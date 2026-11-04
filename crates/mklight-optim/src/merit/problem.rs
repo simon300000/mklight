@@ -549,6 +549,9 @@ impl<E: OperandEvaluator> Problem for OpticalProblem<E> {
     fn evaluate_batch(&self, x: &CandidateBatch, ctx: &JobContext) -> MkResult<BatchEvaluation> {
         Ok(self.to_evaluation(self.operand_values(x, ctx)?))
     }
+    fn anchored_differences(&self) -> bool {
+        self.evaluator.anchored_differences(&self.base)
+    }
     /// The largest step any enabled operand's evaluator asks for (a step
     /// large enough for the noisiest operand costs the others only `O(h)`
     /// truncation, far below their noise floor at these sizes).

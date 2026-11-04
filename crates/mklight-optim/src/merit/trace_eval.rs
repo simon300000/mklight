@@ -69,9 +69,9 @@ use mklight_core::{
     SurfaceId, SurfaceShape, Vec3,
 };
 use mklight_trace::{
-    ObjectSource, OpdReference, ParaxialModel, ParaxialXY, PreparedField, SemiDiameterSettings,
-    SequentialTracer, SurfaceRecord, TraceOptions, TraceResult, TracerSettings, fix_semi_diameters,
-    trace::to_global,
+    AimSeeds, ObjectSource, OpdReference, ParaxialModel, ParaxialXY, PreparedField,
+    SemiDiameterSettings, SequentialTracer, SurfaceRecord, TraceOptions, TraceResult,
+    TracerSettings, fix_semi_diameters, trace::to_global,
 };
 
 use super::default::is_meridionally_symmetric;
@@ -203,11 +203,27 @@ impl TraceEvaluator {
     /// Snapshot → `ResolvedSystem` → `SequentialTracer` for one system.
     /// Invalid systems give `Invalid`, paraxial failures `RayFailure`.
     pub fn tracer(&self, s: &OpticalSystem) -> Result<SequentialTracer, OperandError> {
+        self.seeded_tracer(s, &Seeding::None)
+    }
+
+    /// [`Self::tracer`], seeded from or recording into an anchor's solves.
+    fn seeded_tracer(
+        &self,
+        s: &OpticalSystem,
+        seeding: &Seeding,
+    ) -> Result<SequentialTracer, OperandError> {
         let snap = Snapshot::new(s.clone()).map_err(|e| OperandError::Invalid(e.to_string()))?;
-        let rs = ResolvedSystem::new(&snap, self.library.clone())
-            .map_err(|e| OperandError::Invalid(e.to_string()))?;
-        SequentialTracer::with_settings(Arc::new(rs), self.settings.tracer)
-            .map_err(|e| OperandError::RayFailure(e.to_string()))
+        let rs = Arc::new(
+            ResolvedSystem::new(&snap, self.library.clone())
+                .map_err(|e| OperandError::Invalid(e.to_string()))?,
+        );
+        match seeding {
+            Seeding::Read(seeds) => {
+                SequentialTracer::with_seeds(rs, self.settings.tracer, seeds.clone())
+            }
+            _ => SequentialTracer::with_settings(rs, self.settings.tracer),
+        }
+        .map_err(|e| OperandError::RayFailure(e.to_string()))
     }
 
     /// Values of `operands` (all supported) for one system.
@@ -229,14 +245,34 @@ impl TraceEvaluator {
         ctx: &JobContext,
         parallel: bool,
     ) -> MkResult<Vec<OperandValue>> {
+        Ok(self
+            .evaluate_seeded(s, operands, ctx, parallel, &Seeding::None)?
+            .0)
+    }
+
+    /// [`Self::evaluate_one`] with the tracer seeded by `seeding`; an
+    /// anchor (`Seeding::Record`) also returns its recorded solves.
+    fn evaluate_seeded(
+        &self,
+        s: &OpticalSystem,
+        operands: &[&Operand],
+        ctx: &JobContext,
+        parallel: bool,
+        seeding: &Seeding,
+    ) -> MkResult<(Vec<OperandValue>, Option<Arc<AimSeeds>>)> {
         ctx.check()?;
         let auto_sd = has_auto_semi_diameters(s);
         let needs_tracer = operands.iter().any(|o| {
             (!is_model_kind(&o.kind) && !matches!(o.kind, OperandKind::ToleranceSensitivity { .. }))
                 || (auto_sd && needs_semi_diameters(&o.kind))
         });
+        let mut recorded = None;
         let tracer = if needs_tracer {
-            Some(self.tracer(s))
+            let mut t = self.seeded_tracer(s, seeding);
+            if let (Seeding::Record, Ok(t)) = (seeding, &mut t) {
+                recorded = Some(t.record_seeds());
+            }
+            Some(t)
         } else {
             None
         };
@@ -283,7 +319,7 @@ impl TraceEvaluator {
             };
             out.push(v);
         }
-        Ok(out)
+        Ok((out, recorded))
     }
 
     /// `ToleranceSensitivity`: the criterion at nominal and at `param ± δ`.
@@ -347,12 +383,54 @@ impl OperandEvaluator for TraceEvaluator {
         operands: &[&Operand],
         ctx: &JobContext,
     ) -> MkResult<Vec<Vec<OperandValue>>> {
-        // Small batches (a single LM trial point) also parallelise inside
-        // each candidate; larger ones only over candidates.
-        let inner = systems.len() < rayon::current_num_threads();
+        // Candidates also parallelise inside (field preparation, chiefs,
+        // groups): work stealing then balances the tail of a batch that
+        // is not a multiple of the pool (49 FD columns on 12 workers).
+        let inner = true;
         systems
             .par_iter()
             .map(|s| self.evaluate_one(s, operands, ctx, inner))
+            .collect()
+    }
+
+    /// Real aiming: aims are seeded from the anchor (`evaluate_batch_near`),
+    /// so a finite difference must take its base value from the same batch.
+    fn anchored_differences(&self, base: &OpticalSystem) -> bool {
+        matches!(
+            self.settings.tracer.aiming.unwrap_or(base.ray_aiming),
+            mklight_core::model::RayAiming::Real { .. }
+        )
+    }
+
+    /// Candidates near `anchor` (finite-difference neighbours): the anchor
+    /// is traced once and records its solves ([`AimSeeds`]), which seed the
+    /// field, chief and pupil-ray aims of every candidate. A seeded solve
+    /// resolves its change from the anchor to 1e-6 (`mklight_trace`
+    /// `seeded_tolerance`), far below the aiming tolerance, so values agree
+    /// with [`Self::evaluate_batch`] to within that tolerance and the probes
+    /// of one Jacobian, the re-evaluated base point included, share one
+    /// consistent solve path.
+    fn evaluate_batch_near(
+        &self,
+        systems: &[OpticalSystem],
+        operands: &[&Operand],
+        anchor: Option<&OpticalSystem>,
+        ctx: &JobContext,
+    ) -> MkResult<Vec<Vec<OperandValue>>> {
+        let seeds = match anchor {
+            Some(a) if systems.len() >= MIN_SEEDED_BATCH && self.anchored_differences(a) => {
+                self.evaluate_seeded(a, operands, ctx, true, &Seeding::Record)?
+                    .1
+            }
+            _ => None,
+        };
+        let Some(seeds) = seeds else {
+            return self.evaluate_batch(systems, operands, ctx);
+        };
+        let seeding = Seeding::Read(seeds);
+        systems
+            .par_iter()
+            .map(|s| Ok(self.evaluate_seeded(s, operands, ctx, true, &seeding)?.0))
             .collect()
     }
 
@@ -376,6 +454,19 @@ impl OperandEvaluator for TraceEvaluator {
         }
     }
 }
+
+/// How a candidate's tracer uses an anchor's solves ([`AimSeeds`]).
+enum Seeding {
+    None,
+    /// The anchor: record its solves.
+    Record,
+    /// A candidate near the anchor.
+    Read(Arc<AimSeeds>),
+}
+
+/// Smallest batch whose candidates are seeded from their anchor: tracing
+/// the anchor costs one extra candidate.
+const MIN_SEEDED_BATCH: usize = 4;
 
 /// Relative forward-difference step for wavefront operands on the f64
 /// reference (see [`TraceEvaluator`]'s `fd_relative_step`).
