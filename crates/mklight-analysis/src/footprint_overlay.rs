@@ -15,9 +15,10 @@ pub struct OverlaySet {
     pub points: [usize; 2],
     pub outline: [usize; 2],
 }
-/// Turn angle (radians) below which three hull points count as collinear:
-/// far above f64 and double-float rounding of local hit coordinates, far
-/// below any optical tolerance (1e-9 of a 10 mm chord is 1e-8 mm).
+/// Relative distance (of the neighbours' chord) below which a hull vertex
+/// counts as collinear with its neighbours: far above f64 and double-float
+/// rounding of local hit coordinates, far below any optical tolerance
+/// (1e-9 of a 10 mm chord is 1e-8 mm).
 const COLLINEAR: f64 = 1e-9;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct FootprintOverlay {
@@ -27,12 +28,13 @@ pub struct FootprintOverlay {
     pub run_info: RunInfo,
 }
 /// Monotone-chain hull, counterclockwise and unclosed. Collinear interior
-/// points are removed, including points collinear only to rounding (a turn
-/// of at most [`COLLINEAR`] radians), so the outline of a pupil grid row
-/// does not depend on the last bits of its hits: the hull keeps each
-/// vertex's sag, and an interior row point kept by rounding would bend the
-/// outline by the sag's curvature along the row. Fewer than three hits
-/// yield a point or a segment.
+/// points are removed, including vertices collinear with their neighbours
+/// only to rounding (within [`COLLINEAR`] of their chord), so the outline
+/// of a pupil grid row does not depend on the last bits of its hits: the
+/// hull keeps each vertex's sag, and an interior row point kept by rounding
+/// would bend the outline by the sag's curvature along the row. The exact
+/// hull comes first, so rounding never reorders points along a line. Fewer
+/// than three hits yield a point or a segment.
 pub fn convex_hull(points: &[Vec3]) -> Vec<Vec3> {
     let mut p = points.to_vec();
     p.sort_by(|a, b| a.x.total_cmp(&b.x).then(a.y.total_cmp(&b.y)));
@@ -40,21 +42,17 @@ pub fn convex_hull(points: &[Vec3]) -> Vec<Vec3> {
     if p.len() < 3 {
         return p;
     }
-    // Strictly convex turn a → b → c (beyond rounding).
-    let convex = |a: Vec3, b: Vec3, c: Vec3| {
-        let (u, v) = ((b.x - a.x, b.y - a.y), (c.x - a.x, c.y - a.y));
-        u.0 * v.1 - u.1 * v.0 > COLLINEAR * u.0.hypot(u.1) * v.0.hypot(v.1)
-    };
+    let cross = |a: Vec3, b: Vec3, c: Vec3| (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
     let mut lower = Vec::new();
     let mut upper = Vec::new();
     for &q in &p {
-        while lower.len() >= 2 && !convex(lower[lower.len() - 2], lower[lower.len() - 1], q) {
+        while lower.len() >= 2 && cross(lower[lower.len() - 2], lower[lower.len() - 1], q) <= 0.0 {
             lower.pop();
         }
         lower.push(q);
     }
     for &q in p.iter().rev() {
-        while upper.len() >= 2 && !convex(upper[upper.len() - 2], upper[upper.len() - 1], q) {
+        while upper.len() >= 2 && cross(upper[upper.len() - 2], upper[upper.len() - 1], q) <= 0.0 {
             upper.pop();
         }
         upper.push(q);
@@ -62,7 +60,25 @@ pub fn convex_hull(points: &[Vec3]) -> Vec<Vec3> {
     lower.pop();
     upper.pop();
     lower.extend(upper);
-    lower
+    // Vertices within rounding of their neighbours' chord (on a convex hull
+    // they project inside it), until none is left.
+    let mut hull = lower;
+    let mut i = 0;
+    let mut kept = 0;
+    while hull.len() > 3 && kept < hull.len() {
+        let n = hull.len();
+        let (a, b, c) = (hull[(i + n - 1) % n], hull[i % n], hull[(i + 1) % n]);
+        let chord = (c.x - a.x).hypot(c.y - a.y);
+        if cross(a, b, c) <= COLLINEAR * chord * chord {
+            hull.remove(i % n);
+            kept = 0;
+        } else {
+            i += 1;
+            kept += 1;
+        }
+        i %= hull.len();
+    }
+    hull
 }
 /// Every passing hit (records stop before a clipping surface) of the
 /// footprint's pupil pattern on every surface after the object, per field
@@ -181,6 +197,26 @@ mod tests {
         let mut p = row(0.0);
         p.push(Vec3::new(0.0, -3.0 - 1e-6, 0.0));
         assert_eq!(convex_hull(&p).len(), 5);
+    }
+    /// Rounding of a grid column's x scrambles the sort order along the
+    /// column; the extreme hits of each column must survive.
+    #[test]
+    fn hull_keeps_column_extremes_whose_order_rounding_scrambled() {
+        let mut p = Vec::new();
+        for i in 0..9 {
+            for j in 0..9 {
+                // Deterministic jitter of a few ulps, unrelated to j's order.
+                let e =
+                    [3.0, -2.0, 1.0, -4.0, 0.0, 2.0, -1.0, 4.0, -3.0][(i * 5 + j * 7) % 9] * 2e-16;
+                let (x, y) = (i as f64 - 4.0 + e, j as f64 - 4.0);
+                p.push(Vec3::new(x, y, 0.1 * (x * x + y * y)));
+            }
+        }
+        let hull = convex_hull(&p);
+        assert_eq!(hull.len(), 4, "{hull:?}");
+        for v in &hull {
+            assert!((v.x.abs() - 4.0).abs() < 1e-12 && (v.y.abs() - 4.0).abs() < 1e-12);
+        }
     }
     /// On a centred system the global hits are the local footprint's points
     /// lifted onto the surface sag at the vertex's global position.
