@@ -432,6 +432,14 @@ stop at surface 15; Apple M2 Pro, indicative):
 | pure f32 | 1e-4 | 0 | 6.0 | 3.2e-5 |
 | pure f32 | 1e-10 | 13.4 (cap) | 1,584 | 0.74; 88 % of the rays fail |
 
+Below its floor the pure-f32 build stops early: a solve asked for a stop
+residual below `MKL_AIM_F32_FLOOR` (1e-6 of the stop radius) ends unconverged
+once it reaches that floor, and the ray's schedule ends with it (later phases
+would only reach the floor again). The ray stays a failed aim, reported as
+before; tolerances at or above the floor (`f32_relaxed`, 1e-6) are unchanged.
+On the lens this takes dense spot (23.6M rays) from 97.8 s to 2.0 s and dense
+geometric MTF from 101 s to 3.5 s; the results remain accuracy failures.
+
 One double-float stop trace in the aim kernel costs 113 ns per ray (7.5 ns
 per ray-surface; the bulk resident trace: 5 ns), one more double-float
 Newton iteration 98 ns; the same in f32 costs 62 ns and 72 ns: the aim kernel
