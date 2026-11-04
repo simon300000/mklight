@@ -299,7 +299,6 @@ impl GhostModel {
             mut since_physical,
             mut counting,
         } = *state;
-        let mut record = record;
         let done = |status, ray, surface, k, ws, wp, absorb: f64, opl| {
             Some(SequenceResult {
                 status,
@@ -612,7 +611,7 @@ impl GhostModel {
             }
             ws *= applied[0];
             wp *= applied[1];
-            if let Some(r) = record.as_deref_mut() {
+            if let Some(r) = record {
                 r.push(StepRecord {
                     step: *st,
                     point: ray.pos,
