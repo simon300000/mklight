@@ -103,6 +103,9 @@ pub enum Class {
     /// spacings): recorded, not gated; the data it samples are compared at
     /// common physical coordinates.
     Sampling,
+    /// The value of a first-order table entry `{key, unit, value}`, classed
+    /// by its key and unit ([`entry_class`]).
+    Entry,
 }
 
 impl Class {
@@ -140,6 +143,7 @@ impl Class {
             Class::Image => "image",
             Class::Jones => "jones",
             Class::Sampling => "sampling",
+            Class::Entry => "entry",
         }
     }
 
@@ -173,7 +177,8 @@ impl Class {
             | Class::OutlineVertices
             | Class::Image
             | Class::Jones
-            | Class::Sampling => 0.,
+            | Class::Sampling
+            | Class::Entry => 0.,
         }
     }
 
@@ -1102,11 +1107,122 @@ pub const SOLVER_SCORES: &[(&str, &[Rule])] = &[
     ),
 ];
 
+/// Analyses without a GPU path: every backend request runs the CPU f64
+/// reference, so a comparison checks that the routed result is the
+/// reference's. Lengths, wavefront terms, angles, F-numbers and apertures
+/// keep their physical classes; echoed inputs, catalogue data and the host
+/// f64 material evaluation (indices, Abbe numbers, partial dispersions,
+/// which no backend computes on a device) are exact.
+pub const REFERENCE_ONLY: &[(&str, &[Rule])] = &[
+    (
+        "chromatic_focal_shift",
+        &[
+            r("focal_shift[]", Position),
+            r("focal_shift_x[]", Position),
+            r("paraxial_focus[]", Position),
+            r("paraxial_focus_x[]", Position),
+            r("range", PositionDifference),
+            r("primary_wavelength_um", Exact),
+            r("wavelengths_um[]", Exact),
+        ],
+    ),
+    (
+        "first_order",
+        &[
+            r("entries[].value", Entry),
+            r("tables[].entries[].value", Entry),
+            r("tables[].wavelength*", Exact),
+            r("wavelength_um", Exact),
+            r("paraxial_xy.wavelengths[].bfl_*", Position),
+            r("paraxial_xy.wavelengths[].efl_*", Position),
+            r("paraxial_xy.wavelengths[].squeeze", Generic),
+            r("paraxial_xy.*", Exact),
+            r("system.*", Exact),
+        ],
+    ),
+    ("glass_info", &[r("*", Exact)]),
+    (
+        "glass_map",
+        &[r("glasses[].*", Exact), r("@coordinates", Exact)],
+    ),
+    (
+        "rng_stream",
+        &[
+            // Philox draws are bit-identical on every backend (CONVENTIONS §6).
+            r("count", Exact),
+            r("first[]", Exact),
+            r("min", Exact),
+            r("max", Exact),
+            r("@uniform", Exact),
+            // Reductions over the draws.
+            r("mean", Generic),
+            r("variance", Generic),
+        ],
+    ),
+    (
+        "seidel",
+        &[
+            r("image_marginal_slope", Direction),
+            r("lagrange_invariant", Position),
+            r("petzval_radius", Position),
+            r("petzval_sum", Generic),
+            // Seidel and chromatic coefficients in mm of wavefront; the
+            // same terms in waves carry the OPD budget.
+            r("sums.*", Position),
+            r("surfaces[].surface", Exact),
+            r("surfaces[].*", Position),
+            r("wavefront_mm.*", Position),
+            r("wavefront_waves.*", Waves),
+            r("*wavelength", Exact),
+            r("wavelength_um", Exact),
+        ],
+    ),
+    (
+        "solves",
+        &[r("sweeps", Exact), r("max_change", Generic), r("*", Exact)],
+    ),
+    (
+        "system_summary",
+        &[
+            r("paraxial_xy.wavelengths[].bfl_*", Position),
+            r("paraxial_xy.wavelengths[].efl_*", Position),
+            r("paraxial_xy.wavelengths[].squeeze", Generic),
+            r("paraxial_xy.*", Exact),
+            r("first_to_image_distance", Position),
+            r("surfaces[].frame.origin[]", Position),
+            r("surfaces[].frame.rot[][]", Direction),
+            r("surfaces[].radius", Position),
+            r("@vertex_global", Position),
+            r("@n_after", Exact),
+            // The echoed system and its host f64 material indices.
+            r("*", Exact),
+        ],
+    ),
+    ("validate", &[r("*", Exact)]),
+];
+
+/// The class of a first-order table entry `{key, unit, value}` (`Entry`):
+/// echoed inputs exact, F-numbers, numerical apertures and magnification by
+/// their classes, lengths as positions.
+fn entry_class(entry: &serde_json::Map<String, Value>) -> Class {
+    let key = entry.get("key").and_then(Value::as_str).unwrap_or("");
+    let unit = entry.get("unit").and_then(Value::as_str).unwrap_or("");
+    match key {
+        "object_distance" | "max_field" => Exact,
+        k if k.ends_with("f_number") => FNumber,
+        k if k.ends_with("_na") => Direction,
+        "magnification" => Magnification,
+        _ if unit == "mm" => Position,
+        _ => Generic,
+    }
+}
+
 /// The rule of a normalised path of `analysis`, if the table maps it.
 pub fn rule(analysis: &str, path: &str) -> Option<Rule> {
     FIELDS
         .iter()
         .chain(SOLVER_SCORES)
+        .chain(REFERENCE_ONLY)
         .find(|(a, _)| *a == analysis)?
         .1
         .iter()
@@ -1361,6 +1477,12 @@ impl Comparison {
                             .and_then(|m| oa.get(m))
                             .and_then(Value::as_f64);
                         self.orientation(period, magnitude, va, vb, &format!("result{sub}"));
+                        continue;
+                    }
+                    if let (Some(Rule { class: Entry, .. }), Some(x), Some(y)) =
+                        (self.rule(&normalise(&sub)[1..]), va.as_f64(), vb.as_f64())
+                    {
+                        self.number(entry_class(oa), x, y, &format!("result{sub}"));
                         continue;
                     }
                     self.json(ra, rb, va, vb, &sub);
@@ -1842,6 +1964,7 @@ pub fn compare(
     if !FIELDS
         .iter()
         .chain(SOLVER_SCORES)
+        .chain(REFERENCE_ONLY)
         .any(|(a, _)| *a == analysis)
     {
         c.fail(

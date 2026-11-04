@@ -14,7 +14,7 @@ use serde_json::{Value, json};
 
 #[path = "support/comparison.rs"]
 mod comparison;
-use comparison::{Class, FIELDS, compare, rule};
+use comparison::{Class, FIELDS, REFERENCE_ONLY, compare, rule};
 
 const SOLVERS: [&str; 4] = [
     "optimize",
@@ -66,6 +66,72 @@ fn every_declared_result_field_of_every_compared_analysis_has_a_class() {
             "contract table for {a}, which is not a compared analysis"
         );
     }
+}
+
+/// Analyses without a GPU path run the reference on every backend request;
+/// their results are still gated (a routed result must be the reference's),
+/// so every declared field of every one of them is classed too.
+#[test]
+fn every_declared_result_field_of_every_reference_only_analysis_has_a_class() {
+    let analyses: Vec<_> = Engine::default()
+        .analyses()
+        .into_iter()
+        .filter(|a| !a.gpu_path)
+        .collect();
+    let mut missing = Vec::new();
+    for info in &analyses {
+        assert!(
+            REFERENCE_ONLY.iter().any(|(a, _)| *a == info.name),
+            "{} has no contract table",
+            info.name
+        );
+        for leaf in comparison::schema_leaves(&info.result_schema) {
+            if rule(&info.name, &leaf).is_none() {
+                missing.push(format!("{}: {leaf}", info.name));
+            }
+        }
+    }
+    assert!(
+        missing.is_empty(),
+        "unclassed fields:\n{}",
+        missing.join("\n")
+    );
+    for (a, _) in REFERENCE_ONLY {
+        assert!(
+            analyses.iter().any(|i| i.name == *a),
+            "reference-only table for {a}, which has a GPU path or does not exist"
+        );
+    }
+}
+
+/// First-order entries are classed by key and unit: an F-number is
+/// relative (2e-6), a length a position (2e-5 mm), an echoed input exact.
+#[test]
+fn first_order_entries_are_classed_by_key_and_unit() {
+    let entries = |f: f64, efl: f64, field: f64| {
+        out(
+            json!({"entries":[
+                {"key":"image_f_number","label":"","unit":"","value":f},
+                {"key":"efl","label":"","unit":"mm","value":efl},
+                {"key":"max_field","label":"","unit":"deg","value":field}],
+                "wavelength_um":0.55}),
+            vec![],
+        )
+    };
+    let a = entries(1.4, 50.0, 20.0);
+    assert!(run("first_order", &a, &a).reason.is_none());
+    // 5e-6 mm on a 50 mm focal length passes the position gate.
+    assert!(
+        run("first_order", &a, &entries(1.4, 50.0 + 5e-6, 20.0))
+            .reason
+            .is_none()
+    );
+    // 5e-6 relative on an F-number exceeds the F-number gate.
+    let c = run("first_order", &a, &entries(1.4 * (1. + 5e-6), 50.0, 20.0));
+    assert!(c.reason.unwrap().contains("f_number"));
+    // An echoed field definition must be equal.
+    let c = run("first_order", &a, &entries(1.4, 50.0, 20.0 + 1e-9));
+    assert!(c.reason.unwrap().contains("discrete values differ"));
 }
 
 /// Quantity by quantity: the full class budget never exceeds the
