@@ -25,6 +25,9 @@ impl<E: OperandEvaluator + ?Sized> OperandEvaluator for Worker<'_, E> {
     fn fd_relative_step(&self, k: &OperandKind, s: FdScheme) -> Option<f64> {
         self.evaluator.fd_relative_step(k, s)
     }
+    fn anchored_differences(&self, base: &OpticalSystem) -> bool {
+        self.evaluator.anchored_differences(base)
+    }
     fn evaluate_batch(&self, s: &[OpticalSystem], o: &[&Operand], ctx: &JobContext) -> Values {
         ctx.check()?;
         self.send

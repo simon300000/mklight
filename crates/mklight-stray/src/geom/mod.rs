@@ -121,10 +121,14 @@ impl Aabb {
 }
 
 /// Orthonormal tangent basis `(t₁, t₂)` with `t₁ × t₂ = n` for a unit `n`
-/// (branchless construction of Duff et al., 2017).
+/// (construction of Duff et al., 2017). `n.z = −0` takes the `+1` branch, as
+/// in the resident twins: signed zeros do not survive double-float
+/// arithmetic, and coaxial cylinders (lens edges, barrels) have normals with
+/// an exactly zero `z`, so a sign-bit branch would mirror their scatter
+/// frames between backends.
 #[inline]
 pub fn onb(n: Vec3) -> (Vec3, Vec3) {
-    let s = 1f64.copysign(n.z);
+    let s = if n.z < 0.0 { -1.0 } else { 1.0 };
     let a = -1.0 / (s + n.z);
     let b = n.x * n.y * a;
     (

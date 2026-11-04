@@ -146,27 +146,20 @@ pub enum Request {
         reject_virtual: bool,
         sensor: [Df32; 2],
         newton: crate::NewtonSettings,
-        /// U32 [count + 1]: each probe's compact step rows, one per path step.
-        step_rows: PlanView,
-        output: BufferId,
-        /// One coating query per step row. Rows after a probe's last completed
-        /// step, and spare rows after the final probe, are zeroed.
-        queries: BufferId,
-        /// [rows, 2] absorption and efficiency per completed step.
-        factors: BufferId,
-    },
-    Weights {
-        values: PlanView,
-        coatings: PlanView,
-        factors: PlanView,
-        offsets: PlanView,
-        steps: PlanView,
-        probes: PlanView,
-        wavelengths: usize,
-        step_rows: PlanView,
-        sensor_reflectance: Df32,
+        /// Separate s/p powers folded at every completed step; `None` traces
+        /// geometry only (unit weights).
+        coatings: Option<TraceCoatings>,
         output: BufferId,
     },
+}
+/// Coating records the ghost trace evaluates at each completed step's
+/// incidence with the P7 arithmetic, folding s/p powers, efficiency and
+/// absorption in step order. No per-step query or coating value is stored.
+#[derive(Clone, Debug)]
+pub struct TraceCoatings {
+    pub specs: PlanView,
+    pub layers: PlanView,
+    pub sensor_reflectance: Df32,
 }
 pub fn record_desc<T>(n: usize) -> BufferDesc {
     crate::radiometry::record_desc::<T>(n)
@@ -187,7 +180,7 @@ fn records<T>(v: &PlanView, p: &ResidentPlan) -> MkResult<usize> {
     Ok(n)
 }
 pub fn validate(r: &Request, p: &ResidentPlan) -> MkResult<()> {
-    let (probes, offsets, steps, wavelengths, step_rows, output) = match r {
+    let (probes, offsets, steps, wavelengths, output) = match r {
         Request::MomentTerms { hits, output } => {
             let n = hits.desc.shape.first().copied().unwrap_or(0);
             if hits.desc != BufferDesc::new(ElementType::DoubleFloat, [n, 5])
@@ -334,57 +327,32 @@ pub fn validate(r: &Request, p: &ResidentPlan) -> MkResult<()> {
             offsets,
             steps,
             wavelengths,
-            step_rows,
             output,
-            queries,
-            factors,
+            coatings,
             newton,
             ..
         } => {
             if !matches!(systems, SystemSet::Uploaded(_)) {
                 return unsupported("ghost resident candidate systems");
             }
-            let rows = p.desc(*queries)?.shape.first().copied().unwrap_or(0);
-            if p.desc(*queries)? != &record_desc::<CoatingQuery>(rows)
-                || p.desc(*factors)? != &BufferDesc::new(ElementType::DoubleFloat, [rows, 2])
-                || !newton.tolerance_abs.is_finite()
+            if let Some(c) = coatings {
+                records::<CoatingSpec>(&c.specs, p)?;
+                records::<CoatingLayer>(&c.layers, p)?;
+            }
+            if !newton.tolerance_abs.is_finite()
                 || newton.tolerance_abs < 0.
                 || !newton.tolerance_rel.is_finite()
                 || newton.tolerance_rel < 0.
             {
-                return Err(bad("ghost trace outputs/settings"));
+                return Err(bad("ghost trace settings"));
             }
-            (probes, offsets, steps, wavelengths, step_rows, output)
-        }
-        Request::Weights {
-            probes,
-            offsets,
-            steps,
-            wavelengths,
-            step_rows,
-            output,
-            values,
-            coatings,
-            factors,
-            ..
-        } => {
-            let n = records::<Probe>(probes, p)?;
-            let rows = records::<CoatingValue>(coatings, p)?;
-            if records::<Value>(values, p)? != n
-                || factors.desc != BufferDesc::new(ElementType::DoubleFloat, [rows, 2])
-                || factors.stride != 1
-            {
-                return Err(bad("ghost weight inputs"));
-            }
-            (probes, offsets, steps, wavelengths, step_rows, output)
+            (probes, offsets, steps, wavelengths, output)
         }
     };
     let n = records::<Probe>(probes, p)?;
     let ns = records::<Step>(steps, p)?;
     if *wavelengths == 0
         || ns % wavelengths != 0
-        || step_rows.desc != BufferDesc::new(ElementType::U32, [n + 1])
-        || step_rows.stride != 1
         || offsets.desc.element != ElementType::U32
         || offsets.desc.shape.len() != 1
         || offsets.desc.len()? < 2
@@ -486,47 +454,23 @@ pub fn accesses(r: &Request) -> Access {
             probes,
             offsets,
             steps,
-            step_rows,
-            output,
-            queries,
-            factors,
-            ..
-        } => Access {
-            reads: vec![
-                probes.clone(),
-                offsets.clone(),
-                steps.clone(),
-                step_rows.clone(),
-            ],
-            writes: vec![*output, *queries, *factors],
-            systems: match systems {
-                SystemSet::Uploaded(h) => vec![*h],
-                _ => vec![],
-            },
-        },
-        Request::Weights {
-            values,
             coatings,
-            factors,
-            offsets,
-            steps,
-            probes,
-            step_rows,
             output,
             ..
-        } => Access {
-            reads: vec![
-                values.clone(),
-                coatings.clone(),
-                factors.clone(),
-                offsets.clone(),
-                steps.clone(),
-                probes.clone(),
-                step_rows.clone(),
-            ],
-            writes: vec![*output],
-            systems: vec![],
-        },
+        } => {
+            let mut reads = vec![probes.clone(), offsets.clone(), steps.clone()];
+            if let Some(c) = coatings {
+                reads.extend([c.specs.clone(), c.layers.clone()]);
+            }
+            Access {
+                reads,
+                writes: vec![*output],
+                systems: match systems {
+                    SystemSet::Uploaded(h) => vec![*h],
+                    _ => vec![],
+                },
+            }
+        }
     }
 }
 fn rows<'a, T: Pod>(x: &'a cpu::Execution, v: &PlanView) -> &'a [T] {
@@ -787,10 +731,8 @@ fn execute_in<E: crate::FpEnv>(
             reject_virtual,
             sensor,
             newton,
-            step_rows,
+            coatings,
             output,
-            queries,
-            factors,
         } => {
             let (headers, surfaces, pool) = match systems {
                 SystemSet::Uploaded(h) => {
@@ -806,14 +748,6 @@ fn execute_in<E: crate::FpEnv>(
                 }
             };
             let n = probes.desc.shape[0];
-            let spare = rows::<u32>(x, step_rows)[n] as usize;
-            if spare > x.words(*queries).len() / 4 {
-                return Err(bad("ghost step rows"));
-            }
-            bytemuck::cast_slice_mut::<_, CoatingQuery>(x.words_mut(*queries))[spare..]
-                .fill(CoatingQuery::zeroed());
-            bytemuck::cast_slice_mut::<_, [Df32; 2]>(x.words_mut(*factors))[spare..]
-                .fill([Df32::ZERO; 2]);
             for i in 0..n {
                 if i % 256 == 0 {
                     ctl.check()?;
@@ -829,13 +763,14 @@ fn execute_in<E: crate::FpEnv>(
                     os[q.path as usize + 1] as usize,
                 );
                 let plane = ss.len() / wavelengths;
-                let rs = rows::<u32>(x, step_rows);
-                let (ra, rz) = (rs[i] as usize, rs[i + 1] as usize);
-                if z < a || z > plane || rz < ra || rz - ra != z - a || rz > rs[n] as usize {
-                    return Err(bad("ghost path offset or step rows"));
+                if z < a || z > plane {
+                    return Err(bad("ghost path offset"));
                 }
-                let mut qs = vec![CoatingQuery::zeroed(); z - a];
-                let mut fs = vec![[Df32::ZERO; 2]; z - a];
+                let coat = coatings.as_ref().map(|c| kernel::Coatings {
+                    specs: rows::<CoatingSpec>(x, &c.specs),
+                    layers: rows::<CoatingLayer>(x, &c.layers),
+                    sensor: c.sensor_reflectance,
+                });
                 let v = kernel::trace::<E>(
                     &headers[0],
                     &surfaces,
@@ -845,51 +780,11 @@ fn execute_in<E: crate::FpEnv>(
                     *reject_virtual,
                     *sensor,
                     newton,
-                    |k, q, f| {
-                        qs[k] = q;
-                        fs[k] = f;
-                    },
+                    coat,
                 );
                 x.stats.fallback_count += (v.status & crate::consts::MKL_RAY_CODE_MASK
                     == crate::consts::MKL_GHOST_REFERENCE)
                     as u64;
-                bytemuck::cast_slice_mut::<_, Value>(x.words_mut(*output))[i] = v;
-                bytemuck::cast_slice_mut::<_, CoatingQuery>(x.words_mut(*queries))[ra..rz]
-                    .copy_from_slice(&qs);
-                bytemuck::cast_slice_mut::<_, [Df32; 2]>(x.words_mut(*factors))[ra..rz]
-                    .copy_from_slice(&fs);
-            }
-        }
-        Request::Weights {
-            values,
-            coatings,
-            factors,
-            offsets,
-            steps,
-            probes,
-            wavelengths,
-            step_rows,
-            sensor_reflectance,
-            output,
-        } => {
-            for i in 0..probes.desc.shape[0] {
-                if i % 1024 == 0 {
-                    ctl.check()?;
-                }
-                let q = rows::<Probe>(x, probes)[i];
-                let os = rows::<u32>(x, offsets);
-                let ss = rows::<Step>(x, steps);
-                let plane = ss.len() / wavelengths;
-                let a = q.wavelength as usize * plane + os[q.path as usize] as usize;
-                let rs = rows::<u32>(x, step_rows);
-                let (ra, rz) = (rs[i] as usize, rs[i + 1] as usize);
-                let v = kernel::weights::<E>(
-                    rows::<Value>(x, values)[i],
-                    &ss[a..a + (os[q.path as usize + 1] - os[q.path as usize]) as usize],
-                    &rows::<CoatingValue>(x, coatings)[ra..rz],
-                    &rows::<[Df32; 2]>(x, factors)[ra..rz],
-                    *sensor_reflectance,
-                );
                 bytemuck::cast_slice_mut::<_, Value>(x.words_mut(*output))[i] = v;
             }
         }
