@@ -27,7 +27,7 @@ fn offset_has_known_spectral_indices_and_preserves_partial_dispersion() {
     for (l, expected) in [
         (lines::D, 1.5188000345005885),
         (lines::F, 1.5246724198828),
-        (lines::C, 1.5161907682953219),
+        (lines::C, 1.516190768295322),
     ] {
         assert!((m.index(l) - expected).abs() < 2e-15, "{l}: {}", m.index(l));
     }
