@@ -179,6 +179,9 @@ enum AimStart {
 /// pupil point, as bits.
 type AimKey = [u64; 9];
 
+/// A recorded aim and its aim Jacobian.
+type RaySeed = ([f64; 2], Option<Mat2>);
+
 fn aim_key(field: &PreparedField, wl: usize, px: f64, py: f64) -> AimKey {
     let (p, v) = (field.point, field.point.vignetting);
     [
@@ -209,7 +212,7 @@ fn aim_key(field: &PreparedField, wl: usize, px: f64, py: f64) -> AimKey {
 #[derive(Debug, Default)]
 pub struct AimSeeds {
     fields: RwLock<Vec<PreparedField>>,
-    rays: RwLock<HashMap<AimKey, ([f64; 2], Option<Mat2>)>>,
+    rays: RwLock<HashMap<AimKey, RaySeed>>,
 }
 
 impl AimSeeds {
@@ -225,7 +228,7 @@ impl AimSeeds {
             .find(|f| f.point == *point && f.is_valid() && f.aims.len() == nw)
             .cloned()
     }
-    fn ray(&self, key: &AimKey) -> Option<([f64; 2], Option<Mat2>)> {
+    fn ray(&self, key: &AimKey) -> Option<RaySeed> {
         self.rays.read().unwrap().get(key).copied()
     }
 }
