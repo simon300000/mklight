@@ -304,9 +304,8 @@ matching CPU-f32 code and strict Metal kernels. Coating and transport
 results are bit-identical between the two in a matching floating-point
 environment, except the retardance angles, which leave double-float through
 an f32 `atan2`. This is a service for the
-GPU-first solver packages; engine capability advertisement and `auto`
-selection remain with P11. No reference tracer or solver weighting rule is
-changed.
+GPU solver packages; engine capability and `auto` routing are in GPU.md
+§9.2. No reference tracer or solver weighting rule is changed.
 
 ### Coatings and immutable material state
 

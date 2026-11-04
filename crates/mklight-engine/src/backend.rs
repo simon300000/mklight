@@ -14,16 +14,17 @@
 //!   that does not implement the analysis, is an error unless the caller
 //!   allows fallback, in which case the job runs on the CPU reference and
 //!   its `RunInfo` says so (never silently degrade).
-//! * **Auto.** The first available GPU backend that implements the analysis,
-//!   else the CPU reference (the reason is in the result's
-//!   `BackendReport::fallback_reason`; no warning, since this is the
-//!   expected outcome for analyses without a GPU path).
+//! * **Auto.** Chosen per request by the calibrated cost model among the
+//!   available backends that implement the analysis (docs/GPU.md §9.2,
+//!   "Automatic routing"), else the CPU reference (the reason is in the
+//!   result's `BackendReport::fallback_reason`; no warning, since this is
+//!   the expected outcome).
 //!
-//! Either way a selected GPU analysis first qualifies the backend's
-//! precision for the snapshot (docs/GPU.md §5.2, CONVENTIONS §12) and falls
-//! back to the CPU reference, with a `RunInfo` warning, when it fails. The
-//! chosen provider's `device()` handle travels to the analysis in
-//! `AnalysisInput`.
+//! Either way a selected GPU analysis publishes its native result without a
+//! run-time reference comparison (accuracy is qualified offline, GPU §9.4);
+//! a native run that fails falls back to the CPU reference with a `RunInfo`
+//! warning and a `failed_attempts` record. The chosen provider's `device()`
+//! handle travels to the analysis in `AnalysisInput`.
 
 use serde::{Deserialize, Serialize};
 use std::any::Any;
@@ -42,8 +43,8 @@ pub enum Backend {
     CpuReference,
     /// A GPU backend by short name (`"metal"`, later `"vulkan"`, `"cuda"`).
     Gpu(String),
-    /// The first available GPU backend implementing the analysis, else the
-    /// CPU reference.
+    /// Chosen per request by the engine's cost model (docs/GPU.md §9.2);
+    /// the CPU reference where no GPU backend implements the analysis.
     Auto,
 }
 

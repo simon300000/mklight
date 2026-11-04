@@ -174,7 +174,9 @@ registered later by solver crates are available without CLI changes.
 |---|---|
 | `--settings <json>` / `--settings @file` | settings object (partial; missing keys take the schema defaults, unknown keys are rejected) |
 | `--seed <n>` | sets `settings.seed`; only for analyses whose schema has a `seed` |
-| `--backend cpu\|metal\|auto` | `auto` (default): the engine's `auto`, i.e. the first available GPU backend that implements the analysis and passes precision qualification for the system, else the CPU reference; the calibrated cost model chooses Metal only for a predicted advantage of at least 1.3× and 5 ms, devices without a calibration preferring qualified Metal, docs/RESULTS.md §5 (the envelope's `backend` object records which and why). `metal`: explicit; exit 3 if the Metal backend is unavailable or does not implement the analysis (no silent fallback). `cpu`: the f64 reference |
+| `--backend cpu\|metal\|auto` | `auto` (default): the engine's automatic selection, the calibrated cost model of docs/GPU.md §9.2 (Metal only for a predicted advantage of at least 1.3× and 5 ms; accuracy exclusions and the static capability list stay on the CPU reference; devices without a calibration prefer qualified Metal); the envelope's `backend` object records which and why (docs/RESULTS.md §5). `metal`: explicit, bypassing the cost model; exit 3 if the Metal backend is unavailable or does not implement the analysis (no silent fallback). `cpu`: the f64 reference |
+| `--tier design\|preview` | accuracy tier, `design` (default) or the opt-in, labelled `preview` (docs/GPU.md §9.4); recorded in `run_info.tier` |
+| `--aim-stop requested\|conditioned` | aim-stop policy (CONVENTIONS §7); omitted, the engine default `conditioned`; an explicit aiming tolerance in the project always runs as `requested`; recorded in `run_info.aim_stop` |
 | `--out <file>` | write the result envelope to a file (atomically); stdout gets `{"out", "run_info"}` |
 | `--buffers` | inline each buffer's contents as a `data` array in the envelope |
 | `--progress` | progress on stderr while the job runs (`progress  42.0%  stage`, or one JSON object per line with `--json`) |

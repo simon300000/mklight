@@ -16,7 +16,7 @@
 //! | `field_tracer` | `tracer` key, field selection | geometric analyses with axis fields added |
 //! | `configured` | snapshot, library, configuration | wave adapter (configuration, solves, first order, prepared fields; host seeds of the Metal path) |
 //! | `pupil_lattice`, `resampled_pupil` | `mklight_wave::shared` keys, scoped by library | CPU f64 wave analyses |
-//! | `result` | snapshot, library, analysis, normalised settings, backend selection | repeated requests (refresh, undo) |
+//! | `result` | snapshot, library, analysis, normalised settings, policy; backend selection for explicit requests | repeated requests (refresh, undo) |
 //!
 //! Material resolution stays in the session's resolved-system cache.
 //!

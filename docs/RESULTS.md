@@ -51,11 +51,13 @@ Python `Result.envelope()` return:
 * The solver crates' own `RunInfo` is not repeated inside `result`; its
   warnings are merged into `run_info.warnings`.
 * A request identical to an earlier one (same snapshot content, library,
-  complete settings and backend selection) of a deterministic analysis may
-  be answered from the engine's analysis graph (`docs/ARCHITECTURE.md`):
-  the result is bit-identical, and `started_unix_ms`/`duration_ms` describe
-  this call. Only CPU-reference results without failed backend attempts are
-  reused.
+  complete settings, tier and aim stop; for an explicit backend also the
+  same backend selection) of a deterministic analysis may be answered from
+  the engine's analysis graph (`docs/ARCHITECTURE.md`): the result is
+  bit-identical, and `started_unix_ms`/`duration_ms` describe this call. An
+  `auto` request is answered before routing, whichever backend computed the
+  stored result; explicit requests reuse CPU-reference results only.
+  Results with failed backend attempts are never reused.
 
 ## 2. Versioning and settings
 
@@ -133,8 +135,8 @@ wave/image jobs, transmission/polarisation, ghosts, stray light and
 optimisation/merit/tolerance/glass substitution. Isolated first-order, Seidel,
 model, catalogue and I/O reports remain small host computations. A capability
 means a native adapter exists; the static capability policy and offline suites
-establish its usable domains. The engine no longer uses the host-generated legacy Metal
-analysis route or its 65,536-ray/candidate-count heuristics.
+establish its usable domains. No ray-count or candidate-count crossover
+selects a backend; `auto` uses the cost model below.
 
 Native results publish directly with their actual precision, without per-snapshot
 or per-candidate f64 reruns. Accuracy is established offline. Static capability
@@ -2160,7 +2162,7 @@ Settings:
 | key | type | default | unit | notes |
 |---|---|---|---|---|
 | `algorithm` | string | `"tabu"` |  | one of `"tabu"`, `"hammer"`; tabu: search glass combinations, every one re-optimised from the input shape. hammer: basin hopping over glasses and shape together, to escape local minima. |
-| `backend` | string | `"auto"` |  | one of `"auto"`, `"cpu"`, `"gpu"`, `"gpu_emulation"`; auto: the engine's qualified resident device unless matched complete-chain cost evidence prefers the CPU reference; unknown cost prefers the device. |
+| `backend` | string | `"auto"` |  | one of `"auto"`, `"cpu"`, `"gpu"`, `"gpu_emulation"`; auto: the device the engine selected for this job (under engine auto, its cost model; docs/GPU.md §9.2), else the CPU reference. |
 | `constraints` | array | `[]` |  | Operands appended as explicit constraints (role forced to constraint). |
 | `default_merit` | object | `{"auto_symmetry":true,"configs":[],"criterion":{"reference":"centroid","scope":"monochromatic","type":"rms_spot"},"fields":null,"sampling":{"arm_offset_deg":0.0,"arms":6,"obscuration":0.0,"rings":3,"symmetry":"none"},"thickness":{"air_max_centre":null,"air_min_centre":0.1,"air_min_edge":0.1,"as_constraints":true,"auto_semi_diameters":false,"glass_max_centre":30.0,"glass_min_centre":1.0,"glass_min_edge":1.0,"weight":1.0},"wavelengths":null,"weight":1.0}` |  | Default-merit generator: RMS spot, wavefront or polychromatic MTF; fields, wavelengths, sampling and thickness boundaries. |
 | `fd_relative_step` | number\|null | `null` |  | > 0; null chooses per operand and backend (wavefront 1e-6/1e-4, MTF 1e-6/1e-5 on the CPU, GPU f32 steps; docs/OPTIMIZATION.md). |
@@ -2258,7 +2260,7 @@ Settings:
 | key | type | default | unit | notes |
 |---|---|---|---|---|
 | `algorithm` | string | `"lm"` |  | one of `"lm"`, `"dogleg"`, `"de"`, `"cma_es"`, `"nelder_mead"`, `"hammer"` |
-| `backend` | string | `"auto"` |  | one of `"auto"`, `"cpu"`, `"gpu"`, `"gpu_emulation"`; auto: the engine's qualified resident device unless matched complete-chain cost evidence prefers the CPU reference; unknown cost prefers the device. |
+| `backend` | string | `"auto"` |  | one of `"auto"`, `"cpu"`, `"gpu"`, `"gpu_emulation"`; auto: the device the engine selected for this job (under engine auto, its cost model; docs/GPU.md §9.2), else the CPU reference. |
 | `constraints` | array | `[]` |  | Operands appended as explicit constraints (role forced to constraint). |
 | `default_merit` | object | `{"auto_symmetry":true,"configs":[],"criterion":{"reference":"centroid","scope":"monochromatic","type":"rms_spot"},"fields":null,"sampling":{"arm_offset_deg":0.0,"arms":6,"obscuration":0.0,"rings":3,"symmetry":"none"},"thickness":{"air_max_centre":null,"air_min_centre":0.1,"air_min_edge":0.1,"as_constraints":true,"auto_semi_diameters":false,"glass_max_centre":30.0,"glass_min_centre":1.0,"glass_min_edge":1.0,"weight":1.0},"wavelengths":null,"weight":1.0}` |  | Default-merit generator: RMS spot, wavefront or polychromatic MTF; fields, wavelengths, sampling and thickness boundaries. |
 | `fd_relative_step` | number\|null | `null` |  | > 0; null chooses per operand and backend (wavefront 1e-6/1e-4, MTF 1e-6/1e-5 on the CPU, GPU f32 steps; docs/OPTIMIZATION.md). |
@@ -2328,7 +2330,7 @@ Settings:
 | key | type | default | unit | notes |
 |---|---|---|---|---|
 | `algorithm` | string | `"lm"` |  | one of `"lm"`, `"dogleg"`, `"de"`, `"cma_es"`, `"nelder_mead"`, `"hammer"` |
-| `backend` | string | `"auto"` |  | one of `"auto"`, `"cpu"`, `"gpu"`, `"gpu_emulation"`; auto: the engine's qualified resident device unless matched complete-chain cost evidence prefers the CPU reference; unknown cost prefers the device. |
+| `backend` | string | `"auto"` |  | one of `"auto"`, `"cpu"`, `"gpu"`, `"gpu_emulation"`; auto: the device the engine selected for this job (under engine auto, its cost model; docs/GPU.md §9.2), else the CPU reference. |
 | `constraints` | array | `[]` |  | Operands appended as explicit constraints (role forced to constraint). |
 | `default_merit` | object | `{"auto_symmetry":true,"configs":[],"criterion":{"reference":"centroid","scope":"monochromatic","type":"rms_spot"},"fields":null,"sampling":{"arm_offset_deg":0.0,"arms":6,"obscuration":0.0,"rings":3,"symmetry":"none"},"thickness":{"air_max_centre":null,"air_min_centre":0.1,"air_min_edge":0.1,"as_constraints":true,"auto_semi_diameters":false,"glass_max_centre":30.0,"glass_min_centre":1.0,"glass_min_edge":1.0,"weight":1.0},"wavelengths":null,"weight":1.0}` |  | Default-merit generator: RMS spot, wavefront or polychromatic MTF; fields, wavelengths, sampling and thickness boundaries. |
 | `fd_relative_step` | number\|null | `null` |  | > 0; null chooses per operand and backend (wavefront 1e-6/1e-4, MTF 1e-6/1e-5 on the CPU, GPU f32 steps; docs/OPTIMIZATION.md). |

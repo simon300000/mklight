@@ -157,7 +157,7 @@ pub enum BackendChoice {
     Cpu,
     /// Metal GPU backend (fails if unavailable or not implemented for the analysis).
     Metal,
-    /// The best available backend that implements the analysis, else the CPU reference.
+    /// Chosen per request by the engine's cost model (docs/GPU.md §9.2), else the CPU reference.
     Auto,
 }
 

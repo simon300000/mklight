@@ -141,7 +141,7 @@ fn offset_tracer(environment: mklight_core::model::Environment) -> mklight_trace
 fn offset_paraxial_power_matches_thick_lens_formula() {
     let tracer = offset_tracer(Default::default());
     let packed = mklight_gpu::PackedSystem::pack_all(tracer.system()).unwrap();
-    for (w, n) in [1.5246724198828, 1.5188000345005885, 1.5161907682953219]
+    for (w, n) in [1.5246724198828, 1.5188000345005885, 1.516190768295322]
         .into_iter()
         .enumerate()
     {

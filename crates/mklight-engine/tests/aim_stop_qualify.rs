@@ -332,17 +332,20 @@ fn aim_stop_and_preview_qualification() {
                         .filter(|f| f.contains("unmapped"))
                         .cloned(),
                 );
-                // Gated at the design tier; a Metal failure that the control
-                // (requested stop) shows at the same path is pre-existing,
-                // not the policy's.
+                // Every design-tier row is gated, the requested-stop control
+                // included. A Metal failure that the control shows at the
+                // same path is labelled pre-existing (not the policy's), but
+                // it still counts, and so does a native attempt that a
+                // reference fallback completed.
                 let pre_existing = label == "metal_conditioned"
                     && !report.failures.is_empty()
                     && report
                         .failures
                         .iter()
                         .all(|f| control.iter().any(|c| failure_path(c) == failure_path(f)));
-                let gated = tier == Design && stop == Conditioned && !pre_existing;
-                let failed = gated && report.reason.is_some();
+                let native_failures = comparison::native_failures(&run.run_info);
+                let gated = tier == Design;
+                let failed = gated && (report.reason.is_some() || !native_failures.is_empty());
                 rows += 1;
                 println!(
                     "AIM_STOP_QUALIFY {}",
@@ -351,15 +354,15 @@ fn aim_stop_and_preview_qualification() {
                     "image_l1_relative":report.image_l1_relative,"energy_relative":report.energy_relative,
                     "gate_failure":report.reason,"gate_failures":report.failures,
                     "classes":report.classes,"resampled":report.resampled,"undefined":report.undefined,
-                    "sampling_differences":report.sampling_differences,"failed":failed,"pre_existing":pre_existing,"reference_ms":reference.run_info.duration_ms,"ms":wall,
+                    "sampling_differences":report.sampling_differences,"failed":failed,"pre_existing":pre_existing,
+                    "native_failures":native_failures,"reference_ms":reference.run_info.duration_ms,"ms":wall,
                     "preview_metrics":(tier == Preview).then(|| preview_metrics(&reference, &run)),
                     "settings":run.run_info.settings})
                 );
                 if failed {
                     failures.push(format!(
-                        "{name}/{}/{label}: {}",
-                        info.name,
-                        report.reason.unwrap()
+                        "{name}/{}/{label}: {:?} {:?}",
+                        info.name, report.reason, native_failures
                     ));
                 }
             }
