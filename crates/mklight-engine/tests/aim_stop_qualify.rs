@@ -152,6 +152,100 @@ fn exempt_undefined(a: &mut AnalysisOutput, b: &mut AnalysisOutput) {
     }
 }
 
+/// Preview-tier metrics against the design tier (GPU §9.4 preview
+/// contract): MTF curves at the same frequencies, PSF Strehl and centroid,
+/// wavefront RMS, spot centroid. Empty where the analysis has none.
+fn preview_metrics(
+    a: &mklight_engine::AnalysisResult,
+    b: &mklight_engine::AnalysisResult,
+) -> Value {
+    let mut m = serde_json::Map::new();
+    let f = |v: &Value| v.as_f64();
+    let mut worst = |key: &str, x: Option<f64>| {
+        if let Some(x) = x {
+            let e = m.entry(key.to_string()).or_insert(Value::from(0.0));
+            if x > e.as_f64().unwrap_or(0.0) {
+                *e = Value::from(x);
+            }
+        }
+    };
+    // Curves in buffers of equal name and shape (MTF tangential/sagittal, EE).
+    for (x, y) in a.buffers.iter().zip(&b.buffers) {
+        if x.name == y.name
+            && x.shape == y.shape
+            && let (BufferData::F64(p), BufferData::F64(q)) = (&x.data, &y.data)
+        {
+            let kind = if x.name.starts_with("tangential") || x.name.starts_with("sagittal") {
+                "mtf_abs"
+            } else if x.name.starts_with("encircled") || x.name.starts_with("ensquared") {
+                "energy_fraction_abs"
+            } else {
+                continue;
+            };
+            let d = p
+                .iter()
+                .zip(q)
+                .filter(|(u, v)| u.is_finite() && v.is_finite())
+                .map(|(u, v)| (u - v).abs())
+                .fold(0.0, f64::max);
+            worst(kind, Some(d));
+        }
+    }
+    let arrays = |v: &Value, key: &str| v[key].as_array().cloned().unwrap_or_default();
+    for (x, y) in arrays(&a.json, "psfs").iter().zip(arrays(&b.json, "psfs")) {
+        worst(
+            "strehl_abs",
+            f(&x["strehl"])
+                .zip(f(&y["strehl"]))
+                .map(|(u, v)| (u - v).abs()),
+        );
+        let c = |v: &Value| Some([f(&v["centroid_mm"][0])?, f(&v["centroid_mm"][1])?]);
+        worst(
+            "centroid_mm",
+            c(x).zip(c(&y))
+                .map(|(u, v)| (u[0] - v[0]).hypot(u[1] - v[1])),
+        );
+    }
+    for (x, y) in arrays(&a.json, "maps").iter().zip(arrays(&b.json, "maps")) {
+        worst(
+            "rms_waves_abs",
+            f(&x["rms_waves"])
+                .zip(f(&y["rms_waves"]))
+                .map(|(u, v)| (u - v).abs()),
+        );
+    }
+    for (x, y) in arrays(&a.json, "fields")
+        .iter()
+        .zip(arrays(&b.json, "fields"))
+    {
+        for (p, q) in arrays(x, "per_wavelength")
+            .iter()
+            .zip(arrays(&y, "per_wavelength"))
+        {
+            let c = |v: &Value| {
+                Some([
+                    f(&v["stats"]["centroid"][0])?,
+                    f(&v["stats"]["centroid"][1])?,
+                ])
+            };
+            worst(
+                "centroid_mm",
+                c(p).zip(c(&q))
+                    .map(|(u, v)| (u[0] - v[0]).hypot(u[1] - v[1])),
+            );
+        }
+        for (p, q) in arrays(x, "tangential").iter().zip(arrays(&y, "tangential")) {
+            let d = arrays(p, "values")
+                .iter()
+                .zip(arrays(&q, "values"))
+                .filter_map(|(u, v)| Some((f(u)? - f(&v)?).abs()))
+                .fold(0.0, f64::max);
+            worst("fan_mm", Some(d));
+        }
+    }
+    Value::Object(m)
+}
+
 fn compare(
     a: &mklight_engine::AnalysisResult,
     b: &mklight_engine::AnalysisResult,

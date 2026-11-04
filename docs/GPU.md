@@ -1890,9 +1890,12 @@ the design tier of the same request is
 
 achieved by cheaper sampling and aiming, both recorded in
 `run_info.settings`: analyses declare preview defaults (`x-preview` in the
-settings schema: half the wave lattice rays per axis, 33 instead of 65; half
-the dense square-pattern density, 16 instead of 32; 11 field or focus
-samples instead of 21, 6 instead of 11 for `mtf_vs_field`) that replace the
+settings schema: half the wave lattice rays per axis, 33 instead of 65, for
+the MTF, MTF-vs-field and wavefront-map analyses (the PSF-family image
+windows grow with the geometric blur of a coarser lattice, so those keep
+the design lattice); half the dense square-pattern density, 16 instead of
+32; 11 field or focus samples instead of 21, 6 instead of 11 for
+`mtf_vs_field`) that replace the
 design defaults only for settings the request leaves out, and the
 conditioned aim stop uses the preview allocation (CONVENTIONS §7). Requested
 tolerances, survival-mask rules and the design budgets are untouched by the

@@ -153,7 +153,7 @@ struct Configured<S: Default> {
 
 fn settings_schema(name: &str) -> Value {
     let mut annotations = json!({
-        "pupil": pupil_schema(),
+        "pupil": pupil_schema(matches!(name, "mtf" | "mtf_vs_field" | "wavefront_map")),
         "wavelengths": {"description": "System wavelength selection: all, primary, index or list (tagged by type)."}
     });
     if name != "mtf_vs_field" {
@@ -223,7 +223,12 @@ fn settings_schema(name: &str) -> Value {
     }
 }
 
-fn pupil_schema() -> Value {
+/// The traced-pupil settings; with `preview_lattice`, the preview tier
+/// halves the lattice rays per axis (a quarter of the aims). Only the
+/// MTF-family analyses take it: the PSF-family image windows
+/// (`ensure_window`) grow with the geometric blur of a coarser lattice and
+/// would cost more, not less.
+fn pupil_schema(preview_lattice: bool) -> Value {
     let mut s = settings_from_default::<PupilSettings>(json!({
         "grid": {"minimum": 0, "maximum": 4096, "description": "Cell-centred exit-pupil samples per axis over [-1, 1]; 0 selects from traced phase slope (64..1024)."},
         "rays": {"minimum": 8, "maximum": 2048, "description": "Traced entrance-pupil lattice rays per axis."},
@@ -232,11 +237,12 @@ fn pupil_schema() -> Value {
         "amplitude": {"enum": ["uniform", "transmission", "radiometric"], "description": "Relative field amplitude; radiometric includes ray density and obliquity."},
         "rim_tolerance": {"minimum": 0.0, "maximum": 0.01, "description": "Rim bisection tolerance, strictly between the bounds."}
     }));
-    // Preview tier: half the lattice rays per axis (a quarter of the aims).
-    s["x-preview"] = json!(PupilSettings {
-        rays: 33,
-        ..PupilSettings::default()
-    });
+    if preview_lattice {
+        s["x-preview"] = json!(PupilSettings {
+            rays: 33,
+            ..PupilSettings::default()
+        });
+    }
     s
 }
 
