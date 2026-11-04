@@ -37,28 +37,81 @@
 //! With **aiming off**, `a = P'·r_EP` (or `P'·u_marginal`). With **real
 //! aiming**, `a` solves `stop_hit(a) = P'·r_stop` in the stop's local frame
 //! (`r_stop` is the paraxial stop semi-diameter from the aperture
-//! specification), by Newton–Broyden iteration ([`crate::numeric`]) seeded by a
+//! specification), by Newton iteration ([`crate::numeric`]) seeded by a
 //! linear prediction from the cached chief-ray aim point and Jacobian of the
-//! (field, wavelength). If the direct solve fails, it falls back to
-//! continuation in the pupil radius (25 %, 50 %, 75 %, 100 %). Aiming ignores
-//! clipping. At infinity, chief-ray recovery blends unit directions from the
-//! axis and keeps the entrance hit between steps. Convergence is reported per
-//! ray.
+//! (field, wavelength). The Jacobian `∂(stop hit)/∂a` is **analytic**: the
+//! tangent of the starting ray with respect to `a` is carried through the
+//! surfaces of the stop trace ([`crate::diff`]), so a fresh Jacobian costs
+//! one trace instead of four, and every accepted step uses the exact
+//! Jacobian at its point ([`AIM_POLICY`]). Where the tangent cannot be
+//! formed (grazing incidence, near-TIR, an undefined surface curvature) the
+//! solver falls back to central differences; [`AimStats`] counts this. If
+//! the direct solve fails, it falls back to continuation in the pupil
+//! radius (25 %, 50 %, 75 %, 100 %). Aiming ignores clipping. At infinity,
+//! chief-ray recovery blends unit directions from the axis and keeps the
+//! entrance hit between steps. Convergence is reported per ray.
 
-use std::sync::Arc;
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::sync::{Arc, RwLock};
+
+use rayon::prelude::*;
 
 use mklight_core::{
     FieldKind, MkError, MkResult, OpticalSystem, RayAiming, ResolvedSystem, Vec3, Vignetting,
 };
 use serde::{Deserialize, Serialize};
 
-use crate::numeric::{Mat2, Newton2, fd_jacobian, newton2, solve2};
+use crate::diff::{RayTangent, TangentPlan};
+use crate::numeric::{
+    Eval, JacobianPolicy, Mat2, Newton2, Solve2, fd_jacobian, newton2_seeded, solve2,
+};
 use crate::paraxial::{FirstOrder, Paraxial};
 use crate::surface::{IntersectSettings, intersect};
 use crate::trace::{
     FailReason, Ray, SurfaceRecord, TraceOptions, TraceResult, TraceStatus, start_frame, trace_ray,
-    trace_rays,
+    trace_rays, trace_rays_recorded,
 };
+
+/// How real-aim solves form their Jacobians (module docs).
+pub const AIM_POLICY: JacobianPolicy = JacobianPolicy::AnalyticRefresh;
+
+/// Work counters of real-aim solves ([`SequentialTracer::generate_many_stats`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AimStats {
+    /// Rays that needed a real-aim solve.
+    pub rays: u64,
+    /// Rays whose direct solve failed and that continued in the pupil radius.
+    pub continued: u64,
+    /// Rays that could not be aimed.
+    pub failed: u64,
+    /// Newton iterations (direct and continuation solves).
+    pub iterations: u64,
+    /// Stop traces without a Jacobian.
+    pub traces: u64,
+    /// Stop traces with the analytic Jacobian (records and differentiation).
+    pub jacobian_traces: u64,
+    /// Finite-difference Jacobians formed because the analytic one was
+    /// undefined (four of `traces` each).
+    pub fd_fallbacks: u64,
+}
+
+impl AimStats {
+    fn add(&mut self, s: &Solve2) {
+        self.iterations += u64::from(s.iterations);
+        self.traces += u64::from(s.evaluations);
+        self.jacobian_traces += u64::from(s.jacobian_evaluations);
+        self.fd_fallbacks += u64::from(s.fd_fallbacks);
+    }
+    /// Mean Newton iterations per aimed ray.
+    pub fn mean_iterations(&self) -> f64 {
+        self.iterations as f64 / self.rays.max(1) as f64
+    }
+    /// Mean stop traces (plain and with Jacobian) per aimed ray.
+    pub fn mean_traces(&self) -> f64 {
+        (self.traces + self.jacobian_traces) as f64 / self.rays.max(1) as f64
+    }
+}
 
 /// A field point in normalised coordinates (CONVENTIONS §3).
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -162,7 +215,81 @@ pub type RayRequest<'a> = (&'a PreparedField, usize, [f64; 2]);
 /// [`SequentialTracer::generate`] up to the real-aim solve.
 enum AimStart {
     Ready(GeneratedRay),
-    Solve { target: [f64; 2], x0: [f64; 2] },
+    Solve {
+        target: [f64; 2],
+        x0: [f64; 2],
+        j0: Option<Mat2>,
+        /// Rounding floor when `x0` is an anchor seed (`newton2_seeded`).
+        seed: Option<f64>,
+        key: Option<AimKey>,
+    },
+}
+
+/// Identity of one aimed ray: field point (with vignetting), wavelength and
+/// pupil point, as bits.
+type AimKey = [u64; 9];
+
+/// A recorded aim and its aim Jacobian.
+type RaySeed = ([f64; 2], Option<Mat2>);
+
+fn aim_key(field: &PreparedField, wl: usize, px: f64, py: f64) -> AimKey {
+    let (p, v) = (field.point, field.point.vignetting);
+    [
+        p.hx.to_bits(),
+        p.hy.to_bits(),
+        v.vdx.to_bits(),
+        v.vdy.to_bits(),
+        v.vcx.to_bits(),
+        v.vcy.to_bits(),
+        wl as u64,
+        px.to_bits(),
+        py.to_bits(),
+    ]
+}
+
+/// Converged solves of an anchor tracer (prepared fields and pupil-ray
+/// aims with their Jacobians), seeding the same solves of a nearby system:
+/// the finite-difference neighbours of a Jacobian or the trials of a
+/// tolerance run. A seeded solve starts at the anchor's solution with the
+/// anchor's Jacobian (the aim's stop Jacobian, recorded with it) and takes
+/// at least one Newton step, so it corrects for the change even when the
+/// seed already meets the tolerance; it must then resolve the change to
+/// 1e-6 of itself down to rounding, never looser than the aiming tolerance
+/// (`newton2_seeded`), and falls back to the unseeded solve otherwise.
+/// Results agree with the unseeded tracer to within the aiming tolerance
+/// (not bit for bit) and do not depend on the order of tracing. Recording
+/// costs one Jacobian trace per anchor ray.
+#[derive(Debug, Default)]
+pub struct AimSeeds {
+    fields: RwLock<Vec<PreparedField>>,
+    rays: RwLock<HashMap<AimKey, RaySeed>>,
+}
+
+impl AimSeeds {
+    /// Recorded pupil-ray aims.
+    pub fn rays(&self) -> usize {
+        self.rays.read().unwrap().len()
+    }
+    fn field(&self, point: &FieldPoint, nw: usize) -> Option<PreparedField> {
+        self.fields
+            .read()
+            .unwrap()
+            .iter()
+            .find(|f| f.point == *point && f.is_valid() && f.aims.len() == nw)
+            .cloned()
+    }
+    fn ray(&self, key: &AimKey) -> Option<RaySeed> {
+        self.rays.read().unwrap().get(key).copied()
+    }
+}
+
+/// How a tracer uses [`AimSeeds`].
+#[derive(Clone, Debug)]
+enum Seeds {
+    /// The anchor: converged solves are written.
+    Record(Arc<AimSeeds>),
+    /// A nearby system: solves start from the anchor's.
+    Read(Arc<AimSeeds>),
 }
 
 /// Settings of a [`SequentialTracer`].
@@ -210,6 +337,8 @@ pub struct SequentialTracer {
     settings: TracerSettings,
     fields: Vec<PreparedField>,
     warnings: Vec<String>,
+    tangents: TangentPlan,
+    seeds: Option<Seeds>,
 }
 
 impl SequentialTracer {
@@ -218,6 +347,37 @@ impl SequentialTracer {
     }
 
     pub fn with_settings(sys: Arc<ResolvedSystem>, settings: TracerSettings) -> MkResult<Self> {
+        Self::build(sys, settings, None)
+    }
+
+    /// [`Self::with_settings`] for a system near the anchor of `seeds`:
+    /// field sources, chief aims and pupil-ray aims start from the anchor's
+    /// solutions ([`AimSeeds`]).
+    pub fn with_seeds(
+        sys: Arc<ResolvedSystem>,
+        settings: TracerSettings,
+        seeds: Arc<AimSeeds>,
+    ) -> MkResult<Self> {
+        Self::build(sys, settings, Some(Seeds::Read(seeds)))
+    }
+
+    /// Make this tracer an anchor: its prepared fields, and the aims of the
+    /// pupil rays it generates from now on, are recorded into the returned
+    /// seeds for [`Self::with_seeds`].
+    pub fn record_seeds(&mut self) -> Arc<AimSeeds> {
+        let seeds = Arc::new(AimSeeds {
+            fields: RwLock::new(self.fields.clone()),
+            rays: Default::default(),
+        });
+        self.seeds = Some(Seeds::Record(seeds.clone()));
+        seeds
+    }
+
+    fn build(
+        sys: Arc<ResolvedSystem>,
+        settings: TracerSettings,
+        seeds: Option<Seeds>,
+    ) -> MkResult<Self> {
         let paraxial = Paraxial::new(&sys)?;
         let p = paraxial.primary();
         let pupil = PupilGeometry {
@@ -230,6 +390,7 @@ impl SequentialTracer {
         let aiming = settings.aiming.unwrap_or(sys.system().ray_aiming);
         let mut warnings = sys.warnings.clone();
         warnings.extend(paraxial.warnings.iter().cloned());
+        let tangents = TangentPlan::new(&sys);
         let mut t = SequentialTracer {
             sys,
             paraxial,
@@ -238,12 +399,22 @@ impl SequentialTracer {
             settings,
             fields: Vec::new(),
             warnings,
+            tangents,
+            seeds,
         };
+        // Fields are independent solves; prepare them on the rayon pool
+        // (in order, so results and warnings do not depend on threads).
         let n = t.sys.system().fields.fields.len();
+        let prepared: Vec<_> = (0..n)
+            .into_par_iter()
+            .map(|i| {
+                let point = FieldPoint::system(t.sys.system(), i);
+                (point, t.prepare_field(point))
+            })
+            .collect();
         let mut fields = Vec::with_capacity(n);
-        for i in 0..n {
-            let point = FieldPoint::system(t.sys.system(), i);
-            let f = match t.prepare_field(point) {
+        for (i, (point, prepared)) in prepared.into_iter().enumerate() {
+            let f = match prepared {
                 Ok(f) => {
                     if f.aims.iter().any(|a| !a.converged) {
                         t.warnings
@@ -286,6 +457,10 @@ impl SequentialTracer {
     }
     pub fn field(&self, i: usize) -> &PreparedField {
         &self.fields[i]
+    }
+    /// The per-surface plan of the analytic differential tracer.
+    pub fn tangent_plan(&self) -> &TangentPlan {
+        &self.tangents
     }
     /// Append analysis-local fields without changing the physical snapshot.
     /// Existing field indices keep their meaning; new ones follow them.
@@ -355,16 +530,95 @@ impl SequentialTracer {
         [p[0] * s, p[1] * s]
     }
 
-    /// Stop-surface hit `(x, y)` (stop local frame) of the ray with aim `a`.
-    fn stop_hit(&self, src: &ObjectSource, a: [f64; 2], wl: usize) -> Option<[f64; 2]> {
+    /// The starting ray of aim `a` ([`Self::start_ray`], bitwise) and its
+    /// tangent `∂ray/∂a` in the starting frame ([`crate::diff`]).
+    pub fn start_tangent(&self, src: &ObjectSource, a: [f64; 2]) -> Option<(Ray, RayTangent)> {
         let ray = self.start_ray(src, a)?;
-        let opts = TraceOptions {
+        let tangent = match *src {
+            // `pos = a' − d (a'·d)`, `a' = (a_x, a_y, z_EP)`.
+            ObjectSource::Direction { dir } => RayTangent {
+                dpos: [Vec3::X - dir * dir.x, Vec3::Y - dir * dir.y],
+                ddir: [Vec3::ZERO; 2],
+            },
+            ObjectSource::Point { point } => {
+                let f0 = start_frame(&self.sys);
+                let ddir = if self.pupil.telecentric {
+                    // `d = R₀ᵀ g/|g|`, `g = (a_x, a_y, 1)`.
+                    let g = Vec3::new(a[0], a[1], 1.0);
+                    let (gn, dg) = (g.norm(), g.normalized());
+                    [Vec3::X, Vec3::Y].map(|e| f0.to_local_dir((e - dg * dg.dot(e)) / gn))
+                } else {
+                    // `d = ±u/|u|`, `u = R₀ᵀ(a' − o₀) − point`.
+                    let al = f0.to_local_point(Vec3::new(a[0], a[1], self.pupil.z_ep));
+                    let u = al - point;
+                    let un = u.norm();
+                    let sign = if ray.dir.dot(u) < 0.0 { -1.0 } else { 1.0 };
+                    [Vec3::X, Vec3::Y].map(|e| {
+                        let du = f0.to_local_dir(e);
+                        (du - u * (u.dot(du) / (un * un))) * (sign / un)
+                    })
+                };
+                RayTangent {
+                    dpos: [Vec3::ZERO; 2],
+                    ddir,
+                }
+            }
+        };
+        Some((ray, tangent))
+    }
+
+    fn stop_options(&self) -> TraceOptions {
+        TraceOptions {
             clip: false,
             last_surface: Some(self.sys.stop),
             intersect: self.settings.intersect,
+        }
+    }
+
+    /// The real-aim objective: stop hit `(x, y)` (stop local frame) of the
+    /// ray with aim `a` minus `target`, and when `jac` its analytic
+    /// Jacobian (`None` where the tangent cannot be formed, module docs).
+    /// `scratch` holds the records of the Jacobian trace.
+    fn stop_eval(
+        &self,
+        src: &ObjectSource,
+        a: [f64; 2],
+        wl: usize,
+        target: [f64; 2],
+        jac: bool,
+        scratch: &mut Vec<SurfaceRecord>,
+    ) -> Eval {
+        let opts = self.stop_options();
+        let residual = |r: &TraceResult| [r.ray.pos.x - target[0], r.ray.pos.y - target[1]];
+        if !jac {
+            let ray = self.start_ray(src, a)?;
+            let r = trace_ray(&self.sys, &ray, wl, &opts, None);
+            return r.status.is_ok().then(|| (residual(&r), None));
+        }
+        let (ray, tangent) = self.start_tangent(src, a)?;
+        let r = trace_ray(&self.sys, &ray, wl, &opts, Some(scratch));
+        if !r.status.is_ok() {
+            return None;
+        }
+        let j = self
+            .tangents
+            .differentiate(&self.sys, wl, &tangent, scratch, r.surface)
+            .ok()
+            .map(|t| t.xy_jacobian());
+        Some((residual(&r), j))
+    }
+
+    /// `∂(stop hit)/∂a` at `a`: analytic, else central differences, `None`
+    /// where the ray misses the stop.
+    fn stop_jacobian(&self, src: &ObjectSource, a: [f64; 2], wl: usize) -> Option<Mat2> {
+        let scratch = RefCell::new(Vec::new());
+        let f = |x: [f64; 2], jac: bool| {
+            self.stop_eval(src, x, wl, [0.0, 0.0], jac, &mut scratch.borrow_mut())
         };
-        let r = trace_ray(&self.sys, &ray, wl, &opts, None);
-        r.status.is_ok().then_some([r.ray.pos.x, r.ray.pos.y])
+        match f(a, true)? {
+            (_, Some(j)) => Some(j),
+            (fx, None) => fd_jacobian(&f, a, fx, self.fd_step()),
+        }
     }
 
     fn aim_tolerance(&self) -> f64 {
@@ -373,6 +627,11 @@ impl SequentialTracer {
             RayAiming::Off => 1e-10,
         };
         rel * self.pupil.r_stop.max(f64::MIN_POSITIVE)
+    }
+
+    /// Rounding floor of a seeded aim solve (stop coordinates).
+    fn aim_floor(&self) -> f64 {
+        (1e-4 * self.aim_tolerance()).max(16.0 * f64::EPSILON * self.pupil.r_stop)
     }
 
     fn fd_step(&self) -> f64 {
@@ -387,24 +646,58 @@ impl SequentialTracer {
         target: [f64; 2],
         x0: [f64; 2],
         j0: Option<Mat2>,
-    ) -> (crate::numeric::Solve2, u32) {
-        let f = |a: [f64; 2]| {
-            self.stop_hit(src, a, wl)
-                .map(|s| [s[0] - target[0], s[1] - target[1]])
+    ) -> Solve2 {
+        self.solve_aim_seeded(src, wl, target, x0, j0, None)
+    }
+
+    /// [`Self::solve_aim`], seeded as `newton2_seeded` when `seed` is set.
+    fn solve_aim_seeded(
+        &self,
+        src: &ObjectSource,
+        wl: usize,
+        target: [f64; 2],
+        x0: [f64; 2],
+        j0: Option<Mat2>,
+        seed: Option<f64>,
+    ) -> Solve2 {
+        let scratch = RefCell::new(Vec::new());
+        let f = |a: [f64; 2], jac: bool| {
+            self.stop_eval(src, a, wl, target, jac, &mut scratch.borrow_mut())
         };
-        let s = newton2(
+        newton2_seeded(
             &f,
             x0,
             j0,
             self.fd_step(),
             self.aim_tolerance(),
             self.settings.max_aim_iterations,
-        );
-        let it = s.iterations;
-        (s, it)
+            AIM_POLICY,
+            seed,
+        )
     }
 
-    fn chief_aim(&self, src: &ObjectSource, wl: usize) -> AimData {
+    /// The seeds this tracer reads, if any.
+    fn read_seeds(&self) -> Option<&AimSeeds> {
+        match &self.seeds {
+            Some(Seeds::Read(s)) => Some(s),
+            _ => None,
+        }
+    }
+
+    fn chief_aim(&self, src: &ObjectSource, wl: usize, seed: Option<&AimData>) -> AimData {
+        self.chief_aim_with(src, wl, true, seed)
+    }
+
+    /// [`Self::chief_aim`]; without the final aim Jacobian when `jacobian`
+    /// is false, for callers that only use the aim. A converged `seed` (the
+    /// anchor's aim, [`AimSeeds`]) starts the solve.
+    fn chief_aim_with(
+        &self,
+        src: &ObjectSource,
+        wl: usize,
+        jacobian: bool,
+        seed: Option<&AimData>,
+    ) -> AimData {
         match self.aiming {
             RayAiming::Off => AimData {
                 chief: [0.0, 0.0],
@@ -413,7 +706,17 @@ impl SequentialTracer {
                 residual: 0.0,
             },
             RayAiming::Real { .. } => {
-                let (mut s, _) = self.solve_aim(src, wl, [0.0, 0.0], [0.0, 0.0], None);
+                let seeded = seed
+                    .filter(|a| a.converged)
+                    .map(|a| {
+                        let floor = Some(self.aim_floor());
+                        self.solve_aim_seeded(src, wl, [0.0, 0.0], a.chief, a.jacobian, floor)
+                    })
+                    .filter(|s| s.converged);
+                let mut s = match seeded {
+                    Some(s) => s,
+                    None => self.solve_aim(src, wl, [0.0, 0.0], [0.0, 0.0], None),
+                };
                 if !s.converged {
                     // A wide-field paraxial seed can miss the front surfaces:
                     // continue the source from the axis, ending on `src`
@@ -445,7 +748,7 @@ impl SequentialTracer {
                             let t = (self.pupil.z_ep - e.z) / dir.z;
                             x = [e.x + t * dir.x, e.y + t * dir.y];
                         }
-                        let (sk, _) = self.solve_aim(&step, wl, [0.0, 0.0], x, j);
+                        let sk = self.solve_aim(&step, wl, [0.0, 0.0], x, j);
                         if !sk.converged {
                             break;
                         }
@@ -465,10 +768,11 @@ impl SequentialTracer {
                         }
                     }
                 }
-                let f = |a: [f64; 2]| self.stop_hit(src, a, wl);
-                let jac = f(s.x)
-                    .and_then(|fx| fd_jacobian(&f, s.x, fx, self.fd_step()))
-                    .or(s.jacobian);
+                let jac = if jacobian {
+                    self.stop_jacobian(src, s.x, wl).or(s.jacobian)
+                } else {
+                    s.jacobian
+                };
                 AimData {
                     chief: s.x,
                     jacobian: jac,
@@ -481,16 +785,47 @@ impl SequentialTracer {
 
     /// Resolve a field point into its source and per-wavelength aim cache.
     pub fn prepare_field(&self, point: FieldPoint) -> MkResult<PreparedField> {
-        let source = self.field_source(&point)?;
-        let aims = (0..self.num_wavelengths())
-            .map(|w| self.chief_aim(&source, w))
+        let nw = self.num_wavelengths();
+        let seed = self.read_seeds().and_then(|s| s.field(&point, nw));
+        let source = match seed.as_ref().and_then(|f| self.seeded_source(&point, f)) {
+            Some(source) => source,
+            None => self.field_source(&point)?,
+        };
+        let aims = (0..nw)
+            .into_par_iter()
+            .map(|w| self.chief_aim(&source, w, seed.as_ref().map(|f| &f.aims[w])))
             .collect();
-        Ok(PreparedField {
+        let field = PreparedField {
             point,
             source,
             aims,
             error: None,
-        })
+        };
+        if let Some(Seeds::Record(s)) = &self.seeds {
+            let mut fields = s.fields.write().unwrap();
+            if !fields.iter().any(|f| f.point == point) {
+                fields.push(field.clone());
+            }
+        }
+        Ok(field)
+    }
+
+    /// The real-image-height source of `point`, solved from the anchor's
+    /// `seed` field; `None` for other field kinds, the axis, or when the
+    /// seeded solve fails (the caller then solves unseeded).
+    fn seeded_source(&self, point: &FieldPoint, seed: &PreparedField) -> Option<ObjectSource> {
+        let osys = self.sys.system();
+        if !matches!(osys.fields.kind, FieldKind::RealImageHeight) {
+            return None;
+        }
+        let fmax = osys.fields.max_radial();
+        let target = [point.hx * fmax, point.hy * fmax];
+        if target == [0.0, 0.0] {
+            return None;
+        }
+        let aim = &seed.aims[self.sys.primary_wavelength];
+        self.solve_real_image_height_from(self.source_params(&seed.source), target, Some(aim))
+            .ok()
     }
 
     /// A field that could not be resolved (see [`PreparedField`]).
@@ -601,16 +936,119 @@ impl SequentialTracer {
         }
     }
 
-    /// Image-surface hit of the chief ray of `src` (primary wavelength).
-    fn chief_image_hit(&self, src: &ObjectSource) -> Option<[f64; 2]> {
+    /// The tangent of the starting ray of `src` with respect to the source
+    /// parameters `p` ([`Self::source_params`]) at a fixed aim `a`: the
+    /// field direction `(p_x, p_y, 1)/|·|` at infinity, else the object
+    /// point `(p_x, p_y, sag)`.
+    fn source_tangent(&self, src: &ObjectSource, a: [f64; 2], ray: &Ray) -> Option<RayTangent> {
+        match *src {
+            ObjectSource::Direction { dir } => {
+                let g = Vec3::new(dir.x / dir.z, dir.y / dir.z, 1.0);
+                let gn = g.norm();
+                let ap = Vec3::new(a[0], a[1], self.pupil.z_ep);
+                let ddir = [Vec3::X, Vec3::Y].map(|e| (e - dir * dir.dot(e)) / gn);
+                // `pos = a' − d (a'·d)`.
+                let dpos = ddir.map(|dd| -(dd * ap.dot(dir) + dir * ap.dot(dd)));
+                Some(RayTangent { dpos, ddir })
+            }
+            ObjectSource::Point { point } => {
+                let r2 = point.x.mul_add(point.x, point.y * point.y);
+                let (_, slope) = crate::surface::sag_and_slope(&self.sys.surfaces[0].shape, r2)?;
+                if !slope.is_finite() {
+                    return None;
+                }
+                let dpoint = [
+                    Vec3::new(1.0, 0.0, 2.0 * point.x * slope),
+                    Vec3::new(0.0, 1.0, 2.0 * point.y * slope),
+                ];
+                let ddir = if self.pupil.telecentric {
+                    [Vec3::ZERO; 2]
+                } else {
+                    // `d = ±u/|u|`, `u = a_local − point`.
+                    let f0 = start_frame(&self.sys);
+                    let al = f0.to_local_point(Vec3::new(a[0], a[1], self.pupil.z_ep));
+                    let u = al - point;
+                    let un = u.norm();
+                    let sign = if ray.dir.dot(u) < 0.0 { -1.0 } else { 1.0 };
+                    dpoint.map(|dp| {
+                        let du = -dp;
+                        (du - u * (u.dot(du) / (un * un))) * (sign / un)
+                    })
+                };
+                Some(RayTangent { dpos: dpoint, ddir })
+            }
+        }
+    }
+
+    /// Image hit of the chief ray of `src` and, when `jac`, its Jacobian
+    /// with respect to the source parameters through the aim solve: `d(img)/dp = ∂img/∂p − ∂img/∂a J_stop⁻¹ ∂stop/∂p`
+    /// (implicit function theorem on `stop(a, p) = 0`), from two tangent
+    /// passes over one recorded trace. The Jacobian is `None` where a
+    /// tangent cannot be formed or `J_stop` is singular.
+    fn chief_image_eval(
+        &self,
+        src: &ObjectSource,
+        jac: bool,
+        seed: Option<&AimData>,
+    ) -> Option<([f64; 2], Option<Mat2>)> {
         let wl = self.sys.primary_wavelength;
-        let aim = self.chief_aim(src, wl);
+        // Only the aim is used: its own Jacobian trace is not needed.
+        let aim = self.chief_aim_with(src, wl, false, seed);
         if !aim.converged {
             return None;
         }
-        let ray = self.start_ray(src, aim.chief)?;
-        let r = trace_ray(&self.sys, &ray, wl, &TraceOptions::unclipped(), None);
-        r.status.is_ok().then_some([r.ray.pos.x, r.ray.pos.y])
+        let (ray, ta) = self.start_tangent(src, aim.chief)?;
+        let want = jac;
+        let mut rec = Vec::with_capacity(if want { self.sys.surfaces.len() } else { 0 });
+        let r = trace_ray(
+            &self.sys,
+            &ray,
+            wl,
+            &TraceOptions::unclipped(),
+            want.then_some(&mut rec),
+        );
+        if !r.status.is_ok() {
+            return None;
+        }
+        let hit = [r.ray.pos.x, r.ray.pos.y];
+        if !want {
+            return Some((hit, None));
+        }
+        let jac = (|| {
+            let ts = self.source_tangent(src, aim.chief, &ray)?;
+            let plan = &self.tangents;
+            let image = r.surface;
+            let js_img = plan
+                .differentiate(&self.sys, wl, &ts, &rec, image)
+                .ok()?
+                .xy_jacobian();
+            if matches!(self.aiming, RayAiming::Off) {
+                return Some(js_img);
+            }
+            let stop = self.sys.stop;
+            let ja_stop = plan
+                .differentiate(&self.sys, wl, &ta, &rec, stop)
+                .ok()?
+                .xy_jacobian();
+            let ja_img = plan
+                .differentiate(&self.sys, wl, &ta, &rec, image)
+                .ok()?
+                .xy_jacobian();
+            let js_stop = plan
+                .differentiate(&self.sys, wl, &ts, &rec, stop)
+                .ok()?
+                .xy_jacobian();
+            // M = J_stop⁻¹ ∂stop/∂p, column by column.
+            let m0 = solve2(ja_stop, [js_stop[0][0], js_stop[1][0]])?;
+            let m1 = solve2(ja_stop, [js_stop[0][1], js_stop[1][1]])?;
+            let m = [[m0[0], m1[0]], [m0[1], m1[1]]];
+            Some(std::array::from_fn(|row| {
+                std::array::from_fn(|col| {
+                    js_img[row][col] - (ja_img[row][0] * m[0][col] + ja_img[row][1] * m[1][col])
+                })
+            }))
+        })();
+        Some((hit, jac))
     }
 
     fn solve_real_image_height(
@@ -621,15 +1059,37 @@ impl SequentialTracer {
         if target == [0.0, 0.0] {
             return Ok(guess);
         }
-        let x0 = self.source_params(&guess);
-        let f = |p: [f64; 2]| {
+        self.solve_real_image_height_from(self.source_params(&guess), target, None)
+    }
+
+    /// The real-image-height solve from source parameters `x0`; with an
+    /// anchor's chief `aim`, `x0` is the anchor's source and the solve is
+    /// seeded (`newton2_seeded`).
+    fn solve_real_image_height_from(
+        &self,
+        x0: [f64; 2],
+        target: [f64; 2],
+        aim: Option<&AimData>,
+    ) -> MkResult<ObjectSource> {
+        let f = |p: [f64; 2], jac: bool| {
             let src = self.source_from_params(p)?;
-            self.chief_image_hit(&src)
-                .map(|h| [h[0] - target[0], h[1] - target[1]])
+            self.chief_image_eval(&src, jac, aim)
+                .map(|(h, j)| ([h[0] - target[0], h[1] - target[1]], j))
         };
         let scale = x0[0].hypot(x0[1]).max(1e-6);
-        let tol = 1e-12 * target[0].hypot(target[1]).max(1e-3);
-        let s = newton2(&f, x0, None, 1e-6 * scale, tol, 60);
+        let height = target[0].hypot(target[1]);
+        let tol = 1e-12 * height.max(1e-3);
+        let seed = aim.map(|_| (1e-4 * tol).max(16.0 * f64::EPSILON * height));
+        let s = newton2_seeded(
+            &f,
+            x0,
+            None,
+            1e-6 * scale,
+            tol,
+            60,
+            JacobianPolicy::AnalyticNewton,
+            seed,
+        );
         if !s.converged {
             return Err(MkError::Trace(format!(
                 "real image height ({}, {}) not reached by any chief ray (residual {:.3e} mm)",
@@ -653,12 +1113,61 @@ impl SequentialTracer {
     ) -> Result<GeneratedRay, AimReport> {
         match self.aim_start(field, wl, px, py)? {
             AimStart::Ready(g) => Ok(g),
-            AimStart::Solve { target, x0 } => {
-                let (s, iters) =
-                    self.solve_aim(&field.source, wl, target, x0, field.aims[wl].jacobian);
-                self.finish_aim(field, wl, target, s, iters)
+            AimStart::Solve {
+                target,
+                x0,
+                j0,
+                seed,
+                key,
+            } => {
+                let s = self.solve_aim_seeded(&field.source, wl, target, x0, j0, seed);
+                let stats = &mut AimStats::default();
+                self.finish_seeded(field, wl, target, s, stats, seed.is_some(), key)
             }
         }
+    }
+
+    /// [`Self::finish_aim`] of a direct solve; a seeded solve that did not
+    /// converge is first repeated unseeded. Records the aim on an anchor.
+    #[allow(clippy::too_many_arguments)]
+    fn finish_seeded(
+        &self,
+        field: &PreparedField,
+        wl: usize,
+        target: [f64; 2],
+        mut s: Solve2,
+        stats: &mut AimStats,
+        seeded: bool,
+        key: Option<AimKey>,
+    ) -> Result<GeneratedRay, AimReport> {
+        if seeded && !s.converged {
+            stats.add(&s);
+            let x0 = self.linear_aim(field, wl, target);
+            s = self.solve_aim(&field.source, wl, target, x0, field.aims[wl].jacobian);
+        }
+        let g = self.finish_aim(field, wl, target, s, stats);
+        if let (Some(Seeds::Record(seeds)), Some(key), Ok(g)) = (&self.seeds, key, &g) {
+            // The stop Jacobian at the solution (the solve's own may be a
+            // Broyden estimate): a seeded solve then resolves its small
+            // change in one step.
+            let j = self.stop_jacobian(&field.source, g.aim, wl);
+            seeds.rays.write().unwrap().insert(key, (g.aim, j));
+        }
+        g
+    }
+
+    /// The linear prediction of the aim for stop target `target` from the
+    /// chief ray's aim Jacobian (or the paraxial aim).
+    fn linear_aim(&self, field: &PreparedField, wl: usize, target: [f64; 2]) -> [f64; 2] {
+        let ad = &field.aims[wl];
+        ad.jacobian
+            .and_then(|j| solve2(j, target))
+            .map(|d| [ad.chief[0] + d[0], ad.chief[1] + d[1]])
+            .unwrap_or_else(|| {
+                let r = self.pupil.r_stop;
+                let p = self.paraxial_aim([target[0] / r, target[1] / r]);
+                [ad.chief[0] + p[0], ad.chief[1] + p[1]]
+            })
     }
 
     /// Everything of [`Self::generate`] before the real-aim solve.
@@ -669,6 +1178,10 @@ impl SequentialTracer {
         px: f64,
         py: f64,
     ) -> Result<AimStart, AimReport> {
+        // Seeds are keyed by the requested pupil point; the chief ray is
+        // the prepared field's own aim and never seeded.
+        let key =
+            (self.seeds.is_some() && (px, py) != (0.0, 0.0)).then(|| aim_key(field, wl, px, py));
         let (px, py) = field.point.vignetting.apply(px, py);
         let fail = AimReport {
             iterations: 0,
@@ -705,26 +1218,48 @@ impl SequentialTracer {
                         let p = self.paraxial_aim([px, py]);
                         [ad.chief[0] + p[0], ad.chief[1] + p[1]]
                     });
-                Ok(AimStart::Solve { target, x0 })
+                let seed = key
+                    .as_ref()
+                    .and_then(|k| self.read_seeds().and_then(|s| s.ray(k)));
+                Ok(match seed {
+                    Some((aim, j)) => AimStart::Solve {
+                        target,
+                        x0: aim,
+                        j0: j.or(ad.jacobian),
+                        seed: Some(self.aim_floor()),
+                        key,
+                    },
+                    None => AimStart::Solve {
+                        target,
+                        x0,
+                        j0: ad.jacobian,
+                        seed: None,
+                        key,
+                    },
+                })
             }
         }
     }
 
-    /// Everything of [`Self::generate`] after the direct real-aim solve `s`
-    /// (`iters` Newton iterations): continuation in the pupil radius if it
-    /// did not converge, then the starting ray.
+    /// Everything of [`Self::generate`] after the direct real-aim solve `s`:
+    /// continuation in the pupil radius if it did not converge, then the
+    /// starting ray. `stats` accumulates the solves' work.
     fn finish_aim(
         &self,
         field: &PreparedField,
         wl: usize,
         target: [f64; 2],
-        mut s: crate::numeric::Solve2,
-        mut iters: u32,
+        mut s: Solve2,
+        stats: &mut AimStats,
     ) -> Result<GeneratedRay, AimReport> {
         let ad = &field.aims[wl];
         let r_stop = self.pupil.r_stop;
+        let mut iters = s.iterations;
+        stats.rays += 1;
+        stats.add(&s);
         if !s.converged {
             // Continuation in the pupil radius.
+            stats.continued += 1;
             let mut x = ad.chief;
             let mut j = ad.jacobian;
             let mut prev = [0.0, 0.0];
@@ -733,9 +1268,9 @@ impl SequentialTracer {
                 let seed = j
                     .and_then(|j| solve2(j, [t[0] - prev[0], t[1] - prev[1]]))
                     .map_or(x, |d| [x[0] + d[0], x[1] + d[1]]);
-                let (sn, it) = self.solve_aim(&field.source, wl, t, seed, j);
-                iters += it;
-                s = sn;
+                s = self.solve_aim(&field.source, wl, t, seed, j);
+                iters += s.iterations;
+                stats.add(&s);
                 if !s.converged {
                     break;
                 }
@@ -750,6 +1285,7 @@ impl SequentialTracer {
             converged: s.converged,
         };
         if !s.converged {
+            stats.failed += 1;
             return Err(report);
         }
         let ray = self.start_ray(&field.source, s.x).ok_or(report)?;
@@ -763,23 +1299,41 @@ impl SequentialTracer {
     /// [`Self::generate`] for many pupil points at once, bitwise identical
     /// to generating them one by one. The direct real-aim solves of all rays
     /// advance together ([`Newton2`]) and each round's stop traces run as
-    /// packets ([`trace_rays`]); the rare rays that need continuation in the
-    /// pupil radius finish on their own.
+    /// packets ([`trace_rays`], or [`trace_rays_recorded`] plus
+    /// [`differentiate`] where the Jacobian is requested); the rare rays
+    /// that need continuation in the pupil radius finish on their own.
     pub fn generate_many(&self, rays: &[RayRequest]) -> Vec<Result<GeneratedRay, AimReport>> {
+        self.generate_many_stats(rays, &mut AimStats::default())
+    }
+
+    /// [`Self::generate_many`], accumulating the solves' work into `stats`.
+    pub fn generate_many_stats(
+        &self,
+        rays: &[RayRequest],
+        stats: &mut AimStats,
+    ) -> Vec<Result<GeneratedRay, AimReport>> {
         let mut out = Vec::with_capacity(rays.len());
         // Direct solves: (ray index, stop target, solver).
         let mut solves = Vec::new();
         for (k, &(field, wl, [px, py])) in rays.iter().enumerate() {
             match self.aim_start(field, wl, px, py) {
-                Ok(AimStart::Solve { target, x0 }) => {
+                Ok(AimStart::Solve {
+                    target,
+                    x0,
+                    j0,
+                    seed,
+                    key,
+                }) => {
                     let n = Newton2::new(
                         x0,
-                        field.aims[wl].jacobian,
+                        j0,
                         self.fd_step(),
                         self.aim_tolerance(),
                         self.settings.max_aim_iterations,
-                    );
-                    solves.push((k, target, n));
+                        AIM_POLICY,
+                    )
+                    .seeded(seed);
+                    solves.push((k, target, n, seed.is_some(), key));
                     // Placeholder until the solve finishes.
                     out.push(Err(AimReport {
                         iterations: 0,
@@ -791,47 +1345,88 @@ impl SequentialTracer {
                 Err(e) => out.push(Err(e)),
             }
         }
-        let opts = TraceOptions {
-            clip: false,
-            last_surface: Some(self.sys.stop),
-            intersect: self.settings.intersect,
-        };
+        let opts = self.stop_options();
+        // Plain traces, and Jacobian traces with their start tangents.
         let (mut starts, mut wls) = (Vec::new(), Vec::new());
-        // Per pending point: whether it has a starting ray (else `f` is
-        // undefined there, as in `stop_hit`).
-        let mut has_ray = Vec::new();
-        let mut values = Vec::new();
+        let (mut jstarts, mut jwls, mut jtangents) = (Vec::new(), Vec::new(), Vec::new());
+        let mut records: Vec<Vec<SurfaceRecord>> = Vec::new();
+        // Per pending point: no starting ray (`f` undefined there, as in
+        // `stop_eval`), a plain trace, or a Jacobian trace.
+        let mut kind: Vec<u8> = Vec::new();
+        let mut values: Vec<Eval> = Vec::new();
         loop {
             starts.clear();
             wls.clear();
-            has_ray.clear();
-            for (k, _, n) in &solves {
+            jstarts.clear();
+            jwls.clear();
+            jtangents.clear();
+            kind.clear();
+            for (k, _, n, ..) in &solves {
                 let (field, wl, _) = rays[*k];
+                let want = n.wants_jacobian();
                 for &a in n.pending() {
-                    let ray = self.start_ray(&field.source, a);
-                    has_ray.push(ray.is_some());
-                    if let Some(ray) = ray {
-                        starts.push(ray);
-                        wls.push(wl);
+                    if want {
+                        match self.start_tangent(&field.source, a) {
+                            Some((ray, t)) => {
+                                jstarts.push(ray);
+                                jwls.push(wl);
+                                jtangents.push(t);
+                                kind.push(2);
+                            }
+                            None => kind.push(0),
+                        }
+                    } else {
+                        match self.start_ray(&field.source, a) {
+                            Some(ray) => {
+                                starts.push(ray);
+                                wls.push(wl);
+                                kind.push(1);
+                            }
+                            None => kind.push(0),
+                        }
                     }
                 }
             }
-            if has_ray.is_empty() {
+            if kind.is_empty() {
                 break;
             }
             let hits = trace_rays(&self.sys, &starts, &wls, &opts);
-            let (mut hit, mut point) = (hits.iter(), has_ray.iter());
-            for (_, target, n) in &mut solves {
+            if records.len() < jstarts.len() {
+                records.resize_with(jstarts.len(), || Vec::with_capacity(self.sys.stop + 1));
+            }
+            let jhits = trace_rays_recorded(
+                &self.sys,
+                &jstarts,
+                &jwls,
+                &opts,
+                &mut records[..jstarts.len()],
+            );
+            let mut hit = hits.iter();
+            let mut jhit = jhits.iter().zip(&records).zip(&jtangents);
+            let mut point = kind.iter();
+            for (k, target, n, ..) in &mut solves {
+                let wl = rays[*k].1;
                 values.clear();
                 for _ in 0..n.pending().len() {
-                    let traced = *point.next().expect("one flag per pending point");
-                    values.push(if traced {
-                        let r = hit.next().expect("one trace per starting ray");
-                        r.status
-                            .is_ok()
-                            .then(|| [r.ray.pos.x - target[0], r.ray.pos.y - target[1]])
-                    } else {
-                        None
+                    let residual =
+                        |r: &TraceResult| [r.ray.pos.x - target[0], r.ray.pos.y - target[1]];
+                    values.push(match *point.next().expect("one kind per pending point") {
+                        0 => None,
+                        1 => {
+                            let r = hit.next().expect("one trace per starting ray");
+                            r.status.is_ok().then(|| (residual(r), None))
+                        }
+                        _ => {
+                            let ((r, rec), t) = jhit.next().expect("one trace per Jacobian ray");
+                            r.status.is_ok().then(|| {
+                                let j = self
+                                    .tangents
+                                    .differentiate(&self.sys, wl, t, rec, r.surface)
+                                    .ok()
+                                    .map(|t| t.xy_jacobian());
+                                (residual(r), j)
+                            })
+                        }
                     });
                 }
                 if !values.is_empty() {
@@ -839,10 +1434,10 @@ impl SequentialTracer {
                 }
             }
         }
-        for (k, target, n) in solves {
+        for (k, target, n, seeded, key) in solves {
             let (field, wl, _) = rays[k];
             let s = n.result().expect("a finished solve has a result");
-            out[k] = self.finish_aim(field, wl, target, s, s.iterations);
+            out[k] = self.finish_seeded(field, wl, target, s, stats, seeded, key);
         }
         out
     }
@@ -932,7 +1527,7 @@ mod tests {
     use super::*;
     use mklight_core::materials::MaterialLibrary;
     use mklight_core::{
-        ApertureSpec, Field, FieldSet, MaterialRef, Snapshot, Surface, SurfaceShape,
+        ApertureSpec, Field, FieldSet, MaterialRef, Snapshot, Surface, SurfaceShape, samples,
     };
 
     fn lens(aiming: RayAiming) -> SequentialTracer {
@@ -991,5 +1586,80 @@ mod tests {
             None,
         );
         assert!((r.ray.pos.x + 3.0).abs() < 1e-10 && (r.ray.pos.y - 3.5).abs() < 1e-10);
+    }
+
+    /// Central differences of `f` over a step sweep: the smallest error
+    /// against `j` and the error at `h = 10⁻⁴·scale`.
+    fn sweep(
+        f: &dyn Fn([f64; 2]) -> Option<[f64; 2]>,
+        x: [f64; 2],
+        j: Mat2,
+        scale: f64,
+    ) -> (f64, f64) {
+        let (mut best, mut at4) = (f64::INFINITY, f64::INFINITY);
+        for e in 2..=9 {
+            let h = 10f64.powi(-e) * scale;
+            let mut err = 0.0f64;
+            for k in 0..2 {
+                let (mut xp, mut xm) = (x, x);
+                xp[k] += h;
+                xm[k] -= h;
+                let (a, b) = (f(xp).unwrap(), f(xm).unwrap());
+                for r in 0..2 {
+                    err = err.max(((a[r] - b[r]) / (2.0 * h) - j[r][k]).abs());
+                }
+            }
+            best = best.min(err);
+            if e == 4 {
+                at4 = err;
+            }
+        }
+        (best, at4)
+    }
+
+    #[test]
+    fn stop_jacobian_matches_step_sweep() {
+        let t = lens(RayAiming::Real { tolerance: 1e-12 });
+        let f = t.field(1).clone();
+        let a = [0.7, -1.9];
+        let (_, Some(j)) = t
+            .stop_eval(&f.source, a, 0, [0.0; 2], true, &mut Vec::new())
+            .unwrap()
+        else {
+            panic!("analytic Jacobian expected");
+        };
+        let g = |x: [f64; 2]| {
+            t.stop_eval(&f.source, x, 0, [0.0; 2], false, &mut Vec::new())
+                .map(|(v, _)| v)
+        };
+        let (best, at4) = sweep(&g, a, j, 1.0);
+        assert!(best < 1e-8 && at4 < 1e-6, "best {best:e} at 1e-4 {at4:e}");
+    }
+
+    #[test]
+    fn real_image_height_jacobian_matches_step_sweep() {
+        for sys in [samples::cooke_triplet(), samples::finite_relay()] {
+            let mut sys = sys;
+            sys.ray_aiming = RayAiming::Real { tolerance: 1e-12 };
+            let snap = Snapshot::new(sys).unwrap();
+            let r = ResolvedSystem::new(&snap, Arc::new(MaterialLibrary::with_builtin())).unwrap();
+            let t = SequentialTracer::new(Arc::new(r)).unwrap();
+            let src = t.field(t.fields().len() - 1).source;
+            let p = t.source_params(&src);
+            let (_, Some(j)) = t.chief_image_eval(&src, true, None).unwrap() else {
+                panic!("analytic Jacobian expected");
+            };
+            let g = |x: [f64; 2]| {
+                t.chief_image_eval(&t.source_from_params(x)?, false, None)
+                    .map(|(h, _)| h)
+            };
+            let scale = p[0].hypot(p[1]).max(1e-3);
+            let (best, at4) = sweep(&g, p, j, scale);
+            let jn = j.iter().flatten().fold(0.0f64, |m, v| m.max(v.abs()));
+            assert!(
+                best < 1e-7 * jn && at4 < 1e-5 * jn,
+                "best {best:e} at 1e-4 {at4:e} (|J| {jn:e})"
+            );
+        }
     }
 }

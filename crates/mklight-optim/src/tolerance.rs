@@ -712,6 +712,18 @@ impl<T: OperandEvaluator + ?Sized> OperandEvaluator for &T {
     ) -> MkResult<Vec<Vec<OperandValue>>> {
         (**self).evaluate_batch(systems, operands, ctx)
     }
+    fn evaluate_batch_near(
+        &self,
+        systems: &[OpticalSystem],
+        operands: &[&Operand],
+        anchor: Option<&OpticalSystem>,
+        ctx: &JobContext,
+    ) -> MkResult<Vec<Vec<OperandValue>>> {
+        (**self).evaluate_batch_near(systems, operands, anchor, ctx)
+    }
+    fn anchored_differences(&self, base: &OpticalSystem) -> bool {
+        (**self).anchored_differences(base)
+    }
     fn evaluate_parametric(
         &self,
         batch: &crate::merit::ParametricBatch<'_>,

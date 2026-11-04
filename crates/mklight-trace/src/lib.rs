@@ -15,13 +15,14 @@
 //! | [`interact`] | stable vector Snell refraction with TIR detection, reflection, ideal thin lens |
 //! | [`trace`] | [`trace_ray`]: one ray through a [`ResolvedSystem`] using only relative surface-to-surface transforms; status, compensated OPL, internal transmittance, optional per-surface records. [`trace_rays`]: the same for packets of [`PACKET`] rays (SIMD lane kernel for planes and conics), bitwise identical |
 //! | [`paraxial`] | y–nu trace on the unfolded equivalent (signed reduced indices for mirrors), [`FirstOrder`] properties per wavelength |
-//! | [`tracer`] | [`SequentialTracer`]: fields → object sources, pupils → starting rays, ray aiming (paraxial or real), per-(field, wavelength) aim cache; `generate_many` / `trace_many` aim and trace many rays together, bitwise identical to one by one |
+//! | [`tracer`] | [`SequentialTracer`]: fields → object sources, pupils → starting rays, ray aiming (paraxial or real), per-(field, wavelength) aim cache; `generate_many` / `trace_many` aim and trace many rays together, bitwise identical to one by one; [`AimSeeds`] start the solves of a nearby system (FD neighbour) from an anchor's |
 //! | [`opd`] | OPD against the exit-pupil reference sphere (CONVENTIONS §4) |
 //! | [`semidia`] | automatic clear semi-diameters |
 //! | [`solves`] | solves and pickups: [`apply_solves`] returns a new system with every solve-controlled parameter set (closed-form y–nu updates, fixed-point and bracketed Brent iteration, per configuration) |
 //! | [`batch`] | rayon batches over fields × wavelengths × pupil samples (64-ray packet chunks per task), deterministic ordering, cancellable job variants |
 //! | [`pupil`] | deterministic pupil sampling patterns |
-//! | [`numeric`] | error-free transforms (TwoSum/TwoProd), [`Compensated`] sums, accurate discriminant, 2-D Newton–Broyden (also as a resumable state machine for batched aiming) |
+//! | [`diff`] | analytic differential tracing: the tangent of a traced ray with respect to two launch parameters, carried along its records (aiming Jacobians, chief-ray pencils) |
+//! | [`numeric`] | error-free transforms (TwoSum/TwoProd), [`Compensated`] sums, accurate discriminant, 2-D Newton with analytic or finite-difference Jacobians and Broyden updates (also as a resumable state machine for batched aiming) |
 //! | [`polarization`] | polarisation ray tracing: 3×3 PRT matrices along recorded rays, Jones pupils in double-pole bases, diattenuation / retardance, energy budgets, vector pupils for wave optics |
 //! | [`radiometry`] | per-ray throughput (unpolarised or polarised), pupil-averaged system transmission vs field and wavelength, polarisation pupil maps |
 //!
@@ -81,6 +82,7 @@
 //! interaction it is a pass-through, like any other dummy surface.
 
 pub mod batch;
+pub mod diff;
 pub mod interact;
 pub mod numeric;
 pub mod opd;
@@ -95,6 +97,7 @@ pub mod trace;
 pub mod tracer;
 
 pub use batch::{BatchRay, Grid, opd_grid, opd_grid_job, trace_grid, trace_grid_job};
+pub use diff::{RayTangent, TangentError, TangentPlan, differentiate, trace_ray_tangent};
 pub use numeric::Compensated;
 pub use opd::OpdReference;
 pub use paraxial::{
@@ -119,11 +122,11 @@ pub use solves::{
 pub use surface::{IntersectError, IntersectSettings};
 pub use trace::{
     FailReason, PACKET, Ray, SurfaceRecord, TraceOptions, TraceResult, TraceStatus, trace_ray,
-    trace_ray_recorded, trace_rays, trace_rays_recorded,
+    trace_ray_recorded, trace_rays, trace_rays_recorded, transfer_vector,
 };
 pub use tracer::{
-    AimData, AimReport, FieldPoint, GeneratedRay, ObjectSource, PreparedField, PupilGeometry,
-    RayRequest, SequentialTracer, TracerSettings,
+    AimData, AimReport, AimSeeds, AimStats, FieldPoint, GeneratedRay, ObjectSource, PreparedField,
+    PupilGeometry, RayRequest, SequentialTracer, TracerSettings,
 };
 
 pub use mklight_core::ResolvedSystem;

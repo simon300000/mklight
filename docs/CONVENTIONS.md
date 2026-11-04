@@ -172,6 +172,23 @@ the scalar per-surface step. The packet results are therefore **bitwise
 identical** to `trace_ray` / `generate` / `trace` one ray at a time, which
 stay the independent oracle (`crates/mklight-trace/tests/packets.rs`).
 
+**Aiming Jacobians.** The real-aim solve (`SequentialTracer`, 2-D Newton with
+Broyden updates) takes every *fresh* Jacobian `∂(stop hit)/∂(aim point)`
+from the analytic differential tracer (`mklight_trace::diff`): the tangent
+of the starting ray is carried through the stop trace along its records,
+so a fresh Jacobian costs one recorded trace instead of a four-trace
+central-difference stencil (chief-ray aims, continuation stages, and the
+refreshes after singular, slow or rejected steps). Where the tangent is
+undefined (grazing incidence, near total internal reflection, an undefined
+sag Hessian) the solver falls back to the central differences and
+`AimStats` counts it. Between fresh Jacobians the updates are unchanged, so
+well-seeded direct aims trace exactly as before; results differ from the
+previous finite-difference Jacobians only within the aiming tolerance.
+The same tangent gives the real-image-height field solve its Jacobian
+through the aim solve (implicit function theorem) and the differential
+pencil of the field-curvature cross-check (ANALYSIS §2.2). The device
+kernels still use their finite-difference stencils (GPU.md).
+
 ## 8. Paraxial slopes in solves
 
 Ray-angle solves (`marginal_ray_angle`, `chief_ray_angle`, `docs/SOLVES.md`)

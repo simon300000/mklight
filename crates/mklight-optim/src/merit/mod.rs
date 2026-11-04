@@ -447,8 +447,11 @@ impl ParametricBatch<'_> {
     }
     /// The base with candidate `k`'s parameters applied (no configuration).
     pub fn apply(&self, k: usize) -> Result<OpticalSystem, BuildError> {
+        self.apply_point(self.candidates.point(k))
+    }
+    fn apply_point(&self, x: &[f64]) -> Result<OpticalSystem, BuildError> {
         let mut s = self.base.clone();
-        for (p, &v) in self.params.iter().zip(self.candidates.point(k)) {
+        for (p, &v) in self.params.iter().zip(x) {
             p.set(&mut s, v)
                 .map_err(|e| BuildError::Parameters(e.to_string()))?;
         }
@@ -456,9 +459,17 @@ impl ParametricBatch<'_> {
     }
     /// The full system of candidate `k` (parameters, then configuration).
     pub fn build(&self, k: usize) -> Result<OpticalSystem, BuildError> {
-        self.apply(k)?
-            .with_configuration(self.config)
+        self.configure(self.apply(k)?)
+    }
+    fn configure(&self, s: OpticalSystem) -> Result<OpticalSystem, BuildError> {
+        s.with_configuration(self.config)
             .map_err(|e| BuildError::Configuration(e.to_string()))
+    }
+    /// The full system at the batch's anchor point, if it has one and it
+    /// can be built.
+    pub fn anchor(&self) -> Option<OpticalSystem> {
+        let x = self.candidates.anchor.as_deref()?;
+        self.configure(self.apply_point(x).ok()?).ok()
     }
 }
 
@@ -488,12 +499,37 @@ pub trait OperandEvaluator: Sync {
         ctx: &JobContext,
     ) -> MkResult<Vec<Vec<OperandValue>>>;
 
+    /// [`evaluate_batch`](Self::evaluate_batch) for systems that are all
+    /// small perturbations of `anchor` (the finite-difference neighbours of
+    /// a Jacobian, tolerance trials). An evaluator may start its iterative
+    /// solves from the anchor's (the CPU reference seeds its aims, see
+    /// `mklight_trace::AimSeeds`); values then agree with `evaluate_batch`
+    /// to within the solve tolerances. The default ignores the anchor.
+    fn evaluate_batch_near(
+        &self,
+        systems: &[OpticalSystem],
+        operands: &[&Operand],
+        _anchor: Option<&OpticalSystem>,
+        ctx: &JobContext,
+    ) -> MkResult<Vec<Vec<OperandValue>>> {
+        self.evaluate_batch(systems, operands, ctx)
+    }
+
+    /// Do values near `base` depend on the batch they are evaluated in
+    /// (anchor-seeded solves, device precision with reference completion)?
+    /// Finite differences then re-evaluate their base point with the probes
+    /// ([`Problem::anchored_differences`](crate::Problem::anchored_differences)).
+    fn anchored_differences(&self, _base: &OpticalSystem) -> bool {
+        false
+    }
+
     /// Values for parameter-vector candidates (one row per candidate, or the
     /// reason it could not be built). [`OpticalProblem`] always calls this.
     /// The default builds every system and calls
-    /// [`evaluate_batch`](Self::evaluate_batch); a backend that keeps a
-    /// packed copy of `batch.base` overrides it to upload only the parameter
-    /// vectors.
+    /// [`evaluate_batch_near`](Self::evaluate_batch_near) with the batch's
+    /// anchor ([`CandidateBatch::anchor`](crate::CandidateBatch::anchor));
+    /// a backend that keeps a packed copy of `batch.base` overrides it to
+    /// upload only the parameter vectors.
     fn evaluate_parametric(
         &self,
         batch: &ParametricBatch<'_>,
@@ -506,7 +542,7 @@ pub trait OperandEvaluator: Sync {
         let mut vals = if systems.is_empty() {
             Vec::new()
         } else {
-            self.evaluate_batch(&systems, operands, ctx)?
+            self.evaluate_batch_near(&systems, operands, batch.anchor().as_ref(), ctx)?
         }
         .into_iter();
         if vals.len() != systems.len() {
@@ -567,13 +603,22 @@ impl OperandEvaluator for CompositeEvaluator {
         operands: &[&Operand],
         ctx: &JobContext,
     ) -> MkResult<Vec<Vec<OperandValue>>> {
+        self.evaluate_batch_near(systems, operands, None, ctx)
+    }
+    fn evaluate_batch_near(
+        &self,
+        systems: &[OpticalSystem],
+        operands: &[&Operand],
+        anchor: Option<&OpticalSystem>,
+        ctx: &JobContext,
+    ) -> MkResult<Vec<Vec<OperandValue>>> {
         let mut out = vec![vec![Err(OperandError::Unsupported); operands.len()]; systems.len()];
         for (e, idx) in self.evaluators.iter().zip(self.routes(operands)) {
             if idx.is_empty() {
                 continue;
             }
             let ops: Vec<&Operand> = idx.iter().map(|&k| operands[k]).collect();
-            let vals = e.evaluate_batch(systems, &ops, ctx)?;
+            let vals = e.evaluate_batch_near(systems, &ops, anchor, ctx)?;
             for (s, row) in vals.into_iter().enumerate() {
                 for (j, v) in row.into_iter().enumerate() {
                     out[s][idx[j]] = v;
@@ -585,6 +630,9 @@ impl OperandEvaluator for CompositeEvaluator {
     fn fd_relative_step(&self, kind: &OperandKind, scheme: FdScheme) -> Option<f64> {
         self.route(kind)
             .and_then(|e| self.evaluators[e].fd_relative_step(kind, scheme))
+    }
+    fn anchored_differences(&self, base: &OpticalSystem) -> bool {
+        self.evaluators.iter().any(|e| e.anchored_differences(base))
     }
     /// Routes the parametric batch to each sub-evaluator's own
     /// `evaluate_parametric`, so a packed-system backend keeps its fast path.

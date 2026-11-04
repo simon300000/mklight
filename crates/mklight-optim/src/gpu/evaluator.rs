@@ -152,6 +152,10 @@ impl ResidentEvaluator {
             .map(|system| self.reference.trace.tracer(system).ok().map(Arc::new))
             .collect();
         let mut result = vec![vec![Err(OperandError::Unsupported); ops.len()]; systems.len()];
+        // Per value: from the device, or completed on the reference after a
+        // device fallback (host stages of a route are neither).
+        let mut on_device = vec![vec![false; ops.len()]; systems.len()];
+        let mut completed = vec![vec![false; ops.len()]; systems.len()];
         let mut device_rows = vec![false; systems.len()];
         let mut fallback_rows = vec![false; systems.len()];
         let mut stats = EvaluationStats {
@@ -254,6 +258,7 @@ impl ResidentEvaluator {
                                     } else {
                                         stats.device_operands += 1;
                                         device_rows[row] = true;
+                                        on_device[row][i] = true;
                                     }
                                 }
                             }
@@ -281,6 +286,8 @@ impl ResidentEvaluator {
                 let values = self.reference.evaluate_batch(&batch, &refs, &inner)?;
                 for (&row, values) in rows.iter().zip(values) {
                     for (&i, value) in cols.iter().zip(values) {
+                        // Only usable values take part in a difference.
+                        let usable = value.as_ref().is_ok_and(|v| v.is_finite());
                         result[row][i] = value;
                         stats.host_operands += 1;
                         if route == 3
@@ -293,6 +300,7 @@ impl ResidentEvaluator {
                         }
                         fallback_rows[row] = true;
                         stats.fallback_operands += 1;
+                        completed[row][i] = usable;
                         let reason = if route == 3 {
                             format!("{}: no resident operand adapter", ops[i].kind.name())
                         } else if tracers[row].is_none() {
@@ -302,6 +310,47 @@ impl ResidentEvaluator {
                         };
                         *stats.fallbacks.entry(reason).or_default() += 1;
                     }
+                }
+            }
+        }
+        // One evaluator and precision per operand within the batch: where
+        // the reference completed an operand for some candidates, it also
+        // evaluates it for the others. A finite difference across the batch
+        // (its probes and re-evaluated base point) then never mixes device
+        // and f64 values, whose difference it would divide by the step.
+        let mixed: Vec<usize> = (0..ops.len())
+            .filter(|&i| {
+                (0..systems.len()).any(|r| on_device[r][i])
+                    && (0..systems.len()).any(|r| completed[r][i])
+            })
+            .collect();
+        let mut groups = BTreeMap::<Vec<usize>, Vec<usize>>::new();
+        for row in 0..systems.len() {
+            let cols: Vec<_> = mixed
+                .iter()
+                .copied()
+                .filter(|&i| on_device[row][i])
+                .collect();
+            if !cols.is_empty() {
+                groups.entry(cols).or_default().push(row);
+            }
+        }
+        for (cols, rows) in groups {
+            ctx.check()?;
+            let refs: Vec<_> = cols.iter().map(|&i| ops[i]).collect();
+            let batch: Vec<_> = rows.iter().map(|&r| systems[r].clone()).collect();
+            let values = self.reference.evaluate_batch(&batch, &refs, &inner)?;
+            for (&row, values) in rows.iter().zip(values) {
+                for (&i, value) in cols.iter().zip(values) {
+                    result[row][i] = value;
+                    stats.device_operands -= 1;
+                    stats.host_operands += 1;
+                    stats.fallback_operands += 1;
+                    fallback_rows[row] = true;
+                    *stats
+                        .fallbacks
+                        .entry("uniform reference operand in a mixed batch".into())
+                        .or_default() += 1;
                 }
             }
         }
@@ -423,6 +472,12 @@ impl OperandEvaluator for ResidentEvaluator {
     }
     fn supports(&self, kind: &OperandKind) -> bool {
         self.reference.supports(kind)
+    }
+    /// The base point of a finite difference is evaluated with its probes,
+    /// so all of them share device precision or, operand by operand, the
+    /// reference (`evaluate`).
+    fn anchored_differences(&self, _base: &OpticalSystem) -> bool {
+        true
     }
     fn fd_relative_step(&self, kind: &OperandKind, scheme: FdScheme) -> Option<f64> {
         if matches!(kind, OperandKind::RelativeIllumination) {
