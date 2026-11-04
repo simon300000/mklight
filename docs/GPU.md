@@ -1356,7 +1356,9 @@ public pending-buffer view or implicit asynchronous import.
 
 **Asynchronous execution and admission.** A worker commits its command
 buffers without waiting for them; at most two committed ones stay in flight
-(`MKLIGHT_METAL_IN_FLIGHT`, 0 = complete each before the next). The host
+(`MKLIGHT_METAL_IN_FLIGHT`, 0 = complete each before the next), and only one
+per worker once three are in flight process-wide, so side-by-side plans queue
+about as deep as the synchronous executor did. The host
 waits only where it needs device results (a pending count, a timing
 checkpoint, a final or intermediate readback), when the window is full, and
 when an abandoned batch drops: every committed command keeps the access guards

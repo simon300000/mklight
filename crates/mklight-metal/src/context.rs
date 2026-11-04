@@ -14,7 +14,7 @@ use std::collections::{HashMap, VecDeque};
 use std::ffi::c_void;
 use std::ptr::NonNull;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::Instant;
 
 use bytemuck::Pod;
@@ -585,6 +585,13 @@ impl Encoder<'_> {
 /// `MKLIGHT_METAL_IN_FLIGHT=0` completes every command before the next one is
 /// encoded (the synchronous executor, for diagnostics and A/B runs).
 const IN_FLIGHT: usize = 2;
+/// Committed, unfinished command buffers of all workers beyond which a
+/// worker keeps only its newest one in flight. Several plans side by side
+/// (candidate solves, concurrent wave chains) then queue about as deep as
+/// the synchronous executor did, so the device still yields between
+/// commands to the window server.
+const IN_FLIGHT_TOTAL: usize = 3;
+static IN_FLIGHT_NOW: AtomicUsize = AtomicUsize::new(0);
 /// Device seconds beyond which a command buffer risks the driver's
 /// interactivity watchdog (counted in `PlanStats::long_commands`).
 const LONG_COMMAND: f64 = 0.050;
@@ -636,10 +643,25 @@ struct BatchEncoding {
     start: Instant,
 }
 struct Submitted {
+    _counted: InFlight,
     cb: Retained<ProtocolObject<dyn MTLCommandBuffer>>,
     /// Released only after completion.
     accesses: Vec<crate::buffer::DeviceAccess>,
     ticket: u64,
+}
+/// One process-wide in-flight command buffer (released when its
+/// `Submitted` drops, after completion).
+struct InFlight;
+impl InFlight {
+    fn new() -> Self {
+        IN_FLIGHT_NOW.fetch_add(1, Ordering::AcqRel);
+        Self
+    }
+}
+impl Drop for InFlight {
+    fn drop(&mut self) {
+        IN_FLIGHT_NOW.fetch_sub(1, Ordering::AcqRel);
+    }
 }
 impl Submitted {
     fn finished(&self) -> bool {
@@ -726,11 +748,15 @@ impl CommandBatch {
             b.cb.commit();
             self.submitted += 1;
             self.in_flight.push_back(Submitted {
+                _counted: InFlight::new(),
                 cb: b.cb,
                 accesses: b.accesses.into_inner(),
                 ticket: self.submitted,
             });
-            while self.in_flight.len() > self.window {
+            while self.in_flight.len() > self.window
+                || (self.in_flight.len() > 1
+                    && IN_FLIGHT_NOW.load(Ordering::Acquire) > IN_FLIGHT_TOTAL)
+            {
                 self.retire(true)?;
             }
         }
