@@ -6,7 +6,7 @@ mod common;
 use common::*;
 use mklight_analysis::curvature::{
     FieldCurvatureSettings, GridDistortionSettings, close_ray_focus, coddington_focus,
-    field_curvature, grid_distortion,
+    differential_focus, field_curvature, grid_distortion,
 };
 use mklight_trace::{FieldPoint, TraceOptions};
 
@@ -31,6 +31,62 @@ fn coddington_matches_close_rays_on_every_sample() {
             }
         }
     }
+}
+
+/// The differential pencil (the analytic tangent of the chief ray) agrees
+/// with the Hessian Coddington trace to rounding, four orders tighter than
+/// the close rays, on every field and wavelength of every sample; and it is
+/// the limit of the close rays: their error against it falls as h² and then
+/// plateaus on the cancellation floor.
+#[test]
+fn differential_pencil_matches_coddington_to_rounding_on_every_sample() {
+    let mut compared = 0;
+    let mut undefined = 0;
+    for (name, t) in samples() {
+        for f in t.fields() {
+            for w in 0..t.num_wavelengths() {
+                let Some(a) = coddington_focus(&t, f, w) else {
+                    continue;
+                };
+                let Some(b) = differential_focus(&t, f, w) else {
+                    undefined += 1;
+                    continue;
+                };
+                for (x, y) in [(a.tangential, b.tangential), (a.sagittal, b.sagittal)] {
+                    if x.is_finite() && y.is_finite() {
+                        assert!((x - y).abs() < 1e-9 * (1.0 + x.abs()), "{name}: {x} vs {y}");
+                    }
+                }
+                compared += 1;
+            }
+        }
+    }
+    assert!(
+        compared > 40 && undefined == 0,
+        "{compared} compared, {undefined} undefined"
+    );
+    // Error plateau of the close rays against the differential pencil.
+    let (name, t) = samples()
+        .into_iter()
+        .find(|(n, _)| *n == "double_gauss")
+        .unwrap();
+    let f = &t.fields()[t.fields().len() - 1];
+    let d = differential_focus(&t, f, 0).unwrap();
+    let errors: Vec<f64> = [1e-1, 1e-2, 1e-3, 1e-4, 1e-5, 1e-6, 1e-7]
+        .iter()
+        .map(|&h| {
+            let c = close_ray_focus(&t, f, 0, h).unwrap();
+            (c.tangential - d.tangential)
+                .abs()
+                .max((c.sagittal - d.sagittal).abs())
+        })
+        .collect();
+    assert!(
+        errors[1] < errors[0] && errors[2] < errors[1] / 10.0,
+        "{name}: {errors:?}"
+    );
+    let floor = errors.iter().cloned().fold(f64::INFINITY, f64::min);
+    assert!(floor < 1e-8 && errors[6] > floor, "{name}: {errors:?}");
 }
 
 #[test]
