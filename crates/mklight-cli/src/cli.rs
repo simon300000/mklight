@@ -136,6 +136,22 @@ pub struct AnalysesArgs {
 }
 
 #[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TierChoice {
+    /// Design-grade budgets and sampling.
+    Design,
+    /// Cheaper sampling and aiming within the preview budgets; labelled in `run_info.tier`.
+    Preview,
+}
+
+#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AimStopChoice {
+    /// Stop real-aim solves at the project's requested tolerance.
+    Requested,
+    /// Stop at the residual derived from the propagated error (CONVENTIONS §7).
+    Conditioned,
+}
+
+#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BackendChoice {
     /// CPU f64 reference.
     Cpu,
@@ -159,6 +175,12 @@ pub struct RunArgs {
     pub seed: Option<u64>,
     #[arg(long, value_enum, default_value_t = BackendChoice::Auto)]
     pub backend: BackendChoice,
+    /// Accuracy tier (recorded in `run_info.tier`).
+    #[arg(long, value_enum, default_value_t = TierChoice::Design)]
+    pub tier: TierChoice,
+    /// Aim-stop policy; the engine default when omitted (recorded in `run_info.aim_stop`).
+    #[arg(long, value_enum)]
+    pub aim_stop: Option<AimStopChoice>,
     /// Write the result envelope (JSON) to this file instead of stdout.
     #[arg(long)]
     pub out: Option<PathBuf>,

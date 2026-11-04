@@ -190,3 +190,63 @@ fn overflowing_resident_extents_are_rejected_at_submission() {
         assert!(aiming::validate(&request, &p).is_err());
     }
 }
+
+/// Host seed tables solve each row with one batched `generate_many`; every
+/// node must be bitwise the scalar `generate` of the same pre-vignetting
+/// point (status and aim), on every sample (also vignetted), field and
+/// wavelength.
+#[test]
+fn host_tables_match_scalar_generation_bitwise() {
+    let side = 13u32;
+    let (s, nodes) = (side as usize, (side * side) as usize);
+    let step = 2.25 / (s - 1) as f64;
+    let mut solved = 0;
+    for (name, mut model) in testutil::xval_systems() {
+        model.ray_aiming = RayAiming::Real { tolerance: 1e-10 };
+        let t = testutil::tracer(model);
+        let rows: Vec<_> = t
+            .fields()
+            .iter()
+            .flat_map(|f| (0..t.num_wavelengths()).map(move |w| (f, w)))
+            .collect();
+        let table = aiming::host_tables(&t, &rows, side);
+        assert_eq!(table.len(), rows.len() * nodes);
+        for (r, &(field, w)) in rows.iter().enumerate() {
+            let v = field.point.vignetting;
+            for k in 0..nodes {
+                let node = &table[r * nodes + k];
+                let p = [(k % s) as f64 * step - 1.125, (k / s) as f64 * step - 1.125];
+                let expected = (field.is_valid()
+                    && v.vcx < 1.
+                    && v.vcy < 1.
+                    && p[0] * p[0] + p[1] * p[1] <= 1.5625)
+                    .then(|| {
+                        let px = (p[0] - v.vdx) / (1. - v.vcx);
+                        let py = (p[1] - v.vdy) / (1. - v.vcy);
+                        t.generate(field, w, px, py).ok()
+                    })
+                    .flatten();
+                match expected {
+                    Some(g) => {
+                        solved += 1;
+                        assert_eq!(node.status, 0, "{name} row {r} node {k}");
+                        let aim = g.aim.map(Df32::from_f64);
+                        assert_eq!(
+                            [aim[0].hi, aim[0].lo, aim[1].hi, aim[1].lo].map(f32::to_bits),
+                            [
+                                node.aim[0].hi,
+                                node.aim[0].lo,
+                                node.aim[1].hi,
+                                node.aim[1].lo
+                            ]
+                            .map(f32::to_bits),
+                            "{name} row {r} node {k}"
+                        );
+                    }
+                    None => assert_eq!(node.status, 1, "{name} row {r} node {k}"),
+                }
+            }
+        }
+    }
+    assert!(solved > 10_000, "{solved} solved nodes");
+}

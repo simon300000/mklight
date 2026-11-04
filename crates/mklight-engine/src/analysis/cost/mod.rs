@@ -213,9 +213,9 @@ struct Online {
 
 /// Largest per-analysis correction refinement may apply (either way).
 const MAX_CORRECTION: f64 = 3.;
-/// Range of the host contention factor (CPU, Metal). A loaded host slows
-/// the CPU reference far more than the device.
-const CONTENTION: [(f64, f64); 2] = [(1. / 3., 30.), (1. / 3., 10.)];
+/// Range of the CPU's host contention factor. A loaded host slows the CPU
+/// reference far more than the device, which has none.
+const CONTENTION: (f64, f64) = (1. / 3., 30.);
 const ALPHA: f64 = 0.3;
 /// Calls a one-time device setup is spread over.
 const SETUP_CALLS: u32 = 4;
@@ -624,11 +624,11 @@ impl CostModel {
         let ratio = (measured / predicted).ln();
         let key = (analysis.to_string(), backend, fam, decade as i32);
         let mut e = on.corrections.get(&key).unwrap_or_default();
-        let (lo, hi) = CONTENTION[b];
-        let prior = self.prior(b);
-        let host = (ratio - e.mean).clamp(lo.ln(), hi.ln()) - prior;
-        let c = &mut on.contention[b];
-        c.add(host, ALPHA);
+        if b == 0 {
+            let (lo, hi) = CONTENTION;
+            let host = (ratio - e.mean).clamp(lo.ln(), hi.ln()) - self.prior(b);
+            on.contention[b].add(host, ALPHA);
+        }
         let c = self.contention(&on, b);
         e.add(
             (ratio - c).clamp(-MAX_CORRECTION.ln(), MAX_CORRECTION.ln()),
@@ -646,8 +646,15 @@ impl CostModel {
     /// even while the CPU is not chosen, so a stale observation from a
     /// busier moment does not keep it away.
     fn contention(&self, on: &Online, b: usize) -> f64 {
-        let (lo, hi) = CONTENTION[b];
-        (self.prior(b) + on.contention[b].mean).clamp(lo.ln(), hi.ln())
+        if b == 1 {
+            // The device is not shared with the host's runnable threads; a
+            // global factor learned from one analysis' misprediction would
+            // only skew every other one (residuals stay per analysis).
+            return 0.;
+        }
+        let (lo, hi) = CONTENTION;
+        let excess = on.contention[b].mean.clamp(-MAX_CORRECTION.ln(), MAX_CORRECTION.ln());
+        (self.prior(b) + excess).clamp(lo.ln(), hi.ln())
     }
 
     /// ln of the load-average prior of backend `b`.
@@ -893,13 +900,13 @@ mod tests {
         }
         let later = m.decide("spot_diagram", &settings, &singlet, Device::Apple, &st);
         let factor = later.json["refinement"]["cpu"]["factor"].as_f64().unwrap();
-        let bound = MAX_CORRECTION * CONTENTION[0].1;
-        assert!(factor > 20. && factor <= bound * (1. + 1e-3), "{factor}");
+        let bound = MAX_CORRECTION * CONTENTION.1;
+        assert!(factor > 7. && factor <= bound * (1. + 1e-3), "{factor}");
         let host = later.json["refinement"]["cpu"]["contention"]
             .as_f64()
             .unwrap();
         assert!(
-            host > 10. && host <= CONTENTION[0].1 * (1. + 1e-3),
+            host > 2.5 && host <= CONTENTION.1 * (1. + 1e-3),
             "{host}"
         );
         m.set_refinement(false);

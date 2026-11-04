@@ -11,7 +11,7 @@ use mklight_engine::fsutil::atomic_write;
 use mklight_engine::{AnalysisRequest, AnalysisResult, Engine, EngineError, JobState, JobStatus};
 
 use super::{Ctx, Report, warning_lines};
-use crate::cli::{AnalysesArgs, BackendChoice, RunArgs};
+use crate::cli::{AimStopChoice, AnalysesArgs, BackendChoice, RunArgs, TierChoice};
 use crate::error::{CliError, CliResult, Exit, exit_of};
 use crate::output::{self, Align, Table, cell, fmt_f, key_values, num};
 use crate::signal;
@@ -250,6 +250,14 @@ pub fn run(ctx: &Ctx, a: &RunArgs) -> CliResult<Report> {
         view_key: Some(format!("cli/{}", a.analysis)),
         backend: Some(choose_backend(engine, &a.analysis, a.backend)),
         allow_backend_fallback: false,
+        tier: match a.tier {
+            TierChoice::Design => mklight_core::Tier::Design,
+            TierChoice::Preview => mklight_core::Tier::Preview,
+        },
+        aim_stop: a.aim_stop.map(|c| match c {
+            AimStopChoice::Requested => mklight_core::AimStopKind::Requested,
+            AimStopChoice::Conditioned => mklight_core::AimStopKind::Conditioned,
+        }),
     };
 
     signal::install();

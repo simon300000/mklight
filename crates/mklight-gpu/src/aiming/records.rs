@@ -267,7 +267,11 @@ pub fn host_tables(
             if !field.is_valid() || v.vcx >= 1. || v.vcy >= 1. {
                 return;
             }
-            for (k, node) in row.iter_mut().enumerate() {
+            // One batched solve per row (`generate_many` is bitwise
+            // `generate` per ray).
+            let mut solved = Vec::with_capacity(nodes);
+            let mut requests = Vec::with_capacity(nodes);
+            for k in 0..nodes {
                 let p = [
                     (k % side) as f64 * step - 1.125,
                     (k / side) as f64 * step - 1.125,
@@ -279,9 +283,13 @@ pub fn host_tables(
                 // the field's vignetting, so hand it the pre-vignetting point.
                 let px = (p[0] - v.vdx) / (1. - v.vcx);
                 let py = (p[1] - v.vdy) / (1. - v.vcy);
-                if let Ok(g) = tracer.generate(field, w, px, py) {
-                    node.aim = g.aim.map(Df32::from_f64);
-                    node.status = 0;
+                solved.push(k);
+                requests.push((field, w, [px, py]));
+            }
+            for (k, g) in solved.into_iter().zip(tracer.generate_many(&requests)) {
+                if let Ok(g) = g {
+                    row[k].aim = g.aim.map(Df32::from_f64);
+                    row[k].status = 0;
                 }
             }
         });

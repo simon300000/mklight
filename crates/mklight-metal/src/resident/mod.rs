@@ -6,7 +6,7 @@ use crate::{
     buffer::SharedBuffer,
     context::{CommandBatch, CommandStats, Encoder, MetalContext, PipelineKey},
 };
-use mklight_core::{MkResult, job::RunTimer};
+use mklight_core::{MkError, MkResult, job::RunTimer};
 use mklight_gpu::resident::{
     immutable::{BuildCost, CacheCategory, CacheStats, OperationCacheKey},
     pool::Allocation,
@@ -55,6 +55,9 @@ pub(crate) fn execute(
     prepared: &[Option<PreparedTrace>],
     ctl: &JobControl,
     chunk: usize,
+    admission_seconds: f64,
+    speculate: bool,
+    missed: &std::cell::Cell<bool>,
 ) -> MkResult<PlanResult> {
     let copied_before = crate::buffer::copied_bytes();
     let timer = RunTimer::start();
@@ -74,6 +77,10 @@ pub(crate) fn execute(
         cache_pending: RefCell::new(vec![]),
         cache_stats: RefCell::new(CacheStats::new()),
         cache: rt.operation_cache(plan, &backend.precision().kernel_build),
+        speculate,
+        unverified: vec![],
+        missed,
+        aim_lookahead: false,
     };
     let mut imported = HashSet::new();
     for b in &plan.buffers {
@@ -163,14 +170,27 @@ pub(crate) fn execute(
     ctl.check()?;
     x.flush()?;
     ctl.check()?;
-    let completed = x.commands.borrow().completed;
+    let (completed, max_seconds, waits, wait_seconds, long) = {
+        let c = x.commands.borrow();
+        (
+            c.completed,
+            c.max_seconds,
+            c.waits,
+            c.wait_seconds,
+            c.long_commands,
+        )
+    };
+    x.stats.long_commands += long;
     x.stats.command_buffers += completed.command_buffers;
     x.stats.device_seconds += completed.gpu_seconds;
+    x.stats.host_waits += waits;
+    x.stats.host_wait_seconds += wait_seconds;
+    x.stats.admission_seconds = admission_seconds;
     x.stats.stages.push(StageStats {
         name: "fused completion".into(),
         command_buffers: completed.command_buffers,
         device_seconds: completed.gpu_seconds,
-        max_command_seconds: x.commands.borrow().max_seconds,
+        max_command_seconds: max_seconds,
         ..Default::default()
     });
     x.stats.copied_bytes = crate::buffer::copied_bytes() - copied_before;
@@ -180,6 +200,60 @@ pub(crate) fn execute(
     rt.finish(plan, backend, timer, start, stats, ctl, |id| {
         x.take_output(id)
     })
+}
+/// One diagnostic line per resident plan (`MKLIGHT_METAL_TRACE_PLANS=1`).
+pub(crate) fn trace_plan(
+    plan: &ResidentPlan,
+    started: f64,
+    submitted: Instant,
+    r: &MkResult<PlanResult>,
+) {
+    let ops: Vec<&str> = plan
+        .operations
+        .iter()
+        .map(|op| match op {
+            ResidentOp::TraceUpload(_) => "trace",
+            ResidentOp::Sum(_) => "sum",
+            ResidentOp::Aiming(_) => "aim",
+            ResidentOp::Transforms(_) => "transform",
+            ResidentOp::Collectives(_) => "collective",
+            ResidentOp::Systems(_) => "systems",
+            ResidentOp::Geometry(_) => "geometry",
+            ResidentOp::Radiometry(_) => "radiometry",
+            ResidentOp::Wave(_) => "wave",
+            ResidentOp::Ghost(_) => "ghost",
+            ResidentOp::Stray(_) => "stray",
+            ResidentOp::Optim(_) => "optim",
+        })
+        .collect();
+    let total = submitted.elapsed().as_secs_f64() * 1e3;
+    match r {
+        Ok(r) => {
+            let s = &r.stats;
+            eprintln!(
+                "MKL_PLAN ops={} start_ms={:.3} admit_ms={:.3} wall_ms={:.3} total_ms={total:.3} device_ms={:.3} cbs={} long={} waits={} wait_ms={:.3} max_cmd_ms={:.3}",
+                ops.join(","),
+                started * 1e3,
+                s.admission_seconds * 1e3,
+                s.wall_seconds * 1e3,
+                s.device_seconds * 1e3,
+                s.command_buffers,
+                s.long_commands,
+                s.host_waits,
+                s.host_wait_seconds * 1e3,
+                s.stages
+                    .iter()
+                    .map(|s| s.max_command_seconds)
+                    .fold(0., f64::max)
+                    * 1e3,
+            );
+        }
+        Err(e) => eprintln!(
+            "MKL_PLAN ops={} start_ms={:.3} total_ms={total:.3} error={e}",
+            ops.join(","),
+            started * 1e3
+        ),
+    }
 }
 enum Slot {
     Owned(Lease),
@@ -222,6 +296,17 @@ pub(crate) struct Execution<'a> {
     cache_pending: RefCell<Vec<CachePublication>>,
     /// This plan's cache activity, by category.
     cache_stats: RefCell<CacheStats>,
+    /// Whether generations may commit speculative continuation rounds.
+    pub(crate) speculate: bool,
+    /// Whether aiming commits a further round group before reading the
+    /// pending count (set once a tile of this plan needed more rounds than
+    /// its first group).
+    pub(crate) aim_lookahead: bool,
+    /// Pending counts of speculative generations, checked at completion.
+    unverified: Vec<(Lease, usize)>,
+    /// Set when a speculative generation left rays pending; the plan's
+    /// outputs are then invalid and the backend runs it without speculation.
+    missed: &'a std::cell::Cell<bool>,
 }
 /// Host validation of a buffer once the batch writing it has completed.
 type CompletionCheck = fn(&SharedBuffer<u32>, &mut PlanStats) -> MkResult<()>;
@@ -247,6 +332,18 @@ impl Execution<'_> {
     }
     pub(crate) fn flush(&mut self) -> MkResult<CommandStats> {
         let stats = self.commands.borrow_mut().flush()?;
+        // Speculation is verified before any check, publication or host
+        // read can observe what depends on it.
+        for (count, i) in std::mem::take(&mut self.unverified) {
+            let pending = count.as_slice()[i];
+            self.retired.push(count);
+            if pending != 0 {
+                self.missed.set(true);
+                return Err(MkError::Numerical(format!(
+                    "{pending} speculatively aimed rays still pending"
+                )));
+            }
+        }
         for (buffer, check) in std::mem::take(&mut self.checks) {
             check(&buffer, &mut self.stats)?;
             self.live_bytes -= buffer.words().max(4) as u64 * 4;
@@ -263,8 +360,30 @@ impl Execution<'_> {
         self.retired.clear();
         Ok(stats)
     }
+    /// Commit the encoded work without waiting; returns the ticket of the
+    /// newest committed command buffer, for [`Self::complete`].
+    pub(crate) fn submit(&mut self) -> MkResult<u64> {
+        self.commands.borrow_mut().submit()
+    }
+    /// Verify at the next completion that `count[i]` (a speculative
+    /// generation's pending count) is zero.
+    pub(crate) fn verify(&mut self, count: Lease, i: usize) {
+        self.stats.readback_bytes += 4;
+        self.unverified.push((count, i));
+    }
+    /// The ticket of the command buffer holding the latest encoder call.
+    pub(crate) fn ticket(&self) -> u64 {
+        self.commands.borrow().ticket()
+    }
+    /// Wait for the command buffer with `ticket` and every earlier one (not
+    /// for later ones), returning its device seconds when on record. Storage
+    /// written only by those commands may then be read on the host; checks
+    /// and cache publications still wait for `flush`.
+    pub(crate) fn complete(&mut self, ticket: u64) -> MkResult<Option<f64>> {
+        self.commands.borrow_mut().complete(ticket)
+    }
     /// Device seconds of the submission holding the latest encoder call, if
-    /// the work bound already completed it (free timing feedback).
+    /// it has already completed (free timing feedback).
     pub(crate) fn observed(&self) -> Option<f64> {
         self.commands.borrow().observed
     }
@@ -373,8 +492,9 @@ impl Execution<'_> {
     }
 
     pub(crate) fn allocate(&mut self, n: usize) -> MkResult<Lease> {
-        // Work-bound completions settle their access guards even without an
+        // Completed commands release their access guards even without an
         // explicit flush. Return only those retired leases to the exact pool.
+        self.commands.borrow_mut().poll()?;
         let mut freed = 0;
         self.retired.retain(|b| {
             if b.available() {

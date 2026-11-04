@@ -153,7 +153,7 @@ struct Configured<S: Default> {
 
 fn settings_schema(name: &str) -> Value {
     let mut annotations = json!({
-        "pupil": pupil_schema(),
+        "pupil": pupil_schema(matches!(name, "mtf" | "mtf_vs_field" | "wavefront_map")),
         "wavelengths": {"description": "System wavelength selection: all, primary, index or list (tagged by type)."}
     });
     if name != "mtf_vs_field" {
@@ -191,7 +191,8 @@ fn settings_schema(name: &str) -> Value {
             } else {
                 annotations["frequencies"] = json!({"items": {"type": "number", "minimum": 0.0}, "unit": "cycles/mm", "description": "Image-space frequencies; empty selects a round 1-2-5 base and its 2x/4x multiples within the automatic contrast range."});
                 if name == "mtf_vs_field" {
-                    annotations["field_samples"] = json!({"minimum": 1, "maximum": 1001});
+                    annotations["field_samples"] =
+                        json!({"minimum": 1, "maximum": 1001, "x-preview": 6});
                     annotations["direction"] = tuple(
                         num("", ""),
                         2,
@@ -199,7 +200,8 @@ fn settings_schema(name: &str) -> Value {
                     );
                 } else {
                     annotations["focus_range_mm"] = json!({"type": ["number", "null"], "exclusiveMinimum": 0.0, "unit": "mm", "description": "Positive half-range; null uses max(8 wavelength × F/# squared, 4 F/# × geometric RMS blur)."});
-                    annotations["focus_samples"] = json!({"minimum": 1, "maximum": 1001});
+                    annotations["focus_samples"] =
+                        json!({"minimum": 1, "maximum": 1001, "x-preview": 11});
                 }
             }
         }
@@ -221,15 +223,27 @@ fn settings_schema(name: &str) -> Value {
     }
 }
 
-fn pupil_schema() -> Value {
-    settings_from_default::<PupilSettings>(json!({
+/// The traced-pupil settings; with `preview_lattice`, the preview tier
+/// halves the lattice rays per axis (a quarter of the aims). Only the
+/// MTF-family analyses take it: the PSF-family image windows
+/// (`ensure_window`) grow with the geometric blur of a coarser lattice and
+/// would cost more, not less.
+fn pupil_schema(preview_lattice: bool) -> Value {
+    let mut s = settings_from_default::<PupilSettings>(json!({
         "grid": {"minimum": 0, "maximum": 4096, "description": "Cell-centred exit-pupil samples per axis over [-1, 1]; 0 selects from traced phase slope (64..1024)."},
         "rays": {"minimum": 8, "maximum": 2048, "description": "Traced entrance-pupil lattice rays per axis."},
         "supersample": {"minimum": 1, "maximum": 32},
         "reference": {"enum": ["chief", "centroid"]},
         "amplitude": {"enum": ["uniform", "transmission", "radiometric"], "description": "Relative field amplitude; radiometric includes ray density and obliquity."},
         "rim_tolerance": {"minimum": 0.0, "maximum": 0.01, "description": "Rim bisection tolerance, strictly between the bounds."}
-    }))
+    }));
+    if preview_lattice {
+        s["x-preview"] = json!(PupilSettings {
+            rays: 33,
+            ..PupilSettings::default()
+        });
+    }
+    s
 }
 
 fn detector_schema() -> Value {

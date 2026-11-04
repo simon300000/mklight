@@ -1354,6 +1354,31 @@ within their existing plans. Host-computed sphere/scale/grid metadata still
 separates plans where the next operation genuinely depends on it; there is no
 public pending-buffer view or implicit asynchronous import.
 
+**Asynchronous execution and admission.** A worker commits its command
+buffers without waiting for them; at most two committed ones stay in flight
+(`MKLIGHT_METAL_IN_FLIGHT`, 0 = complete each before the next), and only one
+per worker once three are in flight process-wide, so side-by-side plans queue
+about as deep as the synchronous executor did. The host
+waits only where it needs device results (a pending count, a timing
+checkpoint, a final or intermediate readback), when the window is full, and
+when an abandoned batch drops: every committed command keeps the access guards
+of its bindings until it has completed, so no host slice, pool reuse or cache
+publication observes storage it may still access, and a cancelled plan waits
+for at most the bounded commands already in flight. Unified memory is used
+as is: counts and results are read in place from shared-storage leases, never
+copied or formatted. The Metal backend admits at most four resident plans at
+once and at most 1 GiB of their declared storage (a larger plan runs alone;
+`MKLIGHT_METAL_ADMIT_PLANS`, `MKLIGHT_METAL_ADMIT_MIB`); a plan whose consumer
+was cancelled while it waited never reaches the device. Consumers may
+therefore run independent plan chains side by side: the GPU wave adapter
+places a batch's pupils and computes the fields' MTF/PSF transforms on up to
+four chains (`MKLIGHT_WAVE_CONCURRENT`, 1 = in order), merging results,
+statistics and warnings in item order. `PlanStats` records host waits and
+their seconds, admission seconds, command buffers over 50 ms of device time
+(`long_commands`) and speculation misses; `MKLIGHT_METAL_TRACE_PLANS=1`
+prints one line per plan. Device time sums command-buffer spans, so
+overlapping plans count shared device time more than once.
+
 `PlanStats` counts actual completed command buffers; deferred dispatches have
 zero commands at encode time and their timestamps/counts appear in the
 `fused completion` stage. Arithmetic and reduction trees are unchanged.
@@ -1425,8 +1450,11 @@ device by `mkl_aim_stats`), `PlanStats.host` the host preparation (rows,
 reused/solved fields, seconds) and `PlanStats.memory` the device allocation
 and process RSS high-water mark at completion. Newton–Broyden uses double-float
 stop hits, finite differences, 2×2 solves and updates, the reference's
-continuation schedule and configured cap/tolerance (normally 1e-10 relative
-to stop radius). A rounded f32 stop hit cannot drive that solve. Compact
+continuation schedule and configured cap/tolerance (the request's aim-stop
+policy, CONVENTIONS §7: the requested tolerance, normally 1e-10 relative to
+the stop radius, or the tightest conditioned stop of the request's fields,
+`SequentialTracer::device_aim_tolerance`; one value per generation, part of
+`aim_identity`). A rounded f32 stop hit cannot drive that solve. Compact
 only unresolved rays for optional CPU f64 polish; scatter them back at their
 original indices and record counts/reasons. (The CPU reference takes its
 fresh Jacobians from the analytic differential tracer since D2, CONVENTIONS
@@ -1448,12 +1476,22 @@ unfinished rays in a per-tile `MklAimResume` state buffer
 (`MKL_AIM_STATE_WORDS`) and append their indices to a pending list; the
 executor encodes continuation rounds (`mkl_aim_indirect` sizes
 `mkl_aim_continue`/`mkl_aim_table_continue` from the pending count on the
-device) in doubling groups, reading the count back between groups until no
-ray is pending. A resumed solve performs the specification's operations in
+device) in groups (2, 2, 4, 8, …), one command buffer per round: a round of
+a few hard lanes runs as long as the slowest lane's budget, so fused rounds
+add up past the bound (a 4096-lane candidate tile with two rounds fused into
+its first command ran 77–115 ms). Once a tile of a plan has needed more than its
+first group, the next group is committed before the host reads the previous
+group's count, so the device does not idle on that readback; after the last
+needed group the speculative one finds empty lists and dispatches no thread. A resumed solve performs the specification's operations in
 the specification's order, so results are bitwise those of the monolithic
 CPU-f32 kernel (`aim_resume.rs` forces one unit per command). Time-calibrated
-tiles still bound the throughput part. Rounds cost one readback per group,
-so a small fused generation now completes at least once before its trace.
+tiles still bound the throughput part. `AimOptions::speculative_rounds`
+lets a generation that is expected to converge within them (the wave pupil
+tracer's table- and chief-seeded aims: one round, fused with the first
+command) skip the readback altogether: the executor verifies at the plan's
+next completion, before any check, cache publication or host read, that no
+ray was left pending, and the backend otherwise runs the plan again without
+speculation (`PlanStats::speculation_misses`), so results never depend on it.
 
 **Excluded samples and seed tables.** `AimOptions::cull_outside` excludes
 samples outside the unit pupil disk (the lattice guard nodes a survival mask
@@ -1468,7 +1506,9 @@ used for every sample of the request whatever its size; without one the
 device builds and caches a table of that side for large generations as
 before. The wave pupil tracer hands 25×25 host tables to every generation
 of a batch (chief probe, lattice, saddle and rim probes alike), so a
-sample's converged ray no longer depends on the batch it was aimed in.
+sample's converged ray no longer depends on the batch it was aimed in. The
+tables are solved (one batched `generate_many` per row, bitwise the scalar
+`generate` per node) while the batch's chief plan runs on the device.
 
 Keep hi+lo point/direction/OPL through pupil construction. Use the chief's
 unclipped trace and the signed exit-pupil distance for the reference sphere;
@@ -1678,8 +1718,9 @@ calibrated stage-level cost model (`crates/mklight-engine/src/analysis/cost/`;
 - *Online refinement* (on by default; `MKLIGHT_COST_REFINEMENT=0` or
   `CostModel::set_refinement(false)` turns it off): every completed call
   updates (a) a host-contention factor per backend (what other processes cost
-  this one now; CPU 1/3…30×, Metal 1/3…10×; the CPU factor is the load-average
-  prior √(load per core / 4), at least 1, times what observations learned beyond it, so it
+  this one now: the load-average prior √(load per core / 4), at least 1, times
+  what observations learned beyond it (1/3…3×), in all 1/3…30×; the CPU only,
+  since the device is not shared with the host's threads, so it
   follows the load even while the CPU is not chosen) and (b) a residual per analysis,
   backend, design family and workload decade (1/3…3×), as exponentially
   weighted means of ln(measured/predicted); recorded device aiming statistics
@@ -1875,7 +1916,7 @@ device search; tolerance reports device scores.
 | Quantity / kernel | Acceptance against independent CPU f64 |
 |---|---|
 | G: geometry and statuses | §7: positions ≤2e-5 mm on each surface, directions ≤2e-6; identical survival except the 1e-5 mm aperture band. Count band cases and all failure classes; never compare only common survivors. Existing TIR-band diagnostics remain explicit, not a blanket status exemption. |
-| OPL: aiming/OPD/phase | Honour the requested aiming residual; OPD ≤5e-3 waves. Internal OPL/sphere target ≈1e-7 mm on 100+ mm paths (≈1.8e-4 waves at 0.55 µm); this is tighter than the external λ/200 budget (2.75e-6 mm there). Double-float must cover geometry and reference construction as well as the path sum. |
+| OPL: aiming/OPD/phase | Honour the run's aim-stop policy (CONVENTIONS §7: the requested residual, or the conditioned stop derived from the propagated error, never looser than its allocation); OPD ≤5e-3 waves. Internal OPL/sphere target ≈1e-7 mm on 100+ mm paths (≈1.8e-4 waves at 0.55 µm); this is tighter than the external λ/200 budget (2.75e-6 mm there). Double-float must cover geometry and reference construction as well as the path sum. |
 | R: centroids/RMS/MTF | Position budget for centroids; differences of two positions ≤4e-5 mm. RMS ≤max(0.005×reference,2e-5 mm); MTF ≤2e-3 absolute, including direct/FFT/through-focus and detector multiplication. |
 | T: FFT/chirp/affine transforms | Proposed gates: relative L2 complex error ≤1e-4 and max absolute error ≤1e-4×reference L1 input norm (with declared transform scaling); inverse round-trip/Parseval ≤1e-4 relative. Small direct-DFT, skew-MFT and non-power-of-two known answers supplement large f64 comparisons. Final optical MTF still meets §7. |
 | E: PSF/EE/LSF/image | Proposed gates on matched sampling: integrated energy/flux ≤1e-3 relative, normalised PSF/image L1 error ≤2e-3, EE/ensquared fractions and Strehl ≤2e-3 absolute, LSF integral ≤1e-3. Centroids use G; r50/r80/r90 compare the energy curve and ≤one radial sample interval, tightening with sampling. Include Airy, annulus, tilt, defocus, Parseval and convolution conservation. |
@@ -1891,6 +1932,83 @@ discrepancy is not GPU error. Keep wave sampling, truncation, conditioning
 and root-search warnings; increasing precision does not fix undersampling.
 For insufficient margin use double-float, a better-conditioned formulation
 or the reported reference fallback, never loosen the budget to pass.
+
+**Contracts.** The offline comparators (`metal_accuracy`, `aim_stop_qualify`,
+the `project_bench` accuracy columns; `crates/mklight-engine/tests/support/
+comparison.rs`) judge every result field by its **quantity class**, never by
+a tolerance guessed from its name. One table (`FIELDS`) maps every numeric
+field and buffer of every compared analysis to a class; a field it does not
+map fails loudly, and a test checks the table against the declared result
+schemas. Deterministic classes gate at one third of their budget; the
+statistical classes gate at their stated confidence.
+
+| class | budget | source | for |
+|---|---|---|---|
+| position | 2e-5 mm | §7 position | hit points, centroids, chief/image positions, foci, lengths |
+| position difference | 4e-5 mm | R | geometric spot radii (max distance between positions) |
+| direction | 2e-6 | §7 direction | direction cosines, NA, `sin_max` |
+| frequency, F-number | 2e-6 relative | §7 direction: `f = n sinθ/λ`, so δf/f = δsinθ/(n sinθ) ≥ 2e-6 | cutoffs, frequency axes, Nyquist, working F/# |
+| waves | 5e-3 waves | §7 OPD | OPD, Zernike/Seidel terms, wavefront RMS/PV, OPD fans |
+| modulation | 2e-3 | §7 MTF, R, E | MTF, Strehl, encircled/ensquared fractions |
+| RMS | max(0.5 %, 2e-5 mm) | §7 RMS | RMS spot and moment radii |
+| quantile | min(2e-5 mm, one radial sample) | E | r50/r80/r90 |
+| angle, orientation | 2e-4° | D | chief-ray angles; Seidel axes modulo their period, undefined below 1e-3 waves |
+| magnification | 1e-3 relative or 1e-5 | D | pupil magnification and its variation |
+| illumination | 1e-3 | D | relative illumination |
+| relative 1e-3 | 1e-3 relative | D, E | projected solid angle, integrated PSF energy, diffraction peak |
+| radiometric | 1e-5 relative + 1e-10 | E, GHOST §6 | fluxes, transmissions, ghost peaks |
+| ledger | 1e-5 of emitted + 1e-10 | E stray | stray energy report |
+| polarimetric, retardance | 1e-4; 1e-3 rad | E | diattenuation, intensity; retardance; fast axis only where the retarder is defined |
+| Jones | 1e-4‖J‖ + 1e-7/√2 | E | Jones matrices |
+| image | L1 2e-3, energy 1e-3 | E | PSF, LSF, irradiance and simulated images |
+| outline, loop | Hausdorff ≤ 2e-5 mm (2e-5 in pupil units) | §7 position | footprint hulls and pupil rim loops, never by vertex count |
+| exact | equal | survival | counts, indices, statuses, echoed inputs |
+| count ratio | 1e-12 | survival | vignetted/unvignetted fractions: one ray moves them ≥ 1e-9 |
+| statistical | 5·√(a + b) | E stray | Monte-Carlo counts (events, hits) under roulette |
+| Monte Carlo | 5 combined standard errors | E stray | class fluxes and moments, with their own standard errors; ranked signatures matched by identity, a tail signature only within 5σ of the other list's cut |
+| merit | 1 % or 1e-8 | D | solver merits (violations generic; feasibility exact) |
+| generic | 2e-5 | (unchanged) | dimensionless geometry without a derived budget: distortion %, area and vignetting fractions, normalised pupil coordinates, operand values |
+| diagnostic | 1e-3 relative | — | fit condition numbers (not an optical output) |
+| sampling | recorded | — | pupil/image grid sizes and spacings a backend chooses |
+
+Every class is at least as strict as the §7 budget of its physical quantity
+(`tests/contract.rs`). Data on a sampling axis or grid are compared at the
+**same physical coordinates**: index by index where both results sampled the
+same coordinates (within the axis class), otherwise the denser result is
+resampled onto the sparser one's coordinates (linear on 1-D axes such as
+frequencies, focus planes, radii, field and pupil coordinates; bilinear on
+the regular pupil-map and PSF image grids), so a backend's different grid
+is a recorded sampling choice and only a physical difference fails.
+
+**Tiers.** Every result carries `run_info.tier` and `run_info.aim_stop`
+(`AnalysisRequest::{tier, aim_stop}`; the CLI's `--tier`/`--aim-stop`; the
+FFI request JSON). The budgets above are the **design** tier, the default;
+the engine's default aim stop is `conditioned` (CONVENTIONS §7), qualified
+under the contracts above on the CPU and Metal, and an explicit aiming
+tolerance in the system is always honoured exactly.
+The **preview** tier is opt-in and never silent: it exists for responsive
+exploration and is not evidence for a design decision. Its contract against
+the design tier of the same request is
+
+| quantity | preview budget |
+|---|---|
+| ray/centroid position at the image | ≤ min(0.1 pixel, 0.05 λN) |
+| MTF (same physical frequencies) | ≤ 0.01 absolute |
+| OPD RMS (wave previews) | ≤ 0.02 waves (≈1.6 % Strehl) |
+
+achieved by cheaper sampling and aiming, both recorded in
+`run_info.settings`: analyses declare preview defaults (`x-preview` in the
+settings schema: half the wave lattice rays per axis, 33 instead of 65, for
+the MTF, MTF-vs-field and wavefront-map analyses (the PSF-family image
+windows grow with the geometric blur of a coarser lattice, so those keep
+the design lattice); half the dense square-pattern density, 16 instead of
+32; 11 field or focus samples instead of 21, 6 instead of 11 for
+`mtf_vs_field`) that replace the
+design defaults only for settings the request leaves out, and the
+conditioned aim stop uses the preview allocation (CONVENTIONS §7). Requested
+tolerances, survival-mask rules and the design budgets are untouched by the
+tier; a preview result is compared to the design result with the gates
+above, not to the CPU f64 reference with the design gates.
 
 **Emulation policy.** Require matching-environment bit identity for integer
 RNG, layouts/status/IDs, existing trace/df/fmath, new aiming/system-update

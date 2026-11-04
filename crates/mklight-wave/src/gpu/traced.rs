@@ -29,6 +29,19 @@ const RIM_LEVELS: u32 = 1;
 /// host cost grows with the node count; a device-built table costs ~0.8 s
 /// per edit.
 const TABLE_SIDE: u32 = 25;
+/// Continuation rounds committed without a pending-count readback: rays
+/// seeded from the tables or the chief rows converge within the first
+/// command (≤ 2 Newton iterations on the complex lens), so a plan's
+/// generations need no host round trip; the backend verifies that at
+/// completion and reruns the plan with read-back rounds otherwise. The
+/// round shares the first command's command buffer (at most twice its
+/// bounded time when every lane continued).
+const SPECULATIVE_ROUNDS: u32 = 1;
+/// Host seed-table rows and the seconds spent solving them.
+struct HostTable {
+    nodes: Vec<aim::SeedNode>,
+    seconds: f64,
+}
 /// Relative stop residual (fraction of the stop radius) above which a
 /// failed aim is a physically unaimable ray rather than a convergence
 /// problem: four orders above the 1e-10 tolerance, far below the 5e-3–1e-1
@@ -238,6 +251,9 @@ pub(crate) fn accumulate(a: &mut PlanStats, b: &PlanStats) {
     a.peak_bytes = a.peak_bytes.max(b.peak_bytes);
     a.fallback_count += b.fallback_count;
     a.polished_rays += b.polished_rays;
+    a.host_waits += b.host_waits;
+    a.host_wait_seconds += b.host_wait_seconds;
+    a.long_commands += b.long_commands;
     a.add_activity(b);
 }
 fn subset(h: &BufferHandle, shape: impl Into<Vec<usize>>) -> BufferView {
@@ -346,22 +362,15 @@ impl<'a> PupilTracer<'a> {
         &self,
         pupils: &[(&PreparedField, usize)],
         specs: &[aim::FieldSpec],
-        rays_per_row: usize,
+        table: Option<HostTable>,
     ) -> MkResult<Fields> {
         let start = std::time::Instant::now();
         let seeds: Vec<_> = pupils
             .iter()
             .map(|(f, w)| aim::ChiefSeed::host(self.tracer, f, *w))
             .collect();
-        let real = matches!(self.tracer.aiming(), mklight_core::RayAiming::Real { .. });
-        let table = (real && rays_per_row >= 2 * aim::table_nodes(TABLE_SIDE))
-            .then(|| {
-                rows(
-                    self.backend,
-                    &aim::host_tables(self.tracer, pupils, TABLE_SIDE),
-                )
-            })
-            .transpose()?;
+        let table_seconds = table.as_ref().map_or(0., |t| t.seconds);
+        let table = table.map(|t| rows(self.backend, &t.nodes)).transpose()?;
         let mut points: Vec<_> = Vec::new();
         for (f, _) in pupils {
             if !points.contains(&f.point) {
@@ -372,7 +381,7 @@ impl<'a> PupilTracer<'a> {
             seed_rows: seeds.len() as u64,
             reused_fields: points.len() as u64,
             solved_fields: 0,
-            seconds: start.elapsed().as_secs_f64(),
+            seconds: start.elapsed().as_secs_f64() + table_seconds,
         };
         Ok(Fields {
             buffer: rows(self.backend, specs)?,
@@ -382,6 +391,19 @@ impl<'a> PupilTracer<'a> {
             key: blake3::hash(bytemuck::cast_slice(specs))
                 .to_hex()
                 .to_string(),
+        })
+    }
+    /// Host f64 seed tables of `pupils` when real aiming with `rays_per_row`
+    /// lattice rays per row amortises them (twice the node count).
+    fn tables(&self, pupils: &[(&PreparedField, usize)], rays_per_row: usize) -> Option<HostTable> {
+        let real = matches!(self.tracer.aiming(), mklight_core::RayAiming::Real { .. });
+        (real && rays_per_row >= 2 * aim::table_nodes(TABLE_SIDE)).then(|| {
+            let start = std::time::Instant::now();
+            let nodes = aim::host_tables(self.tracer, pupils, TABLE_SIDE);
+            HostTable {
+                nodes,
+                seconds: start.elapsed().as_secs_f64(),
+            }
         })
     }
     fn spec(&self, field: &PreparedField, wl: usize) -> MkResult<aim::FieldSpec> {
@@ -409,7 +431,7 @@ impl<'a> PupilTracer<'a> {
         ctx: &JobContext,
         stats: &mut PlanStats,
     ) -> MkResult<Vec<Option<[Df32; 7]>>> {
-        let fields = self.fields(pupils, specs, 1)?;
+        let fields = self.fields(pupils, specs, None)?;
         let samples: Vec<_> = (0..specs.len())
             .map(|q| aim::Sample::new([0.; 2], q as u32, q as u64))
             .collect();
@@ -510,8 +532,10 @@ impl<'a> PupilTracer<'a> {
         }
         let steps = p.import(self.steps.view());
         let generated = aim::rays(p, count);
+        // The tightest derived stop of the prepared fields, or the requested
+        // tolerance (CONVENTIONS §7, the aim-stop policy).
         let tolerance = match self.tracer.aiming() {
-            mklight_core::RayAiming::Real { tolerance } => tolerance as f32,
+            mklight_core::RayAiming::Real { .. } => self.tracer.device_aim_tolerance() as f32,
             _ => 1e-10,
         };
         p.operations
@@ -531,6 +555,7 @@ impl<'a> PupilTracer<'a> {
                         table: table.map(|t| p.view(t)).transpose()?,
                         table_side: TABLE_SIDE,
                         cull_outside: cull,
+                        speculative_rounds: SPECULATIVE_ROUNDS,
                     },
                 },
             )));
@@ -854,13 +879,26 @@ impl<'a> PupilTracer<'a> {
                 Err(e) => results[position] = Some(Err(per_pupil(e)?)),
             }
         }
-        // Chief rays, one per field row.
+        // Chief rays, one per field row. The rows' host seed tables are
+        // solved meanwhile (rows are independent, so the kept rows are
+        // bitwise those of a table of the kept pupils alone).
+        let mut table = None;
         if !items.is_empty() {
             let specs: Vec<_> = items.iter().map(|i| i.spec).collect();
             let pupils: Vec<_> = items.iter().map(|i| (i.field, i.wl)).collect();
-            let chiefs = self.chief_rays(&pupils, &specs, &ctx.subrange(0., 0.03), stats)?;
+            let (chiefs, tables) = std::thread::scope(|s| {
+                let tables = s.spawn(|| self.tables(&pupils, n));
+                let chiefs = self.chief_rays(&pupils, &specs, &ctx.subrange(0., 0.03), stats);
+                (chiefs, tables.join().expect("host seed tables"))
+            });
+            let chiefs = chiefs?;
+            let nodes = aim::table_nodes(TABLE_SIDE);
+            let mut kept_rows = vec![];
             let mut kept = vec![];
-            for (mut item, chief) in items.into_iter().zip(chiefs) {
+            for (q, (mut item, chief)) in items.into_iter().zip(chiefs).enumerate() {
+                if matches!(&chief, Some(c) if c[5].to_f64() != 0.) {
+                    kept_rows.push(q);
+                }
                 let error = match chief {
                     None => "chief ray failed",
                     Some(c) if c[5].to_f64() == 0. => {
@@ -875,13 +913,20 @@ impl<'a> PupilTracer<'a> {
                 results[item.position] = Some(Err(MkError::Trace(error.into())));
             }
             items = kept;
+            table = tables.map(|t| HostTable {
+                nodes: kept_rows
+                    .iter()
+                    .flat_map(|&q| t.nodes[q * nodes..(q + 1) * nodes].iter().copied())
+                    .collect(),
+                seconds: t.seconds,
+            });
         }
         // Guard-ringed lattices; field row q is item q.
         let mut lattice_batch = None;
         if !items.is_empty() {
             let specs: Vec<_> = items.iter().map(|i| i.spec).collect();
             let pupils: Vec<_> = items.iter().map(|i| (i.field, i.wl)).collect();
-            let fields = self.fields(&pupils, &specs, n)?;
+            let fields = self.fields(&pupils, &specs, table.take())?;
             let mut p = self.plan();
             let probes = p.scratch(BufferDesc::new(ElementType::U32, [items.len() * n, 8]));
             p.operations
@@ -1042,16 +1087,24 @@ impl<'a> PupilTracer<'a> {
         }
         let total = items.len();
         let mut rims = rims.into_iter();
-        for (k, (item, lat)) in items.iter().zip(lats).enumerate() {
-            let rim = (!item.ids.is_empty()).then(|| rims.next().unwrap());
+        let work: Vec<_> = items
+            .iter()
+            .zip(lats)
+            .map(|(item, lat)| {
+                let rim = (!item.ids.is_empty()).then(|| rims.next().unwrap());
+                (item, lat, rim)
+            })
+            .collect();
+        // Pupils place independently: their plan chains run side by side.
+        let placed = super::concurrent(&work, |k, (item, lat, rim)| {
             let sub = ctx.subrange(
                 0.6 + 0.4 * k as f64 / total as f64,
                 0.6 + 0.4 * (k + 1) as f64 / total as f64,
             );
-            results[item.position] = Some(
-                self.place(item, &lat, rim.as_ref(), settings, &sub)
-                    .or_else(|e| Err(per_pupil(e)?)),
-            );
+            self.place(item, lat, rim.as_ref(), settings, &sub)
+        });
+        for ((item, _, _), r) in work.iter().zip(placed) {
+            results[item.position] = Some(r.or_else(|e| Err(per_pupil(e)?)));
         }
         Ok(results.into_iter().map(Option::unwrap).collect())
     }

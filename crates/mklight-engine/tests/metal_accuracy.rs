@@ -1,5 +1,6 @@
 //! Offline accuracy evidence for the unchecked Metal routes: every GPU-capable
-//! analysis on every sample at default settings against the CPU f64 reference.
+//! analysis on every sample at default settings against the CPU f64 reference,
+//! under the per-quantity contract of `support/comparison.rs` (GPU §9.4).
 use mklight_core::{JobContext, samples};
 use mklight_engine::{AnalysisRequest, Engine, EngineConfig, backend::Backend, project::Project};
 use serde_json::{Value, json};
@@ -22,6 +23,8 @@ fn default_sample_accuracy() {
             .any(|b| b.id == "gpu:metal" && b.available),
         "real Metal required"
     );
+    let mut unmapped = Vec::new();
+    let mut failing = 0;
     for (name, system) in samples::all() {
         let session = engine.session_from_project(Project::new(system)).unwrap();
         for info in engine.analyses().into_iter().filter(|a| {
@@ -37,26 +40,33 @@ fn default_sample_accuracy() {
             request.backend = Some(Backend::Gpu("metal".into()));
             let gpu = session.run_analysis(&request, &JobContext::new()).unwrap();
             let published = gpu.backend.used == "gpu:metal";
-            let report = comparison::compare(
-                &AnalysisOutput {
-                    json: cpu.json,
-                    buffers: cpu.buffers,
-                    ..Default::default()
-                },
-                &AnalysisOutput {
-                    json: gpu.json,
-                    buffers: gpu.buffers,
-                    ..Default::default()
-                },
-                &info.name,
-                &JobContext::new(),
-            )
-            .unwrap();
+            let cpu = AnalysisOutput {
+                json: cpu.json,
+                buffers: cpu.buffers,
+                ..Default::default()
+            };
+            let gpu_out = AnalysisOutput {
+                json: gpu.json,
+                buffers: gpu.buffers,
+                ..Default::default()
+            };
+            let report =
+                comparison::compare(&cpu, &gpu_out, &info.name, &JobContext::new()).unwrap();
+            unmapped.extend(
+                report
+                    .failures
+                    .iter()
+                    .filter(|f| f.contains("unmapped"))
+                    .cloned(),
+            );
+            failing += usize::from(published && report.reason.is_some());
             println!(
                 "METAL_ACCURACY {}",
                 json!({"sample":name,"analysis":info.name,"published":published,"backend":gpu.backend,
                 "compared":report.compared,"maximum_absolute_error":report.maximum,"maximum_error_path":report.maximum_path,"maximum_image_l1_relative":report.image_l1_relative,
-                "maximum_image_energy_relative":report.energy_relative,"previous_gate_failure":report.reason})
+                "maximum_image_energy_relative":report.energy_relative,"previous_gate_failure":report.reason,
+                "gate_failures":report.failures,"classes":report.classes,"resampled":report.resampled,
+                "sampling_differences":report.sampling_differences,"undefined":report.undefined})
             );
             assert!(report.maximum.is_finite());
             if !published {
@@ -64,4 +74,14 @@ fn default_sample_accuracy() {
             }
         }
     }
+    println!(
+        "METAL_ACCURACY_SUMMARY {}",
+        json!({"native_gate_failures":failing})
+    );
+    // A field the contract does not class is a harness defect, never a pass.
+    assert!(
+        unmapped.is_empty(),
+        "unmapped result fields:\n{}",
+        unmapped.join("\n")
+    );
 }

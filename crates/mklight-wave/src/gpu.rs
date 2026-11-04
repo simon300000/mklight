@@ -762,3 +762,52 @@ pub use focus::focus_otf;
 pub mod image_simulation;
 mod shells;
 pub use shells::{RadialBins, encircled_energy_batch};
+
+/// Independent consumer chains run at once (`MKLIGHT_WAVE_CONCURRENT`; 1 runs
+/// them in order on the caller's thread).
+const CONCURRENT: usize = 4;
+fn concurrency() -> usize {
+    static N: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *N.get_or_init(|| {
+        std::env::var("MKLIGHT_WAVE_CONCURRENT")
+            .ok()
+            .and_then(|v| v.trim().parse().ok())
+            .unwrap_or(CONCURRENT)
+            .clamp(1, 16)
+    })
+}
+/// `f` over `items` on up to [`CONCURRENT`] scoped threads, results in item
+/// order. Each item is an independent chain of resident plans (a pupil's
+/// placement, a field's transforms) that waits on the device between plans;
+/// running several keeps the device busy while each chain's host waits, reads
+/// back or prepares, and the backend's admission bounds what executes at
+/// once. Items share no mutable state, so results do not depend on the
+/// interleaving; callers merge statistics and warnings in item order.
+pub(crate) fn concurrent<T: Sync, R: Send>(
+    items: &[T],
+    f: impl Fn(usize, &T) -> R + Sync,
+) -> Vec<R> {
+    let threads = concurrency().min(items.len());
+    if threads <= 1 {
+        return items.iter().enumerate().map(|(i, t)| f(i, t)).collect();
+    }
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let slots: Vec<std::sync::Mutex<Option<R>>> =
+        items.iter().map(|_| std::sync::Mutex::new(None)).collect();
+    std::thread::scope(|s| {
+        for _ in 0..threads {
+            s.spawn(|| {
+                loop {
+                    let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    let Some(item) = items.get(i) else { break };
+                    let r = f(i, item);
+                    *slots[i].lock().unwrap_or_else(|e| e.into_inner()) = Some(r);
+                }
+            });
+        }
+    });
+    slots
+        .into_iter()
+        .map(|m| m.into_inner().unwrap_or_else(|e| e.into_inner()).unwrap())
+        .collect()
+}

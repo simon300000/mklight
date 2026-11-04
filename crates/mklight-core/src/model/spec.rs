@@ -184,7 +184,10 @@ pub enum RayAiming {
     Off,
     /// Iteratively aim real rays so that `(Px, Py)` maps onto the stop.
     Real {
-        /// Convergence tolerance on the stop, as a fraction of the stop radius.
+        /// Convergence tolerance on the stop, as a fraction of the stop
+        /// radius. The model default ([`RayAiming::DEFAULT_TOLERANCE`]) lets
+        /// the run's aim-stop policy derive the stop; any other value is an
+        /// explicit request and is honoured exactly (CONVENTIONS §7).
         #[serde(default = "aim_tol")]
         tolerance: f64,
     },
@@ -193,7 +196,26 @@ pub enum RayAiming {
 crate::serde_util::strict_unit_variants!(RayAiming, "mode", ["off"]);
 
 fn aim_tol() -> f64 {
-    1e-10
+    RayAiming::DEFAULT_TOLERANCE
+}
+
+impl RayAiming {
+    /// The model default of `Real { tolerance }`; serialised files state it,
+    /// so it reads the same whether written by hand or by default.
+    pub const DEFAULT_TOLERANCE: f64 = 1e-10;
+
+    /// The tolerance of real aiming when it is an explicit request: any
+    /// value other than the model default. `None` for the default (which
+    /// an aim-stop policy may derive per field, never tighter) and for
+    /// aiming off.
+    pub fn explicit_tolerance(&self) -> Option<f64> {
+        match *self {
+            RayAiming::Real { tolerance } if tolerance != Self::DEFAULT_TOLERANCE => {
+                Some(tolerance)
+            }
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]

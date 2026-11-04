@@ -96,6 +96,13 @@ fn check(path: &str, schema: &Value, v: &Value) -> EngineResult<()> {
 /// Validate `input` (an object, or null for "all defaults") against `schema`
 /// and return the complete settings object.
 pub fn normalize(schema: &Value, input: &Value) -> EngineResult<Value> {
+    normalize_tier(schema, input, false)
+}
+
+/// [`normalize`]; with `preview`, a property's `x-preview` value (the
+/// preview tier's cheaper sampling) replaces its `default` for every key
+/// the input leaves out. Given values are never changed.
+pub fn normalize_tier(schema: &Value, input: &Value, preview: bool) -> EngineResult<Value> {
     let empty = Map::new();
     let props = schema
         .get("properties")
@@ -135,7 +142,11 @@ pub fn normalize(schema: &Value, input: &Value) -> EngineResult<Value> {
                         "missing required setting '{k}'"
                     )));
                 }
-                if let Some(d) = s.get("default") {
+                let d = preview
+                    .then(|| s.get("x-preview"))
+                    .flatten()
+                    .or_else(|| s.get("default"));
+                if let Some(d) = d {
                     out.insert(k.clone(), d.clone());
                 }
             }

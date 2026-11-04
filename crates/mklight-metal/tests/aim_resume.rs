@@ -58,7 +58,7 @@ fn continuation_rounds_match_specification() {
     small.extend((PupilSampling::Grid { n: 7 }).points());
     let big = (PupilSampling::Grid { n: 64 }).points();
     assert!(big.len() >= TABLE_MIN_RAYS_PER_ROW);
-    let mut rounds = 0;
+    let (mut rounds, mut misses) = (0, 0);
     for (name, mut model) in testutil::xval_systems().into_iter().take(10) {
         model.ray_aiming = RayAiming::Real { tolerance: 1e-10 };
         let t = testutil::tracer(model);
@@ -66,9 +66,22 @@ fn continuation_rounds_match_specification() {
         for (field, points) in [(0, &small), (last, &small), (last, &big)] {
             let (p, h) = make_plan(&gpu, &t, field, 0, points, false, 40, false);
             let (pc, hc) = make_plan(&cpu, &t, field, 0, points, false, 40, false);
-            let (r, data) = run(&gpu, p);
+            let (r, data) = run(&gpu, p.clone());
             let (_, dc) = run(&cpu, pc);
             bits(&data, &dc);
+            // Speculative rounds without readback: too few (one round of one
+            // unit) must be detected and rerun, enough must need no rerun;
+            // both give the specification's bits.
+            for (spec, missed) in [(1, true), (400, false)] {
+                let ps = with_options(p.clone(), |g| g.options.speculative_rounds = spec);
+                let (rs, ds) = run(&gpu, ps);
+                bits(&ds, &dc);
+                if missed {
+                    misses += rs.stats.speculation_misses;
+                } else {
+                    assert_eq!(rs.stats.speculation_misses, 0, "{name} f={field}");
+                }
+            }
             let e = check_f64(&t, field, 0, points, &data, false, false);
             assert_eq!(
                 r.stats.fallback_count, e.fallback as u64,
@@ -88,6 +101,7 @@ fn continuation_rounds_match_specification() {
         rounds > 30,
         "continuation rounds ran: {rounds} command buffers"
     );
+    assert!(misses > 5, "speculation misses rerun: {misses}");
 }
 
 /// Culled (outside the disk) and skip-flagged samples carry

@@ -360,6 +360,8 @@ impl PySession {
             view_key,
             backend,
             allow_backend_fallback,
+            tier: Default::default(),
+            aim_stop: None,
         })
     }
 

@@ -189,6 +189,70 @@ through the aim solve (implicit function theorem) and the differential
 pencil of the field-curvature cross-check (ANALYSIS §2.2). The device
 kernels still use their finite-difference stencils (GPU.md).
 
+**Aim stop.** A real-aim solve is converged when its stop residual
+`|stop_hit − target|` is at most the stop tolerance. Two policies exist
+(`TracerSettings::aim_stop`, engine `AnalysisRequest::aim_stop`, recorded as
+`run_info.aim_stop`):
+
+* `requested`: the tolerance is the system's `ray_aiming.tolerance` (a
+  fraction of the stop radius; the model default 1e-10 is about 2 pm on a
+  20 mm stop) for every ray. This is the library default
+  (`TracerSettings`, so the solver evaluators) and the strict reproduction
+  mode.
+* `conditioned` (the **engine default**, `EngineConfig::aim_stop`, for
+  requests that name no policy): the tolerance is derived per field and
+  wavelength from the
+  **propagated error** of a stop residual. For the chief ray and four marginal
+  probe rays (the chief Jacobian's prediction of the pupil edge, unaimed) the
+  analytic tangent with respect to the aim point is carried through an
+  unclipped image trace; with `J_stop` the stop-hit Jacobian and `T_k` the
+  position or direction tangent at surface `k`, `‖T_k J_stop⁻¹‖₂` is the
+  error at surface `k` per unit stop residual, and the OPD sensitivity comes
+  from the tangent at the image through the field's reference sphere
+  (`OpdReference::opd_tangent`, the eikonal equation on the sphere
+  intersection). The derived stop is the largest residual whose propagated
+  error stays within the **allocation** of every budget above, divided by a
+  safety margin of 2 on the sampled sensitivities, then clamped to
+  `[requested tolerance, cap]`: it is never tighter than the request (an
+  ill-conditioned field keeps the request) and never looser than the cap.
+  Chief rays are always aimed at the requested tolerance.
+
+  | tier | allocation per budget | cap |
+  |---|---|---|
+  | design | 1/10 of 1/3 of the table above: position 6.7·10⁻⁷ mm, direction 6.7·10⁻⁸, OPD 1.7·10⁻⁴ waves | 10⁻⁶ of the stop radius |
+  | preview | 1/10 of the preview budgets (GPU §9.4): position 2·10⁻⁵ mm, direction 2·10⁻⁶, OPD 2·10⁻³ waves | 10⁻⁵ of the stop radius |
+
+  On a well-corrected F/1.4 design the design-tier stop lands at 6–10·10⁻⁹ of
+  the stop radius (about 10⁻⁷ mm) and saves 0.5 Newton iterations per ray;
+  an ill-conditioned field (a surface near grazing incidence) derives
+  6·10⁻¹⁰. The device aiming kernel takes one tolerance per request: the
+  tightest derived stop of the request's fields
+  (`SequentialTracer::device_aim_tolerance`).
+
+  **An explicit tolerance is honoured exactly.** Any `ray_aiming.tolerance`
+  other than the model default (`RayAiming::DEFAULT_TOLERANCE`, 1e-10) is an
+  explicit request (`RayAiming::explicit_tolerance`): the tracer derives no
+  stop for it under either policy, and the engine runs and labels such a
+  system `requested` whatever the request or the engine default says. The
+  model default itself is what saved projects state when nobody chose a
+  tolerance (the serialiser writes it, and the app's model always writes
+  it), so it stays derivable; a run that needs exactly 1e-10 for every ray
+  asks for `aim_stop: requested`. (A model that omits an unset tolerance
+  would also tell an explicit 1e-10 from the default; the app's strict
+  decoder and project schema version are unchanged, so that is left to a
+  schema step together with the app.)
+
+  The conditioned stop became the engine default after its qualification
+  under the per-quantity contract of GPU §9.4 ("Contracts"): the 16 samples
+  with real aiming, perturbed and adversarial variants and a 29-surface
+  F/1.4 design, every GPU-capable analysis on the CPU and on Metal, with
+  identical survival masks and every gate met.
+
+Neither policy changes the budgets above, the requested-tolerance semantics
+of `requested`, nor the survival rule: a ray's survived/clipped status may
+only differ for rays within the aim allocation (6.7·10⁻⁷ mm) of an aperture
+edge, well inside the 10⁻⁵ mm band.
+
 ## 8. Paraxial slopes in solves
 
 Ray-angle solves (`marginal_ray_angle`, `chief_ray_angle`, `docs/SOLVES.md`)

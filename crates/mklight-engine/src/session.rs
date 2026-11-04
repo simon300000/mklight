@@ -56,6 +56,12 @@ pub struct AnalysisRequest {
     /// Run on the CPU reference (with a `RunInfo` warning) if the requested
     /// backend is unavailable, instead of failing.
     pub allow_backend_fallback: bool,
+    /// Accuracy tier (`design` by default; `preview` is opt-in and labelled
+    /// in `RunInfo`).
+    pub tier: mklight_core::Tier,
+    /// Aim-stop policy; `None` uses the engine default
+    /// (`EngineConfig::aim_stop`).
+    pub aim_stop: Option<mklight_core::AimStopKind>,
 }
 
 impl AnalysisRequest {
@@ -685,6 +691,7 @@ impl Session {
         req: &AnalysisRequest,
         analysis: &dyn crate::analysis::Analysis,
         settings: &Value,
+        policy: &crate::analysis::RunPolicy,
     ) -> EngineResult<crate::backend::SelectedBackend> {
         if let (Some(id), Some(graph)) = (
             self.engine.auto_request_id(req.backend.as_ref()),
@@ -698,7 +705,8 @@ impl Session {
                 crate::backend::BackendInfo::cpu_reference(),
             )
             .with_selection(id.clone(), None)
-            .with_library_hash(self.library_hash.clone());
+            .with_library_hash(self.library_hash.clone())
+            .with_policy(*policy);
             let key = crate::analysis::result_key(analysis, &probe, settings, &[]);
             if graph.contains(&key) {
                 let mut s = crate::backend::SelectedBackend::cpu_reference();
@@ -717,14 +725,30 @@ impl Session {
     }
 
     /// Run an analysis on the current snapshot in the calling thread.
+    /// The run policy of a request: its tier, and its aim stop or the
+    /// engine default. An explicit aiming tolerance in the system (any value
+    /// but the model default) is honoured exactly, so the run is `requested`
+    /// whatever the request or the engine default says (CONVENTIONS §7).
+    fn policy(&self, req: &AnalysisRequest) -> crate::analysis::RunPolicy {
+        let aim_stop = match self.current.system().ray_aiming.explicit_tolerance() {
+            Some(_) => mklight_core::AimStopKind::Requested,
+            None => req.aim_stop.unwrap_or(self.engine.config().aim_stop),
+        };
+        crate::analysis::RunPolicy {
+            tier: req.tier,
+            aim_stop,
+        }
+    }
+
     pub fn run_analysis(
         &self,
         req: &AnalysisRequest,
         ctx: &JobContext,
     ) -> EngineResult<AnalysisResult> {
         let analysis = self.engine.analysis(&req.analysis)?;
-        let settings = crate::analysis::prepare(analysis.as_ref(), &req.settings)?;
-        let backend = self.route(req, analysis.as_ref(), &settings)?;
+        let policy = self.policy(req);
+        let settings = crate::analysis::prepare_tier(analysis.as_ref(), &req.settings, req.tier)?;
+        let backend = self.route(req, analysis.as_ref(), &settings, &policy)?;
         let (cache, snap, lib, generation) = (
             &self.resolved,
             &self.current,
@@ -742,7 +766,8 @@ impl Session {
         .with_cost_decision(backend.cost_decision)
         .with_library_hash(self.library_hash.clone())
         .with_graph(self.engine.analysis_graph().cloned())
-        .with_cost_model(Some(self.engine.cost_model().clone()));
+        .with_cost_model(Some(self.engine.cost_model().clone()))
+        .with_policy(policy);
         run_analysis(
             analysis.as_ref(),
             &input,
@@ -759,8 +784,9 @@ impl Session {
     /// before handing it to `Engine::submit_job`.
     pub fn analysis_job(&self, req: &AnalysisRequest) -> EngineResult<JobSpec<AnalysisResult>> {
         let analysis = self.engine.analysis(&req.analysis)?;
-        let settings = crate::analysis::prepare(analysis.as_ref(), &req.settings)?;
-        let backend = self.route(req, analysis.as_ref(), &settings)?;
+        let policy = self.policy(req);
+        let settings = crate::analysis::prepare_tier(analysis.as_ref(), &req.settings, req.tier)?;
+        let backend = self.route(req, analysis.as_ref(), &settings, &policy)?;
         let snap = self.current.clone();
         let lib = self.library.clone();
         let lib_hash = self.library_hash.clone();
@@ -784,7 +810,8 @@ impl Session {
             .with_cost_decision(backend.cost_decision)
             .with_library_hash(lib_hash)
             .with_graph(graph)
-            .with_cost_model(Some(cost_model));
+            .with_cost_model(Some(cost_model))
+            .with_policy(policy);
             run_analysis(
                 analysis.as_ref(),
                 &input,
