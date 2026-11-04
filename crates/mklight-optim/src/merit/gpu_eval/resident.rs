@@ -52,6 +52,19 @@ fn records<T: bytemuck::Pod>(
     let id = p.import(buffer.view());
     p.view(id)
 }
+/// Newton iterations a candidate ray may spend over its whole aiming
+/// schedule. A candidate with any unresolved ray is reported whole as
+/// requiring the reference (below), so the device's work on its other rays
+/// is discarded; without a bound an unaimable ray of a bad trial step (a
+/// line-search candidate that vignettes or misses) ran the full schedule —
+/// up to six solves of 60 iterations with 16-step line searches and
+/// finite-difference refreshes — at low occupancy, 300–400 ms of device time
+/// per such candidate against 1–5 ms for a healthy one. Healthy candidate
+/// rays converge in at most 4–6 iterations (chief-seeded, requested
+/// tolerance) on the 16 samples and the 29-surface F/1.4 lens; converged
+/// rays of bad candidates stayed under 16.
+const AIM_SCHEDULE_CAP: u32 = 32;
+
 #[allow(clippy::too_many_arguments)]
 fn append(
     g: &GpuContext,
@@ -94,7 +107,10 @@ fn append(
                 tolerance,
                 max_iterations: 60,
                 output: generated.clone(),
-                options: Default::default(),
+                options: a::AimOptions {
+                    schedule_cap: AIM_SCHEDULE_CAP,
+                    ..Default::default()
+                },
             },
         )));
     p.operations

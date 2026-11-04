@@ -885,6 +885,12 @@ precision, device/build and cost decisions remain in the envelope; qualification
 blobs and caches are removed. Result versions for these four jobs are now 2.
 Unsupported preparation/features, unresolved aiming and resource/device errors
 remain real, counted fallbacks. Cancellation never starts reference replacement.
+Because a candidate with any unresolved ray is reported whole, the device
+aims its rays under a schedule cap of 32 Newton iterations
+(`AimOptions::schedule_cap`, GPU.md "Bounded aiming commands"): an unaimable
+ray of a bad trial step fails after a bounded number of iterations instead of
+running the reference schedule to its end, which cost 300–400 ms of device
+time per such candidate; healthy candidate rays converge in at most 4–6.
 
 `optimize` and `merit_evaluation` apply the solves (`docs/SOLVES.md`) to
 the start before building the merit. Solve-controlled parameters are never variables: automatic variables

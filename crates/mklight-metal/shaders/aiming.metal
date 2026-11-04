@@ -511,6 +511,10 @@ struct MklAimMachine {
     bool has_sj;
     device const MklAimNode* table;
     uint side;
+    // Newton iterations a ray may spend over its whole schedule (0: the
+    // schedule's own caps only); a solve stops unconverged once the total
+    // reaches it and no further phase starts (kernel::FieldKernel::aim).
+    uint schedule_cap;
 
     MklAimVec2 stage_target(uint phase) const {
         return phase <= 1 ? target : target * mkl_aim_c(float(phase - 1) * 0.25f);
@@ -554,7 +558,8 @@ struct MklAimMachine {
     }
     uint check(thread const MklAimResume& s, MklDf tol) const {
         if ((s.rn - tol).v.x <= 0) return MKL_AIM_UNIT_CONVERGED;
-        return s.it >= f.cap ? MKL_AIM_UNIT_FAILED : MKL_AIM_UNIT_MORE;
+        bool capped = schedule_cap != 0 && s.total + s.it >= schedule_cap;
+        return s.it >= f.cap || capped ? MKL_AIM_UNIT_FAILED : MKL_AIM_UNIT_MORE;
     }
     // One unit of the current solve (mkl_aim_newton's entry or one pass of
     // its loop body, followed by its loop-top test).
@@ -644,6 +649,12 @@ struct MklAimMachine {
             seed(s);
             return false;
         }
+        // The schedule cap ends the schedule after any unconverged solve
+        // that reached it.
+        if (schedule_cap != 0 && s.total >= schedule_cap) {
+            s.phase = MKL_AIM_PHASE_DONE;
+            return true;
+        }
         if (s.phase == 0) {
             s.phase = 1;
             seed(s);
@@ -670,9 +681,11 @@ struct MklAimMachine {
 };
 template <bool OV>
 static inline MklAimMachine<OV> mkl_aim_machine(MklAimFieldKernel<OV> f, constant MklAimCache& seed,
-                                                device const MklAimNode* table, uint side, MklAimVec2 p) {
+                                                device const MklAimNode* table, uint side, MklAimVec2 p,
+                                                uint schedule_cap) {
     MklAimMachine<OV> m;
     m.f = f;
+    m.schedule_cap = schedule_cap;
     m.src = mkl_aim_vec3(mkl_aim_load(seed.source, 0), mkl_aim_load(seed.source, 1), mkl_aim_load(seed.source, 2));
     m.wl = f.field->wavelength;
     m.chief = mkl_aim_vec2(mkl_aim_load(seed.chief, 0), mkl_aim_load(seed.chief, 1));
@@ -691,7 +704,7 @@ struct MklAimParams {
     uint table;
     uint pattern, side;
     float extent[2];
-    uint budget, table_side, flags, reserved;
+    uint budget, table_side, flags, schedule_cap;
 };
 #define MKL_AIM_CULL 1u
 // Looser than the 1e-12 disk inclusion of the lattice masks (kernel::CULL_RADIUS2).
@@ -760,7 +773,8 @@ static inline void mkl_aim_table_node(MKL_AIM_SYSTEMS, constant MklAimCache* see
     if ((f.flags & MKL_AIM_REAL) != 0 && !mkl_aim_hard_failure(seed.status) && x * x + y * y <= 1.5625f) {
         constant auto& h = headers[f.system];
         MklAimFieldKernel<OV> fk = {&h, surfaces + h.surface_offset, pool, &f, &newton, p.tolerance, p.cap};
-        MklAimMachine<OV> m = mkl_aim_machine(fk, seed, nullptr, side, mkl_aim_vec2(mkl_aim_c(x), mkl_aim_c(y)));
+        MklAimMachine<OV> m = mkl_aim_machine(fk, seed, nullptr, side, mkl_aim_vec2(mkl_aim_c(x), mkl_aim_c(y)),
+                                              p.schedule_cap);
         MklAimResume s;
         if (start)
             m.init(s);
@@ -908,8 +922,8 @@ static inline void mkl_aim_ray(MKL_AIM_SYSTEMS, constant MklAimCache* seeds, con
             uint iterations = 0;
             if (f.real()) {
                 const uint nodes = prm.table_side * prm.table_side;
-                MklAimMachine<OV> m =
-                    mkl_aim_machine(f, seed, prm.table != 0 ? tables + row * nodes : nullptr, prm.table_side, p);
+                MklAimMachine<OV> m = mkl_aim_machine(f, seed, prm.table != 0 ? tables + row * nodes : nullptr,
+                                                      prm.table_side, p, prm.schedule_cap);
                 MklAimResume s;
                 if (start)
                     m.init(s);

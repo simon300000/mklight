@@ -172,6 +172,7 @@ fn execute_in<E: FpEnv>(r: &Request, x: &mut Execution, ctl: &JobControl) -> MkR
                     field: f,
                     tolerance: g.tolerance,
                     cap: g.max_iterations,
+                    schedule_cap: g.options.schedule_cap,
                     check: &check,
                     env: Default::default(),
                 }
