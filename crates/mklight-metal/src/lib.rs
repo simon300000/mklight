@@ -18,6 +18,7 @@
 //! [`is_available`] returns `false`.
 
 #[cfg(target_os = "macos")]
+mod admission;
 mod backend;
 #[cfg(target_os = "macos")]
 mod buffer;

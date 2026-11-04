@@ -869,3 +869,49 @@ fn astra_strategy_probe() {
         }
     }
 }
+
+/// Cancellation latency of explicit-Metal jobs: each case runs once warm,
+/// then is cancelled at spread fractions of that wall time; the record is the
+/// time from the cancel to the call's return (it must return `Cancelled`).
+/// Select `cancel_latency`; MKLIGHT_BENCH_CANCEL_CASES (default the wave and
+/// solver cases), MKLIGHT_BENCH_RUNS cancels per case.
+#[test]
+#[ignore = "local-project cancellation latency"]
+fn project_bench_cancel_latency() {
+    if std::env::var("MKLIGHT_BENCH_FILTER").as_deref() != Ok("cancel_latency") {
+        return;
+    }
+    let path = std::env::var("MKLIGHT_BENCH_PROJECT").expect("set MKLIGHT_BENCH_PROJECT");
+    let runs = env_usize("MKLIGHT_BENCH_RUNS", 10).max(1);
+    let s = open("df", Path::new(&path));
+    let all = cases(&s);
+    let names = std::env::var("MKLIGHT_BENCH_CANCEL_CASES")
+        .unwrap_or_else(|_| "mtf,psf,glass_substitution,optimize,tolerance".into());
+    for name in names.split(',') {
+        let case = all.iter().find(|c| c.name == name).unwrap();
+        let req = request(case, "df");
+        let start = Instant::now();
+        s.run_analysis(&req, &JobContext::new()).unwrap();
+        let full = start.elapsed();
+        for k in 0..runs {
+            let ctx = JobContext::new();
+            let at = full.mul_f64(0.1 + 0.7 * k as f64 / runs as f64);
+            let cancel = ctx.cancel.clone();
+            let canceller = std::thread::spawn(move || {
+                std::thread::sleep(at);
+                cancel.cancel();
+                Instant::now()
+            });
+            let result = s.run_analysis(&req, &ctx);
+            let done = Instant::now();
+            let cancelled_at = canceller.join().unwrap();
+            let latency_ms = done.saturating_duration_since(cancelled_at).as_secs_f64() * 1e3;
+            emit(
+                "cancel",
+                json!({"case":name,"full_ms":full.as_secs_f64()*1e3,"cancel_after_ms":at.as_secs_f64()*1e3,
+                "latency_ms":latency_ms,"cancelled":result.as_ref().is_err_and(|e| e.is_cancelled()),
+                "finished_first":done < cancelled_at,"load":load()}),
+            );
+        }
+    }
+}

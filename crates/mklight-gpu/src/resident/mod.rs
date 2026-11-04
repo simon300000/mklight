@@ -565,6 +565,21 @@ pub struct PlanStats {
     pub peak_bytes: u64,
     pub fallback_count: u64,
     pub polished_rays: u64,
+    /// Host waits for device completion inside the plan, and their wall
+    /// seconds (asynchronous execution commits without waiting).
+    #[serde(default)]
+    pub host_waits: u32,
+    #[serde(default)]
+    pub host_wait_seconds: f64,
+    /// Command buffers of the plan that ran over 50 ms on the device.
+    #[serde(default)]
+    pub long_commands: u32,
+    /// Executions repeated because speculative aiming rounds were not enough.
+    #[serde(default)]
+    pub speculation_misses: u32,
+    /// Seconds the plan waited for device admission.
+    #[serde(default)]
+    pub admission_seconds: f64,
     /// This plan's operation-cache activity by category.
     #[serde(default)]
     pub cache: immutable::CacheStats,
