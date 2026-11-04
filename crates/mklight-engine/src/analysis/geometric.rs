@@ -204,6 +204,24 @@ fn a_pattern() -> Value {
 fn a_rings() -> Value {
     json!({"minimum": 1, "maximum": 512, "description": "Density of the pupil pattern (rings, or grid half-count)."})
 }
+/// `a_rings` for the dense square samplings (`RaySampling`, 32 half-count
+/// by default): the preview tier takes half the density (a quarter of the
+/// rays).
+fn a_dense_rings() -> Value {
+    let mut a = a_rings();
+    a["x-preview"] = json!(16);
+    a
+}
+/// Field-sample counts; the preview tier takes about half.
+fn a_field_samples() -> Value {
+    let mut a = a_count(
+        2,
+        10_000,
+        "Samples per selected axis, signed where symmetry requires it.",
+    );
+    a["x-preview"] = json!(11);
+    a
+}
 fn a_seed() -> Value {
     json!({"minimum": 0, "description": "Philox seed of the random and dithered patterns."})
 }
@@ -221,7 +239,7 @@ fn a_count(lo: u64, hi: u64, description: &str) -> Value {
 
 fn sampling_annotations(extra: Value) -> Value {
     let mut a = json!({
-        "pattern": a_pattern(), "rings": a_rings(), "fields": a_fields(),
+        "pattern": a_pattern(), "rings": a_dense_rings(), "fields": a_fields(),
         "wavelengths": a_wavelengths(), "seed": a_seed()
     });
     if let (Value::Object(m), Value::Object(e)) = (&mut a, extra) {
@@ -370,7 +388,7 @@ fn all() -> Vec<Geo> {
             settings: || {
                 settings_from_default::<curvature::FieldCurvatureSettings>(json!({
                     "field_axes": {"enum": ["auto", "x", "y", "both"], "description": "Auto: y for rotational systems; both axes otherwise. Only rotational symmetry permits positive-y sampling alone."},
-                    "field_samples": a_count(2, 10_000, "Samples per selected axis, signed where symmetry requires it."),
+                    "field_samples": a_field_samples(),
                     "wavelengths": a_wavelengths(),
                     "close_ray_step": {"minimum": 1e-9, "maximum": 0.5, "description": "Normalised pupil step of the close-ray cross-check."}
                 }))

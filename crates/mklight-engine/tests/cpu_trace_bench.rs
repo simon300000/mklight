@@ -48,7 +48,39 @@ fn cpu_trace_throughput() {
     let rings = env_usize("MKLIGHT_BENCH_RINGS", 24);
     let repeats = env_usize("MKLIGHT_BENCH_REPEATS", 3);
 
-    let (t_prep, tracer) = best(repeats, || SequentialTracer::new(Arc::clone(&sys)).unwrap());
+    // MKLIGHT_BENCH_AIM_STOP=conditioned[:preview] derives the aim stop from
+    // the propagated error (CONVENTIONS §7) instead of the requested
+    // tolerance.
+    let aim_stop = match std::env::var("MKLIGHT_BENCH_AIM_STOP").as_deref() {
+        Ok("conditioned") => mklight_trace::AimStop::Conditioned(mklight_trace::AimBudget::DESIGN),
+        Ok("conditioned:preview") => {
+            mklight_trace::AimStop::Conditioned(mklight_trace::AimBudget::PREVIEW)
+        }
+        _ => mklight_trace::AimStop::Requested,
+    };
+    let settings = mklight_trace::TracerSettings {
+        aim_stop,
+        ..Default::default()
+    };
+    let (t_prep, tracer) = best(repeats, || {
+        SequentialTracer::with_settings(Arc::clone(&sys), settings).unwrap()
+    });
+    for (i, f) in tracer.fields().iter().enumerate() {
+        for (w, a) in f.aims.iter().enumerate() {
+            if let Some(c) = a.conditioning {
+                println!(
+                    "  field {i} wl {w}: stop tolerance {:.3e} (requested {:.1e}); sensitivity \
+                     position {:.3} direction {:.3e} /mm opd {:.3e} waves/mm ({} probes)",
+                    tracer.aim_tolerance_of(f, w),
+                    tracer.requested_tolerance(),
+                    c.position,
+                    c.direction,
+                    c.opd,
+                    c.probes
+                );
+            }
+        }
+    }
     let pupil = PupilSampling::Hexapolar { rings }.points();
     let fields = tracer.fields().to_vec();
     let wls: Vec<usize> = (0..tracer.num_wavelengths()).collect();

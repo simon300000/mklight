@@ -18,7 +18,7 @@ pub mod snapshot;
 pub mod surface_math;
 
 pub use error::{MkError, MkResult};
-pub use job::{CancelToken, JobContext, Progress, RunInfo};
+pub use job::{AimStopKind, CancelToken, JobContext, Progress, RunInfo, Tier};
 pub use math::{Mat3, Vec3};
 pub use model::*;
 pub use resolved::ResolvedSystem;

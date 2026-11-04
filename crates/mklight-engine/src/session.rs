@@ -56,6 +56,12 @@ pub struct AnalysisRequest {
     /// Run on the CPU reference (with a `RunInfo` warning) if the requested
     /// backend is unavailable, instead of failing.
     pub allow_backend_fallback: bool,
+    /// Accuracy tier (`design` by default; `preview` is opt-in and labelled
+    /// in `RunInfo`).
+    pub tier: mklight_core::Tier,
+    /// Aim-stop policy; `None` uses the engine default
+    /// (`EngineConfig::aim_stop`).
+    pub aim_stop: Option<mklight_core::AimStopKind>,
 }
 
 impl AnalysisRequest {
@@ -678,13 +684,23 @@ impl Session {
     // --- analyses
 
     /// Run an analysis on the current snapshot in the calling thread.
+    /// The run policy of a request: its tier, and its aim stop or the
+    /// engine default.
+    fn policy(&self, req: &AnalysisRequest) -> crate::analysis::RunPolicy {
+        crate::analysis::RunPolicy {
+            tier: req.tier,
+            aim_stop: req.aim_stop.unwrap_or(self.engine.config().aim_stop),
+        }
+    }
+
     pub fn run_analysis(
         &self,
         req: &AnalysisRequest,
         ctx: &JobContext,
     ) -> EngineResult<AnalysisResult> {
         let analysis = self.engine.analysis(&req.analysis)?;
-        let settings = crate::analysis::prepare(analysis.as_ref(), &req.settings)?;
+        let policy = self.policy(req);
+        let settings = crate::analysis::prepare_tier(analysis.as_ref(), &req.settings, req.tier)?;
         let backend = self.engine.route_backend(
             req.backend.as_ref(),
             &req.analysis,
@@ -708,7 +724,8 @@ impl Session {
         .with_selection(backend.requested, backend.note)
         .with_cost_decision(backend.cost_decision)
         .with_library_hash(self.library_hash.clone())
-        .with_graph(self.engine.analysis_graph().cloned());
+        .with_graph(self.engine.analysis_graph().cloned())
+        .with_policy(policy);
         run_analysis(
             analysis.as_ref(),
             &input,
@@ -725,7 +742,8 @@ impl Session {
     /// before handing it to `Engine::submit_job`.
     pub fn analysis_job(&self, req: &AnalysisRequest) -> EngineResult<JobSpec<AnalysisResult>> {
         let analysis = self.engine.analysis(&req.analysis)?;
-        let settings = crate::analysis::prepare(analysis.as_ref(), &req.settings)?;
+        let policy = self.policy(req);
+        let settings = crate::analysis::prepare_tier(analysis.as_ref(), &req.settings, req.tier)?;
         let backend = self.engine.route_backend(
             req.backend.as_ref(),
             &req.analysis,
@@ -754,7 +772,8 @@ impl Session {
             .with_selection(backend.requested, backend.note)
             .with_cost_decision(backend.cost_decision)
             .with_library_hash(lib_hash)
-            .with_graph(graph);
+            .with_graph(graph)
+            .with_policy(policy);
             run_analysis(
                 analysis.as_ref(),
                 &input,

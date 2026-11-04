@@ -41,13 +41,13 @@ pub mod wave;
 pub(crate) use cost::is_apple as is_apple_gpu;
 pub(crate) use routing::pre_route;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::cell::{OnceCell, RefCell};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use mklight_core::job::{BackendAttempt, CancelToken, Precision, RunTimer};
+use mklight_core::job::{AimStopKind, BackendAttempt, CancelToken, Precision, RunTimer, Tier};
 use mklight_core::materials::MaterialLibrary;
 use mklight_core::{JobContext, MkResult, OpticalSystem, ResolvedSystem, RunInfo, Snapshot};
 
@@ -57,8 +57,34 @@ use crate::error::{EngineError, EngineResult};
 use crate::graph::{AnalysisGraph, ScopedMemo};
 use crate::settings;
 use mklight_core::memo::{KeyHasher, NodeKey};
-use mklight_trace::SequentialTracer;
+use mklight_trace::{AimBudget, AimStop, SequentialTracer, TracerSettings};
 use mklight_wave::traced::ConfiguredTracer;
+
+/// The accuracy policies of one run (CONVENTIONS §7, GPU §9.4): the tier
+/// and the aim-stop rule. Both are stamped into `RunInfo` and are part of
+/// every graph key, so a result never silently mixes policies.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RunPolicy {
+    pub tier: Tier,
+    pub aim_stop: AimStopKind,
+}
+
+impl RunPolicy {
+    /// The reference tracer's settings under this policy: the derived aim
+    /// stop uses the tier's error allocation.
+    pub fn tracer_settings(&self) -> TracerSettings {
+        let aim_stop = match (self.aim_stop, self.tier) {
+            (AimStopKind::Requested, _) => AimStop::Requested,
+            (AimStopKind::Conditioned, Tier::Design) => AimStop::Conditioned(AimBudget::DESIGN),
+            (AimStopKind::Conditioned, Tier::Preview) => AimStop::Conditioned(AimBudget::PREVIEW),
+        };
+        TracerSettings {
+            aim_stop,
+            ..Default::default()
+        }
+    }
+}
 
 /// Static description of an analysis, for menus and forms.
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -220,6 +246,8 @@ pub struct AnalysisInput<'a> {
     /// The engine's analysis graph (`crate::graph`); `None` builds every
     /// intermediate.
     graph: Option<Arc<AnalysisGraph>>,
+    /// Tier and aim-stop policy of this run ([`RunPolicy`]).
+    pub policy: RunPolicy,
 }
 
 /// Rough bytes of a tracer node (fields × wavelengths of aim data).
@@ -261,7 +289,15 @@ impl<'a> AnalysisInput<'a> {
             resolved: OnceCell::new(),
             library_hash: OnceCell::new(),
             graph: None,
+            policy: RunPolicy::default(),
         }
+    }
+
+    /// Run under `policy` (tier and aim stop); the default is design grade
+    /// at the requested aiming tolerance.
+    pub fn with_policy(mut self, policy: RunPolicy) -> Self {
+        self.policy = policy;
+        self
     }
 
     /// Share intermediates through the engine's analysis graph.
@@ -278,14 +314,17 @@ impl<'a> AnalysisInput<'a> {
     /// resolution): the root of every node of this input.
     fn content_key(&self, domain: &str) -> KeyHasher {
         let mut h = KeyHasher::new(domain);
-        h.bytes(&self.snapshot.hash().0).str(self.library_hash());
+        h.bytes(&self.snapshot.hash().0)
+            .str(self.library_hash())
+            .json(&self.policy);
         h
     }
 
     /// The reference tracer of the resolved snapshot (first order and
     /// prepared system fields), shared through the graph.
     pub(crate) fn tracer(&self, ctx: &JobContext) -> EngineResult<Arc<SequentialTracer>> {
-        let build = || SequentialTracer::new(self.resolved()?);
+        let build =
+            || SequentialTracer::with_settings(self.resolved()?, self.policy.tracer_settings());
         let Some(g) = &self.graph else {
             return Ok(Arc::new(build()?));
         };
@@ -342,10 +381,11 @@ impl<'a> AnalysisInput<'a> {
         ctx: &JobContext,
     ) -> EngineResult<Arc<ConfiguredTracer>> {
         let build = || {
-            mklight_wave::traced::configured_tracer_job(
+            mklight_wave::traced::configured_tracer_job_with(
                 self.snapshot.system(),
                 self.library.clone(),
                 k,
+                self.policy.tracer_settings(),
                 ctx,
             )
         };
@@ -529,6 +569,13 @@ pub trait Analysis: Send + Sync {
 /// Validate settings and check availability, without running anything.
 /// Returns the normalised settings.
 pub fn prepare(analysis: &dyn Analysis, settings: &Value) -> EngineResult<Value> {
+    prepare_tier(analysis, settings, Tier::Design)
+}
+
+/// [`prepare`] at a tier: the preview tier takes an analysis' `x-preview`
+/// defaults (cheaper sampling) for every setting the request leaves out, so
+/// `RunInfo.settings` always states the sampling actually used.
+pub fn prepare_tier(analysis: &dyn Analysis, settings: &Value, tier: Tier) -> EngineResult<Value> {
     if let Err(reason) = analysis.availability() {
         return Err(EngineError::AnalysisUnavailable {
             name: analysis.name().to_string(),
@@ -540,7 +587,7 @@ pub fn prepare(analysis: &dyn Analysis, settings: &Value) -> EngineResult<Value>
         analysis.category(),
         analysis.name(),
     );
-    settings::normalize(&schema, settings)
+    settings::normalize_tier(&schema, settings, tier == Tier::Preview)
 }
 
 /// Run `analysis` and stamp the result. `extra_warnings` (for example a
@@ -573,6 +620,7 @@ pub fn run_analysis(
         .str(&input.requested_backend)
         .str(&input.backend.id)
         .json(&input.backend.precision)
+        .json(&input.policy)
         .json(&input.selection_note)
         .json(&*input.cost_decision.borrow())
         .json(&extra_warnings)
@@ -703,6 +751,8 @@ fn run_prepared(
         warnings,
     );
     run_info.failed_attempts = attempts;
+    run_info.tier = input.policy.tier;
+    run_info.aim_stop = input.policy.aim_stop;
     ctx.report(1.0, "");
     Ok(AnalysisResult {
         run_info,

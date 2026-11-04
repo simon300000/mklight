@@ -778,7 +778,9 @@ pub unsafe extern "C" fn mk_session_submit_analysis(
 }
 
 /// Queue an analysis from a full request object
-/// `{"analysis", "settings", "view_key", "backend", "allow_backend_fallback"}`.
+/// `{"analysis", "settings", "view_key", "backend", "allow_backend_fallback",
+/// "tier", "aim_stop"}` (`tier`: `design`/`preview`; `aim_stop`:
+/// `requested`/`conditioned` or null for the engine default).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mk_session_submit_analysis_json(
     session: *const MKSession,

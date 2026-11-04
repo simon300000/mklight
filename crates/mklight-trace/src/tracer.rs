@@ -76,6 +76,96 @@ use crate::trace::{
 /// How real-aim solves form their Jacobians (module docs).
 pub const AIM_POLICY: JacobianPolicy = JacobianPolicy::AnalyticRefresh;
 
+/// Per-ray error allocation of a derived aim stop ([`AimStop::Conditioned`]):
+/// the propagated error of an accepted stop residual must stay within these
+/// absolute bounds on every surface of the ray (CONVENTIONS §7).
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AimBudget {
+    /// Ray position on any surface (mm).
+    pub position_mm: f64,
+    /// Direction cosines on any surface.
+    pub direction: f64,
+    /// OPD against the field's reference sphere (waves).
+    pub opd_waves: f64,
+    /// The derived stop is never looser than this fraction of the stop
+    /// radius, whatever the conditioning says.
+    pub max_relative: f64,
+    /// Safety factor on the sensitivities sampled at the chief and four
+    /// marginal probe rays (pupil variation beyond the samples).
+    pub margin: f64,
+}
+
+impl AimBudget {
+    /// Design tier: one tenth of one third of the §7 budgets (position
+    /// 2e-5 mm, direction 2e-6, OPD 5e-3 waves), capped at 1e-6 of the stop
+    /// radius.
+    pub const DESIGN: AimBudget = AimBudget {
+        position_mm: 2e-5 / 30.0,
+        direction: 2e-6 / 30.0,
+        opd_waves: 5e-3 / 30.0,
+        max_relative: 1e-6,
+        margin: 2.0,
+    };
+    /// Preview tier: one tenth of the preview budgets (position 2e-4 mm,
+    /// direction 2e-5, OPD RMS 2e-2 waves), capped at 1e-5 of the stop radius.
+    pub const PREVIEW: AimBudget = AimBudget {
+        position_mm: 2e-4 / 10.0,
+        direction: 2e-5 / 10.0,
+        opd_waves: 2e-2 / 10.0,
+        max_relative: 1e-5,
+        margin: 2.0,
+    };
+}
+
+impl Default for AimBudget {
+    fn default() -> Self {
+        AimBudget::DESIGN
+    }
+}
+
+/// When a real-aim Newton solve stops ([`TracerSettings::aim_stop`]).
+#[derive(Clone, Copy, Debug, PartialEq, Default, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum AimStop {
+    /// Stop residual = the system's requested `RayAiming::Real { tolerance }`
+    /// (a fraction of the stop radius) for every ray.
+    #[default]
+    Requested,
+    /// Derive the stop residual of every (field, wavelength) from the
+    /// propagated error of a stop residual: the sensitivities of the ray
+    /// position and direction on every surface and of the OPD to a stop
+    /// displacement, from the analytic tangents ([`crate::diff`]) of the
+    /// chief ray and four marginal probe rays, give the largest residual
+    /// whose propagated error stays within the budget. The result is clamped
+    /// to `[requested, max_relative]`, so it is never tighter than the
+    /// request (an ill-conditioned field keeps the request and is warned
+    /// about) and never looser than the cap. Chief rays are always aimed at
+    /// the requested tolerance.
+    Conditioned(AimBudget),
+}
+
+/// Sensitivities of one (field, wavelength) to a stop residual: the largest
+/// propagated error per unit residual (mm per mm, direction per mm, waves
+/// per mm) over the surfaces of the chief and marginal probe rays
+/// ([`AimStop::Conditioned`]).
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AimConditioning {
+    pub position: f64,
+    pub direction: f64,
+    pub opd: f64,
+    /// Probe rays that contributed (chief plus up to four marginal rays).
+    pub probes: u32,
+}
+
+/// Largest singular value of the `3 × 2` matrix `[a, b]` (columns).
+fn spectral_norm(a: Vec3, b: Vec3) -> f64 {
+    let (aa, bb, ab) = (a.dot(a), b.dot(b), a.dot(b));
+    let tr = aa + bb;
+    let det = aa.mul_add(bb, -(ab * ab)).max(0.0);
+    (0.5 * (tr + (tr * tr - 4.0 * det).max(0.0).sqrt())).sqrt()
+}
+
 /// Work counters of real-aim solves ([`SequentialTracer::generate_many_stats`]).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AimStats {
@@ -163,6 +253,14 @@ pub struct AimData {
     pub converged: bool,
     /// Chief-ray stop residual as a fraction of the stop radius.
     pub residual: f64,
+    /// Stop residual of this (field, wavelength)'s pupil aims as a fraction
+    /// of the stop radius when derived by [`AimStop::Conditioned`]; `None`
+    /// uses the requested tolerance.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stop_tolerance: Option<f64>,
+    /// The sensitivities behind `stop_tolerance`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conditioning: Option<AimConditioning>,
 }
 
 /// A field resolved for tracing: its source and per-wavelength aim cache.
@@ -299,6 +397,10 @@ pub struct TracerSettings {
     pub aiming: Option<RayAiming>,
     pub max_aim_iterations: u32,
     pub intersect: IntersectSettings,
+    /// When the real-aim solves stop (requested tolerance, or derived from
+    /// the propagated error).
+    #[serde(default)]
+    pub aim_stop: AimStop,
 }
 
 impl Default for TracerSettings {
@@ -307,6 +409,7 @@ impl Default for TracerSettings {
             aiming: None,
             max_aim_iterations: 40,
             intersect: IntersectSettings::default(),
+            aim_stop: AimStop::Requested,
         }
     }
 }
@@ -621,15 +724,60 @@ impl SequentialTracer {
         }
     }
 
-    fn aim_tolerance(&self) -> f64 {
-        let rel = match self.aiming {
+    /// The system's requested aiming tolerance as a fraction of the stop
+    /// radius (1e-10 with aiming off).
+    pub fn requested_tolerance(&self) -> f64 {
+        match self.aiming {
             RayAiming::Real { tolerance } => tolerance,
             RayAiming::Off => 1e-10,
-        };
+        }
+    }
+
+    /// Absolute stop residual (mm) of relative tolerance `rel`.
+    fn stop_mm(&self, rel: f64) -> f64 {
         rel * self.pupil.r_stop.max(f64::MIN_POSITIVE)
     }
 
-    /// Rounding floor of a seeded aim solve (stop coordinates).
+    /// Absolute stop residual (mm) of the requested tolerance: chief-ray
+    /// aims, and every aim under [`AimStop::Requested`].
+    fn aim_tolerance(&self) -> f64 {
+        self.stop_mm(self.requested_tolerance())
+    }
+
+    /// The stop tolerance of a prepared field's pupil aims at wavelength
+    /// `wl`, as a fraction of the stop radius: the derived stop
+    /// ([`AimStop::Conditioned`]) or the requested tolerance.
+    pub fn aim_tolerance_of(&self, field: &PreparedField, wl: usize) -> f64 {
+        field.aims[wl]
+            .stop_tolerance
+            .unwrap_or_else(|| self.requested_tolerance())
+    }
+
+    fn field_tolerance(&self, field: &PreparedField, wl: usize) -> f64 {
+        match field.aims[wl].stop_tolerance {
+            Some(rel) => self.stop_mm(rel),
+            None => self.aim_tolerance(),
+        }
+    }
+
+    /// One stop tolerance for every pupil aim of the prepared fields (a
+    /// fraction of the stop radius): the tightest derived stop, or the
+    /// requested tolerance. Device aiming takes one tolerance per request.
+    pub fn device_aim_tolerance(&self) -> f64 {
+        let derived = self
+            .fields
+            .iter()
+            .flat_map(|f| f.aims.iter().filter_map(|a| a.stop_tolerance))
+            .fold(f64::INFINITY, f64::min);
+        if derived.is_finite() {
+            derived
+        } else {
+            self.requested_tolerance()
+        }
+    }
+
+    /// Rounding floor of a seeded aim solve (stop coordinates), from the
+    /// requested tolerance.
     fn aim_floor(&self) -> f64 {
         (1e-4 * self.aim_tolerance()).max(16.0 * f64::EPSILON * self.pupil.r_stop)
     }
@@ -646,8 +794,9 @@ impl SequentialTracer {
         target: [f64; 2],
         x0: [f64; 2],
         j0: Option<Mat2>,
+        tol: f64,
     ) -> Solve2 {
-        self.solve_aim_seeded(src, wl, target, x0, j0, None)
+        self.solve_aim_seeded(src, wl, target, x0, j0, None, tol)
     }
 
     /// [`Self::solve_aim`], seeded as `newton2_seeded` when `seed` is set.
@@ -659,6 +808,7 @@ impl SequentialTracer {
         x0: [f64; 2],
         j0: Option<Mat2>,
         seed: Option<f64>,
+        tol: f64,
     ) -> Solve2 {
         let scratch = RefCell::new(Vec::new());
         let f = |a: [f64; 2], jac: bool| {
@@ -669,7 +819,7 @@ impl SequentialTracer {
             x0,
             j0,
             self.fd_step(),
-            self.aim_tolerance(),
+            tol,
             self.settings.max_aim_iterations,
             AIM_POLICY,
             seed,
@@ -704,18 +854,21 @@ impl SequentialTracer {
                 jacobian: None,
                 converged: true,
                 residual: 0.0,
+                stop_tolerance: None,
+                conditioning: None,
             },
             RayAiming::Real { .. } => {
+                let tol = self.aim_tolerance();
                 let seeded = seed
                     .filter(|a| a.converged)
                     .map(|a| {
                         let floor = Some(self.aim_floor());
-                        self.solve_aim_seeded(src, wl, [0.0, 0.0], a.chief, a.jacobian, floor)
+                        self.solve_aim_seeded(src, wl, [0.0, 0.0], a.chief, a.jacobian, floor, tol)
                     })
                     .filter(|s| s.converged);
                 let mut s = match seeded {
                     Some(s) => s,
-                    None => self.solve_aim(src, wl, [0.0, 0.0], [0.0, 0.0], None),
+                    None => self.solve_aim(src, wl, [0.0, 0.0], [0.0, 0.0], None, tol),
                 };
                 if !s.converged {
                     // A wide-field paraxial seed can miss the front surfaces:
@@ -748,7 +901,7 @@ impl SequentialTracer {
                             let t = (self.pupil.z_ep - e.z) / dir.z;
                             x = [e.x + t * dir.x, e.y + t * dir.y];
                         }
-                        let sk = self.solve_aim(&step, wl, [0.0, 0.0], x, j);
+                        let sk = self.solve_aim(&step, wl, [0.0, 0.0], x, j, tol);
                         if !sk.converged {
                             break;
                         }
@@ -778,6 +931,8 @@ impl SequentialTracer {
                     jacobian: jac,
                     converged: s.converged,
                     residual: s.residual / self.pupil.r_stop,
+                    stop_tolerance: None,
+                    conditioning: None,
                 }
             }
         }
@@ -795,12 +950,22 @@ impl SequentialTracer {
             .into_par_iter()
             .map(|w| self.chief_aim(&source, w, seed.as_ref().map(|f| &f.aims[w])))
             .collect();
-        let field = PreparedField {
+        let mut field = PreparedField {
             point,
             source,
             aims,
             error: None,
         };
+        if let (AimStop::Conditioned(budget), RayAiming::Real { .. }) =
+            (self.settings.aim_stop, self.aiming)
+        {
+            for wl in 0..nw {
+                let c = self.conditioning(&field, wl);
+                let aim = &mut field.aims[wl];
+                aim.conditioning = c;
+                aim.stop_tolerance = c.map(|c| self.derived_tolerance(&budget, &c));
+            }
+        }
         if let Some(Seeds::Record(s)) = &self.seeds {
             let mut fields = s.fields.write().unwrap();
             if !fields.iter().any(|f| f.point == point) {
@@ -808,6 +973,129 @@ impl SequentialTracer {
             }
         }
         Ok(field)
+    }
+
+    /// The derived stop of [`AimStop::Conditioned`] (module docs): the
+    /// largest residual whose propagated error fits `budget`, clamped to
+    /// `[requested, max_relative]`.
+    fn derived_tolerance(&self, budget: &AimBudget, c: &AimConditioning) -> f64 {
+        let requested = self.requested_tolerance();
+        let r_stop = self.pupil.r_stop.max(f64::MIN_POSITIVE);
+        let mm = (budget.position_mm / c.position)
+            .min(budget.direction / c.direction)
+            .min(budget.opd_waves / c.opd)
+            / budget.margin;
+        let rel = mm / r_stop;
+        if !rel.is_finite() {
+            return requested;
+        }
+        rel.min(budget.max_relative).max(requested)
+    }
+
+    /// Sensitivities of a prepared field's rays at wavelength `wl` to a
+    /// stop residual ([`AimConditioning`]): for the chief ray and four
+    /// marginal probes (the chief Jacobian's prediction of the pupil edge,
+    /// unaimed) the tangent with respect to the aim point is carried
+    /// through an unclipped image trace, and `T_k J_stop⁻¹` (`T_k` the
+    /// position or direction tangent at surface `k`, `J_stop` the stop-hit
+    /// Jacobian) bounds the error at surface `k` per unit stop residual;
+    /// the OPD sensitivity comes from the tangent at the image through the
+    /// reference sphere ([`crate::opd::OpdReference::opd_tangent`]).
+    /// `None` when the chief ray gives no usable tangent or Jacobian.
+    fn conditioning(&self, field: &PreparedField, wl: usize) -> Option<AimConditioning> {
+        let ad = &field.aims[wl];
+        if !ad.converged {
+            return None;
+        }
+        let r_stop = self.pupil.r_stop;
+        let edge = |p: [f64; 2]| {
+            let t = [p[0] * r_stop, p[1] * r_stop];
+            ad.jacobian
+                .and_then(|j| solve2(j, t))
+                .map(|d| [ad.chief[0] + d[0], ad.chief[1] + d[1]])
+                .unwrap_or_else(|| {
+                    let q = self.paraxial_aim(p);
+                    [ad.chief[0] + q[0], ad.chief[1] + q[1]]
+                })
+        };
+        let probes = [
+            ad.chief,
+            edge([1.0, 0.0]),
+            edge([-1.0, 0.0]),
+            edge([0.0, 1.0]),
+            edge([0.0, -1.0]),
+        ];
+        let reference = self.opd_reference(field, wl).ok();
+        let opts = TraceOptions::unclipped();
+        let image = self.sys.image_index();
+        let stop = self.sys.stop;
+        let mut records = Vec::with_capacity(self.sys.surfaces.len());
+        let mut chain: Vec<RayTangent> = Vec::with_capacity(image);
+        let mut out = AimConditioning {
+            position: 0.0,
+            direction: 0.0,
+            opd: 0.0,
+            probes: 0,
+        };
+        for (k, a) in probes.into_iter().enumerate() {
+            let chief = k == 0;
+            let Some((ray, tangent)) = self.start_tangent(&field.source, a) else {
+                continue;
+            };
+            let r = trace_ray(&self.sys, &ray, wl, &opts, Some(&mut records));
+            if !r.status.is_ok() || r.surface != image {
+                if chief {
+                    return None;
+                }
+                continue;
+            }
+            // Tangents at every surface; the stop Jacobian is among them.
+            chain.clear();
+            let ok = self
+                .tangents
+                .differentiate_each(&self.sys, wl, &tangent, &records, image, |_, t| {
+                    chain.push(*t)
+                })
+                .is_ok();
+            // M = J_stop⁻¹, column by column.
+            let m = ok
+                .then(|| chain[stop - 1].xy_jacobian())
+                .and_then(|j| Some((solve2(j, [1.0, 0.0])?, solve2(j, [0.0, 1.0])?)));
+            let Some((m0, m1)) = m else {
+                if chief {
+                    return None;
+                }
+                continue;
+            };
+            let m = [[m0[0], m1[0]], [m0[1], m1[1]]];
+            let apply = |v: &[Vec3; 2]| -> (Vec3, Vec3) {
+                (
+                    v[0] * m[0][0] + v[1] * m[1][0],
+                    v[0] * m[0][1] + v[1] * m[1][1],
+                )
+            };
+            for t in &chain {
+                let (a, b) = apply(&t.dpos);
+                out.position = out.position.max(spectral_norm(a, b));
+                let (a, b) = apply(&t.ddir);
+                out.direction = out.direction.max(spectral_norm(a, b));
+            }
+            if let Some(reference) = &reference
+                && let Some(g) = reference.opd_tangent(&r, &chain[image - 1])
+            {
+                let gm = [
+                    g[0] * m[0][0] + g[1] * m[1][0],
+                    g[0] * m[0][1] + g[1] * m[1][1],
+                ];
+                out.opd = out.opd.max(gm[0].hypot(gm[1]));
+            }
+            out.probes += 1;
+        }
+        (out.probes > 0
+            && out.position.is_finite()
+            && out.direction.is_finite()
+            && out.opd.is_finite())
+        .then_some(out)
     }
 
     /// The real-image-height source of `point`, solved from the anchor's
@@ -840,6 +1128,8 @@ impl SequentialTracer {
             jacobian: None,
             converged: false,
             residual: f64::INFINITY,
+            stop_tolerance: None,
+            conditioning: None,
         };
         PreparedField {
             point,
@@ -1120,7 +1410,8 @@ impl SequentialTracer {
                 seed,
                 key,
             } => {
-                let s = self.solve_aim_seeded(&field.source, wl, target, x0, j0, seed);
+                let tol = self.field_tolerance(field, wl);
+                let s = self.solve_aim_seeded(&field.source, wl, target, x0, j0, seed, tol);
                 let stats = &mut AimStats::default();
                 self.finish_seeded(field, wl, target, s, stats, seed.is_some(), key)
             }
@@ -1143,7 +1434,8 @@ impl SequentialTracer {
         if seeded && !s.converged {
             stats.add(&s);
             let x0 = self.linear_aim(field, wl, target);
-            s = self.solve_aim(&field.source, wl, target, x0, field.aims[wl].jacobian);
+            let tol = self.field_tolerance(field, wl);
+            s = self.solve_aim(&field.source, wl, target, x0, field.aims[wl].jacobian, tol);
         }
         let g = self.finish_aim(field, wl, target, s, stats);
         if let (Some(Seeds::Record(seeds)), Some(key), Ok(g)) = (&self.seeds, key, &g) {
@@ -1260,6 +1552,7 @@ impl SequentialTracer {
         if !s.converged {
             // Continuation in the pupil radius.
             stats.continued += 1;
+            let tol = self.field_tolerance(field, wl);
             let mut x = ad.chief;
             let mut j = ad.jacobian;
             let mut prev = [0.0, 0.0];
@@ -1268,7 +1561,7 @@ impl SequentialTracer {
                 let seed = j
                     .and_then(|j| solve2(j, [t[0] - prev[0], t[1] - prev[1]]))
                     .map_or(x, |d| [x[0] + d[0], x[1] + d[1]]);
-                s = self.solve_aim(&field.source, wl, t, seed, j);
+                s = self.solve_aim(&field.source, wl, t, seed, j, tol);
                 iters += s.iterations;
                 stats.add(&s);
                 if !s.converged {
@@ -1328,7 +1621,7 @@ impl SequentialTracer {
                         x0,
                         j0,
                         self.fd_step(),
-                        self.aim_tolerance(),
+                        self.field_tolerance(field, wl),
                         self.settings.max_aim_iterations,
                         AIM_POLICY,
                     )

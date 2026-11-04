@@ -714,6 +714,8 @@ fn qualification_and_fallback_recording() {
         seed: None,
         started_unix_ms: 0,
         duration_ms: 0.0,
+        tier: Default::default(),
+        aim_stop: Default::default(),
         warnings: vec![],
         failed_attempts: vec![],
     };

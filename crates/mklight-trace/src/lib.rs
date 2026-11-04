@@ -125,8 +125,9 @@ pub use trace::{
     trace_ray_recorded, trace_rays, trace_rays_recorded, transfer_vector,
 };
 pub use tracer::{
-    AimData, AimReport, AimSeeds, AimStats, FieldPoint, GeneratedRay, ObjectSource, PreparedField,
-    PupilGeometry, RayRequest, SequentialTracer, TracerSettings,
+    AimBudget, AimConditioning, AimData, AimReport, AimSeeds, AimStats, AimStop, FieldPoint,
+    GeneratedRay, ObjectSource, PreparedField, PupilGeometry, RayRequest, SequentialTracer,
+    TracerSettings,
 };
 
 pub use mklight_core::ResolvedSystem;

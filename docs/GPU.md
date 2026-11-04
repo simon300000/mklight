@@ -1425,8 +1425,11 @@ device by `mkl_aim_stats`), `PlanStats.host` the host preparation (rows,
 reused/solved fields, seconds) and `PlanStats.memory` the device allocation
 and process RSS high-water mark at completion. Newton–Broyden uses double-float
 stop hits, finite differences, 2×2 solves and updates, the reference's
-continuation schedule and configured cap/tolerance (normally 1e-10 relative
-to stop radius). A rounded f32 stop hit cannot drive that solve. Compact
+continuation schedule and configured cap/tolerance (the request's aim-stop
+policy, CONVENTIONS §7: the requested tolerance, normally 1e-10 relative to
+the stop radius, or the tightest conditioned stop of the request's fields,
+`SequentialTracer::device_aim_tolerance`; one value per generation, part of
+`aim_identity`). A rounded f32 stop hit cannot drive that solve. Compact
 only unresolved rays for optional CPU f64 polish; scatter them back at their
 original indices and record counts/reasons. (The CPU reference takes its
 fresh Jacobians from the analytic differential tracer since D2, CONVENTIONS
@@ -1855,7 +1858,7 @@ device search; tolerance reports device scores.
 | Quantity / kernel | Acceptance against independent CPU f64 |
 |---|---|
 | G: geometry and statuses | §7: positions ≤2e-5 mm on each surface, directions ≤2e-6; identical survival except the 1e-5 mm aperture band. Count band cases and all failure classes; never compare only common survivors. Existing TIR-band diagnostics remain explicit, not a blanket status exemption. |
-| OPL: aiming/OPD/phase | Honour the requested aiming residual; OPD ≤5e-3 waves. Internal OPL/sphere target ≈1e-7 mm on 100+ mm paths (≈1.8e-4 waves at 0.55 µm); this is tighter than the external λ/200 budget (2.75e-6 mm there). Double-float must cover geometry and reference construction as well as the path sum. |
+| OPL: aiming/OPD/phase | Honour the run's aim-stop policy (CONVENTIONS §7: the requested residual, or the conditioned stop derived from the propagated error, never looser than its allocation); OPD ≤5e-3 waves. Internal OPL/sphere target ≈1e-7 mm on 100+ mm paths (≈1.8e-4 waves at 0.55 µm); this is tighter than the external λ/200 budget (2.75e-6 mm there). Double-float must cover geometry and reference construction as well as the path sum. |
 | R: centroids/RMS/MTF | Position budget for centroids; differences of two positions ≤4e-5 mm. RMS ≤max(0.005×reference,2e-5 mm); MTF ≤2e-3 absolute, including direct/FFT/through-focus and detector multiplication. |
 | T: FFT/chirp/affine transforms | Proposed gates: relative L2 complex error ≤1e-4 and max absolute error ≤1e-4×reference L1 input norm (with declared transform scaling); inverse round-trip/Parseval ≤1e-4 relative. Small direct-DFT, skew-MFT and non-power-of-two known answers supplement large f64 comparisons. Final optical MTF still meets §7. |
 | E: PSF/EE/LSF/image | Proposed gates on matched sampling: integrated energy/flux ≤1e-3 relative, normalised PSF/image L1 error ≤2e-3, EE/ensquared fractions and Strehl ≤2e-3 absolute, LSF integral ≤1e-3. Centroids use G; r50/r80/r90 compare the energy curve and ≤one radial sample interval, tightening with sampling. Include Airy, annulus, tilt, defocus, Parseval and convolution conservation. |
@@ -1871,6 +1874,33 @@ discrepancy is not GPU error. Keep wave sampling, truncation, conditioning
 and root-search warnings; increasing precision does not fix undersampling.
 For insufficient margin use double-float, a better-conditioned formulation
 or the reported reference fallback, never loosen the budget to pass.
+
+**Tiers.** Every result carries `run_info.tier` and `run_info.aim_stop`
+(`AnalysisRequest::{tier, aim_stop}`; the CLI's `--tier`/`--aim-stop`; the
+FFI request JSON). The budgets above are the **design** tier, the default.
+The **preview** tier is opt-in and never silent: it exists for responsive
+exploration and is not evidence for a design decision. Its contract against
+the design tier of the same request is
+
+| quantity | preview budget |
+|---|---|
+| ray/centroid position at the image | ≤ min(0.1 pixel, 0.05 λN) |
+| MTF (same physical frequencies) | ≤ 0.01 absolute |
+| OPD RMS (wave previews) | ≤ 0.02 waves (≈1.6 % Strehl) |
+
+achieved by cheaper sampling and aiming, both recorded in
+`run_info.settings`: analyses declare preview defaults (`x-preview` in the
+settings schema: half the wave lattice rays per axis, 33 instead of 65, for
+the MTF, MTF-vs-field and wavefront-map analyses (the PSF-family image
+windows grow with the geometric blur of a coarser lattice, so those keep
+the design lattice); half the dense square-pattern density, 16 instead of
+32; 11 field or focus samples instead of 21, 6 instead of 11 for
+`mtf_vs_field`) that replace the
+design defaults only for settings the request leaves out, and the
+conditioned aim stop uses the preview allocation (CONVENTIONS §7). Requested
+tolerances, survival-mask rules and the design budgets are untouched by the
+tier; a preview result is compared to the design result with the gates
+above, not to the CPU f64 reference with the design gates.
 
 **Emulation policy.** Require matching-environment bit identity for integer
 RNG, layouts/status/IDs, existing trace/df/fmath, new aiming/system-update
