@@ -198,12 +198,14 @@ fn aim_key(field: &PreparedField, wl: usize, px: f64, py: f64) -> AimKey {
 /// aims with their Jacobians), seeding the same solves of a nearby system:
 /// the finite-difference neighbours of a Jacobian or the trials of a
 /// tolerance run. A seeded solve starts at the anchor's solution with the
-/// anchor's Jacobian and takes at least one Newton step, so it corrects for
-/// the change even when the seed already meets the tolerance; it must then
-/// meet the same tolerance as an unseeded solve, and falls back to the
-/// unseeded solve when it does not. Results therefore agree with the
-/// unseeded tracer to within the solve tolerances (not bit for bit), and
-/// do not depend on the order in which candidates are traced.
+/// anchor's Jacobian (central differences, recorded with the aim) and takes
+/// at least one Newton step, so it corrects for the change even when the
+/// seed already meets the tolerance; it must then resolve the change to
+/// 1e-6 of itself down to rounding, never looser than the aiming tolerance
+/// (`newton2_seeded`), and falls back to the unseeded solve otherwise.
+/// Results agree with the unseeded tracer to within the aiming tolerance
+/// (not bit for bit) and do not depend on the order of tracing. Recording
+/// costs a five-trace Jacobian per anchor ray.
 #[derive(Debug, Default)]
 pub struct AimSeeds {
     fields: RwLock<Vec<PreparedField>>,

@@ -654,7 +654,11 @@ mod tests {
         fn constraints(&self) -> &[crate::problem::Constraint] {
             self.0.constraints()
         }
-        fn evaluate_batch(&self, x: &CandidateBatch, ctx: &JobContext) -> MkResult<BatchEvaluation> {
+        fn evaluate_batch(
+            &self,
+            x: &CandidateBatch,
+            ctx: &JobContext,
+        ) -> MkResult<BatchEvaluation> {
             let mut e = self.0.evaluate_batch(x, ctx)?;
             let offset = 1e-9 * x.len() as f64;
             e.residuals.iter_mut().for_each(|r| *r += offset);

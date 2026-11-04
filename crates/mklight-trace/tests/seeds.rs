@@ -100,12 +100,20 @@ fn seeded_aims_agree_with_unseeded_and_take_fewer_iterations() {
         // Aim parameters agree to the cold solve's tolerance (mm of aim
         // per mm of stop is of order one here).
         for k in 0..2 {
-            assert!((c.aim[k] - s.aim[k]).abs() <= 10.0 * tol, "aim {:?} vs {:?}", c.aim, s.aim);
+            assert!(
+                (c.aim[k] - s.aim[k]).abs() <= 10.0 * tol,
+                "aim {:?} vs {:?}",
+                c.aim,
+                s.aim
+            );
         }
         it_c += c.report.iterations;
         it_s += s.report.iterations;
     }
-    assert!(it_s < it_c, "seeded {it_s} vs unseeded {it_c} Newton iterations");
+    assert!(
+        it_s < it_c,
+        "seeded {it_s} vs unseeded {it_c} Newton iterations"
+    );
     // One by one equals the batch, bit for bit, on the seeded tracer too.
     for (&(f, w, [px, py]), b) in requests(&seeded, &pupil).iter().zip(&rs) {
         let one = seeded.generate(f, w, px, py).unwrap();

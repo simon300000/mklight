@@ -286,6 +286,8 @@ impl ResidentEvaluator {
                 let values = self.reference.evaluate_batch(&batch, &refs, &inner)?;
                 for (&row, values) in rows.iter().zip(values) {
                     for (&i, value) in cols.iter().zip(values) {
+                        // Only usable values take part in a difference.
+                        let usable = value.as_ref().is_ok_and(|v| v.is_finite());
                         result[row][i] = value;
                         stats.host_operands += 1;
                         if route == 3
@@ -298,7 +300,7 @@ impl ResidentEvaluator {
                         }
                         fallback_rows[row] = true;
                         stats.fallback_operands += 1;
-                        completed[row][i] = true;
+                        completed[row][i] = usable;
                         let reason = if route == 3 {
                             format!("{}: no resident operand adapter", ops[i].kind.name())
                         } else if tracers[row].is_none() {
