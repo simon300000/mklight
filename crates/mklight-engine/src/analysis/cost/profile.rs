@@ -9,6 +9,11 @@ use serde_json::Value;
 
 use super::model::Features;
 
+/// Device seed-table nodes and the generation size that builds one
+/// (`mklight_gpu::aiming`).
+const TABLE_NODES: f64 = mklight_gpu::aiming::TABLE_NODES as f64;
+const TABLE_MIN_RAYS_PER_ROW: f64 = mklight_gpu::aiming::TABLE_MIN_RAYS_PER_ROW as f64;
+
 /// Stage work of one request.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Profile {
@@ -51,12 +56,22 @@ impl Profile {
     /// difficulty; ignored without real aiming).
     pub fn features(&self, shape: &SystemShape, traces: f64) -> Features {
         let aim = if shape.aimed { traces * shape.stop } else { 0. };
+        // Aimed geometric generations of at least `TABLE_MIN_RAYS_PER_ROW`
+        // rays per row build a device seed table (wave pupils use host f64
+        // tables instead).
+        let per_row = self.rays / self.rows.max(1.);
+        let table = if shape.aimed && !self.lattice && per_row >= TABLE_MIN_RAYS_PER_ROW {
+            self.rows * TABLE_NODES * aim
+        } else {
+            0.
+        };
         [
             1.,
             self.rows * shape.surfaces,
             self.rays * (shape.surfaces + aim),
             self.transform,
             self.output,
+            table,
         ]
     }
 }

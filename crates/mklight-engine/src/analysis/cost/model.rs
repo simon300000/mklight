@@ -15,12 +15,15 @@ use serde_json::Value;
 
 /// Stage features, in this order: constant (1), host preparation
 /// (field–wavelength rows × surfaces), ray work (rays × (surfaces + aim
-/// traces × stop surfaces)), transforms (samples × log₂), output bytes.
-pub const FEATURES: [&str; 5] = ["fixed", "prep", "ray", "transform", "output"];
-pub type Features = [f64; 5];
+/// traces × stop surfaces)), transforms (samples × log₂), output bytes,
+/// and the device seed-table build of large aimed generations (rows ×
+/// table nodes × aim traces × stop surfaces; Metal only, cached while the
+/// snapshot stays resident).
+pub const FEATURES: [&str; 6] = ["fixed", "prep", "ray", "transform", "output", "table"];
+pub type Features = [f64; 6];
 
 /// Format of the stored table; bump when a field changes meaning.
-pub const FORMAT: u32 = 1;
+pub const FORMAT: u32 = 2;
 
 /// One fitted coefficient set (ms per feature unit).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -83,8 +86,21 @@ pub struct Calibration {
 
 impl Calibration {
     /// The built-in table of the measured device class.
+    /// (`builtin_table_matches_this_model` keeps it current; an unreadable
+    /// table would leave every analysis uncalibrated, i.e. qualified Metal.)
     pub fn builtin() -> Self {
-        serde_json::from_str(include_str!("apple-m2-pro.json")).expect("built-in cost calibration")
+        serde_json::from_str(include_str!("apple-m2-pro.json")).unwrap_or_else(|e| {
+            eprintln!("mklight: built-in cost calibration unreadable ({e})");
+            Calibration {
+                format: FORMAT,
+                model_version: super::VERSION,
+                device_class: String::new(),
+                measured: Value::Null,
+                cpu_threads: 1,
+                device_open_ms: 0.,
+                analyses: BTreeMap::new(),
+            }
+        })
     }
 
     /// The table to use: `MKLIGHT_COST_CALIBRATION` (a JSON file written by
@@ -188,15 +204,15 @@ mod tests {
         // t = 2 + 0.5·prep + 1e-3·ray, over sizes spanning three decades.
         let points: Vec<_> = [(1., 10.), (4., 1e3), (2., 1e4), (8., 1e5), (3., 1e6)]
             .iter()
-            .map(|&(p, r)| ([1., p, r, 0., 0.], 2. + 0.5 * p + 1e-3 * r))
+            .map(|&(p, r)| ([1., p, r, 0., 0., 0.], 2. + 0.5 * p + 1e-3 * r))
             .collect();
         let f = fit(&points);
         assert!((f.coef[0] - 2.).abs() < 1e-6, "{f:?}");
         assert!((f.coef[1] - 0.5).abs() < 1e-6 && (f.coef[2] - 1e-3).abs() < 1e-9);
-        assert_eq!((f.coef[3], f.coef[4]), (0., 0.));
+        assert_eq!((f.coef[3], f.coef[4], f.coef[5]), (0., 0., 0.));
         assert!(f.rms_log_error < 1e-9);
         // A negative slope in the data is clamped to zero.
-        let falling = [([1., 1., 0., 0., 0.], 10.), ([1., 9., 0., 0., 0.], 5.)];
+        let falling = [([1., 1., 0., 0., 0., 0.], 10.), ([1., 9., 0., 0., 0., 0.], 5.)];
         let f = fit(&falling);
         assert!(f.coef.iter().all(|c| *c >= 0.) && f.coef[1] == 0.);
     }

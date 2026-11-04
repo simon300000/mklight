@@ -200,7 +200,8 @@ struct Online {
     /// aberrations; small edits rarely change it).
     grids: LruCache<(u64, String), f64>,
     /// Host contention: ln(observed / predicted) over every call of a
-    /// backend (CPU, Metal), what other processes cost this one now.
+    /// backend (CPU, Metal), what other processes cost this one, beyond
+    /// the load-average prior of the moment (CPU).
     contention: [Ewma; 2],
     decisions: u64,
     observations: u64,
@@ -420,6 +421,7 @@ impl CostModel {
             .insert((analysis.to_string(), fam), calls.saturating_add(1));
         // CPU: shared intermediates already in the graph cost nothing.
         let mut cpu_f = features;
+        cpu_f[5] = 0.;
         if state.tracer_warm || lattice_warm {
             cpu_f[1] = 0.;
         }
@@ -435,8 +437,8 @@ impl CostModel {
         let mut cpu = cpu_fit.stages(&cpu_f);
         let threads = rayon::current_num_threads().max(1) as f64;
         let scale = (self.table.cpu_threads.max(1) as f64 / threads).clamp(0.25, 4.);
-        for k in 2..5 {
-            cpu[k] *= scale;
+        for c in &mut cpu[2..5] {
+            *c *= scale;
         }
         // Metal: device caches warm for a resident snapshot, cold after an
         // edit; host f64 preparation is shared with the CPU through the graph.
@@ -448,6 +450,10 @@ impl CostModel {
         let mut metal_f = features;
         if state.tracer_warm {
             metal_f[1] = 0.;
+        }
+        if resident {
+            // The content-cached seed table is still on the device.
+            metal_f[5] = 0.;
         }
         let metal = metal_fit.stages(&metal_f);
         // One-time setup (device open, first native use of the analysis),
@@ -615,15 +621,11 @@ impl CostModel {
         let key = (analysis.to_string(), backend, fam, decade as i32);
         let mut e = on.corrections.get(&key).unwrap_or_default();
         let (lo, hi) = CONTENTION[b];
-        let host = (ratio - e.mean).clamp(lo.ln(), hi.ln());
-        let prior = self.contention(&on, b);
+        let prior = self.prior(b);
+        let host = (ratio - e.mean).clamp(lo.ln(), hi.ln()) - prior;
         let c = &mut on.contention[b];
-        if c.n == 0 {
-            c.mean = prior;
-            c.n = 1;
-        }
         c.add(host, ALPHA);
-        let c = c.mean;
+        let c = self.contention(&on, b);
         e.add(
             (ratio - c).clamp(-MAX_CORRECTION.ln(), MAX_CORRECTION.ln()),
             ALPHA,
@@ -631,16 +633,25 @@ impl CostModel {
         on.corrections.insert(key, e);
     }
 
-    /// ln of the current host contention of backend `b` (0 CPU, 1 Metal),
-    /// learned from observed calls. Before the first CPU call it is a
-    /// prior from the load average: √(load per core), at least 1 (other
-    /// runnable threads share the cores the reference's workers need).
+    /// ln of the current host contention of backend `b` (0 CPU, 1 Metal):
+    /// for the CPU a prior from the load average now, √(load per core) and
+    /// at least 1 (other runnable threads share the cores the reference's
+    /// workers need), times what observed calls learned beyond that prior;
+    /// for Metal what observed calls learned. The prior follows the load
+    /// even while the CPU is not chosen, so a stale observation from a
+    /// busier moment does not keep it away.
     fn contention(&self, on: &Online, b: usize) -> f64 {
-        if on.contention[b].n > 0 || b == 1 {
-            return on.contention[b].mean;
+        let (lo, hi) = CONTENTION[b];
+        (self.prior(b) + on.contention[b].mean).clamp(lo.ln(), hi.ln())
+    }
+
+    /// ln of the load-average prior of backend `b`.
+    fn prior(&self, b: usize) -> f64 {
+        if b == 0 {
+            load_per_core().sqrt().max(1.).ln()
+        } else {
+            0.
         }
-        let (lo, hi) = CONTENTION[0];
-        load_per_core().sqrt().clamp(lo.max(1.), hi).ln()
     }
 
     /// The table's identity and the online state, for diagnostics.
@@ -763,10 +774,10 @@ mod tests {
             "spot_diagram".to_string(),
             AnalysisCalibration {
                 // CPU: 1 ms + 1 µs per ray-surface; Metal: 8 ms + 0.1 µs.
-                cpu: Some(fit([1., 0., 1e-3, 0., 0.])),
+                cpu: Some(fit([1., 0., 1e-3, 0., 0., 0.])),
                 cpu_edit: None,
-                metal: Some(fit([8., 0., 1e-4, 0., 0.])),
-                metal_edit: Some(fit([20., 0., 1e-4, 0., 0.])),
+                metal: Some(fit([8., 0., 1e-4, 0., 0., 0.])),
+                metal_edit: Some(fit([20., 0., 1e-4, 0., 0., 0.])),
                 first_use_ms: 30.,
             },
         );

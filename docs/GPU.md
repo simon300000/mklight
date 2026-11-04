@@ -1653,17 +1653,19 @@ calibrated stage-level cost model (`crates/mklight-engine/src/analysis/cost/`;
   | aiming and tracing | rays × (surfaces + aim traces × stop surfaces) | aim traces = 1 + 3.43·d, where d scales with the recorded device aiming iterations of the design family (paraxial aiming: 0) |
   | transform / reduction | samples × log₂ samples (FFT), samples × frequencies (direct sums) | the automatic wave pupil grid is the one an earlier call decided for the design family, else 2·lattice |
   | output bytes | typed buffers | spot points, ray grids, PSF images; zero-copy readback |
+  | device seed table | rows × 37² nodes × aim traces × stop surfaces | Metal only: aimed geometric generations of ≥ 2·37² rays per row build a device table, content-cached while the snapshot is resident (about +0.45 s per edit on the complex lens) |
   | fixed | 1 | each analysis' own measured constant on each backend (plan floor, packing); there is no universal GPU overhead |
-  | device setup | device open (cold provider) + first native use of the analysis in the process | measured by the calibration |
+  | device setup | device open (cold provider) + first native use of the analysis in the process | measured by the calibration; charged in full to the first call of an analysis and design family, then spread over up to 4 calls |
   | fallback risk | transient native failure rate × (native + CPU time) | deterministic failures in the device's failure cache route to the CPU outright |
 
-  One non-negative coefficient set per analysis and backend, plus a separate
-  native set for an edited (non-resident) snapshot, is fitted by relative
-  least squares from complete calls. CPU coefficients are measured with the
-  graph off (cold intermediates); the CPU drops the preparation term when the
-  graph holds the snapshot's tracer, and the ray term of wave analyses when it
-  already built the request's pupil lattices. Native uses the resident set
-  when this snapshot ran natively before, the edit set otherwise.
+  Four non-negative coefficient sets per analysis — CPU and Metal, each on a
+  repeated and on a freshly edited snapshot — are fitted by load-weighted
+  relative least squares from complete calls. CPU coefficients are measured
+  with the graph off (cold intermediates); the CPU drops the preparation term
+  when the graph holds the snapshot's tracer, and the ray term of wave
+  analyses when it already built the request's pupil lattices. Each backend
+  uses its repeated set when this snapshot ran before (natively, for Metal:
+  resident content, including the seed table), the edit set otherwise.
 - *Cache state*: an `auto` request whose result the analysis graph already
   holds is answered before routing (no device, no route), whichever backend
   computed it; its result key is the request content, not the route. Native
@@ -1676,7 +1678,9 @@ calibrated stage-level cost model (`crates/mklight-engine/src/analysis/cost/`;
 - *Online refinement* (on by default; `MKLIGHT_COST_REFINEMENT=0` or
   `CostModel::set_refinement(false)` turns it off): every completed call
   updates (a) a host-contention factor per backend (what other processes cost
-  this one now; CPU 1/3…30×, Metal 1/3…10×) and (b) a residual per analysis,
+  this one now; CPU 1/3…30×, Metal 1/3…10×; the CPU factor is the load-average
+  prior √(load per core) times what observations learned beyond it, so it
+  follows the load even while the CPU is not chosen) and (b) a residual per analysis,
   backend, design family and workload decade (1/3…3×), as exponentially
   weighted means of ln(measured/predicted); recorded device aiming statistics
   update the design family's difficulty and decided pupil grids are
@@ -1687,17 +1691,23 @@ calibrated stage-level cost model (`crates/mklight-engine/src/analysis/cost/`;
   emulation) use qualified Metal.
 
 **Calibration.** `tests/cost_calibration.rs::calibrate` (release, real Metal)
-measures every calibrated analysis at a ladder of workloads on nine designs
-(refracting, reflecting, finite, anamorphic, freeform, diffractive samples and
-an optional local project; nothing local is embedded) — CPU, Metal resident and
-Metal after an edit, interleaved — fits the table and writes it, versioned by
-format, model version, device class and measurement record:
+measures every calibrated analysis at a ladder of two or three workloads on
+nine sample designs (refracting, reflecting, finite, anamorphic, freeform,
+diffractive) and an optional local project (nothing of it is embedded) — the
+CPU and Metal, each repeated on one snapshot and after an edit, interleaved
+so host load hits all four alike — and records the load, device time and the
+decided pupil grid of every rung. The fit keeps a rung's least loaded record
+and weights records by 1/max(1, load per core / 2)², then writes the table,
+versioned by format, model version, device class and measurement record:
 
     MKLIGHT_COST_CALIBRATION_OUT=$PWD/crates/mklight-engine/src/analysis/cost/apple-m2-pro.json \
     cargo test --release -p mklight-engine --test cost_calibration -- --ignored --exact calibrate --nocapture --test-threads=1
 
-`MKLIGHT_COST_CALIBRATION=<file>` loads another table at engine start (format
-and model version must match). `validate` in the same file compares `auto`
+`MKLIGHT_COST_MODES` and `MKLIGHT_COST_DESIGNS` restrict a run (for example
+to re-measure designs that ran on a busy host); `MKLIGHT_COST_REFIT=1` fits one
+or more record files (`MKLIGHT_COST_RECORDS`, comma-separated) without
+measuring. `MKLIGHT_COST_CALIBRATION=<file>` loads another table at engine
+start (format and model version must match). `validate` in the same file compares `auto`
 against both backends on fresh edits and warm repeats.
 
 *Accuracy exclusions*, re-qualified (E1, point 14) with `metal_accuracy` on the
