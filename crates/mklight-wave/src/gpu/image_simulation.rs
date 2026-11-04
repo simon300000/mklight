@@ -97,7 +97,7 @@ pub fn build_psf_grid(
         &ctx.subrange(0., 0.05),
     )?;
     p5_stats(&d.run_info.settings, &mut stats);
-    let mut evidence = vec![d.run_info.clone()];
+    let evidence = vec![d.run_info.clone()];
     let mut warnings = d.run_info.warnings;
     let coordinates: Vec<_> = d.points.iter().map(|p| p.field).collect();
     if d.points
@@ -109,27 +109,31 @@ pub fn build_psf_grid(
     let wls = crate::analysis::wavelengths(t, &Default::default())?;
     let mut irradiance = vec![0.; coordinates.len()];
     let mut axial = 0.;
+    // Relative illumination of the grid nodes is host f64 preparation, the
+    // CPU grid's own rows: the device projected-solid-angle kernel runs the
+    // nested object/aim solves of every pupil node inside one command and
+    // took ≈1.4 s per wavelength on a 29-surface lens (9 nodes × 576 pupil
+    // samples) against ≈0.2 s on the host for all five wavelengths.
+    let clock = std::time::Instant::now();
     for (i, &(wl, weight)) in wls.iter().enumerate() {
-        let (rows, omega, _, run) = mklight_analysis::gpu::illumination_rows(
-            b,
+        let (rows, omega) = mklight_analysis::illumination::illumination_rows(
             t,
             &coordinates,
             wl,
             s.illumination_radial,
             s.illumination_azimuth,
+            &mut warnings,
             &ctx.subrange(
                 0.05 + 0.15 * i as f64 / wls.len() as f64,
                 0.05 + 0.15 * (i + 1) as f64 / wls.len() as f64,
             ),
         )?;
-        p5_stats(&run.settings, &mut stats);
-        warnings.extend(run.warnings.clone());
-        evidence.push(run);
         for (sum, row) in irradiance.iter_mut().zip(rows) {
             *sum += weight * row[0];
         }
         axial += weight * omega;
     }
+    let illumination_seconds = clock.elapsed().as_secs_f64();
     let service = PupilTracer::new(b, t, ctx)?;
     let prepared = d
         .points
@@ -245,6 +249,8 @@ pub fn build_psf_grid(
     let mut run_info =
         super::analysis::info(b, t, timer, "image_psf_grid", s, &stats, warnings.clone());
     run_info.settings["p5_evidence"] = serde_json::to_value(evidence).unwrap();
+    run_info.settings["illumination"] =
+        serde_json::json!({"backend":"cpu_reference","seconds":illumination_seconds});
     Ok(WaveResult {
         value: ResidentPsfGrid {
             mapping,

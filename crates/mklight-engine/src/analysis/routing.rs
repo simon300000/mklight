@@ -487,6 +487,37 @@ mod tests {
         assert_eq!(opened.load(Ordering::SeqCst), 1);
     }
 
+    /// An explicit GPU request for an analysis without a GPU path falls back
+    /// to the reference from the provider's catalogue, without device setup.
+    #[test]
+    fn explicit_requests_without_a_gpu_path_open_no_device() {
+        let opened = Arc::new(AtomicUsize::new(0));
+        let e = engine(&opened);
+        let s = e
+            .session_from_project(Project::new(samples::cooke_triplet()))
+            .unwrap();
+        let mut req = AnalysisRequest::new("seidel", Value::Null);
+        req.backend = Some(Backend::Gpu("probe".into()));
+        req.allow_backend_fallback = true;
+        let r = s.run_analysis(&req, &JobContext::new()).unwrap();
+        assert_eq!(r.run_info.backend, "cpu_reference");
+        assert!(
+            r.run_info
+                .warnings
+                .iter()
+                .any(|w| w.contains("it does not implement 'seidel'"))
+        );
+        req.allow_backend_fallback = false;
+        assert!(s.run_analysis(&req, &JobContext::new()).is_err());
+        assert_eq!(opened.load(Ordering::SeqCst), 0);
+        // A GPU path opens the device.
+        let mut req = AnalysisRequest::new("spot_diagram", Value::Null);
+        req.backend = Some(Backend::Gpu("probe".into()));
+        let r = s.run_analysis(&req, &JobContext::new()).unwrap();
+        assert_eq!(r.run_info.backend, "gpu:probe");
+        assert_eq!(opened.load(Ordering::SeqCst), 1);
+    }
+
     /// Without GPU providers every `auto` route is the reference, decided
     /// before any device; with the calibrated family the hint decides
     /// without opening anything.
