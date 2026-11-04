@@ -1428,7 +1428,10 @@ stop hits, finite differences, 2×2 solves and updates, the reference's
 continuation schedule and configured cap/tolerance (normally 1e-10 relative
 to stop radius). A rounded f32 stop hit cannot drive that solve. Compact
 only unresolved rays for optional CPU f64 polish; scatter them back at their
-original indices and record counts/reasons. A failed aim remains a failed
+original indices and record counts/reasons. (The CPU reference takes its
+fresh Jacobians from the analytic differential tracer since D2, CONVENTIONS
+§7; the device stencil is unchanged, and the host chief rows it is seeded
+with now carry analytic chief Jacobians.) A failed aim remains a failed
 aim; never silently accept an inaccurate ray or polish the whole grid by
 default.
 
@@ -1561,7 +1564,7 @@ unchecked). Twelve sample/analysis cases fail the former gates:
 | `stray_light` | achromat, cooke_triplet, double_gauss, petzval_asphere, relay, anamorphic | Monte Carlo event counts and sink energies (largest: cooke_triplet centroid 0.032 mm, absorbed-by-sink 5.0e-3 against a 4.9e-4 margin) |
 | `ghost_irradiance` | singlet, achromat, newtonian, q_con | `rays_traced` counts at aperture edges; values within 1e-11 |
 | `footprint` | newtonian | one overlay outline vertex count |
-| `field_curvature_distortion` | petzval_asphere | close-ray tangential focus 1.16e-5 mm against a 6.7e-6 margin |
+| `field_curvature_distortion` | petzval_asphere | close-ray tangential focus 1.16e-5 mm against a 6.7e-6 margin (since D2 the cross-check column is the host f64 differential pencil: 3.8e-8, passing; the native Coddington column was always within budget) |
 
 P11 also counted relay `ghost_paths` (a 26.5 mm focus difference). That was a
 tie, not a Metal error: the symmetric relay gives R3·R1 and R7·R5 the same
@@ -1669,7 +1672,7 @@ Threshold bases:
 | `psf`, `mtf`, `line_spread`, `diffraction_encircled_energy`, `through_focus_mtf` | — | always | known native failure | complex lens Metal DF 1.5e2–1.5e6× its f64 budget, and 2.2–8.6× slower |
 | `mtf_vs_field` | — | always | known native failure | complex lens: unresolved in-pupil aims and driver interactivity failures fell back to f64, 12× slower (since B1 the unaimable rays are vignetted as in the reference and the run is native; re-qualify with point 12) |
 | `chief_ray_angle`, `pupil_aberration`, `relative_illumination_map`, `grid_distortion` | — | always | known native failure | complex lens: 20–200 mask/discrete mismatches against f64, and 24–76× slower |
-| `field_curvature_distortion` | — | always | known native failure | complex lens close-ray focus 4.4× its budget; P11 petzval_asphere residual gap |
+| `field_curvature_distortion` | — | always | known native failure | complex lens device close-ray focus was 4.4× its budget; since D2 that column is the host f64 differential pencil (0 error) and the native Coddington column is 5e-8 on the lens, so the route can be re-qualified (the host chief preparation dominates the small job anyway) |
 | `stray_light` | — | always | known native failure | complex lens sink energies 4.8e4× their budget; 6/16 P11 samples |
 | `optimize`, `merit_evaluation`, `tolerance`, `glass_substitution` | — | always | candidates | complex lens CPU 4–52× (merit 23 / 96 ms, optimise 286 / 5819 ms, tolerance 78 / 3401 ms, glass 763 / 31715 ms with driver errors); P11 16/0 |
 

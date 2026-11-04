@@ -7,7 +7,9 @@ use crate::{
     },
 };
 use mklight_core::surface_math::{Symmetry, system_symmetry};
-use mklight_gpu::geometry::{self, CloseFocus, Coddington, FieldData};
+use mklight_gpu::geometry::{self, Coddington, FieldData};
+use rayon::prelude::*;
+use std::sync::atomic::AtomicUsize;
 impl Geometry<'_> {
     /// Resident Coddington output for P6/P8; signed ray distances and dz.
     pub fn coddington(&self, p: &mut ResidentPlan, hits: ResidentHits) -> MkResult<BufferId> {
@@ -198,29 +200,25 @@ pub fn field_curvature_job(
     )?;
     let cod = geo.coddington(&mut p, g.hits.clone())?;
     let source = geo.image_source(&mut p, g.hits)?;
-    let h = s.close_ray_step;
-    let close = geo.append_grid(
-        &mut p,
-        &fields,
-        &wls,
-        &[[0.0, 0.0], [0.0, h], [0.0, -h], [h, 0.0], [-h, 0.0]],
-        t.aiming(),
-        t.system().image_index(),
-        false,
-        false,
-        ctx,
-    )?;
-    let cross = p.scratch(BufferDesc::new(ElementType::DoubleFloat, [n, 3]));
-    let status = p.scratch(BufferDesc::new(ElementType::U32, [n]));
-    p.operations
-        .push(ResidentOp::Geometry(geometry::Request::CloseFocus(
-            CloseFocus {
-                hits: close.hits,
-                output: cross,
-                status,
-            },
-        )));
-    p.outputs = vec![cod, cross, source];
+    p.outputs = vec![cod, source];
+    // The cross-check column is the host f64 differential pencil (the
+    // close rays' limit, `crate::curvature`): device close rays differenced
+    // in double-float lost significance against the f64 reference.
+    let close_fallbacks = AtomicUsize::new(0);
+    let fb = &close_fallbacks;
+    let cross: Vec<[f64; 2]> = fields
+        .par_iter()
+        .flat_map_iter(|&fp| {
+            let prepared = t.prepare_field(fp).ok();
+            wls.iter().map(move |&w| {
+                prepared
+                    .as_ref()
+                    .and_then(|f| cross_check_focus(t, f, w, s.close_ray_step, fb))
+                    .map_or([f64::NAN; 2], |a| a.axial().into())
+            })
+        })
+        .collect();
+    debug_assert_eq!(cross.len(), n);
     let r = geo.run(p, &ctx.subrange(0.0, 0.95))?;
     let views: Vec<_> = r
         .outputs
@@ -243,8 +241,8 @@ pub fn field_curvature_job(
             ctx.check()?;
             let i = fi * wls.len() + wi;
             let a = &v[0][3 * i..];
-            let c = &v[1][3 * i..];
-            let im = &v[2][5 * i..];
+            let c = cross[i];
+            let im = &v[1][5 * i..];
             let axis = sweep.components[fi];
             let mut real = im[axis].to_f64();
             let mut q = im[2 + axis].to_f64();
@@ -290,8 +288,8 @@ pub fn field_curvature_job(
             let row = [
                 a[0].to_f64() * a[2].to_f64(),
                 a[1].to_f64() * a[2].to_f64(),
-                c[0].to_f64() * c[2].to_f64(),
-                c[1].to_f64() * c[2].to_f64(),
+                c[0],
+                c[1],
                 real,
                 paraxial,
                 d,
@@ -326,9 +324,18 @@ pub fn field_curvature_job(
             "{fallback_count} singular distortion points used the f64 reference"
         ));
     }
+    let close_fallbacks = close_fallbacks.into_inner();
+    if close_fallbacks > 0 {
+        warnings.push(format!(
+            "{close_fallbacks} field sample(s) used finite-difference close rays (differential \
+             tangent undefined)"
+        ));
+    }
     let mut run = stamp(r.run_info, "field_curvature_distortion", s, warnings);
     run.settings["adapter_fallbacks"] =
         serde_json::json!({"stage":"singular_distortion","count":fallback_count});
+    run.settings["host_stages"] =
+        serde_json::json!({"close_rays":"f64 differential pencil","fd_fallbacks":close_fallbacks});
     ctx.report(1.0, "field curvature");
     Ok(FieldCurvatureResult {
         field_coordinates: sweep.coordinates,

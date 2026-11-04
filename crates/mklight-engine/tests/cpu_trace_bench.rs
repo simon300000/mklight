@@ -82,6 +82,10 @@ fn cpu_trace_throughput() {
     for (a, b) in full.iter().zip(&many) {
         assert_eq!(format!("{a:?}"), format!("{b:?}"), "generate_many differs");
     }
+    let mut aim_stats = mklight_trace::AimStats::default();
+    for c in requests.chunks(chunk) {
+        tracer.generate_many_stats(c, &mut aim_stats);
+    }
     let starts: Vec<_> = full.iter().map(|g| g.ok()).collect();
     let iterations: u64 = starts
         .iter()
@@ -108,6 +112,34 @@ fn cpu_trace_throughput() {
         .filter_map(|(i, g)| g.map(|g| (g.ray, wls[grid.split(i).1])))
         .unzip();
     let (t_packet, packed) = best(repeats, || trace_rays(&sys, &gen_starts, &gen_wls, &opts));
+    // Jacobian trace cost breakdown (aiming): plain packet trace to the
+    // stop, the same with records, and the differentiation pass alone.
+    let stop_opts = mklight_trace::TraceOptions::unclipped().to_surface(sys.stop);
+    let (t_stop, _) = best(repeats, || {
+        trace_rays(&sys, &gen_starts, &gen_wls, &stop_opts)
+    });
+    let mut records: Vec<Vec<mklight_trace::SurfaceRecord>> =
+        vec![Vec::with_capacity(sys.stop + 1); gen_starts.len()];
+    let (t_stop_rec, stop_hits) = best(repeats, || {
+        mklight_trace::trace_rays_recorded(&sys, &gen_starts, &gen_wls, &stop_opts, &mut records)
+    });
+    let tangent = mklight_trace::RayTangent {
+        dpos: [mklight_core::Vec3::X, mklight_core::Vec3::Y],
+        ddir: [mklight_core::Vec3::ZERO; 2],
+    };
+    let plan = tracer.tangent_plan();
+    let (t_diff, n_diff) = best(repeats, || {
+        stop_hits
+            .iter()
+            .zip(&records)
+            .zip(&gen_wls)
+            .filter(|((r, _), _)| r.status.is_ok())
+            .filter(|((r, rec), w)| {
+                plan.differentiate(&sys, **w, &tangent, rec, r.surface)
+                    .is_ok()
+            })
+            .count()
+    });
     let scalar: Vec<_> = traced.iter().flatten().copied().collect();
     assert_eq!(packed.len(), scalar.len());
     for (a, b) in packed.iter().zip(&scalar) {
@@ -169,6 +201,18 @@ fn cpu_trace_throughput() {
         us(t_gen_many, n)
     );
     println!(
+        "  aim work: {:.3} it/ray, {:.3} traces/ray ({} plain + {} with Jacobian), \
+         {} fd fallbacks, {} continued, {} failed of {} rays",
+        aim_stats.mean_iterations(),
+        aim_stats.mean_traces(),
+        aim_stats.traces,
+        aim_stats.jacobian_traces,
+        aim_stats.fd_fallbacks,
+        aim_stats.continued,
+        aim_stats.failed,
+        aim_stats.rays
+    );
+    println!(
         "  trace packet ({PACKET:2})       {:9.3} ms  {:7.3} us/ray  {:6.1} ns/surface",
         1e3 * t_packet,
         us(t_packet, generated),
@@ -191,6 +235,13 @@ fn cpu_trace_throughput() {
         1e3 * t_par,
         us(t_par, n),
         n as f64 / t_par / 1e6
+    );
+    println!(
+        "  stop trace: packet {:6.1} ns/surface, with records {:6.1} ns/surface, \
+         differentiate {:6.1} ns/surface ({n_diff} tangents)",
+        1e3 * us(t_stop, generated) / sys.stop as f64,
+        1e3 * us(t_stop_rec, generated) / sys.stop as f64,
+        1e3 * us(t_diff, generated) / sys.stop as f64,
     );
     println!("  checksum {:.17e}", checksum);
 }

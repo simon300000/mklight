@@ -201,6 +201,29 @@ pub fn transfer_into(sys: &ResolvedSystem, i: usize, ray: Ray) -> Ray {
     }
 }
 
+/// The rotation part of [`transfer_into`]: a direction, or the derivative of
+/// a point, from surface `i − 1`'s frame (the starting frame when `i == 1`)
+/// into surface `i`'s frame.
+#[inline]
+pub fn transfer_vector(sys: &ResolvedSystem, i: usize, v: Vec3) -> Vec3 {
+    debug_assert!(i >= 1);
+    if i == 1 && sys.object_at_infinity {
+        let f = &sys.surfaces[1].frame;
+        if f.rot.is_identity() && f.origin == Vec3::ZERO {
+            return v;
+        }
+        return f.to_local_dir(v);
+    }
+    let prev = &sys.surfaces[i - 1];
+    if prev.to_next_is_axial {
+        return v;
+    }
+    match &prev.to_next {
+        Some(f) => f.to_local_dir(v),
+        None => v,
+    }
+}
+
 /// The starting frame expressed in global coordinates: the object surface's
 /// frame for a finite object, the identity (entrance frame) at infinity.
 /// Only ray *generation* uses it; the trace itself never does.
@@ -383,10 +406,17 @@ fn step(
             normal: hit.normal,
             cos_incidence: cos_i,
             opl: w.opl.value(),
-            transmittance: (-w.absorb).exp(),
+            transmittance: transmittance(w.absorb),
         });
     }
     Ok(())
+}
+
+/// `exp(−Σ α·t)`, skipping the call for the common absorption-free case
+/// (`exp(−0) = 1` exactly, so the records are unchanged).
+#[inline]
+fn transmittance(absorb: f64) -> f64 {
+    if absorb == 0.0 { 1.0 } else { (-absorb).exp() }
 }
 
 /// The last surface a trace with `opts` reaches.
@@ -811,7 +841,7 @@ fn trace_packets(
                                 normal: Vec3::new(nx[l], ny[l], nz[l]),
                                 cos_incidence: cos[l],
                                 opl: w.opl.value(),
-                                transmittance: (-w.absorb).exp(),
+                                transmittance: transmittance(w.absorb),
                             });
                         }
                         lanes.set(l, &w);

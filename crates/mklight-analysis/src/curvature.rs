@@ -57,21 +57,27 @@
 //! `Δz = t · d_z`, i.e. the axial focus shift from the image surface
 //! (positive along local `+z`).
 //!
-//! # Close-ray cross-check
+//! # Differential cross-check
 //!
-//! Two pairs of rays at pupil offsets `(0, ±h)` and `(±h, 0)` from the chief
-//! are traced to the image. Each ray is moved onto the plane through the
-//! chief image point `I` normal to the chief direction `c`, giving a point
-//! `Q` and a transverse slope `T = d/(d·c) − c`. With `X` and `T` the 2×2
-//! matrices of the pair differences `ΔQ`, `ΔT` (columns: the `y` pair and
-//! the `x` pair; rows: the transverse basis), the pencil at distance `s`
-//! along `c` is `X + sT`. It degenerates into a focal line where
-//! `det(X + sT) = 0`, i.e. at the eigenvalues of the focal-distance matrix
-//! `F = −X T⁻¹ = C⁻¹`. `F` is symmetrised and decomposed like `C` above (for
-//! afocal pencils, `C = −T X⁻¹` is used instead), and the foci are labelled
-//! by the same rule. Central differences give an error of `O(h²)`. Both
-//! values are reported, and [`field_curvature`] adds a warning where they
-//! disagree by more than `10⁻³ (1 + |Δz|)` mm.
+//! The same foci follow from the **tangent of the real trace**: the chief
+//! ray's starting ray depends on the aim parameters `a` (pupil coordinates
+//! with aiming off, or the entrance-pupil aim point of real aiming), and
+//! [`mklight_trace::diff`] carries `(∂p/∂a, ∂d/∂a)` analytically through
+//! every surface to the image. Projected on the transverse basis `U` of the
+//! chief direction `c`, `X = Uᵀ ∂p/∂a` and `T = Uᵀ ∂d/∂a` are the pencil
+//! matrices of the rays `a ↦ ray(a)` (any parametrisation gives the same
+//! foci: `F = −X T⁻¹` is invariant under `X → XM`, `T → TM`), and the focal
+//! lines follow as above. This is the limit of the close-ray construction
+//! (two pairs of rays at pupil offsets `(0, ±h)`, `(±h, 0)`, each moved onto
+//! the plane through the chief image point normal to `c`, differenced
+//! centrally) as `h → 0`, without its `O(h²)` truncation and without the
+//! cancellation of differencing nearly equal rays. Where the tangent cannot
+//! be formed (grazing incidence, near total internal reflection, an
+//! undefined surface curvature at the hit) the close rays with the
+//! `close_ray_step` are traced instead, and the result reports how many
+//! field samples fell back. Both values are reported, and
+//! [`field_curvature`] adds a warning where they disagree by more than
+//! `10⁻³ (1 + |Δz|)` mm.
 //!
 //! # Distortion
 //!
@@ -94,10 +100,11 @@ use mklight_core::job::RunTimer;
 use mklight_core::model::surface::DiffractivePhase;
 use mklight_core::surface_math::{Symmetry, system_symmetry};
 use mklight_core::{Interaction, JobContext, MkResult, RunInfo, SurfaceShape, Vec3};
-use mklight_trace::trace::transfer_into;
+use mklight_trace::trace::{trace_ray, transfer_into};
 use mklight_trace::{FieldPoint, ObjectSource, PreparedField, Ray, SequentialTracer, TraceOptions};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::util::{
     FieldAxes, WavelengthSelection, check_count, check_finite, field_scale, field_sweep,
@@ -372,9 +379,64 @@ fn pencil_foci(x: &m2::M, t: &m2::M, u: &[Vec3; 2], e_t: Vec3) -> Option<(f64, f
     }
 }
 
+/// Differential foci of `field` at `wl` from the analytic tangent of the
+/// chief ray with respect to the aim parameters (module docs). `None` if
+/// the chief ray fails, the tangent cannot be formed at some surface, or
+/// the pencil is degenerate.
+pub fn differential_focus(
+    tracer: &SequentialTracer,
+    field: &PreparedField,
+    wl: usize,
+) -> Option<AstigmaticFocus> {
+    let sys = tracer.system();
+    let g = tracer.generate(field, wl, 0.0, 0.0).ok()?;
+    let (ray, tangent) = tracer.start_tangent(&field.source, g.aim)?;
+    let mut rec = Vec::with_capacity(sys.num_surfaces());
+    let r = trace_ray(sys, &ray, wl, &TraceOptions::unclipped(), Some(&mut rec));
+    if !r.status.is_ok() {
+        return None;
+    }
+    let t = tracer
+        .tangent_plan()
+        .differentiate(sys, wl, &tangent, &rec, r.surface)
+        .ok()?;
+    let cd = r.ray.dir;
+    let e_t = meridional(cd)?;
+    let u = [e_t, cd.cross(e_t)];
+    // At the chief ray the projected displacement and slope of a pencil
+    // ray are the transverse parts of ∂p/∂a and ∂d/∂a (module docs).
+    let m = |v: &[Vec3; 2]| {
+        [
+            [u[0].dot(v[0]), u[0].dot(v[1])],
+            [u[1].dot(v[0]), u[1].dot(v[1])],
+        ]
+    };
+    let (ft, fs) = pencil_foci(&m(&t.dpos), &m(&t.ddir), &u, e_t)?;
+    Some(AstigmaticFocus {
+        tangential: ft,
+        sagittal: fs,
+        dir_z: cd.z,
+    })
+}
+
+/// [`differential_focus`], or the close rays where the tangent is
+/// undefined (counted in `fallbacks`).
+pub fn cross_check_focus(
+    tracer: &SequentialTracer,
+    field: &PreparedField,
+    wl: usize,
+    h: f64,
+    fallbacks: &AtomicUsize,
+) -> Option<AstigmaticFocus> {
+    differential_focus(tracer, field, wl).or_else(|| {
+        fallbacks.fetch_add(1, Ordering::Relaxed);
+        close_ray_focus(tracer, field, wl, h)
+    })
+}
+
 /// Close-ray (finite-difference) foci of `field` at `wl` with pupil step `h`
-/// (module docs). `None` if any of the five rays fails or the pencil is
-/// degenerate.
+/// (module docs; the fallback of [`cross_check_focus`]). `None` if any of
+/// the five rays fails or the pencil is degenerate.
 pub fn close_ray_focus(
     tracer: &SequentialTracer,
     field: &PreparedField,
@@ -428,7 +490,8 @@ pub struct FieldCurvatureSettings {
     /// Field axes of the sweep (ANALYSIS §2.2).
     pub field_axes: FieldAxes,
     pub wavelengths: WavelengthSelection,
-    /// Normalised pupil step of the close-ray cross-check.
+    /// Normalised pupil step of the close-ray fallback of the differential
+    /// cross-check.
     pub close_ray_step: f64,
 }
 
@@ -455,7 +518,8 @@ pub struct FieldCurvatureCurve {
     /// Sagittal axial focus shift (mm, Coddington).
     #[serde(with = "nf::vec")]
     pub sagittal: Vec<f64>,
-    /// Close-ray cross-checks of `tangential` / `sagittal`.
+    /// Differential cross-checks of `tangential` / `sagittal` (the close
+    /// rays' limit; module docs).
     #[serde(with = "nf::vec")]
     pub tangential_close_rays: Vec<f64>,
     #[serde(with = "nf::vec")]
@@ -544,6 +608,7 @@ pub fn field_curvature_job(
     }
     ctx.check()?;
     let n0 = |w: usize| sys.n_object[w];
+    let fallbacks = AtomicUsize::new(0);
     let mut curves = Vec::with_capacity(wls.len());
     for (k, &w) in wls.iter().enumerate() {
         let (fx, fy) = (first_order_x(tracer, w)?, tracer.paraxial().at(w));
@@ -559,7 +624,9 @@ pub fn field_curvature_job(
                 if let Some(a) = coddington_focus(tracer, f, w) {
                     (row[0], row[1]) = a.axial();
                 }
-                if let Some(a) = close_ray_focus(tracer, f, w, settings.close_ray_step) {
+                if let Some(a) =
+                    cross_check_focus(tracer, f, w, settings.close_ray_step, &fallbacks)
+                {
                     (row[2], row[3]) = a.axial();
                 }
                 let c = tracer.chief(f, w);
@@ -620,6 +687,13 @@ pub fn field_curvature_job(
         });
         ctx.check()?;
         ctx.report((k + 1) as f64 / wls.len() as f64, "field curvature");
+    }
+    let fallbacks = fallbacks.into_inner();
+    if fallbacks > 0 {
+        warnings.push(format!(
+            "{fallbacks} field sample(s) used finite-difference close rays (differential \
+             tangent undefined)"
+        ));
     }
     let scale = field_scale(tracer);
     Ok(FieldCurvatureResult {

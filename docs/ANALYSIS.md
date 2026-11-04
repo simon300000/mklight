@@ -49,7 +49,7 @@ first-order report. Read `docs/CONVENTIONS.md` first; the module docs in
 |---|---|---|
 | `spot_diagram` | `spot` | pupil pattern traced per field × wavelength; centroid, RMS/GEO about centroid and chief, weighted polychromatic stats, vignetted fraction, Airy radius `1.22 λ N_w`, through-focus by transfer along the rays |
 | `ray_fan`, `opd_fan` | `fans` | tangential `(0, P_y)` and sagittal `(P_x, 0)` fans; `εy`/`εx` about the primary (or same-wavelength) chief; OPD from the exit-pupil reference sphere of `mklight-trace` |
-| `field_curvature` | `curvature` | generalised Coddington (2×2 pencil matrices) along the real chief ray, labelled by the image frame, cross-checked by close rays; distortion vs the paraxial chief height, `f·tan θ`, `f·θ` |
+| `field_curvature` | `curvature` | generalised Coddington (2×2 pencil matrices) along the real chief ray, labelled by the image frame, cross-checked by the differential pencil of the real trace (analytic tangent, `mklight_trace::diff`); distortion vs the paraxial chief height, `f·tan θ`, `f·θ` |
 | `grid_distortion` | `curvature` | chief rays of a square field grid vs their paraxial image points |
 | `seidel` | `seidel` | per-surface `S_I…S_V`, `C_L`, `C_T` from the paraxial marginal and chief rays (aspheric terms included), Petzval sum and radius, `W040…W311`, third-order transverse aberration |
 | `longitudinal_aberration` | `seidel` | on-axis zonal rays: crossing with the chief ray vs the primary paraxial focus |
@@ -116,8 +116,8 @@ each surface's plane of incidence. On a mirror tilted about `y`, the
 mirror's in-plane focus `(R/2) cos I` is the sagittal one.
 
 The cone vertex with a nonzero r¹ coefficient has no Hessian: its differential
-focus is undefined (`null`); nearby real rays remain usable. An r³ departure
-has a Hessian but only O(h) convergence of the vertex close-ray check.
+focus is undefined (`null`), and the cross-check there falls back to close
+rays; nearby real rays remain usable.
 
 `field_axes` selects `auto`, `x`, `y` or `both` for field curvature,
 lateral colour and relative illumination. Auto keeps the y sweep for
@@ -135,12 +135,24 @@ buffer shape but mark cells beyond the design's normalised radial domain
 their image coordinates. Those cells are not traced or warned about;
 interior and boundary cells keep the same projected-solid-angle integral.
 
-The close-ray cross-check traces pairs at pupil offsets `(0, ±h)` and
-`(±h, 0)` and finds where the pencil `X + sT` of the pair differences
-degenerates (`det = 0`, the eigenvalues of `−X T⁻¹`), labelled by the same
-rule. The two agree to about 10⁻⁶ mm on every sample and on tilted mirrors.
-`field_curvature` warns where they differ by more than `10⁻³(1 + |Δz|)` mm.
-The reported curve is the axial (`z`) focus shift from the image surface.
+The cross-check (`*_close_rays` columns) is the **differential pencil of
+the real trace**: the chief ray's tangent with respect to its aim
+parameters, carried analytically through every surface by
+`mklight_trace::diff` (implicit-function derivative of each intersection,
+derivative of the normal from the conic gradient or the sag Hessian,
+differentiated Snell/reflection/diffraction/ideal-lens laws). Projected on
+the transverse basis of the chief direction it gives the pencil matrices
+`X`, `T`, and the foci follow as above (`F = −X T⁻¹` is invariant under the
+parametrisation). It is the `h → 0` limit of the former close-ray pairs at
+pupil offsets `(0, ±h)`, `(±h, 0)`, without their `O(h²)` truncation and
+their cancellation (the two methods now agree to about 10⁻¹² mm on every
+sample, against 10⁻⁶ mm for close rays with `h = 10⁻³`; on Metal the
+double-float close rays lost up to 10⁻⁴ mm). Where the tangent cannot be
+formed (grazing incidence `|N·d| < 10⁻⁹`, near total internal reflection,
+an undefined Hessian) the close rays with `close_ray_step` are traced
+instead and a warning counts the samples. `field_curvature` warns where the
+two foci differ by more than `10⁻³(1 + |Δz|)` mm. The reported curve is
+the axial (`z`) focus shift from the image surface.
 
 ### 2.3 Seidel conventions
 
@@ -311,7 +323,7 @@ and conventions:
 
 | test file | what it pins |
 |---|---|
-| `tests/curvature.rs` | Coddington = close rays (≤10⁻⁵ mm rel.) on every sample, field and wavelength; concentric mirror focal sphere `Δz = −(R/2)(1 − cos θ)` to 10⁻⁹; ideal lens flat and distortion-free, `f·θ` distortion `100(tan θ/θ − 1)`; mirrors tilted about `y` and about `x`: foci `(R/2)cos I` and `R/(2 cos I)` labelled by the image frame (10⁻⁹); compound-tilted mirror: both methods find the two focal lines and label them alike |
+| `tests/curvature.rs` | Coddington = differential pencil (≤10⁻⁹ rel.) and = close rays (≤10⁻⁵ rel.) on every sample, field and wavelength, with the close-ray error plateau against the pencil; concentric mirror focal sphere `Δz = −(R/2)(1 − cos θ)` to 10⁻⁹; ideal lens flat and distortion-free, `f·θ` distortion `100(tan θ/θ − 1)`; mirrors tilted about `y` and about `x`: foci `(R/2)cos I` and `R/(2 cos I)` labelled by the image frame (10⁻⁹); compound-tilted mirror: both methods find the two focal lines and label them alike |
 | `tests/seidel.rs` | spherical mirror closed forms (stop at mirror / at centre, paraboloid `S_I = 0`, `W040 = y⁴/4R³`, Petzval sum `−2/R`, radius `−R/2`); Petzval radius vs the Coddington and close-ray foci of a concentric mirror and vs the third-order foci `(3Δz_s − Δz_t)/2` of a singlet; two separated lenses `P = ΣK_i/n_i`; thin plano-convex lens vs thin-lens `S_I…S_V` (coma with its sign, independent `H`); `S_IV = H²P` and the `S_V` form on every sample; Seidel vs real rays (spherical, coma sign and size, astigmatism, sagittal coma, distortion) on the Cooke triplet and singlet at reduced aperture; `W040` vs OPD; exact mirror LSA `(R/2)(sec I − 1)`; thin-lens colour `−f/V`, `C_L`, `C_T` vs real colour |
 | `tests/illumination.rs` | RI of an ideal lens = exact disk view factor (10⁻⁸) and ≈ `cos⁴θ`; real singlet with the stop at the lens = `cos⁴θ` × distortion Jacobian (10⁻³); exact object-side integral on the singlet, triplet and double Gauss (10⁻⁸) and the chief-ray étendue form (first order); RI < 1 and falling on the achromat and finite relay; vignetting by a field aperture = disk-overlap area; footprints |
 | `tests/spot_energy.rs` | defocused ideal lens: RMS/GEO exactly the scaled pupil statistics, EE vs exact grid counts and `(r/R)²`, geometric MTF vs `2J₁(x)/x`; best focus recovers a known defocus and equals the retraced spot; paraboloid on-axis spot ≈ 0; polychromatic weighting; vignetted fraction; fans vs direct traces and symmetry; seeds; cancellation and progress; JSON round trips with NaN; curved-image defocus warnings; batch reductions of an externally traced batch equal the traced analyses (and record the backend); best focus skips chief-less fields for the chief reference and warns at range edges and on non-convergence |
@@ -517,7 +529,7 @@ the free function includes that preparation in each call.
 | `geometric_mtf_job` | Double-float turn reduction, weighted complex characteristic functions and P3 fixed reductions; frequency tiles bound scratch storage |
 | `best_focus_job` | Trace once; one two-pass reduction of centred position/slope products gives each field's exact defocus quadratic, which brackets and drives the host Brent search and the through-focus curve; the optimum is re-reduced two-pass, where the quadratic form could cancel |
 | `field_map_job`, `relative_illumination_job`, `illumination_rows` | Aiming-off pupil probes; real-aimed CRA against the image sag normal; the nested image-point RI solve and implicit direction Jacobian of §2.4, followed by P3 quadrature reductions |
-| `field_curvature_job`, `grid_distortion_job` | Resident chief/source tables, double-float Coddington pencils and independent close-ray pencils; host packs scalar first-order labels and distortion columns |
+| `field_curvature_job`, `grid_distortion_job` | Resident chief/source tables and double-float Coddington pencils; the cross-check column is the host f64 differential pencil (device close rays differenced in double-float failed the f64 budget; `run_info.settings.host_stages`); host packs scalar first-order labels and distortion columns |
 | `longitudinal_aberration_job`, `lateral_colour_job` | Zonal chief crossings and chief-relative spectral offsets; small paraxial reference labels remain host work |
 | `semi_diameters_job`, `footprint_job`, `footprint_overlay_job`, `layout_job` | P1 all-surface records, device radii/extrema and global projection, sag/gradient samples and meshes; host assembles topology, hulls, labels and final result arrays |
 
