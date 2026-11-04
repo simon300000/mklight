@@ -15,6 +15,10 @@ pub struct OverlaySet {
     pub points: [usize; 2],
     pub outline: [usize; 2],
 }
+/// Turn angle (radians) below which three hull points count as collinear:
+/// far above f64 and double-float rounding of local hit coordinates, far
+/// below any optical tolerance (1e-9 of a 10 mm chord is 1e-8 mm).
+const COLLINEAR: f64 = 1e-9;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct FootprintOverlay {
     pub sets: Vec<OverlaySet>,
@@ -23,7 +27,12 @@ pub struct FootprintOverlay {
     pub run_info: RunInfo,
 }
 /// Monotone-chain hull, counterclockwise and unclosed. Collinear interior
-/// points are removed. Fewer than three hits yield a point or a segment.
+/// points are removed, including points collinear only to rounding (a turn
+/// of at most [`COLLINEAR`] radians), so the outline of a pupil grid row
+/// does not depend on the last bits of its hits: the hull keeps each
+/// vertex's sag, and an interior row point kept by rounding would bend the
+/// outline by the sag's curvature along the row. Fewer than three hits
+/// yield a point or a segment.
 pub fn convex_hull(points: &[Vec3]) -> Vec<Vec3> {
     let mut p = points.to_vec();
     p.sort_by(|a, b| a.x.total_cmp(&b.x).then(a.y.total_cmp(&b.y)));
@@ -31,17 +40,21 @@ pub fn convex_hull(points: &[Vec3]) -> Vec<Vec3> {
     if p.len() < 3 {
         return p;
     }
-    let cross = |a: Vec3, b: Vec3, c: Vec3| (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+    // Strictly convex turn a → b → c (beyond rounding).
+    let convex = |a: Vec3, b: Vec3, c: Vec3| {
+        let (u, v) = ((b.x - a.x, b.y - a.y), (c.x - a.x, c.y - a.y));
+        u.0 * v.1 - u.1 * v.0 > COLLINEAR * u.0.hypot(u.1) * v.0.hypot(v.1)
+    };
     let mut lower = Vec::new();
     let mut upper = Vec::new();
     for &q in &p {
-        while lower.len() >= 2 && cross(lower[lower.len() - 2], lower[lower.len() - 1], q) <= 0.0 {
+        while lower.len() >= 2 && !convex(lower[lower.len() - 2], lower[lower.len() - 1], q) {
             lower.pop();
         }
         lower.push(q);
     }
     for &q in p.iter().rev() {
-        while upper.len() >= 2 && cross(upper[upper.len() - 2], upper[upper.len() - 1], q) <= 0.0 {
+        while upper.len() >= 2 && !convex(upper[upper.len() - 2], upper[upper.len() - 1], q) {
             upper.pop();
         }
         upper.push(q);
@@ -132,6 +145,42 @@ mod tests {
             .map(|i| hull[i].x * hull[(i + 1) % 4].y - hull[i].y * hull[(i + 1) % 4].x)
             .sum();
         assert!((area - 2.0).abs() < 1e-14);
+    }
+    /// A grid row collinear only to rounding (as hits recomputed through
+    /// another frame are) gives the same outline as the exact row: the
+    /// outline does not depend on the last bits of the hits.
+    #[test]
+    fn hull_drops_points_collinear_to_rounding() {
+        let row = |noise: f64| {
+            let mut p: Vec<Vec3> = (0..=8)
+                .flat_map(|i| {
+                    let x = -4.0 + i as f64;
+                    // Odd hits a few ulps above or below the row.
+                    let e = if i % 2 == 1 {
+                        noise * (i as f64 - 4.0)
+                    } else {
+                        0.0
+                    };
+                    [Vec3::new(x, -3.0 + e, x * x), Vec3::new(x, 3.0 - e, x * x)]
+                })
+                .collect();
+            p.push(Vec3::new(0.0, 0.0, 0.0));
+            convex_hull(&p)
+        };
+        let exact = row(0.0);
+        assert_eq!(exact.len(), 4);
+        for noise in [4e-16, -4e-16, 3e-15, -3e-15] {
+            let rounded = row(noise);
+            assert_eq!(rounded.len(), exact.len(), "noise {noise}");
+            for (a, b) in rounded.iter().zip(&exact) {
+                assert!((a.x - b.x).abs() < 1e-12 && (a.y - b.y).abs() < 1e-12);
+                assert_eq!(a.z, b.z);
+            }
+        }
+        // A real corner well above rounding is kept.
+        let mut p = row(0.0);
+        p.push(Vec3::new(0.0, -3.0 - 1e-6, 0.0));
+        assert_eq!(convex_hull(&p).len(), 5);
     }
     /// On a centred system the global hits are the local footprint's points
     /// lifted onto the surface sag at the vertex's global position.
