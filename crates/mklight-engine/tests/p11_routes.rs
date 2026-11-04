@@ -23,8 +23,8 @@ fn capabilities_match_registry_routes() {
 }
 
 /// Auto routes by the calibrated cost model: a default singlet spot diagram
-/// to the CPU reference, a dense Cooke spot diagram to qualified Metal; an
-/// explicit backend bypasses the model.
+/// to the CPU reference, a dense double-Gauss geometric MTF to qualified
+/// Metal; an explicit backend bypasses the model.
 #[test]
 fn auto_cost_rules_route_by_workload() {
     let engine = Engine::default();
@@ -36,9 +36,9 @@ fn auto_cost_rules_route_by_workload() {
         eprintln!("skipping: Metal unavailable");
         return;
     }
-    let run = |system, settings: Value, backend| {
+    let run = |system, analysis: &str, settings: Value, backend| {
         let session = engine.session_from_project(Project::new(system)).unwrap();
-        let mut request = AnalysisRequest::new("spot_diagram", settings);
+        let mut request = AnalysisRequest::new(analysis, settings);
         request.backend = backend;
         let r = session.run_analysis(&request, &JobContext::new()).unwrap();
         println!(
@@ -48,7 +48,7 @@ fn auto_cost_rules_route_by_workload() {
         );
         r
     };
-    let small = run(samples::singlet(), Value::Null, None);
+    let small = run(samples::singlet(), "spot_diagram", Value::Null, None);
     let cost = small.backend.cost_decision.as_ref().unwrap();
     assert_eq!(small.backend.used, "cpu_reference");
     assert_eq!(cost["decision"], "cpu_reference");
@@ -64,8 +64,9 @@ fn auto_cost_rules_route_by_workload() {
         "{:?}",
         small.run_info.warnings
     );
-    let dense = json!({"pattern":"square","rings":512,"fields":{"type":"index","index":2},"wavelengths":{"type":"primary"}});
-    let large = run(samples::cooke_triplet(), dense, None);
+    // Dense geometric MTF: Metal measured 7× faster on the double Gauss.
+    let dense = json!({"rings":160});
+    let large = run(samples::double_gauss(), "geometric_mtf", dense, None);
     assert_eq!(
         large.backend.cost_decision.as_ref().unwrap()["decision"],
         "qualified_metal"
@@ -73,6 +74,7 @@ fn auto_cost_rules_route_by_workload() {
     assert_eq!(large.backend.used, "gpu:metal");
     let explicit = run(
         samples::singlet(),
+        "spot_diagram",
         Value::Null,
         Some(Backend::Gpu("metal".into())),
     );

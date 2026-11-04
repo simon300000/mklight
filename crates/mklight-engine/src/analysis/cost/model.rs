@@ -108,11 +108,18 @@ impl Calibration {
 /// over c ≥ 0 by cyclic coordinate descent on column-normalised features.
 /// Deterministic; columns that are zero everywhere get 0.
 pub fn fit(points: &[(Features, f64)]) -> Fit {
+    let weighted: Vec<_> = points.iter().map(|&(f, t)| (f, t, 1.)).collect();
+    fit_weighted(&weighted)
+}
+
+/// [`fit`] with a weight per point (`(features, ms, weight)`), for
+/// example to discount calls measured on a contended host.
+pub fn fit_weighted(points: &[(Features, f64, f64)]) -> Fit {
     let n = FEATURES.len();
     let rows: Vec<(Features, f64)> = points
         .iter()
-        .filter(|(_, t)| t.is_finite() && *t > 0.)
-        .map(|(f, t)| (std::array::from_fn(|k| f[k] / t), 1.))
+        .filter(|(_, t, w)| t.is_finite() && *t > 0. && *w > 0.)
+        .map(|(f, t, w)| (std::array::from_fn(|k| w.sqrt() * f[k] / t), w.sqrt()))
         .collect();
     let mut fit = Fit {
         points: rows.len(),
@@ -133,7 +140,7 @@ pub fn fit(points: &[(Features, f64)]) -> Fit {
         })
         .collect();
     let mut c = vec![0.; n];
-    let mut residual: Vec<f64> = vec![1.; a.len()];
+    let mut residual: Vec<f64> = rows.iter().map(|(_, b)| *b).collect();
     for _ in 0..4000 {
         let mut moved = 0f64;
         for k in (0..n).filter(|&k| norm[k] > 0.) {
@@ -157,8 +164,8 @@ pub fn fit(points: &[(Features, f64)]) -> Fit {
     }
     let logs: Vec<f64> = points
         .iter()
-        .filter(|(_, t)| t.is_finite() && *t > 0.)
-        .map(|(f, t)| {
+        .filter(|(_, t, w)| t.is_finite() && *t > 0. && *w > 0.)
+        .map(|(f, t, _)| {
             let p: f64 = fit.stages(f).iter().sum();
             (p.max(1e-6) / t).ln()
         })

@@ -16,7 +16,10 @@
 //! `MKLIGHT_COST_REPS` (default 2), `MKLIGHT_COST_FILTER` (analyses),
 //! `MKLIGHT_COST_DESIGNS` (sample names and `local`; `all` for the 16),
 //! `MKLIGHT_COST_RECORDS` (measured records, JSON lines; written while
-//! measuring), `MKLIGHT_COST_REFIT=1` (fit those records without measuring).
+//! measuring), `MKLIGHT_COST_REFIT=1` (fit those records without measuring;
+//! several comma-separated files may be given: a rung measured twice keeps
+//! its least loaded record, and load discounts every record's weight) with
+//! `MKLIGHT_COST_DEVICE_OPEN_MS` (the measured device-open time).
 //!
 //! `validate` compares `auto` with both backends (default engines, graph on)
 //! on fresh edits and warm repeats and prints the routing table and regret.
@@ -412,10 +415,27 @@ fn fit(records: &[Value], device_open_ms: f64) -> Calibration {
         .map(|(n, s)| (n, s.system().clone()))
         .collect();
     let traces = 1. + cost::PRIOR_ITERATIONS;
-    let mut points: BTreeMap<(String, String), Vec<(Features, f64)>> = BTreeMap::new();
+    let mut points: BTreeMap<(String, String), Vec<(Features, f64, f64)>> = BTreeMap::new();
+    let mut labels: BTreeMap<(String, String), Vec<Value>> = BTreeMap::new();
     let mut first: BTreeMap<String, Vec<f64>> = BTreeMap::new();
     let mut reference = (0., 0.);
+    // A rung measured more than once (a re-measurement on a quieter host)
+    // keeps its least loaded record; load discounts the rest.
+    let cores = std::thread::available_parallelism().map_or(12, |n| n.get()) as f64;
+    let weight = |r: &Value| {
+        let x = r["load"].as_f64().unwrap_or(0.) / cores;
+        1. / (x / 2.).max(1.).powi(2)
+    };
+    let mut best: BTreeMap<String, &Value> = BTreeMap::new();
     for r in records {
+        let key = format!("{}|{}|{}|{}", r["design"], r["analysis"], r["settings"], r["mode"]);
+        let load = |r: &Value| r["load"].as_f64().unwrap_or(f64::INFINITY);
+        if best.get(&key).is_none_or(|b| load(r) < load(b)) {
+            best.insert(key, r);
+        }
+    }
+    let records: Vec<&Value> = best.into_values().collect();
+    for r in records.iter().copied() {
         let (Some(design), Some(analysis), Some(mode), Some(ms)) = (
             r["design"].as_str(),
             r["analysis"].as_str(),
@@ -441,7 +461,11 @@ fn fit(records: &[Value], device_open_ms: f64) -> Calibration {
         points
             .entry((analysis.into(), mode.into()))
             .or_default()
-            .push((p.features(&shape, traces), ms));
+            .push((p.features(&shape, traces), ms, weight(r)));
+        labels
+            .entry((analysis.into(), mode.into()))
+            .or_default()
+            .push(json!({"design":design,"settings":r["settings"],"load":r["load"]}));
         if mode == "metal_edit" {
             if let Some(f) = r["first_ms"].as_f64() {
                 first.entry(analysis.into()).or_default().push(f - ms);
@@ -458,7 +482,7 @@ fn fit(records: &[Value], device_open_ms: f64) -> Calibration {
             points
                 .get(&(analysis.to_string(), mode.to_string()))
                 .filter(|p| !p.is_empty())
-                .map(|p| cost::model::fit(p))
+                .map(|p| cost::model::fit_weighted(p))
         };
         let c = cost::AnalysisCalibration {
             cpu: get("cpu"),
@@ -469,6 +493,23 @@ fn fit(records: &[Value], device_open_ms: f64) -> Calibration {
                 .map_or(0., |v| v.iter().copied().fold(0., f64::max).max(0.)),
         };
         emit("COST_FIT", json!({"analysis":analysis,"fit":c}));
+        // Residuals, for inspecting the fit.
+        for (mode, fit) in [("cpu", &c.cpu), ("metal", &c.metal), ("metal_edit", &c.metal_edit)] {
+            let (Some(fit), Some(p), Some(l)) = (
+                fit,
+                points.get(&(analysis.to_string(), mode.to_string())),
+                labels.get(&(analysis.to_string(), mode.to_string())),
+            ) else {
+                continue;
+            };
+            for ((f, ms, _), l) in p.iter().zip(l) {
+                let predicted: f64 = fit.stages(f).iter().sum();
+                emit(
+                    "COST_RESID",
+                    json!({"analysis":analysis,"mode":mode,"at":l,"ms":ms,"predicted":predicted,"features":f}),
+                );
+            }
+        }
         analyses_out.insert(analysis.to_string(), c);
     }
     let host = |args: &[&str]| {
@@ -510,10 +551,17 @@ fn calibrate() {
     assert!(!cfg!(debug_assertions), "use --release");
     let mut device_open_ms = 40.;
     let records: Vec<Value> = if env("MKLIGHT_COST_REFIT").is_some() {
-        let text = std::fs::read_to_string(records_path()).unwrap();
-        // The device-open time of the measuring run, when recorded.
-        text.lines()
-            .filter_map(|l| serde_json::from_str(l).ok())
+        // One or more record files (comma-separated), e.g. a re-measurement
+        // of some designs on a quieter host next to the full run.
+        records_path()
+            .split(',')
+            .flat_map(|p| {
+                std::fs::read_to_string(p)
+                    .unwrap()
+                    .lines()
+                    .filter_map(|l| serde_json::from_str(l).ok())
+                    .collect::<Vec<Value>>()
+            })
             .collect()
     } else {
         measure(&mut device_open_ms)
