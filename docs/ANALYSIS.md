@@ -503,8 +503,8 @@ Every hit includes traced sag and the surface's global placement. Clouds
 include rays passing that surface even if lost downstream. Convex outlines
 are counterclockwise, unclosed, and retain traced sag at each hull vertex;
 they enclose the cloud and do not describe nonconvex clipping boundaries.
-Hits collinear to within a 1e-9 rad turn (a pupil grid row, up to
-rounding) are not vertices, so both backends give the same outline.
+Hull vertices within 1e-9 of their neighbours' chord (a pupil grid row,
+up to rounding) are removed, so both backends give the same outline.
 
 Known-answer tests cover stop-plane ideal-lens pupil maps, CRA and sensor
 margin from geometric image height, 2-D disk view factors, the map against
