@@ -193,7 +193,7 @@ pub(crate) fn run(
             // Decided by `auto_route` (the cost model).
             Some(d) => (d, ""),
             // An input routed elsewhere: only the accuracy exclusions apply.
-            None => match cost::accuracy_exclusion(analysis.name()) {
+            None => match cost::accuracy_exclusion(analysis.name(), settings, system) {
                 Some(evidence) => (
                     json!({"decision":"cpu_reference","rule":"accuracy exclusion","evidence":evidence,"version":cost::VERSION}),
                     "auto: the native path failed its f64 comparison on the measured evidence for this analysis",

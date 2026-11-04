@@ -53,28 +53,46 @@ pub const MIN_GAIN_MS: f64 = 5.;
 /// traces per ray). Recorded statistics scale it per design family.
 pub const PRIOR_ITERATIONS: f64 = 3.43;
 
-/// Analyses whose native output fails its f64 budget on the current
-/// evidence: `auto` uses the reference at every size on every device.
-/// Explicit Metal requests still run natively. Re-qualified by E1 (point
-/// 14) against `metal_accuracy` (16 samples) and the complex lens; see
-/// GPU.md §9.2 for the evidence of each entry.
-const EXCLUSIONS: &[(&str, &str)] = &[
+/// Analyses whose native output fails its f64 contract on the current
+/// evidence: `auto` uses the reference on every device, from the given
+/// traced-ray workload up (0: at every size). Explicit Metal requests still
+/// run natively. Re-qualified by E1 (point 14) against `metal_accuracy`
+/// (16 samples) and the complex lens under F1's contracts; see GPU.md §9.2
+/// for the evidence of each entry.
+const EXCLUSIONS: &[(&str, f64, &str)] = &[
     (
         "ghost_irradiance",
+        0.,
         "complex lens, edited snapshot: a discrete rays_traced count differs from f64 (23,442 vs 23,370 in 1 of 1,656 ghost fields; positions and flux within their contracts); 16/16 samples pass",
     ),
     (
+        "spot_diagram",
+        1e6,
+        "complex lens, 23.6M rays after an edit: rays_arrived counts differ from f64 by 2 of 767k in 10 field-wavelength rows (edge rays); default and repeated dense spots pass",
+    ),
+    (
         "glass_substitution",
+        0.,
         "complex lens: the native search returns other finalists than f64 (finalist merit and violation far outside their gates)",
     ),
 ];
 
-/// The accuracy exclusion of `analysis`, with its evidence.
-pub(crate) fn accuracy_exclusion(analysis: &str) -> Option<&'static str> {
-    EXCLUSIONS
-        .iter()
-        .find(|(a, _)| *a == analysis)
-        .map(|(_, e)| *e)
+/// The accuracy exclusion of `analysis` with normalised `settings` on
+/// `system`, with its evidence.
+pub(crate) fn accuracy_exclusion(
+    analysis: &str,
+    settings: &Value,
+    system: &OpticalSystem,
+) -> Option<&'static str> {
+    let &(_, from, evidence) = EXCLUSIONS.iter().find(|(a, _, _)| *a == analysis)?;
+    let rays = || profile(analysis, settings, system).map_or(f64::INFINITY, |p| p.rays);
+    (from <= 0. || rays() >= from).then_some(evidence)
+}
+
+/// Excluded at every size (needs no calibration).
+#[cfg(test)]
+pub(crate) fn always_excluded(analysis: &str) -> bool {
+    EXCLUSIONS.iter().any(|(a, from, _)| *a == analysis && *from <= 0.)
 }
 
 /// Analyses the static capability list keeps on the reference
@@ -208,11 +226,14 @@ struct Online {
 }
 
 /// Largest per-analysis correction refinement may apply (either way).
-const MAX_CORRECTION: f64 = 3.;
+const MAX_CORRECTION: f64 = 10.;
+/// Largest share of the CPU's host contention learned beyond the
+/// load-average prior (either way).
+const HOST_EXCESS: f64 = 3.;
 /// Range of the CPU's host contention factor. A loaded host slows the CPU
 /// reference far more than the device, which has none.
 const CONTENTION: (f64, f64) = (1. / 3., 30.);
-const ALPHA: f64 = 0.3;
+const ALPHA: f64 = 0.5;
 /// Calls a one-time device setup is spread over.
 const SETUP_CALLS: u32 = 4;
 
@@ -351,7 +372,7 @@ impl CostModel {
         state: &State<'_>,
     ) -> Decision {
         let decision = |route, json| Decision { route, json };
-        if let Some(evidence) = accuracy_exclusion(analysis) {
+        if let Some(evidence) = accuracy_exclusion(analysis, settings, system) {
             return decision(
                 Route::Cpu,
                 json!({"decision":"cpu_reference","rule":"accuracy exclusion","evidence":evidence,"version":VERSION}),
@@ -483,7 +504,7 @@ impl CostModel {
             let c = if refine {
                 on.corrections.get(&key).map_or(1., |e| {
                     // Shrink young estimates toward no correction.
-                    let w = e.n as f64 / (e.n as f64 + 2.);
+                    let w = e.n as f64 / (e.n as f64 + 1.);
                     (w * e.mean).exp()
                 })
             } else {
@@ -649,7 +670,7 @@ impl CostModel {
             return 0.;
         }
         let (lo, hi) = CONTENTION;
-        let excess = on.contention[b].mean.clamp(-MAX_CORRECTION.ln(), MAX_CORRECTION.ln());
+        let excess = on.contention[b].mean.clamp(-HOST_EXCESS.ln(), HOST_EXCESS.ln());
         (self.prior(b) + excess).clamp(lo.ln(), hi.ln())
     }
 
@@ -779,7 +800,7 @@ mod tests {
         };
         let mut analyses = BTreeMap::new();
         analyses.insert(
-            "spot_diagram".to_string(),
+            "ray_grid".to_string(),
             AnalysisCalibration {
                 // CPU: 1 ms + 1 µs per ray-surface; Metal: 8 ms + 0.1 µs.
                 cpu: Some(fit([1., 0., 1e-3, 0., 0., 0.])),
@@ -814,7 +835,7 @@ mod tests {
             ..Default::default()
         };
         let d =
-            |rings, st: &State| m.decide("spot_diagram", &spot(rings), &singlet, Device::Apple, st);
+            |rings, st: &State| m.decide("ray_grid", &spot(rings), &singlet, Device::Apple, st);
         // Small: CPU (Metal's fixed cost is its own, not a global floor).
         let small = d(6, &warm);
         assert_eq!(small.route, Route::Cpu, "{}", small.json);
@@ -850,16 +871,19 @@ mod tests {
         );
         let excluded = m.decide("ghost_irradiance", &json!({}), &singlet, Device::Unknown, &warm);
         assert_eq!(excluded.route, Route::Cpu);
+        // A size-bounded exclusion: dense spots only.
+        assert!(accuracy_exclusion("spot_diagram", &spot(6), &singlet).is_none());
+        assert!(accuracy_exclusion("spot_diagram", &spot(512), &singlet).is_some());
         assert!(excluded.note().contains("f64 comparison"));
         // Unknown and uncalibrated devices.
         assert_eq!(d(6, &warm).route, Route::Cpu);
         assert_eq!(
-            m.decide("spot_diagram", &spot(6), &singlet, Device::Unknown, &warm)
+            m.decide("ray_grid", &spot(6), &singlet, Device::Unknown, &warm)
                 .route,
             Route::Undecided
         );
         assert_eq!(
-            m.decide("spot_diagram", &spot(6), &singlet, Device::Other, &warm)
+            m.decide("ray_grid", &spot(6), &singlet, Device::Other, &warm)
                 .route,
             Route::Metal
         );
@@ -877,7 +901,7 @@ mod tests {
             device_open: true,
             ..Default::default()
         };
-        let first = m.decide("spot_diagram", &settings, &singlet, Device::Apple, &st);
+        let first = m.decide("ray_grid", &settings, &singlet, Device::Apple, &st);
         let predicted = first.json["predicted_ms"]["cpu"].as_f64().unwrap();
         m.set_refinement(true);
         // The CPU keeps running 100× slower than predicted: host contention
@@ -892,11 +916,11 @@ mod tests {
             json: &Value::Null,
         };
         for _ in 0..20 {
-            m.observe("spot_diagram", &settings, &singlet, &snap, "", &r);
+            m.observe("ray_grid", &settings, &singlet, &snap, "", &r);
         }
-        let later = m.decide("spot_diagram", &settings, &singlet, Device::Apple, &st);
+        let later = m.decide("ray_grid", &settings, &singlet, Device::Apple, &st);
         let factor = later.json["refinement"]["cpu"]["factor"].as_f64().unwrap();
-        let bound = MAX_CORRECTION * CONTENTION.1;
+        let bound = (MAX_CORRECTION * HOST_EXCESS * 4.).min(MAX_CORRECTION * CONTENTION.1);
         assert!(factor > 7. && factor <= bound * (1. + 1e-3), "{factor}");
         let host = later.json["refinement"]["cpu"]["contention"]
             .as_f64()
@@ -906,7 +930,7 @@ mod tests {
             "{host}"
         );
         m.set_refinement(false);
-        let off = m.decide("spot_diagram", &settings, &singlet, Device::Apple, &st);
+        let off = m.decide("ray_grid", &settings, &singlet, Device::Apple, &st);
         assert_eq!(off.json["predicted_ms"]["cpu"].as_f64().unwrap(), predicted);
     }
 }

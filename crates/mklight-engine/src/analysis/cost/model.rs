@@ -222,7 +222,7 @@ mod tests {
         let c = Calibration::builtin();
         assert_eq!((c.format, c.model_version), (FORMAT, super::super::VERSION));
         for name in crate::analysis::gpu::GPU_ANALYSES {
-            if super::super::accuracy_exclusion(name).is_none() && !super::super::static_route(name)
+            if !super::super::always_excluded(name) && !super::super::static_route(name)
             {
                 let a = c.analyses.get(*name);
                 assert!(
