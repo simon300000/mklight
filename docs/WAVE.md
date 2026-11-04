@@ -596,8 +596,12 @@ runs a replacement reference computation.
 `gpu::image_simulation::{build_psf_grid,image_simulation_job}` implements the
 same scalar, linear-light model as §8. `ResidentPsfGrid` is reusable across
 source/noise changes and checks snapshot, material-library and optical-settings
-identity. P5 supplies distortion and spectrally weighted RI; its explicitly
-reported sparse reference completions remain in the result evidence.
+identity. P5 supplies distortion; the spectrally weighted RI of the grid
+nodes is host f64 preparation (the CPU grid's own `illumination_rows`, recorded
+as `illumination` in the grid's RunInfo settings), because the device
+projected-solid-angle kernel solves every pupil node's object and aim problems
+inside one command (≈1.4 s per wavelength against ≈0.2 s on the host for all
+five on a 29-surface lens).
 
 Patterns, inverse bilinear distortion, source resampling, RI multiplication,
 node-weighted convolution, detector aperture integration and noise run on GPU.
