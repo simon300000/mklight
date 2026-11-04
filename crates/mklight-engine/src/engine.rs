@@ -80,6 +80,8 @@ pub(crate) struct EngineInner {
     pub(crate) default_backend: RwLock<Backend>,
     pub(crate) scheduler: Scheduler<AnalysisResult>,
     pub(crate) graph: Option<Arc<AnalysisGraph>>,
+    /// `auto` routing (`analysis::cost`): calibration and online state.
+    pub(crate) cost: Arc<crate::analysis::cost::CostModel>,
     next_session: AtomicU64,
 }
 
@@ -110,6 +112,7 @@ impl Engine {
                 scheduler: Scheduler::new(sc),
                 graph: (config.analysis_graph_bytes > 0)
                     .then(|| Arc::new(AnalysisGraph::new(config.analysis_graph_bytes))),
+                cost: Arc::new(crate::analysis::cost::CostModel::default()),
                 next_session: AtomicU64::new(1),
                 config,
             }),
@@ -280,32 +283,61 @@ impl Engine {
         }
     }
 
-    /// `select_backend` for one run with normalised `settings` on `system`.
-    /// An `auto` run (requested, or the engine default) whose route the
-    /// static capability or cost rules settle as the CPU reference is
-    /// decided here, before any GPU device is opened; the decision travels in
-    /// `SelectedBackend::cost_decision`.
+    /// `select_backend` for one run with normalised `settings` on the
+    /// `snapshot`. An `auto` run (requested, or the engine default) is routed
+    /// by the cost model (`analysis::cost`): routes that end on the CPU
+    /// reference are decided before any GPU device is opened, and the
+    /// decision travels in `SelectedBackend::cost_decision`.
     pub fn route_backend(
         &self,
         requested: Option<&Backend>,
         analysis: &str,
         settings: &serde_json::Value,
-        system: &mklight_core::OpticalSystem,
+        snapshot: &mklight_core::Snapshot,
+        library_hash: &str,
         allow_fallback: bool,
     ) -> EngineResult<SelectedBackend> {
-        let auto = match requested {
+        let Some(id) = self.auto_request_id(requested) else {
+            return self.select_backend(requested, analysis, allow_fallback);
+        };
+        let hash = snapshot.hash().0;
+        let tracer_warm = self.inner.graph.as_ref().is_some_and(|g| {
+            g.contains(&crate::analysis::tracer_key(&hash, library_hash))
+        });
+        let mut s = crate::analysis::auto_route(
+            &self.inner.cost,
+            &read(&self.inner.backends),
+            &crate::analysis::AutoRequest {
+                analysis,
+                settings,
+                system: snapshot.system(),
+                snapshot: &hash,
+                library: library_hash,
+                tracer_warm,
+            },
+        );
+        s.requested = id;
+        Ok(s)
+    }
+
+    /// The recorded `requested` id when `requested` (or the engine default)
+    /// is `auto`.
+    pub(crate) fn auto_request_id(&self, requested: Option<&Backend>) -> Option<String> {
+        match requested {
             Some(b) => (*b == Backend::Auto).then(|| b.id()),
             None => (self.default_backend() == Backend::Auto)
                 .then(|| format!("default:{}", Backend::Auto.id())),
-        };
-        if let Some(id) = auto
-            && let Some(mut s) =
-                crate::analysis::pre_route(&read(&self.inner.backends), analysis, settings, system)
-        {
-            s.requested = id;
-            return Ok(s);
         }
-        self.select_backend(requested, analysis, allow_fallback)
+    }
+
+    /// The `auto` cost model (calibration table and online state).
+    pub fn cost_model(&self) -> &Arc<crate::analysis::cost::CostModel> {
+        &self.inner.cost
+    }
+
+    /// The cost model's calibration identity and online state.
+    pub fn cost_model_stats(&self) -> serde_json::Value {
+        self.inner.cost.stats()
     }
 
     // --- jobs

@@ -12,6 +12,7 @@
 //! graph budget; 0 disables it), MKLIGHT_BENCH_EDIT_GRAPHS (comma list
 //! replacing the six edit-loop graphs), and MKLIGHT_BENCH_ALLOW_BUSY=1 to
 //! measure next to other builds (every gate record is then provisional).
+//! MKLIGHT_BENCH_MIN_RUNS lowers the run minimums for quick provisional passes.
 #![cfg(target_os = "macos")]
 
 use std::collections::BTreeMap;
@@ -142,6 +143,12 @@ fn quiet(label: &str) {
         }
         std::thread::sleep(Duration::from_secs(2));
     }
+}
+
+/// The minimum of a run count: `floor`, or a quick provisional pass with
+/// `MKLIGHT_BENCH_MIN_RUNS` (at least 1).
+fn min_runs(floor: usize) -> usize {
+    floor.min(env_usize("MKLIGHT_BENCH_MIN_RUNS", floor).max(1))
 }
 
 fn env_usize(name: &str, default: usize) -> usize {
@@ -734,8 +741,8 @@ fn project_bench() {
         panic!("use --release");
     }
     let path = std::env::var("MKLIGHT_BENCH_PROJECT").expect("set MKLIGHT_BENCH_PROJECT");
-    let runs = env_usize("MKLIGHT_BENCH_RUNS", 10).max(10);
-    let cold_runs = env_usize("MKLIGHT_BENCH_COLD_RUNS", 3).max(3);
+    let runs = env_usize("MKLIGHT_BENCH_RUNS", 10).max(min_runs(10));
+    let cold_runs = env_usize("MKLIGHT_BENCH_COLD_RUNS", 3).max(min_runs(3));
     quiet("start");
     emit(
         "host",
@@ -951,7 +958,7 @@ fn project_bench_queued_edit_loop() {
         panic!("use --release");
     }
     let path = std::env::var("MKLIGHT_BENCH_PROJECT").expect("set MKLIGHT_BENCH_PROJECT");
-    let runs = env_usize("MKLIGHT_BENCH_RUNS", 10).max(10);
+    let runs = env_usize("MKLIGHT_BENCH_RUNS", 10).max(min_runs(10));
     quiet("queued edit loop / start");
     emit(
         "queued_host",

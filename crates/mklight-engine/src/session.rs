@@ -677,6 +677,43 @@ impl Session {
 
     // --- analyses
 
+    /// The backend for `req`. An `auto` request whose result the analysis
+    /// graph already holds is answered from it and needs no route (nor any
+    /// device): a stored answer costs nothing on either backend.
+    fn route(
+        &self,
+        req: &AnalysisRequest,
+        analysis: &dyn crate::analysis::Analysis,
+        settings: &Value,
+    ) -> EngineResult<crate::backend::SelectedBackend> {
+        if let (Some(id), Some(graph)) = (
+            self.engine.auto_request_id(req.backend.as_ref()),
+            self.engine.analysis_graph().filter(|_| analysis.memoizable()),
+        ) {
+            let probe = AnalysisInput::new(
+                self.current.clone(),
+                self.library.clone(),
+                crate::backend::BackendInfo::cpu_reference(),
+            )
+            .with_selection(id.clone(), None)
+            .with_library_hash(self.library_hash.clone());
+            let key = crate::analysis::result_key(analysis, &probe, settings, &[]);
+            if graph.contains(&key) {
+                let mut s = crate::backend::SelectedBackend::cpu_reference();
+                s.requested = id;
+                return Ok(s);
+            }
+        }
+        self.engine.route_backend(
+            req.backend.as_ref(),
+            &req.analysis,
+            settings,
+            &self.current,
+            &self.library_hash,
+            req.allow_backend_fallback,
+        )
+    }
+
     /// Run an analysis on the current snapshot in the calling thread.
     pub fn run_analysis(
         &self,
@@ -685,13 +722,7 @@ impl Session {
     ) -> EngineResult<AnalysisResult> {
         let analysis = self.engine.analysis(&req.analysis)?;
         let settings = crate::analysis::prepare(analysis.as_ref(), &req.settings)?;
-        let backend = self.engine.route_backend(
-            req.backend.as_ref(),
-            &req.analysis,
-            &settings,
-            self.current.system(),
-            req.allow_backend_fallback,
-        )?;
+        let backend = self.route(req, analysis.as_ref(), &settings)?;
         let (cache, snap, lib, generation) = (
             &self.resolved,
             &self.current,
@@ -708,7 +739,8 @@ impl Session {
         .with_selection(backend.requested, backend.note)
         .with_cost_decision(backend.cost_decision)
         .with_library_hash(self.library_hash.clone())
-        .with_graph(self.engine.analysis_graph().cloned());
+        .with_graph(self.engine.analysis_graph().cloned())
+        .with_cost_model(Some(self.engine.cost_model().clone()));
         run_analysis(
             analysis.as_ref(),
             &input,
@@ -726,19 +758,14 @@ impl Session {
     pub fn analysis_job(&self, req: &AnalysisRequest) -> EngineResult<JobSpec<AnalysisResult>> {
         let analysis = self.engine.analysis(&req.analysis)?;
         let settings = crate::analysis::prepare(analysis.as_ref(), &req.settings)?;
-        let backend = self.engine.route_backend(
-            req.backend.as_ref(),
-            &req.analysis,
-            &settings,
-            self.current.system(),
-            req.allow_backend_fallback,
-        )?;
+        let backend = self.route(req, analysis.as_ref(), &settings)?;
         let snap = self.current.clone();
         let lib = self.library.clone();
         let lib_hash = self.library_hash.clone();
         let cache = self.resolved.clone();
         let generation = self.library_generation;
         let graph = self.engine.analysis_graph().cloned();
+        let cost_model = self.engine.cost_model().clone();
         let label = format!("{} @ {}", req.analysis, snap.hash().short());
         let stop = mklight_core::job::CancelToken::new();
         let job_stop = stop.clone();
@@ -754,7 +781,8 @@ impl Session {
             .with_selection(backend.requested, backend.note)
             .with_cost_decision(backend.cost_decision)
             .with_library_hash(lib_hash)
-            .with_graph(graph);
+            .with_graph(graph)
+            .with_cost_model(Some(cost_model));
             run_analysis(
                 analysis.as_ref(),
                 &input,
