@@ -336,10 +336,11 @@ impl Resume {
 /// of iteration units per lane: the tile's first command parks unfinished
 /// rays, and continuation commands (sized on the device from the pending
 /// count) resume them in rounds. Rounds go out in groups; the pending count
-/// after a group decides whether more are needed, but the next group is
-/// committed before the host reads it, so the device never idles on that
-/// readback. Once a group leaves nothing pending, the speculative group
-/// after it finds empty lists and dispatches no thread. With `speculative`
+/// after a group decides whether more are needed. Once a tile of the plan
+/// has needed more than its first group, the next group is committed before
+/// the host reads that count, so the device does not idle on the readback;
+/// a speculative group after the last needed one finds empty lists and
+/// dispatches no thread. With `speculative`
 /// rounds (and the plan allowing speculation) a tile commits that many
 /// rounds and never reads its count; the plan verifies it at completion.
 #[allow(clippy::too_many_arguments)]
@@ -402,15 +403,15 @@ fn newton_commands(
                 budget: continue_budget,
                 ..p
             };
+            // Rounds `from + 1..=to`, one command buffer each (with `fused`,
+            // the first shares the buffer being encoded). A round of a few
+            // hard lanes runs as long as one of many (the slowest lane's
+            // budget), so fused rounds would add up past the interactivity
+            // bound: a 4096-lane tile with two fused rounds ran 77–115 ms.
             let mut rounds =
                 |x: &mut Execution<'_>, r: &mut Resume, from: usize, to: usize, fused: bool| {
                     r.group(x, from + 1, to - from)?;
                     for round in from + 1..=to {
-                        // One command buffer per round: a round of hard rays
-                        // runs up to the first command's time, and fused rounds
-                        // would add up past the interactivity bound. A first
-                        // speculative round (expected empty) stays with the first
-                        // command.
                         if !fused || round > from + 1 {
                             x.submit()?;
                             // Committing may have waited on the in-flight
@@ -454,8 +455,12 @@ fn newton_commands(
                 let mut round = rounds(x, r, 0, group.min(r.rounds), false)?;
                 let mut decided = (x.submit()?, round);
                 loop {
-                    let ahead = if round < r.rounds {
-                        round = rounds(x, r, round, (round + group).min(r.rounds), false)?;
+                    // Look ahead only once a tile of this plan has needed
+                    // more than its first group: otherwise the speculative
+                    // group would mostly run empty.
+                    let ahead = if round < r.rounds && x.aim_lookahead {
+                        let to = (round + group).min(r.rounds);
+                        round = rounds(x, r, round, to, false)?;
                         group *= 2;
                         Some((x.submit()?, round))
                     } else {
@@ -470,14 +475,23 @@ fn newton_commands(
                     if pending == 0 {
                         break;
                     }
-                    let Some(a) = ahead else {
+                    x.aim_lookahead = true;
+                    if decided.1 == r.rounds {
                         return Err(MkError::Numerical(format!(
                             "{pending} aims unfinished after {} continuation rounds",
                             decided.1
                         )));
-                    };
+                    }
                     ctl.check()?;
-                    decided = a;
+                    decided = match ahead {
+                        Some(a) => a,
+                        None => {
+                            let to = (round + group).min(r.rounds);
+                            round = rounds(x, r, round, to, false)?;
+                            group *= 2;
+                            (x.submit()?, round)
+                        }
+                    };
                 }
             }
         }

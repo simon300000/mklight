@@ -80,6 +80,7 @@ pub(crate) fn execute(
         speculate,
         unverified: vec![],
         missed,
+        aim_lookahead: false,
     };
     let mut imported = HashSet::new();
     for b in &plan.buffers {
@@ -297,6 +298,10 @@ pub(crate) struct Execution<'a> {
     cache_stats: RefCell<CacheStats>,
     /// Whether generations may commit speculative continuation rounds.
     pub(crate) speculate: bool,
+    /// Whether aiming commits a further round group before reading the
+    /// pending count (set once a tile of this plan needed more rounds than
+    /// its first group).
+    pub(crate) aim_lookahead: bool,
     /// Pending counts of speculative generations, checked at completion.
     unverified: Vec<(Lease, usize)>,
     /// Set when a speculative generation left rays pending; the plan's

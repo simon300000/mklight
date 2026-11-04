@@ -1471,12 +1471,13 @@ unfinished rays in a per-tile `MklAimResume` state buffer
 (`MKL_AIM_STATE_WORDS`) and append their indices to a pending list; the
 executor encodes continuation rounds (`mkl_aim_indirect` sizes
 `mkl_aim_continue`/`mkl_aim_table_continue` from the pending count on the
-device), one command buffer per round so that rounds of hard rays never add
-up past the bound, in groups (2, 2, 4, 8, …). The pending count after a group
-decides whether more rounds are needed, but the next group is committed
-before the host reads it, so the device never idles on that readback; after
-the last needed group the speculative one finds empty lists and dispatches no
-thread. A resumed solve performs the specification's operations in
+device) in groups (2, 2, 4, 8, …), one command buffer per round: a round of
+a few hard lanes runs as long as the slowest lane's budget, so fused rounds
+add up past the bound (a 4096-lane candidate tile with two rounds fused into
+its first command ran 77–115 ms). Once a tile of a plan has needed more than its
+first group, the next group is committed before the host reads the previous
+group's count, so the device does not idle on that readback; after the last
+needed group the speculative one finds empty lists and dispatches no thread. A resumed solve performs the specification's operations in
 the specification's order, so results are bitwise those of the monolithic
 CPU-f32 kernel (`aim_resume.rs` forces one unit per command). Time-calibrated
 tiles still bound the throughput part. `AimOptions::speculative_rounds`
