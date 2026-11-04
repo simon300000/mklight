@@ -141,7 +141,9 @@ pub(crate) fn fd_jacobian(
 /// with step `h`) and is updated with Broyden's rank-one formula, and a fresh
 /// finite-difference Jacobian whenever progress stalls. `f` returns `None`
 /// where it cannot be evaluated (a ray that misses); the line search treats
-/// that as "too far". Converged when `|f| ≤ tol`.
+/// that as "too far". Converged when `|f| ≤ tol`. (The tracer calls
+/// [`newton2_seeded`]; this is its unseeded form.)
+#[cfg(test)]
 pub(crate) fn newton2(
     f: &dyn Fn([f64; 2]) -> Option<[f64; 2]>,
     x0: [f64; 2],
@@ -150,6 +152,32 @@ pub(crate) fn newton2(
     tol: f64,
     max_iter: u32,
 ) -> Solve2 {
+    newton2_seeded(f, x0, j0, h, tol, max_iter, None)
+}
+
+/// The tolerance of a solve seeded at a nearby system's solution, whose
+/// residual there is `r0`: the change must be resolved to 1e-6 of itself
+/// (an FD neighbour's perturbation is ~1e-8 relative, so `tol` alone would
+/// accept an aim whose error the finite difference amplifies by 1/h), down
+/// to the rounding `floor`, and never looser than `tol`.
+pub(crate) fn seeded_tolerance(tol: f64, r0: f64, floor: f64) -> f64 {
+    tol.min((1e-6 * r0).max(floor))
+}
+
+/// [`newton2`]; with `seed = Some(floor)`, `x0` is a nearby system's
+/// solution: the solve takes at least one Newton step (so it corrects for
+/// the change even when `x0` already meets `tol`) and must meet
+/// [`seeded_tolerance`].
+pub(crate) fn newton2_seeded(
+    f: &dyn Fn([f64; 2]) -> Option<[f64; 2]>,
+    x0: [f64; 2],
+    j0: Option<Mat2>,
+    h: f64,
+    tol: f64,
+    max_iter: u32,
+    seed: Option<f64>,
+) -> Solve2 {
+    let min_iter = seed.is_some() as u32;
     let mut out = Solve2 {
         x: x0,
         residual: f64::INFINITY,
@@ -162,6 +190,7 @@ pub(crate) fn newton2(
     };
     let mut x = x0;
     let mut rn = norm2d(r);
+    let tol = seed.map_or(tol, |floor| seeded_tolerance(tol, rn, floor));
     let (mut j, mut fresh) = match j0 {
         Some(j) => (j, false),
         None => match fd_jacobian(f, x, r, h) {
@@ -174,7 +203,7 @@ pub(crate) fn newton2(
     };
     let mut it = 0;
     while it < max_iter {
-        if rn <= tol {
+        if rn <= tol && it >= min_iter {
             break;
         }
         it += 1;
@@ -271,6 +300,9 @@ pub(crate) struct Newton2 {
     h: f64,
     tol: f64,
     max_iter: u32,
+    min_iter: u32,
+    /// Rounding floor of a seeded solve ([`newton2_seeded`]).
+    seed: Option<f64>,
     x0: [f64; 2],
     j0: Option<Mat2>,
     x: [f64; 2],
@@ -317,6 +349,8 @@ impl Newton2 {
             h,
             tol,
             max_iter,
+            min_iter: 0,
+            seed: None,
             x0,
             j0,
             x: x0,
@@ -333,6 +367,13 @@ impl Newton2 {
             n_pending: 1,
             out: None,
         }
+    }
+
+    /// A seeded solve, as [`newton2_seeded`] with `seed`.
+    pub fn seeded(mut self, seed: Option<f64>) -> Self {
+        self.seed = seed;
+        self.min_iter = seed.is_some() as u32;
+        self
     }
 
     /// Points at which `f` is needed next; empty when finished.
@@ -401,7 +442,7 @@ impl Newton2 {
 
     /// Top of [`newton2`]'s `while` loop.
     fn iterate(&mut self) {
-        if !(self.it < self.max_iter) || self.rn <= self.tol {
+        if !(self.it < self.max_iter) || (self.rn <= self.tol && self.it >= self.min_iter) {
             return self.conclude();
         }
         self.it += 1;
@@ -435,6 +476,9 @@ impl Newton2 {
                 };
                 self.r = r;
                 self.rn = norm2d(r);
+                if let Some(floor) = self.seed {
+                    self.tol = seeded_tolerance(self.tol, self.rn, floor);
+                }
                 match self.j0 {
                     Some(j) => {
                         self.j = j;

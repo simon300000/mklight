@@ -45,14 +45,17 @@
 //! axis and keeps the entrance hit between steps. Convergence is reported per
 //! ray.
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, RwLock};
+
+use rayon::prelude::*;
 
 use mklight_core::{
     FieldKind, MkError, MkResult, OpticalSystem, RayAiming, ResolvedSystem, Vec3, Vignetting,
 };
 use serde::{Deserialize, Serialize};
 
-use crate::numeric::{Mat2, Newton2, fd_jacobian, newton2, solve2};
+use crate::numeric::{Mat2, Newton2, fd_jacobian, newton2_seeded, solve2};
 use crate::paraxial::{FirstOrder, Paraxial};
 use crate::surface::{IntersectSettings, intersect};
 use crate::trace::{
@@ -162,7 +165,76 @@ pub type RayRequest<'a> = (&'a PreparedField, usize, [f64; 2]);
 /// [`SequentialTracer::generate`] up to the real-aim solve.
 enum AimStart {
     Ready(GeneratedRay),
-    Solve { target: [f64; 2], x0: [f64; 2] },
+    Solve {
+        target: [f64; 2],
+        x0: [f64; 2],
+        j0: Option<Mat2>,
+        /// Rounding floor when `x0` is an anchor seed (`newton2_seeded`).
+        seed: Option<f64>,
+        key: Option<AimKey>,
+    },
+}
+
+/// Identity of one aimed ray: field point (with vignetting), wavelength and
+/// pupil point, as bits.
+type AimKey = [u64; 9];
+
+fn aim_key(field: &PreparedField, wl: usize, px: f64, py: f64) -> AimKey {
+    let (p, v) = (field.point, field.point.vignetting);
+    [
+        p.hx.to_bits(),
+        p.hy.to_bits(),
+        v.vdx.to_bits(),
+        v.vdy.to_bits(),
+        v.vcx.to_bits(),
+        v.vcy.to_bits(),
+        wl as u64,
+        px.to_bits(),
+        py.to_bits(),
+    ]
+}
+
+/// Converged solves of an anchor tracer (prepared fields and pupil-ray
+/// aims with their Jacobians), seeding the same solves of a nearby system:
+/// the finite-difference neighbours of a Jacobian or the trials of a
+/// tolerance run. A seeded solve starts at the anchor's solution with the
+/// anchor's Jacobian and takes at least one Newton step, so it corrects for
+/// the change even when the seed already meets the tolerance; it must then
+/// meet the same tolerance as an unseeded solve, and falls back to the
+/// unseeded solve when it does not. Results therefore agree with the
+/// unseeded tracer to within the solve tolerances (not bit for bit), and
+/// do not depend on the order in which candidates are traced.
+#[derive(Debug, Default)]
+pub struct AimSeeds {
+    fields: RwLock<Vec<PreparedField>>,
+    rays: RwLock<HashMap<AimKey, ([f64; 2], Option<Mat2>)>>,
+}
+
+impl AimSeeds {
+    /// Recorded pupil-ray aims.
+    pub fn rays(&self) -> usize {
+        self.rays.read().unwrap().len()
+    }
+    fn field(&self, point: &FieldPoint, nw: usize) -> Option<PreparedField> {
+        self.fields
+            .read()
+            .unwrap()
+            .iter()
+            .find(|f| f.point == *point && f.is_valid() && f.aims.len() == nw)
+            .cloned()
+    }
+    fn ray(&self, key: &AimKey) -> Option<([f64; 2], Option<Mat2>)> {
+        self.rays.read().unwrap().get(key).copied()
+    }
+}
+
+/// How a tracer uses [`AimSeeds`].
+#[derive(Clone, Debug)]
+enum Seeds {
+    /// The anchor: converged solves are written.
+    Record(Arc<AimSeeds>),
+    /// A nearby system: solves start from the anchor's.
+    Read(Arc<AimSeeds>),
 }
 
 /// Settings of a [`SequentialTracer`].
@@ -210,6 +282,7 @@ pub struct SequentialTracer {
     settings: TracerSettings,
     fields: Vec<PreparedField>,
     warnings: Vec<String>,
+    seeds: Option<Seeds>,
 }
 
 impl SequentialTracer {
@@ -218,6 +291,37 @@ impl SequentialTracer {
     }
 
     pub fn with_settings(sys: Arc<ResolvedSystem>, settings: TracerSettings) -> MkResult<Self> {
+        Self::build(sys, settings, None)
+    }
+
+    /// [`Self::with_settings`] for a system near the anchor of `seeds`:
+    /// field sources, chief aims and pupil-ray aims start from the anchor's
+    /// solutions ([`AimSeeds`]).
+    pub fn with_seeds(
+        sys: Arc<ResolvedSystem>,
+        settings: TracerSettings,
+        seeds: Arc<AimSeeds>,
+    ) -> MkResult<Self> {
+        Self::build(sys, settings, Some(Seeds::Read(seeds)))
+    }
+
+    /// Make this tracer an anchor: its prepared fields, and the aims of the
+    /// pupil rays it generates from now on, are recorded into the returned
+    /// seeds for [`Self::with_seeds`].
+    pub fn record_seeds(&mut self) -> Arc<AimSeeds> {
+        let seeds = Arc::new(AimSeeds {
+            fields: RwLock::new(self.fields.clone()),
+            rays: Default::default(),
+        });
+        self.seeds = Some(Seeds::Record(seeds.clone()));
+        seeds
+    }
+
+    fn build(
+        sys: Arc<ResolvedSystem>,
+        settings: TracerSettings,
+        seeds: Option<Seeds>,
+    ) -> MkResult<Self> {
         let paraxial = Paraxial::new(&sys)?;
         let p = paraxial.primary();
         let pupil = PupilGeometry {
@@ -238,12 +342,21 @@ impl SequentialTracer {
             settings,
             fields: Vec::new(),
             warnings,
+            seeds,
         };
+        // Fields are independent solves; prepare them on the rayon pool
+        // (in order, so results and warnings do not depend on threads).
         let n = t.sys.system().fields.fields.len();
+        let prepared: Vec<_> = (0..n)
+            .into_par_iter()
+            .map(|i| {
+                let point = FieldPoint::system(t.sys.system(), i);
+                (point, t.prepare_field(point))
+            })
+            .collect();
         let mut fields = Vec::with_capacity(n);
-        for i in 0..n {
-            let point = FieldPoint::system(t.sys.system(), i);
-            let f = match t.prepare_field(point) {
+        for (i, (point, prepared)) in prepared.into_iter().enumerate() {
+            let f = match prepared {
                 Ok(f) => {
                     if f.aims.iter().any(|a| !a.converged) {
                         t.warnings
@@ -375,6 +488,11 @@ impl SequentialTracer {
         rel * self.pupil.r_stop.max(f64::MIN_POSITIVE)
     }
 
+    /// Rounding floor of a seeded aim solve (stop coordinates).
+    fn aim_floor(&self) -> f64 {
+        (1e-4 * self.aim_tolerance()).max(16.0 * f64::EPSILON * self.pupil.r_stop)
+    }
+
     fn fd_step(&self) -> f64 {
         1e-6 * self.aim_scale().max(1e-6)
     }
@@ -388,23 +506,58 @@ impl SequentialTracer {
         x0: [f64; 2],
         j0: Option<Mat2>,
     ) -> (crate::numeric::Solve2, u32) {
+        self.solve_aim_seeded(src, wl, target, x0, j0, None)
+    }
+
+    /// [`Self::solve_aim`], seeded as `newton2_seeded` when `seed` is set.
+    fn solve_aim_seeded(
+        &self,
+        src: &ObjectSource,
+        wl: usize,
+        target: [f64; 2],
+        x0: [f64; 2],
+        j0: Option<Mat2>,
+        seed: Option<f64>,
+    ) -> (crate::numeric::Solve2, u32) {
         let f = |a: [f64; 2]| {
             self.stop_hit(src, a, wl)
                 .map(|s| [s[0] - target[0], s[1] - target[1]])
         };
-        let s = newton2(
+        let s = newton2_seeded(
             &f,
             x0,
             j0,
             self.fd_step(),
             self.aim_tolerance(),
             self.settings.max_aim_iterations,
+            seed,
         );
         let it = s.iterations;
         (s, it)
     }
 
-    fn chief_aim(&self, src: &ObjectSource, wl: usize) -> AimData {
+    /// The seeds this tracer reads, if any.
+    fn read_seeds(&self) -> Option<&AimSeeds> {
+        match &self.seeds {
+            Some(Seeds::Read(s)) => Some(s),
+            _ => None,
+        }
+    }
+
+    fn chief_aim(&self, src: &ObjectSource, wl: usize, seed: Option<&AimData>) -> AimData {
+        self.chief_aim_with(src, wl, true, seed)
+    }
+
+    /// [`Self::chief_aim`]; without the final aim Jacobian (four stop
+    /// traces) when `jacobian` is false, for callers that only use the aim.
+    /// A converged `seed` (the anchor's aim, [`AimSeeds`]) starts the solve.
+    fn chief_aim_with(
+        &self,
+        src: &ObjectSource,
+        wl: usize,
+        jacobian: bool,
+        seed: Option<&AimData>,
+    ) -> AimData {
         match self.aiming {
             RayAiming::Off => AimData {
                 chief: [0.0, 0.0],
@@ -413,7 +566,24 @@ impl SequentialTracer {
                 residual: 0.0,
             },
             RayAiming::Real { .. } => {
-                let (mut s, _) = self.solve_aim(src, wl, [0.0, 0.0], [0.0, 0.0], None);
+                let seeded = seed
+                    .filter(|a| a.converged)
+                    .map(|a| {
+                        self.solve_aim_seeded(
+                            src,
+                            wl,
+                            [0.0, 0.0],
+                            a.chief,
+                            a.jacobian,
+                            Some(self.aim_floor()),
+                        )
+                        .0
+                    })
+                    .filter(|s| s.converged);
+                let mut s = match seeded {
+                    Some(s) => s,
+                    None => self.solve_aim(src, wl, [0.0, 0.0], [0.0, 0.0], None).0,
+                };
                 if !s.converged {
                     // A wide-field paraxial seed can miss the front surfaces:
                     // continue the source from the axis, ending on `src`
@@ -466,9 +636,13 @@ impl SequentialTracer {
                     }
                 }
                 let f = |a: [f64; 2]| self.stop_hit(src, a, wl);
-                let jac = f(s.x)
-                    .and_then(|fx| fd_jacobian(&f, s.x, fx, self.fd_step()))
-                    .or(s.jacobian);
+                let jac = if jacobian {
+                    f(s.x)
+                        .and_then(|fx| fd_jacobian(&f, s.x, fx, self.fd_step()))
+                        .or(s.jacobian)
+                } else {
+                    s.jacobian
+                };
                 AimData {
                     chief: s.x,
                     jacobian: jac,
@@ -481,16 +655,47 @@ impl SequentialTracer {
 
     /// Resolve a field point into its source and per-wavelength aim cache.
     pub fn prepare_field(&self, point: FieldPoint) -> MkResult<PreparedField> {
-        let source = self.field_source(&point)?;
-        let aims = (0..self.num_wavelengths())
-            .map(|w| self.chief_aim(&source, w))
+        let nw = self.num_wavelengths();
+        let seed = self.read_seeds().and_then(|s| s.field(&point, nw));
+        let source = match seed.as_ref().and_then(|f| self.seeded_source(&point, f)) {
+            Some(source) => source,
+            None => self.field_source(&point)?,
+        };
+        let aims = (0..nw)
+            .into_par_iter()
+            .map(|w| self.chief_aim(&source, w, seed.as_ref().map(|f| &f.aims[w])))
             .collect();
-        Ok(PreparedField {
+        let field = PreparedField {
             point,
             source,
             aims,
             error: None,
-        })
+        };
+        if let Some(Seeds::Record(s)) = &self.seeds {
+            let mut fields = s.fields.write().unwrap();
+            if !fields.iter().any(|f| f.point == point) {
+                fields.push(field.clone());
+            }
+        }
+        Ok(field)
+    }
+
+    /// The real-image-height source of `point`, solved from the anchor's
+    /// `seed` field; `None` for other field kinds, the axis, or when the
+    /// seeded solve fails (the caller then solves unseeded).
+    fn seeded_source(&self, point: &FieldPoint, seed: &PreparedField) -> Option<ObjectSource> {
+        let osys = self.sys.system();
+        if !matches!(osys.fields.kind, FieldKind::RealImageHeight) {
+            return None;
+        }
+        let fmax = osys.fields.max_radial();
+        let target = [point.hx * fmax, point.hy * fmax];
+        if target == [0.0, 0.0] {
+            return None;
+        }
+        let aim = &seed.aims[self.sys.primary_wavelength];
+        self.solve_real_image_height_from(self.source_params(&seed.source), target, Some(aim))
+            .ok()
     }
 
     /// A field that could not be resolved (see [`PreparedField`]).
@@ -602,9 +807,9 @@ impl SequentialTracer {
     }
 
     /// Image-surface hit of the chief ray of `src` (primary wavelength).
-    fn chief_image_hit(&self, src: &ObjectSource) -> Option<[f64; 2]> {
+    fn chief_image_hit(&self, src: &ObjectSource, seed: Option<&AimData>) -> Option<[f64; 2]> {
         let wl = self.sys.primary_wavelength;
-        let aim = self.chief_aim(src, wl);
+        let aim = self.chief_aim_with(src, wl, false, seed);
         if !aim.converged {
             return None;
         }
@@ -621,15 +826,28 @@ impl SequentialTracer {
         if target == [0.0, 0.0] {
             return Ok(guess);
         }
-        let x0 = self.source_params(&guess);
+        self.solve_real_image_height_from(self.source_params(&guess), target, None)
+    }
+
+    /// The real-image-height solve from source parameters `x0`; with an
+    /// anchor's chief `aim`, `x0` is the anchor's source and the solve is
+    /// seeded (`newton2_seeded`).
+    fn solve_real_image_height_from(
+        &self,
+        x0: [f64; 2],
+        target: [f64; 2],
+        aim: Option<&AimData>,
+    ) -> MkResult<ObjectSource> {
         let f = |p: [f64; 2]| {
             let src = self.source_from_params(p)?;
-            self.chief_image_hit(&src)
+            self.chief_image_hit(&src, aim)
                 .map(|h| [h[0] - target[0], h[1] - target[1]])
         };
         let scale = x0[0].hypot(x0[1]).max(1e-6);
-        let tol = 1e-12 * target[0].hypot(target[1]).max(1e-3);
-        let s = newton2(&f, x0, None, 1e-6 * scale, tol, 60);
+        let height = target[0].hypot(target[1]);
+        let tol = 1e-12 * height.max(1e-3);
+        let seed = aim.map(|_| (1e-4 * tol).max(16.0 * f64::EPSILON * height));
+        let s = newton2_seeded(&f, x0, None, 1e-6 * scale, tol, 60, seed);
         if !s.converged {
             return Err(MkError::Trace(format!(
                 "real image height ({}, {}) not reached by any chief ray (residual {:.3e} mm)",
@@ -653,12 +871,65 @@ impl SequentialTracer {
     ) -> Result<GeneratedRay, AimReport> {
         match self.aim_start(field, wl, px, py)? {
             AimStart::Ready(g) => Ok(g),
-            AimStart::Solve { target, x0 } => {
-                let (s, iters) =
-                    self.solve_aim(&field.source, wl, target, x0, field.aims[wl].jacobian);
-                self.finish_aim(field, wl, target, s, iters)
+            AimStart::Solve {
+                target,
+                x0,
+                j0,
+                seed,
+                key,
+            } => {
+                let (s, iters) = self.solve_aim_seeded(&field.source, wl, target, x0, j0, seed);
+                self.finish_seeded(field, wl, target, s, iters, seed.is_some(), key)
             }
         }
+    }
+
+    /// [`Self::finish_aim`] of a direct solve; a seeded solve that did not
+    /// converge is first repeated unseeded. Records the aim on an anchor.
+    #[allow(clippy::too_many_arguments)]
+    fn finish_seeded(
+        &self,
+        field: &PreparedField,
+        wl: usize,
+        target: [f64; 2],
+        mut s: crate::numeric::Solve2,
+        mut iters: u32,
+        seeded: bool,
+        key: Option<AimKey>,
+    ) -> Result<GeneratedRay, AimReport> {
+        if seeded && !s.converged {
+            let x0 = self.linear_aim(field, wl, target);
+            let (cold, it) = self.solve_aim(&field.source, wl, target, x0, field.aims[wl].jacobian);
+            (s, iters) = (cold, iters + it);
+        }
+        let (g, jacobian) = self.finish_aim(field, wl, target, s, iters);
+        if let (Some(Seeds::Record(seeds)), Some(key), Ok(g)) = (&self.seeds, key, &g) {
+            // A central-difference Jacobian at the solution (the solve's own
+            // is a Broyden estimate): a seeded solve then resolves its small
+            // change in one step.
+            let f = |a: [f64; 2]| self.stop_hit(&field.source, a, wl);
+            let exact = f(g.aim).and_then(|fx| fd_jacobian(&f, g.aim, fx, self.fd_step()));
+            seeds
+                .rays
+                .write()
+                .unwrap()
+                .insert(key, (g.aim, exact.or(jacobian)));
+        }
+        g
+    }
+
+    /// The linear prediction of the aim for stop target `target` from the
+    /// chief ray's aim Jacobian (or the paraxial aim).
+    fn linear_aim(&self, field: &PreparedField, wl: usize, target: [f64; 2]) -> [f64; 2] {
+        let ad = &field.aims[wl];
+        ad.jacobian
+            .and_then(|j| solve2(j, target))
+            .map(|d| [ad.chief[0] + d[0], ad.chief[1] + d[1]])
+            .unwrap_or_else(|| {
+                let r = self.pupil.r_stop;
+                let p = self.paraxial_aim([target[0] / r, target[1] / r]);
+                [ad.chief[0] + p[0], ad.chief[1] + p[1]]
+            })
     }
 
     /// Everything of [`Self::generate`] before the real-aim solve.
@@ -669,6 +940,10 @@ impl SequentialTracer {
         px: f64,
         py: f64,
     ) -> Result<AimStart, AimReport> {
+        // Seeds are keyed by the requested pupil point; the chief ray is
+        // the prepared field's own aim and never seeded.
+        let key =
+            (self.seeds.is_some() && (px, py) != (0.0, 0.0)).then(|| aim_key(field, wl, px, py));
         let (px, py) = field.point.vignetting.apply(px, py);
         let fail = AimReport {
             iterations: 0,
@@ -705,14 +980,32 @@ impl SequentialTracer {
                         let p = self.paraxial_aim([px, py]);
                         [ad.chief[0] + p[0], ad.chief[1] + p[1]]
                     });
-                Ok(AimStart::Solve { target, x0 })
+                let seed = key
+                    .as_ref()
+                    .and_then(|k| self.read_seeds().and_then(|s| s.ray(k)));
+                Ok(match seed {
+                    Some((aim, j)) => AimStart::Solve {
+                        target,
+                        x0: aim,
+                        j0: j.or(ad.jacobian),
+                        seed: Some(self.aim_floor()),
+                        key,
+                    },
+                    None => AimStart::Solve {
+                        target,
+                        x0,
+                        j0: ad.jacobian,
+                        seed: None,
+                        key,
+                    },
+                })
             }
         }
     }
 
     /// Everything of [`Self::generate`] after the direct real-aim solve `s`
     /// (`iters` Newton iterations): continuation in the pupil radius if it
-    /// did not converge, then the starting ray.
+    /// did not converge, then the starting ray, and the final aim Jacobian.
     fn finish_aim(
         &self,
         field: &PreparedField,
@@ -720,7 +1013,7 @@ impl SequentialTracer {
         target: [f64; 2],
         mut s: crate::numeric::Solve2,
         mut iters: u32,
-    ) -> Result<GeneratedRay, AimReport> {
+    ) -> (Result<GeneratedRay, AimReport>, Option<Mat2>) {
         let ad = &field.aims[wl];
         let r_stop = self.pupil.r_stop;
         if !s.converged {
@@ -750,14 +1043,17 @@ impl SequentialTracer {
             converged: s.converged,
         };
         if !s.converged {
-            return Err(report);
+            return (Err(report), s.jacobian);
         }
-        let ray = self.start_ray(&field.source, s.x).ok_or(report)?;
-        Ok(GeneratedRay {
-            ray,
-            aim: s.x,
-            report,
-        })
+        let g = self
+            .start_ray(&field.source, s.x)
+            .ok_or(report)
+            .map(|ray| GeneratedRay {
+                ray,
+                aim: s.x,
+                report,
+            });
+        (g, s.jacobian)
     }
 
     /// [`Self::generate`] for many pupil points at once, bitwise identical
@@ -771,15 +1067,22 @@ impl SequentialTracer {
         let mut solves = Vec::new();
         for (k, &(field, wl, [px, py])) in rays.iter().enumerate() {
             match self.aim_start(field, wl, px, py) {
-                Ok(AimStart::Solve { target, x0 }) => {
+                Ok(AimStart::Solve {
+                    target,
+                    x0,
+                    j0,
+                    seed,
+                    key,
+                }) => {
                     let n = Newton2::new(
                         x0,
-                        field.aims[wl].jacobian,
+                        j0,
                         self.fd_step(),
                         self.aim_tolerance(),
                         self.settings.max_aim_iterations,
-                    );
-                    solves.push((k, target, n));
+                    )
+                    .seeded(seed);
+                    solves.push((k, target, n, seed.is_some(), key));
                     // Placeholder until the solve finishes.
                     out.push(Err(AimReport {
                         iterations: 0,
@@ -805,7 +1108,7 @@ impl SequentialTracer {
             starts.clear();
             wls.clear();
             has_ray.clear();
-            for (k, _, n) in &solves {
+            for (k, _, n, ..) in &solves {
                 let (field, wl, _) = rays[*k];
                 for &a in n.pending() {
                     let ray = self.start_ray(&field.source, a);
@@ -821,7 +1124,7 @@ impl SequentialTracer {
             }
             let hits = trace_rays(&self.sys, &starts, &wls, &opts);
             let (mut hit, mut point) = (hits.iter(), has_ray.iter());
-            for (_, target, n) in &mut solves {
+            for (_, target, n, ..) in &mut solves {
                 values.clear();
                 for _ in 0..n.pending().len() {
                     let traced = *point.next().expect("one flag per pending point");
@@ -839,10 +1142,10 @@ impl SequentialTracer {
                 }
             }
         }
-        for (k, target, n) in solves {
+        for (k, target, n, seeded, key) in solves {
             let (field, wl, _) = rays[k];
             let s = n.result().expect("a finished solve has a result");
-            out[k] = self.finish_aim(field, wl, target, s, s.iterations);
+            out[k] = self.finish_seeded(field, wl, target, s, s.iterations, seeded, key);
         }
         out
     }

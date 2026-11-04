@@ -201,6 +201,10 @@ impl EvalStatus {
 pub struct CandidateBatch {
     pub n_vars: usize,
     pub data: Vec<f64>,
+    /// A point every candidate is a small perturbation of (the base of a
+    /// finite-difference Jacobian), which evaluators may use to seed their
+    /// solves (`OperandEvaluator::evaluate_batch_near`). Not a candidate.
+    pub anchor: Option<Vec<f64>>,
 }
 
 impl CandidateBatch {
@@ -208,12 +212,14 @@ impl CandidateBatch {
         CandidateBatch {
             n_vars,
             data: Vec::new(),
+            anchor: None,
         }
     }
     pub fn with_capacity(n_vars: usize, n: usize) -> Self {
         CandidateBatch {
             n_vars,
             data: Vec::with_capacity(n * n_vars),
+            anchor: None,
         }
     }
     pub fn from_points<'a>(n_vars: usize, pts: impl IntoIterator<Item = &'a [f64]>) -> Self {
@@ -346,6 +352,15 @@ pub trait Problem: Sync {
     /// traces) say what they need. `None` = `√ε` / `∛ε` (see `deriv`).
     fn fd_relative_step(&self, _scheme: crate::deriv::FdScheme) -> Option<f64> {
         None
+    }
+
+    /// Should finite differences re-evaluate the base point in the batch of
+    /// their probes and difference against it? Yes for evaluators whose
+    /// values carry solve or precision differences between batches (seeded
+    /// aiming, a device that may complete some values on the reference);
+    /// a pure function of the candidate (the default) needs no extra row.
+    fn anchored_differences(&self) -> bool {
+        false
     }
 
     fn num_variables(&self) -> usize {
