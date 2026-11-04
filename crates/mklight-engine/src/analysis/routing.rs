@@ -454,7 +454,7 @@ mod tests {
             s.run_analysis(&req, &JobContext::new()).unwrap()
         };
         for (name, rule) in [
-            ("stray_light", "accuracy exclusion"),
+            ("ghost_irradiance", "accuracy exclusion"),
             ("wavefront_map", "static capability"),
         ] {
             let r = run(name, Value::Null);

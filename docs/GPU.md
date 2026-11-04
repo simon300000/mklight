@@ -1751,21 +1751,23 @@ measuring. `MKLIGHT_COST_CALIBRATION=<file>` loads another table at engine
 start (format and model version must match). `validate` in the same file compares `auto`
 against both backends on fresh edits and warm repeats.
 
-*Accuracy exclusions*, re-qualified (E1, point 14) with `metal_accuracy` on the
-16 samples (release, real Metal, master after C2) and the complex lens
-(`project_bench` accuracy records, Metal DF vs CPU f64):
+*Accuracy exclusions*, re-qualified (E1, point 14) with F1's per-quantity
+contracts: `metal_accuracy` on the 16 samples (release, real Metal, master
+afa942a: 480 rows, 0 native gate failures) and the complex lens
+(`project_bench` accuracy records, Metal DF vs CPU f64, warm and edited):
 
 | Analysis | Status | Evidence |
 |---|---|---|
-| `stray_light` | excluded | complex lens: absorbed energy 5.8e-2 against f64 (sampled margin 4.9e-5); 3/16 samples: discrete `energy.events` counts (roulette) |
-| `footprint` | excluded | newtonian sample: overlay outline masks differ |
-| `psf`, `mtf`, `line_spread`, `diffraction_encircled_energy`, `through_focus_mtf`, `mtf_vs_field` | re-qualified | 16/16 within budget (maxima 4.3e-7, 9.2e-7, 1.4e-4, 6.9e-6, 4.7e-7, 3.4e-7); lens 2.0e-6, 1.3e-5 (`cutoff` scalar: 0.63 of its budget, above only the one-third sampled margin; curves ≤ 6e-8), 2.2e-3 (0.006 of budget), 5.4e-6, 4.6e-7, 1.6e-7 |
-| `chief_ray_angle`, `pupil_aberration`, `relative_illumination_map`, `grid_distortion` | re-qualified | 16/16 without mask mismatches; lens 2.1e-6, 5.3e-7, 1.5e-6, 2.5e-7, no mask mismatches (host f64 chief rows, A4) |
-| `field_curvature_distortion` | re-qualified | 16/16 (3.8e-8); lens 2.8e-7 (host f64 differential pencil, D2) |
-| `ghost_irradiance` | excluded | 16/16 samples pass since C2, but on the complex lens an edited snapshot gave one discrete `rays_traced` mismatch (1 of 1,656 ghost fields; flux 8e-5 of its budget) |
+| `ghost_irradiance` | excluded | 16/16 samples pass, but an edited complex-lens snapshot gives one discrete `rays_traced` mismatch (23,442 vs 23,370 in 1 of 1,656 ghost fields; positions 0.035 and flux far inside their contracts) |
+| `glass_substitution` | excluded | complex lens: the native search returns other finalists (merit and violation far outside their gates); the CPU is also faster |
+| `psf`, `mtf`, `line_spread`, `diffraction_encircled_energy`, `through_focus_mtf`, `mtf_vs_field` | re-qualified | 16/16 within contract; complex lens within contract (MTF frequency class ≤ 0.016 of its gate, dense grids included) |
+| `chief_ray_angle`, `pupil_aberration`, `relative_illumination_map`, `grid_distortion` | re-qualified | 16/16; complex lens without mask mismatches (host f64 chief rows, A4) |
+| `field_curvature_distortion` | re-qualified | 16/16; complex lens 2.8e-7 (host f64 differential pencil, D2) |
+| `stray_light` | re-qualified | passes F1's statistical ledger contract on the 16 samples and the complex lens (worst 0.10 of its gate, edited) |
+| `footprint` | re-qualified | 16/16 under F1's outline contract (newtonian included); complex lens outline 0.07 of its gate |
 
-The candidate solvers are no longer a separate rule: the model predicts them
-like every other analysis (on the complex lens the CPU wins by about 3× per
+The other candidate solvers are no longer a separate rule: the model predicts
+them like every other analysis (on the complex lens the CPU wins by about 3× per
 candidate in device time alone, C2).
 
 **Deciding before the device opens.** Providers describe their analyses,

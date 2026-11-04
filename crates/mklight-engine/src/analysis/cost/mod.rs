@@ -60,16 +60,12 @@ pub const PRIOR_ITERATIONS: f64 = 3.43;
 /// GPU.md §9.2 for the evidence of each entry.
 const EXCLUSIONS: &[(&str, &str)] = &[
     (
-        "stray_light",
-        "complex lens: absorbed energy 5.8e-2 against f64 (sampled margin 4.9e-5); 3/16 samples: discrete energy.events counts differ (roulette)",
-    ),
-    (
-        "footprint",
-        "newtonian sample: overlay outline masks differ from f64",
-    ),
-    (
         "ghost_irradiance",
-        "complex lens, edited snapshot: a discrete rays_traced count differs from f64 (1 of 1,656 ghost fields; flux within 8e-5 of its budget); 16/16 samples pass since C2",
+        "complex lens, edited snapshot: a discrete rays_traced count differs from f64 (23,442 vs 23,370 in 1 of 1,656 ghost fields; positions and flux within their contracts); 16/16 samples pass",
+    ),
+    (
+        "glass_substitution",
+        "complex lens: the native search returns other finalists than f64 (finalist merit and violation far outside their gates)",
     ),
 ];
 
@@ -852,7 +848,7 @@ mod tests {
             (known.route, known.json["rule"].as_str()),
             (Route::Cpu, Some("known failure"))
         );
-        let excluded = m.decide("stray_light", &json!({}), &singlet, Device::Unknown, &warm);
+        let excluded = m.decide("ghost_irradiance", &json!({}), &singlet, Device::Unknown, &warm);
         assert_eq!(excluded.route, Route::Cpu);
         assert!(excluded.note().contains("f64 comparison"));
         // Unknown and uncalibrated devices.
