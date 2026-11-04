@@ -365,6 +365,27 @@ impl BackendRegistry {
         }))
     }
 
+    /// Why an explicit request for `requested` cannot run `analysis`, when
+    /// the provider's hint tells without opening its device (an analysis it
+    /// has no path for, or a device already known to be unavailable). Static
+    /// CPU routes of explicit requests then cost no device setup.
+    fn refusal_before_open(&self, requested: &Backend, analysis: Option<&str>) -> Option<String> {
+        let id = requested.id();
+        let h = self.providers.iter().find(|p| p.id() == id)?.hint()?;
+        if h.reference {
+            return None;
+        }
+        if let Some(reason) = h.unavailable {
+            return Some(if reason.is_empty() {
+                "unavailable".into()
+            } else {
+                reason
+            });
+        }
+        let a = analysis?;
+        (!h.analyses.iter().any(|x| x == a)).then(|| format!("it does not implement '{a}'"))
+    }
+
     /// Resolve a request for running `analysis` (`None`: only check that
     /// the backend is available). A backend that is unavailable or does not
     /// implement the analysis is an error, or, with `allow_fallback`, the CPU
@@ -378,21 +399,24 @@ impl BackendRegistry {
         if *requested == Backend::Auto {
             return Ok(self.select_auto(analysis));
         }
-        let why = match self.provider(requested) {
-            None => "unknown backend".to_string(),
-            Some((_, i)) if !i.available => i.reason.unwrap_or_else(|| "unavailable".into()),
-            Some((p, i)) => match analysis {
-                Some(a) if !i.supports(a) => format!("it does not implement '{a}'"),
-                _ => {
-                    return Ok(SelectedBackend {
-                        device: p.device(),
-                        info: i,
-                        warning: None,
-                        requested: requested.id(),
-                        note: None,
-                        cost_decision: None,
-                    });
-                }
+        let why = match self.refusal_before_open(requested, analysis) {
+            Some(why) => why,
+            None => match self.provider(requested) {
+                None => "unknown backend".to_string(),
+                Some((_, i)) if !i.available => i.reason.unwrap_or_else(|| "unavailable".into()),
+                Some((p, i)) => match analysis {
+                    Some(a) if !i.supports(a) => format!("it does not implement '{a}'"),
+                    _ => {
+                        return Ok(SelectedBackend {
+                            device: p.device(),
+                            info: i,
+                            warning: None,
+                            requested: requested.id(),
+                            note: None,
+                            cost_decision: None,
+                        });
+                    }
+                },
             },
         };
         if allow_fallback && *requested != Backend::CpuReference {

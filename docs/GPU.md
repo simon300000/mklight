@@ -1832,7 +1832,9 @@ GPU). Routes the model settles as the reference are decided before any
 device initialisation, so a cold call that ends on the CPU pays no Metal
 setup; the decision carries `"before_device": true`. A cold device's setup is
 part of the native prediction. Each decision is recorded in the backend
-report (`cost_decision`, RESULTS §5).
+report (`cost_decision`, RESULTS §5). An explicit GPU request for an analysis
+the provider has no path for (first-order data, Seidel, glass data, solves,
+validation, ...) falls back from the same hint, without opening the device.
 
 **Failed and skipped native attempts.** `RunInfo.failed_attempts` lists every
 backend attempt that did not produce the result: `failed` (the native run
