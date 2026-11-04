@@ -2178,3 +2178,39 @@ pub fn schema_leaves(schema: &Value) -> Vec<String> {
 pub fn class_budget(class: Class, reference: f64) -> f64 {
     class.budget(reference, reference, &Scale::default())
 }
+
+/// The physical score view of a solver report (`SOLVER_SCORES`): execution
+/// telemetry and returned designs legitimately differ between backends.
+pub fn solver_scores(analysis: &str, v: &Value) -> Value {
+    use serde_json::json;
+    match analysis {
+        "merit_evaluation" => {
+            json!({"merit":v["merit"],"violation":v["violation"],"status":v["status"],"operands":v["operands"]})
+        }
+        "optimize" => json!({"start":v["start"],"final":v["final"]}),
+        "tolerance" => {
+            let mut mc = v["monte_carlo"].clone();
+            if let Some(object) = mc.as_object_mut() {
+                object.remove("seconds_per_trial");
+            }
+            json!({"sensitivity":v["sensitivity"],"monte_carlo":mc})
+        }
+        _ => {
+            json!({"finalists":v["results"].as_array().map(|rs| rs.iter().map(|r| json!({"merit":r["merit"],"violation":r["violation"],"feasible":r["feasible"],"glasses":r["glasses"]})).collect::<Vec<_>>())})
+        }
+    }
+}
+
+/// Native attempts that did not produce the published result, as
+/// `backend outcome: reason` lines. A failed, skipped (a cached
+/// deterministic failure), infeasible or reference-completed native run is a
+/// native failure even when the reference fallback succeeded; `downgraded`
+/// (the static capability list ran an explicit request on the reference) is
+/// a deliberate route, not a failure.
+pub fn native_failures(info: &mklight_core::RunInfo) -> Vec<String> {
+    info.failed_attempts
+        .iter()
+        .filter(|a| a.outcome != "downgraded")
+        .map(|a| format!("{} {}: {}", a.backend, a.outcome, a.reason))
+        .collect()
+}

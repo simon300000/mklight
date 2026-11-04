@@ -3,7 +3,9 @@
 //! Prints one `BUFFER_IDENTITY` JSON line per analysis call: BLAKE3 of the
 //! canonical result JSON and of every buffer's name, dtype, shape and raw
 //! bytes, plus wall and Metal device time. Builds of two revisions are
-//! compared line by line; equal hashes prove byte-identical results.
+//! compared line by line; equal hashes prove byte-identical results. When
+//! `cpu` precedes another mode, a `BUFFER_CONTRACT` line also judges that
+//! mode's result against the CPU f64 one under the per-quantity contract.
 //!
 //! cargo test --release -p mklight-engine --test buffer_identity -- --ignored
 //! --nocapture --test-threads=1
@@ -19,10 +21,16 @@ use std::time::Instant;
 
 use mklight_core::{JobContext, samples};
 use mklight_engine::{
-    AnalysisRequest, Engine, EngineConfig, Session, analysis::AnalysisResult, backend::Backend,
-    buffer::BufferData, project::Project,
+    AnalysisRequest, Engine, EngineConfig, Session,
+    analysis::{AnalysisOutput, AnalysisResult},
+    backend::Backend,
+    buffer::BufferData,
+    project::Project,
 };
 use serde_json::{Value, json};
+
+#[path = "support/comparison.rs"]
+mod comparison;
 
 fn bytes(d: &BufferData) -> &[u8] {
     fn raw<T>(v: &[T]) -> &[u8] {
@@ -85,7 +93,52 @@ fn default_cases(engine: &Engine, project: bool) -> Vec<Value> {
     cases
 }
 
-fn run(session: &Session, label: &str, case: &Value, mode: &str, runs: usize) {
+/// One `BUFFER_CONTRACT` line: a non-reference result against the CPU f64
+/// result of the same case under the per-quantity contract (GPU §9.4), with
+/// the native attempts a fallback hid. Hashes cannot compare builds whose
+/// arithmetic legitimately changed; the contract can.
+fn contract(label: &str, case: &Value, mode: &str, cpu: &AnalysisResult, other: &AnalysisResult) {
+    let analysis = case["analysis"].as_str().unwrap();
+    if !comparison::FIELDS
+        .iter()
+        .chain(comparison::SOLVER_SCORES)
+        .any(|(a, _)| *a == analysis)
+    {
+        return; // CPU-only analysis: no native result to judge.
+    }
+    let solver = comparison::SOLVER_SCORES
+        .iter()
+        .any(|(a, _)| *a == analysis);
+    let output = |r: &AnalysisResult| AnalysisOutput {
+        json: if solver {
+            comparison::solver_scores(analysis, &r.json)
+        } else {
+            r.json.clone()
+        },
+        buffers: if solver {
+            Vec::new()
+        } else {
+            r.buffers.clone()
+        },
+        ..Default::default()
+    };
+    let c =
+        comparison::compare(&output(cpu), &output(other), analysis, &JobContext::new()).unwrap();
+    let line = json!({"design":label,"case":case["name"],"mode":mode,"used":other.backend.used,
+        "compared":c.compared,"gate_failures":c.failures,"classes":c.classes,
+        "native_failures":comparison::native_failures(&other.run_info),
+        "sampling_differences":c.sampling_differences});
+    println!("BUFFER_CONTRACT {line}");
+}
+
+fn run(
+    session: &Session,
+    label: &str,
+    case: &Value,
+    mode: &str,
+    runs: usize,
+) -> Option<AnalysisResult> {
+    let mut last = None;
     let mut request =
         AnalysisRequest::new(case["analysis"].as_str().unwrap(), case["settings"].clone());
     request.backend = Some(match mode {
@@ -109,11 +162,13 @@ fn run(session: &Session, label: &str, case: &Value, mode: &str, runs: usize) {
                 // Every round: repeated requests may be answered by the
                 // engine's analysis graph and must stay identical.
                 line["identity"] = hashes(&r);
+                last = Some(r);
             }
             Err(e) => line["error"] = json!(e.to_string()),
         }
         println!("BUFFER_IDENTITY {line}");
     }
+    last
 }
 
 #[test]
@@ -154,9 +209,20 @@ fn buffer_identity_probe() {
             .clone()
             .unwrap_or_else(|| default_cases(&engine, *project));
         for case in &cases {
+            let mut reference = None;
             for mode in modes.split(',') {
-                run(session, label, case, mode, runs);
+                let result = run(session, label, case, mode, runs);
+                match (mode, &reference, &result) {
+                    ("cpu", _, _) => reference = result,
+                    (_, Some(cpu), Some(other)) => contract(label, case, mode, cpu, other),
+                    _ => {}
+                }
             }
         }
     }
+    // Retained bytes stay within the configured graph budget.
+    println!(
+        "BUFFER_GRAPH {}",
+        json!({"budget":engine.config().analysis_graph_bytes,"stats":engine.analysis_graph_stats()})
+    );
 }

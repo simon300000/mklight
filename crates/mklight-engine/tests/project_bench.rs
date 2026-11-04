@@ -370,26 +370,8 @@ fn accuracy(a: &AnalysisResult, b: &AnalysisResult, name: &str) -> Value {
     // Solver execution telemetry and returned designs legitimately differ.
     // Compare their physical score reports, not timing/backend identity.
     if SOLVERS.contains(&name) {
-        fn scores(name: &str, v: &Value) -> Value {
-            match name {
-                "merit_evaluation" => {
-                    json!({"merit":v["merit"],"violation":v["violation"],"status":v["status"],"operands":v["operands"]})
-                }
-                "optimize" => json!({"start":v["start"],"final":v["final"]}),
-                "tolerance" => {
-                    let mut mc = v["monte_carlo"].clone();
-                    if let Some(object) = mc.as_object_mut() {
-                        object.remove("seconds_per_trial");
-                    }
-                    json!({"sensitivity":v["sensitivity"],"monte_carlo":mc})
-                }
-                _ => {
-                    json!({"finalists":v["results"].as_array().map(|rs| rs.iter().map(|r| json!({"merit":r["merit"],"violation":r["violation"],"feasible":r["feasible"],"glasses":r["glasses"]})).collect::<Vec<_>>())})
-                }
-            }
-        }
-        a.json = scores(name, &a.json);
-        b.json = scores(name, &b.json);
+        a.json = comparison::solver_scores(name, &a.json);
+        b.json = comparison::solver_scores(name, &b.json);
         a.buffers.clear();
         b.buffers.clear();
     }
