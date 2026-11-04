@@ -15,7 +15,7 @@
 //! | [`interact`] | stable vector Snell refraction with TIR detection, reflection, ideal thin lens |
 //! | [`trace`] | [`trace_ray`]: one ray through a [`ResolvedSystem`] using only relative surface-to-surface transforms; status, compensated OPL, internal transmittance, optional per-surface records. [`trace_rays`]: the same for packets of [`PACKET`] rays (SIMD lane kernel for planes and conics), bitwise identical |
 //! | [`paraxial`] | y–nu trace on the unfolded equivalent (signed reduced indices for mirrors), [`FirstOrder`] properties per wavelength |
-//! | [`tracer`] | [`SequentialTracer`]: fields → object sources, pupils → starting rays, ray aiming (paraxial or real), per-(field, wavelength) aim cache; `generate_many` / `trace_many` aim and trace many rays together, bitwise identical to one by one |
+//! | [`tracer`] | [`SequentialTracer`]: fields → object sources, pupils → starting rays, ray aiming (paraxial or real), per-(field, wavelength) aim cache; `generate_many` / `trace_many` aim and trace many rays together, bitwise identical to one by one; [`AimSeeds`] start the solves of a nearby system (FD neighbour) from an anchor's |
 //! | [`opd`] | OPD against the exit-pupil reference sphere (CONVENTIONS §4) |
 //! | [`semidia`] | automatic clear semi-diameters |
 //! | [`solves`] | solves and pickups: [`apply_solves`] returns a new system with every solve-controlled parameter set (closed-form y–nu updates, fixed-point and bracketed Brent iteration, per configuration) |
@@ -125,8 +125,9 @@ pub use trace::{
     trace_ray_recorded, trace_rays, trace_rays_recorded, transfer_vector,
 };
 pub use tracer::{
-    AimBudget, AimConditioning, AimData, AimReport, AimStats, AimStop, FieldPoint, GeneratedRay,
-    ObjectSource, PreparedField, PupilGeometry, RayRequest, SequentialTracer, TracerSettings,
+    AimBudget, AimConditioning, AimData, AimReport, AimSeeds, AimStats, AimStop, FieldPoint,
+    GeneratedRay, ObjectSource, PreparedField, PupilGeometry, RayRequest, SequentialTracer,
+    TracerSettings,
 };
 
 pub use mklight_core::ResolvedSystem;

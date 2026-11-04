@@ -25,7 +25,10 @@
 //! each lattice point (and field and wavelength) is traced once: refinement
 //! proceeds level by level, tracing the new centres, then the new corners of
 //! the cells at that level, in parallel batches; shared corners and the
-//! centres and corners of parents are looked up, not traced again.
+//! centres and corners of parents are looked up, not traced again. Paths
+//! adjacent in step order are refined together, and a lattice point that
+//! several of them request is traced once along their shared step prefix
+//! (`PathGroup`); each path's results are those of tracing it alone.
 //!
 //! Each ray carries the flux `w_f w_λ · h²/π`: the field and wavelength
 //! weights (normalised over the selection; wavelength weights include the
@@ -522,10 +525,12 @@ impl PathTrace<'_> {
             reserved: 0,
         });
     }
-    fn trace(&self, probe: Probe) -> RayOut {
+    /// The starting ray of a lattice probe; `None` outside the sampled disc
+    /// or when the source cannot reach the aim point. Independent of the path.
+    fn start(&self, probe: Probe) -> Option<mklight_trace::Ray> {
         let p = [probe.x, probe.y].map(|u| pupil(u, self.n, self.overfill));
         if p[0].mul_add(p[0], p[1] * p[1]) > self.overfill * self.overfill {
-            return Ok(None);
+            return None;
         }
         let tracer = self.model.tracer();
         let pupil = tracer.pupil();
@@ -537,15 +542,17 @@ impl PathTrace<'_> {
         let (field, wl) = (&self.fields[probe.field as usize].field, probe.wl as usize);
         let c = field.aims[wl].chief;
         let a = [p[0].mul_add(scale, c[0]), p[1].mul_add(scale, c[1])];
-        let Some(ray) = tracer.start_ray(&field.source, a) else {
+        tracer.start_ray(&field.source, a)
+    }
+    fn trace(&self, probe: Probe) -> RayOut {
+        let Some(ray) = self.start(probe) else {
             return Ok(None);
         };
-        let r = self.model.trace_steps(&ray, wl, self.steps, None);
-        match r.status {
-            SequenceStatus::Ok => Ok(Some((r.ray.pos.x, r.ray.pos.y, r.weight()))),
-            SequenceStatus::Virtual { .. } => Err(r.weight()),
-            _ => Ok(None),
-        }
+        ray_out(
+            &self
+                .model
+                .trace_steps(&ray, probe.wl as usize, self.steps, None),
+        )
     }
 
     fn region(&self, sample: RayOut) -> u8 {
@@ -583,6 +590,98 @@ impl PathTrace<'_> {
             }
         } else {
             out.push(weighted(probes.get(centre), weight));
+        }
+    }
+}
+
+/// Outcome of a traced sequence on the sensor.
+fn ray_out(r: &crate::sequence::SequenceResult) -> RayOut {
+    match r.status {
+        SequenceStatus::Ok => Ok(Some((r.ray.pos.x, r.ray.pos.y, r.weight()))),
+        SequenceStatus::Virtual { .. } => Err(r.weight()),
+        _ => Ok(None),
+    }
+}
+
+/// Sort key of a step; paths are ordered lexicographically by their steps,
+/// so neighbours in that order share their longest common prefixes.
+fn step_key(s: &Step) -> (u32, u8, u8, i64) {
+    (
+        s.surface,
+        s.direction as u8,
+        s.action as u8,
+        s.order.map_or(i64::MIN, i64::from),
+    )
+}
+
+/// Paths whose probes are traced together: a lattice point requested by
+/// several of them is traced once along every shared step prefix (the
+/// forward trace to the first reflection, a shared backward run). A copied
+/// trace state continues bit-identically, so each path's results are those
+/// of tracing it alone.
+struct PathGroup<'a, 'b> {
+    /// Ordered lexicographically by steps.
+    paths: &'b [PathTrace<'a>],
+}
+
+impl PathGroup<'_, '_> {
+    /// Trace one lattice point for `members` (indices into `paths`,
+    /// ascending), appending one outcome per member.
+    fn walk(
+        &self,
+        probe: Probe,
+        members: impl Iterator<Item = usize>,
+        stack: &mut Vec<crate::sequence::TraceState>,
+        out: &mut Vec<RayOut>,
+    ) {
+        let first = &self.paths[0];
+        let ray = first.start(probe);
+        let model = first.model;
+        let wl = probe.wl as usize;
+        let start = ray.map(|r| model.begin(0, &r));
+        stack.clear();
+        // The steps the stack belongs to, and the step at which they ended
+        // (with that result), if they did not complete.
+        let mut prev: &[Step] = &[];
+        let mut ended: Option<(usize, RayOut)> = None;
+        for m in members {
+            let steps = self.paths[m].steps;
+            let state0 = match &start {
+                None => {
+                    out.push(Ok(None));
+                    continue;
+                }
+                Some(Err(r)) => {
+                    out.push(ray_out(r));
+                    continue;
+                }
+                Some(Ok(s)) => *s,
+            };
+            let lcp = prev.iter().zip(steps).take_while(|(a, b)| a == b).count();
+            prev = steps;
+            if let Some((step, result)) = ended
+                && lcp > step
+            {
+                out.push(result);
+                continue;
+            }
+            if stack.is_empty() {
+                stack.push(state0);
+            }
+            stack.truncate(lcp + 1);
+            ended = None;
+            let mut state = *stack.last().unwrap();
+            let mut result = None;
+            for (k, st) in steps.iter().enumerate().skip(lcp) {
+                if let Some(r) = model.advance(&mut state, wl, st, None) {
+                    let r = ray_out(&r);
+                    ended = Some((k, r));
+                    result = Some(r);
+                    break;
+                }
+                stack.push(state);
+            }
+            out.push(result.unwrap_or_else(|| ray_out(&state.finish())));
         }
     }
 }
@@ -662,6 +761,125 @@ impl Probes {
     }
 }
 
+/// Lattice points traced per cancellation / progress block of a group.
+const GROUP_BLOCK: usize = 4096;
+
+impl PathGroup<'_, '_> {
+    /// Every probe each member's refinement of `cells` needs, level by level
+    /// exactly as [`Probes::refine`] per path, with the lattice points that
+    /// several members request at a level traced together.
+    fn refine(
+        &self,
+        cells: &[Cell],
+        ctx: &JobContext,
+        progress: (f64, f64),
+    ) -> MkResult<Vec<Probes>> {
+        let n = self.paths.len();
+        let mut caches: Vec<Probes> = (0..n)
+            .map(|_| {
+                let mut p = Probes::default();
+                p.index.reserve(4 * cells.len());
+                p
+            })
+            .collect();
+        let mut levels: Vec<Vec<Probe>> = vec![cells.iter().map(|c| c.probe).collect(); n];
+        let mut half = HALF;
+        loop {
+            self.add(&mut caches, |m| levels[m].to_vec(), ctx)?;
+            let done = (HALF / half).ilog2() as f64 / BOUNDARY_DEPTH as f64;
+            ctx.report(
+                progress.0 + done * (progress.1 - progress.0),
+                "tracing ghost paths",
+            );
+            if half == 1 {
+                return Ok(caches);
+            }
+            self.add(
+                &mut caches,
+                |m| levels[m].iter().flat_map(|c| c.around(half)).collect(),
+                ctx,
+            )?;
+            levels = levels
+                .iter()
+                .zip(&caches)
+                .enumerate()
+                .map(|(m, (level, cache))| {
+                    level
+                        .par_iter()
+                        .filter(|&&c| self.paths[m].splits(cache, c, half))
+                        .flat_map_iter(|c| c.around(half / 2))
+                        .collect()
+                })
+                .collect();
+            half /= 2;
+        }
+    }
+
+    /// Trace the requested probes each member has not cached yet.
+    fn add(
+        &self,
+        caches: &mut [Probes],
+        requests: impl Fn(usize) -> Vec<Probe> + Sync,
+        ctx: &JobContext,
+    ) -> MkResult<()> {
+        // (probe, member, cache slot); members own disjoint caches.
+        let mut entries = caches
+            .par_iter_mut()
+            .enumerate()
+            .map(|(m, cache)| {
+                let mut new = Vec::new();
+                for p in requests(m) {
+                    if let Entry::Vacant(e) = cache.index.entry(p) {
+                        let id = cache.outs.len();
+                        e.insert(id);
+                        cache.outs.push(Ok(None));
+                        new.push((p, m as u32, id as u32));
+                    }
+                }
+                new
+            })
+            .collect::<Vec<_>>()
+            .concat();
+        // Keys are unique, so the unstable sort is deterministic.
+        entries.par_sort_unstable_by_key(|&(p, m, _)| (p.field, p.wl, p.x, p.y, m));
+        let mut groups = Vec::new();
+        let mut a = 0;
+        for b in 1..=entries.len() {
+            if b == entries.len() || entries[b].0 != entries[a].0 {
+                groups.push((a, b));
+                a = b;
+            }
+        }
+        for block in groups.chunks(GROUP_BLOCK) {
+            ctx.check()?;
+            // Chunks of lattice points share their output and state stack.
+            let outs = block
+                .par_chunks(32)
+                .map(|chunk| {
+                    let (mut out, mut stack) = (Vec::new(), Vec::new());
+                    for &(a, b) in chunk {
+                        self.walk(
+                            entries[a].0,
+                            entries[a..b].iter().map(|e| e.1 as usize),
+                            &mut stack,
+                            &mut out,
+                        );
+                    }
+                    out
+                })
+                .collect::<Vec<_>>();
+            let (lo, hi) = (block[0].0, block[block.len() - 1].1);
+            for (&(_, m, id), out) in entries[lo..hi].iter().zip(outs.into_iter().flatten()) {
+                caches[m as usize].outs[id as usize] = out;
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Paths per [`PathGroup`]: bounds the probe caches held at once.
+const GROUP_PATHS: usize = 16;
+
 /// Trace one path for all base cells; per-field maps and statistics.
 #[allow(clippy::too_many_arguments)]
 fn run_path(
@@ -674,6 +892,7 @@ fn run_path(
     ctx: &JobContext,
     progress: (f64, f64),
     gpu_maps: Option<(&crate::gpu::MapData, usize)>,
+    traced: Option<Probes>,
 ) -> MkResult<PathRun> {
     let path = PathTrace {
         model,
@@ -722,7 +941,10 @@ fn run_path(
         });
     }
     let all: Vec<Cell> = cells.iter().flatten().copied().collect();
-    let probes = Probes::refine(&all, &path, ctx, progress)?;
+    let probes = match traced {
+        Some(p) => p,
+        None => Probes::refine(&all, &path, ctx, progress)?,
+    };
     let leaves: Vec<Vec<RayOut>> = all
         .par_iter()
         .with_min_len(64)
@@ -923,21 +1145,73 @@ pub(crate) fn ghost_irradiance_with_backend(
         None => None,
     };
     let gpu_maps = gpu.as_ref().map(|(_, maps)| maps);
-    let prun = run_path(
-        model,
-        &pstep,
-        &cells,
-        &selected,
-        settings,
-        &template,
-        ctx,
-        if gpu.is_some() {
-            (0.9, 0.9)
-        } else {
-            (0.0, 1.0 / n_jobs)
-        },
-        gpu_maps.map(|v| (v, 0)),
-    )?;
+    // Reference: the primary (index 0) and the ghosts, traced in groups of
+    // paths adjacent in step order, so that shared step prefixes are traced
+    // once per lattice point. Results are those of tracing each path alone.
+    let mut runs: Vec<Option<PathRun>> = Vec::new();
+    if gpu.is_none() {
+        let all_steps = std::iter::once(pstep.as_slice())
+            .chain(path_steps.iter().map(Vec::as_slice))
+            .collect::<Vec<_>>();
+        let mut order = (0..all_steps.len()).collect::<Vec<_>>();
+        order.sort_by(|&a, &b| {
+            all_steps[a]
+                .iter()
+                .map(step_key)
+                .cmp(all_steps[b].iter().map(step_key))
+        });
+        let all_cells = cells.iter().flatten().copied().collect::<Vec<_>>();
+        runs = (0..all_steps.len()).map(|_| None).collect();
+        let groups = order.len().div_ceil(GROUP_PATHS) as f64;
+        for (g, group) in order.chunks(GROUP_PATHS).enumerate() {
+            let members = group
+                .iter()
+                .map(|&i| PathTrace {
+                    model,
+                    steps: all_steps[i],
+                    fields: &selected,
+                    n: settings.pupil_samples,
+                    overfill: settings.overfill,
+                    map: &template,
+                })
+                .collect::<Vec<_>>();
+            let span = (g as f64 / groups, (g + 1) as f64 / groups);
+            let traced = PathGroup { paths: &members }.refine(&all_cells, ctx, span)?;
+            for (&i, probes) in group.iter().zip(traced) {
+                runs[i] = Some(run_path(
+                    model,
+                    all_steps[i],
+                    &cells,
+                    &selected,
+                    settings,
+                    &template,
+                    ctx,
+                    span,
+                    None,
+                    Some(probes),
+                )?);
+            }
+        }
+    }
+    let prun = match runs.get_mut(0).and_then(Option::take) {
+        Some(run) => run,
+        None => run_path(
+            model,
+            &pstep,
+            &cells,
+            &selected,
+            settings,
+            &template,
+            ctx,
+            if gpu.is_some() {
+                (0.9, 0.9)
+            } else {
+                (0.0, 1.0 / n_jobs)
+            },
+            gpu_maps.map(|v| (v, 0)),
+            None,
+        )?,
+    };
     let (pmaps, pstats) = (prun.maps, prun.stats);
     if prun.virtual_rays > 0 {
         // Flux the lost rays carried when rejected, relative to the signal
@@ -974,17 +1248,21 @@ pub(crate) fn ghost_irradiance_with_backend(
         } else {
             ((k + 1) as f64 / n_jobs, (k + 2) as f64 / n_jobs)
         };
-        let PathRun { maps, stats, .. } = run_path(
-            model,
-            steps,
-            &cells,
-            &selected,
-            settings,
-            &template,
-            ctx,
-            span,
-            gpu_maps.map(|v| (v, k + 1)),
-        )?;
+        let PathRun { maps, stats, .. } = match runs.get_mut(k + 1).and_then(Option::take) {
+            Some(run) => run,
+            None => run_path(
+                model,
+                steps,
+                &cells,
+                &selected,
+                settings,
+                &template,
+                ctx,
+                span,
+                gpu_maps.map(|v| (v, k + 1)),
+                None,
+            )?,
+        };
         if gpu.is_some() {
             ctx.report(
                 0.9 + 0.09 * (k + 1) as f64 / paths.len() as f64,
@@ -1137,6 +1415,85 @@ mod tests {
                     distinct
                 );
             }
+        }
+    }
+
+    /// Prefix-shared group tracing reproduces every path's own probes bit
+    /// for bit, including paths that end (clipped, virtual, missed) inside a
+    /// shared prefix and the primary path.
+    #[test]
+    fn grouped_paths_match_paths_traced_alone() {
+        for (sample, reject_virtual) in [
+            (samples::double_gauss(), true),
+            (samples::cooke_triplet(), false),
+        ] {
+            let snapshot = Snapshot::new(sample).unwrap();
+            let system =
+                ResolvedSystem::new(&snapshot, Arc::new(MaterialLibrary::with_builtin())).unwrap();
+            let settings = GhostSettings {
+                reject_virtual,
+                ..GhostSettings::default()
+            };
+            let model = GhostModel::from_system(Arc::new(system), settings).unwrap();
+            let template = IrradianceMap::new([16, 16], [8.0, 8.0]);
+            let irr = IrradianceSettings {
+                pupil_samples: 10,
+                ..Default::default()
+            };
+            let fields = select_fields(&model, &irr, &mut Vec::new()).unwrap();
+            let wls = (0..model.system().wavelengths_um.len()).collect::<Vec<_>>();
+            let cells = base_cells(&model, &fields, &wls, &irr, &JobContext::new())
+                .unwrap()
+                .concat();
+            let mut paths = enumerate(&model, &EnumerationSettings::default())
+                .unwrap()
+                .paths
+                .into_iter()
+                .map(|p| p.path)
+                .collect::<Vec<_>>();
+            paths.insert(0, GhostPath::primary());
+            let steps = paths
+                .iter()
+                .map(|p| model.check_path(p).unwrap())
+                .collect::<Vec<_>>();
+            let mut order = (0..steps.len()).collect::<Vec<_>>();
+            order.sort_by(|&a, &b| {
+                steps[a]
+                    .iter()
+                    .map(step_key)
+                    .cmp(steps[b].iter().map(step_key))
+            });
+            let traces = order
+                .iter()
+                .map(|&i| PathTrace {
+                    model: &model,
+                    steps: &steps[i],
+                    fields: &fields,
+                    n: irr.pupil_samples,
+                    overfill: irr.overfill,
+                    map: &template,
+                })
+                .collect::<Vec<_>>();
+            assert!(traces.len() > 3);
+            let grouped = PathGroup { paths: &traces }
+                .refine(&cells, &JobContext::new(), (0.0, 1.0))
+                .unwrap();
+            let mut ended = 0;
+            for (trace, group) in traces.iter().zip(&grouped) {
+                let alone = Probes::refine(&cells, trace, &JobContext::new(), (0.0, 1.0)).unwrap();
+                assert_eq!(alone.index.len(), group.index.len());
+                for (probe, &id) in &alone.index {
+                    let (a, g) = (alone.outs[id], group.get(*probe));
+                    let bits = |o: RayOut| match o {
+                        Ok(Some((x, y, w))) => [1, x.to_bits(), y.to_bits(), w.to_bits()],
+                        Ok(None) => [2, 0, 0, 0],
+                        Err(w) => [3, w.to_bits(), 0, 0],
+                    };
+                    assert_eq!(bits(a), bits(g), "{probe:?} along {:?}", trace.steps);
+                    ended += matches!(a, Ok(None) | Err(_)) as usize;
+                }
+            }
+            assert!(ended > 0);
         }
     }
 }
@@ -1306,23 +1663,14 @@ fn refine_gpu(
                 .collect::<Vec<_>>()
                 .concat();
             ctx.check()?;
-            // Bound the resident step rows and coating outputs as well as
-            // cancellation latency. This is a memory tile, not a new plan per path.
-            let mut rest = &new[..];
-            while !rest.is_empty() {
-                ctx.check()?;
-                let mut rows = 0;
-                let size = rest
-                    .iter()
-                    .take_while(|&&(pi, ..)| {
-                        rows += gpu.path_rows(pi);
-                        rows <= crate::gpu::ROW_TILE
-                    })
-                    .count()
-                    .max(1);
-                let (block, tail) = rest.split_at(size);
-                rest = tail;
-                let values = gpu.lattice(
+            // A memory tile of probe records (every path, field and
+            // wavelength together), not a new plan per path. The next tile
+            // is submitted before this one's host completion, so the device
+            // traces it while the host classifies and completes references.
+            let blocks = new.chunks(crate::gpu::PROBE_TILE).collect::<Vec<_>>();
+            let submit = |gpu: &crate::gpu::GhostTransport,
+                          block: &[(usize, Probe, usize, [f64; 2])]| {
+                gpu.submit_lattice(
                     block.len(),
                     |i| {
                         let (pi, p, _, xy) = block[i];
@@ -1337,7 +1685,16 @@ fn refine_gpu(
                     },
                     true,
                     &ctx.subrange(stage as f64 / 5., stage as f64 / 5.),
-                )?;
+                )
+            };
+            let mut pending = blocks.first().map(|b| submit(gpu, b)).transpose()?;
+            for (bi, &block) in blocks.iter().enumerate() {
+                ctx.check()?;
+                let current = pending.take().expect("submitted in order");
+                let values = gpu.finish_lattice(current)?;
+                // Two plans in flight would share the device and shrink each
+                // other's time-calibrated commands: submit the next only now.
+                pending = blocks.get(bi + 1).map(|b| submit(gpu, b)).transpose()?;
                 // Numerical failures, flagged conditioning and pixel-edge hits
                 // are completed with the f64 reference, in parallel.
                 let outcomes = block
@@ -1618,4 +1975,106 @@ fn p9_dense_achromat_probe_accuracy() {
         gpu.distinct_probes,
         gpu.fallback_probes
     );
+}
+
+/// Clear apertures sized by the edge field's rim rays put lattice points of
+/// that field exactly on an aperture edge. The native refinement must make
+/// the reference's decision there (aperture ties), so every path refines
+/// the same lattice and counts the same leaves as the CPU f64 reference.
+#[cfg(all(test, target_os = "macos"))]
+#[test]
+fn native_refinement_matches_reference_at_aperture_edges() {
+    use mklight_core::{ResolvedSystem, Snapshot, materials::MaterialLibrary, samples};
+    use std::sync::Arc;
+    for (name, sys) in [
+        ("singlet", samples::singlet()),
+        ("achromat", samples::achromatic_doublet()),
+        ("petzval", samples::petzval_asphere()),
+        ("newtonian", samples::newtonian_telescope()),
+        ("q_con", samples::q_asphere_lens()),
+    ] {
+        let snapshot = Snapshot::new(sys).unwrap();
+        let rs = ResolvedSystem::new(&snapshot, Arc::new(MaterialLibrary::with_builtin())).unwrap();
+        let model = GhostModel::from_system(Arc::new(rs), crate::GhostSettings::default()).unwrap();
+        let settings = IrradianceSettings {
+            pupil_samples: 48,
+            ..Default::default()
+        };
+        let fields = select_fields(&model, &settings, &mut Vec::new()).unwrap();
+        let wls = (0..model.system().wavelengths_um.len()).collect::<Vec<_>>();
+        let cells = base_cells(&model, &fields, &wls, &settings, &JobContext::new()).unwrap();
+        let osys = model.system().system();
+        let image = model.system().image_index();
+        let half = match &osys.sensor {
+            Some(s) => [s.half_width(), s.half_height()],
+            None => {
+                let r = model.semi_diameters().values[image].max(1e-3);
+                [r, r]
+            }
+        };
+        let map = IrradianceMap::new([64, 64], half);
+        let mut paths = enumerate(&model, &settings.enumeration)
+            .unwrap()
+            .paths
+            .into_iter()
+            .map(|p| p.path)
+            .filter(|p| p.ends_at_image())
+            .collect::<Vec<_>>();
+        paths.insert(0, GhostPath::primary());
+        let steps = paths
+            .iter()
+            .map(|p| model.check_path(p).unwrap())
+            .collect::<Vec<_>>();
+        let b = mklight_metal::MetalBackend::new().unwrap().unwrap();
+        let mut gpu =
+            crate::gpu::GhostTransport::new(&b, &model, &paths, &JobContext::new()).unwrap();
+        let points = fields
+            .iter()
+            .map(|f| match f.id {
+                FieldRef::System { index } => FieldPoint::system(osys, index),
+                FieldRef::Point { point } => point,
+            })
+            .collect::<Vec<_>>();
+        gpu.prepare_fields(&points, &JobContext::new()).unwrap();
+        let sl = steps.iter().map(Vec::as_slice).collect::<Vec<_>>();
+        let native = refine_gpu(
+            &mut gpu,
+            &model,
+            &sl,
+            &cells,
+            &fields,
+            &settings,
+            &map,
+            &JobContext::new(),
+        )
+        .unwrap();
+        let all = cells.concat();
+        for (pi, st) in steps.iter().enumerate() {
+            let trace = PathTrace {
+                model: &model,
+                steps: st,
+                fields: &fields,
+                n: 48,
+                overfill: 1.5,
+                map: &map,
+            };
+            let cpu = Probes::refine(&all, &trace, &JobContext::new(), (0., 1.)).unwrap();
+            for (p, &id) in &cpu.index {
+                let g = native[pi].index.get(p).map(|&g| native[pi].outs[g]);
+                let c = cpu.outs[id];
+                assert_eq!(
+                    g.map(|g| trace.region(g)),
+                    Some(trace.region(c)),
+                    "{name} path {:?} {p:?}: reference {c:?}, native {g:?}",
+                    paths[pi]
+                );
+            }
+            assert_eq!(
+                cpu.index.len(),
+                native[pi].index.len(),
+                "{name} {:?}",
+                paths[pi]
+            );
+        }
+    }
 }

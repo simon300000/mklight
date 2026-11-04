@@ -310,6 +310,7 @@ fn aim_stop_and_preview_qualification() {
                     "compared":report.compared,"maximum_absolute_error":report.maximum,"maximum_error_path":report.maximum_path,
                     "image_l1_relative":report.image_l1_relative,"energy_relative":report.energy_relative,
                     "gate_failure":report.reason,"failed":failed,"pre_existing":pre_existing,"reference_ms":reference.run_info.duration_ms,"ms":wall,
+                    "preview_metrics":(tier == Preview).then(|| preview_metrics(&reference, &run)),
                     "settings":run.run_info.settings})
                 );
                 if failed {

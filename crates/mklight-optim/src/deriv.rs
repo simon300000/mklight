@@ -260,12 +260,21 @@ pub(crate) fn fd_jacobian_budget<P: Problem + ?Sized>(
         .filter_map(|j| plan_column(&vars[j], x[j], settings.scheme, eta).map(|(s, h)| (j, s, h)))
         .collect();
     let mut failed = Vec::new();
+    // Evaluators that solve iteratively from the anchor (or that may change
+    // precision between batches) re-evaluate `x` in the same batch, and the
+    // probes are differenced against that row: every value of one
+    // derivative then comes from the same evaluator, precision and solves.
+    let anchored = p.anchored_differences();
     // Pass 0: the planned stencils; pass 1: retries towards the other side.
     for pass in 0..2 {
         if pending.is_empty() {
             break;
         }
-        let mut batch = CandidateBatch::with_capacity(n, 2 * pending.len());
+        let mut batch = CandidateBatch::with_capacity(n, 2 * pending.len() + 1);
+        batch.anchor = Some(x.to_vec());
+        if anchored {
+            batch.push(x);
+        }
         let mut xp = x.to_vec();
         for &(j, st, h) in &pending {
             for &o in st.offsets() {
@@ -285,8 +294,13 @@ pub(crate) fn fd_jacobian_budget<P: Problem + ?Sized>(
                 && e.residuals(q).iter().all(|v| v.is_finite())
                 && e.constraints(q).iter().all(|v| v.is_finite())
         };
+        let (base_r, base_c) = if anchored && probe_ok(0) {
+            (e.residuals(0), e.constraints(0))
+        } else {
+            (&f0.residuals[..], &f0.constraints[..])
+        };
         let mut retry = Vec::new();
-        let mut row = 0;
+        let mut row = anchored as usize;
         for &(j, st, h) in &pending {
             let offs = st.offsets();
             let cnt = offs.len();
@@ -297,11 +311,11 @@ pub(crate) fn fd_jacobian_budget<P: Problem + ?Sized>(
             if bad.is_empty() {
                 for i in 0..m {
                     let vals: Vec<f64> = (0..cnt).map(|q| e.residuals(row + q)[i]).collect();
-                    jr[(i, j)] = st.combine(h, f0.residuals[i], &vals);
+                    jr[(i, j)] = st.combine(h, base_r[i], &vals);
                 }
                 for i in 0..k {
                     let vals: Vec<f64> = (0..cnt).map(|q| e.constraints(row + q)[i]).collect();
-                    jc[(i, j)] = st.combine(h, f0.constraints[i], &vals);
+                    jc[(i, j)] = st.combine(h, base_c[i], &vals);
                 }
             } else {
                 let side = (bad.iter().any(|&o| o > 0.0), bad.iter().any(|&o| o < 0.0));
@@ -570,7 +584,7 @@ pub fn check_jacobian<P: Problem + ?Sized>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::problem::{FnProblem, evaluate_one};
+    use crate::problem::{BatchEvaluation, FnProblem, evaluate_one};
 
     fn test_problem() -> FnProblem {
         // r0 = exp(a)·sin(b), r1 = a³ − 2ab, constraint c = a² + b.
@@ -618,6 +632,66 @@ mod tests {
                     assert!((j.residuals[(r, c)] - ex[r][c]).abs() < tol, "{scheme:?}");
                 }
                 assert!((j.constraints[(0, c)] - ex[2][c]).abs() < tol);
+            }
+        }
+    }
+
+    /// Values that depend on the batch they are evaluated in (an offset per
+    /// batch, standing in for a device/reference precision change between
+    /// batches), optionally anchored.
+    struct BatchOffset(FnProblem, bool);
+
+    impl Problem for BatchOffset {
+        fn variables(&self) -> &[Variable] {
+            self.0.variables()
+        }
+        fn num_residuals(&self) -> usize {
+            self.0.num_residuals()
+        }
+        fn weights(&self) -> &[f64] {
+            self.0.weights()
+        }
+        fn constraints(&self) -> &[crate::problem::Constraint] {
+            self.0.constraints()
+        }
+        fn evaluate_batch(
+            &self,
+            x: &CandidateBatch,
+            ctx: &JobContext,
+        ) -> MkResult<BatchEvaluation> {
+            let mut e = self.0.evaluate_batch(x, ctx)?;
+            let offset = 1e-9 * x.len() as f64;
+            e.residuals.iter_mut().for_each(|r| *r += offset);
+            e.constraints.iter_mut().for_each(|c| *c += offset);
+            Ok(e)
+        }
+        fn anchored_differences(&self) -> bool {
+            self.1
+        }
+    }
+
+    #[test]
+    fn anchored_differences_share_the_batch_of_their_probes() {
+        let ctx = JobContext::new();
+        let x = [0.3, 0.4];
+        let ex = exact(&x);
+        let s = JacobianSettings::default();
+        for anchored in [false, true] {
+            let p = BatchOffset(test_problem(), anchored);
+            // The base value comes from a batch of one, the probes from one
+            // of two (three with the anchored base row).
+            let f0 = evaluate_one(&p, &x, &ctx).unwrap();
+            let j = fd_jacobian(&p, &x, &f0, &s, &ctx).unwrap();
+            assert_eq!(j.evaluations, 2 + anchored as usize);
+            let err = (0..2)
+                .flat_map(|c| (0..2).map(move |r| (r, c)))
+                .map(|(r, c)| (j.residuals[(r, c)] - ex[r][c]).abs())
+                .fold(0.0, f64::max);
+            if anchored {
+                assert!(err < 1e-7, "anchored error {err}");
+            } else {
+                // The batch offset, divided by the ~1.5e-8 step.
+                assert!(err > 1e-2, "unanchored error {err}");
             }
         }
     }

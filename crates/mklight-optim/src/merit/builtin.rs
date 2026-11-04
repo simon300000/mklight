@@ -50,11 +50,23 @@ impl OperandEvaluator for BuiltinEvaluator {
         ops: &[&Operand],
         ctx: &JobContext,
     ) -> MkResult<Vec<Vec<OperandValue>>> {
+        self.evaluate_batch_near(systems, ops, None, ctx)
+    }
+    fn evaluate_batch_near(
+        &self,
+        systems: &[OpticalSystem],
+        ops: &[&Operand],
+        anchor: Option<&OpticalSystem>,
+        ctx: &JobContext,
+    ) -> MkResult<Vec<Vec<OperandValue>>> {
         CompositeEvaluator::new()
             .with(self.trace.clone())
             .with(self.mtf.clone())
             .with(self.solvers.clone())
-            .evaluate_batch(systems, ops, ctx)
+            .evaluate_batch_near(systems, ops, anchor, ctx)
+    }
+    fn anchored_differences(&self, base: &OpticalSystem) -> bool {
+        self.trace.anchored_differences(base)
     }
     fn fd_relative_step(&self, kind: &OperandKind, scheme: FdScheme) -> Option<f64> {
         if self.mtf.supports(kind) {
