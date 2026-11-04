@@ -503,6 +503,8 @@ Every hit includes traced sag and the surface's global placement. Clouds
 include rays passing that surface even if lost downstream. Convex outlines
 are counterclockwise, unclosed, and retain traced sag at each hull vertex;
 they enclose the cloud and do not describe nonconvex clipping boundaries.
+Hits collinear to within a 1e-9 rad turn (a pupil grid row, up to
+rounding) are not vertices, so both backends give the same outline.
 
 Known-answer tests cover stop-plane ideal-lens pupil maps, CRA and sensor
 margin from geometric image height, 2-D disk view factors, the map against
@@ -513,9 +515,9 @@ through strict result and buffer schema validation.
 
 ## 6. Resident geometric adapters (P5)
 
-`mklight_analysis::gpu` exposes backend-neutral job adapters. Engine routes
-and capability/automatic-selection policy are unchanged; P11 owns their
-qualification and integration. The reference functions above remain available.
+`mklight_analysis::gpu` exposes backend-neutral job adapters; the engine's
+native geometric routes call them, and capability and `auto` routing are in
+GPU.md §9.2–9.3. The reference functions above remain available.
 Every adapter takes a `JobContext` and returns the existing result type with
 its actual backend and precision in `RunInfo`. `Geometry` pins an immutable
 system upload for a sequence of resident plans. Its `spot_diagram_job` method
@@ -615,8 +617,8 @@ cancellation and resource release. The benchmark compares unchanged f64,
 legacy trace-only Metal plus host statistics, and the resident chain at
 matched settings. Numerical maxima, hardware, raw runs, cold preparation,
 median/p95, copy/storage counters and any qualification gaps are retained
-in the task's `scratchpad/gpu/P5-evidence.md`. Performance routing must use
-those measurements, not a fixed ray-count assumption.
+in the task's `scratchpad/gpu/P5-evidence.md`. Engine routing is the
+calibrated cost model of GPU.md §9.2, not a fixed ray-count assumption.
 
 On the measured M2 Pro, 113- and 9,845-ray spots and the default spots on
 all 16 samples favor f64. At the capped 823,473-ray square-pupil setting,
@@ -626,7 +628,6 @@ representatives. Complete Cooke global footprints at that density measured
 resident-plan scratch (public output and host hull storage excluded).
 Default interactive layouts and Cooke RI at 5²/33² fields still favor f64;
 RI medians were 42/1819 ms resident versus 23/1441 ms f64. Each owned series
-uses one warm run plus ten measured runs. These measurements are for P11's
-policy review; they do not install a ray-count crossover or qualify changed
-candidates. The external evidence retains p95, raw settings/load snapshots,
+uses one warm run plus ten measured runs. These measurements do not install
+a ray-count crossover or qualify changed candidates. The external evidence retains p95, raw settings/load snapshots,
 explicit copy/fallback counts and the remaining acceptance gaps.

@@ -494,6 +494,8 @@ fn cpu_only_merit_reports_cpu_even_with_a_selected_gpu() {
             .unwrap()
             .contains("no candidates")
     );
+    // The CPU request had no GPU evaluator to fall back from.
+    assert_eq!(cpu.backend.fallback_reason, None);
     assert!(
         !gpu.run_info
             .warnings

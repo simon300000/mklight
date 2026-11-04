@@ -366,7 +366,7 @@ concurrently). `MetalOptions { precision: MetalPrecision::PureF32, .. }`, or
 `MetalOptions::from_env()` with `MKLIGHT_METAL_PRECISION=f32`, selects it; the
 precision descriptor (`opl_double_float`, `compensated_reductions` false) and
 `kernel_build` (`pure_f32 …`) name the variant. `MetalOptions::default()`, and
-so engine `auto`, is always double-float. CPU-f32 emulation stays the
+so the engine's Metal provider (explicit or `auto`), is always double-float. CPU-f32 emulation stays the
 double-float specification.
 
 Measured 2026-11-02 on an Apple M2 Pro under normal host load (provisional;
@@ -398,9 +398,10 @@ Ray statuses agree in both. f32 exceeds the OPD budget on every design (6–43×
 and the position budget on the Newtonian. Real aiming at the default
 tolerance 1e-10 fails 450 of 4,176 f32 aims (Cooke triplet, Double Gauss,
 relay; none with DF), and f32 aims reported as converged miss the stop by up
-to 2.4e-7 of its radius. In the engine, normal qualification (§5.2) sends
-every f32 request to the CPU reference; forced through the raw adapters, f32
-PSFs are off by 8% L1 (41× budget), optical MTF by 0.016 (8×) and image
+to 2.4e-7 of its radius. The engine never runs it: its Metal provider always
+opens the double-float build (`MetalBackend::new`), and
+only test harnesses select the f32 build (`MetalOptions`). Forced through
+the raw adapters, f32 PSFs are off by 8% L1 (41× budget), optical MTF by 0.016 (8×) and image
 simulation by 80% L1.
 
 **Conclusion.** Double-float stays the default and the only qualified mode.
@@ -420,7 +421,7 @@ samples): 65×65 lattices of every field and wavelength aimed from the host
 chief row with and without the wave path's 25×25 host seed table, with both
 metallibs at stop tolerances from 1e-10 to 1e-4, every start ray retraced to
 the stop in f64. On a 29-surface F/1.4 design (30 field rows, 96,270 rays,
-stop at surface 15):
+stop at surface 15; Apple M2 Pro, indicative):
 
 | arithmetic | tolerance | iterations / ray | aiming device ms | true residual (f64 retrace) |
 |---|---:|---:|---:|---:|
@@ -958,13 +959,17 @@ with machine load:
 |---|---:|---:|
 | GPU kernel (device time) | 13.2 ms | 9.0e8 |
 | GPU incl. upload/download (wall) | 28 ms | 4.2e8 |
-| CPU f64 reference, rayon | 71 ms | 1.7e8 |
+| CPU f64 scalar `trace_ray`, rayon | 71 ms | 1.7e8 |
 
-The kernel runs ~5× faster than the reference on 12 CPU cores; end to end,
-with host-side packing and unpacking of ~110 MB of planes, ~2.5×. (The
-double-float aperture tests of layout v4 cost ~5 % of device time.) Chained
-device-resident jobs (trace → reduce without readback) are the next
-optimisation (§8).
+The kernel runs ~5× faster than the **scalar** reference on 12 CPU cores;
+end to end, with host-side packing and unpacking of ~110 MB of planes,
+~2.5×. (The double-float aperture tests of layout v4 cost ~5 % of device
+time.) The CPU row is the scalar oracle. The engine's CPU batch paths use
+the f64 packet tracer instead (CONVENTIONS §7, "CPU packets"), measured
+single-threaded at 2.0–2.9× the scalar trace on conic and plane systems
+(Apple M2 Pro, indicative); this benchmark has not been re-run against it,
+so the CPU–GPU ratio for packet traces is smaller than shown. Device-resident
+chains (trace → reduce without readback) are the resident plans of §9.2.
 
 ### 5.4 Extended-shape throughput
 
@@ -1049,7 +1054,9 @@ terms, while the sample designs have sparse, shorter coefficient lists.
   Plane and record element indices are formed in 64-bit arithmetic
   (`mkl_plane`): a recorded batch has `slots · n · 9` floats, more than
   2³² for, e.g., 13 slots and 37 M rays (17 GB, which an M2 Pro allocates).
-* **Execution.** Each submission runs on a worker thread: per chunk it checks
+* **Execution** (`Job` submissions; resident plans commit without waiting,
+  §9.2 "Asynchronous execution and admission"). Each submission runs on a
+  worker thread: per chunk it checks
   cancellation, encodes, commits, waits, checks `MTLCommandBufferStatus.error`
   (reported as `MkError::Backend` with the Metal error text), and adds
   `GPUEndTime − GPUStartTime` to the stats. Everything runs inside an
@@ -1084,9 +1091,9 @@ terms, while the sample designs have sparse, shorter coefficient lists.
   radiometry through such a surface is `Unsupported` (geometry-only traces
   run). Coating tables (R/T against wavelength and angle) are the planned
   extension, a new `MKL_COATING_*` code with a table offset.
-* Ray generation (field/pupil mapping, real ray aiming) runs on the CPU in
-  f64; the GPU traces the generated rays. Polarised (Jones/Stokes)
-  radiometry is not ported.
+* `Job::Trace` traces rays the host generated (field/pupil mapping and
+  real ray aiming in f64); resident plans generate and aim on the device
+  (§9.2). Polarised (Jones/Stokes) radiometry is not ported to `Job::Trace`.
 * Reported points and directions are f32. Their rounding is inside the
   budget but shows in OPDs formed from them at large image height × NA
   (§5.1); a consumer needing more could be given residual output planes.
@@ -1099,19 +1106,21 @@ terms, while the sample designs have sparse, shorter coefficient lists.
 * Systems are limited by the packer: 16 wavelengths per packed chunk,
   even-asphere terms up to A22, the extended capacities in §2.2, and model
   values representable as normal f32 after coefficient normalization.
-* Job inputs and outputs are host arrays; device-resident buffers chained
-  between jobs (e.g. trace → reduce without a readback) are a later
-  optimisation that does not change the interface's semantics.
-* Command buffers within a job run one after another (commit, wait); with
-  the default 2¹⁹ items per buffer the gap is negligible next to kernel time.
+* `Job` inputs and outputs are host arrays, and the command buffers of a
+  `Job` run one after another (commit, wait); with the default 2¹⁹ items per
+  buffer the gap is negligible next to kernel time. Device-resident chains
+  without intermediate readbacks, and asynchronous command buffers with an
+  in-flight window and admission budget, are the resident plans of §9.2.
 
 ## 9. GPU-first architecture
 
-**Resident implementation; operation/domain qualification governs capability.**
-MKLight is high-performance software: every GPU-efficient computation runs
-on qualified Metal when a device is available. CPU f64 remains the accuracy
-reference, fallback and small-work control path; there is no CPU speed-work
-programme. Vulkan is deferred. Solvers use the backend-neutral
+**GPU for throughput, CPU for latency** (DECISIONS.md, "Compute placement").
+Metal runs large batched work where it is faster end to end; the CPU f64
+path, traced in SIMD packets (CONVENTIONS §7), serves small, interactive and
+solver work, and stays the accuracy reference and reported fallback. `auto`
+chooses per request with the calibrated cost model of §9.2; qualification
+per operation and domain decides what may run natively at all. Vulkan is
+deferred. Solvers use the backend-neutral
 `ComputeBackend`, typed buffers and explicitly specified kernels, with Metal
 encoding confined to `mklight-metal`. This section governs new work; §§1–8
 describe the existing implementation and its measured limitations.
@@ -1148,7 +1157,7 @@ tests; they do not relax §7.
 | Computation / source | Work size | Placement and reason | Precision |
 |---|---|---|---|
 | Sequential and path traces, all supported sags, DOE phase/order, refraction/reflection, clipping (`trace`, `trace_kernel`) | FWP, typically 10²–10⁶ rays × S; optional S records/ray | GPU: independent rays with shared surface data | G + OPL; local frames, double-float geometry/phase |
-| Field/pupil mapping, real-image-height field solve, chief/pupil Newton aiming (`trace/tracer`, `pupil`) | FW chiefs + FWP solves, up to configured iteration cap | Field source and chief/Jacobian rows: host f64 (reference tracer, serial per field); pupil aiming: GPU, many independent small Newton solves seeded by those rows | G; double-float residual/Jacobian/update; preserve requested aim tolerance |
+| Field/pupil mapping, real-image-height field solve, chief/pupil Newton aiming (`trace/tracer`, `pupil`) | FW chiefs + FWP solves, up to configured iteration cap | Field source and chief/Jacobian rows: host f64 (reference tracer, serial per field); pupil aiming: GPU, many independent small Newton solves seeded by those rows | G; double-float residual/Jacobian/update; honour the run's aim-stop policy (CONVENTIONS §7) |
 | Automatic semi-diameters, surface profiles/meshes, layout rays (`trace/semidia`, `analysis/layout`) | FW × rim samples × S; 10²–10⁶ vertices | GPU for traces, sag samples and extrema; host for small topology/labels | G; double-float world-to-local differences, f32 display coordinates relative to origin |
 | Spot, ray grid/fans, OPD fans, footprint/overlays, longitudinal aberration, lateral colour (`analysis/{spot,fans,illumination,seidel}`) | FWP or 10²–10⁴ fan points; footprint records P×S | GPU trace and reductions; host assembles result metadata/small hull topology | G + OPL + R; chief-relative two-pass moments |
 | Geometric EE/ensquared energy, geometric MTF, best focus (`analysis/energy`) | P order statistics; P×frequencies; P×focus trials | GPU stable sort/scan, complex sums and focus merits; scalar Brent decisions may stay host | R; fixed trees, stable radius/index tie order |
@@ -1361,7 +1370,8 @@ are resource/cancellation controls, not engine backend selection thresholds.
 command buffer. Domain operations, trace tiles and fixed-tree sum passes share its serial compute
 encoder, with buffer memory barriers after dispatches. Existing tile boundaries
 remain cancellation checkpoints; accumulated dispatch work (2¹⁹ threads, charging at least 2¹⁵ per dispatch) or
-10 ms of encoding triggers a commit and completion wait. These are work/encoding
+10 ms of encoding triggers a commit (the host waits only where the
+in-flight window below requires it). These are work/encoding
 bounds, not a promise of 10 ms device time for an arbitrary kernel. A genuine
 host read or publication flushes the buffer. Reporting-only fallback counters
 and pupil-normalisation checks are deferred to completion. Cache entries built
@@ -1432,7 +1442,8 @@ completions, without waiting for a later explicit flush. P6 rim rounds retain
 only intermediate aim checks and the final probe batch. Encoding sites no
 longer add zero command/timestamp fields; actual completion owns those stats.
 The consolidated measurements below supersede the provisional wave/fusion
-numbers and determine the surviving CPU cost exceptions.
+numbers; routing between the backends is the cost model ("Automatic
+routing").
 
 `PlanResult` contains final leases, `PlanStats` and `RunInfo`. Stats include
 per-stage wall/device/max-command times, commands, allocations/reuse,
@@ -1472,7 +1483,7 @@ suffices; this is not a general graph compiler.
 telecentric launches, vignetting and pupil patterns on device. Chief rows
 come from the host: `ChiefSeed::host` converts the reference tracer's f64
 `PreparedField` (the real-image-height source once per field, the chief aim
-point and finite-difference stop Jacobian once per field and wavelength,
+point and its analytic stop Jacobian once per field and wavelength,
 with the same 1e-12 relative image-height residual the device solve used)
 into the device row. Every adapter — geometric grids and layout, wave
 pupils, radiometry and ghost pupils, the candidate evaluator — passes these
@@ -1500,9 +1511,9 @@ the stop radius, or the tightest conditioned stop of the request's fields,
 `aim_identity`). A rounded f32 stop hit cannot drive that solve. Compact
 only unresolved rays for optional CPU f64 polish; scatter them back at their
 original indices and record counts/reasons. (The CPU reference takes its
-fresh Jacobians from the analytic differential tracer since D2, CONVENTIONS
-§7; the device stencil is unchanged, and the host chief rows it is seeded
-with now carry analytic chief Jacobians.) A failed aim remains a failed
+fresh Jacobians from the analytic differential tracer, CONVENTIONS §7; the
+device solve keeps its finite-difference stencil and is seeded with the
+host rows' analytic chief Jacobians.) A failed aim remains a failed
 aim; never silently accept an inaccurate ray or polish the whole grid by
 default.
 
@@ -1513,8 +1524,9 @@ such lane serialises its SIMD group, so bounding the *ray count* of a
 command never bounded its duration (single 4096-ray commands reached 0.5–0.9 s
 and tripped the driver's interactivity watchdog). Device aiming is therefore
 resumable: `mkl_generate_aim` and `mkl_aim_table` run at most a budget of
-iteration units per lane (a phase entry, or one Newton iteration; 8 by
-default, `MKLIGHT_AIM_BUDGET=first,continue` for qualification), park
+iteration units per lane (a phase entry, or one Newton iteration; 4 in a
+tile's first command and 4 in each continuation by default,
+`MKLIGHT_AIM_BUDGET=first,continue` for qualification), park
 unfinished rays in a per-tile `MklAimResume` state buffer
 (`MKL_AIM_STATE_WORDS`) and append their indices to a pending list; the
 executor encodes continuation rounds (`mkl_aim_indirect` sizes
@@ -1545,7 +1557,7 @@ unaimable ray of a bad trial step (a line-search candidate whose marginal
 rays miss or vignette) otherwise ran the whole schedule at low occupancy —
 300–400 ms of device time per such candidate against 1–5 ms for a healthy
 one, 64–77 % of the optimize and glass-substitution device time on a
-29-surface F/1.4 design. Healthy candidate rays converge in at most 4–6
+29-surface F/1.4 design (Apple M2 Pro, indicative). Healthy candidate rays converge in at most 4–6
 iterations; a ray the full schedule converges within the cap is bitwise
 unchanged (`aim_resume.rs`). Analyses keep the full schedule.
 `MKLIGHT_METAL_TRACE_AIMS=1` prints every generation's convergence
@@ -1561,10 +1573,10 @@ failures or unresolved rays. `AimOptions::table` supplies a host f64 seed
 table (`aiming::host_tables`: the reference tracer solves each node by its
 own chief-prediction/continuation schedule) of `table_side` nodes per axis,
 used for every sample of the request whatever its size; without one the
-device builds and caches a table of that side for large generations as
-before. The wave pupil tracer hands 25×25 host tables to every generation
-of a batch (chief probe, lattice, saddle and rim probes alike), so a
-sample's converged ray no longer depends on the batch it was aimed in. The
+device builds and caches a table of that side for large generations. The
+wave pupil tracer hands 25×25 host tables to every generation of a batch
+(chief probe, lattice, saddle and rim probes alike), so a sample's
+converged ray does not depend on the batch it was aimed in. The
 tables are solved (one batched `generate_many` per row, bitwise the scalar
 `generate` per node) while the batch's chief plan runs on the device.
 
@@ -1574,8 +1586,8 @@ support centroid references via the shared reduction, both sphere sheets,
 telecentric limit, finite conjugates and negative propagation. Evaluate
 `OPL_chief − OPL_ray` and the rationalised sphere correction of WAVE §3 in
 double-float before conversion to waves. Reference and ray states must use
-the same point convention: if exporting rounded geometry, apply the §12
-OPL correction once; internal unrounded geometry needs no such correction.
+the same point convention: if exporting rounded geometry, apply the
+CONVENTIONS §12 OPL correction once; internal unrounded geometry needs no such correction.
 Lattice/rim probes retain stable IDs; `ProjectPupil` accepts a reference
 descriptor so the wave consumer can build its centroid without another
 trace. P1 exposes shared trace/normal hooks; consumers do not fork
@@ -1639,7 +1651,7 @@ per-candidate f64 check at run time. Accuracy rests on the offline f64
 cross-validation suites (perturbed systems and known answers included) and on
 the ignored `metal_accuracy::default_sample_accuracy` harness, which compares
 every GPU-capable analysis on all samples at default settings with the CPU
-reference using the former publication gates of §9.4. The startup numerics
+reference under the per-quantity contracts of §9.4. The startup numerics
 probe, boundary packing checks, device status/finite guards and the kernels'
 conservation sums remain as runtime guards; none repeats the CPU solve.
 
@@ -1654,33 +1666,30 @@ for explicit Metal requests:
 | `wavefront_map` | 16/16 | Seidel angles and fit condition where the aberration vanishes (on axis): undefined angles differ by up to 158° |
 | `polarization_pupil_map` | 13/16 | fast/diattenuation axes where retardance or diattenuation vanishes differ by 1–2 rad |
 
-**Known residual gaps on Metal** (2026-11-02, default settings; these publish
-unchecked; updated 2026-11-04). Five sample/analysis cases fail the former
-gates (thirteen before the fixes listed below the table):
+**Residual gaps on Metal.** Native results publish unchecked, so known
+differences are listed here. Under the per-quantity contracts of §9.4,
+`metal_accuracy` (every GPU-capable analysis on the 16 samples at default
+settings, release, real Metal) has no native gate failure; the cases that
+still fail on a complex lens are the `auto` accuracy exclusions below. The
+mechanisms behind earlier mismatches, which the contracts rely on:
 
-| Analysis | Samples | Nature of the difference |
-|---|---|---|
-| `stray_light` | cooke_triplet, double_gauss, anamorphic | Monte Carlo event counts only (`energy.events`, one signature's event count); sink energies, maps and moments within budget (largest 5.8e-5, double_gauss). Before the tangent-basis fix below: six samples, absorbed-by-sink 5.0e-3 against a 4.9e-4 margin |
-
-Fixed since: `ghost_irradiance` `rays_traced` on singlet, achromat, newtonian,
-petzval_asphere and q_con. Clear apertures are sized by the edge field's rim
-rays, so its lattice points lie exactly on an aperture edge; clipping tests
-within 2⁻²⁸ of an edge are now decided by the f64 reference. `stray_light`
-on achromat, petzval_asphere and relay: the reference tangent basis took the
-`−1` branch for `n.z = −0` (coaxial cylinder normals: lens edges, barrels)
-and the device the `+1` branch, so scatter frames there were mirror images
-(statistically equivalent, path-different). With the reference following the
-device, analog transport is bit-close (1e-16) on the complex test lens and
-weighted transport differs only through rare Russian-roulette decisions
-(absorbed 2e-7 of emitted, a few events of 380,000).
-| `footprint` | newtonian | one overlay outline vertex count |
-| `field_curvature_distortion` | petzval_asphere | close-ray tangential focus 1.16e-5 mm against a 6.7e-6 margin (since D2 the cross-check column is the host f64 differential pencil: 3.8e-8, passing; the native Coddington column was always within budget) |
-
-P11 also counted relay `ghost_paths` (a 26.5 mm focus difference). That was a
-tie, not a Metal error: the symmetric relay gives R3·R1 and R7·R5 the same
-relative irradiance, the devices round it differently in the last bits, and
-the ranking swaps the two; every value agrees to 1e-12. The harness matches
-ghost paths by label.
+* `ghost_irradiance` `rays_traced`: clear apertures are sized by the edge
+  field's rim rays, so lattice points can lie exactly on an aperture edge;
+  clipping tests within 2⁻²⁸ of an edge are decided by the f64 reference.
+* `stray_light`: at `n.z = −0` (coaxial cylinder normals: lens edges,
+  barrels) both backends take the same branch of the tangent basis, so
+  scatter frames agree; analog transport is bit-close (1e-16) and weighted
+  transport differs only through rare Russian-roulette decisions, which the
+  statistical contract classes cover.
+* `footprint` hulls and pupil rims are compared by Hausdorff distance, not
+  by vertex count.
+* `field_curvature_distortion`: the close-ray cross-check column is the
+  host f64 differential pencil on both backends; the native Coddington
+  column is within budget.
+* Relay `ghost_paths`: R3·R1 and R7·R5 have the same relative irradiance and
+  the backends round it differently in the last bits, so the ranking can
+  swap the two (every value agrees to 1e-12); the harness matches ghost
+  paths by label.
 
 **Candidate solvers.** Optimisation, tolerance and glass search loops run on
 the device, including combined merits, constraint hinges and finite-difference
@@ -1691,10 +1700,152 @@ design; tolerance scores each completed case with its returned compensators
 (no second compensator solve) and derives the sensitivity/Monte Carlo figures
 from those scores; glass substitution scores and ranks the kept finalists.
 `merit_evaluation` publishes the evaluator's values. Cancellation never starts
-a reference replacement or report. `auto` runs them on the CPU reference on
-Apple GPUs: on the complex-lens benchmark (below) the reference was 4–52×
-faster for all four, as it was for every P11 sample. An explicit Metal request
-still runs them natively.
+a reference replacement or report. `auto` routes them by the cost model like
+every other analysis ("Automatic routing" below; `glass_substitution` is an
+accuracy exclusion). An explicit Metal request still runs them natively.
+
+#### Automatic routing
+
+`auto` routes each engine job with a calibrated stage-level cost model
+(`crates/mklight-engine/src/analysis/cost/`; `routing::auto_route` calls
+`CostModel::decide`, model version 5). In order: a result the analysis graph
+already holds is returned (below); the static capability list above keeps
+its analyses on the reference; then
+
+- *Accuracy exclusions* (`cost::EXCLUSIONS`): analyses whose native output fails
+  its f64 contract on the current evidence run on the CPU reference on every
+  device, at every size or from a traced-ray workload up (table below).
+  Explicit Metal requests still run natively.
+- *Known failures*: a request that already failed deterministically on the
+  device (below) runs on the reference (`rule: "known failure"`).
+- Every other GPU analysis is predicted on both backends as a sum of stage terms
+  over its work profile (`cost::profile`), computed from the normalised settings
+  and the system without tracing:
+
+  | Stage | Feature | Notes |
+  |---|---|---|
+  | host f64 preparation | field–wavelength rows × surfaces | sources, chiefs, Jacobians; shared by both backends through the graph `tracer` node, so 0 when it is already built |
+  | aiming and tracing | rays × (surfaces + aim traces × stop surfaces) | aim traces = 1 + 3.43·d, where d scales with the recorded device aiming iterations of the design family (paraxial aiming: 0) |
+  | transform / reduction | samples × log₂ samples (FFT), samples × frequencies (direct sums) | the automatic wave pupil grid is the one an earlier call decided for the design family, else 2·lattice |
+  | output bytes | typed buffers | spot points, ray grids, PSF images; zero-copy readback |
+  | device seed table | rows × 37² nodes × aim traces × stop surfaces | Metal only: aimed geometric generations of ≥ 2·37² rays per row build a device table, content-cached while the snapshot is resident |
+  | fixed | 1 | each analysis' own measured constant on each backend (plan floor, packing); there is no universal GPU overhead |
+  | device setup | device open (cold provider) + first native use of the analysis in the process | measured by the calibration; charged in full to the first call of an analysis and design family, then spread over up to 4 calls |
+  | fallback risk | transient native failure rate × (native + CPU time) | deterministic failures in the device's failure cache route to the CPU outright |
+
+  Four non-negative coefficient sets per analysis — CPU and Metal, each on a
+  repeated and on a freshly edited snapshot — are fitted by load-weighted
+  relative least squares from complete calls. CPU coefficients are measured
+  with the graph off (cold intermediates); the CPU drops the preparation term
+  when the graph holds the snapshot's tracer, and the ray term of wave
+  analyses when it already built the request's pupil lattices. Each backend
+  uses its repeated set when this snapshot ran before (natively, for Metal:
+  resident content, including the seed table), the edit set otherwise.
+- *Cache state*: an `auto` request whose result the analysis graph already
+  holds is answered before routing (no device, no route), whichever backend
+  computed it; its result key is the request content, not the route. Native
+  `auto` results without failed attempts are stored like CPU results.
+- *Decision*: Metal only when the predicted CPU time is at least `RATIO` = 1.3×
+  the predicted Metal time *and* the saving is at least `MIN_GAIN_MS` = 5 ms.
+  The ratio keeps the choice robust to the model's error (median calibration
+  error per analysis 0.2–0.6 in ln of measured/predicted); the absolute floor keeps sub-perceptual gains from
+  paying a device round trip and contention with other GPU work.
+- *Online refinement* (on by default; `MKLIGHT_COST_REFINEMENT=0` or
+  `CostModel::set_refinement(false)` turns it off): every completed call
+  updates (a) the CPU's host-contention factor (what other processes cost
+  it now: the load-average prior √(load per core / 4), at least 1, times what
+  observations learned beyond it (1/3…3×), in all 1/3…30×; it follows the
+  load even while the CPU is not chosen; Metal has none, since the device is
+  not shared with the host's threads) and (b) a residual per analysis,
+  backend, design family and workload decade (1/10…10×), as exponentially
+  weighted means (α = 0.5) of ln(measured/predicted); recorded device aiming statistics
+  update the design family's difficulty and decided pupil grids are
+  remembered. All state is bounded (LRU), recorded in each decision and
+  reported by `Engine::cost_model_stats()`. A decision depends only on the
+  state when it is made.
+- Devices without a calibration table (other GPU families, the CPU-f32
+  emulation), and analyses the table does not cover, use qualified Metal.
+
+**Calibration.** `tests/cost_calibration.rs::calibrate` (release, real Metal)
+measures every calibrated analysis at a ladder of two or three workloads on
+nine sample designs (refracting, reflecting, finite, anamorphic, freeform,
+diffractive) and an optional local project (nothing of it is embedded) — the
+CPU and Metal, each repeated on one snapshot and after an edit, interleaved
+so host load hits all four alike — and records the load, device time and the
+decided pupil grid of every rung. The fit keeps a rung's least loaded record
+and weights records by 1/max(1, load per core / 2)², then writes the table,
+versioned by format, model version, device class and measurement record:
+
+    MKLIGHT_COST_CALIBRATION_OUT=$PWD/crates/mklight-engine/src/analysis/cost/apple-m2-pro.json \
+    cargo test --release -p mklight-engine --test cost_calibration -- --ignored --exact calibrate --nocapture --test-threads=1
+
+`MKLIGHT_COST_MODES` and `MKLIGHT_COST_DESIGNS` restrict a run (for example
+to re-measure designs that ran on a busy host); `MKLIGHT_COST_REFIT=1` fits one
+or more record files (`MKLIGHT_COST_RECORDS`, comma-separated) without
+measuring. `MKLIGHT_COST_CALIBRATION=<file>` loads another table at engine
+start (format and model version must match). `validate` in the same file compares `auto`
+against both backends on fresh edits and warm repeats.
+
+*Accuracy exclusions* are qualified with the per-quantity contracts of §9.4:
+`metal_accuracy` on the 16 samples (release, real Metal: 480 rows, 0 native
+gate failures) and a complex 29-surface F/1.4 lens (`project_bench` accuracy
+records, Metal DF vs CPU f64, warm and edited). Analyses not in the table
+pass both:
+
+| Analysis | Status | Evidence |
+|---|---|---|
+| `ghost_irradiance` | excluded | 16/16 samples pass, but an edited complex-lens snapshot gives one discrete `rays_traced` mismatch (23,442 vs 23,370 in 1 of 1,656 ghost fields; positions 0.035 and flux far inside their contracts) |
+| `glass_substitution` | excluded | complex lens: the native search returns other finalists (merit and violation far outside their gates); the CPU is also faster |
+| `spot_diagram` | excluded from 1M traced rays | complex lens, 23.6M rays after an edit: `rays_arrived` differs by 2 of 767k in 10 field–wavelength rows (edge rays); default spots and the repeated dense spot pass, so smaller spots stay routed by cost |
+| `psf`, `mtf`, `line_spread`, `diffraction_encircled_energy`, `through_focus_mtf`, `mtf_vs_field` | routed by cost | 16/16 within contract; complex lens within contract (MTF frequency class ≤ 0.016 of its gate, dense grids included) |
+| `chief_ray_angle`, `pupil_aberration`, `relative_illumination_map`, `grid_distortion` | routed by cost | 16/16; complex lens without mask mismatches (host f64 chief rows) |
+| `field_curvature_distortion` | routed by cost | 16/16; complex lens 2.8e-7 (host f64 differential pencil) |
+| `stray_light` | routed by cost | passes the statistical ledger contract on the 16 samples and the complex lens (worst 0.10 of its gate, edited) |
+| `footprint` | routed by cost | 16/16 under the outline contract (newtonian included); complex lens outline 0.07 of its gate |
+
+The other candidate solvers (`optimize`, `tolerance`, `merit_evaluation`)
+have no separate rule: the model predicts them like every other analysis.
+
+*Measured routing* (indicative: Apple M2 Pro, release `project_bench` on the
+complex 29-surface F/1.4 lens with CPU, Metal DF and `auto`, 3 rounds per
+phase at low host load; the numbers move with load and with every engine
+change, so the shipped table is recalibrated rather than these figures
+kept current). `auto` chose Metal for the dense geometric MTF (6.3 s against
+21.8 s on the CPU) and, when predicted faster, for wave and map jobs after an
+edit; it kept the CPU for small geometric jobs, the solvers (the CPU 2–6×
+faster per call) and most default wave jobs. Regret (`auto` against the
+faster backend) stayed within 1.3× or 20 ms except for the accuracy
+exclusions (dense spot above 1M rays: 1.7–1.9×, by design) and two cases near
+break-even (PSF after an edit +125 ms, tolerance repeat +33 ms), which
+refinement learns within a few calls. A repeated `auto` request is answered
+from the graph on either backend (dense geometric MTF warm repeat 0.3 ms
+against 5.96 s recomputed on Metal). Six-graph edit loop (layout, spot, ray
+fan, MTF, field curvature, PSF): CPU 338, `auto` 343, Metal 743 ms; warm repeat
+0.7 / 0.7 / 767 ms; queued 305 / 310 / 559 ms. On the 16 samples (31
+analyses × 2 workloads, edits and warm repeats) the median edit regret was
+1.01, with 8 meaningful misses in 1,886 case-phases, all ≤ 1.66×.
+
+**Deciding before the device opens.** Providers describe their analyses,
+device family and whether the device is open without opening it
+(`BackendProvider::hint`; every Metal device on Apple silicon is the Apple
+GPU). Routes the model settles as the reference are decided before any
+device initialisation, so a cold call that ends on the CPU pays no Metal
+setup; the decision carries `"before_device": true`. A cold device's setup is
+part of the native prediction. Each decision is recorded in the backend
+report (`cost_decision`, RESULTS §5).
+
+**Failed and skipped native attempts.** `RunInfo.failed_attempts` lists every
+backend attempt that did not produce the result: `failed` (the native run
+failed after `elapsed_ms` and the reference completed the job), `skipped`
+(the same request already failed deterministically on this device),
+`infeasible` (rejected by the analysis' capability/resource preflight before
+preparation), `downgraded` (an explicit request the static capability list
+ran on the reference; also a warning) and `reference_completion` (the native
+adapter itself completed the whole result in f64). Each device remembers
+deterministic failures (model, support and numerical errors, not
+device/driver, I/O or cancellation errors) by request identity — snapshot
+hash, glass library hash, analysis and normalised settings — in a bounded
+LRU (256 requests per device); an edit changes the identity.
 
 #### Consolidated P11 measurements
 
@@ -1734,149 +1885,10 @@ Where a predecessor exists, the same-input old/new complete calls are retained b
 | P5 Cooke dense footprint | 482.950 / 492.125 | 428.991 / 442.493 |
 | P8 Cooke spot merit B=16 | 1.929 / 2.032 | 2.495 / 2.710 |
 
-**Automatic routing: the cost model.** `auto` routes each engine job with a
-calibrated stage-level cost model (`crates/mklight-engine/src/analysis/cost/`;
-`CostModel::decide` is the router's single entry point, model version 5).
-
-- *Accuracy exclusions* (`cost::EXCLUSIONS`): analyses whose native output fails
-  its f64 budget on the current evidence run on the CPU reference at every size
-  and on every device. Explicit Metal requests still run natively.
-- Every other GPU analysis is predicted on both backends as a sum of stage terms
-  over its work profile (`cost::profile`), computed from the normalised settings
-  and the system without tracing:
-
-  | Stage | Feature | Notes |
-  |---|---|---|
-  | host f64 preparation | field–wavelength rows × surfaces | sources, chiefs, Jacobians; shared by both backends through the graph `tracer` node, so 0 when it is already built |
-  | aiming and tracing | rays × (surfaces + aim traces × stop surfaces) | aim traces = 1 + 3.43·d, where d scales with the recorded device aiming iterations of the design family (paraxial aiming: 0) |
-  | transform / reduction | samples × log₂ samples (FFT), samples × frequencies (direct sums) | the automatic wave pupil grid is the one an earlier call decided for the design family, else 2·lattice |
-  | output bytes | typed buffers | spot points, ray grids, PSF images; zero-copy readback |
-  | device seed table | rows × 37² nodes × aim traces × stop surfaces | Metal only: aimed geometric generations of ≥ 2·37² rays per row build a device table, content-cached while the snapshot is resident (about +0.45 s per edit on the complex lens) |
-  | fixed | 1 | each analysis' own measured constant on each backend (plan floor, packing); there is no universal GPU overhead |
-  | device setup | device open (cold provider) + first native use of the analysis in the process | measured by the calibration; charged in full to the first call of an analysis and design family, then spread over up to 4 calls |
-  | fallback risk | transient native failure rate × (native + CPU time) | deterministic failures in the device's failure cache route to the CPU outright |
-
-  Four non-negative coefficient sets per analysis — CPU and Metal, each on a
-  repeated and on a freshly edited snapshot — are fitted by load-weighted
-  relative least squares from complete calls. CPU coefficients are measured
-  with the graph off (cold intermediates); the CPU drops the preparation term
-  when the graph holds the snapshot's tracer, and the ray term of wave
-  analyses when it already built the request's pupil lattices. Each backend
-  uses its repeated set when this snapshot ran before (natively, for Metal:
-  resident content, including the seed table), the edit set otherwise.
-- *Cache state*: an `auto` request whose result the analysis graph already
-  holds is answered before routing (no device, no route), whichever backend
-  computed it; its result key is the request content, not the route. Native
-  `auto` results without failed attempts are stored like CPU results.
-- *Decision*: Metal only when the predicted CPU time is at least `RATIO` = 1.3×
-  the predicted Metal time *and* the saving is at least `MIN_GAIN_MS` = 5 ms.
-  The ratio keeps the choice robust to the model's error (median calibration
-  error per analysis ≈ …); the absolute floor keeps sub-perceptual gains from
-  paying a device round trip and contention with other GPU work.
-- *Online refinement* (on by default; `MKLIGHT_COST_REFINEMENT=0` or
-  `CostModel::set_refinement(false)` turns it off): every completed call
-  updates (a) a host-contention factor per backend (what other processes cost
-  this one now: the load-average prior √(load per core / 4), at least 1, times
-  what observations learned beyond it (1/3…3×), in all 1/3…30×; the CPU only,
-  since the device is not shared with the host's threads, so it
-  follows the load even while the CPU is not chosen) and (b) a residual per analysis,
-  backend, design family and workload decade (1/3…3×), as exponentially
-  weighted means of ln(measured/predicted); recorded device aiming statistics
-  update the design family's difficulty and decided pupil grids are
-  remembered. All state is bounded (LRU), recorded in each decision and
-  reported by `Engine::cost_model_stats()`. A decision depends only on the
-  state when it is made.
-- Devices without a calibration table (other GPU families, the CPU-f32
-  emulation) use qualified Metal.
-
-**Calibration.** `tests/cost_calibration.rs::calibrate` (release, real Metal)
-measures every calibrated analysis at a ladder of two or three workloads on
-nine sample designs (refracting, reflecting, finite, anamorphic, freeform,
-diffractive) and an optional local project (nothing of it is embedded) — the
-CPU and Metal, each repeated on one snapshot and after an edit, interleaved
-so host load hits all four alike — and records the load, device time and the
-decided pupil grid of every rung. The fit keeps a rung's least loaded record
-and weights records by 1/max(1, load per core / 2)², then writes the table,
-versioned by format, model version, device class and measurement record:
-
-    MKLIGHT_COST_CALIBRATION_OUT=$PWD/crates/mklight-engine/src/analysis/cost/apple-m2-pro.json \
-    cargo test --release -p mklight-engine --test cost_calibration -- --ignored --exact calibrate --nocapture --test-threads=1
-
-`MKLIGHT_COST_MODES` and `MKLIGHT_COST_DESIGNS` restrict a run (for example
-to re-measure designs that ran on a busy host); `MKLIGHT_COST_REFIT=1` fits one
-or more record files (`MKLIGHT_COST_RECORDS`, comma-separated) without
-measuring. `MKLIGHT_COST_CALIBRATION=<file>` loads another table at engine
-start (format and model version must match). `validate` in the same file compares `auto`
-against both backends on fresh edits and warm repeats.
-
-*Accuracy exclusions*, re-qualified (E1, point 14) with F1's per-quantity
-contracts: `metal_accuracy` on the 16 samples (release, real Metal, master
-afa942a: 480 rows, 0 native gate failures) and the complex lens
-(`project_bench` accuracy records, Metal DF vs CPU f64, warm and edited):
-
-| Analysis | Status | Evidence |
-|---|---|---|
-| `ghost_irradiance` | excluded | 16/16 samples pass, but an edited complex-lens snapshot gives one discrete `rays_traced` mismatch (23,442 vs 23,370 in 1 of 1,656 ghost fields; positions 0.035 and flux far inside their contracts) |
-| `glass_substitution` | excluded | complex lens: the native search returns other finalists (merit and violation far outside their gates); the CPU is also faster |
-| `spot_diagram` | excluded from 1M traced rays | complex lens, 23.6M rays after an edit: `rays_arrived` differs by 2 of 767k in 10 field–wavelength rows (edge rays); default spots and the repeated dense spot pass, so smaller spots stay routed by cost |
-| `psf`, `mtf`, `line_spread`, `diffraction_encircled_energy`, `through_focus_mtf`, `mtf_vs_field` | re-qualified | 16/16 within contract; complex lens within contract (MTF frequency class ≤ 0.016 of its gate, dense grids included) |
-| `chief_ray_angle`, `pupil_aberration`, `relative_illumination_map`, `grid_distortion` | re-qualified | 16/16; complex lens without mask mismatches (host f64 chief rows, A4) |
-| `field_curvature_distortion` | re-qualified | 16/16; complex lens 2.8e-7 (host f64 differential pencil, D2) |
-| `stray_light` | re-qualified | passes F1's statistical ledger contract on the 16 samples and the complex lens (worst 0.10 of its gate, edited) |
-| `footprint` | re-qualified | 16/16 under F1's outline contract (newtonian included); complex lens outline 0.07 of its gate |
-
-The other candidate solvers are no longer a separate rule: the model predicts
-them like every other analysis (on the complex lens the CPU wins by about 3× per
-candidate in device time alone, C2).
-
-*Measured routing* (complex lens, M2 Pro, `project_bench` with CPU, Metal DF
-and `auto`, 3 rounds per phase, master b25df11 + E1). On the lens `auto` now
-chooses Metal for dense geometric MTF (6.3 s against 21.8 s on the CPU) and,
-when predicted faster, for wave and map jobs after an edit; it keeps the CPU
-for small geometric jobs, the solvers (CPU 2–6× faster per call after G1) and
-most default wave jobs at low load. Regret against the faster backend stays
-within 1.3× or 20 ms except for the accuracy exclusions (dense spot above 1M
-rays: 1.7–1.9×, by design) and two cases near break-even (PSF after an edit
-+125 ms, tolerance repeat +33 ms). A repeated `auto` request is answered from
-the graph on either backend (dense geometric MTF warm 0.3 ms, previously
-5.9 s per call on Metal). Six-graph edit loop: CPU 338, `auto` 343, Metal 743
-ms; warm repeat 0.7 / 0.7 / 767 ms; queued 305 / 310 / 559 ms. The full
-table, the 16-sample validation and the evidence for every exclusion are in
-the E1 report of the performance programme.
-
-**Deciding before the device opens.** Providers describe their analyses,
-device family and whether the device is open without opening it
-(`BackendProvider::hint`; every Metal device on Apple silicon is the Apple
-GPU). Routes the model settles as the reference are decided before any
-device initialisation, so a cold call that ends on the CPU pays no Metal
-setup; the decision carries `"before_device": true`. A cold device's setup is
-part of the native prediction. Each decision is recorded in the backend
-report (`cost_decision`, RESULTS §5).
-
-**Failed and skipped native attempts.** `RunInfo.failed_attempts` lists every
-backend attempt that did not produce the result: `failed` (the native run
-failed after `elapsed_ms` and the reference completed the job), `skipped`
-(the same request already failed deterministically on this device),
-`infeasible` (rejected by the analysis' capability/resource preflight before
-preparation), `downgraded` (an explicit request the static capability list
-ran on the reference; also a warning) and `reference_completion` (the native
-adapter itself completed the whole result in f64). Each device remembers
-deterministic failures (model, support and numerical errors, not
-device/driver errors) by request identity — snapshot hash, glass library
-hash, analysis and normalised settings — in a bounded LRU; an edit changes the
-identity.
-
-Cold observations are separate: 496 independent CPU and Metal engines/sessions/providers prevent a prior CPU call from warming the Metal engine reference caches. They include construction, setup, qualification and result assembly; backend setup is also reported separately. A cold Metal job includes the complete f64 chain qualification of §9.4 (the CPU reference run plus comparison), so first calls on a new snapshot or settings cost more than the CPU job: median 12× (1.7–51×) over the 496 default jobs, 42.3 s against 13.1 s in total. `geometric_mtf`, 2.9× faster warm, is 2.0× slower cold. Editing a design changes the snapshot and starts a new qualification. The paired first calls in the repeat/candidate sweeps describe their initialized shared session, not an independent cold process. Cold individual observations and every warm median/p95 are retained in `engine-costs-all.json` and the raw `P11_COLD` rows.
-
-Representative independent Cooke cold starts below are single observations, not cold medians/p95. The Metal-request total includes its backend setup.
-
-| Cold engine job | CPU total ms | Metal-request total ms | Backend setup ms | Used backend |
-|---|---:|---:|---:|---|
-| `image_simulation` | 206.678 | 523.370 | 3.203 | gpu:metal |
-| `psf` | 47.259 | 140.741 | 2.952 | gpu:metal |
-| `spot_diagram` | 0.584 | 16.640 | 2.666 | gpu:metal |
-| `stray_light` | 14.249 | 73.753 | 2.683 | cpu_reference |
-| `wavefront_map` | 22.254 | 93.038 | 2.865 | cpu_reference |
+The P11 cold-start observations predate the runtime publication policy:
+every cold Metal job then ran an f64 chain qualification, so they do not
+describe current cold calls and are not repeated here. Cold device setup is
+now a measured term of the routing prediction (above).
 
 | Resident call | Peak live plan MiB | Reported warm copied bytes |
 |---|---:|---:|
@@ -1914,11 +1926,11 @@ remain named, counted numerical fallbacks.
 
 Qualified default maxima: `max_direction` = 4.21012e-08, `max_opd_waves` = 8.01771e-05, `max_position_mm` = 1.89671e-06, `maximum_image_energy_relative` = 4.80666e-07, `maximum_image_l1_relative` = 4.90827e-07. Undefined masks and discrete outputs agree exactly; known answers, conservation, CPU-f32 emulation, f64 cross-checks, cancellation and concurrent repeats are separate tests.
 
-The stray wavefront split was implemented with source-local depth-first Philox state and passed the transport checks, then rejected after alternating A/B measurements showed queue/global-state overhead. Production transport is restored unchanged. Complete transport, not first-hit throughput, determines its cost exceptions. Bounded P1 aiming calibration and the per-candidate reference workload remain performance limits; no wider precision or parameter envelope is claimed.
+The stray wavefront split was implemented with source-local depth-first Philox state and passed the transport checks, then rejected after alternating A/B measurements showed queue/global-state overhead. Production transport is restored unchanged. Complete transport, not first-hit throughput, is what the routing cost model measures. Bounded P1 aiming calibration and the per-candidate reference workload remain performance limits; no wider precision or parameter envelope is claimed.
 
 Peak sampled process RSS over the final tasks: 4.401 GiB. This is a one-second sample, not a process high-water guarantee. Per-plan live peaks exclude immutable caches, idle pools and host metadata; those counters remain separate. Owned final/validation copies and explicit readback are reported separately from in-place resident views; overlapping context/backend counters must not be summed.
 
-The binding scratchpad `P11-evidence.md` and final `P11-quiet/` directory contain commands, complete before/after rows, source/executable identities, numerical evidence, cold/warm distributions, copies/peaks, command maxima and the scope/gap ledger. Only the final frozen-source quiet session supplies the cost-rule thresholds.
+The binding scratchpad `P11-evidence.md` and final `P11-quiet/` directory contain commands, complete before/after rows, source/executable identities, numerical evidence, cold/warm distributions, copies/peaks, command maxima and the scope/gap ledger. Routing does not use these numbers; it uses the calibration table of "Automatic routing".
 
 Final reported warm command maxima: p7-radiometry.log: 38.548 ms, p7-dense-pupils.log: 43.250 ms, p9-ghosts.log: 16.540 ms. Dense film/PRT work calibrates above 16K items with a 32K tile cap; large full-record resident traces complete 128K-ray tiles. The cheap bare-coating path retains its larger fusion allowance. These controls change submission boundaries, not per-item arithmetic or RNG addressing.
 

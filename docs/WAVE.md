@@ -461,9 +461,10 @@ skew transform (0.1% of peak and energy).
 
 `mklight_wave::gpu` composes P1 aiming/tracing/projection, P2 transforms, P3
 collectives/QR, P5 field maps/illumination and P7 scalar throughput through the
-single `ComputeBackend` resident API. It does not enable engine routing or
-change the reference registry. P11 owns qualification policy and automatic
-selection; explicit solver calls report the actual backend and f32 precision.
+single `ComputeBackend` resident API. The engine's native wave routes call
+it without changing the reference registry; capability and `auto` routing
+are in GPU.md §9.2–9.3. Solver calls report the actual backend and f32
+precision.
 
 ### Pupils and automatic sampling
 
@@ -487,7 +488,7 @@ unchanged while the costliest aims (unreachable targets running the whole
 continuation schedule) disappear. Rim probes evaluate `RIM_LEVELS` bisection
 levels per round (one: plain bisection, which aims the fewest rays — rounds
 are dispatches of one plan, not host round trips), retaining the same binary
-decisions and requested tolerance; edges already within tolerance emit
+decisions and the run's aim tolerance (CONVENTIONS §7, "Aim stop"); edges already within tolerance emit
 skip-flagged probes that are neither aimed nor traced. The host f64 seed
 tables (25×25 per field–wavelength row, `aiming::host_tables`) seed every
 generation of a batch, so the chief probe, lattice, saddle and rim probes
@@ -499,10 +500,10 @@ analytic disk root uses its cancellation-free form. Each rim edge keeps the
 ray of its surviving bracket end from the round that traced it (first the
 inside lattice node; `Op::Rim` names the probe, `Op::Keep` gathers its
 channels), exactly as the reference keeps the bracketing ray. The final point
-is never traced again: a small final batch aims from the chief seeds rather
-than the seed table, and a ray converged within the aiming tolerance of an
-aperture edge may then clip, which used to drop a sector of every vignetted
-off-axis rim (`tests/p6_offaxis.rs`). A failed aim whose stop residual is far
+is never traced again: re-aimed from other seeds, a ray converged within the
+aiming tolerance of an aperture edge may land on its other side and clip,
+dropping a sector of a vignetted off-axis rim (regression test
+`tests/p6_offaxis.rs`). A failed aim whose stop residual is far
 above the tolerance (> 1e-6 of the stop radius) or whose stop is unreachable
 is a ray that cannot be aimed through the stop at that field; the reference
 treats it as vignetted (`Tracing::ray` is `None`) and so does the survival
@@ -639,7 +640,8 @@ It alternates unchanged CPU f64 and GPU runs, separates workload-cold/setup and
 warm-up, and records ten measured runs, median/p95, stages, copies, allocations,
 tracked peak plan bytes and fallback counts. The older prepared-pupil benchmark
 remains a distinct residency case. Timings during concurrent package work are
-provisional; P11 owns consolidated quiet-host cost thresholds. Detailed current
+provisional; engine routing uses the calibrated cost model of GPU.md §9.2,
+not these timings. Detailed current
 acceptance status, raw logs, numerical maxima and outstanding qualifications
 are maintained in the task's `P6-evidence.md`.
 
@@ -652,5 +654,5 @@ other small/default jobs, the Huygens/FFT focus cases and 64×64 or default
 image simulation remain CPU-preferred because the f64 reference traces its
 pupils in parallel in 10–50 ms. Dense 256/1024 transforms with an already
 resident pupil favor GPU, a different cost state from tracing and resampling a
-complete job. P11 must retain that distinction
-when deriving backend policy. These measurements do not change engine dispatch.
+complete job; the cost model's stage terms keep that distinction (GPU.md
+§9.2). These measurements do not change engine dispatch.

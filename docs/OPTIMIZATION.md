@@ -833,10 +833,11 @@ generation and the operand reductions (centroids, RMS) onto the device, and
 skip the snapshot hash for transient candidates (`mklight-core`).
 
 **Use.** The crossover figures above describe the legacy host merit adapter.
-The resident evaluator now publishes device values without per-candidate f64
-checks. Engine Auto runs candidate jobs on the CPU reference on Apple GPUs,
-where it was 4–52× faster on the measured designs (`GPU.md` §9.2); an explicit
-Metal request runs them on the device. `gpu_rays_per_candidate` counts
+The resident evaluator publishes device values without per-candidate f64
+checks. Engine `auto` routes candidate jobs by the calibrated cost model
+(`GPU.md` §9.2, "Automatic routing"), which on the calibrated M2 Pro usually
+chooses the CPU reference for them; an explicit Metal request runs them on
+the device. `gpu_rays_per_candidate` counts
 the rays in the legacy evaluator's plan.
 
 ## Engine jobs: `optimize`, `merit_evaluation` and `tolerance`
@@ -882,15 +883,16 @@ evaluator drove the search. `backend` says what evaluated the search
 and glass reports use the CPU f64 reference at the end; tolerance and merit
 evaluation return the active evaluator's values. Requested/used backend,
 precision, device/build and cost decisions remain in the envelope; qualification
-blobs and caches are removed. Result versions for these four jobs are now 2.
+blobs and caches are removed. Result versions for these four jobs are 2.
 Unsupported preparation/features, unresolved aiming and resource/device errors
 remain real, counted fallbacks. Cancellation never starts reference replacement.
 Because a candidate with any unresolved ray is reported whole, the device
 aims its rays under a schedule cap of 32 Newton iterations
 (`AimOptions::schedule_cap`, GPU.md "Bounded aiming commands"): an unaimable
 ray of a bad trial step fails after a bounded number of iterations instead of
-running the reference schedule to its end, which cost 300–400 ms of device
-time per such candidate; healthy candidate rays converge in at most 4–6.
+running the reference schedule to its end, while healthy candidate rays
+converge well within the cap (measurements: GPU.md "Bounded aiming
+commands").
 
 `optimize` and `merit_evaluation` apply the solves (`docs/SOLVES.md`) to
 the start before building the merit. Solve-controlled parameters are never variables: automatic variables
@@ -1272,7 +1274,8 @@ I LM iterations, forward differences cost about `C · (1 + I · (n + 1))`
 merit evaluations, plus rejected steps and constraint updates (central
 differences: 2n). One search iteration's combinations run in parallel. All re-optimisations share the resident GPU evaluator, with each FD Jacobian
 batched and split at `gpu_batch`. No candidate/reference checks run during the
-search. Auto runs the search on the CPU reference (`GPU.md` §9.2). The final ranking
+search. `auto` runs the search on the CPU reference: `glass_substitution` is an
+accuracy exclusion (`GPU.md` §9.2, "Automatic routing"). The final ranking
 adds one CPU f64 merit evaluation per kept combination.
 
 The ignored Cooke-triplet benchmark has three glass variables (K = 3), a
@@ -1327,8 +1330,8 @@ and synthetic catalogues.
 ## Resident optimisation adapter (P8)
 
 `gpu::ResidentEvaluator` is an explicit backend-taking alternative to the
-legacy `GpuTraceEvaluator`. Engine defaults and capability selection are
-unchanged; P11 owns those routes. Construct it with a `GpuContext` containing
+legacy `GpuTraceEvaluator`; the engine's native candidate jobs use it, and
+their routing is in GPU.md §9.2. Construct it with a `GpuContext` containing
 the base snapshot and backend, and the configured `BuiltinEvaluator` reference.
 Use it in `OpticalProblem`, or wrap a driver with `ResidentEvaluator::run` to
 retain actual-backend `RunInfo`, library identity, native solver
@@ -1413,7 +1416,7 @@ already live on the device.
 **P11 policy update:** the `m·n²` threshold and timings in the next
 paragraph are historical. The resident tall QR now starts at `m·n ≥ 2¹⁶`
 Jacobian elements, measured on the complete compression (`GPU.md` §9.2).
-Engine `auto` runs candidate jobs on the CPU reference (`GPU.md` §9.2). The
+Engine `auto` routes candidate jobs by the cost model (`GPU.md` §9.2). The
 following P8/P11 timings are historical and include per-candidate f64 checks.
 
 The local solver hands its tall QR to P3 once the free-column work
@@ -1458,11 +1461,9 @@ The ignored `p8_bench` harness alternates unchanged f64, legacy Metal and the
 resident path at B=1/16/256/1024, with cold, warm-up and ten measured runs.
 Historical runs included candidate qualification and recorded transfers, device/wall time,
 command counts, allocation reuse, peak plan storage and fallback proportions.
-Current default-workload measurements are CPU-preferred; no engine threshold is
-changed. Exact numerical maxima, provisional median/p95 results, raw records
-and unmeasured acceptance cases are in the task's `P8-evidence.md`. P11 must
-retain the distinction between cold candidate qualification, identical-input
-reuse and changing-candidate optimisation when deriving cost policy.
+These measurements do not set engine routing (the cost model of `GPU.md`
+§9.2 does). Exact numerical maxima, provisional median/p95 results, raw records
+and unmeasured acceptance cases are in the task's `P8-evidence.md`.
 
 The additional ignored `p8_workloads` harness measures complete synthetic LM
 solves on both sides of the tall-QR crossover, 32 Cooke tolerance trials with/without
@@ -1472,7 +1473,7 @@ CPU-preferred. `P8_MERIT=wave` runs the default and dense wave counterparts of
 `p8_bench`; its default is spot. Timing evidence remains provisional.
 
 Provisional M2 Pro measurements (2026-11-01), ten measured runs after warm-up,
-show why P11 should retain CPU-preferred small jobs. For an exact-input warm
+show why small candidate jobs favour the CPU. For an exact-input warm
 Cooke default spot evaluation at B=1, CPU / legacy Metal / resident medians were
 0.21 / 1.14 / 5.1 ms (about 3.5 ms on a quieter run); at B=1024, 28 / 32 /
 54 ms after parallel preparation and 1024-candidate spot plans (92 ms

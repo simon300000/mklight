@@ -138,7 +138,7 @@ them. Spot statistics without `include_points` allocate no point output; the
 CPU reference traces one field at a time, so only that field's rays are
 alive. Buffer values follow the JSON conventions of the documented result
 (canonical NaN; infinities only where the schema allows them), so the typed
-route is byte-identical to the former JSON route. The C ABI hands each
+buffers carry exactly the values the result schema documents. The C ABI hands each
 buffer's allocation to the caller without a copy.
 
 ## Analysis graph
@@ -156,20 +156,24 @@ content-addressed dependency graph under the analysis requests
 | `configured` | snapshot, library, configuration | wave analyses: configuration, solves, first order, prepared fields |
 | `pupil_lattice` | configured snapshot, tracer settings, prepared field, wavelength, lattice settings, library | CPU f64 PSF, MTF, LSF, encircled energy, through-focus, wavefront, MTF vs field: rays, rim, reference sphere, masks, automatic pupil grid |
 | `resampled_pupil` | lattice, grid, supersampling | every consumer of the same grid (decided grid and window refinements) |
-| `result` | snapshot, library, analysis, normalised settings, backend selection | repeated requests (refresh, undo); CPU-reference results only |
+| `result` | snapshot, library, analysis, normalised settings, tier and aim stop; for explicit backends also the backend selection | repeated requests (refresh, undo): an `auto` request is answered before routing whichever backend computed it; explicit requests reuse CPU-reference results only; results with failed backend attempts are never stored (RESULTS §1) |
 
 Keys digest every input a node reads plus an algorithm version, so a hit is
 bit-identical to a rebuild and an edit misses exactly the nodes that depend
 on what changed; nothing stale can be returned. Methods are different nodes
 (direct and FFT MTF never substitute for each other); sampling decisions such
 as the automatic pupil grid are computed once per lattice from host f64 data.
-The graph has one byte budget (`EngineConfig::analysis_graph_bytes`, 0
-disables it) with GreedyDual-Size retention by rebuild cost per byte.
+The graph has one byte budget (`EngineConfig::analysis_graph_bytes`,
+default 256 MiB, 0 disables it) with GreedyDual-Size retention by rebuild
+cost per byte; a node larger than a quarter of the budget is returned but
+not stored.
 Concurrent requests claim missing nodes and wait for nodes another job is
 building (outside the rayon pool), so a queued refresh traces each pupil once;
 failed or cancelled builds publish nothing. Metal keeps its own resident
-caches (aiming rows, seed tables, transform plans); transform recipes, tables
-and chirp spectra are content-addressed there and survive edits.
+caches with per-category budgets (GPU §9.2: aiming rows, seed tables,
+transform plans); aiming rows and seed tables are keyed by the uploaded
+content, and transform recipes, tables and chirp spectra by their
+parameters, so they survive edits that do not change them.
 
 ## Structural validation
 
@@ -184,19 +188,39 @@ the same schema version survives a round trip), `RunInfo` and other result
 documents (output, read by front ends of other versions), and glass-catalog
 JSON (`Glass`, `GlassCatalog`: data that other tools may annotate).
 
-## Precision on the GPU
+## Precision
 
-Apple GPUs have no FP64. GPU kernels are FP32, designed so that their error
-stays inside an explicit budget (see `docs/CONVENTIONS.md` §Precision):
+The **CPU f64 tracer is the reference**. Its batch paths aim and trace rays
+in f64 SIMD packets that are bitwise equal to the scalar tracer, which
+stays the independent oracle (CONVENTIONS §7, "CPU packets").
+
+Apple GPUs have no FP64. Metal kernels compute in f32 and switch to
+double-float (`float2` hi + lo pairs, about 48 significand bits) wherever
+the budget needs it (GPU §3–4):
 
 * rays are carried in each surface's local frame, never in large global coordinates;
-* intersections use cancellation-free closed forms, then Newton refinement for aspheres;
-* optical path length is accumulated in double-float (`float2` two-sum)
-  arithmetic, *relative* to the chief ray;
+* intersections use cancellation-free closed forms; decisions and
+  predictors are f32, while transfers, hit refinement, direction
+  renormalisation and the optical path are double-float;
+* aiming runs its stop hits, finite differences, 2×2 solves and updates in
+  double-float;
 * reductions use compensated (Kahan/Neumaier) or pairwise summation.
 
-The CPU f64 tracer is the reference. CI-style tests compare reference ↔ CPU-f32
-emulation ↔ Metal on a fixed set of designs, with per-quantity tolerances.
+A pure-f32 build exists for measurement only; the engine always opens the
+double-float build (GPU §3.6). Every Metal result is labelled `f32_gpu`,
+even where a public buffer widens it to f64.
+
+Some inputs of the Metal paths stay host f64: field sources, chief rays and
+their Jacobians (host chief rows), the wave path's pupil seed tables, the
+prepared fields shared through the analysis graph, the field-curvature
+close-ray cross-check (the f64 differential pencil) and aperture-edge ties
+of ghost lattices. Solver reports are scored once in f64 at the end
+(GPU §9.2).
+
+Budgets are in CONVENTIONS §7; the per-quantity contracts and the preview
+tier are in GPU §9.4. Accuracy is qualified offline: tests compare the
+reference, the CPU-f32 emulation and Metal on the sample designs. `auto`
+routing and its accuracy exclusions are in GPU §9.2.
 
 ## Platform backends
 

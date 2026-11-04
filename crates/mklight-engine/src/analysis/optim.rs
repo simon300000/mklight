@@ -18,8 +18,9 @@
 //! * **Never worse than the start**: the result is the better of the start
 //!   and the optimiser's answer on the reference (feasibility first), with
 //!   a warning when the optimiser found nothing better.
-//! * **Backend `auto`** prefers the qualified resident device; a matched
-//!   complete-chain cost record can choose the CPU reference.
+//! * **Backend `auto`** evaluates on the device the engine selected for the
+//!   job (its cost model under engine `auto`, GPU.md §9.2), else on the CPU
+//!   reference.
 //! * The result carries the final system as model JSON (`"system"`), so a
 //!   front end can apply it as a new (undoable) snapshot.
 
@@ -353,8 +354,7 @@ fn default_merit_schema(default: Value) -> Value {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum BackendChoice {
-    /// The engine's qualified resident device, subject to recorded complete
-    /// workload cost evidence.
+    /// The device the engine selected for the job, else the CPU reference.
     Auto,
     Cpu,
     /// The engine's GPU device for this analysis; the CPU reference (with
@@ -533,12 +533,15 @@ impl Evaluation {
             b["resident_evaluation"] = serde_json::to_value(stats)?;
         }
         let used = self.gpu.as_ref().filter(|_| active);
+        // A CPU-reference request never had a GPU to fall back from.
         let fallback_reason = if active {
             None
         } else {
-            self.fallback_reason
-                .clone()
-                .or_else(|| Some("no candidates evaluated on the GPU".into()))
+            self.fallback_reason.clone().or_else(|| {
+                self.gpu
+                    .is_some()
+                    .then(|| "no candidates evaluated on the GPU".into())
+            })
         };
         input.report_backend(BackendUse {
             id: used.map_or("cpu_reference".into(), |(_, d)| d.id.clone()),
@@ -1295,7 +1298,7 @@ impl Analysis for Optimize {
                 "seed": {"type": "integer", "minimum": 0, "default": 0, "title": "Seed"},
                 "backend": {"type": "string", "enum": ["auto", "cpu", "gpu", "gpu_emulation"],
                     "default": "auto", "title": "Merit evaluation",
-                    "description": "auto: the engine's qualified resident device unless matched complete-chain cost evidence prefers the CPU reference; unknown cost prefers the device."},
+                    "description": "auto: the device the engine selected for this job (under engine auto, its cost model; docs/GPU.md §9.2), else the CPU reference."},
                 "gpu_batch": {"type": "integer", "minimum": 1, "default": 512,
                     "title": "GPU sub-batch", "description": "Candidates per GPU dispatch."},
                 "feasibility_tolerance": {"type": "number", "minimum": 0, "default": 1e-6,

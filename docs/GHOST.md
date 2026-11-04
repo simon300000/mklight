@@ -406,8 +406,8 @@ cargo test --release -p mklight-stray --test partition high_reflectance_ghost_fl
 `mklight_ghost::gpu` exposes explicit backend-neutral `ghost_irradiance`,
 `paraxial_ghosts`, `paraxial_batch` and `real_ghost_focus` jobs. They take a
 `ComputeBackend` and `JobContext`, and preserve the reference functions and
-result shapes. Engine routes, automatic selection and chain qualification
-remain with P11; these adapters do not advertise an engine capability.
+result shapes. The engine's native ghost routes call them; capability and
+`auto` routing are in GPU.md §9.2–9.3.
 
 `GhostTransport` prepares immutable, checked expanded step programs, the
 exact `GhostModel` clips and P7 coating domains for each wavelength and
@@ -418,7 +418,8 @@ count, hi/lo final position/direction, separate s/p weights and bulk
 transmittance; conditioning failures retain a reference-required status.
 The numeric records and version are in `mklight_ghost_ops_types.h`.
 
-Irradiance starts use P1 device chief aiming and source construction. The
+Irradiance starts are aimed on the device from host f64 chief rows
+(`aiming::host_seeds`, GPU.md §9.2 "Aiming and OPD"). The
 sampled square is an entrance-pupil disc about that chief's aim point, as
 in §5; individual overfilled ghost rays are not re-aimed at the stop.
 Lattice coordinates stay integer keys alongside their resident samples.
@@ -517,9 +518,9 @@ wavelengths and default reference intersection settings. Other wavelength
 shapes, custom intersection settings, resident candidate systems and
 irradiance runs whose finite object lies beyond the 1000 mm segment domain
 (every probe would need reference completion) return `Unsupported` for the
-caller's reported reference route. Qualification for
-new designs, candidate envelopes and automatic cost decisions belongs to
-P11. Tests cover all built-in samples, matched CPU-f32/Metal algebra, both
+caller's reported reference route. `auto` keeps `ghost_irradiance` on
+the CPU reference as an accuracy exclusion (GPU.md §9.2, "Automatic
+routing"). Tests cover all built-in samples, matched CPU-f32/Metal algebra, both
 shader-library origins, physical fixtures, fixed-hit map conservation,
 pixel-edge reference handling, bitwise CPU-f32 emulation of the complete
 map chain, concurrent determinism and cancellation.

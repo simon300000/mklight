@@ -201,13 +201,18 @@ All keys optional:
 
 ```json
 { "worker_threads": 0, "max_retained_jobs": 256, "resolved_cache_capacity": 8,
-  "progress_interval_ms": 50, "app_name": "MKLight", "app_version": "1.0",
-  "default_backend": {"kind": "auto"} }
+  "analysis_graph_bytes": 268435456, "progress_interval_ms": 50,
+  "app_name": "MKLight", "app_version": "1.0",
+  "default_backend": {"kind": "auto"}, "aim_stop": "conditioned" }
 ```
 
 The initial `default_backend` is `auto`; explicit CPU remains available.
-`worker_threads: 0` picks `min(cores, 4)`. `app_name`/`app_version` are
-stamped into project metadata on save.
+`worker_threads: 0` picks `min(cores, 4)`. `analysis_graph_bytes` is the
+analysis graph's byte budget (default 256 MiB, 0 disables it;
+ARCHITECTURE "Analysis graph"). `aim_stop` is the aim-stop policy of
+requests that name none (`conditioned` by default, or `requested`;
+CONVENTIONS §7). `app_name`/`app_version` are stamped into project
+metadata on save.
 
 ### Analyses (`mk_engine_list_analyses`)
 
@@ -259,9 +264,11 @@ so.
 Selection is per analysis: a GPU backend runs only the analyses listed in
 its `capabilities.analyses` (the CPU reference runs all). Requesting it
 explicitly for any other analysis is handled like an unavailable backend
-(error, or fallback with a warning). `auto` takes the first available GPU
-backend that implements the analysis, else the CPU reference (no warning;
-the result's `backend.fallback_reason` says why). When the request names no
+(error, or fallback with a warning). `auto` chooses per request with the
+calibrated cost model of GPU §9.2 (accuracy exclusions and the static
+capability list on the CPU reference; Metal only for a predicted advantage
+of at least 1.3× and 5 ms); a CPU choice carries no warning, and the
+result's `backend.cost_decision` and `backend.fallback_reason` say why. When the request names no
 backend, the engine default (`default_backend` in the configuration, or
 `mk_engine_set_default_backend`) applies as a preference: analyses the
 default backend does not implement run on the CPU reference, with a
@@ -269,7 +276,7 @@ default backend does not implement run on the CPU reference, with a
 
 A selected GPU publishes actual device results without per-snapshot or
 per-candidate reference comparisons. Accuracy is tested offline; static capability
-restrictions retain the three broadly failing P11 analyses on CPU (GPU §9.2).
+restrictions keep three analyses on the CPU (GPU §9.2).
 Unsupported stages, unresolved aiming and resource/device errors retain reported
 f64 fallbacks. Cancellation never starts a replacement. Final optimize, tolerance
 and glass reports are f64-scored after the device search; merit evaluation returns

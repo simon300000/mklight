@@ -612,9 +612,11 @@ pub fn prepare_tier(analysis: &dyn Analysis, settings: &Value, tier: Tier) -> En
 ///
 /// With an analysis graph, a [`Analysis::memoizable`] request identical to
 /// an earlier one (same snapshot content, library, normalised settings and
-/// backend selection) returns the stored result, restamped with this
-/// call's start time and duration; identical concurrent requests run once.
-/// Only CPU-reference results without failed backend attempts are stored.
+/// policy; for an explicit backend also the backend selection) returns the
+/// stored result, restamped with this call's start time and duration;
+/// identical concurrent requests run once. Results without failed backend
+/// attempts are stored: an `auto` result whichever backend computed it, an
+/// explicit request's only from the CPU reference.
 pub fn run_analysis(
     analysis: &dyn Analysis,
     input: &AnalysisInput<'_>,

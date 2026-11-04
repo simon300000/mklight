@@ -122,7 +122,8 @@ document on purpose in the same change.
 ## 7. Precision and error budget
 
 The **CPU f64 tracer (`mklight-trace`) is the reference**. GPU backends compute
-in f32, using these techniques:
+in f32, with double-float (f32 hi + lo pair) arithmetic where the budget
+needs more (`docs/GPU.md` §3–4), using these techniques:
 
 1. Trace in surface-local coordinates. Translate by the (exactly representable)
    per-surface thickness, never by global positions.
@@ -156,8 +157,13 @@ designs they cover):
 | MTF | ≤ 2·10⁻³ absolute |
 | ray survival (vignetting) | identical except rays within 1·10⁻⁵ mm of an aperture edge |
 
-If a backend can't meet the budget for a design, it must say so and fall back
-to the CPU reference. It must never return silently degraded numbers.
+A backend must never return silently degraded numbers. Accuracy is
+qualified offline, per analysis, under the per-quantity contracts of GPU
+§9.4 (each class at least as strict as this table). An analysis whose
+native output fails them runs on the CPU reference (the static capability
+list and the `auto` accuracy exclusions, GPU §9.2), and a native run that
+fails is completed by the reference and recorded in
+`run_info.failed_attempts` (RESULTS §5).
 
 **CPU packets.** Batches on the CPU (`trace_grid`, `opd_grid`, wave pupils,
 rim bisection, merit groups, semi-diameters) aim and trace rays in packets
@@ -173,7 +179,7 @@ identical** to `trace_ray` / `generate` / `trace` one ray at a time, which
 stay the independent oracle (`crates/mklight-trace/tests/packets.rs`).
 
 **Aiming Jacobians.** The real-aim solve (`SequentialTracer`, 2-D Newton with
-Broyden updates) takes every *fresh* Jacobian `∂(stop hit)/∂(aim point)`
+Broyden updates, `AIM_POLICY = JacobianPolicy::AnalyticRefresh`) takes every *fresh* Jacobian `∂(stop hit)/∂(aim point)`
 from the analytic differential tracer (`mklight_trace::diff`): the tangent
 of the starting ray is carried through the stop trace along its records,
 so a fresh Jacobian costs one recorded trace instead of a four-trace
@@ -181,13 +187,15 @@ central-difference stencil (chief-ray aims, continuation stages, and the
 refreshes after singular, slow or rejected steps). Where the tangent is
 undefined (grazing incidence, near total internal reflection, an undefined
 sag Hessian) the solver falls back to the central differences and
-`AimStats` counts it. Between fresh Jacobians the updates are unchanged, so
-well-seeded direct aims trace exactly as before; results differ from the
-previous finite-difference Jacobians only within the aiming tolerance.
+`AimStats` counts it. Between fresh Jacobians the solve uses Broyden
+updates, so a seeded direct aim that needs no refresh traces exactly as
+with finite-difference Jacobians; otherwise results differ from them only
+within the aiming tolerance. (Analytic Jacobians at every iterate, `AnalyticNewton`, need
+fewer iterations but cost more per iteration and are not used.)
 The same tangent gives the real-image-height field solve its Jacobian
 through the aim solve (implicit function theorem) and the differential
 pencil of the field-curvature cross-check (ANALYSIS §2.2). The device
-kernels still use their finite-difference stencils (GPU.md).
+kernels use finite-difference stencils (GPU.md §9.2, "Aiming and OPD").
 
 **Aim stop.** A real-aim solve is converged when its stop residual
 `|stop_hit − target|` is at most the stop tolerance. Two policies exist
@@ -222,12 +230,11 @@ kernels still use their finite-difference stencils (GPU.md).
   | design | 1/10 of 1/3 of the table above: position 6.7·10⁻⁷ mm, direction 6.7·10⁻⁸, OPD 1.7·10⁻⁴ waves | 10⁻⁶ of the stop radius |
   | preview | 1/10 of the preview budgets (GPU §9.4): position 2·10⁻⁵ mm, direction 2·10⁻⁶, OPD 2·10⁻³ waves | 10⁻⁵ of the stop radius |
 
-  On a well-corrected F/1.4 design the design-tier stop lands at 6–10·10⁻⁹ of
-  the stop radius (about 10⁻⁷ mm) and saves 0.5 Newton iterations per ray;
-  an ill-conditioned field (a surface near grazing incidence) derives
-  6·10⁻¹⁰. The device aiming kernel takes one tolerance per request: the
-  tightest derived stop of the request's fields
-  (`SequentialTracer::device_aim_tolerance`).
+  On a well-conditioned design the derived stop lies well above the
+  model default (measured values: GPU §3.6); a field with a surface near
+  grazing incidence derives a much tighter one. The device aiming kernel
+  takes one tolerance per request: the tightest derived stop of the
+  request's fields (`SequentialTracer::device_aim_tolerance`).
 
   **An explicit tolerance is honoured exactly.** Any `ray_aiming.tolerance`
   other than the model default (`RayAiming::DEFAULT_TOLERANCE`, 1e-10) is an
@@ -242,11 +249,11 @@ kernels still use their finite-difference stencils (GPU.md).
   decoder and project schema version are unchanged, so that is left to a
   schema step together with the app.)
 
-  The conditioned stop became the engine default after its qualification
-  under the per-quantity contract of GPU §9.4 ("Contracts"): the 16 samples
-  with real aiming, perturbed and adversarial variants and a 29-surface
-  F/1.4 design, every GPU-capable analysis on the CPU and on Metal, with
-  identical survival masks and every gate met.
+  The conditioned stop is qualified under the per-quantity contracts of
+  GPU §9.4 ("Contracts"): the 16 samples with real aiming, perturbed and
+  adversarial variants and a 29-surface F/1.4 design, every GPU-capable
+  analysis on the CPU and on Metal, with identical survival masks and every
+  gate met (`aim_stop_qualify`; the decision is in DECISIONS.md).
 
 Neither policy changes the budgets above, the requested-tolerance semantics
 of `requested`, nor the survival rule: a ray's survived/clipped status may
@@ -264,11 +271,10 @@ its end. Analyses keep the full schedule; their unresolved rays are checked
 against the reference (`check_aim`). The cap never changes a ray the full
 schedule converges within it (bitwise, `aim_resume.rs`), and the
 arithmetic of every solve is unchanged: GPU precision is not the lever for
-aiming cost. The measured study (GPU.md §3.6, "Selective mixed precision")
-shows an f32 predictor phase cannot pay: the f32 stop residual floor on an
-F/1.4 design is 1.6·10⁻⁶ of the stop radius, the aim kernel is control-flow
-bound (f32 saves 1.4× per iteration, not 4×), and a mixed solve still needs
-a double-float evaluation and iteration after the f32 phase.
+aiming cost. An f32 predictor phase cannot pay, because the f32 stop
+residual floor lies above the aim stop, so a double-float evaluation and
+iteration follow it anyway, and the aim kernel is bound by control flow,
+not arithmetic (measured study: GPU.md §3.6, "Selective mixed precision").
 
 ## 8. Paraxial slopes in solves
 
@@ -412,11 +418,14 @@ fixed arrays.
   reverses it, and a reflection at a mirror keeps it (forward or
   backward), because both gaps next to a sequential mirror lie on its
   reflecting side. Transmission through a mirror does not exist.
-* A backend that fails precision qualification for a system is not used
-  for it: the result is computed by the CPU f64 reference and its `RunInfo`
-  names the rejected backend and the reason (`docs/GPU.md` §5.2). A
-  qualification passes only with the sampled errors within a third of the
-  §7 budget; a cancelled qualification is an error, not a failure.
+* Precision qualification is offline evidence, not a run-time gate: no
+  run compares a GPU result with the reference. `xval::qualify` passes a
+  system on a backend only with the sampled errors within a third of the
+  §7 budget (`docs/GPU.md` §5.2), and the offline accuracy harnesses judge
+  complete analyses by the contracts of GPU §9.4. Which analyses run
+  natively, and how a failing native run falls back and is reported, is
+  §7 above and GPU §9.2–9.3; `RunInfo.backend` always names the backend
+  that computed the result (§14).
 
 ## 13. Structural validation codes
 
@@ -454,7 +463,7 @@ may change.
   versioned result schema whose `x-buffers` declare its typed buffers;
   `docs/RESULTS.md` documents them and is generated from the schemas.
 * `RunInfo.backend` names the backend that computed a result (after any
-  fallback, §12), not the one requested; the envelope's `backend` object
+  fallback, §7), not the one requested; the envelope's `backend` object
   records the request and the reason for a fallback.
 * Ray clouds, grids, maps and scene geometry travel as row-major buffers
   with NaN for "no value" (a ray that did not arrive); curves along one

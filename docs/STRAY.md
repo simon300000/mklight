@@ -462,8 +462,8 @@ estimators through `ComputeBackend`, returning the existing `StrayResult`.
 `gpu::TransportScene` retains immutable scene/material leases across plans;
 `append` exposes raw device detections and per-source ledgers for composed
 jobs. `prepare_geometry`, `generate` and `first_hits` remain available for
-geometry diagnostics. Engine qualification, capability advertisement and
-`auto` routing belong to P11 and are unchanged here.
+geometry diagnostics. Engine capability and `auto` routing are in GPU.md
+§9.2 (`stray_light` is routed by the cost model).
 
 The four source measures preserve wavelength-first Philox draws and the
 reference uniform conversion, including its lower half ulp. Every source

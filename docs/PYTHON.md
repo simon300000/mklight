@@ -129,6 +129,11 @@ Type stubs with docstrings: `crates/mklight-py/python/mklight/_mklight.pyi`.
   selection, consistent with the CLI), `"cpu"`,
   `"metal"` / `"gpu:metal"`, or `{"kind": "gpu", "name": "metal"}`.
   Semantics as in `docs/FFI.md` (*Backends*).
+* Requests run at the design tier with the engine's aim-stop policy
+  (`EngineConfig::aim_stop`, `conditioned` unless the engine configuration
+  sets `aim_stop`); there is no per-request `tier`/`aim_stop` argument.
+  `run_info["tier"]` and `run_info["aim_stop"]` record what ran
+  (`docs/RESULTS.md` §1).
 * `view_key`: a newer job with the same key in the same session supersedes
   (cancels) the older one; use one key per live view.
 * `progress(fraction, stage)` is called on the calling thread, with
