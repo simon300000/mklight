@@ -186,3 +186,39 @@ fn requested_policy_is_bitwise_the_default() {
         assert_eq!(format!("{x:?}"), format!("{y:?}"));
     }
 }
+
+#[test]
+fn an_explicit_tolerance_is_honoured_exactly_by_the_conditioned_policy() {
+    // Any tolerance but the model default is an explicit request: the
+    // conditioned policy derives nothing and traces bitwise as requested.
+    let mut sys = samples::double_gauss();
+    sys.ray_aiming = RayAiming::Real { tolerance: 1e-12 };
+    assert_eq!(sys.ray_aiming.explicit_tolerance(), Some(1e-12));
+    let conditioned = tracer_with(
+        sys.clone(),
+        TracerSettings {
+            aim_stop: AimStop::Conditioned(AimBudget::DESIGN),
+            ..Default::default()
+        },
+    );
+    let requested = tracer(sys);
+    assert_eq!(conditioned.device_aim_tolerance(), 1e-12);
+    let f = (conditioned.field(2), requested.field(2));
+    for w in 0..conditioned.num_wavelengths() {
+        assert_eq!(conditioned.aim_tolerance_of(f.0, w), 1e-12);
+    }
+    for p in (PupilSampling::Hexapolar { rings: 4 }).points() {
+        let x = conditioned.generate(f.0, 0, p[0], p[1]).unwrap();
+        let y = requested.generate(f.1, 0, p[0], p[1]).unwrap();
+        assert_eq!(format!("{x:?}"), format!("{y:?}"));
+    }
+    // The model default stays derivable.
+    let derived = tracer_with(
+        real(samples::double_gauss()),
+        TracerSettings {
+            aim_stop: AimStop::Conditioned(AimBudget::DESIGN),
+            ..Default::default()
+        },
+    );
+    assert!(derived.device_aim_tolerance() > RayAiming::DEFAULT_TOLERANCE);
+}

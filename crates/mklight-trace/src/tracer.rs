@@ -141,7 +141,9 @@ pub enum AimStop {
     /// to `[requested, max_relative]`, so it is never tighter than the
     /// request (an ill-conditioned field keeps the request and is warned
     /// about) and never looser than the cap. Chief rays are always aimed at
-    /// the requested tolerance.
+    /// the requested tolerance. Only the model-default tolerance is derived:
+    /// an explicit tolerance ([`RayAiming::explicit_tolerance`]) is honoured
+    /// exactly for every ray, as under [`AimStop::Requested`].
     Conditioned(AimBudget),
 }
 
@@ -959,6 +961,7 @@ impl SequentialTracer {
         };
         if let (AimStop::Conditioned(budget), RayAiming::Real { .. }) =
             (self.settings.aim_stop, self.aiming)
+            && self.aiming.explicit_tolerance().is_none()
         {
             for wl in 0..nw {
                 let c = self.conditioning(&field, wl);

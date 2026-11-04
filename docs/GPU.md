@@ -1924,7 +1924,10 @@ is a recorded sampling choice and only a physical difference fails.
 
 **Tiers.** Every result carries `run_info.tier` and `run_info.aim_stop`
 (`AnalysisRequest::{tier, aim_stop}`; the CLI's `--tier`/`--aim-stop`; the
-FFI request JSON). The budgets above are the **design** tier, the default.
+FFI request JSON). The budgets above are the **design** tier, the default;
+the engine's default aim stop is `conditioned` (CONVENTIONS §7), qualified
+under the contracts above on the CPU and Metal, and an explicit aiming
+tolerance in the system is always honoured exactly.
 The **preview** tier is opt-in and never silent: it exists for responsive
 exploration and is not evidence for a design decision. Its contract against
 the design tier of the same request is
