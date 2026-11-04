@@ -1875,9 +1875,59 @@ and root-search warnings; increasing precision does not fix undersampling.
 For insufficient margin use double-float, a better-conditioned formulation
 or the reported reference fallback, never loosen the budget to pass.
 
+**Contracts.** The offline comparators (`metal_accuracy`, `aim_stop_qualify`,
+the `project_bench` accuracy columns; `crates/mklight-engine/tests/support/
+comparison.rs`) judge every result field by its **quantity class**, never by
+a tolerance guessed from its name. One table (`FIELDS`) maps every numeric
+field and buffer of every compared analysis to a class; a field it does not
+map fails loudly, and a test checks the table against the declared result
+schemas. Deterministic classes gate at one third of their budget; the
+statistical classes gate at their stated confidence.
+
+| class | budget | source | for |
+|---|---|---|---|
+| position | 2e-5 mm | §7 position | hit points, centroids, chief/image positions, foci, lengths |
+| position difference | 4e-5 mm | R | geometric spot radii (max distance between positions) |
+| direction | 2e-6 | §7 direction | direction cosines, NA, `sin_max` |
+| frequency, F-number | 2e-6 relative | §7 direction: `f = n sinθ/λ`, so δf/f = δsinθ/(n sinθ) ≥ 2e-6 | cutoffs, frequency axes, Nyquist, working F/# |
+| waves | 5e-3 waves | §7 OPD | OPD, Zernike/Seidel terms, wavefront RMS/PV, OPD fans |
+| modulation | 2e-3 | §7 MTF, R, E | MTF, Strehl, encircled/ensquared fractions |
+| RMS | max(0.5 %, 2e-5 mm) | §7 RMS | RMS spot and moment radii |
+| quantile | min(2e-5 mm, one radial sample) | E | r50/r80/r90 |
+| angle, orientation | 2e-4° | D | chief-ray angles; Seidel axes modulo their period, undefined below 1e-3 waves |
+| magnification | 1e-3 relative or 1e-5 | D | pupil magnification and its variation |
+| illumination | 1e-3 | D | relative illumination |
+| relative 1e-3 | 1e-3 relative | D, E | projected solid angle, integrated PSF energy, diffraction peak |
+| radiometric | 1e-5 relative + 1e-10 | E, GHOST §6 | fluxes, transmissions, ghost peaks |
+| ledger | 1e-5 of emitted + 1e-10 | E stray | stray energy report |
+| polarimetric, retardance | 1e-4; 1e-3 rad | E | diattenuation, intensity; retardance; fast axis only where the retarder is defined |
+| Jones | 1e-4‖J‖ + 1e-7/√2 | E | Jones matrices |
+| image | L1 2e-3, energy 1e-3 | E | PSF, LSF, irradiance and simulated images |
+| outline, loop | Hausdorff ≤ 2e-5 mm (2e-5 in pupil units) | §7 position | footprint hulls and pupil rim loops, never by vertex count |
+| exact | equal | survival | counts, indices, statuses, echoed inputs |
+| count ratio | 1e-12 | survival | vignetted/unvignetted fractions: one ray moves them ≥ 1e-9 |
+| statistical | 5·√(a + b) | E stray | Monte-Carlo counts (events, hits) under roulette |
+| Monte Carlo | 5 combined standard errors | E stray | class fluxes and moments, with their own standard errors; ranked signatures matched by identity, a tail signature only within 5σ of the other list's cut |
+| merit | 1 % or 1e-8 | D | solver merits (violations generic; feasibility exact) |
+| generic | 2e-5 | (unchanged) | dimensionless geometry without a derived budget: distortion %, area and vignetting fractions, normalised pupil coordinates, operand values |
+| diagnostic | 1e-3 relative | — | fit condition numbers (not an optical output) |
+| sampling | recorded | — | pupil/image grid sizes and spacings a backend chooses |
+
+Every class is at least as strict as the §7 budget of its physical quantity
+(`tests/contract.rs`). Data on a sampling axis or grid are compared at the
+**same physical coordinates**: index by index where both results sampled the
+same coordinates (within the axis class), otherwise the denser result is
+resampled onto the sparser one's coordinates (linear on 1-D axes such as
+frequencies, focus planes, radii, field and pupil coordinates; bilinear on
+the regular pupil-map and PSF image grids), so a backend's different grid
+is a recorded sampling choice and only a physical difference fails.
+
 **Tiers.** Every result carries `run_info.tier` and `run_info.aim_stop`
 (`AnalysisRequest::{tier, aim_stop}`; the CLI's `--tier`/`--aim-stop`; the
-FFI request JSON). The budgets above are the **design** tier, the default.
+FFI request JSON). The budgets above are the **design** tier, the default;
+the engine's default aim stop is `conditioned` (CONVENTIONS §7), qualified
+under the contracts above on the CPU and Metal, and an explicit aiming
+tolerance in the system is always honoured exactly.
 The **preview** tier is opt-in and never silent: it exists for responsive
 exploration and is not evidence for a design decision. Its contract against
 the design tier of the same request is

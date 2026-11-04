@@ -40,6 +40,9 @@ Python `Result.envelope()` return:
   (`requested` | `conditioned`) are the accuracy policies the run used
   (CONVENTIONS §7, GPU §9.4): a preview result's cheaper sampling is in
   `run_info.settings`, and both labels are part of the result identity.
+  Requests that name no aim stop use the engine default, `conditioned`; a
+  system with an explicit aiming tolerance (any but the model default
+  1e-10) always runs, and is labelled, `requested`.
 * A result is current while `run_info.snapshot_hash` and `library_hash`
   equal the session's (`docs/FFI.md`).
 * `derived_snapshot_hash` is the run-local system hash when `spectrum`

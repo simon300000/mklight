@@ -1,14 +1,17 @@
 //! Offline qualification of the conditioned aim stop and the preview tier
 //! (CONVENTIONS §7): every GPU-capable analysis (solvers excluded) on every
 //! sample with real ray aiming, plus perturbed and adversarial variants,
-//! compared with the one-third-margin gates against the CPU f64 reference at
-//! the requested 1e-10 tolerance.
+//! compared under the per-quantity contract (`support/comparison.rs`, GPU
+//! §9.4: one-third margins of the §7 budgets, survival counts and masks exact)
+//! against the CPU f64 reference at the requested 1e-10 tolerance.
 //!
 //! cargo test --release -p mklight-engine --test aim_stop_qualify -- --ignored --nocapture
 //! MKLIGHT_QUALIFY_METAL=1 also runs the conditioned stop on Metal;
 //! MKLIGHT_QUALIFY_PREVIEW=1 records the preview tier's errors (not gated);
 //! MKLIGHT_QUALIFY_FILTER=name,name limits the systems,
-//! MKLIGHT_QUALIFY_ANALYSES=name,name the analyses.
+//! MKLIGHT_QUALIFY_ANALYSES=name,name the analyses,
+//! MKLIGHT_QUALIFY_PROJECT=/path/project.mklight adds a local project (as
+//! saved, with its catalogues; nothing is embedded) under the name `project`.
 use mklight_core::model::Placement;
 use mklight_core::{
     ApertureSpec, Field, JobContext, OpticalSystem, RayAiming, SemiDiameter, SurfaceShape, samples,
@@ -73,83 +76,6 @@ fn variants() -> Vec<(String, OpticalSystem)> {
     hn.aperture = ApertureSpec::ImageSpaceFNumber { value: 1.4 };
     out.push(("petzval_high_na".into(), hn));
     out
-}
-
-/// Undefined axes are not compared (GPU §9.4): the orientation angle of a
-/// Seidel term (tilt, astigmatism, coma) whose reference magnitude is below
-/// 1e-3 waves (the Zernike coefficients themselves are compared with the
-/// OPD budget), and the fast axis of a polarisation sample whose retarder
-/// is undefined or whose retardance is below the 1e-3 rad retardance
-/// budget (the Jones matrices themselves are compared). Both are set to
-/// NaN on both sides.
-fn exempt_undefined(a: &mut AnalysisOutput, b: &mut AnalysisOutput) {
-    fn seidel(reference: &Value, other: &mut Value) {
-        match (reference, other) {
-            (Value::Object(r), Value::Object(o)) => {
-                for (term, period) in [("tilt", 360.0), ("astigmatism", 180.0), ("coma", 360.0)] {
-                    let key = format!("{term}_angle_deg");
-                    if let (Some(mag), Some(ra), Some(angle)) = (
-                        r.get(term).and_then(Value::as_f64),
-                        r.get(&key).and_then(Value::as_f64),
-                        o.get_mut(&key),
-                    ) {
-                        if mag.abs() < 1e-3 {
-                            *angle = Value::from(f64::NAN);
-                        } else if let Some(oa) = angle.as_f64() {
-                            // Orientation angles are periodic (astigmatism
-                            // modulo 180°): compare the wrapped difference.
-                            let d = (oa - ra).rem_euclid(period);
-                            let d = if d > 0.5 * period { d - period } else { d };
-                            *angle = Value::from(ra + d);
-                        }
-                    }
-                }
-                for (k, v) in o.iter_mut() {
-                    if let Some(rv) = r.get(k) {
-                        seidel(rv, v);
-                    }
-                }
-            }
-            (Value::Array(r), Value::Array(o)) => {
-                for (rv, ov) in r.iter().zip(o.iter_mut()) {
-                    seidel(rv, ov);
-                }
-            }
-            _ => {}
-        }
-    }
-    let reference = a.json.clone();
-    seidel(&reference, &mut b.json);
-    seidel(&reference, &mut a.json);
-    let defined: Option<Vec<bool>> = a
-        .buffers
-        .iter()
-        .find(|b| b.name == "retarder_defined")
-        .and_then(|b| match &b.data {
-            BufferData::U8(v) => Some(v.iter().map(|d| *d != 0).collect()),
-            _ => None,
-        });
-    let retardance: Option<Vec<f64>> =
-        a.buffers
-            .iter()
-            .find(|b| b.name == "retardance")
-            .and_then(|b| match &b.data {
-                BufferData::F64(v) => Some(v.clone()),
-                _ => None,
-            });
-    if let (Some(defined), Some(retardance)) = (defined, retardance) {
-        for out in [&mut *a, &mut *b] {
-            if let Some(fa) = out.buffers.iter_mut().find(|b| b.name == "fast_axis")
-                && let BufferData::F64(v) = &mut fa.data
-            {
-                for (i, axis) in v.chunks_mut(3).enumerate() {
-                    if !defined[i] || retardance[i] < 1e-3 {
-                        axis.fill(f64::NAN);
-                    }
-                }
-            }
-        }
-    }
 }
 
 /// Preview-tier metrics against the design tier (GPU §9.4 preview
@@ -251,18 +177,22 @@ fn compare(
     b: &mklight_engine::AnalysisResult,
     name: &str,
 ) -> comparison::Comparison {
-    let mut a = AnalysisOutput {
+    let a = AnalysisOutput {
         json: a.json.clone(),
         buffers: a.buffers.clone(),
         ..Default::default()
     };
-    let mut b = AnalysisOutput {
+    let b = AnalysisOutput {
         json: b.json.clone(),
         buffers: b.buffers.clone(),
         ..Default::default()
     };
-    exempt_undefined(&mut a, &mut b);
     comparison::compare(&a, &b, name, &JobContext::new()).unwrap()
+}
+
+/// The path of a gate failure line.
+fn failure_path(f: &str) -> &str {
+    f.split(": ").next().unwrap_or(f)
 }
 
 #[test]
@@ -292,9 +222,13 @@ fn aim_stop_and_preview_qualification() {
     }
     let mut systems: Vec<(String, OpticalSystem)> = samples::all()
         .into_iter()
-        .map(|(n, s)| (n.to_string(), s))
+        .map(|(n, s)| (n.to_string(), real(s)))
         .collect();
-    systems.extend(variants());
+    systems.extend(variants().into_iter().map(|(n, s)| (n, real(s))));
+    let project = std::env::var("MKLIGHT_QUALIFY_PROJECT").ok();
+    if project.is_some() {
+        systems.push(("project".into(), samples::singlet()));
+    }
     let analyses: Vec<_> = engine
         .analyses()
         .into_iter()
@@ -308,14 +242,16 @@ fn aim_stop_and_preview_qualification() {
         })
         .collect();
     let mut failures = Vec::new();
+    let mut unmapped = Vec::new();
     let mut rows = 0;
     for (name, system) in systems {
         if !filter.is_empty() && !filter.contains(&name) {
             continue;
         }
-        let session = engine
-            .session_from_project(Project::new(real(system)))
-            .unwrap();
+        let session = match (&project, name.as_str()) {
+            (Some(path), "project") => engine.open_session(std::path::Path::new(path)).unwrap(),
+            _ => engine.session_from_project(Project::new(system)).unwrap(),
+        };
         for info in &analyses {
             // Fixed sampling axes (same physical frequencies, image grids
             // and focus ranges at both tiers), so a preview difference is an
@@ -374,7 +310,7 @@ fn aim_stop_and_preview_qualification() {
             if preview {
                 cases.push(("cpu_preview", Backend::CpuReference, Preview, Conditioned));
             }
-            let mut control: Option<String> = None;
+            let mut control: Vec<String> = Vec::new();
             for (label, backend, tier, stop) in cases {
                 request.backend = Some(backend);
                 request.allow_backend_fallback = true;
@@ -387,14 +323,24 @@ fn aim_stop_and_preview_qualification() {
                 assert_eq!(run.run_info.tier, tier);
                 let report = compare(&reference, &run, &info.name);
                 if label == "metal_requested" {
-                    control = report.reason.clone();
+                    control = report.failures.clone();
                 }
+                unmapped.extend(
+                    report
+                        .failures
+                        .iter()
+                        .filter(|f| f.contains("unmapped"))
+                        .cloned(),
+                );
                 // Gated at the design tier; a Metal failure that the control
-                // (requested stop) also shows is pre-existing, not the policy's.
+                // (requested stop) shows at the same path is pre-existing,
+                // not the policy's.
                 let pre_existing = label == "metal_conditioned"
-                    && report.reason.is_some()
-                    && control.as_deref().map(|c| c.split(':').next())
-                        == report.reason.as_deref().map(|r| r.split(':').next());
+                    && !report.failures.is_empty()
+                    && report
+                        .failures
+                        .iter()
+                        .all(|f| control.iter().any(|c| failure_path(c) == failure_path(f)));
                 let gated = tier == Design && stop == Conditioned && !pre_existing;
                 let failed = gated && report.reason.is_some();
                 rows += 1;
@@ -403,7 +349,9 @@ fn aim_stop_and_preview_qualification() {
                     json!({"system":name,"analysis":info.name,"case":label,"backend":run.backend.used,
                     "compared":report.compared,"maximum_absolute_error":report.maximum,"maximum_error_path":report.maximum_path,
                     "image_l1_relative":report.image_l1_relative,"energy_relative":report.energy_relative,
-                    "gate_failure":report.reason,"failed":failed,"pre_existing":pre_existing,"reference_ms":reference.run_info.duration_ms,"ms":wall,
+                    "gate_failure":report.reason,"gate_failures":report.failures,
+                    "classes":report.classes,"resampled":report.resampled,"undefined":report.undefined,
+                    "sampling_differences":report.sampling_differences,"failed":failed,"pre_existing":pre_existing,"reference_ms":reference.run_info.duration_ms,"ms":wall,
                     "preview_metrics":(tier == Preview).then(|| preview_metrics(&reference, &run)),
                     "settings":run.run_info.settings})
                 );
@@ -420,6 +368,11 @@ fn aim_stop_and_preview_qualification() {
     println!(
         "AIM_STOP_QUALIFY_SUMMARY {}",
         json!({"rows":rows,"failures":failures})
+    );
+    assert!(
+        unmapped.is_empty(),
+        "unmapped result fields:\n{}",
+        unmapped.join("\n")
     );
     assert!(
         failures.is_empty(),

@@ -114,3 +114,25 @@ fn policy_is_part_of_the_result_identity() {
     assert_eq!(c.run_info.aim_stop, AimStopKind::Conditioned);
     assert_eq!(c.run_info.settings, a.run_info.settings);
 }
+
+#[test]
+fn an_explicit_aiming_tolerance_is_honoured_exactly() {
+    // Any tolerance but the model default is an explicit request: the run is
+    // `requested` whatever the engine default or the request says, and the
+    // result is that of the requested policy.
+    let e = engine(AimStopKind::Conditioned);
+    let mut sys = samples::double_gauss();
+    sys.ray_aiming = RayAiming::Real { tolerance: 1e-12 };
+    let s = e.session_from_project(Project::new(sys)).unwrap();
+    let d = run(&s, AnalysisRequest::new("spot_diagram", Value::Null));
+    assert_eq!(d.run_info.aim_stop, AimStopKind::Requested);
+    let mut req = AnalysisRequest::new("spot_diagram", Value::Null);
+    req.aim_stop = Some(AimStopKind::Conditioned);
+    let c = run(&s, req);
+    assert_eq!(c.run_info.aim_stop, AimStopKind::Requested);
+    assert_eq!(c.json, d.json);
+    // The model default stays derivable under the engine default.
+    let s = session(&e);
+    let d = run(&s, AnalysisRequest::new("spot_diagram", Value::Null));
+    assert_eq!(d.run_info.aim_stop, AimStopKind::Conditioned);
+}

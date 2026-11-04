@@ -685,11 +685,17 @@ impl Session {
 
     /// Run an analysis on the current snapshot in the calling thread.
     /// The run policy of a request: its tier, and its aim stop or the
-    /// engine default.
+    /// engine default. An explicit aiming tolerance in the system (any value
+    /// but the model default) is honoured exactly, so the run is `requested`
+    /// whatever the request or the engine default says (CONVENTIONS §7).
     fn policy(&self, req: &AnalysisRequest) -> crate::analysis::RunPolicy {
+        let aim_stop = match self.current.system().ray_aiming.explicit_tolerance() {
+            Some(_) => mklight_core::AimStopKind::Requested,
+            None => req.aim_stop.unwrap_or(self.engine.config().aim_stop),
+        };
         crate::analysis::RunPolicy {
             tier: req.tier,
-            aim_stop: req.aim_stop.unwrap_or(self.engine.config().aim_stop),
+            aim_stop,
         }
     }
 

@@ -27,7 +27,6 @@ use mklight_engine::{
     AnalysisRequest, Engine, EngineConfig, Session,
     analysis::{AnalysisOutput, AnalysisResult},
     backend::Backend,
-    buffer::BufferData,
     gpu::GpuProvider,
 };
 use mklight_gpu::ComputeBackend;
@@ -359,67 +358,6 @@ fn output(r: &AnalysisResult) -> AnalysisOutput {
     }
 }
 
-// Per-quantity detail uses the former chain comparator's scalar budgets.
-// Images additionally report the full §9.4 L1 and energy fractions. The full
-// comparator below remains authoritative for masks, discrete values and fits.
-fn budget(path: &str, a: f64, energy: Option<f64>, interval: Option<f64>) -> f64 {
-    let b = if let Some(flux) = energy.filter(|_| path.starts_with("result.energy.")) {
-        1e-5 * flux + 1e-10
-    } else if path.contains("direction") {
-        2e-6
-    } else if ["opd", "wavefront", "zernike"]
-        .iter()
-        .any(|s| path.contains(s))
-    {
-        5e-3
-    } else if [
-        "modulation",
-        "mtf",
-        "strehl",
-        "encircled",
-        "ensquared",
-        "buffer.tangential",
-        "buffer.sagittal",
-        "diffraction_limit",
-    ]
-    .iter()
-    .any(|s| path.contains(s))
-    {
-        2e-3
-    } else if path.contains("angle") || path.contains("incidence") {
-        2e-4
-    } else if path.contains("magnification") || path.contains("variation") {
-        (1e-3 * a.abs()).max(1e-5)
-    } else if ["rms", "radius", "merit"].iter().any(|s| path.contains(s)) {
-        (0.005 * a.abs()).max(2e-5)
-    } else if path.contains("retardance") {
-        1e-3
-    } else if ["transmission", "flux", "weight"]
-        .iter()
-        .any(|s| path.contains(s))
-    {
-        1e-5 * a.abs() + 1e-10
-    } else {
-        2e-5
-    };
-    if ["r50", "r80", "r90", "half_width80"]
-        .iter()
-        .any(|s| path.contains(s))
-    {
-        interval.map_or(b, |step| b.min(step))
-    } else {
-        b
-    }
-}
-
-#[derive(Default, serde::Serialize)]
-struct Quantity {
-    max_abs: f64,
-    max_budget_fraction: f64,
-    mismatches: usize,
-    count: usize,
-}
-
 fn accuracy(a: &AnalysisResult, b: &AnalysisResult, name: &str) -> Value {
     let (mut a, mut b) = (output(a), output(b));
     // Solver execution telemetry and returned designs legitimately differ.
@@ -448,175 +386,14 @@ fn accuracy(a: &AnalysisResult, b: &AnalysisResult, name: &str) -> Value {
         a.buffers.clear();
         b.buffers.clear();
     }
+    // Per-quantity detail: the contract's classes (support/comparison.rs,
+    // GPU §9.4), each with its worst error as a fraction of its gate.
     let c = comparison::compare(&a, &b, name, &JobContext::new()).unwrap();
-    let mut quantities = BTreeMap::<String, Quantity>::new();
-    let energy = a.json["energy"]["emitted"].as_f64();
-    let radius: Vec<f64> = a
-        .buffers
-        .iter()
-        .find(|b| b.name == "radius_mm")
-        .and_then(|b| match &b.data {
-            BufferData::F64(v) => Some(v.clone()),
-            _ => None,
-        })
-        .unwrap_or_else(|| {
-            a.json["radius"]
-                .as_array()
-                .map(|v| v.iter().filter_map(Value::as_f64).collect())
-                .unwrap_or_default()
-        });
-    let interval = radius
-        .windows(2)
-        .map(|v| (v[1] - v[0]).abs())
-        .filter(|v| *v > 0.)
-        .reduce(f64::min);
-    fn number(
-        m: &mut BTreeMap<String, Quantity>,
-        path: &str,
-        a: f64,
-        b: f64,
-        energy: Option<f64>,
-        interval: Option<f64>,
-    ) {
-        if !m.contains_key(path) {
-            m.insert(path.into(), Quantity::default());
-        }
-        let q = m.get_mut(path).unwrap();
-        q.count += 1;
-        if a == b || a.is_nan() && b.is_nan() {
-            return;
-        }
-        if !a.is_finite() || !b.is_finite() {
-            q.mismatches += 1;
-            return;
-        }
-        let error = (a - b).abs();
-        q.max_abs = q.max_abs.max(error);
-        q.max_budget_fraction = q
-            .max_budget_fraction
-            .max(error / budget(path, a, energy, interval));
-    }
-    fn walk(
-        m: &mut BTreeMap<String, Quantity>,
-        a: &Value,
-        b: &Value,
-        path: &str,
-        energy: Option<f64>,
-        interval: Option<f64>,
-    ) {
-        match (a, b) {
-            (Value::Object(a), Value::Object(b)) => {
-                for (k, v) in a {
-                    if ![
-                        "run_info",
-                        "run",
-                        "warnings",
-                        "evaluations",
-                        "iterations",
-                        "duration_ms",
-                    ]
-                    .contains(&k.as_str())
-                    {
-                        walk(
-                            m,
-                            v,
-                            b.get(k).unwrap_or(&Value::Null),
-                            &format!("{path}.{k}"),
-                            energy,
-                            interval,
-                        );
-                    }
-                }
-            }
-            (Value::Array(a), Value::Array(b)) if a.len() == b.len() => {
-                for (a, b) in a.iter().zip(b) {
-                    walk(m, a, b, &format!("{path}[]"), energy, interval);
-                }
-            }
-            (Value::Number(a), Value::Number(b)) if a.is_f64() || b.is_f64() => number(
-                m,
-                path,
-                a.as_f64().unwrap(),
-                b.as_f64().unwrap(),
-                energy,
-                interval,
-            ),
-            _ if a == b => (),
-            _ => m.entry(path.into()).or_default().mismatches += 1,
-        }
-    }
-    walk(
-        &mut quantities,
-        &a.json,
-        &b.json,
-        "result",
-        energy,
-        interval,
-    );
-    for x in &a.buffers {
-        let Some(y) = b
-            .buffers
-            .iter()
-            .find(|y| x.name == y.name && x.shape == y.shape)
-        else {
-            quantities
-                .entry(format!("buffer.{}", x.name))
-                .or_default()
-                .mismatches += 1;
-            continue;
-        };
-        let floats = |d: &BufferData| match d {
-            BufferData::F64(v) => Some(v.clone()),
-            BufferData::F32(v) => Some(v.iter().map(|x| *x as f64).collect::<Vec<_>>()),
-            _ => None,
-        };
-        if let (Some(xs), Some(ys)) = (floats(&x.data), floats(&y.data)) {
-            let path = format!("buffer.{}", x.name);
-            let image = (name == "psf" && path.contains("data_"))
-                || (name == "line_spread"
-                    && (path.starts_with("buffer.x_") || path.starts_with("buffer.y_")))
-                || ["intensity", "irradiance", "line_spread"]
-                    .iter()
-                    .any(|v| path.contains(v))
-                || path == "buffer.image";
-            let mut image_norm = 0.;
-            let mut image_delta = 0.;
-            let mut image_energy = 0.;
-            let columns = (x.name == "values")
-                .then(|| a.json["columns"].as_array())
-                .flatten()
-                .map(|cs| {
-                    cs.iter()
-                        .map(|c| format!("buffer.values.{}", c["name"].as_str().unwrap()))
-                        .collect::<Vec<_>>()
-                });
-            for (i, (&xv, &yv)) in xs.iter().zip(&ys).enumerate() {
-                let quantity = columns
-                    .as_ref()
-                    .map_or(path.as_str(), |cs| cs[i % cs.len()].as_str());
-                number(&mut quantities, quantity, xv, yv, energy, interval);
-                if image && xv.is_finite() && yv.is_finite() {
-                    image_norm += xv.abs();
-                    image_delta += (xv - yv).abs();
-                    image_energy += xv - yv;
-                }
-            }
-            if image && image_norm > 0. {
-                let q = quantities.get_mut(&path).unwrap();
-                q.max_budget_fraction = (image_delta / (image_norm * 2e-3))
-                    .max(image_energy.abs() / (image_norm * 1e-3));
-            }
-        } else if x.data != y.data {
-            quantities
-                .entry(format!("buffer.{}", x.name))
-                .or_default()
-                .mismatches += 1;
-        }
-    }
-    json!({"pass_sampled_margin":c.reason.is_none(),"chain_failure":c.reason,"compared":c.compared,
-        "max_abs":c.maximum,"max_path":c.maximum_path,"image_l1_relative":c.image_l1_relative,
+    json!({"pass_sampled_margin":c.reason.is_none(),"chain_failure":c.reason,"gate_failures":c.failures,
+        "compared":c.compared,"max_abs":c.maximum,"max_path":c.maximum_path,"image_l1_relative":c.image_l1_relative,
         "image_l1_budget_fraction":c.image_l1_relative/2e-3,"image_energy_relative":c.energy_relative,
-        "image_energy_budget_fraction":c.energy_relative/1e-3,"quantities":quantities})
+        "image_energy_budget_fraction":c.energy_relative/1e-3,"classes":c.classes,
+        "resampled":c.resampled,"sampling_differences":c.sampling_differences})
 }
 
 fn measured(

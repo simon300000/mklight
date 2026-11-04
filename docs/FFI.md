@@ -287,7 +287,8 @@ See RESULTS §5 and GPU §9.2.
 ```
 
 `tier` (`design`, the default, or `preview`) and `aim_stop` (`requested`,
-`conditioned`, or null for the engine default) are the accuracy policies of
+`conditioned`, or null for the engine default, `conditioned`; an explicit
+aiming tolerance in the system is always honoured as `requested`) are the accuracy policies of
 docs/RESULTS.md; both are echoed in `run_info`.
 
 `mk_session_run_analysis_json(session, request, &json, &buffers, &count)`

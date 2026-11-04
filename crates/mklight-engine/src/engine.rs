@@ -55,7 +55,10 @@ pub struct EngineConfig {
     pub app_name: String,
     pub app_version: String,
     pub default_backend: Backend,
-    /// Aim-stop policy of requests that name none (CONVENTIONS §7).
+    /// Aim-stop policy of requests that name none (CONVENTIONS §7):
+    /// `conditioned`, qualified under the per-quantity contract of GPU §9.4
+    /// on CPU and Metal. An explicit aiming tolerance in the system is
+    /// honoured exactly under either policy.
     pub aim_stop: mklight_core::AimStopKind,
 }
 
@@ -71,7 +74,7 @@ impl Default for EngineConfig {
             app_name: String::new(),
             app_version: String::new(),
             default_backend: Backend::Auto,
-            aim_stop: mklight_core::AimStopKind::Requested,
+            aim_stop: mklight_core::AimStopKind::Conditioned,
         }
     }
 }
