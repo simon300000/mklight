@@ -1679,7 +1679,7 @@ calibrated stage-level cost model (`crates/mklight-engine/src/analysis/cost/`;
   `CostModel::set_refinement(false)` turns it off): every completed call
   updates (a) a host-contention factor per backend (what other processes cost
   this one now; CPU 1/3…30×, Metal 1/3…10×; the CPU factor is the load-average
-  prior √(load per core) times what observations learned beyond it, so it
+  prior √(load per core / 4), at least 1, times what observations learned beyond it, so it
   follows the load even while the CPU is not chosen) and (b) a residual per analysis,
   backend, design family and workload decade (1/3…3×), as exponentially
   weighted means of ln(measured/predicted); recorded device aiming statistics
@@ -1721,7 +1721,7 @@ against both backends on fresh edits and warm repeats.
 | `psf`, `mtf`, `line_spread`, `diffraction_encircled_energy`, `through_focus_mtf`, `mtf_vs_field` | re-qualified | 16/16 within budget (maxima 4.3e-7, 9.2e-7, 1.4e-4, 6.9e-6, 4.7e-7, 3.4e-7); lens 2.0e-6, 1.3e-5 (`cutoff` scalar: 0.63 of its budget, above only the one-third sampled margin; curves ≤ 6e-8), 2.2e-3 (0.006 of budget), 5.4e-6, 4.6e-7, 1.6e-7 |
 | `chief_ray_angle`, `pupil_aberration`, `relative_illumination_map`, `grid_distortion` | re-qualified | 16/16 without mask mismatches; lens 2.1e-6, 5.3e-7, 1.5e-6, 2.5e-7, no mask mismatches (host f64 chief rows, A4) |
 | `field_curvature_distortion` | re-qualified | 16/16 (3.8e-8); lens 2.8e-7 (host f64 differential pencil, D2) |
-| `ghost_irradiance` | re-qualified | the `rays_traced` mismatches are fixed (C2): 16/16 |
+| `ghost_irradiance` | excluded | 16/16 samples pass since C2, but on the complex lens an edited snapshot gave one discrete `rays_traced` mismatch (1 of 1,656 ghost fields; flux 8e-5 of its budget) |
 
 The candidate solvers are no longer a separate rule: the model predicts them
 like every other analysis (on the complex lens the CPU wins by about 3× per

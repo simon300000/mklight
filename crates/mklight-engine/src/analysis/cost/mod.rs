@@ -67,6 +67,10 @@ const EXCLUSIONS: &[(&str, &str)] = &[
         "footprint",
         "newtonian sample: overlay outline masks differ from f64",
     ),
+    (
+        "ghost_irradiance",
+        "complex lens, edited snapshot: a discrete rays_traced count differs from f64 (1 of 1,656 ghost fields; flux within 8e-5 of its budget); 16/16 samples pass since C2",
+    ),
 ];
 
 /// The accuracy exclusion of `analysis`, with its evidence.
@@ -634,9 +638,10 @@ impl CostModel {
     }
 
     /// ln of the current host contention of backend `b` (0 CPU, 1 Metal):
-    /// for the CPU a prior from the load average now, √(load per core) and
-    /// at least 1 (other runnable threads share the cores the reference's
-    /// workers need), times what observed calls learned beyond that prior;
+    /// for the CPU a prior from the load average now, √(load per core / 4)
+    /// and at least 1 (measured: the reference keeps its speed up to about
+    /// 4 runnable threads per core and slows 5–10× near 25), times what
+    /// observed calls learned beyond that prior;
     /// for Metal what observed calls learned. The prior follows the load
     /// even while the CPU is not chosen, so a stale observation from a
     /// busier moment does not keep it away.
@@ -648,7 +653,7 @@ impl CostModel {
     /// ln of the load-average prior of backend `b`.
     fn prior(&self, b: usize) -> f64 {
         if b == 0 {
-            load_per_core().sqrt().max(1.).ln()
+            (load_per_core() / 4.).sqrt().max(1.).ln()
         } else {
             0.
         }

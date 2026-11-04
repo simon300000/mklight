@@ -147,7 +147,7 @@ when computed by Metal.
 `static capability`, `known failure` or `cost model`), `version`, and
 `before_device: true` when the route was settled before any GPU device was
 opened. Analyses whose native output fails its f64 budget on the current
-evidence (stray light, footprint; GPU §9.2) run on the CPU reference under
+evidence (stray light, footprint, ghost irradiance; GPU §9.2) run on the CPU reference under
 `auto`. Every other analysis is routed by the calibrated stage-level cost
 model of GPU §9.2: the decision records both predicted times
 (`predicted_ms`), their stage terms (`stages_ms`: fixed, preparation, ray
