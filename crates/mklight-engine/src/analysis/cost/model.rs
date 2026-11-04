@@ -42,9 +42,14 @@ impl Fit {
 /// Calibration of one analysis on one device class.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct AnalysisCalibration {
-    /// CPU f64 reference with cold intermediates (graph disabled).
+    /// CPU f64 reference with cold intermediates (graph disabled), on a
+    /// snapshot the session already resolved.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cpu: Option<Fit>,
+    /// The same on a freshly edited snapshot (resolution, solves and host
+    /// preparation of the new content).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpu_edit: Option<Fit>,
     /// Native, repeated on a resident snapshot (device caches warm).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metal: Option<Fit>,

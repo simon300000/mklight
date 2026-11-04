@@ -186,6 +186,11 @@ struct Online {
     lattices: LruCache<[u8; 32], ()>,
     /// Snapshots whose content is resident on the device.
     resident: LruCache<[u8; 32], ()>,
+    /// Snapshots that completed any call (resolved and prepared).
+    seen: LruCache<[u8; 32], ()>,
+    /// Decisions per (analysis, design family): a device's one-time setup
+    /// is spread over the calls that are likely to follow.
+    calls: LruCache<(String, u64), u32>,
     /// Analyses that ran natively in this process (first use paid).
     native: BTreeSet<String>,
     /// Transient native failure rate per analysis.
@@ -207,6 +212,8 @@ const MAX_CORRECTION: f64 = 3.;
 /// the CPU reference far more than the device.
 const CONTENTION: [(f64, f64); 2] = [(1. / 3., 30.), (1. / 3., 10.)];
 const ALPHA: f64 = 0.3;
+/// Calls a one-time device setup is spread over.
+const SETUP_CALLS: u32 = 4;
 
 /// The engine's cost model: a calibration table plus bounded online state.
 pub struct CostModel {
@@ -302,6 +309,8 @@ impl CostModel {
                 difficulty: LruCache::new(64),
                 lattices: LruCache::new(256),
                 resident: LruCache::new(64),
+                seen: LruCache::new(64),
+                calls: LruCache::new(256),
                 native: BTreeSet::new(),
                 transient: BTreeMap::new(),
                 contention: [Ewma::default(); 2],
@@ -403,6 +412,12 @@ impl CostModel {
         let resident = state
             .snapshot
             .is_some_and(|s| on.resident.contains(&resident_key(s, state.library)));
+        let seen = state
+            .snapshot
+            .is_some_and(|s| on.seen.contains(&resident_key(s, state.library)));
+        let calls = on.calls.get(&(analysis.to_string(), fam)).unwrap_or(0);
+        on.calls
+            .insert((analysis.to_string(), fam), calls.saturating_add(1));
         // CPU: shared intermediates already in the graph cost nothing.
         let mut cpu_f = features;
         if state.tracer_warm || lattice_warm {
@@ -411,6 +426,12 @@ impl CostModel {
         if lattice_warm {
             cpu_f[2] = 0.;
         }
+        // A new snapshot pays its resolution and preparation.
+        let cpu_fit = if seen {
+            cpu_fit
+        } else {
+            cal.cpu_edit.as_ref().unwrap_or(cpu_fit)
+        };
         let mut cpu = cpu_fit.stages(&cpu_f);
         let threads = rayon::current_num_threads().max(1) as f64;
         let scale = (self.table.cpu_threads.max(1) as f64 / threads).clamp(0.25, 4.);
@@ -429,7 +450,10 @@ impl CostModel {
             metal_f[1] = 0.;
         }
         let metal = metal_fit.stages(&metal_f);
-        let setup = if state.device_open {
+        // One-time setup (device open, first native use of the analysis),
+        // charged in full to the first call of an analysis and design family
+        // and spread over up to SETUP_CALLS calls after that.
+        let setup = (if state.device_open {
             0.
         } else {
             self.table.device_open_ms
@@ -437,7 +461,7 @@ impl CostModel {
             0.
         } else {
             cal.first_use_ms
-        };
+        }) / f64::from(calls.min(SETUP_CALLS - 1) + 1);
         let raw_cpu: f64 = cpu.iter().sum();
         let raw_metal: f64 = metal.iter().sum();
         let refine = self.refining();
@@ -491,6 +515,8 @@ impl CostModel {
                     "tracer_warm": state.tracer_warm,
                     "lattice_warm": lattice_warm,
                     "resident": resident,
+                    "snapshot_seen": seen,
+                    "calls": calls,
                     "aim_traces_per_ray": if shape.aimed { rounded(traces) } else { 0. },
                     "transient_failure_rate": rounded(p_fail),
                     "decided_pupil_grid": decided,
@@ -526,6 +552,7 @@ impl CostModel {
         let fam = family(system);
         let mut on = self.lock();
         on.observations += 1;
+        on.seen.insert(resident_key(snapshot, library), ());
         if let Some(n) = decided_grid(result.json) {
             on.grids.insert((fam, settings["pupil"].to_string()), n);
         }
@@ -589,7 +616,12 @@ impl CostModel {
         let mut e = on.corrections.get(&key).unwrap_or_default();
         let (lo, hi) = CONTENTION[b];
         let host = (ratio - e.mean).clamp(lo.ln(), hi.ln());
+        let prior = self.contention(&on, b);
         let c = &mut on.contention[b];
+        if c.n == 0 {
+            c.mean = prior;
+            c.n = 1;
+        }
         c.add(host, ALPHA);
         let c = c.mean;
         e.add(
@@ -600,9 +632,15 @@ impl CostModel {
     }
 
     /// ln of the current host contention of backend `b` (0 CPU, 1 Metal),
-    /// learned from observed calls (none before the first).
+    /// learned from observed calls. Before the first CPU call it is a
+    /// prior from the load average: √(load per core), at least 1 (other
+    /// runnable threads share the cores the reference's workers need).
     fn contention(&self, on: &Online, b: usize) -> f64 {
-        on.contention[b].mean
+        if on.contention[b].n > 0 || b == 1 {
+            return on.contention[b].mean;
+        }
+        let (lo, hi) = CONTENTION[0];
+        load_per_core().sqrt().clamp(lo.max(1.), hi).ln()
     }
 
     /// The table's identity and the online state, for diagnostics.
@@ -648,6 +686,15 @@ pub fn decided_grid(json: &Value) -> Option<f64> {
     let mut acc = (0., 0.);
     walk(json, false, &mut acc);
     (acc.1 > 0.).then(|| (acc.0 / acc.1).sqrt())
+}
+
+/// One-minute load average per logical core (0 when unknown).
+pub fn load_per_core() -> f64 {
+    let mut l = [0f64; 3];
+    // SAFETY: `getloadavg` writes at most `l.len()` samples into `l`.
+    let n = unsafe { libc::getloadavg(l.as_mut_ptr(), 3) };
+    let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
+    if n < 1 { 0. } else { l[0] / cores as f64 }
 }
 
 /// What the model learns from one completed run.
@@ -717,6 +764,7 @@ mod tests {
             AnalysisCalibration {
                 // CPU: 1 ms + 1 µs per ray-surface; Metal: 8 ms + 0.1 µs.
                 cpu: Some(fit([1., 0., 1e-3, 0., 0.])),
+                cpu_edit: None,
                 metal: Some(fit([8., 0., 1e-4, 0., 0.])),
                 metal_edit: Some(fit([20., 0., 1e-4, 0., 0.])),
                 first_use_ms: 30.,
@@ -765,7 +813,10 @@ mod tests {
             },
         );
         let setup = cold.json["stages_ms"]["metal_setup"].as_f64().unwrap();
-        assert_eq!(setup, 70.);
+        // Device open and first use, spread over the calls so far.
+        let calls = cold.json["state"]["calls"].as_f64().unwrap();
+        let spread = 70. / (calls.min(f64::from(SETUP_CALLS - 1)) + 1.);
+        assert!((setup - spread).abs() < 1e-2, "{setup} {spread}");
         // A known deterministic failure, and an accuracy exclusion.
         let known = d(
             512,

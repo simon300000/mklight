@@ -8,9 +8,9 @@
 //! It times every calibrated analysis on nine designs of different shape
 //! (samples, plus an optional local project, `MKLIGHT_BENCH_PROJECT`;
 //! nothing of it is embedded) at a ladder of workloads: the CPU reference
-//! with cold intermediates (graph off), Metal repeated on a resident
-//! snapshot and Metal after an edit, interleaved so host load hits all
-//! three alike (load average and device time are recorded with every
+//! with cold intermediates (graph off) and Metal, each repeated on one
+//! snapshot and after an edit, interleaved so host load hits all four
+//! alike (load average and device time are recorded with every
 //! rung; online refinement absorbs the host's current contention). It then
 //! fits the stage coefficients and writes the table (without `_OUT`, to the target tmp dir). Options:
 //! `MKLIGHT_COST_REPS` (default 2), `MKLIGHT_COST_FILTER` (analyses),
@@ -47,6 +47,12 @@ fn wanted(list: &str, name: &str) -> bool {
 /// Designs calibrated by default: refracting, reflecting, finite,
 /// non-rotational, freeform and diffractive shapes, and the local project.
 const DESIGNS: &str = "singlet,cooke_triplet,double_gauss,petzval_asphere,newtonian,relay,anamorphic,zernike_sag,hybrid_doe,local";
+
+/// Measured modes (`MKLIGHT_COST_MODES`, default all four): the CPU
+/// reference and Metal, each on a repeated and on a freshly edited snapshot.
+fn mode_wanted(mode: &str) -> bool {
+    wanted("MKLIGHT_COST_MODES", mode)
+}
 
 fn design_wanted(name: &str) -> bool {
     match env("MKLIGHT_COST_DESIGNS").as_deref() {
@@ -333,18 +339,17 @@ fn measure(device_open_ms: &mut f64) -> Vec<Value> {
                 let mut first = None;
                 let mut slow = false;
                 for rep in 0..=reps {
-                    let order = if rep % 2 == 0 {
-                        ["cpu", "metal", "metal_edit"]
-                    } else {
-                        ["metal_edit", "metal", "cpu"]
-                    };
-                    for mode in order {
-                        let backend = if mode == "cpu" {
+                    let mut order = ["cpu", "cpu_edit", "metal", "metal_edit"];
+                    if rep % 2 == 1 {
+                        order.reverse();
+                    }
+                    for mode in order.into_iter().filter(|m| mode_wanted(m)) {
+                        let backend = if mode.starts_with("cpu") {
                             Backend::CpuReference
                         } else {
                             Backend::Gpu("metal".into())
                         };
-                        if mode == "metal_edit" {
+                        if mode.ends_with("_edit") {
                             serial += 1;
                             edit(&mut session, &base, serial);
                         } else {
@@ -353,7 +358,7 @@ fn measure(device_open_ms: &mut f64) -> Vec<Value> {
                         let Some(c) = call(&session, analysis, &settings, backend) else {
                             continue;
                         };
-                        if mode != "cpu" && !first_native.contains_key(analysis) {
+                        if !mode.starts_with("cpu") && !first_native.contains_key(analysis) {
                             first_native.insert(analysis.into(), c.ms);
                             first = Some(c.ms);
                         }
@@ -449,7 +454,7 @@ fn fit(records: &[Value], device_open_ms: f64) -> Calibration {
         };
         // Only calls that ran where they were asked to.
         let native = r["used"].as_str().is_some_and(|u| u.starts_with("gpu:"));
-        if native != (mode != "cpu") || !ms.is_finite() {
+        if native != !mode.starts_with("cpu") || !ms.is_finite() {
             continue;
         }
         let Some(p) =
@@ -486,6 +491,7 @@ fn fit(records: &[Value], device_open_ms: f64) -> Calibration {
         };
         let c = cost::AnalysisCalibration {
             cpu: get("cpu"),
+            cpu_edit: get("cpu_edit"),
             metal: get("metal"),
             metal_edit: get("metal_edit"),
             first_use_ms: first
@@ -494,7 +500,12 @@ fn fit(records: &[Value], device_open_ms: f64) -> Calibration {
         };
         emit("COST_FIT", json!({"analysis":analysis,"fit":c}));
         // Residuals, for inspecting the fit.
-        for (mode, fit) in [("cpu", &c.cpu), ("metal", &c.metal), ("metal_edit", &c.metal_edit)] {
+        for (mode, fit) in [
+            ("cpu", &c.cpu),
+            ("cpu_edit", &c.cpu_edit),
+            ("metal", &c.metal),
+            ("metal_edit", &c.metal_edit),
+        ] {
             let (Some(fit), Some(p), Some(l)) = (
                 fit,
                 points.get(&(analysis.to_string(), mode.to_string())),
