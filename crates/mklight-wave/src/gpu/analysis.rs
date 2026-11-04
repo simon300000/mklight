@@ -330,8 +330,14 @@ pub fn psf_analysis_job(
         &mut warnings,
     )?;
     let total = per.len().max(1);
-    let mut psfs = vec![];
-    for (index, mut f) in per.into_iter().enumerate() {
+    // Fields run side by side (each its own pupils); results merge in order.
+    let per: Vec<_> = per.into_iter().map(std::sync::Mutex::new).collect();
+    let fields = super::concurrent(&per, |index, f| {
+        let mut f = f.lock().unwrap_or_else(|e| e.into_inner());
+        let f = &mut *f;
+        let mut stats = PlanStats::default();
+        let mut warnings = vec![];
+        let mut psfs = vec![];
         let sub = ctx.subrange(
             0.4 + 0.6 * index as f64 / total as f64,
             0.4 + 0.6 * (index + 1) as f64 / total as f64,
@@ -430,6 +436,14 @@ pub fn psf_analysis_job(
                 psf,
             });
         }
+        Ok::<_, MkError>((psfs, stats, warnings))
+    });
+    let mut psfs = vec![];
+    for r in fields {
+        let (field_psfs, field_stats, field_warnings) = r?;
+        accumulate(&mut stats, &field_stats);
+        warnings.extend(field_warnings);
+        psfs.extend(field_psfs);
     }
     ctx.report(1., "PSF");
     Ok(a::PsfResult {
@@ -573,25 +587,28 @@ pub fn mtf_analysis_job(
         f
     } else {
         let mut maximum = f64::INFINITY;
-        for f in &per {
-            let r = useful_frequency(
+        // Fields run side by side; results merge in field order.
+        for r in super::concurrent(&per, |_, f| {
+            useful_frequency(
                 b,
                 t.system().snapshot.clone(),
                 &f.weighted(),
                 &ctx.subrange(0.5, 0.55),
-            )?;
+            )
+        }) {
+            let r = r?;
             accumulate(&mut stats, &r.stats);
             maximum = maximum.min(r.value);
         }
         maximum
     };
     let frequencies = a::linspace(0., maximum, s.frequency_samples);
-    let mut out = vec![];
-    for (i, f) in per.iter().enumerate() {
+    let curves = super::concurrent(&per, |i, f| {
         let sub = ctx.subrange(
             0.55 + 0.45 * i as f64 / per.len() as f64,
             0.55 + 0.45 * (i + 1) as f64 / per.len() as f64,
         );
+        let mut stats = PlanStats::default();
         let point = t.field(f.index).point;
         let o = crate::MtfOrientation::from_field(point.hx, point.hy);
         let c = curve(
@@ -605,7 +622,6 @@ pub fn mtf_analysis_job(
             &sub.subrange(0., 0.95),
             &mut stats,
         )?;
-        warnings.extend(c.warnings.iter().map(ToString::to_string));
         let detector = if let Some(d) = s.detector {
             let vectors: Vec<_> = [o.tangential, o.sagittal()]
                 .iter()
@@ -628,6 +644,13 @@ pub fn mtf_analysis_job(
         } else {
             None
         };
+        Ok::<_, MkError>((o, c, detector, stats))
+    });
+    let mut out = vec![];
+    for (f, r) in per.iter().zip(curves) {
+        let (o, c, detector, curve_stats) = r?;
+        accumulate(&mut stats, &curve_stats);
+        warnings.extend(c.warnings.iter().map(ToString::to_string));
         let system_tangential = detector.as_ref().map(|d| {
             d.tangential
                 .iter()

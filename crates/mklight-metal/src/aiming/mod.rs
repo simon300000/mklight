@@ -243,10 +243,8 @@ fn budgets() -> (u32, u32) {
             .unwrap_or((AIM_FIRST_BUDGET, AIM_CONTINUE_BUDGET))
     })
 }
-/// Continuation rounds of the first group, encoded after the pending count
-/// of the tile's first command is known (most small generations finish in
-/// that command, so no empty round is ever encoded); each further group
-/// doubles.
+/// Continuation rounds of a tile's first group; each speculative group after
+/// it doubles.
 const AIM_FIRST_ROUNDS: usize = 2;
 /// Rounds that complete any schedule: six solves of a phase entry plus `cap`
 /// iterations each, at `budget` units per round.
@@ -255,26 +253,52 @@ fn max_rounds(cap: u32, budget: u32) -> usize {
 }
 
 /// Resumable-aim buffers of one tile: per-lane state, two pending lists
-/// (alternating by round), the pending count after each round and the
-/// indirect threadgroup arguments of each continuation round.
+/// (alternating by round), the indirect threadgroup arguments of each
+/// continuation round and the pending count after each round. The counts of
+/// each round group live in their own lease, so the host can read a
+/// completed group's last count while a later group, which only reads it,
+/// is still running.
 struct Resume {
     state: Lease,
     lists: [Lease; 2],
-    counts: Lease,
+    /// (first round, counts of the group's rounds), in round order.
+    counts: Vec<(usize, Lease)>,
     args: Lease,
     rounds: usize,
 }
 impl Resume {
     fn new(x: &mut Execution<'_>, lanes: usize, rounds: usize) -> MkResult<Self> {
-        let mut counts = x.allocate(rounds + 1)?;
-        counts.as_mut_slice().fill(0);
-        Ok(Self {
+        let mut r = Self {
             state: x.allocate(lanes * MKL_AIM_STATE_WORDS as usize)?,
             lists: [x.allocate(lanes.max(1))?, x.allocate(lanes.max(1))?],
-            counts,
+            counts: vec![],
             args: x.allocate(3 * rounds)?,
             rounds,
-        })
+        };
+        r.group(x, 0, 1)?;
+        Ok(r)
+    }
+    /// Zeroed count storage for rounds `first..first + len` (the first
+    /// command appends to round 0's count; the indirect kernel resets the
+    /// count of each continuation round before it runs).
+    fn group(&mut self, x: &mut Execution<'_>, first: usize, len: usize) -> MkResult<()> {
+        let mut c = x.allocate(len)?;
+        c.as_mut_slice().fill(0);
+        self.counts.push((first, c));
+        Ok(())
+    }
+    fn count(&self, round: usize) -> (&Lease, usize) {
+        let (first, c) = self.counts.iter().rev().find(|c| c.0 <= round).unwrap();
+        (c, round - first)
+    }
+    fn count_mut(&mut self, round: usize) -> (&mut Lease, usize) {
+        let (first, c) = self.counts.iter_mut().rev().find(|c| c.0 <= round).unwrap();
+        (c, round - *first)
+    }
+    /// The pending count after `round`, once its command has completed.
+    fn pending(&self, round: usize) -> u32 {
+        let (c, i) = self.count(round);
+        c.as_slice()[i]
     }
     /// Bind the resume buffers of `round` (0: the first command) at the
     /// kernel's resume slots.
@@ -285,16 +309,21 @@ impl Resume {
         } else {
             (b, a)
         };
-        e.set_buffer_mut(14, &mut self.state, 0);
         e.set_buffer_mut(15, out, 0);
-        e.set_buffer_mut(16, &mut self.counts, round);
         e.set_buffer(17, inp, 0);
-        e.set_buffer(18, &self.counts, round.saturating_sub(1));
+        e.set_buffer_mut(14, &mut self.state, 0);
+        let (c, i) = self.count_mut(round);
+        e.set_buffer_mut(16, c, i);
+        let (c, i) = self.count(round.saturating_sub(1));
+        e.set_buffer(18, c, i);
     }
     fn recycle(self, x: &mut Execution<'_>) {
         let [a, b] = self.lists;
-        for b in [self.state, a, b, self.counts, self.args] {
+        for b in [self.state, a, b, self.args] {
             x.recycle(b);
+        }
+        for (_, c) in self.counts {
+            x.recycle(c);
         }
     }
 }
@@ -305,9 +334,14 @@ impl Resume {
 /// Threads are independent, so the split never changes a result. With a
 /// continuation pipeline every command additionally runs a bounded number
 /// of iteration units per lane: the tile's first command parks unfinished
-/// rays, continuation commands (sized on the device from the pending count)
-/// resume them in rounds, and the host reads the pending count back between
-/// round groups until no ray is left.
+/// rays, and continuation commands (sized on the device from the pending
+/// count) resume them in rounds. Rounds go out in groups; the pending count
+/// after a group decides whether more are needed, but the next group is
+/// committed before the host reads it, so the device never idles on that
+/// readback. Once a group leaves nothing pending, the speculative group
+/// after it finds empty lists and dispatches no thread. With `speculative`
+/// rounds (and the plan allowing speculation) a tile commits that many
+/// rounds and never reads its count; the plan verifies it at completion.
 #[allow(clippy::too_many_arguments)]
 fn newton_commands(
     x: &mut Execution<'_>,
@@ -317,6 +351,7 @@ fn newton_commands(
     cap: u32,
     progress: (f64, f64, &str),
     pipelines: (&PipelineKey, Option<&PipelineKey>),
+    speculative: usize,
     mut encode: impl FnMut(&Encoder<'_>, &Execution<'_>, AimParams),
 ) -> MkResult<()> {
     const MIN: usize = 4096;
@@ -357,48 +392,93 @@ fn newton_commands(
             })?
         };
         account(x, stage, wall, size_of::<AimParams>());
+        let more = offset + count < n;
+        let calibrate = n > 65536 || (offset == 0 && more);
+        let mut seconds = None;
         if let (Some(r), Some(cont), Some(indirect)) = (&mut resume, &cont, &indirect) {
+            let tile = x.ticket();
             let width = Encoder::width(cont) as u32;
-            let (mut round, mut group) = (0, 0);
-            loop {
-                let last = (round + group).min(r.rounds);
-                while round < last {
-                    round += 1;
-                    let wall = Instant::now();
-                    let p = AimParams {
-                        budget: continue_budget,
-                        ..p
+            let p = AimParams {
+                budget: continue_budget,
+                ..p
+            };
+            let mut rounds =
+                |x: &mut Execution<'_>, r: &mut Resume, from: usize, to: usize, fused: bool| {
+                    r.group(x, from + 1, to - from)?;
+                    for round in from + 1..=to {
+                        // One command buffer per round: a round of hard rays
+                        // runs up to the first command's time, and fused rounds
+                        // would add up past the interactivity bound. A first
+                        // speculative round (expected empty) stays with the first
+                        // command.
+                        if !fused || round > from + 1 {
+                            x.submit()?;
+                            // Committing may have waited on the in-flight
+                            // window: stay cancellable between rounds.
+                            ctl.check()?;
+                        }
+                        let wall = Instant::now();
+                        // SAFETY: as above; the indirect arguments and counts of
+                        // round `round` lie inside the resume buffers.
+                        unsafe {
+                            x.run("aim continuation", |e| {
+                                let (c, i) = r.count(round - 1);
+                                e.set_buffer(0, c, i);
+                                e.set_buffer_mut(1, &mut r.args, 3 * (round - 1));
+                                let (c, i) = r.count_mut(round);
+                                e.set_buffer_mut(2, c, i);
+                                e.set_bytes(3, &width);
+                                e.dispatch_1d(indirect, 1);
+                                encode(e, x, p);
+                                r.bind(e, round);
+                                e.dispatch_indirect(cont, &r.args, 3 * (round - 1));
+                                Ok(())
+                            })?
+                        };
+                        account(x, stage, wall, size_of::<AimParams>());
+                    }
+                    Ok::<_, MkError>(to)
+                };
+            if speculative > 0 && x.speculate {
+                // Committed without reading the count back: verified when
+                // the plan completes (the backend reruns it otherwise).
+                let round = rounds(x, r, 0, speculative.min(r.rounds), true)?;
+                x.submit()?;
+                if calibrate {
+                    seconds = Some(x.complete(tile)?.unwrap_or(0.));
+                }
+                let (first, count) = r.counts.pop().unwrap();
+                x.verify(count, round - first);
+            } else {
+                let mut group = AIM_FIRST_ROUNDS;
+                let mut round = rounds(x, r, 0, group.min(r.rounds), false)?;
+                let mut decided = (x.submit()?, round);
+                loop {
+                    let ahead = if round < r.rounds {
+                        round = rounds(x, r, round, (round + group).min(r.rounds), false)?;
+                        group *= 2;
+                        Some((x.submit()?, round))
+                    } else {
+                        None
                     };
-                    // SAFETY: as above; the indirect arguments and counts
-                    // of round `round` lie inside the resume buffers.
-                    unsafe {
-                        x.run(progress.2, |e| {
-                            e.set_buffer(0, &r.counts, round - 1);
-                            e.set_buffer_mut(1, &mut r.args, 3 * (round - 1));
-                            e.set_buffer_mut(2, &mut r.counts, round);
-                            e.set_bytes(3, &width);
-                            e.dispatch_1d(indirect, 1);
-                            encode(e, x, p);
-                            r.bind(e, round);
-                            e.dispatch_indirect(cont, &r.args, 3 * (round - 1));
-                            Ok(())
-                        })?
+                    if seconds.is_none() && calibrate {
+                        seconds = Some(x.complete(tile)?.unwrap_or(0.));
+                    }
+                    x.complete(decided.0)?;
+                    x.stats.readback_bytes += 4;
+                    let pending = r.pending(decided.1);
+                    if pending == 0 {
+                        break;
+                    }
+                    let Some(a) = ahead else {
+                        return Err(MkError::Numerical(format!(
+                            "{pending} aims unfinished after {} continuation rounds",
+                            decided.1
+                        )));
                     };
-                    account(x, stage, wall, size_of::<AimParams>());
+                    ctl.check()?;
+                    decided = a;
                 }
-                x.measure()?;
-                x.stats.readback_bytes += 4;
-                let pending = r.counts.as_slice()[round];
-                if pending == 0 {
-                    break;
-                }
-                if round == r.rounds {
-                    return Err(MkError::Numerical(format!(
-                        "{pending} aims unfinished after {round} continuation rounds"
-                    )));
-                }
-                ctl.check()?;
-                group = (2 * group).max(AIM_FIRST_ROUNDS);
             }
         }
         if let Some(r) = resume.take() {
@@ -409,9 +489,11 @@ fn newton_commands(
         // calibrate the next; later tiles of mid-sized batches keep that rate.
         // Every tile of a large batch (~15 ms each) completes, so progress
         // follows device completion.
-        let more = offset + count < n;
-        if n > 65536 || (offset == 0 && more) {
-            let seconds = x.measure()?;
+        if calibrate {
+            let seconds = match seconds {
+                Some(s) => s,
+                None => x.measure()?,
+            };
             if seconds > 0. {
                 let fit = (count as f64 * AIM_COMMAND_SECONDS / seconds) as usize;
                 next = fit.clamp(MIN, (8 * count).clamp(MIN, MAX));
@@ -492,6 +574,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                             g.max_iterations,
                             (0.0, 0.05, "chief aiming"),
                             (&pso, None),
+                            0,
                             |e, x, p| {
                                 systems.bind(e, x);
                                 bind(e, 3, x, &g.field_wavelength);
@@ -523,6 +606,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                             g.max_iterations,
                             (0.05, 0.05, "seed table"),
                             (&pso, Some(&cont)),
+                            0,
                             |e, x, p| {
                                 systems.bind(e, x);
                                 bind(e, 3, x, &g.field_wavelength);
@@ -550,6 +634,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                 g.max_iterations,
                 (0.1, 0.9, "pupil aiming"),
                 (&pso, Some(&cont)),
+                g.options.speculative_rounds as usize,
                 |e, x, p| {
                     let [ff, uu, ids, reports] = &mut out;
                     systems.bind(e, x);

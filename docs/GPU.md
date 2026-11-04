@@ -1354,6 +1354,29 @@ within their existing plans. Host-computed sphere/scale/grid metadata still
 separates plans where the next operation genuinely depends on it; there is no
 public pending-buffer view or implicit asynchronous import.
 
+**Asynchronous execution and admission.** A worker commits its command
+buffers without waiting for them; at most two committed ones stay in flight
+(`MKLIGHT_METAL_IN_FLIGHT`, 0 = complete each before the next). The host
+waits only where it needs device results (a pending count, a timing
+checkpoint, a final or intermediate readback), when the window is full, and
+when an abandoned batch drops: every committed command keeps the access guards
+of its bindings until it has completed, so no host slice, pool reuse or cache
+publication observes storage it may still access, and a cancelled plan waits
+for at most the bounded commands already in flight. Unified memory is used
+as is: counts and results are read in place from shared-storage leases, never
+copied or formatted. The Metal backend admits at most four resident plans at
+once and at most 1 GiB of their declared storage (a larger plan runs alone;
+`MKLIGHT_METAL_ADMIT_PLANS`, `MKLIGHT_METAL_ADMIT_MIB`); a plan whose consumer
+was cancelled while it waited never reaches the device. Consumers may
+therefore run independent plan chains side by side: the GPU wave adapter
+places a batch's pupils and computes the fields' MTF/PSF transforms on up to
+four chains (`MKLIGHT_WAVE_CONCURRENT`, 1 = in order), merging results,
+statistics and warnings in item order. `PlanStats` records host waits and
+their seconds, admission seconds, command buffers over 50 ms of device time
+(`long_commands`) and speculation misses; `MKLIGHT_METAL_TRACE_PLANS=1`
+prints one line per plan. Device time sums command-buffer spans, so
+overlapping plans count shared device time more than once.
+
 `PlanStats` counts actual completed command buffers; deferred dispatches have
 zero commands at encode time and their timestamps/counts appear in the
 `fused completion` stage. Arithmetic and reduction trees are unchanged.
@@ -1445,12 +1468,21 @@ unfinished rays in a per-tile `MklAimResume` state buffer
 (`MKL_AIM_STATE_WORDS`) and append their indices to a pending list; the
 executor encodes continuation rounds (`mkl_aim_indirect` sizes
 `mkl_aim_continue`/`mkl_aim_table_continue` from the pending count on the
-device) in doubling groups, reading the count back between groups until no
-ray is pending. A resumed solve performs the specification's operations in
+device), one command buffer per round so that rounds of hard rays never add
+up past the bound, in groups (2, 2, 4, 8, …). The pending count after a group
+decides whether more rounds are needed, but the next group is committed
+before the host reads it, so the device never idles on that readback; after
+the last needed group the speculative one finds empty lists and dispatches no
+thread. A resumed solve performs the specification's operations in
 the specification's order, so results are bitwise those of the monolithic
 CPU-f32 kernel (`aim_resume.rs` forces one unit per command). Time-calibrated
-tiles still bound the throughput part. Rounds cost one readback per group,
-so a small fused generation now completes at least once before its trace.
+tiles still bound the throughput part. `AimOptions::speculative_rounds`
+lets a generation that is expected to converge within them (the wave pupil
+tracer's table- and chief-seeded aims: one round, fused with the first
+command) skip the readback altogether: the executor verifies at the plan's
+next completion, before any check, cache publication or host read, that no
+ray was left pending, and the backend otherwise runs the plan again without
+speculation (`PlanStats::speculation_misses`), so results never depend on it.
 
 **Excluded samples and seed tables.** `AimOptions::cull_outside` excludes
 samples outside the unit pupil disk (the lattice guard nodes a survival mask
@@ -1465,7 +1497,9 @@ used for every sample of the request whatever its size; without one the
 device builds and caches a table of that side for large generations as
 before. The wave pupil tracer hands 25×25 host tables to every generation
 of a batch (chief probe, lattice, saddle and rim probes alike), so a
-sample's converged ray no longer depends on the batch it was aimed in.
+sample's converged ray no longer depends on the batch it was aimed in. The
+tables are solved (one batched `generate_many` per row, bitwise the scalar
+`generate` per node) while the batch's chief plan runs on the device.
 
 Keep hi+lo point/direction/OPL through pupil construction. Use the chief's
 unclipped trace and the signed exit-pupil distance for the reference sphere;

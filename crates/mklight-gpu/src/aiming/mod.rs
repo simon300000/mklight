@@ -121,6 +121,12 @@ pub struct AimOptions {
     /// (`MKL_AIM_OUTSIDE`): lattice guard nodes a disk mask discards anyway,
     /// which are the costliest aims and never needed.
     pub cull_outside: bool,
+    /// Continuation rounds a backend may commit without reading the pending
+    /// count back (for generations expected to converge within them, e.g.
+    /// from seed tables). A backend that speculates verifies at completion
+    /// that no ray was left pending and otherwise runs the plan again with
+    /// read-back rounds, so results never depend on it. 0: no speculation.
+    pub speculative_rounds: u32,
 }
 impl Default for AimOptions {
     fn default() -> Self {
@@ -128,6 +134,7 @@ impl Default for AimOptions {
             table: None,
             table_side: MKL_AIM_TABLE_SIDE,
             cull_outside: false,
+            speculative_rounds: 0,
         }
     }
 }

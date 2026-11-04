@@ -1,5 +1,6 @@
 //! Metal device, queue, shader library and pipeline cache, plus synchronous
-//! command-buffer execution with error and timing reporting.
+//! command-buffer execution and the resident executor's bounded asynchronous
+//! command batch, with error and timing reporting.
 //!
 //! The public surface is safe: device and library information, buffer
 //! allocation and pipeline compilation. Encoding and dispatching kernels
@@ -9,7 +10,7 @@
 //! GPU only through `ComputeBackend`.
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::ffi::c_void;
 use std::ptr::NonNull;
 use std::sync::Mutex;
@@ -577,17 +578,55 @@ impl Encoder<'_> {
     }
 }
 
-/// One worker's uncommitted resident commands. No command is left in flight:
-/// flush commits and waits; dropping an unfinished batch abandons its encoding.
-/// The executor retains recycled leases until flush and publishes only afterwards.
+/// Committed, unfinished command buffers per worker beyond which committing
+/// another waits for the oldest. The device always has the next command
+/// queued while the host encodes, and a cancelled or failed plan waits for at
+/// most this many bounded commands before its storage is released.
+/// `MKLIGHT_METAL_IN_FLIGHT=0` completes every command before the next one is
+/// encoded (the synchronous executor, for diagnostics and A/B runs).
+const IN_FLIGHT: usize = 2;
+/// Device seconds beyond which a command buffer risks the driver's
+/// interactivity watchdog (counted in `PlanStats::long_commands`).
+const LONG_COMMAND: f64 = 0.050;
+fn in_flight_window() -> usize {
+    static W: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *W.get_or_init(|| {
+        std::env::var("MKLIGHT_METAL_IN_FLIGHT")
+            .ok()
+            .and_then(|v| v.trim().parse().ok())
+            .unwrap_or(IN_FLIGHT)
+            .min(8)
+    })
+}
+
+/// One worker's resident commands: the command buffer being encoded and the
+/// committed ones still running (at most [`in_flight_window`]). Committing
+/// never waits for its own command; the host waits only where it needs
+/// device results (`complete`, `flush`), when the window is full, and when
+/// the batch is dropped. Every committed command keeps the device-access
+/// guards of its bindings until it has completed, so no host slice, pool
+/// reuse or publication can observe storage it may still access. Dropping
+/// the batch abandons the encoding and waits for the committed commands.
 pub(crate) struct CommandBatch {
     pending: Option<BatchEncoding>,
+    in_flight: VecDeque<Submitted>,
+    window: usize,
     work_budget: usize,
+    /// Tickets issued: the n-th committed command buffer has ticket n.
+    submitted: u64,
+    /// Device seconds of the latest completed command buffers, by ticket.
+    recent: VecDeque<(u64, f64)>,
     pub(crate) completed: CommandStats,
-    /// Device seconds of a submission completed by the latest `encode` call
-    /// or a later `flush` (timing feedback for calibrated tiles).
+    /// Device seconds of the newest submission once it has completed while
+    /// nothing newer was encoded (timing feedback for calibrated tiles).
     pub(crate) observed: Option<f64>,
+    /// Longest device time of one command buffer (the interactivity bound).
     pub(crate) max_seconds: f64,
+    /// Command buffers that ran longer than [`LONG_COMMAND`] on the device.
+    pub(crate) long_commands: u32,
+    /// Host waits for device completion, and their wall seconds.
+    pub(crate) waits: u32,
+    pub(crate) wait_seconds: f64,
 }
 struct BatchEncoding {
     cb: Retained<ProtocolObject<dyn MTLCommandBuffer>>,
@@ -596,25 +635,48 @@ struct BatchEncoding {
     work: Cell<usize>,
     start: Instant,
 }
+struct Submitted {
+    cb: Retained<ProtocolObject<dyn MTLCommandBuffer>>,
+    /// Released only after completion.
+    accesses: Vec<crate::buffer::DeviceAccess>,
+    ticket: u64,
+}
+impl Submitted {
+    fn finished(&self) -> bool {
+        matches!(
+            self.cb.status(),
+            MTLCommandBufferStatus::Completed | MTLCommandBufferStatus::Error
+        )
+    }
+}
 impl CommandBatch {
     pub(crate) fn new(work_budget: usize) -> Self {
         Self {
             pending: None,
+            in_flight: VecDeque::new(),
+            window: in_flight_window(),
             work_budget,
+            submitted: 0,
+            recent: VecDeque::new(),
             completed: CommandStats::default(),
             observed: None,
             max_seconds: 0.,
+            long_commands: 0,
+            waits: 0,
+            wait_seconds: 0.,
         }
     }
-    /// Same kernel bounds contract as `run`. Host slices require `flush` first.
+    /// Same kernel bounds contract as `run`. Host slices of storage bound
+    /// here require its command's completion (`complete` or `flush`) first.
     pub(crate) unsafe fn encode(
         &mut self,
         gpu: &MetalContext,
         label: &str,
         encode: impl FnOnce(&Encoder<'_>) -> MkResult<()>,
-    ) -> MkResult<CommandStats> {
+    ) -> MkResult<()> {
         self.observed = None;
         if self.pending.is_none() {
+            self.poll()?;
             let cb = gpu
                 .queue
                 .commandBuffer()
@@ -644,40 +706,111 @@ impl CommandBatch {
             let label = label.to_string();
             let stats = self.flush()?;
             eprintln!("MKL_DISPATCH {label} {:.6} ms", stats.gpu_seconds * 1e3);
-            return Ok(stats);
+            return Ok(());
         }
         if b.work.get() >= self.work_budget || b.start.elapsed().as_secs_f64() >= 0.010 {
-            self.flush()
-        } else {
-            Ok(CommandStats::default())
+            self.submit()?;
         }
+        Ok(())
     }
-    pub(crate) fn flush(&mut self) -> MkResult<CommandStats> {
-        let Some(b) = self.pending.take() else {
-            return Ok(CommandStats::default());
+    /// The ticket of the command buffer holding the latest encoder call
+    /// (the one being encoded, or the newest committed one).
+    pub(crate) fn ticket(&self) -> u64 {
+        self.submitted + u64::from(self.pending.is_some())
+    }
+    /// Commit the encoded commands without waiting for them; returns the
+    /// ticket of the newest committed command buffer (0: none yet).
+    pub(crate) fn submit(&mut self) -> MkResult<u64> {
+        if let Some(b) = self.pending.take() {
+            b.enc.endEncoding();
+            b.cb.commit();
+            self.submitted += 1;
+            self.in_flight.push_back(Submitted {
+                cb: b.cb,
+                accesses: b.accesses.into_inner(),
+                ticket: self.submitted,
+            });
+            while self.in_flight.len() > self.window {
+                self.retire(true)?;
+            }
+        }
+        Ok(self.submitted)
+    }
+    /// Retire the oldest committed command once it has completed (waiting
+    /// for it with `block`); false when there is none or it is still running.
+    fn retire(&mut self, block: bool) -> MkResult<bool> {
+        let Some(s) = self.in_flight.front() else {
+            return Ok(false);
         };
-        b.enc.endEncoding();
-        let start = Instant::now();
-        b.cb.commit();
-        b.cb.waitUntilCompleted();
-        self.max_seconds = self.max_seconds.max(start.elapsed().as_secs_f64());
-        if b.cb.status() == MTLCommandBufferStatus::Error {
+        if !s.finished() {
+            if !block {
+                return Ok(false);
+            }
+            let start = Instant::now();
+            s.cb.waitUntilCompleted();
+            self.waits += 1;
+            self.wait_seconds += start.elapsed().as_secs_f64();
+        }
+        let s = self.in_flight.pop_front().unwrap();
+        if s.cb.status() == MTLCommandBufferStatus::Error {
             let msg =
-                b.cb.error()
+                s.cb.error()
                     .map(|e| e.localizedDescription().to_string())
                     .unwrap_or_else(|| "unknown error".into());
             return Err(MkError::Backend(format!("fused command buffer: {msg}")));
         }
-        let (a, z) = (b.cb.GPUStartTime(), b.cb.GPUEndTime());
-        let stats = CommandStats {
-            gpu_seconds: (z - a).max(0.),
-            command_buffers: 1,
-        };
-        add_device_time(stats.gpu_seconds);
-        self.completed.gpu_seconds += stats.gpu_seconds;
+        let (a, z) = (s.cb.GPUStartTime(), s.cb.GPUEndTime());
+        let seconds = (z - a).max(0.);
+        add_device_time(seconds);
+        self.completed.gpu_seconds += seconds;
         self.completed.command_buffers += 1;
-        self.observed = Some(stats.gpu_seconds);
-        Ok(stats)
+        self.max_seconds = self.max_seconds.max(seconds);
+        self.long_commands += u32::from(seconds > LONG_COMMAND);
+        if s.ticket == self.submitted && self.pending.is_none() {
+            self.observed = Some(seconds);
+        }
+        if self.recent.len() == 8 {
+            self.recent.pop_front();
+        }
+        self.recent.push_back((s.ticket, seconds));
+        drop(s.accesses);
+        Ok(true)
+    }
+    /// Retire the commands that have already completed, without waiting.
+    pub(crate) fn poll(&mut self) -> MkResult<()> {
+        while self.retire(false)? {}
+        Ok(())
+    }
+    /// Wait until the command buffer with `ticket` (and every earlier one)
+    /// has completed; returns its device seconds when still on record.
+    pub(crate) fn complete(&mut self, ticket: u64) -> MkResult<Option<f64>> {
+        while self.in_flight.front().is_some_and(|s| s.ticket <= ticket) {
+            self.retire(true)?;
+        }
+        Ok(self
+            .recent
+            .iter()
+            .find(|(t, _)| *t == ticket)
+            .map(|(_, s)| *s))
+    }
+    /// Commit any encoded commands and wait for every committed one. Returns
+    /// the device seconds of the newest command buffer, if one ran.
+    pub(crate) fn flush(&mut self) -> MkResult<CommandStats> {
+        let ticket = self.submit()?;
+        let before = self.completed.command_buffers;
+        while self.retire(true)? {}
+        let ran = self.completed.command_buffers - before;
+        Ok(CommandStats {
+            gpu_seconds: if ran > 0 {
+                self.recent
+                    .iter()
+                    .find(|(t, _)| *t == ticket)
+                    .map_or(0., |(_, s)| *s)
+            } else {
+                0.
+            },
+            command_buffers: ran,
+        })
     }
 }
 
@@ -685,6 +818,14 @@ impl Drop for CommandBatch {
     fn drop(&mut self) {
         if let Some(b) = self.pending.take() {
             b.enc.endEncoding();
+        }
+        // Committed work cannot be withdrawn: its storage stays guarded
+        // (unavailable to the host and the pool) until it has completed.
+        for s in self.in_flight.drain(..) {
+            s.cb.waitUntilCompleted();
+            if s.cb.status() != MTLCommandBufferStatus::Error {
+                add_device_time((s.cb.GPUEndTime() - s.cb.GPUStartTime()).max(0.));
+            }
         }
     }
 }

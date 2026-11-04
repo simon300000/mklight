@@ -34,6 +34,14 @@ use crate::context::{
     PipelineKey,
 };
 
+/// Diagnostic: `MKLIGHT_METAL_TRACE_PLANS=1` prints one line per completed
+/// resident plan (operations, thread start, admission wait, wall, device
+/// time, command buffers and host waits).
+fn trace_plans() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("MKLIGHT_METAL_TRACE_PLANS").is_ok_and(|v| v == "1"))
+}
+
 /// Default work items per command buffer.
 const DEFAULT_CHUNK: usize = 1 << 20;
 
@@ -59,6 +67,7 @@ struct Inner {
     systems: Mutex<HashMap<u64, Arc<Uploaded>>>,
     resident: crate::resident::Runtime,
     cache: Mutex<mklight_gpu::resident::cache::SystemCache<Uploaded>>,
+    admission: crate::admission::Admission,
 }
 
 #[derive(Clone)]
@@ -233,6 +242,7 @@ impl MetalBackend {
                 ),
                 chunk_items: AtomicUsize::new(DEFAULT_CHUNK),
                 systems: Mutex::new(HashMap::new()),
+                admission: crate::admission::Admission::new(),
             }),
         }))
     }
@@ -831,22 +841,47 @@ impl ComputeBackend for MetalBackend {
         let (p, c, ctl) = pending(ctx);
         let b = self.clone();
         let chunk = self.inner.chunk();
+        let submitted = Instant::now();
         spawn_job(
             "mklight-resident-metal",
             "Metal resident plan".into(),
             c,
             move || {
                 let i = &b.inner;
-                crate::resident::execute(
-                    &i.resident,
-                    &b,
-                    &i.ctx,
-                    &plan,
-                    pinned,
-                    &prepared,
-                    &ctl,
-                    chunk,
-                )
+                let started = submitted.elapsed().as_secs_f64();
+                // Admission bounds the plans (and their storage) on the
+                // device; an obsolete consumer's plan leaves while waiting.
+                let permit = i.admission.admit(bytes, &ctl)?;
+                let missed = std::cell::Cell::new(false);
+                let run = |speculate| {
+                    crate::resident::execute(
+                        &i.resident,
+                        &b,
+                        &i.ctx,
+                        &plan,
+                        pinned.clone(),
+                        &prepared,
+                        &ctl,
+                        chunk,
+                        permit.waited,
+                        speculate,
+                        &missed,
+                    )
+                };
+                let mut r = run(true);
+                if missed.get() {
+                    // A speculative generation needed more rounds than it
+                    // committed: run the plan again with read-back rounds.
+                    r = run(false).map(|mut r| {
+                        r.stats.speculation_misses += 1;
+                        r
+                    });
+                }
+                drop(permit);
+                if trace_plans() {
+                    crate::resident::trace_plan(&plan, started, submitted, &r);
+                }
+                r
             },
         )?;
         Ok(p)
