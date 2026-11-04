@@ -93,7 +93,7 @@ use mklight_trace::radiometry::RayThroughput;
 use mklight_trace::trace::{Ray, TraceResult, trace_ray, trace_rays, trace_rays_recorded};
 use mklight_trace::{
     ObjectSource, OpdReference, PreparedField, RayRequest, SequentialTracer, SolveSettings,
-    apply_solves_configuration,
+    TracerSettings, apply_solves_configuration,
 };
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -341,13 +341,25 @@ pub fn configured_tracer_job(
     k: usize,
     ctx: &JobContext,
 ) -> MkResult<ConfiguredTracer> {
+    configured_tracer_job_with(system, library, k, TracerSettings::default(), ctx)
+}
+
+/// [`configured_tracer_job`] with the tracer's settings (aim-stop policy,
+/// intersection settings).
+pub fn configured_tracer_job_with(
+    system: &OpticalSystem,
+    library: Arc<MaterialLibrary>,
+    k: usize,
+    settings: TracerSettings,
+    ctx: &JobContext,
+) -> MkResult<ConfiguredTracer> {
     let base_snapshot_hash = mklight_core::snapshot::hash_system(system)?.to_hex();
     let (solved, report) =
         apply_solves_configuration(system, &library, k, &SolveSettings::default(), ctx)?;
     let snap = Snapshot::new(solved)?;
     let sys = mklight_core::ResolvedSystem::new(&snap, library)?;
     Ok(ConfiguredTracer {
-        tracer: SequentialTracer::new(Arc::new(sys))?,
+        tracer: SequentialTracer::with_settings(Arc::new(sys), settings)?,
         configuration: k,
         base_snapshot_hash,
         solve_warnings: report.warnings,

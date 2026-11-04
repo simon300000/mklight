@@ -510,8 +510,10 @@ impl<'a> PupilTracer<'a> {
         }
         let steps = p.import(self.steps.view());
         let generated = aim::rays(p, count);
+        // The tightest derived stop of the prepared fields, or the requested
+        // tolerance (CONVENTIONS §7, the aim-stop policy).
         let tolerance = match self.tracer.aiming() {
-            mklight_core::RayAiming::Real { tolerance } => tolerance as f32,
+            mklight_core::RayAiming::Real { .. } => self.tracer.device_aim_tolerance() as f32,
             _ => 1e-10,
         };
         p.operations

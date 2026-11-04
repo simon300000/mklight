@@ -141,6 +141,33 @@ pub enum Precision {
     F32Gpu,
 }
 
+/// Accuracy tier of a run (CONVENTIONS §7, GPU §9.4). Every result is
+/// labelled with it; nothing below design grade is ever silent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Tier {
+    /// Design-grade budgets and sampling (the default).
+    #[default]
+    Design,
+    /// Opt-in preview: cheaper sampling and aiming within the preview
+    /// budgets (position ≤ 0.05 λN, MTF ≤ 0.01, OPD RMS ≤ 0.02 waves);
+    /// not for final decisions.
+    Preview,
+}
+
+/// How the real-aim solves of a run stopped (CONVENTIONS §7).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AimStopKind {
+    /// At the system's requested aiming tolerance.
+    #[default]
+    Requested,
+    /// At the residual derived per field and wavelength from the propagated
+    /// error (never looser than the tier's allocation, never tighter than
+    /// the request).
+    Conditioned,
+}
+
 /// Metadata attached to every result, so it can be reproduced and checked
 /// for staleness.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -154,6 +181,12 @@ pub struct RunInfo {
     pub seed: Option<u64>,
     pub started_unix_ms: u64,
     pub duration_ms: f64,
+    /// Accuracy tier the result was computed at.
+    #[serde(default)]
+    pub tier: Tier,
+    /// Aim-stop policy the run's real-aim solves used.
+    #[serde(default)]
+    pub aim_stop: AimStopKind,
     #[serde(default)]
     pub warnings: Vec<String>,
     /// Backend attempts that did not compute this result, in order: native
@@ -220,6 +253,8 @@ impl RunTimer {
             seed,
             started_unix_ms: self.started_unix_ms,
             duration_ms: self.t0.elapsed().as_secs_f64() * 1e3,
+            tier: Tier::Design,
+            aim_stop: AimStopKind::Requested,
             warnings,
             failed_attempts: Vec::new(),
         }

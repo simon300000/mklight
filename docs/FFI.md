@@ -282,8 +282,13 @@ See RESULTS §5 and GPU §9.2.
 
 ```json
 { "analysis": "rng_stream", "settings": {"seed": 1}, "view_key": "win-3",
-  "backend": {"kind": "gpu", "name": "metal"}, "allow_backend_fallback": true }
+  "backend": {"kind": "gpu", "name": "metal"}, "allow_backend_fallback": true,
+  "tier": "design", "aim_stop": null }
 ```
+
+`tier` (`design`, the default, or `preview`) and `aim_stop` (`requested`,
+`conditioned`, or null for the engine default) are the accuracy policies of
+docs/RESULTS.md; both are echoed in `run_info`.
 
 `mk_session_run_analysis_json(session, request, &json, &buffers, &count)`
 runs the same request in the calling thread (blocking, no job, no

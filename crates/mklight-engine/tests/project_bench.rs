@@ -10,8 +10,10 @@
 //! cpu is always kept as the accuracy reference), MKLIGHT_BENCH_PHASES
 //! (warm,edit), MKLIGHT_BENCH_SKIP_COLD=1, MKLIGHT_BENCH_GRAPH_BYTES (analysis
 //! graph budget; 0 disables it), MKLIGHT_BENCH_EDIT_GRAPHS (comma list
-//! replacing the six edit-loop graphs), and MKLIGHT_BENCH_ALLOW_BUSY=1 to
-//! measure next to other builds (every gate record is then provisional).
+//! replacing the six edit-loop graphs), MKLIGHT_BENCH_ALLOW_BUSY=1 to
+//! measure next to other builds (every gate record is then provisional),
+//! MKLIGHT_BENCH_AIM_STOP (requested|conditioned) and MKLIGHT_BENCH_TIER
+//! (design|preview) for the accuracy policies.
 #![cfg(target_os = "macos")]
 
 use std::collections::BTreeMap;
@@ -155,6 +157,13 @@ fn engine(mode: &str) -> Engine {
     if let Ok(b) = std::env::var("MKLIGHT_BENCH_GRAPH_BYTES") {
         config.analysis_graph_bytes = b.parse().unwrap();
     }
+    // MKLIGHT_BENCH_AIM_STOP=requested|conditioned (CONVENTIONS §7).
+    if let Ok(s) = std::env::var("MKLIGHT_BENCH_AIM_STOP") {
+        config.aim_stop = match s.as_str() {
+            "conditioned" => mklight_core::AimStopKind::Conditioned,
+            _ => mklight_core::AimStopKind::Requested,
+        };
+    }
     let e = Engine::new(config);
     // Fixed options avoid process-global environment mutation while alternating
     // precisions. Fresh f32 children additionally set MKLIGHT_METAL_PRECISION.
@@ -201,6 +210,10 @@ fn request(case: &Case, mode: &str) -> AnalysisRequest {
     });
     // Explicit requests still report unsupported/static CPU routes.
     r.allow_backend_fallback = true;
+    // MKLIGHT_BENCH_TIER=preview runs the preview tier (GPU §9.4).
+    if std::env::var("MKLIGHT_BENCH_TIER").as_deref() == Ok("preview") {
+        r.tier = mklight_core::Tier::Preview;
+    }
     r
 }
 

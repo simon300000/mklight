@@ -305,8 +305,15 @@ impl<'a> Geometry<'a> {
         records: bool,
     ) -> MkResult<ResidentHits> {
         let generated = rays(p, n);
+        // The tightest derived stop of the prepared fields, or the requested
+        // tolerance (CONVENTIONS §7, the aim-stop policy).
         let tolerance = match aiming {
-            mklight_core::RayAiming::Real { tolerance } => tolerance as f32,
+            mklight_core::RayAiming::Real { .. } if aiming == self.tracer.aiming() => {
+                self.tracer.device_aim_tolerance() as f32
+            }
+            mklight_core::RayAiming::Real { .. } => {
+                self.tracer_for(aiming)?.device_aim_tolerance() as f32
+            }
             _ => 1e-10,
         };
         p.operations

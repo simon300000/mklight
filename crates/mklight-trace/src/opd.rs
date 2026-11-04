@@ -35,6 +35,7 @@
 use mklight_core::Vec3;
 use serde::{Deserialize, Serialize};
 
+use crate::diff::RayTangent;
 use crate::numeric::Compensated;
 use crate::trace::{TraceOptions, TraceResult, TraceStatus};
 use crate::tracer::{PreparedField, SequentialTracer};
@@ -85,6 +86,48 @@ impl OpdReference {
     /// OPD in waves at this reference's wavelength.
     pub fn opd_waves(&self, ray: &TraceResult) -> Option<f64> {
         self.opd_mm(ray).map(|o| o / (self.wavelength_um * 1e-3))
+    }
+
+    /// Derivative of [`Self::opd_waves`] with respect to the two launch
+    /// parameters of a ray whose tangent at the image surface is `t`
+    /// ([`crate::diff`]), in waves per unit parameter. All rays of a field
+    /// leave one wavefront, so by the eikonal equation the path to the image
+    /// hit `Q` changes by `n d·δQ`; the sphere intersection `S = Q + s d`
+    /// moves along the sphere, `u·(δQ + δs d + s δd) = 0` with `u = S − I`,
+    /// and `OPD = OPL_c − OPL_r − n s + const` gives
+    /// `δOPD = −n (d·δQ − u·(δQ + s δd)/(u·d))`; in the `R → ∞` limit
+    /// `δOPD = n w·δd`. `None` where [`Self::opd_mm`] is undefined or the ray
+    /// runs along the sphere.
+    pub fn opd_tangent(&self, ray: &TraceResult, t: &RayTangent) -> Option<[f64; 2]> {
+        if !ray.status.is_ok() {
+            return None;
+        }
+        let w = ray.ray.pos - self.center;
+        let d = ray.ray.dir;
+        let n = self.n_image;
+        let per_mm = 1.0 / (self.wavelength_um * 1e-3);
+        if !self.s_exit_pupil.is_finite() {
+            return Some(std::array::from_fn(|j| n * w.dot(t.ddir[j]) * per_mm));
+        }
+        let r = self.s_exit_pupil.abs();
+        let sg = self.s_exit_pupil.signum();
+        let b = d.dot(w);
+        let p2 = w.cross(d).norm2();
+        let rr = r * r;
+        if p2 > rr {
+            return None;
+        }
+        let s = sg * (rr - p2).sqrt() - b;
+        let u = w + d * s;
+        let ud = u.dot(d);
+        if ud == 0.0 || !ud.is_finite() {
+            return None;
+        }
+        Some(std::array::from_fn(|j| {
+            let (dq, dd) = (t.dpos[j], t.ddir[j]);
+            let ds = -u.dot(dq + dd * s) / ud;
+            -n * (d.dot(dq) + ds) * per_mm
+        }))
     }
 }
 

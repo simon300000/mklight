@@ -55,6 +55,8 @@ pub struct EngineConfig {
     pub app_name: String,
     pub app_version: String,
     pub default_backend: Backend,
+    /// Aim-stop policy of requests that name none (CONVENTIONS §7).
+    pub aim_stop: mklight_core::AimStopKind,
 }
 
 impl Default for EngineConfig {
@@ -69,6 +71,7 @@ impl Default for EngineConfig {
             app_name: String::new(),
             app_version: String::new(),
             default_backend: Backend::Auto,
+            aim_stop: mklight_core::AimStopKind::Requested,
         }
     }
 }

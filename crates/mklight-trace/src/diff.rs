@@ -594,6 +594,24 @@ impl TangentPlan {
         records: &[SurfaceRecord],
         last: usize,
     ) -> Result<RayTangent, TangentError> {
+        let mut t = *start;
+        self.differentiate_each(sys, wl, start, records, last, |_, tangent| t = *tangent)?;
+        Ok(t)
+    }
+
+    /// [`Self::differentiate`] visiting the tangent at every surface
+    /// `1..=last` on the way (`visit(surface, tangent)`), for callers that
+    /// need the whole chain (the propagated-error conditioning of the aim
+    /// stop) without differentiating once per surface.
+    pub fn differentiate_each(
+        &self,
+        sys: &ResolvedSystem,
+        wl: usize,
+        start: &RayTangent,
+        records: &[SurfaceRecord],
+        last: usize,
+        mut visit: impl FnMut(usize, &RayTangent),
+    ) -> Result<(), TangentError> {
         if records.len() <= last || self.surfaces.len() != sys.surfaces.len() {
             return Err(TangentError::Incomplete);
         }
@@ -605,8 +623,9 @@ impl TangentPlan {
             if !t.is_finite() {
                 return Err(TangentError::Undefined { surface: i });
             }
+            visit(i, &t);
         }
-        Ok(t)
+        Ok(())
     }
 }
 

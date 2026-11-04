@@ -36,6 +36,10 @@ Python `Result.envelope()` return:
   light).
 * `run_info.backend` is the backend that **computed** the result
   (`cpu_reference`, `gpu:metal`, …), not the one requested; see section 5.
+* `run_info.tier` (`design` | `preview`) and `run_info.aim_stop`
+  (`requested` | `conditioned`) are the accuracy policies the run used
+  (CONVENTIONS §7, GPU §9.4): a preview result's cheaper sampling is in
+  `run_info.settings`, and both labels are part of the result identity.
 * A result is current while `run_info.snapshot_hash` and `library_hash`
   equal the session's (`docs/FFI.md`).
 * `derived_snapshot_hash` is the run-local system hash when `spectrum`
