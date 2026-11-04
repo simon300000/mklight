@@ -127,6 +127,15 @@ pub struct AimOptions {
     /// that no ray was left pending and otherwise runs the plan again with
     /// read-back rounds, so results never depend on it. 0: no speculation.
     pub speculative_rounds: u32,
+    /// Newton iterations a ray may spend over its whole aiming schedule
+    /// (table seed, chief prediction and the continuation stages together);
+    /// a solve that reaches it stops unconverged and no further stage runs.
+    /// 0 (the default) leaves the schedule's own per-solve cap
+    /// (`max_iterations`) as the only bound. A consumer that discards every
+    /// result of a batch member with any unresolved ray — the candidate
+    /// evaluator — sets it so an unaimable ray fails in a bounded number of
+    /// iterations instead of running the whole schedule.
+    pub schedule_cap: u32,
 }
 impl Default for AimOptions {
     fn default() -> Self {
@@ -135,6 +144,7 @@ impl Default for AimOptions {
             table_side: MKL_AIM_TABLE_SIDE,
             cull_outside: false,
             speculative_rounds: 0,
+            schedule_cap: 0,
         }
     }
 }
@@ -211,12 +221,13 @@ pub fn aim_identity(
         (Some(_), None) => return None,
     };
     Some(format!(
-        "{name}:{}:{}:{seeds}:{}:{}:{}",
+        "{name}:{}:{}:{seeds}:{}:{}:{}:{}",
         system?.to_hex(),
         blake3::hash(bytemuck::cast_slice(fields?)).to_hex(),
         g.tolerance.to_bits(),
         g.max_iterations,
-        g.options.table_side
+        g.options.table_side,
+        g.options.schedule_cap
     ))
 }
 

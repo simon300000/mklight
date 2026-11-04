@@ -27,5 +27,6 @@ rayon.workspace = true
 
 [dev-dependencies]
 approx.workspace = true
+bytemuck.workspace = true
 # The optimize job on the Metal device (skipped without one).
 mklight-metal.workspace = true

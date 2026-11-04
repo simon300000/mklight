@@ -253,6 +253,23 @@ of `requested`, nor the survival rule: a ray's survived/clipped status may
 only differ for rays within the aim allocation (6.7·10⁻⁷ mm) of an aperture
 edge, well inside the 10⁻⁵ mm band.
 
+**Device aim schedule cap.** The device aim solve runs the reference's
+schedule (seed-table solve, chief prediction, four continuation stages, each
+up to the iteration cap) in double-float; a consumer may bound a ray's
+Newton iterations over the whole schedule (`AimOptions::schedule_cap`,
+GPU.md "Bounded aiming commands"). Only the candidate evaluator does
+(32 iterations): it discards every result of a candidate with any unresolved
+ray, so an unaimable ray of a bad trial step need not run the schedule to
+its end. Analyses keep the full schedule; their unresolved rays are checked
+against the reference (`check_aim`). The cap never changes a ray the full
+schedule converges within it (bitwise, `aim_resume.rs`), and the
+arithmetic of every solve is unchanged: GPU precision is not the lever for
+aiming cost. The measured study (GPU.md §3.6, "Selective mixed precision")
+shows an f32 predictor phase cannot pay: the f32 stop residual floor on an
+F/1.4 design is 1.6·10⁻⁶ of the stop radius, the aim kernel is control-flow
+bound (f32 saves 1.4× per iteration, not 4×), and a mixed solve still needs
+a double-float evaluation and iteration after the f32 phase.
+
 ## 8. Paraxial slopes in solves
 
 Ray-angle solves (`marginal_ray_angle`, `chief_ray_angle`, `docs/SOLVES.md`)

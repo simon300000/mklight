@@ -242,3 +242,61 @@ fn host_and_small_tables_converge_within_tolerance() {
     gpu.release_systems(h).unwrap();
     cpu.release_systems(hc).unwrap();
 }
+
+/// A schedule cap bounds every ray's Newton iterations over its whole
+/// schedule (`AimOptions::schedule_cap`): no ray reports more, a ray the
+/// uncapped schedule converges within the cap is bitwise the uncapped run's,
+/// and the device is bitwise the CPU-f32 specification under every cap.
+/// Samples far outside the pupil disk (not culled) are unaimable and would
+/// otherwise run the whole schedule.
+#[test]
+fn schedule_cap_bounds_the_schedule_bitwise() {
+    let gpu = backend();
+    let cpu = CpuF32Backend::matching(&gpu.precision().probe);
+    let mut points = (PupilSampling::Grid { n: 9 }).points();
+    points.extend([[1.6, 0.], [0., -1.7], [1.3, 1.3], [-1.8, 0.4]]);
+    let n = points.len();
+    let (mut capped, mut kept) = (0, 0);
+    for (name, mut model) in testutil::xval_systems().into_iter().take(10) {
+        model.ray_aiming = RayAiming::Real { tolerance: 1e-10 };
+        let t = testutil::tracer(model);
+        let field = t.fields().len() - 1;
+        let (plain, h) = make_plan(&gpu, &t, field, 0, &points, false, 40, false);
+        let (pc, hc) = make_plan(&cpu, &t, field, 0, &points, false, 40, false);
+        let (_, d0) = run(&gpu, plain.clone());
+        let a = reports(&d0, n);
+        let f0 = floats(&d0[0]);
+        for cap in [1u32, 6, 24] {
+            let set = |g: &mut GenerateAim| g.options.schedule_cap = cap;
+            let (_, d) = run(&gpu, with_options(plain.clone(), set));
+            let (_, dc) = run(&cpu, with_options(pc.clone(), set));
+            bits(&d, &dc);
+            let b = reports(&d, n);
+            let f = floats(&d[0]);
+            for i in 0..n {
+                assert!(
+                    b[i][1] <= cap,
+                    "{name}: ray {i} ran {} iterations under cap {cap}",
+                    b[i][1]
+                );
+                if a[i][0] == 0 && a[i][1] <= cap {
+                    assert_eq!(a[i], b[i], "{name}: converged ray {i} under cap {cap}");
+                    for k in 0..15 {
+                        assert_eq!(
+                            f[k * n + i].to_bits(),
+                            f0[k * n + i].to_bits(),
+                            "{name}: ray {i} plane {k} under cap {cap}"
+                        );
+                    }
+                    kept += 1;
+                } else {
+                    capped += 1;
+                }
+            }
+        }
+        gpu.release_systems(h).unwrap();
+        cpu.release_systems(hc).unwrap();
+    }
+    assert!(capped > 100, "capped rays: {capped}");
+    assert!(kept > 1000, "rays unchanged under a cap: {kept}");
+}
