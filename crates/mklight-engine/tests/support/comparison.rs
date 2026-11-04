@@ -70,7 +70,8 @@ pub enum Class {
     /// Fit condition numbers: a diagnostic of the least-squares problem, not
     /// an optical output; 1e-3 relative.
     Diagnostic,
-    /// Solver merits and constraint violations. §9.4 D: 1 % or 1e-8.
+    /// Solver merits. §9.4 D: 1 % or 1e-8 (violations keep the generic
+    /// budget; feasibility, the §9.4 D criterion, is a label compared exactly).
     Merit,
     /// Counts, indices, statuses and fractions that follow deterministically
     /// from survival, and echoed inputs: equal.
@@ -1014,14 +1015,14 @@ pub const FIELDS: &[(&str, &[Rule])] = &[
 /// The solvers' physical score reports as `project_bench` compares them
 /// (merit, constraint violation, status, operand values, tolerance criteria
 /// and finalists; execution telemetry and returned designs are not compared).
-/// Operand values and tolerance criteria are in their operands' own units,
-/// so they keep the generic budget.
+/// Operand values, constraint violations and tolerance criteria are in their
+/// operands' own units, so they keep the generic budget.
 pub const SOLVER_SCORES: &[(&str, &[Rule])] = &[
     (
         "merit_evaluation",
         &[
             r("merit", Merit),
-            r("violation", Merit),
+            r("violation", Generic),
             r("status.*", Exact),
             r("operands[].config", Exact),
             r("operands[].contribution", Merit),
@@ -1040,10 +1041,10 @@ pub const SOLVER_SCORES: &[(&str, &[Rule])] = &[
         "optimize",
         &[
             r("start.merit", Merit),
-            r("start.violation", Merit),
+            r("start.violation", Generic),
             r("start.status.*", Exact),
             r("final.merit", Merit),
-            r("final.violation", Merit),
+            r("final.violation", Generic),
             r("final.status.*", Exact),
         ],
     ),
@@ -1092,7 +1093,7 @@ pub const SOLVER_SCORES: &[(&str, &[Rule])] = &[
         "glass_substitution",
         &[
             r("finalists[].merit", Merit),
-            r("finalists[].violation", Merit),
+            r("finalists[].violation", Generic),
             r("finalists[].glasses[].dpgf", Exact),
             r("finalists[].glasses[].nd", Exact),
             r("finalists[].glasses[].vd", Exact),

@@ -1908,7 +1908,7 @@ statistical classes gate at their stated confidence.
 | count ratio | 1e-12 | survival | vignetted/unvignetted fractions: one ray moves them ≥ 1e-9 |
 | statistical | 5·√(a + b) | E stray | Monte-Carlo counts (events, hits) under roulette |
 | Monte Carlo | 5 combined standard errors | E stray | class fluxes and moments, with their own standard errors; ranked signatures matched by identity, a tail signature only within 5σ of the other list's cut |
-| merit | 1 % or 1e-8 | D | solver merits and violations |
+| merit | 1 % or 1e-8 | D | solver merits (violations generic; feasibility exact) |
 | generic | 2e-5 | (unchanged) | dimensionless geometry without a derived budget: distortion %, area and vignetting fractions, normalised pupil coordinates, operand values |
 | diagnostic | 1e-3 relative | — | fit condition numbers (not an optical output) |
 | sampling | recorded | — | pupil/image grid sizes and spacings a backend chooses |
