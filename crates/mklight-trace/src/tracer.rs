@@ -800,6 +800,7 @@ impl SequentialTracer {
     }
 
     /// [`Self::solve_aim`], seeded as `newton2_seeded` when `seed` is set.
+    #[allow(clippy::too_many_arguments)]
     fn solve_aim_seeded(
         &self,
         src: &ObjectSource,
