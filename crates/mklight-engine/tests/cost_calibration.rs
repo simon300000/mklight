@@ -209,6 +209,9 @@ fn edit(s: &mut Session, base: &OpticalSystem, serial: usize) {
     s.set_system(system).unwrap();
 }
 
+/// One fitted call: stage features, measured ms and weight.
+type Point = (Features, f64, f64);
+
 struct Call {
     grid: Option<f64>,
     ms: f64,
@@ -420,7 +423,7 @@ fn fit(records: &[Value], device_open_ms: f64) -> Calibration {
         .map(|(n, s)| (n, s.system().clone()))
         .collect();
     let traces = 1. + cost::PRIOR_ITERATIONS;
-    let mut points: BTreeMap<(String, String), Vec<(Features, f64, f64)>> = BTreeMap::new();
+    let mut points: BTreeMap<(String, String), Vec<Point>> = BTreeMap::new();
     let mut labels: BTreeMap<(String, String), Vec<Value>> = BTreeMap::new();
     let mut first: BTreeMap<String, Vec<f64>> = BTreeMap::new();
     let mut reference = (0., 0.);
@@ -433,7 +436,10 @@ fn fit(records: &[Value], device_open_ms: f64) -> Calibration {
     };
     let mut best: BTreeMap<String, &Value> = BTreeMap::new();
     for r in records {
-        let key = format!("{}|{}|{}|{}", r["design"], r["analysis"], r["settings"], r["mode"]);
+        let key = format!(
+            "{}|{}|{}|{}",
+            r["design"], r["analysis"], r["settings"], r["mode"]
+        );
         let load = |r: &Value| r["load"].as_f64().unwrap_or(f64::INFINITY);
         if best.get(&key).is_none_or(|b| load(r) < load(b)) {
             best.insert(key, r);
@@ -471,10 +477,10 @@ fn fit(records: &[Value], device_open_ms: f64) -> Calibration {
             .entry((analysis.into(), mode.into()))
             .or_default()
             .push(json!({"design":design,"settings":r["settings"],"load":r["load"]}));
-        if mode == "metal_edit" {
-            if let Some(f) = r["first_ms"].as_f64() {
-                first.entry(analysis.into()).or_default().push(f - ms);
-            }
+        if mode == "metal_edit"
+            && let Some(f) = r["first_ms"].as_f64()
+        {
+            first.entry(analysis.into()).or_default().push(f - ms);
         }
         if shape.aimed && native {
             reference.0 += r["aim"]["rays"].as_f64().unwrap_or(0.);
@@ -559,7 +565,9 @@ fn fit(records: &[Value], device_open_ms: f64) -> Calibration {
 #[test]
 #[ignore = "release cost-model calibration; real Metal required"]
 fn calibrate() {
-    assert!(!cfg!(debug_assertions), "use --release");
+    if cfg!(debug_assertions) {
+        panic!("use --release");
+    }
     let mut device_open_ms = 40.;
     let records: Vec<Value> = if env("MKLIGHT_COST_REFIT").is_some() {
         // One or more record files (comma-separated), e.g. a re-measurement
@@ -597,7 +605,9 @@ fn calibrate() {
 #[test]
 #[ignore = "release cost-model validation; real Metal required"]
 fn validate() {
-    assert!(!cfg!(debug_assertions), "use --release");
+    if cfg!(debug_assertions) {
+        panic!("use --release");
+    }
     let reps = env("MKLIGHT_COST_REPS").map_or(3, |s| s.parse().unwrap());
     let modes = [
         ("cpu", Backend::CpuReference),

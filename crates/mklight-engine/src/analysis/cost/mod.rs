@@ -92,7 +92,9 @@ pub(crate) fn accuracy_exclusion(
 /// Excluded at every size (needs no calibration).
 #[cfg(test)]
 pub(crate) fn always_excluded(analysis: &str) -> bool {
-    EXCLUSIONS.iter().any(|(a, from, _)| *a == analysis && *from <= 0.)
+    EXCLUSIONS
+        .iter()
+        .any(|(a, from, _)| *a == analysis && *from <= 0.)
 }
 
 /// Analyses the static capability list keeps on the reference
@@ -670,7 +672,9 @@ impl CostModel {
             return 0.;
         }
         let (lo, hi) = CONTENTION;
-        let excess = on.contention[b].mean.clamp(-HOST_EXCESS.ln(), HOST_EXCESS.ln());
+        let excess = on.contention[b]
+            .mean
+            .clamp(-HOST_EXCESS.ln(), HOST_EXCESS.ln());
         (self.prior(b) + excess).clamp(lo.ln(), hi.ln())
     }
 
@@ -834,8 +838,7 @@ mod tests {
             device_open: true,
             ..Default::default()
         };
-        let d =
-            |rings, st: &State| m.decide("ray_grid", &spot(rings), &singlet, Device::Apple, st);
+        let d = |rings, st: &State| m.decide("ray_grid", &spot(rings), &singlet, Device::Apple, st);
         // Small: CPU (Metal's fixed cost is its own, not a global floor).
         let small = d(6, &warm);
         assert_eq!(small.route, Route::Cpu, "{}", small.json);
@@ -869,7 +872,13 @@ mod tests {
             (known.route, known.json["rule"].as_str()),
             (Route::Cpu, Some("known failure"))
         );
-        let excluded = m.decide("ghost_irradiance", &json!({}), &singlet, Device::Unknown, &warm);
+        let excluded = m.decide(
+            "ghost_irradiance",
+            &json!({}),
+            &singlet,
+            Device::Unknown,
+            &warm,
+        );
         assert_eq!(excluded.route, Route::Cpu);
         // A size-bounded exclusion: dense spots only.
         assert!(accuracy_exclusion("spot_diagram", &spot(6), &singlet).is_none());
@@ -925,10 +934,7 @@ mod tests {
         let host = later.json["refinement"]["cpu"]["contention"]
             .as_f64()
             .unwrap();
-        assert!(
-            host > 2.5 && host <= CONTENTION.1 * (1. + 1e-3),
-            "{host}"
-        );
+        assert!(host > 2.5 && host <= CONTENTION.1 * (1. + 1e-3), "{host}");
         m.set_refinement(false);
         let off = m.decide("ray_grid", &settings, &singlet, Device::Apple, &st);
         assert_eq!(off.json["predicted_ms"]["cpu"].as_f64().unwrap(), predicted);

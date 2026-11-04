@@ -212,7 +212,10 @@ mod tests {
         assert_eq!((f.coef[3], f.coef[4], f.coef[5]), (0., 0., 0.));
         assert!(f.rms_log_error < 1e-9);
         // A negative slope in the data is clamped to zero.
-        let falling = [([1., 1., 0., 0., 0., 0.], 10.), ([1., 9., 0., 0., 0., 0.], 5.)];
+        let falling = [
+            ([1., 1., 0., 0., 0., 0.], 10.),
+            ([1., 9., 0., 0., 0., 0.], 5.),
+        ];
         let f = fit(&falling);
         assert!(f.coef.iter().all(|c| *c >= 0.) && f.coef[1] == 0.);
     }
@@ -222,8 +225,7 @@ mod tests {
         let c = Calibration::builtin();
         assert_eq!((c.format, c.model_version), (FORMAT, super::super::VERSION));
         for name in crate::analysis::gpu::GPU_ANALYSES {
-            if !super::super::always_excluded(name) && !super::super::static_route(name)
-            {
+            if !super::super::always_excluded(name) && !super::super::static_route(name) {
                 let a = c.analyses.get(*name);
                 assert!(
                     a.is_some_and(|a| a.cpu.is_some() && a.metal.is_some()),
