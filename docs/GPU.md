@@ -1818,6 +1818,7 @@ afa942a: 480 rows, 0 native gate failures) and the complex lens
 |---|---|---|
 | `ghost_irradiance` | excluded | 16/16 samples pass, but an edited complex-lens snapshot gives one discrete `rays_traced` mismatch (23,442 vs 23,370 in 1 of 1,656 ghost fields; positions 0.035 and flux far inside their contracts) |
 | `glass_substitution` | excluded | complex lens: the native search returns other finalists (merit and violation far outside their gates); the CPU is also faster |
+| `spot_diagram` | excluded from 1M traced rays | complex lens, 23.6M rays after an edit: `rays_arrived` differs by 2 of 767k in 10 field–wavelength rows (edge rays); default spots and the repeated dense spot pass, so smaller spots stay routed by cost |
 | `psf`, `mtf`, `line_spread`, `diffraction_encircled_energy`, `through_focus_mtf`, `mtf_vs_field` | re-qualified | 16/16 within contract; complex lens within contract (MTF frequency class ≤ 0.016 of its gate, dense grids included) |
 | `chief_ray_angle`, `pupil_aberration`, `relative_illumination_map`, `grid_distortion` | re-qualified | 16/16; complex lens without mask mismatches (host f64 chief rows, A4) |
 | `field_curvature_distortion` | re-qualified | 16/16; complex lens 2.8e-7 (host f64 differential pencil, D2) |
@@ -1827,6 +1828,21 @@ afa942a: 480 rows, 0 native gate failures) and the complex lens
 The other candidate solvers are no longer a separate rule: the model predicts
 them like every other analysis (on the complex lens the CPU wins by about 3× per
 candidate in device time alone, C2).
+
+*Measured routing* (complex lens, M2 Pro, `project_bench` with CPU, Metal DF
+and `auto`, 3 rounds per phase, master b25df11 + E1). On the lens `auto` now
+chooses Metal for dense geometric MTF (6.3 s against 21.8 s on the CPU) and,
+when predicted faster, for wave and map jobs after an edit; it keeps the CPU
+for small geometric jobs, the solvers (CPU 2–6× faster per call after G1) and
+most default wave jobs at low load. Regret against the faster backend stays
+within 1.3× or 20 ms except for the accuracy exclusions (dense spot above 1M
+rays: 1.7–1.9×, by design) and two cases near break-even (PSF after an edit
++125 ms, tolerance repeat +33 ms). A repeated `auto` request is answered from
+the graph on either backend (dense geometric MTF warm 0.3 ms, previously
+5.9 s per call on Metal). Six-graph edit loop: CPU 338, `auto` 343, Metal 743
+ms; warm repeat 0.7 / 0.7 / 767 ms; queued 305 / 310 / 559 ms. The full
+table, the 16-sample validation and the evidence for every exclusion are in
+the E1 report of the performance programme.
 
 **Deciding before the device opens.** Providers describe their analyses,
 device family and whether the device is open without opening it
