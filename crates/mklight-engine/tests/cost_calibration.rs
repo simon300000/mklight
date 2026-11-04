@@ -142,7 +142,11 @@ fn ladder(analysis: &str, system: &OpticalSystem) -> Vec<Value> {
             json!({"pupil":{"type":"grid","n":96}}),
             json!({"pupil":{"type":"grid","n":256}}),
         ],
-        "psf" | "mtf" | "line_spread" | "diffraction_encircled_energy" | "through_focus_mtf"
+        "psf"
+        | "mtf"
+        | "line_spread"
+        | "diffraction_encircled_energy"
+        | "through_focus_mtf"
         | "mtf_vs_field" => wave(),
         "image_simulation" => vec![Value::Null, json!({"optics":{"field_grid":5}})],
         "ghost_irradiance" => one("pupil_samples", &[json!(48), json!(96)]),
@@ -365,9 +369,11 @@ fn measure(device_open_ms: &mut f64) -> Vec<Value> {
                         break;
                     }
                 }
-                let normalised =
-                    mklight_engine::analysis::prepare(&*engine.analysis(analysis).unwrap(), &settings)
-                        .unwrap();
+                let normalised = mklight_engine::analysis::prepare(
+                    &*engine.analysis(analysis).unwrap(),
+                    &settings,
+                )
+                .unwrap();
                 for (mode, mut v) in ms {
                     let device_ms = median(dev.get_mut(mode).unwrap());
                     let r = json!({"design":design,"analysis":analysis,"settings":settings,
@@ -408,7 +414,6 @@ fn fit(records: &[Value], device_open_ms: f64) -> Calibration {
     let traces = 1. + cost::PRIOR_ITERATIONS;
     let mut points: BTreeMap<(String, String), Vec<(Features, f64)>> = BTreeMap::new();
     let mut first: BTreeMap<String, Vec<f64>> = BTreeMap::new();
-    let mut edit_ms: BTreeMap<(String, String, String), f64> = BTreeMap::new();
     let mut reference = (0., 0.);
     for r in records {
         let (Some(design), Some(analysis), Some(mode), Some(ms)) = (
@@ -438,10 +443,6 @@ fn fit(records: &[Value], device_open_ms: f64) -> Calibration {
             .or_default()
             .push((p.features(&shape, traces), ms));
         if mode == "metal_edit" {
-            edit_ms.insert(
-                (design.into(), analysis.into(), r["settings"].to_string()),
-                ms,
-            );
             if let Some(f) = r["first_ms"].as_f64() {
                 first.entry(analysis.into()).or_default().push(f - ms);
             }
@@ -518,16 +519,19 @@ fn calibrate() {
         measure(&mut device_open_ms)
     };
     if env("MKLIGHT_COST_REFIT").is_some() {
-        device_open_ms = env("MKLIGHT_COST_DEVICE_OPEN_MS").map_or(device_open_ms, |s| s.parse().unwrap());
+        device_open_ms =
+            env("MKLIGHT_COST_DEVICE_OPEN_MS").map_or(device_open_ms, |s| s.parse().unwrap());
     }
     let table = fit(&records, device_open_ms);
-    let out = env("MKLIGHT_COST_CALIBRATION_OUT").unwrap_or_else(|| {
-        format!("{}/cost-calibration.json", env!("CARGO_TARGET_TMPDIR"))
-    });
+    let out = env("MKLIGHT_COST_CALIBRATION_OUT")
+        .unwrap_or_else(|| format!("{}/cost-calibration.json", env!("CARGO_TARGET_TMPDIR")));
     let mut text = serde_json::to_string_pretty(&table).unwrap();
     text.push('\n');
     std::fs::write(&out, text).unwrap();
-    emit("COST_TABLE", json!({"path":out,"device_open_ms":device_open_ms}));
+    emit(
+        "COST_TABLE",
+        json!({"path":out,"device_open_ms":device_open_ms}),
+    );
 }
 
 /// `auto` against both backends: routing table and regret.

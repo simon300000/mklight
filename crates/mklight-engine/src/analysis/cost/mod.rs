@@ -61,11 +61,7 @@ pub const PRIOR_ITERATIONS: f64 = 3.43;
 const EXCLUSIONS: &[(&str, &str)] = &[
     (
         "stray_light",
-        "complex lens: absorbed energy 5.8e-2 against f64 (sampled margin 4.9e-5); 6/16 samples outside the gates (sink energies, event counts)",
-    ),
-    (
-        "ghost_irradiance",
-        "5/16 samples: discrete rays_traced counts differ from f64 (adaptive ray counts; flux agrees)",
+        "complex lens: absorbed energy 5.8e-2 against f64 (sampled margin 4.9e-5); 3/16 samples: discrete energy.events counts differ (roulette)",
     ),
     (
         "footprint",
@@ -390,16 +386,20 @@ impl CostModel {
         // Aiming difficulty: recorded device iterations relative to the
         // calibration's, scaling the reference solver's traces per ray.
         let recorded = on.difficulty.get(&fam);
-        let factor = match (recorded, self.table.measured["reference_iterations"].as_f64()) {
+        let factor = match (
+            recorded,
+            self.table.measured["reference_iterations"].as_f64(),
+        ) {
             (Some(r), Some(base)) if base > 0. && r.n > 0 => (r.mean / base).clamp(0.5, 4.),
             _ => 1.,
         };
         let traces = 1. + PRIOR_ITERATIONS * factor;
         let features = work.features(&shape, traces);
         let lattice_warm = work.lattice
-            && state
-                .snapshot
-                .is_some_and(|s| on.lattices.contains(&lattice_key(analysis, settings, s, state.library)));
+            && state.snapshot.is_some_and(|s| {
+                on.lattices
+                    .contains(&lattice_key(analysis, settings, s, state.library))
+            });
         let resident = state
             .snapshot
             .is_some_and(|s| on.resident.contains(&resident_key(s, state.library)));
@@ -670,7 +670,11 @@ impl<'a> From<&'a super::AnalysisResult> for Observation<'a> {
     fn from(r: &'a super::AnalysisResult) -> Self {
         Observation {
             used: &r.backend.used,
-            failed: r.run_info.failed_attempts.iter().any(|a| a.outcome == "failed"),
+            failed: r
+                .run_info
+                .failed_attempts
+                .iter()
+                .any(|a| a.outcome == "failed"),
             any_attempt: !r.run_info.failed_attempts.is_empty(),
             duration_ms: r.run_info.duration_ms,
             execution: &r.backend.execution,
@@ -742,7 +746,8 @@ mod tests {
             device_open: true,
             ..Default::default()
         };
-        let d = |rings, st: &State| m.decide("spot_diagram", &spot(rings), &singlet, Device::Apple, st);
+        let d =
+            |rings, st: &State| m.decide("spot_diagram", &spot(rings), &singlet, Device::Apple, st);
         // Small: CPU (Metal's fixed cost is its own, not a global floor).
         let small = d(6, &warm);
         assert_eq!(small.route, Route::Cpu, "{}", small.json);
@@ -752,29 +757,40 @@ mod tests {
         assert_eq!(large.route, Route::Metal, "{}", large.json);
         assert!(large.json["advantage"].as_f64().unwrap() >= RATIO);
         // …and the cold device's setup is part of the prediction.
-        let cold = d(512, &State {
-            device_open: false,
-            ..warm
-        });
+        let cold = d(
+            512,
+            &State {
+                device_open: false,
+                ..warm
+            },
+        );
         let setup = cold.json["stages_ms"]["metal_setup"].as_f64().unwrap();
         assert_eq!(setup, 70.);
         // A known deterministic failure, and an accuracy exclusion.
-        let known = d(512, &State {
-            known_failure: true,
-            ..warm
-        });
-        assert_eq!((known.route, known.json["rule"].as_str()), (Route::Cpu, Some("known failure")));
+        let known = d(
+            512,
+            &State {
+                known_failure: true,
+                ..warm
+            },
+        );
+        assert_eq!(
+            (known.route, known.json["rule"].as_str()),
+            (Route::Cpu, Some("known failure"))
+        );
         let excluded = m.decide("stray_light", &json!({}), &singlet, Device::Unknown, &warm);
         assert_eq!(excluded.route, Route::Cpu);
         assert!(excluded.note().contains("f64 comparison"));
         // Unknown and uncalibrated devices.
         assert_eq!(d(6, &warm).route, Route::Cpu);
         assert_eq!(
-            m.decide("spot_diagram", &spot(6), &singlet, Device::Unknown, &warm).route,
+            m.decide("spot_diagram", &spot(6), &singlet, Device::Unknown, &warm)
+                .route,
             Route::Undecided
         );
         assert_eq!(
-            m.decide("spot_diagram", &spot(6), &singlet, Device::Other, &warm).route,
+            m.decide("spot_diagram", &spot(6), &singlet, Device::Other, &warm)
+                .route,
             Route::Metal
         );
     }
@@ -812,8 +828,13 @@ mod tests {
         let factor = later.json["refinement"]["cpu"]["factor"].as_f64().unwrap();
         let bound = MAX_CORRECTION * CONTENTION[0].1;
         assert!(factor > 20. && factor <= bound * (1. + 1e-3), "{factor}");
-        let host = later.json["refinement"]["cpu"]["contention"].as_f64().unwrap();
-        assert!(host > 10. && host <= CONTENTION[0].1 * (1. + 1e-3), "{host}");
+        let host = later.json["refinement"]["cpu"]["contention"]
+            .as_f64()
+            .unwrap();
+        assert!(
+            host > 10. && host <= CONTENTION[0].1 * (1. + 1e-3),
+            "{host}"
+        );
         m.set_refinement(false);
         let off = m.decide("spot_diagram", &settings, &singlet, Device::Apple, &st);
         assert_eq!(off.json["predicted_ms"]["cpu"].as_f64().unwrap(), predicted);

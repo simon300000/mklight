@@ -94,7 +94,9 @@ impl Calibration {
                 Ok(c) if c.format == FORMAT && c.model_version == super::VERSION => {
                     return (c, path);
                 }
-                Ok(_) => eprintln!("mklight: {path}: cost calibration of another model version, using the built-in table"),
+                Ok(_) => eprintln!(
+                    "mklight: {path}: cost calibration of another model version, using the built-in table"
+                ),
                 Err(e) => eprintln!("mklight: {path}: {e}; using the built-in cost calibration"),
             }
         }

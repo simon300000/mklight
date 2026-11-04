@@ -210,8 +210,13 @@ pub fn profile_with(
             p.rays = fw * n * n;
             p.output = p.rays * 64.;
         }
-        "wavefront_map" | "psf" | "mtf" | "line_spread" | "diffraction_encircled_energy"
-        | "through_focus_mtf" | "mtf_vs_field" => {
+        "wavefront_map"
+        | "psf"
+        | "mtf"
+        | "line_spread"
+        | "diffraction_encircled_energy"
+        | "through_focus_mtf"
+        | "mtf_vs_field" => {
             let (lattice, n) = pupil("/pupil");
             let pupils = if analysis == "mtf_vs_field" {
                 num("/field_samples", 11.) * w

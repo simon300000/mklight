@@ -22,9 +22,9 @@ fn capabilities_match_registry_routes() {
     assert!(advertised.contains(&"glass_substitution"));
 }
 
-/// Auto routes by the measured cost rules: a default singlet spot diagram to
-/// the CPU reference, a dense Cooke spot diagram to qualified Metal; an
-/// explicit backend bypasses the rules.
+/// Auto routes by the calibrated cost model: a default singlet spot diagram
+/// to the CPU reference, a dense Cooke spot diagram to qualified Metal; an
+/// explicit backend bypasses the model.
 #[test]
 fn auto_cost_rules_route_by_workload() {
     let engine = Engine::default();
@@ -52,9 +52,11 @@ fn auto_cost_rules_route_by_workload() {
     let cost = small.backend.cost_decision.as_ref().unwrap();
     assert_eq!(small.backend.used, "cpu_reference");
     assert_eq!(cost["decision"], "cpu_reference");
-    assert_eq!(
-        (cost["workload"].as_f64(), cost["threshold"].as_f64()),
-        (Some(1143.), Some(524288.))
+    assert_eq!(cost["rule"], "cost model");
+    let predicted = &cost["predicted_ms"];
+    assert!(
+        predicted["cpu"].as_f64() < predicted["metal"].as_f64(),
+        "{cost}"
     );
     assert!(small.backend.fallback_reason.unwrap().contains("faster"));
     assert!(

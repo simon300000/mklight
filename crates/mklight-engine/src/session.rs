@@ -688,7 +688,9 @@ impl Session {
     ) -> EngineResult<crate::backend::SelectedBackend> {
         if let (Some(id), Some(graph)) = (
             self.engine.auto_request_id(req.backend.as_ref()),
-            self.engine.analysis_graph().filter(|_| analysis.memoizable()),
+            self.engine
+                .analysis_graph()
+                .filter(|_| analysis.memoizable()),
         ) {
             let probe = AnalysisInput::new(
                 self.current.clone(),

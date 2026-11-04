@@ -116,7 +116,7 @@ energy and MTF curves, through-focus) stay in the JSON.
 ## 5. Backends and GPU paths
 
 The engine initially uses `auto`. Explicit `cpu_reference` always uses the
-f64 reference. Explicit `gpu:metal` bypasses the cost rules, while retaining
+f64 reference. Explicit `gpu:metal` bypasses the cost model, while retaining
 static capability restrictions and reported resource/unsupported fallbacks. Unavailable
 explicit providers keep the existing `allow_backend_fallback` behaviour.
 Cancellation discards the result and never runs a CPU replacement.
@@ -143,21 +143,24 @@ retain reported reasons and warnings. Public f64 buffers still carry `f32_gpu`
 when computed by Metal.
 
 `backend.cost_decision` records automatic selection: `decision`
-(`cpu_reference` or `qualified_metal`), `rule`, `workload`, `threshold`,
-`evidence`, `version`, and `before_device: true` when the route was settled
-before any GPU device was opened. Analyses whose native output failed its f64
-comparison on the measured evidence (the native wave analyses, the chief-ray
-angle/pupil-aberration/illumination-map/grid-distortion maps, field
-curvature and stray light) and the candidate solvers run on the CPU reference
-under `auto`. The others measure a workload from the settings and the system
-(traced rays, wave pupil samples, …) and run the CPU reference at or below a
-threshold derived from the end-to-end benchmarks in GPU §9.2 (Apple M2 Pro;
-applied to Apple GPUs); dense spot/geometric-MTF and large ray grids use
-Metal. Analyses without a rule and other devices prefer qualified Metal. An
-explicit backend records that the rules were bypassed. Deliberate CPU cost
-choices are reported without a warning. Static capability choices are also
-deliberate; for an explicit request they are a `downgraded` attempt with a
-warning. Unsupported/resource failures retain warnings. Cold calls perform no
+(`cpu_reference` or `qualified_metal`), `rule` (`accuracy exclusion`,
+`static capability`, `known failure` or `cost model`), `version`, and
+`before_device: true` when the route was settled before any GPU device was
+opened. Analyses whose native output fails its f64 budget on the current
+evidence (stray light, footprint; GPU §9.2) run on the CPU reference under
+`auto`. Every other analysis is routed by the calibrated stage-level cost
+model of GPU §9.2: the decision records both predicted times
+(`predicted_ms`), their stage terms (`stages_ms`: fixed, preparation, ray
+work, transforms, output; device setup and fallback risk), the cache and
+device state it saw (`state`), the online refinement factors (`refinement`)
+and the calibration table (`calibration`). Metal is chosen only for a
+predicted advantage of at least 1.3× and 5 ms. Devices without a calibration
+table prefer qualified Metal. An `auto` request whose result the analysis
+graph already holds is answered from it without routing (its stored
+decision is returned unchanged). An explicit backend records that the model
+was bypassed. Deliberate CPU choices are reported without a warning. Static
+capability choices are also deliberate; for an explicit request they are a
+`downgraded` attempt with a warning. Unsupported/resource failures retain warnings. Cold calls perform no
 f64 chain verification. Known residual Metal accuracy gaps are listed in GPU
 §9.2.
 

@@ -233,9 +233,9 @@ fn auto_picks_a_gpu_only_for_analyses_with_a_gpu_path() {
     // `auto` takes the first available GPU in registration order: Metal
     // where it qualifies as a device, else the emulation.
     let s = session(&e, samples::singlet());
-    // Large grids are past every cost threshold.
-    let big = json!({"rings": 150});
-    let r = run_on(&s, "spot_diagram", big.clone(), Some(Backend::Auto));
+    // Large grids: the cost model predicts a clear native gain.
+    let big = json!({"rings": 512, "include_points": false});
+    let r = run_on(&s, "spot_diagram", big, Some(Backend::Auto));
     assert_eq!(r.backend.requested, "auto");
     assert_eq!(r.run_info.precision, Precision::F32Gpu);
     // An explicit GPU request is honoured for any size.
@@ -257,7 +257,7 @@ fn auto_picks_a_gpu_only_for_analyses_with_a_gpu_path() {
     assert!(r.run_info.warnings.is_empty(), "{:?}", r.run_info.warnings);
     // As the engine default.
     e.set_default_backend(Backend::Auto).unwrap();
-    let r = run_on(&s, "ray_grid", big, None);
+    let r = run_on(&s, "ray_grid", json!({"rings": 512}), None);
     assert_eq!(r.backend.requested, "default:auto");
     assert_eq!(r.run_info.precision, Precision::F32Gpu);
     // A small grid: on an Apple GPU the cost rule keeps the reference (no

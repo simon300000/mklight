@@ -309,9 +309,9 @@ numerical failure `ComputeError`.
   indices raising `MKLightError` subclasses; afocal paraxial infinities as
   floats.
 
-Automatic selection uses the same static capability policy and workload
-cost rules as the engine (RESULTS §5, GPU §9.2). Unknown cost prefers
-qualified Metal; explicit Metal bypasses the cost rules. The result
+Automatic selection uses the same static capability policy and calibrated
+cost model as the engine (RESULTS §5, GPU §9.2). Devices without a
+calibration prefer qualified Metal; explicit Metal bypasses the model. The result
 envelope retains `backend.execution` and `backend.cost_decision`, including
 partial reference completion and actual precision. Public f64 buffer storage
 does not make GPU arithmetic f64.

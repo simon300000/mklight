@@ -1636,85 +1636,95 @@ Where a predecessor exists, the same-input old/new complete calls are retained b
 | P5 Cooke dense footprint | 482.950 / 492.125 | 428.991 / 442.493 |
 | P8 Cooke spot merit B=16 | 1.929 / 2.032 | 2.495 / 2.710 |
 
-**Automatic cost rules.** `auto` routes each engine job by a rule in
-`crates/mklight-engine/src/analysis/cost.rs` (`decide` is the router's single
-entry point, so a calibrated cost model can replace the table). Every
-GPU-capable analysis has one rule:
+**Automatic routing: the cost model.** `auto` routes each engine job with a
+calibrated stage-level cost model (`crates/mklight-engine/src/analysis/cost/`;
+`CostModel::decide` is the router's single entry point, model version 5).
 
-- *known native failure*: the native output failed its f64 comparison on the
-  measured evidence; `auto` uses the CPU reference at every size and on every
-  device. Explicit Metal requests still run natively.
-- *candidates*: the candidate solvers; the reference was faster at every
-  measured size (Apple GPUs).
-- a *workload threshold* (Apple GPUs): the workload is measured from the
-  normalised settings and the system (F, W: selected fields and wavelengths;
-  pupil points of the pattern and rings; `n`: the wave pupil grid, or `rays`
-  for an automatic grid); the CPU reference runs at or below the threshold,
-  qualified Metal above it.
+- *Accuracy exclusions* (`cost::EXCLUSIONS`): analyses whose native output fails
+  its f64 budget on the current evidence run on the CPU reference at every size
+  and on every device. Explicit Metal requests still run natively.
+- Every other GPU analysis is predicted on both backends as a sum of stage terms
+  over its work profile (`cost::profile`), computed from the normalised settings
+  and the system without tracing:
 
-Evidence: the P11 quiet session below (634 warm keys over the 16 samples,
-medians of ten paired runs) and a complex 29-surface camera lens (6 fields,
-5 wavelengths, real aiming, user glasses; every analysis on CPU, Metal DF,
-Metal f32 and Auto, warm/edit/cold, 2026-11-02). A key is a CPU win when the
-CPU median is ≤85% of the Metal median and the CPU p75 is below the Metal p25.
-Threshold bases:
+  | Stage | Feature | Notes |
+  |---|---|---|
+  | host f64 preparation | field–wavelength rows × surfaces | sources, chiefs, Jacobians; shared by both backends through the graph `tracer` node, so 0 when it is already built |
+  | aiming and tracing | rays × (surfaces + aim traces × stop surfaces) | aim traces = 1 + 3.43·d, where d scales with the recorded device aiming iterations of the design family (paraxial aiming: 0) |
+  | transform / reduction | samples × log₂ samples (FFT), samples × frequencies (direct sums) | the automatic wave pupil grid is the one an earlier call decided for the design family, else 2·lattice |
+  | output bytes | typed buffers | spot points, ray grids, PSF images; zero-copy readback |
+  | fixed | 1 | each analysis' own measured constant on each backend (plan floor, packing); there is no universal GPU overhead |
+  | device setup | device open (cold provider) + first native use of the analysis in the process | measured by the calibration |
+  | fallback risk | transient native failure rate × (native + CPU time) | deterministic failures in the device's failure cache route to the CPU outright |
 
-- *crossover*: the geometric mean, rounded down to a power of two, of the
-  largest measured CPU-win workload and the smallest larger Metal-win
-  workload, over both evidence sets.
-- *fan parity*: fans reached parity on the complex lens at 30,750 samples
-  (CPU 45.5 / Metal 49.5 ms); trace-only analyses without any measured Metal
-  win share it.
-- *measured*: CPU won at every measured size; the threshold is the largest
-  such workload. Larger jobs are unmeasured and use qualified Metal.
+  One non-negative coefficient set per analysis and backend, plus a separate
+  native set for an edited (non-resident) snapshot, is fitted by relative
+  least squares from complete calls. CPU coefficients are measured with the
+  graph off (cold intermediates); the CPU drops the preparation term when the
+  graph holds the snapshot's tracer, and the ray term of wave analyses when it
+  already built the request's pupil lattices. Native uses the resident set
+  when this snapshot ran natively before, the edit set otherwise.
+- *Cache state*: an `auto` request whose result the analysis graph already
+  holds is answered before routing (no device, no route), whichever backend
+  computed it; its result key is the request content, not the route. Native
+  `auto` results without failed attempts are stored like CPU results.
+- *Decision*: Metal only when the predicted CPU time is at least `RATIO` = 1.3×
+  the predicted Metal time *and* the saving is at least `MIN_GAIN_MS` = 5 ms.
+  The ratio keeps the choice robust to the model's error (median calibration
+  error per analysis ≈ …); the absolute floor keeps sub-perceptual gains from
+  paying a device round trip and contention with other GPU work.
+- *Online refinement* (on by default; `MKLIGHT_COST_REFINEMENT=0` or
+  `CostModel::set_refinement(false)` turns it off): every completed call
+  updates (a) a host-contention factor per backend (what other processes cost
+  this one now; CPU 1/3…30×, Metal 1/3…10×) and (b) a residual per analysis,
+  backend, design family and workload decade (1/3…3×), as exponentially
+  weighted means of ln(measured/predicted); recorded device aiming statistics
+  update the design family's difficulty and decided pupil grids are
+  remembered. All state is bounded (LRU), recorded in each decision and
+  reported by `Engine::cost_model_stats()`. A decision depends only on the
+  state when it is made.
+- Devices without a calibration table (other GPU families, the CPU-f32
+  emulation) use qualified Metal.
 
-| Analysis | Workload | `auto` CPU at or below | Basis | Deciding evidence (CPU / Metal DF warm medians) |
-|---|---|---:|---|---|
-| `spot_diagram`, `ray_grid`, `best_focus` | F·W·pupil points | 524,288 | crossover | complex lens 374,430: ray grid 292 / 653 ms, best focus 322 / 663 ms; P11 825,159 Metal faster on every design (spot 1.04–1.25×, best focus 3.8–4.4×); complex-lens dense spot (23.6M) Metal 2.1× |
-| `geometric_mtf` | F·W·pupil points | 262,144 | crossover | complex lens 99,549: 140 / 619 ms; P11 825,159 Metal 6.5–9.6×; complex lens 24.75M Metal 5.1× |
-| `footprint` | F·W·pupil points | 65,536 | crossover | complex lens 6,809: 54 / 92 ms; P5 Cooke 823,473 rays Metal 2.0× |
-| `ray_fan`, `opd_fan` | F·W·samples | 32,768 | fan parity | complex lens 30,750: 45.5 / 49.5 ms |
-| `longitudinal_aberration`, `lateral_colour`, `layout` | W·pupil samples; field samples; F·W·rays | 32,768 | fan parity | CPU 3–14× at every measured default |
-| `relative_illumination` | field·radial·azimuth samples | 6,336 | measured | complex lens 6,336: 56 / 1267 ms; P11 defaults 7 CPU / 8 Metal |
-| `system_transmission` | F·W·pupil n² | 30,720 | measured | complex lens 30,720: 21 / 603 ms; P11 16/0 |
-| `ghost_paths` | surfaces | 29 | measured | complex lens 29 surfaces: 3.9 / 5.3 ms |
-| `ghost_irradiance` | surfaces·pupil_samples² | 66,816 | measured | complex lens 66,816: 17.9 / 24.0 s |
-| `image_simulation` | field_grid²·n² | 38,025 | measured | P11 defaults 9 CPU / 5 Metal; the complex lens' native route failed (unusable chief) |
-| `wavefront_map`, `polarization_pupil_map` | F·W·n²; grid² | 12,675; 1,089 | measured | static capability: always the reference |
-| `psf`, `mtf`, `line_spread`, `diffraction_encircled_energy`, `through_focus_mtf` | — | always | known native failure | complex lens Metal DF 1.5e2–1.5e6× its f64 budget, and 2.2–8.6× slower |
-| `mtf_vs_field` | — | always | known native failure | complex lens: unresolved in-pupil aims and driver interactivity failures fell back to f64, 12× slower (since B1 the unaimable rays are vignetted as in the reference and the run is native; re-qualify with point 12) |
-| `chief_ray_angle`, `pupil_aberration`, `relative_illumination_map`, `grid_distortion` | — | always | known native failure | complex lens: 20–200 mask/discrete mismatches against f64, and 24–76× slower |
-| `field_curvature_distortion` | — | always | known native failure | complex lens device close-ray focus was 4.4× its budget; since D2 that column is the host f64 differential pencil (0 error) and the native Coddington column is 5e-8 on the lens, so the route can be re-qualified (the host chief preparation dominates the small job anyway) |
-| `stray_light` | — | always | known native failure | complex lens: after the tangent-basis fix, sink energies, maps and moments agree to 2e-7 of emitted power, but event counts differ and a single diverging ray in an edited run (one source-ray weight, 5× the 1e-5 ledger budget) fails the deterministic chain gate; 3/16 samples (event counts only) |
-| `optimize`, `merit_evaluation`, `tolerance`, `glass_substitution` | — | always | candidates | complex lens CPU 4–52× (merit 23 / 96 ms, optimise 286 / 5819 ms, tolerance 78 / 3401 ms, glass 763 / 31715 ms with driver errors); P11 16/0 |
+**Calibration.** `tests/cost_calibration.rs::calibrate` (release, real Metal)
+measures every calibrated analysis at a ladder of workloads on nine designs
+(refracting, reflecting, finite, anamorphic, freeform, diffractive samples and
+an optional local project; nothing local is embedded) — CPU, Metal resident and
+Metal after an edit, interleaved — fits the table and writes it, versioned by
+format, model version, device class and measurement record:
 
-The thresholds cover two very different designs with one number per
-analysis: on the simple P11 samples Metal already wins some workloads below
-them (`geometric_mtf` from about 10,000 rays, `best_focus` near 16,000), on
-the complex lens the CPU still wins at them. A stage-level cost model that
-includes the system and its aiming difficulty replaces them.
+    MKLIGHT_COST_CALIBRATION_OUT=$PWD/crates/mklight-engine/src/analysis/cost/apple-m2-pro.json \
+    cargo test --release -p mklight-engine --test cost_calibration -- --ignored --exact calibrate --nocapture --test-threads=1
 
-P11 dense geometric series (seven designs, one field, primary wavelength,
-square pupil), CPU/Metal median ratio range and CPU win / Metal faster /
-f64-only counts:
+`MKLIGHT_COST_CALIBRATION=<file>` loads another table at engine start (format
+and model version must match). `validate` in the same file compares `auto`
+against both backends on fresh edits and warm repeats.
 
-| Analysis | 95 rays | 10,029 rays | 825,159 rays |
-|---|---:|---:|---:|
-| `spot_diagram` | 0.05–0.11 (7/0/0) | 0.61–0.77 (7/0/0) | 1.04–1.25 (0/7/0) |
-| `ray_grid` | 0.05–0.12 (7/0/0) | 0.35–0.76 (7/0/0) | 0.88–2.40 (0/6/0) |
-| `best_focus` | 0.03–0.05 (7/0/0) | 0.51–1.02 (4/1/0) | 3.79–4.43 (0/7/0) |
-| `encircled_energy` | 0.79–0.90 (0/0/7) | 0.37–1.00 (1/0/6) | 0.99–3.37 (0/1/6) |
-| `geometric_mtf` | 0.06–0.09 (7/0/0) | 2.17–2.99 (0/7/0) | 6.51–9.61 (0/7/0) |
+*Accuracy exclusions*, re-qualified (E1, point 14) with `metal_accuracy` on the
+16 samples (release, real Metal, master after C2) and the complex lens
+(`project_bench` accuracy records, Metal DF vs CPU f64):
 
-**Deciding before the device opens.** Providers describe their analyses and
-device family without opening the device (`BackendProvider::hint`; every Metal
-device on Apple silicon is the Apple GPU). An `auto` job whose route is the
-reference by the static capability list or these rules is settled before any
+| Analysis | Status | Evidence |
+|---|---|---|
+| `stray_light` | excluded | complex lens: absorbed energy 5.8e-2 against f64 (sampled margin 4.9e-5); 3/16 samples: discrete `energy.events` counts (roulette) |
+| `footprint` | excluded | newtonian sample: overlay outline masks differ |
+| `psf`, `mtf`, `line_spread`, `diffraction_encircled_energy`, `through_focus_mtf`, `mtf_vs_field` | re-qualified | 16/16 within budget (maxima 4.3e-7, 9.2e-7, 1.4e-4, 6.9e-6, 4.7e-7, 3.4e-7); lens 2.0e-6, 1.3e-5 (`cutoff` scalar: 0.63 of its budget, above only the one-third sampled margin; curves ≤ 6e-8), 2.2e-3 (0.006 of budget), 5.4e-6, 4.6e-7, 1.6e-7 |
+| `chief_ray_angle`, `pupil_aberration`, `relative_illumination_map`, `grid_distortion` | re-qualified | 16/16 without mask mismatches; lens 2.1e-6, 5.3e-7, 1.5e-6, 2.5e-7, no mask mismatches (host f64 chief rows, A4) |
+| `field_curvature_distortion` | re-qualified | 16/16 (3.8e-8); lens 2.8e-7 (host f64 differential pencil, D2) |
+| `ghost_irradiance` | re-qualified | the `rays_traced` mismatches are fixed (C2): 16/16 |
+
+The candidate solvers are no longer a separate rule: the model predicts them
+like every other analysis (on the complex lens the CPU wins by about 3× per
+candidate in device time alone, C2).
+
+**Deciding before the device opens.** Providers describe their analyses,
+device family and whether the device is open without opening it
+(`BackendProvider::hint`; every Metal device on Apple silicon is the Apple
+GPU). Routes the model settles as the reference are decided before any
 device initialisation, so a cold call that ends on the CPU pays no Metal
-setup. Its decision carries `"before_device": true`.
-
-Each decision is recorded in the backend report (`cost_decision`: decision,
-rule, workload, threshold, evidence, version).
+setup; the decision carries `"before_device": true`. A cold device's setup is
+part of the native prediction. Each decision is recorded in the backend
+report (`cost_decision`, RESULTS §5).
 
 **Failed and skipped native attempts.** `RunInfo.failed_attempts` lists every
 backend attempt that did not produce the result: `failed` (the native run
@@ -1796,17 +1806,17 @@ not a blanket precision certificate: offline suites establish accuracy and the
 static capability list above retains broadly failing analyses on the reference. The legacy host-generated Metal analysis bridge and its ray and
 candidate-count heuristics are retired.
 
-`auto` applies the rules of §9.2: known native failures run on the reference
-on any device; candidate solvers and workload thresholds are scoped to the
-measured device family. Unknown cost (no rule, or a device without evidence)
-uses qualified Metal; requests do not time-race backends. Routes that end on
+`auto` applies the cost model of §9.2: accuracy exclusions run on the
+reference on any device; predictions are scoped to the calibrated device
+class. A device without a calibration table uses qualified Metal; requests
+do not time-race backends. Routes that end on
 the reference are settled before the device opens. Cold first calls and warm reuse are measured separately. A CPU choice by cost is deliberate and reported without a
 warning. Small serial host control, I/O and final result packing remain
 host work. Kernel/primitive-only measurements do not set complete-job
 choices.
 
-An explicit Metal request bypasses the cost rules, including the known native
-failures, never the static capability list (reported as a `downgraded`
+An explicit Metal request bypasses the cost model, including the accuracy
+exclusions, never the static capability list (reported as a `downgraded`
 attempt with a warning).
 Preserve existing unavailable-backend/`allow_backend_fallback` behaviour.
 Unsupported work, static capability restrictions, resource or device failure produce

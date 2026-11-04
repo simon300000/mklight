@@ -301,9 +301,11 @@ impl Engine {
             return self.select_backend(requested, analysis, allow_fallback);
         };
         let hash = snapshot.hash().0;
-        let tracer_warm = self.inner.graph.as_ref().is_some_and(|g| {
-            g.contains(&crate::analysis::tracer_key(&hash, library_hash))
-        });
+        let tracer_warm = self
+            .inner
+            .graph
+            .as_ref()
+            .is_some_and(|g| g.contains(&crate::analysis::tracer_key(&hash, library_hash)));
         let mut s = crate::analysis::auto_route(
             &self.inner.cost,
             &read(&self.inner.backends),
