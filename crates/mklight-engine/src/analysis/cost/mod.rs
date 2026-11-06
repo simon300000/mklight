@@ -20,6 +20,12 @@
 //!   prediction per backend, design family and workload decade (bounded,
 //!   clamped, inspectable in [`CostModel::stats`]). A decision depends only
 //!   on the state when it is made and is recorded in the backend report.
+//! * Repeated requests: an identical request (snapshot, library, analysis,
+//!   settings) takes the route its first decision chose
+//!   ([`CostModel::repeated`]). Refinement, the load prior and warm caches
+//!   change the prediction between calls, and the backends agree only
+//!   within the accuracy contracts, so a fresh decision could change the
+//!   result of the same request (a seeded Monte Carlo, an optimisation).
 //!
 //! Devices without a calibration table (other GPU families, emulations)
 //! use qualified Metal; the decision says so.
@@ -145,6 +151,7 @@ pub(crate) enum Route {
     Undecided,
 }
 
+#[derive(Clone)]
 pub(crate) struct Decision {
     pub route: Route,
     /// Recorded as `BackendReport::cost_decision`.
@@ -223,7 +230,10 @@ struct Online {
     /// backend (CPU, Metal), what other processes cost this one, beyond
     /// the load-average prior of the moment (CPU).
     contention: [Ewma; 2],
+    /// The settled route of each request (`routing::request_key`).
+    routes: LruCache<[u8; 32], Decision>,
     decisions: u64,
+    repeats: u64,
     observations: u64,
 }
 
@@ -339,7 +349,9 @@ impl CostModel {
                 transient: BTreeMap::new(),
                 contention: [Ewma::default(); 2],
                 grids: LruCache::new(256),
+                routes: LruCache::new(4096),
                 decisions: 0,
+                repeats: 0,
                 observations: 0,
             }),
         }
@@ -361,6 +373,23 @@ impl CostModel {
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Online> {
         self.online.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// The route an identical earlier request settled on, recorded as
+    /// repeated (module docs).
+    pub(crate) fn repeated(&self, key: &[u8; 32]) -> Option<Decision> {
+        let mut on = self.lock();
+        let mut d = on.routes.get(key)?;
+        on.repeats += 1;
+        d.json["repeated"] = json!(true);
+        Some(d)
+    }
+
+    /// Records the route a request settled on.
+    pub(crate) fn settle(&self, key: [u8; 32], d: &Decision) {
+        if d.route != Route::Undecided {
+            self.lock().routes.insert(key, d.clone());
+        }
     }
 
     /// The automatic route for `analysis` with normalised `settings` on
@@ -696,6 +725,7 @@ impl CostModel {
                 "measured": self.table.measured, "analyses": self.table.analyses.len()},
             "refinement": self.refining(),
             "decisions": on.decisions,
+            "repeated_routes": on.repeats,
             "observations": on.observations,
             "corrections": on.corrections.len(),
             "design_families_with_aiming_statistics": on.difficulty.len(),

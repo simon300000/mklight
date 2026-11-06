@@ -54,7 +54,9 @@ pub(crate) struct AutoRequest<'a> {
 
 /// The `auto` selection: the reference, decided before any device opens
 /// when the hints suffice, or the device with the cost decision. Never
-/// fails (an unavailable device is the reference with its reason).
+/// fails (an unavailable device is the reference with its reason). An
+/// identical earlier request's route is taken again (`cost` module docs),
+/// unless its device has since failed on it deterministically.
 pub(crate) fn auto_route(
     model: &CostModel,
     registry: &BackendRegistry,
@@ -85,14 +87,19 @@ pub(crate) fn auto_route(
     if let Some(reason) = reference_reason(r.analysis) {
         return cpu(reason, static_capability(reason), !open);
     }
-    let hinted = model.decide(
-        r.analysis,
-        r.settings,
-        r.system,
-        Device::hinted(apple),
-        &state(open, false),
-    );
+    let route = route_key(r);
+    let repeated = model.repeated(&route);
+    let hinted = repeated.clone().unwrap_or_else(|| {
+        model.decide(
+            r.analysis,
+            r.settings,
+            r.system,
+            Device::hinted(apple),
+            &state(open, false),
+        )
+    });
     if hinted.route == Route::Cpu {
+        model.settle(route, &hinted);
         return cpu(hinted.note(), hinted.json, !open);
     }
     // Native, or the family needs the device: open it.
@@ -119,6 +126,9 @@ pub(crate) fn auto_route(
             &state(true, known),
         )
     };
+    if repeated.is_none() {
+        model.settle(route, &d);
+    }
     if d.route == Route::Cpu {
         return cpu(d.note(), d.json, false);
     }
@@ -163,6 +173,16 @@ pub(crate) fn request_key(
         h.update(part);
     }
     *h.finalize().as_bytes()
+}
+
+/// Identity of an `auto` request for its settled route: `request_key`
+/// without the stop handle, which names the run rather than its content.
+fn route_key(r: &AutoRequest<'_>) -> [u8; 32] {
+    let mut settings = r.settings.clone();
+    if let Some(m) = settings.as_object_mut() {
+        m.remove("stop_key");
+    }
+    request_key(r.snapshot, r.library, r.analysis, &settings)
 }
 
 pub(crate) fn run(
@@ -543,5 +563,75 @@ mod tests {
             let d = model.decide(name, &settings, &system, Device::Apple, &State::default());
             assert_ne!(d.route, Route::Undecided, "{name}");
         }
+    }
+
+    /// An identical request keeps its first route when refinement (or the
+    /// load, or warm caches) would now predict the other backend: the
+    /// backends agree only within the accuracy contracts, so a new route
+    /// could change the same seeded run's result. Other settings decide
+    /// afresh.
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[test]
+    fn identical_auto_requests_keep_their_first_route() {
+        use crate::analysis::cost::Observation;
+        let mut reg = crate::backend::BackendRegistry::cpu_only();
+        // Named `metal`: the provider hints the calibrated Apple family.
+        reg.register(Arc::new(GpuProvider::new("metal", "emulation", || {
+            Ok(Arc::new(mklight_gpu::CpuF32Backend::new()) as Arc<dyn mklight_gpu::ComputeBackend>)
+        })));
+        let model = CostModel::default();
+        let system = samples::singlet();
+        let analyses = AnalysisRegistry::with_builtin();
+        let a = analyses.get("ray_grid").unwrap();
+        let settings = super::super::prepare(a.as_ref(), &json!({"rings": 64})).unwrap();
+        let snapshot = [7u8; 32];
+        let request = |settings| AutoRequest {
+            analysis: "ray_grid",
+            settings,
+            system: &system,
+            snapshot: &snapshot,
+            library: "",
+            tracer_warm: false,
+        };
+        let first = auto_route(&model, &reg, &request(&settings));
+        assert_eq!(first.info.id, "cpu_reference", "{:?}", first.cost_decision);
+        let decision = first.cost_decision.clone().unwrap();
+        assert_eq!(decision["rule"], "cost model");
+        // The CPU keeps running far slower than predicted.
+        let predicted = decision["predicted_ms"]["cpu"].as_f64().unwrap();
+        let slow = Observation {
+            used: "cpu_reference",
+            failed: false,
+            any_attempt: false,
+            duration_ms: predicted * 100.,
+            execution: &[],
+            decision: Some(&decision),
+            json: &Value::Null,
+        };
+        for _ in 0..20 {
+            model.observe("ray_grid", &settings, &system, &snapshot, "", &slow);
+        }
+        let state = State {
+            snapshot: Some(&snapshot),
+            ..Default::default()
+        };
+        let fresh = model.decide("ray_grid", &settings, &system, Device::Apple, &state);
+        assert_eq!(fresh.route, Route::Metal, "{}", fresh.json);
+        let again = auto_route(&model, &reg, &request(&settings));
+        assert_eq!(again.info.id, "cpu_reference");
+        let replayed = again.cost_decision.unwrap();
+        assert_eq!(replayed["repeated"], true);
+        assert_eq!(replayed["predicted_ms"], decision["predicted_ms"]);
+        // A stop handle names the run, not its content.
+        let mut stop = settings.clone();
+        stop["stop_key"] = json!("run 2");
+        let s = auto_route(&model, &reg, &request(&stop));
+        assert_eq!(s.cost_decision.unwrap()["repeated"], true);
+        // Other settings are a new request.
+        let mut other = settings.clone();
+        other["rings"] = json!(settings["rings"].as_u64().unwrap() + 1);
+        let s = auto_route(&model, &reg, &request(&other));
+        assert!(s.device.is_some() && s.cost_decision.unwrap().get("repeated").is_none());
+        assert_eq!(model.stats()["repeated_routes"], 2);
     }
 }

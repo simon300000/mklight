@@ -454,6 +454,33 @@ fn merit_jobs_publish_without_runtime_qualification() {
     }
 }
 
+/// The same seed gives the same Monte Carlo under `auto`, repeated in one
+/// engine: the repeat keeps the first run's route although refinement, the
+/// device and the warm caches change the cost prediction (the backends'
+/// compensator solves agree only within the accuracy contract).
+#[test]
+fn auto_monte_carlo_repeats_bit_identically() {
+    let e = engine_with(None);
+    e.set_default_backend(Backend::Auto).unwrap();
+    let s = session(&e, samples::cooke_triplet());
+    let settings = json!({"mode": "both", "trials": 40, "seed": 5, "record_trials": 10,
+        "compensators": [{"param": {"param": "thickness", "surface": 6}, "range": 0.5}]});
+    let first = run_on(&s, "tolerance", settings.clone(), None);
+    let criteria = f64s(&first, "monte_carlo_criteria");
+    assert_eq!(criteria.len(), 40);
+    assert!(first.backend.cost_decision.as_ref().unwrap()["repeated"].is_null());
+    for _ in 0..2 {
+        let again = run_on(&s, "tolerance", settings.clone(), None);
+        assert_eq!(f64s(&again, "monte_carlo_criteria"), criteria);
+        assert_eq!(again.json["sensitivity"], first.json["sensitivity"]);
+        assert_eq!(again.run_info.backend, first.run_info.backend);
+        assert_eq!(
+            again.backend.cost_decision.as_ref().unwrap()["repeated"],
+            true
+        );
+    }
+}
+
 #[test]
 fn cpu_only_merit_reports_cpu_even_with_a_selected_gpu() {
     use mklight_optim::merit::operand::OperandKind;

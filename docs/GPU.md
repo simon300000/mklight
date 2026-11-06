@@ -1771,6 +1771,17 @@ its analyses on the reference; then
   remembered. All state is bounded (LRU), recorded in each decision and
   reported by `Engine::cost_model_stats()`. A decision depends only on the
   state when it is made.
+- *Repeated requests*: an identical `auto` request (snapshot and library
+  content, analysis, normalised settings; a `stop_key` names the run and is
+  ignored) takes the route its first decision chose, marked `"repeated":
+  true` in the decision (LRU of 4,096 routes; `repeated_routes` in the
+  stats). Refinement, the load prior and warm caches move the prediction
+  between calls, and the two backends agree only within the accuracy
+  contracts, so a fresh decision could change the result of the same
+  request: a seeded Monte Carlo or optimisation repeats bit-identically in
+  one engine. An edit or other settings decide afresh. A repeated route on
+  a device that has since failed on the request deterministically is
+  decided again (the reference).
 - Devices without a calibration table (other GPU families, the CPU-f32
   emulation), and analyses the table does not cover, use qualified Metal.
 
@@ -1825,7 +1836,8 @@ faster per call) and most default wave jobs. Regret (`auto` against the
 faster backend) stayed within 1.3× or 20 ms except for the accuracy
 exclusions (dense spot above 1M rays: 1.7–1.9×, by design) and two cases near
 break-even (PSF after an edit +125 ms, tolerance repeat +33 ms), which
-refinement learns within a few calls. A repeated `auto` request is answered
+refinement learns within a few calls (for other requests: an identical
+repeat keeps its first route, above). A repeated `auto` request is answered
 from the graph on either backend (dense geometric MTF warm repeat 0.3 ms
 against 5.96 s recomputed on Metal). Six-graph edit loop (layout, spot, ray
 fan, MTF, field curvature, PSF): CPU 338, `auto` 343, Metal 743 ms; warm repeat

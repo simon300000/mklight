@@ -118,6 +118,12 @@ document on purpose in the same change.
   (the f32 one, or the f64 one applied on the host to the GPU's raw words).
 * Settings structs are serialisable. Each result carries a `RunInfo` with the
   engine version, snapshot hash, settings, backend, precision and seed.
+* The same seed gives bit-identical results on the same backend. Backend
+  `auto` keeps an identical request on its first route within one engine
+  (`docs/GPU.md` §9.2), so a repeat is bit-identical there too; between
+  engines or hosts `auto` may choose the other backend, and the results then
+  agree within the accuracy contracts. An explicit backend is bit-reproducible
+  across sessions on the same device and build.
 
 ## 7. Precision and error budget
 
