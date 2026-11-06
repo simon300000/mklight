@@ -4,9 +4,10 @@ import Observation
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// The welcome window: start a new design, open one, or start from one of
-/// the engine's sample designs, each shown with a thumbnail of its layout
-/// as the engine draws it.
+/// The welcome window: start a new design, open one (a project or a `.zmx`
+/// or `.seq` lens file, also by dropping it on the window), or start from
+/// one of the engine's sample designs, each shown with a thumbnail of its
+/// layout as the engine draws it.
 struct WelcomeView: View {
     static let windowID = "welcome"
     let engine: any EngineClient
@@ -16,6 +17,8 @@ struct WelcomeView: View {
     @State private var importing = false
     @State private var error: String?
     @State private var thumbnails = SampleThumbnails()
+    @State private var dropTargeted = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var classic: [SampleSystems.Entry] { SampleSystems.bundled.filter { $0.system.surfaces.allSatisfy(\.shape.isLegacy) } }
     private var extended: [SampleSystems.Entry] { SampleSystems.bundled.filter { !$0.system.surfaces.allSatisfy(\.shape.isLegacy) } }
@@ -35,19 +38,44 @@ struct WelcomeView: View {
         }
         .frame(width: 960, height: 620)
         .task { await thumbnails.load(SampleSystems.bundled, engine: engine.makeDocumentEngine()) }
-        .fileImporter(isPresented: $importing, allowedContentTypes: [.mklightProject, .json]) { result in
+        .fileImporter(isPresented: $importing, allowedContentTypes: UTType.mklightReadable) { result in
             switch result {
-            case .success(let url):
-                Task {
-                    do {
-                        try await openDocument(at: url)
-                        dismissWindow(id: Self.windowID)
-                    } catch {
-                        self.error = error.localizedDescription
-                    }
-                }
+            case .success(let url): open([url])
             case .failure(let e): error = e.localizedDescription
             }
+        }
+        .dropDestination(for: URL.self) { urls, _ in
+            let files = urls.filter(ProjectDocument.canOpen)
+            guard !files.isEmpty else { return false }
+            open(files)
+            return true
+        } isTargeted: { dropTargeted = $0 }
+        .overlay {
+            if dropTargeted {
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .strokeBorder(.tint, lineWidth: 3)
+                    .padding(Space.s)
+                    .allowsHitTesting(false)
+                    .transition(.opacity)
+            }
+        }
+        .animation(reduceMotion ? nil : .smooth(duration: 0.15), value: dropTargeted)
+    }
+
+    /// Opens projects and lens files, each in its own window, then closes
+    /// the welcome window.
+    private func open(_ urls: [URL]) {
+        Task {
+            var opened = false
+            for url in urls {
+                do {
+                    try await openDocument(at: url)
+                    opened = true
+                } catch {
+                    self.error = "\(url.lastPathComponent): \(error.localizedDescription)"
+                }
+            }
+            if opened { dismissWindow(id: Self.windowID) }
         }
     }
 
@@ -81,10 +109,14 @@ struct WelcomeView: View {
                     }
                     .buttonStyle(.glass)
                     .keyboardShortcut("o")
+                    .help("Opens an MKLight project, or imports a .zmx or .seq lens file")
                 }
                 .controlSize(.extraLarge)
             }
             Spacer()
+            Label("Drop a project or a .zmx or .seq lens file here to open it.", systemImage: "arrow.down.document")
+                .font(.caption)
+                .foregroundStyle(.secondary)
             if let error { Text(error).font(.caption).foregroundStyle(.red) }
             Label(engineLine, systemImage: engine.info.isMock ? "exclamationmark.triangle.fill" : "cpu")
                 .font(.caption)

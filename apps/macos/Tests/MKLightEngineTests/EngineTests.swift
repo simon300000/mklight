@@ -409,3 +409,28 @@ private let fast = MockEngine(simulatedLatency: .zero)
         #expect(r.values.allSatisfy { $0 >= 0 && $0.isFinite })
     }
 }
+
+@Suite struct PrescriptionImportDecodingTests {
+    @Test func decodesTheEngineResult() throws {
+        let json = """
+            {"format": "seq", "encoding": "utf8",
+             "system": \(String(decoding: try MKLightJSON.encode(OpticalSystem.newEmpty()), as: UTF8.self)),
+             "warnings": [
+               {"kind": "unknown_glass", "line": 4, "surface": 1, "message": "glass X …"},
+               {"kind": "something_new", "line": null, "surface": null, "message": "?"}
+             ]}
+            """
+        let r = try MKLightJSON.decode(PrescriptionImport.self, from: Data(json.utf8))
+        #expect(r.format == .seq && r.encoding == "utf8")
+        #expect(r.warnings.map(\.kind) == [.unknownGlass, .other])
+        #expect(r.warnings[0].line == 4 && r.warnings[0].surface == 1 && r.warnings[1].line == nil)
+        #expect(PrescriptionFormat(fileExtension: "ZMX") == .zmx && PrescriptionFormat(fileExtension: "txt") == nil)
+    }
+
+    @Test func mockEngineDoesNotImport() async {
+        #expect(throws: EngineError.self) { try fast.importPrescription(Data(), format: .zmx) }
+        await #expect(throws: EngineError.self) {
+            try await fast.importPrescription(at: URL(fileURLWithPath: "/tmp/lens.txt"))
+        }
+    }
+}

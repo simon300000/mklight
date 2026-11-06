@@ -94,10 +94,15 @@ public final class DesignDocument {
     /// machinery may save off the main thread).
     @ObservationIgnored nonisolated let persisted: Mutex<ProjectFile>
 
-    public nonisolated init(project: ProjectFile) {
+    /// What importing the lens file this design came from left out, until
+    /// its window takes it (`takeImportReport`).
+    @ObservationIgnored private var pendingImportReport: ImportReport?
+
+    public nonisolated init(project: ProjectFile, importReport: ImportReport? = nil) {
         _system = project.system
         _project = project
         persisted = Mutex(project)
+        pendingImportReport = importReport
     }
 
     public nonisolated convenience init(system: OpticalSystem = .newEmpty()) {
@@ -106,6 +111,13 @@ public final class DesignDocument {
 
     /// A copy of the project for saving (any thread).
     public nonisolated var savedProject: ProjectFile { persisted.withLock { $0 } }
+
+    /// The import report of a design opened from a lens prescription file,
+    /// once: later calls return `nil`.
+    public func takeImportReport() -> ImportReport? {
+        defer { pendingImportReport = nil }
+        return pendingImportReport
+    }
 
     // MARK: Editing
 

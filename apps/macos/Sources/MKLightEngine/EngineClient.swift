@@ -210,6 +210,17 @@ public protocol EngineClient: Sendable {
     /// report (the `solves` result) with the snapshot of the solved system.
     /// The `solves` analysis is the dry run of this.
     func applySolves(settings: [String: JSONValue], to snapshot: ModelSnapshot) async throws -> SolveApplication
+
+    /// Imports a lens prescription file (`.zmx` or `.seq`, any common text
+    /// encoding) with the built-in glass catalog. Content that does not map
+    /// is listed in the result's warnings; only text without surfaces
+    /// throws. Synchronous, because documents read their files
+    /// synchronously.
+    func importPrescription(_ data: Data, format: PrescriptionFormat) throws -> PrescriptionImport
+
+    /// Imports a lens prescription file into this (document) engine's
+    /// session, resolving glasses against its user catalogs.
+    func importPrescription(at url: URL) async throws -> PrescriptionImport
 }
 
 /// The outcome of `EngineClient.applySolves`.
@@ -248,6 +259,17 @@ extension EngineClient {
 
     public func loadCatalog(at url: URL) async throws -> CatalogInfo {
         throw EngineError.unsupported("\(info.name) cannot load glass catalogs")
+    }
+
+    public func importPrescription(_ data: Data, format: PrescriptionFormat) throws -> PrescriptionImport {
+        throw EngineError.unsupported("\(info.name) cannot import lens prescription files")
+    }
+
+    public func importPrescription(at url: URL) async throws -> PrescriptionImport {
+        guard let format = PrescriptionFormat(fileExtension: url.pathExtension) else {
+            throw EngineError.unsupported("\(url.lastPathComponent) is not a lens prescription file")
+        }
+        return try importPrescription(try Data(contentsOf: url), format: format)
     }
 
     /// Runs the `solves` analysis and writes every outcome's value into the

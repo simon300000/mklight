@@ -161,6 +161,18 @@ enum CABI {
         try string("mk_session_list_catalogs") { mk_session_list_catalogs(s, $0) }
     }
 
+    static func importPrescription(_ data: Data, format: String) throws -> String {
+        try data.withUnsafeBytes { raw in
+            try string("mk_import_prescription") {
+                mk_import_prescription(raw.bindMemory(to: UInt8.self).baseAddress, raw.count, format, $0)
+            }
+        }
+    }
+
+    static func sessionImportPrescription(_ s: OpaquePointer, path: String) throws -> String {
+        try string("mk_session_import_prescription") { mk_session_import_prescription(s, path, $0) }
+    }
+
     static func sessionListGlasses(_ s: OpaquePointer, catalog: String?) throws -> String {
         try string("mk_session_list_glasses") { out in withOptionalCString(catalog) { mk_session_list_glasses(s, $0, out) } }
     }
@@ -288,6 +300,8 @@ enum CABI {
     static func sessionLibraryHash(_ s: OpaquePointer) throws -> String { throw notLinked }
     static func sessionLoadCatalog(_ s: OpaquePointer, path: String) throws -> String { throw notLinked }
     static func sessionListCatalogs(_ s: OpaquePointer) throws -> String { throw notLinked }
+    static func importPrescription(_ data: Data, format: String) throws -> String { throw notLinked }
+    static func sessionImportPrescription(_ s: OpaquePointer, path: String) throws -> String { throw notLinked }
     static func sessionListGlasses(_ s: OpaquePointer, catalog: String?) throws -> String { throw notLinked }
     static func submit(_ s: OpaquePointer, requestJSON: String) throws -> UInt64 { throw notLinked }
     static func sessionApplySolves(_ s: OpaquePointer, settings: String?) throws -> (report: String, hash: String) {
