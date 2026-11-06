@@ -316,4 +316,31 @@ import Testing
         #expect(wide.height == 2)
         #expect(abs(wide.data[0] - SRGB.decode(128.0 / 255)) < 0.02 && abs(wide.data[4 * 3] - 1) < 0.02)
     }
+
+    /// The Glass Data reader: header numbers, offset, environment, the
+    /// indices table and the `(λ, n)` dispersion curve buffer.
+    @Test @MainActor func glassInfoReader() throws {
+        let json: JSONValue = .object([
+            "catalog": .string("SCHOTT"), "name": .string("N-BK7"), "nd": .number(1.5168), "ne": .number(1.5187),
+            "vd": .number(64.17), "pgf": .number(0.5349), "catalog_nd": .number(1.5168), "catalog_vd": .number(64.17),
+            "offset": .object(["dn_d": .number(0), "dv_d": .number(0.5)]),
+            "dispersion": .object(["formula": .string("sellmeier")]), "min_um": .number(0.3), "max_um": .number(2.5),
+            "has_thermal_data": .bool(true), "cte": .number(7.1e-6), "density": .null, "relative_cost": .null, "comment": .string(" "),
+            "environment": .object(["temperature_c": .number(20), "pressure_atm": .number(1)]),
+            "indices": .array([
+                .object(["wavelength_um": .number(0.5876), "n": .number(1.5168), "n_catalog": .number(1.5168), "absorption_per_mm": .number(0), "in_range": .bool(true)]),
+                .object(["wavelength_um": .number(3.0), "n": .null, "n_catalog": .null, "absorption_per_mm": .number(0), "in_range": .bool(false)]),
+            ]),
+        ])
+        let curve = ResultBuffer(name: "dispersion_curve", doubles: [0.3, 1.55, 1.4, 1.50, 2.5, 1.49], shape: [3, 2])
+        let d = try #require(GlassInfoData(output: Self.output("glass_info", json: json, buffers: [curve])))
+        #expect(d.name == "N-BK7" && d.catalog == "SCHOTT" && d.formula == "Sellmeier")
+        #expect(d.hasOffset && d.hasThermalData && d.density == nil && d.comment == nil)
+        #expect(d.temperatureC == 20 && d.pressureAtm == 1)
+        #expect(d.indices.count == 2 && !d.indices[1].inRange && d.indices[1].n.isNaN)
+        #expect(d.curve.count == 3 && d.curve[1].0 == 1.4 && d.curve[2].1 == 1.49)
+        #expect(GlassInfoData(output: Self.output("glass_info", json: .object([:]), buffers: [])) == nil)
+        let w = Workspace(engine: MockEngine(simulatedLatency: .zero))
+        #expect(w.startingSettings("glass_info")["curve_samples"] == .integer(200))
+    }
 }

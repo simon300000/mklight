@@ -27,6 +27,50 @@ extension ResultViewRenders {
         }
     }
 
+    /// Draws `view` through an AppKit window, which (unlike `ImageRenderer`)
+    /// draws the content of scroll views.
+    private func host<V: View>(_ view: V, size: CGSize, to path: String) async throws {
+        for dark in [false, true] {
+            let host = NSHostingView(rootView: view.frame(width: size.width, height: size.height)
+                .background(Color(nsColor: .windowBackgroundColor)))
+            let window = NSWindow(contentRect: NSRect(origin: .zero, size: size), styleMask: [.borderless], backing: .buffered, defer: false)
+            window.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
+            window.contentView = host
+            host.layoutSubtreeIfNeeded()
+            try await Task.sleep(for: .milliseconds(400))
+            let rep = try #require(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+            NSAppearance(named: dark ? .darkAqua : .aqua)!.performAsCurrentDrawingAppearance {
+                host.cacheDisplay(in: host.bounds, to: rep)
+            }
+            try #require(rep.representation(using: .png, properties: [:])).write(to: URL(fileURLWithPath: "\(path)-\(dark ? "dark" : "light").png"))
+            window.contentView = nil
+        }
+    }
+
+    /// The Glass Data view of a design glass, wide, and narrow with an
+    /// offset and a wavelength outside the glass's data range.
+    @Test func renderGlassData() async throws {
+        guard let dir = ProcessInfo.processInfo.environment["MKLIGHT_RENDER_DIR"] else { return }
+        let engine = try FFIEngine()
+        let system = try #require(SampleSystems.bundled("double_gauss"))
+        let snap = try await engine.openSnapshot(system)
+        let context = AnalysisContext(system: system)
+        let plain = try await engine.submit(
+            EngineAnalysisRequest(analysis: "glass_info", settings: ["name": .string("N-SK16"), "curve_samples": .integer(200)]), on: snap
+        ).result()
+        try await host(try #require(GlassDataView(output: plain, context: context)), size: CGSize(width: 560, height: 820), to: "\(dir)/glass-data")
+        let offset = try await engine.submit(
+            EngineAnalysisRequest(
+                analysis: "glass_info",
+                settings: [
+                    "name": .string("N-SK16"), "curve_samples": .integer(200),
+                    "offset": .object(["dn_d": .number(0.001), "dv_d": .number(-0.5)]),
+                    "wavelengths_um": .array([.number(0.4861327), .number(0.5875618), .number(0.6562725), .number(3.0)]),
+                ]), on: snap
+        ).result()
+        try await host(try #require(GlassDataView(output: offset, context: context)), size: CGSize(width: 380, height: 900), to: "\(dir)/glass-data-narrow")
+    }
+
     /// A large synthetic catalogue (every status), a selected glass, and
     /// image simulations of an imported picture and the text chart.
     @Test func renderDirect() async throws {

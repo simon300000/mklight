@@ -55,6 +55,7 @@ struct AnalysisResultView: View {
         case "pupil_aberration": return PupilAberrationView(output: o).map { AnyView($0) }
         case "relative_illumination_map": return RelativeIlluminationMapView(output: o).map { AnyView($0) }
         case "chief_ray_angle": return ChiefRayAngleView(output: o).map { AnyView($0) }
+        case "glass_info": return GlassDataView(output: o, context: c).map { AnyView($0) }
         case "glass_map": return GlassMapView(output: o, context: c).map { AnyView($0) }
         case "image_simulation": return ImageSimulationView(output: o, pane: c.pane).map { AnyView($0) }
         default: return nil
@@ -104,6 +105,12 @@ struct AnalysisResultView: View {
             return j["defocus"]?.nf.map { [KeyNumber(label: "Best defocus", value: Fmt.length($0))] } ?? []
         case "pupil_aberration", "relative_illumination_map", "chief_ray_angle", "glass_map", "image_simulation":
             return extendedKeyNumbers(analysis: analysis, output: output)
+        case "glass_info":
+            guard let d = GlassInfoData(output: output) else { return [] }
+            return [
+                KeyNumber(label: "n_d", value: NumberDisplay.format(d.nd, decimals: 6)),
+                KeyNumber(label: "V_d", value: NumberDisplay.format(d.vd, decimals: 2)),
+            ]
         case "validate":
             return [KeyNumber(label: "Errors", value: "\(j["errors"]?.int ?? 0)"), KeyNumber(label: "Warnings", value: "\(j["warnings"]?.int ?? 0)")]
         default:
