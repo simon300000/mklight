@@ -57,7 +57,11 @@ Python `Result.envelope()` return:
   bit-identical, and `started_unix_ms`/`duration_ms` describe this call. An
   `auto` request is answered before routing, whichever backend computed the
   stored result; explicit requests reuse CPU-reference results only.
-  Results with failed backend attempts are never reused.
+  Results with failed backend attempts are never reused. A repeat that is
+  not answered from the graph (searches such as `tolerance` and `optimize`,
+  evicted results) under `auto` keeps the route of the first such request,
+  so a seed reproduces bit-identically within one engine (`docs/GPU.md`
+  §9.2; `backend.cost_decision.repeated`).
 
 ## 2. Versioning and settings
 

@@ -576,7 +576,11 @@ nominal, it returns the operands whose both limits were evaluated
 (`SensitivityReport::cancelled`). The compensator solves of the trials share
 the job's cancellation but not its progress bar. `monte_carlo` draws trial `i` from Philox stream `TOLERANCE | i`,
 so statistics are bit-reproducible for a seed and any trial can be replayed on
-its own. Both are tested on the Cooke triplet with a back-focus compensator.
+its own. The CPU reference and a GPU evaluator agree only within the accuracy
+contract (the compensator solves settle within it), so a backend `auto` run
+repeats bit-identically in the same engine because an identical request keeps
+its first route (GPU.md §9.2); across engines or hosts `auto` may route
+differently, and `backend: "cpu"` is bit-reproducible across sessions. Both are tested on the Cooke triplet with a back-focus compensator.
 Without compensators every trial is a single evaluation, so the evaluator
 receives a whole batch of perturbed systems in one call (one GPU dispatch
 with `GpuTraceEvaluator`). With compensators, each trial runs its own small LM
