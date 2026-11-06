@@ -102,7 +102,29 @@ public enum DesignJobKind: String, Identifiable, Sendable, CaseIterable {
 @Observable
 public final class WindowState {
     /// Selected surface, by stable id so it survives inserts and deletes.
-    public var selection: SurfaceID?
+    public var selection: SurfaceID? {
+        didSet { if selection != oldValue { followSelection() } }
+    }
+    /// The surface the inspector shows. It follows `selection` one run-loop
+    /// turn later: a click highlights the row and the layout in the frame it
+    /// lands in, and the inspector (a form of many controls, rebuilt for
+    /// each surface) fills in the next one instead of holding that frame.
+    public private(set) var inspectedSurface: SurfaceID?
+    @ObservationIgnored private var inspectorPending = false
+
+    private func followSelection() {
+        guard !inspectorPending else { return }
+        inspectorPending = true
+        DispatchQueue.main.asyncAfter(deadline: .now()) { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.inspectorPending = false
+                if self.inspectedSurface != self.selection { self.inspectedSurface = self.selection }
+                // Selecting a surface shows it in the inspector, unless a job is open.
+                if self.selection != nil && self.activeJob == nil && self.inspectorTab != .surface { self.inspectorTab = .surface }
+            }
+        }
+    }
     /// A field to highlight in the system inspector (from an issue).
     public var highlightedField: Int?
     public var showInspector = true
@@ -141,6 +163,22 @@ public final class WindowState {
     public func open(_ job: DesignJobKind) {
         activeJob = job
         showInspector = true
+    }
+
+    /// Whether `job` is the panel shown in the inspector.
+    public func isShowing(_ job: DesignJobKind) -> Bool { activeJob == job && showInspector }
+
+    /// The toolbar's job buttons: open the job, or close it with the
+    /// inspector when it is already showing (like the Inspector button).
+    public func toggle(_ job: DesignJobKind) {
+        if isShowing(job) { closeJob() } else { open(job) }
+    }
+
+    /// Closes the job panel and the inspector it was shown in. A running
+    /// job continues; the toolbar shows its progress.
+    public func closeJob() {
+        activeJob = nil
+        showInspector = false
     }
 
     /// The running design job, if any.

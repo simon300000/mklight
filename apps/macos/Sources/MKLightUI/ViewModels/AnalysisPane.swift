@@ -30,12 +30,17 @@ public final class AnalysisPane: Identifiable {
     /// Whether the settings form is open in the pane (saved with the layout;
     /// closed by default, the plot with a one-line summary).
     public var showsSettings = false
-    public internal(set) var output: AnalysisOutput?
+    public internal(set) var output: AnalysisOutput? {
+        didSet { derived = nil }
+    }
     public internal(set) var phase = Phase.idle
     /// The request the current job (or the last finished one) ran.
     public internal(set) var lastRequest: EngineAnalysisRequest?
 
     @ObservationIgnored var job: AnalysisJob?
+    /// Values read from `output` once per output rather than in every view
+    /// update (the layout scene is thousands of points).
+    @ObservationIgnored private var derived: (scene: LayoutScene?, autoSemiDiameters: [SurfaceID: Double])?
     @ObservationIgnored weak var workspace: Workspace?
 
     public init(id: String = "pane-" + UUID().uuidString.prefix(8).lowercased(), analysis: String,
@@ -44,6 +49,21 @@ public final class AnalysisPane: Identifiable {
         self.analysis = analysis
         self.settings = settings
         self.autoUpdate = autoUpdate
+    }
+
+    /// The `layout` output as a scene, parsed once per output.
+    var layoutScene: LayoutScene? { derivedValues.scene }
+
+    /// The automatic semi-diameters in the `layout` output, by surface id.
+    var autoSemiDiameters: [SurfaceID: Double] { derivedValues.autoSemiDiameters }
+
+    private var derivedValues: (scene: LayoutScene?, autoSemiDiameters: [SurfaceID: Double]) {
+        let o = output  // tracked: views update when the output changes
+        if let derived { return derived }
+        let scene = EngineLayout.scene(from: o)
+        let d = (scene: scene, autoSemiDiameters: EngineLayout.autoSemiDiameters(scene))
+        derived = d
+        return d
     }
 
     public var isRunning: Bool { if case .running = phase { true } else { false } }

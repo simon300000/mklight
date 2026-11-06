@@ -86,13 +86,24 @@ private struct DesignWindowContent: View {
             }
             .overlay(alignment: .bottom) { toast }
             .inspector(isPresented: $window.showInspector) {
-                InspectorView(design: design, workspace: workspace, window: window)
-                    .inspectorColumnWidth(min: 300, ideal: 360, max: 560)
+                // Built only while shown: a hidden inspector stays in the
+                // view tree and would rebuild its form on every selection.
+                Group {
+                    if window.showInspector { InspectorView(design: design, workspace: workspace, window: window) }
+                }
+                .inspectorColumnWidth(min: 300, ideal: 360, max: 560)
             }
         }
         .navigationSubtitle(system.name)
         .toolbar { toolbar }
-        .focusedSceneValue(\.windowActions, actions)
+        // The menu actions and the saved layout read the selection and the
+        // camera; a child view keeps those reads out of this body, so a
+        // click or a pan does not rebuild the window.
+        .background {
+            WindowObservers(
+                actions: { actions }, layout: { WorkspaceLayout(workspace: workspace, window: window) },
+                save: { design.setViews($0.views) })
+        }
         .fileImporter(isPresented: $importingCatalog, allowedContentTypes: [.json, .plainText, .data]) { result in
             if case .success(let url) = result {
                 loadCatalog(url)
@@ -125,12 +136,6 @@ private struct DesignWindowContent: View {
         .onChange(of: design.catalogs) { _, refs in
             Task { await workspace.syncCatalogs(refs, projectDirectory: projectDirectory) }
         }
-        .onChange(of: WorkspaceLayout(workspace: workspace, window: window)) { _, layout in
-            design.setViews(layout.views)
-        }
-        .onChange(of: window.selection) { _, s in
-            if s != nil && window.activeJob == nil { window.inspectorTab = .surface }
-        }
     }
 
     /// A transient message (a rejected edit) floating over the content.
@@ -159,9 +164,13 @@ private struct DesignWindowContent: View {
             DesignStatus(workspace: workspace, window: window, engine: engine, system: system)
         }
         ToolbarItemGroup(placement: .primaryAction) {
+            // Toggles, like the Inspector button: highlighted while the
+            // job's panel is open; a second click closes it.
             ForEach(DesignJobKind.allCases) { job in
-                Button(job.title, systemImage: job.symbol) { toggle(job) }
-                    .help(help(job))
+                Toggle(isOn: Binding(get: { window.isShowing(job) }, set: { _ in window.toggle(job) })) {
+                    Label(job.title, systemImage: job.symbol)
+                }
+                .help(help(job))
             }
         }
         ToolbarSpacer(.fixed, placement: .primaryAction)
@@ -180,10 +189,6 @@ private struct DesignWindowContent: View {
             Button("Inspector", systemImage: "sidebar.right") { window.showInspector.toggle() }
                 .help("Show or hide the inspector (⌃⌘I)")
         }
-    }
-
-    private func toggle(_ job: DesignJobKind) {
-        if window.activeJob == job && window.showInspector { window.activeJob = nil } else { window.open(job) }
     }
 
     private func help(_ job: DesignJobKind) -> String {
@@ -342,6 +347,21 @@ private struct DesignWindowContent: View {
             }
         }
         return true
+    }
+}
+
+/// Publishes the window's menu actions and saves its layout. Its body
+/// alone depends on the selection, the focused column and the camera.
+private struct WindowObservers: View {
+    let actions: () -> WindowActions
+    let layout: () -> WorkspaceLayout
+    let save: (WorkspaceLayout) -> Void
+
+    var body: some View {
+        Color.clear
+            .focusedSceneValue(\.windowActions, actions())
+            .onChange(of: layout()) { _, l in save(l) }
+            .accessibilityHidden(true)
     }
 }
 

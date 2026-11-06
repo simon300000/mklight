@@ -325,7 +325,7 @@ struct GlassSubstitutionPanel: View {
             // While previewed, the candidate's layout; once applied, the design's.
             LayoutComparison(
                 before: EngineLayout.scene(from: workspace.baseline["layout"]),
-                after: workspace.isPreviewing || session.applied ? EngineLayout.scene(from: workspace.layout.output) : nil)
+                after: workspace.isPreviewing || session.applied ? workspace.layout.layoutScene : nil)
         }
         .padding(Space.m)
         .background(.fill.quinary, in: .rect(cornerRadius: 10))
@@ -410,7 +410,7 @@ struct GlassSubstitutionPanel: View {
                 GlassAction(title: "Run Again", id: "secondary", namespace: glass) { session.reset(workspace) }
                 GlassAction(title: "Done", prominent: true, id: "primary", namespace: glass) {
                     session.reset(workspace)
-                    window.activeJob = nil
+                    window.closeJob()
                 }
                 .keyboardShortcut(.defaultAction)
             } else {

@@ -65,7 +65,7 @@ struct SettingsBar: View {
     var context: SettingContext {
         SettingContext(
             analysis: pane.analysis, output: pane.output, fieldOptions: fieldOptions, wavelengthOptions: wavelengthOptions,
-            surfaceOptions: surfaceOptions)
+            surfaceOptions: surfaceOptions, glassNames: pane.analysis == "glass_info" ? pane.workspace?.materialNames ?? [] : [])
     }
 
     /// The values that differ from the engine's defaults, for a one-line
@@ -190,6 +190,8 @@ struct SettingContext {
     var fieldOptions: [(Int, String)] = []
     var wavelengthOptions: [(Int, String)] = []
     var surfaceOptions: [(Int, String)] = []
+    /// Glass names to complete a glass `name` setting with.
+    var glassNames: [String] = []
 
     func options(_ domain: SettingControl.IndexDomain) -> [(Int, String)] {
         switch domain {
@@ -242,7 +244,8 @@ struct SettingControlView: View {
             )
             .accessibilityLabel(label)
         case .text:
-            SettingTextField(field: f, label: label, value: value, set: { slot.set($0) })
+            SettingTextField(
+                field: f, label: label, value: value, completions: f.name == "name" ? context.glassNames : [], set: { slot.set($0) })
         case .pair(let integer, let nullable):
             SettingPairField(field: f, label: label, value: value, integer: integer, nullable: nullable, set: { slot.set($0) })
         case .indexList(let domain):
@@ -473,14 +476,23 @@ struct SettingTextField: View {
     let field: SettingsField
     let label: String
     let value: JSONValue?
+    /// Values to suggest while typing (glass names).
+    var completions: [String] = []
     let set: (JSONValue?) -> Void
     @State private var text = ""
     @FocusState private var focused: Bool
+
+    private var suggestions: [String] {
+        let q = text.trimmingCharacters(in: .whitespaces).uppercased()
+        guard !q.isEmpty, focused else { return [] }
+        return Array(completions.filter { $0.uppercased().hasPrefix(q) && $0.uppercased() != q }.prefix(12))
+    }
 
     var body: some View {
         TextField(field.nullable ? "any" : label, text: $text)
             .textFieldStyle(.roundedBorder)
             .frame(width: 140)
+            .materialSuggestions(suggestions)
             .focused($focused)
             .onSubmit(commit)
             .onChange(of: focused) { _, f in if !f { commit() } }

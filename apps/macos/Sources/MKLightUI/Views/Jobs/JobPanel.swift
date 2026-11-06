@@ -62,12 +62,6 @@ struct JobPanelFrame<Content: View, Actions: View>: View {
                 Text(subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(1)
             }
             Spacer()
-            Button("Close", systemImage: "xmark") { window.activeJob = nil }
-                .labelStyle(.iconOnly)
-                .buttonStyle(.glass)
-                .buttonBorderShape(.circle)
-                .help("Close the panel. A running job continues; the toolbar shows its progress.")
-                .keyboardShortcut(.cancelAction)
         }
         .padding(.horizontal, Space.l)
         .padding(.vertical, Space.m)
@@ -307,7 +301,7 @@ struct OptimizePanel: View {
                     if workspace.isPreviewing {
                         LayoutComparison(
                             before: EngineLayout.scene(from: workspace.baseline["layout"]),
-                            after: EngineLayout.scene(from: workspace.layout.output))
+                            after: workspace.layout.layoutScene)
                     }
                 }
                 Text(statusText(r)).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
@@ -391,7 +385,7 @@ struct OptimizePanel: View {
                 GlassAction(title: "Run Again", id: "secondary", namespace: glass) { session.reset() }
                 GlassAction(title: "Done", prominent: true, id: "primary", namespace: glass) {
                     session.reset()
-                    window.activeJob = nil
+                    window.closeJob()
                 }
                 .keyboardShortcut(.defaultAction)
             } else {
@@ -501,7 +495,7 @@ struct SolvesPanel: View {
         } actions: {
             if session.committed {
                 Text("Applied. Undo with ⌘Z.").font(.callout).foregroundStyle(.secondary).frame(maxWidth: .infinity)
-                GlassAction(title: "Done", prominent: true, id: "primary", namespace: glass) { window.activeJob = nil }
+                GlassAction(title: "Done", prominent: true, id: "primary", namespace: glass) { window.closeJob() }
                     .keyboardShortcut(.defaultAction)
             } else {
                 GlassAction(title: "Apply to Design", prominent: true, id: "primary", namespace: glass) {

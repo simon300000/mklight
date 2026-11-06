@@ -13,20 +13,16 @@ struct LayoutPaneView: View {
     @State private var error: String?
     @Environment(\.self) private var environment
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @Namespace private var glass
 
     private var pane: AnalysisPane { workspace.layout }
 
     var body: some View {
-        let scene = EngineLayout.scene(from: pane.output)
+        let scene = pane.layoutScene
         let footprints = workspace.showFootprints && window.viewportMode == .orbit3D ? FootprintOverlay(output: workspace.footprints.output) : nil
         ZStack {
-            ViewportView(
-                content: ViewportContent(
-                    scene: scene, mode: window.viewportMode, coloring: window.rayColoring,
-                    selectedSurface: window.selection.flatMap { system.surfaceIndex(of: $0) }, stale: pane.isStale,
-                    fitRequest: window.fitRequest, accent: accent, footprints: footprints, fitLens: window.fitLens),
-                camera: $window.camera, error: $error
+            LayoutViewport(
+                window: window, system: system, scene: scene, stale: pane.isStale, accent: accent, footprints: footprints,
+                error: $error
             )
             .accessibilityLabel(accessibilityText(scene))
             if let error {
@@ -36,11 +32,9 @@ struct LayoutPaneView: View {
                 placeholder
             }
         }
-        .overlay(alignment: .top) { controls }
+        .overlay(alignment: .top) { LayoutControls(workspace: workspace, window: window, modes: modes) }
         .overlay(alignment: .bottomLeading) {
-            if scene != nil {
-                ScaleBar(pointsPerMM: window.camera.pointsPerMM, stretch: window.camera.verticalScale(window.viewportMode)).padding(Space.l)
-            }
+            if scene != nil { CameraScaleBar(window: window).padding(Space.l) }
         }
         .overlay(alignment: .bottomTrailing) {
             if pane.isStale && !pane.isRunning, scene != nil {
@@ -81,7 +75,6 @@ struct LayoutPaneView: View {
 
     private var modes: [ViewportMode] { anamorphic || window.viewportMode == .sectionXZ ? [.section2D, .sectionXZ, .orbit3D] : [.section2D, .orbit3D] }
 
-    private func title(_ m: ViewportMode) -> String { m == .section2D && modes.count == 3 ? "Y–Z" : m.title }
 
     /// The engine draws the section the view shows (`section`), and the
     /// surface mesh only when the 3-D view asks for it.
@@ -90,7 +83,85 @@ struct LayoutPaneView: View {
         if pane.settings["section"] != wanted { pane.set("section", wanted) }
     }
 
+
+    @ViewBuilder private var placeholder: some View {
+        switch pane.phase {
+        case .unavailable(let why):
+            ContentUnavailableView("Layout Not Available", systemImage: "nosign", description: Text(why))
+                .frame(maxWidth: .infinity, maxHeight: .infinity).background(.background)
+        case .failed(let why) where workspace.issues.contains { $0.severity == .error }:
+            ContentUnavailableView("Design Has Errors", systemImage: "xmark.octagon", description: Text(why))
+                .frame(maxWidth: .infinity, maxHeight: .infinity).background(.background)
+        case .failed(let why):
+            ContentUnavailableView("No Layout", systemImage: "exclamationmark.triangle", description: Text(why))
+                .frame(maxWidth: .infinity, maxHeight: .infinity).background(.background)
+        default:
+            if let e = workspace.modelErrors.first {
+                ContentUnavailableView("Design Not Ready", systemImage: "xmark.octagon", description: Text(e))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity).background(.background)
+            } else {
+                ProgressView().controlSize(.small)
+            }
+        }
+    }
+
+    private func accessibilityText(_ scene: LayoutScene?) -> String {
+        guard let scene else { return "Layout, not available" }
+        let rays = scene.polylines.filter { $0.kind == .ray }.count
+        let length = scene.bounds.max.z - scene.bounds.min.z
+        return "Layout, \(window.viewportMode == .orbit3D ? "3D view" : window.viewportMode == .sectionXZ ? "x–z section" : "meridional section"), \(system.surfaces.count - 2) surfaces, \(rays) rays, \(Fmt.short(length)) millimetres long"
+    }
+
+    private var accent: SIMD3<Float> {
+        let r = Color.accentColor.resolve(in: environment)
+        return SIMD3(r.red, r.green, r.blue)
+    }
+}
+
+/// The Metal viewport. Its body alone reads the selection, so selecting a
+/// surface updates the viewport, not the pane and its controls.
+private struct LayoutViewport: View {
+    let window: WindowState
+    let system: OpticalSystem
+    let scene: LayoutScene?
+    let stale: Bool
+    let accent: SIMD3<Float>
+    let footprints: FootprintOverlay?
+    @Binding var error: String?
+
+    var body: some View {
+        @Bindable var window = window
+        ViewportView(
+            content: ViewportContent(
+                scene: scene, mode: window.viewportMode, coloring: window.rayColoring,
+                selectedSurface: window.selection.flatMap { system.surfaceIndex(of: $0) }, stale: stale,
+                fitRequest: window.fitRequest, accent: accent, footprints: footprints, fitLens: window.fitLens),
+            camera: $window.camera, error: $error)
+    }
+}
+
+/// The scale bar, following the camera (its body alone reads it, so a pan
+/// or zoom does not update the pane).
+private struct CameraScaleBar: View {
+    let window: WindowState
+
+    var body: some View {
+        ScaleBar(pointsPerMM: window.camera.pointsPerMM, stretch: window.camera.verticalScale(window.viewportMode))
+    }
+}
+
+/// The viewport's floating controls: title, view mode, display options, fit.
+private struct LayoutControls: View {
+    let workspace: Workspace
+    @Bindable var window: WindowState
+    let modes: [ViewportMode]
+    @Namespace private var glass
+
+    private var pane: AnalysisPane { workspace.layout }
     private var meshOn: Bool { (pane.settings["mesh_rings"]?.int ?? 0) > 0 }
+    private func title(_ m: ViewportMode) -> String { m == .section2D && modes.count == 3 ? "Y–Z" : m.title }
+
+    var body: some View { controls }
 
     /// The vertical stretch of the section views; a change refits the view.
     private var stretch: Binding<Double> {
@@ -235,38 +306,6 @@ struct LayoutPaneView: View {
         .padding(Space.m)
     }
 
-    @ViewBuilder private var placeholder: some View {
-        switch pane.phase {
-        case .unavailable(let why):
-            ContentUnavailableView("Layout Not Available", systemImage: "nosign", description: Text(why))
-                .frame(maxWidth: .infinity, maxHeight: .infinity).background(.background)
-        case .failed(let why) where workspace.issues.contains { $0.severity == .error }:
-            ContentUnavailableView("Design Has Errors", systemImage: "xmark.octagon", description: Text(why))
-                .frame(maxWidth: .infinity, maxHeight: .infinity).background(.background)
-        case .failed(let why):
-            ContentUnavailableView("No Layout", systemImage: "exclamationmark.triangle", description: Text(why))
-                .frame(maxWidth: .infinity, maxHeight: .infinity).background(.background)
-        default:
-            if let e = workspace.modelErrors.first {
-                ContentUnavailableView("Design Not Ready", systemImage: "xmark.octagon", description: Text(e))
-                    .frame(maxWidth: .infinity, maxHeight: .infinity).background(.background)
-            } else {
-                ProgressView().controlSize(.small)
-            }
-        }
-    }
-
-    private func accessibilityText(_ scene: LayoutScene?) -> String {
-        guard let scene else { return "Layout, not available" }
-        let rays = scene.polylines.filter { $0.kind == .ray }.count
-        let length = scene.bounds.max.z - scene.bounds.min.z
-        return "Layout, \(window.viewportMode == .orbit3D ? "3D view" : window.viewportMode == .sectionXZ ? "x–z section" : "meridional section"), \(system.surfaces.count - 2) surfaces, \(rays) rays, \(Fmt.short(length)) millimetres long"
-    }
-
-    private var accent: SIMD3<Float> {
-        let r = Color.accentColor.resolve(in: environment)
-        return SIMD3(r.red, r.green, r.blue)
-    }
 }
 
 /// A scale bar of a round length; with a vertical stretch, an upright bar

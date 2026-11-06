@@ -24,6 +24,8 @@ struct LensTableView: View {
     /// The cell being edited: the only one shown as a text field, the
     /// others are text (fewer AppKit views to lay out and to expose).
     @State private var active: CellID?
+    /// The last mouse-down on a row (not observed: it drives no view).
+    @State private var press = RowPress()
 
     private var system: OpticalSystem { design.system }
     private var editor: LensEditor { LensEditor(document: design, undoManager: undoManager) }
@@ -35,7 +37,7 @@ struct LensTableView: View {
 
     private var rows: [LensRow] {
         LensRow.rows(
-            for: system, autoSemiDiameters: EngineLayout.autoSemiDiameters(EngineLayout.scene(from: workspace.layout.output)),
+            for: system, autoSemiDiameters: workspace.layout.autoSemiDiameters,
             variables: Set(design.variables.map { system.canonical($0.param) }),
             bounds: Dictionary(
                 design.variables.map { (system.canonical($0.param), $0.isPinned ? .pinned : $0.isBounded ? .bounded : .free) }, uniquingKeysWith: { a, _ in a }))
@@ -66,16 +68,20 @@ struct LensTableView: View {
     // cell in its own AppKit view, re-tiled on each frame of a window or
     // sidebar resize, and builds cells for off-screen rows whenever an
     // accessibility client reads them. Here a resize is one layout pass.
+    // The body does not read the selection: a click repaints only the
+    // rows' highlight (`SelectedRow`), not the grid.
     var body: some View {
         let rows = self.rows
+        let issues = self.issues
+        let emphasized = gridFocused || focus != nil
         let columns = columns(hasOffsets: rows.contains { $0.notes[.material] != nil })
         VStack(spacing: 0) {
-            header
+            LensTableHeader(design: design, window: window, editor: editor)
             ScrollView([.vertical, .horizontal]) {
                 LazyVStack(spacing: 0, pinnedViews: [.sectionHeaders]) {
                     Section {
                         ForEach(Array(rows.enumerated()), id: \.element.id) { k, row in
-                            gridRow(row, alternate: k % 2 == 1, columns: columns, rows: rows)
+                            gridRow(row, alternate: k % 2 == 1, columns: columns, rows: rows, issues: issues[row.index] ?? [], emphasized: emphasized)
                         }
                     } header: {
                         LensGridHeader(columns: columns, dragged: $dragged)
@@ -110,40 +116,40 @@ struct LensTableView: View {
         }
     }
 
-    private func gridRow(_ row: LensRow, alternate: Bool, columns: [LensGridColumn], rows: [LensRow]) -> some View {
-        let selected = window.selection == row.id
-        return LensGridLayout(columns: columns) {
-            SurfaceLabel(row: row, issues: issues[row.index] ?? []).gridCell()
+    private func gridRow(
+        _ row: LensRow, alternate: Bool, columns: [LensGridColumn], rows: [LensRow], issues: [ValidationIssue], emphasized: Bool
+    ) -> some View {
+        LensGridLayout(columns: columns) {
+            SurfaceLabel(row: row, issues: issues).gridCell()
             TypeCell(row: row, shape: system.surfaces[row.index].shape, editor: editor).gridCell()
-            column(.comment, row: row, selected: selected, rows: rows)
-            column(.radius, row: row, selected: selected, rows: rows)
-            column(.thickness, row: row, selected: selected, rows: rows)
-            column(.material, row: row, selected: selected, rows: rows)
-            column(.semiDiameter, row: row, selected: selected, rows: rows)
-            column(.conic, row: row, selected: selected, rows: rows)
+            column(.comment, row: row, rows: rows)
+            column(.radius, row: row, rows: rows)
+            column(.thickness, row: row, rows: rows)
+            column(.material, row: row, rows: rows)
+            column(.semiDiameter, row: row, rows: rows)
+            column(.conic, row: row, rows: rows)
         }
         .frame(minHeight: 24)
-        .background {
-            if selected {
-                RoundedRectangle(cornerRadius: 5)
-                    .fill(gridFocused || focus != nil ? Color(nsColor: .selectedContentBackgroundColor) : Color(nsColor: .unemphasizedSelectedContentBackgroundColor))
-            } else if alternate {
-                RoundedRectangle(cornerRadius: 5).fill(Color(nsColor: NSColor.alternatingContentBackgroundColors[1]))
-            }
-        }
-        .environment(\.backgroundProminence, selected && (gridFocused || focus != nil) ? .increased : .standard)
+        .modifier(SelectedRow(window: window, id: row.id, alternate: alternate, emphasized: emphasized))
         .contentShape(Rectangle())
-        .simultaneousGesture(TapGesture().onEnded { select(row.id) })
+        // Select on mouse-down, like a table (a tap fires on mouse-up).
+        .simultaneousGesture(
+            DragGesture(minimumDistance: 0)
+                .onChanged { _ in
+                    guard !press.isDown else { return }
+                    press.down(row.id, wasSelected: window.selection == row.id)
+                    select(row.id)
+                }
+                .onEnded { _ in press.isDown = false })
         // A double click edits the radius, unless it landed on a cell (which then edits).
         .simultaneousGesture(TapGesture(count: 2).onEnded { if active?.row != row.id { edit(row.id, rows: rows) } })
         .contextMenu { contextMenu(row.id) }
         .accessibilityElement(children: .contain)
-        .accessibilityAddTraits(selected ? .isSelected : [])
     }
 
     private func select(_ id: SurfaceID) {
-        window.selection = id
-        if active == nil { gridFocused = true }
+        if window.selection != id { window.selection = id }
+        if active == nil && !gridFocused { gridFocused = true }
     }
 
     private func begin(_ cell: CellID?) {
@@ -165,69 +171,30 @@ struct LensTableView: View {
         return .handled
     }
 
-    private var header: some View {
-        HStack(spacing: Space.m) {
-            Text("Lens Data").font(.headline)
-            Text("\(system.surfaces.count - 2) surfaces · stop on \(system.stop) · mm")
-                .font(.caption).foregroundStyle(.secondary)
-            Spacer()
-            if !design.variables.isEmpty {
-                Label("\(design.variables.count) variable\(design.variables.count == 1 ? "" : "s")", systemImage: "v.square")
-                    .font(.caption).foregroundStyle(.tint)
-            }
-            GlassEffectContainer(spacing: Space.s) {
-                HStack(spacing: Space.xs) {
-                    Button("Insert Surface", systemImage: "plus") {
-                        let i = window.selection.flatMap { system.surfaceIndex(of: $0) } ?? system.imageIndex
-                        if let id = editor.insert(at: max(i, 1)) { window.selection = id }
-                    }
-                    .help("Insert a surface before the selection (⇧⌘I)")
-                    Button("Delete Surface", systemImage: "minus") {
-                        if let id = window.selection { window.selection = editor.delete(id) }
-                    }
-                    .help("Delete the selected surface (⌘⌫)")
-                    .disabled(!canDelete)
-                }
-                .labelStyle(.iconOnly)
-                .buttonStyle(.glass)
-                .buttonBorderShape(.circle)
-                .controlSize(.small)
-            }
-        }
-        .padding(.horizontal, Space.l)
-        .padding(.vertical, Space.xs)
-        .frame(minHeight: 36)
-    }
-
-    private var canDelete: Bool {
-        guard let i = window.selection.flatMap({ system.surfaceIndex(of: $0) }) else { return false }
-        return i > 0 && i < system.imageIndex && system.surfaces.count > 3
-    }
-
-    @ViewBuilder private func column(_ c: LensColumn, row: LensRow, selected: Bool, rows: [LensRow]) -> some View {
+    @ViewBuilder private func column(_ c: LensColumn, row: LensRow, rows: [LensRow]) -> some View {
         let shown = row.shown(c)
         Group {
             if shown.count > 1 {
                 // y and x sections side by side, each editable in place.
                 HStack(spacing: Space.s) {
-                    cell(row, shown[0], selected: selected, rows: rows)
-                    cell(row, shown[1], selected: selected, rows: rows)
+                    cell(row, shown[0], rows: rows)
+                    cell(row, shown[1], rows: rows)
                 }
             } else {
-                cell(row, shown[0], selected: selected, rows: rows)
+                cell(row, shown[0], rows: rows)
             }
         }
         .gridCell()
     }
 
-    /// `selected`: whether the row was selected before this click.
-    private func cell(_ row: LensRow, _ c: LensColumn, selected: Bool, rows: [LensRow]) -> some View {
+    private func cell(_ row: LensRow, _ c: LensColumn, rows: [LensRow]) -> some View {
         let id = CellID(row: row.id, column: c)
         return LensCell(
             row: row, column: c, focus: $focus, isActive: active == id,
             completions: c == .material ? workspace.materialNames : [],
             // Like a table: the first click selects the row, the next edits.
-            begin: { if selected { begin(id) } },
+            click: { if press.wasSelected(row.id) { begin(id) } },
+            begin: { begin(id) },
             end: { if active == id { active = nil } },
             cancel: { begin(nil) },
             commit: { text in commit(row, c, text) },
@@ -301,6 +268,96 @@ struct LensTableView: View {
     }
 }
 
+/// The last mouse-down on a lens row: whether that row was already
+/// selected, so the click's mouse-up edits the cell (second click) or not
+/// (first click). A plain object: it is read in gestures, never in a body.
+final class RowPress {
+    private var row: SurfaceID?
+    private var rowWasSelected = false
+    var isDown = false
+
+    func down(_ id: SurfaceID, wasSelected: Bool) {
+        row = id
+        rowWasSelected = wasSelected
+        isDown = true
+    }
+
+    func wasSelected(_ id: SurfaceID) -> Bool { row == id && rowWasSelected }
+}
+
+/// A lens row's selection highlight. The modifier alone reads the
+/// selection, so a click updates the two highlights, not the rows.
+private struct SelectedRow: ViewModifier {
+    let window: WindowState
+    let id: SurfaceID
+    let alternate: Bool
+    let emphasized: Bool
+
+    func body(content: Content) -> some View {
+        let selected = window.selection == id
+        content
+            .background {
+                if selected {
+                    RoundedRectangle(cornerRadius: 5)
+                        .fill(emphasized ? Color(nsColor: .selectedContentBackgroundColor) : Color(nsColor: .unemphasizedSelectedContentBackgroundColor))
+                } else if alternate {
+                    RoundedRectangle(cornerRadius: 5).fill(Color(nsColor: NSColor.alternatingContentBackgroundColors[1]))
+                }
+            }
+            .environment(\.backgroundProminence, selected && emphasized ? .increased : .standard)
+            .accessibilityAddTraits(selected ? .isSelected : [])
+    }
+}
+
+/// The lens table's title bar: counts and the insert / delete buttons.
+private struct LensTableHeader: View {
+    let design: DesignDocument
+    let window: WindowState
+    let editor: LensEditor
+
+    private var system: OpticalSystem { design.system }
+
+    var body: some View {
+        HStack(spacing: Space.m) {
+            Text("Lens Data").font(.headline)
+            Text("\(system.surfaces.count - 2) surfaces · stop on \(system.stop) · mm")
+                .font(.caption).foregroundStyle(.secondary)
+            Spacer()
+            if !design.variables.isEmpty {
+                Label("\(design.variables.count) variable\(design.variables.count == 1 ? "" : "s")", systemImage: "v.square")
+                    .font(.caption).foregroundStyle(.tint)
+            }
+            GlassEffectContainer(spacing: Space.s) {
+                HStack(spacing: Space.xs) {
+                    Button("Insert Surface", systemImage: "plus") {
+                        let i = window.selection.flatMap { system.surfaceIndex(of: $0) } ?? system.imageIndex
+                        if let id = editor.insert(at: max(i, 1)) { window.selection = id }
+                    }
+                    .help("Insert a surface before the selection (⇧⌘I)")
+                    Button("Delete Surface", systemImage: "minus") {
+                        if let id = window.selection { window.selection = editor.delete(id) }
+                    }
+                    .help("Delete the selected surface (⌘⌫)")
+                    .disabled(!canDelete)
+                }
+                .labelStyle(.iconOnly)
+                .buttonStyle(.glass)
+                .buttonBorderShape(.circle)
+                .controlSize(.small)
+            }
+        }
+        .padding(.horizontal, Space.l)
+        .padding(.vertical, Space.xs)
+        .frame(minHeight: 36)
+    }
+
+    private var canDelete: Bool {
+        guard let i = window.selection.flatMap({ system.surfaceIndex(of: $0) }) else { return false }
+        return i > 0 && i < system.imageIndex && system.surfaces.count > 3
+    }
+
+}
+
 /// `OBJ`, `1`, `STO`, …, `IMA`; the stop gets the aperture symbol.
 private struct SurfaceLabel: View {
     let row: LensRow
@@ -354,6 +411,9 @@ private struct LensCell: View {
     var focus: FocusState<CellID?>.Binding
     let isActive: Bool
     let completions: [String]
+    /// A click on the value (edits only on the row's second click).
+    let click: () -> Void
+    /// Edits the cell.
     let begin: () -> Void
     let end: () -> Void
     /// Leaves the cell, back to row selection.
@@ -414,10 +474,12 @@ private struct LensCell: View {
                 .lineLimit(1)
                 .frame(maxWidth: .infinity, alignment: column.isNumeric ? .trailing : .leading)
                 .contentShape(Rectangle())
-                .onTapGesture(perform: begin)
+                .onTapGesture(perform: click)
                 .accessibilityLabel(accessibilityTitle)
                 .accessibilityValue(display)
                 .accessibilityAddTraits(.isButton)
+                // Pressed by an assistive app (no mouse-down on the row): edit.
+                .accessibilityAction(.default, begin)
                 .accessibilityAction(named: "Edit", begin)
         }
     }

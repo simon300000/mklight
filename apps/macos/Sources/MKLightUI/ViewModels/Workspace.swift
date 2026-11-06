@@ -144,7 +144,8 @@ public final class Workspace {
     /// Analyses a pane can show: everything except design jobs and
     /// internal ones, grouped by category in the engine's order.
     public var paneAnalyses: [AnalysisDescriptor] {
-        descriptors.filter { !["optimization", "diagnostic"].contains($0.category) && $0.name != "layout" }
+        // `ray_grid` is raw ray data for scripts (no plot): the spot diagram shows it.
+        descriptors.filter { !["optimization", "diagnostic"].contains($0.category) && !["layout", "ray_grid"].contains($0.name) }
     }
 
     public var isBusy: Bool { allPanes.contains(where: \.isRunning) }
@@ -170,6 +171,10 @@ public final class Workspace {
     /// saved with the engine's defaults (which show no blur) takes the
     /// starting patch, PSF and pupil sampling, and waits for Update.
     private func migrateSavedPanes() {
+        // A Glass Data pane without a glass would only fail.
+        for p in panes where p.analysis == "glass_info" && p.settings["name"]?.string == nil {
+            p.setSettings(p.settings.merging(startingSettings(p.analysis)) { a, _ in a })
+        }
         for p in panes where p.analysis == "image_simulation" && p.output == nil && !p.isRunning {
             if let m = ImageSimulationSettings.migrated(p.settings) {
                 p.setSettings(m)
@@ -230,6 +235,8 @@ public final class Workspace {
         switch analysis {
         case "image_simulation": ImageSimulationSettings.starting(defaults: descriptor(analysis)?.defaultSettings)
         case "spot_diagram": Self.spotStartingSettings
+        // The engine needs a glass: the design's first catalogue glass.
+        case "glass_info": firstGlass.map { ["name": .string($0)] } ?? [:]
         default: [:]
         }
     }
@@ -240,6 +247,14 @@ public final class Workspace {
     nonisolated public static let spotStartingSettings: [String: JSONValue] = [
         "through_focus": .object(["min": .null, "max": .null, "steps": .integer(3)])
     ]
+
+    /// The first catalogue glass of the design, in surface order.
+    private var firstGlass: String? {
+        designSystem?.surfaces.lazy.compactMap { s -> String? in
+            if case .catalog(_, let name, _) = s.material { return name }
+            return nil
+        }.first ?? materialNames.first
+    }
 
     /// Long-running analyses wait for an explicit re-run by default.
     static func autoUpdateDefault(_ analysis: String) -> Bool {

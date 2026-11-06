@@ -29,9 +29,12 @@ struct InspectorView: View {
         Group {
             switch window.inspectorTab {
             case .surface:
-                if let id = window.selection, let i = design.system.surfaceIndex(of: id) {
+                if let id = window.inspectedSurface, let i = design.system.surfaceIndex(of: id) {
+                    // Updated in place for another surface, not rebuilt: its
+                    // fields follow their values, and the few views with
+                    // per-surface state are keyed by the surface below.
+                    // (Rebuilding the form cost ~200 ms per click.)
                     SurfaceInspector(design: design, workspace: workspace, window: window, index: i)
-                        .id(id)
                 } else {
                     ContentUnavailableView(
                         "No Surface Selected", systemImage: "cursorarrow.click",
@@ -102,7 +105,7 @@ struct SurfaceInspector: View {
                     edit("Change Comment") { $0.label = v }
                 }
             }
-            if type.placementFirst { PlacementSection(surface: surface, edit: edit, variable: variable) }
+            if type.placementFirst { PlacementSection(surface: surface, edit: edit, variable: variable).id(surface.id) }
             if case .diffractive(let base, _) = surface.shape {
                 Section("Base Shape") {
                     Picker("Base", selection: Binding(get: { base.kind }, set: setDiffractiveBase)) {
@@ -119,7 +122,7 @@ struct SurfaceInspector: View {
                     Section {
                         ForEach(section.choices) { c in choiceField(c) }
                         ForEach(params) { p in paramField(p) }
-                        if let list { CoefficientRows(list: list, surface: surface, edit: edit, variable: variable) }
+                        if let list { CoefficientRows(list: list, surface: surface, edit: edit, variable: variable).id(surface.id) }
                     } header: {
                         Text(section.title)
                     } footer: {
@@ -174,6 +177,7 @@ struct SurfaceInspector: View {
                         }
                         if case .catalog = surface.material {
                             MeltOffsetRows(surface: surface, system: system, workspace: workspace, edit: edit, variable: variable)
+                                .id(surface.id)
                         }
                         if case .model(let nd, let vd, let dpgf) = surface.material {
                             NumberField(title: "n_d", value: nd, variable: variable(.modelNd(surface: surface.id))) { v in
@@ -189,7 +193,7 @@ struct SurfaceInspector: View {
             if !surface.isCoordinateBreak {
                 ApertureSection(surface: surface, autoValue: semiDiameter, edit: edit, variable: variable)
             }
-            if !type.placementFirst && !isEnd { PlacementSection(surface: surface, edit: edit, variable: variable) }
+            if !type.placementFirst && !isEnd { PlacementSection(surface: surface, edit: edit, variable: variable).id(surface.id) }
             if !isEnd && !surface.isCoordinateBreak {
                 Section("Coating") {
                     Picker("Coating", selection: Binding(get: { surface.coating ?? "" }, set: { v in edit("Change Coating") { $0.coating = v.isEmpty ? nil : v } })) {
@@ -205,7 +209,7 @@ struct SurfaceInspector: View {
 
     /// The drawn semi-diameter: fixed, or the engine's automatic one.
     private var semiDiameter: Double? {
-        surface.semiDiameter.fixedValue ?? EngineLayout.autoSemiDiameters(EngineLayout.scene(from: workspace.layout.output))[surface.id]
+        surface.semiDiameter.fixedValue ?? workspace.layout.autoSemiDiameters[surface.id]
     }
 
     private var primaryWavelength: Double {

@@ -54,7 +54,12 @@ struct NumberField: View {
             .help(help)
         }
         .onAppear { text = formatted }
-        .onChange(of: value) { _, _ in if !focused { text = formatted } }
+        .onChange(of: value) { _, _ in
+            if !focused {
+                text = formatted
+                error = nil
+            }
+        }
         .overlay(alignment: .bottomTrailing) {
             if let error { Text(error).font(.caption2).foregroundStyle(.red).offset(y: 12) }
         }
