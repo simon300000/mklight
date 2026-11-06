@@ -196,7 +196,9 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 PLIST
 plutil -lint "$APP/Contents/Info.plist" >/dev/null
 
-# Icon placeholder: drop an AppIcon.icns into apps/macos/Resources to use it.
+# App icon: apps/macos/Resources/AppIcon.icns, built from AppIcon.svg with
+# rsvg-convert (16-512 pt at 1x and 2x into AppIcon.iconset) and
+# `iconutil -c icns`.
 if [[ -f "$PKG/Resources/AppIcon.icns" ]]; then
   cp "$PKG/Resources/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
   /usr/libexec/PlistBuddy -c "Add :CFBundleIconFile string AppIcon" "$APP/Contents/Info.plist"

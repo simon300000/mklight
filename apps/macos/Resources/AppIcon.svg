@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" fill="none">
+  <title>Element Stack — MKLight icon concept 6</title>
+  <desc>Three translucent optical elements sit along a diagonal beam, suggesting a sequential lens prescription.</desc>
+  <defs>
+    <path id="tile" d="M312 100H712C856 100 924 168 924 312V712C924 856 856 924 712 924H312C168 924 100 856 100 712V312C100 168 168 100 312 100Z"/>
+    <clipPath id="clip"><use href="#tile"/></clipPath>
+    <linearGradient id="base" x1="217" y1="117" x2="812" y2="928" gradientUnits="userSpaceOnUse"><stop stop-color="#62658F"/><stop offset=".5" stop-color="#343E71"/><stop offset="1" stop-color="#171F48"/></linearGradient>
+    <radialGradient id="ambient" cx="0" cy="0" r="1" gradientTransform="translate(288 182) rotate(48) scale(835 604)" gradientUnits="userSpaceOnUse"><stop stop-color="#DDD9FF" stop-opacity=".24"/><stop offset="1" stop-color="#A4A1F3" stop-opacity="0"/></radialGradient>
+    <linearGradient id="rim" x1="224" y1="131" x2="771" y2="921" gradientUnits="userSpaceOnUse"><stop stop-color="#EFEBFF" stop-opacity=".72"/><stop offset=".45" stop-color="#C3BEF9" stop-opacity=".14"/><stop offset="1" stop-color="#C2C6FF" stop-opacity=".39"/></linearGradient>
+    <linearGradient id="blue-glass" x1="-79" y1="-159" x2="89" y2="171" gradientUnits="userSpaceOnUse"><stop stop-color="#E3FBFF" stop-opacity=".86"/><stop offset=".21" stop-color="#8DE1F3" stop-opacity=".55"/><stop offset=".5" stop-color="#61B7DB" stop-opacity=".2"/><stop offset=".78" stop-color="#92E7FF" stop-opacity=".42"/><stop offset="1" stop-color="#D4F9FF" stop-opacity=".8"/></linearGradient>
+    <linearGradient id="violet-glass" x1="-87" y1="-170" x2="75" y2="172" gradientUnits="userSpaceOnUse"><stop stop-color="#F8F0FF" stop-opacity=".9"/><stop offset=".23" stop-color="#B4B1F9" stop-opacity=".53"/><stop offset=".51" stop-color="#9A9DE8" stop-opacity=".18"/><stop offset=".8" stop-color="#C4CDFF" stop-opacity=".52"/><stop offset="1" stop-color="#E7E3FF" stop-opacity=".88"/></linearGradient>
+    <linearGradient id="edge" x1="-62" y1="-170" x2="79" y2="179" gradientUnits="userSpaceOnUse"><stop stop-color="#FFF" stop-opacity=".94"/><stop offset=".48" stop-color="#B9DDFF" stop-opacity=".3"/><stop offset="1" stop-color="#E5EDFF" stop-opacity=".82"/></linearGradient>
+    <linearGradient id="beam" x1="218" y1="657" x2="812" y2="360" gradientUnits="userSpaceOnUse"><stop stop-color="#A5E9F3" stop-opacity=".52"/><stop offset=".46" stop-color="#FFF9DF"/><stop offset="1" stop-color="#FFE9BB" stop-opacity=".91"/></linearGradient>
+    <filter id="shadow" x="-.3" y="-.3" width="1.6" height="1.7" color-interpolation-filters="sRGB"><feDropShadow dx="0" dy="18" stdDeviation="17" flood-color="#161632" flood-opacity=".24"/></filter>
+    <filter id="element-shadow" x="-.7" y="-.3" width="2.7" height="1.8" color-interpolation-filters="sRGB"><feDropShadow dx="11" dy="18" stdDeviation="11" flood-color="#111937" flood-opacity=".35"/></filter>
+    <filter id="beam-glow" x="-.2" y="-.3" width="1.4" height="1.6" color-interpolation-filters="sRGB"><feGaussianBlur stdDeviation="9"/></filter>
+    <!-- Each symbol is hand drawn; the shared profile is repeated as physical glass. -->
+    <g id="element">
+      <path d="M0-197C51-197 87-109 87 0S51 197 0 197L19 197C70 197 107 109 107 0S70-197 19-197Z" fill="#B2CFFF" fill-opacity=".25" stroke="#DBECFF" stroke-opacity=".46" stroke-width="3"/>
+      <ellipse rx="87" ry="197" fill="inherit" stroke="url(#edge)" stroke-width="5"/>
+      <path d="M-7-179C-49-162-70-82-70-13" stroke="#F6FFFF" stroke-opacity=".73" stroke-width="8" stroke-linecap="round"/>
+      <path d="M19 176C54 146 71 82 71 30" stroke="#DAE8FF" stroke-opacity=".57" stroke-width="4" stroke-linecap="round"/>
+    </g>
+  </defs>
+  <use href="#tile" fill="url(#base)" filter="url(#shadow)"/>
+  <g clip-path="url(#clip)">
+    <use href="#tile" fill="url(#ambient)"/>
+    <path d="M167 335C250 176 471 136 681 156" stroke="#F5EFFF" stroke-opacity=".065" stroke-width="85" stroke-linecap="round"/>
+    <path d="M230 709L803 423" stroke="#101636" stroke-opacity=".18" stroke-width="90" stroke-linecap="round" filter="url(#beam-glow)"/>
+    <path d="M218 659L807 364" stroke="url(#beam)" stroke-width="24" stroke-linecap="round" opacity=".4" filter="url(#beam-glow)"/>
+    <path d="M218 659L807 364" stroke="url(#beam)" stroke-width="9" stroke-linecap="round"/>
+    <g transform="translate(361 588) rotate(-26.565)" filter="url(#element-shadow)"><use href="#element" fill="url(#blue-glass)"/></g>
+    <g transform="translate(510 513) rotate(-26.565)" filter="url(#element-shadow)"><use href="#element" fill="url(#violet-glass)"/></g>
+    <g transform="translate(659 438) rotate(-26.565)" filter="url(#element-shadow)"><use href="#element" fill="url(#blue-glass)"/></g>
+    <!-- Small light deposits make the optical axis visible through the glass. -->
+    <path d="M326 605L399 568M475 531L548 494M624 456L697 419" stroke="#FBFFE9" stroke-opacity=".89" stroke-width="10" stroke-linecap="round"/>
+    <circle cx="807" cy="364" r="9" fill="#FFF6D7"/>
+  </g>
+  <use href="#tile" stroke="url(#rim)" stroke-width="3"/>
+</svg>
