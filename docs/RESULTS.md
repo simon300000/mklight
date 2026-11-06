@@ -1383,7 +1383,7 @@ Settings:
 | `rings` | integer | `6` |  | 1 … 512; Density of the pupil pattern (rings, or grid half-count). |
 | `seed` | integer | `1` |  | ≥ 0; Philox seed of the random and dithered patterns. |
 | `spectrum` | object\|null |  |  | Optional run-local spectrum; absent/null keeps the design. kind: explicit (wavelengths:[{um,weight}]), photopic, scotopic, blackbody (temperature_k), sensor (table:[[um,response]]). Presets/sensor take sampling. Primary is nearest the energy-weighted mean (first on ties). |
-| `through_focus` | object\|null | `null` |  | {"min": mm, "max": mm, "steps": n} or null. |
+| `through_focus` | object\|null | `null` |  | Spot statistics at defocus planes, and the slope of each point for drawing them; null samples the image surface only. |
 | `wavelengths` | object | `{"type":"all"}` |  | Wavelength selection: {"type": "all"}, {"type": "primary"}, {"type": "index", "index": i} or {"type": "list", "indices": [i, …]} (system wavelength indices). |
 
 Result (`result` in the envelope):
@@ -1428,7 +1428,7 @@ Result (`result` in the envelope):
 | `fields[].polychromatic.vignetted_fraction` | nf |  | Weighted fraction of launched rays that did not arrive. |
 | `fields[].reference` | [nf; 2] |  | Reference point of the plotted points (image local mm). |
 | `fields[].rms_radius` | nf | mm | Polychromatic RMS radius about the reference. |
-| `fields[].through_focus` (optional) | array<object> |  | Present when through_focus was requested. |
+| `fields[].through_focus` (optional) | array<object> |  | Present when through_focus was requested: one entry per plane, from min to max. |
 | `fields[].through_focus[].defocus` | number | mm |  |
 | `fields[].through_focus[].rms_radius_centroid` | nf | mm |  |
 | `fields[].through_focus[].rms_radius_chief` | nf | mm |  |
@@ -1442,6 +1442,7 @@ Buffers:
 | `points` | f64 | [N, 2] | mm | Ray points (x, y) relative to their field's `reference`, image local frame; empty unless include_points. |
 | `point_field` | u32 | [N] |  | Position of each point's field in `fields`. |
 | `point_wavelength` | u32 | [N] |  | System wavelength index of each point. |
+| `point_slope` | f64 | [N, 2] | mm/mm | Slope (dx/dz, dy/dz) of each point relative to its field's reference: the point at defocus plane d is `points + (d − defocus) · point_slope`. Only with through_focus. |
 
 ### `system_transmission` — System transmission
 
@@ -1455,8 +1456,8 @@ Settings:
 |---|---|---|---|---|
 | `clip` | boolean | `true` |  | Apply apertures (vignetted rays transmit nothing). |
 | `fields` | array | `[]` |  | Normalised field points [{"hx", "hy"}]; empty = the system fields (with their vignetting factors). |
-| `model` | object | `{"type":"unpolarized"}` |  | {"type": "unpolarized"} (product of s/p-averaged interface factors) or {"type": "polarized", "state": …} (polarisation ray tracing). |
-| `pupil` | object | `{"n":32,"type":"grid"}` |  | Pupil sampling: {"type": "grid", "n": n} (n×n grid inside the unit disk, n = 1 or ≥ 3) or {"type": "random", "count": n, "seed": s}. |
+| `model` | object | `{"type":"unpolarized"}` |  | Unpolarized (product of s/p-averaged interface factors) or polarisation ray tracing with an input state. |
+| `pupil` | object | `{"n":32,"type":"grid"}` |  | Pupil sampling: an n×n grid inside the unit disk, or uniform random points. |
 | `spectrum` | object\|null |  |  | Optional run-local spectrum; absent/null keeps the design. kind: explicit (wavelengths:[{um,weight}]), photopic, scotopic, blackbody (temperature_k), sensor (table:[[um,response]]). Presets/sensor take sampling. Primary is nearest the energy-weighted mean (first on ties). |
 | `wavelengths` | array<integer> | `[]` |  | System wavelength indices; empty = all. |
 
@@ -1492,7 +1493,7 @@ Settings:
 | `grid` | integer | `33` |  | 1 … 2049; Pupil grid n (n×n inside the unit disk; 1 or ≥ 3). |
 | `point` | array\|null | `null` |  | Normalised field point [hx, hy] used instead of `field`. |
 | `spectrum` | object\|null |  |  | Optional run-local spectrum; absent/null keeps the design. kind: explicit (wavelengths:[{um,weight}]), photopic, scotopic, blackbody (temperature_k), sensor (table:[[um,response]]). Presets/sensor take sampling. Primary is nearest the energy-weighted mean (first on ties). |
-| `state` | object | `{"type":"unpolarized"}` |  | Input polarisation in the object-space double-pole basis: {"type": "unpolarized"}, {"type": "jones", "e": …} or {"type": "stokes", "s": {"s0", "s1", "s2", "s3"}} (CONVENTIONS §9). |
+| `state` | object | `{"type":"unpolarized"}` |  | Input polarisation in the object-space double-pole basis: unpolarized, a Jones vector or a Stokes vector (CONVENTIONS §9). |
 | `wavelength` | integer\|null | `null` |  | ≥ 0; System wavelength index; null = the primary. |
 
 Result (`result` in the envelope):
@@ -1537,7 +1538,7 @@ Settings:
 
 | key | type | default | unit | notes |
 |---|---|---|---|---|
-| `clip` | object | `{"margin_mm":0.0,"mode":"clear_apertures"}` |  | Clipping apertures: {"mode": "clear_apertures", "margin_mm": m} (clear semi-diameters + margin; the stop at its size), {"mode": "fixed_apertures"} or {"mode": "none"}. |
+| `clip` | object | `{"margin_mm":0.0,"mode":"clear_apertures"}` |  | Clipping apertures: the clear semi-diameters plus a margin (the stop at its size), the fixed apertures, or none. |
 | `enumeration` | object | `{"diffraction_orders":[],"exclude_surfaces":[],"max_diffraction_paths":10000,"max_higher_order_paths":2000,"max_reflections":2,"min_reflectance_product":0.0,"surface_range":null}` |  | Path enumeration: {"max_reflections": 2\|4\|6\|8, "max_higher_order_paths": n, "min_reflectance_product": r, "surface_range": [first, last] \| null, "exclude_surfaces": [i, …], "diffraction_orders": [m, …], "max_diffraction_paths": n}. |
 | `fields` | array<integer> | `[]` |  | System field indices; empty = all fields (unless points are given). |
 | `keep_path_maps` | boolean | `false` |  | Also return every path's map (buffer path_maps). |
@@ -1617,7 +1618,7 @@ Settings:
 
 | key | type | default | unit | notes |
 |---|---|---|---|---|
-| `clip` | object | `{"margin_mm":0.0,"mode":"clear_apertures"}` |  | Clipping apertures: {"mode": "clear_apertures", "margin_mm": m} (clear semi-diameters + margin; the stop at its size), {"mode": "fixed_apertures"} or {"mode": "none"}. |
+| `clip` | object | `{"margin_mm":0.0,"mode":"clear_apertures"}` |  | Clipping apertures: the clear semi-diameters plus a margin (the stop at its size), the fixed apertures, or none. |
 | `enumeration` | object | `{"diffraction_orders":[],"exclude_surfaces":[],"max_diffraction_paths":10000,"max_higher_order_paths":2000,"max_reflections":2,"min_reflectance_product":0.0,"surface_range":null}` |  | Path enumeration: {"max_reflections": 2\|4\|6\|8, "max_higher_order_paths": n, "min_reflectance_product": r, "surface_range": [first, last] \| null, "exclude_surfaces": [i, …], "diffraction_orders": [m, …], "max_diffraction_paths": n}. |
 | `near_focus_factor` | number | `10.0` |  | ≥ 0.0; Ghosts whose spot is at most this many signal diameters are flagged near_focus. |
 | `paths` | array\|null | `null` |  | Explicit paths: reflection arrays, or {reflections, diffraction: [{surface, visit, order}]} with non-selected DOE orders, sorted by (surface, visit). |
@@ -1672,7 +1673,7 @@ Settings:
 | `scene` | object | `{"clear_semi_diameters":[],"default_edge_finish":{"tis":0.05,"type":"lambertian"},"default_edge_margin":1.0,"detector_pixels":[128,128],"include_mechanics":true,"mechanical_specular_reflectance":0.0,"polished_outer_zone":false}` |  | Scene construction (mklight_stray::SceneOptions); clear_semi_diameters is replaced under ghost_partition. |
 | `seed` | integer | `1` |  | ≥ 0; Philox seed; ray i uses stream (seed, i). |
 | `semi_diameters` | object | `{"azimuths":64,"clip":true}` |  | Sizing traces of the automatic clear semi-diameters. |
-| `source` | object | `{"index":0,"margin":0.1,"strength":1.0,"type":"system_field"}` |  | Source: {"type": "system_field", "index", "margin", "strength"}, {"type": "field", "hx", "hy", "margin", "strength"}, {"type": "out_of_field", "angle_x_deg", "angle_y_deg", "margin", "irradiance"} or {"type": "custom", "spec", "reference_flux"}. |
+| `source` | object | `{"index":0,"margin":0.1,"strength":1.0,"type":"system_field"}` |  | Source: a system field, a normalised field point, a collimated out-of-field beam, or (in a file) a custom source spec {type: custom, spec, reference_flux}. |
 | `spectrum` | object\|null |  |  | Optional run-local spectrum; absent/null keeps the design. kind: explicit (wavelengths:[{um,weight}]), photopic, scotopic, blackbody (temperature_k), sensor (table:[[um,response]]). Presets/sensor take sampling. Primary is nearest the energy-weighted mean (first on ties). |
 | `top_signatures` | integer | `20` |  | ≥ 0; Number of path signatures reported. |
 | `transport` | object | `{"chunk_rays":1024,"max_events":512,"mode":{"mode":"weighted","rare_floor":0.02},"roulette_threshold":0.001,"scatter_reflection":true,"scatter_transmission":true,"split_ceiling":2.0}` |  | Monte-Carlo transport controls (mode, max_events, roulette_threshold, split_ceiling, scatter_reflection, scatter_transmission, chunk_rays). |
@@ -1734,7 +1735,7 @@ Settings:
 
 | key | type | default | unit | notes |
 |---|---|---|---|---|
-| `center` | object | `{"type":"centroid"}` |  | Tagged energy centre: {type: reference}, {type: centroid}, {type: peak}, or {type: point, x, y} in mm. |
+| `center` | object | `{"type":"centroid"}` |  | Energy centre: the PSF's reference point, the intensity centroid, the brightest sample, or an explicit image point. |
 | `configuration` | integer | `0` |  | ≥ 0; System configuration index; 0 also selects the base system when there are no configurations. |
 | `fields` | object | `{"type":"all"}` |  | System field selection: all, index or list (tagged by type). |
 | `grid_size` | integer | `0` |  | ≥ 0; Image samples per axis; 0 selects from traced blur and diffraction (cap 2048); Huygens is limited to 1024. |

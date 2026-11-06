@@ -29,6 +29,7 @@ public enum AutoSettings {
         case "focus_range_mm" where analysis == "through_focus_mtf": return .null
         case "spacing_mm" where analysis == "psf": return .null
         case "optics.psf_spacing_mm": return .null
+        case "through_focus.min", "through_focus.max" where analysis == "spot_diagram": return .null
         case "frequencies" where ["mtf_vs_field", "through_focus_mtf"].contains(analysis): return .empty
         default: return nil
         }
@@ -74,6 +75,12 @@ public enum AutoSettings {
             guard let f = output.buffer(ref: j["focus_mm"]) ?? output.buffer(named: "focus_mm"), f.count > 0 else { return nil }
             let half = f.doubles.map(abs).max() ?? .nan
             return half.isFinite ? "±" + String(format: "%.3g", half) : nil
+        case ("spot_diagram", "through_focus"):
+            // The planes the run sampled (`fields[].through_focus[].defocus`).
+            let planes = (j["fields"]?.array?.first?["through_focus"]?.array ?? []).compactMap { $0["defocus"]?.doubleValue }
+            guard let lo = planes.min(), let hi = planes.max(), lo.isFinite, hi.isFinite else { return nil }
+            if abs(lo + hi) <= 1e-9 * max(1, abs(hi)) { return "±" + String(format: "%.3g", hi) }
+            return String(format: "%.3g to %.3g", lo, hi)
         case (_, "pupil.grid"):
             // Wavefront maps report their grids; other analyses do not.
             return range((j["maps"]?.array ?? []).compactMap { $0["grid"]?.doubleValue })

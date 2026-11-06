@@ -29,8 +29,40 @@ pub fn register_all(r: &mut AnalysisRegistry) {
     r.register(Arc::new(PolarizationPupilMap));
 }
 
+/// `state_annotation` as a full property (type and default) for a nested use.
+fn state_annotation_with_default() -> Value {
+    let mut v = state_annotation();
+    v["type"] = json!("object");
+    v["default"] = json!({"type": "unpolarized"});
+    v
+}
+
 fn state_annotation() -> Value {
-    json!({"description": "Input polarisation in the object-space double-pole basis: {\"type\": \"unpolarized\"}, {\"type\": \"jones\", \"e\": …} or {\"type\": \"stokes\", \"s\": {\"s0\", \"s1\", \"s2\", \"s3\"}} (CONVENTIONS §9)."})
+    super::schema::variants(
+        "type",
+        &[
+            ("unpolarized", "Unpolarized", Value::Null),
+            (
+                "jones",
+                "Jones vector",
+                json!({"e": {"type": "object", "default": {"x": [1.0, 0.0], "y": [0.0, 0.0]}, "description": "Complex amplitudes [re, im] of the x and y components.",
+                    "properties": {
+                        "x": {"type": "array", "items": {"type": "number"}, "default": [1.0, 0.0], "description": "E_x [re, im]."},
+                        "y": {"type": "array", "items": {"type": "number"}, "default": [0.0, 0.0], "description": "E_y [re, im]."}}}}),
+            ),
+            (
+                "stokes",
+                "Stokes vector",
+                json!({"s": {"type": "object", "default": {"s0": 1.0, "s1": 0.0, "s2": 0.0, "s3": 0.0}, "description": "S₀ is the input power.",
+                    "properties": {
+                        "s0": {"type": "number", "default": 1.0, "minimum": 0.0},
+                        "s1": {"type": "number", "default": 0.0},
+                        "s2": {"type": "number", "default": 0.0},
+                        "s3": {"type": "number", "default": 0.0}}}}),
+            ),
+        ],
+        "Input polarisation in the object-space double-pole basis: unpolarized, a Jones vector or a Stokes vector (CONVENTIONS §9).",
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -65,8 +97,16 @@ impl Analysis for SystemTransmission {
         settings_from_default::<TransmissionDefaults>(json!({
             "fields": {"description": "Normalised field points [{\"hx\", \"hy\"}]; empty = the system fields (with their vignetting factors)."},
             "wavelengths": {"items": {"type": "integer", "minimum": 0}, "description": "System wavelength indices; empty = all."},
-            "pupil": {"description": "Pupil sampling: {\"type\": \"grid\", \"n\": n} (n×n grid inside the unit disk, n = 1 or ≥ 3) or {\"type\": \"random\", \"count\": n, \"seed\": s}."},
-            "model": {"description": "{\"type\": \"unpolarized\"} (product of s/p-averaged interface factors) or {\"type\": \"polarized\", \"state\": …} (polarisation ray tracing)."},
+            "pupil": super::schema::variants("type", &[
+                ("grid", "Grid", json!({"n": {"type": "integer", "default": 32, "minimum": 1, "maximum": 2049, "description": "Samples per axis inside the unit disk (1 or ≥ 3)."}})),
+                ("random", "Random", json!({
+                    "count": {"type": "integer", "default": 1024, "minimum": 1, "maximum": 10_000_000, "description": "Uniform points on the unit disk."},
+                    "seed": {"type": "integer", "default": 1, "minimum": 0, "description": "Philox seed."}})),
+            ], "Pupil sampling: an n×n grid inside the unit disk, or uniform random points."),
+            "model": super::schema::variants("type", &[
+                ("unpolarized", "Unpolarized", Value::Null),
+                ("polarized", "Polarized", json!({"state": state_annotation_with_default()})),
+            ], "Unpolarized (product of s/p-averaged interface factors) or polarisation ray tracing with an input state."),
             "clip": {"description": "Apply apertures (vignetted rays transmit nothing)."}
         }))
     }

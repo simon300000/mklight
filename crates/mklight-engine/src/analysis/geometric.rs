@@ -236,6 +236,19 @@ fn a_reference() -> Value {
 fn a_count(lo: u64, hi: u64, description: &str) -> Value {
     json!({"minimum": lo, "maximum": hi, "description": description})
 }
+/// The spot diagram's optional through-focus sampling: planes from `min`
+/// to `max`, automatic and symmetric when a bound is null.
+fn through_focus_schema() -> Value {
+    let mut s = settings_from_default::<spot::ThroughFocus>(json!({
+        "min": {"type": ["number", "null"], "unit": "mm", "description": "First plane; null = −Δ, with Δ = max(8 λ N_w², 4 N_w · RMS) from the depth of focus or the geometric blur."},
+        "max": {"type": ["number", "null"], "unit": "mm", "description": "Last plane; null = +Δ."},
+        "steps": {"minimum": 1, "maximum": 100_000, "description": "Planes from min to max (1: min only)."}
+    }));
+    s["type"] = json!(["object", "null"]);
+    s["default"] = Value::Null;
+    s["description"] = json!("Spot statistics at defocus planes, and the slope of each point for drawing them; null samples the image surface only.");
+    s
+}
 
 fn sampling_annotations(extra: Value) -> Value {
     let mut a = json!({
@@ -332,7 +345,7 @@ fn all() -> Vec<Geo> {
                     "pattern": a_pattern(), "rings": a_rings(), "fields": a_fields(),
                     "wavelengths": a_wavelengths(), "reference": a_reference(), "seed": a_seed(),
                     "defocus": {"unit": "mm", "description": "Defocus from the image surface along its local +z."},
-                    "through_focus": {"type": ["object", "null"], "description": "{\"min\": mm, \"max\": mm, \"steps\": n} or null."},
+                    "through_focus": through_focus_schema(),
                     "include_points": {"description": "Return the individual ray points (buffers `points`, `point_field`, `point_wavelength`)."}
                 }))
             },
@@ -1035,7 +1048,7 @@ fn spot_schema() -> Value {
                         ("rms_radius_centroid", nf_u("mm", "")),
                         ("rms_radius_chief", nf_u("mm", "")),
                     ]),
-                    "Present when through_focus was requested.",
+                    "Present when through_focus was requested: one entry per plane, from min to max.",
                 ),
             ),
         ],
@@ -1076,6 +1089,13 @@ fn spot_schema() -> Value {
                 &["N"],
                 "",
                 "System wavelength index of each point.",
+            ),
+            buffer(
+                "point_slope",
+                "f64",
+                &["N", "2"],
+                "mm/mm",
+                "Slope (dx/dz, dy/dz) of each point relative to its field's reference: the point at defocus plane d is `points + (d − defocus) · point_slope`. Only with through_focus.",
             ),
         ],
     )
@@ -1120,15 +1140,15 @@ fn spot_output(mut r: spot::SpotDiagram) -> EngineResult<AnalysisOutput> {
         f["point_range"] = json!(range);
     }
     let n = p.field.len();
-    Ok(output(
-        v,
-        vec![
-            Buffer::new("points", vec![n, 2], BufferData::F64(p.xy)),
-            Buffer::new("point_field", vec![n], BufferData::U32(p.field)),
-            Buffer::new("point_wavelength", vec![n], BufferData::U32(p.wavelength)),
-        ],
-        w,
-    ))
+    let mut buffers = vec![
+        Buffer::new("points", vec![n, 2], BufferData::F64(p.xy)),
+        Buffer::new("point_field", vec![n], BufferData::U32(p.field)),
+        Buffer::new("point_wavelength", vec![n], BufferData::U32(p.wavelength)),
+    ];
+    if !p.slope.is_empty() {
+        buffers.push(Buffer::new("point_slope", vec![n, 2], BufferData::F64(p.slope)));
+    }
+    Ok(output(v, buffers, w))
 }
 
 /// Bitwise buffer equality (NaN payloads and signed zeros included).
@@ -1219,8 +1239,15 @@ fn typed_spot_packing_matches_legacy_envelope() {
                 let got = spot_output(new).unwrap();
                 assert_eq!(got.json, json);
                 assert_eq!(got.warnings, warnings);
-                assert_same_buffers(&got.buffers, &buffers);
+                // The through-focus request adds the slope buffer after
+                // the three the legacy envelope packs.
+                assert_same_buffers(&got.buffers[..3], &buffers);
                 assert_eq!(got.buffers[0].shape[0] > 0, include_points);
+                assert_eq!(got.buffers.len(), 3 + usize::from(include_points));
+                if include_points {
+                    assert_eq!(got.buffers[3].name, "point_slope");
+                    assert_eq!(got.buffers[3].shape, got.buffers[0].shape);
+                }
             }
         }
     }

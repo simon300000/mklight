@@ -31,11 +31,7 @@ fn check(b: &dyn ComputeBackend) {
                     rings: 3,
                     reference,
                     defocus: 0.02,
-                    through_focus: Some(spot::ThroughFocus {
-                        min: -0.1,
-                        max: 0.1,
-                        steps: 3,
-                    }),
+                    through_focus: Some(spot::ThroughFocus::symmetric(0.1, 3)),
                     ..Default::default()
                 };
                 let a = spot::spot_diagram(&t, &s).unwrap();

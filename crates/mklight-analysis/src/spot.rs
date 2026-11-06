@@ -36,6 +36,16 @@
 //! image surface it is the first-order translation of the surface, and a
 //! warning says so. Positive `δ` is along the image frame's `+z`.
 //!
+//! A through-focus request samples `steps` planes from `min` to `max`; a
+//! `null` bound makes the range automatic and symmetric, `±Δ` with
+//! `Δ = max(8 λ N_w², 4 N_w · RMS)` (the depth of focus or the geometric
+//! blur, whichever is larger; `RMS` is the largest polychromatic RMS radius
+//! about the centroid over the fields; 0.1 mm when neither is finite). With
+//! the points, [`FieldSpot::through_focus`] then carries the sampled planes,
+//! and each packed point has its slope relative to the plotted reference
+//! ([`PackedSpotPoints::slope`]), so a point at plane `d` is
+//! `q + (d − defocus) · slope`: a client draws every plane from one trace.
+//!
 //! # Batches from other backends
 //!
 //! The statistics are a reduction of a [`RayBatch`]. [`FieldRays`] holds
@@ -70,11 +80,61 @@ pub enum SpotReference {
 }
 
 /// Through-focus sampling: `steps` defocus values from `min` to `max` (mm).
+/// A `None` bound makes the range automatic (module docs).
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ThroughFocus {
-    pub min: f64,
-    pub max: f64,
+    #[serde(default)]
+    pub min: Option<f64>,
+    #[serde(default)]
+    pub max: Option<f64>,
+    #[serde(default = "default_steps")]
     pub steps: usize,
+}
+
+fn default_steps() -> usize {
+    3
+}
+
+impl Default for ThroughFocus {
+    fn default() -> Self {
+        ThroughFocus {
+            min: None,
+            max: None,
+            steps: 3,
+        }
+    }
+}
+
+impl ThroughFocus {
+    /// A symmetric range `±half`.
+    pub fn symmetric(half: f64, steps: usize) -> Self {
+        ThroughFocus {
+            min: Some(-half),
+            max: Some(half),
+            steps,
+        }
+    }
+
+    /// The automatic half-range of the module docs.
+    pub fn auto_half_range(wavelength_um: f64, working_f_number: f64, max_rms: f64) -> f64 {
+        let n = working_f_number;
+        let depth = 8.0 * wavelength_um * 1e-3 * n * n;
+        let blur = 4.0 * n * max_rms;
+        let half = [depth, blur]
+            .into_iter()
+            .filter(|v| v.is_finite() && *v > 0.0)
+            .fold(0.0, f64::max);
+        if half > 0.0 { half } else { 0.1 }
+    }
+
+    /// The sampled planes (mm), with `auto_half` for an automatic bound.
+    pub fn planes(&self, auto_half: f64) -> Vec<f64> {
+        let (min, max) = match (self.min, self.max) {
+            (Some(a), Some(b)) => (a, b),
+            _ => (-auto_half, auto_half),
+        };
+        linspace(min, max, self.steps)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -230,6 +290,9 @@ pub struct PackedSpotPoints {
     pub field: Vec<u32>,
     /// System wavelength index of the point.
     pub wavelength: Vec<u32>,
+    /// `[dx/dz, dy/dz]` per point relative to the plotted reference (mm per
+    /// mm of defocus); empty unless through-focus was requested.
+    pub slope: Vec<f64>,
     /// `[offset, count]` of each field's rows, in `SpotDiagram::fields` order.
     pub ranges: Vec<[usize; 2]>,
 }
@@ -243,6 +306,7 @@ impl PackedSpotPoints {
             xy: Vec::with_capacity(2 * n),
             field: Vec::with_capacity(n),
             wavelength: Vec::with_capacity(n),
+            slope: Vec::new(),
             ranges: Vec::with_capacity(fields),
         }
     }
@@ -252,6 +316,12 @@ impl PackedSpotPoints {
         self.xy.extend([canonical(x), canonical(y)]);
         self.field.push(field as u32);
         self.wavelength.push(wavelength as u32);
+    }
+    /// The slope of the point just pushed (through-focus requests).
+    #[inline]
+    pub(crate) fn push_slope(&mut self, sx: f64, sy: f64) {
+        let canonical = |v: f64| if v.is_nan() { f64::NAN } else { v };
+        self.slope.extend([canonical(sx), canonical(sy)]);
     }
     /// Close the current field, whose rows start at `start`.
     pub(crate) fn close(&mut self, start: usize) {
@@ -616,8 +686,12 @@ pub(crate) fn validate_spot_settings(settings: &SpotDiagramSettings) -> MkResult
     check_finite("defocus", settings.defocus)?;
     if let Some(tf) = &settings.through_focus {
         check_count("through-focus steps", tf.steps, 1, 100_000)?;
-        check_finite("through-focus range", tf.min)?;
-        check_finite("through-focus range", tf.max)?;
+        if let Some(v) = tf.min {
+            check_finite("through-focus range", v)?;
+        }
+        if let Some(v) = tf.max {
+            check_finite("through-focus range", v)?;
+        }
     }
     Ok(())
 }
@@ -727,6 +801,20 @@ fn spot_reduce(
         warnings.extend(curved_image_warning(tracer));
     }
     let weights: Vec<f64> = wls.iter().map(|&w| sys.wavelength_weights[w]).collect();
+    let fo = tracer.paraxial().primary();
+    let planes = settings.through_focus.map(|tf| {
+        let max_rms = batch
+            .fields
+            .iter()
+            .map(|f| f.moments(delta).rms_centroid)
+            .filter(|v| v.is_finite())
+            .fold(0.0, f64::max);
+        tf.planes(ThroughFocus::auto_half_range(
+            sys.wavelengths_um[sys.primary_wavelength],
+            fo.working_f_number,
+            max_rms,
+        ))
+    });
 
     let mut out = Vec::with_capacity(batch.fields.len());
     for (k, fr) in batch.fields.iter().enumerate() {
@@ -766,14 +854,24 @@ fn spot_reduce(
             SpotReference::Centroid => (m.centroid, m.rms_centroid, m.geo_centroid),
         };
         let reference = [c_abs[0] + ref_rel[0], c_abs[1] + ref_rel[1]];
+        // The reference's own slope: the chief's is the origin of every
+        // slope difference; the centroid's is the weighted mean.
+        let ref_slope = match settings.reference {
+            SpotReference::Centroid => Moments::of(fr.rays.iter().map(|r| (r.dt, r.weight))).centroid,
+            SpotReference::Chief => [0.0, 0.0],
+        };
         let points = if let Some(p) = packed.as_mut() {
             let start = p.len();
             if settings.include_points {
+                let with_slope = planes.is_some();
                 for chunk in fr.rays.chunks(POINT_CHUNK) {
                     ctx.check()?;
                     for r in chunk {
                         let q = r.at(delta);
                         p.push(k, q[0] - ref_rel[0], q[1] - ref_rel[1], wls[r.wl_pos]);
+                        if with_slope {
+                            p.push_slope(r.dt[0] - ref_slope[0], r.dt[1] - ref_slope[1]);
+                        }
                     }
                 }
             }
@@ -821,12 +919,12 @@ fn spot_reduce(
                 }
             })
             .collect();
-        let through_focus = settings
-            .through_focus
-            .map(|tf| {
-                linspace(tf.min, tf.max, tf.steps)
-                    .into_iter()
-                    .map(|d| {
+        let through_focus = planes
+            .as_ref()
+            .map(|planes| {
+                planes
+                    .iter()
+                    .map(|&d| {
                         let m = fr.moments(d);
                         FocusSample {
                             defocus: d,
@@ -851,7 +949,6 @@ fn spot_reduce(
             through_focus,
         });
     }
-    let fo = tracer.paraxial().primary();
     let airy = 1.22 * sys.wavelengths_um[sys.primary_wavelength] * 1e-3 * fo.working_f_number;
     let seed = matches!(
         settings.pattern,

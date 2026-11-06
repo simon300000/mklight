@@ -95,7 +95,22 @@ impl Analysis for StrayLight {
     }
     fn settings_schema(&self) -> Value {
         let mut s = settings_from_default::<EngineStraySettings>(json!({
-            "source": {"description": "Source: {\"type\": \"system_field\", \"index\", \"margin\", \"strength\"}, {\"type\": \"field\", \"hx\", \"hy\", \"margin\", \"strength\"}, {\"type\": \"out_of_field\", \"angle_x_deg\", \"angle_y_deg\", \"margin\", \"irradiance\"} or {\"type\": \"custom\", \"spec\", \"reference_flux\"}."},
+            "source": super::schema::variants("type", &[
+                ("system_field", "System field", json!({
+                    "index": {"type": "integer", "default": 0, "minimum": 0, "description": "System field index (vignetting factors ignored)."},
+                    "margin": {"type": "number", "default": 0.1, "minimum": 0.0, "description": "Relative beam margin beyond the entrance pupil."},
+                    "strength": {"type": "number", "default": 1.0, "minimum": 0.0, "description": "Irradiance normal to the beam (W/mm²) at infinity, intensity (W/sr) for a finite object."}})),
+                ("field", "Field point", json!({
+                    "hx": {"type": "number", "default": 0.0, "description": "Normalised field x."},
+                    "hy": {"type": "number", "default": 0.0, "description": "Normalised field y."},
+                    "margin": {"type": "number", "default": 0.1, "minimum": 0.0, "description": "Relative beam margin beyond the entrance pupil."},
+                    "strength": {"type": "number", "default": 1.0, "minimum": 0.0, "description": "Irradiance normal to the beam (W/mm²) at infinity, intensity (W/sr) for a finite object."}})),
+                ("out_of_field", "Out of field", json!({
+                    "angle_x_deg": {"type": "number", "default": 0.0, "unit": "°", "description": "Beam angle about x."},
+                    "angle_y_deg": {"type": "number", "default": 30.0, "unit": "°", "description": "Beam angle about y."},
+                    "margin": {"type": "number", "default": 0.1, "minimum": 0.0, "description": "Relative margin of the beam over the scene."},
+                    "irradiance": {"type": "number", "default": 1.0, "minimum": 0.0, "unit": "W/mm²", "description": "Irradiance normal to the beam."}})),
+            ], "Source: a system field, a normalised field point, a collimated out-of-field beam, or (in a file) a custom source spec {type: custom, spec, reference_flux}."),
             "rays": {"minimum": 1, "maximum": 1_000_000_000u64, "description": "Source rays."},
             "seed": {"minimum": 0, "description": "Philox seed; ray i uses stream (seed, i)."},
             "classes": {"minimum": 0, "maximum": 31, "description": "Classes in the stray total and maps, a bit mask: 1 primary, 2 ghost, 4 scatter, 8 mechanical, 16 sneak (default 30: all but primary)."},

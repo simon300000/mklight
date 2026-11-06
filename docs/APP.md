@@ -267,12 +267,42 @@ What we took from Apple's current guidance, and how MKLight applies it.
   "Previewing … · not applied" label under the controls.
 * **Analysis panes** (`AnalysisPaneView`): side by side with resizable
   widths. The header has the analysis menu and a one-line state or settings
-  summary, and a glass cluster: Run (Cancel while running), automatic update
-  (bolt), Settings (a popover with the schema-driven form; "Pin in pane"
-  keeps it as a compact strip) and More. The plot is content. The footer has
+  summary (the values that differ from a new pane's, "±0.193 mm · 3
+  planes"), and a glass cluster: Run (Cancel while running), automatic
+  update (bolt), Settings (a toggle) and More. The settings stay closed
+  by default so the plot has the pane; the toggle opens them as a form
+  between the header and the plot (`SettingsPanel`: a grouped card in the
+  content layer that scrolls when long, with Defaults and Done), and
+  whether a pane's settings are open is saved with the layout
+  (`ui.settings_visible`). The plot is content. The footer has
   the key numbers and a backend badge (CPU · f64 neutral, GPU · f32 in the
   accent, an orange mark for warnings or a fallback, with their count when
   there are several kinds) that opens the run details.
+  * *Settings from the schema* (`SettingControls`, `SettingsBar`): every
+    control is chosen from the engine's settings schema alone, so no
+    setting is ever typed as JSON. Scalars are number fields (with units
+    and bounds), toggles, pickers and text fields; `{"type": …}` field and
+    wavelength selections and index settings are menus of the system's
+    fields, wavelengths and surfaces; two-number arrays are pairs
+    (`[min, max]` ranges and `[x, y]` points that may be null have an
+    automatic state); integer lists are check-mark menus of the fields,
+    wavelengths or surfaces (empty: all); number lists are comma-separated
+    fields; arrays of same-shaped rows (`[{"hx", "hy"}]`, `[[r, θ]]`) are
+    small tables in a popover. An object with known properties (the
+    schema's `properties`, or the keys of its default) is a group of rows
+    under its label, with an on/off switch when null is allowed (the MTF
+    detector); a tagged union, which the engine publishes as `oneOf`
+    alternatives whose tag is a `const` (`schema::variants`: the
+    transmission pupil sampling and model, the polarisation state, the
+    encircled-energy centre, the stray-light source, the ghost clipping),
+    is a picker of the variants followed by the chosen variant's own rows.
+    The spectrum, the wave pupil sampling, the MTF frequencies, the image
+    source and optics, the sensor CRA limit and the spot diagram's
+    through-focus keep dedicated controls. Settings with no sensible
+    control (availability overrides, explicit ghost path lists) are left
+    out of the form and keep their value. `SettingsSchemaTests` and
+    `FFISettingsSchemaTests` check the mapping, the latter over every
+    analysis the engine lists.
   * *Narrow panes* (checked at about 240 pt): the header folds Update and
     Settings into More first, then sets the title a type step smaller,
     then abbreviates it (`RI Map`, `CRA`, `Pupil Aberr.`; the full title
@@ -303,7 +333,7 @@ What we took from Apple's current guidance, and how MKLight applies it.
     spacing, the MTF frequency limit, the fixed frequencies of MTF vs field
     and through-focus MTF, the through-focus range and the image
     simulation's PSF window and spacing from the system when they are 0,
-    null or empty (docs/WAVE.md). The settings bar and popover show such a
+    null or empty (docs/WAVE.md). The settings form shows such a
     setting as "Auto (n)" with the value the last run used, read from its
     result (`Auto (282–371)` for PSF windows that differ by field, `Auto
     (2, 5, 10)` for frequencies, `Auto (±0.437)` for a focus range), never
@@ -372,10 +402,27 @@ What we took from Apple's current guidance, and how MKLight applies it.
   field, resampled in linear light and sent as a buffer, and the project
   keeps only its path. The footer has the pixel size, the largest distortion and
   the lowest relative illumination of the field mapping, which a popover
-  lists node by node. The settings bar has compact controls for two-number
+  lists node by node. The settings form has compact controls for two-number
   settings (grid, extent, size; a field point such as grid distortion's
-  `field_center` reads "Centre Hx … Hy …" and accepts signed values), a table for the sensor CRA limit and a
+  `field_center` reads "Hx … Hy …" and accepts signed values), a table for the sensor CRA limit and a
   source menu.
+* **Spot diagram** (`SpotGrid`, `SpotGridView`): a field × focus grid,
+  fields as rows and focus planes as columns, so the blur before, on and
+  after focus is visible at once. A new pane samples three planes over the
+  engine's automatic range (`through_focus: {min: null, max: null, steps:
+  3}`; Δ = max(8 λ N², 4 N · RMS), the depth of focus or the geometric
+  blur); the settings form has the through-focus control (off, or ±Δ with
+  "Auto (0.193)" and the number of planes, 1 to 15). The engine returns
+  the points once, at the base defocus, with a `point_slope` buffer, and
+  the view places every point on every plane as `points + (d − defocus) ·
+  slope` in its initialiser, never in `body`. Column headers name the
+  plane, row headers the field, each cell its RMS about the reference
+  from the engine's per-plane statistics. The box scale is common to the
+  grid or per field (a small segmented control), stated under the grid.
+  Markers are sized by density and cell size (`SpotMarker.style`: about
+  1 to 2.5 pt across, more translucent in dense patterns) and drawn as one
+  path per wavelength. All columns stay side by side; rows scroll, cells
+  are 48 to 420 pt, and the pane scrolls sideways only below 48 pt.
 * **Run-local spectrum.** Every analysis whose schema has `spectrum` shows
   a spectrum control (`SpectrumControl`) in its settings popover, with a
   compact "Spectrum: …" button in the pinned bar: the design's wavelengths

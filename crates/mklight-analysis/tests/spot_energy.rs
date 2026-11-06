@@ -76,8 +76,8 @@ fn defocused_ideal_lens_spot_is_the_scaled_pupil() {
         &SpotDiagramSettings {
             include_points: false,
             through_focus: Some(ThroughFocus {
-                min: -d,
-                max: 0.0,
+                min: Some(-d),
+                max: Some(0.0),
                 steps: 3,
             }),
             ..Default::default()
@@ -429,11 +429,7 @@ fn defocus_on_a_curved_image_surface_warns_everywhere() {
     };
     assert!(!curved(&spot(0.0, None)));
     assert!(curved(&spot(0.5, None)));
-    let tf = ThroughFocus {
-        min: -0.1,
-        max: 0.1,
-        steps: 3,
-    };
+    let tf = ThroughFocus::symmetric(0.1, 3);
     assert!(curved(&spot(0.0, Some(tf))));
     let ee = |defocus: f64| {
         encircled_energy(
@@ -668,4 +664,61 @@ fn best_focus_warns_when_not_converged_or_at_the_range_edge() {
     assert!(b.defocus.abs() < 1e-6 && has(&b, "edge of the given search range"));
     let b = best_focus(&t, &BestFocusSettings::default()).unwrap();
     assert!(b.converged && b.run_info.warnings.is_empty());
+}
+
+/// The packed slopes place every point on any through-focus plane: the RMS
+/// of `q + (d − defocus) · slope` about the reference equals the plane's
+/// `rms_radius_*` sample, on the CPU and the GPU, for both references; an
+/// automatic range is symmetric and spans more than the depth of focus.
+#[test]
+fn through_focus_slopes_reproduce_the_plane_statistics() {
+    use mklight_analysis::spot::{SpotReference, spot_diagram_packed_job};
+    use mklight_core::JobContext;
+    let t = mklight_analysis::tracer_for(mklight_core::samples::cooke_triplet()).unwrap();
+    let ctx = JobContext::new();
+    let gpu = mklight_gpu::CpuF32Backend::new();
+    for reference in [SpotReference::Chief, SpotReference::Centroid] {
+        for tf in [ThroughFocus::symmetric(0.08, 3), ThroughFocus::default()] {
+            let s = SpotDiagramSettings {
+                defocus: 0.02,
+                reference,
+                through_focus: Some(tf),
+                ..Default::default()
+            };
+            let results = [
+                spot_diagram_packed_job(&t, &s, &ctx).unwrap(),
+                mklight_analysis::gpu::spot_diagram_packed_job(&gpu, &t, &s, &ctx).unwrap(),
+            ];
+            for r in &results {
+                let p = r.packed_points.as_ref().unwrap();
+                assert_eq!(p.slope.len(), p.xy.len());
+                let planes: Vec<f64> = r.fields[0].through_focus.iter().map(|f| f.defocus).collect();
+                assert_eq!(planes.len(), 3);
+                if tf.min.is_none() {
+                    assert!((planes[0] + planes[2]).abs() < 1e-12 && planes[1] == 0.0);
+                    let n = t.paraxial().primary().working_f_number;
+                    assert!(planes[2] >= 8.0 * 0.5875618e-3 * n * n);
+                }
+                for (f, range) in r.fields.iter().zip(&p.ranges) {
+                    for sample in &f.through_focus {
+                        let e = sample.defocus - s.defocus;
+                        let (mut sw, mut sq) = (0.0, 0.0);
+                        for i in range[0]..range[0] + range[1] {
+                            let w = t.system().wavelength_weights[p.wavelength[i] as usize];
+                            let x = p.xy[2 * i] + e * p.slope[2 * i];
+                            let y = p.xy[2 * i + 1] + e * p.slope[2 * i + 1];
+                            sw += w;
+                            sq += w * (x * x + y * y);
+                        }
+                        let expected = match reference {
+                            SpotReference::Chief => sample.rms_radius_chief,
+                            SpotReference::Centroid => sample.rms_radius_centroid,
+                        };
+                        let got = (sq / sw).sqrt();
+                        assert!((got - expected).abs() < 1e-6 * expected.max(1e-3), "{got} vs {expected}");
+                    }
+                }
+            }
+        }
+    }
 }

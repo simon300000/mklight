@@ -9,160 +9,72 @@ import SwiftUI
 
 // MARK: - Spot diagram
 
+/// The spot diagram: fields as rows, focus planes as columns (SpotGrid.swift).
 struct SpotDiagramView: View {
-    struct FieldSpot: Identifiable {
-        var id: Int
-        var label: String
-        var rms: Double
-        var geo: Double
-        var points: [(x: Double, y: Double, w: Int)]
-        var vignetted: Double?
-    }
-    let fields: [FieldSpot]
-    let airy: Double
-    let wavelengths: [Int]
-    let wavelengthsUm: [Double]
+    let grid: SpotGrid
+    @State private var scale: SpotScale = .grid
 
     init?(output: AnalysisOutput, context: AnalysisContext) {
-        let j = output.json
-        guard let list = j["fields"]?.array, !list.isEmpty else { return nil }
-        let pts = output.buffer(named: "points"), pw = output.buffer(named: "point_wavelength")
-        wavelengthsUm = j["wavelengths_um"]?.nfArray ?? context.wavelengthsUm
-        wavelengths = j["wavelengths"]?.intArray ?? Array(wavelengthsUm.indices)
-        airy = j["airy_radius"]?.nf ?? .nan
-        fields = list.enumerated().map { k, f in
-            var points: [(Double, Double, Int)] = []
-            if let pts, let range = f["point_range"]?.intArray, range.count == 2 {
-                let lo = max(range[0], 0), hi = min(range[0] + range[1], pts.rows)
-                if lo < hi {
-                    points.reserveCapacity(hi - lo)
-                    for i in lo..<hi {
-                        let w = pw.map { Int($0[i]) } ?? 0
-                        points.append((pts[i * 2], pts[i * 2 + 1], w))
-                    }
-                }
-            }
-            let index = f["field"]?.int ?? k
-            return FieldSpot(
-                id: index, label: "Field \(index + 1) · " + context.fieldLabel(f["field_value"]?.nfArray),
-                rms: f["rms_radius"]?.nf ?? .nan, geo: f["geo_radius"]?.nf ?? .nan,
-                points: points.map { (x: $0.0, y: $0.1, w: $0.2) },
-                vignetted: f[path: "polychromatic", "vignetted_fraction"]?.nf)
-        }
+        guard let grid = SpotGrid(output: output, context: context) else { return nil }
+        self.grid = grid
     }
 
-    /// Columns and cell size that show every field as large as possible
-    /// (each cell is a square plot plus two text lines).
-    static func grid(count: Int, size: CGSize) -> (Int, CGFloat) {
-        var best = (1, CGFloat(60))
-        for cols in 1...max(count, 1) {
-            let rows = Int(ceil(Double(count) / Double(cols)))
-            let w = (size.width - CGFloat(cols - 1) * Space.m) / CGFloat(cols)
-            // Each cell: its title and two lines of RMS and GEO under the plot.
-            let h = (size.height - CGFloat(rows - 1) * Space.m) / CGFloat(rows) - 50
-            let c = min(w, h)
-            if c > best.1 { best = (cols, c) }
-        }
-        return best
-    }
-
-    /// One scale for every field: the largest GEO radius (or the Airy disk).
-    private var halfWidth: Double {
-        let geo = fields.map(\.geo).filter(\.isFinite).max() ?? 0
-        let a = airy.isFinite ? airy : 0
-        return max(geo, a, 1e-6) * 1.15
-    }
+    /// One row per field.
+    var fields: [SpotGrid.Row] { grid.rows }
 
     var body: some View {
         VStack(alignment: .leading, spacing: Space.s) {
-            FlowLayout(spacing: Space.m) {
-                ForEach(wavelengths, id: \.self) { w in
-                    if wavelengthsUm.indices.contains(w) {
-                        LegendItem(color: Palette.wavelengthColor(wavelengthsUm[w]), label: String(format: "%.4f µm", wavelengthsUm[w]))
-                    }
-                }
-                if airy.isFinite {
-                    LegendItem(color: .secondary, label: "Airy disk \(Fmt.length(airy))", dashed: true)
-                }
-            }
-            GeometryReader { geo in
-                let (cols, cell) = Self.grid(count: fields.count, size: geo.size)
-                ScrollView {
-                    LazyVGrid(columns: Array(repeating: GridItem(.fixed(cell), spacing: Space.m), count: cols), spacing: Space.m) {
-                        ForEach(fields) { f in
-                            SpotCell(field: f, halfWidth: halfWidth, airy: airy, wavelengthsUm: wavelengthsUm, size: max(cell - 4, 60))
+            HStack(alignment: .center, spacing: Space.m) {
+                FlowLayout(spacing: Space.m) {
+                    ForEach(grid.wavelengths, id: \.self) { w in
+                        if grid.wavelengthsUm.indices.contains(w) {
+                            LegendItem(
+                                color: Palette.wavelengthColor(grid.wavelengthsUm[w]),
+                                label: String(format: "%.4f µm", grid.wavelengthsUm[w]))
                         }
                     }
-                    .frame(maxWidth: .infinity)
+                    if grid.airy.isFinite {
+                        LegendItem(color: .secondary, label: "Airy disk \(Fmt.length(grid.airy))", dashed: true)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                if grid.rows.count > 1 {
+                    Picker("Scale", selection: $scale) {
+                        ForEach(SpotScale.allCases) { Text($0.title).tag($0) }
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .controlSize(.mini)
+                    .fixedSize()
+                    .help("Box scale: one for all cells, or one per field")
                 }
             }
-            ScaleNote(halfWidth: halfWidth)
+            SpotGridView(grid: grid, scale: scale)
+            ScaleNote(grid: grid, scale: scale)
         }
         .padding(Space.m)
     }
 }
 
 private struct ScaleNote: View {
-    let halfWidth: Double
+    let grid: SpotGrid
+    let scale: SpotScale
+
     var body: some View {
-        Text("Box half-width \(Fmt.length(halfWidth)), common to all fields")
-            .font(.caption2).foregroundStyle(.secondary)
+        Text(text).font(.caption2).foregroundStyle(.secondary)
     }
-}
 
-private struct SpotCell: View {
-    let field: SpotDiagramView.FieldSpot
-    let halfWidth: Double
-    let airy: Double
-    let wavelengthsUm: [Double]
-    let size: CGFloat
-    @Environment(\.colorScheme) private var scheme
-
-    var body: some View {
-        VStack(spacing: 2) {
-            Text(field.label).font(.caption.weight(.semibold)).lineLimit(1)
-            Canvas { ctx, sz in
-                let s = min(sz.width, sz.height) / 2 / CGFloat(halfWidth)
-                let c = CGPoint(x: sz.width / 2, y: sz.height / 2)
-                ctx.stroke(Path(CGRect(origin: .zero, size: sz)), with: .color(.secondary.opacity(0.25)), lineWidth: 0.5)
-                var cross = Path()
-                cross.move(to: CGPoint(x: c.x, y: 0)); cross.addLine(to: CGPoint(x: c.x, y: sz.height))
-                cross.move(to: CGPoint(x: 0, y: c.y)); cross.addLine(to: CGPoint(x: sz.width, y: c.y))
-                ctx.stroke(cross, with: .color(.secondary.opacity(0.2)), lineWidth: 0.5)
-                if airy.isFinite {
-                    let r = CGFloat(airy) * s
-                    ctx.stroke(
-                        Path(ellipseIn: CGRect(x: c.x - r, y: c.y - r, width: 2 * r, height: 2 * r)),
-                        with: .color(.secondary), style: StrokeStyle(lineWidth: 1, dash: [3, 2]))
-                }
-                let dot: CGFloat = field.points.count > 2000 ? 1.2 : 1.8
-                let dark = scheme == .dark
-                for p in field.points where p.x.isFinite && p.y.isFinite {
-                    let um = wavelengthsUm.indices.contains(p.w) ? wavelengthsUm[p.w] : 0.55
-                    let rgb = Palette.wavelengthRGB(um, dark: dark)
-                    let q = CGPoint(x: c.x + CGFloat(p.x) * s, y: c.y - CGFloat(p.y) * s)
-                    ctx.fill(
-                        Path(ellipseIn: CGRect(x: q.x - dot, y: q.y - dot, width: 2 * dot, height: 2 * dot)),
-                        with: .color(Color(.sRGB, red: rgb.x, green: rgb.y, blue: rgb.z, opacity: 0.85)))
-                }
-            }
-            .frame(width: size, height: size)
-            .accessibilityLabel("\(field.label) spot, RMS \(Fmt.length(field.rms)), GEO \(Fmt.length(field.geo))")
-            // Side by side when they fit, else on two lines.
-            ViewThatFits(in: .horizontal) {
-                HStack(spacing: Space.m) { rms; geo }
-                VStack(spacing: 0) { rms; geo }
-            }
-            .font(.caption2.monospacedDigit())
-            .foregroundStyle(.secondary)
-            .frame(width: size)
+    private var text: String {
+        var s =
+            scale == .grid || grid.rows.count < 2
+            ? "Box half-width \(Fmt.length(grid.halfWidths(.grid).first ?? .nan)), common to all cells"
+            : "Box half-width per field, shown by each row"
+        s += grid.reference == "centroid" ? " · about the centroid" : " · about the chief ray"
+        if grid.planes.count < grid.sampledPlanes {
+            s += " · \(grid.planes.count) of \(grid.sampledPlanes) planes shown"
         }
+        return s
     }
-}
-
-extension SpotCell {
-    fileprivate var rms: some View { Text("RMS \(Fmt.length(field.rms))").lineLimit(1).fixedSize() }
-    fileprivate var geo: some View { Text("GEO \(Fmt.length(field.geo))").lineLimit(1).fixedSize() }
 }
 
 // MARK: - Ray and OPD fans

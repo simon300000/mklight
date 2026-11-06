@@ -227,8 +227,19 @@ public final class Workspace {
     /// The settings a new pane of `analysis` starts with: the engine's
     /// defaults, except where they show nothing useful (image simulation).
     public func startingSettings(_ analysis: String) -> [String: JSONValue] {
-        analysis == "image_simulation" ? ImageSimulationSettings.starting(defaults: descriptor(analysis)?.defaultSettings) : [:]
+        switch analysis {
+        case "image_simulation": ImageSimulationSettings.starting(defaults: descriptor(analysis)?.defaultSettings)
+        case "spot_diagram": Self.spotStartingSettings
+        default: [:]
+        }
     }
+
+    /// A new spot diagram shows each field before, on and after focus: three
+    /// planes over the engine's automatic range (the depth of focus or the
+    /// geometric blur), so the bokeh is visible without any setting.
+    nonisolated public static let spotStartingSettings: [String: JSONValue] = [
+        "through_focus": .object(["min": .null, "max": .null, "steps": .integer(3)])
+    ]
 
     /// Long-running analyses wait for an explicit re-run by default.
     static func autoUpdateDefault(_ analysis: String) -> Bool {

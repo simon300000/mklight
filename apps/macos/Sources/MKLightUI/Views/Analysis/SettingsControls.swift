@@ -3,23 +3,13 @@ import MKLightModel
 import SwiftUI
 import UniformTypeIdentifiers
 
-// Compact settings controls for array and object settings the settings bar
-// would otherwise leave to the JSON editor: two-element numeric arrays
-// (`grid`, `extent`, `size`), the chief-ray sensor limit table and the
-// image simulation source.
+// Compact settings controls for array settings: two-element numeric
+// arrays (`grid`, `extent`, `size`, optional ranges), rows of the same
+// columns as a small table, the chief-ray sensor limit table and the image
+// simulation source.
 
 extension SettingsBar {
-    /// The kind of the settings handled here, or nil.
-    func arrayKind(of f: SettingsField) -> Kind? {
-        let types = Set(f.types).subtracting(["null"])
-        if f.name == "sensor_limit" && types == ["array"] { return .sensorLimit }
-        if f.name == "source" && types == ["object"] && f.defaultValue?["kind"]?.string == "pattern" { return .imageSource }
-        if f.name == "optics" && types == ["object"] && f.defaultValue?["psf_size"] != nil { return .imageOptics }
-        if types == ["array"], let d = f.defaultValue?.array, d.count == 2, d.allSatisfy({ $0.doubleValue != nil }) { return .pair }
-        return nil
-    }
-
-    /// The summary text of a setting handled here ("9 × 9", "2 points").
+    /// The summary text of an array or object setting ("9 × 9", "2 points").
     static func arraySummary(_ f: SettingsField, _ v: JSONValue) -> String? {
         if f.name == "sensor_limit" {
             let n = FieldMapData.sensorLimit(v).count
@@ -34,25 +24,10 @@ extension SettingsBar {
         }
         if let a = v.array, a.count == 2, let x = a[0].doubleValue, let y = a[1].doubleValue {
             if f.name.hasSuffix("center") { return "(\(Fmt.short(x)), \(Fmt.short(y)))" }
+            if f.name.contains("range") { return "\(Fmt.short(x)) to \(Fmt.short(y))" }
             return "\(Fmt.short(x)) × \(Fmt.short(y))"
         }
         return nil
-    }
-
-    @ViewBuilder
-    func arrayControl(_ f: SettingsField, kind: Kind) -> some View {
-        switch kind {
-        case .pair:
-            SettingPairField(field: f, label: Self.label(f), value: pane.value(f.name), set: { pane.set(f.name, $0) })
-        case .sensorLimit:
-            SensorLimitControl(value: pane.value(f.name), help: f.description, set: { pane.set(f.name, $0) })
-        case .imageSource:
-            ImageSourceControl(pane: pane, field: f)
-        case .imageOptics:
-            ImageOpticsControl(pane: pane, field: f)
-        default:
-            EmptyView()
-        }
     }
 }
 
@@ -61,13 +36,19 @@ struct SettingPairField: View {
     let field: SettingsField
     let label: String
     let value: JSONValue?
+    /// Whole numbers (`grid`, `size`); by default when both defaults are.
+    var integer: Bool? = nil
+    /// `null` allowed: both fields empty is the automatic state.
+    var nullable = false
     let set: (JSONValue?) -> Void
     @State private var a = ""
     @State private var b = ""
     @FocusState private var focused: Int?
 
-    /// Integers when the default is (`grid`, `size`).
-    var isInteger: Bool { field.defaultValue?.array?.allSatisfy { if case .integer = $0 { true } else { false } } ?? false }
+    var isInteger: Bool { integer ?? (field.defaultValue?.array?.allSatisfy { if case .integer = $0 { true } else { false } } ?? false) }
+
+    /// `[min, max]` ranges read "from … to".
+    var isRange: Bool { field.name.contains("range") || field.description.lowercased().contains("[min, max]") }
 
     /// A point of the normalised field (`field_center`): `Hx, Hy`, signed.
     var isFieldPoint: Bool { field.name.hasSuffix("center") || field.name.hasSuffix("centre") }
@@ -81,14 +62,15 @@ struct SettingPairField: View {
             let parts = text[r].components(separatedBy: "..").compactMap(Double.init)
             if parts.count == 2, parts[0] <= parts[1] { return parts[0]...parts[1] }
         }
+        if isRange || field.description.contains("signed") { return -1e12...1e12 }
         return isInteger ? 1...1e9 : 1e-9...1e12
     }
 
     var body: some View {
         HStack(spacing: Space.xs) {
-            Text(isFieldPoint ? "Centre Hx" : label).foregroundStyle(.secondary)
+            if isFieldPoint { Text("Hx").foregroundStyle(.secondary) }
             box($a, index: 0)
-            Text(isFieldPoint ? "Hy" : "×").foregroundStyle(.secondary)
+            Text(isFieldPoint ? "Hy" : isRange ? "to" : "×").foregroundStyle(.secondary)
             box($b, index: 1)
             if !field.unit.isEmpty { Text(field.unit).foregroundStyle(.secondary) }
         }
@@ -100,11 +82,11 @@ struct SettingPairField: View {
     }
 
     private func box(_ text: Binding<String>, index: Int) -> some View {
-        TextField(index == 0 ? "x" : "y", text: text)
+        TextField(nullable ? "auto" : index == 0 ? "x" : "y", text: text)
             .textFieldStyle(.roundedBorder)
             .numeric()
             .multilineTextAlignment(.trailing)
-            .frame(width: isInteger ? 40 : 48)
+            .frame(width: nullable ? 52 : isInteger ? 40 : 48)
             .focused($focused, equals: index)
             .onSubmit(commit)
             .onChange(of: focused) { old, new in if old == index && new != index { commit() } }
@@ -123,6 +105,10 @@ struct SettingPairField: View {
     }
 
     private func commit() {
+        if nullable, a.trimmingCharacters(in: .whitespaces).isEmpty, b.trimmingCharacters(in: .whitespaces).isEmpty {
+            if value != nil && value != .null { set(.null) }
+            return
+        }
         guard var x = LensValueParser.number(a), var y = LensValueParser.number(b), x.isFinite, y.isFinite else {
             load()
             return
@@ -135,6 +121,169 @@ struct SettingPairField: View {
         if v != value { set(v) }
         load()
     }
+}
+
+/// Rows of the same scalar columns (`[{"hx", "hy"}, …]` or `[[r, θ], …]`),
+/// edited as a small table in a popover; the row count is the button.
+struct TableSettingControl: View {
+    let field: SettingsField
+    let label: String
+    let columns: [SettingsField]
+    let rowsAreArrays: Bool
+    let value: JSONValue?
+    let set: (JSONValue?) -> Void
+    @State private var open = false
+
+    private var count: Int { value?.array?.count ?? 0 }
+
+    /// What an empty list means, from the description's "empty = …" clause
+    /// ("the system fields"), else "Automatic" or "None".
+    static func emptyTitle(_ f: SettingsField) -> String {
+        if let r = f.description.range(of: #"empty = ([^;(.]+)"#, options: .regularExpression) {
+            let t = f.description[r].dropFirst("empty = ".count).trimmingCharacters(in: .whitespaces)
+            if !t.isEmpty { return t.prefix(1).uppercased() + t.dropFirst() }
+        }
+        return f.nullable ? "Automatic" : "None"
+    }
+
+    var body: some View {
+        Button {
+            open = true
+        } label: {
+            Text(count == 0 ? Self.emptyTitle(field) : count == 1 ? "1 row" : "\(count) rows")
+        }
+        .buttonStyle(.borderless)
+        .help(field.description.isEmpty ? field.title : field.description)
+        .accessibilityLabel(label)
+        .popover(isPresented: $open) {
+            TableSettingEditor(title: label, help: field.description, columns: columns, rowsAreArrays: rowsAreArrays, value: value, set: set)
+                .padding(Space.l)
+                .frame(width: CGFloat(72 * columns.count + 90).clamped(to: 240...520))
+        }
+    }
+}
+
+/// The rows of a table setting: one text field per column, add and delete.
+struct TableSettingEditor: View {
+    struct Row: Identifiable, Equatable {
+        var id = UUID()
+        var cells: [String]
+    }
+    let title: String
+    let help: String
+    let columns: [SettingsField]
+    let rowsAreArrays: Bool
+    let set: (JSONValue?) -> Void
+    @State private var rows: [Row]
+
+    init(title: String, help: String, columns: [SettingsField], rowsAreArrays: Bool, value: JSONValue?, set: @escaping (JSONValue?) -> Void) {
+        self.title = title
+        self.help = help
+        self.columns = columns
+        self.rowsAreArrays = rowsAreArrays
+        self.set = set
+        _rows = State(initialValue: Self.rows(of: value, columns: columns, rowsAreArrays: rowsAreArrays))
+    }
+
+    /// The rows of a value as text, one cell per column.
+    static func rows(of value: JSONValue?, columns: [SettingsField], rowsAreArrays: Bool) -> [Row] {
+        (value?.array ?? []).map { r in
+            Row(cells: columns.enumerated().map { k, c in
+                let v = rowsAreArrays ? r.array.flatMap { k < $0.count ? $0[k] : nil } : r[c.name]
+                return text(v)
+            })
+        }
+    }
+
+    static func text(_ v: JSONValue?) -> String {
+        guard let v else { return "" }
+        if let d = v.doubleValue { return Fmt.short(d) }
+        return v.string ?? v.displayText
+    }
+
+    /// The value of the rows, dropping rows with an unreadable number.
+    static func value(of rows: [Row], columns: [SettingsField], rowsAreArrays: Bool) -> JSONValue {
+        .array(rows.compactMap { r in
+            var cells: [JSONValue] = []
+            for (k, c) in columns.enumerated() {
+                let t = r.cells.indices.contains(k) ? r.cells[k].trimmingCharacters(in: .whitespaces) : ""
+                if c.baseTypes == ["string"] {
+                    cells.append(.string(t))
+                } else if c.baseTypes == ["boolean"] {
+                    cells.append(.bool(["true", "yes", "1", "on"].contains(t.lowercased())))
+                } else {
+                    guard let d = LensValueParser.number(t), d.isFinite else { return nil }
+                    cells.append(c.baseTypes == ["integer"] ? .integer(Int64(d.rounded())) : .number(d))
+                }
+            }
+            return rowsAreArrays ? .array(cells) : .object(Dictionary(uniqueKeysWithValues: zip(columns.map(\.name), cells)))
+        })
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Space.m) {
+            Text(title).font(.headline)
+            if !help.isEmpty {
+                Text(help).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+            Grid(alignment: .leading, horizontalSpacing: Space.s, verticalSpacing: Space.xs) {
+                GridRow {
+                    ForEach(columns) { c in
+                        Text(c.unit.isEmpty ? SettingsBar.label(c) : "\(SettingsBar.label(c)) (\(c.unit))")
+                    }
+                    Color.clear.frame(width: 16, height: 1)
+                }
+                .font(.caption).foregroundStyle(.secondary)
+                ForEach($rows) { $r in
+                    GridRow {
+                        ForEach(columns.indices, id: \.self) { k in
+                            TextField(SettingsBar.label(columns[k]), text: $r.cells[k])
+                                .textFieldStyle(.roundedBorder)
+                                .numeric()
+                                .multilineTextAlignment(.trailing)
+                                .frame(width: 72)
+                                .onSubmit(commit)
+                                .accessibilityLabel(SettingsBar.label(columns[k]))
+                        }
+                        Button {
+                            rows.removeAll { $0.id == r.id }
+                            commit()
+                        } label: {
+                            Image(systemName: "minus.circle")
+                        }
+                        .buttonStyle(.borderless)
+                        .help("Delete this row")
+                        .accessibilityLabel("Delete row")
+                    }
+                }
+            }
+            HStack {
+                Button {
+                    rows.append(rows.last.map { Row(cells: $0.cells) } ?? Row(cells: columns.map { Self.text($0.defaultValue) }))
+                    commit()
+                } label: {
+                    Label("Add Row", systemImage: "plus")
+                }
+                Spacer()
+                if !rows.isEmpty {
+                    Button("Clear") {
+                        rows = []
+                        commit()
+                    }
+                }
+            }
+            .buttonStyle(.borderless)
+        }
+        .controlSize(.small)
+    }
+
+    private func commit() {
+        set(Self.value(of: rows, columns: columns, rowsAreArrays: rowsAreArrays))
+    }
+}
+
+extension Comparable {
+    func clamped(to r: ClosedRange<Self>) -> Self { min(max(self, r.lowerBound), r.upperBound) }
 }
 
 /// The chief-ray sensor limit, `[[image radius mm, max incidence °], …]`,
