@@ -820,6 +820,8 @@ pub const FIELDS: &[(&str, &[Rule])] = &[
             r("@point_field", Exact),
             r("@point_wavelength", Exact),
             r("@points", Position),
+            // Slopes are direction ratios of the image-space rays.
+            r("@point_slope", Direction),
         ],
     ),
     (

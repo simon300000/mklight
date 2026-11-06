@@ -1,7 +1,7 @@
 use super::*;
 use crate::{
     spot::*,
-    util::{curved_image_warning, default_fields, field_value, linspace, pupil_points},
+    util::{curved_image_warning, default_fields, field_value, pupil_points},
 };
 /// Complete resident spot pipeline: generation, trace, chief-relative two-pass
 /// moments and optional points. No intermediate optical arrays cross the host.
@@ -101,14 +101,26 @@ impl Geometry<'_> {
         let nf = fields.len();
         let nw = wls.len();
         let points = 4 + 2 * usize::from(s.through_focus.is_some());
-        let planes = s
-            .through_focus
-            .map_or(Vec::new(), |tf| linspace(tf.min, tf.max, tf.steps));
-        let (quad, slope) = if planes.is_empty() {
+        let (quad, slope) = if s.through_focus.is_none() {
             (&[][..], &[][..])
         } else {
             (views[4].as_slice::<Df32>()?, views[5].as_slice::<Df32>()?)
         };
+        let planes = s.through_focus.map_or(Vec::new(), |tf| {
+            // The automatic range needs the largest centroid RMS over the
+            // fields at the base defocus, as the reference computes it.
+            let max_rms = (0..nf)
+                .map(|fi| {
+                    stats(&poly[fi * 10..fi * 10 + 10], np * nw, true, 1.0).rms_radius_centroid
+                })
+                .filter(|v| v.is_finite())
+                .fold(0.0, f64::max);
+            tf.planes(ThroughFocus::auto_half_range(
+                t.system().wavelengths_um[t.system().primary_wavelength],
+                t.paraxial().primary().working_f_number,
+                max_rms,
+            ))
+        });
         // Centroid- and chief-referenced RMS of field fi at absolute defocus d.
         let focus = |fi: usize, d: f64| {
             let m = &poly[10 * fi..];
@@ -207,12 +219,21 @@ impl Geometry<'_> {
                 })
                 .collect();
             let mut plotted = Vec::new();
+            // The reference's slope: zero for the chief (the origin of the
+            // slope differences), the weighted mean for the centroid.
+            let center_slope = match s.reference {
+                SpotReference::Centroid if !planes.is_empty() => {
+                    [slope[10 * fi + 2].to_f64(), slope[10 * fi + 3].to_f64()]
+                }
+                _ => [0.0; 2],
+            };
             if let Some(p) = packed.as_mut() {
                 let start = p.len();
                 if s.include_points {
                     let q = views[points].as_slice::<Df32>()?;
                     let mask = views[points + 1].as_slice::<u32>()?;
                     let n = g.hits.rays.count;
+                    let with_slope = !planes.is_empty();
                     let rows = fi * nw * np..(fi + 1) * nw * np;
                     for chunk in rows.step_by(POINT_CHUNK) {
                         ctx.check()?;
@@ -224,6 +245,12 @@ impl Geometry<'_> {
                                     q[n + i].to_f64() - center[1],
                                     wls[(i / np) % nw],
                                 );
+                                if with_slope {
+                                    p.push_slope(
+                                        q[2 * n + i].to_f64() - center_slope[0],
+                                        q[3 * n + i].to_f64() - center_slope[1],
+                                    );
+                                }
                             }
                         }
                     }
