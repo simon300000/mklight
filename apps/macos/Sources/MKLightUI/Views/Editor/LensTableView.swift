@@ -21,6 +21,9 @@ struct LensTableView: View {
     @Bindable var window: WindowState
     @Environment(\.undoManager) private var undoManager
     @FocusState private var focus: CellID?
+    /// The cell being edited: the only one shown as a text field, the
+    /// others are text (fewer AppKit views to lay out and to expose).
+    @State private var active: CellID?
 
     private var system: OpticalSystem { design.system }
     private var editor: LensEditor { LensEditor(document: design, undoManager: undoManager) }
@@ -38,36 +41,62 @@ struct LensTableView: View {
                 design.variables.map { (system.canonical($0.param), $0.isPinned ? .pinned : $0.isBounded ? .bounded : .free) }, uniquingKeysWith: { a, _ in a }))
     }
 
+    /// The grid's own keyboard focus (row selection with ↑/↓, Return to edit).
+    @FocusState private var gridFocused: Bool
+    /// Column widths the user dragged in the header, by column.
+    @State private var dragged: [Int: CGFloat] = [:]
+
+    /// The columns: the surface label, the type, then the shared parameters.
+    /// Anamorphic surfaces show both sections in the radius and conic cells.
+    private func columns(hasOffsets: Bool) -> [LensGridColumn] {
+        let base = [
+            LensGridColumn(title: "Surf", min: 40, ideal: 46, max: 64),
+            LensGridColumn(title: "Type", min: 90, ideal: 112, max: 150),
+            LensGridColumn(title: LensColumn.comment.title, min: 70, ideal: 120),
+            LensGridColumn(title: LensColumn.radius.title, min: 80, ideal: 116, max: 220),
+            LensGridColumn(title: LensColumn.thickness.title, min: 80, ideal: 104, max: 160),
+            LensGridColumn(title: LensColumn.material.title, min: hasOffsets ? 150 : 80, ideal: hasOffsets ? 168 : 104, max: 240),
+            LensGridColumn(title: LensColumn.semiDiameter.title, min: 80, ideal: 104, max: 160),
+            LensGridColumn(title: LensColumn.conic.title, min: 64, ideal: 88, max: 180),
+        ]
+        return base.enumerated().map { k, c in dragged[k].map { c.fixed(at: $0) } ?? c }
+    }
+
+    // The grid is plain SwiftUI rather than `Table`: a table hosts every
+    // cell in its own AppKit view, re-tiled on each frame of a window or
+    // sidebar resize, and builds cells for off-screen rows whenever an
+    // accessibility client reads them. Here a resize is one layout pass.
     var body: some View {
         let rows = self.rows
-        let hasOffsets = rows.contains { $0.notes[.material] != nil }
+        let columns = columns(hasOffsets: rows.contains { $0.notes[.material] != nil })
         VStack(spacing: 0) {
             header
-            Table(rows, selection: $window.selection) {
-                TableColumn("Surf") { row in SurfaceLabel(row: row, issues: issues[row.index] ?? []) }
-                    .width(min: 40, ideal: 46, max: 64)
-                TableColumn("Type") { row in
-                    TypeCell(row: row, shape: system.surfaces[row.index].shape, editor: editor)
+            ScrollView([.vertical, .horizontal]) {
+                LazyVStack(spacing: 0, pinnedViews: [.sectionHeaders]) {
+                    Section {
+                        ForEach(Array(rows.enumerated()), id: \.element.id) { k, row in
+                            gridRow(row, alternate: k % 2 == 1, columns: columns, rows: rows)
+                        }
+                    } header: {
+                        LensGridHeader(columns: columns, dragged: $dragged)
+                    }
                 }
-                    .width(min: 90, ideal: 112, max: 150)
-                column(.comment, rows: rows).width(min: 70, ideal: 120)
-                // Anamorphic surfaces show both sections in the radius cell.
-                column(.radius, rows: rows).width(min: 80, ideal: 116, max: 220)
-                column(.thickness, rows: rows).width(min: 80, ideal: 104, max: 160)
-                column(.material, rows: rows).width(min: hasOffsets ? 150 : 80, ideal: hasOffsets ? 168 : 104, max: 240)
-                column(.semiDiameter, rows: rows).width(min: 80, ideal: 104, max: 160)
-                column(.conic, rows: rows).width(min: 64, ideal: 88, max: 180)
+                .padding(.horizontal, Space.m)
+                .padding(.bottom, Space.s)
+                .containerRelativeFrame(.horizontal) { length, _ in
+                    max(length, LensGridLayout.minimumWidth(columns) + 2 * Space.m)
+                }
             }
-            .tableStyle(.inset)
             .scrollEdgeEffectStyle(.hard, for: .top)
-            .contextMenu(forSelectionType: SurfaceID.self) { ids in
-                contextMenu(ids.first)
-            } primaryAction: { ids in
-                if let id = ids.first { focus = CellID(row: id, column: .radius) }
-            }
+            .background(Color(nsColor: .controlBackgroundColor))
+            .focusable()
+            .focusEffectDisabled()
+            .focused($gridFocused)
+            .onKeyPress(.upArrow) { selectAdjacent(-1, rows: rows) }
+            .onKeyPress(.downArrow) { selectAdjacent(1, rows: rows) }
             .onKeyPress(.return) {
-                guard focus == nil, let id = window.selection else { return .ignored }
-                focus = CellID(row: id, column: rows.first { $0.id == id }?.editable.contains(.radius) == true ? .radius : .comment)
+                guard active == nil, let id = window.selection else { return .ignored }
+                edit(id, rows: rows)
                 return .handled
             }
             .onChange(of: focus) { _, f in
@@ -76,8 +105,64 @@ struct LensTableView: View {
                     window.focusedColumn = f.column
                 }
             }
+            .accessibilityElement(children: .contain)
             .accessibilityLabel("Lens data")
         }
+    }
+
+    private func gridRow(_ row: LensRow, alternate: Bool, columns: [LensGridColumn], rows: [LensRow]) -> some View {
+        let selected = window.selection == row.id
+        return LensGridLayout(columns: columns) {
+            SurfaceLabel(row: row, issues: issues[row.index] ?? []).gridCell()
+            TypeCell(row: row, shape: system.surfaces[row.index].shape, editor: editor).gridCell()
+            column(.comment, row: row, selected: selected, rows: rows)
+            column(.radius, row: row, selected: selected, rows: rows)
+            column(.thickness, row: row, selected: selected, rows: rows)
+            column(.material, row: row, selected: selected, rows: rows)
+            column(.semiDiameter, row: row, selected: selected, rows: rows)
+            column(.conic, row: row, selected: selected, rows: rows)
+        }
+        .frame(minHeight: 24)
+        .background {
+            if selected {
+                RoundedRectangle(cornerRadius: 5)
+                    .fill(gridFocused || focus != nil ? Color(nsColor: .selectedContentBackgroundColor) : Color(nsColor: .unemphasizedSelectedContentBackgroundColor))
+            } else if alternate {
+                RoundedRectangle(cornerRadius: 5).fill(Color(nsColor: NSColor.alternatingContentBackgroundColors[1]))
+            }
+        }
+        .environment(\.backgroundProminence, selected && (gridFocused || focus != nil) ? .increased : .standard)
+        .contentShape(Rectangle())
+        .simultaneousGesture(TapGesture().onEnded { select(row.id) })
+        // A double click edits the radius, unless it landed on a cell (which then edits).
+        .simultaneousGesture(TapGesture(count: 2).onEnded { if active?.row != row.id { edit(row.id, rows: rows) } })
+        .contextMenu { contextMenu(row.id) }
+        .accessibilityElement(children: .contain)
+        .accessibilityAddTraits(selected ? .isSelected : [])
+    }
+
+    private func select(_ id: SurfaceID) {
+        window.selection = id
+        if active == nil { gridFocused = true }
+    }
+
+    private func begin(_ cell: CellID?) {
+        active = cell
+        focus = cell
+        if cell == nil { gridFocused = true }
+    }
+
+    /// Edits the row's radius, or its comment where it has none.
+    private func edit(_ id: SurfaceID, rows: [LensRow]) {
+        begin(CellID(row: id, column: rows.first { $0.id == id }?.editable.contains(.radius) == true ? .radius : .comment))
+    }
+
+    private func selectAdjacent(_ step: Int, rows: [LensRow]) -> KeyPress.Result {
+        guard active == nil, !rows.isEmpty else { return .ignored }
+        let i = window.selection.flatMap { id in rows.firstIndex { $0.id == id } }
+        let next = i.map { min(max($0 + step, 0), rows.count - 1) } ?? (step > 0 ? 0 : rows.count - 1)
+        window.selection = rows[next].id
+        return .handled
     }
 
     private var header: some View {
@@ -119,25 +204,32 @@ struct LensTableView: View {
         return i > 0 && i < system.imageIndex && system.surfaces.count > 3
     }
 
-    private func column(_ c: LensColumn, rows: [LensRow]) -> TableColumn<LensRow, Never, some View, Text> {
-        TableColumn(c.title) { row in
-            let shown = row.shown(c)
+    @ViewBuilder private func column(_ c: LensColumn, row: LensRow, selected: Bool, rows: [LensRow]) -> some View {
+        let shown = row.shown(c)
+        Group {
             if shown.count > 1 {
                 // y and x sections side by side, each editable in place.
                 HStack(spacing: Space.s) {
-                    cell(row, shown[0], rows: rows)
-                    cell(row, shown[1], rows: rows)
+                    cell(row, shown[0], selected: selected, rows: rows)
+                    cell(row, shown[1], selected: selected, rows: rows)
                 }
             } else {
-                cell(row, shown[0], rows: rows)
+                cell(row, shown[0], selected: selected, rows: rows)
             }
         }
+        .gridCell()
     }
 
-    private func cell(_ row: LensRow, _ c: LensColumn, rows: [LensRow]) -> some View {
-        LensCell(
-            row: row, column: c, focus: $focus,
+    /// `selected`: whether the row was selected before this click.
+    private func cell(_ row: LensRow, _ c: LensColumn, selected: Bool, rows: [LensRow]) -> some View {
+        let id = CellID(row: row.id, column: c)
+        return LensCell(
+            row: row, column: c, focus: $focus, isActive: active == id,
             completions: c == .material ? workspace.materialNames : [],
+            // Like a table: the first click selects the row, the next edits.
+            begin: { if selected { begin(id) } },
+            end: { if active == id { active = nil } },
+            cancel: { begin(nil) },
             commit: { text in commit(row, c, text) },
             move: { dir in move(from: CellID(row: row.id, column: c), dir, rows: rows) })
     }
@@ -163,11 +255,11 @@ struct LensTableView: View {
             }
             var k = r + (dir == .up ? -1 : 1)
             while rows.indices.contains(k), target(rows[k]) == nil { k += dir == .up ? -1 : 1 }
-            if rows.indices.contains(k), let c = target(rows[k]) { focus = CellID(row: rows[k].id, column: c) } else { focus = nil }
+            begin(rows.indices.contains(k) ? target(rows[k]).map { CellID(row: rows[k].id, column: $0) } : nil)
         case .left, .right:
             guard var c = cols.firstIndex(of: cell.column) else { return }
             repeat { c += dir == .left ? -1 : 1 } while cols.indices.contains(c) && !rows[r].editable.contains(cols[c])
-            if cols.indices.contains(c) { focus = CellID(row: cell.row, column: cols[c]) }
+            if cols.indices.contains(c) { begin(CellID(row: cell.row, column: cols[c])) }
         }
     }
 
@@ -254,16 +346,23 @@ private struct TypeCell: View {
     }
 }
 
-/// An editable cell: shows the formatted value, edits the exact one.
+/// An editable cell: shows the formatted value, edits the exact one. Only
+/// the cell being edited is a text field.
 private struct LensCell: View {
     let row: LensRow
     let column: LensColumn
     var focus: FocusState<CellID?>.Binding
+    let isActive: Bool
     let completions: [String]
+    let begin: () -> Void
+    let end: () -> Void
+    /// Leaves the cell, back to row selection.
+    let cancel: () -> Void
     let commit: (String) -> Bool
     let move: (LensTableView.Move) -> Void
     @State private var text = ""
-    @State private var editing = false
+    /// The text last committed, so leaving the field does not commit it again.
+    @State private var committed: String?
 
     private var id: CellID { CellID(row: row.id, column: column) }
     private var display: String { row.text(column) }
@@ -278,20 +377,20 @@ private struct LensCell: View {
                     .accessibilityHidden(true)
             }
             if row.editable.contains(column) {
-                if row.notes[column] != nil && !editing {
+                if row.notes[column] != nil && !isActive {
                     // The glass name in full; the melt offset after it.
-                    field.fixedSize(horizontal: true, vertical: false)
+                    value.fixedSize(horizontal: true, vertical: false)
                 } else if row.hints[column] != nil {
-                    field.fixedSize(horizontal: true, vertical: false).frame(minWidth: 14, alignment: .trailing)
+                    value.fixedSize(horizontal: true, vertical: false).frame(minWidth: 14, alignment: .trailing)
                 } else {
-                    field
+                    value
                 }
             } else {
                 Text(display)
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: column.isNumeric ? .trailing : .leading)
             }
-            if let note = row.notes[column], !editing {
+            if let note = row.notes[column], !isActive {
                 Text(note)
                     .font(.caption2.monospacedDigit())
                     .foregroundStyle(.secondary)
@@ -303,8 +402,24 @@ private struct LensCell: View {
             }
             if let m = row.markers[column] { MarkerBadge(marker: m) }
         }
-        .onAppear { text = display }
-        .onChange(of: display) { _, d in if !editing { text = d } }
+    }
+
+    @ViewBuilder private var value: some View {
+        if isActive {
+            field
+        } else {
+            Text(display)
+                .font(column.isNumeric ? .body.monospacedDigit() : .body)
+                .foregroundStyle(dimmed ? .secondary : .primary)
+                .lineLimit(1)
+                .frame(maxWidth: .infinity, alignment: column.isNumeric ? .trailing : .leading)
+                .contentShape(Rectangle())
+                .onTapGesture(perform: begin)
+                .accessibilityLabel(accessibilityTitle)
+                .accessibilityValue(display)
+                .accessibilityAddTraits(.isButton)
+                .accessibilityAction(named: "Edit", begin)
+        }
     }
 
     private var field: some View {
@@ -313,36 +428,42 @@ private struct LensCell: View {
             .textFieldStyle(.plain)
             .multilineTextAlignment(column.isNumeric ? .trailing : .leading)
             .font(column.isNumeric ? .body.monospacedDigit() : .body)
-            .foregroundStyle(dimmed ? .secondary : .primary)
             .focused(focus, equals: id)
-            .onChange(of: focus.wrappedValue == id) { _, isFocused in
-                if isFocused {
-                    editing = true
-                    text = row.exact[column] ?? display
-                } else if editing {
-                    editing = false
-                    if !finish() { text = display }
-                }
+            .onAppear {
+                text = row.exact[column] ?? display
+                committed = nil
+                // The field replacing another one can lose the focus to the
+                // grid as the old field goes away: claim it once more.
+                focus.wrappedValue = id
+                DispatchQueue.main.async { if focus.wrappedValue != id { focus.wrappedValue = id } }
             }
+            // Leaving the field (a click elsewhere) commits it.
+            .onChange(of: focus.wrappedValue == id) { _, isFocused in
+                if !isFocused { end() }
+            }
+            .onDisappear { _ = finish() }
             .onSubmit {
                 if finish() { move(.down) }
             }
             .onKeyPress(.upArrow) { step(.up) }
             .onKeyPress(.downArrow) { step(.down) }
+            // ⇧Tab arrives as a back-tab character.
+            .onKeyPress(keys: [.tab, KeyEquivalent("\u{19}")]) { press in
+                step(press.modifiers.contains(.shift) || press.key != .tab ? .left : .right)
+            }
             .onKeyPress(.escape) {
-                editing = false
-                text = display
-                focus.wrappedValue = nil
+                text = row.exact[column] ?? display
+                cancel()
                 return .handled
             }
-            .materialSuggestions(column == .material && editing ? suggestions : [])
+            .materialSuggestions(column == .material ? suggestions : [])
             .accessibilityLabel(accessibilityTitle)
             .accessibilityValue(display)
     }
 
     /// Automatic semi-diameters (computed by the engine) and a cylinder's
     /// flat section are shown dimmed.
-    private var dimmed: Bool { ((column == .semiDiameter && row.semiDiameterIsAuto) || row.isFlatSection(column)) && !editing }
+    private var dimmed: Bool { (column == .semiDiameter && row.semiDiameterIsAuto) || row.isFlatSection(column) }
 
     private func hintHelp(_ hint: String) -> String {
         let what = column.base == .radius ? "radius" : "conic"
@@ -371,9 +492,9 @@ private struct LensCell: View {
     /// Commits the text; false when it was rejected.
     private func finish() -> Bool {
         let exact = row.exact[column] ?? display
-        guard text != exact, text != display else { return true }
+        guard text != exact, text != display, text != committed else { return true }
         let ok = commit(text)
-        if !ok { text = exact }
+        if ok { committed = text } else { text = exact }
         return ok
     }
 }
