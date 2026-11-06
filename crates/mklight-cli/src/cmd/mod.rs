@@ -7,6 +7,7 @@
 
 pub mod analyses;
 pub mod catalogs;
+pub mod import;
 pub mod info;
 pub mod project;
 pub mod trace;

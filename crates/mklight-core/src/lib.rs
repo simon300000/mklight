@@ -4,6 +4,7 @@
 //! `docs/ARCHITECTURE.md` and `docs/CONVENTIONS.md` at the repository root.
 
 pub mod error;
+pub mod import;
 pub mod job;
 pub mod materials;
 pub mod math;

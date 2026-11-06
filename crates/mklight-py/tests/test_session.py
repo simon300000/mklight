@@ -2,6 +2,7 @@
 
 import copy
 import math
+from pathlib import Path
 
 import pytest
 
@@ -127,3 +128,22 @@ def test_info_and_repr(achromat):
 def test_default_engine_helpers():
     s = mklight.new(sample="singlet")
     assert s.engine.config == mklight.default_engine().config
+
+
+FIXTURES = Path(__file__).resolve().parents[2] / "mklight-core" / "tests" / "fixtures" / "prescriptions"
+
+
+def test_import_prescription_replaces_the_system(engine):
+    s = engine.new()
+    h0 = s.snapshot_hash
+    report = s.import_prescription(FIXTURES / "cooke_triplet.zmx")
+    assert report["format"] == "zmx" and report["encoding"] == "utf16_le"
+    assert report["system"]["name"] == "Cooke triplet f50 F/4"
+    assert s.snapshot_hash != h0
+    assert s.system["stop"] == 4
+    assert mklight.paraxial(s)["efl"] == pytest.approx(50.0, abs=0.5)
+    awkward = s.import_prescription(FIXTURES / "awkward.zmx")
+    kinds = {w["kind"] for w in awkward["warnings"]}
+    assert {"unknown_glass", "non_sequential", "unsupported_surface"} <= kinds
+    with pytest.raises(mklight.UnsupportedError):
+        s.import_prescription(FIXTURES / "missing.txt")

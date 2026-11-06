@@ -157,6 +157,16 @@ vendor catalogs; users import their own files.
   project. Reader warnings (skipped glasses, `n_d`/`V_d` mismatches) are
   reported. An AGF catalog is named after its file stem.
 
+### `mklight import <file> <project> [--catalog <file>]… [--force]`
+
+Imports a `.zmx` or `.seq` lens prescription file (`IMPORT.md`) into a new
+project and saves it. Glasses resolve against the built-in catalog and the
+catalogs given with `--catalog` (repeatable; recorded in the project).
+Content that does not map is listed as warnings (`--json`: `warnings`, each
+`{kind, line, surface, message}`) and does not change the exit code. A file
+that is not a `.zmx`/`.seq` file, or an existing project without `--force`,
+is a usage error (1); a file without surfaces is invalid input (2).
+
 ### `mklight analyses [<name>]`
 
 Lists every analysis in the engine registry with category, availability

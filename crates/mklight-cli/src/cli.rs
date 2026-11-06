@@ -42,6 +42,8 @@ pub enum Command {
     Show(ShowArgs),
     /// Upgrade a project file to the current schema version (keeps a backup).
     Migrate(MigrateArgs),
+    /// Import a lens prescription file (.zmx or .seq) into a new project.
+    Import(ImportArgs),
     /// User glass catalogs (AGF or JSON). Vendor catalogs are never shipped.
     #[command(subcommand)]
     Catalogs(CatalogsCmd),
@@ -72,6 +74,21 @@ pub struct NewArgs {
     #[arg(long)]
     pub sample: Option<String>,
     /// Overwrite an existing file.
+    #[arg(long)]
+    pub force: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct ImportArgs {
+    /// Lens prescription file (.zmx or .seq).
+    pub file: PathBuf,
+    /// Project file to create.
+    pub project: PathBuf,
+    /// Glass catalog (AGF or .json) to resolve glasses against; repeatable.
+    /// Recorded in the project.
+    #[arg(long)]
+    pub catalog: Vec<PathBuf>,
+    /// Overwrite an existing project file.
     #[arg(long)]
     pub force: bool,
 }

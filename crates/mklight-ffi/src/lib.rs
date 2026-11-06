@@ -26,6 +26,8 @@ use std::time::Duration;
 
 use serde_json::Value;
 
+use mklight_core::import::{PrescriptionFormat, import_prescription};
+use mklight_core::materials::MaterialLibrary;
 use mklight_core::param::ParamPath;
 use mklight_core::{JobContext, MkError, OpticalSystem};
 use mklight_engine::backend::Backend;
@@ -39,7 +41,7 @@ use mklight_engine::{
 // Versioning and status codes (mirrored in include/mklight.h)
 
 pub const MK_ABI_VERSION_MAJOR: u32 = 1;
-pub const MK_ABI_VERSION_MINOR: u32 = 2;
+pub const MK_ABI_VERSION_MINOR: u32 = 3;
 /// `(major << 16) | minor`. Major changes break compatibility; minor
 /// versions only add functions or JSON fields.
 pub const MK_ABI_VERSION: u32 = (MK_ABI_VERSION_MAJOR << 16) | MK_ABI_VERSION_MINOR;
@@ -1173,6 +1175,63 @@ pub unsafe extern "C" fn mk_job_release(engine: *const MKEngine, job: u64) -> MK
         let e = unsafe { engine_ref(engine) }?;
         e.engine.release_job(job)?;
         Ok(())
+    })
+}
+
+// ---------------------------------------------------------------------------
+// ABI 1.3: lens prescription import
+
+/// Import `.zmx` or `.seq` bytes (`format` "zmx" or "seq"; any common text
+/// encoding) without a session; glasses resolve against the built-in
+/// catalog. `*out_json` receives `{"format", "encoding", "system",
+/// "warnings"}`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mk_import_prescription(
+    bytes: *const u8,
+    len: usize,
+    format: *const c_char,
+    out_json: *mut *mut c_char,
+) -> MKStatus {
+    unsafe { clear_out(out_json) };
+    guard(|| {
+        if bytes.is_null() && len > 0 {
+            return Err(FfiError::arg("bytes is NULL"));
+        }
+        let data = if len == 0 {
+            &[][..]
+        } else {
+            unsafe { std::slice::from_raw_parts(bytes, len) }
+        };
+        let format: PrescriptionFormat = unsafe { in_str(format, "format") }?
+            .parse()
+            .map_err(|e: MkError| FfiError::arg(e.to_string()))?;
+        unsafe { out_ptr(out_json, "out_json") }?;
+        let imported = import_prescription(data, format, &MaterialLibrary::with_builtin())
+            .map_err(EngineError::from)?;
+        unsafe { put_json(out_json, &imported) }
+    })
+}
+
+/// Replace the session's system with one imported from a `.zmx` or `.seq`
+/// file, resolving glasses against the session's catalogs. `*out_json`
+/// (nullable) receives `{"format", "encoding", "system", "warnings",
+/// "snapshot_hash"}`. On failure the session is unchanged.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mk_session_import_prescription(
+    session: *mut MKSession,
+    path: *const c_char,
+    out_json: *mut *mut c_char,
+) -> MKStatus {
+    unsafe { clear_out(out_json) };
+    guard(|| {
+        let s = unsafe { session_ref(session) }?;
+        let path = unsafe { in_str(path, "path") }?;
+        let mut g = s.lock();
+        let imported = g.import_prescription(Path::new(path))?;
+        let mut v = serde_json::to_value(&imported)?;
+        v["snapshot_hash"] = Value::from(g.snapshot_hash().to_hex());
+        drop(g);
+        unsafe { put_json(out_json, &v) }
     })
 }
 

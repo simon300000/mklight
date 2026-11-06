@@ -1,0 +1,21 @@
+! Petzval lens with an aspheric last surface
+LEN NEW
+RDM
+TIT 'Petzval asphere f69 F/4'
+FNO 4
+WL 656.2725 587.5618 486.1327
+REF 2
+YRI 0 4 6
+SO 0 1e+11
+S 47.40 5.0 N-BK7_SCHOTT; STO
+S -42.54 2.5 F2_SCHOTT
+S -410.38 50.0
+S 47.40 5.0 N-BK7_SCHOTT
+S -42.54 2.5 F2_SCHOTT
+S -410.38 26.185686
+  ASP
+  K 0
+  A 3.2e-6
+  B 8.0e-10
+SI
+GO

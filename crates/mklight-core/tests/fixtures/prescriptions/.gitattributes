@@ -1,0 +1,3 @@
+# Keep the bytes exactly as written: CRLF line ends and UTF-16 are part of the tests.
+*.zmx -text
+*.seq -text

@@ -30,7 +30,7 @@ further linker flags are needed.
 ## Versioning
 
 * `mk_abi_version()` returns `(major << 16) | minor`; the header has
-  `MK_ABI_VERSION_MAJOR/MINOR` (currently 1.2). A front end must check that
+  `MK_ABI_VERSION_MAJOR/MINOR` (currently 1.3). A front end must check that
   the runtime major equals the compiled major. Minor releases only **add**
   functions and JSON fields, so JSON readers must ignore unknown keys.
   1.1 added `mk_engine_analysis_info`, `mk_engine_set_default_backend`,
@@ -41,6 +41,8 @@ further linker flags are needed.
   `backend`, `result_version`.
 * 1.2 adds `mk_job_stop`: Stop retains the best-so-far optimisation or
   tolerancing result, with `result.stopped: true`.
+* 1.3 adds `mk_import_prescription` and `mk_session_import_prescription`
+  (lens prescription files, *Lens prescription import* below).
 * Each analysis' result shape has its own `result_version`
   (`docs/RESULTS.md` §2).
 * `mk_engine_version()` is the engine (crate) version recorded in every
@@ -443,6 +445,23 @@ Vendor catalogs are never embedded in project files, only referenced (by
 absolute path and by path relative to the project file). A catalog that
 cannot be found on open is reported in `open_warnings`; the reference is
 kept.
+
+### Lens prescription import
+
+* `mk_import_prescription(bytes, len, format, &json)` imports `.zmx`
+  (`format` `"zmx"`) or `.seq` (`"seq"`) text in any common encoding
+  without a session; glasses resolve against the built-in catalog. An
+  unknown format is `MK_ERR_INVALID_ARGUMENT`, text without surfaces
+  `MK_ERR_PARSE`. Result: `{"format", "encoding", "system", "warnings":
+  [{"kind", "line", "surface", "message"}]}`, where `system` is an
+  `OpticalSystem`.
+* `mk_session_import_prescription(session, path, &json|NULL)` imports a
+  file (format by extension) with the session's catalogs and replaces the
+  session's system; the result adds `"snapshot_hash"`. On failure the
+  session is unchanged.
+
+Content that does not map is a warning, never an error; `IMPORT.md` lists
+the mapping and the warning kinds.
 
 ## Analyses
 
