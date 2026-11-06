@@ -113,6 +113,7 @@ Type stubs with docstrings: `crates/mklight-py/python/mklight/_mklight.pyi`.
 | `id`, `path` (`pathlib.Path` or None), `dirty`, `info` | Session state. |
 | `save(path=None)` | Atomic save (to the session's path when omitted). |
 | `load_catalog(path)`, `catalogs()`, `glasses(catalog=None)` | AGF (or `.json`) glass catalogs. |
+| `import_prescription(path)` | Replace the system with a `.zmx` or `.seq` lens file, glasses resolved against the session's catalogs (load them first). Returns `{format, encoding, system, warnings}`; content that does not map is a warning (`docs/IMPORT.md`). |
 | `set_project_section(section, value)` | `views`, `merit`, `variables`, `tolerances`, `metadata`. |
 | `run(analysis, settings=None, seed=None, backend=None, progress=None, allow_backend_fallback=False, timeout=None)` | Run and wait → `Result`. |
 | `submit(analysis, settings=None, seed=None, backend=None, allow_backend_fallback=False, view_key=None)` | Queue → `Job`. |

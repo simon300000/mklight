@@ -642,6 +642,18 @@ What we took from Apple's current guidance, and how MKLight applies it.
     draws the build.
   *Apply Solves*: a dry run (now →
   solved, residual), then one undoable commit.
+* **Lens prescription files**: `.zmx` and `.seq` files open as designs
+  (File ▸ Open…, the Welcome window, drag and drop onto any MKLight window,
+  Finder's Open With). `ProjectDocument` reads them through
+  `EngineClient.importPrescription` (the engine's importer, `IMPORT.md`);
+  they are declared as imported types with the Viewer role and are never
+  written, so saving asks for a new `.mklight` file. When the import left
+  something out, the window opens with the *import report* sheet
+  (`ImportReportSheet`): the warnings grouped as Problems, Glasses,
+  Surfaces, Not Imported and Assumed or Approximated, each with its surface
+  and line, Copy Report, and, when glasses were not found, Load Glass
+  Catalog…, which loads a catalog and imports the file again (undoable).
+  A clean import shows a short note instead.
 * **Welcome window**: New Design (prominent glass) and Open (glass), and the
   engine's sample designs as cards with thumbnails of their layouts,
   computed by the engine on a session of their own (`SampleThumbnails`);

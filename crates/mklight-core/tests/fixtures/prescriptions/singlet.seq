@@ -1,0 +1,18 @@
+! Singlet f100 F/5: a hand-written command script
+LEN NEW
+RDM; TIT 'Singlet f100 F/5'
+DIM M
+EPD 20
+WL 656.2725 587.5618 486.1327; REF 2; WTW 1 1 1
+XAN 0 0 0
+YAN 0 3.5 5
+WTF 1 1 1
+SO 0 1e+11
+S 60 5 N-BK7_SCHOTT
+  STO
+  CCY 0; THC 100
+  CIR 10
+S -350 96.6967287
+  PIM
+SI 0 0
+GO

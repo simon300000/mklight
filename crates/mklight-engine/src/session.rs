@@ -16,6 +16,7 @@ use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+use mklight_core::import::{PrescriptionImport, read_prescription_file};
 use mklight_core::materials::builtin::BUILTIN_CATALOG_NAME;
 use mklight_core::materials::{GlassCatalog, MaterialLibrary, agf};
 use mklight_core::param::ParamPath;
@@ -439,6 +440,19 @@ impl Session {
         self.path = Some(path);
         self.dirty = false;
         Ok(())
+    }
+
+    // --- lens prescription files
+
+    /// Replace the system with one imported from a `.zmx` or `.seq` file
+    /// (`docs/IMPORT.md`). Glasses resolve against this session's library,
+    /// so load user catalogs first. Content that does not map is listed in
+    /// the returned warnings; only an unreadable file or one without
+    /// surfaces is an error, and leaves the session unchanged.
+    pub fn import_prescription(&mut self, path: &Path) -> EngineResult<PrescriptionImport> {
+        let imported = read_prescription_file(path, &self.library)?;
+        self.set_system(imported.system.clone())?;
+        Ok(imported)
     }
 
     // --- materials

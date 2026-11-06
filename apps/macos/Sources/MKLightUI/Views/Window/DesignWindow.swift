@@ -54,6 +54,13 @@ private struct DesignWindowContent: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var columns = NavigationSplitViewVisibility.all
     @State private var importingCatalog = false
+    @Environment(\.openDocument) private var openDocument
+    /// The import report on screen (a design opened from a lens file).
+    @State private var importReport: ImportReport?
+    /// The report sheet asked for a catalog: pick one when it has closed.
+    @State private var catalogAfterReport = false
+    /// Import the lens file again once the picked catalog has loaded.
+    @State private var reimportAfterCatalog = false
 
     private var system: OpticalSystem { design.system }
     private var editor: LensEditor { LensEditor(document: design, undoManager: undoManager) }
@@ -87,11 +94,25 @@ private struct DesignWindowContent: View {
         .toolbar { toolbar }
         .focusedSceneValue(\.windowActions, actions)
         .fileImporter(isPresented: $importingCatalog, allowedContentTypes: [.json, .plainText, .data]) { result in
-            if case .success(let url) = result { loadCatalog(url) }
+            if case .success(let url) = result {
+                loadCatalog(url)
+            } else {
+                reimportAfterCatalog = false
+            }
         }
+        .sheet(item: $importReport, onDismiss: {
+            guard catalogAfterReport else { return }
+            catalogAfterReport = false
+            reimportAfterCatalog = true
+            importingCatalog = true
+        }) { report in
+            ImportReportSheet(report: report, loadCatalog: prescriptionURL == nil ? nil : { catalogAfterReport = true })
+        }
+        .dropDestination(for: URL.self) { urls, _ in openDropped(urls) }
         .task {
             await workspace.loadEngineMetadata()
             await workspace.open(system: system, catalogs: design.catalogs, projectDirectory: projectDirectory)
+            if let report = design.takeImportReport() { present(report) }
             applyLaunchOptions()
         }
         .onDisappear {
@@ -258,6 +279,8 @@ private struct DesignWindowContent: View {
     }
 
     private func loadCatalog(_ url: URL) {
+        let reimport = reimportAfterCatalog
+        reimportAfterCatalog = false
         Task {
             do {
                 let access = url.startAccessingSecurityScopedResource()
@@ -267,10 +290,58 @@ private struct DesignWindowContent: View {
                     CatalogReference(name: info.name, path: url.path, format: url.pathExtension.lowercased() == "json" ? "json" : "agf"),
                     undoManager: undoManager)
                 window.flash("Loaded glass catalog \(info.name) (\(info.glassCount) glasses).")
+                if reimport, let source = prescriptionURL { await importAgain(source) }
             } catch {
                 window.flash("Glass catalog: \(error.localizedDescription)")
             }
         }
+    }
+
+    // MARK: Lens prescription files
+
+    /// The lens file this design was opened from, while it has not been
+    /// saved as a project.
+    private var prescriptionURL: URL? {
+        fileURL.flatMap { PrescriptionFormat(fileExtension: $0.pathExtension) != nil ? $0 : nil }
+    }
+
+    /// Shows what an import left out: the report sheet, or a short note when
+    /// everything mapped.
+    private func present(_ report: ImportReport) {
+        if report.warnings.isEmpty {
+            window.flash("Imported \(report.fileName): \(report.summary).")
+        } else {
+            importReport = report
+        }
+    }
+
+    /// Imports the lens file again with the catalogs now loaded (undoable).
+    private func importAgain(_ url: URL) async {
+        do {
+            let imported = try await workspace.importPrescription(at: url)
+            var system = imported.system
+            if system.name.isEmpty { system.name = url.deletingPathExtension().lastPathComponent }
+            design.edit("Import Lens File Again", undoManager: undoManager) { $0 = system }
+            present(ImportReport(imported, fileName: url.lastPathComponent))
+        } catch {
+            window.flash("Import: \(error.localizedDescription)")
+        }
+    }
+
+    /// Opens dropped projects and lens files, each in its own window.
+    private func openDropped(_ urls: [URL]) -> Bool {
+        let files = urls.filter(ProjectDocument.canOpen)
+        guard !files.isEmpty else { return false }
+        Task {
+            for url in files {
+                do {
+                    try await openDocument(at: url)
+                } catch {
+                    window.flash("\(url.lastPathComponent): \(error.localizedDescription)")
+                }
+            }
+        }
+        return true
     }
 }
 

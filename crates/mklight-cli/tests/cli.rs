@@ -1385,3 +1385,44 @@ fn ctrl_c_stops_optimization_and_second_signal_cancels() {
         assert!(result["result"]["system_hash"].is_string());
     }
 }
+
+#[test]
+fn import_writes_a_project_and_reports_what_did_not_map() {
+    let dir = TempDir::new("import");
+    let fixtures =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../mklight-core/tests/fixtures/prescriptions");
+    let out = dir.join("awkward.mklight");
+    let file = fixtures.join("awkward.zmx");
+    let v = json_run(&["import", s(&file), s(&out)], 0);
+    assert_eq!(v["format"], "zmx");
+    assert_eq!(v["num_surfaces"], 6);
+    let warnings = v["warnings"].as_array().unwrap();
+    assert!(warnings.iter().any(|w| w["kind"] == "unknown_glass"));
+    assert!(warnings.iter().any(|w| w["kind"] == "non_sequential"));
+    // The project is a normal project.
+    json_run(&["validate", s(&out)], 0);
+    // An existing project is not overwritten without --force.
+    assert_eq!(code(&mklight(["import", s(&file), s(&out)])), 1);
+    json_run(
+        &[
+            "import",
+            s(&fixtures.join("cooke_triplet.seq")),
+            s(&out),
+            "--force",
+        ],
+        0,
+    );
+    let p = json_run(&["paraxial", s(&out)], 0);
+    assert!(p.to_string().contains("efl"));
+    // Not a prescription file, or one without surfaces.
+    assert_eq!(
+        code(&mklight(["import", s(&out), s(&dir.join("x.mklight"))])),
+        1
+    );
+    let junk = dir.join("junk.seq");
+    std::fs::write(&junk, "hello").unwrap();
+    assert_eq!(
+        code(&mklight(["import", s(&junk), s(&dir.join("x.mklight"))])),
+        2
+    );
+}

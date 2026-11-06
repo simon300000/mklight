@@ -260,6 +260,18 @@ public struct FFIEngine: EngineClient {
         return try decodeJSON(CatalogInfo.self, text)
     }
 
+    // MARK: EngineClient: lens prescription files
+
+    public func importPrescription(_ data: Data, format: PrescriptionFormat) throws -> PrescriptionImport {
+        try decodeJSON(PrescriptionImport.self, try CABI.importPrescription(data, format: format.rawValue))
+    }
+
+    public func importPrescription(at url: URL) async throws -> PrescriptionImport {
+        let session = self.session
+        let text = try await offMain { try session.locked { try CABI.sessionImportPrescription($0, path: url.path) } }
+        return try decodeJSON(PrescriptionImport.self, text)
+    }
+
     // MARK: EngineClient: analyses
 
     public func analysisDescriptors() async -> [AnalysisDescriptor] { core.descriptors }

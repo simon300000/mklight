@@ -449,6 +449,12 @@ public final class Workspace {
         return info
     }
 
+    /// Imports a lens prescription file with this document's catalogs
+    /// (after loading one that has the glasses a first import missed).
+    public func importPrescription(at url: URL) async throws -> PrescriptionImport {
+        try await documentEngine.importPrescription(at: url)
+    }
+
     /// The first snapshot of a document: the project's catalogs are loaded
     /// before the system is snapshotted.
     public func open(system: OpticalSystem, catalogs refs: [CatalogReference], projectDirectory: URL?) async {

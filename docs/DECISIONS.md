@@ -34,9 +34,18 @@ exists in the code today.
 3. **Solves and pickups.** Marginal-ray-height and angle solves (for example
    the image distance), F/# solves, and pickups between parameters. Lens
    designers expect these.
-4. **Interchange formats.** Should MKLight import or export other programs'
-   lens files, ISO 10110 drawings, or STEP/IGES mechanical geometry? Each one
-   needs a format decision. None is implemented yet.
+4. **Interchange formats.** *Partly decided (2026-11-07):* MKLight
+   **imports** `.zmx` and `.seq` lens prescription files (`IMPORT.md`):
+   surfaces and their common types, stops, apertures, glasses resolved
+   against the loaded catalogs (unknown ones become model glasses from the
+   file's `n_d`/`V_d`, or stay references by name), fields, wavelengths,
+   aperture and object distance. Anything that does not map (solves,
+   pickups, macros, multi-configuration, non-sequential data) is dropped
+   with a structured warning instead of failing the import; the app shows
+   the warnings in a sheet. Available in the engine, C ABI 1.3, CLI
+   (`mklight import`), Python and the app. Still open: exporting either
+   format, other prescription formats, ISO 10110 drawings, and STEP/IGES
+   mechanical geometry.
 5. **Thermal and environmental analysis.** Glass dn/dT is modelled. Thermal
    expansion of spacers and mounts, and athermalisation, are not.
 6. **Freeforms and more surface types.** Q-type (Forbes) aspheres, XY and

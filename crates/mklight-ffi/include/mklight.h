@@ -31,7 +31,7 @@ extern "C" {
 /* ---- Versioning --------------------------------------------------------- */
 
 #define MK_ABI_VERSION_MAJOR 1
-#define MK_ABI_VERSION_MINOR 2
+#define MK_ABI_VERSION_MINOR 3
 /* (major << 16) | minor. A different major version is incompatible; a newer
  * minor version only adds functions and JSON fields. */
 #define MK_ABI_VERSION ((MK_ABI_VERSION_MAJOR << 16) | MK_ABI_VERSION_MINOR)
@@ -334,6 +334,24 @@ MKStatus mk_session_autosave(const MKSession *session, const char *path, char **
  * is a ParamPath as in mk_session_apply_param_edit. */
 MKStatus mk_session_get_param(const MKSession *session, const char *path_json,
                               char **out_json);
+
+/* ---- Lens prescription import (ABI 1.3) --------------------------------- */
+
+/* Import .zmx or .seq text (format "zmx" or "seq"; UTF-8, UTF-16 LE/BE with
+ * or without a byte-order mark, or Latin-1) without a session. Glasses
+ * resolve against the built-in catalog. out_json receives {"format",
+ * "encoding", "system", "warnings": [{"kind", "line", "surface",
+ * "message"}]}. Content that does not map is a warning, never an error;
+ * text without surfaces is MK_ERR_PARSE. */
+MKStatus mk_import_prescription(const uint8_t *bytes, size_t len, const char *format,
+                                char **out_json);
+
+/* Replace the session's system with one imported from a .zmx or .seq file
+ * (format by extension), resolving glasses against the session's catalogs.
+ * out_json (nullable) receives the mk_import_prescription object plus
+ * "snapshot_hash". On failure the session is unchanged. */
+MKStatus mk_session_import_prescription(MKSession *session, const char *path,
+                                        char **out_json);
 
 #ifdef __cplusplus
 } /* extern "C" */

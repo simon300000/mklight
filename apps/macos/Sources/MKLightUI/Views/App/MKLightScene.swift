@@ -10,6 +10,7 @@ public struct MKLightScene: Scene {
 
     public init(engine: any EngineClient) {
         self.engine = engine
+        ProjectDocument.setImportEngine(engine)
     }
 
     public var body: some Scene {

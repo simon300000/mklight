@@ -21,7 +21,8 @@
 #      finds it (C module CMKLight over crates/mklight-ffi/include/mklight.h);
 #   2. build the Swift package (apps/macos) in release;
 #   3. assemble MKLight.app: executable, Info.plist with the .mklight document
-#      type, SwiftPM resource bundles, precompiled viewport shaders when the
+#      type and the imported .zmx/.seq lens file types,
+#      SwiftPM resource bundles, precompiled viewport shaders when the
 #      Metal toolchain is installed (the app otherwise compiles the bundled
 #      shader source at run time);
 #   4. ad-hoc code signing.
@@ -177,6 +178,18 @@ cat > "$APP/Contents/Info.plist" <<PLIST
       <key>LSHandlerRank</key><string>Alternate</string>
       <key>LSItemContentTypes</key><array><string>public.json</string></array>
     </dict>
+    <dict>
+      <key>CFBundleTypeName</key><string>Lens Prescription (.zmx)</string>
+      <key>CFBundleTypeRole</key><string>Viewer</string>
+      <key>LSHandlerRank</key><string>Alternate</string>
+      <key>LSItemContentTypes</key><array><string>com.mklight.zmx-prescription</string></array>
+    </dict>
+    <dict>
+      <key>CFBundleTypeName</key><string>Lens Prescription (.seq)</string>
+      <key>CFBundleTypeRole</key><string>Viewer</string>
+      <key>LSHandlerRank</key><string>Alternate</string>
+      <key>LSItemContentTypes</key><array><string>com.mklight.seq-prescription</string></array>
+    </dict>
   </array>
   <key>UTExportedTypeDeclarations</key>
   <array>
@@ -189,6 +202,23 @@ cat > "$APP/Contents/Info.plist" <<PLIST
         <key>public.filename-extension</key><array><string>mklight</string></array>
         <key>public.mime-type</key><array><string>application/vnd.mklight.project+json</string></array>
       </dict>
+    </dict>
+  </array>
+  <key>UTImportedTypeDeclarations</key>
+  <array>
+    <dict>
+      <key>UTTypeIdentifier</key><string>com.mklight.zmx-prescription</string>
+      <key>UTTypeDescription</key><string>Lens Prescription (.zmx)</string>
+      <key>UTTypeConformsTo</key><array><string>public.data</string></array>
+      <key>UTTypeTagSpecification</key>
+      <dict><key>public.filename-extension</key><array><string>zmx</string></array></dict>
+    </dict>
+    <dict>
+      <key>UTTypeIdentifier</key><string>com.mklight.seq-prescription</string>
+      <key>UTTypeDescription</key><string>Lens Prescription (.seq)</string>
+      <key>UTTypeConformsTo</key><array><string>public.data</string></array>
+      <key>UTTypeTagSpecification</key>
+      <dict><key>public.filename-extension</key><array><string>seq</string></array></dict>
     </dict>
   </array>
 </dict>

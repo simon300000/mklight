@@ -477,6 +477,22 @@ impl PySession {
         ser_to_py(py, &summary)
     }
 
+    /// Replace the system with one imported from a `.zmx` or `.seq` lens
+    /// prescription file. Glasses resolve against this session's catalogs
+    /// (load them first). Content that does not map is not an error: it is
+    /// listed in the result's `warnings`. Returns `{format, encoding,
+    /// system, warnings}`.
+    fn import_prescription<'py>(
+        &self,
+        py: Python<'py>,
+        path: PathBuf,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let imported = py
+            .detach(|| self.lock().import_prescription(&path))
+            .map_err(engine_err)?;
+        ser_to_py(py, &imported)
+    }
+
     /// Catalogs in the library (built-in first).
     fn catalogs<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let c = self.lock_py(py).catalogs();
