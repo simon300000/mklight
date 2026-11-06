@@ -188,8 +188,8 @@ public struct WorkspaceLayout: Equatable, Sendable {
     public static var standard: WorkspaceLayout {
         var l = WorkspaceLayout()
         l.panes = [
-            Pane(key: "pane-spot", analysis: "spot_diagram", settings: [:], autoUpdate: true, showsSettings: true, width: nil),
-            Pane(key: "pane-fan", analysis: "ray_fan", settings: [:], autoUpdate: true, showsSettings: true, width: nil),
+            Pane(key: "pane-spot", analysis: "spot_diagram", settings: Workspace.spotStartingSettings, autoUpdate: true, showsSettings: false, width: nil),
+            Pane(key: "pane-fan", analysis: "ray_fan", settings: [:], autoUpdate: true, showsSettings: false, width: nil),
         ]
         return l
     }
@@ -211,7 +211,7 @@ public struct WorkspaceLayout: Equatable, Sendable {
                 panes.append(
                     Pane(
                         key: key, analysis: analysis, settings: settings, autoUpdate: ui["auto_update"]?.bool ?? true,
-                        showsSettings: ui["settings_visible"]?.bool ?? true, width: ui["width"]?.doubleValue))
+                        showsSettings: ui["settings_visible"]?.bool ?? false, width: ui["width"]?.doubleValue))
             }
         }
     }

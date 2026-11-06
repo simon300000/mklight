@@ -197,7 +197,7 @@ import Testing
         let pane = AnalysisPane(analysis: "spot_diagram")
         let bar = SettingsBar(pane: pane, descriptor: descriptor, system: SampleSystems.cookeTriplet())
         let field = try #require(descriptor.settingsFields.first { $0.name == "spectrum" })
-        #expect(bar.kind(of: field) == .spectrum)
+        #expect(bar.control(of: field) == .spectrum)
         #expect(SettingsBar.summary(pane, descriptor) == "")
         pane.set("spectrum", SpectrumSetting.photopic(.default).json)
         #expect(SettingsBar.summary(pane, descriptor) == "Spectrum photopic")

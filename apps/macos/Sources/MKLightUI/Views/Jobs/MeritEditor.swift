@@ -626,7 +626,7 @@ struct OperandDetail: View {
             if let s = operand.descriptor?.summary, !s.isEmpty { Text(s).font(.caption).foregroundStyle(.secondary) }
             ForEach(operand.descriptor?.params ?? []) { p in param(p) }
             if operand.descriptor == nil {
-                Text("Parameters: " + JSONSettingEditor.text(.object(operand.kind))).font(.caption.monospaced()).foregroundStyle(.secondary).lineLimit(3)
+                Text("Parameters: " + JSONText.text(.object(operand.kind))).font(.caption.monospaced()).foregroundStyle(.secondary).lineLimit(3)
             }
             fieldMenu
             wavelengthMenu

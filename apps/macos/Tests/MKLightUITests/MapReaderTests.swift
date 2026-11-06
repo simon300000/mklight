@@ -277,9 +277,9 @@ import Testing
             name: "chief_ray_angle", title: "", category: "", description: "", available: true, unavailableReason: nil,
             settingsSchema: .object(["properties": .object([:])]), defaultSettings: .object([:]))
         let bar = SettingsBar(pane: AnalysisPane(analysis: "chief_ray_angle"), descriptor: d, system: nil)
-        #expect(bar.kind(of: grid) == .pair)
-        #expect(bar.kind(of: limit) == .sensorLimit)
-        #expect(bar.kind(of: source) == .imageSource)
+        #expect(bar.control(of: grid) == .pair(integer: true, nullable: false))
+        #expect(bar.control(of: limit) == .sensorLimit)
+        #expect(bar.control(of: source) == .imageSource)
     }
 
     @Test func importedImagesAreNotSaved() {

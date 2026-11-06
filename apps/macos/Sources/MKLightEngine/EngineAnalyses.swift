@@ -62,8 +62,7 @@ public struct AnalysisDescriptor: Codable, Sendable, Hashable, Identifiable {
             if case .array(let r)? = settingsSchema["required"] {
                 Set(r.compactMap { if case .string(let s) = $0 { s } else { nil } })
             } else { [] }
-        return props.map { SettingsField(name: $0.key, schema: $0.value, required: required.contains($0.key)) }
-            .sorted { ($0.required ? 0 : 1, $0.name) < ($1.required ? 0 : 1, $1.name) }
+        return SettingsField.fields(props, required: required)
     }
 
     /// `settings` reduced to the keys the schema declares, with values of an
@@ -90,6 +89,37 @@ public struct SettingsField: Sendable, Hashable, Identifiable {
     public var maximum: Double?
     public var enumValues: [JSONValue]
     public var required: Bool
+    /// The schema of an array's elements (`items`), if given.
+    public var items: JSONValue?
+    /// A fixed value (`const`): the tag of a variant.
+    public var constValue: JSONValue?
+    /// One alternative of a tagged union (`oneOf`): its title and the
+    /// properties of its object, one of which is the tag with a `const`.
+    public struct Variant: Sendable, Hashable, Identifiable {
+        public var title: String
+        public var properties: [SettingsField]
+        /// The tag property's name and value (`"type": "grid"`).
+        public var tag: (key: String, value: JSONValue)? {
+            properties.lazy.compactMap { f in f.constValue.map { (f.name, $0) } }.first
+        }
+        public var id: String { title }
+        public init(title: String, properties: [SettingsField]) {
+            self.title = title
+            self.properties = properties
+        }
+        /// The variant's object with every property at its default.
+        public var defaultObject: JSONValue {
+            .object(Dictionary(uniqueKeysWithValues: properties.compactMap { f in (f.constValue ?? f.defaultValue).map { (f.name, $0) } }))
+        }
+        public static func == (a: Variant, b: Variant) -> Bool { a.title == b.title && a.properties == b.properties }
+        public func hash(into h: inout Hasher) { h.combine(title) }
+    }
+    /// The alternatives of a tagged union (`oneOf` with `const` tags).
+    public var variants: [Variant]
+    /// The fields of an object setting: the schema's `properties`, or,
+    /// without any, inferred from the keys of the default object (each with
+    /// the JSON type of its default). Empty for other types.
+    public var properties: [SettingsField]
     public var id: String { name }
 
     public init(name: String, schema: JSONValue, required: Bool) {
@@ -108,6 +138,56 @@ public struct SettingsField: Sendable, Hashable, Identifiable {
         minimum = schema["minimum"]?.doubleValue
         maximum = schema["maximum"]?.doubleValue
         enumValues = if case .array(let a)? = schema["enum"] { a } else { [] }
+        items = schema["items"]
+        constValue = schema["const"]
+        variants = (schema["oneOf"]?.array ?? []).compactMap { alt in
+            guard case .object(let props)? = alt["properties"] else { return nil }
+            let fields = Self.fields(props, required: [])
+            guard fields.contains(where: { $0.constValue != nil }) else { return nil }
+            return Variant(title: alt["title"]?.string ?? "", properties: fields)
+        }
+        if case .object(let props)? = schema["properties"] {
+            let required: Set<String> = Set((schema["required"]?.array ?? []).compactMap(\.string))
+            properties = Self.fields(props, required: required)
+        } else if variants.isEmpty, case .object(let d)? = schema["default"] {
+            // Only the default object says what the keys are: each keeps
+            // the type of its default (a null default has no type).
+            properties = d.map { key, v in
+                SettingsField(name: key, schema: .object(["type": .string(Self.typeName(v)), "default": v]), required: false)
+            }
+            .sorted { $0.name < $1.name }
+        } else {
+            properties = []
+        }
+    }
+
+    /// Properties in a stable order: required first, then by name.
+    static func fields(_ props: [String: JSONValue], required: Set<String>) -> [SettingsField] {
+        props.map { SettingsField(name: $0.key, schema: $0.value, required: required.contains($0.key)) }
+            .sorted { ($0.required ? 0 : 1, $0.name) < ($1.required ? 0 : 1, $1.name) }
+    }
+
+    /// The JSON type name of a value.
+    public static func typeName(_ v: JSONValue) -> String {
+        switch v {
+        case .null: "null"
+        case .bool: "boolean"
+        case .integer, .unsigned: "integer"
+        case .number: "number"
+        case .string: "string"
+        case .array: "array"
+        case .object: "object"
+        }
+    }
+
+    /// Whether `null` is an accepted value.
+    public var nullable: Bool { types.contains("null") }
+    /// The accepted types other than `null`.
+    public var baseTypes: Set<String> { Set(types).subtracting(["null"]) }
+    /// The variant of a tagged-union value, by its tag.
+    public func variant(of value: JSONValue?) -> Variant? {
+        guard let value else { return nil }
+        return variants.first { v in v.tag.map { value[$0.key] == $0.value } ?? false }
     }
 
     /// Whether `value` has one of the accepted types (and, for enums, is a

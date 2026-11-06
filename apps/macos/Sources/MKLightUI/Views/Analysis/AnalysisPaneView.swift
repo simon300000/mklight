@@ -39,10 +39,11 @@ struct AnalysisArea: View {
     }
 }
 
-/// One analysis pane: a header (the analysis, its state, and its controls
+/// One analysis pane: a header (the analysis, its state and its controls
 /// in a glass cluster), the plot as content, and a footer with the key
-/// numbers and the backend that computed them. Settings open in a popover
-/// from the header, or stay as a compact strip when pinned.
+/// numbers and the backend that computed them. The settings stay closed
+/// behind the header's one-line summary; the sliders button opens them as a
+/// form above the plot, and the choice is saved with the layout.
 struct AnalysisPaneView: View {
     let pane: AnalysisPane
     let workspace: Workspace
@@ -64,11 +65,8 @@ struct AnalysisPaneView: View {
         VStack(spacing: 0) {
             PaneHeader(pane: pane, workspace: workspace, descriptor: descriptor, system: system, isFocused: isFocused)
             if pane.showsSettings, let descriptor, descriptor.available, !descriptor.settingsFields.isEmpty {
-                SettingsBar(pane: pane, descriptor: descriptor, system: system)
-                    .padding(.vertical, Space.xxs)
-                    .background(.fill.quaternary, in: .rect(cornerRadius: 10))
-                    .padding(.horizontal, Space.m)
-                    .padding(.bottom, Space.xs)
+                SettingsPanel(pane: pane, descriptor: descriptor, system: system)
+                    .transition(reduceMotion ? .opacity : .move(edge: .top).combined(with: .opacity))
             }
             content
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -86,6 +84,7 @@ struct AnalysisPaneView: View {
             }
         }
         .background(.background)
+        .animation(reduceMotion ? nil : .snappy(duration: 0.25), value: pane.showsSettings)
         .overlay(alignment: .top) {
             // The focused pane, when there are several: a hairline in the accent colour.
             if isFocused { Rectangle().fill(.tint).frame(height: 2).accessibilityHidden(true) }
@@ -232,7 +231,6 @@ struct PaneHeader: View {
     let descriptor: AnalysisDescriptor?
     let system: OpticalSystem
     let isFocused: Bool
-    @State private var showSettings = false
 
     var body: some View {
         let full = AnalysisCatalog.title(of: pane.analysis), short = AnalysisCatalog.shortTitle(of: pane.analysis)
@@ -245,9 +243,6 @@ struct PaneHeader: View {
             row(full, .subheadline.weight(.semibold), compact: true)
             row(short, .headline, compact: true)
             row(short, .subheadline.weight(.semibold), compact: true)
-        }
-        .popover(isPresented: $showSettings, arrowEdge: .bottom) {
-            if let descriptor { SettingsPopover(pane: pane, descriptor: descriptor, system: system) }
         }
         .padding(.horizontal, Space.m)
         .padding(.top, Space.s)
@@ -314,21 +309,23 @@ struct PaneHeader: View {
                     .toggleStyle(.button)
                     .help(pane.autoUpdate ? "Updates when the design changes. Click to update on request only." : "Updates on request only. Click to update automatically.")
                     if hasSettings {
-                        Button("Settings", systemImage: "slider.horizontal.3") { showSettings.toggle() }
-                            .help("Settings of this analysis")
+                        Toggle(isOn: showSettings) {
+                            Label("Settings", systemImage: "slider.horizontal.3")
+                        }
+                        .toggleStyle(.button)
+                        .help(pane.showsSettings ? "Hide the settings" : "Show the settings of this analysis")
                     }
                 }
                 Menu {
                     if compact {
                         Toggle("Update Automatically", isOn: autoUpdate)
-                        if hasSettings { Button("Settings…") { showSettings = true } }
+                        if hasSettings { Toggle("Show Settings", isOn: showSettings) }
                         Divider()
                     }
                     Button("Duplicate Pane") { workspace.addPane(pane.analysis, settings: pane.settings, after: pane) }
                     Button("Move Left") { workspace.movePane(pane, by: -1) }.disabled(workspace.panes.first === pane)
                     Button("Move Right") { workspace.movePane(pane, by: 1) }.disabled(workspace.panes.last === pane)
                     Divider()
-                    Toggle("Pin Settings in Pane", isOn: Binding(get: { pane.showsSettings }, set: { pane.showsSettings = $0 }))
                     Button("Copy Result as JSON") { copyJSON() }.disabled(pane.output == nil)
                     Divider()
                     Button("Close Pane", role: .destructive) { workspace.removePane(pane) }
@@ -349,6 +346,10 @@ struct PaneHeader: View {
         Binding(get: { pane.autoUpdate }, set: { pane.autoUpdate = $0; if $0 { pane.rerun() } })
     }
 
+    private var showSettings: Binding<Bool> {
+        Binding(get: { pane.showsSettings }, set: { pane.showsSettings = $0 })
+    }
+
     /// State, then the settings that differ from the defaults.
     private var subtitle: String {
         if let p = pane.progress { return p.stage.isEmpty ? "Computing…" : p.stage }
@@ -364,35 +365,45 @@ struct PaneHeader: View {
     }
 }
 
-/// The schema-driven settings of a pane, in a popover.
-struct SettingsPopover: View {
+/// The schema-driven settings of a pane, as a form between the header and
+/// the plot: a grouped card in the content layer (no glass), scrolling
+/// when long so the plot keeps most of the pane, with Defaults when the
+/// settings differ from a new pane's.
+struct SettingsPanel: View {
     let pane: AnalysisPane
     let descriptor: AnalysisDescriptor
-    let system: OpticalSystem
+    let system: OpticalSystem?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Space.l) {
+        VStack(alignment: .leading, spacing: Space.s) {
+            ScrollView {
+                SettingsBar(pane: pane, descriptor: descriptor, system: system)
+                    .environment(\.analysisPane, pane)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, Space.m)
+                    .padding(.top, Space.m)
+            }
+            .frame(maxHeight: 300)
+            .fixedSize(horizontal: false, vertical: true)
             HStack {
-                Text("\(AnalysisCatalog.title(of: pane.analysis)) Settings").font(.headline)
                 Spacer()
                 if pane.settings != pane.startingSettings {
                     Button("Defaults") { pane.setSettings(pane.startingSettings) }
                         .help("Restore the default settings")
                 }
+                Button("Done") { pane.showsSettings = false }
+                    .help("Hide the settings")
             }
-            ScrollView {
-                SettingsBar(pane: pane, descriptor: descriptor, system: system, vertical: true)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .frame(maxHeight: 460)
-            .fixedSize(horizontal: false, vertical: true)
-            Toggle("Pin in pane", isOn: Binding(get: { pane.showsSettings }, set: { pane.showsSettings = $0 }))
-                .toggleStyle(.switch)
-                .controlSize(.mini)
-                .font(.caption)
+            .controlSize(.small)
+            .buttonStyle(.borderless)
+            .padding(.horizontal, Space.m)
+            .padding(.bottom, Space.s)
         }
-        .padding(Space.l)
-        .frame(width: 340)
+        .background(.fill.quaternary, in: .rect(cornerRadius: 10))
+        .padding(.horizontal, Space.m)
+        .padding(.bottom, Space.xs)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("\(AnalysisCatalog.title(of: pane.analysis)) settings")
     }
 }
 

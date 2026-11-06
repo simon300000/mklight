@@ -67,7 +67,7 @@ public struct SpectrumControl: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
             } else {
-                Text("A spectrum this control cannot edit: \(JSONSettingEditor.text(value))")
+                Text("A spectrum this control cannot edit: \(JSONText.text(value))")
                     .font(.caption.monospaced()).foregroundStyle(.secondary)
                     .lineLimit(3)
             }

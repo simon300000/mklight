@@ -27,8 +27,9 @@ public final class AnalysisPane: Identifiable {
     /// Re-run automatically when the design changes; otherwise the result
     /// goes stale and waits for Re-run.
     public var autoUpdate: Bool
-    /// Whether the settings bar is shown.
-    public var showsSettings = true
+    /// Whether the settings form is open in the pane (saved with the layout;
+    /// closed by default, the plot with a one-line summary).
+    public var showsSettings = false
     public internal(set) var output: AnalysisOutput?
     public internal(set) var phase = Phase.idle
     /// The request the current job (or the last finished one) ran.
