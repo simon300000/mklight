@@ -79,6 +79,30 @@ pub fn tuple(items: Value, n: usize, description: &str) -> Value {
     v
 }
 
+/// A tagged union setting for the front ends: `oneOf` lists every variant
+/// as an object schema whose `tag` property is a `const`, with the other
+/// properties annotated (type, default, bounds, unit) so a client can build
+/// a variant's value without reading its documentation. Validation ignores
+/// `oneOf` (the solver's serde type decides); `description` stays the
+/// human summary.
+pub fn variants(tag: &str, list: &[(&str, &str, Value)], description: &str) -> Value {
+    let alternatives: Vec<Value> = list
+        .iter()
+        .map(|(value, title, props)| {
+            let mut p = match props {
+                Value::Object(m) => m.clone(),
+                Value::Null => Map::new(),
+                _ => panic!("variant properties must be an object"),
+            };
+            p.insert(tag.to_string(), json!({"const": value}));
+            json!({"title": title, "properties": p})
+        })
+        .collect();
+    let mut v = json!({"oneOf": alternatives});
+    annotate(&mut v, "", description);
+    v
+}
+
 /// `v` or `null`.
 pub fn nullable(v: Value) -> Value {
     json!({"anyOf": [v, {"type": "null"}]})

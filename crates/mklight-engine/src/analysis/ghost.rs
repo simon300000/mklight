@@ -72,7 +72,11 @@ impl GhostModelOptions {
         let v = json!({
             "sensor_reflectance": {"type": ["number", "null"], "minimum": 0.0, "maximum": 1.0,
                 "description": "Unpolarised, angle-independent reflectance of the sensor; null: the sensor does not reflect."},
-            "clip": {"description": "Clipping apertures: {\"mode\": \"clear_apertures\", \"margin_mm\": m} (clear semi-diameters + margin; the stop at its size), {\"mode\": \"fixed_apertures\"} or {\"mode\": \"none\"}."},
+            "clip": super::schema::variants("mode", &[
+                ("clear_apertures", "Clear apertures", json!({"margin_mm": {"type": "number", "default": 0.0, "minimum": 0.0, "unit": "mm", "description": "Margin beyond the clear semi-diameters; the stop keeps its size."}})),
+                ("fixed_apertures", "Fixed apertures", Value::Null),
+                ("none", "None", Value::Null),
+            ], "Clipping apertures: the clear semi-diameters plus a margin (the stop at its size), the fixed apertures, or none."),
             "reject_virtual": {"description": "Treat an intersection behind the ray as a lost ray."}
         });
         match v {
