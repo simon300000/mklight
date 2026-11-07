@@ -52,7 +52,7 @@ struct LensTableView: View {
     /// Anamorphic surfaces show both sections in the radius and conic cells.
     private func columns(hasOffsets: Bool) -> [LensGridColumn] {
         let base = [
-            LensGridColumn(title: "Surf", min: 40, ideal: 46, max: 64),
+            LensGridColumn(title: "Surf", min: 56, ideal: 58, max: 72),
             LensGridColumn(title: "Type", min: 90, ideal: 112, max: 150),
             LensGridColumn(title: LensColumn.comment.title, min: 70, ideal: 120),
             LensGridColumn(title: LensColumn.radius.title, min: 80, ideal: 116, max: 220),
@@ -380,6 +380,8 @@ private struct SurfaceLabel: View {
                     .accessibilityLabel(issues.map(\.message).joined(separator: ". "))
             }
             Text(row.surfaceText)
+                .lineLimit(1)
+                .fixedSize()
                 .font(row.role == .surface ? .body.monospacedDigit() : .callout.weight(.semibold))
                 .foregroundStyle(row.role == .object || row.role == .image ? .secondary : .primary)
             if row.role == .stop {
