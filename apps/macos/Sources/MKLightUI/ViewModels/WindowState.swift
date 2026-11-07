@@ -129,7 +129,6 @@ public final class WindowState {
     public var highlightedField: Int?
     public var showInspector = true
     public var inspectorTab = InspectorTab.system
-    public var showViewport = true
     public var showIssues = false
     public var viewportMode = ViewportMode.section2D
     public var camera = ViewportCamera()
@@ -138,12 +137,6 @@ public final class WindowState {
     public var fitRequest = 0
     /// Fit frames the lens only (surfaces), not the rays to the image.
     public var fitLens = false
-    /// Height fraction of the lens data editor.
-    public var editorFraction = 0.36
-    /// Width fraction of the viewport in the lower half.
-    public var viewportFraction = 0.42
-    /// Width fractions of the analysis panes (normalised when used).
-    public var paneWidths: [String: Double] = [:]
     /// A transient message (an edit the editor rejected).
     public var message: String?
     /// The design job shown in the inspector (`nil`: surface or system).
@@ -197,9 +190,12 @@ public final class WindowState {
     }
 }
 
-/// The saved layout of a window, stored as the project's `views` section
-/// (`[{key, analysis, settings, ui}]`, docs/FFI.md): one entry per analysis
-/// pane plus a `layout` entry for the viewport and split positions.
+/// The saved layout of a design's windows, stored as the project's `views`
+/// section (`[{key, analysis, settings, ui}]`, docs/FFI.md): one entry per
+/// analysis pane plus a `layout` entry for the viewport and the panel
+/// arrangement (`ui.arrangement`, `PanelArrangement.json`). Projects saved
+/// before panels could move keep split fractions and pane widths instead;
+/// they open in the standard arrangement with those sizes.
 public struct WorkspaceLayout: Equatable, Sendable {
     public struct Pane: Equatable, Sendable {
         public var key: String
@@ -207,18 +203,22 @@ public struct WorkspaceLayout: Equatable, Sendable {
         public var settings: [String: JSONValue]
         public var autoUpdate: Bool
         public var showsSettings: Bool
+        /// Older projects: the pane's width weight in the analysis row.
         public var width: Double?
     }
     public var panes: [Pane] = []
-    public var editorFraction = 0.36
-    public var viewportFraction = 0.42
-    public var showViewport = true
+    /// Where the panels are, in every window (`nil`: an older project).
+    public var arrangement: JSONValue?
     public var viewportMode = ViewportMode.section2D
     public var rayColoring = RayColoring.field
     /// The section views' vertical stretch, when one was chosen or applied
     /// (`nil`: the first fit picks one for a slim design).
     public var stretch: Double?
     public var layoutSettings: [String: JSONValue] = [:]
+    /// Older projects: the standard arrangement's sizes.
+    var editorFraction = 0.36
+    var viewportFraction = 0.42
+    var showViewport = true
 
     public init() {}
 
@@ -238,6 +238,7 @@ public struct WorkspaceLayout: Equatable, Sendable {
             let ui = v["ui"]?.object ?? [:]
             let settings = v["settings"]?.object ?? [:]
             if key == "layout" {
+                arrangement = ui["arrangement"].flatMap { $0.object != nil ? $0 : nil }
                 editorFraction = ui["editor_fraction"]?.doubleValue ?? editorFraction
                 viewportFraction = ui["viewport_fraction"]?.doubleValue ?? viewportFraction
                 showViewport = ui["show_viewport"]?.bool ?? true
@@ -256,11 +257,10 @@ public struct WorkspaceLayout: Equatable, Sendable {
 
     public var views: JSONValue {
         var layoutUI: [String: JSONValue] = [
-            "editor_fraction": .number(editorFraction), "viewport_fraction": .number(viewportFraction),
-            "show_viewport": .bool(showViewport), "mode": .string(viewportMode.rawValue),
-            "ray_coloring": .string(rayColoring.rawValue),
+            "mode": .string(viewportMode.rawValue), "ray_coloring": .string(rayColoring.rawValue),
         ]
         if let stretch { layoutUI["stretch"] = .number(stretch) }
+        if let arrangement { layoutUI["arrangement"] = arrangement }
         var out: [JSONValue] = [
             .object([
                 "key": .string("layout"), "analysis": .string("layout"), "settings": .object(layoutSettings),
@@ -268,8 +268,7 @@ public struct WorkspaceLayout: Equatable, Sendable {
             ])
         ]
         for p in panes {
-            var ui: [String: JSONValue] = ["auto_update": .bool(p.autoUpdate), "settings_visible": .bool(p.showsSettings)]
-            if let w = p.width { ui["width"] = .number(w) }
+            let ui: [String: JSONValue] = ["auto_update": .bool(p.autoUpdate), "settings_visible": .bool(p.showsSettings)]
             out.append(
                 .object([
                     "key": .string(p.key), "analysis": .string(p.analysis), "settings": .object(p.settings), "ui": .object(ui),
@@ -285,17 +284,15 @@ public struct WorkspaceLayout: Equatable, Sendable {
 }
 
 extension WorkspaceLayout {
-    /// The layout of a window now.
+    /// The layout of a design's windows now.
     @MainActor
-    public init(workspace: Workspace, window: WindowState) {
+    public init(workspace: Workspace, window: WindowState, arrangement: PanelArrangement) {
         panes = workspace.panes.map {
             Pane(
                 key: $0.id, analysis: $0.analysis, settings: ImageSourceImport.persistable($0.settings), autoUpdate: $0.autoUpdate,
-                showsSettings: $0.showsSettings, width: window.paneWidths[$0.id])
+                showsSettings: $0.showsSettings, width: nil)
         }
-        editorFraction = window.editorFraction
-        viewportFraction = window.viewportFraction
-        showViewport = window.showViewport
+        self.arrangement = arrangement.json
         viewportMode = window.viewportMode
         rayColoring = window.rayColoring
         let c = window.camera
@@ -313,17 +310,25 @@ extension WorkspaceLayout {
         }
     }
 
+    /// The saved panel arrangement; for an older project, the standard one
+    /// with its saved sizes.
+    @MainActor
+    public func makeArrangement() -> PanelArrangement {
+        let keys = panes.map(\.key)
+        let known = Set([PanelID.lensData, .layout] + keys.map(PanelID.analysis))
+        if let a = PanelArrangement.decode(arrangement, known: known) { return a }
+        return .standard(
+            panes: keys, showLayout: showViewport, editorFraction: editorFraction, viewportFraction: viewportFraction,
+            widths: Dictionary(panes.compactMap { p in p.width.map { (p.key, $0) } }, uniquingKeysWith: { a, _ in a }))
+    }
+
     @MainActor
     public func apply(to window: WindowState) {
-        window.editorFraction = editorFraction
-        window.viewportFraction = viewportFraction
-        window.showViewport = showViewport
         window.viewportMode = viewportMode
         window.rayColoring = rayColoring
         if let stretch {
             window.camera.stretch = stretch
             window.camera.stretchChosen = true
         }
-        window.paneWidths = Dictionary(panes.compactMap { p in p.width.map { (p.key, $0) } }, uniquingKeysWith: { a, _ in a })
     }
 }

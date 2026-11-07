@@ -198,7 +198,7 @@ What we took from Apple's current guidance, and how MKLight applies it.
 ## Window structure
 
 ```
-┌ toolbar: ◧ title │ ⟳ EFL · F/# · TT · ⓘ │ Optimize Glass Tolerance Solves │ + Layout │ ◨ ┐
+┌ toolbar: ◧ title │ ⟳ EFL · F/# · TT · ⓘ │ Optimize Glass Tolerance Solves │ + Lens Layout │ ◨ ┐
 ├ sidebar (glass) ─┬ Lens Data (hard scroll edge) ──────────────────────┬ inspector ─────────┤
 │ Analyses         │ Surf Type Comment Radius Thickness Material …      │ [Surface|System]  │
 │  (searchable,    ├─────────────────────────┬──────────────────────────┤ type menu, preview│
@@ -216,12 +216,51 @@ What we took from Apple's current guidance, and how MKLight applies it.
 * **Toolbar**: three groups separated by `ToolbarSpacer`: the design jobs
   (Optimize, Glass Substitution, Tolerance, Apply Solves, each opening its
   inspector panel);
-  Add Analysis and the layout toggle; the inspector toggle. In the centre,
+  Add Analysis and the lens data and layout toggles (on while the panel is
+  open in any of the design's windows); the inspector toggle. In the centre,
   the **status capsule** (`DesignStatus`): a running job ("Optimizing ·
   479", click to show it) or analysis activity, EFL (EFL y for a design that
   is not rotationally symmetric), F/# and total track, and the issues button.
   Its popover has the first-order table, the anamorphic data, the engine,
   the snapshot and the compute backend picker.
+* **Panels and windows** (`PanelArrangement`, `PanelViews`, `PanelDrag`,
+  `DetachedWindows`): the lens data, the layout and every analysis pane are
+  panels. The content area is a tree of horizontal and vertical splits whose
+  leaves are tab groups; the default is the layout above (lens data across
+  the top, the layout and the panes side by side under it). Key decisions:
+  * *The header is the handle.* A panel alone in its group shows no extra
+    chrome: its title (the lens data's and analysis panes' titles, the
+    layout's title chip) is what you drag, with a grab pointer and a context
+    menu (Move to New Window, Move to Main Window, Close / Hide). A group of
+    several shows a compact tab strip (the front tab on glass, close on
+    hover); tabs switch on click and drag like titles. The analysis menu is
+    the chevron beside the title.
+  * *Drop zones like a browser or an IDE.* While a panel is dragged, the
+    place it would land is outlined in the accent colour: a group's header
+    or middle adds it as a tab (between the tabs under the pointer), its
+    outer 30 % towards an edge splits that side, a window's outer edge adds
+    a full-height column or full-width row. Dropping outside the design's
+    windows opens a **separate window** there, previewed by an outline of
+    the window while dragging; Escape cancels. Splits of the same axis
+    merge, so a row stays one row; dividers drag (double click: equal
+    shares). Drops are judged against MKLight's own windows, front to back.
+  * *Separate windows are views of the same design* (`DesignSession`):
+    selection, edits, analysis updates, the preview of a candidate and the
+    design jobs are shared, so everything stays live. A separate window has
+    its own tree (tabs and splits, and panels can be dragged on from it to
+    yet another window), a toolbar with Add Analysis and Move to Main
+    Window, and the design's name as subtitle. It uses the document's undo
+    manager and passes document commands (Save, Revert, Duplicate…) to the
+    document; Undo and Redo name the action from any of the design's
+    windows. Closing it closes its panels (like a browser window); Move to
+    Main Window puts them back where their kind belongs (an analysis beside
+    the others, the lens data on top, the layout on the left). The
+    separate windows close with the main window and open again with the
+    project, at their saved frames (moved on screen if a display is gone).
+  * *Closing.* Closing an analysis pane removes it; the lens data and the
+    layout are hidden and come back from the toolbar, the View menu or the
+    empty window's buttons, at their default places. View ▸ Panel ▸ Reset
+    Panel Layout brings every panel back into the standard arrangement.
 * **Lens data** (`LensTableView`, SwiftUI `Table`): text cells edit in place
   with full keyboard navigation (Return / double click edits the row; Tab
   and ⇧Tab move across, ↑/↓ and Return move between rows committing, Esc
@@ -265,8 +304,9 @@ What we took from Apple's current guidance, and how MKLight applies it.
   is saved in the project's `views` (`ui.stretch` of the layout entry);
   a saved one, even ×1, is kept instead of the automatic choice. A previewed candidate design shows a glass
   "Previewing … · not applied" label under the controls.
-* **Analysis panes** (`AnalysisPaneView`): side by side with resizable
-  widths. The header has the analysis menu and a one-line state or settings
+* **Analysis panes** (`AnalysisPaneView`): panels of their own, side by
+  side by default. The header has the title (the drag handle), the
+  analysis menu (chevron) and a one-line state or settings
   summary (the values that differ from a new pane's, "±0.193 mm · 3
   planes"), and a glass cluster: Run (Cancel while running), automatic
   update (bolt), Settings (a toggle) and More. The settings stay closed
@@ -660,15 +700,23 @@ What we took from Apple's current guidance, and how MKLight applies it.
   samples with extended surface types are listed under "Surface Types".
   Slim, long designs are framed on their lens.
 * **Layout persistence**: the panes (analysis, settings, automatic update,
-  pinned settings, widths), split positions, viewport mode and ray colouring
-  are saved in the project's `views` section (`[{key, analysis, settings,
-  ui}]`), written with the next save, not as an undoable design change.
+  pinned settings), the panel arrangement of every window, viewport mode
+  and ray colouring are saved in the project's `views` section (`[{key,
+  analysis, settings, ui}]`), written with the next save, not as an
+  undoable design change. The arrangement is the layout entry's
+  `ui.arrangement`: `{"main": node, "windows": [{"frame": [x, y, w, h],
+  "root": node}]}` with nodes `{"tabs": [keys], "selected": key}` or
+  `{"axis": "h"|"v", "children": [nodes], "fractions": [shares]}`; keys are
+  `lens_data`, `layout` or a pane key, frames in screen points. Projects
+  saved before panels could move (split fractions and pane widths) open in
+  the standard arrangement with their sizes.
 
 Keyboard: ⇧⌘I / ⌥⌘I insert before / after, ⌘⌫ delete, ⇧⌘T make stop,
 ⌃⌘V toggle variable, ⌃⌘O optimize, ⌃⌘G glass substitution, ⌃⌘T tolerance,
 ⌃⌘L apply solves, ⌃⌘E issues, ⌘R run analyses, ⌘. cancel, ⌘2 / ⌥⌘2 / ⌘3
-y–z section / x–z section / 3-D, ⌘0 fit, ⌥⌘L layout,
-⌃⌘I inspector, ⌃⌘S sidebar. In a job panel Return is the primary action and
+y–z section / x–z section / 3-D, ⌘0 fit, ⌥⌘L layout, ⌥⌘E lens data,
+⌃⌘I inspector, ⌃⌘S sidebar. View ▸ Panel has Move to New Window, Move to
+Main Window, Close / Hide and Reset Panel Layout for the focused panel. In a job panel Return is the primary action and
 Esc closes the panel.
 
 ## Surface types
@@ -830,9 +878,17 @@ callback never runs on the main thread and holds no engine lock.
   baseline for comparisons; any design change ends the preview, and design
   jobs always run on the design's own snapshot (`designSnapshot`).
 * **Window state** (`WindowState`): selection (by `SurfaceID`), inspector
-  tab, split fractions, viewport mode and camera, ray colouring, transient
-  messages, the open job panel. It never enters the design; its layout part
-  is saved in `views` (`WorkspaceLayout`).
+  tab, viewport mode and camera, ray colouring, transient messages, the
+  open job panel. It never enters the design; its layout part is saved in
+  `views` (`WorkspaceLayout`).
+* **Design session** (`DesignSession`, one per open design, owned by the
+  main window): the document, the workspace, the window state and the
+  panel arrangement (`PanelArrangement`: a tree of `PanelSplit`s and
+  `PanelGroup`s per window, platform-neutral, unit-tested), and the
+  separate windows. Every window of the design draws from it, so they stay
+  in step; a pane added or closed anywhere is placed or removed by
+  `reconcile()`. The arrangement's nodes are observable objects, so
+  dragging a divider updates only that split.
 * **Design jobs** (`OptimizeSession` with the merit editor's working copy
   and live evaluation, `GlassSubstitutionSession`, `ToleranceSession`,
   `SolvesSession`): view models that submit the engine's `optimize`,

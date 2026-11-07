@@ -287,10 +287,10 @@ final class LibraryEngine: EngineClient, @unchecked Sendable {
     @Test func layoutPersistsInTheProject() async throws {
         let w = await make([AnalysisPane(id: "p1", analysis: "spot_diagram", settings: ["rings": .integer(4)], autoUpdate: false)])
         let window = WindowState()
-        window.editorFraction = 0.5
-        window.paneWidths = ["p1": 2]
         window.viewportMode = .orbit3D
-        let layout = WorkspaceLayout(workspace: w, window: window)
+        let arrangement = PanelArrangement.standard(panes: ["p1"])
+        arrangement.move(.lensData, to: .windowEdge(window: arrangement.main.id, edge: .bottom))
+        let layout = WorkspaceLayout(workspace: w, window: window, arrangement: arrangement)
         let doc = DesignDocument(system: SampleSystems.singlet())
         doc.setViews(layout.views)
         let file = try ProjectFile.decode(doc.savedProject.encoded())
@@ -299,7 +299,8 @@ final class LibraryEngine: EngineClient, @unchecked Sendable {
         #expect(back.panes.first?.settings["rings"] == .integer(4) && back.panes.first?.autoUpdate == false)
         let restored = WindowState()
         back.apply(to: restored)
-        #expect(restored.editorFraction == 0.5 && restored.viewportMode == .orbit3D && restored.paneWidths["p1"] == 2)
+        #expect(restored.viewportMode == .orbit3D)
+        #expect(back.makeArrangement().json == arrangement.json)
         #expect(WorkspaceLayout.isSaved(file.sections["views"]!) && !WorkspaceLayout.isSaved(.array([])))
     }
 

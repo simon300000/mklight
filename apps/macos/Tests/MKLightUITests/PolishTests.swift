@@ -284,9 +284,9 @@ import Testing
     @Test func stretchIsSavedInTheViews() throws {
         let w = Workspace(engine: MockEngine(simulatedLatency: .zero))
         let window = WindowState()
-        #expect(WorkspaceLayout(workspace: w, window: window).stretch == nil, "never chosen: the first fit decides")
+        #expect(WorkspaceLayout(workspace: w, window: window, arrangement: .standard(panes: [])).stretch == nil, "never chosen: the first fit decides")
         window.camera.stretch = 10
-        let layout = WorkspaceLayout(workspace: w, window: window)
+        let layout = WorkspaceLayout(workspace: w, window: window, arrangement: .standard(panes: []))
         let back = WorkspaceLayout(views: layout.views)
         #expect(back.stretch == 10 && back == layout)
         let restored = WindowState()
@@ -294,7 +294,7 @@ import Testing
         #expect(restored.camera.stretch == 10 && restored.camera.stretchChosen)
         // Turned off by hand: saved as ×1 and kept.
         restored.camera.stretch = 1
-        let off = WorkspaceLayout(views: WorkspaceLayout(workspace: w, window: restored).views)
+        let off = WorkspaceLayout(views: WorkspaceLayout(workspace: w, window: restored, arrangement: .standard(panes: [])).views)
         #expect(off.stretch == 1)
         let again = WindowState()
         off.apply(to: again)

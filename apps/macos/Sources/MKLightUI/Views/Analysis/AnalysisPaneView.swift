@@ -16,29 +16,6 @@ struct AnalysisContext {
     func fieldLabel(_ value: [Double]?) -> String { FieldLabel.text(value, unit: fieldUnit) }
 }
 
-/// The analysis panes, side by side with resizable widths.
-struct AnalysisArea: View {
-    let workspace: Workspace
-    @Bindable var window: WindowState
-    let system: OpticalSystem
-
-    var body: some View {
-        if workspace.panes.isEmpty {
-            ContentUnavailableView {
-                Label("No Analyses", systemImage: "chart.xyaxis.line")
-            } description: {
-                Text("Choose an analysis in the sidebar, or add a pane.")
-            } actions: {
-                Menu("Add Analysis") { AddPaneMenuItems(workspace: workspace) }.fixedSize()
-            }
-        } else {
-            PaneRow(items: workspace.panes, weights: $window.paneWidths) { pane in
-                AnalysisPaneView(pane: pane, workspace: workspace, window: window, system: system)
-            }
-        }
-    }
-}
-
 /// One analysis pane: a header (the analysis, its state and its controls
 /// in a glass cluster), the plot as content, and a footer with the key
 /// numbers and the backend that computed them. The settings stay closed
@@ -231,6 +208,8 @@ struct PaneHeader: View {
     let descriptor: AnalysisDescriptor?
     let system: OpticalSystem
     let isFocused: Bool
+    @Environment(\.panelTabbed) private var tabbed
+    @Environment(\.designSession) private var session
 
     var body: some View {
         let full = AnalysisCatalog.title(of: pane.analysis), short = AnalysisCatalog.shortTitle(of: pane.analysis)
@@ -252,11 +231,31 @@ struct PaneHeader: View {
     private func row(_ title: String, _ font: Font, compact: Bool) -> some View {
         HStack(alignment: .center, spacing: Space.s) {
             VStack(alignment: .leading, spacing: 0) {
-                titleMenu(title, font: font)
-                    .help(titleHelp)
-                    .accessibilityLabel(AnalysisCatalog.title(of: pane.analysis))
-                    .accessibilityHint("Choose another analysis for this pane")
-                // The state line truncates; it never decides the layout.
+                // The title is the pane's handle (drag it to move the pane);
+                // the chevron chooses another analysis. As one of several
+                // tabs, the tab carries the title.
+                HStack(spacing: 2) {
+                    if !tabbed {
+                        Label(title, systemImage: AnalysisCatalog.symbol(for: pane.analysis))
+                            .font(font)
+                            .lineLimit(1)
+                            .fixedSize()
+                            .help(titleHelp + "\nDrag to move the pane, or out of the window to open it in a window of its own.")
+                            .accessibilityAddTraits(.isHeader)
+                            .panelHandle(.analysis(pane.id))
+                    }
+                    analysisMenu
+                    if tabbed { stateLine }
+                }
+                if !tabbed { stateLine }
+            }
+            Spacer(minLength: Space.xs)
+            cluster(compact: compact)
+        }
+    }
+
+    /// The state line truncates; it never decides the layout.
+    private var stateLine: some View {
                 Text(subtitle)
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -266,24 +265,24 @@ struct PaneHeader: View {
                     .contentTransition(.opacity)
                     .frame(minWidth: 0, idealWidth: 0, maxWidth: .infinity, alignment: .leading)
                     .help(subtitle)
-            }
-            Spacer(minLength: Space.xs)
-            cluster(compact: compact)
-        }
     }
 
     private var hasSettings: Bool { descriptor.map { $0.available && !$0.settingsFields.isEmpty } ?? false }
 
-    private func titleMenu(_ title: String, font: Font) -> some View {
+    private var analysisMenu: some View {
         Menu {
             AnalysisPickerItems(workspace: workspace) { pane.show($0) }
         } label: {
-            Label(title, systemImage: AnalysisCatalog.symbol(for: pane.analysis))
-                .font(font)
-                .lineLimit(1)
+            Image(systemName: "chevron.down")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
         }
         .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
         .fixedSize()
+        .help("Show another analysis in this pane")
+        .accessibilityLabel("Change Analysis")
+        .accessibilityValue(AnalysisCatalog.title(of: pane.analysis))
     }
 
     private var titleHelp: String {
@@ -323,12 +322,13 @@ struct PaneHeader: View {
                         Divider()
                     }
                     Button("Duplicate Pane") { workspace.addPane(pane.analysis, settings: pane.settings, after: pane) }
-                    Button("Move Left") { workspace.movePane(pane, by: -1) }.disabled(workspace.panes.first === pane)
-                    Button("Move Right") { workspace.movePane(pane, by: 1) }.disabled(workspace.panes.last === pane)
-                    Divider()
                     Button("Copy Result as JSON") { copyJSON() }.disabled(pane.output == nil)
                     Divider()
-                    Button("Close Pane", role: .destructive) { workspace.removePane(pane) }
+                    if let session {
+                        PanelMenuItems(panel: .analysis(pane.id), session: session)
+                    } else {
+                        Button("Close Pane", role: .destructive) { workspace.removePane(pane) }
+                    }
                 } label: {
                     Label("More", systemImage: "ellipsis")
                 }

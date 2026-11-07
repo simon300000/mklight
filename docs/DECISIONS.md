@@ -19,6 +19,7 @@ exists in the code today.
 | Glass data | A small built-in catalog of published Sellmeier coefficients, each checked against its catalog nd/vd. Vendor catalogs are **not shipped**: users load AGF-format files, which avoids redistribution licensing problems. | in force |
 | Engine ↔ app boundary | A C ABI. Structured data crosses as versioned JSON and bulk arrays as binary buffers. The UI never computes optics: layout geometry, sag profiles and ray paths all come from the engine. | planned |
 | Multi-configuration | Zoom and focus positions are `Configuration` parameter overrides on one base system. | model in place |
+| App windows and panels (2026-11-07) | The lens data, the layout and the analyses are **panels** in a tree of splits and tab groups per window; any panel can be dragged into a tab, a split, a window edge or out into a **separate window** of the same design, and back. The default arrangement is unchanged. A lone panel's header is its handle (no extra chrome); tab strips appear only for groups of several. Separate windows are AppKit windows hosting SwiftUI, sharing one `DesignSession` with the main window (selection, edits, analyses, undo); they close with it and are saved with the project. Closing a separate window closes its panels, like a browser. docs/APP.md "Panels and windows". | in force |
 | Coatings | A thin-film TMM that obeys `R + T + A = 1` per polarisation. Primary transmission, ghosts and stray light all use the same coating code. | in force |
 
 ## Points the brief did not mention (worth deciding)

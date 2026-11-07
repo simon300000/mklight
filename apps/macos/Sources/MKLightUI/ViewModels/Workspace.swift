@@ -99,6 +99,9 @@ public final class Workspace {
     }
     /// The pane that analysis commands act on.
     public var focusedPaneID: String?
+    /// Where each new pane goes: beside the pane it was added after (or
+    /// the focused one), by pane id. The window arrangement reads it once.
+    @ObservationIgnored public var placementHints: [String: String] = [:]
 
     public var debounce: Duration = .milliseconds(150)
 
@@ -193,6 +196,7 @@ public final class Workspace {
         let pane = AnalysisPane(
             analysis: analysis, settings: settings.isEmpty ? startingSettings(analysis) : settings, autoUpdate: Self.autoUpdateDefault(analysis))
         pane.workspace = self
+        if let hint = after?.id ?? focusedPane?.id { placementHints[pane.id] = hint }
         if let after, let i = panes.firstIndex(where: { $0 === after }) {
             panes.insert(pane, at: i + 1)
         } else {
@@ -207,14 +211,6 @@ public final class Workspace {
         pane.job?.cancel()
         panes.removeAll { $0 === pane }
         if focusedPaneID == pane.id { focusedPaneID = panes.first?.id }
-    }
-
-    public func movePane(_ pane: AnalysisPane, by offset: Int) {
-        guard let i = panes.firstIndex(where: { $0 === pane }) else { return }
-        let j = min(max(i + offset, 0), panes.count - 1)
-        guard i != j else { return }
-        panes.remove(at: i)
-        panes.insert(pane, at: j)
     }
 
     /// Shows `analysis` in the focused pane (or a new one).

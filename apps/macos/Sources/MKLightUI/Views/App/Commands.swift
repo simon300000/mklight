@@ -1,6 +1,9 @@
 import MKLightEngine
 import MKLightModel
 import SwiftUI
+#if os(macOS)
+import AppKit
+#endif
 
 /// What the focused design window can do; published to the menus with
 /// `focusedSceneValue`.
@@ -23,6 +26,17 @@ struct WindowActions {
     var fit: () -> Void
     var setMode: (ViewportMode) -> Void
     var toggleViewport: () -> Void
+    var toggleLensData: () -> Void
+    var showsLayout: Bool
+    var showsLensData: Bool
+    /// The panel the panel commands act on, if it is open.
+    var focusedPanel: PanelID?
+    var focusedPanelDetached: Bool
+    var focusedPanelAlone: Bool
+    var moveToNewWindow: (PanelID) -> Void
+    var moveToMainWindow: (PanelID) -> Void
+    var closePanel: (PanelID) -> Void
+    var resetLayout: () -> Void
     var setColoring: (RayColoring) -> Void
     var backend: Binding<BackendPreference>
     var replaceWithSample: (OpticalSystem) -> Void
@@ -30,13 +44,46 @@ struct WindowActions {
 
 extension FocusedValues {
     @Entry var windowActions: WindowActions?
+    /// The design's undo stack, from whichever of its windows is key.
+    @Entry var documentUndo: DocumentUndo?
+}
+
+/// A design's undo stack, and a count of its changes so the menu updates.
+struct DocumentUndo {
+    let manager: UndoManager
+    let revision: Int
+}
+
+/// Counts changes to every design's undo stack. The menu commands read
+/// it, so Undo and Redo update as the stack changes, whichever window is
+/// key (focused values from a separate window reach the menus only when
+/// the focus moves).
+@MainActor
+@Observable
+final class UndoMenuState {
+    static let shared = UndoMenuState()
+    var revision = 0
 }
 
 struct MKLightCommands: Commands {
     @FocusedValue(\.windowActions) private var actions
+    @FocusedValue(\.documentUndo) private var undo
     @Environment(\.openWindow) private var openWindow
 
     var body: some Commands {
+        // Undo and Redo act on the design's document from any of its windows,
+        // the separate panel windows included; text being edited undoes its
+        // typing first.
+        CommandGroup(replacing: .undoRedo) {
+            let _ = UndoMenuState.shared.revision
+            let u = undo?.manager
+            Button(u.flatMap { $0.canUndo ? $0.undoMenuItemTitle : nil } ?? "Undo") { Self.perform(redo: false, u) }
+                .keyboardShortcut("z", modifiers: .command)
+                .disabled(!(u?.canUndo ?? false) && !Self.editingText)
+            Button(u.flatMap { $0.canRedo ? $0.redoMenuItemTitle : nil } ?? "Redo") { Self.perform(redo: true, u) }
+                .keyboardShortcut("z", modifiers: [.command, .shift])
+                .disabled(!(u?.canRedo ?? false) && !Self.editingText)
+        }
         CommandGroup(after: .newItem) {
             SampleMenu()
             Button("Show Welcome Window") { openWindow(id: WelcomeView.windowID) }
@@ -111,8 +158,25 @@ struct MKLightCommands: Commands {
             .disabled(actions == nil)
         }
         CommandGroup(before: .sidebar) {
-            Button("Show Layout") { actions?.toggleViewport() }
+            Button(actions?.showsLensData == true ? "Hide Lens Data" : "Show Lens Data") { actions?.toggleLensData() }
+                .keyboardShortcut("e", modifiers: [.command, .option])
+                .disabled(actions == nil)
+            Button(actions?.showsLayout == false ? "Show Layout" : "Hide Layout") { actions?.toggleViewport() }
                 .keyboardShortcut("l", modifiers: [.command, .option])
+                .disabled(actions == nil)
+            Menu("Panel") {
+                let panel = actions?.focusedPanel
+                Button("Move to New Window") { if let panel { actions?.moveToNewWindow(panel) } }
+                    .disabled(panel == nil || actions?.focusedPanelAlone == true)
+                Button("Move to Main Window") { if let panel { actions?.moveToMainWindow(panel) } }
+                    .disabled(panel == nil || actions?.focusedPanelDetached != true)
+                Button(panel?.paneID == nil ? "Hide Panel" : "Close Pane") { if let panel { actions?.closePanel(panel) } }
+                    .disabled(panel == nil)
+                Divider()
+                Button("Reset Panel Layout") { actions?.resetLayout() }
+                    .disabled(actions == nil)
+            }
+            Divider()
             Button("Section View") { actions?.setMode(.section2D) }
                 .keyboardShortcut("2", modifiers: [.command])
             Button("X–Z Section") { actions?.setMode(.sectionXZ) }
@@ -126,6 +190,30 @@ struct MKLightCommands: Commands {
             }
             Divider()
         }
+    }
+}
+
+extension MKLightCommands {
+    /// A text field is being edited (its field editor has the focus).
+    @MainActor static var editingText: Bool {
+        #if os(macOS)
+        NSApp.keyWindow?.firstResponder is NSTextView
+        #else
+        false
+        #endif
+    }
+
+    /// Undo or redo: through the field editor while text is edited (it
+    /// closes its typing group first), else on the document's stack.
+    @MainActor static func perform(redo: Bool, _ manager: UndoManager?) {
+        #if os(macOS)
+        if editingText {
+            NSApp.sendAction(Selector(redo ? "redo:" : "undo:"), to: nil, from: nil)
+            return
+        }
+        #endif
+        guard let manager, manager.groupingLevel == 0 else { return }
+        if redo { manager.redo() } else { manager.undo() }
     }
 }
 

@@ -156,6 +156,7 @@ private struct LayoutControls: View {
     @Bindable var window: WindowState
     let modes: [ViewportMode]
     @Namespace private var glass
+    @Environment(\.panelTabbed) private var tabbed
 
     private var pane: AnalysisPane { workspace.layout }
     private var meshOn: Bool { (pane.settings["mesh_rings"]?.int ?? 0) > 0 }
@@ -180,15 +181,20 @@ private struct LayoutControls: View {
         GlassEffectContainer(spacing: Space.m) {
             HStack(spacing: Space.s) {
                 // The title chip steps aside when the viewport is narrow.
+                // The title chip is the panel's handle (drag to move it).
                 ViewThatFits(in: .horizontal) {
-                    HStack(spacing: Space.s) {
-                        Text("Layout").font(.headline)
-                        if pane.isRunning { ProgressView().controlSize(.mini) }
+                    if !tabbed {
+                        HStack(spacing: Space.s) {
+                            Text("Layout").font(.headline)
+                            if pane.isRunning { ProgressView().controlSize(.mini) }
+                        }
+                        .fixedSize()
+                        .padding(.horizontal, Space.l)
+                        .padding(.vertical, Space.s)
+                        .glassEffect(.regular, in: .capsule)
+                        .help("Drag to move the layout, or out of the window to open it in a window of its own")
+                        .panelHandle(.layout)
                     }
-                    .fixedSize()
-                    .padding(.horizontal, Space.l)
-                    .padding(.vertical, Space.s)
-                    .glassEffect(.regular, in: .capsule)
                     Color.clear.frame(width: 0, height: 0)
                 }
                 .layoutPriority(-1)

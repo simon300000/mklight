@@ -314,12 +314,19 @@ private struct LensTableHeader: View {
     let design: DesignDocument
     let window: WindowState
     let editor: LensEditor
+    @Environment(\.panelTabbed) private var tabbed
 
     private var system: OpticalSystem { design.system }
 
     var body: some View {
         HStack(spacing: Space.m) {
-            Text("Lens Data").font(.headline)
+            if !tabbed {
+                Text("Lens Data")
+                    .font(.headline)
+                    .help("Drag to move the lens data, or out of the window to open it in a window of its own")
+                    .accessibilityAddTraits(.isHeader)
+                    .panelHandle(.lensData)
+            }
             Text("\(system.surfaces.count - 2) surfaces · stop on \(system.stop) · mm")
                 .font(.caption).foregroundStyle(.secondary)
             Spacer()
