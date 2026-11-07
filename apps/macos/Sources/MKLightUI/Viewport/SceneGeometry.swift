@@ -180,12 +180,20 @@ enum SceneGeometry {
             if style.mode == .orbit3D && style.footprints != nil { a *= 0.35 }
             add(line, color: SIMD4(SIMD3<Float>(rgb), a), width: 1.1)
         }
-        for line in scene.polylines where line.kind != .ray && (style.mode == .orbit3D || line.inSection) {
-            let selected = line.surface != nil && line.surface == style.selectedSurface
+        // The selected surface is drawn last, so the element outline (which
+        // retraces the front and rear profiles) cannot paint over it.
+        let outlines = scene.polylines.filter { $0.kind != .ray && (style.mode == .orbit3D || $0.inSection) }
+        let isSelected = { (l: LayoutScene.Polyline) in l.surface != nil && l.surface == style.selectedSurface && l.kind != .elementEdge }
+        for line in outlines.filter({ !isSelected($0) }) + outlines.filter(isSelected) {
+            let selected = isSelected(line)
             switch line.kind {
             case .axis: add(line, color: SIMD4(faint, 0.8), width: 0.8, dash: 10)
-            case .surfaceProfile, .elementEdge:
-                add(line, color: SIMD4(selected ? accent : ink, 1), width: selected ? 2.4 : 1.4)
+            case .elementEdge:
+                // Edges are tagged with the element's first surface; they are
+                // never highlighted, so only the selected face stands out.
+                add(line, color: SIMD4(ink, 1), width: 1.4)
+            case .surfaceProfile:
+                add(line, color: SIMD4(selected ? accent : ink, 1), width: selected ? 3.6 : 1.4)
                 // A diffractive surface: a fine violet hatch along its profile.
                 if line.doe && line.kind == .surfaceProfile {
                     add(line, color: SIMD4(doeInk, 0.85), width: selected ? 4.2 : 3.4, dash: 3)
