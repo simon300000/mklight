@@ -204,12 +204,12 @@ struct GlassDataView: View {
 
     private var indicesSection: some View {
         section("Indices", subtitle: environmentText) {
-            Grid(alignment: .trailing, horizontalSpacing: Space.xl, verticalSpacing: Space.xs) {
+            Grid(alignment: .trailing, horizontalSpacing: Space.m, verticalSpacing: Space.xs) {
                 GridRow {
                     Text("λ (µm)").gridColumnAlignment(.leading)
                     Text("n").help("Index relative to air at the analysis temperature and pressure")
-                    Text("n (catalogue)").help("Index at the catalogue's reference conditions")
-                    Text("Absorption (1/mm)").help("Internal absorption coefficient")
+                    Text("n cat.").help("Index at the catalogue's reference conditions")
+                    Text("α (1/mm)").help("Internal absorption coefficient")
                 }
                 .font(.caption.weight(.medium))
                 .foregroundStyle(.secondary)
@@ -236,6 +236,10 @@ struct GlassDataView: View {
                 }
             }
             .font(.callout)
+            // Numbers never wrap mid-digit in a narrow pane; they shrink a
+            // little instead.
+            .lineLimit(1)
+            .minimumScaleFactor(0.75)
             .textSelection(.enabled)
         }
     }

@@ -153,6 +153,9 @@ struct SettingsBar: View {
     static func title(_ v: JSONValue) -> String {
         guard case .string(let s) = v else { return v.displayText }
         if s.count <= 3 { return s.uppercased() }
+        // A name with capitals (a glass such as N-SK16) is shown as written;
+        // only snake_case identifiers are turned into words.
+        if s.contains(where: \.isUppercase) { return s }
         return s.replacingOccurrences(of: "_", with: " ").capitalized
     }
 }
