@@ -230,8 +230,19 @@ public final class Workspace {
     }
 
     /// The settings a new pane of `analysis` starts with: the engine's
-    /// defaults, except where they show nothing useful (image simulation).
+    /// defaults, except where they show nothing useful (image simulation,
+    /// a glass without its dispersion curve).
     public func startingSettings(_ analysis: String) -> [String: JSONValue] {
+        baseStartingSettings(analysis).merging(Self.extraStartingSettings[analysis] ?? [:]) { a, _ in a }
+    }
+
+    /// Starting settings that only change engine defaults. `glass_info`
+    /// samples its dispersion curve (the engine's default is none).
+    nonisolated static let extraStartingSettings: [String: [String: JSONValue]] = [
+        "glass_info": ["curve_samples": .integer(200)]
+    ]
+
+    private func baseStartingSettings(_ analysis: String) -> [String: JSONValue] {
         switch analysis {
         case "image_simulation": ImageSimulationSettings.starting(defaults: descriptor(analysis)?.defaultSettings)
         case "spot_diagram": Self.spotStartingSettings
