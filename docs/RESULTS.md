@@ -2204,6 +2204,7 @@ Result (`result` in the envelope):
 | `backend.reported_on` | string |  | CPU reference for final optimize/glass reports; active evaluator for tolerance and merit_evaluation. |
 | `backend.requested` | string |  | one of `"auto"`, `"cpu"`, `"gpu"`, `"gpu_emulation"`; Merit evaluator preference. |
 | `backend.resident_evaluation` (optional) | object |  | Device evaluation, host-stage and fallback accounting. |
+| `backend.split` (optional) | string |  | one of `"resident"`, `"hybrid"`, `"pipelined"`, `"speculative"`, `"rendezvous"`, `"cpu-par"`; Host/device division of a run handed a GPU device (work-split study `solvers`). |
 | `backend.workload` | object |  |  |
 | `backend.workload.batch` | integer |  | ≥ 0 |
 | `backend.workload.rays_per_candidate` | integer? |  |  |
@@ -2298,6 +2299,7 @@ Result (`result` in the envelope):
 | `backend.reported_on` | string |  | CPU reference for final optimize/glass reports; active evaluator for tolerance and merit_evaluation. |
 | `backend.requested` | string |  | one of `"auto"`, `"cpu"`, `"gpu"`, `"gpu_emulation"`; Merit evaluator preference. |
 | `backend.resident_evaluation` (optional) | object |  | Device evaluation, host-stage and fallback accounting. |
+| `backend.split` (optional) | string |  | one of `"resident"`, `"hybrid"`, `"pipelined"`, `"speculative"`, `"rendezvous"`, `"cpu-par"`; Host/device division of a run handed a GPU device (work-split study `solvers`). |
 | `backend.workload` | object |  |  |
 | `backend.workload.batch` | integer |  | ≥ 0 |
 | `backend.workload.rays_per_candidate` | integer? |  |  |
@@ -2369,6 +2371,7 @@ Result (`result` in the envelope):
 | `backend.reported_on` | string |  | CPU reference for final optimize/glass reports; active evaluator for tolerance and merit_evaluation. |
 | `backend.requested` | string |  | one of `"auto"`, `"cpu"`, `"gpu"`, `"gpu_emulation"`; Merit evaluator preference. |
 | `backend.resident_evaluation` (optional) | object |  | Device evaluation, host-stage and fallback accounting. |
+| `backend.split` (optional) | string |  | one of `"resident"`, `"hybrid"`, `"pipelined"`, `"speculative"`, `"rendezvous"`, `"cpu-par"`; Host/device division of a run handed a GPU device (work-split study `solvers`). |
 | `backend.workload` | object |  |  |
 | `backend.workload.batch` | integer |  | ≥ 0 |
 | `backend.workload.rays_per_candidate` | integer? |  |  |
@@ -2485,6 +2488,7 @@ Result (`result` in the envelope):
 | `backend.reported_on` | string |  | CPU reference for final optimize/glass reports; active evaluator for tolerance and merit_evaluation. |
 | `backend.requested` | string |  | one of `"auto"`, `"cpu"`, `"gpu"`, `"gpu_emulation"`; Merit evaluator preference. |
 | `backend.resident_evaluation` (optional) | object |  | Device evaluation, host-stage and fallback accounting. |
+| `backend.split` (optional) | string |  | one of `"resident"`, `"hybrid"`, `"pipelined"`, `"speculative"`, `"rendezvous"`, `"cpu-par"`; Host/device division of a run handed a GPU device (work-split study `solvers`). |
 | `backend.workload` | object |  |  |
 | `backend.workload.batch` | integer |  | ≥ 0 |
 | `backend.workload.rays_per_candidate` | integer? |  |  |
