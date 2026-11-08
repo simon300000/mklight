@@ -37,6 +37,60 @@ struct FirstOrderParameters {
     offset: u32,
     sensor: mklight_gpu::Df32,
 }
+/// Work-split study key of the ghost trace kernel designs.
+pub const KERNEL_STUDY_KEY: &str = "ghost_kernel";
+
+/// A design of `mkl_ghost_trace`: which features are function constants.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KernelDesign {
+    /// Coating folding and thin films both constants (3 pipelines).
+    Specialized,
+    /// Coating folding a constant, thin films a branch (2 pipelines).
+    Partial,
+    /// One pipeline; both are branches.
+    Uber,
+}
+
+impl KernelDesign {
+    pub fn selected() -> MkResult<KernelDesign> {
+        Ok(
+            match mklight_core::split::variant(KERNEL_STUDY_KEY).as_deref() {
+                None | Some("specialized") => KernelDesign::Specialized,
+                Some("partial") => KernelDesign::Partial,
+                Some("uber") => KernelDesign::Uber,
+                Some(other) => {
+                    return Err(mklight_core::MkError::InvalidModel(format!(
+                        "unknown ghost kernel design '{other}' (specialized, partial, uber)"
+                    )));
+                }
+            },
+        )
+    }
+    pub fn dynamic(self) -> u32 {
+        use mklight_gpu::consts::*;
+        match self {
+            KernelDesign::Specialized => 0,
+            KernelDesign::Partial => MKL_GHOST_FEATURE_FILMS,
+            KernelDesign::Uber => MKL_GHOST_FEATURE_COATINGS | MKL_GHOST_FEATURE_FILMS,
+        }
+    }
+    pub fn pipeline(self, features: u32) -> PipelineKey {
+        use mklight_gpu::consts::*;
+        let mut key = PipelineKey::with_u32(
+            "mkl_ghost_trace",
+            MKL_GHOST_FEATURES_CONSTANT as u16,
+            features & !self.dynamic(),
+        );
+        if self != KernelDesign::Specialized {
+            key.constants.push(crate::context::FunctionConstant::U32 {
+                index: MKL_GHOST_DYNAMIC_CONSTANT as u16,
+                value: self.dynamic(),
+            });
+        }
+        key
+    }
+}
+
 pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> MkResult<()> {
     let start = Instant::now();
     let mut stats = StageStats {
@@ -424,11 +478,8 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                     .any(|s| s.kind == MKL_RAD_FILM);
                 MKL_GHOST_FEATURE_COATINGS | if films { MKL_GHOST_FEATURE_FILMS } else { 0 }
             });
-            let pso = x.gpu.pipeline(&PipelineKey::with_u32(
-                "mkl_ghost_trace",
-                MKL_GHOST_FEATURES_CONSTANT as u16,
-                features,
-            ))?;
+            let design = KernelDesign::selected()?;
+            let pso = x.gpu.pipeline(&design.pipeline(features))?;
             let count_pso = x
                 .gpu
                 .pipeline(&PipelineKey::plain("mkl_ghost_reference_count"))?;
@@ -462,7 +513,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                     reject_virtual: *reject_virtual as u32,
                     specs: coatings.as_ref().map_or(0, |c| records(&c.specs)),
                     layers: coatings.as_ref().map_or(0, |c| records(&c.layers)),
-                    reserved: 0,
+                    reserved: features,
                     sensor: *sensor,
                     sensor_reflectance: coatings
                         .as_ref()

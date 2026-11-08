@@ -411,26 +411,52 @@ fn coverage_partition_and_repeated_passes() {
     assert!((got.energy.detected_uncovered_ghost - 0.49 * 0.09 * 0.09 / (1. - 0.09)).abs() < 1e-9);
     let cpu = mklight_stray::run(&system.scene, &source, &settings, &JobContext::new()).unwrap();
     compare_results(&cpu, &got);
-    let tiled = gpu::run(
-        &b,
-        snapshot,
-        &system.scene,
-        &source,
-        &settings,
-        gpu::TransportOptions {
-            source_tile: 512,
-            event_budget: 32,
-            stack_capacity: 256,
-            ..options
-        },
-        &JobContext::new(),
-    )
-    .unwrap();
+    // Tiles and event budgets never change a source's records. In the
+    // all-device design neither does the stack capacity; in the hybrid
+    // designs it decides which sources the CPU continues (f64 instead of
+    // double-float), which changes only rounding.
+    let run = |design, options| {
+        gpu::run_design(
+            &b,
+            snapshot.clone(),
+            &system.scene,
+            &source,
+            &settings,
+            options,
+            design,
+            &JobContext::new(),
+        )
+        .unwrap()
+    };
+    let retiled = gpu::TransportOptions {
+        source_tile: 512,
+        event_budget: 32,
+        ..options
+    };
+    let deeper = gpu::TransportOptions {
+        stack_capacity: 256,
+        ..retiled
+    };
+    let tiled = run(gpu::Design::GpuHead, retiled);
     assert_resident(&tiled);
     assert_eq!(got.detector, tiled.detector);
     assert_eq!(got.energy, tiled.energy);
     assert_eq!(got.signatures, tiled.signatures);
     assert!(got.signatures.iter().any(|s| s.overflow));
+    let deep = run(gpu::Design::GpuHead, deeper);
+    for c in 0..5 {
+        let (a, b) = (
+            got.energy.detected_by_class[c].1,
+            deep.energy.detected_by_class[c].1,
+        );
+        assert!((a - b).abs() <= 1e-12 * got.energy.emitted, "class {c}");
+    }
+    let legacy = run(gpu::Design::GpuTally, options);
+    let legacy_tiled = run(gpu::Design::GpuTally, deeper);
+    assert_resident(&legacy);
+    assert_eq!(legacy.detector, legacy_tiled.detector);
+    assert_eq!(legacy.energy, legacy_tiled.energy);
+    assert_eq!(legacy.signatures, legacy_tiled.signatures);
     // A shared front interface is crossed in both designed directions.
     let mut sys = common::window(1.5, 5., -50.);
     sys.surfaces[2].material = MaterialRef::Constant { n: 1.5 };
@@ -644,31 +670,47 @@ fn split_tree_cancellation_and_release() {
     .unwrap();
     assert_resident(&got);
     assert!(got.energy.is_balanced());
-    // A genuinely too-small hit journal gives an explicitly labelled f64 result.
-    let fallback = gpu::run(
-        &*b,
-        snap,
-        &system.scene,
-        &source,
-        &StraySettings {
-            mode: SplitMode::Split {
-                max_splits: 4,
-                rare_floor: 0.,
-            },
-            ..set
+    // A genuinely too-small hit journal: the all-device design gives an
+    // explicitly labelled f64 result, the hybrid designs continue the
+    // sources whose journal is full on the CPU.
+    let split = StraySettings {
+        mode: SplitMode::Split {
+            max_splits: 4,
+            rare_floor: 0.,
         },
-        gpu::TransportOptions {
-            detections_per_source: 1,
-            ..Default::default()
-        },
-        &JobContext::new(),
-    )
-    .unwrap();
+        ..set
+    };
+    let small = gpu::TransportOptions {
+        detections_per_source: 1,
+        ..Default::default()
+    };
+    let run = |design| {
+        gpu::run_design(
+            &*b,
+            snap.clone(),
+            &system.scene,
+            &source,
+            &split,
+            small,
+            design,
+            &JobContext::new(),
+        )
+        .unwrap()
+    };
+    let fallback = run(gpu::Design::GpuTally);
     assert_eq!(fallback.run_info.as_ref().unwrap().backend, "cpu-f64");
     assert_eq!(
         fallback.run_info.as_ref().unwrap().settings["fallback_count"],
         1
     );
+    let cpu = mklight_stray::run(&system.scene, &source, &split, &JobContext::new()).unwrap();
+    for design in [gpu::Design::CpuTally, gpu::Design::GpuHead] {
+        let continued = run(design);
+        assert_resident(&continued);
+        let info = &continued.run_info.as_ref().unwrap().settings;
+        assert!(info["counters"]["journal_full"].as_u64().unwrap() > 0);
+        compare_results(&cpu, &continued);
+    }
 }
 
 #[test]
@@ -1445,4 +1487,255 @@ fn native_analysis_result_adapter() {
         let sum = got.maps.iter().map(|m| m.irradiance[i]).sum::<f64>();
         assert!((sum - got.total_irradiance[i]).abs() < 1e-10 * got.emitted);
     }
+}
+
+/// Every division of the transport (`gpu::Design`) against the CPU
+/// reference on a scattering, ghosting sample; designs that share device
+/// records against each other; reproducibility and tile independence.
+#[test]
+fn hybrid_designs_agree() {
+    let b = MetalBackend::new()
+        .unwrap()
+        .expect("actual device required");
+    let (sys, opts) = common::double_gauss_with_barrels();
+    let snapshot = Snapshot::new(sys.clone()).unwrap();
+    let system = StraySystem::new(Arc::new(common::resolve(sys)), &opts).unwrap();
+    let source = system.system_field_source(1, 0.1, 1.).unwrap().spec;
+    let settings = StraySettings {
+        rays: 6000,
+        seed: 17,
+        chunk_rays: 700,
+        ..Default::default()
+    };
+    let cpu = mklight_stray::run(&system.scene, &source, &settings, &JobContext::new()).unwrap();
+    let run = |design, options| {
+        gpu::run_design(
+            &b,
+            snapshot.clone(),
+            &system.scene,
+            &source,
+            &settings,
+            options,
+            design,
+            &JobContext::new(),
+        )
+        .unwrap()
+    };
+    let options = gpu::TransportOptions {
+        head_events: 12,
+        gpu_share: 0.5,
+        source_tile: 2048,
+        ..Default::default()
+    };
+    let mut results = Vec::new();
+    for design in [
+        gpu::Design::GpuTally,
+        gpu::Design::CpuTally,
+        gpu::Design::GpuHead,
+        gpu::Design::Wavefront,
+        gpu::Design::CoSplit,
+    ] {
+        let got = run(design, options);
+        compare_results(&cpu, &got);
+        let info = &got.run_info.as_ref().unwrap().settings;
+        if design != gpu::Design::GpuTally {
+            assert_eq!(info["design"], design.name());
+            let n = &info["counters"];
+            let sources = [
+                "device_sources",
+                "head_budget",
+                "stack_full",
+                "journal_full",
+                "retraced",
+                "cpu_sources",
+            ]
+            .iter()
+            .map(|k| n[k].as_u64().unwrap())
+            .sum::<u64>();
+            assert_eq!(sources, settings.rays, "{design:?}: {n}");
+            assert_eq!(
+                got.energy.events,
+                n["device_events"].as_u64().unwrap() + n["cpu_events"].as_u64().unwrap()
+            );
+        }
+        if matches!(design, gpu::Design::GpuHead | gpu::Design::Wavefront) {
+            assert!(info["counters"]["head_budget"].as_u64().unwrap() > 0);
+        }
+        eprintln!("{design:?}: {}", got.energy.summary());
+        results.push(got);
+    }
+    // The device tallies and the CPU tally of the same device records.
+    for c in 0..5 {
+        let (a, b) = (
+            results[0].energy.detected_by_class[c].1,
+            results[1].energy.detected_by_class[c].1,
+        );
+        assert!(
+            (a - b).abs() <= 1e-10 * cpu.energy.emitted,
+            "class {c}: {a} {b}"
+        );
+    }
+    // Persistent lanes and the wavefront produce identical records.
+    assert_eq!(results[2].energy, results[3].energy);
+    assert_eq!(results[2].detector, results[3].detector);
+    assert_eq!(results[2].signatures, results[3].signatures);
+    // Reproducible, and independent of the plan tile.
+    let again = run(gpu::Design::CoSplit, options);
+    assert_eq!(again.energy, results[4].energy);
+    assert_eq!(again.detector, results[4].detector);
+    let retiled = run(
+        gpu::Design::GpuHead,
+        gpu::TransportOptions {
+            source_tile: 700,
+            event_budget: 5,
+            ..options
+        },
+    );
+    assert_eq!(retiled.energy, results[2].energy);
+    assert_eq!(retiled.detector, results[2].detector);
+    assert_eq!(retiled.signatures, results[2].signatures);
+    // A CPU share of everything is the CPU reference, bit for bit; a device
+    // share of everything is GpuHead.
+    let all_cpu = run(
+        gpu::Design::CoSplit,
+        gpu::TransportOptions {
+            gpu_share: 0.,
+            ..options
+        },
+    );
+    assert_eq!(all_cpu.energy, cpu.energy);
+    assert_eq!(all_cpu.detector, cpu.detector);
+    assert_eq!(all_cpu.signatures, cpu.signatures);
+    let all_gpu = run(
+        gpu::Design::CoSplit,
+        gpu::TransportOptions {
+            gpu_share: 1.,
+            ..options
+        },
+    );
+    assert_eq!(all_gpu.energy, results[2].energy);
+    assert_eq!(all_gpu.detector, results[2].detector);
+}
+
+/// The CPU continues sources from the device stacks after any head budget:
+/// the event count and the physics are those of the full transport.
+#[test]
+fn head_budget_continuation() {
+    let b = MetalBackend::new()
+        .unwrap()
+        .expect("actual device required");
+    let sys = mklight_core::samples::cooke_triplet();
+    let snapshot = Snapshot::new(sys.clone()).unwrap();
+    let system = StraySystem::new(Arc::new(common::resolve(sys)), &Default::default()).unwrap();
+    let source = system.system_field_source(2, 0.1, 1.).unwrap().spec;
+    for mode in [
+        SplitMode::Analog,
+        SplitMode::Weighted { rare_floor: 0.02 },
+        SplitMode::Split {
+            max_splits: 3,
+            rare_floor: 0.02,
+        },
+    ] {
+        let settings = StraySettings {
+            rays: 3000,
+            seed: 5,
+            mode,
+            ..Default::default()
+        };
+        let cpu =
+            mklight_stray::run(&system.scene, &source, &settings, &JobContext::new()).unwrap();
+        let full = gpu::run_design(
+            &b,
+            snapshot.clone(),
+            &system.scene,
+            &source,
+            &settings,
+            gpu::TransportOptions::default(),
+            gpu::Design::CpuTally,
+            &JobContext::new(),
+        )
+        .unwrap();
+        for head in [1, 3, 9] {
+            let got = gpu::run_design(
+                &b,
+                snapshot.clone(),
+                &system.scene,
+                &source,
+                &settings,
+                gpu::TransportOptions {
+                    head_events: head,
+                    ..Default::default()
+                },
+                gpu::Design::Wavefront,
+                &JobContext::new(),
+            )
+            .unwrap();
+            compare_results(&cpu, &got);
+            // Same draws on both sides of the handoff: the same paths up to
+            // the rounding of a branch decision.
+            let events = |r: &mklight_stray::StrayResult| r.energy.events as f64;
+            assert!(
+                (events(&got) - events(&full)).abs() <= 1e-3 * events(&full),
+                "{mode:?} head {head}: {} vs {}",
+                events(&got),
+                events(&full)
+            );
+            // Without splitting a rounding-level branch flip moves one
+            // path; a split tree can move a heavy subtree (compare_results
+            // covers that case statistically).
+            if matches!(mode, SplitMode::Split { .. }) {
+                continue;
+            }
+            for c in 0..5 {
+                let (a, b) = (
+                    got.energy.detected_by_class[c].1,
+                    full.energy.detected_by_class[c].1,
+                );
+                let se = full.energy.detected_std_error_by_class[c].1;
+                assert!(
+                    (a - b).abs() <= 0.1 * se + 1e-12 * cpu.energy.emitted,
+                    "{mode:?} head {head} class {c}: {a} {b}"
+                );
+            }
+        }
+    }
+}
+
+/// The hybrid analysis checks the system fields for obstruction beside the
+/// device transport: the same obstruction, warnings and reference as the
+/// all-device design, which checks them first.
+#[test]
+fn deferred_checks_match() {
+    let b = MetalBackend::new().unwrap().expect("actual GPU required");
+    let (sys, opts) = common::double_gauss_with_barrels();
+    let rs = Arc::new(common::resolve(sys));
+    let settings = mklight_stray::StrayAnalysisSettings {
+        rays: 3000,
+        scene: opts.scene.clone(),
+        source: mklight_stray::StraySource::SystemField {
+            index: 1,
+            margin: 0.1,
+            strength: 1.,
+        },
+        ..Default::default()
+    };
+    let analyze = |design| {
+        let ctx = JobContext::new();
+        let r = gpu::analyze_design(
+            &b,
+            rs.clone(),
+            &settings,
+            gpu::TransportOptions::default(),
+            design,
+            &ctx,
+        )
+        .unwrap();
+        assert_eq!(ctx.progress.fraction(), 1.);
+        r
+    };
+    let legacy = analyze(gpu::Design::GpuTally);
+    let hybrid = analyze(gpu::Design::CoSplit);
+    assert_eq!(hybrid.primary_obstruction, legacy.primary_obstruction);
+    assert_eq!(hybrid.warnings, legacy.warnings);
+    assert_eq!(hybrid.clear_semi_diameters, legacy.clear_semi_diameters);
 }

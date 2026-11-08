@@ -143,6 +143,23 @@ pub struct Transport {
     /// unspecified.
     pub output: BufferId,
     pub ledger: BufferId,
+    /// Handoff mode: the per-source continuation stacks are an output of
+    /// `stack_capacity` states per source. A source whose stack would
+    /// overflow (`Ledger::status` 2), whose detection journal is full (3) or
+    /// that reached `head_events` (5) stops on the device with a consistent
+    /// stack, ledger and draw cursor, and the host continues it; a source
+    /// that needs reference arithmetic (4) stops and is retraced by the host.
+    /// Nothing grows and nothing fails the plan. `None`: the stack is
+    /// internal, grows on device, and capacity or reference status fails it.
+    pub stack_output: Option<BufferId>,
+    /// Handoff mode only: events per source on the device before status 5
+    /// (0: no limit).
+    pub head_events: u32,
+    /// Handoff mode only: run the transport as a wavefront (one event of
+    /// every live source per bounce, in separate pop, closest-hit and
+    /// interaction kernels) instead of persistent lanes. Scheduling only:
+    /// the records are identical.
+    pub wavefront: bool,
 }
 impl Transport {
     pub fn reads(&self) -> Vec<PlanView> {
@@ -192,8 +209,14 @@ impl Transport {
             || self.first_ray.checked_add(self.ray_count as u64).is_none()
             || p.desc(self.output)? != &record_desc::<Detection>(self.ray_count * self.hit_capacity)
             || p.desc(self.ledger)? != &record_desc::<Ledger>(self.ray_count)
+            || ((self.head_events != 0 || self.wavefront) && self.stack_output.is_none())
         {
             return Err(bad("stray transport capacity/output"));
+        }
+        if let Some(stack) = self.stack_output
+            && p.desc(stack)? != &record_desc::<State>(self.ray_count * self.stack_capacity)
+        {
+            return Err(bad("stray transport stack output"));
         }
         Ok(())
     }

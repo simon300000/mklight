@@ -29,6 +29,12 @@ pub struct TransportOptions {
     pub detections_per_source: usize,
     /// Maximum events per lane per transport round.
     pub event_budget: usize,
+    /// Events per source on the device before the CPU continues it
+    /// (`hybrid::Design::GpuHead` and `CoSplit`).
+    pub head_events: u32,
+    /// Share of the source chunks transported by the device
+    /// (`hybrid::Design::CoSplit`); the CPU reference traces the others.
+    pub gpu_share: f64,
 }
 /// Resident scratch budget per plan (two plans overlap): rays, ledgers,
 /// queues, initial stacks, detections and their tags.
@@ -53,6 +59,8 @@ impl Default for TransportOptions {
             stack_capacity: 16,
             detections_per_source: 32,
             event_budget: 32,
+            head_events: 64,
+            gpu_share: 0.5,
         }
     }
 }
@@ -227,6 +235,56 @@ impl TransportScene {
         count: usize,
         options: TransportOptions,
     ) -> MkResult<(BufferId, BufferId)> {
+        self.append_with(
+            plan, scene, source, settings, first, count, options, None, 0, false,
+        )
+    }
+    /// As [`Self::append`] in handoff mode (`ops::Transport::stack_output`):
+    /// sources stop with a consistent device stack in `stack` after
+    /// `head_events` events (0: no limit), or when their stack or detection
+    /// journal is full, for the host to continue. `wavefront` selects the
+    /// wavefront kernels (`ops::Transport::wavefront`).
+    #[allow(clippy::too_many_arguments)]
+    pub fn append_handoff(
+        &self,
+        plan: &mut ResidentPlan,
+        scene: &Scene,
+        source: &SourceSpec,
+        settings: &StraySettings,
+        first: u64,
+        count: usize,
+        options: TransportOptions,
+        stack: BufferId,
+        head_events: u32,
+        wavefront: bool,
+    ) -> MkResult<(BufferId, BufferId)> {
+        self.append_with(
+            plan,
+            scene,
+            source,
+            settings,
+            first,
+            count,
+            options,
+            Some(stack),
+            head_events,
+            wavefront,
+        )
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn append_with(
+        &self,
+        plan: &mut ResidentPlan,
+        scene: &Scene,
+        source: &SourceSpec,
+        settings: &StraySettings,
+        first: u64,
+        count: usize,
+        options: TransportOptions,
+        stack_output: Option<BufferId>,
+        head_events: u32,
+        wavefront: bool,
+    ) -> MkResult<(BufferId, BufferId)> {
         // Reuse the validated source descriptor and CDF, then fuse its device
         // generation into the first transport command.
         generate(
@@ -306,6 +364,9 @@ impl TransportScene {
                     event_budget: options.event_budget,
                     output,
                     ledger,
+                    stack_output,
+                    head_events,
+                    wavefront,
                 },
             ))));
         Ok((output, ledger))
@@ -349,6 +410,7 @@ pub(super) fn history(h: &ops::History) -> History {
     out.first_reflections = h.first.map(|v| v as u16);
     out.scatter_events = h.scatter_events as u16;
     out.signature = signature;
+    out.set_next_specular(h.next_specular);
     out
 }
 /// Explicit resident adapter; unsupported capacities return an error for the
@@ -362,10 +424,79 @@ pub fn run(
     options: TransportOptions,
     ctx: &JobContext,
 ) -> MkResult<StrayResult> {
+    run_design_with(
+        b,
+        snapshot,
+        scene,
+        source,
+        settings,
+        options,
+        super::hybrid::Design::selected()?,
+        &mut || Ok(()),
+        ctx,
+    )
+}
+/// [`run`] with an explicit division of the work instead of the selected
+/// one (`hybrid::Design`).
+#[allow(clippy::too_many_arguments)]
+pub fn run_design(
+    b: &dyn ComputeBackend,
+    snapshot: Snapshot,
+    scene: &Scene,
+    source: &SourceSpec,
+    settings: &StraySettings,
+    options: TransportOptions,
+    design: super::hybrid::Design,
+    ctx: &JobContext,
+) -> MkResult<StrayResult> {
+    run_design_with(
+        b,
+        snapshot,
+        scene,
+        source,
+        settings,
+        options,
+        design,
+        &mut || Ok(()),
+        ctx,
+    )
+}
+/// [`run_design`] with CPU work of the caller, `side`, that runs once while
+/// the device transports the first plans (before the transport for
+/// `GpuTally` and the CPU fallback, which have no overlap).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn run_design_with(
+    b: &dyn ComputeBackend,
+    snapshot: Snapshot,
+    scene: &Scene,
+    source: &SourceSpec,
+    settings: &StraySettings,
+    options: TransportOptions,
+    design: super::hybrid::Design,
+    side: &mut dyn FnMut() -> MkResult<()>,
+    ctx: &JobContext,
+) -> MkResult<StrayResult> {
     let timer = mklight_core::job::RunTimer::start();
-    match run_resident(b, snapshot.clone(), scene, source, settings, options, ctx) {
+    let attempt = if design == super::hybrid::Design::GpuTally {
+        side()?;
+        run_resident(b, snapshot.clone(), scene, source, settings, options, ctx)
+    } else {
+        super::hybrid::run(
+            b,
+            snapshot.clone(),
+            scene,
+            source,
+            settings,
+            options,
+            design,
+            side,
+            ctx,
+        )
+    };
+    match attempt {
         Err(MkError::Unsupported(reason)) => {
             ctx.check()?;
+            side()?;
             let mut result = crate::tracer::run(
                 scene,
                 source,

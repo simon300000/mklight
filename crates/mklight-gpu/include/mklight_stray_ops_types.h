@@ -2,6 +2,9 @@
 #define MKLIGHT_STRAY_OPS_TYPES_H
 #define MKL_STRAY_VERSION 6
 #define MKL_STRAY_FEATURES_CONSTANT 60
+/* Feature bits read at run time from MklStrayTransportParams::reserved[2]
+   instead of the specialisation constant (kernel-design study). */
+#define MKL_STRAY_DYNAMIC_CONSTANT 62
 #define MKL_STRAY_MAX_PRIMITIVES 1048576
 #define MKL_STRAY_MAX_TILE 65536
 #ifdef __METAL_VERSION__

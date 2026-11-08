@@ -390,7 +390,7 @@ pub fn analyze_with_signatures(
     settings.validate()?;
     let sys = StraySystem::build(rs, &settings.system_options(), &ctx.subrange(0.0, 0.1))?;
     ctx.report(0.1, "stray light: scene built");
-    analyze_system_impl(&sys, settings, true, None, &ctx.subrange(0.1, 1.0))
+    analyze_system_impl(&sys, settings, true, None, false, &ctx.subrange(0.1, 1.0))
 }
 
 /// Grid size of the per-source obstruction check.
@@ -404,19 +404,28 @@ pub fn analyze_system(
     settings: &StrayAnalysisSettings,
     ctx: &JobContext,
 ) -> MkResult<StrayAnalysisResult> {
-    analyze_system_impl(sys, settings, false, None, ctx).map(|r| r.0)
+    analyze_system_impl(sys, settings, false, None, false, ctx).map(|r| r.0)
 }
 
+/// A device backend, its transport options and the division of the work.
+pub(crate) type Resident<'a> = (
+    &'a dyn mklight_gpu::ComputeBackend,
+    crate::gpu::TransportOptions,
+    crate::gpu::Design,
+);
+
 /// [`analyze_system`]; with `all_signatures`, signature tallying is forced
-/// on and every tallied signature is returned too.
+/// on and every tallied signature is returned too. With `deferred_checks`
+/// (`sys` from `StraySystem::build_scene`), the obstruction checks of the
+/// system fields run here, beside the device transport like the source's
+/// primary reference, and complete the warnings as `StraySystem::build`
+/// would.
 pub(crate) fn analyze_system_impl(
     sys: &StraySystem,
     settings: &StrayAnalysisSettings,
     all_signatures: bool,
-    resident: Option<(
-        &dyn mklight_gpu::ComputeBackend,
-        crate::gpu::TransportOptions,
-    )>,
+    resident: Option<Resident<'_>>,
+    deferred_checks: bool,
     ctx: &JobContext,
 ) -> MkResult<(StrayAnalysisResult, Vec<SignatureFlux>)> {
     settings.validate()?;
@@ -426,28 +435,65 @@ pub(crate) fn analyze_system_impl(
     let timer = RunTimer::start();
     ctx.check()?;
     let beam = settings.source.resolve(sys)?;
-    let primary_obstruction = match settings.source {
-        StraySource::Field { .. } | StraySource::SystemField { .. } => Some(
-            primary_reference(sys, &beam.spec, OBSTRUCTION_GRID, &ctx.subrange(0.0, 0.02))?
-                .obstruction(),
-        ),
-        _ => None,
-    };
-    ctx.report(0.02, "stray light: transport");
     let mut ss = settings.stray_settings();
     ss.signatures |= all_signatures;
-    let mut r = match resident {
-        Some((b, options)) => crate::gpu::run(
-            b,
-            sys.resolved().snapshot.clone(),
-            &sys.scene,
-            &beam.spec,
-            &ss,
-            options,
-            &ctx.subrange(0.02, 0.98),
-        )?,
-        None => run(&sys.scene, &beam.spec, &ss, &ctx.subrange(0.02, 1.0))?,
+    // CPU work independent of the transport: the source's primary
+    // reference and (deferred) the system fields' obstruction checks.
+    // Beside a device transport it reports no progress of its own.
+    let mut primary_obstruction = None;
+    let mut checks = None;
+    let mut side = |ctx: &JobContext| -> MkResult<()> {
+        if primary_obstruction.is_none() {
+            primary_obstruction = Some(match settings.source {
+                StraySource::Field { .. } | StraySource::SystemField { .. } => Some(
+                    primary_reference(sys, &beam.spec, OBSTRUCTION_GRID, &ctx.subrange(0.0, 0.02))?
+                        .obstruction(),
+                ),
+                _ => None,
+            });
+        }
+        if deferred_checks && checks.is_none() {
+            checks = Some(
+                sys.obstruction_checks(&JobContext::with(ctx.cancel.clone(), Default::default()))?,
+            );
+        }
+        Ok(())
     };
+    let mut r = match resident {
+        Some((b, options, design)) => {
+            let quiet = JobContext::with(ctx.cancel.clone(), Default::default());
+            let r = crate::gpu::run_design_with(
+                b,
+                sys.resolved().snapshot.clone(),
+                &sys.scene,
+                &beam.spec,
+                &ss,
+                options,
+                design,
+                &mut || side(&quiet),
+                &ctx.subrange(0.02, 0.98),
+            )?;
+            side(&quiet)?;
+            r
+        }
+        None => {
+            side(ctx)?;
+            ctx.report(0.02, "stray light: transport");
+            run(&sys.scene, &beam.spec, &ss, &ctx.subrange(0.02, 1.0))?
+        }
+    };
+    drop(side);
+    let primary_obstruction = primary_obstruction.flatten();
+    // The warnings `StraySystem::build` would have collected.
+    let mut sys_warnings = sys.warnings.clone();
+    if let Some(c) = checks {
+        sys_warnings.extend(c.warnings);
+        for w in &sys.scene.warnings {
+            if !sys_warnings.contains(w) {
+                sys_warnings.push(w.clone());
+            }
+        }
+    }
     let owned = ss.owned_classes;
     let det = &r.detector;
     let area = det.spec.pixel_area();
@@ -500,7 +546,7 @@ pub(crate) fn analyze_system_impl(
         Vec::new()
     };
     let mut warnings = r.warnings.clone();
-    for w in &sys.warnings {
+    for w in &sys_warnings {
         if !warnings.contains(w) {
             warnings.push(w.clone());
         }

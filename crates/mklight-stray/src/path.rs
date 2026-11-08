@@ -411,6 +411,11 @@ impl History {
         self.flags & f != 0
     }
 
+    /// Next surface of the specular walk (a resumed device path).
+    pub(crate) fn set_next_specular(&mut self, next: i32) {
+        self.next_specular = next;
+    }
+
     pub(crate) fn expected_specular(&self, sequence: &[usize]) -> Option<usize> {
         if self.has(flags::IRREGULAR_SPECULAR | flags::SCATTERED | flags::MECHANICAL) {
             None

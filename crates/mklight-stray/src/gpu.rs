@@ -338,9 +338,12 @@ pub fn first_hits(
     b.submit_plan(plan, &ctx.subrange(0.1, 1.))?.wait()
 }
 
+pub mod hybrid;
 mod tally;
 mod transport;
-pub use transport::{TransportOptions, TransportScene, run};
+pub use hybrid::Design;
+pub(crate) use transport::run_design_with;
+pub use transport::{TransportOptions, TransportScene, run, run_design};
 
 /// Engine-facing analysis adapter, including coverage/aperture validation,
 /// obstruction reference, source measures, map rows and complete RunInfo.
@@ -349,18 +352,27 @@ fn analyze_impl(
     rs: std::sync::Arc<mklight_core::ResolvedSystem>,
     settings: &crate::StrayAnalysisSettings,
     options: TransportOptions,
+    design: Design,
     all_signatures: bool,
     ctx: &JobContext,
 ) -> MkResult<(crate::StrayAnalysisResult, Vec<crate::tally::SignatureFlux>)> {
     settings.validate()?;
     let timer = mklight_core::job::RunTimer::start();
     let snapshot = rs.snapshot.clone();
-    let sys = crate::StraySystem::build(rs, &settings.system_options(), &ctx.subrange(0., 0.1))?;
+    // The hybrid designs check the system fields for obstruction on the CPU
+    // while the device transports.
+    let defer = design != Design::GpuTally;
+    let sys = if defer {
+        crate::StraySystem::build_scene(rs, &settings.system_options(), &ctx.subrange(0., 0.1))?
+    } else {
+        crate::StraySystem::build(rs, &settings.system_options(), &ctx.subrange(0., 0.1))?
+    };
     let (mut result, signatures) = crate::analysis::analyze_system_impl(
         &sys,
         settings,
         all_signatures,
-        Some((b, options)),
+        Some((b, options, design)),
+        defer,
         &ctx.subrange(0.1, 0.99),
     )?;
     result.run_info = timer.finish(
@@ -383,7 +395,15 @@ pub fn analyze_system(
     options: TransportOptions,
     ctx: &JobContext,
 ) -> MkResult<crate::StrayAnalysisResult> {
-    crate::analysis::analyze_system_impl(sys, settings, false, Some((b, options)), ctx).map(|r| r.0)
+    crate::analysis::analyze_system_impl(
+        sys,
+        settings,
+        false,
+        Some((b, options, Design::selected()?)),
+        false,
+        ctx,
+    )
+    .map(|r| r.0)
 }
 pub fn analyze(
     b: &dyn ComputeBackend,
@@ -392,7 +412,7 @@ pub fn analyze(
     options: TransportOptions,
     ctx: &JobContext,
 ) -> MkResult<crate::StrayAnalysisResult> {
-    analyze_impl(b, rs, settings, options, false, ctx).map(|r| r.0)
+    analyze_impl(b, rs, settings, options, Design::selected()?, false, ctx).map(|r| r.0)
 }
 
 pub fn analyze_with_signatures(
@@ -402,5 +422,18 @@ pub fn analyze_with_signatures(
     options: TransportOptions,
     ctx: &JobContext,
 ) -> MkResult<(crate::StrayAnalysisResult, Vec<crate::tally::SignatureFlux>)> {
-    analyze_impl(b, rs, settings, options, true, ctx)
+    analyze_impl(b, rs, settings, options, Design::selected()?, true, ctx)
+}
+
+/// [`analyze`] with an explicit division of the transport instead of the
+/// selected one.
+pub fn analyze_design(
+    b: &dyn ComputeBackend,
+    rs: std::sync::Arc<mklight_core::ResolvedSystem>,
+    settings: &crate::StrayAnalysisSettings,
+    options: TransportOptions,
+    design: Design,
+    ctx: &JobContext,
+) -> MkResult<crate::StrayAnalysisResult> {
+    analyze_impl(b, rs, settings, options, design, false, ctx).map(|r| r.0)
 }

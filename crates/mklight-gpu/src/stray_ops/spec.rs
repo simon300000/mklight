@@ -601,10 +601,38 @@ pub(super) fn execute<E: FpEnv>(
         let table = rows::<D>(x, &r.tis);
         let seq = rows::<u32>(x, &r.sequence);
         let layers = rows::<crate::radiometry::CoatingLayer>(x, &r.layers);
-        while let Some(mut s) = stack.pop() {
+        // Handoff mode (`Transport::stack_output`): the kernel's stop rules,
+        // checked before a state is popped so the stack stays consistent.
+        let handoff = r.stack_output.is_some();
+        let reserve = if v(set.ceiling) == f32::MAX {
+            3
+        } else {
+            ((1. + 3. * v(set.rare_floor)) * v(set.ceiling))
+                .ceil()
+                .clamp(3., 63.) as usize
+        };
+        'source: while !stack.is_empty() {
             if l.status == 4 {
+                if handoff {
+                    break;
+                }
                 return unsupported("stray f32 ledger range");
             }
+            if handoff {
+                if r.head_events != 0 && l.events >= r.head_events {
+                    l.status = 5;
+                    break;
+                }
+                if stack.len() + reserve > r.stack_capacity {
+                    l.status = 2;
+                    break;
+                }
+                if hits.len() >= r.hit_capacity {
+                    l.status = 3;
+                    break;
+                }
+            }
+            let mut s = stack.pop().unwrap();
             if l.events % r.event_budget as u32 == 0 {
                 ctl.check()?;
             }
@@ -729,6 +757,10 @@ pub(super) fn execute<E: FpEnv>(
                     ci,
                 );
                 if cv.status != 0 {
+                    if handoff {
+                        l.status = 4;
+                        break 'source;
+                    }
                     return unsupported("stray coating requires reference");
                 }
                 let mut rr = (cv.powers[0] + cv.powers[1]) * f(0.5);
@@ -859,6 +891,10 @@ pub(super) fn execute<E: FpEnv>(
             }
             if let Err(lost) = apply(&mut s, next, pick, &e, m, p, seq, &mut rng) {
                 if lost == usize::MAX {
+                    if handoff {
+                        l.status = 4;
+                        break;
+                    }
                     return unsupported("stray sampling arithmetic requires reference");
                 }
                 book(&mut l, lost, next);
@@ -875,11 +911,16 @@ pub(super) fn execute<E: FpEnv>(
             s.weight = s.weight / f(copies as f32);
             stack.extend(std::iter::repeat_n(s, copies));
         }
-        if l.status == 4 {
+        if l.status == 4 && !handoff {
             return unsupported("stray f32 ledger range");
         }
         l.draws = rng.draws;
         l.hits = hits.len() as u32;
+        if let Some(output) = r.stack_output {
+            l.top = stack.len() as u32;
+            let out = bytemuck::cast_slice_mut::<u32, State>(x.words_mut(output));
+            out[i * r.stack_capacity..][..stack.len()].copy_from_slice(&stack);
+        }
         let out = bytemuck::cast_slice_mut::<u32, Detection>(x.words_mut(r.output));
         out[i * r.hit_capacity..][..hits.len()].copy_from_slice(&hits);
         bytemuck::cast_slice_mut::<u32, Ledger>(x.words_mut(r.ledger))[i] = l;
