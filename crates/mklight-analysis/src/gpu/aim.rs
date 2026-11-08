@@ -9,7 +9,8 @@
 //!   coarse f64 seed table per row ([`HostTable`]) and start every ray's
 //!   Newton solve from its interpolated aim and stop Jacobian
 //!   (`SequentialTracer::generate_many_from`; the reference schedule takes
-//!   over where a started solve does not converge).
+//!   over where a started solve does not converge). Paraxial launches
+//!   (aiming off) need no solve: the device generates them inside the plan.
 //! * [`AimDesign::Host`]: the reference tracer aims every ray in f64
 //!   (`SequentialTracer::generate_many`: batched Newton with analytic
 //!   Jacobians, the chunks in parallel on rayon), bitwise as the CPU
@@ -313,12 +314,13 @@ pub(crate) struct HostJob<'a> {
     pub table: Option<&'a HostTable>,
 }
 impl HostJob<'_> {
-    /// Aim the rays of `cols` with the reference tracer and write them.
-    fn aim(&self, cols: &mut RayColumns<'_>) -> HostAims {
-        let stop = self.tracer.system().stop as u32;
-        let specs: Vec<RaySpec> = (cols.start..cols.start + cols.len())
-            .map(self.spec)
-            .collect();
+    /// The reference tracer's rays for `specs`, started from the host seed
+    /// table where there is one.
+    fn generate(
+        &self,
+        specs: &[RaySpec],
+        stats: &mut mklight_trace::AimStats,
+    ) -> Vec<Result<GeneratedRay, AimReport>> {
         let requests: Vec<RayRequest> = specs
             .iter()
             .map(|s| {
@@ -326,8 +328,7 @@ impl HostJob<'_> {
                 (self.rows.field(row), self.rows.wavelength(row), s.pupil)
             })
             .collect();
-        let mut stats = mklight_trace::AimStats::default();
-        let generated = match self.table {
+        match self.table {
             Some(table) => {
                 let r_stop = self.tracer.pupil().r_stop;
                 let starts: Vec<_> = specs
@@ -339,11 +340,19 @@ impl HostJob<'_> {
                         table.start(row, [x, y], r_stop)
                     })
                     .collect();
-                self.tracer
-                    .generate_many_from(&requests, &starts, &mut stats)
+                self.tracer.generate_many_from(&requests, &starts, stats)
             }
-            None => self.tracer.generate_many_stats(&requests, &mut stats),
-        };
+            None => self.tracer.generate_many_stats(&requests, stats),
+        }
+    }
+    /// Aim the rays of `cols` with the reference tracer and write them.
+    fn aim(&self, cols: &mut RayColumns<'_>) -> HostAims {
+        let stop = self.tracer.system().stop as u32;
+        let specs: Vec<RaySpec> = (cols.start..cols.start + cols.len())
+            .map(self.spec)
+            .collect();
+        let mut stats = mklight_trace::AimStats::default();
+        let generated = self.generate(&specs, &mut stats);
         let mut out = HostAims {
             rays: specs.len() as u64,
             iterations: stats.iterations,
@@ -366,36 +375,15 @@ impl HostJob<'_> {
     /// [`Self::aim_indices`] on the calling thread (one batch).
     fn aim_indices_serial(&self, indices: &[u32]) -> Vec<(u32, Result<GeneratedRay, AimReport>)> {
         let specs: Vec<RaySpec> = indices.iter().map(|&i| (self.spec)(i as usize)).collect();
-        let requests: Vec<RayRequest> = specs
-            .iter()
-            .map(|s| {
-                let row = s.row as usize;
-                (self.rows.field(row), self.rows.wavelength(row), s.pupil)
-            })
-            .collect();
-        indices
-            .iter()
-            .copied()
-            .zip(self.tracer.generate_many(&requests))
-            .collect()
+        let generated = self.generate(&specs, &mut Default::default());
+        indices.iter().copied().zip(generated).collect()
     }
     /// Aim the given rays (by index) with the reference tracer, in parallel:
     /// the generated ray or report of each.
     fn aim_indices(&self, indices: &[u32]) -> Vec<(u32, Result<GeneratedRay, AimReport>)> {
         indices
             .par_chunks(HOST_CHUNK)
-            .flat_map_iter(|chunk| {
-                let specs: Vec<RaySpec> = chunk.iter().map(|&i| (self.spec)(i as usize)).collect();
-                let requests: Vec<RayRequest> = specs
-                    .iter()
-                    .map(|s| {
-                        let row = s.row as usize;
-                        (self.rows.field(row), self.rows.wavelength(row), s.pupil)
-                    })
-                    .collect();
-                let generated = self.tracer.generate_many(&requests);
-                chunk.iter().copied().zip(generated).collect::<Vec<_>>()
-            })
+            .flat_map_iter(|chunk| self.aim_indices_serial(chunk))
             .collect()
     }
 }
@@ -541,6 +529,16 @@ impl Geometry<'_> {
         ctx: &JobContext,
     ) -> MkResult<ResidentRays> {
         ctx.check()?;
+        if self.aim == AimDesign::HostTable && !matches!(rows.aiming, RayAiming::Real { .. }) {
+            // Paraxial launches need no solve: the device generates them in
+            // the plan itself (they fail only where the reference fails).
+            self.evidence(|e| {
+                e.generations += 1;
+                e.rays += n as u64;
+                e.device_rays += n as u64;
+            });
+            return self.append_generation(p, rows, 0..n, spec, None, ctx);
+        }
         let handles = match self.aim {
             AimDesign::Host => self.aim_host(rows, n, spec, None, ctx)?,
             AimDesign::HostTable => {
@@ -660,10 +658,35 @@ impl Geometry<'_> {
         table: Option<&(Vec<SeedNode>, u32)>,
         ctx: &JobContext,
     ) -> MkResult<DeviceAims> {
-        let n = range.len();
         let mut a = ResidentPlan::new(self.tracer.system().snapshot.clone());
+        let n = range.len();
+        let start = range.start;
+        let out = self.append_generation(&mut a, rows, range, spec, table, ctx)?;
+        a.outputs = vec![out.floats, out.indices, out.logical_ids, out.report];
+        let submitted = Instant::now();
+        Ok(DeviceAims {
+            pending: Some(self.backend.submit_plan(a, ctx)?),
+            start,
+            count: n,
+            submitted,
+        })
+    }
+    /// Append a device generation (`GenerateAim`) of rays `range` of a
+    /// generation to plan `a`: field rows, samples, host chief rows and the
+    /// design's seed table and schedule. Returns its output rays.
+    fn append_generation(
+        &self,
+        a: &mut ResidentPlan,
+        rows: &AimRows,
+        range: std::ops::Range<usize>,
+        spec: &(dyn Fn(usize) -> RaySpec + Sync),
+        table: Option<&(Vec<SeedNode>, u32)>,
+        ctx: &JobContext,
+    ) -> MkResult<ResidentRays> {
+        let a = &mut *a;
+        let n = range.len();
         let slots = self.slots(rows)?;
-        let metadata = self.records::<FieldSpec>(&mut a, rows.len(), |i| {
+        let metadata = self.records::<FieldSpec>(a, rows.len(), |i| {
             FieldSpec::new(
                 self.tracer.system(),
                 self.tracer.paraxial(),
@@ -673,7 +696,7 @@ impl Geometry<'_> {
                 rows.aiming,
             )
         })?;
-        let samples = self.records::<Sample>(&mut a, n, |k| {
+        let samples = self.records::<Sample>(a, n, |k| {
             if k % 4096 == 0 {
                 ctx.check()?;
             }
@@ -682,15 +705,15 @@ impl Geometry<'_> {
             x.weight = s.weight;
             Ok(x)
         })?;
-        let field_key = self.field_key(&a, metadata)?;
+        let field_key = self.field_key(a, metadata)?;
         let seeds = self.with_tracer(rows.aiming, |t| {
-            self.records::<ChiefSeed>(&mut a, rows.len(), |i| {
+            self.records::<ChiefSeed>(a, rows.len(), |i| {
                 Ok(ChiefSeed::host(t, rows.field(i), rows.wavelength(i)))
             })
         })??;
         let options = match table {
             Some((nodes, side)) => {
-                let id = self.records::<SeedNode>(&mut a, nodes.len(), |i| Ok(nodes[i]))?;
+                let id = self.records::<SeedNode>(a, nodes.len(), |i| Ok(nodes[i]))?;
                 AimOptions {
                     table: Some(a.view(id)?),
                     table_side: *side,
@@ -700,7 +723,7 @@ impl Geometry<'_> {
             }
             None => Default::default(),
         };
-        let out = rays(&mut a, n);
+        let out = rays(a, n);
         a.operations
             .push(ResidentOp::Aiming(Request::GenerateAim(GenerateAim {
                 systems: SystemSet::Uploaded(self.systems),
@@ -715,14 +738,7 @@ impl Geometry<'_> {
                 output: out.clone(),
                 options,
             })));
-        a.outputs = vec![out.floats, out.indices, out.logical_ids, out.report];
-        let submitted = Instant::now();
-        Ok(DeviceAims {
-            pending: Some(self.backend.submit_plan(a, ctx)?),
-            start: range.start,
-            count: n,
-            submitted,
-        })
+        Ok(out)
     }
     /// Wait for a device aiming plan: its four ray buffers and statistics.
     pub(crate) fn finish_device(

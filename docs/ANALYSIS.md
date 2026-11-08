@@ -601,7 +601,7 @@ is built, by one design read once per adapter from the work-split key
 
 | `aiming` | Where pupil rays are aimed |
 |---|---|
-| `host-table` (default) | The reference tracer aims every ray in f64. Generations with at least 2,048 rays per field row first solve a coarse seed table per row (about one node per four rays, 5–37 nodes per axis over the vignetted pupil square ±1.125, as the device table); each ray's Newton solve starts from the table's Catmull–Rom interpolated aim and stop Jacobian (`SequentialTracer::generate_many_from`) and falls back to the reference schedule if it does not converge. Smaller generations are aimed as by `host`. |
+| `host-table` (default) | The reference tracer aims every ray in f64. Generations with at least 2,048 rays per field row first solve a coarse seed table per row (about one node per four rays, 5–37 nodes per axis over the vignetted pupil square ±1.125, as the device table); each ray's Newton solve starts from the table's Catmull–Rom interpolated aim and stop Jacobian (`SequentialTracer::generate_many_from`) and falls back to the reference schedule if it does not converge. Smaller generations are aimed as by `host`. Paraxial launches (aiming off) need no solve; the device generates them inside the plan. |
 | `host` | The reference tracer aims every ray (`generate_many`: the rays of a chunk advance together, chunks in parallel on rayon), bitwise as the CPU reference does. |
 | `device` | The double-float device solve of GPU.md §9.2 (host chief rows, device seed table for large generations), in a plan of its own, followed by host completion. |
 | `table` | A host f64 seed table and device Newton corrections from its interpolated seeds, at most 12 iterations per ray, followed by host completion. |
