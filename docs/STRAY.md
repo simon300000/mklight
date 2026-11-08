@@ -599,9 +599,9 @@ are in flight: the device transports plan `k + 1` while the CPU finishes plan
 
 Which part of a source runs where depends only on the source and on fixed
 options, never on timing, so a seed gives bit-identical results. The device
-share of `cosplit` (`TransportOptions::gpu_share`) is a fixed rule of the
-scene when not set: 0.2, or 0.08 with iteratively intersected sags
-(`gpu::hybrid::default_share`); device chunks come in units of up to one
+share of `cosplit` (`TransportOptions::gpu_share`, else the study key
+`stray_share`) is a fixed rule of the scene when not set: 0.2, or 0.08 with
+iteratively intersected sags (`gpu::hybrid::default_share`); device chunks come in units of up to one
 plan, spread evenly. With a share of 0 `cosplit` is the reference bit for bit,
 with a share of 1 it is `gpu-head`. The persistent and wavefront kernels
 produce identical records. Options that move the split (head budget, stack and

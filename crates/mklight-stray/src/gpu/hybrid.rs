@@ -31,6 +31,9 @@ use std::time::Instant;
 
 /// Study key of the transport divisions (`mklight_core::split`).
 pub const STUDY_KEY: &str = "stray";
+/// Study key of the device share of [`Design::CoSplit`] (a number in
+/// 0…1; unset: [`default_share`]).
+pub const SHARE_KEY: &str = "stray_share";
 
 /// Detections a source keeps on the device before the CPU continues it.
 const HANDOFF_DETECTIONS: usize = 8;
@@ -473,7 +476,18 @@ pub(crate) fn run(
         _ => options.head_events,
     };
     let share = match design {
-        Design::CoSplit => options.gpu_share.unwrap_or_else(|| default_share(scene)),
+        // Options first, then the share study key, then the scene rule.
+        Design::CoSplit => match options.gpu_share {
+            Some(share) => share,
+            None => match mklight_core::split::variant(SHARE_KEY) {
+                Some(v) => v
+                    .parse::<f64>()
+                    .ok()
+                    .filter(|s| (0.0..=1.0).contains(s))
+                    .ok_or_else(|| MkError::InvalidModel(format!("stray share '{v}'")))?,
+                None => default_share(scene),
+            },
+        },
         _ => 1.0,
     };
     let per_source = std::mem::size_of::<ops::Ray>()
