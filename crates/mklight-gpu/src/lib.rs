@@ -24,6 +24,7 @@
 pub mod backend;
 pub mod batch;
 pub mod cpu;
+pub mod cpu_share;
 pub mod df;
 pub mod fenv;
 pub mod fmath;

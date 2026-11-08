@@ -227,20 +227,22 @@ impl TransmissionRows<'_> {
         let np = self.samples.len();
         let n = rows.len() * np;
         let first = rows.start;
-        // Packets of 64 rays of one row, aimed together.
-        let generated: Vec<_> = (0..n.div_ceil(64))
-            .into_par_iter()
-            .flat_map_iter(|c| {
-                let range = c * 64..((c + 1) * 64).min(n);
-                let requests: Vec<mklight_trace::RayRequest> = range
-                    .map(|i| {
-                        let (f, wl) = self.row(first + i / np);
-                        (prep.field(f), wl, self.samples[i % np])
-                    })
-                    .collect();
-                self.t.generate_many(&requests)
-            })
-            .collect();
+        // Packets of 64 rays, aimed together, in the CPU share's pool.
+        let generated: Vec<_> = crate::cpu_share::install(|| {
+            (0..n.div_ceil(64))
+                .into_par_iter()
+                .flat_map_iter(|c| {
+                    let range = c * 64..((c + 1) * 64).min(n);
+                    let requests: Vec<mklight_trace::RayRequest> = range
+                        .map(|i| {
+                            let (f, wl) = self.row(first + i / np);
+                            (prep.field(f), wl, self.samples[i % np])
+                        })
+                        .collect();
+                    self.t.generate_many(&requests)
+                })
+                .collect()
+        });
         ctx.check()?;
         let floats = {
             let h = b.fill_buffer(BufferDesc::new(ElementType::F32, [15, n]), &mut |mut f| {
@@ -471,16 +473,18 @@ impl TransmissionRows<'_> {
                 values[i].status == crate::consts::MKL_RAD_REFERENCE || aim_failed(status[i])
             })
             .collect();
-        let completed: Vec<[Df32; 10]> = reference
-            .par_iter()
-            .map(|&i| {
-                let (f, wl) = self.row(rows.start + i / np);
-                let p = self.samples[i % np];
-                let ray = t.trace_polarized(prep.field(f), wl, p[0], p[1], &opts);
-                let value = reference_value(&ray, self.state);
-                super::summary_channels(value, reference_status(&ray.trace.status))
-            })
-            .collect();
+        let completed: Vec<[Df32; 10]> = crate::cpu_share::install(|| {
+            reference
+                .par_iter()
+                .map(|&i| {
+                    let (f, wl) = self.row(rows.start + i / np);
+                    let p = self.samples[i % np];
+                    let ray = t.trace_polarized(prep.field(f), wl, p[0], p[1], &opts);
+                    let value = reference_value(&ray, self.state);
+                    super::summary_channels(value, reference_status(&ray.trace.status))
+                })
+                .collect()
+        });
         ctx.check()?;
         let fallback = reference.len();
         let mut next = reference.iter().zip(&completed).peekable();
@@ -692,7 +696,11 @@ impl TransmissionRows<'_> {
                     if prepared[f].is_none() {
                         prepared[f] = Some(self.t.prepare_field(self.fields[f])?);
                     }
-                    done.push((r, self.reference_row(prepared[f].as_ref().unwrap(), wl)));
+                    let field = prepared[f].as_ref().unwrap();
+                    done.push((
+                        r,
+                        crate::cpu_share::install(|| self.reference_row(field, wl)),
+                    ));
                 }
                 Ok(done)
             })();

@@ -430,7 +430,11 @@ wavelength) rows side by side, selected by `mklight_core::split` (key
 | `cpu` | the reference path from the GPU route |
 
 Unpolarised rows use the scalar transport kernel; the sums, denominators
-and failure counts are the reference's. `polarization_pupil_map` stays on
+and failure counts are the reference's. The host aims and reference
+completions of the hybrids run in the CPU share's pool (ANALYSIS.md §6.1,
+key `fieldmaps_threads`), and `pupil_mode` traces its reference-completed
+rays in parallel before merging them in pupil order (unchanged results).
+`polarization_pupil_map` stays on
 the reference by static capability (undefined polarisation axes); the
 study design `native` lifts that for measurement only.
 

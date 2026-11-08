@@ -27,6 +27,7 @@ use crate::illumination::{self as host, ImagePoint};
 use crate::util::m2;
 use mklight_core::math::KahanSum;
 use mklight_gpu::consts::*;
+use mklight_gpu::cpu_share;
 use mklight_gpu::geometry::{
     self, IlluminationNodes, IlluminationRays,
     ri::{PENCIL, RiField, RiRay, RiTask},
@@ -36,6 +37,8 @@ use std::time::Instant;
 
 /// Nodes per plan (bounds plan storage).
 const PLAN_NODES: usize = 1 << 18;
+/// `shared`: nodes per CPU grab of fields from the back of the queue.
+const CPU_GRAB_NODES: usize = 2048;
 /// A node's CPU image-point solve: the solved `q` and its converged aim, or
 /// the reference's failure.
 type Solved = Option<Converged>;
@@ -322,9 +325,11 @@ pub fn rows(
     let q_scale = host::q_scale(rt);
     let prepared: Vec<_> = points
         .par_iter()
-        .map(|&p| host::image_point(rt, p, wl, q_scale))
-        .collect();
-    ctx.check()?;
+        .map(|&p| {
+            ctx.check()?;
+            Ok(host::image_point(rt, p, wl, q_scale))
+        })
+        .collect::<MkResult<_>>()?;
     let chunk = geo.chunk(wl)?;
     let real = mklight_core::RayAiming::Real {
         tolerance: match t.aiming() {
@@ -332,24 +337,23 @@ pub fn rows(
             _ => 1e-12,
         },
     };
+    let fields: Vec<Option<RiField>> = points
+        .par_iter()
+        .zip(&prepared)
+        .map(|(p, ip)| {
+            ip.as_ref()
+                .ok()
+                .map(|ip| field_row(t, *p, ip, chunk, wl, real, aim_floor(rt, ip, wl)))
+                .transpose()
+        })
+        .collect::<MkResult<_>>()?;
     let mut rows = Vec::new();
     let mut row_of = Vec::with_capacity(points.len());
-    for (p, ip) in points.iter().zip(&prepared) {
-        row_of.push(match ip {
-            Ok(ip) => {
-                rows.push(field_row(
-                    t,
-                    *p,
-                    ip,
-                    chunk,
-                    wl,
-                    real,
-                    aim_floor(rt, ip, wl),
-                )?);
-                Some(rows.len() as u32 - 1)
-            }
-            Err(_) => None,
-        });
+    for field in fields {
+        row_of.push(field.map(|f| {
+            rows.push(f);
+            rows.len() as u32 - 1
+        }));
     }
     let problem = Problem {
         t,
@@ -363,20 +367,35 @@ pub fn rows(
         nodes: host::pupil_nodes(radial, azimuth),
     };
     stages.host_fields_ms = clock.elapsed().as_secs_f64() * 1e3;
-    // Outcome of every node of every usable point, point-major.
+    ctx.report(0.05, "relative illumination");
+    // Outcome of every node of every usable point, point-major. The solves
+    // report progress in 5…90 % (device plans as stage `geometry`).
     let usable = problem.usable();
     let mut runs: Vec<RunInfo> = Vec::new();
+    let solve_ctx = ctx.subrange(0.05, 0.9);
     let mut outcomes = if usable.is_empty() {
         Vec::new()
     } else {
         match design {
-            RiDesign::Nodes | RiDesign::Split => {
-                device_solve(&problem, &usable, design, &mut stages, &mut runs, ctx)?
+            RiDesign::Nodes | RiDesign::Split => device_solve(
+                &problem,
+                &usable,
+                design,
+                &mut stages,
+                &mut runs,
+                &solve_ctx,
+            )?,
+            RiDesign::Hybrid | RiDesign::Pipelined => host_solve(
+                &problem,
+                &usable,
+                design,
+                &mut stages,
+                &mut runs,
+                &solve_ctx,
+            )?,
+            RiDesign::Shared => {
+                shared_solve(&problem, &usable, &mut stages, &mut runs, &solve_ctx)?
             }
-            RiDesign::Hybrid | RiDesign::Pipelined => {
-                host_solve(&problem, &usable, design, &mut stages, &mut runs, ctx)?
-            }
-            RiDesign::Shared => shared_solve(&problem, &usable, &mut stages, &mut runs, ctx)?,
             RiDesign::Legacy => unreachable!("legacy rows have their own path"),
         }
     };
@@ -397,6 +416,7 @@ pub fn rows(
             .map(|&i| (problem.points[usable[i / per].0], i % per))
             .collect();
         let decided = host::reference_nodes(rt, wl, q_scale, &problem.nodes, &selected, ctx)?;
+        ctx.report(0.95, "relative illumination");
         for (&i, (density, survives, failed)) in unresolved.iter().zip(decided) {
             outcomes[i] = if survives {
                 Outcome::Survives(density)
@@ -485,6 +505,7 @@ pub fn rows(
         + stages.assembly_ms
         + stages.polish_ms;
     run.settings["ri_stages"] = serde_json::to_value(&stages).unwrap();
+    run.settings["ri_stages"]["cpu_threads"] = cpu_share::evidence();
     // The legacy design's reference-completion record, for its consumers.
     run.settings["ri_polish"] = serde_json::json!({
         "attempted_nodes": stages.unresolved,
@@ -541,7 +562,7 @@ fn shared_solve(
                     RiDesign::Split,
                     &mut stages,
                     &mut runs,
-                    ctx,
+                    &ctx.subrange(range.start as f64 / n as f64, range.end as f64 / n as f64),
                 )?;
                 for (k, chunk) in range.zip(outcomes.chunks(per)) {
                     done.push((k, chunk.to_vec()));
@@ -549,31 +570,47 @@ fn shared_solve(
             }
             Ok((done, stages, runs))
         });
+        // The CPU takes about `CPU_GRAB_NODES` nodes' worth of fields at a
+        // time, in parallel in the CPU share's pool.
+        let grab = CPU_GRAB_NODES.div_ceil(per).max(1);
+        let (rt, wl, prepared) = (problem.rt, problem.wl, &problem.prepared);
         let host = (|| {
             let mut done = Vec::new();
             loop {
-                let k = {
+                let range = {
                     let mut q = queue.lock().unwrap();
                     if q.0 >= q.1 {
                         break;
                     }
-                    q.1 -= 1;
-                    q.1
+                    let start = q.1.saturating_sub(grab).max(q.0);
+                    let r = start..q.1;
+                    q.1 = start;
+                    r
                 };
                 ctx.check()?;
-                let ip = problem.prepared[usable[k].0].as_ref().unwrap();
-                let decided = host::field_nodes(problem.rt, ip, problem.wl, &pupil);
-                done.push((
-                    k,
-                    decided
-                        .into_iter()
-                        .map(|(d, survives, failed)| match (survives, failed) {
-                            (true, _) => Outcome::Survives(d),
-                            (_, true) => Outcome::Failed,
-                            _ => Outcome::Vignetted,
+                let decided: Vec<Vec<(f64, bool, bool)>> = cpu_share::install(|| {
+                    range
+                        .clone()
+                        .into_par_iter()
+                        .map(|k| {
+                            let ip = prepared[usable[k].0].as_ref().unwrap();
+                            host::field_nodes(rt, ip, wl, &pupil)
                         })
-                        .collect(),
-                ));
+                        .collect()
+                });
+                for (k, decided) in range.zip(decided) {
+                    done.push((
+                        k,
+                        decided
+                            .into_iter()
+                            .map(|(d, survives, failed)| match (survives, failed) {
+                                (true, _) => Outcome::Survives(d),
+                                (_, true) => Outcome::Failed,
+                                _ => Outcome::Vignetted,
+                            })
+                            .collect(),
+                    ));
+                }
             }
             Ok(done)
         })();
@@ -615,7 +652,8 @@ fn device_solve(
         .flat_map(|&(pi, _)| (0..per).map(move |k| (pi, k)))
         .collect();
     let mut outcomes = Vec::with_capacity(list.len());
-    for part in list.chunks(PLAN_NODES) {
+    let parts = list.len().div_ceil(PLAN_NODES);
+    for (k, part) in list.chunks(PLAN_NODES).enumerate() {
         ctx.check()?;
         let clock = Instant::now();
         let n = part.len();
@@ -660,7 +698,8 @@ fn device_solve(
                 )));
             p.outputs.push(rays);
         }
-        let r = problem.geo.run(p, ctx)?;
+        let range = (k as f64 / parts as f64, (k + 1) as f64 / parts as f64);
+        let r = problem.geo.run(p, &ctx.subrange(range.0, range.1))?;
         stages.device_wait_ms += clock.elapsed().as_secs_f64() * 1e3;
         stages.plans += 1;
         let clock = Instant::now();
@@ -703,6 +742,7 @@ fn device_solve(
         }
         stages.assembly_ms += clock.elapsed().as_secs_f64() * 1e3;
         runs.push(r.run_info);
+        ctx.report(range.1, "geometry");
     }
     Ok(outcomes)
 }
@@ -733,18 +773,29 @@ fn host_solve(
     let blocks: Vec<&[(usize, u32)]> = usable.chunks(fields_per_block).collect();
     stages.blocks = blocks.len();
     // Solve a block on the CPU: per node the solved (q, aim) or the
-    // reference's failure.
+    // reference's failure. The block's fields run in parallel, and so do
+    // the nodes of each field, in the CPU share's pool.
+    let (rt, wl, prepared) = (problem.rt, problem.wl, &problem.prepared);
     let solve = |block: &[(usize, u32)], stages: &mut Stages| -> MkResult<Vec<Solved>> {
         let clock = Instant::now();
-        let mut out = Vec::with_capacity(block.len() * per);
-        for &(pi, _) in block {
-            ctx.check()?;
-            let ip = problem.prepared[pi].as_ref().unwrap();
-            out.extend(host::solve_image_point(problem.rt, ip, problem.wl, &pupil));
-        }
+        let solved: Vec<Vec<Solved>> = cpu_share::install(|| {
+            block
+                .par_iter()
+                .map(|&(pi, _)| {
+                    ctx.check()?;
+                    let ip = prepared[pi].as_ref().unwrap();
+                    Ok(host::solve_image_point(rt, ip, wl, &pupil))
+                })
+                .collect::<MkResult<_>>()
+        })?;
         stages.cpu_solve_ms += clock.elapsed().as_secs_f64() * 1e3;
-        Ok(out)
+        Ok(solved.concat())
     };
+    // The pencil plans share the job's cancellation but not its progress:
+    // with CPU solves and device plans overlapping, the loop below reports
+    // the progress, as stage `geometry` from the first submission on.
+    let mut plan_ctx = JobContext::new();
+    plan_ctx.cancel = ctx.cancel.clone();
     // Submit a block's pencils (converged nodes only).
     let submit = |block: &[(usize, u32)], solved: &[Solved]| -> MkResult<Submitted> {
         let traced: Vec<(usize, Converged)> = solved
@@ -797,7 +848,7 @@ fn host_solve(
             )));
         p.outputs = vec![rays];
         Ok(Some((
-            problem.geo.backend.submit_plan(p, ctx)?,
+            problem.geo.backend.submit_plan(p, &plan_ctx)?,
             traced.len(),
         )))
     };
@@ -820,47 +871,76 @@ fn host_solve(
             .as_ref()
             .map_or(&[][..], |v| bytemuck::cast_slice(v.words()));
         count_failures(rays, stages);
-        let mut next = 0;
-        let mut out = Vec::with_capacity(solved.len());
-        let mut undecided = 0;
-        for (i, s) in solved.iter().enumerate() {
-            out.push(match s {
-                None => Outcome::Failed,
-                Some(_) if view.is_none() => Outcome::Unresolved,
-                Some(_) => {
-                    let (pi, _) = block[i / per];
-                    let hq = problem.prepared[pi].as_ref().unwrap().hq;
-                    let o = pencil_outcome(&rays[next * PENCIL..(next + 1) * PENCIL], hq);
-                    next += 1;
-                    undecided += usize::from(matches!(o, Outcome::Unresolved));
-                    o
-                }
-            });
+        // The pencils were traced for the converged nodes, in node order.
+        let has_rays = view.is_some();
+        let mut pencil = Vec::with_capacity(solved.len());
+        let mut traced = 0;
+        for s in solved {
+            pencil.push(traced);
+            traced += usize::from(s.is_some());
         }
-        let traced = next;
-        // Finish the undecided nodes on the CPU, field by field.
-        for (b, &(pi, _)) in block.iter().enumerate() {
-            let range = b * per..(b + 1) * per;
-            let todo: Vec<usize> = range
-                .filter(|&i| matches!(out[i], Outcome::Unresolved))
-                .collect();
-            if todo.is_empty() {
-                continue;
-            }
+        let out: Vec<Outcome> = solved
+            .par_iter()
+            .zip(&pencil)
+            .enumerate()
+            .map(|(i, (s, &k))| match s {
+                None => Outcome::Failed,
+                Some(_) if !has_rays => Outcome::Unresolved,
+                Some(_) => {
+                    let hq = problem.prepared[block[i / per].0].as_ref().unwrap().hq;
+                    pencil_outcome(&rays[k * PENCIL..(k + 1) * PENCIL], hq)
+                }
+            })
+            .collect();
+        if !has_rays {
+            traced = 0;
+        }
+        let undecided = if traced > 0 {
+            out.iter()
+                .zip(solved)
+                .filter(|(o, s)| s.is_some() && matches!(o, Outcome::Unresolved))
+                .count()
+        } else {
+            0
+        };
+        let mut out = out;
+        // Finish the undecided nodes on the CPU: the fields in parallel, and
+        // the nodes of each field too.
+        let todo: Vec<(usize, Vec<usize>)> = block
+            .iter()
+            .enumerate()
+            .map(|(b, &(pi, _))| {
+                let range = b * per..(b + 1) * per;
+                let todo: Vec<usize> = range
+                    .filter(|&i| matches!(out[i], Outcome::Unresolved))
+                    .collect();
+                (pi, todo)
+            })
+            .filter(|(_, todo)| !todo.is_empty())
+            .collect();
+        if !todo.is_empty() {
             ctx.check()?;
-            let nodes: Vec<([f64; 2], [f64; 2])> = todo
-                .iter()
-                .map(|&i| (pupil[i % per], solved[i].unwrap().0))
-                .collect();
-            let ip = problem.prepared[pi].as_ref().unwrap();
-            let decided = host::finish_nodes(problem.rt, ip, problem.wl, &nodes);
-            stages.cpu_finished += todo.len();
-            for (&i, (d, survives, failed)) in todo.iter().zip(decided) {
-                out[i] = match (survives, failed) {
-                    (true, _) => Outcome::Survives(d),
-                    (_, true) => Outcome::Failed,
-                    _ => Outcome::Vignetted,
-                };
+            let decided: Vec<Vec<(f64, bool, bool)>> = cpu_share::install(|| {
+                todo.par_iter()
+                    .map(|(pi, todo)| {
+                        let nodes: Vec<([f64; 2], [f64; 2])> = todo
+                            .iter()
+                            .map(|&i| (pupil[i % per], solved[i].unwrap().0))
+                            .collect();
+                        let ip = prepared[*pi].as_ref().unwrap();
+                        host::finish_nodes(rt, ip, wl, &nodes)
+                    })
+                    .collect()
+            });
+            for ((_, todo), decided) in todo.iter().zip(decided) {
+                stages.cpu_finished += todo.len();
+                for (&i, (d, survives, failed)) in todo.iter().zip(decided) {
+                    out[i] = match (survives, failed) {
+                        (true, _) => Outcome::Survives(d),
+                        (_, true) => Outcome::Failed,
+                        _ => Outcome::Vignetted,
+                    };
+                }
             }
         }
         if let Some(r) = result {
@@ -877,6 +957,9 @@ fn host_solve(
     // only on the device's results).
     let mut pending: Option<Block> = None;
     let mut device = true;
+    // Progress: a block's CPU solve and its assembly are half a block each.
+    let (mut halves, mut stage) = (0, "relative illumination");
+    let progress = |k: usize| k as f64 / (2 * blocks.len()) as f64;
     for block in blocks.iter().copied().chain(std::iter::once(&[][..])) {
         let next = if block.is_empty() {
             None
@@ -888,6 +971,11 @@ fn host_solve(
                 None
             };
             stages.plans += usize::from(submitted.is_some());
+            if submitted.is_some() {
+                stage = "geometry";
+            }
+            halves += 1;
+            ctx.report(progress(halves), stage);
             Some((block, solved, submitted))
         };
         if let Some((done, solved, submitted)) = pending.take() {
@@ -905,6 +993,8 @@ fn host_solve(
                 device = false;
             }
             stages.assembly_ms += clock.elapsed().as_secs_f64() * 1e3;
+            halves += 1;
+            ctx.report(progress(halves), stage);
         }
         pending = next;
     }

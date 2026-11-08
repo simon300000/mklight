@@ -465,22 +465,52 @@ fn integrate_field(
     let (probe, cra, cos4) = prepare_integral(rt, field, wl, q_scale)?;
     let q0 = source_params(&field.source);
     let j0inv = probe.x_q_inverse(q0, [0.0, 0.0])?;
-    let parts: Vec<(f64, f64, bool)> = nodes
+    let parts: Vec<(f64, bool, bool)> = nodes
         .par_iter()
-        .map(|&(px, py, w)| match probe.node(q0, &j0inv, [px, py]) {
-            Node::Ok(j) => (w * j, w, false),
-            Node::Vignetted => (0.0, 0.0, false),
-            Node::Failed => (0.0, 0.0, true),
+        .map(|&(px, py, _)| match probe.node(q0, &j0inv, [px, py]) {
+            Node::Ok(j) => (j, true, false),
+            Node::Vignetted => (0.0, false, false),
+            Node::Failed => (0.0, false, true),
         })
         .collect();
-    let omega: KahanSum = parts.iter().map(|p| p.0).collect();
-    let area: KahanSum = parts.iter().map(|p| p.1).collect();
+    Some(reduce_field(&parts, nodes, cra, cos4))
+}
+
+/// Nodes per parallel block of fields in [`illumination_rows`] (its
+/// cancellation and progress granularity).
+const FIELD_BLOCK_NODES: usize = 16384;
+
+/// [`integrate_field`] of a prepared image point: the same nodes and sums.
+fn integrate_image_point(
+    rt: &SequentialTracer,
+    ip: &ImagePoint,
+    wl: usize,
+    nodes: &[(f64, f64, f64)],
+    pupil: &[[f64; 2]],
+) -> ([f64; 4], usize) {
+    reduce_field(&field_nodes(rt, ip, wl, pupil), nodes, ip.cra, ip.cos4)
+}
+
+/// One field's weighted node sums in node order, from `(density, survives,
+/// failed)` per node: `(Ω_p, surviving share of the pupil area, chief
+/// angle, cos⁴)` and the number of failed nodes.
+fn reduce_field(
+    parts: &[(f64, bool, bool)],
+    nodes: &[(f64, f64, f64)],
+    cra: f64,
+    cos4: f64,
+) -> ([f64; 4], usize) {
+    let weighted = |(&(j, survives, _), n): (&(f64, bool, bool), &(f64, f64, f64))| {
+        if survives { (n.2 * j, n.2) } else { (0.0, 0.0) }
+    };
+    let omega: KahanSum = parts.iter().zip(nodes).map(|p| weighted(p).0).collect();
+    let area: KahanSum = parts.iter().zip(nodes).map(|p| weighted(p).1).collect();
     let total: KahanSum = nodes.iter().map(|n| n.2).collect();
     let failed = parts.iter().filter(|p| p.2).count();
-    Some((
+    (
         [omega.value(), area.value() / total.value(), cra, cos4],
         failed,
-    ))
+    )
 }
 
 /// The scale of the object parameters `q` for the difference steps: `|q|`
@@ -638,7 +668,8 @@ pub fn field_nodes(
 /// Reference decisions (`Ok` density, vignetted, failed) of selected nodes
 /// `(field point, node index)`, grouped by field: the f64 completion of
 /// device nodes that did not resolve. Returns `(density, survives, failed)`
-/// per entry, in input order.
+/// per entry, in input order. The groups run in parallel, and so do the
+/// nodes of each group.
 pub fn reference_nodes(
     rt: &SequentialTracer,
     wl: usize,
@@ -647,25 +678,35 @@ pub fn reference_nodes(
     selected: &[([f64; 2], usize)],
     ctx: &JobContext,
 ) -> MkResult<Vec<(f64, bool, bool)>> {
-    let mut out = vec![(0.0, false, true); selected.len()];
+    let mut groups = Vec::new();
     let mut start = 0;
     while start < selected.len() {
-        ctx.check()?;
         let point = selected[start].0;
         let mut end = start + 1;
         while end < selected.len() && selected[end].0 == point {
             end += 1;
         }
-        if let Ok(ip) = image_point(rt, point, wl, q_scale) {
-            let pupil: Vec<[f64; 2]> = selected[start..end]
-                .iter()
-                .map(|&(_, k)| [nodes[k].0, nodes[k].1])
-                .collect();
-            out[start..end].copy_from_slice(&field_nodes(rt, &ip, wl, &pupil));
-        }
+        groups.push(start..end);
         start = end;
     }
-    Ok(out)
+    let decided: Vec<Vec<(f64, bool, bool)>> = groups
+        .into_par_iter()
+        .map(|range| {
+            ctx.check()?;
+            let group = &selected[range];
+            Ok(match image_point(rt, group[0].0, wl, q_scale) {
+                Ok(ip) => {
+                    let pupil: Vec<[f64; 2]> = group
+                        .iter()
+                        .map(|&(_, k)| [nodes[k].0, nodes[k].1])
+                        .collect();
+                    field_nodes(rt, &ip, wl, &pupil)
+                }
+                Err(_) => vec![(0.0, false, true); group.len()],
+            })
+        })
+        .collect::<MkResult<_>>()?;
+    Ok(decided.concat())
 }
 
 /// Selective reference decisions for unresolved resident nodes. The result
@@ -692,50 +733,58 @@ pub(crate) fn polish_illumination_nodes(
     let (rx, rw) = gauss_legendre_01(radial);
     let per = radial * azimuth;
     let dphi = 2.0 * PI / azimuth as f64;
-    let mut result = Vec::with_capacity(indices.len());
+    // Runs of indices of one field; the fields run in parallel, and so do
+    // the nodes of each field.
+    let mut groups = Vec::new();
     let mut start = 0;
     while start < indices.len() {
-        ctx.check()?;
         let fi = indices[start] as usize / per;
         let mut end = start + 1;
         while end < indices.len() && indices[end] as usize / per == fi {
             end += 1;
         }
-        let xy = coordinates[fi];
-        let field = rt.prepare_field(FieldPoint::normalized(xy[0], xy[1])).ok();
-        let prepared = field
-            .as_ref()
-            .and_then(|f| prepare_integral(rt, f, wl, q_scale));
-        let state = prepared.as_ref().and_then(|(probe, _, _)| {
-            let q0 = source_params(&probe.base.source);
-            Some((q0, probe.x_q_inverse(q0, [0.0; 2])?))
-        });
-        for &index in &indices[start..end] {
-            ctx.check()?;
-            let k = index as usize % per;
-            let r = k / azimuth;
-            let a = k % azimuth;
-            let (sn, cs) = (a as f64 * dphi).sin_cos();
-            let weight = (rw[r] * rx[r] * dphi) as f32 as f64;
-            let node = match (&prepared, &state) {
-                (Some((probe, _, _)), Some((q0, inverse))) => {
-                    probe.node(*q0, inverse, [rx[r] * cs, rx[r] * sn])
-                }
-                _ => Node::Failed,
-            };
-            result.push(match node {
-                Node::Ok(j) => (index, [weight * j, weight], false),
-                Node::Vignetted => (index, [0.0; 2], false),
-                Node::Failed => (index, [0.0; 2], true),
-            });
-            ctx.report(
-                result.len() as f64 / indices.len() as f64,
-                "RI reference polish",
-            );
-        }
+        groups.push(start..end);
         start = end;
     }
-    Ok(result)
+    let groups: Vec<Vec<(u32, [f64; 2], bool)>> = groups
+        .into_par_iter()
+        .map(|range| {
+            ctx.check()?;
+            let group = &indices[range];
+            let xy = coordinates[group[0] as usize / per];
+            let field = rt.prepare_field(FieldPoint::normalized(xy[0], xy[1])).ok();
+            let prepared = field
+                .as_ref()
+                .and_then(|f| prepare_integral(rt, f, wl, q_scale));
+            let state = prepared.as_ref().and_then(|(probe, _, _)| {
+                let q0 = source_params(&probe.base.source);
+                Some((q0, probe.x_q_inverse(q0, [0.0; 2])?))
+            });
+            Ok(group
+                .par_iter()
+                .map(|&index| {
+                    let k = index as usize % per;
+                    let r = k / azimuth;
+                    let a = k % azimuth;
+                    let (sn, cs) = (a as f64 * dphi).sin_cos();
+                    let weight = (rw[r] * rx[r] * dphi) as f32 as f64;
+                    let node = match (&prepared, &state) {
+                        (Some((probe, _, _)), Some((q0, inverse))) => {
+                            probe.node(*q0, inverse, [rx[r] * cs, rx[r] * sn])
+                        }
+                        _ => Node::Failed,
+                    };
+                    match node {
+                        Node::Ok(j) => (index, [weight * j, weight], false),
+                        Node::Vignetted => (index, [0.0; 2], false),
+                        Node::Failed => (index, [0.0; 2], true),
+                    }
+                })
+                .collect())
+        })
+        .collect::<MkResult<_>>()?;
+    ctx.report(1.0, "RI reference polish");
+    Ok(groups.concat())
 }
 
 /// Relative illumination and vignetting vs field (module docs).
@@ -779,57 +828,48 @@ pub fn illumination_rows(
     check_count("azimuth samples", azimuth_samples, 4, 4096)?;
     let rt = real_aimed(tracer)?;
     let rt = rt.as_ref();
-    let (rx, rw) = gauss_legendre_01(radial_samples);
-    let m = azimuth_samples;
-    let dphi = 2.0 * PI / m as f64;
-    let mut nodes = Vec::with_capacity(rx.len() * m);
-    for (r, w) in rx.iter().zip(&rw) {
-        for j in 0..m {
-            let (s, c) = (j as f64 * dphi).sin_cos();
-            nodes.push((r * c, r * s, w * r * dphi));
-        }
-    }
-    // Scale of the object parameters `q` for the difference steps.
-    let q_scale = rt
-        .prepare_field(FieldPoint::normalized(0.0, 1.0))
-        .map(|f| {
-            let q = source_params(&f.source);
-            q[0].hypot(q[1])
-        })
-        .unwrap_or(0.0)
-        .max(1e-3);
-    let mut rows = Vec::with_capacity(coordinates.len());
-    for (k, &[hx, hy]) in coordinates.iter().enumerate() {
-        ctx.check()?;
-        let row = match rt.prepare_field(FieldPoint::normalized(hx, hy)) {
-            Ok(f) if f.aims[wl].converged => match integrate_field(rt, &f, wl, &nodes, q_scale) {
-                Some((row, failed)) => {
-                    if failed > 0 {
-                        warnings.push(format!(
-                            "field ({hx}, {hy}): {failed} of {} pupil nodes have no ray \
-                             through the image point",
-                            nodes.len()
-                        ));
-                    }
-                    row
-                }
-                None => {
-                    warnings.push(format!(
-                        "field ({hx}, {hy}): chief ray or its object Jacobian failed"
-                    ));
-                    [f64::NAN; 4]
-                }
-            },
-            _ => {
-                warnings.push(format!("field ({hx}, {hy}): chief ray could not be aimed"));
-                [f64::NAN; 4]
-            }
-        };
-        rows.push(row);
+    let nodes = pupil_nodes(radial_samples, azimuth_samples);
+    let pupil: Vec<[f64; 2]> = nodes.iter().map(|n| [n.0, n.1]).collect();
+    let q_scale = q_scale(rt);
+    // Fields in parallel blocks of about `FIELD_BLOCK_NODES` nodes, each
+    // field's nodes in parallel too (nested). Every field sums its own nodes
+    // in node order, so the rows do not depend on the scheduling.
+    let block = (FIELD_BLOCK_NODES / nodes.len()).max(1);
+    let mut fields: Vec<Result<([f64; 4], usize), ImagePointError>> =
+        Vec::with_capacity(coordinates.len());
+    for chunk in coordinates.chunks(block) {
+        let done: Vec<_> = chunk
+            .par_iter()
+            .map(|&p| {
+                ctx.check()?;
+                Ok(image_point(rt, p, wl, q_scale)
+                    .map(|ip| integrate_image_point(rt, &ip, wl, &nodes, &pupil)))
+            })
+            .collect::<MkResult<_>>()?;
+        fields.extend(done);
         ctx.report(
-            (k + 1) as f64 / coordinates.len() as f64,
+            fields.len() as f64 / coordinates.len() as f64,
             "relative illumination",
         );
+    }
+    let mut rows = Vec::with_capacity(coordinates.len());
+    for (&[hx, hy], field) in coordinates.iter().zip(fields) {
+        rows.push(match field {
+            Ok((row, failed)) => {
+                if failed > 0 {
+                    warnings.push(format!(
+                        "field ({hx}, {hy}): {failed} of {} pupil nodes have no ray \
+                         through the image point",
+                        nodes.len()
+                    ));
+                }
+                row
+            }
+            Err(e) => {
+                warnings.push(e.warning(hx, hy));
+                [f64::NAN; 4]
+            }
+        });
     }
     let omega0 = match coordinates.iter().position(|p| *p == [0.0; 2]) {
         Some(k) => rows[k][0],

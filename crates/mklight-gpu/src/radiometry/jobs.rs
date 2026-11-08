@@ -4,6 +4,7 @@ use super::*;
 use crate::{ComputeBackend, Df32, PackedSystem, aiming};
 use mklight_core::{JobContext, job::RunInfo};
 use mklight_trace::{FieldPoint, PolarizationState, PreparedField, SequentialTracer};
+use rayon::prelude::*;
 
 /// Completed backend rows, borrowed in place unless reference completion
 /// requires a mutable working copy. The view pins its storage independently
@@ -269,44 +270,56 @@ pub(super) fn pupil_mode(
     let rows: &[PolarizationValue] = bytemuck::cast_slice(guard.words());
     let mut values = Vec::with_capacity(rows.len());
     let mut trace_status = status.to_vec();
-    let mut fallback = 0;
+    // The rows the device could not decide, traced by the reference in
+    // parallel, then merged in input order.
+    ctx.check()?;
+    let reference: Vec<usize> = (0..rows.len())
+        .filter(|&i| {
+            rows[i].status == crate::consts::MKL_RAD_REFERENCE || aim_failed(trace_status[i])
+        })
+        .collect();
+    let opts = mklight_trace::TraceOptions {
+        clip,
+        ..t.options()
+    };
+    let completed: Vec<(PolarizationValue, u32)> = reference
+        .par_iter()
+        .map(|&i| {
+            let ray = t.trace_polarized(&field, wl, points[i][0], points[i][1], &opts);
+            (
+                reference_value(&ray, state),
+                reference_status(&ray.trace.status),
+            )
+        })
+        .collect();
+    ctx.check()?;
+    let fallback = reference.len();
+    let mut next = reference.iter().zip(&completed).peekable();
     for (i, v) in rows.iter().enumerate() {
         if i % 256 == 0 {
-            ctx.check()?;
             ctx.report(
                 0.9 + 0.09 * i as f64 / rows.len() as f64,
                 "polarization assembly",
             );
         }
-        if v.status == crate::consts::MKL_RAD_REFERENCE || aim_failed(trace_status[i]) {
-            ctx.check()?;
-            let ray = t.trace_polarized(
-                &field,
-                wl,
-                points[i][0],
-                points[i][1],
-                &mklight_trace::TraceOptions {
-                    clip,
-                    ..t.options()
-                },
-            );
-            let value = reference_value(&ray, state);
-            if !value
-                .jones
-                .iter()
-                .chain(&value.proper)
-                .chain(&value.fields)
-                .chain(&value.power)
-                .chain(&value.properties)
-                .all(|v| v.is_finite())
-            {
-                return Err(bad("nonfinite f64 polarization fallback"));
+        match next.peek() {
+            Some(&(&ri, &(value, s))) if ri == i => {
+                if !value
+                    .jones
+                    .iter()
+                    .chain(&value.proper)
+                    .chain(&value.fields)
+                    .chain(&value.power)
+                    .chain(&value.properties)
+                    .all(|v| v.is_finite())
+                {
+                    return Err(bad("nonfinite f64 polarization fallback"));
+                }
+                values.push(value);
+                trace_status[i] = s;
+                next.next();
             }
-            values.push(value);
-            trace_status[i] = reference_status(&ray.trace.status);
-            fallback += 1;
-        } else {
-            values.push(*v);
+            _ => values.push(*v),
         }
     }
     if fallback > 0 {
@@ -564,6 +577,7 @@ pub fn system_transmission(
     );
     run_info.settings["p7_runs"] = serde_json::json!(runs);
     run_info.settings["fieldmaps_variant"] = serde_json::json!(design.1);
+    run_info.settings["cpu_threads"] = crate::cpu_share::evidence();
     ctx.check()?;
     ctx.report(1., "transmission complete");
     Ok(TransmissionResult {

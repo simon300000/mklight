@@ -716,11 +716,14 @@ together whatever stage they are in:
   then either the survival ray and the eight differentiation rays (full
   mode) or nine pencil tasks for `mkl_geometry_ri_rays` (Newton-only mode).
 
-The double-float trace of aspheric systems resolves image points only to
-about 1e-7 mm (f32 decisions inside the asphere intersections), so the
-device accepts a stop aim that stalls within the reference's own aim
-tolerance clamped to [1e-10, 1e-9] of the stop radius, and an image point
-that stalls within 1000 image-point tolerances; a chord step that shrinks
+With the f32 even-asphere slope (`trace_slope=f32`, the trace before
+stream A's fix) the double-float trace of aspheric systems resolved image
+points only to about 1e-7 mm; with the default double-float slope it
+follows the f64 trace to about 1e-12 mm, and on the wide-angle aspheric
+samples the device now leaves 0–23 of 6336 nodes to the reference instead
+of 1700–5000. The device still accepts a stop aim that stalls within the
+reference's own aim tolerance clamped to [1e-10, 1e-9] of the stop radius,
+and an image point that stalls within 1000 image-point tolerances; a chord step that shrinks
 a residual less than 4× refreshes its Jacobian; a ray or node that does not
 finish within its trace budget (48 traces, 16 for a pencil ray seeded with
 a converged aim; 192 per node) fails on the device. Failed device nodes are
@@ -736,7 +739,27 @@ per-field Kahan sums in f64, in the reference's node order and weights.
 | `split` | node kernel (Newton only) writes the pencils, a flat ray pass traces them (9 rays per node, one thread each) in the same plan; host determinants and sums |
 | `hybrid` | the CPU solves the image points (the reference's Newton, bitwise, all cores), the flat ray pass traces the pencils; a pencil the device leaves undecided is finished by the rest of the reference node from the CPU's solve (`illumination::finish_nodes`) |
 | `pipelined` (default) | the hybrid in field blocks (about six, at least 2048 nodes each): the GPU traces block k while the CPU solves block k+1; once a block's pencils are mostly undecided, the CPU finishes the blocks not yet submitted |
-| `shared` | the CPU (reference nodes, a field at a time from the back) and the GPU (`split`, field blocks from the front) drain one queue; which fields each takes depends on timing, so results are not bitwise repeatable (measurement only, GPU.md §9.3) |
+| `shared` | the CPU (reference nodes, about 2048 nodes' worth of fields at a time from the back) and the GPU (`split`, field blocks from the front) drain one queue; which fields each takes depends on timing, so results are not bitwise repeatable (measurement only, GPU.md §9.3) |
+
+The reference (`illumination::illumination_rows`, shared by the curve, the
+map and image simulation) runs its fields in parallel blocks of about
+16384 nodes and the nodes of each field in parallel too; every field sums
+its own nodes in node order, so the rows are bitwise those of a serial run
+(cancellation is checked per field). The hybrids' CPU stages run the same
+way: a block's fields and their nodes in parallel, and the CPU finishing of
+undecided pencils across fields. All designs report their progress from the
+host side with stage `geometry` once device work has started (the
+`pipelined` and `hybrid` pencil plans share the job's cancellation but not
+its progress, since their CPU solves and plans overlap).
+
+**CPU share thread budget** (study key `fieldmaps_threads`). The CPU work
+inside the hybrids (the `hybrid`/`pipelined` solves and finishing, the
+`shared` CPU fields; for the transmission the `cpu-aim`/`pipelined` host
+aims and reference completion and the `shared` CPU rows) uses the global
+rayon pool by default; `fieldmaps_threads=N` gives it a pool of `N`
+threads of its own (`mklight_gpu::cpu_share`), leaving the other cores to
+the threads that feed the GPU. The budget is recorded as `cpu_threads`
+(`ri_stages` or the transmission's settings) and never changes a result.
 
 **Chief-ray maps.** `chief_ray_angle`, `pupil_aberration`,
 `grid_distortion` and `field_curvature_distortion` need one aimed chief per
@@ -748,7 +771,8 @@ completed by the reference); `cpu` runs the reference path; `sized` runs
 and `host-chief` above (a size rule for `auto`, measured as a design, since
 an explicit GPU request must run natively). The reference itself solves and traces the fields of these maps in
 parallel (blocks of 256 fields; grid distortion in blocks of about 1024
-points), with unchanged results.
+points; the field curvature all its (wavelength, field) rows at once), with
+unchanged results.
 
 System transmission and the polarisation pupil map are described in
 POLARIZATION.md §9.
