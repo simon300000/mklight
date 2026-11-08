@@ -280,3 +280,459 @@ MklDf b=vd(dir,w),zxp=geo_d(meta,3ul*j),corr=b;
 kernel void mkl_geometry_focus_terms(device const float2* p [[buffer(0)]],device const uint* mask [[buffer(1)]],device const float2* qm [[buffer(2)]],device const float2* tm [[buffer(3)]],device float2* out [[buffer(4)]],constant MklGeometryParams& params [[buffer(7)]],uint tid [[thread_position_in_grid]]){
     uint i=params.offset+tid;if(tid>=params.count)return;uint n=params.stride;for(uint k=0;k<3;++k)out[ulong(k)*n+i]=float2(0);if(mask[i]==0)return;ulong row=ulong(i/params.segment)*10;MklDf q[2],t[2];for(uint k=0;k<2;++k){q[k]=geo_d(p,ulong(k)*n+i)-(params.centroid?geo_d(qm,row+2+k):geo_c(0));t[k]=geo_d(p,ulong(k+2)*n+i)-(params.centroid?geo_d(tm,row+2+k):geo_c(0));}MklDf w=geo_d(p,4ul*n+i);out[i]=((q[0]*q[0]+q[1]*q[1])*w).v;out[ulong(n)+i]=((q[0]*t[0]+q[1]*t[1])*w).v;out[2ul*n+i]=((t[0]*t[0]+t[1]*t[1])*w).v;
 }
+
+// ---- Restructured image-point illumination (mklight_gpu::geometry::ri) ----
+// Field data comes from the host (MklRiField). Each thread runs a state
+// machine whose every step is one trace from a single call site, so the
+// threads of a SIMD group trace together whatever stage they are in.
+static inline MklDf ri_ld(device const float* p, uint k) { return mkl_parts<MklDf>(p[2 * k], p[2 * k + 1]); }
+struct RiM { MklDf v[2][2]; };
+static inline RiM ri_m(device const float* p) { return {{{ri_ld(p, 0), ri_ld(p, 1)}, {ri_ld(p, 2), ri_ld(p, 3)}}}; }
+static inline bool ri_inverse(RiM a, thread RiM& out) {
+    MklDf d = a.v[0][0] * a.v[1][1] - a.v[0][1] * a.v[1][0];
+    if (!isfinite(d.v.x) || d.v.x == 0.0f) return false;
+    out = {{{a.v[1][1] / d, -a.v[0][1] / d}, {-a.v[1][0] / d, a.v[0][0] / d}}};
+    return true;
+}
+static inline RiM ri_mul(RiM a, RiM b) {
+    RiM o;
+    for (uint i = 0; i < 2; ++i) for (uint j = 0; j < 2; ++j) o.v[i][j] = a.v[i][0] * b.v[0][j] + a.v[i][1] * b.v[1][j];
+    return o;
+}
+static inline MklDf ri_norm(MklDf a, MklDf b) { return mkl_sqrt(a * a + b * b); }
+// Stop target of pupil point (p0, p1), vignetting applied.
+static inline void ri_target(device const MklAimField& f, MklDf p0, MklDf p1, thread MklDf& t0, thread MklDf& t1) {
+    t0 = (ri_ld(f.vignette, 0) + (geo_c(1) - ri_ld(f.vignette, 2)) * p0) * ri_ld(f.pupil, 2);
+    t1 = (ri_ld(f.vignette, 1) + (geo_c(1) - ri_ld(f.vignette, 3)) * p1) * ri_ld(f.pupil, 2);
+}
+// The starting ray of object parameters q and aim point a (GeoRiProbe::initial).
+static inline bool ri_initial(constant MklPackedSurface* s, constant float* pool, device const MklAimField& f,
+    MklDf q0, MklDf q1, MklDf a0, MklDf a1, thread MklRawState& out) {
+    bool finite = (f.flags & MKL_AIM_FINITE) != 0, tele = (f.flags & MKL_AIM_TELECENTRIC) != 0;
+    MklDf z = ri_ld(f.pupil, 0);
+    GeoV pos, dir;
+    if (!finite) {
+        dir = vu(gv(q0, q1, geo_c(1)));
+        GeoV ap = gv(a0, a1, z);
+        pos = vb(ap, vs(dir, vd(ap, dir)));
+    } else {
+        MklJet<MklDf> v;
+        uint shape = s[0].shape == MKL_SHAPE_DIFFRACTIVE ? uint(mkl_surface_data(s[0], pool)[2 * MKL_COEFF_KIND]) : s[0].shape;
+        bool ok = (s[0].flags & MKL_SURF_HAS_SAG_OVERLAY) != 0 ? mkl_surface_eval<true>(s[0], pool, q0, q1, v)
+            : (shape <= MKL_SHAPE_COORD_BREAK ? mkl_legacy_sag(s[0], q0, q1, v) : mkl_surface_eval<false>(s[0], pool, q0, q1, v));
+        if (!ok) return false;
+        pos = gv(q0, q1, v.v);
+        if (tele) {
+            GeoV d = vu(gv(a0, a1, geo_c(1))), o;
+            for (uint k = 0; k < 3; ++k) { GeoV r; for (uint j = 0; j < 3; ++j) r.v[j] = ri_ld(f.rotation, 3 * j + k); o.v[k] = vd(r, d); }
+            dir = o;
+        } else {
+            GeoV ap = gv(a0, a1, z), a, o;
+            for (uint k = 0; k < 3; ++k) a.v[k] = ap.v[k] - ri_ld(f.origin, k);
+            for (uint k = 0; k < 3; ++k) { GeoV r; for (uint j = 0; j < 3; ++j) r.v[j] = ri_ld(f.rotation, 3 * j + k); o.v[k] = vd(r, a); }
+            dir = vu(vb(o, pos));
+            GeoV r = gv(ri_ld(f.rotation, 6), ri_ld(f.rotation, 7), ri_ld(f.rotation, 8));
+            MklDf rz = vd(r, dir);
+            if (mkl_zero(rz)) return false;
+            if (rz.v.x < 0) dir = vs(dir, geo_c(-1));
+        }
+    }
+    out = {};
+    out.weight = 1;
+    for (uint k = 0; k < 3; ++k) { out.pos.v[k] = pos.v[k].v; out.dir.v[k] = dir.v[k].v; }
+    return true;
+}
+#define RI_EVAL 0u
+#define RI_FD 1u
+#define RI_BACK 2u
+#define RI_FINAL 3u
+#define RI_DONE 4u
+// Resumable aimed ray (q, P): stop solve, then the image trace (ri::AimMachine).
+struct RiAim {
+    MklDf q[2], target[2], goal[2], a[2], r[2], rn, prev, da[2], alpha, plus[2];
+    RiM inverse, j;
+    MklDf x[4];
+    uint it, sub, phase, iterations, status, traces;
+    int stage;
+    bool clip, ok;
+};
+static inline RiAim ri_aim(device const MklRiField& f, MklDf q0, MklDf q1, MklDf p0, MklDf p1, bool clip,
+    bool seeded, MklDf s0, MklDf s1, bool aimed) {
+    RiAim m;
+    m.q[0] = q0; m.q[1] = q1; m.clip = clip;
+    ri_target(f.aim, p0, p1, m.target[0], m.target[1]);
+    m.goal[0] = m.target[0]; m.goal[1] = m.target[1];
+    m.inverse = ri_m(f.aim_inverse);
+    if (seeded) { m.a[0] = s0; m.a[1] = s1; }
+    else {
+        for (uint k = 0; k < 2; ++k) m.a[k] = ri_ld(f.chief, k) + (m.inverse.v[k][0] * m.target[0] + m.inverse.v[k][1] * m.target[1]);
+    }
+    m.r[0] = geo_c(0); m.r[1] = geo_c(0); m.rn = geo_c(0);
+    m.prev = geo_c(INFINITY);
+    m.da[0] = geo_c(0); m.da[1] = geo_c(0); m.alpha = geo_c(1);
+    m.plus[0] = geo_c(0); m.plus[1] = geo_c(0);
+    m.j = {{{geo_c(0), geo_c(0)}, {geo_c(0), geo_c(0)}}};
+    for (uint k = 0; k < 4; ++k) m.x[k] = geo_c(0);
+    m.it = 0; m.sub = 0; m.stage = -1; m.phase = aimed ? RI_FINAL : RI_EVAL; m.iterations = 0; m.traces = 0;
+    m.status = MKL_AIM_FAILED; m.ok = false;
+    return m;
+}
+static inline MklDf ri_step(device const MklRiField& f) { return geo_c(1e-6f) * ri_ld(f.aim.pupil, 1); }
+// What the machine traces next: aim point, last surface, clipping.
+static inline void ri_request(thread const RiAim& m, device const MklRiField& f, constant MklPackedHeader& h,
+    thread MklDf& a0, thread MklDf& a1, thread uint& last, thread bool& clip) {
+    a0 = m.a[0]; a1 = m.a[1]; last = h.stop; clip = false;
+    if (m.phase == RI_FD) {
+        MklDf s = ri_step(f);
+        bool plus = m.sub % 2 == 0;
+        if (m.sub < 2) a0 = plus ? m.a[0] + s : m.a[0] - s;
+        else a1 = plus ? m.a[1] + s : m.a[1] - s;
+    } else if (m.phase == RI_BACK) {
+        a0 = m.a[0] - m.da[0] * m.alpha;
+        a1 = m.a[1] - m.da[1] * m.alpha;
+    } else if (m.phase == RI_FINAL) {
+        last = h.num_surfaces - 1;
+        clip = m.clip;
+    }
+}
+static inline void ri_restart(thread RiAim& m, device const MklRiField& f) {
+    m.inverse = ri_m(f.aim_inverse); m.prev = geo_c(INFINITY); m.it = 0; m.phase = RI_EVAL;
+}
+static inline void ri_failed(thread RiAim& m, device const MklRiField& f) {
+    if (m.stage < 0) {
+        m.stage = 0;
+        m.a[0] = ri_ld(f.chief, 0); m.a[1] = ri_ld(f.chief, 1);
+        m.goal[0] = m.target[0] * geo_c(0); m.goal[1] = m.target[1] * geo_c(0);
+        ri_restart(m, f);
+    } else {
+        m.phase = RI_DONE;
+    }
+}
+static inline void ri_succeeded(thread RiAim& m, device const MklRiField& f) {
+    if (m.stage < 0 || m.stage == 4) { m.phase = RI_FINAL; return; }
+    m.stage += 1;
+    MklDf fraction = geo_c(0.25f * float(m.stage));
+    m.goal[0] = m.target[0] * fraction; m.goal[1] = m.target[1] * fraction;
+    ri_restart(m, f);
+}
+static inline void ri_newton(thread RiAim& m) {
+    m.prev = m.rn;
+    for (uint k = 0; k < 2; ++k) m.da[k] = m.inverse.v[k][0] * m.r[0] + m.inverse.v[k][1] * m.r[1];
+    m.alpha = geo_c(1); m.sub = 0; m.phase = RI_BACK;
+}
+static inline bool ri_floored(thread const RiAim& m, device const MklRiField& f) {
+    return (m.rn - geo_c(f.aim_floor) * ri_ld(f.aim.pupil, 2)).v.x <= 0;
+}
+// A solve that cannot step further: accepted within the floor.
+// Stuck below 1e-6 of the stop radius (ri::AIM_NOISE): trace noise, the ray fails at once.
+static inline void ri_ended(thread RiAim& m, device const MklRiField& f) {
+    if (ri_floored(m, f)) ri_succeeded(m, f);
+    else if ((m.rn - geo_c(1e-6f) * ri_ld(f.aim.pupil, 2)).v.x <= 0) m.phase = RI_DONE;
+    else ri_failed(m, f);
+}
+static inline void ri_check(thread RiAim& m, device const MklRiField& f) {
+    if (m.it >= 60u) { ri_ended(m, f); return; }
+    MklDf tol = geo_c(1e-12f) * ri_ld(f.aim.pupil, 2);
+    if ((m.rn - tol).v.x <= 0) { ri_succeeded(m, f); return; }
+    if ((m.rn - geo_c(0.25f) * m.prev).v.x > 0) {
+        // Stalled: at the trace's noise floor, accept; else refresh.
+        if (ri_floored(m, f)) { ri_succeeded(m, f); return; }
+        m.phase = RI_FD; m.sub = 0; return;
+    }
+    ri_newton(m);
+}
+// Advance with the outcome (status code, final state) of the request's trace.
+static inline void ri_advance(thread RiAim& m, device const MklRiField& f, uint code, thread const MklRawState& hit) {
+    bool ok = code == 0u;
+    MklDf pos0 = MklDf{hit.pos.v[0]}, pos1 = MklDf{hit.pos.v[1]};
+    if (m.phase == RI_EVAL) {
+        if (!ok) { ri_failed(m, f); return; }
+        m.r[0] = pos0 - m.goal[0]; m.r[1] = pos1 - m.goal[1];
+        m.rn = ri_norm(m.r[0], m.r[1]);
+        ri_check(m, f);
+    } else if (m.phase == RI_FD) {
+        if (!ok) { ri_failed(m, f); return; }
+        if (m.sub % 2 == 0) { m.plus[0] = pos0; m.plus[1] = pos1; }
+        else {
+            MklDf s = ri_step(f);
+            MklDf c0 = (m.plus[0] - pos0) / (geo_c(2) * s), c1 = (m.plus[1] - pos1) / (geo_c(2) * s);
+            if (m.sub < 2) { m.j.v[0][0] = c0; m.j.v[1][0] = c1; } else { m.j.v[0][1] = c0; m.j.v[1][1] = c1; }
+        }
+        m.sub += 1;
+        if (m.sub == 4) {
+            RiM inv;
+            if (ri_inverse(m.j, inv)) { m.inverse = inv; ri_newton(m); }
+            else ri_failed(m, f);
+        }
+    } else if (m.phase == RI_BACK) {
+        bool accepted = false;
+        MklDf e0 = geo_c(0), e1 = geo_c(0), en = geo_c(0);
+        if (ok) {
+            e0 = pos0 - m.goal[0]; e1 = pos1 - m.goal[1];
+            en = ri_norm(e0, e1);
+            accepted = (en - m.rn).v.x < 0;
+        }
+        if (accepted) {
+            m.a[0] = m.a[0] - m.da[0] * m.alpha; m.a[1] = m.a[1] - m.da[1] * m.alpha;
+            m.r[0] = e0; m.r[1] = e1; m.rn = en;
+            m.it += 1; m.iterations += 1;
+            ri_check(m, f);
+        } else {
+            m.alpha = m.alpha * geo_c(0.5f);
+            m.sub += 1;
+            if (m.sub == 12u) ri_ended(m, f);
+        }
+    } else if (m.phase == RI_FINAL) {
+        m.phase = RI_DONE;
+        m.status = code;
+        m.ok = ok;
+        if (ok) {
+            GeoV d;
+            for (uint k = 0; k < 3; ++k) d.v[k] = MklDf{hit.dir.v[k]};
+            GeoV b0 = gv(ri_ld(f.basis, 0), ri_ld(f.basis, 1), ri_ld(f.basis, 2));
+            GeoV b1 = gv(ri_ld(f.basis, 3), ri_ld(f.basis, 4), ri_ld(f.basis, 5));
+            m.x[0] = pos0; m.x[1] = pos1; m.x[2] = vd(d, b0); m.x[3] = vd(d, b1);
+        }
+    }
+}
+// ri_advance, then the ray's trace budget (ri::RAY_TRACES = 48): an unfinished stop solve fails.
+static inline void ri_feed(thread RiAim& m, device const MklRiField& f, uint code, thread const MklRawState& hit) {
+    ri_advance(m, f, code, hit);
+    m.traces += 1;
+    if (m.phase != RI_DONE && m.phase != RI_FINAL && m.traces >= 48u) m.phase = RI_DONE;
+}
+// The one trace of a machine step; returns its status (MKL_AIM_INVALID without a starting ray).
+static inline uint ri_trace(constant MklPackedHeader& h, constant MklPackedSurface* s, constant float* pool,
+    constant MklTraceParams* newton, device const MklRiField& f, MklDf q0, MklDf q1, MklDf a0, MklDf a1, uint last,
+    bool clip, thread MklRawState& out) {
+    MklRawState ray;
+    if (!ri_initial(s, pool, f.aim, q0, q1, a0, a1, ray)) { out = {}; return MKL_AIM_INVALID; }
+    MklNoRecords rec;
+    out = mkl_trace_raw<true>(h, s, pool, nullptr, newton[clip ? 1 : 0], last, f.aim.wavelength, ray, rec);
+    return out.status;
+}
+// Field row checks shared by both kernels; MKL_RAY_OK when usable.
+static inline uint ri_field_check(constant MklPackedHeader* headers, device const MklRiField* fields, uint field,
+    constant MklGeometryParams& p) {
+    if (field >= p.chiefs) return MKL_AIM_INVALID;
+    device const MklRiField& f = fields[field];
+    if (f.aim.system >= p.systems) return MKL_AIM_INVALID;
+    constant MklPackedHeader& h = headers[f.aim.system];
+    if (h.num_surfaces != p.segment || f.aim.wavelength >= h.num_wavelengths) return MKL_AIM_INVALID;
+    return MKL_RAY_OK;
+}
+static inline void ri_write_df(thread float* o, MklDf v) { o[0] = v.v.x; o[1] = v.v.y; }
+static inline void ri_write_df(device float* o, MklDf v) { o[0] = v.v.x; o[1] = v.v.y; }
+kernel void mkl_geometry_ri_rays(constant MklPackedHeader* headers [[buffer(0)]], constant MklPackedSurface* surfaces [[buffer(1)]],
+    constant float* pool [[buffer(2)]], device const MklRiField* fields [[buffer(3)]], device const MklRiTask* tasks [[buffer(4)]],
+    device MklRiRay* out [[buffer(5)]], constant MklGeometryParams& p [[buffer(7)]], constant MklTraceParams* newton [[buffer(8)]],
+    uint tid [[thread_position_in_grid]]) {
+    uint i = p.offset + tid;
+    if (tid >= p.count) return;
+    MklRiTask task = tasks[i];
+    MklRiRay o = {};
+    o.status = ri_field_check(headers, fields, task.field, p);
+    if (o.status != MKL_RAY_OK) { out[i] = o; return; }
+    if ((task.flags & MKL_RI_SKIP) != 0) { o.status = MKL_AIM_OUTSIDE; out[i] = o; return; }
+    device const MklRiField& f = fields[task.field];
+    if (f.status != 0) { o.status = MKL_AIM_FIELD_UNREACHABLE; out[i] = o; return; }
+    constant MklPackedHeader& h = headers[f.aim.system];
+    constant MklPackedSurface* s = surfaces + h.surface_offset;
+    RiAim m = ri_aim(f, mkl_parts<MklDf>(task.q[0], task.q[1]), mkl_parts<MklDf>(task.q[2], task.q[3]),
+        mkl_parts<MklDf>(task.pupil[0], task.pupil[1]), mkl_parts<MklDf>(task.pupil[2], task.pupil[3]),
+        (task.flags & MKL_RI_CLIP) != 0, (task.flags & MKL_RI_SEEDED) != 0,
+        mkl_parts<MklDf>(task.seed[0], task.seed[1]), mkl_parts<MklDf>(task.seed[2], task.seed[3]),
+        (task.flags & MKL_RI_AIMED) != 0);
+    while (m.phase != RI_DONE) {
+        MklDf a0, a1; uint last; bool clip;
+        ri_request(m, f, h, a0, a1, last, clip);
+        MklRawState st;
+        uint code = ri_trace(h, s, pool, newton, f, m.q[0], m.q[1], a0, a1, last, clip, st);
+        ri_feed(m, f, code, st);
+    }
+    o.status = m.status;
+    o.iterations = m.iterations;
+    ri_write_df(o.aim, m.a[0]); ri_write_df(o.aim + 2, m.a[1]);
+    if (m.ok) {
+        ri_write_df(o.x, m.x[0]); ri_write_df(o.x + 2, m.x[1]);
+        ri_write_df(o.lm, m.x[2]); ri_write_df(o.lm + 2, m.x[3]);
+    }
+    out[i] = o;
+}
+#define RI_NODE_NEWTON 0u
+#define RI_NODE_REFRESH 1u
+#define RI_NODE_CLIP 2u
+#define RI_NODE_JACOBIAN 3u
+#define RI_NODE_DONE 4u
+// Stencil ray s about (q, P) with converged aim (ri::stencil): q0 q1 p0 p1 seed0 seed1.
+static inline void ri_stencil(device const MklRiField& f, MklDf p0, MklDf p1, MklDf q0, MklDf q1, MklDf a0, MklDf a1,
+    uint s, thread MklDf* out) {
+    uint k = s / 2;
+    bool plus = s % 2 == 0;
+    out[0] = q0; out[1] = q1; out[2] = p0; out[3] = p1; out[4] = a0; out[5] = a1;
+    if (k < 2) {
+        MklDf hq = ri_ld(f.hq, 0);
+        if (k == 0) out[0] = plus ? q0 + hq : q0 - hq;
+        else out[1] = plus ? q1 + hq : q1 - hq;
+    } else {
+        MklDf hp = mkl_parts<MklDf>(1e-4f, 2.526212488436659e-12f);
+        if (k == 2) out[2] = plus ? p0 + hp : p0 - hp;
+        else out[3] = plus ? p1 + hp : p1 - hp;
+        MklDf t0, t1, u0, u1;
+        ri_target(f.aim, p0, p1, t0, t1);
+        ri_target(f.aim, out[2], out[3], u0, u1);
+        RiM inv = ri_m(f.aim_inverse);
+        MklDf d0 = u0 - t0, d1 = u1 - t1;
+        out[4] = a0 + (inv.v[0][0] * d0 + inv.v[0][1] * d1);
+        out[5] = a1 + (inv.v[1][0] * d0 + inv.v[1][1] * d1);
+    }
+}
+static inline void ri_task(device MklRiTask& t, uint field, uint flags, MklDf q0, MklDf q1, MklDf p0, MklDf p1,
+    MklDf s0, MklDf s1) {
+    t.field = field; t.flags = flags;
+    ri_write_df(t.q, q0); ri_write_df(t.q + 2, q1);
+    ri_write_df(t.pupil, p0); ri_write_df(t.pupil + 2, p1);
+    ri_write_df(t.seed, s0); ri_write_df(t.seed + 2, s1);
+}
+// One pupil node (ri::node); p.centroid != 0: Newton only, writing the node's pencil tasks.
+kernel void mkl_geometry_ri_nodes(constant MklPackedHeader* headers [[buffer(0)]], constant MklPackedSurface* surfaces [[buffer(1)]],
+    constant float* pool [[buffer(2)]], device const MklRiField* fields [[buffer(3)]], device const MklAimSample* nodes [[buffer(4)]],
+    device float2* density [[buffer(5)]], device uint* status [[buffer(6)]], constant MklGeometryParams& p [[buffer(7)]],
+    constant MklTraceParams* newton [[buffer(8)]], device MklRiTask* pencils [[buffer(9)]], uint tid [[thread_position_in_grid]]) {
+    uint i = p.offset + tid;
+    if (tid >= p.count) return;
+    bool full = p.centroid == 0;
+    uint field = nodes[i].field;
+    MklDf p0 = mkl_parts<MklDf>(nodes[i].pupil[0], nodes[i].pupil[1]), p1 = mkl_parts<MklDf>(nodes[i].pupil[2], nodes[i].pupil[3]);
+    density[i] = float2(0);
+    status[i] = 1u;
+    bool solved = false;
+    MklDf q[2] = {geo_c(0), geo_c(0)}, aim[2] = {geo_c(0), geo_c(0)};
+    if (ri_field_check(headers, fields, field, p) == MKL_RAY_OK && fields[field].status == 0) {
+        device const MklRiField& f = fields[field];
+        constant MklPackedHeader& h = headers[f.aim.system];
+        constant MklPackedSurface* s = surfaces + h.surface_offset;
+        MklDf x0 = ri_ld(f.x0, 0), x1 = ri_ld(f.x0, 1), tol = ri_ld(f.tolerance, 0), hq = ri_ld(f.hq, 0);
+        MklDf hp = mkl_parts<MklDf>(1e-4f, 2.526212488436659e-12f);
+        q[0] = ri_ld(f.q0, 0); q[1] = ri_ld(f.q0, 1);
+        RiM ji = ri_m(f.q_inverse);
+        MklDf prev = geo_c(INFINITY), r[2] = {geo_c(0), geo_c(0)}, rn = geo_c(0), column[4];
+        MklDf j[4][4];
+        for (uint a = 0; a < 4; ++a) { column[a] = geo_c(0); for (uint b = 0; b < 4; ++b) j[a][b] = geo_c(0); }
+        uint it = 0, sub = 0, phase = RI_NODE_NEWTON, outcome = 1u, traces = 0;
+        bool has_aim = false;
+        RiM aim_inv = ri_m(f.aim_inverse);  // carried from ray to ray (ri::node)
+        RiAim m = ri_aim(f, q[0], q[1], p0, p1, false, false, geo_c(0), geo_c(0), false);
+        while (phase != RI_NODE_DONE) {
+            if (m.phase != RI_DONE) {
+                if (traces >= 192u) break;  // ri::NODE_TRACES
+                MklDf a0, a1; uint last; bool clip;
+                ri_request(m, f, h, a0, a1, last, clip);
+                MklRawState st;
+                uint code = ri_trace(h, s, pool, newton, f, m.q[0], m.q[1], a0, a1, last, clip, st);
+                ri_feed(m, f, code, st);
+                traces += 1;
+                continue;
+            }
+            if (phase == RI_NODE_NEWTON) {
+                if (!m.ok) break;
+                aim[0] = m.a[0]; aim[1] = m.a[1]; has_aim = true;
+                r[0] = m.x[0] - x0; r[1] = m.x[1] - x1;
+                rn = ri_norm(r[0], r[1]);
+                it += 1;
+                // Stall acceptance within 1000 tolerances (ri::NODE_FLOOR).
+                bool stalled = (rn - geo_c(0.25f) * prev).v.x > 0;
+                bool floored = (rn - geo_c(1000.0f) * tol).v.x <= 0;
+                if ((rn - tol).v.x <= 0 || (floored && (stalled || it >= 40u))) {
+                    if (!full) { outcome = 0u; solved = true; break; }
+                    phase = RI_NODE_CLIP;
+                } else if (it >= 40u) {
+                    break;
+                } else if (stalled) {
+                    phase = RI_NODE_REFRESH; sub = 0;
+                } else {
+                    prev = rn;
+                    MklDf d0 = ji.v[0][0] * r[0] + ji.v[0][1] * r[1], d1 = ji.v[1][0] * r[0] + ji.v[1][1] * r[1];
+                    q[0] = q[0] - d0; q[1] = q[1] - d1;
+                }
+            } else if (phase == RI_NODE_REFRESH) {
+                if (!m.ok) break;
+                if (sub % 2 == 0) { for (uint a = 0; a < 4; ++a) column[a] = m.x[a]; }
+                else {
+                    MklDf c0 = (column[0] - m.x[0]) / (geo_c(2) * hq), c1 = (column[1] - m.x[1]) / (geo_c(2) * hq);
+                    if (sub < 2) { j[0][0] = c0; j[1][0] = c1; } else { j[0][1] = c0; j[1][1] = c1; }
+                }
+                sub += 1;
+                if (sub == 4) {
+                    RiM inv;
+                    if (!ri_inverse(RiM{{{j[0][0], j[0][1]}, {j[1][0], j[1][1]}}}, inv)) break;
+                    ji = inv;
+                    prev = rn;
+                    MklDf d0 = ji.v[0][0] * r[0] + ji.v[0][1] * r[1], d1 = ji.v[1][0] * r[0] + ji.v[1][1] * r[1];
+                    q[0] = q[0] - d0; q[1] = q[1] - d1;
+                    phase = RI_NODE_NEWTON; sub = 0;
+                }
+            } else if (phase == RI_NODE_CLIP) {
+                if (!m.ok) { outcome = 2u; break; }
+                phase = RI_NODE_JACOBIAN; sub = 0;
+            } else {
+                if (!m.ok) break;
+                uint k = sub / 2;
+                if (sub % 2 == 0) { for (uint a = 0; a < 4; ++a) column[a] = m.x[a]; }
+                else {
+                    MklDf hh = k < 2 ? hq : hp;
+                    for (uint a = 0; a < 4; ++a) {
+                        MklDf v = (column[a] - m.x[a]) / (geo_c(2) * hh);
+                        if (k == 0) j[a][0] = v; else if (k == 1) j[a][1] = v; else if (k == 2) j[a][2] = v; else j[a][3] = v;
+                    }
+                }
+                sub += 1;
+                if (sub == 8) {
+                    RiM xq = {{{j[0][0], j[0][1]}, {j[1][0], j[1][1]}}}, xp = {{{j[0][2], j[0][3]}, {j[1][2], j[1][3]}}};
+                    RiM lq = {{{j[2][0], j[2][1]}, {j[3][0], j[3][1]}}}, lp = {{{j[2][2], j[2][3]}, {j[3][2], j[3][3]}}}, xi;
+                    if (ri_inverse(xq, xi)) {
+                        RiM corr = ri_mul(lq, ri_mul(xi, xp)), d;
+                        for (uint a = 0; a < 2; ++a) for (uint b = 0; b < 2; ++b) d.v[a][b] = lp.v[a][b] - corr.v[a][b];
+                        MklDf det = d.v[0][0] * d.v[1][1] - d.v[0][1] * d.v[1][0];
+                        density[i] = (det.v.x < 0 ? -det : det).v;
+                        outcome = 0u;
+                    }
+                    break;
+                }
+            }
+            if (m.ok) aim_inv = m.inverse;
+            if (phase == RI_NODE_NEWTON) {
+                m = ri_aim(f, q[0], q[1], p0, p1, false, has_aim, aim[0], aim[1], false);
+            } else if (phase == RI_NODE_REFRESH) {
+                MklDf qa = q[0], qb = q[1];
+                bool plus = sub % 2 == 0;
+                if (sub < 2) qa = plus ? q[0] + hq : q[0] - hq; else qb = plus ? q[1] + hq : q[1] - hq;
+                m = ri_aim(f, qa, qb, p0, p1, false, has_aim, aim[0], aim[1], false);
+            } else if (phase == RI_NODE_CLIP) {
+                m = ri_aim(f, q[0], q[1], p0, p1, true, has_aim, aim[0], aim[1], true);
+            } else {
+                MklDf st[6];
+                ri_stencil(f, p0, p1, q[0], q[1], aim[0], aim[1], sub, st);
+                m = ri_aim(f, st[0], st[1], st[2], st[3], false, true, st[4], st[5], false);
+            }
+            m.inverse = aim_inv;
+        }
+        status[i] = outcome;
+    }
+    if (!full) {
+        device MklRiTask* t = pencils + ulong(i) * MKL_RI_PENCIL;
+        if (solved) {
+            device const MklRiField& f = fields[field];
+            ri_task(t[0], field, MKL_RI_CLIP | MKL_RI_SEEDED | MKL_RI_AIMED, q[0], q[1], p0, p1, aim[0], aim[1]);
+            for (uint s = 0; s < 8; ++s) {
+                MklDf st[6];
+                ri_stencil(f, p0, p1, q[0], q[1], aim[0], aim[1], s, st);
+                ri_task(t[1 + s], field, MKL_RI_SEEDED, st[0], st[1], st[2], st[3], st[4], st[5]);
+            }
+        } else {
+            for (uint s = 0; s < MKL_RI_PENCIL; ++s) {
+                ri_task(t[s], field, MKL_RI_SKIP, geo_c(0), geo_c(0), geo_c(0), geo_c(0), geo_c(0), geo_c(0));
+            }
+        }
+    }
+}

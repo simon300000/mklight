@@ -51,6 +51,15 @@ pub fn field_map_job(
             run_info: stamp(run, kind.name(), s, t.warnings().to_vec()),
         });
     }
+    let (selected, name) = super::chief_maps::ChiefDesign::selected();
+    let design = selected.resolve(coords.len());
+    if design == super::chief_maps::ChiefDesign::Cpu {
+        // The CPU-only division: the reference path from the GPU route.
+        let mut r = crate::field_maps::field_map_job(t, kind, s, ctx)?;
+        r.run_info.settings["fieldmaps_variant"] = serde_json::json!(name);
+        return Ok(r);
+    }
+    let device_chiefs = design == super::chief_maps::ChiefDesign::DeviceChief;
     let geo = Geometry::new(b, t, ctx)?;
     let mut p = ResidentPlan::new(t.system().snapshot.clone());
     p.settings = serde_json::to_value(s).unwrap();
@@ -65,15 +74,15 @@ pub fn field_map_job(
             _ => 1e-12,
         },
     };
-    let g = geo.append_grid(
+    let hits = geo.append_chief_grid(
         &mut p,
         &points,
-        &[wl],
+        wl,
         &[[0.0; 2]],
         real,
         t.system().image_index(),
-        false,
         true,
+        device_chiefs,
         ctx,
     )?;
     let angles = p.scratch(BufferDesc::new(ElementType::DoubleFloat, [points.len(), 5]));
@@ -81,7 +90,7 @@ pub fn field_map_job(
         .push(ResidentOp::Geometry(geometry::Request::FieldData(
             FieldData {
                 record_slots: t.system().num_surfaces(),
-                hits: g.hits,
+                hits,
                 kind: 0,
                 pupil_step: Df32::ZERO,
                 output: angles,
@@ -89,10 +98,10 @@ pub fn field_map_job(
         )));
     let mut outputs = vec![angles];
     if matches!(kind, FieldAnalysis::PupilAberration) {
-        let g = geo.append_grid(
+        let hits = geo.append_chief_grid(
             &mut p,
             &points,
-            &[wl],
+            wl,
             &[
                 [0.0, 0.0],
                 [1e-4, 0.0],
@@ -103,7 +112,7 @@ pub fn field_map_job(
             mklight_core::RayAiming::Off,
             t.system().stop,
             false,
-            false,
+            device_chiefs,
             ctx,
         )?;
         let out = p.scratch(BufferDesc::new(ElementType::DoubleFloat, [points.len(), 5]));
@@ -111,7 +120,7 @@ pub fn field_map_job(
             .push(ResidentOp::Geometry(geometry::Request::FieldData(
                 FieldData {
                     record_slots: t.system().num_surfaces(),
-                    hits: g.hits,
+                    hits,
                     kind: 1,
                     pupil_step: if t.pupil().r_ep.is_finite() {
                         Df32::from_f64(2e-4 * t.pupil().r_ep)
@@ -130,6 +139,18 @@ pub fn field_map_job(
     let images: Vec<_> = (0..coords.len())
         .map(|i| [a[5 * i].to_f64(), a[5 * i + 1].to_f64()])
         .collect();
+    if device_chiefs && images.iter().any(|p| !p[0].is_finite()) {
+        // A device chief solve that fails is completed by the reference:
+        // the whole map, so a design never returns fewer chiefs.
+        let failed = images.iter().filter(|p| !p[0].is_finite()).count();
+        let mut out = crate::field_maps::field_map_job(t, kind, s, ctx)?;
+        out.run_info.settings["fieldmaps_variant"] = serde_json::json!(name);
+        out.run_info.settings["device_chief_failures"] = serde_json::json!(failed);
+        out.run_info.warnings.push(format!(
+            "{failed} device chief solves failed; the map was completed by the reference"
+        ));
+        return Ok(out);
+    }
     let values = match kind {
         FieldAnalysis::ChiefRayAngle => (0..coords.len())
             .flat_map(|i| {
@@ -185,6 +206,10 @@ pub fn field_map_job(
         field_coordinates: coords,
         image_mm: images,
         values,
-        run_info: stamp(r.run_info, kind.name(), s, warnings),
+        run_info: {
+            let mut run = stamp(r.run_info, kind.name(), s, warnings);
+            run.settings["resident_execution"]["fieldmaps_variant"] = serde_json::json!(name);
+            run
+        },
     })
 }

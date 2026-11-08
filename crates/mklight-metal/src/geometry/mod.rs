@@ -47,6 +47,17 @@ fn bind_systems(
         bind(e, 2, x, &view(coefficients, ElementType::DoubleFloat, [0]));
     }
 }
+/// Unclipped and clipped trace parameters of the illumination machines.
+fn ri_trace_params() -> [mklight_gpu::layout::TraceParams; 2] {
+    let un = mklight_gpu::aiming::kernel::newton_params();
+    [
+        un,
+        mklight_gpu::layout::TraceParams {
+            flags: mklight_gpu::consts::MKL_TRACE_CLIP,
+            ..un
+        },
+    ]
+}
 pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> MkResult<()> {
     let start = Instant::now();
     let mut stage = StageStats {
@@ -106,6 +117,25 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
             Params {
                 chiefs: r.chiefs.rays.count as u32,
                 segment: r.slots as u32,
+                ..Zeroable::zeroed()
+            },
+        ),
+        Request::IlluminationRays(r) => (
+            "mkl_geometry_ri_rays",
+            r.tasks.desc.shape[0],
+            Params {
+                chiefs: r.fields.desc.shape[0] as u32,
+                segment: r.slots as u32,
+                ..Zeroable::zeroed()
+            },
+        ),
+        Request::IlluminationNodes(r) => (
+            "mkl_geometry_ri_nodes",
+            r.nodes.desc.shape[0],
+            Params {
+                chiefs: r.fields.desc.shape[0] as u32,
+                segment: r.slots as u32,
+                centroid: u32::from(r.pencils.is_some()),
                 ..Zeroable::zeroed()
             },
         ),
@@ -201,6 +231,11 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
     let (minimum, maximum) = (4096, 1 << 18);
     let mut next = match r {
         Request::Illumination(_) => minimum,
+        // Restructured illumination: up to 192 (node) or 48 (ray) dependent
+        // traces per thread, so about one device wave per command keeps
+        // commands short without waiting between them.
+        Request::IlluminationNodes(_) => 1 << 12,
+        Request::IlluminationRays(_) => 1 << 14,
         Request::Coddington(_) => 1 << 16,
         _ => 1 << 22,
     };
@@ -298,6 +333,28 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                         };
                         e.set_bytes(10, &[un, clipped]);
                         bind(e, 11, x, &view(r.chiefs.status, ElementType::U32, [0]));
+                    }
+                    Request::IlluminationRays(r) => {
+                        bind_systems(e, x, uploaded.as_deref(), &r.systems);
+                        bind(e, 3, x, &r.fields);
+                        bind(e, 4, x, &r.tasks);
+                        e.set_buffer_mut(5, &mut out[0], 0);
+                        e.set_bytes(8, &ri_trace_params());
+                    }
+                    Request::IlluminationNodes(r) => {
+                        bind_systems(e, x, uploaded.as_deref(), &r.systems);
+                        bind(e, 3, x, &r.fields);
+                        bind(e, 4, x, &r.nodes);
+                        let (a, b) = out.split_at_mut(1);
+                        e.set_buffer_mut(5, &mut a[0], 0);
+                        e.set_buffer_mut(6, &mut b[0], 0);
+                        if r.pencils.is_some() {
+                            e.set_buffer_mut(9, &mut b[1], 0);
+                        } else {
+                            // Unused without pencils; any valid binding.
+                            bind(e, 9, x, &r.nodes);
+                        }
+                        e.set_bytes(8, &ri_trace_params());
                     }
                     Request::CloseFocus(r) => {
                         bind(e, 0, x, &view(r.hits.rays.floats, ElementType::F32, [0]));

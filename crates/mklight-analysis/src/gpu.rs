@@ -10,13 +10,19 @@ mod energy;
 pub use chromatic::{lateral_colour_job, longitudinal_aberration_job};
 mod curvature;
 pub use curvature::{field_curvature_job, grid_distortion_job};
+mod chief_maps;
 mod layout;
 mod maps;
+pub use chief_maps::ChiefDesign;
 pub use layout::layout_job;
 mod illumination;
+mod illumination_split;
 pub use illumination::{
-    IlluminationBuffers, IlluminationRows, illumination_rows, relative_illumination_job,
+    IlluminationBuffers, IlluminationRows, RiDesign, illumination_rows, relative_illumination_job,
 };
+/// Study key of the field-map, illumination and radiometry work-split
+/// designs (`mklight_core::split`).
+pub const SPLIT_KEY: &str = "fieldmaps";
 mod records;
 pub use records::{
     GridResult, footprint_job, footprint_overlay_job, ray_grid_job, semi_diameters_job,

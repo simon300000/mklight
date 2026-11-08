@@ -94,6 +94,14 @@ pub fn grid_distortion_job(
                 .map(move |&x| [x + s.field_center[0], y + s.field_center[1]])
         })
         .collect();
+    let (selected, name) = super::chief_maps::ChiefDesign::selected();
+    let design = selected.resolve(coords.len());
+    if design == super::chief_maps::ChiefDesign::Cpu {
+        // The CPU-only division: the reference path from the GPU route.
+        let mut r = crate::curvature::grid_distortion_job(t, s, ctx)?;
+        r.run_info.settings["fieldmaps_variant"] = serde_json::json!(name);
+        return Ok(r);
+    }
     let fields: Vec<_> = coords
         .iter()
         .map(|&[x, y]| FieldPoint::normalized(x, y))
@@ -101,22 +109,36 @@ pub fn grid_distortion_job(
     let geo = Geometry::new(b, t, ctx)?;
     let mut p = ResidentPlan::new(t.system().snapshot.clone());
     p.settings = serde_json::to_value(s).unwrap();
-    let g = geo.append_grid(
+    let hits = geo.append_chief_grid(
         &mut p,
         &fields,
-        &[w],
+        w,
         &[[0.0; 2]],
         t.aiming(),
         t.system().image_index(),
-        false,
         true,
+        design == super::chief_maps::ChiefDesign::DeviceChief,
         ctx,
     )?;
-    let source = geo.image_source(&mut p, g.hits)?;
+    let source = geo.image_source(&mut p, hits)?;
     p.outputs = vec![source];
-    let r = geo.run(p, &ctx.subrange(0.0, 0.95))?;
+    let mut r = geo.run(p, &ctx.subrange(0.0, 0.95))?;
+    r.run_info.settings["fieldmaps_variant"] = serde_json::json!(name);
     let v = b.read_view(r.outputs[0].view())?;
     let v = v.as_slice::<Df32>()?;
+    let failed = (0..coords.len())
+        .filter(|&i| !v[5 * i].to_f64().is_finite())
+        .count();
+    if design == super::chief_maps::ChiefDesign::DeviceChief && failed > 0 {
+        // A device chief solve that fails is completed by the reference.
+        let mut out = crate::curvature::grid_distortion_job(t, s, ctx)?;
+        out.run_info.settings["fieldmaps_variant"] = serde_json::json!(name);
+        out.run_info.settings["device_chief_failures"] = serde_json::json!(failed);
+        out.run_info.warnings.push(format!(
+            "{failed} device chief solves failed; the grid was completed by the reference"
+        ));
+        return Ok(out);
+    }
     let (scale, _) = scales(t, w)?;
     let rotational = system_symmetry(t.system().system()) == Symmetry::Rotational;
     let points: Vec<_> = coords
@@ -184,6 +206,15 @@ pub fn field_curvature_job(
         .wavelengths
         .resolve(t.num_wavelengths(), t.system().primary_wavelength)?;
     let n = fields.len() * wls.len();
+    // The chief-map designs: `cpu` (and `sized` below its threshold of
+    // field-wavelength rows) runs the reference path; the GPU designs keep
+    // their host chief rows here.
+    let (selected, name) = super::chief_maps::ChiefDesign::selected();
+    if selected.resolve(n) == super::chief_maps::ChiefDesign::Cpu {
+        let mut r = crate::curvature::field_curvature_job(t, s, ctx)?;
+        r.run_info.settings["fieldmaps_variant"] = serde_json::json!(name);
+        return Ok(r);
+    }
     let geo = Geometry::new(b, t, ctx)?;
     let mut p = ResidentPlan::new(t.system().snapshot.clone());
     p.settings = serde_json::to_value(s).unwrap();
