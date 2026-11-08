@@ -712,11 +712,14 @@ together whatever stage they are in:
   then either the survival ray and the eight differentiation rays (full
   mode) or nine pencil tasks for `mkl_geometry_ri_rays` (Newton-only mode).
 
-The double-float trace of aspheric systems resolves image points only to
-about 1e-7 mm (f32 decisions inside the asphere intersections), so the
-device accepts a stop aim that stalls within the reference's own aim
-tolerance clamped to [1e-10, 1e-9] of the stop radius, and an image point
-that stalls within 1000 image-point tolerances; a chord step that shrinks
+With the f32 even-asphere slope (`trace_slope=f32`, the trace before
+stream A's fix) the double-float trace of aspheric systems resolved image
+points only to about 1e-7 mm; with the default double-float slope it
+follows the f64 trace to about 1e-12 mm, and on the wide-angle aspheric
+samples the device now leaves 0–23 of 6336 nodes to the reference instead
+of 1700–5000. The device still accepts a stop aim that stalls within the
+reference's own aim tolerance clamped to [1e-10, 1e-9] of the stop radius,
+and an image point that stalls within 1000 image-point tolerances; a chord step that shrinks
 a residual less than 4× refreshes its Jacobian; a ray or node that does not
 finish within its trace budget (48 traces, 16 for a pencil ray seeded with
 a converged aim; 192 per node) fails on the device. Failed device nodes are
