@@ -59,14 +59,18 @@ then the operand's configuration):
    candidate this runs in parallel when the candidate traces at least 256
    sampling rays (below that the synchronisation costs more than it saves):
    field points, then chief rays per (field, wavelength), then the pupil
+   samplings. A candidate evaluated alone or in a batch smaller than the
+   pool (a trial point, the anchor of a finite difference) traces its
    samplings in runs of 8 nodes (one trace packet) rather than whole
    groups, because the unaimable rim rays of the outer fields (~140 µs each
    against ~6 µs for a healthy ray) would otherwise leave the pool waiting
-   on a few groups. The automatic semi-diameters that edge-thickness and
-   surface operands need are traced alongside (`rayon::join`). Every ray is
-   traced exactly as in its whole group (`trace_many` is bitwise equal to
-   tracing one by one) and put back in node order, so the values are
-   bit-identical to the serial ones (tested).
+   on a few groups; in a batch at least as large as the pool, where the
+   candidates fill it, whole groups aim and trace together in full packets
+   (the runs cost ~15 % more CPU there). The automatic semi-diameters that
+   edge-thickness and surface operands need are traced alongside
+   (`rayon::join`). Every ray is traced exactly as in its whole group
+   (`trace_many` is bitwise equal to tracing one by one) and put back in
+   node order, so the values are bit-identical to the serial ones (tested).
 4. **Read** each operand from the cache. Group references (spot centroids,
    piston/tilt) are computed on first use and shared by every ray operand of
    the group, and single pupil points that are group nodes reuse the group's

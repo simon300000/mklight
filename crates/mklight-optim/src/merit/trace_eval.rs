@@ -230,7 +230,7 @@ impl TraceEvaluator {
             })
             .collect();
         Ok(self
-            .evaluate_seeded(anchor, &rays, ctx, true, &Seeding::Record)?
+            .evaluate_seeded(anchor, &rays, ctx, Inner::Nodes, &Seeding::Record)?
             .1)
     }
 
@@ -284,7 +284,7 @@ impl TraceEvaluator {
         parallel: bool,
     ) -> MkResult<Vec<OperandValue>> {
         Ok(self
-            .evaluate_seeded(s, operands, ctx, parallel, &Seeding::None)?
+            .evaluate_seeded(s, operands, ctx, Inner::alone(parallel), &Seeding::None)?
             .0)
     }
 
@@ -295,7 +295,7 @@ impl TraceEvaluator {
         s: &OpticalSystem,
         operands: &[&Operand],
         ctx: &JobContext,
-        parallel: bool,
+        inner: Inner,
         seeding: &Seeding,
     ) -> MkResult<(Vec<OperandValue>, Option<Arc<AimSeeds>>)> {
         ctx.check()?;
@@ -325,15 +325,15 @@ impl TraceEvaluator {
                 .iter()
                 .any(|o| is_model_kind(&o.kind) && needs_semi_diameters(&o.kind));
         let (cand, mut fixed_sd) = match &tracer {
-            Some(Ok(tr)) if wants_sd && parallel => {
+            Some(Ok(tr)) if wants_sd && inner != Inner::Serial => {
                 let (cand, sd) = rayon::join(
-                    || Candidate::build(self, tr, operands, ctx, parallel),
+                    || Candidate::build(self, tr, operands, ctx, inner),
                     || tr.semi_diameters(&sd_settings),
                 );
                 (Some(cand?), Some(fix_semi_diameters(s, &sd, 0.0)))
             }
             Some(Ok(tr)) => (
-                Some(Candidate::build(self, tr, operands, ctx, parallel)?),
+                Some(Candidate::build(self, tr, operands, ctx, inner)?),
                 None,
             ),
             _ => (None, None),
@@ -484,10 +484,14 @@ impl OperandEvaluator for TraceEvaluator {
         // Candidates also parallelise inside (field preparation, chiefs,
         // groups): work stealing then balances the tail of a batch that
         // is not a multiple of the pool (49 FD columns on 12 workers).
-        let inner = true;
+        let inner = Inner::batch(systems.len());
         systems
             .par_iter()
-            .map(|s| self.evaluate_one(s, operands, ctx, inner))
+            .map(|s| {
+                Ok(self
+                    .evaluate_seeded(s, operands, ctx, inner, &Seeding::None)?
+                    .0)
+            })
             .collect()
     }
 
@@ -517,7 +521,7 @@ impl OperandEvaluator for TraceEvaluator {
     ) -> MkResult<Vec<Vec<OperandValue>>> {
         let seeds = match anchor {
             Some(a) if systems.len() >= MIN_SEEDED_BATCH && self.anchored_differences(a) => {
-                self.evaluate_seeded(a, operands, ctx, true, &Seeding::Record)?
+                self.evaluate_seeded(a, operands, ctx, Inner::Nodes, &Seeding::Record)?
                     .1
             }
             _ => None,
@@ -526,9 +530,10 @@ impl OperandEvaluator for TraceEvaluator {
             return self.evaluate_batch(systems, operands, ctx);
         };
         let seeding = Seeding::Read(seeds);
+        let inner = Inner::batch(systems.len());
         systems
             .par_iter()
-            .map(|s| Ok(self.evaluate_seeded(s, operands, ctx, true, &seeding)?.0))
+            .map(|s| Ok(self.evaluate_seeded(s, operands, ctx, inner, &seeding)?.0))
             .collect()
     }
 
@@ -562,9 +567,45 @@ enum Seeding {
     Read(Arc<AimSeeds>),
 }
 
-/// Pupil nodes per parallel work item of a candidate's groups: one CPU
-/// trace packet (`mklight_trace::trace::PACKET`).
+/// Pupil nodes per parallel work item of a candidate's groups ([`Inner::Nodes`]):
+/// one CPU trace packet (`mklight_trace::trace::PACKET`).
 const GROUP_RAY_CHUNK: usize = 8;
+
+/// How one candidate's traces use the rayon pool.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Inner {
+    /// One thread.
+    Serial,
+    /// Field points, chief rays and whole pupil groups in parallel: in a
+    /// batch at least as large as the pool, where the candidates already
+    /// fill it and a group's rays aim and trace together in full packets.
+    Groups,
+    /// As [`Self::Groups`], the pupil groups in runs of
+    /// [`GROUP_RAY_CHUNK`] nodes: a candidate alone or in a small batch,
+    /// where the unaimable rim rays of the outer fields (~140 µs each
+    /// against ~6 µs for a healthy ray) would otherwise leave the pool
+    /// waiting on a few groups. (In a large batch the runs cost ~15 % more
+    /// CPU: converging rays leave the short runs' packets part-empty.)
+    Nodes,
+}
+impl Inner {
+    /// A candidate evaluated on its own, in parallel or not.
+    fn alone(parallel: bool) -> Self {
+        if parallel {
+            Inner::Nodes
+        } else {
+            Inner::Serial
+        }
+    }
+    /// A candidate of a batch of `n` evaluated in parallel.
+    fn batch(n: usize) -> Self {
+        if n >= rayon::current_num_threads() {
+            Inner::Groups
+        } else {
+            Inner::Nodes
+        }
+    }
+}
 
 /// Smallest batch whose candidates are seeded from their anchor: tracing
 /// the anchor costs one extra candidate.
@@ -833,16 +874,16 @@ impl<'a> Candidate<'a> {
         tr: &'a SequentialTracer,
         operands: &[&Operand],
         ctx: &JobContext,
-        parallel: bool,
+        inner: Inner,
     ) -> MkResult<Self> {
         let (mut c, plan) = Self::planned(ev, tr, operands);
         // Parallel tracing inside one candidate only pays for a few hundred
         // rays or more (measured on the Double Gauss, docs/OPTIMIZATION.md).
         let rays: usize = plan.groups.values().map(|s| s.rings * s.arms).sum();
-        let parallel = parallel && rays >= 256;
-        c.prepare_points(&plan, parallel);
+        let inner = if rays >= 256 { inner } else { Inner::Serial };
+        c.prepare_points(&plan, inner != Inner::Serial);
         ctx.check()?;
-        c.trace_cpu(&plan, ctx, parallel)?;
+        c.trace_cpu(&plan, ctx, inner)?;
         Ok(c)
     }
 
@@ -922,7 +963,8 @@ impl<'a> Candidate<'a> {
 
     /// Stages 2 and 3 on the CPU: chief rays, reference spheres and pupil
     /// samplings of `plan`.
-    fn trace_cpu(&mut self, plan: &Plan, ctx: &JobContext, parallel: bool) -> MkResult<()> {
+    fn trace_cpu(&mut self, plan: &Plan, ctx: &JobContext, inner: Inner) -> MkResult<()> {
+        let parallel = inner != Inner::Serial;
         let c = &*self;
         // Stage 2: chief rays and reference spheres.
         let chiefs: Vec<(FieldKey, usize)> = plan.chiefs.iter().copied().collect();
@@ -935,20 +977,17 @@ impl<'a> Candidate<'a> {
         let c = &*self;
         let groups: Vec<(GroupKey, PupilSampling)> =
             plan.groups.iter().map(|(k, s)| (*k, *s)).collect();
-        if !parallel {
-            let traced = pmap(&groups, false, |&(key, sampling)| {
+        if inner != Inner::Nodes {
+            let traced = pmap(&groups, parallel, |&(key, sampling)| {
                 ctx.check()?;
                 Ok((key, c.trace_group(key, &sampling)))
             });
             self.groups = traced.into_iter().collect::<MkResult<_>>()?;
             return Ok(());
         }
-        // In parallel, by runs of a group's nodes rather than whole groups:
-        // the unaimable rim rays of the outer fields (each runs the whole
-        // aiming schedule) would otherwise leave a few groups, and the pool,
-        // waiting on one thread. Every ray is traced exactly as in its whole
-        // group (`trace_many` is bitwise one ray at a time), and the rays
-        // are put back in node order.
+        // By runs of a group's nodes ([`Inner::Nodes`]). Every ray is traced
+        // exactly as in its whole group (`trace_many` is bitwise one ray at
+        // a time), and the rays are put back in node order.
         let nodes: Vec<(Vec<PupilNode>, PupilSymmetry)> = groups
             .iter()
             .map(|&(key, sampling)| c.group_nodes(key.0, &sampling))
@@ -2602,7 +2641,7 @@ mod tests {
         let mut mirrored = 0;
         for sys in [&base, &decentered] {
             let tr = ev.tracer(sys).unwrap();
-            let c = Candidate::build(&ev, &tr, &refs, &ctx, false).unwrap();
+            let c = Candidate::build(&ev, &tr, &refs, &ctx, Inner::Serial).unwrap();
             let slow: Vec<OperandValue> = refs.iter().map(|op| c.value(op)).collect();
             let mut memo = GroupMemo::default();
             let fast: Vec<OperandValue> =
@@ -2676,20 +2715,24 @@ mod tests {
             let serial = ev.evaluate_one(sys, &refs, &ctx, false).unwrap();
             let parallel = ev.evaluate_one(sys, &refs, &ctx, true).unwrap();
             assert_eq!(bits(&serial), bits(&parallel));
+            let (groups, _) = ev
+                .evaluate_seeded(sys, &refs, &ctx, Inner::Groups, &Seeding::None)
+                .unwrap();
+            assert_eq!(bits(&serial), bits(&groups));
             // Rim rays of the dense sampling are vignetted (failed alike).
             let ok = serial.iter().filter(|v| v.is_ok()).count();
             assert!(ok * 10 > serial.len() * 9, "{ok} of {}", serial.len());
             let (_, seeds) = ev
-                .evaluate_seeded(sys, &refs, &ctx, true, &Seeding::Record)
+                .evaluate_seeded(sys, &refs, &ctx, Inner::Nodes, &Seeding::Record)
                 .unwrap();
             let seeding = Seeding::Read(seeds.unwrap());
             let mut near = sys.clone();
             near.surfaces[1].thickness += 1e-4;
             let serial = ev
-                .evaluate_seeded(&near, &refs, &ctx, false, &seeding)
+                .evaluate_seeded(&near, &refs, &ctx, Inner::Serial, &seeding)
                 .unwrap();
             let parallel = ev
-                .evaluate_seeded(&near, &refs, &ctx, true, &seeding)
+                .evaluate_seeded(&near, &refs, &ctx, Inner::Nodes, &seeding)
                 .unwrap();
             assert_eq!(bits(&serial.0), bits(&parallel.0));
         }
