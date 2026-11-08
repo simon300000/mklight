@@ -91,6 +91,9 @@ fn deviation(analysis: &str, cpu: &AnalysisResult, r: &AnalysisResult) -> f64 {
 /// division before this study) misses it too, deviates from the reference
 /// by at most twice as much as the resident design.
 fn check(engine: &Engine, device: &str, systems: Vec<(&str, mklight_core::OpticalSystem)>) {
+    // The work-split selection is process-wide: one test selects at a time.
+    static SELECTION: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _selection = SELECTION.lock().unwrap_or_else(|e| e.into_inner());
     let mut failures = Vec::new();
     for (name, system) in systems {
         let session = engine
