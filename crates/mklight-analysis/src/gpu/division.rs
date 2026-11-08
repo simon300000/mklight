@@ -53,7 +53,7 @@ impl Division {
     pub fn groups(self, fields: usize, rays_per_field: usize) -> Vec<std::ops::Range<usize>> {
         match self {
             Self::Pipelined => pipeline_groups(fields, rays_per_field),
-            _ => vec![0..fields],
+            _ => std::iter::once(0..fields).collect(),
         }
     }
 }
@@ -61,21 +61,29 @@ impl Division {
 /// Rays per pipelined plan at least: below this a plan's fixed cost
 /// (submission, command buffers, completion) is comparable to its work.
 pub const PIPELINE_MIN_RAYS: usize = 1 << 15;
+static MIN_RAYS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(PIPELINE_MIN_RAYS);
+/// Override [`PIPELINE_MIN_RAYS`] (tests exercise several groups on small
+/// grids); `None` restores it.
+#[doc(hidden)]
+pub fn set_pipeline_min_rays(n: Option<usize>) {
+    MIN_RAYS.store(
+        n.unwrap_or(PIPELINE_MIN_RAYS).max(1),
+        std::sync::atomic::Ordering::Relaxed,
+    );
+}
 
 /// Consecutive field groups of at least [`PIPELINE_MIN_RAYS`] rays each
 /// (the last group takes the remainder).
 pub fn pipeline_groups(fields: usize, rays_per_field: usize) -> Vec<std::ops::Range<usize>> {
-    let per = PIPELINE_MIN_RAYS.div_ceil(rays_per_field.max(1)).max(1);
+    let min = MIN_RAYS.load(std::sync::atomic::Ordering::Relaxed);
+    let per = min.div_ceil(rays_per_field.max(1)).max(1);
     let mut out: Vec<std::ops::Range<usize>> = (0..fields)
         .step_by(per)
         .map(|s| s..(s + per).min(fields))
         .collect();
     // Merge a short tail into its predecessor.
-    if out.len() > 1
-        && out
-            .last()
-            .is_some_and(|r| r.len() * rays_per_field < PIPELINE_MIN_RAYS)
-    {
+    if out.len() > 1 && out.last().is_some_and(|r| r.len() * rays_per_field < min) {
         let tail = out.pop().unwrap();
         out.last_mut().unwrap().end = tail.end;
     }
@@ -103,7 +111,7 @@ impl Geometry<'_> {
     /// Wait for a submitted plan; its run evidence names the aiming work.
     pub(crate) fn finish(&self, s: Submitted) -> MkResult<PlanResult> {
         let mut r = s.pending.wait()?;
-        if trace_evidence() && s.evidence.generations > 0 {
+        if trace_evidence() >= 2 || trace_evidence() == 1 && s.evidence.generations > 0 {
             eprintln!(
                 "mklight aiming: {} plan {:.2} ms device {:.2} ms",
                 serde_json::to_string(&s.evidence).unwrap(),
@@ -116,13 +124,35 @@ impl Geometry<'_> {
     }
 }
 
-/// `MKLIGHT_TRACE_AIM_EVIDENCE=1` prints each plan's aiming evidence to
-/// stderr (development measurements).
-fn trace_evidence() -> bool {
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var_os("MKLIGHT_TRACE_AIM_EVIDENCE").is_some_and(|v| v != "0"))
+/// `MKLIGHT_TRACE_AIM_EVIDENCE=1` prints the aiming evidence of each plan
+/// that aimed rays to stderr, `=2` of every plan (development measurements).
+fn trace_evidence() -> u32 {
+    static ON: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| {
+        std::env::var("MKLIGHT_TRACE_AIM_EVIDENCE")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0)
+    })
 }
 
+/// Accumulate the evidence of several plans into one run: the first plan's
+/// run, the others under `extra_plans`, durations summed.
+pub(crate) fn merge_run(run: &mut Option<RunInfo>, r: RunInfo) {
+    match run {
+        Some(run) => {
+            run.duration_ms += r.duration_ms;
+            if !run.settings["extra_plans"].is_array() {
+                run.settings["extra_plans"] = serde_json::json!([]);
+            }
+            run.settings["extra_plans"]
+                .as_array_mut()
+                .unwrap()
+                .push(r.settings);
+        }
+        None => *run = Some(r),
+    }
+}
 /// Record the division (and plan count) in a run's evidence.
 pub(crate) fn mark(run: &mut RunInfo, division: Division, plans: usize) {
     run.settings["geometric"] = serde_json::json!({

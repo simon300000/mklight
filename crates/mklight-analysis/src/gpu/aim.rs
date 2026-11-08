@@ -49,23 +49,25 @@ pub const KEY: &str = "aiming";
 pub enum AimDesign {
     #[default]
     Host,
+    HostTable,
     Device,
     Table,
     Split,
 }
 impl AimDesign {
-    /// The design selected for this run: `aiming` = `host`, `device`,
-    /// `table` or `split`; the default design without a selection.
+    /// The design selected for this run: `aiming` = `host`, `host-table`,
+    /// `device`, `table` or `split`; the default design without a selection.
     pub fn selected() -> MkResult<Self> {
         Ok(match split::variant(KEY).as_deref() {
             None => Self::default(),
             Some("host") => Self::Host,
+            Some("host-table") => Self::HostTable,
             Some("device") => Self::Device,
             Some("table") => Self::Table,
             Some("split") => Self::Split,
             Some(other) => {
                 return Err(mklight_core::MkError::InvalidParam(format!(
-                    "unknown aiming design '{other}' (host, device, table, split)"
+                    "unknown aiming design '{other}' (host, host-table, device, table, split)"
                 )));
             }
         })
@@ -73,6 +75,7 @@ impl AimDesign {
     pub fn name(self) -> &'static str {
         match self {
             Self::Host => "host",
+            Self::HostTable => "host-table",
             Self::Device => "device",
             Self::Table => "table",
             Self::Split => "split",
@@ -299,6 +302,8 @@ pub(crate) struct HostJob<'a> {
     /// (packed system, wavelength slot) of every row.
     pub slots: &'a [(u32, u32)],
     pub spec: &'a (dyn Fn(usize) -> RaySpec + Sync),
+    /// Start points from a host seed table ([`AimDesign::HostTable`]).
+    pub table: Option<&'a HostTable>,
 }
 impl HostJob<'_> {
     /// Aim the rays of `cols` with the reference tracer and write them.
@@ -315,7 +320,23 @@ impl HostJob<'_> {
             })
             .collect();
         let mut stats = mklight_trace::AimStats::default();
-        let generated = self.tracer.generate_many_stats(&requests, &mut stats);
+        let generated = match self.table {
+            Some(table) => {
+                let r_stop = self.tracer.pupil().r_stop;
+                let starts: Vec<_> = specs
+                    .iter()
+                    .map(|s| {
+                        let row = s.row as usize;
+                        let v = self.rows.field(row).point.vignetting;
+                        let (x, y) = v.apply(s.pupil[0], s.pupil[1]);
+                        table.start(row, [x, y], r_stop)
+                    })
+                    .collect();
+                self.tracer
+                    .generate_many_from(&requests, &starts, &mut stats)
+            }
+            None => self.tracer.generate_many_stats(&requests, &mut stats),
+        };
         let mut out = HostAims {
             rays: specs.len() as u64,
             iterations: stats.iterations,
@@ -514,7 +535,11 @@ impl Geometry<'_> {
     ) -> MkResult<ResidentRays> {
         ctx.check()?;
         let handles = match self.aim {
-            AimDesign::Host => self.aim_host(rows, n, spec, ctx)?,
+            AimDesign::Host => self.aim_host(rows, n, spec, None, ctx)?,
+            AimDesign::HostTable => {
+                let table = self.host_seed_table(rows, n, ctx)?;
+                self.aim_host(rows, n, spec, table.as_ref(), ctx)?
+            }
             AimDesign::Device => self.aim_device(rows, n, spec, None, ctx)?,
             AimDesign::Table => {
                 let table = self.host_table(rows, n, ctx)?;
@@ -548,6 +573,7 @@ impl Geometry<'_> {
         rows: &AimRows,
         n: usize,
         spec: &(dyn Fn(usize) -> RaySpec + Sync),
+        table: Option<&HostTable>,
         ctx: &JobContext,
     ) -> MkResult<[BufferHandle; 4]> {
         let start = Instant::now();
@@ -558,6 +584,7 @@ impl Geometry<'_> {
                 rows,
                 slots: &slots,
                 spec,
+                table,
             };
             host_fill(self.backend, &job, n, ctx)
         })??;
@@ -757,6 +784,7 @@ impl Geometry<'_> {
                 rows,
                 slots: &slots,
                 spec,
+                table: None,
             }
             .aim_indices(&failed)
             .into_iter()
@@ -836,17 +864,36 @@ mod split_design {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    use std::sync::atomic::AtomicUsize as Knob;
     /// Rays below which a generation is aimed on the host alone: the device
     /// plan's latency (seed table, submission, completion) exceeds the host
     /// time of the whole generation.
     pub const MIN_DEVICE_RAYS: usize = 1 << 15;
     /// Rays per device tile at most; two tiles stay in flight.
     pub const DEVICE_TILE: usize = 1 << 17;
+    /// The smallest device tile.
+    pub const MIN_DEVICE_TILE: usize = 1 << 13;
+    static MIN_RAYS: Knob = Knob::new(MIN_DEVICE_RAYS);
+    static MIN_TILE: Knob = Knob::new(MIN_DEVICE_TILE);
+    /// Override the split thresholds (tests exercise the device side on
+    /// small generations); `None` restores [`MIN_DEVICE_RAYS`] and
+    /// [`MIN_DEVICE_TILE`].
+    #[doc(hidden)]
+    pub fn set_split_thresholds(t: Option<(usize, usize)>) {
+        let (rays, tile) = t.unwrap_or((MIN_DEVICE_RAYS, MIN_DEVICE_TILE));
+        MIN_RAYS.store(rays, Ordering::Relaxed);
+        MIN_TILE.store(tile.max(1), Ordering::Relaxed);
+    }
+    /// Rays below which the host aims alone.
+    pub fn min_device_rays() -> usize {
+        MIN_RAYS.load(Ordering::Relaxed)
+    }
     /// The device tile of a generation of `n` rays: a sixteenth of it within
-    /// [2¹³, [`DEVICE_TILE`]], so the host keeps most of a small generation
-    /// and a slow device never holds more than two tiles.
+    /// [[`MIN_DEVICE_TILE`], [`DEVICE_TILE`]], so the host keeps most of a
+    /// small generation and a slow device never holds more than two tiles.
     pub fn device_tile(n: usize) -> usize {
-        (n / 16).clamp(1 << 13, DEVICE_TILE)
+        let min = MIN_TILE.load(Ordering::Relaxed);
+        (n / 16).clamp(min, DEVICE_TILE.max(min))
     }
 
     /// Shared claim state: the device claims tiles from the front, host
@@ -895,7 +942,7 @@ mod split_design {
         }
     }
 }
-pub(crate) use split_design::{MIN_DEVICE_RAYS, device_tile};
+pub use split_design::{device_tile, min_device_rays, set_split_thresholds};
 
 /// Raw plane pointers for the split design's concurrent writers: device
 /// tiles and host chunks claim disjoint column ranges ([`split_design::Claims`]),
@@ -946,12 +993,24 @@ impl Geometry<'_> {
         spec: &(dyn Fn(usize) -> RaySpec + Sync),
         ctx: &JobContext,
     ) -> MkResult<[BufferHandle; 4]> {
-        if n < MIN_DEVICE_RAYS {
-            return self.aim_host(rows, n, spec, ctx);
+        if n < min_device_rays() {
+            return self.aim_host(rows, n, spec, None, ctx);
         }
         let start = Instant::now();
         let slots = self.slots(rows)?;
-        let table = self.host_table(rows, n, ctx)?;
+        // One f64 host table seeds both sides: the host workers' started
+        // solves and, as double-float nodes, the device tiles.
+        let host_table = {
+            let t0 = Instant::now();
+            let side = table_side(n / rows.len().max(1)) as usize;
+            let table = self.with_tracer(rows.aiming, |t| HostTable::build(t, rows, side))?;
+            self.evidence(|e| {
+                e.table_nodes += table.nodes.len() as u64;
+                e.table_seconds += t0.elapsed().as_secs_f64();
+            });
+            table
+        };
+        let table = (host_table.seed_nodes(), host_table.side as u32);
         let claims = split_design::Claims::new(n);
         let mut host_stats = HostAims::default();
         let mut completion = (0u64, 0u64);
@@ -981,6 +1040,8 @@ impl Geometry<'_> {
                                         rows,
                                         slots: &slots,
                                         spec,
+                                        table: matches!(rows.aiming, RayAiming::Real { .. })
+                                            .then_some(&host_table),
                                     };
                                     self.split_run(&job, &claims, &shared, &table, ctx)
                                 })??;
@@ -1148,5 +1209,337 @@ impl Geometry<'_> {
             host.into_inner().unwrap_or_else(|e| e.into_inner()),
             (queued.into_inner(), resolved.into_inner()),
         ))
+    }
+}
+
+/// Rays per field row below which [`AimDesign::HostTable`] aims without a
+/// table: a coarse table's interpolation saves too few iterations to pay
+/// for its nodes.
+pub const HOST_TABLE_MIN_PER_ROW: usize = 2048;
+const HOST_TABLE_EXTENT: f64 = 1.125;
+
+/// A host f64 seed table ([`AimDesign::HostTable`]): for every field row,
+/// the reference tracer's aims at a `side`² lattice of vignetted pupil
+/// points over [−1.125, 1.125]² (nodes beyond pupil radius 1.25, unusable
+/// rows and unreachable nodes unsolved), as the device table
+/// ([`host_tables`]) but kept in f64.
+pub(crate) struct HostTable {
+    side: usize,
+    nodes: Vec<Option<[f64; 2]>>,
+}
+impl HostTable {
+    fn build(tracer: &SequentialTracer, rows: &AimRows, side: usize) -> Self {
+        let nodes = side * side;
+        let step = 2.0 * HOST_TABLE_EXTENT / (side - 1) as f64;
+        let mut out = vec![None; rows.len() * nodes];
+        out.par_chunks_mut(nodes)
+            .enumerate()
+            .for_each(|(row, table)| {
+                let field = rows.field(row);
+                let v = field.point.vignetting;
+                if !field.is_valid() || v.vcx >= 1. || v.vcy >= 1. {
+                    return;
+                }
+                let mut solved = Vec::with_capacity(nodes);
+                let mut requests = Vec::with_capacity(nodes);
+                for k in 0..nodes {
+                    let p = [
+                        (k % side) as f64 * step - HOST_TABLE_EXTENT,
+                        (k / side) as f64 * step - HOST_TABLE_EXTENT,
+                    ];
+                    if p[0] * p[0] + p[1] * p[1] > 1.5625 {
+                        continue;
+                    }
+                    // Nodes lie in vignetted coordinates; `generate` applies
+                    // the field's vignetting to the point it is given.
+                    let px = (p[0] - v.vdx) / (1. - v.vcx);
+                    let py = (p[1] - v.vdy) / (1. - v.vcy);
+                    solved.push(k);
+                    requests.push((field, rows.wavelength(row), [px, py]));
+                }
+                for (k, g) in solved.into_iter().zip(tracer.generate_many(&requests)) {
+                    table[k] = g.ok().map(|g| g.aim);
+                }
+            });
+        Self { side, nodes: out }
+    }
+    /// The table as device seed nodes (double-float aims; status 1 where
+    /// unsolved), for [`AimOptions::table`].
+    fn seed_nodes(&self) -> Vec<SeedNode> {
+        self.nodes
+            .iter()
+            .map(|n| match n {
+                Some(a) => SeedNode {
+                    aim: a.map(Df32::from_f64),
+                    status: 0,
+                    reserved: 0,
+                },
+                None => SeedNode {
+                    aim: [Df32::ZERO; 2],
+                    status: 1,
+                    reserved: 0,
+                },
+            })
+            .collect()
+    }
+    /// The Catmull–Rom interpolated aim of row `row` at vignetted pupil
+    /// point `p`, and the stop Jacobian `r_stop · (d aim / dp)⁻¹` of the
+    /// interpolant; `None` unless all 16 nodes around `p` are solved.
+    pub fn start(&self, row: usize, p: [f64; 2], r_stop: f64) -> Option<([f64; 2], [[f64; 2]; 2])> {
+        let side = self.side;
+        let inv = (side - 1) as f64 / (2.0 * HOST_TABLE_EXTENT);
+        let fx = (p[0] + HOST_TABLE_EXTENT) * inv;
+        let fy = (p[1] + HOST_TABLE_EXTENT) * inv;
+        let (ix, iy) = (fx.floor(), fy.floor());
+        let last = (side - 3) as f64;
+        if !(ix >= 1.0 && iy >= 1.0 && ix <= last && iy <= last) {
+            return None;
+        }
+        let spline = |t: f64| {
+            let (t2, t3) = (t * t, t * t * t);
+            (
+                [
+                    (2.0 * t2 - t3 - t) * 0.5,
+                    (3.0 * t3 - 5.0 * t2 + 2.0) * 0.5,
+                    (4.0 * t2 - 3.0 * t3 + t) * 0.5,
+                    (t3 - t2) * 0.5,
+                ],
+                [
+                    (4.0 * t - 3.0 * t2 - 1.0) * 0.5,
+                    (9.0 * t2 - 10.0 * t) * 0.5,
+                    (8.0 * t - 9.0 * t2 + 1.0) * 0.5,
+                    (3.0 * t2 - 2.0 * t) * 0.5,
+                ],
+            )
+        };
+        let (wx, dx) = spline(fx - ix);
+        let (wy, dy) = spline(fy - iy);
+        let base = row * side * side;
+        let (mut a, mut ax, mut ay) = ([0.0; 2], [0.0; 2], [0.0; 2]);
+        for j in 0..4 {
+            for i in 0..4 {
+                let n = self.nodes[base + (iy as usize + j - 1) * side + ix as usize + i - 1]?;
+                for k in 0..2 {
+                    a[k] += n[k] * (wx[i] * wy[j]);
+                    ax[k] += n[k] * (dx[i] * wy[j]);
+                    ay[k] += n[k] * (wx[i] * dy[j]);
+                }
+            }
+        }
+        // d aim / dp = inv · [ax ay]; the stop target is p · r_stop.
+        let det = ax[0] * ay[1] - ay[0] * ax[1];
+        let q = r_stop / (det * inv);
+        let j = [[ay[1] * q, -ay[0] * q], [-ax[1] * q, ax[0] * q]];
+        (det != 0.0 && j.iter().flatten().all(|v| v.is_finite()) && a.iter().all(|v| v.is_finite()))
+            .then_some((a, j))
+    }
+}
+impl Geometry<'_> {
+    /// The host f64 seed table of a generation of `n` rays, or `None` below
+    /// [`HOST_TABLE_MIN_PER_ROW`] rays per row.
+    pub(crate) fn host_seed_table(
+        &self,
+        rows: &AimRows,
+        n: usize,
+        ctx: &JobContext,
+    ) -> MkResult<Option<HostTable>> {
+        let per_row = n / rows.len().max(1);
+        if per_row < HOST_TABLE_MIN_PER_ROW || !matches!(rows.aiming, RayAiming::Real { .. }) {
+            return Ok(None);
+        }
+        ctx.check()?;
+        let start = Instant::now();
+        let side = table_side(per_row) as usize;
+        let table = self.with_tracer(rows.aiming, |t| HostTable::build(t, rows, side))?;
+        self.evidence(|e| {
+            e.table_nodes += table.nodes.len() as u64;
+            e.table_seconds += start.elapsed().as_secs_f64();
+        });
+        Ok(Some(table))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mklight_gpu::CpuF32Backend;
+
+    fn tracer() -> SequentialTracer {
+        let mut m = mklight_core::samples::double_gauss();
+        m.ray_aiming = RayAiming::Real { tolerance: 1e-10 };
+        crate::tracer_for(m).unwrap()
+    }
+
+    #[test]
+    fn completion_replaces_unconverged_device_aims_with_reference_aims() {
+        let t = tracer();
+        let b = CpuF32Backend::new();
+        let ctx = JobContext::new();
+        let geo = Geometry::new(&b, &t, &ctx).unwrap();
+        let mut p = ResidentPlan::new(t.system().snapshot.clone());
+        let points = [
+            (t.field(1).point, t.system().primary_wavelength),
+            (t.field(2).point, 0),
+        ];
+        let rows = geo.aim_rows(&mut p, &points, t.aiming()).unwrap();
+        let pupil = [[0.0, 0.0], [0.5, 0.3], [-0.7, 0.6], [0.9, -0.1], [3.0, 3.0]];
+        let n = 2 * pupil.len();
+        let spec = |i: usize| RaySpec {
+            row: (i / pupil.len()) as u32,
+            pupil: pupil[i % pupil.len()],
+            weight: 0.5,
+            id: 100 + i as u64,
+        };
+        let slots = geo.slots(&rows).unwrap();
+        let stop = (t.system().stop as u32) << MKL_RAY_SURFACE_SHIFT;
+        // A device result: ray 0 converged (a sentinel the completion must
+        // keep), every other aim unconverged with a zero ray.
+        let floats = b
+            .fill_buffer(BufferDesc::new(ElementType::F32, [15, n]), &mut |mut f| {
+                let f = f.as_mut_slice::<f32>()?;
+                f.fill(0.0);
+                f[0] = 42.0;
+                Ok(())
+            })
+            .unwrap();
+        let indices = b
+            .fill_buffer(BufferDesc::new(ElementType::U32, [2, n]), &mut |mut f| {
+                let f = f.as_mut_slice::<u32>()?;
+                for i in 0..n {
+                    let s = slots[spec(i).row as usize];
+                    f[i] = s.0;
+                    f[n + i] = s.1;
+                }
+                Ok(())
+            })
+            .unwrap();
+        let ids = b
+            .fill_buffer(BufferDesc::new(ElementType::U32, [2, n]), &mut |mut f| {
+                let f = f.as_mut_slice::<u32>()?;
+                for i in 0..n {
+                    f[i] = spec(i).id as u32;
+                    f[n + i] = 0;
+                }
+                Ok(())
+            })
+            .unwrap();
+        let report = b
+            .fill_buffer(BufferDesc::new(ElementType::U32, [4, n]), &mut |mut f| {
+                let f = f.as_mut_slice::<u32>()?;
+                f.fill(0);
+                for v in &mut f[1..n] {
+                    *v = MKL_AIM_FAILED | stop;
+                }
+                Ok(())
+            })
+            .unwrap();
+        let out = geo
+            .complete(&rows, n, &spec, [floats, indices, ids, report], &ctx)
+            .unwrap();
+        let f = b.read_view(out[0].view()).unwrap();
+        let f = f.as_slice::<f32>().unwrap();
+        let r = b.read_view(out[3].view()).unwrap();
+        let r = r.as_slice::<u32>().unwrap();
+        assert_eq!((f[0], r[0]), (42.0, 0), "a converged device ray is kept");
+        let mut resolved = 0;
+        for i in 1..n {
+            let s = spec(i);
+            let row = s.row as usize;
+            let g = t.generate(
+                rows.field(row),
+                rows.wavelength(row),
+                s.pupil[0],
+                s.pupil[1],
+            );
+            match g {
+                Ok(g) => {
+                    resolved += 1;
+                    assert_eq!(r[i], 0, "ray {i}");
+                    let p = [g.ray.pos.x, g.ray.pos.y, g.ray.pos.z].map(Df32::from_f64);
+                    let d = [g.ray.dir.x, g.ray.dir.y, g.ray.dir.z].map(Df32::from_f64);
+                    for k in 0..3 {
+                        assert_eq!((f[k * n + i], f[(9 + k) * n + i]), (p[k].hi, p[k].lo));
+                        assert_eq!(
+                            (f[(3 + k) * n + i], f[(12 + k) * n + i]),
+                            (d[k].hi, d[k].lo)
+                        );
+                    }
+                    assert_eq!(f[8 * n + i], 0.5);
+                }
+                Err(_) => {
+                    assert_eq!(r[i], MKL_AIM_FAILED | stop, "ray {i} stays failed");
+                    assert!((0..15).all(|k| f[k * n + i] == 0.0));
+                }
+            }
+        }
+        assert!(resolved >= 6);
+        let e = geo.take_aim_evidence();
+        assert_eq!(e.completion_rays, n as u64 - 1);
+        assert_eq!(e.completion_resolved, resolved);
+    }
+
+    #[test]
+    fn host_table_starts_are_close_to_the_reference_aims() {
+        let t = tracer();
+        let b = CpuF32Backend::new();
+        let ctx = JobContext::new();
+        let geo = Geometry::new(&b, &t, &ctx).unwrap();
+        let mut p = ResidentPlan::new(t.system().snapshot.clone());
+        let points: Vec<_> = (0..t.fields().len())
+            .map(|f| (t.field(f).point, t.system().primary_wavelength))
+            .collect();
+        let rows = geo.aim_rows(&mut p, &points, t.aiming()).unwrap();
+        let table = HostTable::build(&t, &rows, 25);
+        let r_stop = t.pupil().r_stop;
+        let mut seen = 0;
+        for row in 0..rows.len() {
+            for &q in &[[0.13, -0.41], [0.52, 0.31], [-0.77, 0.12], [0.0, 0.9]] {
+                // The table lies in vignetted pupil coordinates.
+                let (x, y) = rows.field(row).point.vignetting.apply(q[0], q[1]);
+                let Some((a, j)) = table.start(row, [x, y], r_stop) else {
+                    continue;
+                };
+                seen += 1;
+                let g = t
+                    .generate(rows.field(row), rows.wavelength(row), q[0], q[1])
+                    .unwrap();
+                let scale = g.aim[0].hypot(g.aim[1]).max(r_stop);
+                for k in 0..2 {
+                    assert!(
+                        (a[k] - g.aim[k]).abs() < 1e-4 * scale,
+                        "{row} {q:?} {a:?} {:?}",
+                        g.aim
+                    );
+                }
+                assert!(j.iter().flatten().all(|v| v.is_finite()));
+            }
+        }
+        assert!(seen > 0);
+        // Outside the table's interior the start is left to the reference.
+        assert!(table.start(0, [1.2, 0.0], r_stop).is_none());
+    }
+
+    #[test]
+    fn split_claims_meet_without_overlap() {
+        let c = split_design::Claims::new(1000);
+        let mut device = Vec::new();
+        let mut host = Vec::new();
+        loop {
+            let d = c.device(256);
+            let h = c.host(100);
+            if d.is_none() && h.is_none() {
+                break;
+            }
+            device.extend(d);
+            host.extend(h);
+        }
+        let mut all: Vec<_> = device.iter().chain(&host).cloned().collect();
+        all.sort_by_key(|r| r.start);
+        assert_eq!(all.first().unwrap().start, 0);
+        assert_eq!(all.last().unwrap().end, 1000);
+        for w in all.windows(2) {
+            assert_eq!(w[0].end, w[1].start);
+        }
+        assert!(device.iter().all(|r| r.len() >= 64));
     }
 }

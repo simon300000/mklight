@@ -6,6 +6,7 @@ use mklight_gpu::{
 };
 use mklight_trace::{FieldPoint, SequentialTracer};
 pub mod aim;
+mod batch;
 mod chromatic;
 pub mod division;
 mod energy;

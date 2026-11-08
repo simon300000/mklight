@@ -144,7 +144,7 @@ impl Geometry<'_> {
         let pupil = pupil_points(s.pattern, s.rings, s.seed);
         let points: Vec<_> = fields.iter().map(|&i| t.field(i).point).collect();
         if division == Division::HostReduce {
-            return self.spot_host_reduce(t, s, &fields, &points, &wls, &pupil, ctx, packed);
+            return self.spot_host_reduce(t, s, &fields, &wls, &pupil, ctx, packed);
         }
         let groups = division.groups(fields.len(), wls.len() * pupil.len());
         // Each group's rays are aimed while the device works on the groups
@@ -167,7 +167,7 @@ impl Geometry<'_> {
                 .iter()
                 .map(|h| b.read_view(h.view()))
                 .collect::<MkResult<_>>()?;
-            merge_run(&mut run, r.run_info);
+            division::merge_run(&mut run, r.run_info);
             parts.push(Part {
                 fields,
                 grid,
@@ -420,132 +420,43 @@ impl Geometry<'_> {
         t: &SequentialTracer,
         s: &SpotDiagramSettings,
         fields: &[usize],
-        points: &[FieldPoint],
         wls: &[usize],
         pupil: &[[f64; 2]],
         ctx: &JobContext,
         packed: bool,
     ) -> MkResult<SpotDiagram> {
-        let b = self.backend;
-        let mut p = ResidentPlan::new(t.system().snapshot.clone());
-        p.settings = serde_json::to_value(s).unwrap();
-        let mut g = self.append_grid(
-            &mut p,
-            points,
-            wls,
-            pupil,
-            t.aiming(),
-            t.system().image_index(),
-            true,
-            false,
-            ctx,
-        )?;
-        self.append_chiefs(&mut p, &mut g)?;
-        let chiefs = g.chiefs()?.clone();
-        p.outputs = vec![
-            g.hits.rays.floats,
-            g.hits.status,
-            chiefs.rays.floats,
-            chiefs.status,
-        ];
-        let r = self.run(p, &ctx.subrange(0.0, 0.8))?;
-        let views: Vec<_> = r
-            .outputs
-            .iter()
-            .map(|h| b.read_view(h.view()))
-            .collect::<MkResult<_>>()?;
-        let batch = host_batch(
+        let seed = matches!(
+            s.pattern,
+            crate::util::PupilPattern::Random | crate::util::PupilPattern::Dithered
+        )
+        .then_some(s.seed);
+        let traced = self.traced_batch(
             t,
             fields,
             wls,
-            pupil.len(),
-            &g,
-            [views[0].as_slice()?, views[2].as_slice()?],
-            [views[1].as_slice()?, views[3].as_slice()?],
+            pupil,
+            Division::HostReduce,
+            &serde_json::to_value(s).unwrap(),
+            seed,
+            &ctx.subrange(0.0, 0.8),
         )?;
         let reduced = crate::spot::spot_reduce(
             mklight_core::job::RunTimer::start(),
             t,
             s,
-            &batch.0,
+            &traced.batch,
             &crate::util::BackendInfo::cpu_reference(),
-            batch.1,
+            traced.warnings,
             &ctx.subrange(0.8, 1.0),
             packed,
         )?;
-        let mut run = r.run_info;
-        division::mark(&mut run, Division::HostReduce, 1);
         let mut warnings = t.warnings().to_vec();
         warnings.extend(reduced.run_info.warnings.iter().cloned());
         Ok(SpotDiagram {
-            run_info: stamp(run, "spot_diagram", s, warnings),
+            run_info: stamp(traced.run, "spot_diagram", s, warnings),
             ..reduced
         })
     }
-}
-/// Accumulate the evidence of several plans into one run: the first plan's
-/// run, the others under `extra_plans`, durations summed.
-pub(super) fn merge_run(run: &mut Option<RunInfo>, r: RunInfo) {
-    match run {
-        Some(run) => {
-            run.duration_ms += r.duration_ms;
-            if !run.settings["extra_plans"].is_array() {
-                run.settings["extra_plans"] = serde_json::json!([]);
-            }
-            run.settings["extra_plans"]
-                .as_array_mut()
-                .unwrap()
-                .push(r.settings);
-        }
-        None => *run = Some(r),
-    }
-}
-/// The image hit of ray `i` of resident hit planes (`f` [15, n], `status`
-/// [3, n]), `None` unless it arrived.
-pub(super) fn image_hit(f: &[f32], status: &[u32], n: usize, i: usize) -> Option<ImageHit> {
-    (status[i] == 0).then(|| ImageHit {
-        point: [value(f, n, i, 0), value(f, n, i, 1)],
-        dir: mklight_core::Vec3::new(value(f, n, i, 3), value(f, n, i, 4), value(f, n, i, 5)),
-    })
-}
-/// The reference's ray batch from device-traced grid and chief hits, read in
-/// place (`floats`/`status`: grid, then chiefs).
-pub(super) fn host_batch(
-    t: &SequentialTracer,
-    fields: &[usize],
-    wls: &[usize],
-    np: usize,
-    g: &ResidentGrid,
-    floats: [&[f32]; 2],
-    status: [&[u32]; 2],
-) -> MkResult<(RayBatch, Vec<String>)> {
-    let sys = t.system();
-    let weights: Vec<f64> = wls.iter().map(|&w| sys.wavelength_weights[w]).collect();
-    let n = g.hits.rays.count;
-    let nc = g.chiefs()?.rays.count;
-    let ncw = g.chief_wavelengths.len();
-    let column = |w: usize| g.chief_wavelengths.iter().position(|&v| v == w).unwrap();
-    let mut warnings = Vec::new();
-    let nw = wls.len();
-    let out = fields
-        .iter()
-        .enumerate()
-        .map(|(fi, &f)| {
-            let chief = |w: usize| image_hit(floats[1], status[1], nc, fi * ncw + column(w));
-            let pc = chief(sys.primary_wavelength);
-            let wl_chiefs: Vec<_> = wls.iter().map(|&w| chief(w)).collect();
-            let rays = (fi * nw * np..(fi + 1) * nw * np)
-                .map(|i| (wls[(i / np) % nw], image_hit(floats[0], status[0], n, i)));
-            crate::spot::FieldRays::from_hits(f, wls, &weights, pc, &wl_chiefs, rays, &mut warnings)
-        })
-        .collect::<MkResult<Vec<_>>>()?;
-    Ok((
-        RayBatch {
-            wavelengths: wls.to_vec(),
-            fields: out,
-        },
-        warnings,
-    ))
 }
 pub(super) fn stats(v: &[Df32], launched: usize, chief_ok: bool, total: f64) -> SpotStats {
     let x: Vec<_> = v.iter().map(|v| v.to_f64()).collect();
