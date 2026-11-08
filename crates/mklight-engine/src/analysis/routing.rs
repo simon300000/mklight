@@ -27,7 +27,9 @@ pub(crate) fn reference_reason(analysis: &str) -> Option<&'static str> {
         "encircled_energy" => Some(
             "static capability: P11 encircled_energy failed f64 comparison on 16/16 default samples (geometry-uncertainty bin completion)",
         ),
-        "wavefront_map" => Some(
+        // Host-traced wave designs (`mklight_wave::gpu::split`) fit the
+        // reference's own lattice: identical Zernike sets and Seidel terms.
+        "wavefront_map" if !mklight_wave::gpu::Design::selected().host_lattice() => Some(
             "static capability: P11 wavefront_map failed f64 comparison on 16/16 default samples (undefined on-axis Seidel angles)",
         ),
         "polarization_pupil_map" => Some(
@@ -35,6 +37,17 @@ pub(crate) fn reference_reason(analysis: &str) -> Option<&'static str> {
         ),
         _ => None,
     }
+}
+
+/// [`reference_reason`] for `auto`: a native route without calibration
+/// data stays on the reference until the cost model is recalibrated.
+fn auto_reference_reason(analysis: &str) -> Option<&'static str> {
+    reference_reason(analysis).or(match analysis {
+        "wavefront_map" => Some(
+            "static capability: the host-traced wavefront_map route has no cost calibration for auto",
+        ),
+        _ => None,
+    })
 }
 
 fn static_capability(reason: &str) -> Value {
@@ -84,7 +97,7 @@ pub(crate) fn auto_route(
         Some(AutoCandidate::Gpu { apple_gpu, open }) => (apple_gpu, open),
         None => (None, false),
     };
-    if let Some(reason) = reference_reason(r.analysis) {
+    if let Some(reason) = auto_reference_reason(r.analysis) {
         return cpu(reason, static_capability(reason), !open);
     }
     let route = route_key(r);

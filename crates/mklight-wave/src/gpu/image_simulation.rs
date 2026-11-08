@@ -38,6 +38,11 @@ impl ResidentPsfGrid {
     }
 }
 
+/// Host rule of a node PSF's transform (the PSF rule of `gpu::analysis`).
+const IMAGE_HOST: super::split::HostRule = super::split::HostRule {
+    limit: 1e8,
+    ratio: 4.,
+};
 fn invalid(s: &str) -> MkError {
     MkError::InvalidParam(format!("image simulation: {s}"))
 }
@@ -67,13 +72,25 @@ fn p5_stats(v: &serde_json::Value, stats: &mut PlanStats) {
         }
     }
 }
-/// Build the optical grid entirely through P1/P5/P7 and resident wave adapters.
+/// Build the optical grid: P5 distortion, host f64 relative illumination,
+/// pupils from the run's work-split design (`split`), and resident PSFs.
 pub fn build_psf_grid(
     b: &dyn ComputeBackend,
     t: &SequentialTracer,
     s: &ImageGridSettings,
     ctx: &JobContext,
 ) -> MkResult<WaveResult<ResidentPsfGrid>> {
+    build_psf_grid_shared(b, t, s, None, ctx)
+}
+/// [`build_psf_grid`] sharing host lattices and pupils through `memo`.
+pub fn build_psf_grid_shared(
+    b: &dyn ComputeBackend,
+    t: &SequentialTracer,
+    s: &ImageGridSettings,
+    memo: Option<&dyn mklight_core::memo::Memo>,
+    ctx: &JobContext,
+) -> MkResult<WaveResult<ResidentPsfGrid>> {
+    use super::analysis::{Source, Staged, gather};
     let timer = RunTimer::start();
     if !(2..=33).contains(&s.field_grid)
         || !s.field_extent.is_finite()
@@ -107,34 +124,39 @@ pub fn build_psf_grid(
         return Err(invalid("field grid contains unusable chief"));
     }
     let wls = crate::analysis::wavelengths(t, &Default::default())?;
-    let mut irradiance = vec![0.; coordinates.len()];
-    let mut axial = 0.;
+    let src = Source::new(b, t, memo, ctx)?;
     // Relative illumination of the grid nodes is host f64 preparation, the
     // CPU grid's own rows: the device projected-solid-angle kernel runs the
     // nested object/aim solves of every pupil node inside one command and
     // took ≈1.4 s per wavelength on a 29-surface lens (9 nodes × 576 pupil
-    // samples) against ≈0.2 s on the host for all five wavelengths.
-    let clock = std::time::Instant::now();
-    for (i, &(wl, weight)) in wls.iter().enumerate() {
-        let (rows, omega) = mklight_analysis::illumination::illumination_rows(
-            t,
-            &coordinates,
-            wl,
-            s.illumination_radial,
-            s.illumination_azimuth,
-            &mut warnings,
-            &ctx.subrange(
-                0.05 + 0.15 * i as f64 / wls.len() as f64,
-                0.05 + 0.15 * (i + 1) as f64 / wls.len() as f64,
-            ),
-        )?;
-        for (sum, row) in irradiance.iter_mut().zip(rows) {
-            *sum += weight * row[0];
+    // samples) against ≈0.2 s on the host for all five wavelengths. It runs
+    // beside device work: during device tracing, or (designs whose host
+    // traces) during the device PSFs.
+    let illumination = || -> MkResult<(Vec<f64>, f64, Vec<String>, f64)> {
+        let clock = std::time::Instant::now();
+        let mut warnings = vec![];
+        let mut irradiance = vec![0.; coordinates.len()];
+        let mut axial = 0.;
+        for (i, &(wl, weight)) in wls.iter().enumerate() {
+            let (rows, omega) = mklight_analysis::illumination::illumination_rows(
+                t,
+                &coordinates,
+                wl,
+                s.illumination_radial,
+                s.illumination_azimuth,
+                &mut warnings,
+                &ctx.subrange(
+                    0.05 + 0.15 * i as f64 / wls.len() as f64,
+                    0.05 + 0.15 * (i + 1) as f64 / wls.len() as f64,
+                ),
+            )?;
+            for (sum, row) in irradiance.iter_mut().zip(rows) {
+                *sum += weight * row[0];
+            }
+            axial += weight * omega;
         }
-        axial += weight * omega;
-    }
-    let illumination_seconds = clock.elapsed().as_secs_f64();
-    let service = PupilTracer::new(b, t, ctx)?;
+        Ok((irradiance, axial, warnings, clock.elapsed().as_secs_f64()))
+    };
     let prepared = d
         .points
         .iter()
@@ -147,18 +169,20 @@ pub fn build_psf_grid(
         .enumerate()
         .map(|(i, (p, f))| (i, p.field, f))
         .collect();
-    let mut per = super::analysis::trace_fields(
-        &service,
-        t,
-        &requests,
-        &wls,
-        &s.pupil,
-        &ctx.subrange(0.2, 0.6),
-        &mut stats,
-        &mut warnings,
-    )?
-    .into_iter()
-    .collect::<MkResult<Vec<_>>>()?;
+    let host_traces = src.design.host_lattice();
+    let (per, early) = std::thread::scope(|scope| {
+        let early = (!host_traces).then(|| scope.spawn(illumination));
+        let per = src.trace(
+            &requests,
+            &wls,
+            &s.pupil,
+            &ctx.subrange(0.2, 0.6),
+            &mut stats,
+            &mut warnings,
+        );
+        (per, early.map(|h| h.join().expect("illumination rows")))
+    });
+    let per = per?.into_iter().collect::<MkResult<Vec<_>>>()?;
     let dx = s.psf_spacing_mm.unwrap_or_else(|| {
         per.iter()
             .flat_map(|f| &f.pupils)
@@ -167,17 +191,21 @@ pub fn build_psf_grid(
     });
     let mut size = s.psf_size;
     if size == 0 {
-        for f in &per {
-            size = size.max(super::analysis::image_grid(
-                b,
-                t,
+        for r in concurrent(&per, |_, f| {
+            let mut st = PlanStats::default();
+            src.image_grid(
                 f,
                 0,
                 dx,
                 crate::analysis::PsfMethod::Fft,
                 &ctx.subrange(0.6, 0.6),
-                &mut stats,
-            )?);
+                &mut st,
+            )
+            .map(|g| (g, st))
+        }) {
+            let (g, st) = r?;
+            accumulate(&mut stats, &st);
+            size = size.max(g);
         }
         size = (size | 1).min(2047);
     }
@@ -192,62 +220,147 @@ pub fn build_psf_grid(
             "resident PSF grid needs {kernel_bytes} bytes, exceeding its {budget}-byte working-set budget"
         )));
     }
+    let count = d.points.len();
+    let range = |i: usize| {
+        ctx.subrange(
+            0.6 + 0.4 * i as f64 / count as f64,
+            0.6 + 0.4 * (i + 1) as f64 / count as f64,
+        )
+    };
+    let ((results, ran), late) = std::thread::scope(|scope| {
+        let late = host_traces.then(|| scope.spawn(illumination));
+        let results = super::split::schedule_with(
+            src.design,
+            per,
+            |i, mut f| {
+                let mut stats = PlanStats::default();
+                let warnings = src.ensure_window(
+                    &mut f,
+                    size as f64 * dx,
+                    &s.pupil,
+                    &range(i).subrange(0., 0.1),
+                    &mut stats,
+                )?;
+                Ok(Staged::Done {
+                    value: f,
+                    stats,
+                    warnings,
+                })
+            },
+            |i, staged| {
+                let sub = range(i);
+                staged.then(|f, stats, warnings| {
+                    let psf = polychromatic_psf(
+                        b,
+                        t.system().snapshot.clone(),
+                        &f.weighted(),
+                        &crate::PolyPsfSettings {
+                            grid_size: size,
+                            spacing_mm: dx,
+                            normalization: PsfNormalization::UnitEnergy,
+                            transform: PsfTransform::Matrix,
+                        },
+                        false,
+                        &sub.subrange(0.1, 0.9),
+                    )?;
+                    accumulate(stats, &psf.stats);
+                    let metrics = psf.value.metrics(
+                        b,
+                        t.system().snapshot.clone(),
+                        &sub.subrange(0.9, 1.),
+                    )?;
+                    accumulate(stats, &metrics.stats);
+                    if metrics.value.energy_in_grid < crate::analysis::MIN_ENERGY_IN_GRID {
+                        warnings.push(
+                            WaveWarning::PsfTruncated {
+                                energy_in_grid: metrics.value.energy_in_grid,
+                            }
+                            .to_string(),
+                        );
+                    }
+                    warnings.extend(psf.value.warnings.iter().map(ToString::to_string));
+                    Ok((
+                        psf.value.image,
+                        metrics.value.energy_in_grid / (dx * dx),
+                        f.sampling(),
+                        f.reference,
+                    ))
+                })
+            },
+            src.reference(
+                &|i, staged: Staged<super::analysis::Field>| {
+                    let sub = range(i);
+                    staged.then(|f, _, warnings| {
+                        // The reference's kernel, written into a shared
+                        // allocation for the device convolution.
+                        let host = f.host_weighted().ok_or_else(|| {
+                            MkError::Unsupported("host transform without host pupils".into())
+                        })?;
+                        let psf = crate::analysis::psf::compute_psf(
+                            &host,
+                            crate::analysis::PsfMethod::Fft,
+                            size,
+                            dx,
+                            PsfNormalization::UnitEnergy,
+                            &sub.subrange(0.1, 1.),
+                        )?;
+                        warnings.extend(psf.warnings.iter().map(ToString::to_string));
+                        let kernel = b.fill_buffer(
+                            BufferDesc::new(ElementType::F32, [size, size]),
+                            &mut |mut a| {
+                                for (d, v) in a.as_mut_slice::<f32>()?.iter_mut().zip(&psf.data) {
+                                    *d = *v as f32;
+                                }
+                                Ok(())
+                            },
+                        )?;
+                        Ok((
+                            kernel,
+                            psf.energy_in_grid() / (dx * dx),
+                            f.sampling(),
+                            f.reference,
+                        ))
+                    })
+                },
+                &|staged| match staged {
+                    Staged::Done { value, .. } => value
+                        .pupils
+                        .iter()
+                        .map(|(_, _, p)| {
+                            let n = p.pupil.n as f64;
+                            n * size as f64 * (n + size as f64)
+                        })
+                        .sum(),
+                    Staged::Skipped { .. } => 0.,
+                },
+                IMAGE_HOST,
+            ),
+        );
+        (results, late.map(|h| h.join().expect("illumination rows")))
+    });
+    src.record(ran);
+    let nodes = gather(results, &mut stats, &mut warnings)?;
+    if nodes.len() != count {
+        return Err(invalid("field grid contains an unusable pupil"));
+    }
+    let (irradiance, axial, illumination_warnings, illumination_seconds) =
+        early.or(late).expect("illumination rows ran")?;
+    warnings.extend(illumination_warnings);
     let mut kernels = vec![];
     let mut kernel_sums = vec![];
     let mut mapping = vec![];
-    for (i, (p, f)) in d.points.iter().zip(&mut per).enumerate() {
-        let sub = ctx.subrange(
-            0.6 + 0.4 * i as f64 / d.points.len() as f64,
-            0.6 + 0.4 * (i + 1) as f64 / d.points.len() as f64,
-        );
-        super::analysis::ensure_window(
-            b,
-            t,
-            f,
-            size as f64 * dx,
-            &s.pupil,
-            &sub.subrange(0., 0.1),
-            &mut stats,
-        )?;
-        let psf = polychromatic_psf(
-            b,
-            t.system().snapshot.clone(),
-            &f.weighted(),
-            &crate::PolyPsfSettings {
-                grid_size: size,
-                spacing_mm: dx,
-                normalization: PsfNormalization::UnitEnergy,
-                transform: PsfTransform::Matrix,
-            },
-            false,
-            &sub.subrange(0.1, 0.9),
-        )?;
-        accumulate(&mut stats, &psf.stats);
-        let metrics = psf
-            .value
-            .metrics(b, t.system().snapshot.clone(), &sub.subrange(0.9, 1.))?;
-        accumulate(&mut stats, &metrics.stats);
-        if metrics.value.energy_in_grid < crate::analysis::MIN_ENERGY_IN_GRID {
-            warnings.push(
-                WaveWarning::PsfTruncated {
-                    energy_in_grid: metrics.value.energy_in_grid,
-                }
-                .to_string(),
-            );
-        }
-        warnings.extend(psf.value.warnings.iter().map(ToString::to_string));
-        kernels.push(psf.value.image);
-        kernel_sums.push(metrics.value.energy_in_grid / (dx * dx));
+    for (i, (p, (kernel, sum, sampling, reference))) in d.points.iter().zip(nodes).enumerate() {
+        kernels.push(kernel);
+        kernel_sums.push(sum);
         mapping.push(FieldMapping {
-            pupil_sampling: f.sampling(),
+            pupil_sampling: sampling,
             field: p.field,
             ideal_mm: p.paraxial,
-            real_mm: f.reference,
+            real_mm: reference,
             relative_illumination: irradiance[i] / axial,
         });
     }
-    let mut run_info =
-        super::analysis::info(b, t, timer, "image_psf_grid", s, &stats, warnings.clone());
+    let mut run_info = src.info(timer, "image_psf_grid", s, &stats, warnings.clone());
     run_info.settings["p5_evidence"] = serde_json::to_value(evidence).unwrap();
     run_info.settings["illumination"] =
         serde_json::json!({"backend":"cpu_reference","seconds":illumination_seconds});

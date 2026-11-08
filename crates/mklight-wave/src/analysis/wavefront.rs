@@ -113,8 +113,16 @@ pub fn fit_traced(
     basis: &ZernikeBasis,
     ctx: &JobContext,
 ) -> MkResult<crate::zernike::ZernikeFit> {
-    let rays: Vec<_> = tp
-        .samples
+    fit_samples(&tp.samples, basis, ctx)
+}
+
+/// The Zernike fit of lattice rays (weights `A²`), as [`fit_traced`].
+pub(crate) fn fit_samples(
+    samples: &crate::StructuredSamples,
+    basis: &ZernikeBasis,
+    ctx: &JobContext,
+) -> MkResult<crate::zernike::ZernikeFit> {
+    let rays: Vec<_> = samples
         .samples
         .iter()
         .flatten()

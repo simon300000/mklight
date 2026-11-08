@@ -182,6 +182,58 @@ pub(crate) fn traced_pupils(
         .collect()
 }
 
+/// The traced lattices of `jobs` at `settings`, in order, each with its
+/// key: the first stage of [`traced_pupils`] alone, for callers that
+/// resample elsewhere (the device work-split designs, `crate::gpu`).
+/// Shared through `memo` exactly as [`traced_pupils`] shares them.
+pub(crate) fn traced_lattices(
+    tracer: &SequentialTracer,
+    jobs: &[PupilJob],
+    settings: &PupilSettings,
+    memo: Option<&dyn Memo>,
+    ctx: &JobContext,
+) -> Vec<MkResult<(NodeKey, Arc<PupilLattice>)>> {
+    if let Err(e) = settings.validate() {
+        return jobs.iter().map(|_| Err(e.clone())).collect();
+    }
+    let keys: Vec<NodeKey> = jobs
+        .iter()
+        .map(|j| lattice_key(tracer, j.field, j.wl, settings))
+        .collect();
+    nodes(memo, LATTICE_NODE, &keys, ctx, &|i| {
+        let j = &jobs[i];
+        trace_lattice(tracer, j.field, j.wl, settings, &j.ctx).map(|l| {
+            let b = l.bytes();
+            (l, b)
+        })
+    })
+    .into_iter()
+    .zip(keys)
+    .map(|(l, k)| l.map(|l| (k, l)))
+    .collect()
+}
+
+/// `lattice` (key `key`) resampled to `n × n` through `memo` (offset zero):
+/// the resampled-pupil node [`traced_pupils`] and [`resample`] share.
+pub(crate) fn resampled(
+    lattice: &PupilLattice,
+    key: &NodeKey,
+    n: usize,
+    supersample: usize,
+    memo: Option<&dyn Memo>,
+    ctx: &JobContext,
+) -> MkResult<Arc<Resampled>> {
+    let rkey = resampled_key(key, n, supersample);
+    nodes(memo, RESAMPLED_NODE, &[rkey], ctx, &|_| {
+        lattice.resample(n, supersample, ctx).map(|r| {
+            let b = pupil_bytes(&r.0) + r.1.iter().map(String::len).sum::<usize>();
+            (r, b)
+        })
+    })
+    .pop()
+    .expect("one node")
+}
+
 /// `tp` (from the lattice `key`) resampled to `n × n`, keeping its image
 /// offset ([`TracedPupil::resample`] through `memo`).
 pub(crate) fn resample(

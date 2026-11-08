@@ -466,6 +466,64 @@ it without changing the reference registry; capability and `auto` routing
 are in GPU.md §9.2–9.3. Solver calls report the actual backend and f32
 precision.
 
+### Work-split designs
+
+The native jobs (`gpu::analysis`, `gpu::image_simulation::build_psf_grid`)
+divide each analysis between the host (the CPU f64 reference code, in
+parallel) and the device according to a design from `gpu::split`, read once
+per run through `mklight_core::split` (study key `wave`,
+`MKLIGHT_SPLIT_WAVE`) and named in `RunInfo.settings.work_split` together
+with where each field's transforms ran and how long its host preparation
+and transforms took.
+
+| design | host | device |
+|---|---|---|
+| `resident` | seed tables, chief rows, illumination | aiming, tracing, rim, placement, resampling, sampling decisions, transforms (the subsections below) |
+| `cpu-lattice` | lattices and rims (`trace_lattice`), illumination | resampling and refinements, sampling decisions, transforms |
+| `cpu-pupil` | lattices, resampling and refinements, sampling decisions, illumination | transforms |
+| `pipelined` (default) | as `cpu-pupil` | transforms, each field as soon as the host has prepared it |
+| `co-op` | as `pipelined`, and one host worker transforms fields with the reference's code | transforms of the other fields |
+| `by-size` | as `pipelined`, and the transforms of fields below a work limit | transforms of larger fields |
+| `cpu-aim` | aiming of chief, lattice, saddle and rim probes | tracing, survival, rim bisection, placement, resampling, decisions, transforms |
+
+Host lattices are the reference's own `PupilLattice`s (shared with the CPU
+analyses through the engine memo, `shared`); their nodes are written
+straight into shared allocations for device resampling, refinement and the
+lattice Zernike fit. Host resampling yields the reference's
+`PupilFunction`s, written into shared allocations in place, so the
+host-pupil designs make the reference's own sampling decisions (pupil grids
+and refinements, image windows, automatic frequencies and focus ranges)
+and report the reference's grids. Host-traced wavefront maps fit the
+reference's lattice (identical Zernike sets and Seidel terms), so explicit
+Metal requests run them; `auto` keeps `wavefront_map` on the reference
+until the cost model is calibrated for it.
+
+Chain designs run each field's host preparation and device transforms as
+one chain, up to `MKLIGHT_WAVE_CONCURRENT` chains at once. The pipelined
+designs start every field's host preparation at once and queue each
+prepared field for up to as many device workers; the analyses whose
+decisions are per field (PSF, line spread, MTF with an explicit frequency
+limit) trace field by field, the others trace all pupils first because
+their automatic frequencies, windows and focus ranges span all fields.
+`co-op` adds one host worker that takes fields from the back of the queue,
+only when more fields wait than device workers are free and the devices
+would need at least as long for the rest of the queue as the host for the
+field (a measured host/device time ratio per analysis: about 4 for PSFs and
+line spreads, 2.5 for direct MTFs, 1.3 for focus sweeps, 0.5 for wavefront
+statistics). `by-size` places a
+field's transforms on the host below a work limit per analysis
+(`n·m·(n + m)` summed over the pupils for matrix-transform PSFs on an `m²`
+image, cells × frequency vectors for autocorrelation OTFs, cells for
+wavefront statistics), measured on the M2 Pro; `MKLIGHT_WAVE_BY_SIZE`
+scales the limits (calibration: 0 keeps every transform on the device,
+`inf` on the host). Image simulation computes the relative-illumination
+rows beside the device work: during device tracing, or during the device
+PSFs when the host traces. `cpu-aim` writes host-aimed start rays in the
+device's generated-ray layout (`MKL_AIM_OUTSIDE` marks samples the
+reference does not trace and failed aims), traces chief, lattice and saddle
+probes with one plan each and runs the device rim bisection one plan per
+round, each round's probes aimed on the host.
+
 ### Pupils and automatic sampling
 
 `PupilTracer::new(backend, tracer, ctx)` prepares reusable packed geometry and
@@ -571,7 +629,10 @@ snapshot and configuration identity.
   grid whose stencil cannot hold one frequency (4096²) is rejected by the
   direct MTF, field MTF and through-focus jobs before any pupil is traced.
 * Focus sweeps share correlation stencils and cache exact defocus phases up to
-  256 MiB; larger requests evaluate the same phases on the fly. Per-plane GPU
+  256 MiB; larger sweeps run in plane chunks that each cache their planes'
+  phases (the cached phases are the values the on-the-fly path evaluates, five
+  per correlation sample and plane), and only a single plane beyond the limit
+  evaluates them on the fly. Per-plane GPU
   reductions retain phase-step warnings. FFT/Huygens use bounded plane batches.
   Automatic pupils are refined from the phase steps at both focus endpoints.
   Polychromatic fields/OTFs accumulate on device before taking magnitudes.

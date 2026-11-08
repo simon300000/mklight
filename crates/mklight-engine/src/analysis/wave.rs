@@ -19,19 +19,19 @@ use crate::error::EngineResult;
 
 struct Wave(&'static WaveAnalysisEntry);
 
-/// `$run!(job)` with the solver job of the wave analysis `$name`; the CPU
-/// reference ([`wa`]) and Metal (`mklight_wave::gpu::analysis`) jobs share
-/// their names and result types.
+/// `$run!(job)` with the memo-sharing solver job of the wave analysis
+/// `$name`; the CPU reference ([`wa`]) and Metal
+/// (`mklight_wave::gpu::analysis`) jobs share their names and result types.
 macro_rules! dispatch {
     ($name:expr, $run:ident) => {
         match $name {
-            "wavefront_map" => $run!(wavefront_map_job),
-            "psf" => $run!(psf_analysis_job),
-            "mtf" => $run!(mtf_analysis_job),
-            "mtf_vs_field" => $run!(mtf_vs_field_job),
-            "through_focus_mtf" => $run!(through_focus_mtf_analysis_job),
-            "diffraction_encircled_energy" => $run!(diffraction_encircled_energy_job),
-            "line_spread" => $run!(line_spread_job),
+            "wavefront_map" => $run!(wavefront_map_shared),
+            "psf" => $run!(psf_analysis_shared),
+            "mtf" => $run!(mtf_analysis_shared),
+            "mtf_vs_field" => $run!(mtf_vs_field_shared),
+            "through_focus_mtf" => $run!(through_focus_mtf_analysis_shared),
+            "diffraction_encircled_energy" => $run!(diffraction_encircled_energy_shared),
+            "line_spread" => $run!(line_spread_shared),
             _ => unreachable!("registered wave operation"),
         }
     };
@@ -80,12 +80,17 @@ impl Analysis for Wave {
             return run_cpu(self.0.name, &cfg, settings, memo, c);
         };
         let b = d.backend.as_ref();
+        // Host-traced lattices and pupils of the work-split designs are the
+        // reference's and are shared with the CPU analyses (`run_cpu`).
+        let memo = input.memo();
+        let memo = memo.as_ref().map(|m| m as &dyn Memo);
         macro_rules! gpu {
             ($f:ident) => {{
                 let mut r = mklight_wave::gpu::analysis::$f(
                     b,
                     &cfg.tracer,
                     &super::geometric::parse(settings)?,
+                    memo,
                     c,
                 )?;
                 super::gpu::record_native(input, &r.run_info);
