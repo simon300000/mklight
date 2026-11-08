@@ -605,7 +605,7 @@ is built, by one design read once per adapter from the work-split key
 | `host` | The reference tracer aims every ray (`generate_many`: the rays of a chunk advance together, chunks in parallel on rayon), bitwise as the CPU reference does. |
 | `device` | The double-float device solve of GPU.md §9.2 (host chief rows, device seed table for large generations), in a plan of its own, followed by host completion. |
 | `table` | A host f64 seed table and device Newton corrections from its interpolated seeds, at most 12 iterations per ray, followed by host completion. |
-| `split` | The host and the device aim one generation at the same time from one host seed table: the device takes tiles from the front (a sixteenth of the generation, 2¹³–2¹⁷ rays, two in flight), the host's rayon workers take 128-ray chunks from the back until the claims meet, then complete the device tiles' unconverged aims as each tile finishes. Generations under 2¹⁵ rays are aimed as by `host`. |
+| `split` | The host and the device aim one generation at the same time from one host seed table: the device takes tiles from the front (a sixteenth of the generation, 2¹³–2¹⁷ rays, two in flight), the host's rayon workers take 128-ray chunks from the back until the claims meet, then complete the device tiles' unconverged aims as each tile finishes. Generations under 2¹⁵ rays, and paraxial launches, are handled as by `host-table`. |
 
 Host aims are written straight into the shared ray planes the trace reads
 (four `fill_buffer` buffers filled in place by the rayon workers, the start

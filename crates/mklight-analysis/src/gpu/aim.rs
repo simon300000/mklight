@@ -28,7 +28,9 @@
 //! * [`AimDesign::Split`]: host and device aim one generation at the same
 //!   time: the device ([`AimDesign::Table`]) takes tiles from the front, the
 //!   host's rayon workers take chunks from the back until they meet; the
-//!   host completes the device tiles.
+//!   host completes the device tiles. Generations under
+//!   [`min_device_rays`] and paraxial launches are handled as by
+//!   [`AimDesign::HostTable`].
 //!
 //! **Host completion.** A device double-float aim cannot always certify the
 //! requested stop tolerance: the double-float trace carries the even-asphere
@@ -529,7 +531,9 @@ impl Geometry<'_> {
         ctx: &JobContext,
     ) -> MkResult<ResidentRays> {
         ctx.check()?;
-        if self.aim == AimDesign::HostTable && !matches!(rows.aiming, RayAiming::Real { .. }) {
+        if matches!(self.aim, AimDesign::HostTable | AimDesign::Split)
+            && !matches!(rows.aiming, RayAiming::Real { .. })
+        {
             // Paraxial launches need no solve: the device generates them in
             // the plan itself (they fail only where the reference fails).
             self.evidence(|e| {
@@ -1017,7 +1021,9 @@ impl Geometry<'_> {
         ctx: &JobContext,
     ) -> MkResult<[BufferHandle; 4]> {
         if n < min_device_rays() {
-            return self.aim_host(rows, n, spec, None, ctx);
+            // Too small for the device: as the default design.
+            let table = self.host_seed_table(rows, n, ctx)?;
+            return self.aim_host(rows, n, spec, table.as_ref(), ctx);
         }
         let start = Instant::now();
         let slots = self.slots(rows)?;
