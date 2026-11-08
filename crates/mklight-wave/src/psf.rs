@@ -340,11 +340,11 @@ fn surface_intensity(
         let xn: Vec<f64> = xs.iter().map(|x| b[0][0] * x).collect();
         let yn: Vec<f64> = ys.iter().map(|y| b[1][1] * y).collect();
         let u = mft(&field, n, &nu, &nu, &xn, &yn, ctx)?;
-        return Ok(u.iter().map(|z| z.norm_sqr()).collect());
+        return Ok(u.par_iter().map(|z| z.norm_sqr()).collect());
     }
     if n >= 32 && size >= 32 {
         let u = affine_mft(&field, n, &nu, &xs, &ys, b, ctx)?;
-        return Ok(u.iter().map(|z| z.norm_sqr()).collect());
+        return Ok(u.par_iter().map(|z| z.norm_sqr()).collect());
     }
     // Bounding box of the non-zero samples keeps the Horner loops short.
     let (mut lo, mut hi) = ((n, n), (0, 0));
@@ -807,19 +807,27 @@ pub fn polychromatic_psf(
     let mut acc = vec![0.0; size * size];
     let mut dl_peak = 0.0;
     let mut warnings = Vec::new();
-    for (q, (pupil, w)) in pupils.iter().enumerate() {
-        let sub = ctx.subrange(
-            q as f64 / pupils.len() as f64,
-            (q + 1) as f64 / pupils.len() as f64,
-        );
+    // The wavelengths transform side by side; the sum runs in wavelength
+    // order, element by element.
+    let raws: Vec<MkResult<Vec<f64>>> = pupils
+        .par_iter()
+        .enumerate()
+        .map(|(q, (pupil, _))| {
+            let sub = ctx.subrange(
+                q as f64 / pupils.len() as f64,
+                (q + 1) as f64 / pupils.len() as f64,
+            );
+            let off = pupil.image_offset_mm();
+            surface_intensity(pupil, dx, size, [-off[0], -off[1]], &sub)
+        })
+        .collect();
+    for ((pupil, w), raw) in pupils.iter().zip(raws) {
         let wn = w / wsum;
-        let off = pupil.image_offset_mm();
         let (_, raw_energy) = raw_constants(pupil);
-        let raw = surface_intensity(pupil, dx, size, [-off[0], -off[1]], &sub)?;
-        let unit: Vec<_> = raw.into_iter().map(|v| v / raw_energy).collect();
-        for (a, v) in acc.iter_mut().zip(&unit) {
-            *a += wn * v;
-        }
+        let raw = raw?;
+        acc.par_iter_mut().zip(&raw).for_each(|(a, v)| {
+            *a += wn * (v / raw_energy);
+        });
         // Unit-energy peak on the image surface (the projection spreads the
         // energy over 1/cosθ_c more area).
         dl_peak +=

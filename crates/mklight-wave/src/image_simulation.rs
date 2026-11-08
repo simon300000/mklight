@@ -195,19 +195,33 @@ pub fn build_psf_grid(
     let coordinates: Vec<_> = d.points.iter().map(|p| p.field).collect();
     let wls = wavelengths(t, &Default::default())?;
     // Irradiance Σ w_λ Ω_p,λ(H) relative to its on-axis value.
+    // Wavelengths side by side; sums and warnings in wavelength order.
     let mut irradiance = vec![0.0; coordinates.len()];
     let mut axial = 0.0;
-    for (i, &(wl, weight)) in wls.iter().enumerate() {
-        let n = wls.len() as f64;
-        let (rows, omega0) = illumination_rows(
-            t,
-            &coordinates,
-            wl,
-            s.illumination_radial,
-            s.illumination_azimuth,
-            &mut warnings,
-            &ctx.subrange(0.05 + 0.15 * i as f64 / n, 0.05 + 0.15 * (i + 1) as f64 / n),
-        )?;
+    let nw = wls.len() as f64;
+    let rows: Vec<_> = wls
+        .par_iter()
+        .enumerate()
+        .map(|(i, &(wl, _))| {
+            let mut w = Vec::new();
+            let r = illumination_rows(
+                t,
+                &coordinates,
+                wl,
+                s.illumination_radial,
+                s.illumination_azimuth,
+                &mut w,
+                &ctx.subrange(
+                    0.05 + 0.15 * i as f64 / nw,
+                    0.05 + 0.15 * (i + 1) as f64 / nw,
+                ),
+            );
+            (w, r)
+        })
+        .collect();
+    for ((w, r), &(_, weight)) in rows.into_iter().zip(&wls) {
+        warnings.extend(w);
+        let (rows, omega0) = r?;
         for (sum, row) in irradiance.iter_mut().zip(rows) {
             *sum += weight * row[0];
         }
@@ -244,7 +258,7 @@ pub fn build_psf_grid(
             .fold(f64::INFINITY, f64::min)
     });
     let size = if s.psf_size == 0 {
-        (per.iter()
+        (per.par_iter()
             .map(|fp| crate::sampling::image_grid(&fp.weighted(), dx))
             .max()
             .unwrap()
@@ -253,43 +267,59 @@ pub fn build_psf_grid(
     } else {
         s.psf_size
     };
+    // Every node's PSF side by side, merged in node order.
+    type Node = (Vec<String>, Vec<f64>, FieldMapping);
+    let nodes: Vec<MkResult<Node>> = d
+        .points
+        .par_iter()
+        .zip(per.par_iter_mut())
+        .enumerate()
+        .map(|(i, (p, pupils))| -> MkResult<Node> {
+            let mut warnings = Vec::new();
+            let sub = ctx.subrange(0.6 + 0.4 * i as f64 / n, 0.6 + 0.4 * (i + 1) as f64 / n);
+            warnings.extend(pupils.ensure_window(
+                size as f64 * dx,
+                &s.pupil,
+                None,
+                &sub.subrange(0.0, 0.1),
+            )?);
+            let psf = crate::polychromatic_psf(
+                &pupils.weighted(),
+                &PolyPsfSettings {
+                    grid_size: size,
+                    spacing_mm: dx,
+                    normalization: PsfNormalization::UnitEnergy,
+                    transform: PsfTransform::Fft,
+                },
+                &sub.subrange(0.1, 1.0),
+            )?;
+            let energy = psf.energy_in_grid() / psf.total_energy;
+            if energy < crate::analysis::MIN_ENERGY_IN_GRID {
+                let w = crate::WaveWarning::PsfTruncated {
+                    energy_in_grid: energy,
+                };
+                warnings.push(format!("field {:?}: {w}", p.field));
+            }
+            warnings.extend(psf.warnings.iter().map(ToString::to_string));
+            let sum: f64 = psf.data.iter().sum();
+            let kernel = psf.data.iter().map(|v| v / sum).collect();
+            let mapping = FieldMapping {
+                pupil_sampling: pupils.sampling(),
+                field: p.field,
+                ideal_mm: p.paraxial,
+                real_mm: pupils.reference_mm,
+                relative_illumination: irradiance[i] / axial,
+            };
+            Ok((warnings, kernel, mapping))
+        })
+        .collect();
     let mut kernels = Vec::new();
     let mut mapping = Vec::new();
-    for (i, (p, pupils)) in d.points.iter().zip(&mut per).enumerate() {
-        let sub = ctx.subrange(0.6 + 0.4 * i as f64 / n, 0.6 + 0.4 * (i + 1) as f64 / n);
-        warnings.extend(pupils.ensure_window(
-            size as f64 * dx,
-            &s.pupil,
-            None,
-            &sub.subrange(0.0, 0.1),
-        )?);
-        let psf = crate::polychromatic_psf(
-            &pupils.weighted(),
-            &PolyPsfSettings {
-                grid_size: size,
-                spacing_mm: dx,
-                normalization: PsfNormalization::UnitEnergy,
-                transform: PsfTransform::Fft,
-            },
-            &sub.subrange(0.1, 1.0),
-        )?;
-        let energy = psf.energy_in_grid() / psf.total_energy;
-        if energy < crate::analysis::MIN_ENERGY_IN_GRID {
-            let w = crate::WaveWarning::PsfTruncated {
-                energy_in_grid: energy,
-            };
-            warnings.push(format!("field {:?}: {w}", p.field));
-        }
-        warnings.extend(psf.warnings.iter().map(ToString::to_string));
-        let sum: f64 = psf.data.iter().sum();
-        kernels.push(psf.data.iter().map(|v| v / sum).collect());
-        mapping.push(FieldMapping {
-            pupil_sampling: pupils.sampling(),
-            field: p.field,
-            ideal_mm: p.paraxial,
-            real_mm: pupils.reference_mm,
-            relative_illumination: irradiance[i] / axial,
-        });
+    for node in nodes {
+        let (w, kernel, map) = node?;
+        warnings.extend(w);
+        kernels.push(kernel);
+        mapping.push(map);
     }
     Ok(PsfGrid {
         mapping,

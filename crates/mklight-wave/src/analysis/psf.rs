@@ -13,6 +13,7 @@ use mklight_core::job::RunTimer;
 use mklight_core::memo::Memo;
 use mklight_core::{JobContext, MkError, MkResult, RunInfo};
 use mklight_trace::SequentialTracer;
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use super::{FieldPupils, check_pos, fields, run_info, system_field_pupils, wavelengths};
@@ -350,7 +351,7 @@ pub fn psf_analysis_shared(
     )?;
     let mut warnings = skipped;
     let mut psfs = Vec::new();
-    let jobs: usize = per
+    let counts: Vec<usize> = per
         .iter()
         .map(|(_, _, fp)| {
             if settings.polychromatic {
@@ -359,64 +360,94 @@ pub fn psf_analysis_shared(
                 fp.pupils.len()
             }
         })
-        .sum::<usize>()
-        .max(1);
-    let mut done = 0usize;
-    for (f, value, mut fp) in per {
-        warnings.extend(fp.warnings.iter().cloned());
-        let spacing = default_spacing(&fp, settings.spacing_mm, settings.padding)?;
-        let grid = image_grid(settings.grid_size, settings.method, &fp.weighted(), spacing);
-        warnings.extend(fp.ensure_window(
-            grid as f64 * spacing,
-            &settings.pupil,
-            memo,
-            &ctx.subrange(0.4, 0.4),
-        )?);
-        // (wavelength, weighted pupils) of each PSF of this field.
-        type Group<'a> = (Option<usize>, Vec<(&'a PupilFunction, f64)>);
-        let groups: Vec<Group> = if settings.polychromatic {
-            vec![(
-                (fp.pupils.len() == 1).then(|| fp.pupils[0].0),
-                fp.weighted(),
-            )]
-        } else {
-            fp.pupils
-                .iter()
-                .map(|(wl, _, p)| (Some(*wl), vec![(&p.pupil, 1.0)]))
-                .collect()
-        };
-        for (wl, group) in groups {
-            let a = 0.4 + 0.6 * done as f64 / jobs as f64;
-            let b = 0.4 + 0.6 * (done + 1) as f64 / jobs as f64;
-            let psf = compute_psf(
-                &group,
-                settings.method,
-                grid,
-                spacing,
-                settings.normalization,
-                &ctx.subrange(a, b),
-            )?;
-            done += 1;
-            for w in &psf.warnings {
-                warnings.push(format!("field {f}: {w}"));
+        .collect();
+    let jobs = counts.iter().sum::<usize>().max(1);
+    let firsts: Vec<usize> = counts
+        .iter()
+        .scan(0, |done, c| {
+            let first = *done;
+            *done += c;
+            Some(first)
+        })
+        .collect();
+    // Fields (and a field's PSFs) are independent: they run side by side
+    // and merge in field order, so results and warnings do not depend on
+    // the scheduling.
+    type FieldOut = (Vec<String>, Vec<FieldPsf>);
+    let fields: Vec<MkResult<FieldOut>> = per
+        .into_par_iter()
+        .zip(firsts)
+        .map(|((f, value, mut fp), first)| -> MkResult<FieldOut> {
+            let mut warnings = fp.warnings.clone();
+            let spacing = default_spacing(&fp, settings.spacing_mm, settings.padding)?;
+            let grid = image_grid(settings.grid_size, settings.method, &fp.weighted(), spacing);
+            warnings.extend(fp.ensure_window(
+                grid as f64 * spacing,
+                &settings.pupil,
+                memo,
+                &ctx.subrange(0.4, 0.4),
+            )?);
+            // (wavelength, weighted pupils) of each PSF of this field.
+            type Group<'a> = (Option<usize>, Vec<(&'a PupilFunction, f64)>);
+            let groups: Vec<Group> = if settings.polychromatic {
+                vec![(
+                    (fp.pupils.len() == 1).then(|| fp.pupils[0].0),
+                    fp.weighted(),
+                )]
+            } else {
+                fp.pupils
+                    .iter()
+                    .map(|(wl, _, p)| (Some(*wl), vec![(&p.pupil, 1.0)]))
+                    .collect()
+            };
+            let computed: Vec<MkResult<Psf>> = groups
+                .par_iter()
+                .enumerate()
+                .map(|(j, (_, group))| {
+                    let done = first + j;
+                    let a = 0.4 + 0.6 * done as f64 / jobs as f64;
+                    let b = 0.4 + 0.6 * (done + 1) as f64 / jobs as f64;
+                    compute_psf(
+                        group,
+                        settings.method,
+                        grid,
+                        spacing,
+                        settings.normalization,
+                        &ctx.subrange(a, b),
+                    )
+                })
+                .collect();
+            let mut psfs = Vec::with_capacity(groups.len());
+            for ((wl, _), psf) in groups.iter().zip(computed) {
+                let psf = psf?;
+                let wl = *wl;
+                for w in &psf.warnings {
+                    warnings.push(format!("field {f}: {w}"));
+                }
+                let (_, i, j) = psf.peak();
+                psfs.push(FieldPsf {
+                    field: f,
+                    field_value: value,
+                    wavelength: wl,
+                    pupil_sampling: fp
+                        .sampling()
+                        .into_iter()
+                        .filter(|s| wl.is_none_or(|wl| s.wavelength == wl))
+                        .collect(),
+                    reference_mm: fp.reference_mm,
+                    strehl: psf.strehl(),
+                    centroid_mm: psf.centroid(),
+                    peak_mm: [psf.x(i), psf.y(j)],
+                    psf,
+                });
             }
-            let (_, i, j) = psf.peak();
-            psfs.push(FieldPsf {
-                field: f,
-                field_value: value,
-                wavelength: wl,
-                pupil_sampling: fp
-                    .sampling()
-                    .into_iter()
-                    .filter(|s| wl.is_none_or(|wl| s.wavelength == wl))
-                    .collect(),
-                reference_mm: fp.reference_mm,
-                strehl: psf.strehl(),
-                centroid_mm: psf.centroid(),
-                peak_mm: [psf.x(i), psf.y(j)],
-                psf,
-            });
-        }
+            Ok((warnings, psfs))
+        })
+        .collect();
+    for field in fields {
+        let (w, p) = field?;
+        warnings.extend(w);
+        psfs.extend(p);
     }
     ctx.report(1.0, "PSF");
     Ok(PsfResult {
