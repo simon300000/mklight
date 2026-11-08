@@ -61,6 +61,7 @@
 use mklight_core::job::RunTimer;
 use mklight_core::{JobContext, MkError, MkResult, RunInfo, Vec3};
 use mklight_trace::{Grid, SequentialTracer, trace_grid_job};
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::util::{
@@ -816,52 +817,130 @@ pub(crate) fn spot_reduce(
         ))
     });
 
-    let mut out = Vec::with_capacity(batch.fields.len());
-    for (k, fr) in batch.fields.iter().enumerate() {
-        ctx.check()?;
-        let m = fr.moments(delta);
-        let total: f64 = fr
-            .launched
-            .iter()
-            .zip(&weights)
-            .map(|(&n, w)| n as f64 * w)
-            .sum();
-        let missing: f64 = fr
-            .launched
-            .iter()
-            .zip(&fr.arrived)
-            .zip(&weights)
-            .map(|((&n, &a), w)| (n - a) as f64 * w)
-            .sum();
-        let poly = stats(
-            &m,
-            fr.launched.iter().sum::<usize>() as f64,
-            fr.rays.len(),
-            missing,
-            total,
-            fr.chief_ok,
-        );
-        // Absolute chief/centroid at this defocus.
-        let c_abs = [
-            delta.mul_add(fr.origin_slope[0], fr.origin[0]),
-            delta.mul_add(fr.origin_slope[1], fr.origin[1]),
-        ];
-        let chief = if fr.chief_ok { c_abs } else { [f64::NAN; 2] };
-        let centroid = [c_abs[0] + m.centroid[0], c_abs[1] + m.centroid[1]];
-        let (ref_rel, rms, geo) = match settings.reference {
-            SpotReference::Chief if fr.chief_ok => ([0.0, 0.0], m.rms_origin, m.geo_origin),
-            SpotReference::Chief => ([f64::NAN; 2], f64::NAN, f64::NAN),
-            SpotReference::Centroid => (m.centroid, m.rms_centroid, m.geo_centroid),
-        };
-        let reference = [c_abs[0] + ref_rel[0], c_abs[1] + ref_rel[1]];
-        // The reference's own slope: the chief's is the origin of every
-        // slope difference; the centroid's is the weighted mean.
-        let ref_slope = match settings.reference {
-            SpotReference::Centroid => {
-                Moments::of(fr.rays.iter().map(|r| (r.dt, r.weight))).centroid
+    // The statistics of each field are a pure function of its rays: they
+    // run in parallel over the fields; points and assembly follow in field
+    // order.
+    struct Summary {
+        poly: SpotStats,
+        chief: [f64; 2],
+        centroid: [f64; 2],
+        ref_rel: [f64; 2],
+        rms: f64,
+        geo: f64,
+        reference: [f64; 2],
+        ref_slope: [f64; 2],
+        per_wavelength: Vec<WavelengthSpot>,
+        through_focus: Vec<FocusSample>,
+    }
+    ctx.check()?;
+    let summaries: Vec<Summary> = batch
+        .fields
+        .par_iter()
+        .map(|fr| {
+            let m = fr.moments(delta);
+            let total: f64 = fr
+                .launched
+                .iter()
+                .zip(&weights)
+                .map(|(&n, w)| n as f64 * w)
+                .sum();
+            let missing: f64 = fr
+                .launched
+                .iter()
+                .zip(&fr.arrived)
+                .zip(&weights)
+                .map(|((&n, &a), w)| (n - a) as f64 * w)
+                .sum();
+            let poly = stats(
+                &m,
+                fr.launched.iter().sum::<usize>() as f64,
+                fr.rays.len(),
+                missing,
+                total,
+                fr.chief_ok,
+            );
+            // Absolute chief/centroid at this defocus.
+            let c_abs = [
+                delta.mul_add(fr.origin_slope[0], fr.origin[0]),
+                delta.mul_add(fr.origin_slope[1], fr.origin[1]),
+            ];
+            let chief = if fr.chief_ok { c_abs } else { [f64::NAN; 2] };
+            let centroid = [c_abs[0] + m.centroid[0], c_abs[1] + m.centroid[1]];
+            let (ref_rel, rms, geo) = match settings.reference {
+                SpotReference::Chief if fr.chief_ok => ([0.0, 0.0], m.rms_origin, m.geo_origin),
+                SpotReference::Chief => ([f64::NAN; 2], f64::NAN, f64::NAN),
+                SpotReference::Centroid => (m.centroid, m.rms_centroid, m.geo_centroid),
+            };
+            let reference = [c_abs[0] + ref_rel[0], c_abs[1] + ref_rel[1]];
+            // The reference's own slope: the chief's is the origin of every
+            // slope difference; the centroid's is the weighted mean.
+            let ref_slope = match settings.reference {
+                SpotReference::Centroid => {
+                    Moments::of(fr.rays.iter().map(|r| (r.dt, r.weight))).centroid
+                }
+                SpotReference::Chief => [0.0, 0.0],
+            };
+            let per_wavelength = wls
+                .iter()
+                .enumerate()
+                .map(|(k, &w)| {
+                    let mw = fr.moments_wl(k, delta);
+                    let (cq, cdt) = fr.wl_chief[k];
+                    let ok = cq[0].is_finite();
+                    let n = fr.launched[k];
+                    WavelengthSpot {
+                        wavelength: w,
+                        wavelength_um: sys.wavelengths_um[w],
+                        weight: sys.wavelength_weights[w],
+                        chief: [
+                            c_abs[0] + delta.mul_add(cdt[0], cq[0]),
+                            c_abs[1] + delta.mul_add(cdt[1], cq[1]),
+                        ],
+                        stats: stats(
+                            &mw,
+                            n as f64,
+                            fr.arrived[k],
+                            (n - fr.arrived[k]) as f64,
+                            n as f64,
+                            ok,
+                        ),
+                    }
+                })
+                .collect();
+            let through_focus = planes
+                .as_ref()
+                .map(|planes| {
+                    planes
+                        .iter()
+                        .map(|&d| {
+                            let m = fr.moments(d);
+                            FocusSample {
+                                defocus: d,
+                                rms_radius_centroid: m.rms_centroid,
+                                rms_radius_chief: if fr.chief_ok { m.rms_origin } else { f64::NAN },
+                            }
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            Summary {
+                poly,
+                chief,
+                centroid,
+                ref_rel,
+                rms,
+                geo,
+                reference,
+                ref_slope,
+                per_wavelength,
+                through_focus,
             }
-            SpotReference::Chief => [0.0, 0.0],
-        };
+        })
+        .collect();
+    let mut out = Vec::with_capacity(batch.fields.len());
+    for (k, (fr, sum)) in batch.fields.iter().zip(summaries).enumerate() {
+        ctx.check()?;
+        let (ref_rel, ref_slope) = (sum.ref_rel, sum.ref_slope);
         let points = if let Some(p) = packed.as_mut() {
             let start = p.len();
             if settings.include_points {
@@ -894,61 +973,18 @@ pub(crate) fn spot_reduce(
         } else {
             Vec::new()
         };
-        let per_wavelength = wls
-            .iter()
-            .enumerate()
-            .map(|(k, &w)| {
-                let mw = fr.moments_wl(k, delta);
-                let (cq, cdt) = fr.wl_chief[k];
-                let ok = cq[0].is_finite();
-                let n = fr.launched[k];
-                WavelengthSpot {
-                    wavelength: w,
-                    wavelength_um: sys.wavelengths_um[w],
-                    weight: sys.wavelength_weights[w],
-                    chief: [
-                        c_abs[0] + delta.mul_add(cdt[0], cq[0]),
-                        c_abs[1] + delta.mul_add(cdt[1], cq[1]),
-                    ],
-                    stats: stats(
-                        &mw,
-                        n as f64,
-                        fr.arrived[k],
-                        (n - fr.arrived[k]) as f64,
-                        n as f64,
-                        ok,
-                    ),
-                }
-            })
-            .collect();
-        let through_focus = planes
-            .as_ref()
-            .map(|planes| {
-                planes
-                    .iter()
-                    .map(|&d| {
-                        let m = fr.moments(d);
-                        FocusSample {
-                            defocus: d,
-                            rms_radius_centroid: m.rms_centroid,
-                            rms_radius_chief: if fr.chief_ok { m.rms_origin } else { f64::NAN },
-                        }
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
         out.push(FieldSpot {
             field: fr.field,
             field_value: field_value(tracer, fr.field),
             points,
-            reference,
-            chief,
-            centroid,
-            rms_radius: rms,
-            geo_radius: geo,
-            polychromatic: poly,
-            per_wavelength,
-            through_focus,
+            reference: sum.reference,
+            chief: sum.chief,
+            centroid: sum.centroid,
+            rms_radius: sum.rms,
+            geo_radius: sum.geo,
+            polychromatic: sum.poly,
+            per_wavelength: sum.per_wavelength,
+            through_focus: sum.through_focus,
         });
     }
     let airy = 1.22 * sys.wavelengths_um[sys.primary_wavelength] * 1e-3 * fo.working_f_number;

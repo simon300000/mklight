@@ -6,6 +6,7 @@ use crate::util::{default_fields, pupil_points, run_info};
 use mklight_core::job::RunTimer;
 use mklight_core::{JobContext, MkResult, RunInfo, Vec3};
 use mklight_trace::SequentialTracer;
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct OverlaySet {
@@ -102,23 +103,48 @@ pub fn footprint_overlay_job(
     let mut outlines = Vec::new();
     for (fi, &f) in fields.iter().enumerate() {
         for (wi, &w) in wls.iter().enumerate() {
+            // The pupil's rays in parallel chunks, their records collected
+            // in pupil order (the clouds are those of a serial trace).
+            let records: Vec<Vec<Vec3>> = pupil
+                .par_chunks(64)
+                .map(|chunk| {
+                    ctx.check()?;
+                    let mut records = Vec::new();
+                    Ok(chunk
+                        .iter()
+                        .map(|p| {
+                            t.trace_with(
+                                t.field(f),
+                                w,
+                                p[0],
+                                p[1],
+                                &t.options(),
+                                Some(&mut records),
+                            );
+                            records.iter().map(|r| r.point).collect()
+                        })
+                        .collect::<Vec<Vec<Vec3>>>())
+                })
+                .collect::<MkResult<Vec<_>>>()?
+                .into_iter()
+                .flatten()
+                .collect();
             let mut hits = vec![Vec::new(); ns];
-            for p in &pupil {
-                ctx.check()?;
-                let mut records = Vec::new();
-                t.trace_with(t.field(f), w, p[0], p[1], &t.options(), Some(&mut records));
-                for (i, r) in records.iter().enumerate().skip(1) {
-                    hits[i].push(r.point);
+            for ray in &records {
+                for (i, &p) in ray.iter().enumerate().skip(1) {
+                    hits[i].push(p);
                 }
             }
-            for (i, hit) in hits.iter().enumerate().skip(1) {
+            drop(records);
+            ctx.check()?;
+            let hulls: Vec<Vec<Vec3>> = hits.par_iter().map(|h| convex_hull(h)).collect();
+            for ((i, hit), hull) in hits.iter().enumerate().zip(hulls).skip(1) {
                 ctx.check()?;
                 let frame = &t.system().surfaces[i].frame;
                 let global = |p: Vec3| {
                     let q = frame.to_global_point(p);
                     [q.x, q.y, q.z]
                 };
-                let hull = convex_hull(hit);
                 sets.push(OverlaySet {
                     surface: i,
                     field: f,
