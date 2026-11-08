@@ -17,6 +17,65 @@ pub use evaluator::{EvalDesign, EvaluationStats, ResidentEvaluator};
 /// Work-split study key of the solver analyses (`mklight_core::split`).
 pub const SPLIT_STUDY: &str = "solvers";
 
+/// Work-split study key of the hybrid designs' CPU thread layout
+/// (`mklight_core::split`): [`Lanes`].
+pub const THREADS_STUDY: &str = "solver_threads";
+
+/// How the hybrid designs lay a batch's host work out on the CPU threads
+/// when it has several device sub-batches ([`EvalDesign::Pipelined`], or a
+/// batch over one plan's limit): the variants of the `solver_threads`
+/// work-split study. Values do not depend on it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Lanes {
+    /// One lane (the default): each sub-batch's preparation, host share and
+    /// finishing in turn, each on the whole rayon pool.
+    Single,
+    /// Two concurrent lanes on the whole pool: the feed lane prepares and
+    /// submits the sub-batches (host tracers, chief rays, device plans),
+    /// the host lane traces each one's host-routed rays and rayless
+    /// operands while the device works and finishes it when it lands.
+    Shared,
+    /// The two lanes on dedicated pools: the host lane gets `quarters`
+    /// quarters of the threads, the feed lane the rest.
+    Budget { quarters: u8 },
+}
+impl Lanes {
+    pub const DEFAULT: Lanes = Lanes::Single;
+    pub const ALL: [Lanes; 5] = [
+        Lanes::Single,
+        Lanes::Shared,
+        Lanes::Budget { quarters: 1 },
+        Lanes::Budget { quarters: 2 },
+        Lanes::Budget { quarters: 3 },
+    ];
+    pub fn name(self) -> &'static str {
+        match self {
+            Lanes::Single => "single",
+            Lanes::Shared => "lanes",
+            Lanes::Budget { quarters: 1 } => "host-quarter",
+            Lanes::Budget { quarters: 2 } => "host-half",
+            Lanes::Budget { .. } => "host-three-quarters",
+        }
+    }
+    pub fn from_name(name: &str) -> Option<Lanes> {
+        Lanes::ALL.into_iter().find(|s| s.name() == name)
+    }
+    /// The variant selected for this run (`mklight_core::split`), or the
+    /// default; an unknown name is an error.
+    pub fn selected() -> MkResult<Lanes> {
+        match mklight_core::split::variant(THREADS_STUDY) {
+            None => Ok(Lanes::DEFAULT),
+            Some(v) => Lanes::from_name(&v).ok_or_else(|| {
+                mklight_core::MkError::InvalidParam(format!(
+                    "unknown '{THREADS_STUDY}' work-split variant '{v}' (known: {})",
+                    Lanes::ALL.map(Lanes::name).join(", ")
+                ))
+            }),
+        }
+    }
+}
+
 /// A named division of the solver analyses (merit evaluation, optimisation,
 /// tolerancing, glass substitution) between the CPU and the GPU: the
 /// variants of the `solvers` work-split study. The engine reads it once per
@@ -33,7 +92,9 @@ pub enum Split {
     Pipelined,
     /// [`Split::Hybrid`], and least-squares trial points evaluated together
     /// with the finite-difference probes of the next Jacobian (one batch per
-    /// iteration instead of two when the step is accepted).
+    /// iteration instead of two when the step is accepted); batches of at
+    /// least [`Split::PIPELINE_FROM`] candidates (Monte Carlo, sensitivity)
+    /// pipelined as [`Split::Pipelined`].
     Speculative,
     /// [`Split::Hybrid`], and glass substitution re-optimises each search
     /// iteration's combinations side by side through the rendezvous
@@ -101,6 +162,17 @@ impl Split {
     pub fn joint_refinements(self) -> bool {
         self == Split::Rendezvous
     }
+    /// The smallest batch the variant pipelines in sub-batches: the
+    /// default (`speculative`) pipelines Monte Carlo and sensitivity
+    /// batches (at least [`Split::PIPELINE_FROM`] candidates) and keeps a
+    /// finite-difference Jacobian in one plan.
+    pub fn pipeline_from(self) -> Option<usize> {
+        (self == Split::Speculative).then_some(Split::PIPELINE_FROM)
+    }
+    /// See [`Split::pipeline_from`]: 1000 dense trials on the 29- and
+    /// 35-surface lenses 1.92 → 1.72 s and 1.98 → 1.75 s pipelined, a
+    /// 23-candidate Jacobian of the Double Gauss slower (792 vs 582 ms).
+    pub const PIPELINE_FROM: usize = 64;
 }
 
 type SamplingCache = Vec<(

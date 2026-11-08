@@ -1,6 +1,6 @@
 //! Resident candidate evaluation. Accuracy is checked by offline f64 regressions;
 //! only unsupported work and device failures invoke the reference evaluator.
-use super::GpuContext;
+use super::{GpuContext, Lanes};
 use crate::deriv::FdScheme;
 use crate::merit::gpu_eval::resident::{self, RayDesign};
 use crate::merit::{
@@ -67,11 +67,17 @@ pub enum EvalDesign {
     Pipelined,
 }
 impl EvalDesign {
-    fn ray_design(self, cap: Option<u32>) -> RayDesign {
+    fn ray_design(self, cap: Option<u32>, host_aim: bool) -> RayDesign {
         match (self, cap) {
             (EvalDesign::Resident, _) => RayDesign::RESIDENT,
-            (_, Some(cap)) => RayDesign::hybrid_capped(cap),
-            (_, None) => RayDesign::HYBRID,
+            (_, Some(cap)) => RayDesign {
+                host_aim,
+                ..RayDesign::hybrid_capped(cap)
+            },
+            (_, None) => RayDesign {
+                host_aim,
+                ..RayDesign::HYBRID
+            },
         }
     }
     fn hybrid(self) -> bool {
@@ -86,6 +92,28 @@ const PIPELINE_MIN_CHUNK: usize = 8;
 /// [`PIPELINE_MIN_CHUNK`] candidates.
 fn pipeline_chunk(n: usize) -> usize {
     n.div_ceil(3).max(PIPELINE_MIN_CHUNK)
+}
+/// The dedicated (host lane, feed lane) rayon pools of a
+/// [`Lanes::Budget`]: `quarters` quarters of the global pool's threads (at
+/// least one) for the host lane, the rest (at least one) for the feed
+/// lane. Built once per budget.
+fn lane_pools(quarters: u8) -> (&'static rayon::ThreadPool, &'static rayon::ThreadPool) {
+    static POOLS: [std::sync::OnceLock<(rayon::ThreadPool, rayon::ThreadPool)>; 3] =
+        [const { std::sync::OnceLock::new() }; 3];
+    let q = quarters.clamp(1, 3);
+    let (h, f) = POOLS[q as usize - 1].get_or_init(|| {
+        let n = rayon::current_num_threads().max(2);
+        let host = (n * q as usize / 4).clamp(1, n - 1);
+        let pool = |threads: usize, name: &'static str| {
+            rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .thread_name(move |i| format!("{name}-{i}"))
+                .build()
+                .expect("lane pool")
+        };
+        (pool(host, "mkl-host-lane"), pool(n - host, "mkl-feed-lane"))
+    });
+    (h, f)
 }
 /// Smallest batch for which a hybrid evaluator that has not seen a batch
 /// yet first traces one candidate alone to learn the slow rays: a large
@@ -109,6 +137,13 @@ pub struct ResidentEvaluator {
     host_rays: Arc<Mutex<HostRays>>,
     /// Device aiming schedule cap of the hybrid designs (`None`: theirs).
     aim_cap: Option<u32>,
+    /// CPU thread layout of the hybrid designs' sub-batches.
+    lanes: Lanes,
+    /// Hybrid designs: aim every pupil ray on the host, trace on the device.
+    host_aim: bool,
+    /// [`EvalDesign::Hybrid`]: pipeline batches of at least this many
+    /// candidates as [`EvalDesign::Pipelined`] does.
+    pipeline_from: Option<usize>,
 }
 /// Rays the hybrid designs route to the host, learned from the device's
 /// aiming reports (unresolved or slow), and the batches seen so far. A ray
@@ -161,7 +196,36 @@ impl ResidentEvaluator {
             design: EvalDesign::default(),
             host_rays: Arc::default(),
             aim_cap: None,
+            lanes: Lanes::DEFAULT,
+            host_aim: false,
+            pipeline_from: None,
         }
+    }
+    /// [`EvalDesign::Hybrid`] with batches of at least `n` candidates
+    /// pipelined in sub-batches as [`EvalDesign::Pipelined`] (a size rule:
+    /// Monte Carlo and sensitivity batches overlap their host and device
+    /// work, finite-difference Jacobians stay one plan).
+    pub fn with_pipelining_from(mut self, n: usize) -> Self {
+        self.pipeline_from = Some(n);
+        self
+    }
+    /// The hybrid designs with every pupil ray aimed on the host (the
+    /// candidates' f64 tracers, the reference's aims) and only traced and
+    /// reduced on the device, or (`false`, the default) aimed on the device
+    /// with host completion.
+    pub fn with_host_aim(mut self, host_aim: bool) -> Self {
+        self.host_aim = host_aim;
+        self
+    }
+    /// Are the hybrid designs' pupil rays aimed on the host?
+    pub fn host_aim(&self) -> bool {
+        self.host_aim
+    }
+    /// The same evaluator with another CPU thread layout of the hybrid
+    /// designs' sub-batches.
+    pub fn with_lanes(mut self, lanes: Lanes) -> Self {
+        self.lanes = lanes;
+        self
     }
     /// The same evaluator with another host/device division.
     pub fn with_design(mut self, design: EvalDesign) -> Self {
@@ -259,9 +323,32 @@ impl ResidentEvaluator {
         let inner = JobContext::with(ctx.cancel.clone(), Default::default());
         let hybrid = self.design.hybrid();
         let started = std::time::Instant::now();
+        // A finite-difference batch with host aiming: like the reference's
+        // `evaluate_batch_near`, the base point (the batch's first
+        // candidate) is evaluated on the host first and its solves seed
+        // every candidate's tracer, so the probes' host solves (fields,
+        // chief rays, automatic semi-diameters, pupil rays) start from the
+        // base's and share its solve path, as the reference's do. (Device
+        // aiming keeps unseeded host tracers: seeding them measured no host
+        // saving on the 29-surface lens and adds the base evaluation.)
+        let seeds = match (hybrid && anchored && self.host_aim, systems.first()) {
+            (true, Some(base)) => {
+                self.reference
+                    .trace
+                    .anchor_seeds(base, systems.len(), ops, &inner)?
+            }
+            _ => None,
+        };
         let tracers: Vec<_> = systems
             .par_iter()
-            .map(|system| self.reference.trace.tracer(system).ok().map(Arc::new))
+            .map(|system| {
+                match &seeds {
+                    Some(seeds) => self.reference.trace.tracer_near(system, seeds),
+                    None => self.reference.trace.tracer(system),
+                }
+                .ok()
+                .map(Arc::new)
+            })
             .collect();
         if hybrid {
             let seconds = started.elapsed().as_secs_f64();
@@ -789,7 +876,133 @@ struct Stage<'s> {
     /// Unresolved rays of the sub-batches finished on landing.
     unresolved: Mutex<Vec<Vec<resident::RayKey>>>,
 }
-impl Stage<'_> {
+/// A prepared sub-batch, its submitted plan and its rays (device and
+/// host-routed).
+type Fed<'a> = (
+    resident::Prepared<'a>,
+    mklight_gpu::Pending<mklight_gpu::resident::PlanResult>,
+    usize,
+);
+/// `f` on `pool`, or on the calling thread.
+fn on<R: Send>(pool: Option<&rayon::ThreadPool>, f: impl FnOnce() -> R + Send) -> R {
+    match pool {
+        Some(p) => p.install(f),
+        None => f(),
+    }
+}
+impl<'s> Stage<'s> {
+    /// Prepare sub-batch `k` and submit its device plan.
+    fn feed<'a>(
+        &self,
+        k: usize,
+        chunk: &'a [Arc<SequentialTracer>],
+        host_rays: &BTreeSet<resident::RayKey>,
+    ) -> MkResult<Fed<'a>>
+    where
+        's: 'a,
+    {
+        self.ctx.check()?;
+        let mut prepared = resident::prepare(
+            self.context,
+            self.cpu,
+            chunk,
+            self.ops,
+            None,
+            self.design,
+            host_rays,
+            self.ctx,
+        )?;
+        let plan = prepared.plan.take().expect("prepared plan");
+        self.context.record_traced_rays(prepared.traced_rays());
+        let rays = prepared.traced_rays() + prepared.host_rays();
+        if resident::trace_routing() {
+            eprintln!(
+                "MKL_SOLVERS chunk {k}: {} candidates, {} device rays, {} host-routed rays (set {})",
+                chunk.len(),
+                prepared.traced_rays(),
+                prepared.host_rays(),
+                host_rays.len()
+            );
+        }
+        let pending = self.context.submit_async(plan, self.ctx)?;
+        Ok((prepared, pending, rays))
+    }
+    /// The host's share of a sub-batch while the device traces the rest:
+    /// the rays routed to it and the operands that need no ray.
+    fn host_share(
+        &self,
+        chunk: &[Arc<SequentialTracer>],
+        prepared: &mut resident::Prepared<'_>,
+    ) -> MkResult<()> {
+        let started = std::time::Instant::now();
+        resident::host_stage(prepared, self.cpu, chunk, self.ops, self.design, self.ctx)?;
+        self.context.observe(mklight_gpu::resident::PlanStats {
+            polished_rays: prepared.host_rays() as u64,
+            stages: vec![mklight_gpu::resident::StageStats {
+                name: "host stage (routed rays, rayless operands; overlapped)".into(),
+                wall_seconds: started.elapsed().as_secs_f64(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        });
+        Ok(())
+    }
+    /// The sub-batches `chunks` in two concurrent lanes ([`Lanes::Shared`]
+    /// or [`Lanes::Budget`]): this thread feeds the device (preparation
+    /// and submission), a second one takes each submitted sub-batch's host
+    /// share and lands it; at most one fed sub-batch waits between them.
+    /// Returns the batch's rays. Called outside the rayon pool only, so
+    /// that the lanes' blocking hand-over holds no pool thread.
+    fn lanes<'a>(
+        &self,
+        lanes: Lanes,
+        chunks: &[&'a [Arc<SequentialTracer>]],
+        host_rays: &BTreeSet<resident::RayKey>,
+        values: &mut [Option<Vec<Vec<OperandValue>>>],
+        deferred: &mut Vec<Landing<'a>>,
+    ) -> MkResult<usize>
+    where
+        's: 'a,
+    {
+        let (host_pool, feed_pool) = match lanes {
+            Lanes::Budget { quarters } => {
+                let (h, f) = lane_pools(quarters);
+                (Some(h), Some(f))
+            }
+            _ => (None, None),
+        };
+        let (tx, rx) = std::sync::mpsc::sync_channel::<(usize, Fed<'a>)>(1);
+        std::thread::scope(|scope| {
+            let host = scope.spawn(|| -> MkResult<()> {
+                for (k, (mut prepared, pending, _)) in rx {
+                    on(host_pool, || {
+                        self.host_share(chunks[k], &mut prepared)?;
+                        self.land(k, chunks[k], prepared, pending, values, deferred)
+                    })?;
+                }
+                Ok(())
+            });
+            let mut rays = 0;
+            let mut fed = Ok(());
+            for (k, chunk) in chunks.iter().enumerate() {
+                match on(feed_pool, || self.feed(k, chunk, host_rays)) {
+                    Ok(item) => {
+                        rays += item.2;
+                        if tx.send((k, item)).is_err() {
+                            break;
+                        }
+                    }
+                    Err(e) => {
+                        fed = Err(e);
+                        break;
+                    }
+                }
+            }
+            drop(tx);
+            let hosted = host.join().expect("host lane");
+            fed.and(hosted).map(|()| rays)
+        })
+    }
     /// Wait for sub-batch `k`'s plan, read it and finish it (or, in an
     /// anchored batch, keep it for the uniform completion).
     fn land<'a>(
@@ -858,7 +1071,7 @@ impl ResidentEvaluator {
         if n == 0 {
             return Ok(vec![]);
         }
-        if n >= PROBE_MIN_BATCH && self.host_rays.lock().unwrap().batches == 0 {
+        if n >= PROBE_MIN_BATCH && !self.host_aim && self.host_rays.lock().unwrap().batches == 0 {
             // The probe's values are not used: a finite difference routes
             // all its candidates alike.
             self.split_rays(context, &tracers[..1], ops, false, ctx)?;
@@ -880,13 +1093,14 @@ impl ResidentEvaluator {
                 .or_default() += (n * ops.len()) as u64;
             return Ok(values);
         }
-        let design = self.design.ray_design(self.aim_cap);
+        let design = self.design.ray_design(self.aim_cap, self.host_aim);
         let limit = batch_limit(
             tracers[0].system().system(),
             ops,
             1 + cpu.settings().illumination_rings.max(2) * cpu.settings().illumination_arms.max(8),
         );
-        let overlap = self.design == EvalDesign::Pipelined;
+        let overlap = self.design == EvalDesign::Pipelined
+            || (self.design == EvalDesign::Hybrid && self.pipeline_from.is_some_and(|m| n >= m));
         let size = if overlap {
             pipeline_chunk(n).min(limit)
         } else {
@@ -909,48 +1123,32 @@ impl ResidentEvaluator {
         let host_rays = self.host_rays.lock().unwrap().rays.clone();
         let mut unresolved: BTreeMap<resident::RayKey, usize> = BTreeMap::new();
         let mut rays_total = 0usize;
-        let mut in_flight = None;
-        for (k, chunk) in chunks.iter().enumerate() {
-            ctx.check()?;
-            let mut prepared =
-                resident::prepare(context, cpu, chunk, ops, None, &design, &host_rays, ctx)?;
-            let plan = prepared.plan.take().expect("prepared plan");
-            context.record_traced_rays(prepared.traced_rays());
-            rays_total += prepared.traced_rays() + prepared.host_rays();
-            if resident::trace_routing() {
-                eprintln!(
-                    "MKL_SOLVERS chunk {k}: {} candidates, {} device rays, {} host-routed rays (set {})",
-                    chunk.len(),
-                    prepared.traced_rays(),
-                    prepared.host_rays(),
-                    host_rays.len()
-                );
+        // Two lanes only outside the rayon pool (a nested evaluation, as in
+        // parallel glass refinements, keeps one).
+        let lanes = match self.lanes {
+            Lanes::Single => None,
+            l if chunks.len() > 1 && rayon::current_thread_index().is_none() => Some(l),
+            _ => None,
+        };
+        if let Some(lanes) = lanes {
+            rays_total = stage.lanes(lanes, &chunks, &host_rays, &mut values, &mut deferred)?;
+        } else {
+            let mut in_flight = None;
+            for (k, chunk) in chunks.iter().enumerate() {
+                let (mut prepared, pending, rays) = stage.feed(k, chunk, &host_rays)?;
+                rays_total += rays;
+                stage.host_share(chunk, &mut prepared)?;
+                if !overlap {
+                    stage.land(k, chunk, prepared, pending, &mut values, &mut deferred)?;
+                    continue;
+                }
+                if let Some((j, prev, p)) = in_flight.replace((k, prepared, pending)) {
+                    stage.land(j, chunks[j], prev, p, &mut values, &mut deferred)?;
+                }
             }
-            let pending = context.submit_async(plan, ctx)?;
-            // The host's share while the device traces the rest: the rays
-            // routed to it and the operands that need no ray.
-            let started = std::time::Instant::now();
-            resident::host_stage(&mut prepared, cpu, chunk, ops, &design, ctx)?;
-            let seconds = started.elapsed().as_secs_f64();
-            context.observe(mklight_gpu::resident::PlanStats {
-                polished_rays: prepared.host_rays() as u64,
-                stages: vec![mklight_gpu::resident::StageStats {
-                    name: "host stage (routed rays, rayless operands; overlapped)".into(),
-                    wall_seconds: seconds,
-                    ..Default::default()
-                }],
-                ..Default::default()
-            });
-            if !overlap {
-                stage.land(k, chunk, prepared, pending, &mut values, &mut deferred)?;
-                continue;
-            }
-            if let Some((j, prev, p)) = in_flight.replace((k, prepared, pending)) {
+            if let Some((j, prev, p)) = in_flight.take() {
                 stage.land(j, chunks[j], prev, p, &mut values, &mut deferred)?;
             }
-        }
-        if let Some((j, prev, p)) = in_flight.take() {
-            stage.land(j, chunks[j], prev, p, &mut values, &mut deferred)?;
         }
         for (_, t) in &deferred {
             for (u, slow) in t.unresolved.iter().zip(&t.slow) {

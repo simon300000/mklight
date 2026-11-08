@@ -56,9 +56,21 @@ then the operand's configuration):
    needed (field, wavelength), and every pupil sampling (ray group or aggregate
    sampling) at a (field, wavelength).
 3. **Trace** each planned item once into a per-candidate cache. Within one
-   candidate this runs in parallel when the batch is smaller than the rayon
-   pool and the candidate traces at least 256 sampling rays (below that the
-   synchronisation costs more than it saves).
+   candidate this runs in parallel when the candidate traces at least 256
+   sampling rays (below that the synchronisation costs more than it saves):
+   field points, then chief rays per (field, wavelength), then the pupil
+   samplings. A candidate evaluated alone or in a batch smaller than the
+   pool (a trial point, the anchor of a finite difference) traces its
+   samplings in runs of 8 nodes (one trace packet) rather than whole
+   groups, because the unaimable rim rays of the outer fields (~140 µs each
+   against ~6 µs for a healthy ray) would otherwise leave the pool waiting
+   on a few groups; in a batch at least as large as the pool, where the
+   candidates fill it, whole groups aim and trace together in full packets
+   (the runs cost ~15 % more CPU there). The automatic semi-diameters that
+   edge-thickness and surface operands need are traced alongside
+   (`rayon::join`). Every ray is traced exactly as in its whole group
+   (`trace_many` is bitwise equal to tracing one by one) and put back in
+   node order, so the values are bit-identical to the serial ones (tested).
 4. **Read** each operand from the cache. Group references (spot centroids,
    piston/tilt) are computed on first use and shared by every ray operand of
    the group, and single pupil points that are group nodes reuse the group's
@@ -1068,7 +1080,7 @@ the best point seen. `final` is the better of the answer and the start
 | `criterion` | object or null, `null` | the criterion `MeritFunctionSpec`; `null` generates it with `DefaultMeritSpec::generate_for_tolerancing` from `default_merit` |
 | `default_merit` | object, the default merit without thickness boundaries | generator settings, laid over that default |
 | `mode` | `sensitivity` \| `monte_carlo` \| `both`, `both` | what to run |
-| `trials`, `seed`, `batch` | `100`, `0`, `16` | Monte Carlo: trial `i` draws from Philox stream `TOLERANCE \| i` of `seed` |
+| `trials`, `seed`, `batch` | `100`, `0`, `16` | Monte Carlo: trial `i` draws from Philox stream `TOLERANCE \| i` of `seed`; `batch` trials per evaluation batch, at least 128 except on the `resident` work-split variant (below) |
 | `threshold` | number or null, `null` | criterion value for the yield |
 | `compensator_iterations` | integer, `20` | LM iterations per trial |
 | `percentiles` | array, `[50, 90, 97.7]` | Monte Carlo percentiles, each in [0, 100] |
@@ -1079,7 +1091,13 @@ the best point seen. `final` is the better of the answer and the start
 | `backend`, `gpu_batch`, `stop_key` | as for `optimize` | |
 
 Without compensators, every trial is a single evaluation, and a batch of trials
-goes to the evaluator as one batch (one GPU dispatch).
+goes to the evaluator as one batch (one GPU dispatch). The job hands the
+evaluator at least 128 trials (and sensitivity points) per batch on the CPU
+reference and on every `solvers` variant but `resident`: values do not
+depend on the batching, and with 16 trials per batch the CPU's 12 threads
+idled at the end of every batch (29-surface F/1.4 lens: 155 → 120 ms for
+the default run, 2.4 → 1.9 s for 1000 trials at 6 × 12 sampling, identical
+results). Progress and a stop request act between batches.
 
 ### `tolerance` result
 
@@ -1509,7 +1527,7 @@ CPU-reference runs are unaffected.
 | `resident` | `Resident`: the P1/P4 adapter above | as before |
 | `hybrid` | `Hybrid` | tolerance batches of at least 128 |
 | `pipelined` | `Pipelined` | as `hybrid` |
-| `speculative` (default) | `Hybrid` | as `hybrid`, plus speculative least-squares Jacobians |
+| `speculative` (default) | `Hybrid`, batches of at least 64 candidates pipelined as `Pipelined` | as `hybrid`, plus speculative least-squares Jacobians |
 | `rendezvous` | `Hybrid` | as `hybrid`, plus joint glass refinements |
 | `cpu-par` | none: the CPU f64 reference | as `speculative` |
 
@@ -1579,7 +1597,44 @@ host-routed rays and the device's unresolved, clipped and slow rays.
 
 `EvalDesign::Pipelined` splits a batch into three sub-batches (at least 8
 candidates each) and overlaps the host preparation of sub-batch k + 1 and
-the finishing of k − 1 with the device's work on k.
+the finishing of k − 1 with the device's work on k. The default variant
+(`speculative`) pipelines batches of at least 64 candidates this way
+(`ResidentEvaluator::with_pipelining_from`): Monte Carlo and sensitivity
+batches gain (1000 trials at 6 × 12 sampling on the 29- and 35-surface
+lenses: 1.92 → 1.72 s and 1.98 → 1.75 s), a 23-candidate Jacobian loses
+(Double Gauss `optimize` 792 vs 582 ms), so Jacobians stay one plan.
+
+**CPU thread layout** (work-split study `solver_threads`, `gpu::Lanes`,
+reported as `backend.threads` and `solvers_threads`). How the hybrid
+designs spread a batch with several device sub-batches over the CPU:
+`single` (default) runs each sub-batch's preparation, host share and
+finishing in turn, each on the whole rayon pool; `lanes` runs two
+concurrent lanes on the whole pool, a feed lane that prepares and submits
+the sub-batches and a host lane that takes each submitted one's host share
+(host-routed rays, rayless operands) and finishes it when it lands, with at
+most one fed sub-batch waiting between them; `host-quarter`, `host-half`
+and `host-three-quarters` run the two lanes on dedicated pools, the host
+lane getting that share of the threads and the feed lane the rest. Values
+do not depend on the layout (tested). The lanes hand sub-batches over with
+blocking channels, so they are used only outside the rayon pool (an engine
+job thread); a nested evaluation (parallel glass refinements) keeps one
+lane.
+
+**Host aiming** (the `aiming` study, read by the hybrid designs when it is
+set). With `aiming` set to `host` or `host-table` (the solvers' rows hold
+too few rays for a seed table, so both mean the same here), every pupil ray
+is aimed on the host by the candidate's f64 tracer (`generate_many`: the
+reference's aims, bit for bit) and the device only traces it from the
+host's starting ray (`TraceResident`) and forms the chief-relative
+coordinates, moments, OPD and fits. A ray the host cannot aim fails as on
+the reference (it enters the plan with an aim-outside report and is not
+completed again); there is no device aiming, no probe candidate and no
+routing. In a finite-difference batch the base point is first evaluated
+on the host and its recorded solves seed every candidate's tracer, as in
+the reference's `evaluate_batch_near`, so the probes' aims are the
+reference's seeded aims. Unset, or set to a device design (`device`, `table`, `split`),
+the device aims with host completion as above. Reported as
+`backend.aiming` (`device` or `host`) and `solvers_aiming`.
 
 **Speculative Jacobians** (`LsqSettings::speculative_jacobian`). A trial
 point of LM or dogleg that follows an accepted step is evaluated in one
