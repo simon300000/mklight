@@ -488,8 +488,9 @@ and transforms took.
 
 Host lattices are the reference's own `PupilLattice`s (shared with the CPU
 analyses through the engine memo, `shared`); their nodes are written
-straight into shared allocations for device resampling, refinement and the
-lattice Zernike fit. Host resampling yields the reference's
+straight into shared allocations for device resampling and refinement, and
+their wavefront maps use the reference's lattice Zernike fit. Host
+resampling yields the reference's
 `PupilFunction`s, written into shared allocations in place, so the
 host-pupil designs make the reference's own sampling decisions (pupil grids
 and refinements, image windows, automatic frequencies and focus ranges)
