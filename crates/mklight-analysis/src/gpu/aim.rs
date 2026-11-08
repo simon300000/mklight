@@ -4,11 +4,18 @@
 //! Every generation of a [`Geometry`] (grid rays, chief rays, layout fans)
 //! is aimed by one design, read once per adapter in [`Geometry::new`]:
 //!
-//! * [`AimDesign::Host`] (default): the reference tracer aims every ray in
-//!   f64 (`SequentialTracer::generate_many`: batched Newton with analytic
-//!   Jacobians, the chunks in parallel on rayon) and writes the starting
-//!   rays straight into the shared ray planes the device trace reads; no
-//!   device aiming, no sample or field records.
+//! * [`AimDesign::HostTable`] (default): as `Host`, but generations of at
+//!   least [`HOST_TABLE_MIN_PER_ROW`] rays per field row first solve a
+//!   coarse f64 seed table per row ([`HostTable`]) and start every ray's
+//!   Newton solve from its interpolated aim and stop Jacobian
+//!   (`SequentialTracer::generate_many_from`; the reference schedule takes
+//!   over where a started solve does not converge).
+//! * [`AimDesign::Host`]: the reference tracer aims every ray in f64
+//!   (`SequentialTracer::generate_many`: batched Newton with analytic
+//!   Jacobians, the chunks in parallel on rayon), bitwise as the CPU
+//!   reference, and writes the starting rays straight into the shared ray
+//!   planes the device trace reads; no device aiming, no sample or field
+//!   records.
 //! * [`AimDesign::Device`]: the resident design before the work split:
 //!   double-float Newton–Broyden on the device from host chief rows (and a
 //!   device seed table for large generations), in its own plan, followed by
@@ -47,8 +54,8 @@ pub const KEY: &str = "aiming";
 /// How a [`Geometry`] aims its generations (module docs).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum AimDesign {
-    #[default]
     Host,
+    #[default]
     HostTable,
     Device,
     Table,

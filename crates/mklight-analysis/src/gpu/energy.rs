@@ -291,7 +291,12 @@ pub fn encircled_energy_with_uncertainty_job(
         radius: radii,
         fields: out,
         wavelengths: g.wavelengths,
-        run_info: stamp(run, "encircled_energy", s, warnings(t, s.defocus)),
+        run_info: {
+            // Encircled energy keeps the fused division in every selection.
+            let plans = 1 + run.settings["extra_plans"].as_array().map_or(0, Vec::len);
+            division::mark(&mut run, Division::Fused, plans);
+            stamp(run, "encircled_energy", s, warnings(t, s.defocus))
+        },
     })
 }
 
@@ -844,6 +849,10 @@ pub fn best_focus_job(
         converged: br.converged,
         through_focus_defocus: tfd,
         through_focus_merit: tfm,
-        run_info: stamp(run, "best_focus", s, warnings),
+        run_info: {
+            // Best focus has no pipelined division: its grid is small.
+            division::mark(&mut run, Division::Fused, 2);
+            stamp(run, "best_focus", s, warnings)
+        },
     })
 }

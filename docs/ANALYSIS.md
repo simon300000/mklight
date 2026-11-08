@@ -526,7 +526,7 @@ the free function includes that preparation in each call.
 
 | Adapter | Resident computation |
 |---|---|
-| `spot_diagram_job`, `ray_grid_job`, `ray_fan_job`, `opd_fan_job` | P1 generation/aiming and tracing; chief-relative double-float positions/slopes and reference-sphere OPD; P3 two-pass spot moments; optional requested points |
+| `spot_diagram_job`, `ray_grid_job`, `ray_fan_job`, `opd_fan_job` | Aiming by the adapter's design (§6.1), P1 tracing; chief-relative double-float positions/slopes and reference-sphere OPD; P3 two-pass spot moments; optional requested points |
 | `encircled_energy_job` | Double-float radii/square half-widths; P3 stable distance/ID sort and inclusive weighted scan; device binary-search curve/quantile queries with a bin-uncertainty bound |
 | `geometric_mtf_job` | Double-float turn reduction, weighted complex characteristic functions and P3 fixed reductions; frequency tiles bound scratch storage |
 | `best_focus_job` | Trace once; one two-pass reduction of centred position/slope products gives each field's exact defocus quadratic, which brackets and drives the host Brent search and the through-focus curve; the optimum is re-reduced two-pass, where the quadratic form could cancel |
@@ -591,6 +591,54 @@ infinities. A cancellation discards the result and never starts a CPU
 replacement. First-order, chromatic paraxial reports and an isolated Seidel
 report remain the existing small host computations; this adapter does not
 supply a batched Seidel reduction.
+
+### 6.1 Aiming and the division between host and device
+
+Every generation of a `Geometry` (grid rays, chief rays, layout fans, the
+sizing and field-map grids built on `append_grid`) is aimed before its plan
+is built, by one design read once per adapter from the work-split key
+`aiming` (`mklight_core::split`; `gpu::aim`):
+
+| `aiming` | Where pupil rays are aimed |
+|---|---|
+| `host-table` (default) | The reference tracer aims every ray in f64. Generations with at least 2,048 rays per field row first solve a coarse seed table per row (about one node per four rays, 5–37 nodes per axis over the vignetted pupil square ±1.125, as the device table); each ray's Newton solve starts from the table's Catmull–Rom interpolated aim and stop Jacobian (`SequentialTracer::generate_many_from`) and falls back to the reference schedule if it does not converge. Smaller generations are aimed as by `host`. |
+| `host` | The reference tracer aims every ray (`generate_many`: the rays of a chunk advance together, chunks in parallel on rayon), bitwise as the CPU reference does. |
+| `device` | The double-float device solve of GPU.md §9.2 (host chief rows, device seed table for large generations), in a plan of its own, followed by host completion. |
+| `table` | A host f64 seed table and device Newton corrections from its interpolated seeds, at most 12 iterations per ray, followed by host completion. |
+| `split` | The host and the device aim one generation at the same time from one host seed table: the device takes tiles from the front (a sixteenth of the generation, 2¹³–2¹⁷ rays, two in flight), the host's rayon workers take 128-ray chunks from the back until the claims meet, then complete the device tiles' unconverged aims as each tile finishes. Generations under 2¹⁵ rays are aimed as by `host`. |
+
+Host aims are written straight into the shared ray planes the trace reads
+(four `fill_buffer` buffers filled in place by the rayon workers, the start
+rays rounded to double-float once); no sample or field record is built.
+
+**Host completion.** A device aim cannot always certify the requested stop
+tolerance: the double-float trace evaluates the even-asphere slope in f32
+(GPU.md §4.1), so on wide-angle aspheric designs the evaluated stop hit
+jitters by 1e-9 to 1e-8 of the stop radius, above the 1e-10 the reference
+reaches. On a 35-surface ultra-wide a third of the device aims, chief rays
+among them, ended unconverged, and the device spot diagram's vignetted
+fraction differed from the reference by up to 0.77. Every device aim
+reported `MKL_AIM_FAILED` is therefore aimed again in f64 by the reference
+tracer; a ray it aims replaces the device's (the position and report planes
+are copied once, with the host rays in place), a ray it cannot aim stays
+failed, exactly as on the CPU, and the hard field statuses of the host rows
+are kept. Each plan's `RunInfo.settings.aiming` records the design, the host
+and device rays, iterations and seconds, the completed and resolved rays and
+the seed-table nodes (`MKLIGHT_TRACE_AIM_EVIDENCE=1` prints it to stderr).
+
+The image trace and the reductions run on the device as before in the
+default division. The key `geometric` selects how the geometric analyses'
+remaining stages divide (`gpu::division`):
+
+| `geometric` | Division |
+|---|---|
+| `fused` (default) | One plan per stage: the device traces the aimed grid and reduces it. Geometric MTF submits its characteristic-function tiles without waiting for each (at most four in flight). |
+| `pipelined` | The fields are split into groups of at least 2¹⁵ rays, each group a plan submitted as soon as its rays are aimed, so the host aims group k + 1 while the device traces and reduces group k (spot diagram, geometric MTF with its tiles, footprint, ray grid); smaller generations form one group. |
+| `host-reduce` | The device traces the grid and the chief rays; the host reads the hits in place into a `RayBatch` (§2.6) and runs the reference reduction (spot diagram, geometric MTF, best focus). |
+
+Encircled energy, the fans and the chromatic and layout adapters keep the
+fused division. The study keys are measurement scaffolding: the designs that
+lose the comparison are to be removed with their keys.
 
 High-level `Geometry` metadata belongs to its nominal immutable snapshot.
 Changed candidates must use P4's updated first-order/field metadata through
