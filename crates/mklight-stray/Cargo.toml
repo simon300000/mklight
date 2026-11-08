@@ -36,5 +36,9 @@ name = "p10_bench"
 path = "tests/p10_support/bench.rs"
 
 [[test]]
+name = "p10_kernel_designs"
+path = "tests/p10_support/kernel_designs.rs"
+
+[[test]]
 name = "p10_transport_bench"
 path = "tests/p10_support/transport_bench.rs"

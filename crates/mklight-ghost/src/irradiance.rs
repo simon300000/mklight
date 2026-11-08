@@ -1703,6 +1703,9 @@ fn resident_maps<'a>(
 /// A request of one device tile: (path, probe, cache slot, pupil point).
 type Request = (usize, Probe, usize, [f64; 2]);
 
+/// Called with the paths of a group whose refinement has ended.
+type GroupDone<'a> = dyn FnMut(std::ops::Range<usize>, &[Probes]) -> MkResult<()> + 'a;
+
 /// The refinement of a group of paths: the five breadth-first levels, each
 /// with its centres and then (except the last) its corners, one step at a
 /// time. Groups advance independently.
@@ -1736,7 +1739,7 @@ fn refine_gpu(
     settings: &IrradianceSettings,
     template: &IrradianceMap,
     groups: usize,
-    done: &mut dyn FnMut(std::ops::Range<usize>, &[Probes]) -> MkResult<()>,
+    done: &mut GroupDone,
     ctx: &JobContext,
 ) -> MkResult<Vec<Probes>> {
     use mklight_gpu::{Df32, consts::*, ghost_ops::LaunchSample};
