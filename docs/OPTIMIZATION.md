@@ -1582,11 +1582,15 @@ candidates each) and overlaps the host preparation of sub-batch k + 1 and
 the finishing of k − 1 with the device's work on k.
 
 **Speculative Jacobians** (`LsqSettings::speculative_jacobian`). A trial
-point of LM or dogleg is evaluated in one batch with the first-pass
-finite-difference probes of the Jacobian at it (`deriv::fd_first_batch`);
-when the step is accepted, its Jacobian needs no further batch, so an
-iteration costs one batch instead of two (a rejected step wastes the
-probes). Every evaluation performed counts against `max_evaluations`. On an
+point of LM or dogleg that follows an accepted step is evaluated in one
+batch with the first-pass finite-difference probes of the Jacobian at it
+(`deriv::fd_first_batch`); when the step is accepted, its Jacobian needs no
+further batch, so an iteration costs one batch instead of two. A rejected
+step wastes the probes, so trial points after a rejection are evaluated
+alone: on the 29-surface lens, whose merit (failed-ray penalties) rejects
+about ten trial points per Jacobian, speculating on every trial point
+evaluated 9× as many candidates (10 177 against 1110) for the same 34
+iterations. Every evaluation performed counts against `max_evaluations`. On an
 evaluator whose values do not depend on the batch the iterates are
 bit-identical to the plain run (tested on the Cooke triplet).
 

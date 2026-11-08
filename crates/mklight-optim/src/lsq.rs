@@ -136,11 +136,13 @@ pub struct LsqSettings {
     pub initial_trust_factor: f64,
     pub jacobian: JacobianSettings,
     pub constraints: AugLagSettings,
-    /// Evaluate each trial point in one batch with the first-pass probes of
-    /// the finite-difference Jacobian at it (`deriv::fd_first_batch`): an
-    /// accepted step then has its next Jacobian already, so an iteration
-    /// costs one batch instead of two; a rejected step wastes the probes.
-    /// Set by callers (the engine's work-split study), not by settings.
+    /// Evaluate a trial point in one batch with the first-pass probes of the
+    /// finite-difference Jacobian at it (`deriv::fd_first_batch`) when the
+    /// previous trial point was accepted: an accepted step then has its next
+    /// Jacobian already, so an iteration costs one batch instead of two; a
+    /// rejected step wastes the probes (at most one batch per accepted
+    /// step). Set by callers (the engine's work-split study), not by
+    /// settings.
     #[serde(skip)]
     pub speculative_jacobian: bool,
 }
@@ -379,6 +381,10 @@ struct Ctx<'a, P: Problem + ?Sized> {
     /// A speculative trial point's first Jacobian pass: the point, the
     /// batch and its evaluation.
     speculated: Option<(Vec<f64>, CandidateBatch, BatchEvaluation)>,
+    /// Was the last trial point accepted? Speculation follows acceptance:
+    /// while steps are being rejected, each rejected speculative trial would
+    /// waste a whole probe batch.
+    last_accepted: bool,
 }
 
 impl<P: Problem + ?Sized> Ctx<'_, P> {
@@ -396,7 +402,7 @@ impl<P: Problem + ?Sized> Ctx<'_, P> {
     /// [`Self::jacobian`]. Every evaluation performed counts.
     fn eval_trial(&mut self, x: &[f64]) -> MkResult<Evaluation> {
         self.speculated = None;
-        if !self.s.speculative_jacobian {
+        if !self.s.speculative_jacobian || !self.last_accepted {
             return self.eval(x);
         }
         let Some(first) = fd_first_batch(self.p, x, &self.s.jacobian) else {
@@ -980,6 +986,7 @@ fn inner<P: Problem + ?Sized>(
             }
             first = false;
             let accepted = rho > 1e-4;
+            c.last_accepted = accepted;
             if accepted {
                 let phi_old = phi;
                 x = xt;
@@ -1046,6 +1053,7 @@ pub fn least_squares<P: Problem + ?Sized>(
         lambda: 0.0,
         failed: Vec::new(),
         speculated: None,
+        last_accepted: true,
     };
     let mut x = x0.to_vec();
     project(vars, &mut x);
