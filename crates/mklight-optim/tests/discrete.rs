@@ -130,6 +130,7 @@ fn glass_choice_with_local_refinement() {
             Ok((Box::new(p) as Box<dyn Problem + Send>, vec![1.0, 0.0]))
         }),
         settings: LsqSettings::default(),
+        joint: None,
     };
     let (xa, fa) = brute_force(&problem);
     let coords: Vec<Vec<Vec<f64>>> =

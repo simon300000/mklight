@@ -8,10 +8,14 @@ use mklight_core::{JobContext, MkError, MkResult, OpticalSystem};
 use std::sync::{Mutex, mpsc};
 
 enum Message {
-    Evaluate(usize, Vec<OpticalSystem>, Vec<Operand>),
+    /// A worker's next evaluation; `true` when its batch holds the probes of
+    /// finite differences (evaluated anchored, see `evaluate_batch_near`).
+    Evaluate(usize, Vec<OpticalSystem>, Vec<Operand>, bool),
     Done(usize),
 }
 type Values = MkResult<Vec<Vec<OperandValue>>>;
+/// A worker's pending evaluation: systems, operands, anchored.
+type Request = (Vec<OpticalSystem>, Vec<Operand>, bool);
 pub struct Worker<'a, E: ?Sized> {
     evaluator: &'a E,
     id: usize,
@@ -29,12 +33,33 @@ impl<E: OperandEvaluator + ?Sized> OperandEvaluator for Worker<'_, E> {
         self.evaluator.anchored_differences(base)
     }
     fn evaluate_batch(&self, s: &[OpticalSystem], o: &[&Operand], ctx: &JobContext) -> Values {
+        self.request(s, o, false, ctx)
+    }
+    fn evaluate_batch_near(
+        &self,
+        s: &[OpticalSystem],
+        o: &[&Operand],
+        anchor: Option<&OpticalSystem>,
+        ctx: &JobContext,
+    ) -> Values {
+        self.request(s, o, anchor.is_some(), ctx)
+    }
+}
+impl<E: OperandEvaluator + ?Sized> Worker<'_, E> {
+    fn request(
+        &self,
+        s: &[OpticalSystem],
+        o: &[&Operand],
+        anchored: bool,
+        ctx: &JobContext,
+    ) -> Values {
         ctx.check()?;
         self.send
             .send(Message::Evaluate(
                 self.id,
                 s.to_vec(),
                 o.iter().map(|v| (*v).clone()).collect(),
+                anchored,
             ))
             .map_err(|_| MkError::Cancelled)?;
         self.receive
@@ -85,8 +110,7 @@ where
         }
         drop(send);
         let mut active = vec![true; count];
-        let mut pending: Vec<Option<(Vec<OpticalSystem>, Vec<Operand>)>> =
-            (0..count).map(|_| None).collect();
+        let mut pending: Vec<Option<Request>> = (0..count).map(|_| None).collect();
         while active.iter().any(|&a| a) {
             while active
                 .iter()
@@ -94,7 +118,7 @@ where
                 .any(|(i, &a)| a && pending[i].is_none())
             {
                 match receive.recv() {
-                    Ok(Message::Evaluate(id, s, o)) => pending[id] = Some((s, o)),
+                    Ok(Message::Evaluate(id, s, o, a)) => pending[id] = Some((s, o, a)),
                     Ok(Message::Done(id)) => active[id] = false,
                     Err(_) => break,
                 }
@@ -107,15 +131,21 @@ where
                     .collect();
                 let mut systems = Vec::new();
                 let mut lengths = Vec::new();
+                let mut anchor = None;
                 for &i in &ids {
-                    let (s, _) = pending[i].take().unwrap();
+                    let (s, _, anchored) = pending[i].take().unwrap();
                     lengths.push(s.len());
+                    if anchored && anchor.is_none() {
+                        anchor = s.first().cloned();
+                    }
                     systems.extend(s);
                 }
                 let refs: Vec<_> = operands.iter().collect();
-                let result = ctx
-                    .check()
-                    .and_then(|_| evaluator.evaluate_batch(&systems, &refs, ctx));
+                // Finite differences among the joined requests are evaluated
+                // anchored: one evaluator per ray across the whole batch.
+                let result = ctx.check().and_then(|_| {
+                    evaluator.evaluate_batch_near(&systems, &refs, anchor.as_ref(), ctx)
+                });
                 match result {
                     Ok(v) => {
                         let mut rows = v.into_iter();

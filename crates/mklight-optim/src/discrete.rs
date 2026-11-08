@@ -426,6 +426,21 @@ impl DiscreteProblem for FnDiscrete {
 /// return the continuous problem and its start point.
 pub type BuildFn = dyn Fn(&[usize]) -> MkResult<(Box<dyn Problem + Send>, Vec<f64>)> + Send + Sync;
 
+/// Joint refinement of a batch of assignments (from their built start
+/// points, or from `starts`), with the settings and feasibility tolerance
+/// of [`LocallyRefined::refine_batch`]; results in input order. For example
+/// rendezvous-batched least squares on a device evaluator
+/// (`gpu::scheduler`).
+pub type JointRefineFn = dyn Fn(
+        &[Vec<usize>],
+        Option<&[Vec<f64>]>,
+        &LsqSettings,
+        &JobContext,
+        f64,
+    ) -> Vec<MkResult<OptimResult>>
+    + Send
+    + Sync;
+
 /// Mixed discrete/continuous problems: every assignment is scored by the
 /// merit *after* a local least-squares solve of the continuous variables
 /// (e.g. re-bending all lenses after a glass substitution).
@@ -433,6 +448,9 @@ pub struct LocallyRefined {
     pub choices: Vec<usize>,
     pub build: Box<BuildFn>,
     pub settings: LsqSettings,
+    /// Refines a batch jointly instead of each assignment on its own in
+    /// parallel (`None`).
+    pub joint: Option<Box<JointRefineFn>>,
 }
 
 impl LocallyRefined {
@@ -447,6 +465,9 @@ impl LocallyRefined {
         ctx: &JobContext,
         feasibility_tol: f64,
     ) -> Vec<MkResult<OptimResult>> {
+        if let Some(joint) = &self.joint {
+            return joint(assignments, starts, &self.settings, ctx, feasibility_tol);
+        }
         assignments
             .par_iter()
             .enumerate()
@@ -465,8 +486,10 @@ impl LocallyRefined {
     }
 }
 
-/// Shared archive semantics for ordinary and rendezvous-batched refinements.
-pub(crate) fn refine_one<P: Problem + ?Sized>(
+/// Shared archive semantics for ordinary and rendezvous-batched refinements:
+/// least squares from `x0`, answering the best point it saw under the
+/// feasibility rule (independently scored when restored).
+pub fn refine_one<P: Problem + ?Sized>(
     p: &P,
     x0: &[f64],
     settings: &LsqSettings,

@@ -40,7 +40,7 @@ use mklight_optim::global::cmaes::{CmaEsSettings, cma_es};
 use mklight_optim::global::de::{DeSettings, differential_evolution};
 use mklight_optim::global::hammer::{HammerSettings, hammer};
 use mklight_optim::global::nelder_mead::{NelderMeadSettings, nelder_mead};
-use mklight_optim::gpu::{GpuContext, ResidentEvaluator};
+use mklight_optim::gpu::{GpuContext, ResidentEvaluator, Split};
 use mklight_optim::lsq::{AugLagSettings, LsqMethod, LsqSettings, least_squares};
 use mklight_optim::merit::default::DefaultMeritSpec;
 use mklight_optim::merit::geometric::optical_gaps;
@@ -55,7 +55,7 @@ use mklight_optim::problem::{
 };
 use mklight_optim::tolerance::{
     Compensator, MonteCarloSettings, OpticalToleranceEvaluator, SENSITIVITY_BATCH,
-    ToleranceEvaluator, ToleranceOperand, ToleranceSpec, monte_carlo, sensitivity,
+    ToleranceEvaluator, ToleranceOperand, ToleranceSpec, monte_carlo, sensitivity_batched,
 };
 use mklight_optim::{IterationRecord, Monitor, OptimResult, Termination};
 
@@ -113,6 +113,20 @@ pub(super) fn evaluation_backend_schema() -> Value {
                 opaque("Device evaluation, host-stage and fallback accounting."),
             ),
             (
+                "split",
+                enumeration(
+                    &[
+                        "resident",
+                        "hybrid",
+                        "pipelined",
+                        "speculative",
+                        "rendezvous",
+                        "cpu-par",
+                    ],
+                    "Host/device division of a run handed a GPU device (work-split study `solvers`).",
+                ),
+            ),
+            (
                 "gpu_stats",
                 obj(&[
                     ("gpu_candidates", int("")),
@@ -123,7 +137,7 @@ pub(super) fn evaluation_backend_schema() -> Value {
                 ]),
             ),
         ],
-        &["gpu_stats", "resident_evaluation"],
+        &["gpu_stats", "resident_evaluation", "split"],
     )
 }
 
@@ -435,6 +449,9 @@ struct Evaluation {
     cpu: BuiltinEvaluator,
     /// The GPU evaluator and the engine device behind it.
     gpu: Option<(ResidentEvaluator, Arc<GpuDevice>)>,
+    /// The `solvers` work-split variant of a run handed a GPU device
+    /// (`None` on the CPU reference path).
+    split: Option<Split>,
     work: Workload,
     fallback_reason: Option<String>,
     /// `"backend"` block of the result.
@@ -455,11 +472,29 @@ impl Evaluation {
         let cpu = BuiltinEvaluator::new(input.library.clone());
         let mut warnings = Vec::new();
         let mut fallback_reason = input.selection_note.clone();
+        let mut split = None;
         let gpu = match gpu_backend(choice, input) {
             Ok(Some(device)) => {
                 ctx.check()?;
-                let context = GpuContext::new(device.backend.clone(), snapshot.clone());
-                Some((ResidentEvaluator::new(context, cpu.clone()), device))
+                // The division of the run between host and device, read once.
+                let selected = Split::selected().map_err(invalid)?;
+                split = Some(selected);
+                match selected.design() {
+                    Some(design) => {
+                        let context = GpuContext::new(device.backend.clone(), snapshot.clone());
+                        Some((
+                            ResidentEvaluator::new(context, cpu.clone()).with_design(design),
+                            device,
+                        ))
+                    }
+                    None => {
+                        fallback_reason = Some(format!(
+                            "work-split variant '{}' evaluates on the CPU reference",
+                            selected.name()
+                        ));
+                        None
+                    }
+                }
             }
             Ok(None) => {
                 if super::gpu::device(input).is_some() && choice == BackendChoice::Cpu {
@@ -478,6 +513,7 @@ impl Evaluation {
         Ok(Evaluation {
             cpu,
             gpu,
+            split,
             work,
             fallback_reason,
             report: Value::Null,
@@ -487,6 +523,30 @@ impl Evaluation {
 
     fn active_gpu(&self) -> Option<&ResidentEvaluator> {
         self.gpu.as_ref().map(|(g, _)| g)
+    }
+
+    /// Least-squares solves evaluate their trial points with the next
+    /// Jacobian's probes (work-split variant).
+    fn speculative(&self) -> bool {
+        self.split.is_some_and(Split::speculative)
+    }
+
+    /// The device evaluator when independent refinements are to be joined
+    /// into rendezvous batches (work-split variant).
+    fn joint_gpu(&self) -> Option<&ResidentEvaluator> {
+        self.active_gpu()
+            .filter(|_| self.split.is_some_and(Split::joint_refinements))
+    }
+
+    /// Candidates per tolerance evaluation batch (Monte Carlo trials and
+    /// sensitivity points) for a requested batch: the batch-oriented
+    /// work-split variants hand the evaluator larger batches (trial values
+    /// do not depend on the batching).
+    fn tolerance_batch(&self, requested: usize) -> usize {
+        match self.split {
+            Some(Split::Resident) | None => requested,
+            Some(_) => requested.max(TOLERANCE_SPLIT_BATCH),
+        }
     }
 
     /// The `"backend"` block: who evaluated the search and the GPU
@@ -499,6 +559,22 @@ impl Evaluation {
             "reported_on": TraceEvaluator::BACKEND,
             "workload": self.work.report(),
         });
+        if let Some(split) = self.split {
+            b["split"] = json!(split.name());
+            if self.gpu.is_none() {
+                let mut run = mklight_core::job::RunTimer::start().finish(
+                    &input.snapshot,
+                    "resident_merit",
+                    &json!({}),
+                    "cpu_reference",
+                    Precision::F64Reference,
+                    None,
+                    vec![],
+                );
+                run.settings["solvers_split"] = json!(split.name());
+                input.executions.borrow_mut().push(run.settings.clone());
+            }
+        }
         // The GPU evaluated the search only if it traced candidates.
         let active = self
             .active_gpu()
@@ -529,6 +605,9 @@ impl Evaluation {
                 vec![],
             );
             g.record(&mut run);
+            if let Some(split) = self.split {
+                run.settings["solvers_split"] = json!(split.name());
+            }
             input.executions.borrow_mut().push(run.settings.clone());
             b["resident_evaluation"] = serde_json::to_value(stats)?;
         }
@@ -890,6 +969,12 @@ fn interrupt_status(why: Interrupt, termination: Termination) -> &'static str {
 /// default for `AugLagSettings::max_inner_iterations`).
 const INNER_ITERATIONS: usize = 10;
 
+/// Smallest tolerance evaluation batch (Monte Carlo trials, sensitivity
+/// points) of the batch-oriented `solvers` work-split variants: the hundred
+/// trials of a default Monte Carlo run go to the evaluator as one batch,
+/// which a pipelined evaluator splits into overlapped device plans.
+const TOLERANCE_SPLIT_BATCH: usize = 128;
+
 /// The job's initial spreads of the population methods around the start,
 /// in variable scales (`VariableSpec::scale`; 10 % of a curvature by
 /// default). The library defaults (DE 1.0, CMA-ES 0.3) suit a search of a
@@ -1192,6 +1277,17 @@ impl Algo {
         })
     }
 
+    /// Least-squares solves (LM, dogleg, basin hopping's local runs)
+    /// evaluate each trial point with the next Jacobian's probes.
+    fn with_speculation(mut self, on: bool) -> Self {
+        match &mut self {
+            Algo::Lsq(l) => l.speculative_jacobian = on,
+            Algo::Hammer(h) => h.local.speculative_jacobian = on,
+            _ => {}
+        }
+        self
+    }
+
     /// Typical candidates per evaluation batch with `n` variables: the FD
     /// Jacobian, the population, the basin-hopping screen.
     fn batch(&self, n: usize) -> usize {
@@ -1459,6 +1555,7 @@ impl Analysis for Optimize {
         let work = Workload::new(&cpu.trace, system, &spec, algo.batch(x0.len()));
         ctx.report(0.0, "preparing the merit evaluator");
         let mut ev = Evaluation::new(s.backend, input, &start, s.gpu_batch, work, ctx)?;
+        let algo = algo.with_speculation(ev.speculative());
         ctx.check()?;
 
         // The search.
@@ -2099,6 +2196,11 @@ impl Analysis for Tolerance {
         );
         ctx.report(0.0, "preparing the merit evaluator");
         let mut ev = Evaluation::new(s.backend, input, &input.snapshot, s.gpu_batch, work, ctx)?;
+        let lsq = LsqSettings {
+            speculative_jacobian: ev.speculative(),
+            ..lsq
+        };
+        let sensitivity_batch = ev.tolerance_batch(SENSITIVITY_BATCH);
         if let Some(case) = &s.preview_case {
             let deltas = match case {
                 ToleranceCase::Trial { trial } => spec.sample_trial(s.seed, *trial),
@@ -2191,6 +2293,7 @@ impl Analysis for Tolerance {
             } else {
                 mc.record_trials
             },
+            batch: ev.tolerance_batch(mc.batch),
             ..mc.clone()
         };
         let ((sens, mcr), why) = interruptible(&ctx.subrange(0., 0.9), &stop, |inner| {
@@ -2218,6 +2321,7 @@ impl Analysis for Tolerance {
                         registry: &reg,
                         lsq,
                         spec: &spec,
+                        sensitivity_batch,
                     })
                 }
                 None => run(&Runner {
@@ -2227,6 +2331,7 @@ impl Analysis for Tolerance {
                     registry: &reg,
                     lsq,
                     spec: &spec,
+                    sensitivity_batch,
                 }),
             }
         });
@@ -2341,6 +2446,8 @@ struct Runner<'a, E: OperandEvaluator> {
     registry: &'a OperandRegistry,
     lsq: LsqSettings,
     spec: &'a ToleranceSpec,
+    /// Points per sensitivity evaluation batch.
+    sensitivity_batch: usize,
 }
 
 impl<E: OperandEvaluator> Runner<'_, E> {
@@ -2362,7 +2469,7 @@ impl<E: OperandEvaluator> ToleranceRunner for Runner<'_, E> {
         spec: &ToleranceSpec,
         mon: &Monitor,
     ) -> mklight_core::MkResult<mklight_optim::tolerance::SensitivityReport> {
-        sensitivity(spec, &self.evaluator(), mon)
+        sensitivity_batched(spec, &self.evaluator(), mon, self.sensitivity_batch)
     }
     fn monte_carlo(
         &self,

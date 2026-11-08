@@ -322,6 +322,51 @@ impl TraceEvaluator {
         Ok((out, recorded))
     }
 
+    /// Values of `operands` for `s` from a candidate whose ray caches an
+    /// external tracer filled (the hybrid GPU evaluator): the same operand
+    /// loop as [`Self::evaluate_seeded`] with its tracer, so model operands
+    /// (automatic semi-diameters from `c`'s tracer), paraxial operands and
+    /// any ray the caches lack are computed here in f64.
+    pub(super) fn host_values(
+        &self,
+        s: &OpticalSystem,
+        c: &Candidate<'_>,
+        operands: &[&Operand],
+        ctx: &JobContext,
+    ) -> MkResult<Vec<OperandValue>> {
+        let auto_sd = has_auto_semi_diameters(s);
+        let mut fixed_sd: Option<OpticalSystem> = None;
+        let mut memo = GroupMemo::default();
+        let mut out = Vec::with_capacity(operands.len());
+        for op in operands {
+            let v = if is_model_kind(&op.kind) {
+                if auto_sd && needs_semi_diameters(&op.kind) {
+                    let sys = fixed_sd.get_or_insert_with(|| {
+                        let sd = c.tr.semi_diameters(&SemiDiameterSettings {
+                            azimuths: self.settings.semi_diameter_azimuths.max(4),
+                            clip: self.settings.clip,
+                        });
+                        fix_semi_diameters(s, &sd, 0.0)
+                    });
+                    model_value(sys, op)
+                } else {
+                    model_value(s, op)
+                }
+            } else if let OperandKind::ToleranceSensitivity {
+                param,
+                delta,
+                criterion,
+            } = &op.kind
+            {
+                self.sensitivity(s, op, param, *delta, criterion, ctx)?
+            } else {
+                c.value_with(op, &mut memo)
+            };
+            out.push(v);
+        }
+        Ok(out)
+    }
+
     /// `ToleranceSensitivity`: the criterion at nominal and at `param ± δ`.
     fn sensitivity(
         &self,
@@ -480,7 +525,7 @@ pub const WAVEFRONT_FD_RELATIVE_STEP_CENTRAL: f64 = 1e-4;
 
 /// A field: a system field by index or an arbitrary normalised point (bits).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(super) enum FieldKey {
+pub(crate) enum FieldKey {
     Index(usize),
     Point(u64, u64),
 }
@@ -821,35 +866,12 @@ impl<'a> Candidate<'a> {
     /// Stages 2 and 3 on the CPU: chief rays, reference spheres and pupil
     /// samplings of `plan`.
     fn trace_cpu(&mut self, plan: &Plan, ctx: &JobContext, parallel: bool) -> MkResult<()> {
-        let tr = self.tr;
         let c = &*self;
         // Stage 2: chief rays and reference spheres.
         let chiefs: Vec<(FieldKey, usize)> = plan.chiefs.iter().copied().collect();
-        let chiefs = pmap(&chiefs, parallel, |&(f, w)| {
-            let d = match c.field(f) {
-                Ok(field) => {
-                    let chief = tr.chief(field, w);
-                    let reference = tr
-                        .opd_reference(field, w)
-                        .map_err(|s| OperandError::RayFailure(format!("chief ray: {s:?}")));
-                    ChiefData {
-                        chief: if chief.status.is_ok() {
-                            Ok(chief)
-                        } else {
-                            Err(status_error(&chief))
-                        },
-                        reference,
-                    }
-                }
-                Err(e) => ChiefData {
-                    chief: Err(e.clone()),
-                    reference: Err(e),
-                },
-            };
-            ((f, w), d)
-        })
-        .into_iter()
-        .collect();
+        let chiefs = pmap(&chiefs, parallel, |&(f, w)| ((f, w), c.host_chief(f, w)))
+            .into_iter()
+            .collect();
         self.chiefs = chiefs;
         ctx.check()?;
         // Stage 3: pupil samplings.
@@ -924,6 +946,83 @@ impl<'a> Candidate<'a> {
             symmetry,
             rays,
             index,
+        }
+    }
+
+    /// The chief ray and OPD reference sphere of `(f, w)` from this
+    /// candidate's f64 tracer.
+    pub(super) fn host_chief(&self, f: FieldKey, w: usize) -> ChiefData {
+        match self.field(f) {
+            Ok(field) => {
+                let chief = self.tr.chief(field, w);
+                let reference = self
+                    .tr
+                    .opd_reference(field, w)
+                    .map_err(|s| OperandError::RayFailure(format!("chief ray: {s:?}")));
+                ChiefData {
+                    chief: if chief.status.is_ok() {
+                        Ok(chief)
+                    } else {
+                        Err(status_error(&chief))
+                    },
+                    reference,
+                }
+            }
+            Err(e) => ChiefData {
+                chief: Err(e.clone()),
+                reference: Err(e),
+            },
+        }
+    }
+
+    /// Trace nodes `idx` of the planned group `key` with this candidate's
+    /// f64 tracer, aimed and traced as [`Self::trace_group`] does: the host
+    /// share of a group whose other rays an external tracer traces.
+    /// `None` for a node of a field that cannot be prepared.
+    pub(super) fn trace_nodes(&self, key: GroupKey, idx: &[usize]) -> Vec<Option<TraceResult>> {
+        let (f, w, _) = key;
+        let (Some(g), Ok(field)) = (self.groups.get(&key), self.field(f)) else {
+            return vec![None; idx.len()];
+        };
+        let requests: Vec<_> = idx
+            .iter()
+            .map(|&j| (field, w, [g.nodes[j].px, g.nodes[j].py]))
+            .collect();
+        self.tr
+            .trace_many(&requests, &self.opts)
+            .into_iter()
+            .map(Some)
+            .collect()
+    }
+
+    /// Install traced nodes `idx` of group `key` (from [`Self::trace_nodes`]),
+    /// their OPD against the group's planned reference sphere.
+    pub(super) fn set_nodes(
+        &mut self,
+        key: GroupKey,
+        idx: &[usize],
+        traced: &[Option<TraceResult>],
+    ) {
+        let (f, w, _) = key;
+        let reference = self
+            .chiefs
+            .get(&(f, w))
+            .and_then(|d| d.reference.as_ref().ok())
+            .cloned();
+        let Some(g) = self.groups.get_mut(&key) else {
+            return;
+        };
+        if g.rays.len() != g.nodes.len() {
+            g.rays = vec![NodeRay::FAILED; g.nodes.len()];
+        }
+        for (&j, r) in idx.iter().zip(traced) {
+            g.rays[j] = match r {
+                Some(r) if r.status.is_ok() => NodeRay {
+                    pos: Some([r.ray.pos.x, r.ray.pos.y]),
+                    opd: reference.as_ref().and_then(|rf| rf.opd_waves(r)),
+                },
+                _ => NodeRay::FAILED,
+            };
         }
     }
 

@@ -15,6 +15,14 @@ pub(super) fn append(
     mask: BufferId,
 ) -> MkResult<Vec<Fit>> {
     let mut batches: BTreeMap<(usize, usize), Vec<GroupSlice>> = BTreeMap::new();
+    // A fit reads a group's nodes as contiguous probes: groups with nodes
+    // routed to the host (fewer probes than nodes) are fitted on the host.
+    let mut counts: BTreeMap<(usize, u32), usize> = BTreeMap::new();
+    for q in probes {
+        if let Dest::Node(group, _) = q.dest {
+            *counts.entry((q.candidate, group)).or_default() += 1;
+        }
+    }
     for (i, q) in probes.iter().enumerate() {
         if let Dest::Node(group, 0) = q.dest {
             let key = *candidates[q.candidate]
@@ -24,6 +32,9 @@ pub(super) fn append(
                 .nth(group as usize)
                 .unwrap();
             let nodes = &candidates[q.candidate].0.groups[&key];
+            if counts[&(q.candidate, group)] != nodes.nodes.len() {
+                continue;
+            }
             let cols = if nodes.symmetry == crate::merit::PupilSymmetry::Bilateral {
                 2
             } else {

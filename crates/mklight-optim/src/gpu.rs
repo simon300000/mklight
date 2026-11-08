@@ -4,6 +4,7 @@
 use crate::linalg::Matrix;
 use mklight_core::{JobContext, MkResult, RunInfo, Snapshot};
 use mklight_gpu::{ComputeBackend, Df32, optim_ops::Request, resident::*};
+use serde::{Deserialize, Serialize};
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicBool, AtomicU64, Ordering},
@@ -11,7 +12,96 @@ use std::sync::{
 mod evaluator;
 mod first_order;
 pub mod scheduler;
-pub use evaluator::{EvaluationStats, ResidentEvaluator};
+pub use evaluator::{EvalDesign, EvaluationStats, ResidentEvaluator};
+
+/// Work-split study key of the solver analyses (`mklight_core::split`).
+pub const SPLIT_STUDY: &str = "solvers";
+
+/// A named division of the solver analyses (merit evaluation, optimisation,
+/// tolerancing, glass substitution) between the CPU and the GPU: the
+/// variants of the `solvers` work-split study. The engine reads it once per
+/// run ([`Split::selected`]) and names it in the run's backend report.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Split {
+    /// The fully resident adapter ([`EvalDesign::Resident`]).
+    Resident,
+    /// Host candidates, one device ray plan per batch, per-ray host
+    /// completion ([`EvalDesign::Hybrid`]).
+    Hybrid,
+    /// [`Split::Hybrid`] in pipelined sub-batches ([`EvalDesign::Pipelined`]).
+    Pipelined,
+    /// [`Split::Hybrid`], and least-squares trial points evaluated together
+    /// with the finite-difference probes of the next Jacobian (one batch per
+    /// iteration instead of two when the step is accepted).
+    Speculative,
+    /// [`Split::Hybrid`], and glass substitution re-optimises each search
+    /// iteration's combinations side by side through the rendezvous
+    /// scheduler, so that every round of their evaluations is one device
+    /// batch (`discrete::LocallyRefined::joint`).
+    Rendezvous,
+    /// No device: the CPU f64 reference (rayon over candidates, fields and
+    /// pupil groups) driven like [`Split::Speculative`] (speculative
+    /// least-squares Jacobians, large tolerance batches): the honest CPU
+    /// competitor of the device variants.
+    CpuPar,
+}
+impl Split {
+    /// The design that runs when no variant is selected.
+    pub const DEFAULT: Split = Split::Speculative;
+    pub const ALL: [Split; 6] = [
+        Split::Resident,
+        Split::Hybrid,
+        Split::Pipelined,
+        Split::Speculative,
+        Split::Rendezvous,
+        Split::CpuPar,
+    ];
+    pub fn name(self) -> &'static str {
+        match self {
+            Split::Resident => "resident",
+            Split::Hybrid => "hybrid",
+            Split::Pipelined => "pipelined",
+            Split::Speculative => "speculative",
+            Split::Rendezvous => "rendezvous",
+            Split::CpuPar => "cpu-par",
+        }
+    }
+    pub fn from_name(name: &str) -> Option<Split> {
+        Split::ALL.into_iter().find(|s| s.name() == name)
+    }
+    /// The variant selected for this run (`mklight_core::split`), or the
+    /// default design; an unknown name is an error.
+    pub fn selected() -> MkResult<Split> {
+        match mklight_core::split::variant(SPLIT_STUDY) {
+            None => Ok(Split::DEFAULT),
+            Some(v) => Split::from_name(&v).ok_or_else(|| {
+                mklight_core::MkError::InvalidParam(format!(
+                    "unknown '{SPLIT_STUDY}' work-split variant '{v}' (known: {})",
+                    Split::ALL.map(Split::name).join(", ")
+                ))
+            }),
+        }
+    }
+    /// The device evaluator's design, `None` when the variant uses no device.
+    pub fn design(self) -> Option<EvalDesign> {
+        match self {
+            Split::Resident => Some(EvalDesign::Resident),
+            Split::Hybrid | Split::Speculative | Split::Rendezvous => Some(EvalDesign::Hybrid),
+            Split::Pipelined => Some(EvalDesign::Pipelined),
+            Split::CpuPar => None,
+        }
+    }
+    /// Do least-squares solves evaluate the next Jacobian's probes with each
+    /// trial point?
+    pub fn speculative(self) -> bool {
+        matches!(self, Split::Speculative | Split::CpuPar)
+    }
+    /// Are glass combinations refined jointly (rendezvous batches)?
+    pub fn joint_refinements(self) -> bool {
+        self == Split::Rendezvous
+    }
+}
 
 type SamplingCache = Vec<(
     crate::merit::PupilSampling,
@@ -118,8 +208,25 @@ impl GpuContext {
         })
     }
     pub fn submit(&self, p: ResidentPlan, ctx: &JobContext) -> MkResult<PlanResult> {
+        let pending = self.submit_async(p, ctx)?;
+        self.complete(pending)
+    }
+    /// Submit a plan without waiting: the device runs it while the caller
+    /// continues; [`Self::complete`] waits and records its statistics.
+    pub fn submit_async(
+        &self,
+        p: ResidentPlan,
+        ctx: &JobContext,
+    ) -> MkResult<mklight_gpu::pending::Pending<PlanResult>> {
         let inner = JobContext::with(ctx.cancel.clone(), Default::default());
-        let result = self.backend.submit_plan(p, &inner)?.wait()?;
+        self.backend.submit_plan(p, &inner)
+    }
+    /// Wait for a plan of [`Self::submit_async`] and record its statistics.
+    pub fn complete(
+        &self,
+        pending: mklight_gpu::pending::Pending<PlanResult>,
+    ) -> MkResult<PlanResult> {
+        let result = pending.wait()?;
         self.observe(result.stats.clone());
         Ok(result)
     }

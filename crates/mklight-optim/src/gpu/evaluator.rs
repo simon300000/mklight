@@ -2,6 +2,7 @@
 //! only unsupported work and device failures invoke the reference evaluator.
 use super::GpuContext;
 use crate::deriv::FdScheme;
+use crate::merit::gpu_eval::resident::{self, RayDesign};
 use crate::merit::{
     gpu_eval::{gpu_fd_relative_step, gpu_supports},
     mtf_eval::MtfEvaluator,
@@ -13,10 +14,11 @@ use mklight_core::{
     JobContext, MkError, MkResult, OpticalSystem, RunInfo, Snapshot, param::ParamPath,
 };
 use mklight_gpu::systems::{Candidate, CompiledSystem, Parameter, UploadedSystem};
+use mklight_trace::SequentialTracer;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     sync::{Arc, Mutex},
 };
 
@@ -43,6 +45,54 @@ impl Drop for Template {
         let _ = self.uploaded.release(self.backend.as_ref());
     }
 }
+/// How a [`ResidentEvaluator`] divides a candidate batch between the host
+/// and the device (work-split study `solvers`, see [`super::Split`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EvalDesign {
+    /// The fully resident P1/P4 adapter: candidate systems prepared on the
+    /// device from a compiled template, first-order operands in their own
+    /// device plan, every other host operand completed by the reference,
+    /// and a candidate with any unresolved device ray reported whole to the
+    /// reference. The library default; the engine selects its design.
+    #[default]
+    Resident,
+    /// Host candidates (f64 tracers, chief seeds, model, paraxial and
+    /// host-only ray operands) with one device plan per batch for the
+    /// pupil-ray aiming, tracing and reductions; rays the device leaves
+    /// unresolved are completed one by one on the host in f64.
+    Hybrid,
+    /// [`Self::Hybrid`] in sub-batches, pipelined: the host prepares
+    /// sub-batch k + 1 and finishes k − 1 while the device traces k.
+    Pipelined,
+}
+impl EvalDesign {
+    fn ray_design(self, cap: Option<u32>) -> RayDesign {
+        match (self, cap) {
+            (EvalDesign::Resident, _) => RayDesign::RESIDENT,
+            (_, Some(cap)) => RayDesign::hybrid_capped(cap),
+            (_, None) => RayDesign::HYBRID,
+        }
+    }
+    fn hybrid(self) -> bool {
+        self != EvalDesign::Resident
+    }
+}
+/// Smallest pipelined sub-batch. A plan's device time hardly grows with its
+/// size up to some ten thousand rays (it is the latency of the slowest
+/// aiming lanes), so small sub-batches would only add plans.
+const PIPELINE_MIN_CHUNK: usize = 8;
+/// Candidates per pipelined sub-batch of `n`: three stages, of at least
+/// [`PIPELINE_MIN_CHUNK`] candidates.
+fn pipeline_chunk(n: usize) -> usize {
+    n.div_ceil(3).max(PIPELINE_MIN_CHUNK)
+}
+/// Smallest batch for which a hybrid evaluator that has not seen a batch
+/// yet first traces one candidate alone to learn the slow rays: a large
+/// cold batch would hold every aiming tile of its plan up for the slow
+/// lanes (tiles run one after another, each as long as its slowest lane).
+const PROBE_MIN_BATCH: usize = 4;
+
 #[derive(Clone)]
 pub struct ResidentEvaluator {
     pub context: GpuContext,
@@ -51,7 +101,43 @@ pub struct ResidentEvaluator {
     solvers: SolverEvaluator,
     template: Arc<Mutex<Option<Arc<Template>>>>,
     stats: Arc<Mutex<EvaluationStats>>,
+    design: EvalDesign,
+    /// Hybrid designs: rays the device recently left unresolved in a
+    /// quarter or more of a batch's candidates. Later batches route them to
+    /// the host before the plan, where they are traced while the device
+    /// works, so the device's commands are not held up by their slow lanes.
+    host_rays: Arc<Mutex<HostRays>>,
+    /// Device aiming schedule cap of the hybrid designs (`None`: theirs).
+    aim_cap: Option<u32>,
 }
+/// Rays the hybrid designs route to the host, learned from the device's
+/// aiming reports (unresolved or slow), and the batches seen so far. A ray
+/// stays with the host for the evaluator's lifetime: the learned rays are
+/// the merit's unaimable and slow rim rays, and one that has become easy
+/// costs the host a few microseconds.
+#[derive(Default)]
+struct HostRays {
+    batches: u64,
+    rays: BTreeSet<resident::RayKey>,
+    /// The device left so many rays to the host (more than
+    /// [`HOST_ONLY_FRACTION`] of a candidate's) that the rest of the run is
+    /// evaluated on the host alone, by the reference.
+    host_only: bool,
+}
+impl HostRays {
+    /// Learn `keys`; `rays` is a candidate's traced ray count.
+    fn record(&mut self, keys: impl IntoIterator<Item = resident::RayKey>, rays: f64) {
+        self.rays.extend(keys);
+        self.batches += 1;
+        if self.rays.len() as f64 > HOST_ONLY_FRACTION * rays {
+            self.host_only = true;
+        }
+    }
+}
+/// Fraction of a candidate's rays the device may leave to the host before
+/// a hybrid evaluator gives the rest of its run to the reference (on the
+/// 35-surface ultra-wide benchmark lens the device aimed only 166 of 570).
+const HOST_ONLY_FRACTION: f64 = 0.5;
 impl ResidentEvaluator {
     pub fn new(mut context: GpuContext, reference: BuiltinEvaluator) -> Self {
         // Same length-prefixed catalogue identity as the engine; computed once.
@@ -72,7 +158,25 @@ impl ResidentEvaluator {
             reference,
             template: Arc::default(),
             stats: Arc::default(),
+            design: EvalDesign::default(),
+            host_rays: Arc::default(),
+            aim_cap: None,
         }
+    }
+    /// The same evaluator with another host/device division.
+    pub fn with_design(mut self, design: EvalDesign) -> Self {
+        self.design = design;
+        self
+    }
+    pub fn design(&self) -> EvalDesign {
+        self.design
+    }
+    /// The hybrid designs with another device aiming schedule cap (Newton
+    /// iterations per ray before the host completes it): a test and
+    /// measurement knob.
+    pub fn with_device_aim_cap(mut self, cap: u32) -> Self {
+        self.aim_cap = Some(cap);
+        self
     }
     pub fn run<T>(
         &self,
@@ -95,6 +199,7 @@ impl ResidentEvaluator {
     pub fn record(&self, info: &mut RunInfo) {
         self.context.record(info);
         info.settings["candidate_evaluation"] = serde_json::to_value(self.stats()).unwrap();
+        info.settings["evaluation_design"] = serde_json::to_value(self.design).unwrap();
         if self.stats().device_operands > 0 {
             info.backend = self.context.backend.info().backend_id();
             info.precision = mklight_core::job::Precision::F32Gpu;
@@ -138,19 +243,45 @@ impl ResidentEvaluator {
         *cache = Some(t.clone());
         Ok(t)
     }
+    /// One batch through every route. `anchored`: the batch holds the probes
+    /// and re-evaluated base point of finite differences (hybrid designs
+    /// then complete a ray on the host for every candidate when any needed
+    /// it).
     fn evaluate(
         &self,
         systems: &[OpticalSystem],
         ops: &[&Operand],
         template: Option<(&Template, &[Candidate])>,
+        anchored: bool,
         ctx: &JobContext,
     ) -> MkResult<Vec<Vec<OperandValue>>> {
         ctx.check()?;
         let inner = JobContext::with(ctx.cancel.clone(), Default::default());
+        let hybrid = self.design.hybrid();
+        let started = std::time::Instant::now();
         let tracers: Vec<_> = systems
             .par_iter()
             .map(|system| self.reference.trace.tracer(system).ok().map(Arc::new))
             .collect();
+        if hybrid {
+            let seconds = started.elapsed().as_secs_f64();
+            self.context.observe(mklight_gpu::resident::PlanStats {
+                wall_seconds: seconds,
+                stages: vec![mklight_gpu::resident::StageStats {
+                    name: "host tracers".into(),
+                    wall_seconds: seconds,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            });
+        }
+        // Hybrid designs evaluate the first-order, model, paraxial and
+        // host-only ray operands from the same host candidates as the
+        // device rays (one pass, route 0).
+        let route_of = |kind: &OperandKind| match route_for(kind) {
+            3 | 4 if hybrid => 0,
+            r => r,
+        };
         let mut result = vec![vec![Err(OperandError::Unsupported); ops.len()]; systems.len()];
         // Per value: from the device, or completed on the reference after a
         // device fallback (host stages of a route are neither).
@@ -167,7 +298,7 @@ impl ResidentEvaluator {
             let indices: Vec<_> = ops
                 .iter()
                 .enumerate()
-                .filter(|(_, o)| route_for(&o.kind) == route)
+                .filter(|(_, o)| route_of(&o.kind) == route)
                 .map(|(i, _)| i)
                 .collect();
             if indices.is_empty() {
@@ -199,12 +330,16 @@ impl ResidentEvaluator {
                 Ok(vec![])
             } else {
                 match route {
-                    0 => crate::merit::gpu_eval::resident::evaluate(
+                    0 if hybrid => {
+                        self.split_rays(&context, &selected_tracers, &refs, anchored, &inner)
+                    }
+                    0 => resident::evaluate(
                         &context,
                         &self.reference.trace,
                         &selected_tracers,
                         &refs,
                         selected_template,
+                        &RayDesign::RESIDENT,
                         &inner,
                     ),
                     1 => self.mtf.evaluate_batch(&selected(), &refs, &inner),
@@ -241,6 +376,19 @@ impl ResidentEvaluator {
                                         .fallbacks
                                         .entry("non-finite device operand".into())
                                         .or_default() += 1;
+                                }
+                                _ if hybrid
+                                    && route == 0
+                                    && !gpu_supports(&ops[i].kind, true)
+                                    && !matches!(
+                                        ops[i].kind,
+                                        OperandKind::RelativeIllumination
+                                    ) =>
+                                {
+                                    // A host stage of the hybrid pass.
+                                    result[row][i] = value;
+                                    missing[row][col] = false;
+                                    stats.host_operands += 1;
                                 }
                                 _ => {
                                     result[row][i] = value;
@@ -380,6 +528,13 @@ impl ResidentEvaluator {
 /// at the spot budget; dense wavefront batches (OPD and fit channels) reach
 /// 127 MiB at their budget and 376 MiB at the spot budget.
 fn batch_limit(system: &OpticalSystem, ops: &[&Operand], ri_nodes: usize) -> usize {
+    let (rays, wavefront) = estimated_rays(system, ops, ri_nodes);
+    let budget = if wavefront { 196_608 } else { 786_432 };
+    (budget / rays.max(1)).clamp(1, 1024)
+}
+/// Estimated device rays per candidate of `ops` (an upper bound of the
+/// plan's probes), and whether the operands need OPD and fit channels.
+fn estimated_rays(system: &OpticalSystem, ops: &[&Operand], ri_nodes: usize) -> (usize, bool) {
     let mut groups = Vec::new();
     for op in ops {
         let sampling = match &op.kind {
@@ -441,8 +596,7 @@ fn batch_limit(system: &OpticalSystem, ops: &[&Operand], ri_nodes: usize) -> usi
             OperandKind::WavefrontAberration { .. } | OperandKind::WavefrontRms { .. }
         )
     });
-    let budget = if wavefront { 196_608 } else { 786_432 };
-    (budget / rays.max(1)).clamp(1, 1024)
+    (rays, wavefront)
 }
 
 fn route_for(kind: &OperandKind) -> usize {
@@ -507,18 +661,38 @@ impl OperandEvaluator for ResidentEvaluator {
                     * self.reference.trace.settings().illumination_arms.max(8),
             )
         });
+        if self.design.hybrid() {
+            // The ray stage splits the batch into plans itself.
+            return self.evaluate(systems, ops, None, false, ctx);
+        }
         let count = systems.len().div_ceil(limit);
         for (i, chunk) in systems.chunks(limit).enumerate() {
             values.extend(self.evaluate(
                 chunk,
                 ops,
                 None,
+                false,
                 &ctx.subrange(i as f64 / count as f64, (i + 1) as f64 / count as f64),
             )?);
         }
         ctx.check()?;
         ctx.report(1., "candidate batch complete");
         Ok(values)
+    }
+    /// Hybrid designs evaluate a batch near an anchor (joined finite
+    /// differences of the rendezvous scheduler) with one evaluator per ray
+    /// across it; the resident design ignores the anchor.
+    fn evaluate_batch_near(
+        &self,
+        systems: &[OpticalSystem],
+        ops: &[&Operand],
+        anchor: Option<&OpticalSystem>,
+        ctx: &JobContext,
+    ) -> MkResult<Vec<Vec<OperandValue>>> {
+        if self.design.hybrid() {
+            return self.evaluate(systems, ops, None, anchor.is_some(), ctx);
+        }
+        self.evaluate_batch(systems, ops, ctx)
     }
     fn evaluate_parametric(
         &self,
@@ -531,6 +705,23 @@ impl OperandEvaluator for ResidentEvaluator {
             .into_par_iter()
             .map(|i| batch.build(i))
             .collect();
+        if self.design.hybrid() {
+            // Host candidates: no device template; one pass over the batch.
+            let systems: Vec<OpticalSystem> = built
+                .iter()
+                .filter_map(|s| s.as_ref().ok().cloned())
+                .collect();
+            let anchored = batch.candidates.anchor.is_some();
+            let mut values = self
+                .evaluate(&systems, ops, None, anchored, ctx)?
+                .into_iter();
+            ctx.check()?;
+            ctx.report(1., "parametric candidate batch complete");
+            return Ok(built
+                .into_iter()
+                .map(|s| s.map(|_| values.next().unwrap()))
+                .collect());
+        }
         let template = match self.template(batch, &ctx.subrange(0., 0.05)) {
             Ok(t) => Some(t),
             Err(MkError::Cancelled) => return Err(MkError::Cancelled),
@@ -569,6 +760,7 @@ impl OperandEvaluator for ResidentEvaluator {
                 systems,
                 ops,
                 template.as_ref().map(|t| (t.as_ref(), rows)),
+                false,
                 &ctx.subrange(
                     0.05 + 0.95 * i as f64 / count as f64,
                     0.05 + 0.95 * (i + 1) as f64 / count as f64,
@@ -585,7 +777,227 @@ impl OperandEvaluator for ResidentEvaluator {
     }
 }
 
+type Landing<'a> = (usize, resident::Traced<'a>);
+/// What the stages of one hybrid batch share.
+struct Stage<'s> {
+    context: &'s GpuContext,
+    cpu: &'s TraceEvaluator,
+    ops: &'s [&'s Operand],
+    design: &'s RayDesign,
+    anchored: bool,
+    ctx: &'s JobContext,
+    /// Unresolved rays of the sub-batches finished on landing.
+    unresolved: Mutex<Vec<Vec<resident::RayKey>>>,
+}
+impl Stage<'_> {
+    /// Wait for sub-batch `k`'s plan, read it and finish it (or, in an
+    /// anchored batch, keep it for the uniform completion).
+    fn land<'a>(
+        &self,
+        k: usize,
+        chunk: &[Arc<SequentialTracer>],
+        prepared: resident::Prepared<'a>,
+        pending: mklight_gpu::Pending<mklight_gpu::resident::PlanResult>,
+        values: &mut [Option<Vec<Vec<OperandValue>>>],
+        deferred: &mut Vec<Landing<'a>>,
+    ) -> MkResult<()> {
+        let wait = std::time::Instant::now();
+        let result = self.context.complete(pending)?;
+        let waited = wait.elapsed().as_secs_f64();
+        self.context.observe(mklight_gpu::resident::PlanStats {
+            stages: vec![mklight_gpu::resident::StageStats {
+                name: "host wait for device".into(),
+                wall_seconds: waited,
+                ..Default::default()
+            }],
+            ..Default::default()
+        });
+        let traced = resident::collect(self.context, prepared, result, self.design)?;
+        if self.anchored {
+            deferred.push((k, traced));
+        } else {
+            self.unresolved.lock().unwrap().extend(
+                traced
+                    .unresolved
+                    .iter()
+                    .zip(&traced.slow)
+                    .map(|(u, s)| u.iter().chain(s).copied().collect()),
+            );
+            values[k] = Some(resident::finish(
+                self.context,
+                self.cpu,
+                chunk,
+                self.ops,
+                traced,
+                None,
+                self.design,
+                self.ctx,
+            )?);
+        }
+        Ok(())
+    }
+}
 impl ResidentEvaluator {
+    /// The ray stage of the hybrid designs: host preparation, one device
+    /// plan per sub-batch (aim, trace, reductions), host completion of the
+    /// unresolved rays and every operand value from the host candidates.
+    /// [`EvalDesign::Pipelined`] overlaps the host preparation of the next
+    /// sub-batch and the finishing of the previous one with the device's
+    /// work on the current one. In an `anchored` batch every sub-batch is
+    /// finished after all are traced, so that a ray completed on the host
+    /// for one candidate is completed for all.
+    fn split_rays(
+        &self,
+        context: &GpuContext,
+        tracers: &[Arc<SequentialTracer>],
+        ops: &[&Operand],
+        anchored: bool,
+        ctx: &JobContext,
+    ) -> MkResult<Vec<Vec<OperandValue>>> {
+        let n = tracers.len();
+        if n == 0 {
+            return Ok(vec![]);
+        }
+        if n >= PROBE_MIN_BATCH && self.host_rays.lock().unwrap().batches == 0 {
+            // The probe's values are not used: a finite difference routes
+            // all its candidates alike.
+            self.split_rays(context, &tracers[..1], ops, false, ctx)?;
+        }
+        let cpu = &self.reference.trace;
+        if self.host_rays.lock().unwrap().host_only {
+            // The reference, seeded from the batch's base point when it holds
+            // finite differences (its first candidate).
+            let systems: Vec<OpticalSystem> = tracers
+                .iter()
+                .map(|t| t.system().system().clone())
+                .collect();
+            let anchor = anchored.then(|| systems[0].clone());
+            let values = cpu.evaluate_batch_near(&systems, ops, anchor.as_ref(), ctx)?;
+            let mut stats = self.stats.lock().unwrap();
+            *stats
+                .fallbacks
+                .entry("device aiming left most rays to the host: reference evaluation".into())
+                .or_default() += (n * ops.len()) as u64;
+            return Ok(values);
+        }
+        let design = self.design.ray_design(self.aim_cap);
+        let limit = batch_limit(
+            tracers[0].system().system(),
+            ops,
+            1 + cpu.settings().illumination_rings.max(2) * cpu.settings().illumination_arms.max(8),
+        );
+        let overlap = self.design == EvalDesign::Pipelined;
+        let size = if overlap {
+            pipeline_chunk(n).min(limit)
+        } else {
+            limit
+        };
+        let chunks: Vec<&[Arc<SequentialTracer>]> = tracers.chunks(size).collect();
+        let mut values: Vec<Option<Vec<Vec<OperandValue>>>> = chunks.iter().map(|_| None).collect();
+        let mut deferred: Vec<Landing<'_>> = Vec::new();
+        let stage = Stage {
+            context,
+            cpu,
+            ops,
+            design: &design,
+            anchored,
+            ctx,
+            unresolved: Mutex::default(),
+        };
+        // One routing for the whole batch, so that a ray is traced by the
+        // same side for every candidate of a finite difference.
+        let host_rays = self.host_rays.lock().unwrap().rays.clone();
+        let mut unresolved: BTreeMap<resident::RayKey, usize> = BTreeMap::new();
+        let mut rays_total = 0usize;
+        let mut in_flight = None;
+        for (k, chunk) in chunks.iter().enumerate() {
+            ctx.check()?;
+            let mut prepared =
+                resident::prepare(context, cpu, chunk, ops, None, &design, &host_rays, ctx)?;
+            let plan = prepared.plan.take().expect("prepared plan");
+            context.record_traced_rays(prepared.traced_rays());
+            rays_total += prepared.traced_rays() + prepared.host_rays();
+            if resident::trace_routing() {
+                eprintln!(
+                    "MKL_SOLVERS chunk {k}: {} candidates, {} device rays, {} host-routed rays (set {})",
+                    chunk.len(),
+                    prepared.traced_rays(),
+                    prepared.host_rays(),
+                    host_rays.len()
+                );
+            }
+            let pending = context.submit_async(plan, ctx)?;
+            // The host's share while the device traces the rest: the rays
+            // routed to it and the operands that need no ray.
+            let started = std::time::Instant::now();
+            resident::host_stage(&mut prepared, cpu, chunk, ops, &design, ctx)?;
+            let seconds = started.elapsed().as_secs_f64();
+            context.observe(mklight_gpu::resident::PlanStats {
+                polished_rays: prepared.host_rays() as u64,
+                stages: vec![mklight_gpu::resident::StageStats {
+                    name: "host stage (routed rays, rayless operands; overlapped)".into(),
+                    wall_seconds: seconds,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            });
+            if !overlap {
+                stage.land(k, chunk, prepared, pending, &mut values, &mut deferred)?;
+                continue;
+            }
+            if let Some((j, prev, p)) = in_flight.replace((k, prepared, pending)) {
+                stage.land(j, chunks[j], prev, p, &mut values, &mut deferred)?;
+            }
+        }
+        if let Some((j, prev, p)) = in_flight.take() {
+            stage.land(j, chunks[j], prev, p, &mut values, &mut deferred)?;
+        }
+        for (_, t) in &deferred {
+            for (u, slow) in t.unresolved.iter().zip(&t.slow) {
+                for &key in u.iter().chain(slow) {
+                    *unresolved.entry(key).or_default() += 1;
+                }
+            }
+        }
+        for keys in stage.unresolved.lock().unwrap().drain(..) {
+            for key in keys {
+                *unresolved.entry(key).or_default() += 1;
+            }
+        }
+        // A ray slow or unresolved in an eighth of the batch's candidates
+        // (any, in small batches) goes to the host for the next batches.
+        let threshold = n.div_ceil(8).max(1);
+        self.host_rays.lock().unwrap().record(
+            unresolved
+                .iter()
+                .filter(|&(_, &count)| count >= threshold)
+                .map(|(&key, _)| key),
+            rays_total as f64 / n as f64,
+        );
+        if anchored {
+            let uniform: BTreeSet<resident::RayKey> = deferred
+                .iter()
+                .flat_map(|(_, t)| t.unresolved.iter().flatten().copied())
+                .collect();
+            for (k, traced) in deferred {
+                values[k] = Some(resident::finish(
+                    context,
+                    cpu,
+                    chunks[k],
+                    ops,
+                    traced,
+                    Some(&uniform),
+                    &design,
+                    ctx,
+                )?);
+            }
+        }
+        Ok(values
+            .into_iter()
+            .flat_map(|v| v.expect("finished"))
+            .collect())
+    }
+
     /// Independent glass or multistart refinements. Every supplied choice is
     /// refined; stable input order is retained and final scores come from f64.
     pub fn refine_candidates(
