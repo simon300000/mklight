@@ -50,6 +50,7 @@ use mklight_core::job::RunTimer;
 use mklight_core::math::KahanSum;
 use mklight_core::{JobContext, MkError, MkResult, RunInfo};
 use mklight_trace::SequentialTracer;
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::spot::{FieldRays, RayBatch, SpotReference, trace_field_rays, validate_sampling};
@@ -289,7 +290,7 @@ fn ee_reduce(
         warnings.extend(curved_image_warning(tracer));
     }
     let per: Vec<(Cumulative, Cumulative, usize, usize)> = data
-        .iter()
+        .par_iter()
         .map(|fr| {
             let pts = relative_points(fr, delta, settings.reference);
             let circ = pts.iter().map(|(q, w)| (q[0].hypot(q[1]), *w)).collect();
@@ -417,8 +418,10 @@ impl GeometricMtfResult {
 fn modulation(x: &[(f64, f64)], freqs: &[f64]) -> Vec<f64> {
     let wt: KahanSum = x.iter().map(|p| p.1).collect();
     let wt = wt.value();
+    // Frequencies in parallel; each sum runs over the rays in order, so the
+    // result does not depend on the thread count.
     freqs
-        .iter()
+        .par_iter()
         .map(|&nu| {
             if !(wt > 0.0) {
                 return f64::NAN;
@@ -798,9 +801,12 @@ fn best_focus_reduce(
             SpotReference::Chief => m.rms_origin,
         }
     };
+    // The fields' RMS in parallel, summed in field order.
     let merit = |d: f64| {
-        used.iter()
+        used.par_iter()
             .map(|u| u.1 * rms(u.0, d))
+            .collect::<Vec<f64>>()
+            .into_iter()
             .collect::<KahanSum>()
             .value()
             / wsum
@@ -854,7 +860,7 @@ fn best_focus_reduce(
     }
     let (tfd, tfm) = if settings.through_focus_samples > 0 {
         let d = linspace(range[0], range[1], settings.through_focus_samples.max(2));
-        let m = d.iter().map(|&x| merit(x)).collect();
+        let m = d.par_iter().map(|&x| merit(x)).collect();
         (d, m)
     } else {
         (Vec::new(), Vec::new())
