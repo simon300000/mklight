@@ -686,12 +686,13 @@ per-field Kahan sums in f64, in the reference's node order and weights.
 
 **Chief-ray maps.** `chief_ray_angle`, `pupil_aberration`,
 `grid_distortion` and `field_curvature_distortion` need one aimed chief per
-field point: `host-chief` solves them in f64 on all cores and traces on the
-device; `device-chief` solves them with the aiming kernels' own chief solve
-(no host seeds; a map with a failed device chief is completed by the
-reference); `cpu` runs the reference path; `sized` (the default) runs `cpu`
-below 64 field points (field-wavelength rows for the field curvature) and
-`host-chief` above. The reference itself solves and traces the fields of these maps in
+field point: `host-chief` (the default) solves them in f64 on all cores and
+traces on the device; `device-chief` solves them with the aiming kernels'
+own chief solve (no host seeds; a map with a failed device chief is
+completed by the reference); `cpu` runs the reference path; `sized` runs
+`cpu` below 64 field points (field-wavelength rows for the field curvature)
+and `host-chief` above (a size rule for `auto`, measured as a design, since
+an explicit GPU request must run natively). The reference itself solves and traces the fields of these maps in
 parallel (blocks of 256 fields; grid distortion in blocks of about 1024
 points), with unchanged results.
 

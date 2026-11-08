@@ -11,6 +11,9 @@
 //! * `cpu`: the reference path (fields in parallel), run from the GPU
 //!   route: the CPU-only division.
 //! * `sized`: `cpu` below [`SIZED_FIELDS`] field points, else `host-chief`.
+//!
+//! The default is `host-chief`: an explicit GPU request runs natively; the
+//! size rule belongs to `auto` (the cost model), which `sized` measures.
 use super::*;
 
 /// The chief-map designs (module docs).
@@ -24,7 +27,7 @@ pub enum ChiefDesign {
 /// Field points below which `sized` runs the CPU path.
 pub const SIZED_FIELDS: usize = 64;
 impl ChiefDesign {
-    pub const DEFAULT: Self = Self::Sized;
+    pub const DEFAULT: Self = Self::HostChief;
     pub fn name(self) -> &'static str {
         match self {
             Self::HostChief => "host-chief",
