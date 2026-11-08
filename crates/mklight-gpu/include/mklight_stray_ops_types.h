@@ -5,6 +5,8 @@
 /* Feature bits read at run time from MklStrayTransportParams::reserved[2]
    instead of the specialisation constant (kernel-design study). */
 #define MKL_STRAY_DYNAMIC_CONSTANT 62
+/* Sag mode 2: an extended-sag scan of more cells goes to the host. */
+#define MKL_STRAY_SAG_HANDOFF_CELLS 32
 #define MKL_STRAY_MAX_PRIMITIVES 1048576
 #define MKL_STRAY_MAX_TILE 65536
 #ifdef __METAL_VERSION__

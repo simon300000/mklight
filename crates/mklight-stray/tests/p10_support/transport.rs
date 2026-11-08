@@ -1576,6 +1576,7 @@ fn hybrid_designs_agree() {
                 "head_budget",
                 "stack_full",
                 "journal_full",
+                "sag_handoff",
                 "retraced",
                 "cpu_sources",
             ]

@@ -237,14 +237,15 @@ impl TransportScene {
         options: TransportOptions,
     ) -> MkResult<(BufferId, BufferId)> {
         self.append_with(
-            plan, scene, source, settings, first, count, options, None, 0, false,
+            plan, scene, source, settings, first, count, options, None, 0, false, 0,
         )
     }
     /// As [`Self::append`] in handoff mode (`ops::Transport::stack_output`):
     /// sources stop with a consistent device stack in `stack` after
     /// `head_events` events (0: no limit), or when their stack or detection
     /// journal is full, for the host to continue. `wavefront` selects the
-    /// wavefront kernels (`ops::Transport::wavefront`).
+    /// wavefront kernels (`ops::Transport::wavefront`), `sag_mode` the
+    /// extended-sag intersection (`ops::Transport::sag_mode`).
     #[allow(clippy::too_many_arguments)]
     pub fn append_handoff(
         &self,
@@ -258,6 +259,7 @@ impl TransportScene {
         stack: BufferId,
         head_events: u32,
         wavefront: bool,
+        sag_mode: u32,
     ) -> MkResult<(BufferId, BufferId)> {
         self.append_with(
             plan,
@@ -270,6 +272,7 @@ impl TransportScene {
             Some(stack),
             head_events,
             wavefront,
+            sag_mode,
         )
     }
     #[allow(clippy::too_many_arguments)]
@@ -285,6 +288,7 @@ impl TransportScene {
         stack_output: Option<BufferId>,
         head_events: u32,
         wavefront: bool,
+        sag_mode: u32,
     ) -> MkResult<(BufferId, BufferId)> {
         // Reuse the validated source descriptor and CDF, then fuse its device
         // generation into the first transport command.
@@ -368,6 +372,7 @@ impl TransportScene {
                     stack_output,
                     head_events,
                     wavefront,
+                    sag_mode,
                 },
             ))));
         Ok((output, ledger))

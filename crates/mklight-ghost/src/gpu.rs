@@ -46,16 +46,37 @@ impl Lap {
     }
     /// (wall, CPU) seconds since the mark.
     pub(crate) fn elapsed(&self) -> (f64, f64) {
-        (
-            self.wall.elapsed().as_secs_f64(),
-            cpu_seconds() - self.cpu,
-        )
+        (self.wall.elapsed().as_secs_f64(), cpu_seconds() - self.cpu)
     }
 }
 
 /// Study key of the CPU/GPU divisions of `ghost_irradiance`
 /// (`mklight_core::split`).
 pub const STUDY_KEY: &str = "ghost";
+
+/// Study key of the threads of the CPU share of [`Design::Shared`]: a
+/// number of threads for a pool of its own (unset: the global pool, which
+/// the device refinement's host work shares).
+pub const THREADS_KEY: &str = "ghost_threads";
+
+/// A pool of the selected size for the CPU share, if one is selected.
+pub(crate) fn share_pool() -> MkResult<Option<rayon::ThreadPool>> {
+    match mklight_core::split::variant(THREADS_KEY) {
+        None => Ok(None),
+        Some(v) => {
+            let n = v
+                .parse::<usize>()
+                .ok()
+                .filter(|n| *n > 0)
+                .ok_or_else(|| MkError::InvalidModel(format!("{THREADS_KEY} '{v}'")))?;
+            rayon::ThreadPoolBuilder::new()
+                .num_threads(n)
+                .build()
+                .map(Some)
+                .map_err(|e| MkError::Backend(format!("{THREADS_KEY} pool: {e}")))
+        }
+    }
+}
 
 /// Path groups of [`Design::Pipelined`].
 const PIPELINE_GROUPS: usize = 4;
@@ -484,7 +505,7 @@ impl<'a> GhostTransport<'a> {
     pub(crate) fn lattice(
         &mut self,
         n: usize,
-        sample: impl FnMut(usize) -> MkResult<LaunchSample>,
+        sample: impl Fn(usize) -> MkResult<LaunchSample> + Sync,
         powers: bool,
         ctx: &JobContext,
     ) -> MkResult<ProbeValues> {
@@ -496,12 +517,13 @@ impl<'a> GhostTransport<'a> {
     pub(crate) fn submit_lattice(
         &self,
         n: usize,
-        sample: impl FnMut(usize) -> MkResult<LaunchSample>,
+        sample: impl Fn(usize) -> MkResult<LaunchSample> + Sync,
         powers: bool,
         ctx: &JobContext,
     ) -> MkResult<PendingLattice> {
         let (chiefs, fields) = self.chiefs.as_ref().unwrap();
-        let input = fill(self.backend, n, sample)?;
+        // The launch records are a function of the index: filled in parallel.
+        let input = fill_par(self.backend, n, sample)?;
         let mut p = self.plan();
         let chiefs = p.import(chiefs.view());
         let fields = p.import(fields.view());

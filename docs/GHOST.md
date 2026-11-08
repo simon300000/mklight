@@ -505,6 +505,15 @@ the design, the CPU paths and the wall seconds of the host stages
 (`host_seconds`: deduplication, device waits, outcomes, splits, leaves,
 maps); `settings.timings` has the run's stages on either backend.
 
+The CPU share of `shared` runs in the global rayon pool or in a pool of its
+own size (study key `ghost_threads`); results do not depend on it. Host stages
+run in parallel where their results allow it: the outcomes of a tile per path
+run, the splits and leaf gathering of a group's paths, the per-path maps of
+the CPU reference's groups, the leaf ordering (a stable parallel sort) and
+the record fills of the device maps; folds stay in their fixed order.
+`settings.gpu.host_cpu_seconds` records the process CPU time of each host
+stage beside its wall time, and `settings.timings` holds [wall, CPU] pairs.
+
 Measured on a heavily loaded M2 Pro (provisional): on a 29-surface lens with
 276 two-reflection ghosts (58 M probes), the device traces for about 9 s and
 the host stages of `level-sync` add about 7 s that the device waits for

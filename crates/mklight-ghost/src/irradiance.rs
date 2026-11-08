@@ -1257,8 +1257,14 @@ pub(crate) fn ghost_irradiance_with_backend(
                 .collect::<Vec<_>>();
             let device_steps = device.iter().map(|&i| all_steps[i]).collect::<Vec<_>>();
             let quiet = JobContext::with(ctx.cancel.clone(), Default::default());
+            let pool = crate::gpu::share_pool()?;
             std::thread::scope(|scope| {
-                let cpu = (!cpu_groups.is_empty()).then(|| scope.spawn(|| trace_cpu(&quiet)));
+                let cpu = (!cpu_groups.is_empty()).then(|| {
+                    scope.spawn(|| match &pool {
+                        Some(p) => p.install(|| trace_cpu(&quiet)),
+                        None => trace_cpu(&quiet),
+                    })
+                });
                 let gpu = resident_maps(
                     b,
                     design,
@@ -1282,7 +1288,9 @@ pub(crate) fn ghost_irradiance_with_backend(
                 gpu.0.cpu_paths = cpu_groups.iter().map(Vec::len).sum();
                 let (runs, seconds) = cpu?.unwrap_or_default();
                 gpu.0.host_seconds.insert("cpu_share_refine", seconds[0]);
-                gpu.0.host_cpu_seconds.insert("cpu_share_refine", seconds[1]);
+                gpu.0
+                    .host_cpu_seconds
+                    .insert("cpu_share_refine", seconds[1]);
                 gpu.0.host_seconds.insert("cpu_share_maps", seconds[2]);
                 gpu.0.host_cpu_seconds.insert("cpu_share_maps", seconds[3]);
                 MkResult::Ok((Some(gpu), runs))

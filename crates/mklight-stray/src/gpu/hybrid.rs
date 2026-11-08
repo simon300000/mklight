@@ -34,6 +34,49 @@ pub const STUDY_KEY: &str = "stray";
 /// Study key of the device share of [`Design::CoSplit`] (a number in
 /// 0…1; unset: [`default_share`]).
 pub const SHARE_KEY: &str = "stray_share";
+/// Study key of the device's extended-sag intersection
+/// (`ops::Transport::sag_mode`): `scan` (default), `f32-scan`,
+/// `cpu-grazing` or `f32-grazing` (both).
+pub const SAG_KEY: &str = "stray_sag";
+
+/// Study key of the threads of the CPU share of [`Design::CoSplit`]: a
+/// number of threads for a pool of its own (unset: the global pool, which
+/// the device plans' CPU completion shares).
+pub const THREADS_KEY: &str = "stray_threads";
+
+/// A pool of the selected size for a CPU share, if one is selected.
+pub(crate) fn share_pool(key: &str) -> MkResult<Option<rayon::ThreadPool>> {
+    match mklight_core::split::variant(key) {
+        None => Ok(None),
+        Some(v) => {
+            let n = v
+                .parse::<usize>()
+                .ok()
+                .filter(|n| *n > 0)
+                .ok_or_else(|| MkError::InvalidModel(format!("{key} '{v}'")))?;
+            rayon::ThreadPoolBuilder::new()
+                .num_threads(n)
+                .build()
+                .map(Some)
+                .map_err(|e| MkError::Backend(format!("{key} pool: {e}")))
+        }
+    }
+}
+
+/// The selected extended-sag intersection mode.
+pub fn sag_mode() -> MkResult<u32> {
+    Ok(match mklight_core::split::variant(SAG_KEY).as_deref() {
+        None | Some("scan") => 0,
+        Some("f32-scan") => 1,
+        Some("cpu-grazing") => 2,
+        Some("f32-grazing") => 3,
+        Some(other) => {
+            return Err(MkError::InvalidModel(format!(
+                "unknown stray sag mode '{other}' (scan, f32-scan, cpu-grazing, f32-grazing)"
+            )));
+        }
+    })
+}
 
 /// Detections a source keeps on the device before the CPU continues it.
 const HANDOFF_DETECTIONS: usize = 8;
@@ -107,8 +150,9 @@ impl Design {
 /// 12-core reference traces analytic scenes about four times faster than
 /// the device, and scenes with iteratively intersected sags (aspheres,
 /// freeforms) about ten times faster (provisional M2 Pro measurements), so
-/// the device takes the share it finishes in the CPU's time.
-pub fn default_share(scene: &Scene) -> f64 {
+/// the device takes the share it finishes in the CPU's time, when that
+/// share is at least `MIN_DEVICE_SOURCES` sources.
+pub fn default_share(scene: &Scene, rays: u64) -> f64 {
     let iterative = scene.primitives().iter().any(|p| match &p.shape {
         // The device's closed-form kinds (`prepare_geometry`).
         Shape::Sag(s) => !match s.shape() {
@@ -120,8 +164,18 @@ pub fn default_share(scene: &Scene) -> f64 {
         },
         Shape::Cylinder(_) => false,
     });
-    if iterative { 0.08 } else { 0.2 }
+    let share = if iterative { 0.08 } else { 0.2 };
+    // A device plan has a fixed latency (its longest path trees): below
+    // about two plans of work the device cannot pay for it.
+    if share * rays as f64 >= MIN_DEVICE_SOURCES {
+        share
+    } else {
+        0.
+    }
 }
+
+/// Sources the device must receive before [`default_share`] gives it any.
+const MIN_DEVICE_SOURCES: f64 = 32768.;
 
 /// Which source chunks the device transports: units of `block` consecutive
 /// chunks, spread evenly so that the device holds `round(u·share)` of the
@@ -189,6 +243,8 @@ pub struct Counters {
     pub head_budget: u64,
     pub stack_full: u64,
     pub journal_full: u64,
+    /// Sources the CPU continued at a long extended-sag scan (`cpu-grazing`).
+    pub sag_handoff: u64,
     /// Sources retraced by the CPU reference (reference arithmetic needed).
     pub retraced: u64,
     /// Sources traced by the CPU reference from the start (`CoSplit`).
@@ -205,6 +261,7 @@ impl Counters {
         self.head_budget += o.head_budget;
         self.stack_full += o.stack_full;
         self.journal_full += o.journal_full;
+        self.sag_handoff += o.sag_handoff;
         self.retraced += o.retraced;
         self.cpu_sources += o.cpu_sources;
         self.device_events += o.device_events;
@@ -310,6 +367,7 @@ impl Finisher<'_> {
                 match status {
                     2 => n.stack_full += 1,
                     3 => n.journal_full += 1,
+                    6 => n.sag_handoff += 1,
                     _ => n.head_budget += 1,
                 }
                 stack.clear();
@@ -471,6 +529,7 @@ pub(crate) fn run(
     let started = Instant::now();
     let hit_capacity = options.detections_per_source.min(HANDOFF_DETECTIONS);
     let stack_capacity = options.stack_capacity.max(4);
+    let sag = sag_mode()?;
     let head_events = match design {
         Design::CpuTally => 0,
         _ => options.head_events,
@@ -485,7 +544,7 @@ pub(crate) fn run(
                     .ok()
                     .filter(|s| (0.0..=1.0).contains(s))
                     .ok_or_else(|| MkError::InvalidModel(format!("stray share '{v}'")))?,
-                None => default_share(scene),
+                None => default_share(scene, settings.rays),
             },
         },
         _ => 1.0,
@@ -539,6 +598,7 @@ pub(crate) fn run(
             stack,
             head_events,
             design.wavefront(),
+            sag,
         )?;
         plan.outputs = vec![hits, ledger, stack];
         // Progress is reported per finished chunk, not by the device.
@@ -568,20 +628,28 @@ pub(crate) fn run(
     let (mut wait_seconds, mut finish_seconds, mut side_seconds) = (0., 0., 0.);
     let cpu_counters = Mutex::new(Counters::default());
     let abort = std::sync::atomic::AtomicBool::new(false);
+    let pool = share_pool(THREADS_KEY)?;
     std::thread::scope(|scope| -> MkResult<()> {
-        // The CPU share (CoSplit) runs in the rayon pool beside the device.
+        // The CPU share (CoSplit) runs in the rayon pool beside the device,
+        // or in a pool of its own (`stray_threads`).
         let cpu = (!cpu_chunks.is_empty()).then(|| {
             scope.spawn(|| -> MkResult<()> {
-                cpu_chunks.par_iter().try_for_each(|&c| {
-                    if abort.load(std::sync::atomic::Ordering::Relaxed) {
-                        return Err(MkError::Cancelled);
-                    }
-                    let (t, n) = finisher.cpu_chunk(c, ctx)?;
-                    cpu_counters.lock().unwrap().add(&n);
-                    folder.lock().unwrap().put(c, t);
-                    report(1);
-                    Ok(())
-                })
+                let share = || {
+                    cpu_chunks.par_iter().try_for_each(|&c| {
+                        if abort.load(std::sync::atomic::Ordering::Relaxed) {
+                            return Err(MkError::Cancelled);
+                        }
+                        let (t, n) = finisher.cpu_chunk(c, ctx)?;
+                        cpu_counters.lock().unwrap().add(&n);
+                        folder.lock().unwrap().put(c, t);
+                        report(1);
+                        Ok(())
+                    })
+                };
+                match &pool {
+                    Some(p) => p.install(share),
+                    None => share(),
+                }
             })
         });
         let result = (|| -> MkResult<()> {
@@ -689,7 +757,9 @@ pub(crate) fn run(
         &snapshot,
         "stray_light",
         &serde_json::json!({"settings": settings, "source": source, "resident_options": options,
-            "design": design.name(), "head_events": head_events, "gpu_share": share,
+            "design": design.name(), "head_events": head_events, "gpu_share": share, "sag_mode": sag,
+            "kernel": mklight_core::split::variant("stray_kernel"),
+            "cpu_share_threads": pool.as_ref().map(|p| p.current_num_threads()),
             "hit_capacity": hit_capacity, "stack_capacity": stack_capacity, "plan_sources": per_plan,
             "stray_version": mklight_gpu::consts::MKL_STRAY_VERSION, "plans": plan_stats,
             "device": b.info(), "precision": b.precision(), "fallback_count": 0,

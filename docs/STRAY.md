@@ -601,7 +601,8 @@ Which part of a source runs where depends only on the source and on fixed
 options, never on timing, so a seed gives bit-identical results. The device
 share of `cosplit` (`TransportOptions::gpu_share`, else the study key
 `stray_share`) is a fixed rule of the scene when not set: 0.2, or 0.08 with
-iteratively intersected sags (`gpu::hybrid::default_share`); device chunks come in units of up to one
+iteratively intersected sags, and 0 when that share is below 32 768 sources
+(`gpu::hybrid::default_share`); device chunks come in units of up to one
 plan, spread evenly. With a share of 0 `cosplit` is the reference bit for bit,
 with a share of 1 it is `gpu-head`. The persistent and wavefront kernels
 produce identical records. Options that move the split (head budget, stack and
@@ -612,6 +613,27 @@ The hybrid analysis adapter builds the scene, starts the device transport and
 then runs the obstruction checks of the system fields and the source's primary
 reference on the CPU beside it (`StraySystem::build_scene`); the result,
 warnings and progress are those of the sequential order.
+
+The CPU share of `cosplit` runs in the global rayon pool, or in a pool of
+its own size (study key `stray_threads`), beside the CPU completion of the
+device plans; the records do not depend on it.
+
+**Extended-sag intersection on the device** (`ops::Transport::sag_mode`,
+study key `stray_sag`): `scan` (default) is the double-float cell scan above;
+`f32-scan` evaluates the cells' end points in plain f32 first and skips a cell
+only when the residual and its slope are clearly of one sign at both ends
+(about a hundred times the f32 rounding), so every root is decided by the
+same double-float cells and the records are those of `scan` (tested on the
+aspheric, Q, odd-asphere and Zernike samples); `cpu-grazing` hands a ray whose
+clipped interval needs more than 32 cells (oblique and grazing rays) back to
+the CPU before the event (`Ledger::status` 6: the state goes back on the
+stack, no draw consumed), and the CPU continues the source; `f32-grazing`
+combines both.
+
+**CPU stages.** The CPU path overlaps the obstruction checks of the system
+fields and the source's primary reference with the transport (all three are
+parallel, none fills the cores alone), checks the system fields in parallel,
+and traces chunks in batches of 16 per thread; results are unchanged.
 
 Measured on a heavily loaded M2 Pro (provisional): the device's double-float
 transport kernel is register-limited; the same kernel compiled as plain f32

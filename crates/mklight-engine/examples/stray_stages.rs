@@ -113,11 +113,18 @@ fn main() {
             for (key, v) in &extra {
                 split::set(key, Some(v));
             }
-            if d != "default" && d != "cpu" {
-                split::set("stray", Some(d));
+            // `DESIGN+KEY=VARIANT+…` adds selections to one column.
+            let mut parts = d.split('+');
+            let design = parts.next().unwrap();
+            for kv in parts {
+                let (key, v) = kv.split_once('=').unwrap();
+                split::set(key, Some(v));
+            }
+            if design != "default" && design != "cpu" {
+                split::set("stray", Some(design));
             }
             let (t, c0) = (Instant::now(), cpu_ms());
-            let r = if d == "cpu" {
+            let r = if design == "cpu" {
                 mklight_stray::run(&sys.scene, &beam.spec, &ss, &ctx).unwrap()
             } else {
                 mklight_stray::gpu::run(

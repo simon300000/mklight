@@ -121,7 +121,24 @@ static SD sgroot(constant MklStraySurfaceData &s,SV o,SV d,SD r,SD lo,SD hi,SD f
     SD next=t-ft/dt;t=sv(next-lo)>0&&sv(next-hi)<0?next:(lo+hi)*SD(0.5f);
   }return (lo+hi)*SD(0.5f);
 }
-static bool sgintersect(device const MklStrayPrimitive &p,constant MklStraySurfaceData &s,MklStrayRay ray,SD limit,thread MklStrayHit &hit){
+// Plain-f32 residual, slope and residual tolerance of the sag at ray
+// parameter t (the pre-scan of sag mode 1 only; never decides a root).
+static bool fgat(constant MklStraySurfaceData &s,float3 o,float3 d,float radius,float t,thread float &f,thread float &df,thread float &tf,thread float &td){
+  float3 q=o+d*t;float r=sqrt(q.x*q.x+q.y*q.y),k=r>radius?radius/r:1.0f;
+  MklJet<float> j;
+  if(!mkl_surface_eval<true>(s.surface,reinterpret_cast<constant float*>(s.coefficients),q.x*k,q.y*k,j))return false;
+  f=q.z-j.v;df=d.z-j.x*d.x-j.y*d.y;
+  // About 100 times the f32 rounding of each quantity.
+  tf=2e-5f*(1+fabs(q.x)+fabs(q.y)+fabs(q.z)+fabs(j.v));td=1e-4f*(1+fabs(j.x)+fabs(j.y));
+  return isfinite(f)&&isfinite(df);
+}
+// Sag modes (MklStrayTransportParams.reserved[2] bits 8-9): 0 the
+// double-float cell scan; 1 a plain-f32 pre-scan that skips cells whose
+// residual and slope are clearly of one sign at both ends (no root and no
+// tangency the scan would find), every other cell exactly as mode 0; 2 mode 0,
+// but a scan longer than MKL_STRAY_SAG_HANDOFF_CELLS cells hands the ray to
+// the host (`handoff`) before any root is decided; 3 modes 1 and 2.
+static bool sgintersect(device const MklStrayPrimitive &p,constant MklStraySurfaceData &s,MklStrayRay ray,SD limit,thread MklStrayHit &hit,uint sag,thread bool &handoff){
   SV o=srotate(p.rotation,ssub(svec(ray.origin),svec(p.origin))),d=srotate(p.rotation,svec(ray.direction));
   SD ta(0),tb=limit;
   for(uint k=0;k<3;k++){
@@ -133,10 +150,24 @@ static bool sgintersect(device const MklStrayPrimitive &p,constant MklStraySurfa
   if(sv(aa)>0){SD disc=bb*bb-aa*cc;if(sv(disc)<0)return false;SD root=ssqrt(disc),lo=(-bb-root)/aa,hi=(-bb+root)/aa;if(sv(lo-ta)>0)ta=lo;if(sv(hi-tb)<0)tb=hi;}
   else if(sv(cc)>0)return false;if(sv(ta-tb)>0)return false;
   SV oo=sadd(o,sscale(d,ta));SD len=tb-ta,step;uint n=clamp(uint(ceil(sv(len)*64/sv(r))),8u,512u);step=len/SD(float(n));
+  if(sag>=2&&n>MKL_STRAY_SAG_HANDOFF_CELLS){handoff=true;return false;}
   SD tol=SD(2e-13f)*(SD(1)+len+ssqrt(sdot(oo,oo))),a(0),fa,da;
-  if(!sgat(s,oo,d,r,a,fa,da))return false;
+  bool fast=sag==1||sag==3,have=!fast;
+  float3 fo(oo.a[0].x.x,oo.a[1].x.x,oo.a[2].x.x),fdir(d.a[0].x.x,d.a[1].x.x,d.a[2].x.x);
+  float fa32=0,da32=0,tfa=0,tda=0;bool oka=fast&&fgat(s,fo,fdir,sv(r),0.0f,fa32,da32,tfa,tda);
+  if(!fast&&!sgat(s,oo,d,r,a,fa,da))return false;
   for(uint i=1;i<=n;i++){
-    SD b=i==n?len:step*SD(float(i)),fb,db;if(!sgat(s,oo,d,r,b,fb,db))return false;
+    SD b=i==n?len:step*SD(float(i)),fb,db;
+    float fb32=0,db32=0,tfb=0,tdb=0;
+    if(fast){
+      bool okb=fgat(s,fo,fdir,sv(r),sv(b),fb32,db32,tfb,tdb);
+      if(oka&&okb&&fabs(fa32)>tfa&&fabs(fb32)>tfb&&(fa32>0)==(fb32>0)&&fabs(da32)>tda&&fabs(db32)>tdb&&(da32>0)==(db32>0)){
+        a=b;fa32=fb32;da32=db32;tfa=tfb;tda=tdb;have=false;continue;
+      }
+      oka=okb;
+      if(!have&&!sgat(s,oo,d,r,a,fa,da))return false;
+    }
+    if(!sgat(s,oo,d,r,b,fb,db))return false;
     SD roots[2]={SD(NAN),SD(NAN)};
     if(sv(fa)==0)roots[0]=a;else if(sv(fa*fb)<0)roots[0]=sgroot(s,oo,d,r,a,b,fa,tol);else if(sv(fb)==0)roots[0]=b;
     else if(sv(da*db)<0){SD lo=a,hi=b;
@@ -151,11 +182,11 @@ static bool sgintersect(device const MklStrayPrimitive &p,constant MklStraySurfa
       SD z,gx,gy;if(!sgeval(s,q,r,z,gx,gy))continue;SV normal=sunit({{-gx,-gy,SD(1)}});
       for(uint k=0;k<3;k++){hit.point[k]=q.a[k].x;hit.normal[k]=normal.a[k].x;}hit.distance=tt.x;hit.primitive=0;hit.reserved=0;return true;
     }
-    a=b;fa=fb;da=db;
+    a=b;fa=fb;da=db;have=true;fa32=fb32;da32=db32;tfa=tfb;tda=tdb;
   }return false;
 }
-static bool sintersect(device const MklStrayPrimitive &p,constant MklStraySurfaceData &shape,MklStrayRay ray,SD limit,thread MklStrayHit &out,bool extended=true){
-  if(extended&&p.kind==3)return sgintersect(p,shape,ray,limit,out);
+static bool sintersect(device const MklStrayPrimitive &p,constant MklStraySurfaceData &shape,MklStrayRay ray,SD limit,thread MklStrayHit &out,bool extended,uint sag,thread bool &handoff){
+  if(extended&&p.kind==3)return sgintersect(p,shape,ray,limit,out,sag,handoff);
   SV o=srotate(p.rotation,ssub(svec(ray.origin),svec(p.origin))),d=srotate(p.rotation,svec(ray.direction));
   SD shift;if(!sslab(p.lower,p.upper,o,d,limit,shift))return false;
   SV oo=sadd(o,sscale(d,shift));SD roots[2];uint count=1;
@@ -206,7 +237,8 @@ kernel void mkl_stray_cast(device const MklStrayPrimitive *prims [[buffer(0)]],
     if(!sslab(node.lower,node.upper,svec(ray.origin),svec(ray.direction),limit,entry)){i=node.escape;continue;}
     if(node.primitive!=0xffffffff){
       MklStrayHit h;
-      if(sintersect(prims[node.primitive],shapes[node.primitive],ray,limit,h)){
+      bool handoff=false;
+      if(sintersect(prims[node.primitive],shapes[node.primitive],ray,limit,h,true,0,handoff)){
         float delta=sv(SD(h.distance)-limit);
         if(out.primitive==0xffffffff||delta<0||(delta==0&&node.primitive<out.primitive)){
           h.primitive=node.primitive;limit=SD(h.distance);out=h;
@@ -256,16 +288,18 @@ template<typename P> static bool fslab(P lo,P hi,float3 o,float3 d,float3 inv,fl
   }
   return true;
 }
-static MklStrayHit sclosest(device const MklStrayPrimitive *prims,device const MklStrayNode *nodes,constant MklStraySurfaceData *shapes,uint count,MklStrayRay ray,bool extended){
-  MklStrayHit out={};out.primitive=0xffffffff;SD limit(FLT_MAX);uint i=0;
+// Closest hit; primitive 0xfffffffe: the ray is handed to the host (sag mode 2).
+static MklStrayHit sclosest(device const MklStrayPrimitive *prims,device const MklStrayNode *nodes,constant MklStraySurfaceData *shapes,uint count,MklStrayRay ray,bool extended,uint sag=0){
+  MklStrayHit out={};out.primitive=0xffffffff;SD limit(FLT_MAX);uint i=0;bool handoff=false;
   float3 fo(ray.origin[0].x,ray.origin[1].x,ray.origin[2].x),fd(ray.direction[0].x,ray.direction[1].x,ray.direction[2].x),finv=1/fd;
   while(i<count){MklStrayNode node=nodes[i];SD entry;
     if(!fslab(node.lower,node.upper,fo,fd,finv,sv(limit))||!sslab(node.lower,node.upper,svec(ray.origin),svec(ray.direction),limit,entry)){i=node.escape;continue;}
     if(node.primitive!=0xffffffff){MklStrayHit h;
-      if(sintersect(prims[node.primitive],shapes[node.primitive],ray,limit,h,extended)){
+      if(sintersect(prims[node.primitive],shapes[node.primitive],ray,limit,h,extended,sag,handoff)){
         float delta=sv(SD(h.distance)-limit);
         if(out.primitive==0xffffffff||delta<0||(delta==0&&node.primitive<out.primitive)){h.primitive=node.primitive;limit=SD(h.distance);out=h;}
       }
+      if(handoff){out.primitive=0xfffffffe;return out;}
     }i++;
   }return out;
 }
@@ -543,7 +577,9 @@ kernel void mkl_stray_transport(device const MklStrayPrimitive *prims [[buffer(0
       if(l.hits>=p.hit_capacity){l.status=3;break;}
       MklStrayState s=stack[base+--l.top];SD w(s.weight);if(sv(w)<=0)continue;
       if(s.events>=set.max_events){sbook(l,14,w);continue;}
-      s.events++;l.events++;MklStrayHit hit=sclosest(prims,nodes,shapes,p.nodes,s.ray,(features&8)!=0);
+      s.events++;l.events++;MklStrayHit hit=sclosest(prims,nodes,shapes,p.nodes,s.ray,(features&8)!=0,(p.reserved[2]>>8)&3);
+      // A ray handed to the host goes back on the stack unchanged.
+      if(hit.primitive==0xfffffffe){s.events--;l.events--;stack[base+l.top++]=s;l.status=6;break;}
       sinteract(s,hit,l,base,hbase,prims,materials,layers,passes,media,tis,seq,stack,hits,set,seed,features,rr,ceiling);
     }
     if(l.top==0&&l.status==1)l.status=0;
@@ -577,7 +613,7 @@ kernel void mkl_stray_wave_pop(device MklStrayState *stack [[buffer(0)]],device 
   uint reserve=sv(SD(set.ceiling))==FLT_MAX?3u:uint(clamp(ceil((1+3*sv(SD(set.rare_floor)))*sv(SD(set.ceiling))),3.0f,63.0f));
   for(;;){
     if(l.top==0){if(l.status==1)l.status=0;break;}
-    if(l.status==4)break;
+    if(l.status!=1)break;
     if(head&&l.events>=head){l.status=5;break;}
     if(l.top+reserve>p.stack_capacity){l.status=2;break;}
     if(l.hits>=p.hit_capacity){l.status=3;break;}
@@ -592,7 +628,7 @@ kernel void mkl_stray_wave_cast(device const MklStrayPrimitive *prims [[buffer(0
  device const MklStrayState *current [[buffer(3)]],device MklStrayHit *found [[buffer(4)]],constant MklStrayTransportParams &p [[buffer(5)]],device const uint *lists [[buffer(6)]],
  device const uint *counters [[buffer(7)]],uint tid [[thread_position_in_grid]]){
   uint par=p.parity;if(tid>=counters[1-par])return;uint i=lists[(1-par)*p.count+tid];
-  found[i]=sclosest(prims,nodes,shapes,p.nodes,current[i].ray,(sfeatures(p.reserved[2])&8)!=0);
+  found[i]=sclosest(prims,nodes,shapes,p.nodes,current[i].ray,(sfeatures(p.reserved[2])&8)!=0,(p.reserved[2]>>8)&3);
 }
 kernel void mkl_stray_wave_interact(device const MklStrayPrimitive *prims [[buffer(0)]],device const MklStrayMaterial *materials [[buffer(1)]],device const MklCoatingLayer *layers [[buffer(2)]],
  device const MklStrayPass *passes [[buffer(3)]],device const MklStrayMedium *media [[buffer(4)]],device const float2 *tis [[buffer(5)]],device const uint *seq [[buffer(6)]],
@@ -601,6 +637,8 @@ kernel void mkl_stray_wave_interact(device const MklStrayPrimitive *prims [[buff
  device const uint *lists [[buffer(14)]],device const uint *counters [[buffer(15)]],uint tid [[thread_position_in_grid]]){
   uint par=p.parity;if(tid>=counters[1-par])return;uint i=lists[(1-par)*p.count+tid];
   MklStrayLedger l=ledgers[i];MklStrayState s=current[i];
+  // A ray handed to the host goes back on the stack unchanged.
+  if(found[i].primitive==0xfffffffe){s.events--;l.events--;stack[i*p.stack_capacity+l.top++]=s;l.status=6;ledgers[i]=l;return;}
   SD rr=SD(set.roulette)*SD(set.weight),ceiling=SD(set.ceiling)*SD(set.weight);
   sinteract(s,found[i],l,i*p.stack_capacity,i*p.hit_capacity,prims,materials,layers,passes,media,tis,seq,stack,hits,set,uint2(p.seed[0],p.seed[1]),sfeatures(p.reserved[2]),rr,ceiling);
   ledgers[i]=l;

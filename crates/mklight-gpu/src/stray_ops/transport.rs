@@ -160,6 +160,14 @@ pub struct Transport {
     /// interaction kernels) instead of persistent lanes. Scheduling only:
     /// the records are identical.
     pub wavefront: bool,
+    /// Extended-sag intersection on the device: 0 the double-float cell
+    /// scan; 1 a plain-f32 pre-scan that skips cells the scan would find
+    /// empty (the decided roots are those of mode 0); 2 (handoff mode only)
+    /// mode 0, but a scan longer than `MKL_STRAY_SAG_HANDOFF_CELLS` cells
+    /// stops the source before that event (`Ledger::status` 6) for the host
+    /// to continue; 3 modes 1 and 2. The CPU specification always scans as
+    /// mode 0.
+    pub sag_mode: u32,
 }
 impl Transport {
     pub fn reads(&self) -> Vec<PlanView> {
@@ -209,7 +217,9 @@ impl Transport {
             || self.first_ray.checked_add(self.ray_count as u64).is_none()
             || p.desc(self.output)? != &record_desc::<Detection>(self.ray_count * self.hit_capacity)
             || p.desc(self.ledger)? != &record_desc::<Ledger>(self.ray_count)
-            || ((self.head_events != 0 || self.wavefront) && self.stack_output.is_none())
+            || ((self.head_events != 0 || self.wavefront || self.sag_mode >= 2)
+                && self.stack_output.is_none())
+            || self.sag_mode > 3
         {
             return Err(bad("stray transport capacity/output"));
         }

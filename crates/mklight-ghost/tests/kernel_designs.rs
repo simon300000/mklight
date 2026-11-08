@@ -28,8 +28,15 @@ fn kernel_designs_give_identical_results() {
             ..Default::default()
         };
         let mut reference: Option<GhostIrradiance> = None;
-        for kernel in ["specialized", "partial", "uber"] {
-            split::set("ghost_kernel", Some(kernel));
+        // The kernel designs, and a thread budget for the CPU share of the
+        // shared design, change no result.
+        for (key, kernel) in [
+            ("ghost_kernel", "specialized"),
+            ("ghost_kernel", "partial"),
+            ("ghost_kernel", "uber"),
+            ("ghost_threads", "3"),
+        ] {
+            split::set(key, Some(kernel));
             let got = gpu::ghost_irradiance(&b, &m, &settings, &JobContext::new()).unwrap();
             split::reset();
             match &reference {

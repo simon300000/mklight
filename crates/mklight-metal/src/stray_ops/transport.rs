@@ -213,7 +213,7 @@ pub(super) fn execute(r: &Transport, x: &mut Execution<'_>, ctl: &JobControl) ->
                             threads as u32,
                             r.head_events,
                             handoff as u32,
-                            features,
+                            features | r.sag_mode << 8,
                         ],
                     );
                     let (b, o) = x.buffer(&r.shapes);
@@ -382,7 +382,7 @@ fn execute_wavefront(
             0,
             r.head_events,
             1,
-            features,
+            features | r.sag_mode << 8,
         ]
     };
     // Encodes the sources' generation (`first`) and then `bounces` bounces
