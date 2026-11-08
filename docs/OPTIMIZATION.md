@@ -1603,7 +1603,9 @@ host-completed rays and rayless operands are the reference's f64 values
 checks both hybrid designs against the reference on every sample with a
 default spot and wavefront merit plus thickness boundaries, first-order,
 aggregate, single and inner real-ray operands (emulation and Metal), host
-completion and routing with a one-iteration device cap, equal values of the
+completion, routing and handover to the reference at device caps of 1–8
+iterations (the real-aimed Cooke triplet at cap 4 routes rays without
+handing over), equal values of the
 two designs, finite-difference column errors (1.8e-4 against f64 central
 differences on the real-aimed Cooke triplet, also with host completion),
 LM on the hybrid evaluator, and speculative LM. The engine test

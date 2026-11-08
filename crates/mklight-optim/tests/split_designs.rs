@@ -270,7 +270,7 @@ fn unresolved_rays_are_completed_and_routed_on_the_host() {
         let reference = values(&BuiltinEvaluator::builtin(), &cands, &ops);
         for design in [EvalDesign::Hybrid, EvalDesign::Pipelined] {
             let mut outcomes = Vec::new();
-            for cap in [1, 2, 3, 8] {
+            for cap in [1, 4, 5, 6, 8] {
                 let ev = evaluator(&backend, &sys, design).with_device_aim_cap(cap);
                 let first = values(&ev, &cands, &ops);
                 let second = values(&ev, &cands, &ops);
@@ -288,7 +288,7 @@ fn unresolved_rays_are_completed_and_routed_on_the_host() {
             // One iteration resolves almost nothing: completed, then handed over.
             assert!(outcomes[0].1 > 0 && outcomes[0].2, "{outcomes:?}");
             // The full cap keeps the run on the device.
-            assert!(!outcomes[3].2, "{outcomes:?}");
+            assert!(!outcomes[4].2, "{outcomes:?}");
             // Some cap in between routes rays to the host without handing over.
             assert!(
                 outcomes.iter().any(|&(_, rays, only)| rays > 0 && !only),
