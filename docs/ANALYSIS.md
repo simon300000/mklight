@@ -667,11 +667,13 @@ together whatever stage they are in:
 The double-float trace of aspheric systems resolves image points only to
 about 1e-7 mm (f32 decisions inside the asphere intersections), so the
 device accepts a stop aim that stalls within the reference's own aim
-tolerance (at least 1e-10 of the stop radius) and an image point that stalls
-within 1000 image-point tolerances; a ray or node that does not finish
-within its trace budget (48 and 192 traces) fails on the device. Failed
-device nodes are completed by the reference (`illumination::reference_nodes`)
-and counted (`ri_stages`), so a design never returns fewer nodes than the
+tolerance clamped to [1e-10, 1e-9] of the stop radius, and an image point
+that stalls within 1000 image-point tolerances; a chord step that shrinks
+a residual less than 4× refreshes its Jacobian; a ray or node that does not
+finish within its trace budget (48 traces, 16 for a pencil ray seeded with
+a converged aim; 192 per node) fails on the device. Failed device nodes are
+completed by the reference (`illumination::reference_nodes`) and counted
+(`ri_stages`, `ri_polish`), so a design never returns fewer nodes than the
 reference. The host forms the pencils' central differences and the
 per-field Kahan sums in f64, in the reference's node order and weights.
 
@@ -680,8 +682,8 @@ per-field Kahan sums in f64, in the reference's node order and weights.
 | `legacy` | the original `Illumination` request: one thread per node with nested aims and per-node field work |
 | `nodes` | one node kernel dispatch, everything on the device; host sums |
 | `split` | node kernel (Newton only) writes the pencils, a flat ray pass traces them (9 rays per node, one thread each) in the same plan; host determinants and sums |
-| `hybrid` | the CPU solves the image points (the reference's Newton, bitwise, all cores), the flat ray pass traces the pencils |
-| `pipelined` (default) | the hybrid in field blocks: the GPU traces block k while the CPU solves block k+1 |
+| `hybrid` | the CPU solves the image points (the reference's Newton, bitwise, all cores), the flat ray pass traces the pencils; a pencil the device leaves undecided is finished by the rest of the reference node from the CPU's solve (`illumination::finish_nodes`) |
+| `pipelined` (default) | the hybrid in field blocks (about six, at least 2048 nodes each): the GPU traces block k while the CPU solves block k+1; once a block's pencils are mostly undecided, the CPU finishes the blocks not yet submitted |
 | `shared` | the CPU (reference nodes, a field at a time from the back) and the GPU (`split`, field blocks from the front) drain one queue; which fields each takes depends on timing, so results are not bitwise repeatable (measurement only, GPU.md §9.3) |
 
 **Chief-ray maps.** `chief_ray_angle`, `pupil_aberration`,
