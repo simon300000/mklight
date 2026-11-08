@@ -871,24 +871,39 @@ fn host_solve(
             .as_ref()
             .map_or(&[][..], |v| bytemuck::cast_slice(v.words()));
         count_failures(rays, stages);
-        let mut next = 0;
-        let mut out = Vec::with_capacity(solved.len());
-        let mut undecided = 0;
-        for (i, s) in solved.iter().enumerate() {
-            out.push(match s {
-                None => Outcome::Failed,
-                Some(_) if view.is_none() => Outcome::Unresolved,
-                Some(_) => {
-                    let (pi, _) = block[i / per];
-                    let hq = problem.prepared[pi].as_ref().unwrap().hq;
-                    let o = pencil_outcome(&rays[next * PENCIL..(next + 1) * PENCIL], hq);
-                    next += 1;
-                    undecided += usize::from(matches!(o, Outcome::Unresolved));
-                    o
-                }
-            });
+        // The pencils were traced for the converged nodes, in node order.
+        let has_rays = view.is_some();
+        let mut pencil = Vec::with_capacity(solved.len());
+        let mut traced = 0;
+        for s in solved {
+            pencil.push(traced);
+            traced += usize::from(s.is_some());
         }
-        let traced = next;
+        let out: Vec<Outcome> = solved
+            .par_iter()
+            .zip(&pencil)
+            .enumerate()
+            .map(|(i, (s, &k))| match s {
+                None => Outcome::Failed,
+                Some(_) if !has_rays => Outcome::Unresolved,
+                Some(_) => {
+                    let hq = problem.prepared[block[i / per].0].as_ref().unwrap().hq;
+                    pencil_outcome(&rays[k * PENCIL..(k + 1) * PENCIL], hq)
+                }
+            })
+            .collect();
+        if !has_rays {
+            traced = 0;
+        }
+        let undecided = if traced > 0 {
+            out.iter()
+                .zip(solved)
+                .filter(|(o, s)| s.is_some() && matches!(o, Outcome::Unresolved))
+                .count()
+        } else {
+            0
+        };
+        let mut out = out;
         // Finish the undecided nodes on the CPU: the fields in parallel, and
         // the nodes of each field too.
         let todo: Vec<(usize, Vec<usize>)> = block
