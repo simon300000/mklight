@@ -76,6 +76,9 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
     if let Request::Shells(r) = r {
         return shells::execute(r, x, ctl);
     }
+    if focus_cache::chunked(r, x, ctl)? {
+        return Ok(());
+    }
     let cache = focus_cache::prepare(r, x, ctl)?;
     let access = accesses(r);
     let mut p = params(r);

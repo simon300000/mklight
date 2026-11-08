@@ -948,6 +948,16 @@ impl PupilLattice {
         }
     }
 
+    /// The lattice's own warnings, as [`Self::assemble`] reports them
+    /// before the resampling warnings.
+    pub(crate) fn notes(&self) -> Vec<String> {
+        let mut warnings = self.warnings.clone();
+        if self.failed > 0 {
+            warnings.push(format!("{} rays miss the reference sphere", self.failed));
+        }
+        warnings
+    }
+
     /// Bytes held (memory budgets of shared stores).
     pub fn bytes(&self) -> usize {
         let mask = |m: &Option<PupilMask>| match m {

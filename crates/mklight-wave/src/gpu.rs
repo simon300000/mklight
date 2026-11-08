@@ -762,6 +762,8 @@ pub use focus::focus_otf;
 pub mod image_simulation;
 mod shells;
 pub use shells::{RadialBins, encircled_energy_batch};
+pub mod split;
+pub use split::{Design, HostPupil};
 
 /// Independent consumer chains run at once (`MKLIGHT_WAVE_CONCURRENT`; 1 runs
 /// them in order on the caller's thread).
