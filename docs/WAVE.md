@@ -481,8 +481,8 @@ and transforms took.
 | `resident` | seed tables, chief rows, illumination | aiming, tracing, rim, placement, resampling, sampling decisions, transforms (the subsections below) |
 | `cpu-lattice` | lattices and rims (`trace_lattice`), illumination | resampling and refinements, sampling decisions, transforms |
 | `cpu-pupil` | lattices, resampling and refinements, sampling decisions, illumination | transforms |
-| `pipelined` (default) | as `cpu-pupil` | transforms, each field as soon as the host has prepared it |
-| `co-op` | as `pipelined`, and one host worker transforms fields with the reference's code | transforms of the other fields |
+| `pipelined` | as `cpu-pupil` | transforms, each field as soon as the host has prepared it |
+| `co-op` (default) | as `pipelined`, and one host worker transforms fields with the reference's code | transforms of the other fields |
 | `by-size` | as `pipelined`, and the transforms of fields below a work limit | transforms of larger fields |
 | `cpu-aim` | aiming of chief, lattice, saddle and rim probes | tracing, survival, rim bisection, placement, resampling, decisions, transforms |
 

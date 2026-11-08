@@ -9,7 +9,7 @@
 //! | `cpu-lattice` | lattice and rim aiming, tracing and placement | resampling and refinements, sampling decisions, transforms |
 //! | `cpu-pupil` | lattice, resampling, refinements, sampling decisions | transforms |
 //! | `pipelined` | as `cpu-pupil`, overlapped (dataflow): the device transforms each field as soon as the host has prepared it | transforms |
-//! | `co-op` | as `pipelined`, and one host worker also transforms fields with the reference's own code, taking them from the other end of the queue | transforms of the remaining fields |
+//! | `co-op` (default) | as `pipelined`, and one host worker also transforms fields with the reference's own code, taking them from the other end of the queue when that pays | transforms of the remaining fields |
 //! | `by-size` | as `pipelined`, and transforms of small fields (a measured work rule per analysis) with the reference's own code | transforms of large fields |
 //! | `cpu-aim` | aiming of lattice, chief, saddle and rim probes | tracing, rim survival, placement, resampling, decisions, transforms |
 //!
@@ -43,7 +43,7 @@ pub enum Design {
 
 impl Design {
     /// The design that runs without a selection.
-    pub const DEFAULT: Design = Design::Pipelined;
+    pub const DEFAULT: Design = Design::Cooperative;
     pub const ALL: [Design; 7] = [
         Design::Resident,
         Design::CpuLattice,
