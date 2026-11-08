@@ -416,6 +416,7 @@ dependencies = [
  "approx",
  "blake3",
  "bytemuck",
+ "libc",
  "mklight-core",
  "mklight-gpu",
  "mklight-metal",
@@ -497,6 +498,7 @@ version = "0.1.0"
 dependencies = [
  "approx",
  "blake3",
+ "libc",
  "mklight-core",
  "mklight-ghost",
  "mklight-gpu",

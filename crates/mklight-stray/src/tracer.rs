@@ -981,7 +981,10 @@ pub fn run_with<C: RayCaster>(
     let pixels = (scene.detector.nx * scene.detector.ny) as usize;
     let mut tally = StrayTally::new(scene.num_wavelengths(), pixels);
     let n_chunks = settings.rays.div_ceil(settings.chunk_rays as u64);
-    let batch = (rayon::current_num_threads() as u64 * 4).max(1);
+    // Chunks are traced in parallel batches and folded in chunk order; a
+    // batch of 16 chunks per thread keeps the idle tail at each batch's end
+    // small while bounding the chunk tallies held at once.
+    let batch = (rayon::current_num_threads() as u64 * 16).max(1);
     let stage = "stray light: tracing rays";
     ctx.report(0.0, stage);
     let mut c = 0;

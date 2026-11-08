@@ -63,19 +63,48 @@ fn main() {
         .unwrap()
         .unwrap();
     let ms = |t: Instant| t.elapsed().as_secs_f64() * 1e3;
-    let t = Instant::now();
-    let sys = StraySystem::build(rs.clone(), &settings.system_options(), &ctx).unwrap();
-    let build = ms(t);
-    let beam = settings.source.resolve(&sys).unwrap();
-    let t = Instant::now();
-    let reference = primary_reference(&sys, &beam.spec, 64, &ctx).unwrap();
-    println!(
-        "{} primitives, build {build:.1} ms, reference {:.1} ms (obstruction {:.2e})",
-        sys.scene.primitives().len(),
-        ms(t),
-        reference.obstruction()
-    );
+    // Wall and process CPU time (user + system) of a stage, ms.
+    let stage = |name: &str, f: &mut dyn FnMut()| {
+        let (t, c) = (Instant::now(), cpu_ms());
+        f();
+        let (wall, cpu) = (ms(t), cpu_ms() - c);
+        println!(
+            "  stage {name:<28} wall {wall:8.1} ms  cpu {cpu:8.1} ms  cores {:.1}",
+            cpu / wall
+        );
+    };
     let ss = settings.stray_settings();
+    let mut sys = None;
+    for rep in 0..2 {
+        println!("CPU stage profile, rep {rep}:");
+        stage("sizing traces", &mut || {
+            let tracer = mklight_trace::SequentialTracer::new(rs.clone()).unwrap();
+            tracer
+                .semi_diameters_with(&settings.system_options().semi_diameters, &ctx)
+                .unwrap();
+        });
+        stage("StraySystem::build (all)", &mut || {
+            sys = Some(StraySystem::build(rs.clone(), &settings.system_options(), &ctx).unwrap());
+        });
+        let sys = sys.as_ref().unwrap();
+        stage("system-field checks (48²)", &mut || {
+            for k in 0..rs.system().fields.fields.len() {
+                if let Ok(b) = sys.system_field_source(k, 0.1, 1.) {
+                    primary_reference(sys, &b.spec, 48, &ctx).unwrap();
+                }
+            }
+        });
+        let beam = settings.source.resolve(sys).unwrap();
+        stage("source reference (64²)", &mut || {
+            primary_reference(sys, &beam.spec, 64, &ctx).unwrap();
+        });
+        stage("CPU transport + tally", &mut || {
+            mklight_stray::run(&sys.scene, &beam.spec, &ss, &ctx).unwrap();
+        });
+    }
+    let sys = sys.unwrap();
+    let beam = settings.source.resolve(&sys).unwrap();
+    println!("{} primitives", sys.scene.primitives().len());
     let cpu = mklight_stray::run(&sys.scene, &beam.spec, &ss, &ctx).unwrap();
     let mut times = vec![Vec::new(); designs.len()];
     for rep in 0..=reps {
@@ -87,7 +116,7 @@ fn main() {
             if d != "default" && d != "cpu" {
                 split::set("stray", Some(d));
             }
-            let t = Instant::now();
+            let (t, c0) = (Instant::now(), cpu_ms());
             let r = if d == "cpu" {
                 mklight_stray::run(&sys.scene, &beam.spec, &ss, &ctx).unwrap()
             } else {
@@ -103,6 +132,7 @@ fn main() {
                 .unwrap()
             };
             let elapsed = ms(t);
+            let cores = (cpu_ms() - c0) / elapsed;
             if rep > 0 {
                 times[k].push(elapsed);
             }
@@ -115,7 +145,7 @@ fn main() {
                 .map(|i| format!("{} {} {}", i["design"], i["counters"], i["timings"]))
                 .unwrap_or_default();
             println!(
-                "rep {rep} {d:>10}: {elapsed:8.1} ms, {} events (cpu {}), owned {:.6e} ± {:.1e} \
+                "rep {rep} {d:>10}: {elapsed:8.1} ms ({cores:.1} cores), {} events (cpu {}), owned {:.6e} ± {:.1e} \
                  (z {z:+.2} vs cpu), balance {:.1e}, backend {} {detail} {:?}",
                 e.events,
                 cpu.energy.events,
@@ -138,4 +168,15 @@ fn main() {
             );
         }
     }
+}
+
+/// Process CPU time (user + system) in ms.
+fn cpu_ms() -> f64 {
+    let mut u = std::mem::MaybeUninit::<libc::rusage>::zeroed();
+    // SAFETY: getrusage writes one rusage record.
+    unsafe { libc::getrusage(libc::RUSAGE_SELF, u.as_mut_ptr()) };
+    // SAFETY: zero-initialised and written by getrusage.
+    let u = unsafe { u.assume_init() };
+    let t = |v: libc::timeval| v.tv_sec as f64 * 1e3 + v.tv_usec as f64 * 1e-3;
+    t(u.ru_utime) + t(u.ru_stime)
 }

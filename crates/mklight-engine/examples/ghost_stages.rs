@@ -59,13 +59,14 @@ fn main() {
             if d != "cpu" && d != "default" {
                 split::set("ghost", Some(d));
             }
-            let t = Instant::now();
+            let (t, c0) = (Instant::now(), cpu_ms());
             let r = if d == "cpu" {
                 mklight_ghost::ghost_irradiance(&model, &settings, &ctx).unwrap()
             } else {
                 mklight_ghost::gpu::ghost_irradiance(&metal, &model, &settings, &ctx).unwrap()
             };
             let ms = t.elapsed().as_secs_f64() * 1e3;
+            let cores = (cpu_ms() - c0) / ms;
             let gpu = &r.run.settings["gpu"];
             let peak = r.total_ghost_map.peak();
             let diff = reference.as_ref().map_or(0., |p: &(f64, f64)| {
@@ -77,16 +78,28 @@ fn main() {
                 reference = Some((r.total_flux_ratio, peak));
             }
             println!(
-                "rep {rep} {d:>10}: {ms:9.1} ms, {} ghosts, flux ratio {:.9e} (rel. diff {diff:.1e} \
-                 vs cpu), backend {}, timings {} host {} probes {} reference {}",
+                "rep {rep} {d:>10}: {ms:9.1} ms ({cores:.1} cores), {} ghosts, flux ratio {:.9e} \
+                 (rel. diff {diff:.1e} vs cpu), backend {}\n    timings [wall, cpu] {}\n    host wall {}\n    host cpu {}\n    probes {} reference {}",
                 r.ghosts.len(),
                 r.total_flux_ratio,
                 r.run.backend,
                 r.run.settings["timings"],
                 gpu["host_seconds"],
+                gpu["host_cpu_seconds"],
                 gpu["distinct_probes"],
                 gpu["reference_probes"],
             );
         }
     }
+}
+
+/// Process CPU time (user + system) in ms.
+fn cpu_ms() -> f64 {
+    let mut u = std::mem::MaybeUninit::<libc::rusage>::zeroed();
+    // SAFETY: getrusage writes one rusage record.
+    unsafe { libc::getrusage(libc::RUSAGE_SELF, u.as_mut_ptr()) };
+    // SAFETY: zero-initialised and written by getrusage.
+    let u = unsafe { u.assume_init() };
+    let t = |v: libc::timeval| v.tv_sec as f64 * 1e3 + v.tv_usec as f64 * 1e-3;
+    t(u.ru_utime) + t(u.ru_stime)
 }

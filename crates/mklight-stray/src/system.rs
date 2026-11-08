@@ -343,16 +343,31 @@ impl StraySystem {
     /// The obstruction of a pupil-filling beam for every system field and
     /// the warnings it raises (the check [`StraySystem::build`] makes).
     pub(crate) fn obstruction_checks(&self, ctx: &JobContext) -> MkResult<ObstructionChecks> {
+        use rayon::prelude::*;
         let mut out = ObstructionChecks::default();
         let nf = self.resolved().system().fields.fields.len();
-        for k in 0..nf {
-            let sub = ctx.subrange(k as f64 / nf as f64, (k + 1) as f64 / nf as f64);
-            let o = match self.system_field_source(k, 0.1, 1.0) {
-                Ok(beam) => {
-                    Some(primary_reference(self, &beam.spec, OBSTRUCTION_GRID, &sub)?.obstruction())
-                }
-                Err(_) => None,
-            };
+        // Fields in parallel (each reference is parallel over its rows but
+        // too small to fill the cores), kept in field order.
+        let done = std::sync::Mutex::new(0usize);
+        let checks = (0..nf)
+            .into_par_iter()
+            .map(|k| {
+                let quiet = JobContext::with(ctx.cancel.clone(), Default::default());
+                let o = match self.system_field_source(k, 0.1, 1.0) {
+                    Ok(beam) => Some(
+                        primary_reference(self, &beam.spec, OBSTRUCTION_GRID, &quiet)?
+                            .obstruction(),
+                    ),
+                    Err(_) => None,
+                };
+                // Counted and reported under the lock: monotone progress.
+                let mut d = done.lock().unwrap_or_else(|e| e.into_inner());
+                *d += 1;
+                ctx.report(*d as f64 / nf as f64, "");
+                Ok(o)
+            })
+            .collect::<MkResult<Vec<_>>>()?;
+        for (k, o) in checks.into_iter().enumerate() {
             if let Some(o) = o
                 && o > OBSTRUCTION_WARNING
             {

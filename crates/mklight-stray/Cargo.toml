@@ -14,6 +14,7 @@ mklight-ghost.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 rayon.workspace = true
+libc = "0.2"
 blake3.workspace = true
 
 [dev-dependencies]

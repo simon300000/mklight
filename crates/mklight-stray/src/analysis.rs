@@ -371,9 +371,10 @@ pub fn analyze(
     ctx: &JobContext,
 ) -> MkResult<StrayAnalysisResult> {
     settings.validate()?;
-    let sys = StraySystem::build(rs, &settings.system_options(), &ctx.subrange(0.0, 0.1))?;
+    // The obstruction checks of the system fields run beside the transport.
+    let sys = StraySystem::build_scene(rs, &settings.system_options(), &ctx.subrange(0.0, 0.1))?;
     ctx.report(0.1, "stray light: scene built");
-    analyze_system(&sys, settings, &ctx.subrange(0.1, 1.0))
+    analyze_system_impl(&sys, settings, false, None, true, &ctx.subrange(0.1, 1.0)).map(|r| r.0)
 }
 
 /// As [`analyze`], also returning the flux of **every** (class, path
@@ -388,9 +389,9 @@ pub fn analyze_with_signatures(
     ctx: &JobContext,
 ) -> MkResult<(StrayAnalysisResult, Vec<SignatureFlux>)> {
     settings.validate()?;
-    let sys = StraySystem::build(rs, &settings.system_options(), &ctx.subrange(0.0, 0.1))?;
+    let sys = StraySystem::build_scene(rs, &settings.system_options(), &ctx.subrange(0.0, 0.1))?;
     ctx.report(0.1, "stray light: scene built");
-    analyze_system_impl(&sys, settings, true, None, false, &ctx.subrange(0.1, 1.0))
+    analyze_system_impl(&sys, settings, true, None, true, &ctx.subrange(0.1, 1.0))
 }
 
 /// Grid size of the per-source obstruction check.
@@ -477,9 +478,17 @@ pub(crate) fn analyze_system_impl(
             r
         }
         None => {
-            side(ctx)?;
+            // The checks and the reference run beside the CPU transport (all
+            // three are parallel but none fills the cores alone); they report
+            // no progress of their own, so progress stays monotone.
+            let quiet = JobContext::with(ctx.cancel.clone(), Default::default());
             ctx.report(0.02, "stray light: transport");
-            run(&sys.scene, &beam.spec, &ss, &ctx.subrange(0.02, 1.0))?
+            let (checked, r) = rayon::join(
+                || side(&quiet),
+                || run(&sys.scene, &beam.spec, &ss, &ctx.subrange(0.02, 1.0)),
+            );
+            checked?;
+            r?
         }
     };
     drop(side);
