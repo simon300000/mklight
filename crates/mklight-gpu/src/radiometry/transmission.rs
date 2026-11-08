@@ -38,7 +38,7 @@ pub enum TransmissionDesign {
 }
 impl TransmissionDesign {
     /// The design without a selection.
-    pub const DEFAULT: Self = Self::Batched;
+    pub const DEFAULT: Self = Self::CpuAim;
     pub fn name(self) -> &'static str {
         match self {
             Self::Legacy => "legacy",

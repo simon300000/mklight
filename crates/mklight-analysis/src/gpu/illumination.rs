@@ -210,7 +210,7 @@ pub enum RiDesign {
 }
 impl RiDesign {
     /// The design without a selection.
-    pub const DEFAULT: Self = RiDesign::Split;
+    pub const DEFAULT: Self = RiDesign::Pipelined;
     pub fn name(self) -> &'static str {
         match self {
             Self::Legacy => "legacy",

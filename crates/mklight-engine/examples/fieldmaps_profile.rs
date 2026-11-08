@@ -28,7 +28,7 @@ fn edit(s: &mut Session, base: &OpticalSystem, serial: u64) {
         surface: surface.id,
     };
     let c = surface.shape.curvature();
-    let sign = if serial % 2 == 0 { 1. } else { -1. };
+    let sign = if serial.is_multiple_of(2) { 1. } else { -1. };
     param
         .set(
             &mut system,

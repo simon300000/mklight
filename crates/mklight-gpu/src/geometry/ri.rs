@@ -324,7 +324,7 @@ impl<E: FpEnv> AimMachine<E> {
             PHASE_FD => {
                 let s = Self::step(f);
                 let k = (self.sub / 2) as usize;
-                a[k] = if self.sub % 2 == 0 {
+                a[k] = if self.sub.is_multiple_of(2) {
                     a[k] + s
                 } else {
                     a[k] - s
@@ -446,13 +446,13 @@ impl<E: FpEnv> AimMachine<E> {
                     D::new(hit.ray.pos[0], hit.ray.pos_lo[0]),
                     D::new(hit.ray.pos[1], hit.ray.pos_lo[1]),
                 ];
-                if self.sub % 2 == 0 {
+                if self.sub.is_multiple_of(2) {
                     self.fd_plus = pos;
                 } else {
                     let k = (self.sub / 2) as usize;
                     let s = Self::step(f);
-                    for i in 0..2 {
-                        self.j[i][k] = (self.fd_plus[i] - pos[i]) / (c(2.0) * s);
+                    for (i, row) in self.j.iter_mut().enumerate() {
+                        row[k] = (self.fd_plus[i] - pos[i]) / (c(2.0) * s);
                     }
                 }
                 self.sub += 1;
@@ -575,7 +575,7 @@ pub fn pupil_step() -> Df32 {
 /// chief prediction of the target change for the pupil columns).
 pub fn stencil<E: FpEnv>(f: &RiField, p: P<E>, q: P<E>, aim: P<E>, s: u32) -> [P<E>; 3] {
     let k = (s / 2) as usize;
-    let plus = s % 2 == 0;
+    let plus = s.is_multiple_of(2);
     if k < 2 {
         let hq = D::<E>::from_df(f.hq);
         let mut qq = q;
@@ -703,7 +703,11 @@ pub fn node<E: FpEnv>(
             NODE_REFRESH => {
                 let mut qq = q;
                 let k = (sub / 2) as usize;
-                qq[k] = if sub % 2 == 0 { qq[k] + hq } else { qq[k] - hq };
+                qq[k] = if sub.is_multiple_of(2) {
+                    qq[k] + hq
+                } else {
+                    qq[k] - hq
+                };
                 AimMachine::new(f, qq, p, false, aim, false)
             }
             NODE_CLIP => AimMachine::new(f, q, p, true, aim, true),
@@ -766,7 +770,7 @@ pub fn node<E: FpEnv>(
             NODE_REFRESH => {
                 let Some(x) = x else { return out };
                 let k = (sub / 2) as usize;
-                if sub % 2 == 0 {
+                if sub.is_multiple_of(2) {
                     column = x;
                 } else {
                     for i in 0..2 {
@@ -799,7 +803,7 @@ pub fn node<E: FpEnv>(
             _ => {
                 let Some(x) = x else { return out };
                 let k = (sub / 2) as usize;
-                if sub % 2 == 0 {
+                if sub.is_multiple_of(2) {
                     column = x;
                 } else {
                     let h = if k < 2 { hq } else { hp };

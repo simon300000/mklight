@@ -36,6 +36,17 @@ use std::time::Instant;
 
 /// Nodes per plan (bounds plan storage).
 const PLAN_NODES: usize = 1 << 18;
+/// A node's CPU image-point solve: the solved `q` and its converged aim, or
+/// the reference's failure.
+type Solved = Option<Converged>;
+/// The solved `q` of a node and the aim of its converged ray.
+type Converged = ([f64; 2], [f64; 2]);
+/// A field block in the pipeline: its fields, CPU solves and pencil plan.
+type Block<'a> = (&'a [(usize, u32)], Vec<Solved>, Submitted);
+/// A submitted pencil plan and its traced node count.
+type Submitted = Option<(mklight_gpu::pending::Pending<PlanResult>, usize)>;
+/// Fields (queue positions) and their node outcomes.
+type Done = Vec<(usize, Vec<Outcome>)>;
 
 /// What decided a node.
 #[derive(Clone, Copy, Debug)]
@@ -469,6 +480,14 @@ pub fn rows(
         + stages.assembly_ms
         + stages.polish_ms;
     run.settings["ri_stages"] = serde_json::to_value(&stages).unwrap();
+    // The legacy design's reference-completion record, for its consumers.
+    run.settings["ri_polish"] = serde_json::json!({
+        "attempted_nodes": stages.unresolved,
+        "resolved_nodes": stages.unresolved - stages.polished_failed,
+        "remaining_failed_nodes": stages.polished_failed,
+        "seconds": stages.polish_ms * 1e-3,
+        "reference_backend": "cpu-f64",
+    });
     run.warnings.extend(warnings);
     if stages.unresolved > 0 {
         run.warnings.push(format!(
@@ -495,67 +514,66 @@ fn shared_solve(
     let take = ((n * per) / 4).clamp(2048, 32768).div_ceil(per).max(1);
     let queue = std::sync::Mutex::new((0usize, n));
     let pupil: Vec<[f64; 2]> = problem.nodes.iter().map(|n| [n.0, n.1]).collect();
-    type Done = Vec<(usize, Vec<Outcome>)>;
-    let (gpu, cpu): (MkResult<(Done, Stages, Vec<RunInfo>)>, MkResult<Done>) =
-        std::thread::scope(|scope| {
-            let device = scope.spawn(|| {
-                let mut done = Vec::new();
-                let mut stages = Stages::default();
-                let mut runs = Vec::new();
-                loop {
-                    let range = {
-                        let mut q = queue.lock().unwrap();
-                        if q.0 >= q.1 {
-                            break;
-                        }
-                        let r = q.0..(q.0 + take).min(q.1);
-                        q.0 = r.end;
-                        r
-                    };
-                    let outcomes = device_solve(
-                        problem,
-                        &usable[range.clone()],
-                        RiDesign::Split,
-                        &mut stages,
-                        &mut runs,
-                        ctx,
-                    )?;
-                    for (k, chunk) in range.zip(outcomes.chunks(per)) {
-                        done.push((k, chunk.to_vec()));
+    type Device = MkResult<(Done, Stages, Vec<RunInfo>)>;
+    let (gpu, cpu): (Device, MkResult<Done>) = std::thread::scope(|scope| {
+        let device = scope.spawn(|| {
+            let mut done = Vec::new();
+            let mut stages = Stages::default();
+            let mut runs = Vec::new();
+            loop {
+                let range = {
+                    let mut q = queue.lock().unwrap();
+                    if q.0 >= q.1 {
+                        break;
                     }
+                    let r = q.0..(q.0 + take).min(q.1);
+                    q.0 = r.end;
+                    r
+                };
+                let outcomes = device_solve(
+                    problem,
+                    &usable[range.clone()],
+                    RiDesign::Split,
+                    &mut stages,
+                    &mut runs,
+                    ctx,
+                )?;
+                for (k, chunk) in range.zip(outcomes.chunks(per)) {
+                    done.push((k, chunk.to_vec()));
                 }
-                Ok((done, stages, runs))
-            });
-            let host = (|| {
-                let mut done = Vec::new();
-                loop {
-                    let k = {
-                        let mut q = queue.lock().unwrap();
-                        if q.0 >= q.1 {
-                            break;
-                        }
-                        q.1 -= 1;
-                        q.1
-                    };
-                    ctx.check()?;
-                    let ip = problem.prepared[usable[k].0].as_ref().unwrap();
-                    let decided = host::field_nodes(problem.rt, ip, problem.wl, &pupil);
-                    done.push((
-                        k,
-                        decided
-                            .into_iter()
-                            .map(|(d, survives, failed)| match (survives, failed) {
-                                (true, _) => Outcome::Survives(d),
-                                (_, true) => Outcome::Failed,
-                                _ => Outcome::Vignetted,
-                            })
-                            .collect(),
-                    ));
-                }
-                Ok(done)
-            })();
-            (device.join().expect("device worker"), host)
+            }
+            Ok((done, stages, runs))
         });
+        let host = (|| {
+            let mut done = Vec::new();
+            loop {
+                let k = {
+                    let mut q = queue.lock().unwrap();
+                    if q.0 >= q.1 {
+                        break;
+                    }
+                    q.1 -= 1;
+                    q.1
+                };
+                ctx.check()?;
+                let ip = problem.prepared[usable[k].0].as_ref().unwrap();
+                let decided = host::field_nodes(problem.rt, ip, problem.wl, &pupil);
+                done.push((
+                    k,
+                    decided
+                        .into_iter()
+                        .map(|(d, survives, failed)| match (survives, failed) {
+                            (true, _) => Outcome::Survives(d),
+                            (_, true) => Outcome::Failed,
+                            _ => Outcome::Vignetted,
+                        })
+                        .collect(),
+                ));
+            }
+            Ok(done)
+        })();
+        (device.join().expect("device worker"), host)
+    });
     let (gpu_done, gpu_stages, gpu_runs) = gpu?;
     let cpu_done = cpu?;
     stages.device_wait_ms += gpu_stages.device_wait_ms;
@@ -711,9 +729,7 @@ fn host_solve(
     stages.blocks = blocks.len();
     // Solve a block on the CPU: per node the solved (q, aim) or the
     // reference's failure.
-    let solve = |block: &[(usize, u32)],
-                 stages: &mut Stages|
-     -> MkResult<Vec<Option<([f64; 2], [f64; 2])>>> {
+    let solve = |block: &[(usize, u32)], stages: &mut Stages| -> MkResult<Vec<Solved>> {
         let clock = Instant::now();
         let mut out = Vec::with_capacity(block.len() * per);
         for &(pi, _) in block {
@@ -725,10 +741,8 @@ fn host_solve(
         Ok(out)
     };
     // Submit a block's pencils (converged nodes only).
-    let submit = |block: &[(usize, u32)],
-                  solved: &[Option<([f64; 2], [f64; 2])>]|
-     -> MkResult<Option<(mklight_gpu::pending::Pending<PlanResult>, usize)>> {
-        let traced: Vec<(usize, ([f64; 2], [f64; 2]))> = solved
+    let submit = |block: &[(usize, u32)], solved: &[Solved]| -> MkResult<Submitted> {
+        let traced: Vec<(usize, Converged)> = solved
             .iter()
             .enumerate()
             .filter_map(|(i, s)| s.map(|s| (i, s)))
@@ -784,7 +798,7 @@ fn host_solve(
     };
     // Outcomes of a block from its solves and traced pencils.
     let assemble = |block: &[(usize, u32)],
-                    solved: &[Option<([f64; 2], [f64; 2])>],
+                    solved: &[Solved],
                     result: Option<PlanResult>,
                     runs: &mut Vec<RunInfo>,
                     stages: &mut Stages|
@@ -819,9 +833,7 @@ fn host_solve(
     let mut outcomes = Vec::with_capacity(usable.len() * per);
     // The pipeline: block k's pencils on the device while the CPU solves
     // block k+1. The hybrid is the one-block case of the same loop.
-    type Solved = Vec<Option<([f64; 2], [f64; 2])>>;
-    type Submitted = Option<(mklight_gpu::pending::Pending<PlanResult>, usize)>;
-    let mut pending: Option<(&[(usize, u32)], Solved, Submitted)> = None;
+    let mut pending: Option<Block> = None;
     for block in blocks.iter().copied().chain(std::iter::once(&[][..])) {
         let next = if block.is_empty() {
             None
