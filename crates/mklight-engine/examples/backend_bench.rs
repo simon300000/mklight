@@ -12,32 +12,40 @@
 //! {"lenses": {"dg": "/path/double_gauss.mklight"},
 //!  "cases": [{"lens": "dg", "analysis": "spot_diagram", "settings": {"rings": 100},
 //!             "tag": "dense", "reps": 5, "backends": ["cpu", "metal", "auto"],
+//!             "variants": [{"name": "cpuaim", "set": {"geometric": "cpu-aim"}}],
 //!             "setup": "curvature_variables"}]}
 //! ```
 //!
-//! `settings`, `tag`, `reps` (default 5), `backends` (default all three) and
-//! `setup` are optional. `setup: "curvature_variables"` makes every curved
-//! surface's curvature a variable (for `optimize`, `tolerance` and the
-//! other solvers). `--filter` keeps the cases whose `lens/analysis/tag`
-//! contains the text (comma-separated alternatives).
+//! `settings`, `tag`, `reps` (default 5), `backends` (default all three),
+//! `variants` and `setup` are optional. Each variant adds a column
+//! `metal/<name>` (or `<variant_backend>/<name>` when the case sets
+//! `variant_backend`) that runs with the work-split selections of `set`
+//! (`mklight_core::split`); the plain `metal` column runs the default
+//! designs. `setup: "curvature_variables"` makes every curved surface's
+//! curvature a variable (for `optimize`, `tolerance` and the other solvers).
+//! `--filter` keeps the cases whose `lens/analysis/tag` contains the text
+//! (comma-separated alternatives); `--backends` keeps the columns named, a
+//! backend name also keeping its variant columns.
 //!
 //! Every timed call follows an edit, a tiny unique change of the first
-//! curved surface, so nothing is reused from an earlier call; backends
+//! curved surface, so nothing is reused from an earlier call; columns
 //! alternate within each repetition so drift affects them alike. Before the
-//! timed calls, one untimed call per backend on one shared state warms
-//! shaders and host state and compares each backend's output with the CPU
-//! reference: for every group of numbers (the JSON path without array
-//! indices, or a buffer) the largest difference relative to the group's
-//! largest CPU magnitude; the worst groups are reported.
+//! timed calls, each column gets one untimed call that warms shaders and
+//! host state; on its own fresh state the CPU reference runs first, and the
+//! column's output is compared with it: for every group of numbers (the
+//! JSON path without array indices, or a buffer) the largest difference
+//! relative to the group's largest CPU magnitude; the worst groups are
+//! reported.
 //!
-//! Each case and backend appends one JSON line to `--out` and prints a row.
+//! Each case and column appends one JSON line to `--out` and each case
+//! prints one row.
 
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::process::Command;
 use std::time::Instant;
 
-use mklight_core::{OpticalSystem, param::ParamPath};
+use mklight_core::{OpticalSystem, param::ParamPath, split};
 use mklight_engine::{
     AnalysisRequest, Engine, EngineConfig, Session, analysis::AnalysisResult, backend::Backend,
     buffer::BufferData,
@@ -105,6 +113,30 @@ fn commit() -> String {
     format!("{head}{}", if dirty { "+dirty" } else { "" })
 }
 
+/// One column of a case: a backend, optionally with work-split selections.
+#[derive(Clone)]
+struct Column {
+    label: String,
+    backend: String,
+    set: BTreeMap<String, String>,
+}
+
+impl Column {
+    fn plain(backend: &str) -> Self {
+        Column {
+            label: backend.to_string(),
+            backend: backend.to_string(),
+            set: BTreeMap::new(),
+        }
+    }
+    fn select(&self) {
+        split::reset();
+        for (k, v) in &self.set {
+            split::set(k, Some(v));
+        }
+    }
+}
+
 fn backend(name: &str) -> Backend {
     match name {
         "cpu" => Backend::CpuReference,
@@ -140,18 +172,25 @@ fn run(
     s: &Session,
     analysis: &str,
     settings: &Value,
-    be: &str,
+    column: &Column,
 ) -> Result<(f64, AnalysisResult), String> {
+    column.select();
     let mut req = AnalysisRequest::new(analysis, settings.clone());
-    req.backend = Some(backend(be));
+    req.backend = Some(backend(&column.backend));
     let engine = s.engine().clone();
     let t = Instant::now();
-    let id = s.submit_analysis(&req).map_err(|e| e.to_string())?;
-    let r = engine
-        .wait_job(id, None)
-        .and_then(|_| engine.take_result(id))
-        .map_err(|e| e.to_string())?;
-    Ok((t.elapsed().as_secs_f64() * 1e3, r))
+    let result = s
+        .submit_analysis(&req)
+        .map_err(|e| e.to_string())
+        .and_then(|id| {
+            engine
+                .wait_job(id, None)
+                .and_then(|_| engine.take_result(id))
+                .map_err(|e| e.to_string())
+        });
+    let ms = t.elapsed().as_secs_f64() * 1e3;
+    split::reset();
+    result.map(|r| (ms, r))
 }
 
 fn skipped(key: &str) -> bool {
@@ -273,6 +312,42 @@ fn curvature_variables(s: &mut Session) {
         .unwrap();
 }
 
+fn columns(case: &Value, keep: &Option<Vec<String>>) -> Vec<Column> {
+    let backends: Vec<String> = case["backends"].as_array().map_or_else(
+        || vec!["cpu".into(), "metal".into(), "auto".into()],
+        |b| b.iter().map(|x| x.as_str().unwrap().to_string()).collect(),
+    );
+    let variant_backend = case["variant_backend"].as_str().unwrap_or("metal");
+    let mut out: Vec<Column> = Vec::new();
+    for b in &backends {
+        out.push(Column::plain(b));
+        if b == variant_backend {
+            for v in case["variants"].as_array().into_iter().flatten() {
+                let name = v["name"].as_str().expect("variant name");
+                let set = v["set"]
+                    .as_object()
+                    .expect("variant set")
+                    .iter()
+                    .map(|(k, x)| (k.clone(), x.as_str().expect("variant value").to_string()))
+                    .collect();
+                out.push(Column {
+                    label: format!("{b}/{name}"),
+                    backend: b.clone(),
+                    set,
+                });
+            }
+        }
+    }
+    if let Some(keep) = keep {
+        out.retain(|c| keep.iter().any(|k| *k == c.label || *k == c.backend));
+    }
+    out
+}
+
+fn short(e: &str) -> String {
+    e.chars().take(80).collect()
+}
+
 fn main() {
     let a = args();
     let suite: Value = serde_json::from_str(&std::fs::read_to_string(&a.suite).unwrap()).unwrap();
@@ -288,13 +363,10 @@ fn main() {
     });
     let mut serial = (std::process::id() as u64) << 20;
     println!(
-        "# {} commit {commit}, load {:.1}; median ms after an edit",
+        "# {} commit {commit}, load {:.1}; median ms after an edit; (x) worst relative \
+         difference from the CPU reference",
         a.label,
         load()
-    );
-    println!(
-        "{:<44} {:>9} {:>9} {:>9}  {:<6} {}",
-        "case", "cpu", "metal", "auto", "auto→", "metal vs cpu (worst group)"
     );
     for case in suite["cases"].as_array().unwrap() {
         let lens = case["lens"].as_str().unwrap();
@@ -311,12 +383,7 @@ fn main() {
             .reps
             .unwrap_or(case["reps"].as_u64().unwrap_or(5) as usize)
             .max(1);
-        let backends: Vec<String> = a.backends.clone().unwrap_or_else(|| {
-            case["backends"].as_array().map_or_else(
-                || vec!["cpu".into(), "metal".into(), "auto".into()],
-                |b| b.iter().map(|x| x.as_str().unwrap().to_string()).collect(),
-            )
-        });
+        let cols = columns(case, &a.backends);
         if !sessions.contains_key(lens) {
             let path = suite["lenses"][lens]
                 .as_str()
@@ -329,128 +396,108 @@ fn main() {
         if case["setup"].as_str() == Some("curvature_variables") {
             curvature_variables(s);
         }
-        // Warm-up on one shared state; outputs compared with the CPU reference.
-        serial += 1;
-        edit(s, base, serial);
-        let mut warm: BTreeMap<String, Result<(f64, AnalysisResult), String>> = BTreeMap::new();
-        for be in &backends {
-            warm.insert(be.clone(), run(s, analysis, &settings, be));
-        }
-        if a.compare && !warm.contains_key("cpu") && warm.values().any(|r| r.is_ok()) {
-            warm.insert("cpu".into(), run(s, analysis, &settings, "cpu"));
+        let cpu = Column::plain("cpu");
+        // Warm-up: each column on a fresh state, after the CPU reference on it.
+        let mut warm: Vec<Result<(f64, AnalysisResult), String>> = Vec::new();
+        let mut comparisons: Vec<Option<Value>> = Vec::new();
+        for c in &cols {
+            serial += 1;
+            edit(s, base, serial);
+            let reference = (a.compare && c.label != "cpu")
+                .then(|| run(s, analysis, &settings, &cpu).ok())
+                .flatten();
+            let r = run(s, analysis, &settings, c);
+            comparisons.push(match (&reference, &r) {
+                (Some((_, x)), Ok((_, y))) => Some(compare(x, y)),
+                _ => None,
+            });
+            warm.push(r);
         }
         let load_before = load();
-        let mut times: BTreeMap<String, Vec<f64>> = BTreeMap::new();
-        let mut device: BTreeMap<String, Vec<f64>> = BTreeMap::new();
-        let mut reported: BTreeMap<String, Vec<f64>> = BTreeMap::new();
-        let mut used: BTreeMap<String, String> = BTreeMap::new();
-        let mut errors: BTreeMap<String, String> = BTreeMap::new();
+        let n = cols.len();
+        let mut times = vec![Vec::new(); n];
+        let mut device = vec![Vec::new(); n];
+        let mut reported = vec![Vec::new(); n];
+        let mut used: Vec<Option<String>> = vec![None; n];
+        let mut errors: Vec<Option<String>> =
+            warm.iter().map(|r| r.as_ref().err().cloned()).collect();
         for _ in 0..reps {
-            for be in &backends {
-                if matches!(warm.get(be), Some(Err(_))) {
+            for (i, c) in cols.iter().enumerate() {
+                if warm[i].is_err() {
                     continue;
                 }
                 serial += 1;
                 edit(s, base, serial);
                 let d0 = mklight_metal::device_seconds();
-                match run(s, analysis, &settings, be) {
+                match run(s, analysis, &settings, c) {
                     Ok((ms, r)) => {
-                        times.entry(be.clone()).or_default().push(ms);
-                        device
-                            .entry(be.clone())
-                            .or_default()
-                            .push((mklight_metal::device_seconds() - d0) * 1e3);
-                        reported
-                            .entry(be.clone())
-                            .or_default()
-                            .push(r.run_info.duration_ms);
-                        used.insert(be.clone(), r.run_info.backend.clone());
+                        times[i].push(ms);
+                        device[i].push((mklight_metal::device_seconds() - d0) * 1e3);
+                        reported[i].push(r.run_info.duration_ms);
+                        used[i] = Some(r.run_info.backend.clone());
                     }
-                    Err(e) => {
-                        errors.insert(be.clone(), e);
-                    }
+                    Err(e) => errors[i] = Some(e),
                 }
             }
         }
         let load_after = load();
         let mut cells = Vec::new();
-        for be in ["cpu", "metal", "auto"] {
-            cells.push(match times.get(be) {
-                Some(t) => format!("{:9.1}", median(t)),
-                None if backends.iter().any(|b| b == be) => format!("{:>9}", "err"),
-                None => format!("{:>9}", "-"),
+        for (i, c) in cols.iter().enumerate() {
+            let used_i = used[i].clone().or_else(|| {
+                warm[i]
+                    .as_ref()
+                    .ok()
+                    .map(|(_, r)| r.run_info.backend.clone())
             });
-        }
-        let cpu_ref = warm.get("cpu").and_then(|r| r.as_ref().ok());
-        let mut agreement = String::new();
-        for be in &backends {
-            let comparison = match (cpu_ref, warm.get(be)) {
-                (Some((_, c)), Some(Ok((_, r)))) if be != "cpu" && a.compare => Some(compare(c, r)),
-                _ => None,
-            };
-            if be == "metal"
-                && let Some(c) = &comparison
-            {
-                agreement = c["worst"]
-                    .get(0)
-                    .map(|w| format!("{:.1e} {}", w[1].as_f64().unwrap(), w[0].as_str().unwrap()))
-                    .unwrap_or_default();
-            }
-            let warm_err = warm.get(be).and_then(|r| r.as_ref().err()).cloned();
             let record = json!({
                 "label": a.label, "commit": commit, "lens": lens, "analysis": analysis, "tag": tag,
-                "settings": settings, "backend": be, "used": used.get(be).or_else(|| {
-                    warm.get(be).and_then(|r| r.as_ref().ok()).map(|(_, r)| &r.run_info.backend)
-                }),
-                "ms": times.get(be), "median_ms": times.get(be).map(|t| median(t)),
-                "min_ms": times.get(be).map(|t| t.iter().cloned().fold(f64::INFINITY, f64::min)),
-                "device_ms": device.get(be).map(|t| median(t)),
-                "reported_ms": reported.get(be).map(|t| median(t)),
-                "first_ms": warm.get(be).and_then(|r| r.as_ref().ok()).map(|(ms, _)| *ms),
+                "settings": settings, "backend": c.label, "base_backend": c.backend,
+                "variant": c.set, "used": used_i,
+                "ms": (!times[i].is_empty()).then(|| times[i].clone()),
+                "median_ms": (!times[i].is_empty()).then(|| median(&times[i])),
+                "min_ms": times[i].iter().cloned().reduce(f64::min),
+                "device_ms": (!device[i].is_empty()).then(|| median(&device[i])),
+                "reported_ms": (!reported[i].is_empty()).then(|| median(&reported[i])),
+                "first_ms": warm[i].as_ref().ok().map(|(ms, _)| *ms),
                 "load": [load_before, load_after],
-                "error": errors.get(be).cloned().or(warm_err),
-                "compare": comparison,
+                "error": errors[i],
+                "compare": comparisons[i],
             });
             if let Some(f) = out.as_mut() {
                 use std::io::Write;
                 writeln!(f, "{record}").unwrap();
             }
-        }
-        let auto_used = used
-            .get("auto")
-            .map(|u| if u.starts_with("gpu") { "Metal" } else { "CPU" })
-            .unwrap_or("");
-        let note = match used.get("metal") {
-            Some(u) if !u.starts_with("gpu") => format!("  (metal ran on {u})"),
-            _ => String::new(),
-        };
-        let errs =
-            if errors.is_empty() && !warm.values().any(|r| r.is_err()) {
-                String::new()
+            let time = if times[i].is_empty() {
+                "err".to_string()
             } else {
-                let e: Vec<String> =
-                    warm.iter()
-                        .filter_map(|(b, r)| {
-                            r.as_ref()
-                                .err()
-                                .map(|e| format!("{b}: {}", e.chars().take(80).collect::<String>()))
-                        })
-                        .chain(errors.iter().map(|(b, e)| {
-                            format!("{b}: {}", e.chars().take(80).collect::<String>())
-                        }))
-                        .collect();
-                format!("  ERR {}", e.join("; "))
+                format!("{:.1}", median(&times[i]))
             };
+            let ran = match (&used_i, c.backend.as_str()) {
+                (Some(u), "auto") => {
+                    if u.starts_with("gpu") {
+                        "→Metal".to_string()
+                    } else {
+                        "→CPU".to_string()
+                    }
+                }
+                (Some(u), b) if b != "cpu" && !u.starts_with("gpu") => format!(" (ran on {u})"),
+                _ => String::new(),
+            };
+            let agreement = comparisons[i]
+                .as_ref()
+                .and_then(|c| c["worst"].get(0).cloned())
+                .map(|w| format!(" ({:.0e})", w[1].as_f64().unwrap_or(f64::INFINITY)))
+                .unwrap_or_default();
+            let err = errors[i]
+                .as_ref()
+                .map(|e| format!(" ERR {}", short(e)))
+                .unwrap_or_default();
+            cells.push(format!("{} {time}{ran}{agreement}{err}", c.label));
+        }
         println!(
-            "{:<44} {} {} {}  {:<6} {agreement}{note}{errs}",
-            format!("{lens} {analysis} {tag}")
-                .chars()
-                .take(44)
-                .collect::<String>(),
-            cells[0],
-            cells[1],
-            cells[2],
-            auto_used
+            "{:<40} {}",
+            format!("{lens} {analysis} {tag}"),
+            cells.join(" | ")
         );
     }
     println!("# load at end {:.1}", load());
