@@ -54,7 +54,7 @@ pub enum Design {
     /// events of every source, the CPU continues the longer path trees from
     /// the device stacks and tallies, overlapped with the next plan.
     GpuHead,
-    /// `GpuHead` on a fixed share (`TransportOptions::gpu_share`) of the
+    /// `Wavefront` on a fixed share (`TransportOptions::gpu_share`) of the
     /// source chunks, while the CPU reference traces the other chunks at the
     /// same time.
     CoSplit,
@@ -71,7 +71,7 @@ impl Design {
     }
     pub fn named(name: Option<&str>) -> MkResult<Design> {
         Ok(match name {
-            None => Design::GpuHead,
+            None => Design::CoSplit,
             Some("gpu-tally") => Design::GpuTally,
             Some("cpu-tally") => Design::CpuTally,
             Some("gpu-head") => Design::GpuHead,
@@ -95,8 +95,29 @@ impl Design {
     }
     /// Whether the device runs the wavefront kernels.
     fn wavefront(self) -> bool {
-        self == Design::Wavefront
+        matches!(self, Design::Wavefront | Design::CoSplit)
     }
+}
+
+/// Device share of [`Design::CoSplit`] when the options leave it open: a
+/// fixed rule of the scene, so that a seed gives the same partition. The
+/// 12-core reference traces analytic scenes about four times faster than
+/// the device, and scenes with iteratively intersected sags (aspheres,
+/// freeforms) about ten times faster (provisional M2 Pro measurements), so
+/// the device takes the share it finishes in the CPU's time.
+pub fn default_share(scene: &Scene) -> f64 {
+    let iterative = scene.primitives().iter().any(|p| match &p.shape {
+        // The device's closed-form kinds (`prepare_geometry`).
+        Shape::Sag(s) => !match s.shape() {
+            SurfaceShape::Plane | SurfaceShape::Paraxial { .. } | SurfaceShape::Conic { .. } => {
+                true
+            }
+            SurfaceShape::EvenAsphere { coefficients, .. } => coefficients.iter().all(|v| *v == 0.),
+            _ => false,
+        },
+        Shape::Cylinder(_) => false,
+    });
+    if iterative { 0.08 } else { 0.2 }
 }
 
 /// Which source chunks the device transports: units of `block` consecutive
@@ -432,7 +453,7 @@ pub(crate) fn run(
         || options.detections_per_source > 1024
         || options.stack_capacity == 0
         || options.stack_capacity > 8192
-        || !(0.0..=1.0).contains(&options.gpu_share)
+        || options.gpu_share.is_some_and(|s| !(0.0..=1.0).contains(&s))
         || design == Design::GpuTally
     {
         return Err(MkError::InvalidModel("stray transport settings".into()));
@@ -452,7 +473,7 @@ pub(crate) fn run(
         _ => options.head_events,
     };
     let share = match design {
-        Design::CoSplit => options.gpu_share,
+        Design::CoSplit => options.gpu_share.unwrap_or_else(|| default_share(scene)),
         _ => 1.0,
     };
     let per_source = std::mem::size_of::<ops::Ray>()
@@ -731,7 +752,7 @@ mod tests {
         ] {
             assert_eq!(Design::named(Some(d.name())).unwrap(), d);
         }
-        assert_eq!(Design::named(None).unwrap(), Design::GpuHead);
+        assert_eq!(Design::named(None).unwrap(), Design::CoSplit);
         assert!(Design::named(Some("nope")).is_err());
     }
 }

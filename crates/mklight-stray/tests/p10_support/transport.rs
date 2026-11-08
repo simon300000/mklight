@@ -7,6 +7,30 @@ use mklight_gpu::{ComputeBackend, stray_ops as ops};
 use mklight_metal::{LibraryChoice, MetalBackend, MetalOptions};
 use mklight_stray::{SplitMode, StraySettings, StraySystem, gpu};
 use std::sync::Arc;
+
+/// The all-device design these qualification tests were written for
+/// (`gpu::Design::GpuTally`); the hybrid designs have their own tests below.
+#[allow(clippy::too_many_arguments)]
+fn legacy_run(
+    b: &dyn ComputeBackend,
+    snapshot: Snapshot,
+    scene: &mklight_stray::Scene,
+    source: &mklight_stray::SourceSpec,
+    settings: &StraySettings,
+    options: gpu::TransportOptions,
+    ctx: &JobContext,
+) -> mklight_core::MkResult<mklight_stray::StrayResult> {
+    gpu::run_design(
+        b,
+        snapshot,
+        scene,
+        source,
+        settings,
+        options,
+        gpu::Design::GpuTally,
+        ctx,
+    )
+}
 #[test]
 fn controlled_transport() {
     for origin in [LibraryChoice::Precompiled, LibraryChoice::RuntimeSource] {
@@ -40,7 +64,7 @@ fn controlled_transport() {
             };
             let cpu =
                 mklight_stray::run(&system.scene, &source, &settings, &JobContext::new()).unwrap();
-            let got = gpu::run(
+            let got = legacy_run(
                 &b,
                 snapshot,
                 &system.scene,
@@ -212,7 +236,7 @@ fn samples_all_fields_and_spectra() {
                 };
                 let cpu = mklight_stray::run(&system.scene, &source, &settings, &JobContext::new())
                     .unwrap();
-                let got = gpu::run(
+                let got = legacy_run(
                     &b,
                     snapshot.clone(),
                     &system.scene,
@@ -279,7 +303,7 @@ fn scatter_ensembles_and_doe() {
                 };
                 let cpu = mklight_stray::run(&system.scene, &source, &settings, &JobContext::new())
                     .unwrap();
-                let got = gpu::run(
+                let got = legacy_run(
                     &b,
                     snapshot.clone(),
                     &system.scene,
@@ -322,7 +346,7 @@ fn scatter_ensembles_and_doe() {
             };
             let cpu =
                 mklight_stray::run(&system.scene, &source, &settings, &JobContext::new()).unwrap();
-            let got = gpu::run(
+            let got = legacy_run(
                 &b,
                 snap,
                 &system.scene,
@@ -395,7 +419,7 @@ fn coverage_partition_and_repeated_passes() {
         event_budget: 8,
         ..Default::default()
     };
-    let got = gpu::run(
+    let got = legacy_run(
         &b,
         snapshot.clone(),
         &system.scene,
@@ -437,26 +461,32 @@ fn coverage_partition_and_repeated_passes() {
         stack_capacity: 256,
         ..retiled
     };
-    let tiled = run(gpu::Design::GpuHead, retiled);
-    assert_resident(&tiled);
-    assert_eq!(got.detector, tiled.detector);
-    assert_eq!(got.energy, tiled.energy);
-    assert_eq!(got.signatures, tiled.signatures);
     assert!(got.signatures.iter().any(|s| s.overflow));
+    let legacy_tiled = run(gpu::Design::GpuTally, deeper);
+    assert_eq!(got.detector, legacy_tiled.detector);
+    assert_eq!(got.energy, legacy_tiled.energy);
+    assert_eq!(got.signatures, legacy_tiled.signatures);
+    let head = run(gpu::Design::GpuHead, options);
+    let tiled = run(gpu::Design::GpuHead, retiled);
+    assert_resident(&head);
+    compare_results(&cpu, &head);
+    assert!(
+        head.run_info.as_ref().unwrap().settings["counters"]["stack_full"]
+            .as_u64()
+            .unwrap()
+            > 0
+    );
+    assert_eq!(head.detector, tiled.detector);
+    assert_eq!(head.energy, tiled.energy);
+    assert_eq!(head.signatures, tiled.signatures);
     let deep = run(gpu::Design::GpuHead, deeper);
     for c in 0..5 {
         let (a, b) = (
-            got.energy.detected_by_class[c].1,
+            head.energy.detected_by_class[c].1,
             deep.energy.detected_by_class[c].1,
         );
-        assert!((a - b).abs() <= 1e-12 * got.energy.emitted, "class {c}");
+        assert!((a - b).abs() <= 1e-12 * head.energy.emitted, "class {c}");
     }
-    let legacy = run(gpu::Design::GpuTally, options);
-    let legacy_tiled = run(gpu::Design::GpuTally, deeper);
-    assert_resident(&legacy);
-    assert_eq!(legacy.detector, legacy_tiled.detector);
-    assert_eq!(legacy.energy, legacy_tiled.energy);
-    assert_eq!(legacy.signatures, legacy_tiled.signatures);
     // A shared front interface is crossed in both designed directions.
     let mut sys = common::window(1.5, 5., -50.);
     sys.surfaces[2].material = MaterialRef::Constant { n: 1.5 };
@@ -476,7 +506,7 @@ fn coverage_partition_and_repeated_passes() {
         ..Default::default()
     };
     let cpu = mklight_stray::run(&scene, &source, &settings, &JobContext::new()).unwrap();
-    let got = gpu::run(
+    let got = legacy_run(
         &b,
         snap,
         &scene,
@@ -548,7 +578,7 @@ fn integrating_sphere_energy() {
             ..Default::default()
         };
         let snap = Snapshot::new(mklight_core::samples::singlet()).unwrap();
-        let got = gpu::run(
+        let got = legacy_run(
             &b,
             snap,
             &scene,
@@ -658,7 +688,7 @@ fn split_tree_cancellation_and_release() {
         rays: 257,
         ..Default::default()
     };
-    let got = gpu::run(
+    let got = legacy_run(
         &*b,
         snap.clone(),
         &system.scene,
@@ -731,7 +761,7 @@ fn full_pipeline_concurrency_and_chunk_identity() {
     };
     let (a, c) = std::thread::scope(|scope| {
         let a = scope.spawn(|| {
-            gpu::run(
+            legacy_run(
                 &*b,
                 snapshot.clone(),
                 &system.scene,
@@ -747,7 +777,7 @@ fn full_pipeline_concurrency_and_chunk_identity() {
             )
             .unwrap()
         });
-        let c = gpu::run(
+        let c = legacy_run(
             &*b,
             snapshot.clone(),
             &system.scene,
@@ -819,7 +849,7 @@ fn controlled_film_bulk_weights() {
                 ..Default::default()
             };
             let cpu = mklight_stray::run(&scene, &source, &set, &JobContext::new()).unwrap();
-            let got = gpu::run(
+            let got = legacy_run(
                 &b,
                 snap.clone(),
                 &scene,
@@ -943,7 +973,7 @@ fn explicit_ghost_partition() {
         covered_ghosts: coverage,
         ..Default::default()
     };
-    let gpu = gpu::run(
+    let gpu = legacy_run(
         &b,
         snap,
         &system.scene,
@@ -1046,7 +1076,7 @@ fn bsdf_disk_integrals() {
             seed: 251,
             ..Default::default()
         };
-        let result = gpu::run(
+        let result = legacy_run(
             &b,
             Snapshot::new(mklight_core::samples::singlet()).unwrap(),
             &scene,
@@ -1120,7 +1150,7 @@ fn doe_visit_overflow_and_coverage_boundary() {
         roulette_threshold: 0.,
         ..Default::default()
     };
-    let got = gpu::run(
+    let got = legacy_run(
         &b,
         snap,
         &scene,
@@ -1162,7 +1192,7 @@ fn doe_visit_overflow_and_coverage_boundary() {
         rays: 1,
         ..Default::default()
     };
-    let result = gpu::run(
+    let result = legacy_run(
         &b,
         snap,
         &scene,
@@ -1216,7 +1246,7 @@ fn doe_near_integer_preserves_draw_consumption() {
             ..Default::default()
         };
         let cpu = mklight_stray::run(&system.scene, &source, &set, &JobContext::new()).unwrap();
-        let got = gpu::run(
+        let got = legacy_run(
             &b,
             snap.clone(),
             &system.scene,
@@ -1275,7 +1305,7 @@ fn wide_selected_order_keeps_integer_bits() {
         })
         .unwrap()
         .expect("actual GPU required");
-        let got = gpu::run(
+        let got = legacy_run(
             &b,
             snapshot.clone(),
             &scene,
@@ -1319,7 +1349,7 @@ fn absolute_power_precision_fallback() {
             rays: 16,
             ..Default::default()
         };
-        let got = gpu::run(
+        let got = legacy_run(
             &b,
             snap.clone(),
             &scene,
@@ -1413,7 +1443,7 @@ fn grazing_tis_weights() {
                     seed: 19,
                     ..Default::default()
                 };
-                let result = gpu::run(
+                let result = legacy_run(
                     &b,
                     Snapshot::new(mklight_core::samples::singlet()).unwrap(),
                     &scene,
@@ -1523,7 +1553,7 @@ fn hybrid_designs_agree() {
     };
     let options = gpu::TransportOptions {
         head_events: 12,
-        gpu_share: 0.5,
+        gpu_share: Some(0.5),
         source_tile: 2048,
         ..Default::default()
     };
@@ -1599,7 +1629,7 @@ fn hybrid_designs_agree() {
     let all_cpu = run(
         gpu::Design::CoSplit,
         gpu::TransportOptions {
-            gpu_share: 0.,
+            gpu_share: Some(0.),
             ..options
         },
     );
@@ -1609,7 +1639,7 @@ fn hybrid_designs_agree() {
     let all_gpu = run(
         gpu::Design::CoSplit,
         gpu::TransportOptions {
-            gpu_share: 1.,
+            gpu_share: Some(1.),
             ..options
         },
     );

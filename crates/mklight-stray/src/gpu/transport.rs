@@ -34,7 +34,8 @@ pub struct TransportOptions {
     pub head_events: u32,
     /// Share of the source chunks transported by the device
     /// (`hybrid::Design::CoSplit`); the CPU reference traces the others.
-    pub gpu_share: f64,
+    /// `None`: a fixed rule of the scene (`hybrid::default_share`).
+    pub gpu_share: Option<f64>,
 }
 /// Resident scratch budget per plan (two plans overlap): rays, ledgers,
 /// queues, initial stacks, detections and their tags.
@@ -60,7 +61,7 @@ impl Default for TransportOptions {
             detections_per_source: 32,
             event_budget: 32,
             head_events: 64,
-            gpu_share: 0.5,
+            gpu_share: None,
         }
     }
 }

@@ -45,7 +45,7 @@ fn main() {
         .into_iter()
         .filter(|(k, v)| match k.as_str() {
             "share" => {
-                options.gpu_share = v.parse().unwrap();
+                options.gpu_share = Some(v.parse().unwrap());
                 false
             }
             "head" => {
