@@ -682,7 +682,7 @@ per-field Kahan sums in f64, in the reference's node order and weights.
 | `split` | node kernel (Newton only) writes the pencils, a flat ray pass traces them (9 rays per node, one thread each) in the same plan; host determinants and sums |
 | `hybrid` | the CPU solves the image points (the reference's Newton, bitwise, all cores), the flat ray pass traces the pencils |
 | `pipelined` (default) | the hybrid in field blocks: the GPU traces block k while the CPU solves block k+1 |
-| `shared` | the CPU (reference nodes, a field at a time from the back) and the GPU (`split`, field blocks from the front) drain one queue |
+| `shared` | the CPU (reference nodes, a field at a time from the back) and the GPU (`split`, field blocks from the front) drain one queue; which fields each takes depends on timing, so results are not bitwise repeatable (measurement only, GPU.md §9.3) |
 
 **Chief-ray maps.** `chief_ray_angle`, `pupil_aberration`,
 `grid_distortion` and `field_curvature_distortion` need one aimed chief per

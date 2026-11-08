@@ -77,6 +77,8 @@ struct Stages {
     device_failed: usize,
     /// `shared`: fields the CPU took (the device took the rest).
     cpu_fields: usize,
+    /// `hybrid`/`pipelined`: nodes the CPU finished from its own solve.
+    cpu_finished: usize,
     /// Failure codes (low byte) of the traced pencil rays.
     pencil_failures: std::collections::BTreeMap<u32, usize>,
 }
@@ -136,11 +138,14 @@ fn field_row(
 }
 
 /// Stall acceptance of the device stop aims (`MklRiField::aim_floor`): the
-/// reference's aim tolerance of the field, at least `1e-10` of the stop
-/// radius, the double-float trace's noise floor on aspheric systems (the
-/// asphere intersections stop at sag residuals near `1e-9` mm).
+/// reference's aim tolerance of the field, within `[1e-10, 1e-9]` of the
+/// stop radius. The lower bound is the double-float trace's noise floor on
+/// aspheric systems; the upper bound keeps the pencils' central differences
+/// (steps of 1e-4 of the stop radius) within ~1e-5 even where the
+/// reference's own derived stop is looser, a stall above it failing to the
+/// reference.
 fn aim_floor(rt: &SequentialTracer, ip: &ImagePoint, wl: usize) -> f64 {
-    rt.aim_tolerance_of(&ip.field, wl).max(1e-10)
+    rt.aim_tolerance_of(&ip.field, wl).clamp(1e-10, 1e-9)
 }
 
 /// The pencil of a CPU-solved node (f64 twin of `ri::pencil`): the clipped
@@ -796,13 +801,17 @@ fn host_solve(
             traced.len(),
         )))
     };
-    // Outcomes of a block from its solves and traced pencils.
+    // Outcomes of a block from its solves and traced pencils (`None`: the
+    // block's pencils were not traced). A pencil the device could not decide
+    // is finished by the reference from the CPU's own solve (the rest of the
+    // reference's node, bitwise). Returns the outcomes and the fraction of
+    // traced pencils the device could not decide.
     let assemble = |block: &[(usize, u32)],
                     solved: &[Solved],
                     result: Option<PlanResult>,
                     runs: &mut Vec<RunInfo>,
                     stages: &mut Stages|
-     -> MkResult<Vec<Outcome>> {
+     -> MkResult<(Vec<Outcome>, f64)> {
         let view = match &result {
             Some(r) => Some(problem.geo.backend.read_view(r.outputs[0].view())?),
             None => None,
@@ -813,33 +822,71 @@ fn host_solve(
         count_failures(rays, stages);
         let mut next = 0;
         let mut out = Vec::with_capacity(solved.len());
+        let mut undecided = 0;
         for (i, s) in solved.iter().enumerate() {
             out.push(match s {
                 None => Outcome::Failed,
+                Some(_) if view.is_none() => Outcome::Unresolved,
                 Some(_) => {
                     let (pi, _) = block[i / per];
                     let hq = problem.prepared[pi].as_ref().unwrap().hq;
                     let o = pencil_outcome(&rays[next * PENCIL..(next + 1) * PENCIL], hq);
                     next += 1;
+                    undecided += usize::from(matches!(o, Outcome::Unresolved));
                     o
                 }
             });
         }
+        let traced = next;
+        // Finish the undecided nodes on the CPU, field by field.
+        for (b, &(pi, _)) in block.iter().enumerate() {
+            let range = b * per..(b + 1) * per;
+            let todo: Vec<usize> = range
+                .filter(|&i| matches!(out[i], Outcome::Unresolved))
+                .collect();
+            if todo.is_empty() {
+                continue;
+            }
+            ctx.check()?;
+            let nodes: Vec<([f64; 2], [f64; 2])> = todo
+                .iter()
+                .map(|&i| (pupil[i % per], solved[i].unwrap().0))
+                .collect();
+            let ip = problem.prepared[pi].as_ref().unwrap();
+            let decided = host::finish_nodes(problem.rt, ip, problem.wl, &nodes);
+            stages.cpu_finished += todo.len();
+            for (&i, (d, survives, failed)) in todo.iter().zip(decided) {
+                out[i] = match (survives, failed) {
+                    (true, _) => Outcome::Survives(d),
+                    (_, true) => Outcome::Failed,
+                    _ => Outcome::Vignetted,
+                };
+            }
+        }
         if let Some(r) = result {
             runs.push(r.run_info);
         }
-        Ok(out)
+        Ok((out, undecided as f64 / traced.max(1) as f64))
     };
     let mut outcomes = Vec::with_capacity(usable.len() * per);
     // The pipeline: block k's pencils on the device while the CPU solves
-    // block k+1. The hybrid is the one-block case of the same loop.
+    // block k+1. The hybrid is the one-block case of the same loop. Where
+    // the device leaves most pencils of a block undecided (its trace cannot
+    // resolve the stop, e.g. wide-angle aspheric fields), the blocks not yet
+    // submitted are finished on the CPU (a deterministic rule: it depends
+    // only on the device's results).
     let mut pending: Option<Block> = None;
+    let mut device = true;
     for block in blocks.iter().copied().chain(std::iter::once(&[][..])) {
         let next = if block.is_empty() {
             None
         } else {
             let solved = solve(block, stages)?;
-            let submitted = submit(block, &solved)?;
+            let submitted = if device {
+                submit(block, &solved)?
+            } else {
+                None
+            };
             stages.plans += usize::from(submitted.is_some());
             Some((block, solved, submitted))
         };
@@ -851,10 +898,19 @@ fn host_solve(
             };
             stages.device_wait_ms += clock.elapsed().as_secs_f64() * 1e3;
             let clock = Instant::now();
-            outcomes.extend(assemble(done, &solved, result, runs, stages)?);
+            let traced = result.is_some();
+            let (block_outcomes, undecided) = assemble(done, &solved, result, runs, stages)?;
+            outcomes.extend(block_outcomes);
+            if traced && undecided > DEVICE_GIVE_UP {
+                device = false;
+            }
             stages.assembly_ms += clock.elapsed().as_secs_f64() * 1e3;
         }
         pending = next;
     }
     Ok(outcomes)
 }
+
+/// Fraction of a pipelined block's traced pencils left undecided by the
+/// device above which the remaining blocks are finished on the CPU.
+const DEVICE_GIVE_UP: f64 = 0.5;

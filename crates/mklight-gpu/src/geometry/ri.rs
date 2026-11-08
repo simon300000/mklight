@@ -228,6 +228,9 @@ const AIM_NOISE: f32 = 1e-6;
 /// thread's chain of dependent traces runs long. Converging rays take 3–10
 /// traces and converging nodes 30–70.
 pub const RAY_TRACES: u32 = 48;
+/// Budget of a flat-pass ray seeded with a converged neighbouring aim (a
+/// pencil ray; 3–6 traces when it converges).
+pub const RAY_TRACES_SEEDED: u32 = 16;
 pub const NODE_TRACES: u32 = 192;
 /// A chord step that does not shrink the residual below this fraction
 /// refreshes the Jacobian (stop aims and image points alike): slow linear
@@ -258,6 +261,8 @@ pub struct AimMachine<E: FpEnv> {
     pub iterations: u32,
     /// Traces so far.
     pub traces: u32,
+    /// Trace budget of the stop solve.
+    pub budget: u32,
     /// Ok: image x/y and direction cosines on the basis.
     pub result: Option<[D<E>; 4]>,
     /// When done: 0, `MKL_AIM_FAILED`, or the image trace's failure status.
@@ -303,6 +308,7 @@ impl<E: FpEnv> AimMachine<E> {
             phase: if aimed { PHASE_FINAL } else { PHASE_EVAL },
             iterations: 0,
             traces: 0,
+            budget: RAY_TRACES,
             result: None,
             status: MKL_AIM_FAILED,
         }
@@ -420,11 +426,11 @@ impl<E: FpEnv> AimMachine<E> {
         self.rn = norm(self.r);
     }
     /// Advance with the outcome of [`Self::request`]'s trace. A ray whose
-    /// stop solve has not finished within [`RAY_TRACES`] traces fails.
+    /// stop solve has not finished within its budget fails.
     pub fn feed(&mut self, f: &RiField, traced: Result<&ResidentState, u32>) {
         self.advance(f, traced);
         self.traces += 1;
-        if self.phase != PHASE_DONE && self.phase != PHASE_FINAL && self.traces >= RAY_TRACES {
+        if self.phase != PHASE_DONE && self.phase != PHASE_FINAL && self.traces >= self.budget {
             self.phase = PHASE_DONE;
         }
     }
@@ -549,6 +555,9 @@ pub fn ray<E: FpEnv>(sys: &System, f: &RiField, task: &RiTask, check: &dyn Fn() 
         (task.flags & MKL_RI_SEEDED != 0).then(|| dfs(task.seed)),
         task.flags & MKL_RI_AIMED != 0,
     );
+    if task.flags & MKL_RI_SEEDED != 0 {
+        machine.budget = RAY_TRACES_SEEDED;
+    }
     run(sys, f, &mut machine, check);
     let mut out = RiRay {
         status: machine.status,

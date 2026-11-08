@@ -352,7 +352,7 @@ struct RiAim {
     MklDf q[2], target[2], goal[2], a[2], r[2], rn, prev, da[2], alpha, plus[2];
     RiM inverse, j;
     MklDf x[4];
-    uint it, sub, phase, iterations, status, traces;
+    uint it, sub, phase, iterations, status, traces, budget;
     int stage;
     bool clip, ok;
 };
@@ -373,7 +373,7 @@ static inline RiAim ri_aim(device const MklRiField& f, MklDf q0, MklDf q1, MklDf
     m.plus[0] = geo_c(0); m.plus[1] = geo_c(0);
     m.j = {{{geo_c(0), geo_c(0)}, {geo_c(0), geo_c(0)}}};
     for (uint k = 0; k < 4; ++k) m.x[k] = geo_c(0);
-    m.it = 0; m.sub = 0; m.stage = -1; m.phase = aimed ? RI_FINAL : RI_EVAL; m.iterations = 0; m.traces = 0;
+    m.it = 0; m.sub = 0; m.stage = -1; m.phase = aimed ? RI_FINAL : RI_EVAL; m.iterations = 0; m.traces = 0; m.budget = 48u;
     m.status = MKL_AIM_FAILED; m.ok = false;
     return m;
 }
@@ -495,11 +495,11 @@ static inline void ri_advance(thread RiAim& m, device const MklRiField& f, uint 
         }
     }
 }
-// ri_advance, then the ray's trace budget (ri::RAY_TRACES = 48): an unfinished stop solve fails.
+// ri_advance, then the ray's trace budget (ri::RAY_TRACES, RAY_TRACES_SEEDED): an unfinished stop solve fails.
 static inline void ri_feed(thread RiAim& m, device const MklRiField& f, uint code, thread const MklRawState& hit) {
     ri_advance(m, f, code, hit);
     m.traces += 1;
-    if (m.phase != RI_DONE && m.phase != RI_FINAL && m.traces >= 48u) m.phase = RI_DONE;
+    if (m.phase != RI_DONE && m.phase != RI_FINAL && m.traces >= m.budget) m.phase = RI_DONE;
 }
 // The one trace of a machine step; returns its status (MKL_AIM_INVALID without a starting ray).
 static inline uint ri_trace(constant MklPackedHeader& h, constant MklPackedSurface* s, constant float* pool,
@@ -543,6 +543,7 @@ kernel void mkl_geometry_ri_rays(constant MklPackedHeader* headers [[buffer(0)]]
         (task.flags & MKL_RI_CLIP) != 0, (task.flags & MKL_RI_SEEDED) != 0,
         mkl_parts<MklDf>(task.seed[0], task.seed[1]), mkl_parts<MklDf>(task.seed[2], task.seed[3]),
         (task.flags & MKL_RI_AIMED) != 0);
+    if ((task.flags & MKL_RI_SEEDED) != 0) m.budget = 16u;  // ri::RAY_TRACES_SEEDED
     while (m.phase != RI_DONE) {
         MklDf a0, a1; uint last; bool clip;
         ri_request(m, f, h, a0, a1, last, clip);

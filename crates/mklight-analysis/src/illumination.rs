@@ -350,6 +350,12 @@ impl Probe<'_> {
         if !converged {
             return Node::Failed;
         }
+        self.finish(q, p)
+    }
+
+    /// The rest of [`Self::node`] from the solved `q`: survival, then the
+    /// differentiated density.
+    fn finish(&self, q: [f64; 2], p: [f64; 2]) -> Node {
         if self.ray(q, p, &self.rt.options()).is_none() {
             return Node::Vignetted;
         }
@@ -367,6 +373,34 @@ impl Probe<'_> {
         let d = m2::add(&lp, &m2::scale(&corr, -1.0));
         Node::Ok(m2::det(&d).abs())
     }
+}
+
+/// The reference's decisions of nodes `(P, q)` whose image points were
+/// solved by [`solve_image_point`] (the rest of the reference's node,
+/// bitwise): `(density, survives, failed)` each, in parallel.
+pub fn finish_nodes(
+    rt: &SequentialTracer,
+    point: &ImagePoint,
+    wl: usize,
+    nodes: &[([f64; 2], [f64; 2])],
+) -> Vec<(f64, bool, bool)> {
+    let probe = Probe {
+        rt,
+        base: &point.field,
+        wl,
+        x0: point.x0,
+        t1: point.basis[0],
+        t2: point.basis[1],
+        hq: point.hq,
+    };
+    nodes
+        .par_iter()
+        .map(|&(p, q)| match probe.finish(q, p) {
+            Node::Ok(j) => (j, true, false),
+            Node::Vignetted => (0.0, false, false),
+            Node::Failed => (0.0, false, true),
+        })
+        .collect()
 }
 
 fn prepare_integral<'a>(
