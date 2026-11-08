@@ -159,7 +159,8 @@ impl Geometry<'_> {
 /// Matched RI rows `[solid angle, surviving area share, CRA, cos4]`, plus
 /// on-axis normalisation, image coordinates and reproducibility evidence.
 pub type IlluminationRows = (Vec<[f64; 4]>, f64, Vec<[f64; 2]>, RunInfo);
-/// Resident RI rows for field coordinates (see [`IlluminationRows`]).
+/// Resident RI rows for field coordinates (see [`IlluminationRows`]), by
+/// the work-split design selected for the run ([`RiDesign::selected`]).
 pub fn illumination_rows(
     b: &dyn ComputeBackend,
     t: &SequentialTracer,
@@ -171,6 +172,94 @@ pub fn illumination_rows(
 ) -> MkResult<IlluminationRows> {
     check_count("radial samples", radial, 1, 512)?;
     check_count("azimuth samples", azimuth, 4, 4096)?;
+    let (design, name) = RiDesign::selected();
+    let mut out = match design {
+        RiDesign::Legacy => legacy_rows(b, t, coordinates, wl, radial, azimuth, ctx),
+        d => super::illumination_split::rows(b, t, coordinates, wl, radial, azimuth, d, ctx),
+    }?;
+    out.3.settings["fieldmaps_variant"] = serde_json::json!(name);
+    Ok(out)
+}
+
+/// Work-split designs of the image-point illumination quadrature
+/// (`relative_illumination`, `relative_illumination_map` and the image
+/// simulation's illumination rows), selected by the `fieldmaps` study key
+/// of `mklight_core::split`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RiDesign {
+    /// `legacy`: one thread per pupil node runs the node's nested aims and
+    /// recomputes the field's chief data.
+    Legacy,
+    /// `nodes`: one thread per pupil node runs the whole restructured node
+    /// (image-point Newton, survival, differentiated density); host sums.
+    Nodes,
+    /// `split`: a node kernel solves the image points and writes the
+    /// differentiation pencils, a flat pass traces them (one thread per
+    /// ray); host determinants and sums.
+    Split,
+    /// `hybrid`: the CPU solves the image points (f64, all cores), a flat
+    /// GPU pass traces the pencils; host determinants and sums.
+    Hybrid,
+    /// `pipelined`: the hybrid in field blocks, the CPU solving block k+1
+    /// while the GPU traces block k.
+    Pipelined,
+    /// `shared`: the CPU (the reference's own nodes, one field at a time)
+    /// and the GPU (the `split` design, blocks of fields) take fields from
+    /// opposite ends of one queue until it is empty: dynamic co-processing.
+    Shared,
+}
+impl RiDesign {
+    /// The design without a selection.
+    pub const DEFAULT: Self = RiDesign::Pipelined;
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Legacy => "legacy",
+            Self::Nodes => "nodes",
+            Self::Split => "split",
+            Self::Hybrid => "hybrid",
+            Self::Pipelined => "pipelined",
+            Self::Shared => "shared",
+        }
+    }
+    pub fn from_name(name: &str) -> Option<Self> {
+        [
+            Self::Legacy,
+            Self::Nodes,
+            Self::Split,
+            Self::Hybrid,
+            Self::Pipelined,
+            Self::Shared,
+        ]
+        .into_iter()
+        .find(|d| d.name() == name)
+    }
+    /// The design selected for this run and its name for the evidence
+    /// (`default:<design>` without a selection; an unknown name runs the
+    /// default).
+    pub fn selected() -> (Self, String) {
+        match mklight_core::split::variant(super::SPLIT_KEY) {
+            None => (Self::DEFAULT, format!("default:{}", Self::DEFAULT.name())),
+            Some(v) => match Self::from_name(&v) {
+                Some(d) => (d, v),
+                None => (
+                    Self::DEFAULT,
+                    format!("unknown:{v}:{}", Self::DEFAULT.name()),
+                ),
+            },
+        }
+    }
+}
+
+/// The original resident design ([`RiDesign::Legacy`]).
+fn legacy_rows(
+    b: &dyn ComputeBackend,
+    t: &SequentialTracer,
+    coordinates: &[[f64; 2]],
+    wl: usize,
+    radial: usize,
+    azimuth: usize,
+    ctx: &JobContext,
+) -> MkResult<IlluminationRows> {
     let geo = Geometry::new(b, t, ctx)?;
     let per = radial * azimuth;
     let tile = (65536 / per).max(1);

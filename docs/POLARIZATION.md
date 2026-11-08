@@ -416,6 +416,24 @@ counters return to the host between resident stages. All jobs carry
 `RunInfo` with plan/build, material, sampling, backend and fallback
 metadata.
 
+`system_transmission` keeps several CPU/GPU divisions of its (field,
+wavelength) rows side by side, selected by `mklight_core::split` (key
+`fieldmaps`, named in `run_info.settings.fieldmaps_variant`):
+
+| design | division |
+|---|---|
+| `legacy` | one plan per row (`pupil_mode`), each with its own system upload, tables and P3 summary |
+| `batched` | one plan for all rows: device aims (one generation over every field row), recorded trace, P7 transport and the per-ray summary channels; the host sums each row in f64 from the shared buffer and completes reference-required rays in parallel |
+| `cpu-aim` | the CPU aims every ray (the reference's f64 packet aiming, all cores) and writes the launch rays into shared ray planes; the GPU traces, evaluates the transport and the channels; host sums |
+| `pipelined` (default) | `cpu-aim` in row blocks: the GPU traces block k while the CPU aims block k+1 |
+| `shared` | the GPU (`batched`, row blocks from the front) and the CPU (the reference's rows, from the back) drain one queue; which rows each takes depends on timing, so results are not bitwise repeatable (measurement only, GPU.md §9.3) |
+| `cpu` | the reference path from the GPU route |
+
+Unpolarised rows use the scalar transport kernel; the sums, denominators
+and failure counts are the reference's. `polarization_pupil_map` stays on
+the reference by static capability (undefined polarisation axes); the
+study design `native` lifts that for measurement only.
+
 Tests are `tests/p7_radiometry.rs` in both GPU crates; host Metal tests require
 a device and exercise both precompiled and runtime-source libraries. The
 ignored `p7_bench` harness records cold setup and at least ten warm samples

@@ -278,6 +278,48 @@ impl Probe<'_> {
         Some(j)
     }
 
+    /// [`Self::ray`] unclipped, with the aim point of the generated ray
+    /// (bitwise the same trace: `SequentialTracer::trace` is `generate`
+    /// then `trace_ray`).
+    fn ray_aim(&self, q: [f64; 2], p: [f64; 2]) -> Option<([f64; 4], [f64; 2])> {
+        let f = self.field(q)?;
+        let g = self.rt.generate(&f, self.wl, p[0], p[1]).ok()?;
+        let r = mklight_trace::trace_ray(
+            self.rt.system(),
+            &g.ray,
+            self.wl,
+            &TraceOptions::unclipped(),
+            None,
+        );
+        let d = r.ray.dir;
+        r.status.is_ok().then_some((
+            [r.ray.pos.x, r.ray.pos.y, d.dot(self.t1), d.dot(self.t2)],
+            g.aim,
+        ))
+    }
+
+    /// The image-point solve of [`Self::node`] alone: the solved `q` and the
+    /// aim point of its converged ray, or `None` (`Node::Failed`).
+    fn solve(&self, q0: [f64; 2], j0inv: &m2::M, p: [f64; 2]) -> Option<([f64; 2], [f64; 2])> {
+        let tol = 1e-10 * (1.0 + self.x0[0].hypot(self.x0[1]));
+        let (mut q, mut jinv, mut prev) = (q0, *j0inv, f64::INFINITY);
+        for _ in 0..40 {
+            let (x, aim) = self.ray_aim(q, p)?;
+            let r = [x[0] - self.x0[0], x[1] - self.x0[1]];
+            let rn = r[0].hypot(r[1]);
+            if rn <= tol {
+                return Some((q, aim));
+            }
+            if rn > 0.5 * prev {
+                jinv = self.x_q_inverse(q, p)?;
+            }
+            prev = rn;
+            let dq = m2::apply(&jinv, r);
+            q = [q[0] - dq[0], q[1] - dq[1]];
+        }
+        None
+    }
+
     /// Solve `X(q, P) = X₀` from `q₀` (chord Newton with refresh), then
     /// the projected-solid-angle density at the solution.
     fn node(&self, q0: [f64; 2], j0inv: &m2::M, p: [f64; 2]) -> Node {
@@ -308,6 +350,12 @@ impl Probe<'_> {
         if !converged {
             return Node::Failed;
         }
+        self.finish(q, p)
+    }
+
+    /// The rest of [`Self::node`] from the solved `q`: survival, then the
+    /// differentiated density.
+    fn finish(&self, q: [f64; 2], p: [f64; 2]) -> Node {
         if self.ray(q, p, &self.rt.options()).is_none() {
             return Node::Vignetted;
         }
@@ -325,6 +373,34 @@ impl Probe<'_> {
         let d = m2::add(&lp, &m2::scale(&corr, -1.0));
         Node::Ok(m2::det(&d).abs())
     }
+}
+
+/// The reference's decisions of nodes `(P, q)` whose image points were
+/// solved by [`solve_image_point`] (the rest of the reference's node,
+/// bitwise): `(density, survives, failed)` each, in parallel.
+pub fn finish_nodes(
+    rt: &SequentialTracer,
+    point: &ImagePoint,
+    wl: usize,
+    nodes: &[([f64; 2], [f64; 2])],
+) -> Vec<(f64, bool, bool)> {
+    let probe = Probe {
+        rt,
+        base: &point.field,
+        wl,
+        x0: point.x0,
+        t1: point.basis[0],
+        t2: point.basis[1],
+        hq: point.hq,
+    };
+    nodes
+        .par_iter()
+        .map(|&(p, q)| match probe.finish(q, p) {
+            Node::Ok(j) => (j, true, false),
+            Node::Vignetted => (0.0, false, false),
+            Node::Failed => (0.0, false, true),
+        })
+        .collect()
 }
 
 fn prepare_integral<'a>(
@@ -405,6 +481,191 @@ fn integrate_field(
         [omega.value(), area.value() / total.value(), cra, cos4],
         failed,
     ))
+}
+
+/// The scale of the object parameters `q` for the difference steps: `|q|`
+/// of the real-aimed `(0, 1)` field, at least `10⁻³`.
+pub fn q_scale(rt: &SequentialTracer) -> f64 {
+    rt.prepare_field(FieldPoint::normalized(0.0, 1.0))
+        .map(|f| {
+            let q = source_params(&f.source);
+            q[0].hypot(q[1])
+        })
+        .unwrap_or(0.0)
+        .max(1e-3)
+}
+
+/// The f64 per-field data of one image point, as the reference prepares it
+/// before its pupil nodes (module docs): the start of the device solves of
+/// `mklight_gpu::geometry::ri` and of the split designs.
+#[derive(Clone, Debug)]
+pub struct ImagePoint {
+    /// The real-aimed field (its chief aim and stop Jacobian seed the aims).
+    pub field: PreparedField,
+    pub x0: [f64; 2],
+    /// Tangent basis of the image surface at `X₀`.
+    pub basis: [Vec3; 2],
+    /// Object difference step.
+    pub hq: f64,
+    /// Chief object parameters and `(∂X/∂q)⁻¹` at `(q₀, P = 0)`.
+    pub q0: [f64; 2],
+    pub q_inverse: [[f64; 2]; 2],
+    /// Image-point tolerance `10⁻¹⁰ (1 + |X₀|)`.
+    pub tolerance: f64,
+    /// Image-space chief-ray angle (°) and object-space `cos⁴`.
+    pub cra: f64,
+    pub cos4: f64,
+}
+
+/// Why a field has no image point (the reference's warnings).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ImagePointError {
+    /// The chief ray could not be aimed.
+    Unaimed,
+    /// The chief ray or its object Jacobian failed.
+    Failed,
+}
+impl ImagePointError {
+    pub fn warning(self, hx: f64, hy: f64) -> String {
+        match self {
+            Self::Unaimed => format!("field ({hx}, {hy}): chief ray could not be aimed"),
+            Self::Failed => {
+                format!("field ({hx}, {hy}): chief ray or its object Jacobian failed")
+            }
+        }
+    }
+}
+
+/// [`ImagePoint`] of normalised field `[hx, hy]` with the real-aimed tracer
+/// `rt` ([`real_aimed`]); the reference's per-field preparation exactly.
+pub fn image_point(
+    rt: &SequentialTracer,
+    point: [f64; 2],
+    wl: usize,
+    q_scale: f64,
+) -> Result<ImagePoint, ImagePointError> {
+    let field = match rt.prepare_field(FieldPoint::normalized(point[0], point[1])) {
+        Ok(f) if f.aims[wl].converged => f,
+        _ => return Err(ImagePointError::Unaimed),
+    };
+    let (probe, cra, cos4) =
+        prepare_integral(rt, &field, wl, q_scale).ok_or(ImagePointError::Failed)?;
+    let q0 = source_params(&field.source);
+    let q_inverse = probe
+        .x_q_inverse(q0, [0.0, 0.0])
+        .ok_or(ImagePointError::Failed)?;
+    let (x0, basis, hq) = (probe.x0, [probe.t1, probe.t2], probe.hq);
+    Ok(ImagePoint {
+        tolerance: 1e-10 * (1.0 + x0[0].hypot(x0[1])),
+        x0,
+        basis,
+        hq,
+        q0,
+        q_inverse,
+        cra,
+        cos4,
+        field,
+    })
+}
+
+/// The image-point solves of pupil nodes `pupil` of one field on the CPU
+/// (the reference's Newton iterations, bitwise): per node the solved `q`
+/// and the aim point of its converged ray, `None` for `Node::Failed`.
+/// Nodes run in parallel.
+pub fn solve_image_point(
+    rt: &SequentialTracer,
+    point: &ImagePoint,
+    wl: usize,
+    pupil: &[[f64; 2]],
+) -> Vec<Option<([f64; 2], [f64; 2])>> {
+    let probe = Probe {
+        rt,
+        base: &point.field,
+        wl,
+        x0: point.x0,
+        t1: point.basis[0],
+        t2: point.basis[1],
+        hq: point.hq,
+    };
+    pupil
+        .par_iter()
+        .map(|&p| probe.solve(point.q0, &point.q_inverse, p))
+        .collect()
+}
+
+/// Polar quadrature of the pupil disk: `(Px, Py, weight)` per node,
+/// radius-major (the reference's node order and weights).
+pub fn pupil_nodes(radial: usize, azimuth: usize) -> Vec<(f64, f64, f64)> {
+    let (rx, rw) = gauss_legendre_01(radial);
+    let dphi = 2.0 * PI / azimuth as f64;
+    let mut nodes = Vec::with_capacity(rx.len() * azimuth);
+    for (r, w) in rx.iter().zip(&rw) {
+        for j in 0..azimuth {
+            let (s, c) = (j as f64 * dphi).sin_cos();
+            nodes.push((r * c, r * s, w * r * dphi));
+        }
+    }
+    nodes
+}
+
+/// Reference decisions of the given pupil nodes of one image point:
+/// `(density, survives, failed)` per node, in parallel over nodes.
+pub fn field_nodes(
+    rt: &SequentialTracer,
+    point: &ImagePoint,
+    wl: usize,
+    pupil: &[[f64; 2]],
+) -> Vec<(f64, bool, bool)> {
+    let probe = Probe {
+        rt,
+        base: &point.field,
+        wl,
+        x0: point.x0,
+        t1: point.basis[0],
+        t2: point.basis[1],
+        hq: point.hq,
+    };
+    pupil
+        .par_iter()
+        .map(|&p| match probe.node(point.q0, &point.q_inverse, p) {
+            Node::Ok(j) => (j, true, false),
+            Node::Vignetted => (0.0, false, false),
+            Node::Failed => (0.0, false, true),
+        })
+        .collect()
+}
+
+/// Reference decisions (`Ok` density, vignetted, failed) of selected nodes
+/// `(field point, node index)`, grouped by field: the f64 completion of
+/// device nodes that did not resolve. Returns `(density, survives, failed)`
+/// per entry, in input order.
+pub fn reference_nodes(
+    rt: &SequentialTracer,
+    wl: usize,
+    q_scale: f64,
+    nodes: &[(f64, f64, f64)],
+    selected: &[([f64; 2], usize)],
+    ctx: &JobContext,
+) -> MkResult<Vec<(f64, bool, bool)>> {
+    let mut out = vec![(0.0, false, true); selected.len()];
+    let mut start = 0;
+    while start < selected.len() {
+        ctx.check()?;
+        let point = selected[start].0;
+        let mut end = start + 1;
+        while end < selected.len() && selected[end].0 == point {
+            end += 1;
+        }
+        if let Ok(ip) = image_point(rt, point, wl, q_scale) {
+            let pupil: Vec<[f64; 2]> = selected[start..end]
+                .iter()
+                .map(|&(_, k)| [nodes[k].0, nodes[k].1])
+                .collect();
+            out[start..end].copy_from_slice(&field_nodes(rt, &ip, wl, &pupil));
+        }
+        start = end;
+    }
+    Ok(out)
 }
 
 /// Selective reference decisions for unresolved resident nodes. The result

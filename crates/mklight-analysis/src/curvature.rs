@@ -799,11 +799,17 @@ pub fn grid_distortion_job(
     let rotational = system_symmetry(tracer.system().system()) == Symmetry::Rotational;
     let mut points = Vec::with_capacity(n * n);
     let mut failed = 0usize;
-    for (j, &hy) in t.iter().enumerate() {
+    // Rows in blocks of about 1024 points, all points of a block in
+    // parallel (each exactly as alone).
+    let rows_per_block = (1024 / n).max(1);
+    for (b, rows) in t.chunks(rows_per_block).enumerate() {
         ctx.check()?;
-        let row: Vec<GridPoint> = t
+        let row: Vec<GridPoint> = rows
+            .iter()
+            .flat_map(|&hy| t.iter().map(move |&hx| (hx, hy)))
+            .collect::<Vec<_>>()
             .par_iter()
-            .map(|&hx| {
+            .map(|&(hx, hy)| {
                 let (hx, hy) = (hx + settings.field_center[0], hy + settings.field_center[1]);
                 let mut g = GridPoint {
                     field: [hx, hy],
@@ -832,7 +838,10 @@ pub fn grid_distortion_job(
             .collect();
         failed += row.iter().filter(|g| g.real[0].is_nan()).count();
         points.extend(row);
-        ctx.report((j + 1) as f64 / n as f64, "grid distortion");
+        ctx.report(
+            ((b * rows_per_block + rows.len()) as f64 / n as f64).min(1.0),
+            "grid distortion",
+        );
     }
     let mut warnings = Vec::new();
     if failed > 0 {
