@@ -3,7 +3,7 @@
 //! ```text
 //! cargo run --release -p mklight-engine --example backend_bench -- SUITE.json \
 //!     [--filter TEXT] [--backends cpu,metal,auto] [--reps N] [--out FILE.jsonl] \
-//!     [--label TEXT] [--no-compare]
+//!     [--label TEXT] [--no-compare] [--budget SECONDS]
 //! ```
 //!
 //! `SUITE.json` names the projects and the cases:
@@ -37,6 +37,10 @@
 //! relative to the group's largest CPU magnitude; the worst groups are
 //! reported.
 //!
+//! `--budget SECONDS` caps each column's timed calls: after the first timed
+//! call a column runs only as many repetitions as fit the budget (at least
+//! one, at most `reps`), so very slow columns are timed once.
+//!
 //! Each case and column appends one JSON line to `--out` and each case
 //! prints one row.
 
@@ -60,6 +64,7 @@ struct Args {
     out: Option<String>,
     label: String,
     compare: bool,
+    budget: Option<f64>,
 }
 
 fn args() -> Args {
@@ -71,6 +76,7 @@ fn args() -> Args {
         out: None,
         label: String::new(),
         compare: true,
+        budget: None,
     };
     let mut it = std::env::args().skip(1);
     while let Some(x) = it.next() {
@@ -82,6 +88,7 @@ fn args() -> Args {
             "--out" => a.out = Some(value()),
             "--label" => a.label = value(),
             "--no-compare" => a.compare = false,
+            "--budget" => a.budget = Some(value().parse().expect("--budget SECONDS")),
             _ if a.suite.is_empty() => a.suite = x,
             _ => panic!("unexpected argument {x}"),
         }
@@ -421,9 +428,10 @@ fn main() {
         let mut used: Vec<Option<String>> = vec![None; n];
         let mut errors: Vec<Option<String>> =
             warm.iter().map(|r| r.as_ref().err().cloned()).collect();
+        let mut want = vec![reps; n];
         for _ in 0..reps {
             for (i, c) in cols.iter().enumerate() {
-                if warm[i].is_err() {
+                if warm[i].is_err() || times[i].len() >= want[i] {
                     continue;
                 }
                 serial += 1;
@@ -432,6 +440,11 @@ fn main() {
                 match run(s, analysis, &settings, c) {
                     Ok((ms, r)) => {
                         times[i].push(ms);
+                        if times[i].len() == 1
+                            && let Some(b) = a.budget
+                        {
+                            want[i] = ((b * 1e3 / ms).floor() as usize).clamp(1, reps);
+                        }
                         device[i].push((mklight_metal::device_seconds() - d0) * 1e3);
                         reported[i].push(r.run_info.duration_ms);
                         used[i] = Some(r.run_info.backend.clone());
