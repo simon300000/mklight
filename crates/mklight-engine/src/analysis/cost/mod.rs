@@ -103,11 +103,11 @@ pub(crate) fn always_excluded(analysis: &str) -> bool {
         .any(|(a, from, _)| *a == analysis && *from <= 0.)
 }
 
-/// Analyses the static capability list keeps on the reference
-/// (`routing::reference_reason`); they need no calibration.
+/// Analyses `auto` keeps on the reference by static capability
+/// (`routing::auto_reference_reason`); they need no calibration.
 #[cfg(test)]
 pub(crate) fn static_route(analysis: &str) -> bool {
-    super::routing::reference_reason(analysis).is_some()
+    super::routing::auto_reference_reason(analysis).is_some()
 }
 
 /// The device a decision is for.

@@ -41,7 +41,7 @@ pub(crate) fn reference_reason(analysis: &str) -> Option<&'static str> {
 
 /// [`reference_reason`] for `auto`: a native route without calibration
 /// data stays on the reference until the cost model is recalibrated.
-fn auto_reference_reason(analysis: &str) -> Option<&'static str> {
+pub(crate) fn auto_reference_reason(analysis: &str) -> Option<&'static str> {
     reference_reason(analysis).or(match analysis {
         "wavefront_map" => Some(
             "static capability: the host-traced wavefront_map route has no cost calibration for auto",
