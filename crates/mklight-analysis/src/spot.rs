@@ -857,7 +857,9 @@ fn spot_reduce(
         // The reference's own slope: the chief's is the origin of every
         // slope difference; the centroid's is the weighted mean.
         let ref_slope = match settings.reference {
-            SpotReference::Centroid => Moments::of(fr.rays.iter().map(|r| (r.dt, r.weight))).centroid,
+            SpotReference::Centroid => {
+                Moments::of(fr.rays.iter().map(|r| (r.dt, r.weight))).centroid
+            }
             SpotReference::Chief => [0.0, 0.0],
         };
         let points = if let Some(p) = packed.as_mut() {

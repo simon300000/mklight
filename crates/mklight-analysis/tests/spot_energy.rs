@@ -692,7 +692,11 @@ fn through_focus_slopes_reproduce_the_plane_statistics() {
             for r in &results {
                 let p = r.packed_points.as_ref().unwrap();
                 assert_eq!(p.slope.len(), p.xy.len());
-                let planes: Vec<f64> = r.fields[0].through_focus.iter().map(|f| f.defocus).collect();
+                let planes: Vec<f64> = r.fields[0]
+                    .through_focus
+                    .iter()
+                    .map(|f| f.defocus)
+                    .collect();
                 assert_eq!(planes.len(), 3);
                 if tf.min.is_none() {
                     assert!((planes[0] + planes[2]).abs() < 1e-12 && planes[1] == 0.0);
@@ -715,7 +719,10 @@ fn through_focus_slopes_reproduce_the_plane_statistics() {
                             SpotReference::Centroid => sample.rms_radius_centroid,
                         };
                         let got = (sq / sw).sqrt();
-                        assert!((got - expected).abs() < 1e-6 * expected.max(1e-3), "{got} vs {expected}");
+                        assert!(
+                            (got - expected).abs() < 1e-6 * expected.max(1e-3),
+                            "{got} vs {expected}"
+                        );
                     }
                 }
             }

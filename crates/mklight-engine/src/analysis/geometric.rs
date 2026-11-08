@@ -246,7 +246,9 @@ fn through_focus_schema() -> Value {
     }));
     s["type"] = json!(["object", "null"]);
     s["default"] = Value::Null;
-    s["description"] = json!("Spot statistics at defocus planes, and the slope of each point for drawing them; null samples the image surface only.");
+    s["description"] = json!(
+        "Spot statistics at defocus planes, and the slope of each point for drawing them; null samples the image surface only."
+    );
     s
 }
 
@@ -1146,7 +1148,11 @@ fn spot_output(mut r: spot::SpotDiagram) -> EngineResult<AnalysisOutput> {
         Buffer::new("point_wavelength", vec![n], BufferData::U32(p.wavelength)),
     ];
     if !p.slope.is_empty() {
-        buffers.push(Buffer::new("point_slope", vec![n, 2], BufferData::F64(p.slope)));
+        buffers.push(Buffer::new(
+            "point_slope",
+            vec![n, 2],
+            BufferData::F64(p.slope),
+        ));
     }
     Ok(output(v, buffers, w))
 }

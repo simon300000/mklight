@@ -175,14 +175,22 @@ fn settings_schema(name: &str) -> Value {
             } else if name == "diffraction_encircled_energy" {
                 annotations["max_radius_mm"] = json!({"type": ["number", "null"], "exclusiveMinimum": 0.0, "unit": "mm", "description": "Positive maximum radius; null uses the PSF window."});
                 annotations["samples"] = json!({"minimum": 2});
-                annotations["center"] = super::schema::variants("type", &[
-                    ("reference", "Reference point", Value::Null),
-                    ("centroid", "Centroid", Value::Null),
-                    ("peak", "Peak", Value::Null),
-                    ("point", "Point", json!({
+                annotations["center"] = super::schema::variants(
+                    "type",
+                    &[
+                        ("reference", "Reference point", Value::Null),
+                        ("centroid", "Centroid", Value::Null),
+                        ("peak", "Peak", Value::Null),
+                        (
+                            "point",
+                            "Point",
+                            json!({
                         "x": {"type": "number", "default": 0.0, "unit": "mm", "description": "Image x relative to the reference."},
-                        "y": {"type": "number", "default": 0.0, "unit": "mm", "description": "Image y relative to the reference."}})),
-                ], "Energy centre: the PSF's reference point, the intensity centroid, the brightest sample, or an explicit image point.");
+                        "y": {"type": "number", "default": 0.0, "unit": "mm", "description": "Image y relative to the reference."}}),
+                        ),
+                    ],
+                    "Energy centre: the PSF's reference point, the intensity centroid, the brightest sample, or an explicit image point.",
+                );
             }
         }
         _ => {
