@@ -450,6 +450,10 @@ impl Analysis for GlassSubstitution {
             };
         let work = Workload::new(&cpu.trace, &system, &spec, jacobian_batch);
         let mut ev = Evaluation::new(s.backend, input, &input.snapshot, s.gpu_batch, work, ctx)?;
+        let lsq = LsqSettings {
+            speculative_jacobian: ev.speculative(),
+            ..lsq
+        };
         let space = Arc::new(LensSpace {
             indices: s
                 .material_variables

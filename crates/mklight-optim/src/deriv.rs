@@ -28,7 +28,7 @@ use serde::{Deserialize, Serialize};
 use mklight_core::{JobContext, MkError, MkResult};
 
 use crate::linalg::Matrix;
-use crate::problem::{CandidateBatch, Evaluation, Problem, Variable};
+use crate::problem::{BatchEvaluation, CandidateBatch, Evaluation, Problem, Variable};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -249,17 +249,81 @@ pub(crate) fn fd_jacobian_budget<P: Problem + ?Sized>(
     ctx: &JobContext,
     budget: usize,
 ) -> MkResult<Option<Jacobian>> {
+    fd_jacobian_prefetched(p, x, f0, settings, ctx, budget, None)
+}
+
+/// The planned stencils of every column at `x` (pinned columns omitted).
+fn plan_columns<P: Problem + ?Sized>(
+    p: &P,
+    x: &[f64],
+    settings: &JacobianSettings,
+) -> Vec<(usize, Stencil, f64)> {
+    let vars = p.variables();
+    let eta = relative_step(p, settings);
+    (0..vars.len())
+        .filter_map(|j| plan_column(&vars[j], x[j], settings.scheme, eta).map(|(s, h)| (j, s, h)))
+        .collect()
+}
+
+/// The batch of one pass: the base point first when `anchored`, then each
+/// column's probes in stencil order; anchored at `x`.
+fn pass_batch<P: Problem + ?Sized>(
+    p: &P,
+    x: &[f64],
+    pending: &[(usize, Stencil, f64)],
+    anchored: bool,
+) -> CandidateBatch {
+    let vars = p.variables();
+    let mut batch = CandidateBatch::with_capacity(vars.len(), 2 * pending.len() + 1);
+    batch.anchor = Some(x.to_vec());
+    if anchored {
+        batch.push(x);
+    }
+    let mut xp = x.to_vec();
+    for &(j, st, h) in pending {
+        for &o in st.offsets() {
+            xp[j] = vars[j].clamp(x[j] + o * h);
+            batch.push(&xp);
+        }
+        xp[j] = x[j];
+    }
+    batch
+}
+
+/// The first batch [`fd_jacobian`] evaluates at `x` (its base point first
+/// when the problem's differences are anchored), or `None` when no column
+/// needs a probe. A caller that evaluates it ahead of time (a speculative
+/// trial point) hands the result to [`fd_jacobian_prefetched`].
+pub(crate) fn fd_first_batch<P: Problem + ?Sized>(
+    p: &P,
+    x: &[f64],
+    settings: &JacobianSettings,
+) -> Option<CandidateBatch> {
+    let pending = plan_columns(p, x, settings);
+    (!pending.is_empty()).then(|| pass_batch(p, x, &pending, p.anchored_differences()))
+}
+
+/// [`fd_jacobian_budget`] whose first pass may already be evaluated:
+/// `prefetched` holds [`fd_first_batch`]`(x)` and its evaluation, which is
+/// used (and not counted again) when it is exactly the planned batch.
+pub(crate) fn fd_jacobian_prefetched<P: Problem + ?Sized>(
+    p: &P,
+    x: &[f64],
+    f0: &Evaluation,
+    settings: &JacobianSettings,
+    ctx: &JobContext,
+    budget: usize,
+    prefetched: Option<(CandidateBatch, BatchEvaluation)>,
+) -> MkResult<Option<Jacobian>> {
     let vars = p.variables();
     let n = vars.len();
     let (m, k) = (p.num_residuals(), p.num_constraints());
-    let eta = relative_step(p, settings);
     let mut jr = Matrix::zeros(m, n);
     let mut jc = Matrix::zeros(k, n);
     let mut evaluations = 0;
-    let mut pending: Vec<(usize, Stencil, f64)> = (0..n)
-        .filter_map(|j| plan_column(&vars[j], x[j], settings.scheme, eta).map(|(s, h)| (j, s, h)))
-        .collect();
+    let mut pending = plan_columns(p, x, settings);
     let mut failed = Vec::new();
+    let mut prefetched = prefetched;
     // Evaluators that solve iteratively from the anchor (or that may change
     // precision between batches) re-evaluate `x` in the same batch, and the
     // probes are differenced against that row: every value of one
@@ -270,25 +334,19 @@ pub(crate) fn fd_jacobian_budget<P: Problem + ?Sized>(
         if pending.is_empty() {
             break;
         }
-        let mut batch = CandidateBatch::with_capacity(n, 2 * pending.len() + 1);
-        batch.anchor = Some(x.to_vec());
-        if anchored {
-            batch.push(x);
-        }
-        let mut xp = x.to_vec();
-        for &(j, st, h) in &pending {
-            for &o in st.offsets() {
-                xp[j] = vars[j].clamp(x[j] + o * h);
-                batch.push(&xp);
+        let batch = pass_batch(p, x, &pending, anchored);
+        let e = match prefetched.take() {
+            Some((b, e)) if pass == 0 && b.n_vars == batch.n_vars && b.data == batch.data => e,
+            _ => {
+                if evaluations + batch.len() > budget {
+                    return Ok(None);
+                }
+                let e = p.evaluate_batch(&batch, ctx)?;
+                evaluations += batch.len();
+                e
             }
-            xp[j] = x[j];
-        }
-        if evaluations + batch.len() > budget {
-            return Ok(None);
-        }
-        let e = p.evaluate_batch(&batch, ctx)?;
+        };
         e.validate(batch.len(), m, k)?;
-        evaluations += batch.len();
         let probe_ok = |q: usize| {
             e.status[q].is_usable()
                 && e.residuals(q).iter().all(|v| v.is_finite())

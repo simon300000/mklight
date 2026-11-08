@@ -466,6 +466,17 @@ pub fn sensitivity<E: ToleranceEvaluator + ?Sized>(
     evaluator: &E,
     mon: &Monitor,
 ) -> MkResult<SensitivityReport> {
+    sensitivity_batched(spec, evaluator, mon, SENSITIVITY_BATCH)
+}
+
+/// [`sensitivity`] in evaluation batches of `batch` points (the values do
+/// not depend on it; only how much a cancellation keeps does).
+pub fn sensitivity_batched<E: ToleranceEvaluator + ?Sized>(
+    spec: &ToleranceSpec,
+    evaluator: &E,
+    mon: &Monitor,
+    batch: usize,
+) -> MkResult<SensitivityReport> {
     spec.validate()?;
     let n = spec.operands.len();
     let mut pts = vec![vec![0.0; n]];
@@ -480,7 +491,7 @@ pub fn sensitivity<E: ToleranceEvaluator + ?Sized>(
     mon.progress(0.0, "tolerance sensitivity");
     let mut out: Vec<TrialOutcome> = Vec::with_capacity(pts.len());
     let mut cancelled = false;
-    for chunk in pts.chunks(SENSITIVITY_BATCH) {
+    for chunk in pts.chunks(batch.max(1)) {
         if mon.cancelled() && !out.is_empty() {
             cancelled = true;
             break;

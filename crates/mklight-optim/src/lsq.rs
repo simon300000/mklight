@@ -65,11 +65,14 @@ use serde::{Deserialize, Serialize};
 
 use mklight_core::{JobContext, MkError, MkResult};
 
-use crate::deriv::{JacobianSettings, jacobian_budget};
+use crate::deriv::{
+    Jacobian, JacobianSettings, fd_first_batch, fd_jacobian_prefetched, jacobian_budget,
+};
 use crate::linalg::{Matrix, Qr, dot, norm_inf, norm2, solve_upper, solve_upper_transpose};
 use crate::monitor::{IterationRecord, Monitor, OptimResult, Termination};
 use crate::problem::{
-    CandidateBatch, Evaluation, Problem, ScalarEval, check_problem, merit, project, total_violation,
+    BatchEvaluation, CandidateBatch, Evaluation, Problem, ScalarEval, check_problem, merit,
+    project, total_violation,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -133,6 +136,13 @@ pub struct LsqSettings {
     pub initial_trust_factor: f64,
     pub jacobian: JacobianSettings,
     pub constraints: AugLagSettings,
+    /// Evaluate each trial point in one batch with the first-pass probes of
+    /// the finite-difference Jacobian at it (`deriv::fd_first_batch`): an
+    /// accepted step then has its next Jacobian already, so an iteration
+    /// costs one batch instead of two; a rejected step wastes the probes.
+    /// Set by callers (the engine's work-split study), not by settings.
+    #[serde(skip)]
+    pub speculative_jacobian: bool,
 }
 
 impl Default for LsqSettings {
@@ -149,6 +159,7 @@ impl Default for LsqSettings {
             initial_trust_factor: 100.0,
             jacobian: JacobianSettings::default(),
             constraints: AugLagSettings::default(),
+            speculative_jacobian: false,
         }
     }
 }
@@ -365,6 +376,9 @@ struct Ctx<'a, P: Problem + ?Sized> {
     lambda: f64,
     /// Failed Jacobian columns at the current iterate.
     failed: Vec<usize>,
+    /// A speculative trial point's first Jacobian pass: the point, the
+    /// batch and its evaluation.
+    speculated: Option<(Vec<f64>, CandidateBatch, BatchEvaluation)>,
 }
 
 impl<P: Problem + ?Sized> Ctx<'_, P> {
@@ -376,6 +390,79 @@ impl<P: Problem + ?Sized> Ctx<'_, P> {
         let ev = e.get(0);
         self.mon.offer(x, scalar(self.p, &ev));
         Ok(ev)
+    }
+    /// A trial point; with `speculative_jacobian`, evaluated in one batch
+    /// with the first pass of the Jacobian at it, which is kept for
+    /// [`Self::jacobian`]. Every evaluation performed counts.
+    fn eval_trial(&mut self, x: &[f64]) -> MkResult<Evaluation> {
+        self.speculated = None;
+        if !self.s.speculative_jacobian {
+            return self.eval(x);
+        }
+        let Some(first) = fd_first_batch(self.p, x, &self.s.jacobian) else {
+            return self.eval(x);
+        };
+        // The trial point is the anchored pass's base row, or goes first.
+        let anchored = self.p.anchored_differences();
+        let mut batch = CandidateBatch::with_capacity(x.len(), first.len() + 1);
+        batch.anchor = first.anchor.clone();
+        if !anchored {
+            batch.push(x);
+        }
+        for k in 0..first.len() {
+            batch.push(first.point(k));
+        }
+        if self.ctr.evaluations + batch.len() > self.s.max_evaluations {
+            return self.eval(x);
+        }
+        let (m, k) = (self.p.num_residuals(), self.p.num_constraints());
+        let e = self.p.evaluate_batch(&batch, &self.mon.job)?;
+        e.validate(batch.len(), m, k)?;
+        self.ctr.evaluations += batch.len();
+        let ev = e.get(0);
+        self.mon.offer(x, scalar(self.p, &ev));
+        let probes = if anchored {
+            e
+        } else {
+            let mut rest = BatchEvaluation::zeros(first.len(), m, k);
+            rest.residuals.copy_from_slice(&e.residuals[m..]);
+            rest.constraints.copy_from_slice(&e.constraints[k..]);
+            rest.status.copy_from_slice(&e.status[1..]);
+            rest
+        };
+        self.speculated = Some((x.to_vec(), first, probes));
+        Ok(ev)
+    }
+    /// The Jacobian at `x` (`e` its evaluation) within the evaluation
+    /// budget, from a speculative first pass when one was taken at `x`.
+    fn jacobian(&mut self, x: &[f64], e: &Evaluation) -> MkResult<Option<Jacobian>> {
+        let budget = self
+            .s
+            .max_evaluations
+            .saturating_sub(self.ctr.evaluations + 1);
+        let prefetched = self
+            .speculated
+            .take()
+            .filter(|(at, _, _)| at.as_slice() == x)
+            .map(|(_, b, e)| (b, e));
+        if prefetched.is_none() {
+            return jacobian_budget(self.p, x, e, &self.s.jacobian, &self.mon.job, budget);
+        }
+        fd_jacobian_prefetched(
+            self.p,
+            x,
+            e,
+            &self.s.jacobian,
+            &self.mon.job,
+            budget,
+            prefetched,
+        )
+        .map(|j| {
+            j.map(|j| Jacobian {
+                analytic: false,
+                ..j
+            })
+        })
     }
     fn budget_left(&self) -> bool {
         self.ctr.evaluations < self.s.max_evaluations
@@ -715,8 +802,7 @@ fn inner<P: Problem + ?Sized>(
             return out(x, e, Termination::TargetReached);
         }
         // Jacobian (keeping one evaluation for the trial point).
-        let budget = s.max_evaluations.saturating_sub(c.ctr.evaluations + 1);
-        let jac = match jacobian_budget(c.p, &x, &e, &s.jacobian, &c.mon.job, budget) {
+        let jac = match c.jacobian(&x, &e) {
             Ok(Some(j)) => j,
             Ok(None) => return out(x, e, Termination::MaxEvaluations),
             Err(MkError::Cancelled) => return out(x, e, Termination::Cancelled),
@@ -865,7 +951,7 @@ fn inner<P: Problem + ?Sized>(
             // pred = ‖r‖² − ‖r + Jp‖² = −(2 rᵀJp + ‖Jp‖²)
             let pred = -(2.0 * dot(&r, &jp) + dot(&jp, &jp));
             let (et, rt) = if pnorm > 0.0 {
-                let et = match c.eval(&xt) {
+                let et = match c.eval_trial(&xt) {
                     Ok(v) => v,
                     Err(MkError::Cancelled) => return out(x, e, Termination::Cancelled),
                     Err(err) => return Err(err),
@@ -959,6 +1045,7 @@ pub fn least_squares<P: Problem + ?Sized>(
         d: vec![0.0; n],
         lambda: 0.0,
         failed: Vec::new(),
+        speculated: None,
     };
     let mut x = x0.to_vec();
     project(vars, &mut x);
@@ -1070,8 +1157,7 @@ fn restore_feasibility<P: Problem + ?Sized>(
         if !e.status.is_usable() || violation <= c.mon.feasibility_tol || !c.budget_left() {
             break;
         }
-        let budget = c.s.max_evaluations.saturating_sub(c.ctr.evaluations + 1);
-        let Some(jac) = jacobian_budget(c.p, x, e, &c.s.jacobian, &c.mon.job, budget)? else {
+        let Some(jac) = c.jacobian(x, e)? else {
             break;
         };
         c.ctr.evaluations += jac.evaluations;
