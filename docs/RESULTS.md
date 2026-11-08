@@ -2193,6 +2193,7 @@ Result (`result` in the envelope):
 |---|---|---|---|
 | `algorithm` | string |  | one of `"tabu"`, `"hammer"` |
 | `backend` | object |  |  |
+| `backend.aiming` (optional) | string |  | one of `"device"`, `"host"`; Where the hybrid designs aim the pupil rays: on the device with host completion (default), or on the host with device tracing (`aiming` study set to `host` or `host-table`). |
 | `backend.evaluated_on` | string |  | Search evaluator backend; envelope uses engine backend ids. |
 | `backend.gpu_stats` (optional) | object |  |  |
 | `backend.gpu_stats.cpu_candidates` | integer |  | ≥ 0 |
@@ -2205,6 +2206,7 @@ Result (`result` in the envelope):
 | `backend.requested` | string |  | one of `"auto"`, `"cpu"`, `"gpu"`, `"gpu_emulation"`; Merit evaluator preference. |
 | `backend.resident_evaluation` (optional) | object |  | Device evaluation, host-stage and fallback accounting. |
 | `backend.split` (optional) | string |  | one of `"resident"`, `"hybrid"`, `"pipelined"`, `"speculative"`, `"rendezvous"`, `"cpu-par"`; Host/device division of a run handed a GPU device (work-split study `solvers`). |
+| `backend.threads` (optional) | string |  | one of `"single"`, `"lanes"`, `"host-quarter"`, `"host-half"`, `"host-three-quarters"`; CPU thread layout of the hybrid designs' device sub-batches (work-split study `solver_threads`). |
 | `backend.workload` | object |  |  |
 | `backend.workload.batch` | integer |  | ≥ 0 |
 | `backend.workload.rays_per_candidate` | integer? |  |  |
@@ -2288,6 +2290,7 @@ Result (`result` in the envelope):
 | field | type | unit | notes |
 |---|---|---|---|
 | `backend` | object |  |  |
+| `backend.aiming` (optional) | string |  | one of `"device"`, `"host"`; Where the hybrid designs aim the pupil rays: on the device with host completion (default), or on the host with device tracing (`aiming` study set to `host` or `host-table`). |
 | `backend.evaluated_on` | string |  | Search evaluator backend; envelope uses engine backend ids. |
 | `backend.gpu_stats` (optional) | object |  |  |
 | `backend.gpu_stats.cpu_candidates` | integer |  | ≥ 0 |
@@ -2300,6 +2303,7 @@ Result (`result` in the envelope):
 | `backend.requested` | string |  | one of `"auto"`, `"cpu"`, `"gpu"`, `"gpu_emulation"`; Merit evaluator preference. |
 | `backend.resident_evaluation` (optional) | object |  | Device evaluation, host-stage and fallback accounting. |
 | `backend.split` (optional) | string |  | one of `"resident"`, `"hybrid"`, `"pipelined"`, `"speculative"`, `"rendezvous"`, `"cpu-par"`; Host/device division of a run handed a GPU device (work-split study `solvers`). |
+| `backend.threads` (optional) | string |  | one of `"single"`, `"lanes"`, `"host-quarter"`, `"host-half"`, `"host-three-quarters"`; CPU thread layout of the hybrid designs' device sub-batches (work-split study `solver_threads`). |
 | `backend.workload` | object |  |  |
 | `backend.workload.batch` | integer |  | ≥ 0 |
 | `backend.workload.rays_per_candidate` | integer? |  |  |
@@ -2360,6 +2364,7 @@ Result (`result` in the envelope):
 |---|---|---|---|
 | `algorithm` | string |  |  |
 | `backend` | object |  |  |
+| `backend.aiming` (optional) | string |  | one of `"device"`, `"host"`; Where the hybrid designs aim the pupil rays: on the device with host completion (default), or on the host with device tracing (`aiming` study set to `host` or `host-table`). |
 | `backend.evaluated_on` | string |  | Search evaluator backend; envelope uses engine backend ids. |
 | `backend.gpu_stats` (optional) | object |  |  |
 | `backend.gpu_stats.cpu_candidates` | integer |  | ≥ 0 |
@@ -2372,6 +2377,7 @@ Result (`result` in the envelope):
 | `backend.requested` | string |  | one of `"auto"`, `"cpu"`, `"gpu"`, `"gpu_emulation"`; Merit evaluator preference. |
 | `backend.resident_evaluation` (optional) | object |  | Device evaluation, host-stage and fallback accounting. |
 | `backend.split` (optional) | string |  | one of `"resident"`, `"hybrid"`, `"pipelined"`, `"speculative"`, `"rendezvous"`, `"cpu-par"`; Host/device division of a run handed a GPU device (work-split study `solvers`). |
+| `backend.threads` (optional) | string |  | one of `"single"`, `"lanes"`, `"host-quarter"`, `"host-half"`, `"host-three-quarters"`; CPU thread layout of the hybrid designs' device sub-batches (work-split study `solver_threads`). |
 | `backend.workload` | object |  |  |
 | `backend.workload.batch` | integer |  | ≥ 0 |
 | `backend.workload.rays_per_candidate` | integer? |  |  |
@@ -2477,6 +2483,7 @@ Result (`result` in the envelope):
 | field | type | unit | notes |
 |---|---|---|---|
 | `backend` | object |  |  |
+| `backend.aiming` (optional) | string |  | one of `"device"`, `"host"`; Where the hybrid designs aim the pupil rays: on the device with host completion (default), or on the host with device tracing (`aiming` study set to `host` or `host-table`). |
 | `backend.evaluated_on` | string |  | Search evaluator backend; envelope uses engine backend ids. |
 | `backend.gpu_stats` (optional) | object |  |  |
 | `backend.gpu_stats.cpu_candidates` | integer |  | ≥ 0 |
@@ -2489,6 +2496,7 @@ Result (`result` in the envelope):
 | `backend.requested` | string |  | one of `"auto"`, `"cpu"`, `"gpu"`, `"gpu_emulation"`; Merit evaluator preference. |
 | `backend.resident_evaluation` (optional) | object |  | Device evaluation, host-stage and fallback accounting. |
 | `backend.split` (optional) | string |  | one of `"resident"`, `"hybrid"`, `"pipelined"`, `"speculative"`, `"rendezvous"`, `"cpu-par"`; Host/device division of a run handed a GPU device (work-split study `solvers`). |
+| `backend.threads` (optional) | string |  | one of `"single"`, `"lanes"`, `"host-quarter"`, `"host-half"`, `"host-three-quarters"`; CPU thread layout of the hybrid designs' device sub-batches (work-split study `solver_threads`). |
 | `backend.workload` | object |  |  |
 | `backend.workload.batch` | integer |  | ≥ 0 |
 | `backend.workload.rays_per_candidate` | integer? |  |  |

@@ -94,6 +94,11 @@ pub(crate) struct RayDesign {
     /// paraxial and host-only ray operands included) instead of only the
     /// resident ones.
     pub host_operands: bool,
+    /// Aim every pupil ray on the host (the candidates' f64 tracers, the
+    /// reference's aims) and only trace it on the device (with
+    /// `complete_rays`; the solvers' reading of the `aiming` study's `host`
+    /// designs).
+    pub host_aim: bool,
 }
 impl RayDesign {
     /// The fully resident P1/P4 adapter.
@@ -102,6 +107,7 @@ impl RayDesign {
         speculative_rounds: 0,
         complete_rays: false,
         host_operands: false,
+        host_aim: false,
     };
     /// Host candidates and per-ray host completion: the device aims each ray
     /// for at most [`HYBRID_SCHEDULE_CAP`] iterations and the host completes
@@ -112,6 +118,7 @@ impl RayDesign {
         speculative_rounds: hybrid_rounds(HYBRID_SCHEDULE_CAP),
         complete_rays: true,
         host_operands: true,
+        host_aim: false,
     };
     /// [`Self::HYBRID`] with another device schedule cap.
     pub(crate) fn hybrid_capped(cap: u32) -> Self {
@@ -226,7 +233,6 @@ fn host_chief_rays(
     last: usize,
     ctx: &JobContext,
 ) -> MkResult<a::ResidentHits> {
-    let n = chiefs.len();
     let rays: Vec<Option<Ray>> = chiefs
         .par_iter()
         .map(|q| {
@@ -248,6 +254,97 @@ fn host_chief_rays(
         })
         .collect();
     ctx.check()?;
+    host_rays_traced(
+        g,
+        p,
+        set,
+        chiefs,
+        &rays,
+        last,
+        false,
+        mklight_gpu::consts::MKL_AIM_FAILED,
+    )
+}
+/// Pupil probes per host aiming work item of [`host_aimed_rays`]: runs of
+/// one (candidate, field, wavelength) are aimed together in trace packets.
+const HOST_AIM_CHUNK: usize = 8;
+/// Pupil probes aimed on the host by the candidates' f64 tracers
+/// (`generate_many`, the reference's aims bit for bit) and traced on the
+/// device ([`RayDesign::host_aim`]). A ray the host cannot aim fails as on
+/// the reference: it enters with an aim-outside report, so that it is
+/// neither traced nor completed again.
+#[allow(clippy::too_many_arguments)]
+fn host_aimed_rays(
+    g: &GpuContext,
+    p: &mut ResidentPlan,
+    set: &SystemSet,
+    probes: &[Probe],
+    candidates: &[(Candidate<'_>, Plan)],
+    tracers: &[Arc<SequentialTracer>],
+    last: usize,
+    clip: bool,
+    ctx: &JobContext,
+) -> MkResult<a::ResidentHits> {
+    let started = std::time::Instant::now();
+    let rays: Vec<Option<Ray>> = probes
+        .par_chunks(HOST_AIM_CHUNK)
+        .flat_map_iter(|chunk| {
+            let mut out = Vec::with_capacity(chunk.len());
+            for run in chunk.chunk_by(|a, b| {
+                (a.candidate, a.field, a.wavelength) == (b.candidate, b.field, b.wavelength)
+            }) {
+                let q = &run[0];
+                match candidates[q.candidate].0.field(q.field) {
+                    Ok(field) => {
+                        let requests: Vec<_> =
+                            run.iter().map(|q| (field, q.wavelength, q.pupil)).collect();
+                        out.extend(
+                            tracers[q.candidate]
+                                .generate_many(&requests)
+                                .into_iter()
+                                .map(|r| r.ok().map(|g| g.ray)),
+                        );
+                    }
+                    Err(_) => out.extend(std::iter::repeat_n(None, run.len())),
+                }
+            }
+            out
+        })
+        .collect();
+    ctx.check()?;
+    g.observe(PlanStats {
+        stages: vec![StageStats {
+            name: "host pupil-ray aiming".into(),
+            wall_seconds: started.elapsed().as_secs_f64(),
+            ..Default::default()
+        }],
+        ..Default::default()
+    });
+    host_rays_traced(
+        g,
+        p,
+        set,
+        probes,
+        &rays,
+        last,
+        clip,
+        mklight_gpu::consts::MKL_AIM_OUTSIDE,
+    )
+}
+/// Host-generated starting rays of `probes` (`None`: not generated, entered
+/// with the report `failed`) traced on the device to surface `last`.
+#[allow(clippy::too_many_arguments)]
+fn host_rays_traced(
+    g: &GpuContext,
+    p: &mut ResidentPlan,
+    set: &SystemSet,
+    probes: &[Probe],
+    rays: &[Option<Ray>],
+    last: usize,
+    clip: bool,
+    failed: u32,
+) -> MkResult<a::ResidentHits> {
+    let n = probes.len();
     let floats = g.fill(p, [15, n], |out: &mut [f32]| {
         for (i, r) in rays.iter().enumerate() {
             let Some(r) = r else { continue };
@@ -264,7 +361,7 @@ fn host_chief_rays(
         }
     })?;
     let indices = g.fill(p, [2, n], |out: &mut [u32]| {
-        for (i, q) in chiefs.iter().enumerate() {
+        for (i, q) in probes.iter().enumerate() {
             out[i] = q.candidate as u32;
             out[n + i] = q.wavelength as u32;
         }
@@ -279,7 +376,7 @@ fn host_chief_rays(
         out.fill(0);
         for (i, r) in rays.iter().enumerate() {
             if r.is_none() {
-                out[i] = mklight_gpu::consts::MKL_AIM_FAILED;
+                out[i] = failed;
             }
         }
     })?;
@@ -302,7 +399,7 @@ fn host_chief_rays(
                 },
                 steps,
                 start_surface: 0,
-                apply_apertures: false,
+                apply_apertures: clip,
                 radiometry: 0,
                 newton: Default::default(),
                 output: hits.clone(),
@@ -922,20 +1019,34 @@ pub(crate) fn prepare<'a>(
                 Some(remap),
             )
         };
-        let h = append(
-            g,
-            &mut p,
-            &set,
-            &aim_metadata,
-            &aim_seeds,
-            probes,
-            remap.as_deref(),
-            last,
-            clip,
-            tolerance,
-            design,
-            ctx,
-        )?;
+        let h = if design.host_aim && design.complete_rays {
+            host_aimed_rays(
+                g,
+                &mut p,
+                &set,
+                probes,
+                &candidates,
+                tracers,
+                last,
+                clip,
+                ctx,
+            )?
+        } else {
+            append(
+                g,
+                &mut p,
+                &set,
+                &aim_metadata,
+                &aim_seeds,
+                probes,
+                remap.as_deref(),
+                last,
+                clip,
+                tolerance,
+                design,
+                ctx,
+            )?
+        };
         let index = g.fill(&mut p, [probes.len()], |out: &mut [u32]| {
             for (o, q) in out.iter_mut().zip(probes) {
                 *o = q.slot;
@@ -1128,6 +1239,15 @@ pub(crate) fn collect<'a>(
         .map(|o| g.backend.read_view(o.view()))
         .collect::<MkResult<Vec<_>>>()?;
     let chief_status = views[1].as_slice::<u32>()?;
+    if trace_routing() {
+        let k = prepared.chiefs.len();
+        let aim = views[2].as_slice::<u32>()?[..k].iter().filter(|&&s| s != 0);
+        eprintln!(
+            "MKL_SOLVERS chiefs: {k} of {n} candidates, aim-failed {}, trace-failed {}",
+            aim.count(),
+            chief_status[..k].iter().filter(|&&s| s != 0).count()
+        );
+    }
     let mut chief_keys = vec![BTreeSet::new(); n];
     for (i, (q, &status)) in prepared
         .chiefs

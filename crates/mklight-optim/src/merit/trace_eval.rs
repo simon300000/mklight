@@ -206,6 +206,44 @@ impl TraceEvaluator {
         self.seeded_tracer(s, &Seeding::None)
     }
 
+    /// The solves of `anchor` recorded to seed the candidates of a
+    /// finite-difference batch near it, as [`Self::evaluate_batch_near`]
+    /// seeds its batches (the anchor is traced for `operands`' rays), or
+    /// `None` when the batch is small or the system is not real-aimed.
+    pub(crate) fn anchor_seeds(
+        &self,
+        anchor: &OpticalSystem,
+        batch: usize,
+        operands: &[&Operand],
+        ctx: &JobContext,
+    ) -> MkResult<Option<Arc<AimSeeds>>> {
+        if batch < MIN_SEEDED_BATCH || !self.anchored_differences(anchor) {
+            return Ok(None);
+        }
+        let rays: Vec<&Operand> = operands
+            .iter()
+            .copied()
+            .filter(|o| {
+                trace_supports(&o.kind)
+                    && !is_model_kind(&o.kind)
+                    && !matches!(o.kind, OperandKind::ToleranceSensitivity { .. })
+            })
+            .collect();
+        Ok(self
+            .evaluate_seeded(anchor, &rays, ctx, true, &Seeding::Record)?
+            .1)
+    }
+
+    /// [`Self::tracer`] seeded from an anchor's recorded solves
+    /// ([`Self::anchor_seeds`]).
+    pub(crate) fn tracer_near(
+        &self,
+        s: &OpticalSystem,
+        seeds: &Arc<AimSeeds>,
+    ) -> Result<SequentialTracer, OperandError> {
+        self.seeded_tracer(s, &Seeding::Read(seeds.clone()))
+    }
+
     /// [`Self::tracer`], seeded from or recording into an anchor's solves.
     fn seeded_tracer(
         &self,
@@ -276,11 +314,30 @@ impl TraceEvaluator {
         } else {
             None
         };
-        let cand = match &tracer {
-            Some(Ok(tr)) => Some(Candidate::build(self, tr, operands, ctx, parallel)?),
-            _ => None,
+        // Automatic semi-diameters (edge-thickness and surface operands)
+        // trace their own rays: alongside the candidate's, in parallel.
+        let sd_settings = SemiDiameterSettings {
+            azimuths: self.settings.semi_diameter_azimuths.max(4),
+            clip: self.settings.clip,
         };
-        let mut fixed_sd: Option<OpticalSystem> = None;
+        let wants_sd = auto_sd
+            && operands
+                .iter()
+                .any(|o| is_model_kind(&o.kind) && needs_semi_diameters(&o.kind));
+        let (cand, mut fixed_sd) = match &tracer {
+            Some(Ok(tr)) if wants_sd && parallel => {
+                let (cand, sd) = rayon::join(
+                    || Candidate::build(self, tr, operands, ctx, parallel),
+                    || tr.semi_diameters(&sd_settings),
+                );
+                (Some(cand?), Some(fix_semi_diameters(s, &sd, 0.0)))
+            }
+            Some(Ok(tr)) => (
+                Some(Candidate::build(self, tr, operands, ctx, parallel)?),
+                None,
+            ),
+            _ => (None, None),
+        };
         let mut memo = GroupMemo::default();
         let mut out = Vec::with_capacity(operands.len());
         for op in operands {
@@ -289,11 +346,7 @@ impl TraceEvaluator {
                     match &tracer {
                         Some(Ok(tr)) => {
                             let sys = fixed_sd.get_or_insert_with(|| {
-                                let sd = tr.semi_diameters(&SemiDiameterSettings {
-                                    azimuths: self.settings.semi_diameter_azimuths.max(4),
-                                    clip: self.settings.clip,
-                                });
-                                fix_semi_diameters(s, &sd, 0.0)
+                                fix_semi_diameters(s, &tr.semi_diameters(&sd_settings), 0.0)
                             });
                             model_value(sys, op)
                         }
@@ -508,6 +561,10 @@ enum Seeding {
     /// A candidate near the anchor.
     Read(Arc<AimSeeds>),
 }
+
+/// Pupil nodes per parallel work item of a candidate's groups: one CPU
+/// trace packet (`mklight_trace::trace::PACKET`).
+const GROUP_RAY_CHUNK: usize = 8;
 
 /// Smallest batch whose candidates are seeded from their anchor: tracing
 /// the anchor costs one extra candidate.
@@ -878,11 +935,55 @@ impl<'a> Candidate<'a> {
         let c = &*self;
         let groups: Vec<(GroupKey, PupilSampling)> =
             plan.groups.iter().map(|(k, s)| (*k, *s)).collect();
-        let traced = pmap(&groups, parallel, |&(key, sampling)| {
-            ctx.check()?;
-            Ok((key, c.trace_group(key, &sampling)))
-        });
-        self.groups = traced.into_iter().collect::<MkResult<_>>()?;
+        if !parallel {
+            let traced = pmap(&groups, false, |&(key, sampling)| {
+                ctx.check()?;
+                Ok((key, c.trace_group(key, &sampling)))
+            });
+            self.groups = traced.into_iter().collect::<MkResult<_>>()?;
+            return Ok(());
+        }
+        // In parallel, by runs of a group's nodes rather than whole groups:
+        // the unaimable rim rays of the outer fields (each runs the whole
+        // aiming schedule) would otherwise leave a few groups, and the pool,
+        // waiting on one thread. Every ray is traced exactly as in its whole
+        // group (`trace_many` is bitwise one ray at a time), and the rays
+        // are put back in node order.
+        let nodes: Vec<(Vec<PupilNode>, PupilSymmetry)> = groups
+            .iter()
+            .map(|&(key, sampling)| c.group_nodes(key.0, &sampling))
+            .collect();
+        let items: Vec<(usize, usize, usize)> = nodes
+            .iter()
+            .enumerate()
+            .flat_map(|(g, (n, _))| {
+                (0..n.len())
+                    .step_by(GROUP_RAY_CHUNK)
+                    .map(move |a| (g, a, (a + GROUP_RAY_CHUNK).min(n.len())))
+            })
+            .collect();
+        let traced: Vec<Vec<NodeRay>> = items
+            .par_iter()
+            .map(|&(g, a, b)| {
+                ctx.check()?;
+                Ok(c.trace_group_nodes(groups[g].0, &nodes[g].0[a..b]))
+            })
+            .collect::<MkResult<_>>()?;
+        let mut rays: Vec<Vec<NodeRay>> = nodes
+            .iter()
+            .map(|(n, _)| Vec::with_capacity(n.len()))
+            .collect();
+        for (&(g, _, _), t) in items.iter().zip(traced) {
+            rays[g].extend(t);
+        }
+        self.groups = groups
+            .iter()
+            .zip(nodes)
+            .zip(rays)
+            .map(|((&(key, _), (nodes, symmetry)), rays)| {
+                (key, Self::group_rays(nodes, symmetry, rays))
+            })
+            .collect();
         Ok(())
     }
 
@@ -1026,10 +1127,16 @@ impl<'a> Candidate<'a> {
         }
     }
 
-    fn trace_group(&self, (f, w, _): GroupKey, sampling: &PupilSampling) -> GroupRays {
-        let (nodes, symmetry) = self.group_nodes(f, sampling);
+    fn trace_group(&self, key: GroupKey, sampling: &PupilSampling) -> GroupRays {
+        let (nodes, symmetry) = self.group_nodes(key.0, sampling);
+        let rays = self.trace_group_nodes(key, &nodes);
+        Self::group_rays(nodes, symmetry, rays)
+    }
+
+    /// The rays of `nodes` of group `key` (its field and wavelength).
+    fn trace_group_nodes(&self, (f, w, _): GroupKey, nodes: &[PupilNode]) -> Vec<NodeRay> {
         let reference = self.chiefs[&(f, w)].reference.as_ref().ok();
-        let rays = match self.field(f) {
+        match self.field(f) {
             Ok(field) => {
                 // Aimed and traced together (bitwise equal to one by one).
                 let requests: Vec<_> = nodes.iter().map(|n| (field, w, [n.px, n.py])).collect();
@@ -1052,8 +1159,7 @@ impl<'a> Candidate<'a> {
                     .collect()
             }
             Err(_) => vec![NodeRay::FAILED; nodes.len()],
-        };
-        Self::group_rays(nodes, symmetry, rays)
+        }
     }
 
     // ----- selectors -----------------------------------------------------
@@ -2525,5 +2631,67 @@ mod tests {
             mirrored > 0,
             "the decentered candidate traces mirrored half pupils"
         );
+    }
+
+    /// A candidate evaluated in parallel (runs of group nodes on the pool,
+    /// the automatic semi-diameters alongside the rays) has exactly the
+    /// serial values, with real aiming, on a symmetric and a decentered
+    /// (mirrored half pupil) candidate, unseeded and seeded from an anchor.
+    #[test]
+    fn parallel_candidates_equal_serial() {
+        use crate::merit::default::ThicknessBoundaries;
+        let ev = TraceEvaluator::builtin();
+        let mut base = samples::double_gauss();
+        base.ray_aiming = mklight_core::model::RayAiming::Real { tolerance: 1e-10 };
+        let mut decentered = base.clone();
+        decentered.surfaces[3].placement = Some(Placement {
+            decenter_x: 0.05,
+            ..Default::default()
+        });
+        let spec = DefaultMeritSpec {
+            sampling: PupilSampling {
+                rings: 6,
+                arms: 12,
+                ..Default::default()
+            },
+            thickness: Some(ThicknessBoundaries {
+                auto_semi_diameters: true,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let ops = spec.generate(&base).unwrap().operands;
+        let refs: Vec<&Operand> = ops.iter().collect();
+        assert!(
+            refs.iter()
+                .any(|o| is_model_kind(&o.kind) && needs_semi_diameters(&o.kind))
+        );
+        let ctx = JobContext::new();
+        let bits = |v: &[OperandValue]| -> Vec<Result<u64, OperandError>> {
+            v.iter()
+                .map(|v| v.as_ref().map(|x| x.to_bits()).map_err(|e| e.clone()))
+                .collect()
+        };
+        for sys in [&base, &decentered] {
+            let serial = ev.evaluate_one(sys, &refs, &ctx, false).unwrap();
+            let parallel = ev.evaluate_one(sys, &refs, &ctx, true).unwrap();
+            assert_eq!(bits(&serial), bits(&parallel));
+            // Rim rays of the dense sampling are vignetted (failed alike).
+            let ok = serial.iter().filter(|v| v.is_ok()).count();
+            assert!(ok * 10 > serial.len() * 9, "{ok} of {}", serial.len());
+            let (_, seeds) = ev
+                .evaluate_seeded(sys, &refs, &ctx, true, &Seeding::Record)
+                .unwrap();
+            let seeding = Seeding::Read(seeds.unwrap());
+            let mut near = sys.clone();
+            near.surfaces[1].thickness += 1e-4;
+            let serial = ev
+                .evaluate_seeded(&near, &refs, &ctx, false, &seeding)
+                .unwrap();
+            let parallel = ev
+                .evaluate_seeded(&near, &refs, &ctx, true, &seeding)
+                .unwrap();
+            assert_eq!(bits(&serial.0), bits(&parallel.0));
+        }
     }
 }

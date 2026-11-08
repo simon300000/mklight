@@ -13,7 +13,7 @@ use mklight_core::param::ParamPath;
 use mklight_core::{JobContext, RayAiming, Snapshot, samples};
 use mklight_gpu::{ComputeBackend, CpuF32Backend};
 use mklight_optim::deriv::{FdScheme, JacobianSettings, jacobian};
-use mklight_optim::gpu::{EvalDesign, GpuContext, ResidentEvaluator};
+use mklight_optim::gpu::{EvalDesign, GpuContext, Lanes, ResidentEvaluator};
 use mklight_optim::linalg::Matrix;
 use mklight_optim::lsq::{LsqSettings, least_squares};
 use mklight_optim::merit::default::{DefaultCriterion, DefaultMeritSpec};
@@ -218,12 +218,24 @@ fn hybrid_designs_agree_with_the_reference() {
             let ops = operands(&sys);
             let cands = candidates(&sys);
             let reference = values(&BuiltinEvaluator::builtin(), &cands, &ops);
-            for design in [EvalDesign::Hybrid, EvalDesign::Pipelined] {
-                let ev = evaluator(&backend, &sys, design);
+            // Device aiming with host completion, and host aiming (the
+            // `aiming` study's host designs) with device tracing.
+            for (design, host_aim) in [
+                (EvalDesign::Hybrid, false),
+                (EvalDesign::Pipelined, false),
+                (EvalDesign::Hybrid, true),
+            ] {
+                let ev = evaluator(&backend, &sys, design).with_host_aim(host_aim);
                 let v = values(&ev, &cands, &ops);
                 let worst = compare(&v, &reference, &ops);
-                eprintln!("{backend_name} {name} {design:?}: worst budget fraction {worst:.3}");
-                assert!(worst <= 1.0, "{backend_name} {name} {design:?}: {worst}");
+                eprintln!(
+                    "{backend_name} {name} {design:?} host aim {host_aim}: worst budget fraction \
+                     {worst:.3}"
+                );
+                assert!(
+                    worst <= 1.0,
+                    "{backend_name} {name} {design:?} {host_aim}: {worst}"
+                );
                 let st = ev.stats();
                 assert!(st.device_operands > 0, "{name}: {st:?}");
                 assert!(st.fallbacks.is_empty(), "{name}: {st:?}");
@@ -252,6 +264,54 @@ fn designs_give_the_same_values() {
                 (Err(_), Err(_)) => {}
                 _ => panic!("{a:?} vs {b:?}"),
             }
+        }
+    }
+}
+
+/// The CPU thread layouts of the pipelined design's sub-batches (one lane,
+/// two lanes on the pool, two lanes on dedicated pools) give the same
+/// values, plain and anchored (finite differences).
+#[test]
+fn thread_lanes_give_the_same_values() {
+    let backend: Arc<dyn ComputeBackend> = Arc::new(CpuF32Backend::new());
+    let sys = real_aimed(samples::double_gauss());
+    let ops = operands(&sys);
+    let refs: Vec<&Operand> = ops.iter().collect();
+    // 24 candidates: three pipelined sub-batches of 8.
+    let c = ParamPath::Curvature {
+        surface: sys.surfaces[1].id,
+    };
+    let v = c.get(&sys).unwrap();
+    let cands: Vec<OpticalSystem> = (0..24)
+        .map(|i| {
+            let mut s = sys.clone();
+            c.set(&mut s, v * (1.0 + 1e-3 * i as f64)).unwrap();
+            s
+        })
+        .collect();
+    let ctx = JobContext::new();
+    let run = |lanes: Lanes| {
+        let ev = evaluator(&backend, &sys, EvalDesign::Pipelined).with_lanes(lanes);
+        let plain = ev.evaluate_batch(&cands, &refs, &ctx).unwrap();
+        let near = ev
+            .evaluate_batch_near(&cands, &refs, Some(&cands[0]), &ctx)
+            .unwrap();
+        [plain, near]
+    };
+    let bits = |v: &[Vec<OperandValue>]| -> Vec<Vec<Option<u64>>> {
+        v.iter()
+            .map(|r| {
+                r.iter()
+                    .map(|x| x.as_ref().ok().map(|x| x.to_bits()))
+                    .collect()
+            })
+            .collect()
+    };
+    let single = run(Lanes::Single);
+    for lanes in Lanes::ALL {
+        let other = run(lanes);
+        for (a, b) in single.iter().zip(&other) {
+            assert_eq!(bits(a), bits(b), "{}", lanes.name());
         }
     }
 }
@@ -351,8 +411,8 @@ fn hybrid_finite_differences() {
     let r = jacobian(&reference, &x, &f0, &central, &ctx)
         .unwrap()
         .residuals;
-    for cap in [None, Some(2)] {
-        let mut ev = evaluator(&backend, &sys, EvalDesign::Pipelined);
+    for (cap, host_aim) in [(None, false), (Some(2), false), (None, true)] {
+        let mut ev = evaluator(&backend, &sys, EvalDesign::Pipelined).with_host_aim(host_aim);
         if let Some(cap) = cap {
             ev = ev.with_device_aim_cap(cap);
         }
@@ -363,8 +423,8 @@ fn hybrid_finite_differences() {
             .unwrap()
             .residuals;
         let e = column_error(&j, &r);
-        eprintln!("cap {cap:?}: largest relative column error {e:.2e}");
-        assert!(e < 2e-3, "cap {cap:?}: {e}");
+        eprintln!("cap {cap:?} host aim {host_aim}: largest relative column error {e:.2e}");
+        assert!(e < 2e-3, "cap {cap:?} host aim {host_aim}: {e}");
     }
 }
 

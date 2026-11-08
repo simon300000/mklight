@@ -5,13 +5,15 @@
 //! ```text
 //! cargo run --release -p mklight-engine --example solver_profile -- LENS.mklight ANALYSIS \
 //!     [--backend cpu|metal|auto] [--variant NAME] [--settings JSON] [--reps N] [--json]
+//!     [--out FILE]
 //! ```
 //!
 //! Every curved surface's curvature is a variable (as the benchmark
 //! harness's `curvature_variables` setup). One untimed warm-up call precedes
 //! `--reps` timed calls, each after a tiny unique edit. Prints the wall time,
 //! the result's `backend` block summary and the resident plan stages
-//! (wall/device seconds and command buffers per stage).
+//! (wall/device seconds and command buffers per stage). `--out` writes the
+//! last call's result JSON (to compare outcomes between builds).
 
 use std::path::Path;
 use std::time::Instant;
@@ -83,6 +85,7 @@ fn main() {
     let mut settings = json!({});
     let mut reps = 1usize;
     let mut dump = false;
+    let mut out: Option<String> = None;
     while let Some(a) = args.next() {
         match a.as_str() {
             "--backend" => backend = args.next().unwrap(),
@@ -90,6 +93,7 @@ fn main() {
             "--settings" => settings = serde_json::from_str(&args.next().unwrap()).unwrap(),
             "--reps" => reps = args.next().unwrap().parse().unwrap(),
             "--json" => dump = true,
+            "--out" => out = args.next(),
             _ => panic!("unexpected argument {a}"),
         }
     }
@@ -157,6 +161,9 @@ fn main() {
                 wall * 1e3,
                 dev * 1e3
             );
+        }
+        if let (Some(path), true) = (&out, rep == reps) {
+            std::fs::write(path, serde_json::to_string_pretty(&r.json).unwrap()).unwrap();
         }
         if dump && rep == reps {
             println!(

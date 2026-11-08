@@ -40,7 +40,7 @@ use mklight_optim::global::cmaes::{CmaEsSettings, cma_es};
 use mklight_optim::global::de::{DeSettings, differential_evolution};
 use mklight_optim::global::hammer::{HammerSettings, hammer};
 use mklight_optim::global::nelder_mead::{NelderMeadSettings, nelder_mead};
-use mklight_optim::gpu::{GpuContext, ResidentEvaluator, Split};
+use mklight_optim::gpu::{GpuContext, Lanes, ResidentEvaluator, Split};
 use mklight_optim::lsq::{AugLagSettings, LsqMethod, LsqSettings, least_squares};
 use mklight_optim::merit::default::DefaultMeritSpec;
 use mklight_optim::merit::geometric::optical_gaps;
@@ -127,6 +127,26 @@ pub(super) fn evaluation_backend_schema() -> Value {
                 ),
             ),
             (
+                "aiming",
+                enumeration(
+                    &["device", "host"],
+                    "Where the hybrid designs aim the pupil rays: on the device with host completion (default), or on the host with device tracing (`aiming` study set to `host` or `host-table`).",
+                ),
+            ),
+            (
+                "threads",
+                enumeration(
+                    &[
+                        "single",
+                        "lanes",
+                        "host-quarter",
+                        "host-half",
+                        "host-three-quarters",
+                    ],
+                    "CPU thread layout of the hybrid designs' device sub-batches (work-split study `solver_threads`).",
+                ),
+            ),
+            (
                 "gpu_stats",
                 obj(&[
                     ("gpu_candidates", int("")),
@@ -137,7 +157,13 @@ pub(super) fn evaluation_backend_schema() -> Value {
                 ]),
             ),
         ],
-        &["gpu_stats", "resident_evaluation", "split"],
+        &[
+            "gpu_stats",
+            "resident_evaluation",
+            "split",
+            "aiming",
+            "threads",
+        ],
     )
 }
 
@@ -452,11 +478,31 @@ struct Evaluation {
     /// The `solvers` work-split variant of a run handed a GPU device
     /// (`None` on the CPU reference path).
     split: Option<Split>,
+    /// The `solver_threads` work-split variant of a run handed a GPU device.
+    lanes: Option<Lanes>,
+    /// Hybrid designs: are the pupil rays aimed on the host (`aiming`
+    /// study)?
+    host_aim: Option<bool>,
     work: Workload,
     fallback_reason: Option<String>,
     /// `"backend"` block of the result.
     report: Value,
     warnings: Vec<String>,
+}
+
+/// Do the hybrid solver designs aim their pupil rays on the host? Only when
+/// the `aiming` study is set to one of its host designs (`host`,
+/// `host-table`; the solvers' rows hold too few rays for a seed table);
+/// unset, or a device design, keeps device aiming with host completion.
+fn solver_host_aim() -> EngineResult<bool> {
+    use mklight_analysis::gpu::aim::{AimDesign, KEY};
+    if mklight_core::split::variant(KEY).is_none() {
+        return Ok(false);
+    }
+    Ok(matches!(
+        AimDesign::selected().map_err(invalid)?,
+        AimDesign::Host | AimDesign::HostTable
+    ))
 }
 
 impl Evaluation {
@@ -473,6 +519,8 @@ impl Evaluation {
         let mut warnings = Vec::new();
         let mut fallback_reason = input.selection_note.clone();
         let mut split = None;
+        let mut lanes = None;
+        let mut host_aim = None;
         let gpu = match gpu_backend(choice, input) {
             Ok(Some(device)) => {
                 ctx.check()?;
@@ -481,9 +529,16 @@ impl Evaluation {
                 split = Some(selected);
                 match selected.design() {
                     Some(design) => {
+                        let layout = Lanes::selected().map_err(invalid)?;
+                        lanes = Some(layout);
+                        let aim = solver_host_aim()?;
+                        host_aim = Some(aim);
                         let context = GpuContext::new(device.backend.clone(), snapshot.clone());
                         Some((
-                            ResidentEvaluator::new(context, cpu.clone()).with_design(design),
+                            ResidentEvaluator::new(context, cpu.clone())
+                                .with_design(design)
+                                .with_lanes(layout)
+                                .with_host_aim(aim),
                             device,
                         ))
                     }
@@ -514,6 +569,8 @@ impl Evaluation {
             cpu,
             gpu,
             split,
+            lanes,
+            host_aim,
             work,
             fallback_reason,
             report: Value::Null,
@@ -539,13 +596,15 @@ impl Evaluation {
     }
 
     /// Candidates per tolerance evaluation batch (Monte Carlo trials and
-    /// sensitivity points) for a requested batch: the batch-oriented
-    /// work-split variants hand the evaluator larger batches (trial values
-    /// do not depend on the batching).
+    /// sensitivity points) for a requested batch: the CPU reference and the
+    /// batch-oriented work-split variants hand the evaluator larger batches
+    /// (trial values do not depend on the batching; the CPU's rayon pool
+    /// otherwise idles at the end of every small batch); only the resident
+    /// variant keeps the requested size.
     fn tolerance_batch(&self, requested: usize) -> usize {
         match self.split {
-            Some(Split::Resident) | None => requested,
-            Some(_) => requested.max(TOLERANCE_SPLIT_BATCH),
+            Some(Split::Resident) => requested,
+            None | Some(_) => requested.max(TOLERANCE_SPLIT_BATCH),
         }
     }
 
@@ -559,6 +618,12 @@ impl Evaluation {
             "reported_on": TraceEvaluator::BACKEND,
             "workload": self.work.report(),
         });
+        if let Some(lanes) = self.lanes {
+            b["threads"] = json!(lanes.name());
+        }
+        if let Some(host) = self.host_aim {
+            b["aiming"] = json!(if host { "host" } else { "device" });
+        }
         if let Some(split) = self.split {
             b["split"] = json!(split.name());
             if self.gpu.is_none() {
@@ -607,6 +672,12 @@ impl Evaluation {
             g.record(&mut run);
             if let Some(split) = self.split {
                 run.settings["solvers_split"] = json!(split.name());
+            }
+            if let Some(lanes) = self.lanes {
+                run.settings["solvers_threads"] = json!(lanes.name());
+            }
+            if let Some(host) = self.host_aim {
+                run.settings["solvers_aiming"] = json!(if host { "host" } else { "device" });
             }
             input.executions.borrow_mut().push(run.settings.clone());
             b["resident_evaluation"] = serde_json::to_value(stats)?;
@@ -970,9 +1041,13 @@ fn interrupt_status(why: Interrupt, termination: Termination) -> &'static str {
 const INNER_ITERATIONS: usize = 10;
 
 /// Smallest tolerance evaluation batch (Monte Carlo trials, sensitivity
-/// points) of the batch-oriented `solvers` work-split variants: the hundred
-/// trials of a default Monte Carlo run go to the evaluator as one batch,
-/// which a pipelined evaluator splits into overlapped device plans.
+/// points) of the CPU reference and the batch-oriented `solvers` work-split
+/// variants: the hundred trials of a default Monte Carlo run go to the
+/// evaluator as one batch, which the CPU spreads over its pool without a
+/// barrier every 16 trials (29-surface F/1.4 benchmark lens, 12 threads: 155 →
+/// 120 ms for the default tolerance run, 2.4 → 1.9 s for 1000 dense trials,
+/// identical results) and a pipelined evaluator splits into overlapped
+/// device plans.
 const TOLERANCE_SPLIT_BATCH: usize = 128;
 
 /// The job's initial spreads of the population methods around the start,
