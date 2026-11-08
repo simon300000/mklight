@@ -362,6 +362,63 @@ fn asphere_poly_df<E: FpEnv>(s: &PackedSurface, r2: D<E>) -> D<E> {
     p * (rho2 * rho2)
 }
 
+/// `mkl_asphere_poly_dp_df`: `P(r²)` and `dP/d(r²)` in double-float from
+/// the packed hi + lo coefficients (Horner in `ρ²`, the power-of-two
+/// normalisation exact), for the double-float slope (`MKL_SURF_DF_SLOPE`).
+#[inline(always)]
+fn asphere_poly_dp_df<E: FpEnv>(s: &PackedSurface, r2: D<E>) -> (D<E>, D<E>) {
+    let n = (s.num_asphere as usize).min(MAX_ASPHERE);
+    if n == 0 {
+        return (D::ZERO, D::ZERO);
+    }
+    let rho2 = r2 * s.asphere_inv_norm2;
+    let a = |j: usize| D::new(s.asphere[j], s.asphere_lo[j]);
+    let mut p = a(n - 1);
+    let mut dp = a(n - 1) * ((n + 1) as f32);
+    for j in (0..n - 1).rev() {
+        p = p * rho2 + a(j);
+        dp = dp * rho2 + a(j) * ((j + 2) as f32);
+    }
+    (p * (rho2 * rho2), (dp * rho2) * s.asphere_inv_norm2)
+}
+
+/// `mkl_asphere_refine_df`: from the f32 hit `t1`, two Newton steps on
+/// `z − sag(r²)` along the exact line with the whole slope in double-float,
+/// then the unnormalised normal `(−x·s, −y·s, w)` from the double-float
+/// slope `s = 2w·dP/d(r²) + c` of the last step (`MKL_SURF_DF_SLOPE`). The
+/// f32 slope of the original refinement put the normal of a steep asphere
+/// off by ~1e-8 and made a stop hit through it jitter between neighbouring
+/// aims by 1e-9–1e-8 of the stop radius.
+#[inline(always)]
+fn asphere_refine_df<E: FpEnv>(
+    s: &PackedSurface,
+    q: DV<E>,
+    d: DV<E>,
+    t1: F<E>,
+    cd: D<E>,
+    kcd: D<E>,
+) -> (D<E>, DV<E>, DV<E>) {
+    let mut tb = D::from_f(t1);
+    let mut w = D::from_f(F::ONE);
+    let mut gs = cd;
+    for _ in 0..2 {
+        let x = point_on(q, tb, d);
+        let r2 = x[0] * x[0] + x[1] * x[1];
+        w = (D::from_f(F::ONE) - r2 * (kcd * cd)).sqrt();
+        let csag = (r2 * cd) / (w + F::ONE);
+        let (poly, dpoly) = asphere_poly_dp_df(s, r2);
+        let res = (x[2] - csag) - poly;
+        gs = (w * dpoly) * 2.0 + cd;
+        let gp = d[2] - (gs / w) * (x[0] * d[0] + x[1] * d[1]);
+        let step = res / gp;
+        if step.hi().is_finite() {
+            tb = tb - step;
+        }
+    }
+    let x = point_on(q, tb, d);
+    (tb, x, [-(x[0] * gs), -(x[1] * gs), w])
+}
+
 /// `mkl_asphere_domain`: whether the asphere normal is defined at `p`
 /// (`1 − κc²r² ≥ 0`), as `mklight_trace::surface::asphere_normal`.
 #[inline(always)]
@@ -540,7 +597,13 @@ fn intersect_legacy<E: FpEnv>(
     let cd = D::new(s.curvature, s.curvature_lo);
     let kapd = D::new(s.conic, s.conic_lo) + F::ONE;
     let kcd = kapd * cd;
-    let (tb, x, g) = if shape == MKL_SHAPE_EVEN_ASPHERE && s.num_asphere > 0 {
+    let (tb, x, g) = if shape == MKL_SHAPE_EVEN_ASPHERE
+        && s.num_asphere > 0
+        && s.flags & MKL_SURF_DF_SLOPE != 0
+    {
+        let t1 = asphere_from(s, qf, df, prm)?;
+        asphere_refine_df(s, q, d, t1, cd, kcd)
+    } else if shape == MKL_SHAPE_EVEN_ASPHERE && s.num_asphere > 0 {
         let t1 = asphere_from(s, qf, df, prm)?;
         // Refinement on z − sag(r²), conic part in double-float.
         let x0 = point_on(q, D::from_f(t1), d);

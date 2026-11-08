@@ -752,6 +752,16 @@ impl Geometry<'_> {
         let r = d.pending.take().unwrap().wait()?;
         let seconds = d.submitted.elapsed().as_secs_f64();
         let stats = r.stats.aiming.clone();
+        if division::trace_evidence() >= 3 {
+            eprintln!(
+                "mklight aim generation: rays {} failed {} iterations {} max {} device {:.2} ms",
+                stats.rays,
+                stats.failed,
+                stats.iterations,
+                stats.max_iterations,
+                r.stats.device_seconds * 1e3
+            );
+        }
         self.evidence(|e| {
             e.device_plans += 1;
             e.device_seconds += seconds;
