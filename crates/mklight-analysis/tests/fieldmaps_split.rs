@@ -292,3 +292,81 @@ fn metal_transmission_designs() {
         .expect("host Metal required");
     transmission_designs(&b);
 }
+
+/// Results do not depend on the CPU threads: the reference rows in pools of
+/// one and four threads, and the hybrids' CPU share
+/// (`mklight_gpu::cpu_share`) with one thread and with the global pool.
+#[test]
+fn cpu_thread_budgets_do_not_change_results() {
+    use mklight_trace::{PupilSamples, TransmissionSettings};
+    let _guard = SELECTION.lock().unwrap_or_else(|e| e.into_inner());
+    let b = CpuF32Backend::new();
+    let in_pool = |threads: usize, f: &(dyn Fn() -> String + Sync)| {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build()
+            .unwrap()
+            .install(f)
+    };
+    let with_budget = |budget: Option<&str>, f: &dyn Fn() -> String| {
+        split::set(mklight_gpu::cpu_share::KEY, budget);
+        let r = f();
+        split::reset();
+        r
+    };
+    for (name, model) in samples::all() {
+        let t = tracer_for(model).unwrap();
+        let wl = t.system().primary_wavelength;
+        let coords = [[0.0, 0.0], [0.0, 0.5], [0.0, 1.0], [0.6, 0.6]];
+        let reference = || {
+            let mut warnings = Vec::new();
+            let r = illumination::illumination_rows(
+                &t,
+                &coords,
+                wl,
+                4,
+                16,
+                &mut warnings,
+                &JobContext::new(),
+            )
+            .unwrap();
+            format!("{:?} {warnings:?}", r)
+        };
+        assert_eq!(in_pool(1, &reference), in_pool(4, &reference), "{name} RI");
+        for design in ["hybrid", "pipelined", "shared"] {
+            let rows = || {
+                split::set(gpu::SPLIT_KEY, Some(design));
+                let r = gpu::illumination_rows(&b, &t, &coords, wl, 4, 16, &JobContext::new());
+                let (rows, omega0, images, _) = r.unwrap();
+                format!("{rows:?} {omega0:?} {images:?}")
+            };
+            if design != "shared" {
+                assert_eq!(
+                    with_budget(Some("1"), &rows),
+                    with_budget(None, &rows),
+                    "{name} {design}"
+                );
+            } else {
+                // `shared` divides the fields by timing: only its success.
+                with_budget(Some("1"), &rows);
+            }
+        }
+        let s = TransmissionSettings {
+            pupil: PupilSamples::Grid { n: 9 },
+            ..Default::default()
+        };
+        for design in ["cpu-aim", "pipelined"] {
+            let st = || {
+                split::set(gpu::SPLIT_KEY, Some(design));
+                let r =
+                    mklight_gpu::radiometry::system_transmission(&b, &t, &s, &JobContext::new());
+                format!("{:?}", r.unwrap().points)
+            };
+            assert_eq!(
+                with_budget(Some("1"), &st),
+                with_budget(None, &st),
+                "{name} {design}"
+            );
+        }
+    }
+}
