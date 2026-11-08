@@ -366,8 +366,9 @@ fn source(s: &ImageSimulationSettings) -> MkResult<Raster> {
         ImageSource::Path { path } => read_png(path),
         ImageSource::Pattern { pattern } => {
             let [w, h] = s.size;
-            let data = (0..h)
-                .flat_map(|y| (0..w).map(move |x| pattern_value(*pattern, x, y, w, h)))
+            let data = (0..w * h)
+                .into_par_iter()
+                .map(|k| pattern_value(*pattern, k % w, k / w, w, h))
                 .collect();
             Ok(Raster { w, h, c: 1, data })
         }
