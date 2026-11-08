@@ -1739,6 +1739,175 @@ impl SequentialTracer {
         out
     }
 
+    /// [`Self::generate_many_stats`] with caller start points, for hybrid
+    /// aiming (a host seed table's interpolated aim and stop Jacobian, for
+    /// example): the direct real-aim solve of ray `k` starts from
+    /// `starts[k] = (aim, stop Jacobian)` when it is `Some`, instead of the
+    /// chief ray's linear prediction. A started solve that does not converge
+    /// is repeated by the reference schedule ([`Self::generate`]: the chief
+    /// prediction, then continuation in the pupil radius), so a ray fails
+    /// only where the reference fails too. Started rays meet the same stop
+    /// tolerance as the reference's and differ from them only within it;
+    /// rays without a start (and seeded or non-real aims) are bitwise those
+    /// of [`Self::generate_many`]. The stop traces of all solves run as
+    /// packets, as there.
+    pub fn generate_many_from(
+        &self,
+        rays: &[RayRequest],
+        starts: &[Option<([f64; 2], crate::numeric::Mat2)>],
+        stats: &mut AimStats,
+    ) -> Vec<Result<GeneratedRay, AimReport>> {
+        assert_eq!(rays.len(), starts.len(), "one start per ray");
+        let mut out = Vec::with_capacity(rays.len());
+        // Direct solves: (ray index, stop target, solver, seeded, key, started).
+        let mut solves = Vec::new();
+        for (k, &(field, wl, [px, py])) in rays.iter().enumerate() {
+            match self.aim_start(field, wl, px, py) {
+                Ok(AimStart::Solve {
+                    target,
+                    x0,
+                    j0,
+                    seed,
+                    key,
+                }) => {
+                    let (x0, j0, started) = match starts[k] {
+                        Some((x, j)) if seed.is_none() => (x, Some(j), true),
+                        _ => (x0, j0, false),
+                    };
+                    let n = Newton2::new(
+                        x0,
+                        j0,
+                        self.fd_step(),
+                        self.field_tolerance(field, wl),
+                        self.settings.max_aim_iterations,
+                        AIM_POLICY,
+                    )
+                    .seeded(seed);
+                    solves.push((k, target, n, seed.is_some(), key, started));
+                    out.push(Err(AimReport {
+                        iterations: 0,
+                        residual: f64::INFINITY,
+                        converged: false,
+                    }));
+                }
+                Ok(AimStart::Ready(g)) => out.push(Ok(g)),
+                Err(e) => out.push(Err(e)),
+            }
+        }
+        let opts = self.stop_options();
+        let (mut plain, mut wls) = (Vec::new(), Vec::new());
+        let (mut jstarts, mut jwls, mut jtangents) = (Vec::new(), Vec::new(), Vec::new());
+        let mut records: Vec<Vec<SurfaceRecord>> = Vec::new();
+        let mut kind: Vec<u8> = Vec::new();
+        let mut values: Vec<Eval> = Vec::new();
+        loop {
+            plain.clear();
+            wls.clear();
+            jstarts.clear();
+            jwls.clear();
+            jtangents.clear();
+            kind.clear();
+            for (k, _, n, ..) in &solves {
+                let (field, wl, _) = rays[*k];
+                let want = n.wants_jacobian();
+                for &a in n.pending() {
+                    if want {
+                        match self.start_tangent(&field.source, a) {
+                            Some((ray, t)) => {
+                                jstarts.push(ray);
+                                jwls.push(wl);
+                                jtangents.push(t);
+                                kind.push(2);
+                            }
+                            None => kind.push(0),
+                        }
+                    } else {
+                        match self.start_ray(&field.source, a) {
+                            Some(ray) => {
+                                plain.push(ray);
+                                wls.push(wl);
+                                kind.push(1);
+                            }
+                            None => kind.push(0),
+                        }
+                    }
+                }
+            }
+            if kind.is_empty() {
+                break;
+            }
+            let hits = trace_rays(&self.sys, &plain, &wls, &opts);
+            if records.len() < jstarts.len() {
+                records.resize_with(jstarts.len(), || Vec::with_capacity(self.sys.stop + 1));
+            }
+            let jhits = trace_rays_recorded(
+                &self.sys,
+                &jstarts,
+                &jwls,
+                &opts,
+                &mut records[..jstarts.len()],
+            );
+            let mut hit = hits.iter();
+            let mut jhit = jhits.iter().zip(&records).zip(&jtangents);
+            let mut point = kind.iter();
+            for (k, target, n, ..) in &mut solves {
+                let wl = rays[*k].1;
+                values.clear();
+                for _ in 0..n.pending().len() {
+                    let residual =
+                        |r: &TraceResult| [r.ray.pos.x - target[0], r.ray.pos.y - target[1]];
+                    values.push(match *point.next().expect("one kind per pending point") {
+                        0 => None,
+                        1 => {
+                            let r = hit.next().expect("one trace per starting ray");
+                            r.status.is_ok().then(|| (residual(r), None))
+                        }
+                        _ => {
+                            let ((r, rec), t) = jhit.next().expect("one trace per Jacobian ray");
+                            r.status.is_ok().then(|| {
+                                let j = self
+                                    .tangents
+                                    .differentiate(&self.sys, wl, t, rec, r.surface)
+                                    .ok()
+                                    .map(|t| t.xy_jacobian());
+                                (residual(r), j)
+                            })
+                        }
+                    });
+                }
+                if !values.is_empty() {
+                    n.resume(&values);
+                }
+            }
+        }
+        for (k, target, n, seeded, key, started) in solves {
+            let (field, wl, [px, py]) = rays[k];
+            let s = n.result().expect("a finished solve has a result");
+            out[k] = if started && !s.converged {
+                // The reference schedule from the chief prediction.
+                stats.add(&s);
+                match self.aim_start(field, wl, px, py) {
+                    Ok(AimStart::Solve {
+                        target,
+                        x0,
+                        j0,
+                        seed,
+                        key,
+                    }) => {
+                        let tol = self.field_tolerance(field, wl);
+                        let s = self.solve_aim_seeded(&field.source, wl, target, x0, j0, seed, tol);
+                        self.finish_seeded(field, wl, target, s, stats, seed.is_some(), key)
+                    }
+                    Ok(AimStart::Ready(g)) => Ok(g),
+                    Err(e) => Err(e),
+                }
+            } else {
+                self.finish_seeded(field, wl, target, s, stats, seeded, key)
+            };
+        }
+        out
+    }
+
     /// Generate and trace pupil point `(px, py)`. A ray that cannot be aimed
     /// is reported as `Failed { surface: stop, reason: AimNotConverged }`,
     /// and every ray of an unresolved field as

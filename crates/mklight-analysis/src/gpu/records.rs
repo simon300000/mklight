@@ -4,13 +4,14 @@ use crate::{
     illumination::FootprintSettings,
     util::{default_fields, pupil_points},
 };
+use division::Division;
 use mklight_core::{SurfaceShape, Vec3};
 use mklight_gpu::{
     ReduceMode,
     collectives::{self, SegmentKind, SegmentReduce},
     geometry::{self, Records},
 };
-use mklight_trace::{SemiDiameterSettings, SemiDiameterSource, SemiDiameters};
+use mklight_trace::{FieldPoint, SemiDiameterSettings, SemiDiameterSource, SemiDiameters};
 impl Geometry<'_> {
     pub fn global_records(
         &self,
@@ -338,6 +339,7 @@ pub fn ray_grid_job(
     ctx: &JobContext,
 ) -> MkResult<GridResult> {
     crate::spot::validate_sampling(s.pattern, s.rings)?;
+    let division = Division::selected()?;
     let aug = default_fields(t, &s.fields)?;
     let t = aug.as_ref();
     let fields = s.fields.resolve(t.fields().len())?;
@@ -347,46 +349,49 @@ pub fn ray_grid_job(
     let pupil = pupil_points(s.pattern, s.rings, s.seed);
     let pts: Vec<_> = fields.iter().map(|&f| t.field(f).point).collect();
     let geo = Geometry::new(b, t, ctx)?;
-    let mut p = ResidentPlan::new(t.system().snapshot.clone());
-    p.seed = matches!(
+    let seed = matches!(
         s.pattern,
         crate::util::PupilPattern::Random | crate::util::PupilPattern::Dithered
     )
     .then_some(s.seed);
-    p.settings = serde_json::to_value(s).unwrap();
-    let g = geo.append_grid(
-        &mut p,
+    let per_field = wls.len() * pupil.len();
+    let total = fields.len() * per_field;
+    let mut points = vec![f64::NAN; 2 * total];
+    let mut directions = vec![f64::NAN; 3 * total];
+    // The host reads the hits in every division; pipelined, each field
+    // group's plan traces while the next group is aimed.
+    let (plans, run) = geo.grid_groups(
+        t,
         &pts,
         &wls,
         &pupil,
-        t.aiming(),
         t.system().image_index(),
-        true,
-        false,
+        division,
+        &serde_json::to_value(s).unwrap(),
+        seed,
         ctx,
+        |range, f, status, n| {
+            let base = range.start * per_field;
+            for (i, &code) in status[..n].iter().enumerate() {
+                if i % 4096 == 0 {
+                    ctx.check()?;
+                }
+                if code == 0 {
+                    let k = base + i;
+                    points[2 * k..2 * k + 2]
+                        .copy_from_slice(&[value(f, n, i, 0), value(f, n, i, 1)]);
+                    directions[3 * k..3 * k + 3].copy_from_slice(&[
+                        value(f, n, i, 3),
+                        value(f, n, i, 4),
+                        value(f, n, i, 5),
+                    ]);
+                }
+            }
+            Ok(())
+        },
     )?;
-    p.outputs = vec![g.hits.rays.floats, g.hits.status];
-    let r = geo.run(p, &ctx.subrange(0.0, 0.95))?;
-    let f = b.read_view(r.outputs[0].view())?;
-    let f = f.as_slice::<f32>()?;
-    let status = b.read_view(r.outputs[1].view())?;
-    let status = status.as_slice::<u32>()?;
-    let n = g.hits.rays.count;
-    let mut points = vec![f64::NAN; 2 * n];
-    let mut directions = vec![f64::NAN; 3 * n];
-    for (i, &code) in status[..n].iter().enumerate() {
-        if i % 4096 == 0 {
-            ctx.check()?;
-        }
-        if code == 0 {
-            points[2 * i..2 * i + 2].copy_from_slice(&[value(f, n, i, 0), value(f, n, i, 1)]);
-            directions[3 * i..3 * i + 3].copy_from_slice(&[
-                value(f, n, i, 3),
-                value(f, n, i, 4),
-                value(f, n, i, 5),
-            ]);
-        }
-    }
+    let mut run = run;
+    division::mark(&mut run, division, plans);
     ctx.report(1.0, "ray grid");
     Ok(GridResult {
         fields,
@@ -394,8 +399,63 @@ pub fn ray_grid_job(
         pupil,
         points,
         directions,
-        run_info: stamp(r.run_info, "ray_grid", s, t.warnings().to_vec()),
+        run_info: stamp(run, "ray_grid", s, t.warnings().to_vec()),
     })
+}
+impl Geometry<'_> {
+    /// Aim and trace (clipped, to surface `last`) the grid of field points
+    /// `pts` × `wls` × `pupil` in field groups ([`Division::groups`]), each
+    /// group a plan submitted once its rays are aimed, and hand every
+    /// group's hit planes (`floats`, `status`, ray count) to `read`, in
+    /// group order. Returns the number of plans and their merged evidence.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn grid_groups(
+        &self,
+        t: &SequentialTracer,
+        pts: &[FieldPoint],
+        wls: &[usize],
+        pupil: &[[f64; 2]],
+        last: usize,
+        division: Division,
+        settings: &serde_json::Value,
+        seed: Option<u64>,
+        ctx: &JobContext,
+        mut read: impl FnMut(std::ops::Range<usize>, &[f32], &[u32], usize) -> MkResult<()>,
+    ) -> MkResult<(usize, RunInfo)> {
+        let groups = division.groups(pts.len(), wls.len() * pupil.len());
+        let mut submitted = Vec::with_capacity(groups.len());
+        for (k, range) in groups.iter().enumerate() {
+            let sub = ctx.subrange(
+                0.7 * k as f64 / groups.len() as f64,
+                0.7 * (k + 1) as f64 / groups.len() as f64,
+            );
+            let mut p = ResidentPlan::new(t.system().snapshot.clone());
+            p.seed = seed;
+            p.settings = settings.clone();
+            let g = self.append_grid(
+                &mut p,
+                &pts[range.clone()],
+                wls,
+                pupil,
+                t.aiming(),
+                last,
+                true,
+                false,
+                &sub,
+            )?;
+            p.outputs = vec![g.hits.rays.floats, g.hits.status];
+            submitted.push((range.clone(), g.hits.rays.count, self.submit(p, &sub)?));
+        }
+        let mut run = None;
+        for (range, n, sub) in submitted {
+            let r = self.finish(sub)?;
+            let f = self.backend.read_view(r.outputs[0].view())?;
+            let st = self.backend.read_view(r.outputs[1].view())?;
+            read(range, f.as_slice::<f32>()?, st.as_slice::<u32>()?, n)?;
+            division::merge_run(&mut run, r.run_info);
+        }
+        Ok((groups.len(), run.unwrap()))
+    }
 }
 pub fn footprint_job(
     b: &dyn ComputeBackend,
@@ -421,32 +481,13 @@ pub fn footprint_job(
         .resolve(t.num_wavelengths(), t.system().primary_wavelength)?;
     let pupil = pupil_points(s.pattern, s.rings, s.seed);
     let pts: Vec<_> = fields.iter().map(|&f| t.field(f).point).collect();
+    let division = Division::selected()?;
     let geo = Geometry::new(b, t, ctx)?;
-    let mut p = ResidentPlan::new(t.system().snapshot.clone());
-    p.settings = serde_json::to_value(s).unwrap();
-    p.seed = matches!(
+    let seed = matches!(
         s.pattern,
         crate::util::PupilPattern::Random | crate::util::PupilPattern::Dithered
     )
     .then_some(s.seed);
-    let g = geo.append_grid(
-        &mut p,
-        &pts,
-        &wls,
-        &pupil,
-        t.aiming(),
-        s.surface,
-        true,
-        false,
-        ctx,
-    )?;
-    p.outputs = vec![g.hits.rays.floats, g.hits.status];
-    let r = geo.run(p, &ctx.subrange(0.0, 0.7))?;
-    let f = b.read_view(r.outputs[0].view())?;
-    let f = f.as_slice::<f32>()?;
-    let st = b.read_view(r.outputs[1].view())?;
-    let st = st.as_slice::<u32>()?;
-    let n = g.hits.rays.count;
     let mut extent = [
         f64::INFINITY,
         f64::NEG_INFINITY,
@@ -455,42 +496,56 @@ pub fn footprint_job(
     ];
     let mut max_r = f64::NAN;
     let mut rays = Vec::new();
-    for (fi, &field) in fields.iter().enumerate() {
-        for (wi, &wavelength) in wls.iter().enumerate() {
-            ctx.check()?;
-            let mut fr = FootprintRays {
-                field,
-                wavelength,
-                points: Vec::new(),
-                clipped: Vec::new(),
-                launched: pupil.len(),
-                lost_before: 0,
-            };
-            let start = (fi * wls.len() + wi) * pupil.len();
-            for (i, &code) in st.iter().enumerate().skip(start).take(pupil.len()) {
-                let q = [value(f, n, i, 0), value(f, n, i, 1)];
-                if code == 0 {
-                    fr.points.push(q);
-                    extent = [
-                        extent[0].min(q[0]),
-                        extent[1].max(q[0]),
-                        extent[2].min(q[1]),
-                        extent[3].max(q[1]),
-                    ];
-                    max_r = max_r.max(q[0].hypot(q[1]));
-                } else if code & MKL_RAY_CODE_MASK == MKL_RAY_VIGNETTED
-                    && (code >> MKL_RAY_SURFACE_SHIFT) as usize == s.surface
-                {
-                    fr.clipped.push(q);
-                } else {
-                    fr.lost_before += 1;
+    let (plans, mut run) = geo.grid_groups(
+        t,
+        &pts,
+        &wls,
+        &pupil,
+        s.surface,
+        division,
+        &serde_json::to_value(s).unwrap(),
+        seed,
+        ctx,
+        |range, f, st, n| {
+            for (gi, &field) in fields[range].iter().enumerate() {
+                for (wi, &wavelength) in wls.iter().enumerate() {
+                    ctx.check()?;
+                    let mut fr = FootprintRays {
+                        field,
+                        wavelength,
+                        points: Vec::new(),
+                        clipped: Vec::new(),
+                        launched: pupil.len(),
+                        lost_before: 0,
+                    };
+                    let start = (gi * wls.len() + wi) * pupil.len();
+                    for (i, &code) in st.iter().enumerate().skip(start).take(pupil.len()) {
+                        let q = [value(f, n, i, 0), value(f, n, i, 1)];
+                        if code == 0 {
+                            fr.points.push(q);
+                            extent = [
+                                extent[0].min(q[0]),
+                                extent[1].max(q[0]),
+                                extent[2].min(q[1]),
+                                extent[3].max(q[1]),
+                            ];
+                            max_r = max_r.max(q[0].hypot(q[1]));
+                        } else if code & MKL_RAY_CODE_MASK == MKL_RAY_VIGNETTED
+                            && (code >> MKL_RAY_SURFACE_SHIFT) as usize == s.surface
+                        {
+                            fr.clipped.push(q);
+                        } else {
+                            fr.lost_before += 1;
+                        }
+                    }
+                    rays.push(fr);
                 }
             }
-            rays.push(fr);
-        }
-    }
+            Ok(())
+        },
+    )?;
+    division::mark(&mut run, division, plans);
     let (sd, sd_run) = geo.semi_diameters(&Default::default(), &ctx.subrange(0.7, 0.95))?;
-    let mut run = r.run_info;
     run.duration_ms += sd_run.duration_ms;
     run.settings["sizing"] = sd_run.settings;
     let extent = if extent[0].is_finite() {
