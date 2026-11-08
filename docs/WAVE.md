@@ -520,10 +520,25 @@ scales the limits (calibration: 0 keeps every transform on the device,
 `inf` on the host). Image simulation computes the relative-illumination
 rows beside the device work: during device tracing, or during the device
 PSFs when the host traces. `cpu-aim` writes host-aimed start rays in the
-device's generated-ray layout (`MKL_AIM_OUTSIDE` marks samples the
-reference does not trace and failed aims), traces chief, lattice and saddle
-probes with one plan each and runs the device rim bisection one plan per
-round, each round's probes aimed on the host.
+device's generated-ray layout with the geometric adapters' writer
+(`mklight_analysis::gpu::aim::fill_host_rays`; `MKL_AIM_OUTSIDE` marks
+samples the reference does not trace and failed aims), traces chief,
+lattice and saddle probes with one plan each and runs the device rim
+bisection one plan per round, each round's probes aimed on the host.
+
+A second study key, `wave_threads` (`MKLIGHT_SPLIT_WAVE_THREADS`), splits
+the CPU threads of every design as `PREP:HOST:DEVICES` (`*` keeps a part's
+default): host preparation (lattices, resampling, refinements) on its own
+pool of `PREP` threads, host transforms (`co-op`'s host worker, `by-size`'s
+small fields) on their own pool of `HOST` threads, and `DEVICES` chains or
+device workers. Unset, preparation and host transforms share the global
+thread pool and `MKLIGHT_WAVE_CONCURRENT` (4) device chains run. Results
+do not depend on the split.
+
+The CPU reference runs fields, wavelengths, focus planes, image-grid nodes
+and Zernike fits side by side on the thread pool (each transform parallel
+inside) and merges every sum, warning and error in the serial order, so its
+results are bit-identical for any thread count.
 
 ### Pupils and automatic sampling
 
