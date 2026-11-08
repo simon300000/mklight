@@ -533,7 +533,11 @@ fn mtf_tiles(
     let weights: Vec<f64> = (0..group.len())
         .map(|fi| mom[fi * 10 + 1].to_f64())
         .collect();
-    let tile = ((1 << 20) / (2 * n).max(1)).clamp(1, freqs.len());
+    // Characteristic terms per tile: 2²⁰, or one frequency pair of every
+    // field when that is larger (as for the whole grid at once), so field
+    // groups add no tile plans over the fused division.
+    let budget = (1usize << 20).max(2 * fields.len() * len);
+    let tile = (budget / (2 * n).max(1)).clamp(1, freqs.len());
     for start in (0..freqs.len()).step_by(tile) {
         ctx.check()?;
         let end = (start + tile).min(freqs.len());
