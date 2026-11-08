@@ -4,17 +4,20 @@
 // per-step query, factor or coating record is stored.
 #include "trace_shared.h"
 constant uint mkl_ghost_features [[function_constant(MKL_GHOST_FEATURES_CONSTANT)]];
+// Feature bits taken from the run's parameters instead (0 unless set).
+constant uint mkl_ghost_dynamic_value [[function_constant(MKL_GHOST_DYNAMIC_CONSTANT)]];
+constant uint mkl_ghost_dynamic = is_function_constant_defined(mkl_ghost_dynamic_value) ? mkl_ghost_dynamic_value : 0u;
 // Reuse the P7 implementation verbatim (as stray_ops.metal does).
 namespace ghost_coating {
 #include "radiometry.metal"
 }
-static MklCoatingValue ghost_coating_value(uint index,device const MklCoatingSpec* specs,device const MklCoatingLayer* layers,constant MklGhostTraceParams& p,float2 cosine){
+static MklCoatingValue ghost_coating_value(uint index,device const MklCoatingSpec* specs,device const MklCoatingLayer* layers,constant MklGhostTraceParams& p,float2 cosine,uint features){
  MklCoatingValue out={};out.status=MKL_RAD_REFERENCE;
  if(index>=p.specs)return out;
  MklCoatingSpec c=specs[index];
  if(c.offset>p.layers||c.count>p.layers-c.offset||c.count>MKL_RAD_MAX_LAYERS)return out;
  ghost_coating::RD ci(cosine);
- if(mkl_ghost_features&MKL_GHOST_FEATURE_FILMS)return ghost_coating::revaluate(c,layers,ci);
+ if(features&MKL_GHOST_FEATURE_FILMS)return ghost_coating::revaluate(c,layers,ci);
  // Constant kinds let the compiler remove the film matrices in this variant.
  switch(c.kind){
   case MKL_RAD_BARE:c.kind=MKL_RAD_BARE;return ghost_coating::revaluate(c,layers,ci);
@@ -44,6 +47,7 @@ kernel void mkl_ghost_trace(constant MklPackedHeader* headers [[buffer(0)]],
  device const MklCoatingSpec* specs [[buffer(7)]], device const MklCoatingLayer* layers [[buffer(8)]],
  constant MklGhostTraceParams& p [[buffer(9)]], uint tid [[thread_position_in_grid]]) {
  uint i=p.offset+tid;if(i>=p.end)return;
+ uint features=(mkl_ghost_features&~mkl_ghost_dynamic)|(p.reserved&mkl_ghost_dynamic);
  MklGhostProbe q=probes[i];MklGhostValue v={};v.weight_s=float2(1,0);v.weight_p=float2(1,0);v.internal=float2(1,0);
  uint plane=offsets[p.paths],a=offsets[q.path],len=offsets[q.path+1]-a;
  float2 one=float2(1,0),ws=one,wp=one,absorb=float2(0);
@@ -82,10 +86,10 @@ kernel void mkl_ghost_trace(constant MklPackedHeader* headers [[buffer(0)]],
     for(uint j=0;j<3;j++)next.v[j]=mkl_df_add(mkl_df_mul(dir.v[j],mu),mkl_df_mul_f32(hit.g.v[j],b));next=mkl_renorm_along(mkl_renorm_along(next,hit.g),hit.g);
    }
   }
-  if(mkl_ghost_features&MKL_GHOST_FEATURE_COATINGS){
+  if(features&MKL_GHOST_FEATURE_COATINGS){
    float2 x=one,y=one;
    if(st.channel==1||st.channel==2){
-    MklCoatingValue coat=ghost_coating_value(st.coating,specs,layers,p,cosine);
+    MklCoatingValue coat=ghost_coating_value(st.coating,specs,layers,p,cosine,features);
     if(coat.status!=MKL_RAD_OK){v.status=MKL_GHOST_REFERENCE;break;}
     if(st.channel==1){x=coat.powers[2];y=coat.powers[3];}else{x=coat.powers[0];y=coat.powers[1];}
    }else if(st.channel==3){x=mkl_df_sub(one,p.sensor_reflectance);y=x;}else if(st.channel==4){x=p.sensor_reflectance;y=x;}
@@ -93,7 +97,7 @@ kernel void mkl_ghost_trace(constant MklPackedHeader* headers [[buffer(0)]],
   }
   dir=next;v.done++;
  }
- if(mkl_ghost_features&MKL_GHOST_FEATURE_COATINGS){v.weight_s=ws;v.weight_p=wp;v.internal=float2(mkl_exp(-absorb.x),0);}
+ if(features&MKL_GHOST_FEATURE_COATINGS){v.weight_s=ws;v.weight_p=wp;v.internal=float2(mkl_exp(-absorb.x),0);}
  for(uint j=0;j<3;j++){v.position[j]=pos.v[j];v.direction[j]=dir.v[j];}output[i]=v;
 }
 

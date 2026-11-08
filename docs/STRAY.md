@@ -502,7 +502,15 @@ uncovered. Shared reference boundary checks reject unrepresentable coverage.
 
 Immutable mode/material/shape features specialize the transport shader so
 unused split, film, extended-sag and scatter state does not burden other
-scenes. This changes no physical decisions.
+scenes. This changes no physical decisions. The work-split study key
+`stray_kernel` selects how: `specialized` (default; every feature a
+function constant, up to 108 pipelines), `partial` (split mode, thin films
+and extended sags constants, 8 pipelines; analog/weighted, DOE presence and
+order kind, scatter presence and BSDF kind uniform branches) or `uber` (one
+pipeline, every feature a branch on the run's feature word). The kernel folds
+the constant and the run's bits into one mask, so the designs share the
+source and produce identical records. Every design compiles to the same
+register-limited pipeline (384 threads per threadgroup on an M2 Pro).
 
 Each source has a resident continuation stack, ledger, detection journal and
 draw cursor. Up to 16,384 persistent lanes claim fresh sources and paused
@@ -562,6 +570,59 @@ device scene builds. The actual-Metal harnesses in `tests/p10_support` are
 macOS test targets of this crate; the paired benchmarks there are ignored by
 default. Provisional busy-host timings do not establish an engine routing
 threshold.
+
+### Divisions between the CPU and the GPU
+
+`gpu::Design` (work-split study key `stray`, `gpu::run_design`,
+`gpu::analyze_design`) selects how a run divides the transport:
+
+| design | device | CPU |
+|---|---|---|
+| `gpu-tally` | transport and detector estimators (above) | integer keys, final assembly |
+| `cpu-tally` | transport of every source to completion | tally of the device records in place; continuation of sources whose stack or detection journal is full; retrace of sources that need reference arithmetic |
+| `gpu-head` | the first `TransportOptions::head_events` (64) events of every source | as `cpu-tally`, plus the continuation of longer path trees |
+| `wavefront` | as `gpu-head`, as a wavefront: per bounce, every live source advances by one event in three kernels (pop, closest hit, interaction) over device-compacted lists with indirect dispatch | as `gpu-head` |
+| `cosplit` (default) | `wavefront` on a fixed share of the source chunks | the reference trace of the other chunks at the same time, and the `wavefront` work |
+
+In every design but `gpu-tally` the device writes its detection journal,
+ledgers and per-source stacks (handoff mode, `ops::Transport::stack_output`)
+into shared memory and the CPU reads them in place. A source whose stack or
+journal is full, or that reaches the head budget, stops on the device before
+its next event with a consistent stack, ledger and draw cursor; the CPU tracer
+continues it from there (`Philox::seek` to the device cursor), so the paths
+and draws are those of the reference. Its estimator terms combine the device
+ledger and the CPU continuation as one source. Chunks of `chunk_rays` sources
+are tallied in parallel, each in source order, and folded in chunk order as in
+the reference; a chunk that spans two plans continues in the next. Two plans
+are in flight: the device transports plan `k + 1` while the CPU finishes plan
+`k`. A capacity limit is no longer a reason for a CPU fallback.
+
+Which part of a source runs where depends only on the source and on fixed
+options, never on timing, so a seed gives bit-identical results. The device
+share of `cosplit` (`TransportOptions::gpu_share`, else the study key
+`stray_share`) is a fixed rule of the scene when not set: 0.2, or 0.08 with
+iteratively intersected sags (`gpu::hybrid::default_share`); device chunks come in units of up to one
+plan, spread evenly. With a share of 0 `cosplit` is the reference bit for bit,
+with a share of 1 it is `gpu-head`. The persistent and wavefront kernels
+produce identical records. Options that move the split (head budget, stack and
+journal capacity) change results only by the rounding of the part that moved
+(f64 instead of double-float).
+
+The hybrid analysis adapter builds the scene, starts the device transport and
+then runs the obstruction checks of the system fields and the source's primary
+reference on the CPU beside it (`StraySystem::build_scene`); the result,
+warnings and progress are those of the sequential order.
+
+Measured on a heavily loaded M2 Pro (provisional): the device's double-float
+transport kernel is register-limited; the same kernel compiled as plain f32
+runs about 13 times faster. The closest-hit search dominates scenes with
+iteratively intersected sags: two even aspheres in a 29-surface lens make the
+cast kernel 85 % of the wavefront's device time, and one grazing ray's sag
+scan takes up to about 3 ms on the device. Device transport reaches about
+4 M events/s on the Double Gauss and 1 M events/s on that lens, against about
+16 M and 10 M events/s for the 12-thread reference, so only `cosplit` with a
+small device share is faster than the reference (the Double Gauss at 400 000
+rays: 413 against 633 ms with a share of 0.25).
 
 The provisional Apple M2 Pro native-analysis benchmark (33 paired workloads,
 median of three warm runs, busy shared host) still prefers the CPU f64 route

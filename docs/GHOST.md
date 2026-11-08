@@ -438,7 +438,10 @@ included in the ghost kernel) at its incidence and folds the s and p
 channel powers, DOE efficiency and signed Beer–Lambert absorption in step
 order inside the trace, so no per-step query, factor or coating record is
 stored or re-read. A function constant compiles the thin-film matrices only
-when the run has film coatings. There is no independently interpolated
+when the run has film coatings (work-split study key `ghost_kernel`:
+`specialized`, the default, makes coating folding and films constants, 3
+pipelines; `partial` keeps folding a constant and branches on films, 2;
+`uber` branches on both, 1; the records are identical). There is no independently interpolated
 coating table or second path enumerator. Probes flagged by P7, and
 numerical trace failures, are completed with the reference and counted.
 Clipping tests whose margin lies within 2⁻²⁸ (relative, of r², |x| or the
@@ -483,6 +486,32 @@ values are filled into sparse shared records;
 unaffected resident probes are reused without copying their batch.
 Cancellation checks precede every reference-completion block; cancellation
 never starts a replacement CPU job.
+
+**Divisions between host and device** (`gpu::Design`, work-split study key
+`ghost`, `gpu::ghost_irradiance_design`):
+
+| design | device | host |
+|---|---|---|
+| `level-sync` | every level's probes of all paths, in tiles | refines all paths level by level; completes one tile while the device traces the next |
+| `pipelined` | tiles of one group of paths at a time | the paths form four groups (contiguous path indices) that refine independently: the host completes, deduplicates and splits one group, and gathers a finished group's leaves, while the device traces another group's tile; the first group with a tile ready goes first, so groups finish one after another |
+| `shared` (default) | `pipelined` on most paths | the CPU reference traces a fixed share (20 %) of the path groups of §5 (adjacent in step order, shared prefixes) at the same time |
+
+Grouping never changes a result: each path's probes, cache order and
+leaves, and the order of leaves in the map chain, are those of one group, and
+`level-sync` and `pipelined` agree bit for bit (tested). In `shared` the
+primary stays on the device; the paths the CPU traces are bit-identical to the
+reference, the others to `pipelined` (tested). `RunInfo.settings.gpu` records
+the design, the CPU paths and the wall seconds of the host stages
+(`host_seconds`: deduplication, device waits, outcomes, splits, leaves,
+maps); `settings.timings` has the run's stages on either backend.
+
+Measured on a heavily loaded M2 Pro (provisional): on a 29-surface lens with
+276 two-reflection ghosts (58 M probes), the device traces for about 9 s and
+the host stages of `level-sync` add about 7 s that the device waits for
+(leaves, splits and deduplication, outcome classification); `pipelined`
+overlaps most of them and `shared` also moves a share of the probes and their
+host work to the CPU. On the Double Gauss: CPU 1.39 s, `level-sync` 0.86 s,
+`pipelined` 0.70 s.
 
 Lattice plans are tiled at 2²⁰ probes across paths, fields and wavelengths
 (about 170 MB of launch, probe and value records); per-probe storage does

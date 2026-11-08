@@ -288,7 +288,10 @@ pub fn accesses(r: &Request) -> Access {
         },
         Request::Transport(r) => Access {
             reads: r.reads(),
-            writes: vec![r.output, r.ledger],
+            writes: [r.output, r.ledger]
+                .into_iter()
+                .chain(r.stack_output)
+                .collect(),
             ..Default::default()
         },
     }

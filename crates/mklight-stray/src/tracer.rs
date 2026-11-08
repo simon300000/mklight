@@ -259,14 +259,15 @@ const SCAT_R: usize = 1;
 const SPEC_T: usize = 2;
 const SCAT_T: usize = 3;
 
+/// One path in flight: a ray, its weight, medium and history.
 #[derive(Clone, Copy, Debug)]
-struct State {
-    ray: Ray,
-    w: f64,
-    medium: MediumId,
-    hist: History,
-    events: u32,
-    splits: u32,
+pub(crate) struct State {
+    pub(crate) ray: Ray,
+    pub(crate) w: f64,
+    pub(crate) medium: MediumId,
+    pub(crate) hist: History,
+    pub(crate) events: u32,
+    pub(crate) splits: u32,
 }
 
 /// Why a chosen branch produced no ray.
@@ -323,7 +324,7 @@ fn scatter_dir(bsdf: &Bsdf, spec: Vec3, n_out: Vec3, rng: &mut Philox) -> Option
     Some((t1 * b[0] + t2 * b[1] + n_out * bz).normalized())
 }
 
-struct Tracer<'a, C: RayCaster> {
+pub(crate) struct Tracer<'a, C: RayCaster> {
     scene: &'a Scene,
     caster: &'a C,
     settings: &'a StraySettings,
@@ -336,7 +337,43 @@ struct Tracer<'a, C: RayCaster> {
     ambient_like: Vec<bool>,
 }
 
-impl<C: RayCaster> Tracer<'_, C> {
+impl<'a, C: RayCaster> Tracer<'a, C> {
+    pub(crate) fn new(
+        scene: &'a Scene,
+        caster: &'a C,
+        source: &'a SourceSpec,
+        settings: &'a StraySettings,
+    ) -> Self {
+        let total: f64 = scene.wavelength_weights.iter().sum();
+        let mut acc = 0.0;
+        let wl_cdf: Vec<f64> = scene
+            .wavelength_weights
+            .iter()
+            .map(|w| {
+                acc += w / total;
+                acc
+            })
+            .collect();
+        Tracer {
+            scene,
+            caster,
+            settings,
+            source,
+            w0: source.power() / settings.rays as f64,
+            wl_cdf,
+            ambient_like: scene
+                .media
+                .iter()
+                .map(|m| *m == scene.media[scene.ambient as usize])
+                .collect(),
+        }
+    }
+
+    /// Weight of a source ray.
+    pub(crate) fn source_weight(&self) -> f64 {
+        self.w0
+    }
+
     fn pick_wavelength(&self, rng: &mut Philox) -> usize {
         if self.wl_cdf.len() == 1 {
             return 0;
@@ -483,12 +520,12 @@ impl<C: RayCaster> Tracer<'_, C> {
         Ok(s)
     }
 
-    fn trace_ray(&self, index: u64, tally: &mut ChunkTally, stack: &mut Vec<State>) {
+    /// Traces source ray `index` and all its branches.
+    pub(crate) fn trace_ray(&self, index: u64, tally: &mut ChunkTally, stack: &mut Vec<State>) {
         let scene = self.scene;
         let set = self.settings;
         let mut rng = Philox::new(set.seed, index);
         let wl = self.pick_wavelength(&mut rng);
-        let lambda = scene.wavelengths_um[wl];
         let ray = self.source.sample(&mut rng);
         let w0 = self.w0;
         tally.rays += 1;
@@ -503,6 +540,39 @@ impl<C: RayCaster> Tracer<'_, C> {
             events: 0,
             splits: 0,
         });
+        self.trace_paths(wl, &mut rng, tally, stack);
+    }
+
+    /// Continues source ray `index` from a pending stack (top last) whose
+    /// next random draw is `draws`: the paths and draws a full trace would
+    /// produce from that point. The caller books the source's emission and
+    /// the contributions made before.
+    pub(crate) fn resume(
+        &self,
+        index: u64,
+        draws: u64,
+        wl: usize,
+        tally: &mut ChunkTally,
+        stack: &mut Vec<State>,
+    ) {
+        let mut rng = Philox::new(self.settings.seed, index);
+        rng.seek(draws);
+        self.trace_paths(wl, &mut rng, tally, stack);
+    }
+
+    /// Depth-first transport of the paths on `stack` at wavelength `wl`.
+    fn trace_paths(
+        &self,
+        wl: usize,
+        rng: &mut Philox,
+        tally: &mut ChunkTally,
+        stack: &mut Vec<State>,
+    ) {
+        let scene = self.scene;
+        let set = self.settings;
+        let lambda = scene.wavelengths_um[wl];
+        let w0 = self.w0;
+        let rng = &mut *rng;
         let prims = scene.primitives();
         let w_rr = set.roulette_threshold * w0;
         let w_split = set.split_ceiling * w0;
@@ -746,7 +816,7 @@ impl<C: RayCaster> Tracer<'_, C> {
                         }
                         (pick, s.w)
                     }
-                    SplitMode::Weighted { rare_floor } => weighted(s, rare_floor, &mut rng, tally),
+                    SplitMode::Weighted { rare_floor } => weighted(s, rare_floor, &mut *rng, tally),
                     SplitMode::Split {
                         max_splits,
                         rare_floor,
@@ -760,7 +830,7 @@ impl<C: RayCaster> Tracer<'_, C> {
                                     let w = s.w * pj;
                                     let mut c = s;
                                     c.splits += 1;
-                                    match self.apply(c, w, j, &ev, &mut rng) {
+                                    match self.apply(c, w, j, &ev, &mut *rng) {
                                         Ok(c) if first.is_none() => first = Some(c),
                                         Ok(c) => children[j] = Some(c),
                                         Err(lost) => lost.book(tally, w),
@@ -773,24 +843,24 @@ impl<C: RayCaster> Tracer<'_, C> {
                             match first {
                                 Some(c) => {
                                     s = c;
-                                    self.roulette(&mut s, w_rr, &mut rng, tally);
+                                    self.roulette(&mut s, w_rr, &mut *rng, tally);
                                     continue;
                                 }
                                 None => break,
                             }
                         }
-                        weighted(s, rare_floor, &mut rng, tally)
+                        weighted(s, rare_floor, &mut *rng, tally)
                     }
                 };
                 let (j, w) = next;
-                match self.apply(s, w, j, &ev, &mut rng) {
+                match self.apply(s, w, j, &ev, &mut *rng) {
                     Ok(ns) => s = ns,
                     Err(lost) => {
                         lost.book(tally, w);
                         break;
                     }
                 }
-                if !self.roulette(&mut s, w_rr, &mut rng, tally) {
+                if !self.roulette(&mut s, w_rr, &mut *rng, tally) {
                     break;
                 }
                 // Weight window: split heavy paths into equal copies.
@@ -907,29 +977,7 @@ pub fn run_with<C: RayCaster>(
 ) -> MkResult<StrayResult> {
     validate_run(scene, source, settings)?;
     let timer = RunTimer::start();
-    let total: f64 = scene.wavelength_weights.iter().sum();
-    let mut acc = 0.0;
-    let wl_cdf: Vec<f64> = scene
-        .wavelength_weights
-        .iter()
-        .map(|w| {
-            acc += w / total;
-            acc
-        })
-        .collect();
-    let tracer = Tracer {
-        scene,
-        caster,
-        settings,
-        source,
-        w0: source.power() / settings.rays as f64,
-        wl_cdf,
-        ambient_like: scene
-            .media
-            .iter()
-            .map(|m| *m == scene.media[scene.ambient as usize])
-            .collect(),
-    };
+    let tracer = Tracer::new(scene, caster, source, settings);
     let pixels = (scene.detector.nx * scene.detector.ny) as usize;
     let mut tally = StrayTally::new(scene.num_wavelengths(), pixels);
     let n_chunks = settings.rays.div_ceil(settings.chunk_rays as u64);
