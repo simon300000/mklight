@@ -281,6 +281,22 @@ fn norm_exponent(series: &[&[f64]], hint_radius: f64, first: i32, step: i32) -> 
         .find(|&e| (-60..=60).contains(&e) && ok(e))
 }
 
+/// The work-split key of the even-asphere slope precision.
+pub const TRACE_SLOPE_KEY: &str = "trace_slope";
+
+/// Whether even aspheres are packed for the double-float slope
+/// (`MKL_SURF_DF_SLOPE`): the `trace_slope` design `df` (the default) or
+/// `f32` (the f32 polynomial slope of the original kernel).
+pub fn df_slope() -> MkResult<bool> {
+    match mklight_core::split::variant(TRACE_SLOPE_KEY).as_deref() {
+        None | Some("df") => Ok(true),
+        Some("f32") => Ok(false),
+        Some(other) => Err(MkError::InvalidParam(format!(
+            "unknown trace_slope design '{other}' (df, f32)"
+        ))),
+    }
+}
+
 /// `c_j·2^(e(first + step·j))` (exact: powers of two).
 fn normalise(c: &[f64], e: i32, first: i32, step: i32) -> Vec<f64> {
     c.iter()
@@ -326,6 +342,9 @@ fn pack_legacy(
             coefficients,
         } => {
             p.shape = MKL_SHAPE_EVEN_ASPHERE;
+            if df_slope()? {
+                p.flags |= MKL_SURF_DF_SLOPE;
+            }
             p.curvature = f32_checked(*curvature, &what("curvature"))?;
             p.conic = f32_checked(*conic, &what("conic"))?;
             p.curvature_lo = normal_or_zero((curvature - p.curvature as f64) as f32);
@@ -917,7 +936,8 @@ impl PackedSystem {
             | MKL_SURF_APERTURE_FROM_SD
             | MKL_SURF_OBJECT
             | MKL_SURF_IMAGE
-            | MKL_SURF_HAS_SAG_OVERLAY;
+            | MKL_SURF_HAS_SAG_OVERLAY
+            | MKL_SURF_DF_SLOPE;
         for (i, s) in self.surfaces.iter().enumerate() {
             let bad = |m: &str| bad(format!("surface {i}: {m}"));
             if s.shape > MKL_SHAPE_ZERNIKE {
