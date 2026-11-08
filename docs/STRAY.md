@@ -629,6 +629,23 @@ the CPU before the event (`Ledger::status` 6: the state goes back on the
 stack, no draw consumed), and the CPU continues the source; `f32-grazing`
 combines both.
 
+**Even-asphere evaluation on the device** (bits 2-3 of
+`ops::Transport::sag_mode`, study key `stray_asphere`): `jet` (default)
+evaluates every extended sag by the jets of `surface_math.h`. On an even
+asphere whose sag is the plain radial form (the stray packing's zero overlay)
+the radial forms evaluate `S(u) = c·u/(1 + w) + P(u)`, `u = x² + y²`, with
+the gradient `2S'(u)·(x, y)`: `radial-scan` only in the f32 pre-scan (the
+records of `jet`); `radial` also in double-float, with `P` and `P'` from the
+trace's double-float slope (`mkl_asphere_poly_dp_df` in `trace_shared.h`);
+`radial-newton` as `radial`, with each bracketed root located in f32 and
+polished by two double-float Newton steps as the trace refines an asphere
+hit, and a sign change that is clear in f32 solved without the cell's
+double-float end points. `radial` and `radial-newton` agree with `jet` to
+double-float rounding, not bit for bit (no CPU specification). The trace's
+`trace_slope` key packs `MKL_SURF_DF_SLOPE` into the stray surfaces too, but
+the stray kernels never read it: their sag slope is double-float in every
+mode.
+
 **CPU stages.** The CPU path overlaps the obstruction checks of the system
 fields and the source's primary reference with the transport (all three are
 parallel, none fills the cores alone), checks the system fields in parallel,

@@ -71,6 +71,25 @@ fn sag_modes_and_thread_budgets() {
         assert_eq!(scan.detector, fast.detector, "{name}");
         let persistent = run(&[("stray_sag", "f32-scan")], gpu::Design::CpuTally);
         assert_eq!(scan.energy, persistent.energy, "{name}");
+        // So does the radial f32 pre-scan of an even asphere; the radial
+        // double-float forms agree with the reference.
+        let radial = run(&[("stray_asphere", "radial-scan")], gpu::Design::Wavefront);
+        assert_eq!(scan.energy, radial.energy, "{name}");
+        assert_eq!(scan.detector, radial.detector, "{name}");
+        for mode in ["radial", "radial-newton"] {
+            compare(
+                &cpu,
+                &run(&[("stray_asphere", mode)], gpu::Design::Wavefront),
+            );
+        }
+        let newton = run(
+            &[
+                ("stray_sag", "f32-grazing"),
+                ("stray_asphere", "radial-newton"),
+            ],
+            gpu::Design::CpuTally,
+        );
+        compare(&cpu, &newton);
         // Long scans continue on the CPU: the reference's physics.
         for (design, mode) in [
             (gpu::Design::Wavefront, "cpu-grazing"),

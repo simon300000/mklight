@@ -38,6 +38,10 @@ pub const SHARE_KEY: &str = "stray_share";
 /// (`ops::Transport::sag_mode`): `f32-scan` (default), `scan`,
 /// `cpu-grazing` or `f32-grazing` (both).
 pub const SAG_KEY: &str = "stray_sag";
+/// Study key of the device's even-asphere evaluation (bits 2-3 of
+/// `ops::Transport::sag_mode`): `jet` (default), `radial-scan`, `radial` or
+/// `radial-newton`.
+pub const ASPHERE_KEY: &str = "stray_asphere";
 
 /// Study key of the threads of the CPU share of [`Design::CoSplit`]: a
 /// number of threads for a pool of its own (unset: the global pool, which
@@ -63,19 +67,32 @@ pub(crate) fn share_pool(key: &str) -> MkResult<Option<rayon::ThreadPool>> {
     }
 }
 
-/// The selected extended-sag intersection mode.
+/// The selected extended-sag intersection mode and even-asphere evaluation
+/// (`ops::Transport::sag_mode`).
 pub fn sag_mode() -> MkResult<u32> {
-    Ok(match mklight_core::split::variant(SAG_KEY).as_deref() {
-        Some("scan") => 0,
-        None | Some("f32-scan") => 1,
-        Some("cpu-grazing") => 2,
-        Some("f32-grazing") => 3,
+    let asphere = match mklight_core::split::variant(ASPHERE_KEY).as_deref() {
+        None | Some("jet") => 0,
+        Some("radial-scan") => 1,
+        Some("radial") => 2,
+        Some("radial-newton") => 3,
         Some(other) => {
             return Err(MkError::InvalidModel(format!(
-                "unknown stray sag mode '{other}' (scan, f32-scan, cpu-grazing, f32-grazing)"
+                "unknown stray asphere mode '{other}' (jet, radial-scan, radial, radial-newton)"
             )));
         }
-    })
+    };
+    Ok(asphere << 2
+        | match mklight_core::split::variant(SAG_KEY).as_deref() {
+            Some("scan") => 0,
+            None | Some("f32-scan") => 1,
+            Some("cpu-grazing") => 2,
+            Some("f32-grazing") => 3,
+            Some(other) => {
+                return Err(MkError::InvalidModel(format!(
+                    "unknown stray sag mode '{other}' (scan, f32-scan, cpu-grazing, f32-grazing)"
+                )));
+            }
+        })
 }
 
 /// Detections a source keeps on the device before the CPU continues it.

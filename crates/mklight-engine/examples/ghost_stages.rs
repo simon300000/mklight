@@ -7,7 +7,8 @@
 //! ```
 //!
 //! `DESIGNS` is a comma-separated list: `cpu` and `ghost` variants
-//! (`default`, `level-sync`, `pipelined`, `shared`).
+//! (`default`, `level-sync`, `pipelined`, `shared`), each optionally with
+//! `+KEY=VARIANT` selections of its own (e.g. `default+trace_slope=f32`).
 
 use std::path::Path;
 use std::time::Instant;
@@ -56,11 +57,18 @@ fn main() {
             for (k, v) in &extra {
                 split::set(k, Some(v));
             }
-            if d != "cpu" && d != "default" {
-                split::set("ghost", Some(d));
+            // A column `DESIGN+KEY=VARIANT+...` adds its own selections.
+            let mut parts = d.split('+');
+            let design = parts.next().unwrap();
+            for kv in parts {
+                let (k, v) = kv.split_once('=').unwrap();
+                split::set(k, Some(v));
+            }
+            if design != "cpu" && design != "default" {
+                split::set("ghost", Some(design));
             }
             let (t, c0) = (Instant::now(), cpu_ms());
-            let r = if d == "cpu" {
+            let r = if design == "cpu" {
                 mklight_ghost::ghost_irradiance(&model, &settings, &ctx).unwrap()
             } else {
                 mklight_ghost::gpu::ghost_irradiance(&metal, &model, &settings, &ctx).unwrap()
@@ -74,7 +82,7 @@ fn main() {
                     .abs()
                     .max(((peak - p.1) / p.1).abs())
             });
-            if d == "cpu" && reference.is_none() {
+            if design == "cpu" && reference.is_none() {
                 reference = Some((r.total_flux_ratio, peak));
             }
             println!(

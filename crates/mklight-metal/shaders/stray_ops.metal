@@ -1,5 +1,6 @@
 #include "mklight_common.h"
 #include "surface_math.h"
+#include "trace_shared.h"
 constant uint mkl_stray_features [[function_constant(MKL_STRAY_FEATURES_CONSTANT)]];
 // Feature bits taken from the run's parameters instead of the constant: 0
 // (every feature specialised) unless the pipeline sets it. The kernel folds
@@ -104,35 +105,85 @@ static bool smask(uint mask,float2 a0,float2 a1,SV q){
   }
   return pass != ((mask&256)!=0);
 }
-static bool sgeval(constant MklStraySurfaceData &s,SV q,SD radius,thread SD &z,thread SD &gx,thread SD &gy){
+// Asphere modes (stray_asphere; reserved[2] bits 10-11): 0 the sag jets of
+// surface_math.h; on an even asphere whose sag is the plain radial form (its
+// overlay is the zero one the stray packing adds), 1 the f32 pre-scan in
+// the radial form S(u), u = x² + y², gradient 2S'(u)·(x, y) (the records of
+// mode 0), 2 also the double-float evaluations in that form, with P and P'
+// from the trace's mkl_asphere_poly_dp_df (trace_shared.h), 3 mode 2 with
+// each bracketed root located in f32 and polished by two double-float
+// Newton steps, as the trace refines an asphere hit (mkl_intersect_legacy).
+static bool sradial(constant MklStraySurfaceData &s){
+  constant MklPackedSurface &f=s.surface;
+  if(f.shape!=MKL_SHAPE_EVEN_ASPHERE||(f.flags&MKL_SURF_HAS_SAG_OVERLAY)==0u)return false;
+  constant float *d=reinterpret_cast<constant float*>(s.coefficients)+2ul*(f.coefficient_count-MKL_OVERLAY_COUNT);
+  for(uint k=MKL_OVERLAY_COS;k<MKL_OVERLAY_COUNT;k++)if(d[2*k]!=0.0f||d[2*k+1]!=0.0f)return false;
+  return true;
+}
+// S(u) = c·u/(1 + w) + P(u), w = √(1 − (1+k)c²u); 2S'(u) = c/w + 2P'(u).
+static bool sgeval_radial(constant MklPackedSurface &f,SD x,SD y,thread SD &z,thread SD &gx,thread SD &gy){
+  SD u=x*x+y*y,c(float2(f.curvature,f.curvature_lo)),kap=SD(float2(f.conic,f.conic_lo))+SD(1);
+  SD arg=SD(1)-kap*c*c*u;if(sv(arg)<0)return false;
+  SD w=ssqrt(arg);float2 p,dp;mkl_asphere_poly_dp_df(f,u.x,p,dp);
+  SD g=c/w+SD(2)*SD(dp);z=c*u/(SD(1)+w)+SD(p);gx=x*g;gy=y*g;return true;
+}
+static bool fgeval_radial(constant MklPackedSurface &f,float x,float y,thread float &z,thread float &g){
+  float u=x*x+y*y,c=f.curvature,arg=1.0f-(1.0f+f.conic)*c*c*u;if(arg<0)return false;
+  float w=sqrt(arg),rho=u*f.asphere_inv_norm2,p=0,dp=0;
+  for(int j=int(min(f.num_asphere,MKL_MAX_ASPHERE))-1;j>=0;--j){dp=dp*rho+f.asphere[j]*float(j+2);p=p*rho+f.asphere[j];}
+  z=c*u/(1.0f+w)+p*rho*rho;g=c/w+2.0f*dp*rho*f.asphere_inv_norm2;return true;
+}
+static bool sgeval(constant MklStraySurfaceData &s,SV q,SD radius,thread SD &z,thread SD &gx,thread SD &gy,bool rad=false){
   SD r=ssqrt(q.a[0]*q.a[0]+q.a[1]*q.a[1]),k=sv(r-radius)>0?radius/r:SD(1);
+  if(rad)return sgeval_radial(s.surface,q.a[0]*k,q.a[1]*k,z,gx,gy);
   MklJet<MklDf> j;
   if(!mkl_surface_eval<true>(s.surface,reinterpret_cast<constant float*>(s.coefficients),MklDf{(q.a[0]*k).x},MklDf{(q.a[1]*k).x},j))return false;
   z=SD(j.v.v);gx=SD(j.x.v);gy=SD(j.y.v);return true;
 }
-static bool sgat(constant MklStraySurfaceData &s,SV o,SV d,SD r,SD t,thread SD &f,thread SD &df){
-  SV q=sadd(o,sscale(d,t));SD z,gx,gy;if(!sgeval(s,q,r,z,gx,gy))return false;
+static bool sgat(constant MklStraySurfaceData &s,SV o,SV d,SD r,SD t,thread SD &f,thread SD &df,bool rad){
+  SV q=sadd(o,sscale(d,t));SD z,gx,gy;if(!sgeval(s,q,r,z,gx,gy,rad))return false;
   f=q.a[2]-z;df=d.a[2]-gx*d.a[0]-gy*d.a[1];return true;
 }
-static SD sgroot(constant MklStraySurfaceData &s,SV o,SV d,SD r,SD lo,SD hi,SD fa,SD tol){
+static SD sgroot(constant MklStraySurfaceData &s,SV o,SV d,SD r,SD lo,SD hi,SD fa,SD tol,bool rad){
   SD t=(lo+hi)*SD(0.5f);
-  for(uint i=0;i<64;i++){SD ft,dt;if(!sgat(s,o,d,r,t,ft,dt))return SD(NAN);if(sv(ft)==0)return t;
+  for(uint i=0;i<64;i++){SD ft,dt;if(!sgat(s,o,d,r,t,ft,dt,rad))return SD(NAN);if(sv(ft)==0)return t;
     if(sv(ft*fa)<0)hi=t;else lo=t;if(sv(hi-lo-tol)<=0)break;
     SD next=t-ft/dt;t=sv(next-lo)>0&&sv(next-hi)<0?next:(lo+hi)*SD(0.5f);
   }return (lo+hi)*SD(0.5f);
 }
 // Plain-f32 residual, slope and residual tolerance of the sag at ray
 // parameter t (the pre-scan of sag mode 1 only; never decides a root).
-static bool fgat(constant MklStraySurfaceData &s,float3 o,float3 d,float radius,float t,thread float &f,thread float &df,thread float &tf,thread float &td){
+static bool fgat(constant MklStraySurfaceData &s,float3 o,float3 d,float radius,float t,thread float &f,thread float &df,thread float &tf,thread float &td,bool rad){
   float3 q=o+d*t;float r=sqrt(q.x*q.x+q.y*q.y),k=r>radius?radius/r:1.0f;
   MklJet<float> j;
-  if(!mkl_surface_eval<true>(s.surface,reinterpret_cast<constant float*>(s.coefficients),q.x*k,q.y*k,j))return false;
+  if(rad){float g;if(!fgeval_radial(s.surface,q.x*k,q.y*k,j.v,g))return false;j.x=q.x*k*g;j.y=q.y*k*g;}
+  else if(!mkl_surface_eval<true>(s.surface,reinterpret_cast<constant float*>(s.coefficients),q.x*k,q.y*k,j))return false;
   f=q.z-j.v;df=d.z-j.x*d.x-j.y*d.y;
   // About 100 times the f32 rounding of each quantity.
   tf=2e-5f*(1+fabs(q.x)+fabs(q.y)+fabs(q.z)+fabs(j.v));td=1e-4f*(1+fabs(j.x)+fabs(j.y));
   return isfinite(f)&&isfinite(df);
 }
-// Sag modes (MklStrayTransportParams.reserved[2] bits 8-9): 0 the
+// Asphere mode 3: the root of a bracket [lo, hi] with a sign change
+// (f(lo) of the sign of fa), located by safeguarded f32 Newton and then
+// polished by two double-float Newton steps; the double-float bracketing of
+// sgroot if the polished root leaves the bracket.
+static SD sgnewton(constant MklStraySurfaceData &s,SV o,SV d,SD r,SD lo,SD hi,SD fa,SD tol){
+  float3 fo(o.a[0].x.x,o.a[1].x.x,o.a[2].x.x),fd(d.a[0].x.x,d.a[1].x.x,d.a[2].x.x);
+  float a=sv(lo),b=sv(hi),t=0.5f*(a+b);bool neg=sv(fa)<0;
+  for(uint i=0;i<16;i++){
+    float f,df,tf,td;if(!fgat(s,fo,fd,sv(r),t,f,df,tf,td,true))break;
+    if((f<0)==neg)a=t;else b=t;
+    float next=t-f/df;next=next>a&&next<b?next:0.5f*(a+b);
+    bool done=fabs(next-t)<=1e-6f*(1.0f+fabs(t));t=next;if(done)break;
+  }
+  SD tb(t);
+  for(uint it=0;it<2;it++){SD ft,dt;if(!sgat(s,o,d,r,tb,ft,dt,true))return sgroot(s,o,d,r,lo,hi,fa,tol,true);
+    SD step=ft/dt;if(isfinite(sv(step)))tb=tb-step;}
+  if(sv(tb-lo)<0||sv(tb-hi)>0)return sgroot(s,o,d,r,lo,hi,fa,tol,true);
+  return tb;
+}
+// Sag modes (MklStrayTransportParams.reserved[2] bits 8-9, asphere modes in
+// bits 10-11 above): 0 the
 // double-float cell scan; 1 a plain-f32 pre-scan that skips cells whose
 // residual and slope are clearly of one sign at both ends (no root and no
 // tangency the scan would find), every other cell exactly as mode 0; 2 mode 0,
@@ -150,39 +201,51 @@ static bool sgintersect(device const MklStrayPrimitive &p,constant MklStraySurfa
   if(sv(aa)>0){SD disc=bb*bb-aa*cc;if(sv(disc)<0)return false;SD root=ssqrt(disc),lo=(-bb-root)/aa,hi=(-bb+root)/aa;if(sv(lo-ta)>0)ta=lo;if(sv(hi-tb)<0)tb=hi;}
   else if(sv(cc)>0)return false;if(sv(ta-tb)>0)return false;
   SV oo=sadd(o,sscale(d,ta));SD len=tb-ta,step;uint n=clamp(uint(ceil(sv(len)*64/sv(r))),8u,512u);step=len/SD(float(n));
-  if(sag>=2&&n>MKL_STRAY_SAG_HANDOFF_CELLS){handoff=true;return false;}
+  uint mode=sag&3,am=(sag>>2)&3;
+  if(mode>=2&&n>MKL_STRAY_SAG_HANDOFF_CELLS){handoff=true;return false;}
   SD tol=SD(2e-13f)*(SD(1)+len+ssqrt(sdot(oo,oo))),a(0),fa,da;
-  bool fast=sag==1||sag==3,have=!fast;
+  bool rad=am!=0&&sradial(s),fast=mode==1||mode==3,have=!fast,rf=rad,rd=rad&&am>=2,newton=rad&&am==3;
   float3 fo(oo.a[0].x.x,oo.a[1].x.x,oo.a[2].x.x),fdir(d.a[0].x.x,d.a[1].x.x,d.a[2].x.x);
-  float fa32=0,da32=0,tfa=0,tda=0;bool oka=fast&&fgat(s,fo,fdir,sv(r),0.0f,fa32,da32,tfa,tda);
-  if(!fast&&!sgat(s,oo,d,r,a,fa,da))return false;
+  float fa32=0,da32=0,tfa=0,tda=0;bool oka=fast&&fgat(s,fo,fdir,sv(r),0.0f,fa32,da32,tfa,tda,rf);
+  if(!fast&&!sgat(s,oo,d,r,a,fa,da,rd))return false;
   for(uint i=1;i<=n;i++){
     SD b=i==n?len:step*SD(float(i)),fb,db;
     float fb32=0,db32=0,tfb=0,tdb=0;
+    SD roots[2]={SD(NAN),SD(NAN)};
+    bool clear=false;
     if(fast){
-      bool okb=fgat(s,fo,fdir,sv(r),sv(b),fb32,db32,tfb,tdb);
-      if(oka&&okb&&fabs(fa32)>tfa&&fabs(fb32)>tfb&&(fa32>0)==(fb32>0)&&fabs(da32)>tda&&fabs(db32)>tdb&&(da32>0)==(db32>0)){
+      bool okb=fgat(s,fo,fdir,sv(r),sv(b),fb32,db32,tfb,tdb,rf);
+      bool sure=oka&&okb&&fabs(fa32)>tfa&&fabs(fb32)>tfb;
+      if(sure&&(fa32>0)==(fb32>0)&&fabs(da32)>tda&&fabs(db32)>tdb&&(da32>0)==(db32>0)){
         a=b;fa32=fb32;da32=db32;tfa=tfb;tda=tdb;have=false;continue;
       }
       oka=okb;
-      if(!have&&!sgat(s,oo,d,r,a,fa,da))return false;
+      // Asphere mode 3: a sign change clear in f32 is one the double-float
+      // scan finds too; locate its root without the cell's end points.
+      clear=newton&&sure&&(fa32>0)!=(fb32>0);
+      if(clear)roots[0]=sgnewton(s,oo,d,r,a,b,SD(fa32),tol);
+      else if(!have&&!sgat(s,oo,d,r,a,fa,da,rd))return false;
     }
-    if(!sgat(s,oo,d,r,b,fb,db))return false;
-    SD roots[2]={SD(NAN),SD(NAN)};
-    if(sv(fa)==0)roots[0]=a;else if(sv(fa*fb)<0)roots[0]=sgroot(s,oo,d,r,a,b,fa,tol);else if(sv(fb)==0)roots[0]=b;
-    else if(sv(da*db)<0){SD lo=a,hi=b;
-      for(uint k=0;k<64;k++){SD mid=(lo+hi)*SD(0.5f),fm,dm;if(!sgat(s,oo,d,r,mid,fm,dm))return false;if(sv(dm*da)>0)lo=mid;else hi=mid;if(sv(hi-lo-tol)<=0)break;}
-      SD t=(lo+hi)*SD(0.5f),ft,dt;if(!sgat(s,oo,d,r,t,ft,dt))return false;
-      if(sv(ft)==0)roots[0]=t;else if(sv(ft*fa)<0){roots[0]=sgroot(s,oo,d,r,a,t,fa,tol);roots[1]=sgroot(s,oo,d,r,t,b,ft,tol);}
+    if(!clear){
+      if(!sgat(s,oo,d,r,b,fb,db,rd))return false;
+      if(sv(fa)==0)roots[0]=a;else if(sv(fa*fb)<0)roots[0]=newton?sgnewton(s,oo,d,r,a,b,fa,tol):sgroot(s,oo,d,r,a,b,fa,tol,rd);else if(sv(fb)==0)roots[0]=b;
+      else if(sv(da*db)<0){SD lo=a,hi=b;
+        for(uint k=0;k<64;k++){SD mid=(lo+hi)*SD(0.5f),fm,dm;if(!sgat(s,oo,d,r,mid,fm,dm,rd))return false;if(sv(dm*da)>0)lo=mid;else hi=mid;if(sv(hi-lo-tol)<=0)break;}
+        SD t=(lo+hi)*SD(0.5f),ft,dt;if(!sgat(s,oo,d,r,t,ft,dt,rd))return false;
+        if(sv(ft)==0)roots[0]=t;else if(sv(ft*fa)<0){
+          roots[0]=newton?sgnewton(s,oo,d,r,a,t,fa,tol):sgroot(s,oo,d,r,a,t,fa,tol,rd);
+          roots[1]=newton?sgnewton(s,oo,d,r,t,b,ft,tol):sgroot(s,oo,d,r,t,b,ft,tol,rd);
+        }
+      }
     }
     for(uint j=0;j<2;j++){
       SD t=roots[j];if(isnan(sv(t)))continue;SD tt=ta+t;if(sv(tt)<=0||sv(tt-limit)>0)continue;
       SV q=sadd(oo,sscale(d,t));SD rr=q.a[0]*q.a[0]+q.a[1]*q.a[1],ri(p.inner_radius);
       if(sv(rr-ri*ri)<0||sv(rr-r*r)>0||!smask(p.mask,p.aperture[0],p.aperture[1],q))continue;
-      SD z,gx,gy;if(!sgeval(s,q,r,z,gx,gy))continue;SV normal=sunit({{-gx,-gy,SD(1)}});
+      SD z,gx,gy;if(!sgeval(s,q,r,z,gx,gy,rd))continue;SV normal=sunit({{-gx,-gy,SD(1)}});
       for(uint k=0;k<3;k++){hit.point[k]=q.a[k].x;hit.normal[k]=normal.a[k].x;}hit.distance=tt.x;hit.primitive=0;hit.reserved=0;return true;
     }
-    a=b;fa=fb;da=db;have=true;fa32=fb32;da32=db32;tfa=tfb;tda=tdb;
+    a=b;fa=fb;da=db;have=!clear;fa32=fb32;da32=db32;tfa=tfb;tda=tdb;
   }return false;
 }
 static bool sintersect(device const MklStrayPrimitive &p,constant MklStraySurfaceData &shape,MklStrayRay ray,SD limit,thread MklStrayHit &out,bool extended,uint sag,thread bool &handoff){
@@ -577,7 +640,7 @@ kernel void mkl_stray_transport(device const MklStrayPrimitive *prims [[buffer(0
       if(l.hits>=p.hit_capacity){l.status=3;break;}
       MklStrayState s=stack[base+--l.top];SD w(s.weight);if(sv(w)<=0)continue;
       if(s.events>=set.max_events){sbook(l,14,w);continue;}
-      s.events++;l.events++;MklStrayHit hit=sclosest(prims,nodes,shapes,p.nodes,s.ray,(features&8)!=0,(p.reserved[2]>>8)&3);
+      s.events++;l.events++;MklStrayHit hit=sclosest(prims,nodes,shapes,p.nodes,s.ray,(features&8)!=0,(p.reserved[2]>>8)&15);
       // A ray handed to the host goes back on the stack unchanged.
       if(hit.primitive==0xfffffffe){s.events--;l.events--;stack[base+l.top++]=s;l.status=6;break;}
       sinteract(s,hit,l,base,hbase,prims,materials,layers,passes,media,tis,seq,stack,hits,set,seed,features,rr,ceiling);
@@ -629,7 +692,7 @@ kernel void mkl_stray_wave_cast(device const MklStrayPrimitive *prims [[buffer(0
  device const uint *counters [[buffer(7)]],uint tid [[thread_position_in_grid]]){
   // A tile (p.budget threads, 0: all) of the list from p.threads on.
   uint par=p.parity,t=tid+p.threads;if(t>=counters[1-par]||(p.budget!=0&&tid>=p.budget))return;uint i=lists[(1-par)*p.count+t];
-  found[i]=sclosest(prims,nodes,shapes,p.nodes,current[i].ray,(sfeatures(p.reserved[2])&8)!=0,(p.reserved[2]>>8)&3);
+  found[i]=sclosest(prims,nodes,shapes,p.nodes,current[i].ray,(sfeatures(p.reserved[2])&8)!=0,(p.reserved[2]>>8)&15);
 }
 kernel void mkl_stray_wave_interact(device const MklStrayPrimitive *prims [[buffer(0)]],device const MklStrayMaterial *materials [[buffer(1)]],device const MklCoatingLayer *layers [[buffer(2)]],
  device const MklStrayPass *passes [[buffer(3)]],device const MklStrayMedium *media [[buffer(4)]],device const float2 *tis [[buffer(5)]],device const uint *seq [[buffer(6)]],

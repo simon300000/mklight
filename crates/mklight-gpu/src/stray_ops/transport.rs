@@ -166,7 +166,11 @@ pub struct Transport {
     /// mode 0, but a scan longer than `MKL_STRAY_SAG_HANDOFF_CELLS` cells
     /// stops the source before that event (`Ledger::status` 6) for the host
     /// to continue; 3 modes 1 and 2. The CPU specification always scans as
-    /// mode 0.
+    /// mode 0. Bits 2-3: the even-asphere evaluation (0 the sag jets; 1 the
+    /// f32 pre-scan in the radial form, the records of 0; 2 also the
+    /// double-float evaluations in the radial form; 3 mode 2 with each root
+    /// located in f32 and polished by two double-float Newton steps). Modes
+    /// 2 and 3 agree with the jets to double-float rounding, not bit for bit.
     pub sag_mode: u32,
 }
 impl Transport {
@@ -217,9 +221,9 @@ impl Transport {
             || self.first_ray.checked_add(self.ray_count as u64).is_none()
             || p.desc(self.output)? != &record_desc::<Detection>(self.ray_count * self.hit_capacity)
             || p.desc(self.ledger)? != &record_desc::<Ledger>(self.ray_count)
-            || ((self.head_events != 0 || self.wavefront || self.sag_mode >= 2)
+            || ((self.head_events != 0 || self.wavefront || self.sag_mode & 3 >= 2)
                 && self.stack_output.is_none())
-            || self.sag_mode > 3
+            || self.sag_mode > 15
         {
             return Err(bad("stray transport capacity/output"));
         }
