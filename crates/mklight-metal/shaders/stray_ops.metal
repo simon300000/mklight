@@ -627,7 +627,8 @@ kernel void mkl_stray_wave_pop(device MklStrayState *stack [[buffer(0)]],device 
 kernel void mkl_stray_wave_cast(device const MklStrayPrimitive *prims [[buffer(0)]],device const MklStrayNode *nodes [[buffer(1)]],constant MklStraySurfaceData *shapes [[buffer(2)]],
  device const MklStrayState *current [[buffer(3)]],device MklStrayHit *found [[buffer(4)]],constant MklStrayTransportParams &p [[buffer(5)]],device const uint *lists [[buffer(6)]],
  device const uint *counters [[buffer(7)]],uint tid [[thread_position_in_grid]]){
-  uint par=p.parity;if(tid>=counters[1-par])return;uint i=lists[(1-par)*p.count+tid];
+  // A tile (p.budget threads, 0: all) of the list from p.threads on.
+  uint par=p.parity,t=tid+p.threads;if(t>=counters[1-par]||(p.budget!=0&&tid>=p.budget))return;uint i=lists[(1-par)*p.count+t];
   found[i]=sclosest(prims,nodes,shapes,p.nodes,current[i].ray,(sfeatures(p.reserved[2])&8)!=0,(p.reserved[2]>>8)&3);
 }
 kernel void mkl_stray_wave_interact(device const MklStrayPrimitive *prims [[buffer(0)]],device const MklStrayMaterial *materials [[buffer(1)]],device const MklCoatingLayer *layers [[buffer(2)]],
@@ -635,7 +636,8 @@ kernel void mkl_stray_wave_interact(device const MklStrayPrimitive *prims [[buff
  device MklStrayState *stack [[buffer(7)]],device MklStrayDetection *hits [[buffer(8)]],device MklStrayLedger *ledgers [[buffer(9)]],
  constant MklStraySettings &set [[buffer(10)]],constant MklStrayTransportParams &p [[buffer(11)]],device const MklStrayState *current [[buffer(12)]],device const MklStrayHit *found [[buffer(13)]],
  device const uint *lists [[buffer(14)]],device const uint *counters [[buffer(15)]],uint tid [[thread_position_in_grid]]){
-  uint par=p.parity;if(tid>=counters[1-par])return;uint i=lists[(1-par)*p.count+tid];
+  // A tile (p.budget threads, 0: all) of the list from p.threads on.
+  uint par=p.parity,t=tid+p.threads;if(t>=counters[1-par]||(p.budget!=0&&tid>=p.budget))return;uint i=lists[(1-par)*p.count+t];
   MklStrayLedger l=ledgers[i];MklStrayState s=current[i];
   // A ray handed to the host goes back on the stack unchanged.
   if(found[i].primitive==0xfffffffe){s.events--;l.events--;stack[i*p.stack_capacity+l.top++]=s;l.status=6;ledgers[i]=l;return;}

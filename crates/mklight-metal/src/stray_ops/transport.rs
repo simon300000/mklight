@@ -118,6 +118,10 @@ pub(super) fn execute(r: &Transport, x: &mut Execution<'_>, ctl: &JobControl) ->
         .pipeline(&PipelineKey::plain("mkl_stray_queue_reset"))?;
     let n = r.ray_count;
     let threads = n.min(PERSISTENT_LANES);
+    // Lanes of a round: few at first, so that a scene whose events are
+    // long (iterative sag scans) cannot exceed the command time limits;
+    // they grow while rounds are short (lanes never change a record).
+    let mut lanes = threads.min(2048);
     let mut capacity = r.stack_capacity.max(4);
     let words = |size: usize, count: usize| size / 4 * count;
     let mut rays = x.allocate(words(std::mem::size_of::<Ray>(), n))?;
@@ -210,7 +214,7 @@ pub(super) fn execute(r: &Transport, x: &mut Execution<'_>, ctl: &JobControl) ->
                             par,
                             r.seed as u32,
                             (r.seed >> 32) as u32,
-                            threads as u32,
+                            lanes as u32,
                             r.head_events,
                             handoff as u32,
                             features | r.sag_mode << 8,
@@ -220,7 +224,7 @@ pub(super) fn execute(r: &Transport, x: &mut Execution<'_>, ctl: &JobControl) ->
                     e.set_buffer(14, b, o);
                     e.set_buffer_mut(15, &mut queue, 0);
                     e.set_buffer_mut(16, &mut lists, 0);
-                    e.dispatch_groups([threads.div_ceil(32), 1, 1], 32);
+                    e.dispatch_groups([lanes.div_ceil(32), 1, 1], 32);
                 }
                 Ok(())
             })?
@@ -294,7 +298,13 @@ pub(super) fn execute(r: &Transport, x: &mut Execution<'_>, ctl: &JobControl) ->
         if round > TARGET_COMMAND_SECONDS && budget > 1 {
             budget /= 2;
             rounds = 1;
+        } else if round > TARGET_COMMAND_SECONDS && lanes > 64 {
+            lanes /= 2;
+            rounds = 1;
         } else {
+            if round < 0.25 * TARGET_COMMAND_SECONDS && lanes < threads {
+                lanes = (lanes * 2).min(threads);
+            }
             rounds = (TARGET_COMMAND_SECONDS / round).clamp(1., 64.) as usize;
         }
         // Claimed sources are reported once complete; reserve a tail for
@@ -369,17 +379,18 @@ fn execute_wavefront(
         name: format!("stray wavefront ({} kernel)", design.name()),
         ..Default::default()
     };
-    let params = |parity: u32| {
+    // `tile`: (first list entry, entries) of a tiled cast/interaction.
+    let params = |parity: u32, tile: (u32, u32)| {
         [
             n as u32,
             r.nodes.desc.shape[0] as u32,
             r.stack_capacity as u32,
             r.hit_capacity as u32,
-            0,
+            tile.1,
             parity,
             r.seed as u32,
             (r.seed >> 32) as u32,
-            0,
+            tile.0,
             r.head_events,
             1,
             features | r.sag_mode << 8,
@@ -395,7 +406,8 @@ fn execute_wavefront(
                       first: bool,
                       bounces: usize,
                       parity: u32,
-                      phases: u32| {
+                      phases: u32,
+                      tile: Option<(u32, u32)>| {
         if first {
             let gp = [
                 n as u32,
@@ -418,14 +430,17 @@ fn execute_wavefront(
             e.set_buffer_mut(1, &mut stack, 0);
             e.set_buffer_mut(2, &mut ledger, 0);
             e.set_bytes(3, &r.settings);
-            e.set_bytes(4, &params(0));
+            e.set_bytes(4, &params(0, (0, 0)));
             e.set_buffer_mut(5, &mut lists, 0);
             e.set_buffer_mut(6, &mut *counters, 0);
             e.dispatch_groups([n.div_ceil(64), 1, 1], 64);
         }
         for b in 0..bounces {
             let par = parity ^ (b as u32 & 1);
-            let p = params(par);
+            let p = params(par, (0, 0));
+            // A tiled cast and interaction dispatch a fixed grid over a
+            // range of the list instead of the whole list indirectly.
+            let tp = tile.map(|t| params(par, t));
             if phases & 1 != 0 {
                 // Pop: list `par` into list `1 - par` (cleared first).
                 e.set_pipeline(&args_pso);
@@ -459,10 +474,13 @@ fn execute_wavefront(
                 }
                 e.set_buffer(3, &current, 0);
                 e.set_buffer_mut(4, &mut found, 0);
-                e.set_bytes(5, &p);
+                e.set_bytes(5, tp.as_ref().unwrap_or(&p));
                 e.set_buffer(6, &lists, 0);
                 e.set_buffer(7, &*counters, 0);
-                e.dispatch_indirect(&cast, &args, 3);
+                match tile {
+                    Some((_, len)) => e.dispatch_groups([(len as usize).div_ceil(64), 1, 1], 64),
+                    None => e.dispatch_indirect(&cast, &args, 3),
+                }
             }
             if phases & 4 != 0 {
                 e.set_pipeline(&interact);
@@ -485,12 +503,15 @@ fn execute_wavefront(
                 e.set_buffer_mut(8, &mut hits, 0);
                 e.set_buffer_mut(9, &mut ledger, 0);
                 e.set_bytes(10, &r.settings);
-                e.set_bytes(11, &p);
+                e.set_bytes(11, tp.as_ref().unwrap_or(&p));
                 e.set_buffer(12, &current, 0);
                 e.set_buffer(13, &found, 0);
                 e.set_buffer(14, &lists, 0);
                 e.set_buffer(15, &*counters, 0);
-                e.dispatch_indirect(&interact, &args, 6);
+                match tile {
+                    Some((_, len)) => e.dispatch_groups([(len as usize).div_ceil(64), 1, 1], 64),
+                    None => e.dispatch_indirect(&interact, &args, 6),
+                }
             }
         }
         Ok(())
@@ -501,7 +522,12 @@ fn execute_wavefront(
     let trace = std::env::var("MKLIGHT_STRAY_TRACE").ok();
     let profile = trace.as_deref() == Some("kernels");
     let mut phase_seconds = [0f64; 3];
-    let (mut parity, mut bounces, mut commands, mut parameter_bytes) = (0u32, 4usize, 0u64, 0u64);
+    let (mut parity, mut bounces, mut commands, mut parameter_bytes) = (0u32, 1usize, 0u64, 0u64);
+    // Bounded commands: a bounce whose casts may exceed the command time
+    // (long iterative sag scans) runs tiled until one fits; the first is
+    // tiled until the cost of a cast is known.
+    let mut tiled: Option<usize> = Some(2048);
+    let mut tile_commands = 0u32;
     loop {
         ctl.check()?;
         let wall = Instant::now();
@@ -514,7 +540,15 @@ fn execute_wavefront(
             for (k, mask) in [1u32, 2, 4].into_iter().enumerate() {
                 let cs = unsafe {
                     gpu.run("stray wavefront phase", |e| {
-                        encode(e, &mut counters, commands == 0 && k == 0, 1, parity, mask)
+                        encode(
+                            e,
+                            &mut counters,
+                            commands == 0 && k == 0,
+                            1,
+                            parity,
+                            mask,
+                            None,
+                        )
                     })?
                 };
                 phase_seconds[k] += cs.gpu_seconds;
@@ -522,10 +556,47 @@ fn execute_wavefront(
             }
             bounces = 1;
             total
+        } else if let Some(size) = tiled {
+            // One bounce: the pop, then the cast and interaction of the
+            // popped list in tiles of bounded device time.
+            let mut total = unsafe {
+                gpu.run("stray wavefront pop", |e| {
+                    encode(e, &mut counters, commands == 0, 1, parity, 1, None)
+                })?
+            }
+            .gpu_seconds;
+            let popped = counters.as_slice()[1 - parity as usize] as usize;
+            let (mut first, mut size) = (0, size);
+            while first < popped {
+                ctl.check()?;
+                let len = size.min(popped - first);
+                let t = unsafe {
+                    gpu.run("stray wavefront tile", |e| {
+                        encode(
+                            e,
+                            &mut counters,
+                            false,
+                            1,
+                            parity,
+                            6,
+                            Some((first as u32, len as u32)),
+                        )
+                    })?
+                }
+                .gpu_seconds;
+                total += t;
+                first += len;
+                tile_commands += 1;
+                size = ((size as f64 * TARGET_COMMAND_SECONDS / t.max(1e-5)) as usize)
+                    .clamp(256, 1 << 20);
+            }
+            tiled = Some(size);
+            bounces = 1;
+            total
         } else {
             unsafe {
                 gpu.run("stray wavefront", |e| {
-                    encode(e, &mut counters, commands == 0, bounces, parity, 7)
+                    encode(e, &mut counters, commands == 0, bounces, parity, 7, None)
                 })?
             }
             .gpu_seconds
@@ -535,7 +606,7 @@ fn execute_wavefront(
         commands += 1;
         parameter_bytes += (bounces * (2 * std::mem::size_of::<Settings>() + 180)) as u64;
         stats.device_seconds += gpu_seconds;
-        stats.command_buffers += if profile { 3 } else { 1 };
+        stats.command_buffers += if profile { 3 } else { 1 } + std::mem::take(&mut tile_commands);
         stats.max_command_seconds = stats.max_command_seconds.max(seconds);
         let live = counters.as_slice()[parity as usize] as usize;
         if trace.is_some() {
@@ -551,8 +622,16 @@ fn execute_wavefront(
         if live == 0 {
             break;
         }
-        // About TARGET_COMMAND_SECONDS of device time per command.
+        // About TARGET_COMMAND_SECONDS of device time per command: several
+        // bounces per command while a bounce is short, tiles while it is
+        // long.
         let per = gpu_seconds.max(1e-5) / bounces as f64;
+        if per > 4. * TARGET_COMMAND_SECONDS {
+            let size = (live as f64 * TARGET_COMMAND_SECONDS / per) as usize;
+            tiled = Some(size.clamp(256, 1 << 20));
+        } else if per < 0.5 * TARGET_COMMAND_SECONDS {
+            tiled = None;
+        }
         bounces = (TARGET_COMMAND_SECONDS / per).clamp(1., 256.) as usize;
         ctl.report(1. - live as f64 / n as f64, "stray wavefront");
     }

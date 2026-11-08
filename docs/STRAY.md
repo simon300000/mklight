@@ -600,9 +600,8 @@ are in flight: the device transports plan `k + 1` while the CPU finishes plan
 Which part of a source runs where depends only on the source and on fixed
 options, never on timing, so a seed gives bit-identical results. The device
 share of `cosplit` (`TransportOptions::gpu_share`, else the study key
-`stray_share`) is a fixed rule of the scene when not set: 0.2, or 0.08 with
-iteratively intersected sags, and 0 when that share is below 32 768 sources
-(`gpu::hybrid::default_share`); device chunks come in units of up to one
+`stray_share`) is a fixed rule of the scene when not set: 0.2, and 0 with iteratively intersected sags or when
+that share is below 32 768 sources (`gpu::hybrid::default_share`); device chunks come in units of up to one
 plan, spread evenly. With a share of 0 `cosplit` is the reference bit for bit,
 with a share of 1 it is `gpu-head`. The persistent and wavefront kernels
 produce identical records. Options that move the split (head budget, stack and
@@ -619,8 +618,8 @@ its own size (study key `stray_threads`), beside the CPU completion of the
 device plans; the records do not depend on it.
 
 **Extended-sag intersection on the device** (`ops::Transport::sag_mode`,
-study key `stray_sag`): `scan` (default) is the double-float cell scan above;
-`f32-scan` evaluates the cells' end points in plain f32 first and skips a cell
+study key `stray_sag`): `scan` is the double-float cell scan above;
+`f32-scan` (default) evaluates the cells' end points in plain f32 first and skips a cell
 only when the residual and its slope are clearly of one sign at both ends
 (about a hundred times the f32 rounding), so every root is decided by the
 same double-float cells and the records are those of `scan` (tested on the

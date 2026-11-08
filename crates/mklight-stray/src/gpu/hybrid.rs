@@ -35,7 +35,7 @@ pub const STUDY_KEY: &str = "stray";
 /// 0…1; unset: [`default_share`]).
 pub const SHARE_KEY: &str = "stray_share";
 /// Study key of the device's extended-sag intersection
-/// (`ops::Transport::sag_mode`): `scan` (default), `f32-scan`,
+/// (`ops::Transport::sag_mode`): `f32-scan` (default), `scan`,
 /// `cpu-grazing` or `f32-grazing` (both).
 pub const SAG_KEY: &str = "stray_sag";
 
@@ -66,8 +66,8 @@ pub(crate) fn share_pool(key: &str) -> MkResult<Option<rayon::ThreadPool>> {
 /// The selected extended-sag intersection mode.
 pub fn sag_mode() -> MkResult<u32> {
     Ok(match mklight_core::split::variant(SAG_KEY).as_deref() {
-        None | Some("scan") => 0,
-        Some("f32-scan") => 1,
+        Some("scan") => 0,
+        None | Some("f32-scan") => 1,
         Some("cpu-grazing") => 2,
         Some("f32-grazing") => 3,
         Some(other) => {
@@ -148,10 +148,11 @@ impl Design {
 /// Device share of [`Design::CoSplit`] when the options leave it open: a
 /// fixed rule of the scene, so that a seed gives the same partition. The
 /// 12-core reference traces analytic scenes about four times faster than
-/// the device, and scenes with iteratively intersected sags (aspheres,
-/// freeforms) about ten times faster (provisional M2 Pro measurements), so
-/// the device takes the share it finishes in the CPU's time, when that
-/// share is at least `MIN_DEVICE_SOURCES` sources.
+/// the device, so the device takes the share it finishes in the CPU's time
+/// when that share is at least `MIN_DEVICE_SOURCES` sources; scenes with
+/// iteratively intersected sags (aspheres, freeforms) are 7–50 times faster
+/// on the CPU, and the device gets none of them (provisional M2 Pro
+/// measurements).
 pub fn default_share(scene: &Scene, rays: u64) -> f64 {
     let iterative = scene.primitives().iter().any(|p| match &p.shape {
         // The device's closed-form kinds (`prepare_geometry`).
@@ -164,7 +165,9 @@ pub fn default_share(scene: &Scene, rays: u64) -> f64 {
         },
         Shape::Cylinder(_) => false,
     });
-    let share = if iterative { 0.08 } else { 0.2 };
+    // Lenses with iterative sags: the device is 7–50 times slower per event
+    // than the CPU (round 2, with the f32 pre-scan), so it gets nothing.
+    let share = if iterative { 0. } else { 0.2 };
     // A device plan has a fixed latency (its longest path trees): below
     // about two plans of work the device cannot pay for it.
     if share * rays as f64 >= MIN_DEVICE_SOURCES {

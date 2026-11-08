@@ -63,7 +63,7 @@ fn sag_modes_and_thread_budgets() {
             assert_eq!(r.run_info.as_ref().unwrap().settings["fallback_count"], 0);
             r
         };
-        let scan = run(&[], gpu::Design::Wavefront);
+        let scan = run(&[("stray_sag", "scan")], gpu::Design::Wavefront);
         // The f32 pre-scan only skips cells the double-float scan finds
         // empty: the same roots, so the same records.
         let fast = run(&[("stray_sag", "f32-scan")], gpu::Design::Wavefront);
@@ -72,8 +72,12 @@ fn sag_modes_and_thread_budgets() {
         let persistent = run(&[("stray_sag", "f32-scan")], gpu::Design::CpuTally);
         assert_eq!(scan.energy, persistent.energy, "{name}");
         // Long scans continue on the CPU: the reference's physics.
-        for design in [gpu::Design::Wavefront, gpu::Design::CpuTally] {
-            let handed = run(&[("stray_sag", "cpu-grazing")], design);
+        for (design, mode) in [
+            (gpu::Design::Wavefront, "cpu-grazing"),
+            (gpu::Design::CpuTally, "cpu-grazing"),
+            (gpu::Design::Wavefront, "f32-grazing"),
+        ] {
+            let handed = run(&[("stray_sag", mode)], design);
             let n = &handed.run_info.as_ref().unwrap().settings["counters"];
             handoffs += n["sag_handoff"].as_u64().unwrap();
             compare(&cpu, &handed);
