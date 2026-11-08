@@ -614,13 +614,17 @@ Host aims are written straight into the shared ray planes the trace reads
 rays rounded to double-float once); no sample or field record is built.
 
 **Host completion.** A device aim cannot always certify the requested stop
-tolerance: the double-float trace evaluates the even-asphere slope in f32
-(GPU.md §4.1), so on wide-angle aspheric designs the evaluated stop hit
-jitters by 1e-9 to 1e-8 of the stop radius, above the 1e-10 the reference
-reaches. On a 35-surface ultra-wide a third of the device aims, chief rays
-among them, ended unconverged, and the device spot diagram's vignetted
-fraction differed from the reference by up to 0.77. Every device aim
-reported `MKL_AIM_FAILED` is therefore aimed again in f64 by the reference
+tolerance. With the even-asphere slope in f32 (work-split key
+`trace_slope=f32`, the trace before the double-float slope) the evaluated
+stop hit on wide-angle aspheric designs jitters by 1e-9 to 1e-8 of the stop
+radius, above the 1e-10 the reference reaches: on a 35-surface ultra-wide a
+third of the device aims, chief rays among them, ended unconverged, and the
+device spot diagram's vignetted fraction differed from the reference by up
+to 0.77. With the default `trace_slope=df` (the even-asphere hit refined
+and its normal formed with the polynomial slope in double-float, flag
+`MKL_SURF_DF_SLOPE` set by `PackedSystem::pack`) the device aims there
+converge except for the rays the reference cannot aim either. Every device
+aim reported `MKL_AIM_FAILED` is still aimed again in f64 by the reference
 tracer; a ray it aims replaces the device's (the position and report planes
 are copied once, with the host rays in place), a ray it cannot aim stays
 failed, exactly as on the CPU, and the hard field statuses of the host rows
