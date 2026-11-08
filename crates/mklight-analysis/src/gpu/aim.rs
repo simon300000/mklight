@@ -436,6 +436,63 @@ fn host_fill(
     Ok(([floats, indices, ids, report], stats))
 }
 
+/// One start ray of [`fill_host_rays`]: the reference ray and its weight
+/// (`None`: not aimed, zero planes), its packed system and wavelength slot,
+/// logical ID and report words.
+pub struct HostRay<'a> {
+    pub ray: Option<(&'a mklight_trace::Ray, f32)>,
+    pub slot: (u32, u32),
+    pub id: u64,
+    pub report: [u32; 4],
+}
+
+/// Write `n` host start rays (`ray(k)` gives ray `k`) into four new shared
+/// buffers in the resident generated-ray layout (`ResidentRays`), filled in
+/// place in parallel column blocks by the writer of [`host_fill`], for
+/// callers that aim with their own rule (the wave analyses' `cpu-aim`
+/// design). Returns `[floats, indices, logical_ids, report]`.
+pub fn fill_host_rays<'r>(
+    b: &dyn ComputeBackend,
+    n: usize,
+    ray: &(dyn Fn(usize) -> HostRay<'r> + Sync),
+) -> MkResult<[BufferHandle; 4]> {
+    let mut handles: Vec<BufferHandle> = Vec::new();
+    let report = b.fill_buffer(BufferDesc::new(ElementType::U32, [4, n]), &mut |mut rf| {
+        let report = rf.as_mut_slice::<u32>()?;
+        let ids = b.fill_buffer(BufferDesc::new(ElementType::U32, [2, n]), &mut |mut xf| {
+            let ids = xf.as_mut_slice::<u32>()?;
+            let indices =
+                b.fill_buffer(BufferDesc::new(ElementType::U32, [2, n]), &mut |mut uf| {
+                    let indices = uf.as_mut_slice::<u32>()?;
+                    let floats = b.fill_buffer(
+                        BufferDesc::new(ElementType::F32, [FLOAT_PLANES, n]),
+                        &mut |mut ff| {
+                            let floats = ff.as_mut_slice::<f32>()?;
+                            columns(floats, indices, ids, report, n, HOST_CHUNK)
+                                .into_par_iter()
+                                .for_each(|mut cols| {
+                                    for k in 0..cols.len() {
+                                        let r = ray(cols.start + k);
+                                        cols.write(k, r.ray, r.slot, r.id, r.report);
+                                    }
+                                });
+                            Ok(())
+                        },
+                    )?;
+                    handles.push(floats);
+                    Ok(())
+                })?;
+            handles.push(indices);
+            Ok(())
+        })?;
+        handles.push(ids);
+        Ok(())
+    })?;
+    let [floats, indices, ids]: [BufferHandle; 3] =
+        handles.try_into().map_err(|_| bad("host ray buffers"))?;
+    Ok([floats, indices, ids, report])
+}
+
 /// The aiming adapters of [`Geometry`].
 impl Geometry<'_> {
     /// Run `f` with the reference tracer of aiming mode `aiming`.

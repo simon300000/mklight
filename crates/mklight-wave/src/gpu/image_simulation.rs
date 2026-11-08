@@ -8,6 +8,7 @@ use crate::image_simulation::{
 use mklight_core::job::RunTimer;
 use mklight_gpu::wave_ops::simulation::Simulation as Op;
 use mklight_trace::{FieldPoint, SequentialTracer};
+use rayon::prelude::*;
 use std::{collections::BTreeMap, sync::Arc};
 #[derive(Clone)]
 pub struct ResidentPsfGrid {
@@ -137,19 +138,31 @@ pub fn build_psf_grid_shared(
         let mut warnings = vec![];
         let mut irradiance = vec![0.; coordinates.len()];
         let mut axial = 0.;
-        for (i, &(wl, weight)) in wls.iter().enumerate() {
-            let (rows, omega) = mklight_analysis::illumination::illumination_rows(
-                t,
-                &coordinates,
-                wl,
-                s.illumination_radial,
-                s.illumination_azimuth,
-                &mut warnings,
-                &ctx.subrange(
-                    0.05 + 0.15 * i as f64 / wls.len() as f64,
-                    0.05 + 0.15 * (i + 1) as f64 / wls.len() as f64,
-                ),
-            )?;
+        // Wavelengths side by side; sums and warnings in wavelength order
+        // (as the CPU grid's).
+        let per_wavelength: Vec<_> = wls
+            .par_iter()
+            .enumerate()
+            .map(|(i, &(wl, _))| {
+                let mut w = vec![];
+                let r = mklight_analysis::illumination::illumination_rows(
+                    t,
+                    &coordinates,
+                    wl,
+                    s.illumination_radial,
+                    s.illumination_azimuth,
+                    &mut w,
+                    &ctx.subrange(
+                        0.05 + 0.15 * i as f64 / wls.len() as f64,
+                        0.05 + 0.15 * (i + 1) as f64 / wls.len() as f64,
+                    ),
+                );
+                (w, r)
+            })
+            .collect();
+        for ((w, r), &(_, weight)) in per_wavelength.into_iter().zip(&wls) {
+            warnings.extend(w);
+            let (rows, omega) = r?;
             for (sum, row) in irradiance.iter_mut().zip(rows) {
                 *sum += weight * row[0];
             }
@@ -159,8 +172,10 @@ pub fn build_psf_grid_shared(
     };
     let prepared = d
         .points
-        .iter()
+        .par_iter()
         .map(|p| t.prepare_field(FieldPoint::normalized(p.field[0], p.field[1])))
+        .collect::<Vec<_>>()
+        .into_iter()
         .collect::<MkResult<Vec<_>>>()?;
     let requests: Vec<_> = d
         .points

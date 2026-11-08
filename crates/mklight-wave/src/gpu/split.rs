@@ -13,6 +13,14 @@
 //! | `by-size` | as `pipelined`, and transforms of small fields (a measured work rule per analysis) with the reference's own code | transforms of large fields |
 //! | `cpu-aim` | aiming of lattice, chief, saddle and rim probes | tracing, rim survival, placement, resampling, decisions, transforms |
 //!
+//! The CPU thread split of every design is a second study key,
+//! [`THREADS_KEY`] (`wave_threads`, [`Threads`]): the threads that prepare
+//! items on the host, the threads of the host transforms (`co-op`'s host
+//! worker, `by-size`'s small items) and the device chains that feed the
+//! device. Unset, host preparation and host transforms share the global
+//! thread pool and `MKLIGHT_WAVE_CONCURRENT` (default 4) chains feed the
+//! device.
+//!
 //! Host lattices are the reference's own ([`crate::traced::trace_lattice`])
 //! and are shared with the CPU analyses through the engine memo
 //! (`crate::shared`); host-resampled pupils are the reference's
@@ -27,6 +35,90 @@ use std::time::Instant;
 
 /// The `mklight_core::split` study key of the wave analyses.
 pub const KEY: &str = "wave";
+
+/// The study key of the CPU thread split ([`Threads`]).
+pub const THREADS_KEY: &str = "wave_threads";
+
+/// A CPU thread split, `PREP:HOST:DEVICES` ([`THREADS_KEY`]; `*` or an empty
+/// position keeps that part's default): host preparation runs on its own
+/// pool of `PREP` threads, host transforms on their own pool of `HOST`
+/// threads, and `DEVICES` chains feed the device. Results do not depend on
+/// the split.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Threads {
+    pub prep: Option<usize>,
+    pub host: Option<usize>,
+    pub devices: Option<usize>,
+}
+
+impl Threads {
+    /// The selected split (an unparsable value selects the default; the
+    /// requested value is kept in [`Design::evidence`]).
+    pub fn selected() -> Self {
+        mklight_core::split::variant(THREADS_KEY)
+            .and_then(|v| Self::parse(&v))
+            .unwrap_or_default()
+    }
+    pub fn parse(v: &str) -> Option<Self> {
+        let parts: Vec<&str> = v.split(':').map(str::trim).collect();
+        if parts.len() > 3 {
+            return None;
+        }
+        let mut n = [None; 3];
+        for (slot, p) in n.iter_mut().zip(&parts) {
+            if !(p.is_empty() || *p == "*") {
+                *slot = Some(p.parse::<usize>().ok().filter(|k| (1..=64).contains(k))?);
+            }
+        }
+        Some(Threads {
+            prep: n[0],
+            host: n[1],
+            devices: n[2],
+        })
+    }
+    /// Device chains at once.
+    pub(crate) fn devices(self) -> usize {
+        self.devices.map_or_else(super::concurrency, |d| d.min(16))
+    }
+    /// Runs host preparation `f` on the preparation pool.
+    pub(crate) fn prep<R: Send>(self, f: impl FnOnce() -> R + Send) -> R {
+        match self.prep {
+            Some(n) => pool(0, n).install(f),
+            None => f(),
+        }
+    }
+    /// Runs a host transform `f` on the host-transform pool.
+    pub(crate) fn host<R: Send>(self, f: impl FnOnce() -> R + Send) -> R {
+        match self.host {
+            Some(n) => pool(1, n).install(f),
+            None => f(),
+        }
+    }
+}
+
+/// The thread pool of `role` (0 preparation, 1 host transforms) with `n`
+/// threads, built once.
+fn pool(role: u8, n: usize) -> Arc<rayon::ThreadPool> {
+    type Pools = Mutex<std::collections::HashMap<(u8, usize), Arc<rayon::ThreadPool>>>;
+    static POOLS: std::sync::OnceLock<Pools> = std::sync::OnceLock::new();
+    let mut pools = POOLS
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    pools
+        .entry((role, n))
+        .or_insert_with(|| {
+            let name = if role == 0 { "wave-prep" } else { "wave-host" };
+            Arc::new(
+                rayon::ThreadPoolBuilder::new()
+                    .num_threads(n)
+                    .thread_name(move |k| format!("{name}-{k}"))
+                    .build()
+                    .expect("wave thread pool"),
+            )
+        })
+        .clone()
+}
 
 /// One division of the native wave analyses between host and device
 /// (module docs).
@@ -93,10 +185,18 @@ impl Design {
     }
     /// `RunInfo.settings.work_split`.
     pub fn evidence(self) -> serde_json::Value {
+        let t = Threads::selected();
         serde_json::json!({
             "key": KEY,
             "design": self.name(),
             "requested": mklight_core::split::variant(KEY),
+            "threads": {
+                "key": THREADS_KEY,
+                "requested": mklight_core::split::variant(THREADS_KEY),
+                "prep": t.prep,
+                "host": t.host,
+                "devices": t.devices(),
+            },
         })
     }
 }
@@ -469,13 +569,14 @@ pub(crate) fn schedule_with<T: Send, P: Send, R: Send>(
     reference: Option<Reference<'_, P, R>>,
 ) -> (Vec<MkResult<R>>, Vec<Option<Ran>>) {
     let count = items.len();
+    let threads = Threads::selected();
     let ran: Vec<Mutex<Option<Ran>>> = (0..count).map(|_| Mutex::new(None)).collect();
     let transform = |i: usize, p: P, prepare_ms: f64, on_host: bool| {
         let start = Instant::now();
         let work = reference.as_ref().map_or(f64::NAN, |c| (c.work)(&p));
         let (on, r) = match &reference {
             Some(c) if on_host || (design == Design::BySize && work < c.limit) => {
-                ("host", (c.transform)(i, p))
+                ("host", threads.host(|| (c.transform)(i, p)))
             }
             _ => ("device", device(i, p)),
         };
@@ -492,6 +593,7 @@ pub(crate) fn schedule_with<T: Send, P: Send, R: Send>(
         let p = host(i, t);
         (p, start.elapsed().as_secs_f64() * 1e3)
     };
+    let devices = threads.devices().min(count);
     let results = if !design.pipelined() {
         let items: Vec<_> = items.into_iter().map(|t| Mutex::new(Some(t))).collect();
         concurrent(&items, |i, t| {
@@ -500,12 +602,11 @@ pub(crate) fn schedule_with<T: Send, P: Send, R: Send>(
                 .unwrap_or_else(|e| e.into_inner())
                 .take()
                 .expect("one run per item");
-            let (p, ms) = timed(i, t);
+            let (p, ms) = threads.prep(|| timed(i, t));
             p.and_then(|p| transform(i, p, ms, false))
         })
     } else {
         let slots: Vec<Mutex<Option<MkResult<R>>>> = (0..count).map(|_| Mutex::new(None)).collect();
-        let devices = concurrency().min(count);
         // Prepared items, whether every host stage has finished, and the
         // device workers free to take an item.
         let queue = (
@@ -553,15 +654,17 @@ pub(crate) fn schedule_with<T: Send, P: Send, R: Send>(
             if design == Design::Cooperative && reference.is_some() {
                 s.spawn(|| worker(true));
             }
-            items.into_par_iter().enumerate().for_each(|(i, t)| {
-                let (p, ms) = timed(i, t);
-                queue
-                    .0
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .0
-                    .push_back((i, p, ms));
-                queue.1.notify_all();
+            threads.prep(|| {
+                items.into_par_iter().enumerate().for_each(|(i, t)| {
+                    let (p, ms) = timed(i, t);
+                    queue
+                        .0
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .0
+                        .push_back((i, p, ms));
+                    queue.1.notify_all();
+                })
             });
             queue.0.lock().unwrap_or_else(|e| e.into_inner()).1 = true;
             queue.1.notify_all();
@@ -585,6 +688,30 @@ pub(crate) fn schedule_with<T: Send, P: Send, R: Send>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn thread_splits_parse() {
+        assert_eq!(Threads::parse(""), Some(Threads::default()));
+        assert_eq!(
+            Threads::parse("8:4:2"),
+            Some(Threads {
+                prep: Some(8),
+                host: Some(4),
+                devices: Some(2)
+            })
+        );
+        assert_eq!(
+            Threads::parse("*:2"),
+            Some(Threads {
+                prep: None,
+                host: Some(2),
+                devices: None
+            })
+        );
+        for bad in ["0", "x", "1:2:3:4", "65"] {
+            assert_eq!(Threads::parse(bad), None, "{bad}");
+        }
+    }
 
     #[test]
     fn design_names_round_trip() {

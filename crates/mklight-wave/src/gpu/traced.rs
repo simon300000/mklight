@@ -762,46 +762,20 @@ impl<'a> PupilTracer<'a> {
                 out
             })
             .collect();
-        let floats = fill::<f32>(self.backend, [15, n], |a| {
-            for (k, (r, s)) in rays.iter().zip(samples).enumerate() {
-                let mut v = [0f32; 15];
-                if let Some(r) = r {
-                    for c in 0..3 {
-                        let p = Df32::from_f64([r.pos.x, r.pos.y, r.pos.z][c]);
-                        let d = Df32::from_f64([r.dir.x, r.dir.y, r.dir.z][c]);
-                        (v[c], v[c + 9]) = (p.hi, p.lo);
-                        (v[c + 3], v[c + 12]) = (d.hi, d.lo);
-                    }
-                    v[8] = s.weight;
-                }
-                for (plane, x) in v.into_iter().enumerate() {
-                    a[plane * n + k] = x;
-                }
-            }
-            Ok(())
-        })?;
-        let indices = fill::<u32>(self.backend, [2, n], |a| {
-            for (k, s) in samples.iter().enumerate() {
+        // Stream A's resident ray writer, with this design's inclusion rule
+        // in the reports.
+        let [floats, indices, logical_ids, report] =
+            mklight_analysis::gpu::aim::fill_host_rays(self.backend, n, &|k| {
+                let s = &samples[k];
+                let r = rays[k].as_ref();
                 let [chunk, slot] = self.slot(pupils[(s.field & !MKL_AIM_SKIP) as usize].1);
-                (a[k], a[n + k]) = (chunk, slot);
-            }
-            Ok(())
-        })?;
-        let logical_ids = fill::<u32>(self.backend, [2, n], |a| {
-            for (k, s) in samples.iter().enumerate() {
-                (a[k], a[n + k]) = (s.id[0], s.id[1]);
-            }
-            Ok(())
-        })?;
-        let report = fill::<u32>(self.backend, [4, n], |a| {
-            a.fill(0);
-            for (k, r) in rays.iter().enumerate() {
-                if r.is_none() {
-                    a[k] = MKL_AIM_OUTSIDE;
+                mklight_analysis::gpu::aim::HostRay {
+                    ray: r.map(|r| (r, s.weight)),
+                    slot: (chunk, slot),
+                    id: u64::from(s.id[0]) | (u64::from(s.id[1]) << 32),
+                    report: [if r.is_some() { 0 } else { MKL_AIM_OUTSIDE }, 0, 0, 0],
                 }
-            }
-            Ok(())
-        })?;
+            })?;
         Ok(HostRays {
             floats,
             indices,

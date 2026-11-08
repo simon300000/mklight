@@ -15,6 +15,7 @@ use mklight_core::job::RunTimer;
 use mklight_core::memo::Memo;
 use mklight_core::{JobContext, MkError, MkResult, RunInfo};
 use mklight_trace::SequentialTracer;
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use super::psf::{PsfMethod, check_huygens_grid, compute_psf, image_grid};
@@ -161,7 +162,7 @@ pub fn diffraction_encircled_energy_shared(
     let spacing = lf / settings.padding;
     // One window too: the largest automatic one over the fields.
     let grid = per
-        .iter()
+        .par_iter()
         .map(|(_, _, fp)| image_grid(settings.grid_size, settings.method, &fp.weighted(), spacing))
         .max()
         .unwrap_or(settings.grid_size);
@@ -175,58 +176,81 @@ pub fn diffraction_encircled_energy_shared(
     let radius = linspace(0.0, rmax, settings.samples);
     let dense = linspace(0.0, rmax, 8 * settings.samples);
     let mut warnings = skipped;
-    let mut pending = Vec::new();
     let nf = per.len().max(1) as f64;
-    for (k, (f, value, mut fp)) in per.into_iter().enumerate() {
-        warnings.extend(fp.warnings.iter().cloned());
-        let sub = ctx.subrange(0.3 + 0.5 * k as f64 / nf, 0.3 + 0.5 * (k + 1) as f64 / nf);
-        warnings.extend(fp.ensure_window(
-            grid as f64 * spacing,
-            &settings.pupil,
-            memo,
-            &sub.subrange(0.0, 0.0),
-        )?);
-        let pupils = fp.weighted();
-        let psf = compute_psf(
-            &pupils,
-            settings.method,
-            grid,
-            spacing,
-            PsfNormalization::UnitEnergy,
-            &sub.subrange(0.0, 0.5),
-        )?;
-        for w in &psf.warnings {
-            warnings.push(format!("field {f}: {w}"));
-        }
-        let clean: Vec<PupilFunction> = pupils
-            .iter()
-            .map(|(p, _)| p.without_aberrations())
-            .collect();
-        let clean_w: Vec<(&PupilFunction, f64)> = clean
-            .iter()
-            .zip(&pupils)
-            .map(|(p, (_, w))| (p, *w))
-            .collect();
-        let dl_psf = compute_psf(
-            &clean_w,
-            PsfMethod::Fft,
-            grid,
-            spacing,
-            PsfNormalization::UnitEnergy,
-            &sub.subrange(0.5, 0.7),
-        )?;
-        let c = settings.center;
-        let sq = ensquared_energy(&psf, &radius, c, &sub.subrange(0.7, 1.0))?;
-        let center_mm = match c {
-            EnergyCenter::Reference => psf.center_mm,
-            EnergyCenter::Centroid => psf.centroid(),
-            EnergyCenter::Peak => {
-                let (_, i, j) = psf.peak();
-                [psf.x(i), psf.y(j)]
+    // Fields are independent: they run side by side and merge in field
+    // order (results and warnings do not depend on the scheduling).
+    let computed: Vec<MkResult<_>> = per
+        .into_par_iter()
+        .enumerate()
+        .map(|(k, (f, value, mut fp))| {
+            let mut warnings = fp.warnings.clone();
+            let sub = ctx.subrange(0.3 + 0.5 * k as f64 / nf, 0.3 + 0.5 * (k + 1) as f64 / nf);
+            warnings.extend(fp.ensure_window(
+                grid as f64 * spacing,
+                &settings.pupil,
+                memo,
+                &sub.subrange(0.0, 0.0),
+            )?);
+            let pupils = fp.weighted();
+            let clean: Vec<PupilFunction> = pupils
+                .iter()
+                .map(|(p, _)| p.without_aberrations())
+                .collect();
+            let clean_w: Vec<(&PupilFunction, f64)> = clean
+                .iter()
+                .zip(&pupils)
+                .map(|(p, (_, w))| (p, *w))
+                .collect();
+            // The aberrated and diffraction-limited PSFs side by side.
+            let (psf, dl_psf) = rayon::join(
+                || {
+                    compute_psf(
+                        &pupils,
+                        settings.method,
+                        grid,
+                        spacing,
+                        PsfNormalization::UnitEnergy,
+                        &sub.subrange(0.0, 0.5),
+                    )
+                },
+                || {
+                    compute_psf(
+                        &clean_w,
+                        PsfMethod::Fft,
+                        grid,
+                        spacing,
+                        PsfNormalization::UnitEnergy,
+                        &sub.subrange(0.5, 0.7),
+                    )
+                },
+            );
+            let psf = psf?;
+            for w in &psf.warnings {
+                warnings.push(format!("field {f}: {w}"));
             }
-            EnergyCenter::Point { x, y } => [x, y],
-        };
-        pending.push((f, value, fp.sampling(), center_mm, psf, dl_psf, sq));
+            let dl_psf = dl_psf?;
+            let c = settings.center;
+            let sq = ensquared_energy(&psf, &radius, c, &sub.subrange(0.7, 1.0))?;
+            let center_mm = match c {
+                EnergyCenter::Reference => psf.center_mm,
+                EnergyCenter::Centroid => psf.centroid(),
+                EnergyCenter::Peak => {
+                    let (_, i, j) = psf.peak();
+                    [psf.x(i), psf.y(j)]
+                }
+                EnergyCenter::Point { x, y } => [x, y],
+            };
+            Ok((
+                warnings,
+                (f, value, fp.sampling(), center_mm, psf, dl_psf, sq),
+            ))
+        })
+        .collect();
+    let mut pending = Vec::new();
+    for c in computed {
+        let (w, p) = c?;
+        warnings.extend(w);
+        pending.push(p);
     }
     let mut all_radii = radius.clone();
     all_radii.extend_from_slice(&dense);
@@ -354,38 +378,54 @@ pub fn line_spread_shared(
     let mut warnings = skipped;
     let mut out = Vec::new();
     let nf = per.len().max(1) as f64;
-    for (k, (f, value, mut fp)) in per.into_iter().enumerate() {
-        warnings.extend(fp.warnings.iter().cloned());
-        let sub = ctx.subrange(0.4 + 0.6 * k as f64 / nf, 0.4 + 0.6 * (k + 1) as f64 / nf);
-        let spacing = fp.min_lambda_f() / settings.padding;
-        let grid = image_grid(settings.grid_size, settings.method, &fp.weighted(), spacing);
-        warnings.extend(fp.ensure_window(
-            grid as f64 * spacing,
-            &settings.pupil,
-            memo,
-            &sub.subrange(0.0, 0.0),
-        )?);
-        let psf = compute_psf(
-            &fp.weighted(),
-            settings.method,
-            grid,
-            spacing,
-            PsfNormalization::UnitEnergy,
-            &sub,
-        )?;
-        for w in &psf.warnings {
-            warnings.push(format!("field {f}: {w}"));
-        }
-        let lx = line_spread_function(&psf, LsfAxis::X);
-        let ly = line_spread_function(&psf, LsfAxis::Y);
-        out.push(FieldLineSpread {
-            field: f,
-            field_value: value,
-            positions_mm: lx.positions_mm,
-            pupil_sampling: fp.sampling(),
-            x: lx.values,
-            y: ly.values,
-        });
+    // Fields are independent: they run side by side and merge in field
+    // order (results and warnings do not depend on the scheduling).
+    let computed: Vec<MkResult<_>> = per
+        .into_par_iter()
+        .enumerate()
+        .map(|(k, (f, value, mut fp))| {
+            let mut warnings = fp.warnings.clone();
+            let sub = ctx.subrange(0.4 + 0.6 * k as f64 / nf, 0.4 + 0.6 * (k + 1) as f64 / nf);
+            let spacing = fp.min_lambda_f() / settings.padding;
+            let grid = image_grid(settings.grid_size, settings.method, &fp.weighted(), spacing);
+            warnings.extend(fp.ensure_window(
+                grid as f64 * spacing,
+                &settings.pupil,
+                memo,
+                &sub.subrange(0.0, 0.0),
+            )?);
+            let psf = compute_psf(
+                &fp.weighted(),
+                settings.method,
+                grid,
+                spacing,
+                PsfNormalization::UnitEnergy,
+                &sub,
+            )?;
+            for w in &psf.warnings {
+                warnings.push(format!("field {f}: {w}"));
+            }
+            let (lx, ly) = rayon::join(
+                || line_spread_function(&psf, LsfAxis::X),
+                || line_spread_function(&psf, LsfAxis::Y),
+            );
+            Ok((
+                warnings,
+                FieldLineSpread {
+                    field: f,
+                    field_value: value,
+                    positions_mm: lx.positions_mm,
+                    pupil_sampling: fp.sampling(),
+                    x: lx.values,
+                    y: ly.values,
+                },
+            ))
+        })
+        .collect();
+    for c in computed {
+        let (w, field) = c?;
+        warnings.extend(w);
+        out.push(field);
     }
     ctx.report(1.0, "line spread");
     Ok(LineSpreadResult {

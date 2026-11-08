@@ -14,7 +14,9 @@ use mklight_core::job::RunTimer;
 use mklight_core::memo::Memo;
 use mklight_core::{JobContext, MkError, MkResult, RunInfo};
 use mklight_trace::SequentialTracer;
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use super::{fields, run_info, system_field_pupils, wavelengths};
 use crate::energy::strehl_marechal;
@@ -141,6 +143,14 @@ pub(crate) fn fit_samples(
     )
 }
 
+/// One pupil's outcome in [`wavefront_map_shared`].
+enum Fitted {
+    /// The map and its warnings.
+    Map(Vec<String>, Box<WavefrontMap>),
+    /// Too few rays for the fit: the warning and the error.
+    Skipped(String, MkError),
+}
+
 pub fn wavefront_map_job(
     tracer: &SequentialTracer,
     settings: &WavefrontSettings,
@@ -178,69 +188,98 @@ pub fn wavefront_map_shared(
         .map(|(_, _, fp)| fp.pupils.len())
         .sum::<usize>()
         .max(1);
-    for (f, value, fp) in per {
-        warnings.extend(fp.warnings.iter().cloned());
-        for (wl, _, tp) in fp.pupils {
-            fit_ctx.check()?;
-            // A field with too few surviving rays for the fit is skipped
-            // like an unusable field (`super` module docs).
-            let fit = match fit_traced(&tp, &basis, &JobContext::new()) {
-                Ok(fit) => fit,
-                Err(e @ MkError::Numerical(_)) => {
-                    warnings.push(format!("field {f}, wavelength {wl} skipped: {e}"));
-                    first_error.get_or_insert(e);
-                    continue;
-                }
-                Err(e) => return Err(e),
-            };
-            for w in &fit.warnings {
-                warnings.push(format!("field {f}, wavelength {wl}: {w}"));
-            }
-            let p = &tp.pupil;
-            let n = p.n();
-            let opd = p
-                .opd_waves()
-                .iter()
-                .zip(p.coverage())
-                .map(|(&w, &c)| if c > 0.0 { w } else { f64::NAN })
+    let done = AtomicUsize::new(0);
+    // Every pupil is fitted side by side; the outcomes merge in field and
+    // wavelength order, so maps, warnings and the first error are those of
+    // a serial pass.
+    let fitted: Vec<(Vec<String>, Vec<MkResult<Fitted>>)> = per
+        .into_par_iter()
+        .map(|(f, value, fp)| {
+            let outcomes = fp
+                .pupils
+                .into_par_iter()
+                .map(|(wl, _, tp)| -> MkResult<Fitted> {
+                    fit_ctx.check()?;
+                    // A field with too few surviving rays for the fit is
+                    // skipped like an unusable field (`super` module docs).
+                    let fit = match fit_traced(&tp, &basis, &JobContext::new()) {
+                        Ok(fit) => fit,
+                        Err(e @ MkError::Numerical(_)) => {
+                            let w = format!("field {f}, wavelength {wl} skipped: {e}");
+                            return Ok(Fitted::Skipped(w, e));
+                        }
+                        Err(e) => return Err(e),
+                    };
+                    let mut warnings: Vec<String> = fit
+                        .warnings
+                        .iter()
+                        .map(|w| format!("field {f}, wavelength {wl}: {w}"))
+                        .collect();
+                    let p = &tp.pupil;
+                    let n = p.n();
+                    let opd = p
+                        .opd_waves()
+                        .iter()
+                        .zip(p.coverage())
+                        .map(|(&w, &c)| if c > 0.0 { w } else { f64::NAN })
+                        .collect();
+                    let s0 = p.opd_stats(false);
+                    let s1 = p.opd_stats(true);
+                    for w in p.sampling_warnings() {
+                        warnings.push(format!("field {f}, wavelength {wl}: {w}"));
+                    }
+                    let rim = match &tp.mask {
+                        Some(crate::pupil::PupilMask::Polygons { loops }) => loops.clone(),
+                        _ => Vec::new(),
+                    };
+                    let map = WavefrontMap {
+                        field: f,
+                        field_value: value,
+                        wavelength: wl,
+                        wavelength_um: p.wavelength_um(),
+                        exit_pupil: tp.info.clone(),
+                        grid: n,
+                        coordinates: (0..n).map(|i| p.coord(i)).collect(),
+                        opd_waves: opd,
+                        amplitude: p
+                            .amplitude()
+                            .iter()
+                            .zip(p.coverage())
+                            .map(|(a, c)| if *c > 0.0 { *a } else { 0.0 })
+                            .collect(),
+                        rms_waves: s0.rms,
+                        pv_waves: s0.pv,
+                        rms_waves_tilt_removed: s1.rms,
+                        pv_waves_tilt_removed: s1.pv,
+                        strehl_at_reference: p.strehl_at_reference(),
+                        strehl_marechal: strehl_marechal(s1.rms),
+                        seidel: fit.set.seidel()?,
+                        zernike: fit.set,
+                        zernike_residual_rms: fit.residual_rms,
+                        zernike_condition: fit.condition,
+                        rim,
+                    };
+                    let k = done.fetch_add(1, Ordering::Relaxed) + 1;
+                    fit_ctx.report(k as f64 / total as f64, "Zernike fit");
+                    Ok(Fitted::Map(warnings, Box::new(map)))
+                })
                 .collect();
-            let s0 = p.opd_stats(false);
-            let s1 = p.opd_stats(true);
-            for w in p.sampling_warnings() {
-                warnings.push(format!("field {f}, wavelength {wl}: {w}"));
+            (fp.warnings, outcomes)
+        })
+        .collect();
+    for (field_warnings, outcomes) in fitted {
+        warnings.extend(field_warnings);
+        for outcome in outcomes {
+            match outcome? {
+                Fitted::Map(w, map) => {
+                    warnings.extend(w);
+                    maps.push(*map);
+                }
+                Fitted::Skipped(w, e) => {
+                    warnings.push(w);
+                    first_error.get_or_insert(e);
+                }
             }
-            let rim = match &tp.mask {
-                Some(crate::pupil::PupilMask::Polygons { loops }) => loops.clone(),
-                _ => Vec::new(),
-            };
-            maps.push(WavefrontMap {
-                field: f,
-                field_value: value,
-                wavelength: wl,
-                wavelength_um: p.wavelength_um(),
-                exit_pupil: tp.info.clone(),
-                grid: n,
-                coordinates: (0..n).map(|i| p.coord(i)).collect(),
-                opd_waves: opd,
-                amplitude: p
-                    .amplitude()
-                    .iter()
-                    .zip(p.coverage())
-                    .map(|(a, c)| if *c > 0.0 { *a } else { 0.0 })
-                    .collect(),
-                rms_waves: s0.rms,
-                pv_waves: s0.pv,
-                rms_waves_tilt_removed: s1.rms,
-                pv_waves_tilt_removed: s1.pv,
-                strehl_at_reference: p.strehl_at_reference(),
-                strehl_marechal: strehl_marechal(s1.rms),
-                seidel: fit.set.seidel()?,
-                zernike: fit.set,
-                zernike_residual_rms: fit.residual_rms,
-                zernike_condition: fit.condition,
-                rim,
-            });
-            fit_ctx.report(maps.len() as f64 / total as f64, "Zernike fit");
         }
     }
     if maps.is_empty()
