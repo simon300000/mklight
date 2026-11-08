@@ -1620,7 +1620,10 @@ host's starting ray (`TraceResident`) and forms the chief-relative
 coordinates, moments, OPD and fits. A ray the host cannot aim fails as on
 the reference (it enters the plan with an aim-outside report and is not
 completed again); there is no device aiming, no probe candidate and no
-routing. Unset, or set to a device design (`device`, `table`, `split`),
+routing. In a finite-difference batch the base point is first evaluated
+on the host and its recorded solves seed every candidate's tracer, as in
+the reference's `evaluate_batch_near`, so the probes' aims are the
+reference's seeded aims. Unset, or set to a device design (`device`, `table`, `split`),
 the device aims with host completion as above. Reported as
 `backend.aiming` (`device` or `host`) and `solvers_aiming`.
 

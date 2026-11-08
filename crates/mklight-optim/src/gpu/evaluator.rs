@@ -311,11 +311,14 @@ impl ResidentEvaluator {
         let inner = JobContext::with(ctx.cancel.clone(), Default::default());
         let hybrid = self.design.hybrid();
         let started = std::time::Instant::now();
-        // Host aiming of a finite-difference batch: like the reference's
+        // A finite-difference batch with host aiming: like the reference's
         // `evaluate_batch_near`, the base point (the batch's first
-        // candidate) is traced on the host first and its solves seed every
-        // candidate's tracer, so the probes' aims start from the base's and
-        // share its solve path.
+        // candidate) is evaluated on the host first and its solves seed
+        // every candidate's tracer, so the probes' host solves (fields,
+        // chief rays, automatic semi-diameters, pupil rays) start from the
+        // base's and share its solve path, as the reference's do. (Device
+        // aiming keeps unseeded host tracers: seeding them measured no host
+        // saving on the 29-surface lens and adds the base evaluation.)
         let seeds = match (hybrid && anchored && self.host_aim, systems.first()) {
             (true, Some(base)) => {
                 self.reference

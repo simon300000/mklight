@@ -208,8 +208,9 @@ impl TraceEvaluator {
 
     /// The solves of `anchor` recorded to seed the candidates of a
     /// finite-difference batch near it, as [`Self::evaluate_batch_near`]
-    /// seeds its batches (the anchor is traced for `operands`' rays), or
-    /// `None` when the batch is small or the system is not real-aimed.
+    /// seeds its batches (the anchor is evaluated for `operands`, its
+    /// automatic semi-diameters included), or `None` when the batch is
+    /// small or the system is not real-aimed.
     pub(crate) fn anchor_seeds(
         &self,
         anchor: &OpticalSystem,
@@ -225,7 +226,6 @@ impl TraceEvaluator {
             .copied()
             .filter(|o| {
                 trace_supports(&o.kind)
-                    && !is_model_kind(&o.kind)
                     && !matches!(o.kind, OperandKind::ToleranceSensitivity { .. })
             })
             .collect();
