@@ -161,7 +161,16 @@ fn host_views_both_origins() {
         contracts::suite(&b);
         let (opd_plan, opd_system) = opd(&b);
         for (plan, expected) in [
-            (opd_plan, vec![5738852189248301980, 17415920747824051813]),
+            // The singlet's rear surface is an even asphere: its OPD bits
+            // follow the trace-slope design (`trace_slope`).
+            (
+                opd_plan,
+                if mklight_gpu::layout::df_slope().unwrap() {
+                    vec![7341078886716340591, 17415920747824051813]
+                } else {
+                    vec![5738852189248301980, 17415920747824051813]
+                },
+            ),
             (fft(&b), vec![13232921648690179073]),
         ] {
             let r = b
@@ -185,11 +194,17 @@ fn host_views_both_origins() {
             .wait()
             .unwrap();
         let g = b.read_view(r.outputs[0].view()).unwrap();
-        assert_eq!(digest(g.words()), 16663909210024701490);
+        // The traced singlet's rear surface is an even asphere (`trace_slope`).
+        let traced = if mklight_gpu::layout::df_slope().unwrap() {
+            10683428124538957362
+        } else {
+            16663909210024701490
+        };
+        assert_eq!(digest(g.words()), traced);
         assert_eq!(r.stats.copied_bytes, 0);
         b.release_systems(h).unwrap();
         drop(r);
         drop(b);
-        assert_eq!(digest(g.words()), 16663909210024701490);
+        assert_eq!(digest(g.words()), traced);
     }
 }

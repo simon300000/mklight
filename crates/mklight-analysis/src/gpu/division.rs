@@ -125,8 +125,9 @@ impl Geometry<'_> {
 }
 
 /// `MKLIGHT_TRACE_AIM_EVIDENCE=1` prints the aiming evidence of each plan
-/// that aimed rays to stderr, `=2` of every plan (development measurements).
-fn trace_evidence() -> u32 {
+/// that aimed rays to stderr, `=2` of every plan, `=3` also each device
+/// generation (development measurements).
+pub(crate) fn trace_evidence() -> u32 {
     static ON: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
     *ON.get_or_init(|| {
         std::env::var("MKLIGHT_TRACE_AIM_EVIDENCE")
