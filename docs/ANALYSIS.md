@@ -764,7 +764,8 @@ completed by the reference); `cpu` runs the reference path; `sized` runs
 and `host-chief` above (a size rule for `auto`, measured as a design, since
 an explicit GPU request must run natively). The reference itself solves and traces the fields of these maps in
 parallel (blocks of 256 fields; grid distortion in blocks of about 1024
-points), with unchanged results.
+points; the field curvature all its (wavelength, field) rows at once), with
+unchanged results.
 
 System transmission and the polarisation pupil map are described in
 POLARIZATION.md §9.
