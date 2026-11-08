@@ -534,13 +534,14 @@ impl Evaluation {
                         let aim = solver_host_aim()?;
                         host_aim = Some(aim);
                         let context = GpuContext::new(device.backend.clone(), snapshot.clone());
-                        Some((
-                            ResidentEvaluator::new(context, cpu.clone())
-                                .with_design(design)
-                                .with_lanes(layout)
-                                .with_host_aim(aim),
-                            device,
-                        ))
+                        let mut evaluator = ResidentEvaluator::new(context, cpu.clone())
+                            .with_design(design)
+                            .with_lanes(layout)
+                            .with_host_aim(aim);
+                        if let Some(n) = selected.pipeline_from() {
+                            evaluator = evaluator.with_pipelining_from(n);
+                        }
+                        Some((evaluator, device))
                     }
                     None => {
                         fallback_reason = Some(format!(

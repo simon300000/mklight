@@ -92,7 +92,9 @@ pub enum Split {
     Pipelined,
     /// [`Split::Hybrid`], and least-squares trial points evaluated together
     /// with the finite-difference probes of the next Jacobian (one batch per
-    /// iteration instead of two when the step is accepted).
+    /// iteration instead of two when the step is accepted); batches of at
+    /// least [`Split::PIPELINE_FROM`] candidates (Monte Carlo, sensitivity)
+    /// pipelined as [`Split::Pipelined`].
     Speculative,
     /// [`Split::Hybrid`], and glass substitution re-optimises each search
     /// iteration's combinations side by side through the rendezvous
@@ -160,6 +162,17 @@ impl Split {
     pub fn joint_refinements(self) -> bool {
         self == Split::Rendezvous
     }
+    /// The smallest batch the variant pipelines in sub-batches: the
+    /// default (`speculative`) pipelines Monte Carlo and sensitivity
+    /// batches (at least [`Split::PIPELINE_FROM`] candidates) and keeps a
+    /// finite-difference Jacobian in one plan.
+    pub fn pipeline_from(self) -> Option<usize> {
+        (self == Split::Speculative).then_some(Split::PIPELINE_FROM)
+    }
+    /// See [`Split::pipeline_from`]: 1000 dense trials on the 29- and
+    /// 35-surface lenses 1.92 → 1.72 s and 1.98 → 1.75 s pipelined, a
+    /// 23-candidate Jacobian of the Double Gauss slower (792 vs 582 ms).
+    pub const PIPELINE_FROM: usize = 64;
 }
 
 type SamplingCache = Vec<(

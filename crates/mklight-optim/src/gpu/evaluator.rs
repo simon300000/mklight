@@ -141,6 +141,9 @@ pub struct ResidentEvaluator {
     lanes: Lanes,
     /// Hybrid designs: aim every pupil ray on the host, trace on the device.
     host_aim: bool,
+    /// [`EvalDesign::Hybrid`]: pipeline batches of at least this many
+    /// candidates as [`EvalDesign::Pipelined`] does.
+    pipeline_from: Option<usize>,
 }
 /// Rays the hybrid designs route to the host, learned from the device's
 /// aiming reports (unresolved or slow), and the batches seen so far. A ray
@@ -195,7 +198,16 @@ impl ResidentEvaluator {
             aim_cap: None,
             lanes: Lanes::DEFAULT,
             host_aim: false,
+            pipeline_from: None,
         }
+    }
+    /// [`EvalDesign::Hybrid`] with batches of at least `n` candidates
+    /// pipelined in sub-batches as [`EvalDesign::Pipelined`] (a size rule:
+    /// Monte Carlo and sensitivity batches overlap their host and device
+    /// work, finite-difference Jacobians stay one plan).
+    pub fn with_pipelining_from(mut self, n: usize) -> Self {
+        self.pipeline_from = Some(n);
+        self
     }
     /// The hybrid designs with every pupil ray aimed on the host (the
     /// candidates' f64 tracers, the reference's aims) and only traced and
@@ -1087,7 +1099,8 @@ impl ResidentEvaluator {
             ops,
             1 + cpu.settings().illumination_rings.max(2) * cpu.settings().illumination_arms.max(8),
         );
-        let overlap = self.design == EvalDesign::Pipelined;
+        let overlap = self.design == EvalDesign::Pipelined
+            || (self.design == EvalDesign::Hybrid && self.pipeline_from.is_some_and(|m| n >= m));
         let size = if overlap {
             pipeline_chunk(n).min(limit)
         } else {

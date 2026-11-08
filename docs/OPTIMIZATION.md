@@ -1527,7 +1527,7 @@ CPU-reference runs are unaffected.
 | `resident` | `Resident`: the P1/P4 adapter above | as before |
 | `hybrid` | `Hybrid` | tolerance batches of at least 128 |
 | `pipelined` | `Pipelined` | as `hybrid` |
-| `speculative` (default) | `Hybrid` | as `hybrid`, plus speculative least-squares Jacobians |
+| `speculative` (default) | `Hybrid`, batches of at least 64 candidates pipelined as `Pipelined` | as `hybrid`, plus speculative least-squares Jacobians |
 | `rendezvous` | `Hybrid` | as `hybrid`, plus joint glass refinements |
 | `cpu-par` | none: the CPU f64 reference | as `speculative` |
 
@@ -1597,7 +1597,12 @@ host-routed rays and the device's unresolved, clipped and slow rays.
 
 `EvalDesign::Pipelined` splits a batch into three sub-batches (at least 8
 candidates each) and overlaps the host preparation of sub-batch k + 1 and
-the finishing of k − 1 with the device's work on k.
+the finishing of k − 1 with the device's work on k. The default variant
+(`speculative`) pipelines batches of at least 64 candidates this way
+(`ResidentEvaluator::with_pipelining_from`): Monte Carlo and sensitivity
+batches gain (1000 trials at 6 × 12 sampling on the 29- and 35-surface
+lenses: 1.92 → 1.72 s and 1.98 → 1.75 s), a 23-candidate Jacobian loses
+(Double Gauss `optimize` 792 vs 582 ms), so Jacobians stay one plan.
 
 **CPU thread layout** (work-split study `solver_threads`, `gpu::Lanes`,
 reported as `backend.threads` and `solvers_threads`). How the hybrid
