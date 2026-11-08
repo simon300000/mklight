@@ -87,13 +87,11 @@ const PIPELINE_MIN_CHUNK: usize = 8;
 fn pipeline_chunk(n: usize) -> usize {
     n.div_ceil(3).max(PIPELINE_MIN_CHUNK)
 }
-/// Device aiming cap of a hybrid evaluator's first batch: healthy rays
-/// converge in 2–5 iterations; the slow ones it leaves unresolved are
-/// completed on the host and routed there afterwards.
-const COLD_AIM_CAP: u32 = 4;
-/// Batches a routed ray stays with the host after it was last seen slow on
-/// the device; then the device tries it again.
-const HOST_RAY_BATCHES: u64 = 8;
+/// Smallest batch for which a hybrid evaluator that has not seen a batch
+/// yet first traces one candidate alone to learn the slow rays: a large
+/// cold batch would hold every aiming tile of its plan up for the slow
+/// lanes (tiles run one after another, each as long as its slowest lane).
+const PROBE_MIN_BATCH: usize = 4;
 
 #[derive(Clone)]
 pub struct ResidentEvaluator {
@@ -113,29 +111,33 @@ pub struct ResidentEvaluator {
     aim_cap: Option<u32>,
 }
 /// Rays the hybrid designs route to the host, learned from the device's
-/// aiming reports: the batch each was last seen unresolved or slow in.
+/// aiming reports (unresolved or slow), and the batches seen so far. A ray
+/// stays with the host for the evaluator's lifetime: the learned rays are
+/// the merit's unaimable and slow rim rays, and one that has become easy
+/// costs the host a few microseconds.
 #[derive(Default)]
 struct HostRays {
-    batch: u64,
-    seen: BTreeMap<resident::RayKey, u64>,
+    batches: u64,
+    rays: BTreeSet<resident::RayKey>,
+    /// The device left so many rays to the host (more than
+    /// [`HOST_ONLY_FRACTION`] of a candidate's) that the rest of the run is
+    /// evaluated on the host alone, by the reference.
+    host_only: bool,
 }
 impl HostRays {
-    /// The rays to route in the next batch (seen within
-    /// [`HOST_RAY_BATCHES`]); expired ones go back to the device.
-    fn current(&mut self) -> BTreeSet<resident::RayKey> {
-        let batch = self.batch;
-        self.seen
-            .retain(|_, &mut at| batch.saturating_sub(at) < HOST_RAY_BATCHES);
-        self.seen.keys().copied().collect()
-    }
-    fn record(&mut self, keys: impl IntoIterator<Item = resident::RayKey>) {
-        let batch = self.batch;
-        for key in keys {
-            self.seen.insert(key, batch);
+    /// Learn `keys`; `rays` is a candidate's traced ray count.
+    fn record(&mut self, keys: impl IntoIterator<Item = resident::RayKey>, rays: f64) {
+        self.rays.extend(keys);
+        self.batches += 1;
+        if self.rays.len() as f64 > HOST_ONLY_FRACTION * rays {
+            self.host_only = true;
         }
-        self.batch += 1;
     }
 }
+/// Fraction of a candidate's rays the device may leave to the host before
+/// a hybrid evaluator gives the rest of its run to the reference (on the
+/// 35-surface ultra-wide benchmark lens the device aimed only 166 of 570).
+const HOST_ONLY_FRACTION: f64 = 0.5;
 impl ResidentEvaluator {
     pub fn new(mut context: GpuContext, reference: BuiltinEvaluator) -> Self {
         // Same length-prefixed catalogue identity as the engine; computed once.
@@ -677,6 +679,21 @@ impl OperandEvaluator for ResidentEvaluator {
         ctx.report(1., "candidate batch complete");
         Ok(values)
     }
+    /// Hybrid designs evaluate a batch near an anchor (joined finite
+    /// differences of the rendezvous scheduler) with one evaluator per ray
+    /// across it; the resident design ignores the anchor.
+    fn evaluate_batch_near(
+        &self,
+        systems: &[OpticalSystem],
+        ops: &[&Operand],
+        anchor: Option<&OpticalSystem>,
+        ctx: &JobContext,
+    ) -> MkResult<Vec<Vec<OperandValue>>> {
+        if self.design.hybrid() {
+            return self.evaluate(systems, ops, None, anchor.is_some(), ctx);
+        }
+        self.evaluate_batch(systems, ops, ctx)
+    }
     fn evaluate_parametric(
         &self,
         batch: &ParametricBatch<'_>,
@@ -841,13 +858,29 @@ impl ResidentEvaluator {
         if n == 0 {
             return Ok(vec![]);
         }
-        // Before any batch has taught the evaluator its slow rays, a lower
-        // device cap bounds the latency of the stragglers among them.
-        let cold = self.host_rays.lock().unwrap().batch == 0;
-        let design = self
-            .design
-            .ray_design(self.aim_cap.or(cold.then_some(COLD_AIM_CAP)));
+        if n >= PROBE_MIN_BATCH && self.host_rays.lock().unwrap().batches == 0 {
+            // The probe's values are not used: a finite difference routes
+            // all its candidates alike.
+            self.split_rays(context, &tracers[..1], ops, false, ctx)?;
+        }
         let cpu = &self.reference.trace;
+        if self.host_rays.lock().unwrap().host_only {
+            // The reference, seeded from the batch's base point when it holds
+            // finite differences (its first candidate).
+            let systems: Vec<OpticalSystem> = tracers
+                .iter()
+                .map(|t| t.system().system().clone())
+                .collect();
+            let anchor = anchored.then(|| systems[0].clone());
+            let values = cpu.evaluate_batch_near(&systems, ops, anchor.as_ref(), ctx)?;
+            let mut stats = self.stats.lock().unwrap();
+            *stats
+                .fallbacks
+                .entry("device aiming left most rays to the host: reference evaluation".into())
+                .or_default() += (n * ops.len()) as u64;
+            return Ok(values);
+        }
+        let design = self.design.ray_design(self.aim_cap);
         let limit = batch_limit(
             tracers[0].system().system(),
             ops,
@@ -873,8 +906,9 @@ impl ResidentEvaluator {
         };
         // One routing for the whole batch, so that a ray is traced by the
         // same side for every candidate of a finite difference.
-        let host_rays = self.host_rays.lock().unwrap().current();
+        let host_rays = self.host_rays.lock().unwrap().rays.clone();
         let mut unresolved: BTreeMap<resident::RayKey, usize> = BTreeMap::new();
+        let mut rays_total = 0usize;
         let mut in_flight = None;
         for (k, chunk) in chunks.iter().enumerate() {
             ctx.check()?;
@@ -882,6 +916,16 @@ impl ResidentEvaluator {
                 resident::prepare(context, cpu, chunk, ops, None, &design, &host_rays, ctx)?;
             let plan = prepared.plan.take().expect("prepared plan");
             context.record_traced_rays(prepared.traced_rays());
+            rays_total += prepared.traced_rays() + prepared.host_rays();
+            if resident::trace_routing() {
+                eprintln!(
+                    "MKL_SOLVERS chunk {k}: {} candidates, {} device rays, {} host-routed rays (set {})",
+                    chunk.len(),
+                    prepared.traced_rays(),
+                    prepared.host_rays(),
+                    host_rays.len()
+                );
+            }
             let pending = context.submit_async(plan, ctx)?;
             // The host's share while the device traces the rest: the rays
             // routed to it and the operands that need no ray.
@@ -928,6 +972,7 @@ impl ResidentEvaluator {
                 .iter()
                 .filter(|&(_, &count)| count >= threshold)
                 .map(|(&key, _)| key),
+            rays_total as f64 / n as f64,
         );
         if anchored {
             let uniform: BTreeSet<resident::RayKey> = deferred

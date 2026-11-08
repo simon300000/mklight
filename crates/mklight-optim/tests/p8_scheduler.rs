@@ -106,6 +106,7 @@ fn refined_archives_keep_reference_scores() {
                 vec![0.],
             ))
         }),
+        joint: None,
     };
     let mut r = local.refine_batch(&[vec![0]], None, &JobContext::new(), 1e-8);
     let r = r.remove(0).unwrap();

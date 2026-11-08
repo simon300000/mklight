@@ -113,6 +113,20 @@ pub(super) fn evaluation_backend_schema() -> Value {
                 opaque("Device evaluation, host-stage and fallback accounting."),
             ),
             (
+                "split",
+                enumeration(
+                    &[
+                        "resident",
+                        "hybrid",
+                        "pipelined",
+                        "speculative",
+                        "rendezvous",
+                        "cpu-par",
+                    ],
+                    "Host/device division of a run handed a GPU device (work-split study `solvers`).",
+                ),
+            ),
+            (
                 "gpu_stats",
                 obj(&[
                     ("gpu_candidates", int("")),
@@ -123,7 +137,7 @@ pub(super) fn evaluation_backend_schema() -> Value {
                 ]),
             ),
         ],
-        &["gpu_stats", "resident_evaluation"],
+        &["gpu_stats", "resident_evaluation", "split"],
     )
 }
 
@@ -515,6 +529,13 @@ impl Evaluation {
     /// Jacobian's probes (work-split variant).
     fn speculative(&self) -> bool {
         self.split.is_some_and(Split::speculative)
+    }
+
+    /// The device evaluator when independent refinements are to be joined
+    /// into rendezvous batches (work-split variant).
+    fn joint_gpu(&self) -> Option<&ResidentEvaluator> {
+        self.active_gpu()
+            .filter(|_| self.split.is_some_and(Split::joint_refinements))
     }
 
     /// Candidates per tolerance evaluation batch (Monte Carlo trials and

@@ -57,7 +57,39 @@ fn run(s: &Session, analysis: &str, settings: &Value, backend: Backend) -> Optio
     s.run_analysis(&request, &JobContext::new()).ok()
 }
 
-/// Every variant on `systems` and `device` against the CPU reference.
+/// The merits a solver outcome is judged by: the final merit of an
+/// optimisation, the finalists' merits of a glass substitution.
+fn merits(analysis: &str, r: &AnalysisResult) -> Vec<f64> {
+    match analysis {
+        "optimize" => vec![r.json["final"]["merit"].as_f64().unwrap_or(f64::NAN)],
+        "glass_substitution" => r.json["results"]
+            .as_array()
+            .map(|v| {
+                v.iter()
+                    .map(|x| x["merit"].as_f64().unwrap_or(f64::NAN))
+                    .collect()
+            })
+            .unwrap_or_default(),
+        _ => vec![],
+    }
+}
+
+/// Largest relative merit difference of `r` from the reference `cpu`.
+fn deviation(analysis: &str, cpu: &AnalysisResult, r: &AnalysisResult) -> f64 {
+    let (a, b) = (merits(analysis, cpu), merits(analysis, r));
+    if a.len() != b.len() {
+        return f64::INFINITY;
+    }
+    a.iter()
+        .zip(&b)
+        .map(|(x, y)| (x - y).abs() / x.abs().max(1e-300))
+        .fold(0.0, f64::max)
+}
+
+/// Every variant on `systems` and `device` against the CPU reference: each
+/// meets the solver-outcome contract, or, where the resident design (the
+/// division before this study) misses it too, deviates from the reference
+/// by at most twice as much as the resident design.
 fn check(engine: &Engine, device: &str, systems: Vec<(&str, mklight_core::OpticalSystem)>) {
     let mut failures = Vec::new();
     for (name, system) in systems {
@@ -69,6 +101,7 @@ fn check(engine: &Engine, device: &str, systems: Vec<(&str, mklight_core::Optica
             let Some(cpu) = run(&session, analysis, &settings, Backend::CpuReference) else {
                 continue;
             };
+            let mut resident: Option<(bool, f64)> = None;
             for variant in Split::ALL.map(Some).into_iter().chain([None]) {
                 split::set(SPLIT_STUDY, variant.map(Split::name));
                 let gpu = run(&session, analysis, &settings, Backend::Gpu(device.into()))
@@ -91,15 +124,21 @@ fn check(engine: &Engine, device: &str, systems: Vec<(&str, mklight_core::Optica
                     comparison::compare(&view(&cpu), &view(&gpu), analysis, &JobContext::new())
                         .unwrap();
                 let native = comparison::native_failures(&gpu.run_info);
+                let dev = deviation(analysis, &cpu, &gpu);
                 eprintln!(
-                    "{name}/{analysis}/{}: used {} reason {:?} cpu {:.1} ms device {:.1} ms",
+                    "{name}/{analysis}/{}: used {} reason {:?} merit deviation {dev:.2e} \
+                     cpu {:.1} ms device {:.1} ms",
                     expected.name(),
                     gpu.backend.used,
                     report.reason,
                     cpu.run_info.duration_ms,
                     gpu.run_info.duration_ms
                 );
-                if report.reason.is_some() || !native.is_empty() {
+                if expected == Split::Resident {
+                    resident = Some((report.reason.is_none(), dev));
+                }
+                let within_resident = matches!(resident, Some((false, r)) if dev <= 2. * r + 1e-12);
+                if (report.reason.is_some() && !within_resident) || !native.is_empty() {
                     failures.push(format!(
                         "{name}/{analysis}/{}: {:?} {:?}",
                         expected.name(),

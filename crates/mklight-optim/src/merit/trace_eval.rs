@@ -866,35 +866,12 @@ impl<'a> Candidate<'a> {
     /// Stages 2 and 3 on the CPU: chief rays, reference spheres and pupil
     /// samplings of `plan`.
     fn trace_cpu(&mut self, plan: &Plan, ctx: &JobContext, parallel: bool) -> MkResult<()> {
-        let tr = self.tr;
         let c = &*self;
         // Stage 2: chief rays and reference spheres.
         let chiefs: Vec<(FieldKey, usize)> = plan.chiefs.iter().copied().collect();
-        let chiefs = pmap(&chiefs, parallel, |&(f, w)| {
-            let d = match c.field(f) {
-                Ok(field) => {
-                    let chief = tr.chief(field, w);
-                    let reference = tr
-                        .opd_reference(field, w)
-                        .map_err(|s| OperandError::RayFailure(format!("chief ray: {s:?}")));
-                    ChiefData {
-                        chief: if chief.status.is_ok() {
-                            Ok(chief)
-                        } else {
-                            Err(status_error(&chief))
-                        },
-                        reference,
-                    }
-                }
-                Err(e) => ChiefData {
-                    chief: Err(e.clone()),
-                    reference: Err(e),
-                },
-            };
-            ((f, w), d)
-        })
-        .into_iter()
-        .collect();
+        let chiefs = pmap(&chiefs, parallel, |&(f, w)| ((f, w), c.host_chief(f, w)))
+            .into_iter()
+            .collect();
         self.chiefs = chiefs;
         ctx.check()?;
         // Stage 3: pupil samplings.
@@ -969,6 +946,32 @@ impl<'a> Candidate<'a> {
             symmetry,
             rays,
             index,
+        }
+    }
+
+    /// The chief ray and OPD reference sphere of `(f, w)` from this
+    /// candidate's f64 tracer.
+    pub(super) fn host_chief(&self, f: FieldKey, w: usize) -> ChiefData {
+        match self.field(f) {
+            Ok(field) => {
+                let chief = self.tr.chief(field, w);
+                let reference = self
+                    .tr
+                    .opd_reference(field, w)
+                    .map_err(|s| OperandError::RayFailure(format!("chief ray: {s:?}")));
+                ChiefData {
+                    chief: if chief.status.is_ok() {
+                        Ok(chief)
+                    } else {
+                        Err(status_error(&chief))
+                    },
+                    reference,
+                }
+            }
+            Err(e) => ChiefData {
+                chief: Err(e.clone()),
+                reference: Err(e),
+            },
         }
     }
 

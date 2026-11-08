@@ -5,7 +5,9 @@
 
 use super::*;
 use mklight_core::MkResult;
-use mklight_optim::discrete::{DiscreteSettings, LocallyRefined, NearestChoices, tabu_search};
+use mklight_optim::discrete::{
+    DiscreteSettings, JointRefineFn, LocallyRefined, NearestChoices, refine_one, tabu_search,
+};
 use mklight_optim::glass::{
     CandidateSet, DISTANCE_WEIGHTS, GlassChoice, MaterialVariable, model_variables,
 };
@@ -481,6 +483,36 @@ impl Analysis for GlassSubstitution {
         let gpu = ev.active_gpu().cloned();
         let build_cpu = cpu.clone();
         let start_x = x0.clone();
+        // The `rendezvous` work-split variant refines one search iteration's
+        // combinations jointly: their solves run side by side and every
+        // round of evaluations goes to the device as one batch
+        // (`gpu::scheduler`).
+        let joint = ev.joint_gpu().cloned().map(|g| {
+            let space = space.clone();
+            let x0 = x0.clone();
+            Box::new(
+                move |assignments: &[Vec<usize>],
+                      starts: Option<&[Vec<f64>]>,
+                      settings: &LsqSettings,
+                      ctx: &JobContext,
+                      tol: f64| {
+                    let run = mklight_optim::gpu::scheduler::run(
+                        &g,
+                        assignments.len(),
+                        ctx,
+                        |i, worker| {
+                            let p = space.problem(&assignments[i], worker)?;
+                            let start = starts.map_or(&x0, |s| &s[i]);
+                            refine_one(&p, start, settings, ctx, tol)
+                        },
+                    );
+                    match run {
+                        Ok(v) => v.into_iter().map(Ok).collect(),
+                        Err(e) => assignments.iter().map(|_| Err(e.clone())).collect(),
+                    }
+                },
+            ) as Box<JointRefineFn>
+        });
         let local = LocallyRefined {
             choices: space.candidates.iter().map(Vec::len).collect(),
             settings: lsq,
@@ -492,6 +524,7 @@ impl Analysis for GlassSubstitution {
                 };
                 Ok((p, start_x.clone()))
             }),
+            joint,
         };
 
         let ((run, archive), why) = interruptible_for(ctx, &stop, time_limit, |inner| {

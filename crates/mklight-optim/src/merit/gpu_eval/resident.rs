@@ -134,6 +134,14 @@ const fn hybrid_rounds(cap: u32) -> u32 {
     (cap + 2).div_ceil(4) + 1
 }
 
+/// `MKLIGHT_SOLVERS_TRACE_ROUTING=1` prints, per hybrid batch, the rays
+/// routed to the host and the device's unresolved, failed and slow rays
+/// (diagnostics of the work-split study).
+pub(crate) fn trace_routing() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("MKLIGHT_SOLVERS_TRACE_ROUTING").is_ok_and(|v| v == "1"))
+}
+
 /// Identity of one traced ray, shared by the candidates of a batch:
 /// (field, λ, bits of `px`, bits of `py`, clipped, last surface).
 pub(crate) type RayKey = (FieldKey, usize, u64, u64, bool, usize);
@@ -196,6 +204,105 @@ fn append(
                 steps,
                 start_surface: 0,
                 apply_apertures: clip,
+                radiometry: 0,
+                newton: Default::default(),
+                output: hits.clone(),
+            },
+        )));
+    Ok(hits)
+}
+/// Chief rays generated (aimed) on the host by the candidates' f64 tracers
+/// and traced on the device to the image (unclipped): the hybrid design's
+/// chief rows, which no device aim can leave unresolved. A chief the host
+/// cannot generate enters with a failure report and is not traced.
+#[allow(clippy::too_many_arguments)]
+fn host_chief_rays(
+    g: &GpuContext,
+    p: &mut ResidentPlan,
+    set: &SystemSet,
+    chiefs: &[Probe],
+    candidates: &[(Candidate<'_>, Plan)],
+    tracers: &[Arc<SequentialTracer>],
+    last: usize,
+    ctx: &JobContext,
+) -> MkResult<a::ResidentHits> {
+    let n = chiefs.len();
+    let rays: Vec<Option<Ray>> = chiefs
+        .par_iter()
+        .map(|q| {
+            let field = candidates[q.candidate].0.field(q.field).ok()?;
+            let tr = &tracers[q.candidate];
+            // The prepared field's converged chief aim is the pupil-centre
+            // solve when the field has no vignetting decentre.
+            let v = field.point.vignetting;
+            if field.is_valid()
+                && v.vdx == 0.
+                && v.vdy == 0.
+                && let Some(a) = field.aims.get(q.wavelength).filter(|a| a.converged)
+            {
+                return tr.start_ray(&field.source, a.chief);
+            }
+            tr.generate(field, q.wavelength, 0.0, 0.0)
+                .ok()
+                .map(|g| g.ray)
+        })
+        .collect();
+    ctx.check()?;
+    let floats = g.fill(p, [15, n], |out: &mut [f32]| {
+        for (i, r) in rays.iter().enumerate() {
+            let Some(r) = r else { continue };
+            let v = [r.pos.x, r.pos.y, r.pos.z, r.dir.x, r.dir.y, r.dir.z];
+            for (k, &x) in v.iter().enumerate() {
+                let d = Df32::from_f64(x);
+                // Hi planes 0..6, then OPL hi/lo and weight, then lo planes.
+                out[k * n + i] = d.hi;
+                out[(9 + k) * n + i] = d.lo;
+            }
+            out[6 * n + i] = 0.;
+            out[7 * n + i] = 0.;
+            out[8 * n + i] = 1.;
+        }
+    })?;
+    let indices = g.fill(p, [2, n], |out: &mut [u32]| {
+        for (i, q) in chiefs.iter().enumerate() {
+            out[i] = q.candidate as u32;
+            out[n + i] = q.wavelength as u32;
+        }
+    })?;
+    let ids = g.fill(p, [2, n], |out: &mut [u32]| {
+        for (i, v) in out[..n].iter_mut().enumerate() {
+            *v = i as u32;
+        }
+        out[n..].fill(0);
+    })?;
+    let report = g.fill(p, [4, n], |out: &mut [u32]| {
+        out.fill(0);
+        for (i, r) in rays.iter().enumerate() {
+            if r.is_none() {
+                out[i] = mklight_gpu::consts::MKL_AIM_FAILED;
+            }
+        }
+    })?;
+    let steps = g.fill(p, [last], |out: &mut [u32]| {
+        for (i, v) in out.iter_mut().enumerate() {
+            *v = (i + 1) as u32;
+        }
+    })?;
+    let hits = a::hits(p, n, 0);
+    p.operations
+        .push(ResidentOp::Aiming(a::Request::TraceResident(
+            a::TraceResident {
+                systems: set.clone(),
+                input: a::ResidentRays {
+                    floats: floats.buffer,
+                    indices: indices.buffer,
+                    count: n,
+                    logical_ids: ids.buffer,
+                    report: report.buffer,
+                },
+                steps,
+                start_surface: 0,
+                apply_apertures: false,
                 radiometry: 0,
                 newton: Default::default(),
                 output: hits.clone(),
@@ -275,6 +382,8 @@ pub(crate) struct Prepared<'a> {
     uploaded: Option<Uploaded<'a>>,
     traced_rays: usize,
     aggregates: bool,
+    /// Image surface index (the chief rays' last surface).
+    image: usize,
 }
 impl Prepared<'_> {
     pub(crate) fn traced_rays(&self) -> usize {
@@ -328,28 +437,39 @@ pub(crate) fn host_stage(
         .filter(|&(ci, hi, _, _)| prepared.host[ci][hi].traced.is_none())
         .collect();
     let host = &prepared.host;
-    let traced: Vec<_> = items
-        .par_iter()
-        .map(|&(ci, hi, a, b)| {
-            let h = &host[ci][hi];
-            candidates[ci].0.trace_nodes(h.key, &h.nodes[a..b])
-        })
-        .collect();
+    let early_ops: Vec<&Operand> = operands.iter().copied().filter(|o| rayless(o)).collect();
+    let want_early = design.host_operands && prepared.early.is_none();
+    // Both on the pool at once: the routed rays and the rayless operands.
+    let (traced, early) = rayon::join(
+        || {
+            items
+                .par_iter()
+                .map(|&(ci, hi, a, b)| {
+                    let h = &host[ci][hi];
+                    candidates[ci].0.trace_nodes(h.key, &h.nodes[a..b])
+                })
+                .collect::<Vec<_>>()
+        },
+        || {
+            want_early.then(|| {
+                candidates
+                    .par_iter()
+                    .enumerate()
+                    .map(|(ci, (c, _))| {
+                        cpu.host_values(tracers[ci].system().system(), c, &early_ops, ctx)
+                    })
+                    .collect::<MkResult<Vec<_>>>()
+            })
+        },
+    );
     for (&(ci, hi, _, _), t) in items.iter().zip(traced) {
         prepared.host[ci][hi]
             .traced
             .get_or_insert_with(Vec::new)
             .extend(t);
     }
-    if design.host_operands && prepared.early.is_none() {
-        let early: Vec<&Operand> = operands.iter().copied().filter(|o| rayless(o)).collect();
-        prepared.early = Some(
-            candidates
-                .par_iter()
-                .enumerate()
-                .map(|(ci, (c, _))| cpu.host_values(tracers[ci].system().system(), c, &early, ctx))
-                .collect::<MkResult<Vec<_>>>()?,
-        );
+    if let Some(early) = early {
+        prepared.early = Some(early?);
     }
     Ok(())
 }
@@ -758,20 +878,24 @@ pub(crate) fn prepare<'a>(
         speculative_rounds: design.speculative_rounds.min(1),
         ..*design
     };
-    let ch = append(
-        g,
-        &mut p,
-        &set,
-        &metadata,
-        &seeds,
-        &chiefs,
-        None,
-        last,
-        false,
-        tolerance,
-        &chief_design,
-        ctx,
-    )?;
+    let ch = if design.complete_rays {
+        host_chief_rays(g, &mut p, &set, &chiefs, &candidates, tracers, last, ctx)?
+    } else {
+        append(
+            g,
+            &mut p,
+            &set,
+            &metadata,
+            &seeds,
+            &chiefs,
+            None,
+            last,
+            false,
+            tolerance,
+            &chief_design,
+            ctx,
+        )?
+    };
     let reference = g.df(&mut p, [chiefs.len(), 3], &refs)?;
     p.outputs = vec![ch.rays.floats, ch.status, ch.rays.report];
     let mut moment_segments = Vec::new();
@@ -959,6 +1083,7 @@ pub(crate) fn prepare<'a>(
         uploaded,
         traced_rays,
         aggregates,
+        image: last,
     })
 }
 
@@ -1003,34 +1128,55 @@ pub(crate) fn collect<'a>(
         .map(|o| g.backend.read_view(o.view()))
         .collect::<MkResult<Vec<_>>>()?;
     let chief_status = views[1].as_slice::<u32>()?;
+    let mut chief_keys = vec![BTreeSet::new(); n];
     for (i, (q, &status)) in prepared
         .chiefs
         .iter()
         .zip(views[2].as_slice::<u32>()?)
         .enumerate()
     {
-        // A chief ray the device could not trace is decided by the
-        // reference with its whole candidate (the hybrid design trusts no
-        // device failure).
-        if status != 0 || (design.complete_rays && chief_status[i] != 0) {
+        // A chief ray the device could not aim or trace: the resident
+        // design reports the whole candidate to the reference; the hybrid
+        // design takes the f64 chief and traces every ray of its field and
+        // wavelength on the host (they depend on the chief through the
+        // device's chief-relative coordinates and OPD).
+        if design.complete_rays {
+            if status != 0 || chief_status[i] != 0 {
+                chief_keys[q.candidate].insert(ray_key(q, false, prepared.image));
+            }
+        } else if status != 0 {
             whole.insert(q.candidate);
         }
     }
-    let mut unresolved = vec![BTreeSet::new(); n];
+    let mut unresolved = chief_keys;
     let mut slow = vec![BTreeSet::new(); n];
     for (bi, ((clip, last), probes)) in prepared.partitions.iter().enumerate() {
         let report = views[3 + 7 * bi + 2].as_slice::<u32>()?;
         let traced = views[3 + 7 * bi + 1].as_slice::<u32>()?;
         let count = probes.len();
+        if trace_routing() {
+            let aim = (0..count).filter(|&i| unresolved_report(report[i])).count();
+            let clipped = (0..count)
+                .filter(|&i| report[i] == 0 && traced[i] != 0)
+                .count();
+            let slow = (0..count)
+                .filter(|&i| report[i] == 0 && report[count + i] > SLOW_ITERATIONS)
+                .count();
+            eprintln!(
+                "MKL_SOLVERS partition {bi}: {count} probes of {n} candidates, aim-unresolved \
+                 {aim}, trace-failed {clipped}, slow {slow}"
+            );
+        }
         for (i, q) in probes.iter().enumerate() {
             let code = report[i];
             if design.complete_rays {
-                // Unresolved aims, and rays the device traced to a failure
-                // (an aperture edge in f32 may differ from f64): every
-                // failure is decided by the host in f64. Blocked
-                // illumination rays are the visibility data itself.
-                let failed = code == 0 && traced[i] != 0 && !matches!(q.dest, Dest::Illumination);
-                if unresolved_report(code) || failed {
+                // Unresolved aims are completed by the host in f64. A ray
+                // the device aimed and then traced to a failure (clipped by
+                // an aperture) stays a failure, as on the resident path: an
+                // f32/f64 disagreement needs the ray within ~1e-6 mm of the
+                // edge, and completing every clipped ray of a vignetted
+                // lens would cost the host as much as the reference.
+                if unresolved_report(code) {
                     unresolved[q.candidate].insert(ray_key(q, *clip, *last));
                 } else if code == 0 && report[count + i] > SLOW_ITERATIONS {
                     slow[q.candidate].insert(ray_key(q, *clip, *last));
@@ -1083,8 +1229,21 @@ pub(crate) fn finish(
         fits,
         uploaded,
         aggregates,
+        image,
         ..
     } = prepared;
+    // Chief rays the host takes over (failed on the device, here or, in a
+    // finite difference, for another candidate): with every ray of their
+    // field and wavelength.
+    let host_chiefs: BTreeSet<(usize, FieldKey, usize)> = chiefs
+        .iter()
+        .filter(|q| {
+            let key = ray_key(q, false, image);
+            design.complete_rays
+                && (rays[q.candidate].contains(&key) || uniform.is_some_and(|u| u.contains(&key)))
+        })
+        .map(|q| (q.candidate, q.field, q.wavelength))
+        .collect();
     let wavefront = operands.iter().any(|o| {
         matches!(
             o.kind,
@@ -1094,21 +1253,28 @@ pub(crate) fn finish(
     let f = views[0].as_slice::<f32>()?;
     let status = views[1].as_slice::<u32>()?;
     for (i, q) in chiefs.iter().enumerate() {
-        let chief = trace_result(f, status, chiefs.len(), i);
-        let reference = chief
-            .as_ref()
-            .map_err(Clone::clone)
-            .and_then(|r| gpu_reference(&tracers[q.candidate], r, q.wavelength));
+        let data = if host_chiefs.contains(&(q.candidate, q.field, q.wavelength)) {
+            candidates[q.candidate].0.host_chief(q.field, q.wavelength)
+        } else {
+            let chief = trace_result(f, status, chiefs.len(), i);
+            let reference = chief
+                .as_ref()
+                .map_err(Clone::clone)
+                .and_then(|r| gpu_reference(&tracers[q.candidate], r, q.wavelength));
+            ChiefData { chief, reference }
+        };
         candidates[q.candidate]
             .0
             .chiefs
-            .insert((q.field, q.wavelength), ChiefData { chief, reference });
+            .insert((q.field, q.wavelength), data);
     }
     // Which probes the host completes, and which groups (candidate, group
     // index) that touches.
     let complete = |q: &Probe, key: &RayKey| {
         design.complete_rays
-            && (rays[q.candidate].contains(key) || uniform.is_some_and(|u| u.contains(key)))
+            && (rays[q.candidate].contains(key)
+                || uniform.is_some_and(|u| u.contains(key))
+                || host_chiefs.contains(&(q.candidate, q.field, q.wavelength)))
     };
     let mut dirty: BTreeSet<(usize, u32)> = BTreeSet::new();
     let mut completions: BTreeMap<(usize, u32), Vec<usize>> = BTreeMap::new();
@@ -1289,24 +1455,40 @@ pub(crate) fn finish(
         }
     }
     // Host f64 completion of the unresolved group nodes, in parallel over
-    // candidates.
+    // candidates, groups and runs of nodes (a single candidate's failing
+    // aims are the slowest host work of a batch).
     let completion = std::time::Instant::now();
     if !completions.is_empty() {
-        let mut per_candidate: Vec<Vec<(GroupKey, Vec<usize>)>> =
-            (0..candidates.len()).map(|_| Vec::new()).collect();
-        for ((ci, gi), nodes) in completions {
-            let key = *candidates[ci].1.groups.keys().nth(gi as usize).unwrap();
-            per_candidate[ci].push((key, nodes));
+        let groups: Vec<(usize, GroupKey, Vec<usize>)> = completions
+            .into_iter()
+            .map(|((ci, gi), nodes)| {
+                let key = *candidates[ci].1.groups.keys().nth(gi as usize).unwrap();
+                (ci, key, nodes)
+            })
+            .collect();
+        let items: Vec<(usize, usize, usize)> = groups
+            .iter()
+            .enumerate()
+            .flat_map(|(k, (_, _, nodes))| {
+                (0..nodes.len())
+                    .step_by(HOST_RAYS_PER_ITEM)
+                    .map(move |a| (k, a, (a + HOST_RAYS_PER_ITEM).min(nodes.len())))
+            })
+            .collect();
+        let traced: Vec<_> = items
+            .par_iter()
+            .map(|&(k, a, b)| {
+                let (ci, key, nodes) = &groups[k];
+                candidates[*ci].0.trace_nodes(*key, &nodes[a..b])
+            })
+            .collect();
+        let mut per_group: Vec<Vec<Option<TraceResult>>> = vec![Vec::new(); groups.len()];
+        for (&(k, _, _), t) in items.iter().zip(traced) {
+            per_group[k].extend(t);
         }
-        candidates
-            .par_iter_mut()
-            .zip(per_candidate)
-            .for_each(|((c, _), groups)| {
-                for (key, nodes) in groups {
-                    let traced = c.trace_nodes(key, &nodes);
-                    c.set_nodes(key, &nodes, &traced);
-                }
-            });
+        for ((ci, key, nodes), traced) in groups.iter().zip(per_group) {
+            candidates[*ci].0.set_nodes(*key, nodes, &traced);
+        }
     }
     let completion_seconds = completion.elapsed().as_secs_f64();
     let values = candidates

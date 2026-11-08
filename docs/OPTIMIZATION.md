@@ -1036,6 +1036,8 @@ failure policy.
   "backend": {"requested": "gpu", "evaluated_on": "metal:Apple M2 Pro" | "cpu-f64-reference",
               "precision": "f32_gpu" | "f64_reference", "reported_on": "cpu-f64-reference",
               "workload": {"rays_per_candidate": 38, "batch": 7},
+              "split": "speculative",                // runs handed a GPU device: the
+                                                     // work-split variant (Host/device division)
               "gpu_stats": {"gpu_candidates": 0, "cpu_candidates": 0, "rays": 0,
                             "dispatches": 0, "device_seconds": 0.0}},
   "merit_spec": {/* the MeritFunctionSpec used, generated operands included */},
@@ -1322,7 +1324,10 @@ and synthetic catalogues.
   snapshot, resolution and paraxial setup, ray generation (and aiming),
   packing, and operand reads. At the default merit's sampling this work costs
   as much as the CPU trace it replaces (see Throughput). Device-side ray
-  generation and reductions would remove it.
+  generation and reductions would remove it. The hybrid designs (Host/device
+  division of candidate batches) overlap the host share with the device but
+  keep it: tracer construction, automatic semi-diameters and the f64
+  failure path of unaimable rays bound their gain.
 * The GPU evaluator traces chief-ray angles, incidence angles, real working
   F/# and relative illumination on the CPU.
 * The engine, C ABI, Python and CLI expose Stop; the native app still needs
@@ -1487,3 +1492,120 @@ changing-candidate workloads include it: 32 compensated Cooke trials took
 versus 24 ms; per-candidate geometry qualification commands dominate both.
 Plan peaks are 60 MiB (spot) and 127 MiB (dense wavefront). Cold costs, p95, copies, fallback proportions and raw records are in
 `P8-evidence.md`; these numbers do not set a universal backend threshold.
+
+## Host/device division of candidate batches (work-split study `solvers`)
+
+The engine's candidate jobs (`merit_evaluation`, `optimize`, `tolerance`,
+`glass_substitution`) select how a Metal run divides its candidate batches
+between the CPU and the GPU from the work-split study `solvers`
+(`mklight_core::split`; the benchmark harness selects variants per column,
+`MKLIGHT_SPLIT_SOLVERS` otherwise). The variant is read once per run
+(`gpu::Split::selected`) and reported as `backend.split` and in the
+execution evidence (`solvers_split`). An unknown name is an invalid setting.
+CPU-reference runs are unaffected.
+
+| variant | evaluator (`gpu::EvalDesign`) | driver |
+|---|---|---|
+| `resident` | `Resident`: the P1/P4 adapter above | as before |
+| `hybrid` | `Hybrid` | tolerance batches of at least 128 |
+| `pipelined` | `Pipelined` | as `hybrid` |
+| `speculative` (default) | `Hybrid` | as `hybrid`, plus speculative least-squares Jacobians |
+| `rendezvous` | `Hybrid` | as `hybrid`, plus joint glass refinements |
+| `cpu-par` | none: the CPU f64 reference | as `speculative` |
+
+**Why the resident adapter was slow.** On real-aimed lenses (the 29- and
+35-surface benchmark lenses, real aiming at 1e-10) a few pupil rays of
+every candidate cannot be aimed (vignetted rim rays at the outer fields:
+12 of 570 on the 29-surface lens). The resident adapter reports a candidate
+with any unresolved ray whole to the reference, so every candidate was
+evaluated twice: on the device, where the unaimable rays ran their whole
+capped schedule (32 iterations with line searches, 20–90 ms of device time
+per plan, the slowest lane setting the command's duration) behind
+continuation rounds that read the pending count back, and then completely
+on the CPU. A 22-variable optimisation took 30–50 times as long as on the
+CPU. Without real aiming (the Double Gauss) the cost was the fixed latency
+of a plan per evaluation (3–4 ms: P4 system preparation, aiming rounds,
+waits) and a second plan for the first-order operands, against 0.2 ms of
+CPU work per candidate.
+
+**Hybrid division** (`EvalDesign::Hybrid`). Per batch:
+
+1. *Host, parallel over candidates (f64):* tracers (snapshot, resolution,
+   fields with their real-image-height and chief solves), operand plans,
+   chief seed rows, the chief rays themselves (aimed by the host tracer and
+   handed to the device as rays: on the 35-surface wide-angle lens device
+   aims from the host seeds failed for 13 of 30 field/wavelength chiefs),
+   packed systems, and one resident plan: chief traces, pupil-ray aiming
+   from the host chief seeds, trace, chief-relative coordinates and moment
+   reductions (OPD and piston/tilt fits for wavefront merits). The device's
+   aiming schedule is capped at 8 Newton iterations per ray and its continuation rounds are committed
+   without reading the pending count back (`AimOptions::speculative_rounds`;
+   one round without real aiming).
+2. *Host, while the device runs:* the rays routed to the host (below) and
+   every operand that needs no ray (model operands with their automatic
+   semi-diameters, paraxial and first-order operands), from the same
+   tracers; no separate first-order plan.
+3. *Host, after the plan:* the device rays are read in place; every ray the
+   device left unresolved is aimed and traced again with the candidate's
+   f64 tracer, so an aim fails only when the reference's fails (a ray the
+   device aimed and then traced to an aperture stays clipped, as on the
+   resident path); a group with host rays forms its aggregates from rays on
+   the host; then all operand values, with `Candidate::value_with`.
+
+A chief ray the device fails to trace is replaced by the host's, with every
+ray of its field and wavelength traced on the host (they depend on it
+through the device's chief-relative coordinates and OPD); no candidate is
+reported whole to the reference. In a finite-difference batch (anchored:
+probes and the re-evaluated base point) a ray completed on the host for one
+candidate is completed on the host for every candidate, so a derivative
+never differences a device ray against an f64 one. Rays that were
+unresolved or slow (more than 6 device iterations) in an eighth of a
+batch's candidates are routed to the host before the plan in the following
+batches, the same for every candidate of a batch, for the evaluator's
+lifetime: the device then runs only lanes that converge in a few
+iterations (2–3 ms of device time per plan on the 29-surface lens), and the
+host traces the hard rays while the device works. An evaluator's first
+batch of four or more candidates is preceded by one of its candidates
+traced alone, to learn those rays: the Metal executor runs a large
+generation in tiles one after another, each as long as its slowest lane,
+so a cold 91-candidate sensitivity batch spent 370 ms of device time in
+67 command buffers on the 29-surface lens. When the device leaves more than
+half of a candidate's rays to the host (on the 35-surface ultra-wide lens it
+aimed 166 of 570 within the cap), the evaluator hands the rest of the run
+to the reference (`evaluate_batch_near`, counted as a fallback).
+
+`MKLIGHT_SOLVERS_TRACE_ROUTING=1` prints, per batch, the device and
+host-routed rays and the device's unresolved, clipped and slow rays.
+
+`EvalDesign::Pipelined` splits a batch into three sub-batches (at least 8
+candidates each) and overlaps the host preparation of sub-batch k + 1 and
+the finishing of k − 1 with the device's work on k.
+
+**Speculative Jacobians** (`LsqSettings::speculative_jacobian`). A trial
+point of LM or dogleg is evaluated in one batch with the first-pass
+finite-difference probes of the Jacobian at it (`deriv::fd_first_batch`);
+when the step is accepted, its Jacobian needs no further batch, so an
+iteration costs one batch instead of two (a rejected step wastes the
+probes). Every evaluation performed counts against `max_evaluations`. On an
+evaluator whose values do not depend on the batch the iterates are
+bit-identical to the plain run (tested on the Cooke triplet).
+
+**Joint glass refinements** (`rendezvous`). One search iteration's glass
+combinations are re-optimised side by side through the rendezvous
+scheduler (`gpu::scheduler`, `LocallyRefined::joint`): each round of their
+evaluations is one device batch, evaluated anchored when it holds finite
+differences. The other variants refine each combination on its own, in
+parallel, each with its own device batches.
+
+**Accuracy.** Device rays keep the precision of the resident adapter;
+host-completed rays and rayless operands are the reference's f64 values
+(bit-identical for model and paraxial operands, tested). `tests/split_designs.rs`
+checks both hybrid designs against the reference on every sample with a
+default spot and wavefront merit plus thickness boundaries, first-order,
+aggregate, single and inner real-ray operands (emulation and Metal), host
+completion and routing with a one-iteration device cap, equal values of the
+two designs, finite-difference column errors (1.8e-4 against f64 central
+differences on the real-aimed Cooke triplet, also with host completion),
+LM on the hybrid evaluator, and speculative LM. The engine test
+`tests/solver_splits.rs` runs every variant of all four jobs against the
+reference under the solver-outcome contract (emulation; Metal ignored).

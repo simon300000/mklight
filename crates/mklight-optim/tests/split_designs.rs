@@ -256,10 +256,11 @@ fn designs_give_the_same_values() {
     }
 }
 
-/// With a device schedule cap of one Newton iteration nearly every real-aimed
-/// pupil ray is left unresolved on the device: the host completes each one
-/// in f64, and a second batch routes the rays learned as slow to the host
-/// before its plan. Both agree with the reference.
+/// Low device schedule caps leave real-aimed pupil rays unresolved on the
+/// device: the host completes each one in f64, later batches route the
+/// rays learned as slow to the host before the plan, and when the device
+/// leaves most rays to the host the evaluator hands the run to the
+/// reference. Every outcome agrees with the reference.
 #[test]
 fn unresolved_rays_are_completed_and_routed_on_the_host() {
     for (backend_name, backend) in backends() {
@@ -268,28 +269,31 @@ fn unresolved_rays_are_completed_and_routed_on_the_host() {
         let cands = candidates(&sys);
         let reference = values(&BuiltinEvaluator::builtin(), &cands, &ops);
         for design in [EvalDesign::Hybrid, EvalDesign::Pipelined] {
-            let ev = evaluator(&backend, &sys, design).with_device_aim_cap(1);
-            let first = values(&ev, &cands, &ops);
-            let completed = ev.context.stats().polished_rays;
+            let mut outcomes = Vec::new();
+            for cap in [1, 2, 3, 8] {
+                let ev = evaluator(&backend, &sys, design).with_device_aim_cap(cap);
+                let first = values(&ev, &cands, &ops);
+                let second = values(&ev, &cands, &ops);
+                let host_rays = ev.context.stats().polished_rays;
+                let host_only = ev.stats().fallbacks.keys().any(|k| k.contains("most rays"));
+                let worst =
+                    compare(&first, &reference, &ops).max(compare(&second, &reference, &ops));
+                eprintln!(
+                    "{backend_name} {design:?} cap {cap}: host rays {host_rays}, host only \
+                     {host_only}, worst {worst:.3}"
+                );
+                assert!(worst <= 1.0, "{backend_name} {design:?} cap {cap}: {worst}");
+                outcomes.push((cap, host_rays, host_only));
+            }
+            // One iteration resolves almost nothing: completed, then handed over.
+            assert!(outcomes[0].1 > 0 && outcomes[0].2, "{outcomes:?}");
+            // The full cap keeps the run on the device.
+            assert!(!outcomes[3].2, "{outcomes:?}");
+            // Some cap in between routes rays to the host without handing over.
             assert!(
-                completed > 0,
-                "{backend_name} {design:?}: nothing completed"
+                outcomes.iter().any(|&(_, rays, only)| rays > 0 && !only),
+                "{outcomes:?}"
             );
-            assert!(compare(&first, &reference, &ops) <= 1.0);
-            let second = values(&ev, &cands, &ops);
-            let routed = ev
-                .context
-                .stats()
-                .stages
-                .iter()
-                .find(|s| s.name.starts_with("host stage"))
-                .is_some();
-            assert!(routed, "{backend_name} {design:?}: no host stage");
-            assert!(ev.context.stats().polished_rays > completed);
-            let worst = compare(&second, &reference, &ops);
-            eprintln!("{backend_name} {design:?}: completed {completed}, worst {worst:.3}");
-            assert!(worst <= 1.0, "{backend_name} {design:?}: {worst}");
-            assert!(ev.stats().fallbacks.is_empty(), "{:?}", ev.stats());
         }
     }
 }

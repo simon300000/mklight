@@ -35,6 +35,11 @@ pub enum Split {
     /// with the finite-difference probes of the next Jacobian (one batch per
     /// iteration instead of two when the step is accepted).
     Speculative,
+    /// [`Split::Hybrid`], and glass substitution re-optimises each search
+    /// iteration's combinations side by side through the rendezvous
+    /// scheduler, so that every round of their evaluations is one device
+    /// batch (`discrete::LocallyRefined::joint`).
+    Rendezvous,
     /// No device: the CPU f64 reference (rayon over candidates, fields and
     /// pupil groups) driven like [`Split::Speculative`] (speculative
     /// least-squares Jacobians, large tolerance batches): the honest CPU
@@ -44,11 +49,12 @@ pub enum Split {
 impl Split {
     /// The design that runs when no variant is selected.
     pub const DEFAULT: Split = Split::Speculative;
-    pub const ALL: [Split; 5] = [
+    pub const ALL: [Split; 6] = [
         Split::Resident,
         Split::Hybrid,
         Split::Pipelined,
         Split::Speculative,
+        Split::Rendezvous,
         Split::CpuPar,
     ];
     pub fn name(self) -> &'static str {
@@ -57,6 +63,7 @@ impl Split {
             Split::Hybrid => "hybrid",
             Split::Pipelined => "pipelined",
             Split::Speculative => "speculative",
+            Split::Rendezvous => "rendezvous",
             Split::CpuPar => "cpu-par",
         }
     }
@@ -80,7 +87,7 @@ impl Split {
     pub fn design(self) -> Option<EvalDesign> {
         match self {
             Split::Resident => Some(EvalDesign::Resident),
-            Split::Hybrid | Split::Speculative => Some(EvalDesign::Hybrid),
+            Split::Hybrid | Split::Speculative | Split::Rendezvous => Some(EvalDesign::Hybrid),
             Split::Pipelined => Some(EvalDesign::Pipelined),
             Split::CpuPar => None,
         }
@@ -89,6 +96,10 @@ impl Split {
     /// trial point?
     pub fn speculative(self) -> bool {
         matches!(self, Split::Speculative | Split::CpuPar)
+    }
+    /// Are glass combinations refined jointly (rendezvous batches)?
+    pub fn joint_refinements(self) -> bool {
+        self == Split::Rendezvous
     }
 }
 
