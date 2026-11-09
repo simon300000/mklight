@@ -32,7 +32,7 @@ import Testing
         let allowed: Set<String> = [
             "glass_map.metadata", "ghost_paths.paths", "ghost_irradiance.paths", "ghost_irradiance.points", "stray_light.ghost_partition",
         ]
-        let unexpected = hidden.filter { h in !allowed.contains(h) && !["configuration", "seed", "stop_key", "delay_ms", "chunk"].contains(h.split(separator: ".").last.map(String.init) ?? "") }
+        let unexpected = hidden.filter { h in !allowed.contains(h) && !["configuration", "seed", "delay_ms", "chunk"].contains(h.split(separator: ".").last.map(String.init) ?? "") }
         #expect(unexpected.isEmpty, "hidden without reason: \(unexpected)")
         // The structured settings of the audit have their controls.
         func control(_ a: String, _ k: String) -> SettingControl? {

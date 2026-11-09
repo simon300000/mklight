@@ -70,7 +70,6 @@ extension MockEngine {
                     "hold_efl": .object(["type": .string("boolean"), "default": .bool(true)]),
                     "variables": .object(["type": .string("array"), "default": .array([])]),
                     "default_merit": .object(["type": .string("object"), "default": .object([:])]),
-                    "stop_key": .object(["type": .array([.string("string"), .string("null")]), "default": .null]),
                 ]),
             d(
                 "merit_evaluation", "Evaluate merit", "optimization",
@@ -85,7 +84,6 @@ extension MockEngine {
                 [
                     "mode": enm("both", ["sensitivity", "monte_carlo", "both"], "Mode"),
                     "trials": int(100, 1, 100000, "Trials"), "seed": int(0, 0, Int(Int32.max), "Seed"),
-                    "stop_key": .object(["type": .array([.string("string"), .string("null")]), "default": .null]),
                 ]),
             d(
                 "glass_info", "Glass data", "materials",

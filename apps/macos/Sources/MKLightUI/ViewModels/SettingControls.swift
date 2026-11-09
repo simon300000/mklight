@@ -72,7 +72,7 @@ public enum SettingControls {
             if f.name == "optics" && types == ["object"] && f.defaultValue?["psf_size"] != nil { return .imageOptics }
             switch f.name {
             case "configuration": return hasConfigurations ? .number(integer: true) : .hidden
-            case "stop_key", "delay_ms", "chunk": return .hidden
+            case "delay_ms", "chunk": return .hidden
             case "seed":
                 // A seed matters only for random pupil patterns, where the analysis has one.
                 if let pattern, !["random", "dithered"].contains(pattern) { return .hidden }
