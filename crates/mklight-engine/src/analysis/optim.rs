@@ -40,7 +40,7 @@ use mklight_optim::global::cmaes::{CmaEsSettings, cma_es};
 use mklight_optim::global::de::{DeSettings, differential_evolution};
 use mklight_optim::global::hammer::{HammerSettings, hammer};
 use mklight_optim::global::nelder_mead::{NelderMeadSettings, nelder_mead};
-use mklight_optim::gpu::{GpuContext, ResidentEvaluator, Split};
+use mklight_optim::gpu::{EvalDesign, GpuContext, ResidentEvaluator};
 use mklight_optim::lsq::{AugLagSettings, LsqMethod, LsqSettings, least_squares};
 use mklight_optim::merit::default::DefaultMeritSpec;
 use mklight_optim::merit::geometric::optical_gaps;
@@ -113,20 +113,6 @@ pub(super) fn evaluation_backend_schema() -> Value {
                 opaque("Device evaluation, host-stage and fallback accounting."),
             ),
             (
-                "split",
-                enumeration(
-                    &[
-                        "resident",
-                        "hybrid",
-                        "pipelined",
-                        "speculative",
-                        "rendezvous",
-                        "cpu-par",
-                    ],
-                    "Host/device division of a run handed a GPU device (work-split study `solvers`).",
-                ),
-            ),
-            (
                 "aiming",
                 enumeration(
                     &["device", "host"],
@@ -144,7 +130,7 @@ pub(super) fn evaluation_backend_schema() -> Value {
                 ]),
             ),
         ],
-        &["gpu_stats", "resident_evaluation", "split", "aiming"],
+        &["gpu_stats", "resident_evaluation", "aiming"],
     )
 }
 
@@ -456,11 +442,8 @@ struct Evaluation {
     cpu: BuiltinEvaluator,
     /// The GPU evaluator and the engine device behind it.
     gpu: Option<(ResidentEvaluator, Arc<GpuDevice>)>,
-    /// The `solvers` work-split variant of a run handed a GPU device
-    /// (`None` on the CPU reference path).
-    split: Option<Split>,
-    /// Hybrid designs: are the pupil rays aimed on the host (`aiming`
-    /// study)?
+    /// A run handed a GPU device: are the pupil rays aimed on the host
+    /// (`aiming` study)?
     host_aim: Option<bool>,
     work: Workload,
     fallback_reason: Option<String>,
@@ -496,35 +479,18 @@ impl Evaluation {
         let cpu = BuiltinEvaluator::new(input.library.clone());
         let mut warnings = Vec::new();
         let mut fallback_reason = input.selection_note.clone();
-        let mut split = None;
         let mut host_aim = None;
         let gpu = match gpu_backend(choice, input) {
             Ok(Some(device)) => {
                 ctx.check()?;
-                // The division of the run between host and device, read once.
-                let selected = Split::selected().map_err(invalid)?;
-                split = Some(selected);
-                match selected.design() {
-                    Some(design) => {
-                        let aim = solver_host_aim()?;
-                        host_aim = Some(aim);
-                        let context = GpuContext::new(device.backend.clone(), snapshot.clone());
-                        let mut evaluator = ResidentEvaluator::new(context, cpu.clone())
-                            .with_design(design)
-                            .with_host_aim(aim);
-                        if let Some(n) = selected.pipeline_from() {
-                            evaluator = evaluator.with_pipelining_from(n);
-                        }
-                        Some((evaluator, device))
-                    }
-                    None => {
-                        fallback_reason = Some(format!(
-                            "work-split variant '{}' evaluates on the CPU reference",
-                            selected.name()
-                        ));
-                        None
-                    }
-                }
+                // Where the pupil rays are aimed, read once.
+                let aim = solver_host_aim()?;
+                host_aim = Some(aim);
+                let context = GpuContext::new(device.backend.clone(), snapshot.clone());
+                let evaluator = ResidentEvaluator::new(context, cpu.clone())
+                    .with_design(EvalDesign::Hybrid)
+                    .with_host_aim(aim);
+                Some((evaluator, device))
             }
             Ok(None) => {
                 if super::gpu::device(input).is_some() && choice == BackendChoice::Cpu {
@@ -543,7 +509,6 @@ impl Evaluation {
         Ok(Evaluation {
             cpu,
             gpu,
-            split,
             host_aim,
             work,
             fallback_reason,
@@ -556,30 +521,21 @@ impl Evaluation {
         self.gpu.as_ref().map(|(g, _)| g)
     }
 
-    /// Least-squares solves evaluate their trial points with the next
-    /// Jacobian's probes (work-split variant).
+    /// Least-squares solves on a device evaluate their trial points with
+    /// the next Jacobian's probes (one device round trip per accepted
+    /// iteration instead of two). The CPU reference evaluates a trial point
+    /// alone: in a batch its anchored base row would change the values.
     fn speculative(&self) -> bool {
-        self.split.is_some_and(Split::speculative)
-    }
-
-    /// The device evaluator when independent refinements are to be joined
-    /// into rendezvous batches (work-split variant).
-    fn joint_gpu(&self) -> Option<&ResidentEvaluator> {
-        self.active_gpu()
-            .filter(|_| self.split.is_some_and(Split::joint_refinements))
+        self.gpu.is_some()
     }
 
     /// Candidates per tolerance evaluation batch (Monte Carlo trials and
-    /// sensitivity points) for a requested batch: the CPU reference and the
-    /// batch-oriented work-split variants hand the evaluator larger batches
-    /// (trial values do not depend on the batching; the CPU's rayon pool
-    /// otherwise idles at the end of every small batch); only the resident
-    /// variant keeps the requested size.
+    /// sensitivity points) for a requested batch: at least
+    /// [`TOLERANCE_SPLIT_BATCH`] (trial values do not depend on the
+    /// batching; the CPU's rayon pool otherwise idles at the end of every
+    /// small batch, and the device evaluator pipelines large batches).
     fn tolerance_batch(&self, requested: usize) -> usize {
-        match self.split {
-            Some(Split::Resident) => requested,
-            None | Some(_) => requested.max(TOLERANCE_SPLIT_BATCH),
-        }
+        requested.max(TOLERANCE_SPLIT_BATCH)
     }
 
     /// The `"backend"` block: who evaluated the search and the GPU
@@ -594,22 +550,6 @@ impl Evaluation {
         });
         if let Some(host) = self.host_aim {
             b["aiming"] = json!(if host { "host" } else { "device" });
-        }
-        if let Some(split) = self.split {
-            b["split"] = json!(split.name());
-            if self.gpu.is_none() {
-                let mut run = mklight_core::job::RunTimer::start().finish(
-                    &input.snapshot,
-                    "resident_merit",
-                    &json!({}),
-                    "cpu_reference",
-                    Precision::F64Reference,
-                    None,
-                    vec![],
-                );
-                run.settings["solvers_split"] = json!(split.name());
-                input.executions.borrow_mut().push(run.settings.clone());
-            }
         }
         // The GPU evaluated the search only if it traced candidates.
         let active = self
@@ -641,9 +581,6 @@ impl Evaluation {
                 vec![],
             );
             g.record(&mut run);
-            if let Some(split) = self.split {
-                run.settings["solvers_split"] = json!(split.name());
-            }
             if let Some(host) = self.host_aim {
                 run.settings["solvers_aiming"] = json!(if host { "host" } else { "device" });
             }
@@ -1009,8 +946,7 @@ fn interrupt_status(why: Interrupt, termination: Termination) -> &'static str {
 const INNER_ITERATIONS: usize = 10;
 
 /// Smallest tolerance evaluation batch (Monte Carlo trials, sensitivity
-/// points) of the CPU reference and the batch-oriented `solvers` work-split
-/// variants: the hundred trials of a default Monte Carlo run go to the
+/// points): the hundred trials of a default Monte Carlo run go to the
 /// evaluator as one batch, which the CPU spreads over its pool without a
 /// barrier every 16 trials (29-surface F/1.4 benchmark lens, 12 threads: 155 →
 /// 120 ms for the default tolerance run, 2.4 → 1.9 s for 1000 dense trials,

@@ -43,7 +43,7 @@ impl Drop for Template {
     }
 }
 /// How a [`ResidentEvaluator`] divides a candidate batch between the host
-/// and the device (work-split study `solvers`, see [`super::Split`]).
+/// and the device.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EvalDesign {
@@ -57,11 +57,10 @@ pub enum EvalDesign {
     /// Host candidates (f64 tracers, chief seeds, model, paraxial and
     /// host-only ray operands) with one device plan per batch for the
     /// pupil-ray aiming, tracing and reductions; rays the device leaves
-    /// unresolved are completed one by one on the host in f64.
+    /// unresolved are completed one by one on the host in f64; batches of
+    /// at least [`ResidentEvaluator::with_pipelining_from`] candidates in
+    /// pipelined sub-batches.
     Hybrid,
-    /// [`Self::Hybrid`] in sub-batches, pipelined: the host prepares
-    /// sub-batch k + 1 and finishes k − 1 while the device traces k.
-    Pipelined,
 }
 impl EvalDesign {
     fn ray_design(self, cap: Option<u32>, host_aim: bool) -> RayDesign {
@@ -81,6 +80,13 @@ impl EvalDesign {
         self != EvalDesign::Resident
     }
 }
+/// Smallest batch the hybrid design pipelines in sub-batches (the host
+/// prepares sub-batch k + 1 and finishes k − 1 while the device traces k):
+/// Monte Carlo and sensitivity batches gain (1000 dense trials on the 29-
+/// and 35-surface benchmark lenses 1.92 → 1.72 s and 1.98 → 1.75 s), a
+/// 23-candidate finite-difference Jacobian of the Double Gauss loses (792
+/// vs 582 ms), so Jacobians stay one plan.
+pub const PIPELINE_FROM: usize = 64;
 /// Smallest pipelined sub-batch. A plan's device time hardly grows with its
 /// size up to some ten thousand rays (it is the latency of the slowest
 /// aiming lanes), so small sub-batches would only add plans.
@@ -132,8 +138,8 @@ pub struct ResidentEvaluator {
     /// Hybrid designs: aim every pupil ray on the host, trace on the device.
     host_aim: bool,
     /// [`EvalDesign::Hybrid`]: pipeline batches of at least this many
-    /// candidates as [`EvalDesign::Pipelined`] does.
-    pipeline_from: Option<usize>,
+    /// candidates in sub-batches.
+    pipeline_from: usize,
 }
 /// Rays the hybrid designs route to the host, learned from the device's
 /// aiming reports (unresolved or slow), and the batches seen so far. A ray
@@ -187,15 +193,15 @@ impl ResidentEvaluator {
             host_rays: Arc::default(),
             aim_cap: None,
             host_aim: false,
-            pipeline_from: None,
+            pipeline_from: PIPELINE_FROM,
         }
     }
     /// [`EvalDesign::Hybrid`] with batches of at least `n` candidates
-    /// pipelined in sub-batches as [`EvalDesign::Pipelined`] (a size rule:
-    /// Monte Carlo and sensitivity batches overlap their host and device
-    /// work, finite-difference Jacobians stay one plan).
+    /// pipelined in sub-batches (default [`PIPELINE_FROM`]: Monte Carlo and
+    /// sensitivity batches overlap their host and device work,
+    /// finite-difference Jacobians stay one plan).
     pub fn with_pipelining_from(mut self, n: usize) -> Self {
-        self.pipeline_from = Some(n);
+        self.pipeline_from = n;
         self
     }
     /// The hybrid designs with every pupil ray aimed on the host (the
@@ -983,12 +989,12 @@ impl<'s> Stage<'s> {
     }
 }
 impl ResidentEvaluator {
-    /// The ray stage of the hybrid designs: host preparation, one device
+    /// The ray stage of the hybrid design: host preparation, one device
     /// plan per sub-batch (aim, trace, reductions), host completion of the
     /// unresolved rays and every operand value from the host candidates.
-    /// [`EvalDesign::Pipelined`] overlaps the host preparation of the next
-    /// sub-batch and the finishing of the previous one with the device's
-    /// work on the current one. In an `anchored` batch every sub-batch is
+    /// A batch of at least `pipeline_from` candidates overlaps the host
+    /// preparation of the next sub-batch and the finishing of the previous
+    /// one with the device's work on the current one. In an `anchored` batch every sub-batch is
     /// finished after all are traced, so that a ray completed on the host
     /// for one candidate is completed for all.
     fn split_rays(
@@ -1031,8 +1037,7 @@ impl ResidentEvaluator {
             ops,
             1 + cpu.settings().illumination_rings.max(2) * cpu.settings().illumination_arms.max(8),
         );
-        let overlap = self.design == EvalDesign::Pipelined
-            || (self.design == EvalDesign::Hybrid && self.pipeline_from.is_some_and(|m| n >= m));
+        let overlap = n >= self.pipeline_from;
         let size = if overlap {
             pipeline_chunk(n).min(limit)
         } else {
