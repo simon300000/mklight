@@ -40,7 +40,7 @@ use mklight_optim::global::cmaes::{CmaEsSettings, cma_es};
 use mklight_optim::global::de::{DeSettings, differential_evolution};
 use mklight_optim::global::hammer::{HammerSettings, hammer};
 use mklight_optim::global::nelder_mead::{NelderMeadSettings, nelder_mead};
-use mklight_optim::gpu::{GpuContext, Lanes, ResidentEvaluator, Split};
+use mklight_optim::gpu::{GpuContext, ResidentEvaluator, Split};
 use mklight_optim::lsq::{AugLagSettings, LsqMethod, LsqSettings, least_squares};
 use mklight_optim::merit::default::DefaultMeritSpec;
 use mklight_optim::merit::geometric::optical_gaps;
@@ -130,20 +130,7 @@ pub(super) fn evaluation_backend_schema() -> Value {
                 "aiming",
                 enumeration(
                     &["device", "host"],
-                    "Where the hybrid designs aim the pupil rays: on the device with host completion (default), or on the host with device tracing (`aiming` study set to `host` or `host-table`).",
-                ),
-            ),
-            (
-                "threads",
-                enumeration(
-                    &[
-                        "single",
-                        "lanes",
-                        "host-quarter",
-                        "host-half",
-                        "host-three-quarters",
-                    ],
-                    "CPU thread layout of the hybrid designs' device sub-batches (work-split study `solver_threads`).",
+                    "Where the pupil rays of a run handed a GPU device are aimed: on the host with device tracing (default), or on the device with host completion (`aiming` study set to `device` or `table`).",
                 ),
             ),
             (
@@ -157,13 +144,7 @@ pub(super) fn evaluation_backend_schema() -> Value {
                 ]),
             ),
         ],
-        &[
-            "gpu_stats",
-            "resident_evaluation",
-            "split",
-            "aiming",
-            "threads",
-        ],
+        &["gpu_stats", "resident_evaluation", "split", "aiming"],
     )
 }
 
@@ -478,8 +459,6 @@ struct Evaluation {
     /// The `solvers` work-split variant of a run handed a GPU device
     /// (`None` on the CPU reference path).
     split: Option<Split>,
-    /// The `solver_threads` work-split variant of a run handed a GPU device.
-    lanes: Option<Lanes>,
     /// Hybrid designs: are the pupil rays aimed on the host (`aiming`
     /// study)?
     host_aim: Option<bool>,
@@ -490,18 +469,17 @@ struct Evaluation {
     warnings: Vec<String>,
 }
 
-/// Do the hybrid solver designs aim their pupil rays on the host? Only when
-/// the `aiming` study is set to one of its host designs (`host`,
-/// `host-table`; the solvers' rows hold too few rays for a seed table);
-/// unset, or a device design, keeps device aiming with host completion.
+/// Do the solver evaluators aim their pupil rays on the host? Yes by
+/// default: the device only traces and reduces the host's f64 aims (0.89 of
+/// device aiming's time over the merit, tolerance and glass cases of the
+/// benchmark lenses). The `aiming` study's device designs (`device`,
+/// `table`; the solvers' rows hold too few rays for a seed table) select
+/// device aiming with host completion, the GPU-heavier route.
 fn solver_host_aim() -> EngineResult<bool> {
-    use mklight_analysis::gpu::aim::{AimDesign, KEY};
-    if mklight_core::split::variant(KEY).is_none() {
-        return Ok(false);
-    }
-    Ok(matches!(
+    use mklight_analysis::gpu::aim::AimDesign;
+    Ok(!matches!(
         AimDesign::selected().map_err(invalid)?,
-        AimDesign::Host | AimDesign::HostTable
+        AimDesign::Device | AimDesign::Table
     ))
 }
 
@@ -519,7 +497,6 @@ impl Evaluation {
         let mut warnings = Vec::new();
         let mut fallback_reason = input.selection_note.clone();
         let mut split = None;
-        let mut lanes = None;
         let mut host_aim = None;
         let gpu = match gpu_backend(choice, input) {
             Ok(Some(device)) => {
@@ -529,14 +506,11 @@ impl Evaluation {
                 split = Some(selected);
                 match selected.design() {
                     Some(design) => {
-                        let layout = Lanes::selected().map_err(invalid)?;
-                        lanes = Some(layout);
                         let aim = solver_host_aim()?;
                         host_aim = Some(aim);
                         let context = GpuContext::new(device.backend.clone(), snapshot.clone());
                         let mut evaluator = ResidentEvaluator::new(context, cpu.clone())
                             .with_design(design)
-                            .with_lanes(layout)
                             .with_host_aim(aim);
                         if let Some(n) = selected.pipeline_from() {
                             evaluator = evaluator.with_pipelining_from(n);
@@ -570,7 +544,6 @@ impl Evaluation {
             cpu,
             gpu,
             split,
-            lanes,
             host_aim,
             work,
             fallback_reason,
@@ -619,9 +592,6 @@ impl Evaluation {
             "reported_on": TraceEvaluator::BACKEND,
             "workload": self.work.report(),
         });
-        if let Some(lanes) = self.lanes {
-            b["threads"] = json!(lanes.name());
-        }
         if let Some(host) = self.host_aim {
             b["aiming"] = json!(if host { "host" } else { "device" });
         }
@@ -673,9 +643,6 @@ impl Evaluation {
             g.record(&mut run);
             if let Some(split) = self.split {
                 run.settings["solvers_split"] = json!(split.name());
-            }
-            if let Some(lanes) = self.lanes {
-                run.settings["solvers_threads"] = json!(lanes.name());
             }
             if let Some(host) = self.host_aim {
                 run.settings["solvers_aiming"] = json!(if host { "host" } else { "device" });

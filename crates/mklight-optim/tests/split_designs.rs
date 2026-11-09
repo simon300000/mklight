@@ -13,7 +13,7 @@ use mklight_core::param::ParamPath;
 use mklight_core::{JobContext, RayAiming, Snapshot, samples};
 use mklight_gpu::{ComputeBackend, CpuF32Backend};
 use mklight_optim::deriv::{FdScheme, JacobianSettings, jacobian};
-use mklight_optim::gpu::{EvalDesign, GpuContext, Lanes, ResidentEvaluator};
+use mklight_optim::gpu::{EvalDesign, GpuContext, ResidentEvaluator};
 use mklight_optim::linalg::Matrix;
 use mklight_optim::lsq::{LsqSettings, least_squares};
 use mklight_optim::merit::default::{DefaultCriterion, DefaultMeritSpec};
@@ -264,54 +264,6 @@ fn designs_give_the_same_values() {
                 (Err(_), Err(_)) => {}
                 _ => panic!("{a:?} vs {b:?}"),
             }
-        }
-    }
-}
-
-/// The CPU thread layouts of the pipelined design's sub-batches (one lane,
-/// two lanes on the pool, two lanes on dedicated pools) give the same
-/// values, plain and anchored (finite differences).
-#[test]
-fn thread_lanes_give_the_same_values() {
-    let backend: Arc<dyn ComputeBackend> = Arc::new(CpuF32Backend::new());
-    let sys = real_aimed(samples::double_gauss());
-    let ops = operands(&sys);
-    let refs: Vec<&Operand> = ops.iter().collect();
-    // 24 candidates: three pipelined sub-batches of 8.
-    let c = ParamPath::Curvature {
-        surface: sys.surfaces[1].id,
-    };
-    let v = c.get(&sys).unwrap();
-    let cands: Vec<OpticalSystem> = (0..24)
-        .map(|i| {
-            let mut s = sys.clone();
-            c.set(&mut s, v * (1.0 + 1e-3 * i as f64)).unwrap();
-            s
-        })
-        .collect();
-    let ctx = JobContext::new();
-    let run = |lanes: Lanes| {
-        let ev = evaluator(&backend, &sys, EvalDesign::Pipelined).with_lanes(lanes);
-        let plain = ev.evaluate_batch(&cands, &refs, &ctx).unwrap();
-        let near = ev
-            .evaluate_batch_near(&cands, &refs, Some(&cands[0]), &ctx)
-            .unwrap();
-        [plain, near]
-    };
-    let bits = |v: &[Vec<OperandValue>]| -> Vec<Vec<Option<u64>>> {
-        v.iter()
-            .map(|r| {
-                r.iter()
-                    .map(|x| x.as_ref().ok().map(|x| x.to_bits()))
-                    .collect()
-            })
-            .collect()
-    };
-    let single = run(Lanes::Single);
-    for lanes in Lanes::ALL {
-        let other = run(lanes);
-        for (a, b) in single.iter().zip(&other) {
-            assert_eq!(bits(a), bits(b), "{}", lanes.name());
         }
     }
 }
