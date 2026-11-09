@@ -24,9 +24,10 @@
 //!   ([`Geometry::aim_split`]): a fixed, evenly interleaved share of its
 //!   tiles ([`SPLIT_DEVICE_SHARE`], `aiming=split:<share>` overrides it) goes
 //!   to the device's double-float Newton solve, seeded from the same table,
-//!   the rest to the host's rayon workers. The assignment depends only on
-//!   the generation's size and the share, never on timing, so identical
-//!   input gives identical rays.
+//!   except for the 128-ray chunks with a ray outside the table's solved
+//!   nodes; the rest goes to the host's rayon workers. The assignment
+//!   depends only on the generation and the share, never on timing, so
+//!   identical input gives identical rays.
 //! * [`AimDesign::Table`]: a coarse host f64 aim map per field row (a seed
 //!   table whose side follows the rays per row) and device Newton
 //!   corrections of every ray from its interpolated seeds, with a bounded
@@ -238,11 +239,10 @@ impl RayColumns<'_> {
             plane[k] = v;
         }
     }
-    /// Copy this block's columns from the planes of a device tile of
-    /// `count` rays that starts at ray `tile` (`[floats, indices, ids,
-    /// report]` views).
-    fn copy_from(&mut self, tile: usize, count: usize, views: &[ReadView]) -> MkResult<()> {
-        let (off, len) = (self.start - tile, self.len());
+    /// Copy this block's columns from columns `off..` of device ray planes
+    /// of `count` rays (`[floats, indices, ids, report]` views).
+    fn copy_from(&mut self, off: usize, count: usize, views: &[ReadView]) -> MkResult<()> {
+        let len = self.len();
         let part = |k: usize| k * count + off..k * count + off + len;
         let f = views[0].as_slice::<f32>()?;
         for (k, plane) in self.floats.iter_mut().enumerate() {
@@ -498,10 +498,16 @@ pub const SPLIT_MIN_WORK: usize = 1 << 21;
 /// overrides it. Measured on M2 Pro: a GPU with more cores per CPU core may
 /// take more.
 pub const SPLIT_DEVICE_SHARE: f64 = 0.5;
-/// Rays per device tile at most; two tiles stay in flight.
+/// Rays per split tile at most (the unit in which tiles are dealt to host
+/// and device).
 const DEVICE_TILE: usize = 1 << 17;
-/// The smallest device tile.
+/// The smallest split tile.
 const MIN_DEVICE_TILE: usize = 1 << 13;
+/// Device plans per split generation: few and large, since each plan's
+/// Newton rounds cost a fixed latency (small plans left the device 4–5×
+/// slower per ray than the host); two let the host complete the first while
+/// the second runs.
+const DEVICE_PLANS: usize = 2;
 static SPLIT_MIN: AtomicUsize = AtomicUsize::new(SPLIT_MIN_WORK);
 static MIN_TILE: AtomicUsize = AtomicUsize::new(MIN_DEVICE_TILE);
 
@@ -672,7 +678,7 @@ impl Geometry<'_> {
                     e.rays += n as u64;
                     e.device_rays += n as u64;
                 });
-                return self.append_generation(p, rows, 0..n, spec, None, ctx);
+                return self.append_generation(p, rows, n, spec, None, ctx);
             }
             AimDesign::HostTable => {
                 let table = self.host_seed_table(rows, n, ctx)?;
@@ -743,11 +749,14 @@ impl Geometry<'_> {
     }
     /// Aim a large generation on the host and the device together (module
     /// docs). The generation is cut into tiles of whole host chunks; the
-    /// device's tiles (`device_share` of them, [`device_tile`]) are driven
-    /// from a thread of their own, outside the rayon pool (it mostly waits
-    /// for the GPU), two in flight, each copied into the shared planes as it
-    /// lands; the pool's workers aim the host's chunks, then complete the
-    /// device tiles' unconverged aims.
+    /// device takes the chunks of its tiles (`device_share` of them,
+    /// [`device_tile`]) whose rays all start inside the seed table's solved
+    /// nodes (rays the reference cannot aim lie at unsolved nodes; they stay
+    /// the host's). Its chunks form [`DEVICE_PLANS`] plans, driven from a
+    /// thread of its own outside the rayon pool (it mostly waits for the
+    /// GPU), each copied into the shared planes as it lands; the pool's
+    /// workers aim the host's chunks, then complete the device plans'
+    /// unconverged aims.
     fn aim_split(
         &self,
         rows: &AimRows,
@@ -761,6 +770,19 @@ impl Geometry<'_> {
         let slots = self.slots(rows)?;
         let nodes = (table.seed_nodes(), table.side as u32);
         let per = split_tile(n) / HOST_CHUNK;
+        let device_chunk: Vec<bool> = (0..n.div_ceil(HOST_CHUNK))
+            .into_par_iter()
+            .map(|c| {
+                device_tile(c / per, device_share)
+                    && (c * HOST_CHUNK..((c + 1) * HOST_CHUNK).min(n)).all(|i| {
+                        let s = spec(i);
+                        let row = s.row as usize;
+                        let v = rows.field(row).point.vignetting;
+                        let (x, y) = v.apply(s.pupil[0], s.pupil[1]);
+                        table.covers(row, [x, y])
+                    })
+            })
+            .collect();
         let (handles, (host, completion)) = self.with_tracer(rows.aiming, |tracer| {
             let job = HostJob {
                 tracer,
@@ -770,72 +792,75 @@ impl Geometry<'_> {
                 table: Some(table),
             };
             ray_buffers(self.backend, n, HOST_CHUNK, |chunks| {
-                let mut device: Vec<Vec<RayColumns<'_>>> = Vec::new();
-                let mut host = Vec::new();
-                for (i, c) in chunks.into_iter().enumerate() {
-                    if !device_tile(i / per, device_share) {
-                        host.push(c);
-                    } else if i % per == 0 {
-                        device.push(vec![c]);
+                let (mut device, mut host) = (Vec::new(), Vec::new());
+                for (c, cols) in chunks.into_iter().enumerate() {
+                    if device_chunk[c] {
+                        device.push(cols);
                     } else {
-                        device.last_mut().unwrap().push(c);
+                        host.push(cols);
+                    }
+                }
+                let per_plan = device.len().div_ceil(DEVICE_PLANS).max(1);
+                let mut plans: Vec<Vec<RayColumns<'_>>> = Vec::new();
+                for cols in device {
+                    match plans.last_mut() {
+                        Some(p) if p.len() < per_plan => p.push(cols),
+                        _ => plans.push(vec![cols]),
                     }
                 }
                 std::thread::scope(|scope| {
                     let (tx, rx) = mpsc::channel();
                     let driver = scope.spawn(move || -> MkResult<()> {
-                        let mut tiles = device.into_iter();
-                        let mut inflight = std::collections::VecDeque::new();
-                        loop {
-                            while inflight.len() < 2
-                                && let Some(cols) = tiles.next()
-                            {
-                                let last: &RayColumns<'_> = cols.last().unwrap();
-                                let range = cols[0].start..last.start + last.len();
-                                let d = self.submit_device(
-                                    rows,
-                                    range.clone(),
-                                    spec,
-                                    Some(&nodes),
-                                    ctx,
-                                )?;
-                                inflight.push_back((d, range, cols));
-                            }
-                            let Some((d, range, mut cols)) = inflight.pop_front() else {
-                                return Ok(());
-                            };
+                        // Submit every plan, then copy each as it lands.
+                        let mut submitted = Vec::with_capacity(plans.len());
+                        for cols in plans {
+                            let rays: Vec<usize> = cols
+                                .iter()
+                                .flat_map(|c| c.start..c.start + c.len())
+                                .collect();
+                            let d = self.submit_device(
+                                rows,
+                                rays.len(),
+                                &|k| spec(rays[k]),
+                                Some(&nodes),
+                                ctx,
+                            )?;
+                            submitted.push((d, rays, cols));
+                        }
+                        for (d, rays, mut cols) in submitted {
                             let views = self
                                 .finish_device(d)?
                                 .iter()
                                 .map(|h| self.backend.read_view(h.view()))
                                 .collect::<MkResult<Vec<_>>>()?;
+                            let mut offset = 0;
                             for c in &mut cols {
-                                c.copy_from(range.start, range.len(), &views)?;
+                                c.copy_from(offset, rays.len(), &views)?;
+                                offset += c.len();
                             }
                             let report = views[3].as_slice::<u32>()?;
-                            let failed: Vec<u32> = range
-                                .clone()
-                                .filter(|i| {
-                                    report[i - range.start] & MKL_RAY_CODE_MASK == MKL_AIM_FAILED
-                                })
-                                .map(|i| i as u32)
+                            let failed: Vec<u32> = (0..rays.len())
+                                .filter(|&k| report[k] & MKL_RAY_CODE_MASK == MKL_AIM_FAILED)
+                                .map(|k| rays[k] as u32)
                                 .collect();
-                            if tx.send((range.start, cols, failed)).is_err() {
+                            if tx.send((cols, failed)).is_err() {
                                 return Ok(());
                             }
                         }
+                        Ok(())
                     });
                     let aimed = job.aim_all(host, ctx);
-                    // Host completion of each device tile as it lands.
+                    // Host completion of each device plan as it lands.
                     let mut completion = (0u64, 0u64);
-                    while let Some((tile, mut cols, failed)) = recv_helping(&rx) {
+                    while let Some((mut cols, failed)) = recv_helping(&rx) {
                         let resolved = job.aim_indices(&failed);
                         completion.0 += failed.len() as u64;
                         completion.1 += resolved.len() as u64;
                         for (i, s, g) in resolved {
-                            let k = i - tile;
-                            cols[k / HOST_CHUNK].write(
-                                k % HOST_CHUNK,
+                            let c = cols.partition_point(|c| c.start <= i) - 1;
+                            let k = i - cols[c].start;
+                            cols[c].write(
+                                k,
                                 Some((&g.ray, s.weight)),
                                 slots[s.row as usize],
                                 s.id,
@@ -860,38 +885,37 @@ impl Geometry<'_> {
         });
         Ok(handles)
     }
-    /// Submit a device aiming plan for rays `range` of a generation, seeded
+    /// Submit a device aiming plan for `n` rays (ray `k`: `spec(k)`), seeded
     /// from host chief rows and a host seed table's nodes and side, if any.
     fn submit_device(
         &self,
         rows: &AimRows,
-        range: std::ops::Range<usize>,
+        n: usize,
         spec: &(dyn Fn(usize) -> RaySpec + Sync),
         table: Option<&(Vec<SeedNode>, u32)>,
         ctx: &JobContext,
     ) -> MkResult<DeviceAims> {
         let mut a = ResidentPlan::new(self.tracer.system().snapshot.clone());
-        let out = self.append_generation(&mut a, rows, range, spec, table, ctx)?;
+        let out = self.append_generation(&mut a, rows, n, spec, table, ctx)?;
         a.outputs = vec![out.floats, out.indices, out.logical_ids, out.report];
         Ok(DeviceAims {
             submitted: Instant::now(),
             pending: self.backend.submit_plan(a, ctx)?,
         })
     }
-    /// Append a device generation (`GenerateAim`) of rays `range` of a
-    /// generation to plan `a`: field rows, samples, host chief rows and, for
+    /// Append a device generation (`GenerateAim`) of `n` rays (ray `k`:
+    /// `spec(k)`) to plan `a`: field rows, samples, host chief rows and, for
     /// table-seeded aims, the seed table with its bounded schedule. Returns
     /// its output rays.
     fn append_generation(
         &self,
         a: &mut ResidentPlan,
         rows: &AimRows,
-        range: std::ops::Range<usize>,
+        n: usize,
         spec: &(dyn Fn(usize) -> RaySpec + Sync),
         table: Option<&(Vec<SeedNode>, u32)>,
         ctx: &JobContext,
     ) -> MkResult<ResidentRays> {
-        let n = range.len();
         let slots = self.slots(rows)?;
         let metadata = self.records::<FieldSpec>(a, rows.len(), |i| {
             FieldSpec::new(
@@ -907,7 +931,7 @@ impl Geometry<'_> {
             if k % 4096 == 0 {
                 ctx.check()?;
             }
-            let s = spec(range.start + k);
+            let s = spec(k);
             let mut x = Sample::new(s.pupil, s.row, s.id);
             x.weight = s.weight;
             Ok(x)
@@ -1004,7 +1028,7 @@ impl Geometry<'_> {
         table: Option<(Vec<SeedNode>, u32)>,
         ctx: &JobContext,
     ) -> MkResult<[BufferHandle; 4]> {
-        let d = self.submit_device(rows, 0..n, spec, table.as_ref(), ctx)?;
+        let d = self.submit_device(rows, n, spec, table.as_ref(), ctx)?;
         let handles = self.finish_device(d)?;
         self.evidence(|e| {
             e.generations += 1;
@@ -1058,7 +1082,7 @@ impl Geometry<'_> {
                 .collect::<MkResult<Vec<_>>>()?;
             ray_buffers(self.backend, n, HOST_CHUNK, |mut cols| {
                 cols.par_iter_mut()
-                    .try_for_each(|c| c.copy_from(0, n, &views))?;
+                    .try_for_each(|c| c.copy_from(c.start, n, &views))?;
                 for (i, s, g) in &resolved {
                     cols[i / HOST_CHUNK].write(
                         i % HOST_CHUNK,
@@ -1150,19 +1174,33 @@ impl HostTable {
             })
             .collect()
     }
+    /// The table cell of vignetted pupil point `p`: its fractional node
+    /// coordinates and the node below and left of it, if its 4 × 4
+    /// interpolation stencil lies inside the table.
+    fn cell(&self, p: [f64; 2]) -> Option<(f64, f64, f64, f64)> {
+        let inv = (self.side - 1) as f64 / (2.0 * HOST_TABLE_EXTENT);
+        let fx = (p[0] + HOST_TABLE_EXTENT) * inv;
+        let fy = (p[1] + HOST_TABLE_EXTENT) * inv;
+        let (ix, iy) = (fx.floor(), fy.floor());
+        let last = (self.side - 3) as f64;
+        (ix >= 1.0 && iy >= 1.0 && ix <= last && iy <= last).then_some((fx, fy, ix, iy))
+    }
+    /// Whether all 16 nodes around vignetted pupil point `p` of row `row`
+    /// are solved (the condition for [`Self::start`]).
+    fn covers(&self, row: usize, p: [f64; 2]) -> bool {
+        let side = self.side;
+        self.cell(p).is_some_and(|(_, _, ix, iy)| {
+            let base = row * side * side + (iy as usize - 1) * side + ix as usize - 1;
+            (0..4).all(|j| (0..4).all(|i| self.nodes[base + j * side + i].is_some()))
+        })
+    }
     /// The Catmull–Rom interpolated aim of row `row` at vignetted pupil
     /// point `p`, and the stop Jacobian `r_stop · (d aim / dp)⁻¹` of the
     /// interpolant; `None` unless all 16 nodes around `p` are solved.
     pub fn start(&self, row: usize, p: [f64; 2], r_stop: f64) -> Option<([f64; 2], [[f64; 2]; 2])> {
         let side = self.side;
         let inv = (side - 1) as f64 / (2.0 * HOST_TABLE_EXTENT);
-        let fx = (p[0] + HOST_TABLE_EXTENT) * inv;
-        let fy = (p[1] + HOST_TABLE_EXTENT) * inv;
-        let (ix, iy) = (fx.floor(), fy.floor());
-        let last = (side - 3) as f64;
-        if !(ix >= 1.0 && iy >= 1.0 && ix <= last && iy <= last) {
-            return None;
-        }
+        let (fx, fy, ix, iy) = self.cell(p)?;
         let spline = |t: f64| {
             let (t2, t3) = (t * t, t * t * t);
             (

@@ -619,14 +619,18 @@ and the device together. It is cut into tiles of whole 128-ray host chunks
 (a sixteenth of the generation, 2¹³–2¹⁷ rays); a fixed share of the tiles
 (`gpu::aim::SPLIT_DEVICE_SHARE`, SPLIT_SHARE_DOC), spread evenly over the
 generation, goes to the device's double-float Newton solve seeded from the
-generation's host table (at most 12 iterations per ray, two tiles in flight,
-each its own plan, driven from a thread of its own outside the rayon pool,
-since it mostly waits for the GPU); the rayon workers aim the other tiles,
-then complete the device tiles' unconverged aims, and each device tile is
-copied into the shared planes as it lands. Which ray goes where depends only
-on the generation's size and the share, never on which side is faster, so
-identical input gives bitwise identical rays (`tests/aim_designs.rs` runs it
-on one and four rayon threads). SPLIT_EVIDENCE_DOC
+generation's host table (at most 12 iterations per ray), except for the
+chunks with a ray outside the table's solved nodes: the rays the reference
+cannot aim lie there, and on the device they would iterate to the end of the
+schedule and then be aimed again by the host. The device's chunks form two
+plans, both submitted at once from a thread of its own outside the rayon pool
+(it mostly waits for the GPU; small plans, each paying the Newton rounds'
+fixed latency, left the device 4–5 times slower per ray than the host). The
+rayon workers aim the other chunks, then complete each device plan's
+unconverged aims as it lands. Which ray goes where depends only on the
+generation and the share, never on which side is faster, so identical input
+gives bitwise identical rays (`tests/aim_designs.rs` runs it on one and four
+rayon threads, and with other shares). SPLIT_EVIDENCE_DOC
 
 **Host completion.** A device aim cannot always certify the requested stop
 tolerance. When the double-float trace still took the even-asphere slope in
