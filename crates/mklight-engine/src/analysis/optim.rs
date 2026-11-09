@@ -501,7 +501,7 @@ fn solver_host_aim() -> EngineResult<bool> {
     }
     Ok(matches!(
         AimDesign::selected().map_err(invalid)?,
-        AimDesign::HostTable { .. }
+        AimDesign::HostTable
     ))
 }
 

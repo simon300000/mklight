@@ -316,7 +316,7 @@ pub fn geometric_mtf_job(
         crate::util::PupilPattern::Random | crate::util::PupilPattern::Dithered
     )
     .then_some(s.sampling.seed);
-    let geo = Geometry::new(b, t, ctx)?;
+    let geo = Geometry::new(b, t, ctx)?.split_large_generations()?;
     let cutoff = 1.0
         / (t.system().wavelengths_um[t.system().primary_wavelength]
             * 1e-3

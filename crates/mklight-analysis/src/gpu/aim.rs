@@ -14,15 +14,19 @@
 //!   seed table per row ([`HostTable`]) and start every ray's Newton solve
 //!   from its interpolated aim and stop Jacobian
 //!   (`SequentialTracer::generate_many_from`; the reference schedule takes
-//!   over where a started solve does not converge). Large generations (a
-//!   seed table and at least [`SPLIT_MIN_WORK`] rays × surfaces) are aimed
-//!   by the host and the device together ([`Geometry::aim_split`]): a fixed,
-//!   interleaved share of tiles (key `aiming_share`, default
-//!   [`DEVICE_SHARE`]) goes to the device's double-float Newton solve,
-//!   seeded from the same table, the rest to the host's rayon workers. The
-//!   assignment depends only on the generation's size, so identical input
-//!   gives identical rays. Paraxial launches (aiming off) need no solve: the
-//!   device generates them inside the plan.
+//!   over where a started solve does not converge). Paraxial launches
+//!   (aiming off) need no solve: the device generates them inside the plan.
+//!
+//!   **Split generations.** In the analyses that opt in
+//!   ([`Geometry::split_large_generations`]: spot diagram and geometric
+//!   MTF), a generation with a seed table and at least [`SPLIT_MIN_WORK`]
+//!   rays × surfaces is aimed by the host and the device together
+//!   ([`Geometry::aim_split`]): a fixed, evenly interleaved share of its
+//!   tiles ([`SPLIT_DEVICE_SHARE`], `aiming=split:<share>` overrides it) goes
+//!   to the device's double-float Newton solve, seeded from the same table,
+//!   the rest to the host's rayon workers. The assignment depends only on
+//!   the generation's size and the share, never on timing, so identical
+//!   input gives identical rays.
 //! * [`AimDesign::Table`]: a coarse host f64 aim map per field row (a seed
 //!   table whose side follows the rays per row) and device Newton
 //!   corrections of every ray from its interpolated seeds, with a bounded
@@ -50,53 +54,45 @@ use std::time::Instant;
 
 /// The work-split key of the aiming design.
 pub const KEY: &str = "aiming";
-/// The work-split key of the device's share of a split generation
-/// ([`AimDesign::HostTable`]): a fraction in [0, 1].
-pub const SHARE_KEY: &str = "aiming_share";
 
 /// How a [`Geometry`] aims its generations (module docs).
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum AimDesign {
-    /// Host aiming with seed tables; large generations split with the
-    /// device, which aims `device_share` of their tiles.
-    HostTable { device_share: f64 },
+    #[default]
+    HostTable,
     Table,
     Device,
 }
-impl Default for AimDesign {
-    fn default() -> Self {
-        Self::HostTable {
-            device_share: DEVICE_SHARE,
-        }
-    }
-}
 impl AimDesign {
-    /// The design selected for this run: `aiming` = `host-table` (the
-    /// default, with the device share `aiming_share`), `table` or `device`.
-    pub fn selected() -> MkResult<Self> {
+    /// The design selected for this run and the device's share of split
+    /// generations: `aiming` unset or `host-table` (the default, with
+    /// [`SPLIT_DEVICE_SHARE`]), `split:<share>` (the default design with a
+    /// device share in [0, 1]; 0 aims every generation on the host),
+    /// `table` or `device`.
+    pub fn selection() -> MkResult<(Self, f64)> {
         let invalid = |what: String| Err(mklight_core::MkError::InvalidParam(what));
         Ok(match split::variant(KEY).as_deref() {
-            None | Some("host-table") => match split::variant(SHARE_KEY) {
-                None => Self::default(),
-                Some(s) => match s.parse::<f64>() {
-                    Ok(device_share) if (0.0..=1.0).contains(&device_share) => {
-                        Self::HostTable { device_share }
-                    }
-                    _ => return invalid(format!("aiming share '{s}' is not in [0, 1]")),
-                },
+            None | Some("host-table") => (Self::HostTable, SPLIT_DEVICE_SHARE),
+            Some("table") => (Self::Table, 0.0),
+            Some("device") => (Self::Device, 0.0),
+            Some(other) => match other.strip_prefix("split:").map(str::parse::<f64>) {
+                Some(Ok(share)) if (0.0..=1.0).contains(&share) => (Self::HostTable, share),
+                Some(_) => return invalid(format!("aiming '{other}': the share is not in [0, 1]")),
+                None => {
+                    return invalid(format!(
+                        "unknown aiming design '{other}' (host-table, split:<share>, table, device)"
+                    ));
+                }
             },
-            Some("table") => Self::Table,
-            Some("device") => Self::Device,
-            Some(other) => {
-                return invalid(format!(
-                    "unknown aiming design '{other}' (host-table, table, device)"
-                ));
-            }
         })
+    }
+    /// The design selected for this run ([`Self::selection`]).
+    pub fn selected() -> MkResult<Self> {
+        Ok(Self::selection()?.0)
     }
     pub fn name(self) -> &'static str {
         match self {
-            Self::HostTable { .. } => "host-table",
+            Self::HostTable => "host-table",
             Self::Table => "table",
             Self::Device => "device",
         }
@@ -494,13 +490,14 @@ pub fn fill_host_rays<'r>(
     Ok(handles)
 }
 
-/// Generations below this many rays × surfaces are aimed on the host alone:
-/// the device's share would not pay for its plans (measured on M2 Pro).
+/// Split generations ([`Geometry::split_large_generations`]) below this
+/// many rays × surfaces are aimed on the host alone: the device's share
+/// would not pay for its plans (measured on M2 Pro).
 pub const SPLIT_MIN_WORK: usize = 1 << 21;
-/// The device's default share of a split generation's tiles (key
-/// `aiming_share`; measured on M2 Pro, a GPU with more cores per CPU core
-/// may take more).
-pub const DEVICE_SHARE: f64 = 0.5;
+/// The device's share of a split generation's tiles; `aiming=split:<share>`
+/// overrides it. Measured on M2 Pro: a GPU with more cores per CPU core may
+/// take more.
+pub const SPLIT_DEVICE_SHARE: f64 = 0.5;
 /// Rays per device tile at most; two tiles stay in flight.
 const DEVICE_TILE: usize = 1 << 17;
 /// The smallest device tile.
@@ -666,7 +663,7 @@ impl Geometry<'_> {
     ) -> MkResult<ResidentRays> {
         ctx.check()?;
         let handles = match self.aim {
-            AimDesign::HostTable { .. } if !matches!(rows.aiming, RayAiming::Real { .. }) => {
+            AimDesign::HostTable if !matches!(rows.aiming, RayAiming::Real { .. }) => {
                 // Paraxial launches need no solve: the device generates them
                 // in the plan itself (they fail only where the reference
                 // fails).
@@ -677,12 +674,13 @@ impl Geometry<'_> {
                 });
                 return self.append_generation(p, rows, 0..n, spec, None, ctx);
             }
-            AimDesign::HostTable { device_share } => {
+            AimDesign::HostTable => {
                 let table = self.host_seed_table(rows, n, ctx)?;
                 let work = n.saturating_mul(self.tracer.system().image_index());
+                let share = self.split_share;
                 match table {
-                    Some(table) if device_share > 0.0 && work >= SPLIT_MIN.load(Ordering::Relaxed) => {
-                        self.aim_split(rows, n, spec, &table, device_share, ctx)?
+                    Some(table) if share > 0.0 && work >= SPLIT_MIN.load(Ordering::Relaxed) => {
+                        self.aim_split(rows, n, spec, &table, share, ctx)?
                     }
                     table => self.aim_host(rows, n, spec, table.as_ref(), ctx)?,
                 }
@@ -971,9 +969,7 @@ impl Geometry<'_> {
             e.device_failed += stats.failed;
             e.device_iterations += stats.iterations;
         });
-        r.outputs
-            .try_into()
-            .map_err(|_| bad("device aim outputs"))
+        r.outputs.try_into().map_err(|_| bad("device aim outputs"))
     }
     /// A host f64 seed table as device nodes for the rows of a generation of
     /// `n` rays ([`AimDesign::Table`]).

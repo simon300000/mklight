@@ -594,7 +594,7 @@ replacement. First-order, chromatic paraxial reports and an isolated Seidel
 report remain the existing small host computations; this adapter does not
 supply a batched Seidel reduction.
 
-### 6.1 Aiming and the division between host and device
+### 6.1 Aiming and the plans of the geometric analyses
 
 Every generation of a `Geometry` (grid rays, chief rays, layout fans, the
 sizing and field-map grids built on `append_grid`) is aimed before its plan
@@ -603,48 +603,68 @@ is built, by one design read once per adapter from the work-split key
 
 | `aiming` | Where pupil rays are aimed |
 |---|---|
-| `host-table` (default) | The reference tracer aims every ray in f64. Generations with at least 2,048 rays per field row first solve a coarse seed table per row (about one node per four rays, 5–37 nodes per axis over the vignetted pupil square ±1.125, as the device table); each ray's Newton solve starts from the table's Catmull–Rom interpolated aim and stop Jacobian (`SequentialTracer::generate_many_from`) and falls back to the reference schedule if it does not converge. Smaller generations are aimed as by `host`. Paraxial launches (aiming off) need no solve; the device generates them inside the plan. |
-| `host` | The reference tracer aims every ray (`generate_many`: the rays of a chunk advance together, chunks in parallel on rayon), bitwise as the CPU reference does. |
+| `host-table` (default) | The reference tracer aims every ray in f64. Generations with at least 2,048 rays per field row first solve a coarse seed table per row (about one node per four rays, 5–37 nodes per axis over the vignetted pupil square ±1.125, as the device table); each ray's Newton solve starts from the table's Catmull–Rom interpolated aim and stop Jacobian (`SequentialTracer::generate_many_from`) and falls back to the reference schedule if it does not converge. Smaller generations are aimed without a table (`generate_many`: the rays of a chunk advance together, chunks in parallel on rayon), bitwise as the CPU reference. Paraxial launches (aiming off) need no solve; the device generates them inside the plan. Large generations of the spot diagram and the geometric MTF are split between host and device (below). |
+| `split:<share>` | `host-table` with the device's share of split generations set to `<share>` in [0, 1] instead of SPLIT_SHARE_DOC; 0 aims every generation on the host. |
 | `device` | The double-float device solve of GPU.md §9.2 (host chief rows, device seed table for large generations), in a plan of its own, followed by host completion. |
 | `table` | A host f64 seed table and device Newton corrections from its interpolated seeds, at most 12 iterations per ray, followed by host completion. |
-| `split` | The host and the device aim one generation at the same time from one host seed table: the device takes tiles from the front (a sixteenth of the generation, 2¹³–2¹⁷ rays, two in flight), the host's rayon workers take 128-ray chunks from the back until the claims meet, then complete the device tiles' unconverged aims as each tile finishes. Generations under 2¹⁵ rays, and paraxial launches, are handled as by `host-table`. |
 
 Host aims are written straight into the shared ray planes the trace reads
 (four `fill_buffer` buffers filled in place by the rayon workers, the start
 rays rounded to double-float once); no sample or field record is built.
 
+**Split generations.** In the spot diagram and the geometric MTF, a
+generation with a seed table and at least SPLIT_MIN_DOC rays × surfaces
+(rays of the generation times the image surface index) is aimed by the host
+and the device together. It is cut into tiles of whole 128-ray host chunks
+(a sixteenth of the generation, 2¹³–2¹⁷ rays); a fixed share of the tiles
+(`gpu::aim::SPLIT_DEVICE_SHARE`, SPLIT_SHARE_DOC), spread evenly over the
+generation, goes to the device's double-float Newton solve seeded from the
+generation's host table (at most 12 iterations per ray, two tiles in flight,
+each its own plan, driven from a thread of its own outside the rayon pool,
+since it mostly waits for the GPU); the rayon workers aim the other tiles,
+then complete the device tiles' unconverged aims, and each device tile is
+copied into the shared planes as it lands. Which ray goes where depends only
+on the generation's size and the share, never on which side is faster, so
+identical input gives bitwise identical rays (`tests/aim_designs.rs` runs it
+on one and four rayon threads). SPLIT_EVIDENCE_DOC
+
 **Host completion.** A device aim cannot always certify the requested stop
-tolerance. With the even-asphere slope in f32 (work-split key
-`trace_slope=f32`, the trace before the double-float slope) the evaluated
-stop hit on wide-angle aspheric designs jitters by 1e-9 to 1e-8 of the stop
-radius, above the 1e-10 the reference reaches: on a 35-surface ultra-wide a
-third of the device aims, chief rays among them, ended unconverged, and the
-device spot diagram's vignetted fraction differed from the reference by up
-to 0.77. With the default `trace_slope=df` (the even-asphere hit refined
-and its normal formed with the polynomial slope in double-float, flag
-`MKL_SURF_DF_SLOPE` set by `PackedSystem::pack`) the device aims there
-converge except for the rays the reference cannot aim either. Every device
-aim reported `MKL_AIM_FAILED` is still aimed again in f64 by the reference
-tracer; a ray it aims replaces the device's (the position and report planes
-are copied once, with the host rays in place), a ray it cannot aim stays
-failed, exactly as on the CPU, and the hard field statuses of the host rows
-are kept. Each plan's `RunInfo.settings.aiming` records the design, the host
-and device rays, iterations and seconds, the completed and resolved rays and
-the seed-table nodes (`MKLIGHT_TRACE_AIM_EVIDENCE=1` prints it to stderr).
+tolerance. When the double-float trace still took the even-asphere slope in
+f32, the evaluated stop hit on wide-angle aspheric designs jittered by 1e-9
+to 1e-8 of the stop radius, above the 1e-10 the reference reaches: on a
+35-surface ultra-wide a third of the device aims, chief rays among them,
+ended unconverged, and the device spot diagram's vignetted fraction differed
+from the reference by up to 0.77. With the slope in double-float (the hit
+refined and its normal formed from `asphere_poly_dp_df`) the device aims
+there converge except for the rays the reference cannot aim either. Every
+device aim reported `MKL_AIM_FAILED` is still aimed again in f64 by the
+reference tracer; a ray it aims replaces the device's (the position and
+report planes are copied once, with the host rays in place), a ray it cannot
+aim stays failed, exactly as on the CPU, and the hard field statuses of the
+host rows are kept. Each plan's `RunInfo.settings.aiming` records the
+design, the host and device rays, iterations and seconds, the completed and
+resolved rays and the seed-table nodes (`MKLIGHT_TRACE_AIM_EVIDENCE=1`
+prints it to stderr).
 
-The image trace and the reductions run on the device as before in the
-default division. The key `geometric` selects how the geometric analyses'
-remaining stages divide (`gpu::division`):
+`table` and `device` move the aiming to the GPU. On the M2 Pro they were
+1.15× and 1.63× slower than the default on large geometric cases (CPU time
+of at least 100 ms) and 1.9–2.8× slower on smaller ones, with the default's
+accuracy; they stay selectable as routes for GPUs with more cores per CPU
+core, and the solvers' device aiming uses `device`.
 
-| `geometric` | Division |
-|---|---|
-| `fused` (default) | One plan per stage: the device traces the aimed grid and reduces it. Geometric MTF submits its characteristic-function tiles without waiting for each (at most four in flight). |
-| `pipelined` | The fields are split into groups of at least 2¹⁵ rays, each group a plan submitted as soon as its rays are aimed, so the host aims group k + 1 while the device traces and reduces group k (spot diagram, geometric MTF with its tiles, footprint, ray grid); smaller generations form one group. |
-| `host-reduce` | The device traces the grid and the chief rays; the host reads the hits in place into a `RayBatch` (§2.6) and runs the reference reduction (spot diagram, geometric MTF, best focus). |
-
-Encircled energy, the fans and the chromatic and layout adapters keep the
-fused division. The study keys are measurement scaffolding: the designs that
-lose the comparison are to be removed with their keys.
+**Plans.** The device traces the aimed rays and reduces them (coordinates,
+moments, characteristic sums); the host reads only small results. The spot
+diagram, geometric MTF, footprint and ray grid split their fields into
+groups of at least 2¹⁵ rays (`gpu::plans`), each group a plan submitted as
+soon as its rays are aimed, so the host aims group k + 1 while the device
+traces and reduces group k; the results are collected at the end, and
+smaller grids form one group. Geometric MTF submits each group's
+characteristic-function tiles without waiting for each (at most four in
+flight), with the tile budget of a single grid plan, so groups add no tile
+plans. Against one plan per stage the groups took 4–7 % off the measured
+spot, MTF, footprint and ray-grid cases of every size, with results within
+1e-7 of it. Encircled energy, best focus, the fans and the chromatic and
+layout adapters build one plan per stage.
 
 High-level `Geometry` metadata belongs to its nominal immutable snapshot.
 Changed candidates must use P4's updated first-order/field metadata through
@@ -716,10 +736,9 @@ together whatever stage they are in:
   then either the survival ray and the eight differentiation rays (full
   mode) or nine pencil tasks for `mkl_geometry_ri_rays` (Newton-only mode).
 
-With the f32 even-asphere slope (`trace_slope=f32`, the trace before
-stream A's fix) the double-float trace of aspheric systems resolved image
-points only to about 1e-7 mm; with the default double-float slope it
-follows the f64 trace to about 1e-12 mm, and on the wide-angle aspheric
+With the former f32 even-asphere slope the double-float trace of aspheric
+systems resolved image points only to about 1e-7 mm; with the double-float
+slope it follows the f64 trace to about 1e-12 mm, and on the wide-angle aspheric
 samples the device now leaves 0–23 of 6336 nodes to the reference instead
 of 1700–5000. The device still accepts a stop aim that stalls within the
 reference's own aim tolerance clamped to [1e-10, 1e-9] of the stop radius,

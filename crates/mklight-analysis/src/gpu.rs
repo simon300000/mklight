@@ -7,8 +7,8 @@ use mklight_gpu::{
 use mklight_trace::{FieldPoint, SequentialTracer};
 pub mod aim;
 mod chromatic;
-pub mod plans;
 mod energy;
+pub mod plans;
 pub use chromatic::{lateral_colour_job, longitudinal_aberration_job};
 mod curvature;
 pub use curvature::{field_curvature_job, grid_distortion_job};
@@ -49,8 +49,12 @@ pub struct Geometry<'a> {
     /// Reference tracers for aiming modes other than the tracer's own (maps
     /// and illumination force real aiming, pupil aberration none).
     others: std::sync::Mutex<Vec<(mklight_core::RayAiming, std::sync::Arc<SequentialTracer>)>>,
-    /// How generations are aimed (study key `aiming`, [`aim`]).
+    /// How generations are aimed (work-split key `aiming`, [`aim`]).
     aim: aim::AimDesign,
+    /// The device's share of large generations aimed by host and device
+    /// together: the selected share once the analysis opts in
+    /// ([`Self::split_large_generations`]), otherwise 0.
+    split_share: f64,
     /// Aiming work since the last plan, reported with it.
     aim_evidence: std::sync::Mutex<aim::AimEvidence>,
 }
@@ -111,8 +115,16 @@ impl<'a> Geometry<'a> {
             wavelengths: chunks,
             others: Default::default(),
             aim: aim::AimDesign::selected()?,
+            split_share: 0.0,
             aim_evidence: Default::default(),
         })
+    }
+    /// Aim large generations by host and device together (`gpu::aim`, split
+    /// generations): for the analyses where that was measured to pay, the
+    /// spot diagram and the geometric MTF.
+    pub(crate) fn split_large_generations(mut self) -> MkResult<Self> {
+        self.split_share = aim::AimDesign::selection()?.1;
+        Ok(self)
     }
     /// The aiming design of this adapter's generations.
     pub fn aim_design(&self) -> aim::AimDesign {

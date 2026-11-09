@@ -191,9 +191,10 @@ fn energies(b: &dyn ComputeBackend, aims: &[&str]) {
 }
 
 /// Large generations (at least 2,048 rays per field row, so with a seed
-/// table) split between host and device: the same bits on a one-thread and
-/// a four-thread rayon pool, i.e. whichever side is faster, and within the
-/// reference's tolerances.
+/// table) of the spot diagram and the geometric MTF split between host and
+/// device: the same bits on a one-thread and a four-thread rayon pool, i.e.
+/// whichever side is faster, and within the reference's tolerances; the
+/// device share follows `aiming=split:<share>` (0: host only).
 fn split_designs(b: &dyn ComputeBackend) {
     gpu::aim::set_split_thresholds(Some((0, 512)));
     for (name, t) in tracers() {
@@ -212,26 +213,42 @@ fn split_designs(b: &dyn ComputeBackend) {
         };
         let a = spot::spot_diagram(&t, &s).unwrap();
         let am = energy::geometric_mtf(&t, &m).unwrap();
-        let mut runs = Vec::new();
-        for threads in [1, 4] {
+        let run = |threads: usize, aiming: Option<&str>| {
             let pool = rayon::ThreadPoolBuilder::new()
                 .num_threads(threads)
                 .build()
                 .unwrap();
-            runs.push(pool.install(|| {
+            split::set("aiming", aiming);
+            let out = pool.install(|| {
                 let g = gpu::spot_diagram_job(b, &t, &s, &JobContext::new()).unwrap();
                 let gm = gpu::geometric_mtf_job(b, &t, &m, &JobContext::new()).unwrap();
                 (g, gm)
-            }));
-        }
+            });
+            split::reset();
+            out
+        };
+        let device_rays = |g: &SpotDiagram| {
+            let e = &g.run_info.settings["resident_execution"]["aiming"];
+            (
+                e["device_plans"].as_u64().unwrap(),
+                e["device_rays"].as_u64().unwrap(),
+            )
+        };
+        let runs = [
+            run(1, None),
+            run(4, None),
+            run(4, Some("split:0.75")),
+            run(4, Some("split:0")),
+        ];
         for (g, gm) in &runs {
             let what = format!("{name} split");
-            let e = &g.run_info.settings["resident_execution"]["aiming"];
-            assert!(e["device_plans"].as_u64().unwrap() > 1, "{what}: {e}");
-            assert!(e["host_rays"].as_u64().unwrap() > 0, "{what}: {e}");
             same_spots(&what, &a, g);
             same_mtf(&what, &am, gm);
         }
+        let (plans, rays) = device_rays(&runs[0].0);
+        assert!(plans > 1 && rays > 0, "{name}: {plans} device plans");
+        assert!(device_rays(&runs[2].0).1 > rays, "{name}: share 0.75");
+        assert_eq!(device_rays(&runs[3].0), (0, 0), "{name}: share 0");
         let bits = |(g, gm): &(SpotDiagram, GeometricMtfResult)| {
             serde_json::to_string(&(&g.fields, &gm.curves)).unwrap()
         };
@@ -272,11 +289,11 @@ fn unknown_designs_are_rejected() {
     let _g = SELECTION.lock().unwrap_or_else(|e| e.into_inner());
     let (_, t) = tracers().remove(0);
     let b = CpuF32Backend::new();
-    for (key, name) in [("aiming", "nonsense"), ("aiming_share", "1.5")] {
-        split::set(key, Some(name));
+    for name in ["nonsense", "split:1.5", "split:", "split:-0.1", "host"] {
+        split::set("aiming", Some(name));
         let r = gpu::spot_diagram_job(&b, &t, &Default::default(), &JobContext::new());
         split::reset();
-        assert!(r.is_err(), "{key}={name}");
+        assert!(r.is_err(), "aiming={name}");
     }
 }
 

@@ -514,11 +514,11 @@ the record fills of the device maps; folds stay in their fixed order.
 `settings.gpu.host_cpu_seconds` records the process CPU time of each host
 stage beside its wall time, and `settings.timings` holds [wall, CPU] pairs.
 
-The device path traces and chief aims use the shared trace kernel, so the
-even-asphere slope design (`trace_slope`, default `df`) applies to them. With
-`f32` the chief aims of lenses with deep even aspheres need not reach the
-aiming tolerance; the device path then stops ("ghost chief aiming requires
-reference completion") and the engine runs the CPU reference. Measured on a
+The device path traces and chief aims use the shared trace kernel with its
+double-float even-asphere slope. A chief aim that does not reach the aiming
+tolerance stops the device path ("ghost chief aiming requires reference
+completion") and the engine runs the CPU reference; with the former f32
+slope that happened on lenses with deep even aspheres. Measured on a
 quiet M2 Pro at a 24² pupil grid: a 37-surface zoom with 7 aspheres (630
 ghosts) 20.8 s on the CPU and 14.0 s with `shared`; a 35-surface ultra-wide
 (528 ghosts) 14.5 and 9.2 s; flux and peak agree with the CPU to 3e-14.

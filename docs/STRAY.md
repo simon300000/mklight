@@ -641,10 +641,9 @@ trace's double-float slope (`mkl_asphere_poly_dp_df` in `trace_shared.h`);
 polished by two double-float Newton steps as the trace refines an asphere
 hit, and a sign change that is clear in f32 solved without the cell's
 double-float end points. `radial` and `radial-newton` agree with `jet` to
-double-float rounding, not bit for bit (no CPU specification). The trace's
-`trace_slope` key packs `MKL_SURF_DF_SLOPE` into the stray surfaces too, but
-the stray kernels never read it: their sag slope is double-float in every
-mode. Measured on a quiet M2 Pro, wavefront transport: `radial-newton` takes
+double-float rounding, not bit for bit (no CPU specification). Their sag
+slope is double-float in every mode, as the trace's even-asphere slope is.
+Measured on a quiet M2 Pro, wavefront transport: `radial-newton` takes
 26 % off the device time of a 29-surface lens with two even aspheres (100k
 rays), 46 % off a 37-surface zoom with 7 aspheres and 55 % off a 35-surface
 ultra-wide (10k rays); the 12-thread f64 reference is still 3–5 times faster

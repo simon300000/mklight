@@ -11,7 +11,9 @@ pub fn spot_diagram_job(
     s: &SpotDiagramSettings,
     ctx: &JobContext,
 ) -> MkResult<SpotDiagram> {
-    Geometry::new(b, t, ctx)?.spot_job(s, ctx, false)
+    Geometry::new(b, t, ctx)?
+        .split_large_generations()?
+        .spot_job(s, ctx, false)
 }
 /// [`spot_diagram_job`] with the points packed straight from the mapped
 /// device views into [`SpotDiagram::packed_points`] (see
@@ -22,7 +24,9 @@ pub fn spot_diagram_packed_job(
     s: &SpotDiagramSettings,
     ctx: &JobContext,
 ) -> MkResult<SpotDiagram> {
-    Geometry::new(b, t, ctx)?.spot_job(s, ctx, true)
+    Geometry::new(b, t, ctx)?
+        .split_large_generations()?
+        .spot_job(s, ctx, true)
 }
 /// The device outputs of one field group's spot plan, read in place.
 struct Part {
