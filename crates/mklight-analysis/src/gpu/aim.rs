@@ -491,13 +491,17 @@ pub fn fill_host_rays<'r>(
 }
 
 /// Split generations ([`Geometry::split_large_generations`]) below this
-/// many rays × surfaces are aimed on the host alone: the device's share
-/// would not pay for its plans (measured on M2 Pro).
-pub const SPLIT_MIN_WORK: usize = 1 << 21;
+/// many rays × surfaces (rays of the generation times the image surface
+/// index) are aimed on the host alone: the device's share does not pay for
+/// its plans there. Measured on an M2 Pro (8 + 4 CPU cores, 19 GPU cores):
+/// spot diagrams and geometric MTFs from 1.5 M up were 0.96 of host-only
+/// aiming (geometric mean), from 4 M up 0.94; below 1.5 M they lost up to 18 %.
+pub const SPLIT_MIN_WORK: usize = 1_500_000;
 /// The device's share of a split generation's tiles; `aiming=split:<share>`
-/// overrides it. Measured on M2 Pro: a GPU with more cores per CPU core may
-/// take more.
-pub const SPLIT_DEVICE_SHARE: f64 = 0.5;
+/// overrides it. On the M2 Pro, 0.35 gave the same mean gain as 0.5 and 0.65
+/// with the smallest worst case (+8 % against +26 % and +32 % on one lens); a
+/// GPU with more cores per CPU core may take more.
+pub const SPLIT_DEVICE_SHARE: f64 = 0.35;
 /// Rays per split tile at most (the unit in which tiles are dealt to host
 /// and device).
 const DEVICE_TILE: usize = 1 << 17;
