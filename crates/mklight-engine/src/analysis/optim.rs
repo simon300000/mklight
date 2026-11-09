@@ -3318,9 +3318,13 @@ mod tests {
                 }
             })
         };
-        // 30 tolerances: 61 trials, two sensitivity batches of 32 and 29.
+        // 90 tolerances: 181 points, two sensitivity batches of 128 and 53
+        // (`TOLERANCE_SPLIT_BATCH`), so that the stop lands between them.
         let mut tol = Vec::new();
-        for id in [1u64, 2, 3, 4, 5, 6] {
+        for (id, size) in [1u64, 2, 3, 4, 5, 6]
+            .into_iter()
+            .flat_map(|id| [1e-3, 2e-3, 3e-3].map(|size| (id, size)))
+        {
             for p in [
                 ParamPath::DecenterX {
                     surface: SurfaceId(id),
@@ -3338,7 +3342,7 @@ mod tests {
                     surface: SurfaceId(id),
                 },
             ] {
-                tol.push(json!({"param": p, "minus": 1e-3, "plus": 1e-3}));
+                tol.push(json!({"param": p, "minus": size, "plus": size}));
             }
         }
         let mut settings = settings;
@@ -3351,8 +3355,8 @@ mod tests {
         let n = sens["operands"].as_array().unwrap().len();
         // The last batch may finish before the observing thread runs. A stop
         // keeps every completed operand, including a just-completed full set.
-        assert!(n > 0 && n <= 30, "{n} of 30 operands");
-        assert_eq!(sens["cancelled"], json!(n < 30), "{sens}");
+        assert!(n > 0 && n <= 90, "{n} of 90 operands");
+        assert_eq!(sens["cancelled"], json!(n < 90), "{sens}");
         assert_eq!(sens["ranking"].as_array().unwrap().len(), n);
     }
 
