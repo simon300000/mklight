@@ -1,11 +1,15 @@
-//! The `solvers` work-split variants (`mklight_optim::gpu::Split`) through
-//! the engine: every variant runs `merit_evaluation`, `optimize`,
-//! `tolerance` and `glass_substitution`, names itself in the backend report,
+//! The solver analyses on a GPU device through the engine, with each of
+//! their aiming options: host aiming (the default) and device aiming
+//! (`aiming` = `device`). Every job (`merit_evaluation`, `optimize`,
+//! `tolerance`, `glass_substitution`) names its aiming in the backend report
 //! and agrees with the CPU f64 reference under the solver-outcome contract
-//! of `support/comparison.rs`. The CPU-f32 emulation runs everywhere; the
-//! Metal test is ignored (real Metal required, run through the benchmark
-//! lock). One test per process section: the variant selection is
-//! process-global.
+//! of `support/comparison.rs`; for the truncated solves (`optimize` with 3
+//! iterations, `glass_substitution` with 2 local iterations) a merit or
+//! violation outside its gate passes within twice the reference's own
+//! movement (`support/solver_spread.rs`). The CPU-f32 emulation runs
+//! everywhere; the Metal test is ignored (real Metal required, run through
+//! the benchmark lock). One test per process section: the aiming selection
+//! is process-global.
 
 use std::sync::Arc;
 
@@ -15,11 +19,12 @@ use mklight_engine::backend::Backend;
 use mklight_engine::gpu::GpuProvider;
 use mklight_engine::project::Project;
 use mklight_engine::{AnalysisRequest, AnalysisResult, Engine, EngineConfig, Session};
-use mklight_optim::gpu::{SPLIT_STUDY, Split};
 use serde_json::{Value, json};
 
 #[path = "support/comparison.rs"]
 mod comparison;
+#[path = "support/solver_spread.rs"]
+mod solver_spread;
 
 fn settings(system: &mklight_core::OpticalSystem) -> Vec<(&'static str, Value)> {
     let vars: Vec<Value> = system.surfaces[1..system.surfaces.len() - 1]
@@ -57,41 +62,9 @@ fn run(s: &Session, analysis: &str, settings: &Value, backend: Backend) -> Optio
     s.run_analysis(&request, &JobContext::new()).ok()
 }
 
-/// The merits a solver outcome is judged by: the final merit of an
-/// optimisation, the finalists' merits of a glass substitution.
-fn merits(analysis: &str, r: &AnalysisResult) -> Vec<f64> {
-    match analysis {
-        "optimize" => vec![r.json["final"]["merit"].as_f64().unwrap_or(f64::NAN)],
-        "glass_substitution" => r.json["results"]
-            .as_array()
-            .map(|v| {
-                v.iter()
-                    .map(|x| x["merit"].as_f64().unwrap_or(f64::NAN))
-                    .collect()
-            })
-            .unwrap_or_default(),
-        _ => vec![],
-    }
-}
-
-/// Largest relative merit difference of `r` from the reference `cpu`.
-fn deviation(analysis: &str, cpu: &AnalysisResult, r: &AnalysisResult) -> f64 {
-    let (a, b) = (merits(analysis, cpu), merits(analysis, r));
-    if a.len() != b.len() {
-        return f64::INFINITY;
-    }
-    a.iter()
-        .zip(&b)
-        .map(|(x, y)| (x - y).abs() / x.abs().max(1e-300))
-        .fold(0.0, f64::max)
-}
-
-/// Every variant on `systems` and `device` against the CPU reference: each
-/// meets the solver-outcome contract, or, where the resident design (the
-/// division before this study) misses it too, deviates from the reference
-/// by at most twice as much as the resident design.
+/// Both aiming options on `systems` and `device` against the CPU reference.
 fn check(engine: &Engine, device: &str, systems: Vec<(&str, mklight_core::OpticalSystem)>) {
-    // The work-split selection is process-wide: one test selects at a time.
+    // The aiming selection is process-wide: one test selects at a time.
     static SELECTION: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let _selection = SELECTION.lock().unwrap_or_else(|e| e.into_inner());
     let mut failures = Vec::new();
@@ -99,26 +72,26 @@ fn check(engine: &Engine, device: &str, systems: Vec<(&str, mklight_core::Optica
         let session = engine
             .session_from_project(Project::new(system.clone()))
             .unwrap();
+        let nudged = engine
+            .session_from_project(Project::new(solver_spread::nudged(&system)))
+            .unwrap();
         for (analysis, settings) in settings(&system) {
             split::reset();
             let Some(cpu) = run(&session, analysis, &settings, Backend::CpuReference) else {
                 continue;
             };
-            let mut resident: Option<(bool, f64)> = None;
-            for variant in Split::ALL.map(Some).into_iter().chain([None]) {
-                split::set(SPLIT_STUDY, variant.map(Split::name));
+            let spread =
+                solver_spread::reference_movement(&session, &nudged, analysis, &settings, &cpu);
+            for (aiming, expected) in [(None, "host"), (Some("device"), "device")] {
+                split::set("aiming", aiming);
                 let gpu = run(&session, analysis, &settings, Backend::Gpu(device.into()))
-                    .unwrap_or_else(|| panic!("{name}/{analysis}/{variant:?} failed"));
+                    .unwrap_or_else(|| panic!("{name}/{analysis}/{expected} failed"));
                 split::reset();
-                let expected = variant.unwrap_or(Split::DEFAULT);
                 assert_eq!(
-                    gpu.json["backend"]["split"],
-                    json!(expected.name()),
+                    gpu.json["backend"]["aiming"],
+                    json!(expected),
                     "{name}/{analysis}"
                 );
-                if expected == Split::CpuPar {
-                    assert_eq!(gpu.backend.used, "cpu_reference", "{name}/{analysis}");
-                }
                 let view = |r: &AnalysisResult| AnalysisOutput {
                     json: comparison::solver_scores(analysis, &r.json),
                     ..Default::default()
@@ -127,26 +100,27 @@ fn check(engine: &Engine, device: &str, systems: Vec<(&str, mklight_core::Optica
                     comparison::compare(&view(&cpu), &view(&gpu), analysis, &JobContext::new())
                         .unwrap();
                 let native = comparison::native_failures(&gpu.run_info);
-                let dev = deviation(analysis, &cpu, &gpu);
+                let dev = solver_spread::deviation(analysis, &cpu, &gpu);
                 eprintln!(
-                    "{name}/{analysis}/{}: used {} reason {:?} merit deviation {dev:.2e} \
-                     cpu {:.1} ms device {:.1} ms",
-                    expected.name(),
+                    "{name}/{analysis}/{expected} aiming: used {} reason {:?} merit, violation \
+                     deviation {:.2e}, {:.2e} (reference moves {:.2e}, {:.2e}) cpu {:.1} ms \
+                     device {:.1} ms",
                     gpu.backend.used,
                     report.reason,
+                    dev.0,
+                    dev.1,
+                    spread.0,
+                    spread.1,
                     cpu.run_info.duration_ms,
                     gpu.run_info.duration_ms
                 );
-                if expected == Split::Resident {
-                    resident = Some((report.reason.is_none(), dev));
-                }
-                let within_resident = matches!(resident, Some((false, r)) if dev <= 2. * r + 1e-12);
-                if (report.reason.is_some() && !within_resident) || !native.is_empty() {
+                if !solver_spread::within_movement(&report.failures, dev, spread)
+                    || !native.is_empty()
+                {
                     failures.push(format!(
-                        "{name}/{analysis}/{}: {:?} {:?}",
-                        expected.name(),
-                        report.reason,
-                        native
+                        "{name}/{analysis}/{expected}: {:?} {:?} deviation {dev:?} \
+                         (reference moves {spread:?})",
+                        report.failures, native
                     ));
                 }
             }
@@ -168,7 +142,7 @@ fn engine_with(p: Option<GpuProvider>) -> Engine {
 }
 
 #[test]
-fn split_variants_on_emulation() {
+fn aiming_options_on_emulation() {
     let engine = engine_with(Some(GpuProvider::emulation()));
     let mut real = samples::cooke_triplet();
     real.ray_aiming = mklight_core::RayAiming::Real { tolerance: 1e-10 };
@@ -183,8 +157,8 @@ fn split_variants_on_emulation() {
 }
 
 #[test]
-#[ignore = "solver outcomes of every work-split variant; real Metal required"]
-fn split_variants_on_metal() {
+#[ignore = "solver outcomes of both aiming options; real Metal required"]
+fn aiming_options_on_metal() {
     let engine = engine_with(None);
     assert!(
         engine

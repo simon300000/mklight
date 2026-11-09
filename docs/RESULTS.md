@@ -2170,10 +2170,9 @@ Settings:
 | `backend` | string | `"auto"` |  | one of `"auto"`, `"cpu"`, `"gpu"`, `"gpu_emulation"`; auto: the device the engine selected for this job (under engine auto, its cost model; docs/GPU.md §9.2), else the CPU reference. |
 | `constraints` | array | `[]` |  | Operands appended as explicit constraints (role forced to constraint). |
 | `default_merit` | object | `{"auto_symmetry":true,"configs":[],"criterion":{"reference":"centroid","scope":"monochromatic","type":"rms_spot"},"fields":null,"sampling":{"arm_offset_deg":0.0,"arms":6,"obscuration":0.0,"rings":3,"symmetry":"none"},"thickness":{"air_max_centre":null,"air_min_centre":0.1,"air_min_edge":0.1,"as_constraints":true,"auto_semi_diameters":false,"glass_max_centre":30.0,"glass_min_centre":1.0,"glass_min_edge":1.0,"weight":1.0},"wavelengths":null,"weight":1.0}` |  | Default-merit generator: RMS spot, wavefront or polychromatic MTF; fields, wavelengths, sampling and thickness boundaries. |
-| `fd_relative_step` | number\|null | `null` |  | > 0; null chooses per operand and backend (wavefront 1e-6/1e-4, MTF 1e-6/1e-5 on the CPU, GPU f32 steps; docs/OPTIMIZATION.md). |
+| `fd_relative_step` | number\|null | `null` |  | > 0; null chooses per operand and backend (wavefront 1e-6/1e-4, MTF 1e-6/1e-5 on the CPU; device ray operands 1e-6, wavefront 1e-5 forward; docs/OPTIMIZATION.md). |
 | `fd_scheme` | string | `"forward"` |  | one of `"forward"`, `"central"` |
 | `feasibility_tolerance` | number | `1e-6` |  | ≥ 0; Total normalised constraint violation regarded as feasible (ranking, results[].feasible). |
-| `gpu_batch` | integer | `512` |  | ≥ 1; Candidates per GPU dispatch. |
 | `hold_efl` | boolean | `true` |  | Hold the EFL at its start value, as a constraint, unless the merit already has an efl operand. |
 | `local_iterations` | integer | `100` |  | ≥ 1; LM iterations per re-optimisation. |
 | `material_variables` | array<object> | `[]` |  | One entry per glass that may change; a cemented doublet is two entries. Empty: every model glass, with the default candidates. |
@@ -2183,7 +2182,6 @@ Settings:
 | `operands` | array | `[]` |  | Operands appended to the merit, including MTF (frequency, orientation, method, defocus_mm, detector), ghost and stray power operands. Stray power uses a fixed seed and is unsuitable for LM. |
 | `seed` | integer | `0` |  | ≥ 0 |
 | `spectrum` | object\|null |  |  | Optional run-local spectrum; absent/null keeps the design. kind: explicit (wavelengths:[{um,weight}]), photopic, scotopic, blackbody (temperature_k), sensor (table:[[um,response]]). Presets/sensor take sampling. Primary is nearest the energy-weighted mean (first on ties). |
-| `stop_key` | string\|null | `null` |  | Key for `request_stop`: stop and keep the ranked results. One running job per key. |
 | `top_n` | integer | `10` |  | ≥ 1; Best glass combinations returned. |
 | `variables` | array | `[]` |  | Variable specs: {"param": ParamPath, "lower", "upper", "scale", "fd_step", "label"}. Empty: the curvature of every curved optical surface and the back focus. |
 
@@ -2193,7 +2191,7 @@ Result (`result` in the envelope):
 |---|---|---|---|
 | `algorithm` | string |  | one of `"tabu"`, `"hammer"` |
 | `backend` | object |  |  |
-| `backend.aiming` (optional) | string |  | one of `"device"`, `"host"`; Where the hybrid designs aim the pupil rays: on the device with host completion (default), or on the host with device tracing (`aiming` set to `host-table` or `split:<share>`). |
+| `backend.aiming` (optional) | string |  | one of `"device"`, `"host"`; Where the pupil rays of a run handed a GPU device are aimed: on the host with device tracing (default), or on the device with host completion (`aiming` study set to `device` or `table`). |
 | `backend.evaluated_on` | string |  | Search evaluator backend; envelope uses engine backend ids. |
 | `backend.gpu_stats` (optional) | object |  |  |
 | `backend.gpu_stats.cpu_candidates` | integer |  | ≥ 0 |
@@ -2205,8 +2203,6 @@ Result (`result` in the envelope):
 | `backend.reported_on` | string |  | CPU reference for final optimize/glass reports; active evaluator for tolerance and merit_evaluation. |
 | `backend.requested` | string |  | one of `"auto"`, `"cpu"`, `"gpu"`, `"gpu_emulation"`; Merit evaluator preference. |
 | `backend.resident_evaluation` (optional) | object |  | Device evaluation, host-stage and fallback accounting. |
-| `backend.split` (optional) | string |  | one of `"resident"`, `"hybrid"`, `"pipelined"`, `"speculative"`, `"rendezvous"`, `"cpu-par"`; Host/device division of a run handed a GPU device (work-split study `solvers`). |
-| `backend.threads` (optional) | string |  | one of `"single"`, `"lanes"`, `"host-quarter"`, `"host-half"`, `"host-three-quarters"`; CPU thread layout of the hybrid designs' device sub-batches (work-split study `solver_threads`). |
 | `backend.workload` | object |  |  |
 | `backend.workload.batch` | integer |  | ≥ 0 |
 | `backend.workload.rays_per_candidate` | integer? |  |  |
@@ -2271,10 +2267,9 @@ Settings:
 | `backend` | string | `"auto"` |  | one of `"auto"`, `"cpu"`, `"gpu"`, `"gpu_emulation"`; auto: the device the engine selected for this job (under engine auto, its cost model; docs/GPU.md §9.2), else the CPU reference. |
 | `constraints` | array | `[]` |  | Operands appended as explicit constraints (role forced to constraint). |
 | `default_merit` | object | `{"auto_symmetry":true,"configs":[],"criterion":{"reference":"centroid","scope":"monochromatic","type":"rms_spot"},"fields":null,"sampling":{"arm_offset_deg":0.0,"arms":6,"obscuration":0.0,"rings":3,"symmetry":"none"},"thickness":{"air_max_centre":null,"air_min_centre":0.1,"air_min_edge":0.1,"as_constraints":true,"auto_semi_diameters":false,"glass_max_centre":30.0,"glass_min_centre":1.0,"glass_min_edge":1.0,"weight":1.0},"wavelengths":null,"weight":1.0}` |  | Default-merit generator: RMS spot, wavefront or polychromatic MTF; fields, wavelengths, sampling and thickness boundaries. |
-| `fd_relative_step` | number\|null | `null` |  | > 0; null chooses per operand and backend (wavefront 1e-6/1e-4, MTF 1e-6/1e-5 on the CPU, GPU f32 steps; docs/OPTIMIZATION.md). |
+| `fd_relative_step` | number\|null | `null` |  | > 0; null chooses per operand and backend (wavefront 1e-6/1e-4, MTF 1e-6/1e-5 on the CPU; device ray operands 1e-6, wavefront 1e-5 forward; docs/OPTIMIZATION.md). |
 | `fd_scheme` | string | `"forward"` |  | one of `"forward"`, `"central"` |
 | `feasibility_tolerance` | number | `1e-6` |  | ≥ 0; Total normalised constraint violation regarded as feasible (best-so-far ranking, `final.feasible`). |
-| `gpu_batch` | integer | `512` |  | ≥ 1; Candidates per GPU dispatch. |
 | `hold_efl` | boolean | `true` |  | Hold the EFL at its start value unless the merit already has an efl operand: a constraint for lm, dogleg and hammer, a penalty residual for de, cma_es and nelder_mead. |
 | `max_iterations` | integer\|null | `null` |  | ≥ 1; Iterations (lm, dogleg, nelder_mead), generations (de, cma_es) or rounds (hammer); null: 200, 200, 2000, 100, 200, 20. |
 | `merit` | object\|null | `null` |  | A merit-function spec; null generates the default merit from `default_merit` for the variables. |
@@ -2282,7 +2277,6 @@ Settings:
 | `options` | object | `{}` |  | Settings of the algorithm, laid over its defaults. |
 | `seed` | integer | `0` |  | ≥ 0 |
 | `spectrum` | object\|null |  |  | Optional run-local spectrum; absent/null keeps the design. kind: explicit (wavelengths:[{um,weight}]), photopic, scotopic, blackbody (temperature_k), sensor (table:[[um,response]]). Presets/sensor take sampling. Primary is nearest the energy-weighted mean (first on ties). |
-| `stop_key` | string\|null | `null` |  | Key for `request_stop`: stop and keep the best point. One running job per key. |
 | `variables` | array | `[]` |  | Variable specs: {"param": ParamPath, "lower", "upper", "scale", "fd_step", "label"}. Empty: the curvature of every curved optical surface and the back focus. |
 
 Result (`result` in the envelope):
@@ -2290,7 +2284,7 @@ Result (`result` in the envelope):
 | field | type | unit | notes |
 |---|---|---|---|
 | `backend` | object |  |  |
-| `backend.aiming` (optional) | string |  | one of `"device"`, `"host"`; Where the hybrid designs aim the pupil rays: on the device with host completion (default), or on the host with device tracing (`aiming` set to `host-table` or `split:<share>`). |
+| `backend.aiming` (optional) | string |  | one of `"device"`, `"host"`; Where the pupil rays of a run handed a GPU device are aimed: on the host with device tracing (default), or on the device with host completion (`aiming` study set to `device` or `table`). |
 | `backend.evaluated_on` | string |  | Search evaluator backend; envelope uses engine backend ids. |
 | `backend.gpu_stats` (optional) | object |  |  |
 | `backend.gpu_stats.cpu_candidates` | integer |  | ≥ 0 |
@@ -2302,8 +2296,6 @@ Result (`result` in the envelope):
 | `backend.reported_on` | string |  | CPU reference for final optimize/glass reports; active evaluator for tolerance and merit_evaluation. |
 | `backend.requested` | string |  | one of `"auto"`, `"cpu"`, `"gpu"`, `"gpu_emulation"`; Merit evaluator preference. |
 | `backend.resident_evaluation` (optional) | object |  | Device evaluation, host-stage and fallback accounting. |
-| `backend.split` (optional) | string |  | one of `"resident"`, `"hybrid"`, `"pipelined"`, `"speculative"`, `"rendezvous"`, `"cpu-par"`; Host/device division of a run handed a GPU device (work-split study `solvers`). |
-| `backend.threads` (optional) | string |  | one of `"single"`, `"lanes"`, `"host-quarter"`, `"host-half"`, `"host-three-quarters"`; CPU thread layout of the hybrid designs' device sub-batches (work-split study `solver_threads`). |
 | `backend.workload` | object |  |  |
 | `backend.workload.batch` | integer |  | ≥ 0 |
 | `backend.workload.rays_per_candidate` | integer? |  |  |
@@ -2344,10 +2336,9 @@ Settings:
 | `backend` | string | `"auto"` |  | one of `"auto"`, `"cpu"`, `"gpu"`, `"gpu_emulation"`; auto: the device the engine selected for this job (under engine auto, its cost model; docs/GPU.md §9.2), else the CPU reference. |
 | `constraints` | array | `[]` |  | Operands appended as explicit constraints (role forced to constraint). |
 | `default_merit` | object | `{"auto_symmetry":true,"configs":[],"criterion":{"reference":"centroid","scope":"monochromatic","type":"rms_spot"},"fields":null,"sampling":{"arm_offset_deg":0.0,"arms":6,"obscuration":0.0,"rings":3,"symmetry":"none"},"thickness":{"air_max_centre":null,"air_min_centre":0.1,"air_min_edge":0.1,"as_constraints":true,"auto_semi_diameters":false,"glass_max_centre":30.0,"glass_min_centre":1.0,"glass_min_edge":1.0,"weight":1.0},"wavelengths":null,"weight":1.0}` |  | Default-merit generator: RMS spot, wavefront or polychromatic MTF; fields, wavelengths, sampling and thickness boundaries. |
-| `fd_relative_step` | number\|null | `null` |  | > 0; null chooses per operand and backend (wavefront 1e-6/1e-4, MTF 1e-6/1e-5 on the CPU, GPU f32 steps; docs/OPTIMIZATION.md). |
+| `fd_relative_step` | number\|null | `null` |  | > 0; null chooses per operand and backend (wavefront 1e-6/1e-4, MTF 1e-6/1e-5 on the CPU; device ray operands 1e-6, wavefront 1e-5 forward; docs/OPTIMIZATION.md). |
 | `fd_scheme` | string | `"forward"` |  | one of `"forward"`, `"central"` |
 | `feasibility_tolerance` | number | `1e-6` |  | ≥ 0; Total normalised constraint violation regarded as feasible (best-so-far ranking, `final.feasible`). |
-| `gpu_batch` | integer | `512` |  | ≥ 1; Candidates per GPU dispatch. |
 | `hold_efl` | boolean | `true` |  | Hold the EFL at its start value unless the merit already has an efl operand: a constraint for lm, dogleg and hammer, a penalty residual for de, cma_es and nelder_mead. |
 | `max_iterations` | integer\|null | `null` |  | ≥ 1; Iterations (lm, dogleg, nelder_mead), generations (de, cma_es) or rounds (hammer); null: 200, 200, 2000, 100, 200, 20. |
 | `merit` | object\|null | `null` |  | A merit-function spec; null generates the default merit from `default_merit` for the variables. |
@@ -2355,7 +2346,6 @@ Settings:
 | `options` | object | `{}` |  | Settings of the algorithm, laid over its defaults. |
 | `seed` | integer | `0` |  | ≥ 0 |
 | `spectrum` | object\|null |  |  | Optional run-local spectrum; absent/null keeps the design. kind: explicit (wavelengths:[{um,weight}]), photopic, scotopic, blackbody (temperature_k), sensor (table:[[um,response]]). Presets/sensor take sampling. Primary is nearest the energy-weighted mean (first on ties). |
-| `stop_key` | string\|null | `null` |  | Key for `request_stop`: stop and keep the best point. One running job per key. |
 | `variables` | array | `[]` |  | Variable specs: {"param": ParamPath, "lower", "upper", "scale", "fd_step", "label"}. Empty: the curvature of every curved optical surface and the back focus. |
 
 Result (`result` in the envelope):
@@ -2364,7 +2354,7 @@ Result (`result` in the envelope):
 |---|---|---|---|
 | `algorithm` | string |  |  |
 | `backend` | object |  |  |
-| `backend.aiming` (optional) | string |  | one of `"device"`, `"host"`; Where the hybrid designs aim the pupil rays: on the device with host completion (default), or on the host with device tracing (`aiming` set to `host-table` or `split:<share>`). |
+| `backend.aiming` (optional) | string |  | one of `"device"`, `"host"`; Where the pupil rays of a run handed a GPU device are aimed: on the host with device tracing (default), or on the device with host completion (`aiming` study set to `device` or `table`). |
 | `backend.evaluated_on` | string |  | Search evaluator backend; envelope uses engine backend ids. |
 | `backend.gpu_stats` (optional) | object |  |  |
 | `backend.gpu_stats.cpu_candidates` | integer |  | ≥ 0 |
@@ -2376,8 +2366,6 @@ Result (`result` in the envelope):
 | `backend.reported_on` | string |  | CPU reference for final optimize/glass reports; active evaluator for tolerance and merit_evaluation. |
 | `backend.requested` | string |  | one of `"auto"`, `"cpu"`, `"gpu"`, `"gpu_emulation"`; Merit evaluator preference. |
 | `backend.resident_evaluation` (optional) | object |  | Device evaluation, host-stage and fallback accounting. |
-| `backend.split` (optional) | string |  | one of `"resident"`, `"hybrid"`, `"pipelined"`, `"speculative"`, `"rendezvous"`, `"cpu-par"`; Host/device division of a run handed a GPU device (work-split study `solvers`). |
-| `backend.threads` (optional) | string |  | one of `"single"`, `"lanes"`, `"host-quarter"`, `"host-half"`, `"host-three-quarters"`; CPU thread layout of the hybrid designs' device sub-batches (work-split study `solver_threads`). |
 | `backend.workload` | object |  |  |
 | `backend.workload.batch` | integer |  | ≥ 0 |
 | `backend.workload.rays_per_candidate` | integer? |  |  |
@@ -2464,7 +2452,6 @@ Settings:
 | `compensators` | array | `[]` |  | {"param": ParamPath, "range", "scale"}: re-optimised for every trial. |
 | `criterion` | object\|null | `null` |  | A merit-function spec; null generates the default merit for tolerancing from `default_merit`. |
 | `default_merit` | object | `{"auto_symmetry":true,"configs":[],"criterion":{"reference":"centroid","scope":"monochromatic","type":"rms_spot"},"fields":null,"sampling":{"arm_offset_deg":0.0,"arms":6,"obscuration":0.0,"rings":3,"symmetry":"none"},"thickness":null,"wavelengths":null,"weight":1.0}` |  | Default-merit generator: RMS spot, wavefront or polychromatic MTF; fields, wavelengths, sampling and thickness boundaries. |
-| `gpu_batch` | integer | `512` |  | ≥ 1 |
 | `irregularity_wavelength_um` | number\|null | `null` | µm | > 0; Fringe test wavelength; null keeps an existing overlay's, else the primary wavelength. |
 | `mode` | string | `"both"` |  | one of `"sensitivity"`, `"monte_carlo"`, `"both"` |
 | `percentiles` | array<number> | `[50,90,97.7]` |  | Monte Carlo percentiles of the successful criteria, linearly interpolated. |
@@ -2473,7 +2460,6 @@ Settings:
 | `record_trials` | integer | `0` |  | 0 … 10000; Keep perturbations and compensators of the first this many trials. |
 | `seed` | integer | `0` |  | ≥ 0 |
 | `spectrum` | object\|null |  |  | Optional run-local spectrum; absent/null keeps the design. kind: explicit (wavelengths:[{um,weight}]), photopic, scotopic, blackbody (temperature_k), sensor (table:[[um,response]]). Presets/sensor take sampling. Primary is nearest the energy-weighted mean (first on ties). |
-| `stop_key` | string\|null | `null` |  |  |
 | `threshold` | number\|null | `null` |  | Criterion value for the yield (criterion ≤ threshold). |
 | `tolerances` | array | `[]` |  | Tolerance operands: {"param": ParamPath, "minus", "plus", "distribution", "label"}. material_dn_d / material_dv_d perturb catalogue index / Abbe offsets around the saved melt values. Empty: ±0.05 mm on every thickness but the back focus and ±0.5 % on every curvature. |
 | `trials` | integer | `100` |  | ≥ 1 |
@@ -2483,7 +2469,7 @@ Result (`result` in the envelope):
 | field | type | unit | notes |
 |---|---|---|---|
 | `backend` | object |  |  |
-| `backend.aiming` (optional) | string |  | one of `"device"`, `"host"`; Where the hybrid designs aim the pupil rays: on the device with host completion (default), or on the host with device tracing (`aiming` set to `host-table` or `split:<share>`). |
+| `backend.aiming` (optional) | string |  | one of `"device"`, `"host"`; Where the pupil rays of a run handed a GPU device are aimed: on the host with device tracing (default), or on the device with host completion (`aiming` study set to `device` or `table`). |
 | `backend.evaluated_on` | string |  | Search evaluator backend; envelope uses engine backend ids. |
 | `backend.gpu_stats` (optional) | object |  |  |
 | `backend.gpu_stats.cpu_candidates` | integer |  | ≥ 0 |
@@ -2495,8 +2481,6 @@ Result (`result` in the envelope):
 | `backend.reported_on` | string |  | CPU reference for final optimize/glass reports; active evaluator for tolerance and merit_evaluation. |
 | `backend.requested` | string |  | one of `"auto"`, `"cpu"`, `"gpu"`, `"gpu_emulation"`; Merit evaluator preference. |
 | `backend.resident_evaluation` (optional) | object |  | Device evaluation, host-stage and fallback accounting. |
-| `backend.split` (optional) | string |  | one of `"resident"`, `"hybrid"`, `"pipelined"`, `"speculative"`, `"rendezvous"`, `"cpu-par"`; Host/device division of a run handed a GPU device (work-split study `solvers`). |
-| `backend.threads` (optional) | string |  | one of `"single"`, `"lanes"`, `"host-quarter"`, `"host-half"`, `"host-three-quarters"`; CPU thread layout of the hybrid designs' device sub-batches (work-split study `solver_threads`). |
 | `backend.workload` | object |  |  |
 | `backend.workload.batch` | integer |  | ≥ 0 |
 | `backend.workload.rays_per_candidate` | integer? |  |  |

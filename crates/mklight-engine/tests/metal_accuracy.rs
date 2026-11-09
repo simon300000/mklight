@@ -10,6 +10,8 @@ use serde_json::{Value, json};
 
 #[path = "support/comparison.rs"]
 mod comparison;
+#[path = "support/solver_spread.rs"]
+mod solver_spread;
 
 #[test]
 #[ignore = "offline default-grid f64 accuracy evidence; real Metal required"]
@@ -106,7 +108,9 @@ fn default_sample_accuracy() {
 
 /// The solvers' physical outcomes (merit, violation, feasibility, finalists,
 /// tolerance figures; `comparison::SOLVER_SCORES`) on Metal against the CPU
-/// reference on every sample at default settings.
+/// reference on every sample at default settings. The truncated solves'
+/// merits and violations outside their gates pass within twice the
+/// reference's own movement (`support/solver_spread.rs`).
 #[test]
 #[ignore = "offline solver-outcome evidence; real Metal required"]
 fn solver_outcomes() {
@@ -142,6 +146,9 @@ fn solver_outcomes() {
             .find(|s| matches!(s.material, mklight_core::MaterialRef::Catalog { .. }))
             .map(|g| vec![json!({"surface":g.id,"candidates":{"nearest":3}})])
             .unwrap_or_default();
+        let nudged = engine
+            .session_from_project(Project::new(solver_spread::nudged(&system)))
+            .unwrap();
         let session = engine.session_from_project(Project::new(system)).unwrap();
         for (analysis, settings) in [
             ("merit_evaluation", Value::Null),
@@ -159,7 +166,7 @@ fn solver_outcomes() {
                     "local_iterations":2,"top_n":3,"seed":71}),
             ),
         ] {
-            let mut request = AnalysisRequest::new(analysis, settings);
+            let mut request = AnalysisRequest::new(analysis, settings.clone());
             request.backend = Some(Backend::CpuReference);
             let cpu = match session.run_analysis(&request, &JobContext::new()) {
                 Ok(r) => r,
@@ -182,7 +189,13 @@ fn solver_outcomes() {
                 comparison::compare(&view(&cpu), &view(&gpu), analysis, &JobContext::new())
                     .unwrap();
             let published = gpu.backend.used == "gpu:metal";
-            if (published && report.reason.is_some()) || !native_failures.is_empty() {
+            // Truncated solves: a merit or violation outside its gate passes
+            // within twice the reference's own movement.
+            let deviation = solver_spread::deviation(analysis, &cpu, &gpu);
+            let movement =
+                solver_spread::reference_movement(&session, &nudged, analysis, &settings, &cpu);
+            let within = solver_spread::within_movement(&report.failures, deviation, movement);
+            if (published && !within) || !native_failures.is_empty() {
                 failures.push(format!(
                     "{name}/{analysis}: {:?} {:?}",
                     report.reason, native_failures
@@ -200,6 +213,7 @@ fn solver_outcomes() {
                 "compared":report.compared,"gate_failures":report.failures,"classes":report.classes,
                 "native_failures":native_failures,"cpu_ms":cpu.run_info.duration_ms,"metal_ms":gpu.run_info.duration_ms,
                 "merits":[&cpu.json["final"]["merit"], &gpu.json["final"]["merit"]],
+                "deviation":[deviation.0, deviation.1],"reference_movement":[movement.0, movement.1],
                 "finalist_merits":[finalists(&cpu), finalists(&gpu)]})
             );
         }

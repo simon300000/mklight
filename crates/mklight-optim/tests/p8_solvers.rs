@@ -202,7 +202,12 @@ fn one_sided_retry_and_thick_lens_derivative() {
             "step {step}: {d} vs {analytic}"
         );
     }
-    assert!(gpu.stats().device_operands > 0);
+    // First-order operands are host stages of the ray pass, not fallbacks.
+    let stats = gpu.stats();
+    assert!(
+        stats.host_operands > 0 && stats.fallback_operands == 0,
+        "{stats:?}"
+    );
 }
 
 #[test]

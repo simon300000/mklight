@@ -1,10 +1,10 @@
 //! Stage profile of one solver analysis (optimize, tolerance,
-//! merit_evaluation, glass_substitution) on one backend and work-split
-//! variant.
+//! merit_evaluation, glass_substitution) on one backend, optionally with
+//! work-split selections (`--set aiming=device`).
 //!
 //! ```text
 //! cargo run --release -p mklight-engine --example solver_profile -- LENS.mklight ANALYSIS \
-//!     [--backend cpu|metal|auto] [--variant NAME] [--settings JSON] [--reps N] [--json]
+//!     [--backend cpu|metal|auto] [--set KEY=VARIANT]... [--settings JSON] [--reps N] [--json]
 //!     [--out FILE]
 //! ```
 //!
@@ -81,7 +81,7 @@ fn main() {
     let lens = args.next().expect("LENS.mklight");
     let analysis = args.next().expect("ANALYSIS");
     let mut backend = "metal".to_string();
-    let mut variant: Option<String> = None;
+    let mut selections: Vec<String> = Vec::new();
     let mut settings = json!({});
     let mut reps = 1usize;
     let mut dump = false;
@@ -89,7 +89,7 @@ fn main() {
     while let Some(a) = args.next() {
         match a.as_str() {
             "--backend" => backend = args.next().unwrap(),
-            "--variant" => variant = args.next(),
+            "--set" => selections.push(args.next().unwrap()),
             "--settings" => settings = serde_json::from_str(&args.next().unwrap()).unwrap(),
             "--reps" => reps = args.next().unwrap().parse().unwrap(),
             "--json" => dump = true,
@@ -97,7 +97,10 @@ fn main() {
             _ => panic!("unexpected argument {a}"),
         }
     }
-    split::set("solvers", variant.as_deref());
+    for selection in &selections {
+        let (key, value) = selection.split_once('=').expect("--set KEY=VARIANT");
+        split::set(key, Some(value));
+    }
     let engine = Engine::new(EngineConfig::default());
     let mut s = engine.open_session(Path::new(&lens)).unwrap();
     curvature_variables(&mut s);
@@ -125,7 +128,11 @@ fn main() {
         println!(
             "{} {analysis} {backend}/{} {:.1} ms; used {}; iterations {} evaluations {} merit {}",
             if rep == 0 { "warm" } else { "timed" },
-            variant.as_deref().unwrap_or("default"),
+            if selections.is_empty() {
+                "default".to_string()
+            } else {
+                selections.join(",")
+            },
             ms,
             r.backend.used,
             j["iterations"],
@@ -151,8 +158,8 @@ fn main() {
                 "  gpu_stats {}  resident {}",
                 b["gpu_stats"], b["resident_evaluation"]
             );
-            if let Some(v) = b.get("split") {
-                println!("  split {v}");
+            if let Some(v) = b.get("aiming") {
+                println!("  aiming {v}");
             }
         }
         for (name, wall, dev, cb) in &st {
