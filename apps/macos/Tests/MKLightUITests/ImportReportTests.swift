@@ -32,7 +32,8 @@ private func sampleImport(_ warnings: [ImportWarning], name: String = "") -> Pre
     return PrescriptionImport(format: .zmx, encoding: "utf16_le", system: system, warnings: warnings)
 }
 
-@Suite struct ImportReportTests {
+/// Serialized: two tests swap the process-wide import engine.
+@Suite(.serialized) struct ImportReportTests {
     @Test func groupsByMeaningMostSeriousFirst() {
         let r = ImportReport(
             sampleImport([
