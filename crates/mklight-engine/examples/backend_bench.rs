@@ -153,6 +153,12 @@ fn backend(name: &str) -> Backend {
 }
 
 /// A unique, tiny change of the first curved surface (relative 1e-9 scale).
+///
+/// `serial` is `pid << 20 | call counter`. Only the counter (and a small
+/// residue of the process id, for uniqueness between processes) sets the
+/// size, so every edit stays between 1e-9 and about 2e-9 relative for the
+/// first 10,000 calls. The sign comes from a hash of the counter, so it does
+/// not follow the column order of an even number of columns.
 fn edit(s: &mut Session, base: &OpticalSystem, serial: u64) {
     let mut system = base.clone();
     let surface = system
@@ -165,13 +171,15 @@ fn edit(s: &mut Session, base: &OpticalSystem, serial: u64) {
         surface: surface.id,
     };
     let c = surface.shape.curvature();
-    let sign = if serial % 2 == 0 { 1. } else { -1. };
-    param
-        .set(
-            &mut system,
-            c * (1. + sign * (1. + serial as f64 * 1e-3) * 1e-9),
-        )
-        .unwrap();
+    let counter = serial & 0xf_ffff;
+    let process = (serial >> 20) % 1000;
+    let sign = if counter.wrapping_mul(0x9e37_79b9_7f4a_7c15) >> 63 == 0 {
+        1.
+    } else {
+        -1.
+    };
+    let size = (1. + counter as f64 * 1e-4 + process as f64 * 1e-6) * 1e-9;
+    param.set(&mut system, c * (1. + sign * size)).unwrap();
     s.set_system(system).unwrap();
 }
 
