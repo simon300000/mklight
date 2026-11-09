@@ -155,10 +155,6 @@
 #define MKL_SURF_OBJECT (1u << 5)          /* surface 0 */
 #define MKL_SURF_IMAGE (1u << 6)           /* surface N-1 */
 #define MKL_SURF_HAS_SAG_OVERLAY (1u << 7) /* MKL_OVERLAY_* pool suffix */
-/* Even asphere: the hit refinement and the unnormalised normal take the
- * polynomial slope in double-float (two Newton steps on the exact line);
- * without it the slope is f32 (work-split key trace_slope: df / f32). */
-#define MKL_SURF_DF_SLOPE (1u << 8)
 
 /* MklPackedSurface.coating: how the interface splits flux (CONVENTIONS §5).
  *   BARE   uncoated: Fresnel on refracting surfaces, R = 1 on mirrors

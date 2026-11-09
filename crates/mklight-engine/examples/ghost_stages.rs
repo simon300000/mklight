@@ -8,7 +8,7 @@
 //!
 //! `DESIGNS` is a comma-separated list: `cpu` and `ghost` variants
 //! (`default`, `level-sync`, `pipelined`, `shared`), each optionally with
-//! `+KEY=VARIANT` selections of its own (e.g. `default+trace_slope=f32`).
+//! `+KEY=VARIANT` selections of its own.
 
 use std::path::Path;
 use std::time::Instant;
