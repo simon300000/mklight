@@ -133,7 +133,7 @@ impl ResidentEvaluator {
             stats: Arc::default(),
             host_rays: Arc::default(),
             aim_cap: None,
-            host_aim: false,
+            host_aim: true,
             pipeline_from: PIPELINE_FROM,
         }
     }
@@ -147,8 +147,8 @@ impl ResidentEvaluator {
     }
     /// The evaluator with every pupil ray aimed on the host (the
     /// candidates' f64 tracers, the reference's aims) and only traced and
-    /// reduced on the device, or (`false`, the default) aimed on the device
-    /// with host completion.
+    /// reduced on the device (the default), or (`false`) aimed on the
+    /// device with host completion.
     pub fn with_host_aim(mut self, host_aim: bool) -> Self {
         self.host_aim = host_aim;
         self
@@ -157,9 +157,9 @@ impl ResidentEvaluator {
     pub fn host_aim(&self) -> bool {
         self.host_aim
     }
-    /// The evaluator with another device aiming schedule cap (Newton
-    /// iterations per ray before the host completes it): a test and
-    /// measurement knob.
+    /// The evaluator with another device aiming schedule cap (device aiming
+    /// only; Newton iterations per ray before the host completes it): a
+    /// test and measurement knob.
     pub fn with_device_aim_cap(mut self, cap: u32) -> Self {
         self.aim_cap = Some(cap);
         self

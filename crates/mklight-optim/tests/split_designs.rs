@@ -277,7 +277,9 @@ fn unresolved_rays_are_completed_and_routed_on_the_host() {
         for pipelined in [false, true] {
             let mut outcomes = Vec::new();
             for cap in [1, 4, 5, 6, 8] {
-                let ev = evaluator(&backend, &sys, pipelined).with_device_aim_cap(cap);
+                let ev = evaluator(&backend, &sys, pipelined)
+                    .with_host_aim(false)
+                    .with_device_aim_cap(cap);
                 let first = values(&ev, &cands, &ops);
                 let second = values(&ev, &cands, &ops);
                 let host_rays = ev.context.stats().polished_rays;

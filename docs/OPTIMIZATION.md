@@ -1653,6 +1653,17 @@ iterations. Every evaluation performed counts against `max_evaluations`. On an
 evaluator whose values do not depend on the batch the iterates are
 bit-identical to the plain run (tested on the Cooke triplet).
 
+Speculation applies with device aiming only. With host aiming every probe
+is a host evaluation, as on the CPU reference (which does not speculate),
+and the probes of a rejected trial point sit at a design whose rim rays
+fail and run the whole aiming schedule: on the 35-surface zoom, 8 LM
+iterations with every trial rejected took 606–623 ms and 544–577
+evaluations with speculation and 466 ms and 387 evaluations without
+(CPU reference 368 ms, 387 evaluations); on a full optimisation of that
+lens speculation added 64 % of evaluations per iteration. The Double Gauss
+optimisation is unaffected (335–444 against 366–389 ms), its glass
+substitution 6 % slower without it.
+
 **Accuracy.** Device rays are double-float traces of f64 aims;
 host-completed rays and rayless operands are the reference's f64 values
 (bit-identical for model and paraxial operands, tested). Forward

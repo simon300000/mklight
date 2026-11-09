@@ -519,12 +519,15 @@ impl Evaluation {
         self.gpu.as_ref().map(|(g, _)| g)
     }
 
-    /// Least-squares solves on a device evaluate their trial points with
-    /// the next Jacobian's probes (one device round trip per accepted
-    /// iteration instead of two). The CPU reference evaluates a trial point
-    /// alone: in a batch its anchored base row would change the values.
+    /// Least-squares solves with device aiming evaluate their trial points
+    /// with the next Jacobian's probes (one device round trip per accepted
+    /// iteration instead of two). With host aiming every probe is a host
+    /// evaluation, as on the CPU reference (which evaluates a trial point
+    /// alone: in a batch its anchored base row would change the values),
+    /// and a rejected trial point's probes, at a design whose rim rays fail,
+    /// cost as much (`docs/OPTIMIZATION.md`, "Speculative Jacobians").
     fn speculative(&self) -> bool {
-        self.gpu.is_some()
+        self.active_gpu().is_some_and(|g| !g.host_aim())
     }
 
     /// Candidates per tolerance evaluation batch (Monte Carlo trials and
