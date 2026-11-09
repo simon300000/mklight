@@ -27,20 +27,9 @@ pub(crate) fn reference_reason(analysis: &str) -> Option<&'static str> {
         "encircled_energy" => Some(
             "static capability: P11 encircled_energy failed f64 comparison on 16/16 default samples (geometry-uncertainty bin completion)",
         ),
-        // Host-traced wave designs (`mklight_wave::gpu::split`) fit the
-        // reference's own lattice: identical Zernike sets and Seidel terms.
-        "wavefront_map" if !mklight_wave::gpu::Design::selected().host_lattice() => Some(
-            "static capability: P11 wavefront_map failed f64 comparison on 16/16 default samples (undefined on-axis Seidel angles)",
+        "polarization_pupil_map" => Some(
+            "static capability: P11 polarization_pupil_map failed f64 comparison on 13/16 default samples (undefined polarization axes)",
         ),
-        // The work-split study's `native` design measures the device path
-        // (`mklight_core::split`, key `fieldmaps`).
-        "polarization_pupil_map"
-            if mklight_core::split::variant("fieldmaps").as_deref() != Some("native") =>
-        {
-            Some(
-                "static capability: P11 polarization_pupil_map failed f64 comparison on 13/16 default samples (undefined polarization axes)",
-            )
-        }
         _ => None,
     }
 }

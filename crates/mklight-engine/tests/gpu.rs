@@ -297,22 +297,14 @@ fn static_capability_fallback_is_deliberate_even_for_explicit_gpu() {
     let s = session(&e, samples::cooke_triplet());
     for (name, settings) in [
         ("encircled_energy", json!({"rings": 24})),
-        ("wavefront_map", Value::Null),
         ("polarization_pupil_map", Value::Null),
     ] {
-        // The wavefront map's static capability applies to the
-        // device-traced wave design; host-traced designs fit the
-        // reference's own lattice (`mklight_wave::gpu::split`).
-        if name == "wavefront_map" {
-            mklight_core::split::set("wave", Some("resident"));
-        }
         let gpu = run_on(
             &s,
             name,
             settings.clone(),
             Some(Backend::Gpu("cpu_f32".into())),
         );
-        mklight_core::split::reset();
         let cpu = run_on(&s, name, settings, Some(Backend::CpuReference));
         assert_eq!(gpu.run_info.backend, "cpu_reference");
         assert_eq!(gpu.run_info.precision, Precision::F64Reference);

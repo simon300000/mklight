@@ -416,27 +416,18 @@ counters return to the host between resident stages. All jobs carry
 `RunInfo` with plan/build, material, sampling, backend and fallback
 metadata.
 
-`system_transmission` keeps several CPU/GPU divisions of its (field,
-wavelength) rows side by side, selected by `mklight_core::split` (key
-`fieldmaps`, named in `run_info.settings.fieldmaps_variant`):
-
-| design | division |
-|---|---|
-| `legacy` | one plan per row (`pupil_mode`), each with its own system upload, tables and P3 summary |
-| `batched` | one plan for all rows: device aims (one generation over every field row), recorded trace, P7 transport and the per-ray summary channels; the host sums each row in f64 from the shared buffer and completes reference-required rays in parallel |
-| `cpu-aim` | the CPU aims every ray (the reference's f64 packet aiming, all cores) and writes the launch rays into shared ray planes; the GPU traces, evaluates the transport and the channels; host sums |
-| `pipelined` (default) | `cpu-aim` in row blocks: the GPU traces block k while the CPU aims block k+1 |
-| `shared` | the GPU (`batched`, row blocks from the front) and the CPU (the reference's rows, from the back) drain one queue; which rows each takes depends on timing, so results are not bitwise repeatable (measurement only, GPU.md §9.3) |
-| `cpu` | the reference path from the GPU route |
-
-Unpolarised rows use the scalar transport kernel; the sums, denominators
-and failure counts are the reference's. The host aims and reference
-completions of the hybrids run in the CPU share's pool (ANALYSIS.md §6.1,
-key `fieldmaps_threads`), and `pupil_mode` traces its reference-completed
-rays in parallel before merging them in pupil order (unchanged results).
-`polarization_pupil_map` stays on
-the reference by static capability (undefined polarisation axes); the
-study design `native` lifts that for measurement only.
+`system_transmission` divides its (field, wavelength) rows between the CPU
+and the GPU at the aim: the CPU aims every ray (the reference's f64 packet
+aiming, all cores) and writes the launch rays straight into shared ray
+planes; the GPU traces them and evaluates the P7 transport and the per-ray
+summary channels; the host sums each row in f64 from the shared buffer and
+completes the rays the device could not decide with the reference. The
+rows run in blocks of at least 4096 rays (about four): the GPU traces block
+k while the CPU aims block k+1. Unpolarised rows use the scalar transport
+kernel; the sums, denominators and failure counts are the reference's.
+`pupil` traces its reference-completed rays in parallel before merging them
+in pupil order (unchanged results). `polarization_pupil_map` stays on the
+reference by static capability (undefined polarisation axes).
 
 Tests are `tests/p7_radiometry.rs` in both GPU crates; host Metal tests require
 a device and exercise both precompiled and runtime-source libraries. The

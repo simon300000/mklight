@@ -206,68 +206,6 @@ kernel void mkl_geometry_close(device const float* f [[buffer(0)]],device const 
     GeoV ip=gread(f,n,a,0),cd=gread(f,n,a,3),et=vu(vb(gv(geo_c(0),geo_c(1),geo_c(0)),vs(cd,cd.v[1])));GeoB u={{et,vc(cd,et)}};GeoV q[4],d[4];for(uint k=0;k<4;++k)if(!gproject(f,n,a+1+k,ip,cd,q[k],d[k]))return;
     GeoV xy=vb(q[0],q[1]),xx=vb(q[2],q[3]),ty=vb(d[0],d[1]),tx=vb(d[2],d[3]);GeoM x={{{vd(xy,u.v[0]),vd(xx,u.v[0])},{vd(xy,u.v[1]),vd(xx,u.v[1])}}},t={{{vd(ty,u.v[0]),vd(tx,u.v[0])},{vd(ty,u.v[1]),vd(tx,u.v[1])}}};MklDf v[3];if(!gf(x,t,u,cd,v))return;for(uint k=0;k<3;++k)out[3ul*i+k]=v[k].v;status[i]=0;
 }
-struct GeoRiProbe {
-    constant MklPackedHeader* h;constant MklPackedSurface* s;constant float* pool;constant MklAimField* f;constant MklTraceParams* newton;
-    MklDf seed[2],q0[2],x0[2],hq;GeoB basis;GeoM aim;
-    MklDf load(constant float* p,uint k)const{return mkl_parts<MklDf>(p[2*k],p[2*k+1]);}
-    GeoV local(GeoV p,bool point)const{GeoV a=p,o;if(point)for(uint k=0;k<3;++k)a.v[k]=p.v[k]-load(f->origin,k);for(uint k=0;k<3;++k){GeoV r;for(uint j=0;j<3;++j)r.v[j]=load(f->rotation,3*j+k);o.v[k]=vd(r,a);}return o;}
-    bool initial(thread const MklDf* q,thread const MklDf* a,thread MklRawState& out)const{
-        bool finite=(f->flags&MKL_AIM_FINITE)!=0,tele=(f->flags&MKL_AIM_TELECENTRIC)!=0;MklDf z=load(f->pupil,0);GeoV pos,dir;
-        if(!finite){dir=vu(gv(q[0],q[1],geo_c(1)));GeoV ap=gv(a[0],a[1],z);pos=vb(ap,vs(dir,vd(ap,dir)));}
-        else{MklJet<MklDf> v;uint shape=s[0].shape==MKL_SHAPE_DIFFRACTIVE?uint(mkl_surface_data(s[0],pool)[2*MKL_COEFF_KIND]):s[0].shape;
-            bool ok=(s[0].flags&MKL_SURF_HAS_SAG_OVERLAY)!=0?mkl_surface_eval<true>(s[0],pool,q[0],q[1],v):(shape<=MKL_SHAPE_COORD_BREAK?mkl_legacy_sag(s[0],q[0],q[1],v):mkl_surface_eval<false>(s[0],pool,q[0],q[1],v));if(!ok)return false;
-            pos=gv(q[0],q[1],v.v);if(tele)dir=local(vu(gv(a[0],a[1],geo_c(1))),false);else{GeoV ap=local(gv(a[0],a[1],z),true);dir=vu(vb(ap,pos));GeoV r=gv(load(f->rotation,6),load(f->rotation,7),load(f->rotation,8));MklDf rz=vd(r,dir);if(mkl_zero(rz))return false;if(rz.v.x<0)dir=vs(dir,geo_c(-1));}}
-        out={};out.weight=1;for(uint k=0;k<3;++k){out.pos.v[k]=pos.v[k].v;out.dir.v[k]=dir.v[k].v;}return true;
-    }
-    __attribute__((noinline)) bool trace(thread const MklDf* q,thread const MklDf* a,uint last,bool clip,thread MklRawState& out)const{
-        MklRawState ray;if(!initial(q,a,ray))return false;MklNoRecords rec;out=mkl_trace_raw<true>(*h,s,pool,nullptr,newton[clip?1:0],last,f->wavelength,ray,rec);return out.status==0;
-    }
-    __attribute__((noinline)) bool aim_inverse(thread const MklDf* q,thread const MklDf* a,thread GeoM& out)const{
-        MklDf step=geo_c(1e-6f)*load(f->pupil,1);GeoM j;for(uint k=0;k<2;++k){MklDf aa[2]={a[0],a[1]},bb[2]={a[0],a[1]};aa[k]=aa[k]+step;bb[k]=bb[k]-step;MklRawState ha,hb;if(!trace(q,aa,h->stop,false,ha)||!trace(q,bb,h->stop,false,hb))return false;for(uint v=0;v<2;++v)j.v[v][k]=(MklDf{ha.pos.v[v]}-MklDf{hb.pos.v[v]})/(geo_c(2)*step);}return mi(j,out);
-    }
-    __attribute__((noinline)) bool aim_solve(thread const MklDf* q,thread const MklDf* target,thread const MklDf* initial,thread MklDf* a)const{
-        a[0]=initial[0];a[1]=initial[1];GeoM inverse=aim;MklDf previous=geo_c(INFINITY),tol=geo_c(1e-12f)*load(f->pupil,2);MklRawState hit;if(!trace(q,a,h->stop,false,hit))return false;
-        for(uint it=0;it<60;++it){MklDf r[2]={MklDf{hit.pos.v[0]}-target[0],MklDf{hit.pos.v[1]}-target[1]},rn=mkl_sqrt(r[0]*r[0]+r[1]*r[1]);if((rn-tol).v.x<=0)return true;
-            if((rn-geo_c(0.5)*previous).v.x>0)if(!aim_inverse(q,a,inverse))return false;previous=rn;MklDf da[2];for(uint k=0;k<2;++k)da[k]=inverse.v[k][0]*r[0]+inverse.v[k][1]*r[1];MklDf alpha=geo_c(1);bool accepted=false;
-            for(uint back=0;back<12;++back){MklDf next[2]={a[0]-da[0]*alpha,a[1]-da[1]*alpha};MklRawState candidate;if(trace(q,next,h->stop,false,candidate)){MklDf e[2]={MklDf{candidate.pos.v[0]}-target[0],MklDf{candidate.pos.v[1]}-target[1]};if((mkl_sqrt(e[0]*e[0]+e[1]*e[1])-rn).v.x<0){a[0]=next[0];a[1]=next[1];hit=candidate;accepted=true;break;}}alpha=alpha*geo_c(0.5);}if(!accepted)return false;
-        }return false;
-    }
-    __attribute__((noinline)) bool ray(thread const MklDf* q,thread const MklDf* p,bool clip,thread MklDf* result)const{
-        MklDf target[2];for(uint k=0;k<2;++k)target[k]=(load(f->vignette,k)+(geo_c(1)-load(f->vignette,k+2))*p[k])*load(f->pupil,2);
-        MklDf predicted[2];for(uint k=0;k<2;++k)predicted[k]=seed[k]+(aim.v[k][0]*target[0]+aim.v[k][1]*target[1]);MklDf a[2];
-        if(!aim_solve(q,target,predicted,a)){MklDf current[2]={seed[0],seed[1]};for(uint step=0;step<5;++step){MklDf fraction=geo_c(0.25f*float(step)),t[2]={target[0]*fraction,target[1]*fraction};if(!aim_solve(q,t,current,a))return false;current[0]=a[0];current[1]=a[1];}}
-        MklRawState hit;if(!trace(q,a,h->num_surfaces-1,clip,hit))return false;GeoV d;for(uint k=0;k<3;++k)d.v[k]=MklDf{hit.dir.v[k]};result[0]=MklDf{hit.pos.v[0]};result[1]=MklDf{hit.pos.v[1]};result[2]=vd(d,basis.v[0]);result[3]=vd(d,basis.v[1]);return true;
-    }
-    __attribute__((noinline)) bool jac(thread const MklDf* q,thread const MklDf* p,thread MklDf j[4][4],uint columns)const{
-        for(uint k=0;k<columns;++k){MklDf step=k<2?hq:mkl_parts<MklDf>(1e-4f,2.526212488436659e-12f),qa[2]={q[0],q[1]},qb[2]={q[0],q[1]},pa[2]={p[0],p[1]},pb[2]={p[0],p[1]};if(k<2){qa[k]=qa[k]+step;qb[k]=qb[k]-step;}else{pa[k-2]=pa[k-2]+step;pb[k-2]=pb[k-2]-step;}MklDf a[4],b[4];if(!ray(qa,pa,false,a)||!ray(qb,pb,false,b))return false;for(uint i=0;i<4;++i)j[i][k]=(a[i]-b[i])/(geo_c(2)*step);}return true;
-    }
-    __attribute__((noinline)) bool node(thread const MklDf* p,thread MklDf& density,thread bool& pass)const{
-        MklDf zero[2]={geo_c(0),geo_c(0)},j[4][4];if(!jac(q0,zero,j,2))return false;GeoM j0={{{j[0][0],j[0][1]},{j[1][0],j[1][1]}}},ji;if(!mi(j0,ji))return false;
-        MklDf q[2]={q0[0],q0[1]},prev=geo_c(INFINITY),tol=geo_c(1e-10f)*(geo_c(1)+mkl_sqrt(x0[0]*x0[0]+x0[1]*x0[1]));bool converged=false;
-        for(uint it=0;it<40;++it){MklDf x[4];if(!ray(q,p,false,x))return false;MklDf r[2]={x[0]-x0[0],x[1]-x0[1]},rn=mkl_sqrt(r[0]*r[0]+r[1]*r[1]);if((rn-tol).v.x<=0){converged=true;break;}if((rn-geo_c(0.5)*prev).v.x>0){if(!jac(q,p,j,2))return false;GeoM xq={{{j[0][0],j[0][1]},{j[1][0],j[1][1]}}};if(!mi(xq,ji))return false;}prev=rn;MklDf dq[2];for(uint k=0;k<2;++k)dq[k]=ji.v[k][0]*r[0]+ji.v[k][1]*r[1];for(uint k=0;k<2;++k)q[k]=q[k]-dq[k];}
-        if(!converged)return false;MklDf clipped[4];if(!ray(q,p,true,clipped)){density=geo_c(0);pass=false;return true;}if(!jac(q,p,j,4))return false;
-        GeoM xq={{{j[0][0],j[0][1]},{j[1][0],j[1][1]}}},xp={{{j[0][2],j[0][3]},{j[1][2],j[1][3]}}},lq={{{j[2][0],j[2][1]},{j[3][0],j[3][1]}}},lp={{{j[2][2],j[2][3]},{j[3][2],j[3][3]}}},xi;
-        if(!mi(xq,xi))return false;GeoM d=ma(lp,ms(mm(lq,mm(xi,xp)),geo_c(-1)));MklDf det=d.v[0][0]*d.v[1][1]-d.v[0][1]*d.v[1][0];density=det.v.x<0?-det:det;pass=true;return true;
-    }
-};
-static inline MklDf ri_load(constant float* p,uint k){return mkl_parts<MklDf>(p[2*k],p[2*k+1]);}
-static inline GeoV ri_global(GeoV v,bool point,constant MklAimField& f){GeoV out;for(uint k=0;k<3;++k){GeoV row;for(uint j=0;j<3;++j)row.v[j]=ri_load(f.rotation,3*k+j);out.v[k]=vd(row,v)+(point?ri_load(f.origin,k):geo_c(0));}return out;}
-kernel void mkl_geometry_illumination(constant MklPackedHeader* headers [[buffer(0)]],constant MklPackedSurface* surfaces [[buffer(1)]],constant float* pool [[buffer(2)]],
-    device const float* hi [[buffer(3)]],device const float* lo [[buffer(4)]],constant MklAimField* fields [[buffer(5)]],constant MklAimSample* nodes [[buffer(6)]],
-    constant MklGeometryParams& p [[buffer(7)]],device float2* out [[buffer(8)]],device uint* status [[buffer(9)]],constant MklTraceParams* newton [[buffer(10)]],device const uint* chief_status [[buffer(11)]],device uint* ids [[buffer(12)]],uint tid [[thread_position_in_grid]]){
-    uint i=p.offset+tid;if(tid>=p.count)return;uint nr=p.chiefs,field=nodes[i].field;ids[i]=i;status[i]=1;for(uint k=0;k<4;++k)out[ulong(k)*p.stride+i]=float2(0);out[2ul*p.stride+i]=float2(1,0);
-    if(field>=nr||chief_status[field]!=0)return;constant auto& f=fields[field];if(f.system>=p.systems)return;constant auto& h=headers[f.system];if(h.num_surfaces!=p.segment||f.wavelength>=h.num_wavelengths)return;constant auto* s=surfaces+h.surface_offset;
-    GeoV pos=gr(hi,lo,nr,field,0,0),dir=gr(hi,lo,nr,field,0,3);bool finite=(f.flags&MKL_AIM_FINITE)!=0;GeoV dp=finite?ri_global(dir,false,f):dir,pp=finite?ri_global(pos,true,f):pos;
-    GeoRiProbe probe;probe.h=&h;probe.s=s;probe.pool=pool;probe.f=&f;probe.newton=newton;
-    for(uint k=0;k<2;++k)probe.q0[k]=finite?pos.v[k]:dir.v[k]/dir.v[2];
-    if((f.flags&MKL_AIM_TELECENTRIC)!=0){probe.seed[0]=dp.v[0]/dp.v[2];probe.seed[1]=dp.v[1]/dp.v[2];}else{MklDf t=(ri_load(f.pupil,0)-pp.v[2])/dp.v[2];for(uint k=0;k<2;++k)probe.seed[k]=pp.v[k]+t*dp.v[k];}
-    GeoV normal=vu(gr(hi,lo,nr,field,h.num_surfaces-1,8)),t1=vb(gv(geo_c(1),geo_c(0),geo_c(0)),vs(normal,normal.v[0]));if(vd(t1,t1).v.x<1e-12f)t1=vb(gv(geo_c(0),geo_c(1),geo_c(0)),vs(normal,normal.v[1]));t1=vu(t1);probe.basis={{t1,vc(normal,t1)}};GeoV cp=gr(hi,lo,nr,field,h.num_surfaces-1,0);probe.x0[0]=cp.v[0];probe.x0[1]=cp.v[1];
-    GeoV sp=gr(hi,lo,nr,nr-1,0,0),sd=gr(hi,lo,nr,nr-1,0,3);MklDf qs[2]={finite?sp.v[0]:sd.v[0]/sd.v[2],finite?sp.v[1]:sd.v[1]/sd.v[2]},norm=mkl_sqrt(qs[0]*qs[0]+qs[1]*qs[1]);MklDf scale=norm.v.x>1e-3f?norm:geo_c(1e-3f);probe.hq=mkl_parts<MklDf>(1e-5f,2.526212491824791e-13f)*scale;
-    MklDf cz=dp.v[2]*dp.v[2];out[3ul*p.stride+i]=mkl_df_mul_f32((cz*cz).v,nodes[i].weight);
-    if(!probe.aim_inverse(probe.q0,probe.seed,probe.aim))return;
-    MklDf pupil[2]={ri_load(nodes[i].pupil,0),ri_load(nodes[i].pupil,1)},density;bool pass;if(!probe.node(pupil,density,pass))return;
-    float w=nodes[i].weight;out[i]=mkl_df_mul_f32(density.v,w);out[ulong(p.stride)+i]=float2(pass?w:0,0);out[2ul*p.stride+i]=float2(0);out[3ul*p.stride+i]=mkl_df_mul_f32((cz*cz).v,w);status[i]=0;
-}
 kernel void mkl_geometry_opd(device const float* f [[buffer(0)]],device const uint* hit_status [[buffer(1)]],device const float* cf [[buffer(2)]],device const uint* chief_status [[buffer(3)]],device const uint* index [[buffer(4)]],device const float2* meta [[buffer(5)]],device float2* out [[buffer(6)]],constant MklGeometryParams& p [[buffer(7)]],device uint* status [[buffer(8)]],uint tid [[thread_position_in_grid]]){
     uint i=p.offset+tid;if(tid>=p.count)return;uint n=p.stride,nc=p.chiefs,j=index[i];out[i]=float2(NAN,0);status[i]=1;if(j>=nc||hit_status[i]!=0||chief_status[j]!=0)return;
     GeoV pos=gread(f,n,i,0),dir=gread(f,n,i,3),cp=gread(cf,nc,j,0),cd=gread(cf,nc,j,3),w=vb(pos,cp);
@@ -281,7 +219,7 @@ kernel void mkl_geometry_focus_terms(device const float2* p [[buffer(0)]],device
     uint i=params.offset+tid;if(tid>=params.count)return;uint n=params.stride;for(uint k=0;k<3;++k)out[ulong(k)*n+i]=float2(0);if(mask[i]==0)return;ulong row=ulong(i/params.segment)*10;MklDf q[2],t[2];for(uint k=0;k<2;++k){q[k]=geo_d(p,ulong(k)*n+i)-(params.centroid?geo_d(qm,row+2+k):geo_c(0));t[k]=geo_d(p,ulong(k+2)*n+i)-(params.centroid?geo_d(tm,row+2+k):geo_c(0));}MklDf w=geo_d(p,4ul*n+i);out[i]=((q[0]*q[0]+q[1]*q[1])*w).v;out[ulong(n)+i]=((q[0]*t[0]+q[1]*t[1])*w).v;out[2ul*n+i]=((t[0]*t[0]+t[1]*t[1])*w).v;
 }
 
-// ---- Restructured image-point illumination (mklight_gpu::geometry::ri) ----
+// ---- Image-point illumination solve (mklight_gpu::geometry::ri) ----
 // Field data comes from the host (MklRiField). Each thread runs a state
 // machine whose every step is one trace from a single call site, so the
 // threads of a SIMD group trace together whatever stage they are in.
@@ -294,18 +232,13 @@ static inline bool ri_inverse(RiM a, thread RiM& out) {
     out = {{{a.v[1][1] / d, -a.v[0][1] / d}, {-a.v[1][0] / d, a.v[0][0] / d}}};
     return true;
 }
-static inline RiM ri_mul(RiM a, RiM b) {
-    RiM o;
-    for (uint i = 0; i < 2; ++i) for (uint j = 0; j < 2; ++j) o.v[i][j] = a.v[i][0] * b.v[0][j] + a.v[i][1] * b.v[1][j];
-    return o;
-}
 static inline MklDf ri_norm(MklDf a, MklDf b) { return mkl_sqrt(a * a + b * b); }
 // Stop target of pupil point (p0, p1), vignetting applied.
 static inline void ri_target(device const MklAimField& f, MklDf p0, MklDf p1, thread MklDf& t0, thread MklDf& t1) {
     t0 = (ri_ld(f.vignette, 0) + (geo_c(1) - ri_ld(f.vignette, 2)) * p0) * ri_ld(f.pupil, 2);
     t1 = (ri_ld(f.vignette, 1) + (geo_c(1) - ri_ld(f.vignette, 3)) * p1) * ri_ld(f.pupil, 2);
 }
-// The starting ray of object parameters q and aim point a (GeoRiProbe::initial).
+// The starting ray of object parameters q and aim point a (ri::initial).
 static inline bool ri_initial(constant MklPackedSurface* s, constant float* pool, device const MklAimField& f,
     MklDf q0, MklDf q1, MklDf a0, MklDf a1, thread MklRawState& out) {
     bool finite = (f.flags & MKL_AIM_FINITE) != 0, tele = (f.flags & MKL_AIM_TELECENTRIC) != 0;
@@ -511,7 +444,7 @@ static inline uint ri_trace(constant MklPackedHeader& h, constant MklPackedSurfa
     out = mkl_trace_raw<true>(h, s, pool, nullptr, newton[clip ? 1 : 0], last, f.aim.wavelength, ray, rec);
     return out.status;
 }
-// Field row checks shared by both kernels; MKL_RAY_OK when usable.
+// Field row checks of the ray kernel; MKL_RAY_OK when usable.
 static inline uint ri_field_check(constant MklPackedHeader* headers, device const MklRiField* fields, uint field,
     constant MklGeometryParams& p) {
     if (field >= p.chiefs) return MKL_AIM_INVALID;
@@ -522,7 +455,6 @@ static inline uint ri_field_check(constant MklPackedHeader* headers, device cons
     return MKL_RAY_OK;
 }
 static inline void ri_write_df(thread float* o, MklDf v) { o[0] = v.v.x; o[1] = v.v.y; }
-static inline void ri_write_df(device float* o, MklDf v) { o[0] = v.v.x; o[1] = v.v.y; }
 kernel void mkl_geometry_ri_rays(constant MklPackedHeader* headers [[buffer(0)]], constant MklPackedSurface* surfaces [[buffer(1)]],
     constant float* pool [[buffer(2)]], device const MklRiField* fields [[buffer(3)]], device const MklRiTask* tasks [[buffer(4)]],
     device MklRiRay* out [[buffer(5)]], constant MklGeometryParams& p [[buffer(7)]], constant MklTraceParams* newton [[buffer(8)]],
@@ -559,181 +491,4 @@ kernel void mkl_geometry_ri_rays(constant MklPackedHeader* headers [[buffer(0)]]
         ri_write_df(o.lm, m.x[2]); ri_write_df(o.lm + 2, m.x[3]);
     }
     out[i] = o;
-}
-#define RI_NODE_NEWTON 0u
-#define RI_NODE_REFRESH 1u
-#define RI_NODE_CLIP 2u
-#define RI_NODE_JACOBIAN 3u
-#define RI_NODE_DONE 4u
-// Stencil ray s about (q, P) with converged aim (ri::stencil): q0 q1 p0 p1 seed0 seed1.
-static inline void ri_stencil(device const MklRiField& f, MklDf p0, MklDf p1, MklDf q0, MklDf q1, MklDf a0, MklDf a1,
-    uint s, thread MklDf* out) {
-    uint k = s / 2;
-    bool plus = s % 2 == 0;
-    out[0] = q0; out[1] = q1; out[2] = p0; out[3] = p1; out[4] = a0; out[5] = a1;
-    if (k < 2) {
-        MklDf hq = ri_ld(f.hq, 0);
-        if (k == 0) out[0] = plus ? q0 + hq : q0 - hq;
-        else out[1] = plus ? q1 + hq : q1 - hq;
-    } else {
-        MklDf hp = mkl_parts<MklDf>(1e-4f, 2.526212488436659e-12f);
-        if (k == 2) out[2] = plus ? p0 + hp : p0 - hp;
-        else out[3] = plus ? p1 + hp : p1 - hp;
-        MklDf t0, t1, u0, u1;
-        ri_target(f.aim, p0, p1, t0, t1);
-        ri_target(f.aim, out[2], out[3], u0, u1);
-        RiM inv = ri_m(f.aim_inverse);
-        MklDf d0 = u0 - t0, d1 = u1 - t1;
-        out[4] = a0 + (inv.v[0][0] * d0 + inv.v[0][1] * d1);
-        out[5] = a1 + (inv.v[1][0] * d0 + inv.v[1][1] * d1);
-    }
-}
-static inline void ri_task(device MklRiTask& t, uint field, uint flags, MklDf q0, MklDf q1, MklDf p0, MklDf p1,
-    MklDf s0, MklDf s1) {
-    t.field = field; t.flags = flags;
-    ri_write_df(t.q, q0); ri_write_df(t.q + 2, q1);
-    ri_write_df(t.pupil, p0); ri_write_df(t.pupil + 2, p1);
-    ri_write_df(t.seed, s0); ri_write_df(t.seed + 2, s1);
-}
-// One pupil node (ri::node); p.centroid != 0: Newton only, writing the node's pencil tasks.
-kernel void mkl_geometry_ri_nodes(constant MklPackedHeader* headers [[buffer(0)]], constant MklPackedSurface* surfaces [[buffer(1)]],
-    constant float* pool [[buffer(2)]], device const MklRiField* fields [[buffer(3)]], device const MklAimSample* nodes [[buffer(4)]],
-    device float2* density [[buffer(5)]], device uint* status [[buffer(6)]], constant MklGeometryParams& p [[buffer(7)]],
-    constant MklTraceParams* newton [[buffer(8)]], device MklRiTask* pencils [[buffer(9)]], uint tid [[thread_position_in_grid]]) {
-    uint i = p.offset + tid;
-    if (tid >= p.count) return;
-    bool full = p.centroid == 0;
-    uint field = nodes[i].field;
-    MklDf p0 = mkl_parts<MklDf>(nodes[i].pupil[0], nodes[i].pupil[1]), p1 = mkl_parts<MklDf>(nodes[i].pupil[2], nodes[i].pupil[3]);
-    density[i] = float2(0);
-    status[i] = 1u;
-    bool solved = false;
-    MklDf q[2] = {geo_c(0), geo_c(0)}, aim[2] = {geo_c(0), geo_c(0)};
-    if (ri_field_check(headers, fields, field, p) == MKL_RAY_OK && fields[field].status == 0) {
-        device const MklRiField& f = fields[field];
-        constant MklPackedHeader& h = headers[f.aim.system];
-        constant MklPackedSurface* s = surfaces + h.surface_offset;
-        MklDf x0 = ri_ld(f.x0, 0), x1 = ri_ld(f.x0, 1), tol = ri_ld(f.tolerance, 0), hq = ri_ld(f.hq, 0);
-        MklDf hp = mkl_parts<MklDf>(1e-4f, 2.526212488436659e-12f);
-        q[0] = ri_ld(f.q0, 0); q[1] = ri_ld(f.q0, 1);
-        RiM ji = ri_m(f.q_inverse);
-        MklDf prev = geo_c(INFINITY), r[2] = {geo_c(0), geo_c(0)}, rn = geo_c(0), column[4];
-        MklDf j[4][4];
-        for (uint a = 0; a < 4; ++a) { column[a] = geo_c(0); for (uint b = 0; b < 4; ++b) j[a][b] = geo_c(0); }
-        uint it = 0, sub = 0, phase = RI_NODE_NEWTON, outcome = 1u, traces = 0;
-        bool has_aim = false;
-        RiM aim_inv = ri_m(f.aim_inverse);  // carried from ray to ray (ri::node)
-        RiAim m = ri_aim(f, q[0], q[1], p0, p1, false, false, geo_c(0), geo_c(0), false);
-        while (phase != RI_NODE_DONE) {
-            if (m.phase != RI_DONE) {
-                if (traces >= 192u) break;  // ri::NODE_TRACES
-                MklDf a0, a1; uint last; bool clip;
-                ri_request(m, f, h, a0, a1, last, clip);
-                MklRawState st;
-                uint code = ri_trace(h, s, pool, newton, f, m.q[0], m.q[1], a0, a1, last, clip, st);
-                ri_feed(m, f, code, st);
-                traces += 1;
-                continue;
-            }
-            if (phase == RI_NODE_NEWTON) {
-                if (!m.ok) break;
-                aim[0] = m.a[0]; aim[1] = m.a[1]; has_aim = true;
-                r[0] = m.x[0] - x0; r[1] = m.x[1] - x1;
-                rn = ri_norm(r[0], r[1]);
-                it += 1;
-                // Stall acceptance within 1000 tolerances (ri::NODE_FLOOR).
-                bool stalled = (rn - geo_c(0.25f) * prev).v.x > 0;
-                bool floored = (rn - geo_c(1000.0f) * tol).v.x <= 0;
-                if ((rn - tol).v.x <= 0 || (floored && (stalled || it >= 40u))) {
-                    if (!full) { outcome = 0u; solved = true; break; }
-                    phase = RI_NODE_CLIP;
-                } else if (it >= 40u) {
-                    break;
-                } else if (stalled) {
-                    phase = RI_NODE_REFRESH; sub = 0;
-                } else {
-                    prev = rn;
-                    MklDf d0 = ji.v[0][0] * r[0] + ji.v[0][1] * r[1], d1 = ji.v[1][0] * r[0] + ji.v[1][1] * r[1];
-                    q[0] = q[0] - d0; q[1] = q[1] - d1;
-                }
-            } else if (phase == RI_NODE_REFRESH) {
-                if (!m.ok) break;
-                if (sub % 2 == 0) { for (uint a = 0; a < 4; ++a) column[a] = m.x[a]; }
-                else {
-                    MklDf c0 = (column[0] - m.x[0]) / (geo_c(2) * hq), c1 = (column[1] - m.x[1]) / (geo_c(2) * hq);
-                    if (sub < 2) { j[0][0] = c0; j[1][0] = c1; } else { j[0][1] = c0; j[1][1] = c1; }
-                }
-                sub += 1;
-                if (sub == 4) {
-                    RiM inv;
-                    if (!ri_inverse(RiM{{{j[0][0], j[0][1]}, {j[1][0], j[1][1]}}}, inv)) break;
-                    ji = inv;
-                    prev = rn;
-                    MklDf d0 = ji.v[0][0] * r[0] + ji.v[0][1] * r[1], d1 = ji.v[1][0] * r[0] + ji.v[1][1] * r[1];
-                    q[0] = q[0] - d0; q[1] = q[1] - d1;
-                    phase = RI_NODE_NEWTON; sub = 0;
-                }
-            } else if (phase == RI_NODE_CLIP) {
-                if (!m.ok) { outcome = 2u; break; }
-                phase = RI_NODE_JACOBIAN; sub = 0;
-            } else {
-                if (!m.ok) break;
-                uint k = sub / 2;
-                if (sub % 2 == 0) { for (uint a = 0; a < 4; ++a) column[a] = m.x[a]; }
-                else {
-                    MklDf hh = k < 2 ? hq : hp;
-                    for (uint a = 0; a < 4; ++a) {
-                        MklDf v = (column[a] - m.x[a]) / (geo_c(2) * hh);
-                        if (k == 0) j[a][0] = v; else if (k == 1) j[a][1] = v; else if (k == 2) j[a][2] = v; else j[a][3] = v;
-                    }
-                }
-                sub += 1;
-                if (sub == 8) {
-                    RiM xq = {{{j[0][0], j[0][1]}, {j[1][0], j[1][1]}}}, xp = {{{j[0][2], j[0][3]}, {j[1][2], j[1][3]}}};
-                    RiM lq = {{{j[2][0], j[2][1]}, {j[3][0], j[3][1]}}}, lp = {{{j[2][2], j[2][3]}, {j[3][2], j[3][3]}}}, xi;
-                    if (ri_inverse(xq, xi)) {
-                        RiM corr = ri_mul(lq, ri_mul(xi, xp)), d;
-                        for (uint a = 0; a < 2; ++a) for (uint b = 0; b < 2; ++b) d.v[a][b] = lp.v[a][b] - corr.v[a][b];
-                        MklDf det = d.v[0][0] * d.v[1][1] - d.v[0][1] * d.v[1][0];
-                        density[i] = (det.v.x < 0 ? -det : det).v;
-                        outcome = 0u;
-                    }
-                    break;
-                }
-            }
-            if (m.ok) aim_inv = m.inverse;
-            if (phase == RI_NODE_NEWTON) {
-                m = ri_aim(f, q[0], q[1], p0, p1, false, has_aim, aim[0], aim[1], false);
-            } else if (phase == RI_NODE_REFRESH) {
-                MklDf qa = q[0], qb = q[1];
-                bool plus = sub % 2 == 0;
-                if (sub < 2) qa = plus ? q[0] + hq : q[0] - hq; else qb = plus ? q[1] + hq : q[1] - hq;
-                m = ri_aim(f, qa, qb, p0, p1, false, has_aim, aim[0], aim[1], false);
-            } else if (phase == RI_NODE_CLIP) {
-                m = ri_aim(f, q[0], q[1], p0, p1, true, has_aim, aim[0], aim[1], true);
-            } else {
-                MklDf st[6];
-                ri_stencil(f, p0, p1, q[0], q[1], aim[0], aim[1], sub, st);
-                m = ri_aim(f, st[0], st[1], st[2], st[3], false, true, st[4], st[5], false);
-            }
-            m.inverse = aim_inv;
-        }
-        status[i] = outcome;
-    }
-    if (!full) {
-        device MklRiTask* t = pencils + ulong(i) * MKL_RI_PENCIL;
-        if (solved) {
-            device const MklRiField& f = fields[field];
-            ri_task(t[0], field, MKL_RI_CLIP | MKL_RI_SEEDED | MKL_RI_AIMED, q[0], q[1], p0, p1, aim[0], aim[1]);
-            for (uint s = 0; s < 8; ++s) {
-                MklDf st[6];
-                ri_stencil(f, p0, p1, q[0], q[1], aim[0], aim[1], s, st);
-                ri_task(t[1 + s], field, MKL_RI_SEEDED, st[0], st[1], st[2], st[3], st[4], st[5]);
-            }
-        } else {
-            for (uint s = 0; s < MKL_RI_PENCIL; ++s) {
-                ri_task(t[s], field, MKL_RI_SKIP, geo_c(0), geo_c(0), geo_c(0), geo_c(0), geo_c(0), geo_c(0));
-            }
-        }
-    }
 }

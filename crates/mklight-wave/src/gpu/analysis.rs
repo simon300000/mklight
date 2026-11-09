@@ -1,13 +1,12 @@
 //! Native result adapters. Engine routing and qualification policy remain in P11.
 //!
-//! Every job reads its work-split design once ([`Design::selected`],
-//! `gpu::split`) and names it in `RunInfo.settings.work_split`. The design
-//! decides where pupils are traced and resampled ([`Source`]), whether the
-//! sampling decisions that read them (image windows, refinements, automatic
-//! frequencies and focus ranges) run on the host with the reference's own
-//! rules or on the device, and whether per-field host preparation overlaps
-//! the device transforms of other fields ([`split::schedule`]).
-use super::split::{self, Design};
+//! The host traces and resamples every pupil with the reference's code
+//! ([`Source`]) and makes the sampling decisions that read them (image
+//! windows, refinements, automatic frequencies and focus ranges) with the
+//! reference's own rules; the device runs the transforms. Per-field host
+//! preparation overlaps the device transforms of other fields
+//! ([`split::schedule`]).
+use super::split;
 use super::traced::accumulate;
 use super::*;
 use crate::analysis::{self as a, PupilSampling};
@@ -36,12 +35,15 @@ impl Field {
             })
             .collect()
     }
-    /// The reference pupils with their weights, when the host resampled
-    /// every pupil of the field.
-    pub(super) fn host_weighted(&self) -> Option<Vec<(&PupilFunction, f64)>> {
+    /// The reference pupils with their weights (every pupil is resampled
+    /// on the host).
+    pub(super) fn host_weighted(&self) -> Vec<(&PupilFunction, f64)> {
         self.pupils
             .iter()
-            .map(|(_, w, p)| p.host_pupil().map(|h| (h, *w)))
+            .map(|(_, w, p)| {
+                let h = p.host_pupil().expect("host-resampled pupil");
+                (h, *w)
+            })
             .collect()
     }
 }
@@ -122,12 +124,6 @@ pub(super) fn gather<T>(
         _ => Ok(out),
     }
 }
-/// The host pupils of a field transformed by the reference's code (designs
-/// with host pupils only).
-fn host_pupils(f: &Field) -> MkResult<Vec<(&PupilFunction, f64)>> {
-    f.host_weighted()
-        .ok_or_else(|| MkError::Unsupported("host transform without host pupils".into()))
-}
 /// The PSF result of one field (and wavelength, unless polychromatic).
 fn field_psf(f: &Field, wl: Option<usize>, psf: Psf) -> a::FieldPsf {
     let (_, i, j) = psf.peak();
@@ -172,46 +168,6 @@ fn field_mtf(
         detector,
     }
 }
-/// Work of the matrix-transform PSFs of a field on a `grid²` image: the
-/// separable chirp transform's row and column passes, `Σ n·grid·(n + grid)`
-/// over its pupils.
-fn transform_work(f: &Field, grid: usize) -> f64 {
-    f.pupils
-        .iter()
-        .map(|(_, _, p)| {
-            let n = p.pupil.n as f64;
-            n * grid as f64 * (n + grid as f64)
-        })
-        .sum()
-}
-/// Work of direct-autocorrelation OTFs of a field at `points` frequency
-/// vectors (planes × frequencies): `points · Σ n²` over its pupils.
-fn correlation_work(f: &Field, points: usize) -> f64 {
-    points as f64
-        * f.pupils
-            .iter()
-            .map(|(_, _, p)| (p.pupil.n * p.pupil.n) as f64)
-            .sum::<f64>()
-}
-/// Host-transform rules (`split::HostRule`): the `by-size` work limit below
-/// which the reference's host code is predicted faster than the device
-/// chain, and the host/device time ratio `co-op` weighs. Measured per field
-/// on the M2 Pro (default and dense settings, three lenses): matrix-transform
-/// PSFs of 5e8–2e10 took 60–220 ms on the host against 10–85 ms on the
-/// device, so only tiny problems stay on the host; direct OTFs of 2e7–3e8
-/// took 2–4× the device time; focus sweeps took about the same on both.
-const PSF_HOST: split::HostRule = split::HostRule {
-    limit: 1e8,
-    ratio: 4.,
-};
-const OTF_HOST: split::HostRule = split::HostRule {
-    limit: 1e6,
-    ratio: 2.5,
-};
-const FOCUS_HOST: split::HostRule = split::HostRule {
-    limit: 1e6,
-    ratio: 1.3,
-};
 /// Trace and Numerical errors make one pupil (and its field) unusable;
 /// every other error fails the whole run.
 fn per_pupil(e: MkError) -> MkResult<MkError> {
@@ -221,89 +177,29 @@ fn per_pupil(e: MkError) -> MkResult<MkError> {
     }
 }
 
-/// Where a run's pupils are traced and resampled, after its design.
+/// A run's pupils, traced and resampled on the host.
 pub(super) struct Source<'a> {
     pub(super) b: &'a dyn ComputeBackend,
     pub(super) t: &'a SequentialTracer,
-    pub(super) design: Design,
     pub(super) memo: Option<&'a dyn Memo>,
-    device: Option<PupilTracer<'a>>,
-    /// Where each scheduled item's transform ran ([`Self::record`]).
-    ran: std::sync::Mutex<Vec<Option<split::Ran>>>,
 }
 impl<'a> Source<'a> {
     pub(super) fn new(
         b: &'a dyn ComputeBackend,
         t: &'a SequentialTracer,
         memo: Option<&'a dyn Memo>,
-        ctx: &JobContext,
-    ) -> MkResult<Self> {
-        let design = Design::selected();
-        let device = if design.host_lattice() {
-            None
-        } else {
-            Some(PupilTracer::new(b, t, ctx)?.with_host_aim(design == Design::CpuAim))
-        };
-        Ok(Self {
-            b,
-            t,
-            design,
-            memo,
-            device,
-            ran: Default::default(),
-        })
+    ) -> Self {
+        Self { b, t, memo }
     }
-    /// Keep a schedule's placements for the run's evidence.
-    pub(super) fn record(&self, ran: Vec<Option<split::Ran>>) {
-        self.ran
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .extend(ran);
-    }
-    /// The host transform of a schedule, for the designs that place
-    /// transforms on the host (host pupils only).
-    pub(super) fn reference<'r, P, R>(
-        &self,
-        transform: &'r (dyn Fn(usize, P) -> MkResult<R> + Sync),
-        work: &'r (dyn Fn(&P) -> f64 + Sync),
-        rule: split::HostRule,
-    ) -> Option<split::Reference<'r, P, R>> {
-        self.design.host_pupil().then_some(split::Reference {
-            transform,
-            work,
-            limit: rule.limit * split::by_size_scale(),
-            ratio: rule.ratio,
-        })
-    }
-    pub(super) fn snapshot(&self) -> Snapshot {
-        self.t.system().snapshot.clone()
-    }
-    /// Trace every request at `wls`: a field whose pupil fails with a
-    /// Trace/Numerical error (first in wavelength order) is returned as that
-    /// error; any other error fails the call.
-    #[allow(clippy::too_many_arguments)]
-    pub(super) fn trace(
-        &self,
-        requests: &[Request<'_>],
-        wls: &[(usize, f64)],
-        settings: &PupilSettings,
-        ctx: &JobContext,
-        stats: &mut PlanStats,
-        warnings: &mut Vec<String>,
-    ) -> MkResult<Vec<MkResult<Field>>> {
-        match &self.device {
-            Some(service) => trace_fields(
-                service, self.t, requests, wls, settings, ctx, stats, warnings,
-            ),
-            None => self.host_trace(requests, wls, settings, ctx, stats, warnings),
-        }
-    }
-    /// [`Self::trace`] with the reference's lattices: every (field,
-    /// wavelength) lattice is traced on the host at once (shared through
-    /// the memo), then written into shared allocations and resampled on
-    /// the host or the device. Reference points follow the reference
+    /// Trace every request at `wls` with the reference's lattices: every
+    /// (field, wavelength) lattice is traced on the host at once (shared
+    /// through the memo), then resampled on the host and written into shared
+    /// allocations. Reference points follow the reference
     /// (`crate::analysis`): the primary chief ray, or the weighted centroid.
-    fn host_trace(
+    /// A field whose pupil fails with a Trace/Numerical error (first in
+    /// wavelength order) is returned as that error; any other error fails
+    /// the call.
+    pub(super) fn trace(
         &self,
         requests: &[Request<'_>],
         wls: &[(usize, f64)],
@@ -327,37 +223,21 @@ impl<'a> Source<'a> {
             .collect();
         let lattices =
             crate::shared::traced_lattices(self.t, &jobs, settings, self.memo, &trace_ctx);
-        let snapshot = self.snapshot();
-        let host = self.design.host_pupil();
         let place_ctx = ctx.subrange(0.8, 1.);
         let place = |k: usize, r: MkResult<(mklight_core::memo::NodeKey, std::sync::Arc<_>)>| {
             let sub = place_ctx.subrange(k as f64 / total, (k + 1) as f64 / total);
             match r.and_then(|(key, lattice)| {
-                split::place(
-                    self.b, &snapshot, key, lattice, settings, host, self.memo, &sub,
-                )
+                split::place(self.b, key, lattice, settings, self.memo, &sub)
             }) {
                 Ok(p) => Ok(Ok(p)),
                 Err(e) => per_pupil(e).map(Err),
             }
         };
-        // Host resampling is CPU work; device resampling chains wait on
-        // the device.
-        let placed: Vec<MkResult<MkResult<split::Placed>>> = if host {
-            lattices
-                .into_par_iter()
-                .enumerate()
-                .map(|(k, r)| place(k, r))
-                .collect()
-        } else {
-            let lattices: Vec<_> = lattices
-                .into_iter()
-                .map(|r| std::sync::Mutex::new(Some(r)))
-                .collect();
-            concurrent(&lattices, |k, r| {
-                place(k, r.lock().unwrap().take().expect("one placement"))
-            })
-        };
+        let placed: Vec<MkResult<MkResult<split::Placed>>> = lattices
+            .into_par_iter()
+            .enumerate()
+            .map(|(k, r)| place(k, r))
+            .collect();
         let mut placed = placed.into_iter();
         let primary = self.t.system().primary_wavelength;
         let mut out = vec![];
@@ -488,66 +368,37 @@ impl<'a> Source<'a> {
                 .map_err(|e| (r.0, e))),
         }
     }
-    /// Blur estimates `(extent, rms)` of every pupil of `f`: the
-    /// reference's rule on host pupils, the device's otherwise.
-    pub(super) fn blurs(
-        &self,
-        f: &Field,
-        ctx: &JobContext,
-        stats: &mut PlanStats,
-    ) -> MkResult<Vec<(f64, f64)>> {
-        f.pupils
-            .iter()
-            .map(|(_, _, p)| match p.host_pupil() {
-                Some(h) => Ok(crate::sampling::blur(h)),
-                None => {
-                    let r = p.pupil.blur(self.b, self.snapshot(), ctx)?;
-                    accumulate(stats, &r.stats);
-                    Ok((r.value.extent, r.value.rms))
-                }
-            })
+    /// Blur estimates `(extent, rms)` of every pupil of `f` (the
+    /// reference's rule).
+    pub(super) fn blurs(&self, f: &Field) -> Vec<(f64, f64)> {
+        f.host_weighted()
+            .into_iter()
+            .map(|(h, _)| crate::sampling::blur(h))
             .collect()
     }
-    /// The automatic image grid of `field` at `spacing` (or `requested`).
-    #[allow(clippy::too_many_arguments)]
+    /// The automatic image grid of `field` at `spacing` (or `requested`),
+    /// by the reference's rule.
     pub(super) fn image_grid(
         &self,
         field: &Field,
         requested: usize,
         spacing: f64,
         method: a::PsfMethod,
-        ctx: &JobContext,
-        stats: &mut PlanStats,
-    ) -> MkResult<usize> {
+    ) -> usize {
         if requested != 0 {
-            return Ok(requested);
+            return requested;
         }
-        if let Some(host) = field.host_weighted() {
-            return Ok(a::psf::image_grid(0, method, &host, spacing));
-        }
-        let mut side = 0f64;
-        for ((_, _, p), (extent, _)) in field.pupils.iter().zip(self.blurs(field, ctx, stats)?) {
-            side = side.max(2. * (extent + 16. * p.pupil.lambda_f()));
-        }
-        Ok(((side / spacing).ceil() as usize).clamp(
-            64,
-            if method == a::PsfMethod::Huygens {
-                1024
-            } else {
-                2048
-            },
-        ))
+        a::psf::image_grid(0, method, &field.host_weighted(), spacing)
     }
     /// Refine automatic pupils so their alias-free field holds `window`
-    /// (explicit grids are kept); host pupils refine in parallel on the
-    /// host. Returns the resampling warnings.
+    /// (explicit grids are kept), in parallel on the host. Returns the
+    /// resampling warnings.
     pub(super) fn ensure_window(
         &self,
         field: &mut Field,
         window: f64,
         s: &PupilSettings,
         ctx: &JobContext,
-        stats: &mut PlanStats,
     ) -> MkResult<Vec<String>> {
         if s.grid != 0 {
             return Ok(vec![]);
@@ -563,77 +414,39 @@ impl<'a> Source<'a> {
                     .next_power_of_two()
             })
             .collect();
-        self.refine(field, &grids, s.supersample, ctx, stats)
+        self.refine(field, &grids, s.supersample, ctx)
     }
-    /// Resample every pupil of `field` to its grid of `grids`.
+    /// Resample every pupil of `field` to its grid of `grids`, in parallel
+    /// on the host.
     pub(super) fn refine(
         &self,
         field: &mut Field,
         grids: &[usize],
         supersample: usize,
         ctx: &JobContext,
-        stats: &mut PlanStats,
     ) -> MkResult<Vec<String>> {
-        let snapshot = self.snapshot();
-        let host = field.host_weighted().is_some();
-        let refined: Vec<MkResult<(PlanStats, Vec<String>)>> = if host {
-            field
-                .pupils
-                .par_iter_mut()
-                .zip(grids)
-                .map(|((_, _, p), &n)| {
-                    p.refine(self.b, snapshot.clone(), n, supersample, self.memo, ctx)
-                })
-                .collect()
-        } else {
-            field
-                .pupils
-                .iter_mut()
-                .zip(grids)
-                .map(|((_, _, p), &n)| {
-                    p.refine(self.b, snapshot.clone(), n, supersample, self.memo, ctx)
-                })
-                .collect()
-        };
+        let refined: Vec<MkResult<Vec<String>>> = field
+            .pupils
+            .par_iter_mut()
+            .zip(grids)
+            .map(|((_, _, p), &n)| p.refine(self.b, n, supersample, self.memo, ctx))
+            .collect();
         let mut warnings = vec![];
         for r in refined {
-            let (s, w) = r?;
-            accumulate(stats, &s);
-            warnings.extend(w);
+            warnings.extend(r?);
         }
         Ok(warnings)
     }
-    /// The phase-contrast frequency limit of a field's pupils.
-    pub(super) fn useful(
-        &self,
-        field: &Field,
-        ctx: &JobContext,
-        stats: &mut PlanStats,
-    ) -> MkResult<f64> {
-        if let Some(host) = field.host_weighted() {
-            return Ok(crate::sampling::useful_frequency(&host));
-        }
-        let r = useful_frequency(self.b, self.snapshot(), &field.weighted(), ctx)?;
-        accumulate(stats, &r.stats);
-        Ok(r.value)
+    /// The phase-contrast frequency limit of a field's pupils (the
+    /// reference's rule).
+    pub(super) fn useful(&self, field: &Field) -> f64 {
+        crate::sampling::useful_frequency(&field.host_weighted())
     }
     /// The smallest [`Self::useful`] of `fields`, evaluated side by side.
-    pub(super) fn useful_limit(
-        &self,
-        fields: &[&Field],
-        ctx: &JobContext,
-        stats: &mut PlanStats,
-    ) -> MkResult<f64> {
-        let mut limit = f64::INFINITY;
-        for r in concurrent(fields, |_, f| {
-            let mut s = PlanStats::default();
-            self.useful(f, ctx, &mut s).map(|v| (v, s))
-        }) {
-            let (v, s) = r?;
-            accumulate(stats, &s);
-            limit = limit.min(v);
-        }
-        Ok(limit)
+    pub(super) fn useful_limit(&self, fields: &[&Field]) -> f64 {
+        concurrent(fields, |_, f| self.useful(f))
+            .into_iter()
+            .fold(f64::INFINITY, f64::min)
     }
     pub(super) fn info(
         &self,
@@ -643,13 +456,7 @@ impl<'a> Source<'a> {
         stats: &PlanStats,
         warnings: Vec<String>,
     ) -> RunInfo {
-        let mut r = info(self.b, self.t, timer, name, settings, stats, warnings);
-        r.settings["work_split"] = self.design.evidence();
-        let ran = self.ran.lock().unwrap_or_else(|e| e.into_inner());
-        if !ran.is_empty() {
-            r.settings["work_split"]["items"] = serde_json::json!(*ran);
-        }
-        r
+        info(self.b, self.t, timer, name, settings, stats, warnings)
     }
 }
 
@@ -684,131 +491,11 @@ fn system_requests<'t>(t: &'t SequentialTracer, indices: &[usize]) -> Vec<Reques
         })
         .collect()
 }
-/// Trace every requested field at `wls` in shared device batches. A field
-/// whose pupil fails with a Trace/Numerical error (first in wavelength
-/// order) is returned as that error; any other error fails the call.
-#[allow(clippy::too_many_arguments)]
-pub(super) fn trace_fields(
-    service: &PupilTracer<'_>,
-    t: &SequentialTracer,
-    requests: &[Request<'_>],
-    wls: &[(usize, f64)],
-    settings: &PupilSettings,
-    ctx: &JobContext,
-    stats: &mut PlanStats,
-    warnings: &mut Vec<String>,
-) -> MkResult<Vec<MkResult<Field>>> {
-    let pupils: Vec<_> = requests
-        .iter()
-        .flat_map(|&(_, _, f)| wls.iter().map(move |&(wl, _)| (f, wl)))
-        .collect();
-    let (traced, shared) = service.trace_many(&pupils, settings, ctx)?;
-    accumulate(stats, &shared);
-    let mut traced = traced.into_iter();
-    let mut out = vec![];
-    for &(index, value, _) in requests {
-        let mut pupils = vec![];
-        let mut error = None;
-        for (&(wl, weight), r) in wls.iter().zip(traced.by_ref().take(wls.len())) {
-            match r {
-                Ok(r) => {
-                    accumulate(stats, &r.stats);
-                    warnings.extend(r.run_info.warnings);
-                    pupils.push((wl, weight, r.value));
-                }
-                Err(e) => {
-                    error.get_or_insert(e);
-                }
-            }
-        }
-        out.push(match error {
-            Some(e) => Err(e),
-            None => Ok(Field {
-                index,
-                value,
-                reference: [0.; 2],
-                pupils,
-            }),
-        });
-    }
-    // The chief reference is the primary wavelength's chief ray; when the
-    // primary is not traced (or its chief fails) the first pupil's reference.
-    let primary = t.system().primary_wavelength;
-    let missing: Vec<_> = requests
-        .iter()
-        .zip(&out)
-        .filter(|(_, f)| {
-            settings.reference == ReferencePoint::Chief
-                && f.as_ref()
-                    .is_ok_and(|f| f.pupils.iter().all(|(wl, _, _)| *wl != primary))
-        })
-        .map(|(r, _)| r.2)
-        .collect();
-    let mut chiefs = if missing.is_empty() {
-        vec![]
-    } else {
-        service.chief_points(&missing, &ctx.subrange(1., 1.), stats)?
-    }
-    .into_iter();
-    for f in out.iter_mut().flatten() {
-        let first = f.pupils[0].2.info.reference_point_mm;
-        f.reference = match settings.reference {
-            ReferencePoint::Chief => match f.pupils.iter().find(|(wl, _, _)| *wl == primary) {
-                Some((_, _, p)) => [p.info.chief_point_mm[0], p.info.chief_point_mm[1]],
-                None => chiefs.next().unwrap().unwrap_or([first[0], first[1]]),
-            },
-            ReferencePoint::Centroid => {
-                let mut v = [0.; 2];
-                for (_, w, p) in &f.pupils {
-                    for (j, x) in v.iter_mut().enumerate() {
-                        *x += w * p.info.reference_point_mm[j];
-                    }
-                }
-                v
-            }
-        };
-        for (_, _, p) in &mut f.pupils {
-            p.pupil.image_offset_mm = [
-                p.info.reference_point_mm[0] - f.reference[0],
-                p.info.reference_point_mm[1] - f.reference[1],
-            ];
-        }
-    }
-    Ok(out)
-}
-
 /// One wavefront map's statistics and arrays.
 struct MapData {
     stats: WavefrontStatistics,
     opd: Vec<f64>,
     amplitude: Vec<f64>,
-}
-/// Wavefront statistics and arrays of a host pupil, by the reference.
-fn host_map(p: &PupilFunction) -> MapData {
-    let s0 = p.opd_stats(false);
-    let s1 = p.opd_stats(true);
-    MapData {
-        stats: WavefrontStatistics {
-            rms: s0.rms,
-            pv: s0.pv,
-            rms_tilt_removed: s1.rms,
-            pv_tilt_removed: s1.pv,
-            strehl: p.strehl_at_reference(),
-            tilt_condition_inf: f64::NAN,
-        },
-        opd: p
-            .opd_waves()
-            .iter()
-            .zip(p.coverage())
-            .map(|(&w, &c)| if c > 0. { w } else { f64::NAN })
-            .collect(),
-        amplitude: p
-            .amplitude()
-            .iter()
-            .zip(p.coverage())
-            .map(|(&a, &c)| if c > 0. { a } else { 0. })
-            .collect(),
-    }
 }
 /// Wavefront statistics (device) and arrays (read in place) of a resident pupil.
 fn device_map(
@@ -844,9 +531,6 @@ fn device_map(
 
 /// A wavefront map's field, wavelength and pupil.
 type MapItem<'f> = (&'f Field, usize, &'f ResidentTracedPupil);
-/// A lattice fit `(set, residual, condition)` with its statistics and
-/// warnings, or the Numerical error that skips the pupil.
-type Fitted = MkResult<((crate::ZernikeSet, f64, f64), PlanStats, Vec<String>)>;
 /// One wavefront map from its lattice fit `(set, residual, condition)` and
 /// its statistics and arrays.
 fn wavefront(
@@ -883,19 +567,9 @@ fn wavefront(
         },
     })
 }
-/// Host rule of a wavefront map's statistics (work: pupil cells). The
-/// reference's statistics of a host pupil took 1–25 ms against 2–47 ms for
-/// the device reductions and readback, up to 1024² cells.
-const MAP_HOST: split::HostRule = split::HostRule {
-    limit: 1e7,
-    ratio: 0.5,
-};
-
-/// Complete wavefront maps. Device-traced pupils use the device lattice QR
-/// fit; host-traced pupils use the reference's fit of the same lattice
-/// (bit-identical Zernike sets and Seidel terms); statistics and arrays are
-/// device reductions of the resident pupil, or the reference's own where
-/// the design places transforms on the host.
+/// Complete wavefront maps. The Zernike fit is the reference's fit of the
+/// host lattice (bit-identical Zernike sets and Seidel terms); statistics
+/// and arrays are device reductions of the resident pupil.
 pub fn wavefront_map_job(
     b: &dyn ComputeBackend,
     t: &SequentialTracer,
@@ -918,7 +592,7 @@ pub fn wavefront_map_shared(
     let wls = a::wavelengths(t, &s.wavelengths)?;
     let mut stats = PlanStats::default();
     let mut warnings = t.warnings().to_vec();
-    let src = Source::new(b, t, memo, ctx)?;
+    let src = Source::new(b, t, memo);
     let fields = src.fields(
         &system_requests(t, &idx),
         &wls,
@@ -934,41 +608,22 @@ pub fn wavefront_map_shared(
     let total = items.len().max(1);
     let fit_ctx = ctx.subrange(0.7, 1.);
     let range = |k: usize| fit_ctx.subrange(k as f64 / total as f64, (k + 1) as f64 / total as f64);
-    // First the lattice fit (the reference's on host lattices, the device QR
-    // otherwise), then the statistics and arrays (device reductions, or the
-    // reference's on host pupils where the design places them). A pupil
-    // too sparse for the fit is skipped like an unusable field.
-    let (results, ran) = split::schedule_with(
-        src.design,
+    // First the lattice fit (the reference's, on the host lattice), then the
+    // statistics and arrays (device reductions). A pupil too sparse for the
+    // fit is skipped like an unusable field.
+    let results = split::schedule(
         items,
         |k, item: (&Field, usize, &ResidentTracedPupil)| {
             let (f, wl, p) = item;
             let sub = range(k);
-            let mut stats = PlanStats::default();
+            let stats = PlanStats::default();
             let mut warnings = vec![];
-            let fit = match &p.host {
-                Some(h) => {
-                    crate::analysis::wavefront::fit_samples(&h.lattice.samples, &basis, &sub).map(
-                        |fit| {
-                            warnings.extend(fit.warnings.iter().map(ToString::to_string));
-                            (fit.set, fit.residual_rms, fit.condition)
-                        },
-                    )
-                }
-                None => fit_resident_zernike(
-                    b,
-                    t.system().snapshot.clone(),
-                    p.nodes.view(),
-                    &basis,
-                    &sub.subrange(0., 0.5),
-                )
+            let h = p.host.as_ref().expect("host-traced pupil");
+            let fit = crate::analysis::wavefront::fit_samples(&h.lattice.samples, &basis, &sub)
                 .map(|fit| {
-                    accumulate(&mut stats, &fit.stats);
-                    warnings.extend(fit.run_info.warnings);
-                    let v = fit.value;
-                    (v.set, v.residual_rms, v.condition_inf)
-                }),
-            };
+                    warnings.extend(fit.warnings.iter().map(ToString::to_string));
+                    (fit.set, fit.residual_rms, fit.condition)
+                });
             let warnings: Vec<_> = warnings
                 .into_iter()
                 .chain(p.pupil.warnings.iter().map(ToString::to_string))
@@ -990,23 +645,7 @@ pub fn wavefront_map_shared(
                 Err(e) => Err((item.0.index, item.1, e)),
             })
         },
-        src.reference(
-            &|_, (item, fit): (MapItem<'_>, Fitted)| {
-                Ok(match fit {
-                    Ok((fit, stats, warnings)) => {
-                        let pupil = item.2.host_pupil().ok_or_else(|| {
-                            MkError::Unsupported("host statistics without a host pupil".into())
-                        })?;
-                        Ok((wavefront(item, fit, host_map(pupil))?, stats, warnings))
-                    }
-                    Err(e) => Err((item.0.index, item.1, e)),
-                })
-            },
-            &|(item, _)| (item.2.pupil.n * item.2.pupil.n) as f64,
-            MAP_HOST,
-        ),
     );
-    src.record(ran);
     let mut maps = vec![];
     let mut first_error = None;
     for r in results {
@@ -1021,9 +660,6 @@ pub fn wavefront_map_shared(
                 first_error.get_or_insert(e);
             }
         }
-    }
-    if !src.design.host_lattice() {
-        warnings.push("Zernike condition is the equilibrated R infinity-norm estimate".into());
     }
     if maps.is_empty()
         && let Some(e) = first_error
@@ -1068,12 +704,11 @@ pub fn psf_analysis_shared(
     let wls = a::wavelengths(t, &s.wavelengths)?;
     let mut stats = PlanStats::default();
     let mut warnings = t.warnings().to_vec();
-    let src = Source::new(b, t, memo, ctx)?;
-    // Every decision of a PSF is per field: pipelined runs trace field by field.
-    let stream = src.design.pipelined();
+    let src = Source::new(b, t, memo);
+    // Every decision of a PSF is per field: trace field by field.
     let items = src.items(
         system_requests(t, &idx),
-        stream,
+        true,
         &wls,
         &s.pupil,
         &ctx.subrange(0., 0.4),
@@ -1082,20 +717,12 @@ pub fn psf_analysis_shared(
     )?;
     let total = items.len().max(1);
     let range = |index: usize| {
-        if stream {
-            ctx.subrange(
-                index as f64 / total as f64,
-                (index + 1) as f64 / total as f64,
-            )
-        } else {
-            ctx.subrange(
-                0.4 + 0.6 * index as f64 / total as f64,
-                0.4 + 0.6 * (index + 1) as f64 / total as f64,
-            )
-        }
+        ctx.subrange(
+            index as f64 / total as f64,
+            (index + 1) as f64 / total as f64,
+        )
     };
-    let (results, ran) = split::schedule_with(
-        src.design,
+    let results = split::schedule(
         items,
         |index, item| {
             let sub = range(index);
@@ -1118,20 +745,12 @@ pub fn psf_analysis_shared(
                     .map(|(_, _, p)| p.pupil.lambda_f() / s.padding)
                     .fold(f64::INFINITY, f64::min)
             });
-            let grid = src.image_grid(
-                &f,
-                s.grid_size,
-                spacing,
-                s.method,
-                &sub.subrange(0.2, 0.25),
-                &mut stats,
-            )?;
+            let grid = src.image_grid(&f, s.grid_size, spacing, s.method);
             warnings.extend(src.ensure_window(
                 &mut f,
                 grid as f64 * spacing,
                 &s.pupil,
                 &sub.subrange(0.25, 0.35),
-                &mut stats,
             )?);
             Ok(Staged::Done {
                 value: (f, grid, spacing),
@@ -1179,50 +798,7 @@ pub fn psf_analysis_shared(
                 Ok(psfs)
             })
         },
-        src.reference(
-            &|index, staged: Staged<(Field, usize, f64)>| {
-                let sub = range(index);
-                staged.then(|(f, grid, spacing), _, warnings| {
-                    let host = host_pupils(&f)?;
-                    let groups: Vec<_> = if s.polychromatic {
-                        vec![((f.pupils.len() == 1).then(|| f.pupils[0].0), host)]
-                    } else {
-                        f.pupils
-                            .iter()
-                            .zip(host)
-                            .map(|((wl, _, _), (p, _))| (Some(*wl), vec![(p, 1.)]))
-                            .collect()
-                    };
-                    let mut psfs = vec![];
-                    for (j, (wl, group)) in groups.iter().enumerate() {
-                        let psf = a::psf::compute_psf(
-                            group,
-                            s.method,
-                            grid,
-                            spacing,
-                            s.normalization,
-                            &sub.subrange(
-                                0.35 + 0.65 * j as f64 / groups.len() as f64,
-                                0.35 + 0.65 * (j + 1) as f64 / groups.len() as f64,
-                            ),
-                        )?;
-                        warnings.extend(psf.warnings.iter().map(ToString::to_string));
-                        psfs.push(field_psf(&f, *wl, psf));
-                    }
-                    Ok(psfs)
-                })
-            },
-            &|staged| match staged {
-                Staged::Done {
-                    value: (f, grid, _),
-                    ..
-                } => transform_work(f, *grid),
-                Staged::Skipped { .. } => 0.,
-            },
-            PSF_HOST,
-        ),
     );
-    src.record(ran);
     let psfs = gather(results, &mut stats, &mut warnings)?
         .into_iter()
         .flatten()
@@ -1365,10 +941,10 @@ pub fn mtf_analysis_shared(
     let wls = a::wavelengths(t, &s.wavelengths)?;
     let mut stats = PlanStats::default();
     let mut warnings = t.warnings().to_vec();
-    let src = Source::new(b, t, memo, ctx)?;
+    let src = Source::new(b, t, memo);
     // The automatic frequency limit is the smallest over all fields; with an
-    // explicit limit, pipelined runs trace field by field.
-    let stream = src.design.pipelined() && s.max_frequency.is_some();
+    // explicit limit, trace field by field.
+    let stream = s.max_frequency.is_some();
     let items = src.items(
         system_requests(t, &idx),
         stream,
@@ -1388,7 +964,7 @@ pub fn mtf_analysis_shared(
                 Item::Request(_) => None,
             })
             .collect();
-        src.useful_limit(&fields, &ctx.subrange(0.5, 0.55), &mut stats)?
+        src.useful_limit(&fields)
     };
     let frequencies = a::linspace(0., maximum, s.frequency_samples);
     let total = items.len().max(1);
@@ -1402,8 +978,7 @@ pub fn mtf_analysis_shared(
         let point = t.field(f.index).point;
         crate::MtfOrientation::from_field(point.hx, point.hy)
     };
-    let (results, ran) = split::schedule_with(
-        src.design,
+    let results = split::schedule(
         items,
         |i, item| {
             let mut stats = PlanStats::default();
@@ -1460,32 +1035,7 @@ pub fn mtf_analysis_shared(
                 Ok(field_mtf(&f, o, c, detector))
             })
         },
-        src.reference(
-            &|i, staged: Staged<Field>| {
-                let sub = range(i);
-                staged.then(|f, _, warnings| {
-                    let o = orientation(&f);
-                    let c = a::mtf::field_mtf(
-                        &o,
-                        &host_pupils(&f)?,
-                        &frequencies,
-                        s.method,
-                        &s.huygens,
-                        &sub,
-                    )?;
-                    warnings.extend(c.warnings.iter().map(ToString::to_string));
-                    let detector = s.detector.map(|d| d.curve(&frequencies, &o));
-                    Ok(field_mtf(&f, o, c, detector))
-                })
-            },
-            &|staged| match staged {
-                Staged::Done { value, .. } => correlation_work(value, 2 * frequencies.len()),
-                Staged::Skipped { .. } => 0.,
-            },
-            OTF_HOST,
-        ),
     );
-    src.record(ran);
     let out = gather(results, &mut stats, &mut warnings)?;
     ctx.report(1., "MTF");
     Ok(a::WaveMtfResult {
@@ -1495,13 +1045,7 @@ pub fn mtf_analysis_shared(
         run_info: src.info(timer, "mtf", s, &stats, warnings),
     })
 }
-fn fixed_frequencies(
-    src: &Source<'_>,
-    fields: &[&Field],
-    list: &[f64],
-    ctx: &JobContext,
-    stats: &mut PlanStats,
-) -> MkResult<Vec<f64>> {
+fn fixed_frequencies(src: &Source<'_>, fields: &[&Field], list: &[f64]) -> MkResult<Vec<f64>> {
     if !list.is_empty() {
         if list.iter().any(|f| !f.is_finite() || *f < 0.) {
             return Err(MkError::InvalidParam(
@@ -1510,7 +1054,7 @@ fn fixed_frequencies(
         }
         return Ok(list.to_vec());
     }
-    let limit = src.useful_limit(fields, ctx, stats)?;
+    let limit = src.useful_limit(fields);
     let base = crate::sampling::round_frequency(limit / 4.);
     Ok(vec![base, 2. * base, 4. * base])
 }
@@ -1549,7 +1093,7 @@ pub fn mtf_vs_field_shared(
     };
     let hs = a::linspace(0., 1., s.field_samples);
     let wls = a::wavelengths(t, &s.wavelengths)?;
-    let src = Source::new(b, t, memo, ctx)?;
+    let src = Source::new(b, t, memo);
     let mut stats = PlanStats::default();
     let mut warnings = t.warnings().to_vec();
     let mut values = vec![];
@@ -1591,13 +1135,7 @@ pub fn mtf_vs_field_shared(
         return Err(error.unwrap_or_else(|| MkError::Trace("no usable field".into())));
     }
     let usable: Vec<_> = per.iter().flatten().collect();
-    let freqs = fixed_frequencies(
-        &src,
-        &usable,
-        &s.frequencies,
-        &ctx.subrange(0.6, 0.65),
-        &mut stats,
-    )?;
+    let freqs = fixed_frequencies(&src, &usable, &s.frequencies)?;
     let mut curves: Vec<_> = freqs
         .iter()
         .map(|&frequency| a::MtfFieldCurve {
@@ -1618,8 +1156,7 @@ pub fn mtf_vs_field_shared(
             0.65 + 0.35 * (i + 1) as f64 / hs.len() as f64,
         )
     };
-    let (computed, ran) = split::schedule_with(
-        src.design,
+    let computed = split::schedule(
         per,
         |_, f| Ok(f),
         |i, f| {
@@ -1638,27 +1175,7 @@ pub fn mtf_vs_field_shared(
             )?;
             Ok(Some((c, stats)))
         },
-        src.reference(
-            &|i, f: Option<Field>| {
-                let Some(f) = f else { return Ok(None) };
-                let c = a::mtf::field_mtf(
-                    &o,
-                    &host_pupils(&f)?,
-                    &freqs,
-                    s.method,
-                    &s.huygens,
-                    &range(i),
-                )?;
-                Ok(Some((c, PlanStats::default())))
-            },
-            &|f| {
-                f.as_ref()
-                    .map_or(0., |f| correlation_work(f, 2 * freqs.len()))
-            },
-            OTF_HOST,
-        ),
     );
-    src.record(ran);
     for (i, r) in computed.into_iter().enumerate() {
         if let Some((c, s)) = r? {
             accumulate(&mut stats, &s);
@@ -1707,12 +1224,11 @@ pub fn line_spread_shared(
     let wls = a::wavelengths(t, &s.wavelengths)?;
     let mut stats = PlanStats::default();
     let mut warnings = t.warnings().to_vec();
-    let src = Source::new(b, t, memo, ctx)?;
-    // Every decision is per field: pipelined runs trace field by field.
-    let stream = src.design.pipelined();
+    let src = Source::new(b, t, memo);
+    // Every decision is per field: trace field by field.
     let items = src.items(
         system_requests(t, &idx),
-        stream,
+        true,
         &wls,
         &s.pupil,
         &ctx.subrange(0., 0.5),
@@ -1720,18 +1236,8 @@ pub fn line_spread_shared(
         &mut warnings,
     )?;
     let total = items.len().max(1);
-    let range = |i: usize| {
-        if stream {
-            ctx.subrange(i as f64 / total as f64, (i + 1) as f64 / total as f64)
-        } else {
-            ctx.subrange(
-                0.5 + 0.5 * i as f64 / total as f64,
-                0.5 + 0.5 * (i + 1) as f64 / total as f64,
-            )
-        }
-    };
-    let (results, ran) = split::schedule_with(
-        src.design,
+    let range = |i: usize| ctx.subrange(i as f64 / total as f64, (i + 1) as f64 / total as f64);
+    let results = split::schedule(
         items,
         |i, item| {
             let sub = range(i);
@@ -1753,21 +1259,8 @@ pub fn line_spread_shared(
                 .iter()
                 .map(|(_, _, p)| p.pupil.lambda_f() / s.padding)
                 .fold(f64::INFINITY, f64::min);
-            let grid = src.image_grid(
-                &f,
-                s.grid_size,
-                dx,
-                s.method,
-                &sub.subrange(0.2, 0.25),
-                &mut stats,
-            )?;
-            src.ensure_window(
-                &mut f,
-                grid as f64 * dx,
-                &s.pupil,
-                &sub.subrange(0.25, 0.3),
-                &mut stats,
-            )?;
+            let grid = src.image_grid(&f, s.grid_size, dx, s.method);
+            src.ensure_window(&mut f, grid as f64 * dx, &s.pupil, &sub.subrange(0.25, 0.3))?;
             Ok(Staged::Done {
                 value: (f, grid, dx),
                 stats,
@@ -1809,42 +1302,7 @@ pub fn line_spread_shared(
                 })
             })
         },
-        src.reference(
-            &|i, staged: Staged<(Field, usize, f64)>| {
-                let sub = range(i);
-                staged.then(|(f, grid, dx), _, warnings| {
-                    let psf = a::psf::compute_psf(
-                        &host_pupils(&f)?,
-                        s.method,
-                        grid,
-                        dx,
-                        PsfNormalization::UnitEnergy,
-                        &sub.subrange(0.3, 1.),
-                    )?;
-                    warnings.extend(psf.warnings.iter().map(ToString::to_string));
-                    let lx = crate::energy::line_spread_function(&psf, crate::energy::LsfAxis::X);
-                    let ly = crate::energy::line_spread_function(&psf, crate::energy::LsfAxis::Y);
-                    Ok(a::FieldLineSpread {
-                        field: f.index,
-                        field_value: f.value,
-                        pupil_sampling: f.sampling(),
-                        positions_mm: lx.positions_mm,
-                        x: lx.values,
-                        y: ly.values,
-                    })
-                })
-            },
-            &|staged| match staged {
-                Staged::Done {
-                    value: (f, grid, _),
-                    ..
-                } => transform_work(f, *grid),
-                Staged::Skipped { .. } => 0.,
-            },
-            PSF_HOST,
-        ),
     );
-    src.record(ran);
     let out = gather(results, &mut stats, &mut warnings)?;
     ctx.report(1., "line spread");
     Ok(a::LineSpreadResult {
@@ -1880,7 +1338,7 @@ pub fn diffraction_encircled_energy_shared(
     let wls = a::wavelengths(t, &s.wavelengths)?;
     let mut stats = PlanStats::default();
     let mut warnings = t.warnings().to_vec();
-    let src = Source::new(b, t, memo, ctx)?;
+    let src = Source::new(b, t, memo);
     let per = src.fields(
         &system_requests(t, &idx),
         &wls,
@@ -1895,20 +1353,9 @@ pub fn diffraction_encircled_energy_shared(
         .map(|(_, _, p)| p.pupil.lambda_f() / s.padding)
         .fold(f64::INFINITY, f64::min);
     let mut grid = s.grid_size;
-    for r in concurrent(&per, |_, f| {
-        let mut st = PlanStats::default();
-        src.image_grid(
-            f,
-            s.grid_size,
-            spacing,
-            s.method,
-            &ctx.subrange(0.3, 0.35),
-            &mut st,
-        )
-        .map(|g| (g, st))
+    for g in concurrent(&per, |_, f| {
+        src.image_grid(f, s.grid_size, spacing, s.method)
     }) {
-        let (g, st) = r?;
-        accumulate(&mut stats, &st);
         grid = grid.max(g);
     }
     let max = s.max_radius_mm.unwrap_or(0.5 * grid as f64 * spacing);
@@ -1930,17 +1377,15 @@ pub fn diffraction_encircled_energy_shared(
         normalization: PsfNormalization::UnitEnergy,
         transform: PsfTransform::Matrix,
     };
-    let (results, ran) = split::schedule(
-        src.design,
+    let results = split::schedule(
         per,
         |i, mut f| {
-            let mut stats = PlanStats::default();
+            let stats = PlanStats::default();
             let warnings = src.ensure_window(
                 &mut f,
                 grid as f64 * spacing,
                 &s.pupil,
                 &range(i).subrange(0., 0.05),
-                &mut stats,
             )?;
             Ok(Staged::Done {
                 value: f,
@@ -2021,7 +1466,6 @@ pub fn diffraction_encircled_energy_shared(
             })
         },
     );
-    src.record(ran);
     let pending = gather(results, &mut stats, &mut warnings)?;
     let psfs: Vec<_> = pending
         .iter()
@@ -2112,7 +1556,7 @@ pub fn through_focus_mtf_analysis_shared(
     let wls = a::wavelengths(t, &s.wavelengths)?;
     let mut stats = PlanStats::default();
     let mut warnings = t.warnings().to_vec();
-    let src = Source::new(b, t, memo, ctx)?;
+    let src = Source::new(b, t, memo);
     let per = src.fields(
         &system_requests(t, &idx),
         &wls,
@@ -2121,26 +1565,14 @@ pub fn through_focus_mtf_analysis_shared(
         &mut stats,
         &mut warnings,
     )?;
-    let frequencies = fixed_frequencies(
-        &src,
-        &per.iter().collect::<Vec<_>>(),
-        &s.frequencies,
-        &ctx.subrange(0.3, 0.32),
-        &mut stats,
-    )?;
+    let frequencies = fixed_frequencies(&src, &per.iter().collect::<Vec<_>>(), &s.frequencies)?;
     let half = if let Some(r) = s.focus_range_mm {
         r
     } else {
         // max over pupils of max(8 λ N², 4 N · RMS blur)
         let mut half = 0f64;
-        let blurs = concurrent(&per, |_, f| {
-            let mut st = PlanStats::default();
-            src.blurs(f, &ctx.subrange(0.32, 0.35), &mut st)
-                .map(|b| (b, st))
-        });
-        for (f, r) in per.iter().zip(blurs) {
-            let (blurs, st) = r?;
-            accumulate(&mut stats, &st);
+        let blurs = concurrent(&per, |_, f| src.blurs(f));
+        for (f, blurs) in per.iter().zip(blurs) {
             for ((_, _, p), (_, rms)) in f.pupils.iter().zip(blurs) {
                 let n = p.pupil.geometry.working_f_number();
                 half = half.max((8. * p.pupil.wavelength_um * 1e-3 * n * n).max(4. * n * rms));
@@ -2160,12 +1592,11 @@ pub fn through_focus_mtf_analysis_shared(
             0.35 + 0.65 * (i + 1) as f64 / count as f64,
         )
     };
-    let (results, ran) = split::schedule_with(
-        src.design,
+    let results = split::schedule(
         per,
         |i, mut field| {
             let sub = range(i);
-            let mut stats = PlanStats::default();
+            let stats = PlanStats::default();
             let mut warnings = vec![];
             if s.pupil.grid == 0 {
                 warnings.extend(refine_for_focus(
@@ -2174,7 +1605,6 @@ pub fn through_focus_mtf_analysis_shared(
                     half,
                     s.pupil.supersample,
                     &sub.subrange(0., 0.2),
-                    &mut stats,
                 )?);
             }
             Ok(Staged::Done {
@@ -2234,91 +1664,7 @@ pub fn through_focus_mtf_analysis_shared(
                 })
             })
         },
-        src.reference(
-            &|i, staged: Staged<Field>| {
-                let sub = range(i).subrange(0.2, 1.);
-                staged.then(|field, _, warnings| {
-                    let point = t.field(field.index).point;
-                    let o = crate::MtfOrientation::from_field(point.hx, point.hy);
-                    let host = host_pupils(&field)?;
-                    // The reference's planes (`crate::analysis::mtf`).
-                    let planes = if s.method == a::MtfAnalysisMethod::Direct {
-                        crate::mtf::polychromatic_focus_mtf(&host, &focus, &frequencies, &o, &sub)?
-                    } else {
-                        let nz = focus.len() as f64;
-                        focus
-                            .iter()
-                            .enumerate()
-                            .map(|(z, &dz)| {
-                                let shifted: Vec<PupilFunction> = host
-                                    .iter()
-                                    .map(|(p, _)| {
-                                        p.with_focus_shift(dz / p.geometry().chief_ray[2])
-                                    })
-                                    .collect();
-                                let weighted: Vec<_> = shifted
-                                    .iter()
-                                    .zip(&host)
-                                    .map(|(p, (_, w))| (p, *w))
-                                    .collect();
-                                a::mtf::field_mtf(
-                                    &o,
-                                    &weighted,
-                                    &frequencies,
-                                    s.method,
-                                    &s.huygens,
-                                    &sub.subrange(z as f64 / nz, (z + 1) as f64 / nz),
-                                )
-                            })
-                            .collect::<MkResult<Vec<_>>>()?
-                    };
-                    for c in &planes {
-                        for w in &c.warnings {
-                            let w = w.to_string();
-                            if !warnings.contains(&w) {
-                                warnings.push(w);
-                            }
-                        }
-                    }
-                    let detector = s.detector.map(|d| d.curve(&frequencies, &o));
-                    let curves = frequencies
-                        .iter()
-                        .enumerate()
-                        .map(|(q, &frequency)| a::ThroughFocusCurve {
-                            frequency,
-                            tangential: planes
-                                .iter()
-                                .map(|c| {
-                                    c.tangential[q]
-                                        * detector.as_ref().map_or(1., |d| d.tangential[q])
-                                })
-                                .collect(),
-                            sagittal: planes
-                                .iter()
-                                .map(|c| {
-                                    c.sagittal[q] * detector.as_ref().map_or(1., |d| d.sagittal[q])
-                                })
-                                .collect(),
-                        })
-                        .collect();
-                    Ok(a::ThroughFocusField {
-                        field: field.index,
-                        field_value: field.value,
-                        pupil_sampling: field.sampling(),
-                        curves,
-                    })
-                })
-            },
-            &|staged| match staged {
-                Staged::Done { value, .. } => {
-                    correlation_work(value, 2 * frequencies.len() * focus.len())
-                }
-                Staged::Skipped { .. } => 0.,
-            },
-            FOCUS_HOST,
-        ),
     );
-    src.record(ran);
     let out = gather(results, &mut stats, &mut warnings)?;
     ctx.report(1., "through-focus MTF");
     Ok(a::ThroughFocusResult {
@@ -2329,41 +1675,24 @@ pub fn through_focus_mtf_analysis_shared(
     })
 }
 /// Refine automatic pupils against the phase steps at both focus ends
-/// (`±half` along the image normal): the reference's rule on host pupils,
-/// device focus batches otherwise.
+/// (`±half` along the image normal), by the reference's rule.
 fn refine_for_focus(
     src: &Source<'_>,
     field: &mut Field,
     half: f64,
     supersample: usize,
     ctx: &JobContext,
-    stats: &mut PlanStats,
 ) -> MkResult<Vec<String>> {
     let mut grids = vec![];
     for (_, _, p) in &field.pupils {
-        let step = match p.host_pupil() {
-            Some(h) => [-half, half]
-                .map(|dz| {
-                    h.with_focus_shift(dz / h.geometry().chief_ray[2])
-                        .max_phase_step()
-                })
-                .into_iter()
-                .fold(0., f64::max),
-            None => {
-                let shifts = [
-                    -half / p.pupil.geometry.chief_ray[2],
-                    half / p.pupil.geometry.chief_ray[2],
-                ];
-                let r =
-                    p.pupil
-                        .focus_batch(src.b, src.snapshot(), &shifts, &ctx.subrange(0., 0.2))?;
-                accumulate(stats, &r.stats);
-                r.value
-                    .iter()
-                    .map(|p| p.max_phase_step)
-                    .fold(0f64, f64::max)
-            }
-        };
+        let h = p.host_pupil().expect("host-resampled pupil");
+        let step = [-half, half]
+            .map(|dz| {
+                h.with_focus_shift(dz / h.geometry().chief_ray[2])
+                    .max_phase_step()
+            })
+            .into_iter()
+            .fold(0., f64::max);
         grids.push(
             ((p.pupil.n as f64 * step / 0.35)
                 .max(p.pupil.n as f64)
@@ -2372,5 +1701,5 @@ fn refine_for_focus(
                 .next_power_of_two(),
         );
     }
-    src.refine(field, &grids, supersample, &ctx.subrange(0.2, 1.), stats)
+    src.refine(field, &grids, supersample, &ctx.subrange(0.2, 1.))
 }

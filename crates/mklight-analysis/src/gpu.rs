@@ -20,11 +20,9 @@ pub use chief_maps::ChiefDesign;
 pub use layout::layout_job;
 mod illumination;
 mod illumination_split;
-pub use illumination::{
-    IlluminationBuffers, IlluminationRows, RiDesign, illumination_rows, relative_illumination_job,
-};
-/// Study key of the field-map, illumination and radiometry work-split
-/// designs (`mklight_core::split`).
+pub use illumination::{IlluminationRows, illumination_rows, relative_illumination_job};
+/// Study key of the chief-ray map work-split designs ([`ChiefDesign`],
+/// `mklight_core::split`).
 pub const SPLIT_KEY: &str = "fieldmaps";
 mod records;
 pub use records::{

@@ -763,11 +763,10 @@ pub mod image_simulation;
 mod shells;
 pub use shells::{RadialBins, encircled_energy_batch};
 pub mod split;
-pub use split::{Design, HostPupil};
+pub use split::HostPupil;
 
 /// Independent consumer chains run at once (`MKLIGHT_WAVE_CONCURRENT`; 1 runs
-/// them in order on the caller's thread; the `wave_threads` study key
-/// overrides it, [`split::Threads`]).
+/// them in order on the caller's thread).
 const CONCURRENT: usize = 4;
 fn concurrency() -> usize {
     static N: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
@@ -790,7 +789,7 @@ pub(crate) fn concurrent<T: Sync, R: Send>(
     items: &[T],
     f: impl Fn(usize, &T) -> R + Sync,
 ) -> Vec<R> {
-    let threads = split::Threads::selected().devices().min(items.len());
+    let threads = concurrency().min(items.len());
     if threads <= 1 {
         return items.iter().enumerate().map(|(i, t)| f(i, t)).collect();
     }

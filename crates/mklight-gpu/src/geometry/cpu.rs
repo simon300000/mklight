@@ -95,9 +95,7 @@ fn run<E: FpEnv>(r: &Request, x: &mut Execution, ctl: &JobControl) -> MkResult<(
         Request::Records(r) => r.slots * r.hits.rays.count,
         Request::Coddington(r) => r.hits.rays.count,
         Request::CloseFocus(r) => r.hits.rays.count / 5,
-        Request::Illumination(r) => r.nodes.desc.shape[0],
         Request::IlluminationRays(r) => r.tasks.desc.shape[0],
-        Request::IlluminationNodes(r) => r.nodes.desc.shape[0],
         Request::Opd(r) => r.hits.rays.count,
         Request::FocusTerms(r) => r.mask.desc.len()?,
     };
@@ -328,85 +326,6 @@ fn run<E: FpEnv>(r: &Request, x: &mut Execution, ctl: &JobControl) -> MkResult<(
             put(x, r.output, &out);
             x.words_mut(r.status).copy_from_slice(&status);
         }
-        Request::Illumination(r) => {
-            let owned;
-            let (headers, surfaces, pool) = match &r.systems {
-                SystemSet::Uploaded(h) => {
-                    owned = x.system(*h)?;
-                    (
-                        &owned.headers[..],
-                        &owned.surfaces[..],
-                        &owned.coefficients[..],
-                    )
-                }
-                SystemSet::Resident {
-                    headers,
-                    surfaces,
-                    coefficients,
-                    count,
-                    max_surfaces,
-                    ..
-                } => (
-                    bytemuck::cast_slice(
-                        &x.words(*headers)[..count * size_of::<crate::layout::PackedHeader>() / 4],
-                    ),
-                    bytemuck::cast_slice(
-                        &x.words(*surfaces)[..count
-                            * max_surfaces
-                            * size_of::<crate::layout::PackedSurface>()
-                            / 4],
-                    ),
-                    bytemuck::cast_slice(x.words(*coefficients)),
-                ),
-            };
-            let hi = bytemuck::cast_slice(x.words(r.chiefs.records.unwrap()));
-            let lo = bytemuck::cast_slice(x.words(r.chiefs.record_low.unwrap()));
-            let fields: &[crate::aiming::FieldSpec] = bytemuck::cast_slice(words(x, &r.fields));
-            let nodes: &[crate::aiming::Sample] = bytemuck::cast_slice(words(x, &r.nodes));
-            let st = x.words(r.chiefs.status);
-            let mut out = vec![Df32::ZERO; 4 * n];
-            let mut status = vec![1; n];
-            for (i, node) in nodes.iter().enumerate() {
-                ctl.check()?;
-                let fi = node.field as usize;
-                let v = fields.get(fi).and_then(|f| {
-                    if st[fi] != 0 {
-                        return None;
-                    }
-                    let h = headers.get(f.system as usize)?;
-                    if f.wavelength >= h.num_wavelengths || h.num_surfaces as usize != r.slots {
-                        return None;
-                    }
-                    super::illumination::node::<E>(
-                        h,
-                        &surfaces[h.surface_offset as usize..][..r.slots],
-                        pool,
-                        f,
-                        hi,
-                        lo,
-                        r.chiefs.rays.count,
-                        fi,
-                        node.pupil,
-                        &|| ctl.check().is_ok(),
-                    )
-                });
-                if let Some(v) = v {
-                    for k in [0, 1, 3] {
-                        out[k * n + i] = (D::<E>::from_df(v[k]) * crate::fx::F::new(node.weight)).0;
-                    }
-                    out[2 * n + i] = v[2];
-                    status[i] = u32::from(v[2].hi != 0.0);
-                } else {
-                    out[2 * n + i] = Df32::from_f32(1.0);
-                }
-                ctl.report((i + 1) as f64 / n as f64, "image-point illumination");
-            }
-            for (i, id) in x.words_mut(r.ids).iter_mut().enumerate() {
-                *id = i as u32;
-            }
-            put(x, r.output, &out);
-            x.words_mut(r.status).copy_from_slice(&status);
-        }
         Request::IlluminationRays(r) => {
             use rayon::prelude::*;
             let set = ri_system(x, &r.systems)?;
@@ -437,56 +356,6 @@ fn run<E: FpEnv>(r: &Request, x: &mut Execution, ctl: &JobControl) -> MkResult<(
             ctl.check()?;
             x.words_mut(r.output)
                 .copy_from_slice(bytemuck::cast_slice(&out));
-        }
-        Request::IlluminationNodes(r) => {
-            use rayon::prelude::*;
-            let set = ri_system(x, &r.systems)?;
-            let fields: &[super::ri::RiField] = bytemuck::cast_slice(words(x, &r.fields));
-            let nodes: &[crate::aiming::Sample] = bytemuck::cast_slice(words(x, &r.nodes));
-            let full = r.pencils.is_none();
-            type Pencil = [super::ri::RiTask; super::ri::PENCIL];
-            let out: Vec<(Df32, u32, Pencil)> = nodes
-                .par_iter()
-                .map(|node| {
-                    let skipped = super::ri::pencil::<E>(
-                        &bytemuck::Zeroable::zeroed(),
-                        node.field,
-                        node.pupil,
-                        None,
-                    );
-                    let f = fields.get(node.field as usize);
-                    let Some((f, (h, s))) = f.and_then(|f| Some((f, ri_header(&set, f, r.slots)?)))
-                    else {
-                        return (Df32::ZERO, super::ri::NODE_FAILED, skipped);
-                    };
-                    let steps: Vec<u32> = (1..h.num_surfaces).collect();
-                    let sys = super::ri::System {
-                        h,
-                        s,
-                        pool: &set.coefficients,
-                        steps: &steps,
-                    };
-                    let o =
-                        super::ri::node::<E>(&sys, f, node.pupil, full, &|| ctl.check().is_ok());
-                    let pencil = if !full && o.status == super::ri::NODE_SURVIVES {
-                        super::ri::pencil::<E>(f, node.field, node.pupil, Some((o.q, o.aim)))
-                    } else {
-                        skipped
-                    };
-                    (o.density.0, o.status, pencil)
-                })
-                .collect();
-            ctl.check()?;
-            let density: Vec<Df32> = out.iter().map(|v| v.0).collect();
-            put(x, r.output, &density);
-            for (s, v) in x.words_mut(r.status).iter_mut().zip(&out) {
-                *s = v.1;
-            }
-            if let Some(id) = r.pencils {
-                let tasks: Vec<super::ri::RiTask> = out.iter().flat_map(|v| v.2).collect();
-                x.words_mut(id)
-                    .copy_from_slice(bytemuck::cast_slice(&tasks));
-            }
         }
         Request::CloseFocus(r) => {
             let f = bytemuck::cast_slice(x.words(r.hits.rays.floats));

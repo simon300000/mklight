@@ -184,7 +184,7 @@ pub(crate) fn traced_pupils(
 
 /// The traced lattices of `jobs` at `settings`, in order, each with its
 /// key: the first stage of [`traced_pupils`] alone, for callers that
-/// resample elsewhere (the device work-split designs, `crate::gpu`).
+/// resample elsewhere (the native device analyses, `crate::gpu`).
 /// Shared through `memo` exactly as [`traced_pupils`] shares them.
 pub(crate) fn traced_lattices(
     tracer: &SequentialTracer,

@@ -51,14 +51,7 @@ pub fn field_map_job(
             run_info: stamp(run, kind.name(), s, t.warnings().to_vec()),
         });
     }
-    let (selected, name) = super::chief_maps::ChiefDesign::selected();
-    let design = selected.resolve(coords.len());
-    if design == super::chief_maps::ChiefDesign::Cpu {
-        // The CPU-only division: the reference path from the GPU route.
-        let mut r = crate::field_maps::field_map_job(t, kind, s, ctx)?;
-        r.run_info.settings["fieldmaps_variant"] = serde_json::json!(name);
-        return Ok(r);
-    }
+    let (design, name) = super::chief_maps::ChiefDesign::selected();
     let device_chiefs = design == super::chief_maps::ChiefDesign::DeviceChief;
     let geo = Geometry::new(b, t, ctx)?;
     let mut p = ResidentPlan::new(t.system().snapshot.clone());

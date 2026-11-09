@@ -1,6 +1,5 @@
-//! Restructured image-point illumination solve, in double-float: the
-//! specification of `mkl_geometry_ri_rays` (one thread per aimed ray) and
-//! `mkl_geometry_ri_nodes` (one thread per pupil node).
+//! Image-point illumination pencils, in double-float: the specification of
+//! `mkl_geometry_ri_rays` (one thread per aimed ray).
 //!
 //! Field-level data (chief aim and stop-Jacobian inverse, image point and
 //! basis, chief object parameters and the chord inverse of `∂X/∂q`) comes
@@ -13,12 +12,12 @@
 //! An aimed ray `(q, P)` solves the stop aim by chord Newton from the chief
 //! (or a given seed) with finite-difference refreshes and backtracking,
 //! falls back to continuation in the pupil radius, then traces to the image.
-//! A node solves `X(q, P) = X₀` for `q` (chord Newton from `q₀` with
-//! refreshes), checks survival with a clipped ray and differentiates
-//! `(X, L, M)` by central differences in `q` and `P` (module docs of
-//! `mklight_analysis::illumination`). Rays of a node after its first are
-//! seeded with the aim of the converged ray, so their stop solves start
-//! within one Newton step.
+//! The host solves each node's image point `X(q, P) = X₀` for `q` and
+//! writes its pencil ([`PENCIL`] rays): the clipped ray and the central
+//! differences of `(X, L, M)` in `q` and `P` (module docs of
+//! `mklight_analysis::illumination`). The pencil rays are seeded with the
+//! aim of the node's converged ray, so their stop solves start within one
+//! Newton step.
 use super::sag;
 use crate::{
     Df32, FpEnv,
@@ -94,9 +93,6 @@ fn inverse<E: FpEnv>(a: M<E>) -> Option<M<E>> {
 }
 fn apply<E: FpEnv>(a: M<E>, v: P<E>) -> P<E> {
     std::array::from_fn(|k| a[k][0] * v[0] + a[k][1] * v[1])
-}
-fn mul<E: FpEnv>(a: M<E>, b: M<E>) -> M<E> {
-    std::array::from_fn(|i| std::array::from_fn(|j| a[i][0] * b[0][j] + a[i][1] * b[1][j]))
 }
 fn norm<E: FpEnv>(r: P<E>) -> D<E> {
     (r[0] * r[0] + r[1] * r[1]).sqrt()
@@ -223,18 +219,16 @@ const AIM_HALVINGS: u32 = 12;
 /// Residual (fraction of the stop radius) below which a stuck stop solve
 /// meets the double-float trace's noise rather than a convergence basin.
 const AIM_NOISE: f32 = 1e-6;
-/// Trace budgets of one aimed ray and of one node: the device fails what
-/// does not finish within them (the reference completes those), so no
-/// thread's chain of dependent traces runs long. Converging rays take 3–10
-/// traces and converging nodes 30–70.
+/// Trace budget of one aimed ray: the device fails what does not finish
+/// within it (the reference completes those), so no thread's chain of
+/// dependent traces runs long. Converging rays take 3–10 traces.
 pub const RAY_TRACES: u32 = 48;
 /// Budget of a flat-pass ray seeded with a converged neighbouring aim (a
 /// pencil ray; 3–6 traces when it converges).
 pub const RAY_TRACES_SEEDED: u32 = 16;
-pub const NODE_TRACES: u32 = 192;
 /// A chord step that does not shrink the residual below this fraction
-/// refreshes the Jacobian (stop aims and image points alike): slow linear
-/// convergence costs more traces than a four-ray refresh.
+/// refreshes the Jacobian: slow linear convergence costs more traces than a
+/// four-ray refresh.
 const REFRESH: f32 = 0.25;
 
 /// Resumable aimed ray `(q, P)`: stop solve, then the image trace.
@@ -312,12 +306,6 @@ impl<E: FpEnv> AimMachine<E> {
             result: None,
             status: MKL_AIM_FAILED,
         }
-    }
-    /// Start the stop solve from chord inverse `inverse` (a node carries
-    /// its latest from ray to ray).
-    pub fn with_inverse(mut self, inverse: M<E>) -> Self {
-        self.inverse = inverse;
-        self
     }
     fn step(f: &RiField) -> D<E> {
         c::<E>(1e-6) * D::from_df(f.aim.pupil[1])
@@ -579,282 +567,6 @@ pub const PENCIL: usize = 9;
 pub fn pupil_step() -> Df32 {
     Df32::from_f64(1e-4)
 }
-/// Stencil ray `s` about the converged `(q, P)` with aim `aim`: its object
-/// parameters, pupil point and aim seed (the converged aim, moved by the
-/// chief prediction of the target change for the pupil columns).
-pub fn stencil<E: FpEnv>(f: &RiField, p: P<E>, q: P<E>, aim: P<E>, s: u32) -> [P<E>; 3] {
-    let k = (s / 2) as usize;
-    let plus = s.is_multiple_of(2);
-    if k < 2 {
-        let hq = D::<E>::from_df(f.hq);
-        let mut qq = q;
-        qq[k] = if plus { qq[k] + hq } else { qq[k] - hq };
-        [qq, p, aim]
-    } else {
-        let hp = D::<E>::from_df(pupil_step());
-        let mut pp = p;
-        pp[k - 2] = if plus { pp[k - 2] + hp } else { pp[k - 2] - hp };
-        let t0 = target(&f.aim, p);
-        let t1 = target(&f.aim, pp);
-        let d = apply(m(f.aim_inverse), [t1[0] - t0[0], t1[1] - t0[1]]);
-        [q, pp, [aim[0] + d[0], aim[1] + d[1]]]
-    }
-}
-/// The [`PENCIL`] tasks of a converged node (`mkl_geometry_ri_nodes` in
-/// its Newton-only mode); all skipped for a failed node.
-pub fn pencil<E: FpEnv>(
-    f: &RiField,
-    field: u32,
-    pupil: [Df32; 2],
-    solved: Option<(P<E>, P<E>)>,
-) -> [RiTask; PENCIL] {
-    let Some((q, aim)) = solved else {
-        return [RiTask {
-            field,
-            flags: MKL_RI_SKIP,
-            ..Default::default()
-        }; PENCIL];
-    };
-    let p: P<E> = dfs(pupil);
-    std::array::from_fn(|i| {
-        if i == 0 {
-            RiTask {
-                field,
-                flags: MKL_RI_CLIP | MKL_RI_SEEDED | MKL_RI_AIMED,
-                q: q.map(|v| v.0),
-                pupil,
-                seed: aim.map(|v| v.0),
-            }
-        } else {
-            let [qq, pp, seed] = stencil(f, p, q, aim, i as u32 - 1);
-            RiTask {
-                field,
-                flags: MKL_RI_SEEDED,
-                q: qq.map(|v| v.0),
-                pupil: pp.map(|v| v.0),
-                seed: seed.map(|v| v.0),
-            }
-        }
-    })
-}
-
-const NODE_NEWTON: u32 = 0;
-const NODE_REFRESH: u32 = 1;
-const NODE_CLIP: u32 = 2;
-const NODE_JACOBIAN: u32 = 3;
-const NODE_DONE: u32 = 4;
-/// Image-point Newton iterations of one node.
-const NODE_ITERATIONS: u32 = 40;
-/// Stall acceptance of the image-point solve, in image-point tolerances.
-const NODE_FLOOR: f32 = 1000.0;
-/// Node outcomes (`IlluminationNodes::status`).
-pub const NODE_SURVIVES: u32 = 0;
-pub const NODE_FAILED: u32 = 1;
-pub const NODE_VIGNETTED: u32 = 2;
-
-/// Outcome of one pupil node.
-#[derive(Clone, Copy, Debug)]
-pub struct NodeOutcome<E: FpEnv> {
-    /// [`NODE_SURVIVES`] (or converged, Newton only), [`NODE_FAILED`] when no
-    /// ray through this stop point reaches the image point, or
-    /// [`NODE_VIGNETTED`].
-    pub status: u32,
-    /// `|det d(L, M)/dP|` of a surviving node (full mode).
-    pub density: D<E>,
-    /// The solved object parameters and the aim of the converged ray.
-    pub q: P<E>,
-    pub aim: P<E>,
-    /// Traces spent (diagnostics).
-    pub traces: u32,
-}
-
-/// One pupil node: the image-point solve, then (`full`) the survival check
-/// and the differentiated density.
-pub fn node<E: FpEnv>(
-    sys: &System,
-    f: &RiField,
-    pupil: [Df32; 2],
-    full: bool,
-    check: &dyn Fn() -> bool,
-) -> NodeOutcome<E> {
-    let mut out = NodeOutcome {
-        status: NODE_FAILED,
-        density: D::ZERO,
-        q: [D::ZERO; 2],
-        aim: [D::ZERO; 2],
-        traces: 0,
-    };
-    if f.status != 0 {
-        return out;
-    }
-    let p: P<E> = dfs(pupil);
-    let x0: P<E> = dfs(f.x0);
-    let tol = D::<E>::from_df(f.tolerance);
-    let hq = D::<E>::from_df(f.hq);
-    let hp = D::<E>::from_df(pupil_step());
-    let mut q: P<E> = dfs(f.q0);
-    let mut ji: M<E> = m(f.q_inverse);
-    let mut prev = c::<E>(f32::INFINITY);
-    let mut it = 0;
-    let mut r: P<E> = [D::ZERO; 2];
-    let mut rn = D::ZERO;
-    let mut sub = 0u32;
-    let mut column: [D<E>; 4] = [D::ZERO; 4];
-    let mut j = [[D::<E>::ZERO; 4]; 4];
-    // The converged aim of the current `q` seeds the node's further rays.
-    let mut aim: Option<P<E>> = None;
-    // The latest stop chord inverse of the node's rays seeds the next.
-    let mut aim_inverse: M<E> = m(f.aim_inverse);
-    let mut phase = NODE_NEWTON;
-    let start = |phase: u32, sub: u32, q: P<E>, aim: Option<P<E>>, inv: M<E>| -> AimMachine<E> {
-        match phase {
-            NODE_NEWTON => AimMachine::new(f, q, p, false, aim, false),
-            NODE_REFRESH => {
-                let mut qq = q;
-                let k = (sub / 2) as usize;
-                qq[k] = if sub.is_multiple_of(2) {
-                    qq[k] + hq
-                } else {
-                    qq[k] - hq
-                };
-                AimMachine::new(f, qq, p, false, aim, false)
-            }
-            NODE_CLIP => AimMachine::new(f, q, p, true, aim, true),
-            _ => {
-                let a = aim.unwrap_or([D::ZERO; 2]);
-                let [qq, pp, seed] = stencil(f, p, q, a, sub);
-                AimMachine::new(f, qq, pp, false, Some(seed), false)
-            }
-        }
-        .with_inverse(inv)
-    };
-    let mut machine = start(phase, sub, q, aim, aim_inverse);
-    let mut traces = 0u32;
-    while phase != NODE_DONE {
-        if machine.phase != PHASE_DONE {
-            if !check() || traces >= NODE_TRACES {
-                return out;
-            }
-            let req = machine.request(f, sys.h);
-            let hit = trace(sys, &f.aim, req.q, req.a, req.last, req.clip);
-            machine.feed(f, hit.as_ref().map_err(|e| *e));
-            traces += 1;
-            out.traces = traces;
-            continue;
-        }
-        let x = machine.result;
-        match phase {
-            NODE_NEWTON => {
-                let Some(x) = x else { return out };
-                aim = Some(machine.a);
-                r = [x[0] - x0[0], x[1] - x0[1]];
-                rn = norm(r);
-                it += 1;
-                // The double-float image point of an aspheric system jumps
-                // by up to ~1e-7 mm between neighbouring rays (f32 decisions
-                // inside the intersections): a solve that stalls within
-                // NODE_FLOOR tolerances has converged as far as the device
-                // trace resolves (the density moves by ~1e-8 relative).
-                let stalled = (rn - c::<E>(REFRESH) * prev).hi() > 0.0;
-                let floored = (rn - c::<E>(NODE_FLOOR) * tol).hi() <= 0.0;
-                if (rn - tol).hi() <= 0.0 || (floored && (stalled || it >= NODE_ITERATIONS)) {
-                    if !full {
-                        out.status = NODE_SURVIVES;
-                        out.q = q;
-                        out.aim = machine.a;
-                        return out;
-                    }
-                    phase = NODE_CLIP;
-                } else if it >= NODE_ITERATIONS {
-                    return out;
-                } else if stalled {
-                    phase = NODE_REFRESH;
-                    sub = 0;
-                } else {
-                    prev = rn;
-                    let dq = apply(ji, r);
-                    q = [q[0] - dq[0], q[1] - dq[1]];
-                }
-            }
-            NODE_REFRESH => {
-                let Some(x) = x else { return out };
-                let k = (sub / 2) as usize;
-                if sub.is_multiple_of(2) {
-                    column = x;
-                } else {
-                    for i in 0..2 {
-                        j[i][k] = (column[i] - x[i]) / (c(2.0) * hq);
-                    }
-                }
-                sub += 1;
-                if sub == 4 {
-                    let Some(inv) = inverse([[j[0][0], j[0][1]], [j[1][0], j[1][1]]]) else {
-                        return out;
-                    };
-                    ji = inv;
-                    prev = rn;
-                    let dq = apply(ji, r);
-                    q = [q[0] - dq[0], q[1] - dq[1]];
-                    phase = NODE_NEWTON;
-                    sub = 0;
-                }
-            }
-            NODE_CLIP => {
-                if x.is_none() {
-                    out.status = NODE_VIGNETTED;
-                    out.q = q;
-                    out.aim = aim.unwrap_or([D::ZERO; 2]);
-                    return out;
-                }
-                phase = NODE_JACOBIAN;
-                sub = 0;
-            }
-            _ => {
-                let Some(x) = x else { return out };
-                let k = (sub / 2) as usize;
-                if sub.is_multiple_of(2) {
-                    column = x;
-                } else {
-                    let h = if k < 2 { hq } else { hp };
-                    for (i, row) in j.iter_mut().enumerate() {
-                        row[k] = (column[i] - x[i]) / (c(2.0) * h);
-                    }
-                }
-                sub += 1;
-                if sub == 8 {
-                    phase = NODE_DONE;
-                }
-            }
-        }
-        if phase != NODE_DONE {
-            if machine.result.is_some() {
-                aim_inverse = machine.inverse;
-            }
-            machine = start(phase, sub, q, aim, aim_inverse);
-        }
-    }
-    if let Some(d) = density(j) {
-        out.status = NODE_SURVIVES;
-        out.density = d;
-        out.q = q;
-        out.aim = aim.unwrap_or([D::ZERO; 2]);
-    }
-    out
-}
-
-/// `|det(∂(L, M)/∂P − ∂(L, M)/∂q · (∂X/∂q)⁻¹ · ∂X/∂P)|` of the central
-/// differences `j[row][column]` (rows X, Y, L, M; columns q, P).
-pub fn density<E: FpEnv>(j: [[D<E>; 4]; 4]) -> Option<D<E>> {
-    let xq = [[j[0][0], j[0][1]], [j[1][0], j[1][1]]];
-    let xp = [[j[0][2], j[0][3]], [j[1][2], j[1][3]]];
-    let lq = [[j[2][0], j[2][1]], [j[3][0], j[3][1]]];
-    let lp = [[j[2][2], j[2][3]], [j[3][2], j[3][3]]];
-    let corr = mul(lq, mul(inverse(xq)?, xp));
-    let d: M<E> = std::array::from_fn(|i| std::array::from_fn(|k| lp[i][k] - corr[i][k]));
-    let det = d[0][0] * d[1][1] - d[0][1] * d[1][0];
-    Some(if det.hi() < 0.0 { -det } else { det })
-}
-
 /// The thread entry of `mkl_geometry_ri_rays` for the CPU emulation.
 pub fn run_ray<E: FpEnv>(
     sys: &System,

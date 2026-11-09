@@ -39,11 +39,6 @@ impl ResidentPsfGrid {
     }
 }
 
-/// Host rule of a node PSF's transform (the PSF rule of `gpu::analysis`).
-const IMAGE_HOST: super::split::HostRule = super::split::HostRule {
-    limit: 1e8,
-    ratio: 4.,
-};
 fn invalid(s: &str) -> MkError {
     MkError::InvalidParam(format!("image simulation: {s}"))
 }
@@ -74,7 +69,7 @@ fn p5_stats(v: &serde_json::Value, stats: &mut PlanStats) {
     }
 }
 /// Build the optical grid: P5 distortion, host f64 relative illumination,
-/// pupils from the run's work-split design (`split`), and resident PSFs.
+/// host-traced pupils (`split`), and resident PSFs.
 pub fn build_psf_grid(
     b: &dyn ComputeBackend,
     t: &SequentialTracer,
@@ -125,14 +120,13 @@ pub fn build_psf_grid_shared(
         return Err(invalid("field grid contains unusable chief"));
     }
     let wls = crate::analysis::wavelengths(t, &Default::default())?;
-    let src = Source::new(b, t, memo, ctx)?;
+    let src = Source::new(b, t, memo);
     // Relative illumination of the grid nodes is host f64 preparation, the
     // CPU grid's own rows: the device projected-solid-angle kernel runs the
     // nested object/aim solves of every pupil node inside one command and
     // took ≈1.4 s per wavelength on a 29-surface lens (9 nodes × 576 pupil
     // samples) against ≈0.2 s on the host for all five wavelengths. It runs
-    // beside device work: during device tracing, or (designs whose host
-    // traces) during the device PSFs.
+    // beside the device PSFs.
     let illumination = || -> MkResult<(Vec<f64>, f64, Vec<String>, f64)> {
         let clock = std::time::Instant::now();
         let mut warnings = vec![];
@@ -184,20 +178,17 @@ pub fn build_psf_grid_shared(
         .enumerate()
         .map(|(i, (p, f))| (i, p.field, f))
         .collect();
-    let host_traces = src.design.host_lattice();
-    let (per, early) = std::thread::scope(|scope| {
-        let early = (!host_traces).then(|| scope.spawn(illumination));
-        let per = src.trace(
+    let per = src
+        .trace(
             &requests,
             &wls,
             &s.pupil,
             &ctx.subrange(0.2, 0.6),
             &mut stats,
             &mut warnings,
-        );
-        (per, early.map(|h| h.join().expect("illumination rows")))
-    });
-    let per = per?.into_iter().collect::<MkResult<Vec<_>>>()?;
+        )?
+        .into_iter()
+        .collect::<MkResult<Vec<_>>>()?;
     let dx = s.psf_spacing_mm.unwrap_or_else(|| {
         per.iter()
             .flat_map(|f| &f.pupils)
@@ -206,20 +197,9 @@ pub fn build_psf_grid_shared(
     });
     let mut size = s.psf_size;
     if size == 0 {
-        for r in concurrent(&per, |_, f| {
-            let mut st = PlanStats::default();
-            src.image_grid(
-                f,
-                0,
-                dx,
-                crate::analysis::PsfMethod::Fft,
-                &ctx.subrange(0.6, 0.6),
-                &mut st,
-            )
-            .map(|g| (g, st))
+        for g in concurrent(&per, |_, f| {
+            src.image_grid(f, 0, dx, crate::analysis::PsfMethod::Fft)
         }) {
-            let (g, st) = r?;
-            accumulate(&mut stats, &st);
             size = size.max(g);
         }
         size = (size | 1).min(2047);
@@ -242,19 +222,17 @@ pub fn build_psf_grid_shared(
             0.6 + 0.4 * (i + 1) as f64 / count as f64,
         )
     };
-    let ((results, ran), late) = std::thread::scope(|scope| {
-        let late = host_traces.then(|| scope.spawn(illumination));
-        let results = super::split::schedule_with(
-            src.design,
+    let (results, illumination) = std::thread::scope(|scope| {
+        let illumination = scope.spawn(illumination);
+        let results = super::split::schedule(
             per,
             |i, mut f| {
-                let mut stats = PlanStats::default();
+                let stats = PlanStats::default();
                 let warnings = src.ensure_window(
                     &mut f,
                     size as f64 * dx,
                     &s.pupil,
                     &range(i).subrange(0., 0.1),
-                    &mut stats,
                 )?;
                 Ok(Staged::Done {
                     value: f,
@@ -302,64 +280,14 @@ pub fn build_psf_grid_shared(
                     ))
                 })
             },
-            src.reference(
-                &|i, staged: Staged<super::analysis::Field>| {
-                    let sub = range(i);
-                    staged.then(|f, _, warnings| {
-                        // The reference's kernel, written into a shared
-                        // allocation for the device convolution.
-                        let host = f.host_weighted().ok_or_else(|| {
-                            MkError::Unsupported("host transform without host pupils".into())
-                        })?;
-                        let psf = crate::analysis::psf::compute_psf(
-                            &host,
-                            crate::analysis::PsfMethod::Fft,
-                            size,
-                            dx,
-                            PsfNormalization::UnitEnergy,
-                            &sub.subrange(0.1, 1.),
-                        )?;
-                        warnings.extend(psf.warnings.iter().map(ToString::to_string));
-                        let kernel = b.fill_buffer(
-                            BufferDesc::new(ElementType::F32, [size, size]),
-                            &mut |mut a| {
-                                for (d, v) in a.as_mut_slice::<f32>()?.iter_mut().zip(&psf.data) {
-                                    *d = *v as f32;
-                                }
-                                Ok(())
-                            },
-                        )?;
-                        Ok((
-                            kernel,
-                            psf.energy_in_grid() / (dx * dx),
-                            f.sampling(),
-                            f.reference,
-                        ))
-                    })
-                },
-                &|staged| match staged {
-                    Staged::Done { value, .. } => value
-                        .pupils
-                        .iter()
-                        .map(|(_, _, p)| {
-                            let n = p.pupil.n as f64;
-                            n * size as f64 * (n + size as f64)
-                        })
-                        .sum(),
-                    Staged::Skipped { .. } => 0.,
-                },
-                IMAGE_HOST,
-            ),
         );
-        (results, late.map(|h| h.join().expect("illumination rows")))
+        (results, illumination.join().expect("illumination rows"))
     });
-    src.record(ran);
     let nodes = gather(results, &mut stats, &mut warnings)?;
     if nodes.len() != count {
         return Err(invalid("field grid contains an unusable pupil"));
     }
-    let (irradiance, axial, illumination_warnings, illumination_seconds) =
-        early.or(late).expect("illumination rows ran")?;
+    let (irradiance, axial, illumination_warnings, illumination_seconds) = illumination?;
     warnings.extend(illumination_warnings);
     let mut kernels = vec![];
     let mut kernel_sums = vec![];

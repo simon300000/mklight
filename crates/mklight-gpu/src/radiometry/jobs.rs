@@ -1,5 +1,5 @@
 //! Host boundary and final assembly for resident P1 -> P7 -> P3 jobs.
-use super::transmission::{TransmissionDesign, TransmissionRows};
+use super::transmission::TransmissionRows;
 use super::*;
 use crate::{ComputeBackend, Df32, PackedSystem, aiming};
 use mklight_core::{JobContext, job::RunInfo};
@@ -57,7 +57,7 @@ pub struct PupilResult {
     pub run_info: RunInfo,
     pub stats: PlanStats,
 }
-pub(super) fn import<T: bytemuck::Pod>(
+fn import<T: bytemuck::Pod>(
     b: &dyn ComputeBackend,
     p: &mut ResidentPlan,
     rows: &[T],
@@ -190,21 +190,6 @@ pub fn pupil(
     clip: bool,
     ctx: &JobContext,
 ) -> MkResult<PupilResult> {
-    pupil_mode(b, t, field, wl, points, state, clip, false, true, ctx)
-}
-#[allow(clippy::too_many_arguments)]
-pub(super) fn pupil_mode(
-    b: &dyn ComputeBackend,
-    t: &SequentialTracer,
-    field: FieldPoint,
-    wl: usize,
-    points: &[[f64; 2]],
-    state: &PolarizationState,
-    clip: bool,
-    scalar: bool,
-    retain_values: bool,
-    ctx: &JobContext,
-) -> MkResult<PupilResult> {
     ctx.check()?;
     let field = t.prepare_field(field)?;
     let prepared = PreparedRadiometry::new(b, t.system(), &ctx.subrange(0.0, 0.05))?;
@@ -220,17 +205,9 @@ pub(super) fn pupil_mode(
     };
     let handle = b.upload_systems_cached(&cache_key, std::slice::from_ref(&packed))?;
     let result = (|| {
-        let mut p = pupil_plan(
+        let p = pupil_plan(
             b, t, &prepared, handle, &field, wl, points, state, clip, ctx,
         )?;
-        if scalar {
-            for op in &mut p.operations {
-                if let ResidentOp::Radiometry(Request::Polarization(r)) = op {
-                    r.scalar = true;
-                }
-            }
-            p.settings["scalar"] = serde_json::json!(true);
-        }
         b.submit_plan(p, &ctx.subrange(0.05, 0.9))?.wait()
     })();
     b.release_systems(handle)?;
@@ -248,14 +225,8 @@ pub(super) fn pupil_mode(
     if result.stats.fallback_count == 0
         && (summary[9][0] == 0. || !status.iter().any(|&s| aim_failed(s)))
     {
-        let (values, trace_status) = if retain_values {
-            (
-                ResultSlice::resident(b.read_view(result.outputs[0].view())?, points.len()),
-                ResultSlice::resident(status_view, points.len()),
-            )
-        } else {
-            (ResultSlice::owned(vec![]), ResultSlice::owned(vec![]))
-        };
+        let values = ResultSlice::resident(b.read_view(result.outputs[0].view())?, points.len());
+        let trace_status = ResultSlice::resident(status_view, points.len());
         ctx.check()?;
         ctx.report(1., "radiometry complete");
         return Ok(PupilResult {
@@ -497,8 +468,7 @@ pub fn system_transmission(
     let mut points = vec![];
     let mut warnings = t.warnings().to_vec();
     let mut runs = vec![];
-    let design = TransmissionDesign::selected();
-    let problem = TransmissionRows {
+    let rows = TransmissionRows {
         t,
         fields: &fields,
         wavelengths: &wavelengths,
@@ -507,20 +477,8 @@ pub fn system_transmission(
         model: &settings.model,
         clip: settings.clip,
         channel,
-    };
-    let rows = match design.0 {
-        TransmissionDesign::Legacy => problem.legacy(b, ctx)?,
-        TransmissionDesign::Batched => problem.batched(b, 0..problem.count(), false, ctx)?,
-        TransmissionDesign::CpuAim => problem.batched(b, 0..problem.count(), true, ctx)?,
-        TransmissionDesign::Pipelined => problem.pipelined(b, ctx)?,
-        TransmissionDesign::Shared => problem.shared(b, ctx)?,
-        TransmissionDesign::Cpu => {
-            // The CPU-only division: the reference path from the GPU route.
-            let mut r = mklight_trace::system_transmission(t, settings, ctx)?;
-            r.run_info.settings["fieldmaps_variant"] = serde_json::json!(design.1);
-            return Ok(r);
-        }
-    };
+    }
+    .run(b, ctx)?;
     for (f, _) in fields.iter().enumerate() {
         for (wi, &wl) in wavelengths.iter().enumerate() {
             let r = &rows[f * wavelengths.len() + wi];
@@ -576,8 +534,6 @@ pub fn system_transmission(
         warnings,
     );
     run_info.settings["p7_runs"] = serde_json::json!(runs);
-    run_info.settings["fieldmaps_variant"] = serde_json::json!(design.1);
-    run_info.settings["cpu_threads"] = crate::cpu_share::evidence();
     ctx.check()?;
     ctx.report(1., "transmission complete");
     Ok(TransmissionResult {
@@ -703,9 +659,6 @@ pub fn polarization_pupil_map(
         warnings,
     );
     run_info.settings["p7_plan"] = r.run_info.settings;
-    run_info.settings["fieldmaps_variant"] = serde_json::json!(
-        mklight_core::split::variant("fieldmaps").unwrap_or_else(|| "default".into())
-    );
     let out = PolarizationPupilMap {
         samples,
         mean_intensity: r.summary[1][0] / ok.max(1.) * eta,
