@@ -53,10 +53,7 @@ private func paraxialEFL(summary: GenericResult, wavelength w: Int) throws -> (e
         #expect(e.info.backends.contains("cpu_reference"))
         let names = await e.analysisDescriptors().map(\.name)
         for n in ["validate", "system_summary", "glass_info", "rng_stream"] { #expect(names.contains(n)) }
-        // First-order data: `first_order`, or the `paraxial` placeholder of
-        // engines that predate it.
-        let descriptors = await e.analysisDescriptors()
-        #expect(names.contains(AnalysisKind.firstOrder.engineName(in: descriptors)))
+        #expect(names.contains(AnalysisKind.firstOrder.engineName))
         let glass = try #require(await e.analysisDescriptors().first { $0.name == "glass_info" })
         #expect(glass.settingsFields.first?.name == "name" && glass.settingsFields.first?.required == true)
         #expect(glass.defaultSettings == .null, "a required setting means no defaults")
@@ -106,7 +103,7 @@ private func paraxialEFL(summary: GenericResult, wavelength w: Int) throws -> (e
         // The engine's own first-order analysis, once it is available, must
         // agree: it has to deliver a typed result with a numeric EFL.
         let descriptors = await e.analysisDescriptors()
-        let name = AnalysisKind.firstOrder.engineName(in: descriptors)
+        let name = AnalysisKind.firstOrder.engineName
         if descriptors.first(where: { $0.name == name })?.available == true {
             let fo = try await e.submit(.firstOrder(FirstOrderSettings()), on: snap).result()
             guard case .firstOrder(let r) = fo.result else {

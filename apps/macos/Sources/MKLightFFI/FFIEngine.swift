@@ -275,16 +275,14 @@ public struct FFIEngine: EngineClient {
 
     public func analysisDescriptors() async -> [AnalysisDescriptor] { core.descriptors }
 
-    /// A typed analysis runs as the engine analysis
-    /// `kind.engineName(in: descriptors)` (`first_order`, or `paraxial` on
-    /// engines that predate it) with the settings its schema accepts
-    /// (`AnalysisRequest.engineSettings`).
+    /// A typed analysis runs as the engine analysis `kind.engineName` with
+    /// the settings its schema accepts (`AnalysisRequest.engineSettings`).
     /// Its result decodes into the typed mirror when the JSON matches, and
     /// is shown generically otherwise. An analysis the engine lists as
     /// unavailable fails with `EngineError.unsupported` and its reason.
     public func submit(_ request: AnalysisRequest, on snapshot: ModelSnapshot) -> AnalysisJob {
         let problems = request.problems(for: snapshot.system)
-        let name = request.kind.engineName(in: core.descriptors)
+        let name = request.kind.engineName
         guard problems.isEmpty else {
             return AnalysisJob.run(request: request, snapshot: snapshot) { _ in throw EngineError.invalidSettings(problems) }
         }
