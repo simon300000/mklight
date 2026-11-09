@@ -6,13 +6,15 @@
 //! of `support/comparison.rs`. For the truncated solves (`optimize` with 3
 //! iterations, `glass_substitution` with 2 local iterations) a merit or
 //! violation outside its gate passes when it deviates from the reference by
-//! at most twice as much as the reference deviates from itself after a
-//! 1e-9 relative change of one curvature: their outcomes follow the
+//! at most twice as much as the reference itself moves under either of the
+//! two differences a device run brings: a perturbation of the values (the
+//! reference on a copy with one curvature changed by 1e-9, relative) and
+//! the device's forward-difference step. Their outcomes follow the
 //! least-squares trajectory, which perturbations far below the contract's
-//! gates move by more than the gates on several samples. The CPU-f32 emulation runs everywhere;
-//! the Metal test is ignored (real Metal required, run through the
-//! benchmark lock). One test per process section: the aiming selection is
-//! process-global.
+//! gates move by more than the gates on several samples. The CPU-f32
+//! emulation runs everywhere; the Metal test is ignored (real Metal
+//! required, run through the benchmark lock). One test per process
+//! section: the aiming selection is process-global.
 
 use std::sync::Arc;
 
@@ -100,6 +102,11 @@ fn deviation(analysis: &str, cpu: &AnalysisResult, r: &AnalysisResult) -> (f64, 
     (largest("merit", true), largest("violation", false))
 }
 
+/// `ResidentEvaluator`'s forward step for ray operands
+/// (`DEVICE_FD_RELATIVE_STEP_FORWARD`; the default merits here are spot
+/// merits).
+const DEVICE_STEP: f64 = 1e-6;
+
 /// `system` with its first curvature changed by 1e-9 (relative).
 fn nudged(system: &mklight_core::OpticalSystem) -> mklight_core::OpticalSystem {
     let mut s = system.clone();
@@ -133,9 +140,19 @@ fn check(engine: &Engine, device: &str, systems: Vec<(&str, mklight_core::Optica
             let Some(cpu) = run(&session, analysis, &settings, Backend::CpuReference) else {
                 continue;
             };
-            // The reference's own sensitivity of a truncated solve.
-            let spread = run(&nudged, analysis, &settings, Backend::CpuReference)
-                .map_or((0., 0.), |r| deviation(analysis, &cpu, &r));
+            // The reference's own movement of a truncated solve.
+            let spread = if matches!(analysis, "optimize" | "glass_substitution") {
+                let mut stepped = settings.clone();
+                stepped["fd_relative_step"] = json!(DEVICE_STEP);
+                let moved = |s: &Session, settings: &Value| {
+                    run(s, analysis, settings, Backend::CpuReference)
+                        .map_or((0., 0.), |r| deviation(analysis, &cpu, &r))
+                };
+                let (a, b) = (moved(&nudged, &settings), moved(&session, &stepped));
+                (a.0.max(b.0), a.1.max(b.1))
+            } else {
+                (0., 0.)
+            };
             for (aiming, expected) in [(None, "host"), (Some("device"), "device")] {
                 split::set("aiming", aiming);
                 let gpu = run(&session, analysis, &settings, Backend::Gpu(device.into()))
@@ -157,7 +174,7 @@ fn check(engine: &Engine, device: &str, systems: Vec<(&str, mklight_core::Optica
                 let dev = deviation(analysis, &cpu, &gpu);
                 eprintln!(
                     "{name}/{analysis}/{expected} aiming: used {} reason {:?} merit, violation \
-                     deviation {:.2e}, {:.2e} (reference nudged {:.2e}, {:.2e}) cpu {:.1} ms \
+                     deviation {:.2e}, {:.2e} (reference moves {:.2e}, {:.2e}) cpu {:.1} ms \
                      device {:.1} ms",
                     gpu.backend.used,
                     report.reason,
@@ -177,7 +194,7 @@ fn check(engine: &Engine, device: &str, systems: Vec<(&str, mklight_core::Optica
                 if !report.failures.iter().all(within_spread) || !native.is_empty() {
                     failures.push(format!(
                         "{name}/{analysis}/{expected}: {:?} {:?} deviation {dev:?} \
-                         (reference nudged {spread:?})",
+                         (reference moves {spread:?})",
                         report.failures, native
                     ));
                 }
