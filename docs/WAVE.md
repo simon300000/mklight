@@ -557,9 +557,11 @@ or silently zero amplitudes.
 The chief/centroid reference uses P1's unclipped chief and P3 weighted moments.
 Small reference-frame metadata remains host control. P1 sphere projection and
 resident amplitude/Jacobian work preserve both sheets, telecentric limits,
-negative propagation and finite conjugates. `ResidentTracedPupil` retains its
-original resident lattice, mask and `ExitPupilInfo`; resampling/refinement does
-not trace again or copy a host pupil back to the device.
+negative propagation and finite conjugates. A device-traced
+`ResidentTracedPupil` retains its resident lattice nodes, mask and
+`ExitPupilInfo`; a host-traced one (the native analyses) keeps the reference
+lattice and pupil instead (`host`), uploads only the resampled pupil, and
+refines on the host without tracing again.
 
 `from_structured` and `ResidentPupil::from_pupil` remain explicit input boundaries
 for existing host data. `from_resident_lattice` consumes already resident nodes.
@@ -588,10 +590,9 @@ Configured callers still apply `ConfiguredTracer::stamp` to retain the base
 snapshot and configuration identity.
 
 * Wavefront statistics use Debye weights, double-float reductions and a P3
-  three-column QR tilt fit. The original lattice Zernike fit uses device basis
-  evaluation and pivoted, reorthogonalised QR. Its reported condition is the
-  infinity-norm estimate of equilibrated R, distinct from the reference's
-  spectral condition number; rank failures remain errors.
+  three-column QR tilt fit (device basis evaluation, pivoted and
+  reorthogonalised QR; a rank failure is an error). The Zernike fit and
+  Seidel terms are the reference's own, from the host lattice (§9).
 * `append_psf`, `append_huygens`, `append_correlation` and `append_fft_otf`
   compose into caller plans. FFT/chirp/affine transforms
   preserve the reference's negligible-skew rule before satisfying P2's exact

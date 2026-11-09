@@ -163,9 +163,7 @@ pub struct Transport {
     /// even asphere whose sag is the plain radial form is evaluated as
     /// `S(u)`, `u = x² + y²`, each bracketed root located in f32 and polished
     /// by two double-float Newton steps; every other extended sag by the sag
-    /// jets. The CPU specification evaluates every extended sag by the jets
-    /// and never hands off, so on even aspheres it agrees with the device to
-    /// double-float rounding, not bit for bit.
+    /// jets, as in the CPU specification, which never hands off.
     pub sag_mode: u32,
 }
 impl Transport {

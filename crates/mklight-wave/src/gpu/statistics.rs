@@ -47,7 +47,6 @@ impl ResidentPupil {
         p.operations.push(ResidentOp::Wave(w::Request::Zernike {
             samples: p.view(samples)?,
             terms: p.view(t)?,
-            standard: false,
             matrix,
             rhs,
         }));

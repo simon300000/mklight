@@ -72,8 +72,8 @@ pub(crate) struct RayDesign {
     pub speculative_rounds: u32,
     /// Aim every pupil ray on the host (the candidates' f64 tracers, the
     /// reference's aims) and only trace it on the device (the solvers'
-    /// default; device aiming is the `aiming` study's `device` and `table`
-    /// designs).
+    /// default; device aiming is the `aiming` key's `device` and `table`
+    /// options).
     pub host_aim: bool,
 }
 impl RayDesign {
@@ -109,7 +109,7 @@ const fn hybrid_rounds(cap: u32) -> u32 {
 
 /// `MKLIGHT_SOLVERS_TRACE_ROUTING=1` prints, per hybrid batch, the rays
 /// routed to the host and the device's unresolved, failed and slow rays
-/// (diagnostics of the work-split study).
+/// (diagnostics).
 pub(crate) fn trace_routing() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| std::env::var("MKLIGHT_SOLVERS_TRACE_ROUTING").is_ok_and(|v| v == "1"))

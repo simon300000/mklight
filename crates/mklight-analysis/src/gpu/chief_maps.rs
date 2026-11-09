@@ -1,5 +1,5 @@
-//! Work-split designs of the chief-ray maps: `chief_ray_angle`,
-//! `pupil_aberration` and `grid_distortion` (study key `fieldmaps`). Each
+//! Host/device divisions of the chief-ray maps: `chief_ray_angle`,
+//! `pupil_aberration` and `grid_distortion` (route key `fieldmaps`). Each
 //! field point needs one aimed chief ray (plus, for the pupil aberration,
 //! four un-aimed probes); the per-field chief solve is small, serial and
 //! branchy, the trace regular.
