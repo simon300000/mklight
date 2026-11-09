@@ -42,7 +42,6 @@ struct MklRiField {
 #define MKL_RI_SEEDED 2u
 #define MKL_RI_AIMED 4u
 #define MKL_RI_SKIP 8u
-#define MKL_RI_PENCIL 9u
 #define MKL_RI_TASK_WORDS 14u
 struct MklRiTask {
     MKL_U32 field, flags;

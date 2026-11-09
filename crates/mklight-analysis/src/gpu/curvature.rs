@@ -94,14 +94,7 @@ pub fn grid_distortion_job(
                 .map(move |&x| [x + s.field_center[0], y + s.field_center[1]])
         })
         .collect();
-    let (selected, name) = super::chief_maps::ChiefDesign::selected();
-    let design = selected.resolve(coords.len());
-    if design == super::chief_maps::ChiefDesign::Cpu {
-        // The CPU-only division: the reference path from the GPU route.
-        let mut r = crate::curvature::grid_distortion_job(t, s, ctx)?;
-        r.run_info.settings["fieldmaps_variant"] = serde_json::json!(name);
-        return Ok(r);
-    }
+    let (design, name) = super::chief_maps::ChiefDesign::selected();
     let fields: Vec<_> = coords
         .iter()
         .map(|&[x, y]| FieldPoint::normalized(x, y))
@@ -206,15 +199,6 @@ pub fn field_curvature_job(
         .wavelengths
         .resolve(t.num_wavelengths(), t.system().primary_wavelength)?;
     let n = fields.len() * wls.len();
-    // The chief-map designs: `cpu` (and `sized` below its threshold of
-    // field-wavelength rows) runs the reference path; the GPU designs keep
-    // their host chief rows here.
-    let (selected, name) = super::chief_maps::ChiefDesign::selected();
-    if selected.resolve(n) == super::chief_maps::ChiefDesign::Cpu {
-        let mut r = crate::curvature::field_curvature_job(t, s, ctx)?;
-        r.run_info.settings["fieldmaps_variant"] = serde_json::json!(name);
-        return Ok(r);
-    }
     let geo = Geometry::new(b, t, ctx)?;
     let mut p = ResidentPlan::new(t.system().snapshot.clone());
     p.settings = serde_json::to_value(s).unwrap();

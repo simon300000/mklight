@@ -4,16 +4,11 @@
 //! four un-aimed probes); the per-field chief solve is small, serial and
 //! branchy, the trace regular.
 //!
-//! * `host-chief`: the reference tracer solves every field's chief in f64
-//!   on all CPU cores (`aiming::host_seeds`), the GPU traces the rays.
+//! * `host-chief` (default): the reference tracer solves every field's
+//!   chief in f64 on all CPU cores (`aiming::host_seeds`), the GPU traces
+//!   the rays.
 //! * `device-chief`: the GPU solves the chiefs too (the aiming kernels'
 //!   own chief solve; no host seeds), so the whole map runs on the device.
-//! * `cpu`: the reference path (fields in parallel), run from the GPU
-//!   route: the CPU-only division.
-//! * `sized`: `cpu` below [`SIZED_FIELDS`] field points, else `host-chief`.
-//!
-//! The default is `host-chief`: an explicit GPU request runs natively; the
-//! size rule belongs to `auto` (the cost model), which `sized` measures.
 use super::*;
 
 /// The chief-map designs (module docs).
@@ -21,24 +16,18 @@ use super::*;
 pub enum ChiefDesign {
     HostChief,
     DeviceChief,
-    Cpu,
-    Sized,
 }
-/// Field points below which `sized` runs the CPU path.
-pub const SIZED_FIELDS: usize = 64;
 impl ChiefDesign {
     pub const DEFAULT: Self = Self::HostChief;
     pub fn name(self) -> &'static str {
         match self {
             Self::HostChief => "host-chief",
             Self::DeviceChief => "device-chief",
-            Self::Cpu => "cpu",
-            Self::Sized => "sized",
         }
     }
     /// The selected design and its evidence name.
     pub fn selected() -> (Self, String) {
-        let all = [Self::HostChief, Self::DeviceChief, Self::Cpu, Self::Sized];
+        let all = [Self::HostChief, Self::DeviceChief];
         match mklight_core::split::variant(super::SPLIT_KEY) {
             None => (Self::DEFAULT, format!("default:{}", Self::DEFAULT.name())),
             Some(v) => match all.into_iter().find(|d| d.name() == v) {
@@ -48,14 +37,6 @@ impl ChiefDesign {
                     format!("unknown:{v}:{}", Self::DEFAULT.name()),
                 ),
             },
-        }
-    }
-    /// The design that runs `fields` field points (`sized` resolved).
-    pub fn resolve(self, fields: usize) -> Self {
-        match self {
-            Self::Sized if fields < SIZED_FIELDS => Self::Cpu,
-            Self::Sized => Self::HostChief,
-            d => d,
         }
     }
 }

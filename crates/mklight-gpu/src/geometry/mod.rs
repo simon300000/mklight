@@ -6,7 +6,6 @@ pub const VERSION: u32 = 1;
 pub(crate) const RECORD_FLOATS: usize = crate::consts::MKL_AIM_RECORD_FLOATS as usize;
 mod cpu;
 mod curvature;
-mod illumination;
 pub mod ri;
 mod sag;
 pub mod spec;
@@ -127,23 +126,8 @@ pub struct Coddington {
     pub output: BufferId,
     pub status: BufferId,
 }
-#[derive(Clone, Debug)]
-pub struct Illumination {
-    /// Stable U32 [nodes] logical indices for sparse unresolved compaction.
-    pub ids: BufferId,
-    pub systems: SystemSet,
-    /// FieldSpec rows aligned with chief hits, last row is the q-step scale field.
-    pub fields: PlanView,
-    pub chiefs: ResidentHits,
-    pub slots: usize,
-    /// Sample rows, field selects a chief, weight is the polar quadrature weight.
-    pub nodes: PlanView,
-    /// DF [4,nodes]: weighted solid-angle/area, failed count, weighted cos4.
-    pub output: BufferId,
-    pub status: BufferId,
-}
-/// Flat aimed rays of the restructured illumination solve ([`ri`]): one
-/// thread per ray.
+/// Aimed rays of the image-point illumination solve ([`ri`]): one thread
+/// per ray.
 #[derive(Clone, Debug)]
 pub struct IlluminationRays {
     pub systems: SystemSet,
@@ -155,27 +139,6 @@ pub struct IlluminationRays {
     pub slots: usize,
     /// [`ri::RiRay`] rows, U32 [rays, MKL_RI_RAY_WORDS].
     pub output: BufferId,
-}
-/// Pupil nodes of the restructured illumination solve ([`ri::node`]): one
-/// thread per node.
-#[derive(Clone, Debug)]
-pub struct IlluminationNodes {
-    pub systems: SystemSet,
-    /// [`ri::RiField`] rows, U32 [fields, MKL_RI_FIELD_WORDS].
-    pub fields: PlanView,
-    /// Sample rows: field row and pupil point (weight unused).
-    pub nodes: PlanView,
-    pub slots: usize,
-    /// DF [nodes]: unweighted projected-solid-angle density, zero unless
-    /// the node's ray survives.
-    pub output: BufferId,
-    /// U32 [nodes]: 0 surviving, 1 no ray reaches the image point, 2
-    /// vignetted ([`ri::NODE_SURVIVES`] …). With `pencils`, 0 converged.
-    pub status: BufferId,
-    /// Newton-only mode: [`ri::RiTask`] rows U32 [nodes · MKL_RI_PENCIL,
-    /// MKL_RI_TASK_WORDS], each node's pencil ([`ri::pencil`]) for
-    /// [`IlluminationRays`]; `output` stays zero.
-    pub pencils: Option<BufferId>,
 }
 #[derive(Clone, Debug)]
 pub struct Opd {
@@ -222,9 +185,7 @@ pub enum Request {
     Records(Records),
     Coddington(Coddington),
     CloseFocus(CloseFocus),
-    Illumination(Illumination),
     IlluminationRays(IlluminationRays),
-    IlluminationNodes(IlluminationNodes),
     Opd(Opd),
     FocusTerms(FocusTerms),
 }
@@ -234,9 +195,7 @@ impl Request {
         match self {
             Request::SurfaceSamples(r) => Some(&r.systems),
             Request::Coddington(r) => Some(&r.systems),
-            Request::Illumination(r) => Some(&r.systems),
             Request::IlluminationRays(r) => Some(&r.systems),
-            Request::IlluminationNodes(r) => Some(&r.systems),
             _ => None,
         }
     }
@@ -355,32 +314,6 @@ pub fn validate(r: &Request, p: &ResidentPlan) -> MkResult<()> {
             output(p, r.output, D, &[n])?;
             output(p, r.status, U32, &[n])
         }
-        Request::Illumination(r) => {
-            let nr = r.chiefs.rays.count;
-            let n = r.nodes.desc.shape.first().copied().unwrap_or(0);
-            input(
-                &r.nodes,
-                U32,
-                &[n, crate::consts::MKL_AIM_SAMPLE_WORDS as usize],
-            )?;
-            input(
-                &r.fields,
-                U32,
-                &[nr, crate::consts::MKL_AIM_FIELD_WORDS as usize],
-            )?;
-            for id in [r.chiefs.records, r.chiefs.record_low] {
-                output(
-                    p,
-                    id.ok_or_else(|| bad("illumination chief records"))?,
-                    ElementType::F32,
-                    &[r.slots, nr, RECORD_FLOATS],
-                )?;
-            }
-            output(p, r.chiefs.status, U32, &[3, nr])?;
-            output(p, r.ids, U32, &[n])?;
-            output(p, r.output, D, &[4, n])?;
-            output(p, r.status, U32, &[n])
-        }
         Request::IlluminationRays(r) => {
             ri_fields(&r.fields, r.slots)?;
             let n = r.tasks.desc.shape.first().copied().unwrap_or(0);
@@ -395,28 +328,6 @@ pub fn validate(r: &Request, p: &ResidentPlan) -> MkResult<()> {
                 U32,
                 &[n, crate::consts::MKL_RI_RAY_WORDS as usize],
             )
-        }
-        Request::IlluminationNodes(r) => {
-            ri_fields(&r.fields, r.slots)?;
-            let n = r.nodes.desc.shape.first().copied().unwrap_or(0);
-            input(
-                &r.nodes,
-                U32,
-                &[n, crate::consts::MKL_AIM_SAMPLE_WORDS as usize],
-            )?;
-            if let Some(id) = r.pencils {
-                output(
-                    p,
-                    id,
-                    U32,
-                    &[
-                        n * crate::consts::MKL_RI_PENCIL as usize,
-                        crate::consts::MKL_RI_TASK_WORDS as usize,
-                    ],
-                )?;
-            }
-            output(p, r.output, D, &[n])?;
-            output(p, r.status, U32, &[n])
         }
         Request::CloseFocus(r) => {
             let n = r.hits.rays.count;
@@ -599,31 +510,10 @@ pub fn accesses(r: &Request) -> Access {
             a.reads.extend([r.chief_index.clone(), r.reference.clone()]);
             a.writes = vec![r.output, r.status];
         }
-        Request::Illumination(r) => {
-            a.reads = vec![
-                r.fields.clone(),
-                r.nodes.clone(),
-                view(r.chiefs.status, ElementType::U32, [0]),
-            ];
-            for id in [r.chiefs.records, r.chiefs.record_low]
-                .into_iter()
-                .flatten()
-            {
-                a.reads.push(view(id, ElementType::F32, [0]));
-            }
-            system_reads(&mut a, &r.systems);
-            a.writes = vec![r.output, r.status, r.ids];
-        }
         Request::IlluminationRays(r) => {
             a.reads = vec![r.fields.clone(), r.tasks.clone()];
             system_reads(&mut a, &r.systems);
             a.writes = vec![r.output];
-        }
-        Request::IlluminationNodes(r) => {
-            a.reads = vec![r.fields.clone(), r.nodes.clone()];
-            system_reads(&mut a, &r.systems);
-            a.writes = vec![r.output, r.status];
-            a.writes.extend(r.pencils);
         }
         Request::CloseFocus(r) => {
             a.reads.extend(hit_views(&r.hits));

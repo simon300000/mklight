@@ -111,31 +111,12 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                 ..Zeroable::zeroed()
             },
         ),
-        Request::Illumination(r) => (
-            "mkl_geometry_illumination",
-            r.nodes.desc.shape[0],
-            Params {
-                chiefs: r.chiefs.rays.count as u32,
-                segment: r.slots as u32,
-                ..Zeroable::zeroed()
-            },
-        ),
         Request::IlluminationRays(r) => (
             "mkl_geometry_ri_rays",
             r.tasks.desc.shape[0],
             Params {
                 chiefs: r.fields.desc.shape[0] as u32,
                 segment: r.slots as u32,
-                ..Zeroable::zeroed()
-            },
-        ),
-        Request::IlluminationNodes(r) => (
-            "mkl_geometry_ri_nodes",
-            r.nodes.desc.shape[0],
-            Params {
-                chiefs: r.fields.desc.shape[0] as u32,
-                segment: r.slots as u32,
-                centroid: u32::from(r.pencils.is_some()),
                 ..Zeroable::zeroed()
             },
         ),
@@ -223,18 +204,11 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
     let a = mklight_gpu::geometry::accesses(r);
     let mut out: Vec<_> = a.writes.iter().map(|&id| x.take_output(id)).collect();
     let pso = x.gpu.pipeline(&PipelineKey::plain(name))?;
-    // RI nodes run nested Newton solves: size those commands adaptively from
-    // measured throughput, starting large enough to occupy the device. The
-    // other kernels are closed-form per thread; fixed chunks only bound the
-    // command time (and so the cancellation latency).
-    let adaptive = matches!(r, Request::Illumination(_));
-    let (minimum, maximum) = (4096, 1 << 18);
-    let mut next = match r {
-        Request::Illumination(_) => minimum,
-        // Restructured illumination: up to 192 (node) or 48 (ray) dependent
-        // traces per thread, so about one device wave per command keeps
-        // commands short without waiting between them.
-        Request::IlluminationNodes(_) => 1 << 12,
+    // Fixed chunks bound the command time (and so the cancellation
+    // latency). The illumination rays run up to 48 dependent traces per
+    // thread, so about one device wave per command keeps commands short
+    // without waiting between them.
+    let next = match r {
         Request::IlluminationRays(_) => 1 << 14,
         Request::Coddington(_) => 1 << 16,
         _ => 1 << 22,
@@ -307,53 +281,11 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                         e.set_buffer_mut(6, &mut out[0], 0);
                         e.set_buffer_mut(8, &mut out[1], 0);
                     }
-                    Request::Illumination(r) => {
-                        bind_systems(e, x, uploaded.as_deref(), &r.systems);
-                        bind(
-                            e,
-                            3,
-                            x,
-                            &view(r.chiefs.records.unwrap(), ElementType::F32, [0]),
-                        );
-                        bind(
-                            e,
-                            4,
-                            x,
-                            &view(r.chiefs.record_low.unwrap(), ElementType::F32, [0]),
-                        );
-                        bind(e, 5, x, &r.fields);
-                        bind(e, 6, x, &r.nodes);
-                        e.set_buffer_mut(8, &mut out[0], 0);
-                        e.set_buffer_mut(9, &mut out[1], 0);
-                        e.set_buffer_mut(12, &mut out[2], 0);
-                        let un = mklight_gpu::aiming::kernel::newton_params();
-                        let clipped = mklight_gpu::layout::TraceParams {
-                            flags: mklight_gpu::consts::MKL_TRACE_CLIP,
-                            ..un
-                        };
-                        e.set_bytes(10, &[un, clipped]);
-                        bind(e, 11, x, &view(r.chiefs.status, ElementType::U32, [0]));
-                    }
                     Request::IlluminationRays(r) => {
                         bind_systems(e, x, uploaded.as_deref(), &r.systems);
                         bind(e, 3, x, &r.fields);
                         bind(e, 4, x, &r.tasks);
                         e.set_buffer_mut(5, &mut out[0], 0);
-                        e.set_bytes(8, &ri_trace_params());
-                    }
-                    Request::IlluminationNodes(r) => {
-                        bind_systems(e, x, uploaded.as_deref(), &r.systems);
-                        bind(e, 3, x, &r.fields);
-                        bind(e, 4, x, &r.nodes);
-                        let (a, b) = out.split_at_mut(1);
-                        e.set_buffer_mut(5, &mut a[0], 0);
-                        e.set_buffer_mut(6, &mut b[0], 0);
-                        if r.pencils.is_some() {
-                            e.set_buffer_mut(9, &mut b[1], 0);
-                        } else {
-                            // Unused without pencils; any valid binding.
-                            bind(e, 9, x, &r.nodes);
-                        }
                         e.set_bytes(8, &ri_trace_params());
                     }
                     Request::CloseFocus(r) => {
@@ -449,18 +381,11 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                 Ok(())
             })?
         };
-        let more = offset + (p.count as usize) < n;
-        let adaptive_seconds = if adaptive && more { x.measure()? } else { 0. };
         stage.max_command_seconds = stage.max_command_seconds.max(t.elapsed().as_secs_f64());
         x.stats.parameter_bytes += size_of::<Params>() as u64;
         ctl.check()?;
         ctl.report((offset + p.count as usize) as f64 / n as f64, "geometry");
         offset += p.count as usize;
-        if adaptive {
-            let fit = (p.count as f64 * 0.010 / adaptive_seconds.max(1e-6)) as usize;
-            next = fit.clamp(minimum, (p.count as usize * 8).clamp(minimum, maximum));
-            x.stats.parameter_bytes += 2 * size_of::<mklight_gpu::layout::TraceParams>() as u64;
-        }
     }
     for (id, b) in a.writes.into_iter().zip(out) {
         x.put_output(id, b);

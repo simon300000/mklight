@@ -975,42 +975,6 @@ fn metal_p4_composition() {
 }
 #[cfg(target_os = "macos")]
 #[test]
-fn metal_resident_integrals_match_ftz() {
-    use mklight_gpu::resident::ResidentPlan;
-    let b = mklight_metal::MetalBackend::new()
-        .unwrap()
-        .expect("host Metal required");
-    let cpu = CpuF32Backend::matching(&b.precision().probe);
-    let t = tracer_for(samples::cooke_triplet()).unwrap();
-    let run = |b: &dyn ComputeBackend| {
-        let mut p = ResidentPlan::new(t.system().snapshot.clone());
-        let g = gpu::Geometry::new(b, &t, &JobContext::new()).unwrap();
-        let buffers = g
-            .illumination(
-                &mut p,
-                &[[0.0, 0.0], [0.0, 1.0]],
-                t.system().primary_wavelength,
-                3,
-                12,
-                &JobContext::new(),
-            )
-            .unwrap();
-        p.outputs = vec![buffers.integrals];
-        let r = b
-            .submit_plan(p, &JobContext::new())
-            .unwrap()
-            .wait()
-            .unwrap();
-        assert_eq!(r.stats.copied_bytes, 0);
-        b.read_view(r.outputs[0].view()).unwrap().words().to_vec()
-    };
-    let a = run(&b);
-    let c = run(&cpu);
-    assert_eq!(a, c);
-    assert_eq!(a, run(&b));
-}
-#[cfg(target_os = "macos")]
-#[test]
 fn metal_ri_rim_regression() {
     let b = mklight_metal::MetalBackend::new()
         .unwrap()
