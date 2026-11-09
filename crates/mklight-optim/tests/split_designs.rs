@@ -13,7 +13,7 @@ use mklight_core::param::ParamPath;
 use mklight_core::{JobContext, RayAiming, Snapshot, samples};
 use mklight_gpu::{ComputeBackend, CpuF32Backend};
 use mklight_optim::deriv::{FdScheme, JacobianSettings, jacobian};
-use mklight_optim::gpu::{GpuContext, ResidentEvaluator};
+use mklight_optim::gpu::{DEVICE_AIM_FROM, GpuContext, ResidentEvaluator};
 use mklight_optim::linalg::Matrix;
 use mklight_optim::lsq::{LsqSettings, least_squares};
 use mklight_optim::merit::default::{DefaultCriterion, DefaultMeritSpec};
@@ -259,6 +259,37 @@ fn pipelining_gives_the_same_values() {
                 _ => panic!("{a:?} vs {b:?}"),
             }
         }
+    }
+}
+
+/// The default aiming rule: a small batch aims on the host and a large one
+/// of an aspheric system on the device, a spherical system's never; a pinned
+/// aiming holds for every batch.
+#[test]
+fn aiming_rule_by_batch() {
+    let backend: Arc<dyn ComputeBackend> = Arc::new(CpuF32Backend::new());
+    let rule = evaluator(&backend, &samples::cooke_triplet(), false);
+    assert_eq!(rule.device_aim_from(), Some(DEVICE_AIM_FROM));
+    for (sys, aspheric) in [
+        (real_aimed(samples::petzval_asphere()), true),
+        (real_aimed(samples::cooke_triplet()), false),
+    ] {
+        let ops = operands(&sys);
+        let refs: Vec<&Operand> = ops.iter().collect();
+        let large = 1 << 24;
+        assert!(!rule.aims_on_device(&sys, 1, &refs));
+        assert_eq!(rule.aims_on_device(&sys, large, &refs), aspheric);
+        let host = evaluator(&backend, &sys, false).with_host_aim(true);
+        let device = evaluator(&backend, &sys, false).with_host_aim(false);
+        assert!(!host.aims_on_device(&sys, large, &refs));
+        assert!(device.aims_on_device(&sys, 1, &refs));
+        // The decision reaches the plan: one pinned device batch, one rule
+        // batch of a single candidate.
+        values(&device, &[sys.clone()], &ops);
+        let rule = evaluator(&backend, &sys, false);
+        values(&rule, &[sys.clone()], &ops);
+        assert_eq!(device.stats().device_aimed_batches, 1);
+        assert_eq!(rule.stats().device_aimed_batches, 0);
     }
 }
 
