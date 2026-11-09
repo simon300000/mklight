@@ -1067,9 +1067,8 @@ pub(crate) fn ghost_irradiance_with_backend(
     model: &GhostModel,
     settings: &IrradianceSettings,
     ctx: &JobContext,
-    device: Option<(&dyn mklight_gpu::ComputeBackend, crate::gpu::Design)>,
+    backend: Option<&dyn mklight_gpu::ComputeBackend>,
 ) -> MkResult<GhostIrradiance> {
-    let backend = device.map(|d| d.0);
     let timer = RunTimer::start();
     let sys = model.system();
     let osys = sys.system();
@@ -1150,8 +1149,8 @@ pub(crate) fn ghost_irradiance_with_backend(
     // The primary (index 0) and the ghosts. The CPU reference traces paths
     // in groups adjacent in step order, so that shared step prefixes are
     // traced once per lattice point (results are those of tracing each path
-    // alone): all of them without a device, a fixed share of the groups with
-    // `Design::Shared`, beside the device run of the others.
+    // alone): all of them without a device, else a fixed share of the
+    // groups (`gpu::CPU_SHARE`) beside the device run of the others.
     let all_steps = std::iter::once(pstep.as_slice())
         .chain(path_steps.iter().map(Vec::as_slice))
         .collect::<Vec<_>>();
@@ -1162,12 +1161,10 @@ pub(crate) fn ghost_irradiance_with_backend(
             .map(step_key)
             .cmp(all_steps[b].iter().map(step_key))
     });
-    let design = device.map(|d| d.1);
-    let cpu_groups: Vec<Vec<usize>> = match design {
+    let cpu_groups: Vec<Vec<usize>> = match backend {
         None => order.chunks(GROUP_PATHS).map(<[usize]>::to_vec).collect(),
-        Some(d) => {
-            let share = d.cpu_share();
-            let at = |k: usize| (k as f64 * share).round() as usize;
+        Some(_) => {
+            let at = |k: usize| (k as f64 * crate::gpu::CPU_SHARE).round() as usize;
             order
                 .chunks(GROUP_PATHS)
                 .enumerate()
@@ -1249,25 +1246,18 @@ pub(crate) fn ghost_irradiance_with_backend(
         device_index[i] = k;
     }
     let mut cpu_stages = None;
-    let (gpu, cpu_runs) = match (backend, design) {
-        (Some(b), Some(design)) => {
+    let (gpu, cpu_runs) = match backend {
+        Some(b) => {
             let device_paths = device[1..]
                 .iter()
                 .map(|&i| paths[i - 1].clone())
                 .collect::<Vec<_>>();
             let device_steps = device.iter().map(|&i| all_steps[i]).collect::<Vec<_>>();
             let quiet = JobContext::with(ctx.cancel.clone(), Default::default());
-            let pool = crate::gpu::share_pool()?;
             std::thread::scope(|scope| {
-                let cpu = (!cpu_groups.is_empty()).then(|| {
-                    scope.spawn(|| match &pool {
-                        Some(p) => p.install(|| trace_cpu(&quiet)),
-                        None => trace_cpu(&quiet),
-                    })
-                });
+                let cpu = (!cpu_groups.is_empty()).then(|| scope.spawn(|| trace_cpu(&quiet)));
                 let gpu = resident_maps(
                     b,
-                    design,
                     model,
                     &device_paths,
                     &device_steps,
@@ -1284,7 +1274,6 @@ pub(crate) fn ghost_irradiance_with_backend(
                     .map(|h| h.join().expect("CPU share panicked"))
                     .transpose();
                 let mut gpu = gpu?;
-                gpu.0.design = Some(design);
                 gpu.0.cpu_paths = cpu_groups.iter().map(Vec::len).sum();
                 let (runs, seconds) = cpu?.unwrap_or_default();
                 gpu.0.host_seconds.insert("cpu_share_refine", seconds[0]);
@@ -1296,7 +1285,7 @@ pub(crate) fn ghost_irradiance_with_backend(
                 MkResult::Ok((Some(gpu), runs))
             })?
         }
-        _ => {
+        None => {
             let (runs, seconds) = trace_cpu(ctx)?;
             lap = crate::gpu::Lap::now();
             cpu_stages = Some(seconds);
@@ -1626,7 +1615,6 @@ mod tests {
 #[allow(clippy::too_many_arguments)]
 fn resident_maps<'a>(
     backend: &'a dyn mklight_gpu::ComputeBackend,
-    design: crate::gpu::Design,
     model: &'a GhostModel,
     paths: &[GhostPath],
     steps: &[&[Step]],
@@ -1730,7 +1718,7 @@ fn resident_maps<'a>(
         fields,
         settings,
         template,
-        design.groups(),
+        crate::gpu::PIPELINE_GROUPS,
         &mut gather,
         &ctx.subrange(0.03, 0.8),
     )?;

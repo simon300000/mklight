@@ -438,10 +438,7 @@ included in the ghost kernel) at its incidence and folds the s and p
 channel powers, DOE efficiency and signed Beer–Lambert absorption in step
 order inside the trace, so no per-step query, factor or coating record is
 stored or re-read. A function constant compiles the thin-film matrices only
-when the run has film coatings (work-split study key `ghost_kernel`:
-`specialized`, the default, makes coating folding and films constants, 3
-pipelines; `partial` keeps folding a constant and branches on films, 2;
-`uber` branches on both, 1; the records are identical). There is no independently interpolated
+when the run has film coatings. There is no independently interpolated
 coating table or second path enumerator. Probes flagged by P7, and
 numerical trace failures, are completed with the reference and counted.
 Clipping tests whose margin lies within 2⁻²⁸ (relative, of r², |x| or the
@@ -487,49 +484,36 @@ unaffected resident probes are reused without copying their batch.
 Cancellation checks precede every reference-completion block; cancellation
 never starts a replacement CPU job.
 
-**Divisions between host and device** (`gpu::Design`, work-split study key
-`ghost`, `gpu::ghost_irradiance_design`):
+**Division between host and device.** The paths form four groups
+(contiguous path indices) that refine independently: the device traces one
+group's tile while the host completes, deduplicates and splits another, and
+gathers a finished group's leaves; the first group with a tile ready goes
+first, so groups finish one after another. Meanwhile the CPU reference traces
+a fixed share (20 %) of the path groups of §5 (adjacent in step order, shared
+prefixes) beside the device run. Grouping never changes a result: each path's
+probes, cache order and leaves, and the order of leaves in the map chain, are
+those of one group. The primary stays on the device; the paths the CPU traces
+are bit-identical to the reference (tested). `RunInfo.settings.gpu` records
+the CPU paths and the wall seconds of the host stages (`host_seconds`:
+deduplication, device waits, outcomes, splits, leaves, maps) with their
+process CPU time (`host_cpu_seconds`); `settings.timings` holds [wall, CPU]
+pairs of the run's stages on either backend.
 
-| design | device | host |
-|---|---|---|
-| `level-sync` | every level's probes of all paths, in tiles | refines all paths level by level; completes one tile while the device traces the next |
-| `pipelined` | tiles of one group of paths at a time | the paths form four groups (contiguous path indices) that refine independently: the host completes, deduplicates and splits one group, and gathers a finished group's leaves, while the device traces another group's tile; the first group with a tile ready goes first, so groups finish one after another |
-| `shared` (default) | `pipelined` on most paths | the CPU reference traces a fixed share (20 %) of the path groups of §5 (adjacent in step order, shared prefixes) at the same time |
+Host stages run in parallel where their results allow it: the outcomes of a
+tile per path run, the splits and leaf gathering of a group's paths, the
+per-path maps of the CPU reference's groups, the leaf ordering (a stable
+parallel sort) and the record fills of the device maps; folds stay in their
+fixed order.
 
-Grouping never changes a result: each path's probes, cache order and
-leaves, and the order of leaves in the map chain, are those of one group, and
-`level-sync` and `pipelined` agree bit for bit (tested). In `shared` the
-primary stays on the device; the paths the CPU traces are bit-identical to the
-reference, the others to `pipelined` (tested). `RunInfo.settings.gpu` records
-the design, the CPU paths and the wall seconds of the host stages
-(`host_seconds`: deduplication, device waits, outcomes, splits, leaves,
-maps); `settings.timings` has the run's stages on either backend.
-
-The CPU share of `shared` runs in the global rayon pool or in a pool of its
-own size (study key `ghost_threads`); results do not depend on it. Host stages
-run in parallel where their results allow it: the outcomes of a tile per path
-run, the splits and leaf gathering of a group's paths, the per-path maps of
-the CPU reference's groups, the leaf ordering (a stable parallel sort) and
-the record fills of the device maps; folds stay in their fixed order.
-`settings.gpu.host_cpu_seconds` records the process CPU time of each host
-stage beside its wall time, and `settings.timings` holds [wall, CPU] pairs.
-
-The device path traces and chief aims use the shared trace kernel, so the
-even-asphere slope design (`trace_slope`, default `df`) applies to them. With
-`f32` the chief aims of lenses with deep even aspheres need not reach the
-aiming tolerance; the device path then stops ("ghost chief aiming requires
-reference completion") and the engine runs the CPU reference. Measured on a
-quiet M2 Pro at a 24² pupil grid: a 37-surface zoom with 7 aspheres (630
-ghosts) 20.8 s on the CPU and 14.0 s with `shared`; a 35-surface ultra-wide
-(528 ghosts) 14.5 and 9.2 s; flux and peak agree with the CPU to 3e-14.
-
-Measured on a heavily loaded M2 Pro (provisional): on a 29-surface lens with
-276 two-reflection ghosts (58 M probes), the device traces for about 9 s and
-the host stages of `level-sync` add about 7 s that the device waits for
-(leaves, splits and deduplication, outcome classification); `pipelined`
-overlaps most of them and `shared` also moves a share of the probes and their
-host work to the CPU. On the Double Gauss: CPU 1.39 s, `level-sync` 0.86 s,
-`pipelined` 0.70 s.
+The device path traces and chief aims use the shared trace kernel with the
+double-float even-asphere slope, so the device path completes on lenses with
+deep even aspheres. Measured on a quiet M2 Pro at a 24² pupil grid: a
+37-surface zoom with 7 aspheres (630 ghosts) 20.8 s on the CPU and 14.0 s on
+the device; a 35-surface ultra-wide (528 ghosts) 14.5 and 9.2 s; flux and
+peak agree with the CPU to 3e-14. On a 29-surface lens with 276
+two-reflection ghosts (58 M probes) the device traces for about 9 s, and
+without the grouping the host stages (leaves, splits and deduplication,
+outcome classification) added about 7 s that the device waited for.
 
 Lattice plans are tiled at 2²⁰ probes across paths, fields and wavelengths
 (about 170 MB of launch, probe and value records); per-probe storage does

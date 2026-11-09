@@ -2,10 +2,8 @@
 #define MKLIGHT_STRAY_OPS_TYPES_H
 #define MKL_STRAY_VERSION 6
 #define MKL_STRAY_FEATURES_CONSTANT 60
-/* Feature bits read at run time from MklStrayTransportParams::reserved[2]
-   instead of the specialisation constant (kernel-design study). */
-#define MKL_STRAY_DYNAMIC_CONSTANT 62
-/* Sag mode 2: an extended-sag scan of more cells goes to the host. */
+/* Grazing handoff (Transport::sag_mode bit 0): an extended-sag scan of more
+   cells stops the source before the event for the host to continue. */
 #define MKL_STRAY_SAG_HANDOFF_CELLS 32
 #define MKL_STRAY_MAX_PRIMITIVES 1048576
 #define MKL_STRAY_MAX_TILE 65536
@@ -60,14 +58,15 @@ struct MklStrayDetection {
 struct MklStrayLedger {
   float2 sums[21]; ulong draws; uint events, hits, top, status, wavelength, reserved;
 };
-struct MklStrayQuery { MklStrayHistory history; uint kind, slot, key, other; };
-struct MklStrayTallyParams { float2 half_size[2]; uint nx, ny, owned, covered, count, capacity, sources, queries; };
 struct MklStraySettings {
   float2 weight, roulette, ceiling, rare_floor;
   uint mode, max_splits, max_events, scatter, start_medium, detector_accept, wavelengths, sequence_count;
 };
+/* Wavefront transport: `tile_count` list entries from `tile_first` on (0:
+   the whole list), `head_events` events per source (0: no limit),
+   `sag_mode` as Transport::sag_mode. */
 struct MklStrayTransportParams {
-  uint count, nodes, stack_capacity, hit_capacity, budget, parity, seed[2], threads, reserved[3];
+  uint count, nodes, stack_capacity, hit_capacity, tile_count, parity, seed[2], tile_first, head_events, sag_mode, reserved;
 };
 #endif
 #endif

@@ -1,7 +1,9 @@
 //! Divisions of stray-light transport between the GPU and the CPU (the
 //! work-split study key `stray`, docs/STRAY.md "Resident GPU transport").
 //!
-//! Every design keeps the reference's per-source semantics: source ray `i`
+//! The device runs the wavefront kernels on a share of the source chunks
+//! (all of them in [`Design::Wavefront`]). Every design keeps the
+//! reference's per-source semantics: source ray `i`
 //! uses Philox stream `(seed, i)` for its whole depth-first path tree, its
 //! contributions form one per-source term of every estimator, and chunks of
 //! `chunk_rays` sources are folded in source order. A source is transported
@@ -12,7 +14,7 @@
 //! fixed options, never on timing, so a seed gives bit-identical results.
 //!
 //! The device writes detections, ledgers and stacks into shared memory; the
-//! CPU reads them in place (no estimator chain on the device, no copies).
+//! CPU reads them in place and forms the estimators (no copies).
 //! Two plans are in flight, so the GPU transports plan `k + 1` while the CPU
 //! finishes and tallies plan `k`.
 
@@ -34,65 +36,36 @@ pub const STUDY_KEY: &str = "stray";
 /// Study key of the device share of [`Design::CoSplit`] (a number in
 /// 0…1; unset: [`default_share`]).
 pub const SHARE_KEY: &str = "stray_share";
-/// Study key of the device's extended-sag intersection
-/// (`ops::Transport::sag_mode`): `f32-scan` (default), `scan`,
-/// `cpu-grazing` or `f32-grazing` (both).
+/// Study key of the device's extended-sag intersection (bit 0 of
+/// `ops::Transport::sag_mode`): `f32-scan` (default) or `f32-grazing`,
+/// which hands oblique and grazing rays to the CPU.
 pub const SAG_KEY: &str = "stray_sag";
-/// Study key of the device's even-asphere evaluation (bits 2-3 of
-/// `ops::Transport::sag_mode`): `jet` (default), `radial-scan`, `radial` or
-/// `radial-newton`.
+/// Study key of the device's even-asphere evaluation (bit 1 of
+/// `ops::Transport::sag_mode`): `jet` (default) or `radial-newton`.
 pub const ASPHERE_KEY: &str = "stray_asphere";
-
-/// Study key of the threads of the CPU share of [`Design::CoSplit`]: a
-/// number of threads for a pool of its own (unset: the global pool, which
-/// the device plans' CPU completion shares).
-pub const THREADS_KEY: &str = "stray_threads";
-
-/// A pool of the selected size for a CPU share, if one is selected.
-pub(crate) fn share_pool(key: &str) -> MkResult<Option<rayon::ThreadPool>> {
-    match mklight_core::split::variant(key) {
-        None => Ok(None),
-        Some(v) => {
-            let n = v
-                .parse::<usize>()
-                .ok()
-                .filter(|n| *n > 0)
-                .ok_or_else(|| MkError::InvalidModel(format!("{key} '{v}'")))?;
-            rayon::ThreadPoolBuilder::new()
-                .num_threads(n)
-                .build()
-                .map(Some)
-                .map_err(|e| MkError::Backend(format!("{key} pool: {e}")))
-        }
-    }
-}
 
 /// The selected extended-sag intersection mode and even-asphere evaluation
 /// (`ops::Transport::sag_mode`).
 pub fn sag_mode() -> MkResult<u32> {
     let asphere = match mklight_core::split::variant(ASPHERE_KEY).as_deref() {
         None | Some("jet") => 0,
-        Some("radial-scan") => 1,
-        Some("radial") => 2,
-        Some("radial-newton") => 3,
+        Some("radial-newton") => 2,
         Some(other) => {
             return Err(MkError::InvalidModel(format!(
-                "unknown stray asphere mode '{other}' (jet, radial-scan, radial, radial-newton)"
+                "unknown stray asphere mode '{other}' (jet, radial-newton)"
             )));
         }
     };
-    Ok(asphere << 2
-        | match mklight_core::split::variant(SAG_KEY).as_deref() {
-            Some("scan") => 0,
-            None | Some("f32-scan") => 1,
-            Some("cpu-grazing") => 2,
-            Some("f32-grazing") => 3,
-            Some(other) => {
-                return Err(MkError::InvalidModel(format!(
-                    "unknown stray sag mode '{other}' (scan, f32-scan, cpu-grazing, f32-grazing)"
-                )));
-            }
-        })
+    let sag = match mklight_core::split::variant(SAG_KEY).as_deref() {
+        None | Some("f32-scan") => 0,
+        Some("f32-grazing") => 1,
+        Some(other) => {
+            return Err(MkError::InvalidModel(format!(
+                "unknown stray sag mode '{other}' (f32-scan, f32-grazing)"
+            )));
+        }
+    };
+    Ok(asphere | sag)
 }
 
 /// Detections a source keeps on the device before the CPU continues it.
@@ -105,25 +78,17 @@ const PLAN_BYTES: usize = 160 << 20;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Design {
-    /// The device transports and tallies everything (detector estimators on
-    /// the device, integer keys on the host); a capacity or precision limit
-    /// sends the whole run to the CPU reference.
-    GpuTally,
-    /// The device transports every source to completion; the CPU tallies the
-    /// detections in place, continues sources whose stack or detection
-    /// journal is full, and retraces sources that need reference arithmetic.
-    CpuTally,
-    /// The device transports the first `TransportOptions::head_events`
-    /// events of every source, the CPU continues the longer path trees from
-    /// the device stacks and tallies, overlapped with the next plan.
-    GpuHead,
-    /// `Wavefront` on a fixed share (`TransportOptions::gpu_share`) of the
-    /// source chunks, while the CPU reference traces the other chunks at the
-    /// same time.
+    /// The device transports a share (`TransportOptions::gpu_share`, else
+    /// the study key `stray_share`, else [`default_share`]) of the source
+    /// chunks while the CPU reference traces the other chunks at the same
+    /// time.
     CoSplit,
-    /// `GpuHead` with wavefront device transport: each bounce advances every
-    /// live source by one event in separate pop, closest-hit and interaction
-    /// kernels, with device-compacted lists (identical device records).
+    /// The device transports every source: the first
+    /// `TransportOptions::head_events` events of each, in wavefront kernels
+    /// (each bounce advances every live source by one event in separate
+    /// pop, closest-hit and interaction kernels over device-compacted
+    /// lists); the CPU continues the longer path trees from the device
+    /// stacks and tallies, overlapped with the next plan.
     Wavefront,
 }
 
@@ -134,35 +99,25 @@ impl Design {
     }
     pub fn named(name: Option<&str>) -> MkResult<Design> {
         Ok(match name {
-            None => Design::CoSplit,
-            Some("gpu-tally") => Design::GpuTally,
-            Some("cpu-tally") => Design::CpuTally,
-            Some("gpu-head") => Design::GpuHead,
-            Some("cosplit") => Design::CoSplit,
+            None | Some("cosplit") => Design::CoSplit,
             Some("wavefront") => Design::Wavefront,
             Some(other) => {
                 return Err(MkError::InvalidModel(format!(
-                    "unknown stray transport design '{other}' (gpu-tally, cpu-tally, gpu-head, cosplit, wavefront)"
+                    "unknown stray transport design '{other}' (cosplit, wavefront)"
                 )));
             }
         })
     }
     pub fn name(self) -> &'static str {
         match self {
-            Design::GpuTally => "gpu-tally",
-            Design::CpuTally => "cpu-tally",
-            Design::GpuHead => "gpu-head",
             Design::CoSplit => "cosplit",
             Design::Wavefront => "wavefront",
         }
     }
-    /// Whether the device runs the wavefront kernels.
-    fn wavefront(self) -> bool {
-        matches!(self, Design::Wavefront | Design::CoSplit)
-    }
 }
 
-/// Device share of [`Design::CoSplit`] when the options leave it open: a
+/// Device share of [`Design::CoSplit`] when neither the options nor the
+/// study key `stray_share` set it: a
 /// fixed rule of the scene, so that a seed gives the same partition. The
 /// 12-core reference traces analytic scenes about four times faster than
 /// the device, so the device takes the share it finishes in the CPU's time
@@ -183,7 +138,7 @@ pub fn default_share(scene: &Scene, rays: u64) -> f64 {
         Shape::Cylinder(_) => false,
     });
     // Lenses with iterative sags: the device is 7–50 times slower per event
-    // than the CPU (round 2, with the f32 pre-scan), so it gets nothing.
+    // than the CPU (with the f32 pre-scan), so it gets nothing.
     let share = if iterative { 0. } else { 0.2 };
     // A device plan has a fixed latency (its longest path trees): below
     // about two plans of work the device cannot pay for it.
@@ -263,7 +218,7 @@ pub struct Counters {
     pub head_budget: u64,
     pub stack_full: u64,
     pub journal_full: u64,
-    /// Sources the CPU continued at a long extended-sag scan (`cpu-grazing`).
+    /// Sources the CPU continued at a long extended-sag scan (`f32-grazing`).
     pub sag_handoff: u64,
     /// Sources retraced by the CPU reference (reference arithmetic needed).
     pub retraced: u64,
@@ -513,8 +468,8 @@ impl Folder {
     }
 }
 
-/// Runs `design` (not [`Design::GpuTally`]). `side` runs on the CPU once,
-/// while the device transports the first plans.
+/// Runs `design`; `side` runs on the CPU once, while the device transports
+/// the first plans.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run(
     b: &dyn ComputeBackend,
@@ -535,7 +490,6 @@ pub(crate) fn run(
         || options.stack_capacity == 0
         || options.stack_capacity > 8192
         || options.gpu_share.is_some_and(|s| !(0.0..=1.0).contains(&s))
-        || design == Design::GpuTally
     {
         return Err(MkError::InvalidModel("stray transport settings".into()));
     }
@@ -550,10 +504,6 @@ pub(crate) fn run(
     let hit_capacity = options.detections_per_source.min(HANDOFF_DETECTIONS);
     let stack_capacity = options.stack_capacity.max(4);
     let sag = sag_mode()?;
-    let head_events = match design {
-        Design::CpuTally => 0,
-        _ => options.head_events,
-    };
     let share = match design {
         // Options first, then the share study key, then the scene rule.
         Design::CoSplit => match options.gpu_share {
@@ -567,7 +517,7 @@ pub(crate) fn run(
                 None => default_share(scene, settings.rays),
             },
         },
-        _ => 1.0,
+        Design::Wavefront => 1.0,
     };
     let per_source = std::mem::size_of::<ops::Ray>()
         + std::mem::size_of::<ops::Ledger>()
@@ -601,25 +551,13 @@ pub(crate) fn run(
         plan.seed = Some(settings.seed);
         plan.settings = serde_json::json!({"stray_version": mklight_gpu::consts::MKL_STRAY_VERSION,
             "scene": fingerprint, "first": first, "design": design.name()});
-        let stack = plan.scratch(ops::record_desc::<ops::State>(count * stack_capacity));
         let opts = TransportOptions {
             stack_capacity,
             detections_per_source: hit_capacity,
             ..options
         };
-        let (hits, ledger) = prepared.append_handoff(
-            &mut plan,
-            scene,
-            source,
-            settings,
-            first,
-            count,
-            opts,
-            stack,
-            head_events,
-            design.wavefront(),
-            sag,
-        )?;
+        let (hits, ledger, stack) =
+            prepared.append(&mut plan, scene, source, settings, first, count, opts, sag)?;
         plan.outputs = vec![hits, ledger, stack];
         // Progress is reported per finished chunk, not by the device.
         b.submit_plan(
@@ -648,28 +586,20 @@ pub(crate) fn run(
     let (mut wait_seconds, mut finish_seconds, mut side_seconds) = (0., 0., 0.);
     let cpu_counters = Mutex::new(Counters::default());
     let abort = std::sync::atomic::AtomicBool::new(false);
-    let pool = share_pool(THREADS_KEY)?;
     std::thread::scope(|scope| -> MkResult<()> {
-        // The CPU share (CoSplit) runs in the rayon pool beside the device,
-        // or in a pool of its own (`stray_threads`).
+        // The CPU share (CoSplit) runs in the rayon pool beside the device.
         let cpu = (!cpu_chunks.is_empty()).then(|| {
             scope.spawn(|| -> MkResult<()> {
-                let share = || {
-                    cpu_chunks.par_iter().try_for_each(|&c| {
-                        if abort.load(std::sync::atomic::Ordering::Relaxed) {
-                            return Err(MkError::Cancelled);
-                        }
-                        let (t, n) = finisher.cpu_chunk(c, ctx)?;
-                        cpu_counters.lock().unwrap().add(&n);
-                        folder.lock().unwrap().put(c, t);
-                        report(1);
-                        Ok(())
-                    })
-                };
-                match &pool {
-                    Some(p) => p.install(share),
-                    None => share(),
-                }
+                cpu_chunks.par_iter().try_for_each(|&c| {
+                    if abort.load(std::sync::atomic::Ordering::Relaxed) {
+                        return Err(MkError::Cancelled);
+                    }
+                    let (t, n) = finisher.cpu_chunk(c, ctx)?;
+                    cpu_counters.lock().unwrap().add(&n);
+                    folder.lock().unwrap().put(c, t);
+                    report(1);
+                    Ok(())
+                })
             })
         });
         let result = (|| -> MkResult<()> {
@@ -777,9 +707,7 @@ pub(crate) fn run(
         &snapshot,
         "stray_light",
         &serde_json::json!({"settings": settings, "source": source, "resident_options": options,
-            "design": design.name(), "head_events": head_events, "gpu_share": share, "sag_mode": sag,
-            "kernel": mklight_core::split::variant("stray_kernel"),
-            "cpu_share_threads": pool.as_ref().map(|p| p.current_num_threads()),
+            "design": design.name(), "gpu_share": share, "sag_mode": sag,
             "hit_capacity": hit_capacity, "stack_capacity": stack_capacity, "plan_sources": per_plan,
             "stray_version": mklight_gpu::consts::MKL_STRAY_VERSION, "plans": plan_stats,
             "device": b.info(), "precision": b.precision(), "fallback_count": 0,
@@ -847,13 +775,7 @@ mod tests {
 
     #[test]
     fn design_names_round_trip() {
-        for d in [
-            Design::GpuTally,
-            Design::CpuTally,
-            Design::GpuHead,
-            Design::CoSplit,
-            Design::Wavefront,
-        ] {
+        for d in [Design::CoSplit, Design::Wavefront] {
             assert_eq!(Design::named(Some(d.name())).unwrap(), d);
         }
         assert_eq!(Design::named(None).unwrap(), Design::CoSplit);

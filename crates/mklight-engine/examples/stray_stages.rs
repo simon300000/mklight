@@ -7,9 +7,10 @@
 //! ```
 //!
 //! `DESIGNS` is a comma-separated list of `stray` variants (`default`,
-//! `gpu-tally`, `cpu-tally`, `gpu-head`, `cosplit`, `wavefront`; `cpu` for
-//! the CPU reference transport). `share=X` and `head=N` set the transport
-//! options; other `KEY=VARIANT` pairs select work-split variants.
+//! `cosplit`, `wavefront`; `cpu` for the CPU reference transport), each
+//! optionally with `+KEY=VARIANT` selections of its own. `share=X` and
+//! `head=N` set the transport options; other `KEY=VARIANT` pairs select
+//! work-split variants for every column.
 
 use std::path::Path;
 use std::time::Instant;

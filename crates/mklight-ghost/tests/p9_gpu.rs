@@ -769,12 +769,11 @@ fn paraxial_sensor_powers_and_afocal_completion() {
     assert_eq!(r.rays[0][0].nu.last().copied(), Some(0.));
 }
 
-/// The divisions of `ghost_irradiance` (`gpu::Design`): grouping the device
-/// refinement never changes a result; the paths the CPU traces beside the
-/// device are the reference's, the others the device run's.
+/// The CPU traces a share of the path groups beside the device: those
+/// paths are bit-identical to the reference, the others agree with it.
 #[cfg(target_os = "macos")]
 #[test]
-fn design_divisions_agree() {
+fn cpu_share_paths_match_the_reference() {
     let b = mklight_metal::MetalBackend::new()
         .unwrap()
         .expect("P9 requires host Metal");
@@ -787,33 +786,24 @@ fn design_divisions_agree() {
             keep_path_maps: true,
             ..Default::default()
         };
-        let ctx = JobContext::new();
-        let run = |design| gpu::ghost_irradiance_design(&b, &m, &settings, design, &ctx).unwrap();
-        let level = run(gpu::Design::LevelSync);
-        let piped = run(gpu::Design::Pipelined);
-        assert_eq!(level.total_ghost_map, piped.total_ghost_map, "{name}");
-        assert_eq!(level.primary, piped.primary, "{name}");
-        assert_eq!(level.ghosts, piped.ghosts, "{name}");
-        let shared = run(gpu::Design::Shared);
+        let shared = gpu::ghost_irradiance(&b, &m, &settings, &JobContext::new()).unwrap();
         let cpu = ghost_irradiance(&m, &settings, &JobContext::new()).unwrap();
         let cpu_paths = shared.run.settings["gpu"]["cpu_paths"].as_u64().unwrap();
         // A fifth of the 16-path groups: the Double Gauss's 45 ghosts form
         // three groups, the Cooke triplet's ghosts one (all on the device).
         assert_eq!(cpu_paths > 0, shared.ghosts.len() > 32, "{name}");
-        assert_eq!(shared.primary, piped.primary, "{name}");
         let (mut from_cpu, mut from_device) = (0, 0);
         for g in &shared.ghosts {
             let c = cpu.ghosts.iter().find(|c| c.path == g.path).unwrap();
-            let d = piped.ghosts.iter().find(|d| d.path == g.path).unwrap();
-            // Each path is bit-identical to one of the two complete runs
-            // (its ratios are relative to the device-traced primary).
-            let same = |a: &PathIrradiance, b: &PathIrradiance| {
-                a.fields == b.fields && a.flux == b.flux && a.map == b.map
-            };
-            if same(g, c) && !same(g, d) {
+            if g.fields == c.fields && g.flux == c.flux && g.map == c.map {
                 from_cpu += 1;
             } else {
-                assert_eq!(g, d, "{name} {}", g.label);
+                // Ratios are relative to the device-traced primary.
+                assert!(
+                    (g.flux - c.flux).abs() <= 1e-9 * c.flux.abs() + 1e-15,
+                    "{name} {}",
+                    g.label
+                );
                 from_device += 1;
             }
         }

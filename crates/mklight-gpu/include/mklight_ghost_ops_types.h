@@ -4,9 +4,6 @@
 /* Function constant of mkl_ghost_trace: bit 0 folds coating powers, bit 1
    keeps the thin-film matrices (otherwise only bare/ideal/table kinds). */
 #define MKL_GHOST_FEATURES_CONSTANT 61
-/* Feature bits read at run time from MklGhostTraceParams::reserved instead of
-   the constant (kernel-design study). */
-#define MKL_GHOST_DYNAMIC_CONSTANT 63
 #define MKL_GHOST_FEATURE_COATINGS 1u
 #define MKL_GHOST_FEATURE_FILMS 2u
 #define MKL_GHOST_AXIAL_NONE 0u

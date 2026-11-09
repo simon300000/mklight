@@ -3,7 +3,7 @@ use crate::{
     bsdf::LobeParams,
     path::{EventKind, History, Signature},
     scene::{Accept, Behavior, InterfaceKind, Side},
-    tally::{Sink, StrayTally},
+    tally::Sink,
     tracer::{SplitMode, StrayResult, StraySettings},
 };
 use mklight_core::materials::{coating::ResolvedCoating, diffraction::DiffractionEfficiency};
@@ -18,40 +18,27 @@ fn numeric(value: f64, name: &str) -> MkResult<Df32> {
     }
     Ok(out)
 }
-/// Memory/command choices do not alter source IDs or their random streams.
+/// Memory/command choices do not alter source IDs or their random streams;
+/// options that move work between the device and the CPU change results
+/// only by the rounding of the part that moved.
 #[derive(Clone, Copy, Debug, serde::Serialize)]
 pub struct TransportOptions {
     /// Maximum sources per resident plan; the plan memory budget may lower it.
     pub source_tile: usize,
-    /// Initial stack records per source; grows on device when exceeded.
+    /// Stack records per source on the device (at least 4); a source whose
+    /// stack would overflow continues on the CPU.
     pub stack_capacity: usize,
-    /// A source exceeding this falls back to the reference.
+    /// Detection journal per source on the device (at most 8 are used); a
+    /// source whose journal is full continues on the CPU.
     pub detections_per_source: usize,
-    /// Maximum events per lane per transport round.
-    pub event_budget: usize,
-    /// Events per source on the device before the CPU continues it
-    /// (`hybrid::Design::GpuHead` and `CoSplit`).
+    /// Events per source on the device before the CPU continues it (0: no
+    /// limit).
     pub head_events: u32,
     /// Share of the source chunks transported by the device
     /// (`hybrid::Design::CoSplit`); the CPU reference traces the others.
-    /// `None`: a fixed rule of the scene (`hybrid::default_share`).
+    /// `None`: the study key `stray_share`, else a fixed rule of the scene
+    /// (`hybrid::default_share`).
     pub gpu_share: Option<f64>,
-}
-/// Resident scratch budget per plan (two plans overlap): rays, ledgers,
-/// queues, initial stacks, detections and their tags.
-const PLAN_BYTES: usize = 160 << 20;
-impl TransportOptions {
-    /// Sources per plan, a multiple of the 256-source estimator leaves.
-    fn plan_sources(&self) -> usize {
-        use std::mem::size_of;
-        let per_source = size_of::<ops::Ray>()
-            + size_of::<ops::Ledger>()
-            + 8
-            + self.stack_capacity.max(4) * size_of::<ops::State>()
-            + self.detections_per_source * (size_of::<ops::Detection>() + 16);
-        // At least one block; oversized stacks then take the reported reference route.
-        ((PLAN_BYTES / per_source).min(self.source_tile.div_ceil(256) * 256) / 256 * 256).max(256)
-    }
 }
 impl Default for TransportOptions {
     fn default() -> Self {
@@ -59,7 +46,6 @@ impl Default for TransportOptions {
             source_tile: 65536,
             stack_capacity: 16,
             detections_per_source: 32,
-            event_budget: 32,
             head_events: 64,
             gpu_share: None,
         }
@@ -225,6 +211,12 @@ impl TransportScene {
             })?,
         })
     }
+    /// Appends the transport of sources `first..first + count` to `plan`:
+    /// their detections, ledgers and continuation stacks (`ops::Transport`).
+    /// A source stops with a consistent device stack after
+    /// `options.head_events` events, or when its stack or detection journal
+    /// is full, for the host to continue; `sag_mode` selects the
+    /// extended-sag intersection (`ops::Transport::sag_mode`).
     #[allow(clippy::too_many_arguments)]
     pub fn append(
         &self,
@@ -235,61 +227,8 @@ impl TransportScene {
         first: u64,
         count: usize,
         options: TransportOptions,
-    ) -> MkResult<(BufferId, BufferId)> {
-        self.append_with(
-            plan, scene, source, settings, first, count, options, None, 0, false, 0,
-        )
-    }
-    /// As [`Self::append`] in handoff mode (`ops::Transport::stack_output`):
-    /// sources stop with a consistent device stack in `stack` after
-    /// `head_events` events (0: no limit), or when their stack or detection
-    /// journal is full, for the host to continue. `wavefront` selects the
-    /// wavefront kernels (`ops::Transport::wavefront`), `sag_mode` the
-    /// extended-sag intersection (`ops::Transport::sag_mode`).
-    #[allow(clippy::too_many_arguments)]
-    pub fn append_handoff(
-        &self,
-        plan: &mut ResidentPlan,
-        scene: &Scene,
-        source: &SourceSpec,
-        settings: &StraySettings,
-        first: u64,
-        count: usize,
-        options: TransportOptions,
-        stack: BufferId,
-        head_events: u32,
-        wavefront: bool,
         sag_mode: u32,
-    ) -> MkResult<(BufferId, BufferId)> {
-        self.append_with(
-            plan,
-            scene,
-            source,
-            settings,
-            first,
-            count,
-            options,
-            Some(stack),
-            head_events,
-            wavefront,
-            sag_mode,
-        )
-    }
-    #[allow(clippy::too_many_arguments)]
-    fn append_with(
-        &self,
-        plan: &mut ResidentPlan,
-        scene: &Scene,
-        source: &SourceSpec,
-        settings: &StraySettings,
-        first: u64,
-        count: usize,
-        options: TransportOptions,
-        stack_output: Option<BufferId>,
-        head_events: u32,
-        wavefront: bool,
-        sag_mode: u32,
-    ) -> MkResult<(BufferId, BufferId)> {
+    ) -> MkResult<(BufferId, BufferId, BufferId)> {
         // Reuse the validated source descriptor and CDF, then fuse its device
         // generation into the first transport command.
         generate(
@@ -328,6 +267,9 @@ impl TransportScene {
             count * options.detections_per_source,
         ));
         let ledger = plan.scratch(ops::record_desc::<ops::Ledger>(count));
+        let stack = plan.scratch(ops::record_desc::<ops::State>(
+            count * options.stack_capacity,
+        ));
         plan.operations
             .push(ResidentOp::Stray(ops::Request::Transport(Box::new(
                 ops::Transport {
@@ -366,16 +308,14 @@ impl TransportScene {
                     ray_count: count,
                     stack_capacity: options.stack_capacity,
                     hit_capacity: options.detections_per_source,
-                    event_budget: options.event_budget,
                     output,
                     ledger,
-                    stack_output,
-                    head_events,
-                    wavefront,
+                    stack,
+                    head_events: options.head_events,
                     sag_mode,
                 },
             ))));
-        Ok((output, ledger))
+        Ok((output, ledger, stack))
     }
 }
 pub(super) fn history(h: &ops::History) -> History {
@@ -468,8 +408,8 @@ pub fn run_design(
     )
 }
 /// [`run_design`] with CPU work of the caller, `side`, that runs once while
-/// the device transports the first plans (before the transport for
-/// `GpuTally` and the CPU fallback, which have no overlap).
+/// the device transports the first plans (before the CPU fallback, which
+/// has no overlap).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_design_with(
     b: &dyn ComputeBackend,
@@ -483,23 +423,17 @@ pub(crate) fn run_design_with(
     ctx: &JobContext,
 ) -> MkResult<StrayResult> {
     let timer = mklight_core::job::RunTimer::start();
-    let attempt = if design == super::hybrid::Design::GpuTally {
-        side()?;
-        run_resident(b, snapshot.clone(), scene, source, settings, options, ctx)
-    } else {
-        super::hybrid::run(
-            b,
-            snapshot.clone(),
-            scene,
-            source,
-            settings,
-            options,
-            design,
-            side,
-            ctx,
-        )
-    };
-    match attempt {
+    match super::hybrid::run(
+        b,
+        snapshot.clone(),
+        scene,
+        source,
+        settings,
+        options,
+        design,
+        side,
+        ctx,
+    ) {
         Err(MkError::Unsupported(reason)) => {
             ctx.check()?;
             side()?;
@@ -521,154 +455,4 @@ pub(crate) fn run_design_with(
         }
         other => other,
     }
-}
-fn run_resident(
-    b: &dyn ComputeBackend,
-    snapshot: Snapshot,
-    scene: &Scene,
-    source: &SourceSpec,
-    settings: &StraySettings,
-    options: TransportOptions,
-    ctx: &JobContext,
-) -> MkResult<StrayResult> {
-    crate::tracer::validate_run(scene, source, settings)?;
-    if options.source_tile == 0
-        || options.source_tile > 65536
-        || options.detections_per_source == 0
-        || options.detections_per_source > 1024
-        || options.stack_capacity == 0
-        || options.stack_capacity > 8192
-        || settings
-            .start_medium
-            .is_some_and(|m| m as usize >= scene.media.len())
-    {
-        return Err(MkError::InvalidModel("stray transport settings".into()));
-    }
-    // P3 forms per-source second products and sums at most 256 sources.
-    // Reject absolute power scales that cannot represent those products;
-    // the reference result keeps the requested physical units unchanged.
-    let w = source.power() / settings.rays as f64;
-    let floor = match settings.mode {
-        SplitMode::Analog => 0.,
-        SplitMode::Weighted { rare_floor } | SplitMode::Split { rare_floor, .. } => rare_floor,
-    };
-    let growth = (1. + 3. * floor)
-        .powf(settings.max_events as f64)
-        .min(settings.split_ceiling);
-    let radius = scene
-        .primitives()
-        .iter()
-        .enumerate()
-        .filter(|(i, _)| matches!(scene.behavior(*i), Behavior::Detector))
-        .map(|(_, p)| match &p.shape {
-            Shape::Sag(s) => s.r_outer(),
-            Shape::Cylinder(c) => c.radius,
-        })
-        .fold(0f64, f64::max);
-    let term = w * options.detections_per_source as f64 * growth * radius.powi(2).max(1.);
-    if w < (f32::MIN_POSITIVE as f64).sqrt()
-        || !term.is_finite()
-        || term * term * 256. > f32::MAX as f64 / 16.
-    {
-        return Err(unsupported(
-            "source power is outside the f32 estimator-product range",
-        ));
-    }
-    let timer = mklight_core::job::RunTimer::start();
-    let prep_started = std::time::Instant::now();
-    let prepared = TransportScene::new(b, scene, &ctx.subrange(0., 0.05))?;
-    let preparation_seconds = prep_started.elapsed().as_secs_f64();
-    let mut transport_seconds = 0.;
-    let mut tally_seconds = 0.;
-    let mut tally = StrayTally::new(
-        scene.num_wavelengths(),
-        (scene.detector.nx * scene.detector.ny) as usize,
-    );
-    let mut plans = Vec::new();
-    let coverage = super::tally::coverage(b, settings, ctx)?;
-    let fingerprint = scene.fingerprint();
-    let submit = |first: u64| {
-        let count = (settings.rays - first).min(options.plan_sources() as u64) as usize;
-        let mut plan = ResidentPlan::new(snapshot.clone());
-        plan.seed = Some(settings.seed);
-        plan.settings = serde_json::json!({"stray_version":mklight_gpu::consts::MKL_STRAY_VERSION,"scene":fingerprint,"first":first});
-        let (hits, ledger) =
-            prepared.append(&mut plan, scene, source, settings, first, count, options)?;
-        let tags = super::tally::tags(
-            &mut plan,
-            hits,
-            ledger,
-            &coverage,
-            super::tally::params(scene, settings, count, options.detections_per_source),
-        )?;
-        plan.outputs = vec![hits, ledger, tags];
-        let sub = ctx.subrange(
-            0.05 + first as f64 / settings.rays as f64 * 0.9,
-            0.05 + (first + count as u64) as f64 / settings.rays as f64 * 0.9,
-        );
-        MkResult::Ok((first, count, b.submit_plan(plan, &sub)?, sub))
-    };
-    // The next plan's transport overlaps this plan's host key enumeration.
-    let mut next = Some(submit(0)?);
-    while let Some((first, count, pending, sub)) = next.take() {
-        ctx.check()?;
-        let started = std::time::Instant::now();
-        let result = pending.wait()?;
-        transport_seconds += started.elapsed().as_secs_f64();
-        if first + (count as u64) < settings.rays {
-            next = Some(submit(first + count as u64)?);
-        }
-        let started = std::time::Instant::now();
-        let views = std::array::from_fn(|i| result.outputs[i].view());
-        for chunk in super::tally::collect(
-            b,
-            &snapshot,
-            scene,
-            settings,
-            views,
-            count,
-            options.detections_per_source,
-            &sub,
-            &mut plans,
-        )? {
-            tally.add(&chunk);
-        }
-        tally_seconds += started.elapsed().as_secs_f64();
-        plans.push(result.stats);
-    }
-    let pack_started = std::time::Instant::now();
-    let (detector, energy, mut signatures) = tally.finish(&scene.detector, settings.owned_classes);
-    for s in &mut signatures {
-        s.label = s.signature.describe(|p| scene.label(p).to_string());
-    }
-    let mut warnings = scene.warnings.clone();
-    if energy.sampling_failed > 0. {
-        warnings.push(format!(
-            "{:.3e} W lost to BSDF rejection-sampling failures",
-            energy.sampling_failed
-        ));
-    }
-    if energy.escaped_from_solid > 1e-12 * energy.emitted {
-        warnings.push(format!(
-            "{:.3e} W left the scene from inside a solid",
-            energy.escaped_from_solid
-        ));
-    }
-    if energy.truncated > 1e-6 * energy.emitted {
-        warnings.push(format!(
-            "{:.3e} W truncated at {} events per path",
-            energy.truncated, settings.max_events
-        ));
-    }
-    let packing_seconds = pack_started.elapsed().as_secs_f64();
-    let info=timer.finish(&snapshot,"stray_light",&serde_json::json!({"settings":settings,"source":source,"resident_options":options,"stray_version":mklight_gpu::consts::MKL_STRAY_VERSION,"plans":plans,"device":b.info(),"precision":b.precision(),"fallback_count":0,"scene_fingerprint":fingerprint,"timings":{"preparation_seconds":preparation_seconds,"transport_seconds":transport_seconds,"tally_seconds":tally_seconds,"packing_seconds":packing_seconds}}),&b.info().backend_id(),mklight_core::job::Precision::F32Gpu,Some(settings.seed),warnings.clone());
-    ctx.check()?;
-    ctx.report(1., "stray complete");
-    Ok(StrayResult {
-        detector,
-        energy,
-        signatures,
-        warnings,
-        run_info: Some(info),
-    })
 }
