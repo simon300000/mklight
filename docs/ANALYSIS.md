@@ -604,7 +604,7 @@ is built, by one design read once per adapter from the work-split key
 | `aiming` | Where pupil rays are aimed |
 |---|---|
 | `host-table` (default) | The reference tracer aims every ray in f64. Generations with at least 2,048 rays per field row first solve a coarse seed table per row (about one node per four rays, 5–37 nodes per axis over the vignetted pupil square ±1.125, as the device table); each ray's Newton solve starts from the table's Catmull–Rom interpolated aim and stop Jacobian (`SequentialTracer::generate_many_from`) and falls back to the reference schedule if it does not converge. Smaller generations are aimed without a table (`generate_many`: the rays of a chunk advance together, chunks in parallel on rayon), bitwise as the CPU reference. Paraxial launches (aiming off) need no solve; the device generates them inside the plan. Large generations of the spot diagram and the geometric MTF are split between host and device (below). |
-| `split:<share>` | `host-table` with the device's share of split generations set to `<share>` in [0, 1] instead of SPLIT_SHARE_DOC; 0 aims every generation on the host. |
+| `split:<share>` | `host-table` with the device's share of split generations set to `<share>` in [0, 1] instead of 0.35; 0 aims every generation on the host. |
 | `device` | The double-float device solve of GPU.md §9.2 (host chief rows, device seed table for large generations), in a plan of its own, followed by host completion. |
 | `table` | A host f64 seed table and device Newton corrections from its interpolated seeds, at most 12 iterations per ray, followed by host completion. |
 
@@ -613,11 +613,11 @@ Host aims are written straight into the shared ray planes the trace reads
 rays rounded to double-float once); no sample or field record is built.
 
 **Split generations.** In the spot diagram and the geometric MTF, a
-generation with a seed table and at least SPLIT_MIN_DOC rays × surfaces
+generation with a seed table and at least 1.5 million rays × surfaces
 (rays of the generation times the image surface index) is aimed by the host
 and the device together. It is cut into tiles of whole 128-ray host chunks
 (a sixteenth of the generation, 2¹³–2¹⁷ rays); a fixed share of the tiles
-(`gpu::aim::SPLIT_DEVICE_SHARE`, SPLIT_SHARE_DOC), spread evenly over the
+(`gpu::aim::SPLIT_DEVICE_SHARE`, 0.35), spread evenly over the
 generation, goes to the device's double-float Newton solve seeded from the
 generation's host table (at most 12 iterations per ray), except for the
 chunks with a ray outside the table's solved nodes: the rays the reference
@@ -630,7 +630,19 @@ rayon workers aim the other chunks, then complete each device plan's
 unconverged aims as it lands. Which ray goes where depends only on the
 generation and the share, never on which side is faster, so identical input
 gives bitwise identical rays (`tests/aim_designs.rs` runs it on one and four
-rayon threads, and with other shares). SPLIT_EVIDENCE_DOC
+rayon threads, and with other shares).
+
+Measured on a quiet M2 Pro (8 + 4 CPU cores, 19 GPU cores; shuffled
+columns, against the same build aiming every generation on the host): spot
+diagrams and geometric MTFs of four complex camera lenses with dense pupils
+(4–13 million rays × surfaces per field group) took
+0.94 of the host-only time at share 0.35 (0.84–1.08 per case); shares 0.5
+and 0.65 gave the same mean but worst cases of 1.26 and 1.32. Between 1.5
+and 4 million rays × surfaces the split took 0.96; below, it lost up to
+18 %. No fixed share suits every lens on this machine: the device aims some
+lenses several times slower per ray than the twelve host threads, and the
+slower side sets the time. The footprint (1.00–1.01) and the ray grid
+(0.90–1.17) gained nothing and do not split.
 
 **Host completion.** A device aim cannot always certify the requested stop
 tolerance. When the double-float trace still took the even-asphere slope in
@@ -665,9 +677,10 @@ traces and reduces group k; the results are collected at the end, and
 smaller grids form one group. Geometric MTF submits each group's
 characteristic-function tiles without waiting for each (at most four in
 flight), with the tile budget of a single grid plan, so groups add no tile
-plans. Against one plan per stage the groups took 4–7 % off the measured
-spot, MTF, footprint and ray-grid cases of every size, with results within
-1e-7 of it. Encircled energy, best focus, the fans and the chromatic and
+plans. Against one plan per stage, the groups took 4–7 % off the measured
+spot, MTF, footprint and ray-grid cases (geometric means 0.94, 0.96 and 0.93
+below 10 ms, from 10 to 100 ms and above 100 ms of CPU time), with results
+within 1e-7 of it. Encircled energy, best focus, the fans and the chromatic and
 layout adapters build one plan per stage.
 
 High-level `Geometry` metadata belongs to its nominal immutable snapshot.
