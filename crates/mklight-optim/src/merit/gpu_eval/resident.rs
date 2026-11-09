@@ -154,8 +154,6 @@ fn append(
             a::GenerateAim {
                 systems: set.clone(),
                 samples,
-                sampling: a::Sampling::Explicit,
-                unresolved: None,
                 field_wavelength: metadata.clone(),
                 field_key: None,
                 seeds: Some(seeds.clone()),

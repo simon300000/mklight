@@ -28,9 +28,6 @@ struct AimParams {
     cap: u32,
     tolerance: f32,
     table: u32,
-    pattern: u32,
-    side: u32,
-    extent: [f32; 2],
     /// Iteration units per lane of this command.
     budget: u32,
     table_side: u32,
@@ -539,7 +536,6 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
             let systems = Systems::new(x, &g.systems)?;
             let nf = g.field_wavelength.desc.shape[0];
             let n = g.output.count;
-            let (pattern, side, extent) = g.sampling.parameters();
             let table_side = g.options.table_side;
             let params = |p: AimParams| AimParams {
                 stride: n as u32,
@@ -547,9 +543,6 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                 systems: systems.count(),
                 cap: g.max_iterations,
                 tolerance: g.tolerance,
-                pattern,
-                side,
-                extent: [extent.hi, extent.lo],
                 table_side,
                 flags: if g.options.cull_outside { AIM_CULL } else { 0 },
                 schedule_cap: g.options.schedule_cap,
@@ -687,9 +680,6 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
             }
             x.count_fallbacks(failures);
             put_rays(x, &g.output, out);
-            if let Some(id) = g.unresolved {
-                compact(x, g.output.report, id, n, ctl, &mut stage)?;
-            }
         }
         Request::TraceResident(t) => {
             stage.name = "trace_resident".into();
@@ -913,50 +903,4 @@ const AIM_STATS_WORDS: usize = 12;
 fn trace_aims() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| std::env::var("MKLIGHT_METAL_TRACE_AIMS").is_ok_and(|v| v == "1"))
-}
-
-/// Stable unresolved-index compaction: count, prefix and scatter as three
-/// serial dispatches of one command.
-fn compact(
-    x: &mut Execution<'_>,
-    report: BufferId,
-    output: BufferId,
-    n: usize,
-    ctl: &JobControl,
-    stage: &mut StageStats,
-) -> MkResult<()> {
-    ctl.check()?;
-    let groups = n.div_ceil(256);
-    let mut counts = x.allocate(groups)?;
-    let mut sparse = x.take_output(output);
-    let [count, prefix, scatter] = ["mkl_aim_count", "mkl_aim_prefix", "mkl_aim_scatter"]
-        .map(|k| x.gpu.pipeline(&PipelineKey::plain(k)));
-    let (count, prefix, scatter) = (count?, prefix?, scatter?);
-    let wall = Instant::now();
-    // SAFETY: plan validation fixes the sparse size; each group owns a
-    // disjoint source range and prefix-selected destination range, and the
-    // serial dispatches of one encoder complete in order.
-    unsafe {
-        x.run("aim compaction", |e| {
-            bind(e, 0, x, &view(report, ElementType::U32));
-            e.set_buffer_mut(1, &mut counts, 0);
-            e.set_buffer_mut(2, &mut sparse, 0);
-            e.set_bytes(3, &(n as u32));
-            e.dispatch_1d(&count, groups.max(1));
-            e.set_buffer_mut(0, &mut counts, 0);
-            e.set_buffer_mut(1, &mut sparse, 0);
-            e.set_bytes(2, &(groups as u32));
-            e.dispatch_1d(&prefix, 1);
-            bind(e, 0, x, &view(report, ElementType::U32));
-            e.set_buffer_mut(1, &mut counts, 0);
-            e.set_buffer_mut(2, &mut sparse, 0);
-            e.set_bytes(3, &(n as u32));
-            e.dispatch_1d(&scatter, groups.max(1));
-            Ok(())
-        })?
-    };
-    account(x, stage, wall, 8);
-    x.recycle(counts);
-    x.put_output(output, sparse);
-    Ok(())
 }

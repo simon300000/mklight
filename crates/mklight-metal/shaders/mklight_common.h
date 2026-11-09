@@ -207,9 +207,6 @@ static inline float mkl_dot3(float3 a, float3 b) {
     return fma(a.x, b.x, fma(a.y, b.y, a.z * b.z));
 }
 
-// 1 - x^2 in factored form (exact factors near |x| = 1).
-static inline float mkl_one_minus_sq(float x) { return (1.0f - x) * (1.0f + x); }
-
 // Power-of-two scaling into [2^-60, 2^60] so squares cannot overflow or
 // underflow; the scaling itself is exact.
 static inline float2 mkl_hypot_scale(float m) {

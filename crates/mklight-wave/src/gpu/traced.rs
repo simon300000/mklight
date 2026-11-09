@@ -596,8 +596,6 @@ impl<'a> PupilTracer<'a> {
                 aim::GenerateAim {
                     systems: SystemSet::Uploaded(self.systems),
                     samples: p.view(samples)?,
-                    sampling: aim::Sampling::Explicit,
-                    unresolved: None,
                     field_wavelength: p.view(metadata)?,
                     field_key: Some(fields.key.clone()),
                     seeds: Some(p.view(seeds)?),

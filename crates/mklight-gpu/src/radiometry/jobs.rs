@@ -138,8 +138,6 @@ pub fn pupil_plan(
             aiming::GenerateAim {
                 systems: SystemSet::Uploaded(systems),
                 samples: p.view(samples)?,
-                sampling: aiming::Sampling::Explicit,
-                unresolved: None,
                 field_wavelength: fields,
                 field_key: Some(blake3::hash(bytemuck::bytes_of(&spec)).to_hex().to_string()),
                 seeds: Some(seeds),

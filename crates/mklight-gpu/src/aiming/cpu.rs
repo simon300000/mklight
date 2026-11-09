@@ -237,12 +237,7 @@ fn execute_in<E: FpEnv>(r: &Request, x: &mut Execution, ctl: &JobControl) -> MkR
             } else {
                 None
             };
-            for i in 0..g.output.count {
-                let sample = if matches!(g.sampling, Sampling::Explicit) {
-                    samples[i]
-                } else {
-                    kernel::sample_at::<E>(samples[0], g.sampling, i, g.output.count)
-                };
+            for (i, &sample) in samples.iter().enumerate().take(g.output.count) {
                 ctl.check()?;
                 let row = (sample.field & !MKL_AIM_SKIP) as usize;
                 let f = &fields[row];
@@ -265,16 +260,6 @@ fn execute_in<E: FpEnv>(r: &Request, x: &mut Execution, ctl: &JobControl) -> MkR
                 x.words(g.output.report),
                 n,
             ));
-            if let Some(id) = g.unresolved {
-                let indices: Vec<u32> = (0..n)
-                    .filter(|&i| !matches!(x.words(g.output.report)[i], 0 | MKL_AIM_OUTSIDE))
-                    .map(|i| i as u32)
-                    .collect();
-                let out = x.words_mut(id);
-                out.fill(u32::MAX);
-                out[0] = indices.len() as u32;
-                out[1..1 + indices.len()].copy_from_slice(&indices);
-            }
         }
         Request::TraceResident(t) => {
             let set = systems(x, &t.systems)?;

@@ -392,8 +392,6 @@ impl<'a> GhostTransport<'a> {
             mklight_gpu::aiming::Request::GenerateAim(GenerateAim {
                 systems: SystemSet::Uploaded(self.systems),
                 samples: p.view(samples)?,
-                sampling: Sampling::Explicit,
-                unresolved: None,
                 field_wavelength: p.view(metadata)?,
                 field_key: None,
                 seeds: Some(p.view(seeds)?),

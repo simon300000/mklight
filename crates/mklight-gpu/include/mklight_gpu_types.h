@@ -452,7 +452,6 @@ MKL_STATIC_ASSERT(sizeof(struct MklSagParams) == 16, "MklSagParams size");
 #define MKL_DFOP_ADD_F32 7u      /* df + a f32 (b.hi) */
 #define MKL_DFOP_MUL_F32 8u      /* df * a f32 (b.hi) */
 #define MKL_DFOP_HYPOT2 9u       /* hypot(a.hi, b.hi) in f32 (stable, scaled) */
-#define MKL_DFOP_COUNT 10u
 
 /* Numerics probe: number of result words written by mkl_numerics_probe. */
 #define MKL_PROBE_WORDS 8u

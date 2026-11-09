@@ -206,9 +206,12 @@ fn fixtures_failures_and_cancellation() {
         .wait()
         .unwrap();
     let data = read_all(&gpu, &r);
-    let unresolved = aiming::unresolved(uints(&data[1]), uints(&data[2]));
-    assert!(!unresolved.is_empty() && unresolved.len() < points.len());
-    assert_eq!(r.stats.fallback_count, unresolved.len() as u64);
+    let report = uints(&data[1]);
+    let unresolved = (0..points.len())
+        .filter(|&i| !matches!(report[i], 0 | consts::MKL_AIM_OUTSIDE))
+        .count();
+    assert!(unresolved > 0 && unresolved < points.len());
+    assert_eq!(r.stats.fallback_count, unresolved as u64);
     eprintln!(
         "P1_FAILURES reason=iteration_cap count={} total={} polished={}",
         r.stats.fallback_count,
@@ -258,112 +261,6 @@ fn fixtures_failures_and_cancellation() {
     let a = a.wait().unwrap();
     let b = b.wait().unwrap();
     bits(&read_all(&gpu, &a), &read_all(&gpu, &b));
-}
-
-#[test]
-fn procedural_sampling_sparse_indices_and_resident_systems() {
-    use aiming::*;
-    use resident::*;
-    let gpu = backend(LibraryChoice::Precompiled);
-    let cpu = CpuF32Backend::matching(&gpu.precision().probe);
-    let mut model = samples::cooke_triplet();
-    model.ray_aiming = RayAiming::Real { tolerance: 1e-10 };
-    let t = testutil::tracer(model);
-    for sampling in [
-        Sampling::Lattice {
-            side: 65,
-            extent: Df32::from_f32(1.0),
-        },
-        Sampling::Fan {
-            axis: 1,
-            extent: Df32::from_f32(1.0),
-        },
-    ] {
-        let count = if matches!(sampling, Sampling::Lattice { .. }) {
-            65 * 65
-        } else {
-            8193
-        };
-        let make = |b: &dyn ComputeBackend, resident: bool| {
-            let (p, h) = make_plan(b, &t, 0, 1, &vec![[0., 0.]; count], false, 0, false);
-            let mut p = p;
-            let sample = Sample::new([0., 0.], 0, 0xfffffff0);
-            let sv = upload(b, &mut p, 1, &[sample]);
-            let sparse = p.scratch(BufferDesc::new(ElementType::U32, [count + 1]));
-            if let ResidentOp::Aiming(Request::GenerateAim(g)) = &mut p.operations[0] {
-                g.samples = sv;
-                g.sampling = sampling;
-                g.unresolved = Some(sparse);
-            }
-            p.outputs.push(sparse);
-            if resident {
-                let set =
-                    PackedSystemSet::new(&[PackedSystem::pack_all(t.system()).unwrap()]).unwrap();
-                let hs = upload(b, &mut p, set.headers.len(), &set.headers);
-                let ss = upload(b, &mut p, set.surfaces.len(), &set.surfaces);
-                let co = df(b, &mut p, &set.coefficients);
-                let systems = SystemSet::Resident {
-                    headers: hs.buffer,
-                    surfaces: ss.buffer,
-                    coefficients: co.buffer,
-                    count: 1,
-                    max_surfaces: t.system().surfaces.len(),
-                    max_wavelengths: t.num_wavelengths(),
-                };
-                for op in &mut p.operations {
-                    if let ResidentOp::Aiming(Request::GenerateAim(g)) = op {
-                        g.systems = systems.clone();
-                        g.field_key = None;
-                    }
-                    if let ResidentOp::Aiming(Request::TraceResident(t)) = op {
-                        t.systems = systems.clone();
-                    }
-                }
-            }
-            (p, h)
-        };
-        let (p, h) = make(&gpu, true);
-        let minimum_peak = p
-            .buffers
-            .iter()
-            .map(|b| b.desc().byte_len().unwrap() as u64)
-            .sum::<u64>()
-            + size_of::<ChiefSeed>() as u64;
-        let (pc, hc) = make(&cpu, false);
-        let r = gpu
-            .submit_plan(p, &JobContext::new())
-            .unwrap()
-            .wait()
-            .unwrap();
-        let rc = cpu
-            .submit_plan(pc, &JobContext::new())
-            .unwrap()
-            .wait()
-            .unwrap();
-        let a = read_all(&gpu, &r);
-        bits(&a, &read_all(&cpu, &rc));
-        assert!(
-            r.stats.peak_bytes >= minimum_peak,
-            "uncached chiefs belong to live plan memory"
-        );
-        let sparse = uints(a.last().unwrap());
-        assert_eq!(sparse[0] as u64, r.stats.fallback_count);
-        assert!(sparse[0] > 0);
-        let expected: Vec<_> = (0..count)
-            .filter(|&i| uints(&a[1])[i] != 0)
-            .map(|i| i as u32)
-            .collect();
-        assert_eq!(&sparse[1..1 + expected.len()], &expected);
-        assert!(sparse[expected.len() + 1..].iter().all(|&i| i == u32::MAX));
-        let ids = uints(&a[2]);
-        for i in 0..count {
-            let id = 0xfffffff0u64 + i as u64;
-            assert_eq!(ids[i], id as u32);
-            assert_eq!(ids[count + i], (id >> 32) as u32);
-        }
-        gpu.release_systems(h).unwrap();
-        cpu.release_systems(hc).unwrap();
-    }
 }
 
 #[test]

@@ -1,13 +1,12 @@
 //! Image-point illumination pencils, in double-float: the specification of
 //! `mkl_geometry_ri_rays` (one thread per aimed ray).
 //!
-//! Field-level data (chief aim and stop-Jacobian inverse, image point and
-//! basis, chief object parameters and the chord inverse of `∂X/∂q`) comes
-//! from the host's f64 field preparation ([`RiField`]), so no thread repeats
-//! per-field work. Each thread runs a state machine whose every step is one
-//! trace from a single call site: the threads of a SIMD group trace together
-//! whatever stage of their solve they are in, and the kernel holds one copy
-//! of the trace.
+//! Field-level data (chief aim and stop-Jacobian inverse, the image basis
+//! and tolerance) comes from the host's f64 field preparation ([`RiField`]),
+//! so no thread repeats per-field work. Each thread runs a state machine
+//! whose every step is one trace from a single call site: the threads of a
+//! SIMD group trace together whatever stage of their solve they are in, and
+//! the kernel holds one copy of the trace.
 //!
 //! An aimed ray `(q, P)` solves the stop aim by chord Newton from the chief
 //! (or a given seed) with finite-difference refreshes and backtracking,
@@ -36,11 +35,7 @@ pub struct RiField {
     pub aim: FieldSpec,
     pub chief: [Df32; 2],
     pub aim_inverse: [Df32; 4],
-    pub x0: [Df32; 2],
     pub basis: [Df32; 6],
-    pub q0: [Df32; 2],
-    pub q_inverse: [Df32; 4],
-    pub hq: Df32,
     pub tolerance: Df32,
     pub status: u32,
     /// Stall acceptance of the stop aims, a fraction of the stop radius.

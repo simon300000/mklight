@@ -51,7 +51,7 @@ pub fn field_map_job(
             run_info: stamp(run, kind.name(), s, t.warnings().to_vec()),
         });
     }
-    let (design, name) = super::chief_maps::ChiefDesign::selected();
+    let (design, name) = super::chief_maps::ChiefDesign::selected()?;
     let device_chiefs = design == super::chief_maps::ChiefDesign::DeviceChief;
     let geo = Geometry::new(b, t, ctx)?;
     let mut p = ResidentPlan::new(t.system().snapshot.clone());

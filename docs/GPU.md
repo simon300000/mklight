@@ -1341,7 +1341,7 @@ still uploads its initial host rays on each call; P1 owns resident generation.
 | `collectives` | `SegmentReduce`, `StableCompact`, `StableSort`, `Scan`, `QrFit`; explicit IDs/counts, factors and rank/condition destinations |
 | `systems` | `SystemBatchPlan`, `CandidateMap`; parameter/dependency/material views and numeric system/first-order sidecars |
 | `geometry`, `radiometry` | numeric geometry settings/samples and coating-stack/hit records, with status destinations |
-| `wave_ops`, `ghost_ops`, `stray_ops`, `optim_ops` | numeric solver records and settings views; ghost/stray share `ghost_ops::Coverage` |
+| `wave_ops`, `ghost_ops`, `stray_ops`, `optim_ops` | numeric solver records and settings views |
 
 Exact field names and types are in each `src/<module>/mod.rs`; these are
 owned by the named package after P0. `SystemSet` accepts an uploaded handle
@@ -1596,9 +1596,10 @@ continuation schedule and configured cap/tolerance (the request's aim-stop
 policy, CONVENTIONS §7: the requested tolerance, normally 1e-10 relative to
 the stop radius, or the tightest conditioned stop of the request's fields,
 `SequentialTracer::device_aim_tolerance`; one value per generation, part of
-`aim_identity`). A rounded f32 stop hit cannot drive that solve. Compact
-only unresolved rays for optional CPU f64 polish; scatter them back at their
-original indices and record counts/reasons. (The CPU reference takes its
+`aim_identity`). A rounded f32 stop hit cannot drive that solve. Unresolved
+rays keep their index, logical ID and failure report; the adapters complete
+them on the host in f64 where they do (host completion above) and record
+counts/reasons. (The CPU reference takes its
 fresh Jacobians from the analytic differential tracer, CONVENTIONS §7; the
 device solve keeps its finite-difference stencil and is seeded with the
 host rows' analytic chief Jacobians.) A failed aim remains a failed

@@ -722,8 +722,6 @@ struct MklAimParams {
     uint count, offset, stride, fields, systems, cap;
     float tolerance;
     uint table;
-    uint pattern, side;
-    float extent[2];
     uint budget, table_side, flags, schedule_cap;
 };
 #define MKL_AIM_CULL 1u
@@ -863,33 +861,6 @@ static inline MklRawState mkl_aim_read(device const float* ff, uint n, uint i) {
     r.weight = ff[mkl_plane(8, n, i)];
     return r;
 }
-// Sample i: explicit, or the procedural lattice / fan (kernel::sample_at).
-static inline MklAimSample mkl_aim_sample(constant MklAimSample* samples, constant MklAimParams& prm, uint i) {
-    MklAimSample sample = samples[prm.pattern == 0 ? i : 0];
-    if (prm.pattern != 0) {
-        MklDf extent = mkl_aim_load(prm.extent, 0);
-        uint side = prm.pattern == 1 ? prm.side : prm.stride;
-        MklDf px = side <= 1 ? mkl_aim_c(0)
-                             : (mkl_aim_c(-1) + mkl_aim_c(2) * mkl_aim_c(float(prm.pattern == 1 ? i % side : i)) /
-                                                    mkl_aim_c(float(side - 1))) *
-                                   extent;
-        MklDf py = prm.pattern == 1 ? (side <= 1 ? mkl_aim_c(0)
-                                                 : (mkl_aim_c(-1) + mkl_aim_c(2) * mkl_aim_c(float(i / side)) /
-                                                                        mkl_aim_c(float(side - 1))) *
-                                                       extent)
-                                    : mkl_aim_c(0);
-        if (prm.pattern == 2 && prm.side == 1) {
-            py = px;
-            px = mkl_aim_c(0);
-        }
-        mkl_aim_store(sample.pupil, 0, px);
-        mkl_aim_store(sample.pupil, 1, py);
-        ulong id = ((ulong(sample.id_hi) << 32) | ulong(sample.id_lo)) + ulong(i);
-        sample.id_lo = uint(id);
-        sample.id_hi = uint(id >> 32);
-    }
-    return sample;
-}
 // Samples never aimed: skip-flagged, or outside the unit disk when culling
 // (kernel::excluded).
 static inline bool mkl_aim_excluded(MklAimSample sample, constant MklAimParams& prm) {
@@ -913,7 +884,7 @@ static inline void mkl_aim_ray(MKL_AIM_SYSTEMS, constant MklAimCache* seeds, con
                                device uint* reports, device atomic_uint* failures, constant MklTraceParams& newton,
                                device const MklAimNode* tables, device uint* state, device uint* pending,
                                device atomic_uint* pending_count, uint i, uint lane, bool start) {
-    MklAimSample sample = mkl_aim_sample(samples, prm, i);
+    MklAimSample sample = samples[i];
     uint row = sample.field & ~MKL_AIM_SKIP;
     MklRawState ray = {};
     uint4 report = uint4(MKL_AIM_INVALID, 0, 0, 0);
@@ -1182,39 +1153,4 @@ kernel void mkl_aim_stats(device const uint* report [[buffer(0)]], device atomic
     atomic_fetch_max_explicit(&stats[2], most, memory_order_relaxed);
     for (uint k = 0; k < 8; ++k)
         if (hist[k] != 0) atomic_fetch_add_explicit(&stats[3 + k], hist[k], memory_order_relaxed);
-}
-
-// Stable unresolved compaction: fixed 256-ray groups, exclusive prefix,
-// original-order scatter.
-kernel void mkl_aim_count(device const uint* report [[buffer(0)]], device uint* counts [[buffer(1)]],
-                          device uint* sparse [[buffer(2)]], constant uint& n [[buffer(3)]],
-                          uint g [[thread_position_in_grid]]) {
-    uint first = g * 256;
-    if (first >= n) return;
-    uint count = 0;
-    for (uint i = first; i < min(first + 256, n); ++i) {
-        count += report[i] != 0 && report[i] != MKL_AIM_OUTSIDE;
-        sparse[i + 1] = 0xffffffffu;
-    }
-    counts[g] = count;
-}
-kernel void mkl_aim_prefix(device uint* counts [[buffer(0)]], device uint* sparse [[buffer(1)]],
-                           constant uint& groups [[buffer(2)]], uint i [[thread_position_in_grid]]) {
-    if (i != 0) return;
-    uint sum = 0;
-    for (uint g = 0; g < groups; ++g) {
-        uint count = counts[g];
-        counts[g] = sum;
-        sum += count;
-    }
-    sparse[0] = sum;
-}
-kernel void mkl_aim_scatter(device const uint* report [[buffer(0)]], device const uint* counts [[buffer(1)]],
-                            device uint* sparse [[buffer(2)]], constant uint& n [[buffer(3)]],
-                            uint g [[thread_position_in_grid]]) {
-    uint first = g * 256;
-    if (first >= n) return;
-    uint index = counts[g] + 1;
-    for (uint i = first; i < min(first + 256, n); ++i)
-        if (report[i] != 0 && report[i] != MKL_AIM_OUTSIDE) sparse[index++] = i;
 }

@@ -931,8 +931,6 @@ impl Geometry<'_> {
             .push(ResidentOp::Aiming(Request::GenerateAim(GenerateAim {
                 systems: SystemSet::Uploaded(self.systems),
                 samples: a.view(samples)?,
-                sampling: Sampling::Explicit,
-                unresolved: None,
                 field_wavelength: a.view(metadata)?,
                 field_key,
                 seeds: Some(a.view(seeds)?),

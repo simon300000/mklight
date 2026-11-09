@@ -6,14 +6,6 @@ use bytemuck::{Pod, Zeroable};
 pub use kernel::trace;
 use mklight_core::MkResult;
 
-/// Frozen coverage contract shared with stray; ordered signatures are unchanged.
-#[derive(Clone, Debug)]
-pub struct Coverage {
-    pub aperture_words: PlanView,
-    pub path_offsets: PlanView,
-    pub path_events: PlanView,
-    pub diffraction_visits: PlanView,
-}
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct Step {

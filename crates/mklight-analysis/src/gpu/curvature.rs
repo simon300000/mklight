@@ -94,7 +94,7 @@ pub fn grid_distortion_job(
                 .map(move |&x| [x + s.field_center[0], y + s.field_center[1]])
         })
         .collect();
-    let (design, name) = super::chief_maps::ChiefDesign::selected();
+    let (design, name) = super::chief_maps::ChiefDesign::selected()?;
     let fields: Vec<_> = coords
         .iter()
         .map(|&[x, y]| FieldPoint::normalized(x, y))

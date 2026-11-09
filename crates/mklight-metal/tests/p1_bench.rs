@@ -70,8 +70,6 @@ fn plan(
         .push(ResidentOp::Aiming(Request::GenerateAim(GenerateAim {
             systems: SystemSet::Uploaded(h),
             samples: sv,
-            sampling: Sampling::Explicit,
-            unresolved: None,
             field_wavelength: fw,
             field_key: key,
             seeds: None,

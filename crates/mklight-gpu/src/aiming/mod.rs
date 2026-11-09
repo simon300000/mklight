@@ -15,9 +15,9 @@
 //!   [3] in the image frame give DF [4,N]: OPD in waves and the unit-radius
 //!   sphere x/y/z (z mirrored for negative propagation).
 //!
-//! There is no automatic f64 polish: `GenerateAim.unresolved` lists the
-//! unresolved indices for an adapter, and `PlanStats::fallback_count` counts
-//! them. Real-image-height fields need the primary wavelength in the packed
+//! There is no automatic f64 polish: unresolved rays keep their failure
+//! report for the adapter, and `PlanStats::fallback_count` counts them.
+//! Real-image-height fields need the primary wavelength in the packed
 //! chunk; a missing primary is reported, never replaced. Samples excluded by
 //! [`AimOptions::cull_outside`] or the `MKL_AIM_SKIP` field flag carry
 //! `MKL_AIM_OUTSIDE`: they are neither aimed, traced, counted nor listed.
@@ -62,35 +62,11 @@ pub struct ResidentHits {
     pub records: Option<BufferId>,
     pub record_low: Option<BufferId>,
 }
-/// Device construction of regular probes; explicit tables preserve arbitrary
-/// rings, annular boundaries and caller sampling. Lattices include the square
-/// guard nodes outside the disk, for later rim topology and masking.
-#[derive(Clone, Copy, Debug)]
-pub enum Sampling {
-    Explicit,
-    Lattice { side: u32, extent: Df32 },
-    Fan { axis: u32, extent: Df32 },
-}
-impl Sampling {
-    pub fn parameters(self) -> (u32, u32, Df32) {
-        match self {
-            Self::Explicit => (0, 0, Df32::from_f32(1.0)),
-            Self::Lattice { side, extent } => (1, side, extent),
-            Self::Fan { axis, extent } => (2, axis, extent),
-        }
-    }
-}
-
 #[derive(Clone, Debug)]
 pub struct GenerateAim {
     pub systems: crate::resident::SystemSet,
-    /// Explicit: one Sample per ray. Procedural: one base Sample, with field,
-    /// weight and first logical ID; pupil coordinates are generated on device.
+    /// One Sample per ray.
     pub samples: PlanView,
-    pub sampling: Sampling,
-    /// Optional stable sparse ray indices: u32 [count+1], count at element 0,
-    /// ascending original indices next, unused tail = u32::MAX.
-    pub unresolved: Option<BufferId>,
     pub field_wavelength: PlanView,
     /// Opts into cross-plan reuse of chief rows and seed tables: the caller's
     /// name for its immutable field metadata. The executor keys reuse by
@@ -344,28 +320,8 @@ pub fn validate(r: &Request, p: &ResidentPlan) -> MkResult<()> {
             check_view(
                 &a.samples,
                 ElementType::U32,
-                &[
-                    if matches!(a.sampling, Sampling::Explicit) {
-                        a.output.count
-                    } else {
-                        1
-                    },
-                    MKL_AIM_SAMPLE_WORDS as usize,
-                ],
+                &[a.output.count, MKL_AIM_SAMPLE_WORDS as usize],
             )?;
-            let (kind, side, extent) = a.sampling.parameters();
-            if kind != 0
-                && (!extent.to_f64().is_finite()
-                    || extent.to_f64() <= 0.0
-                    || (kind == 1
-                        && (side == 0 || side as u64 * side as u64 != a.output.count as u64))
-                    || (kind == 2 && side > 1))
-            {
-                return Err(bad("aiming sampling dimensions"));
-            }
-            if let Some(id) = a.unresolved {
-                output(id, ElementType::U32, &[a.output.count + 1])?;
-            }
             let shape = &a.field_wavelength.desc.shape;
             if shape.len() != 2 || shape[0] == 0 || shape[0] > u32::MAX as usize {
                 return Err(bad("aiming field rows"));
@@ -483,7 +439,6 @@ pub fn accesses(r: &Request) -> Access {
             a.reads.extend(g.seeds.clone());
             a.reads.extend(g.options.table.clone());
             a.writes = ray_ids(&g.output);
-            a.writes.extend(g.unresolved);
         }
         Request::TraceResident(t) => {
             system_access(&t.systems, &mut a);
