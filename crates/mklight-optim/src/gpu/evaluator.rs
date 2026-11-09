@@ -902,14 +902,18 @@ impl ResidentEvaluator {
         }
         // A ray slow or unresolved in an eighth of the batch's candidates
         // (any, in small batches) goes to the host for the next batches.
+        // Only device aiming learns, so that the first device-aimed batch
+        // of a run is preceded by its probe candidate.
         let threshold = n.div_ceil(8).max(1);
-        self.host_rays.lock().unwrap().record(
-            unresolved
-                .iter()
-                .filter(|&(_, &count)| count >= threshold)
-                .map(|(&key, _)| key),
-            rays_total as f64 / n as f64,
-        );
+        if !host_aim {
+            self.host_rays.lock().unwrap().record(
+                unresolved
+                    .iter()
+                    .filter(|&(_, &count)| count >= threshold)
+                    .map(|(&key, _)| key),
+                rays_total as f64 / n as f64,
+            );
+        }
         if anchored {
             let uniform: BTreeSet<resident::RayKey> = deferred
                 .iter()
