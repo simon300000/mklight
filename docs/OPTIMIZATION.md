@@ -545,6 +545,24 @@ at these sizes. An explicit `relative_step` still wins.
 * **f32 GPU operands** (`GpuTraceEvaluator`, see GPU-batched evaluation):
   `η = 1e-3` / `3e-3` for ray positions, `1e-4` / `1e-3` for wavefront
   operands.
+* **Device operands of the resident evaluator** (`ResidentEvaluator`,
+  double-float traces of f64 aims, ~1e-12 relative noise): forward
+  `η = 1e-6` for ray positions and `1e-5` for wavefront operands; central
+  differences take the reference's steps. Largest relative column error
+  against f64 central differences on the samples (default spot merit,
+  every curvature; Metal and emulation, device and host aiming alike):
+  3e-8–1.6e-6 at `1e-6`, against 4e-6–1.5e-3 with the f32-era `1e-3` it
+  used before and 1.9e-6–4.5e-5 with `√ε`; wavefront merit 5e-7–2.2e-5 at
+  `1e-5`, 4e-6–1.1e-4 at `1e-6`. The f32-era step also broke optimisation
+  of vignetted lenses: on a 35-surface ultra-wide zoom a probe `1e-3` away
+  crossed the vignetting edge of a ray that fails at the base point, so one
+  Jacobian column held the failure penalty divided by the step (7e5 against
+  2e3); the trial steps followed that column and were rejected, the trust
+  region shrank below `xtol · ‖D x‖` (inflated by the column's Moré scale)
+  and LM stopped after one iteration (`small_step`) on every device
+  variant, while the reference improved the merit by 30 % in 65
+  iterations. The reference fails the same way when given
+  `fd_relative_step: 1e-3`.
 
 Measured largest relative column error `‖J_j − R_j‖/‖R_j‖` on the Cooke
 triplet (curvatures 1, 3, 6, an air space and the back focus; all fields and

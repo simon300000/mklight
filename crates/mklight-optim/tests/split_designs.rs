@@ -393,8 +393,9 @@ fn column_error(j: &Matrix, r: &Matrix) -> f64 {
 }
 
 /// Finite differences of the hybrid evaluator (anchored batches, host
-/// completion with a low device cap included) stay at the device's noise
-/// level against f64 central differences.
+/// completion with a low device cap included) at its automatic step stay at
+/// the reference's level against f64 central differences (the f32-era
+/// `1e-3` step measured 1.8e-4 here).
 #[test]
 fn hybrid_finite_differences() {
     let backend: Arc<dyn ComputeBackend> = Arc::new(CpuF32Backend::new());
@@ -424,7 +425,7 @@ fn hybrid_finite_differences() {
             .residuals;
         let e = column_error(&j, &r);
         eprintln!("cap {cap:?} host aim {host_aim}: largest relative column error {e:.2e}");
-        assert!(e < 2e-3, "cap {cap:?} host aim {host_aim}: {e}");
+        assert!(e < 1e-5, "cap {cap:?} host aim {host_aim}: {e}");
     }
 }
 

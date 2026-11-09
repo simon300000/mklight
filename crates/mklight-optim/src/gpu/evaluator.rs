@@ -4,10 +4,7 @@ use super::{GpuContext, Lanes};
 use crate::deriv::FdScheme;
 use crate::merit::gpu_eval::resident::{self, RayDesign};
 use crate::merit::{
-    gpu_eval::{gpu_fd_relative_step, gpu_supports},
-    mtf_eval::MtfEvaluator,
-    solver_eval::SolverEvaluator,
-    *,
+    gpu_eval::gpu_supports, mtf_eval::MtfEvaluator, solver_eval::SolverEvaluator, *,
 };
 use crate::problem::Problem;
 use mklight_core::{
@@ -115,6 +112,23 @@ fn lane_pools(quarters: u8) -> (&'static rayon::ThreadPool, &'static rayon::Thre
     });
     (h, f)
 }
+/// Relative forward-difference step of the device's ray operands. Device
+/// values are double-float traces (rounding noise ~1e-12 relative, against
+/// ~1e-16 on the f64 reference): with the reference's `√ε` the noise term
+/// gave Jacobian column errors of 2e-6–5e-5 on the samples, at `1e-6`
+/// 3e-8–2e-6 (as close to f64 central differences as the reference's own
+/// forward differences). The f32-era step (`1e-3`) cost up to 1.5e-3 of
+/// truncation and, on a vignetted lens, let a probe cross the vignetting
+/// edge of a ray that fails at the base point: a penalty jump divided by
+/// the step, one spurious column, and least squares that no longer moved
+/// (`docs/OPTIMIZATION.md`).
+pub const DEVICE_FD_RELATIVE_STEP_FORWARD: f64 = 1e-6;
+/// [`DEVICE_FD_RELATIVE_STEP_FORWARD`] of the wavefront operands (OPD
+/// adds the path-length noise; the reference takes `1e-6`): column errors
+/// 5e-7–2e-5 on the samples against 4e-6–1e-4 at `1e-6` and up to 2e-4 at
+/// the f32-era `1e-4`.
+pub const DEVICE_WAVEFRONT_FD_RELATIVE_STEP_FORWARD: f64 = 1e-5;
+
 /// Smallest batch for which a hybrid evaluator that has not seen a batch
 /// yet first traces one candidate alone to learn the slow rays: a large
 /// cold batch would hold every aiming tile of its plan up for the slow
@@ -720,6 +734,10 @@ impl OperandEvaluator for ResidentEvaluator {
     fn anchored_differences(&self, _base: &OpticalSystem) -> bool {
         true
     }
+    /// Forward differences of device ray operands take
+    /// [`DEVICE_FD_RELATIVE_STEP_FORWARD`] (wavefront:
+    /// [`DEVICE_WAVEFRONT_FD_RELATIVE_STEP_FORWARD`]); central differences
+    /// and everything the host evaluates, the reference's steps.
     fn fd_relative_step(&self, kind: &OperandKind, scheme: FdScheme) -> Option<f64> {
         if matches!(kind, OperandKind::RelativeIllumination) {
             return Some(match scheme {
@@ -727,10 +745,18 @@ impl OperandEvaluator for ResidentEvaluator {
                 FdScheme::Central => 1e-5,
             });
         }
-        if gpu_supports(kind, true) {
-            Some(gpu_fd_relative_step(kind, scheme))
-        } else {
-            self.reference.fd_relative_step(kind, scheme)
+        match scheme {
+            FdScheme::Forward if gpu_supports(kind, true) => Some(
+                if matches!(
+                    kind,
+                    OperandKind::WavefrontAberration { .. } | OperandKind::WavefrontRms { .. }
+                ) {
+                    DEVICE_WAVEFRONT_FD_RELATIVE_STEP_FORWARD
+                } else {
+                    DEVICE_FD_RELATIVE_STEP_FORWARD
+                },
+            ),
+            _ => self.reference.fd_relative_step(kind, scheme),
         }
     }
     fn evaluate_batch(
