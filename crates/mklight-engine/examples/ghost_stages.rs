@@ -3,12 +3,12 @@
 //! engine's default settings (48² pupil grid).
 //!
 //! ```text
-//! ghost_stages LENS.mklight [REPS] [DESIGNS] [SETTINGS_JSON] [KEY=VARIANT ...]
+//! ghost_stages LENS.mklight [REPS] [COLUMNS] [SETTINGS_JSON] [KEY=VARIANT ...]
 //! ```
 //!
-//! `DESIGNS` is a comma-separated list: `cpu` and `ghost` variants
-//! (`default`, `level-sync`, `pipelined`, `shared`), each optionally with
-//! `+KEY=VARIANT` selections of its own (e.g. `default+trace_slope=f32`).
+//! `COLUMNS` is a comma-separated list: `cpu` (the CPU
+//! reference) and `metal`, each optionally with `+KEY=VARIANT` work-split
+//! selections of its own.
 
 use std::path::Path;
 use std::time::Instant;
@@ -20,10 +20,10 @@ use mklight_ghost::{GhostModel, GhostSettings, IrradianceSettings};
 fn main() {
     let a: Vec<String> = std::env::args().skip(1).collect();
     let reps: usize = a.get(1).map(|s| s.parse().unwrap()).unwrap_or(1);
-    let designs: Vec<String> = a
+    let columns: Vec<String> = a
         .get(2)
         .map(|s| s.split(',').map(String::from).collect())
-        .unwrap_or_else(|| vec!["cpu".into(), "default".into()]);
+        .unwrap_or_else(|| vec!["cpu".into(), "metal".into()]);
     let mut settings = IrradianceSettings {
         pupil_samples: 48,
         ..Default::default()
@@ -52,23 +52,20 @@ fn main() {
     let ctx = JobContext::default();
     let mut reference = None;
     for rep in 0..=reps {
-        for d in &designs {
+        for d in &columns {
             split::reset();
             for (k, v) in &extra {
                 split::set(k, Some(v));
             }
-            // A column `DESIGN+KEY=VARIANT+...` adds its own selections.
+            // A column `NAME+KEY=VARIANT+...` adds its own selections.
             let mut parts = d.split('+');
-            let design = parts.next().unwrap();
+            let column = parts.next().unwrap();
             for kv in parts {
                 let (k, v) = kv.split_once('=').unwrap();
                 split::set(k, Some(v));
             }
-            if design != "cpu" && design != "default" {
-                split::set("ghost", Some(design));
-            }
             let (t, c0) = (Instant::now(), cpu_ms());
-            let r = if design == "cpu" {
+            let r = if column == "cpu" {
                 mklight_ghost::ghost_irradiance(&model, &settings, &ctx).unwrap()
             } else {
                 mklight_ghost::gpu::ghost_irradiance(&metal, &model, &settings, &ctx).unwrap()
@@ -82,7 +79,7 @@ fn main() {
                     .abs()
                     .max(((peak - p.1) / p.1).abs())
             });
-            if design == "cpu" && reference.is_none() {
+            if column == "cpu" && reference.is_none() {
                 reference = Some((r.total_flux_ratio, peak));
             }
             println!(

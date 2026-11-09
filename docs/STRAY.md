@@ -457,33 +457,54 @@ analysis result, including aperture/coverage checks and the obstruction-checked
 primary reference. The reference diagnostic remains CPU f64 and is distinct
 from the transport backend.
 
-`gpu::run` executes source generation, non-sequential transport and detector
-estimators through `ComputeBackend`, returning the existing `StrayResult`.
-`gpu::TransportScene` retains immutable scene/material leases across plans;
-`append` exposes raw device detections and per-source ledgers for composed
-jobs. `prepare_geometry`, `generate` and `first_hits` remain available for
-geometry diagnostics. Engine capability and `auto` routing are in GPU.md
+`gpu::run` executes source generation and non-sequential transport through
+`ComputeBackend` and forms the detector estimators on the CPU from the device
+records, returning the existing `StrayResult`. `gpu::TransportScene` retains
+immutable scene/material leases across plans; `append` exposes raw device
+detections, per-source ledgers and continuation stacks for composed jobs.
+`prepare_geometry`, `generate` and `first_hits` remain available for geometry
+diagnostics. Engine capability and `auto` routing are in GPU.md
 §9.2 (`stray_light` is routed by the cost model).
 
 The four source measures preserve wavelength-first Philox draws and the
 reference uniform conversion, including its lower half ulp. Every source
 keeps its own 64-bit logical ID and 64-bit transport draw cursor. Splitting
 applies branches in reference order, then traverses children depth first.
-Other sources, command boundaries and stack growth never consume its random
-stream. Rare-branch forcing, analog/weighted/split modes, roulette and the
-64-copy weight window retain the reference bookkeeping.
+Other sources, command boundaries and the CPU continuation never consume its
+random stream. Rare-branch forcing, analog/weighted/split modes, roulette and
+the 64-copy weight window retain the reference bookkeeping.
 
 The portable compute caster uses analytic planes, conics and cylinders,
 local-frame double-float roots/normals and stable original-primitive-ID ties.
 Extended sags reuse P1's packed bases and gradients. Their nearest-hit search
 clips to a conservative box/cylinder, scans signed residuals and derivative
 extrema, and refines brackets with safeguarded Newton/bisection; this also
-resolves close root pairs near tangency. Coefficient bounds enclose the
-whole sag domain, including asymmetric surfaces; sampled extrema do not
-stand in for a bound. Small scenes retain the median host topology. At 512
-primitives and above, device kernels transform bounds and build a balanced
-preorder tree by levels. Traversal is stackless on every Metal device,
-including devices without hardware ray tracing. Optics are never triangulated.
+resolves close root pairs near tangency. A plain-f32 pre-scan skips cells
+whose residual and slope are clearly of one sign at both ends (about a
+hundred times the f32 rounding), so every root is decided by the same
+double-float cells. An even asphere whose sag is the plain radial form (the
+stray packing's zero overlay) is evaluated as `S(u) = c·u/(1 + w) + P(u)`,
+`u = x² + y²`, with the gradient `2S'(u)·(x, y)`, in f32 and in double-float
+(`P` and `P'` from the trace's double-float slope, `mkl_asphere_poly_dp_df`
+in `trace_shared.h`); each bracketed root is located in f32 and polished by
+two double-float Newton steps as the trace refines an asphere hit, and a
+sign change that is clear in f32 is solved without the cell's double-float
+end points. Every other extended sag is evaluated by the jets of
+`surface_math.h`, and its records are those of the CPU-f32 specification's
+scan. The specification evaluates even aspheres by the jets too, so there it
+agrees with the device to double-float rounding, not bit for bit. The radial
+form is also the more accurate one: the double-float jets sent about 2
+sources in 10⁵ of the Petzval sample down a spurious sneak path (a specular
+path crossing a surface outside its aperture, about 1 % of that lens's stray
+flux) that the f64 reference never takes, and the specification reproduced
+those records; the radial form follows the reference. Coefficient bounds
+enclose the whole sag domain, including asymmetric surfaces; sampled extrema
+do not stand in for a bound. A plain-f32 pre-test of the node boxes only skips
+boxes the double-float test rejects. Small scenes retain the median host
+topology. At 512 primitives and above, device kernels transform bounds and
+build a balanced preorder tree by levels. Traversal is stackless on every Metal
+device, including devices without hardware ray tracing. Optics are never
+triangulated.
 
 Interactions call the P7 coating implementation directly (the shader includes
 P7's source and the CPU-f32 specification uses P7's module, so there is one
@@ -497,75 +518,62 @@ double-float residuals, including grazing angles and uniform endpoints.
 DOE order draws retain the full ideal/kinoform/multilevel spectrum,
 the curved-surface grating equation and evanescent sink. Histories preserve
 all five classes, six non-designed events and 32 DOE visits. Coverage matches
-exact reflection and non-selected order overrides on device; overflow stays
-uncovered. Shared reference boundary checks reject unrepresentable coverage.
+exact reflection and non-selected order overrides; overflow stays uncovered.
+Shared reference boundary checks reject unrepresentable coverage.
 
-Immutable mode/material/shape features specialize the transport shader so
-unused split, film, extended-sag and scatter state does not burden other
-scenes. This changes no physical decisions. The work-split study key
-`stray_kernel` selects how: `specialized` (default; every feature a
-function constant, up to 108 pipelines), `partial` (split mode, thin films
-and extended sags constants, 8 pipelines; analog/weighted, DOE presence and
-order kind, scatter presence and BSDF kind uniform branches) or `uber` (one
-pipeline, every feature a branch on the run's feature word). The kernel folds
-the constant and the run's bits into one mask, so the designs share the
-source and produce identical records. Every design compiles to the same
-register-limited pipeline (384 threads per threadgroup on an M2 Pro).
+Immutable mode/material/shape features are function constants of the
+transport kernels, so unused split, film, extended-sag and scatter state does
+not burden other scenes. This changes no physical decisions.
 
-Each source has a resident continuation stack, ledger, detection journal and
-draw cursor. Up to 16,384 persistent lanes claim fresh sources and paused
-sources from device queues (integer atomics only), so SIMD groups stay full
-while long split trees finish; claim order never changes a source's records.
-Several rounds share one command buffer. The lane event budget and rounds per
-command adapt towards 15 ms of device time, and cancellation is checked
-between commands. A plan holds as many 256-source numerical blocks as fit a
-160 MiB scratch budget (`TransportOptions::source_tile` caps it), and the next
-plan's transport overlaps host key enumeration of the current one.
-A full stack pauses before the next event consumes any draws, grows into a
-larger device allocation and resumes through a device spill copy of the paused
-sources. Stack storage is capped at 256 MiB per allocation. `TransportOptions`
-also controls initial stack capacity, detection-journal capacity and the
-maximum lane event budget. Journal rows past a source's count are unspecified.
-Exhausted journal/stack capacity or P7's reference-required precision domain
-returns `Unsupported`; non-ideal DOE blazes beyond 2^20 also use reference
-sampling so every rounded Cauchy proposal remains an exactly represented
-integer. Ideal selected orders retain all i32 bits in the grating equation.
-Unrepresentable numeric BSDF/DOE parameters and estimator-product power
-scales also use the reported reference route.
-The high-level adapter completes a labelled CPU-f64
-replacement with a fallback count and reason. Cancellation returns
-`Cancelled` and never starts replacement work. No partial GPU ledger is
-published as a completed result.
+The device runs a wavefront: per bounce, every live source advances by one
+event in three kernels (pop, closest hit, interaction) over device-compacted
+lists with indirect dispatch, so the closest hit runs in its own small kernel
+instead of beside the interaction state. Several bounces share a command
+while bounces are short; a bounce whose casts may exceed the command time
+(long iterative sag scans) runs in tiles of bounded device time, and the
+first bounce is tiled until the cost of a cast is known. Commands aim at
+15 ms of device time, and cancellation is checked between commands.
 
-Tallies use P3 source products and fixed source-block reductions. Moment
-channels combine each source's depth-first children in double-float before
-the one-record P3 source-product formula is fused into channel generation;
-scalar sink/class estimators keep only (sum, sum²), and one plan normally
-forms every estimator of a transport plan.
-Sparse pixel and signature groups gather the
-original device weights into P3 segments, sum each source's children, then
-form squares and reduce source blocks. Owned, uncovered and covered ghost
-quantities have separate source estimators. Integer pixel/signature/source
-keys are enumerated on the host (in parallel 256-source blocks) for sparse
-topology and labels; no optical weights or positions are reduced there. Final compact block summaries are
-folded in canonical source order using the existing compensated result
-assembler, which also derives scalar centroids, RMS radii and standard
-errors. This keeps public maps, signature ordering and error definitions
-compatible with the reference. There are no floating-point atomics.
+Each source has a continuation stack, ledger, detection journal and draw
+cursor in shared memory. A source whose stack or journal is full, that
+reaches the head budget (`TransportOptions::head_events`, 64), or that needs
+reference arithmetic (P7's reference-required precision domain,
+unrepresentable sampling arithmetic) stops on the device
+before its next event with a consistent stack, ledger and draw cursor. The CPU
+reads the records in place, tallies them, continues stopped sources from the
+device stack with the reference tracer (`Philox::seek` to the device cursor),
+and retraces those that need reference arithmetic, so the paths and draws are
+those of the reference. A source's estimator terms combine the device ledger
+and the CPU continuation as one source. Chunks of `chunk_rays` sources are
+tallied in parallel, each in source order, and folded in chunk order as in
+the reference, with the reference's compensated result assembler (maps,
+signature ordering, centroids, RMS radii and standard errors); a chunk that
+spans two plans continues in the next. A plan holds the sources that fit a
+160 MiB scratch budget (`TransportOptions::source_tile` caps it), and two
+plans are in flight: the device transports plan `k + 1` while the CPU
+finishes plan `k`. Options that move the split (head budget, stack and
+journal capacity) change results only by the rounding of the part that moved
+(f64 instead of double-float). Unrepresentable numeric BSDF/DOE parameters,
+non-ideal DOE blazes beyond 2^20 (so every rounded Cauchy proposal remains an
+exactly represented integer) and source weights outside the device range use
+the reported reference route: the high-level adapter completes a labelled CPU-f64 replacement with a
+fallback count and reason. Cancellation returns `Cancelled` and never starts
+replacement work.
 
-Inputs are produced with `fill_buffer`; output and integer-key metadata are
-borrowed with `read_view`. Device stack spill is an explicit device copy,
-not an upload/readback of path state. RunInfo records the actual backend,
-F32Gpu precision, seed, scene fingerprint, numeric recipe version, kernel
-build/probe, stage timings, command/allocation/storage/copy statistics and
-any reference replacement. Widening final values to f64 does not change the
+Inputs are produced with `fill_buffer`; outputs are borrowed with
+`read_view`. RunInfo records the actual backend, F32Gpu precision, seed,
+scene fingerprint, numeric recipe version, kernel build/probe, the division
+(`design`, `gpu_share`, `sag_mode`), the source counters (device sources,
+CPU continuations by cause, retraces, CPU-share sources, events on each
+side), stage timings, command/allocation/storage/copy statistics and any
+reference replacement. Widening final values to f64 does not change the
 reported computation precision. Preparation and transport use progress
 subranges, and successful public assembly emits the final 1.
 
 Owned harnesses cover all 16 sample geometries and full transports, both
 shader origins, f64 and matching CPU-f32 comparisons, analytic plate and
-enclosure energy, BSDF integrals, split-child covariance, exact coverage and
-DOE overflow, concurrent/chunked jobs, cancellation/resource reuse and large
+enclosure energy, BSDF integrals, exact coverage and DOE overflow,
+concurrent/chunked jobs, head budgets, cancellation/resource reuse and large
 device scene builds. The actual-Metal harnesses in `tests/p10_support` are
 macOS test targets of this crate; the paired benchmarks there are ignored by
 default. Provisional busy-host timings do not establish an engine routing
@@ -578,95 +586,75 @@ threshold.
 
 | design | device | CPU |
 |---|---|---|
-| `gpu-tally` | transport and detector estimators (above) | integer keys, final assembly |
-| `cpu-tally` | transport of every source to completion | tally of the device records in place; continuation of sources whose stack or detection journal is full; retrace of sources that need reference arithmetic |
-| `gpu-head` | the first `TransportOptions::head_events` (64) events of every source | as `cpu-tally`, plus the continuation of longer path trees |
-| `wavefront` | as `gpu-head`, as a wavefront: per bounce, every live source advances by one event in three kernels (pop, closest hit, interaction) over device-compacted lists with indirect dispatch | as `gpu-head` |
-| `cosplit` (default) | `wavefront` on a fixed share of the source chunks | the reference trace of the other chunks at the same time, and the `wavefront` work |
-
-In every design but `gpu-tally` the device writes its detection journal,
-ledgers and per-source stacks (handoff mode, `ops::Transport::stack_output`)
-into shared memory and the CPU reads them in place. A source whose stack or
-journal is full, or that reaches the head budget, stops on the device before
-its next event with a consistent stack, ledger and draw cursor; the CPU tracer
-continues it from there (`Philox::seek` to the device cursor), so the paths
-and draws are those of the reference. Its estimator terms combine the device
-ledger and the CPU continuation as one source. Chunks of `chunk_rays` sources
-are tallied in parallel, each in source order, and folded in chunk order as in
-the reference; a chunk that spans two plans continues in the next. Two plans
-are in flight: the device transports plan `k + 1` while the CPU finishes plan
-`k`. A capacity limit is no longer a reason for a CPU fallback.
+| `cosplit` (default) | the first 64 events of the sources of a fixed share of the source chunks | the reference trace of the other chunks at the same time; the tally and the continuation of the device sources |
+| `wavefront` | the first 64 events of every source | the tally and the continuation of longer path trees |
 
 Which part of a source runs where depends only on the source and on fixed
 options, never on timing, so a seed gives bit-identical results. The device
 share of `cosplit` (`TransportOptions::gpu_share`, else the study key
-`stray_share`) is a fixed rule of the scene when not set: 0.2, and 0 with iteratively intersected sags or when
-that share is below 32 768 sources (`gpu::hybrid::default_share`); device chunks come in units of up to one
-plan, spread evenly. With a share of 0 `cosplit` is the reference bit for bit,
-with a share of 1 it is `gpu-head`. The persistent and wavefront kernels
-produce identical records. Options that move the split (head budget, stack and
-journal capacity) change results only by the rounding of the part that moved
-(f64 instead of double-float).
+`stray_share`, a number in 0…1) is a fixed rule of the scene when not set: 0.2,
+and 0 with iteratively intersected sags or when that share is below 32 768
+sources (`gpu::hybrid::default_share`); device chunks come in units of up to
+one plan, spread evenly. With a share of 0 `cosplit` is the reference bit for
+bit, with a share of 1 it is `wavefront`. A machine with a stronger GPU per
+CPU core wants a larger share.
 
-The hybrid analysis adapter builds the scene, starts the device transport and
-then runs the obstruction checks of the system fields and the source's primary
+The analysis adapter builds the scene, starts the device transport and then
+runs the obstruction checks of the system fields and the source's primary
 reference on the CPU beside it (`StraySystem::build_scene`); the result,
 warnings and progress are those of the sequential order.
 
-The CPU share of `cosplit` runs in the global rayon pool, or in a pool of
-its own size (study key `stray_threads`), beside the CPU completion of the
-device plans; the records do not depend on it.
+**Grazing handoff on the device** (study key `stray_sag`,
+`ops::Transport::sag_mode`): `f32-scan` (default) is the scan above;
+`f32-grazing` also hands a ray whose clipped interval needs more than 32
+cells (oblique and grazing rays) back to the CPU before the event
+(`Ledger::status` 6: the state goes back on the stack, no draw consumed),
+and the CPU continues the source.
 
-**Extended-sag intersection on the device** (`ops::Transport::sag_mode`,
-study key `stray_sag`): `scan` is the double-float cell scan above;
-`f32-scan` (default) evaluates the cells' end points in plain f32 first and skips a cell
-only when the residual and its slope are clearly of one sign at both ends
-(about a hundred times the f32 rounding), so every root is decided by the
-same double-float cells and the records are those of `scan` (tested on the
-aspheric, Q, odd-asphere and Zernike samples); `cpu-grazing` hands a ray whose
-clipped interval needs more than 32 cells (oblique and grazing rays) back to
-the CPU before the event (`Ledger::status` 6: the state goes back on the
-stack, no draw consumed), and the CPU continues the source; `f32-grazing`
-combines both.
+Measured on a quiet M2 Pro, wavefront transport: the radial evaluation of
+even aspheres takes 26 % off the device time of the jets on a 29-surface
+lens with two even aspheres (100k rays), 46 % on a 37-surface zoom with 7
+aspheres and 55 % on a 35-surface ultra-wide (10k rays); with `f32-grazing`
+as well, 40 % and 62 % on the first two (the ultra-wide then hands nearly
+every source to the CPU). The 12-thread f64 reference is still 3–5 times
+faster per event there, so the default share on such lenses stays 0.
 
-**Even-asphere evaluation on the device** (bits 2-3 of
-`ops::Transport::sag_mode`, study key `stray_asphere`): `jet` (default)
-evaluates every extended sag by the jets of `surface_math.h`. On an even
-asphere whose sag is the plain radial form (the stray packing's zero overlay)
-the radial forms evaluate `S(u) = c·u/(1 + w) + P(u)`, `u = x² + y²`, with
-the gradient `2S'(u)·(x, y)`: `radial-scan` only in the f32 pre-scan (the
-records of `jet`); `radial` also in double-float, with `P` and `P'` from the
-trace's double-float slope (`mkl_asphere_poly_dp_df` in `trace_shared.h`);
-`radial-newton` as `radial`, with each bracketed root located in f32 and
-polished by two double-float Newton steps as the trace refines an asphere
-hit, and a sign change that is clear in f32 solved without the cell's
-double-float end points. `radial` and `radial-newton` agree with `jet` to
-double-float rounding, not bit for bit (no CPU specification). The trace's
-`trace_slope` key packs `MKL_SURF_DF_SLOPE` into the stray surfaces too, but
-the stray kernels never read it: their sag slope is double-float in every
-mode. Measured on a quiet M2 Pro, wavefront transport: `radial-newton` takes
-26 % off the device time of a 29-surface lens with two even aspheres (100k
-rays), 46 % off a 37-surface zoom with 7 aspheres and 55 % off a 35-surface
-ultra-wide (10k rays); the 12-thread f64 reference is still 3–5 times faster
-per event there, so the default share on such lenses stays 0.
+**GPU options.** `wavefront`, a forced `stray_share` and `f32-grazing` move
+transport onto the device. On an M2 Pro their time ranges from 0.7 times the
+default's (`wavefront` with `f32-grazing` on the Petzval sample at 20k rays)
+to 2.5–3.6 times (`wavefront` at 400k–2M rays); a forced share of 0.2–0.35
+takes 0.9–1.6 times at 20k rays and up to 3 times at 2M rays on an aspheric
+lens. A GPU with more cores per CPU core may favour them, so they stay
+selectable. Their accuracy was checked against the CPU reference on the
+Cooke triplet, Double Gauss, Petzval, odd-asphere, Q and Zernike samples and
+three large aspheric lenses (six independent seeds per side; class totals,
+stray flux and irradiance in 8 × 8-pixel blocks against their Monte Carlo
+standard errors, with the default design as control): every option agrees
+within Monte Carlo error. With the reference's own seeds the device results
+equal it to rounding (within 1e-12 standard errors on the Petzval sample),
+apart from a rare single path that rounding sends elsewhere on the large
+lenses.
 
 **CPU stages.** The CPU path overlaps the obstruction checks of the system
 fields and the source's primary reference with the transport (all three are
 parallel, none fills the cores alone), checks the system fields in parallel,
 and traces chunks in batches of 16 per thread; results are unchanged.
 
-Measured on a heavily loaded M2 Pro (provisional): the device's double-float
-transport kernel is register-limited; the same kernel compiled as plain f32
-runs about 13 times faster. The closest-hit search dominates scenes with
-iteratively intersected sags: two even aspheres in a 29-surface lens make the
-cast kernel 85 % of the wavefront's device time, and one grazing ray's sag
+Measured on an M2 Pro: the device's double-float transport kernels are
+register-limited (at most 384 threads per threadgroup for the closest-hit
+kernel, 384–576 for the interaction kernel depending on the specialised
+features; the ignored `kernel_occupancy` test of `mklight-metal` prints
+them); the same transport compiled as plain f32 runs about 13 times faster. The closest-hit search dominates scenes
+with iteratively intersected sags: two even aspheres in a 29-surface lens make
+the cast kernel 85 % of the wavefront's device time, and one grazing ray's sag
 scan takes up to about 3 ms on the device. Device transport reaches about
 4 M events/s on the Double Gauss and 1 M events/s on that lens, against about
 16 M and 10 M events/s for the 12-thread reference, so only `cosplit` with a
 small device share is faster than the reference (the Double Gauss at 400 000
 rays: 413 against 633 ms with a share of 0.25).
 
-The provisional Apple M2 Pro native-analysis benchmark (33 paired workloads,
+With the earlier all-device transport, the provisional Apple M2 Pro
+native-analysis benchmark (33 paired workloads,
 median of three warm runs, busy shared host) still prefers the CPU f64 route
 for 32 of them: Metal/CPU median wall time is 1.6–5.1× on the samples at 20k
 and 1M rays, 3.3–3.5× on the split-heavy plate and 3.0–14.5× on the

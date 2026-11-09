@@ -1,5 +1,6 @@
-//! Resident stray-light transport, analytic compute BVH and deterministic
-//! per-source detector estimators. Engine qualification/routing belongs to P11.
+//! Resident stray-light transport and analytic compute BVH; the CPU forms
+//! the per-source detector estimators from the device records. Engine
+//! qualification/routing belongs to P11.
 use crate::{
     Scene, SourceSpec,
     geom::{Aabb, Mask, Primitive, Shape, onb},
@@ -339,7 +340,6 @@ pub fn first_hits(
 }
 
 pub mod hybrid;
-mod tally;
 mod transport;
 pub use hybrid::Design;
 pub(crate) use transport::run_design_with;
@@ -359,20 +359,16 @@ fn analyze_impl(
     settings.validate()?;
     let timer = mklight_core::job::RunTimer::start();
     let snapshot = rs.snapshot.clone();
-    // The hybrid designs check the system fields for obstruction on the CPU
-    // while the device transports.
-    let defer = design != Design::GpuTally;
-    let sys = if defer {
-        crate::StraySystem::build_scene(rs, &settings.system_options(), &ctx.subrange(0., 0.1))?
-    } else {
-        crate::StraySystem::build(rs, &settings.system_options(), &ctx.subrange(0., 0.1))?
-    };
+    // The obstruction checks of the system fields run on the CPU while the
+    // device transports.
+    let sys =
+        crate::StraySystem::build_scene(rs, &settings.system_options(), &ctx.subrange(0., 0.1))?;
     let (mut result, signatures) = crate::analysis::analyze_system_impl(
         &sys,
         settings,
         all_signatures,
         Some((b, options, design)),
-        defer,
+        true,
         &ctx.subrange(0.1, 0.99),
     )?;
     result.run_info = timer.finish(

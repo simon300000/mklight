@@ -3,12 +3,8 @@ use crate::{context::PipelineKey, resident::Execution};
 use mklight_core::MkResult;
 use mklight_gpu::{pending::JobControl, resident::StageStats, stray_ops::*};
 use std::time::Instant;
-mod tally;
 mod transport;
 pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> MkResult<()> {
-    if let Request::Tally(t) = r {
-        return tally::execute(t, x, ctl);
-    }
     if let Request::Build(r) = r {
         return transport::build(r, x, ctl);
     }
@@ -23,7 +19,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
             r.tile(),
             r.output(),
         ),
-        Request::Tally(_) | Request::Build(_) => unreachable!(),
+        Request::Build(_) => unreachable!(),
         Request::Transport(_) => {
             return mklight_gpu::resident::unsupported(
                 "stray split-tree transport is not qualified",
@@ -82,7 +78,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                         let (b, o) = x.buffer(r.shapes());
                         e.set_buffer(5, b, o);
                     }
-                    Request::Tally(_) | Request::Build(_) | Request::Transport(_) => unreachable!(),
+                    Request::Build(_) | Request::Transport(_) => unreachable!(),
                 }
                 e.dispatch_groups([((n - offset).min(tile)).div_ceil(64), 1, 1], 64);
                 Ok(())

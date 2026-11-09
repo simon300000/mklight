@@ -50,96 +50,13 @@ impl Lap {
     }
 }
 
-/// Study key of the CPU/GPU divisions of `ghost_irradiance`
-/// (`mklight_core::split`).
-pub const STUDY_KEY: &str = "ghost";
+/// Path groups of the device refinement: the device traces one group's
+/// tile while the host classifies, deduplicates and splits the others.
+pub(crate) const PIPELINE_GROUPS: usize = 4;
+/// Share of the reference's path groups (adjacent in step order, with
+/// shared prefixes) the CPU traces beside the device run.
+pub(crate) const CPU_SHARE: f64 = 0.2;
 
-/// Study key of the threads of the CPU share of [`Design::Shared`]: a
-/// number of threads for a pool of its own (unset: the global pool, which
-/// the device refinement's host work shares).
-pub const THREADS_KEY: &str = "ghost_threads";
-
-/// A pool of the selected size for the CPU share, if one is selected.
-pub(crate) fn share_pool() -> MkResult<Option<rayon::ThreadPool>> {
-    match mklight_core::split::variant(THREADS_KEY) {
-        None => Ok(None),
-        Some(v) => {
-            let n = v
-                .parse::<usize>()
-                .ok()
-                .filter(|n| *n > 0)
-                .ok_or_else(|| MkError::InvalidModel(format!("{THREADS_KEY} '{v}'")))?;
-            rayon::ThreadPoolBuilder::new()
-                .num_threads(n)
-                .build()
-                .map(Some)
-                .map_err(|e| MkError::Backend(format!("{THREADS_KEY} pool: {e}")))
-        }
-    }
-}
-
-/// Path groups of [`Design::Pipelined`].
-const PIPELINE_GROUPS: usize = 4;
-/// Share of the path groups the CPU traces in [`Design::Shared`].
-const CPU_SHARE: f64 = 0.2;
-
-/// A division of `ghost_irradiance` between the host and the device.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum Design {
-    /// The host refines all paths level by level; each level's probes of
-    /// every path go to the device in tiles, and the host completes one tile
-    /// while the device traces the next.
-    LevelSync,
-    /// The paths form groups that refine independently: the device traces
-    /// one group's tile while the host classifies, deduplicates and splits
-    /// the others.
-    Pipelined,
-    /// `Pipelined` on most paths while the CPU reference traces a fixed
-    /// share of the path groups (in step order, with shared prefixes) at the
-    /// same time; those paths are bit-identical to the reference.
-    Shared,
-}
-
-impl Design {
-    /// The design selected for this run (default: `Shared`).
-    pub fn selected() -> MkResult<Design> {
-        Self::named(mklight_core::split::variant(STUDY_KEY).as_deref())
-    }
-    pub fn named(name: Option<&str>) -> MkResult<Design> {
-        Ok(match name {
-            None | Some("shared") => Design::Shared,
-            Some("pipelined") => Design::Pipelined,
-            Some("level-sync") => Design::LevelSync,
-            Some(other) => {
-                return Err(MkError::InvalidModel(format!(
-                    "unknown ghost design '{other}' (level-sync, pipelined, shared)"
-                )));
-            }
-        })
-    }
-    pub fn name(self) -> &'static str {
-        match self {
-            Design::LevelSync => "level-sync",
-            Design::Pipelined => "pipelined",
-            Design::Shared => "shared",
-        }
-    }
-    /// Path groups of the device refinement.
-    pub(crate) fn groups(self) -> usize {
-        match self {
-            Design::LevelSync => 1,
-            Design::Pipelined | Design::Shared => PIPELINE_GROUPS,
-        }
-    }
-    /// Share of the path groups the CPU reference traces.
-    pub(crate) fn cpu_share(self) -> f64 {
-        match self {
-            Design::Shared => CPU_SHARE,
-            _ => 0.,
-        }
-    }
-}
 pub struct GhostTransport<'a> {
     pub backend: &'a dyn ComputeBackend,
     model: &'a GhostModel,
@@ -167,9 +84,8 @@ pub struct GhostTransport<'a> {
     pub(crate) host_seconds: std::collections::BTreeMap<&'static str, f64>,
     /// Process CPU seconds (all threads) over the same stages.
     pub(crate) host_cpu_seconds: std::collections::BTreeMap<&'static str, f64>,
-    /// The division that ran (irradiance jobs) and the paths the CPU
-    /// reference traced beside it.
-    pub(crate) design: Option<Design>,
+    /// The paths the CPU reference traced beside the device (irradiance
+    /// jobs).
     pub(crate) cpu_paths: usize,
 }
 impl Drop for GhostTransport<'_> {
@@ -336,7 +252,6 @@ impl<'a> GhostTransport<'a> {
             pixel_migrations: 0,
             host_seconds: Default::default(),
             host_cpu_seconds: Default::default(),
-            design: None,
             cpu_paths: 0,
             run: None,
         })
@@ -564,7 +479,7 @@ impl<'a> GhostTransport<'a> {
             run.precision = r.precision;
             run.settings["resident_backend"] = r.settings.clone();
         }
-        run.settings["gpu"] = serde_json::json!({"system_cache":self.backend.resident_cache_stats(),"resident_bytes":self.resident_probes.iter().map(|h|h.desc().byte_len().unwrap()).sum::<usize>(),"version":MKL_GHOST_VERSION,"distinct_probes":self.distinct_probes,"lattice_keys":self.lattice_keys,"reference_probes":self.fallback_probes,"reference_seconds":self.reference_seconds,"boundary_probes":self.boundary_probes,"pixel_migrations":self.pixel_migrations,"host_seconds":self.host_seconds,"host_cpu_seconds":self.host_cpu_seconds,"design":self.design,"cpu_paths":self.cpu_paths,"plans":self.stats,"map_plans":*self.map_stats.borrow()});
+        run.settings["gpu"] = serde_json::json!({"system_cache":self.backend.resident_cache_stats(),"resident_bytes":self.resident_probes.iter().map(|h|h.desc().byte_len().unwrap()).sum::<usize>(),"version":MKL_GHOST_VERSION,"distinct_probes":self.distinct_probes,"lattice_keys":self.lattice_keys,"reference_probes":self.fallback_probes,"reference_seconds":self.reference_seconds,"boundary_probes":self.boundary_probes,"pixel_migrations":self.pixel_migrations,"host_seconds":self.host_seconds,"host_cpu_seconds":self.host_cpu_seconds,"cpu_paths":self.cpu_paths,"plans":self.stats,"map_plans":*self.map_stats.borrow()});
         if self.fallback_probes > 0 {
             run.warnings.push(format!(
                 "P9: {} probes completed by CPU f64 reference",
@@ -590,18 +505,7 @@ pub fn ghost_irradiance(
     settings: &crate::IrradianceSettings,
     ctx: &JobContext,
 ) -> MkResult<crate::GhostIrradiance> {
-    ghost_irradiance_design(backend, model, settings, Design::selected()?, ctx)
-}
-/// [`ghost_irradiance`] with an explicit division of the work instead of
-/// the selected one.
-pub fn ghost_irradiance_design(
-    backend: &dyn ComputeBackend,
-    model: &GhostModel,
-    settings: &crate::IrradianceSettings,
-    design: Design,
-    ctx: &JobContext,
-) -> MkResult<crate::GhostIrradiance> {
-    crate::irradiance::ghost_irradiance_with_backend(model, settings, ctx, Some((backend, design)))
+    crate::irradiance::ghost_irradiance_with_backend(model, settings, ctx, Some(backend))
 }
 
 pub(crate) struct MapData {

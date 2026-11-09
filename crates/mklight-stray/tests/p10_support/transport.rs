@@ -8,10 +8,14 @@ use mklight_metal::{LibraryChoice, MetalBackend, MetalOptions};
 use mklight_stray::{SplitMode, StraySettings, StraySystem, gpu};
 use std::sync::Arc;
 
-/// The all-device design these qualification tests were written for
-/// (`gpu::Design::GpuTally`); the hybrid designs have their own tests below.
+/// The whole transport on the device (`gpu::Design::Wavefront` without a
+/// head budget): the CPU only tallies, continues sources whose stack or
+/// detection journal is full, and retraces sources that need reference
+/// arithmetic. A device run that needed no reference arithmetic is checked
+/// to have retraced nothing, so these qualification tests cover the device
+/// physics.
 #[allow(clippy::too_many_arguments)]
-fn legacy_run(
+fn device_run(
     b: &dyn ComputeBackend,
     snapshot: Snapshot,
     scene: &mklight_stray::Scene,
@@ -20,16 +24,24 @@ fn legacy_run(
     options: gpu::TransportOptions,
     ctx: &JobContext,
 ) -> mklight_core::MkResult<mklight_stray::StrayResult> {
-    gpu::run_design(
+    let r = gpu::run_design(
         b,
         snapshot,
         scene,
         source,
         settings,
-        options,
-        gpu::Design::GpuTally,
+        gpu::TransportOptions {
+            head_events: 0,
+            ..options
+        },
+        gpu::Design::Wavefront,
         ctx,
-    )
+    )?;
+    let info = &r.run_info.as_ref().unwrap().settings;
+    if info["fallback_count"] == 0 {
+        assert_eq!(info["counters"]["retraced"], 0, "reference arithmetic");
+    }
+    Ok(r)
 }
 #[test]
 fn controlled_transport() {
@@ -64,7 +76,7 @@ fn controlled_transport() {
             };
             let cpu =
                 mklight_stray::run(&system.scene, &source, &settings, &JobContext::new()).unwrap();
-            let got = legacy_run(
+            let got = device_run(
                 &b,
                 snapshot,
                 &system.scene,
@@ -118,47 +130,60 @@ fn transport_specification_and_tiles() {
         },
         ..Default::default()
     };
-    let raw = |b: &dyn ComputeBackend, budget| {
+    let raw = |b: &dyn ComputeBackend, head_events| {
         let ctx = JobContext::new();
         let prep = gpu::TransportScene::new(b, &system.scene, &ctx).unwrap();
         let mut p = mklight_gpu::resident::ResidentPlan::new(snap.clone());
-        let (a, c) = prep
-            .append(
-                &mut p,
-                &system.scene,
-                &source,
-                &settings,
-                0,
-                65,
-                gpu::TransportOptions {
-                    event_budget: budget,
-                    stack_capacity: 64,
-                    ..Default::default()
-                },
-            )
+        let options = gpu::TransportOptions {
+            stack_capacity: 64,
+            head_events,
+            ..Default::default()
+        };
+        let (a, c, s) = prep
+            .append(&mut p, &system.scene, &source, &settings, 0, 65, options, 0)
             .unwrap();
-        p.outputs = vec![a, c];
+        p.outputs = vec![a, c, s];
         let r = b.submit_plan(p, &ctx).unwrap().wait().unwrap();
         assert_eq!(r.stats.copied_bytes, 0);
         let ledger_view = b.read_view(r.outputs[1].view()).unwrap();
         let ledgers = ops::read_records::<ops::Ledger>(&ledger_view).unwrap();
         assert_eq!(ledgers.len(), 65);
-        // Detection rows past each source's count are unspecified.
-        let cap = gpu::TransportOptions::default().detections_per_source;
-        let width = std::mem::size_of::<ops::Detection>() / 4;
-        let hits = b.read_view(r.outputs[0].view()).unwrap().words().to_vec();
-        let valid = ledgers
-            .iter()
-            .enumerate()
-            .flat_map(|(i, l)| hits[i * cap * width..][..l.hits as usize * width].to_vec())
-            .collect::<Vec<_>>();
-        (valid, ledger_view.words().to_vec())
+        // Detection and stack rows past each source's count are unspecified.
+        let valid = |output: usize, rows: usize, width: usize, count: fn(&ops::Ledger) -> u32| {
+            let words = b
+                .read_view(r.outputs[output].view())
+                .unwrap()
+                .words()
+                .to_vec();
+            ledgers
+                .iter()
+                .enumerate()
+                .flat_map(|(i, l)| words[i * rows * width..][..count(l) as usize * width].to_vec())
+                .collect::<Vec<_>>()
+        };
+        let hits = valid(
+            0,
+            options.detections_per_source,
+            std::mem::size_of::<ops::Detection>() / 4,
+            |l| l.hits,
+        );
+        let stacks = valid(
+            2,
+            options.stack_capacity,
+            std::mem::size_of::<ops::State>() / 4,
+            |l| l.top,
+        );
+        (hits, ledger_view.words().to_vec(), stacks)
     };
-    let a = raw(&cpu, 7);
-    let b = raw(&metal, 7);
-    assert!(!a.0.is_empty());
-    assert_eq!(a, b, "CPU-f32 specification and Metal records differ");
-    assert_eq!(b, raw(&metal, 64), "event budget changed the records");
+    for head in [0, 7] {
+        let a = raw(&cpu, head);
+        let b = raw(&metal, head);
+        assert!(!a.0.is_empty());
+        assert_eq!(
+            a, b,
+            "CPU-f32 specification and Metal records differ (head {head})"
+        );
+    }
 }
 
 /// Identity comparisons are meaningful only between actual GPU transports.
@@ -236,7 +261,7 @@ fn samples_all_fields_and_spectra() {
                 };
                 let cpu = mklight_stray::run(&system.scene, &source, &settings, &JobContext::new())
                     .unwrap();
-                let got = legacy_run(
+                let got = device_run(
                     &b,
                     snapshot.clone(),
                     &system.scene,
@@ -303,7 +328,7 @@ fn scatter_ensembles_and_doe() {
                 };
                 let cpu = mklight_stray::run(&system.scene, &source, &settings, &JobContext::new())
                     .unwrap();
-                let got = legacy_run(
+                let got = device_run(
                     &b,
                     snapshot.clone(),
                     &system.scene,
@@ -346,7 +371,7 @@ fn scatter_ensembles_and_doe() {
             };
             let cpu =
                 mklight_stray::run(&system.scene, &source, &settings, &JobContext::new()).unwrap();
-            let got = legacy_run(
+            let got = device_run(
                 &b,
                 snap,
                 &system.scene,
@@ -416,10 +441,9 @@ fn coverage_partition_and_repeated_passes() {
     let options = gpu::TransportOptions {
         detections_per_source: 64,
         stack_capacity: 4,
-        event_budget: 8,
         ..Default::default()
     };
-    let got = legacy_run(
+    let got = device_run(
         &b,
         snapshot.clone(),
         &system.scene,
@@ -435,10 +459,9 @@ fn coverage_partition_and_repeated_passes() {
     assert!((got.energy.detected_uncovered_ghost - 0.49 * 0.09 * 0.09 / (1. - 0.09)).abs() < 1e-9);
     let cpu = mklight_stray::run(&system.scene, &source, &settings, &JobContext::new()).unwrap();
     compare_results(&cpu, &got);
-    // Tiles and event budgets never change a source's records. In the
-    // all-device design neither does the stack capacity; in the hybrid
-    // designs it decides which sources the CPU continues (f64 instead of
-    // double-float), which changes only rounding.
+    // Plan tiles never change a source's records; the stack capacity decides
+    // which sources the CPU continues (f64 instead of double-float), which
+    // changes only rounding.
     let run = |design, options| {
         gpu::run_design(
             &b,
@@ -454,7 +477,6 @@ fn coverage_partition_and_repeated_passes() {
     };
     let retiled = gpu::TransportOptions {
         source_tile: 512,
-        event_budget: 32,
         ..options
     };
     let deeper = gpu::TransportOptions {
@@ -462,12 +484,21 @@ fn coverage_partition_and_repeated_passes() {
         ..retiled
     };
     assert!(got.signatures.iter().any(|s| s.overflow));
-    let legacy_tiled = run(gpu::Design::GpuTally, deeper);
-    assert_eq!(got.detector, legacy_tiled.detector);
-    assert_eq!(got.energy, legacy_tiled.energy);
-    assert_eq!(got.signatures, legacy_tiled.signatures);
-    let head = run(gpu::Design::GpuHead, options);
-    let tiled = run(gpu::Design::GpuHead, retiled);
+    let device_tiled = device_run(
+        &b,
+        snapshot.clone(),
+        &system.scene,
+        &source,
+        &settings,
+        retiled,
+        &JobContext::new(),
+    )
+    .unwrap();
+    assert_eq!(got.detector, device_tiled.detector);
+    assert_eq!(got.energy, device_tiled.energy);
+    assert_eq!(got.signatures, device_tiled.signatures);
+    let head = run(gpu::Design::Wavefront, options);
+    let tiled = run(gpu::Design::Wavefront, retiled);
     assert_resident(&head);
     compare_results(&cpu, &head);
     assert!(
@@ -479,7 +510,7 @@ fn coverage_partition_and_repeated_passes() {
     assert_eq!(head.detector, tiled.detector);
     assert_eq!(head.energy, tiled.energy);
     assert_eq!(head.signatures, tiled.signatures);
-    let deep = run(gpu::Design::GpuHead, deeper);
+    let deep = run(gpu::Design::Wavefront, deeper);
     for c in 0..5 {
         let (a, b) = (
             head.energy.detected_by_class[c].1,
@@ -506,7 +537,7 @@ fn coverage_partition_and_repeated_passes() {
         ..Default::default()
     };
     let cpu = mklight_stray::run(&scene, &source, &settings, &JobContext::new()).unwrap();
-    let got = legacy_run(
+    let got = device_run(
         &b,
         snap,
         &scene,
@@ -578,7 +609,7 @@ fn integrating_sphere_energy() {
             ..Default::default()
         };
         let snap = Snapshot::new(mklight_core::samples::singlet()).unwrap();
-        let got = legacy_run(
+        let got = device_run(
             &b,
             snap,
             &scene,
@@ -627,37 +658,38 @@ fn split_tree_cancellation_and_release() {
     )
     .unwrap();
     let source = system.system_field_source(0, 0.1, 1.).unwrap().spec;
+    // A long transport: a full plan of sources through a lens with
+    // iteratively intersected aspheres, cancelled once progress shows.
+    let long = mklight_core::samples::petzval_asphere();
+    let long_snap = Snapshot::new(long.clone()).unwrap();
+    let long_system =
+        StraySystem::new(Arc::new(common::resolve(long)), &Default::default()).unwrap();
+    let long_source = long_system.system_field_source(0, 0.1, 1.).unwrap().spec;
     let ctx = JobContext::new();
-    let prepared = gpu::TransportScene::new(&*b, &system.scene, &ctx).unwrap();
+    let prepared = gpu::TransportScene::new(&*b, &long_system.scene, &ctx).unwrap();
     let set = StraySettings {
-        rays: 256,
-        mode: SplitMode::Split {
-            max_splits: 10000,
-            rare_floor: 0.,
-        },
-        max_events: 10000,
-        roulette_threshold: 0.,
+        rays: 65536,
         ..Default::default()
     };
     let plan = || {
-        let mut p = mklight_gpu::resident::ResidentPlan::new(snap.clone());
-        let (a, c) = prepared
+        let mut p = mklight_gpu::resident::ResidentPlan::new(long_snap.clone());
+        let (a, c, s) = prepared
             .append(
                 &mut p,
-                &system.scene,
-                &source,
+                &long_system.scene,
+                &long_source,
                 &set,
                 0,
-                256,
+                65536,
                 gpu::TransportOptions {
-                    detections_per_source: 1024,
-                    event_budget: 1,
-                    stack_capacity: 64,
+                    detections_per_source: 8,
+                    head_events: 0,
                     ..Default::default()
                 },
+                0,
             )
             .unwrap();
-        p.outputs = vec![a, c];
+        p.outputs = vec![a, c, s];
         p
     };
     let ctx = JobContext::new();
@@ -688,7 +720,7 @@ fn split_tree_cancellation_and_release() {
         rays: 257,
         ..Default::default()
     };
-    let got = legacy_run(
+    let got = device_run(
         &*b,
         snap.clone(),
         &system.scene,
@@ -700,9 +732,8 @@ fn split_tree_cancellation_and_release() {
     .unwrap();
     assert_resident(&got);
     assert!(got.energy.is_balanced());
-    // A genuinely too-small hit journal: the all-device design gives an
-    // explicitly labelled f64 result, the hybrid designs continue the
-    // sources whose journal is full on the CPU.
+    // A genuinely too-small hit journal: the sources whose journal is full
+    // continue on the CPU.
     let split = StraySettings {
         mode: SplitMode::Split {
             max_splits: 4,
@@ -714,28 +745,25 @@ fn split_tree_cancellation_and_release() {
         detections_per_source: 1,
         ..Default::default()
     };
-    let run = |design| {
+    let run = |head_events| {
         gpu::run_design(
             &*b,
             snap.clone(),
             &system.scene,
             &source,
             &split,
-            small,
-            design,
+            gpu::TransportOptions {
+                head_events,
+                ..small
+            },
+            gpu::Design::Wavefront,
             &JobContext::new(),
         )
         .unwrap()
     };
-    let fallback = run(gpu::Design::GpuTally);
-    assert_eq!(fallback.run_info.as_ref().unwrap().backend, "cpu-f64");
-    assert_eq!(
-        fallback.run_info.as_ref().unwrap().settings["fallback_count"],
-        1
-    );
     let cpu = mklight_stray::run(&system.scene, &source, &split, &JobContext::new()).unwrap();
-    for design in [gpu::Design::CpuTally, gpu::Design::GpuHead] {
-        let continued = run(design);
+    for head in [0, 64] {
+        let continued = run(head);
         assert_resident(&continued);
         let info = &continued.run_info.as_ref().unwrap().settings;
         assert!(info["counters"]["journal_full"].as_u64().unwrap() > 0);
@@ -761,7 +789,7 @@ fn full_pipeline_concurrency_and_chunk_identity() {
     };
     let (a, c) = std::thread::scope(|scope| {
         let a = scope.spawn(|| {
-            legacy_run(
+            device_run(
                 &*b,
                 snapshot.clone(),
                 &system.scene,
@@ -769,7 +797,6 @@ fn full_pipeline_concurrency_and_chunk_identity() {
                 &set,
                 gpu::TransportOptions {
                     source_tile: 256,
-                    event_budget: 7,
                     detections_per_source: 8,
                     ..Default::default()
                 },
@@ -777,7 +804,7 @@ fn full_pipeline_concurrency_and_chunk_identity() {
             )
             .unwrap()
         });
-        let c = legacy_run(
+        let c = device_run(
             &*b,
             snapshot.clone(),
             &system.scene,
@@ -785,7 +812,6 @@ fn full_pipeline_concurrency_and_chunk_identity() {
             &set,
             gpu::TransportOptions {
                 source_tile: 4096,
-                event_budget: 32,
                 detections_per_source: 8,
                 ..Default::default()
             },
@@ -849,7 +875,7 @@ fn controlled_film_bulk_weights() {
                 ..Default::default()
             };
             let cpu = mklight_stray::run(&scene, &source, &set, &JobContext::new()).unwrap();
-            let got = legacy_run(
+            let got = device_run(
                 &b,
                 snap.clone(),
                 &scene,
@@ -973,7 +999,7 @@ fn explicit_ghost_partition() {
         covered_ghosts: coverage,
         ..Default::default()
     };
-    let gpu = legacy_run(
+    let gpu = device_run(
         &b,
         snap,
         &system.scene,
@@ -1076,7 +1102,7 @@ fn bsdf_disk_integrals() {
             seed: 251,
             ..Default::default()
         };
-        let result = legacy_run(
+        let result = device_run(
             &b,
             Snapshot::new(mklight_core::samples::singlet()).unwrap(),
             &scene,
@@ -1150,7 +1176,7 @@ fn doe_visit_overflow_and_coverage_boundary() {
         roulette_threshold: 0.,
         ..Default::default()
     };
-    let got = legacy_run(
+    let got = device_run(
         &b,
         snap,
         &scene,
@@ -1192,7 +1218,7 @@ fn doe_visit_overflow_and_coverage_boundary() {
         rays: 1,
         ..Default::default()
     };
-    let result = legacy_run(
+    let result = device_run(
         &b,
         snap,
         &scene,
@@ -1246,7 +1272,7 @@ fn doe_near_integer_preserves_draw_consumption() {
             ..Default::default()
         };
         let cpu = mklight_stray::run(&system.scene, &source, &set, &JobContext::new()).unwrap();
-        let got = legacy_run(
+        let got = device_run(
             &b,
             snap.clone(),
             &system.scene,
@@ -1305,7 +1331,7 @@ fn wide_selected_order_keeps_integer_bits() {
         })
         .unwrap()
         .expect("actual GPU required");
-        let got = legacy_run(
+        let got = device_run(
             &b,
             snapshot.clone(),
             &scene,
@@ -1349,7 +1375,7 @@ fn absolute_power_precision_fallback() {
             rays: 16,
             ..Default::default()
         };
-        let got = legacy_run(
+        let got = device_run(
             &b,
             snap.clone(),
             &scene,
@@ -1443,7 +1469,7 @@ fn grazing_tis_weights() {
                     seed: 19,
                     ..Default::default()
                 };
-                let result = legacy_run(
+                let result = device_run(
                     &b,
                     Snapshot::new(mklight_core::samples::singlet()).unwrap(),
                     &scene,
@@ -1519,9 +1545,9 @@ fn native_analysis_result_adapter() {
     }
 }
 
-/// Every division of the transport (`gpu::Design`) against the CPU
-/// reference on a scattering, ghosting sample; designs that share device
-/// records against each other; reproducibility and tile independence.
+/// Both divisions of the transport (`gpu::Design`) against the CPU
+/// reference on a scattering, ghosting sample; reproducibility, tile
+/// independence and the limits of the device share.
 #[test]
 fn hybrid_designs_agree() {
     let b = MetalBackend::new()
@@ -1558,75 +1584,49 @@ fn hybrid_designs_agree() {
         ..Default::default()
     };
     let mut results = Vec::new();
-    for design in [
-        gpu::Design::GpuTally,
-        gpu::Design::CpuTally,
-        gpu::Design::GpuHead,
-        gpu::Design::Wavefront,
-        gpu::Design::CoSplit,
-    ] {
+    for design in [gpu::Design::Wavefront, gpu::Design::CoSplit] {
         let got = run(design, options);
         compare_results(&cpu, &got);
         let info = &got.run_info.as_ref().unwrap().settings;
-        if design != gpu::Design::GpuTally {
-            assert_eq!(info["design"], design.name());
-            let n = &info["counters"];
-            let sources = [
-                "device_sources",
-                "head_budget",
-                "stack_full",
-                "journal_full",
-                "sag_handoff",
-                "retraced",
-                "cpu_sources",
-            ]
-            .iter()
-            .map(|k| n[k].as_u64().unwrap())
-            .sum::<u64>();
-            assert_eq!(sources, settings.rays, "{design:?}: {n}");
-            assert_eq!(
-                got.energy.events,
-                n["device_events"].as_u64().unwrap() + n["cpu_events"].as_u64().unwrap()
-            );
-        }
-        if matches!(design, gpu::Design::GpuHead | gpu::Design::Wavefront) {
-            assert!(info["counters"]["head_budget"].as_u64().unwrap() > 0);
-        }
+        assert_eq!(info["design"], design.name());
+        let n = &info["counters"];
+        let sources = [
+            "device_sources",
+            "head_budget",
+            "stack_full",
+            "journal_full",
+            "sag_handoff",
+            "retraced",
+            "cpu_sources",
+        ]
+        .iter()
+        .map(|k| n[k].as_u64().unwrap())
+        .sum::<u64>();
+        assert_eq!(sources, settings.rays, "{design:?}: {n}");
+        assert_eq!(
+            got.energy.events,
+            n["device_events"].as_u64().unwrap() + n["cpu_events"].as_u64().unwrap()
+        );
+        assert!(n["head_budget"].as_u64().unwrap() > 0);
         eprintln!("{design:?}: {}", got.energy.summary());
         results.push(got);
     }
-    // The device tallies and the CPU tally of the same device records.
-    for c in 0..5 {
-        let (a, b) = (
-            results[0].energy.detected_by_class[c].1,
-            results[1].energy.detected_by_class[c].1,
-        );
-        assert!(
-            (a - b).abs() <= 1e-10 * cpu.energy.emitted,
-            "class {c}: {a} {b}"
-        );
-    }
-    // Persistent lanes and the wavefront produce identical records.
-    assert_eq!(results[2].energy, results[3].energy);
-    assert_eq!(results[2].detector, results[3].detector);
-    assert_eq!(results[2].signatures, results[3].signatures);
     // Reproducible, and independent of the plan tile.
     let again = run(gpu::Design::CoSplit, options);
-    assert_eq!(again.energy, results[4].energy);
-    assert_eq!(again.detector, results[4].detector);
+    assert_eq!(again.energy, results[1].energy);
+    assert_eq!(again.detector, results[1].detector);
     let retiled = run(
-        gpu::Design::GpuHead,
+        gpu::Design::Wavefront,
         gpu::TransportOptions {
             source_tile: 700,
-            event_budget: 5,
             ..options
         },
     );
-    assert_eq!(retiled.energy, results[2].energy);
-    assert_eq!(retiled.detector, results[2].detector);
-    assert_eq!(retiled.signatures, results[2].signatures);
+    assert_eq!(retiled.energy, results[0].energy);
+    assert_eq!(retiled.detector, results[0].detector);
+    assert_eq!(retiled.signatures, results[0].signatures);
     // A CPU share of everything is the CPU reference, bit for bit; a device
-    // share of everything is GpuHead.
+    // share of everything is the wavefront design.
     let all_cpu = run(
         gpu::Design::CoSplit,
         gpu::TransportOptions {
@@ -1644,8 +1644,8 @@ fn hybrid_designs_agree() {
             ..options
         },
     );
-    assert_eq!(all_gpu.energy, results[2].energy);
-    assert_eq!(all_gpu.detector, results[2].detector);
+    assert_eq!(all_gpu.energy, results[0].energy);
+    assert_eq!(all_gpu.detector, results[0].detector);
 }
 
 /// The CPU continues sources from the device stacks after any head budget:
@@ -1675,14 +1675,13 @@ fn head_budget_continuation() {
         };
         let cpu =
             mklight_stray::run(&system.scene, &source, &settings, &JobContext::new()).unwrap();
-        let full = gpu::run_design(
+        let full = device_run(
             &b,
             snapshot.clone(),
             &system.scene,
             &source,
             &settings,
             gpu::TransportOptions::default(),
-            gpu::Design::CpuTally,
             &JobContext::new(),
         )
         .unwrap();
@@ -1732,9 +1731,9 @@ fn head_budget_continuation() {
     }
 }
 
-/// The hybrid analysis checks the system fields for obstruction beside the
-/// device transport: the same obstruction, warnings and reference as the
-/// all-device design, which checks them first.
+/// The device analysis checks the system fields for obstruction beside the
+/// transport: the same obstruction, warnings and reference as the CPU
+/// analysis of a system that checked them first (`StraySystem::build`).
 #[test]
 fn deferred_checks_match() {
     let b = MetalBackend::new().unwrap().expect("actual GPU required");
@@ -1764,9 +1763,14 @@ fn deferred_checks_match() {
         assert_eq!(ctx.progress.fraction(), 1.);
         r
     };
-    let legacy = analyze(gpu::Design::GpuTally);
-    let hybrid = analyze(gpu::Design::CoSplit);
-    assert_eq!(hybrid.primary_obstruction, legacy.primary_obstruction);
-    assert_eq!(hybrid.warnings, legacy.warnings);
-    assert_eq!(hybrid.clear_semi_diameters, legacy.clear_semi_diameters);
+    let sys =
+        StraySystem::build(rs.clone(), &settings.system_options(), &JobContext::new()).unwrap();
+    let sequential =
+        mklight_stray::analysis::analyze_system(&sys, &settings, &JobContext::new()).unwrap();
+    for design in [gpu::Design::CoSplit, gpu::Design::Wavefront] {
+        let device = analyze(design);
+        assert_eq!(device.primary_obstruction, sequential.primary_obstruction);
+        assert_eq!(device.warnings, sequential.warnings);
+        assert_eq!(device.clear_semi_diameters, sequential.clear_semi_diameters);
+    }
 }
