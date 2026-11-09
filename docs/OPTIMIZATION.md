@@ -898,8 +898,7 @@ Front ends use `Engine::stop_job`, `mk_job_stop` (ABI 1.2), Python
 job token: even a queued request is retained until the job starts, and the
 job ends normally (`Done`) with `status: "stopped"` and `stopped: true`.
 A second CLI Ctrl-C cancels. Cancel/supersession still discards the result.
-The legacy `stop_key` / `analysis::optim::request_stop(key)` remains supported;
-one running job holds each key. A stopped sensitivity keeps completed
+A stopped sensitivity keeps completed
 operands; stopped Monte Carlo keeps completed trials.
 
 **Never worse than the start.** The job evaluates the start and the
@@ -996,8 +995,8 @@ settings object, the same merit construction (explicit `merit` or
 fixed-boundary relaxation, the EFL hold that `algorithm` selects, solves
 applied first) and the same operand report, without a search or derivatives.
 A derivative-free EFL penalty is weighted from that one evaluation. On the
-CPU every number equals `optimize`'s `start` report (tested). `backend`,
-`gpu_batch` and fallback follow `optimize` with a workload of
+CPU every number equals `optimize`'s `start` report (tested). `backend`
+and fallback follow `optimize` with a workload of
 one candidate, so `auto` normally stays on the CPU; an explicit GPU traces
 the ray operands there, and `backend.reported_on` names it.
 
@@ -1026,9 +1025,7 @@ failure policy.
 | `fd_relative_step` | number > 0 or null, `null` | `null`: chosen per operand and evaluator (Derivatives); 0 or a negative step is rejected |
 | `seed` | integer, `0` | seed of `de`, `cma_es`, `hammer` |
 | `backend` | `auto` \| `cpu` \| `gpu` \| `gpu_emulation`, `auto` | merit evaluation. `gpu` uses the GPU device the engine selected for the analysis (`AnalysisInput::device` holding the provider's `GpuDevice`), or the CPU reference with a warning when there is none. `auto` uses that device when the engine handed one over (an engine `auto` request runs these jobs on the CPU reference, `GPU.md` §9.2). `backend.workload` reports the rays counted by `gpu_rays_per_candidate` for the merit's configuration-0 operands on the start system and the batch: the FD Jacobian (n, or 2n central) for `lm` / `dogleg`, the population for `de` (default max(10n, 15)) and `cma_es` (default 4 + ⌊3 ln n⌋), 1 for `nelder_mead`, `candidates_per_round` for `hammer`. A GPU provider lists `optimize` and `tolerance` in its capabilities so that the engine hands them its device. `gpu_emulation` requires the selected `gpu:cpu_f32` provider (validation, tests) |
-| `gpu_batch` | integer, `512` | candidates per GPU dispatch (`GpuEvalSettings::batch`) |
 | `feasibility_tolerance` | number, `1e-6` | total normalised constraint violation regarded as feasible: best-so-far ranking and `final.feasible` |
-| `stop_key` | string or null, `null` | key for `request_stop`; a key held by a running job is rejected |
 
 ### `optimize` result
 
@@ -1105,7 +1102,7 @@ the best point seen. `final` is the better of the answer and the start
 | `preview_case` | object or null, `null` | evaluate only `{"type":"trial","trial":k}` or `{"type":"sensitivity","operand":k,"positive":true}` (zero-based) and return it as `preview` instead of `sensitivity`/`monte_carlo` |
 | `irregularity_wavelength_um` | positive number or null, `null` | fringe test wavelength; null keeps an existing overlay's, else the primary wavelength |
 | `random_irregularity_orientation` | boolean, `true` | Monte Carlo: a uniform astigmatism axis in [0, 180)° per toleranced surface and trial, reproducible from the seed; false keeps the model's angle |
-| `backend`, `gpu_batch`, `stop_key` | as for `optimize` | |
+| `backend` | as for `optimize` | |
 
 Without compensators, every trial is a single evaluation, and a batch of trials
 goes to the evaluator as one batch (one GPU dispatch). The job hands the
@@ -1165,15 +1162,15 @@ Buffer 0 (when Monte Carlo ran) is `monte_carlo_criteria` (f64, one per trial).
 | defaults | singlet: variables c₁, c₂ and the back focus, EFL held at its start value (replaced by an explicit `efl` operand); tolerances: the lens thickness and both curvatures |
 | singlet through the scheduler | equi-convex start, EFL = 100 constraint: converged, merit ÷5 or more, EFL within 1e-6, the result applies as a session snapshot with the reported hash |
 | Cooke triplet | default merit with thickness boundaries and EFL constraint, LM 40 iterations: merit −20 % or more, every constraint holds to 1e-6, two runs give identical JSON; seeded DE: identical for a seed, different for another, improves |
-| cancel and stop | cancelled after two LM iterations: `Cancelled` without reference scoring; `stop_key` through the scheduler: `Done`, `stopped`, improved; the key is unregistered afterwards |
+| cancel and stop | cancelled after two LM iterations: `Cancelled` without reference scoring; `Engine::stop_job` through the scheduler: `Done`, `stopped`, improved |
 | tolerance | 6 tolerances, back-focus compensator: ranked sensitivities, compensator moves, Monte Carlo identical for a seed, different for another |
 | GPU backends | `gpu_emulation` everywhere and `gpu` (Metal) when present: GPU precision, no runtime qualification, reported on the reference, merit decreases; `auto` with a handed-over device uses it at both merit sizes |
 | global methods | `cma_es`, `de`, `nelder_mead` with the defaults on the singlet and Cooke triplet: improve, feasible, EFL within 1e-4 relative by the penalty; a DE run that cannot improve returns the start (`improved: false`, same snapshot hash) with a warning |
 | snapshot merit | Cooke triplet and Double Gauss, default RMS spot, worst-field MTF and a custom merit, and the DE penalty hold: equal to the optimize start report; expanded defaults round-trip as custom; CPU-f32 GPU counters record one candidate; solves applied first; per-operand errors |
 | feasibility restoration | nonlinear equality leaves a 2.7e-6 defect after one improving LM/dogleg step: repaired below the ranking tolerance, bounds and hard evaluation budgets respected, cancellation retains the best point; 20 LM iterations on the Double Gauss with the worst-field MTF merit (release, ignored) end 3e-3 off the EFL hold and are restored instead of returning the start |
 | defaults feasible | `{}` on the Cooke triplet (the 1 mm glass minimum relaxed to 0.99997, warned), the Petzval and the relay: feasible, improved, EFL held to 1e-6 mm |
-| bad input | `fd_relative_step` 0 or negative, tolerances or compensators on a missing surface, a `stop_key` in use → `InvalidSettings` |
-| stopped sensitivity | a compensated sensitivity of 30 tolerances stopped after its first batch: `stopped`, 15 operands kept, `cancelled: true` |
+| bad input | `fd_relative_step` 0 or negative, tolerances or compensators on a missing surface → `InvalidSettings` |
+| stopped sensitivity | a compensated sensitivity of 90 tolerances stopped through the job's stop token after its first batch of 128 points: `stopped`, the completed operands kept, `cancelled: true` |
 
 ## Glass substitution: `glass_substitution`
 
@@ -1205,8 +1202,8 @@ Every other setting has a default:
 | `top_n` | 10 | combinations returned |
 
 `variables`, `merit`, `default_merit`, `operands`, `constraints`,
-`hold_efl`, `fd_scheme`, `fd_relative_step`, `seed`, `backend`, `gpu_batch`,
-`feasibility_tolerance` and `stop_key` are those of `optimize`. Empty
+`hold_efl`, `fd_scheme`, `fd_relative_step`, `seed`, `backend` and
+`feasibility_tolerance` are those of `optimize`. Empty
 continuous variables select the curvatures of the curved surfaces and the
 back focus; explicit variables may be any `ParamPath`. The re-optimisation is
 `optimize`'s LM: the same merit, augmented-Lagrangian constraints, FD steps
@@ -1302,7 +1299,7 @@ apply any entry as one undoable edit. `starting_merit`, `candidate_sets`,
 With fixed settings and seed, and no time limit or Stop, the result is
 identical for any number of Rayon workers. Progress reports the number of
 re-optimisations, the best merit and the best combination's glasses. Stop
-(`Engine::stop_job` or `stop_key`) ends the search and returns the ranking
+(`Engine::stop_job`) ends the search and returns the ranking
 so far, including re-optimisations cut short (`local_termination:
 "cancelled"`); Cancel discards the job. `max_seconds` covers the search only,
 not setup or the final ranking.
@@ -1313,7 +1310,7 @@ Re-optimisation dominates. For C combinations, n continuous variables and
 I LM iterations, forward differences cost about `C · (1 + I · (n + 1))`
 merit evaluations, plus rejected steps and constraint updates (central
 differences: 2n). One search iteration's combinations run in parallel. All re-optimisations share the resident GPU evaluator, with each FD Jacobian
-batched and split at `gpu_batch`. No candidate/reference checks run during the
+in one batch. No candidate/reference checks run during the
 search. `auto` runs the search on the CPU reference: `glass_substitution` is an
 accuracy exclusion (`GPU.md` §9.2, "Automatic routing"). The final ranking
 adds one CPU f64 merit evaluation per kept combination.

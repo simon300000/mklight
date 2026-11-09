@@ -35,9 +35,7 @@ struct Settings {
     fd_relative_step: Option<f64>,
     seed: u64,
     backend: BackendChoice,
-    gpu_batch: usize,
     feasibility_tolerance: f64,
-    stop_key: Option<String>,
 }
 
 /// The input prescription and candidate glasses, shared by the parallel
@@ -197,9 +195,6 @@ impl Analysis for GlassSubstitution {
         props["feasibility_tolerance"]["description"] = json!(
             "Total normalised constraint violation regarded as feasible (ranking, results[].feasible)."
         );
-        props["stop_key"]["description"] = json!(
-            "Key for `request_stop`: stop and keep the ranked results. One running job per key."
-        );
         schema
     }
 
@@ -343,7 +338,7 @@ impl Analysis for GlassSubstitution {
             .map(Duration::try_from_secs_f64)
             .transpose()
             .map_err(invalid)?;
-        let stop = StopRequest::register(s.stop_key.as_deref(), input.stop.clone())?;
+        let stop = input.stop.clone();
         let system = input.snapshot.system().clone();
         if s.variables.is_empty() {
             s.variables = auto_variables(&system);
@@ -449,7 +444,7 @@ impl Analysis for GlassSubstitution {
                 1
             };
         let work = Workload::new(&cpu.trace, &system, &spec, jacobian_batch);
-        let mut ev = Evaluation::new(s.backend, input, &input.snapshot, s.gpu_batch, work, ctx)?;
+        let mut ev = Evaluation::new(s.backend, input, &input.snapshot, work, ctx)?;
         let lsq = LsqSettings {
             speculative_jacobian: ev.speculative(),
             ..lsq
