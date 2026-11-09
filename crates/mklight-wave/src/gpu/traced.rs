@@ -52,8 +52,11 @@ const UNAIMABLE_RESIDUAL: f32 = 1e-6;
 pub struct ResidentTracedPupil {
     pub pupil: ResidentPupil,
     pub info: ExitPupilInfo,
-    pub nodes: BufferHandle,
-    pub valid: BufferHandle,
+    /// Resident lattice nodes (DF `[side, side, 4]`: u, v, unwrapped OPD,
+    /// amplitude) and survival (u32) of a pupil the device traced; None
+    /// when the host traced it (its lattice is in `host`).
+    pub nodes: Option<BufferHandle>,
+    pub valid: Option<BufferHandle>,
     pub mask: Option<PupilMask>,
     pub entrance_rim: Option<PupilMask>,
     /// Content key of this traced lattice ([`lattice_key`]): the shared
@@ -82,36 +85,6 @@ pub fn lattice_key(
         .key(&crate::shared::lattice_key(tracer, field, wl, settings))
         .str(library)
         .finish()
-}
-impl ResidentTracedPupil {
-    pub fn resample(
-        &mut self,
-        b: &dyn ComputeBackend,
-        snapshot: Snapshot,
-        n: usize,
-        supersample: usize,
-        ctx: &JobContext,
-    ) -> MkResult<WaveResult<ResidentPupil>> {
-        let mut r = from_resident_lattice(
-            b,
-            snapshot,
-            self.nodes.view(),
-            subset(
-                &self.valid,
-                [self.nodes.desc().shape[0], self.nodes.desc().shape[1]],
-            ),
-            self.pupil.input_hash.clone(),
-            n,
-            self.pupil.wavelength_um,
-            self.pupil.geometry,
-            self.mask.as_ref(),
-            supersample,
-            ctx,
-        )?;
-        r.value.image_offset_mm = self.pupil.image_offset_mm;
-        self.pupil = r.value.clone();
-        Ok(r)
-    }
 }
 /// Probe rays: generated starts, the five hit channels, survival and power.
 struct Batch {
@@ -469,26 +442,6 @@ impl<'a> PupilTracer<'a> {
                     })
                 })
             })
-            .collect())
-    }
-    /// Image-surface chief points of `fields` at the primary wavelength (the
-    /// chief reference when it is not traced); None where the chief fails.
-    pub fn chief_points(
-        &self,
-        fields: &[&PreparedField],
-        ctx: &JobContext,
-        stats: &mut PlanStats,
-    ) -> MkResult<Vec<Option<[f64; 2]>>> {
-        let primary = self.tracer.system().primary_wavelength;
-        let specs: Vec<_> = fields
-            .iter()
-            .map(|f| self.spec(f, primary))
-            .collect::<MkResult<_>>()?;
-        let pupils: Vec<_> = fields.iter().map(|&f| (f, primary)).collect();
-        Ok(self
-            .chief_rays(&pupils, &specs, ctx, stats)?
-            .into_iter()
-            .map(|c| c.map(|c| [c[0].to_f64(), c[1].to_f64()]))
             .collect())
     }
     #[allow(clippy::too_many_arguments)]
@@ -1648,8 +1601,8 @@ impl<'a> PupilTracer<'a> {
             value: ResidentTracedPupil {
                 pupil: result.value,
                 info,
-                nodes,
-                valid,
+                nodes: Some(nodes),
+                valid: Some(valid),
                 mask,
                 entrance_rim,
                 key,

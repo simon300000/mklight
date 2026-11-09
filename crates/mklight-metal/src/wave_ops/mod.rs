@@ -14,7 +14,6 @@ mod image_integrals;
 mod lattice;
 mod placement;
 mod resample;
-mod sampling;
 mod shells;
 mod simulation;
 mod spectral;
@@ -60,9 +59,6 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
     }
     if let Request::Spectral(r) = r {
         return spectral::execute(r, x, ctl);
-    }
-    if let Request::Blur(r) = r {
-        return sampling::execute(r, x, ctl);
     }
     if let Request::ImageIntegral(r) = r {
         return image_integrals::execute(r, x, ctl);

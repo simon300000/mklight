@@ -9,7 +9,6 @@ pub mod image_integrals;
 pub mod lattice;
 pub mod placement;
 pub mod resample;
-pub mod sampling;
 pub mod shells;
 pub mod simulation;
 pub mod spec;
@@ -38,7 +37,6 @@ pub enum Request {
     Simulation(simulation::Simulation),
     FftMtf(fft_mtf::FftMtf),
     ImageIntegral(image_integrals::ImageIntegral),
-    Blur(sampling::Blur),
     Spectral(spectral::Spectral),
     Placement(placement::Placement),
     Lattice(lattice::Lattice),
@@ -51,7 +49,6 @@ pub enum Request {
     Zernike {
         samples: PlanView,
         terms: PlanView,
-        standard: bool,
         matrix: BufferId,
         rhs: BufferId,
     },
@@ -176,7 +173,6 @@ pub fn validate(r: &Request, p: &ResidentPlan) -> MkResult<()> {
         Request::Simulation(r) => simulation::validate(r, p)?,
         Request::FftMtf(r) => fft_mtf::validate(r, p)?,
         Request::ImageIntegral(r) => image_integrals::validate(r, p)?,
-        Request::Blur(r) => sampling::validate(r, p)?,
         Request::Spectral(r) => spectral::validate(r, p)?,
         Request::Placement(r) => placement::validate(r, p)?,
         Request::Lattice(r) => lattice::validate(r, p)?,
@@ -382,7 +378,6 @@ pub fn accesses(r: &Request) -> Access {
         Request::Simulation(r) => return simulation::access(r),
         Request::FftMtf(r) => return fft_mtf::access(r),
         Request::ImageIntegral(r) => return image_integrals::access(r),
-        Request::Blur(r) => return sampling::access(r),
         Request::Spectral(r) => return spectral::access(r),
         Request::Placement(r) => return placement::access(r),
         Request::Lattice(r) => return lattice::access(r),

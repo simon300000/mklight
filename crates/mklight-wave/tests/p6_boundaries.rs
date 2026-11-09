@@ -163,8 +163,12 @@ fn physical_pupil_boundaries_and_wavelength_chunks() {
             r.into_iter()
                 .map(|r| {
                     let r = r.unwrap().value;
-                    [r.nodes.view(), r.valid.view(), r.pupil.opd.clone()]
-                        .map(|v| b.read_view(v).unwrap().words().to_vec())
+                    [
+                        r.nodes.as_ref().unwrap().view(),
+                        r.valid.as_ref().unwrap().view(),
+                        r.pupil.opd.clone(),
+                    ]
+                    .map(|v| b.read_view(v).unwrap().words().to_vec())
                 })
                 .collect::<Vec<_>>()
         };

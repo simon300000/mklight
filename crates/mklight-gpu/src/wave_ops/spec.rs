@@ -39,23 +39,16 @@ pub fn scalar(v: Df32) -> f32 {
 pub fn params(r: &Request) -> Params {
     let mut p = Params::zeroed();
     let g = match r {
-        Request::Zernike {
-            samples,
-            terms,
-            standard,
-            ..
-        } => {
+        Request::Zernike { samples, terms, .. } => {
             p.mode = 7;
             p.n = samples.desc.shape[0] as u32;
             p.field_side = terms.desc.shape[0] as u32;
-            p.size = *standard as u32;
             None
         }
         Request::Shells(_)
         | Request::Simulation(_)
         | Request::FftMtf(_)
         | Request::ImageIntegral(_)
-        | Request::Blur(_)
         | Request::Spectral(_)
         | Request::Placement(_)
         | Request::Lattice(_)
@@ -370,7 +363,7 @@ pub fn correlation_term(
 
 /// Cartesian angular powers and Jacobi recurrence avoid polar-coordinate
 /// singularities at the origin and factorial cancellation at high order.
-pub fn zernike(x: Df32, y: Df32, n: u32, m: i32, standard: bool) -> Df32 {
+pub fn zernike(x: Df32, y: Df32, n: u32, m: i32) -> Df32 {
     let am = m.unsigned_abs();
     let degree = (n - am) / 2;
     let one = Df32::from_f32(1.);
@@ -391,10 +384,5 @@ pub fn zernike(x: Df32, y: Df32, n: u32, m: i32, standard: bool) -> Df32 {
     for _ in 0..am {
         (re, im) = (re * x - im * y, re * y + im * x);
     }
-    let z = (if m >= 0 { re } else { im }) * if degree == 0 { one } else { cur };
-    if standard {
-        z * Df32::from_f32((n + 1) as f32 * if m == 0 { 1. } else { 2. }).sqrt()
-    } else {
-        z
-    }
+    (if m >= 0 { re } else { im }) * if degree == 0 { one } else { cur }
 }
