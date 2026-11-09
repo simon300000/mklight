@@ -80,7 +80,7 @@ impl Analysis for Wave {
             return run_cpu(self.0.name, &cfg, settings, memo, c);
         };
         let b = d.backend.as_ref();
-        // Host-traced lattices and pupils of the work-split designs are the
+        // The native division's host-traced lattices and pupils are the
         // reference's and are shared with the CPU analyses (`run_cpu`).
         let memo = input.memo();
         let memo = memo.as_ref().map(|m| m as &dyn Memo);

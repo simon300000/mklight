@@ -1,5 +1,5 @@
 //! Divisions of stray-light transport between the GPU and the CPU (the
-//! work-split study key `stray`, docs/STRAY.md "Resident GPU transport").
+//! route key `stray`, docs/STRAY.md "Resident GPU transport").
 //!
 //! The device runs the wavefront kernels on a share of the source chunks
 //! (all of them in [`Design::Wavefront`]). Every design keeps the
@@ -31,12 +31,12 @@ use std::collections::{BTreeMap, VecDeque};
 use std::sync::Mutex;
 use std::time::Instant;
 
-/// Study key of the transport divisions (`mklight_core::split`).
+/// Route key of the transport divisions (`mklight_core::split`).
 pub const STUDY_KEY: &str = "stray";
-/// Study key of the device share of [`Design::CoSplit`] (a number in
+/// Route key of the device share of [`Design::CoSplit`] (a number in
 /// 0…1; unset: [`default_share`]).
 pub const SHARE_KEY: &str = "stray_share";
-/// Study key of the device's extended-sag intersection
+/// Route key of the device's extended-sag intersection
 /// (`ops::Transport::sag_mode`): `f32-scan` (default) or `f32-grazing`,
 /// which hands oblique and grazing rays to the CPU.
 pub const SAG_KEY: &str = "stray_sag";
@@ -63,7 +63,7 @@ const PLAN_BYTES: usize = 160 << 20;
 #[serde(rename_all = "kebab-case")]
 pub enum Design {
     /// The device transports a share (`TransportOptions::gpu_share`, else
-    /// the study key `stray_share`, else [`default_share`]) of the source
+    /// the route key `stray_share`, else [`default_share`]) of the source
     /// chunks while the CPU reference traces the other chunks at the same
     /// time.
     CoSplit,
@@ -101,7 +101,7 @@ impl Design {
 }
 
 /// Device share of [`Design::CoSplit`] when neither the options nor the
-/// study key `stray_share` set it: a
+/// route key `stray_share` set it: a
 /// fixed rule of the scene, so that a seed gives the same partition. The
 /// 12-core reference traces analytic scenes about four times faster than
 /// the device, so the device takes the share it finishes in the CPU's time
@@ -489,7 +489,7 @@ pub(crate) fn run(
     let stack_capacity = options.stack_capacity.max(4);
     let sag = sag_mode()?;
     let share = match design {
-        // Options first, then the share study key, then the scene rule.
+        // Options first, then the share route key, then the scene rule.
         Design::CoSplit => match options.gpu_share {
             Some(share) => share,
             None => match mklight_core::split::variant(SHARE_KEY) {

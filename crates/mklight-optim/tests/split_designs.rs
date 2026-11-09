@@ -220,7 +220,7 @@ fn hybrid_designs_agree_with_the_reference() {
             let ops = operands(&sys);
             let cands = candidates(&sys);
             let reference = values(&BuiltinEvaluator::builtin(), &cands, &ops);
-            // Device aiming with host completion (the `aiming` study's
+            // Device aiming with host completion (the `aiming` key's
             // device designs), and host aiming with device tracing.
             for (pipelined, host_aim) in [(false, false), (true, false), (false, true)] {
                 let ev = evaluator(&backend, &sys, pipelined).with_host_aim(host_aim);

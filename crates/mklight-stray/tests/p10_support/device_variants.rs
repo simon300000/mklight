@@ -1,4 +1,4 @@
-//! The device's extended-sag intersection (work-split study key
+//! The device's extended-sag intersection (route key
 //! `stray_sag`) agrees with the reference on the aspheric samples. The
 //! selection is process-wide, so these checks run in one test, in a process
 //! of their own.
