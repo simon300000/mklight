@@ -130,7 +130,7 @@ pub(super) fn evaluation_backend_schema() -> Value {
                 "aiming",
                 enumeration(
                     &["device", "host"],
-                    "Where the hybrid designs aim the pupil rays: on the device with host completion (default), or on the host with device tracing (`aiming` study set to `host` or `host-table`).",
+                    "Where the hybrid designs aim the pupil rays: on the device with host completion (default), or on the host with device tracing (`aiming` set to `host-table` or `split:<share>`).",
                 ),
             ),
             (
@@ -491,9 +491,9 @@ struct Evaluation {
 }
 
 /// Do the hybrid solver designs aim their pupil rays on the host? Only when
-/// the `aiming` study is set to one of its host designs (`host`,
-/// `host-table`; the solvers' rows hold too few rays for a seed table);
-/// unset, or a device design, keeps device aiming with host completion.
+/// the `aiming` study is set to its host design (`host-table`; the solvers'
+/// rows hold too few rays for a seed table); unset, or a device design,
+/// keeps device aiming with host completion.
 fn solver_host_aim() -> EngineResult<bool> {
     use mklight_analysis::gpu::aim::{AimDesign, KEY};
     if mklight_core::split::variant(KEY).is_none() {
@@ -501,7 +501,7 @@ fn solver_host_aim() -> EngineResult<bool> {
     }
     Ok(matches!(
         AimDesign::selected().map_err(invalid)?,
-        AimDesign::Host | AimDesign::HostTable
+        AimDesign::HostTable
     ))
 }
 

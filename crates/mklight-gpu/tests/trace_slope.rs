@@ -1,16 +1,11 @@
-//! The even-asphere slope designs of the double-float trace (work-split key
-//! `trace_slope`): with `df` (the default) the hit refinement and the normal
-//! of an even asphere take the polynomial slope in double-float, and the
-//! double-float trace follows the f64 reference to its own precision; with
-//! `f32` the slope is the f32 polynomial's and the normal carries its
-//! rounding. Measured on the CPU-f32 specification of the kernel, through
-//! two strong even aspheres at steep incidence.
-use mklight_core::{SurfaceShape, split};
+//! The even-asphere slope of the double-float trace: the hit refinement and
+//! the normal of an even asphere take the polynomial slope in double-float,
+//! so the double-float trace follows the f64 reference to its own precision.
+//! Measured on the CPU-f32 specification of the kernel, through two strong
+//! even aspheres at steep incidence.
+use mklight_core::SurfaceShape;
 use mklight_gpu::{
-    Df32, Ieee, PackOptions, PackedSystem,
-    consts::*,
-    layout::df_slope,
-    testutil,
+    Df32, Ieee, PackOptions, PackedSystem, testutil,
     trace_kernel::{self as tr, KRayIn},
 };
 use mklight_trace::{PupilSampling, TraceOptions, trace_ray};
@@ -32,7 +27,7 @@ fn ray_in(r: &mklight_trace::Ray) -> KRayIn {
 
 /// The largest image position (mm) and direction errors of the
 /// double-float trace against the f64 trace, over every field and a pupil
-/// grid, with the system packed under the current `trace_slope` selection.
+/// grid, and the number of rays compared.
 fn errors() -> (f64, f64, usize) {
     let t = testutil::tracer(testutil::asphere_heavy());
     let wl = t.system().primary_wavelength;
@@ -84,39 +79,14 @@ fn errors() -> (f64, f64, usize) {
 
 #[test]
 fn double_float_slope_follows_the_f64_trace() {
-    // The fixture's surfaces are even aspheres: `df` marks them.
-    assert!(df_slope().unwrap());
     let t = testutil::tracer(testutil::asphere_heavy());
-    let p = PackedSystem::pack_all(t.system()).unwrap();
-    assert!(
-        p.surfaces
-            .iter()
-            .filter(|s| s.shape == MKL_SHAPE_EVEN_ASPHERE)
-            .all(|s| s.flags & MKL_SURF_DF_SLOPE != 0)
-    );
     assert!(matches!(
         t.system().surfaces[1].shape,
         SurfaceShape::EvenAsphere { .. }
     ));
-    let (df_pos, df_dir, n) = errors();
-    split::set("trace_slope", Some("f32"));
-    let flags = PackedSystem::pack_all(t.system()).unwrap().surfaces[1].flags;
-    let (f32_pos, f32_dir, m) = errors();
-    split::set("trace_slope", Some("nonsense"));
-    assert!(PackedSystem::pack_all(t.system()).is_err());
-    split::reset();
-    assert_eq!(flags & MKL_SURF_DF_SLOPE, 0, "f32 leaves the flag off");
-    assert_eq!(n, m);
+    let (pos, dir, n) = errors();
     assert!(n > 100, "{n} rays");
-    // Double-float slope: the trace keeps double-float precision.
-    assert!(
-        df_pos < 1e-11 && df_dir < 1e-12,
-        "df: {df_pos:e} mm, {df_dir:e}"
-    );
-    // The f32 slope's normal error is orders of magnitude larger.
-    assert!(
-        f32_dir > 100.0 * df_dir.max(1e-15),
-        "f32 {f32_dir:e} vs df {df_dir:e}"
-    );
-    println!("df {df_pos:e} mm {df_dir:e}; f32 {f32_pos:e} mm {f32_dir:e}");
+    // An f32 slope leaves ~2e-8 mm and ~4e-9 here.
+    assert!(pos < 1e-11 && dir < 1e-12, "{pos:e} mm, {dir:e}");
+    println!("{pos:e} mm {dir:e}");
 }

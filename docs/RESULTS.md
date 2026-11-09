@@ -2193,7 +2193,7 @@ Result (`result` in the envelope):
 |---|---|---|---|
 | `algorithm` | string |  | one of `"tabu"`, `"hammer"` |
 | `backend` | object |  |  |
-| `backend.aiming` (optional) | string |  | one of `"device"`, `"host"`; Where the hybrid designs aim the pupil rays: on the device with host completion (default), or on the host with device tracing (`aiming` study set to `host` or `host-table`). |
+| `backend.aiming` (optional) | string |  | one of `"device"`, `"host"`; Where the hybrid designs aim the pupil rays: on the device with host completion (default), or on the host with device tracing (`aiming` set to `host-table` or `split:<share>`). |
 | `backend.evaluated_on` | string |  | Search evaluator backend; envelope uses engine backend ids. |
 | `backend.gpu_stats` (optional) | object |  |  |
 | `backend.gpu_stats.cpu_candidates` | integer |  | ≥ 0 |
@@ -2290,7 +2290,7 @@ Result (`result` in the envelope):
 | field | type | unit | notes |
 |---|---|---|---|
 | `backend` | object |  |  |
-| `backend.aiming` (optional) | string |  | one of `"device"`, `"host"`; Where the hybrid designs aim the pupil rays: on the device with host completion (default), or on the host with device tracing (`aiming` study set to `host` or `host-table`). |
+| `backend.aiming` (optional) | string |  | one of `"device"`, `"host"`; Where the hybrid designs aim the pupil rays: on the device with host completion (default), or on the host with device tracing (`aiming` set to `host-table` or `split:<share>`). |
 | `backend.evaluated_on` | string |  | Search evaluator backend; envelope uses engine backend ids. |
 | `backend.gpu_stats` (optional) | object |  |  |
 | `backend.gpu_stats.cpu_candidates` | integer |  | ≥ 0 |
@@ -2364,7 +2364,7 @@ Result (`result` in the envelope):
 |---|---|---|---|
 | `algorithm` | string |  |  |
 | `backend` | object |  |  |
-| `backend.aiming` (optional) | string |  | one of `"device"`, `"host"`; Where the hybrid designs aim the pupil rays: on the device with host completion (default), or on the host with device tracing (`aiming` study set to `host` or `host-table`). |
+| `backend.aiming` (optional) | string |  | one of `"device"`, `"host"`; Where the hybrid designs aim the pupil rays: on the device with host completion (default), or on the host with device tracing (`aiming` set to `host-table` or `split:<share>`). |
 | `backend.evaluated_on` | string |  | Search evaluator backend; envelope uses engine backend ids. |
 | `backend.gpu_stats` (optional) | object |  |  |
 | `backend.gpu_stats.cpu_candidates` | integer |  | ≥ 0 |
@@ -2483,7 +2483,7 @@ Result (`result` in the envelope):
 | field | type | unit | notes |
 |---|---|---|---|
 | `backend` | object |  |  |
-| `backend.aiming` (optional) | string |  | one of `"device"`, `"host"`; Where the hybrid designs aim the pupil rays: on the device with host completion (default), or on the host with device tracing (`aiming` study set to `host` or `host-table`). |
+| `backend.aiming` (optional) | string |  | one of `"device"`, `"host"`; Where the hybrid designs aim the pupil rays: on the device with host completion (default), or on the host with device tracing (`aiming` set to `host-table` or `split:<share>`). |
 | `backend.evaluated_on` | string |  | Search evaluator backend; envelope uses engine backend ids. |
 | `backend.gpu_stats` (optional) | object |  |  |
 | `backend.gpu_stats.cpu_candidates` | integer |  | ≥ 0 |

@@ -4,7 +4,6 @@ use crate::{
     spot::SpotReference,
     util::{curved_image_warning, default_fields, field_value, linspace, pupil_points},
 };
-use division::Division;
 use mklight_gpu::{
     ReduceMode,
     collectives::{self, Scan, SegmentKind, SegmentReduce, StableSort},
@@ -291,12 +290,7 @@ pub fn encircled_energy_with_uncertainty_job(
         radius: radii,
         fields: out,
         wavelengths: g.wavelengths,
-        run_info: {
-            // Encircled energy keeps the fused division in every selection.
-            let plans = 1 + run.settings["extra_plans"].as_array().map_or(0, Vec::len);
-            division::mark(&mut run, Division::Fused, plans);
-            stamp(run, "encircled_energy", s, warnings(t, s.defocus))
-        },
+        run_info: stamp(run, "encircled_energy", s, warnings(t, s.defocus)),
     })
 }
 
@@ -309,7 +303,6 @@ pub fn geometric_mtf_job(
     crate::energy::validate_mtf(s)?;
     crate::spot::validate_sampling(s.sampling.pattern, s.sampling.rings)?;
     crate::util::check_finite("defocus", s.defocus)?;
-    let division = Division::selected()?;
     let augmented = default_fields(t, &s.sampling.fields)?;
     let t = augmented.as_ref();
     let fields = s.sampling.fields.resolve(t.fields().len())?;
@@ -323,33 +316,7 @@ pub fn geometric_mtf_job(
         crate::util::PupilPattern::Random | crate::util::PupilPattern::Dithered
     )
     .then_some(s.sampling.seed);
-    let geo = Geometry::new(b, t, ctx)?;
-    if division == Division::HostReduce {
-        let traced = geo.traced_batch(
-            t,
-            &fields,
-            &wls,
-            &pupil,
-            division,
-            &serde_json::to_value(s).unwrap(),
-            seed,
-            &ctx.subrange(0.0, 0.8),
-        )?;
-        let reduced = crate::energy::geometric_mtf_from_rays(
-            t,
-            s,
-            &traced.batch,
-            &crate::util::BackendInfo::cpu_reference(),
-            traced.warnings,
-        )?;
-        let mut w = warnings(t, s.defocus);
-        w.extend(reduced.run_info.warnings.iter().cloned());
-        ctx.report(1.0, "geometric MTF");
-        return Ok(GeometricMtfResult {
-            run_info: stamp(traced.run, "geometric_mtf", s, w),
-            ..reduced
-        });
-    }
+    let geo = Geometry::new(b, t, ctx)?.split_large_generations()?;
     let cutoff = 1.0
         / (t.system().wavelengths_um[t.system().primary_wavelength]
             * 1e-3
@@ -382,14 +349,14 @@ pub fn geometric_mtf_job(
         })
         .collect();
     let points: Vec<_> = fields.iter().map(|&i| t.field(i).point).collect();
-    let groups = division.groups(fields.len(), wls.len() * pupil.len());
+    let groups = plans::field_groups(fields.len(), wls.len() * pupil.len());
     let len = pupil.len() * wls.len();
     // Each group's grid plan is submitted once its rays are aimed; its
     // characteristic tiles follow once its points exist, while the host
     // aims the next group.
     let mut run: Option<RunInfo> = None;
     let mut tiles: std::collections::VecDeque<MtfTile> = Default::default();
-    let mut previous: Option<(std::ops::Range<usize>, division::Submitted)> = None;
+    let mut previous: Option<(std::ops::Range<usize>, plans::Submitted)> = None;
     let progress = |k: usize| {
         ctx.subrange(
             0.9 * k as f64 / groups.len() as f64,
@@ -420,7 +387,7 @@ pub fn geometric_mtf_job(
         if let Some((range, sub)) = previous.take() {
             let r = geo.finish(sub)?;
             let info = r.run_info.clone();
-            division::merge_run(&mut run, info);
+            plans::merge_run(&mut run, info);
             mtf_tiles(
                 &geo,
                 t,
@@ -440,7 +407,7 @@ pub fn geometric_mtf_job(
     if let Some((range, sub)) = previous.take() {
         let r = geo.finish(sub)?;
         let info = r.run_info.clone();
-        division::merge_run(&mut run, info);
+        plans::merge_run(&mut run, info);
         mtf_tiles(
             &geo,
             t,
@@ -458,8 +425,7 @@ pub fn geometric_mtf_job(
     while let Some(tile) = tiles.pop_front() {
         tile.finish(&geo, &mut curves, &mut run)?;
     }
-    let mut run = run.unwrap();
-    division::mark(&mut run, division, groups.len());
+    let run = run.unwrap();
     ctx.report(1.0, "geometric MTF");
     Ok(GeometricMtfResult {
         frequencies: freqs,
@@ -479,7 +445,7 @@ struct MtfTile {
     fields: std::ops::Range<usize>,
     batch: usize,
     weights: Vec<f64>,
-    submitted: division::Submitted,
+    submitted: plans::Submitted,
 }
 impl MtfTile {
     fn finish(
@@ -506,7 +472,7 @@ impl MtfTile {
                     });
             }
         }
-        division::merge_run(run, rr.run_info);
+        plans::merge_run(run, rr.run_info);
         Ok(())
     }
 }
@@ -535,7 +501,7 @@ fn mtf_tiles(
         .collect();
     // Characteristic terms per tile: 2²⁰, or one frequency pair of every
     // field when that is larger (as for the whole grid at once), so field
-    // groups add no tile plans over the fused division.
+    // groups add no tile plans over a single grid plan.
     let budget = (1usize << 20).max(2 * fields.len() * len);
     let tile = (budget / (2 * n).max(1)).clamp(1, freqs.len());
     for start in (0..freqs.len()).step_by(tile) {
@@ -628,45 +594,6 @@ pub fn best_focus_job(
     crate::energy::validate_best_focus(s)?;
     let aug = default_fields(t, &s.sampling.fields)?;
     let t = aug.as_ref();
-    if Division::selected()? == Division::HostReduce {
-        crate::spot::validate_sampling(s.sampling.pattern, s.sampling.rings)?;
-        let fields = s.sampling.fields.resolve(t.fields().len())?;
-        let wls = s
-            .sampling
-            .wavelengths
-            .resolve(t.num_wavelengths(), t.system().primary_wavelength)?;
-        let pupil = pupil_points(s.sampling.pattern, s.sampling.rings, s.sampling.seed);
-        let seed = matches!(
-            s.sampling.pattern,
-            crate::util::PupilPattern::Random | crate::util::PupilPattern::Dithered
-        )
-        .then_some(s.sampling.seed);
-        let geo = Geometry::new(b, t, ctx)?;
-        let traced = geo.traced_batch(
-            t,
-            &fields,
-            &wls,
-            &pupil,
-            Division::HostReduce,
-            &serde_json::to_value(s).unwrap(),
-            seed,
-            &ctx.subrange(0.0, 0.8),
-        )?;
-        let reduced = crate::energy::best_focus_from_rays(
-            t,
-            s,
-            &traced.batch,
-            &crate::util::BackendInfo::cpu_reference(),
-            traced.warnings,
-        )?;
-        let mut w = t.warnings().to_vec();
-        w.extend(reduced.run_info.warnings.iter().cloned());
-        ctx.report(1.0, "best focus");
-        return Ok(BestFocusResult {
-            run_info: stamp(traced.run, "best_focus", s, w),
-            ..reduced
-        });
-    }
     let Setup {
         geo,
         plan: mut p,
@@ -853,10 +780,6 @@ pub fn best_focus_job(
         converged: br.converged,
         through_focus_defocus: tfd,
         through_focus_merit: tfm,
-        run_info: {
-            // Best focus has no pipelined division: its grid is small.
-            division::mark(&mut run, Division::Fused, 2);
-            stamp(run, "best_focus", s, warnings)
-        },
+        run_info: stamp(run, "best_focus", s, warnings),
     })
 }
