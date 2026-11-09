@@ -72,6 +72,5 @@ pub mod optim_ops;
 pub mod radiometry;
 pub mod resident;
 pub mod stray_ops;
-pub mod systems;
 pub mod transforms;
 pub mod wave_ops;

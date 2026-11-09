@@ -554,7 +554,7 @@ fn host_solve(
         p.operations
             .push(ResidentOp::Geometry(geometry::Request::IlluminationRays(
                 IlluminationRays {
-                    systems: SystemSet::Uploaded(problem.geo.systems),
+                    systems: problem.geo.systems,
                     fields: p.view(fields)?,
                     tasks: p.view(tasks)?,
                     slots: problem.slots(),

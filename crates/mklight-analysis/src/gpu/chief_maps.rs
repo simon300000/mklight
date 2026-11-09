@@ -106,7 +106,7 @@ impl Geometry<'_> {
         let generated = rays(p, count);
         p.operations
             .push(ResidentOp::Aiming(Request::GenerateAim(GenerateAim {
-                systems: SystemSet::Uploaded(self.systems),
+                systems: self.systems,
                 samples: p.view(samples)?,
                 field_wavelength: p.view(metadata)?,
                 field_key: None,
@@ -119,7 +119,7 @@ impl Geometry<'_> {
         let out = hits(p, count, if records { last + 1 } else { 0 });
         p.operations
             .push(ResidentOp::Aiming(Request::TraceResident(TraceResident {
-                systems: SystemSet::Uploaded(self.systems),
+                systems: self.systems,
                 input: generated,
                 steps: p.view(steps)?,
                 start_surface: 0,

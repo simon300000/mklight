@@ -246,7 +246,7 @@ impl TransmissionRows<'_> {
         p.operations
             .push(ResidentOp::Aiming(aiming::Request::TraceResident(
                 aiming::TraceResident {
-                    systems: SystemSet::Uploaded(prep.handle),
+                    systems: prep.handle,
                     input: rays,
                     steps: p.view(program)?,
                     start_surface: 0,

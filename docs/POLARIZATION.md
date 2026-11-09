@@ -347,10 +347,9 @@ Stacks beyond 32 layers return unsupported for the caller's reference route.
 `PreparedRadiometry::append` consumes P1 `ResidentHits` with paired hi/lo
 records, primary slots `0..image` in order and radiometry off. Metadata is
 surface-major/wavelength-minor; the public `PolarizationRequest` can also
-consume plan-local `SurfaceSpec` records from a candidate producer. Its
-material state must match the P1 records. The supplied immutable preparation
-helper prepares one resolved system; it does not rebuild P4 candidate
-material tables on the host after each trace.
+consume plan-local `SurfaceSpec` records. Its material state must match the
+P1 records. The supplied immutable preparation helper prepares one resolved
+system.
 
 Directions/normals use P1's records. Segment lengths use relative local
 frame transfers and double-float differences, then Beer–Lambert absorption.
@@ -433,5 +432,5 @@ Tests are `tests/p7_radiometry.rs` in both GPU crates; host Metal tests require
 a device and exercise both precompiled and runtime-source libraries. The
 ignored `p7_bench` harness records cold setup and at least ten warm samples
 for all built-ins, dense grids and 0–32-layer stacks. These paths do not by
-themselves enable production engine routing or qualify arbitrary P4 candidate
+themselves enable production engine routing or qualify arbitrary candidate
 parameter envelopes.

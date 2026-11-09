@@ -75,7 +75,7 @@ impl LayoutProvider for Provider<'_> {
             p.operations
                 .push(ResidentOp::Geometry(geometry::Request::SurfaceSamples(
                     SurfaceSamples {
-                        systems: SystemSet::Uploaded(geo.systems),
+                        systems: geo.systems,
                         samples: p.view(inputs)?,
                         projection: Some(VertexProjection {
                             xy: p.view(xy)?,

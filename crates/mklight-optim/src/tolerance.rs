@@ -889,7 +889,8 @@ impl<E: OperandEvaluator> ToleranceEvaluator for OpticalToleranceEvaluator<'_, E
 }
 
 impl<E: OperandEvaluator> OpticalToleranceEvaluator<'_, E> {
-    /// Ordinary parameter trials retain the P4 path. Random irregularity
+    /// Ordinary parameter trials are one parameter batch of the nominal
+    /// system. Random irregularity
     /// orientation can change extra model fields; those keep their complete
     /// system representation and the reported host preparation route.
     fn parametric_trials(

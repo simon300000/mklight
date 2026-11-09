@@ -136,7 +136,7 @@ pub fn pupil_plan(
     p.operations
         .push(ResidentOp::Aiming(aiming::Request::GenerateAim(
             aiming::GenerateAim {
-                systems: SystemSet::Uploaded(systems),
+                systems,
                 samples: p.view(samples)?,
                 field_wavelength: fields,
                 field_key: Some(blake3::hash(bytemuck::bytes_of(&spec)).to_hex().to_string()),
@@ -159,7 +159,7 @@ pub fn pupil_plan(
     p.operations
         .push(ResidentOp::Aiming(aiming::Request::TraceResident(
             aiming::TraceResident {
-                systems: SystemSet::Uploaded(systems),
+                systems,
                 input: rays,
                 steps: p.view(program)?,
                 start_surface: 0,

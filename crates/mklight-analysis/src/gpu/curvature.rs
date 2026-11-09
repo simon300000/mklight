@@ -19,7 +19,7 @@ impl Geometry<'_> {
         p.operations
             .push(ResidentOp::Geometry(geometry::Request::Coddington(
                 Coddington {
-                    systems: SystemSet::Uploaded(self.systems),
+                    systems: self.systems,
                     hits,
                     slots: self.tracer.system().num_surfaces(),
                     output,

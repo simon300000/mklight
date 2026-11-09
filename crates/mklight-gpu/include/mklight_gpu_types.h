@@ -461,7 +461,6 @@ MKL_STATIC_ASSERT(sizeof(struct MklSagParams) == 16, "MklSagParams size");
 #include "mklight_aiming_types.h"
 #include "mklight_transforms_types.h"
 #include "mklight_collectives_types.h"
-#include "mklight_systems_types.h"
 #include "mklight_geometry_types.h"
 #include "mklight_radiometry_types.h"
 #include "mklight_wave_ops_types.h"

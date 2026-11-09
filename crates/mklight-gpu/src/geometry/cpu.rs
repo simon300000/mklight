@@ -23,35 +23,6 @@ fn hit<E: FpEnv>(w: &[u32], n: usize, i: usize) -> [Df32; 4] {
         (D::new(f(4), f(13)) / dz).0,
     ]
 }
-/// The packed systems of an illumination request (resident sets copied).
-fn ri_system(
-    x: &Execution,
-    systems: &SystemSet,
-) -> MkResult<std::sync::Arc<crate::layout::PackedSystemSet>> {
-    match systems {
-        SystemSet::Uploaded(h) => x.system(*h),
-        SystemSet::Resident {
-            headers,
-            surfaces,
-            coefficients,
-            count,
-            max_surfaces,
-            ..
-        } => Ok(std::sync::Arc::new(crate::layout::PackedSystemSet {
-            headers: bytemuck::cast_slice(
-                &x.words(*headers)[..count * size_of::<crate::layout::PackedHeader>() / 4],
-            )
-            .to_vec(),
-            surfaces: bytemuck::cast_slice(
-                &x.words(*surfaces)
-                    [..count * max_surfaces * size_of::<crate::layout::PackedSurface>() / 4],
-            )
-            .to_vec(),
-            coefficients: bytemuck::cast_slice(x.words(*coefficients)).to_vec(),
-            hashes: vec![],
-        })),
-    }
-}
 /// Header and surfaces of a field row's system, as the kernels check them.
 fn ri_header<'a>(
     set: &'a crate::layout::PackedSystemSet,
@@ -328,7 +299,7 @@ fn run<E: FpEnv>(r: &Request, x: &mut Execution, ctl: &JobControl) -> MkResult<(
         }
         Request::IlluminationRays(r) => {
             use rayon::prelude::*;
-            let set = ri_system(x, &r.systems)?;
+            let set = x.system(r.systems)?;
             let fields: &[super::ri::RiField] = bytemuck::cast_slice(words(x, &r.fields));
             let tasks: &[super::ri::RiTask] = bytemuck::cast_slice(words(x, &r.tasks));
             let out: Vec<super::ri::RiRay> = tasks
@@ -373,36 +344,12 @@ fn run<E: FpEnv>(r: &Request, x: &mut Execution, ctl: &JobControl) -> MkResult<(
             x.words_mut(r.status).copy_from_slice(&status);
         }
         Request::Coddington(r) => {
-            let owned;
-            let (headers, surfaces, pool) = match &r.systems {
-                SystemSet::Uploaded(h) => {
-                    owned = x.system(*h)?;
-                    (
-                        &owned.headers[..],
-                        &owned.surfaces[..],
-                        &owned.coefficients[..],
-                    )
-                }
-                SystemSet::Resident {
-                    headers,
-                    surfaces,
-                    coefficients,
-                    count,
-                    max_surfaces,
-                    ..
-                } => (
-                    bytemuck::cast_slice(
-                        &x.words(*headers)[..count * size_of::<crate::layout::PackedHeader>() / 4],
-                    ),
-                    bytemuck::cast_slice(
-                        &x.words(*surfaces)[..count
-                            * max_surfaces
-                            * size_of::<crate::layout::PackedSurface>()
-                            / 4],
-                    ),
-                    bytemuck::cast_slice(x.words(*coefficients)),
-                ),
-            };
+            let owned = x.system(r.systems)?;
+            let (headers, surfaces, pool) = (
+                &owned.headers[..],
+                &owned.surfaces[..],
+                &owned.coefficients[..],
+            );
             let hi = bytemuck::cast_slice(x.words(r.hits.records.unwrap()));
             let lo = bytemuck::cast_slice(x.words(r.hits.record_low.unwrap()));
             let indices = x.words(r.hits.rays.indices);
@@ -665,36 +612,12 @@ fn run<E: FpEnv>(r: &Request, x: &mut Execution, ctl: &JobControl) -> MkResult<(
             put(x, r.output, &out);
         }
         Request::SurfaceSamples(r) => {
-            let owned;
-            let (headers, surfaces, pool) = match &r.systems {
-                SystemSet::Uploaded(h) => {
-                    owned = x.system(*h)?;
-                    (
-                        &owned.headers[..],
-                        &owned.surfaces[..],
-                        &owned.coefficients[..],
-                    )
-                }
-                SystemSet::Resident {
-                    headers,
-                    surfaces,
-                    coefficients,
-                    count,
-                    max_surfaces,
-                    ..
-                } => (
-                    bytemuck::cast_slice(
-                        &x.words(*headers)[..count * size_of::<crate::layout::PackedHeader>() / 4],
-                    ),
-                    bytemuck::cast_slice(
-                        &x.words(*surfaces)[..count
-                            * max_surfaces
-                            * size_of::<crate::layout::PackedSurface>()
-                            / 4],
-                    ),
-                    bytemuck::cast_slice(x.words(*coefficients)),
-                ),
-            };
+            let owned = x.system(r.systems)?;
+            let (headers, surfaces, pool) = (
+                &owned.headers[..],
+                &owned.surfaces[..],
+                &owned.coefficients[..],
+            );
             let samples: &[SurfaceSample] = bytemuck::cast_slice(words(x, &r.samples));
             let mut out = vec![Df32::from_f32(f32::NAN); 3 * n];
             let mut status = vec![0; n];

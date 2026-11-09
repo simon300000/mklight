@@ -12,22 +12,6 @@ fn words<'a>(x: &'a Execution, v: &PlanView) -> &'a [u32] {
     let start = v.offset * v.desc.element.words();
     &x.words(v.buffer)[start..start + v.desc.len().unwrap() * v.desc.element.words()]
 }
-fn systems(x: &Execution, s: &SystemSet) -> MkResult<Arc<crate::PackedSystemSet>> {
-    match s {
-        SystemSet::Uploaded(h) => x.system(*h),
-        SystemSet::Resident {
-            headers,
-            surfaces,
-            coefficients,
-            ..
-        } => Ok(Arc::new(crate::PackedSystemSet {
-            headers: bytemuck::cast_slice(x.words(*headers)).to_vec(),
-            surfaces: bytemuck::cast_slice(x.words(*surfaces)).to_vec(),
-            coefficients: bytemuck::cast_slice(x.words(*coefficients)).to_vec(),
-            hashes: vec![],
-        })),
-    }
-}
 pub(super) fn read_ray(f: &[f32], u: &[u32], n: usize, i: usize) -> KRayIn {
     KRayIn {
         pos: std::array::from_fn(|k| f[k * n + i]),
@@ -128,7 +112,7 @@ pub fn execute(r: &Request, x: &mut Execution, ctl: &JobControl) -> MkResult<()>
 fn execute_in<E: FpEnv>(r: &Request, x: &mut Execution, ctl: &JobControl) -> MkResult<()> {
     match r {
         Request::GenerateAim(g) => {
-            let set = systems(x, &g.systems)?;
+            let set = x.system(g.systems)?;
             let fields: Vec<FieldSpec> =
                 bytemuck::cast_slice(words(x, &g.field_wavelength)).to_vec();
             let samples: Vec<Sample> = bytemuck::cast_slice(words(x, &g.samples)).to_vec();
@@ -147,10 +131,10 @@ fn execute_in<E: FpEnv>(r: &Request, x: &mut Execution, ctl: &JobControl) -> MkR
                 return Err(bad("sample field index"));
             }
             // CPU storage is complete at every operation, so in-plan rows have
-            // content too; device-built systems stay plan-local as on Metal.
+            // content too.
             let identity = aim_identity(
                 g,
-                matches!(g.systems, SystemSet::Uploaded(_)).then(|| set.digest()),
+                set.digest(),
                 Some(words(x, &g.field_wavelength)),
                 g.seeds.as_ref().map(|v| words(x, v)),
             );
@@ -262,11 +246,8 @@ fn execute_in<E: FpEnv>(r: &Request, x: &mut Execution, ctl: &JobControl) -> MkR
             ));
         }
         Request::TraceResident(t) => {
-            let set = systems(x, &t.systems)?;
-            if t.radiometry != 0
-                && (matches!(t.systems, SystemSet::Resident { .. })
-                    || set.surfaces.iter().any(|s| s.coating == MKL_COATING_TABLE))
-            {
+            let set = x.system(t.systems)?;
+            if t.radiometry != 0 && set.surfaces.iter().any(|s| s.coating == MKL_COATING_TABLE) {
                 return resident::unsupported("resident table-coating radiometry");
             }
             let n = t.input.count;

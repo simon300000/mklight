@@ -123,7 +123,7 @@ pub(crate) type RayKey = (FieldKey, usize, u64, u64, bool, usize);
 fn append(
     g: &GpuContext,
     p: &mut ResidentPlan,
-    set: &SystemSet,
+    set: mklight_gpu::SystemHandle,
     metadata: &PlanView,
     seeds: &PlanView,
     probes: &[Probe],
@@ -152,7 +152,7 @@ fn append(
     p.operations
         .push(ResidentOp::Aiming(a::Request::GenerateAim(
             a::GenerateAim {
-                systems: set.clone(),
+                systems: set,
                 samples,
                 field_wavelength: metadata.clone(),
                 field_key: None,
@@ -170,7 +170,7 @@ fn append(
     p.operations
         .push(ResidentOp::Aiming(a::Request::TraceResident(
             a::TraceResident {
-                systems: set.clone(),
+                systems: set,
                 input: generated,
                 steps,
                 start_surface: 0,
@@ -190,7 +190,7 @@ fn append(
 fn host_chief_rays(
     g: &GpuContext,
     p: &mut ResidentPlan,
-    set: &SystemSet,
+    set: mklight_gpu::SystemHandle,
     chiefs: &[Probe],
     candidates: &[(Candidate<'_>, Plan)],
     tracers: &[Arc<SequentialTracer>],
@@ -241,7 +241,7 @@ const HOST_AIM_CHUNK: usize = 8;
 fn host_aimed_rays(
     g: &GpuContext,
     p: &mut ResidentPlan,
-    set: &SystemSet,
+    set: mklight_gpu::SystemHandle,
     probes: &[Probe],
     candidates: &[(Candidate<'_>, Plan)],
     tracers: &[Arc<SequentialTracer>],
@@ -301,7 +301,7 @@ fn host_aimed_rays(
 fn host_rays_traced(
     g: &GpuContext,
     p: &mut ResidentPlan,
-    set: &SystemSet,
+    set: mklight_gpu::SystemHandle,
     probes: &[Probe],
     rays: &[Option<Ray>],
     last: usize,
@@ -353,7 +353,7 @@ fn host_rays_traced(
     p.operations
         .push(ResidentOp::Aiming(a::Request::TraceResident(
             a::TraceResident {
-                systems: set.clone(),
+                systems: set,
                 input: a::ResidentRays {
                     floats: floats.buffer,
                     indices: indices.buffer,
@@ -604,7 +604,7 @@ pub(crate) fn prepare<'a>(
             }],
             ..Default::default()
         });
-        (SystemSet::Uploaded(h), Uploaded(g.backend.as_ref(), h))
+        (h, Uploaded(g.backend.as_ref(), h))
     };
     // Candidates prepare independently; merging in candidate order keeps every
     // probe list, field index and reference row identical to a serial pass.
@@ -890,7 +890,7 @@ pub(crate) fn prepare<'a>(
         },
         ..*design
     };
-    let ch = host_chief_rays(g, &mut p, &set, &chiefs, &candidates, tracers, last, ctx)?;
+    let ch = host_chief_rays(g, &mut p, set, &chiefs, &candidates, tracers, last, ctx)?;
     let reference = g.df(&mut p, [chiefs.len(), 3], &refs)?;
     p.outputs = vec![ch.rays.floats, ch.status, ch.rays.report];
     let mut moment_segments = Vec::new();
@@ -921,7 +921,7 @@ pub(crate) fn prepare<'a>(
             host_aimed_rays(
                 g,
                 &mut p,
-                &set,
+                set,
                 probes,
                 &candidates,
                 tracers,
@@ -933,7 +933,7 @@ pub(crate) fn prepare<'a>(
             append(
                 g,
                 &mut p,
-                &set,
+                set,
                 &aim_metadata,
                 &aim_seeds,
                 probes,

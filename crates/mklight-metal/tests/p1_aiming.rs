@@ -334,13 +334,13 @@ fn batches_and_reordering_preserve_geometry() {
             }
             let sv = upload(&gpu, &mut p, n, &samples);
             if let ResidentOp::Aiming(Request::GenerateAim(g)) = &mut p.operations[0] {
-                g.systems = SystemSet::Uploaded(handle);
+                g.systems = handle;
                 g.field_wavelength = fv;
                 g.samples = sv;
                 g.field_key = None;
             }
             if let ResidentOp::Aiming(Request::TraceResident(t)) = &mut p.operations[1] {
-                t.systems = SystemSet::Uploaded(handle);
+                t.systems = handle;
             }
             let now = std::time::Instant::now();
             let result = gpu
@@ -510,12 +510,8 @@ fn missing_primary_wavelength_is_reported() {
         let handle = b.upload_system(&packed).unwrap();
         for op in &mut p.operations {
             match op {
-                ResidentOp::Aiming(Request::GenerateAim(g)) => {
-                    g.systems = SystemSet::Uploaded(handle)
-                }
-                ResidentOp::Aiming(Request::TraceResident(t)) => {
-                    t.systems = SystemSet::Uploaded(handle)
-                }
+                ResidentOp::Aiming(Request::GenerateAim(g)) => g.systems = handle,
+                ResidentOp::Aiming(Request::TraceResident(t)) => t.systems = handle,
                 _ => {}
             }
         }
@@ -633,7 +629,7 @@ fn resident_path_can_start_backwards() {
         let hit = hits(&mut p, 1, start as usize + 1);
         p.operations
             .push(ResidentOp::Aiming(Request::TraceResident(TraceResident {
-                systems: SystemSet::Uploaded(h),
+                systems: h,
                 input,
                 steps: p.view(si).unwrap(),
                 start_surface: start,

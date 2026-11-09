@@ -25,26 +25,11 @@ fn bind(e: &crate::context::Encoder<'_>, i: usize, x: &Execution<'_>, v: &PlanVi
     e.set_buffer(i, b, o);
 }
 /// Packed headers, surfaces and coefficients at slots 0-2.
-fn bind_systems(
-    e: &crate::context::Encoder<'_>,
-    x: &Execution<'_>,
-    uploaded: Option<&crate::backend::Uploaded>,
-    systems: &SystemSet,
-) {
+fn bind_systems(e: &crate::context::Encoder<'_>, uploaded: Option<&crate::backend::Uploaded>) {
     if let Some(u) = uploaded {
         e.set_buffer(0, &u.headers, 0);
         e.set_buffer(1, &u.surfaces, 0);
         e.set_buffer(2, &u.coefficients, 0);
-    } else if let SystemSet::Resident {
-        headers,
-        surfaces,
-        coefficients,
-        ..
-    } = *systems
-    {
-        bind(e, 0, x, &view(headers, ElementType::U32, [0]));
-        bind(e, 1, x, &view(surfaces, ElementType::U32, [0]));
-        bind(e, 2, x, &view(coefficients, ElementType::DoubleFloat, [0]));
     }
 }
 /// Unclipped and clipped trace parameters of the illumination machines.
@@ -179,15 +164,8 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
     };
     stage.name = name.into();
     p.stride = n as u32;
-    let uploaded = match r.systems() {
-        Some(SystemSet::Uploaded(h)) => Some(x.system(*h)?),
-        _ => None,
-    };
-    p.systems = match (&uploaded, r.systems()) {
-        (Some(u), _) => u.set.headers.len() as u32,
-        (None, Some(SystemSet::Resident { count, .. })) => *count as u32,
-        _ => 0,
-    };
+    let uploaded = r.systems().map(|h| x.system(h)).transpose()?;
+    p.systems = uploaded.as_ref().map_or(0, |u| u.set.headers.len() as u32);
     if let Request::SurfaceSamples(SurfaceSamples {
         projection: Some(v),
         ..
@@ -282,7 +260,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                         e.set_buffer_mut(8, &mut out[1], 0);
                     }
                     Request::IlluminationRays(r) => {
-                        bind_systems(e, x, uploaded.as_deref(), &r.systems);
+                        bind_systems(e, uploaded.as_deref());
                         bind(e, 3, x, &r.fields);
                         bind(e, 4, x, &r.tasks);
                         e.set_buffer_mut(5, &mut out[0], 0);
@@ -295,7 +273,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                         e.set_buffer_mut(3, &mut out[1], 0);
                     }
                     Request::Coddington(r) => {
-                        bind_systems(e, x, uploaded.as_deref(), &r.systems);
+                        bind_systems(e, uploaded.as_deref());
                         for (i, (id, ty)) in [
                             (r.hits.records.unwrap(), ElementType::F32),
                             (r.hits.record_low.unwrap(), ElementType::F32),
@@ -361,7 +339,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                         e.set_buffer_mut(4, &mut out[1], 0);
                     }
                     Request::SurfaceSamples(r) => {
-                        bind_systems(e, x, uploaded.as_deref(), &r.systems);
+                        bind_systems(e, uploaded.as_deref());
                         bind(e, 3, x, &r.samples);
                         if let Some(v) = &r.projection {
                             bind(e, 6, x, &v.frames);

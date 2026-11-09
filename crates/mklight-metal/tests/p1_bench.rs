@@ -68,7 +68,7 @@ fn plan(
     let generated = rays(&mut p, n);
     p.operations
         .push(ResidentOp::Aiming(Request::GenerateAim(GenerateAim {
-            systems: SystemSet::Uploaded(h),
+            systems: h,
             samples: sv,
             field_wavelength: fw,
             field_key: key,
@@ -89,7 +89,7 @@ fn plan(
     let hit = hits(&mut p, n, 0);
     p.operations
         .push(ResidentOp::Aiming(Request::TraceResident(TraceResident {
-            systems: SystemSet::Uploaded(h),
+            systems: h,
             input: generated.clone(),
             steps: p.view(si).unwrap(),
             start_surface: 0,

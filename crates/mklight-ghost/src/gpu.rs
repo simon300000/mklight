@@ -292,7 +292,7 @@ impl<'a> GhostTransport<'a> {
             .unwrap_or([f32::MAX as f64; 2])
             .map(Df32::from_f64);
         p.operations.push(ResidentOp::Ghost(op::Request::Trace {
-            systems: SystemSet::Uploaded(self.systems),
+            systems: self.systems,
             probes: p.view(probes)?,
             offsets: p.view(offsets)?,
             steps: p.view(steps)?,
@@ -390,7 +390,7 @@ impl<'a> GhostTransport<'a> {
         };
         p.operations.push(ResidentOp::Aiming(
             mklight_gpu::aiming::Request::GenerateAim(GenerateAim {
-                systems: SystemSet::Uploaded(self.systems),
+                systems: self.systems,
                 samples: p.view(samples)?,
                 field_wavelength: p.view(metadata)?,
                 field_key: None,
