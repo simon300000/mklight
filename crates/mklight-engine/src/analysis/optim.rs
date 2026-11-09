@@ -130,7 +130,7 @@ pub(super) fn evaluation_backend_schema() -> Value {
                 "aiming",
                 enumeration(
                     &["device", "host"],
-                    "Where the hybrid designs aim the pupil rays: on the device with host completion (default), or on the host with device tracing (`aiming` study set to `host` or `host-table`).",
+                    "Where the hybrid designs aim the pupil rays: on the device with host completion (default), or on the host with device tracing (`aiming` set to `host-table` or `split:<share>`).",
                 ),
             ),
             (
