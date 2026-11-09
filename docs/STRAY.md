@@ -490,14 +490,14 @@ in `trace_shared.h`); each bracketed root is located in f32 and polished by
 two double-float Newton steps as the trace refines an asphere hit, and a
 sign change that is clear in f32 is solved without the cell's double-float
 end points. Every other extended sag is evaluated by the jets of
-`surface_math.h`, and its records are those of the CPU-f32 specification's
-scan. The specification evaluates even aspheres by the jets too, so there it
-agrees with the device to double-float rounding, not bit for bit. The radial
-form is also the more accurate one: the double-float jets sent about 2
-sources in 10⁵ of the Petzval sample down a spurious sneak path (a specular
-path crossing a surface outside its aperture, about 1 % of that lens's stray
-flux) that the f64 reference never takes, and the specification reproduced
-those records; the radial form follows the reference. Coefficient bounds
+`surface_math.h`. The CPU-f32 specification (`stray_ops/sag.rs`) evaluates
+both forms the same way, so the device's records are the specification's
+bit for bit, the Petzval sample's even aspheres included (P10
+`transport_specification_and_tiles`). The radial form is also the more
+accurate one: the double-float jets sent about 2 sources in 10⁵ of the
+Petzval sample down a spurious sneak path (a specular path crossing a
+surface outside its aperture, about 1 % of that lens's stray flux) that the
+f64 reference never takes; the radial form follows the reference. Coefficient bounds
 enclose the whole sag domain, including asymmetric surfaces; sampled extrema
 do not stand in for a bound. A plain-f32 pre-test of the node boxes only skips
 boxes the double-float test rejects. Small scenes retain the median host
