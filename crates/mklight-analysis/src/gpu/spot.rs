@@ -3,7 +3,6 @@ use crate::{
     spot::*,
     util::{curved_image_warning, default_fields, field_value, pupil_points},
 };
-use division::Division;
 /// Complete resident spot pipeline: generation, trace, chief-relative two-pass
 /// moments and optional points. No intermediate optical arrays cross the host.
 pub fn spot_diagram_job(
@@ -134,7 +133,6 @@ impl Geometry<'_> {
         let b = self.backend;
         let t = self.tracer;
         crate::spot::validate_spot_settings(s)?;
-        let division = Division::selected()?;
         let augmented = default_fields(t, &s.fields)?;
         let t = augmented.as_ref();
         let fields = s.fields.resolve(t.fields().len())?;
@@ -143,10 +141,7 @@ impl Geometry<'_> {
             .resolve(t.num_wavelengths(), t.system().primary_wavelength)?;
         let pupil = pupil_points(s.pattern, s.rings, s.seed);
         let points: Vec<_> = fields.iter().map(|&i| t.field(i).point).collect();
-        if division == Division::HostReduce {
-            return self.spot_host_reduce(t, s, &fields, &wls, &pupil, ctx, packed);
-        }
-        let groups = division.groups(fields.len(), wls.len() * pupil.len());
+        let groups = plans::field_groups(fields.len(), wls.len() * pupil.len());
         // Each group's rays are aimed while the device works on the groups
         // before it; every plan is collected at the end.
         let mut submitted = Vec::with_capacity(groups.len());
@@ -167,15 +162,14 @@ impl Geometry<'_> {
                 .iter()
                 .map(|h| b.read_view(h.view()))
                 .collect::<MkResult<_>>()?;
-            division::merge_run(&mut run, r.run_info);
+            plans::merge_run(&mut run, r.run_info);
             parts.push(Part {
                 fields,
                 grid,
                 views,
             });
         }
-        let mut run = run.unwrap();
-        division::mark(&mut run, division, parts.len());
+        let run = run.unwrap();
         self.spot_decode(t, s, &fields, &wls, &pupil, &parts, run, ctx, packed)
     }
     /// Spot statistics, chief data and points from the device reductions of
@@ -409,52 +403,6 @@ impl Geometry<'_> {
             defocus: s.defocus,
             run_info: stamp(run, "spot_diagram", s, warnings),
             packed_points: packed,
-        })
-    }
-    /// [`Division::HostReduce`]: the device traces the grid and its chief
-    /// rays; the host reduces the hits, read in place, with the reference's
-    /// own spot reduction.
-    #[allow(clippy::too_many_arguments)]
-    fn spot_host_reduce(
-        &self,
-        t: &SequentialTracer,
-        s: &SpotDiagramSettings,
-        fields: &[usize],
-        wls: &[usize],
-        pupil: &[[f64; 2]],
-        ctx: &JobContext,
-        packed: bool,
-    ) -> MkResult<SpotDiagram> {
-        let seed = matches!(
-            s.pattern,
-            crate::util::PupilPattern::Random | crate::util::PupilPattern::Dithered
-        )
-        .then_some(s.seed);
-        let traced = self.traced_batch(
-            t,
-            fields,
-            wls,
-            pupil,
-            Division::HostReduce,
-            &serde_json::to_value(s).unwrap(),
-            seed,
-            &ctx.subrange(0.0, 0.8),
-        )?;
-        let reduced = crate::spot::spot_reduce(
-            mklight_core::job::RunTimer::start(),
-            t,
-            s,
-            &traced.batch,
-            &crate::util::BackendInfo::cpu_reference(),
-            traced.warnings,
-            &ctx.subrange(0.8, 1.0),
-            packed,
-        )?;
-        let mut warnings = t.warnings().to_vec();
-        warnings.extend(reduced.run_info.warnings.iter().cloned());
-        Ok(SpotDiagram {
-            run_info: stamp(traced.run, "spot_diagram", s, warnings),
-            ..reduced
         })
     }
 }

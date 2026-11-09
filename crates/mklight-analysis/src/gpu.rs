@@ -6,9 +6,8 @@ use mklight_gpu::{
 };
 use mklight_trace::{FieldPoint, SequentialTracer};
 pub mod aim;
-mod batch;
 mod chromatic;
-pub mod division;
+pub mod plans;
 mod energy;
 pub use chromatic::{lateral_colour_job, longitudinal_aberration_job};
 mod curvature;

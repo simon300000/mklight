@@ -495,7 +495,7 @@ impl FieldRays {
 
     /// [`FieldRays::from_image_rays`] over `(system wavelength, hit)` pairs
     /// read in place, without an intermediate list of rays.
-    pub(crate) fn from_hits<I: Iterator<Item = (usize, Option<ImageHit>)> + Clone>(
+    fn from_hits<I: Iterator<Item = (usize, Option<ImageHit>)> + Clone>(
         field: usize,
         wavelengths: &[usize],
         weights: &[f64],
@@ -777,7 +777,7 @@ pub fn spot_from_rays(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn spot_reduce(
+fn spot_reduce(
     timer: RunTimer,
     tracer: &SequentialTracer,
     settings: &SpotDiagramSettings,

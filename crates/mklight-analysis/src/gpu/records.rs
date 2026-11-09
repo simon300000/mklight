@@ -4,7 +4,6 @@ use crate::{
     illumination::FootprintSettings,
     util::{default_fields, pupil_points},
 };
-use division::Division;
 use mklight_core::{SurfaceShape, Vec3};
 use mklight_gpu::{
     ReduceMode,
@@ -339,7 +338,6 @@ pub fn ray_grid_job(
     ctx: &JobContext,
 ) -> MkResult<GridResult> {
     crate::spot::validate_sampling(s.pattern, s.rings)?;
-    let division = Division::selected()?;
     let aug = default_fields(t, &s.fields)?;
     let t = aug.as_ref();
     let fields = s.fields.resolve(t.fields().len())?;
@@ -358,15 +356,14 @@ pub fn ray_grid_job(
     let total = fields.len() * per_field;
     let mut points = vec![f64::NAN; 2 * total];
     let mut directions = vec![f64::NAN; 3 * total];
-    // The host reads the hits in every division; pipelined, each field
-    // group's plan traces while the next group is aimed.
-    let (plans, run) = geo.grid_groups(
+    // The host reads the hits; each field group's plan traces while the
+    // next group is aimed.
+    let run = geo.grid_groups(
         t,
         &pts,
         &wls,
         &pupil,
         t.system().image_index(),
-        division,
         &serde_json::to_value(s).unwrap(),
         seed,
         ctx,
@@ -390,8 +387,6 @@ pub fn ray_grid_job(
             Ok(())
         },
     )?;
-    let mut run = run;
-    division::mark(&mut run, division, plans);
     ctx.report(1.0, "ray grid");
     Ok(GridResult {
         fields,
@@ -404,10 +399,10 @@ pub fn ray_grid_job(
 }
 impl Geometry<'_> {
     /// Aim and trace (clipped, to surface `last`) the grid of field points
-    /// `pts` × `wls` × `pupil` in field groups ([`Division::groups`]), each
-    /// group a plan submitted once its rays are aimed, and hand every
+    /// `pts` × `wls` × `pupil` in field groups ([`plans::field_groups`]),
+    /// each group a plan submitted once its rays are aimed, and hand every
     /// group's hit planes (`floats`, `status`, ray count) to `read`, in
-    /// group order. Returns the number of plans and their merged evidence.
+    /// group order. Returns the plans' merged evidence.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn grid_groups(
         &self,
@@ -416,13 +411,12 @@ impl Geometry<'_> {
         wls: &[usize],
         pupil: &[[f64; 2]],
         last: usize,
-        division: Division,
         settings: &serde_json::Value,
         seed: Option<u64>,
         ctx: &JobContext,
         mut read: impl FnMut(std::ops::Range<usize>, &[f32], &[u32], usize) -> MkResult<()>,
-    ) -> MkResult<(usize, RunInfo)> {
-        let groups = division.groups(pts.len(), wls.len() * pupil.len());
+    ) -> MkResult<RunInfo> {
+        let groups = plans::field_groups(pts.len(), wls.len() * pupil.len());
         let mut submitted = Vec::with_capacity(groups.len());
         for (k, range) in groups.iter().enumerate() {
             let sub = ctx.subrange(
@@ -452,9 +446,9 @@ impl Geometry<'_> {
             let f = self.backend.read_view(r.outputs[0].view())?;
             let st = self.backend.read_view(r.outputs[1].view())?;
             read(range, f.as_slice::<f32>()?, st.as_slice::<u32>()?, n)?;
-            division::merge_run(&mut run, r.run_info);
+            plans::merge_run(&mut run, r.run_info);
         }
-        Ok((groups.len(), run.unwrap()))
+        Ok(run.unwrap())
     }
 }
 pub fn footprint_job(
@@ -481,7 +475,6 @@ pub fn footprint_job(
         .resolve(t.num_wavelengths(), t.system().primary_wavelength)?;
     let pupil = pupil_points(s.pattern, s.rings, s.seed);
     let pts: Vec<_> = fields.iter().map(|&f| t.field(f).point).collect();
-    let division = Division::selected()?;
     let geo = Geometry::new(b, t, ctx)?;
     let seed = matches!(
         s.pattern,
@@ -496,13 +489,12 @@ pub fn footprint_job(
     ];
     let mut max_r = f64::NAN;
     let mut rays = Vec::new();
-    let (plans, mut run) = geo.grid_groups(
+    let mut run = geo.grid_groups(
         t,
         &pts,
         &wls,
         &pupil,
         s.surface,
-        division,
         &serde_json::to_value(s).unwrap(),
         seed,
         ctx,
@@ -544,7 +536,6 @@ pub fn footprint_job(
             Ok(())
         },
     )?;
-    division::mark(&mut run, division, plans);
     let (sd, sd_run) = geo.semi_diameters(&Default::default(), &ctx.subrange(0.7, 0.95))?;
     run.duration_ms += sd_run.duration_ms;
     run.settings["sizing"] = sd_run.settings;
