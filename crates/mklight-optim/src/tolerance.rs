@@ -229,9 +229,9 @@ impl ToleranceSpec {
         }
     }
     pub fn validate(&self) -> MkResult<()> {
-        if self.schema_version > TOLERANCE_SCHEMA_VERSION {
+        if self.schema_version != TOLERANCE_SCHEMA_VERSION {
             return Err(MkError::Parse(format!(
-                "tolerance schema {} is newer than supported {TOLERANCE_SCHEMA_VERSION}",
+                "tolerance schema {} is not supported (this engine reads {TOLERANCE_SCHEMA_VERSION})",
                 self.schema_version
             )));
         }
