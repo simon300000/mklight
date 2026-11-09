@@ -1,16 +1,17 @@
-//! Work-split variants: named alternative divisions of an analysis between
-//! the CPU and the GPU, kept side by side while they are measured.
+//! Route options: named alternative divisions of an analysis between the
+//! CPU and the GPU. The default division of each analysis was measured on
+//! one machine; a key selects a GPU-heavier alternative that a machine with
+//! more GPU cores per CPU core may prefer: `aiming`, `fieldmaps`, `stray`,
+//! `stray_share` and `stray_sag` (docs/GPU.md §9.3). They are the hook for
+//! letting users test and choose routes on their own machine.
 //!
-//! A study key (for example `geometric`) selects one variant by name; `None`
-//! is the key's default design. The benchmark harness selects variants
-//! in-process with [`set`]; otherwise the environment variable
-//! `MKLIGHT_SPLIT_<KEY>` (key upper-cased, `default` or empty meaning the
-//! default design) applies. Code reads the selection with [`variant`] once
-//! per run, where the designs diverge, and names it in the run's backend
-//! report so a measurement can show which design ran.
-//!
-//! This is measurement scaffolding: once a study is decided, its key and the
-//! variants that lost are removed.
+//! A key selects one variant by name; `None` is the key's default design.
+//! The benchmark harness selects variants in-process with [`set`]; otherwise
+//! the environment variable `MKLIGHT_SPLIT_<KEY>` (key upper-cased,
+//! `default` or empty meaning the default design) applies. Code reads the
+//! selection with [`variant`] once per run, where the designs diverge, and
+//! names it in the run's backend report so a measurement can show which
+//! design ran.
 
 use std::collections::HashMap;
 use std::sync::RwLock;
@@ -29,11 +30,6 @@ pub fn variant(key: &str) -> Option<String> {
     std::env::var(format!("MKLIGHT_SPLIT_{}", key.to_ascii_uppercase()))
         .ok()
         .filter(|s| !s.is_empty() && s != "default")
-}
-
-/// Whether `key` selects the variant `name`.
-pub fn is(key: &str, name: &str) -> bool {
-    variant(key).as_deref() == Some(name)
 }
 
 /// Selects `value` for `key` in this process, overriding the environment;
@@ -60,7 +56,7 @@ mod tests {
         let key = "split_selftest";
         assert_eq!(variant(key), None);
         set(key, Some("pipelined"));
-        assert!(is(key, "pipelined"));
+        assert_eq!(variant(key).as_deref(), Some("pipelined"));
         set(key, None);
         assert_eq!(variant(key), None);
         reset();
