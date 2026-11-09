@@ -1668,12 +1668,16 @@ finite-difference column errors (1.8e-7 against f64 central differences on
 the real-aimed Cooke triplet, also with host completion), LM on the
 evaluator, and speculative LM. The engine test `tests/solver_splits.rs`
 runs both aiming options of all four jobs against the reference under the
-solver-outcome contract (emulation; Metal ignored). Truncated solves
-(3 LM iterations, 2 local glass iterations) may miss the contract's merit
-gate when they deviate no more than twice as much as the reference does
-from itself after a 1e-9 relative change of one curvature. Such
-trajectories react to tiny perturbations: the f64 reference re-run on a
-copy with one curvature changed by 1e-9 differs by up to 2 % in the
-Double Gauss's merit after 3 iterations and by up to 52 % in the glass
-finalists' merits (anamorphic sample; 1.5–3.5 % on the achromat, Double
-Gauss and relay), against the merit gate of 0.33 %.
+solver-outcome contract (emulation; Metal ignored). A truncated solve
+(3 LM iterations, 2 local glass iterations) may miss a merit or violation
+gate when it deviates no more than twice as much as the reference itself
+moves under the two differences a device run brings: a perturbation of
+the values (the reference on a copy with one curvature changed by 1e-9)
+and the device's forward step (the reference with `fd_relative_step:
+1e-6`). Such trajectories react to tiny perturbations: the nudged
+reference differs by up to 2 % in the Double Gauss's merit after 3
+iterations and by up to 52 % in the glass finalists' merits (anamorphic
+sample; 1.5–3.5 % on the achromat, Double Gauss and relay), against the
+merit gate of 0.33 %; and the reference with the device's step reproduces
+the device's glass finalists to about 1 % (violations of infeasible
+intermediate finalists 4e-5–1e-4 apart, against a gate of 6.7e-6).
