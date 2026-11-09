@@ -98,13 +98,13 @@ static bool smask(uint mask,float2 a0,float2 a1,SV q){
   }
   return pass != ((mask&256)!=0);
 }
-// Radial asphere evaluation (sag mode bit 1): on an even asphere whose sag
-// is the plain radial form (its overlay is the zero one the stray packing
-// adds), the sag is S(u), u = x² + y², with gradient 2S'(u)·(x, y), in f32
-// and in double-float (P and P' from the trace's mkl_asphere_poly_dp_df in
+// Radial evaluation of even aspheres: on an even asphere whose sag is the
+// plain radial form (its overlay is the zero one the stray packing adds), the
+// sag is S(u), u = x² + y², with gradient 2S'(u)·(x, y), in f32 and in
+// double-float (P and P' from the trace's mkl_asphere_poly_dp_df in
 // trace_shared.h), and each bracketed root is located in f32 and polished by
 // two double-float Newton steps, as the trace refines an asphere hit
-// (mkl_intersect_legacy). Otherwise every extended sag uses the jets of
+// (mkl_intersect_legacy). Every other extended sag uses the jets of
 // surface_math.h.
 static bool sradial(constant MklStraySurfaceData &s){
   constant MklPackedSurface &f=s.surface;
@@ -156,7 +156,7 @@ static bool fgat(constant MklStraySurfaceData &s,float3 o,float3 d,float radius,
   tf=2e-5f*(1+fabs(q.x)+fabs(q.y)+fabs(q.z)+fabs(j.v));td=1e-4f*(1+fabs(j.x)+fabs(j.y));
   return isfinite(f)&&isfinite(df);
 }
-// Radial mode: the root of a bracket [lo, hi] with a sign change
+// Radial evaluation: the root of a bracket [lo, hi] with a sign change
 // (f(lo) of the sign of fa), located by safeguarded f32 Newton and then
 // polished by two double-float Newton steps; the double-float bracketing of
 // sgroot if the polished root leaves the bracket.
@@ -181,9 +181,10 @@ static SD sgnewton(constant MklStraySurfaceData &s,SV o,SV d,SD r,SD lo,SD hi,SD
 // pre-scan skips cells whose residual and slope are clearly of one sign at
 // both ends (about a hundred times the f32 rounding): no root and no
 // tangency the double-float scan would find, so every root is decided by
-// the double-float cells. Sag mode (Transport::sag_mode): bit 0 hands a ray
-// whose scan is longer than MKL_STRAY_SAG_HANDOFF_CELLS cells to the host
-// (`handoff`) before any root is decided; bit 1 the radial mode above.
+// the double-float cells; even aspheres use the radial evaluation above.
+// Sag mode 1 (Transport::sag_mode) hands a ray whose scan is longer than
+// MKL_STRAY_SAG_HANDOFF_CELLS cells to the host (`handoff`) before any root
+// is decided.
 static bool sgintersect(device const MklStrayPrimitive &p,constant MklStraySurfaceData &s,MklStrayRay ray,SD limit,thread MklStrayHit &hit,uint sag,thread bool &handoff){
   SV o=srotate(p.rotation,ssub(svec(ray.origin),svec(p.origin))),d=srotate(p.rotation,svec(ray.direction));
   SD ta(0),tb=limit;
@@ -196,10 +197,10 @@ static bool sgintersect(device const MklStrayPrimitive &p,constant MklStraySurfa
   if(sv(aa)>0){SD disc=bb*bb-aa*cc;if(sv(disc)<0)return false;SD root=ssqrt(disc),lo=(-bb-root)/aa,hi=(-bb+root)/aa;if(sv(lo-ta)>0)ta=lo;if(sv(hi-tb)<0)tb=hi;}
   else if(sv(cc)>0)return false;if(sv(ta-tb)>0)return false;
   SV oo=sadd(o,sscale(d,ta));SD len=tb-ta,step;uint n=clamp(uint(ceil(sv(len)*64/sv(r))),8u,512u);step=len/SD(float(n));
-  if((sag&1)&&n>MKL_STRAY_SAG_HANDOFF_CELLS){handoff=true;return false;}
+  if(sag&&n>MKL_STRAY_SAG_HANDOFF_CELLS){handoff=true;return false;}
   SD tol=SD(2e-13f)*(SD(1)+len+ssqrt(sdot(oo,oo))),a(0),fa,da;
   // `have`: the double-float residual and slope at `a` are known.
-  bool rad=(sag&2)&&sradial(s),have=false;
+  bool rad=sradial(s),have=false;
   float3 fo(oo.a[0].x.x,oo.a[1].x.x,oo.a[2].x.x),fdir(d.a[0].x.x,d.a[1].x.x,d.a[2].x.x);
   float fa32=0,da32=0,tfa=0,tda=0;bool oka=fgat(s,fo,fdir,sv(r),0.0f,fa32,da32,tfa,tda,rad);
   for(uint i=1;i<=n;i++){
@@ -212,7 +213,7 @@ static bool sgintersect(device const MklStrayPrimitive &p,constant MklStraySurfa
       a=b;fa32=fb32;da32=db32;tfa=tfb;tda=tdb;have=false;continue;
     }
     oka=okb;
-    // Radial mode: a sign change clear in f32 is one the double-float scan
+    // Radial evaluation: a sign change clear in f32 is one the double-float scan
     // finds too; locate its root without the cell's end points.
     bool clear=rad&&sure&&(fa32>0)!=(fb32>0);
     if(clear)roots[0]=sgnewton(s,oo,d,r,a,b,SD(fa32),tol);
@@ -342,7 +343,7 @@ template<typename P> static bool fslab(P lo,P hi,float3 o,float3 d,float3 inv,fl
   }
   return true;
 }
-// Closest hit; primitive 0xfffffffe: the ray is handed to the host (sag mode bit 0).
+// Closest hit; primitive 0xfffffffe: the ray is handed to the host (sag mode 1).
 static MklStrayHit sclosest(device const MklStrayPrimitive *prims,device const MklStrayNode *nodes,constant MklStraySurfaceData *shapes,uint count,MklStrayRay ray,bool extended,uint sag=0){
   MklStrayHit out={};out.primitive=0xffffffff;SD limit(FLT_MAX);uint i=0;bool handoff=false;
   float3 fo(ray.origin[0].x,ray.origin[1].x,ray.origin[2].x),fd(ray.direction[0].x,ray.direction[1].x,ray.direction[2].x),finv=1/fd;

@@ -36,36 +36,20 @@ pub const STUDY_KEY: &str = "stray";
 /// Study key of the device share of [`Design::CoSplit`] (a number in
 /// 0…1; unset: [`default_share`]).
 pub const SHARE_KEY: &str = "stray_share";
-/// Study key of the device's extended-sag intersection (bit 0 of
-/// `ops::Transport::sag_mode`): `f32-scan` (default) or `f32-grazing`,
+/// Study key of the device's extended-sag intersection
+/// (`ops::Transport::sag_mode`): `f32-scan` (default) or `f32-grazing`,
 /// which hands oblique and grazing rays to the CPU.
 pub const SAG_KEY: &str = "stray_sag";
-/// Study key of the device's even-asphere evaluation (bit 1 of
-/// `ops::Transport::sag_mode`): `jet` (default) or `radial-newton`.
-pub const ASPHERE_KEY: &str = "stray_asphere";
 
-/// The selected extended-sag intersection mode and even-asphere evaluation
-/// (`ops::Transport::sag_mode`).
+/// The selected extended-sag intersection mode (`ops::Transport::sag_mode`).
 pub fn sag_mode() -> MkResult<u32> {
-    let asphere = match mklight_core::split::variant(ASPHERE_KEY).as_deref() {
-        None | Some("jet") => 0,
-        Some("radial-newton") => 2,
-        Some(other) => {
-            return Err(MkError::InvalidModel(format!(
-                "unknown stray asphere mode '{other}' (jet, radial-newton)"
-            )));
-        }
-    };
-    let sag = match mklight_core::split::variant(SAG_KEY).as_deref() {
-        None | Some("f32-scan") => 0,
-        Some("f32-grazing") => 1,
-        Some(other) => {
-            return Err(MkError::InvalidModel(format!(
-                "unknown stray sag mode '{other}' (f32-scan, f32-grazing)"
-            )));
-        }
-    };
-    Ok(asphere | sag)
+    match mklight_core::split::variant(SAG_KEY).as_deref() {
+        None | Some("f32-scan") => Ok(0),
+        Some("f32-grazing") => Ok(1),
+        Some(other) => Err(MkError::InvalidModel(format!(
+            "unknown stray sag mode '{other}' (f32-scan, f32-grazing)"
+        ))),
+    }
 }
 
 /// Detections a source keeps on the device before the CPU continues it.

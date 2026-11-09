@@ -479,10 +479,25 @@ local-frame double-float roots/normals and stable original-primitive-ID ties.
 Extended sags reuse P1's packed bases and gradients. Their nearest-hit search
 clips to a conservative box/cylinder, scans signed residuals and derivative
 extrema, and refines brackets with safeguarded Newton/bisection; this also
-resolves close root pairs near tangency. A plain-f32 pre-scan skips cells whose
-residual and slope are clearly of one sign at both ends (about a hundred times
-the f32 rounding), so every root is decided by the same double-float cells and
-the records are those of the CPU-f32 specification's scan. Coefficient bounds
+resolves close root pairs near tangency. A plain-f32 pre-scan skips cells
+whose residual and slope are clearly of one sign at both ends (about a
+hundred times the f32 rounding), so every root is decided by the same
+double-float cells. An even asphere whose sag is the plain radial form (the
+stray packing's zero overlay) is evaluated as `S(u) = c·u/(1 + w) + P(u)`,
+`u = x² + y²`, with the gradient `2S'(u)·(x, y)`, in f32 and in double-float
+(`P` and `P'` from the trace's double-float slope, `mkl_asphere_poly_dp_df`
+in `trace_shared.h`); each bracketed root is located in f32 and polished by
+two double-float Newton steps as the trace refines an asphere hit, and a
+sign change that is clear in f32 is solved without the cell's double-float
+end points. Every other extended sag is evaluated by the jets of
+`surface_math.h`, and its records are those of the CPU-f32 specification's
+scan. The specification evaluates even aspheres by the jets too, so there it
+agrees with the device to double-float rounding, not bit for bit. The radial
+form is also the more accurate one: the double-float jets sent about 2
+sources in 10⁵ of the Petzval sample down a spurious sneak path (a specular
+path crossing a surface outside its aperture, about 1 % of that lens's stray
+flux) that the f64 reference never takes, and the specification reproduced
+those records; the radial form follows the reference. Coefficient bounds
 enclose the whole sag domain, including asymmetric surfaces; sampled extrema
 do not stand in for a bound. A plain-f32 pre-test of the node boxes only skips
 boxes the double-float test rejects. Small scenes retain the median host
@@ -589,54 +604,36 @@ runs the obstruction checks of the system fields and the source's primary
 reference on the CPU beside it (`StraySystem::build_scene`); the result,
 warnings and progress are those of the sequential order.
 
-**Extended-sag variants on the device** (`ops::Transport::sag_mode`), which
-cut the device's cost on aspheric lenses:
+**Grazing handoff on the device** (study key `stray_sag`,
+`ops::Transport::sag_mode`): `f32-scan` (default) is the scan above;
+`f32-grazing` also hands a ray whose clipped interval needs more than 32
+cells (oblique and grazing rays) back to the CPU before the event
+(`Ledger::status` 6: the state goes back on the stack, no draw consumed),
+and the CPU continues the source.
 
-- study key `stray_sag`: `f32-scan` (default) is the scan above;
-  `f32-grazing` also hands a ray whose clipped interval needs more than 32
-  cells (oblique and grazing rays) back to the CPU before the event
-  (`Ledger::status` 6: the state goes back on the stack, no draw consumed),
-  and the CPU continues the source;
-- study key `stray_asphere`: `jet` (default) evaluates every extended sag by
-  the jets of `surface_math.h`; `radial-newton` evaluates an even asphere
-  whose sag is the plain radial form (the stray packing's zero overlay) as
-  `S(u) = c·u/(1 + w) + P(u)`, `u = x² + y²`, with the gradient
-  `2S'(u)·(x, y)`, in f32 and in double-float (`P` and `P'` from the trace's
-  double-float slope, `mkl_asphere_poly_dp_df` in `trace_shared.h`), locates
-  each bracketed root in f32 and polishes it by two double-float Newton
-  steps as the trace refines an asphere hit, and solves a sign change that
-  is clear in f32 without the cell's double-float end points. It agrees with
-  `jet` to double-float rounding, not bit for bit (no CPU specification).
+Measured on a quiet M2 Pro, wavefront transport: the radial evaluation of
+even aspheres takes 26 % off the device time of the jets on a 29-surface
+lens with two even aspheres (100k rays), 46 % on a 37-surface zoom with 7
+aspheres and 55 % on a 35-surface ultra-wide (10k rays); with `f32-grazing`
+as well, 40 % and 62 % on the first two (the ultra-wide then hands nearly
+every source to the CPU). The 12-thread f64 reference is still 3–5 times
+faster per event there, so the default share on such lenses stays 0.
 
-Measured on a quiet M2 Pro, wavefront transport: `radial-newton` takes 26 %
-off the device time of a 29-surface lens with two even aspheres (100k rays),
-46 % off a 37-surface zoom with 7 aspheres and 55 % off a 35-surface
-ultra-wide (10k rays); with `f32-grazing` as well, 40 % and 62 % off the
-first two (the ultra-wide then hands nearly every source to the CPU). The 12-thread
-f64 reference is still 3–5 times faster per event there, so the default share
-on such lenses stays 0.
-
-**GPU options.** `wavefront`, a forced `stray_share`, `f32-grazing` and
-`radial-newton` move transport onto the device. On an M2 Pro their time
-ranges from 0.7 times the default's (`wavefront` with both sag variants on
-the Petzval sample at 20k rays) to 2.5–3.6 times (`wavefront` at 400k–2M
-rays); a forced share of 0.2–0.35 takes 0.9–1.6 times at 20k rays and up to
-3 times at 2M rays on an aspheric lens. A GPU with more cores per CPU core
-may favour them, so they stay selectable. Their accuracy was checked against
-the CPU reference on the Cooke triplet, Double Gauss, Petzval, odd-asphere,
-Q and Zernike samples and three large aspheric lenses (six independent seeds
-per side; class totals, stray flux and irradiance in 8 × 8-pixel blocks
-against their Monte Carlo standard errors, with the default design as
-control): every option agrees within Monte Carlo error. With the reference's
-own seeds the device results equal it to rounding (`radial-newton` within
-1e-12 standard errors on the Petzval sample). One systematic exception: with
-the default `jet` evaluation the device sends about 2 sources in 10⁵ on the
-Petzval sample, and less often on one of the large lenses, down a spurious
-sneak path (about 1 % of the Petzval stray flux, absent from the reference).
-The CPU-f32 specification gives the same records for such a source, so the
-cause is the double-float jet evaluation of the even asphere, not the f32
-pre-scan; `radial-newton` follows the reference there. A device share on a
-lens with even aspheres should therefore use `radial-newton`.
+**GPU options.** `wavefront`, a forced `stray_share` and `f32-grazing` move
+transport onto the device. On an M2 Pro their time ranges from 0.7 times the
+default's (`wavefront` with `f32-grazing` on the Petzval sample at 20k rays)
+to 2.5–3.6 times (`wavefront` at 400k–2M rays); a forced share of 0.2–0.35
+takes 0.9–1.6 times at 20k rays and up to 3 times at 2M rays on an aspheric
+lens. A GPU with more cores per CPU core may favour them, so they stay
+selectable. Their accuracy was checked against the CPU reference on the
+Cooke triplet, Double Gauss, Petzval, odd-asphere, Q and Zernike samples and
+three large aspheric lenses (six independent seeds per side; class totals,
+stray flux and irradiance in 8 × 8-pixel blocks against their Monte Carlo
+standard errors, with the default design as control): every option agrees
+within Monte Carlo error. With the reference's own seeds the device results
+equal it to rounding (within 1e-12 standard errors on the Petzval sample),
+apart from a rare single path that rounding sends elsewhere on the large
+lenses.
 
 **CPU stages.** The CPU path overlaps the obstruction checks of the system
 fields and the source's primary reference with the transport (all three are

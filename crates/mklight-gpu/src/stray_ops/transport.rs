@@ -154,18 +154,18 @@ pub struct Transport {
     pub stack: BufferId,
     /// Events per source on the device before status 5 (0: no limit).
     pub head_events: u32,
-    /// Extended-sag intersection on the device. Every mode scans the cells
-    /// of the clipped ray interval in double-float after a plain-f32
-    /// pre-scan that skips cells the double-float scan would find empty, so
-    /// the decided roots are the scan's. Bit 0: a scan longer than
-    /// `MKL_STRAY_SAG_HANDOFF_CELLS` cells (an oblique or grazing ray) stops
-    /// the source before that event (`Ledger::status` 6) for the host to
-    /// continue. Bit 1: on an even asphere whose sag is the plain radial
-    /// form, the sag is evaluated as `S(u)`, `u = x² + y²`, and each
-    /// bracketed root is located in f32 and polished by two double-float
-    /// Newton steps; this agrees with the sag jets to double-float rounding,
-    /// not bit for bit. The CPU specification scans with the jets and never
-    /// hands off (mode 0).
+    /// Extended-sag intersection on the device: 0 scans the cells of the
+    /// clipped ray interval in double-float after a plain-f32 pre-scan that
+    /// skips cells the double-float scan would find empty, so the decided
+    /// roots are the scan's; 1 also stops a source whose scan would be longer
+    /// than `MKL_STRAY_SAG_HANDOFF_CELLS` cells (an oblique or grazing ray)
+    /// before that event (`Ledger::status` 6) for the host to continue. An
+    /// even asphere whose sag is the plain radial form is evaluated as
+    /// `S(u)`, `u = x² + y²`, each bracketed root located in f32 and polished
+    /// by two double-float Newton steps; every other extended sag by the sag
+    /// jets. The CPU specification evaluates every extended sag by the jets
+    /// and never hands off, so on even aspheres it agrees with the device to
+    /// double-float rounding, not bit for bit.
     pub sag_mode: u32,
 }
 impl Transport {
@@ -215,7 +215,7 @@ impl Transport {
             || p.desc(self.output)? != &record_desc::<Detection>(self.ray_count * self.hit_capacity)
             || p.desc(self.ledger)? != &record_desc::<Ledger>(self.ray_count)
             || p.desc(self.stack)? != &record_desc::<State>(self.ray_count * self.stack_capacity)
-            || self.sag_mode > 3
+            || self.sag_mode > 1
         {
             return Err(bad("stray transport capacity/output"));
         }

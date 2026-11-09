@@ -2,7 +2,7 @@
 #define MKLIGHT_STRAY_OPS_TYPES_H
 #define MKL_STRAY_VERSION 6
 #define MKL_STRAY_FEATURES_CONSTANT 60
-/* Grazing handoff (Transport::sag_mode bit 0): an extended-sag scan of more
+/* Grazing handoff (Transport::sag_mode 1): an extended-sag scan of more
    cells stops the source before the event for the host to continue. */
 #define MKL_STRAY_SAG_HANDOFF_CELLS 32
 #define MKL_STRAY_MAX_PRIMITIVES 1048576

@@ -1,7 +1,7 @@
-//! The device's extended-sag variants (work-split study keys `stray_sag`
-//! and `stray_asphere`) agree with the reference on the aspheric samples.
-//! The selections are process-wide, so these checks run in one test, in a
-//! process of their own.
+//! The device's extended-sag intersection (work-split study key
+//! `stray_sag`) agrees with the reference on the aspheric samples. The
+//! selection is process-wide, so these checks run in one test, in a process
+//! of their own.
 #![cfg(target_os = "macos")]
 #[path = "../common/mod.rs"]
 mod common;
@@ -56,23 +56,14 @@ fn sag_variants_agree_with_the_reference() {
             assert_eq!(r.run_info.as_ref().unwrap().settings["fallback_count"], 0);
             r
         };
+        // Even aspheres in the radial double-float evaluation with Newton
+        // polish, every other sag by its jets.
         compare(&cpu, &run(&[]), &name);
-        // The radial double-float evaluation with Newton polish agrees with
-        // the reference to double-float rounding.
-        compare(&cpu, &run(&[("stray_asphere", "radial-newton")]), &name);
         // Long scans continue on the CPU: the reference's physics.
-        for sets in [
-            &[("stray_sag", "f32-grazing")][..],
-            &[
-                ("stray_sag", "f32-grazing"),
-                ("stray_asphere", "radial-newton"),
-            ],
-        ] {
-            let handed = run(sets);
-            let n = &handed.run_info.as_ref().unwrap().settings["counters"];
-            handoffs += n["sag_handoff"].as_u64().unwrap();
-            compare(&cpu, &handed, &name);
-        }
+        let handed = run(&[("stray_sag", "f32-grazing")]);
+        let n = &handed.run_info.as_ref().unwrap().settings["counters"];
+        handoffs += n["sag_handoff"].as_u64().unwrap();
+        compare(&cpu, &handed, &name);
     }
     // Short sample runs rarely scan longer than the limit; the continuation
     // itself is covered by the handoff tests of p10_transport.
