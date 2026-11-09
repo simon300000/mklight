@@ -161,4 +161,3 @@ fn cpu_known_answers() {
     answers(&b);
     close_hits(&b);
 }
-

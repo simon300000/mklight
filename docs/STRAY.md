@@ -616,14 +616,38 @@ first two (the ultra-wide then hands nearly every source to the CPU). The 12-thr
 f64 reference is still 3–5 times faster per event there, so the default share
 on such lenses stays 0.
 
+**GPU options.** `wavefront`, a forced `stray_share`, `f32-grazing` and
+`radial-newton` move transport onto the device. On an M2 Pro their time
+ranges from 0.7 times the default's (`wavefront` with both sag variants on
+the Petzval sample at 20k rays) to 2.5–3.6 times (`wavefront` at 400k–2M
+rays); a forced share of 0.2–0.35 takes 0.9–1.6 times at 20k rays and up to
+3 times at 2M rays on an aspheric lens. A GPU with more cores per CPU core
+may favour them, so they stay selectable. Their accuracy was checked against
+the CPU reference on the Cooke triplet, Double Gauss, Petzval, odd-asphere,
+Q and Zernike samples and three large aspheric lenses (six independent seeds
+per side; class totals, stray flux and irradiance in 8 × 8-pixel blocks
+against their Monte Carlo standard errors, with the default design as
+control): every option agrees within Monte Carlo error. With the reference's
+own seeds the device results equal it to rounding (`radial-newton` within
+1e-12 standard errors on the Petzval sample). One systematic exception: with
+the default `jet` evaluation the device sends about 2 sources in 10⁵ on the
+Petzval sample, and less often on one of the large lenses, down a spurious
+sneak path (about 1 % of the Petzval stray flux, absent from the reference).
+The CPU-f32 specification gives the same records for such a source, so the
+cause is the double-float jet evaluation of the even asphere, not the f32
+pre-scan; `radial-newton` follows the reference there. A device share on a
+lens with even aspheres should therefore use `radial-newton`.
+
 **CPU stages.** The CPU path overlaps the obstruction checks of the system
 fields and the source's primary reference with the transport (all three are
 parallel, none fills the cores alone), checks the system fields in parallel,
 and traces chunks in batches of 16 per thread; results are unchanged.
 
 Measured on an M2 Pro: the device's double-float transport kernels are
-register-limited (384 threads per threadgroup); the same kernel compiled as
-plain f32 runs about 13 times faster. The closest-hit search dominates scenes
+register-limited (at most 384 threads per threadgroup for the closest-hit
+kernel, 384–576 for the interaction kernel depending on the specialised
+features; the ignored `kernel_occupancy` test of `mklight-metal` prints
+them); the same transport compiled as plain f32 runs about 13 times faster. The closest-hit search dominates scenes
 with iteratively intersected sags: two even aspheres in a 29-surface lens make
 the cast kernel 85 % of the wavefront's device time, and one grazing ray's sag
 scan takes up to about 3 ms on the device. Device transport reaches about

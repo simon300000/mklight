@@ -150,7 +150,11 @@ fn transport_specification_and_tiles() {
         assert_eq!(ledgers.len(), 65);
         // Detection and stack rows past each source's count are unspecified.
         let valid = |output: usize, rows: usize, width: usize, count: fn(&ops::Ledger) -> u32| {
-            let words = b.read_view(r.outputs[output].view()).unwrap().words().to_vec();
+            let words = b
+                .read_view(r.outputs[output].view())
+                .unwrap()
+                .words()
+                .to_vec();
             ledgers
                 .iter()
                 .enumerate()
@@ -175,7 +179,10 @@ fn transport_specification_and_tiles() {
         let a = raw(&cpu, head);
         let b = raw(&metal, head);
         assert!(!a.0.is_empty());
-        assert_eq!(a, b, "CPU-f32 specification and Metal records differ (head {head})");
+        assert_eq!(
+            a, b,
+            "CPU-f32 specification and Metal records differ (head {head})"
+        );
     }
 }
 
@@ -655,7 +662,8 @@ fn split_tree_cancellation_and_release() {
     // iteratively intersected aspheres, cancelled once progress shows.
     let long = mklight_core::samples::petzval_asphere();
     let long_snap = Snapshot::new(long.clone()).unwrap();
-    let long_system = StraySystem::new(Arc::new(common::resolve(long)), &Default::default()).unwrap();
+    let long_system =
+        StraySystem::new(Arc::new(common::resolve(long)), &Default::default()).unwrap();
     let long_source = long_system.system_field_source(0, 0.1, 1.).unwrap().spec;
     let ctx = JobContext::new();
     let prepared = gpu::TransportScene::new(&*b, &long_system.scene, &ctx).unwrap();
