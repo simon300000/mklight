@@ -336,18 +336,16 @@ private func paraxialEFL(summary: GenericResult, wavelength w: Int) throws -> (e
         try file.encoded().write(to: url)
         let reopened = try e.openProject(at: url)
         #expect(try reopened.system().name == "Edited in Swift")
-        #expect(try reopened.sessionInfo().migration?.notes.isEmpty ?? true)
+        #expect(try reopened.sessionInfo().openWarnings.isEmpty)
         let snapA = try await reopened.openSnapshot(file.system)
         #expect(try reopened.currentSnapshotHash() == snapA.hash)
-        // An early app envelope migrates.
+        // A document without a schema version is refused by the engine too.
         let early = try JSONValue.object([
             "format": .string("mklight-project"), "version": .integer(1), "system": JSONValue.from(sample("singlet")),
         ])
         let earlyURL = dir.appendingPathComponent("early.mklight")
         try MKLightJSON.encode(early).write(to: earlyURL)
-        let migrated = try e.openProject(at: earlyURL)
-        #expect(try migrated.sessionInfo().migration?.fromVersion == 0)
-        #expect(try migrated.project().system == (try sample("singlet")))
+        #expect(throws: EngineError.self) { try e.openProject(at: earlyURL) }
     }
 
     @Test func paramEditsAreAtomicAndProduceNewSnapshots() async throws {

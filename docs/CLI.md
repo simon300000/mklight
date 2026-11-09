@@ -3,7 +3,7 @@
 `mklight` is the headless front end of the engine. It is a thin client of
 `mklight-engine`, the facade the macOS app (through `mklight-ffi`) and the
 Python bindings use too: projects are opened as engine `Session`s (with
-schema migration and catalog loading), analyses come from the engine's
+the schema version check and catalog loading), analyses come from the engine's
 analysis registry and run on its job scheduler, and every result is the same
 envelope with a `RunInfo` that the app receives. `trace` and `paraxial` also
 call the CPU f64 reference tracer (`mklight-trace`) directly, on the
@@ -35,8 +35,7 @@ wavelength and surface indices are **0-based** (surface 0 is the object).
   written with `run --out`.
 * Errors are printed to stderr as `mklight: error: …`. With `--json`, stdout
   additionally carries `{"error": {"exit_code", "kind", "message"}}`.
-* Warnings (missing catalogs, migration notes, glass data ranges, tracer
-  warnings) are printed as `warning: …` lines and listed in the JSON.
+* Warnings (missing catalogs, glass data ranges, tracer warnings) are printed as `warning: …` lines and listed in the JSON.
 
 ## Exit codes
 
@@ -44,7 +43,7 @@ wavelength and surface indices are **0-based** (surface 0 is the object).
 |---|---|---|
 | 0 | `ok` | success |
 | 1 | `usage` | bad command line; unknown analysis, sample or catalog; a parameter path that does not address a parameter of the system; invalid settings JSON or values; field/wavelength index out of range; a pupil point outside the unit disk; file exists (`new` without `--force`) |
-| 2 | `invalid_model` | the project file cannot be parsed (including content that is not UTF-8) or migrated (including a newer `schema_version`); `validate` finds errors; materials or coatings do not resolve (also a glass named in analysis settings); `set` with a value the parameter cannot take, or an edit that would make the system invalid |
+| 2 | `invalid_model` | the project file cannot be parsed (including content that is not UTF-8 and a `schema_version` other than the current one); `validate` finds errors; materials or coatings do not resolve (also a glass named in analysis settings); `set` with a value the parameter cannot take, or an edit that would make the system invalid |
 | 3 | `analysis_failed` | the job failed; the analysis or requested backend is not available; a trace or numerical failure |
 | 4 | `io` | a file cannot be read or written (missing project, catalog or settings file) |
 | 130 | `cancelled` | the job was cancelled by Ctrl-C (SIGINT/SIGTERM) or `--timeout` |
@@ -74,7 +73,7 @@ an existing file unless `--force`.
 
 ### `mklight validate <project>`
 
-Opens the project (migrating older versions in memory) and runs the engine's
+Opens the project and runs the engine's
 `validate` analysis, followed by checks that make `validate` agree with the
 ray-based commands (a project reported valid can be traced):
 
@@ -104,7 +103,7 @@ project) keeps its load error.
 
 JSON: `ok`, `structural_only`, `errors`, `warnings`, `issues` (severity,
 code, surface, message, and `path` for structural issues; engine issues
-first), `open_warnings`, `migration`, `snapshot_hash`, `library_hash`
+first), `open_warnings`, `snapshot_hash`, `library_hash`
 (`null` when structurally invalid). Exit 2 when `ok` is false (the report
 is still printed).
 
@@ -131,14 +130,6 @@ largest ray height over all fields, wavelengths and the pupil rim), `none`
 (for example an unknown glass), the model data are still shown, indices and
 traced values are `null`, and a warning says why. `--no-semi-diameters`
 skips the ray trace.
-
-### `mklight migrate <project> [--dry-run] [--no-backup]`
-
-Upgrades the file to the current `schema_version` through the engine's
-migration chain (`docs/FFI.md`, *Project file*). The original bytes are kept
-as `<file>.v<from>.bak` (or `….bak.<k>` if that exists) before the migrated
-project is saved atomically. A file that is already current is left alone;
-`--dry-run` reports the migration and its notes without writing.
 
 ### `mklight catalogs list|show|import`
 
@@ -298,6 +289,6 @@ image at global (0, −100, −400) for any pupil point, the relay's m = −1 an
 first-order data), exit codes (including non-UTF-8 projects for every command), `validate` and
 `set` agreeing with `paraxial`/`trace` (F/# 0, negative field weight:
 every structural issue listed, step-by-step repair with `set`),
-migration backups, atomic `set`, Ctrl-C and
+atomic `set`, Ctrl-C and
 `--timeout` cancellation with monotone progress, and byte-identical
 `--no-timing` output.

@@ -34,7 +34,7 @@ further linker flags are needed.
   the runtime major equals the compiled major. Minor releases only **add**
   functions and JSON fields, so JSON readers must ignore unknown keys.
   1.1 added `mk_engine_analysis_info`, `mk_engine_set_default_backend`,
-  `mk_engine_migrate_project`, `mk_session_run_analysis_json`,
+  `mk_session_run_analysis_json`,
   `mk_session_validate_json`, `mk_session_apply_solves`,
   `mk_session_autosave`, `mk_session_get_param`, and the analysis fields
   `result_schema`, `result_version`, `gpu_path` and envelope fields
@@ -47,8 +47,8 @@ further linker flags are needed.
   (`docs/RESULTS.md` §2).
 * `mk_engine_version()` is the engine (crate) version recorded in every
   `RunInfo` and project file.
-* Project files carry `schema_version` (currently 1). Older files are
-  migrated on open; newer ones are refused (see *Project file*).
+* Project files carry `schema_version` (currently 1). A file at any other
+  version is refused (see *Project file*).
 
 ## Status codes and errors
 
@@ -360,7 +360,6 @@ sits beside `run_info` until `RunInfo` in mklight-core carries it.)
 { "session_id": 1, "path": "/…/lens.mklight", "dirty": false,
   "snapshot_hash": "<64 hex>", "library_hash": "<64 hex>", "name": "Untitled",
   "open_warnings": ["glass catalog 'MYCAT' could not be loaded (…)"],
-  "migration": {"from_version": 0, "to_version": 1, "notes": ["…"]},
   "catalogs": [ {"name": "BUILTIN", "source": "builtin", "path": null, "glass_count": 13} ] }
 ```
 
@@ -398,7 +397,7 @@ return the resolved layout radius (same aperture solve and domain clipping);
 writes still set a fixed radius. A path the system does not have is
 `MK_ERR_INVALID_ARGUMENT`.
 
-### Validation, solves, autosave, migration
+### Validation, solves, autosave
 
 * `mk_session_validate_json(session, &json)`: the `validate` report
   `{ok, errors, warnings, issues: [{severity, code, surface, message}]}` of
@@ -419,11 +418,6 @@ writes still set a fixed radius. A path the system does not have is
 * `mk_session_autosave(session, path, &written)`: writes the project to
   `path` or `<project file>.autosave` without touching the session (path,
   dirty flag). Recover by opening the autosave file.
-* `mk_engine_migrate_project(engine, path, backup, dry_run, &json)`:
-  migrates a project file in place to the current schema version (keeping
-  `<file>.v<N>.bak` unless `backup` is 0); `json` is `{path, from_version,
-  to_version, notes, migrated, backup, dry_run}`. Opening a file migrates it
-  in memory only.
 
 `mk_session_set_project_section_json(session, section, json)` replaces
 `views` (array of `{key, analysis, settings, ui}`), `merit`, `variables`,
@@ -512,12 +506,9 @@ of times. When the catalog file is not found at all, the previous
 `relative_path` is kept on save. A catalog outside the project folder gets
 `relative_path: null`.
 
-Unknown top-level keys are preserved on a round trip. Migrations run one
-version step at a time (`MIGRATIONS[k]`: version k → k+1). Version 0 denotes
-unversioned drafts: a bare `OpticalSystem` or `{ "system": … }`, which are
-wrapped into a v1 project (with a note in `migration.notes`). A file with a
-newer `schema_version` than the engine supports is refused with
-`MK_ERR_PARSE`.
+Unknown top-level keys are preserved on a round trip. Only the current
+`schema_version` is read: a file without one or at any other version is
+refused with `MK_ERR_PARSE`.
 
 ## Swift usage sketch
 
@@ -566,4 +557,4 @@ mk_engine_destroy(engine)
   `analysis::gpu::GPU_ANALYSES`, reads `AnalysisInput::device` and reports
   what it used with `AnalysisInput::report_backend`.
 * Typed merit/variables/tolerances replace the opaque project sections
-  through a schema migration (v1 → v2).
+  in a new schema version.

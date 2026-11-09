@@ -136,9 +136,9 @@ unknown keys, verbatim. It also writes `merit` (the merit editor's
 default-generator settings or custom operands as an engine
 `MeritFunctionSpec`, plus the EFL hold) and `variables` (`VariableSpec`s
 with their bounds); both are undoable design changes. The system is decoded strictly, like the engine's
-model: an unknown field in it is an error rather than silently dropped. Bare `OpticalSystem` JSON and the app's early
-`{"format", "version": 1, "system"}` files open too (as the engine's
-version-0 migration does); newer schema versions are refused. The exported
+model: an unknown field in it is an error rather than silently dropped. Like
+the engine, the app reads only the current `schema_version` and refuses a
+file without one or at another version. The exported
 UTI is `com.mklight.project`, which conforms to `public.json` and is declared
 in the bundle's Info.plist by the build script.
 

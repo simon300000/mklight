@@ -96,7 +96,7 @@ Type stubs with docstrings: `crates/mklight-py/python/mklight/_mklight.pyi`.
 ### `Engine`
 
 `new(sample=None, system=None)` → `Session`; `open(path)` → `Session`
-(older project schemas are migrated; see `Session.info["migration"]`);
+(only the current project `schema_version` is read; another one raises);
 `analyses()` (name, title, category, `available`, settings schema,
 `default_settings`); `backends()`; `jobs()` (status dicts); `cancel_all()`;
 `config`; `default_backend`.
