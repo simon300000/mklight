@@ -261,22 +261,6 @@ import Testing
         #expect(ImageSourceImport.engineSettings("psf", ["size": .integer(3)], defaults: nil) == ["size": .integer(3)])
     }
 
-    /// Image simulation panes saved with the engine's defaults (before the
-    /// starting settings existed) take the starting settings and wait for
-    /// Update; panes the user changed keep their settings.
-    @Test func oldImageSimulationPanesMigrate() async throws {
-        let defaults: JSONValue = .object(["size": .array([.integer(64), .integer(64)])])
-        #expect(ImageSimulationSettings.isEngineDefault([:], defaults: defaults))
-        #expect(ImageSimulationSettings.isEngineDefault(["size": .array([.integer(64), .integer(64)])], defaults: defaults))
-        #expect(!ImageSimulationSettings.isEngineDefault(["size": .array([.integer(512), .integer(512)])], defaults: defaults))
-        let old = AnalysisPane(id: "old", analysis: "image_simulation", settings: [:], autoUpdate: true)
-        let mine = AnalysisPane(id: "mine", analysis: "image_simulation", settings: ["size": .array([.integer(128), .integer(128)])], autoUpdate: true)
-        let w = Workspace(engine: MockEngine(simulatedLatency: .zero), panes: [old, mine])
-        await w.loadEngineMetadata()
-        #expect(old.settings == w.startingSettings("image_simulation") && !old.autoUpdate)
-        #expect(mine.settings["size"] == .array([.integer(128), .integer(128)]) && mine.autoUpdate)
-    }
-
     // MARK: Leftovers of the review round
 
     /// The section stretch is saved in the project's `views`; a stretch

@@ -2,14 +2,12 @@
 //! everything a document needs around it (analysis views, user catalog
 //! references, optimisation and tolerancing setup, metadata).
 //!
-//! Files carry a `schema_version`. Older files are upgraded on load by a chain
-//! of migrations, one per version step (`MIGRATIONS[k]` turns version `k` into
-//! `k + 1`), so each step stays small and testable. Files written by a newer
-//! engine are refused rather than silently misread. Saves are atomic
-//! (`fsutil::atomic_write`).
+//! Files carry a `schema_version`. Only `PROJECT_SCHEMA_VERSION` is read; a
+//! file at any other version is refused rather than silently misread. Saves
+//! are atomic (`fsutil::atomic_write`).
 
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value, json};
+use serde_json::{Map, Value};
 use std::path::{Path, PathBuf};
 
 use mklight_core::{MkError, OpticalSystem};
@@ -140,110 +138,42 @@ pub struct Project {
     pub extra: Map<String, Value>,
 }
 
-/// What happened while loading a file.
-#[derive(Clone, Debug, PartialEq, Default, Serialize)]
-pub struct MigrationReport {
-    pub from_version: u32,
-    pub to_version: u32,
-    pub notes: Vec<String>,
-}
-
-impl MigrationReport {
-    pub fn migrated(&self) -> bool {
-        self.from_version != self.to_version
-    }
-}
-
-/// One migration step on the raw JSON document. It may append notes for the
-/// user (for example "converted a bare system file").
-pub type Migration = fn(Value, &mut Vec<String>) -> Result<Value, String>;
-
-/// `MIGRATIONS[k]` upgrades schema version `k` to `k + 1`. Its length is
-/// therefore `PROJECT_SCHEMA_VERSION`.
-pub const MIGRATIONS: &[Migration] = &[migrate_v0_to_v1];
-
-/// Version 0 means files without `schema_version`: early drafts that were
-/// either a bare `OpticalSystem` or `{ "system": … }` with optional extras.
-fn migrate_v0_to_v1(doc: Value, notes: &mut Vec<String>) -> Result<Value, String> {
-    let Value::Object(mut obj) = doc else {
-        return Err("project document must be a JSON object".into());
+/// Check the `schema_version` of a raw document before it is deserialised,
+/// so a file at another version gets a clear error instead of a field error.
+fn check_schema_version(doc: &Value) -> EngineResult<()> {
+    let Value::Object(obj) = doc else {
+        return Err(EngineError::Project(
+            "project document must be a JSON object".into(),
+        ));
     };
-    if !obj.contains_key("system") {
-        if obj.contains_key("surfaces") {
-            notes.push("converted a bare optical-system file into a project".into());
-            obj = Map::from_iter([("system".to_string(), Value::Object(obj))]);
-        } else {
-            return Err("document has neither 'system' nor 'surfaces'".into());
+    let v = match obj.get("schema_version") {
+        None | Some(Value::Null) => {
+            return Err(EngineError::Project(
+                "not an MKLight project (no schema_version)".into(),
+            ));
         }
-    }
-    obj.entry("format")
-        .or_insert_with(|| json!(PROJECT_FORMAT_ID));
-    obj.entry("metadata").or_insert_with(|| json!({}));
-    Ok(Value::Object(obj))
-}
-
-fn read_version(doc: &Value) -> Result<u32, String> {
-    match doc.get("schema_version") {
-        None | Some(Value::Null) => Ok(0),
         Some(v) => v
             .as_u64()
             .and_then(|v| u32::try_from(v).ok())
-            .ok_or_else(|| format!("schema_version must be a non-negative integer, got {v}")),
-    }
-}
-
-/// Upgrade `doc` through `steps` to version `steps.len()`.
-pub fn migrate_with(doc: Value, steps: &[Migration]) -> EngineResult<(Value, MigrationReport)> {
-    let target = steps.len() as u32;
-    let from = read_version(&doc).map_err(EngineError::Project)?;
-    if from > target {
+            .ok_or_else(|| {
+                EngineError::Project(format!(
+                    "schema_version must be a non-negative integer, got {v}"
+                ))
+            })?,
+    };
+    if v > PROJECT_SCHEMA_VERSION {
         return Err(EngineError::Project(format!(
-            "file schema version {from} is newer than this engine supports ({target}); \
-             please update MKLight"
+            "file schema version {v} is newer than this engine supports \
+             ({PROJECT_SCHEMA_VERSION}); please update MKLight"
         )));
     }
-    let mut report = MigrationReport {
-        from_version: from,
-        to_version: target,
-        notes: Vec::new(),
-    };
-    let mut doc = doc;
-    for (k, step) in steps.iter().enumerate().skip(from as usize) {
-        doc = step(doc, &mut report.notes)
-            .map_err(|e| EngineError::Project(format!("migration v{k} → v{}: {e}", k + 1)))?;
-        match &mut doc {
-            Value::Object(o) => {
-                o.insert("schema_version".into(), json!(k + 1));
-            }
-            _ => {
-                return Err(EngineError::Project(format!(
-                    "migration v{k} → v{} produced a non-object",
-                    k + 1
-                )));
-            }
-        }
+    if v != PROJECT_SCHEMA_VERSION {
+        return Err(EngineError::Project(format!(
+            "file schema version {v} is not supported (this engine reads version \
+             {PROJECT_SCHEMA_VERSION})"
+        )));
     }
-    Ok((doc, report))
-}
-
-/// Backup name for a file migrated from schema version `from`:
-/// `<file>.v<from>.bak`, or `<file>.v<from>.bak.<k>` with the first free
-/// `k` when that exists.
-pub fn backup_path(path: &Path, from: u32) -> std::path::PathBuf {
-    let base = format!("{}.v{from}.bak", path.display());
-    let first = std::path::PathBuf::from(&base);
-    if !first.exists() {
-        return first;
-    }
-    (1..)
-        .map(|k| std::path::PathBuf::from(format!("{base}.{k}")))
-        .find(|p| !p.exists())
-        .expect("unbounded search")
-}
-
-/// Upgrade a raw document to `PROJECT_SCHEMA_VERSION`.
-pub fn migrate(doc: Value) -> EngineResult<(Value, MigrationReport)> {
-    migrate_with(doc, MIGRATIONS)
+    Ok(())
 }
 
 impl Project {
@@ -269,24 +199,23 @@ impl Project {
         }
     }
 
-    /// Parse (and migrate) a project from JSON text.
-    pub fn from_json_str(s: &str) -> EngineResult<(Project, MigrationReport)> {
+    /// Parse a project from JSON text.
+    pub fn from_json_str(s: &str) -> EngineResult<Project> {
         let doc: Value = serde_json::from_str(s)?;
         Self::from_value(doc)
     }
 
-    /// Parse (and migrate) a project from a JSON value.
-    pub fn from_value(doc: Value) -> EngineResult<(Project, MigrationReport)> {
-        let (doc, report) = migrate(doc)?;
-        let mut p: Project = serde_json::from_value(doc)?;
+    /// Parse a project from a JSON value at `PROJECT_SCHEMA_VERSION`.
+    pub fn from_value(doc: Value) -> EngineResult<Project> {
+        check_schema_version(&doc)?;
+        let p: Project = serde_json::from_value(doc)?;
         if p.format != PROJECT_FORMAT_ID {
             return Err(EngineError::Project(format!(
                 "not an MKLight project (format '{}')",
                 p.format
             )));
         }
-        p.schema_version = PROJECT_SCHEMA_VERSION;
-        Ok((p, report))
+        Ok(p)
     }
 
     pub fn to_value(&self) -> EngineResult<Value> {
@@ -300,7 +229,7 @@ impl Project {
         Ok(s)
     }
 
-    pub fn load(path: &Path) -> EngineResult<(Project, MigrationReport)> {
+    pub fn load(path: &Path) -> EngineResult<Project> {
         let text = std::fs::read_to_string(path).map_err(|e| {
             EngineError::Core(MkError::Io(format!("cannot read {}: {e}", path.display())))
         })?;
@@ -321,6 +250,7 @@ impl Project {
 mod tests {
     use super::*;
     use crate::fsutil::test_util::TempDir;
+    use serde_json::json;
 
     #[test]
     fn roundtrip_preserves_everything() {
@@ -334,39 +264,30 @@ mod tests {
         p.merit = json!({"operands": [1, 2, 3]});
         p.extra.insert("future_key".into(), json!({"x": 1}));
         let s = p.to_json_string().unwrap();
-        let (q, rep) = Project::from_json_str(&s).unwrap();
+        let q = Project::from_json_str(&s).unwrap();
         assert_eq!(p, q);
-        assert!(!rep.migrated());
         // Infinite object distance survives as "inf".
         assert!(s.contains("\"inf\""));
     }
 
     #[test]
-    fn v0_bare_system_is_migrated() {
+    fn files_without_a_schema_version_are_refused() {
         let bare = serde_json::to_value(OpticalSystem::new_empty()).unwrap();
-        let (p, rep) = Project::from_value(bare).unwrap();
-        assert_eq!(rep.from_version, 0);
-        assert_eq!(rep.to_version, PROJECT_SCHEMA_VERSION);
-        assert_eq!(rep.notes.len(), 1);
-        assert_eq!(p.system, OpticalSystem::new_empty());
-        assert_eq!(p.format, PROJECT_FORMAT_ID);
-        assert_eq!(p.schema_version, 1);
-    }
-
-    #[test]
-    fn v0_wrapped_system_is_migrated() {
-        let doc = json!({"system": OpticalSystem::new_empty(), "merit": [1]});
-        let (p, rep) = Project::from_value(doc).unwrap();
-        assert!(rep.migrated() && rep.notes.is_empty());
-        assert_eq!(p.merit, json!([1]));
+        let e = Project::from_value(bare).unwrap_err();
+        assert!(e.to_string().contains("no schema_version"), "{e}");
+        let wrapped = json!({"system": OpticalSystem::new_empty()});
+        assert!(Project::from_value(wrapped).is_err());
     }
 
     #[test]
     fn newer_files_are_refused() {
         let mut v = Project::new(OpticalSystem::new_empty()).to_value().unwrap();
         v["schema_version"] = json!(PROJECT_SCHEMA_VERSION + 1);
-        let e = Project::from_value(v).unwrap_err();
+        let e = Project::from_value(v.clone()).unwrap_err();
         assert!(e.to_string().contains("newer"), "{e}");
+        v["schema_version"] = json!(0);
+        let e = Project::from_value(v).unwrap_err();
+        assert!(e.to_string().contains("not supported"), "{e}");
     }
 
     #[test]
@@ -379,50 +300,13 @@ mod tests {
         assert!(Project::from_value(json!({"schema_version": -1, "system": {}})).is_err());
     }
 
-    /// The framework runs steps in order from the file's version and stamps
-    /// each intermediate version.
-    #[test]
-    fn migration_chain_order() {
-        fn s0(mut d: Value, n: &mut Vec<String>) -> Result<Value, String> {
-            d["trail"] = json!("0");
-            n.push("s0".into());
-            Ok(d)
-        }
-        fn s1(mut d: Value, n: &mut Vec<String>) -> Result<Value, String> {
-            assert_eq!(d["schema_version"], json!(1));
-            let t = d["trail"].as_str().unwrap_or("").to_string();
-            d["trail"] = json!(t + "1");
-            n.push("s1".into());
-            Ok(d)
-        }
-        fn s2(mut d: Value, n: &mut Vec<String>) -> Result<Value, String> {
-            let t = d["trail"].as_str().unwrap_or("").to_string();
-            d["trail"] = json!(t + "2");
-            n.push("s2".into());
-            Ok(d)
-        }
-        fn fail(_: Value, _: &mut Vec<String>) -> Result<Value, String> {
-            Err("boom".into())
-        }
-        let steps: &[Migration] = &[s0, s1, s2];
-        let (d, r) = migrate_with(json!({}), steps).unwrap();
-        assert_eq!(d["trail"], json!("012"));
-        assert_eq!(d["schema_version"], json!(3));
-        assert_eq!(r.notes, vec!["s0", "s1", "s2"]);
-        let (d, r) = migrate_with(json!({"schema_version": 1, "trail": "x"}), steps).unwrap();
-        assert_eq!(d["trail"], json!("x12"));
-        assert_eq!(r.from_version, 1);
-        let e = migrate_with(json!({"schema_version": 1}), &[s0, fail]).unwrap_err();
-        assert!(e.to_string().contains("v1 → v2: boom"), "{e}");
-    }
-
     #[test]
     fn save_and_load_file() {
         let dir = TempDir::new("project");
         let path = dir.path().join("lens.mklight");
         let p = Project::new(OpticalSystem::new_empty());
         p.save(&path).unwrap();
-        let (q, _) = Project::load(&path).unwrap();
+        let q = Project::load(&path).unwrap();
         assert_eq!(p, q);
         assert_eq!(dir.entries(), vec!["lens.mklight".to_string()]);
     }

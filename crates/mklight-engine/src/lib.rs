@@ -1,7 +1,7 @@
 //! MKLight engine facade, used by every front end (macOS app via
 //! `mklight-ffi`, Python, CLI).
 //!
-//! * `project` — the `.mklight` file format, schema migrations, atomic save.
+//! * `project` — the `.mklight` file format, schema version check, atomic save.
 //! * `session` — one open document: project, material library, immutable
 //!   snapshots per edit, LRU cache of resolved systems.
 //! * `scheduler` — worker pool with cancellation, progress and supersession.
@@ -48,7 +48,7 @@ pub use analysis::{
 };
 pub use backend::{Backend, BackendInfo};
 pub use buffer::{Buffer, BufferData, DType};
-pub use engine::{Engine, EngineConfig, MigrationOutcome};
+pub use engine::{Engine, EngineConfig};
 pub use error::{EngineError, EngineResult};
 pub use project::{PROJECT_SCHEMA_VERSION, Project};
 pub use scheduler::{JobEvent, JobId, JobState, JobStatus};

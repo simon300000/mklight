@@ -1,6 +1,6 @@
 //! Session operations beyond edits: applying solves as a new snapshot,
-//! validation through the engine, autosave, file migration and parameter
-//! reads.
+//! validation through the engine, autosave, the schema version check and
+//! parameter reads.
 
 use serde_json::{Value, json};
 
@@ -208,25 +208,16 @@ fn autosave_writes_a_recoverable_copy_without_touching_the_session() {
 }
 
 #[test]
-fn migrate_file_upgrades_with_a_backup() {
-    let d = temp_dir("migrate");
+fn files_at_another_schema_version_are_refused() {
+    let d = temp_dir("schema");
     let e = Engine::default();
     let p = d.join("old.mklight");
-    // Version 0: a bare optical system.
+    // A bare optical system has no schema_version.
     let bare = serde_json::to_string(&samples::singlet()).unwrap();
     std::fs::write(&p, &bare).unwrap();
-    let dry = e.migrate_file(&p, true, true).unwrap();
-    assert!(!dry.migrated && dry.dry_run && dry.from_version == 0);
-    assert_eq!(std::fs::read_to_string(&p).unwrap(), bare);
-    let m = e.migrate_file(&p, true, false).unwrap();
-    assert!(m.migrated);
-    assert_eq!((m.from_version, m.to_version), (0, 1));
-    let b = m.backup.unwrap();
-    assert_eq!(std::fs::read_to_string(&b).unwrap(), bare);
-    let again = e.migrate_file(&p, true, false).unwrap();
-    assert!(!again.migrated && again.backup.is_none());
-    let s = e.open_session(&p).unwrap();
-    assert!(!s.migration().migrated());
+    let err = e.open_session(&p).err().expect("refused");
+    assert!(err.to_string().contains("schema_version"), "{err}");
+    assert_eq!(std::fs::read_to_string(&p).unwrap(), bare, "left untouched");
     std::fs::remove_dir_all(&d).ok();
 }
 

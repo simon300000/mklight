@@ -40,8 +40,6 @@ pub enum Command {
     Validate(ProjectArg),
     /// Lens data table and system settings.
     Show(ShowArgs),
-    /// Upgrade a project file to the current schema version (keeps a backup).
-    Migrate(MigrateArgs),
     /// Import a lens prescription file (.zmx or .seq) into a new project.
     Import(ImportArgs),
     /// User glass catalogs (AGF or JSON). Vendor catalogs are never shipped.
@@ -99,17 +97,6 @@ pub struct ShowArgs {
     /// Do not trace rays for automatic semi-diameters (faster; shows "auto").
     #[arg(long)]
     pub no_semi_diameters: bool,
-}
-
-#[derive(Args, Debug)]
-pub struct MigrateArgs {
-    pub project: PathBuf,
-    /// Report what would change without writing anything.
-    #[arg(long)]
-    pub dry_run: bool,
-    /// Do not keep a backup of the original file.
-    #[arg(long)]
-    pub no_backup: bool,
 }
 
 #[derive(Subcommand, Debug)]

@@ -165,28 +165,12 @@ public final class Workspace {
         descriptors = await engine.analysisDescriptors()
         catalogs = await engine.catalogs()
         materialNames = await engine.materialNames()
-        migrateSavedPanes()
-        for p in allPanes where p.output == nil { refreshPane(p) }
-    }
-
-    /// Brings panes saved by an older version up to the current starting
-    /// settings where the user never changed them: an image simulation
-    /// saved with the engine's defaults (which show no blur) takes the
-    /// starting patch, PSF and pupil sampling, and waits for Update.
-    private func migrateSavedPanes() {
-        // A Glass Data pane without a glass would only fail.
+        // A Glass Data pane without a glass (saved while the design had
+        // none) would only fail: it takes the design's first catalogue glass.
         for p in panes where p.analysis == "glass_info" && p.settings["name"]?.string == nil {
             p.setSettings(p.settings.merging(startingSettings(p.analysis)) { a, _ in a })
         }
-        for p in panes where p.analysis == "image_simulation" && p.output == nil && !p.isRunning {
-            if let m = ImageSimulationSettings.migrated(p.settings) {
-                p.setSettings(m)
-                continue
-            }
-            guard ImageSimulationSettings.isEngineDefault(p.settings, defaults: descriptor(p.analysis)?.defaultSettings) else { continue }
-            p.autoUpdate = Self.autoUpdateDefault(p.analysis)
-            p.setSettings(startingSettings(p.analysis))
-        }
+        for p in allPanes where p.output == nil { refreshPane(p) }
     }
 
     // MARK: Panes

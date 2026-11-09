@@ -62,9 +62,8 @@ impl Ctx {
         Ctx { global, engine }
     }
 
-    /// Open a project file (migrating older schema versions in memory).
-    /// A file that cannot be read is an I/O error (4); one whose content is
-    /// not UTF-8 text is not a project (2), as in `migrate`.
+    /// Open a project file. A file that cannot be read is an I/O error (4);
+    /// one whose content is not UTF-8 text is not a project (2).
     pub fn open(&self, path: &Path) -> CliResult<Session> {
         if !path.exists() {
             return Err(CliError::io(format!("{}: no such file", path.display())));
@@ -111,7 +110,7 @@ pub fn warning_lines(warnings: &[String]) -> String {
     warnings.iter().map(|w| format!("warning: {w}\n")).collect()
 }
 
-/// Session warnings raised while opening (missing catalogs, migration notes).
+/// Session warnings raised while opening (missing or unreadable catalogs).
 pub fn open_warnings(session: &Session) -> Vec<String> {
     session.open_warnings().to_vec()
 }

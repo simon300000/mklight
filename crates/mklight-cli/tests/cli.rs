@@ -281,13 +281,23 @@ fn invalid_and_missing_projects_have_distinct_codes() {
     let garbage = d.join("garbage.mklight");
     std::fs::write(&garbage, "{ not json").unwrap();
     assert_eq!(code(&mklight(["show", s(&garbage)])), 2);
-    // A newer schema version is refused.
+    // Another schema version is refused, newer or older.
     let p = sample(&d, "singlet");
     let mut doc: Value = serde_json::from_slice(&std::fs::read(&p).unwrap()).unwrap();
     doc["schema_version"] = json!(99);
     let newer = d.join("newer.mklight");
     std::fs::write(&newer, doc.to_string()).unwrap();
     assert_eq!(code(&mklight(["validate", s(&newer)])), 2);
+    let bare = d.join("bare.mklight");
+    std::fs::write(&bare, doc["system"].to_string()).unwrap();
+    let e = json_run(&["validate", s(&bare)], 2);
+    assert!(
+        e["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("schema_version"),
+        "{e}"
+    );
     // An unknown glass resolves to a validation error (exit 2, report printed),
     // and analyses that need indices fail with "invalid model" too.
     let mut doc: Value = serde_json::from_slice(&std::fs::read(&p).unwrap()).unwrap();
@@ -308,50 +318,6 @@ fn invalid_and_missing_projects_have_distinct_codes() {
     // show still prints the model data, with a warning.
     let show = json_run(&["show", s(&unknown)], 0);
     assert!(!show["warnings"].as_array().unwrap().is_empty());
-}
-
-#[test]
-fn migrate_upgrades_and_keeps_a_backup() {
-    let d = TempDir::new("migrate");
-    let p = sample(&d, "achromat");
-    let doc: Value = serde_json::from_slice(&std::fs::read(&p).unwrap()).unwrap();
-    // A version-0 draft: the bare optical system.
-    let old = d.join("old.mklight");
-    let original = serde_json::to_vec(&doc["system"]).unwrap();
-    std::fs::write(&old, &original).unwrap();
-
-    let dry = json_run(&["migrate", s(&old), "--dry-run"], 0);
-    assert_eq!(dry["from_version"], 0);
-    assert_eq!(dry["to_version"], 1);
-    assert_eq!(dry["migrated"], false);
-    assert_eq!(
-        std::fs::read(&old).unwrap(),
-        original,
-        "dry run writes nothing"
-    );
-
-    let v = json_run(&["migrate", s(&old)], 0);
-    assert_eq!(v["migrated"], true);
-    assert!(!v["notes"].as_array().unwrap().is_empty());
-    let backup = PathBuf::from(v["backup"].as_str().unwrap());
-    assert_eq!(
-        std::fs::read(&backup).unwrap(),
-        original,
-        "backup is byte-exact"
-    );
-    let new: Value = serde_json::from_slice(&std::fs::read(&old).unwrap()).unwrap();
-    assert_eq!(new["schema_version"], 1);
-    assert_eq!(new["format"], "mklight-project");
-    assert_eq!(new["system"], doc["system"]);
-
-    // Already current: nothing to do, no second backup.
-    let again = json_run(&["migrate", s(&old)], 0);
-    assert_eq!(again["migrated"], false);
-    assert_eq!(again["backup"], Value::Null);
-    // The migrated project behaves like the original.
-    let a = json_run(&["paraxial", s(&p), "--no-timing"], 0);
-    let b = json_run(&["paraxial", s(&old), "--no-timing"], 0);
-    assert_eq!(a["wavelengths"], b["wavelengths"]);
 }
 
 #[test]
@@ -962,7 +928,6 @@ fn non_utf8_projects_are_invalid_models_for_every_command() {
         &["show", s(&b)],
         &["paraxial", s(&b)],
         &["trace", s(&b)],
-        &["migrate", s(&b)],
         &["run", s(&b), "validate"],
         &["set", s(&b), r#"{"param":"aperture_value"}"#, "4"],
         &["catalogs", "list", "--project", s(&b)],

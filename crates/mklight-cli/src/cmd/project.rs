@@ -1,4 +1,4 @@
-//! Project commands: `new`, `validate`, `show`, `migrate`, `set`.
+//! Project commands: `new`, `validate`, `show`, `set`.
 
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
@@ -10,13 +10,12 @@ use mklight_core::surface_math::xy_powers;
 use mklight_core::{
     ApertureSpec, Interaction, MkError, OpticalSystem, SemiDiameter, SurfaceShape, samples,
 };
-use mklight_engine::project::MigrationReport;
 use mklight_engine::{EngineError, ParamEdit, Project, Session};
 use mklight_trace::{SemiDiameterSettings, SemiDiameterSource, SequentialTracer};
 
 use super::{Ctx, Report, open_warnings, run_sync, save, warning_lines};
-use crate::cli::{MigrateArgs, NewArgs, SetArgs, ShowArgs};
-use crate::error::{CliError, CliResult, Exit, open_error};
+use crate::cli::{NewArgs, SetArgs, ShowArgs};
+use crate::error::{CliError, CliResult, Exit};
 use crate::output::{Align, Table, cell, fmt_f, fmt_g, key_values, num};
 
 fn path_str(p: &Path) -> String {
@@ -87,7 +86,6 @@ pub fn validation(session: &Session) -> CliResult<Value> {
 /// it, so `validate` lists its issues and `set` edits it in this form.
 struct Unopened {
     project: Project,
-    migration: MigrationReport,
     issues: Vec<ValidationIssue>,
 }
 
@@ -101,16 +99,12 @@ fn open_or_unopened(ctx: &Ctx, path: &Path) -> CliResult<Result<Session, Unopene
         Err(e) => return Err(e),
     };
     match Project::load(path) {
-        Ok((project, migration)) => {
+        Ok(project) => {
             let issues = project.system.validation_issues();
             if issues.is_empty() {
                 return Err(err);
             }
-            Ok(Err(Unopened {
-                project,
-                migration,
-                issues,
-            }))
+            Ok(Err(Unopened { project, issues }))
         }
         Err(_) => Err(err),
     }
@@ -168,13 +162,11 @@ fn validate_unopened(path: &Path, u: &Unopened) -> Report {
         "errors": issues.len(),
         "warnings": 0,
         "issues": issues,
-        "open_warnings": u.migration.notes,
-        "migration": u.migration,
+        "open_warnings": [],
         "snapshot_hash": Value::Null,
         "library_hash": Value::Null,
     });
-    let mut text = warning_lines(&u.migration.notes);
-    text.push_str(&issue_table(&issues));
+    let mut text = issue_table(&issues);
     text.push_str(&format!(
         "{}: INVALID ({} structural error(s); the other checks run once they are fixed, \
          e.g. with `mklight set`)\n",
@@ -200,7 +192,6 @@ pub fn validate(ctx: &Ctx, path: &Path) -> CliResult<Report> {
         "warnings": v["warnings"],
         "issues": v["issues"],
         "open_warnings": open_warnings(&session),
-        "migration": session.migration(),
         "snapshot_hash": session.snapshot_hash(),
         "library_hash": session.library_hash(),
     });
@@ -576,50 +567,6 @@ pub fn show(ctx: &Ctx, a: &ShowArgs) -> CliResult<Report> {
         text.push_str(&parameters);
     }
     text.push_str(&warning_lines(&warnings));
-    Ok(Report::ok(json, text))
-}
-
-// ---------------------------------------------------------------------------
-// migrate
-
-/// Migrate in place with the engine (`Engine::migrate_file`: the backup is
-/// `<file>.v<from>.bak`, or `….bak.<k>` for the first free `k` when taken;
-/// the file is opened through a session before anything is written).
-pub fn migrate(ctx: &Ctx, a: &MigrateArgs) -> CliResult<Report> {
-    let path = &a.project;
-    let out = ctx
-        .engine
-        .migrate_file(path, !a.no_backup, a.dry_run)
-        .map_err(|e| open_error(path, e))?;
-    let json = serde_json::to_value(&out)
-        .map_err(|e| CliError::new(Exit::AnalysisFailed, e.to_string()))?;
-    if out.from_version == out.to_version {
-        let text = format!(
-            "{} is already at schema version {}; nothing to do\n",
-            path.display(),
-            out.to_version
-        );
-        return Ok(Report::ok(json, text));
-    }
-    let mut text: String = out.notes.iter().map(|n| format!("note: {n}\n")).collect();
-    if !out.migrated {
-        text.push_str(&format!(
-            "{} would be migrated from schema version {} to {} (dry run, nothing written)\n",
-            path.display(),
-            out.from_version,
-            out.to_version
-        ));
-        return Ok(Report::ok(json, text));
-    }
-    text.push_str(&format!(
-        "migrated {} from schema version {} to {}\n",
-        path.display(),
-        out.from_version,
-        out.to_version
-    ));
-    if let Some(b) = &out.backup {
-        text.push_str(&format!("backup: {b}\n"));
-    }
     Ok(Report::ok(json, text))
 }
 

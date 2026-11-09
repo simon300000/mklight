@@ -84,7 +84,6 @@ fn dispatch(ctx: &Ctx, command: Command) -> CliResult<Report> {
         Command::New(a) => cmd::project::new(ctx, &a),
         Command::Validate(a) => cmd::project::validate(ctx, &a.project),
         Command::Show(a) => cmd::project::show(ctx, &a),
-        Command::Migrate(a) => cmd::project::migrate(ctx, &a),
         Command::Set(a) => cmd::project::set(ctx, &a),
         Command::Import(a) => cmd::import::import(ctx, &a),
         Command::Catalogs(c) => match c {

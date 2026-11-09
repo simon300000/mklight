@@ -163,25 +163,25 @@ struct PanelArrangementTests {
         #expect(PanelArrangement.decode(.array([]), known: known) == nil)
     }
 
-    /// Projects saved before panels could move open in the standard
-    /// arrangement with their sizes; new ones keep the arrangement.
+    /// Views without an arrangement open in the standard one; a saved
+    /// arrangement is kept.
     @Test func workspaceLayoutCarriesTheArrangement() throws {
-        let old: JSONValue = .array([
-            .object(["key": .string("layout"), "ui": .object(["editor_fraction": .number(0.5), "show_viewport": .bool(false)])]),
-            .object(["key": .string("p1"), "analysis": .string("spot_diagram"), "ui": .object(["width": .number(2)])]),
+        let plain: JSONValue = .array([
+            .object(["key": .string("layout"), "ui": .object([:])]),
+            .object(["key": .string("p1"), "analysis": .string("spot_diagram")]),
             .object(["key": .string("p2"), "analysis": .string("ray_fan")]),
         ])
-        let legacy = WorkspaceLayout(views: old).makeArrangement()
-        #expect(tree(legacy) == "v([lens]|h([p1]|[p2]))")
-        guard case .split(let root) = legacy.main.root!, case .split(let row) = root.children[1] else { Issue.record("not split"); return }
-        #expect(abs(root.fractions[0] - 0.5) < 1e-9 && abs(row.fractions[0] - 2.0 / 3) < 1e-9)
+        let standard = WorkspaceLayout(views: plain).makeArrangement()
+        #expect(tree(standard) == "v([lens]|h([layout]|[p1]|[p2]))")
+        guard case .split(let root) = standard.main.root!, case .split(let row) = root.children[1] else { Issue.record("not split"); return }
+        #expect(abs(root.fractions[0] - 0.36) < 1e-9 && abs(row.fractions[1] - row.fractions[2]) < 1e-9)
 
-        var saved = WorkspaceLayout(views: old)
-        legacy.move(.analysis("p2"), to: .newWindow, frame: CGRect(x: 0, y: 0, width: 600, height: 400))
-        saved.arrangement = legacy.json
+        var saved = WorkspaceLayout(views: plain)
+        standard.move(.analysis("p2"), to: .newWindow, frame: CGRect(x: 0, y: 0, width: 600, height: 400))
+        saved.arrangement = standard.json
         let reread = WorkspaceLayout(views: saved.views)
-        #expect(reread.arrangement == legacy.json)
+        #expect(reread.arrangement == standard.json)
         let again = reread.makeArrangement()
-        #expect(tree(again) == "v([lens]|[p1])" && again.detached.count == 1)
+        #expect(tree(again) == "v([lens]|h([layout]|[p1]))" && again.detached.count == 1)
     }
 }

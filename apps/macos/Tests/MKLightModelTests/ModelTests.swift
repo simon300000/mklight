@@ -262,33 +262,17 @@ import Testing
         #expect(tree["system"]?["surfaces"] != nil)
     }
 
-    @Test func acceptsBareSystemJSON() throws {
-        let p = try ProjectFile.decode(Fixtures.data("kitchen_sink"))
-        #expect(p.system.name == "Kitchen sink")
-        #expect(p.schemaVersion == ProjectFile.currentVersion)
-        #expect(p.catalogs.isEmpty)
-    }
-
-    @Test func rejectsNewerSchemaVersion() {
+    @Test func rejectsOtherSchemaVersions() throws {
         let json = #"{"format":"mklight-project","schema_version":99,"system":{}}"#
         #expect(throws: ProjectFile.Error.unsupportedVersion(99)) { try ProjectFile.decode(Data(json.utf8)) }
+        let older = #"{"format":"mklight-project","schema_version":0,"system":{}}"#
+        #expect(throws: ProjectFile.Error.unsupportedVersion(0)) { try ProjectFile.decode(Data(older.utf8)) }
         let foreign = #"{"format":"something-else","schema_version":1,"system":{}}"#
         #expect(throws: ProjectFile.Error.self) { try ProjectFile.decode(Data(foreign.utf8)) }
-    }
-
-    /// Files from the app's first envelope (`"version": 1`, no
-    /// `schema_version`) migrate like the engine's version-0 drafts.
-    @Test func readsEarlyAppEnvelope() throws {
-        let early = try JSONValue.object([
-            "format": .string("mklight-project"), "version": .integer(1),
-            "system": JSONValue.from(SampleSystems.singlet()),
-        ])
-        let p = try ProjectFile.decode(MKLightJSON.encode(early))
-        #expect(p.system == SampleSystems.singlet())
-        #expect(p.sections["version"] == nil)
-        let tree = try JSONValue.parse(p.encoded())
-        #expect(tree["schema_version"] == .integer(1))
-        #expect(tree["catalogs"] == .array([]) && tree["merit"] == .null)
+        // A bare optical system has no schema version.
+        #expect(throws: ProjectFile.Error.notAProject("it has no schema_version")) {
+            try ProjectFile.decode(Fixtures.data("kitchen_sink"))
+        }
     }
 
     /// Sections the app does not edit (views, merit, metadata, unknown keys)

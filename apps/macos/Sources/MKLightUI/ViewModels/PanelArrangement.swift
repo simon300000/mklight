@@ -532,22 +532,18 @@ public final class PanelArrangement {
 // MARK: - Defaults and saving
 
 extension PanelArrangement {
-    /// The default window: the lens data across the top; under it the
-    /// layout and the analysis panes side by side.
-    public static func standard(
-        panes: [String], showLensData: Bool = true, showLayout: Bool = true, editorFraction: Double = 0.36,
-        viewportFraction: Double = 0.42, widths: [String: Double] = [:]
-    ) -> PanelArrangement {
+    /// The default window: the lens data across the top (36 %); under it
+    /// the layout (42 %) and the analysis panes side by side.
+    public static func standard(panes: [String], showLensData: Bool = true, showLayout: Bool = true) -> PanelArrangement {
+        let editorFraction = 0.36, viewportFraction = 0.42
         var lower: [PanelNode] = [], f: [Double] = []
         if showLayout {
             lower.append(.group(PanelGroup([.layout])))
             f.append(panes.isEmpty ? 1 : viewportFraction)
         }
-        let weights = panes.map { max(widths[$0] ?? 1, 0.05) }
-        let total = weights.reduce(0, +)
-        for (key, w) in zip(panes, weights) {
+        for key in panes {
             lower.append(.group(PanelGroup([.analysis(key)])))
-            f.append((showLayout ? 1 - viewportFraction : 1) * w / max(total, 1e-9))
+            f.append((showLayout ? 1 - viewportFraction : 1) / Double(panes.count))
         }
         let below: PanelNode? = lower.isEmpty ? nil : lower.count == 1 ? lower[0] : .split(PanelSplit(axis: .horizontal, children: lower, fractions: f))
         let top: PanelNode? = showLensData ? .group(PanelGroup([.lensData])) : nil

@@ -28,9 +28,7 @@ use crate::backend::Backend;
 use crate::engine::Engine;
 use crate::error::{EngineError, EngineResult};
 use crate::lru::LruCache;
-use crate::project::{
-    AnalysisView, CatalogFormat, CatalogRef, MigrationReport, Project, ProjectMetadata,
-};
+use crate::project::{AnalysisView, CatalogFormat, CatalogRef, Project, ProjectMetadata};
 use crate::scheduler::{JobId, JobSpec};
 use crate::time::now_rfc3339;
 
@@ -115,7 +113,6 @@ pub struct Session {
     path: Option<PathBuf>,
     dirty: bool,
     open_warnings: Vec<String>,
-    migration: MigrationReport,
 }
 
 /// Read a catalog file. AGF files are named by their file stem.
@@ -201,20 +198,14 @@ impl Session {
             path,
             dirty: false,
             open_warnings: Vec::new(),
-            migration: MigrationReport::default(),
         };
-        s.migration.from_version = s.project.schema_version;
-        s.migration.to_version = s.project.schema_version;
         s.reload_catalogs();
         Ok(s)
     }
 
     pub(crate) fn open(engine: &Engine, path: &Path) -> EngineResult<Session> {
-        let (project, report) = Project::load(path)?;
-        let mut s = Self::from_project(engine, project, Some(path.to_path_buf()))?;
-        s.open_warnings.extend(report.notes.iter().cloned());
-        s.migration = report;
-        Ok(s)
+        let project = Project::load(path)?;
+        Self::from_project(engine, project, Some(path.to_path_buf()))
     }
 
     /// Load every catalog the project references. Missing or broken files
@@ -302,12 +293,9 @@ impl Session {
     pub fn is_dirty(&self) -> bool {
         self.dirty
     }
-    /// Problems found while opening (missing catalogs, migration notes).
+    /// Problems found while opening (missing or unreadable catalogs).
     pub fn open_warnings(&self) -> &[String] {
         &self.open_warnings
-    }
-    pub fn migration(&self) -> &MigrationReport {
-        &self.migration
     }
     pub fn library(&self) -> &Arc<MaterialLibrary> {
         &self.library
@@ -328,7 +316,6 @@ impl Session {
             "library_hash": self.library_hash,
             "name": self.current.system().name,
             "open_warnings": self.open_warnings,
-            "migration": self.migration,
             "catalogs": self.catalogs(),
         })
     }
