@@ -3,13 +3,13 @@
 //! (`aiming` = `device`). Every job (`merit_evaluation`, `optimize`,
 //! `tolerance`, `glass_substitution`) names its aiming in the backend report
 //! and agrees with the CPU f64 reference under the solver-outcome contract
-//! of `support/comparison.rs`, or, for the truncated solves (`optimize` with
-//! 3 iterations, `glass_substitution` with 2 local iterations), deviates
-//! from the reference by at most twice as much as the reference deviates
-//! from itself after a 1e-9 relative change of one curvature: their
-//! outcomes follow the least-squares trajectory, which a perturbation at
-//! the level of the device's rounding moves by more than the contract's
-//! merit gate on several samples. The CPU-f32 emulation runs everywhere;
+//! of `support/comparison.rs`. For the truncated solves (`optimize` with 3
+//! iterations, `glass_substitution` with 2 local iterations) a merit or
+//! violation outside its gate passes when it deviates from the reference by
+//! at most twice as much as the reference deviates from itself after a
+//! 1e-9 relative change of one curvature: their outcomes follow the
+//! least-squares trajectory, which perturbations far below the contract's
+//! gates move by more than the gates on several samples. The CPU-f32 emulation runs everywhere;
 //! the Metal test is ignored (real Metal required, run through the
 //! benchmark lock). One test per process section: the aiming selection is
 //! process-global.
@@ -63,16 +63,17 @@ fn run(s: &Session, analysis: &str, settings: &Value, backend: Backend) -> Optio
     s.run_analysis(&request, &JobContext::new()).ok()
 }
 
-/// The merits a solver outcome is judged by: the final merit of an
-/// optimisation, the finalists' merits of a glass substitution.
-fn merits(analysis: &str, r: &AnalysisResult) -> Vec<f64> {
+/// The values (`merit` or `violation`) a solver outcome is judged by: the
+/// final design's of an optimisation, the finalists' of a glass
+/// substitution.
+fn scores(analysis: &str, r: &AnalysisResult, key: &str) -> Vec<f64> {
     match analysis {
-        "optimize" => vec![r.json["final"]["merit"].as_f64().unwrap_or(f64::NAN)],
+        "optimize" => vec![r.json["final"][key].as_f64().unwrap_or(f64::NAN)],
         "glass_substitution" => r.json["results"]
             .as_array()
             .map(|v| {
                 v.iter()
-                    .map(|x| x["merit"].as_f64().unwrap_or(f64::NAN))
+                    .map(|x| x[key].as_f64().unwrap_or(f64::NAN))
                     .collect()
             })
             .unwrap_or_default(),
@@ -80,16 +81,23 @@ fn merits(analysis: &str, r: &AnalysisResult) -> Vec<f64> {
     }
 }
 
-/// Largest relative merit difference of `r` from the reference `cpu`.
-fn deviation(analysis: &str, cpu: &AnalysisResult, r: &AnalysisResult) -> f64 {
-    let (a, b) = (merits(analysis, cpu), merits(analysis, r));
-    if a.len() != b.len() {
-        return f64::INFINITY;
-    }
-    a.iter()
-        .zip(&b)
-        .map(|(x, y)| (x - y).abs() / x.abs().max(1e-300))
-        .fold(0.0, f64::max)
+/// Largest difference of `r` from the reference `cpu`: (merits, relative;
+/// violations, absolute).
+fn deviation(analysis: &str, cpu: &AnalysisResult, r: &AnalysisResult) -> (f64, f64) {
+    let largest = |key: &str, relative: bool| {
+        let (a, b) = (scores(analysis, cpu, key), scores(analysis, r, key));
+        if a.len() != b.len() {
+            return f64::INFINITY;
+        }
+        a.iter()
+            .zip(&b)
+            .map(|(x, y)| {
+                let d = (x - y).abs();
+                if relative { d / x.abs().max(1e-300) } else { d }
+            })
+            .fold(0.0, f64::max)
+    };
+    (largest("merit", true), largest("violation", false))
 }
 
 /// `system` with its first curvature changed by 1e-9 (relative).
@@ -127,7 +135,7 @@ fn check(engine: &Engine, device: &str, systems: Vec<(&str, mklight_core::Optica
             };
             // The reference's own sensitivity of a truncated solve.
             let spread = run(&nudged, analysis, &settings, Backend::CpuReference)
-                .map_or(0., |r| deviation(analysis, &cpu, &r));
+                .map_or((0., 0.), |r| deviation(analysis, &cpu, &r));
             for (aiming, expected) in [(None, "host"), (Some("device"), "device")] {
                 split::set("aiming", aiming);
                 let gpu = run(&session, analysis, &settings, Backend::Gpu(device.into()))
@@ -148,19 +156,29 @@ fn check(engine: &Engine, device: &str, systems: Vec<(&str, mklight_core::Optica
                 let native = comparison::native_failures(&gpu.run_info);
                 let dev = deviation(analysis, &cpu, &gpu);
                 eprintln!(
-                    "{name}/{analysis}/{expected} aiming: used {} reason {:?} merit deviation \
-                     {dev:.2e} (reference nudged {spread:.2e}) cpu {:.1} ms device {:.1} ms",
+                    "{name}/{analysis}/{expected} aiming: used {} reason {:?} merit, violation \
+                     deviation {:.2e}, {:.2e} (reference nudged {:.2e}, {:.2e}) cpu {:.1} ms \
+                     device {:.1} ms",
                     gpu.backend.used,
                     report.reason,
+                    dev.0,
+                    dev.1,
+                    spread.0,
+                    spread.1,
                     cpu.run_info.duration_ms,
                     gpu.run_info.duration_ms
                 );
-                let within_spread = dev <= 2. * spread + 1e-12;
-                if (report.reason.is_some() && !within_spread) || !native.is_empty() {
+                // Every gate failure must be a merit or violation within
+                // twice the reference's own deviation.
+                let within_spread = |failure: &String| {
+                    (failure.contains(".merit:") && dev.0 <= 2. * spread.0 + 1e-12)
+                        || (failure.contains(".violation:") && dev.1 <= 2. * spread.1 + 1e-12)
+                };
+                if !report.failures.iter().all(within_spread) || !native.is_empty() {
                     failures.push(format!(
-                        "{name}/{analysis}/{expected}: {:?} {:?} deviation {dev:.2e} \
-                         (reference nudged {spread:.2e})",
-                        report.reason, native
+                        "{name}/{analysis}/{expected}: {:?} {:?} deviation {dev:?} \
+                         (reference nudged {spread:?})",
+                        report.failures, native
                     ));
                 }
             }
