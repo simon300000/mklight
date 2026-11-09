@@ -476,7 +476,7 @@ impl Evaluation {
         if let Some((g, device)) = &self.gpu {
             if active {
                 self.warnings.push(format!(
-                    "ray operands evaluated on {} (f32)",
+                    "ray operands evaluated on {} (double-float)",
                     device.backend.info().backend_id()
                 ));
                 b["evaluated_on"] = json!(device.backend.info().backend_id());
