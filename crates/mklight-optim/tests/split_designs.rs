@@ -1,11 +1,10 @@
-//! The hybrid host/device design of the resident evaluator
-//! (`EvalDesign::Hybrid`, in one plan per batch and in pipelined
-//! sub-batches) against the CPU f64 reference: agreement within the
-//! CONVENTIONS §7 budget on the samples (CPU-f32 emulation everywhere,
-//! Metal when present), rayless operands equal to the reference, host
-//! completion of unresolved device rays and learned host routing, equal
-//! results with and without pipelining, finite differences, and least
-//! squares with speculative Jacobians.
+//! The hybrid host/device division of the resident evaluator (in one plan
+//! per batch and in pipelined sub-batches) against the CPU f64 reference:
+//! agreement within the CONVENTIONS §7 budget on the samples (CPU-f32
+//! emulation everywhere, Metal when present), rayless operands equal to the
+//! reference, host completion of unresolved device rays and learned host
+//! routing, equal results with and without pipelining, finite differences,
+//! and least squares with speculative Jacobians.
 
 use std::sync::{Arc, OnceLock};
 
@@ -14,7 +13,7 @@ use mklight_core::param::ParamPath;
 use mklight_core::{JobContext, RayAiming, Snapshot, samples};
 use mklight_gpu::{ComputeBackend, CpuF32Backend};
 use mklight_optim::deriv::{FdScheme, JacobianSettings, jacobian};
-use mklight_optim::gpu::{EvalDesign, GpuContext, ResidentEvaluator};
+use mklight_optim::gpu::{GpuContext, ResidentEvaluator};
 use mklight_optim::linalg::Matrix;
 use mklight_optim::lsq::{LsqSettings, least_squares};
 use mklight_optim::merit::default::{DefaultCriterion, DefaultMeritSpec};
@@ -71,7 +70,6 @@ fn evaluator(
         GpuContext::new(backend.clone(), Snapshot::new(system.clone()).unwrap()),
         BuiltinEvaluator::builtin(),
     )
-    .with_design(EvalDesign::Hybrid)
     .with_pipelining_from(if pipelined { 1 } else { usize::MAX })
 }
 

@@ -40,7 +40,7 @@ use mklight_optim::global::cmaes::{CmaEsSettings, cma_es};
 use mklight_optim::global::de::{DeSettings, differential_evolution};
 use mklight_optim::global::hammer::{HammerSettings, hammer};
 use mklight_optim::global::nelder_mead::{NelderMeadSettings, nelder_mead};
-use mklight_optim::gpu::{EvalDesign, GpuContext, ResidentEvaluator};
+use mklight_optim::gpu::{GpuContext, ResidentEvaluator};
 use mklight_optim::lsq::{AugLagSettings, LsqMethod, LsqSettings, least_squares};
 use mklight_optim::merit::default::DefaultMeritSpec;
 use mklight_optim::merit::geometric::optical_gaps;
@@ -487,9 +487,7 @@ impl Evaluation {
                 let aim = solver_host_aim()?;
                 host_aim = Some(aim);
                 let context = GpuContext::new(device.backend.clone(), snapshot.clone());
-                let evaluator = ResidentEvaluator::new(context, cpu.clone())
-                    .with_design(EvalDesign::Hybrid)
-                    .with_host_aim(aim);
+                let evaluator = ResidentEvaluator::new(context, cpu.clone()).with_host_aim(aim);
                 Some((evaluator, device))
             }
             Ok(None) => {

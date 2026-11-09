@@ -1,19 +1,18 @@
-//! P1/P4 resident candidate traces. The legacy evaluator above remains an
-//! independent before/after benchmark route.
+//! Resident candidate traces of the hybrid host/device division. The legacy
+//! evaluator above remains an independent before/after benchmark route.
 //!
 //! A batch goes through stages that callers may pipeline across
-//! sub-batches: [`prepare`] (host: candidate plans, chief seeds, the
-//! resident plan), the device plan, [`collect`] (the outputs read in place)
-//! and [`finish`] (host: caches, completion, operand values). [`RayDesign`]
-//! selects how unresolved device rays are handled: the resident design
-//! reports a candidate with any unresolved ray whole to the reference; the
-//! hybrid design completes exactly those rays on the host in f64.
+//! sub-batches: [`prepare`] (host: candidate plans, chief rays and seeds,
+//! the resident plan), the device plan, [`collect`] (the outputs read in
+//! place) and [`finish`] (host: caches, completion of the rays the device
+//! left unresolved in f64, operand values). [`RayDesign`] selects where the
+//! pupil rays are aimed and the device's aiming schedule.
 mod fits;
 use super::*;
 use crate::gpu::GpuContext;
 use crate::merit::Capability;
 use crate::merit::trace_eval::Plan;
-use mklight_gpu::{Df32, aiming as a, resident::*, systems};
+use mklight_gpu::{Df32, aiming as a, resident::*};
 use std::collections::BTreeSet;
 #[derive(Clone, Copy)]
 enum Dest {
@@ -63,19 +62,6 @@ fn records<T: bytemuck::Pod>(
     let id = p.import(buffer.view());
     p.view(id)
 }
-/// Newton iterations a candidate ray may spend over its whole aiming
-/// schedule. A candidate with any unresolved ray is reported whole as
-/// requiring the reference (below), so the device's work on its other rays
-/// is discarded; without a bound an unaimable ray of a bad trial step (a
-/// line-search candidate that vignettes or misses) ran the full schedule —
-/// up to six solves of 60 iterations with 16-step line searches and
-/// finite-difference refreshes — at low occupancy, 300–400 ms of device time
-/// per such candidate against 1–5 ms for a healthy one. Healthy candidate
-/// rays converge in at most 4–6 iterations (chief-seeded, requested
-/// tolerance) on the 16 samples and the 29-surface F/1.4 lens; converged
-/// rays of bad candidates stayed under 16.
-const AIM_SCHEDULE_CAP: u32 = 32;
-
 /// How the ray stage of a batch is divided between the device and the host.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct RayDesign {
@@ -84,31 +70,13 @@ pub(crate) struct RayDesign {
     /// Aiming continuation rounds the device commits without reading the
     /// pending count back (0: read back after each round group).
     pub speculative_rounds: u32,
-    /// Complete the rays the device left unresolved one by one on the host
-    /// (f64 aim and trace with the candidate's own tracer) instead of
-    /// reporting the whole candidate to the reference; also leave device
-    /// probes the device cannot trace (real rays at passive surfaces) to
-    /// the host, which traces them on demand.
-    pub complete_rays: bool,
-    /// Compute every operand of the pass from the candidates (model,
-    /// paraxial and host-only ray operands included) instead of only the
-    /// resident ones.
-    pub host_operands: bool,
     /// Aim every pupil ray on the host (the candidates' f64 tracers, the
-    /// reference's aims) and only trace it on the device (with
-    /// `complete_rays`; the solvers' reading of the `aiming` study's `host`
+    /// reference's aims) and only trace it on the device (the solvers'
+    /// default; device aiming is the `aiming` study's `device` and `table`
     /// designs).
     pub host_aim: bool,
 }
 impl RayDesign {
-    /// The fully resident P1/P4 adapter.
-    pub(crate) const RESIDENT: Self = Self {
-        schedule_cap: AIM_SCHEDULE_CAP,
-        speculative_rounds: 0,
-        complete_rays: false,
-        host_operands: false,
-        host_aim: false,
-    };
     /// Host candidates and per-ray host completion: the device aims each ray
     /// for at most [`HYBRID_SCHEDULE_CAP`] iterations and the host completes
     /// the rest, so the device rounds are bounded and committed
@@ -116,8 +84,6 @@ impl RayDesign {
     pub(crate) const HYBRID: Self = Self {
         schedule_cap: HYBRID_SCHEDULE_CAP,
         speculative_rounds: hybrid_rounds(HYBRID_SCHEDULE_CAP),
-        complete_rays: true,
-        host_operands: true,
         host_aim: false,
     };
     /// [`Self::HYBRID`] with another device schedule cap.
@@ -129,7 +95,7 @@ impl RayDesign {
         }
     }
 }
-/// Device iterations per ray in the hybrid design. Healthy rays converge in
+/// Device iterations per ray. Healthy rays converge in
 /// 2–6 (chief-seeded); a ray still unconverged at this cap is aimed on the
 /// host, whose schedule is the reference's.
 pub(crate) const HYBRID_SCHEDULE_CAP: u32 = 8;
@@ -475,8 +441,7 @@ pub(crate) struct Prepared<'a> {
     partitions: Vec<((bool, usize), Vec<Probe>)>,
     moment_segments: Vec<Vec<Option<(usize, u32)>>>,
     fits: Vec<fits::Fit>,
-    map: bool,
-    uploaded: Option<Uploaded<'a>>,
+    uploaded: Uploaded<'a>,
     traced_rays: usize,
     aggregates: bool,
     /// Image surface index (the chief rays' last surface).
@@ -507,8 +472,7 @@ const HOST_RAYS_PER_ITEM: usize = 4;
 
 /// The host's share of a batch, run while the device works on the plan:
 /// the group nodes routed to the host (in parallel over candidates, groups
-/// and runs of nodes), and, in the hybrid design, every operand that needs
-/// no ray (model operands, with their automatic semi-diameters, and
+/// and runs of nodes), and every operand that needs no ray (model operands, with their automatic semi-diameters, and
 /// paraxial operands). The OPD of the host rays is formed in [`finish`],
 /// against the device chief's reference sphere as for the device rays.
 pub(crate) fn host_stage(
@@ -516,7 +480,6 @@ pub(crate) fn host_stage(
     cpu: &TraceEvaluator,
     tracers: &[Arc<SequentialTracer>],
     operands: &[&Operand],
-    design: &RayDesign,
     ctx: &JobContext,
 ) -> MkResult<()> {
     let candidates = &prepared.candidates;
@@ -535,7 +498,7 @@ pub(crate) fn host_stage(
         .collect();
     let host = &prepared.host;
     let early_ops: Vec<&Operand> = operands.iter().copied().filter(|o| rayless(o)).collect();
-    let want_early = design.host_operands && prepared.early.is_none();
+    let want_early = prepared.early.is_none();
     // Both on the pool at once: the routed rays and the rayless operands.
     let (traced, early) = rayon::join(
         || {
@@ -571,40 +534,9 @@ pub(crate) fn host_stage(
     Ok(())
 }
 
-/// Device numeric output; P4 status is consumed before publishing candidates.
-pub(crate) fn evaluate(
-    g: &GpuContext,
-    cpu: &TraceEvaluator,
-    tracers: &[Arc<SequentialTracer>],
-    operands: &[&Operand],
-    template: Option<(&systems::UploadedSystem, &[systems::Candidate])>,
-    design: &RayDesign,
-    ctx: &JobContext,
-) -> MkResult<Vec<Vec<OperandValue>>> {
-    ctx.check()?;
-    if tracers.is_empty() {
-        return Ok(vec![]);
-    }
-    let mut prepared = prepare(
-        g,
-        cpu,
-        tracers,
-        operands,
-        template,
-        design,
-        &BTreeSet::new(),
-        ctx,
-    )?;
-    let plan = prepared.plan.take().expect("prepared plan");
-    let result = g.submit(plan, ctx)?;
-    g.record_traced_rays(prepared.traced_rays);
-    let traced = collect(g, prepared, result, design)?;
-    finish(g, cpu, tracers, operands, traced, None, design, ctx)
-}
-
 /// Host preparation of a batch (parallel over candidates): candidate plans,
 /// chief seeds from the f64 tracers, and the resident plan. Rays in
-/// `host_rays` (with ray completion) stay off the device: their group
+/// `host_rays` stay off the device: their group
 /// nodes are traced by [`host_stage`], every other kind on demand.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn prepare<'a>(
@@ -612,12 +544,11 @@ pub(crate) fn prepare<'a>(
     cpu: &'a TraceEvaluator,
     tracers: &'a [Arc<SequentialTracer>],
     operands: &[&Operand],
-    template: Option<(&systems::UploadedSystem, &[systems::Candidate])>,
     design: &RayDesign,
     host_rays: &BTreeSet<RayKey>,
     ctx: &JobContext,
 ) -> MkResult<Prepared<'a>> {
-    let on_host = |key: RayKey| design.complete_rays && host_rays.contains(&key);
+    let on_host = |key: RayKey| host_rays.contains(&key);
     ctx.check()?;
     let preparation = std::time::Instant::now();
     let wavefront = operands.iter().any(|o| {
@@ -644,11 +575,7 @@ pub(crate) fn prepare<'a>(
         ));
     }
     let mut p = g.plan();
-    let mut uploaded = None;
-    let (set, map) = if let Some((template, rows)) = template {
-        let prep = template.append(g.backend.as_ref(), &mut p, rows, ctx)?;
-        (prep.system_set(), Some(prep.map.status))
-    } else {
+    let (set, uploaded) = {
         let packed = tracers
             .par_iter()
             .map(|t| PackedSystem::pack(t.system(), &Default::default()))
@@ -679,8 +606,7 @@ pub(crate) fn prepare<'a>(
             }],
             ..Default::default()
         });
-        uploaded = Some(Uploaded(g.backend.as_ref(), h));
-        (SystemSet::Uploaded(h), None)
+        (SystemSet::Uploaded(h), Uploaded(g.backend.as_ref(), h))
     };
     // Candidates prepare independently; merging in candidate order keeps every
     // probe list, field index and reference row identical to a serial pass.
@@ -804,13 +730,8 @@ pub(crate) fn prepare<'a>(
             }
             for &(f, w, px, py, j) in &plan.real {
                 if j == 0 || tr.system().surfaces[j].is_passive() {
-                    if design.complete_rays {
-                        // Traced on the host on demand (no cache entry).
-                        continue;
-                    }
-                    return Err(MkError::Unsupported(
-                        "real ray at passive/start surface".into(),
-                    ));
+                    // Traced on the host on demand (no cache entry).
+                    continue;
                 }
                 let q = Probe {
                     candidate: 0,
@@ -964,35 +885,14 @@ pub(crate) fn prepare<'a>(
         )
     });
     let design = &RayDesign {
-        speculative_rounds: if real || !design.complete_rays {
+        speculative_rounds: if real {
             design.speculative_rounds
         } else {
             design.speculative_rounds.min(1)
         },
         ..*design
     };
-    let chief_design = RayDesign {
-        speculative_rounds: design.speculative_rounds.min(1),
-        ..*design
-    };
-    let ch = if design.complete_rays {
-        host_chief_rays(g, &mut p, &set, &chiefs, &candidates, tracers, last, ctx)?
-    } else {
-        append(
-            g,
-            &mut p,
-            &set,
-            &metadata,
-            &seeds,
-            &chiefs,
-            None,
-            last,
-            false,
-            tolerance,
-            &chief_design,
-            ctx,
-        )?
-    };
+    let ch = host_chief_rays(g, &mut p, &set, &chiefs, &candidates, tracers, last, ctx)?;
     let reference = g.df(&mut p, [chiefs.len(), 3], &refs)?;
     p.outputs = vec![ch.rays.floats, ch.status, ch.rays.report];
     let mut moment_segments = Vec::new();
@@ -1019,7 +919,7 @@ pub(crate) fn prepare<'a>(
                 Some(remap),
             )
         };
-        let h = if design.host_aim && design.complete_rays {
+        let h = if design.host_aim {
             host_aimed_rays(
                 g,
                 &mut p,
@@ -1168,9 +1068,6 @@ pub(crate) fn prepare<'a>(
             fits.extend(fits::append(g, &mut p, &candidates, probes, opd, mask)?);
         }
     }
-    if let Some(status) = map {
-        p.outputs.push(status);
-    }
     let seconds = preparation.elapsed().as_secs_f64();
     g.observe(PlanStats {
         wall_seconds: seconds,
@@ -1190,7 +1087,6 @@ pub(crate) fn prepare<'a>(
         partitions,
         moment_segments,
         fits,
-        map: map.is_some(),
         uploaded,
         traced_rays,
         aggregates,
@@ -1203,10 +1099,6 @@ pub(crate) fn prepare<'a>(
 pub(crate) struct Traced<'a> {
     prepared: Prepared<'a>,
     views: Vec<ReadView>,
-    /// Candidates reported whole to the reference: P4 preparation failures,
-    /// unresolved chief rays, and (without ray completion) any unresolved
-    /// ray.
-    whole: BTreeSet<usize>,
     /// Per candidate, the rays the device left unresolved.
     pub(crate) unresolved: Vec<BTreeSet<RayKey>>,
     /// Per candidate, the rays the device resolved only after more than
@@ -1221,18 +1113,8 @@ pub(crate) fn collect<'a>(
     g: &GpuContext,
     prepared: Prepared<'a>,
     result: PlanResult,
-    design: &RayDesign,
 ) -> MkResult<Traced<'a>> {
     let n = prepared.candidates.len();
-    let mut whole = BTreeSet::new();
-    if prepared.map {
-        let v = g.backend.read_view(result.outputs.last().unwrap().view())?;
-        for (ci, status) in v.as_slice::<u32>()?.as_chunks::<2>().0.iter().enumerate() {
-            if status[0] != 0 {
-                whole.insert(ci);
-            }
-        }
-    }
     let views = result
         .outputs
         .iter()
@@ -1255,17 +1137,12 @@ pub(crate) fn collect<'a>(
         .zip(views[2].as_slice::<u32>()?)
         .enumerate()
     {
-        // A chief ray the device could not aim or trace: the resident
-        // design reports the whole candidate to the reference; the hybrid
-        // design takes the f64 chief and traces every ray of its field and
-        // wavelength on the host (they depend on the chief through the
-        // device's chief-relative coordinates and OPD).
-        if design.complete_rays {
-            if status != 0 || chief_status[i] != 0 {
-                chief_keys[q.candidate].insert(ray_key(q, false, prepared.image));
-            }
-        } else if status != 0 {
-            whole.insert(q.candidate);
+        // A chief ray the device could not trace: the f64 chief replaces
+        // it, with every ray of its field and wavelength traced on the host
+        // (they depend on the chief through the device's chief-relative
+        // coordinates and OPD).
+        if status != 0 || chief_status[i] != 0 {
+            chief_keys[q.candidate].insert(ray_key(q, false, prepared.image));
         }
     }
     let mut unresolved = chief_keys;
@@ -1289,27 +1166,22 @@ pub(crate) fn collect<'a>(
         }
         for (i, q) in probes.iter().enumerate() {
             let code = report[i];
-            if design.complete_rays {
-                // Unresolved aims are completed by the host in f64. A ray
-                // the device aimed and then traced to a failure (clipped by
-                // an aperture) stays a failure, as on the resident path: an
-                // f32/f64 disagreement needs the ray within ~1e-6 mm of the
-                // edge, and completing every clipped ray of a vignetted
-                // lens would cost the host as much as the reference.
-                if unresolved_report(code) {
-                    unresolved[q.candidate].insert(ray_key(q, *clip, *last));
-                } else if code == 0 && report[count + i] > SLOW_ITERATIONS {
-                    slow[q.candidate].insert(ray_key(q, *clip, *last));
-                }
-            } else if code != 0 {
-                whole.insert(q.candidate);
+            // Unresolved aims are completed by the host in f64. A ray the
+            // device aimed and then traced to a failure (clipped by an
+            // aperture) stays a failure: an f32/f64 disagreement needs the
+            // ray within ~1e-6 mm of the edge, and completing every clipped
+            // ray of a vignetted lens would cost the host as much as the
+            // reference.
+            if unresolved_report(code) {
+                unresolved[q.candidate].insert(ray_key(q, *clip, *last));
+            } else if code == 0 && report[count + i] > SLOW_ITERATIONS {
+                slow[q.candidate].insert(ray_key(q, *clip, *last));
             }
         }
     }
     Ok(Traced {
         prepared,
         views,
-        whole,
         unresolved,
         slow,
     })
@@ -1328,14 +1200,12 @@ pub(crate) fn finish(
     operands: &[&Operand],
     traced: Traced<'_>,
     uniform: Option<&BTreeSet<RayKey>>,
-    design: &RayDesign,
     ctx: &JobContext,
 ) -> MkResult<Vec<Vec<OperandValue>>> {
     let assembly = std::time::Instant::now();
     let Traced {
         prepared,
         views,
-        whole,
         unresolved: rays,
         ..
     } = traced;
@@ -1359,8 +1229,7 @@ pub(crate) fn finish(
         .iter()
         .filter(|q| {
             let key = ray_key(q, false, image);
-            design.complete_rays
-                && (rays[q.candidate].contains(&key) || uniform.is_some_and(|u| u.contains(&key)))
+            rays[q.candidate].contains(&key) || uniform.is_some_and(|u| u.contains(&key))
         })
         .map(|q| (q.candidate, q.field, q.wavelength))
         .collect();
@@ -1391,10 +1260,9 @@ pub(crate) fn finish(
     // Which probes the host completes, and which groups (candidate, group
     // index) that touches.
     let complete = |q: &Probe, key: &RayKey| {
-        design.complete_rays
-            && (rays[q.candidate].contains(key)
-                || uniform.is_some_and(|u| u.contains(key))
-                || host_chiefs.contains(&(q.candidate, q.field, q.wavelength)))
+        rays[q.candidate].contains(key)
+            || uniform.is_some_and(|u| u.contains(key))
+            || host_chiefs.contains(&(q.candidate, q.field, q.wavelength))
     };
     let mut dirty: BTreeSet<(usize, u32)> = BTreeSet::new();
     let mut completions: BTreeMap<(usize, u32), Vec<usize>> = BTreeMap::new();
@@ -1405,18 +1273,16 @@ pub(crate) fn finish(
             dirty.insert((ci, h.gi));
         }
     }
-    if design.complete_rays {
-        for ((clip, last), probes) in &partitions {
-            for q in probes {
-                if complete(q, &ray_key(q, *clip, *last)) {
-                    completed_rays += 1;
-                    if let Dest::Node(gi, j) = q.dest {
-                        dirty.insert((q.candidate, gi));
-                        completions
-                            .entry((q.candidate, gi))
-                            .or_default()
-                            .push(j as usize);
-                    }
+    for ((clip, last), probes) in &partitions {
+        for q in probes {
+            if complete(q, &ray_key(q, *clip, *last)) {
+                completed_rays += 1;
+                if let Dest::Node(gi, j) = q.dest {
+                    dirty.insert((q.candidate, gi));
+                    completions
+                        .entry((q.candidate, gi))
+                        .or_default()
+                        .push(j as usize);
                 }
             }
         }
@@ -1615,39 +1481,23 @@ pub(crate) fn finish(
         .par_iter()
         .enumerate()
         .map(|(ci, (c, _))| {
-            if whole.contains(&ci) {
-                return Ok(vec![
-                    Err(OperandError::RayFailure(
-                        "resident candidate preparation or aiming requires reference".into()
-                    ));
-                    operands.len()
-                ]);
-            }
-            if design.host_operands {
-                let system = tracers[ci].system().system();
-                let Some(early) = &early else {
-                    return cpu.host_values(system, c, operands, ctx);
-                };
-                // The rayless values came from the host stage.
-                let late: Vec<&Operand> =
-                    operands.iter().copied().filter(|o| !rayless(o)).collect();
-                let mut late = cpu.host_values(system, c, &late, ctx)?.into_iter();
-                let mut early = early[ci].iter().cloned();
-                return Ok(operands
-                    .iter()
-                    .map(|o| {
-                        if rayless(o) {
-                            early.next().unwrap()
-                        } else {
-                            late.next().unwrap()
-                        }
-                    })
-                    .collect());
-            }
-            let mut memo = GroupMemo::default();
+            let system = tracers[ci].system().system();
+            let Some(early) = &early else {
+                return cpu.host_values(system, c, operands, ctx);
+            };
+            // The rayless values came from the host stage.
+            let late: Vec<&Operand> = operands.iter().copied().filter(|o| !rayless(o)).collect();
+            let mut late = cpu.host_values(system, c, &late, ctx)?.into_iter();
+            let mut early = early[ci].iter().cloned();
             Ok(operands
                 .iter()
-                .map(|op| c.value_with(op, &mut memo))
+                .map(|o| {
+                    if rayless(o) {
+                        early.next().unwrap()
+                    } else {
+                        late.next().unwrap()
+                    }
+                })
                 .collect())
         })
         .collect::<MkResult<Vec<_>>>()?;
@@ -1675,24 +1525,22 @@ pub(crate) fn finish(
         });
     }
     ctx.check()?;
-    if design.complete_rays {
-        g.observe(PlanStats {
-            polished_rays: completed_rays as u64,
-            stages: vec![
-                StageStats {
-                    name: "host f64 ray completion".into(),
-                    wall_seconds: completion_seconds,
-                    ..Default::default()
-                },
-                StageStats {
-                    name: "host-routed rays (install)".into(),
-                    wall_seconds: routed_seconds,
-                    ..Default::default()
-                },
-            ],
-            ..Default::default()
-        });
-    }
+    g.observe(PlanStats {
+        polished_rays: completed_rays as u64,
+        stages: vec![
+            StageStats {
+                name: "host f64 ray completion".into(),
+                wall_seconds: completion_seconds,
+                ..Default::default()
+            },
+            StageStats {
+                name: "host-routed rays (install)".into(),
+                wall_seconds: routed_seconds,
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    });
     g.observe(PlanStats {
         wall_seconds: seconds,
         stages: vec![StageStats {

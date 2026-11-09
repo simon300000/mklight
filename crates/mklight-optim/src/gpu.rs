@@ -9,9 +9,8 @@ use std::sync::{
     atomic::{AtomicBool, AtomicU64, Ordering},
 };
 mod evaluator;
-mod first_order;
 pub mod scheduler;
-pub use evaluator::{EvalDesign, EvaluationStats, PIPELINE_FROM, ResidentEvaluator};
+pub use evaluator::{EvaluationStats, PIPELINE_FROM, ResidentEvaluator};
 
 type SamplingCache = Vec<(
     crate::merit::PupilSampling,

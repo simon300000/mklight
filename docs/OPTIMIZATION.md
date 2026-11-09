@@ -920,13 +920,12 @@ precision, device/build and cost decisions remain in the envelope; qualification
 blobs and caches are removed. Result versions for these four jobs are 2.
 Unsupported preparation/features, unresolved aiming and resource/device errors
 remain real, counted fallbacks. Cancellation never starts reference replacement.
-Because a candidate with any unresolved ray is reported whole, the device
-aims its rays under a schedule cap of 32 Newton iterations
-(`AimOptions::schedule_cap`, GPU.md "Bounded aiming commands"): an unaimable
-ray of a bad trial step fails after a bounded number of iterations instead of
-running the reference schedule to its end, while healthy candidate rays
-converge well within the cap (measurements: GPU.md "Bounded aiming
-commands").
+With device aiming, the device aims a ray for at most 8 Newton iterations
+(`AimOptions::schedule_cap`, GPU.md "Bounded aiming commands") and the host
+completes the rays it leaves unresolved in f64 (Host/device division below):
+an unaimable ray of a bad trial step costs the device a bounded number of
+iterations instead of the reference schedule, while healthy candidate rays
+converge well within the cap.
 
 `optimize` and `merit_evaluation` apply the solves (`docs/SOLVES.md`) to
 the start before building the merit. Solve-controlled parameters are never variables: automatic variables
@@ -1066,8 +1065,8 @@ failure policy.
   "backend": {"requested": "gpu", "evaluated_on": "metal:Apple M2 Pro" | "cpu-f64-reference",
               "precision": "f32_gpu" | "f64_reference", "reported_on": "cpu-f64-reference",
               "workload": {"rays_per_candidate": 38, "batch": 7},
-              "split": "speculative",                // runs handed a GPU device: the
-                                                     // work-split variant (Host/device division)
+              "aiming": "host" | "device",          // runs handed a GPU device: where the
+                                                     // pupil rays are aimed (Host/device division)
               "gpu_stats": {"gpu_candidates": 0, "cpu_candidates": 0, "rays": 0,
                             "dispatches": 0, "device_seconds": 0.0}},
   "merit_spec": {/* the MeritFunctionSpec used, generated operands included */},
@@ -1098,7 +1097,7 @@ the best point seen. `final` is the better of the answer and the start
 | `criterion` | object or null, `null` | the criterion `MeritFunctionSpec`; `null` generates it with `DefaultMeritSpec::generate_for_tolerancing` from `default_merit` |
 | `default_merit` | object, the default merit without thickness boundaries | generator settings, laid over that default |
 | `mode` | `sensitivity` \| `monte_carlo` \| `both`, `both` | what to run |
-| `trials`, `seed`, `batch` | `100`, `0`, `16` | Monte Carlo: trial `i` draws from Philox stream `TOLERANCE \| i` of `seed`; `batch` trials per evaluation batch, at least 128 except on the `resident` work-split variant (below) |
+| `trials`, `seed`, `batch` | `100`, `0`, `16` | Monte Carlo: trial `i` draws from Philox stream `TOLERANCE \| i` of `seed`; `batch` trials per evaluation batch, at least 128 (below) |
 | `threshold` | number or null, `null` | criterion value for the yield |
 | `compensator_iterations` | integer, `20` | LM iterations per trial |
 | `percentiles` | array, `[50, 90, 97.7]` | Monte Carlo percentiles, each in [0, 100] |
@@ -1110,9 +1109,8 @@ the best point seen. `final` is the better of the answer and the start
 
 Without compensators, every trial is a single evaluation, and a batch of trials
 goes to the evaluator as one batch (one GPU dispatch). The job hands the
-evaluator at least 128 trials (and sensitivity points) per batch on the CPU
-reference and on every `solvers` variant but `resident`: values do not
-depend on the batching, and with 16 trials per batch the CPU's 12 threads
+evaluator at least 128 trials (and sensitivity points) per batch on either
+backend: values do not depend on the batching, and with 16 trials per batch the CPU's 12 threads
 idled at the end of every batch (29-surface F/1.4 lens: 155 → 120 ms for
 the default run, 2.4 → 1.9 s for 1000 trials at 6 × 12 sampling, identical
 results). Progress and a stop request act between batches.
@@ -1374,6 +1372,12 @@ and synthetic catalogues.
 
 ## Resident optimisation adapter (P8)
 
+This section describes the adapter as P8 built it. Since the work-split
+study the engine's candidate jobs run its device stages within the hybrid
+division of "Host/device division of candidate batches" below; the P4
+candidate template and reports of whole candidates to the reference
+described here were removed.
+
 `gpu::ResidentEvaluator` is an explicit backend-taking alternative to the
 legacy `GpuTraceEvaluator`; the engine's native candidate jobs use it, and
 their routing is in GPU.md §9.2. Construct it with a `GpuContext` containing
@@ -1529,30 +1533,28 @@ versus 24 ms; per-candidate geometry qualification commands dominate both.
 Plan peaks are 60 MiB (spot) and 127 MiB (dense wavefront). Cold costs, p95, copies, fallback proportions and raw records are in
 `P8-evidence.md`; these numbers do not set a universal backend threshold.
 
-## Host/device division of candidate batches (work-split study `solvers`)
+## Host/device division of candidate batches
 
 The engine's candidate jobs (`merit_evaluation`, `optimize`, `tolerance`,
-`glass_substitution`) select how a Metal run divides its candidate batches
-between the CPU and the GPU from the work-split study `solvers`
-(`mklight_core::split`; the benchmark harness selects variants per column,
-`MKLIGHT_SPLIT_SOLVERS` otherwise). The variant is read once per run
-(`gpu::Split::selected`) and reported as `backend.split` and in the
-execution evidence (`solvers_split`). An unknown name is an invalid setting.
-CPU-reference runs are unaffected.
+`glass_substitution`) divide a run handed a GPU device between the CPU and
+the GPU as described here (`gpu::ResidentEvaluator`); CPU-reference runs
+are unaffected. This is the outcome of the work-split study `solvers`. Its
+alternatives were removed with the study key: the fully resident P1/P4
+adapter (master's design: 3.3× the time of this division, up to 7× on
+large cases), joint glass refinements through the rendezvous scheduler
+(1.7×: lock-step rounds wait for the slowest solve), the CPU reference
+with this division's driver (CPU-heavier), plain host/device batches
+without speculation and always-pipelined batches (ties within noise). Of
+the P8 adapter above, the division keeps the device stages (P1 aiming,
+P3 moments and fits, P5 OPD); the P4 candidate template, the separate
+first-order plan and candidates reported whole to the reference are gone.
+The CPU thread layouts of the study `solver_threads` (two lanes, dedicated
+pools) never beat one lane and were removed too.
 
-| variant | evaluator (`gpu::EvalDesign`) | driver |
-|---|---|---|
-| `resident` | `Resident`: the P1/P4 adapter above | as before |
-| `hybrid` | `Hybrid` | tolerance batches of at least 128 |
-| `pipelined` | `Pipelined` | as `hybrid` |
-| `speculative` (default) | `Hybrid`, batches of at least 64 candidates pipelined as `Pipelined` | as `hybrid`, plus speculative least-squares Jacobians |
-| `rendezvous` | `Hybrid` | as `hybrid`, plus joint glass refinements |
-| `cpu-par` | none: the CPU f64 reference | as `speculative` |
-
-**Why the resident adapter was slow.** On real-aimed lenses (the 29- and
+**Why the fully resident adapter was slow.** On real-aimed lenses (the 29- and
 35-surface benchmark lenses, real aiming at 1e-10) a few pupil rays of
 every candidate cannot be aimed (vignetted rim rays at the outer fields:
-12 of 570 on the 29-surface lens). The resident adapter reports a candidate
+12 of 570 on the 29-surface lens). The resident adapter reported a candidate
 with any unresolved ray whole to the reference, so every candidate was
 evaluated twice: on the device, where the unaimable rays ran their whole
 capped schedule (32 iterations with line searches, 20–90 ms of device time
@@ -1564,7 +1566,7 @@ of a plan per evaluation (3–4 ms: P4 system preparation, aiming rounds,
 waits) and a second plan for the first-order operands, against 0.2 ms of
 CPU work per candidate.
 
-**Hybrid division** (`EvalDesign::Hybrid`). Per batch:
+**The division.** Per batch:
 
 1. *Host, parallel over candidates (f64):* tracers (snapshot, resolution,
    fields with their real-image-height and chief solves), operand plans,
@@ -1584,8 +1586,7 @@ CPU work per candidate.
 3. *Host, after the plan:* the device rays are read in place; every ray the
    device left unresolved is aimed and traced again with the candidate's
    f64 tracer, so an aim fails only when the reference's fails (a ray the
-   device aimed and then traced to an aperture stays clipped, as on the
-   resident path); a group with host rays forms its aggregates from rays on
+   device aimed and then traced to an aperture stays clipped); a group with host rays forms its aggregates from rays on
    the host; then all operand values, with `Candidate::value_with`.
 
 A chief ray the device fails to trace is replaced by the host's, with every
@@ -1613,46 +1614,31 @@ to the reference (`evaluate_batch_near`, counted as a fallback).
 `MKLIGHT_SOLVERS_TRACE_ROUTING=1` prints, per batch, the device and
 host-routed rays and the device's unresolved, clipped and slow rays.
 
-`EvalDesign::Pipelined` splits a batch into three sub-batches (at least 8
-candidates each) and overlaps the host preparation of sub-batch k + 1 and
-the finishing of k − 1 with the device's work on k. The default variant
-(`speculative`) pipelines batches of at least 64 candidates this way
-(`ResidentEvaluator::with_pipelining_from`): Monte Carlo and sensitivity
-batches gain (1000 trials at 6 × 12 sampling on the 29- and 35-surface
-lenses: 1.92 → 1.72 s and 1.98 → 1.75 s), a 23-candidate Jacobian loses
-(Double Gauss `optimize` 792 vs 582 ms), so Jacobians stay one plan.
+**Pipelined batches** (`PIPELINE_FROM`, `ResidentEvaluator::
+with_pipelining_from`). A batch of at least 64 candidates is split into
+three sub-batches (at least 8 candidates each), and the host preparation of
+sub-batch k + 1 and the finishing of k − 1 overlap the device's work on k:
+Monte Carlo and sensitivity batches gain (1000 trials at 6 × 12 sampling on
+the 29- and 35-surface lenses: 1.92 → 1.72 s and 1.98 → 1.75 s), a
+23-candidate Jacobian loses (Double Gauss `optimize` 792 vs 582 ms), so
+Jacobians stay one plan.
 
-**CPU thread layout** (work-split study `solver_threads`, `gpu::Lanes`,
-reported as `backend.threads` and `solvers_threads`). How the hybrid
-designs spread a batch with several device sub-batches over the CPU:
-`single` (default) runs each sub-batch's preparation, host share and
-finishing in turn, each on the whole rayon pool; `lanes` runs two
-concurrent lanes on the whole pool, a feed lane that prepares and submits
-the sub-batches and a host lane that takes each submitted one's host share
-(host-routed rays, rayless operands) and finishes it when it lands, with at
-most one fed sub-batch waiting between them; `host-quarter`, `host-half`
-and `host-three-quarters` run the two lanes on dedicated pools, the host
-lane getting that share of the threads and the feed lane the rest. Values
-do not depend on the layout (tested). The lanes hand sub-batches over with
-blocking channels, so they are used only outside the rayon pool (an engine
-job thread); a nested evaluation (parallel glass refinements) keeps one
-lane.
-
-**Host aiming** (the `aiming` study, read by the hybrid designs when it is
-set). With `aiming` set to `host` or `host-table` (the solvers' rows hold
-too few rays for a seed table, so both mean the same here), every pupil ray
-is aimed on the host by the candidate's f64 tracer (`generate_many`: the
-reference's aims, bit for bit) and the device only traces it from the
-host's starting ray (`TraceResident`) and forms the chief-relative
-coordinates, moments, OPD and fits. A ray the host cannot aim fails as on
-the reference (it enters the plan with an aim-outside report and is not
+**Aiming** (the `aiming` study). By default every pupil ray is aimed on the
+host by the candidate's f64 tracer (`generate_many`: the reference's aims,
+bit for bit) and the device only traces it from the host's starting ray
+(`TraceResident`) and forms the chief-relative coordinates, moments, OPD
+and fits: 0.89 of device aiming's time over the merit, tolerance and glass
+cases of the benchmark lenses. A ray the host cannot aim fails as on the
+reference (it enters the plan with an aim-outside report and is not
 completed again); there is no device aiming, no probe candidate and no
-routing. In a finite-difference batch the base point is first evaluated
-on the host and its recorded solves seed every candidate's tracer, as in
-the reference's `evaluate_batch_near`, so the probes' aims are the
-reference's seeded aims. Unset, or set to a device design (`device`, `table`, `split`),
-the device aims with host completion as above. Reported as
-`backend.aiming` (`device` or `host`) and `solvers_aiming`.
+routing. In a finite-difference batch the base point is first evaluated on
+the host and its recorded solves seed every candidate's tracer, as in the
+reference's `evaluate_batch_near`, so the probes' aims are the reference's
+seeded aims. With `aiming` set to a device design (`device` or `table`; the
+solvers' rows hold too few rays for a seed table, so both mean the same
+here) the device aims with host completion as above, the GPU-heavier route
+(it frees most of the host's aiming work on large batches). Reported as
+`backend.aiming` (`host` or `device`) and `solvers_aiming`.
 
 **Speculative Jacobians** (`LsqSettings::speculative_jacobian`). A trial
 point of LM or dogleg that follows an accepted step is evaluated in one
@@ -1667,24 +1653,27 @@ iterations. Every evaluation performed counts against `max_evaluations`. On an
 evaluator whose values do not depend on the batch the iterates are
 bit-identical to the plain run (tested on the Cooke triplet).
 
-**Joint glass refinements** (`rendezvous`). One search iteration's glass
-combinations are re-optimised side by side through the rendezvous
-scheduler (`gpu::scheduler`, `LocallyRefined::joint`): each round of their
-evaluations is one device batch, evaluated anchored when it holds finite
-differences. The other variants refine each combination on its own, in
-parallel, each with its own device batches.
-
-**Accuracy.** Device rays keep the precision of the resident adapter;
+**Accuracy.** Device rays are double-float traces of f64 aims;
 host-completed rays and rayless operands are the reference's f64 values
-(bit-identical for model and paraxial operands, tested). `tests/split_designs.rs`
-checks both hybrid designs against the reference on every sample with a
-default spot and wavefront merit plus thickness boundaries, first-order,
-aggregate, single and inner real-ray operands (emulation and Metal), host
+(bit-identical for model and paraxial operands, tested). Forward
+differences take the device steps of "Step size" above.
+`tests/split_designs.rs` checks the division against the reference on
+every sample with a default spot and wavefront merit plus thickness
+boundaries, first-order, aggregate, single and inner real-ray operands
+(emulation and Metal; device and host aiming, one plan and pipelined), host
 completion, routing and handover to the reference at device caps of 1–8
 iterations (the real-aimed Cooke triplet at cap 4 routes rays without
-handing over), equal values of the
-two designs, finite-difference column errors (1.8e-4 against f64 central
-differences on the real-aimed Cooke triplet, also with host completion),
-LM on the hybrid evaluator, and speculative LM. The engine test
-`tests/solver_splits.rs` runs every variant of all four jobs against the
-reference under the solver-outcome contract (emulation; Metal ignored).
+handing over), equal values with and without pipelining,
+finite-difference column errors (1.8e-7 against f64 central differences on
+the real-aimed Cooke triplet, also with host completion), LM on the
+evaluator, and speculative LM. The engine test `tests/solver_splits.rs`
+runs both aiming options of all four jobs against the reference under the
+solver-outcome contract (emulation; Metal ignored). Truncated solves
+(3 LM iterations, 2 local glass iterations) may miss the contract's merit
+gate when they deviate no more than twice as much as the reference does
+from itself after a 1e-9 relative change of one curvature. Such
+trajectories react to tiny perturbations: the f64 reference re-run on a
+copy with one curvature changed by 1e-9 differs by up to 2 % in the
+Double Gauss's merit after 3 iterations and by up to 52 % in the glass
+finalists' merits (anamorphic sample; 1.5–3.5 % on the achromat, Double
+Gauss and relay), against the merit gate of 0.33 %.
