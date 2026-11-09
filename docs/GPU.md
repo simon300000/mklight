@@ -484,15 +484,23 @@ intersection, clipping, interaction) with one split:
 * **Geometry in double-float** (CONVENTIONS §7.4): the ray point and
   direction between surfaces, the transfers (axial fast path `p − (0, 0, t)`
   or `rot·p − shift`, both hi + lo), the closest approach `t₀ = −P·D`,
-  `Q = P + t₀D`, one Newton refinement of every hit on the exact line
-  (`c(x² + y² + κz²) − 2z`, or `z − sag(r²)`), the unnormalised normal `G = (−cx, −cy, 1 − κcz)` or
-  `(−x·g, −y·g, w)`, and the interactions: refraction `D' = μD + bG` with
+  `Q = P + t₀D`, the refinement of every hit on the exact line (one Newton
+  step on `c(x² + y² + κz²) − 2z`; two on `z − sag(r²)` for an even
+  asphere), the unnormalised normal `G = (−cx, −cy, 1 − κcz)` or
+  `(−x·s, −y·s, w)`, and the interactions: refraction `D' = μD + bG` with
   `μ = n₁/n₂` from double-float indices and reflection `D' = D + bG`, where
   `b` comes from the f32 law and is then corrected along `G` until
   `|D'| = 1` (twice for refraction). The tangential component — Snell's law
   — is exact by construction. The asphere refinement evaluates the whole
-  sag in double-float (the polynomial by Horner from the hi + lo
-  coefficients). The **ideal lens** runs entirely in double-float: the
+  sag *and its slope* in double-float (`P` and `dP/d(r²)` by Horner from
+  the hi + lo coefficients); the normal takes the double-float slope
+  `s = 2w·dP/d(r²) + c` of the last step, so the f32 Newton search only
+  seeds the hit. (Until 2026-11 the slope came from the f32 polynomial
+  derivative at the unrefined point: image hits on strong aspheres were
+  off by up to ~7e-6 mm and device aiming failed on them; with the
+  double-float slope the kernel's CPU-f32 specification matches the f64
+  trace to ~1e-12 mm, `crates/mklight-gpu/tests/trace_slope.rs`.) The
+  **ideal lens** runs entirely in double-float: the
   tangents `t = k/|k_z|`, `t'⊥ = r·t⊥ − X·φ` with the packed hi + lo power,
   the output direction, and the phase `Δ` from both cancellation-free
   `sphere_term` forms with the hi + lo vergence. **Clipping** compares the
