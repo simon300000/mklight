@@ -1599,8 +1599,10 @@ batches, the same for every candidate of a batch, for the evaluator's
 lifetime: the device then runs only lanes that converge in a few
 iterations (2–3 ms of device time per plan on the 29-surface lens), and the
 host traces the hard rays while the device works. An evaluator's first
-batch of four or more candidates is preceded by one of its candidates
-traced alone, to learn those rays: the Metal executor runs a large
+device-aimed batch of four or more candidates is preceded by three of its
+candidates traced alone, to learn those rays (one perturbed Monte Carlo
+trial learned 18 of the 34 rays the batches route on the 35-surface lens,
+three learn all): the Metal executor runs a large
 generation in tiles one after another, each as long as its slowest lane,
 so a cold 91-candidate sensitivity batch spent 370 ms of device time in
 67 command buffers on the 29-surface lens. When the device leaves more than

@@ -71,10 +71,14 @@ pub const DEVICE_FD_RELATIVE_STEP_FORWARD: f64 = 1e-6;
 /// the f32-era `1e-4`.
 pub const DEVICE_WAVEFRONT_FD_RELATIVE_STEP_FORWARD: f64 = 1e-5;
 
-/// Smallest batch for which a hybrid evaluator that has not seen a batch
-/// yet first traces one candidate alone to learn the slow rays: a large
-/// cold batch would hold every aiming tile of its plan up for the slow
-/// lanes (tiles run one after another, each as long as its slowest lane).
+/// Smallest batch for which an evaluator that has not yet aimed a batch on
+/// the device first traces its first `PROBE_MIN_BATCH − 1` candidates
+/// alone to learn the slow rays: a large cold batch would hold every aiming
+/// tile of its plan up for the slow lanes (tiles run one after another,
+/// each as long as its slowest lane). Under the aiming rule the probe
+/// candidates are perturbed designs (Monte Carlo trials), so one learned
+/// 18 of the 34 rays the batches route on the 35-surface zoom (+0.45 s of
+/// device time for 1000 dense trials); three learn all 34.
 const PROBE_MIN_BATCH: usize = 4;
 
 #[derive(Clone)]
@@ -823,7 +827,7 @@ impl ResidentEvaluator {
         if n >= PROBE_MIN_BATCH && !host_aim && self.host_rays.lock().unwrap().batches == 0 {
             // The probe's values are not used: a finite difference routes
             // all its candidates alike.
-            self.split_rays(&tracers[..1], ops, false, false, ctx)?;
+            self.split_rays(&tracers[..PROBE_MIN_BATCH - 1], ops, false, false, ctx)?;
         }
         let cpu = &self.reference.trace;
         if self.host_rays.lock().unwrap().host_only {
