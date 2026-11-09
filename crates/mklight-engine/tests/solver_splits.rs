@@ -3,18 +3,13 @@
 //! (`aiming` = `device`). Every job (`merit_evaluation`, `optimize`,
 //! `tolerance`, `glass_substitution`) names its aiming in the backend report
 //! and agrees with the CPU f64 reference under the solver-outcome contract
-//! of `support/comparison.rs`. For the truncated solves (`optimize` with 3
+//! of `support/comparison.rs`; for the truncated solves (`optimize` with 3
 //! iterations, `glass_substitution` with 2 local iterations) a merit or
-//! violation outside its gate passes when it deviates from the reference by
-//! at most twice as much as the reference itself moves under either of the
-//! two differences a device run brings: a perturbation of the values (the
-//! reference on a copy with one curvature changed by 1e-9, relative) and
-//! the device's forward-difference step. Their outcomes follow the
-//! least-squares trajectory, which perturbations far below the contract's
-//! gates move by more than the gates on several samples. The CPU-f32
-//! emulation runs everywhere; the Metal test is ignored (real Metal
-//! required, run through the benchmark lock). One test per process
-//! section: the aiming selection is process-global.
+//! violation outside its gate passes within twice the reference's own
+//! movement (`support/solver_spread.rs`). The CPU-f32 emulation runs
+//! everywhere; the Metal test is ignored (real Metal required, run through
+//! the benchmark lock). One test per process section: the aiming selection
+//! is process-global.
 
 use std::sync::Arc;
 
@@ -28,6 +23,8 @@ use serde_json::{Value, json};
 
 #[path = "support/comparison.rs"]
 mod comparison;
+#[path = "support/solver_spread.rs"]
+mod solver_spread;
 
 fn settings(system: &mklight_core::OpticalSystem) -> Vec<(&'static str, Value)> {
     let vars: Vec<Value> = system.surfaces[1..system.surfaces.len() - 1]
@@ -65,63 +62,6 @@ fn run(s: &Session, analysis: &str, settings: &Value, backend: Backend) -> Optio
     s.run_analysis(&request, &JobContext::new()).ok()
 }
 
-/// The values (`merit` or `violation`) a solver outcome is judged by: the
-/// final design's of an optimisation, the finalists' of a glass
-/// substitution.
-fn scores(analysis: &str, r: &AnalysisResult, key: &str) -> Vec<f64> {
-    match analysis {
-        "optimize" => vec![r.json["final"][key].as_f64().unwrap_or(f64::NAN)],
-        "glass_substitution" => r.json["results"]
-            .as_array()
-            .map(|v| {
-                v.iter()
-                    .map(|x| x[key].as_f64().unwrap_or(f64::NAN))
-                    .collect()
-            })
-            .unwrap_or_default(),
-        _ => vec![],
-    }
-}
-
-/// Largest difference of `r` from the reference `cpu`: (merits, relative;
-/// violations, absolute).
-fn deviation(analysis: &str, cpu: &AnalysisResult, r: &AnalysisResult) -> (f64, f64) {
-    let largest = |key: &str, relative: bool| {
-        let (a, b) = (scores(analysis, cpu, key), scores(analysis, r, key));
-        if a.len() != b.len() {
-            return f64::INFINITY;
-        }
-        a.iter()
-            .zip(&b)
-            .map(|(x, y)| {
-                let d = (x - y).abs();
-                if relative { d / x.abs().max(1e-300) } else { d }
-            })
-            .fold(0.0, f64::max)
-    };
-    (largest("merit", true), largest("violation", false))
-}
-
-/// `ResidentEvaluator`'s forward step for ray operands
-/// (`DEVICE_FD_RELATIVE_STEP_FORWARD`; the default merits here are spot
-/// merits).
-const DEVICE_STEP: f64 = 1e-6;
-
-/// `system` with its first curvature changed by 1e-9 (relative).
-fn nudged(system: &mklight_core::OpticalSystem) -> mklight_core::OpticalSystem {
-    let mut s = system.clone();
-    if let Some(id) = s.surfaces[1..]
-        .iter()
-        .find(|x| x.shape.curvature() != 0.)
-        .map(|x| x.id)
-    {
-        let p = ParamPath::Curvature { surface: id };
-        let c = p.get(&s).unwrap();
-        p.set(&mut s, c * (1. + 1e-9)).unwrap();
-    }
-    s
-}
-
 /// Both aiming options on `systems` and `device` against the CPU reference.
 fn check(engine: &Engine, device: &str, systems: Vec<(&str, mklight_core::OpticalSystem)>) {
     // The aiming selection is process-wide: one test selects at a time.
@@ -133,26 +73,15 @@ fn check(engine: &Engine, device: &str, systems: Vec<(&str, mklight_core::Optica
             .session_from_project(Project::new(system.clone()))
             .unwrap();
         let nudged = engine
-            .session_from_project(Project::new(nudged(&system)))
+            .session_from_project(Project::new(solver_spread::nudged(&system)))
             .unwrap();
         for (analysis, settings) in settings(&system) {
             split::reset();
             let Some(cpu) = run(&session, analysis, &settings, Backend::CpuReference) else {
                 continue;
             };
-            // The reference's own movement of a truncated solve.
-            let spread = if matches!(analysis, "optimize" | "glass_substitution") {
-                let mut stepped = settings.clone();
-                stepped["fd_relative_step"] = json!(DEVICE_STEP);
-                let moved = |s: &Session, settings: &Value| {
-                    run(s, analysis, settings, Backend::CpuReference)
-                        .map_or((0., 0.), |r| deviation(analysis, &cpu, &r))
-                };
-                let (a, b) = (moved(&nudged, &settings), moved(&session, &stepped));
-                (a.0.max(b.0), a.1.max(b.1))
-            } else {
-                (0., 0.)
-            };
+            let spread =
+                solver_spread::reference_movement(&session, &nudged, analysis, &settings, &cpu);
             for (aiming, expected) in [(None, "host"), (Some("device"), "device")] {
                 split::set("aiming", aiming);
                 let gpu = run(&session, analysis, &settings, Backend::Gpu(device.into()))
@@ -171,7 +100,7 @@ fn check(engine: &Engine, device: &str, systems: Vec<(&str, mklight_core::Optica
                     comparison::compare(&view(&cpu), &view(&gpu), analysis, &JobContext::new())
                         .unwrap();
                 let native = comparison::native_failures(&gpu.run_info);
-                let dev = deviation(analysis, &cpu, &gpu);
+                let dev = solver_spread::deviation(analysis, &cpu, &gpu);
                 eprintln!(
                     "{name}/{analysis}/{expected} aiming: used {} reason {:?} merit, violation \
                      deviation {:.2e}, {:.2e} (reference moves {:.2e}, {:.2e}) cpu {:.1} ms \
@@ -185,13 +114,9 @@ fn check(engine: &Engine, device: &str, systems: Vec<(&str, mklight_core::Optica
                     cpu.run_info.duration_ms,
                     gpu.run_info.duration_ms
                 );
-                // Every gate failure must be a merit or violation within
-                // twice the reference's own deviation.
-                let within_spread = |failure: &String| {
-                    (failure.contains(".merit:") && dev.0 <= 2. * spread.0 + 1e-12)
-                        || (failure.contains(".violation:") && dev.1 <= 2. * spread.1 + 1e-12)
-                };
-                if !report.failures.iter().all(within_spread) || !native.is_empty() {
+                if !solver_spread::within_movement(&report.failures, dev, spread)
+                    || !native.is_empty()
+                {
                     failures.push(format!(
                         "{name}/{analysis}/{expected}: {:?} {:?} deviation {dev:?} \
                          (reference moves {spread:?})",
