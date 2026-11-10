@@ -1918,8 +1918,11 @@ its analyses on the reference; then
 
   The features date from when the geometric adapters aimed on the device:
   with host aiming the default (above), the device-seed-table term and the
-  device-iteration difficulty describe only the device-aiming routes, and
-  the features are to be revised with the recalibration (2026-11).
+  device-iteration difficulty describe only the device-aiming routes. The
+  shipped table records no device iterations (`reference_iterations` null),
+  so the difficulty factor is 1. The 2026-11 recalibration kept these
+  features: the fit's error fell (below) and `validate` routes within the
+  regret under "Measured routing".
   Four non-negative coefficient sets per analysis — CPU and Metal, each on a
   repeated and on a freshly edited snapshot — are fitted by load-weighted
   relative least squares from complete calls. CPU coefficients are measured
@@ -1935,8 +1938,9 @@ its analyses on the reference; then
 - *Decision*: Metal only when the predicted CPU time is at least `RATIO` = 1.3×
   the predicted Metal time *and* the saving is at least `MIN_GAIN_MS` = 5 ms.
   The ratio keeps the choice robust to the model's error (median calibration
-  error per analysis 0.2–0.6 in ln of measured/predicted in the shipped
-  table; to be recalibrated (2026-11)); the absolute floor keeps
+  error per analysis in the shipped table: median 0.34 in ln of
+  measured/predicted, 0.61 at the 90th percentile; `stray_light` fits worst,
+  1.2, its device share following the scene rule); the absolute floor keeps
   sub-perceptual gains from paying a device round trip and contention with
   other GPU work.
 - *Online refinement* (on by default; `MKLIGHT_COST_REFINEMENT=0` or
@@ -1971,13 +1975,17 @@ its analyses on the reference; then
 
 **Calibration status.** The shipped table
 (`crates/mklight-engine/src/analysis/cost/apple-m2-pro.json`, M2 Pro, model
-version 5) was measured before the 2026-11 work-split round changed the
-divisions of most native analyses: host aiming with seed tables, field-group
-plans and split generations (geometric), one pipelined division for RI and
-transmission, host-traced pupils with device transforms (wave), `cosplit`
-stray transport, four pipelined ghost path groups with a CPU share, and the
-host/device candidate division (solvers). Its coefficients, and the measured
-per-analysis figures in this subsection, are to be recalibrated (2026-11).
+version 5) was recalibrated on 2026-11-10, after the work-split round changed
+the divisions of most native analyses: host aiming with seed tables,
+field-group plans and split generations (geometric), one pipelined division
+for RI and transmission, host-traced pupils with device transforms (wave),
+`cosplit` stray transport, four pipelined ghost path groups with a CPU share,
+and the host/device candidate division with its per-batch aiming rule
+(solvers). It is fitted from a full run on the nine samples and the complex
+lens at load 8–22 (partly the run's own CPU calls), with the four designs
+measured above load 13 re-measured at 5–13. Device open is the warm 113 ms;
+the first open after a shader change, which compiles the library, measured
+222 ms.
 
 **Calibration.** `tests/cost_calibration.rs::calibrate` (release, real Metal)
 measures every calibrated analysis at a ladder of two or three workloads on
@@ -2013,31 +2021,32 @@ pass both. Re-qualified with the 2026-11 divisions and recalibration.
 | `psf`, `mtf`, `line_spread`, `diffraction_encircled_energy`, `through_focus_mtf`, `mtf_vs_field` | routed by cost | 16/16 within contract; complex lens within contract (MTF frequency class ≤ 0.016 of its gate, dense grids included) |
 | `chief_ray_angle`, `pupil_aberration`, `relative_illumination_map`, `grid_distortion` | routed by cost | 16/16; complex lens without mask mismatches (host f64 chief rows) |
 | `field_curvature_distortion` | routed by cost | 16/16; complex lens 2.8e-7 (host f64 differential pencil) |
-| `stray_light` | routed by cost | calibrated and qualified with an all-device transport that no longer exists; the Metal route is now `cosplit` (STRAY.md, "Divisions between the CPU and the GPU"), whose device sources agree with the reference within Monte Carlo error. To be recalibrated (2026-11): *calibration and contract evidence to be filled in* |
+| `stray_light` | routed by cost | the Metal route is `cosplit` (STRAY.md, "Divisions between the CPU and the GPU"): on nine lenses, the complex lens included, with six independent seeds per side, class totals and stray flux lie within 2.3 Monte Carlo standard errors of the reference and the irradiance blocks match the CPU control's statistics; with the reference's seeds the device reproduces its paths to rounding. Recalibrated 2026-11 (fit error 1.2 in ln, the table's worst); `validate` regret geometric mean 1.11, worst +5 ms |
 | `footprint` | routed by cost | 16/16 under the outline contract (newtonian included); complex lens outline 0.07 of its gate |
 
 The other candidate solvers (`optimize`, `tolerance`, `merit_evaluation`)
 have no separate rule: the model predicts them like every other analysis.
 
-*Measured routing* (indicative: Apple M2 Pro, release `project_bench` on the
-complex 29-surface F/1.4 lens with CPU, Metal DF and `auto`, 3 rounds per
-phase at low host load, before the 2026-11 divisions: to be recalibrated
-(2026-11); the numbers move with load and with every engine change, so the
-shipped table is recalibrated rather than these figures kept current). `auto` chose Metal for the dense geometric MTF (6.3 s against
-21.8 s on the CPU) and, when predicted faster, for wave and map jobs after an
-edit; it kept the CPU for small geometric jobs, the solvers (the CPU 2–6×
-faster per call) and most default wave jobs. Regret (`auto` against the
-faster backend) stayed within 1.3× or 20 ms except for the accuracy
-exclusions (dense spot above 1M rays: 1.7–1.9×, by design) and two cases near
-break-even (PSF after an edit +125 ms, tolerance repeat +33 ms), which
-refinement learns within a few calls (for other requests: an identical
-repeat keeps its first route, above). A repeated `auto` request is answered
-from the graph on either backend (dense geometric MTF warm repeat 0.3 ms
-against 5.96 s recomputed on Metal). Six-graph edit loop (layout, spot, ray
-fan, MTF, field curvature, PSF): CPU 338, `auto` 343, Metal 743 ms; warm repeat
-0.7 / 0.7 / 767 ms; queued 305 / 310 / 559 ms. On the 16 samples (31
-analyses × 2 workloads, edits and warm repeats) the median edit regret was
-1.01, with 8 meaningful misses in 1,886 case-phases, all ≤ 1.66×.
+*Measured routing* (indicative: Apple M2 Pro, `validate` after the 2026-11
+recalibration: the nine samples and the complex 29-surface F/1.4 lens, every
+calibrated analysis at its first two workloads, after an edit and as a warm
+repeat, CPU, Metal and `auto` interleaved, median of three repetitions, load
+5–13; the numbers move with load and with every engine change, so the
+shipped table is recalibrated rather than these figures kept current). Over
+1,177 case-phases `auto` took 78.1 s, the faster backend of each case
+78.7 s, the CPU alone 94.0 s and Metal alone 141.6 s; the median regret
+(`auto` against the faster backend) was 1.07, the geometric mean 1.13.
+`auto` chose Metal for most wave, map and image-simulation jobs on the larger
+designs after an edit and for the complex lens's ghost maps after an edit
+(Metal 10.3 s against 14.9 s on the CPU at 48 pupil samples, 35.8 s against
+38.9 s at 96),
+about half of the stray-light runs, and kept the CPU for small geometric
+jobs, the solvers and glass substitution (accuracy exclusion). Five
+case-phases missed by more than 1.3× and 20 ms, all warm repeats: four image
+simulations (+30 to +185 ms: a repeat keeps its first call's route, Metal,
+while the CPU would have answered from its cached intermediates) and one
+`optimize` on the complex lens (+301 ms). A repeated identical `auto` request
+is answered from the graph on either backend.
 
 **Deciding before the device opens.** Providers describe their analyses,
 device family and whether the device is open without opening it
@@ -2092,8 +2101,9 @@ These rows measure the P11 package paths. The analyses' CPU/GPU divisions
 have changed since (§9.1, §9.2: host aiming and field groups, host-traced
 wave pupils, grouped ghost paths with a CPU share); the candidate batches
 (P8) and the stray transport (P10) now run the divisions of "Candidate
-solvers" above and of STRAY.md, so their package rows are to be remeasured
-(2026-11), as are the P5–P9 analysis rows.
+solvers" above and of STRAY.md. These package rows, and the P5–P9 analysis
+rows, are kept as the P11 record; the current routing figures are under
+"Automatic routing" ("Measured routing").
 
 Where a predecessor exists, the same-input old/new complete calls are retained below. The old merit adapter had weaker candidate checking; this is a cost comparison, not a qualification of that predecessor.
 
