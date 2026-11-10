@@ -40,9 +40,11 @@ pub struct ParamEdit {
     pub value: f64,
 }
 
-/// A request to run an analysis on the session's current snapshot.
+/// A request to run an analysis on the session's current snapshot. Every
+/// field but `analysis` has a default; a key that is not a field is an
+/// error.
 #[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct AnalysisRequest {
     pub analysis: String,
     /// Partial settings; missing keys take the schema defaults.
@@ -61,6 +63,9 @@ pub struct AnalysisRequest {
     /// Aim-stop policy; `None` uses the engine default
     /// (`EngineConfig::aim_stop`).
     pub aim_stop: Option<mklight_core::AimStopKind>,
+    /// Route options (`crate::route`); `None` uses the engine default
+    /// (`EngineConfig::route`).
+    pub route: Option<crate::route::RouteOptions>,
 }
 
 impl AnalysisRequest {
@@ -113,6 +118,13 @@ pub struct Session {
     path: Option<PathBuf>,
     dirty: bool,
     open_warnings: Vec<String>,
+}
+
+/// A project section's value as its type; a value of another shape is an
+/// invalid argument.
+fn section_value<T: serde::de::DeserializeOwned>(section: &str, value: Value) -> EngineResult<T> {
+    serde_json::from_value(value)
+        .map_err(|e| EngineError::InvalidArgument(format!("project section '{section}': {e}")))
 }
 
 /// Read a catalog file. AGF files are named by their file stem.
@@ -352,11 +364,11 @@ impl Session {
     /// `tolerances` or `metadata`.
     pub fn set_project_section(&mut self, section: &str, value: Value) -> EngineResult<()> {
         match section {
-            "views" => self.project.views = serde_json::from_value::<Vec<AnalysisView>>(value)?,
+            "views" => self.project.views = section_value::<Vec<AnalysisView>>(section, value)?,
             "merit" => self.project.merit = value,
             "variables" => self.project.variables = value,
             "tolerances" => self.project.tolerances = value,
-            "metadata" => self.project.metadata = serde_json::from_value::<ProjectMetadata>(value)?,
+            "metadata" => self.project.metadata = section_value::<ProjectMetadata>(section, value)?,
             other => {
                 return Err(EngineError::Core(MkError::InvalidParam(format!(
                     "unknown or read-only project section '{other}' \
@@ -694,6 +706,7 @@ impl Session {
         analysis: &dyn crate::analysis::Analysis,
         settings: &Value,
         policy: &crate::analysis::RunPolicy,
+        route: crate::route::RouteOptions,
     ) -> EngineResult<crate::backend::SelectedBackend> {
         if let (Some(id), Some(graph)) = (
             self.engine.auto_request_id(req.backend.as_ref()),
@@ -708,7 +721,8 @@ impl Session {
             )
             .with_selection(id.clone(), None)
             .with_library_hash(self.library_hash.clone())
-            .with_policy(*policy);
+            .with_policy(*policy)
+            .with_route(route);
             let key = crate::analysis::result_key(analysis, &probe, settings, &[]);
             if graph.contains(&key) {
                 let mut s = crate::backend::SelectedBackend::cpu_reference();
@@ -723,6 +737,7 @@ impl Session {
             &self.current,
             &self.library_hash,
             policy,
+            &route,
             req.allow_backend_fallback,
         )
     }
@@ -742,6 +757,14 @@ impl Session {
         }
     }
 
+    /// The route options of a request: its own, or the engine default;
+    /// checked here, so an invalid value fails the request before it runs.
+    fn route_options(&self, req: &AnalysisRequest) -> EngineResult<crate::route::RouteOptions> {
+        let route = req.route.unwrap_or(self.engine.config().route);
+        route.validate()?;
+        Ok(route)
+    }
+
     /// Run an analysis on the current snapshot in the calling thread.
     pub fn run_analysis(
         &self,
@@ -750,8 +773,9 @@ impl Session {
     ) -> EngineResult<AnalysisResult> {
         let analysis = self.engine.analysis(&req.analysis)?;
         let policy = self.policy(req);
+        let route = self.route_options(req)?;
         let settings = crate::analysis::prepare_tier(analysis.as_ref(), &req.settings, req.tier)?;
-        let backend = self.route(req, analysis.as_ref(), &settings, &policy)?;
+        let backend = self.route(req, analysis.as_ref(), &settings, &policy, route)?;
         let (cache, snap, lib, generation) = (
             &self.resolved,
             &self.current,
@@ -770,7 +794,8 @@ impl Session {
         .with_library_hash(self.library_hash.clone())
         .with_graph(self.engine.analysis_graph().cloned())
         .with_cost_model(Some(self.engine.cost_model().clone()))
-        .with_policy(policy);
+        .with_policy(policy)
+        .with_route(route);
         run_analysis(
             analysis.as_ref(),
             &input,
@@ -788,8 +813,9 @@ impl Session {
     pub fn analysis_job(&self, req: &AnalysisRequest) -> EngineResult<JobSpec<AnalysisResult>> {
         let analysis = self.engine.analysis(&req.analysis)?;
         let policy = self.policy(req);
+        let route = self.route_options(req)?;
         let settings = crate::analysis::prepare_tier(analysis.as_ref(), &req.settings, req.tier)?;
-        let backend = self.route(req, analysis.as_ref(), &settings, &policy)?;
+        let backend = self.route(req, analysis.as_ref(), &settings, &policy, route)?;
         let snap = self.current.clone();
         let lib = self.library.clone();
         let lib_hash = self.library_hash.clone();
@@ -798,6 +824,7 @@ impl Session {
         let graph = self.engine.analysis_graph().cloned();
         let cost_model = self.engine.cost_model().clone();
         let label = format!("{} @ {}", req.analysis, snap.hash().short());
+        let supports_stop = analysis.supports_stop();
         let stop = mklight_core::job::CancelToken::new();
         let job_stop = stop.clone();
         let mut spec = JobSpec::new(label, move |ctx: &JobContext| {
@@ -814,7 +841,8 @@ impl Session {
             .with_library_hash(lib_hash)
             .with_graph(graph)
             .with_cost_model(Some(cost_model))
-            .with_policy(policy);
+            .with_policy(policy)
+            .with_route(route);
             run_analysis(
                 analysis.as_ref(),
                 &input,
@@ -823,10 +851,7 @@ impl Session {
                 ctx,
             )
         });
-        if matches!(
-            req.analysis.as_str(),
-            "optimize" | "tolerance" | "glass_substitution"
-        ) {
+        if supports_stop {
             spec = spec.with_stop_token(stop);
         }
         if let Some(k) = &req.view_key {
@@ -1367,7 +1392,81 @@ mod tests {
         s.set_project_section("merit", json!({"x": 1})).unwrap();
         assert_eq!(s.project().views[0].key, "k");
         assert!(s.set_project_section("system", json!({})).is_err());
-        assert!(s.set_project_section("views", json!(3)).is_err());
+        // A value of the wrong shape is an invalid argument naming the section.
+        let e = s.set_project_section("views", json!(3)).unwrap_err();
+        assert!(
+            matches!(&e, EngineError::InvalidArgument(m) if m.contains("'views'")),
+            "{e}"
+        );
         assert!(s.save(None).is_err()); // never saved: needs a path
+    }
+
+    #[test]
+    fn requests_reject_unknown_keys() {
+        let full = AnalysisRequest {
+            analysis: "validate".into(),
+            settings: json!({}),
+            view_key: Some("k".into()),
+            backend: Some(Backend::Gpu("metal".into())),
+            allow_backend_fallback: true,
+            tier: mklight_core::Tier::Preview,
+            aim_stop: Some(mklight_core::AimStopKind::Requested),
+            route: Some(Default::default()),
+        };
+        // What the engine writes, it reads.
+        let text = serde_json::to_string(&full).unwrap();
+        assert_eq!(
+            serde_json::from_str::<AnalysisRequest>(&text).unwrap(),
+            full
+        );
+        assert_eq!(
+            serde_json::from_str::<AnalysisRequest>(r#"{"analysis": "validate"}"#).unwrap(),
+            AnalysisRequest::new("validate", Value::Null)
+        );
+        for (bad, key) in [
+            (r#"{"analysis": "validate", "setings": {}}"#, "setings"),
+            (
+                r#"{"analysis": "validate", "backened": {"kind": "auto"}}"#,
+                "backened",
+            ),
+            (
+                r#"{"analysis": "validate", "route": {"fieldmap": "device-chief"}}"#,
+                "fieldmap",
+            ),
+        ] {
+            let e = serde_json::from_str::<AnalysisRequest>(bad)
+                .unwrap_err()
+                .to_string();
+            assert!(e.contains(&format!("`{key}`")), "{bad}: {e}");
+        }
+    }
+
+    #[test]
+    fn only_analyses_that_support_stop_get_a_stop_handler() {
+        let e = engine();
+        let s = e.new_session();
+        for info in e.analyses() {
+            let analysis = e.analysis(&info.name).unwrap();
+            assert_eq!(info.stoppable, analysis.supports_stop(), "{}", info.name);
+        }
+        let stoppable: Vec<String> = e
+            .analyses()
+            .into_iter()
+            .filter(|a| a.stoppable)
+            .map(|a| a.name)
+            .collect();
+        assert_eq!(stoppable, ["glass_substitution", "optimize", "tolerance"]);
+        // A job of an analysis without stop support refuses `stop_job`.
+        let job = s
+            .submit_analysis(&AnalysisRequest::new(
+                "rng_stream",
+                json!({"count": 4, "delay_ms": 200}),
+            ))
+            .unwrap();
+        assert!(matches!(
+            e.stop_job(job),
+            Err(EngineError::Core(MkError::Unsupported(_)))
+        ));
+        e.release_job(job).unwrap();
     }
 }

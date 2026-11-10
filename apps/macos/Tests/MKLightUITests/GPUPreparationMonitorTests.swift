@@ -20,8 +20,8 @@ private final class PreparingEngine: EngineClient, Sendable {
 
     var info: EngineInfo { mock.info }
     func openSnapshot(_ system: OpticalSystem) async throws -> ModelSnapshot { try await mock.openSnapshot(system) }
-    func validate(_ system: OpticalSystem) async -> [ModelIssue] { await mock.validate(system) }
-    func submit(_ request: AnalysisRequest, on snapshot: ModelSnapshot) -> AnalysisJob { mock.submit(request, on: snapshot) }
+    func analysisDescriptors() async -> [AnalysisDescriptor] { await mock.analysisDescriptors() }
+    func submit(_ request: EngineAnalysisRequest, on snapshot: ModelSnapshot) -> AnalysisJob { mock.submit(request, on: snapshot) }
     func materialNames() async -> [String] { [] }
 
     func gpuPreparation() -> GPUPreparation {
@@ -56,5 +56,20 @@ private final class PreparingEngine: EngineClient, Sendable {
             PreparingEngine(preparingReads: 0, then: .ready(device: "GPU", kernels: 3, fromCache: 3, seconds: 0.01)),
             interval: .milliseconds(5))
         #expect(ready.summary == "Ready (3, loaded from cache)" && ready.display == .hidden)
+        #expect(ready.note == nil && failed.note == nil)
+    }
+
+    /// Kernels that are ready but could not be saved or loaded: the status
+    /// says ready, and a second line says what the next launch does.
+    @Test func aKernelCacheWarningIsASecondLine() async {
+        let monitor = GPUPreparationMonitor()
+        #expect(monitor.note == nil)
+        await monitor.follow(
+            PreparingEngine(
+                preparingReads: 0,
+                then: .ready(device: "GPU", kernels: 205, fromCache: 0, seconds: 31.24, warning: "kernel archive: permission denied")),
+            interval: .milliseconds(5))
+        #expect(monitor.summary == "Ready (205, prepared in 31.2 s)")
+        #expect(monitor.note == "Kernel cache unavailable: the next launch compiles again (kernel archive: permission denied)")
     }
 }

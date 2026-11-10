@@ -15,9 +15,10 @@ struct JobEvent: Sendable {
 ///
 /// Registration happens under the same lock that `deliver` takes, and
 /// `submit` registers while still holding it, so an event can never arrive
-/// for a job before its stream exists. Events of ids nobody registered
-/// (synchronous helper jobs) are dropped. Streams buffer without limit: a
-/// job produces at most one event per progress interval.
+/// for a job before its stream exists. An event for an id that is not
+/// registered (its job has ended, or its consumer went away) is dropped.
+/// Streams buffer without limit: a job produces at most one event per
+/// progress interval.
 final class JobEventHub: Sendable {
     private let streams = Mutex<[UInt64: AsyncStream<JobEvent>.Continuation]>([:])
 
@@ -58,6 +59,9 @@ final class FFIEngineCore: @unchecked Sendable {
     /// `mk_engine_list_analyses`, read once (the registry is fixed after
     /// creation).
     let descriptors: [AnalysisDescriptor]
+    /// The analyses whose jobs `mk_job_stop` can stop: those the engine
+    /// lists as `stoppable`.
+    let stoppable: Set<String>
     /// Why `mk_engine_prepare_gpu` refused to start, if it did.
     let gpuPreparationError = Mutex<String?>(nil)
 
@@ -74,6 +78,7 @@ final class FFIEngineCore: @unchecked Sendable {
             try CABI.setJobCallback(pointer, hub: hub)
             let list = try CABI.listAnalyses(pointer)
             descriptors = try decodeJSON([AnalysisDescriptor].self, list)
+            stoppable = Set(descriptors.filter(\.stoppable).map(\.name))
         } catch {
             CABI.engineDestroy(pointer)
             throw error
@@ -85,8 +90,6 @@ final class FFIEngineCore: @unchecked Sendable {
         // after this) is never used by a late event.
         CABI.engineDestroy(pointer)
     }
-
-    func descriptor(_ name: String) -> AnalysisDescriptor? { descriptors.first { $0.name == name } }
 }
 
 /// Owns an `MKSession*`. Calls on a session are serialised by the engine;
@@ -98,13 +101,9 @@ final class FFISessionHandle: @unchecked Sendable {
     let core: FFIEngineCore
     private let lock = Mutex(())
 
-    init(core: FFIEngineCore, pointer: OpaquePointer) {
+    init(core: FFIEngineCore) throws {
         self.core = core
-        self.pointer = pointer
-    }
-
-    convenience init(core: FFIEngineCore) throws {
-        self.init(core: core, pointer: try CABI.sessionNew(core.pointer))
+        pointer = try CABI.sessionNew(core.pointer)
     }
 
     deinit { CABI.sessionDestroy(pointer) }

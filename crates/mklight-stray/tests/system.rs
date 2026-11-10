@@ -316,7 +316,7 @@ fn out_of_field_source_covers_a_lens_hood() {
         let r = mklight_stray::run(&sys.scene, spec, &set(rays, seed), &ctx).unwrap();
         assert!(r.energy.is_balanced(), "{}", r.energy.summary());
         let e = &r.energy;
-        (e.detected, e.detected_std_error)
+        (e.detected, e.detected_std_error.unwrap())
     };
     let theta = 30.0;
     let sun = sys.out_of_field_source(0.0, theta, 0.1, 1.0).unwrap();

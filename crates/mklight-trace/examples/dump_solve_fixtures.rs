@@ -8,6 +8,11 @@
 //! solve and an F/# solve, solved as given (`configuration: null`) and per
 //! configuration (`configuration: k`), the second configuration overriding a
 //! solve-controlled thickness (a warning in its report).
+//!
+//! [`solve_reports`] is what [`main`] writes: the test `tests/app_fixtures.rs`
+//! includes this file and compares it with the committed one. Only each
+//! report's `run_info.started_unix_ms` and `run_info.duration_ms` depend on
+//! the run.
 
 use std::path::PathBuf;
 
@@ -23,16 +28,16 @@ struct Entry {
     report: SolveReport,
 }
 
-fn main() {
-    let dir = std::env::args()
-        .nth(1)
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("../../apps/macos/Tests/MKLightModelTests/Fixtures")
-        });
-    std::fs::create_dir_all(&dir).expect("create fixture dir");
+pub const FILE: &str = "solve_reports.json";
 
+/// The app's fixture directory.
+pub fn directory() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../apps/macos/Tests/MKLightModelTests/Fixtures")
+}
+
+/// The text of `solve_reports.json`.
+pub fn solve_reports() -> String {
     let mut sys = samples::singlet();
     sys.solves = vec![
         Solve::marginal_ray_height(SurfaceId(2), 0.0),
@@ -61,7 +66,17 @@ fn main() {
     }
     let mut json = serde_json::to_string_pretty(&out).expect("serialise");
     json.push('\n');
-    let path = dir.join("solve_reports.json");
-    std::fs::write(&path, json).unwrap_or_else(|e| panic!("write {}: {e}", path.display()));
+    json
+}
+
+pub fn main() {
+    let dir = std::env::args()
+        .nth(1)
+        .map(PathBuf::from)
+        .unwrap_or_else(directory);
+    std::fs::create_dir_all(&dir).expect("create fixture dir");
+    let path = dir.join(FILE);
+    std::fs::write(&path, solve_reports())
+        .unwrap_or_else(|e| panic!("write {}: {e}", path.display()));
     println!("wrote {}", path.display());
 }

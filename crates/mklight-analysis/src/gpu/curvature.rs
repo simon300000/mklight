@@ -73,6 +73,7 @@ pub fn grid_distortion_job(
     b: &dyn ComputeBackend,
     t: &SequentialTracer,
     s: &GridDistortionSettings,
+    route: &Route,
     ctx: &JobContext,
 ) -> MkResult<GridDistortionResult> {
     check_count("grid size", s.grid_size, 2, 1001)?;
@@ -94,12 +95,12 @@ pub fn grid_distortion_job(
                 .map(move |&x| [x + s.field_center[0], y + s.field_center[1]])
         })
         .collect();
-    let (design, name) = super::chief_maps::ChiefDesign::selected()?;
+    let design = route.chief;
     let fields: Vec<_> = coords
         .iter()
         .map(|&[x, y]| FieldPoint::normalized(x, y))
         .collect();
-    let geo = Geometry::new(b, t, ctx)?;
+    let geo = Geometry::new(b, t, ctx)?.with_route(route)?;
     let mut p = ResidentPlan::new(t.system().snapshot.clone());
     p.settings = serde_json::to_value(s).unwrap();
     let hits = geo.append_chief_grid(
@@ -110,22 +111,22 @@ pub fn grid_distortion_job(
         t.aiming(),
         t.system().image_index(),
         true,
-        design == super::chief_maps::ChiefDesign::DeviceChief,
+        design == ChiefDesign::DeviceChief,
         ctx,
     )?;
     let source = geo.image_source(&mut p, hits)?;
     p.outputs = vec![source];
     let mut r = geo.run(p, &ctx.subrange(0.0, 0.95))?;
-    r.run_info.settings["fieldmaps_variant"] = serde_json::json!(name);
+    r.run_info.settings["fieldmaps_variant"] = serde_json::json!(design.name());
     let v = b.read_view(r.outputs[0].view())?;
     let v = v.as_slice::<Df32>()?;
     let failed = (0..coords.len())
         .filter(|&i| !v[5 * i].to_f64().is_finite())
         .count();
-    if design == super::chief_maps::ChiefDesign::DeviceChief && failed > 0 {
+    if design == ChiefDesign::DeviceChief && failed > 0 {
         // A device chief solve that fails is completed by the reference.
         let mut out = crate::curvature::grid_distortion_job(t, s, ctx)?;
-        out.run_info.settings["fieldmaps_variant"] = serde_json::json!(name);
+        out.run_info.settings["fieldmaps_variant"] = serde_json::json!(design.name());
         out.run_info.settings["device_chief_failures"] = serde_json::json!(failed);
         out.run_info.warnings.push(format!(
             "{failed} device chief solves failed; the grid was completed by the reference"
@@ -180,6 +181,7 @@ pub fn field_curvature_job(
     b: &dyn ComputeBackend,
     t: &SequentialTracer,
     s: &FieldCurvatureSettings,
+    route: &Route,
     ctx: &JobContext,
 ) -> MkResult<FieldCurvatureResult> {
     check_count("field samples", s.field_samples, 2, 100_001)?;
@@ -198,7 +200,7 @@ pub fn field_curvature_job(
     let wls = s
         .wavelengths
         .resolve(t.num_wavelengths(), t.system().primary_wavelength)?;
-    let geo = Geometry::new(b, t, ctx)?;
+    let geo = Geometry::new(b, t, ctx)?.with_route(route)?;
     let mut p = ResidentPlan::new(t.system().snapshot.clone());
     p.settings = serde_json::to_value(s).unwrap();
     let g = geo.append_grid(

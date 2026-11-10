@@ -6,8 +6,8 @@
 #include "trace_shared.h"
 
 static inline MklDf mkl_aim_c(float x) { return mkl_c<MklDf>(x); }
-static inline MklDf mkl_aim_load(constant float* x, uint k) { return MklDf{mkl_df_input(float2(x[2 * k], x[2 * k + 1]))}; }
-static inline MklDf mkl_aim_load(thread const float* x, uint k) { return MklDf{mkl_df_input(float2(x[2 * k], x[2 * k + 1]))}; }
+static inline MklDf mkl_aim_load(constant float* x, uint k) { return MklDf{float2(x[2 * k], x[2 * k + 1])}; }
+static inline MklDf mkl_aim_load(thread const float* x, uint k) { return MklDf{float2(x[2 * k], x[2 * k + 1])}; }
 static inline void mkl_aim_store(thread float* p, uint k, MklDf x) {
     p[2 * k] = x.v.x;
     p[2 * k + 1] = x.v.y;
@@ -448,9 +448,6 @@ struct MklAimResume {
 #define MKL_AIM_UNIT_MORE 0u
 #define MKL_AIM_UNIT_CONVERGED 1u
 #define MKL_AIM_UNIT_FAILED 2u
-// Stop-residual floor of the pure-f32 build, in stop radii (aims at a 1e-6
-// tolerance converge in 0.75 iterations per ray, true residual 1.6e-6).
-#define MKL_AIM_F32_FLOOR 1e-6f
 
 static inline void mkl_aim_put2(device float* w, MklAimVec2 v) {
     for (uint k = 0; k < 2; ++k) {
@@ -559,27 +556,10 @@ struct MklAimMachine {
         s.flags = has_sj ? MKL_AIM_RS_HAS_JC : 0u;
         seed(s);
     }
-#ifdef MKLIGHT_PURE_F32
-    // Pure f32 (opt-in measurement build, docs/GPU.md §3.6): the computed
-    // stop residual cannot fall reliably below ≈1e-6 of the stop radius. A
-    // solve asked for less ends unconverged once it reaches that floor, and
-    // so does the schedule: later phases would only reach the floor again.
-    // The ray stays a failed aim, reported as before.
-    bool at_floor(thread const MklAimResume& s, MklDf tol) const {
-        MklDf floor = mkl_aim_c(MKL_AIM_F32_FLOOR) * f.pupil(2);
-        return (tol - floor).v.x < 0 && (s.rn - floor).v.x <= 0;
-    }
-#else
-    bool at_floor(thread const MklAimResume& s, MklDf tol) const {
-        (void)s;
-        (void)tol;
-        return false;
-    }
-#endif
     uint check(thread const MklAimResume& s, MklDf tol) const {
         if ((s.rn - tol).v.x <= 0) return MKL_AIM_UNIT_CONVERGED;
         bool capped = schedule_cap != 0 && s.total + s.it >= schedule_cap;
-        return s.it >= f.cap || capped || at_floor(s, tol) ? MKL_AIM_UNIT_FAILED : MKL_AIM_UNIT_MORE;
+        return s.it >= f.cap || capped ? MKL_AIM_UNIT_FAILED : MKL_AIM_UNIT_MORE;
     }
     // One unit of the current solve (mkl_aim_newton's entry or one pass of
     // its loop body, followed by its loop-top test).
@@ -671,7 +651,7 @@ struct MklAimMachine {
         }
         // The schedule cap ends the schedule after any unconverged solve
         // that reached it.
-        if ((schedule_cap != 0 && s.total >= schedule_cap) || at_floor(s, f.tol())) {
+        if (schedule_cap != 0 && s.total >= schedule_cap) {
             s.phase = MKL_AIM_PHASE_DONE;
             return true;
         }

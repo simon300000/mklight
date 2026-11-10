@@ -73,7 +73,7 @@ fn stats(sc: &mklight_stray::Scene, mode: SplitMode, class: PathClass, seeds: u6
                 ..Default::default()
             },
         );
-        reported += r.energy.std_error_in(class) / seeds as f64;
+        reported += r.energy.std_error_in(class).unwrap() / seeds as f64;
         r.energy.detected_in(class)
     });
     Stats {
@@ -143,15 +143,15 @@ fn analog_standard_errors_are_binomial() {
     let binom = |k: f64| (nf / (nf - 1.0) * (k * w0 * w0 - (k * w0).powi(2) / nf)).sqrt();
     let e = &r.energy;
     let hits = e.detected_hits_by_class[PathClass::Primary.index()].1 as f64;
-    let se = e.std_error_in(PathClass::Primary);
+    let se = e.std_error_in(PathClass::Primary).unwrap();
     assert!(
         (se / binom(hits) - 1.0).abs() < 1e-9,
         "{se} {}",
         binom(hits)
     );
-    assert!((e.detected_std_error / binom(e.detected / w0) - 1.0).abs() < 1e-9);
+    assert!((e.detected_std_error.unwrap() / binom(e.detected / w0) - 1.0).abs() < 1e-9);
     let flux = r.detector.flux_of(PathClass::Primary);
-    let ses = &r.detector.flux_std_error[PathClass::Primary.index()];
+    let ses = &r.detector.flux_std_error.as_ref().unwrap()[PathClass::Primary.index()];
     let mut checked = 0;
     for (f, s) in flux.iter().zip(ses) {
         if *f > 0.0 {

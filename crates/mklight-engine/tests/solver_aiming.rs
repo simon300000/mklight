@@ -1,6 +1,7 @@
 //! The solver analyses on a GPU device through the engine, with each of
-//! their aiming options: the batch rule (the default), and device aiming
-//! (`aiming` = `device`) and host aiming (`aiming` = `host-table`) pinned.
+//! their aiming options (route option `solver_aiming`): the batch rule
+//! (`by-batch`, the default), and device aiming (`device`) and host aiming
+//! (`host`) pinned.
 //! Every job (`merit_evaluation`, `optimize`, `tolerance`,
 //! `glass_substitution`) names its aiming in the backend report
 //! and agrees with the CPU f64 reference under the solver-outcome contract
@@ -8,17 +9,19 @@
 //! iterations, `glass_substitution` with 2 local iterations) the final
 //! design's or a finalist's merit or violation outside its gate passes
 //! within twice the reference's own movement (`support/solver_spread.rs`).
+//! With device aiming, the solves a job runs in parallel give the same
+//! result for any number of workers.
 //! The CPU-f32 emulation runs everywhere; the Metal test is ignored (real
-//! Metal required). One test per process section: the aiming selection is
-//! process-global.
+//! Metal required).
 
 use std::sync::Arc;
 
-use mklight_core::{JobContext, param::ParamPath, samples, split};
+use mklight_core::{JobContext, param::ParamPath, samples};
 use mklight_engine::analysis::AnalysisOutput;
 use mklight_engine::backend::Backend;
 use mklight_engine::gpu::GpuProvider;
 use mklight_engine::project::Project;
+use mklight_engine::route::{RouteOptions, SolverAiming};
 use mklight_engine::{AnalysisRequest, AnalysisResult, Engine, EngineConfig, Session};
 use serde_json::{Value, json};
 
@@ -57,17 +60,24 @@ fn settings(system: &mklight_core::OpticalSystem) -> Vec<(&'static str, Value)> 
     ]
 }
 
-fn run(s: &Session, analysis: &str, settings: &Value, backend: Backend) -> Option<AnalysisResult> {
+fn run(
+    s: &Session,
+    analysis: &str,
+    settings: &Value,
+    backend: Backend,
+    solver_aiming: SolverAiming,
+) -> Option<AnalysisResult> {
     let mut request = AnalysisRequest::new(analysis, settings.clone());
     request.backend = Some(backend);
+    request.route = Some(RouteOptions {
+        solver_aiming,
+        ..Default::default()
+    });
     s.run_analysis(&request, &JobContext::new()).ok()
 }
 
 /// The aiming options on `systems` and `device` against the CPU reference.
 fn check(engine: &Engine, device: &str, systems: Vec<(&str, mklight_core::OpticalSystem)>) {
-    // The aiming selection is process-wide: one test selects at a time.
-    static SELECTION: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    let _selection = SELECTION.lock().unwrap_or_else(|e| e.into_inner());
     let mut failures = Vec::new();
     for (name, system) in systems {
         let session = engine
@@ -77,21 +87,26 @@ fn check(engine: &Engine, device: &str, systems: Vec<(&str, mklight_core::Optica
             .session_from_project(Project::new(solver_spread::nudged(&system)))
             .unwrap();
         for (analysis, settings) in settings(&system) {
-            split::reset();
-            let Some(cpu) = run(&session, analysis, &settings, Backend::CpuReference) else {
+            let reference = Backend::CpuReference;
+            let Some(cpu) = run(
+                &session,
+                analysis,
+                &settings,
+                reference,
+                SolverAiming::ByBatch,
+            ) else {
                 continue;
             };
             let spread =
                 solver_spread::reference_movement(&session, &nudged, analysis, &settings, &cpu);
             for (aiming, expected) in [
-                (None, "by-batch"),
-                (Some("device"), "device"),
-                (Some("host-table"), "host"),
+                (SolverAiming::ByBatch, "by-batch"),
+                (SolverAiming::Device, "device"),
+                (SolverAiming::Host, "host"),
             ] {
-                split::set("aiming", aiming);
-                let gpu = run(&session, analysis, &settings, Backend::Gpu(device.into()))
+                let gpu = Backend::Gpu(device.into());
+                let gpu = run(&session, analysis, &settings, gpu, aiming)
                     .unwrap_or_else(|| panic!("{name}/{analysis}/{expected} failed"));
-                split::reset();
                 assert_eq!(
                     gpu.json["backend"]["aiming"],
                     json!(expected),
@@ -159,6 +174,55 @@ fn aiming_options_on_emulation() {
             ("cooke_triplet real aiming", real),
         ],
     );
+}
+
+/// Device aiming learns, solve by solve, which rays to route to the host.
+/// Basin hopping runs its local solves in parallel and glass substitution
+/// its re-optimisations: each is a solve with routing state of its own, so
+/// the result (every value and counter) does not depend on how many
+/// workers run them, or when. The real-aimed triplet at one and a half
+/// times its field, and basin hopping's wide steps, give the device rays
+/// it leaves to the host and so something to learn.
+#[test]
+fn device_aimed_parallel_solves_do_not_depend_on_the_workers() {
+    let engine = engine_with(Some(GpuProvider::emulation()));
+    let mut system = samples::cooke_triplet();
+    system.ray_aiming = mklight_core::RayAiming::Real { tolerance: 1e-10 };
+    for field in &mut system.fields.fields {
+        field.y *= 1.5;
+    }
+    let session = engine
+        .session_from_project(Project::new(system.clone()))
+        .unwrap();
+    let all = settings(&system);
+    let glass = all.iter().find(|s| s.0 == "glass_substitution").unwrap();
+    let mut hammer = all.iter().find(|s| s.0 == "optimize").unwrap().1.clone();
+    hammer["algorithm"] = json!("hammer");
+    hammer["max_iterations"] = json!(2);
+    hammer["options"] = json!({"candidates_per_round": 8, "local_per_round": 4,
+        "step": 2.0, "local": {"max_iterations": 2}});
+    for (analysis, settings) in [("optimize", &hammer), ("glass_substitution", &glass.1)] {
+        let run_in = |threads: usize| {
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .unwrap();
+            let gpu = Backend::Gpu("cpu_f32".into());
+            let r = pool
+                .install(|| run(&session, analysis, settings, gpu, SolverAiming::Device))
+                .unwrap_or_else(|| panic!("{analysis} with {threads} workers failed"));
+            let mut json = r.json;
+            let stats = &json["backend"]["resident_evaluation"];
+            assert!(stats["device_aimed_batches"].as_u64() > Some(0), "{stats}");
+            // The one timing in the result.
+            json["backend"]["gpu_stats"]["device_seconds"] = Value::Null;
+            json
+        };
+        let one = run_in(1);
+        for threads in [2, 8] {
+            assert_eq!(one, run_in(threads), "{analysis} with {threads} workers");
+        }
+    }
 }
 
 #[test]

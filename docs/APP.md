@@ -157,6 +157,11 @@ What we took from Apple's current guidance, and how MKLight applies it.
   chart axes, number fields and `formatted()` follow the rule; the
   `String(format:)` paths are locale-free. Typed numbers also accept a
   decimal comma (`1,5`). Signed columns never show `−0.0000`.
+* **One text-field rule.** Every field that edits a value commits by the
+  same rule (`FieldEdit`, shown by `CommittingField`): compact text at rest
+  and the exact value with the focus, only edited text is committed (on
+  Return and when the focus leaves), a value equal to the current one is
+  not, and text typed for one object goes to that object.
 * **Units at hand.** Every bounded or edited quantity names its unit: the
   lens table's header (mm), the bounds list's unit column (`mm`, `1/mm`,
   `mm⁻³` for A₄, `°`, `µm`, `rad`; dimensionless shows `–`), the colour
@@ -181,8 +186,9 @@ What we took from Apple's current guidance, and how MKLight applies it.
   `ShapeSag`); a DOE's paraxial power comes from A₁ by docs/SURFACES.md §3.
 * **Reproducible and honest.** Every result carries the settings and seed
   the engine recorded, the backend that actually computed it (CPU f64
-  reference or GPU f32, with the fallback reason) and its warnings, one
-  click away from the pane's backend badge. A result that no longer matches
+  reference or GPU f32, with the fallback reason, the route of an
+  automatic request and any backend attempt that failed) and its warnings,
+  one click away from the pane's backend badge. A result that no longer matches
   the design, the glass library or its settings is dimmed and blurred under
   a glass "Design changed" card with Update. A previewed candidate design
   is labelled as not applied.
@@ -224,7 +230,8 @@ What we took from Apple's current guidance, and how MKLight applies it.
   or analysis activity, EFL (EFL y for a design that is not rotationally
   symmetric), F/# and total track, and the issues button. Its popover has
   the first-order table, the anamorphic data, the engine, the snapshot, the
-  state of the GPU kernels and the compute backend picker.
+  state of the GPU kernels (with a second line when their cache could not
+  be used) and the compute backend picker.
 * **Panels and windows** (`PanelArrangement`, `PanelViews`, `PanelDrag`,
   `DetachedWindows`): the lens data, the layout and every analysis pane are
   panels. The content area is a tree of horizontal and vertical splits whose
@@ -359,6 +366,25 @@ What we took from Apple's current guidance, and how MKLight applies it.
     wavefront coefficients wrap; wide segmented controls (polarisation
     quantity, image comparison) become pop-up menus (`SegmentedOrMenu`),
     so no pane overflows into its neighbour.
+  * *Run details* (`RunDetails`, `RunRoute`): the backend that computed
+    the result, what was requested, the engine's reason when the run was on
+    the CPU, precision, seed, snapshot, engine version and time. Rows that
+    carry nothing are left out. "Route" is the engine's
+    `backend.cost_decision` of an automatic request in one line
+    (docs/RESULTS.md §5): the backend chosen and how ("GPU by predicted
+    time (GPU predicted 312 ms, CPU 557 ms)", "CPU: the GPU's predicted
+    gain is too small (…)", "CPU: this analysis is not accurate enough on
+    the GPU", "CPU: fixed for this analysis, without a prediction", "CPU:
+    this request already failed on the GPU", "GPU: no timing data for this
+    device, so no prediction"), with "; kept from the first identical
+    request" for a repeated one; an explicit request and a decision the
+    app does not know have no such row. "Tier" appears for a run that was
+    not design tier. Backend attempts that did not compute the result
+    (`run_info.failed_attempts`) are listed under "Attempt Not Used", one
+    row each in the warnings' style with the engine's reason below: "GPU
+    failed after 12 ms; completed on the CPU", "GPU not tried: the same
+    input already failed on it", "GPU request run on the CPU", "GPU path
+    completed the result on the CPU (1.8 s)".
   * *Warnings* (`RunWarnings`): the engine's run warnings are grouped by
     message (numbers masked), with the fields and wavelengths they
     concern numbered from 1 as everywhere in the app (`Field 1, Field 3`).
@@ -810,26 +836,28 @@ scripts/build-macos.sh --no-engine --engine-only   # remove the library again
 ## `FFIEngine`
 
 `FFIEngine` (module `MKLightFFI`) implements `EngineClient` over the C ABI.
-Every C function is wrapped once in `CABI.swift`, which converts strings,
-frees what the library allocated and turns a failed `MKStatus` into an
-`EngineError` with the engine's message (read from `mk_last_error()` on the
-same thread).
+Every C function the app uses is wrapped once in `CABI.swift`, which
+converts strings, frees what the library allocated and turns a failed
+`MKStatus` into an `EngineError` with the engine's message (read from
+`mk_last_error()` on the same thread). The app has no binding for the
+engine's project calls (`mk_session_open`, `mk_session_save`, …): it reads
+and writes `.mklight` files through `ProjectFile`, and `FFIEngineTests`
+checks the two against each other.
 
 | concern | how |
 |---|---|
 | lifetimes | `FFIEngineCore` owns `MKEngine*`, `FFISessionHandle` owns `MKSession*`; both free their handle in `deinit`. A session and every running job keep the core alive. |
-| sessions | `FFIEngine` = core + one session. `makeDocumentEngine()` gives each open design its own session (user catalogs, library hash). `newSession(system:)`, `openProject(at:)`, `save(to:)`, `project()`, `sessionInfo()`, `setProjectSection` cover projects. |
+| sessions | `FFIEngine` = core + one session. `makeDocumentEngine()` (`newSession()`) gives each open design its own session (user catalogs, library hash). |
 | snapshots | `openSnapshot` sets the session's system (`mk_session_set_system_json`) and returns the engine's BLAKE3 hash and the library hash. An invalid model throws `.invalidModel` with the engine's message first, then the mirror's structural errors. |
-| validation | `validate` runs the engine's `validate` analysis (issues with severity, code and surface); a system the engine refuses gives its message plus the mirror's checks. The app runs `validate` as a pane of its own on every snapshot. |
-| edits | `applyParamEdits` applies `ParamPath` edits atomically and returns the new snapshot (the edited system read back from the engine). |
+| validation | The app runs the engine's `validate` analysis (issues with severity, code and surface) as a pane of its own on every snapshot. A system the engine refuses has no snapshot: its message and the mirror's checks are the error of `openSnapshot`. |
 | solves | `applySolves(settings:to:)` calls `mk_session_apply_solves` and reads the solved system back; the report is the `solves` result. Engines without it fall back to the `solves` dry run plus `OpticalSystem.setValue`. |
 | catalogs | `catalogs()`, `loadCatalog(at:)`, `glasses(in:)`, `materialNames()` (completion). |
-| analyses | `analysisDescriptors()` lists every analysis with its settings schema (read once, when the engine is created). The app submits every analysis pane and design job by name (`EngineAnalysisRequest`, built by `Workspace.request(for:)` and `Workspace.submitJob`): the analysis, the settings the schema accepts and the backend preference. `FFIEngine` also runs the typed requests (`AnalysisRequest`: eight analyses with one settings struct each, checked by `problems(for:)` before submission), whose results decode into the typed mirrors when the JSON matches; `MockEngine` and the tests use them, the app does not. |
+| analyses | `analysisDescriptors()` lists every analysis with its settings schema (read once, when the engine is created). The app submits every analysis pane and design job by name (`EngineAnalysisRequest`, built by `Workspace.request(for:)` and `Workspace.submitJob`): the analysis, the settings the schema accepts and the backend preference. That is the only way to run an analysis; `MockEngine` answers the same requests in the engine's result format. |
 | jobs | `submit` returns at once; the job's task does the rest off the caller's thread. Submission is one locked step on a global dispatch queue: set the snapshot's system if the session holds another, then `mk_session_submit_analysis_json`, registering the job's event stream before any event can be delivered. Events from the engine's `mklight-events` thread feed the job's `progress` stream; a 250 ms status poll is a safety net. The terminal event takes the result at once. `cancel()` calls `mk_job_cancel`; a job cancelled before it was submitted never reaches the engine and throws `EngineError.cancelled`. |
-| stop | For `optimize`, `tolerance` and `glass_substitution`, `AnalysisJob.canStop` is true and `stop()` calls `mk_job_stop` (ABI 1.2): the job ends normally with its best result so far (`result.stopped: true`). A stop requested before the engine job exists is sent right after submission. |
-| results | The envelope's `run_info` decodes into `RunInfo`, `library_hash` into `AnalysisOutput.libraryHash`, `backend` into `AnalysisOutput.backend` (`BackendReport`: requested, used, precision, device, fallback reason). The result is `.generic(GenericResult)`: the JSON tree plus `ResultBuffer`s, read by the views through tolerant accessors (`JSONValue.nf`, `nfArray`, `[path:]`, `AnalysisOutput.buffer(named:)`). |
+| stop | For the analyses whose descriptor is `stoppable` (the engine's listing), `AnalysisJob.canStop` is true and `stop()` calls `mk_job_stop` (ABI 1.2): the job ends normally with its best result so far (`result.stopped: true`). A stop requested before the engine job exists is sent right after submission. |
+| results | The envelope's `run_info` decodes into `RunInfo`, `library_hash` into `AnalysisOutput.libraryHash`, `backend` into `AnalysisOutput.backend` (`BackendReport`: requested, used, precision, device, fallback reason, and the `cost_decision` object as sent). The envelope's `result` is `AnalysisOutput.json`, with the `ResultBuffer`s in `AnalysisOutput.buffers`; the views read both through tolerant accessors (`JSONValue.nf`, `nfArray`, `[path:]`, `AnalysisOutput.buffer(named:)`). |
 | buffers | `ResultBuffer` points into the engine's memory (no copy) and keeps the buffer array alive; `mk_buffer_free` runs when the last buffer of a result goes. Typed access checks the dtype (`withUnsafeBufferPointer(of:)`); `buffer[[i, j]]` indexes row-major. |
-| errors | `EngineError.from(code:message:)`: cancelled, invalid model, unsupported and failed jobs get their own cases; every other status is `.engine(EngineErrorCode, message)`. Submission errors (unknown analysis, invalid settings) fail the job immediately. |
+| errors | `EngineError.from(code:message:)`: cancelled, invalid model and unsupported get their own cases; every other status is `.engine(EngineErrorCode, message)`, and a failed job arrives with the status of its own error (`.failed` is a job that panicked). Submission errors (unknown analysis, invalid settings) fail the job immediately. |
 
 **Thread safety.** `FFIEngine` is a `Sendable` value; use it from any task.
 The C engine and sessions are thread-safe. The asynchronous `EngineClient`
@@ -849,11 +877,9 @@ calls run on the caller's thread:
 * `mk_engine_prepare_gpu`, which returns at once, and
   `mk_engine_gpu_preparation_json`, which `GPUPreparationMonitor` polls on
   the main actor;
-* the synchronous helpers, which block their caller: the project calls
-  (`openProject`, `save`, `project`, `sessionInfo`, `setSystem`,
-  `setProjectSection`, …) and `importPrescription(_:format:)`
-  (`mk_import_prescription`), which `ProjectDocument` calls while it reads
-  a `.zmx` or `.seq` file.
+* `importPrescription(_:format:)` (`mk_import_prescription`), which blocks
+  its caller: `ProjectDocument` calls it while it reads a `.zmx` or `.seq`
+  file.
 
 Progress reaches the UI through `AsyncStream`s that the `@MainActor`
 `Workspace` consumes. The engine's callback runs on its `mklight-events`
@@ -885,8 +911,9 @@ while it follows the preparation.
 * *Swift.* `FFIEngine.prepareGPU` records a refusal of
   `mk_engine_prepare_gpu`, and `gpuPreparation()` then reads `.failed`, as
   it does when the state cannot be read. `GPUPreparation` mirrors the
-  states. Engines without a GPU (`MockEngine`) keep the protocol's
-  defaults: nothing to prepare, `.idle`.
+  states, `ready` with the engine's optional `warning`. Engines without a
+  GPU (`MockEngine`) keep the protocol's defaults: nothing to prepare,
+  `.idle`.
 * *Window.* `GPUPreparationMonitor` (`@MainActor`, `@Observable`, one per
   app) reads the state every 200 ms while it is `preparing`, for at most
   600 s (`followLimit`; a longer preparation keeps running in the engine
@@ -897,7 +924,10 @@ while it follows the preparation.
   preparation ends ready, the capsule says "GPU ready" for 3 s. The status
   popover's Engine section has a "GPU kernels" row: "Preparing (d of t)",
   "Ready (n, loaded from cache)", "Ready (n, prepared in s s)", "No GPU:
-  reason" or "Compiled on first use (message)".
+  reason" or "Compiled on first use (message)". Kernels that are ready
+  with the engine's `warning` (`GPUPreparationMonitor.note`) have a second
+  line under the row: "Kernel cache unavailable: the next launch compiles
+  again (message)".
 
 ## State model
 
@@ -973,9 +1003,12 @@ is skipped while the library is not linked (see "Building").
   against the engine's verdicts, shape-kind conversions, XY and Zernike
   term numbering.
 * `MKLightEngineTests` (`EngineTests`, `EngineBoundaryTests`,
-  `GPUPreparationTests`): schemas, request translation, tolerant decoding,
-  buffers, error mapping, staleness; the mock's analyses by name; every
-  state of `mk_engine_gpu_preparation_json` in the engine's exact JSON.
+  `GPUPreparationTests`): schemas and the settings they accept, buffers,
+  error mapping, staleness, non-finite numbers; jobs on the mock (progress,
+  cancellation, seeds) and its analyses by name; the mock's optics against
+  known answers; every state of `mk_engine_gpu_preparation_json` in the
+  engine's exact JSON, `ready` with and without its `warning`; the
+  envelope's `cost_decision` kept in `BackendReport`.
 * `MKLightUITests`:
   * the workspace (`WorkspaceTests`: panes run, go stale, automatic vs
     manual update, settings re-run, unavailable and unknown analyses, an
@@ -1013,7 +1046,9 @@ is skipped while the library is not linked (see "Building").
     (`GlassSubstitutionTests`); spectrum settings encoding and CSV import
     (`SpectrumAndFirstOrderTests`); the settings form from the schema
     (`SettingsSchemaTests`); the field-map, glass-map and image-simulation
-    readers (`MapReaderTests`); the spot diagram's field × focus grid
+    readers (`MapReaderTests`); the run details' route line on the engine's
+    JSON of each decision kind, the tier and the attempt rows
+    (`RunRouteTests`); the spot diagram's field × focus grid
     (`SpotGridTests`: points moved to each plane, the single-plane
     fallback, the marker style, the layout and the box scale); the import
     report (`ImportReportTests`: warnings grouped by meaning, the document
@@ -1059,15 +1094,19 @@ is skipped while the library is not linked (see "Building").
     variables left out;
   * the GPU preparation's window status (`GPUPreparationMonitorTests`: a
     preparation that never ends is followed up to the limit, the final
-    state is shown).
+    state is shown, a kernel-cache warning is a second line);
+  * the text-field rule (`FieldEditTests`: the scenarios the rule exists
+    for, on `FieldEdit` and the fields built on it; `CommittingFieldTests`:
+    the same rule through hosted fields with real focus changes).
 * `MKLightFFITests` (need the library):
   * `FFIEngineTests`: BLAKE3 hashes, samples, EFL from engine data,
     non-blocking submission, progress, reproducible seeds, cancellation,
-    error codes, projects, parameter edits, catalogs, concurrent
-    submissions, handles; the extended shapes fixture validates in the
-    engine, and the extended shapes run through the layout (x–z section,
-    surface mesh, DOE flag) and Seidel; footprint overlays read as
-    outlines; a refused GPU preparation reads as failed;
+    error codes, project files between the engine and `ProjectFile`,
+    catalogs, concurrent submissions, handles; the extended shapes fixture
+    validates in the engine, and the extended shapes run through the layout
+    (x–z section, surface mesh, DOE flag) and Seidel; footprint overlays
+    read as outlines; a refused GPU preparation reads as failed; the route
+    decisions of automatic runs read as a line of the run details;
   * `FFIDesignTests`: **every dedicated result view reads the real engine's
     result** for 25 analyses (geometric, wave optics, ghosts, radiometry,
     polarisation), the layout buffers become a scene with rays per field,
@@ -1103,9 +1142,9 @@ is skipped while the library is not linked (see "Building").
     `PrescriptionImportTests`: `.zmx` / `.seq` import without a session
     (UTF-16 text), what did not map, and into the document's session;
   * `RenderSnapshotTests`, `ResultViewRenders` and
-    `ResultViewRendersDirect` render panes and panels to PNGs (light and
-    dark) for a visual check, only when `MKLIGHT_RENDER_DIR` names an
-    output directory.
+    `ResultViewRendersDirect` render panes, panels and the run details of
+    recorded runs to PNGs (light and dark) for a visual check, only when
+    `MKLIGHT_RENDER_DIR` names an output directory.
 
 ## iPadOS readiness
 

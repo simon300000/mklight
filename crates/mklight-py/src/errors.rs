@@ -17,9 +17,9 @@
 //! ```
 //!
 //! The classes are created once (with multiple inheritance, so `except
-//! ValueError` keeps working) and stored in a `PyOnceLock`. The kinds mirror
-//! the C ABI status codes (`docs/FFI.md`), so every front end classifies an
-//! engine error the same way.
+//! ValueError` keeps working) and stored in a `PyOnceLock`. An engine error
+//! is raised as the class of its `mklight_engine::ErrorKind`, the
+//! classification the C ABI and the CLI map too.
 
 use pyo3::exceptions::{
     PyException, PyLookupError, PyNotImplementedError, PyOSError, PyTimeoutError, PyValueError,
@@ -120,35 +120,26 @@ impl ErrorKind {
     }
 }
 
-/// Classify a core error (same table as the C ABI's `core_status`).
-pub fn core_kind(e: &MkError) -> ErrorKind {
-    match e {
-        MkError::Cancelled => ErrorKind::Cancelled,
-        MkError::InvalidModel(_) => ErrorKind::InvalidModel,
-        MkError::UnknownMaterial(_) | MkError::UnknownCoating(_) => ErrorKind::NotFound,
-        MkError::WavelengthOutOfRange { .. } | MkError::InvalidParam(_) => {
-            ErrorKind::InvalidArgument
+/// The exception class of each engine error kind (the hierarchy of
+/// `docs/PYTHON.md`).
+pub fn class_kind(kind: mklight_engine::ErrorKind) -> ErrorKind {
+    use mklight_engine::ErrorKind as Engine;
+    match kind {
+        Engine::Cancelled => ErrorKind::Cancelled,
+        Engine::InvalidModel => ErrorKind::InvalidModel,
+        Engine::UnknownMaterial | Engine::UnknownAnalysis | Engine::UnknownJob => {
+            ErrorKind::NotFound
         }
-        MkError::Parse(_) => ErrorKind::Parse,
-        MkError::Io(_) => ErrorKind::File,
-        MkError::Unsupported(_) => ErrorKind::Unsupported,
-        MkError::Trace(_) | MkError::Numerical(_) | MkError::Backend(_) => ErrorKind::Compute,
-    }
-}
-
-/// Classify an engine error (same table as the C ABI's status codes).
-pub fn engine_kind(e: &EngineError) -> ErrorKind {
-    match e {
-        EngineError::Core(c) => core_kind(c),
-        EngineError::UnknownAnalysis(_) | EngineError::UnknownJob(_) => ErrorKind::NotFound,
-        EngineError::AnalysisUnavailable { .. } | EngineError::BackendUnavailable(_) => {
-            ErrorKind::Unsupported
-        }
-        EngineError::InvalidSettings(_) => ErrorKind::InvalidSettings,
-        EngineError::NotFinished(_) | EngineError::ShutDown => ErrorKind::Internal,
-        EngineError::Timeout(_) => ErrorKind::Timeout,
-        EngineError::JobFailed(_) => ErrorKind::JobFailed,
-        EngineError::Project(_) => ErrorKind::Parse,
+        Engine::WavelengthOutOfRange | Engine::InvalidArgument => ErrorKind::InvalidArgument,
+        Engine::InvalidSettings => ErrorKind::InvalidSettings,
+        Engine::Parse | Engine::ProjectFile => ErrorKind::Parse,
+        Engine::Io => ErrorKind::File,
+        Engine::Unsupported => ErrorKind::Unsupported,
+        Engine::Compute => ErrorKind::Compute,
+        Engine::Timeout => ErrorKind::Timeout,
+        Engine::JobFailed => ErrorKind::JobFailed,
+        // `Job.result()` waits, so no caller sees an unfinished job.
+        Engine::NotFinished | Engine::ShutDown => ErrorKind::Internal,
     }
 }
 
@@ -231,12 +222,12 @@ pub fn new_err(kind: ErrorKind, msg: impl Into<String>) -> PyErr {
 
 /// Convert an engine error into the matching Python exception.
 pub fn engine_err(e: EngineError) -> PyErr {
-    new_err(engine_kind(&e), e.to_string())
+    new_err(class_kind(e.kind()), e.to_string())
 }
 
 /// Convert a core error into the matching Python exception.
 pub fn core_err(e: MkError) -> PyErr {
-    new_err(core_kind(&e), e.to_string())
+    new_err(class_kind(mklight_engine::ErrorKind::of(&e)), e.to_string())
 }
 
 /// Add the hierarchy to the module.
@@ -254,7 +245,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn engine_errors_map_like_the_c_abi() {
+    fn engine_errors_map_to_the_documented_classes() {
+        let engine_kind = |e: &EngineError| class_kind(e.kind());
         let cases = [
             (EngineError::Core(MkError::Cancelled), ErrorKind::Cancelled),
             (
@@ -288,6 +280,29 @@ mod tests {
             (EngineError::Timeout(3), ErrorKind::Timeout),
             (EngineError::JobFailed("x".into()), ErrorKind::JobFailed),
             (EngineError::Project("x".into()), ErrorKind::Parse),
+            (
+                EngineError::InvalidArgument("x".into()),
+                ErrorKind::InvalidArgument,
+            ),
+            (EngineError::UnknownJob(3), ErrorKind::NotFound),
+            (
+                EngineError::BackendUnavailable("gpu:x".into()),
+                ErrorKind::Unsupported,
+            ),
+            (EngineError::NotFinished(3), ErrorKind::Internal),
+            (EngineError::ShutDown, ErrorKind::Internal),
+            (
+                EngineError::Core(MkError::InvalidParam("x".into())),
+                ErrorKind::InvalidArgument,
+            ),
+            (
+                EngineError::Core(MkError::Parse("x".into())),
+                ErrorKind::Parse,
+            ),
+            (
+                EngineError::Core(MkError::Unsupported("x".into())),
+                ErrorKind::Unsupported,
+            ),
         ];
         for (e, k) in cases {
             assert_eq!(engine_kind(&e), k, "{e}");

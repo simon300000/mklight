@@ -1,16 +1,11 @@
-//! The device illumination rows and maps, the chief-ray map designs (route
-//! key `fieldmaps`) and the device system transmission against the f64
+//! The device illumination rows and maps, the chief-ray map designs
+//! (`gpu::Route::chief`) and the device system transmission against the f64
 //! reference, on the CPU-f32 emulation of the device kernels and (ignored,
 //! run through the bench lock) on Metal, where the illumination kernels must
 //! also reproduce the emulation bit for bit.
 use mklight_analysis::{curvature, field_maps, gpu, illumination, tracer_for};
-use mklight_core::{JobContext, samples, split};
+use mklight_core::{JobContext, samples};
 use mklight_gpu::{ComputeBackend, CpuF32Backend};
-use std::sync::Mutex;
-
-/// The variant selection is process-wide: tests that set it run one at a
-/// time.
-static SELECTION: Mutex<()> = Mutex::new(());
 
 fn close(what: &str, a: &[f64], g: &[f64], tol: impl Fn(f64) -> f64) {
     assert_eq!(a.len(), g.len(), "{what}: length");
@@ -119,7 +114,7 @@ fn ri_map(b: &dyn ComputeBackend) {
     };
     let kind = field_maps::FieldAnalysis::RelativeIllumination;
     let a = field_maps::field_map_job(&t, kind, &s, &JobContext::new()).unwrap();
-    let g = gpu::field_map_job(b, &t, kind, &s, &JobContext::new()).unwrap();
+    let g = gpu::field_map_job(b, &t, kind, &s, &Default::default(), &JobContext::new()).unwrap();
     close("map", &a.values, &g.values, |a| 1e-5 * (1.0 + a.abs()));
     let ai: Vec<f64> = a.image_mm.iter().flatten().copied().collect();
     let gi: Vec<f64> = g.image_mm.iter().flatten().copied().collect();
@@ -142,9 +137,8 @@ fn metal_ri_map() {
 }
 
 /// The chief-ray maps (CRA, pupil aberration) and grid distortion by every
-/// chief design.
+/// chief design, each named in the run evidence.
 fn chief_designs(b: &dyn ComputeBackend) {
-    let _guard = SELECTION.lock().unwrap_or_else(|e| e.into_inner());
     for (name, model) in samples::all() {
         let t = tracer_for(model).unwrap();
         let s = field_maps::FieldMapSettings {
@@ -164,10 +158,22 @@ fn chief_designs(b: &dyn ComputeBackend) {
             .map(|&k| field_maps::field_map_job(&t, k, &s, &JobContext::new()).unwrap())
             .collect();
         let grid_ref = curvature::grid_distortion_job(&t, &grid, &JobContext::new()).unwrap();
-        for design in ["host-chief", "device-chief"] {
-            split::set(gpu::SPLIT_KEY, Some(design));
+        for chief in [gpu::ChiefDesign::HostChief, gpu::ChiefDesign::DeviceChief] {
+            let design = chief.name();
+            let route = gpu::Route {
+                chief,
+                ..Default::default()
+            };
+            // The design a run names: its own, also when the reference
+            // completed a device map.
+            let named = |run: &mklight_core::RunInfo| {
+                let own = &run.settings["fieldmaps_variant"];
+                let device = &run.settings["resident_execution"]["fieldmaps_variant"];
+                own.as_str().or(device.as_str()).map(String::from)
+            };
             for (k, a) in kinds.iter().zip(&refs) {
-                let g = gpu::field_map_job(b, &t, *k, &s, &JobContext::new()).unwrap();
+                let g = gpu::field_map_job(b, &t, *k, &s, &route, &JobContext::new()).unwrap();
+                assert_eq!(named(&g.run_info).as_deref(), Some(design), "{name}");
                 let tol = match k {
                     // Degrees.
                     field_maps::FieldAnalysis::ChiefRayAngle => 2e-4,
@@ -181,7 +187,8 @@ fn chief_designs(b: &dyn ComputeBackend) {
                     |a| tol * (1.0 + a.abs()),
                 );
             }
-            let g = gpu::grid_distortion_job(b, &t, &grid, &JobContext::new()).unwrap();
+            let g = gpu::grid_distortion_job(b, &t, &grid, &route, &JobContext::new()).unwrap();
+            assert_eq!(named(&g.run_info).as_deref(), Some(design), "{name}");
             let real = |r: &curvature::GridDistortionResult| -> Vec<f64> {
                 r.points.iter().flat_map(|p| p.real).collect()
             };
@@ -191,7 +198,6 @@ fn chief_designs(b: &dyn ComputeBackend) {
                 &real(&g),
                 |_| 2e-5,
             );
-            split::reset();
         }
     }
 }
@@ -199,35 +205,6 @@ fn chief_designs(b: &dyn ComputeBackend) {
 #[test]
 fn cpu_chief_designs() {
     chief_designs(&CpuF32Backend::new());
-}
-
-/// An unknown `fieldmaps` design is an error, not the default.
-#[test]
-fn unknown_chief_designs_are_rejected() {
-    let _guard = SELECTION.lock().unwrap_or_else(|e| e.into_inner());
-    let t = tracer_for(samples::cooke_triplet()).unwrap();
-    let b = CpuF32Backend::new();
-    let s = field_maps::FieldMapSettings {
-        grid: [3, 3],
-        ..Default::default()
-    };
-    let grid = curvature::GridDistortionSettings {
-        grid_size: 3,
-        ..Default::default()
-    };
-    for name in ["nonsense", "cpu", "sized"] {
-        split::set(gpu::SPLIT_KEY, Some(name));
-        let map = gpu::field_map_job(
-            &b,
-            &t,
-            field_maps::FieldAnalysis::ChiefRayAngle,
-            &s,
-            &JobContext::new(),
-        );
-        let distortion = gpu::grid_distortion_job(&b, &t, &grid, &JobContext::new());
-        split::reset();
-        assert!(map.is_err() && distortion.is_err(), "fieldmaps={name}");
-    }
 }
 
 #[cfg(target_os = "macos")]

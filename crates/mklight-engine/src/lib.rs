@@ -7,6 +7,7 @@
 //! * `scheduler` — worker pool with cancellation, progress and supersession.
 //! * `analysis` — the pluggable analysis registry and the built-in analyses.
 //! * `backend` — compute-backend selection (CPU reference, GPU, `auto`).
+//! * `route` — route options: alternative CPU/GPU divisions of an analysis.
 //! * `gpu` — GPU backend providers (Metal, CPU-f32 emulation) with
 //!   offline precision qualification and static analysis capabilities.
 //! * `validation` — the engine-level model checks of `validate`.
@@ -37,6 +38,7 @@ pub mod gpu;
 pub mod graph;
 pub mod lru;
 pub mod project;
+pub mod route;
 pub mod scheduler;
 pub mod session;
 pub mod settings;
@@ -49,7 +51,8 @@ pub use analysis::{
 pub use backend::{Backend, BackendInfo};
 pub use buffer::{Buffer, BufferData, DType};
 pub use engine::{Engine, EngineConfig};
-pub use error::{EngineError, EngineResult};
+pub use error::{EngineError, EngineResult, ErrorKind};
 pub use project::{PROJECT_SCHEMA_VERSION, Project};
+pub use route::RouteOptions;
 pub use scheduler::{JobEvent, JobId, JobState, JobStatus};
 pub use session::{AnalysisRequest, ParamEdit, Session};

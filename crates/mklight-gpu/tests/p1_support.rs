@@ -37,7 +37,7 @@ pub fn df(b: &dyn ComputeBackend, p: &mut ResidentPlan, v: &[Df32]) -> PlanView 
 }
 #[allow(clippy::too_many_arguments)]
 pub fn make_plan(
-    b: &dyn ComputeBackend,
+    b: &dyn QualificationBackend,
     t: &SequentialTracer,
     field: usize,
     wl: usize,
@@ -201,7 +201,7 @@ pub fn uncached(mut p: ResidentPlan) -> ResidentPlan {
     }
     p
 }
-pub fn read_all(b: &dyn ComputeBackend, result: &PlanResult) -> Vec<BufferData> {
+pub fn read_all(b: &dyn QualificationBackend, result: &PlanResult) -> Vec<BufferData> {
     result
         .outputs
         .iter()

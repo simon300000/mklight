@@ -17,9 +17,12 @@ use pyo3::types::PyDict;
 use serde_json::{Value, json};
 
 use mklight_core::{OpticalSystem, samples};
-use mklight_engine::backend::Backend;
+use mklight_engine::backend::{Backend, BackendRegistry};
 use mklight_engine::project::Project;
-use mklight_engine::{AnalysisRequest, Engine, EngineConfig, EngineError, ParamEdit, Session};
+use mklight_engine::{
+    AnalysisRequest, Engine, EngineConfig, EngineError, EngineResult, ParamEdit, RouteOptions,
+    Session,
+};
 use mklight_trace::SequentialTracer;
 
 use crate::convert::{from_py, ser_to_py, to_py};
@@ -41,14 +44,34 @@ pub fn sample_system(name: &str) -> Result<OpticalSystem, String> {
 /// Parse the `backend` argument: `None` → engine default, `"auto"` → automatic selection,
 /// `"cpu"`/`"cpu_reference"` → CPU reference, `"metal"`/`"gpu:metal"` → a
 /// GPU backend, or the JSON form `{"kind": "gpu", "name": "metal"}`.
-pub fn parse_backend(v: &Value) -> Result<Option<Backend>, String> {
+/// `by_name` resolves a name against the registered backends
+/// (`Engine::parse_backend`); a name it does not know is an error.
+pub fn parse_backend(
+    v: &Value,
+    by_name: impl Fn(&str) -> EngineResult<Backend>,
+) -> Result<Option<Backend>, String> {
     match v {
         Value::Null => Ok(None),
-        Value::String(s) => Ok(Some(Backend::parse(s))),
+        Value::String(s) => by_name(s).map(Some).map_err(|e| match e {
+            EngineError::InvalidArgument(message) => message,
+            other => other.to_string(),
+        }),
         Value::Object(_) => serde_json::from_value(v.clone())
             .map(Some)
             .map_err(|e| format!("invalid backend {v}: {e}")),
         other => Err(format!("invalid backend {other}")),
+    }
+}
+
+/// The `route` argument of `run`/`submit`: a dict of route options
+/// (`mklight_engine::RouteOptions`), or `None` for the engine's.
+pub fn parse_route(v: &Value) -> Result<Option<RouteOptions>, String> {
+    match v {
+        Value::Null => Ok(None),
+        Value::Object(_) => serde_json::from_value(v.clone())
+            .map(Some)
+            .map_err(|e| format!("invalid route options {v}: {e}")),
+        other => Err(format!("route must be a dict, got {other}")),
     }
 }
 
@@ -87,10 +110,11 @@ fn invalid(msg: impl Into<String>) -> PyErr {
 /// keyword arguments.
 ///
 /// * Keys must be `EngineConfig` fields (the C ABI's configuration keys);
-///   a misspelt key is an error rather than silently ignored.
+///   the engine rejects any other key.
 /// * `default_backend` takes the same forms as the `backend` argument of
 ///   `run`/`submit` (`"cpu"`, `"metal"`, `{"kind": "gpu", ...}`; `"auto"`
-///   or `None` keep the engine default).
+///   or `None` keep the engine default). A name is resolved against the
+///   backends every engine registers.
 /// * `max_retained_jobs` defaults to unlimited. The engine's bounded
 ///   retention exists for front ends that may never collect a result; here
 ///   every job is owned by a `Job` object (whose result is collected, or
@@ -100,27 +124,8 @@ fn invalid(msg: impl Into<String>) -> PyErr {
 ///   collecting any). An explicit value is honoured; jobs discarded by it
 ///   report the state `evicted`.
 pub fn engine_config(mut cfg: serde_json::Map<String, Value>) -> Result<EngineConfig, String> {
-    let known = match serde_json::to_value(EngineConfig::default()) {
-        Ok(Value::Object(o)) => o,
-        _ => return Err("engine configuration is not a JSON object".into()),
-    };
-    let mut unknown: Vec<&str> = cfg
-        .keys()
-        .filter(|k| !known.contains_key(*k))
-        .map(String::as_str)
-        .collect();
-    if !unknown.is_empty() {
-        unknown.sort_unstable();
-        let mut names: Vec<&str> = known.keys().map(String::as_str).collect();
-        names.sort_unstable();
-        return Err(format!(
-            "unknown engine configuration key(s) {} (known: {})",
-            unknown.join(", "),
-            names.join(", ")
-        ));
-    }
     if let Some(b) = cfg.remove("default_backend")
-        && let Some(backend) = parse_backend(&b)?
+        && let Some(backend) = parse_backend(&b, |s| BackendRegistry::with_defaults().parse(s))?
     {
         let v = serde_json::to_value(backend).map_err(|e| e.to_string())?;
         cfg.insert("default_backend".into(), v);
@@ -157,8 +162,8 @@ pub fn u64_arg(obj: &Bound<'_, PyAny>, what: &str, kind: ErrorKind) -> PyResult<
 /// `Engine(config=None, **kwargs)`: configuration keys are those of the C
 /// ABI (`worker_threads`, `max_retained_jobs`, `resolved_cache_capacity`,
 /// `analysis_graph_bytes`, `progress_interval_ms`, `app_name`,
-/// `app_version`, `default_backend`, `aim_stop`); see [`engine_config`] for
-/// validation and the retention default.
+/// `app_version`, `default_backend`, `aim_stop`, `route`); see
+/// [`engine_config`] for validation and the retention default.
 #[pyclass(frozen, module = "mklight", name = "Engine")]
 pub struct PyEngine {
     pub(crate) engine: Engine,
@@ -351,13 +356,17 @@ impl PySession {
         backend: Option<&Bound<'_, PyAny>>,
         allow_backend_fallback: bool,
         view_key: Option<String>,
+        route: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<AnalysisRequest> {
         let seed = seed
             .filter(|s| !s.is_none())
             .map(|s| u64_arg(s, "seed", ErrorKind::InvalidSettings))
             .transpose()?;
         let settings = opt_value(settings)?;
-        let backend = parse_backend(&opt_value(backend)?).map_err(invalid)?;
+        let backend = parse_backend(&opt_value(backend)?, |s| self.engine.parse_backend(s))
+            .map_err(invalid)?;
+        let route =
+            parse_route(&opt_value(route)?).map_err(|m| new_err(ErrorKind::InvalidSettings, m))?;
         let schema = self
             .engine
             .analysis(analysis)
@@ -373,6 +382,7 @@ impl PySession {
             allow_backend_fallback,
             tier: Default::default(),
             aim_stop: None,
+            route,
         })
     }
 
@@ -533,7 +543,7 @@ impl PySession {
     /// released). See `submit` for the arguments; `progress(fraction,
     /// stage)` is called with monotone fractions from the calling thread.
     /// Ctrl-C (or an exception raised by `progress`) cancels the job.
-    #[pyo3(signature = (analysis, settings=None, seed=None, backend=None, progress=None, allow_backend_fallback=false, timeout=None))]
+    #[pyo3(signature = (analysis, settings=None, seed=None, backend=None, progress=None, allow_backend_fallback=false, timeout=None, route=None))]
     #[allow(clippy::too_many_arguments)]
     fn run(
         &self,
@@ -545,6 +555,7 @@ impl PySession {
         progress: Option<Bound<'_, PyAny>>,
         allow_backend_fallback: bool,
         timeout: Option<f64>,
+        route: Option<Bound<'_, PyAny>>,
     ) -> PyResult<PyAnalysisResult> {
         let req = self.request(
             analysis,
@@ -553,6 +564,7 @@ impl PySession {
             backend.as_ref(),
             allow_backend_fallback,
             None,
+            route.as_ref(),
         )?;
         // On any error (including a timeout) the job is dropped here,
         // which cancels and forgets it.
@@ -567,7 +579,10 @@ impl PySession {
     /// * `backend`: `"auto"` (automatic selection), `"cpu"`, `"metal"`, or
     ///   `{"kind": "gpu", "name": "metal"}`.
     /// * `view_key`: a newer job with the same key supersedes this one.
-    #[pyo3(signature = (analysis, settings=None, seed=None, backend=None, allow_backend_fallback=false, view_key=None))]
+    /// * `route`: route options dict (`aiming`, `aiming_share`, `fieldmaps`,
+    ///   `stray_share`, `stray_sag`, `solver_aiming`; docs/GPU.md §9.3);
+    ///   `None` uses the engine's (`Engine(route=...)`).
+    #[pyo3(signature = (analysis, settings=None, seed=None, backend=None, allow_backend_fallback=false, view_key=None, route=None))]
     #[allow(clippy::too_many_arguments)]
     fn submit(
         &self,
@@ -578,6 +593,7 @@ impl PySession {
         backend: Option<Bound<'_, PyAny>>,
         allow_backend_fallback: bool,
         view_key: Option<String>,
+        route: Option<Bound<'_, PyAny>>,
     ) -> PyResult<PyJob> {
         let req = self.request(
             analysis,
@@ -586,6 +602,7 @@ impl PySession {
             backend.as_ref(),
             allow_backend_fallback,
             view_key,
+            route.as_ref(),
         )?;
         self.submit_request(py, &req)
     }
@@ -628,6 +645,9 @@ mod tests {
 
     #[test]
     fn backend_argument_forms() {
+        let engine = Engine::default();
+        engine.register_backend(Arc::new(mklight_engine::gpu::GpuProvider::emulation()));
+        let parse_backend = |v: &Value| parse_backend(v, |s| engine.parse_backend(s));
         assert_eq!(parse_backend(&Value::Null), Ok(None));
         assert_eq!(parse_backend(&json!("auto")), Ok(Some(Backend::Auto)));
         assert_eq!(
@@ -638,11 +658,26 @@ mod tests {
             parse_backend(&json!("gpu:metal")),
             Ok(Some(Backend::Gpu("metal".into())))
         );
+        // The bare name of a registered GPU backend.
+        assert_eq!(
+            parse_backend(&json!("cpu_f32")),
+            Ok(Some(Backend::Gpu("cpu_f32".into())))
+        );
         assert_eq!(
             parse_backend(&json!({"kind": "gpu", "name": "metal"})),
             Ok(Some(Backend::Gpu("metal".into())))
         );
         assert!(parse_backend(&json!(3)).is_err());
+        // A name no backend has is refused, naming it and what is known.
+        for bad in ["", "cpu_ref", "mteal"] {
+            let e = parse_backend(&json!(bad)).unwrap_err();
+            assert!(
+                e.contains(&format!("'{bad}'")) && e.contains("cpu_reference"),
+                "{e}"
+            );
+        }
+        let e = parse_backend(&json!({"kind": "gpu", "nmae": "metal"})).unwrap_err();
+        assert!(e.contains("nmae"), "{e}");
     }
 
     #[test]
@@ -679,11 +714,52 @@ mod tests {
         );
         let e = cfg(json!({"worker_thread": 2})).unwrap_err();
         assert!(
-            e.contains("worker_thread") && e.contains("worker_threads"),
+            e.contains("`worker_thread`") && e.contains("worker_threads"),
             "{e}"
         );
+        let e = cfg(json!({"default_backend": "mteal"})).unwrap_err();
+        assert!(e.contains("'mteal'"), "{e}");
         assert!(cfg(json!({"default_backend": 3})).is_err());
         assert!(cfg(json!({"worker_threads": "many"})).is_err());
+    }
+
+    #[test]
+    fn route_argument_is_a_dict_of_route_options() {
+        use mklight_engine::route::{FieldMaps, SolverAiming};
+        assert_eq!(parse_route(&Value::Null), Ok(None));
+        let route = parse_route(&json!({"fieldmaps": "device-chief", "stray_share": 1,
+                                        "solver_aiming": "host"}))
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            route,
+            RouteOptions {
+                fieldmaps: FieldMaps::DeviceChief,
+                stray_share: Some(1.0),
+                solver_aiming: SolverAiming::Host,
+                ..Default::default()
+            }
+        );
+        assert_eq!(parse_route(&json!({})), Ok(Some(RouteOptions::default())));
+        for bad in [
+            json!("device"),
+            json!({"stray": "wavefront"}),
+            json!({"aiming": "fast"}),
+        ] {
+            assert!(parse_route(&bad).is_err(), "{bad}");
+        }
+        // The engine default is a configuration key.
+        let config = engine_config(
+            json!({"route": {"aiming": "table"}})
+                .as_object()
+                .unwrap()
+                .clone(),
+        )
+        .unwrap();
+        assert_eq!(
+            serde_json::to_value(config.route).unwrap()["aiming"],
+            "table"
+        );
     }
 
     #[test]

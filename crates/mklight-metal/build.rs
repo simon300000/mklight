@@ -1,6 +1,5 @@
-//! Compiles `shaders/*.metal` into one `.metallib` per kernel variant
-//! (double-float, and the opt-in pure f32 build) with the offline Metal
-//! toolchain (`xcrun -sdk macosx metal` → `.air` → `metallib`) and embeds them.
+//! Compiles `shaders/*.metal` into one `.metallib` with the offline Metal
+//! toolchain (`xcrun -sdk macosx metal` → `.air` → `metallib`) and embeds it.
 //! The preprocessed-include source is always embedded too, so the backend can
 //! fall back to runtime compilation (`newLibraryWithSource`) when the metallib
 //! does not load. A shader that fails offline fails the build; only a debug
@@ -103,48 +102,34 @@ fn find_toolchain() -> Option<Toolchain> {
     candidates.into_iter().find(Toolchain::works)
 }
 
-/// Kernel variants: (output subdirectory, generated-constant suffix, extra
-/// defines). The second is the opt-in pure-f32 measurement build
-/// (`MetalPrecision::PureF32`, see shaders/mklight_common.h).
-const VARIANTS: [(&str, &str, &[&str]); 2] = [
-    ("double_float", "", &[]),
-    ("pure_f32", "_F32", &["-DMKLIGHT_PURE_F32=1"]),
-];
-
-/// Compiles every shader of every variant concurrently (one `metal -c`
-/// process each), then links one metallib per variant.
-fn try_offline(
-    shaders: &[PathBuf],
-    inc: &[PathBuf],
-    out_dir: &Path,
-) -> Result<Vec<PathBuf>, String> {
+/// Compiles every shader concurrently (one `metal -c` process each), then
+/// links the metallib.
+fn try_offline(shaders: &[PathBuf], inc: &[PathBuf], out_dir: &Path) -> Result<PathBuf, String> {
     let tc = find_toolchain().ok_or("no working Metal compiler found")?;
+    let dir = out_dir.join("air");
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let air = |src: &PathBuf| dir.join(src.file_stem().unwrap()).with_extension("air");
     let mut jobs = Vec::new();
-    for (variant, _, defines) in VARIANTS {
-        let dir = out_dir.join(variant);
-        fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-        for src in shaders {
-            let air = dir.join(src.file_stem().unwrap()).with_extension("air");
-            let mut cmd = Toolchain::cmd(&tc.metal);
-            cmd.arg("-c").args(FLAGS).args(defines);
-            // Keep the module cache inside OUT_DIR (sandboxed builds).
-            cmd.arg(format!(
-                "-fmodules-cache-path={}",
-                out_dir.join("modules").display()
-            ));
-            for d in inc {
-                cmd.arg("-I").arg(d);
-            }
-            let child = cmd
-                .arg(src)
-                .arg("-o")
-                .arg(&air)
-                .stdout(Stdio::null())
-                .stderr(Stdio::piped())
-                .spawn()
-                .map_err(|e| format!("metal not runnable: {e}"))?;
-            jobs.push((src, child));
+    for src in shaders {
+        let mut cmd = Toolchain::cmd(&tc.metal);
+        cmd.arg("-c").args(FLAGS);
+        // Keep the module cache inside OUT_DIR (sandboxed builds).
+        cmd.arg(format!(
+            "-fmodules-cache-path={}",
+            out_dir.join("modules").display()
+        ));
+        for d in inc {
+            cmd.arg("-I").arg(d);
         }
+        let child = cmd
+            .arg(src)
+            .arg("-o")
+            .arg(air(src))
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("metal not runnable: {e}"))?;
+        jobs.push((src, child));
     }
     let mut failure = None;
     for (src, child) in jobs {
@@ -160,28 +145,20 @@ fn try_offline(
     if let Some(e) = failure {
         return Err(e);
     }
-    let mut libs = Vec::new();
-    for (variant, _, _) in VARIANTS {
-        let dir = out_dir.join(variant);
-        let lib = dir.join("mklight.metallib");
-        let airs = shaders
-            .iter()
-            .map(|s| dir.join(s.file_stem().unwrap()).with_extension("air"));
-        let o = Toolchain::cmd(&tc.metallib)
-            .args(airs)
-            .arg("-o")
-            .arg(&lib)
-            .output()
-            .map_err(|e| format!("metallib not runnable: {e}"))?;
-        if !o.status.success() {
-            return Err(format!(
-                "metallib failed: {}",
-                String::from_utf8_lossy(&o.stderr)
-            ));
-        }
-        libs.push(lib);
+    let lib = out_dir.join("mklight.metallib");
+    let o = Toolchain::cmd(&tc.metallib)
+        .args(shaders.iter().map(air))
+        .arg("-o")
+        .arg(&lib)
+        .output()
+        .map_err(|e| format!("metallib not runnable: {e}"))?;
+    if !o.status.success() {
+        return Err(format!(
+            "metallib failed: {}",
+            String::from_utf8_lossy(&o.stderr)
+        ));
     }
-    Ok(libs)
+    Ok(lib)
 }
 
 fn main() {
@@ -246,21 +223,15 @@ fn main() {
         try_offline(&shaders, &inc, &out_dir)
     };
     match offline {
-        Ok(libs) => {
-            for ((_, suffix, defines), lib) in VARIANTS.into_iter().zip(libs) {
-                writeln!(
-                    generated,
-                    "pub const METALLIB{suffix}: Option<&[u8]> = Some(include_bytes!({:?}));",
-                    lib.display().to_string()
-                )
-                .unwrap();
-                let flags = [FLAGS, defines].concat().join(" ");
-                writeln!(
-                    generated,
-                    "pub const OFFLINE_FLAGS{suffix}: &str = {flags:?};"
-                )
-                .unwrap();
-            }
+        Ok(lib) => {
+            writeln!(
+                generated,
+                "pub const METALLIB: Option<&[u8]> = Some(include_bytes!({:?}));",
+                lib.display().to_string()
+            )
+            .unwrap();
+            let flags = FLAGS.join(" ");
+            writeln!(generated, "pub const OFFLINE_FLAGS: &str = {flags:?};").unwrap();
         }
         Err(e) => {
             // Shipped builds embed the offline metallib: with a working
@@ -278,14 +249,8 @@ fn main() {
                 "cargo:warning=offline Metal compile unavailable, using runtime compilation: {}",
                 e.lines().next().unwrap_or("")
             );
-            for (_, suffix, _) in VARIANTS {
-                writeln!(
-                    generated,
-                    "pub const METALLIB{suffix}: Option<&[u8]> = None;"
-                )
-                .unwrap();
-                writeln!(generated, "pub const OFFLINE_FLAGS{suffix}: &str = \"\";").unwrap();
-            }
+            writeln!(generated, "pub const METALLIB: Option<&[u8]> = None;").unwrap();
+            writeln!(generated, "pub const OFFLINE_FLAGS: &str = \"\";").unwrap();
         }
     }
     fs::write(out_dir.join("shaders.rs"), generated).unwrap();

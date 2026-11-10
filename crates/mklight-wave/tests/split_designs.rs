@@ -2,7 +2,7 @@
 //! `gpu::split`) against the CPU f64 reference on built-in samples. The
 //! host traces and resamples the pupils and makes the reference's own
 //! sampling decisions, so pupil grids, image grids and frequencies match it
-//! exactly, and wavefront maps fit the reference's Zernike set.
+//! exactly.
 #![cfg(target_os = "macos")]
 use mklight_core::{JobContext, samples};
 use mklight_wave::{analysis as cpu, gpu, image_simulation as image};
@@ -115,20 +115,6 @@ fn check_sample(b: &mklight_metal::MetalBackend, name: &str) {
             compare(&a.x, &z.x, 2e-3 * peak);
             compare(&a.y, &z.y, 2e-3 * peak);
         }
-    }
-
-    let s = cpu::WavefrontSettings::default();
-    let a = cpu::wavefront_map_job(&t, &s, &ctx).unwrap();
-    let z = gpu::analysis::wavefront_map_job(b, &t, &s, &ctx).unwrap();
-    assert_eq!(a.maps.len(), z.maps.len());
-    for (a, z) in a.maps.iter().zip(&z.maps) {
-        assert_eq!(a.grid, z.grid);
-        compare(&a.opd_waves, &z.opd_waves, 5e-3);
-        compare(&[a.rms_waves], &[z.rms_waves], 5e-3);
-        // The reference's own fit of the same lattice.
-        assert_eq!(a.zernike, z.zernike);
-        assert_eq!(a.seidel, z.seidel);
-        assert!((a.strehl_at_reference - z.strehl_at_reference).abs() < 2e-3);
     }
 
     let s = image::ImageSimulationSettings::default();

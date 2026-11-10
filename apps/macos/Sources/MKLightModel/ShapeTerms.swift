@@ -22,6 +22,8 @@ public enum CoefficientSet: String, Codable, Sendable, Hashable, CaseIterable, I
 
     public var id: String { rawValue }
 
+    /// Even asphere A4 … A42, addressed by `ParamPath.asphere`.
+    public static let maxEvenTerms = 20
     public static let maxOddTerms = 20
     public static let maxQTerms = 20
     public static let maxPhaseTerms = 10

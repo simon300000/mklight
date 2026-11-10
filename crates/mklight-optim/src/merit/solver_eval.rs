@@ -171,7 +171,7 @@ impl SolverEvaluator {
                                 self.irradiance(model, &settings, ctx)?
                                     .ghosts
                                     .iter()
-                                    .map(|g| g.peak_ratio)
+                                    .map(|g| defined(g.peak_ratio))
                                     .fold(0.0, f64::max)
                             }
                         };
@@ -208,8 +208,8 @@ impl SolverEvaluator {
                 }
                 let r = self.irradiance(model, &settings, ctx)?;
                 Ok(match metric {
-                    GhostMetric::Peak => r.total_peak_ratio,
-                    GhostMetric::Mean | GhostMetric::Power => r.total_flux_ratio,
+                    GhostMetric::Peak => defined(r.total_peak_ratio),
+                    GhostMetric::Mean | GhostMetric::Power => defined(r.total_flux_ratio),
                 })
             }
             _ => unreachable!("routed by capability"),
@@ -298,6 +298,13 @@ fn ghost_model<'m>(
     Ok(slot.as_ref().unwrap())
 }
 
+/// A ghost ratio as an operand value: an undefined one (the primary puts
+/// no light on the map, `mklight_ghost::irradiance`) is `+∞`, which fails
+/// the operand.
+fn defined(ratio: Option<f64>) -> f64 {
+    ratio.unwrap_or(f64::INFINITY)
+}
+
 /// An explicit `path`, or the two-reflection path of a surface `pair`
 /// (reflection at `second`, then `first`).
 fn explicit_paths(
@@ -337,5 +344,32 @@ impl OperandEvaluator for SolverEvaluator {
             .iter()
             .map(|s| self.candidate(s, ops, ctx))
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A source whose image misses the map has undefined ghost ratios: the
+    /// operand's value is `+∞`, which the problem counts as a failure.
+    #[test]
+    fn undefined_ghost_ratio_fails_the_operand() {
+        let s = mklight_core::samples::double_gauss();
+        let ev = SolverEvaluator::builtin();
+        for metric in [GhostMetric::Peak, GhostMetric::Power] {
+            let mut op = Operand::new(OperandKind::GhostIrradiance {
+                pair: None,
+                path: None,
+                metric,
+                orders: Vec::new(),
+                max_reflections: 2,
+            });
+            op.field = FieldSelector::Normalized { hx: 0.0, hy: 1.5 };
+            let values = ev
+                .evaluate_batch(std::slice::from_ref(&s), &[&op], &JobContext::new())
+                .unwrap();
+            assert_eq!(values[0][0], Ok(f64::INFINITY), "{metric:?}");
+        }
     }
 }

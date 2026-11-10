@@ -12,7 +12,7 @@ static inline MklDf operator*(MklDf a, MklDf b) { return {mkl_df_mul(a.v,b.v)}; 
 static inline MklDf operator/(MklDf a, MklDf b) { return {mkl_df_div(a.v,b.v)}; }
 template<typename R> static inline R mkl_parts(float hi, float lo);
 template<> inline float mkl_parts<float>(float hi, float lo) { (void)lo; return hi; }
-template<> inline MklDf mkl_parts<MklDf>(float hi, float lo) { return {mkl_df_input(float2(hi,lo))}; }
+template<> inline MklDf mkl_parts<MklDf>(float hi, float lo) { return {float2(hi,lo)}; }
 template<typename R> static inline R mkl_c(float v) { return mkl_parts<R>(v,0.0f); }
 static inline float mkl_sqrt(float a) { return sqrt(a); }
 static inline MklDf mkl_sqrt(MklDf a) { return {mkl_df_sqrt(a.v)}; }

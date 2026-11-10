@@ -687,8 +687,6 @@ impl PsfOutput {
 mod resample;
 pub use resample::{from_resident_lattice, from_structured};
 
-mod statistics;
-pub use statistics::WavefrontStatistics;
 mod traced;
 pub use traced::{PupilTracer, ResidentTracedPupil};
 mod spectral;

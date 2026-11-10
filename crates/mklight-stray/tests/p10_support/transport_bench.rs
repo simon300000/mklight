@@ -115,13 +115,14 @@ fn measure(
         let se = cpu
             .energy
             .detected_std_error
-            .hypot(gpu.energy.detected_std_error);
+            .unwrap()
+            .hypot(gpu.energy.detected_std_error.unwrap());
         assert!(
             (cpu.energy.detected - gpu.energy.detected).abs() < 5. * se + 1e-8 * cpu.energy.emitted
         );
         println!(
             "P10_TRANSPORT {}",
-            serde_json::json!({"name":name,"rays":rays,"angle":angle,"iteration":iteration,"phase":if iteration==0{"cold"}else if iteration==1{"warmup"}else{"measured"},"scene_seconds":scene_seconds,"cpu_seconds":cpu_seconds,"metal_seconds":wall,"device_seconds":device,"commands":commands,"peak_bytes":peak,"copied_bytes":copies,"allocations":allocations,"max_command_seconds":max_command,"fallback_count":0,"events":gpu.energy.events,"cpu_events_per_second":cpu.energy.events as f64/cpu_seconds,"gpu_events_per_second":gpu.energy.events as f64/wall,"cpu_variance_time":cpu.energy.detected_owned_std_error.powi(2)*cpu_seconds,"gpu_variance_time":gpu.energy.detected_owned_std_error.powi(2)*wall,"settings":native,"source":source,"stages":execution["timings"],"resident_options":execution["resident_options"],"backend":info.backend,"build":b.precision().kernel_build})
+            serde_json::json!({"name":name,"rays":rays,"angle":angle,"iteration":iteration,"phase":if iteration==0{"cold"}else if iteration==1{"warmup"}else{"measured"},"scene_seconds":scene_seconds,"cpu_seconds":cpu_seconds,"metal_seconds":wall,"device_seconds":device,"commands":commands,"peak_bytes":peak,"copied_bytes":copies,"allocations":allocations,"max_command_seconds":max_command,"fallback_count":0,"events":gpu.energy.events,"cpu_events_per_second":cpu.energy.events as f64/cpu_seconds,"gpu_events_per_second":gpu.energy.events as f64/wall,"cpu_variance_time":cpu.energy.detected_owned_std_error.unwrap().powi(2)*cpu_seconds,"gpu_variance_time":gpu.energy.detected_owned_std_error.unwrap().powi(2)*wall,"settings":native,"source":source,"stages":execution["timings"],"resident_options":execution["resident_options"],"backend":info.backend,"build":b.precision().kernel_build})
         );
     }
 }

@@ -1,5 +1,5 @@
 //! Host/device divisions of the chief-ray maps: `chief_ray_angle`,
-//! `pupil_aberration` and `grid_distortion` (route key `fieldmaps`). Each
+//! `pupil_aberration` and `grid_distortion` ([`Route::chief`]). Each
 //! field point needs one aimed chief ray (plus, for the pupil aberration,
 //! four un-aimed probes); the per-field chief solve is small, serial and
 //! branchy, the trace regular.
@@ -12,31 +12,18 @@
 use super::*;
 
 /// The chief-map designs (module docs).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ChiefDesign {
+    #[default]
     HostChief,
     DeviceChief,
 }
 impl ChiefDesign {
-    pub const DEFAULT: Self = Self::HostChief;
+    /// The design's name in the run evidence (`fieldmaps_variant`).
     pub fn name(self) -> &'static str {
         match self {
             Self::HostChief => "host-chief",
             Self::DeviceChief => "device-chief",
-        }
-    }
-    /// The selected design and its evidence name; an unknown name is an
-    /// error, as for the other route keys.
-    pub fn selected() -> MkResult<(Self, String)> {
-        let all = [Self::HostChief, Self::DeviceChief];
-        match mklight_core::split::variant(super::SPLIT_KEY) {
-            None => Ok((Self::DEFAULT, format!("default:{}", Self::DEFAULT.name()))),
-            Some(v) => match all.into_iter().find(|d| d.name() == v) {
-                Some(d) => Ok((d, v)),
-                None => Err(mklight_core::MkError::InvalidParam(format!(
-                    "unknown fieldmaps design '{v}' (host-chief, device-chief)"
-                ))),
-            },
         }
     }
 }

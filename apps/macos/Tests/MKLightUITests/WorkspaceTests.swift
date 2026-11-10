@@ -62,9 +62,7 @@ final class LibraryEngine: EngineClient, @unchecked Sendable {
         return ModelSnapshot(system: s.system, hash: s.hash, libraryHash: libraryHash)
     }
 
-    func validate(_ system: OpticalSystem) async -> [ModelIssue] { [] }
     func materialNames() async -> [String] { ["N-BK7", "N-SK16"] }
-    func submit(_ request: AnalysisRequest, on snapshot: ModelSnapshot) -> AnalysisJob { mock.submit(request, on: snapshot) }
 
     func analysisDescriptors() async -> [AnalysisDescriptor] {
         ["first_order", "layout", "validate", "forever"].map {
@@ -82,9 +80,7 @@ final class LibraryEngine: EngineClient, @unchecked Sendable {
             let info = RunInfo(
                 engineVersion: "1", snapshotHash: snapshot.hash, analysis: request.analysis, settings: .object(request.settings),
                 backend: "cpu_reference", precision: .f64Reference, seed: nil, startedUnixMs: 0, durationMs: 0)
-            return AnalysisOutput(
-                runInfo: info, result: .generic(GenericResult(analysis: request.analysis, json: .object([:]))), libraryHash: lib,
-                engineRequest: request)
+            return AnalysisOutput(runInfo: info, json: .object([:]), libraryHash: lib, engineRequest: request)
         }
         if request.analysis == "forever" { shared.jobs.withLock { $0.append(job) } }
         return job
@@ -441,7 +437,7 @@ final class LibraryEngine: EngineClient, @unchecked Sendable {
             runInfo: RunInfo(
                 engineVersion: "1", snapshotHash: SnapshotHash(hex: "00"), analysis: "spot_diagram", settings: .object([:]),
                 backend: "cpu_reference", precision: .f64Reference, seed: nil, startedUnixMs: 0, durationMs: 0),
-            result: .generic(GenericResult(analysis: "spot_diagram", json: .object(["unexpected": .bool(true)]))))
+            json: .object(["unexpected": .bool(true)]))
         #expect(SpotDiagramView(output: out, context: AnalysisContext()) == nil)
         #expect(MTFView(output: out, context: AnalysisContext()) == nil)
         #expect(WavefrontView(output: out, context: AnalysisContext()) == nil)

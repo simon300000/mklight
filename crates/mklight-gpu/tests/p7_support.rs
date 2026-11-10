@@ -205,7 +205,7 @@ pub fn check_coatings(b: &dyn ComputeBackend) {
 #[path = "p1_support.rs"]
 mod p1;
 pub fn transport_plan(
-    b: &dyn ComputeBackend,
+    b: &dyn QualificationBackend,
     t: &mklight_trace::SequentialTracer,
     field: usize,
     wl: usize,
@@ -250,7 +250,7 @@ pub fn transport_plan(
     p.settings = serde_json::json!({"package":"P7","field":field,"wavelength":wl,"tile":tile,"version":consts::MKL_RAD_VERSION});
     (p, h)
 }
-pub fn check_samples(b: &dyn ComputeBackend) {
+pub fn check_samples(b: &dyn QualificationBackend) {
     let state = mklight_trace::PolarizationState::Stokes {
         s: mklight_trace::Stokes {
             s0: 1.,
@@ -645,40 +645,6 @@ pub fn malus_and_channels(b: &dyn ComputeBackend) {
         assert!((v.power[1].to_f64() - v.power[3].to_f64()).abs() < 1e-12);
         assert!(v.power[1].to_f64() > v.power[0].to_f64());
     }
-    let settings = mklight_trace::PolarizationMapSettings {
-        field: t.field(0).point,
-        wavelength: 1,
-        grid: 7,
-        state: PolarizationState::Unpolarized,
-        clip: true,
-    };
-    let a = polarization_pupil_map(b, &t, &settings, &JobContext::new()).unwrap();
-    let c = mklight_trace::polarization_pupil_map(&t, &settings, &JobContext::new()).unwrap();
-    assert!((a.mean_intensity - c.mean_intensity).abs() < FIELD_TOL);
-    assert!((a.max_diattenuation - c.max_diattenuation).abs() < FIELD_TOL);
-    assert!((a.rms_retardance - c.rms_retardance).abs() < RETARDANCE_TOL);
-    assert_eq!(a.undefined_retarder, c.undefined_retarder);
-    // Per-sample map assembly, including the T_max/T_min reconstruction.
-    assert_eq!(a.samples.len(), c.samples.len());
-    for (x, y) in a.samples.iter().zip(&c.samples) {
-        assert_eq!((x.pupil, x.status), (y.pupil, y.status));
-        assert!((x.intensity - y.intensity).abs() < FIELD_TOL);
-        for (u, v) in x.jones.m.iter().flatten().zip(y.jones.m.iter().flatten()) {
-            assert!((u - v).norm() < FIELD_TOL);
-        }
-        let (p, q) = (x.properties, y.properties);
-        assert_eq!(p.retarder_defined, q.retarder_defined);
-        for (u, v) in [
-            (p.t_unpolarized, q.t_unpolarized),
-            (p.t_max, q.t_max),
-            (p.t_min, q.t_min),
-            (p.diattenuation, q.diattenuation),
-        ] {
-            assert!((u - v).abs() < FIELD_TOL, "{p:?} {q:?}");
-        }
-        assert!((p.retardance - q.retardance).abs() < RETARDANCE_TOL);
-        assert!((x.retardance_jones - y.retardance_jones).abs() < RETARDANCE_TOL);
-    }
     let expected = intensities[0] * 0.35f64.cos().powi(2) + intensities[1] * 0.35f64.sin().powi(2);
     assert!((intensities[2] - expected).abs() < 1e-12);
 }
@@ -882,7 +848,7 @@ pub fn singular_retarder(b: &dyn ComputeBackend) {
         }
     }
 }
-pub fn scalar_reference(b: &dyn ComputeBackend) {
+pub fn scalar_reference(b: &dyn QualificationBackend) {
     for (name, model) in samples::all() {
         let t = testutil::tracer(model);
         let pts = (mklight_trace::PupilSampling::Grid { n: 17 }).points();

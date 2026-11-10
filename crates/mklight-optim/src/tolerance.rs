@@ -769,6 +769,9 @@ impl<T: OperandEvaluator + ?Sized> OperandEvaluator for &T {
     fn fd_relative_step(&self, kind: &OperandKind, scheme: crate::deriv::FdScheme) -> Option<f64> {
         (**self).fd_relative_step(kind, scheme)
     }
+    fn for_solve(&self) -> Option<Box<dyn OperandEvaluator + '_>> {
+        (**self).for_solve()
+    }
 }
 
 /// Compensator solves one scheduler run takes: each is a thread of its own,

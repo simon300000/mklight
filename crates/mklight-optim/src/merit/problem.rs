@@ -361,6 +361,16 @@ impl<E: OperandEvaluator> OpticalProblem<E> {
         x: &CandidateBatch,
         ctx: &JobContext,
     ) -> MkResult<Vec<Option<Vec<OperandValue>>>> {
+        self.operand_values_on(&self.evaluator, x, ctx)
+    }
+
+    /// [`Self::operand_values`] computed by `evaluator`.
+    fn operand_values_on(
+        &self,
+        evaluator: &dyn OperandEvaluator,
+        x: &CandidateBatch,
+        ctx: &JobContext,
+    ) -> MkResult<Vec<Option<Vec<OperandValue>>>> {
         let n_ops = self.spec.operands.len();
         let mut out: Vec<Option<Vec<OperandValue>>> =
             vec![Some(vec![Err(OperandError::Invalid("disabled".into())); n_ops]); x.len()];
@@ -378,9 +388,7 @@ impl<E: OperandEvaluator> OpticalProblem<E> {
             ctx.check()?;
             let ops = self.config_operands(c);
             let refs: Vec<&super::Operand> = ops.iter().map(|&i| &self.spec.operands[i]).collect();
-            let rows = self
-                .evaluator
-                .evaluate_parametric(&self.parametric(x, c), &refs, ctx)?;
+            let rows = evaluator.evaluate_parametric(&self.parametric(x, c), &refs, ctx)?;
             if rows.len() != x.len() {
                 return Err(MkError::Numerical(
                     "operand evaluator returned the wrong shape".into(),
@@ -561,6 +569,54 @@ impl<E: OperandEvaluator> Problem for OpticalProblem<E> {
             .filter(|(_, o)| !matches!(o.kind, OperandKind::Combine { .. }))
             .filter_map(|(_, o)| self.evaluator.fd_relative_step(&o.kind, scheme))
             .reduce(f64::max)
+    }
+    fn for_solve(&self) -> Option<Box<dyn Problem + '_>> {
+        let evaluator = self.evaluator.for_solve()?;
+        Some(Box::new(OneSolve {
+            problem: self,
+            evaluator,
+        }))
+    }
+}
+
+/// An [`OpticalProblem`] on the evaluator of one solve
+/// ([`Problem::for_solve`]): the problem's merit, variables and constraints,
+/// evaluated with that solve's own evaluator state.
+struct OneSolve<'a, E: OperandEvaluator> {
+    problem: &'a OpticalProblem<E>,
+    evaluator: Box<dyn OperandEvaluator + 'a>,
+}
+
+impl<E: OperandEvaluator> Problem for OneSolve<'_, E> {
+    fn gpu_context(&self) -> Option<&crate::gpu::GpuContext> {
+        self.evaluator.gpu_context()
+    }
+    fn variables(&self) -> &[Variable] {
+        self.problem.variables()
+    }
+    fn num_residuals(&self) -> usize {
+        self.problem.num_residuals()
+    }
+    fn weights(&self) -> &[f64] {
+        self.problem.weights()
+    }
+    fn constraints(&self) -> &[Constraint] {
+        self.problem.constraints()
+    }
+    fn evaluate_batch(&self, x: &CandidateBatch, ctx: &JobContext) -> MkResult<BatchEvaluation> {
+        let values = self
+            .problem
+            .operand_values_on(self.evaluator.as_ref(), x, ctx)?;
+        Ok(self.problem.to_evaluation(values))
+    }
+    fn anchored_differences(&self) -> bool {
+        self.problem.anchored_differences()
+    }
+    fn fd_relative_step(&self, scheme: crate::deriv::FdScheme) -> Option<f64> {
+        self.problem.fd_relative_step(scheme)
+    }
+    fn for_solve(&self) -> Option<Box<dyn Problem + '_>> {
+        self.problem.for_solve()
     }
 }
 

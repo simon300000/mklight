@@ -7,6 +7,10 @@ import Testing
 @testable import MKLightModel
 @testable import MKLightUI
 
+#if canImport(CMKLight)
+import CMKLight
+#endif
+
 /// Integration tests against the real Rust engine (`libmklight_ffi.a`).
 /// They are skipped, with the reason below, when the library was not
 /// linked; build it with `scripts/build-macos.sh --engine-only`.
@@ -31,7 +35,7 @@ private func sample(_ id: String) throws -> OpticalSystem { try #require(SampleS
 /// thicknesses from `system_summary`, indices from its `n_after` buffer
 /// (read without copying). Test-only arithmetic that cross-checks the data
 /// path; the app itself never computes optics.
-private func paraxialEFL(summary: GenericResult, wavelength w: Int) throws -> (efl: Double, imageHeight: Double) {
+private func paraxialEFL(summary: AnalysisOutput, wavelength w: Int) throws -> (efl: Double, imageHeight: Double) {
     let n = try #require(summary.buffer(named: "n_after"))
     #expect(n.dtype == .f64 && n.shape.count == 2)
     guard case .array(let rows)? = summary.json["surfaces"] else { throw EngineError.failed("no surface table") }
@@ -51,11 +55,8 @@ private func paraxialEFL(summary: GenericResult, wavelength w: Int) throws -> (e
     @Test func libraryAndAnalysisList() async throws {
         let e = try engine()
         #expect(!e.info.isMock && !e.info.version.isEmpty)
-        let backends = try await e.backends()
-        #expect(backends.array?.contains { $0["id"] == .string("cpu_reference") && $0["available"] == .bool(true) } == true)
         let names = await e.analysisDescriptors().map(\.name)
-        for n in ["validate", "system_summary", "glass_info", "rng_stream"] { #expect(names.contains(n)) }
-        #expect(names.contains(AnalysisKind.firstOrder.engineName))
+        for n in ["validate", "system_summary", "glass_info", "rng_stream", "first_order"] { #expect(names.contains(n)) }
         let glass = try #require(await e.analysisDescriptors().first { $0.name == "glass_info" })
         #expect(glass.settingsFields.first?.name == "name" && glass.settingsFields.first?.required == true)
         #expect(glass.defaultSettings == .null, "a required setting means no defaults")
@@ -79,16 +80,14 @@ private func paraxialEFL(summary: GenericResult, wavelength w: Int) throws -> (e
 
     @Test(arguments: SampleSystems.bundled.map(\.id))
     func everySampleOpensValidatesAndSummarises(id: String) async throws {
-        let e = try engine().newSession(system: sample(id))
+        let e = try engine().newSession()
         let snap = try await e.openSnapshot(sample(id))
-        #expect(try e.currentSnapshotHash() == snap.hash)
-        let issues = await e.validate(try sample(id))
-        #expect(issues.filter { $0.severity == .error }.isEmpty, "\(id): \(issues)")
+        let validation = try await e.submit(EngineAnalysisRequest(analysis: "validate"), on: snap).result()
+        #expect(validation.json["ok"] == .bool(true) && validation.json["errors"]?.int == 0, "\(id): \(validation.json)")
         let out = try await e.submit(EngineAnalysisRequest(analysis: "system_summary"), on: snap).result()
-        guard case .generic(let g) = out.result else { Issue.record("summary is generic"); return }
         #expect(out.runInfo.snapshotHash == snap.hash && out.runInfo.analysis == "system_summary")
         #expect(out.libraryHash == snap.libraryHash)
-        let n = try #require(g.buffer(named: "n_after"))
+        let n = try #require(out.buffer(named: "n_after"))
         #expect(n.shape == [snap.system.surfaces.count, snap.system.wavelengths.wavelengths.count])
         #expect((0..<n.count).allSatisfy { n[$0] > 0.9 && n[$0] < 2.1 }, "indices are relative to air")
     }
@@ -97,20 +96,15 @@ private func paraxialEFL(summary: GenericResult, wavelength w: Int) throws -> (e
         let e = try engine().makeDocumentEngine()
         let achromat = try sample("achromat")
         let snap = try await e.openSnapshot(achromat)
-        let out = try await e.submit(EngineAnalysisRequest(analysis: "system_summary"), on: snap).result()
-        guard case .generic(let summary) = out.result else { Issue.record("no summary"); return }
+        let summary = try await e.submit(EngineAnalysisRequest(analysis: "system_summary"), on: snap).result()
         let (efl, imageHeight) = try paraxialEFL(summary: summary, wavelength: achromat.wavelengths.primary)
         #expect(abs(efl - 100) < 0.01, "EFL \(efl)")
         #expect(abs(imageHeight) < 1e-6, "the sample's image is at the paraxial focus (y = \(imageHeight))")
-        // The engine's own first-order analysis must agree: it has to
-        // deliver a typed result with a numeric EFL.
-        let name = AnalysisKind.firstOrder.engineName
-        let fo = try await e.submit(.firstOrder(FirstOrderSettings()), on: snap).result()
-        guard case .firstOrder(let r) = fo.result else {
-            Issue.record("\(name) did not decode as first-order data: \(fo.result)")
-            return
-        }
-        let engineEFL = try #require(r["efl"], "\(name) reports no 'efl' entry: \(r.entries.map(\.key))")
+        // The engine's own first-order analysis must agree: the pane's
+        // reader has to find a numeric EFL in its report.
+        let fo = try await e.submit(EngineAnalysisRequest(analysis: "first_order"), on: snap).result()
+        let report = try #require(FirstOrderData(fo.json), "first_order did not read as first-order data: \(fo.json)")
+        let engineEFL = try #require(report.entry(["efl"])?.value, "first_order reports no 'efl' entry: \(report.entries.map(\.key))")
         #expect(abs(engineEFL - efl) < 1e-6 * efl, "engine EFL \(engineEFL), y-nu trace \(efl)")
     }
 
@@ -138,7 +132,7 @@ private func paraxialEFL(summary: GenericResult, wavelength w: Int) throws -> (e
         #expect(elapsed < .milliseconds(100), "submit waited \(elapsed) for the session lock")
         let out = try await job.result()
         #expect(out.runInfo.snapshotHash == achromat.hash)
-        guard case .generic(let g) = out.result, case .array(let rows)? = g.json["surfaces"] else {
+        guard case .array(let rows)? = out.json["surfaces"] else {
             Issue.record("no surface table")
             return
         }
@@ -164,18 +158,17 @@ private func paraxialEFL(summary: GenericResult, wavelength w: Int) throws -> (e
         #expect(zip(updates, updates.dropFirst()).allSatisfy { $0.fraction <= $1.fraction }, "monotone")
         #expect(updates.last?.fraction == 1)
         #expect(a.runInfo.seed == 7 && a.runInfo.settings["seed"] == .integer(7))
-        guard case .generic(let ga) = a.result else { Issue.record("generic"); return }
-        let u = try #require(ga.buffer(named: "uniform"))
+        let u = try #require(a.buffer(named: "uniform"))
         #expect(u.count == 4000 && u.dtype == .f64)
         let zeroCopy = u.withUnsafeBufferPointer(of: Double.self) { $0.reduce(0, +) / Double($0.count) }
         #expect(abs(try #require(zeroCopy) - 0.5) < 0.03)
         #expect(u.withUnsafeBufferPointer(of: Float.self) { _ in 0 } == nil, "typed access checks the dtype")
         let (b, _) = try await run(seed: 7)
         let (c, _) = try await run(seed: 8)
-        guard case .generic(let gb) = b.result, case .generic(let gc) = c.result else { return }
-        #expect(gb.buffer(named: "uniform") == u, "same seed, same stream")
-        #expect(gc.buffer(named: "uniform") != u)
+        #expect(b.buffer(named: "uniform") == u, "same seed, same stream")
+        #expect(c.buffer(named: "uniform") != u)
         #expect(a.isCurrent(for: snap, request: try #require(a.engineRequest)))
+        #expect(!a.isCurrent(for: snap, request: try #require(c.engineRequest)), "another seed is another request")
     }
 
     /// A request by name runs with exactly its settings: a seed it leaves
@@ -187,7 +180,6 @@ private func paraxialEFL(summary: GenericResult, wavelength w: Int) throws -> (e
         let descriptor = try #require(await e.analysisDescriptors().first { $0.name == "rng_stream" })
         let shown = try #require(descriptor.settingsFields.first { $0.name == "seed" }?.defaultValue)
         var r = EngineAnalysisRequest(analysis: "rng_stream", settings: ["count": .integer(16)])
-        r.execution.seed = 99
         let byDefault = try await e.submit(r, on: snap).result()
         #expect(byDefault.runInfo.settings["seed"] == shown)
         #expect(byDefault.runInfo.seed == shown.int.flatMap { UInt64(exactly: $0) })
@@ -215,7 +207,7 @@ private func paraxialEFL(summary: GenericResult, wavelength w: Int) throws -> (e
         #expect(clock.now - t0 < .seconds(5), "the job stopped long before its 20 s of work")
         // The engine is still usable afterwards.
         let ok = try await e.submit(EngineAnalysisRequest(analysis: "validate"), on: snap).result()
-        #expect(ok.result.analysisName == "validate")
+        #expect(ok.runInfo.analysis == "validate")
     }
 
     /// Extended surface shapes open, validate and now run through every
@@ -230,7 +222,7 @@ private func paraxialEFL(summary: GenericResult, wavelength w: Int) throws -> (e
         let snap = try await e.openSnapshot(system)
         for analysis in ["seidel", "layout"] {
             let out = try await e.submit(EngineAnalysisRequest(analysis: analysis), on: snap).result()
-            #expect(out.result.analysisName == analysis, "\(id) \(analysis)")
+            #expect(out.runInfo.analysis == analysis, "\(id) \(analysis)")
         }
         let layout = try await e.submit(EngineAnalysisRequest(analysis: "layout"), on: snap).result()
         let surfaces = layout.json["surfaces"]?.array ?? []
@@ -267,8 +259,9 @@ private func paraxialEFL(summary: GenericResult, wavelength w: Int) throws -> (e
         let e = try engine()
         let system = try MKLightJSON.decode(
             OpticalSystem.self, from: Data(contentsOf: fixtureDir.appendingPathComponent("extended_shapes.json")))
-        let issues = await e.validate(system)
-        #expect(issues.isEmpty, "\(issues)")
+        let snap = try await e.openSnapshot(system)
+        let out = try await e.submit(EngineAnalysisRequest(analysis: "validate"), on: snap).result()
+        #expect(out.json["issues"]?.array?.isEmpty == true, "\(out.json)")
         #expect(system.structuralIssues().isEmpty)
     }
 
@@ -293,80 +286,123 @@ private func paraxialEFL(summary: GenericResult, wavelength w: Int) throws -> (e
         #expect(await failure(EngineAnalysisRequest(analysis: "no_such_analysis"))?.code == .notFound)
         #expect(await failure(EngineAnalysisRequest(analysis: "rng_stream", settings: ["bogus": .integer(1)]))?.code == .invalidArgument)
         #expect(await failure(EngineAnalysisRequest(analysis: "glass_info"))?.code == .invalidArgument, "name is required")
-        #expect(await failure(EngineAnalysisRequest(analysis: "glass_info", settings: ["name": .string("NO-SUCH-GLASS")]))?.code != nil)
+        #expect(await failure(EngineAnalysisRequest(analysis: "glass_info", settings: ["name": .string("NO-SUCH-GLASS")]))?.code == .notFound)
         if let unavailable = await e.analysisDescriptors().first(where: { !$0.available }) {
             #expect(await failure(EngineAnalysisRequest(analysis: unavailable.name))?.code == .unsupported)
         }
-        #expect(throws: EngineError.self) { try e.openProject(at: URL(fileURLWithPath: "/nonexistent/x.mklight")) }
+        // Statuses of the session calls keep their codes too.
         do {
-            _ = try e.openProject(at: URL(fileURLWithPath: "/nonexistent/x.mklight"))
+            _ = try await e.loadCatalog(at: URL(fileURLWithPath: "/nonexistent/x.agf"))
+            Issue.record("a missing catalog loaded")
         } catch let error as EngineError {
             #expect(error.code == .io)
         }
-        let junk = FileManager.default.temporaryDirectory.appendingPathComponent("mklight-junk-\(UUID()).mklight")
+        let junk = FileManager.default.temporaryDirectory.appendingPathComponent("mklight-junk-\(UUID()).json")
         try Data("not json".utf8).write(to: junk)
         defer { try? FileManager.default.removeItem(at: junk) }
         do {
-            _ = try e.openProject(at: junk)
-            Issue.record("junk opened")
+            _ = try await e.loadCatalog(at: junk)
+            Issue.record("junk loaded as a catalog")
         } catch let error as EngineError {
             #expect(error.code == .parse)
         }
     }
 
-    @Test func typedSettingsFailFast() async throws {
-        let e = try engine()
-        let snap = try await e.openSnapshot(SampleSystems.singlet())
-        var psf = PSFSettings()
-        psf.field = 9
-        await #expect(throws: EngineError.self) { try await e.submit(.psf(psf), on: snap).result() }
+    /// A job that fails while running throws the error of its own status
+    /// code and message, not a generic "job failed".
+    @Test func failedJobsKeepTheirErrorCode() async throws {
+        let e = try engine().newSession()
+        var system = SampleSystems.singlet()
+        system.surfaces[1].material = .catalog(catalog: nil, name: "NOPE-42")
+        let snap = try await e.openSnapshot(system)
+        do {
+            _ = try await e.submit(EngineAnalysisRequest(analysis: "system_summary"), on: snap).result()
+            Issue.record("a system with an unknown glass was summarised")
+        } catch let error as EngineError {
+            #expect(error.code == .notFound, "\(error)")
+            #expect(error.errorDescription?.contains("NOPE-42") == true, "\(error)")
+            guard case .engine(.notFound, _) = error else {
+                Issue.record("expected .engine(.notFound, …), got \(error)")
+                return
+            }
+        }
     }
 
+    /// Which jobs can be stopped is what the engine's analysis list says.
+    @Test func stopSupportComesFromTheAnalysisList() async throws {
+        let e = try engine()
+        let stoppable = Set(await e.analysisDescriptors().filter(\.stoppable).map(\.name))
+        #expect(stoppable == ["optimize", "tolerance", "glass_substitution"])
+        let snap = try await e.openSnapshot(SampleSystems.singlet())
+        for name in ["optimize", "tolerance", "glass_substitution", "rng_stream", "validate"] {
+            let job = e.submit(EngineAnalysisRequest(analysis: name), on: snap)
+            #expect(job.canStop == stoppable.contains(name), "\(name)")
+            job.cancel()
+            _ = try? await job.result()
+        }
+    }
+
+    /// The app reads and writes `.mklight` files itself (`ProjectFile`) and
+    /// has no binding for the engine's project calls, so this test makes
+    /// them directly: a file the engine saves reads in the mirror and
+    /// writes back losslessly, and the engine opens what the mirror wrote.
     @Test func projectsRoundTripThroughEngineAndMirror() async throws {
+        #if canImport(CMKLight)
+        func check(_ status: MKStatus) throws {
+            guard status != MK_OK else { return }
+            let message = String(cString: mk_last_error())
+            throw EngineError.from(code: EngineErrorCode(rawValue: status) ?? .internal, message: message)
+        }
+        func json(_ call: (UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>) -> MKStatus) throws -> JSONValue {
+            var out: UnsafeMutablePointer<CChar>?
+            let status = call(&out)
+            defer { mk_string_free(out) }
+            try check(status)
+            return try JSONValue.parse(Data(String(cString: try #require(out)).utf8))
+        }
+        /// `mk_session_open`: the opened project's system and session info.
+        func open(_ url: URL, on e: FFIEngine) throws -> (system: OpticalSystem, info: JSONValue) {
+            var session: OpaquePointer?
+            try check(mk_session_open(e.core.pointer, url.path, &session))
+            defer { mk_session_destroy(session) }
+            let system = try json { mk_session_get_system_json(session, $0) }.decode(OpticalSystem.self)
+            return (system, try json { mk_session_info_json(session, $0) })
+        }
         let e = try engine()
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("mklight-ffi-\(UUID())")
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: dir) }
         let url = dir.appendingPathComponent("achromat.mklight")
-        let doc = try e.newSession(system: sample("achromat"))
-        try doc.setProjectSection("views", .array([.object(["key": .string("w1"), "analysis": .string("system_summary")])]))
-        try doc.save(to: url)
-        #expect(try doc.sessionInfo().dirty == false)
+        let doc = try e.newSession()
+        _ = try await doc.openSnapshot(sample("achromat"))
+        let views = #"[{"key":"w1","analysis":"system_summary"}]"#
+        let saved = try doc.session.locked { s in
+            try check(mk_session_set_project_section_json(s, "views", views))
+            try check(mk_session_save(s, url.path))
+            return try json { mk_session_info_json(s, $0) }
+        }
+        #expect(saved["dirty"] == .bool(false))
         // The Swift mirror reads the engine's file and writes it back losslessly.
         var file = try ProjectFile.decode(Data(contentsOf: url))
         #expect(file.system == (try sample("achromat")))
         #expect(file.sections["views"]?.differences(from: .array([.object(["key": .string("w1"), "analysis": .string("system_summary"), "settings": .null, "ui": .null])])).isEmpty == true)
         file.system.name = "Edited in Swift"
         try file.encoded().write(to: url)
-        let reopened = try e.openProject(at: url)
-        #expect(try reopened.system().name == "Edited in Swift")
-        #expect(try reopened.sessionInfo().openWarnings.isEmpty)
-        let snapA = try await reopened.openSnapshot(file.system)
-        #expect(try reopened.currentSnapshotHash() == snapA.hash)
+        let reopened = try open(url, on: e)
+        #expect(reopened.system.name == "Edited in Swift" && reopened.system == file.system)
+        #expect(reopened.info["open_warnings"]?.array?.isEmpty == true)
+        let snap = try await e.newSession().openSnapshot(file.system)
+        #expect(reopened.info["snapshot_hash"] == .string(snap.hash.hex), "the engine read the system the mirror wrote")
         // A document without a schema version is refused by the engine too.
         let early = try JSONValue.object([
             "format": .string("mklight-project"), "version": .integer(1), "system": JSONValue.from(sample("singlet")),
         ])
         let earlyURL = dir.appendingPathComponent("early.mklight")
         try MKLightJSON.encode(early).write(to: earlyURL)
-        #expect(throws: EngineError.self) { try e.openProject(at: earlyURL) }
-    }
-
-    @Test func paramEditsAreAtomicAndProduceNewSnapshots() async throws {
-        let e = try engine().newSession()
-        let snap = try await e.openSnapshot(SampleSystems.singlet())
-        let id = snap.system.surfaces[2].id
-        let edited = try await e.applyParamEdits(
-            [ParamEdit(.thickness(surface: id), 90), ParamEdit(.wavelengthUm(index: 0), 0.5)], to: snap)
-        #expect(edited.hash != snap.hash)
-        #expect(edited.system.surfaces[2].thickness == 90 && edited.system.wavelengths.wavelengths[0].um == 0.5)
-        #expect(snap.system.surfaces[2].thickness != 90, "snapshots are immutable")
-        await #expect(throws: EngineError.self) {
-            try await e.applyParamEdits([ParamEdit(.thickness(surface: id), 80), ParamEdit(.conic(surface: SurfaceID(99)), 1)], to: edited)
-        }
-        #expect(try e.currentSnapshotHash() == edited.hash, "a failed batch changes nothing")
-        let inf = try await e.applyParamEdits([ParamEdit(.thickness(surface: snap.system.surfaces[0].id), 1000)], to: edited)
-        #expect(inf.system.surfaces[0].thickness == 1000)
+        #expect(throws: EngineError.self) { try open(earlyURL, on: e) }
+        #else
+        Issue.record("the engine library is linked, but the tests cannot import its C module")
+        #endif
     }
 
     @Test func catalogsChangeTheLibraryHash() async throws {
@@ -386,15 +422,18 @@ private func paraxialEFL(summary: GenericResult, wavelength w: Int) throws -> (e
         ).write(to: agf)
         var system = SampleSystems.singlet()
         system.surfaces[1].material = .catalog(catalog: "MYCAT", name: "MY-BK7")
+        func validationErrors(_ snapshot: ModelSnapshot) async throws -> Int? {
+            try await e.submit(EngineAnalysisRequest(analysis: "validate"), on: snapshot).result().json["errors"]?.int
+        }
         let before = try await e.openSnapshot(system)
-        #expect(await e.validate(system).contains { $0.severity == .error }, "unknown glass before loading")
+        #expect(try await validationErrors(before) ?? 0 > 0, "unknown glass before loading")
         let info = try await e.loadCatalog(at: agf)
         #expect(info.name == "MYCAT" && info.glassCount == 1 && info.source == "user")
         #expect(await e.catalogs().map(\.name) == ["BUILTIN", "MYCAT"])
         let after = try await e.openSnapshot(system)
         #expect(after.hash == before.hash, "same system")
         #expect(after.libraryHash != before.libraryHash, "different glass data")
-        #expect(await e.validate(system).filter { $0.severity == .error }.isEmpty)
+        #expect(try await validationErrors(after) == 0)
         let glasses = try await e.glasses(in: "MYCAT")
         #expect(glasses.map(\.name) == ["MY-BK7"] && abs(glasses[0].nd - 1.5168) < 1e-3)
         let out = try await e.submit(EngineAnalysisRequest(analysis: "system_summary"), on: after).result()
@@ -422,11 +461,36 @@ private func paraxialEFL(summary: GenericResult, wavelength w: Int) throws -> (e
                 g.addTask {
                     let out = try await e.submit(EngineAnalysisRequest(analysis: "system_summary"), on: snap).result()
                     #expect(out.runInfo.snapshotHash == snap.hash)
-                    guard case .generic(let r) = out.result, case .array(let rows)? = r.json["surfaces"] else { return }
+                    let rows = try #require(out.json["surfaces"]?.array)
                     #expect(rows[2]["thickness"]?.doubleValue == snap.system.surfaces[2].thickness)
                 }
             }
             try await g.waitForAll()
+        }
+    }
+
+    /// The route the engine records for automatic runs reads as a line of
+    /// the run details: every decision it sends is one the app knows.
+    /// Analyses without a GPU path, and an engine without a GPU, send none.
+    @Test func routeDecisionsOfAutomaticRunsReadAsALine() async throws {
+        let e = try engine()
+        let snap = try await e.openSnapshot(try #require(SampleSystems.bundled("double_gauss")))
+        for (analysis, settings) in [
+            ("spot_diagram", ["rings": JSONValue.integer(6)]), ("spot_diagram", ["rings": .integer(200)]),
+            ("encircled_energy", [:]), ("wavefront_map", [:]), ("system_summary", [:]),
+        ] {
+            let out = try await e.submit(EngineAnalysisRequest(analysis: analysis, settings: settings), on: snap).result()
+            let backend = try #require(out.backend, "\(analysis)")
+            #expect(backend.requested == "default:auto", "\(analysis)")
+            let line = RunRoute.line(requested: backend.requested, decision: backend.costDecision)
+            #expect((line == nil) == (backend.costDecision == nil), "\(analysis): \(String(describing: backend.costDecision))")
+            if let line {
+                // The line names the backend the decision chose.
+                let chosen = backend.costDecision?["decision"]?.string
+                #expect(line.hasPrefix(chosen == "cpu_reference" ? "CPU" : "GPU"), "\(analysis): \(line)")
+                if backend.costDecision?["rule"]?.string == "cost model" { #expect(line.contains("GPU predicted "), "\(line)") }
+            }
+            #expect(RunRoute.attempts(out.runInfo.failedAttempts).count == out.runInfo.failedAttempts.count)
         }
     }
 

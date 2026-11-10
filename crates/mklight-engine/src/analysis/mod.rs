@@ -64,6 +64,7 @@ use crate::backend::{Backend, BackendInfo, DeviceHandle};
 use crate::buffer::{Buffer, BufferDesc};
 use crate::error::{EngineError, EngineResult};
 use crate::graph::{AnalysisGraph, ScopedMemo};
+use crate::route::RouteOptions;
 use crate::settings;
 use mklight_core::memo::{KeyHasher, NodeKey};
 use mklight_trace::{AimBudget, AimStop, SequentialTracer, TracerSettings};
@@ -119,6 +120,9 @@ pub struct AnalysisInfo {
     pub result_version: u32,
     /// The analysis can run on a GPU backend (`auto` selects one).
     pub gpu_path: bool,
+    /// A running job of the analysis can be stopped early, keeping its
+    /// best result so far (`Engine::stop_job`).
+    pub stoppable: bool,
 }
 
 /// What an analysis returns.
@@ -142,10 +146,10 @@ pub struct BackendReport {
     /// GPU device name, when a GPU computed the result.
     pub device: Option<String>,
     /// Why the requested (or automatically preferred) backend was not used:
-    /// unavailable, no GPU path, a static capability restriction, a cost
-    /// decision of `auto`, or a native run that failed. In
-    /// `run_info.warnings` too, except for the deliberate routes of an
-    /// `auto` or default preference (no GPU path, static capability, cost
+    /// unavailable, no GPU path, a division that gives the device no part
+    /// of the run, a cost decision of `auto`, or a native run that failed.
+    /// In `run_info.warnings` too, except for the deliberate routes of an
+    /// `auto` or default preference (no GPU path, no device share, cost
     /// decision).
     pub fallback_reason: Option<String>,
     /// Native execution evidence: device/build/probe, plan versions and stages.
@@ -261,6 +265,9 @@ pub struct AnalysisInput<'a> {
     cost_model: Option<Arc<cost::CostModel>>,
     /// Tier and aim-stop policy of this run ([`RunPolicy`]).
     pub policy: RunPolicy,
+    /// How the device analyses of this run divide their work
+    /// (`crate::route`).
+    pub route: RouteOptions,
 }
 
 /// Rough bytes of a tracer node (fields × wavelengths of aim data).
@@ -304,12 +311,13 @@ impl<'a> AnalysisInput<'a> {
             graph: None,
             cost_model: None,
             policy: RunPolicy::default(),
+            route: RouteOptions::default(),
         }
     }
 
     /// An input of the same run for another snapshot or backend: the
-    /// library and its hash, the run policy, the analysis graph and the
-    /// job-level stop carry over. Device, selection and cost decision are
+    /// library and its hash, the run policy, the route options, the
+    /// analysis graph and the job-level stop carry over. Device, selection and cost decision are
     /// the caller's to set.
     pub(crate) fn derive<'b>(
         &self,
@@ -320,6 +328,7 @@ impl<'a> AnalysisInput<'a> {
         AnalysisInput::with_resolver(snapshot, self.library.clone(), backend, resolver)
             .with_library_hash(self.library_hash().to_string())
             .with_policy(self.policy)
+            .with_route(self.route)
             .with_graph(self.graph.clone())
             .with_stop_token(self.stop.clone())
     }
@@ -334,6 +343,13 @@ impl<'a> AnalysisInput<'a> {
     /// at the requested aiming tolerance.
     pub fn with_policy(mut self, policy: RunPolicy) -> Self {
         self.policy = policy;
+        self
+    }
+
+    /// Divide the device analyses by `route`; the default is each
+    /// analysis' default division.
+    pub fn with_route(mut self, route: RouteOptions) -> Self {
+        self.route = route;
         self
     }
 
@@ -553,6 +569,12 @@ pub trait Analysis: Send + Sync {
     fn memoizable(&self) -> bool {
         false
     }
+    /// True when the analysis reads `AnalysisInput`'s stop token and, once
+    /// it is set, ends with its best result so far (`result.stopped`). Its
+    /// jobs then accept `Engine::stop_job`.
+    fn supports_stop(&self) -> bool {
+        false
+    }
     /// `Err(reason)` when the analysis cannot run in this build.
     fn availability(&self) -> Result<(), String> {
         Ok(())
@@ -586,6 +608,7 @@ pub trait Analysis: Send + Sync {
             result_schema: self.result_schema(),
             result_version: self.result_version(),
             gpu_path: self.gpu_path(),
+            stoppable: self.supports_stop(),
         }
     }
 }
@@ -618,12 +641,12 @@ pub fn prepare_tier(analysis: &dyn Analysis, settings: &Value, tier: Tier) -> En
 /// backend fallback notice) are added to the `RunInfo`.
 ///
 /// With an analysis graph, a [`Analysis::memoizable`] request identical to
-/// an earlier one (same snapshot content, library, normalised settings and
-/// policy; for an explicit backend also the backend selection) returns the
-/// stored result, restamped with this call's start time and duration;
-/// identical concurrent requests run once. Results without failed backend
-/// attempts are stored: an `auto` result whichever backend computed it, an
-/// explicit request's only from the CPU reference.
+/// an earlier one (same snapshot content, library, normalised settings,
+/// policy and route options; for an explicit backend also the backend
+/// selection) returns the stored result, restamped with this call's start
+/// time and duration; identical concurrent requests run once. Results
+/// without failed backend attempts are stored: an `auto` result whichever
+/// backend computed it, an explicit request's only from the CPU reference.
 pub fn run_analysis(
     analysis: &dyn Analysis,
     input: &AnalysisInput<'_>,
@@ -676,10 +699,10 @@ pub fn run_analysis(
 }
 
 /// Graph key of a result. An `auto` request's key is its content alone
-/// (snapshot, library, analysis, settings): a stored answer is returned
-/// before routing, whichever backend computed it, so a repeated request
-/// costs nothing on either backend. Explicit requests also key the backend
-/// selection, its precision and reasons.
+/// (snapshot, library, analysis, settings, policy, route options): a
+/// stored answer is returned before routing, whichever backend computed
+/// it, so a repeated request costs nothing on either backend. Explicit
+/// requests also key the backend selection, its precision and reasons.
 pub(crate) fn result_key(
     analysis: &dyn Analysis,
     input: &AnalysisInput<'_>,
@@ -694,8 +717,8 @@ pub(crate) fn result_key(
         .u64(analysis.result_version() as u64)
         .json(settings)
         .json(&input.policy)
-        // The device divisions in effect (process-wide route options).
-        .json(&mklight_core::split::selection())
+        // The device divisions of the run.
+        .json(&input.route)
         .str(&input.requested_backend);
     if !Backend::is_auto_request(&input.requested_backend) {
         h.str(&input.backend.id)
@@ -779,12 +802,6 @@ fn run_prepared(
         backend.device = None;
     }
     let attempts = input.attempts.take();
-    for a in attempts.iter().filter(|a| a.outcome == "downgraded") {
-        warnings.push(format!(
-            "backend '{}' downgraded to the CPU f64 reference ({})",
-            a.backend, a.reason
-        ));
-    }
     for w in input.resolved_warnings().into_iter().chain(out.warnings) {
         if !warnings.contains(&w) {
             warnings.push(w);

@@ -63,6 +63,9 @@ Validation (CONVENTIONS §13) reports `non_finite` and, for
 `|Δn_d| > 0.05` or `|ΔV_d| > 10`, `invalid_material` at
 `….material.offset.dn_d` / `.dv_d`. Tracing (CPU, GPU, paraxial) sees the
 offset through the resolved indices; catalogue files are never modified.
+A model glass (`{"type": "model", "nd", "vd", "dpgf"}`, on a surface or in
+a coating layer) needs `n_d > 1` and `V_d > 0`, the condition of its Cauchy
+fit: validation reports `invalid_material` at `….material.nd` / `.vd`.
 
 * `glass_map` keeps the nominal point and adds a `kind: "offset"` point per
   offset surface (at the glass's catalogue conditions); only that point

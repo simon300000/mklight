@@ -39,12 +39,6 @@ pub fn scalar(v: Df32) -> f32 {
 pub fn params(r: &Request) -> Params {
     let mut p = Params::zeroed();
     let g = match r {
-        Request::Zernike { samples, terms, .. } => {
-            p.mode = 7;
-            p.n = samples.desc.shape[0] as u32;
-            p.field_side = terms.desc.shape[0] as u32;
-            None
-        }
         Request::Shells(_)
         | Request::Simulation(_)
         | Request::FftMtf(_)
@@ -52,7 +46,6 @@ pub fn params(r: &Request) -> Params {
         | Request::Spectral(_)
         | Request::Placement(_)
         | Request::Lattice(_)
-        | Request::Statistics(_)
         | Request::Diagnostics(_)
         | Request::Resample(_) => unreachable!("grouped requests have their own parameters"),
         Request::FocusCorrelation {
@@ -329,30 +322,4 @@ pub fn correlation_term(
     let z = cis(phase / Df32::from_f32(cov) - (w[k] + focus(p, k, dz)));
     let m = c[k] * a[k] / gamma * ar / if p.shifted != 0 { 1. } else { qz };
     [m * z[0] + deficit, m * z[1], energy]
-}
-
-/// Cartesian angular powers and Jacobi recurrence avoid polar-coordinate
-/// singularities at the origin and factorial cancellation at high order.
-pub fn zernike(x: Df32, y: Df32, n: u32, m: i32) -> Df32 {
-    let am = m.unsigned_abs();
-    let degree = (n - am) / 2;
-    let one = Df32::from_f32(1.);
-    let t = (x * x + y * y).mul_f32(2.) - one;
-    let b = am as f32;
-    let (mut prev, mut cur) = (one, one + (t - one).mul_f32((b + 2.) * 0.5));
-    for k in 1..degree {
-        let f = k as f32;
-        let s = 2. * f + b;
-        let a1 = 2. * (f + 1.) * (f + b + 1.) * s;
-        let a2 = (t.mul_f32((s + 2.) * s) - Df32::from_f32(b * b)).mul_f32(s + 1.);
-        let a3 = 2. * f * (f + b) * (s + 2.);
-        let next = (a2 * cur - prev.mul_f32(a3)) / Df32::from_f32(a1);
-        prev = cur;
-        cur = next;
-    }
-    let (mut re, mut im) = (one, Df32::ZERO);
-    for _ in 0..am {
-        (re, im) = (re * x - im * y, re * y + im * x);
-    }
-    (if m >= 0 { re } else { im }) * if degree == 0 { one } else { cur }
 }

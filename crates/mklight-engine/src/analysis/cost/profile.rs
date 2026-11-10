@@ -14,6 +14,11 @@ use super::model::Features;
 const TABLE_NODES: f64 = mklight_gpu::aiming::TABLE_NODES as f64;
 const TABLE_MIN_RAYS_PER_ROW: f64 = mklight_gpu::aiming::TABLE_MIN_RAYS_PER_ROW as f64;
 
+/// Stop traces per aimed ray: the mean Newton iterations of the reference
+/// CPU solver at the calibrated difficulty (3.43) and the ray's own trace.
+/// The unit of the fitted ray and seed-table coefficients.
+pub const AIM_TRACES: f64 = 1. + 3.43;
+
 /// Stage work of one request.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Profile {
@@ -52,10 +57,14 @@ impl SystemShape {
 }
 
 impl Profile {
-    /// Model features with `traces` stop traces per aimed ray (the aiming
-    /// difficulty; ignored without real aiming).
-    pub fn features(&self, shape: &SystemShape, traces: f64) -> Features {
-        let aim = if shape.aimed { traces * shape.stop } else { 0. };
+    /// Model features: an aimed ray adds [`AIM_TRACES`] traces to the stop
+    /// (none without real aiming).
+    pub fn features(&self, shape: &SystemShape) -> Features {
+        let aim = if shape.aimed {
+            AIM_TRACES * shape.stop
+        } else {
+            0.
+        };
         // Aimed geometric generations of at least `TABLE_MIN_RAYS_PER_ROW`
         // rays per row build a device seed table (wave pupils use host f64
         // tables instead).
@@ -147,8 +156,7 @@ pub fn profile_with(
     };
     let mut p = Profile::default();
     match analysis {
-        "spot_diagram" | "ray_grid" | "encircled_energy" | "footprint" | "geometric_mtf"
-        | "best_focus" => {
+        "spot_diagram" | "ray_grid" | "footprint" | "geometric_mtf" | "best_focus" => {
             p.rows = fw;
             p.rays = fw * pattern(s, num("/rings", 6.));
             match analysis {
@@ -158,7 +166,6 @@ pub fn profile_with(
                 "ray_grid" => p.output = p.rays * 56.,
                 "footprint" => p.output = p.rays * 16.,
                 "geometric_mtf" => p.transform = p.rays * num("/frequency_samples", 41.) * 2.,
-                "encircled_energy" => p.transform = p.rays * lg(p.rays),
                 "best_focus" => p.transform = p.rays * num("/max_evaluations", 200.).min(64.),
                 _ => (),
             }
@@ -220,14 +227,7 @@ pub fn profile_with(
             p.rows = fw;
             p.rays = fw * nodes;
         }
-        "polarization_pupil_map" => {
-            let n = num("/grid", 33.);
-            p.rows = fw;
-            p.rays = fw * n * n;
-            p.output = p.rays * 64.;
-        }
-        "wavefront_map"
-        | "psf"
+        "psf"
         | "mtf"
         | "line_spread"
         | "diffraction_encircled_energy"
@@ -249,16 +249,15 @@ pub fn profile_with(
             let image = num("/grid_size", 0.).max(n);
             p.transform = pupils
                 * match analysis {
-                    "wavefront_map" => n * n,
                     "mtf" if s["method"].as_str() == Some("fft") => n * n * lg(n) * 4.,
                     "mtf" | "mtf_vs_field" => n * n * freqs * 2.,
                     "through_focus_mtf" => n * n * freqs * num("/focus_samples", 21.),
                     _ => image * image * lg(image) * 4.,
                 };
-            p.output = match analysis {
-                "psf" => f * image * image * 8.,
-                "wavefront_map" => pupils * n * n * 8.,
-                _ => 0.,
+            p.output = if analysis == "psf" {
+                f * image * image * 8.
+            } else {
+                0.
             };
         }
         "image_simulation" => {
@@ -326,8 +325,17 @@ mod tests {
         assert_eq!(wave(0).rays, wave(512).rays);
         let shape = SystemShape::of(&cooke);
         assert!(!shape.aimed);
-        let f = spot(6).features(&shape, 4.);
+        let f = spot(6).features(&shape);
         assert_eq!(f[2], 9. * 127. * shape.surfaces);
+        // Real aiming adds its stop traces to every ray.
+        let aimed = SystemShape {
+            aimed: true,
+            ..shape
+        };
+        assert_eq!(
+            spot(6).features(&aimed)[2],
+            9. * 127. * (shape.surfaces + 4.43 * shape.stop)
+        );
         assert!(profile("seidel", &json!({}), &cooke).is_none());
         // A random transmission pupil counts its rays, in the grid's unit.
         let transmission = |pupil: Value| {

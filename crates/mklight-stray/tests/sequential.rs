@@ -56,20 +56,24 @@ fn check_primary(
     let coarse = primary_reference(sys, &beam.spec, 250, &ctx).unwrap();
 
     let mc = e.detected_in(PathClass::Primary);
-    let se = e.std_error_in(PathClass::Primary);
+    let se = e.std_error_in(PathClass::Primary).unwrap();
     let m = r.detector.moments_of(PathClass::Primary);
     let zf = z(mc, reference.flux, se);
     let zx = z(
         m.centroid[0],
         reference.centroid[0],
-        m.centroid_std_error[0],
+        m.centroid_std_error[0].unwrap(),
     );
     let zy = z(
         m.centroid[1],
         reference.centroid[1],
-        m.centroid_std_error[1],
+        m.centroid_std_error[1].unwrap(),
     );
-    let zr = z(m.rms_radius, reference.rms_radius, m.rms_radius_std_error);
+    let zr = z(
+        m.rms_radius,
+        reference.rms_radius,
+        m.rms_radius_std_error.unwrap(),
+    );
     println!(
         "{name}: transmitted {:.6} vs {:.6} of the emitted flux (z = {zf:+.2}), centroid ({:.6}, {:.6}) vs ({:.6}, {:.6}) mm (z = {zx:+.2}, {zy:+.2}), RMS {:.6} vs {:.6} mm (z = {zr:+.2}); geometric RMS {:.6} mm",
         mc / e.emitted,
@@ -89,13 +93,15 @@ fn check_primary(
         reference.flux,
         coarse.flux
     );
-    assert!((reference.rms_radius - coarse.rms_radius).abs() < 0.2 * m.rms_radius_std_error);
+    assert!(
+        (reference.rms_radius - coarse.rms_radius).abs() < 0.2 * m.rms_radius_std_error.unwrap()
+    );
     for (what, zz) in [("flux", zf), ("x", zx), ("y", zy), ("rms", zr)] {
         assert!(zz.abs() < Z_MAX, "{name} {what}: z = {zz}");
     }
     // The error bars are tight enough for the comparison to mean something.
     assert!(se / mc < 0.01, "{name}: relative SE {}", se / mc);
-    assert!(m.rms_radius_std_error < 0.03 * m.rms_radius.max(1e-3));
+    assert!(m.rms_radius_std_error.unwrap() < 0.03 * m.rms_radius.max(1e-3));
     // Something is lost to reflections and the margin, and the beam is
     // limited by the stop rather than the source.
     assert!(reference.flux < 0.95 * beam.reference_flux);
@@ -250,7 +256,7 @@ fn crossing_surfaces_are_reported_and_obstruct() {
     .unwrap();
     let reference = primary_reference(&sys, &beam.spec, 250, &JobContext::new()).unwrap();
     let mc = r.energy.detected_in(PathClass::Primary);
-    let se = r.energy.std_error_in(PathClass::Primary);
+    let se = r.energy.std_error_in(PathClass::Primary).unwrap();
     let zs = z(mc, reference.sequential_flux, se);
     let zf = z(mc, reference.flux, se);
     println!(
@@ -338,7 +344,7 @@ fn plate_ghost_matches_closed_form() {
     assert!(r.energy.is_balanced());
     let e = &r.energy;
     let ghost = e.detected_in(PathClass::Ghost);
-    let se = e.std_error_in(PathClass::Ghost);
+    let se = e.std_error_in(PathClass::Ghost).unwrap();
     let all_orders = incident * tt * tt * rr * rr / (1.0 - rr * rr);
     let second = incident * tt * tt * rr * rr;
     let z_all = z(ghost, all_orders, se);
@@ -357,7 +363,7 @@ fn plate_ghost_matches_closed_form() {
     let zp = z(
         e.detected_in(PathClass::Primary),
         incident * tt * tt,
-        e.std_error_in(PathClass::Primary),
+        e.std_error_in(PathClass::Primary).unwrap(),
     );
     assert!(zp.abs() < Z_MAX, "primary z = {zp}");
     // The strongest ghost signature is "back face, then front face", whose

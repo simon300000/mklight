@@ -190,9 +190,8 @@ pub struct RunInfo {
     #[serde(default)]
     pub warnings: Vec<String>,
     /// Backend attempts that did not compute this result, in order: native
-    /// runs that failed or were skipped/rejected before running, and explicit
-    /// requests the capability policy downgraded. Their time is part of
-    /// `duration_ms`.
+    /// runs that failed, were skipped before running or were completed on
+    /// the reference. Their time is part of `duration_ms`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub failed_attempts: Vec<BackendAttempt>,
 }
@@ -204,10 +203,8 @@ pub struct BackendAttempt {
     /// Backend id (`gpu:metal`).
     pub backend: String,
     /// `failed` (ran and failed), `skipped` (the same input already failed
-    /// deterministically on this device), `downgraded` (an
-    /// explicit request the static capability policy ran on the reference),
-    /// or `reference_completion` (the native adapter completed the whole
-    /// result on the reference).
+    /// deterministically on this device) or `reference_completion` (the
+    /// native adapter completed the whole result on the reference).
     pub outcome: String,
     pub reason: String,
     /// Wall time spent in the attempt; 0 when it never started.

@@ -34,20 +34,24 @@ import Testing
         #expect(s.surfaces.contains { !$0.shape.isLegacy })
     }
 
+    /// The samples the app ships (the engine's, written by `dump_fixtures`
+    /// into the model's resources), read through the model's own loader.
     @Test func bundledSamplesRoundTripAndValidate() throws {
-        let entries = try Fixtures.roundTrip([SampleSystems.Entry].self, "samples")
+        let data = try #require(SampleSystems.bundledData)
+        let entries = try Fixtures.roundTrip([SampleSystems.Entry].self, "samples", data: data)
+        #expect(SampleSystems.bundled == entries)
         let ids = entries.map(\.id)
         #expect(ids.count == 16)
         for id in [
-            "hybrid_doe", "anamorphic", "biconic", "toroid", "q_con", "q_bfs", "odd_asphere", "xy_freeform", "zernike_sag",
+            "achromat", "hybrid_doe", "anamorphic", "biconic", "toroid", "q_con", "q_bfs", "odd_asphere", "xy_freeform",
+            "zernike_sag",
         ] {
             #expect(ids.contains(id), "\(id)")
         }
         for e in entries {
             #expect(e.system.structuralIssues().isEmpty, "\(e.id): \(e.system.structuralIssues())")
         }
-        // The app bundle ships the same file.
-        #expect(SampleSystems.bundled.map(\.id) == ids)
+        #expect(SampleSystems.bundled("achromat")?.aperture == .imageSpaceFNumber(5))
         #expect(SampleSystems.bundled("anamorphic")?.surfaces.compactMap(\.shape.cylinderAxis) == [.x, .x])
     }
 

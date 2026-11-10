@@ -9,8 +9,8 @@ use crate::{
 };
 use mklight_gpu::{
     ReduceMode,
-    collectives::{self, Scan, SegmentKind, SegmentReduce, StableSort},
-    geometry::{self, Characteristic, Distribution, Radial},
+    collectives::{self, SegmentKind, SegmentReduce},
+    geometry::{self, Characteristic},
 };
 /// Traced grid with chief-relative image coordinates and their moments.
 struct Setup<'a> {
@@ -27,6 +27,7 @@ fn setup<'a>(
     t: &'a SequentialTracer,
     s: &RaySampling,
     delta: f64,
+    route: &Route,
     ctx: &JobContext,
 ) -> MkResult<Setup<'a>> {
     crate::spot::validate_sampling(s.rings)?;
@@ -37,7 +38,7 @@ fn setup<'a>(
         .resolve(t.num_wavelengths(), t.system().primary_wavelength)?;
     let pupil = pupil_points(s.pattern, s.rings, s.seed);
     let points: Vec<_> = fields.iter().map(|&i| t.field(i).point).collect();
-    let geo = Geometry::new(b, t, ctx)?;
+    let geo = Geometry::new(b, t, ctx)?.with_route(route)?;
     let mut p = ResidentPlan::new(t.system().snapshot.clone());
     p.seed = seed_of(s.pattern, s.seed);
     let mut g = geo.append_grid(
@@ -71,221 +72,18 @@ fn warnings(t: &SequentialTracer, delta: f64) -> Vec<String> {
     }
     w
 }
-fn part(h: &BufferHandle, start: usize, n: usize) -> BufferView {
-    BufferView {
-        buffer: h.clone(),
-        offset: start,
-        stride: 1,
-        desc: BufferDesc::new(h.desc().element, [n]),
-    }
-}
-
-pub fn encircled_energy_job(
-    b: &dyn ComputeBackend,
-    t: &SequentialTracer,
-    s: &EncircledEnergySettings,
-    ctx: &JobContext,
-) -> MkResult<EncircledEnergyResult> {
-    encircled_energy_with_uncertainty_job(b, t, s, b.precision().budget.position_mm, ctx)
-}
-/// A caller-qualified position error bound, including its safety margin, may
-/// replace the backend-wide budget for this exact snapshot/sampling domain.
-/// The bound and every resulting reference decision are retained in RunInfo.
-pub fn encircled_energy_with_uncertainty_job(
-    b: &dyn ComputeBackend,
-    t: &SequentialTracer,
-    s: &EncircledEnergySettings,
-    position_uncertainty_mm: f64,
-    ctx: &JobContext,
-) -> MkResult<EncircledEnergyResult> {
-    if !position_uncertainty_mm.is_finite() || position_uncertainty_mm < 0.0 {
-        return Err(mklight_core::MkError::InvalidParam(
-            "position uncertainty must be finite and nonnegative".into(),
-        ));
-    }
-    crate::energy::validate_ee(s)?;
-    let augmented = default_fields(t, &s.sampling.fields)?;
-    let t = augmented.as_ref();
-    let Setup {
-        geo,
-        plan: mut p,
-        grid: g,
-        points: q,
-        mask,
-        moments,
-        fields,
-    } = setup(b, t, &s.sampling, s.defocus, ctx)?;
-    p.settings = serde_json::to_value(s).unwrap();
-    p.settings["position_uncertainty_mm"] = serde_json::json!(position_uncertainty_mm);
-    let n = g.hits.rays.count;
-    let len = g.pupil_count * g.wavelengths.len();
-    let radius = p.scratch(BufferDesc::new(ElementType::DoubleFloat, [n]));
-    let square = p.scratch(BufferDesc::new(ElementType::DoubleFloat, [n]));
-    let weight = p.scratch(BufferDesc::new(ElementType::DoubleFloat, [n]));
-    let ids = p.scratch(BufferDesc::new(ElementType::U32, [n]));
-    p.operations
-        .push(ResidentOp::Geometry(geometry::Request::Radial(Radial {
-            points: p.view(q)?,
-            mask: p.view(mask)?,
-            moments: p.view(moments)?,
-            segment_len: len,
-            centroid: s.reference == SpotReference::Centroid,
-            radius,
-            square,
-            weight,
-            ids,
-        })));
-    p.outputs = vec![radius, square, weight, ids, moments];
-    let r = geo.run(p, &ctx.subrange(0.0, 0.5))?;
-    let v = b.read_view(r.outputs[4].view())?;
-    let mom = v.as_slice::<Df32>()?;
-    let max = fields
-        .iter()
-        .enumerate()
-        .map(|(i, _)| {
-            mom[i * 10
-                + if s.reference == SpotReference::Centroid {
-                    9
-                } else {
-                    8
-                }]
-            .to_f64()
-            .sqrt()
-        })
-        .fold(0.0, f64::max);
-    let radii = linspace(0.0, s.max_radius.unwrap_or(max), s.samples);
-    let mut run = r.run_info.clone();
-    let mut ambiguous = Vec::new();
-    let mut out = Vec::new();
-    for (fi, &field) in fields.iter().enumerate() {
-        let mut p = ResidentPlan::new(t.system().snapshot.clone());
-        let rid = geo.import::<Df32>(&mut p, [radii.len()], |out| {
-            for (v, &r) in out.iter_mut().zip(&radii) {
-                *v = Df32::from_f64(r);
-            }
-            // The automatic outer bin is the largest arrived distance, so it
-            // holds every arrived ray by construction, as in the reference.
-            // Classifying it against that distance recomputed from moments
-            // would only add rounding (and a spurious straddle).
-            if s.max_radius.is_none() {
-                out[radii.len() - 1] = Df32::from_f32(f32::MAX);
-            }
-            Ok(())
-        })?;
-        let mut queries = Vec::new();
-        let mut boundaries = Vec::new();
-        for kind in 0..2 {
-            let keys = p.import(part(&r.outputs[kind], fi * len, len));
-            let weights = p.import(part(&r.outputs[2], fi * len, len));
-            let ids = p.import(part(&r.outputs[3], fi * len, len));
-            let sk = p.scratch(BufferDesc::new(ElementType::DoubleFloat, [len]));
-            let si = p.scratch(BufferDesc::new(ElementType::U32, [len]));
-            let sw = p.scratch(BufferDesc::new(ElementType::DoubleFloat, [len]));
-            p.operations
-                .push(ResidentOp::Collectives(collectives::Request::StableSort(
-                    StableSort {
-                        keys: p.view(keys)?,
-                        ids: p.view(ids)?,
-                        values: Some(p.view(weights)?),
-                        output_keys: sk,
-                        output_ids: si,
-                        output_values: Some(sw),
-                    },
-                )));
-            let cumulative = p.scratch(BufferDesc::new(ElementType::DoubleFloat, [len]));
-            p.operations
-                .push(ResidentOp::Collectives(collectives::Request::Scan(Scan {
-                    values: p.view(sw)?,
-                    inclusive: true,
-                    output: cumulative,
-                })));
-            let output = p.scratch(BufferDesc::new(ElementType::DoubleFloat, [radii.len() + 4]));
-            let boundary = p.scratch(BufferDesc::new(ElementType::DoubleFloat, [radii.len()]));
-            p.operations
-                .push(ResidentOp::Geometry(geometry::Request::Distribution(
-                    Distribution {
-                        uncertainty: Df32::from_f64(
-                            2.0 * std::f64::consts::SQRT_2 * position_uncertainty_mm,
-                        ),
-                        boundary,
-                        keys: p.view(sk)?,
-                        cumulative: p.view(cumulative)?,
-                        radii: p.view(rid)?,
-                        output,
-                    },
-                )));
-            queries.push(output);
-            boundaries.push(boundary);
-        }
-        queries.extend(boundaries);
-        p.outputs = queries;
-        let rr = geo.run(
-            p,
-            &ctx.subrange(
-                0.5 + 0.4 * fi as f64 / fields.len() as f64,
-                0.5 + 0.4 * (fi + 1) as f64 / fields.len() as f64,
-            ),
-        )?;
-        plans::add_run(&mut run, rr.run_info.clone());
-        let mut uncertain = false;
-        for h in &rr.outputs[2..] {
-            let view = b.read_view(h.view())?;
-            uncertain |= view.as_slice::<Df32>()?.iter().any(|v| v.to_f64() > 2e-3);
-        }
-        if uncertain {
-            ambiguous.push(field);
-        }
-        let c = b.read_view(rr.outputs[0].view())?;
-        let q = b.read_view(rr.outputs[1].view())?;
-        let c = c.as_slice::<Df32>()?;
-        let q = q.as_slice::<Df32>()?;
-        let k = radii.len();
-        out.push(FieldEnergy {
-            field,
-            field_value: field_value(t, field),
-            encircled: c[..k].iter().map(|v| v.to_f64()).collect(),
-            ensquared: q[..k].iter().map(|v| v.to_f64()).collect(),
-            r50: c[k].to_f64(),
-            r80: c[k + 1].to_f64(),
-            r90: c[k + 2].to_f64(),
-            half_width80: q[k + 1].to_f64(),
-            rays_arrived: mom[10 * fi].to_f64() as usize,
-        });
-    }
-    if !ambiguous.is_empty() {
-        ctx.check()?;
-        // The geometry error budget can straddle a discrete CDF step. Keep
-        // the reference's exact bins/automatic radius when that step exceeds
-        // the energy budget; never silently move or widen a requested bin.
-        let mut reference = crate::energy::encircled_energy_job(t, s, &ctx.subrange(0.9, 0.99))?;
-        reference.run_info.duration_ms += run.duration_ms;
-        reference.run_info.started_unix_ms = run.started_unix_ms;
-        reference.run_info.settings["resident_attempt"] = run.settings;
-        reference.run_info.settings["adapter_fallbacks"] = serde_json::json!({"stage":"energy_bin_classification","count":1,"trigger_fields":ambiguous,"pupil_rays":n,"requested_backend":b.info().backend_id(),"reason":"geometry uncertainty straddles more than 0.002 of arrived energy"});
-        reference.run_info.warnings.push(format!("encircled energy used the f64 reference: geometry uncertainty straddles more than 0.002 of arrived energy in field(s) {ambiguous:?}"));
-        ctx.check()?;
-        ctx.report(1.0, "encircled energy");
-        return Ok(reference);
-    }
-    ctx.check()?;
-    ctx.report(1.0, "encircled energy");
-    Ok(EncircledEnergyResult {
-        radius: radii,
-        fields: out,
-        wavelengths: g.wavelengths,
-        run_info: stamp(run, "encircled_energy", s, warnings(t, s.defocus)),
-    })
-}
 
 pub fn geometric_mtf_job(
     b: &dyn ComputeBackend,
     t: &SequentialTracer,
     s: &GeometricMtfSettings,
+    route: &Route,
     ctx: &JobContext,
 ) -> MkResult<GeometricMtfResult> {
     validate_mtf_job(s)?;
     let augmented = default_fields(t, &s.sampling.fields)?;
     Geometry::new(b, augmented.as_ref(), ctx)?
+        .with_route(route)?
         .split_large_generations()
         .geometric_mtf_job(s, ctx)
 }
@@ -594,6 +392,7 @@ pub fn best_focus_job(
     b: &dyn ComputeBackend,
     t: &SequentialTracer,
     s: &BestFocusSettings,
+    route: &Route,
     ctx: &JobContext,
 ) -> MkResult<BestFocusResult> {
     crate::energy::validate_best_focus(s)?;
@@ -607,7 +406,7 @@ pub fn best_focus_job(
         mask,
         moments: m0,
         fields,
-    } = setup(b, t, &s.sampling, 0.0, ctx)?;
+    } = setup(b, t, &s.sampling, 0.0, route, ctx)?;
     p.settings = serde_json::to_value(s).unwrap();
     let len = g.pupil_count * g.wavelengths.len();
     let (quad, _) = geo.focus_quadratic(

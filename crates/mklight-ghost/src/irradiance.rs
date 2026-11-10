@@ -52,6 +52,16 @@
 //!   field. A point source's primary peak depends on the bin size, so this
 //!   ratio is meaningful for bins of about a pixel.
 //!
+//! A ratio against a primary that puts no light on the map (a source
+//! outside the field of view, `points`) is undefined: `None`, unless the
+//! ghost puts none there either, which is the ratio 0. A `peak_ratio` is
+//! undefined when any field's is.
+//!
+//! Ghosts are ranked strongest first: those with an undefined `peak_ratio`
+//! (light where the primary has none) lead, by their absolute peak
+//! irradiance ([`PathIrradiance::peak`]) and then their flux on the map;
+//! the others follow by `peak_ratio`. Ties keep path order.
+//!
 //! The total ghost map is the sum of all path maps.
 //!
 //! With a sensor reflectance, detection counts the flux the sensor absorbs,
@@ -233,14 +243,37 @@ pub struct PathIrradiance {
     pub label: String,
     pub fields: Vec<FieldIrradiance>,
     /// Ghost flux on the map / primary flux on the map (1 for the primary
-    /// itself).
-    pub flux_ratio: f64,
-    /// Max over fields of ghost peak / primary peak (1 for the primary).
-    pub peak_ratio: f64,
+    /// itself); `None`: undefined (module docs).
+    pub flux_ratio: Option<f64>,
+    /// Max over fields of ghost peak / primary peak (1 for the primary);
+    /// `None`: undefined (module docs).
+    pub peak_ratio: Option<f64>,
     /// Flux on the map, all fields.
     pub flux: f64,
     #[serde(default)]
     pub map: Option<IrradianceMap>,
+}
+
+impl PathIrradiance {
+    /// Peak irradiance of the path: the largest of its fields' peaks.
+    pub fn peak(&self) -> f64 {
+        self.fields.iter().map(|f| f.peak).fold(0.0, f64::max)
+    }
+
+    /// Ranking order, strongest first (module docs).
+    fn rank(&self, other: &Self) -> std::cmp::Ordering {
+        use std::cmp::Ordering;
+        match (self.peak_ratio, other.peak_ratio) {
+            (Some(a), Some(b)) => b.total_cmp(&a),
+            (None, Some(_)) => Ordering::Less,
+            (Some(_), None) => Ordering::Greater,
+            (None, None) => other
+                .peak()
+                .total_cmp(&self.peak())
+                .then_with(|| other.flux.total_cmp(&self.flux)),
+        }
+        .then_with(|| self.path.cmp(&other.path))
+    }
 }
 
 /// Result of [`ghost_irradiance`].
@@ -249,12 +282,13 @@ pub struct GhostIrradiance {
     pub run: RunInfo,
     /// The primary image, computed the same way (always with its map).
     pub primary: PathIrradiance,
-    /// Ranked by `peak_ratio`, strongest first.
+    /// Ranked strongest first (module docs).
     pub ghosts: Vec<PathIrradiance>,
     pub total_ghost_map: IrradianceMap,
-    /// Total ghost peak / primary peak, and total ghost flux / primary flux.
-    pub total_peak_ratio: f64,
-    pub total_flux_ratio: f64,
+    /// Total ghost peak / primary peak, and total ghost flux / primary flux;
+    /// `None`: undefined (module docs).
+    pub total_peak_ratio: Option<f64>,
+    pub total_flux_ratio: Option<f64>,
     pub truncated: bool,
     pub coverage: GhostCoverage,
 }
@@ -380,13 +414,15 @@ fn select_fields<'a>(
     Ok(out)
 }
 
-fn ratio(a: f64, b: f64) -> f64 {
+/// `a / b` for a ghost quantity `a` against the primary's `b`; `None`
+/// (undefined) when the primary's is zero and the ghost's is not.
+fn ratio(a: f64, b: f64) -> Option<f64> {
     if b > 0.0 {
-        a / b
+        Some(a / b)
     } else if a > 0.0 {
-        f64::INFINITY
+        None
     } else {
-        0.0
+        Some(0.0)
     }
 }
 
@@ -1340,8 +1376,8 @@ pub(crate) fn ghost_irradiance_with_backend(
         path: GhostPath::primary(),
         label: GhostPath::primary().label(image),
         fields: pstats.clone(),
-        flux_ratio: 1.0,
-        peak_ratio: 1.0,
+        flux_ratio: Some(1.0),
+        peak_ratio: Some(1.0),
         flux: primary_flux,
         map: Some(primary_map.clone()),
     };
@@ -1385,7 +1421,7 @@ pub(crate) fn ghost_irradiance_with_backend(
             .iter()
             .zip(&pstats)
             .map(|(g, p)| ratio(g.peak, p.peak))
-            .fold(0.0, f64::max);
+            .try_fold(0.0, |max: f64, r| r.map(|r| max.max(r)));
         let flux = map.flux();
         ghosts.push(PathIrradiance {
             label: path.label(image),
@@ -1400,11 +1436,7 @@ pub(crate) fn ghost_irradiance_with_backend(
     for (v, acc) in total.values.iter_mut().zip(&total_acc) {
         *v = acc.value();
     }
-    ghosts.sort_by(|a, b| {
-        b.peak_ratio
-            .total_cmp(&a.peak_ratio)
-            .then_with(|| a.path.cmp(&b.path))
-    });
+    ghosts.sort_by(PathIrradiance::rank);
     ctx.check()?;
     let total_flux_ratio = ratio(total.flux(), primary_flux);
     let total_peak_ratio = ratio(total.peak(), primary_map.peak());

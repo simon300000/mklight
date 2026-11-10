@@ -81,12 +81,6 @@ extension SurfaceShape {
         return self
     }
 
-    /// The base of a sag overlay, else the shape itself.
-    var sagShapeBase: SurfaceShape {
-        if case .sagOverlay(let base, _, _, _, _, _) = self { return base }
-        return self
-    }
-
     /// Sets fringe irregularity `mode`, wrapping the sag shape in a zero
     /// overlay over `clearRadius` first, like the engine's
     /// `ParamPath::Irregularity` setter. False for a paraxial lens or
@@ -261,10 +255,11 @@ extension SurfaceShape {
     }
 
     /// Sets even-asphere coefficient `index` of the geometry, extending the
-    /// list with zeros (the engine's `ParamPath::Asphere` setter).
+    /// list with zeros; an index at or beyond `CoefficientSet.maxEvenTerms`
+    /// is refused (the engine's `ParamPath::Asphere` setter).
     @discardableResult
     public mutating func setAsphereCoefficient(_ v: Double, at index: Int) -> Bool {
-        guard index >= 0 else { return false }
+        guard index >= 0, index < CoefficientSet.maxEvenTerms else { return false }
         return editGeometry { s in
             guard case .evenAsphere(let c, let k, var a) = s else { return false }
             if index >= a.count { a += Array(repeating: 0, count: index - a.count + 1) }
@@ -370,8 +365,9 @@ extension ParamPath {
                 return s.shape.hasCurvature ? nil : "surface has no curvature"
             case .conic:
                 return s.shape.hasConic ? nil : "surface has no conic"
-            case .asphere:
-                return s.shape.hasAsphereCoefficients ? nil : "surface is not an even asphere"
+            case .asphere(_, let index):
+                guard s.shape.hasAsphereCoefficients else { return "surface is not an even asphere" }
+                return index < CoefficientSet.maxEvenTerms ? nil : "[coefficient_count] index exceeds shape limit"
             case .shapeCoefficient(_, let set, let index):
                 guard let max = set.maxCount(for: s.shape) else { return "coefficient set does not belong to shape" }
                 return index < max ? nil : "[coefficient_count] index exceeds shape limit"

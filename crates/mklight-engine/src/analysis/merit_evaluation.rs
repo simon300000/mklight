@@ -177,6 +177,8 @@ mod tests {
         );
     }
 
+    /// The EFL penalty of the derivative-free methods is weighted by the
+    /// start merit on the CPU reference, in both jobs and on any backend.
     #[test]
     fn derivative_free_hold_uses_the_same_start_merit() {
         let settings = json!({"algorithm": "de", "max_iterations": 1,
@@ -191,6 +193,24 @@ mod tests {
         for key in ["merit", "violation"] {
             assert_eq!(e.json[key], o.json["start"][key]);
         }
+        // On a device the penalty is still weighted by the reference's
+        // start merit: both jobs report the same merit spec.
+        use crate::{AnalysisRequest, Backend, Engine};
+        let engine = Engine::default();
+        engine.register_backend(Arc::new(crate::gpu::GpuProvider::emulation()));
+        let mut session = engine.new_session();
+        session.set_system(samples::cooke_triplet()).unwrap();
+        let on_device = |analysis: &str| {
+            let settings = json!({"algorithm": "de", "max_iterations": 1,
+                "options": {"population": 4}, "backend": "gpu_emulation"});
+            let mut request = AnalysisRequest::new(analysis, settings);
+            request.backend = Some(Backend::Gpu("cpu_f32".into()));
+            session.run_analysis(&request, &JobContext::new()).unwrap()
+        };
+        let (e, o) = (on_device("merit_evaluation"), on_device("optimize"));
+        assert_eq!(e.json["backend"]["precision"], "f32_gpu");
+        assert_ne!(e.json["merit"], o.json["start"]["merit"], "device values");
+        assert_eq!(e.json["merit_spec"], o.json["merit_spec"]);
     }
 
     #[test]

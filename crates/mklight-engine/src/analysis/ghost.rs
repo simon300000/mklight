@@ -113,6 +113,16 @@ fn merge(mut a: serde_json::Map<String, Value>, b: Value) -> Value {
     Value::Object(a)
 }
 
+/// A number that is `null` when the quantity is undefined, with its unit
+/// and meaning.
+pub(super) fn num_or_null(unit: &str, description: &str) -> Value {
+    let mut v = describe(nullable(num("", "")), description);
+    if !unit.is_empty() {
+        v["unit"] = json!(unit);
+    }
+    v
+}
+
 fn coverage_schema() -> Value {
     obj(&[
         (
@@ -377,6 +387,9 @@ impl Analysis for GhostIrradiance {
     fn memoizable(&self) -> bool {
         true
     }
+    fn result_version(&self) -> u32 {
+        2
+    }
     fn name(&self) -> &str {
         "ghost_irradiance"
     }
@@ -436,11 +449,17 @@ impl Analysis for GhostIrradiance {
             ("fields", arr(field, "")),
             (
                 "flux_ratio",
-                num("", "Flux on the map / primary flux on the map."),
+                num_or_null(
+                    "",
+                    "Flux on the map / primary flux on the map; null (undefined) when the primary puts no flux on the map and this path does.",
+                ),
             ),
             (
                 "peak_ratio",
-                num("", "Max over fields of peak / primary peak."),
+                num_or_null(
+                    "",
+                    "Max over fields of peak / primary peak; null (undefined) when a field's primary peak is zero and this path's is not.",
+                ),
             ),
             ("flux", num("", "Flux on the map, all fields.")),
             (
@@ -467,15 +486,24 @@ impl Analysis for GhostIrradiance {
                 ("primary", path.clone()),
                 (
                     "ghosts",
-                    arr(path, "Ranked by peak_ratio, strongest first."),
+                    arr(
+                        path,
+                        "Strongest first: ghosts with a null peak_ratio by their largest field peak, then flux; then the others by peak_ratio.",
+                    ),
                 ),
                 (
                     "total_peak_ratio",
-                    num("", "Total ghost peak / primary peak."),
+                    num_or_null(
+                        "",
+                        "Total ghost peak / primary peak; null (undefined) when the primary map is empty and the ghost map is not.",
+                    ),
                 ),
                 (
                     "total_flux_ratio",
-                    num("", "Total ghost flux / primary flux."),
+                    num_or_null(
+                        "",
+                        "Total ghost flux / primary flux; null (undefined) when the primary map is empty and the ghost map is not.",
+                    ),
                 ),
                 ("truncated", boolean("")),
                 ("coverage", coverage_schema()),
@@ -580,5 +608,59 @@ impl Analysis for GhostIrradiance {
             o.insert("map".into(), geometry);
         }
         Ok(output(v, buffers, w))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::analysis::run_analysis;
+    use crate::backend::BackendInfo;
+    use mklight_core::materials::MaterialLibrary;
+    use mklight_core::{Snapshot, samples};
+
+    /// A source whose image misses the map: the ratios against it are
+    /// `null`, as the result schema declares, and the ghosts are ranked by
+    /// their absolute peak.
+    #[test]
+    fn undefined_ratios_are_null_in_the_result() {
+        let input = AnalysisInput::new(
+            Snapshot::new(samples::double_gauss()).unwrap(),
+            Arc::new(MaterialLibrary::with_builtin()),
+            BackendInfo::cpu_reference(),
+        );
+        let settings = json!({
+            "points": [{"hx": 0.0, "hy": 1.5}], "wavelengths": [1],
+            "pupil_samples": 24, "map_bins": [16, 16]
+        });
+        let r = run_analysis(
+            &GhostIrradiance,
+            &input,
+            &settings,
+            vec![],
+            &JobContext::new(),
+        )
+        .unwrap();
+        validate(&GhostIrradiance.result_schema(), &r.json, true).unwrap();
+        let j = &r.json;
+        assert_eq!(j["primary"]["flux"], json!(0.0));
+        assert_eq!(j["primary"]["peak_ratio"], json!(1.0));
+        assert!(j["total_flux_ratio"].is_null() && j["total_peak_ratio"].is_null());
+        let ghosts = j["ghosts"].as_array().unwrap();
+        let peak = |g: &Value| {
+            let fields = g["fields"].as_array().unwrap();
+            fields
+                .iter()
+                .map(|f| f["peak"].as_f64().unwrap())
+                .fold(0.0, f64::max)
+        };
+        let lit = ghosts.iter().filter(|g| peak(g) > 0.0).count();
+        assert!(lit > 4 && lit < ghosts.len(), "{lit}");
+        for (k, g) in ghosts.iter().enumerate() {
+            let expected = if k < lit { Value::Null } else { json!(0.0) };
+            assert_eq!(g["peak_ratio"], expected, "{}", g["label"]);
+            assert_eq!(g["flux_ratio"], expected, "{}", g["label"]);
+        }
+        assert!(ghosts[..lit].windows(2).all(|w| peak(&w[0]) >= peak(&w[1])));
     }
 }

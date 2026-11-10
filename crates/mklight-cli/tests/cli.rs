@@ -958,6 +958,14 @@ fn analyses_lists_the_registry() {
     assert_eq!(rng["available"], true);
     assert_eq!(rng["default_settings"]["count"], 100000);
     assert!(rng["settings_schema"]["properties"]["seed"].is_object());
+    // The analyses whose jobs take a Stop (the first Ctrl-C of `run`).
+    let stoppable: Vec<&str> = list
+        .iter()
+        .filter(|a| a["stoppable"] == true)
+        .map(|a| a["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(stoppable, ["glass_substitution", "optimize", "tolerance"]);
+    assert_eq!(rng["stoppable"], false);
     // Reserved names are listed as unavailable with a reason.
     for a in list.iter().filter(|a| a["available"] == false) {
         assert!(a["unavailable_reason"].is_string());
@@ -1120,6 +1128,35 @@ fn run_settings_seed_buffers_and_out() {
     assert!(code(&metal) == 0 || code(&metal) == 3);
     for b in ["cpu", "auto"] {
         json_run(&["run", s(&p), "rng_stream", "--backend", b], 0);
+    }
+}
+
+/// `--route KEY=VALUE` sets route options of the run: valid options run
+/// (and, on a device, divide the work), invalid ones are usage errors.
+#[test]
+fn run_route_options() {
+    let d = TempDir::new("route");
+    let p = sample(&d, "cooke_triplet");
+    let spot = ["run", s(&p), "spot_diagram", "--backend"];
+    let table = ["--route", "aiming=table", "--route", "aiming_share=0.5"];
+    json_run(&[&spot[..], &["cpu"], &table[..]].concat(), 0);
+    // On a Metal backend the evidence names the aiming design that ran.
+    let metal = mklight([&spot[..], &["metal", "--json"], &table[..]].concat());
+    assert!(code(&metal) == 0 || code(&metal) == 3);
+    if code(&metal) == 0 {
+        let v: Value = serde_json::from_str(&stdout(&metal)).unwrap();
+        let aiming = &v["backend"]["execution"][0]["settings"]["resident_execution"]["aiming"];
+        assert_eq!(aiming["design"], "table", "{aiming}");
+    }
+    for (bad, what) in [
+        ("aiming", "KEY=VALUE"),
+        ("aiming=nonsense", "nonsense"),
+        ("stray=wavefront", "stray"),
+        ("stray_share=2", "stray_share"),
+    ] {
+        let o = mklight([&spot[..], &["cpu", "--route", bad]].concat());
+        assert_eq!(code(&o), 1, "--route {bad}: {}", stderr(&o));
+        assert!(stderr(&o).contains(what), "--route {bad}: {}", stderr(&o));
     }
 }
 

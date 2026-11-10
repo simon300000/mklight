@@ -12,12 +12,9 @@ use std::{
 };
 fn backend(origin: LibraryChoice) -> MetalBackend {
     let started = Instant::now();
-    let b = MetalBackend::with_options(&MetalOptions {
-        library: origin,
-        ..Default::default()
-    })
-    .unwrap()
-    .expect("actual host Metal required");
+    let b = MetalBackend::with_options(&MetalOptions { library: origin })
+        .unwrap()
+        .expect("actual host Metal required");
     eprintln!(
         "backend_setup_probe_ms={:.6} build={}",
         started.elapsed().as_secs_f64() * 1e3,
@@ -48,7 +45,7 @@ fn grid(t: &SequentialTracer, side: usize) -> (RayBatch, Vec<u32>, Vec<Option<[f
     (rays, offsets, reference, aim_failures)
 }
 fn trace_plan(
-    b: &dyn ComputeBackend,
+    b: &dyn QualificationBackend,
     t: &SequentialTracer,
     h: SystemHandle,
     rays: RayBatch,
@@ -211,7 +208,7 @@ fn masked_subnormals_modes_and_views() {
                 SegmentKind::Summary,
                 SegmentKind::SourceProducts,
             ] {
-                let build = |b: &dyn ComputeBackend| {
+                let build = |b: &dyn QualificationBackend| {
                     let values = (0..2 * n).map(|i| [1e8, 1., -1e8, 1e-39][i % 4]).collect();
                     let mut p = cases::segment(
                         b,
@@ -241,7 +238,7 @@ fn masked_subnormals_modes_and_views() {
     }
 }
 /// A fit spanning several command buffers (20000 x 120).
-fn long_fit(g: &dyn ComputeBackend) -> ResidentPlan {
+fn long_fit(g: &dyn QualificationBackend) -> ResidentPlan {
     let (m, n) = (20000, 120);
     let a: Vec<_> = (0..m)
         .flat_map(|i| {

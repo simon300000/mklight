@@ -2,8 +2,12 @@
 //! packed f32 system layout shared bit-for-bit by every GPU backend, the
 //! double-float numerics specification, and a CPU-f32 emulation backend.
 //!
-//! * [`backend::ComputeBackend`] is the only interface solvers see; their
-//!   work runs as [`resident`] plans of the operation modules below.
+//! * [`backend::ComputeBackend`] is the production interface, the only one
+//!   the solvers and the engine see; their work runs as [`resident`] plans
+//!   of the operation modules below.
+//! * [`backend::QualificationBackend`] adds the host-array [`backend::Job`]
+//!   API and the single-buffer primitives. Only the offline accuracy
+//!   qualification ([`xval`]) and the test suites use it.
 //! * [`layout`] mirrors `include/mklight_gpu_types.h`, the single definition
 //!   of every host/GPU struct (also `#include`d by the Metal shaders).
 //! * [`df`], [`fmath`] and [`reduce`] specify the f32 numerics (CONVENTIONS
@@ -16,9 +20,10 @@
 //!   to a GPU that passes the numerics probe when constructed for that
 //!   GPU's environment (`CpuF32Backend::matching`), to separate algorithm
 //!   error from precision error.
-//! * [`xval`] cross-validates a backend's traces against the f64 reference
-//!   and qualifies a backend for a system (pass/fail with measured errors;
-//!   on failure callers fall back to the CPU and record it in `RunInfo`).
+//! * [`xval`] is the offline accuracy qualification, a test utility: it
+//!   cross-validates a backend's traces against the f64 reference and
+//!   reports pass/fail with the measured errors. Nothing calls it at run
+//!   time, and no run-time fallback depends on it.
 //!
 //! See `docs/GPU.md`.
 
@@ -44,7 +49,8 @@ pub mod consts {
 
 pub use backend::{
     BackendKind, ComputeBackend, DeviceInfo, DfOp, ErrorBudget, Job, JobKind, JobOutput, JobResult,
-    JobStats, KernelPreparation, NumericsProbe, PrecisionDescriptor, ReduceMode, SystemHandle,
+    JobStats, KernelPreparation, NumericsProbe, PrecisionDescriptor, QualificationBackend,
+    ReduceMode, SystemHandle,
 };
 pub use batch::{
     NewtonSettings, PathStep, PreparedTrace, Radiometry, RayBatch, RayStatus, RecordMode, StepMode,

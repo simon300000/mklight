@@ -10,12 +10,9 @@ use mklight_metal::{LibraryChoice, MetalBackend, MetalOptions};
 use std::{hint::black_box, time::Instant};
 
 fn backend(origin: LibraryChoice) -> MetalBackend {
-    let b = MetalBackend::with_options(&MetalOptions {
-        library: origin,
-        ..Default::default()
-    })
-    .unwrap()
-    .expect("host Metal required");
+    let b = MetalBackend::with_options(&MetalOptions { library: origin })
+        .unwrap()
+        .expect("host Metal required");
     assert!(b.precision().probe.error_free_transforms());
     eprintln!("DEVICE {:?} BUILD {}", b.info(), b.precision().kernel_build);
     b
@@ -55,7 +52,7 @@ fn fft(b: &dyn ComputeBackend) -> ResidentPlan {
     p.outputs = vec![prev];
     p
 }
-fn trace(b: &dyn ComputeBackend) -> (ResidentPlan, SystemHandle) {
+fn trace(b: &dyn QualificationBackend) -> (ResidentPlan, SystemHandle) {
     let t = testutil::tracer(testutil::singlet());
     let h = b
         .upload_system(&PackedSystem::pack_all(t.system()).unwrap())
@@ -78,7 +75,7 @@ fn trace(b: &dyn ComputeBackend) -> (ResidentPlan, SystemHandle) {
     p.outputs = vec![sum];
     (p, h)
 }
-fn opd(b: &dyn ComputeBackend) -> (ResidentPlan, SystemHandle) {
+fn opd(b: &dyn QualificationBackend) -> (ResidentPlan, SystemHandle) {
     let t = testutil::tracer(testutil::singlet());
     let points: Vec<_> = (0..1024 * 1024)
         .map(|i| {

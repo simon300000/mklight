@@ -36,7 +36,12 @@ use crate::error::{EngineError, EngineResult};
 
 /// A requested backend.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
-#[serde(tag = "kind", content = "name", rename_all = "snake_case")]
+#[serde(
+    tag = "kind",
+    content = "name",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
 pub enum Backend {
     /// CPU double-precision reference (`mklight-trace`).
     #[default]
@@ -58,12 +63,19 @@ impl Backend {
             Backend::Auto => "auto".into(),
         }
     }
-    /// Inverse of `id` (also accepts `cpu` and a bare GPU name like `metal`).
-    pub fn parse(s: &str) -> Self {
+    /// Inverse of `id`: `cpu_reference` (or `cpu`), `auto`, `gpu:<name>`.
+    /// Anything else is an invalid argument. `BackendRegistry::parse` also
+    /// takes the bare names of the registered GPU backends.
+    pub fn parse(s: &str) -> EngineResult<Self> {
         match s.trim() {
-            "" | "cpu" | "cpu_reference" => Backend::CpuReference,
-            "auto" => Backend::Auto,
-            other => Backend::Gpu(other.strip_prefix("gpu:").unwrap_or(other).to_string()),
+            "cpu" | "cpu_reference" => Ok(Backend::CpuReference),
+            "auto" => Ok(Backend::Auto),
+            other => match other.strip_prefix("gpu:") {
+                Some(name) if !name.is_empty() => Ok(Backend::Gpu(name.to_string())),
+                _ => Err(EngineError::InvalidArgument(format!(
+                    "unknown backend '{s}' (use cpu, cpu_reference, auto or gpu:<name>)"
+                ))),
+            },
         }
     }
     /// Whether a recorded request id (`SelectedBackend::requested`, which
@@ -284,6 +296,30 @@ impl BackendRegistry {
         self.providers.iter().map(|p| p.info()).collect()
     }
 
+    /// A backend by name: the forms of `Backend::parse`, or the bare name
+    /// of a registered GPU backend (`metal` for `gpu:metal`). Anything else
+    /// is an invalid argument naming what is accepted.
+    pub fn parse(&self, s: &str) -> EngineResult<Backend> {
+        let name = s.trim();
+        let gpus: Vec<String> = self
+            .providers
+            .iter()
+            .filter_map(|p| p.id().strip_prefix("gpu:").map(str::to_string))
+            .collect();
+        if gpus.iter().any(|g| g == name) {
+            return Ok(Backend::Gpu(name.to_string()));
+        }
+        Backend::parse(s).map_err(|_| {
+            let mut known = vec!["cpu".to_string(), "cpu_reference".into(), "auto".into()];
+            known.extend(gpus);
+            known.push("gpu:<name>".into());
+            EngineError::InvalidArgument(format!(
+                "unknown backend '{s}' (known: {})",
+                known.join(", ")
+            ))
+        })
+    }
+
     pub fn info(&self, b: &Backend) -> Option<BackendInfo> {
         self.provider(b).map(|(_, i)| i)
     }
@@ -449,14 +485,57 @@ mod tests {
 
     #[test]
     fn ids_roundtrip() {
-        for b in [Backend::CpuReference, Backend::Gpu("metal".into())] {
-            assert_eq!(Backend::parse(&b.id()), b);
+        for b in [
+            Backend::CpuReference,
+            Backend::Gpu("metal".into()),
+            Backend::Auto,
+        ] {
+            assert_eq!(Backend::parse(&b.id()), Ok(b));
         }
-        assert_eq!(Backend::parse("metal"), Backend::Gpu("metal".into()));
+        assert_eq!(Backend::parse("cpu"), Ok(Backend::CpuReference));
         assert_eq!(
             serde_json::to_value(Backend::Gpu("metal".into())).unwrap(),
             serde_json::json!({"kind": "gpu", "name": "metal"})
         );
+    }
+
+    #[test]
+    fn unknown_backend_names_are_invalid_arguments() {
+        for bad in ["", "cpu_ref", "mteal", "gpu", "gpu:", "CPU"] {
+            let e = Backend::parse(bad).unwrap_err();
+            assert!(matches!(e, EngineError::InvalidArgument(_)), "{bad:?}: {e}");
+            assert!(e.to_string().contains(&format!("'{bad}'")), "{e}");
+        }
+        // A bare GPU name is known only to the registry that has it.
+        assert!(Backend::parse("emu").is_err());
+        let mut r = BackendRegistry::cpu_only();
+        assert!(r.parse("emu").is_err());
+        r.register(Arc::new(Emu));
+        assert_eq!(r.parse("emu"), Ok(Backend::Gpu("emu".into())));
+        assert_eq!(r.parse("gpu:emu"), Ok(Backend::Gpu("emu".into())));
+        assert_eq!(r.parse(" cpu "), Ok(Backend::CpuReference));
+        assert_eq!(r.parse("auto"), Ok(Backend::Auto));
+        // An explicit id parses whether or not it is registered: selecting
+        // it then reports it as unavailable.
+        assert_eq!(r.parse("gpu:other"), Ok(Backend::Gpu("other".into())));
+        let e = r.parse("mteal").unwrap_err();
+        assert!(matches!(&e, EngineError::InvalidArgument(m)
+            if m.contains("'mteal'") && m.contains("emu") && m.contains("cpu_reference")));
+    }
+
+    #[test]
+    fn backend_objects_reject_unknown_keys() {
+        let ok: Backend = serde_json::from_str(r#"{"kind": "gpu", "name": "metal"}"#).unwrap();
+        assert_eq!(ok, Backend::Gpu("metal".into()));
+        assert_eq!(
+            serde_json::from_str::<Backend>(r#"{"kind": "auto"}"#).unwrap(),
+            Backend::Auto
+        );
+        let e = serde_json::from_str::<Backend>(r#"{"kind": "auto", "nmae": "metal"}"#)
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("nmae"), "{e}");
+        assert!(serde_json::from_str::<Backend>(r#"{"kind": "metal"}"#).is_err());
     }
 
     #[test]
@@ -477,7 +556,6 @@ mod tests {
         let s = r.select(&Backend::Auto, Some("validate"), false).unwrap();
         assert_eq!(s.info.backend, Backend::CpuReference);
         assert!(s.note.unwrap().contains("no GPU path for 'validate'"));
-        assert_eq!(Backend::parse("auto"), Backend::Auto);
         assert_eq!(
             serde_json::to_value(Backend::Auto).unwrap(),
             serde_json::json!({"kind": "auto"})

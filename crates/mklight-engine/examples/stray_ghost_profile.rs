@@ -3,14 +3,17 @@
 //! run records.
 //!
 //! ```text
-//! stray_ghost_profile LENS.mklight ANALYSIS BACKEND [SETTINGS_JSON] [REPS] [KEY=VARIANT ...]
+//! stray_ghost_profile LENS.mklight ANALYSIS BACKEND [SETTINGS_JSON] [REPS] [KEY=VALUE ...]
 //! ```
+//!
+//! `KEY=VALUE` sets a route option of the requests
+//! (`mklight_engine::RouteOptions`).
 
 use std::path::Path;
 use std::time::Instant;
 
-use mklight_core::{param::ParamPath, split};
-use mklight_engine::{AnalysisRequest, Engine, EngineConfig, backend::Backend};
+use mklight_core::param::ParamPath;
+use mklight_engine::{AnalysisRequest, Engine, EngineConfig, RouteOptions, backend::Backend};
 use serde_json::Value;
 
 fn timings(v: &Value, path: &str, out: &mut Vec<(String, f64)>) {
@@ -50,10 +53,12 @@ fn main() {
         .map(|s| serde_json::from_str(s).unwrap())
         .unwrap_or(serde_json::json!({}));
     let reps: usize = a.get(4).map(|s| s.parse().unwrap()).unwrap_or(3);
-    for kv in a.iter().skip(5) {
-        let (k, v) = kv.split_once('=').unwrap();
-        split::set(k, Some(v));
-    }
+    let route = RouteOptions::from_pairs(
+        a.iter()
+            .skip(5)
+            .map(|kv| kv.split_once('=').expect("KEY=VALUE")),
+    )
+    .unwrap();
     let engine = Engine::new(EngineConfig::default());
     let mut s = engine.open_session(Path::new(lens)).unwrap();
     let base = s.system().clone();
@@ -74,6 +79,7 @@ fn main() {
         s.set_system(system).unwrap();
         let mut req = AnalysisRequest::new(analysis, settings.clone());
         req.backend = Some(backend.clone());
+        req.route = Some(route);
         let t = Instant::now();
         let id = s.submit_analysis(&req).unwrap();
         engine.wait_job(id, None).unwrap();

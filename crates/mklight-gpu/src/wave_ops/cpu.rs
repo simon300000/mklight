@@ -14,7 +14,6 @@ pub fn execute(
     match r {
         Request::Resample(r) => return resample::cpu(r, x, ctl),
         Request::Diagnostics(r) => return diagnostics::cpu(r, x, ctl),
-        Request::Statistics(r) => return statistics::cpu(r, x, ctl),
         Request::Lattice(r) => return lattice::cpu(r, x, ctl),
         Request::Placement(r) => return placement::cpu(r, x, ctl),
         Request::Spectral(r) => return spectral::cpu(r, x, ctl),
@@ -22,33 +21,6 @@ pub fn execute(
         Request::FftMtf(r) => return fft_mtf::cpu(r, x, ctl),
         Request::Simulation(r) => return simulation::cpu(r, x, ctl),
         Request::Shells(r) => return shells::cpu(r, x, ctl),
-        Request::Zernike {
-            samples,
-            terms,
-            matrix,
-            rhs,
-        } => {
-            let a = x.rows::<Df32>(samples).as_chunks::<4>().0;
-            let t = x.rows::<u32>(terms).as_chunks::<2>().0;
-            let mut design = vec![Df32::ZERO; a.len() * t.len()];
-            let mut b = vec![Df32::ZERO; a.len()];
-            for (i, row) in a.iter().enumerate() {
-                if i % 256 == 0 {
-                    ctl.check()?;
-                }
-                if row[3].hi <= 0. {
-                    continue;
-                }
-                b[i] = row[2] * row[3];
-                for (j, term) in t.iter().enumerate() {
-                    design[i * t.len() + j] =
-                        row[3] * zernike(row[0], row[1], term[0], term[1] as i32);
-                }
-            }
-            x.words_mut(*matrix)
-                .copy_from_slice(bytemuck::cast_slice(&design));
-            x.words_mut(*rhs).copy_from_slice(bytemuck::cast_slice(&b));
-        }
         Request::FocusCorrelation {
             pupil,
             stencil,

@@ -29,8 +29,8 @@ use mklight_stray::PathClass;
 use mklight_stray::analysis::{StrayAnalysisSettings, analyze_with_signatures};
 use mklight_stray::tracer::covered;
 
-use super::geometric::{crate_json, output, parse};
-use super::ghost::GhostModelOptions;
+use super::geometric::{crate_json, output, parse, plain};
+use super::ghost::{GhostModelOptions, num_or_null};
 use super::schema::*;
 use super::{Analysis, AnalysisInput, AnalysisOutput, AnalysisRegistry};
 use crate::buffer::{Buffer, BufferData};
@@ -68,6 +68,18 @@ struct GhostPartition {
     paths: Option<Vec<GhostPath>>,
 }
 
+/// When a standard error is `null` (NaN in the error buffers).
+const NO_ERROR: &str = "null (undefined) for a run of a single source ray";
+
+/// A standard-error map of `pixels` values for its buffer: plain numbers
+/// (a non-finite value becomes NaN), all NaN for an undefined map.
+fn error_values(map: Option<Vec<f64>>, pixels: usize) -> Vec<f64> {
+    match map {
+        Some(m) => m.into_iter().map(plain).collect(),
+        None => vec![f64::NAN; pixels],
+    }
+}
+
 pub struct StrayLight;
 
 impl Analysis for StrayLight {
@@ -75,7 +87,7 @@ impl Analysis for StrayLight {
         true
     }
     fn result_version(&self) -> u32 {
-        2
+        3
     }
     fn name(&self) -> &str {
         "stray_light"
@@ -138,7 +150,10 @@ impl Analysis for StrayLight {
                 enumeration(&["primary", "ghost", "scatter", "mechanical", "sneak"], ""),
             ),
             ("flux", num("W", "")),
-            ("std_error", num("W", "Monte-Carlo standard error.")),
+            (
+                "std_error",
+                num_or_null("W", &format!("Monte-Carlo standard error; {NO_ERROR}.")),
+            ),
             ("fraction", nullable(num("", "flux / reference_flux."))),
             (
                 "included",
@@ -148,7 +163,7 @@ impl Analysis for StrayLight {
             (
                 "moments",
                 opaque(
-                    "Image moments: flux, centroid, centroid_std_error, rms_radius, rms_radius_std_error (detector local mm).",
+                    "Image moments: flux, centroid, centroid_std_error, rms_radius, rms_radius_std_error (detector local mm); all zero when the class detected nothing. The errors are null (undefined) for a run of a single source ray, rms_radius_std_error also for a zero RMS radius (a single hit).",
                 ),
             ),
         ]);
@@ -172,7 +187,10 @@ impl Analysis for StrayLight {
                     "Monte-Carlo estimate of the excluded ghost class (comparison only).",
                 ),
             ),
-            ("ghost_class_std_error", num("W", "")),
+            (
+                "ghost_class_std_error",
+                num_or_null("W", &format!("Monte-Carlo standard error; {NO_ERROR}.")),
+            ),
             (
                 "covered_ghost_flux_mc",
                 num(
@@ -182,7 +200,10 @@ impl Analysis for StrayLight {
             ),
             (
                 "covered_ghost_std_error",
-                num("W", "Exact per-source-ray Monte-Carlo standard error."),
+                num_or_null(
+                    "W",
+                    &format!("Exact per-source-ray Monte-Carlo standard error; {NO_ERROR}."),
+                ),
             ),
             (
                 "uncovered_ghost_flux",
@@ -193,7 +214,10 @@ impl Analysis for StrayLight {
             ),
             (
                 "uncovered_ghost_std_error",
-                num("W", "Exact per-source-ray Monte-Carlo standard error."),
+                num_or_null(
+                    "W",
+                    &format!("Exact per-source-ray Monte-Carlo standard error; {NO_ERROR}."),
+                ),
             ),
             (
                 "uncovered_ghost_signatures",
@@ -225,9 +249,11 @@ impl Analysis for StrayLight {
                 ),
                 (
                     "stray_std_error",
-                    num(
+                    num_or_null(
                         "W",
-                        "Exact per-source-ray Monte-Carlo standard error, including uncovered ghosts.",
+                        &format!(
+                            "Exact per-source-ray Monte-Carlo standard error, including uncovered ghosts; {NO_ERROR}."
+                        ),
                     ),
                 ),
                 (
@@ -240,13 +266,13 @@ impl Analysis for StrayLight {
                     "top_signatures",
                     arr(
                         opaque("{class, events, overflow, label, flux, std_error, hits}"),
-                        "Strongest (class, signature) pairs, including ordered DOE (surface, visit, interaction, order) events.",
+                        "Strongest (class, signature) pairs, including ordered DOE (surface, visit, interaction, order) events; std_error is null (undefined) for a run of a single source ray.",
                     ),
                 ),
                 (
                     "energy",
                     opaque(
-                        "Energy report: emitted, detected, absorbed, escaped, balance_residual, … (docs/STRAY.md).",
+                        "Energy report: emitted, detected, absorbed, escaped, balance_residual, … (docs/STRAY.md); its *_std_error values are null (undefined) for a run of a single source ray.",
                     ),
                 ),
                 (
@@ -272,7 +298,7 @@ impl Analysis for StrayLight {
                     "f64",
                     &["C", "ny", "nx"],
                     "W/mm²",
-                    "Standard error per pixel.",
+                    "Standard error per pixel; NaN (undefined) for a run of a single source ray.",
                 ),
                 buffer(
                     "total_irradiance",
@@ -286,7 +312,7 @@ impl Analysis for StrayLight {
                     "f64",
                     &["ny", "nx"],
                     "W/mm²",
-                    "",
+                    "Standard error per pixel; NaN (undefined) for a run of a single source ray.",
                 ),
             ],
         )
@@ -346,7 +372,7 @@ impl Analysis for StrayLight {
                 d.backend.as_ref(),
                 rs.clone(),
                 &ss,
-                mklight_stray::gpu::TransportOptions::default(),
+                input.route.transport(),
                 ctx,
             )?;
             let run = &result.0.run_info;
@@ -403,9 +429,9 @@ impl Analysis for StrayLight {
         let mut irr = Vec::with_capacity(c * nx * ny);
         let mut err = Vec::with_capacity(c * nx * ny);
         let mut names = Vec::with_capacity(c);
-        for m in &maps {
-            irr.extend_from_slice(&m.irradiance);
-            err.extend_from_slice(&m.irradiance_std_error);
+        for m in maps {
+            irr.extend(m.irradiance.into_iter().map(plain));
+            err.extend(error_values(m.irradiance_std_error, nx * ny));
             names.push(serde_json::to_value(m.class)?);
         }
         if let Some(o) = v.as_object_mut() {
@@ -422,13 +448,97 @@ impl Analysis for StrayLight {
                 vec![c, ny, nx],
                 BufferData::F64(err),
             ),
-            Buffer::new("total_irradiance", vec![ny, nx], BufferData::F64(total)),
+            Buffer::new(
+                "total_irradiance",
+                vec![ny, nx],
+                BufferData::F64(total.into_iter().map(plain).collect()),
+            ),
             Buffer::new(
                 "total_irradiance_std_error",
                 vec![ny, nx],
-                BufferData::F64(total_err),
+                BufferData::F64(error_values(total_err, nx * ny)),
             ),
         ];
         Ok(output(v, buffers, warnings))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::analysis::{AnalysisResult, run_analysis};
+    use crate::backend::BackendInfo;
+    use mklight_core::materials::MaterialLibrary;
+    use mklight_core::{Snapshot, samples};
+
+    fn run(settings: Value) -> AnalysisResult {
+        let input = AnalysisInput::new(
+            Snapshot::new(samples::cooke_triplet()).unwrap(),
+            Arc::new(MaterialLibrary::with_builtin()),
+            BackendInfo::cpu_reference(),
+        );
+        let r = run_analysis(&StrayLight, &input, &settings, vec![], &JobContext::new()).unwrap();
+        validate(&StrayLight.result_schema(), &r.json, true).unwrap();
+        r
+    }
+
+    fn values<'a>(r: &'a AnalysisResult, name: &str, shape: &[usize]) -> &'a [f64] {
+        let b = r.buffers.iter().find(|b| b.name == name).unwrap();
+        assert_eq!(b.shape, shape, "{name}");
+        match &b.data {
+            BufferData::F64(v) => v,
+            _ => panic!("{name} is not f64"),
+        }
+    }
+
+    /// A run of one source ray has no standard errors: `null` where the
+    /// result schema declares it, canonical NaN in the error buffers.
+    #[test]
+    fn undefined_errors_are_null_and_nan_in_the_buffers() {
+        let one = json!({
+            "rays": 1, "seed": 3, "classes": 31, "detector_pixels": [4, 3],
+            "ghost_partition": {}
+        });
+        let r = run(one.clone());
+        let j = &r.json;
+        assert!(j["stray_std_error"].is_null());
+        assert!(j["energy"]["detected_std_error"].is_null());
+        for t in j["totals"].as_array().unwrap() {
+            assert!(t["std_error"].is_null(), "{}", t["class"]);
+        }
+        for key in [
+            "ghost_class_std_error",
+            "covered_ghost_std_error",
+            "uncovered_ghost_std_error",
+        ] {
+            assert!(j["partition"][key].is_null(), "{key}");
+        }
+        let classes = j["map_classes"].as_array().unwrap().len();
+        assert_eq!(classes, 5);
+        let nan = f64::NAN.to_bits();
+        let errors = values(&r, "class_irradiance_std_error", &[classes, 3, 4]);
+        assert!(errors.iter().all(|e| e.to_bits() == nan));
+        let errors = values(&r, "total_irradiance_std_error", &[3, 4]);
+        assert!(errors.iter().all(|e| e.to_bits() == nan));
+        let maps = values(&r, "class_irradiance", &[classes, 3, 4]);
+        assert!(maps.iter().all(|v| v.is_finite()));
+
+        // With several rays every error is a number.
+        let mut many = one;
+        many["rays"] = json!(500);
+        let r = run(many);
+        let j = &r.json;
+        assert!(j["stray_std_error"].is_number());
+        assert!(j["partition"]["covered_ghost_std_error"].is_number());
+        for t in j["totals"].as_array().unwrap() {
+            assert!(t["std_error"].is_number(), "{}", t["class"]);
+        }
+        for name in ["class_irradiance_std_error", "total_irradiance_std_error"] {
+            let b = r.buffers.iter().find(|b| b.name == name).unwrap();
+            let BufferData::F64(v) = &b.data else {
+                panic!("{name} is not f64")
+            };
+            assert!(v.iter().all(|e| e.is_finite()), "{name}");
+        }
     }
 }

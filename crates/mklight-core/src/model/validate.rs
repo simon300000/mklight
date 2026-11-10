@@ -212,10 +212,11 @@ fn check_shape(out: &mut Issues, path: &str, shape: &SurfaceShape) {
             );
         }
         Diffractive { base, phase } => {
-            let geometry = match &**base {
-                SagOverlay { base, .. } => &**base,
-                base => base,
-            };
+            // The phase lies on the geometry beneath any stacked overlays.
+            let mut geometry = &**base;
+            while let SagOverlay { base, .. } = geometry {
+                geometry = base;
+            }
             if matches!(geometry, Plane | Conic { .. } | EvenAsphere { .. }) {
                 check_shape(out, &format!("{path}.base"), base);
             } else {
@@ -332,7 +333,12 @@ fn check_material(out: &mut Issues, path: &str, m: &MaterialRef) {
             }
         }
         MaterialRef::Model { nd, vd, dpgf } => {
-            out.positive("invalid_material", format!("{path}.nd"), nd);
+            // The dispersion of a model glass is its refractivity
+            // `n_d − 1` over `V_d`: an index of 1 or less has none.
+            let p = format!("{path}.nd");
+            if out.finite(p.clone(), nd) && nd <= 1.0 {
+                out.push("invalid_material", p, format!("must be > 1 (got {nd})"));
+            }
             out.positive("invalid_material", format!("{path}.vd"), vd);
             out.finite(format!("{path}.dpgf"), dpgf);
         }
@@ -1266,6 +1272,37 @@ mod tests {
         rejects("invalid_material", "surfaces[1].material.n", |s| {
             s.surfaces[1].material = MaterialRef::Constant { n: -1.5 }
         });
+        // A model glass refracts: its index is above 1, also in a coating.
+        let model = |nd: f64| MaterialRef::Model {
+            nd,
+            vd: 50.0,
+            dpgf: 0.0,
+        };
+        for nd in [1.0, 0.5, 0.0, -1.5] {
+            rejects("invalid_material", "surfaces[1].material.nd", |s| {
+                s.surfaces[1].material = model(nd)
+            });
+        }
+        rejects(
+            "invalid_material",
+            "coatings[\"AR\"].layers[0].material.nd",
+            |s| {
+                *s = coated_cooke();
+                if let Some(CoatingDef::ThinFilm { layers, .. }) = s.coatings.get_mut("AR") {
+                    layers[0].material = model(1.0);
+                }
+            },
+        );
+        let mut s = samples::cooke_triplet();
+        s.surfaces[1].material = model(1.0 + f64::EPSILON);
+        assert_eq!(issues(&s), vec![]);
+        rejects("invalid_material", "surfaces[1].material.vd", |s| {
+            s.surfaces[1].material = MaterialRef::Model {
+                nd: 1.5,
+                vd: 0.0,
+                dpgf: 0.0,
+            }
+        });
         rejects("invalid_environment", "environment.pressure_atm", |s| {
             s.environment.pressure_atm = -1.0
         });
@@ -1388,6 +1425,61 @@ mod tests {
                 s.surfaces[2].shape = overlay(base)
             });
         }
+        // A diffractive phase takes the same stack around its base, whose
+        // geometry stays a plane, conic or even asphere.
+        let doe = |base: SurfaceShape| {
+            let mut s = samples::hybrid_diffractive_achromat();
+            let SurfaceShape::Diffractive { base: b, .. } = &mut s.surfaces[2].shape else {
+                panic!("the sample's rear surface is diffractive");
+            };
+            **b = base;
+            s
+        };
+        let asphere = SurfaceShape::EvenAsphere {
+            curvature: 0.01,
+            conic: -1.0,
+            coefficients: vec![1e-6],
+        };
+        for base in [SurfaceShape::Plane, SurfaceShape::sphere(50.0), asphere] {
+            for stack in [
+                overlay(base.clone()),
+                overlay(overlay(base.clone())),
+                overlay(overlay(overlay(base))),
+            ] {
+                assert_eq!(doe(stack).validation_issues(), vec![]);
+            }
+        }
+        let toroid = SurfaceShape::Toroid {
+            curvature_x: 0.01,
+            curvature_y: 0.02,
+            conic_y: 0.0,
+            y_asphere: vec![],
+        };
+        for base in [
+            toroid.clone(),
+            overlay(toroid.clone()),
+            overlay(overlay(toroid)),
+        ] {
+            assert_eq!(
+                issues(&doe(base)),
+                [(
+                    "invalid_diffractive_base".into(),
+                    "surfaces[2].shape.base".into()
+                )]
+            );
+        }
+        // Every layer of the stack obeys the overlay's own rules.
+        let mut inner = overlay(SurfaceShape::Plane);
+        if let SurfaceShape::SagOverlay { norm_radius, .. } = &mut inner {
+            *norm_radius = 0.0;
+        }
+        assert_eq!(
+            issues(&doe(overlay(inner))),
+            [(
+                "invalid_norm_radius".into(),
+                "surfaces[2].shape.base.base.norm_radius".into()
+            )]
+        );
     }
 
     #[test]

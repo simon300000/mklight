@@ -132,23 +132,22 @@ energy and MTF curves, through-focus) stay in the JSON.
 
 The engine initially uses `auto`. Explicit `cpu_reference` always uses the
 f64 reference. Explicit `gpu:metal` bypasses the cost model, while retaining
-static capability restrictions and reported resource/unsupported fallbacks. Unavailable
-explicit providers keep the existing `allow_backend_fallback` behaviour.
+reported resource/unsupported fallbacks. An explicit provider that is
+unavailable, or has no path for the analysis, fails the request unless
+`allow_backend_fallback` is set (the reference then runs, with a warning).
 Cancellation discards the result and never runs a CPU replacement.
 
 The shared resident catalogue covers geometric analyses, field maps, layout,
 wave/image jobs, transmission/polarisation, ghosts, stray light and
 optimisation/merit/tolerance/glass substitution. Isolated first-order, Seidel,
-model, catalogue and I/O reports remain small host computations. A capability
-means a native adapter exists; the static capability policy and offline suites
-establish its usable domains. No ray-count or candidate-count crossover
+model, catalogue and I/O reports remain small host computations, and so do
+encircled energy, the polarization pupil map and the wavefront map (GPU
+§9.2, "Analyses without a GPU path"). A capability means a native adapter
+exists; the offline suites establish its usable domains. No ray-count or candidate-count crossover
 selects a backend; `auto` uses the cost model below.
 
 Native results publish directly with their actual precision, without per-snapshot
-or per-candidate f64 reruns. Accuracy is established offline. Static capability
-restrictions route encircled energy and polarization pupil maps to the CPU
-reference with deliberate reasons, and wavefront maps under `auto` only (an
-explicit Metal request runs them natively; GPU §9.2). Optimization best
+or per-candidate f64 reruns. Accuracy is established offline. Optimization best
 designs and glass finalists receive f64 report scores once at the end;
 tolerance and merit evaluation return actual evaluator values.
 
@@ -159,14 +158,14 @@ retain reported reasons and warnings. Public f64 buffers still carry `f32_gpu`
 when computed by Metal.
 
 `backend.cost_decision` records how the backend was selected. The routing
-policy itself (static capability, accuracy exclusions, the cost model, its
+policy itself (division rules, accuracy exclusions, the cost model, its
 calibration and refinement) is GPU §9.2; the keys are:
 
 | key | present | meaning |
 |---|---|---|
 | `decision` | always | `cpu_reference`, `qualified_metal`, or `explicit_backend` (an explicit request: the cost rules were bypassed) |
-| `rule` | reference decisions and cost-model decisions | `static capability`, `accuracy exclusion`, `known failure` or `cost model` |
-| `reason` | static capability, `explicit_backend`, and `qualified_metal` without a prediction | the capability reason, `cost rules bypassed`, or why nothing was predicted (no calibration for the device or the analysis) |
+| `rule` | reference decisions and cost-model decisions | `no device share` (the analysis's own division gives the device no part of this run), `accuracy exclusion`, `known failure` or `cost model` |
+| `reason` | `no device share`, `explicit_backend`, and `qualified_metal` without a prediction | why the device gets no share, `cost rules bypassed`, or why nothing was predicted (no calibration for the device or the analysis) |
 | `evidence` | `accuracy exclusion` | the finding behind the exclusion |
 | `version` | `auto` decisions of the cost module | the routing model version |
 | `before_device` | `auto` decisions | `true` when the route was settled before any GPU device was opened |
@@ -174,21 +173,20 @@ calibration and refinement) is GPU §9.2; the keys are:
 | `predicted_ms` | `cost model` | `{cpu, metal}` predicted times |
 | `advantage`, `required` | `cost model` | predicted CPU/Metal time ratio; the thresholds `{ratio, gain_ms}` Metal must reach |
 | `stages_ms` | `cost model` | `cpu` and `metal` stage terms (`fixed`, `prep`, `ray`, `transform`, `output`, `table`), `metal_setup`, `metal_fallback_risk` |
-| `state` | `cost model` | the cache and device state the decision saw |
+| `state` | `cost model` | the cache and device state the decision saw (`device_open`, `kernels_prepared`, `tracer_warm`, `lattice_warm`, `resident`, `snapshot_seen`, `calls`, `transient_failure_rate`, `decided_pupil_grid`) |
 | `refinement` | `cost model` | the online refinement factors applied |
-| `calibration` | `cost model` | the calibration table used (`device_class`, `source`) |
+| `calibration` | `cost model` | the calibration table used (`device_class`, `source`), with a `note` when the opened device is not that device class |
 
 An `auto` request whose result the analysis graph already holds is answered
 from it without routing (its stored decision is returned unchanged).
-Deliberate CPU choices (by cost, exclusion or static capability) are
-reported without a warning; a static capability choice for an explicit
-request is a `downgraded` attempt with a warning. Unsupported/resource
+Deliberate CPU choices of `auto` (by cost, exclusion, division rule, or no
+GPU path) are reported without a warning. Unsupported/resource
 failures retain warnings. Known residual Metal accuracy gaps are listed in
 GPU §9.2.
 
 `run_info.failed_attempts` (omitted when empty) lists backend attempts that
 did not produce the result, each with `backend`, `outcome` (`failed`,
-`skipped`, `downgraded`, `reference_completion`), `reason` and
+`skipped`, `reference_completion`), `reason` and
 `elapsed_ms`, so a fallback's time is visible next to the CPU label. A request
 that failed deterministically on a device is not attempted again there for
 the same snapshot, glass library and settings (`skipped`).
@@ -266,10 +264,12 @@ These rules and backend reports are shared by Rust, FFI, CLI and Python.
   rendering precision, `vertices_f64` absolute.
 * `ghost_irradiance`: maps `[ny, nx]`, row 0 at `y = −half_size[1]`, `x`
   fastest; values per mm² relative to the entrance-pupil input flux;
-  `flux_ratio`/`peak_ratio` against the primary image.
+  `flux_ratio`/`peak_ratio` against the primary image, `null` where the
+  primary is zero there.
 * `stray_light`: flux in W, irradiance in W/mm², detector local frame,
   maps `[ny, nx]` with row 0 at `y = −half_y`; every flux has a Monte-Carlo
-  standard error.
+  standard error, `null` where it is undefined (fewer than two rays, or the
+  RMS radius of a single hit).
 * `system_transmission`: dimensionless throughput in [0, 1].
 * `polarization_pupil_map`: Jones matrices in the double-pole bases
   (CONVENTIONS §9), `[row][col][re, im]`; retardance in radians.
@@ -716,9 +716,9 @@ Result (`result` in the envelope):
 
 ### `encircled_energy` — Encircled energy
 
-Category `geometric`, result version 1, **GPU path**.
+Category `geometric`, result version 1.
 
-Geometric encircled and ensquared energy versus radius per field, with r50/r80/r90. GPU path.
+Geometric encircled and ensquared energy versus radius per field, with r50/r80/r90.
 
 Settings:
 
@@ -1488,7 +1488,7 @@ Result (`result` in the envelope):
 
 ### `polarization_pupil_map` — Polarisation pupil map
 
-Category `polarization`, result version 1, **GPU path**.
+Category `polarization`, result version 1.
 
 Polarisation ray tracing over the pupil of one field and wavelength: amplitude Jones matrix (double-pole bases), transmitted intensity for an input state, diattenuation and retardance per sample, with pupil statistics.
 
@@ -1538,7 +1538,7 @@ Buffers:
 
 ### `ghost_irradiance` — Ghost irradiance
 
-Category `ghost`, result version 1, **GPU path**.
+Category `ghost`, result version 2, **GPU path**.
 
 Real-ray ghost irradiance on the sensor: per-path flux and peak ratios against the primary image, per-field statistics, the total ghost map and the primary map (typed buffers).
 
@@ -1569,7 +1569,7 @@ Result (`result` in the envelope):
 | `coverage.apertures` | array<object> |  | Clipping of every surface in this run. |
 | `coverage.interfaces` | array<string> |  | Interface kind per surface: object, passive, refractive, ideal_lens, mirror, image. |
 | `coverage.paths` | array<any> |  | The exact set of ghost paths this run counted. |
-| `ghosts` | array<object> |  | Ranked by peak_ratio, strongest first. |
+| `ghosts` | array<object> |  | Strongest first: ghosts with a null peak_ratio by their largest field peak, then flux; then the others by peak_ratio. |
 | `ghosts[].fields` | array<object> |  |  |
 | `ghosts[].fields[].centroid` | [nf; 2] |  | mm |
 | `ghosts[].fields[].field` | object |  | {"type": "system", "index": i} or {"type": "point", "point": {hx, hy}} |
@@ -1580,11 +1580,11 @@ Result (`result` in the envelope):
 | `ghosts[].fields[].rays_traced` | integer |  | ≥ 0 |
 | `ghosts[].fields[].rms_radius` | nf | mm |  |
 | `ghosts[].flux` | number |  | Flux on the map, all fields. |
-| `ghosts[].flux_ratio` | number |  | Flux on the map / primary flux on the map. |
+| `ghosts[].flux_ratio` | number? |  | Flux on the map / primary flux on the map; null (undefined) when the primary puts no flux on the map and this path does. |
 | `ghosts[].label` | string |  |  |
 | `ghosts[].map_index` | integer? |  |  |
 | `ghosts[].path` | any |  |  |
-| `ghosts[].peak_ratio` | number |  | Max over fields of peak / primary peak. |
+| `ghosts[].peak_ratio` | number? |  | Max over fields of peak / primary peak; null (undefined) when a field's primary peak is zero and this path's is not. |
 | `map` | object |  |  |
 | `map.bins` | [integer; 2] |  | [nx, ny] |
 | `map.half_size` | [number; 2] |  | [x, y]; the maps span −half_size … +half_size. |
@@ -1599,13 +1599,13 @@ Result (`result` in the envelope):
 | `primary.fields[].rays_traced` | integer |  | ≥ 0 |
 | `primary.fields[].rms_radius` | nf | mm |  |
 | `primary.flux` | number |  | Flux on the map, all fields. |
-| `primary.flux_ratio` | number |  | Flux on the map / primary flux on the map. |
+| `primary.flux_ratio` | number? |  | Flux on the map / primary flux on the map; null (undefined) when the primary puts no flux on the map and this path does. |
 | `primary.label` | string |  |  |
 | `primary.map_index` | integer? |  |  |
 | `primary.path` | any |  |  |
-| `primary.peak_ratio` | number |  | Max over fields of peak / primary peak. |
-| `total_flux_ratio` | number |  | Total ghost flux / primary flux. |
-| `total_peak_ratio` | number |  | Total ghost peak / primary peak. |
+| `primary.peak_ratio` | number? |  | Max over fields of peak / primary peak; null (undefined) when a field's primary peak is zero and this path's is not. |
+| `total_flux_ratio` | number? |  | Total ghost flux / primary flux; null (undefined) when the primary map is empty and the ghost map is not. |
+| `total_peak_ratio` | number? |  | Total ghost peak / primary peak; null (undefined) when the primary map is empty and the ghost map is not. |
 | `truncated` | boolean |  |  |
 
 Buffers:
@@ -1664,7 +1664,7 @@ Result (`result` in the envelope):
 
 ### `stray_light` — Stray light
 
-Category `stray`, result version 2, **GPU path**.
+Category `stray`, result version 3, **GPU path**.
 
 Non-sequential Monte-Carlo stray light: detector irradiance per path class (primary, ghost, scatter, mechanical, sneak) with standard errors, the stray total, the strongest path signatures and an energy balance. With `ghost_partition` the ghost paths the explicit ghost run covers are left to it, with identical apertures; uncovered ghost paths stay in the stray total.
 
@@ -1694,34 +1694,34 @@ Result (`result` in the envelope):
 | `clear_semi_diameters` | array<number?> |  | Clear semi-diameters the scene used per surface (null: the surface's own). |
 | `detector` | object |  | Detector: surface, nx, ny, half_x, half_y (mm), accept. |
 | `emitted` | number | W | Emitted power. |
-| `energy` | object |  | Energy report: emitted, detected, absorbed, escaped, balance_residual, … (docs/STRAY.md). |
+| `energy` | object |  | Energy report: emitted, detected, absorbed, escaped, balance_residual, … (docs/STRAY.md); its *_std_error values are null (undefined) for a run of a single source ray. |
 | `map_classes` | array<string> |  | Class of each row of class_irradiance, in path-class order. |
 | `partition` | object? |  |  |
 | `partition.apertures` | array<object> |  | The shared clipping per surface. |
 | `partition.covered_ghost_flux_mc` | number | W | Monte-Carlo flux of the ghost signatures the ghost run covers (its counterpart is the ghost solver's total). |
-| `partition.covered_ghost_std_error` | number | W | Exact per-source-ray Monte-Carlo standard error. |
+| `partition.covered_ghost_std_error` | number? | W | Exact per-source-ray Monte-Carlo standard error; null (undefined) for a run of a single source ray. |
 | `partition.excluded_class` | string |  | Always `ghost`. |
 | `partition.ghost_class_flux_mc` | number | W | Monte-Carlo estimate of the excluded ghost class (comparison only). |
-| `partition.ghost_class_std_error` | number | W |  |
+| `partition.ghost_class_std_error` | number? | W | Monte-Carlo standard error; null (undefined) for a run of a single source ray. |
 | `partition.ghost_paths` | integer |  | ≥ 0; Paths in the ghost run's coverage. |
 | `partition.same_apertures` | boolean |  | GhostCoverage::same_apertures held (always true: a mismatch is an error). |
 | `partition.uncovered_ghost_flux` | number | W | Ghost-class flux outside the ghost run's coverage, included in stray_flux and the maps (CONVENTIONS §10). |
 | `partition.uncovered_ghost_signatures` | integer |  | ≥ 0; Number of handed-back ghost signatures. |
-| `partition.uncovered_ghost_std_error` | number | W | Exact per-source-ray Monte-Carlo standard error. |
+| `partition.uncovered_ghost_std_error` | number? | W | Exact per-source-ray Monte-Carlo standard error; null (undefined) for a run of a single source ray. |
 | `primary_obstruction` | nf? |  |  |
 | `source` | object |  | Resolved source beam: spec, reference_flux, description. |
 | `stray_flux` | number | W | Stray-owned flux, including uncovered ghost paths. |
 | `stray_fraction` | number? |  |  |
-| `stray_std_error` | number | W | Exact per-source-ray Monte-Carlo standard error, including uncovered ghosts. |
-| `top_signatures` | array<object> |  | Strongest (class, signature) pairs, including ordered DOE (surface, visit, interaction, order) events. |
+| `stray_std_error` | number? | W | Exact per-source-ray Monte-Carlo standard error, including uncovered ghosts; null (undefined) for a run of a single source ray. |
+| `top_signatures` | array<object> |  | Strongest (class, signature) pairs, including ordered DOE (surface, visit, interaction, order) events; std_error is null (undefined) for a run of a single source ray. |
 | `totals` | array<object> |  | Every class, included or not. |
 | `totals[].class` | string |  | one of `"primary"`, `"ghost"`, `"scatter"`, `"mechanical"`, `"sneak"` |
 | `totals[].flux` | number | W |  |
 | `totals[].fraction` | number? |  |  |
 | `totals[].hits` | integer |  | ≥ 0; Detector hits. |
 | `totals[].included` | boolean |  | Whole class selected; uncovered ghosts may be included separately. |
-| `totals[].moments` | object |  | Image moments: flux, centroid, centroid_std_error, rms_radius, rms_radius_std_error (detector local mm). |
-| `totals[].std_error` | number | W | Monte-Carlo standard error. |
+| `totals[].moments` | object |  | Image moments: flux, centroid, centroid_std_error, rms_radius, rms_radius_std_error (detector local mm); all zero when the class detected nothing. The errors are null (undefined) for a run of a single source ray, rms_radius_std_error also for a zero RMS radius (a single hit). |
+| `totals[].std_error` | number? | W | Monte-Carlo standard error; null (undefined) for a run of a single source ray. |
 | `warnings` | array<string> |  |  |
 
 Buffers:
@@ -1729,9 +1729,9 @@ Buffers:
 | name | dtype | shape | unit | notes |
 |---|---|---|---|---|
 | `class_irradiance` | f64 | [C, ny, nx] | W/mm² | Irradiance per owned class (rows of map_classes); under ghost_partition the Ghost row contains only uncovered paths. Row 0 at y = −half_y, x fastest. |
-| `class_irradiance_std_error` | f64 | [C, ny, nx] | W/mm² | Standard error per pixel. |
+| `class_irradiance_std_error` | f64 | [C, ny, nx] | W/mm² | Standard error per pixel; NaN (undefined) for a run of a single source ray. |
 | `total_irradiance` | f64 | [ny, nx] | W/mm² | Stray total. |
-| `total_irradiance_std_error` | f64 | [ny, nx] | W/mm² |  |
+| `total_irradiance_std_error` | f64 | [ny, nx] | W/mm² | Standard error per pixel; NaN (undefined) for a run of a single source ray. |
 
 ### `diffraction_encircled_energy` — Diffraction encircled energy
 
@@ -2081,7 +2081,7 @@ Buffers:
 
 ### `wavefront_map` — Wavefront map
 
-Category `wave`, result version 1, **GPU path**.
+Category `wave`, result version 1.
 
 OPD on the exit-pupil reference sphere from the reference tracer, with RMS/PV, Strehl estimate and Zernike fit.
 
@@ -2191,7 +2191,7 @@ Settings:
 | `seed` | integer | `0` |  | ≥ 0 |
 | `spectrum` | object\|null |  |  | Optional run-local spectrum; absent/null keeps the design. kind: explicit (wavelengths:[{um,weight}]), photopic, scotopic, blackbody (temperature_k), sensor (table:[[um,response]]). Presets/sensor take sampling. Primary is nearest the energy-weighted mean (first on ties). |
 | `top_n` | integer | `10` |  | ≥ 1; Best glass combinations returned. |
-| `variables` | array | `[]` |  | Variable specs: {"param": ParamPath, "lower", "upper", "scale", "fd_step", "label"}. Empty: the curvature of every curved optical surface and the back focus. |
+| `variables` | array | `[]` |  | Variable specs: {"param": ParamPath, "lower", "upper", "scale", "fd_step", "label"}. Empty: the curvature of every curved optical surface and the back focus, without the solve-controlled ones. A solve-controlled parameter is rejected. |
 
 Result (`result` in the envelope):
 
@@ -2199,7 +2199,7 @@ Result (`result` in the envelope):
 |---|---|---|---|
 | `algorithm` | string |  | one of `"tabu"`, `"hammer"` |
 | `backend` | object |  |  |
-| `backend.aiming` (optional) | string |  | one of `"by-batch"`, `"device"`, `"host"`; Where the pupil rays of a run handed a GPU device are aimed: by batch (default; `resident_evaluation.device_aimed_batches` counts the device's), every batch on the device with host completion (`aiming` key set to `device` or `table`) or on the host with device tracing (`host-table`, `split:<share>`). |
+| `backend.aiming` (optional) | string |  | one of `"by-batch"`, `"device"`, `"host"`; Where the pupil rays of a run handed a GPU device are aimed (route option `solver_aiming`): by batch (default; `resident_evaluation.device_aimed_batches` counts the device's), every batch on the device with host completion, or every batch on the host with device tracing. |
 | `backend.evaluated_on` | string |  | Search evaluator backend; envelope uses engine backend ids. |
 | `backend.gpu_stats` (optional) | object |  |  |
 | `backend.gpu_stats.cpu_candidates` | integer |  | ≥ 0 |
@@ -2282,17 +2282,17 @@ Settings:
 | `max_iterations` | integer\|null | `null` |  | ≥ 1; Iterations (lm, dogleg, nelder_mead), generations (de, cma_es) or rounds (hammer); null: 200, 200, 2000, 100, 200, 20. |
 | `merit` | object\|null | `null` |  | A merit-function spec; null generates the default merit from `default_merit` for the variables. |
 | `operands` | array | `[]` |  | Operands appended to the merit, including MTF (frequency, orientation, method, defocus_mm, detector), ghost and stray power operands. Stray power uses a fixed seed and is unsuitable for LM. |
-| `options` | object | `{}` |  | Settings of the algorithm, laid over its defaults. |
+| `options` | object | `{}` |  | Settings of the algorithm, laid over its defaults; a key wins over max_iterations, fd_scheme and fd_relative_step. Keys must be fields of the selected algorithm's settings; method and seed are the job's own. |
 | `seed` | integer | `0` |  | ≥ 0 |
 | `spectrum` | object\|null |  |  | Optional run-local spectrum; absent/null keeps the design. kind: explicit (wavelengths:[{um,weight}]), photopic, scotopic, blackbody (temperature_k), sensor (table:[[um,response]]). Presets/sensor take sampling. Primary is nearest the energy-weighted mean (first on ties). |
-| `variables` | array | `[]` |  | Variable specs: {"param": ParamPath, "lower", "upper", "scale", "fd_step", "label"}. Empty: the curvature of every curved optical surface and the back focus. |
+| `variables` | array | `[]` |  | Variable specs: {"param": ParamPath, "lower", "upper", "scale", "fd_step", "label"}. Empty: the curvature of every curved optical surface and the back focus, without the solve-controlled ones. A solve-controlled parameter is rejected. |
 
 Result (`result` in the envelope):
 
 | field | type | unit | notes |
 |---|---|---|---|
 | `backend` | object |  |  |
-| `backend.aiming` (optional) | string |  | one of `"by-batch"`, `"device"`, `"host"`; Where the pupil rays of a run handed a GPU device are aimed: by batch (default; `resident_evaluation.device_aimed_batches` counts the device's), every batch on the device with host completion (`aiming` key set to `device` or `table`) or on the host with device tracing (`host-table`, `split:<share>`). |
+| `backend.aiming` (optional) | string |  | one of `"by-batch"`, `"device"`, `"host"`; Where the pupil rays of a run handed a GPU device are aimed (route option `solver_aiming`): by batch (default; `resident_evaluation.device_aimed_batches` counts the device's), every batch on the device with host completion, or every batch on the host with device tracing. |
 | `backend.evaluated_on` | string |  | Search evaluator backend; envelope uses engine backend ids. |
 | `backend.gpu_stats` (optional) | object |  |  |
 | `backend.gpu_stats.cpu_candidates` | integer |  | ≥ 0 |
@@ -2351,10 +2351,10 @@ Settings:
 | `max_iterations` | integer\|null | `null` |  | ≥ 1; Iterations (lm, dogleg, nelder_mead), generations (de, cma_es) or rounds (hammer); null: 200, 200, 2000, 100, 200, 20. |
 | `merit` | object\|null | `null` |  | A merit-function spec; null generates the default merit from `default_merit` for the variables. |
 | `operands` | array | `[]` |  | Operands appended to the merit, including MTF (frequency, orientation, method, defocus_mm, detector), ghost and stray power operands. Stray power uses a fixed seed and is unsuitable for LM. |
-| `options` | object | `{}` |  | Settings of the algorithm, laid over its defaults. |
+| `options` | object | `{}` |  | Settings of the algorithm, laid over its defaults; a key wins over max_iterations, fd_scheme and fd_relative_step. Keys must be fields of the selected algorithm's settings; method and seed are the job's own. |
 | `seed` | integer | `0` |  | ≥ 0 |
 | `spectrum` | object\|null |  |  | Optional run-local spectrum; absent/null keeps the design. kind: explicit (wavelengths:[{um,weight}]), photopic, scotopic, blackbody (temperature_k), sensor (table:[[um,response]]). Presets/sensor take sampling. Primary is nearest the energy-weighted mean (first on ties). |
-| `variables` | array | `[]` |  | Variable specs: {"param": ParamPath, "lower", "upper", "scale", "fd_step", "label"}. Empty: the curvature of every curved optical surface and the back focus. |
+| `variables` | array | `[]` |  | Variable specs: {"param": ParamPath, "lower", "upper", "scale", "fd_step", "label"}. Empty: the curvature of every curved optical surface and the back focus, without the solve-controlled ones. A solve-controlled parameter is rejected. |
 
 Result (`result` in the envelope):
 
@@ -2362,7 +2362,7 @@ Result (`result` in the envelope):
 |---|---|---|---|
 | `algorithm` | string |  |  |
 | `backend` | object |  |  |
-| `backend.aiming` (optional) | string |  | one of `"by-batch"`, `"device"`, `"host"`; Where the pupil rays of a run handed a GPU device are aimed: by batch (default; `resident_evaluation.device_aimed_batches` counts the device's), every batch on the device with host completion (`aiming` key set to `device` or `table`) or on the host with device tracing (`host-table`, `split:<share>`). |
+| `backend.aiming` (optional) | string |  | one of `"by-batch"`, `"device"`, `"host"`; Where the pupil rays of a run handed a GPU device are aimed (route option `solver_aiming`): by batch (default; `resident_evaluation.device_aimed_batches` counts the device's), every batch on the device with host completion, or every batch on the host with device tracing. |
 | `backend.evaluated_on` | string |  | Search evaluator backend; envelope uses engine backend ids. |
 | `backend.gpu_stats` (optional) | object |  |  |
 | `backend.gpu_stats.cpu_candidates` | integer |  | ≥ 0 |
@@ -2448,16 +2448,16 @@ Buffers:
 
 Category `optimization`, result version 2, **GPU path**.
 
-Sensitivity of a criterion merit (default: the RMS spot merit) to each tolerance at its limits, ranked worst first with the RSS prediction, and a reproducible Monte-Carlo analysis, with compensators re-optimised for every trial.
+Sensitivity of a criterion merit (default: the RMS spot merit) to each tolerance at its limits, ranked worst first with the RSS prediction, and a reproducible Monte-Carlo analysis, with compensators re-optimised and the model's solves re-applied for every trial.
 
 Settings:
 
 | key | type | default | unit | notes |
 |---|---|---|---|---|
 | `backend` | string | `"auto"` |  | one of `"auto"`, `"cpu"`, `"gpu"`, `"gpu_emulation"` |
-| `batch` | integer | `16` |  | ≥ 1; Monte-Carlo trials per evaluation batch, raised to at least 128 (the criteria do not depend on the batching). |
+| `batch` | integer | `16` |  | ≥ 1; Monte-Carlo trials per evaluation batch, raised to at least 128 (the criteria do not depend on the batching on the CPU reference; on a device, within its precision). |
 | `compensator_iterations` | integer | `20` |  | ≥ 1 |
-| `compensators` | array | `[]` |  | {"param": ParamPath, "range", "scale"}: re-optimised for every trial. |
+| `compensators` | array | `[]` |  | {"param": ParamPath, "range", "scale"}: re-optimised for every trial. A solve-controlled parameter is rejected. |
 | `criterion` | object\|null | `null` |  | A merit-function spec; null generates the default merit for tolerancing from `default_merit`. |
 | `default_merit` | object | `{"auto_symmetry":true,"configs":[],"criterion":{"reference":"centroid","scope":"monochromatic","type":"rms_spot"},"fields":null,"sampling":{"arm_offset_deg":0.0,"arms":6,"obscuration":0.0,"rings":3,"symmetry":"none"},"thickness":null,"wavelengths":null,"weight":1.0}` |  | Default-merit generator: RMS spot, wavefront or polychromatic MTF; fields, wavelengths, sampling and thickness boundaries. |
 | `irregularity_wavelength_um` | number\|null | `null` | µm | > 0; Fringe test wavelength; null keeps an existing overlay's, else the primary wavelength. |
@@ -2469,7 +2469,7 @@ Settings:
 | `seed` | integer | `0` |  | ≥ 0 |
 | `spectrum` | object\|null |  |  | Optional run-local spectrum; absent/null keeps the design. kind: explicit (wavelengths:[{um,weight}]), photopic, scotopic, blackbody (temperature_k), sensor (table:[[um,response]]). Presets/sensor take sampling. Primary is nearest the energy-weighted mean (first on ties). |
 | `threshold` | number\|null | `null` |  | Criterion value for the yield (criterion ≤ threshold). |
-| `tolerances` | array | `[]` |  | Tolerance operands: {"param": ParamPath, "minus", "plus", "distribution", "label"}. material_dn_d / material_dv_d perturb catalogue index / Abbe offsets around the saved melt values. Empty: ±0.05 mm on every thickness but the back focus and ±0.5 % on every curvature. |
+| `tolerances` | array | `[]` |  | Tolerance operands: {"param": ParamPath, "minus", "plus", "distribution", "label"}. material_dn_d / material_dv_d perturb catalogue index / Abbe offsets around the saved melt values. Empty: ±0.05 mm on every thickness but the back focus and ±0.5 % on every curvature, without the solve-controlled ones. A solve-controlled parameter is rejected. |
 | `trials` | integer | `100` |  | ≥ 1 |
 
 Result (`result` in the envelope):
@@ -2477,7 +2477,7 @@ Result (`result` in the envelope):
 | field | type | unit | notes |
 |---|---|---|---|
 | `backend` | object |  |  |
-| `backend.aiming` (optional) | string |  | one of `"by-batch"`, `"device"`, `"host"`; Where the pupil rays of a run handed a GPU device are aimed: by batch (default; `resident_evaluation.device_aimed_batches` counts the device's), every batch on the device with host completion (`aiming` key set to `device` or `table`) or on the host with device tracing (`host-table`, `split:<share>`). |
+| `backend.aiming` (optional) | string |  | one of `"by-batch"`, `"device"`, `"host"`; Where the pupil rays of a run handed a GPU device are aimed (route option `solver_aiming`): by batch (default; `resident_evaluation.device_aimed_batches` counts the device's), every batch on the device with host completion, or every batch on the host with device tracing. |
 | `backend.evaluated_on` | string |  | Search evaluator backend; envelope uses engine backend ids. |
 | `backend.gpu_stats` (optional) | object |  |  |
 | `backend.gpu_stats.cpu_candidates` | integer |  | ≥ 0 |
@@ -2495,7 +2495,7 @@ Result (`result` in the envelope):
 | `compensators` | array<object> |  | Model parameter units. |
 | `criterion_spec` | object |  | Effective MeritFunctionSpec. |
 | `monte_carlo` | object? |  |  |
-| `monte_carlo.cancelled` | boolean |  | Statistics of completed trials after interruption. |
+| `monte_carlo.cancelled` | boolean |  | Statistics of completed trials after a stop. |
 | `monte_carlo.compensator_mean` | array<nf> |  |  |
 | `monte_carlo.compensator_std` | array<nf> |  |  |
 | `monte_carlo.criteria` | array<nf> |  | Criterion per trial; inf for failed trials. |
@@ -2529,7 +2529,7 @@ Result (`result` in the envelope):
 | `preview.system` | object |  | Compensated OpticalSystem; apply as a new session snapshot. |
 | `preview.system_hash` | string |  | Content hash of the preview model. |
 | `sensitivity` | object? |  |  |
-| `sensitivity.cancelled` | boolean |  | Partial sensitivity after interruption. |
+| `sensitivity.cancelled` | boolean |  | Partial sensitivity after a stop. |
 | `sensitivity.evaluations` | integer |  | ≥ 0 |
 | `sensitivity.nominal` | object |  |  |
 | `sensitivity.nominal.compensators` | array<nf> |  | Parameter values. |
@@ -2552,7 +2552,7 @@ Result (`result` in the envelope):
 | `sensitivity.predicted_criterion` | nf | criterion | Nominal + rss_change. |
 | `sensitivity.ranking` | array<integer> |  | Worst first. |
 | `sensitivity.rss_change` | nf | criterion | Root sum of squared worst changes. |
-| `status` | string |  | one of `"complete"`, `"stopped"`, `"cancelled"` |
+| `status` | string |  | one of `"finished"`, `"stopped"`; Cancel discards the result. |
 | `stopped` | boolean |  | Stop requested; completed sensitivity operands/trials retained. |
 
 Buffers:

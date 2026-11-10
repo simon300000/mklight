@@ -13,14 +13,15 @@ public enum SampleSystems {
         }
     }
 
-    /// The engine's built-in samples, shipped as `Resources/samples.json`
-    /// (written by `cargo run -p mklight-core --example dump_fixtures`). They
-    /// validate in the engine and use only built-in glasses.
+    /// The text of `Resources/samples.json`, which
+    /// `cargo run -p mklight-core --example dump_fixtures` writes.
+    static let bundledData: Data? = Bundle.module.url(forResource: "samples", withExtension: "json")
+        .flatMap { try? Data(contentsOf: $0) }
+
+    /// The engine's built-in samples, shipped as `Resources/samples.json`.
+    /// They validate in the engine and use only built-in glasses.
     public static let bundled: [Entry] = {
-        guard let url = Bundle.module.url(forResource: "samples", withExtension: "json"),
-            let data = try? Data(contentsOf: url),
-            let entries = try? MKLightJSON.decode([Entry].self, from: data)
-        else { return [] }
+        guard let data = bundledData, let entries = try? MKLightJSON.decode([Entry].self, from: data) else { return [] }
         return entries
     }()
 

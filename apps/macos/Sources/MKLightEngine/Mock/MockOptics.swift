@@ -6,9 +6,9 @@ import MKLightModel
 /// A deliberately small stand-in that lets the UI be developed against data
 /// that responds to edits: nominal Cauchy indices fitted to `n_d`/`V_d`, a
 /// rotationally symmetric real-ray trace that ignores placements, ray aiming
-/// and configurations, and closed-form approximations for MTF and PSF. Every
-/// `MockEngine` result says so in its `RunInfo`. The real numbers come from
-/// the Rust engine (`mklight-trace`, `mklight-analysis`, `mklight-wave`).
+/// and configurations. Every `MockEngine` result says so in its `RunInfo`.
+/// The real numbers come from the Rust engine (`mklight-trace`,
+/// `mklight-analysis`, `mklight-wave`).
 struct MockOptics {
     typealias V3 = SIMD3<Double>
 

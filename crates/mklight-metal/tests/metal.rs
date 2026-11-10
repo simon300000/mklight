@@ -15,7 +15,8 @@ use mklight_gpu::fmath::{hypot2, u32_to_unit_f32};
 use mklight_gpu::layout::{header_offsets, surface_offsets};
 use mklight_gpu::{
     ComputeBackend, CpuF32Backend, Df32, DfOp, Job, JobKind, JobOutput, PackedHeader,
-    PackedSurface, PackedSystem, ReduceMode, SystemHandle, TraceRequest, testutil,
+    PackedSurface, PackedSystem, QualificationBackend, ReduceMode, SystemHandle, TraceRequest,
+    testutil,
 };
 use mklight_metal::{LibraryChoice, LibraryOrigin, MetalBackend, MetalOptions};
 
@@ -470,7 +471,6 @@ fn runtime_source_fallback_matches() {
     }
     let rt = MetalBackend::with_options(&MetalOptions {
         library: LibraryChoice::RuntimeSource,
-        ..Default::default()
     })
     .unwrap()
     .unwrap();

@@ -39,7 +39,8 @@ extension MockEngine {
                 name: name, title: title, category: cat, description: "Mock \(title.lowercased()) (synthetic data).",
                 available: available,
                 unavailableReason: available ? nil : "the mock engine does not compute \(title.lowercased())",
-                settingsSchema: schema(props), defaultSettings: .object([:]))
+                settingsSchema: schema(props), defaultSettings: .object([:]),
+                stoppable: name == "optimize" || name == "tolerance")
         }
         return [
             d("validate", "Validate system", "model"),
@@ -107,8 +108,7 @@ extension MockEngine {
             return AnalysisJob.run(engineRequest: request, snapshot: snapshot) { _ in throw EngineError.unsupported(why) }
         }
         let stop = MockStopFlag()
-        let stoppable = name == "optimize" || name == "tolerance"
-        let onStop: (@Sendable () -> Bool)? = stoppable ? { @Sendable in stop.set() } : nil
+        let onStop: (@Sendable () -> Bool)? = descriptor.stoppable ? { @Sendable in stop.set() } : nil
         return AnalysisJob.run(engineRequest: request, snapshot: snapshot, onStop: onStop) { reporter in
             let started = Date()
             let optics = MockOptics(system: snapshot.system)
@@ -137,29 +137,28 @@ extension MockEngine {
                 startedUnixMs: UInt64(started.timeIntervalSince1970 * 1000),
                 durationMs: Date().timeIntervalSince(started) * 1000, warnings: [Self.mockWarning] + optics.warnings)
             return AnalysisOutput(
-                runInfo: info, result: .generic(GenericResult(analysis: name, json: json, buffers: buffers)),
-                engineRequest: request,
+                runInfo: info, json: json, buffers: buffers, engineRequest: request,
                 backend: BackendReport(requested: "default:mock", used: "mock", precision: "f64_reference"))
         }
     }
 
     // MARK: Plain analyses
 
-    static func selection(_ v: JSONValue?) -> FieldSelection {
+    static func selection(_ v: JSONValue?) -> MockOptics.FieldSelection {
         if v?["type"]?.string == "index", let i = v?["index"]?.int { return .index(i) }
         return .all
     }
 
-    static func wavelengthSelection(_ v: JSONValue?, default d: WavelengthSelection = .all) -> WavelengthSelection {
+    static func wavelengthSelection(_ v: JSONValue?) -> MockOptics.WavelengthSelection {
         switch v?["type"]?.string {
         case "all": .all
         case "primary": .primary
-        case "index": v?["index"]?.int.map { .index($0) } ?? d
-        default: d
+        case "index": v?["index"]?.int.map { .index($0) } ?? .all
+        default: .all
         }
     }
 
-    static func pair(_ p: Point2) -> JSONValue { .array([num(p.x), num(p.y)]) }
+    static func pair(_ p: MockOptics.Point2) -> JSONValue { .array([num(p.x), num(p.y)]) }
     static func num(_ d: Double) -> JSONValue {
         d.isNaN ? .null : d.isInfinite ? .string(d > 0 ? "inf" : "-inf") : .number(d)
     }
@@ -187,7 +186,7 @@ extension MockEngine {
                 ]), []
             )
         case "first_order":
-            let fo = o.firstOrder(FirstOrderSettings())
+            let fo = o.firstOrder()
             let entries = JSONValue.array(
                 fo.entries.map {
                     .object(["key": .string($0.key), "label": .string($0.label), "value": num($0.value), "unit": .string($0.unit)])
@@ -207,16 +206,16 @@ extension MockEngine {
                 ]), []
             )
         case "layout":
-            var ls = LayoutSettings()
+            var ls = MockOptics.LayoutSettings()
             if let r = s["rays_per_field"]?.int { ls.raysPerField = r }
             return layoutBuffers(try o.layout(ls))
         case "spot_diagram":
-            var ss = SpotDiagramSettings()
+            var ss = MockOptics.SpotDiagramSettings()
             ss.fields = selection(s["fields"])
             ss.wavelengths = wavelengthSelection(s["wavelengths"])
             if let r = s["rings"]?.int { ss.rings = r }
-            if let p = s["pattern"]?.string, let pat = PupilPattern(rawValue: p) { ss.pattern = pat }
-            if let seed = s["seed"]?.int.flatMap({ UInt64(exactly: $0) }) { ss.execution.seed = seed }
+            if let p = s["pattern"]?.string, let pat = MockOptics.PupilPattern(rawValue: p) { ss.pattern = pat }
+            if let seed = s["seed"]?.int.flatMap({ UInt64(exactly: $0) }) { ss.seed = seed }
             let r = try o.spot(ss)
             var xy: [Double] = [], pw: [Double] = [], pf: [Double] = []
             var fields: [JSONValue] = []
@@ -248,12 +247,12 @@ extension MockEngine {
                 ]
             )
         case "ray_fan", "opd_fan":
-            var fs = FanSettings()
+            var fs = MockOptics.FanSettings()
             fs.fields = selection(s["fields"])
             fs.wavelengths = wavelengthSelection(s["wavelengths"])
             if let n = s["samples"]?.int { fs.samples = n }
             let r = name == "ray_fan" ? try o.rayFan(fs) : try o.opdFan(fs)
-            func curves(_ cs: [FanResult.Curve]) -> JSONValue {
+            func curves(_ cs: [MockOptics.FanResult.Curve]) -> JSONValue {
                 .array(
                     cs.map {
                         .object(["wavelength": .integer(Int64($0.wavelength)), "pupil": nums($0.pupil), "values": nums($0.values)])
@@ -267,7 +266,7 @@ extension MockEngine {
             }
             return (.object(["quantity": .string(r.quantity.rawValue), "fields": .array(fields), "wavelengths_um": wl]), [])
         case "field_curvature_distortion":
-            var fs = FieldCurvatureSettings()
+            var fs = MockOptics.FieldCurvatureSettings()
             if let n = s["field_samples"]?.int { fs.fieldSamples = n }
             fs.wavelengths = wavelengthSelection(s["wavelengths"])
             let r = try o.fieldCurvature(fs)
@@ -322,7 +321,7 @@ extension MockEngine {
         ])
     }
 
-    /// The typed mock scene in the engine's buffer form (`layout`).
+    /// The mock's scene in the engine's buffer form (`layout`).
     static func layoutBuffers(_ scene: LayoutScene) -> (JSONValue, [ResultBuffer]) {
         var vertices: [Double] = [], offsets: [Double] = [0], kinds: [Double] = []
         var surf: [Double] = [], fld: [Double] = [], wav: [Double] = [], flags: [Double] = []
@@ -404,7 +403,7 @@ extension MockEngine {
         let algorithm = s["algorithm"]?.string ?? "lm"
         let iterations = max(s["max_iterations"]?.int ?? 12, 0)
         let vars = variables(s, snap.system)
-        var spot = SpotDiagramSettings()
+        var spot = MockOptics.SpotDiagramSettings()
         spot.rings = 3
         let r = try o.spot(spot)
         let start = max(r.fields.map(\.rmsRadius).filter(\.isFinite).reduce(0, +) / Double(max(r.fields.count, 1)), 1e-6)
@@ -465,7 +464,7 @@ extension MockEngine {
     /// evaluates `efl` from the paraxial trace and every other operand as
     /// that RMS spot. The EFL hold is appended as a constraint.
     static func mockMeritEvaluation(_ s: [String: JSONValue], _ o: MockOptics) throws -> JSONValue {
-        var spotSettings = SpotDiagramSettings()
+        var spotSettings = MockOptics.SpotDiagramSettings()
         spotSettings.rings = 3
         let r = try o.spot(spotSettings)
         let spots = r.fields.map(\.rmsRadius).map { $0.isFinite ? $0 : 0 }
@@ -595,7 +594,7 @@ extension MockEngine {
             ])
             return (
                 .object([
-                    "status": .string("complete"), "stopped": .bool(false), "sensitivity": .null, "monte_carlo": .null, "preview": preview,
+                    "status": .string("finished"), "stopped": .bool(false), "sensitivity": .null, "monte_carlo": .null, "preview": preview,
                     "compensators": s["compensators"] ?? .array([]),
                 ]), []
             )
@@ -669,7 +668,7 @@ extension MockEngine {
                 "compensator_mean": .array(comps.map { .number($0.1 + 0.01) }), "compensator_std": .array(comps.map { _ in .number(0.05) }),
             ])
         let json = JSONValue.object([
-            "status": .string(stopped ? "stopped" : "complete"), "stopped": .bool(stopped),
+            "status": .string(stopped ? "stopped" : "finished"), "stopped": .bool(stopped),
             "sensitivity": mode == "monte_carlo"
                 ? .null
                 : .object([

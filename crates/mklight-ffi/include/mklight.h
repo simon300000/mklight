@@ -15,6 +15,10 @@
  *  - Buffer arrays returned by mk_job_take_result() are released with
  *    mk_buffer_free().
  *  - Structured data is JSON. Infinite lengths are the strings "inf"/"-inf".
+ *  - JSON passed in: text that is not JSON is MK_ERR_PARSE; JSON of the
+ *    wrong shape (a missing key, a value of the wrong type, a key the object
+ *    does not have) is MK_ERR_INVALID_ARGUMENT, and the message names the
+ *    key. No unknown key is ignored.
  *  - No function lets a panic or exception escape: internal errors are
  *    reported as MK_ERR_PANIC / MK_ERR_INTERNAL.
  */
@@ -48,8 +52,10 @@ const char *mk_engine_version(void);
 typedef int32_t MKStatus;
 
 #define MK_OK 0
-#define MK_ERR_INVALID_ARGUMENT 1 /* NULL/invalid argument, bad UTF-8, bad settings */
-#define MK_ERR_PARSE 2            /* malformed JSON, project or catalog file */
+#define MK_ERR_INVALID_ARGUMENT 1 /* NULL/invalid argument, bad UTF-8, bad settings,
+                                     JSON of the wrong shape, unknown key */
+#define MK_ERR_PARSE 2            /* text that is not JSON; malformed project or
+                                     catalog file */
 #define MK_ERR_INVALID_MODEL 3    /* optical system fails validation */
 #define MK_ERR_NOT_FOUND 4        /* unknown job, analysis, glass, catalog */
 #define MK_ERR_IO 5               /* file system error */
@@ -57,7 +63,7 @@ typedef int32_t MKStatus;
 #define MK_ERR_CANCELLED 7        /* job was cancelled */
 #define MK_ERR_TIMEOUT 8          /* mk_job_wait timed out */
 #define MK_ERR_NOT_READY 9        /* job has not finished */
-#define MK_ERR_JOB_FAILED 10      /* job ended with an error */
+#define MK_ERR_JOB_FAILED 10      /* job ended with an internal error (a panic) */
 #define MK_ERR_COMPUTE 11         /* trace / numerical / backend failure */
 #define MK_ERR_PANIC 12           /* internal error caught at the boundary */
 #define MK_ERR_INTERNAL 13
@@ -105,9 +111,16 @@ typedef struct MKSession MKSession; /* thread-safe; calls are serialised */
 /* config_json (nullable): {"worker_threads": 0, "max_retained_jobs": 256,
  * "resolved_cache_capacity": 8, "analysis_graph_bytes": 268435456,
  * "progress_interval_ms": 50, "app_name": "", "app_version": "",
- * "default_backend": {"kind": "auto"}, "aim_stop": "conditioned"}; every
- * key is optional and these are the defaults. "aim_stop" ("conditioned" or
- * "requested") is the aim-stop policy of requests that name none. */
+ * "default_backend": {"kind": "auto"}, "aim_stop": "conditioned",
+ * "route": {}}; every key is optional and these are the defaults.
+ * "aim_stop" ("conditioned" or "requested") is the aim-stop policy of
+ * requests that name none. "route" holds the route options of requests
+ * that carry none: {"aiming": "host-table" | "table" | "device",
+ * "aiming_share": null | 0…1, "fieldmaps": "host-chief" | "device-chief",
+ * "stray_share": null | 0…1, "stray_sag": "f32-scan" | "f32-grazing",
+ * "solver_aiming": "by-batch" | "host" | "device"}, every key optional
+ * with the first value as its default (docs/GPU.md §9.3); an unknown key or
+ * name fails here, a share outside 0…1 fails the requests that use it. */
 MKStatus mk_engine_create(const char *config_json, MKEngine **out_engine);
 
 /* Clears the job callback (waiting for calls in progress), then releases
@@ -116,7 +129,8 @@ void mk_engine_destroy(MKEngine *engine);
 
 /* JSON array of analysis descriptions (name, title, category, description,
  * available, unavailable_reason, settings_schema, default_settings,
- * result_schema, result_version, gpu_path). The result schemas, and every
+ * result_schema, result_version, gpu_path, stoppable). "stoppable": the
+ * analysis' jobs accept mk_job_stop. The result schemas, and every
  * analysis' result fields and buffers, are documented in docs/RESULTS.md. */
 MKStatus mk_engine_list_analyses(const MKEngine *engine, char **out_json);
 
@@ -180,8 +194,8 @@ MKStatus mk_session_get_project_json(const MKSession *session, char **out_json);
 /* The current OpticalSystem. */
 MKStatus mk_session_get_system_json(const MKSession *session, char **out_json);
 
-/* Replace the OpticalSystem. Invalid systems are rejected (MK_ERR_PARSE /
- * MK_ERR_INVALID_MODEL) and leave the session unchanged. out_hash
+/* Replace the OpticalSystem. A system that fails validation is rejected
+ * (MK_ERR_INVALID_MODEL) and leaves the session unchanged. out_hash
  * (nullable) receives the new snapshot hash. */
 MKStatus mk_session_set_system_json(MKSession *session, const char *system_json,
                                     char **out_hash);
@@ -232,8 +246,8 @@ MKStatus mk_session_submit_analysis(const MKSession *session, const char *analys
                                     uint64_t *out_job);
 
 /* Same, from {"analysis", "settings", "view_key", "backend",
- * "allow_backend_fallback", "tier", "aim_stop"}; every key but "analysis"
- * is optional. "backend" is {"kind": "cpu_reference"},
+ * "allow_backend_fallback", "tier", "aim_stop", "route"}; every key but
+ * "analysis" is optional. "backend" is {"kind": "cpu_reference"},
  * {"kind": "gpu", "name": "metal"} or {"kind": "auto"} (chosen per request
  * by the engine's cost model: a GPU when it implements the analysis and is
  * predicted to be faster, else the CPU reference); without it the engine's
@@ -241,7 +255,11 @@ MKStatus mk_session_submit_analysis(const MKSession *session, const char *analys
  * and why. "allow_backend_fallback": run on the CPU reference, with a
  * run_info warning, when the requested backend is unavailable, instead of
  * failing. "tier": "design" (default) or "preview". "aim_stop": "requested"
- * or "conditioned"; null or absent takes the engine configuration's. */
+ * or "conditioned"; null or absent takes the engine configuration's.
+ * "route": route options of this request (the object of the engine
+ * configuration's "route"; keys left out take their defaults, not the
+ * configuration's values); null or absent takes the engine
+ * configuration's. Invalid route options fail here. */
 MKStatus mk_session_submit_analysis_json(const MKSession *session, const char *request_json,
                                          uint64_t *out_job);
 
@@ -256,9 +274,9 @@ MKStatus mk_job_stage(const MKEngine *engine, uint64_t job, char **out_stage);
  *  "superseded_by", "elapsed_ms"} */
 MKStatus mk_job_status_json(const MKEngine *engine, uint64_t job, char **out_json);
 
-/* Stop optimize, tolerance or glass_substitution, keeping the best-so-far
- * result as DONE with result.stopped = true. Queued jobs start and return
- * their initial result.
+/* Stop a job of an analysis listed with "stoppable": true
+ * (mk_engine_list_analyses), keeping the best-so-far result as DONE with
+ * result.stopped = true. Queued jobs start and return their initial result.
  * MK_ERR_UNSUPPORTED for other active jobs. No-op for finished jobs.
  * Cancellation/supersession still discards the result, even after stop. */
 MKStatus mk_job_stop(const MKEngine *engine, uint64_t job);
@@ -279,10 +297,16 @@ MKStatus mk_job_wait(const MKEngine *engine, uint64_t job, int64_t timeout_ms,
  *                      "buffers": [{"index", "name", "dtype", "shape"}]};
  *                      *out_buffers and
  *                      *out_count = typed buffers (NULL and 0 when none).
- *   MK_ERR_JOB_FAILED: the job failed (message in mk_last_error).
  *   MK_ERR_CANCELLED:  the job was cancelled or superseded.
  *   MK_ERR_NOT_READY:  still queued/running; the job is kept.
- *   MK_ERR_NOT_FOUND:  unknown or already taken. */
+ *   MK_ERR_NOT_FOUND:  unknown or already taken.
+ * A job that FAILED returns the status of its own error, the one
+ * mk_session_run_analysis_json returns for the same request (for example
+ * MK_ERR_NOT_FOUND for an unknown glass, MK_ERR_COMPUTE for a trace or
+ * numerical failure, MK_ERR_INVALID_MODEL, MK_ERR_UNSUPPORTED), with its
+ * message in mk_last_error; MK_ERR_JOB_FAILED when the job panicked. The
+ * failed job is forgotten too. mk_job_status tells a failed job
+ * (MK_JOB_FAILED) from an unknown one before the result is taken. */
 MKStatus mk_job_take_result(const MKEngine *engine, uint64_t job, char **out_json,
                             MKBuffer **out_buffers, size_t *out_count);
 

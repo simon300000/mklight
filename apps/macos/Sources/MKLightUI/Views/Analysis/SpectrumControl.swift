@@ -474,43 +474,35 @@ struct SpectrumPreview: View {
     }
 }
 
-/// A compact number field that commits on Return or when it loses focus;
-/// unreadable text reverts.
+/// A compact number field that commits on Return or when it loses focus,
+/// if the text was edited; unreadable text reverts.
 struct SpectrumNumberField: View {
     let value: Double
     var width: CGFloat = 60
     var integer = false
     let label: String
     let commit: (Double) -> Void
-    @State private var text = ""
-    @FocusState private var focused: Bool
 
     var body: some View {
-        TextField(label, text: $text)
-            .labelsHidden()
-            .textFieldStyle(.roundedBorder)
-            .monospacedDigit()
-            .multilineTextAlignment(.trailing)
-            .frame(width: width)
-            .focused($focused)
-            .onSubmit(apply)
-            .onChange(of: focused) { _, f in if !f { apply() } }
-            .onAppear { text = display }
-            .onChange(of: value) { _, _ in if !focused { text = display } }
-            .accessibilityLabel(label)
+        CommittingField(value: value, format: entry, commit: commit) { text, _ in
+            TextField(label, text: text)
+                .labelsHidden()
+                .textFieldStyle(.roundedBorder)
+                .monospacedDigit()
+                .multilineTextAlignment(.trailing)
+                .frame(width: width)
+        }
+        .accessibilityLabel(label)
     }
 
-    private var display: String { integer ? String(Int(saturating: value)) : Fmt.short(value) }
-
-    private func apply() {
-        // Unchanged text keeps the full-precision value it displays.
-        if text == display { return }
-        guard let d = LensValueParser.number(text.trimmingCharacters(in: .whitespaces)), d.isFinite else {
-            text = display
-            return
-        }
-        let v = integer ? d.rounded() : d
-        text = integer ? String(Int(saturating: v)) : Fmt.short(v)
-        if v != value { commit(v) }
+    /// A finite number, whole where the value is.
+    private var entry: FieldEdit<Double>.Format {
+        FieldEdit.Format(
+            exact: { [integer] in integer ? String(Int(saturating: $0)) : FieldText.exact($0) },
+            display: { [integer] in integer ? String(Int(saturating: $0)) : Fmt.short($0) },
+            parse: { [integer] text in
+                guard let d = LensValueParser.number(text.trimmingCharacters(in: .whitespaces)), d.isFinite else { return nil }
+                return integer ? d.rounded() : d
+            })
     }
 }

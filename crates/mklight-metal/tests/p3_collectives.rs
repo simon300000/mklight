@@ -5,12 +5,9 @@ use mklight_gpu::{resident::*, *};
 use mklight_metal::{LibraryChoice, MetalBackend, MetalOptions};
 fn backend(origin: LibraryChoice) -> MetalBackend {
     let started = std::time::Instant::now();
-    let b = MetalBackend::with_options(&MetalOptions {
-        library: origin,
-        ..Default::default()
-    })
-    .unwrap()
-    .expect("P3 requires actual host Metal");
+    let b = MetalBackend::with_options(&MetalOptions { library: origin })
+        .unwrap()
+        .expect("P3 requires actual host Metal");
     eprintln!(
         "backend_setup_probe_ms={:.6}",
         started.elapsed().as_secs_f64() * 1e3
@@ -48,7 +45,7 @@ fn bitwise_fixed_collectives() {
 }
 fn bitwise(g: &MetalBackend) {
     let c = CpuF32Backend::matching(&g.precision().probe);
-    let same = |build: &dyn Fn(&dyn ComputeBackend) -> ResidentPlan| {
+    let same = |build: &dyn Fn(&dyn QualificationBackend) -> ResidentPlan| {
         let (a, _) = p3_cases::read(&c, build(&c));
         let (b, _) = p3_cases::read(g, build(g));
         for (a, b) in a.iter().zip(&b) {

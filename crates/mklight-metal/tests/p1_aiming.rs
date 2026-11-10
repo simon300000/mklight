@@ -7,12 +7,9 @@ use mklight_metal::{LibraryChoice, MetalBackend, MetalOptions};
 use mklight_trace::PupilSampling;
 use support::*;
 fn backend(library: LibraryChoice) -> MetalBackend {
-    let b = MetalBackend::with_options(&MetalOptions {
-        library,
-        ..Default::default()
-    })
-    .unwrap()
-    .expect("P1 requires host Metal hardware");
+    let b = MetalBackend::with_options(&MetalOptions { library })
+        .unwrap()
+        .expect("P1 requires host Metal hardware");
     assert!(b.precision().probe.error_free_transforms());
     eprintln!("device={:?} precision={:?}", b.info(), b.precision());
     b
@@ -390,7 +387,7 @@ fn analytic_projection_on_device() {
     for sheet in [-1, 1] {
         for tele in [false, true] {
             for dz in [-1., 1.] {
-                let make = |backend: &dyn ComputeBackend| {
+                let make = |backend: &dyn QualificationBackend| {
                     let mut p =
                         ResidentPlan::new(mklight_core::Snapshot::new(samples::singlet()).unwrap());
                     let n = 2;
@@ -504,7 +501,7 @@ fn missing_primary_wavelength_is_reported() {
     )
     .unwrap();
     assert_eq!(packed.header.primary_wavelength, consts::MKL_INDEX_NONE);
-    let run = |b: &dyn ComputeBackend| {
+    let run = |b: &dyn QualificationBackend| {
         let (mut p, old) = make_plan(b, &t, 2, 0, &[[0., 0.], [0., 0.5]], false, 40, false);
         b.release_systems(old).unwrap();
         let handle = b.upload_system(&packed).unwrap();
@@ -542,7 +539,7 @@ fn degenerate_finite_launch_is_not_converged() {
     let mut model = samples::finite_relay();
     model.ray_aiming = RayAiming::Off;
     let t = testutil::tracer(model);
-    let run = |b: &dyn ComputeBackend| {
+    let run = |b: &dyn QualificationBackend| {
         let (mut p, h) = make_plan(b, &t, 0, 0, &[[0., 0.], [0.5, 0.]], false, 40, false);
         let mut field = FieldSpec::new(
             t.system(),
@@ -588,7 +585,7 @@ fn resident_path_can_start_backwards() {
     let cpu = CpuF32Backend::matching(&gpu.precision().probe);
     let t = testutil::tracer(samples::singlet());
     let packed = PackedSystem::pack_all(t.system()).unwrap();
-    let run = |b: &dyn ComputeBackend| {
+    let run = |b: &dyn QualificationBackend| {
         let h = b.upload_system(&packed).unwrap();
         let mut p =
             ResidentPlan::new(mklight_core::Snapshot::new(t.system().system().clone()).unwrap());

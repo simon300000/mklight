@@ -1,9 +1,10 @@
-//! Static capability, the cost model's `auto` route and native-attempt
-//! accounting; no runtime f64 verification.
+//! The cost model's `auto` route and native-attempt accounting; no runtime
+//! f64 verification.
 //!
-//! * `auto_route` settles every `auto` request from provider hints and the
-//!   cost model (`cost`), opening the device only when the predicted route
-//!   is native or the device family cannot be known without it.
+//! * `auto_route` settles every `auto` request from provider hints, the
+//!   division rule of the analysis (`reference_by_division`) and the cost
+//!   model (`cost`), opening the device only when the predicted route is
+//!   native or the device family cannot be known without it.
 //! * `run` executes the selected route, skips native paths that already
 //!   failed deterministically on the same input and device, and records
 //!   every attempt that did not produce the result
@@ -15,42 +16,40 @@ use super::{Analysis, AnalysisInput, AnalysisOutput, BackendUse, gpu};
 use crate::backend::{AutoCandidate, Backend, BackendInfo, BackendRegistry, SelectedBackend};
 use crate::error::{EngineError, EngineResult};
 use crate::gpu::{GpuDevice, KnownFailure};
+use crate::route::RouteOptions;
 use mklight_core::job::{BackendAttempt, Precision};
 use mklight_core::{JobContext, MkError, OpticalSystem};
 use serde_json::{Value, json};
 
-/// Analyses whose device output failed the f64 comparison on most default
-/// samples always run on the reference (docs/GPU.md §9.2 has the evidence:
-/// `encircled_energy` on 16 of 16 samples, where the adapter's bin check
-/// under geometry uncertainty completes the result in f64;
-/// `polarization_pupil_map` on 13 of 16, in the axes of samples whose
-/// retardance or diattenuation vanishes). Sporadic disagreements are
-/// documented residual gaps, not runtime gates.
-pub(crate) fn reference_reason(analysis: &str) -> Option<&'static str> {
-    match analysis {
-        "encircled_energy" => Some(
-            "static capability: encircled_energy is not accurate enough on the GPU (energy bins within the ray position uncertainty)",
-        ),
-        "polarization_pupil_map" => Some(
-            "static capability: polarization_pupil_map is not accurate enough on the GPU (undefined polarization axes)",
-        ),
+/// Why the native division of this request gives the device no part of the
+/// run, when the request alone tells: such a run is the CPU reference, and
+/// `auto` settles it without a prediction or a device.
+///
+/// `stray_light`: the transport's share of the source chunks
+/// (`mklight_stray::gpu::hybrid::planned_share`) is zero below the device's
+/// smallest worthwhile share and for sags it does not intersect in closed
+/// form, or as `route.stray_share` says. The analysis reports the same for
+/// a run that reaches the device and gets no share
+/// (`gpu::record_reference_by_rule`).
+fn reference_by_division(r: &AutoRequest<'_>) -> Option<&'static str> {
+    match r.analysis {
+        "stray_light" => {
+            let rays = r.settings["rays"].as_u64()?;
+            let share =
+                mklight_stray::gpu::hybrid::planned_share(r.system, rays, r.route.stray_share);
+            (share == 0.).then_some(if r.route.stray_share.is_some() {
+                "stray_light: the route option stray_share gives the device no source of this run"
+            } else {
+                "stray_light: the transport gives the device no source of this run \
+                 (too few sources, or surfaces it does not intersect in closed form)"
+            })
+        }
         _ => None,
     }
 }
 
-/// [`reference_reason`] for `auto`: a native route without calibration
-/// data stays on the reference until the cost model is recalibrated.
-pub(crate) fn auto_reference_reason(analysis: &str) -> Option<&'static str> {
-    reference_reason(analysis).or(match analysis {
-        "wavefront_map" => {
-            Some("static capability: wavefront_map on the GPU has no cost calibration for auto")
-        }
-        _ => None,
-    })
-}
-
-fn static_capability(reason: &str) -> Value {
-    json!({"decision":"cpu_reference","rule":"static capability","reason":reason})
+fn no_device_share(reason: &str) -> Value {
+    json!({"decision":"cpu_reference","rule":"no device share","reason":reason,"version":cost::VERSION})
 }
 
 /// One `auto` request as the router sees it.
@@ -60,8 +59,12 @@ pub(crate) struct AutoRequest<'a> {
     pub system: &'a OpticalSystem,
     pub snapshot: &'a [u8; 32],
     pub library: &'a str,
+    /// The run's route options.
+    pub route: &'a RouteOptions,
     /// The graph holds the snapshot's reference tracer.
     pub tracer_warm: bool,
+    /// The device's kernels were created ahead (`Engine::prepare_gpu`).
+    pub kernels_prepared: bool,
 }
 
 /// The `auto` selection: the reference, decided before any device opens
@@ -90,14 +93,15 @@ pub(crate) fn auto_route(
         device_open,
         tracer_warm: r.tracer_warm,
         known_failure,
+        kernels_prepared: r.kernels_prepared,
     };
     let (apple, open) = match registry.auto_candidate(r.analysis) {
         Some(AutoCandidate::NoGpu(note)) => return cpu(&note, Value::Null, true),
         Some(AutoCandidate::Gpu { apple_gpu, open }) => (apple_gpu, open),
         None => (None, false),
     };
-    if let Some(reason) = auto_reference_reason(r.analysis) {
-        return cpu(reason, static_capability(reason), !open);
+    if let Some(reason) = reference_by_division(r) {
+        return cpu(reason, no_device_share(reason), !open);
     }
     let route = request_key(r.snapshot, r.library, r.analysis, r.settings);
     let repeated = model.repeated(&route);
@@ -126,7 +130,7 @@ pub(crate) fn auto_route(
         return selected;
     };
     let known = device.known_failure(&route).is_some();
-    let d = if hinted.route == Route::Metal && !known {
+    let mut d = if hinted.route == Route::Metal && !known {
         hinted
     } else {
         // The device is open now; its setup is sunk.
@@ -138,6 +142,7 @@ pub(crate) fn auto_route(
             &state(true, known),
         )
     };
+    model.note_device(&mut d, device.backend.info());
     if repeated.is_none() {
         model.settle(route, &d);
     }
@@ -203,10 +208,7 @@ pub(crate) fn run(
         Box::new(|| input.resolved()),
     );
     let auto = crate::backend::Backend::is_auto_request(&input.requested_backend);
-    let capability = reference_reason(analysis.name());
-    let (cost, note) = if let Some(reason) = capability {
-        (static_capability(reason), reason)
-    } else if auto {
+    let (cost, note) = if auto {
         let decided = input.cost_decision.borrow().clone();
         match decided {
             // Decided by `auto_route` (the cost model).
@@ -249,10 +251,6 @@ pub(crate) fn run(
         });
     };
     if cpu {
-        if !auto {
-            // An explicit request sent to the reference by policy.
-            attempt("downgraded", note.into(), 0.);
-        }
         fallback(note.into(), true);
         return analysis.run(&reference, settings, ctx);
     }
@@ -308,6 +306,7 @@ pub(crate) fn run(
 mod tests {
     use super::*;
     use crate::analysis::AnalysisRegistry;
+    use crate::analysis::cost::Calibration;
     use crate::backend::Backend;
     use crate::gpu::GpuProvider;
     use crate::project::Project;
@@ -529,7 +528,7 @@ mod tests {
         });
         for (name, settings, rule) in [
             ("glass_substitution", glass, "accuracy exclusion"),
-            ("wavefront_map", Value::Null, "static capability"),
+            ("stray_light", json!({"rays": 2000}), "no device share"),
         ] {
             let r = run(name, settings);
             assert_eq!(r.run_info.backend, "cpu_reference", "{name}");
@@ -543,13 +542,23 @@ mod tests {
             assert!(r.run_info.failed_attempts.is_empty(), "{name}");
         }
         // No GPU path: known from the provider's catalogue.
-        let r = run("seidel", Value::Null);
-        assert!(
-            r.backend
-                .fallback_reason
-                .unwrap()
-                .contains("no GPU path for 'seidel'")
-        );
+        for name in [
+            "seidel",
+            "encircled_energy",
+            "polarization_pupil_map",
+            "wavefront_map",
+        ] {
+            let r = run(name, Value::Null);
+            assert_eq!(r.run_info.backend, "cpu_reference", "{name}");
+            assert!(
+                r.backend
+                    .fallback_reason
+                    .unwrap()
+                    .contains(&format!("no GPU path for '{name}'"))
+            );
+            assert!(r.backend.cost_decision.is_none(), "{name}");
+            assert!(r.run_info.warnings.is_empty() && r.run_info.failed_attempts.is_empty());
+        }
         assert_eq!(opened.load(Ordering::SeqCst), 0);
         // The cost model needs the device family: this provider opens and
         // has no calibration, so it runs natively.
@@ -562,6 +571,150 @@ mod tests {
         assert_eq!(opened.load(Ordering::SeqCst), 1);
     }
 
+    /// A stray run whose division gives the device no source is the CPU
+    /// reference by rule: decided from the request alone, before any device
+    /// opens and without a prediction. A share that gives the device
+    /// sources leaves the decision to the cost model.
+    #[test]
+    fn stray_runs_without_a_device_share_are_decided_by_rule() {
+        let settings = |rays: u64| json!({"rays": rays});
+        let verdict = |system: &OpticalSystem, rays: u64, route: &RouteOptions| {
+            reference_by_division(&AutoRequest {
+                analysis: "stray_light",
+                settings: &settings(rays),
+                system,
+                snapshot: &[0; 32],
+                library: "",
+                route,
+                tracer_warm: false,
+                kernels_prepared: false,
+            })
+        };
+        let default = RouteOptions::default();
+        let share = |s: f64| RouteOptions {
+            stray_share: Some(s),
+            ..Default::default()
+        };
+        let triplet = samples::cooke_triplet();
+        // A fifth of 163,840 sources is the smallest device share.
+        assert!(verdict(&triplet, 20_000, &default).is_some());
+        assert!(verdict(&triplet, 163_839, &default).is_some());
+        assert!(verdict(&triplet, 163_840, &default).is_none());
+        // Aspheres are intersected iteratively: no share at any size.
+        let asphere = samples::petzval_asphere();
+        assert!(verdict(&asphere, 1_000_000, &default).is_some());
+        // The route option replaces the rule.
+        assert!(verdict(&triplet, 2000, &share(1.)).is_none());
+        assert!(verdict(&asphere, 2000, &share(0.5)).is_none());
+        let none = verdict(&triplet, 1_000_000, &share(0.)).unwrap();
+        assert!(none.contains("stray_share"), "{none}");
+        // The verdict is the transport's own.
+        for (system, rays, route) in [
+            (&triplet, 20_000, &default),
+            (&triplet, 163_840, &default),
+            (&asphere, 1_000_000, &default),
+        ] {
+            let planned =
+                mklight_stray::gpu::hybrid::planned_share(system, rays, route.stray_share);
+            assert_eq!(verdict(system, rays, route).is_some(), planned == 0.);
+        }
+        // Through the engine: no device opens, and the decision names the
+        // rule.
+        let opened = Arc::new(AtomicUsize::new(0));
+        let e = engine(&opened);
+        let s = e
+            .session_from_project(Project::new(samples::cooke_triplet()))
+            .unwrap();
+        let mut req = AnalysisRequest::new("stray_light", settings(2000));
+        req.backend = Some(Backend::Auto);
+        let r = s.run_analysis(&req, &JobContext::new()).unwrap();
+        assert_eq!(r.run_info.backend, "cpu_reference");
+        let cost = r.backend.cost_decision.as_ref().unwrap();
+        assert_eq!(
+            (&cost["decision"], &cost["rule"], &cost["before_device"]),
+            (
+                &json!("cpu_reference"),
+                &json!("no device share"),
+                &json!(true)
+            )
+        );
+        let reason = r.backend.fallback_reason.clone().unwrap();
+        assert!(reason.contains("gives the device no source"), "{reason}");
+        assert!(r.run_info.warnings.is_empty(), "{:?}", r.run_info.warnings);
+        assert!(r.run_info.failed_attempts.is_empty());
+        assert_eq!(opened.load(Ordering::SeqCst), 0);
+        // With every source on the device the same request is routed (this
+        // provider has no calibration, so natively).
+        req.route = Some(share(1.));
+        let r = s.run_analysis(&req, &JobContext::new()).unwrap();
+        assert_eq!(r.run_info.backend, "gpu:probe", "{:?}", r.backend);
+        assert_eq!(opened.load(Ordering::SeqCst), 1);
+    }
+
+    /// Kernels prepared ahead (`Engine::prepare_gpu`) leave no first-use
+    /// pipeline creation to charge to a native route; without a finished
+    /// preparation the first native use of an analysis pays it. (Real
+    /// Metal: only an Apple GPU is predicted.)
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[test]
+    fn prepared_kernels_are_not_charged_as_first_use() {
+        use crate::gpu::GpuPreparation;
+        let engine = || {
+            Engine::new(EngineConfig {
+                default_backend: Backend::Auto,
+                ..Default::default()
+            })
+        };
+        let decision = |e: &Engine| {
+            let s = e
+                .session_from_project(Project::new(samples::double_gauss()))
+                .unwrap();
+            let r = s
+                .run_analysis(
+                    &AnalysisRequest::new("ray_grid", json!({"rings": 8})),
+                    &JobContext::new(),
+                )
+                .unwrap();
+            r.backend.cost_decision.unwrap()
+        };
+        let e = engine();
+        assert!(e.prepare_gpu(None));
+        let start = Instant::now();
+        while matches!(e.gpu_preparation(), GpuPreparation::Preparing { .. })
+            && start.elapsed().as_secs() < 300
+        {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        match e.gpu_preparation() {
+            GpuPreparation::Ready { .. } => (),
+            GpuPreparation::Unavailable { reason } => {
+                return eprintln!("skipping: Metal unavailable ({reason})");
+            }
+            s => panic!("{s:?}"),
+        }
+        // Prepared: the device is open and its kernels exist.
+        let prepared = decision(&e);
+        assert_eq!(prepared["rule"], "cost model", "{prepared}");
+        assert_eq!(prepared["state"]["kernels_prepared"], true);
+        assert_eq!(prepared["state"]["device_open"], true);
+        assert_eq!(prepared["stages_ms"]["metal_setup"], 0.);
+        // Not prepared: the first native use is charged, with the device
+        // open here (the other engine opened the process's Metal device)
+        // or not.
+        let table = Calibration::builtin();
+        let first_use = table.analyses["ray_grid"].first_use_ms;
+        assert!(first_use > 0.);
+        let cold = decision(&engine());
+        assert_eq!(cold["state"]["kernels_prepared"], false, "{cold}");
+        let open = if cold["state"]["device_open"] == true {
+            0.
+        } else {
+            table.device_open_ms
+        };
+        let setup = cold["stages_ms"]["metal_setup"].as_f64().unwrap();
+        assert!((setup - (open + first_use)).abs() < 1e-3 * setup, "{setup}");
+    }
+
     /// An explicit GPU request for an analysis without a GPU path falls back
     /// to the reference from the provider's catalogue, without device setup.
     #[test]
@@ -571,19 +724,33 @@ mod tests {
         let s = e
             .session_from_project(Project::new(samples::cooke_triplet()))
             .unwrap();
-        let mut req = AnalysisRequest::new("seidel", Value::Null);
-        req.backend = Some(Backend::Gpu("probe".into()));
-        req.allow_backend_fallback = true;
-        let r = s.run_analysis(&req, &JobContext::new()).unwrap();
-        assert_eq!(r.run_info.backend, "cpu_reference");
-        assert!(
-            r.run_info
-                .warnings
-                .iter()
-                .any(|w| w.contains("it does not implement 'seidel'"))
-        );
-        req.allow_backend_fallback = false;
-        assert!(s.run_analysis(&req, &JobContext::new()).is_err());
+        // The analyses the reference alone computes behave alike, whatever
+        // their category.
+        for name in [
+            "seidel",
+            "encircled_energy",
+            "polarization_pupil_map",
+            "wavefront_map",
+        ] {
+            let mut req = AnalysisRequest::new(name, Value::Null);
+            req.backend = Some(Backend::Gpu("probe".into()));
+            req.allow_backend_fallback = true;
+            let r = s.run_analysis(&req, &JobContext::new()).unwrap();
+            assert_eq!(r.run_info.backend, "cpu_reference");
+            assert!(
+                r.run_info
+                    .warnings
+                    .iter()
+                    .any(|w| w.contains(&format!("it does not implement '{name}'")))
+            );
+            assert!(r.run_info.failed_attempts.is_empty(), "{name}");
+            req.allow_backend_fallback = false;
+            let e = s.run_analysis(&req, &JobContext::new()).unwrap_err();
+            assert!(
+                matches!(&e, EngineError::BackendUnavailable(m) if m.contains(name)),
+                "{e}"
+            );
+        }
         assert_eq!(opened.load(Ordering::SeqCst), 0);
         // A GPU path opens the device.
         let mut req = AnalysisRequest::new("spot_diagram", Value::Null);
@@ -610,7 +777,9 @@ mod tests {
                 system: &system,
                 snapshot: &[0; 32],
                 library: "",
+                route: &RouteOptions::default(),
                 tracer_warm: false,
+                kernels_prepared: false,
             };
             let s = auto_route(&model, &reg, &r);
             assert!(s.device.is_none() && s.info.id == "cpu_reference", "{name}");
@@ -637,13 +806,16 @@ mod tests {
         let a = analyses.get("ray_grid").unwrap();
         let settings = super::super::prepare(a.as_ref(), &json!({"rings": 64})).unwrap();
         let snapshot = [7u8; 32];
+        let route = RouteOptions::default();
         let request = |settings| AutoRequest {
             analysis: "ray_grid",
             settings,
             system: &system,
             snapshot: &snapshot,
             library: "",
+            route: &route,
             tracer_warm: false,
+            kernels_prepared: false,
         };
         let first = auto_route(&model, &reg, &request(&settings));
         assert_eq!(first.info.id, "cpu_reference", "{:?}", first.cost_decision);
@@ -656,7 +828,6 @@ mod tests {
             failed: false,
             any_attempt: false,
             duration_ms: predicted * 100.,
-            execution: &[],
             decision: Some(&decision),
             json: &Value::Null,
         };

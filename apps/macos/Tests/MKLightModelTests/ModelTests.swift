@@ -110,6 +110,19 @@ import Testing
     }
 }
 
+/// One model and the engine's verdict on it (`validation_cases.json`,
+/// written by dump_fixtures from `OpticalSystem::validate`).
+private struct EngineVerdict: Decodable {
+    var name: String
+    var system: OpticalSystem
+    /// `nil` when the engine accepts the system, else its error message.
+    var error: String?
+
+    static func all() throws -> [EngineVerdict] {
+        try MKLightJSON.decode([EngineVerdict].self, from: Fixtures.data("validation_cases"))
+    }
+}
+
 @Suite struct ValidationTests {
     @Test func detectsEngineValidationErrors() {
         var s = OpticalSystem.newEmpty()
@@ -133,15 +146,10 @@ import Testing
     }
 
     /// Engine verdicts on parameter paths that do or do not fit the surface's
-    /// shape, material or semi-diameter mode (written by dump_fixtures from
-    /// `OpticalSystem::validate`). Swift must agree case by case.
+    /// shape, material or semi-diameter mode (the cases with a configuration
+    /// override). Swift must agree case by case.
     @Test func agreesWithEngineOnParameterPaths() throws {
-        struct Case: Decodable {
-            var name: String
-            var system: OpticalSystem
-            var error: String?
-        }
-        let cases = try MKLightJSON.decode([Case].self, from: Fixtures.data("validation_cases"))
+        let cases = try EngineVerdict.all().filter { !$0.system.configurations.isEmpty }
         #expect(cases.count >= 70 && cases.contains { $0.error == nil } && cases.contains { $0.error != nil })
         for c in cases {
             let errors = c.system.structuralIssues().filter { $0.severity == .error }
@@ -171,6 +179,101 @@ import Testing
         }
     }
 
+    /// Engine verdicts on the structural rules (the cases without a
+    /// configuration, each with at most one problem). Swift must accept what
+    /// the engine accepts and report the engine's one problem as an error,
+    /// with the engine's code and path where its message carries them.
+    @Test func agreesWithEngineOnStructuralRules() throws {
+        let cases = try EngineVerdict.all().filter { $0.system.configurations.isEmpty }
+        #expect(cases.filter { $0.error == nil }.count >= 15 && cases.filter { $0.error != nil }.count >= 60)
+        var located = 0
+        for c in cases {
+            let issues = c.system.structuralIssues()
+            #expect(issues.allSatisfy { $0.severity == .error }, "\(c.name)")
+            guard let engine = c.error else {
+                #expect(issues.isEmpty, "\(c.name): engine accepts, Swift found \(issues)")
+                continue
+            }
+            #expect(issues.count == 1, "\(c.name): engine rejects (\(engine)), Swift found \(issues)")
+            // "invalid model: [code] path: message".
+            guard let message = issues.first?.message, message.hasPrefix("["), let start = engine.firstIndex(of: "["),
+                let end = engine[start...].range(of: ": ")
+            else { continue }
+            #expect(message.hasPrefix(engine[start..<end.upperBound]), "\(c.name): \(engine) vs \(message)")
+            located += 1
+        }
+        #expect(located >= 50)
+    }
+
+    private func messages(_ edit: (inout OpticalSystem) -> Void) -> [String] {
+        var s = SampleSystems.cookeTriplet()
+        edit(&s)
+        let issues = s.structuralIssues()
+        #expect(issues.allSatisfy { $0.severity == .error })
+        return issues.map(\.message)
+    }
+
+    @Test func evenAsphereHoldsTwentyCoefficients() {
+        func asphere(_ terms: Int) -> SurfaceShape {
+            .evenAsphere(curvature: 0.01, conic: 0, coefficients: Array(repeating: 1e-30, count: terms))
+        }
+        #expect(messages { $0.surfaces[2].shape = asphere(20) }.isEmpty)
+        #expect(messages { $0.surfaces[2].shape = asphere(21) } == [
+            "[coefficient_count] surfaces[2].shape.coefficients: at most 20 coefficients"
+        ])
+        // The parameter path and its setter stop at the same term.
+        var s = SampleSystems.cookeTriplet()
+        s.surfaces[2].shape = asphere(1)
+        let id = s.surfaces[2].id
+        let last = s.setValue(1e-40, at: .asphere(surface: id, index: 19))
+        #expect(last && s.surfaces[2].shape.asphereCoefficients.count == 20 && s.structuralIssues().isEmpty)
+        let beyond = ParamPath.asphere(surface: id, index: 20)
+        #expect(beyond.unresolvedReason(in: s) == "[coefficient_count] index exceeds shape limit")
+        #expect(s.value(at: beyond) == nil)
+        let before = s
+        let set = s.setValue(1, at: beyond)
+        #expect(!set && s == before)
+    }
+
+    @Test func wavelengthTablesIncreaseStrictly() {
+        func coating(_ table: [SpectralSample]) -> [String] {
+            messages { $0.coatings["T"] = .tabulated(reflectance: table) }
+        }
+        #expect(coating([Pair(0.4, 0.01), Pair(0.55, 0.03), Pair(0.7, 0.02)]).isEmpty)
+        #expect(coating([Pair(0.55, 0.03)]).isEmpty)
+        #expect(coating([]) == ["[invalid_coating] coatings[\"T\"].reflectance: a tabulated coating needs at least one sample"])
+        #expect(coating([Pair(0.4, 0.01), Pair(0.7, 0.02), Pair(0.55, 0.03)]) == [
+            "[invalid_coating] coatings[\"T\"].reflectance[2][0]: wavelengths must increase (0.55 follows 0.7)"
+        ])
+        #expect(coating([Pair(0.4, 0.01), Pair(0.4, 0.02), Pair(0.55, 0.03)]) == [
+            "[invalid_coating] coatings[\"T\"].reflectance[1][0]: wavelengths must increase (0.4 follows 0.4)"
+        ])
+        func sensor(_ response: [SpectralSample]) -> [String] {
+            messages { $0.sensor = Sensor(pixelsX: 10, pixelsY: 10, pitchX: 0.004, pitchY: 0.004, spectralResponse: response) }
+        }
+        #expect(sensor([]).isEmpty && sensor([Pair(0.45, 0.6), Pair(0.55, 1), Pair(0.65, 0.7)]).isEmpty)
+        #expect(sensor([Pair(0.55, 1), Pair(0.45, 0.6), Pair(0.65, 0.7)]) == [
+            "[invalid_sensor] sensor.spectral_response[1][0]: wavelengths must increase (0.45 follows 0.55)"
+        ])
+        #expect(sensor([Pair(0.45, 0.6), Pair(0.55, 1), Pair(0.55, 0.7)]) == [
+            "[invalid_sensor] sensor.spectral_response[2][0]: wavelengths must increase (0.55 follows 0.55)"
+        ])
+    }
+
+    @Test func modelGlassIndexIsAboveOne() {
+        for nd in [1, 0.5, 0, -1.5] {
+            #expect(messages { $0.surfaces[1].material = .model(nd: nd, vd: 50, dpgf: 0) } == [
+                "[invalid_material] surfaces[1].material.nd: must be > 1 (got \(nd))"
+            ])
+        }
+        #expect(messages { $0.surfaces[1].material = .model(nd: 1.0001, vd: 50, dpgf: 0) }.isEmpty)
+        // Also the material of a coating layer.
+        let layer = CoatingLayer(material: .model(nd: 1, vd: 50, dpgf: 0), quarterWaves: 1)
+        #expect(messages { $0.coatings["AR"] = .thinFilm(referenceWavelengthUm: 0.55, layers: [layer], mirrorSubstrate: nil) } == [
+            "[invalid_material] coatings[\"AR\"].layers[0].material.nd: must be > 1 (got 1.0)"
+        ])
+    }
+
     @Test func detectsValuesJSONCannotCarry() throws {
         var s = SampleSystems.cookeTriplet()
         #expect(s.structuralIssues().isEmpty)
@@ -185,11 +288,19 @@ import Testing
         #expect(s.structuralIssues().isEmpty, "±∞ object distance has a JSON form")
     }
 
+    /// The engine rejects a part attached to a surface that does not exist.
     @Test func detectsMechanicsOnMissingSurfaces() {
         var s = SampleSystems.cookeTriplet()
-        s.mechanics = [.annularBaffle(surface: SurfaceID(42), z: 0, innerRadius: 1, outerRadius: 2, finish: .lambertian(tis: 0.1))]
+        s.mechanics = [
+            .annularBaffle(surface: SurfaceID(42), z: 0, innerRadius: 1, outerRadius: 2, finish: .lambertian(tis: 0.1)),
+            .barrel(from: SurfaceID(1), to: SurfaceID(43), innerRadius: 9, finish: .lambertian(tis: 0.1)),
+        ]
         let issues = s.structuralIssues()
-        #expect(issues.count == 1 && issues[0].severity == .warning)
+        #expect(issues.map(\.severity) == [.error, .error])
+        #expect(issues.map(\.message) == [
+            "[missing_surface] mechanics[0].surface: no surface with id 42",
+            "[missing_surface] mechanics[1].to: no surface with id 43",
+        ])
     }
 }
 

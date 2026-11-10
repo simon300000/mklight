@@ -40,6 +40,12 @@
 //! (also inside `semi_diameters`). The detector
 //! map is limited to [`crate::system::MAX_DETECTOR_PIXELS`], source strengths
 //! must be finite, and a fraction of a zero reference flux is `None`.
+//!
+//! # Undefined errors
+//!
+//! A run of a single source ray has no standard errors: the scalar errors
+//! and the error maps are then `None` (JSON `null`), as is the error of a
+//! zero RMS radius in any run (`crate::tally`, "Monte-Carlo uncertainty").
 
 use std::sync::Arc;
 
@@ -288,8 +294,9 @@ pub struct ClassMap {
     pub class: PathClass,
     /// W/mm².
     pub irradiance: Vec<f64>,
-    /// Monte-Carlo standard error of each pixel (W/mm²).
-    pub irradiance_std_error: Vec<f64>,
+    /// Monte-Carlo standard error of each pixel (W/mm²); `None`: undefined
+    /// (module docs).
+    pub irradiance_std_error: Option<Vec<f64>>,
 }
 
 /// Flux of one class on the detector.
@@ -298,7 +305,8 @@ pub struct ClassTotal {
     pub class: PathClass,
     /// W.
     pub flux: f64,
-    pub std_error: f64,
+    /// `None`: undefined (module docs).
+    pub std_error: Option<f64>,
     /// `flux / reference_flux` (`None` when the reference flux is 0).
     pub fraction: Option<f64>,
     /// Whole class selected; an uncovered Ghost subset can be included
@@ -322,12 +330,14 @@ pub struct StrayAnalysisResult {
     /// the Ghost row contains only uncovered paths; `totals` still reports
     /// the full class for comparison.
     pub maps: Vec<ClassMap>,
-    /// Sum of the included classes (W/mm²), with its own standard error.
+    /// Sum of the included classes (W/mm²), with its own standard error
+    /// (`None`: undefined, module docs).
     pub total_irradiance: Vec<f64>,
-    pub total_irradiance_std_error: Vec<f64>,
-    /// Stray total (W) and its standard error.
+    pub total_irradiance_std_error: Option<Vec<f64>>,
+    /// Stray total (W) and its standard error (`None`: undefined, module
+    /// docs).
     pub stray_flux: f64,
-    pub stray_std_error: f64,
+    pub stray_std_error: Option<f64>,
     /// `stray_flux / reference_flux` (`None` when the reference flux is 0).
     pub stray_fraction: Option<f64>,
     /// Field sources: fraction of the designed (sequential) flux that
@@ -408,11 +418,10 @@ pub fn analyze_system(
     analyze_system_impl(sys, settings, false, None, false, ctx).map(|r| r.0)
 }
 
-/// A device backend, its transport options and the division of the work.
+/// A device backend and its transport options.
 pub(crate) type Resident<'a> = (
     &'a dyn mklight_gpu::ComputeBackend,
     crate::gpu::TransportOptions,
-    crate::gpu::Design,
 );
 
 /// [`analyze_system`]; with `all_signatures`, signature tallying is forced
@@ -462,9 +471,9 @@ pub(crate) fn analyze_system_impl(
         Ok(())
     };
     let mut r = match resident {
-        Some((b, options, design)) => {
+        Some((b, options)) => {
             let quiet = JobContext::with(ctx.cancel.clone(), Default::default());
-            let r = crate::gpu::run_design_with(
+            let r = crate::gpu::run_with(
                 b,
                 sys.resolved().snapshot.clone(),
                 &sys.scene,
@@ -472,7 +481,6 @@ pub(crate) fn analyze_system_impl(
                 &beam.spec,
                 &ss,
                 options,
-                design,
                 &mut || side(&quiet),
                 &ctx.subrange(0.02, 0.98),
             )?;
@@ -513,16 +521,21 @@ pub(crate) fn analyze_system_impl(
     let area = det.spec.pixel_area();
     let reference = beam.reference_flux;
     let frac = |f: f64| (reference > 0.0).then(|| f / reference);
+    // A flux error map (W) as irradiance.
+    let per_area = |e: &Vec<f64>| e.iter().map(|e| e / area).collect::<Vec<f64>>();
     let maps = PathClass::ALL
         .iter()
         .filter_map(|&c| {
             let (irradiance, error) = if owned.contains(c) {
-                (&det.irradiance[c.index()], &det.flux_std_error[c.index()])
+                (
+                    &det.irradiance[c.index()],
+                    det.flux_std_error.as_ref().map(|e| &e[c.index()]),
+                )
             } else if c == PathClass::Ghost && ss.covered_ghosts.is_some() {
                 // Only the uncovered ghosts are owned.
                 (
                     &det.uncovered_ghost_irradiance,
-                    &det.uncovered_ghost_flux_std_error,
+                    det.uncovered_ghost_flux_std_error.as_ref(),
                 )
             } else {
                 return None;
@@ -530,7 +543,7 @@ pub(crate) fn analyze_system_impl(
             Some(ClassMap {
                 class: c,
                 irradiance: irradiance.clone(),
-                irradiance_std_error: error.iter().map(|e| e / area).collect(),
+                irradiance_std_error: error.map(per_area),
             })
         })
         .collect();
@@ -601,7 +614,7 @@ pub(crate) fn analyze_system_impl(
         detector: det.spec.clone(),
         maps,
         total_irradiance: det.owned_irradiance.clone(),
-        total_irradiance_std_error: det.owned_flux_std_error.iter().map(|x| x / area).collect(),
+        total_irradiance_std_error: det.owned_flux_std_error.as_ref().map(per_area),
         stray_flux: e.detected_owned,
         stray_std_error: e.detected_owned_std_error,
         stray_fraction: frac(e.detected_owned),

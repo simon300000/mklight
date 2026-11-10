@@ -6,6 +6,7 @@ pub fn field_map_job(
     t: &SequentialTracer,
     kind: FieldAnalysis,
     s: &FieldMapSettings,
+    route: &Route,
     ctx: &JobContext,
 ) -> MkResult<FieldMapResult> {
     validate_map(s)?;
@@ -51,9 +52,9 @@ pub fn field_map_job(
             run_info: stamp(run, kind.name(), s, t.warnings().to_vec()),
         });
     }
-    let (design, name) = super::chief_maps::ChiefDesign::selected()?;
-    let device_chiefs = design == super::chief_maps::ChiefDesign::DeviceChief;
-    let geo = Geometry::new(b, t, ctx)?;
+    let design = route.chief;
+    let device_chiefs = design == ChiefDesign::DeviceChief;
+    let geo = Geometry::new(b, t, ctx)?.with_route(route)?;
     let mut p = ResidentPlan::new(t.system().snapshot.clone());
     p.settings = serde_json::to_value(s).unwrap();
     let mut points: Vec<_> = coords
@@ -132,7 +133,7 @@ pub fn field_map_job(
         // the whole map, so a design never returns fewer chiefs.
         let failed = images.iter().filter(|p| !p[0].is_finite()).count();
         let mut out = crate::field_maps::field_map_job(t, kind, s, ctx)?;
-        out.run_info.settings["fieldmaps_variant"] = serde_json::json!(name);
+        out.run_info.settings["fieldmaps_variant"] = serde_json::json!(design.name());
         out.run_info.settings["device_chief_failures"] = serde_json::json!(failed);
         out.run_info.warnings.push(format!(
             "{failed} device chief solves failed; the map was completed by the reference"
@@ -196,7 +197,8 @@ pub fn field_map_job(
         values,
         run_info: {
             let mut run = stamp(r.run_info, kind.name(), s, warnings);
-            run.settings["resident_execution"]["fieldmaps_variant"] = serde_json::json!(name);
+            run.settings["resident_execution"]["fieldmaps_variant"] =
+                serde_json::json!(design.name());
             run
         },
     })

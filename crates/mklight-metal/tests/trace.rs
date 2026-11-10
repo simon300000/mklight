@@ -13,10 +13,10 @@ use mklight_core::{JobContext, MkError, Vec3, samples};
 use mklight_gpu::testutil::{self, f64_path};
 use mklight_gpu::xval::{XvalSettings, cross_validate, qualify};
 use mklight_gpu::{
-    ComputeBackend, CpuF32Backend, Job, JobKind, JobOutput, PackedSystem, PathStep, Radiometry,
-    RayBatch, RecordMode, StepMode, TraceRequest, TraceResult,
+    ComputeBackend, CpuF32Backend, Job, JobKind, JobOutput, PackedSystem, PathStep,
+    QualificationBackend, Radiometry, RayBatch, RecordMode, StepMode, TraceRequest, TraceResult,
 };
-use mklight_metal::{MetalBackend, MetalOptions};
+use mklight_metal::MetalBackend;
 use mklight_trace::{PupilSampling, Ray, SequentialTracer};
 use rayon::prelude::*;
 
@@ -40,7 +40,7 @@ macro_rules! gpu_or_skip {
     };
 }
 
-fn trace(b: &dyn ComputeBackend, req: TraceRequest) -> TraceResult {
+fn trace(b: &dyn QualificationBackend, req: TraceRequest) -> TraceResult {
     match b
         .run(Job::Trace(Box::new(req)), &JobContext::new())
         .unwrap()
@@ -452,13 +452,11 @@ fn trace_chunks_progress_and_cancellation() {
 /// Throughput: about 1e6 Double-Gauss rays (12 surfaces each) on the GPU,
 /// including packing the planes, upload and download, against the
 /// `mklight-trace` f64 reference on all CPU cores (rayon). Run with
-/// `cargo test --release -p mklight-metal --test trace -- --ignored --nocapture`;
-/// `MKLIGHT_METAL_PRECISION=f32` times the pure-f32 kernels (docs/GPU.md §3.6).
+/// `cargo test --release -p mklight-metal --test trace -- --ignored --nocapture`.
 #[test]
 #[ignore = "benchmark"]
 fn benchmark_double_gauss_1e6() {
-    let options = MetalOptions::from_env();
-    let Some(g) = MetalBackend::with_options(&options).unwrap() else {
+    let Some(g) = MetalBackend::new().unwrap() else {
         return eprintln!("SKIP: no Metal device");
     };
     let t = testutil::tracer(samples::double_gauss());
@@ -500,11 +498,10 @@ fn benchmark_double_gauss_1e6() {
     }
     let rs = (n * steps) as f64;
     eprintln!(
-        "{n} rays x {steps} surfaces on {} ({}): GPU {:.1} ms wall ({:.2e} ray-surfaces/s), \
+        "{n} rays x {steps} surfaces on {}: GPU {:.1} ms wall ({:.2e} ray-surfaces/s), \
          {:.1} ms device ({:.2e}/s); CPU f64 rayon ({} threads) {:.1} ms ({:.2e}/s); \
          speed-up {:.1}x wall",
         g.info().name,
-        options.precision.name(),
         gpu_best * 1e3,
         rs / gpu_best,
         dev_best * 1e3,
@@ -613,7 +610,7 @@ fn extended_full_capacity_and_steep_rays_bitwise() {
             assert!(a.status.iter().all(|s| s & 255 != MKL_RAY_EVANESCENT));
         }
         let r2: Vec<f32> = (0..=64).map(|j| j as f32 * 160.0 / 64.0).collect();
-        let probe = |backend: &dyn ComputeBackend, h| match backend
+        let probe = |backend: &dyn QualificationBackend, h| match backend
             .run(
                 Job::SagProbe {
                     systems: h,

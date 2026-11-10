@@ -5,7 +5,22 @@ pub use crate::resident::record_desc;
 use crate::{Df32, pending::JobControl, radiometry::*, resident::*};
 use bytemuck::{Pod, Zeroable};
 pub use kernel::trace;
-use mklight_core::MkResult;
+use mklight_core::{MkError, MkResult};
+
+/// The largest integer a leaf word carries exactly: [`Request::Gather`]
+/// passes a leaf's map index and its reference bin + 1 to
+/// [`Request::PixelKeys`] in one f32 word each.
+pub const LEAF_WORD_MAX: u64 = 1 << 24;
+
+/// Whether [`Request::PixelKeys`] bins exactly: every map index below `maps`
+/// and every reference bin + 1 up to `bins[0] · bins[1]` fits a leaf word.
+/// Larger maps belong to the CPU reference.
+pub fn leaf_words_exact(bins: [u64; 2], maps: u64) -> bool {
+    maps.saturating_sub(1) <= LEAF_WORD_MAX
+        && bins[0]
+            .checked_mul(bins[1])
+            .is_some_and(|pixels| pixels <= LEAF_WORD_MAX)
+}
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
@@ -288,6 +303,14 @@ pub fn validate(r: &Request, p: &ResidentPlan) -> MkResult<()> {
                 || p.desc(*weights)? != &BufferDesc::new(ElementType::DoubleFloat, [n])
             {
                 return Err(bad("ghost pixel records"));
+            }
+            // A support limit, not a malformed plan: the request runs on
+            // the CPU reference.
+            if !leaf_words_exact(bins.map(u64::from), *maps as u64) {
+                return Err(MkError::Unsupported(format!(
+                    "ghost pixel keys beyond exact f32 leaf words \
+                     ({LEAF_WORD_MAX} pixels per map, or as many maps)"
+                )));
             }
             // Keys are u32: `map · bins + pixel`, and `maps · bins` for a miss.
             let pixels = u64::from(bins[0]) * u64::from(bins[1]);
@@ -759,4 +782,46 @@ fn execute_in<E: crate::FpEnv>(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mklight_core::{Snapshot, samples};
+
+    fn pixel_keys(bins: [u32; 2], maps: usize) -> MkResult<()> {
+        let mut p = ResidentPlan::new(Snapshot::new(samples::singlet()).unwrap());
+        let hits = p.scratch(BufferDesc::new(ElementType::DoubleFloat, [1, 5]));
+        let r = Request::PixelKeys {
+            hits: p.view(hits)?,
+            bins,
+            maps,
+            half: [Df32::from_f32(1.); 2],
+            keys: p.scratch(BufferDesc::new(ElementType::U32, [1])),
+            ids: p.scratch(BufferDesc::new(ElementType::U32, [1])),
+            weights: p.scratch(BufferDesc::new(ElementType::DoubleFloat, [1])),
+        };
+        validate(&r, &p)
+    }
+
+    /// A leaf's map and reference bin + 1 are f32 words, exact up to 2^24:
+    /// the plan is accepted up to that count and unsupported above it.
+    #[test]
+    fn pixel_keys_stay_within_exact_leaf_words() {
+        let unsupported = |r: MkResult<()>| matches!(r, Err(MkError::Unsupported(_)));
+        assert_eq!(LEAF_WORD_MAX as f32 as u64, LEAF_WORD_MAX);
+        assert_eq!((LEAF_WORD_MAX + 1) as f32 as u64, LEAF_WORD_MAX);
+        pixel_keys([4096, 4096], 1).unwrap();
+        pixel_keys([1 << 24, 1], 255).unwrap();
+        assert!(unsupported(pixel_keys([4097, 4096], 1)));
+        assert!(unsupported(pixel_keys([(1 << 24) + 1, 1], 1)));
+        assert!(unsupported(pixel_keys([u32::MAX, u32::MAX], 1)));
+        pixel_keys([1, 1], (1 << 24) + 1).unwrap();
+        assert!(unsupported(pixel_keys([1, 1], (1 << 24) + 2)));
+        // Exact leaf words whose keys leave u32 are a malformed plan.
+        assert!(matches!(
+            pixel_keys([4096, 4096], 256),
+            Err(MkError::Backend(_))
+        ));
+    }
 }

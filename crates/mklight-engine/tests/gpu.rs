@@ -57,7 +57,7 @@ fn num(v: &Value) -> f64 {
 
 /// Spot statistics and ray grids of `backend` against the CPU reference.
 fn cross_check(e: &Engine, backend: &str) {
-    let b = Backend::parse(backend);
+    let b = Backend::parse(backend).unwrap();
     for (name, sys) in samples::all() {
         let s = session(e, sys);
         let cpu = run_on(&s, "spot_diagram", Value::Null, None);
@@ -104,24 +104,14 @@ fn cross_check(e: &Engine, backend: &str) {
                 assert!((x - y).abs() <= 2e-6, "{name}: direction {x} vs {y}");
             }
         }
-        // Energy analyses and best focus through the same path, against the
-        // reference: MTF ≤ 2e-3 absolute (CONVENTIONS §7), encircled-energy
-        // fractions to the same budget (or a few rays' weight, below), radii
-        // and merits to the RMS budget, the best defocus to 1e-4 mm.
+        // The geometric MTF and best focus through the same path, against
+        // the reference: MTF ≤ 2e-3 absolute (CONVENTIONS §7), merits to the
+        // RMS budget, the best defocus to 1e-4 mm.
         let set = json!({"rings": 6});
         let pair = |a: &str, set: &Value| {
             let c = run_on(&s, a, set.clone(), None);
             let g = run_on(&s, a, set.clone(), Some(b.clone()));
-            if a == "encircled_energy" && g.run_info.backend == "cpu_reference" {
-                assert!(
-                    g.backend
-                        .fallback_reason
-                        .as_deref()
-                        .is_some_and(|r| r.contains("static capability"))
-                );
-            } else {
-                assert_eq!(g.run_info.backend, backend, "{a}: {:?}", g.backend);
-            }
+            assert_eq!(g.run_info.backend, backend, "{a}: {:?}", g.backend);
             assert_eq!(c.run_info.backend, "cpu_reference", "{a}");
             (c.json, g.json)
         };
@@ -147,44 +137,6 @@ fn cross_check(e: &Engine, backend: &str) {
             }
         }
         assert!(worst <= MTF_ABS, "{name}: MTF differs by {worst}");
-        // Encircled energy is a step function of the radius: a ray within
-        // the position budget of a radius sample may cross it, and a ring of
-        // symmetric rays crosses together. Allow a few rays' weight.
-        let (c, g) = pair("encircled_energy", &json!({"rings": 24}));
-        // The radius axis ends at the largest GEO radius, itself within the
-        // RMS budget.
-        for (x, y) in c["radius"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .zip(g["radius"].as_array().unwrap())
-        {
-            assert!(radius_ok(num(x), num(y)), "{name} radius: {x} vs {y}");
-        }
-        for (cf, gf) in c["fields"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .zip(g["fields"].as_array().unwrap())
-        {
-            assert_eq!(cf["rays_arrived"], gf["rays_arrived"], "{name}");
-            let step = MTF_ABS.max(8.0 / num(&cf["rays_arrived"]));
-            for key in ["encircled", "ensquared"] {
-                for (x, y) in cf[key]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .zip(gf[key].as_array().unwrap())
-                {
-                    let d = (num(x) - num(y)).abs();
-                    assert!(d <= step, "{name} {key}: {x} vs {y}");
-                }
-            }
-            for key in ["r50", "r80", "r90", "half_width80"] {
-                let (x, y) = (num(&cf[key]), num(&gf[key]));
-                assert!(radius_ok(x, y), "{name} {key}: {x} vs {y}");
-            }
-        }
         let (c, g) = pair("best_focus", &set);
         let (x, y) = (num(&c["defocus"]), num(&g["defocus"]));
         assert!((x - y).abs() <= 1e-4, "{name} best defocus: {x} vs {y}");
@@ -283,66 +235,6 @@ fn auto_picks_a_gpu_only_for_analyses_with_a_gpu_path() {
     let r = s.run_analysis(&req, &JobContext::new()).unwrap();
     assert_eq!(r.run_info.backend, "cpu_reference");
     assert!(!r.run_info.warnings.is_empty());
-}
-
-#[test]
-fn static_capability_fallback_is_deliberate_even_for_explicit_gpu() {
-    let e = engine_with(Some(GpuProvider::emulation()));
-    let s = session(&e, samples::cooke_triplet());
-    for (name, settings) in [
-        ("encircled_energy", json!({"rings": 24})),
-        ("polarization_pupil_map", Value::Null),
-    ] {
-        let gpu = run_on(
-            &s,
-            name,
-            settings.clone(),
-            Some(Backend::Gpu("cpu_f32".into())),
-        );
-        let cpu = run_on(&s, name, settings, Some(Backend::CpuReference));
-        assert_eq!(gpu.run_info.backend, "cpu_reference");
-        assert_eq!(gpu.run_info.precision, Precision::F64Reference);
-        assert!(
-            gpu.backend
-                .fallback_reason
-                .unwrap()
-                .contains(&format!("static capability: {name} is not accurate enough"))
-        );
-        assert_eq!(gpu.json, cpu.json);
-        assert_eq!(gpu.buffers.len(), cpu.buffers.len());
-        for (a, b) in gpu.buffers.iter().zip(&cpu.buffers) {
-            assert_eq!((&a.name, &a.shape), (&b.name, &b.shape));
-            let equal = match (&a.data, &b.data) {
-                (BufferData::F64(a), BufferData::F64(b)) => a
-                    .iter()
-                    .map(|v| v.to_bits())
-                    .eq(b.iter().map(|v| v.to_bits())),
-                (BufferData::F32(a), BufferData::F32(b)) => a
-                    .iter()
-                    .map(|v| v.to_bits())
-                    .eq(b.iter().map(|v| v.to_bits())),
-                _ => a.data == b.data,
-            };
-            assert!(equal, "{}", a.name);
-        }
-        // The explicit request was downgraded: a warning and an attempt
-        // record, no native time spent.
-        let attempts = &gpu.run_info.failed_attempts;
-        assert_eq!(attempts.len(), 1, "{attempts:?}");
-        assert_eq!(attempts[0].backend, "gpu:cpu_f32");
-        assert_eq!(
-            (attempts[0].outcome.as_str(), attempts[0].elapsed_ms),
-            ("downgraded", 0.)
-        );
-        assert!(attempts[0].reason.contains("is not accurate enough"));
-        assert!(
-            gpu.run_info
-                .warnings
-                .iter()
-                .any(|w| w.starts_with("backend 'gpu:cpu_f32' downgraded"))
-        );
-        assert!(cpu.run_info.failed_attempts.is_empty());
-    }
 }
 
 /// A stray run whose transport gives the device no source is the CPU

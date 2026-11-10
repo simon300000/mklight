@@ -21,20 +21,6 @@ kernel void mkl_geometry_coordinates(device const float* rays [[buffer(0)]], dev
     }
     out[4ul*p.stride+i]=float2(ok?rays[8ul*p.stride+i]:0,0);
 }
-kernel void mkl_geometry_radial(device const float2* points [[buffer(0)]], device const uint* mask [[buffer(1)]],
-    device const float2* moments [[buffer(2)]], device float2* radius [[buffer(3)]], device float2* square [[buffer(4)]],
-    device float2* weight [[buffer(5)]], device uint* ids [[buffer(6)]], constant MklGeometryParams& p [[buffer(7)]],uint tid [[thread_position_in_grid]]) {
-    uint i=p.offset+tid; if(tid>=p.count) return; ids[i]=i;
-    radius[i]=float2(INFINITY,0); square[i]=float2(INFINITY,0);weight[i]=float2(0);
-    if(mask[i]==0) return;
-    ulong j=ulong(i/p.segment)*10;
-    MklDf x=geo_d(points,i)-(p.centroid?geo_d(moments,j+2):geo_c(0));
-    MklDf y=geo_d(points,ulong(p.stride)+i)-(p.centroid?geo_d(moments,j+3):geo_c(0));
-    radius[i]=mkl_sqrt(x*x+y*y).v;
-    MklDf ax=x.v.x<0?-x:x,ay=y.v.x<0?-y:y;
-    square[i]=mkl_le(ax-ay,0)?ay.v:ax.v;
-    weight[i]=points[4ul*p.stride+i];
-}
 kernel void mkl_geometry_characteristic(device const float2* points [[buffer(0)]], device const uint* mask [[buffer(1)]],
     device const float2* frequency [[buffer(2)]], device float2* out [[buffer(3)]],constant MklGeometryParams& p [[buffer(7)]],uint tid [[thread_position_in_grid]]) {
     uint i=p.offset+tid; if(tid>=p.count) return;
@@ -68,25 +54,6 @@ kernel void mkl_geometry_surfaces(constant MklPackedHeader* headers [[buffer(0)]
         for(uint k=0;k<3;++k){MklDv rot;for(uint a=0;a<3;++a)rot.v[a]=frames[12ul*frame+3*k+a];out[3ul*i+k]=((geo_d(frames,12ul*frame+9+k)-mkl_parts<MklDf>(p.origin[2*k],p.origin[2*k+1]))+MklDf{mkl_ddot(rot,point)}).v;}
     }
 
-}
-kernel void mkl_geometry_distribution(device const float2* keys [[buffer(0)]],device const float2* cum [[buffer(1)]],
-    device const float2* radii [[buffer(2)]],device float2* out [[buffer(3)]],device float2* boundary [[buffer(4)]],constant MklGeometryParams& p [[buffer(7)]],uint tid [[thread_position_in_grid]]) {
-    uint i=p.offset+tid;if(tid>=p.count) return;
-    uint n=p.segment,k=p.chiefs;MklDf total=n>0?geo_d(cum,n-1):geo_c(0);
-    if(i==k+3){out[i]=total.v;return;}
-    uint a=0,b=n;
-    if(i<k){MklDf radius=geo_d(radii,i);while(a<b){uint mid=(a+b)/2;if(mkl_le(geo_d(keys,mid)-radius,0))a=mid+1;else b=mid;}
-        boundary[i]=float2(0);
-        if(total.v.x>0){MklDf radius=geo_d(radii,i),error=mkl_parts<MklDf>(p.defocus[0],p.defocus[1]),low=radius-error,high=radius+error;uint la=0,lb=n,ha=0,hb=n;
-            while(la<lb){uint mid=(la+lb)/2;if((geo_d(keys,mid)-low).v.x<0)la=mid+1;else lb=mid;}
-            while(ha<hb){uint mid=(ha+hb)/2;if((geo_d(keys,mid)-high).v.x<=0)ha=mid+1;else hb=mid;}
-            MklDf lower=la>0?geo_d(cum,la-1):geo_c(0),upper=ha>0?geo_d(cum,ha-1):geo_c(0);boundary[i]=((upper-lower)/total).v;
-        }
-        out[i]=a>0 && total.v.x>0?(geo_d(cum,a-1)/total).v:float2(0);
-    }else{MklDf fraction=i==k?mkl_parts<MklDf>(0.5f,-4.996003610813204e-16f):i==k+1?mkl_parts<MklDf>(0.8f,-1.192092980328851e-8f):mkl_parts<MklDf>(0.9f,2.38418573772492e-8f);
-        MklDf target=total*fraction;while(a<b){uint mid=(a+b)/2;if((geo_d(cum,mid)-target).v.x<0)a=mid+1;else b=mid;}
-        out[i]=a<n && total.v.x>0?keys[a]:float2(NAN,0);
-    }
 }
 kernel void mkl_geometry_fields(device const float* f [[buffer(0)]],device const uint* status [[buffer(1)]],
     device const float* hi [[buffer(2)]],device const float* lo [[buffer(3)]],device float2* out [[buffer(4)]],

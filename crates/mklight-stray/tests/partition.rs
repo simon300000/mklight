@@ -150,7 +150,7 @@ fn check(name: &str, base: OpticalSystem, fields: &[usize]) {
         .unwrap();
         let reference = all.source.reference_flux;
         let frac = |c: PathClass| all.total_of(c).flux / reference;
-        let se = |c: PathClass| all.total_of(c).std_error / reference;
+        let se = |c: PathClass| all.total_of(c).std_error.unwrap() / reference;
         let detected: f64 = PathClass::ALL.iter().map(|c| frac(*c)).sum();
         let stray = excl.stray_flux / reference;
         let stray_with_ghost = all.stray_flux / reference;
@@ -285,7 +285,7 @@ fn ghost_orders_outside_the_ghost_run_stay_with_the_stray_solver() {
     let without = run(None);
     let reference = all.source.reference_flux;
     let frac = |c: PathClass| all.total_of(c).flux / reference;
-    let se = |c: PathClass| all.total_of(c).std_error / reference;
+    let se = |c: PathClass| all.total_of(c).std_error.unwrap() / reference;
     let rest = PathClass::ALL.iter().map(|c| frac(*c)).sum::<f64>() - frac(PathClass::Primary);
     let se_rest = [
         PathClass::Ghost,
@@ -458,7 +458,7 @@ fn high_reflectance(rays: u64, seeds: &[u64]) {
             let paired_se = (n / (n - 1.0) * (sq.value() - paired * paired / n)).sqrt();
             let e = &r.energy;
             assert!((paired / e.detected_covered_ghost - 1.0).abs() < 1e-10);
-            assert!((paired_se / e.detected_covered_ghost_std_error - 1.0).abs() < 1e-10);
+            assert!((paired_se / e.detected_covered_ghost_std_error.unwrap() - 1.0).abs() < 1e-10);
             let (mc, se) = (
                 paired / r.source.reference_flux,
                 paired_se / r.source.reference_flux,
@@ -554,11 +554,18 @@ fn hybrid_doe_orders_partition_without_double_counting() {
         * reference;
     let primary = explicit.primary.fields[0].flux_on_map * reference;
     let p = all.total_of(PathClass::Primary);
-    let z_primary = (p.flux - primary) / p.std_error;
-    let z_ghost =
-        (excl.energy.detected_covered_ghost - ghost) / excl.energy.detected_covered_ghost_std_error;
+    let p_error = p.std_error.unwrap();
+    let z_primary = (p.flux - primary) / p_error;
+    let z_ghost = (excl.energy.detected_covered_ghost - ghost)
+        / excl.energy.detected_covered_ghost_std_error.unwrap();
     let z_sum = (primary + ghost + excl.stray_flux - all.energy.detected)
-        / (p.std_error.powi(2) + excl.energy.detected_covered_ghost_std_error.powi(2)).sqrt();
+        / (p_error.powi(2)
+            + excl
+                .energy
+                .detected_covered_ghost_std_error
+                .unwrap()
+                .powi(2))
+        .sqrt();
     println!(
         "hybrid DOE: primary z={z_primary:+.3}, covered orders z={z_ghost:+.3}, partition z={z_sum:+.3}, uncovered={:.6e}",
         excl.energy.detected_uncovered_ghost

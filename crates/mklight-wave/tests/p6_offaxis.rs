@@ -14,7 +14,6 @@ const LAM: f64 = 0.55;
 fn metal() -> Option<mklight_metal::MetalBackend> {
     let Some(b) = mklight_metal::MetalBackend::with_options(&mklight_metal::MetalOptions {
         library: mklight_metal::LibraryChoice::Precompiled,
-        ..Default::default()
     })
     .unwrap() else {
         eprintln!("no Metal device: skipped");

@@ -38,6 +38,9 @@
 //! ```
 //!
 //! over all `N` source rays (rays that deliver nothing count as `xᵢ = 0`).
+//! A run of a single ray has no standard error: every error of the run is
+//! then undefined (`None`, JSON `null`; the per-pixel error maps as a
+//! whole).
 //!
 //! The same per-ray bookkeeping gives
 //!
@@ -50,7 +53,9 @@
 //!   `(Sx/F, Sy/F)` and the RMS radius about it,
 //!   `√(Sr/F − (Sx/F)² − (Sy/F)²)`, are ratio estimators; their standard
 //!   errors are the delta-method (linearised) errors
-//!   `SE(g)² = N/(N−1) · (∇gᵀ Q ∇g − (∇gᵀ S)²/N)`, `S` being the four sums;
+//!   `SE(g)² = N/(N−1) · (∇gᵀ Q ∇g − (∇gᵀ S)²/N)`, `S` being the four sums.
+//!   The RMS radius is not differentiable at zero, so the error of a zero
+//!   RMS radius (a class with a single hit) is undefined (`None`);
 //! * flux, hits and standard error per class and **path signature**
 //!   ([`crate::path::Signature`]).
 //!
@@ -605,20 +610,29 @@ impl StrayTally {
         self.events += c.events;
     }
 
+    /// Whether the run has the two rays a standard error needs.
+    fn has_errors(&self) -> bool {
+        self.rays >= 2
+    }
+
     /// Standard error of a sum over the run's `N` independent rays, from the
-    /// sum and the sum of per-ray squares (module docs).
-    fn se(&self, sum: f64, sq: f64) -> f64 {
-        if self.rays < 2 {
-            return f64::INFINITY;
-        }
+    /// sum and the sum of per-ray squares (module docs); `None` (undefined)
+    /// for fewer than two rays.
+    fn se(&self, sum: f64, sq: f64) -> Option<f64> {
+        self.has_errors().then(|| self.se_of(sum, sq))
+    }
+
+    /// [`Self::se`] of a run with at least two rays.
+    fn se_of(&self, sum: f64, sq: f64) -> f64 {
         let n = self.rays as f64;
         (n / (n - 1.0) * (sq - sum * sum / n)).max(0.0).sqrt()
     }
 
-    /// Linearised standard error of `g(S)` with gradient `grad` (module docs).
-    fn se_linear(&self, slot: usize, grad: [f64; 4]) -> f64 {
-        if self.rays < 2 {
-            return f64::INFINITY;
+    /// Linearised standard error of `g(S)` with gradient `grad` (module
+    /// docs); `None` (undefined) for fewer than two rays.
+    fn se_linear(&self, slot: usize, grad: [f64; 4]) -> Option<f64> {
+        if !self.has_errors() {
+            return None;
         }
         let n = self.rays as f64;
         let s: Vec<f64> = self.moments[slot].iter().map(|k| k.value()).collect();
@@ -630,7 +644,7 @@ impl StrayTally {
             }
         }
         let gs: f64 = (0..4).map(|a| grad[a] * s[a]).sum();
-        (n / (n - 1.0) * (gqg - gs * gs / n)).max(0.0).sqrt()
+        Some((n / (n - 1.0) * (gqg - gs * gs / n)).max(0.0).sqrt())
     }
 
     fn image_moments(&self, slot: usize) -> ImageMoments {
@@ -656,7 +670,7 @@ impl StrayTally {
                 ],
             )
         } else {
-            f64::INFINITY
+            None
         };
         ImageMoments {
             flux: f,
@@ -779,21 +793,23 @@ impl StrayTally {
             .iter()
             .map(|m| m.iter().map(v).collect())
             .collect();
-        let mut errors: Vec<Vec<f64>> = maps
-            .iter()
-            .zip(&self.maps_sq)
-            .map(|(m, q)| {
-                m.iter()
-                    .zip(q)
-                    .map(|(f, s)| self.se(*f, s.value()))
-                    .collect()
-            })
-            .collect();
+        let mut errors: Option<Vec<Vec<f64>>> = self.has_errors().then(|| {
+            maps.iter()
+                .zip(&self.maps_sq)
+                .map(|(m, q)| {
+                    m.iter()
+                        .zip(q)
+                        .map(|(f, s)| self.se_of(*f, s.value()))
+                        .collect()
+                })
+                .collect()
+        });
+        let mut pop_errors = |slot| errors.as_mut().map(|e| e.pop().expect(slot));
         let mut flux = maps;
         let uncovered_map = flux.pop().expect("uncovered slot");
-        let uncovered_err = errors.pop().expect("uncovered slot");
+        let uncovered_err = pop_errors("uncovered slot");
         let owned_map = flux.pop().expect("owned slot");
-        let owned_err = errors.pop().expect("owned slot");
+        let owned_err = pop_errors("owned slot");
         let irr = |m: &[f64]| m.iter().map(|f| f / area).collect::<Vec<f64>>();
         let det = DetectorResult {
             spec: spec.clone(),
@@ -841,15 +857,31 @@ impl StrayTally {
 /// Flux-weighted image moments of one class (or the owned sum) on the
 /// detector, in its local frame (mm), with delta-method standard errors
 /// (module docs). All zero when nothing was detected.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ImageMoments {
     /// Detected flux (W).
     pub flux: f64,
     pub centroid: [f64; 2],
-    pub centroid_std_error: [f64; 2],
+    /// `None`: undefined (a run of fewer than two rays).
+    pub centroid_std_error: [Option<f64>; 2],
     /// RMS radius about the centroid.
     pub rms_radius: f64,
-    pub rms_radius_std_error: f64,
+    /// `None`: undefined (a run of fewer than two rays, or a zero RMS
+    /// radius).
+    pub rms_radius_std_error: Option<f64>,
+}
+
+impl Default for ImageMoments {
+    /// The moments of nothing detected: all zero.
+    fn default() -> Self {
+        ImageMoments {
+            flux: 0.0,
+            centroid: [0.0; 2],
+            centroid_std_error: [Some(0.0); 2],
+            rms_radius: 0.0,
+            rms_radius_std_error: Some(0.0),
+        }
+    }
 }
 
 /// Detected flux of one (class, path signature) pair.
@@ -865,8 +897,9 @@ pub struct SignatureFlux {
     pub label: String,
     /// W.
     pub flux: f64,
-    /// Monte-Carlo standard error of `flux`.
-    pub std_error: f64,
+    /// Monte-Carlo standard error of `flux`; `None`: undefined (a run of
+    /// fewer than two rays).
+    pub std_error: Option<f64>,
     /// Detector hits (split copies count separately).
     pub hits: u64,
     #[serde(skip)]
@@ -883,21 +916,22 @@ pub struct DetectorResult {
     /// `irradiance[class][pixel]` in W/mm².
     pub irradiance: Vec<Vec<f64>>,
     /// Monte-Carlo standard error of `flux[class][pixel]` in W (divide by
-    /// `spec.pixel_area()` for irradiance).
-    pub flux_std_error: Vec<Vec<f64>>,
+    /// `spec.pixel_area()` for irradiance). `None`, here and for the other
+    /// error maps: undefined (a run of fewer than two rays).
+    pub flux_std_error: Option<Vec<Vec<f64>>>,
     /// The classes summed in the `owned_*` maps.
     pub owned_classes: ClassMask,
     /// Sum of the owned classes' flux maps (W), with its own standard error
     /// (per-ray contributions to several classes are correlated, so it is
     /// not the root-sum-square of the class errors).
     pub owned_flux: Vec<f64>,
-    pub owned_flux_std_error: Vec<f64>,
+    pub owned_flux_std_error: Option<Vec<f64>>,
     /// W/mm².
     pub owned_irradiance: Vec<f64>,
     /// Stray-owned subset of the Ghost class (W/mm²).
     pub uncovered_ghost_irradiance: Vec<f64>,
     /// Per-pixel standard error of the uncovered ghost flux (W).
-    pub uncovered_ghost_flux_std_error: Vec<f64>,
+    pub uncovered_ghost_flux_std_error: Option<Vec<f64>>,
     /// Image moments per class (`PathClass::index`).
     pub moments: Vec<ImageMoments>,
     /// Image moments of the owned sum.
@@ -913,37 +947,38 @@ impl DetectorResult {
     }
 }
 
-/// Where the emitted flux went (all in W).
+/// Where the emitted flux went (all in W). Every `*_std_error` is `None`
+/// when undefined (a run of fewer than two rays).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct EnergyReport {
     pub emitted: f64,
     pub emitted_by_wavelength: Vec<f64>,
     pub detected: f64,
     /// Monte-Carlo standard error of `detected`.
-    pub detected_std_error: f64,
+    pub detected_std_error: Option<f64>,
     pub detected_by_class: Vec<(PathClass, f64)>,
     /// Monte-Carlo standard error per class.
-    pub detected_std_error_by_class: Vec<(PathClass, f64)>,
+    pub detected_std_error_by_class: Vec<(PathClass, Option<f64>)>,
     pub detected_hits_by_class: Vec<(PathClass, u64)>,
     /// `[wavelength][class]`.
     pub detected_by_wavelength: Vec<Vec<f64>>,
     pub owned_classes: ClassMask,
     /// Detected flux in `owned_classes`, plus `detected_uncovered_ghost`.
     pub detected_owned: f64,
-    pub detected_owned_std_error: f64,
+    pub detected_owned_std_error: Option<f64>,
     /// `Ghost`-class flux outside the coverage of the ghost run the stray
     /// run is combined with (`StraySettings::covered_ghosts`): owned by the
     /// stray solver even when `Ghost` is not in `owned_classes`.
     #[serde(default)]
     pub detected_uncovered_ghost: f64,
     #[serde(default)]
-    pub detected_uncovered_ghost_std_error: f64,
+    pub detected_uncovered_ghost_std_error: Option<f64>,
     /// Remaining Ghost-class flux; the explicit solver owns it when the
     /// Ghost class is excluded. Errors are accumulated per source ray.
     #[serde(default)]
     pub detected_covered_ghost: f64,
     #[serde(default)]
-    pub detected_covered_ghost_std_error: f64,
+    pub detected_covered_ghost_std_error: Option<f64>,
     pub absorbed: f64,
     pub absorbed_by_sink: Vec<(Sink, f64)>,
     /// Left the scene from the ambient medium.
@@ -962,7 +997,7 @@ pub struct EnergyReport {
     pub mc_adjustment: f64,
     /// Monte-Carlo standard error of `mc_adjustment` (its expectation is
     /// zero, so `|mc_adjustment|` should be a few of these at most).
-    pub mc_adjustment_std_error: f64,
+    pub mc_adjustment_std_error: Option<f64>,
     /// `emitted + mc_adjustment − (detected + absorbed + escaped +
     /// escaped_from_solid + truncated + sampling_failed)`. Zero to rounding.
     pub balance_residual: f64,
@@ -981,7 +1016,7 @@ impl EnergyReport {
         self.absorbed_by_sink[sink as usize].1
     }
     /// Monte-Carlo standard error of `detected_in(class)`.
-    pub fn std_error_in(&self, class: PathClass) -> f64 {
+    pub fn std_error_in(&self, class: PathClass) -> Option<f64> {
         self.detected_std_error_by_class[class.index()].1
     }
     /// `|balance_residual| / emitted`.
@@ -996,17 +1031,18 @@ impl EnergyReport {
     pub fn is_balanced(&self) -> bool {
         self.relative_residual() <= 1e-12
     }
-    /// Human-readable summary.
+    /// Human-readable summary (an undefined standard error reads `—`).
     pub fn summary(&self) -> String {
         let pct = |x: f64| 100.0 * x / self.emitted.max(f64::MIN_POSITIVE);
+        let pm = |e: Option<f64>| e.map_or("—".to_string(), |e| format!("{e:.2e}"));
         let mut s = format!(
             "emitted {:.6e} W over {} rays ({} events)\n",
             self.emitted, self.rays, self.events
         );
         s += &format!(
-            "  detected  {:.6e} ± {:.2e} W ({:.4} %)\n",
+            "  detected  {:.6e} ± {} W ({:.4} %)\n",
             self.detected,
-            self.detected_std_error,
+            pm(self.detected_std_error),
             pct(self.detected)
         );
         for ((c, f), (_, e)) in self
@@ -1015,16 +1051,17 @@ impl EnergyReport {
             .zip(&self.detected_std_error_by_class)
         {
             s += &format!(
-                "    {:<10} {:.6e} ± {:.2e} W ({:.4} %)\n",
+                "    {:<10} {:.6e} ± {} W ({:.4} %)\n",
                 format!("{c:?}"),
                 f,
-                e,
+                pm(*e),
                 pct(*f)
             );
         }
         s += &format!(
-            "    owned      {:.6e} ± {:.2e} W\n",
-            self.detected_owned, self.detected_owned_std_error
+            "    owned      {:.6e} ± {} W\n",
+            self.detected_owned,
+            pm(self.detected_owned_std_error)
         );
         s += &format!(
             "  absorbed  {:.6e} W ({:.4} %)\n",
@@ -1047,9 +1084,9 @@ impl EnergyReport {
             self.truncated, self.sampling_failed
         );
         s += &format!(
-            "  MC adjustment {:+.6e} ± {:.2e} W ({:+.4} %), balance residual {:.3e} (relative {:.3e})\n",
+            "  MC adjustment {:+.6e} ± {} W ({:+.4} %), balance residual {:.3e} (relative {:.3e})\n",
             self.mc_adjustment,
-            self.mc_adjustment_std_error,
+            pm(self.mc_adjustment_std_error),
             pct(self.mc_adjustment),
             self.balance_residual,
             self.relative_residual()
@@ -1117,13 +1154,126 @@ mod tests {
         close(energy.detected_owned, 8.0);
         close(map.owned_flux[0], 8.0);
         close(map.owned_moments.flux, 8.0);
-        close(energy.detected_owned_std_error, 19.0f64.sqrt());
-        close(map.owned_flux_std_error[0], 19.0f64.sqrt());
+        close(energy.detected_owned_std_error.unwrap(), 19.0f64.sqrt());
+        close(map.owned_flux_std_error.unwrap()[0], 19.0f64.sqrt());
         close(energy.detected_uncovered_ghost, 3.0);
         close(map.uncovered_ghost_irradiance[0], 3.0);
-        close(energy.detected_uncovered_ghost_std_error, 3.0f64.sqrt());
-        close(map.uncovered_ghost_flux_std_error[0], 3.0f64.sqrt());
+        close(
+            energy.detected_uncovered_ghost_std_error.unwrap(),
+            3.0f64.sqrt(),
+        );
+        close(
+            map.uncovered_ghost_flux_std_error.unwrap()[0],
+            3.0f64.sqrt(),
+        );
         close(energy.detected_covered_ghost, 7.0);
-        close(energy.detected_covered_ghost_std_error, 7.0f64.sqrt());
+        close(
+            energy.detected_covered_ghost_std_error.unwrap(),
+            7.0f64.sqrt(),
+        );
+    }
+
+    /// `rays` source rays: each hits pixel 0 as `Primary` at a different
+    /// point, the first also once as `Sneak`.
+    fn finish(rays: u64) -> (DetectorResult, EnergyReport, Vec<SignatureFlux>) {
+        let mask = ClassMask::ALL;
+        let mut chunk = ChunkTally::new(1, mask);
+        chunk.track_signatures = true;
+        let hist = History::default();
+        for i in 0..rays {
+            chunk.begin_ray();
+            chunk.rays += 1;
+            let x = 0.1 * i as f64;
+            chunk.detect(PathClass::Primary, false, Some(0), 1.0, 0, &hist, x, 0.0);
+            if i == 0 {
+                chunk.detect(PathClass::Sneak, false, Some(0), 0.5, 0, &hist, 0.2, 0.1);
+            }
+            chunk.end_ray();
+        }
+        let spec = DetectorSpec {
+            surface: 0,
+            accept: Accept::Both,
+            half_x: 0.5,
+            half_y: 0.5,
+            nx: 1,
+            ny: 1,
+        };
+        let mut tally = StrayTally::new(1, 1);
+        tally.add(&chunk);
+        tally.finish(&spec, mask)
+    }
+
+    /// The results read back from their own JSON.
+    fn round_trip(det: &DetectorResult, energy: &EnergyReport, sigs: &[SignatureFlux]) {
+        let json = serde_json::to_string(&(det, energy, sigs)).unwrap();
+        let back: (DetectorResult, EnergyReport, Vec<SignatureFlux>) =
+            serde_json::from_str(&json).unwrap();
+        assert_eq!((&back.0, &back.1), (det, energy));
+        // The compact signature itself is not serialised.
+        assert_eq!(back.2.len(), sigs.len());
+        for (b, s) in back.2.iter().zip(sigs) {
+            assert_eq!(
+                (b.class, b.flux, b.std_error),
+                (s.class, s.flux, s.std_error)
+            );
+        }
+    }
+
+    #[test]
+    fn one_ray_has_no_standard_errors() {
+        let (det, energy, sigs) = finish(1);
+        assert_eq!(energy.detected, 1.5);
+        assert_eq!(energy.detected_std_error, None);
+        assert_eq!(energy.detected_owned_std_error, None);
+        assert_eq!(energy.detected_uncovered_ghost_std_error, None);
+        assert_eq!(energy.detected_covered_ghost_std_error, None);
+        assert_eq!(energy.mc_adjustment_std_error, None);
+        for class in PathClass::ALL {
+            assert_eq!(energy.std_error_in(class), None, "{class:?}");
+        }
+        assert_eq!(det.flux_std_error, None);
+        assert_eq!(det.owned_flux_std_error, None);
+        assert_eq!(det.uncovered_ghost_flux_std_error, None);
+        let m = det.moments_of(PathClass::Primary);
+        assert_eq!((m.flux, m.centroid, m.rms_radius), (1.0, [0.0; 2], 0.0));
+        assert_eq!(m.centroid_std_error, [None; 2]);
+        assert_eq!(m.rms_radius_std_error, None);
+        // Nothing detected: all zero, errors included.
+        assert_eq!(*det.moments_of(PathClass::Ghost), ImageMoments::default());
+        assert_eq!(
+            det.moments_of(PathClass::Ghost).rms_radius_std_error,
+            Some(0.0)
+        );
+        assert_eq!(sigs.len(), 2);
+        assert!(sigs.iter().all(|s| s.std_error.is_none()));
+        assert!(energy.summary().contains("detected  1.500000e0 ± — W"));
+        round_trip(&det, &energy, &sigs);
+    }
+
+    #[test]
+    fn a_single_hit_has_no_rms_radius_error() {
+        let (det, energy, sigs) = finish(3);
+        // Every error of a run of several rays is defined …
+        assert!(energy.detected_std_error.unwrap() > 0.0);
+        assert!(energy.std_error_in(PathClass::Sneak).unwrap() > 0.0);
+        assert_eq!(energy.std_error_in(PathClass::Primary), Some(0.0));
+        assert_eq!(energy.std_error_in(PathClass::Ghost), Some(0.0));
+        let errors = det.flux_std_error.as_ref().unwrap();
+        assert_eq!(errors.len(), NUM_CLASSES);
+        assert!(errors[PathClass::Sneak.index()][0] > 0.0);
+        assert!(det.owned_flux_std_error.as_ref().unwrap()[0] > 0.0);
+        assert!(sigs.iter().all(|s| s.std_error.is_some()));
+        let primary = det.moments_of(PathClass::Primary);
+        assert!(primary.rms_radius > 0.0);
+        assert!(primary.rms_radius_std_error.unwrap() > 0.0);
+        assert!(primary.centroid_std_error[0].unwrap() > 0.0);
+        // … except that of the zero RMS radius of a class with one hit; its
+        // centroid has one.
+        let sneak = det.moments_of(PathClass::Sneak);
+        assert_eq!((sneak.flux, sneak.rms_radius), (0.5, 0.0));
+        assert_eq!(sneak.rms_radius_std_error, None);
+        assert!(sneak.centroid_std_error.iter().all(|e| e.is_some()));
+        assert!(!energy.summary().contains('—'));
+        round_trip(&det, &energy, &sigs);
     }
 }

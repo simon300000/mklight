@@ -82,12 +82,12 @@ fn normal_incidence_ghost_ratio_is_r_squared() {
     let g = &res.ghosts[0];
     // Every ray meets the plate at normal incidence: ghost / primary = R²
     // ray by ray, so for flux and for every bin.
+    let (flux_ratio, peak_ratio) = (g.flux_ratio.unwrap(), g.peak_ratio.unwrap());
     assert!(
-        (g.flux_ratio - r * r).abs() < 1e-14 * r * r + 1e-16,
-        "{}",
-        g.flux_ratio
+        (flux_ratio - r * r).abs() < 1e-14 * r * r + 1e-16,
+        "{flux_ratio}"
     );
-    assert!((g.peak_ratio - r * r).abs() < 1e-12 * r * r);
+    assert!((peak_ratio - r * r).abs() < 1e-12 * r * r);
     let gm = g.map.as_ref().unwrap();
     let pm = res.primary.map.as_ref().unwrap();
     for (a, b) in gm.values.iter().zip(&pm.values) {
@@ -96,7 +96,7 @@ fn normal_incidence_ghost_ratio_is_r_squared() {
     // Unit pupil area: boundary quadrature must conserve incident flux.
     let t2 = (1.0 - r) * (1.0 - r);
     assert!((res.primary.flux / t2 - 1.0).abs() < 3e-4);
-    assert!((res.total_flux_ratio - r * r).abs() < 1e-14);
+    assert!((res.total_flux_ratio.unwrap() - r * r).abs() < 1e-14);
 }
 
 #[test]
@@ -114,7 +114,11 @@ fn quarter_wave_ar_reduces_ghost_by_r_ratio() {
             ..Default::default()
         };
         let r = ghost_irradiance(&m, &settings, &JobContext::new()).unwrap();
-        (r.ghosts[0].flux, r.primary.flux, r.ghosts[0].flux_ratio)
+        (
+            r.ghosts[0].flux,
+            r.primary.flux,
+            r.ghosts[0].flux_ratio.unwrap(),
+        )
     };
     let (gb, pb, rb_ratio) = run(None);
     let (gc, pc, rc_ratio) = run(Some(quarter_wave(nf, D_LINE)));

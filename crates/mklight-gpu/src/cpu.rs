@@ -281,15 +281,6 @@ impl ComputeBackend for CpuF32Backend {
             .remove(&handle.id());
         Ok(())
     }
-    fn upload_buffer(
-        &self,
-        desc: crate::resident::BufferDesc,
-        data: crate::resident::BufferData,
-    ) -> MkResult<crate::resident::BufferHandle> {
-        self.inner
-            .resident
-            .upload(desc, data, crate::resident::HostAllocation::new)
-    }
     fn fill_buffer(
         &self,
         desc: crate::resident::BufferDesc,
@@ -299,22 +290,8 @@ impl ComputeBackend for CpuF32Backend {
             .resident
             .fill(desc, fill, crate::resident::HostAllocation::new)
     }
-    fn import_buffer(
-        &self,
-        desc: crate::resident::BufferDesc,
-        data: crate::resident::HostAllocation,
-    ) -> MkResult<crate::resident::BufferHandle> {
-        self.inner.resident.adopt(desc, data)
-    }
     fn read_view(&self, view: crate::resident::BufferView) -> MkResult<crate::resident::ReadView> {
         self.inner.resident.read_view(view)
-    }
-    fn readback(
-        &self,
-        view: crate::resident::BufferView,
-        ctx: &JobContext,
-    ) -> MkResult<crate::resident::Readback> {
-        self.inner.resident.readback(view, ctx)
     }
     fn resident_cache_stats(&self) -> crate::resident::ResidentCacheStats {
         let s = self
@@ -411,6 +388,9 @@ impl ComputeBackend for CpuF32Backend {
         )?;
         Ok(p)
     }
+}
+
+impl QualificationBackend for CpuF32Backend {
     fn submit(&self, job: Job, ctx: &JobContext) -> MkResult<Pending<JobResult>> {
         job.validate()?;
         // Resolve handles now so a released handle fails at submission.
@@ -437,6 +417,29 @@ impl ComputeBackend for CpuF32Backend {
             }
         })?;
         Ok(p)
+    }
+    fn upload_buffer(
+        &self,
+        desc: crate::resident::BufferDesc,
+        data: crate::resident::BufferData,
+    ) -> MkResult<crate::resident::BufferHandle> {
+        self.inner
+            .resident
+            .upload(desc, data, crate::resident::HostAllocation::new)
+    }
+    fn import_buffer(
+        &self,
+        desc: crate::resident::BufferDesc,
+        data: crate::resident::HostAllocation,
+    ) -> MkResult<crate::resident::BufferHandle> {
+        self.inner.resident.adopt(desc, data)
+    }
+    fn readback(
+        &self,
+        view: crate::resident::BufferView,
+        ctx: &JobContext,
+    ) -> MkResult<crate::resident::Readback> {
+        self.inner.resident.readback(view, ctx)
     }
 }
 
@@ -524,13 +527,13 @@ fn trace_job_prepared<E: FpEnv>(
 }
 
 /// Convenience: run a job and return its output, for tests and tools.
-pub fn run_output(b: &dyn ComputeBackend, job: Job) -> MkResult<JobOutput> {
+pub fn run_output(b: &dyn QualificationBackend, job: Job) -> MkResult<JobOutput> {
     Ok(b.run(job, &JobContext::new())?.output)
 }
 
 /// Convenience: the double-float sums of a reduction job.
 pub fn reduce_sums(
-    b: &dyn ComputeBackend,
+    b: &dyn QualificationBackend,
     mode: ReduceMode,
     count: usize,
     values: Vec<f32>,

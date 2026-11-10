@@ -1,10 +1,17 @@
 //! Writes JSON fixtures of the model's serde representation for the macOS
-//! app's Codable mirror (`apps/macos/Tests/MKLightModelTests/Fixtures`).
+//! app's Codable mirror (`apps/macos/Tests/MKLightModelTests/Fixtures`) and
+//! the built-in samples the app ships
+//! (`apps/macos/Sources/MKLightModel/Resources/samples.json`).
 //!
-//! Run with `cargo run -p mklight-core --example dump_fixtures [out_dir]`.
+//! Run with `cargo run -p mklight-core --example dump_fixtures [out_dir]`;
+//! with `out_dir`, every file goes there instead.
 //! The fixtures cover every enum variant of the model, `ParamPath` and
 //! `RunInfo`, so a Swift decode → encode round trip that compares equal to
-//! these files proves the two representations agree.
+//! these files proves the two representations agree; `validation_cases.json`
+//! holds the engine's verdicts for the app's mirror of the validation rules.
+//!
+//! [`fixtures`] is everything [`main`] writes: the test `tests/app_fixtures.rs`
+//! includes this file and compares it with the committed files.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -638,6 +645,8 @@ struct ValidationCase {
 /// The Cooke triplet with one configuration override each: some that
 /// `ParamPath::get` accepts and some that it rejects for the surface's shape,
 /// material or semi-diameter mode, the aperture spec, or an index range.
+/// Then [`extended_validation_cases`] and, without configurations,
+/// [`structural_validation_cases`].
 fn validation_cases() -> Vec<ValidationCase> {
     let id = SurfaceId;
     let mut base = cooke_triplet();
@@ -656,13 +665,13 @@ fn validation_cases() -> Vec<ValidationCase> {
     base.surfaces[5].shape = SurfaceShape::CoordinateBreak;
     base.surfaces[5].placement = Some(Placement::default());
     base.stop = 1;
-    let with = |name: &str, p: ParamPath, edit: &dyn Fn(&mut OpticalSystem)| {
+    let with_value = |name: &str, p: ParamPath, v: f64, edit: &dyn Fn(&mut OpticalSystem)| {
         let mut s = base.clone();
         s.name = name.into();
         edit(&mut s);
         s.configurations = vec![Configuration {
             name: name.into(),
-            overrides: vec![(p, 1.0)],
+            overrides: vec![(p, v)],
         }];
         let error = s.validate().err().map(|e| e.to_string());
         ValidationCase {
@@ -670,6 +679,9 @@ fn validation_cases() -> Vec<ValidationCase> {
             system: s,
             error,
         }
+    };
+    let with = |name: &str, p: ParamPath, edit: &dyn Fn(&mut OpticalSystem)| {
+        with_value(name, p, 1.0, edit)
     };
     let none = |_: &mut OpticalSystem| {};
     vec![
@@ -708,6 +720,22 @@ fn validation_cases() -> Vec<ValidationCase> {
             &none,
         ),
         with(
+            "asphere term at last index",
+            ParamPath::Asphere {
+                surface: id(2),
+                index: 19,
+            },
+            &none,
+        ),
+        with(
+            "asphere term at limit",
+            ParamPath::Asphere {
+                surface: id(2),
+                index: 20,
+            },
+            &none,
+        ),
+        with(
             "asphere on conic",
             ParamPath::Asphere {
                 surface: id(1),
@@ -725,9 +753,11 @@ fn validation_cases() -> Vec<ValidationCase> {
             ParamPath::ParaxialFocalLength { surface: id(1) },
             &none,
         ),
-        with(
+        // A model glass index is above 1 (the structural cases hold the rule).
+        with_value(
             "nd on model glass",
             ParamPath::ModelNd { surface: id(3) },
+            1.7,
             &none,
         ),
         with(
@@ -795,6 +825,7 @@ fn validation_cases() -> Vec<ValidationCase> {
     ]
     .into_iter()
     .chain(extended_validation_cases())
+    .chain(structural_validation_cases())
     .collect()
 }
 
@@ -942,6 +973,469 @@ fn extended_validation_cases() -> Vec<ValidationCase> {
     ]
 }
 
+/// The Cooke triplet (no configurations) with one edit each, for the
+/// structural rules of `OpticalSystem::validation_issues`: values at and
+/// beyond a limit, tables in and out of order, references to surfaces that do
+/// or do not exist. A rejected case has exactly one issue, so a front end
+/// can compare its own with the `[code] path` of `error`.
+fn structural_validation_cases() -> Vec<ValidationCase> {
+    let id = SurfaceId;
+    let base = cooke_triplet();
+    let case = |name: &str, edit: &dyn Fn(&mut OpticalSystem)| {
+        let mut s = base.clone();
+        s.name = name.into();
+        edit(&mut s);
+        let issues = s.validation_issues();
+        assert!(
+            issues.len() <= 1,
+            "{name}: one problem per case: {issues:?}"
+        );
+        let error = s.validate().err().map(|e| e.to_string());
+        ValidationCase {
+            name: name.into(),
+            system: s,
+            error,
+        }
+    };
+    let even_asphere = |terms: usize| {
+        move |s: &mut OpticalSystem| {
+            let mut coefficients = vec![0.0; terms];
+            coefficients[0] = 1e-6;
+            s.surfaces[2].shape = SurfaceShape::EvenAsphere {
+                curvature: -1.0 / 435.76044,
+                conic: 0.0,
+                coefficients,
+            }
+        }
+    };
+    let material = |surface: usize, m: MaterialRef| {
+        move |s: &mut OpticalSystem| s.surfaces[surface].material = m.clone()
+    };
+    let model = |nd: f64, vd: f64| MaterialRef::Model { nd, vd, dpgf: 0.0 };
+    let offset = |dn_d: f64, dv_d: f64| MaterialRef::Catalog {
+        catalog: None,
+        name: "N-SK16".into(),
+        offset: materials::MaterialOffset { dn_d, dv_d },
+    };
+    let coating = |name: &'static str, c: CoatingDef| {
+        move |s: &mut OpticalSystem| {
+            s.coatings.insert(name.into(), c.clone());
+        }
+    };
+    let tabulated = |reflectance: &[(f64, f64)]| {
+        coating(
+            "T",
+            CoatingDef::Tabulated {
+                reflectance: reflectance.to_vec(),
+            },
+        )
+    };
+    // A quarter-wave MgF2 layer on a metal.
+    struct Film {
+        reference_wavelength_um: f64,
+        layer: Layer,
+        mirror_substrate: (f64, f64),
+    }
+    let film = |edit: &dyn Fn(&mut Film)| {
+        let mut film = Film {
+            reference_wavelength_um: 0.55,
+            layer: Layer {
+                material: MaterialRef::glass("MGF2"),
+                thickness_um: 0.0,
+                quarter_waves: Some(1.0),
+                extinction: 0.0,
+            },
+            mirror_substrate: (0.12, 3.4),
+        };
+        edit(&mut film);
+        coating(
+            "T",
+            CoatingDef::ThinFilm {
+                reference_wavelength_um: film.reference_wavelength_um,
+                layers: vec![film.layer],
+                mirror_substrate: Some(film.mirror_substrate),
+            },
+        )
+    };
+    let sensor = |edit: &dyn Fn(&mut Sensor)| {
+        let mut sensor = Sensor {
+            pixels_x: 4000,
+            pixels_y: 3000,
+            pitch_x: 0.00376,
+            pitch_y: 0.00376,
+            max_cra_deg: Some(30.0),
+            spectral_response: vec![(0.45, 0.6), (0.55, 1.0), (0.65, 0.7)],
+        };
+        edit(&mut sensor);
+        move |s: &mut OpticalSystem| s.sensor = Some(sensor.clone())
+    };
+    let response = |table: &'static [(f64, f64)]| {
+        sensor(&|sn: &mut Sensor| sn.spectral_response = table.to_vec())
+    };
+    let barrel = |from: u64, to: u64, inner_radius: f64, tis: f64| {
+        move |s: &mut OpticalSystem| {
+            s.mechanics = vec![MechanicalPart::Barrel {
+                from: id(from),
+                to: id(to),
+                inner_radius,
+                finish: ScatterModel::Lambertian { tis },
+            }]
+        }
+    };
+    let baffle = |surface: u64, inner_radius: f64, outer_radius: f64| {
+        move |s: &mut OpticalSystem| {
+            s.mechanics = vec![MechanicalPart::AnnularBaffle {
+                surface: id(surface),
+                z: -0.5,
+                inner_radius,
+                outer_radius,
+                finish: ScatterModel::Lambertian { tis: 0.05 },
+            }]
+        }
+    };
+    let aperture =
+        |a: ApertureShape| move |s: &mut OpticalSystem| s.surfaces[3].aperture = Some(a.clone());
+    let group = |first: usize, last: u64, pivot: Option<u64>| {
+        move |s: &mut OpticalSystem| {
+            s.surfaces[first].element_placement = Some(ElementPlacement {
+                last: id(last),
+                pivot: pivot.map(id),
+                motion: Placement {
+                    tilt_x: 0.1,
+                    ..Default::default()
+                },
+            })
+        }
+    };
+    let overlay = |base: SurfaceShape| SurfaceShape::SagOverlay {
+        base: Box::new(base),
+        norm_radius: 8.0,
+        test_wavelength_um: 0.6328,
+        astigmatism: 0.5,
+        astigmatism_angle_deg: 30.0,
+        spherical: -0.25,
+    };
+    let doe = |base: SurfaceShape| SurfaceShape::Diffractive {
+        base: Box::new(base),
+        phase: DiffractivePhase {
+            norm_radius: 8.0,
+            coefficients: vec![-20.0],
+            design_order: 1,
+            design_wavelength_um: 0.5875618,
+            trace_order: 1,
+        },
+    };
+    let shape = |sh: SurfaceShape| move |s: &mut OpticalSystem| s.surfaces[2].shape = sh.clone();
+    let sphere = || SurfaceShape::sphere(-435.76044);
+    vec![
+        // Structure of the system.
+        case("stop on the object", &|s| s.stop = 0),
+        case("object and image only", &|s| {
+            s.surfaces.drain(1..8);
+        }),
+        case("repeated surface id", &|s| s.surfaces[2].id = id(1)),
+        case("infinite thickness inside", &|s| {
+            s.surfaces[3].thickness = f64::INFINITY
+        }),
+        case("unknown coating", &|s| {
+            s.surfaces[2].coating = Some("nope".into())
+        }),
+        case("fixed semi-diameter of zero", &|s| {
+            s.surfaces[3].semi_diameter = SemiDiameter::Fixed { value: 0.0 }
+        }),
+        case("coordinate break as image", &|s| {
+            s.surfaces[8].shape = SurfaceShape::CoordinateBreak
+        }),
+        case("mirror as image", &|s| {
+            s.surfaces[8].interaction = Interaction::Reflect
+        }),
+        // Aperture, fields, wavelengths, environment and aiming.
+        case("aperture value of zero", &|s| {
+            s.aperture = ApertureSpec::EntrancePupilDiameter { value: 0.0 }
+        }),
+        case("object-space NA at infinity", &|s| {
+            s.aperture = ApertureSpec::ObjectSpaceNa { value: 0.05 }
+        }),
+        case("object heights at infinity", &|s| {
+            s.fields.kind = FieldKind::ObjectHeight
+        }),
+        case("no fields", &|s| s.fields.fields.clear()),
+        case("field angle of 90 degrees", &|s| {
+            s.fields.fields[2] = Field::new(0.0, 90.0)
+        }),
+        case("field weight of zero", &|s| s.fields.fields[1].weight = 0.0),
+        case("negative field weight", &|s| {
+            s.fields.fields[1].weight = -1.0
+        }),
+        case("pupil compression below 1", &|s| {
+            s.fields.fields[2].vignetting.vcy = 0.99
+        }),
+        case("pupil compression of 1", &|s| {
+            s.fields.fields[2].vignetting.vcy = 1.0
+        }),
+        case("negative pupil compression", &|s| {
+            s.fields.fields[1].vignetting.vcx = -0.1
+        }),
+        case("wavelength of zero", &|s| {
+            s.wavelengths.wavelengths[0].um = 0.0
+        }),
+        case("negative wavelength weight", &|s| {
+            s.wavelengths.wavelengths[1].weight = -0.5
+        }),
+        case("primary wavelength out of range", &|s| {
+            s.wavelengths.primary = 3
+        }),
+        case("temperature at absolute zero", &|s| {
+            s.environment.temperature_c = -273.15
+        }),
+        case("vacuum pressure", &|s| s.environment.pressure_atm = 0.0),
+        case("negative pressure", &|s| s.environment.pressure_atm = -1.0),
+        case("real ray aiming", &|s| {
+            s.ray_aiming = RayAiming::Real { tolerance: 1e-9 }
+        }),
+        case("ray aiming tolerance of zero", &|s| {
+            s.ray_aiming = RayAiming::Real { tolerance: 0.0 }
+        }),
+        // Shapes.
+        case("even asphere with the most coefficients", &even_asphere(20)),
+        case("even asphere with too many coefficients", &even_asphere(21)),
+        case("stacked overlays", &shape(overlay(overlay(sphere())))),
+        case("overlay on an ideal lens", &|s| {
+            s.surfaces[2].shape = SurfaceShape::SagOverlay {
+                base: Box::new(SurfaceShape::Paraxial { focal_length: 50.0 }),
+                norm_radius: 8.0,
+                test_wavelength_um: 0.6328,
+                astigmatism: 0.5,
+                astigmatism_angle_deg: 0.0,
+                spherical: 0.0,
+            }
+        }),
+        case(
+            "overlay on a diffractive surface",
+            &shape(overlay(doe(sphere()))),
+        ),
+        case(
+            "diffractive phase on an overlay",
+            &shape(doe(overlay(sphere()))),
+        ),
+        case(
+            "diffractive phase on stacked overlays",
+            &shape(doe(overlay(overlay(sphere())))),
+        ),
+        case(
+            "diffractive phase on an overlaid toroid",
+            &shape(doe(overlay(overlay(SurfaceShape::Toroid {
+                curvature_x: 0.01,
+                curvature_y: 0.02,
+                conic_y: 0.0,
+                y_asphere: vec![],
+            })))),
+        ),
+        // Materials.
+        case(
+            "model glass index above 1",
+            &material(3, model(1.0001, 36.37)),
+        ),
+        case("model glass index of 1", &material(3, model(1.0, 36.37))),
+        case("model glass index below 1", &material(3, model(0.9, 36.37))),
+        case(
+            "model glass with an Abbe number of zero",
+            &material(3, model(1.62004, 0.0)),
+        ),
+        case(
+            "constant index of zero",
+            &material(3, MaterialRef::Constant { n: 0.0 }),
+        ),
+        case(
+            "catalog offsets at their bounds",
+            &material(1, offset(0.05, -10.0)),
+        ),
+        case(
+            "catalog index offset beyond its bound",
+            &material(1, offset(0.06, 0.0)),
+        ),
+        case(
+            "catalog Abbe offset beyond its bound",
+            &material(1, offset(0.0, -10.5)),
+        ),
+        // Surface apertures, scatter and edges.
+        case(
+            "annular aperture from the axis",
+            &aperture(ApertureShape::Annular {
+                inner_radius: 0.0,
+                outer_radius: 6.0,
+            }),
+        ),
+        case(
+            "annular aperture inside out",
+            &aperture(ApertureShape::Annular {
+                inner_radius: 3.0,
+                outer_radius: 2.0,
+            }),
+        ),
+        case(
+            "circular aperture of zero radius",
+            &aperture(ApertureShape::Circular { radius: 0.0 }),
+        ),
+        case(
+            "rectangular aperture without height",
+            &aperture(ApertureShape::Rectangular {
+                half_x: 3.0,
+                half_y: 0.0,
+            }),
+        ),
+        case(
+            "elliptical aperture with a negative axis",
+            &aperture(ApertureShape::Elliptical {
+                semi_x: -3.0,
+                semi_y: 2.0,
+            }),
+        ),
+        case("surface scattering everything", &|s| {
+            s.surfaces[5].scatter = Some(ScatterModel::Lambertian { tis: 1.0 })
+        }),
+        case("surface scattering more than it receives", &|s| {
+            s.surfaces[5].scatter = Some(ScatterModel::Lambertian { tis: 1.5 })
+        }),
+        case("ABg scatter with a negative A", &|s| {
+            s.surfaces[5].scatter = Some(ScatterModel::Abg {
+                a: -1e-5,
+                b: 1e-3,
+                g: 2.0,
+            })
+        }),
+        case("Gaussian edge scatter without a slope", &|s| {
+            s.surfaces[2].edge.edge_scatter = Some(ScatterModel::Gaussian {
+                tis: 0.1,
+                sigma_slope: 0.0,
+            })
+        }),
+        case("mechanical semi-diameter of zero", &|s| {
+            s.surfaces[2].edge.mechanical_semi_diameter = Some(0.0)
+        }),
+        // Rigid groups.
+        case("rigid group about its first vertex", &group(1, 2, Some(1))),
+        case("rigid group ending before it starts", &group(3, 1, None)),
+        case("rigid group ending at the image", &group(6, 8, None)),
+        case("rigid group to a missing surface", &group(1, 99, None)),
+        case("rigid group about a missing vertex", &group(1, 2, Some(99))),
+        // Coatings.
+        case(
+            "tabulated coating",
+            &tabulated(&[(0.4, 0.012), (0.55, 0.004), (0.7, 0.009)]),
+        ),
+        case("tabulated coating without samples", &tabulated(&[])),
+        case(
+            "tabulated coating out of order",
+            &tabulated(&[(0.4, 0.012), (0.7, 0.009), (0.55, 0.004)]),
+        ),
+        case(
+            "tabulated coating with a repeated wavelength",
+            &tabulated(&[(0.4, 0.012), (0.4, 0.004), (0.7, 0.009)]),
+        ),
+        case(
+            "tabulated coating with a wavelength of zero",
+            &tabulated(&[(0.0, 0.012), (0.55, 0.004)]),
+        ),
+        case(
+            "tabulated coating reflecting more than it receives",
+            &tabulated(&[(0.4, 0.012), (0.55, 1.5)]),
+        ),
+        case(
+            "ideal coating gaining energy",
+            &coating(
+                "T",
+                CoatingDef::Ideal {
+                    reflectance: 0.7,
+                    transmittance: 0.5,
+                },
+            ),
+        ),
+        case(
+            "coating name with quotes",
+            &coating(
+                r#"the "best" AR\V"#,
+                CoatingDef::Ideal {
+                    reflectance: -0.1,
+                    transmittance: 0.5,
+                },
+            ),
+        ),
+        case("thin film", &film(&|_| {})),
+        case(
+            "thin film with a reference wavelength of zero",
+            &film(&|f| f.reference_wavelength_um = 0.0),
+        ),
+        case(
+            "thin film with a negative thickness",
+            &film(&|f| f.layer.thickness_um = -0.1),
+        ),
+        case(
+            "thin film with a negative quarter-wave count",
+            &film(&|f| f.layer.quarter_waves = Some(-1.0)),
+        ),
+        case(
+            "thin film with a negative extinction",
+            &film(&|f| f.layer.extinction = -1e-4),
+        ),
+        case(
+            "thin film of a model glass index of 1",
+            &film(&|f| f.layer.material = model(1.0, 60.0)),
+        ),
+        case(
+            "thin film on a substrate of index zero",
+            &film(&|f| f.mirror_substrate.0 = 0.0),
+        ),
+        case(
+            "thin film on a substrate with gain",
+            &film(&|f| f.mirror_substrate.1 = -3.4),
+        ),
+        // Mechanics.
+        case("barrel", &barrel(1, 7, 15.0, 0.05)),
+        case("barrel from a missing surface", &barrel(42, 7, 15.0, 0.05)),
+        case("barrel to a missing surface", &barrel(1, 42, 15.0, 0.05)),
+        case("barrel without a bore", &barrel(1, 7, 0.0, 0.05)),
+        case(
+            "barrel finish scattering more than it receives",
+            &barrel(1, 7, 15.0, 1.5),
+        ),
+        case("baffle", &baffle(5, 0.0, 16.0)),
+        case("baffle on a missing surface", &baffle(42, 5.5, 16.0)),
+        case("baffle inside out", &baffle(5, 16.0, 5.5)),
+        case(
+            "baffle with a negative inner radius",
+            &baffle(5, -1.0, 16.0),
+        ),
+        // Sensor.
+        case("sensor", &sensor(&|_| {})),
+        case(
+            "sensor with a flat response",
+            &sensor(&|sn| sn.spectral_response.clear()),
+        ),
+        case("sensor without pixels", &sensor(&|sn| sn.pixels_x = 0)),
+        case(
+            "sensor with a pitch of zero",
+            &sensor(&|sn| sn.pitch_y = 0.0),
+        ),
+        case(
+            "sensor response out of order",
+            &response(&[(0.55, 1.0), (0.45, 0.6), (0.65, 0.7)]),
+        ),
+        case(
+            "sensor response with a repeated wavelength",
+            &response(&[(0.45, 0.6), (0.55, 1.0), (0.55, 0.7)]),
+        ),
+        case(
+            "sensor response at a wavelength of zero",
+            &response(&[(0.0, 0.6), (0.55, 1.0)]),
+        ),
+        case(
+            "sensor response below zero",
+            &response(&[(0.45, -0.1), (0.55, 1.0)]),
+        ),
+    ]
+}
+
 fn run_info(snapshot: &Snapshot) -> RunInfo {
     RunInfo {
         engine_version: ENGINE_VERSION.to_string(),
@@ -1075,43 +1569,48 @@ struct SampleEntry {
     system: OpticalSystem,
 }
 
-fn write<T: Serialize>(dir: &std::path::Path, name: &str, value: &T) {
-    let mut json = serde_json::to_string_pretty(value).expect("serialise fixture");
-    json.push('\n');
-    let path = dir.join(name);
-    std::fs::write(&path, json).unwrap_or_else(|e| panic!("write {}: {e}", path.display()));
-    println!("wrote {}", path.display());
+/// Where a generated file lives in the repository.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Place {
+    /// `apps/macos/Tests/MKLightModelTests/Fixtures`.
+    TestFixture,
+    /// `apps/macos/Sources/MKLightModel/Resources`: shipped in the app, and
+    /// read by its tests through the model's own loader.
+    AppResource,
 }
 
-fn main() {
-    let dir = std::env::args()
-        .nth(1)
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("../../apps/macos/Tests/MKLightModelTests/Fixtures")
-        });
-    std::fs::create_dir_all(&dir).expect("create fixture dir");
+impl Place {
+    pub fn directory(self) -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(match self {
+            Place::TestFixture => "../../apps/macos/Tests/MKLightModelTests/Fixtures",
+            Place::AppResource => "../../apps/macos/Sources/MKLightModel/Resources",
+        })
+    }
+}
 
+/// One generated file: its place, name and exact text.
+pub struct FixtureFile {
+    pub place: Place,
+    pub name: &'static str,
+    pub json: String,
+}
+
+fn file<T: Serialize>(place: Place, name: &'static str, value: &T) -> FixtureFile {
+    let mut json = serde_json::to_string_pretty(value).expect("serialise fixture");
+    json.push('\n');
+    FixtureFile { place, name, json }
+}
+
+/// Every file this generator writes. Nothing in them depends on the run.
+pub fn fixtures() -> Vec<FixtureFile> {
+    let fixture = Place::TestFixture;
     // Fixtures meant to be valid models must pass validation.
     let cooke = Snapshot::new(cooke_triplet()).expect("cooke triplet is valid");
-    Snapshot::new(kitchen_sink()).expect("kitchen sink is valid");
-    Snapshot::new(OpticalSystem::new_empty()).expect("empty system is valid");
+    let sink = Snapshot::new(kitchen_sink()).expect("kitchen sink is valid");
+    let empty = Snapshot::new(OpticalSystem::new_empty()).expect("empty system is valid");
     let extended = Snapshot::new(extended_shapes()).expect("extended shapes are valid");
-
-    write(&dir, "empty.json", &OpticalSystem::new_empty());
-    write(&dir, "cooke_triplet.json", cooke.system());
-    write(&dir, "kitchen_sink.json", &kitchen_sink());
-    write(&dir, "extended_shapes.json", extended.system());
-    write(&dir, "variants.json", &variants());
-    write(&dir, "param_paths.json", &all_param_paths());
-    write(&dir, "run_info.json", &run_info(&cooke));
-    write(&dir, "validation_cases.json", &validation_cases());
-
     // Solves and pickups (docs/SOLVES.md §6).
     let solved = Snapshot::new(solved_triplet()).expect("solved triplet is valid");
-    write(&dir, "solve_kinds.json", &solve_kinds());
-    write(&dir, "solved_triplet.json", solved.system());
 
     // Built-in samples, for the app bundle and its tests.
     let samples: Vec<SampleEntry> = samples::all()
@@ -1121,31 +1620,43 @@ fn main() {
             SampleEntry { id, system }
         })
         .collect();
-    write(&dir, "samples.json", &samples);
-    if std::env::args().nth(1).is_none() {
-        // The app ships the same file as a resource of its model module.
-        let res = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../apps/macos/Sources/MKLightModel/Resources");
-        std::fs::create_dir_all(&res).expect("create resource dir");
-        write(&res, "samples.json", &samples);
-    }
 
     // Snapshot hashes of the valid fixtures, so a front end can check that its
     // engine binding reproduces the engine's content hashes.
-    let mut hashes = BTreeMap::new();
-    hashes.insert("cooke_triplet.json", cooke.hash().to_hex());
-    hashes.insert(
-        "empty.json",
-        Snapshot::new(OpticalSystem::new_empty())
-            .unwrap()
-            .hash()
-            .to_hex(),
-    );
-    hashes.insert(
-        "kitchen_sink.json",
-        Snapshot::new(kitchen_sink()).unwrap().hash().to_hex(),
-    );
-    hashes.insert("solved_triplet.json", solved.hash().to_hex());
-    hashes.insert("extended_shapes.json", extended.hash().to_hex());
-    write(&dir, "snapshot_hashes.json", &hashes);
+    let hashes: BTreeMap<&str, String> = [
+        ("cooke_triplet.json", &cooke),
+        ("empty.json", &empty),
+        ("kitchen_sink.json", &sink),
+        ("solved_triplet.json", &solved),
+        ("extended_shapes.json", &extended),
+    ]
+    .into_iter()
+    .map(|(name, snapshot)| (name, snapshot.hash().to_hex()))
+    .collect();
+
+    vec![
+        file(fixture, "empty.json", empty.system()),
+        file(fixture, "cooke_triplet.json", cooke.system()),
+        file(fixture, "kitchen_sink.json", sink.system()),
+        file(fixture, "extended_shapes.json", extended.system()),
+        file(fixture, "variants.json", &variants()),
+        file(fixture, "param_paths.json", &all_param_paths()),
+        file(fixture, "run_info.json", &run_info(&cooke)),
+        file(fixture, "validation_cases.json", &validation_cases()),
+        file(fixture, "solve_kinds.json", &solve_kinds()),
+        file(fixture, "solved_triplet.json", solved.system()),
+        file(Place::AppResource, "samples.json", &samples),
+        file(fixture, "snapshot_hashes.json", &hashes),
+    ]
+}
+
+pub fn main() {
+    let out_dir = std::env::args().nth(1).map(PathBuf::from);
+    for f in fixtures() {
+        let dir = out_dir.clone().unwrap_or_else(|| f.place.directory());
+        std::fs::create_dir_all(&dir).expect("create fixture dir");
+        let path = dir.join(f.name);
+        std::fs::write(&path, f.json).unwrap_or_else(|e| panic!("write {}: {e}", path.display()));
+        println!("wrote {}", path.display());
+    }
 }

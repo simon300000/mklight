@@ -7,12 +7,9 @@ use mklight_metal::{LibraryChoice, MetalBackend, MetalOptions};
 #[test]
 fn host_reference_comparisons() {
     for origin in [LibraryChoice::Precompiled, LibraryChoice::RuntimeSource] {
-        let b = MetalBackend::with_options(&MetalOptions {
-            library: origin,
-            ..Default::default()
-        })
-        .unwrap()
-        .expect("actual Metal required");
+        let b = MetalBackend::with_options(&MetalOptions { library: origin })
+            .unwrap()
+            .expect("actual Metal required");
         eprintln!(
             "P10 {} {} {:?}",
             b.info().backend_id(),

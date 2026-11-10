@@ -368,7 +368,7 @@ import Testing
             ])
         }
         let json: JSONValue = .object([
-            "status": .string("complete"), "stopped": .bool(false),
+            "status": .string("finished"), "stopped": .bool(false),
             "compensators": .array(compensated ? [ToleranceCompensator(.thickness(surface: id(7)), range: 0.5).json] : []),
             "sensitivity": .object([
                 "nominal": .object(["criterion": .number(4e-4), "compensators": .array([.number(42.1)])]),

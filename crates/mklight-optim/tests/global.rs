@@ -212,6 +212,91 @@ fn hammer_escapes_freudenstein_roth_local_minimum() {
     assert_eq!(r.evaluations, r2.evaluations);
 }
 
+/// Basin hopping runs each parallel local solve on the problem's instance
+/// for one solve (`Problem::for_solve`) and everything else on the problem
+/// itself; the result is that of the same function without such instances.
+#[test]
+fn hammer_local_solves_run_on_their_own_problem_instances() {
+    use mklight_core::MkResult;
+    use mklight_optim::Problem;
+    use mklight_optim::problem::{BatchEvaluation, CandidateBatch};
+    /// A problem counting the batches it evaluates itself and the
+    /// instances it hands out (when it does).
+    #[derive(Clone, Copy)]
+    struct Counted<'a> {
+        inner: &'a FnProblem,
+        hands_out: bool,
+        instance: bool,
+        batches: &'a AtomicUsize,
+        instances: &'a AtomicUsize,
+    }
+    impl Problem for Counted<'_> {
+        fn variables(&self) -> &[Variable] {
+            self.inner.variables()
+        }
+        fn num_residuals(&self) -> usize {
+            self.inner.num_residuals()
+        }
+        fn weights(&self) -> &[f64] {
+            self.inner.weights()
+        }
+        fn evaluate_batch(
+            &self,
+            x: &CandidateBatch,
+            ctx: &JobContext,
+        ) -> MkResult<BatchEvaluation> {
+            if !self.instance {
+                self.batches.fetch_add(1, Ordering::SeqCst);
+            }
+            self.inner.evaluate_batch(x, ctx)
+        }
+        fn for_solve(&self) -> Option<Box<dyn Problem + '_>> {
+            self.hands_out.then(|| {
+                self.instances.fetch_add(1, Ordering::SeqCst);
+                Box::new(Counted {
+                    instance: true,
+                    ..*self
+                }) as Box<dyn Problem>
+            })
+        }
+    }
+    let mut inner = freudenstein_roth();
+    for v in inner.variables_mut().iter_mut() {
+        v.lower = Some(-20.0);
+        v.upper = Some(20.0);
+    }
+    let s = HammerSettings {
+        seed: 7,
+        rounds: 3,
+        local_per_round: 2,
+        target_merit: -1.0,
+        ..Default::default()
+    };
+    let plain = hammer(&inner, &[0.5, -2.0], &s, &Monitor::default()).unwrap();
+    let run = |hands_out: bool| {
+        let (batches, instances) = (AtomicUsize::new(0), AtomicUsize::new(0));
+        let p = Counted {
+            inner: &inner,
+            hands_out,
+            instance: false,
+            batches: &batches,
+            instances: &instances,
+        };
+        let r = hammer(&p, &[0.5, -2.0], &s, &Monitor::default()).unwrap();
+        assert_eq!(r.x, plain.x);
+        assert_eq!(r.merit, plain.merit);
+        assert_eq!(r.evaluations, plain.evaluations);
+        (batches.into_inner(), instances.into_inner())
+    };
+    let (own_batches, instances) = run(true);
+    // Two local solves in each of the three rounds, each on an instance.
+    assert_eq!(instances, 6);
+    // The problem itself evaluated the start solve and the screens only.
+    let (all_batches, none) = run(false);
+    assert_eq!(none, 0);
+    assert!(own_batches < all_batches, "{own_batches} {all_batches}");
+}
+
 #[test]
 fn global_methods_honour_cancellation() {
     let p = rastrigin(4, 5.12);

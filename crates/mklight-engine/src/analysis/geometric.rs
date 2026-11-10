@@ -14,8 +14,7 @@
 //!   curves sampled along one axis (fans, field curves, energy, MTF) stay in
 //!   the JSON.
 //!
-//! The ray-grid analyses (`spot_diagram`, `encircled_energy`,
-//! `geometric_mtf`, `best_focus`, `ray_grid`) trace through
+//! The analyses with a GPU path (`gpu::GPU_ANALYSES`) trace through
 //! complete resident adapters, preserving the public result packing.
 
 use serde::Serialize;
@@ -368,7 +367,13 @@ fn all() -> Vec<Geo> {
                 let settings = parse(s)?;
                 let r = gpu::native_job!(
                     input,
-                    |b| mklight_analysis::gpu::ray_fan_job(b, t, &settings, c),
+                    |b| mklight_analysis::gpu::ray_fan_job(
+                        b,
+                        t,
+                        &settings,
+                        &input.route.geometric(),
+                        c
+                    ),
                     fans::ray_fan_job(t, &settings, c)
                 )?;
                 let (v, w) = crate_json(&r)?;
@@ -387,7 +392,13 @@ fn all() -> Vec<Geo> {
                 let settings = parse(s)?;
                 let r = gpu::native_job!(
                     input,
-                    |b| mklight_analysis::gpu::opd_fan_job(b, t, &settings, c),
+                    |b| mklight_analysis::gpu::opd_fan_job(
+                        b,
+                        t,
+                        &settings,
+                        &input.route.geometric(),
+                        c
+                    ),
                     fans::opd_fan_job(t, &settings, c)
                 )?;
                 let (v, w) = crate_json(&r)?;
@@ -414,7 +425,13 @@ fn all() -> Vec<Geo> {
                 let settings = parse(s)?;
                 let r = gpu::native_job!(
                     input,
-                    |b| mklight_analysis::gpu::field_curvature_job(b, t, &settings, c),
+                    |b| mklight_analysis::gpu::field_curvature_job(
+                        b,
+                        t,
+                        &settings,
+                        &input.route.geometric(),
+                        c
+                    ),
                     curvature::field_curvature_job(t, &settings, c)
                 )?;
                 let (v, w) = crate_json(&r)?;
@@ -476,7 +493,13 @@ fn all() -> Vec<Geo> {
                 let settings = parse(s)?;
                 let r = gpu::native_job!(
                     input,
-                    |b| mklight_analysis::gpu::longitudinal_aberration_job(b, t, &settings, c),
+                    |b| mklight_analysis::gpu::longitudinal_aberration_job(
+                        b,
+                        t,
+                        &settings,
+                        &input.route.geometric(),
+                        c
+                    ),
                     seidel::longitudinal_aberration_job(t, &settings, c)
                 )?;
                 let (v, w) = crate_json(&r)?;
@@ -522,7 +545,13 @@ fn all() -> Vec<Geo> {
                 let settings = parse(s)?;
                 let r = gpu::native_job!(
                     input,
-                    |b| mklight_analysis::gpu::lateral_colour_job(b, t, &settings, c),
+                    |b| mklight_analysis::gpu::lateral_colour_job(
+                        b,
+                        t,
+                        &settings,
+                        &input.route.geometric(),
+                        c
+                    ),
                     seidel::lateral_colour_job(t, &settings, c)
                 )?;
                 let (v, w) = crate_json(&r)?;
@@ -580,7 +609,7 @@ fn all() -> Vec<Geo> {
             name: "encircled_energy",
             title: "Encircled energy",
             description: "Geometric encircled and ensquared energy versus radius per field, \
-                          with r50/r80/r90. GPU path.",
+                          with r50/r80/r90.",
             settings: || {
                 settings_from_default::<energy::EncircledEnergySettings>(sampling_annotations(
                     a_dense_rings(),
@@ -920,7 +949,7 @@ fn run_layout(
     let settings = parse(s)?;
     let scene = gpu::native_job!(
         input,
-        |b| mklight_analysis::gpu::layout_job(b, t, &settings, ctx),
+        |b| mklight_analysis::gpu::layout_job(b, t, &settings, &input.route.geometric(), ctx),
         layout::layout_job(t, &settings, ctx)
     )?;
     let b = scene.to_buffers();
@@ -1250,8 +1279,22 @@ fn typed_spot_packing_matches_legacy_envelope() {
                     spot::spot_diagram_packed_job(&t, &s, &ctx).unwrap(),
                 ),
                 (
-                    mklight_analysis::gpu::spot_diagram_job(&gpu, &t, &s, &ctx).unwrap(),
-                    mklight_analysis::gpu::spot_diagram_packed_job(&gpu, &t, &s, &ctx).unwrap(),
+                    mklight_analysis::gpu::spot_diagram_job(
+                        &gpu,
+                        &t,
+                        &s,
+                        &Default::default(),
+                        &ctx,
+                    )
+                    .unwrap(),
+                    mklight_analysis::gpu::spot_diagram_packed_job(
+                        &gpu,
+                        &t,
+                        &s,
+                        &Default::default(),
+                        &ctx,
+                    )
+                    .unwrap(),
                 ),
             ] {
                 assert!(old.packed_points.is_none());
@@ -1294,7 +1337,13 @@ fn run_spot(
     let st: spot::SpotDiagramSettings = parse(s)?;
     let r = gpu::native_job!(
         input,
-        |b| mklight_analysis::gpu::spot_diagram_packed_job(b, t, &st, ctx),
+        |b| mklight_analysis::gpu::spot_diagram_packed_job(
+            b,
+            t,
+            &st,
+            &input.route.geometric(),
+            ctx
+        ),
         spot::spot_diagram_packed_job(t, &st, ctx)
     )?;
     spot_output(r)
@@ -1483,7 +1532,13 @@ fn run_grid_distortion(
     let settings = parse(s)?;
     let r = gpu::native_job!(
         input,
-        |b| mklight_analysis::gpu::grid_distortion_job(b, t, &settings, ctx),
+        |b| mklight_analysis::gpu::grid_distortion_job(
+            b,
+            t,
+            &settings,
+            &input.route.geometric(),
+            ctx
+        ),
         curvature::grid_distortion_job(t, &settings, ctx)
     )?;
     let mut r = r;
@@ -1850,7 +1905,13 @@ fn run_footprint(
     let settings = parse(s)?;
     let r = gpu::native_job!(
         input,
-        |b| mklight_analysis::gpu::footprint_job(b, t, &settings, &ctx.subrange(0.0, 0.3)),
+        |b| mklight_analysis::gpu::footprint_job(
+            b,
+            t,
+            &settings,
+            &input.route.geometric(),
+            &ctx.subrange(0.0, 0.3)
+        ),
         illumination::footprint_job(t, &settings, &ctx.subrange(0.0, 0.3))
     )?;
     let mut r = r;
@@ -1881,6 +1942,7 @@ fn run_footprint(
             d.backend.as_ref(),
             t,
             &settings,
+            &input.route.geometric(),
             &ctx.subrange(0.3, 1.0),
         )?,
         None => footprint_overlay::footprint_overlay_job(t, &settings, &ctx.subrange(0.3, 1.0))?,
@@ -1910,7 +1972,7 @@ fn run_footprint(
 }
 
 // ---------------------------------------------------------------------------
-// energy family (GPU paths)
+// energy family
 
 fn encircled_energy_schema() -> Value {
     result(
@@ -1958,17 +2020,13 @@ fn encircled_energy_schema() -> Value {
 }
 
 fn run_encircled_energy(
-    input: &AnalysisInput<'_>,
+    _: &AnalysisInput<'_>,
     t: &SequentialTracer,
     s: &Value,
     ctx: &JobContext,
 ) -> EngineResult<AnalysisOutput> {
     let st: energy::EncircledEnergySettings = parse(s)?;
-    let r = gpu::native_job!(
-        input,
-        |b| mklight_analysis::gpu::encircled_energy_job(b, t, &st, ctx),
-        energy::encircled_energy_job(t, &st, ctx)
-    )?;
+    let r = energy::encircled_energy_job(t, &st, ctx)?;
     let (v, w) = crate_json(&r)?;
     Ok(output(v, vec![], w))
 }
@@ -2023,7 +2081,7 @@ fn run_geometric_mtf(
     let st: energy::GeometricMtfSettings = parse(s)?;
     let r = gpu::native_job!(
         input,
-        |b| mklight_analysis::gpu::geometric_mtf_job(b, t, &st, ctx),
+        |b| mklight_analysis::gpu::geometric_mtf_job(b, t, &st, &input.route.geometric(), ctx),
         energy::geometric_mtf_job(t, &st, ctx)
     )?;
     let (v, w) = crate_json(&r)?;
@@ -2093,7 +2151,7 @@ fn run_best_focus(
     let st: energy::BestFocusSettings = parse(s)?;
     let r = gpu::native_job!(
         input,
-        |b| mklight_analysis::gpu::best_focus_job(b, t, &st, ctx),
+        |b| mklight_analysis::gpu::best_focus_job(b, t, &st, &input.route.geometric(), ctx),
         energy::best_focus_job(t, &st, ctx)
     )?;
     let (v, w) = crate_json(&r)?;
@@ -2201,6 +2259,7 @@ fn run_ray_grid(
             d.backend.as_ref(),
             t,
             sm,
+            &input.route.geometric(),
             &ctx.subrange(0.0, 0.95),
         )?;
         gpu::record_native(input, &h.run_info);

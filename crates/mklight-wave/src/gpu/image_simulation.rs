@@ -109,6 +109,7 @@ pub fn build_psf_grid_shared(
             field_center: s.field_center,
             ..Default::default()
         },
+        &Default::default(),
         &ctx.subrange(0., 0.05),
     )?;
     recorded_stats(&d.run_info.settings, &mut stats);
@@ -741,7 +742,6 @@ mod tests {
         ] {
             let Some(b) = mklight_metal::MetalBackend::with_options(&mklight_metal::MetalOptions {
                 library: origin,
-                ..Default::default()
             })
             .unwrap() else {
                 eprintln!("no Metal device: skipped");

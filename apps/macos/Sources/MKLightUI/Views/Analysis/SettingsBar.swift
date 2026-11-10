@@ -474,7 +474,7 @@ struct IndexListMenu: View {
 }
 
 /// A free text setting (a glass name, a catalogue); empty restores the
-/// default, or null when allowed.
+/// default, or null when allowed. Only edited text is committed.
 struct SettingTextField: View {
     let field: SettingsField
     let label: String
@@ -482,32 +482,34 @@ struct SettingTextField: View {
     /// Values to suggest while typing (glass names).
     var completions: [String] = []
     let set: (JSONValue?) -> Void
-    @State private var text = ""
-    @FocusState private var focused: Bool
 
-    private var suggestions: [String] {
+    var body: some View {
+        CommittingField(value: value, format: entry, commit: set) { text, focused in
+            TextField(field.nullable ? "any" : label, text: text)
+                .textFieldStyle(.roundedBorder)
+                .frame(width: 140)
+                .materialSuggestions(focused ? suggestions(text.wrappedValue) : [])
+        }
+        .help(field.description.isEmpty ? field.title : field.description)
+        .accessibilityLabel(label)
+    }
+
+    private func suggestions(_ text: String) -> [String] {
         let q = text.trimmingCharacters(in: .whitespaces).uppercased()
-        guard !q.isEmpty, focused else { return [] }
+        guard !q.isEmpty else { return [] }
         return Array(completions.filter { $0.uppercased().hasPrefix(q) && $0.uppercased() != q }.prefix(12))
     }
 
-    var body: some View {
-        TextField(field.nullable ? "any" : label, text: $text)
-            .textFieldStyle(.roundedBorder)
-            .frame(width: 140)
-            .materialSuggestions(suggestions)
-            .focused($focused)
-            .onSubmit(commit)
-            .onChange(of: focused) { _, f in if !f { commit() } }
-            .onAppear { text = value?.string ?? "" }
-            .onChange(of: value) { _, v in if !focused { text = v?.string ?? "" } }
-            .help(field.description.isEmpty ? field.title : field.description)
-            .accessibilityLabel(label)
-    }
-
-    private func commit() {
-        let t = text.trimmingCharacters(in: .whitespaces)
-        if t.isEmpty { set(field.nullable ? .null : nil) } else if t != value?.string { set(.string(t)) }
+    private var entry: FieldEdit<JSONValue?>.Format {
+        let text: (JSONValue?) -> String = { $0?.string ?? "" }
+        return FieldEdit.Format(
+            exact: text, display: text,
+            parse: { [field, value] typed in
+                let t = typed.trimmingCharacters(in: .whitespaces)
+                if !t.isEmpty { return .some(.string(t)) }
+                // A setting already at its default keeps it.
+                return .some(field.nullable ? .null : value == field.defaultValue ? value : nil)
+            })
     }
 }
 
@@ -523,28 +525,20 @@ struct SettingNumberField: View {
     var auto: AutoSettings.Sentinel? = nil
     var autoUsed: String? = nil
     let set: (JSONValue?) -> Void
-    @State private var text = ""
-    /// The text the field was given (on focus, after a commit, with a new
-    /// value): only other text is an edit.
-    @State private var base = ""
-    @FocusState private var focused: Bool
 
     var body: some View {
         HStack(spacing: Space.xs) {
             if !label.isEmpty { Text(label).foregroundStyle(.secondary) }
-            TextField(placeholder, text: $text)
-                .textFieldStyle(.roundedBorder)
-                .numeric()
-                .multilineTextAlignment(.trailing)
-                .frame(width: isAuto ? max(64, CGFloat(placeholder.count) * 7 + 8) : 64)
-                .focused($focused)
-                .onSubmit(commit)
-                .onChange(of: focused) { _, f in if f { show(value) } else { commit() } }
+            CommittingField(value: value, format: entry, commit: set) { text, _ in
+                TextField(placeholder, text: text)
+                    .textFieldStyle(.roundedBorder)
+                    .numeric()
+                    .multilineTextAlignment(.trailing)
+                    .frame(width: isAuto ? max(64, CGFloat(placeholder.count) * 7 + 8) : 64)
+            }
             if !field.unit.isEmpty { Text(field.unit).foregroundStyle(.secondary) }
         }
         .help(helpText)
-        .onAppear { show(value) }
-        .onChange(of: value) { _, v in if !focused || text == base { show(v) } }
         .accessibilityElement(children: .contain)
         .accessibilityLabel(label.isEmpty ? SettingsBar.label(field) : label)
         .accessibilityValue(isAuto ? placeholder : display)
@@ -576,44 +570,31 @@ struct SettingNumberField: View {
 
     private var display: String { Self.display(value, isInteger: isInteger, auto: auto) }
 
-    private func show(_ v: JSONValue?) {
-        text = Self.display(v, isInteger: isInteger, auto: auto, exact: focused)
-        base = text
-    }
-
-    private func commit() {
-        guard text != base else {
-            if !focused { show(value) }
-            return
-        }
-        let t = text.trimmingCharacters(in: .whitespaces)
-        let typed = LensValueParser.number(t)
-        // Nothing, "auto", or the 0 of a setting that is automatic at 0.
-        if t.isEmpty || (auto != nil && t.lowercased().hasPrefix("auto")) || (auto == .zero && typed == 0) {
-            let cleared: JSONValue? =
-                switch auto {
-                case .zero?: .integer(0)
-                case .null?: .null
-                default: nullable ? .null : nil
+    /// The typed setting: the automatic value for nothing, "auto", or the
+    /// 0 of a setting that is automatic at 0; else the number, held to the
+    /// setting's range.
+    var entry: FieldEdit<JSONValue?>.Format {
+        FieldEdit.Format(
+            exact: { [isInteger, auto] in Self.display($0, isInteger: isInteger, auto: auto, exact: true) },
+            display: { [isInteger, auto] in Self.display($0, isInteger: isInteger, auto: auto) },
+            parse: { [field, value, auto, isInteger, nullable] text in
+                let t = text.trimmingCharacters(in: .whitespaces)
+                let typed = LensValueParser.number(t)
+                if t.isEmpty || (auto != nil && t.lowercased().hasPrefix("auto")) || (auto == .zero && typed == 0) {
+                    let cleared: JSONValue? =
+                        switch auto {
+                        case .zero?: .integer(0)
+                        case .null?: .null
+                        default: nullable ? .null : nil
+                        }
+                    // A setting already at its default keeps it.
+                    return .some(cleared == nil && value == field.defaultValue ? value : cleared)
                 }
-            // A setting already at its default keeps showing it.
-            if cleared == nil, value == field.defaultValue {
-                show(value)
-                return
-            }
-            if cleared != value { set(cleared) }
-            show(cleared)
-            return
-        }
-        guard var d = typed, d.isFinite else {
-            show(value)
-            return
-        }
-        if let lo = field.minimum { d = max(d, lo) }
-        if let hi = field.maximum { d = min(d, hi) }
-        let v: JSONValue = isInteger ? .integer(Int64(Int(saturating: d))) : .number(d)
-        if v != value { set(v) }
-        show(v)
+                guard var d = typed, d.isFinite else { return nil }
+                if let lo = field.minimum { d = max(d, lo) }
+                if let hi = field.maximum { d = min(d, hi) }
+                return .some(isInteger ? .integer(Int64(Int(saturating: d))) : .number(d))
+            })
     }
 }
 
@@ -659,58 +640,38 @@ struct NumberListField: View {
     let label: String
     let value: JSONValue?
     let set: (JSONValue?) -> Void
-    @State private var text = ""
-    /// The text the field was given (on focus, after a commit, with a new
-    /// value): only other text is an edit.
-    @State private var base = ""
-    @FocusState private var focused: Bool
 
-    private var values: [Double] { value?.array?.compactMap(\.doubleValue) ?? [] }
     private var isInteger: Bool { field.items?["type"]?.string == "integer" }
 
     var body: some View {
         HStack(spacing: Space.xs) {
-            TextField(field.nullable ? "auto" : "none", text: $text)
-                .textFieldStyle(.roundedBorder)
-                .numeric()
-                .frame(width: max(96, CGFloat(text.count) * 7 + 8))
-                .focused($focused)
-                .onSubmit(commit)
-                .onChange(of: focused) { _, f in if f { show(values) } else { commit() } }
+            CommittingField(value: value, format: entry, commit: set) { text, _ in
+                TextField(field.nullable ? "auto" : "none", text: text)
+                    .textFieldStyle(.roundedBorder)
+                    .numeric()
+                    .frame(width: max(96, CGFloat(text.wrappedValue.count) * 7 + 8))
+            }
             if !field.unit.isEmpty { Text(field.unit).foregroundStyle(.secondary) }
         }
         .help(field.description + "\nComma separated.")
-        .onAppear { show(values) }
-        .onChange(of: value) { _, _ in if !focused || text == base { show(values) } }
         .accessibilityElement(children: .contain)
         .accessibilityLabel(label)
-        .accessibilityValue(text)
+        .accessibilityValue(entry.display(value))
     }
 
-    private func show(_ v: [Double]) {
-        text = isInteger ? v.map { String(Int(saturating: $0)) }.joined(separator: ", ") : FrequencyListSetting.text(v, exact: focused)
-        base = text
-    }
-
-    private func commit() {
-        guard text != base else {
-            if !focused { show(values) }
-            return
+    private var entry: FieldEdit<JSONValue?>.Format {
+        func text(_ value: JSONValue?, exact: Bool) -> String {
+            let v = value?.array?.compactMap(\.doubleValue) ?? []
+            return isInteger ? v.map { String(Int(saturating: $0)) }.joined(separator: ", ") : FrequencyListSetting.text(v, exact: exact)
         }
-        let t = text.trimmingCharacters(in: .whitespaces)
-        if t.isEmpty {
-            let cleared: JSONValue = field.nullable ? .null : .array([])
-            if cleared != value { set(cleared) }
-            show([])
-            return
-        }
-        guard let v = FrequencyListSetting.numbers(t) else {
-            show(values)
-            return
-        }
-        let list = JSONValue.array(v.map { isInteger ? JSONValue.integer(Int64(Int(saturating: $0))) : .number($0) })
-        if list != value { set(list) }
-        show(v)
+        return FieldEdit.Format(
+            exact: { text($0, exact: true) }, display: { text($0, exact: false) },
+            parse: { [field, isInteger] typed in
+                let t = typed.trimmingCharacters(in: .whitespaces)
+                if t.isEmpty { return .some(field.nullable ? .null : .array([])) }
+                guard let v = FrequencyListSetting.numbers(t) else { return nil }
+                return .some(.array(v.map { isInteger ? JSONValue.integer(Int64(Int(saturating: $0))) : .number($0) }))
+            })
     }
 }
 
@@ -722,29 +683,21 @@ struct FrequencyListSetting: View {
     let value: JSONValue?
     let autoUsed: String?
     let set: (JSONValue?) -> Void
-    @State private var text = ""
-    /// The text the field was given (on focus, after a commit, with a new
-    /// value): only other text is an edit.
-    @State private var base = ""
-    @FocusState private var focused: Bool
 
     private var values: [Double] { value?.array?.compactMap(\.doubleValue) ?? [] }
     private var placeholder: String { AutoSettings.display(used: autoUsed) }
 
     var body: some View {
         HStack(spacing: Space.xs) {
-            TextField(placeholder, text: $text)
-                .textFieldStyle(.roundedBorder)
-                .numeric()
-                .frame(width: max(96, CGFloat(max(placeholder.count, text.count)) * 7 + 8))
-                .focused($focused)
-                .onSubmit(commit)
-                .onChange(of: focused) { _, f in if f { show(values) } else { commit() } }
+            CommittingField(value: values, format: Self.entry, commit: { set(.array($0.map(JSONValue.number))) }) { text, _ in
+                TextField(placeholder, text: text)
+                    .textFieldStyle(.roundedBorder)
+                    .numeric()
+                    .frame(width: max(96, CGFloat(max(placeholder.count, text.wrappedValue.count)) * 7 + 8))
+            }
             Text(field.unit.isEmpty ? "cycles/mm" : field.unit).foregroundStyle(.secondary)
         }
         .help(field.description + "\nComma separated; empty lets the engine choose.")
-        .onAppear { show(values) }
-        .onChange(of: value) { _, _ in if !focused || text == base { show(values) } }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Frequencies")
         .accessibilityValue(values.isEmpty ? placeholder : Self.text(values))
@@ -770,29 +723,14 @@ struct FrequencyListSetting: View {
         return Array(Set(v)).sorted()
     }
 
-    private func show(_ v: [Double]) {
-        text = Self.text(v, exact: focused)
-        base = text
-    }
-
-    private func commit() {
-        guard text != base else {
-            if !focused { show(values) }
-            return
-        }
-        let t = text.trimmingCharacters(in: .whitespaces)
-        if t.isEmpty || t.lowercased().hasPrefix("auto") {
-            if !values.isEmpty { set(.array([])) }
-            show([])
-            return
-        }
-        guard let v = Self.parse(t), !v.isEmpty else {
-            show(values)
-            return
-        }
-        if v != values { set(.array(v.map(JSONValue.number))) }
-        show(v)
-    }
+    /// Nothing or "auto" is the empty list (the engine chooses).
+    static let entry = FieldEdit<[Double]>.Format(
+        exact: { text($0, exact: true) }, display: { text($0) },
+        parse: { typed in
+            let t = typed.trimmingCharacters(in: .whitespaces)
+            if t.isEmpty || t.lowercased().hasPrefix("auto") { return [] }
+            return parse(t).flatMap { $0.isEmpty ? nil : $0 }
+        })
 }
 
 /// The spot diagram's through-focus sampling: off (one plane), or planes

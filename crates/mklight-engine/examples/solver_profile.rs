@@ -1,10 +1,11 @@
 //! Stage profile of one solver analysis (optimize, tolerance,
 //! merit_evaluation, glass_substitution) on one backend, optionally with
-//! work-split selections (`--set aiming=device`).
+//! route options (`--route solver_aiming=device`;
+//! `mklight_engine::RouteOptions`).
 //!
 //! ```text
 //! cargo run --release -p mklight-engine --example solver_profile -- LENS.mklight ANALYSIS \
-//!     [--backend cpu|metal|auto] [--set KEY=VARIANT]... [--settings JSON] [--reps N] [--json]
+//!     [--backend cpu|metal|auto] [--route KEY=VALUE]... [--settings JSON] [--reps N] [--json]
 //!     [--out FILE]
 //! ```
 //!
@@ -18,8 +19,10 @@
 use std::path::Path;
 use std::time::Instant;
 
-use mklight_core::{param::ParamPath, split};
-use mklight_engine::{AnalysisRequest, Engine, EngineConfig, Session, backend::Backend};
+use mklight_core::param::ParamPath;
+use mklight_engine::{
+    AnalysisRequest, Engine, EngineConfig, RouteOptions, Session, backend::Backend,
+};
 use serde_json::{Value, json};
 
 fn curvature_variables(s: &mut Session) {
@@ -89,7 +92,7 @@ fn main() {
     while let Some(a) = args.next() {
         match a.as_str() {
             "--backend" => backend = args.next().unwrap(),
-            "--set" => selections.push(args.next().unwrap()),
+            "--route" => selections.push(args.next().unwrap()),
             "--settings" => settings = serde_json::from_str(&args.next().unwrap()).unwrap(),
             "--reps" => reps = args.next().unwrap().parse().unwrap(),
             "--json" => dump = true,
@@ -97,10 +100,12 @@ fn main() {
             _ => panic!("unexpected argument {a}"),
         }
     }
-    for selection in &selections {
-        let (key, value) = selection.split_once('=').expect("--set KEY=VARIANT");
-        split::set(key, Some(value));
-    }
+    let route = RouteOptions::from_pairs(
+        selections
+            .iter()
+            .map(|s| s.split_once('=').expect("--route KEY=VALUE")),
+    )
+    .unwrap();
     let engine = Engine::new(EngineConfig::default());
     let mut s = engine.open_session(Path::new(&lens)).unwrap();
     curvature_variables(&mut s);
@@ -114,6 +119,7 @@ fn main() {
         edit(&mut s, &base, rep as u64 + 1);
         let mut req = AnalysisRequest::new(&analysis, settings.clone());
         req.backend = Some(b.clone());
+        req.route = Some(route);
         let t = Instant::now();
         let id = s.submit_analysis(&req).unwrap();
         engine.wait_job(id, None).unwrap();

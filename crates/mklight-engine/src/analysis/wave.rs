@@ -22,10 +22,10 @@ struct Wave(&'static WaveAnalysisEntry);
 /// `$run!(job)` with the memo-sharing solver job of the wave analysis
 /// `$name`; the CPU reference ([`wa`]) and Metal
 /// (`mklight_wave::gpu::analysis`) jobs share their names and result types.
+/// The wavefront map has the reference job only (`run_cpu`).
 macro_rules! dispatch {
     ($name:expr, $run:ident) => {
         match $name {
-            "wavefront_map" => $run!(wavefront_map_shared),
             "psf" => $run!(psf_analysis_shared),
             "mtf" => $run!(mtf_analysis_shared),
             "mtf_vs_field" => $run!(mtf_vs_field_shared),
@@ -75,7 +75,7 @@ impl Analysis for Wave {
         // reference's and are shared with the CPU analyses (`run_cpu`).
         let memo = input.memo();
         let memo = memo.as_ref().map(|m| m as &dyn Memo);
-        let Some(d) = super::gpu::device(input) else {
+        let Some(d) = super::gpu::device(input).filter(|_| self.gpu_path()) else {
             return run_cpu(self.0.name, &cfg, settings, memo, c);
         };
         let b = d.backend.as_ref();
@@ -114,6 +114,10 @@ fn run_cpu(
             cfg.stamp(&mut r.run_info);
             r.pack()
         }};
+    }
+    if name == "wavefront_map" {
+        // Reduced on the host, which holds the traced pupils in f64.
+        return cpu!(wavefront_map_shared);
     }
     dispatch!(name, cpu)
 }
@@ -1291,6 +1295,50 @@ mod tests {
         .into_iter()
         .map(|(label, sys)| (label, configured_tracer(&sys, lib.clone(), 0).unwrap()))
         .collect()
+    }
+
+    /// The wavefront map has the reference job only: an input that carries
+    /// a device runs it as the CPU reference does, and reports no device.
+    #[test]
+    fn the_wavefront_map_runs_the_reference_on_a_device_input() {
+        use crate::analysis::{AnalysisRegistry, AnalysisResult, run_analysis};
+        use crate::backend::{BackendInfo, DeviceHandle};
+        use crate::gpu::GpuDevice;
+        let registry = AnalysisRegistry::with_builtin();
+        let analysis = registry.get("wavefront_map").unwrap();
+        assert!(!analysis.gpu_path());
+        let input = || {
+            AnalysisInput::new(
+                mklight_core::Snapshot::new(samples::cooke_triplet()).unwrap(),
+                Arc::new(MaterialLibrary::with_builtin()),
+                BackendInfo::cpu_reference(),
+            )
+        };
+        let device: DeviceHandle = Arc::new(GpuDevice::new(
+            "gpu:cpu_f32",
+            Arc::new(mklight_gpu::CpuF32Backend::new()),
+        ));
+        let run = |input: AnalysisInput<'static>| {
+            run_analysis(
+                analysis.as_ref(),
+                &input,
+                &small_settings("wavefront_map"),
+                vec![],
+                &JobContext::new(),
+            )
+            .unwrap()
+        };
+        let cpu = run(input());
+        let on_device = run(input().with_device(Some(device)));
+        assert_eq!(on_device.run_info.backend, "cpu_reference");
+        assert!(on_device.backend.execution.is_empty());
+        assert!(on_device.run_info.failed_attempts.is_empty());
+        let output = |r: AnalysisResult| AnalysisOutput {
+            json: r.json,
+            buffers: r.buffers,
+            ..Default::default()
+        };
+        assert_same("wavefront_map", &output(on_device), &output(cpu));
     }
 
     #[test]

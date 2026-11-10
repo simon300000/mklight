@@ -47,6 +47,11 @@ def test_engine_config_rejects_unknown_keys():
         mklight.Engine(worker_thread=2)
     with pytest.raises(mklight.InvalidArgumentError, match="bogus"):
         mklight.Engine({"bogus": 1})
+    # Nested objects are as strict.
+    with pytest.raises(mklight.InvalidArgumentError, match="fieldmap"):
+        mklight.Engine(route={"fieldmap": "device-chief"})
+    with pytest.raises(mklight.InvalidArgumentError, match="nmae"):
+        mklight.Engine(default_backend={"kind": "auto", "nmae": "metal"})
 
 
 def test_engine_default_backend_takes_the_run_forms():

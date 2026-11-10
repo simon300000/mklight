@@ -20,8 +20,9 @@ pub struct Solve { pub target: ParamPath, pub kind: SolveKind }
   system in which every target is set, and the engine builds the `Snapshot`
   of that solved system. Snapshots are never modified.
 * `OpticalSystem::solved_params()` (also `mklight_trace::solved_params`)
-  lists the targets, sorted and deduplicated. The optimiser must exclude them
-  from its variables, and the UI should show them as solve-controlled.
+  lists the targets, sorted and deduplicated. The solver jobs exclude them
+  from their variables, tolerances and compensators (§5, Solver jobs), and
+  the UI should show them as solve-controlled.
 * `SolveKind` is internally tagged by `"type"` (snake case), like the rest of
   the model; `ParamPath` is tagged by `"param"`.
 
@@ -287,6 +288,20 @@ again. `SolveReport::configuration` (and the `RunInfo` settings) record `k`.
 `with_configuration(k)` on that result is **not** a solved system: solve
 each configuration with `apply_solves_configuration` (or
 `apply_solves_all`).
+
+**Solver jobs.** `optimize`, `merit_evaluation`, `tolerance` and
+`glass_substitution` apply the solves to the snapshot's system and work on
+that solved start (`docs/OPTIMIZATION.md`, Engine jobs, "One model"). A
+solve-controlled parameter is never one of their variables, tolerances or
+compensators: automatic sets skip it and an explicit one is an error.
+`optimize`'s search and the re-optimisations of `glass_substitution` do not
+re-solve: the solved parameters keep their start values. `glass_substitution`
+applies the solves to each substituted design before re-optimising it.
+`tolerance` keeps the solves in effect in every system it evaluates: each
+perturbed case, and each candidate of its compensator solve, is re-solved
+(`mklight_optim::merit::WithSolves`), so a solve acts like a compensator
+that is always applied. These re-solves run on the system as the job
+changed it, with the default `SolveSettings`.
 
 ## 6. JSON
 

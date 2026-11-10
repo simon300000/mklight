@@ -1,10 +1,10 @@
-//! Pupil-aiming designs of the resident geometric adapters (work-split key
-//! `aiming`, [`mklight_core::split`]).
+//! Pupil-aiming designs of the resident geometric adapters
+//! ([`Route::aiming`]).
 //!
 //! Every generation of a [`Geometry`] (grid rays, chief rays, layout fans,
 //! the sizing and field-map grids built on `append_grid`) is aimed before
-//! its plan is built, by one design read once per adapter in
-//! [`Geometry::new`]:
+//! its plan is built, by the design of the adapter's route
+//! ([`Geometry::with_route`]):
 //!
 //! * [`AimDesign::HostTable`] (default): the reference tracer aims every ray
 //!   in f64 and writes the starting rays straight into the shared ray planes
@@ -22,7 +22,7 @@
 //!   MTF), a generation with a seed table and at least [`SPLIT_MIN_WORK`]
 //!   rays × surfaces is aimed by the host and the device together
 //!   ([`Geometry::aim_split`]): a fixed, evenly interleaved share of its
-//!   tiles ([`SPLIT_DEVICE_SHARE`], `aiming=split:<share>` overrides it) goes
+//!   tiles ([`Route::device_share`], by default [`SPLIT_DEVICE_SHARE`]) goes
 //!   to the device's double-float Newton solve, seeded from the same table,
 //!   except for the 128-ray chunks with a ray outside the table's solved
 //!   nodes; the rest goes to the host's rayon workers. The assignment
@@ -44,7 +44,7 @@
 //! device aims converge except for rays the reference cannot aim either.
 
 use super::*;
-use mklight_core::{RayAiming, split};
+use mklight_core::RayAiming;
 use mklight_gpu::{consts::*, resident};
 use mklight_trace::{AimReport, FieldPoint, GeneratedRay, PreparedField, RayRequest};
 use rayon::prelude::*;
@@ -52,9 +52,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::mpsc;
 use std::time::Instant;
-
-/// The work-split key of the aiming design.
-pub const KEY: &str = "aiming";
 
 /// How a [`Geometry`] aims its generations (module docs).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -65,32 +62,7 @@ pub enum AimDesign {
     Device,
 }
 impl AimDesign {
-    /// The design selected for this run and the device's share of split
-    /// generations: `aiming` unset or `host-table` (the default, with
-    /// [`SPLIT_DEVICE_SHARE`]), `split:<share>` (the default design with a
-    /// device share in [0, 1]; 0 aims every generation on the host),
-    /// `table` or `device`.
-    pub fn selection() -> MkResult<(Self, f64)> {
-        let invalid = |what: String| Err(mklight_core::MkError::InvalidParam(what));
-        Ok(match split::variant(KEY).as_deref() {
-            None | Some("host-table") => (Self::HostTable, SPLIT_DEVICE_SHARE),
-            Some("table") => (Self::Table, 0.0),
-            Some("device") => (Self::Device, 0.0),
-            Some(other) => match other.strip_prefix("split:").map(str::parse::<f64>) {
-                Some(Ok(share)) if (0.0..=1.0).contains(&share) => (Self::HostTable, share),
-                Some(_) => return invalid(format!("aiming '{other}': the share is not in [0, 1]")),
-                None => {
-                    return invalid(format!(
-                        "unknown aiming design '{other}' (host-table, split:<share>, table, device)"
-                    ));
-                }
-            },
-        })
-    }
-    /// The design selected for this run ([`Self::selection`]).
-    pub fn selected() -> MkResult<Self> {
-        Ok(Self::selection()?.0)
-    }
+    /// The design's name in the run evidence (`aiming.design`).
     pub fn name(self) -> &'static str {
         match self {
             Self::HostTable => "host-table",
@@ -141,6 +113,9 @@ impl AimRows {
 #[derive(Clone, Debug, Default, serde::Serialize)]
 pub struct AimEvidence {
     pub design: &'static str,
+    /// The device's share of split generations (0 where the adapter aims
+    /// every generation of the design on one side).
+    pub device_share: f64,
     pub generations: u64,
     pub rays: u64,
     /// Rays aimed by the reference tracer.
@@ -465,10 +440,10 @@ impl HostJob<'_> {
 /// spot diagrams and geometric MTFs from 1.5 M up were 0.96 of host-only
 /// aiming (geometric mean), from 4 M up 0.94; below 1.5 M they lost up to 18 %.
 pub const SPLIT_MIN_WORK: usize = 1_500_000;
-/// The device's share of a split generation's tiles; `aiming=split:<share>`
-/// overrides it. On the M2 Pro, 0.35 gave the same mean gain as 0.5 and 0.65
-/// with the smallest worst case (+8 % against +26 % and +32 % on one lens); a
-/// GPU with more cores per CPU core may take more.
+/// The device's share of a split generation's tiles unless the route sets
+/// another ([`Route::device_share`]). On the M2 Pro, 0.35 gave the same mean
+/// gain as 0.5 and 0.65 with the smallest worst case (+8 % against +26 % and
+/// +32 % on one lens); a GPU with more cores per CPU core may take more.
 pub const SPLIT_DEVICE_SHARE: f64 = 0.35;
 /// Rays per split tile at most (the unit in which tiles are dealt to host
 /// and device).
@@ -638,7 +613,7 @@ impl Geometry<'_> {
         ctx: &JobContext,
     ) -> MkResult<ResidentRays> {
         ctx.check()?;
-        let handles = match self.aim {
+        let handles = match self.route.aiming {
             AimDesign::HostTable if !matches!(rows.aiming, RayAiming::Real { .. }) => {
                 // Paraxial launches need no solve: the device generates them
                 // in the plan itself (they fail only where the reference
@@ -653,7 +628,7 @@ impl Geometry<'_> {
             AimDesign::HostTable => {
                 let table = self.host_seed_table(rows, n, ctx)?;
                 let work = n.saturating_mul(self.tracer.system().image_index());
-                let share = if self.split { self.device_share } else { 0.0 };
+                let share = self.split_share();
                 match table {
                     Some(table) if share > 0.0 && work >= self.tuning.split_min_work => {
                         self.aim_split(rows, n, spec, &table, share, ctx)?
@@ -676,16 +651,24 @@ impl Geometry<'_> {
             report,
         })
     }
+    /// The device's share of this adapter's split generations.
+    fn split_share(&self) -> f64 {
+        if self.split && self.route.aiming == AimDesign::HostTable {
+            self.route.device_share
+        } else {
+            0.0
+        }
+    }
     fn evidence(&self, f: impl FnOnce(&mut AimEvidence)) {
         let mut e = self.aim_evidence.lock().unwrap_or_else(|e| e.into_inner());
-        e.design = self.aim.name();
         f(&mut e);
     }
     /// The aiming evidence since the previous plan (cleared).
     pub(crate) fn take_aim_evidence(&self) -> AimEvidence {
         let mut e = self.aim_evidence.lock().unwrap_or_else(|e| e.into_inner());
         let mut out = std::mem::take(&mut *e);
-        out.design = self.aim.name();
+        out.design = self.route.aiming.name();
+        out.device_share = self.split_share();
         out
     }
     /// Aim every ray of the generation on the host.

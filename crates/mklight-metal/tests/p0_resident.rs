@@ -7,12 +7,9 @@ use std::{sync::Arc, time::Instant};
 
 fn backend(library: LibraryChoice) -> MetalBackend {
     let init = Instant::now();
-    let b = MetalBackend::with_options(&MetalOptions {
-        library,
-        ..Default::default()
-    })
-    .unwrap()
-    .expect("P0 qualification requires a host Metal device");
+    let b = MetalBackend::with_options(&MetalOptions { library })
+        .unwrap()
+        .expect("P0 qualification requires a host Metal device");
     eprintln!("startup_probe_seconds={:.6}", init.elapsed().as_secs_f64());
     eprintln!(
         "device={} build={} probe={:?}",
@@ -67,7 +64,7 @@ fn plan(s: Snapshot, req: TraceRequest, keep_trace: bool) -> ResidentPlan {
     }
     p
 }
-fn read(b: &dyn ComputeBackend, h: &BufferHandle) -> BufferData {
+fn read(b: &dyn QualificationBackend, h: &BufferHandle) -> BufferData {
     b.readback(h.view(), &JobContext::new()).unwrap().data
 }
 fn bits(a: &[f32], b: &[f32]) {

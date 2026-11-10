@@ -12,8 +12,8 @@ private struct ImportingEngine: EngineClient {
     private let base = MockEngine(simulatedLatency: .zero)
     var info: EngineInfo { base.info }
     func openSnapshot(_ system: OpticalSystem) async throws -> ModelSnapshot { try await base.openSnapshot(system) }
-    func validate(_ system: OpticalSystem) async -> [ModelIssue] { await base.validate(system) }
-    func submit(_ request: AnalysisRequest, on snapshot: ModelSnapshot) -> AnalysisJob { base.submit(request, on: snapshot) }
+    func analysisDescriptors() async -> [AnalysisDescriptor] { await base.analysisDescriptors() }
+    func submit(_ request: EngineAnalysisRequest, on snapshot: ModelSnapshot) -> AnalysisJob { base.submit(request, on: snapshot) }
     func materialNames() async -> [String] { await base.materialNames() }
     func importPrescription(_ data: Data, format: PrescriptionFormat) throws -> PrescriptionImport {
         var r = result

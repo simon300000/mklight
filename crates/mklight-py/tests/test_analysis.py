@@ -67,6 +67,61 @@ def test_unknown_analysis_and_backend(achromat):
     assert achromat.run("validate", backend="cpu").run_info["backend"] == "cpu_reference"
 
 
+def test_backend_names_and_request_keys_are_checked(achromat):
+    # A name no backend has is an argument error, not "not available".
+    for bad in ("mteal", "cpu_ref", "gpu", ""):
+        with pytest.raises(mklight.InvalidArgumentError, match="unknown backend"):
+            achromat.run("validate", backend=bad)
+    with pytest.raises(mklight.InvalidArgumentError, match="mteal"):
+        mklight.Engine(default_backend="mteal")
+    # The bare name of a registered backend is its id.
+    for b in achromat.engine.backends():
+        if b["id"].startswith("gpu:"):
+            name = b["id"].removeprefix("gpu:")
+            r = achromat.run("validate", backend=name, allow_backend_fallback=True)
+            assert r.envelope()["backend"]["requested"] == b["id"]
+            assert mklight.Engine(default_backend=name).default_backend == {
+                "kind": "gpu",
+                "name": name,
+            }
+    # Misspelt keys of the request's objects are named.
+    with pytest.raises(mklight.InvalidArgumentError, match="nmae"):
+        achromat.run("validate", backend={"kind": "auto", "nmae": "metal"})
+    with pytest.raises(mklight.InvalidSettingsError, match="fieldmap"):
+        achromat.submit("validate", route={"fieldmap": "device-chief"})
+
+
+def test_stoppable_analyses_are_listed(achromat):
+    stoppable = {a["name"] for a in achromat.engine.analyses() if a["stoppable"]}
+    assert stoppable == {"optimize", "tolerance", "glass_substitution"}
+    job = achromat.submit("rng_stream", {"count": 100000, "chunk": 100, "delay_ms": 20})
+    with pytest.raises(mklight.UnsupportedError):
+        job.stop()
+    job.cancel()
+
+
+def test_route_options(achromat):
+    # Route options divide a device analysis; the CPU reference ignores them.
+    spot = {"rings": 3}
+    default = achromat.run("spot_diagram", spot, backend="cpu")
+    routed = achromat.run(
+        "spot_diagram", spot, backend="cpu", route={"aiming": "table", "aiming_share": 0.5}
+    )
+    assert routed.data == default.data
+    job = achromat.submit("spot_diagram", spot, backend="cpu", route={"solver_aiming": "device"})
+    assert job.result(timeout=60).data == default.data
+    with pytest.raises(mklight.InvalidSettingsError, match="stray"):
+        achromat.run("validate", route={"stray": "wavefront"})
+    with pytest.raises(mklight.InvalidSettingsError, match="stray_share"):
+        achromat.run("validate", route={"stray_share": 2})
+    with pytest.raises(mklight.InvalidSettingsError, match="dict"):
+        achromat.submit("validate", route="device")
+    engine = mklight.Engine(route={"fieldmaps": "device-chief"})
+    assert engine.config["route"]["fieldmaps"] == "device-chief"
+    with pytest.raises(mklight.InvalidArgumentError):
+        mklight.Engine(route={"fieldmaps": "nonsense"})
+
+
 def test_seed_determinism(achromat):
     a = achromat.run("rng_stream", {"count": 5000}, seed=42)
     b = achromat.run("rng_stream", {"count": 5000}, seed=42)

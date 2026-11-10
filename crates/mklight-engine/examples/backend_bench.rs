@@ -12,16 +12,16 @@
 //! {"lenses": {"dg": "/path/double_gauss.mklight"},
 //!  "cases": [{"lens": "dg", "analysis": "spot_diagram", "settings": {"rings": 100},
 //!             "tag": "dense", "reps": 5, "backends": ["cpu", "metal", "auto"],
-//!             "variants": [{"name": "device", "set": {"aiming": "device"}}],
+//!             "variants": [{"name": "device", "route": {"aiming": "device"}}],
 //!             "setup": "curvature_variables"}]}
 //! ```
 //!
 //! `settings`, `tag`, `reps` (default 5), `backends` (default all three),
 //! `variants` and `setup` are optional. Each variant adds a column
 //! `metal/<name>` (or `<variant_backend>/<name>` when the case sets
-//! `variant_backend`) that runs with the work-split selections of `set`
-//! (`mklight_core::split`); the plain `metal` column runs the default
-//! designs. `setup: "curvature_variables"` makes every curved surface's
+//! `variant_backend`) that runs with the route options `route`
+//! (`mklight_engine::RouteOptions`); the plain `metal` column runs the
+//! engine's default divisions. `setup: "curvature_variables"` makes every curved surface's
 //! curvature a variable for that case (for `optimize`, `tolerance` and the
 //! other solvers); the other cases run with the project's own variables.
 //! `--filter` keeps the cases whose `lens/analysis/tag` contains the text
@@ -58,10 +58,10 @@ use std::path::Path;
 use std::process::Command;
 use std::time::Instant;
 
-use mklight_core::{OpticalSystem, param::ParamPath, split};
+use mklight_core::{OpticalSystem, param::ParamPath};
 use mklight_engine::{
-    AnalysisRequest, Engine, EngineConfig, Session, analysis::AnalysisResult, backend::Backend,
-    buffer::BufferData,
+    AnalysisRequest, Engine, EngineConfig, RouteOptions, Session, analysis::AnalysisResult,
+    backend::Backend, buffer::BufferData,
 };
 use serde_json::{Value, json};
 
@@ -135,12 +135,13 @@ fn commit() -> String {
     format!("{head}{}", if dirty { "+dirty" } else { "" })
 }
 
-/// One column of a case: a backend, optionally with work-split selections.
+/// One column of a case: a backend, optionally with route options of its
+/// own (`None`: the engine's).
 #[derive(Clone)]
 struct Column {
     label: String,
     backend: String,
-    set: BTreeMap<String, String>,
+    route: Option<RouteOptions>,
 }
 
 impl Column {
@@ -148,13 +149,7 @@ impl Column {
         Column {
             label: backend.to_string(),
             backend: backend.to_string(),
-            set: BTreeMap::new(),
-        }
-    }
-    fn select(&self) {
-        split::reset();
-        for (k, v) in &self.set {
-            split::set(k, Some(v));
+            route: None,
         }
     }
 }
@@ -204,9 +199,9 @@ fn run(
     settings: &Value,
     column: &Column,
 ) -> Result<(f64, AnalysisResult), String> {
-    column.select();
     let mut req = AnalysisRequest::new(analysis, settings.clone());
     req.backend = Some(backend(&column.backend));
+    req.route = column.route;
     let engine = s.engine().clone();
     let t = Instant::now();
     let result = s
@@ -219,7 +214,6 @@ fn run(
                 .map_err(|e| e.to_string())
         });
     let ms = t.elapsed().as_secs_f64() * 1e3;
-    split::reset();
     result.map(|r| (ms, r))
 }
 
@@ -354,16 +348,13 @@ fn columns(case: &Value, keep: &Option<Vec<String>>) -> Vec<Column> {
         if b == variant_backend {
             for v in case["variants"].as_array().into_iter().flatten() {
                 let name = v["name"].as_str().expect("variant name");
-                let set = v["set"]
-                    .as_object()
-                    .expect("variant set")
-                    .iter()
-                    .map(|(k, x)| (k.clone(), x.as_str().expect("variant value").to_string()))
-                    .collect();
+                let route: RouteOptions =
+                    serde_json::from_value(v["route"].clone()).expect("variant route");
+                route.validate().expect("variant route");
                 out.push(Column {
                     label: format!("{b}/{name}"),
                     backend: b.clone(),
-                    set,
+                    route: Some(route),
                 });
             }
         }
@@ -516,7 +507,7 @@ fn main() {
             let record = json!({
                 "label": a.label, "commit": commit, "lens": lens, "analysis": analysis, "tag": tag,
                 "settings": settings, "backend": c.label, "base_backend": c.backend,
-                "variant": c.set, "used": used_i,
+                "variant": c.route, "used": used_i,
                 "ms": (!times[i].is_empty()).then(|| times[i].clone()),
                 "median_ms": (!times[i].is_empty()).then(|| median(&times[i])),
                 "min_ms": times[i].iter().cloned().reduce(f64::min),

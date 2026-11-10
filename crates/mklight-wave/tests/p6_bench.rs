@@ -313,11 +313,6 @@ fn native_analysis_benchmark() {
         }};
     }
     case!(
-        "wavefront_cooke",
-        cpu::WavefrontSettings::default(),
-        wavefront_map_job
-    );
-    case!(
         "mtf_direct_cooke",
         cpu::MtfSettings::default(),
         mtf_analysis_job

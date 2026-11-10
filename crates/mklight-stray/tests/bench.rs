@@ -56,7 +56,7 @@ fn bench_double_gauss_with_barrels() {
             r.energy.rays as f64 / dt,
             r.energy.events as f64 / dt,
             r.stray_fraction.unwrap_or(f64::NAN),
-            r.stray_std_error / r.source.reference_flux,
+            r.stray_std_error.unwrap() / r.source.reference_flux,
         );
     }
 }

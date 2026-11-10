@@ -22,9 +22,10 @@ use crate::scheduler::{
 };
 use crate::session::Session;
 
-/// Engine configuration. Every field has a default, so `{}` is valid JSON.
+/// Engine configuration. Every field has a default, so `{}` is valid JSON;
+/// a key that is not a field is an error.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct EngineConfig {
     /// Worker threads; 0 picks `min(available cores, 4)`.
     pub worker_threads: usize,
@@ -47,6 +48,9 @@ pub struct EngineConfig {
     /// on CPU and Metal. An explicit aiming tolerance in the system is
     /// honoured exactly under either policy.
     pub aim_stop: mklight_core::AimStopKind,
+    /// Route options of requests that carry none (`crate::route`). They
+    /// are checked with each request.
+    pub route: crate::route::RouteOptions,
 }
 
 impl Default for EngineConfig {
@@ -62,6 +66,7 @@ impl Default for EngineConfig {
             app_version: String::new(),
             default_backend: Backend::Auto,
             aim_stop: mklight_core::AimStopKind::Conditioned,
+            route: Default::default(),
         }
     }
 }
@@ -192,6 +197,12 @@ impl Engine {
         write(&self.inner.backends).register(p);
     }
 
+    /// A backend by name (`BackendRegistry::parse`): `cpu`, `cpu_reference`,
+    /// `auto`, `gpu:<name>` or the bare name of a registered GPU backend.
+    pub fn parse_backend(&self, name: &str) -> EngineResult<Backend> {
+        read(&self.inner.backends).parse(name)
+    }
+
     /// Create the GPU's compute kernels in the background, so the first GPU
     /// analysis does not wait for shader compilation (several seconds on a
     /// new install, update or system-cache eviction). Opens the first
@@ -306,8 +317,9 @@ impl Engine {
     /// `snapshot`. An `auto` run (requested, or the engine default) is routed
     /// by the cost model (`analysis::cost`): routes that end on the CPU
     /// reference are decided before any GPU device is opened, and the
-    /// decision travels in `SelectedBackend::cost_decision`. `policy` is the
-    /// run's (its reference tracer is a graph node per policy).
+    /// decision travels in `SelectedBackend::cost_decision`. `policy` and
+    /// `route` are the run's (its reference tracer is a graph node per
+    /// policy; a route option can leave the device no part of the run).
     #[allow(clippy::too_many_arguments)]
     pub fn route_backend(
         &self,
@@ -317,6 +329,7 @@ impl Engine {
         snapshot: &mklight_core::Snapshot,
         library_hash: &str,
         policy: &crate::analysis::RunPolicy,
+        route: &crate::route::RouteOptions,
         allow_fallback: bool,
     ) -> EngineResult<SelectedBackend> {
         let Some(id) = self.auto_request_id(requested) else {
@@ -336,7 +349,14 @@ impl Engine {
                 system: snapshot.system(),
                 snapshot: &hash,
                 library: library_hash,
+                route,
                 tracer_warm,
+                // The prepared device is the one `auto` selects (the first
+                // registered GPU).
+                kernels_prepared: matches!(
+                    self.gpu_preparation(),
+                    crate::gpu::GpuPreparation::Ready { .. }
+                ),
             },
         );
         s.requested = id;
@@ -467,5 +487,49 @@ mod tests {
             s => panic!("{s:?}"),
         }
         assert!(!e.prepare_gpu(None), "a preparation runs once per engine");
+    }
+
+    #[test]
+    fn configuration_rejects_unknown_keys() {
+        // What the engine writes, it reads.
+        let text = serde_json::to_string(&EngineConfig::default()).unwrap();
+        let back: EngineConfig = serde_json::from_str(&text).unwrap();
+        assert_eq!(back, EngineConfig::default());
+        assert_eq!(
+            serde_json::from_str::<EngineConfig>("{}").unwrap(),
+            EngineConfig::default()
+        );
+        for (bad, named) in [
+            (r#"{"worker_thread": 2}"#, "`worker_thread`"),
+            (r#"{"route": {"fieldmap": "device-chief"}}"#, "`fieldmap`"),
+            (
+                r#"{"default_backend": {"kind": "auto", "nmae": "x"}}"#,
+                "\"nmae\"",
+            ),
+        ] {
+            let e = serde_json::from_str::<EngineConfig>(bad)
+                .unwrap_err()
+                .to_string();
+            assert!(e.contains(named), "{bad}: {e}");
+        }
+    }
+
+    #[test]
+    fn backend_names_resolve_against_the_registered_backends() {
+        let e = Engine::default();
+        assert_eq!(e.parse_backend("cpu"), Ok(Backend::CpuReference));
+        assert_eq!(
+            e.parse_backend("gpu:metal"),
+            Ok(Backend::Gpu("metal".into()))
+        );
+        assert!(matches!(
+            e.parse_backend("cpu_f32"),
+            Err(crate::error::EngineError::InvalidArgument(_))
+        ));
+        e.register_backend(Arc::new(crate::gpu::GpuProvider::emulation()));
+        assert_eq!(
+            e.parse_backend("cpu_f32"),
+            Ok(Backend::Gpu("cpu_f32".into()))
+        );
     }
 }

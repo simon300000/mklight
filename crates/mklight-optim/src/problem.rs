@@ -367,6 +367,16 @@ pub trait Problem: Sync {
         false
     }
 
+    /// This problem for one solve that runs beside others on it (basin
+    /// hopping's parallel local solves), when its evaluation keeps state
+    /// between the batches of a solve: the same function, with that state
+    /// starting afresh, so that the solves cannot influence each other's
+    /// values. `None` (the default): the problem keeps no such state and
+    /// the solves share it.
+    fn for_solve(&self) -> Option<Box<dyn Problem + '_>> {
+        None
+    }
+
     fn num_variables(&self) -> usize {
         self.variables().len()
     }

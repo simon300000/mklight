@@ -1,5 +1,5 @@
 use mklight_analysis::{
-    energy::{self, EncircledEnergySettings, GeometricMtfSettings},
+    energy::{self, GeometricMtfSettings},
     gpu,
     spot::{self, SpotDiagramSettings},
     tracer_for,
@@ -36,7 +36,7 @@ fn check(b: &dyn ComputeBackend) {
                 };
                 let a = spot::spot_diagram(&t, &s).unwrap();
                 let c = JobContext::new();
-                let g = gpu::spot_diagram_job(b, &t, &s, &c).unwrap();
+                let g = gpu::spot_diagram_job(b, &t, &s, &Default::default(), &c).unwrap();
                 assert_eq!(c.progress.fraction(), 1.0);
                 assert_eq!(a.fields.len(), g.fields.len(), "{name}");
                 for (a, g) in a.fields.iter().zip(&g.fields) {
@@ -79,57 +79,26 @@ fn check(b: &dyn ComputeBackend) {
                 }
                 let mut no = s.clone();
                 no.include_points = false;
-                let empty = gpu::spot_diagram_job(b, &t, &no, &JobContext::new()).unwrap();
+                let empty =
+                    gpu::spot_diagram_job(b, &t, &no, &Default::default(), &JobContext::new())
+                        .unwrap();
                 assert!(empty.fields.iter().all(|f| f.points.is_empty()));
                 for (f, g) in empty.fields.iter().zip(&g.fields) {
                     assert_eq!(f.polychromatic, g.polychromatic);
                 }
             }
-            let s = EncircledEnergySettings {
+            let s = GeometricMtfSettings {
                 sampling: energy::RaySampling {
                     rings: 4,
                     ..Default::default()
                 },
-                samples: 17,
-                defocus: 0.13,
-                ..Default::default()
-            };
-            let a = energy::encircled_energy(&t, &s).unwrap();
-            let g = gpu::encircled_energy_job(b, &t, &s, &JobContext::new()).unwrap();
-            // Few heavy rays near bin edges under the full position budget:
-            // usually the counted reference replacement (qualified_energy
-            // covers the resident curve).
-            if g.run_info.backend != b.info().backend_id() {
-                let fallback = &g.run_info.settings["adapter_fallbacks"];
-                assert_eq!(fallback["stage"], "energy_bin_classification", "{name}");
-            }
-            close(&format!("{name} EE radii"), &a.radius, &g.radius, |_| 2e-5);
-            assert_eq!(a.fields.len(), g.fields.len());
-            for (a, g) in a.fields.iter().zip(&g.fields) {
-                assert_eq!(a.rays_arrived, g.rays_arrived);
-                close(&format!("{name} EE"), &a.encircled, &g.encircled, |_| 2e-3);
-                close(
-                    &format!("{name} ensquared"),
-                    &a.ensquared,
-                    &g.ensquared,
-                    |_| 2e-3,
-                );
-                close(
-                    &format!("{name} EE radii 50/80/90"),
-                    &[a.r50, a.r80, a.r90, a.half_width80],
-                    &[g.r50, g.r80, g.r90, g.half_width80],
-                    |_| 2e-5,
-                );
-                assert!(g.encircled.windows(2).all(|w| w[0] <= w[1]));
-            }
-            let s = GeometricMtfSettings {
-                sampling: s.sampling,
                 frequency_samples: 5,
                 max_frequency: Some(100.0),
                 defocus: 0.13,
             };
             let a = energy::geometric_mtf(&t, &s).unwrap();
-            let g = gpu::geometric_mtf_job(b, &t, &s, &JobContext::new()).unwrap();
+            let g =
+                gpu::geometric_mtf_job(b, &t, &s, &Default::default(), &JobContext::new()).unwrap();
             assert_eq!(a.curves.len(), g.curves.len());
             for (a, g) in a.curves.iter().zip(&g.curves) {
                 assert_eq!((a.field, a.orientation), (g.field, g.orientation));
@@ -152,12 +121,9 @@ fn metal_complete_results_both_libraries() {
         mklight_metal::LibraryChoice::Precompiled,
         mklight_metal::LibraryChoice::RuntimeSource,
     ] {
-        let b = mklight_metal::MetalBackend::with_options(&mklight_metal::MetalOptions {
-            library,
-            ..Default::default()
-        })
-        .unwrap()
-        .expect("host Metal required");
+        let b = mklight_metal::MetalBackend::with_options(&mklight_metal::MetalOptions { library })
+            .unwrap()
+            .expect("host Metal required");
         eprintln!("GEOMETRY_DEVICE {:?} {:?}", b.info(), b.precision());
         assert!(b.precision().probe.error_free_transforms());
         check(&b);
@@ -167,9 +133,10 @@ fn metal_complete_results_both_libraries() {
             rings: 8,
             ..Default::default()
         };
-        let a = gpu::spot_diagram_job(&b, &t, &s, &JobContext::new()).unwrap();
-        let c = gpu::spot_diagram_job(&cpu, &t, &s, &JobContext::new()).unwrap();
-        let r = gpu::spot_diagram_job(&b, &t, &s, &JobContext::new()).unwrap();
+        let a = gpu::spot_diagram_job(&b, &t, &s, &Default::default(), &JobContext::new()).unwrap();
+        let c =
+            gpu::spot_diagram_job(&cpu, &t, &s, &Default::default(), &JobContext::new()).unwrap();
+        let r = gpu::spot_diagram_job(&b, &t, &s, &Default::default(), &JobContext::new()).unwrap();
         assert_eq!(a.fields, c.fields);
         assert_eq!(a.fields, r.fields);
     }
@@ -180,7 +147,13 @@ fn cancellation_is_not_a_reference_replacement() {
     c.cancel.cancel();
     let t = tracer_for(samples::cooke_triplet()).unwrap();
     assert!(matches!(
-        gpu::spot_diagram_job(&CpuF32Backend::new(), &t, &Default::default(), &c),
+        gpu::spot_diagram_job(
+            &CpuF32Backend::new(),
+            &t,
+            &Default::default(),
+            &Default::default(),
+            &c
+        ),
         Err(mklight_core::MkError::Cancelled)
     ));
 }
@@ -198,7 +171,8 @@ fn maps_and_records(b: &dyn ComputeBackend) {
         ] {
             let a = mklight_analysis::field_maps::field_map_job(&t, kind, &s, &JobContext::new())
                 .unwrap();
-            let g = gpu::field_map_job(b, &t, kind, &s, &JobContext::new()).unwrap();
+            let g = gpu::field_map_job(b, &t, kind, &s, &Default::default(), &JobContext::new())
+                .unwrap();
             let flat = |v: &[[f64; 2]]| v.iter().flatten().copied().collect::<Vec<_>>();
             close(
                 &format!("{name} map image"),
@@ -222,14 +196,15 @@ fn maps_and_records(b: &dyn ComputeBackend) {
             ..Default::default()
         };
         let a = mklight_analysis::fans::ray_fan(&t, &s).unwrap();
-        let g = gpu::ray_fan_job(b, &t, &s, &JobContext::new()).unwrap();
+        let g = gpu::ray_fan_job(b, &t, &s, &Default::default(), &JobContext::new()).unwrap();
         close(&format!("{name} ray fan"), &fans(&a), &fans(&g), |_| 2e-5);
         let s = mklight_trace::SemiDiameterSettings {
             azimuths: 16,
             ..Default::default()
         };
         let a = t.semi_diameters(&s);
-        let (g, _) = gpu::semi_diameters_job(b, &t, &s, &JobContext::new()).unwrap();
+        let (g, _) =
+            gpu::semi_diameters_job(b, &t, &s, &Default::default(), &JobContext::new()).unwrap();
         assert_eq!(a.sources, g.sources);
         assert_eq!(a.failed_rays, g.failed_rays, "{name}");
         close(&format!("{name} sizing"), &a.traced, &g.traced, |_| 2e-5);
@@ -241,7 +216,8 @@ fn maps_and_records(b: &dyn ComputeBackend) {
         let a =
             mklight_analysis::footprint_overlay::footprint_overlay_job(&t, &s, &JobContext::new())
                 .unwrap();
-        let g = gpu::footprint_overlay_job(b, &t, &s, &JobContext::new()).unwrap();
+        let g =
+            gpu::footprint_overlay_job(b, &t, &s, &Default::default(), &JobContext::new()).unwrap();
         assert_eq!(a.sets.len(), g.sets.len());
         for (a, g) in a.sets.iter().zip(&g.sets) {
             assert_eq!(a.points, g.points, "{name}");
@@ -264,7 +240,7 @@ fn maps_and_records(b: &dyn ComputeBackend) {
         ..Default::default()
     };
     let a = energy::best_focus(&t, &s).unwrap();
-    let g = gpu::best_focus_job(b, &t, &s, &JobContext::new()).unwrap();
+    let g = gpu::best_focus_job(b, &t, &s, &Default::default(), &JobContext::new()).unwrap();
     assert_eq!(a.fields, g.fields);
     let spot = |v: f64| 2e-5 + 0.005 * v.abs();
     close(
@@ -324,7 +300,8 @@ fn pencils(b: &dyn ComputeBackend) {
             ..Default::default()
         };
         let a = mklight_analysis::curvature::field_curvature(&t, &s).unwrap();
-        let g = gpu::field_curvature_job(b, &t, &s, &JobContext::new()).unwrap();
+        let g =
+            gpu::field_curvature_job(b, &t, &s, &Default::default(), &JobContext::new()).unwrap();
         assert_eq!(a.curves.len(), g.curves.len());
         for (a, g) in a.curves.iter().zip(&g.curves) {
             for (a, g) in a
@@ -391,7 +368,8 @@ fn pencils(b: &dyn ComputeBackend) {
             ..Default::default()
         };
         let a = mklight_analysis::curvature::grid_distortion(&t, &s).unwrap();
-        let g = gpu::grid_distortion_job(b, &t, &s, &JobContext::new()).unwrap();
+        let g =
+            gpu::grid_distortion_job(b, &t, &s, &Default::default(), &JobContext::new()).unwrap();
         let grid = |r: &mklight_analysis::curvature::GridDistortionResult| -> Vec<f64> {
             r.points
                 .iter()
@@ -422,12 +400,9 @@ fn metal_pencils() {
         mklight_metal::LibraryChoice::Precompiled,
         mklight_metal::LibraryChoice::RuntimeSource,
     ] {
-        let b = mklight_metal::MetalBackend::with_options(&mklight_metal::MetalOptions {
-            library,
-            ..Default::default()
-        })
-        .unwrap()
-        .expect("host Metal required");
+        let b = mklight_metal::MetalBackend::with_options(&mklight_metal::MetalOptions { library })
+            .unwrap()
+            .expect("host Metal required");
         pencils(&b);
     }
 }
@@ -508,12 +483,9 @@ fn metal_ri() {
         mklight_metal::LibraryChoice::Precompiled,
         mklight_metal::LibraryChoice::RuntimeSource,
     ] {
-        let b = mklight_metal::MetalBackend::with_options(&mklight_metal::MetalOptions {
-            library,
-            ..Default::default()
-        })
-        .unwrap()
-        .expect("host Metal required");
+        let b = mklight_metal::MetalBackend::with_options(&mklight_metal::MetalOptions { library })
+            .unwrap()
+            .expect("host Metal required");
         ri(&b);
     }
 }
@@ -533,7 +505,7 @@ fn layouts(b: &dyn ComputeBackend) {
                 ..Default::default()
             };
             let a = mklight_analysis::layout::layout(&t, &s).unwrap();
-            let g = gpu::layout_job(b, &t, &s, &JobContext::new()).unwrap();
+            let g = gpu::layout_job(b, &t, &s, &Default::default(), &JobContext::new()).unwrap();
             assert_eq!(a.polylines.len(), g.polylines.len(), "{name}");
             for (a, g) in a.polylines.iter().zip(&g.polylines) {
                 assert_eq!(a.kind, g.kind);
@@ -583,7 +555,7 @@ fn layouts(b: &dyn ComputeBackend) {
                 ..Default::default()
             };
             let a = mklight_analysis::fans::opd_fan(&t, &s).unwrap();
-            let g = gpu::opd_fan_job(b, &t, &s, &JobContext::new()).unwrap();
+            let g = gpu::opd_fan_job(b, &t, &s, &Default::default(), &JobContext::new()).unwrap();
             close(&format!("{name} OPD"), &fans(&a), &fans(&g), |_| 5e-3);
         }
     }
@@ -613,6 +585,7 @@ fn known(b: &dyn ComputeBackend) {
         &t,
         mklight_analysis::field_maps::FieldAnalysis::RelativeIllumination,
         &settings,
+        &Default::default(),
         &JobContext::new(),
     )
     .unwrap();
@@ -637,6 +610,7 @@ fn known(b: &dyn ComputeBackend) {
         &t,
         mklight_analysis::field_maps::FieldAnalysis::PupilAberration,
         &settings,
+        &Default::default(),
         &JobContext::new(),
     )
     .unwrap();
@@ -649,6 +623,7 @@ fn known(b: &dyn ComputeBackend) {
         &t,
         mklight_analysis::field_maps::FieldAnalysis::ChiefRayAngle,
         &settings,
+        &Default::default(),
         &JobContext::new(),
     )
     .unwrap();
@@ -656,27 +631,6 @@ fn known(b: &dyn ComputeBackend) {
         let p = r.image_mm[i];
         assert!((row[0] - (p[0].hypot(p[1]) / 100.0).atan().to_degrees()).abs() < 2e-4);
     }
-    let energy = gpu::encircled_energy_job(
-        b,
-        &t,
-        &EncircledEnergySettings {
-            sampling: energy::RaySampling {
-                rings: 4,
-                ..Default::default()
-            },
-            samples: 5,
-            defocus: 5.0,
-            ..Default::default()
-        },
-        &JobContext::new(),
-    )
-    .unwrap();
-    assert_eq!(energy.run_info.backend, "cpu-f64");
-    assert_eq!(
-        energy.run_info.settings["adapter_fallbacks"]["stage"],
-        "energy_bin_classification"
-    );
-    assert!((energy.fields[0].encircled[0] - 1.0 / 49.0).abs() < 1e-12);
     let mut model = common::ideal_lens(100.0, 10.0, &[0.0]);
     model.surfaces[1].thickness = 105.0;
     let t = tracer_for(model).unwrap();
@@ -687,7 +641,7 @@ fn known(b: &dyn ComputeBackend) {
         },
         ..Default::default()
     };
-    let focus = gpu::best_focus_job(b, &t, &s, &JobContext::new()).unwrap();
+    let focus = gpu::best_focus_job(b, &t, &s, &Default::default(), &JobContext::new()).unwrap();
     assert!(
         (focus.defocus + 5.0).abs() < 1e-6,
         "analytic focus {}",
@@ -711,8 +665,14 @@ fn known(b: &dyn ComputeBackend) {
         ..Default::default()
     };
     let reference = mklight_analysis::seidel::longitudinal_aberration(&afocal, &settings).unwrap();
-    let result =
-        gpu::longitudinal_aberration_job(b, &afocal, &settings, &JobContext::new()).unwrap();
+    let result = gpu::longitudinal_aberration_job(
+        b,
+        &afocal,
+        &settings,
+        &Default::default(),
+        &JobContext::new(),
+    )
+    .unwrap();
     assert_eq!(reference.curves[0].focus, result.curves[0].focus);
 }
 fn remaining(b: &dyn ComputeBackend) {
@@ -723,7 +683,8 @@ fn remaining(b: &dyn ComputeBackend) {
             ..Default::default()
         };
         let a = mklight_analysis::seidel::lateral_colour(&t, &s).unwrap();
-        let g = gpu::lateral_colour_job(b, &t, &s, &JobContext::new()).unwrap();
+        let g =
+            gpu::lateral_colour_job(b, &t, &s, &Default::default(), &JobContext::new()).unwrap();
         close(
             &format!("{name} lateral colour"),
             &a.lateral_colour,
@@ -744,7 +705,9 @@ fn remaining(b: &dyn ComputeBackend) {
             ..Default::default()
         };
         let a = mklight_analysis::seidel::longitudinal_aberration(&t, &s).unwrap();
-        let g = gpu::longitudinal_aberration_job(b, &t, &s, &JobContext::new()).unwrap();
+        let g =
+            gpu::longitudinal_aberration_job(b, &t, &s, &Default::default(), &JobContext::new())
+                .unwrap();
         assert_eq!(a.curves.len(), g.curves.len());
         for (a, g) in a.curves.iter().zip(&g.curves) {
             close(&format!("{name} longitudinal"), &a.focus, &g.focus, |v| {
@@ -757,7 +720,7 @@ fn remaining(b: &dyn ComputeBackend) {
             ..Default::default()
         };
         let a = mklight_analysis::illumination::footprint(&t, &s).unwrap();
-        let g = gpu::footprint_job(b, &t, &s, &JobContext::new()).unwrap();
+        let g = gpu::footprint_job(b, &t, &s, &Default::default(), &JobContext::new()).unwrap();
         assert_eq!(a.rays.len(), g.rays.len());
         let flat = |v: &[[f64; 2]]| v.iter().flatten().copied().collect::<Vec<_>>();
         for (a, g) in a.rays.iter().zip(&g.rays) {
@@ -825,7 +788,7 @@ fn metal_concurrent_cancel_and_release() {
     for _ in 0..3 {
         let (b, t, s) = (b.clone(), t.clone(), settings.clone());
         threads.push(std::thread::spawn(move || {
-            gpu::spot_diagram_job(&*b, &t, &s, &JobContext::new())
+            gpu::spot_diagram_job(&*b, &t, &s, &Default::default(), &JobContext::new())
                 .unwrap()
                 .fields
         }));
@@ -847,6 +810,7 @@ fn metal_concurrent_cancel_and_release() {
                 grid: [33, 33],
                 ..Default::default()
             },
+            &Default::default(),
             &sub,
         )
     });
@@ -877,7 +841,8 @@ fn metal_concurrent_cancel_and_release() {
     assert!(ctx.progress.fraction() < 1.0);
     // Successful work after cancellation verifies independent jobs and released
     // plan resources, with no CPU replacement produced by the cancelled job.
-    let r = gpu::spot_diagram_job(&*b, &t, &settings, &JobContext::new()).unwrap();
+    let r =
+        gpu::spot_diagram_job(&*b, &t, &settings, &Default::default(), &JobContext::new()).unwrap();
     assert_eq!(result, r.fields);
 }
 #[cfg(target_os = "macos")]
@@ -903,107 +868,6 @@ fn metal_ri_rim_regression() {
         &g.relative_illumination,
         |_| 1e-5,
     );
-}
-/// The resident EE curve itself (no reference replacement) on every sample,
-/// with the bin-classification bound taken from the measured position error.
-fn qualified_energy(b: &dyn ComputeBackend) {
-    let mut replaced = Vec::new();
-    for (name, model) in samples::all() {
-        let t = tracer_for(model).unwrap();
-        let settings = EncircledEnergySettings {
-            sampling: energy::RaySampling {
-                rings: 16,
-                wavelengths: mklight_analysis::util::WavelengthSelection::Primary,
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        let grid = gpu::ray_grid_job(b, &t, &settings.sampling, &JobContext::new()).unwrap();
-        // Field indices include the analysis-local symmetry fields.
-        let augmented =
-            mklight_analysis::util::default_fields(&t, &settings.sampling.fields).unwrap();
-        let fields: Vec<_> = grid
-            .fields
-            .iter()
-            .map(|&f| augmented.field(f).clone())
-            .collect();
-        let reference = mklight_trace::trace_grid_job(
-            &augmented,
-            &mklight_trace::Grid {
-                fields: &fields,
-                wavelengths: &grid.wavelengths,
-                pupil: &grid.pupil,
-            },
-            &t.options(),
-            &JobContext::new(),
-        )
-        .unwrap();
-        assert_eq!(reference.len(), grid.len());
-        let mut error = 0.0f64;
-        for (a, g) in reference.iter().zip((0..grid.len()).map(|i| grid.hit(i))) {
-            assert_eq!(a.status.is_ok(), g.is_some(), "{name}");
-            if let Some(g) = g {
-                error = error
-                    .max((a.point.x - g.point[0]).abs())
-                    .max((a.point.y - g.point[1]).abs());
-            }
-        }
-        assert!(error < 2e-5, "{name} grid error {error}");
-        let bound = (3.0 * error).max(1e-10);
-        let result =
-            gpu::encircled_energy_with_uncertainty_job(b, &t, &settings, bound, &JobContext::new())
-                .unwrap();
-        let reference = energy::encircled_energy(&t, &settings).unwrap();
-        if result.run_info.backend != b.info().backend_id() {
-            // A perfect focus puts every radius within the bound of a bin edge.
-            let fallback = &result.run_info.settings["adapter_fallbacks"];
-            assert_eq!(fallback["stage"], "energy_bin_classification", "{name}");
-            assert_eq!(result.fields, reference.fields, "{name}");
-            replaced.push(name);
-            continue;
-        }
-        close(
-            &format!("{name} qualified EE radii"),
-            &reference.radius,
-            &result.radius,
-            |_| 2e-5,
-        );
-        assert_eq!(reference.fields.len(), result.fields.len());
-        for (a, g) in reference.fields.iter().zip(&result.fields) {
-            assert_eq!(a.rays_arrived, g.rays_arrived);
-            close(
-                &format!("{name} qualified EE"),
-                &a.encircled,
-                &g.encircled,
-                |_| 2e-3,
-            );
-            close(
-                &format!("{name} qualified ensquared"),
-                &a.ensquared,
-                &g.ensquared,
-                |_| 2e-3,
-            );
-            close(
-                &format!("{name} qualified EE radii 50/80/90"),
-                &[a.r50, a.r80, a.r90, a.half_width80],
-                &[g.r50, g.r80, g.r90, g.half_width80],
-                |_| 2e-5,
-            );
-        }
-    }
-    eprintln!("GEOMETRY_EE_REPLACED {replaced:?}");
-}
-#[test]
-fn cpu_qualified_energy() {
-    qualified_energy(&CpuF32Backend::new());
-}
-#[cfg(target_os = "macos")]
-#[test]
-fn metal_qualified_energy() {
-    let b = mklight_metal::MetalBackend::new()
-        .unwrap()
-        .expect("host Metal required");
-    qualified_energy(&b);
 }
 fn scoped_record_views(b: &dyn ComputeBackend) {
     use mklight_gpu::{
@@ -1156,7 +1020,8 @@ fn telecentric(b: &dyn ComputeBackend) {
         ] {
             let a = mklight_analysis::field_maps::field_map_job(&t, kind, &s, &JobContext::new())
                 .unwrap();
-            let g = gpu::field_map_job(b, &t, kind, &s, &JobContext::new()).unwrap();
+            let g = gpu::field_map_job(b, &t, kind, &s, &Default::default(), &JobContext::new())
+                .unwrap();
             close(
                 &format!("{name} {}", kind.name()),
                 &a.values,
@@ -1169,7 +1034,7 @@ fn telecentric(b: &dyn ComputeBackend) {
             ..Default::default()
         };
         let a = mklight_analysis::fans::opd_fan(&t, &s).unwrap();
-        let g = gpu::opd_fan_job(b, &t, &s, &JobContext::new()).unwrap();
+        let g = gpu::opd_fan_job(b, &t, &s, &Default::default(), &JobContext::new()).unwrap();
         close(
             &format!("{name} telecentric OPD"),
             &fans(&a),
@@ -1207,7 +1072,8 @@ fn metal_tiled_footprints() {
         ..Default::default()
     };
     let a = footprint_overlay::footprint_overlay_job(&t, &s, &JobContext::new()).unwrap();
-    let g = gpu::footprint_overlay_job(&b, &t, &s, &JobContext::new()).unwrap();
+    let g =
+        gpu::footprint_overlay_job(&b, &t, &s, &Default::default(), &JobContext::new()).unwrap();
     assert_eq!(a.sets.len(), g.sets.len());
     for (a, g) in a.sets.iter().zip(&g.sets) {
         assert_eq!(a.points, g.points);
@@ -1285,6 +1151,7 @@ fn metal_tilted_mirror_focal_lines() {
                 field_samples: 3,
                 ..Default::default()
             },
+            &Default::default(),
             &JobContext::new(),
         )
         .unwrap();
@@ -1317,7 +1184,7 @@ fn metal_long_track_geometry_and_opd() {
         ..Default::default()
     };
     let a = spot::spot_diagram(&t, &s).unwrap();
-    let g = gpu::spot_diagram_job(&b, &t, &s, &JobContext::new()).unwrap();
+    let g = gpu::spot_diagram_job(&b, &t, &s, &Default::default(), &JobContext::new()).unwrap();
     assert_eq!(a.fields.len(), g.fields.len());
     for (a, g) in a.fields.iter().zip(&g.fields) {
         assert_eq!(a.polychromatic.rays_arrived, g.polychromatic.rays_arrived);
@@ -1330,6 +1197,6 @@ fn metal_long_track_geometry_and_opd() {
         ..Default::default()
     };
     let a = mklight_analysis::fans::opd_fan(&t, &s).unwrap();
-    let g = gpu::opd_fan_job(&b, &t, &s, &JobContext::new()).unwrap();
+    let g = gpu::opd_fan_job(&b, &t, &s, &Default::default(), &JobContext::new()).unwrap();
     close("long-track OPD", &fans(&a), &fans(&g), |_| 5e-3);
 }

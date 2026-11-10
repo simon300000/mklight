@@ -107,7 +107,14 @@ impl Analysis for FieldMap {
         let s = parse(settings)?;
         let r = super::gpu::native_job!(
             input,
-            |b| mklight_analysis::gpu::field_map_job(b, &t, self.0, &s, ctx),
+            |b| mklight_analysis::gpu::field_map_job(
+                b,
+                &t,
+                self.0,
+                &s,
+                &input.route.geometric(),
+                ctx
+            ),
             fm::field_map_job(&t, self.0, &s, ctx)
         )?;
         // The maps move into buffers; only the metadata is serialised.

@@ -5,7 +5,7 @@ pub fn plan() -> ResidentPlan {
     ResidentPlan::new(Snapshot::new(testutil::singlet()).unwrap())
 }
 pub fn import(
-    b: &dyn ComputeBackend,
+    b: &dyn QualificationBackend,
     p: &mut ResidentPlan,
     shape: impl Into<Vec<usize>>,
     data: BufferData,
@@ -19,7 +19,7 @@ pub fn import(
 pub fn scratch(p: &mut ResidentPlan, t: ElementType, s: impl Into<Vec<usize>>) -> BufferId {
     p.scratch(BufferDesc::new(t, s))
 }
-pub fn read(b: &dyn ComputeBackend, p: ResidentPlan) -> (Vec<BufferData>, PlanResult) {
+pub fn read(b: &dyn QualificationBackend, p: ResidentPlan) -> (Vec<BufferData>, PlanResult) {
     let out = b
         .submit_plan(p, &JobContext::new())
         .unwrap()
@@ -57,7 +57,12 @@ pub fn assert_bits(a: &BufferData, b: &BufferData) {
         );
     }
 }
-pub fn scan_case(b: &dyn ComputeBackend, n: usize, integer: bool, inclusive: bool) -> ResidentPlan {
+pub fn scan_case(
+    b: &dyn QualificationBackend,
+    n: usize,
+    integer: bool,
+    inclusive: bool,
+) -> ResidentPlan {
     let mut p = plan();
     let data = if integer {
         BufferData::U32(
@@ -91,7 +96,7 @@ pub fn scan_case(b: &dyn ComputeBackend, n: usize, integer: bool, inclusive: boo
     p.outputs = vec![o];
     p
 }
-pub fn scan_answers(b: &dyn ComputeBackend) {
+pub fn scan_answers(b: &dyn QualificationBackend) {
     for n in [0, 1, 255, 256, 257, 65539] {
         for inclusive in [true, false] {
             for integer in [true, false] {
@@ -122,7 +127,7 @@ pub fn scan_answers(b: &dyn ComputeBackend) {
         }
     }
 }
-pub fn sort_case(b: &dyn ComputeBackend, n: usize, key_type: ElementType) -> ResidentPlan {
+pub fn sort_case(b: &dyn QualificationBackend, n: usize, key_type: ElementType) -> ResidentPlan {
     let mut p = plan();
     let raw: Vec<_> = (0..n).map(|i| ((i * 7919) % 17) as u32).collect();
     let keys = match key_type {
@@ -162,7 +167,7 @@ pub fn sort_case(b: &dyn ComputeBackend, n: usize, key_type: ElementType) -> Res
     p.outputs = vec![ok, oi, ov];
     p
 }
-pub fn sort_answers(b: &dyn ComputeBackend) {
+pub fn sort_answers(b: &dyn QualificationBackend) {
     let mut p = plan();
     let keys = import(
         b,
@@ -241,7 +246,7 @@ pub fn sort_answers(b: &dyn ComputeBackend) {
     let (v, _) = read(b, p);
     assert_eq!(uint(&v[0]), &[0, 9, 2, 5, 1, 0, 0, 1]);
 }
-pub fn compact_answers(b: &dyn ComputeBackend) {
+pub fn compact_answers(b: &dyn QualificationBackend) {
     for n in [0, 1, 257, 10003] {
         for none in [false, true] {
             let mut p = plan();
@@ -296,7 +301,7 @@ pub fn compact_answers(b: &dyn ComputeBackend) {
     }
 }
 pub fn segment(
-    b: &dyn ComputeBackend,
+    b: &dyn QualificationBackend,
     values: BufferData,
     c: usize,
     offsets: Vec<u32>,
@@ -330,7 +335,7 @@ pub fn segment(
         .push(ResidentOp::Collectives(Request::SegmentReduce(r)));
     p
 }
-pub fn segment_answers(b: &dyn ComputeBackend) {
+pub fn segment_answers(b: &dyn QualificationBackend) {
     let (v, _) = read(
         b,
         segment(
@@ -485,7 +490,7 @@ pub fn segment_answers(b: &dyn ComputeBackend) {
     }
 }
 pub fn qr_plan(
-    b: &dyn ComputeBackend,
+    b: &dyn QualificationBackend,
     m: usize,
     n: usize,
     batch: usize,
@@ -554,7 +559,7 @@ pub fn reference_qr(a: &[f64], rhs: &[f64], m: usize, n: usize) -> Vec<f64> {
     x.iter().zip(&scale).map(|(x, s)| x / s).collect()
 }
 pub fn qr_check(
-    b: &dyn ComputeBackend,
+    b: &dyn QualificationBackend,
     a: Vec<f64>,
     rhs: Vec<f64>,
     m: usize,
@@ -622,7 +627,7 @@ pub fn qr_check(
     }
     maxerr
 }
-pub fn qr_answers(b: &dyn ComputeBackend) {
+pub fn qr_answers(b: &dyn QualificationBackend) {
     let (v, _) = read(
         b,
         qr_plan(
@@ -698,7 +703,7 @@ pub fn qr_answers(b: &dyn ComputeBackend) {
     qr_check(b, a, rhs, m, n, 1e-12, n);
 }
 
-pub fn energy_chain(b: &dyn ComputeBackend) {
+pub fn energy_chain(b: &dyn QualificationBackend) {
     let mut p = plan();
     let keys = import(
         b,
@@ -738,7 +743,7 @@ pub fn energy_chain(b: &dyn ComputeBackend) {
     assert_eq!(df(&v[1]), vec![4., 7., 9., 15., 16., 21.]);
     assert_eq!(df(&v[1])[5], 21.);
 }
-pub fn conditioned_qr(b: &dyn ComputeBackend) {
+pub fn conditioned_qr(b: &dyn QualificationBackend) {
     let (m, n) = (71, 3);
     let a: Vec<_> = (0..m)
         .flat_map(|i| {
@@ -777,7 +782,7 @@ pub fn conditioned_qr(b: &dyn ComputeBackend) {
     assert!(df(&v[1]).iter().all(|x| x.is_nan()));
 }
 
-pub fn nonfinite_qr(b: &dyn ComputeBackend) {
+pub fn nonfinite_qr(b: &dyn QualificationBackend) {
     let (v, _) = read(
         b,
         qr_plan(
@@ -799,7 +804,11 @@ fn philox(n: usize, stream: u64) -> Vec<u32> {
 }
 /// Full-range keys and IDs with ties, signed zeros, subnormals and NaNs, so
 /// every radix digit matters.
-pub fn random_sort_case(b: &dyn ComputeBackend, n: usize, key_type: ElementType) -> ResidentPlan {
+pub fn random_sort_case(
+    b: &dyn QualificationBackend,
+    n: usize,
+    key_type: ElementType,
+) -> ResidentPlan {
     let bits = philox(2 * n, 1);
     let key = |i: usize| bits[i % (n / 3 + 1)];
     let float = |u: u32| match u % 7 {
@@ -842,7 +851,7 @@ pub fn random_sort_case(b: &dyn ComputeBackend, n: usize, key_type: ElementType)
 }
 /// Double-float moments at large image height with a reference, separate
 /// weights and a mask whose rejected records hold NaN coordinates.
-pub fn moments_case(b: &dyn ComputeBackend, offsets: Vec<u32>, bound: usize) -> ResidentPlan {
+pub fn moments_case(b: &dyn QualificationBackend, offsets: Vec<u32>, bound: usize) -> ResidentPlan {
     let n = *offsets.last().unwrap() as usize;
     let s = offsets.len() - 1;
     let bits = philox(3 * n, 2);

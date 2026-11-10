@@ -160,7 +160,7 @@ content-addressed dependency graph under the analysis requests
 | `configured` | snapshot, library, configuration | wave analyses: configuration, solves, first order, prepared fields |
 | `pupil_lattice` | configured snapshot, tracer settings, prepared field, wavelength, lattice settings, library | CPU f64 PSF, MTF, LSF, encircled energy, through-focus, wavefront, MTF vs field: rays, rim, reference sphere, masks, automatic pupil grid |
 | `resampled_pupil` | lattice, grid, supersampling | every consumer of the same grid (decided grid and window refinements) |
-| `result` | snapshot, library, analysis, normalised settings, tier and aim stop; for explicit backends also the backend selection | repeated requests (refresh, undo): an `auto` request is answered before routing whichever backend computed it; explicit requests reuse CPU-reference results only; results with failed backend attempts are never stored (RESULTS §1) |
+| `result` | snapshot, library, analysis, normalised settings, tier, aim stop and route options; for explicit backends also the backend selection | repeated requests (refresh, undo): an `auto` request is answered before routing whichever backend computed it; explicit requests reuse CPU-reference results only; results with failed backend attempts are never stored (RESULTS §1) |
 
 Keys digest every input a node reads plus an algorithm version, so a hit is
 bit-identical to a rebuild and an edit misses exactly the nodes that depend
@@ -210,9 +210,8 @@ the budget needs it (GPU §3–4):
   double-float;
 * reductions use compensated (Kahan/Neumaier) or pairwise summation.
 
-A pure-f32 build exists for measurement only; the engine always opens the
-double-float build (GPU §3.6). Every Metal result is labelled `f32_gpu`,
-even where a public buffer widens it to f64.
+This is the only kernel arithmetic (GPU §3.6). Every Metal result is
+labelled `f32_gpu`, even where a public buffer widens it to f64.
 
 Some inputs of the Metal paths stay host f64: field sources, chief rays and
 their Jacobians (host chief rows), the wave path's pupil seed tables, the

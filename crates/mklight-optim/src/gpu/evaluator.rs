@@ -72,7 +72,7 @@ pub const DEVICE_FD_RELATIVE_STEP_FORWARD: f64 = 1e-6;
 /// `1e-4`.
 pub const DEVICE_WAVEFRONT_FD_RELATIVE_STEP_FORWARD: f64 = 1e-5;
 
-/// Smallest batch for which an evaluator that has not yet aimed a batch on
+/// Smallest batch for which a solve that has not yet aimed a batch on
 /// the device first traces its first `PROBE_MIN_BATCH − 1` candidates
 /// alone to learn the slow rays: a large cold batch would hold every aiming
 /// tile of its plan up for the slow lanes (tiles run one after another,
@@ -82,6 +82,11 @@ pub const DEVICE_WAVEFRONT_FD_RELATIVE_STEP_FORWARD: f64 = 1e-5;
 /// device time for 1000 dense trials); three learn all 34.
 const PROBE_MIN_BATCH: usize = 4;
 
+/// Evaluates candidate batches on a device. An evaluator serves one solve:
+/// a sequence of batches evaluated one after another (a least-squares run,
+/// a population search, the batches of a tolerance run). Its clones serve
+/// the same solve; [`ResidentEvaluator::for_solve`] gives the evaluator of
+/// another one.
 #[derive(Clone)]
 pub struct ResidentEvaluator {
     pub context: GpuContext,
@@ -89,11 +94,9 @@ pub struct ResidentEvaluator {
     mtf: MtfEvaluator,
     solvers: SolverEvaluator,
     stats: Arc<Mutex<EvaluationStats>>,
-    /// Rays the device left unresolved, or resolved slowly, in an eighth or
-    /// more of a batch's candidates. Later batches route them to the host
-    /// before the plan, where they are traced while the device works, so
-    /// the device's commands are not held up by their slow lanes.
-    host_rays: Arc<Mutex<HostRays>>,
+    /// What the solve has learned from its device-aimed batches. Shared by
+    /// clones (the same solve), never by [`Self::for_solve`].
+    routing: Arc<Mutex<Routing>>,
     /// Device aiming schedule cap (`None`: [`SCHEDULE_CAP`]).
     aim_cap: Option<u32>,
     /// Aim a batch's pupil rays on the device (with host completion) when
@@ -101,43 +104,52 @@ pub struct ResidentEvaluator {
     /// the host, which the device then only traces (`None`: every batch).
     device_aim_from: Option<usize>,
 }
-/// Rays the evaluator routes to the host, learned from the device's
-/// aiming reports (unresolved or slow). A ray stays with the host for the
-/// evaluator's lifetime: the learned rays are the merit's unaimable and
-/// slow rim rays, and one that has become easy costs the host a few
-/// microseconds.
+/// The routing state of one solve, learned from the aiming reports of its
+/// device-aimed batches. Batches of one solve are evaluated one after
+/// another, so the state a batch sees depends only on the batches before it.
 #[derive(Default)]
-struct HostRays {
+struct Routing {
     /// Has a device-aimed batch reported its rays?
     learned: bool,
+    /// Pupil rays the device left unresolved, or resolved slowly, in an
+    /// eighth or more of a batch's candidates. Later device-aimed batches
+    /// route them to the host before the plan, where they are traced while
+    /// the device works, so the device's commands are not held up by their
+    /// slow lanes. A ray stays with the host for the rest of the solve: the
+    /// learned rays are the merit's unaimable and slow rim rays, and one
+    /// that has become easy costs the host a few microseconds.
     rays: BTreeSet<resident::RayKey>,
-    /// The device left so many rays to the host (more than
-    /// [`HOST_ONLY_FRACTION`] of a candidate's) that the rest of the run is
-    /// evaluated on the host alone, by the reference.
+    /// A device-aimed batch left so many of its rays to the host (more than
+    /// [`HOST_ONLY_FRACTION`] of a candidate's) that the rest of the solve
+    /// is evaluated on the host alone, by the reference.
     host_only: bool,
 }
-impl HostRays {
-    /// Learn `keys`; `rays` is a candidate's traced ray count.
-    fn record(&mut self, keys: impl IntoIterator<Item = resident::RayKey>, rays: f64) {
-        self.rays.extend(keys);
+impl Routing {
+    /// Learn the rays a device-aimed batch reported (`keys`: unresolved or
+    /// slow in enough of its candidates). Of the `rays` of one of its
+    /// candidates, `routed` were already routed to the host; with the ones
+    /// learned now, that is what the batch leaves to the host.
+    fn learn(&mut self, keys: impl IntoIterator<Item = resident::RayKey>, routed: f64, rays: f64) {
+        let new = keys.into_iter().filter(|&k| self.rays.insert(k)).count();
         self.learned = true;
-        if self.rays.len() as f64 > HOST_ONLY_FRACTION * rays {
+        if routed + new as f64 > HOST_ONLY_FRACTION * rays {
             self.host_only = true;
         }
     }
 }
-/// Fraction of a candidate's rays the device may leave to the host before
-/// the evaluator gives the rest of its run to the reference (on the
-/// 35-surface ultra-wide benchmark lens the device aimed only 166 of 570).
+/// Fraction of a candidate's rays a device-aimed batch may leave to the
+/// host before the evaluator gives the rest of its solve to the reference
+/// (on the 35-surface ultra-wide benchmark lens the device aimed only 166
+/// of 570).
 const HOST_ONLY_FRACTION: f64 = 0.5;
 /// The fallback counted for every value of a batch evaluated by the
-/// reference after [`HostRays::host_only`].
+/// reference after [`Routing::host_only`].
 const HOST_ONLY_FALLBACK: &str = "device aiming left most rays to the host: reference evaluation";
 /// The ray pass's values of a batch and who computed them.
 enum RayPass {
     /// The host/device division.
     Split(Vec<Vec<OperandValue>>),
-    /// The reference alone ([`HostRays::host_only`]).
+    /// The reference alone ([`Routing::host_only`]).
     Reference(Vec<Vec<OperandValue>>),
 }
 impl ResidentEvaluator {
@@ -159,9 +171,20 @@ impl ResidentEvaluator {
             context,
             reference,
             stats: Arc::default(),
-            host_rays: Arc::default(),
+            routing: Arc::default(),
             aim_cap: None,
             device_aim_from: Some(DEVICE_AIM_FROM),
+        }
+    }
+    /// This evaluator for another solve (another problem, or a solve that
+    /// runs beside this one): the same device context, reference, settings
+    /// and statistics, with a routing state of its own. What one solve
+    /// learns from its batches then never routes another's rays, and solves
+    /// that run in parallel do not depend on each other's timing.
+    pub fn for_solve(&self) -> Self {
+        Self {
+            routing: Arc::default(),
+            ..self.clone()
         }
     }
     /// The evaluator with every pupil ray aimed on the host (the
@@ -226,35 +249,36 @@ impl ResidentEvaluator {
     }
     /// One batch through every route. `anchored`: the batch holds the probes
     /// and re-evaluated base point of finite differences (a ray is then
-    /// completed on the host for every candidate when any needed it).
+    /// completed on the host for every candidate when any needed it), near
+    /// `anchor` (`None` when the base point cannot be built).
     fn evaluate(
         &self,
         systems: &[OpticalSystem],
         ops: &[&Operand],
         anchored: bool,
+        anchor: Option<&OpticalSystem>,
         ctx: &JobContext,
     ) -> MkResult<Vec<Vec<OperandValue>>> {
         ctx.check()?;
         let inner = JobContext::with(ctx.cancel.clone(), Default::default());
         let started = std::time::Instant::now();
         // A finite-difference batch with host aiming: like the reference's
-        // `evaluate_batch_near`, the base point (the batch's first
-        // candidate) is evaluated on the host first and its solves seed
-        // every candidate's tracer, so the probes' host solves (fields,
-        // chief rays, automatic semi-diameters, pupil rays) start from the
-        // base's and share its solve path, as the reference's do. (Device
-        // aiming keeps unseeded host tracers: seeding them measured no host
-        // saving on the 29-surface lens and adds the base evaluation.)
+        // `evaluate_batch_near`, the anchor (the base point) is evaluated on
+        // the host first and its solves seed every candidate's tracer, so
+        // the probes' host solves (fields, chief rays, automatic
+        // semi-diameters, pupil rays) start from the base's and share its
+        // solve path, as the reference's do. (Device aiming keeps unseeded
+        // host tracers: seeding them measured no host saving on the
+        // 29-surface lens and adds the base evaluation.)
         let host_aim = systems
             .first()
             .is_none_or(|s| !self.aims_on_device(s, systems.len(), ops));
-        let seeds = match (anchored && host_aim, systems.first()) {
-            (true, Some(base)) => {
-                self.reference
-                    .trace
-                    .anchor_seeds(base, systems.len(), ops, &inner)?
-            }
-            _ => None,
+        let seeds = match anchor.filter(|_| anchored && host_aim) {
+            Some(base) => self
+                .reference
+                .trace
+                .anchor_seeds(base, systems.len(), ops, &inner)?,
+            None => None,
         };
         let tracers: Vec<_> = systems
             .par_iter()
@@ -320,7 +344,7 @@ impl ResidentEvaluator {
             } else {
                 match route {
                     0 => self
-                        .split_rays(&selected_tracers, &refs, anchored, host_aim, &inner)
+                        .split_rays(&selected_tracers, &refs, anchored, anchor, host_aim, &inner)
                         .map(|pass| match pass {
                             RayPass::Split(values) => values,
                             RayPass::Reference(values) => {
@@ -678,10 +702,11 @@ impl OperandEvaluator for ResidentEvaluator {
         ops: &[&Operand],
         ctx: &JobContext,
     ) -> MkResult<Vec<Vec<OperandValue>>> {
-        self.evaluate(systems, ops, false, ctx)
+        self.evaluate(systems, ops, false, None, ctx)
     }
     /// A batch near an anchor (joined finite differences of the rendezvous
-    /// scheduler) with one evaluator per ray across it.
+    /// scheduler) with one evaluator per ray across it, seeded from the
+    /// anchor.
     fn evaluate_batch_near(
         &self,
         systems: &[OpticalSystem],
@@ -689,7 +714,10 @@ impl OperandEvaluator for ResidentEvaluator {
         anchor: Option<&OpticalSystem>,
         ctx: &JobContext,
     ) -> MkResult<Vec<Vec<OperandValue>>> {
-        self.evaluate(systems, ops, anchor.is_some(), ctx)
+        self.evaluate(systems, ops, anchor.is_some(), anchor, ctx)
+    }
+    fn for_solve(&self) -> Option<Box<dyn OperandEvaluator + '_>> {
+        Some(Box::new(ResidentEvaluator::for_solve(self)))
     }
     fn evaluate_parametric(
         &self,
@@ -708,7 +736,10 @@ impl OperandEvaluator for ResidentEvaluator {
             .filter_map(|s| s.as_ref().ok().cloned())
             .collect();
         let anchored = batch.candidates.anchor.is_some();
-        let mut values = self.evaluate(&systems, ops, anchored, ctx)?.into_iter();
+        let anchor = batch.anchor();
+        let mut values = self
+            .evaluate(&systems, ops, anchored, anchor.as_ref(), ctx)?
+            .into_iter();
         ctx.check()?;
         ctx.report(1., "parametric candidate batch complete");
         Ok(built
@@ -727,23 +758,22 @@ struct Stage<'s> {
     design: &'s RayDesign,
     anchored: bool,
     ctx: &'s JobContext,
-    /// Per ray, the candidates of the landed sub-batches in which the
+    /// Per pupil ray, the candidates of the landed sub-batches in which the
     /// device left it unresolved or resolved it slowly.
     unresolved: BTreeMap<resident::RayKey, usize>,
 }
-/// A prepared sub-batch, its submitted plan and its rays (device and
-/// host-routed).
+/// A prepared sub-batch and its submitted plan.
 type Fed<'a> = (
     resident::Prepared<'a>,
     mklight_gpu::Pending<mklight_gpu::resident::PlanResult>,
-    usize,
 );
 impl<'s> Stage<'s> {
-    /// Prepare a sub-batch and submit its device plan.
+    /// Prepare a sub-batch, with the rays in `routed` kept off the device,
+    /// and submit its device plan.
     fn feed<'a>(
         &self,
         chunk: &'a [Arc<SequentialTracer>],
-        host_rays: &BTreeSet<resident::RayKey>,
+        routed: &BTreeSet<resident::RayKey>,
     ) -> MkResult<Fed<'a>>
     where
         's: 'a,
@@ -755,14 +785,13 @@ impl<'s> Stage<'s> {
             chunk,
             self.ops,
             self.design,
-            host_rays,
+            routed,
             self.ctx,
         )?;
         let plan = prepared.plan.take().expect("prepared plan");
         self.context.record_traced_rays(prepared.traced_rays());
-        let rays = prepared.traced_rays() + prepared.host_rays();
         let pending = self.context.submit_async(plan, self.ctx)?;
-        Ok((prepared, pending, rays))
+        Ok((prepared, pending))
     }
     /// The host's share of a sub-batch while the device traces the rest:
     /// the rays routed to it and the operands that need no ray.
@@ -837,13 +866,15 @@ impl ResidentEvaluator {
     /// previous one with the device's work on the current one. In an
     /// `anchored` batch every sub-batch is finished after all are traced,
     /// so that a ray completed on the host for one candidate is completed
-    /// for all. Once the device has left most rays to the host
-    /// ([`HostRays::host_only`]) the reference evaluates the batch.
+    /// for all. Once a device-aimed batch of the solve has left most rays
+    /// to the host ([`Routing::host_only`]) the reference evaluates the
+    /// batch (seeded from `anchor` when it holds finite differences).
     fn split_rays(
         &self,
         tracers: &[Arc<SequentialTracer>],
         ops: &[&Operand],
         anchored: bool,
+        anchor: Option<&OpticalSystem>,
         host_aim: bool,
         ctx: &JobContext,
     ) -> MkResult<RayPass> {
@@ -851,24 +882,28 @@ impl ResidentEvaluator {
         if n == 0 {
             return Ok(RayPass::Split(vec![]));
         }
-        if n >= PROBE_MIN_BATCH && !host_aim && !self.host_rays.lock().unwrap().learned {
+        if n >= PROBE_MIN_BATCH && !host_aim && !self.routing.lock().unwrap().learned {
             // The probe's values are not used: a finite difference routes
             // all its candidates alike.
-            self.split_rays(&tracers[..PROBE_MIN_BATCH - 1], ops, false, false, ctx)?;
+            self.split_rays(
+                &tracers[..PROBE_MIN_BATCH - 1],
+                ops,
+                false,
+                None,
+                false,
+                ctx,
+            )?;
         }
         let cpu = &self.reference.trace;
-        if self.host_rays.lock().unwrap().host_only {
-            // The reference, seeded from the batch's base point when it holds
-            // finite differences (its first candidate).
+        if self.routing.lock().unwrap().host_only {
             let systems: Vec<OpticalSystem> = tracers
                 .iter()
                 .map(|t| t.system().system().clone())
                 .collect();
-            let anchor = anchored.then(|| systems[0].clone());
             return Ok(RayPass::Reference(cpu.evaluate_batch_near(
                 &systems,
                 ops,
-                anchor.as_ref(),
+                anchor.filter(|_| anchored),
                 ctx,
             )?));
         }
@@ -894,13 +929,20 @@ impl ResidentEvaluator {
             unresolved: BTreeMap::new(),
         };
         // One routing for the whole batch, so that a ray is traced by the
-        // same side for every candidate of a finite difference.
-        let host_rays = self.host_rays.lock().unwrap().rays.clone();
-        let mut rays_total = 0usize;
+        // same side for every candidate of a finite difference. Host aiming
+        // routes nothing: the device only traces the host's rays.
+        let routed = if host_aim {
+            BTreeSet::new()
+        } else {
+            self.routing.lock().unwrap().rays.clone()
+        };
+        // The batch's rays, and those of them routed to the host.
+        let (mut rays_total, mut routed_total) = (0usize, 0usize);
         let mut in_flight = None;
         for (k, chunk) in chunks.iter().enumerate() {
-            let (mut prepared, pending, rays) = stage.feed(chunk, &host_rays)?;
-            rays_total += rays;
+            let (mut prepared, pending) = stage.feed(chunk, &routed)?;
+            rays_total += prepared.traced_rays() + prepared.routed_rays();
+            routed_total += prepared.routed_rays();
             stage.host_share(chunk, &mut prepared)?;
             if !overlap {
                 stage.land(k, chunk, prepared, pending, &mut values, &mut deferred)?;
@@ -914,24 +956,26 @@ impl ResidentEvaluator {
             stage.land(j, chunks[j], prev, p, &mut values, &mut deferred)?;
         }
         // A ray slow or unresolved in an eighth of the batch's candidates
-        // (any, in small batches) goes to the host for the next batches.
-        // Only device aiming learns, so that the first device-aimed batch
-        // of a run is preceded by its probe candidate.
+        // (any, in small batches) goes to the host for the solve's next
+        // device-aimed batches. Only device aiming learns, so that the
+        // first device-aimed batch of a solve is preceded by its probe
+        // candidates.
         let threshold = n.div_ceil(8).max(1);
         if !host_aim {
-            self.host_rays.lock().unwrap().record(
+            self.routing.lock().unwrap().learn(
                 stage
                     .unresolved
                     .iter()
                     .filter(|&(_, &count)| count >= threshold)
                     .map(|(&key, _)| key),
+                routed_total as f64 / n as f64,
                 rays_total as f64 / n as f64,
             );
         }
         if anchored {
             let uniform: BTreeSet<resident::RayKey> = deferred
                 .iter()
-                .flat_map(|(_, t)| t.unresolved.iter().flatten().copied())
+                .flat_map(|(_, t)| t.host_completed())
                 .collect();
             for (k, traced) in deferred {
                 values[k] = Some(resident::finish(

@@ -69,20 +69,31 @@ private let fast = MockEngine(simulatedLatency: .zero)
     @Test func invalidModelIsRejected() async {
         var s = OpticalSystem.newEmpty()
         s.stop = 0
-        await #expect(throws: EngineError.self) { try await fast.openSnapshot(s) }
-        let issues = await fast.validate(s)
-        #expect(!issues.isEmpty)
+        do {
+            _ = try await fast.openSnapshot(s)
+            Issue.record("an invalid model opened")
+        } catch EngineError.invalidModel(let issues) {
+            #expect(!issues.isEmpty)
+        } catch {
+            Issue.record("\(error)")
+        }
     }
+}
+
+/// The analyses the mock runs from a system alone (no required settings).
+private let plainAnalyses = ["layout", "spot_diagram", "ray_fan", "opd_fan", "field_curvature_distortion", "first_order"]
+
+private func request(_ analysis: String, _ settings: [String: JSONValue] = [:]) -> EngineAnalysisRequest {
+    EngineAnalysisRequest(analysis: analysis, settings: settings)
 }
 
 @Suite struct JobTests {
     @Test func progressIsMonotoneAndResultCarriesRunInfo() async throws {
         let engine = MockEngine(simulatedLatency: .milliseconds(40))
         let snap = try await engine.openSnapshot(SampleSystems.cookeTriplet())
-        var settings = SpotDiagramSettings()
-        settings.rings = 3
-        let request = AnalysisRequest.spotDiagram(settings)
-        let job = engine.submit(request, on: snap)
+        let spot = request("spot_diagram", ["rings": .integer(3)])
+        let job = engine.submit(spot, on: snap)
+        #expect(job.analysis == "spot_diagram" && job.engineRequest == spot && job.snapshotHash == snap.hash)
         var fractions: [Double] = []
         for await p in job.progress { fractions.append(p.fraction) }
         #expect(fractions.count >= 3)
@@ -93,15 +104,15 @@ private let fast = MockEngine(simulatedLatency: .zero)
         #expect(out.runInfo.analysis == "spot_diagram")
         #expect(out.runInfo.backend == "mock")
         #expect(out.runInfo.warnings.contains(MockEngine.mockWarning))
-        #expect(out.runInfo.isCurrent(for: snap, request: request))
-        settings.rings = 4
-        #expect(!out.runInfo.isCurrent(for: snap, request: .spotDiagram(settings)), "different settings → stale")
+        #expect(out.isCurrent(for: snap, request: spot))
+        #expect(!out.isCurrent(for: snap, request: request("spot_diagram", ["rings": .integer(4)])), "different settings → stale")
+        #expect(!out.isCurrent(for: nil, request: spot), "no snapshot → stale")
     }
 
     @Test func cancellationStopsJob() async throws {
         let engine = MockEngine(simulatedLatency: .seconds(30))
         let snap = try await engine.openSnapshot(SampleSystems.cookeTriplet())
-        let job = engine.submit(.mtf(MTFSettings()), on: snap)
+        let job = engine.submit(request("spot_diagram"), on: snap)
         let clock = ContinuousClock()
         let t0 = clock.now
         try await Task.sleep(for: .milliseconds(20))
@@ -115,104 +126,80 @@ private let fast = MockEngine(simulatedLatency: .zero)
     @Test func awaiterCancellationDoesNotCancelJob() async throws {
         let engine = MockEngine(simulatedLatency: .milliseconds(50))
         let snap = try await engine.openSnapshot(SampleSystems.singlet())
-        let job = engine.submit(.firstOrder(FirstOrderSettings()), on: snap)
+        let job = engine.submit(request("first_order"), on: snap)
         let waiter = Task { try await job.result() }
         waiter.cancel()
         _ = try? await waiter.value
         let out = try await job.result()
-        #expect(out.result.kind == .firstOrder)
+        #expect(out.runInfo.analysis == "first_order" && out.json["entries"]?.array?.isEmpty == false)
     }
 
     @Test func randomSpotIsReproducibleFromSeed() async throws {
         let snap = try await fast.openSnapshot(SampleSystems.cookeTriplet())
-        var s = SpotDiagramSettings()
-        s.pattern = .random
-        s.execution.seed = 1234
-        func points(_ s: SpotDiagramSettings) async throws -> [SpotDiagramResult.Point] {
-            guard case .spotDiagram(let r) = try await fast.submit(.spotDiagram(s), on: snap).result().result else { return [] }
-            return r.fields.flatMap(\.points)
+        func run(seed: Int64) async throws -> AnalysisOutput {
+            try await fast.submit(request("spot_diagram", ["pattern": .string("random"), "seed": .integer(seed)]), on: snap).result()
         }
-        let a = try await points(s), b = try await points(s)
-        #expect(!a.isEmpty && a == b)
-        s.execution.seed = 4321
-        #expect(try await points(s) != a)
-        let out = try await fast.submit(.spotDiagram(s), on: snap).result()
-        #expect(out.runInfo.seed == 4321)
+        let a = try #require(try await run(seed: 1234).buffer(named: "points"))
+        let b = try #require(try await run(seed: 1234).buffer(named: "points"))
+        #expect(a.count > 0 && a == b)
+        let other = try await run(seed: 4321)
+        #expect(other.buffer(named: "points") != a)
+        #expect(other.runInfo.seed == 4321)
     }
 
-    @Test func requestAndOutputCodableRoundTrip() async throws {
+    /// Every analysis the mock runs from a system alone finishes under its
+    /// own name with a result object, on a design with several fields and
+    /// wavelengths.
+    @Test func plainAnalysesRunByName() async throws {
         let snap = try await fast.openSnapshot(SampleSystems.cookeTriplet())
-        for kind in AnalysisKind.allCases {
-            let req = AnalysisSettingsSet().request(for: kind)
-            #expect(try MKLightJSON.decode(AnalysisRequest.self, from: MKLightJSON.encode(req)) == req)
-            let out = try await fast.submit(req, on: snap).result()
-            #expect(out.result.kind == kind)
-            let back = try MKLightJSON.decode(AnalysisOutput.self, from: MKLightJSON.encode(out))
-            #expect(back == out, "\(kind) output round trip")
+        for name in plainAnalyses {
+            let out = try await fast.submit(request(name), on: snap).result()
+            #expect(out.runInfo.analysis == name && out.json.object?.isEmpty == false, "\(name)")
+            #expect(out.engineRequest == request(name) && out.backend?.used == "mock", "\(name)")
         }
     }
+
     /// Seeds are full 64-bit values. Two seeds that round to the same
-    /// `Double` must still give a stale result, and the recorded settings must
-    /// carry the seed exactly (an engine could not reproduce a rounded one).
+    /// `Double` must still give a stale result, with or without the request
+    /// that produced it, and the recorded run carries the seed exactly (an
+    /// engine could not reproduce a rounded one).
     @Test func seedsAbove2To53AreExact() async throws {
         let snap = try await fast.openSnapshot(SampleSystems.cookeTriplet())
-        var s = SpotDiagramSettings()
-        s.pattern = .random
-        s.rings = 2
-        s.execution.seed = 1 << 60
-        let out = try await fast.submit(.spotDiagram(s), on: snap).result()
-        #expect(out.runInfo.isCurrent(for: snap, request: .spotDiagram(s)))
-        var other = s
-        other.execution.seed = (1 << 60) + 1
-        #expect(Double(other.execution.seed) == Double(s.execution.seed), "the two seeds collide as Double")
-        #expect(!out.runInfo.isCurrent(for: snap, request: .spotDiagram(other)))
-        s.execution.seed = 12_345_678_901_234_567_891
-        let json = String(decoding: try MKLightJSON.encode(AnalysisRequest.spotDiagram(s).settingsJSON()), as: UTF8.self)
-        #expect(json.contains("\"seed\":12345678901234567891"))
-        let info = try await fast.submit(.spotDiagram(s), on: snap).result().runInfo
-        let decoded = try MKLightJSON.decode(RunInfo.self, from: MKLightJSON.encode(info))
-        #expect(decoded.settings["execution"]?["seed"] == .unsigned(12_345_678_901_234_567_891))
+        let seed: Int64 = 1 << 60
+        func spot(_ seed: Int64) -> EngineAnalysisRequest {
+            request("spot_diagram", ["pattern": .string("random"), "rings": .integer(2), "seed": .integer(seed)])
+        }
+        #expect(Double(seed + 1) == Double(seed), "the two seeds collide as Double")
+        let out = try await fast.submit(spot(seed), on: snap).result()
+        #expect(out.runInfo.seed == 1 << 60)
+        #expect(out.isCurrent(for: snap, request: spot(seed)) && !out.isCurrent(for: snap, request: spot(seed + 1)))
+        var recorded = out
+        recorded.engineRequest = nil
+        #expect(recorded.isCurrent(for: snap, request: spot(seed)) && !recorded.isCurrent(for: snap, request: spot(seed + 1)))
+        // Above `Int64.max` too: the run info keeps every digit.
+        var info = out.runInfo
+        info.seed = 12_345_678_901_234_567_891
+        info.settings = .object(["seed": .unsigned(12_345_678_901_234_567_891)])
+        let data = try MKLightJSON.encode(info)
+        #expect(String(decoding: data, as: UTF8.self).contains("\"seed\":12345678901234567891"))
+        let decoded = try MKLightJSON.decode(RunInfo.self, from: data)
+        #expect(decoded.settings["seed"] == .unsigned(12_345_678_901_234_567_891))
         #expect(decoded.seed == 12_345_678_901_234_567_891)
     }
 
     /// The backend preference is part of a job's identity: changing it
-    /// makes an existing result stale, and the run info records the request.
+    /// makes an existing result stale. The mock reports what it actually
+    /// used.
     @Test func executionSettingsTakePartInStaleness() async throws {
         let snap = try await fast.openSnapshot(SampleSystems.cookeTriplet())
-        var set = AnalysisSettingsSet()
-        let out = try await fast.submit(set.request(for: .mtf), on: snap).result()
-        #expect(out.runInfo.isCurrent(for: snap, request: set.request(for: .mtf)))
-        #expect(out.runInfo.settings["execution"]?["backend"] == .string("auto"))
-        set.execution.backend = .gpu
-        #expect(!out.runInfo.isCurrent(for: snap, request: set.request(for: .mtf)))
-        let gpu = try await fast.submit(set.request(for: .mtf), on: snap).result()
-        #expect(gpu.runInfo.precision == .f64Reference && gpu.runInfo.warnings.contains { $0.contains("f64 only") },
-            "the mock reports what it actually used")
-        // A deterministic analysis does not depend on the seed.
-        set.execution.seed = 99
-        #expect(set.request(for: .mtf).seed == nil)
-    }
-
-    @Test func invalidSettingsFailFast() async throws {
-        let snap = try await fast.openSnapshot(SampleSystems.cookeTriplet())
-        var mtf = MTFSettings()
-        mtf.maxFrequency = -50
-        var psf = PSFSettings()
-        psf.field = 7
-        var spot = SpotDiagramSettings()
-        spot.rings = 100_000
-        spot.wavelengths = .index(5)
-        var layout = LayoutSettings()
-        layout.configuration = 3
-        for (req, n) in [(AnalysisRequest.mtf(mtf), 1), (.psf(psf), 1), (.spotDiagram(spot), 2), (.layout(layout), 1)] {
-            #expect(req.problems(for: snap.system).count == n, "\(req.kind): \(req.problems(for: snap.system))")
-            await #expect(throws: EngineError.invalidSettings(req.problems(for: snap.system))) {
-                try await MockEngine(simulatedLatency: .seconds(30)).submit(req, on: snap).result()
-            }
-        }
-        for kind in AnalysisKind.allCases {
-            #expect(AnalysisSettingsSet().request(for: kind).problems(for: snap.system).isEmpty)
-        }
+        var r = request("first_order")
+        let out = try await fast.submit(r, on: snap).result()
+        #expect(out.isCurrent(for: snap, request: r))
+        r.execution.backend = .gpu
+        #expect(!out.isCurrent(for: snap, request: r))
+        let gpu = try await fast.submit(r, on: snap).result()
+        #expect(gpu.isCurrent(for: snap, request: r))
+        #expect(gpu.runInfo.precision == .f64Reference && gpu.runInfo.backend == "mock" && gpu.backend?.used == "mock")
     }
 
     /// Progress reported from concurrent child tasks (how engine jobs fan out
@@ -220,7 +207,7 @@ private let fast = MockEngine(simulatedLatency: .zero)
     @Test func concurrentProgressStaysMonotone() async throws {
         let snap = try await fast.openSnapshot(SampleSystems.singlet())
         for _ in 0..<50 {
-            let job = AnalysisJob.run(request: .firstOrder(FirstOrderSettings()), snapshot: snap) { r in
+            let job = AnalysisJob.run(engineRequest: request("first_order"), snapshot: snap) { r in
                 await withTaskGroup(of: Void.self) { g in
                     for child in 0..<8 {
                         g.addTask {
@@ -228,7 +215,7 @@ private let fast = MockEngine(simulatedLatency: .zero)
                         }
                     }
                 }
-                return try await fast.submit(.firstOrder(FirstOrderSettings()), on: snap).result()
+                return try await fast.submit(request("first_order"), on: snap).result()
             }
             var last = -1.0, decreases = 0
             for await p in job.progress {
@@ -242,34 +229,31 @@ private let fast = MockEngine(simulatedLatency: .zero)
 }
 
 /// serde_json writes non-finite `f64` as `null`; the engine writes infinite
-/// lengths as `"inf"`. Results must decode both and round-trip them.
+/// lengths as `"inf"`. Readers must take both.
 @Suite struct NonFiniteResultTests {
+    /// `EngineDouble` fields (here a glass's numbers) decode a number,
+    /// `null` (NaN) and the infinity strings, and round-trip them.
     @Test func decodesNullAndInfinityStrings() throws {
-        let json = #"""
-            {"entries":[{"key":"efl","label":"EFL","value":"inf","unit":"mm"},
-                        {"key":"bfl","label":"BFL","value":null,"unit":"mm"},
-                        {"key":"epd","label":"EPD","value":10,"unit":"mm"}],
-             "wavelength_um":0.5875618}
-            """#
-        let r = try MKLightJSON.decode(FirstOrderResult.self, from: Data(json.utf8))
-        #expect(r["efl"] == .infinity && r["bfl"]!.isNaN && r["epd"] == 10)
-        let back = try MKLightJSON.decode(FirstOrderResult.self, from: MKLightJSON.encode(r))
-        #expect(back == r)
-        let tree = try JSONValue.from(r)
-        #expect(tree["entries"] == .array([
-            .object(["key": .string("efl"), "label": .string("EFL"), "value": .string("inf"), "unit": .string("mm")]),
-            .object(["key": .string("bfl"), "label": .string("BFL"), "value": .null, "unit": .string("mm")]),
-            .object(["key": .string("epd"), "label": .string("EPD"), "value": .integer(10), "unit": .string("mm")]),
-        ]))
-        let mtf = #"{"frequencies":[0,50],"curves":[{"field":0,"orientation":"sagittal","modulation":[1,null]}],"diffraction_limit":null,"cutoff_frequency":"inf","field_values":[[0,null]]}"#
-        let m = try MKLightJSON.decode(MTFResult.self, from: Data(mtf.utf8))
-        #expect(m.curves[0].modulation[1].isNaN && m.cutoffFrequency == .infinity && m.fieldValues[0].y.isNaN)
-        #expect(try MKLightJSON.decode(MTFResult.self, from: MKLightJSON.encode(m)) == m)
+        let json = #"{"catalog":"X","name":"G","nd":1.5,"vd":null,"min_um":"-inf","max_um":"inf"}"#
+        let g = try MKLightJSON.decode(GlassInfo.self, from: Data(json.utf8))
+        #expect(g.nd == 1.5 && g.vd.isNaN && g.minUm == -.infinity && g.maxUm == .infinity)
+        let back = try MKLightJSON.decode(GlassInfo.self, from: MKLightJSON.encode(g))
+        #expect(back == g, "NaN compares equal to NaN")
+        #expect(try JSONValue.from(g) == JSONValue.parse(Data(json.utf8)))
+        #expect(throws: DecodingError.self) {
+            try MKLightJSON.decode(GlassInfo.self, from: Data(json.replacingOccurrences(of: "\"inf\"", with: "\"wide\"").utf8))
+        }
+        // The tolerant accessors read the same forms from a result's JSON.
+        let tree = try JSONValue.parse(Data(json.utf8))
+        #expect(tree["vd"]?.nf?.isNaN == true && tree["min_um"]?.nf == -.infinity && tree["name"]?.nf == nil)
+        // Points compare the same way, so a scene with an undefined point
+        // still equals itself.
+        #expect(Point3(0, .nan, 1) == Point3(0, .nan, 1) && Point3(0, .nan, 1) != Point3(0, 2, 1))
     }
 
     /// An afocal (Kepler) telescope has an infinite EFL; the mock reports it
-    /// as such and the output still serialises.
-    @Test func afocalOutputSerialises() async throws {
+    /// in the engine's form (`"inf"`) and every analysis still runs.
+    @Test func afocalSystemRunsByName() async throws {
         let s = OpticalSystem(
             name: "Kepler", aperture: .entrancePupilDiameter(10),
             surfaces: [
@@ -279,12 +263,15 @@ private let fast = MockEngine(simulatedLatency: .zero)
                 Surface(id: SurfaceID(3), thickness: 0),
             ], stop: 1)
         let snap = try await fast.openSnapshot(s)
-        for kind in AnalysisKind.allCases {
-            let out = try await fast.submit(AnalysisSettingsSet().request(for: kind), on: snap).result()
-            let back = try MKLightJSON.decode(AnalysisOutput.self, from: MKLightJSON.encode(out))
-            #expect(back == out, "\(kind)")
-            if case .firstOrder(let fo) = out.result { #expect(fo["efl"] == .infinity) }
+        for name in plainAnalyses {
+            let out = try await fast.submit(request(name), on: snap).result()
+            #expect(out.runInfo.analysis == name, "\(name)")
+            // The result is valid JSON text: no bare non-finite number.
+            #expect(throws: Never.self, "\(name)") { try JSONValue.parse(MKLightJSON.encode(out.json)) }
         }
+        let fo = try await fast.submit(request("first_order"), on: snap).result()
+        let efl = try #require(fo.json["entries"]?.array?.first { $0["key"]?.string == "efl" })
+        #expect(efl["value"] == .string("inf") && efl["value"]?.nf == .infinity)
     }
 }
 
@@ -299,7 +286,7 @@ private let fast = MockEngine(simulatedLatency: .zero)
         // through n_d exactly.
         let power = (n - 1) * (1 / r1 - 1 / r2 + (n - 1) * t / (n * r1 * r2))
         let f = 1 / power
-        let fo = o.firstOrder(FirstOrderSettings())
+        let fo = o.firstOrder()
         #expect(abs(fo["efl"]! - f) < 1e-9 * f)
         let bfl = f * (1 - (n - 1) * t / (n * r1))
         #expect(abs(fo["bfl"]! - bfl) < 1e-9 * f)
@@ -309,7 +296,7 @@ private let fast = MockEngine(simulatedLatency: .zero)
 
     @Test func tripletFirstOrderMatchesIndependentTrace() {
         // Reference values from an independent y-nu trace at n_d.
-        let fo = MockOptics(system: SampleSystems.cookeTriplet()).firstOrder(FirstOrderSettings())
+        let fo = MockOptics(system: SampleSystems.cookeTriplet()).firstOrder()
         #expect(abs(fo["efl"]! - 47.10087534020714) < 1e-9)
         #expect(abs(fo["bfl"]! - 41.36144145724218) < 1e-9)
     }
@@ -325,11 +312,11 @@ private let fast = MockEngine(simulatedLatency: .zero)
                 Surface(id: SurfaceID(2), thickness: 0),
             ], stop: 1)
         let o = MockOptics(system: s)
-        let r = try o.spot(SpotDiagramSettings())
+        let r = try o.spot(MockOptics.SpotDiagramSettings())
         #expect(r.fields[0].points.count == 127 * 3)
         #expect(r.fields[0].rmsRadius < 1e-12)
         #expect(r.fields[0].geoRadius < 1e-12)
-        #expect(abs(o.firstOrder(FirstOrderSettings())["efl"]! - 100) < 1e-12)
+        #expect(abs(o.firstOrder()["efl"]! - 100) < 1e-12)
     }
 
     @Test func sphericalMirrorHasThirdOrderAberration() throws {
@@ -343,7 +330,7 @@ private let fast = MockEngine(simulatedLatency: .zero)
                 Surface(id: SurfaceID(2), thickness: 0),
             ], stop: 1)
         let o = MockOptics(system: s)
-        var fan = FanSettings()
+        var fan = MockOptics.FanSettings()
         fan.samples = 5
         fan.wavelengths = .primary
         let curve = try o.rayFan(fan).fields[0].tangential[0]
@@ -357,18 +344,9 @@ private let fast = MockEngine(simulatedLatency: .zero)
         #expect(abs(abs(e1) - expected) < 0.01 * expected)
     }
 
-    @Test func diffractionMTFKnownValues() {
-        #expect(MockOptics.diffractionMTF(0, cutoff: 100) == 1)
-        let half = MockOptics.diffractionMTF(50, cutoff: 100)
-        #expect(abs(half - 2 / Double.pi * (acos(0.5) - 0.5 * 0.75.squareRoot())) < 1e-15)
-        #expect(MockOptics.diffractionMTF(100, cutoff: 100) == 0)
-        #expect(MockOptics.diffractionMTF(-50, cutoff: 100) == MockOptics.diffractionMTF(50, cutoff: 100))
-        #expect(MockOptics.diffractionMTF(-50, cutoff: 100) <= 1)
-    }
-
     @Test func layoutSceneOfTriplet() throws {
         let o = MockOptics(system: SampleSystems.cookeTriplet())
-        var settings = LayoutSettings()
+        var settings = MockOptics.LayoutSettings()
         settings.include3D = false
         let scene = try o.layout(settings)
         #expect(scene.elements.count == 3)
@@ -384,7 +362,7 @@ private let fast = MockEngine(simulatedLatency: .zero)
 
     @Test func distortionIsZeroOnAxisAndFieldCurvatureFinite() throws {
         let o = MockOptics(system: SampleSystems.cookeTriplet())
-        let r = try o.fieldCurvature(FieldCurvatureSettings())
+        let r = try o.fieldCurvature(MockOptics.FieldCurvatureSettings())
         #expect(r.fieldValues.first == 0 && r.fieldValues.last == 20)
         for c in r.curves {
             #expect(c.distortionPercent[0] == 0)
@@ -404,13 +382,13 @@ private let fast = MockEngine(simulatedLatency: .zero)
         let snap = try await fast.openSnapshot(s)
         let o = MockOptics(system: s)
         #expect(o.warnings.contains { $0.contains("entrance pupil") })
-        for kind in AnalysisKind.allCases {
-            let out = try await fast.submit(AnalysisSettingsSet().request(for: kind), on: snap).result()
-            _ = try MKLightJSON.encode(out)
-            if case .opdFan(let fan) = out.result {
-                #expect(fan.fields.allSatisfy { $0.tangential.allSatisfy { $0.values.allSatisfy { $0?.isFinite ?? true } } })
-            }
+        for name in plainAnalyses {
+            let out = try await fast.submit(request(name), on: snap).result()
+            #expect(throws: Never.self, "\(name)") { try JSONValue.parse(MKLightJSON.encode(out.json)) }
         }
+        // Vignetted samples are `nil`; every other one is a finite number.
+        let fan = try o.opdFan(MockOptics.FanSettings())
+        #expect(fan.fields.allSatisfy { $0.tangential.allSatisfy { $0.values.allSatisfy { $0?.isFinite ?? true } } })
         // Paraxially, the marginal ray then leaves the axial object point with
         // slope NA/n, whatever the pupil radius.
         let m = o.marginalStart()
@@ -419,22 +397,11 @@ private let fast = MockEngine(simulatedLatency: .zero)
 
     @Test func computeHonoursCancellation() async throws {
         let o = MockOptics(system: SampleSystems.cookeTriplet())
-        var s = PSFSettings()
-        s.imageSampling = 512
-        let t = Task { () throws -> PSFResult in
+        let t = Task { () throws -> Int in
             withUnsafeCurrentTask { $0?.cancel() }
-            return try o.psf(s)
+            return try o.spot(MockOptics.SpotDiagramSettings()).fields.count
         }
         await #expect(throws: CancellationError.self) { try await t.value }
-    }
-
-    @Test func psfPeakIsStrehlBounded() throws {
-        var s = PSFSettings()
-        s.imageSampling = 32
-        let r = try MockOptics(system: SampleSystems.cookeTriplet()).psf(s)
-        #expect(r.values.count == 32 * 32)
-        #expect(r.strehl > 0 && r.strehl <= 1)
-        #expect(r.values.allSatisfy { $0 >= 0 && $0.isFinite })
     }
 }
 

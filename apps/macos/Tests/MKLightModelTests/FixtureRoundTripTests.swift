@@ -15,7 +15,11 @@ enum Fixtures {
 
     /// Decode → encode → compare semantically with the original.
     static func roundTrip<T: Codable & Equatable>(_ type: T.Type, _ name: String) throws -> T {
-        let original = try data(name)
+        try roundTrip(type, name, data: data(name))
+    }
+
+    /// The same for `original`, the text of an engine-written file `name`.
+    static func roundTrip<T: Codable & Equatable>(_ type: T.Type, _ name: String, data original: Data) throws -> T {
         let value = try MKLightJSON.decode(T.self, from: original)
         let reencoded = try MKLightJSON.encode(value)
         let diff = try JSONValue.parse(original).differences(from: JSONValue.parse(reencoded))

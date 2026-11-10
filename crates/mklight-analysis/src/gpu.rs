@@ -15,13 +15,11 @@ pub use curvature::{field_curvature_job, grid_distortion_job};
 mod chief_maps;
 mod layout;
 mod maps;
+pub use aim::AimDesign;
 pub use chief_maps::ChiefDesign;
 pub use layout::layout_job;
 mod illumination;
 pub use illumination::{IlluminationRows, illumination_rows, relative_illumination_job};
-/// Route key of the chief-ray map divisions ([`ChiefDesign`],
-/// `mklight_core::split`).
-pub const SPLIT_KEY: &str = "fieldmaps";
 mod records;
 pub use records::{
     GridResult, footprint_job, footprint_overlay_job, ray_grid_job, semi_diameters_job,
@@ -30,9 +28,7 @@ mod fans;
 pub use fans::{opd_fan_job, ray_fan_job};
 pub use maps::field_map_job;
 mod spot;
-pub use energy::{
-    best_focus_job, encircled_energy_job, encircled_energy_with_uncertainty_job, geometric_mtf_job,
-};
+pub use energy::{best_focus_job, geometric_mtf_job};
 pub use spot::{spot_diagram_job, spot_diagram_packed_job};
 
 /// Thresholds of a [`Geometry`]'s plan and aiming divisions. The defaults
@@ -59,6 +55,31 @@ impl Default for Tuning {
     }
 }
 
+/// How the device jobs divide their work between the host and the device.
+/// The default is the division measured to be fastest on the reference
+/// machine; the others move work to the device (docs/GPU.md §9.3). Every
+/// job that aims rays through a [`Geometry`] takes one.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Route {
+    /// How generations are aimed ([`aim`]).
+    pub aiming: AimDesign,
+    /// The device's share of the tiles of a split generation under
+    /// [`AimDesign::HostTable`], in [0, 1]; 0 aims every generation on the
+    /// host.
+    pub device_share: f64,
+    /// Who solves the chief rays of the chief-ray maps ([`ChiefDesign`]).
+    pub chief: ChiefDesign,
+}
+impl Default for Route {
+    fn default() -> Self {
+        Self {
+            aiming: AimDesign::HostTable,
+            device_share: aim::SPLIT_DEVICE_SHARE,
+            chief: ChiefDesign::HostChief,
+        }
+    }
+}
+
 /// A reusable system upload. Host work is immutable resolution/packing, small
 /// first-order field metadata and f64 chief rows from the reference tracer's
 /// field preparation; pupil generation and tracing run on the backend.
@@ -70,10 +91,9 @@ pub struct Geometry<'a> {
     /// Reference tracers for aiming modes other than the tracer's own (maps
     /// and illumination force real aiming, pupil aberration none).
     others: std::sync::Mutex<Vec<(mklight_core::RayAiming, std::sync::Arc<SequentialTracer>)>>,
-    /// How generations are aimed (work-split key `aiming`, [`aim`]), and
-    /// the selected device share of split generations.
-    aim: aim::AimDesign,
-    device_share: f64,
+    /// How generations are aimed and the device share of split generations
+    /// ([`Self::with_route`]).
+    route: Route,
     /// Whether large generations are aimed by host and device together
     /// ([`Self::split_large_generations`]).
     split: bool,
@@ -131,19 +151,29 @@ impl<'a> Geometry<'a> {
             },
             &packed,
         )?;
-        let (aim, device_share) = aim::AimDesign::selection()?;
         Ok(Self {
             backend,
             tracer,
             systems,
             wavelengths: chunks,
             others: Default::default(),
-            aim,
-            device_share,
+            route: Route::default(),
             split: false,
             tuning: Tuning::default(),
             aim_evidence: Default::default(),
         })
+    }
+    /// This adapter under the division `route` instead of the default one.
+    /// A device share outside [0, 1] is an error.
+    pub fn with_route(mut self, route: &Route) -> MkResult<Self> {
+        if !(0.0..=1.0).contains(&route.device_share) {
+            return Err(mklight_core::MkError::InvalidParam(format!(
+                "aiming device share {} is not in [0, 1]",
+                route.device_share
+            )));
+        }
+        self.route = *route;
+        Ok(self)
     }
     /// This adapter with the thresholds `tuning` instead of the defaults.
     pub fn with_tuning(mut self, tuning: Tuning) -> Self {

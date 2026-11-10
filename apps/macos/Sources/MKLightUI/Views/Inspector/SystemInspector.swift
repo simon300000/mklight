@@ -244,45 +244,23 @@ struct SystemInspector: View {
 
 /// A number field inside a grid row (no label): shows the formatted value,
 /// edits the exact one, and commits on Return or when focus leaves, if the
-/// text was edited.
+/// text was edited; rejected text reverts.
 struct CompactNumber: View {
     let value: Double
     var parse: (String) -> Result<Double, LensValueParser.Failure> = LensValueParser.finite
     let commit: (Double) -> Void
-    @State private var text = ""
-    /// The text the field was given (on focus, after a commit, with a new
-    /// value): only other text is an edit.
-    @State private var base = ""
-    @FocusState private var focused: Bool
 
     var body: some View {
-        TextField("", text: $text)
-            .labelsHidden()
-            .multilineTextAlignment(.trailing)
-            .font(.body.monospacedDigit())
-            .frame(minWidth: 52, maxWidth: 76)
-            .focused($focused)
-            .onSubmit(finish)
-            .onChange(of: focused) { _, f in if f { show() } else { finish() } }
-            .onAppear(perform: show)
-            .onChange(of: value) { _, _ in if !focused || text == base { show() } }
+        CommittingField(value: value, format: entry, commit: commit) { text, _ in
+            TextField("", text: text)
+                .labelsHidden()
+                .multilineTextAlignment(.trailing)
+                .font(.body.monospacedDigit())
+                .frame(minWidth: 52, maxWidth: 76)
+        }
     }
 
-    private func show() {
-        text = focused ? NumberDisplay.exact(value) : Fmt.short(value)
-        base = text
-    }
-
-    private func finish() {
-        guard text != base else {
-            if !focused { show() }
-            return
-        }
-        if case .success(let v) = parse(text) {
-            commit(v)
-            base = text
-        } else {
-            show()
-        }
+    private var entry: FieldEdit<Double>.Format {
+        FieldEdit.Format(exact: NumberDisplay.exact, display: Fmt.short, parse: { [parse] in try? parse($0).get() })
     }
 }

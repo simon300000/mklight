@@ -1,6 +1,7 @@
 //! One-shot completion handle for asynchronous backend work.
 //!
-//! A backend returns a [`Pending`] from `submit` and keeps the matching
+//! A backend returns a [`Pending`] from `submit_plan` (and from the
+//! qualification interface's `submit`) and keeps the matching
 //! [`Completer`] and [`JobControl`]. The result is waited on from a blocking
 //! thread ([`Pending::wait`]) or polled ([`Pending::is_ready`]). Dropping a
 //! `Completer` without completing it resolves the `Pending` with a backend

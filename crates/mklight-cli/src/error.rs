@@ -13,7 +13,7 @@
 use std::fmt;
 
 use mklight_core::MkError;
-use mklight_engine::EngineError;
+use mklight_engine::{EngineError, ErrorKind};
 
 /// Process exit codes (see the module table and `docs/CLI.md`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -81,37 +81,35 @@ impl fmt::Display for CliError {
     }
 }
 
-/// Exit code of a core error.
-pub fn exit_of_core(e: &MkError) -> Exit {
-    match e {
-        MkError::Cancelled => Exit::Cancelled,
-        MkError::InvalidModel(_)
-        | MkError::UnknownMaterial(_)
-        | MkError::UnknownCoating(_)
-        | MkError::WavelengthOutOfRange { .. } => Exit::InvalidModel,
-        MkError::InvalidParam(_) | MkError::Parse(_) => Exit::Usage,
-        MkError::Io(_) => Exit::Io,
-        MkError::Trace(_)
-        | MkError::Numerical(_)
-        | MkError::Backend(_)
-        | MkError::Unsupported(_) => Exit::AnalysisFailed,
+/// Exit code of each error kind (the module table). The grouping is the
+/// CLI's own: what the user must correct decides the code, so a glass or a
+/// project file that does not resolve is "invalid model" and an unknown
+/// analysis is "usage".
+pub fn exit_of_kind(kind: ErrorKind) -> Exit {
+    match kind {
+        ErrorKind::Cancelled => Exit::Cancelled,
+        ErrorKind::InvalidModel
+        | ErrorKind::UnknownMaterial
+        | ErrorKind::WavelengthOutOfRange
+        | ErrorKind::ProjectFile => Exit::InvalidModel,
+        ErrorKind::InvalidArgument
+        | ErrorKind::InvalidSettings
+        | ErrorKind::Parse
+        | ErrorKind::UnknownAnalysis => Exit::Usage,
+        ErrorKind::Io => Exit::Io,
+        ErrorKind::Unsupported
+        | ErrorKind::Compute
+        | ErrorKind::UnknownJob
+        | ErrorKind::NotFinished
+        | ErrorKind::Timeout
+        | ErrorKind::JobFailed
+        | ErrorKind::ShutDown => Exit::AnalysisFailed,
     }
 }
 
 /// Exit code of an engine error.
 pub fn exit_of(e: &EngineError) -> Exit {
-    match e {
-        EngineError::Core(c) => exit_of_core(c),
-        EngineError::UnknownAnalysis(_) | EngineError::InvalidSettings(_) => Exit::Usage,
-        EngineError::Project(_) => Exit::InvalidModel,
-        EngineError::AnalysisUnavailable { .. }
-        | EngineError::BackendUnavailable(_)
-        | EngineError::JobFailed(_)
-        | EngineError::UnknownJob(_)
-        | EngineError::NotFinished(_)
-        | EngineError::Timeout(_)
-        | EngineError::ShutDown => Exit::AnalysisFailed,
-    }
+    exit_of_kind(e.kind())
 }
 
 impl From<EngineError> for CliError {
@@ -122,16 +120,16 @@ impl From<EngineError> for CliError {
 
 impl From<MkError> for CliError {
     fn from(e: MkError) -> Self {
-        CliError::new(exit_of_core(&e), e.to_string())
+        CliError::new(exit_of_kind(ErrorKind::of(&e)), e.to_string())
     }
 }
 
 /// Errors from opening a project file: a parse error there means the file
 /// is not a valid project (exit 2), not a command-line mistake.
 pub fn open_error(path: &std::path::Path, e: EngineError) -> CliError {
-    let exit = match &e {
-        EngineError::Core(MkError::Parse(_)) => Exit::InvalidModel,
-        other => exit_of(other),
+    let exit = match e.kind() {
+        ErrorKind::Parse => Exit::InvalidModel,
+        kind => exit_of_kind(kind),
     };
     CliError::new(exit, format!("{}: {e}", path.display()))
 }
@@ -163,6 +161,46 @@ mod tests {
         assert_eq!(c(EngineError::JobFailed("x".into())), Exit::AnalysisFailed);
         assert_eq!(c(EngineError::Project("x".into())), Exit::InvalidModel);
         assert_eq!(c(EngineError::Core(MkError::Io("x".into()))), Exit::Io);
+        // The groups the C ABI and Python draw differently (docs/CLI.md).
+        assert_eq!(
+            c(EngineError::Core(MkError::UnknownCoating("X".into()))),
+            Exit::InvalidModel
+        );
+        assert_eq!(
+            c(EngineError::Core(MkError::WavelengthOutOfRange {
+                material: "X".into(),
+                wavelength_um: 3.0,
+                min_um: 0.3,
+                max_um: 2.5,
+            })),
+            Exit::InvalidModel
+        );
+        assert_eq!(
+            c(EngineError::Core(MkError::InvalidParam("x".into()))),
+            Exit::Usage
+        );
+        assert_eq!(c(EngineError::InvalidArgument("x".into())), Exit::Usage);
+        assert_eq!(
+            c(EngineError::Core(MkError::Parse("x".into()))),
+            Exit::Usage
+        );
+        for e in [
+            EngineError::Core(MkError::Unsupported("x".into())),
+            EngineError::Core(MkError::Numerical("x".into())),
+            EngineError::BackendUnavailable("gpu:x".into()),
+            EngineError::AnalysisUnavailable {
+                name: "x".into(),
+                reason: "y".into(),
+            },
+            EngineError::UnknownJob(1),
+            EngineError::Timeout(1),
+        ] {
+            assert_eq!(c(e.clone()), Exit::AnalysisFailed, "{e}");
+        }
+        assert_eq!(
+            CliError::from(MkError::UnknownMaterial("X".into())).exit,
+            Exit::InvalidModel
+        );
         let p = std::path::Path::new("a.mklight");
         let e = open_error(p, EngineError::Core(MkError::Parse("bad".into())));
         assert_eq!(e.exit, Exit::InvalidModel);

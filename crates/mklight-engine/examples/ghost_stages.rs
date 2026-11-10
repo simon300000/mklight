@@ -62,19 +62,18 @@ fn main() {
             let cores = (cpu_ms() - c0) / ms;
             let gpu = &r.run.settings["gpu"];
             let peak = r.total_ghost_map.peak();
+            let ratio = r.total_flux_ratio.expect("the primary reaches the map");
             let diff = reference.as_ref().map_or(0., |p: &(f64, f64)| {
-                ((r.total_flux_ratio - p.0) / p.0)
-                    .abs()
-                    .max(((peak - p.1) / p.1).abs())
+                ((ratio - p.0) / p.0).abs().max(((peak - p.1) / p.1).abs())
             });
             if column == "cpu" && reference.is_none() {
-                reference = Some((r.total_flux_ratio, peak));
+                reference = Some((ratio, peak));
             }
             println!(
                 "rep {rep} {column:>10}: {ms:9.1} ms ({cores:.1} cores), {} ghosts, flux ratio {:.9e} \
                  (rel. diff {diff:.1e} vs cpu), backend {}\n    timings [wall, cpu] {}\n    host wall {}\n    host cpu {}\n    probes {} reference {}",
                 r.ghosts.len(),
-                r.total_flux_ratio,
+                ratio,
                 r.run.backend,
                 r.run.settings["timings"],
                 gpu["host_seconds"],

@@ -79,7 +79,7 @@ final class GPUPreparationMonitor {
             nil
         case .preparing(_, let done, let total):
             total > 0 ? "Preparing (\(done) of \(total))" : "Preparing"
-        case .ready(_, let kernels, let fromCache, let seconds):
+        case .ready(_, let kernels, let fromCache, let seconds, _):
             fromCache == kernels
                 ? "Ready (\(kernels), loaded from cache)"
                 : "Ready (\(kernels), prepared in \(String(format: "%.1f", seconds)) s)"
@@ -88,5 +88,12 @@ final class GPUPreparationMonitor {
         case .failed(_, let message):
             "Compiled on first use (\(message))"
         }
+    }
+
+    /// A second line for the status details: the kernels are ready, but
+    /// the saved ones could not be read or written.
+    var note: String? {
+        guard case .ready(_, _, _, _, let warning?) = state else { return nil }
+        return "Kernel cache unavailable: the next launch compiles again (\(warning))"
     }
 }

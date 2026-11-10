@@ -20,10 +20,8 @@ public struct JobProgress: Sendable, Hashable {
 /// interest in a result without killing a job another view still needs.
 public final class AnalysisJob: Sendable, Identifiable {
     public let id = UUID()
-    /// The typed request, for jobs started with `submit(_: AnalysisRequest, …)`.
-    public let request: AnalysisRequest?
-    /// The request by name, for jobs started with `submit(_: EngineAnalysisRequest, …)`.
-    public let engineRequest: EngineAnalysisRequest?
+    /// The request the job was started with.
+    public let engineRequest: EngineAnalysisRequest
     public let snapshotHash: SnapshotHash
     /// Progress updates. The stream finishes when the job ends. It has a single
     /// consumer (iterate it from one task).
@@ -33,11 +31,10 @@ public final class AnalysisJob: Sendable, Identifiable {
     private let onStop: (@Sendable () -> Bool)?
 
     public init(
-        request: AnalysisRequest?, engineRequest: EngineAnalysisRequest? = nil, snapshotHash: SnapshotHash,
-        progress: AsyncStream<JobProgress>, task: Task<AnalysisOutput, any Error>,
-        onCancel: @escaping @Sendable () -> Void = {}, onStop: (@Sendable () -> Bool)? = nil
+        engineRequest: EngineAnalysisRequest, snapshotHash: SnapshotHash, progress: AsyncStream<JobProgress>,
+        task: Task<AnalysisOutput, any Error>, onCancel: @escaping @Sendable () -> Void = {},
+        onStop: (@Sendable () -> Bool)? = nil
     ) {
-        self.request = request
         self.engineRequest = engineRequest
         self.snapshotHash = snapshotHash
         self.progress = progress
@@ -57,8 +54,8 @@ public final class AnalysisJob: Sendable, Identifiable {
     @discardableResult
     public func stop() -> Bool { onStop?() ?? false }
 
-    /// The analysis name (typed kind or engine name).
-    public var analysis: String { request?.kind.rawValue ?? engineRequest?.analysis ?? "" }
+    /// The engine's name of the analysis.
+    public var analysis: String { engineRequest.analysis }
 
     /// Waits for the result. Throws `EngineError.cancelled` if the job was
     /// cancelled.
@@ -78,32 +75,12 @@ public final class AnalysisJob: Sendable, Identifiable {
 
     /// Runs `operation` as a job on the cooperative pool. `operation` reports
     /// progress through the reporter and must check for cancellation
-    /// (`try reporter.checkCancelled()`) at bounded intervals.
-    public static func run(
-        request: AnalysisRequest, snapshot: ModelSnapshot, priority: TaskPriority = .userInitiated,
-        onCancel: @escaping @Sendable () -> Void = {},
-        operation: @escaping @Sendable (JobReporter) async throws -> AnalysisOutput
-    ) -> AnalysisJob {
-        make(
-            request: request, engineRequest: nil, snapshot: snapshot, priority: priority, onCancel: onCancel, onStop: nil,
-            operation)
-    }
-
-    /// As `run(request:…)`, for a request by name.
+    /// (`try reporter.checkCancelled()`) at bounded intervals. `onStop`
+    /// makes the job stoppable (`canStop`).
     public static func run(
         engineRequest: EngineAnalysisRequest, snapshot: ModelSnapshot, priority: TaskPriority = .userInitiated,
         onCancel: @escaping @Sendable () -> Void = {}, onStop: (@Sendable () -> Bool)? = nil,
         operation: @escaping @Sendable (JobReporter) async throws -> AnalysisOutput
-    ) -> AnalysisJob {
-        make(
-            request: nil, engineRequest: engineRequest, snapshot: snapshot, priority: priority, onCancel: onCancel,
-            onStop: onStop, operation)
-    }
-
-    private static func make(
-        request: AnalysisRequest?, engineRequest: EngineAnalysisRequest?, snapshot: ModelSnapshot,
-        priority: TaskPriority, onCancel: @escaping @Sendable () -> Void, onStop: (@Sendable () -> Bool)?,
-        _ operation: @escaping @Sendable (JobReporter) async throws -> AnalysisOutput
     ) -> AnalysisJob {
         let (stream, continuation) = AsyncStream.makeStream(of: JobProgress.self, bufferingPolicy: .bufferingNewest(8))
         let reporter = JobReporter(continuation: continuation)
@@ -116,8 +93,8 @@ public final class AnalysisJob: Sendable, Identifiable {
             return out
         }
         return AnalysisJob(
-            request: request, engineRequest: engineRequest, snapshotHash: snapshot.hash, progress: stream, task: task,
-            onCancel: onCancel, onStop: onStop)
+            engineRequest: engineRequest, snapshotHash: snapshot.hash, progress: stream, task: task, onCancel: onCancel,
+            onStop: onStop)
     }
 }
 

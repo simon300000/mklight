@@ -5,9 +5,9 @@ import Synchronization
 
 /// The Rust engine over its C ABI (`crates/mklight-ffi`, docs/FFI.md).
 ///
-/// An `FFIEngine` is one engine handle plus one **session** (a project: the
-/// current system, user glass catalogs, library hash). `makeDocumentEngine()`
-/// gives each document its own session on the shared engine.
+/// An `FFIEngine` is one engine handle plus one **session** (the current
+/// system, user glass catalogs, library hash). `makeDocumentEngine()` gives
+/// each document its own session on the shared engine.
 ///
 /// Lifetimes: the engine handle (`mk_engine_destroy`) and each session
 /// (`mk_session_destroy`) are freed when the last `FFIEngine` value and the
@@ -15,14 +15,14 @@ import Synchronization
 /// alive.
 ///
 /// Threading: `FFIEngine` is `Sendable` and may be used from any task. The C
-/// engine and sessions are thread-safe. The `EngineClient` methods never
-/// block their caller: their C calls (including waits for the session lock)
-/// run on a global dispatch queue, never on the main thread. The synchronous
-/// project helpers (`openProject`, `save`, `setSystem`, …) do block. Job events arrive on the
-/// engine's `mklight-events` thread and are forwarded to each job's
-/// `AsyncStream`s; consumers hop to the main actor themselves. A job runs
-/// against the snapshot it was submitted with: the session's system is set
-/// to that snapshot and the job submitted in one locked step.
+/// engine and sessions are thread-safe. The asynchronous `EngineClient`
+/// methods never block their caller: their C calls (including waits for the
+/// session lock) run on a global dispatch queue, never on the main thread.
+/// Job events arrive on the engine's `mklight-events` thread and are
+/// forwarded to each job's `AsyncStream`s; consumers hop to the main actor
+/// themselves. A job runs against the snapshot it was submitted with: the
+/// session's system is set to that snapshot and the job submitted in one
+/// locked step.
 ///
 /// When the library was not linked into the build, `init` throws
 /// `EngineError.libraryUnavailable` (see `FFIEngine.isLinked`).
@@ -50,14 +50,6 @@ public struct FFIEngine: EngineClient {
 
     public var info: EngineInfo {
         EngineInfo(name: "MKLight engine", version: core.version, isMock: false)
-    }
-
-    /// `mk_engine_list_backends`, verbatim. Listing the backends opens the
-    /// GPU device (shader library, numerics probe), so the call runs off
-    /// the caller's thread.
-    public func backends() async throws -> JSONValue {
-        let core = self.core
-        return try decodeJSON(JSONValue.self, try await offMain { try CABI.listBackends(core.pointer) })
     }
 
     /// A preparation the engine refuses to start is reported by
@@ -88,79 +80,15 @@ public struct FFIEngine: EngineClient {
         (error as? EngineError).map(message(of:)) ?? error.localizedDescription
     }
 
-    // MARK: Sessions and projects
+    // MARK: Sessions
 
-    /// A new untitled session on the same engine.
+    /// A new session on the same engine.
     public func newSession() throws -> FFIEngine {
         FFIEngine(core: core, session: try FFISessionHandle(core: core))
     }
 
-    /// A new session holding `system` (e.g. a sample).
-    public func newSession(system: OpticalSystem) throws -> FFIEngine {
-        let e = try newSession()
-        _ = try e.setSystem(system)
-        return e
-    }
-
     public func makeDocumentEngine() -> any EngineClient {
         (try? newSession()) ?? self
-    }
-
-    /// Opens a `.mklight` project (user catalogs loaded; missing ones are
-    /// listed in `info.openWarnings`) as a new session.
-    public func openProject(at url: URL) throws -> FFIEngine {
-        let s = try CABI.sessionOpen(core.pointer, path: url.path)
-        return FFIEngine(core: core, session: FFISessionHandle(core: core, pointer: s))
-    }
-
-    /// Atomically saves the session's project (`nil`: where it was opened
-    /// from or last saved to).
-    public func save(to url: URL? = nil) throws {
-        try session.locked { try CABI.sessionSave($0, path: url?.path) }
-    }
-
-    /// The session's project document (same schema as the file).
-    public func project() throws -> ProjectFile {
-        let text = try session.locked { try CABI.sessionProject($0) }
-        do {
-            return try ProjectFile.decode(Data(text.utf8))
-        } catch {
-            throw EngineError.engine(.parse, "project from the engine: \(error.localizedDescription)")
-        }
-    }
-
-    /// `mk_session_info_json`: path, dirty flag, hashes, open warnings,
-    /// catalogs.
-    public func sessionInfo() throws -> FFISessionInfo {
-        try decodeJSON(FFISessionInfo.self, try session.locked { try CABI.sessionInfo($0) })
-    }
-
-    /// The session's current system.
-    public func system() throws -> OpticalSystem {
-        try decodeJSON(OpticalSystem.self, try session.locked { try CABI.sessionSystem($0) })
-    }
-
-    /// Replaces the session's system (validated by the engine) and returns
-    /// its snapshot hash.
-    @discardableResult
-    public func setSystem(_ system: OpticalSystem) throws -> SnapshotHash {
-        let json = try encodeSystem(system)
-        return SnapshotHash(hex: try session.locked { try CABI.sessionSetSystem($0, json: json) })
-    }
-
-    /// Replaces a project section: `views`, `merit`, `variables`,
-    /// `tolerances` or `metadata`.
-    public func setProjectSection(_ section: String, _ value: JSONValue) throws {
-        let json = String(decoding: try MKLightJSON.encode(value), as: UTF8.self)
-        try session.locked { try CABI.sessionSetSection($0, section: section, json: json) }
-    }
-
-    public func currentSnapshotHash() throws -> SnapshotHash {
-        SnapshotHash(hex: try session.locked { try CABI.sessionSnapshotHash($0) })
-    }
-
-    public func currentLibraryHash() throws -> String {
-        try session.locked { try CABI.sessionLibraryHash($0) }
     }
 
     /// Glasses of one catalog, or of every catalog.
@@ -170,7 +98,7 @@ public struct FFIEngine: EngineClient {
         return try decodeJSON([GlassInfo].self, text)
     }
 
-    // MARK: EngineClient: snapshots and validation
+    // MARK: EngineClient: snapshots
 
     public func openSnapshot(_ system: OpticalSystem) async throws -> ModelSnapshot {
         let local = system.structuralIssues()
@@ -186,65 +114,20 @@ public struct FFIEngine: EngineClient {
                 try session.locked { s in (try CABI.sessionSetSystem(s, json: json), try CABI.sessionLibraryHash(s)) }
             }
             return ModelSnapshot(system: system, hash: SnapshotHash(hex: hash), libraryHash: library)
-        } catch let error as EngineError where error.code == .invalidModel || error.code == .parse {
-            // The engine stops at its first error; add the mirror's list.
-            let message = error.code == .parse ? (error.errorDescription ?? "") : Self.message(of: error)
+        } catch let error as EngineError
+            where error.code == .invalidModel || error.code == .parse || error.code == .invalidArgument
+        {
+            // The engine stops at its first error (a system it cannot read
+            // as one, or one that fails validation); add the mirror's list.
+            let message = error.code == .invalidModel ? Self.message(of: error) : (error.errorDescription ?? "")
             let extra = local.filter { $0.severity == .error }.map(\.description).filter { $0 != message }
             throw EngineError.invalidModel([message] + extra)
-        }
-    }
-
-    /// Every problem: the engine's `validate` analysis when the engine
-    /// accepts the system (authoritative, with severities and surfaces),
-    /// else the engine's rejection plus the mirror's structural checks.
-    public func validate(_ system: OpticalSystem) async -> [ModelIssue] {
-        let local = system.structuralIssues()
-        guard let json = try? encodeSystem(system) else { return local }
-        let session = self.session, core = self.core
-        do {
-            let text = try await offMain { () throws -> String in
-                let id = try session.locked { s -> UInt64 in
-                    _ = try CABI.sessionSetSystem(s, json: json)
-                    return try CABI.submit(s, requestJSON: #"{"analysis":"validate"}"#)
-                }
-                _ = try CABI.jobWait(core.pointer, id, timeoutMs: -1)
-                return try CABI.jobTakeResult(core.pointer, id).json
-            }
-            let envelope = try decodeJSON(JSONValue.self, text)
-            guard case .array(let issues)? = envelope["result"]?["issues"] else { return local }
-            return issues.map { i in
-                let severity: ModelIssue.Severity = i["severity"] == .string("error") ? .error : .warning
-                let surface = i["surface"]?.int
-                let code = if case .string(let c)? = i["code"] { "[\(c)] " } else { "" }
-                let message = if case .string(let m)? = i["message"] { m } else { "" }
-                return ModelIssue(severity, surface: surface, code + message)
-            }
-        } catch let error as EngineError {
-            let message = Self.message(of: error)
-            return [ModelIssue(.error, message)] + local.filter { $0.description != message }
-        } catch {
-            return local
         }
     }
 
     public func materialNames() async -> [String] {
         let names = ((try? await glasses()) ?? []).map(\.name)
         return Array(Set(names)).sorted()
-    }
-
-    public func applyParamEdits(_ edits: [ParamEdit], to snapshot: ModelSnapshot) async throws -> ModelSnapshot {
-        let json = try encodeSystem(snapshot.system)
-        let editsJSON = String(decoding: try MKLightJSON.encode(edits), as: UTF8.self)
-        let session = self.session
-        let (hash, systemJSON, library) = try await offMain {
-            try session.locked { s in
-                if try CABI.sessionSnapshotHash(s) != snapshot.hash.hex { _ = try CABI.sessionSetSystem(s, json: json) }
-                let hash = try CABI.sessionApplyEdits(s, json: editsJSON)
-                return (hash, try CABI.sessionSystem(s), try CABI.sessionLibraryHash(s))
-            }
-        }
-        let system = try decodeJSON(OpticalSystem.self, systemJSON)
-        return ModelSnapshot(system: system, hash: SnapshotHash(hex: hash), libraryHash: library)
     }
 
     /// Solves the snapshot's system in the engine (`mk_session_apply_solves`)
@@ -296,80 +179,27 @@ public struct FFIEngine: EngineClient {
 
     public func analysisDescriptors() async -> [AnalysisDescriptor] { core.descriptors }
 
-    /// A typed analysis runs as the engine analysis `kind.engineName` with
-    /// the settings its schema accepts (`AnalysisRequest.engineSettings`).
-    /// Its result decodes into the typed mirror when the JSON matches, and
-    /// is shown generically otherwise. An analysis the engine lists as
-    /// unavailable fails with `EngineError.unsupported` and its reason.
-    public func submit(_ request: AnalysisRequest, on snapshot: ModelSnapshot) -> AnalysisJob {
-        let problems = request.problems(for: snapshot.system)
-        let name = request.kind.engineName
-        guard problems.isEmpty else {
-            return AnalysisJob.run(request: request, snapshot: snapshot) { _ in throw EngineError.invalidSettings(problems) }
-        }
-        guard let descriptor = core.descriptor(name), descriptor.available else {
-            let why = core.descriptor(name)?.unavailableReason ?? "the engine has no analysis '\(name)'"
-            return AnalysisJob.run(request: request, snapshot: snapshot) { _ in
-                throw EngineError.unsupported("\(request.kind.title) is not available in this engine build: \(why)")
-            }
-        }
-        let wire = WireRequest(
-            analysis: name, settings: request.engineSettings(for: descriptor), execution: request.execution)
-        let kind = request.kind
-        return start(wire, snapshot: snapshot, request: request, engineRequest: nil) { json, buffers in
-            AnalysisResult.fromEngine(kind: kind, json: json, buffers: buffers)
-        }
-    }
-
-    /// The settings go to the engine as given: what the request leaves out
-    /// (a seed included) takes the engine's default, the one its schema
-    /// declares and the settings form shows.
-    public func submit(_ request: EngineAnalysisRequest, on snapshot: ModelSnapshot) -> AnalysisJob {
-        let wire = WireRequest(analysis: request.analysis, settings: request.settings, execution: request.execution)
-        let name = request.analysis
-        return start(wire, snapshot: snapshot, request: nil, engineRequest: request) { json, buffers in
-            .generic(GenericResult(analysis: name, json: json, buffers: buffers))
-        }
-    }
-
-    // MARK: Jobs
-
-    /// `{"analysis", "settings", "backend", "allow_backend_fallback"}`.
-    struct WireRequest: Sendable {
-        var analysis: String
-        var settings: [String: JSONValue]
-        var execution: ExecutionSettings
-
-        var json: String {
-            var o: [String: JSONValue] = ["analysis": .string(analysis), "settings": .object(settings)]
-            switch execution.backend {
-            case .auto: break
-            case .cpuReference: o["backend"] = .object(["kind": .string("cpu_reference")])
-            case .gpu:
-                o["backend"] = .object(["kind": .string("gpu"), "name": .string("metal")])
-                o["allow_backend_fallback"] = .bool(true)
-            }
-            return (try? String(decoding: MKLightJSON.encode(JSONValue.object(o)), as: UTF8.self)) ?? "{}"
-        }
-    }
-
+    /// Runs the analysis in the engine. The settings go as given: what the
+    /// request leaves out (a seed included) takes the engine's default, the
+    /// one its schema declares and the settings form shows.
+    ///
     /// Sets the session to `snapshot`, submits, and bridges the job: engine
     /// events → `JobReporter` progress; the terminal state → the result,
     /// taken (and its buffers wrapped) right away; `cancel()` →
     /// `mk_job_cancel`. Submission errors (unknown analysis, invalid
-    /// settings, unavailable backend) fail the job at once.
+    /// settings, unavailable backend) fail the job at once. A job that
+    /// fails while running throws the error of its own status code (an
+    /// unknown glass is `notFound`, a numerical failure `compute`), as a
+    /// submission error does.
     ///
     /// Nothing here blocks the caller (usually the main actor): encoding
     /// the system, waiting for the session lock (held during e.g. a catalog
     /// load) and the set-system-and-submit step all run in the job's task,
     /// the C calls through `offMain`. A job cancelled before it reached the
     /// engine is never submitted.
-    private func start(
-        _ wire: WireRequest, snapshot: ModelSnapshot, request: AnalysisRequest?, engineRequest: EngineAnalysisRequest?,
-        decode: @escaping @Sendable (JSONValue, [ResultBuffer]) -> AnalysisResult
-    ) -> AnalysisJob {
+    public func submit(_ request: EngineAnalysisRequest, on snapshot: ModelSnapshot) -> AnalysisJob {
         let core = self.core, session = self.session
-        let requestJSON = wire.json
+        let requestJSON = Self.wireJSON(request)
         let submission = Submission()
         let (progress, continuation) = AsyncStream.makeStream(of: JobProgress.self, bufferingPolicy: .bufferingNewest(8))
         let reporter = JobReporter(continuation: continuation)
@@ -425,21 +255,32 @@ public struct FFIEngine: EngineClient {
             let library: String? = if case .string(let h)? = envelope["library_hash"] { h } else { nil }
             reporter.report(1, stage: "Done")
             return AnalysisOutput(
-                runInfo: runInfo, result: decode(envelope["result"] ?? .null, buffers), libraryHash: library,
-                request: request, engineRequest: engineRequest, backend: BackendReport(json: envelope["backend"]))
+                runInfo: runInfo, json: envelope["result"] ?? .null, buffers: buffers, libraryHash: library,
+                engineRequest: request, backend: BackendReport(json: envelope["backend"]))
         }
         return AnalysisJob(
-            request: request, engineRequest: engineRequest, snapshotHash: snapshot.hash, progress: progress, task: task,
+            engineRequest: request, snapshotHash: snapshot.hash, progress: progress, task: task,
             onCancel: { if let id = submission.cancel() { try? CABI.jobCancel(core.pointer, id) } },
-            onStop: Self.stoppable.contains(wire.analysis)
+            onStop: core.stoppable.contains(request.analysis)
                 ? { @Sendable in
                     guard let id = submission.requestStop() else { return true }
                     return (try? CABI.jobStop(core.pointer, id)) != nil
                 } : nil)
     }
 
-    /// Analyses `mk_job_stop` can stop (ABI 1.2).
-    static let stoppable: Set<String> = ["optimize", "tolerance", "glass_substitution"]
+    /// The request as the C ABI takes it: `{"analysis", "settings",
+    /// "backend", "allow_backend_fallback"}`.
+    static func wireJSON(_ request: EngineAnalysisRequest) -> String {
+        var o: [String: JSONValue] = ["analysis": .string(request.analysis), "settings": .object(request.settings)]
+        switch request.execution.backend {
+        case .auto: break
+        case .cpuReference: o["backend"] = .object(["kind": .string("cpu_reference")])
+        case .gpu:
+            o["backend"] = .object(["kind": .string("gpu"), "name": .string("metal")])
+            o["allow_backend_fallback"] = .bool(true)
+        }
+        return (try? String(decoding: MKLightJSON.encode(JSONValue.object(o)), as: UTF8.self)) ?? "{}"
+    }
 
     static func message(of error: EngineError) -> String {
         switch error {
@@ -487,23 +328,6 @@ final class Submission: Sendable {
             if case .submitted(let id) = s { return id }
             return nil
         }
-    }
-}
-
-/// `mk_session_info_json`.
-public struct FFISessionInfo: Codable, Sendable, Hashable {
-    public var sessionID: UInt64
-    public var path: String?
-    public var dirty: Bool
-    public var snapshotHash: String
-    public var libraryHash: String
-    public var name: String
-    public var openWarnings: [String]
-    public var catalogs: [CatalogInfo]
-
-    private enum CodingKeys: String, CodingKey {
-        case sessionID = "session_id", path, dirty, snapshotHash = "snapshot_hash", libraryHash = "library_hash", name
-        case openWarnings = "open_warnings", catalogs
     }
 }
 

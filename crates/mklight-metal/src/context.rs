@@ -57,45 +57,9 @@ pub enum LibraryOrigin {
     RuntimeSource,
 }
 
-/// Kernel arithmetic. `PureF32` (the `MKLIGHT_PURE_F32` metallib, docs/GPU.md
-/// §3.6) is an opt-in measurement mode, not qualified for OPD, wave or aiming
-/// results; default construction (including engine Auto) is DoubleFloat.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum MetalPrecision {
-    #[default]
-    DoubleFloat,
-    PureF32,
-}
-
-impl MetalPrecision {
-    pub fn name(self) -> &'static str {
-        match self {
-            Self::DoubleFloat => "double_float",
-            Self::PureF32 => "pure_f32",
-        }
-    }
-}
-
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct MetalOptions {
     pub library: LibraryChoice,
-    pub precision: MetalPrecision,
-}
-
-impl MetalOptions {
-    /// Defaults, with `MKLIGHT_METAL_PRECISION=f32` selecting `PureF32` for
-    /// benchmarks. Only explicit callers read it; `default()` never does.
-    pub fn from_env() -> Self {
-        let f32 = std::env::var("MKLIGHT_METAL_PRECISION").is_ok_and(|v| v == "f32");
-        Self {
-            precision: if f32 {
-                MetalPrecision::PureF32
-            } else {
-                MetalPrecision::DoubleFloat
-            },
-            ..Self::default()
-        }
-    }
 }
 
 /// Completed command-buffer GPU time in this process, nanoseconds
@@ -353,39 +317,26 @@ type Library = (
 fn load_library(
     device: &ProtocolObject<dyn MTLDevice>,
     choice: LibraryChoice,
-    precision: MetalPrecision,
 ) -> MkResult<Library> {
     let precompiled = || -> MkResult<Library> {
-        let (metallib, flags) = match precision {
-            MetalPrecision::DoubleFloat => (shaders::METALLIB, shaders::OFFLINE_FLAGS),
-            MetalPrecision::PureF32 => (shaders::METALLIB_F32, shaders::OFFLINE_FLAGS_F32),
-        };
-        let bytes = metallib.ok_or_else(|| {
+        let bytes = shaders::METALLIB.ok_or_else(|| {
             MkError::Unsupported("no precompiled metallib was embedded at build time".into())
         })?;
         let data = DispatchData::from_static_bytes(bytes);
         let lib = device
             .newLibraryWithData_error(&data)
             .map_err(|e| ns_error("loading embedded metallib", &e))?;
-        let desc = format!("{} precompiled metallib, flags: {flags}", precision.name());
+        let desc = format!("precompiled metallib, flags: {}", shaders::OFFLINE_FLAGS);
         Ok((lib, LibraryOrigin::Precompiled, desc))
     };
     let runtime = || -> MkResult<Library> {
-        let source = if precision == MetalPrecision::PureF32 {
-            format!("#define MKLIGHT_PURE_F32 1\n{}", shaders::SOURCE)
-        } else {
-            shaders::SOURCE.to_string()
-        };
-        let src = NSString::from_str(&source);
+        let src = NSString::from_str(shaders::SOURCE);
         let compile = |v, name: &str| {
             let (opts, desc) = compile_options(v);
             device
                 .newLibraryWithSource_options_error(&src, Some(&opts))
                 .map(|l| {
-                    let d = format!(
-                        "{} runtime-compiled source, MSL {name}, {desc}",
-                        precision.name()
-                    );
+                    let d = format!("runtime-compiled source, MSL {name}, {desc}");
                     (l, LibraryOrigin::RuntimeSource, d)
                 })
         };
@@ -411,8 +362,7 @@ impl MetalContext {
                 .newCommandQueue()
                 .ok_or_else(|| MkError::Backend("cannot create a command queue".into()))?;
             queue.setLabel(Some(&NSString::from_str("mklight")));
-            let (library, origin, library_build) =
-                load_library(&device, opts.library, opts.precision)?;
+            let (library, origin, library_build) = load_library(&device, opts.library)?;
             Ok(Some(MetalContext {
                 device,
                 queue,
@@ -675,12 +625,7 @@ impl MetalContext {
     /// source a runtime library was compiled from.
     fn library_identity(&self) -> &'static [u8] {
         match self.origin {
-            LibraryOrigin::Precompiled => if self.library_build.starts_with("pure_f32") {
-                shaders::METALLIB_F32
-            } else {
-                shaders::METALLIB
-            }
-            .unwrap_or_default(),
+            LibraryOrigin::Precompiled => shaders::METALLIB.unwrap_or_default(),
             LibraryOrigin::RuntimeSource => shaders::SOURCE.as_bytes(),
         }
     }

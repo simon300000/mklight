@@ -463,7 +463,7 @@ overrides.
 ## 9. Resident scalar-wave service
 
 `mklight_wave::gpu` composes the `aiming` (aiming, tracing, projection),
-`transforms`, `collectives` (reductions, QR), `geometry` (field maps,
+`transforms`, `collectives` (sorts, segmented reductions), `geometry` (field maps,
 illumination) and `radiometry` (scalar throughput) operations of
 `mklight-gpu` through the single `ComputeBackend` resident API. The engine's native wave routes call
 it without changing the reference registry; capability and `auto` routing
@@ -478,13 +478,13 @@ parallel) and the device (`gpu::split`): the host traces the pupil
 lattices with the reference tracer (`trace_lattice`), resamples and refines
 the pupils and makes every sampling decision that reads them; the device
 runs the transforms (PSFs, OTFs, focus sweeps, energy, line spreads,
-wavefront statistics, convolution).
+convolution). `wavefront_map` has no device stage and no GPU path: its
+statistics, Strehl ratio and Zernike fit are reductions of the f64 pupils
+and lattices the host holds, so the CPU reference computes it
+(`analysis::wavefront_map_shared`, §5).
 
 Host lattices are the reference's own `PupilLattice`s (shared with the CPU
-analyses through the engine memo, `shared`), and their wavefront maps use
-the reference's lattice Zernike fit (identical Zernike sets and Seidel
-terms, so explicit Metal requests run them; `auto` keeps `wavefront_map`
-on the reference until the cost model is calibrated for it). Host
+analyses through the engine memo, `shared`). Host
 resampling yields the reference's `PupilFunction`s, written into shared
 allocations in place, so the native jobs make the reference's own sampling
 decisions (pupil grids and refinements, image windows, automatic
@@ -583,18 +583,14 @@ minimum Chebyshev distance and the lowest row-major source tie are preserved.
 
 ### Native results and composition
 
-`gpu::analysis` exposes backend-taking job variants of all seven native wave
-analyses: wavefront, PSF, MTF, field MTF, through-focus MTF, diffraction energy
+`gpu::analysis` exposes backend-taking job variants of the six native wave
+analyses: PSF, MTF, field MTF, through-focus MTF, diffraction energy
 and line spread. Results retain their existing types, selected sampling,
 references, warnings and `RunInfo`. `resident` metadata includes the device,
 probe/build, plan version and aggregated stage/copy/fallback statistics.
 Configured callers still apply `ConfiguredTracer::stamp` to retain the base
 snapshot and configuration identity.
 
-* Wavefront statistics use Debye weights, double-float reductions and a
-  three-column `collectives` QR tilt fit (device basis evaluation, pivoted and
-  reorthogonalised QR; a rank failure is an error). The Zernike fit and
-  Seidel terms are the reference's own, from the host lattice (§9).
 * `append_psf`, `append_huygens`, `append_correlation` and `append_fft_otf`
   compose into caller plans. FFT/chirp/affine transforms
   preserve the reference's negligible-skew rule before satisfying the exact

@@ -4,8 +4,9 @@ import SwiftUI
 
 /// A labelled number in an inspector form: shows the formatted value, edits
 /// the exact one, accepts `∞` where the parser does, and commits on Return
-/// or when focus leaves, if the text was edited. An optional `V` toggle
-/// makes it a variable.
+/// or when focus leaves, if the text was edited; rejected text reverts,
+/// with the reason under the field. An optional `V` toggle makes it a
+/// variable.
 struct NumberField: View {
     let title: String
     /// What the value means, shown after the title (e.g. `r⁴` after `A₄`).
@@ -22,28 +23,20 @@ struct NumberField: View {
     /// surface is committed to that surface.
     var owner: SurfaceID?
     let commit: (Double) -> Void
-    @State private var text = ""
-    /// The text the field was given (on focus, after a commit, with a new
-    /// value): only other text is an edit.
-    @State private var base = ""
-    /// The owner and the commit of the object the text was typed for.
-    @State private var typed: (owner: SurfaceID?, commit: (Double) -> Void)?
     @State private var error: String?
-    @FocusState private var focused: Bool
 
     var body: some View {
         LabeledContent {
             HStack(spacing: Space.xs) {
-                TextField(title, text: $text, prompt: Text(""))
-                    .labelsHidden()
-                    .multilineTextAlignment(.trailing)
-                    .font(.body.monospacedDigit())
-                    .focused($focused)
-                    .onSubmit(finish)
-                    .onChange(of: focused) { _, f in if f { show() } else { finish() } }
-                    .onChange(of: text) { _, t in
-                        if focused && t != base { typed = (owner, commit) } else if typed != nil { typed = nil }
-                    }
+                CommittingField(
+                    value: value, owner: owner.map(AnyHashable.init), format: entry,
+                    rejected: { text in error = text.flatMap(failure) }, commit: { if let v = $0 { commit(v) } }
+                ) { text, _ in
+                    TextField(title, text: text, prompt: Text(""))
+                        .labelsHidden()
+                        .multilineTextAlignment(.trailing)
+                        .font(.body.monospacedDigit())
+                }
                 if !unit.isEmpty {
                     Text(unit).foregroundStyle(.secondary).frame(minWidth: 22, alignment: .leading)
                 }
@@ -63,46 +56,21 @@ struct NumberField: View {
             }
             .help(help)
         }
-        .onAppear(perform: show)
-        .onChange(of: value) { _, _ in
-            // An edit in progress stays; text that was not edited follows the value.
-            if !focused { error = nil }
-            if !focused || text == base { show() }
-        }
         .overlay(alignment: .bottomTrailing) {
             if let error { Text(error).font(.caption2).foregroundStyle(.red).offset(y: 12) }
         }
     }
 
-    /// Shows the value: every digit while the field has the focus, the
-    /// formatted value otherwise.
-    private func show() {
-        text = focused ? value.map(NumberDisplay.exact) ?? "" : value.map(Fmt.short) ?? ""
-        base = text
+    /// No value shows as an empty field; typed text is always a number.
+    private var entry: FieldEdit<Double?>.Format {
+        FieldEdit.Format(
+            exact: { $0.map(NumberDisplay.exact) ?? "" }, display: { $0.map(Fmt.short) ?? "" },
+            parse: { [parse] text in (try? parse(text).get()).map(Optional.some) })
     }
 
-    private func finish() {
-        // Text typed while the field showed another owner goes to that owner.
-        let other = typed.flatMap { $0.owner == owner ? nil : $0.commit }
-        if typed != nil { typed = nil }
-        guard text != base else {
-            error = nil
-            if !focused { show() }
-            return
-        }
-        switch (parse(text), other) {
-        case (.success(let v), let other?):
-            error = nil
-            other(v)
-            show()
-        case (.success(let v), nil):
-            error = nil
-            commit(v)
-            base = text
-        case (.failure(let f), let other):
-            error = other == nil ? f.description : nil
-            show()
-        }
+    /// Why `text` is not a value.
+    private func failure(_ text: String) -> String? {
+        if case .failure(let f) = parse(text) { f.description } else { nil }
     }
 }
 
@@ -176,50 +144,22 @@ struct TextValueField: View {
     /// The surface the value belongs to (see `NumberField.owner`).
     var owner: SurfaceID?
     let commit: (String) -> Void
-    @State private var text = ""
-    /// The value the text was last set from: only other text is an edit.
-    @State private var base = ""
-    /// The owner and the commit of the object the text was typed for.
-    @State private var typed: (owner: SurfaceID?, commit: (String) -> Void)?
-    @FocusState private var focused: Bool
 
     var body: some View {
         LabeledContent(title) {
-            TextField(title, text: $text, prompt: Text(prompt))
-                .labelsHidden()
-                .multilineTextAlignment(.trailing)
-                .focused($focused)
-                .onSubmit(finish)
-                .onChange(of: focused) { _, f in if !f { finish() } }
-                .onChange(of: text) { _, t in
-                    if focused && t != base { typed = (owner, commit) } else if typed != nil { typed = nil }
-                }
-                .materialSuggestions(focused ? matches : [])
-        }
-        .onAppear(perform: show)
-        .onChange(of: value) { _, _ in if !focused || text == base { show() } }
-    }
-
-    private func show() {
-        text = value
-        base = value
-    }
-
-    private func finish() {
-        // Text typed while the field showed another owner goes to that owner.
-        let other = typed.flatMap { $0.owner == owner ? nil : $0.commit }
-        if typed != nil { typed = nil }
-        guard text != base else { return }
-        if let other {
-            other(text)
-            show()
-        } else {
-            if text != value { commit(text) }
-            base = text
+            CommittingField(value: value, owner: owner.map(AnyHashable.init), format: Self.entry, commit: commit) { text, focused in
+                TextField(title, text: text, prompt: Text(prompt))
+                    .labelsHidden()
+                    .multilineTextAlignment(.trailing)
+                    .materialSuggestions(focused ? matches(text.wrappedValue) : [])
+            }
         }
     }
 
-    private var matches: [String] {
+    /// The text is the value.
+    private static let entry = FieldEdit<String>.Format(exact: { $0 }, display: { $0 }, parse: { $0 })
+
+    private func matches(_ text: String) -> [String] {
         let q = text.uppercased()
         guard !q.isEmpty, !suggestions.isEmpty else { return [] }
         return Array(suggestions.filter { $0.uppercased().hasPrefix(q) && $0.uppercased() != q }.prefix(12))

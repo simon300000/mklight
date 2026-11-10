@@ -302,22 +302,6 @@ pub const FIELDS: &[(&str, &[Rule])] = &[
         ],
     ),
     (
-        "encircled_energy",
-        &[
-            on("fields[].encircled[]", Modulation, "radius[]"),
-            on("fields[].ensquared[]", Modulation, "radius[]"),
-            r("fields[].field", Exact),
-            r("fields[].field_value[]", Exact),
-            r("fields[].half_width80", Quantile),
-            r("fields[].r50", Quantile),
-            r("fields[].r80", Quantile),
-            r("fields[].r90", Quantile),
-            r("fields[].rays_arrived", Exact),
-            r("radius[]", Position),
-            r("wavelengths[]", Exact),
-        ],
-    ),
-    (
         "field_curvature_distortion",
         &[
             on(
@@ -612,38 +596,6 @@ pub const FIELDS: &[(&str, &[Rule])] = &[
             ),
             r("fields[].tangential[].wavelength", Exact),
             r("wavelengths_um[]", Exact),
-        ],
-    ),
-    (
-        "polarization_pupil_map",
-        &[
-            r("field.hx", Exact),
-            r("field.hy", Exact),
-            r("field.vignetting.vcx", Exact),
-            r("field.vignetting.vcy", Exact),
-            r("field.vignetting.vdx", Exact),
-            r("field.vignetting.vdy", Exact),
-            r("grid", Exact),
-            r("max_diattenuation", Polarimetric),
-            r("max_retardance", Retardance),
-            r("mean_intensity", Polarimetric),
-            r("rms_retardance", Retardance),
-            r("sample_count", Exact),
-            r("undefined_retarder", Exact),
-            r("wavelength", Exact),
-            r("wavelength_um", Exact),
-            r("@diattenuation", Polarimetric),
-            r("@diattenuation_axis", Generic),
-            r("@fast_axis", FastAxis),
-            r("@intensity", Polarimetric),
-            r("@jones", Jones),
-            r("@pupil", Exact),
-            r("@reached", Exact),
-            r("@retardance", Retardance),
-            r("@retardance_jones", Retardance),
-            r("@retarder_defined", Exact),
-            r("@t_max", Polarimetric),
-            r("@t_min", Polarimetric),
         ],
     ),
     (
@@ -967,56 +919,6 @@ pub const FIELDS: &[(&str, &[Rule])] = &[
             on("@tangential_*", Modulation, "@focus_mm"),
         ],
     ),
-    (
-        "wavefront_map",
-        &[
-            r("maps[].exit_pupil.chief_direction[]", Direction),
-            r("maps[].exit_pupil.chief_point_mm[]", Position),
-            r("maps[].exit_pupil.clear_area", Generic),
-            r("maps[].exit_pupil.effective_f_number", FNumber),
-            r("maps[].exit_pupil.exit_pupil_point_mm[]", Position),
-            r("maps[].exit_pupil.image_index", Exact),
-            r("maps[].exit_pupil.lattice_rays", Exact),
-            r("maps[].exit_pupil.numerical_aperture", Direction),
-            r("maps[].exit_pupil.paraxial_position_mm", Position),
-            r("maps[].exit_pupil.paraxial_radius_mm", Position),
-            r("maps[].exit_pupil.propagation_sign", Exact),
-            r("maps[].exit_pupil.reference_point_mm[]", Position),
-            r("maps[].exit_pupil.reference_radius_mm", Position),
-            r("maps[].exit_pupil.rim_points", Exact),
-            r("maps[].exit_pupil.sin_max", Direction),
-            r("maps[].exit_pupil.surviving_rays", Exact),
-            r("maps[].exit_pupil.transmitted_fraction", Generic),
-            r("maps[].exit_pupil.wavelength_um", Exact),
-            r("maps[].field", Exact),
-            r("maps[].field_value[]", Exact),
-            r("maps[].grid", Sampling),
-            r("maps[].pv_waves", Waves),
-            r("maps[].pv_waves_tilt_removed", Waves),
-            r("maps[].rms_waves", Waves),
-            r("maps[].rms_waves_tilt_removed", Waves),
-            r("maps[].seidel.astigmatism", Waves),
-            r("maps[].seidel.astigmatism_angle_deg", Orientation(180.)),
-            r("maps[].seidel.coma", Waves),
-            r("maps[].seidel.coma_angle_deg", Orientation(360.)),
-            r("maps[].seidel.focus", Waves),
-            r("maps[].seidel.piston", Waves),
-            r("maps[].seidel.spherical", Waves),
-            r("maps[].seidel.tilt", Waves),
-            r("maps[].seidel.tilt_angle_deg", Orientation(360.)),
-            r("maps[].strehl_at_reference", Modulation),
-            r("maps[].strehl_marechal", Modulation),
-            r("maps[].wavelength", Exact),
-            r("maps[].wavelength_um", Exact),
-            r("maps[].zernike_condition", Diagnostic),
-            r("maps[].zernike_residual_rms", Waves),
-            on("@amplitude_*", Generic, "@coordinates_*"),
-            r("@coefficients_*", Waves),
-            r("@coordinates_*", Generic),
-            on("@opd_waves_*", Waves, "@coordinates_*"),
-            r("@rim_*", Loop),
-        ],
-    ),
 ];
 
 /// The solvers' physical score reports as `project_bench` compares them
@@ -1129,6 +1031,22 @@ pub const REFERENCE_ONLY: &[(&str, &[Rule])] = &[
         ],
     ),
     (
+        "encircled_energy",
+        &[
+            on("fields[].encircled[]", Modulation, "radius[]"),
+            on("fields[].ensquared[]", Modulation, "radius[]"),
+            r("fields[].field", Exact),
+            r("fields[].field_value[]", Exact),
+            r("fields[].half_width80", Quantile),
+            r("fields[].r50", Quantile),
+            r("fields[].r80", Quantile),
+            r("fields[].r90", Quantile),
+            r("fields[].rays_arrived", Exact),
+            r("radius[]", Position),
+            r("wavelengths[]", Exact),
+        ],
+    ),
+    (
         "first_order",
         &[
             r("entries[].value", Entry),
@@ -1146,6 +1064,38 @@ pub const REFERENCE_ONLY: &[(&str, &[Rule])] = &[
     (
         "glass_map",
         &[r("glasses[].*", Exact), r("@coordinates", Exact)],
+    ),
+    (
+        "polarization_pupil_map",
+        &[
+            r("field.hx", Exact),
+            r("field.hy", Exact),
+            r("field.vignetting.vcx", Exact),
+            r("field.vignetting.vcy", Exact),
+            r("field.vignetting.vdx", Exact),
+            r("field.vignetting.vdy", Exact),
+            r("grid", Exact),
+            r("max_diattenuation", Polarimetric),
+            r("max_retardance", Retardance),
+            r("mean_intensity", Polarimetric),
+            r("rms_retardance", Retardance),
+            r("sample_count", Exact),
+            r("undefined_retarder", Exact),
+            r("wavelength", Exact),
+            r("wavelength_um", Exact),
+            r("@diattenuation", Polarimetric),
+            r("@diattenuation_axis", Generic),
+            r("@fast_axis", FastAxis),
+            r("@intensity", Polarimetric),
+            r("@jones", Jones),
+            r("@pupil", Exact),
+            r("@reached", Exact),
+            r("@retardance", Retardance),
+            r("@retardance_jones", Retardance),
+            r("@retarder_defined", Exact),
+            r("@t_max", Polarimetric),
+            r("@t_min", Polarimetric),
+        ],
     ),
     (
         "rng_stream",
@@ -1201,6 +1151,56 @@ pub const REFERENCE_ONLY: &[(&str, &[Rule])] = &[
         ],
     ),
     ("validate", &[r("*", Exact)]),
+    (
+        "wavefront_map",
+        &[
+            r("maps[].exit_pupil.chief_direction[]", Direction),
+            r("maps[].exit_pupil.chief_point_mm[]", Position),
+            r("maps[].exit_pupil.clear_area", Generic),
+            r("maps[].exit_pupil.effective_f_number", FNumber),
+            r("maps[].exit_pupil.exit_pupil_point_mm[]", Position),
+            r("maps[].exit_pupil.image_index", Exact),
+            r("maps[].exit_pupil.lattice_rays", Exact),
+            r("maps[].exit_pupil.numerical_aperture", Direction),
+            r("maps[].exit_pupil.paraxial_position_mm", Position),
+            r("maps[].exit_pupil.paraxial_radius_mm", Position),
+            r("maps[].exit_pupil.propagation_sign", Exact),
+            r("maps[].exit_pupil.reference_point_mm[]", Position),
+            r("maps[].exit_pupil.reference_radius_mm", Position),
+            r("maps[].exit_pupil.rim_points", Exact),
+            r("maps[].exit_pupil.sin_max", Direction),
+            r("maps[].exit_pupil.surviving_rays", Exact),
+            r("maps[].exit_pupil.transmitted_fraction", Generic),
+            r("maps[].exit_pupil.wavelength_um", Exact),
+            r("maps[].field", Exact),
+            r("maps[].field_value[]", Exact),
+            r("maps[].grid", Sampling),
+            r("maps[].pv_waves", Waves),
+            r("maps[].pv_waves_tilt_removed", Waves),
+            r("maps[].rms_waves", Waves),
+            r("maps[].rms_waves_tilt_removed", Waves),
+            r("maps[].seidel.astigmatism", Waves),
+            r("maps[].seidel.astigmatism_angle_deg", Orientation(180.)),
+            r("maps[].seidel.coma", Waves),
+            r("maps[].seidel.coma_angle_deg", Orientation(360.)),
+            r("maps[].seidel.focus", Waves),
+            r("maps[].seidel.piston", Waves),
+            r("maps[].seidel.spherical", Waves),
+            r("maps[].seidel.tilt", Waves),
+            r("maps[].seidel.tilt_angle_deg", Orientation(360.)),
+            r("maps[].strehl_at_reference", Modulation),
+            r("maps[].strehl_marechal", Modulation),
+            r("maps[].wavelength", Exact),
+            r("maps[].wavelength_um", Exact),
+            r("maps[].zernike_condition", Diagnostic),
+            r("maps[].zernike_residual_rms", Waves),
+            on("@amplitude_*", Generic, "@coordinates_*"),
+            r("@coefficients_*", Waves),
+            r("@coordinates_*", Generic),
+            on("@opd_waves_*", Waves, "@coordinates_*"),
+            r("@rim_*", Loop),
+        ],
+    ),
 ];
 
 /// The class of a first-order table entry `{key, unit, value}` (`Entry`):
@@ -2257,6 +2257,7 @@ impl Comparison {
     fn is_axis(&self, path: &str) -> bool {
         FIELDS
             .iter()
+            .chain(REFERENCE_ONLY)
             .find(|(a, _)| *a == self.analysis)
             .is_some_and(|(_, rules)| {
                 rules
@@ -2353,13 +2354,10 @@ pub fn solver_scores(analysis: &str, v: &Value) -> Value {
 /// Native attempts that did not produce the published result, as
 /// `backend outcome: reason` lines. A failed, skipped (a cached
 /// deterministic failure) or reference-completed native run is a
-/// native failure even when the reference fallback succeeded; `downgraded`
-/// (the static capability list ran an explicit request on the reference) is
-/// a deliberate route, not a failure.
+/// native failure even when the reference fallback succeeded.
 pub fn native_failures(info: &mklight_core::RunInfo) -> Vec<String> {
     info.failed_attempts
         .iter()
-        .filter(|a| a.outcome != "downgraded")
         .map(|a| format!("{} {}: {}", a.backend, a.outcome, a.reason))
         .collect()
 }

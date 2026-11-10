@@ -558,24 +558,28 @@ struct CandidateForm: View {
     }
 }
 
-/// Comma-separated glass names.
+/// Comma-separated glass names. Commits on Return or when focus leaves, if
+/// the text was edited.
 private struct NameListField: View {
     let title: String
     @Binding var names: [String]
     let prompt: String
-    @State private var text = ""
 
     var body: some View {
         LabeledContent(title) {
-            TextField(title, text: $text, prompt: Text(prompt))
-                .labelsHidden()
-                .textFieldStyle(.roundedBorder)
-                .frame(width: 150)
-                .onSubmit { names = GlassCandidates.names(text) }
-                .onAppear { text = names.joined(separator: ", ") }
-                .onChange(of: names) { _, v in text = v.joined(separator: ", ") }
+            CommittingField(value: names, format: Self.entry, commit: { names = $0 }) { text, _ in
+                TextField(title, text: text, prompt: Text(prompt))
+                    .labelsHidden()
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 150)
+            }
         }
     }
+
+    static let entry: FieldEdit<[String]>.Format = {
+        let text: ([String]) -> String = { $0.joined(separator: ", ") }
+        return FieldEdit.Format(exact: text, display: text, parse: GlassCandidates.names)
+    }()
 }
 
 /// The design's and the candidate's layouts, one above the other.

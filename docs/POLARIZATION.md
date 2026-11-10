@@ -369,8 +369,8 @@ The separate-s/p product is a diagnostic for the ghost approximation; it is
 not substituted for PRT on non-coplanar paths. As with `vector_pupil` and
 `PolarizedRay`, these raw pupil channels exclude DOE efficiency. The
 `system_transmission` adapter multiplies by the reference selected-order
-factor, as the CPU transmission job does. A wave or pupil-map adapter must
-apply its existing DOE factor once.
+factor, as the CPU transmission job does. A wave adapter must apply its
+existing DOE factor once.
 
 `append_summary` extracts channel-major double-float data and uses the
 fixed segmented tree of `collectives`. The ten
@@ -382,9 +382,10 @@ numerically failed rays are excluded from the transmission denominator.
 
 `pupil_plan` builds generation → recorded trace → transport → summary with
 no intermediate optical readback. `pupil` is its cancellable
-host result adapter; `system_transmission` and `polarization_pupil_map`
-expose the existing result types for all requested fields/wavelengths.
-Reference-required pupil rows and unresolved aims are evaluated with the f64
+host result adapter: the entry of the transport's offline qualification
+(`tests/p7_radiometry.rs`); no analysis runs through it.
+`system_transmission` exposes the reference's result type for all requested
+fields/wavelengths. Reference-required pupil rows and unresolved aims are evaluated with the f64
 tracer and counted in metadata. Only when such rows change is the final
 summary rebuilt in f64, in original input order, with a warning. The
 physical undefined-retarder contrast remains 1e-24; the device requests f64
@@ -424,8 +425,10 @@ rows run in blocks of at least 4096 rays (about four): the GPU traces block
 k while the CPU aims block k+1. Unpolarised rows use the scalar transport
 kernel; the sums, denominators and failure counts are the reference's.
 `pupil` traces its reference-completed rays in parallel before merging them
-in pupil order (unchanged results). `polarization_pupil_map` stays on the
-reference by static capability (undefined polarisation axes).
+in pupil order (unchanged results). `polarization_pupil_map` has no device
+path: the CPU reference computes it (§5), because the fast and diattenuation
+axes of samples whose retardance or diattenuation vanishes are not
+reproducible in device arithmetic.
 
 Tests are `tests/p7_radiometry.rs` in both GPU crates; host Metal tests require
 a device and exercise both precompiled and runtime-source libraries. The

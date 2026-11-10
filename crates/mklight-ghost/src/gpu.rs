@@ -496,7 +496,20 @@ pub(crate) fn ray_out(v: Value) -> crate::irradiance::RayOut {
         _ => Ok(None),
     }
 }
-/// Explicit GPU job; unsupported setup is returned to the engine adapter.
+/// Whether the device map chain bins `maps` maps of `bins` pixels exactly
+/// (`ghost_ops::leaf_words_exact`); a larger request is unsupported, so its
+/// caller runs the CPU reference.
+fn check_map_keys(bins: [usize; 2], maps: usize) -> MkResult<()> {
+    if op::leaf_words_exact(bins.map(|v| v as u64), maps as u64) {
+        return Ok(());
+    }
+    Err(MkError::Unsupported(format!(
+        "ghost map binning beyond {} pixels per map requires the reference",
+        op::LEAF_WORD_MAX
+    )))
+}
+/// Explicit GPU job; unsupported setup is returned to the engine adapter,
+/// before any device work where the settings alone decide it.
 /// Probes the device flags for reference arithmetic are completed by the
 /// CPU f64 reference and counted by the scheduler.
 pub fn ghost_irradiance(
@@ -505,6 +518,7 @@ pub fn ghost_irradiance(
     settings: &crate::IrradianceSettings,
     ctx: &JobContext,
 ) -> MkResult<crate::GhostIrradiance> {
+    check_map_keys(settings.map_bins, 1)?;
     crate::irradiance::ghost_irradiance_with_backend(model, settings, ctx, Some(backend))
 }
 
@@ -526,6 +540,7 @@ impl GhostTransport<'_> {
     ) -> MkResult<MapData> {
         use mklight_gpu::collectives::*;
         let maps = summaries.len();
+        check_map_keys(template.bins, maps)?;
         let nb = template.values.len() * maps;
         let n = leaves.len();
         use rayon::prelude::*;
@@ -1244,4 +1259,28 @@ fn material_identity(
         hash.update(block);
     }
     Ok(hash.finalize().to_hex().to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The device map chain is exact up to 2^24 pixels per map and that many
+    /// map indices; anything larger is unsupported, not an error of the run.
+    #[test]
+    fn map_keys_are_limited_to_exact_leaf_words() {
+        check_map_keys([4096, 4096], 1).unwrap();
+        check_map_keys([1 << 24, 1], (1 << 24) + 1).unwrap();
+        for (bins, maps) in [
+            ([4097, 4096], 1),
+            ([1, (1 << 24) + 1], 1),
+            ([usize::MAX, 2], 1),
+            ([8, 8], (1 << 24) + 2),
+        ] {
+            assert!(matches!(
+                check_map_keys(bins, maps),
+                Err(MkError::Unsupported(_))
+            ));
+        }
+    }
 }

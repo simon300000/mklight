@@ -4,16 +4,19 @@
 //! * Accuracy exclusions: analyses whose native output fails its f64
 //!   budget on the current evidence run on the CPU reference at every size
 //!   and on every device ([`accuracy_exclusion`]).
+//! * A run whose native division gives the device no part (a stray run
+//!   without a device share) is the reference by rule: the router settles
+//!   it before it asks the model (`routing::auto_route`).
 //! * Everything else on a calibrated device class is predicted per stage
 //!   for both backends: host f64 preparation, aiming and tracing (rays ×
-//!   (surfaces + aim traces × stop surfaces), with the aiming difficulty
-//!   from recorded statistics), transforms, output bytes, the device's
-//!   seed-table build of large aimed generations, device setup when cold,
-//!   and the risk of a native fallback. Cache state enters as stage
-//!   terms that vanish when shared CPU intermediates (graph `tracer`,
-//!   `pupil_lattice` nodes) or resident device content are already built;
-//!   a stored graph result is answered before routing and costs nothing on
-//!   either backend.
+//!   (surfaces + aim traces × stop surfaces)), transforms, output bytes,
+//!   the device's seed-table build of large aimed generations, device
+//!   setup when cold (opening it, and an analysis' first native use unless
+//!   the kernels were prepared ahead), and the risk of a native fallback.
+//!   Cache state enters as stage terms that vanish when shared CPU
+//!   intermediates (graph `tracer`, `pupil_lattice` nodes) or resident
+//!   device content are already built; a stored graph result is answered
+//!   before routing and costs nothing on either backend.
 //! * `auto` picks Metal only for a meaningful predicted advantage:
 //!   [`RATIO`] and [`MIN_GAIN_MS`]. No universal GPU overhead is assumed:
 //!   each analysis has its own measured fixed cost on each backend.
@@ -43,8 +46,8 @@ use crate::lru::LruCache;
 pub mod model;
 pub mod profile;
 
-pub use model::{AnalysisCalibration, Calibration, FEATURES, Features, Fit};
-pub use profile::{Profile, SystemShape, profile};
+pub use model::{AnalysisCalibration, Calibration, FEATURES, Features, Fit, Mode};
+pub use profile::{AIM_TRACES, Profile, SystemShape, profile};
 
 /// Version of the routing model and its features.
 pub const VERSION: u32 = 5;
@@ -54,11 +57,6 @@ pub const RATIO: f64 = 1.3;
 /// …and save at least this much wall time. Below it the gain is within the
 /// run-to-run spread of small calls and not worth a device round trip.
 pub const MIN_GAIN_MS: f64 = 5.;
-
-/// Mean Newton iterations per aimed ray of the reference CPU solver at the
-/// calibrated difficulty (complex lens, C1/D2: 3.43 iterations, 4.43 stop
-/// traces per ray). Recorded statistics scale it per design family.
-pub const PRIOR_ITERATIONS: f64 = 3.43;
 
 /// Analyses whose native output fails its f64 contract on the current
 /// evidence, with the finding: `auto` uses the reference on every device
@@ -154,6 +152,10 @@ pub(crate) struct State<'a> {
     pub tracer_warm: bool,
     /// The device's deterministic-failure cache holds this request.
     pub known_failure: bool,
+    /// The device's kernels were created ahead (`Engine::prepare_gpu`
+    /// finished): no analysis pays pipeline creation on its first native
+    /// use.
+    pub kernels_prepared: bool,
 }
 
 /// Exponentially weighted mean.
@@ -178,8 +180,6 @@ impl Ewma {
 struct Online {
     /// ln(observed / predicted) per (analysis, backend, family, decade).
     corrections: LruCache<(String, &'static str, u64, i32), Ewma>,
-    /// Mean device aiming iterations per aimed ray, per design family.
-    difficulty: LruCache<u64, Ewma>,
     /// CPU pupil lattices built per (snapshot, library, pupil request).
     lattices: LruCache<[u8; 32], ()>,
     /// Snapshots whose content is resident on the device.
@@ -242,8 +242,8 @@ impl Default for CostModel {
     }
 }
 
-/// Design family of a system: what its aiming difficulty and cost scale
-/// with, stable under small edits.
+/// Design family of a system: what its cost scales with, stable under
+/// small edits.
 fn family(system: &OpticalSystem) -> u64 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     let shape = SystemShape::of(system);
@@ -319,7 +319,6 @@ impl CostModel {
             refine,
             online: Mutex::new(Online {
                 corrections: LruCache::new(1024),
-                difficulty: LruCache::new(64),
                 lattices: LruCache::new(256),
                 resident: LruCache::new(64),
                 seen: LruCache::new(64),
@@ -411,18 +410,7 @@ impl CostModel {
         let shape = SystemShape::of(system);
         let mut on = self.lock();
         on.decisions += 1;
-        // Aiming difficulty: recorded device iterations relative to the
-        // calibration's, scaling the reference solver's traces per ray.
-        let recorded = on.difficulty.get(&fam);
-        let factor = match (
-            recorded,
-            self.table.measured["reference_iterations"].as_f64(),
-        ) {
-            (Some(r), Some(base)) if base > 0. && r.n > 0 => (r.mean / base).clamp(0.5, 4.),
-            _ => 1.,
-        };
-        let traces = 1. + PRIOR_ITERATIONS * factor;
-        let features = work.features(&shape, traces);
+        let features = work.features(&shape);
         let lattice_warm = work.lattice
             && state.snapshot.is_some_and(|s| {
                 on.lattices
@@ -437,51 +425,44 @@ impl CostModel {
         let calls = on.calls.get(&(analysis.to_string(), fam)).unwrap_or(0);
         on.calls
             .insert((analysis.to_string(), fam), calls.saturating_add(1));
-        // CPU: shared intermediates already in the graph cost nothing.
-        let mut cpu_f = features;
-        cpu_f[5] = 0.;
+        // CPU: shared intermediates already in the graph cost nothing. A
+        // new snapshot pays its resolution and preparation.
+        let cpu_mode = if seen { Mode::Cpu } else { Mode::CpuEdit };
+        let mut cpu_f = cpu_mode.features(features);
         if state.tracer_warm || lattice_warm {
             cpu_f[1] = 0.;
         }
         if lattice_warm {
             cpu_f[2] = 0.;
         }
-        // A new snapshot pays its resolution and preparation.
-        let cpu_fit = if seen {
-            cpu_fit
-        } else {
-            cal.cpu_edit.as_ref().unwrap_or(cpu_fit)
-        };
-        let mut cpu = cpu_fit.stages(&cpu_f);
+        let mut cpu = cal.fit(cpu_mode).unwrap_or(cpu_fit).stages(&cpu_f);
         let threads = rayon::current_num_threads().max(1) as f64;
         let scale = (self.table.cpu_threads.max(1) as f64 / threads).clamp(0.25, 4.);
         for c in &mut cpu[2..5] {
             *c *= scale;
         }
-        // Metal: device caches warm for a resident snapshot, cold after an
-        // edit; host f64 preparation is shared with the CPU through the graph.
-        let metal_fit = if resident {
-            warm_fit
+        // Metal: device caches (the content-cached seed table among them)
+        // warm for a resident snapshot, cold after an edit; host f64
+        // preparation is shared with the CPU through the graph.
+        let metal_mode = if resident {
+            Mode::Metal
         } else {
-            cal.metal_edit.as_ref().unwrap_or(warm_fit)
+            Mode::MetalEdit
         };
-        let mut metal_f = features;
+        let mut metal_f = metal_mode.features(features);
         if state.tracer_warm {
             metal_f[1] = 0.;
         }
-        if resident {
-            // The content-cached seed table is still on the device.
-            metal_f[5] = 0.;
-        }
-        let metal = metal_fit.stages(&metal_f);
-        // One-time setup (device open, first native use of the analysis),
-        // charged in full to the first call of an analysis and design family
-        // and spread over up to SETUP_CALLS calls after that.
+        let metal = cal.fit(metal_mode).unwrap_or(warm_fit).stages(&metal_f);
+        // One-time setup (device open; first native use of the analysis,
+        // unless its kernels were prepared ahead), charged in full to the
+        // first call of an analysis and design family and spread over up to
+        // SETUP_CALLS calls after that.
         let setup = (if state.device_open {
             0.
         } else {
             self.table.device_open_ms
-        } + if on.native.contains(analysis) {
+        } + if state.kernels_prepared || on.native.contains(analysis) {
             0.
         } else {
             cal.first_use_ms
@@ -534,12 +515,12 @@ impl CostModel {
                 },
                 "state": {
                     "device_open": state.device_open,
+                    "kernels_prepared": state.kernels_prepared,
                     "tracer_warm": state.tracer_warm,
                     "lattice_warm": lattice_warm,
                     "resident": resident,
                     "snapshot_seen": seen,
                     "calls": calls,
-                    "aim_traces_per_ray": if shape.aimed { rounded(traces) } else { 0. },
                     "transient_failure_rate": rounded(p_fail),
                     "decided_pupil_grid": decided,
                 },
@@ -554,9 +535,21 @@ impl CostModel {
         )
     }
 
+    /// Names the opened device in a cost-model decision when it is not the
+    /// device class the table was measured on: the prediction applies that
+    /// class's coefficients to it.
+    pub(crate) fn note_device(&self, d: &mut Decision, info: &DeviceInfo) {
+        if d.json["rule"] == "cost model" && info.name != self.table.device_class {
+            d.json["calibration"]["note"] = json!(format!(
+                "calibrated on {}; this device is {}",
+                self.table.device_class, info.name
+            ));
+        }
+    }
+
     /// Learn from a completed (not graph-served) run: residency, shared CPU
-    /// intermediates, aiming difficulty, transient failures and, with
-    /// refinement on, the ratio of measured to predicted time.
+    /// intermediates, transient failures and, with refinement on, the ratio
+    /// of measured to predicted time.
     pub(crate) fn observe(
         &self,
         analysis: &str,
@@ -579,13 +572,6 @@ impl CostModel {
             .then(|| decided_grid(result.json))
             .flatten()
             .map(|n| ((fam, settings["pupil"].to_string()), n));
-        // Aimed rays and their iterations over the native plans.
-        let mut aim = (0f64, 0f64);
-        if native {
-            for e in result.execution {
-                aiming_stats(&e["settings"], &mut aim);
-            }
-        }
         let mut on = self.lock();
         on.observations += 1;
         on.seen.insert(resident_key(snapshot, library), ());
@@ -595,11 +581,6 @@ impl CostModel {
         if native {
             on.resident.insert(resident_key(snapshot, library), ());
             on.native.insert(analysis.to_string());
-            if aim.0 > 0. {
-                let mut d = on.difficulty.get(&fam).unwrap_or_default();
-                d.add(aim.1 / aim.0, ALPHA);
-                on.difficulty.insert(fam, d);
-            }
         } else if work.lattice && !result.any_attempt {
             on.lattices
                 .insert(lattice_key(analysis, settings, snapshot, library), ());
@@ -694,7 +675,6 @@ impl CostModel {
             "repeated_routes": on.repeats,
             "observations": on.observations,
             "corrections": on.corrections.len(),
-            "design_families_with_aiming_statistics": on.difficulty.len(),
             "cpu_lattices": on.lattices.len(),
             "resident_snapshots": on.resident.len(),
             "native_analyses": on.native,
@@ -745,8 +725,6 @@ pub(crate) struct Observation<'a> {
     /// Any attempt did not produce the result.
     pub any_attempt: bool,
     pub duration_ms: f64,
-    /// `BackendReport::execution` (native plan statistics).
-    pub execution: &'a [Value],
     pub decision: Option<&'a Value>,
     /// The result's JSON (sampling decisions).
     pub json: &'a Value,
@@ -763,29 +741,9 @@ impl<'a> From<&'a super::AnalysisResult> for Observation<'a> {
                 .any(|a| a.outcome == "failed"),
             any_attempt: !r.run_info.failed_attempts.is_empty(),
             duration_ms: r.run_info.duration_ms,
-            execution: &r.backend.execution,
             decision: r.backend.cost_decision.as_ref(),
             json: &r.json,
         }
-    }
-}
-
-/// Adds the aimed rays and aiming iterations of every `plan_stats` record
-/// under `v` to `aim`.
-fn aiming_stats(v: &Value, aim: &mut (f64, f64)) {
-    match v {
-        Value::Object(m) => {
-            for (k, x) in m {
-                if k == "plan_stats" {
-                    aim.0 += x["aiming"]["rays"].as_f64().unwrap_or(0.);
-                    aim.1 += x["aiming"]["iterations"].as_f64().unwrap_or(0.);
-                } else {
-                    aiming_stats(x, aim);
-                }
-            }
-        }
-        Value::Array(a) => a.iter().for_each(|x| aiming_stats(x, aim)),
-        _ => {}
     }
 }
 
@@ -857,6 +815,21 @@ mod tests {
         let calls = cold.json["state"]["calls"].as_f64().unwrap();
         let spread = 70. / (calls.min(f64::from(SETUP_CALLS - 1)) + 1.);
         assert!((setup - spread).abs() < 1e-2, "{setup} {spread}");
+        // Kernels prepared ahead leave only the device open to pay.
+        let prepared = d(
+            512,
+            &State {
+                device_open: false,
+                kernels_prepared: true,
+                ..warm
+            },
+        );
+        let calls = prepared.json["state"]["calls"].as_f64().unwrap();
+        let spread = 40. / (calls.min(f64::from(SETUP_CALLS - 1)) + 1.);
+        let setup = prepared.json["stages_ms"]["metal_setup"].as_f64().unwrap();
+        assert!((setup - spread).abs() < 1e-2, "{setup} {spread}");
+        assert_eq!(prepared.json["state"]["kernels_prepared"], true);
+        assert_eq!(cold.json["state"]["kernels_prepared"], false);
         // A known deterministic failure, and an accuracy exclusion.
         let known = d(
             512,
@@ -929,7 +902,6 @@ mod tests {
             failed: false,
             any_attempt: false,
             duration_ms: predicted * 100.,
-            execution: &[],
             decision: Some(&first.json),
             json: &Value::Null,
         };
@@ -950,6 +922,50 @@ mod tests {
         let off = fixed.decide("ray_grid", &settings, &singlet, Device::Apple, &st);
         assert_eq!(off.json["predicted_ms"]["cpu"].as_f64().unwrap(), predicted);
         assert_eq!(fixed.stats()["corrections"], 0);
+    }
+
+    /// A decision on a device other than the table's class says so; the
+    /// route is the table's either way.
+    #[test]
+    fn decisions_name_a_device_the_table_was_not_measured_on() {
+        let m = CostModel::with_table(table(), "test".into(), false);
+        let singlet = samples::singlet();
+        let settings = json!({"fields":{"type":"all"},"wavelengths":{"type":"all"},"pattern":"square","rings":512});
+        let st = State {
+            device_open: true,
+            ..Default::default()
+        };
+        let decided = m.decide("ray_grid", &settings, &singlet, Device::Apple, &st);
+        use mklight_gpu::ComputeBackend;
+        let mut info = mklight_gpu::CpuF32Backend::new().info().clone();
+        info.name = "test".into();
+        let mut same = decided.clone();
+        m.note_device(&mut same, &info);
+        assert_eq!(same.json, decided.json);
+        info.name = "Apple M9 Ultra".into();
+        let mut other = decided.clone();
+        m.note_device(&mut other, &info);
+        assert_eq!(other.route, decided.route);
+        assert_eq!(
+            other.json["calibration"]["note"],
+            "calibrated on test; this device is Apple M9 Ultra"
+        );
+        other.json["calibration"]
+            .as_object_mut()
+            .unwrap()
+            .remove("note");
+        assert_eq!(other.json, decided.json);
+        // Only a prediction is the table's.
+        let mut excluded = m.decide(
+            "glass_substitution",
+            &json!({}),
+            &singlet,
+            Device::Apple,
+            &st,
+        );
+        let before = excluded.json.clone();
+        m.note_device(&mut excluded, &info);
+        assert_eq!(excluded.json, before);
     }
 
     /// A replayed decision predicted its first request's state (cold
@@ -982,7 +998,6 @@ mod tests {
                     failed: false,
                     any_attempt: false,
                     duration_ms: 1e3,
-                    execution: &[],
                     decision: Some(decision),
                     json: &Value::Null,
                 },

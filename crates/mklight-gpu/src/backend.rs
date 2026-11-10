@@ -1,30 +1,34 @@
-//! `ComputeBackend`: the only GPU interface solvers see (ARCHITECTURE,
-//! "Platform backends").
+//! The backend interfaces (ARCHITECTURE, "Platform backends").
 //!
-//! The interface is data-oriented:
+//! [`ComputeBackend`] is the production interface: the only one the solver
+//! crates and the engine see. It is data-oriented:
 //!
 //! 1. `upload_systems` (or `upload_systems_cached`) copies one or more
 //!    [`PackedSystem`]s to the device and returns a [`SystemHandle`] (systems
 //!    are immutable on the device, like the snapshots they come from).
-//! 2. `submit_plan` takes a [`ResidentPlan`](crate::resident::ResidentPlan):
-//!    ordered operations over buffers that stay on the device, filled with
-//!    `fill_buffer` and read in place with `read_view`. The solvers run
-//!    through plans.
-//! 3. `submit` takes a [`Job`]: a batched, backend-neutral description of work
-//!    over host SoA arrays (the numerics self-tests and the host-array
-//!    trace).
-//! 4. Both return a [`Pending`] immediately. The backend splits large work
-//!    into command buffers (or launches), checks the submission's
-//!    `CancelToken` between them and reports progress through the
-//!    `JobContext`.
-//! 5. Each result carries its statistics ([`JobStats`], or
-//!    [`PlanStats`](crate::resident::PlanStats)), and the backend describes
-//!    itself with [`DeviceInfo`] and a [`PrecisionDescriptor`], which go into
-//!    `RunInfo` for reproducibility.
+//! 2. `fill_buffer` writes a buffer that stays on the device, and `read_view`
+//!    borrows a published one in place.
+//! 3. `submit_plan` takes a [`ResidentPlan`](crate::resident::ResidentPlan):
+//!    ordered operations over those buffers. It returns a [`Pending`]
+//!    immediately. The backend splits large work into command buffers (or
+//!    launches), checks the submission's `CancelToken` between them and
+//!    reports progress through the `JobContext`.
+//! 4. Each result carries its [`PlanStats`](crate::resident::PlanStats), and
+//!    the backend describes itself with [`DeviceInfo`] and a
+//!    [`PrecisionDescriptor`], which go into `RunInfo` for reproducibility.
 //!
-//! A backend that cannot run a job kind reports `supports(kind) == false` and
-//! returns `MkError::Unsupported`; the engine then uses the CPU reference
-//! (CONVENTIONS §7: never silently degraded numbers).
+//! [`QualificationBackend`] adds the host-array [`Job`] API (`submit`, `run`:
+//! the numerics self-tests and the host-array trace, each with its
+//! [`JobStats`]) and the single-buffer primitives (`upload_buffer`,
+//! `import_buffer`, `readback`, `upload_system`). It is the offline test
+//! interface: [`xval`](crate::xval) and the test suites qualify a backend
+//! against the CPU reference through it. No solver or engine code calls it,
+//! and nothing falls back to it at run time.
+//!
+//! A backend that cannot run a job kind reports `supports(kind) == false`
+//! and returns `MkError::Unsupported` for it. The engine opens a device only
+//! when it supports [`JobKind::Trace`], and otherwise runs the CPU reference
+//! with that reason (CONVENTIONS §7: never silently degraded numbers).
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -428,86 +432,47 @@ impl Job {
     }
 }
 
-/// The backend interface. Object-safe: the engine holds `Arc<dyn ComputeBackend>`.
+/// The production backend interface: what the solver crates and the engine
+/// call. Object-safe: the engine holds `Arc<dyn ComputeBackend>`.
 pub trait ComputeBackend: Send + Sync {
     fn info(&self) -> &DeviceInfo;
     fn precision(&self) -> &PrecisionDescriptor;
+    /// Whether the device runs this kind of work. The engine opens a device
+    /// only when it supports [`JobKind::Trace`].
     fn supports(&self, kind: JobKind) -> bool;
 
     /// Copy systems to the device. The handle stays valid until released.
     fn upload_systems(&self, systems: &[PackedSystem]) -> MkResult<SystemHandle>;
+    /// [`upload_systems`](Self::upload_systems) through the backend's upload
+    /// cache: the same key and content share one device copy.
+    fn upload_systems_cached(
+        &self,
+        key: &crate::resident::SystemCacheKey,
+        systems: &[PackedSystem],
+    ) -> MkResult<SystemHandle>;
     fn release_systems(&self, handle: SystemHandle) -> MkResult<()>;
 
-    /// Start a job asynchronously. Cancellation (the returned
-    /// `Pending::cancel`, dropping the `Pending`, or `ctx.cancel`) is checked
-    /// between command buffers; progress is reported through `ctx` and
-    /// reaches 1 when the job succeeds. Indices in the job are checked
-    /// against the stored system set, never only against the handle.
-    fn submit(&self, job: Job, ctx: &JobContext) -> MkResult<Pending<JobResult>>;
-
-    /// Immutable typed upload; the returned lease owns storage until its last use.
-    fn upload_buffer(
-        &self,
-        _desc: crate::resident::BufferDesc,
-        _data: crate::resident::BufferData,
-    ) -> MkResult<crate::resident::BufferHandle> {
-        crate::resident::unsupported("buffer upload")
-    }
     /// Write a new buffer in place: `fill` gets exclusive access to its
     /// (pooled, unspecified) storage before publication and must write every element.
     fn fill_buffer(
         &self,
-        _desc: crate::resident::BufferDesc,
-        _fill: &mut dyn FnMut(crate::resident::BufferFill<'_>) -> MkResult<()>,
-    ) -> MkResult<crate::resident::BufferHandle> {
-        crate::resident::unsupported("buffer fill")
-    }
-    /// Publish page-owned host storage without copying.
-    fn import_buffer(
-        &self,
-        _desc: crate::resident::BufferDesc,
-        _data: crate::resident::HostAllocation,
-    ) -> MkResult<crate::resident::BufferHandle> {
-        crate::resident::unsupported("host allocation import")
-    }
+        desc: crate::resident::BufferDesc,
+        fill: &mut dyn FnMut(crate::resident::BufferFill<'_>) -> MkResult<()>,
+    ) -> MkResult<crate::resident::BufferHandle>;
     /// Borrow a contiguous published buffer in place.
-    fn read_view(&self, _view: crate::resident::BufferView) -> MkResult<crate::resident::ReadView> {
-        crate::resident::unsupported("read view")
-    }
-    /// Copy a (possibly strided) view into owned data.
-    fn readback(
-        &self,
-        _view: crate::resident::BufferView,
-        _ctx: &JobContext,
-    ) -> MkResult<crate::resident::Readback> {
-        crate::resident::unsupported("readback")
-    }
+    fn read_view(&self, view: crate::resident::BufferView) -> MkResult<crate::resident::ReadView>;
+    /// Start a plan asynchronously. Cancellation (the returned
+    /// `Pending::cancel`, dropping the `Pending`, or `ctx.cancel`) is checked
+    /// between command buffers; progress is reported through `ctx` and
+    /// reaches 1 when the plan succeeds. System indices in the plan are
+    /// checked against the stored system set, never only against the handle.
     fn submit_plan(
         &self,
-        _plan: crate::resident::ResidentPlan,
-        _ctx: &JobContext,
-    ) -> MkResult<Pending<crate::resident::PlanResult>> {
-        crate::resident::unsupported("plan")
-    }
-    fn upload_systems_cached(
-        &self,
-        _key: &crate::resident::SystemCacheKey,
-        _systems: &[PackedSystem],
-    ) -> MkResult<SystemHandle> {
-        crate::resident::unsupported("system cache")
-    }
-    fn resident_cache_stats(&self) -> crate::resident::ResidentCacheStats {
-        Default::default()
-    }
+        plan: crate::resident::ResidentPlan,
+        ctx: &JobContext,
+    ) -> MkResult<Pending<crate::resident::PlanResult>>;
+    fn resident_cache_stats(&self) -> crate::resident::ResidentCacheStats;
 
-    /// Upload a single system.
-    fn upload_system(&self, system: &PackedSystem) -> MkResult<SystemHandle> {
-        self.upload_systems(std::slice::from_ref(system))
-    }
-    /// Submit and block until done.
-    fn run(&self, job: Job, ctx: &JobContext) -> MkResult<JobResult> {
-        self.submit(job, ctx)?.wait()
-    }
     /// Create the device's compute kernels ahead of their first use, so no
     /// job waits for shader compilation, reporting `(done, total)`. With
     /// `cache_dir` the compiled kernels are saved there and later processes
@@ -520,6 +485,48 @@ pub trait ComputeBackend: Send + Sync {
         _cancel: &std::sync::atomic::AtomicBool,
     ) -> MkResult<KernelPreparation> {
         Ok(KernelPreparation::default())
+    }
+}
+
+/// The offline qualification interface: the host-array [`Job`] API and the
+/// single-buffer primitives, through which [`xval`](crate::xval) and the test
+/// suites compare a backend with the CPU reference. Production code runs
+/// resident plans through [`ComputeBackend`] only and never falls back to
+/// this interface.
+pub trait QualificationBackend: ComputeBackend {
+    /// Start a job asynchronously. Cancellation (the returned
+    /// `Pending::cancel`, dropping the `Pending`, or `ctx.cancel`) is checked
+    /// between command buffers; progress is reported through `ctx` and
+    /// reaches 1 when the job succeeds. Indices in the job are checked
+    /// against the stored system set, never only against the handle.
+    fn submit(&self, job: Job, ctx: &JobContext) -> MkResult<Pending<JobResult>>;
+
+    /// Immutable typed upload; the returned lease owns storage until its last use.
+    fn upload_buffer(
+        &self,
+        desc: crate::resident::BufferDesc,
+        data: crate::resident::BufferData,
+    ) -> MkResult<crate::resident::BufferHandle>;
+    /// Publish page-owned host storage without copying.
+    fn import_buffer(
+        &self,
+        desc: crate::resident::BufferDesc,
+        data: crate::resident::HostAllocation,
+    ) -> MkResult<crate::resident::BufferHandle>;
+    /// Copy a (possibly strided) view into owned data.
+    fn readback(
+        &self,
+        view: crate::resident::BufferView,
+        ctx: &JobContext,
+    ) -> MkResult<crate::resident::Readback>;
+
+    /// Upload a single system.
+    fn upload_system(&self, system: &PackedSystem) -> MkResult<SystemHandle> {
+        self.upload_systems(std::slice::from_ref(system))
+    }
+    /// Submit and block until done.
+    fn run(&self, job: Job, ctx: &JobContext) -> MkResult<JobResult> {
+        self.submit(job, ctx)?.wait()
     }
 }
 

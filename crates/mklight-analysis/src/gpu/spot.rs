@@ -9,9 +9,10 @@ pub fn spot_diagram_job(
     b: &dyn ComputeBackend,
     t: &SequentialTracer,
     s: &SpotDiagramSettings,
+    route: &Route,
     ctx: &JobContext,
 ) -> MkResult<SpotDiagram> {
-    spot(b, t, s, ctx, false)
+    spot(b, t, s, route, ctx, false)
 }
 /// [`spot_diagram_job`] with the points packed straight from the mapped
 /// device views into [`SpotDiagram::packed_points`] (see
@@ -20,9 +21,10 @@ pub fn spot_diagram_packed_job(
     b: &dyn ComputeBackend,
     t: &SequentialTracer,
     s: &SpotDiagramSettings,
+    route: &Route,
     ctx: &JobContext,
 ) -> MkResult<SpotDiagram> {
-    spot(b, t, s, ctx, true)
+    spot(b, t, s, route, ctx, true)
 }
 /// The spot job on an adapter of the tracer with the default axis fields
 /// (`default_fields`), so the adapter prepares each of them once.
@@ -30,12 +32,14 @@ fn spot(
     b: &dyn ComputeBackend,
     t: &SequentialTracer,
     s: &SpotDiagramSettings,
+    route: &Route,
     ctx: &JobContext,
     packed: bool,
 ) -> MkResult<SpotDiagram> {
     crate::spot::validate_spot_settings(s)?;
     let augmented = default_fields(t, &s.fields)?;
     Geometry::new(b, augmented.as_ref(), ctx)?
+        .with_route(route)?
         .split_large_generations()
         .spot_job(s, ctx, packed)
 }

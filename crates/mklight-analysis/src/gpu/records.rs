@@ -60,9 +60,12 @@ pub fn semi_diameters_job(
     b: &dyn ComputeBackend,
     t: &SequentialTracer,
     s: &SemiDiameterSettings,
+    route: &Route,
     ctx: &JobContext,
 ) -> MkResult<(SemiDiameters, RunInfo)> {
-    Geometry::new(b, t, ctx)?.semi_diameters(s, ctx)
+    Geometry::new(b, t, ctx)?
+        .with_route(route)?
+        .semi_diameters(s, ctx)
 }
 impl Geometry<'_> {
     pub fn semi_diameters(
@@ -184,6 +187,7 @@ pub fn footprint_overlay_job(
     b: &dyn ComputeBackend,
     t: &SequentialTracer,
     s: &FootprintSettings,
+    route: &Route,
     ctx: &JobContext,
 ) -> MkResult<FootprintOverlay> {
     crate::spot::validate_sampling(s.rings)?;
@@ -196,7 +200,7 @@ pub fn footprint_overlay_job(
     let pupil = pupil_points(s.pattern, s.rings, s.seed);
     let pts: Vec<_> = fields.iter().map(|&f| t.field(f).point).collect();
     let slots = t.system().num_surfaces();
-    let geo = Geometry::new(b, t, ctx)?;
+    let geo = Geometry::new(b, t, ctx)?.with_route(route)?;
     // Bound all-surface scratch independently of field/wavelength multiplicity.
     let tile = ((1usize << 20) / (slots * pts.len() * wls.len())).max(1);
     let count = pupil.len().div_ceil(tile);
@@ -326,11 +330,14 @@ pub fn ray_grid_job(
     b: &dyn ComputeBackend,
     t: &SequentialTracer,
     s: &crate::energy::RaySampling,
+    route: &Route,
     ctx: &JobContext,
 ) -> MkResult<GridResult> {
     crate::spot::validate_sampling(s.rings)?;
     let aug = default_fields(t, &s.fields)?;
-    Geometry::new(b, aug.as_ref(), ctx)?.ray_grid_job(s, ctx)
+    Geometry::new(b, aug.as_ref(), ctx)?
+        .with_route(route)?
+        .ray_grid_job(s, ctx)
 }
 impl Geometry<'_> {
     /// [`ray_grid_job`] on this adapter: the fields of its tracer (plus the
@@ -455,11 +462,14 @@ pub fn footprint_job(
     b: &dyn ComputeBackend,
     t: &SequentialTracer,
     s: &FootprintSettings,
+    route: &Route,
     ctx: &JobContext,
 ) -> MkResult<crate::illumination::FootprintResult> {
     validate_footprint(t, s)?;
     let aug = default_fields(t, &s.fields)?;
-    Geometry::new(b, aug.as_ref(), ctx)?.footprint_job(s, ctx)
+    Geometry::new(b, aug.as_ref(), ctx)?
+        .with_route(route)?
+        .footprint_job(s, ctx)
 }
 fn validate_footprint(t: &SequentialTracer, s: &FootprintSettings) -> MkResult<()> {
     crate::spot::validate_sampling(s.rings)?;

@@ -54,10 +54,8 @@ fn put(x: &mut Execution, id: BufferId, v: &[Df32]) {
 fn run<E: FpEnv>(r: &Request, x: &mut Execution, ctl: &JobControl) -> MkResult<()> {
     let n = match r {
         Request::Coordinates(r) => r.hits.rays.count,
-        Request::Radial(r) => r.mask.desc.len()?,
         Request::Characteristic(r) => r.mask.desc.len()? * r.frequency.desc.shape[0],
         Request::SurfaceSamples(r) => r.samples.desc.shape[0],
-        Request::Distribution(r) => r.radii.desc.len()? + 4,
         Request::FieldData(r) => r.hits.rays.count / if r.kind == 1 { 5 } else { 1 },
         Request::Records(r) => r.slots * r.hits.rays.count,
         Request::Coddington(r) => r.hits.rays.count,
@@ -99,41 +97,6 @@ fn run<E: FpEnv>(r: &Request, x: &mut Execution, ctl: &JobControl) -> MkResult<(
             }
             put(x, r.output, &out);
             x.words_mut(r.mask).copy_from_slice(&mask);
-        }
-        Request::Radial(r) => {
-            let p = x.view(&r.points);
-            let m = x.view(&r.moments);
-            let mask = x.view(&r.mask);
-            let mut radius = vec![Df32::from_f32(f32::INFINITY); n];
-            let mut square = radius.clone();
-            let mut weight = vec![Df32::ZERO; n];
-            for i in 0..n {
-                if i % 4096 == 0 {
-                    ctl.check()?;
-                    ctl.report(i as f64 / n.max(1) as f64, "geometric radii");
-                }
-                if mask[i] == 0 {
-                    continue;
-                }
-                let c = if r.centroid {
-                    [
-                        df(m, (i / r.segment_len) * 10 + 2),
-                        df(m, (i / r.segment_len) * 10 + 3),
-                    ]
-                } else {
-                    [Df32::ZERO; 2]
-                };
-                let v = spec::radial::<E>([df(p, i), df(p, n + i)], c);
-                radius[i] = v[0];
-                square[i] = v[1];
-                weight[i] = df(p, 4 * n + i);
-            }
-            put(x, r.radius, &radius);
-            put(x, r.square, &square);
-            put(x, r.weight, &weight);
-            for (i, v) in x.words_mut(r.ids).iter_mut().enumerate() {
-                *v = i as u32;
-            }
         }
         Request::Characteristic(r) => {
             let nr = r.mask.desc.len()?;
@@ -522,80 +485,6 @@ fn run<E: FpEnv>(r: &Request, x: &mut Execution, ctl: &JobControl) -> MkResult<(
                     out[i * 5 + 4] = Df32::ZERO;
                 }
             }
-            put(x, r.output, &out);
-        }
-        Request::Distribution(r) => {
-            let keys = x.view(&r.keys);
-            let cum = x.view(&r.cumulative);
-            let radii = x.view(&r.radii);
-            let len = r.keys.desc.len()?;
-            let k = r.radii.desc.len()?;
-            let total = if len > 0 {
-                D::<E>::from_df(df(cum, len - 1))
-            } else {
-                D::ZERO
-            };
-            let mut out = vec![Df32::ZERO; k + 4];
-            let mut boundary = vec![Df32::ZERO; k];
-            // Keys below `radius` (or equal to it when `inclusive`).
-            let below = |radius: D<E>, inclusive: bool| {
-                let (mut a, mut b) = (0, len);
-                while a < b {
-                    let mid = (a + b) / 2;
-                    let d = (D::<E>::from_df(df(keys, mid)) - radius).hi();
-                    if if inclusive { d <= 0.0 } else { d < 0.0 } {
-                        a = mid + 1;
-                    } else {
-                        b = mid;
-                    }
-                }
-                a
-            };
-            let bound = |radius: D<E>, inclusive: bool| match below(radius, inclusive) {
-                0 => D::ZERO,
-                a => D::<E>::from_df(df(cum, a - 1)),
-            };
-            for (i, v) in out.iter_mut().enumerate() {
-                if i % 4096 == 0 {
-                    ctl.check()?;
-                }
-                if i == k + 3 {
-                    *v = total.0;
-                    continue;
-                }
-                if i < k {
-                    let radius = D::<E>::from_df(df(radii, i));
-                    let a = below(radius, true);
-                    if total.hi() > 0.0 {
-                        let e = D::from_df(r.uncertainty);
-                        boundary[i] =
-                            ((bound(radius + e, true) - bound(radius - e, false)) / total).0;
-                    }
-                    *v = if a > 0 && total.hi() > 0.0 {
-                        (D::<E>::from_df(df(cum, a - 1)) / total).0
-                    } else {
-                        Df32::ZERO
-                    };
-                } else {
-                    let target =
-                        total * D::from_df(Df32::from_f64([0.5, 0.8, 0.9][i - k] * (1.0 - 1e-15)));
-                    let (mut a, mut b) = (0, len);
-                    while a < b {
-                        let mid = (a + b) / 2;
-                        if (D::<E>::from_df(df(cum, mid)) - target).hi() < 0.0 {
-                            a = mid + 1;
-                        } else {
-                            b = mid;
-                        }
-                    }
-                    *v = if a < len && total.hi() > 0.0 {
-                        df(keys, a)
-                    } else {
-                        Df32::from_f32(f32::NAN)
-                    };
-                }
-            }
-            put(x, r.boundary, &boundary);
             put(x, r.output, &out);
         }
         Request::SurfaceSamples(r) => {

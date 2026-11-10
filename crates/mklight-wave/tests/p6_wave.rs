@@ -251,11 +251,10 @@ fn emulation_f64() {
 #[cfg(target_os = "macos")]
 /// The host Metal backend; None (the test is skipped) without a device.
 fn metal(library: mklight_metal::LibraryChoice) -> Option<mklight_metal::MetalBackend> {
-    let Some(b) = mklight_metal::MetalBackend::with_options(&mklight_metal::MetalOptions {
-        library,
-        ..Default::default()
-    })
-    .unwrap() else {
+    let Some(b) =
+        mklight_metal::MetalBackend::with_options(&mklight_metal::MetalOptions { library })
+            .unwrap()
+    else {
         eprintln!("no Metal device: skipped");
         return None;
     };
@@ -536,59 +535,6 @@ fn benchmark_prepared_pupils() {
     }
 }
 
-fn statistics_suite(b: &dyn ComputeBackend) {
-    let ctx = JobContext::new();
-    let geom = PupilGeometry::from_working_f_number(4., 100., 1.).unwrap();
-    for aperture in [
-        Aperture::Circular,
-        Aperture::Annular { obscuration: 0.45 },
-        Aperture::Rectangular {
-            half_u: 0.9,
-            half_v: 0.4,
-        },
-    ] {
-        let p = PupilFunction::from_aperture(
-            65,
-            0.55,
-            geom,
-            aperture,
-            Apodization::Uniform,
-            4,
-            |u, v| 0.7 * u - 0.3 * v + 0.4 * (u * u + v * v),
-        )
-        .unwrap();
-        let resident = ResidentPupil::from_pupil(b, &p, &ctx).unwrap();
-        let a = resident.statistics(b, snapshot(), &ctx).unwrap();
-        let s = p.opd_stats(false);
-        let t = p.opd_stats(true);
-        for (got, want) in [
-            (a.value.rms, s.rms),
-            (a.value.pv, s.pv),
-            (a.value.rms_tilt_removed, t.rms),
-            (a.value.pv_tilt_removed, t.pv),
-            (a.value.strehl, p.strehl_at_reference()),
-        ] {
-            assert!((got - want).abs() < 2e-6, "statistics {got} != {want}");
-        }
-        assert_eq!(a.stats.copied_bytes, 0);
-    }
-}
-#[test]
-fn statistics_f64() {
-    statistics_suite(&CpuF32Backend::new());
-}
-#[cfg(target_os = "macos")]
-#[test]
-fn statistics_metal() {
-    for origin in [
-        mklight_metal::LibraryChoice::Precompiled,
-        mklight_metal::LibraryChoice::RuntimeSource,
-    ] {
-        let Some(b) = metal(origin) else { return };
-        statistics_suite(&b);
-    }
-}
-
 #[cfg(target_os = "macos")]
 #[test]
 fn resident_traced_pupil_matches_reference() {
@@ -790,24 +736,12 @@ fn all_gpu_traced_pupils() {
 
 #[cfg(target_os = "macos")]
 #[test]
-fn native_wavefront_and_psf() {
+fn native_psf() {
     let Some(b) = metal(mklight_metal::LibraryChoice::Precompiled) else {
         return;
     };
     let ctx = JobContext::new();
     let t = mklight_analysis::tracer_for(samples::cooke_triplet()).unwrap();
-    let settings = analysis::WavefrontSettings::default();
-    let reference = analysis::wavefront_map_job(&t, &settings, &ctx).unwrap();
-    let got = gpu::analysis::wavefront_map_job(&b, &t, &settings, &ctx).unwrap();
-    assert_eq!(got.maps.len(), reference.maps.len());
-    for (a, b) in got.maps.iter().zip(&reference.maps) {
-        assert_eq!(a.grid, b.grid);
-        assert!((a.rms_waves - b.rms_waves).abs() < 1e-5);
-        assert!((a.rms_waves_tilt_removed - b.rms_waves_tilt_removed).abs() < 1e-5);
-        assert!((a.strehl_at_reference - b.strehl_at_reference).abs() < 1e-5);
-        assert!((a.zernike_residual_rms - b.zernike_residual_rms).abs() < 1e-5);
-        close(a.zernike.coefficients(), b.zernike.coefficients(), 5e-3);
-    }
     let settings = analysis::PsfAnalysisSettings::default();
     let reference = analysis::psf_analysis_job(&t, &settings, &ctx).unwrap();
     let got = gpu::analysis::psf_analysis_job(&b, &t, &settings, &ctx).unwrap();

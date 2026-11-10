@@ -48,7 +48,7 @@ fn all_samples_run() {
             .unwrap_or_else(|e| panic!("{name}: {e}"));
         assert!(res.primary.flux > 0.0, "{name}");
         assert_eq!(res.ghosts.len(), rep.ghosts.len(), "{name}");
-        assert!(res.total_flux_ratio.is_finite(), "{name}");
+        assert!(res.total_flux_ratio.is_some_and(f64::is_finite), "{name}");
         assert!(
             res.total_ghost_map
                 .values
@@ -57,7 +57,8 @@ fn all_samples_run() {
         );
         // Each ghost loses at least two reflections' worth of flux.
         for g in &res.ghosts {
-            assert!(g.flux_ratio < 0.1, "{name} {}: {}", g.label, g.flux_ratio);
+            let ratio = g.flux_ratio.unwrap();
+            assert!(ratio < 0.1, "{name} {}: {ratio}", g.label);
         }
         assert_eq!(
             res.run.snapshot_hash,
@@ -126,7 +127,7 @@ fn irradiance_is_deterministic_and_cancellable() {
     assert!(
         a.ghosts
             .windows(2)
-            .all(|w| w[0].peak_ratio >= w[1].peak_ratio)
+            .all(|w| w[0].peak_ratio.unwrap() >= w[1].peak_ratio.unwrap())
     );
     // The total map is the sum of the path maps.
     let s2 = IrradianceSettings {
@@ -140,7 +141,7 @@ fn irradiance_is_deterministic_and_cancellable() {
         .map(|g| g.map.as_ref().unwrap().flux())
         .sum();
     assert!((sum - c.total_ghost_map.flux()).abs() < 1e-12 * sum);
-    assert!((c.total_flux_ratio - sum / c.primary.flux).abs() < 1e-12);
+    assert!((c.total_flux_ratio.unwrap() - sum / c.primary.flux).abs() < 1e-12);
 
     let ctx = JobContext::new();
     ctx.cancel.cancel();
@@ -287,5 +288,8 @@ fn irradiance_is_bit_identical_across_thread_counts() {
     assert_eq!(a.primary, b.primary);
     assert_eq!(a.ghosts, b.ghosts);
     assert_eq!(a.total_ghost_map, b.total_ghost_map);
-    assert_eq!(a.total_flux_ratio.to_bits(), b.total_flux_ratio.to_bits());
+    assert_eq!(
+        a.total_flux_ratio.unwrap().to_bits(),
+        b.total_flux_ratio.unwrap().to_bits()
+    );
 }

@@ -687,7 +687,14 @@ fn through_focus_slopes_reproduce_the_plane_statistics() {
             };
             let results = [
                 spot_diagram_packed_job(&t, &s, &ctx).unwrap(),
-                mklight_analysis::gpu::spot_diagram_packed_job(&gpu, &t, &s, &ctx).unwrap(),
+                mklight_analysis::gpu::spot_diagram_packed_job(
+                    &gpu,
+                    &t,
+                    &s,
+                    &Default::default(),
+                    &ctx,
+                )
+                .unwrap(),
             ];
             for r in &results {
                 let p = r.packed_points.as_ref().unwrap();

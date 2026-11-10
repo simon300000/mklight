@@ -76,7 +76,7 @@ fn records<T: bytemuck::Pod>(
 pub(crate) struct RayDesign {
     /// Aim every pupil ray on the host (the candidates' f64 tracers, the
     /// reference's aims) and only trace it on the device (chosen per batch,
-    /// `gpu::DEVICE_AIM_FROM`, unless the `aiming` key pins either side).
+    /// `gpu::DEVICE_AIM_FROM`, unless the evaluator pins either side).
     /// Otherwise the device aims each ray for at most `schedule_cap`
     /// iterations and the host completes the rest, so the device rounds are
     /// bounded and committed speculatively (no read-back inside the plan).
@@ -419,6 +419,7 @@ pub(crate) struct Prepared<'a> {
     fits: Vec<fits::Fit>,
     uploaded: Uploaded<'a>,
     traced_rays: usize,
+    routed_rays: usize,
     aggregates: bool,
     /// Image surface index (the chief rays' last surface).
     image: usize,
@@ -427,9 +428,16 @@ impl Prepared<'_> {
     pub(crate) fn traced_rays(&self) -> usize {
         self.traced_rays
     }
-    /// Rays of the batch routed to the host before the plan.
+    /// Group nodes of the batch routed to the host before the plan (the
+    /// rays [`host_stage`] traces).
     pub(crate) fn host_rays(&self) -> usize {
         self.host.iter().flatten().map(|h| h.nodes.len()).sum()
+    }
+    /// Every ray of the batch that the routing kept off the device: the
+    /// group nodes of [`Self::host_rays`] and the rays the host traces on
+    /// demand.
+    pub(crate) fn routed_rays(&self) -> usize {
+        self.routed_rays
     }
 }
 
@@ -503,7 +511,7 @@ pub(crate) fn host_stage(
 }
 
 /// Host preparation of a batch (parallel over candidates): candidate plans,
-/// chief seeds from the f64 tracers, and the resident plan. Rays in
+/// chief seeds from the f64 tracers, and the resident plan. Pupil rays in
 /// `host_rays` stay off the device: their group
 /// nodes are traced by [`host_stage`], every other kind on demand.
 #[allow(clippy::too_many_arguments)]
@@ -611,6 +619,8 @@ pub(crate) fn prepare<'a>(
             }
             let slot = |f, w| all.iter().position(|&k| k == (f, w)).unwrap() as u32;
             let mut local: BTreeMap<(bool, usize), Vec<Probe>> = BTreeMap::new();
+            // Probes kept off the device by `host_rays`.
+            let mut routed = 0usize;
             let nr = cpu.settings().illumination_rings.max(2);
             let na = cpu.settings().illumination_arms.max(8);
             let dt = std::f64::consts::TAU / na as f64;
@@ -628,7 +638,9 @@ pub(crate) fn prepare<'a>(
                         dest: Dest::Illumination,
                     };
                     // A host ray has no visibility entry: the host traces it.
-                    if !on_host(ray_key(&q, clip, last)) {
+                    if on_host(ray_key(&q, clip, last)) {
+                        routed += 1;
+                    } else {
                         probes.push(q);
                     }
                 };
@@ -663,6 +675,7 @@ pub(crate) fn prepare<'a>(
                         probes.push(q);
                     }
                 }
+                routed += host_nodes.len();
                 if !host_nodes.is_empty() {
                     host.push(HostGroup {
                         gi: gi as u32,
@@ -690,6 +703,7 @@ pub(crate) fn prepare<'a>(
                 };
                 if on_host(ray_key(&q, clip, last)) {
                     // Traced by the host on demand (no cache entry).
+                    routed += 1;
                     continue;
                 }
                 local.entry((clip, last)).or_default().push(q);
@@ -708,11 +722,13 @@ pub(crate) fn prepare<'a>(
                     pupil: [f64::from_bits(px), f64::from_bits(py)],
                     dest: Dest::Real(j as u32),
                 };
-                if !on_host(ray_key(&q, clip, j)) {
+                if on_host(ray_key(&q, clip, j)) {
+                    routed += 1;
+                } else {
                     local.entry((clip, j)).or_default().push(q);
                 }
             }
-            Ok(((c, plan), all, local, host))
+            Ok(((c, plan), all, local, host, routed))
         })
         .collect::<MkResult<Vec<_>>>()?;
     let mut candidates = Vec::with_capacity(tracers.len());
@@ -722,8 +738,10 @@ pub(crate) fn prepare<'a>(
     // Rows in (candidate, field, λ) order, which is also the slot order.
     let mut field_keys = Vec::new();
     let mut refs = Vec::new();
-    for (ci, (candidate, all, local, host_groups)) in prepared.into_iter().enumerate() {
+    let mut routed_rays = 0usize;
+    for (ci, (candidate, all, local, host_groups, routed)) in prepared.into_iter().enumerate() {
         host.push(host_groups);
+        routed_rays += routed;
         let tr = &tracers[ci];
         let base = field_keys.len() as u32;
         for &(f, w) in &all {
@@ -1056,6 +1074,7 @@ pub(crate) fn prepare<'a>(
         fits,
         uploaded,
         traced_rays,
+        routed_rays,
         aggregates,
         image: last,
     })
@@ -1066,11 +1085,24 @@ pub(crate) fn prepare<'a>(
 pub(crate) struct Traced<'a> {
     prepared: Prepared<'a>,
     views: Vec<ReadView>,
-    /// Per candidate, the rays the device left unresolved.
+    /// Per candidate, the chief rays the device could not trace.
+    failed_chiefs: Vec<BTreeSet<RayKey>>,
+    /// Per candidate, the pupil rays the device left unresolved.
     pub(crate) unresolved: Vec<BTreeSet<RayKey>>,
     /// Per candidate, the rays the device resolved only after more than
     /// [`SLOW_ITERATIONS`] Newton iterations (they hold up their commands).
     pub(crate) slow: Vec<BTreeSet<RayKey>>,
+}
+impl Traced<'_> {
+    /// Every ray the host completes for some candidate of the batch: its
+    /// failed chief rays and its unresolved pupil rays.
+    pub(crate) fn host_completed(&self) -> impl Iterator<Item = RayKey> + '_ {
+        self.failed_chiefs
+            .iter()
+            .chain(&self.unresolved)
+            .flatten()
+            .copied()
+    }
 }
 /// Device aiming iterations above which a resolved ray counts as slow.
 pub(crate) const SLOW_ITERATIONS: u32 = 6;
@@ -1088,7 +1120,7 @@ pub(crate) fn collect<'a>(
         .map(|o| g.backend.read_view(o.view()))
         .collect::<MkResult<Vec<_>>>()?;
     let chief_status = views[1].as_slice::<u32>()?;
-    let mut chief_keys = vec![BTreeSet::new(); n];
+    let mut failed_chiefs = vec![BTreeSet::new(); n];
     for (i, (q, &status)) in prepared
         .chiefs
         .iter()
@@ -1100,10 +1132,10 @@ pub(crate) fn collect<'a>(
         // (they depend on the chief through the device's chief-relative
         // coordinates and OPD).
         if status != 0 || chief_status[i] != 0 {
-            chief_keys[q.candidate].insert(ray_key(q, false, prepared.image));
+            failed_chiefs[q.candidate].insert(ray_key(q, false, prepared.image));
         }
     }
-    let mut unresolved = chief_keys;
+    let mut unresolved = vec![BTreeSet::new(); n];
     let mut slow = vec![BTreeSet::new(); n];
     for (bi, ((clip, last), probes)) in prepared.partitions.iter().enumerate() {
         let report = views[3 + 7 * bi + 2].as_slice::<u32>()?;
@@ -1126,6 +1158,7 @@ pub(crate) fn collect<'a>(
     Ok(Traced {
         prepared,
         views,
+        failed_chiefs,
         unresolved,
         slow,
     })
@@ -1150,9 +1183,19 @@ pub(crate) fn finish(
     let Traced {
         prepared,
         views,
-        unresolved: rays,
+        failed_chiefs,
+        unresolved,
         ..
     } = traced;
+    // Per candidate, the rays the host completes.
+    let rays: Vec<BTreeSet<RayKey>> = failed_chiefs
+        .into_iter()
+        .zip(unresolved)
+        .map(|(mut chiefs, pupil)| {
+            chiefs.extend(pupil);
+            chiefs
+        })
+        .collect();
     let Prepared {
         mut candidates,
         host,

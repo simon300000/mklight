@@ -13,7 +13,11 @@ pub fn input(n: usize) -> Vec<[f32; 2]> {
         })
         .collect()
 }
-pub fn upload(b: &dyn ComputeBackend, data: Vec<[f32; 2]>, shape: Vec<usize>) -> BufferHandle {
+pub fn upload(
+    b: &dyn QualificationBackend,
+    data: Vec<[f32; 2]>,
+    shape: Vec<usize>,
+) -> BufferHandle {
     b.upload_buffer(
         BufferDesc::new(ElementType::Complex32, shape),
         BufferData::Complex32(data),
@@ -22,7 +26,7 @@ pub fn upload(b: &dyn ComputeBackend, data: Vec<[f32; 2]>, shape: Vec<usize>) ->
 }
 #[allow(clippy::too_many_arguments)]
 pub fn run(
-    b: &dyn ComputeBackend,
+    b: &dyn QualificationBackend,
     data: &[[f32; 2]],
     dims: &[usize],
     od: &[usize],
@@ -105,7 +109,7 @@ pub fn compare(got: &[[f32; 2]], want: &[[f64; 2]], l1: f64) -> f64 {
     assert!(max <= 1e-4 * l1, "scaled max={max}, L1={l1}");
     rel
 }
-pub fn suite(b: &dyn ComputeBackend) {
+pub fn suite(b: &dyn QualificationBackend) {
     let mut worst = 0f64;
     for dims in [
         vec![1],
@@ -247,14 +251,14 @@ fn boundary_validation() {
     p.operations[0] = ResidentOp::Transforms(Request::Transform(t));
     assert!(b.submit_plan(p, &JobContext::new()).is_err());
 }
-pub fn correlation_suite(b: &dyn ComputeBackend) {
+pub fn correlation_suite(b: &dyn QualificationBackend) {
     let mut stencil = None;
     for defocus in [0.0, 30.0, -30.0] {
         stencil = Some(correlation_case(b, defocus, stencil.as_ref()));
     }
 }
 fn correlation_case(
-    b: &dyn ComputeBackend,
+    b: &dyn QualificationBackend,
     defocus: f64,
     previous: Option<&BufferHandle>,
 ) -> BufferHandle {
@@ -471,7 +475,7 @@ fn correlation_case(
     );
     geometry
 }
-pub fn primitives_suite(b: &dyn ComputeBackend) {
+pub fn primitives_suite(b: &dyn QualificationBackend) {
     let dims = vec![7, 11];
     let data = input(77);
     let mut impulse = vec![[0.; 2]; 77];
@@ -565,7 +569,7 @@ fn cpu_correlation_and_convolution() {
     correlation_suite(&b);
     primitives_suite(&b);
 }
-pub fn phase_and_views(b: &dyn ComputeBackend) {
+pub fn phase_and_views(b: &dyn QualificationBackend) {
     let data = input(35);
     let mut with_guard = vec![[99., -99.]; 3];
     with_guard.extend(data.clone());
@@ -685,7 +689,7 @@ fn portable_parameter_layout() {
     );
     std::fs::remove_dir_all(dir).unwrap();
 }
-pub fn complex_correlation_suite(b: &dyn ComputeBackend) {
+pub fn complex_correlation_suite(b: &dyn QualificationBackend) {
     let (w, h) = (6, 4);
     let data = input(w * h);
     let cov: Vec<f32> = (0..w * h)
@@ -780,7 +784,7 @@ pub fn complex_correlation_suite(b: &dyn ComputeBackend) {
 fn cpu_complex_correlation() {
     complex_correlation_suite(&CpuF32Backend::new());
 }
-pub fn physical_grid_mft(b: &dyn ComputeBackend) {
+pub fn physical_grid_mft(b: &dyn QualificationBackend) {
     let (w, h, ow, oh) = (7, 5, 11, 9);
     let data = input(w * h);
     let map = [[0.83, -0.17], [-0.17, 0.76]];

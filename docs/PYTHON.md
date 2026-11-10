@@ -85,7 +85,7 @@ Type stubs with docstrings: `crates/mklight-py/python/mklight/_mklight.pyi`.
 
 | name | |
 |---|---|
-| `Engine(config=None, **kwargs)` | Engine configuration keys as in `docs/FFI.md` (`worker_threads`, `max_retained_jobs`, `resolved_cache_capacity`, `analysis_graph_bytes`, `progress_interval_ms`, `app_name`, `app_version`, `default_backend`, `aim_stop`). Unknown keys raise `InvalidArgumentError`; `default_backend` takes the `backend` forms of `run`; `max_retained_jobs` defaults to unlimited (see *Job*). |
+| `Engine(config=None, **kwargs)` | Engine configuration keys as in `docs/FFI.md` (`worker_threads`, `max_retained_jobs`, `resolved_cache_capacity`, `analysis_graph_bytes`, `progress_interval_ms`, `app_name`, `app_version`, `default_backend`, `aim_stop`, `route`). Unknown keys (also inside `route` and a `default_backend` dict) raise `InvalidArgumentError`; `default_backend` takes the `backend` forms of `run`; `max_retained_jobs` defaults to unlimited (see *Job*). |
 | `default_engine()`, `new(sample=, system=)`, `open(path)` | Convenience wrappers over a lazily created process-wide engine. |
 | `samples()`, `sample(name)` | Built-in sample identifiers; a sample's system dict. |
 | `trace`, `trace_grid`, `paraxial` | Low-level reference tracing (below). |
@@ -115,8 +115,8 @@ Type stubs with docstrings: `crates/mklight-py/python/mklight/_mklight.pyi`.
 | `load_catalog(path)`, `catalogs()`, `glasses(catalog=None)` | AGF (or `.json`) glass catalogs. |
 | `import_prescription(path)` | Replace the system with a `.zmx` or `.seq` lens file, glasses resolved against the session's catalogs (load them first). Returns `{format, encoding, system, warnings}`; content that does not map is a warning (`docs/IMPORT.md`). |
 | `set_project_section(section, value)` | `views`, `merit`, `variables`, `tolerances`, `metadata`. |
-| `run(analysis, settings=None, seed=None, backend=None, progress=None, allow_backend_fallback=False, timeout=None)` | Run and wait → `Result`. |
-| `submit(analysis, settings=None, seed=None, backend=None, allow_backend_fallback=False, view_key=None)` | Queue → `Job`. |
+| `run(analysis, settings=None, seed=None, backend=None, progress=None, allow_backend_fallback=False, timeout=None, route=None)` | Run and wait → `Result`. |
+| `submit(analysis, settings=None, seed=None, backend=None, allow_backend_fallback=False, view_key=None, route=None)` | Queue → `Job`. |
 
 * `settings` is a partial dict; missing keys take the schema defaults and
   unknown keys raise `InvalidSettingsError`. The complete normalised settings
@@ -127,14 +127,25 @@ Type stubs with docstrings: `crates/mklight-py/python/mklight/_mklight.pyi`.
   `docs/CONVENTIONS.md` §6); the seed is recorded in `run_info["seed"]`.
   It must be an integer in `0..2**64` (otherwise `InvalidSettingsError`).
 * `backend`: `None` (engine default, initially `auto`, a preference), `"auto"` (engine automatic
-  selection, consistent with the CLI), `"cpu"`,
+  selection, consistent with the CLI), `"cpu"` / `"cpu_reference"`,
   `"metal"` / `"gpu:metal"`, or `{"kind": "gpu", "name": "metal"}`.
+  A GPU backend is named by its id (`gpu:<name>`) or, when it is registered
+  (`Engine.backends()`), by its bare name. Any other string, and a dict
+  with a key a backend does not have, raises `InvalidArgumentError`; a
+  `gpu:<name>` that is not registered or not available raises
+  `UnsupportedError` when it is used.
   Semantics as in `docs/FFI.md` (*Backends*).
 * Requests run at the design tier with the engine's aim-stop policy
   (`EngineConfig::aim_stop`, `conditioned` unless the engine configuration
   sets `aim_stop`); there is no per-request `tier`/`aim_stop` argument.
   `run_info["tier"]` and `run_info["aim_stop"]` record what ran
   (`docs/RESULTS.md` §1).
+* `route`: a dict of route options (`docs/GPU.md` §9.3: `aiming`,
+  `aiming_share`, `fieldmaps`, `stray_share`, `stray_sag`,
+  `solver_aiming`), e.g. `route={"fieldmaps": "device-chief"}`; keys left
+  out take their defaults. `None` uses the engine's (`Engine(route=...)`).
+  An unknown key or value, or a share outside 0…1, raises
+  `InvalidSettingsError`.
 * `view_key`: a newer job with the same key in the same session supersedes
   (cancels) the older one; use one key per live view.
 * `progress(fraction, stage)` is called on the calling thread, with
@@ -151,8 +162,9 @@ the last value seen for a failed or cancelled job), `stage`, `status()`
 progress=None)` → `Result`. Timeouts are seconds; `None` or `inf` wait
 forever; NaN or negative values raise `InvalidArgumentError`.
 
-`stop()` requests an early `optimize`, `tolerance` or `glass_substitution`
-result: `result()` returns
+`stop()` requests an early result of an analysis that `Engine.analyses()`
+lists with `stoppable: True` (`optimize`, `tolerance`,
+`glass_substitution`): `result()` returns
 normally, the job ends `done`, and `result.data["stopped"]` is true. Queued
 jobs still start; a finished job is unchanged. Other active jobs raise
 `UnsupportedError`. `cancel()` (also after Stop) discards the result.
@@ -269,10 +281,15 @@ MKLightError(Exception)
 └── InternalError(MKLightError)
 ```
 
-Engine errors are classified with the same table as the C ABI status codes
-(`docs/FFI.md`): e.g. an unknown analysis or glass is `NotFoundError`, a
-placeholder analysis or unavailable backend `UnsupportedError`, a trace or
-numerical failure `ComputeError`.
+Engine errors are classified once, by the engine
+(`mklight_engine::ErrorKind`), and each kind is raised as the class that
+corresponds to its C ABI status code (`docs/FFI.md`): e.g. an unknown
+analysis or glass is `NotFoundError`, a placeholder analysis or unavailable
+backend `UnsupportedError`, a trace or numerical failure `ComputeError`.
+`InvalidSettingsError` is the `MK_ERR_INVALID_ARGUMENT` of analysis settings
+and route options. `JobFailedError` is a job that ended with an internal
+error; a job that fails otherwise raises its own error's class. There is no
+"not ready" class: `result()` waits.
 
 ## Threading, the GIL and Ctrl-C
 

@@ -247,7 +247,13 @@ fn geometric(
         indices: wls.iter().map(|x| x.0).collect(),
     };
     let c = if let Some(g) = gpu {
-        mklight_analysis::gpu::geometric_mtf_job(g.backend.as_ref(), &local, &settings, ctx)?
+        mklight_analysis::gpu::geometric_mtf_job(
+            g.backend.as_ref(),
+            &local,
+            &settings,
+            &Default::default(),
+            ctx,
+        )?
     } else {
         geometric_mtf_job(&local, &settings, ctx)?
     };

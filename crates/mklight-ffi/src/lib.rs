@@ -30,6 +30,7 @@ use mklight_core::import::{PrescriptionFormat, import_prescription};
 use mklight_core::materials::MaterialLibrary;
 use mklight_core::param::ParamPath;
 use mklight_core::{JobContext, MkError, OpticalSystem};
+use mklight_engine::ErrorKind;
 use mklight_engine::backend::Backend;
 use mklight_engine::buffer::BufferData;
 use mklight_engine::session::{AnalysisRequest, ParamEdit, Session};
@@ -83,42 +84,42 @@ impl FfiError {
     }
 }
 
-fn core_status(e: &MkError) -> MKStatus {
-    match e {
-        MkError::Cancelled => MK_ERR_CANCELLED,
-        MkError::InvalidModel(_) => MK_ERR_INVALID_MODEL,
-        MkError::UnknownMaterial(_) | MkError::UnknownCoating(_) => MK_ERR_NOT_FOUND,
-        MkError::WavelengthOutOfRange { .. } | MkError::InvalidParam(_) => MK_ERR_INVALID_ARGUMENT,
-        MkError::Parse(_) => MK_ERR_PARSE,
-        MkError::Io(_) => MK_ERR_IO,
-        MkError::Unsupported(_) => MK_ERR_UNSUPPORTED,
-        MkError::Trace(_) | MkError::Numerical(_) | MkError::Backend(_) => MK_ERR_COMPUTE,
+/// The status code of each error kind (the table of `mklight.h`).
+fn kind_status(kind: ErrorKind) -> MKStatus {
+    match kind {
+        ErrorKind::Cancelled => MK_ERR_CANCELLED,
+        ErrorKind::InvalidModel => MK_ERR_INVALID_MODEL,
+        ErrorKind::UnknownMaterial | ErrorKind::UnknownAnalysis | ErrorKind::UnknownJob => {
+            MK_ERR_NOT_FOUND
+        }
+        ErrorKind::WavelengthOutOfRange
+        | ErrorKind::InvalidArgument
+        | ErrorKind::InvalidSettings => MK_ERR_INVALID_ARGUMENT,
+        ErrorKind::Parse | ErrorKind::ProjectFile => MK_ERR_PARSE,
+        ErrorKind::Io => MK_ERR_IO,
+        ErrorKind::Unsupported => MK_ERR_UNSUPPORTED,
+        ErrorKind::Compute => MK_ERR_COMPUTE,
+        ErrorKind::NotFinished => MK_ERR_NOT_READY,
+        ErrorKind::Timeout => MK_ERR_TIMEOUT,
+        ErrorKind::JobFailed => MK_ERR_JOB_FAILED,
+        ErrorKind::ShutDown => MK_ERR_INTERNAL,
     }
 }
 
 impl From<EngineError> for FfiError {
     fn from(e: EngineError) -> Self {
-        let status = match &e {
-            EngineError::Core(c) => core_status(c),
-            EngineError::UnknownAnalysis(_) | EngineError::UnknownJob(_) => MK_ERR_NOT_FOUND,
-            EngineError::AnalysisUnavailable { .. } | EngineError::BackendUnavailable(_) => {
-                MK_ERR_UNSUPPORTED
-            }
-            EngineError::InvalidSettings(_) => MK_ERR_INVALID_ARGUMENT,
-            EngineError::NotFinished(_) => MK_ERR_NOT_READY,
-            EngineError::Timeout(_) => MK_ERR_TIMEOUT,
-            EngineError::JobFailed(_) => MK_ERR_JOB_FAILED,
-            EngineError::Project(_) => MK_ERR_PARSE,
-            EngineError::ShutDown => MK_ERR_INTERNAL,
-        };
-        FfiError::new(status, e.to_string())
+        FfiError::new(kind_status(e.kind()), e.to_string())
     }
 }
 
-impl From<serde_json::Error> for FfiError {
-    fn from(e: serde_json::Error) -> Self {
-        FfiError::new(MK_ERR_PARSE, format!("JSON: {e}"))
-    }
+/// Text passed as `what` that is not JSON.
+fn not_json(what: &str, e: serde_json::Error) -> FfiError {
+    FfiError::new(MK_ERR_PARSE, format!("{what}: invalid JSON: {e}"))
+}
+
+/// A value this library could not write as JSON.
+fn json_output_error(e: serde_json::Error) -> FfiError {
+    FfiError::new(MK_ERR_INTERNAL, format!("JSON: {e}"))
 }
 
 type FfiResult<T> = Result<T, FfiError>;
@@ -190,9 +191,30 @@ unsafe fn in_json(p: *const c_char, what: &str) -> FfiResult<Value> {
     match unsafe { in_opt_str(p, what) }? {
         None => Ok(Value::Null),
         Some(s) if s.trim().is_empty() => Ok(Value::Null),
-        Some(s) => serde_json::from_str(s)
-            .map_err(|e| FfiError::new(MK_ERR_PARSE, format!("{what}: invalid JSON: {e}"))),
+        Some(s) => serde_json::from_str(s).map_err(|e| not_json(what, e)),
     }
+}
+
+/// Read a required JSON object as `T`. The rule for every JSON input: text
+/// that is not JSON is `MK_ERR_PARSE`; JSON of another shape than `T` (not
+/// an object, a missing or unknown key, a value of the wrong type) is
+/// `MK_ERR_INVALID_ARGUMENT`.
+unsafe fn in_object<T: serde::de::DeserializeOwned>(p: *const c_char, what: &str) -> FfiResult<T> {
+    let v = serde_json::from_str(unsafe { in_str(p, what) }?).map_err(|e| not_json(what, e))?;
+    object(v, what)
+}
+
+/// Read a parsed JSON object as `T` (see `in_object`).
+fn object<T: serde::de::DeserializeOwned>(v: Value, what: &str) -> FfiResult<T> {
+    if !v.is_object() {
+        return Err(FfiError::arg(format!("{what} must be a JSON object")));
+    }
+    typed(v, what)
+}
+
+/// Read parsed JSON as `T`: another shape is `MK_ERR_INVALID_ARGUMENT`.
+fn typed<T: serde::de::DeserializeOwned>(v: Value, what: &str) -> FfiResult<T> {
+    serde_json::from_value(v).map_err(|e| FfiError::arg(format!("{what}: {e}")))
 }
 
 unsafe fn out_ptr<'a, T>(p: *mut T, what: &str) -> FfiResult<&'a mut T> {
@@ -207,7 +229,7 @@ unsafe fn put_string(out: *mut *mut c_char, s: &str) {
 }
 
 unsafe fn put_json(out: *mut *mut c_char, v: &impl serde::Serialize) -> FfiResult<()> {
-    let s = serde_json::to_string(v)?;
+    let s = serde_json::to_string(v).map_err(json_output_error)?;
     unsafe { put_string(out, &s) };
     Ok(())
 }
@@ -388,7 +410,7 @@ pub unsafe extern "C" fn mk_engine_create(
         let out = unsafe { out_ptr(out_engine, "out_engine") }?;
         let cfg = match unsafe { in_json(config_json, "config_json") }? {
             Value::Null => EngineConfig::default(),
-            v => serde_json::from_value::<EngineConfig>(v)?,
+            v => object::<EngineConfig>(v, "config_json")?,
         };
         *out = Box::into_raw(Box::new(MKEngine {
             engine: Engine::new(cfg),
@@ -597,8 +619,7 @@ pub unsafe extern "C" fn mk_session_set_system_json(
     unsafe { clear_out(out_hash) };
     guard(|| {
         let s = unsafe { session_ref(session) }?;
-        let text = unsafe { in_str(system_json, "system_json") }?;
-        let sys: OpticalSystem = serde_json::from_str(text)?;
+        let sys: OpticalSystem = unsafe { in_object(system_json, "system_json") }?;
         let h = s.lock().set_system(sys)?;
         unsafe { put_string(out_hash, &h.to_hex()) };
         Ok(())
@@ -618,8 +639,8 @@ pub unsafe extern "C" fn mk_session_apply_param_edit(
         let s = unsafe { session_ref(session) }?;
         let v = unsafe { in_json(edits_json, "edits_json") }?;
         let edits: Vec<ParamEdit> = match v {
-            Value::Array(_) => serde_json::from_value(v)?,
-            Value::Object(_) => vec![serde_json::from_value(v)?],
+            Value::Array(_) => typed(v, "edits_json")?,
+            Value::Object(_) => vec![typed(v, "edits_json")?],
             _ => return Err(FfiError::arg("edits_json must be an object or an array")),
         };
         let h = s.lock().apply_edits(&edits)?;
@@ -763,10 +784,7 @@ pub unsafe extern "C" fn mk_session_submit_analysis(
     })
 }
 
-/// Queue an analysis from a full request object
-/// `{"analysis", "settings", "view_key", "backend", "allow_backend_fallback",
-/// "tier", "aim_stop"}` (`tier`: `design`/`preview`; `aim_stop`:
-/// `requested`/`conditioned` or null for the engine default).
+/// Queue an analysis from a request object (its keys: `mklight.h`).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mk_session_submit_analysis_json(
     session: *const MKSession,
@@ -779,8 +797,7 @@ pub unsafe extern "C" fn mk_session_submit_analysis_json(
     guard(|| {
         let s = unsafe { session_ref(session) }?;
         let out = unsafe { out_ptr(out_job, "out_job") }?;
-        let req: AnalysisRequest =
-            serde_json::from_str(unsafe { in_str(request_json, "request_json") }?)?;
+        let req: AnalysisRequest = unsafe { in_object(request_json, "request_json") }?;
         submit(s, &req, out)
     })
 }
@@ -842,8 +859,9 @@ pub unsafe extern "C" fn mk_job_status_json(
     })
 }
 
-/// Stop optimisation/tolerancing and retain the best-so-far result.
-/// Unsupported for other active jobs; no-op for finished jobs.
+/// Stop a job of an analysis listed as `stoppable` and keep its
+/// best-so-far result. Unsupported for other active jobs; no-op for
+/// finished jobs.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mk_job_stop(engine: *const MKEngine, job: u64) -> MKStatus {
     guard(|| {
@@ -894,9 +912,11 @@ pub unsafe extern "C" fn mk_job_wait(
 
 /// Take a finished job's result and forget the job.
 ///
-/// * Done: `MK_OK`; `*out_json` receives `{"run_info", "result", "buffers"}`
-///   and `*out_buffers`/`*out_count` the buffers (NULL/0 when there are none).
-/// * Failed: `MK_ERR_JOB_FAILED` (message in `mk_last_error`).
+/// * Done: `MK_OK`; `*out_json` receives the result envelope and
+///   `*out_buffers`/`*out_count` the buffers (NULL/0 when there are none).
+/// * Failed: the status of the job's own error, as a synchronous run would
+///   return it (message in `mk_last_error`); `MK_ERR_JOB_FAILED` when the
+///   job panicked.
 /// * Cancelled: `MK_ERR_CANCELLED`.
 /// * Still queued/running: `MK_ERR_NOT_READY` (the job is kept).
 #[unsafe(no_mangle)]
@@ -919,17 +939,9 @@ pub unsafe extern "C" fn mk_job_take_result(
         unsafe { out_ptr(out_json, "out_json") }?;
         let out_b = unsafe { out_ptr(out_buffers, "out_buffers") }?;
         let out_c = unsafe { out_ptr(out_count, "out_count") }?;
-        let state = e.engine.job_status(job)?.state;
-        let r = match e.engine.take_result(job) {
-            Ok(r) => r,
-            Err(err @ (EngineError::NotFinished(_) | EngineError::UnknownJob(_))) => {
-                return Err(err.into());
-            }
-            Err(err) if state == JobState::Cancelled || err.is_cancelled() => {
-                return Err(FfiError::new(MK_ERR_CANCELLED, err.to_string()));
-            }
-            Err(err) => return Err(FfiError::new(MK_ERR_JOB_FAILED, err.to_string())),
-        };
+        // A failed job yields its own error and a cancelled one
+        // `Cancelled`, so the kind of either decides the status.
+        let r = e.engine.take_result(job)?;
         unsafe { export_result(r, out_json, out_b, out_c) }
     })
 }
@@ -941,7 +953,7 @@ unsafe fn export_result(
     out_b: &mut *mut MKBuffer,
     out_c: &mut usize,
 ) -> FfiResult<()> {
-    let json = serde_json::to_string(&r.envelope())?;
+    let json = serde_json::to_string(&r.envelope()).map_err(json_output_error)?;
     let bufs: Vec<MKBuffer> = r.buffers.into_iter().map(export_buffer).collect();
     *out_c = bufs.len();
     *out_b = if bufs.is_empty() {
@@ -985,9 +997,7 @@ pub unsafe extern "C" fn mk_engine_set_default_backend(
 ) -> MKStatus {
     guard(|| {
         let e = unsafe { engine_ref(engine) }?;
-        let v = unsafe { in_json(backend_json, "backend_json") }?;
-        let b: Backend = serde_json::from_value(v)
-            .map_err(|err| FfiError::arg(format!("backend_json: {err}")))?;
+        let b: Backend = unsafe { in_object(backend_json, "backend_json") }?;
         e.engine.set_default_backend(b)?;
         Ok(())
     })
@@ -1024,11 +1034,10 @@ pub unsafe extern "C" fn mk_session_run_analysis_json(
     }
     guard(|| {
         let s = unsafe { session_ref(session) }?;
-        let text = unsafe { in_str(request_json, "request_json") }?;
         unsafe { out_ptr(out_json, "out_json") }?;
         let out_b = unsafe { out_ptr(out_buffers, "out_buffers") }?;
         let out_c = unsafe { out_ptr(out_count, "out_count") }?;
-        let req: AnalysisRequest = serde_json::from_str(text)?;
+        let req: AnalysisRequest = unsafe { in_object(request_json, "request_json") }?;
         let r = run_unlocked(s, &req)?;
         unsafe { export_result(r, out_json, out_b, out_c) }
     })
@@ -1115,10 +1124,8 @@ pub unsafe extern "C" fn mk_session_get_param(
     unsafe { clear_out(out_json) };
     guard(|| {
         let s = unsafe { session_ref(session) }?;
-        let text = unsafe { in_str(path_json, "path_json") }?;
         unsafe { out_ptr(out_json, "out_json") }?;
-        let p: ParamPath =
-            serde_json::from_str(text).map_err(|e| FfiError::arg(format!("path_json: {e}")))?;
+        let p: ParamPath = unsafe { in_object(path_json, "path_json") }?;
         let v = s.lock().param_value(&p)?;
         let value = match v {
             None => Value::Null,
@@ -1222,7 +1229,7 @@ pub unsafe extern "C" fn mk_session_import_prescription(
         let path = unsafe { in_str(path, "path") }?;
         let mut g = s.lock();
         let imported = g.import_prescription(Path::new(path))?;
-        let mut v = serde_json::to_value(&imported)?;
+        let mut v = serde_json::to_value(&imported).map_err(json_output_error)?;
         v["snapshot_hash"] = Value::from(g.snapshot_hash().to_hex());
         drop(g);
         unsafe { put_json(out_json, &v) }
@@ -1287,6 +1294,72 @@ mod tests {
             .map(|(name, _)| name.to_string())
             .filter(|name| name.starts_with("mk_"))
             .collect()
+    }
+
+    #[test]
+    fn error_kinds_map_to_the_documented_statuses() {
+        let core = |e: MkError| FfiError::from(EngineError::Core(e)).status;
+        assert_eq!(core(MkError::Cancelled), MK_ERR_CANCELLED);
+        assert_eq!(
+            core(MkError::InvalidModel("x".into())),
+            MK_ERR_INVALID_MODEL
+        );
+        assert_eq!(core(MkError::UnknownMaterial("x".into())), MK_ERR_NOT_FOUND);
+        assert_eq!(core(MkError::UnknownCoating("x".into())), MK_ERR_NOT_FOUND);
+        assert_eq!(
+            core(MkError::WavelengthOutOfRange {
+                material: "x".into(),
+                wavelength_um: 3.0,
+                min_um: 0.3,
+                max_um: 2.5,
+            }),
+            MK_ERR_INVALID_ARGUMENT
+        );
+        assert_eq!(
+            core(MkError::InvalidParam("x".into())),
+            MK_ERR_INVALID_ARGUMENT
+        );
+        assert_eq!(core(MkError::Parse("x".into())), MK_ERR_PARSE);
+        assert_eq!(core(MkError::Io("x".into())), MK_ERR_IO);
+        assert_eq!(core(MkError::Unsupported("x".into())), MK_ERR_UNSUPPORTED);
+        for e in [
+            MkError::Trace("x".into()),
+            MkError::Numerical("x".into()),
+            MkError::Backend("x".into()),
+        ] {
+            assert_eq!(core(e), MK_ERR_COMPUTE);
+        }
+        for (e, status) in [
+            (EngineError::UnknownAnalysis("x".into()), MK_ERR_NOT_FOUND),
+            (EngineError::UnknownJob(1), MK_ERR_NOT_FOUND),
+            (
+                EngineError::AnalysisUnavailable {
+                    name: "x".into(),
+                    reason: "y".into(),
+                },
+                MK_ERR_UNSUPPORTED,
+            ),
+            (
+                EngineError::BackendUnavailable("x".into()),
+                MK_ERR_UNSUPPORTED,
+            ),
+            (
+                EngineError::InvalidSettings("x".into()),
+                MK_ERR_INVALID_ARGUMENT,
+            ),
+            (
+                EngineError::InvalidArgument("x".into()),
+                MK_ERR_INVALID_ARGUMENT,
+            ),
+            (EngineError::NotFinished(1), MK_ERR_NOT_READY),
+            (EngineError::Timeout(1), MK_ERR_TIMEOUT),
+            // Only a job that panicked keeps this status.
+            (EngineError::JobFailed("x".into()), MK_ERR_JOB_FAILED),
+            (EngineError::Project("x".into()), MK_ERR_PARSE),
+            (EngineError::ShutDown, MK_ERR_INTERNAL),
+        ] {
+            assert_eq!(FfiError::from(e.clone()).status, status, "{e}");
+        }
     }
 
     #[test]

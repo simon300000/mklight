@@ -10,7 +10,9 @@ public enum GPUPreparation: Equatable, Sendable, Decodable {
     /// Creating kernels: `done` of `total`.
     case preparing(device: String, done: Int, total: Int)
     /// Every kernel is ready; `fromCache` were loaded instead of compiled.
-    case ready(device: String, kernels: Int, fromCache: Int, seconds: Double)
+    /// `warning`: the saved kernels could not be read or written, so the
+    /// next launch compiles again.
+    case ready(device: String, kernels: Int, fromCache: Int, seconds: Double, warning: String? = nil)
     /// No GPU: analyses use the CPU reference.
     case unavailable(reason: String)
     /// Preparation failed; kernels compile when first used.
@@ -29,7 +31,7 @@ public enum GPUPreparation: Equatable, Sendable, Decodable {
     }
 
     private enum Keys: String, CodingKey {
-        case state, device, done, total, kernels, from_cache, seconds, reason, message
+        case state, device, done, total, kernels, from_cache, seconds, warning, reason, message
     }
 
     public init(from decoder: any Decoder) throws {
@@ -42,7 +44,8 @@ public enum GPUPreparation: Equatable, Sendable, Decodable {
         case "ready":
             self = .ready(device: device(), kernels: try c.decode(Int.self, forKey: .kernels),
                           fromCache: try c.decode(Int.self, forKey: .from_cache),
-                          seconds: try c.decode(Double.self, forKey: .seconds))
+                          seconds: try c.decode(Double.self, forKey: .seconds),
+                          warning: try c.decodeIfPresent(String.self, forKey: .warning))
         case "unavailable":
             self = .unavailable(reason: try c.decode(String.self, forKey: .reason))
         case "failed":

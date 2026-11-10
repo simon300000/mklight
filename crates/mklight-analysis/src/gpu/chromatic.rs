@@ -7,6 +7,7 @@ pub fn lateral_colour_job(
     b: &dyn ComputeBackend,
     t: &SequentialTracer,
     s: &LateralColourSettings,
+    route: &Route,
     ctx: &JobContext,
 ) -> MkResult<LateralColourResult> {
     check_count("field samples", s.field_samples, 2, 100_001)?;
@@ -18,7 +19,7 @@ pub fn lateral_colour_job(
         .map(|&[x, y]| FieldPoint::normalized(x, y))
         .collect();
     let wls: Vec<_> = (0..t.num_wavelengths()).collect();
-    let geo = Geometry::new(b, t, ctx)?;
+    let geo = Geometry::new(b, t, ctx)?.with_route(route)?;
     let mut p = ResidentPlan::new(t.system().snapshot.clone());
     p.settings = serde_json::to_value(s).unwrap();
     let mut g = geo.append_grid(
@@ -84,6 +85,7 @@ pub fn longitudinal_aberration_job(
     b: &dyn ComputeBackend,
     t: &SequentialTracer,
     s: &LongitudinalSettings,
+    route: &Route,
     ctx: &JobContext,
 ) -> MkResult<LongitudinalResult> {
     use mklight_core::surface_math::{Symmetry, system_symmetry};
@@ -102,7 +104,7 @@ pub fn longitudinal_aberration_job(
     let wls = s
         .wavelengths
         .resolve(t.num_wavelengths(), t.system().primary_wavelength)?;
-    let geo = Geometry::new(b, t, ctx)?;
+    let geo = Geometry::new(b, t, ctx)?.with_route(route)?;
     let mut p = ResidentPlan::new(t.system().snapshot.clone());
     p.settings = serde_json::to_value(s).unwrap();
     let axes = s.axes.components(symmetry);

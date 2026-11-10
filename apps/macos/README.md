@@ -23,11 +23,11 @@ and uses its SwiftUI APIs without availability checks (docs/APP.md,
 
 | target | contents |
 |---|---|
-| `MKLightModel` | Codable, `Sendable`, `Hashable` value types that mirror the engine's `OpticalSystem` JSON exactly. That covers tagged enums (`"type"`, `"mode"`, `"param"`), snake_case keys, explicit `null`s, `"inf"`/`"-inf"` thicknesses and curvature rather than radius, and every surface field (including the DOE order-efficiency model `diffraction_efficiency`: ideal, kinoform, multilevel N). Every surface shape of `docs/SURFACES.md` is mirrored (odd asphere, Q-con/Q-bfs, diffractive on a plane/conic/even-asphere base, toroid, biconic with its cylinder preset, XY polynomial, Zernike sag, and the fringe irregularity `sag_overlay` on a geometric base), with the `shape_coefficient`/`shape_param` parameter paths, their limits and term numbering (`CoefficientSet`, `ShapeParameter`, `XYTerm`, `ZernikeTerm`), checked against `extended_shapes.json`. It also includes structural validation (the engine's `validate` checks, including `ParamPath::get`'s shape, material, semi-diameter and aperture rules for configuration overrides, verified case by case against engine verdicts in `validation_cases.json`; values JSON cannot carry are errors, and mechanical parts on missing surfaces, which the engine rejects, are only warnings here), reference-preserving edits (surface insert/delete/stop, field and wavelength removal that renumbers index-addressed overrides), radius↔curvature display helpers, the `.mklight` project envelope (`ProjectFile`) and sample systems. It has no UI and no optics. |
-| `MKLightEngine` | The engine boundary. It holds the `EngineClient` protocol, `ModelSnapshot`/`SnapshotHash`, analysis requests by name and typed requests with their settings, result types and buffers, `RunInfo`, the `AnalysisJob` handle, `GPUPreparation`, the prescription import types and `MockEngine`. |
+| `MKLightModel` | Codable, `Sendable`, `Hashable` value types that mirror the engine's `OpticalSystem` JSON exactly. That covers tagged enums (`"type"`, `"mode"`, `"param"`), snake_case keys, explicit `null`s, `"inf"`/`"-inf"` thicknesses and curvature rather than radius, and every surface field (including the DOE order-efficiency model `diffraction_efficiency`: ideal, kinoform, multilevel N). Every surface shape of `docs/SURFACES.md` is mirrored (odd asphere, Q-con/Q-bfs, diffractive on a plane/conic/even-asphere base, toroid, biconic with its cylinder preset, XY polynomial, Zernike sag, and the fringe irregularity `sag_overlay` on a geometric base), with the `shape_coefficient`/`shape_param` parameter paths, their limits and term numbering (`CoefficientSet`, `ShapeParameter`, `XYTerm`, `ZernikeTerm`), checked against `extended_shapes.json`. It also includes structural validation (the engine's `validate` checks, including `ParamPath::get`'s shape, material, semi-diameter and aperture rules for configuration overrides, and the engine's structural rules, verified case by case against engine verdicts in `validation_cases.json`; values JSON cannot carry are errors; what the mirror leaves to the engine is the validation of each configured system and the per-kind rules of solves), reference-preserving edits (surface insert/delete/stop, field and wavelength removal that renumbers index-addressed overrides), radius↔curvature display helpers, the `.mklight` project envelope (`ProjectFile`) and sample systems. It has no UI and no optics. |
+| `MKLightEngine` | The engine boundary. It holds the `EngineClient` protocol, `ModelSnapshot`/`SnapshotHash`, analysis requests by name (`EngineAnalysisRequest`), the analysis descriptors with their settings schemas, results as JSON with buffers (`AnalysisOutput`, `ResultBuffer`), `RunInfo`, the `AnalysisJob` handle, `GPUPreparation`, the viewport's `LayoutScene`, the prescription import types and `MockEngine`. |
 | `MKLightUI` | The document app. `Document/` (`ProjectDocument` file adapter, `DesignDocument` design state with undo), `Editor/` (`LensEdit`, the lens-data edits), `ViewModels/` (`Workspace` snapshots and panes, `AnalysisPane`, `WindowState` and the saved `WorkspaceLayout`, `PanelArrangement`, `LensTable`, the data-driven `SurfaceTypes` and the display sags of their previews (`ShapeSag`), design-job sessions, result readers, `GPUPreparationMonitor`; platform-neutral), `Views/` (window, toolbar status, sidebar, lens table, inspectors with shape previews, analysis panes and dedicated plots in Swift Charts, design-job inspector panels, welcome window with layout thumbnails), `Viewport/` (Metal renderer, engine layout reader, NS/UIViewRepresentable wrappers), `Support/` (palette, parsers, platform adapters). See docs/APP.md for the design. |
 | `CMKLight` | System-library module over `crates/mklight-ffi/include/mklight.h`; present only when `Frameworks/libmklight_ffi.a` exists. |
-| `MKLightFFI` | `FFIEngine`: `EngineClient` over the C ABI (sessions, projects, catalogs, jobs, zero-copy buffers). Compiles without the library and then reports it unavailable. |
+| `MKLightFFI` | `FFIEngine`: `EngineClient` over the C ABI (sessions, catalogs, jobs, zero-copy buffers). Compiles without the library and then reports it unavailable. |
 | `MKLight` | The executable. It uses `FFIEngine` (debug builds without the library fall back to `MockEngine`) and runs `MKLightScene`. |
 
 ## Engine boundary
@@ -39,20 +39,21 @@ every engine implements:
 |---|---|
 | `info` | `EngineInfo`: name, version and `isMock` |
 | `openSnapshot(_:)` | validates a system and freezes it into a hashed `ModelSnapshot` |
-| `validate(_:)` | every `ModelIssue`, without throwing |
-| `submit(_: EngineAnalysisRequest, on:)` | starts any engine analysis by name, with JSON settings |
-| `submit(_: AnalysisRequest, on:)` | starts one of the typed analyses (`AnalysisKind`) |
 | `analysisDescriptors()` | every analysis with its settings schema and availability |
+| `submit(_:on:)` | starts any engine analysis by name (`EngineAnalysisRequest`), with JSON settings |
 | `materialNames()`, `catalogs()`, `loadCatalog(at:)` | glass names for completion, the glass catalogs, loading a user catalog |
 | `makeDocumentEngine()` | the same engine with a session of its own for one document |
-| `applyParamEdits(_:to:)`, `applySolves(settings:to:)` | parameter edits and solves applied by the engine, returning the new snapshot |
+| `applySolves(settings:to:)` | solves applied by the engine, returning the report and the new snapshot |
 | `importPrescription(_:format:)`, `importPrescription(at:)` | `.zmx` and `.seq` import |
 | `prepareGPU(cacheDirectory:)`, `gpuPreparation()` | the GPU kernel preparation at launch and its state (`GPUPreparation`) |
 
 The requirements after `materialNames()` have default implementations in an
 extension, for engines without those capabilities: they fail with
 `EngineError.unsupported`, list no catalogs, return the engine itself as
-the document engine, or have no GPU to prepare.
+the document engine, apply solves from the `solves` analysis' report, or
+have no GPU to prepare. An analysis is described by data alone: what it
+takes is its settings schema, and what it returns is the engine's result
+JSON (docs/RESULTS.md).
 
 * **Snapshots.** `ModelSnapshot` is an immutable system plus its
   engine-computed content hash and the hash of the glass library it was
@@ -64,32 +65,30 @@ the document engine, or have no GPU to prepare.
   and keep the best result so far). Cancelling the task that awaits a job
   does not cancel the job. Only `cancel()` does. Implementations build jobs
   with `AnalysisJob.run` and report through `JobReporter`.
-* **Requests by name.** The app submits every analysis and design job as an
+* **Requests.** Every analysis and design job is an
   `EngineAnalysisRequest`: the engine's analysis name, the settings its
   schema accepts as JSON (a seed is the analysis' own `seed` setting) and an
-  `ExecutionSettings` with the backend preference. `FFIEngine` fails a job
-  whose settings the engine refuses at once with
-  `EngineError.invalidSettings`.
-* **Typed requests.** `AnalysisRequest` covers the layout scene, spot
-  diagram, ray fan, OPD fan, field curvature/distortion, MTF, PSF and
-  first-order data with one Codable settings struct each
-  (`SpotDiagramSettings`, `MTFSettings`, …) and its `execution` block
-  (`ExecutionSettings`: backend preference and the seed of random pupil
-  sampling). `AnalysisRequest.problems(for:)` checks sample counts,
-  frequencies and field/wavelength/configuration indices against the
-  snapshot, and engines fail such requests at once with
-  `EngineError.invalidSettings`. `MockEngine` and the tests use this layer;
-  the app does not.
+  `ExecutionSettings` with the backend preference. `AnalysisDescriptor`
+  carries the schema (`SettingsField`s, from which the app builds its
+  settings forms) and reduces settings to what the schema declares
+  (`acceptedSettings`). `FFIEngine` fails a job whose settings the engine
+  refuses at once with `EngineError.invalidSettings`.
+* **Results.** An `AnalysisOutput` is the engine's result JSON plus its
+  binary `ResultBuffer`s, which point into the engine's memory without a
+  copy, the `RunInfo`, the glass library hash and the backend report. The
+  views read the JSON and the buffers through tolerant accessors
+  (`JSONValue.nf`, `nfArray`, `[path:]`, `buffer(named:)`): a missing key or
+  another type reads as `nil`, and the pane shows the result generically.
 * **Reproducibility.** Every `AnalysisOutput` carries a `RunInfo` that
   mirrors the engine's. It records the engine version, snapshot hash,
   settings JSON, the backend and precision actually used, the seed, the
   accuracy tier, timing, warnings and failed backend attempts.
   `AnalysisOutput.isCurrent(for:request:)` drives the "stale" state: the
-  snapshot and glass library must match, and so must the request (for a
-  request by name, every requested setting must have the requested value in
-  the engine's recorded settings). Settings compare as exact JSON values
-  (`JSONValue` keeps integers as `Int64` / `UInt64`, so 64-bit seeds are
-  never rounded through `Double`).
+  snapshot and glass library must match, and so must the request (the one
+  that produced the output, or else every requested setting must have the
+  requested value in the engine's recorded settings). Settings compare as
+  exact JSON values (`JSONValue` keeps integers as `Int64` / `UInt64`, so
+  64-bit seeds are never rounded through `Double`).
 * **Layout scene.** `LayoutScene` contains polylines for surface profiles,
   rims, element edges, the stop, the image and the axis, plus rays. Each
   polyline is tagged with its surface, field and wavelength and with
@@ -101,30 +100,31 @@ the document engine, or have no GPU to prepare.
 * **Non-finite results.** serde_json writes non-finite `f64` as `null`; the
   engine writes infinities as `"inf"`/`"-inf"`. Result scalars that can
   legitimately be non-finite (EFL of an afocal system, RMS radius with no
-  surviving rays, MTF samples, points) decode through `EngineDouble`, which
-  accepts a number, `null` (NaN) or those strings and round-trips them.
-* **Results.** A result by name is a `GenericResult`: the engine's result
-  JSON plus its binary `ResultBuffer`s, which point into the engine's memory
-  without a copy. The views read both through tolerant accessors.
+  surviving rays, MTF samples) are read with `JSONValue.nf`, which takes a
+  number, `null` (NaN) or those strings; Codable mirrors of engine JSON
+  (`GlassInfo`) use the `EngineDouble` wrapper, which also round-trips
+  them.
 
 ### MockEngine (synthetic data)
 
-The mock also runs a few analyses **by name in the engine's result format**
+The mock runs a few analyses **by name in the engine's result format**
 (`validate`, `first_order`, `layout`, `spot_diagram`, `ray_fan`, `opd_fan`,
 `field_curvature_distortion`, `solves`, `glass_info`, `merit_evaluation`,
 and synthetic `optimize` and `tolerance` jobs that report progress and
 support Stop), so the views and view-model tests work without the Rust
-engine.
+engine. It lists `seidel`, `mtf`, `psf` and `wavefront_map` as unavailable,
+so the app can show that state.
 
-`MockEngine` implements the core of the contract: validation, hashing
-(SHA-256 of sorted-key JSON, where the Rust engine uses BLAKE3), simulated
-stages with progress and cancellation, and seeded random sampling. Glass
-catalogs, parameter edits, prescription import and GPU preparation take the
-protocol's default implementations. Its numbers come from
-`MockOptics`, a deliberately small stand-in. It uses a Cauchy index fitted
-to n_d/V_d, a rotationally symmetric real-ray trace that ignores tilts,
-decenters, ray aiming and configurations, and diffraction-limit × Gaussian-blur
-approximations for MTF and PSF. Extended surface shapes are traced as their
+`MockEngine` implements the core of the contract: snapshots that refuse an
+invalid model, hashing (SHA-256 of sorted-key JSON, where the Rust engine
+uses BLAKE3), jobs with progress and cancellation, and seeded random
+sampling. Glass catalogs, applying solves, prescription import and GPU
+preparation take the protocol's default implementations. Its numbers come
+from `MockOptics`, a deliberately small stand-in. It uses a Cauchy index
+fitted to n_d/V_d and a rotationally symmetric real-ray trace that ignores
+tilts, decenters, ray aiming and configurations; its settings and results
+are internal types that `MockByName.swift` writes out as the engine's JSON
+and buffers. Extended surface shapes are traced as their
 rotational y-meridian base (toroid and biconic: the y profile; Q, XY and
 Zernike: the base conic without the departure; diffractive: the base, plus the
 first phase term's paraxial power). The app labels its output: an orange
@@ -139,12 +139,10 @@ at least self-consistent.
 ### The Rust engine
 
 `FFIEngine` (module `MKLightFFI`) is the production `EngineClient`; see
-`docs/APP.md`. Requests by name (`EngineAnalysisRequest`) go to the engine
-as they are and come back as `GenericResult`s. Typed requests run as the
-engine analysis `AnalysisKind.engineName` with the settings its schema
-accepts (`AnalysisRequest.engineSettings(for:)`); their results decode into
-the typed mirrors when the JSON matches and are shown generically
-otherwise.
+`docs/APP.md`. A request goes to the engine as it is (analysis, settings,
+backend preference), and the result envelope comes back as an
+`AnalysisOutput`: `result` as JSON, the buffers without a copy, `run_info`,
+`library_hash` and `backend`.
 
 ## State model
 
@@ -245,11 +243,8 @@ library.
 
 ## Open contract items
 
-* The typed result mirrors (`SpotDiagramResult`, `FanResult`, `MTFResult`,
-  …) have no round-trip tests against engine fixtures (the model fixtures
-  come from `dump_fixtures`); a typed result whose JSON does not match is
-  shown generically.
-* The engine's `OpticalSystem::validate` rejects mechanical parts attached
-  to missing surfaces (`missing_surface`), while the Swift mirror's
-  `structuralIssues()` reports them only as warnings. With `FFIEngine` the
-  engine's verdict decides; `MockEngine` accepts such a model.
+* The engine validates every configured system (each override applied) and
+  the per-kind rules of solves; the Swift mirror's `structuralIssues()`
+  checks only that an override's path resolves and its value is one the
+  setter takes. With `FFIEngine` the engine's verdict decides; `MockEngine`
+  accepts such a model.

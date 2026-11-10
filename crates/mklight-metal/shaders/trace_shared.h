@@ -21,10 +21,6 @@
 struct MklDv {
     float2 v[3];
 };
-static inline MklDv mkl_df_input(MklDv p) {
-    for (uint k = 0; k < 3; ++k) p.v[k] = mkl_df_input(p.v[k]);
-    return p;
-}
 
 struct MklHit {
     float2 ta;
@@ -43,7 +39,7 @@ struct MklState {
 };
 
 static inline float3 mkl_hi3(MklDv p) { return float3(p.v[0].x, p.v[1].x, p.v[2].x); }
-static inline float3 mkl_lo3(MklDv p) { return float3(mkl_df_low(p.v[0].y), mkl_df_low(p.v[1].y), mkl_df_low(p.v[2].y)); }
+static inline float3 mkl_lo3(MklDv p) { return float3(p.v[0].y, p.v[1].y, p.v[2].y); }
 static inline bool mkl_finite3(float3 v) { return isfinite(v.x) && isfinite(v.y) && isfinite(v.z); }
 static inline float mkl_norm3(float3 v) { return mkl_hypot3(v.x, v.y, v.z); }
 
@@ -85,7 +81,7 @@ static inline float2 mkl_rot_row(constant MklPackedSurface& s, uint row, bool tr
     float2 acc = mkl_df_mul_f32(v.v[2], s.to_next_rot[c]);
     acc = mkl_df_add(acc, mkl_df_mul_f32(v.v[1], s.to_next_rot[b]));
     acc = mkl_df_add(acc, mkl_df_mul_f32(v.v[0], s.to_next_rot[a]));
-    return mkl_df_add_f32(acc, mkl_df_low(lo));
+    return mkl_df_add_f32(acc, lo);
 }
 
 static inline void mkl_xf_forward(constant MklPackedSurface& s, thread MklDv& p, thread MklDv& d) {
@@ -118,7 +114,7 @@ static inline float mkl_discriminant(float a, float b, float c) {
     float w = a * c;
     float e = fma(-a, c, w);
     float ff = fma(b, b, -w);
-    return ff + mkl_df_low(e);
+    return ff + e;
 }
 
 static inline float3 mkl_at(float t, float3 d, float3 q) {
@@ -640,7 +636,7 @@ static inline void mkl_record(device float* rf, device uint* ru, uint slot, uint
 }
 
 static inline float2 mkl_index(constant MklPackedSurface& s, uint w) {
-    return mkl_df_input(float2(s.n_after[w], s.n_after_lo[w]));
+    return float2(s.n_after[w], s.n_after_lo[w]);
 }
 
 // Resident trace core (trace_kernel::trace_resident): unrounded hi+lo
@@ -664,8 +660,8 @@ static __attribute__((always_inline)) MklRawState mkl_trace_raw(constant MklPack
     const bool radiometry = (prm.flags & MKL_TRACE_RADIOMETRY) != 0u;
     const bool at_infinity = (h.flags & MKL_SYS_OBJECT_AT_INFINITY) != 0u;
 
-    MklDv pos = mkl_df_input(input.pos), dir = mkl_df_input(input.dir);
-    float2 opl = mkl_df_input(input.opl);
+    MklDv pos = input.pos, dir = input.dir;
+    float2 opl = input.opl;
     const float w_in = input.weight;
     float tw = 1.0f;
     float absorb = 0.0f;

@@ -32,8 +32,7 @@ public enum AimStopKind: String, Codable, Sendable, Hashable {
 public struct BackendAttempt: Codable, Sendable, Hashable {
     /// Backend id (`gpu:metal`).
     public var backend: String
-    /// `failed`, `skipped`, `infeasible`, `downgraded` or
-    /// `reference_completion`.
+    /// `failed`, `skipped` or `reference_completion`.
     public var outcome: String
     public var reason: String
     /// Wall time spent in the attempt; 0 when it never started.
@@ -145,15 +144,5 @@ public struct RunInfo: Codable, Sendable, Hashable {
         try c.encode(aimStop, forKey: .aimStop)
         try c.encode(warnings, forKey: .warnings)
         if !failedAttempts.isEmpty { try c.encode(failedAttempts, forKey: .failedAttempts) }
-    }
-
-    /// Whether this result was computed from `snapshot` with `request`'s
-    /// settings, including its execution block (backend preference and
-    /// seed). A result that is not current is stale. Settings compare as
-    /// exact JSON values, so 64-bit seeds are not rounded.
-    public func isCurrent(for snapshot: ModelSnapshot?, request: AnalysisRequest) -> Bool {
-        guard let snapshot, snapshot.hash == snapshotHash, analysis == request.kind.rawValue, seed == request.seed
-        else { return false }
-        return (try? request.settingsJSON()) == settings
     }
 }

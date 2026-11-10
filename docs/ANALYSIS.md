@@ -488,7 +488,6 @@ the free function includes that preparation in each call.
 | Adapter | Resident computation |
 |---|---|
 | `spot_diagram_job`, `ray_grid_job`, `ray_fan_job`, `opd_fan_job` | Aiming by the adapter's design (§6.1), resident tracing; chief-relative double-float positions/slopes and reference-sphere OPD; two-pass spot moments (`collectives`); optional requested points |
-| `encircled_energy_job` | Double-float radii/square half-widths; stable distance/ID sort and inclusive weighted scan (`collectives`); device binary-search curve/quantile queries with a bin-uncertainty bound |
 | `geometric_mtf_job` | Double-float turn reduction, weighted complex characteristic functions and fixed-tree reductions; frequency tiles bound scratch storage |
 | `best_focus_job` | Trace once; one two-pass reduction of centred position/slope products gives each field's exact defocus quadratic, which brackets and drives the host Brent search and the through-focus curve; the optimum is re-reduced two-pass, where the quadratic form could cancel |
 | `field_map_job`, `relative_illumination_job`, `illumination_rows` | Aiming-off pupil probes; real-aimed CRA against the image sag normal; the nested image-point RI solve and implicit direction Jacobian of §2.4, followed by quadrature reductions |
@@ -533,20 +532,12 @@ connection term. The odd-cone vertex remains undefined. RI solves the
 source-to-image point on the CPU and traces the differentiation pencils on
 the device, with chord Newton and refresh for the stop aims (§6.2). Nodes the device leaves undecided are completed with the f64
 image-point solver and counted (`ri_stages.cpu_finished`); successful
-device nodes are never retraced. EE also bounds the energy that can cross a
-requested bin within the geometry error budget. When that bound exceeds
-0.002, the complete reference EE result preserves its exact bins and automatic
-radius, records the attempted resident chain and counts the reference
-fallback; its actual result backend/precision are CPU f64. No requested bin
-is widened to hide classification error. The automatic outer radius is the
-largest arrived distance, so that bin holds every arrived ray by construction
-(as in the reference) and is not classified against a recomputed distance. A caller with an independently
-qualified, tighter full-grid position bound can pass it to
-`encircled_energy_with_uncertainty_job`; that bound must include its safety
-margin and is recorded in RunInfo. Singular distortion denominators use a
+device nodes are never retraced. Singular distortion denominators use a
 small, explicitly counted f64 reference decision to preserve signed
 infinities. A cancellation discards the result and never starts a CPU
-replacement. First-order, chromatic paraxial reports and an isolated Seidel
+replacement. Encircled energy has no adapter: its curve is the exact order
+statistics of the ray distances (§2), which the reference computes in f64
+on every backend. First-order, chromatic paraxial reports and an isolated Seidel
 report remain the existing small host computations; this adapter does not
 supply a batched Seidel reduction.
 
@@ -554,13 +545,13 @@ supply a batched Seidel reduction.
 
 Every generation of a `Geometry` (grid rays, chief rays, layout fans, the
 sizing and field-map grids built on `append_grid`) is aimed before its plan
-is built, by one design read once per adapter from the route option
-`aiming` (`mklight_core::split`, GPU.md §9.3; `gpu::aim`):
+is built, by the design of the adapter's route (`gpu::Route::aiming`,
+`Geometry::with_route`; the engine passes the route option `aiming` of the
+request, GPU.md §9.3; `gpu::aim`):
 
 | `aiming` | Where pupil rays are aimed |
 |---|---|
 | `host-table` (default) | The reference tracer aims every ray in f64. Generations with at least 2,048 rays per field row first solve a coarse seed table per row (about one node per four rays, 5–37 nodes per axis over the vignetted pupil square ±1.125, as the device table); each ray's Newton solve starts from the table's Catmull–Rom interpolated aim and stop Jacobian (`SequentialTracer::generate_many_from`) and falls back to the reference schedule if it does not converge. Smaller generations are aimed without a table (`generate_many`: the rays of a chunk advance together, chunks in parallel on rayon), bitwise as the CPU reference. Paraxial launches (aiming off) need no solve; the device generates them inside the plan. Large generations of the spot diagram and the geometric MTF are split between host and device (below). |
-| `split:<share>` | `host-table` with the device's share of split generations set to `<share>` in [0, 1] instead of 0.35; 0 aims every generation on the host. |
 | `device` | The double-float device solve of GPU.md §9.2 (host chief rows, device seed table for large generations), in a plan of its own, followed by host completion. |
 | `table` | A host f64 seed table and device Newton corrections from its interpolated seeds, at most 12 iterations per ray, followed by host completion. |
 
@@ -573,9 +564,11 @@ generation with a seed table and at least 1.5 million rays × surfaces
 (rays of the generation times the image surface index) is aimed by the host
 and the device together. It is cut into tiles of whole 128-ray host chunks
 (a sixteenth of the generation, 2¹³–2¹⁷ rays); a fixed share of the tiles
-(`gpu::aim::SPLIT_DEVICE_SHARE`, 0.35), spread evenly over the
-generation, goes to the device's double-float Newton solve seeded from the
-generation's host table (at most 12 iterations per ray), except for the
+(`gpu::Route::device_share`: `gpu::aim::SPLIT_DEVICE_SHARE`, 0.35, unless
+the route option `aiming_share` sets another in [0, 1]; 0 aims every
+generation on the host), spread evenly over the generation, goes to the
+device's double-float Newton solve seeded from the generation's host table
+(at most 12 iterations per ray), except for the
 chunks with a ray outside the table's solved nodes: the rays the reference
 cannot aim lie there, and on the device they would iterate to the end of the
 schedule and then be aimed again by the host. The device's chunks form two
@@ -630,8 +623,8 @@ flight), with the tile budget of a single grid plan, so groups add no tile
 plans. Against one plan per stage, the groups took 4–7 % off the measured
 spot, MTF, footprint and ray-grid cases (geometric means 0.94, 0.96 and 0.93
 below 10 ms, from 10 to 100 ms and above 100 ms of CPU time), with results
-within 1e-7 of it. Encircled energy, best focus, the fans and the chromatic and
-layout adapters build one plan per stage.
+within 1e-7 of it. Best focus, the fans and the chromatic and layout
+adapters build one plan per stage.
 
 High-level `Geometry` metadata belongs to its nominal immutable snapshot;
 a changed system needs its own `Geometry` (its own upload and field
@@ -664,10 +657,10 @@ adapters are in
 
 The image-point illumination and the system transmission divide their work
 between the CPU and the GPU one way each (below). The chief-ray maps keep
-two divisions side by side, selected for the process by the route option
-`fieldmaps` (`mklight_core::split`, `MKLIGHT_SPLIT_FIELDMAPS`; GPU.md §9.3)
-and named in `run_info.settings` (`fieldmaps_variant`, `default:<design>`
-without a selection). Every path returns the reference result type and is
+two divisions side by side, selected by the route of the job
+(`gpu::Route::chief`; the engine passes the route option `fieldmaps` of the
+request, GPU.md §9.3) and named in `run_info.settings`
+(`fieldmaps_variant`). Every path returns the reference result type and is
 tested against the f64 reference on all built-in samples
 (`tests/fieldmaps_split.rs`; the Metal half is ignored by default).
 

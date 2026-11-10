@@ -24,22 +24,6 @@ pub struct Coordinates {
     pub mask: BufferId,
 }
 #[derive(Clone, Debug)]
-pub struct Radial {
-    /// DF [5,rays], from Coordinates.
-    pub points: PlanView,
-    pub mask: PlanView,
-    /// DF [segments,10], from Moments2.
-    pub moments: PlanView,
-    /// Each segment has exactly this many rays, in stable input order.
-    pub segment_len: usize,
-    pub centroid: bool,
-    /// DF [rays] radius, square half-width, and masked weight; U32 [rays] IDs.
-    pub radius: BufferId,
-    pub square: BufferId,
-    pub weight: BufferId,
-    pub ids: BufferId,
-}
-#[derive(Clone, Debug)]
 pub struct Characteristic {
     pub points: PlanView,
     pub mask: PlanView,
@@ -156,25 +140,11 @@ pub struct FocusTerms {
     /// DF [3,rays]: weighted |q|^2, q.dot(dt), |dt|^2 after centring.
     pub output: BufferId,
 }
-/// Queries a resident sorted distance distribution and its inclusive weight scan.
-#[derive(Clone, Debug)]
-pub struct Distribution {
-    /// Absolute distance uncertainty used to bound CDF classification error.
-    pub uncertainty: Df32,
-    pub boundary: BufferId,
-    pub keys: PlanView,
-    pub cumulative: PlanView,
-    pub radii: PlanView,
-    /// DF [radii+4]: fractions at each radius, then 50/80/90% and total weight.
-    pub output: BufferId,
-}
 #[derive(Clone, Debug)]
 pub enum Request {
     Coordinates(Coordinates),
-    Radial(Radial),
     Characteristic(Characteristic),
     SurfaceSamples(SurfaceSamples),
-    Distribution(Distribution),
     FieldData(FieldData),
     Records(Records),
     Coddington(Coddington),
@@ -239,14 +209,6 @@ pub fn validate(r: &Request, p: &ResidentPlan) -> MkResult<()> {
             }
             output(p, r.output, D, &[5, n])?;
             output(p, r.mask, U32, &[n])
-        }
-        Request::Radial(r) => {
-            let n = points(&r.points, &r.mask, r.segment_len)?;
-            input(&r.moments, D, &[n / r.segment_len, 10])?;
-            for id in [r.radius, r.square, r.weight] {
-                output(p, id, D, &[n])?;
-            }
-            output(p, r.ids, U32, &[n])
         }
         Request::Characteristic(r) => {
             let n = points(&r.points, &r.mask, r.segment_len)?;
@@ -357,18 +319,6 @@ pub fn validate(r: &Request, p: &ResidentPlan) -> MkResult<()> {
                 &[r.hits.rays.count / if r.kind == 1 { 5 } else { 1 }, 5],
             )
         }
-        Request::Distribution(r) => {
-            let n = r.keys.desc.len()?;
-            let k = r.radii.desc.len()?;
-            input(&r.keys, D, &[n])?;
-            input(&r.cumulative, D, &[n])?;
-            input(&r.radii, D, &[k])?;
-            if !r.uncertainty.to_f64().is_finite() || r.uncertainty.to_f64() < 0.0 {
-                return Err(bad("energy distance uncertainty"));
-            }
-            output(p, r.boundary, D, &[k])?;
-            output(p, r.output, D, &[k + 4])
-        }
         Request::SurfaceSamples(r) => {
             let n = r.samples.desc.shape.first().copied().unwrap_or(0);
             input(
@@ -420,10 +370,6 @@ pub fn accesses(r: &Request) -> Access {
             a.reads.push(r.chief_index.clone());
             a.writes = vec![r.output, r.mask];
         }
-        Request::Radial(r) => {
-            a.reads = vec![r.points.clone(), r.mask.clone(), r.moments.clone()];
-            a.writes = vec![r.radius, r.square, r.weight, r.ids];
-        }
         Request::Characteristic(r) => {
             a.reads = vec![r.points.clone(), r.mask.clone(), r.frequency.clone()];
             a.writes = vec![r.output];
@@ -472,10 +418,6 @@ pub fn accesses(r: &Request) -> Access {
                 }
             }
             a.writes = vec![r.output];
-        }
-        Request::Distribution(r) => {
-            a.reads = vec![r.keys.clone(), r.cumulative.clone(), r.radii.clone()];
-            a.writes = vec![r.output, r.boundary];
         }
         Request::SurfaceSamples(r) => {
             if let Some(v) = &r.projection {

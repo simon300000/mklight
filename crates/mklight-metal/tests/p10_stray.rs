@@ -4,12 +4,9 @@ mod cases;
 use mklight_gpu::*;
 use mklight_metal::{LibraryChoice, MetalBackend, MetalOptions};
 fn backend(origin: LibraryChoice) -> MetalBackend {
-    let b = MetalBackend::with_options(&MetalOptions {
-        library: origin,
-        ..Default::default()
-    })
-    .unwrap()
-    .expect("P10 requires actual host Metal");
+    let b = MetalBackend::with_options(&MetalOptions { library: origin })
+        .unwrap()
+        .expect("P10 requires actual host Metal");
     assert!(b.precision().probe.error_free_transforms());
     eprintln!(
         "P10 device={} build={} probe={:?}",

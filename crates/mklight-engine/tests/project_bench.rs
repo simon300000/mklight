@@ -6,8 +6,8 @@
 //! MKLIGHT_BENCH_QUIET_SECONDS (default 30). Cold calls use this test binary
 //! in fresh processes; the private child test does nothing without its marker.
 //! Select `edit_loop_queued` to measure the six graphs on the worker queue.
-//! Focused runs: MKLIGHT_BENCH_MODES (subset of cpu,df,f32,auto,f32_relaxed;
-//! cpu is always kept as the accuracy reference), MKLIGHT_BENCH_PHASES
+//! Focused runs: MKLIGHT_BENCH_MODES (subset of cpu,df,auto; cpu is always
+//! kept as the accuracy reference), MKLIGHT_BENCH_PHASES
 //! (warm,edit), MKLIGHT_BENCH_SKIP_COLD=1, MKLIGHT_BENCH_GRAPH_BYTES (analysis
 //! graph budget; 0 disables it), MKLIGHT_BENCH_EDIT_GRAPHS (comma list
 //! replacing the six edit-loop graphs), MKLIGHT_BENCH_ALLOW_BUSY=1 to
@@ -23,7 +23,7 @@ use std::process::Command;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use mklight_core::{JobContext, OpticalSystem, model::RayAiming, param::ParamPath};
+use mklight_core::{JobContext, OpticalSystem, param::ParamPath};
 use mklight_engine::{
     AnalysisRequest, Engine, EngineConfig, Session,
     analysis::{AnalysisOutput, AnalysisResult},
@@ -31,13 +31,13 @@ use mklight_engine::{
     gpu::GpuProvider,
 };
 use mklight_gpu::ComputeBackend;
-use mklight_metal::{LibraryChoice, MetalBackend, MetalOptions, MetalPrecision};
+use mklight_metal::{LibraryChoice, MetalBackend, MetalOptions};
 use serde_json::{Value, json};
 
 #[path = "support/comparison.rs"]
 mod comparison;
 
-const MODES: [&str; 5] = ["cpu", "df", "f32", "auto", "f32_relaxed"];
+const MODES: [&str; 3] = ["cpu", "df", "auto"];
 const SOLVERS: [&str; 4] = [
     "merit_evaluation",
     "optimize",
@@ -158,7 +158,7 @@ fn env_usize(name: &str, default: usize) -> usize {
         .unwrap_or(default)
 }
 
-fn engine(mode: &str) -> Engine {
+fn engine() -> Engine {
     let mut config = EngineConfig::default();
     if let Ok(b) = std::env::var("MKLIGHT_BENCH_GRAPH_BYTES") {
         config.analysis_graph_bytes = b.parse().unwrap();
@@ -171,19 +171,11 @@ fn engine(mode: &str) -> Engine {
         };
     }
     let e = Engine::new(config);
-    // Fixed options avoid process-global environment mutation while alternating
-    // precisions. Fresh f32 children additionally set MKLIGHT_METAL_PRECISION.
-    let precision = if mode.starts_with("f32") {
-        MetalPrecision::PureF32
-    } else {
-        MetalPrecision::DoubleFloat
-    };
     e.register_backend(Arc::new(GpuProvider::new(
         "metal",
         "project measurement",
-        move || {
+        || {
             MetalBackend::with_options(&MetalOptions {
-                precision,
                 library: LibraryChoice::Precompiled,
             })
             .map_err(|e| e.to_string())?
@@ -194,15 +186,9 @@ fn engine(mode: &str) -> Engine {
     e
 }
 
-fn open(mode: &str, path: &Path) -> Session {
-    let e = engine(mode);
-    let mut s = e.open_session(path).unwrap();
+fn open(path: &Path) -> Session {
+    let s = engine().open_session(path).unwrap();
     assert!(s.open_warnings().is_empty(), "{:?}", s.open_warnings());
-    if mode == "f32_relaxed" {
-        let mut system = s.system().clone();
-        system.ray_aiming = RayAiming::Real { tolerance: 1e-6 };
-        s.set_system(system).unwrap();
-    }
     s
 }
 
@@ -490,10 +476,6 @@ fn cold(case: &Case, path: &Path, round: usize, mode: &str) {
         .env("MKLIGHT_BENCH_ANALYSIS", &case.analysis)
         .env("MKLIGHT_BENCH_SETTINGS", case.settings.to_string())
         .env("MKLIGHT_BENCH_MODE", mode)
-        .env(
-            "MKLIGHT_METAL_PRECISION",
-            if mode.starts_with("f32") { "f32" } else { "df" },
-        )
         .output()
         .unwrap();
     emit(
@@ -533,7 +515,7 @@ fn project_bench() {
     ) {
         emit("variant", json!({"name":variant}));
         let path = Path::new(&path);
-        let mut sessions: Vec<_> = MODES.iter().map(|m| open(m, path)).collect();
+        let mut sessions: Vec<_> = MODES.iter().map(|_| open(path)).collect();
         let bases: Vec<_> = sessions.iter().map(|s| s.system().clone()).collect();
         emit(
             "project",
@@ -585,31 +567,14 @@ fn project_bench() {
                         }
                     }
                 }
-                // Comparison and CPU relaxed reference are outside measured calls.
-                let relaxed = first[4].as_ref().map(|_| {
-                    let mut cpu = open("cpu", path);
-                    cpu.set_system(sessions[4].system().clone()).unwrap();
-                    // Use the first measured edit, not the final one.
-                    if phase == "edit" {
-                        let mut base = bases[0].clone();
-                        base.ray_aiming = RayAiming::Real { tolerance: 1e-6 };
-                        edit(&mut cpu, &base, 10000 + index * (runs + 1) + 1);
-                    }
-                    cpu.run_analysis(&request(case, "cpu"), &JobContext::new())
-                });
+                // The comparison is outside measured calls.
                 for mode in (0..MODES.len()).filter(|m| mode_selected(*m)) {
-                    let reference = if mode == 4 {
-                        relaxed.as_ref().and_then(|r| r.as_ref().ok())
-                    } else {
-                        first[0].as_ref()
-                    };
                     if mode > 0
-                        && let (Some(a), Some(b)) = (reference, first[mode].as_ref())
+                        && let (Some(a), Some(b)) = (first[0].as_ref(), first[mode].as_ref())
                     {
                         emit(
                             "accuracy",
                             json!({"case":case.name,"mode":MODES[mode],"phase":phase,
-                            "reference_aiming":if mode==4 {"1e-6"} else {"project"},
                             "report":accuracy(a,b,&case.analysis)}),
                         );
                     }
@@ -692,7 +657,7 @@ fn project_bench_cold() {
     let start = Instant::now();
     let mode = std::env::var("MKLIGHT_BENCH_MODE").unwrap();
     let path = std::env::var("MKLIGHT_BENCH_PROJECT").unwrap();
-    let s = open(&mode, Path::new(&path));
+    let s = open(Path::new(&path));
     let name = std::env::var("MKLIGHT_BENCH_CASE").unwrap();
     let case = Case {
         name,
@@ -747,7 +712,7 @@ fn project_bench_queued_edit_loop() {
             .map(|p| ("autosd", p)),
     ) {
         emit("variant", json!({"name":variant}));
-        let mut sessions: Vec<_> = MODES.iter().map(|m| open(m, Path::new(&path))).collect();
+        let mut sessions: Vec<_> = MODES.iter().map(|_| open(Path::new(&path))).collect();
         let bases: Vec<_> = sessions.iter().map(|s| s.system().clone()).collect();
         let all = cases(&sessions[0]);
         quiet(&format!("{variant}/queued edit loop"));
@@ -813,7 +778,7 @@ fn project_bench_cancel_latency() {
     }
     let path = std::env::var("MKLIGHT_BENCH_PROJECT").expect("set MKLIGHT_BENCH_PROJECT");
     let runs = env_usize("MKLIGHT_BENCH_RUNS", 10).max(1);
-    let s = open("df", Path::new(&path));
+    let s = open(Path::new(&path));
     let all = cases(&s);
     let names = std::env::var("MKLIGHT_BENCH_CANCEL_CASES")
         .unwrap_or_else(|_| "mtf,psf,glass_substitution,optimize,tolerance".into());

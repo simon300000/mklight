@@ -1120,44 +1120,38 @@ struct AnalysisSection: View {
     }
 }
 
-/// Percent levels typed as a list: "50, 90, 97.7".
+/// Percent levels typed as a list: "50, 90, 97.7". Commits on Return or
+/// when focus leaves, if the text was edited; text that is not such a list
+/// reverts, with a note of the range.
 struct PercentileListField: View {
     let values: [Double]
     let commit: ([Double]) -> Void
-    @State private var text = ""
     @State private var invalid = false
-    @FocusState private var focused: Bool
-
-    private var formatted: String { values.map(Fmt.short).joined(separator: ", ") }
 
     var body: some View {
-        TextField("Percentiles", text: $text, prompt: Text("50, 90, 97.7"))
-            .labelsHidden()
-            .multilineTextAlignment(.trailing)
-            .font(.body.monospacedDigit())
-            .frame(width: 110)
-            .focused($focused)
-            .onSubmit(finish)
-            .onChange(of: focused) { _, f in if !f { finish() } }
-            .onAppear { text = formatted }
-            .onChange(of: values) { _, _ in if !focused { text = formatted } }
-            .overlay(alignment: .bottomTrailing) {
-                if invalid { Text("0 to 100").font(.caption2).foregroundStyle(.red).offset(y: 12) }
-            }
+        CommittingField(
+            value: values, format: Self.entry,
+            rejected: { text in invalid = !(text ?? "").trimmingCharacters(in: .whitespaces).isEmpty }, commit: commit
+        ) { text, _ in
+            TextField("Percentiles", text: text, prompt: Text("50, 90, 97.7"))
+                .labelsHidden()
+                .multilineTextAlignment(.trailing)
+                .font(.body.monospacedDigit())
+                .frame(width: 110)
+        }
+        .overlay(alignment: .bottomTrailing) {
+            if invalid { Text("0 to 100").font(.caption2).foregroundStyle(.red).offset(y: 12) }
+        }
     }
 
-    private func finish() {
-        let parts = text.split(whereSeparator: { $0 == "," || $0 == ";" || $0 == " " }).map(String.init)
-        let nums = parts.compactMap { LensValueParser.number($0.replacingOccurrences(of: "%", with: "")) }
-        guard nums.count == parts.count, let v = ToleranceSettings.validPercentiles(nums), nums.allSatisfy({ $0 >= 0 && $0 <= 100 }) else {
-            invalid = !text.trimmingCharacters(in: .whitespaces).isEmpty
-            text = formatted
-            return
-        }
-        invalid = false
-        if v != values { commit(v) }
-        text = v.map(Fmt.short).joined(separator: ", ")
-    }
+    static let entry = FieldEdit<[Double]>.Format(
+        exact: { $0.map(FieldText.exact).joined(separator: ", ") }, display: { $0.map(Fmt.short).joined(separator: ", ") },
+        parse: { text in
+            let parts = text.split(whereSeparator: { $0 == "," || $0 == ";" || $0 == " " }).map(String.init)
+            let nums = parts.compactMap { LensValueParser.number($0.replacingOccurrences(of: "%", with: "")) }
+            guard nums.count == parts.count, nums.allSatisfy({ $0 >= 0 && $0 <= 100 }) else { return nil }
+            return ToleranceSettings.validPercentiles(nums)
+        })
 }
 
 // MARK: - Running

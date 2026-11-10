@@ -170,7 +170,6 @@ fn stats(mut v: Vec<f64>) -> (f64, f64) {
 fn aim_trace_opd_matrix() {
     let gpu = MetalBackend::with_options(&MetalOptions {
         library: LibraryChoice::Precompiled,
-        ..Default::default()
     })
     .unwrap()
     .expect("benchmark requires host Metal");

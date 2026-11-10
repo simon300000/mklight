@@ -95,10 +95,10 @@ public enum EngineErrorCode: Int32, Sendable, Hashable, CaseIterable, CustomStri
 public enum EngineError: Error, Sendable, Hashable, LocalizedError {
     case cancelled
     case invalidModel([String])
-    /// The analysis settings do not fit the snapshot (see
-    /// `AnalysisRequest.problems(for:)`).
+    /// The engine refused the analysis settings.
     case invalidSettings([String])
     case unsupported(String)
+    /// A job ended with an internal error (status `jobFailed`).
     case failed(String)
     /// Any other engine status, with the engine's message.
     case engine(EngineErrorCode, String)
@@ -133,8 +133,10 @@ public enum EngineError: Error, Sendable, Hashable, LocalizedError {
     }
 
     /// Maps an engine status and message to the most specific case:
-    /// cancellation, invalid model and unsupported get their own cases, a
-    /// failed job keeps its message, everything else keeps its code.
+    /// cancellation, invalid model and unsupported get their own cases,
+    /// everything else keeps its code. A job that failed carries the status
+    /// of its own error; `jobFailed` (`failed`) is a job that ended with an
+    /// internal error.
     public static func from(code: EngineErrorCode, message: String) -> EngineError {
         switch code {
         case .cancelled: .cancelled
@@ -151,8 +153,9 @@ public enum EngineError: Error, Sendable, Hashable, LocalizedError {
 /// Every computation goes through this protocol; the UI never computes optics
 /// itself. Implementations: `MockEngine` (synthetic data, for UI work) and
 /// `FFIEngine` (the Rust engine over its C ABI, module `MKLightFFI`). All
-/// values crossing the boundary are `Sendable` value types with the engine's
-/// JSON representation.
+/// values crossing the boundary are `Sendable` value types: analyses are
+/// requested by name with JSON settings, and results come back as the
+/// engine's JSON with typed buffers.
 ///
 /// The requirements after `materialNames()` have default implementations
 /// (in an extension) for engines without those capabilities.
@@ -163,14 +166,15 @@ public protocol EngineClient: Sendable {
     /// `EngineError.invalidModel` with every structural problem found.
     func openSnapshot(_ system: OpticalSystem) async throws -> ModelSnapshot
 
-    /// Validation only: every problem, without throwing.
-    func validate(_ system: OpticalSystem) async -> [ModelIssue]
+    /// Every analysis the engine knows, with its settings schema. Analyses
+    /// of later phases are listed with `available == false`.
+    func analysisDescriptors() async -> [AnalysisDescriptor]
 
-    /// Starts an analysis of `snapshot`. The job runs asynchronously; observe
-    /// its progress and await its result through the returned handle. A
-    /// request whose `problems(for:)` is not empty fails immediately with
-    /// `EngineError.invalidSettings`.
-    func submit(_ request: AnalysisRequest, on snapshot: ModelSnapshot) -> AnalysisJob
+    /// Starts an engine analysis of `snapshot` by name, with JSON settings.
+    /// The job runs asynchronously; observe its progress and await its
+    /// result through the returned handle. Unknown analyses and invalid
+    /// settings fail the job at once.
+    func submit(_ request: EngineAnalysisRequest, on snapshot: ModelSnapshot) -> AnalysisJob
 
     /// Names of the glasses the engine can resolve (for completion and
     /// validation in editors).
@@ -180,18 +184,6 @@ public protocol EngineClient: Sendable {
     /// glass catalogs, library hash). Engines without per-document state
     /// return themselves.
     func makeDocumentEngine() -> any EngineClient
-
-    /// Every analysis the engine knows, with its settings schema. Analyses
-    /// of later phases are listed with `available == false`.
-    func analysisDescriptors() async -> [AnalysisDescriptor]
-
-    /// Starts any engine analysis by name, with JSON settings. Unknown
-    /// analyses and invalid settings fail the job at once.
-    func submit(_ request: EngineAnalysisRequest, on snapshot: ModelSnapshot) -> AnalysisJob
-
-    /// Applies parameter edits atomically (all or none) and returns the
-    /// snapshot of the edited system.
-    func applyParamEdits(_ edits: [ParamEdit], to snapshot: ModelSnapshot) async throws -> ModelSnapshot
 
     /// Glass catalogs of this (document) engine, built-in first.
     func catalogs() async -> [CatalogInfo]
@@ -244,22 +236,6 @@ extension EngineClient {
     /// Engines without a GPU have nothing to prepare.
     public func prepareGPU(cacheDirectory: URL?) {}
     public func gpuPreparation() -> GPUPreparation { .idle }
-
-    /// The analyses of `AnalysisKind`, all available, without schemas.
-    public func analysisDescriptors() async -> [AnalysisDescriptor] {
-        AnalysisKind.allCases.map {
-            AnalysisDescriptor(name: $0.engineName, title: $0.title, category: "analysis", available: true)
-        }
-    }
-
-    public func submit(_ request: EngineAnalysisRequest, on snapshot: ModelSnapshot) -> AnalysisJob {
-        let message = "\(info.name) cannot run '\(request.analysis)' by name"
-        return AnalysisJob.run(engineRequest: request, snapshot: snapshot) { _ in throw EngineError.unsupported(message) }
-    }
-
-    public func applyParamEdits(_ edits: [ParamEdit], to snapshot: ModelSnapshot) async throws -> ModelSnapshot {
-        throw EngineError.unsupported("\(info.name) does not apply parameter edits")
-    }
 
     public func catalogs() async -> [CatalogInfo] { [] }
 

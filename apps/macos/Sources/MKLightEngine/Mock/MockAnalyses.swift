@@ -2,8 +2,47 @@ import Foundation
 import MKLightModel
 
 /// Synthetic analyses built on `MockOptics`. See its documentation: these are
-/// illustrative stand-ins for UI development, not engine results.
+/// illustrative stand-ins for UI development, not engine results. Their
+/// settings and results are the mock's own intermediate form; `MockEngine`
+/// writes them out in the engine's result format (`MockByName.swift`).
 extension MockOptics {
+    /// A 2-D point (mm, or field units).
+    struct Point2 {
+        var x, y: Double
+        init(_ x: Double, _ y: Double) {
+            self.x = x
+            self.y = y
+        }
+    }
+
+    /// Which fields an analysis covers.
+    enum FieldSelection {
+        case all
+        case index(Int)
+
+        func indices(count: Int) -> [Int] {
+            switch self {
+            case .all: Array(0..<count)
+            case .index(let i): (0..<count).contains(i) ? [i] : []
+            }
+        }
+    }
+
+    /// Which wavelengths an analysis covers.
+    enum WavelengthSelection {
+        case all
+        case primary
+        case index(Int)
+
+        func indices(in set: WavelengthSet) -> [Int] {
+            switch self {
+            case .all: Array(set.wavelengths.indices)
+            case .primary: set.wavelengths.indices.contains(set.primary) ? [set.primary] : []
+            case .index(let i): set.wavelengths.indices.contains(i) ? [i] : []
+            }
+        }
+    }
+
     func fieldValue(_ i: Int) -> Point2 {
         let f = system.fields.fields[i]
         return Point2(f.x, f.y)
@@ -18,6 +57,18 @@ extension MockOptics {
     }
 
     // MARK: Layout
+
+    struct LayoutSettings {
+        /// Meridional rays per field, evenly spaced across the pupil.
+        var raysPerField = 7
+        var fields = FieldSelection.all
+        var wavelengths = WavelengthSelection.primary
+        /// Points per surface profile.
+        var profileSamples = 41
+        /// Also produce out-of-section geometry (sagittal profiles, rims, skew rays)
+        /// for the 3-D view.
+        var include3D = true
+    }
 
     /// Clear semi-diameters: fixed values, else the largest marginal/chief
     /// ray height over every field at the primary wavelength.
@@ -48,7 +99,7 @@ extension MockOptics {
         }
     }
 
-    func layout(_ s: LayoutSettings) throws -> LayoutScene {
+    func layout(_ s: LayoutSettings = LayoutSettings()) throws -> LayoutScene {
         let n = system.surfaces.count
         let sd = semiDiameters()
         let m = max(s.profileSamples | 1, 5)
@@ -142,6 +193,50 @@ extension MockOptics {
 
     // MARK: Spot diagram
 
+    enum PupilPattern: String {
+        case hexapolar, square
+        /// Uniform random over the pupil; uses the settings' `seed`.
+        case random
+    }
+
+    struct SpotDiagramSettings {
+        var pattern = PupilPattern.hexapolar
+        /// Rings (hexapolar), grid half-width (square) or √samples (random).
+        var rings = 6
+        var fields = FieldSelection.all
+        var wavelengths = WavelengthSelection.all
+        /// Seed of the random pattern.
+        var seed: UInt64 = 1
+    }
+
+    struct SpotDiagramResult {
+        struct Point {
+            /// Position relative to the reference point (mm).
+            var x, y: Double
+            var wavelength: Int
+        }
+
+        struct FieldSpot {
+            var field: Int
+            /// Field value as specified (degrees or mm).
+            var fieldValue: Point2
+            var points: [Point]
+            /// Reference point on the image surface (global mm): the chief
+            /// ray at the primary wavelength.
+            var reference: Point2
+            var centroid: Point2
+            /// RMS radius about the reference (mm); NaN when no ray arrived.
+            var rmsRadius: Double
+            /// Largest distance from the reference (mm).
+            var geoRadius: Double
+        }
+
+        var fields: [FieldSpot]
+        /// Airy disk radius `1.22 λ N_w` at the primary wavelength (mm); ∞ for
+        /// an afocal system.
+        var airyRadius: Double
+    }
+
     static func pupilSamples(_ pattern: PupilPattern, rings: Int, rng: inout SplitMix64) -> [(Double, Double)] {
         let r = max(rings, 1)
         switch pattern {
@@ -185,7 +280,7 @@ extension MockOptics {
         for f in s.fields.indices(count: system.fields.fields.count) {
             try Task.checkCancellation()
             let fp = fieldPoint(f)
-            var rng = SplitMix64(seed: s.execution.seed ^ (UInt64(f) &* 0x9E37_79B9))
+            var rng = SplitMix64(seed: s.seed ^ (UInt64(f) &* 0x9E37_79B9))
             let pupil = Self.pupilSamples(s.pattern, rings: s.rings, rng: &rng)
             var raw: [(Double, Double, Int)] = []
             for w in wls {
@@ -200,8 +295,7 @@ extension MockOptics {
             }
             let count = Double(max(raw.count, 1))
             let centroid = Point2(cx.value / count, cy.value / count)
-            let chief = trace(makeRay(fp, px: 0, py: 0), w: primary).atImage.map { Point2($0.p.x, $0.p.y) } ?? centroid
-            let ref = s.reference == .chief ? chief : centroid
+            let ref = trace(makeRay(fp, px: 0, py: 0), w: primary).atImage.map { Point2($0.p.x, $0.p.y) } ?? centroid
             var ss = CompensatedSum(), geo = 0.0
             let pts = raw.map { p -> SpotDiagramResult.Point in
                 let dx = p.0 - ref.x, dy = p.1 - ref.y
@@ -215,10 +309,47 @@ extension MockOptics {
                     rmsRadius: (ss.value / count).squareRoot(), geoRadius: geo))
         }
         let airy = 1.22 * wavelengthsUm[primary] * 1e-3 * workingFNumber(primary)
-        return SpotDiagramResult(fields: fields, wavelengthsUm: wavelengthsUm, airyRadius: airy)
+        return SpotDiagramResult(fields: fields, airyRadius: airy)
     }
 
     // MARK: Fans
+
+    /// Settings for transverse ray fans and OPD fans.
+    struct FanSettings {
+        /// Pupil samples across each fan (−1…1).
+        var samples = 41
+        var fields = FieldSelection.all
+        var wavelengths = WavelengthSelection.all
+    }
+
+    /// Transverse ray aberration (mm) or OPD (waves) against normalised pupil
+    /// coordinate, per field and wavelength (CONVENTIONS §4).
+    struct FanResult {
+        enum Quantity: String {
+            /// `εy` (tangential) / `εx` (sagittal) in mm.
+            case transverseAberration = "transverse_aberration"
+            /// OPD in waves at each ray's wavelength.
+            case opd
+        }
+
+        struct Curve {
+            var wavelength: Int
+            /// Normalised pupil coordinate `Py` (tangential) or `Px` (sagittal).
+            var pupil: [Double]
+            /// Value per pupil sample; `nil` where the ray was vignetted.
+            var values: [Double?]
+        }
+
+        struct FieldFan {
+            var field: Int
+            var fieldValue: Point2
+            var tangential: [Curve]
+            var sagittal: [Curve]
+        }
+
+        var quantity: Quantity
+        var fields: [FieldFan]
+    }
 
     func rayFan(_ s: FanSettings) throws -> FanResult {
         let wls = s.wavelengths.indices(in: system.wavelengths)
@@ -239,7 +370,7 @@ extension MockOptics {
             }
             return .init(field: f, fieldValue: fieldValue(f), tangential: tan, sagittal: sag)
         }
-        return FanResult(quantity: .transverseAberration, fields: fields, wavelengthsUm: wavelengthsUm)
+        return FanResult(quantity: .transverseAberration, fields: fields)
     }
 
     /// Exit-pupil radius and its distance to the image surface (primary).
@@ -286,10 +417,31 @@ extension MockOptics {
                 field: $0.field, fieldValue: $0.fieldValue, tangential: $0.tangential.map(integrate),
                 sagittal: $0.sagittal.map(integrate))
         }
-        return FanResult(quantity: .opd, fields: fields, wavelengthsUm: wavelengthsUm)
+        return FanResult(quantity: .opd, fields: fields)
     }
 
     // MARK: Field curvature and distortion
+
+    struct FieldCurvatureSettings {
+        /// Field samples from axis to the maximum field.
+        var fieldSamples = 21
+        var wavelengths = WavelengthSelection.all
+    }
+
+    struct FieldCurvatureResult {
+        struct Curve {
+            var wavelength: Int
+            /// Tangential and sagittal focus shift from the image surface (mm).
+            var tangential: [Double?]
+            var sagittal: [Double?]
+            /// Distortion (%) relative to the paraxial chief-ray height.
+            var distortionPercent: [Double?]
+        }
+        /// Field values (in `fieldUnit`), from axis to the maximum field.
+        var fieldValues: [Double]
+        var fieldUnit: String
+        var curves: [Curve]
+    }
 
     func fieldCurvature(_ s: FieldCurvatureSettings) throws -> FieldCurvatureResult {
         let values = linspace(0, maxField, max(s.fieldSamples, 2))
@@ -319,148 +471,28 @@ extension MockOptics {
             }
             return .init(wavelength: w, tangential: t, sagittal: sg, distortionPercent: dist)
         }
-        return FieldCurvatureResult(fieldValues: values, fieldUnit: system.fields.kind.unit, curves: curves, wavelengthsUm: wavelengthsUm)
-    }
-
-    // MARK: MTF and PSF (diffraction limit × geometric blur)
-
-    /// RMS spot extent along x and y about the polychromatic centroid (mm).
-    func blur(field f: Int, wavelengths: [Int]) -> (sx: Double, sy: Double) {
-        let fp = fieldPoint(f)
-        var rng = SplitMix64(seed: 0)
-        let pupil = Self.pupilSamples(.hexapolar, rings: 6, rng: &rng)
-        var pts: [(Double, Double)] = []
-        for w in wavelengths {
-            for (px, py) in pupil {
-                if let r = trace(makeRay(fp, px: px, py: py), w: w).atImage { pts.append((r.p.x, r.p.y)) }
-            }
-        }
-        guard !pts.isEmpty else { return (0, 0) }
-        let n = Double(pts.count)
-        var mx = CompensatedSum(), my = CompensatedSum()
-        for p in pts {
-            mx.add(p.0)
-            my.add(p.1)
-        }
-        let cx = mx.value / n, cy = my.value / n
-        var vx = CompensatedSum(), vy = CompensatedSum()
-        for p in pts {
-            vx.add((p.0 - cx) * (p.0 - cx))
-            vy.add((p.1 - cy) * (p.1 - cy))
-        }
-        return ((vx.value / n).squareRoot(), (vy.value / n).squareRoot())
-    }
-
-    /// Diffraction-limited MTF of a uniform circular pupil; even in `nu`, so a
-    /// negative frequency gives the same value as its magnitude.
-    static func diffractionMTF(_ nu: Double, cutoff: Double) -> Double {
-        guard cutoff > 0, nu.isFinite, abs(nu) < cutoff else { return 0 }
-        let x = abs(nu) / cutoff
-        return 2 / .pi * (acos(x) - x * ((1 - x) * (1 + x)).squareRoot())
-    }
-
-    func mtf(_ s: MTFSettings) throws -> MTFResult {
-        let wls = s.wavelengths.indices(in: system.wavelengths)
-        let weights = wls.map { system.wavelengths.wavelengths[$0].weight }
-        let wsum = max(weights.reduce(0, +), 1e-300)
-        let nw = workingFNumber(primary)
-        let freqs = linspace(0, s.maxFrequency, max(s.frequencySamples, 2))
-        let cutoffs = wls.map { 1 / (wavelengthsUm[$0] * 1e-3 * nw) }
-        let dl = freqs.map { nu in zip(weights, cutoffs).reduce(0) { $0 + $1.0 * Self.diffractionMTF(nu, cutoff: $1.1) } / wsum }
-        var curves: [MTFResult.Curve] = []
-        let fieldIdx = s.fields.indices(count: system.fields.fields.count)
-        for f in fieldIdx {
-            try Task.checkCancellation()
-            let (sx, sy) = blur(field: f, wavelengths: wls)
-            for (o, sigma) in [(MTFResult.Orientation.tangential, sy), (.sagittal, sx)] {
-                let g = freqs.map { nu in exp(-2 * .pi * .pi * sigma * sigma * nu * nu) }
-                curves.append(.init(field: f, orientation: o, modulation: zip(dl, g).map { $0 * $1 }))
-            }
-        }
-        let cutoff = 1 / (wavelengthsUm[primary] * 1e-3 * nw)
-        return MTFResult(
-            frequencies: freqs, curves: curves, diffractionLimit: dl, cutoffFrequency: cutoff.isFinite ? cutoff : 0,
-            fieldValues: fieldIdx.map(fieldValue))
-    }
-
-    func psf(_ s: PSFSettings) throws -> PSFResult {
-        let f = min(max(s.field, 0), system.fields.fields.count - 1)
-        let wls = s.wavelengths.indices(in: system.wavelengths)
-        let weights = wls.map { system.wavelengths.wavelengths[$0].weight }
-        let wsum = max(weights.reduce(0, +), 1e-300)
-        let nw = workingFNumber(primary)
-        let size = max(min(s.imageSampling, 512), 16)
-        let (sx, sy) = blur(field: f, wavelengths: wls)
-        let airy = 1.22 * wavelengthsUm[primary] * 1e-3 * (nw.isFinite ? nw : 10)
-        let half = max(4 * airy, 4 * max(sx, sy))
-        let pitch = 2 * half / Double(size)
-        var img = [Double](repeating: 0, count: size * size)
-        for row in 0..<size {
-            if row % 16 == 0 { try Task.checkCancellation() }
-            let y = (Double(row) + 0.5) * pitch - half
-            for col in 0..<size {
-                let x = (Double(col) + 0.5) * pitch - half
-                let r = hypot(x, y)
-                var acc = 0.0
-                for (k, w) in wls.enumerated() {
-                    let v = Double.pi * r / (wavelengthsUm[w] * 1e-3 * nw)
-                    let a = v < 1e-8 ? 1 : 2 * j1(v) / v
-                    acc += weights[k] * a * a
-                }
-                img[row * size + col] = acc / wsum
-            }
-        }
-        img = Self.gaussianBlur(img, size: size, sigmaX: sx / pitch, sigmaY: sy / pitch)
-        let peak = img.max() ?? 0
-        return PSFResult(field: f, width: size, height: size, pixelPitch: pitch, values: img.map { Float($0) }, strehl: min(peak, 1))
-    }
-
-    static func gaussianBlur(_ img: [Double], size: Int, sigmaX: Double, sigmaY: Double) -> [Double] {
-        func kernel(_ s: Double) -> [Double]? {
-            guard s > 0.3 else { return nil }
-            let r = min(Int((3 * s).rounded(.up)), size)
-            let k = (-r...r).map { exp(-0.5 * Double($0 * $0) / (s * s)) }
-            let sum = k.reduce(0, +)
-            return k.map { $0 / sum }
-        }
-        var out = img
-        if let k = kernel(sigmaX) {
-            let r = k.count / 2
-            var tmp = out
-            for row in 0..<size {
-                for col in 0..<size {
-                    var acc = 0.0
-                    for (j, kv) in k.enumerated() {
-                        let c = col + j - r
-                        if c >= 0 && c < size { acc += kv * out[row * size + c] }
-                    }
-                    tmp[row * size + col] = acc
-                }
-            }
-            out = tmp
-        }
-        if let k = kernel(sigmaY) {
-            let r = k.count / 2
-            var tmp = out
-            for row in 0..<size {
-                for col in 0..<size {
-                    var acc = 0.0
-                    for (j, kv) in k.enumerated() {
-                        let rr = row + j - r
-                        if rr >= 0 && rr < size { acc += kv * out[rr * size + col] }
-                    }
-                    tmp[row * size + col] = acc
-                }
-            }
-            out = tmp
-        }
-        return out
+        return FieldCurvatureResult(fieldValues: values, fieldUnit: system.fields.kind.unit, curves: curves)
     }
 
     // MARK: First-order data
 
-    func firstOrder(_ s: FirstOrderSettings) -> FirstOrderResult {
-        let w = s.wavelength.indices(in: system.wavelengths).first ?? primary
+    struct FirstOrderResult {
+        struct Entry {
+            /// Stable key, e.g. `efl`.
+            var key: String
+            var label: String
+            /// May be ±∞ (e.g. the EFL of an afocal system).
+            var value: Double
+            var unit: String
+        }
+        var entries: [Entry]
+        var wavelengthUm: Double
+        subscript(key: String) -> Double? { entries.first { $0.key == key }?.value }
+    }
+
+    /// First-order data at the primary wavelength.
+    func firstOrder() -> FirstOrderResult {
+        let w = primary
         let k = system.surfaces.count - 2
         let nk = imageN(w)
         var e: [FirstOrderResult.Entry] = []

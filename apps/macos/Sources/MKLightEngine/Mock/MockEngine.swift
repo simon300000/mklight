@@ -4,11 +4,12 @@ import MKLightModel
 
 /// MOCK ENGINE — returns synthetic, illustrative data for UI development.
 ///
-/// It honours the full `EngineClient` contract (validation, snapshots, async
-/// jobs with progress and cancellation, reproducible seeds, run metadata), but
-/// its numbers come from `MockOptics`, not from the Rust engine. Every result's
-/// `RunInfo` has `backend == "mock"` and a warning saying so, and
-/// `info.isMock` is true so front ends can label the data.
+/// It honours the core of the `EngineClient` contract (validated snapshots,
+/// analyses by name as async jobs with progress and cancellation,
+/// reproducible seeds, run metadata; `MockByName.swift`), but its numbers
+/// come from `MockOptics`, not from the Rust engine. Every result's `RunInfo`
+/// has `backend == "mock"` and a warning saying so, and `info.isMock` is true
+/// so front ends can label the data.
 public struct MockEngine: EngineClient {
     /// Simulated computation time per analysis, spread over its stages.
     public var simulatedLatency: Duration
@@ -22,10 +23,6 @@ public struct MockEngine: EngineClient {
 
     public var info: EngineInfo {
         EngineInfo(name: "Mock engine (synthetic data)", version: Self.version, isMock: true)
-    }
-
-    public func validate(_ system: OpticalSystem) async -> [ModelIssue] {
-        system.structuralIssues()
     }
 
     public func openSnapshot(_ system: OpticalSystem) async throws -> ModelSnapshot {
@@ -50,65 +47,5 @@ public struct MockEngine: EngineClient {
 
     public func materialNames() async -> [String] {
         MockOptics.catalog.keys.sorted()
-    }
-
-    public func submit(_ request: AnalysisRequest, on snapshot: ModelSnapshot) -> AnalysisJob {
-        let problems = request.problems(for: snapshot.system)
-        guard problems.isEmpty else {
-            return AnalysisJob.run(request: request, snapshot: snapshot) { _ in throw EngineError.invalidSettings(problems) }
-        }
-        let latency = simulatedLatency
-        return AnalysisJob.run(request: request, snapshot: snapshot) { reporter in
-            let started = Date()
-            let stages = Self.stages(for: request.kind)
-            let step = latency / max(stages.count, 1)
-            for (k, stage) in stages.enumerated() {
-                try reporter.checkCancelled()
-                reporter.report(Double(k) / Double(stages.count + 1), stage: stage)
-                if step > .zero { try await Task.sleep(for: step) }
-            }
-            try reporter.checkCancelled()
-            reporter.report(Double(stages.count) / Double(stages.count + 1), stage: "Assembling result")
-            let optics = MockOptics(system: snapshot.system)
-            let result = try Self.compute(request, optics)
-            var warnings = [Self.mockWarning] + optics.warnings
-            if request.configuration != 0 { warnings.append("mock engine ignores configurations") }
-            if request.execution.backend == .gpu {
-                warnings.append("mock engine computes on the CPU in f64 only")
-            }
-            let info = RunInfo(
-                engineVersion: Self.version, snapshotHash: snapshot.hash, analysis: request.kind.rawValue,
-                settings: try request.settingsJSON(), backend: "mock", precision: .f64Reference, seed: request.seed,
-                startedUnixMs: UInt64(started.timeIntervalSince1970 * 1000),
-                durationMs: Date().timeIntervalSince(started) * 1000, warnings: warnings)
-            return AnalysisOutput(runInfo: info, result: result)
-        }
-    }
-
-    static func stages(for kind: AnalysisKind) -> [String] {
-        switch kind {
-        case .layout: ["Resolving system", "Tracing layout rays"]
-        case .spotDiagram: ["Resolving system", "Aiming rays", "Tracing pupil grid", "Reducing"]
-        case .rayFan, .opdFan: ["Resolving system", "Tracing fans", "Reducing"]
-        case .fieldCurvature: ["Resolving system", "Tracing field samples", "Locating foci"]
-        case .mtf: ["Resolving system", "Sampling wavefront", "Autocorrelating pupil", "Averaging fields"]
-        case .psf: ["Resolving system", "Sampling wavefront", "Propagating to image"]
-        case .firstOrder: ["Paraxial trace"]
-        }
-    }
-
-    /// Synchronous computation; it checks for cancellation once per field
-    /// (or per block of PSF rows).
-    static func compute(_ r: AnalysisRequest, _ o: MockOptics) throws -> AnalysisResult {
-        switch r {
-        case .layout(let s): .layout(try o.layout(s))
-        case .spotDiagram(let s): .spotDiagram(try o.spot(s))
-        case .rayFan(let s): .rayFan(try o.rayFan(s))
-        case .opdFan(let s): .opdFan(try o.opdFan(s))
-        case .fieldCurvature(let s): .fieldCurvature(try o.fieldCurvature(s))
-        case .mtf(let s): .mtf(try o.mtf(s))
-        case .psf(let s): .psf(try o.psf(s))
-        case .firstOrder(let s): .firstOrder(o.firstOrder(s))
-        }
     }
 }

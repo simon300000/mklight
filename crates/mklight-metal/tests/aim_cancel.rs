@@ -15,7 +15,6 @@ use support::*;
 fn cancel_during_aiming_is_prompt() {
     let gpu = MetalBackend::with_options(&MetalOptions {
         library: LibraryChoice::Precompiled,
-        ..Default::default()
     })
     .unwrap()
     .expect("requires host Metal hardware");

@@ -366,14 +366,9 @@ impl Analysis for PolarizationPupilMap {
             state: o.state,
             clip: o.clip,
         };
-        let r = super::gpu::native_job!(
-            input,
-            |b| mklight_gpu::radiometry::polarization_pupil_map(b, &tracer, &s, ctx),
-            polarization_pupil_map(&tracer, &s, ctx)
-        )?;
         // Samples go straight into the typed buffers; only the summary is
         // serialised.
-        let mut r = r;
+        let mut r = polarization_pupil_map(&tracer, &s, ctx)?;
         let samples = std::mem::take(&mut r.samples);
         let (mut v, w) = crate_json(&r)?;
         v.as_object_mut().map(|m| m.remove("samples"));

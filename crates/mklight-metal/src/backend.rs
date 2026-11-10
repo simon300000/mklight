@@ -23,15 +23,14 @@ use mklight_gpu::pending::{JobControl, pending, spawn_job};
 use mklight_gpu::{
     BackendKind, ComputeBackend, DeviceInfo, Df32, ErrorBudget, Job, JobKind, JobOutput, JobResult,
     JobStats, KernelPreparation, NumericsProbe, PackedHeader, PackedSurface, PackedSystem,
-    PackedSystemSet, Pending, PrecisionDescriptor, SystemHandle, reduce,
+    PackedSystemSet, Pending, PrecisionDescriptor, QualificationBackend, SystemHandle, reduce,
 };
 use mklight_gpu::{PreparedTrace, TraceRequest, TraceResult};
 use objc2_metal::{MTLComputePipelineState, MTLDevice, MTLGPUFamily};
 
 use crate::buffer::SharedBuffer;
 use crate::context::{
-    CommandStats, LibraryChoice, LibraryOrigin, MetalContext, MetalOptions, MetalPrecision,
-    PipelineKey,
+    CommandStats, LibraryChoice, LibraryOrigin, MetalContext, MetalOptions, PipelineKey,
 };
 
 /// Diagnostic: `MKLIGHT_METAL_TRACE_PLANS=1` prints one line per completed
@@ -220,7 +219,6 @@ impl MetalBackend {
         {
             let rt_opts = MetalOptions {
                 library: LibraryChoice::RuntimeSource,
-                ..opts.clone()
             };
             if let Ok(Some(rt)) = MetalContext::new(&rt_opts) {
                 let rt_probe = run_probe(&rt)?;
@@ -253,8 +251,8 @@ impl MetalBackend {
         let precision = PrecisionDescriptor {
             model: Precision::F32Gpu,
             fast_math_disabled: probe.no_reassociation && probe.no_contraction,
-            opl_double_float: opts.precision == MetalPrecision::DoubleFloat,
-            compensated_reductions: opts.precision == MetalPrecision::DoubleFloat,
+            opl_double_float: true,
+            compensated_reductions: true,
             probe,
             budget: ErrorBudget::CONVENTIONS,
             kernel_build: format!(
@@ -811,19 +809,6 @@ impl ComputeBackend for MetalBackend {
         Ok(())
     }
 
-    fn upload_buffer(
-        &self,
-        desc: mklight_gpu::resident::BufferDesc,
-        data: mklight_gpu::resident::BufferData,
-    ) -> MkResult<mklight_gpu::resident::BufferHandle> {
-        if desc.byte_len()? as u64 > self.info().max_buffer_bytes {
-            return Err(mklight_gpu::resident::bad("upload exceeds device limit"));
-        }
-        let ctx = &self.inner.ctx;
-        self.inner
-            .resident
-            .upload(desc, data, |n| ctx.buffer_filled(n, |_| {}))
-    }
     fn fill_buffer(
         &self,
         desc: mklight_gpu::resident::BufferDesc,
@@ -833,26 +818,11 @@ impl ComputeBackend for MetalBackend {
             .resident
             .fill(desc, fill, |n| self.inner.ctx.buffer_filled(n, |_| {}))
     }
-    fn import_buffer(
-        &self,
-        desc: mklight_gpu::resident::BufferDesc,
-        data: mklight_gpu::resident::HostAllocation,
-    ) -> MkResult<mklight_gpu::resident::BufferHandle> {
-        let storage = SharedBuffer::from_host(self.inner.ctx.device(), data)?;
-        self.inner.resident.adopt(desc, storage)
-    }
     fn read_view(
         &self,
         view: mklight_gpu::resident::BufferView,
     ) -> MkResult<mklight_gpu::resident::ReadView> {
         self.inner.resident.read_view(view)
-    }
-    fn readback(
-        &self,
-        view: mklight_gpu::resident::BufferView,
-        ctx: &JobContext,
-    ) -> MkResult<mklight_gpu::resident::Readback> {
-        self.inner.resident.readback(view, ctx)
     }
     fn resident_cache_stats(&self) -> mklight_gpu::resident::ResidentCacheStats {
         let s = self
@@ -981,6 +951,9 @@ impl ComputeBackend for MetalBackend {
         )?;
         Ok(p)
     }
+}
+
+impl QualificationBackend for MetalBackend {
     fn submit(&self, job: Job, ctx: &JobContext) -> MkResult<Pending<JobResult>> {
         job.validate()?;
         if job.kind() == JobKind::Reduce {
@@ -1008,6 +981,34 @@ impl ComputeBackend for MetalBackend {
         let what = format!("metal {:?} job", job.kind());
         spawn_job("mklight-metal", what, c, move || inner.execute(job, &ctl))?;
         Ok(p)
+    }
+    fn upload_buffer(
+        &self,
+        desc: mklight_gpu::resident::BufferDesc,
+        data: mklight_gpu::resident::BufferData,
+    ) -> MkResult<mklight_gpu::resident::BufferHandle> {
+        if desc.byte_len()? as u64 > self.info().max_buffer_bytes {
+            return Err(mklight_gpu::resident::bad("upload exceeds device limit"));
+        }
+        let ctx = &self.inner.ctx;
+        self.inner
+            .resident
+            .upload(desc, data, |n| ctx.buffer_filled(n, |_| {}))
+    }
+    fn import_buffer(
+        &self,
+        desc: mklight_gpu::resident::BufferDesc,
+        data: mklight_gpu::resident::HostAllocation,
+    ) -> MkResult<mklight_gpu::resident::BufferHandle> {
+        let storage = SharedBuffer::from_host(self.inner.ctx.device(), data)?;
+        self.inner.resident.adopt(desc, storage)
+    }
+    fn readback(
+        &self,
+        view: mklight_gpu::resident::BufferView,
+        ctx: &JobContext,
+    ) -> MkResult<mklight_gpu::resident::Readback> {
+        self.inner.resident.readback(view, ctx)
     }
 }
 

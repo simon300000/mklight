@@ -314,9 +314,8 @@ pub fn generate(
 
 pub mod hybrid;
 mod transport;
-pub use hybrid::Design;
-pub(crate) use transport::run_design_with;
-pub use transport::{TransportOptions, TransportScene, run, run_design};
+pub(crate) use transport::run_with;
+pub use transport::{SagMode, TransportOptions, TransportScene, run};
 
 /// Engine-facing analysis adapter, including coverage/aperture validation,
 /// obstruction reference, source measures, map rows and complete RunInfo.
@@ -325,7 +324,6 @@ fn analyze_impl(
     rs: std::sync::Arc<mklight_core::ResolvedSystem>,
     settings: &crate::StrayAnalysisSettings,
     options: TransportOptions,
-    design: Design,
     all_signatures: bool,
     ctx: &JobContext,
 ) -> MkResult<(crate::StrayAnalysisResult, Vec<crate::tally::SignatureFlux>)> {
@@ -340,7 +338,7 @@ fn analyze_impl(
         &sys,
         settings,
         all_signatures,
-        Some((b, options, design)),
+        Some((b, options)),
         true,
         &ctx.subrange(0.1, 0.99),
     )?;
@@ -371,15 +369,8 @@ pub fn analyze_system(
     options: TransportOptions,
     ctx: &JobContext,
 ) -> MkResult<crate::StrayAnalysisResult> {
-    crate::analysis::analyze_system_impl(
-        sys,
-        settings,
-        false,
-        Some((b, options, Design::selected()?)),
-        false,
-        ctx,
-    )
-    .map(|r| r.0)
+    crate::analysis::analyze_system_impl(sys, settings, false, Some((b, options)), false, ctx)
+        .map(|r| r.0)
 }
 pub fn analyze(
     b: &dyn ComputeBackend,
@@ -388,7 +379,7 @@ pub fn analyze(
     options: TransportOptions,
     ctx: &JobContext,
 ) -> MkResult<crate::StrayAnalysisResult> {
-    analyze_impl(b, rs, settings, options, Design::selected()?, false, ctx).map(|r| r.0)
+    analyze_impl(b, rs, settings, options, false, ctx).map(|r| r.0)
 }
 
 pub fn analyze_with_signatures(
@@ -398,18 +389,5 @@ pub fn analyze_with_signatures(
     options: TransportOptions,
     ctx: &JobContext,
 ) -> MkResult<(crate::StrayAnalysisResult, Vec<crate::tally::SignatureFlux>)> {
-    analyze_impl(b, rs, settings, options, Design::selected()?, true, ctx)
-}
-
-/// [`analyze`] with an explicit division of the transport instead of the
-/// selected one.
-pub fn analyze_design(
-    b: &dyn ComputeBackend,
-    rs: std::sync::Arc<mklight_core::ResolvedSystem>,
-    settings: &crate::StrayAnalysisSettings,
-    options: TransportOptions,
-    design: Design,
-    ctx: &JobContext,
-) -> MkResult<crate::StrayAnalysisResult> {
-    analyze_impl(b, rs, settings, options, design, false, ctx).map(|r| r.0)
+    analyze_impl(b, rs, settings, options, true, ctx)
 }

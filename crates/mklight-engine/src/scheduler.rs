@@ -960,6 +960,13 @@ mod tests {
         );
         assert_eq!(s.wait(p, Some(LONG)).unwrap(), JobState::Failed);
         assert!(s.status(p).unwrap().error.unwrap().contains("kaboom"));
+        // A failed job keeps its own error; only a panic is `JobFailed`.
+        let panicked = s.take_result(p).unwrap_err();
+        assert!(
+            matches!(&panicked, EngineError::JobFailed(m) if m.contains("kaboom")),
+            "{panicked}"
+        );
+        assert_eq!(panicked.kind(), crate::error::ErrorKind::JobFailed);
         // The worker survived the panic.
         let ok = s
             .submit(JobSpec::new("ok", |_: &JobContext| Ok(3)))

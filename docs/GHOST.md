@@ -323,8 +323,21 @@ image is computed by the same code from the empty path. Per path and field:
 flux (on and off the map), peak, centroid, RMS radius; per path:
 `flux_ratio` (ghost/primary flux on the map) and `peak_ratio` (maximum over
 fields of ghost peak/primary peak; meaningful for bins about a pixel and many
-rays per bin); both are 1 for the primary itself. Paths are ranked by `peak_ratio`; the total ghost map is the
-sum of path maps.
+rays per bin); both are 1 for the primary itself. The total ghost map is the
+sum of path maps, with `total_flux_ratio` and `total_peak_ratio` against the
+primary map.
+
+A ratio against a primary that puts no light on the map is undefined. This
+is the normal case of a source outside the field of view (`points`): its
+image misses the sensor and only its ghosts land on it. An undefined ratio
+is `None` (`null` in JSON), never a number; a ghost that puts no light
+there either has the ratio 0. `peak_ratio` is undefined as soon as one
+field's ratio is.
+
+Paths are ranked strongest first. Ghosts with an undefined `peak_ratio`
+lead, ordered by their absolute peak irradiance (the largest of their
+fields' peaks, `PathIrradiance::peak`) and then by their flux on the map;
+the others follow by `peak_ratio`. Ties keep path order.
 
 Probes are traced with rayon in blocks of up to 16384; leaves are collected
 in the fixed order (field, wavelength, base cell, depth first) and binned
@@ -414,7 +427,9 @@ small reduced statistics, ratios, coverage and peak ranking in reference order.
 Numerical inputs are filled directly in shared buffers and outputs are read
 in place. The existing packed-system upload is cached by snapshot, material,
 clipping and build identity; its small cold metadata copy is measured
-separately from the zero-copy probe/map pipeline.
+separately from the zero-copy probe/map pipeline. A leaf's map index and
+reference bin cross the chain as f32 words, exact up to 2²⁴: a map of more
+than 2²⁴ pixels is unsupported on the device and runs on the reference.
 
 Point binning is discontinuous at pixel edges. Hits within the 2e-5 mm
 geometry uncertainty band of a pixel edge receive a counted f64 reference

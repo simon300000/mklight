@@ -4,9 +4,11 @@
 //! `fixed + prep·f_prep + ray·f_ray + transform·f_transform +
 //! output·f_output + table·f_table` ([`FEATURES`],
 //! `profile::Profile::features`), with one non-negative
-//! coefficient set per analysis, backend and resident state. Coefficients
-//! are fitted from measured complete calls (`tests/cost_calibration.rs`)
-//! by relative least squares, so a 1 ms and a 10 s call weigh alike.
+//! coefficient set per analysis, backend and resident state ([`Mode`]).
+//! Coefficients are fitted from measured complete calls
+//! (`tests/cost_calibration.rs`) by relative least squares, so a 1 ms and a
+//! 10 s call weigh alike; a mode is fitted with the features it is applied
+//! to ([`Mode::features`]).
 //! Nothing here is a universal GPU overhead: every analysis has its own
 //! measured fixed cost on each backend.
 use std::collections::BTreeMap;
@@ -23,8 +25,50 @@ use serde_json::Value;
 pub const FEATURES: [&str; 6] = ["fixed", "prep", "ray", "transform", "output", "table"];
 pub type Features = [f64; 6];
 
+/// Index of the `table` feature.
+const TABLE: usize = 5;
+
 /// Format of the stored table; bump when a field changes meaning.
 pub const FORMAT: u32 = 2;
+
+/// One calibrated mode: a backend on a repeated or on a freshly edited
+/// snapshot (the four coefficient sets of [`AnalysisCalibration`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Mode {
+    Cpu,
+    CpuEdit,
+    Metal,
+    MetalEdit,
+}
+
+impl Mode {
+    pub const ALL: [Mode; 4] = [Mode::Cpu, Mode::CpuEdit, Mode::Metal, Mode::MetalEdit];
+
+    /// The key of the mode's coefficient set in the table.
+    pub fn name(self) -> &'static str {
+        match self {
+            Mode::Cpu => "cpu",
+            Mode::CpuEdit => "cpu_edit",
+            Mode::Metal => "metal",
+            Mode::MetalEdit => "metal_edit",
+        }
+    }
+
+    /// Inverse of [`Self::name`].
+    pub fn parse(name: &str) -> Option<Mode> {
+        Mode::ALL.into_iter().find(|m| m.name() == name)
+    }
+
+    /// The stage features of a request as this mode's coefficients see
+    /// them, in the prediction and in the fit alike: only Metal builds the
+    /// device seed table, and a repeated snapshot still has it.
+    pub fn features(self, mut f: Features) -> Features {
+        if self != Mode::MetalEdit {
+            f[TABLE] = 0.;
+        }
+        f
+    }
+}
 
 /// One fitted coefficient set (ms per feature unit).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -61,7 +105,8 @@ pub struct AnalysisCalibration {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metal_edit: Option<Fit>,
     /// Extra time of the first native call of this analysis in a process
-    /// (pipeline creation, first allocations), above `metal_edit`.
+    /// (pipeline creation, first allocations), above `metal_edit`. Not
+    /// charged once the device's kernels were prepared ahead.
     #[serde(default)]
     pub first_use_ms: f64,
 }
@@ -83,6 +128,19 @@ pub struct Calibration {
     /// Opening the device (library load and numerics probe).
     pub device_open_ms: f64,
     pub analyses: BTreeMap<String, AnalysisCalibration>,
+}
+
+impl AnalysisCalibration {
+    /// The coefficient set of `mode`, when the table has it.
+    pub fn fit(&self, mode: Mode) -> Option<&Fit> {
+        match mode {
+            Mode::Cpu => &self.cpu,
+            Mode::CpuEdit => &self.cpu_edit,
+            Mode::Metal => &self.metal,
+            Mode::MetalEdit => &self.metal_edit,
+        }
+        .as_ref()
+    }
 }
 
 impl Calibration {
@@ -223,19 +281,71 @@ mod tests {
 
     #[test]
     fn builtin_table_matches_this_model() {
+        use crate::analysis::gpu::GPU_ANALYSES;
         let c = Calibration::builtin();
         assert_eq!((c.format, c.model_version), (FORMAT, super::super::VERSION));
-        // Accuracy exclusions and static CPU routes need no calibration.
-        for name in crate::analysis::gpu::GPU_ANALYSES {
-            if super::super::accuracy_exclusion(name).is_none()
-                && crate::analysis::routing::auto_reference_reason(name).is_none()
-            {
-                let a = c.analyses.get(*name);
-                assert!(
-                    a.is_some_and(|a| a.cpu.is_some() && a.metal.is_some()),
-                    "{name} is not calibrated"
-                );
-            }
+        // A row for every analysis with a GPU path (the calibration
+        // measures them all) and for no other: `auto` never predicts an
+        // analysis without one.
+        let rows: Vec<&str> = c.analyses.keys().map(String::as_str).collect();
+        let mut gpu = GPU_ANALYSES.to_vec();
+        gpu.sort_unstable();
+        assert_eq!(rows, gpu);
+        // Both backends are fitted wherever a decision reads the row. The
+        // rows of the accuracy exclusions are measured and never read.
+        for name in GPU_ANALYSES {
+            let a = &c.analyses[*name];
+            assert!(
+                super::super::accuracy_exclusion(name).is_some()
+                    || (a.cpu.is_some() && a.metal.is_some()),
+                "{name} is not calibrated"
+            );
+            // The work profile covers the same analyses.
+            assert!(
+                super::super::profile(name, &Value::Null, &mklight_core::samples::singlet())
+                    .is_some(),
+                "{name} has no work profile"
+            );
         }
+        let excluded: Vec<&str> = rows
+            .iter()
+            .copied()
+            .filter(|a| super::super::accuracy_exclusion(a).is_some())
+            .collect();
+        assert_eq!(excluded, ["glass_substitution"]);
+        for name in [
+            "encircled_energy",
+            "polarization_pupil_map",
+            "wavefront_map",
+        ] {
+            assert!(
+                super::super::profile(name, &Value::Null, &mklight_core::samples::singlet())
+                    .is_none(),
+                "{name} has no GPU path"
+            );
+        }
+    }
+
+    /// A mode's coefficients are fitted with the features the prediction
+    /// applies them to: the seed-table term exists for Metal on an edited
+    /// snapshot only.
+    #[test]
+    fn modes_see_the_seed_table_only_on_edited_metal() {
+        let f: Features = [1., 2., 3., 4., 5., 6.];
+        for mode in Mode::ALL {
+            let seen = mode.features(f);
+            assert_eq!(seen[..TABLE], f[..TABLE]);
+            assert_eq!(seen[TABLE], if mode == Mode::MetalEdit { 6. } else { 0. });
+            assert_eq!(Mode::parse(mode.name()), Some(mode));
+        }
+        assert_eq!(FEATURES[TABLE], "table");
+        // A fit over such features leaves the column's coefficient at zero.
+        let points: Vec<_> = [(10., 1e3), (40., 1e4), (20., 1e5)]
+            .iter()
+            .map(|&(t, r)| (Mode::Cpu.features([1., 0., r, 0., 0., t]), 1. + 1e-3 * r))
+            .collect();
+        let fitted = fit(&points);
+        assert_eq!(fitted.coef[TABLE], 0.);
+        assert!((fitted.coef[2] - 1e-3).abs() < 1e-9, "{fitted:?}");
     }
 }

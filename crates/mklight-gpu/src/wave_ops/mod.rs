@@ -13,7 +13,6 @@ pub mod shells;
 pub mod simulation;
 pub mod spec;
 pub mod spectral;
-pub mod statistics;
 
 /// Resident cell-centred pupil: amplitude and fractional coverage, with unwrapped
 /// OPD in waves. These are separate channels so interpolation never wraps phase.
@@ -40,18 +39,8 @@ pub enum Request {
     Spectral(spectral::Spectral),
     Placement(placement::Placement),
     Lattice(lattice::Lattice),
-    Statistics(statistics::Statistics),
     /// Compact coverage, phase-step and extrapolation diagnostics.
     Diagnostics(diagnostics::Diagnostics),
-    /// Weighted Zernike design matrix for the collectives' QR. Samples are DF [rows,4]
-    /// (u,v,OPD,sqrt(weight)); zero weight masks a row. Terms are U32 [cols,2]
-    /// (n,m as signed bits), validated by the basis producer.
-    Zernike {
-        samples: PlanView,
-        terms: PlanView,
-        matrix: BufferId,
-        rhs: BufferId,
-    },
     Resample(resample::Resample),
     /// Many focus planes and frequencies in one tiled operation. Geometry is
     /// the transforms' reusable [frequencies,n*n,5] optical correlation stencil.
@@ -164,26 +153,7 @@ pub fn validate(r: &Request, p: &ResidentPlan) -> MkResult<()> {
         Request::Spectral(r) => spectral::validate(r, p)?,
         Request::Placement(r) => placement::validate(r, p)?,
         Request::Lattice(r) => lattice::validate(r, p)?,
-        Request::Statistics(r) => statistics::validate(r, p)?,
         Request::Diagnostics(r) => diagnostics::validate(r, p)?,
-        Request::Zernike {
-            samples,
-            terms,
-            matrix,
-            rhs,
-            ..
-        } => {
-            let a = &samples.desc.shape;
-            let t = &terms.desc.shape;
-            if a.len() != 2 || a[1] != 4 || t.len() != 2 || t[1] != 2 || t[0] == 0 || a[0] < t[0] {
-                return Err(bad("Zernike fit layout"));
-            }
-            view(samples, DoubleFloat, a)?;
-            view(terms, U32, t)?;
-            out(p, *matrix, DoubleFloat, &[1, a[0], t[0]])?;
-            out(p, *rhs, DoubleFloat, &[1, a[0]])?;
-        }
-
         Request::Resample(r) => resample::validate(r, p)?,
         Request::FocusCorrelation {
             pupil: v,
@@ -351,15 +321,7 @@ pub fn accesses(r: &Request) -> Access {
         Request::Spectral(r) => return spectral::access(r),
         Request::Placement(r) => return placement::access(r),
         Request::Lattice(r) => return lattice::access(r),
-        Request::Statistics(r) => return statistics::access(r),
         Request::Diagnostics(r) => return diagnostics::access(r),
-        Request::Zernike {
-            samples,
-            terms,
-            matrix,
-            rhs,
-            ..
-        } => (vec![samples.clone(), terms.clone()], vec![*matrix, *rhs]),
         Request::Resample(r) => return resample::access(r),
         Request::FocusCorrelation {
             pupil,

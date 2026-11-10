@@ -7,9 +7,13 @@
 //! * **Progress** is reported per optimiser iteration (stage text
 //!   `"<method> <iteration>: merit <best>"`) and per Monte-Carlo batch.
 //! * **Stopping and cancelling.** Cancelling through the job context stops
-//!   the optimiser and returns `Cancelled` without final reference scoring.
-//!   To stop a job *and keep* its best point, call `Engine::stop_job`: the
-//!   job then ends normally with `"status": "stopped"`.
+//!   the search of any of the jobs and returns `Cancelled`, without a
+//!   result. To stop a job *and keep* what it has (the best point, the
+//!   completed trials), call `Engine::stop_job`: the job then ends normally
+//!   with `"status": "stopped"` (`job_status`).
+//! * **One model.** Every job works on the snapshot's system with its
+//!   solves applied and builds its merit the same way (`SolvedStart`,
+//!   `PreparedMerit`); none changes a solve-controlled parameter itself.
 //! * **Reported numbers** (start and final merit, operand table) are always
 //!   computed with the CPU f64 reference, whatever evaluated the search; the
 //!   result says which backend evaluated it, with its actual precision;
@@ -31,6 +35,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use mklight_core::job::{CancelToken, Precision, Progress};
+use mklight_core::materials::MaterialLibrary;
 use mklight_core::param::ParamPath;
 use mklight_core::{JobContext, MkError, OpticalSystem, SemiDiameter, Snapshot, SurfaceShape};
 use mklight_optim::deriv::{FdScheme, JacobianSettings};
@@ -41,12 +46,13 @@ use mklight_optim::global::nelder_mead::{NelderMeadSettings, nelder_mead};
 use mklight_optim::gpu::device_rays_per_candidate;
 use mklight_optim::gpu::{GpuContext, ResidentEvaluator};
 use mklight_optim::lsq::{AugLagSettings, LsqMethod, LsqSettings, least_squares};
-use mklight_optim::merit::default::DefaultMeritSpec;
+use mklight_optim::merit::default::{DefaultMeritSpec, ThicknessBoundaries};
 use mklight_optim::merit::geometric::optical_gaps;
 use mklight_optim::merit::operand::OperandKind;
 use mklight_optim::merit::{
     BuiltinEvaluator, Comparison, MeritFunctionSpec, Operand, OperandEvaluator, OperandRegistry,
-    OperandRole, OperandValue, OpticalProblem, TraceEvaluator, VariableSpec,
+    OperandRole, OperandValue, OpticalProblem, PupilSampling, TraceEvaluator, VariableSpec,
+    WithSolves,
 };
 use mklight_optim::problem::{
     CandidateBatch, EvalStatus, Problem, ScalarEval, merit, total_violation,
@@ -62,6 +68,7 @@ use super::{Analysis, AnalysisInput, AnalysisOutput, AnalysisRegistry};
 use crate::buffer::{Buffer, BufferData};
 use crate::error::{EngineError, EngineResult};
 use crate::gpu::GpuDevice;
+use crate::route::SolverAiming;
 
 #[path = "glass.rs"]
 mod glass;
@@ -111,7 +118,7 @@ pub(super) fn evaluation_backend_schema() -> Value {
                 "aiming",
                 enumeration(
                     &["by-batch", "device", "host"],
-                    "Where the pupil rays of a run handed a GPU device are aimed: by batch (default; `resident_evaluation.device_aimed_batches` counts the device's), every batch on the device with host completion (`aiming` key set to `device` or `table`) or on the host with device tracing (`host-table`, `split:<share>`).",
+                    "Where the pupil rays of a run handed a GPU device are aimed (route option `solver_aiming`): by batch (default; `resident_evaluation.device_aimed_batches` counts the device's), every batch on the device with host completion, or every batch on the host with device tracing.",
                 ),
             ),
             (
@@ -235,6 +242,53 @@ fn overlay(base: &mut Value, patch: &Value) {
     }
 }
 
+/// The first key of the overlay `patch` that `fields` (a serialised
+/// settings struct) does not have, through nested objects: an error with
+/// the keys that exist there.
+fn check_overlay_keys(fields: &Value, patch: &Value, path: &str) -> EngineResult<()> {
+    let (Value::Object(fields), Value::Object(patch)) = (fields, patch) else {
+        return Ok(());
+    };
+    for (key, value) in patch {
+        match fields.get(key) {
+            Some(field) => check_overlay_keys(field, value, &format!("{path}.{key}"))?,
+            None => {
+                let valid: Vec<&str> = fields.keys().map(String::as_str).collect();
+                return Err(invalid(format!(
+                    "'{path}': unknown key '{key}' (valid: {})",
+                    valid.join(", ")
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The recursive check of a job's `settings` against its schema: beyond the
+/// top-level normalisation, unknown keys and wrong types inside nested
+/// objects (`default_merit` and below) are errors. The criterion of the
+/// default merit is a tagged union, checked against the alternative of its
+/// `type`.
+fn validate_settings(schema: &Value, settings: &Value) -> EngineResult<()> {
+    super::schema::validate(schema, settings, true).map_err(invalid)?;
+    let criterion = &settings["default_merit"]["criterion"];
+    let alternatives = &schema["properties"]["default_merit"]["properties"]["criterion"]["oneOf"];
+    if let (Some(tag), Some(alternatives)) = (criterion.get("type"), alternatives.as_array()) {
+        const AT: &str = "$.default_merit.criterion";
+        let tag_of = |a: &Value| a["properties"]["type"]["const"].clone();
+        let variant = alternatives
+            .iter()
+            .find(|a| tag_of(a) == *tag)
+            .ok_or_else(|| {
+                let tags: Vec<Value> = alternatives.iter().map(tag_of).collect();
+                invalid(format!("{AT}.type: {tag} is not one of {}", json!(tags)))
+            })?;
+        super::schema::validate(variant, criterion, true)
+            .map_err(|e| invalid(e.replacen('$', AT, 1)))?;
+    }
+    Ok(())
+}
+
 /// `defaults` with the (partial) JSON `patch` laid over it.
 fn patched<T: Serialize + DeserializeOwned>(
     defaults: &T,
@@ -251,10 +305,28 @@ fn patched<T: Serialize + DeserializeOwned>(
 /// Shared schema of the default-merit generator (every `DefaultMeritSpec`
 /// key) accepted by `optimize`, `tolerance` and `glass_substitution`.
 fn default_merit_schema(default: Value) -> Value {
-    let mut schema = super::schema::settings_from_default::<DefaultMeritSpec>(json!({
+    use super::schema::settings_from_default;
+    let reference = json!({"type": "string", "enum": ["centroid", "chief"], "default": "centroid"});
+    let sampling = settings_from_default::<PupilSampling>(json!({
+        "symmetry": {"enum": ["none", "bilateral"]},
+        "arm_offset_deg": {"unit": "deg"}
+    }));
+    let boundary = json!({"type": ["number", "null"], "unit": "mm"});
+    let thickness = settings_from_default::<ThicknessBoundaries>(json!({
+        "glass_min_centre": boundary, "glass_max_centre": boundary, "glass_min_edge": boundary,
+        "air_min_centre": boundary, "air_max_centre": boundary, "air_min_edge": boundary
+    }));
+    let mut schema = settings_from_default::<DefaultMeritSpec>(json!({
         "criterion": {"type": "object", "oneOf": [
-            {"type": "object", "properties": {"type": {"const": "rms_spot"}}},
-            {"type": "object", "properties": {"type": {"const": "wavefront"}}, "required": ["type"]},
+            {"type": "object", "required": ["type"], "properties": {
+                "type": {"const": "rms_spot"},
+                "reference": reference,
+                "scope": {"type": "string", "enum": ["monochromatic", "polychromatic"], "default": "monochromatic"}
+            }},
+            {"type": "object", "required": ["type"], "properties": {
+                "type": {"const": "wavefront"},
+                "reference": reference
+            }},
             {"type": "object", "required": ["type", "frequencies", "target"], "properties": {
                 "type": {"const": "mtf"},
                 "frequencies": {"type": "array", "minItems": 1, "items": {"type": "number", "minimum": 0}, "description": "Fixed image frequencies in cycles/mm."},
@@ -263,11 +335,13 @@ fn default_merit_schema(default: Value) -> Value {
                 "worst_field": {"type": "boolean", "default": false, "description": "One combine:min over every field and both T/S directions per frequency."}
             }}
         ]},
+        "sampling": {"properties": sampling["properties"],
+            "description": "Rings and arms of the pupil sampling."},
         "fields": {"type": ["array", "null"], "items": {"type": "integer", "minimum": 0},
             "description": "Field indices; null: every field (or the x/y grid for anamorphic and freeform systems)."},
         "wavelengths": {"type": ["array", "null"], "items": {"type": "integer", "minimum": 0},
             "description": "Wavelength indices; null: every wavelength."},
-        "thickness": {"type": ["object", "null"],
+        "thickness": {"type": ["object", "null"], "properties": thickness["properties"],
             "description": "Centre and edge thickness boundaries; null: none."}
     }));
     // Omitted from the serialised default when unset.
@@ -384,22 +458,6 @@ struct Evaluation {
     warnings: Vec<String>,
 }
 
-/// Does the `aiming` key pin the solvers' pupil-ray aiming: `device` or
-/// `table` every batch on the device with host completion (`Some(false)`),
-/// `host-table` or `split:<share>` every batch on the host (`Some(true)`)?
-/// Unset, the evaluator's rule decides per batch
-/// (`gpu::DEVICE_AIM_FROM`, docs/OPTIMIZATION.md "Aiming").
-fn solver_host_aim() -> EngineResult<Option<bool>> {
-    use mklight_analysis::gpu::aim::{AimDesign, KEY};
-    if mklight_core::split::variant(KEY).is_none() {
-        return Ok(None);
-    }
-    Ok(Some(!matches!(
-        AimDesign::selected().map_err(invalid)?,
-        AimDesign::Device | AimDesign::Table
-    )))
-}
-
 impl Evaluation {
     /// The evaluator for `snapshot`, the start of the run.
     fn new(
@@ -416,17 +474,18 @@ impl Evaluation {
         let gpu = match gpu_backend(choice, input) {
             Ok(Some(device)) => {
                 ctx.check()?;
-                // Where the pupil rays are aimed, read once.
-                let pinned = solver_host_aim()?;
-                aiming = Some(match pinned {
-                    None => "by-batch",
-                    Some(true) => "host",
-                    Some(false) => "device",
-                });
+                // Where the pupil rays are aimed (route option
+                // `solver_aiming`): pinned to the host or the device, or
+                // left to the evaluator's rule per batch
+                // (`gpu::DEVICE_AIM_FROM`, docs/OPTIMIZATION.md "Aiming").
+                let route = input.route.solver_aiming;
+                aiming = Some(route.name());
                 let context = GpuContext::new(device.backend.clone(), snapshot.clone());
                 let mut evaluator = ResidentEvaluator::new(context, cpu.clone());
-                if let Some(host) = pinned {
-                    evaluator = evaluator.with_host_aim(host);
+                match route {
+                    SolverAiming::ByBatch => {}
+                    SolverAiming::Host => evaluator = evaluator.with_host_aim(true),
+                    SolverAiming::Device => evaluator = evaluator.with_host_aim(false),
                 }
                 Some((evaluator, device))
             }
@@ -457,6 +516,29 @@ impl Evaluation {
 
     fn active_gpu(&self) -> Option<&ResidentEvaluator> {
         self.gpu.as_ref().map(|(g, _)| g)
+    }
+
+    /// The evaluator of the search: the GPU evaluator of a run that has
+    /// one, else the CPU reference.
+    fn evaluator(&self) -> &dyn OperandEvaluator {
+        match &self.gpu {
+            Some((g, _)) => g,
+            None => &self.cpu,
+        }
+    }
+
+    /// Run `f` on the evaluator of the search; with `solves` (the library
+    /// they resolve materials in) on one that applies the solves of every
+    /// candidate first (`WithSolves`).
+    fn with_evaluator<T>(
+        &self,
+        solves: Option<&Arc<MaterialLibrary>>,
+        f: impl FnOnce(&dyn OperandEvaluator) -> T,
+    ) -> T {
+        match solves {
+            Some(library) => f(&WithSolves::new(self.evaluator(), library.clone())),
+            None => f(self.evaluator()),
+        }
     }
 
     /// Least-squares solves with device aiming pinned evaluate their trial points
@@ -872,11 +954,15 @@ fn values_report<E: OperandEvaluator>(
     }
 }
 
-/// `status` of an `optimize` result (a cancelled run returns none).
-fn optimize_status(stopped: bool, termination: Termination) -> &'static str {
+/// `status` of a solver job's result, from how its search ended (a
+/// cancelled job returns no result): `stopped` when a Stop ended it and the
+/// result holds what it had, `converged` when its optimiser met a
+/// convergence test, else `finished` (a budget or a time limit; a search
+/// without a convergence test, `termination` `None`, that ran to its end).
+fn job_status(stopped: bool, termination: Option<Termination>) -> &'static str {
     if stopped {
         "stopped"
-    } else if termination.is_converged() {
+    } else if termination.is_some_and(Termination::is_converged) {
         "converged"
     } else {
         "finished"
@@ -893,13 +979,14 @@ const INNER_ITERATIONS: usize = 10;
 
 /// Candidates per tolerance evaluation batch: sensitivity points go to the
 /// evaluator this many at a time, Monte Carlo trials at least this many (the
-/// `batch` setting only raises it; trial values do not depend on the
-/// batching). The hundred trials of a default Monte Carlo run go to the
-/// evaluator as one batch, which the CPU spreads over its pool without a
-/// barrier every 16 trials (29-surface F/1.4 benchmark lens, 12 threads:
-/// 155 → 120 ms for the default tolerance run, 2.4 → 1.9 s for 1000 dense
-/// trials, identical results) and a pipelined evaluator splits into
-/// overlapped device plans.
+/// `batch` setting only raises it; on the CPU reference and with host
+/// aiming trial values do not depend on the batching, with device aiming
+/// they do within the device's precision). The hundred trials of a default
+/// Monte Carlo run go to the evaluator as one batch, which the CPU spreads
+/// over its pool without a barrier every 16 trials (29-surface F/1.4
+/// benchmark lens, 12 threads: 155 → 120 ms for the default tolerance run,
+/// 2.4 → 1.9 s for 1000 dense trials, identical results) and a pipelined
+/// evaluator splits into overlapped device plans.
 const TOLERANCE_BATCH: usize = 128;
 
 /// The job's initial spreads of the population methods around the start,
@@ -974,12 +1061,125 @@ struct OptimizeSettings {
     feasibility_tolerance: f64,
 }
 
-/// The merit of an `optimize` or `merit_evaluation` request: its settings,
-/// the solved start, the variables and the effective merit spec.
+impl OptimizeSettings {
+    /// The checked settings of an `optimize` or `merit_evaluation` request
+    /// with its algorithm (and iteration budget) and its merit on the
+    /// solved start.
+    fn prepare(
+        input: &AnalysisInput<'_>,
+        settings: &Value,
+        ctx: &JobContext,
+    ) -> EngineResult<(OptimizeSettings, (Algo, usize), PreparedMerit)> {
+        validate_settings(&Optimize.settings_schema(), settings)?;
+        let s: OptimizeSettings = parse(settings, "settings")?;
+        let algo = Algo::new(&s)?;
+        let start = SolvedStart::new(input, ctx)?;
+        let variables =
+            start.parameters("variables", s.variables.clone(), auto_variables, |v| {
+                &v.param
+            })?;
+        let merit = MeritSettings {
+            variables,
+            merit: s.merit.clone(),
+            default_merit: patched(
+                &DefaultMeritSpec::default(),
+                &s.default_merit,
+                "default_merit",
+            )?,
+            relax_boundaries: true,
+            operands: s.operands.clone(),
+            constraints: s.constraints.clone(),
+            hold_efl: s.hold_efl,
+            derivative_free: s.algorithm.derivative_free().then(|| s.algorithm.name()),
+        };
+        let merit = PreparedMerit::new(input, start, merit, ctx)?;
+        Ok((s, algo, merit))
+    }
+}
+
+/// The start of a solver job: the snapshot's system with its solves applied
+/// (`docs/SOLVES.md`). Every job builds its merit on it, and none changes a
+/// solve-controlled parameter itself: such a parameter is never a variable,
+/// a tolerance or a compensator.
+struct SolvedStart {
+    system: OpticalSystem,
+    /// The solve-controlled parameters.
+    solved: Vec<ParamPath>,
+    warnings: Vec<String>,
+}
+
+impl SolvedStart {
+    fn new(input: &AnalysisInput<'_>, ctx: &JobContext) -> EngineResult<Self> {
+        let (system, solves) = mklight_trace::apply_solves_with(
+            input.snapshot.system(),
+            &input.library,
+            &Default::default(),
+            ctx,
+        )?;
+        Ok(SolvedStart {
+            solved: system.solved_params(),
+            system,
+            warnings: solves.warnings,
+        })
+    }
+
+    /// The parameters a job changes on the start (its setting `key`): the
+    /// `given` ones, none of which a solve may control, or with none given
+    /// the `automatic` ones that no solve controls.
+    fn parameters<T>(
+        &self,
+        key: &str,
+        given: Vec<T>,
+        automatic: impl FnOnce(&OpticalSystem) -> Vec<T>,
+        param: impl Fn(&T) -> &ParamPath,
+    ) -> EngineResult<Vec<T>> {
+        if given.is_empty() {
+            let mut all = automatic(&self.system);
+            all.retain(|p| !self.solved.contains(param(p)));
+            return Ok(all);
+        }
+        match given.iter().position(|p| self.solved.contains(param(p))) {
+            Some(i) => Err(invalid(format!(
+                "'{key}'[{i}]: a solve controls this parameter; a job cannot change it"
+            ))),
+            None => Ok(given),
+        }
+    }
+}
+
+/// What a solver job asks of the shared merit preparation.
+struct MeritSettings {
+    /// The continuous parameters the job changes on the start: its
+    /// variables, for `tolerance` its tolerances and compensators. They
+    /// decide the pupil symmetry of a generated merit and which of its
+    /// boundaries are fixed.
+    variables: Vec<VariableSpec>,
+    /// An explicit merit-function spec; null generates the default merit.
+    merit: Value,
+    /// The default-merit generator: the job's `default_merit` laid over its
+    /// defaults.
+    default_merit: DefaultMeritSpec,
+    /// Relax the generated thickness boundaries that the start violates and
+    /// no variable changes (`relax_fixed_boundaries`).
+    relax_boundaries: bool,
+    /// Operands appended to the merit, and operands appended as constraints.
+    operands: Vec<Operand>,
+    constraints: Vec<Operand>,
+    /// Hold the focal length of the start, unless the merit has an EFL
+    /// operand.
+    hold_efl: bool,
+    /// The search method, when it is derivative-free: the EFL hold is then
+    /// a penalty residual, and equality constraints get a warning.
+    derivative_free: Option<&'static str>,
+}
+
+/// The merit of a solver job on its solved start, built the same way for
+/// `optimize`, `merit_evaluation`, `glass_substitution` and `tolerance`.
 struct PreparedMerit {
-    settings: OptimizeSettings,
-    /// The snapshot's system with its solves applied.
+    /// The start: the snapshot's system with its solves applied.
     snapshot: Snapshot,
+    /// The parameters the job changes (`MeritSettings::variables`).
+    variables: Vec<VariableSpec>,
     cpu: BuiltinEvaluator,
     reg: OperandRegistry,
     spec: MeritFunctionSpec,
@@ -989,33 +1189,21 @@ struct PreparedMerit {
 }
 
 impl PreparedMerit {
-    fn new(input: &AnalysisInput<'_>, settings: &Value, ctx: &JobContext) -> EngineResult<Self> {
-        let mut s: OptimizeSettings = parse(settings, "settings")?;
-        let (system, solves) = mklight_trace::apply_solves_with(
-            input.snapshot.system(),
-            &input.library,
-            &Default::default(),
-            ctx,
-        )?;
+    fn new(
+        input: &AnalysisInput<'_>,
+        start: SolvedStart,
+        s: MeritSettings,
+        ctx: &JobContext,
+    ) -> EngineResult<Self> {
+        let SolvedStart {
+            system,
+            mut warnings,
+            ..
+        } = start;
         let cpu = BuiltinEvaluator::new(input.library.clone());
         let reg = OperandRegistry::builtin();
-        let mut warnings = solves.warnings;
-        let solved = system.solved_params();
-        if s.variables.is_empty() {
-            s.variables = auto_variables(&system);
-            s.variables.retain(|v| !solved.contains(&v.param));
-        } else if s.variables.iter().any(|v| solved.contains(&v.param)) {
-            return Err(invalid(
-                "'variables': a solve-controlled parameter cannot vary",
-            ));
-        }
-        let default_merit = patched(
-            &DefaultMeritSpec::default(),
-            &s.default_merit,
-            "default_merit",
-        )?;
-        let mut spec = build_merit(&system, &s.merit, &default_merit, &s.variables)?;
-        if s.merit.is_null() {
+        let mut spec = build_merit(&system, &s.merit, &s.default_merit, &s.variables)?;
+        if s.merit.is_null() && s.relax_boundaries {
             warnings.extend(relax_fixed_boundaries(
                 &system,
                 &mut spec,
@@ -1025,22 +1213,19 @@ impl PreparedMerit {
                 ctx,
             )?);
         }
-        spec.operands.extend(s.operands.iter().cloned());
-        spec.operands
-            .extend(s.constraints.iter().cloned().map(|mut o| {
-                o.role = OperandRole::Constraint;
-                o
-            }));
-        let global = s.algorithm.derivative_free();
-        if global
+        spec.operands.extend(s.operands);
+        spec.operands.extend(s.constraints.into_iter().map(|mut o| {
+            o.role = OperandRole::Constraint;
+            o
+        }));
+        if let Some(algorithm) = s.derivative_free
             && spec.enabled().any(|(_, o)| {
                 o.role == OperandRole::Constraint && o.comparison == Comparison::Equal
             })
         {
             warnings.push(format!(
-                "{} rarely samples a point that meets an equality constraint exactly; such \
-                 constraints are better held by lm, dogleg or hammer, or by a weighted operand",
-                s.algorithm.name()
+                "{algorithm} rarely samples a point that meets an equality constraint exactly; \
+                 such constraints are better held by lm, dogleg or hammer, or by a weighted operand"
             ));
         }
         let mut efl_penalty = None;
@@ -1050,7 +1235,7 @@ impl PreparedMerit {
                 .remove(0)
             {
                 Ok(f) if f.is_finite() && f != 0.0 => {
-                    let o = if global {
+                    let o = if s.derivative_free.is_some() {
                         // Penalty: the derivative-free methods' random trial
                         // points never meet an equality exactly, so Deb's
                         // rule would rank them by EFL error alone.
@@ -1071,8 +1256,8 @@ impl PreparedMerit {
             }
         }
         Ok(PreparedMerit {
-            settings: s,
             snapshot: Snapshot::new(system)?,
+            variables: s.variables,
             cpu,
             reg,
             spec,
@@ -1084,7 +1269,7 @@ impl PreparedMerit {
     fn problem<E: OperandEvaluator>(&self, evaluator: E) -> EngineResult<OpticalProblem<E>> {
         Ok(OpticalProblem::new(
             self.snapshot.system().clone(),
-            self.settings.variables.clone(),
+            self.variables.clone(),
             self.spec.clone(),
             evaluator,
             &self.reg,
@@ -1115,7 +1300,34 @@ enum Algo {
     Hammer(HammerSettings),
 }
 
+/// The settings of an algorithm: `options` laid over `defaults`, the
+/// job's defaults for it with the job's own `max_iterations`, `fd_scheme`,
+/// `fd_relative_step` and `seed` in their fields, so a key of `options`
+/// wins over the setting that fills the same field. A key must be a field of
+/// the algorithm's settings (through nested objects); a field in `owned` is
+/// the job's alone (it names the setting to use) and is refused.
+fn algorithm_settings<T: Serialize + DeserializeOwned>(
+    defaults: &T,
+    options: &Value,
+    owned: &[(&str, &str)],
+) -> EngineResult<T> {
+    let mut fields = serde_json::to_value(defaults)?;
+    for (field, setting) in owned {
+        if options.get(field).is_some() {
+            return Err(invalid(format!(
+                "'options.{field}': set by the job's '{setting}' setting"
+            )));
+        }
+        if let Some(fields) = fields.as_object_mut() {
+            fields.remove(*field);
+        }
+    }
+    check_overlay_keys(&fields, options, "options")?;
+    patched(defaults, options, "options")
+}
+
 impl Algo {
+    /// The algorithm of `s` with its settings, and its iteration budget.
     fn new(s: &OptimizeSettings) -> EngineResult<(Algo, usize)> {
         let iters = s.max_iterations.unwrap_or(s.algorithm.default_iterations());
         let jacobian = JacobianSettings {
@@ -1131,73 +1343,72 @@ impl Algo {
             max_inner_iterations: Some(INNER_ITERATIONS),
             ..Default::default()
         };
+        const SEED: [(&str, &str); 1] = [("seed", "seed")];
         Ok(match s.algorithm {
             Algorithm::Lm | Algorithm::Dogleg => {
-                let method = if s.algorithm == Algorithm::Lm {
-                    LsqMethod::LevenbergMarquardt
-                } else {
-                    LsqMethod::Dogleg
-                };
-                let mut l = patched(
+                let l = algorithm_settings(
                     &LsqSettings {
-                        method,
+                        method: if s.algorithm == Algorithm::Lm {
+                            LsqMethod::LevenbergMarquardt
+                        } else {
+                            LsqMethod::Dogleg
+                        },
                         jacobian,
                         max_iterations: iters,
                         constraints,
                         ..Default::default()
                     },
                     opts,
-                    "options",
+                    &[("method", "algorithm")],
                 )?;
-                l.method = method;
                 (Algo::Lsq(l), l.max_iterations)
             }
             Algorithm::De => {
-                let mut d = patched(
+                let d = algorithm_settings(
                     &DeSettings {
                         max_generations: iters,
                         init_spread: DE_INIT_SPREAD,
+                        seed: s.seed,
                         ..Default::default()
                     },
                     opts,
-                    "options",
+                    &SEED,
                 )?;
-                d.seed = s.seed;
                 (Algo::De(d), d.max_generations)
             }
             Algorithm::CmaEs => {
-                let mut c = patched(
+                let c = algorithm_settings(
                     &CmaEsSettings {
                         max_generations: iters,
                         sigma0: CMA_ES_SIGMA0,
+                        seed: s.seed,
                         ..Default::default()
                     },
                     opts,
-                    "options",
+                    &SEED,
                 )?;
-                c.seed = s.seed;
                 (Algo::CmaEs(c), c.max_generations)
             }
             Algorithm::NelderMead => {
-                let n = patched(
+                let n = algorithm_settings(
                     &NelderMeadSettings {
                         max_iterations: iters,
                         ..Default::default()
                     },
                     opts,
-                    "options",
+                    &[],
                 )?;
                 (Algo::NelderMead(n), n.max_iterations)
             }
             Algorithm::Hammer => {
                 let mut d = HammerSettings {
                     rounds: iters,
+                    seed: s.seed,
                     ..Default::default()
                 };
+                d.local.jacobian = jacobian;
                 d.local.constraints.max_inner_iterations = Some(INNER_ITERATIONS);
-                let mut h = patched(&d, opts, "options")?;
-                h.seed = s.seed;
-                h.local.jacobian = jacobian;
+                let h = algorithm_settings(&d, opts, &SEED)?;
                 (Algo::Hammer(h), h.rounds)
             }
         })
@@ -1276,6 +1487,9 @@ impl Analysis for Optimize {
     fn name(&self) -> &str {
         "optimize"
     }
+    fn supports_stop(&self) -> bool {
+        true
+    }
     fn title(&self) -> &str {
         "Optimize"
     }
@@ -1295,7 +1509,7 @@ impl Analysis for Optimize {
             "type": "object",
             "properties": {
                 "variables": {"type": "array", "default": [], "title": "Variables",
-                    "description": "Variable specs: {\"param\": ParamPath, \"lower\", \"upper\", \"scale\", \"fd_step\", \"label\"}. Empty: the curvature of every curved optical surface and the back focus."},
+                    "description": "Variable specs: {\"param\": ParamPath, \"lower\", \"upper\", \"scale\", \"fd_step\", \"label\"}. Empty: the curvature of every curved optical surface and the back focus, without the solve-controlled ones. A solve-controlled parameter is rejected."},
                 "hold_efl": {"type": "boolean", "default": true, "title": "Hold focal length",
                     "description": "Hold the EFL at its start value unless the merit already has an efl operand: a constraint for lm, dogleg and hammer, a penalty residual for de, cma_es and nelder_mead."},
                 "merit": {"type": ["object", "null"], "default": null, "title": "Merit function",
@@ -1308,7 +1522,7 @@ impl Analysis for Optimize {
                 "algorithm": {"type": "string", "enum": ["lm", "dogleg", "de", "cma_es", "nelder_mead", "hammer"],
                     "default": "lm", "title": "Algorithm"},
                 "options": {"type": "object", "default": {}, "title": "Algorithm options",
-                    "description": "Settings of the algorithm, laid over its defaults."},
+                    "description": "Settings of the algorithm, laid over its defaults; a key wins over max_iterations, fd_scheme and fd_relative_step. Keys must be fields of the selected algorithm's settings; method and seed are the job's own."},
                 "max_iterations": {"type": ["integer", "null"], "minimum": 1, "default": null,
                     "title": "Iterations",
                     "description": "Iterations (lm, dogleg, nelder_mead), generations (de, cma_es) or rounds (hammer); null: 200, 200, 2000, 100, 200, 20."},
@@ -1446,8 +1660,9 @@ impl Analysis for Optimize {
     ) -> EngineResult<AnalysisOutput> {
         // Before the merit is prepared, so that a stop meanwhile is kept.
         let stop = input.stop.clone();
-        let mut m = PreparedMerit::new(input, settings, &ctx.subrange(0.0, 0.0))?;
-        if m.settings.variables.is_empty() {
+        let (s, (algo, max_iter), mut m) =
+            OptimizeSettings::prepare(input, settings, &ctx.subrange(0.0, 0.0))?;
+        if m.variables.is_empty() {
             return Err(invalid(
                 "'variables': none given, and the system has nothing to vary",
             ));
@@ -1459,8 +1674,8 @@ impl Analysis for Optimize {
         }
         let reference = m.problem(m.cpu.clone())?;
         let PreparedMerit {
-            settings: s,
             snapshot: start,
+            variables,
             cpu,
             reg,
             spec,
@@ -1468,7 +1683,6 @@ impl Analysis for Optimize {
             ..
         } = m;
         let system = start.system();
-        let (algo, max_iter) = Algo::new(&s)?;
         let x0 = reference.start_point()?;
         let work = Workload::new(&cpu.trace, system, &spec, algo.batch(x0.len()));
         ctx.report(0.0, "preparing the merit evaluator");
@@ -1503,17 +1717,14 @@ impl Analysis for Optimize {
             });
             mon.keep_history = false;
             mon.feasibility_tol = s.feasibility_tolerance;
-            let r = match ev.active_gpu() {
-                Some(g) => OpticalProblem::new(
-                    system.clone(),
-                    s.variables.clone(),
-                    spec.clone(),
-                    g.clone(),
-                    &reg,
-                )
-                .and_then(|p| algo.run(&p, &x0, &mon)),
-                None => algo.run(&reference, &x0, &mon),
-            };
+            let r = OpticalProblem::new(
+                system.clone(),
+                variables.clone(),
+                spec.clone(),
+                ev.evaluator(),
+                &reg,
+            )
+            .and_then(|p| algo.run(&p, &x0, &mon));
             (r, mon.best.get())
         });
         let (run, best) = run;
@@ -1589,8 +1800,7 @@ impl Analysis for Optimize {
         ev.finish(input, s.backend, Reported::Reference)?;
         let hash = final_system.hash().to_hex();
         let history = history.lock().map(|h| h.clone()).unwrap_or_default();
-        let variables: Vec<Value> = s
-            .variables
+        let variables: Vec<Value> = variables
             .iter()
             .zip(reference.variables())
             .enumerate()
@@ -1609,7 +1819,7 @@ impl Analysis for Optimize {
             .collect();
         let feasible = refs.violation[k] <= feas_tol;
         let json = json!({
-            "status": optimize_status(why == Interrupt::Stopped, result.termination),
+            "status": job_status(why == Interrupt::Stopped, Some(result.termination)),
             "stopped": why == Interrupt::Stopped,
             "termination": result.termination,
             "algorithm": method,
@@ -1669,32 +1879,28 @@ pub(super) fn evaluate_merit(
     settings: &Value,
     ctx: &JobContext,
 ) -> EngineResult<AnalysisOutput> {
-    let mut m = PreparedMerit::new(input, settings, &ctx.subrange(0.0, 0.0))?;
+    let (s, _, mut m) = OptimizeSettings::prepare(input, settings, &ctx.subrange(0.0, 0.0))?;
     let work = Workload::new(&m.cpu.trace, m.snapshot.system(), &m.spec, 1);
     ctx.report(0.0, "preparing the merit evaluator");
-    let mut ev = Evaluation::new(
-        m.settings.backend,
-        input,
-        &m.snapshot,
-        work,
-        &ctx.subrange(0.0, 0.2),
-    )?;
+    let mut ev = Evaluation::new(s.backend, input, &m.snapshot, work, &ctx.subrange(0.0, 0.2))?;
     ctx.report(0.2, "evaluating merit");
     let reference = m.problem(m.cpu.clone())?;
     let x0 = reference.start_point()?;
-    let x0 = CandidateBatch::from_points(x0.len(), [&x0[..]]);
-    let eval_ctx = ctx.subrange(0.2, 1.0);
-    let values = match ev.active_gpu() {
-        Some(g) => m.problem(g.clone())?.operand_values(&x0, &eval_ctx)?,
-        None => reference.operand_values(&x0, &eval_ctx)?,
-    };
-    let r = if m.efl_penalty.is_some() {
-        m.weight_efl(values_report(&reference, values.clone()).merit[0]);
-        values_report(&m.problem(m.cpu.clone())?, values)
-    } else {
-        values_report(&reference, values)
-    };
-    ev.finish(input, m.settings.backend, Reported::Evaluator)?;
+    let batch = CandidateBatch::from_points(x0.len(), [&x0[..]]);
+    let values = m
+        .problem(ev.evaluator())?
+        .operand_values(&batch, &ctx.subrange(0.2, 1.0))?;
+    if m.efl_penalty.is_some() {
+        // The penalty's weight comes from the reference's start merit, as
+        // in `optimize`, whichever evaluator computed the values.
+        let phi = match ev.active_gpu() {
+            Some(_) => reference_values(&reference, &[&x0], ctx)?.merit[0],
+            None => values_report(&reference, values.clone()).merit[0],
+        };
+        m.weight_efl(phi);
+    }
+    let r = values_report(&m.problem(m.cpu.clone())?, values);
+    ev.finish(input, s.backend, Reported::Evaluator)?;
     ev.warnings.extend(m.warnings);
     Ok(AnalysisOutput {
         json: json!({
@@ -1767,6 +1973,9 @@ impl Analysis for Tolerance {
     fn name(&self) -> &str {
         "tolerance"
     }
+    fn supports_stop(&self) -> bool {
+        true
+    }
     fn title(&self) -> &str {
         "Tolerance analysis"
     }
@@ -1776,7 +1985,8 @@ impl Analysis for Tolerance {
     fn description(&self) -> &str {
         "Sensitivity of a criterion merit (default: the RMS spot merit) to each tolerance at its \
          limits, ranked worst first with the RSS prediction, and a reproducible Monte-Carlo \
-         analysis, with compensators re-optimised for every trial."
+         analysis, with compensators re-optimised and the model's solves re-applied for every \
+         trial."
     }
     fn settings_schema(&self) -> Value {
         let default_merit = serde_json::to_value(tolerance_default_merit()).unwrap_or(Value::Null);
@@ -1784,9 +1994,9 @@ impl Analysis for Tolerance {
             "type": "object",
             "properties": {
                 "tolerances": {"type": "array", "default": [], "title": "Tolerances",
-                    "description": "Tolerance operands: {\"param\": ParamPath, \"minus\", \"plus\", \"distribution\", \"label\"}. material_dn_d / material_dv_d perturb catalogue index / Abbe offsets around the saved melt values. Empty: ±0.05 mm on every thickness but the back focus and ±0.5 % on every curvature."},
+                    "description": "Tolerance operands: {\"param\": ParamPath, \"minus\", \"plus\", \"distribution\", \"label\"}. material_dn_d / material_dv_d perturb catalogue index / Abbe offsets around the saved melt values. Empty: ±0.05 mm on every thickness but the back focus and ±0.5 % on every curvature, without the solve-controlled ones. A solve-controlled parameter is rejected."},
                 "compensators": {"type": "array", "default": [], "title": "Compensators",
-                    "description": "{\"param\": ParamPath, \"range\", \"scale\"}: re-optimised for every trial."},
+                    "description": "{\"param\": ParamPath, \"range\", \"scale\"}: re-optimised for every trial. A solve-controlled parameter is rejected."},
                 "criterion": {"type": ["object", "null"], "default": null, "title": "Criterion",
                     "description": "A merit-function spec; null generates the default merit for tolerancing from `default_merit`."},
                 "default_merit": default_merit_schema(default_merit),
@@ -1808,7 +2018,7 @@ impl Analysis for Tolerance {
                 "threshold": {"type": ["number", "null"], "default": null, "title": "Yield threshold",
                     "description": "Criterion value for the yield (criterion ≤ threshold)."},
                 "batch": {"type": "integer", "minimum": 1, "default": 16, "title": "Trials per batch",
-                    "description": "Monte-Carlo trials per evaluation batch, raised to at least 128 (the criteria do not depend on the batching)."},
+                    "description": "Monte-Carlo trials per evaluation batch, raised to at least 128 (the criteria do not depend on the batching on the CPU reference; on a device, within its precision)."},
                 "compensator_iterations": {"type": "integer", "minimum": 1, "default": 20,
                     "title": "Compensator iterations"},
                 "backend": {"type": "string", "enum": ["auto", "cpu", "gpu", "gpu_emulation"],
@@ -1823,7 +2033,7 @@ impl Analysis for Tolerance {
             &[
                 (
                     "status",
-                    enumeration(&["complete", "stopped", "cancelled"], ""),
+                    enumeration(&["finished", "stopped"], "Cancel discards the result."),
                 ),
                 (
                     "stopped",
@@ -1883,10 +2093,7 @@ impl Analysis for Tolerance {
                             nf_u("criterion", "Nominal + rss_change."),
                         ),
                         ("evaluations", int("")),
-                        (
-                            "cancelled",
-                            boolean("Partial sensitivity after interruption."),
-                        ),
+                        ("cancelled", boolean("Partial sensitivity after a stop.")),
                     ])),
                 ),
                 (
@@ -1940,7 +2147,7 @@ impl Analysis for Tolerance {
                         ("compensator_std", arr(nf(), "")),
                         (
                             "cancelled",
-                            boolean("Statistics of completed trials after interruption."),
+                            boolean("Statistics of completed trials after a stop."),
                         ),
                         (
                             "criteria",
@@ -1990,9 +2197,10 @@ impl Analysis for Tolerance {
         settings: &Value,
         ctx: &JobContext,
     ) -> EngineResult<AnalysisOutput> {
-        let mut s: ToleranceSettings = parse(settings, "settings")?;
+        validate_settings(&self.settings_schema(), settings)?;
+        let s: ToleranceSettings = parse(settings, "settings")?;
         let stop = input.stop.clone();
-        let mut system = input.snapshot.system().clone();
+        let mut start = SolvedStart::new(input, &ctx.subrange(0.0, 0.0))?;
         // Every parameter must exist on the nominal system (a missing one
         // would fail every trial).
         let params = s
@@ -2001,7 +2209,7 @@ impl Analysis for Tolerance {
             .map(|t| ("tolerances", &t.param))
             .chain(s.compensators.iter().map(|c| ("compensators", &c.param)));
         for (k, (what, p)) in params.enumerate() {
-            if let Err(e) = p.get(&system) {
+            if let Err(e) = p.get(&start.system) {
                 let i = if what == "tolerances" {
                     k
                 } else {
@@ -2010,14 +2218,23 @@ impl Analysis for Tolerance {
                 return Err(invalid(format!("'{what}'[{i}]: {e}")));
             }
         }
-        if s.tolerances.is_empty() {
-            s.tolerances = auto_tolerances(&system);
-            if s.tolerances.is_empty() {
-                return Err(invalid(
-                    "'tolerances': none given, and the system has nothing to tolerance",
-                ));
-            }
+        // Every trial re-solves the solve-controlled parameters (below), so
+        // none of them is a tolerance or a compensator.
+        let tolerances =
+            start.parameters("tolerances", s.tolerances.clone(), auto_tolerances, |t| {
+                &t.param
+            })?;
+        if tolerances.is_empty() {
+            return Err(invalid(
+                "'tolerances': none given, and the system has nothing to tolerance",
+            ));
         }
+        let compensators = start.parameters(
+            "compensators",
+            s.compensators.clone(),
+            |_| Vec::new(),
+            |c| &c.param,
+        )?;
         let mc = MonteCarloSettings {
             trials: s.trials,
             seed: s.seed,
@@ -2027,8 +2244,8 @@ impl Analysis for Tolerance {
             record_trials: s.record_trials,
             random_irregularity_orientation: s.random_irregularity_orientation,
         };
-        let mut spec = ToleranceSpec::new(s.tolerances.clone());
-        spec.compensators = s.compensators.clone();
+        let mut spec = ToleranceSpec::new(tolerances);
+        spec.compensators = compensators;
         spec.monte_carlo = mc.clone();
         spec.validate()?;
         // Freeze each irregular surface's nominal clear radius into a zero
@@ -2038,8 +2255,9 @@ impl Analysis for Tolerance {
             .filter(|p| matches!(p, ParamPath::Irregularity { .. }))
             .collect();
         if !irregular.is_empty() {
+            let system = &mut start.system;
             let radii = TraceEvaluator::new(input.library.clone())
-                .tracer(&system)
+                .tracer(system)
                 .map_err(|e| invalid(format!("{e:?}")))?
                 .semi_diameters_with(&Default::default(), &ctx.subrange(0.0, 0.0))?;
             for p in irregular {
@@ -2050,8 +2268,8 @@ impl Analysis for Tolerance {
                         value: radii.values[i],
                     };
                 }
-                let fringes = p.get(&system)?;
-                p.set(&mut system, fringes)?;
+                let fringes = p.get(system)?;
+                p.set(system, fringes)?;
                 let sf = &mut system.surfaces[i];
                 sf.semi_diameter = semi;
                 if let (
@@ -2064,19 +2282,37 @@ impl Analysis for Tolerance {
                     *test_wavelength_um = w;
                 }
             }
-            system.validate()?;
         }
-        let criterion = if s.criterion.is_null() {
-            patched(
-                &tolerance_default_merit(),
-                &s.default_merit,
-                "default_merit",
-            )?
-            .generate_for_tolerancing(&system, &spec)?
-        } else {
-            MeritFunctionSpec::from_value(s.criterion.clone())?
-        };
-        let reg = OperandRegistry::builtin();
+        // The criterion, generated for the toleranced parameters and the
+        // compensators (`DefaultMeritSpec::generate_for_tolerancing`).
+        let changed = (spec.operands.iter().map(|o| &o.param))
+            .chain(spec.compensators.iter().map(|c| &c.param))
+            .map(|p| VariableSpec::new(p.clone()))
+            .collect();
+        let m = PreparedMerit::new(
+            input,
+            start,
+            MeritSettings {
+                variables: changed,
+                merit: s.criterion.clone(),
+                default_merit: patched(
+                    &tolerance_default_merit(),
+                    &s.default_merit,
+                    "default_merit",
+                )?,
+                relax_boundaries: false,
+                operands: Vec::new(),
+                constraints: Vec::new(),
+                hold_efl: false,
+                derivative_free: None,
+            },
+            &ctx.subrange(0.0, 0.0),
+        )?;
+        let (system, criterion, reg) = (m.snapshot.system(), &m.spec, &m.reg);
+        // The model's solves stay in effect in everything the job evaluates:
+        // the perturbed system of a trial and each candidate of its
+        // compensator solve are re-solved, as a compensator would be.
+        let solves = (!system.solves.is_empty()).then_some(&input.library);
         let lsq = LsqSettings {
             max_iterations: s.compensator_iterations,
             ..Default::default()
@@ -2096,14 +2332,9 @@ impl Analysis for Tolerance {
         } else {
             TOLERANCE_BATCH.min(2 * spec.operands.len() + 1)
         };
-        let work = Workload::new(
-            &TraceEvaluator::new(input.library.clone()),
-            &system,
-            &criterion,
-            batch,
-        );
+        let work = Workload::new(&m.cpu.trace, system, criterion, batch);
         ctx.report(0.0, "preparing the merit evaluator");
-        let mut ev = Evaluation::new(s.backend, input, &input.snapshot, work, ctx)?;
+        let mut ev = Evaluation::new(s.backend, input, &m.snapshot, work, ctx)?;
         let lsq = LsqSettings {
             speculative_jacobian: ev.speculative(),
             ..lsq
@@ -2122,13 +2353,13 @@ impl Analysis for Tolerance {
                 }
             };
             let (outcome, why) = interruptible(ctx, &stop, |inner| {
-                let evaluate = |e: &dyn OperandEvaluator| {
+                ev.with_evaluator(solves, |e| {
                     let evaluator = OpticalToleranceEvaluator {
-                        nominal: &system,
+                        nominal: system,
                         spec: &spec,
-                        criterion: &criterion,
+                        criterion,
                         evaluator: &e,
-                        registry: &reg,
+                        registry: reg,
                         lsq,
                     };
                     match case {
@@ -2142,25 +2373,35 @@ impl Analysis for Tolerance {
                             evaluator.evaluate_batch(std::slice::from_ref(&deltas), inner)
                         }
                     }
-                };
-                match ev.active_gpu() {
-                    Some(g) => evaluate(&g.clone()),
-                    None => evaluate(&ev.cpu),
-                }
+                })
             });
+            ctx.check()?; // Cancel discards; Stop cancelled only the evaluation.
             let preview = match outcome.map(|mut o| o.remove(0)) {
                 Ok(outcome) if outcome.ok => {
                     let model = match case {
                         ToleranceCase::Trial { trial } => spec.trial_case_system(
-                            &system,
+                            system,
                             &deltas,
                             &outcome.compensators,
                             &mc,
                             *trial,
                         )?,
                         ToleranceCase::Sensitivity { .. } => {
-                            spec.case_system(&system, &deltas, &outcome.compensators)?
+                            spec.case_system(system, &deltas, &outcome.compensators)?
                         }
+                    };
+                    // The case as it was evaluated: with its solves applied.
+                    let model = match solves {
+                        Some(library) => {
+                            mklight_trace::apply_solves_with(
+                                &model,
+                                library,
+                                &Default::default(),
+                                &ctx.subrange(0.0, 0.0),
+                            )?
+                            .0
+                        }
+                        None => model,
                     };
                     let snapshot = Snapshot::new(model)?;
                     json!({"system": snapshot.system(), "system_hash": snapshot.hash().to_hex(),
@@ -2170,14 +2411,11 @@ impl Analysis for Tolerance {
                 Ok(_) | Err(MkError::Cancelled) => Value::Null,
                 Err(e) => return Err(e.into()),
             };
-            let status = match why {
-                Interrupt::Stopped => "stopped",
-                Interrupt::Cancelled => "cancelled",
-                _ => "complete",
-            };
+            let stopped = why == Interrupt::Stopped;
             ev.finish(input, s.backend, Reported::Evaluator)?;
+            ev.warnings.extend(m.warnings);
             return Ok(AnalysisOutput {
-                json: json!({"status": status, "stopped": why == Interrupt::Stopped,
+                json: json!({"status": job_status(stopped, None), "stopped": stopped,
                     "sensitivity": null, "monte_carlo": null, "preview": preview,
                     "compensators": spec.compensators, "criterion_spec": criterion,
                     "backend": ev.report}),
@@ -2195,42 +2433,30 @@ impl Analysis for Tolerance {
         };
 
         let ((sens, mcr), why) = interruptible(ctx, &stop, |inner| {
-            let run = |e: &dyn ToleranceRunner| -> (Option<Result<_, MkError>>, Option<Result<_, MkError>>) {
+            ev.with_evaluator(solves, |e| {
+                let evaluator = OpticalToleranceEvaluator {
+                    nominal: system,
+                    spec: &spec,
+                    criterion,
+                    evaluator: &e,
+                    registry: reg,
+                    lsq,
+                };
                 let sens = do_sens.then(|| {
                     let mon = Monitor::new(inner.subrange(0.0, split));
                     mon.progress(0.0, "tolerance sensitivity");
-                    e.sensitivity(&spec, &mon)
+                    sensitivity_batched(&spec, &evaluator, &mon, TOLERANCE_BATCH)
                 });
                 let cancelled = matches!(sens, Some(Err(MkError::Cancelled)))
                     || matches!(&sens, Some(Ok(r)) if r.cancelled);
                 let mcr = (do_mc && !cancelled).then(|| {
                     let mon = Monitor::new(inner.subrange(split, 1.0));
-                    e.monte_carlo(&spec, &mc, &mon)
+                    monte_carlo(&spec, &evaluator, &mc, &mon)
                 });
                 (sens, mcr)
-            };
-            match ev.active_gpu() {
-                Some(g) => {
-                    let comp = g.clone();
-                    run(&Runner {
-                        nominal: &system,
-                        criterion: &criterion,
-                        evaluator: &comp,
-                        registry: &reg,
-                        lsq,
-                        spec: &spec,
-                    })
-                }
-                None => run(&Runner {
-                    nominal: &system,
-                    criterion: &criterion,
-                    evaluator: &ev.cpu,
-                    registry: &reg,
-                    lsq,
-                    spec: &spec,
-                }),
-            }
+            })
         });
+        ctx.check()?; // Cancel discards; Stop cancelled only the search.
         let sens = match sens {
             Some(Ok(r)) => Some(r),
             Some(Err(MkError::Cancelled)) | None => None,
@@ -2242,11 +2468,8 @@ impl Analysis for Tolerance {
             Some(Err(e)) => return Err(e.into()),
         };
         ev.finish(input, s.backend, Reported::Evaluator)?;
-        let status = match why {
-            Interrupt::None | Interrupt::TimeLimit => "complete",
-            Interrupt::Stopped => "stopped",
-            Interrupt::Cancelled => "cancelled",
-        };
+        ev.warnings.extend(m.warnings.iter().cloned());
+        let stopped = why == Interrupt::Stopped;
         let label = |i: usize| spec.operands[i].display_label();
         let sens_json = sens.as_ref().map(|r| {
             json!({
@@ -2302,8 +2525,8 @@ impl Analysis for Tolerance {
             })
         });
         let json = json!({
-            "status": status,
-            "stopped": why == Interrupt::Stopped,
+            "status": job_status(stopped, None),
+            "stopped": stopped,
             "preview": null,
             "sensitivity": sens_json,
             "monte_carlo": mc_json,
@@ -2316,62 +2539,6 @@ impl Analysis for Tolerance {
             buffers,
             warnings: ev.warnings,
         })
-    }
-}
-
-/// Sensitivity and Monte Carlo on one evaluator type, behind a trait object
-/// so the run closure is written once.
-trait ToleranceRunner {
-    fn sensitivity(
-        &self,
-        spec: &ToleranceSpec,
-        mon: &Monitor,
-    ) -> mklight_core::MkResult<mklight_optim::tolerance::SensitivityReport>;
-    fn monte_carlo(
-        &self,
-        spec: &ToleranceSpec,
-        mc: &MonteCarloSettings,
-        mon: &Monitor,
-    ) -> mklight_core::MkResult<mklight_optim::tolerance::MonteCarloReport>;
-}
-
-struct Runner<'a, E: OperandEvaluator> {
-    nominal: &'a OpticalSystem,
-    criterion: &'a MeritFunctionSpec,
-    evaluator: &'a E,
-    registry: &'a OperandRegistry,
-    lsq: LsqSettings,
-    spec: &'a ToleranceSpec,
-}
-
-impl<E: OperandEvaluator> Runner<'_, E> {
-    fn evaluator(&self) -> OpticalToleranceEvaluator<'_, E> {
-        OpticalToleranceEvaluator {
-            nominal: self.nominal,
-            spec: self.spec,
-            criterion: self.criterion,
-            evaluator: self.evaluator,
-            registry: self.registry,
-            lsq: self.lsq,
-        }
-    }
-}
-
-impl<E: OperandEvaluator> ToleranceRunner for Runner<'_, E> {
-    fn sensitivity(
-        &self,
-        spec: &ToleranceSpec,
-        mon: &Monitor,
-    ) -> mklight_core::MkResult<mklight_optim::tolerance::SensitivityReport> {
-        sensitivity_batched(spec, &self.evaluator(), mon, TOLERANCE_BATCH)
-    }
-    fn monte_carlo(
-        &self,
-        spec: &ToleranceSpec,
-        mc: &MonteCarloSettings,
-        mon: &Monitor,
-    ) -> mklight_core::MkResult<mklight_optim::tolerance::MonteCarloReport> {
-        monte_carlo(spec, &self.evaluator(), mc, mon)
     }
 }
 
@@ -2925,7 +3092,7 @@ mod tests {
         };
         let a = run(sys.clone(), "tolerance", settings(3)).unwrap();
         let j = &a.json;
-        assert_eq!(j["status"], json!("complete"));
+        assert_eq!(j["status"], json!("finished"));
         let sens = &j["sensitivity"];
         assert_eq!(sens["nominal"]["ok"], json!(true));
         let ops = sens["operands"].as_array().unwrap();
@@ -3266,6 +3433,466 @@ mod tests {
         assert!(n > 0 && n <= 90, "{n} of 90 operands");
         assert_eq!(sens["cancelled"], json!(n < 90), "{sens}");
         assert_eq!(sens["ranking"].as_array().unwrap().len(), n);
+    }
+
+    /// Cancelling ends every solver job with `Cancelled` and no result; the
+    /// statuses of the results are those of `job_status`.
+    #[test]
+    fn cancel_is_an_error_in_every_job() {
+        assert_eq!(job_status(true, Some(Termination::SmallStep)), "stopped");
+        assert_eq!(job_status(false, Some(Termination::SmallStep)), "converged");
+        assert_eq!(
+            job_status(false, Some(Termination::MaxIterations)),
+            "finished"
+        );
+        assert_eq!(job_status(false, Some(Termination::Cancelled)), "finished");
+        assert_eq!(job_status(false, None), "finished");
+        assert_eq!(job_status(true, None), "stopped");
+        let reg = AnalysisRegistry::with_builtin();
+        for (name, statuses) in [
+            ("optimize", json!(["converged", "finished", "stopped"])),
+            ("tolerance", json!(["finished", "stopped"])),
+            ("glass_substitution", json!(["finished", "stopped"])),
+        ] {
+            let schema = reg.get(name).unwrap().result_schema();
+            assert_eq!(schema["properties"]["status"]["enum"], statuses, "{name}");
+        }
+        // A compensated sensitivity and Monte Carlo, cancelled once the
+        // first batch has been reported.
+        let c = |id: u64| json!({"param": ParamPath::Curvature { surface: SurfaceId(id) }, "minus": 1e-4, "plus": 1e-4});
+        let settings = prepare(
+            &Tolerance,
+            &json!({"tolerances": [c(1), c(2), c(3), c(4), c(5), c(6)], "trials": 100_000,
+                "compensators": [{"param": ParamPath::Thickness { surface: SurfaceId(6) }, "range": 1.0}]}),
+        )
+        .unwrap();
+        for preview in [false, true] {
+            let mut settings = settings.clone();
+            if preview {
+                settings["preview_case"] = json!({"type": "trial", "trial": 0});
+            }
+            let ctx = JobContext::new();
+            let watch = {
+                let ctx = ctx.clone();
+                std::thread::spawn(move || {
+                    let t = Instant::now();
+                    while t.elapsed() < Duration::from_secs(600) {
+                        if preview || ctx.progress.fraction() > 0.0 {
+                            ctx.cancel.cancel();
+                            return;
+                        }
+                        std::thread::sleep(Duration::from_millis(1));
+                    }
+                })
+            };
+            let out = Tolerance.run(&input(samples::cooke_triplet()), &settings, &ctx);
+            watch.join().unwrap();
+            assert!(out.unwrap_err().is_cancelled(), "preview {preview}");
+        }
+    }
+
+    /// A triplet whose last curvature holds F/4.2 and whose image sits at
+    /// the paraxial focus. The stored values are the sample's, which meets
+    /// neither condition.
+    fn solved_triplet() -> OpticalSystem {
+        let mut sys = samples::cooke_triplet();
+        sys.solves = serde_json::from_value(json!([
+            {"target": {"param": "curvature", "surface": 6},
+                "kind": {"type": "f_number", "value": 4.2}},
+            {"target": {"param": "thickness", "surface": 6},
+                "kind": {"type": "marginal_ray_height", "height": 0.0}},
+        ]))
+        .unwrap();
+        sys
+    }
+
+    /// The system with its solves applied.
+    fn solved(sys: &OpticalSystem) -> OpticalSystem {
+        mklight_trace::apply_solves(sys, &MaterialLibrary::with_builtin())
+            .unwrap()
+            .0
+    }
+
+    /// The image's distance from the paraxial focus (object at infinity)
+    /// and the image-space F/# at the triplet's 12.5 mm entrance pupil.
+    fn focus_and_f_number(sys: &OpticalSystem) -> (f64, f64) {
+        let ops = [
+            Operand::new(OperandKind::Bfl),
+            Operand::new(OperandKind::Efl),
+        ];
+        let v = TraceEvaluator::builtin()
+            .evaluate_system(sys, &[&ops[0], &ops[1]], &JobContext::new())
+            .unwrap();
+        let back_focus = sys.surfaces[sys.surfaces.len() - 2].thickness;
+        (
+            v[0].clone().unwrap() - back_focus,
+            v[1].clone().unwrap() / 12.5,
+        )
+    }
+
+    /// On a design with solves the four jobs work on the same model: the
+    /// solved start, with the same start merit. No job changes a
+    /// solve-controlled parameter itself, and each system a job derives is
+    /// solved where its meaning asks for it: every tolerance case and every
+    /// substituted glass combination.
+    #[test]
+    fn jobs_work_on_the_same_solved_model() {
+        let sys = solved_triplet();
+        let start = solved(&sys);
+        let (c6, t6) = (curv(6)["param"].clone(), thick(6)["param"].clone());
+        let value = |sys: &OpticalSystem, p: &Value| {
+            serde_json::from_value::<ParamPath>(p.clone())
+                .unwrap()
+                .get(sys)
+                .unwrap()
+        };
+        // The solves move both targets off the stored values.
+        assert!((value(&start, &c6) - value(&sys, &c6)).abs() > 1e-4);
+        assert!((value(&start, &t6) - value(&sys, &t6)).abs() > 1e-2);
+        let (focus, f_number) = focus_and_f_number(&start);
+        assert!(focus.abs() < 1e-9 && (f_number - 4.2).abs() < 1e-9);
+
+        // One explicit merit for every job: the start merit is that of the
+        // solved system, in all four.
+        let merit = json!({"hold_efl": false, "backend": "cpu",
+            "default_merit": {"fields": [0, 2], "wavelengths": [1], "thickness": null}});
+        let e = run(sys.clone(), "merit_evaluation", merit.clone()).unwrap();
+        let spec = e.json["merit_spec"].clone();
+        let m0 = e.json["merit"].clone();
+        let mut unsolved = start.clone();
+        unsolved.solves.clear();
+        let on_solved = run(unsolved, "merit_evaluation", merit.clone()).unwrap();
+        assert_eq!(m0, on_solved.json["merit"]);
+        let mut stored = sys.clone();
+        stored.solves.clear();
+        let on_stored = run(stored, "merit_evaluation", merit).unwrap();
+        assert!((f(&m0) / f(&on_stored.json["merit"]) - 1.0).abs() > 0.1);
+
+        let o = run(
+            sys.clone(),
+            "optimize",
+            json!({"merit": spec, "hold_efl": false, "backend": "cpu", "max_iterations": 2}),
+        )
+        .unwrap();
+        assert_eq!(o.json["start"]["merit"], m0);
+        let thickness = |id: u64, tol: f64| json!({"param": ParamPath::Thickness { surface: SurfaceId(id) }, "minus": tol, "plus": tol});
+        let tolerance = json!({"criterion": spec, "backend": "cpu", "trials": 4, "seed": 5,
+            "record_trials": 4, "tolerances": [thickness(1, 0.05), thickness(4, 0.05)]});
+        let t = run(sys.clone(), "tolerance", tolerance.clone()).unwrap();
+        assert_eq!(t.json["sensitivity"]["nominal"]["criterion"], m0);
+        assert_eq!(t.json["monte_carlo"]["nominal"]["criterion"], m0);
+        let glass = json!({"merit": spec, "hold_efl": false, "backend": "cpu",
+            "material_variables": [{"surface": 1, "candidates": {"nearest": 3}}],
+            "max_combinations": 3, "local_iterations": 2, "top_n": 3});
+        let g = run(sys.clone(), "glass_substitution", glass.clone()).unwrap();
+        assert_eq!(g.json["starting_merit"], m0);
+
+        // Automatic variables and tolerances skip the solve-controlled
+        // parameters; explicit ones are rejected, in every job.
+        let params = |rows: &Value| -> Vec<Value> {
+            (rows.as_array().unwrap().iter())
+                .map(|v| v["param"].clone())
+                .collect()
+        };
+        let auto = run(sys.clone(), "optimize", json!({"max_iterations": 1})).unwrap();
+        let varied = params(&auto.json["variables"]);
+        assert_eq!(varied.len(), 5, "{varied:?}");
+        assert!(!varied.contains(&c6) && !varied.contains(&t6));
+        let mut auto = glass.clone();
+        auto["max_combinations"] = json!(1);
+        let auto = run(sys.clone(), "glass_substitution", auto).unwrap();
+        assert_eq!(params(&auto.json["results"][0]["variables"]), varied);
+        let auto = run(
+            sys.clone(),
+            "tolerance",
+            json!({"mode": "sensitivity", "backend": "cpu"}),
+        )
+        .unwrap();
+        let toleranced = params(&auto.json["sensitivity"]["operands"]);
+        assert_eq!(toleranced.len(), 10, "{toleranced:?}");
+        assert!(!toleranced.contains(&c6) && !toleranced.contains(&t6));
+        for (name, settings) in [
+            ("optimize", json!({"variables": [curv(1), thick(6)]})),
+            ("merit_evaluation", json!({"variables": [curv(6)]})),
+            (
+                "glass_substitution",
+                json!({"variables": [curv(6)],
+                "material_variables": [{"surface": 1}]}),
+            ),
+            (
+                "tolerance",
+                json!({"tolerances": [thickness(1, 0.05), thickness(6, 0.05)]}),
+            ),
+            (
+                "tolerance",
+                json!({"tolerances": [thickness(1, 0.05)],
+                "compensators": [{"param": t6, "range": 1.0}]}),
+            ),
+        ] {
+            match run(sys.clone(), name, settings.clone()) {
+                Err(EngineError::InvalidSettings(m)) => {
+                    assert!(m.contains("a solve controls"), "{name}: {m}")
+                }
+                other => panic!("{name} accepted {settings}: {:?}", other.map(|r| r.json)),
+            }
+        }
+
+        // Tolerance: every case is re-solved. A sensitivity limit, and a
+        // trial with a compensator, move both solved parameters; the
+        // previewed system meets its solves, applying them changes nothing,
+        // and its merit is the reported criterion.
+        let mut compensated = tolerance.clone();
+        compensated["compensators"] =
+            json!([{"param": ParamPath::Thickness { surface: SurfaceId(2) }, "range": 0.5}]);
+        for (settings, case) in [
+            (
+                &tolerance,
+                json!({"type": "sensitivity", "operand": 0, "positive": true}),
+            ),
+            (&tolerance, json!({"type": "trial", "trial": 2})),
+            (&compensated, json!({"type": "trial", "trial": 2})),
+        ] {
+            let mut preview = settings.clone();
+            preview["preview_case"] = case.clone();
+            let p = run(sys.clone(), "tolerance", preview).unwrap();
+            let p = &p.json["preview"];
+            let model: OpticalSystem = serde_json::from_value(p["system"].clone()).unwrap();
+            assert!(
+                (value(&model, &c6) - value(&start, &c6)).abs() > 1e-7,
+                "{case}"
+            );
+            assert!(
+                (value(&model, &t6) - value(&start, &t6)).abs() > 1e-4,
+                "{case}"
+            );
+            let (focus, f_number) = focus_and_f_number(&model);
+            assert!(
+                focus.abs() < 1e-9 && (f_number - 4.2).abs() < 1e-9,
+                "{case}"
+            );
+            assert_eq!(solved(&model), model, "{case}");
+            let again = run(
+                model,
+                "merit_evaluation",
+                json!({"merit": spec, "hold_efl": false, "backend": "cpu"}),
+            )
+            .unwrap();
+            assert_eq!(again.json["merit"], p["criterion"], "{case}");
+            if case["type"] == "trial" {
+                // The preview is the trial of the run.
+                let all = run(sys.clone(), "tolerance", settings.clone()).unwrap();
+                assert_eq!(all.json["monte_carlo"]["criteria"][2], p["criterion"]);
+                assert_eq!(all.json["monte_carlo"]["failures"], 0);
+            }
+        }
+
+        // On a device too: the cases reach it re-solved, plain and through
+        // the joined batches of the compensator solves.
+        let emulation: DeviceHandle = Arc::new(GpuDevice::new(
+            "gpu:cpu_f32",
+            Arc::new(CpuF32Backend::new()),
+        ));
+        let reg = AnalysisRegistry::with_builtin();
+        let on_device = |settings: &Value| {
+            let mut settings = settings.clone();
+            settings["backend"] = json!("gpu_emulation");
+            let inp = input(sys.clone()).with_device(Some(emulation.clone()));
+            let analysis = reg.get("tolerance").unwrap();
+            let r = run_analysis(
+                analysis.as_ref(),
+                &inp,
+                &settings,
+                vec![],
+                &JobContext::new(),
+            );
+            let r = r.unwrap();
+            assert_eq!(r.json["backend"]["precision"], "f32_gpu");
+            assert_eq!(r.json["monte_carlo"]["failures"], 0);
+            r.json
+        };
+        let d = on_device(&tolerance);
+        let criteria = |j: &Value| -> Vec<f64> {
+            let mut all = vec![f(&j["sensitivity"]["nominal"]["criterion"])];
+            all.extend(
+                j["monte_carlo"]["criteria"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(f),
+            );
+            all
+        };
+        for (a, b) in criteria(&d).iter().zip(criteria(&t.json)) {
+            assert!((a / b - 1.0).abs() < 1e-6, "{a} vs {b}");
+        }
+        on_device(&compensated);
+
+        // Glass substitution: each combination starts from the substituted
+        // design with its solves applied, which its re-optimisation (as
+        // `optimize`'s search) leaves alone.
+        let rows = g.json["results"].as_array().unwrap();
+        assert_eq!(rows.len(), 3);
+        let mut moved = 0;
+        for row in rows {
+            let model: OpticalSystem = serde_json::from_value(row["system"].clone()).unwrap();
+            let mut substituted = start.clone();
+            substituted.surfaces[1].material = model.surfaces[1].material.clone();
+            let expected = solved(&substituted);
+            let (focus, f_number) = focus_and_f_number(&expected);
+            assert!(focus.abs() < 1e-9 && (f_number - 4.2).abs() < 1e-9);
+            assert_eq!(
+                value(&model, &c6),
+                value(&expected, &c6),
+                "{}",
+                row["glasses"]
+            );
+            assert_eq!(
+                value(&model, &t6),
+                value(&expected, &t6),
+                "{}",
+                row["glasses"]
+            );
+            moved += usize::from(value(&model, &c6) != value(&start, &c6));
+        }
+        assert_eq!(moved, 2, "the two other glasses are re-solved");
+    }
+
+    /// A misspelt key inside a nested settings object is an error in every
+    /// job, as at the top level; unknown `options` name the valid keys of
+    /// the selected algorithm.
+    #[test]
+    fn misspelt_nested_settings_are_rejected() {
+        let sys = samples::cooke_triplet();
+        let rejected = |name: &str, settings: Value| -> String {
+            match run(sys.clone(), name, settings.clone()) {
+                Err(EngineError::InvalidSettings(m)) => m,
+                other => panic!("{name} accepted {settings}: {:?}", other.map(|r| r.json)),
+            }
+        };
+        let mtf = |key: &str| {
+            json!({"default_merit": {"criterion":
+                {"type": "mtf", "frequencies": [30.0], "target": 0.5, key: true}}})
+        };
+        for name in [
+            "optimize",
+            "merit_evaluation",
+            "tolerance",
+            "glass_substitution",
+        ] {
+            for (settings, word) in [
+                (json!({"default_merit": {"feilds": [0]}}), "feilds"),
+                (json!({"default_merit": {"sampling": {"rngs": 4}}}), "rngs"),
+                (
+                    json!({"default_merit": {"sampling": {"rings": "four"}}}),
+                    "rings",
+                ),
+                (
+                    json!({"default_merit": {"thickness": {"glass_min_center": 0.9}}}),
+                    "glass_min_center",
+                ),
+                (mtf("worst_feild"), "worst_feild"),
+                (
+                    json!({"default_merit": {"criterion": {"type": "rms_spot", "frequencies": [30.0]}}}),
+                    "frequencies",
+                ),
+                (
+                    json!({"default_merit": {"criterion": {"type": "strehl"}}}),
+                    "strehl",
+                ),
+            ] {
+                let m = rejected(name, settings);
+                assert!(m.contains(word), "{name}: {m}");
+            }
+        }
+        // The same objects, spelt right, are accepted.
+        let good = json!({"max_iterations": 1, "default_merit": {"fields": [0],
+            "sampling": {"rings": 4, "arms": 6}, "thickness": {"glass_min_centre": 0.9},
+            "criterion": {"type": "rms_spot", "reference": "chief", "scope": "polychromatic"}}});
+        run(sys.clone(), "optimize", good).unwrap();
+
+        // `options`: the fields of the selected algorithm's settings.
+        for name in ["optimize", "merit_evaluation"] {
+            for (settings, word) in [
+                (
+                    json!({"options": {"max_iteratons": 5}}),
+                    "valid: constraints, ftol",
+                ),
+                (
+                    json!({"options": {"jacobian": {"shceme": "central"}}}),
+                    "relative_step, scheme",
+                ),
+                (
+                    json!({"options": {"constraints": {"mu": 1.0}}}),
+                    "max_inner_iterations",
+                ),
+                (
+                    json!({"algorithm": "de", "options": {"gtol": 0.0}}),
+                    "valid: cr, f_max",
+                ),
+                (
+                    json!({"algorithm": "hammer", "options": {"local": {"rounds": 3}}}),
+                    "'options.local'",
+                ),
+                (
+                    json!({"options": {"speculative_jacobian": true}}),
+                    "unknown key",
+                ),
+                // Fields the job sets from settings of its own.
+                (
+                    json!({"options": {"method": "dogleg"}}),
+                    "'algorithm' setting",
+                ),
+                (
+                    json!({"algorithm": "cma_es", "options": {"seed": 3}}),
+                    "'seed' setting",
+                ),
+            ] {
+                let m = rejected(name, settings);
+                assert!(m.contains(word), "{name}: {m}");
+            }
+        }
+        // Every field of an algorithm's settings is a valid key, and one
+        // given in `options` wins over the job's own setting for it.
+        let lsq = serde_json::to_value(LsqSettings::default()).unwrap();
+        let mut all = lsq.clone();
+        all.as_object_mut().unwrap().remove("method");
+        all["max_iterations"] = json!(2);
+        let mut hammer = serde_json::to_value(HammerSettings::default()).unwrap();
+        hammer.as_object_mut().unwrap().remove("seed");
+        hammer["rounds"] = json!(1);
+        hammer["local"] = lsq;
+        hammer["local"]["max_iterations"] = json!(2);
+        hammer["local"]["jacobian"]["scheme"] = json!("central");
+        for (algorithm, options, iterations) in [("lm", all, 2), ("hammer", hammer, 1)] {
+            let r = run(
+                sys.clone(),
+                "optimize",
+                json!({"algorithm": algorithm, "options": options, "max_iterations": 7,
+                    "default_merit": {"fields": [0], "wavelengths": [1], "thickness": null},
+                    "hold_efl": false}),
+            )
+            .unwrap();
+            assert!(
+                r.json["iterations"].as_u64().unwrap() <= iterations,
+                "{algorithm}: {}",
+                r.json["iterations"]
+            );
+        }
+        let s: OptimizeSettings = parse(
+            &prepare(
+                &Optimize,
+                &json!({"algorithm": "hammer", "fd_scheme": "forward", "seed": 9,
+                    "options": {"local": {"jacobian": {"scheme": "central"}}}}),
+            )
+            .unwrap(),
+            "settings",
+        )
+        .unwrap();
+        let (Algo::Hammer(h), _) = Algo::new(&s).unwrap() else {
+            panic!("hammer")
+        };
+        assert_eq!(h.local.jacobian.scheme, FdScheme::Central);
+        assert_eq!(h.seed, 9);
     }
 
     /// With no variables / tolerances the jobs choose them: the curvatures of

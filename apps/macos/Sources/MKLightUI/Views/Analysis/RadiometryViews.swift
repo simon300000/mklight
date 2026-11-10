@@ -134,14 +134,7 @@ struct GhostIrradianceView: View {
         if let g = Grid2D(output.buffer(named: "total_ghost_map"), xRange: xr, yRange: yr) { maps.append(("All ghosts", g)) }
         if let g = Grid2D(output.buffer(named: "primary_map"), xRange: xr, yRange: yr) { maps.append(("Primary image", g)) }
         guard !maps.isEmpty else { return nil }
-        var rows: [(String, String)] = [
-            ("Ghost / primary flux", Fmt.short(j["total_flux_ratio"]?.nf ?? .nan)),
-            ("Ghost / primary peak", Fmt.short(j["total_peak_ratio"]?.nf ?? .nan)),
-        ]
-        for g in (j["ghosts"]?.array ?? []).prefix(6) {
-            rows.append((g["label"]?.string ?? "", Fmt.short(g["peak_ratio"]?.nf ?? .nan)))
-        }
-        map = SensorMapView(maps: maps.map { (title: $0.0, grid: $0.1) }, unit: "mm⁻²", rows: rows)
+        map = SensorMapView(maps: maps.map { (title: $0.0, grid: $0.1) }, unit: "mm⁻²", rows: GhostIrradianceSummary(j).rows())
     }
 
     var body: some View { map }
@@ -163,15 +156,7 @@ struct StrayLightView: View {
             if let g = Grid2D(output.buffer(named: "class_irradiance"), slice: k, xRange: xr, yRange: yr) { maps.append((c.capitalized, g)) }
         }
         guard !maps.isEmpty else { return nil }
-        var rows: [(String, String)] = [
-            ("Stray flux", Fmt.short(j["stray_flux"]?.nf ?? .nan) + " W"),
-            ("± standard error", Fmt.short(j["stray_std_error"]?.nf ?? .nan) + " W"),
-        ]
-        if let f = j["stray_fraction"]?.nf, f.isFinite { rows.append(("Stray fraction", Fmt.short(f))) }
-        for t in j["totals"]?.array ?? [] {
-            rows.append(((t["class"]?.string ?? "").capitalized, Fmt.short(t["flux"]?.nf ?? .nan) + " W"))
-        }
-        map = SensorMapView(maps: maps.map { (title: $0.0, grid: $0.1) }, unit: "W/mm²", rows: rows)
+        map = SensorMapView(maps: maps.map { (title: $0.0, grid: $0.1) }, unit: "W/mm²", rows: StrayLightSummary(j).rows)
     }
 
     var body: some View { map }

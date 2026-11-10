@@ -1,12 +1,13 @@
-//! Divisions of stray-light transport between the GPU and the CPU (the
-//! route key `stray`, docs/STRAY.md "Resident GPU transport").
+//! Division of stray-light transport between the GPU and the CPU
+//! (docs/STRAY.md "Resident GPU transport").
 //!
 //! The device runs the wavefront kernels on a share of the source chunks
-//! (all of them in [`Design::Wavefront`]). Every design keeps the
-//! reference's per-source semantics: source ray `i`
-//! uses Philox stream `(seed, i)` for its whole depth-first path tree, its
-//! contributions form one per-source term of every estimator, and chunks of
-//! `chunk_rays` sources are folded in source order. A source is transported
+//! (`TransportOptions::gpu_share`; all of them with a share of 1) while the
+//! CPU reference traces the others. Every division keeps the reference's
+//! per-source semantics: source ray `i` uses Philox stream `(seed, i)` for
+//! its whole depth-first path tree, its contributions form one per-source
+//! term of every estimator, and chunks of `chunk_rays` sources are folded
+//! in source order. A source is transported
 //! by the device for some events and finished by the CPU tracer from the
 //! device's stack, ledger and draw cursor, so the split never changes which
 //! random draws decide a path. Which part of a source runs where depends
@@ -31,80 +32,15 @@ use std::collections::{BTreeMap, VecDeque};
 use std::sync::Mutex;
 use std::time::Instant;
 
-/// Route key of the transport divisions (`mklight_core::split`).
-pub const DESIGN_KEY: &str = "stray";
-/// Route key of the device share of [`Design::CoSplit`] (a number in
-/// 0…1; unset: [`default_share`]).
-pub const SHARE_KEY: &str = "stray_share";
-/// Route key of the device's extended-sag intersection
-/// (`ops::Transport::sag_mode`): `f32-scan` (default) or `f32-grazing`,
-/// which hands oblique and grazing rays to the CPU.
-pub const SAG_KEY: &str = "stray_sag";
-
-/// The selected extended-sag intersection mode (`ops::Transport::sag_mode`).
-pub fn sag_mode() -> MkResult<u32> {
-    match mklight_core::split::variant(SAG_KEY).as_deref() {
-        None | Some("f32-scan") => Ok(0),
-        Some("f32-grazing") => Ok(1),
-        Some(other) => Err(MkError::InvalidModel(format!(
-            "unknown stray sag mode '{other}' (f32-scan, f32-grazing)"
-        ))),
-    }
-}
-
 /// Detections a source keeps on the device before the CPU continues it.
 const HANDOFF_DETECTIONS: usize = 8;
 
 /// Resident scratch per plan (two plans are in flight).
 const PLAN_BYTES: usize = 160 << 20;
 
-/// A division of the stray transport between the GPU and the CPU: the
-/// share of the source chunks the device transports. The device transports
-/// the first `TransportOptions::head_events` events of each of its sources
-/// in wavefront kernels (each bounce advances every live source by one
-/// event in separate pop, closest-hit and interaction kernels over
-/// device-compacted lists); the CPU continues the longer path trees from
-/// the device stacks and tallies, overlapped with the next plan.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum Design {
-    /// The device transports a share (`TransportOptions::gpu_share`, else
-    /// the route key `stray_share`, else [`default_share`]) of the source
-    /// chunks while the CPU reference traces the other chunks at the same
-    /// time.
-    CoSplit,
-    /// The device transports every source chunk ([`Design::CoSplit`] with a
-    /// share of 1, whatever the share options say).
-    Wavefront,
-}
-
-impl Design {
-    /// The design selected for this run (`None`: the default design).
-    pub fn selected() -> MkResult<Design> {
-        Self::named(mklight_core::split::variant(DESIGN_KEY).as_deref())
-    }
-    pub fn named(name: Option<&str>) -> MkResult<Design> {
-        Ok(match name {
-            None | Some("cosplit") => Design::CoSplit,
-            Some("wavefront") => Design::Wavefront,
-            Some(other) => {
-                return Err(MkError::InvalidModel(format!(
-                    "unknown stray transport design '{other}' (cosplit, wavefront)"
-                )));
-            }
-        })
-    }
-    pub fn name(self) -> &'static str {
-        match self {
-            Design::CoSplit => "cosplit",
-            Design::Wavefront => "wavefront",
-        }
-    }
-}
-
-/// Device share of [`Design::CoSplit`] when neither the options nor the
-/// route key `stray_share` set it: a
-/// fixed rule of the scene, so that a seed gives the same partition. The
+/// Device share of the source chunks when the options set none
+/// (`TransportOptions::gpu_share`): a fixed rule of the scene, so that a
+/// seed gives the same partition. The
 /// 12-core reference traces analytic scenes about four times faster than
 /// the device, so the device takes the share it finishes in the CPU's time
 /// when that share is at least `MIN_DEVICE_SOURCES` sources; scenes with
@@ -115,7 +51,40 @@ pub fn default_share(scene: &Scene, rays: u64) -> f64 {
     let iterative = scene
         .primitives()
         .iter()
-        .any(|p| matches!(&p.shape, Shape::Sag(s) if s.conic().is_none()));
+        .any(|p| matches!(&p.shape, Shape::Sag(s) if !closed_form(s.shape())));
+    share_rule(iterative, rays)
+}
+
+/// The device's share of a run of `rays` sources on `system`, known before
+/// its scene is built: `explicit` (`TransportOptions::gpu_share`), else the
+/// rule of [`default_share`] over the shapes of the system's surfaces. A
+/// share of 0 is the CPU reference run (the device gets no source), so a
+/// router can settle it without opening a device.
+///
+/// Every sag of the scene is the sag of a surface after the object or a
+/// plane, and its other primitives are cylinders (lens edges, barrels),
+/// which the rule does not look at. The rule's share for the scene is
+/// therefore 0 wherever this one is. It is 0 here and not there only when
+/// an iteratively intersected sag belongs to a surface the scene does not
+/// build (a dummy surface that clips nothing).
+pub fn planned_share(
+    system: &mklight_core::OpticalSystem,
+    rays: u64,
+    explicit: Option<f64>,
+) -> f64 {
+    explicit.unwrap_or_else(|| {
+        let iterative = system
+            .surfaces
+            .iter()
+            .skip(1)
+            .any(|s| !closed_form(&s.shape));
+        share_rule(iterative, rays)
+    })
+}
+
+/// The rule of [`default_share`] for a scene with or without `iterative`ly
+/// intersected sags.
+fn share_rule(iterative: bool, rays: u64) -> f64 {
     // Lenses with iterative sags: the device is 7–50 times slower per event
     // than the CPU (with the f32 pre-scan), so it gets nothing.
     let share = if iterative { 0. } else { 0.2 };
@@ -125,6 +94,22 @@ pub fn default_share(scene: &Scene, rays: u64) -> f64 {
         share
     } else {
         0.
+    }
+}
+
+/// Whether rays meet the sag of `shape` in closed form: a plane or a conic,
+/// as `SagPatch::conic` classifies the patch of that shape (an even asphere
+/// without coefficients is its base conic, a diffractive surface has the
+/// sag of its base, and an ideal lens or a coordinate break is a plane
+/// where the scene builds one).
+fn closed_form(shape: &SurfaceShape) -> bool {
+    match shape.sag_shape() {
+        SurfaceShape::Plane
+        | SurfaceShape::Paraxial { .. }
+        | SurfaceShape::CoordinateBreak
+        | SurfaceShape::Conic { .. } => true,
+        SurfaceShape::EvenAsphere { coefficients, .. } => coefficients.iter().all(|a| *a == 0.0),
+        _ => false,
     }
 }
 
@@ -201,7 +186,7 @@ pub struct Counters {
     pub sag_handoff: u64,
     /// Sources retraced by the CPU reference (reference arithmetic needed).
     pub retraced: u64,
-    /// Sources traced by the CPU reference from the start (`CoSplit`).
+    /// Sources of the CPU's share, traced by the reference from the start.
     pub cpu_sources: u64,
     /// Events on the device, and on the CPU (continuations, retraces and
     /// CPU-share sources).
@@ -450,10 +435,17 @@ impl Folder {
     }
 }
 
-/// Runs `design`; `side` runs on the CPU once, while the device transports
-/// the first plans. A run whose device share holds no source chunk is the
-/// CPU reference run ([`crate::tracer::run`]) and is reported as one.
-/// `fingerprint` is the scene's (`Scene::fingerprint`).
+/// Runs the transport, the device's share of the source chunks on the
+/// device (the first `TransportOptions::head_events` events of each of its
+/// sources in wavefront kernels: each bounce advances every live source by
+/// one event in separate pop, closest-hit and interaction kernels over
+/// device-compacted lists; the CPU continues the longer path trees from the
+/// device stacks and tallies, overlapped with the next plan) and the other
+/// chunks on the CPU reference at the same time. `side` runs on the CPU
+/// once, while the device transports the first plans. A run whose device
+/// share holds no source chunk is the CPU reference run
+/// ([`crate::tracer::run`]) and is reported as one. `fingerprint` is the
+/// scene's (`Scene::fingerprint`).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run(
     b: &dyn ComputeBackend,
@@ -463,7 +455,6 @@ pub(crate) fn run(
     source: &SourceSpec,
     settings: &StraySettings,
     options: TransportOptions,
-    design: Design,
     side: &mut (dyn FnMut() -> MkResult<()> + Send),
     ctx: &JobContext,
 ) -> MkResult<StrayResult> {
@@ -482,22 +473,9 @@ pub(crate) fn run(
     let started = Instant::now();
     let hit_capacity = options.detections_per_source.min(HANDOFF_DETECTIONS);
     let stack_capacity = options.stack_capacity.max(4);
-    let sag = sag_mode()?;
-    let share = match design {
-        // Options first, then the share route key, then the scene rule.
-        Design::CoSplit => match options.gpu_share {
-            Some(share) => share,
-            None => match mklight_core::split::variant(SHARE_KEY) {
-                Some(v) => v
-                    .parse::<f64>()
-                    .ok()
-                    .filter(|s| (0.0..=1.0).contains(s))
-                    .ok_or_else(|| MkError::InvalidModel(format!("stray share '{v}'")))?,
-                None => default_share(scene, settings.rays),
-            },
-        },
-        Design::Wavefront => 1.0,
-    };
+    let share = options
+        .gpu_share
+        .unwrap_or_else(|| default_share(scene, settings.rays));
     let per_source = std::mem::size_of::<ops::Ray>()
         + std::mem::size_of::<ops::Ledger>()
         + 8
@@ -523,7 +501,7 @@ pub(crate) fn run(
             &snapshot,
             "stray_light",
             &serde_json::json!({"settings": settings, "source": source, "resident_options": options,
-                "design": design.name(), "gpu_share": share,
+                "gpu_share": share,
                 "requested_backend": b.info().backend_id(), "fallback_count": 0,
                 "scene_fingerprint": fingerprint}),
             "cpu-f64",
@@ -553,14 +531,14 @@ pub(crate) fn run(
         let mut plan = ResidentPlan::new(snapshot.clone());
         plan.seed = Some(settings.seed);
         plan.settings = serde_json::json!({"stray_version": mklight_gpu::consts::MKL_STRAY_VERSION,
-            "scene": fingerprint, "first": first, "design": design.name()});
+            "scene": fingerprint, "first": first});
         let opts = TransportOptions {
             stack_capacity,
             detections_per_source: hit_capacity,
             ..options
         };
         let (hits, ledger, stack) =
-            prepared.append(&mut plan, scene, source, settings, first, count, opts, sag)?;
+            prepared.append(&mut plan, scene, source, settings, first, count, opts)?;
         plan.outputs = vec![hits, ledger, stack];
         // Progress is reported per finished chunk, not by the device.
         b.submit_plan(
@@ -590,7 +568,7 @@ pub(crate) fn run(
     let cpu_counters = Mutex::new(Counters::default());
     let abort = std::sync::atomic::AtomicBool::new(false);
     std::thread::scope(|scope| -> MkResult<()> {
-        // The CPU share (CoSplit) runs in the rayon pool beside the device.
+        // The CPU's share runs in the rayon pool beside the device.
         let cpu = (!cpu_chunks.is_empty()).then(|| {
             scope.spawn(|| -> MkResult<()> {
                 cpu_chunks.par_iter().try_for_each(|&c| {
@@ -687,7 +665,7 @@ pub(crate) fn run(
         &snapshot,
         "stray_light",
         &serde_json::json!({"settings": settings, "source": source, "resident_options": options,
-            "design": design.name(), "gpu_share": share, "sag_mode": sag,
+            "gpu_share": share, "sag_mode": options.sag.code(),
             "hit_capacity": hit_capacity, "stack_capacity": stack_capacity, "plan_sources": per_plan,
             "stray_version": mklight_gpu::consts::MKL_STRAY_VERSION, "plans": plan_stats,
             "device": b.info(), "precision": b.precision(), "fallback_count": 0,
@@ -748,12 +726,108 @@ mod tests {
         assert!(plans.iter().all(|p| p.1 <= 1000));
     }
 
+    /// The share rule's shape predicate is the patch's own classification
+    /// (what `prepare_geometry` packs as an iterative sag), for every
+    /// surface shape.
     #[test]
-    fn design_names_round_trip() {
-        for d in [Design::CoSplit, Design::Wavefront] {
-            assert_eq!(Design::named(Some(d.name())).unwrap(), d);
+    fn closed_form_is_the_patch_classification() {
+        use crate::geom::SagPatch;
+        use mklight_core::samples;
+        let mut shapes = vec![
+            SurfaceShape::Plane,
+            SurfaceShape::Paraxial { focal_length: 50. },
+            SurfaceShape::sphere(40.),
+            SurfaceShape::Conic {
+                curvature: 0.,
+                conic: -1.,
+            },
+            SurfaceShape::EvenAsphere {
+                curvature: 0.02,
+                conic: -0.5,
+                coefficients: vec![0., 0.],
+            },
+            SurfaceShape::EvenAsphere {
+                curvature: 0.,
+                conic: 0.,
+                coefficients: vec![],
+            },
+            SurfaceShape::EvenAsphere {
+                curvature: 0.02,
+                conic: 0.,
+                coefficients: vec![0., 1e-9],
+            },
+            SurfaceShape::SagOverlay {
+                base: Box::new(SurfaceShape::sphere(40.)),
+                norm_radius: 5.,
+                test_wavelength_um: 0.6328,
+                astigmatism: 1.,
+                astigmatism_angle_deg: 0.,
+                spherical: 0.,
+            },
+        ];
+        // Every shape of the samples: the extended kinds and the
+        // diffractive surface among them.
+        let mut kinds = std::collections::HashSet::new();
+        for (_, system) in samples::all() {
+            for s in &system.surfaces {
+                kinds.insert(std::mem::discriminant(&s.shape));
+                shapes.push(s.shape.clone());
+            }
         }
-        assert_eq!(Design::named(None).unwrap(), Design::CoSplit);
-        assert!(Design::named(Some("nope")).is_err());
+        assert!(kinds.len() >= 11, "{} shape kinds", kinds.len());
+        let mut iterative = 0;
+        for shape in shapes {
+            if matches!(shape, SurfaceShape::CoordinateBreak) {
+                // No patch: the scene builds none (a plane for a detector).
+                assert!(closed_form(&shape));
+                continue;
+            }
+            let patch = SagPatch::new(shape.clone(), 0., 0.5, None).unwrap();
+            assert_eq!(closed_form(&shape), patch.conic().is_some(), "{shape:?}");
+            assert_eq!(closed_form(patch.shape()), patch.conic().is_some());
+            iterative += usize::from(patch.conic().is_none());
+        }
+        assert!(iterative >= 8, "{iterative} iterative shapes");
+    }
+
+    /// The share planned from the model is the share the transport's rule
+    /// gives the built scene, on every sample and on both sides of the
+    /// source threshold; an explicit share passes through.
+    #[test]
+    fn the_planned_share_is_the_scene_rule() {
+        use mklight_core::materials::MaterialLibrary;
+        use mklight_core::{ResolvedSystem, Snapshot, samples};
+        use std::sync::Arc;
+        let threshold = (MIN_DEVICE_SOURCES / 0.2) as u64;
+        let (mut device, mut reference) = (0, 0);
+        for (name, system) in samples::all() {
+            let snapshot = Snapshot::new(system.clone()).unwrap();
+            let rs =
+                ResolvedSystem::new(&snapshot, Arc::new(MaterialLibrary::with_builtin())).unwrap();
+            let options = crate::StrayAnalysisSettings::default().system_options();
+            let Ok(sys) = crate::StraySystem::new(Arc::new(rs), &options) else {
+                continue;
+            };
+            for rays in [20_000, threshold - 1, threshold, 1_000_000] {
+                let planned = planned_share(&system, rays, None);
+                assert_eq!(planned, default_share(&sys.scene, rays), "{name} {rays}");
+                let iterative = system.surfaces.iter().any(|s| !closed_form(&s.shape));
+                let expected = if rays >= threshold && !iterative {
+                    0.2
+                } else {
+                    0.
+                };
+                assert_eq!(planned, expected, "{name} {rays}");
+                if planned > 0. {
+                    device += 1;
+                } else {
+                    reference += 1;
+                }
+            }
+            for explicit in [0., 0.35, 1.] {
+                assert_eq!(planned_share(&system, 20_000, Some(explicit)), explicit);
+            }
+        }
+        assert!(device >= 8 && reference >= 20, "{device} {reference}");
     }
 }

@@ -6,12 +6,9 @@ use mklight_metal::{LibraryChoice, MetalBackend, MetalOptions};
 #[test]
 fn coatings_both_libraries() {
     for library in [LibraryChoice::Precompiled, LibraryChoice::RuntimeSource] {
-        let b = MetalBackend::with_options(&MetalOptions {
-            library,
-            ..Default::default()
-        })
-        .unwrap()
-        .expect("P7 requires host Metal");
+        let b = MetalBackend::with_options(&MetalOptions { library })
+            .unwrap()
+            .expect("P7 requires host Metal");
         assert!(b.precision().probe.error_free_transforms());
         eprintln!("device={:?} precision={:?}", b.info(), b.precision());
         support::check_coatings(&b);
@@ -20,12 +17,9 @@ fn coatings_both_libraries() {
 #[test]
 fn samples_both_libraries() {
     for library in [LibraryChoice::Precompiled, LibraryChoice::RuntimeSource] {
-        let b = MetalBackend::with_options(&MetalOptions {
-            library,
-            ..Default::default()
-        })
-        .unwrap()
-        .expect("P7 requires host Metal");
+        let b = MetalBackend::with_options(&MetalOptions { library })
+            .unwrap()
+            .expect("P7 requires host Metal");
         support::check_samples(&b);
     }
 }
@@ -209,7 +203,7 @@ fn transport_matches_cpu_emulation() {
     for (name, model) in [("cooke", samples::cooke_triplet()), ("film", model)] {
         let t = testutil::tracer(model);
         for scalar in [false, true] {
-            let run = |b: &dyn ComputeBackend| {
+            let run = |b: &dyn QualificationBackend| {
                 let (mut p, h) = support::transport_plan(b, &t, 2, 1, &points, 256);
                 for op in &mut p.operations {
                     if let resident::ResidentOp::Radiometry(Request::Polarization(r)) = op {

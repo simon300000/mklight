@@ -60,15 +60,6 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                 ..Zeroable::zeroed()
             },
         ),
-        Request::Radial(r) => (
-            "mkl_geometry_radial",
-            r.mask.desc.len()?,
-            Params {
-                segment: r.segment_len as u32,
-                centroid: u32::from(r.centroid),
-                ..Zeroable::zeroed()
-            },
-        ),
         Request::Characteristic(r) => (
             "mkl_geometry_characteristic",
             r.mask.desc.len()? * r.frequency.desc.shape[0],
@@ -138,16 +129,6 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                 ..Zeroable::zeroed()
             },
         ),
-        Request::Distribution(r) => (
-            "mkl_geometry_distribution",
-            r.radii.desc.len()? + 4,
-            Params {
-                segment: r.keys.desc.len()? as u32,
-                defocus: [r.uncertainty.hi, r.uncertainty.lo],
-                chiefs: r.radii.desc.len()? as u32,
-                ..Zeroable::zeroed()
-            },
-        ),
         Request::SurfaceSamples(r) => (
             "mkl_geometry_surfaces",
             r.samples.desc.shape[0],
@@ -210,14 +191,6 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                         let (a, b) = out.split_at_mut(1);
                         e.set_buffer_mut(5, &mut a[0], 0);
                         e.set_buffer_mut(6, &mut b[0], 0);
-                    }
-                    Request::Radial(r) => {
-                        for (i, v) in [&r.points, &r.mask, &r.moments].iter().enumerate() {
-                            bind(e, i, x, v);
-                        }
-                        for (i, b) in out.iter_mut().enumerate() {
-                            e.set_buffer_mut(i + 3, b, 0);
-                        }
                     }
                     Request::Characteristic(r) => {
                         for (i, v) in [&r.points, &r.mask, &r.frequency].iter().enumerate() {
@@ -316,13 +289,6 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                             bind(e, 3, x, &view(r.hits.rays.floats, ElementType::F32, [0]));
                         }
                         e.set_buffer_mut(4, &mut out[0], 0);
-                    }
-                    Request::Distribution(r) => {
-                        for (i, v) in [&r.keys, &r.cumulative, &r.radii].iter().enumerate() {
-                            bind(e, i, x, v);
-                        }
-                        e.set_buffer_mut(3, &mut out[0], 0);
-                        e.set_buffer_mut(4, &mut out[1], 0);
                     }
                     Request::SurfaceSamples(r) => {
                         bind_systems(e, uploaded.as_deref());

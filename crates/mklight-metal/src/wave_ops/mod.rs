@@ -17,7 +17,6 @@ mod resample;
 mod shells;
 mod simulation;
 mod spectral;
-mod statistics;
 /// Work units (threads × relative per-thread cost) per command. Smaller
 /// operations run as one command; larger ones keep bounded commands for
 /// cancellation latency.
@@ -47,9 +46,6 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
     }
     if let Request::Diagnostics(r) = r {
         return diagnostics::execute(r, x, ctl);
-    }
-    if let Request::Statistics(r) = r {
-        return statistics::execute(r, x, ctl);
     }
     if let Request::Lattice(r) = r {
         return lattice::execute(r, x, ctl);
@@ -93,7 +89,6 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
         1 | 2 => (p.size * p.size) as usize,
         3 => (p.size * p.n * p.n) as usize,
         6 => (p.size * p.field_side) as usize,
-        7 => p.n as usize,
         _ => 2 * p.n as usize,
     };
     let kernel = match p.mode {
@@ -102,7 +97,6 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
         2 => "mkl_wave_huygens",
         3 => "mkl_wave_focus",
         6 => "mkl_wave_focus_correlation",
-        7 => "mkl_wave_zernike",
         _ => "mkl_wave_lsf",
     };
     let pipeline = x.gpu.pipeline(&PipelineKey::plain(kernel))?;
@@ -164,10 +158,6 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                     e.set_buffer(index, b, o);
                 };
                 match p.mode {
-                    7 => {
-                        bind(0, 0);
-                        bind(1, 1);
-                    }
                     0 | 2 | 3 | 6 => {
                         bind(0, 0);
                         bind(1, 1);

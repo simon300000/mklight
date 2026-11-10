@@ -21,6 +21,9 @@ public struct AnalysisDescriptor: Codable, Sendable, Hashable, Identifiable {
     }
     /// Complete default settings; `null` when some setting is required.
     public var defaultSettings: JSONValue
+    /// A running job of the analysis can be stopped early, keeping its best
+    /// result so far (`AnalysisJob.stop()`).
+    public var stoppable: Bool
     /// The schema's properties, in a stable order (required first, then by
     /// name); read from `settingsSchema` whenever that is set.
     public private(set) var settingsFields: [SettingsField]
@@ -29,7 +32,8 @@ public struct AnalysisDescriptor: Codable, Sendable, Hashable, Identifiable {
 
     public init(
         name: String, title: String, category: String, description: String = "", available: Bool,
-        unavailableReason: String? = nil, settingsSchema: JSONValue = .object([:]), defaultSettings: JSONValue = .null
+        unavailableReason: String? = nil, settingsSchema: JSONValue = .object([:]), defaultSettings: JSONValue = .null,
+        stoppable: Bool = false
     ) {
         self.name = name
         self.title = title
@@ -39,13 +43,14 @@ public struct AnalysisDescriptor: Codable, Sendable, Hashable, Identifiable {
         self.unavailableReason = unavailableReason
         self.settingsSchema = settingsSchema
         self.defaultSettings = defaultSettings
+        self.stoppable = stoppable
         settingsFields = Self.fields(of: settingsSchema)
     }
 
     private enum CodingKeys: String, CodingKey {
         case name, title, category, description, available
         case unavailableReason = "unavailable_reason", settingsSchema = "settings_schema"
-        case defaultSettings = "default_settings"
+        case defaultSettings = "default_settings", stoppable
     }
 
     public init(from decoder: any Decoder) throws {
@@ -58,6 +63,7 @@ public struct AnalysisDescriptor: Codable, Sendable, Hashable, Identifiable {
         unavailableReason = try c.decodeIfPresent(String.self, forKey: .unavailableReason)
         settingsSchema = try c.decodeIfPresent(JSONValue.self, forKey: .settingsSchema) ?? .object([:])
         defaultSettings = try c.decodeIfPresent(JSONValue.self, forKey: .defaultSettings) ?? .null
+        stoppable = try c.decodeIfPresent(Bool.self, forKey: .stoppable) ?? false
         settingsFields = Self.fields(of: settingsSchema)
     }
 
@@ -72,8 +78,7 @@ public struct AnalysisDescriptor: Codable, Sendable, Hashable, Identifiable {
 
     /// `settings` reduced to the keys the schema declares, with values of an
     /// accepted type. The engine rejects unknown keys, so keys this schema
-    /// does not declare (typed settings carry some that not every analysis
-    /// takes) are dropped and the engine's defaults apply instead.
+    /// does not declare are dropped and the engine's defaults apply instead.
     public func acceptedSettings(_ settings: [String: JSONValue]) -> [String: JSONValue] {
         settings.filter { key, value in settingsFields.first { $0.name == key }?.accepts(value) ?? false }
     }
@@ -226,6 +231,40 @@ extension JSONValue {
 
 // MARK: - Requests by name
 
+/// Which compute backend a job should use. A preference: the engine falls back
+/// to the CPU reference (and says so in `RunInfo.warnings`) when a backend is
+/// unavailable or cannot meet the error budget for a design (CONVENTIONS §7).
+public enum BackendPreference: String, Codable, Sendable, Hashable, CaseIterable {
+    /// The engine chooses.
+    case auto
+    /// The CPU f64 reference tracer.
+    case cpuReference = "cpu_reference"
+    /// This platform's GPU backend (Metal on macOS).
+    case gpu
+
+    public var title: String {
+        switch self {
+        case .auto: "Automatic"
+        case .cpuReference: "CPU reference"
+        case .gpu: "GPU"
+        }
+    }
+}
+
+/// How a job is executed: what a front end chooses of a job's identity
+/// `(snapshot, settings, backend, precision, seed)` (ARCHITECTURE §State
+/// model) besides the snapshot and the analysis settings. The engine chooses
+/// the precision with the backend (`RunInfo.precision` records it), and a
+/// seed is the analysis' own `seed` setting. It is part of the request, so
+/// it takes part in the staleness check: another backend preference makes
+/// the old result stale.
+public struct ExecutionSettings: Codable, Sendable, Hashable {
+    public var backend = BackendPreference.auto
+    public init(backend: BackendPreference = .auto) {
+        self.backend = backend
+    }
+}
+
 /// A request for any engine analysis by name (`{"analysis", "settings",
 /// "view_key", "backend", "allow_backend_fallback"}` on the C ABI).
 /// `settings` may be partial: the engine fills in defaults and records the
@@ -233,8 +272,7 @@ extension JSONValue {
 public struct EngineAnalysisRequest: Codable, Sendable, Hashable {
     public var analysis: String
     public var settings: [String: JSONValue]
-    /// The backend preference. A seed is the analysis' own `seed` setting;
-    /// `execution.seed` belongs to typed requests and is not sent.
+    /// The backend preference.
     public var execution: ExecutionSettings
 
     public init(analysis: String, settings: [String: JSONValue] = [:], execution: ExecutionSettings = ExecutionSettings()) {
@@ -249,19 +287,6 @@ public struct EngineAnalysisRequest: Codable, Sendable, Hashable {
         guard info.analysis == analysis else { return false }
         return settings.allSatisfy { info.settings[$0.key] == $0.value }
     }
-}
-
-/// One parameter edit (`{"path", "value"}`), applied by the engine.
-public struct ParamEdit: Codable, Sendable, Hashable {
-    public var path: ParamPath
-    /// May be `±∞` for thicknesses (sent as `"inf"` / `"-inf"`).
-    @EngineDouble public var value: Double
-
-    public init(_ path: ParamPath, _ value: Double) {
-        self.path = path
-        self.value = value
-    }
-    private enum CodingKeys: String, CodingKey { case path, value }
 }
 
 /// A glass catalog of a session (`mk_session_list_catalogs`).
@@ -293,32 +318,6 @@ public struct GlassInfo: Codable, Sendable, Hashable {
     @EngineDouble public var maxUm: Double
 
     private enum CodingKeys: String, CodingKey { case catalog, name, nd, vd, minUm = "min_um", maxUm = "max_um" }
-}
-
-// MARK: - Typed analyses on the engine
-
-extension AnalysisKind {
-    /// The engine's registry name of this analysis (its raw value).
-    public var engineName: String { rawValue }
-}
-
-extension AnalysisRequest {
-    /// The settings in engine form for `descriptor`: the Swift settings
-    /// flattened (the execution block contributes `seed`; field and
-    /// wavelength selections become indices, or are left to the engine's
-    /// default for "all"/"primary"), then reduced to what the schema accepts.
-    public func engineSettings(for descriptor: AnalysisDescriptor) -> [String: JSONValue] {
-        guard case .object(var o) = (try? settingsJSON()) ?? .null else { return [:] }
-        o.removeValue(forKey: "execution")
-        o["seed"] = .unsigned(execution.seed)
-        if let i = Int64(exactly: execution.seed) { o["seed"] = .integer(i) }
-        for (k, v) in o {
-            if case .object(let sel) = v, case .string(let t)? = sel["type"] {
-                o[k] = t == "index" ? sel["index"] : nil
-            }
-        }
-        return descriptor.acceptedSettings(o)
-    }
 }
 
 // MARK: - Binary buffers
@@ -480,87 +479,4 @@ private final class OwnedBytes: @unchecked Sendable {
         data.withUnsafeBytes { if let b = $0.baseAddress { pointer.copyMemory(from: b, byteCount: data.count) } }
     }
     deinit { pointer.deallocate() }
-}
-
-// MARK: - Generic results
-
-/// An engine result shown generically: the analysis-specific JSON (`result`
-/// of the envelope) and its binary buffers. Used for analyses without a
-/// typed Swift mirror and for typed analyses whose JSON the mirror does not
-/// (yet) decode, so a newer engine never breaks the app.
-public struct GenericResult: Sendable, Hashable {
-    public var analysis: String
-    public var json: JSONValue
-    public var buffers: [ResultBuffer]
-    /// Why the typed mirror was not used, if a typed decode was attempted.
-    public var note: String?
-
-    public init(analysis: String, json: JSONValue, buffers: [ResultBuffer] = [], note: String? = nil) {
-        self.analysis = analysis
-        self.json = json
-        self.buffers = buffers
-        self.note = note
-    }
-
-    public func buffer(named name: String) -> ResultBuffer? { buffers.first { $0.name == name } }
-}
-
-extension AnalysisResult {
-    /// Decodes an engine result for `kind` into its typed mirror. When that
-    /// fails, first-order data is read from the numeric fields of the JSON
-    /// (any engine layout of `{"efl": …, …}` works) and everything else
-    /// falls back to `.generic`, never an error.
-    public static func fromEngine(kind: AnalysisKind, json: JSONValue, buffers: [ResultBuffer]) -> AnalysisResult {
-        func typed<T: Decodable>(_ t: T.Type) -> Result<T, any Error> {
-            Result { try json.decode(T.self) }
-        }
-        let decoded: Result<AnalysisResult, any Error> =
-            switch kind {
-            case .layout: typed(LayoutScene.self).map { .layout($0) }
-            case .spotDiagram: typed(SpotDiagramResult.self).map { .spotDiagram($0) }
-            case .rayFan: typed(FanResult.self).map { .rayFan($0) }
-            case .opdFan: typed(FanResult.self).map { .opdFan($0) }
-            case .fieldCurvature: typed(FieldCurvatureResult.self).map { .fieldCurvature($0) }
-            case .mtf: typed(MTFResult.self).map { .mtf($0) }
-            case .psf: typed(PSFResult.self).map { .psf($0) }
-            case .firstOrder: typed(FirstOrderResult.self).map { .firstOrder($0) }
-            }
-        switch decoded {
-        case .success(let r): return r
-        case .failure(let error):
-            if kind == .firstOrder, let fo = FirstOrderResult(engineJSON: json) { return .firstOrder(fo) }
-            return .generic(
-                GenericResult(
-                    analysis: kind.engineName, json: json, buffers: buffers,
-                    note: "not in the app's \(kind.title) format (\(error.localizedDescription)); shown as data"))
-        }
-    }
-}
-
-extension FirstOrderResult {
-    /// First-order entries from any JSON object: every number (or `±inf`
-    /// string) at the top level or one object level down becomes an entry
-    /// keyed by its field name (the first occurrence wins). `nil` when there
-    /// is none.
-    public init?(engineJSON json: JSONValue) {
-        guard case .object(let top) = json else { return nil }
-        var entries: [Entry] = []
-        var seen = Set<String>()
-        func add(_ key: String, _ v: JSONValue) {
-            guard seen.insert(key).inserted, let d = v.doubleValue else { return }
-            if case .string = v, !d.isInfinite { return }
-            let label = key.replacingOccurrences(of: "_", with: " ").capitalized
-                .replacingOccurrences(of: "Efl", with: "EFL").replacingOccurrences(of: "Bfl", with: "BFL")
-            entries.append(Entry(key: key, label: label, value: d, unit: ""))
-        }
-        for (k, v) in top.sorted(by: { $0.key < $1.key }) where v.doubleValue != nil { add(k, v) }
-        for (_, v) in top.sorted(by: { $0.key < $1.key }) {
-            if case .object(let inner) = v {
-                for (k, w) in inner.sorted(by: { $0.key < $1.key }) { add(k, w) }
-            }
-        }
-        guard !entries.isEmpty else { return nil }
-        let wl = top["wavelength_um"]?.doubleValue ?? 0
-        self.init(entries: entries.filter { $0.key != "wavelength_um" }, wavelengthUm: wl)
-    }
 }

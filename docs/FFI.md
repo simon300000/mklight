@@ -64,8 +64,8 @@ It is never NULL.
 | code | name | meaning |
 |---|---|---|
 | 0 | `MK_OK` | success |
-| 1 | `MK_ERR_INVALID_ARGUMENT` | NULL where not allowed, invalid UTF-8, invalid settings or parameter edit |
-| 2 | `MK_ERR_PARSE` | malformed JSON, project file or catalog |
+| 1 | `MK_ERR_INVALID_ARGUMENT` | NULL where not allowed, invalid UTF-8, invalid settings or parameter edit, JSON of the wrong shape (an unknown key included) |
+| 2 | `MK_ERR_PARSE` | text that is not JSON; a malformed project file or catalog |
 | 3 | `MK_ERR_INVALID_MODEL` | the optical system fails validation |
 | 4 | `MK_ERR_NOT_FOUND` | unknown job, analysis, glass or catalog |
 | 5 | `MK_ERR_IO` | file-system error |
@@ -73,13 +73,26 @@ It is never NULL.
 | 7 | `MK_ERR_CANCELLED` | the job was cancelled or superseded |
 | 8 | `MK_ERR_TIMEOUT` | `mk_job_wait` timed out |
 | 9 | `MK_ERR_NOT_READY` | the job has not finished |
-| 10 | `MK_ERR_JOB_FAILED` | the job ended with an error |
+| 10 | `MK_ERR_JOB_FAILED` | the job ended with an internal error (a panic) |
 | 11 | `MK_ERR_COMPUTE` | trace, numerical or backend failure |
 | 12 | `MK_ERR_PANIC` | an internal panic was caught at the boundary |
 | 13 | `MK_ERR_INTERNAL` | other internal error |
 
 No panic ever unwinds into C: every entry point catches it and returns
 `MK_ERR_PANIC`. The library stays usable afterwards.
+
+**JSON input.** One rule for every JSON argument: text that is not JSON is
+`MK_ERR_PARSE`; JSON of the wrong shape (not an object where one is
+expected, a missing key, a value of the wrong type, a key the object does
+not have) is `MK_ERR_INVALID_ARGUMENT`, and the message names the key. No
+unknown key is ignored: a misspelt configuration or request key fails the
+call instead of running with a default.
+
+**One classification.** The engine gives every error a kind
+(`mklight_engine::ErrorKind`), and each front end maps kinds: this table for
+the C ABI, the exception classes of `docs/PYTHON.md`, the exit codes of
+`docs/CLI.md`. A job that fails reports the same status as the synchronous
+call that fails the same way (`mk_job_take_result`, below).
 
 ## Ownership
 
@@ -163,8 +176,9 @@ submit ──► QUEUED ──► RUNNING ──► DONE
   cancelled immediately; a running job stops at its next check (analyses
   check at bounded intervals). A job whose token was set ends `CANCELLED`
   even if it finished its work.
-* `mk_job_stop(engine, job)` requests cooperative Stop for `optimize`,
-  `tolerance` and `glass_substitution`. A queued job still starts and returns its initial/best result;
+* `mk_job_stop(engine, job)` requests cooperative Stop for the analyses
+  listed with `stoppable: true` (`optimize`, `tolerance` and
+  `glass_substitution`). A queued job still starts and returns its initial/best result;
   a running job returns the best completed work as `DONE` with
   `result.stopped: true`. Other active jobs return `MK_ERR_UNSUPPORTED`;
   finished jobs are unchanged. Cancel, supersession and shutdown still
@@ -173,8 +187,15 @@ submit ──► QUEUED ──► RUNNING ──► DONE
   forever. Returns `MK_OK` with a terminal state or `MK_ERR_TIMEOUT` with
   the current state.
 * `mk_job_take_result` returns the result once and forgets the job (see the
-  header for the per-state status codes). `mk_job_release` forgets a job
-  without taking the result (cancelling it if needed).
+  header for the per-state status codes). A job that failed returns the
+  status of its own error, the one `mk_session_run_analysis_json` returns
+  for the same request (`MK_ERR_NOT_FOUND` for an unknown glass,
+  `MK_ERR_COMPUTE` for a trace or numerical failure, …), with the message
+  in `mk_last_error()`; `MK_ERR_JOB_FAILED` means the job panicked. The
+  failed job is forgotten as well, so read its state (`MK_JOB_FAILED`)
+  first where `MK_ERR_NOT_FOUND` must be told from an unknown job.
+  `mk_job_release` forgets a job without taking the result (cancelling it
+  if needed).
 * Retention: at most `max_retained_jobs` finished jobs are kept; older ones
   are dropped with their results (`MK_ERR_NOT_FOUND` afterwards). Take or
   release results promptly.
@@ -209,7 +230,10 @@ All keys optional:
 { "worker_threads": 0, "max_retained_jobs": 256, "resolved_cache_capacity": 8,
   "analysis_graph_bytes": 268435456, "progress_interval_ms": 50,
   "app_name": "MKLight", "app_version": "1.0",
-  "default_backend": {"kind": "auto"}, "aim_stop": "conditioned" }
+  "default_backend": {"kind": "auto"}, "aim_stop": "conditioned",
+  "route": { "aiming": "host-table", "aiming_share": null,
+             "fieldmaps": "host-chief", "stray_share": null,
+             "stray_sag": "f32-scan", "solver_aiming": "by-batch" } }
 ```
 
 The initial `default_backend` is `auto`; explicit CPU remains available.
@@ -217,8 +241,11 @@ The initial `default_backend` is `auto`; explicit CPU remains available.
 analysis graph's byte budget (default 256 MiB, 0 disables it;
 ARCHITECTURE "Analysis graph"). `aim_stop` is the aim-stop policy of
 requests that name none (`conditioned` by default, or `requested`;
-CONVENTIONS §7). `app_name`/`app_version` are stamped into project
-metadata on save.
+CONVENTIONS §7). `route` holds the route options of requests that carry
+none (GPU §9.3: the keys, their values and what each moves to the GPU;
+every key optional, an unknown key or name fails `mk_engine_create`). A key
+the configuration does not have fails it too (`MK_ERR_INVALID_ARGUMENT`).
+`app_name`/`app_version` are stamped into project metadata on save.
 
 ### Analyses (`mk_engine_list_analyses`)
 
@@ -230,10 +257,11 @@ metadata on save.
    "result_schema": { "type": "object", "properties": { … }, "required": [ … ],
                       "x-buffers": [ {"name": "dispersion_curve", "dtype": "f64",
                                       "shape": ["samples", "2"], "unit": "", "description": "…"} ] },
-   "result_version": 1, "gpu_path": false }]
+   "result_version": 1, "gpu_path": false, "stoppable": false }]
 ```
 
 `mk_engine_analysis_info(engine, name, &json)` returns one such object.
+`stoppable` is true for the analyses whose jobs accept `mk_job_stop`.
 
 `settings_schema` is a JSON-Schema subset: `type` (name or list of
 `number|integer|string|boolean|array|object|null`), `default`, `minimum`,
@@ -270,9 +298,9 @@ Selection is per analysis: a GPU backend runs only the analyses listed in
 its `capabilities.analyses` (the CPU reference runs all). Requesting it
 explicitly for any other analysis is handled like an unavailable backend
 (error, or fallback with a warning). `auto` chooses per request with the
-calibrated cost model of GPU §9.2 (accuracy exclusions and the static
-capability list on the CPU reference; Metal only for a predicted advantage
-of at least 1.3× and 5 ms); a CPU choice carries no warning, and the
+calibrated cost model of GPU §9.2 (accuracy exclusions and runs whose
+division gives the device no share on the CPU reference; Metal only for a
+predicted advantage of at least 1.3× and 5 ms); a CPU choice carries no warning, and the
 result's `backend.cost_decision` and `backend.fallback_reason` say why. When the request names no
 backend, the engine default (`default_backend` in the configuration, or
 `mk_engine_set_default_backend`) applies as a preference: analyses the
@@ -280,15 +308,13 @@ default backend does not implement run on the CPU reference, with a
 `run_info.warnings` note for an explicit GPU default.
 
 A selected GPU publishes actual device results without per-snapshot or
-per-candidate reference comparisons. Accuracy is tested offline; static capability
-restrictions keep two analyses on the CPU, and `wavefront_map` under `auto`
-(GPU §9.2).
+per-candidate reference comparisons. Accuracy is tested offline (GPU §9.2).
 Unsupported stages, unresolved aiming and resource/device errors retain reported
 f64 fallbacks. Cancellation never starts a replacement. Final optimize and
 glass reports are f64-scored after the device search; tolerance and merit
 evaluation return the active evaluator's values. `backend.execution` retains device/build/probe and
-stage metadata; `backend.cost_decision` records cost-model/capability choices. Explicit
-Metal bypasses the cost model, while static capability restrictions still apply.
+stage metadata; `backend.cost_decision` records how `auto` chose. Explicit
+Metal bypasses the cost model.
 See RESULTS §5 and GPU §9.2.
 
 ### Analysis request (`mk_session_submit_analysis_json`)
@@ -296,13 +322,19 @@ See RESULTS §5 and GPU §9.2.
 ```json
 { "analysis": "rng_stream", "settings": {"seed": 1}, "view_key": "win-3",
   "backend": {"kind": "gpu", "name": "metal"}, "allow_backend_fallback": true,
-  "tier": "design", "aim_stop": null }
+  "tier": "design", "aim_stop": null,
+  "route": { "fieldmaps": "device-chief", "stray_share": 1 } }
 ```
 
 `tier` (`design`, the default, or `preview`) and `aim_stop` (`requested`,
 `conditioned`, or null for the engine default, `conditioned`; an explicit
 aiming tolerance in the system is always honoured as `requested`) are the accuracy policies of
-docs/RESULTS.md; both are echoed in `run_info`.
+docs/RESULTS.md; both are echoed in `run_info`. `route` holds the route
+options of this request (the object of the engine configuration's `route`;
+GPU §9.3): null or absent takes the engine configuration's, and a key the
+object leaves out takes its default, not the configuration's value. An
+unknown key or name, or a share outside [0, 1], fails the submission
+(`MK_ERR_INVALID_ARGUMENT`), as does any key the request does not have.
 
 `mk_session_run_analysis_json(session, request, &json, &buffers, &count)`
 runs the same request in the calling thread (blocking, no job, no

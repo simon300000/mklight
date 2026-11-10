@@ -24,6 +24,17 @@ fn capabilities_match_registry_routes() {
         assert!(engine.analysis(name).is_ok(), "{name}");
     }
     assert!(advertised.contains(&"glass_substitution"));
+    // Computed by the CPU reference alone.
+    for name in [
+        "encircled_energy",
+        "polarization_pupil_map",
+        "wavefront_map",
+    ] {
+        assert!(
+            !advertised.contains(&name) && engine.analysis(name).is_ok(),
+            "{name}"
+        );
+    }
 }
 
 /// Auto routes by the cost model, whose predictions depend on the machine
@@ -110,7 +121,6 @@ fn all_sample_resident_routes() {
             || {
                 mklight_metal::MetalBackend::with_options(&mklight_metal::MetalOptions {
                     library: mklight_metal::LibraryChoice::RuntimeSource,
-                    ..Default::default()
                 })
                 .map_err(|e| e.to_string())
                 .and_then(|b| {
@@ -202,7 +212,7 @@ fn all_sample_resident_routes() {
 fn batched_candidate_geometry_preserves_individual_verdicts() {
     check_candidate_geometry(&mklight_gpu::CpuF32Backend::new());
 }
-fn check_candidate_geometry(backend: &dyn mklight_gpu::ComputeBackend) {
+fn check_candidate_geometry(backend: &dyn mklight_gpu::QualificationBackend) {
     use mklight_gpu::{
         Radiometry,
         xval::{XvalSettings, qualify, qualify_many},
@@ -272,12 +282,21 @@ impl mklight_gpu::ComputeBackend for FailedResident {
     fn release_systems(&self, h: mklight_gpu::SystemHandle) -> mklight_core::MkResult<()> {
         self.inner.release_systems(h)
     }
-    fn submit(
+    fn read_view(
         &self,
-        j: mklight_gpu::Job,
+        v: mklight_gpu::resident::BufferView,
+    ) -> mklight_core::MkResult<mklight_gpu::resident::ReadView> {
+        self.inner.read_view(v)
+    }
+    fn submit_plan(
+        &self,
+        p: mklight_gpu::resident::ResidentPlan,
         c: &JobContext,
-    ) -> mklight_core::MkResult<mklight_gpu::Pending<mklight_gpu::JobResult>> {
-        self.inner.submit(j, c)
+    ) -> mklight_core::MkResult<mklight_gpu::Pending<mklight_gpu::resident::PlanResult>> {
+        self.inner.submit_plan(p, c)
+    }
+    fn resident_cache_stats(&self) -> mklight_gpu::resident::ResidentCacheStats {
+        self.inner.resident_cache_stats()
     }
     fn fill_buffer(
         &self,
@@ -345,12 +364,9 @@ fn resource_fallback_reports_reference_and_cancellation_discards_output() {
 fn host_batched_candidate_geometry() {
     use mklight_metal::{LibraryChoice, MetalBackend, MetalOptions};
     for library in [LibraryChoice::Precompiled, LibraryChoice::RuntimeSource] {
-        let b = MetalBackend::with_options(&MetalOptions {
-            library,
-            ..Default::default()
-        })
-        .unwrap()
-        .expect("real Metal required");
+        let b = MetalBackend::with_options(&MetalOptions { library })
+            .unwrap()
+            .expect("real Metal required");
         check_candidate_geometry(&b);
     }
 }

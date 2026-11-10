@@ -20,7 +20,7 @@
 //! | [`discrete`] | finite-choice variables (glass substitution) with pluggable neighbourhoods |
 //! | [`glass`] | catalogue glasses as choices: candidate filters and neighbourhoods on the glass map |
 //! | [`mixed`] | discrete choices with continuous re-optimisation per combination, mixed "hammer" |
-//! | [`merit`] | serialisable merit-function spec, operand registry, pupil quadrature, ray-group references, default merit, parametric evaluator entry point, tracer-backed evaluator, device operand support |
+//! | [`merit`] | serialisable merit-function spec, operand registry, pupil quadrature, ray-group references, default merit, parametric evaluator entry point, tracer-backed evaluator, device operand support, solves applied per candidate |
 //! | [`gpu`] | device context and algebra, resident candidate evaluator, rendezvous scheduler of concurrent solves |
 //! | [`tolerance`] | tolerance operands, Monte-Carlo sampling, sensitivity analysis |
 //! | [`monitor`] | cancellation/progress, iteration history callback, best-so-far |

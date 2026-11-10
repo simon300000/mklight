@@ -44,6 +44,53 @@ fn independent_workers_share_stable_rounds() {
         vec![vec![0.; 2], vec![1.; 3], vec![2.; 2], vec![3.; 3]]
     );
 }
+/// A worker's finite-difference batch reaches the evaluator near the
+/// anchor the worker gave, not near the first system of the joined batch.
+#[test]
+fn joined_batches_keep_the_anchor_they_are_given() {
+    #[derive(Default)]
+    struct Anchors(Mutex<Vec<(usize, Option<f64>)>>);
+    impl OperandEvaluator for Anchors {
+        fn supports(&self, _: &OperandKind) -> bool {
+            true
+        }
+        fn evaluate_batch(
+            &self,
+            s: &[OpticalSystem],
+            ops: &[&Operand],
+            ctx: &JobContext,
+        ) -> MkResult<Vec<Vec<OperandValue>>> {
+            self.evaluate_batch_near(s, ops, None, ctx)
+        }
+        fn evaluate_batch_near(
+            &self,
+            s: &[OpticalSystem],
+            ops: &[&Operand],
+            anchor: Option<&OpticalSystem>,
+            _: &JobContext,
+        ) -> MkResult<Vec<Vec<OperandValue>>> {
+            let anchor = anchor.map(|a| a.surfaces[1].thickness);
+            self.0.lock().unwrap().push((s.len(), anchor));
+            Ok(vec![vec![Ok(0.); ops.len()]; s.len()])
+        }
+    }
+    let e = Anchors::default();
+    let ctx = JobContext::new();
+    scheduler::run(&e, 2, &ctx, |id, w| {
+        let op = Operand::new(OperandKind::Efl);
+        let mut probe = samples::singlet();
+        probe.surfaces[1].thickness = 1. + id as f64;
+        let mut base = samples::singlet();
+        base.surfaces[1].thickness = 11. + id as f64;
+        // Worker 0 evaluates a plain point, worker 1 probes near its base.
+        match id {
+            0 => w.evaluate_batch(&[probe], &[&op], &ctx),
+            _ => w.evaluate_batch_near(&[probe], &[&op], Some(&base), &ctx),
+        }
+    })
+    .unwrap();
+    assert_eq!(*e.0.lock().unwrap(), vec![(2, Some(12.))]);
+}
 #[test]
 fn cancelled_workers_finish_without_replacement() {
     let e = BatchSizes::default();

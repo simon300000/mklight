@@ -1,6 +1,12 @@
 //! Cross-validation of a backend's trace kernel against the CPU f64
 //! reference (`mklight_trace`), and the precision qualification built on it.
 //!
+//! This module is an offline test utility. It drives the backend through
+//! [`QualificationBackend`] (the host-array `Job::Trace`), which no solver or
+//! engine code calls: the test suites run it to qualify a backend's
+//! accuracy, and no run-time path qualifies a device or falls back on a
+//! verdict from here.
+//!
 //! [`cross_validate`] generates rays with the reference tracer (field and
 //! pupil mapping, ray aiming in f64), rounds them once to f32
 //! ([`RayBatch::push_f64`]), traces them on the backend and with
@@ -25,11 +31,9 @@
 //! [`qualify`] runs a small cross-validation for one system and returns a
 //! [`Qualification`] (pass/fail, measured errors, reason); the sampled
 //! maxima must stay within a margin (a third) of the budget, because rays
-//! outside the sample can be worse. A caller that gets a failure runs the
-//! CPU reference instead and records the decision
-//! with [`Qualification::record`], which writes the backend, precision and
-//! fallback reason into the result's `RunInfo` (CONVENTIONS §7: never
-//! silently degraded numbers).
+//! outside the sample can be worse. [`Qualification::record`] writes a
+//! verdict into a `RunInfo`: the backend and precision the verdict stands
+//! for and, for a failure, a warning with the reason.
 
 use mklight_core::job::{Precision, RunInfo};
 use mklight_core::model::ApertureShape;
@@ -43,7 +47,7 @@ use mklight_trace::{
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::backend::{ComputeBackend, ErrorBudget, Job, JobOutput};
+use crate::backend::{ErrorBudget, Job, JobOutput, QualificationBackend};
 use crate::batch::{
     NewtonSettings, RECORD_FLOATS, Radiometry, RayBatch, RayStatus, RecordMode, TraceRequest,
     TraceResult,
@@ -382,7 +386,7 @@ fn backend_reference(
 }
 
 fn run_trace(
-    backend: &dyn ComputeBackend,
+    backend: &dyn QualificationBackend,
     req: TraceRequest,
     ctx: &JobContext,
 ) -> MkResult<TraceResult> {
@@ -399,7 +403,7 @@ fn run_trace(
 /// system cannot run on the backend at all, and with `Cancelled` when `ctx`
 /// is cancelled.
 pub fn cross_validate(
-    backend: &dyn ComputeBackend,
+    backend: &dyn QualificationBackend,
     tracer: &SequentialTracer,
     settings: &XvalSettings,
     ctx: &JobContext,
@@ -496,7 +500,7 @@ fn prepare_validation(
 /// [`cross_validate`] for at most `MKL_MAX_WAVELENGTHS` wavelengths (one
 /// packed system).
 fn cross_validate_chunk(
-    backend: &dyn ComputeBackend,
+    backend: &dyn QualificationBackend,
     tracer: &SequentialTracer,
     settings: &XvalSettings,
     wls: &[usize],
@@ -548,7 +552,7 @@ fn cross_validate_chunk(
 
 #[allow(clippy::too_many_arguments)]
 fn compare_validation(
-    backend: &dyn ComputeBackend,
+    backend: &dyn QualificationBackend,
     tracer: &SequentialTracer,
     settings: &XvalSettings,
     samples: &[Sample],
@@ -765,10 +769,9 @@ impl Qualification {
 ///
 /// A backend that cannot run the system (unsupported job, unpackable
 /// model, backend error) fails with that reason. The only error is
-/// `MkError::Cancelled`: a cancelled qualification is not a verdict, and
-/// the caller should stop rather than fall back.
+/// `MkError::Cancelled`: a cancelled qualification is not a verdict.
 pub fn qualify(
-    backend: &dyn ComputeBackend,
+    backend: &dyn QualificationBackend,
     tracer: &SequentialTracer,
     settings: Option<&XvalSettings>,
     ctx: &JobContext,
@@ -784,7 +787,7 @@ pub fn qualify(
 }
 
 fn verdict(
-    backend: &dyn ComputeBackend,
+    backend: &dyn QualificationBackend,
     settings: &XvalSettings,
     result: MkResult<XvalReport>,
 ) -> MkResult<Qualification> {
@@ -831,7 +834,7 @@ fn fraction_label(m: f64) -> String {
 /// comparison; this establishes no parameter envelope. Groups are bounded by
 /// 32 systems and common record geometry, keeping the all-surface scratch small.
 pub fn qualify_many(
-    backend: &dyn ComputeBackend,
+    backend: &dyn QualificationBackend,
     tracers: &[&SequentialTracer],
     settings: &XvalSettings,
     ctx: &JobContext,

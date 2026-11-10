@@ -1,10 +1,9 @@
-//! The aiming designs (work-split key `aiming`) of the geometric analyses
+//! The aiming designs (`gpu::Route::aiming`) of the geometric analyses
 //! agree with the CPU reference on the built-in samples with real aiming,
 //! in field groups of several plans, and name themselves in the run
 //! evidence; large generations split between host and device give the same
-//! rays however the work is timed. Selections are process-wide, so every
-//! check holds one lock and selects through a guard ([`select`]); the
-//! thresholds are each adapter's own ([`gpu::Tuning`]).
+//! rays however the work is timed. The design and the thresholds are each
+//! adapter's own ([`gpu::Route`], [`gpu::Tuning`]).
 use mklight_analysis::{
     energy::{self, BestFocusSettings, GeometricMtfResult, GeometricMtfSettings, RaySampling},
     gpu,
@@ -12,25 +11,30 @@ use mklight_analysis::{
     spot::{self, SpotDiagram, SpotDiagramSettings},
     tracer_for,
 };
-use mklight_core::{JobContext, RayAiming, samples, split};
+use mklight_core::{JobContext, RayAiming, samples};
 use mklight_gpu::{ComputeBackend, CpuF32Backend};
 use mklight_trace::{Grid, SequentialTracer};
-use std::sync::Mutex;
 
-static SELECTION: Mutex<()> = Mutex::new(());
+const AIMS: [gpu::AimDesign; 3] = [
+    gpu::AimDesign::HostTable,
+    gpu::AimDesign::Table,
+    gpu::AimDesign::Device,
+];
 
-const AIMS: [&str; 3] = ["host-table", "table", "device"];
-
-/// The aiming selection while the guard lives; dropping it (also when an
-/// assertion fails) removes the in-process selections.
-struct Selected;
-fn select(aiming: Option<&str>) -> Selected {
-    split::set("aiming", aiming);
-    Selected
+/// The default route with the aiming design `aiming`.
+fn aimed(aiming: gpu::AimDesign) -> gpu::Route {
+    gpu::Route {
+        aiming,
+        ..Default::default()
+    }
 }
-impl Drop for Selected {
-    fn drop(&mut self) {
-        split::reset();
+
+/// The default route with the device share `device_share` of split
+/// generations.
+fn shared(device_share: f64) -> gpu::Route {
+    gpu::Route {
+        device_share,
+        ..Default::default()
     }
 }
 
@@ -51,14 +55,16 @@ fn small_tiles() -> gpu::Tuning {
     }
 }
 
-/// The device adapter of `t` with thresholds `tuning`, under the aiming
-/// design selected now.
+/// The device adapter of `t` with thresholds `tuning`, under `route`.
 fn adapter<'a>(
     b: &'a dyn ComputeBackend,
     t: &'a SequentialTracer,
     tuning: gpu::Tuning,
+    route: &gpu::Route,
 ) -> gpu::Geometry<'a> {
     gpu::Geometry::new(b, t, &JobContext::new())
+        .unwrap()
+        .with_route(route)
         .unwrap()
         .with_tuning(tuning)
 }
@@ -137,7 +143,7 @@ fn same_mtf(what: &str, a: &GeometricMtfResult, g: &GeometricMtfResult) {
     }
 }
 
-fn spots(b: &dyn ComputeBackend, aims: &[&str], rings: usize) {
+fn spots(b: &dyn ComputeBackend, aims: &[gpu::AimDesign], rings: usize) {
     for (name, t) in tracers() {
         let s = SpotDiagramSettings {
             rings,
@@ -145,20 +151,18 @@ fn spots(b: &dyn ComputeBackend, aims: &[&str], rings: usize) {
         };
         let a = spot::spot_diagram(&t, &s).unwrap();
         for &aim in aims {
-            let selected = select(Some(aim));
-            let g = adapter(b, &t, small_groups())
+            let g = adapter(b, &t, small_groups(), &aimed(aim))
                 .split_large_generations()
                 .spot_diagram_job(&s, &JobContext::new())
                 .unwrap();
-            drop(selected);
-            let what = format!("{name} {aim}");
-            assert_eq!(evidence(&g.run_info), aim, "{what}");
+            let what = format!("{name} {}", aim.name());
+            assert_eq!(evidence(&g.run_info), aim.name(), "{what}");
             same_spots(&what, &a, &g);
         }
     }
 }
 
-fn energies(b: &dyn ComputeBackend, aims: &[&str]) {
+fn energies(b: &dyn ComputeBackend, aims: &[gpu::AimDesign]) {
     for (name, t) in tracers() {
         let sampling = RaySampling {
             rings: 4,
@@ -195,19 +199,19 @@ fn energies(b: &dyn ComputeBackend, aims: &[&str]) {
             &t.options(),
         );
         for &aim in aims {
-            let selected = select(Some(aim));
-            let what = format!("{name} {aim}");
-            let gm = adapter(b, &t, small_groups())
+            let route = aimed(aim);
+            let what = format!("{name} {}", aim.name());
+            let gm = adapter(b, &t, small_groups(), &route)
                 .split_large_generations()
                 .geometric_mtf_job(&m, &JobContext::new())
                 .unwrap();
-            let gf = gpu::best_focus_job(b, &t, &f, &JobContext::new()).unwrap();
-            let geo = adapter(b, &t, small_groups());
+            let gf = gpu::best_focus_job(b, &t, &f, &route, &JobContext::new()).unwrap();
+            let geo = adapter(b, &t, small_groups(), &route);
             let gp = geo.footprint_job(&fp, &JobContext::new()).unwrap();
             let gg = geo.ray_grid_job(&sampling, &JobContext::new()).unwrap();
-            drop((geo, selected));
-            assert_eq!(evidence(&gm.run_info), aim, "{what}");
-            assert_eq!(evidence(&gg.run_info), aim, "{what}");
+            drop(geo);
+            assert_eq!(evidence(&gm.run_info), aim.name(), "{what}");
+            assert_eq!(evidence(&gg.run_info), aim.name(), "{what}");
             same_mtf(&what, &am, &gm);
             close(
                 &format!("{what} best focus"),
@@ -244,7 +248,8 @@ fn energies(b: &dyn ComputeBackend, aims: &[&str]) {
 /// table) of the spot diagram and the geometric MTF split between host and
 /// device: the same bits on a one-thread and a four-thread rayon pool, i.e.
 /// whichever side is faster, and within the reference's tolerances; the
-/// device share follows `aiming=split:<share>` (0: host only).
+/// device share follows the route (0: host only) and is named in the run
+/// evidence.
 fn split_designs(b: &dyn ComputeBackend) {
     for (name, t) in tracers() {
         let s = SpotDiagramSettings {
@@ -262,14 +267,13 @@ fn split_designs(b: &dyn ComputeBackend) {
         };
         let a = spot::spot_diagram(&t, &s).unwrap();
         let am = energy::geometric_mtf(&t, &m).unwrap();
-        let run = |threads: usize, aiming: Option<&str>| {
+        let run = |threads: usize, route: gpu::Route| {
             let pool = rayon::ThreadPoolBuilder::new()
                 .num_threads(threads)
                 .build()
                 .unwrap();
-            let _selected = select(aiming);
             pool.install(|| {
-                let geo = adapter(b, &t, small_tiles()).split_large_generations();
+                let geo = adapter(b, &t, small_tiles(), &route).split_large_generations();
                 let g = geo.spot_diagram_job(&s, &JobContext::new()).unwrap();
                 let gm = geo.geometric_mtf_job(&m, &JobContext::new()).unwrap();
                 (g, gm)
@@ -282,11 +286,16 @@ fn split_designs(b: &dyn ComputeBackend) {
                 e["device_rays"].as_u64().unwrap(),
             )
         };
+        let share = |g: &SpotDiagram| {
+            g.run_info.settings["resident_execution"]["aiming"]["device_share"]
+                .as_f64()
+                .unwrap()
+        };
         let runs = [
-            run(1, None),
-            run(4, None),
-            run(4, Some("split:0.75")),
-            run(4, Some("split:0")),
+            run(1, gpu::Route::default()),
+            run(4, gpu::Route::default()),
+            run(4, shared(0.75)),
+            run(4, shared(0.0)),
         ];
         for (g, gm) in &runs {
             let what = format!("{name} split");
@@ -297,6 +306,11 @@ fn split_designs(b: &dyn ComputeBackend) {
         assert!(plans > 1 && rays > 0, "{name}: {plans} device plans");
         assert!(device_rays(&runs[2].0).1 > rays, "{name}: share 0.75");
         assert_eq!(device_rays(&runs[3].0), (0, 0), "{name}: share 0");
+        assert_eq!(
+            [&runs[0], &runs[2], &runs[3]].map(|r| share(&r.0)),
+            [gpu::aim::SPLIT_DEVICE_SHARE, 0.75, 0.0],
+            "{name}: shares in the evidence"
+        );
         let bits = |(g, gm): &(SpotDiagram, GeometricMtfResult)| {
             serde_json::to_string(&(&g.fields, &gm.curves)).unwrap()
         };
@@ -309,7 +323,6 @@ fn split_designs(b: &dyn ComputeBackend) {
 
 #[test]
 fn cpu_f32_designs_match_reference() {
-    let _g = SELECTION.lock().unwrap_or_else(|e| e.into_inner());
     let b = CpuF32Backend::new();
     spots(&b, &AIMS, 3);
     energies(&b, &AIMS);
@@ -317,26 +330,29 @@ fn cpu_f32_designs_match_reference() {
 
 #[test]
 fn cpu_f32_split_is_deterministic() {
-    let _g = SELECTION.lock().unwrap_or_else(|e| e.into_inner());
     split_designs(&CpuF32Backend::new());
 }
 
+/// A device share outside [0, 1] is an error, not a clamped share.
 #[test]
-fn unknown_designs_are_rejected() {
-    let _g = SELECTION.lock().unwrap_or_else(|e| e.into_inner());
+fn shares_outside_the_unit_interval_are_rejected() {
     let (_, t) = tracers().remove(0);
     let b = CpuF32Backend::new();
-    for name in ["nonsense", "split:1.5", "split:", "split:-0.1", "host"] {
-        let _selected = select(Some(name));
-        let r = gpu::spot_diagram_job(&b, &t, &Default::default(), &JobContext::new());
-        assert!(r.is_err(), "aiming={name}");
+    for share in [1.5, -0.1, f64::NAN, f64::INFINITY] {
+        let r = gpu::spot_diagram_job(
+            &b,
+            &t,
+            &Default::default(),
+            &shared(share),
+            &JobContext::new(),
+        );
+        assert!(r.is_err(), "device share {share}");
     }
 }
 
 #[cfg(target_os = "macos")]
 #[test]
 fn metal_designs_match_reference() {
-    let _g = SELECTION.lock().unwrap_or_else(|e| e.into_inner());
     let b = mklight_metal::MetalBackend::new()
         .unwrap()
         .expect("host Metal required");

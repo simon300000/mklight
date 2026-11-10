@@ -187,6 +187,10 @@ pub struct RunArgs {
     /// Aim-stop policy; the engine default when omitted (recorded in `run_info.aim_stop`).
     #[arg(long, value_enum)]
     pub aim_stop: Option<AimStopChoice>,
+    /// Route option of this run, `KEY=VALUE` (repeatable; docs/GPU.md §9.3);
+    /// the engine defaults when omitted.
+    #[arg(long, value_name = "KEY=VALUE")]
+    pub route: Vec<String>,
     /// Write the result envelope (JSON) to this file instead of stdout.
     #[arg(long)]
     pub out: Option<PathBuf>,

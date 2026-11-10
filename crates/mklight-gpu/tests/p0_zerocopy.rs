@@ -2,7 +2,7 @@ use mklight_core::{JobContext, MkError, Snapshot};
 use mklight_gpu::{resident::*, *};
 
 /// Zero-copy contracts shared by CPU-f32 and Metal.
-pub fn suite(b: &dyn ComputeBackend) {
+pub fn suite(b: &dyn QualificationBackend) {
     let ctx = JobContext::new();
     let before = b.resident_cache_stats().copied_bytes;
 

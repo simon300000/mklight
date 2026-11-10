@@ -31,6 +31,84 @@ extension SettingsBar {
     }
 }
 
+/// The edit of a two-number setting in two boxes, each a `FieldEdit`. The
+/// pair is one value: it is committed on Return and when the focus leaves
+/// a box, from the typed numbers and, for a box that was not edited, its
+/// stored one. Half a pair waits for its other number while the focus is
+/// in the pair, and is given up when the focus leaves it.
+struct PairEdit {
+    typealias Format = FieldEdit<Double?>.Format
+
+    /// The two boxes; the fields show and set their texts.
+    var boxes: [FieldEdit<Double?>]
+    /// `null` allowed: both boxes empty is the automatic state.
+    let nullable: Bool
+    /// The box with the focus.
+    private(set) var focus: Int?
+
+    /// Two empty boxes; `valueChanged` fills them.
+    init(nullable: Bool = false) {
+        let empty = Format(exact: { _ in "" }, display: { _ in "" }, parse: { _ in nil })
+        boxes = [FieldEdit(nil, empty), FieldEdit(nil, empty)]
+        self.nullable = nullable
+    }
+
+    /// The setting is `pair` (`nil` where it has no number): boxes that
+    /// were not edited follow it.
+    mutating func valueChanged(_ pair: [Double?], _ format: Format) {
+        for i in boxes.indices { boxes[i].valueChanged(pair.indices.contains(i) ? pair[i] : nil, format) }
+    }
+
+    /// The focus moved to box `new`, or out of the pair (`nil`).
+    mutating func focusChanged(to new: Int?, _ format: Format) -> FieldEdit<[Double]?>.Commit {
+        let old = focus
+        focus = new
+        var result = FieldEdit<[Double]?>.Commit.unchanged
+        if old != nil, old != new { result = commit(format) }
+        if let new, new != old { boxes[new].beginEditing(format) }
+        return result
+    }
+
+    /// Return in a box.
+    mutating func submit(_ format: Format) -> FieldEdit<[Double]?>.Commit { commit(format) }
+
+    /// The pair to write (`nil`: automatic), when it was edited, is
+    /// complete and is not the stored one.
+    private mutating func commit(_ format: Format) -> FieldEdit<[Double]?>.Commit {
+        defer {
+            // A box without the focus shows its number at rest, unless it waits.
+            for i in boxes.indices where i != focus && !boxes[i].isEdited { _ = boxes[i].endEditing(format) }
+        }
+        guard boxes.contains(where: \.isEdited) else { return .unchanged }
+        let stored = boxes.map(\.value)
+        let blank = boxes.map { $0.text.trimmingCharacters(in: .whitespaces).isEmpty }
+        if nullable, !blank.contains(false) {
+            show([nil, nil], format)
+            return stored.contains { $0 != nil } ? .value(nil) : .unchanged
+        }
+        // Half a pair with the focus still in it waits for its other number.
+        if blank[0] != blank[1], focus != nil { return .unchanged }
+        var typed: [Double] = []
+        for i in boxes.indices {
+            if case .invalid = boxes[i].submit(format) { continue }
+            if let v = boxes[i].value { typed.append(v) }
+        }
+        guard typed.count == boxes.count else {
+            show(stored, format)
+            return .unchanged
+        }
+        return typed == stored ? .unchanged : .value(typed)
+    }
+
+    /// Both boxes show `pair`, whatever was typed.
+    private mutating func show(_ pair: [Double?], _ format: Format) {
+        for i in boxes.indices {
+            boxes[i].valueChanged(pair[i], format)
+            boxes[i].revert(format)
+        }
+    }
+}
+
 /// A two-element numeric setting as two small fields: `Grid 5 × 5`. Only
 /// edited text is committed; a box left as it was keeps its stored value.
 struct SettingPairField: View {
@@ -42,12 +120,18 @@ struct SettingPairField: View {
     /// `null` allowed: both fields empty is the automatic state.
     var nullable = false
     let set: (JSONValue?) -> Void
-    @State private var a = ""
-    @State private var b = ""
-    /// The texts the two boxes were given (on focus, after a commit, with
-    /// a new value): only other text is an edit.
-    @State private var base = ["", ""]
+    @State private var edit: PairEdit
     @FocusState private var focused: Int?
+
+    init(field: SettingsField, label: String, value: JSONValue?, integer: Bool? = nil, nullable: Bool = false, set: @escaping (JSONValue?) -> Void) {
+        self.field = field
+        self.label = label
+        self.value = value
+        self.integer = integer
+        self.nullable = nullable
+        self.set = set
+        _edit = State(initialValue: PairEdit(nullable: nullable))
+    }
 
     var isInteger: Bool { integer ?? (field.defaultValue?.array?.allSatisfy { if case .integer = $0 { true } else { false } } ?? false) }
 
@@ -77,85 +161,59 @@ struct SettingPairField: View {
     var body: some View {
         HStack(spacing: Space.xs) {
             if isFieldPoint { Text("Hx").foregroundStyle(.secondary) }
-            box($a, index: 0)
+            box(0)
             Text(isFieldPoint ? "Hy" : isRange ? "to" : "×").foregroundStyle(.secondary)
-            box($b, index: 1)
+            box(1)
             if !field.unit.isEmpty { Text(field.unit).foregroundStyle(.secondary) }
         }
         .help(field.description.isEmpty ? field.title : field.description)
-        .onAppear { show(value) }
-        .onChange(of: value) { _, v in if focused == nil || (a == base[0] && b == base[1]) { show(v) } }
+        .onAppear(perform: sync)
+        .onChange(of: value) { _, _ in sync() }
+        .onChange(of: focused) { _, new in
+            sync()
+            write(edit.focusChanged(to: new, entry))
+        }
         .accessibilityElement(children: .contain)
         .accessibilityLabel(label)
     }
 
-    private func box(_ text: Binding<String>, index: Int) -> some View {
-        TextField(nullable ? "auto" : index == 0 ? "x" : "y", text: text)
+    private func box(_ index: Int) -> some View {
+        TextField(nullable ? "auto" : index == 0 ? "x" : "y", text: $edit.boxes[index].text)
             .textFieldStyle(.roundedBorder)
             .numeric()
             .multilineTextAlignment(.trailing)
             .frame(width: nullable ? 52 : isInteger ? 40 : 48)
             .focused($focused, equals: index)
-            .onSubmit(commit)
-            .onChange(of: focused) { old, new in
-                if old == index && new != index { commit() } else if new == index && old != index { focus(index) }
+            .onSubmit {
+                sync()
+                write(edit.submit(entry))
             }
             .accessibilityLabel("\(label) \(index == 0 ? "x" : "y")")
     }
 
-    /// The text of one number: compact, or with `exact` (the focused box)
-    /// a text that reads back as the value.
-    private func display(_ v: JSONValue?, exact: Bool) -> String {
-        guard let d = v?.doubleValue else { return "" }
-        return isInteger ? String(Int(saturating: d)) : exact ? FieldText.exact(d) : Fmt.short(d)
+    /// One number of the pair: whole where the setting is, held to its
+    /// bounds; no number shows as an empty box.
+    private var entry: PairEdit.Format {
+        let isInteger = isInteger, bounds = bounds
+        return PairEdit.Format(
+            exact: { v in v.map { isInteger ? String(Int(saturating: $0)) : FieldText.exact($0) } ?? "" },
+            display: { v in v.map { isInteger ? String(Int(saturating: $0)) : Fmt.short($0) } ?? "" },
+            parse: { text in
+                guard let d = LensValueParser.number(text), d.isFinite else { return nil }
+                let held = min(max(d, bounds.lowerBound), bounds.upperBound)
+                return .some(isInteger ? Double(Int(saturating: held)) : held)
+            })
     }
 
-    private func element(_ pair: JSONValue?, _ index: Int) -> JSONValue? {
-        pair?.array.flatMap { $0.indices.contains(index) ? $0[index] : nil }
+    /// Reports the setting's two numbers to the boxes.
+    private func sync() {
+        let pair = value?.array ?? []
+        edit.valueChanged([0, 1].map { pair.indices.contains($0) ? pair[$0].doubleValue : nil }, entry)
     }
 
-    /// Shows `pair` in both boxes.
-    private func show(_ pair: JSONValue?) {
-        a = display(element(pair, 0), exact: focused == 0)
-        b = display(element(pair, 1), exact: focused == 1)
-        base = [a, b]
-    }
-
-    /// The box that takes the focus shows every digit, unless it is being edited.
-    private func focus(_ index: Int) {
-        guard (index == 0 ? a : b) == base[index] else { return }
-        let text = display(element(value, index), exact: true)
-        if index == 0 { a = text } else { b = text }
-        base[index] = text
-    }
-
-    private func commit() {
-        guard a != base[0] || b != base[1] else {
-            show(value)
-            return
-        }
-        if nullable, a.trimmingCharacters(in: .whitespaces).isEmpty, b.trimmingCharacters(in: .whitespaces).isEmpty {
-            if value != nil && value != .null { set(.null) }
-            show(.null)
-            return
-        }
-        // A box that was not edited keeps its stored number, not the one its text rounds to.
-        func number(_ text: String, _ index: Int) -> Double? {
-            text == base[index] ? element(value, index)?.doubleValue ?? LensValueParser.number(text) : LensValueParser.number(text)
-        }
-        guard var x = number(a, 0), var y = number(b, 1), x.isFinite, y.isFinite else {
-            // Half a pair with the focus still in it waits for its other number.
-            let half = a.trimmingCharacters(in: .whitespaces).isEmpty != b.trimmingCharacters(in: .whitespaces).isEmpty
-            if focused == nil || !half { show(value) }
-            return
-        }
-        x = min(max(x, bounds.lowerBound), bounds.upperBound)
-        y = min(max(y, bounds.lowerBound), bounds.upperBound)
-        let v: JSONValue =
-            isInteger
-            ? .array([.integer(Int64(Int(saturating: x))), .integer(Int64(Int(saturating: y)))]) : .array([.number(x), .number(y)])
-        if v != value { set(v) }
-        show(v)
+    private func write(_ result: FieldEdit<[Double]?>.Commit) {
+        guard case .value(let pair) = result else { return }
+        set(pair.map { p in .array(p.map { isInteger ? .integer(Int64(Int(saturating: $0))) : .number($0) }) } ?? .null)
     }
 }
 
@@ -199,11 +257,14 @@ struct TableSettingControl: View {
     }
 }
 
-/// The rows of a table setting: one text field per column, add and delete.
+/// The rows of a table setting: one field per column, add and delete. A
+/// cell commits on Return or when focus leaves, if its text was edited; a
+/// row with an empty number is not part of the setting until it is filled.
 struct TableSettingEditor: View {
     struct Row: Identifiable, Equatable {
         var id = UUID()
-        var cells: [String]
+        /// One value per column; `nil` is an empty cell.
+        var cells: [JSONValue?]
     }
     let title: String
     let help: String
@@ -221,13 +282,10 @@ struct TableSettingEditor: View {
         _rows = State(initialValue: Self.rows(of: value, columns: columns, rowsAreArrays: rowsAreArrays))
     }
 
-    /// The rows of a value as text, one cell per column.
+    /// The rows of a value, one cell per column.
     static func rows(of value: JSONValue?, columns: [SettingsField], rowsAreArrays: Bool) -> [Row] {
         (value?.array ?? []).map { r in
-            Row(cells: columns.enumerated().map { k, c in
-                let v = rowsAreArrays ? r.array.flatMap { k < $0.count ? $0[k] : nil } : r[c.name]
-                return text(v)
-            })
+            Row(cells: columns.enumerated().map { k, c in rowsAreArrays ? r.array.flatMap { k < $0.count ? $0[k] : nil } : r[c.name] })
         }
     }
 
@@ -237,23 +295,49 @@ struct TableSettingEditor: View {
         return v.string ?? v.displayText
     }
 
-    /// The value of the rows, dropping rows with an unreadable number.
+    /// The value of the rows, dropping rows with a number missing.
     static func value(of rows: [Row], columns: [SettingsField], rowsAreArrays: Bool) -> JSONValue {
         .array(rows.compactMap { r in
             var cells: [JSONValue] = []
             for (k, c) in columns.enumerated() {
-                let t = r.cells.indices.contains(k) ? r.cells[k].trimmingCharacters(in: .whitespaces) : ""
+                let v = r.cells.indices.contains(k) ? r.cells[k] : nil
                 if c.baseTypes == ["string"] {
-                    cells.append(.string(t))
+                    cells.append(v ?? .string(""))
                 } else if c.baseTypes == ["boolean"] {
-                    cells.append(.bool(["true", "yes", "1", "on"].contains(t.lowercased())))
+                    cells.append(v ?? .bool(false))
                 } else {
-                    guard let d = LensValueParser.number(t), d.isFinite else { return nil }
-                    cells.append(c.baseTypes == ["integer"] ? .integer(Int64(Int(saturating: d))) : .number(d))
+                    guard let v, v.doubleValue != nil else { return nil }
+                    cells.append(v)
                 }
             }
             return rowsAreArrays ? .array(cells) : .object(Dictionary(uniqueKeysWithValues: zip(columns.map(\.name), cells)))
         })
+    }
+
+    /// A cell of `column`: text, yes/no, or a finite number (whole for an
+    /// integer column; empty is an empty cell).
+    static func entry(_ column: SettingsField) -> FieldEdit<JSONValue?>.Format {
+        if column.baseTypes == ["string"] {
+            return FieldEdit.Format(exact: text, display: text, parse: { .some(.string($0.trimmingCharacters(in: .whitespaces))) })
+        }
+        if column.baseTypes == ["boolean"] {
+            return FieldEdit.Format(
+                exact: text, display: text,
+                parse: { .some(.bool(["true", "yes", "1", "on"].contains($0.trimmingCharacters(in: .whitespaces).lowercased()))) })
+        }
+        let isInteger = column.baseTypes == ["integer"]
+        return FieldEdit.Format(
+            exact: { v in
+                guard let d = v?.doubleValue else { return text(v) }
+                return isInteger ? String(Int(saturating: d)) : FieldText.exact(d)
+            },
+            display: text,
+            parse: { typed in
+                let t = typed.trimmingCharacters(in: .whitespaces)
+                if t.isEmpty { return .some(nil) }
+                guard let d = LensValueParser.number(t), d.isFinite else { return nil }
+                return .some(isInteger ? .integer(Int64(Int(saturating: d))) : .number(d))
+            })
     }
 
     var body: some View {
@@ -270,16 +354,24 @@ struct TableSettingEditor: View {
                     Color.clear.frame(width: 16, height: 1)
                 }
                 .font(.caption).foregroundStyle(.secondary)
-                ForEach($rows) { $r in
+                ForEach(rows) { r in
                     GridRow {
                         ForEach(columns.indices, id: \.self) { k in
-                            TextField(SettingsBar.label(columns[k]), text: $r.cells[k])
-                                .textFieldStyle(.roundedBorder)
-                                .numeric()
-                                .multilineTextAlignment(.trailing)
-                                .frame(width: 72)
-                                .onSubmit(commit)
-                                .accessibilityLabel(SettingsBar.label(columns[k]))
+                            CommittingField(
+                                value: r.cells[k], format: Self.entry(columns[k]), endsOnDisappear: true,
+                                commit: { v in
+                                    guard let i = rows.firstIndex(where: { $0.id == r.id }) else { return }
+                                    rows[i].cells[k] = v
+                                    commit()
+                                }
+                            ) { text, _ in
+                                TextField(SettingsBar.label(columns[k]), text: text)
+                                    .textFieldStyle(.roundedBorder)
+                                    .numeric()
+                                    .multilineTextAlignment(.trailing)
+                                    .frame(width: 72)
+                            }
+                            .accessibilityLabel(SettingsBar.label(columns[k]))
                         }
                         Button {
                             rows.removeAll { $0.id == r.id }
@@ -295,7 +387,7 @@ struct TableSettingEditor: View {
             }
             HStack {
                 Button {
-                    rows.append(rows.last.map { Row(cells: $0.cells) } ?? Row(cells: columns.map { Self.text($0.defaultValue) }))
+                    rows.append(Row(cells: rows.last?.cells ?? columns.map(\.defaultValue)))
                     commit()
                 } label: {
                     Label("Add Row", systemImage: "plus")
@@ -347,19 +439,21 @@ struct SensorLimitControl: View {
 }
 
 /// The rows of a sensor limit: radius and angle, add and delete; rows are
-/// kept sorted by radius (the engine interpolates an increasing table).
+/// kept sorted by radius (the engine interpolates an increasing table). A
+/// cell commits on Return or when focus leaves, if its text was edited;
+/// text that is not a number reverts.
 struct SensorLimitEditor: View {
     struct Row: Identifiable, Equatable {
         var id = UUID()
-        var radius: String
-        var angle: String
+        var radius: Double
+        var angle: Double
     }
     let set: (JSONValue?) -> Void
     @State private var rows: [Row]
 
     init(rows: [(Double, Double)], set: @escaping (JSONValue?) -> Void) {
         self.set = set
-        _rows = State(initialValue: rows.map { Row(radius: Fmt.short($0.0), angle: Fmt.short($0.1)) })
+        _rows = State(initialValue: rows.map { Row(radius: $0.0, angle: $0.1) })
     }
 
     var body: some View {
@@ -374,10 +468,10 @@ struct SensorLimitEditor: View {
                     Color.clear.frame(width: 16, height: 1)
                 }
                 .font(.caption).foregroundStyle(.secondary)
-                ForEach($rows) { $r in
+                ForEach(rows) { r in
                     GridRow {
-                        field($r.radius, id: r.id, label: "Radius")
-                        field($r.angle, id: r.id, label: "Maximum angle")
+                        field(\.radius, of: r, label: "Radius", format: Self.radius)
+                        field(\.angle, of: r, label: "Maximum angle", format: Self.angle)
                         Button {
                             rows.removeAll { $0.id == r.id }
                             commit()
@@ -392,9 +486,8 @@ struct SensorLimitEditor: View {
             }
             HStack {
                 Button {
-                    let last = rows.last.flatMap { LensValueParser.number($0.radius) } ?? -1
-                    let angle = rows.last?.angle ?? "30"
-                    rows.append(Row(radius: Fmt.short(last < 0 ? 0 : last + 1), angle: angle))
+                    let last = rows.last?.radius ?? -1
+                    rows.append(Row(radius: last < 0 ? 0 : last + 1, angle: rows.last?.angle ?? 30))
                     commit()
                 } label: {
                     Label("Add Point", systemImage: "plus")
@@ -412,28 +505,40 @@ struct SensorLimitEditor: View {
         .controlSize(.small)
     }
 
-    private func field(_ text: Binding<String>, id: UUID, label: String) -> some View {
-        TextField(label, text: text)
-            .textFieldStyle(.roundedBorder)
-            .numeric()
-            .multilineTextAlignment(.trailing)
-            .frame(width: 90)
-            .onSubmit(commit)
-            .accessibilityLabel(label)
+    /// A finite number, at least `minimum`.
+    private static func number(minimum: Double) -> FieldEdit<Double>.Format {
+        FieldEdit.Format(
+            exact: FieldText.exact, display: Fmt.short,
+            parse: { text in LensValueParser.number(text).flatMap { $0.isFinite && $0 >= minimum ? $0 : nil } })
     }
 
-    /// Valid rows, sorted by radius, as the setting; then the rows shown again.
-    private func commit() {
-        let parsed = rows.compactMap { r -> (Double, Double)? in
-            guard let a = LensValueParser.number(r.radius), let b = LensValueParser.number(r.angle), a.isFinite, b.isFinite, a >= 0
-            else { return nil }
-            return (a, b)
+    private static let radius = number(minimum: 0)
+    private static let angle = number(minimum: -.infinity)
+
+    private func field(_ key: WritableKeyPath<Row, Double>, of row: Row, label: String, format: FieldEdit<Double>.Format) -> some View {
+        CommittingField(
+            value: row[keyPath: key], format: format, endsOnDisappear: true,
+            commit: { v in
+                guard let i = rows.firstIndex(where: { $0.id == row.id }) else { return }
+                rows[i][keyPath: key] = v
+                commit()
+            }
+        ) { text, _ in
+            TextField(label, text: text)
+                .textFieldStyle(.roundedBorder)
+                .numeric()
+                .multilineTextAlignment(.trailing)
+                .frame(width: 90)
         }
-        .sorted { $0.0 < $1.0 }
-        var unique: [(Double, Double)] = []
-        for p in parsed where unique.last?.0 != p.0 { unique.append(p) }
-        set(unique.isEmpty ? nil : .array(unique.map { .array([.number($0.0), .number($0.1)]) }))
-        rows = unique.map { Row(radius: Fmt.short($0.0), angle: Fmt.short($0.1)) }
+        .accessibilityLabel(label)
+    }
+
+    /// The rows sorted by radius, one per radius, as the setting.
+    private func commit() {
+        var unique: [Row] = []
+        for r in rows.sorted(by: { $0.radius < $1.radius }) where unique.last?.radius != r.radius { unique.append(r) }
+        set(unique.isEmpty ? nil : .array(unique.map { .array([.number($0.radius), .number($0.angle)]) }))
+        rows = unique
     }
 }
 

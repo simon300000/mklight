@@ -3,11 +3,13 @@
 //!
 //! ```text
 //! cargo run --release -p mklight-engine --example fieldmaps_profile -- LENS.mklight \
-//!     ANALYSIS '{"settings": "json"}' [--backend cpu|metal] [--variant KEY=NAME] \
+//!     ANALYSIS '{"settings": "json"}' [--backend cpu|metal] [--route KEY=VALUE]... \
 //!     [--reps N] [--evidence] [--serial N]
 //! ```
 //!
-//! The first call is untimed (shader compilation, host caches). Each call
+//! `--route` sets a route option of the requests
+//! (`mklight_engine::RouteOptions`). The first call is untimed (shader
+//! compilation, host caches). Each call
 //! prints its wall time, the process CPU time (user + system, all threads)
 //! and a digest of the result (JSON without timings, warnings, buffers);
 //! `--serial` fixes the edits so two builds can be compared bitwise.
@@ -16,8 +18,10 @@ use std::hash::{Hash, Hasher};
 use std::path::Path;
 use std::time::Instant;
 
-use mklight_core::{OpticalSystem, param::ParamPath, split};
-use mklight_engine::{AnalysisRequest, Engine, EngineConfig, Session, backend::Backend};
+use mklight_core::{OpticalSystem, param::ParamPath};
+use mklight_engine::{
+    AnalysisRequest, Engine, EngineConfig, RouteOptions, Session, backend::Backend,
+};
 use serde_json::Value;
 
 fn edit(s: &mut Session, base: &OpticalSystem, serial: u64) {
@@ -50,7 +54,7 @@ fn main() {
     let mut backend = "metal".to_string();
     let mut reps = 3;
     let mut evidence = false;
-    let mut variants: Vec<(String, String)> = Vec::new();
+    let mut route: Vec<(String, String)> = Vec::new();
     let mut serial = (std::process::id() as u64) << 20;
     while let Some(a) = args.next() {
         match a.as_str() {
@@ -58,17 +62,16 @@ fn main() {
             "--reps" => reps = args.next().unwrap().parse().unwrap(),
             "--evidence" => evidence = true,
             "--serial" => serial = args.next().unwrap().parse().unwrap(),
-            "--variant" => {
+            "--route" => {
                 let v = args.next().unwrap();
-                let (k, n) = v.split_once('=').unwrap();
-                variants.push((k.into(), n.into()));
+                let (k, n) = v.split_once('=').expect("--route KEY=VALUE");
+                route.push((k.into(), n.into()));
             }
             _ => panic!("unexpected {a}"),
         }
     }
-    for (k, v) in &variants {
-        split::set(k, Some(v));
-    }
+    let route =
+        RouteOptions::from_pairs(route.iter().map(|(k, v)| (k.as_str(), v.as_str()))).unwrap();
     let engine = Engine::new(EngineConfig::default());
     let mut s = engine.open_session(Path::new(&lens)).unwrap();
     let base = s.system().clone();
@@ -78,6 +81,7 @@ fn main() {
         serial += 1;
         edit(&mut s, &base, serial);
         let mut req = AnalysisRequest::new(&analysis, settings.clone());
+        req.route = Some(route);
         req.backend = Some(match backend.as_str() {
             "cpu" => Backend::CpuReference,
             "auto" => Backend::Auto,

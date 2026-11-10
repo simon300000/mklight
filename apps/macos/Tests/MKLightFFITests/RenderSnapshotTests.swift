@@ -113,6 +113,42 @@ import Testing
         try await render("inspector-system", width: 300, SystemInspector(design: doc, workspace: w, window: window).frame(height: 900))
     }
 
+    /// The run details of recorded runs: an automatic run the cost model
+    /// placed on the GPU; a preview-tier run whose GPU attempt failed and
+    /// was completed on the CPU (route, tier, the attempt, its warning); and
+    /// an explicit CPU run, which has none of these rows.
+    @Test func runDetails() async throws {
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        func output(
+            backend: String, precision: Precision, tier: Tier = .design, warnings: [String] = [], attempts: [BackendAttempt] = [],
+            report: String
+        ) throws -> AnalysisOutput {
+            AnalysisOutput(
+                runInfo: RunInfo(
+                    engineVersion: "0.1.0", snapshotHash: SnapshotHash(hex: String(repeating: "5a", count: 32)), analysis: "spot_diagram",
+                    settings: .object([:]), backend: backend, precision: precision, seed: nil, startedUnixMs: 0, durationMs: 318.4,
+                    tier: tier, warnings: warnings, failedAttempts: attempts),
+                json: .object([:]),
+                backend: BackendReport(json: try MKLightJSON.decode(JSONValue.self, from: Data(report.utf8))))
+        }
+        let decision = #""cost_decision":{"decision":"qualified_metal","rule":"cost model","predicted_ms":{"cpu":556.6,"metal":312.3},"before_device":false,"version":5}"#
+        let routed = try output(
+            backend: "gpu:metal", precision: .f32GPU,
+            report: #"{"requested":"default:auto","used":"gpu:metal","precision":"f32_gpu","device":"Apple M2 Pro","fallback_reason":null,\#(decision)}"#)
+        try await render("run-details-route", width: 400, RunDetails(output: routed))
+        let reason = "native spot_diagram failed after 12.3 ms: backend error: command buffer failed"
+        let failed = try output(
+            backend: "cpu_reference", precision: .f64Reference, tier: .preview,
+            warnings: ["backend 'gpu:metal' not used (\(reason)); computed with the CPU f64 reference"],
+            attempts: [BackendAttempt(backend: "gpu:metal", outcome: "failed", reason: reason, elapsedMs: 12.3)],
+            report: #"{"requested":"default:auto","used":"cpu_reference","precision":"f64_reference","device":null,"fallback_reason":"\#(reason)",\#(decision)}"#)
+        try await render("run-details-failed-attempt", width: 400, RunDetails(output: failed))
+        let explicit = try output(
+            backend: "cpu_reference", precision: .f64Reference,
+            report: #"{"requested":"cpu_reference","used":"cpu_reference","precision":"f64_reference","device":null,"fallback_reason":null}"#)
+        try await render("run-details-explicit", width: 400, RunDetails(output: explicit))
+    }
+
     /// The tolerance editor and its results on the Double Gauss and the Cooke.
     @Test func tolerancePanel() async throws {
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)

@@ -8,7 +8,9 @@ use std::time::{Duration, Instant};
 use mklight_engine::backend::Backend;
 use mklight_engine::buffer::BufferData;
 use mklight_engine::fsutil::atomic_write;
-use mklight_engine::{AnalysisRequest, AnalysisResult, EngineError, JobState, JobStatus};
+use mklight_engine::{
+    AnalysisRequest, AnalysisResult, EngineError, JobState, JobStatus, RouteOptions,
+};
 
 use super::{Ctx, Report, warning_lines};
 use crate::cli::{AimStopChoice, AnalysesArgs, BackendChoice, RunArgs, TierChoice};
@@ -220,6 +222,22 @@ impl CancelReason {
     }
 }
 
+/// The route options of `--route KEY=VALUE` arguments; `None` without any
+/// (the engine defaults apply).
+fn route_options(pairs: &[String]) -> CliResult<Option<RouteOptions>> {
+    if pairs.is_empty() {
+        return Ok(None);
+    }
+    let pairs = pairs
+        .iter()
+        .map(|kv| {
+            kv.split_once('=')
+                .ok_or_else(|| CliError::usage(format!("--route takes KEY=VALUE, got '{kv}'")))
+        })
+        .collect::<CliResult<Vec<_>>>()?;
+    Ok(Some(RouteOptions::from_pairs(pairs)?))
+}
+
 pub fn run(ctx: &Ctx, a: &RunArgs) -> CliResult<Report> {
     let engine = &ctx.engine;
     let analysis = engine.analysis(&a.analysis)?;
@@ -244,6 +262,7 @@ pub fn run(ctx: &Ctx, a: &RunArgs) -> CliResult<Report> {
             "--timeout must be a non-negative number of seconds",
         ));
     }
+    let route = route_options(&a.route)?;
     let session = ctx.open(&a.project)?;
     let req = AnalysisRequest {
         analysis: a.analysis.clone(),
@@ -259,6 +278,7 @@ pub fn run(ctx: &Ctx, a: &RunArgs) -> CliResult<Report> {
             AimStopChoice::Requested => mklight_core::AimStopKind::Requested,
             AimStopChoice::Conditioned => mklight_core::AimStopKind::Conditioned,
         }),
+        route,
     };
 
     signal::install();

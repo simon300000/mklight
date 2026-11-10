@@ -17,7 +17,7 @@ use mklight_trace::{
     IntersectSettings, PupilSampling, Ray, TraceOptions, trace_ray, trace_ray_recorded,
 };
 
-fn trace(b: &dyn ComputeBackend, req: TraceRequest) -> TraceResult {
+fn trace(b: &dyn QualificationBackend, req: TraceRequest) -> TraceResult {
     match b
         .run(Job::Trace(Box::new(req)), &JobContext::new())
         .unwrap()

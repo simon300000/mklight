@@ -1,11 +1,9 @@
-//! The device's extended-sag intersection (route key
-//! `stray_sag`) agrees with the reference on the aspheric samples. The
-//! selection is process-wide, so these checks run in one test, in a process
-//! of their own.
+//! The device's extended-sag intersections (`gpu::SagMode`) agree with the
+//! reference on the aspheric samples.
 #![cfg(target_os = "macos")]
 #[path = "../common/mod.rs"]
 mod common;
-use mklight_core::{JobContext, Snapshot, split};
+use mklight_core::{JobContext, Snapshot};
 use mklight_metal::MetalBackend;
 use mklight_stray::{StraySettings, StraySystem, gpu};
 use std::sync::Arc;
@@ -34,11 +32,8 @@ fn sag_variants_agree_with_the_reference() {
         };
         let cpu =
             mklight_stray::run(&system.scene, &source, &settings, &JobContext::new()).unwrap();
-        let run = |sets: &[(&str, &str)]| {
-            for (k, v) in sets {
-                split::set(k, Some(v));
-            }
-            let r = gpu::run_design(
+        let run = |sag: gpu::SagMode| {
+            let r = gpu::run(
                 &b,
                 snapshot.clone(),
                 &system.scene,
@@ -46,21 +41,23 @@ fn sag_variants_agree_with_the_reference() {
                 &settings,
                 gpu::TransportOptions {
                     head_events: 0,
+                    gpu_share: Some(1.),
+                    sag,
                     ..Default::default()
                 },
-                gpu::Design::Wavefront,
                 &JobContext::new(),
             )
             .unwrap();
-            split::reset();
-            assert_eq!(r.run_info.as_ref().unwrap().settings["fallback_count"], 0);
+            let info = &r.run_info.as_ref().unwrap().settings;
+            assert_eq!(info["fallback_count"], 0);
+            assert_eq!(info["sag_mode"], sag as u32);
             r
         };
         // Even aspheres in the radial double-float evaluation with Newton
         // polish, every other sag by its jets.
-        compare(&cpu, &run(&[]), &name);
+        compare(&cpu, &run(gpu::SagMode::F32Scan), &name);
         // Long scans continue on the CPU: the reference's physics.
-        let handed = run(&[("stray_sag", "f32-grazing")]);
+        let handed = run(gpu::SagMode::F32Grazing);
         let n = &handed.run_info.as_ref().unwrap().settings["counters"];
         handoffs += n["sag_handoff"].as_u64().unwrap();
         compare(&cpu, &handed, &name);
@@ -84,7 +81,8 @@ fn compare(a: &mklight_stray::StrayResult, b: &mklight_stray::StrayResult, name:
         );
         let se = a.energy.detected_std_error_by_class[c]
             .1
-            .hypot(b.energy.detected_std_error_by_class[c].1);
+            .unwrap()
+            .hypot(b.energy.detected_std_error_by_class[c].1.unwrap());
         assert!(
             (av - bv).abs() <= 5. * se + 1e-8 * a.energy.emitted,
             "{name} class {c}: {av} vs {bv} SE={se}"

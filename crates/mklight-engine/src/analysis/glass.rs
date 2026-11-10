@@ -1,7 +1,9 @@
 //! The `glass_substitution` job: tabu search (or mixed glass/shape basin
 //! hopping) over catalogue glasses, with an LM re-optimisation of the
-//! continuous variables for every combination. Shares `optimize`'s merit,
-//! backend and Stop machinery.
+//! continuous variables for every combination. Shares `optimize`'s solved
+//! start and merit preparation, backend and Stop machinery; every
+//! combination is re-optimised from the substituted design with its solves
+//! applied, as a solve of its own on a device.
 
 use super::*;
 use mklight_core::MkResult;
@@ -39,8 +41,9 @@ struct Settings {
     feasibility_tolerance: f64,
 }
 
-/// The input prescription and candidate glasses, shared by the parallel
-/// local solves. Every assignment is built from `base`.
+/// The input prescription (its solves applied) and candidate glasses,
+/// shared by the parallel local solves. Every assignment is built from
+/// `base`.
 struct LensSpace {
     base: OpticalSystem,
     variables: Vec<VariableSpec>,
@@ -49,6 +52,8 @@ struct LensSpace {
     indices: Vec<usize>,
     merit: MeritFunctionSpec,
     registry: OperandRegistry,
+    /// Resolves the materials of a substituted design's solves.
+    library: Arc<MaterialLibrary>,
 }
 
 impl LensSpace {
@@ -78,6 +83,18 @@ impl LensSpace {
                     spec.operands.push(o);
                 }
             }
+        }
+        // A substituted design is the start of its own re-optimisation: its
+        // solves are applied to it, as `optimize` applies them to its start,
+        // and the re-optimisation does not re-solve.
+        if !system.solves.is_empty() {
+            system = mklight_trace::apply_solves_with(
+                &system,
+                &self.library,
+                &Default::default(),
+                &JobContext::new(),
+            )?
+            .0;
         }
         OpticalProblem::new(
             system,
@@ -109,6 +126,9 @@ impl Analysis for GlassSubstitution {
     }
     fn name(&self) -> &str {
         "glass_substitution"
+    }
+    fn supports_stop(&self) -> bool {
+        true
     }
     fn title(&self) -> &str {
         "Glass substitution"
@@ -328,9 +348,8 @@ impl Analysis for GlassSubstitution {
         settings: &Value,
         ctx: &JobContext,
     ) -> EngineResult<AnalysisOutput> {
-        // Settings normalisation checks only the top level: this also checks
-        // the nested candidate sets.
-        super::super::schema::validate(&self.settings_schema(), settings, true).map_err(invalid)?;
+        // Also checks the nested candidate sets.
+        validate_settings(&self.settings_schema(), settings)?;
         let mut s: Settings = parse(settings, "settings")?;
         let time_limit = s
             .max_seconds
@@ -338,12 +357,16 @@ impl Analysis for GlassSubstitution {
             .transpose()
             .map_err(invalid)?;
         let stop = input.stop.clone();
-        let system = input.snapshot.system().clone();
-        if s.variables.is_empty() {
-            s.variables = auto_variables(&system);
-        }
+        let start = SolvedStart::new(input, &ctx.subrange(0.0, 0.0))?;
+        let variables = start.parameters(
+            "variables",
+            std::mem::take(&mut s.variables),
+            auto_variables,
+            |v| &v.param,
+        )?;
+        let system = &start.system;
         if s.material_variables.is_empty() {
-            s.material_variables = model_variables(&system);
+            s.material_variables = model_variables(system);
             if s.material_variables.is_empty() {
                 return Err(invalid(
                     "'material_variables': none given, and the system has no model glasses",
@@ -354,73 +377,64 @@ impl Analysis for GlassSubstitution {
         if !s.material_variables.iter().all(|m| seen.insert(m.surface)) {
             return Err(invalid("'material_variables': a surface is listed twice"));
         }
-        if s.variables.iter().any(|v| {
+        // The glass of a substituted surface belongs to the search alone.
+        let of_substituted_glass = |p: &ParamPath| {
             matches!(
-                v.param,
+                p,
                 ParamPath::ModelNd { .. }
                     | ParamPath::ModelVd { .. }
                     | ParamPath::ModelDpgf { .. }
                     | ParamPath::MaterialDnD { .. }
                     | ParamPath::MaterialDvD { .. }
-            ) && v.param.surface().is_some_and(|id| seen.contains(&id))
-        }) {
+            ) && p.surface().is_some_and(|id| seen.contains(&id))
+        };
+        if variables.iter().any(|v| of_substituted_glass(&v.param)) {
             return Err(invalid(
                 "a substituted surface cannot also have continuous material variables",
+            ));
+        }
+        if start.solved.iter().any(of_substituted_glass) {
+            return Err(invalid(
+                "'material_variables': a solve controls the glass of a substituted surface",
             ));
         }
         let candidates = s
             .material_variables
             .iter()
-            .map(|v| v.candidates.resolve(&system, v.surface, &input.library))
+            .map(|v| v.candidates.resolve(system, v.surface, &input.library))
             .collect::<MkResult<Vec<_>>>()?;
 
         // The merit, as `optimize` builds it for LM.
-        let cpu = BuiltinEvaluator::new(input.library.clone());
-        let reg = OperandRegistry::builtin();
-        let default_merit = patched(
-            &DefaultMeritSpec::default(),
-            &s.default_merit,
-            "default_merit",
+        let m = PreparedMerit::new(
+            input,
+            start,
+            MeritSettings {
+                variables,
+                merit: s.merit.clone(),
+                default_merit: patched(
+                    &DefaultMeritSpec::default(),
+                    &s.default_merit,
+                    "default_merit",
+                )?,
+                relax_boundaries: true,
+                operands: s.operands,
+                constraints: s.constraints,
+                hold_efl: s.hold_efl,
+                derivative_free: None,
+            },
+            &ctx.subrange(0.0, 0.0),
         )?;
-        let mut spec = build_merit(&system, &s.merit, &default_merit, &s.variables)?;
-        let mut warnings = Vec::new();
-        if s.merit.is_null() {
-            warnings.extend(relax_fixed_boundaries(
-                &system,
-                &mut spec,
-                &s.variables,
-                &cpu,
-                &reg,
-                ctx,
-            )?);
-        }
-        spec.operands.extend(s.operands);
-        spec.operands.extend(s.constraints.into_iter().map(|mut o| {
-            o.role = OperandRole::Constraint;
-            o
-        }));
-        if s.hold_efl && !has_efl(&spec) {
-            match cpu
-                .evaluate_system(&system, &[&Operand::new(OperandKind::Efl)], ctx)?
-                .remove(0)
-            {
-                Ok(f) if f.is_finite() && f != 0.0 => {
-                    let mut o = Operand::new(OperandKind::Efl).target(f).as_constraint();
-                    o.label = "hold EFL".into();
-                    spec.operands.push(o);
-                }
-                other => warnings.push(format!(
-                    "the focal length is not held: the start has no finite EFL ({other:?})"
-                )),
-            }
-        }
-        let reference = OpticalProblem::new(
-            system.clone(),
-            s.variables.clone(),
-            spec.clone(),
-            cpu.clone(),
-            &reg,
-        )?;
+        let reference = m.problem(m.cpu.clone())?;
+        let PreparedMerit {
+            snapshot,
+            variables,
+            cpu,
+            reg,
+            spec,
+            mut warnings,
+            ..
+        } = m;
+        let system = snapshot.system().clone();
         let x0 = reference.start_point()?;
         let start = reference_score(&reference, &x0, ctx)?;
         let lsq = LsqSettings {
@@ -443,7 +457,7 @@ impl Analysis for GlassSubstitution {
                 1
             };
         let work = Workload::new(&cpu.trace, &system, &spec, jacobian_batch);
-        let mut ev = Evaluation::new(s.backend, input, &input.snapshot, work, ctx)?;
+        let mut ev = Evaluation::new(s.backend, input, &snapshot, work, ctx)?;
         let lsq = LsqSettings {
             speculative_jacobian: ev.speculative(),
             ..lsq
@@ -455,11 +469,12 @@ impl Analysis for GlassSubstitution {
                 .map(|v| system.surface_index(v.surface).unwrap())
                 .collect(),
             base: system,
-            variables: s.variables,
+            variables,
             materials: s.material_variables,
             candidates,
             merit: spec,
             registry: reg,
+            library: input.library.clone(),
         });
         let coords: Vec<_> = space
             .candidates
@@ -479,10 +494,12 @@ impl Analysis for GlassSubstitution {
         let local = LocallyRefined {
             choices: space.candidates.iter().map(Vec::len).collect(),
             settings: lsq,
-            // Every combination starts from the input shape.
+            // Every combination starts from the input shape, and its solve
+            // is one of its own on the device: what it learns about its rays
+            // stays with it.
             build: Box::new(move |a| {
                 let p: Box<dyn Problem + Send> = match &gpu {
-                    Some(g) => Box::new(build_space.problem(a, g.clone())?),
+                    Some(g) => Box::new(build_space.problem(a, g.for_solve())?),
                     None => Box::new(build_space.problem(a, build_cpu.clone())?),
                 };
                 Ok((p, start_x.clone()))
@@ -593,7 +610,7 @@ impl Analysis for GlassSubstitution {
         }
         let stopped = why == Interrupt::Stopped;
         let json = json!({
-            "status": if stopped { "stopped" } else { "finished" }, "stopped": stopped,
+            "status": job_status(stopped, None), "stopped": stopped,
             "termination": if why == Interrupt::TimeLimit { json!("time_limit") } else { json!(termination) },
             "algorithm": s.algorithm, "starting_merit": json_nf(start.merit), "starting_violation": json_nf(start.violation),
             "results": results,

@@ -155,11 +155,7 @@ fn all_algebra_emulation() {
 fn all_algebra_metal_matches_emulation() {
     use mklight_metal::{LibraryChoice, MetalBackend, MetalOptions};
     for library in [LibraryChoice::Precompiled, LibraryChoice::RuntimeSource] {
-        let Some(b) = MetalBackend::with_options(&MetalOptions {
-            library,
-            ..Default::default()
-        })
-        .unwrap() else {
+        let Some(b) = MetalBackend::with_options(&MetalOptions { library }).unwrap() else {
             eprintln!("SKIP: no Metal device");
             return;
         };

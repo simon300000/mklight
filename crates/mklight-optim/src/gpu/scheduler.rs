@@ -8,14 +8,19 @@ use mklight_core::{JobContext, MkError, MkResult, OpticalSystem};
 use std::sync::{Mutex, mpsc};
 
 enum Message {
-    /// A worker's next evaluation; `true` when its batch holds the probes of
-    /// finite differences (evaluated anchored, see `evaluate_batch_near`).
-    Evaluate(usize, Vec<OpticalSystem>, Vec<Operand>, bool),
+    /// A worker's next evaluation; with the anchor when its batch holds the
+    /// probes of finite differences (evaluated anchored, see
+    /// `evaluate_batch_near`).
+    Evaluate(usize, Request),
     Done(usize),
 }
 type Values = MkResult<Vec<Vec<OperandValue>>>;
-/// A worker's pending evaluation: systems, operands, anchored.
-type Request = (Vec<OpticalSystem>, Vec<Operand>, bool);
+/// A worker's pending evaluation: systems, operands, anchor.
+type Request = (Vec<OpticalSystem>, Vec<Operand>, Option<Box<OpticalSystem>>);
+/// A solve whose evaluations join those of the other workers in the
+/// coordinator's batches. The evaluator behind the workers sees one
+/// sequence of joined batches, in stable order: one solve's worth of state
+/// (`OperandEvaluator::for_solve`), which the workers therefore share.
 pub struct Worker<'a, E: ?Sized> {
     evaluator: &'a E,
     id: usize,
@@ -33,7 +38,7 @@ impl<E: OperandEvaluator + ?Sized> OperandEvaluator for Worker<'_, E> {
         self.evaluator.anchored_differences(base)
     }
     fn evaluate_batch(&self, s: &[OpticalSystem], o: &[&Operand], ctx: &JobContext) -> Values {
-        self.request(s, o, false, ctx)
+        self.request(s, o, None, ctx)
     }
     fn evaluate_batch_near(
         &self,
@@ -42,7 +47,7 @@ impl<E: OperandEvaluator + ?Sized> OperandEvaluator for Worker<'_, E> {
         anchor: Option<&OpticalSystem>,
         ctx: &JobContext,
     ) -> Values {
-        self.request(s, o, anchor.is_some(), ctx)
+        self.request(s, o, anchor, ctx)
     }
 }
 impl<E: OperandEvaluator + ?Sized> Worker<'_, E> {
@@ -50,16 +55,18 @@ impl<E: OperandEvaluator + ?Sized> Worker<'_, E> {
         &self,
         s: &[OpticalSystem],
         o: &[&Operand],
-        anchored: bool,
+        anchor: Option<&OpticalSystem>,
         ctx: &JobContext,
     ) -> Values {
         ctx.check()?;
         self.send
             .send(Message::Evaluate(
                 self.id,
-                s.to_vec(),
-                o.iter().map(|v| (*v).clone()).collect(),
-                anchored,
+                (
+                    s.to_vec(),
+                    o.iter().map(|v| (*v).clone()).collect(),
+                    anchor.cloned().map(Box::new),
+                ),
             ))
             .map_err(|_| MkError::Cancelled)?;
         self.receive
@@ -118,7 +125,7 @@ where
                 .any(|(i, &a)| a && pending[i].is_none())
             {
                 match receive.recv() {
-                    Ok(Message::Evaluate(id, s, o, a)) => pending[id] = Some((s, o, a)),
+                    Ok(Message::Evaluate(id, request)) => pending[id] = Some(request),
                     Ok(Message::Done(id)) => active[id] = false,
                     Err(_) => break,
                 }
@@ -133,18 +140,19 @@ where
                 let mut lengths = Vec::new();
                 let mut anchor = None;
                 for &i in &ids {
-                    let (s, _, anchored) = pending[i].take().unwrap();
+                    let (s, _, near) = pending[i].take().unwrap();
                     lengths.push(s.len());
-                    if anchored && anchor.is_none() {
-                        anchor = s.first().cloned();
+                    if anchor.is_none() {
+                        anchor = near;
                     }
                     systems.extend(s);
                 }
                 let refs: Vec<_> = operands.iter().collect();
                 // Finite differences among the joined requests are evaluated
-                // anchored: one evaluator per ray across the whole batch.
+                // anchored: one evaluator per ray across the whole batch,
+                // near the anchor of the first worker that has one.
                 let result = ctx.check().and_then(|_| {
-                    evaluator.evaluate_batch_near(&systems, &refs, anchor.as_ref(), ctx)
+                    evaluator.evaluate_batch_near(&systems, &refs, anchor.as_deref(), ctx)
                 });
                 match result {
                     Ok(v) => {

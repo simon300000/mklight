@@ -195,7 +195,7 @@ import simd
     }
 
     @Test func sceneGeometryCentresAndFilters() throws {
-        let scene = try MockOptics(system: SampleSystems.cookeTriplet()).layout(LayoutSettings())
+        let scene = try MockOptics(system: SampleSystems.cookeTriplet()).layout()
         let style = ViewportStyle(mode: .section2D, coloring: .field, selectedSurface: nil, stale: false, dark: false, scale: 2)
         let (segs2D, fills) = SceneGeometry.build(scene, style: style)
         var s3 = style

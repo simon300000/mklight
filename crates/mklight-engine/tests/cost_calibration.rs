@@ -12,7 +12,9 @@
 //! snapshot and after an edit, interleaved so host load hits all four
 //! alike (load average and device time are recorded with every
 //! rung; online refinement absorbs the host's current contention). It then
-//! fits the stage coefficients and writes the table (without `_OUT`, to the target tmp dir). Options:
+//! fits the stage coefficients, each mode with the features the model
+//! applies its coefficients to (`cost::Mode::features`), and writes the
+//! table (without `_OUT`, to the target tmp dir). Options:
 //! `MKLIGHT_COST_REPS` (default 2), `MKLIGHT_COST_FILTER` (analyses),
 //! `MKLIGHT_COST_MODES` (of `cpu`, `cpu_edit`, `metal`, `metal_edit`; a run
 //! restricted by either fits a partial table and refuses `_OUT`),
@@ -32,7 +34,7 @@ use std::io::Write;
 use std::time::Instant;
 
 use mklight_core::{JobContext, OpticalSystem, param::ParamPath, samples};
-use mklight_engine::analysis::cost::{self, Calibration, Features, SystemShape};
+use mklight_engine::analysis::cost::{self, Calibration, Features, Mode, SystemShape};
 use mklight_engine::{
     AnalysisRequest, Engine, EngineConfig, Session, backend::Backend, project::Project,
 };
@@ -64,18 +66,12 @@ fn design_wanted(name: &str) -> bool {
     }
 }
 
-/// Calibrated analyses: every GPU analysis except the static-capability
-/// ones (always the reference).
+/// Calibrated analyses: every analysis with a GPU path.
 fn analyses() -> Vec<&'static str> {
     mklight_engine::analysis::gpu::GPU_ANALYSES
         .iter()
         .copied()
-        .filter(|a| {
-            !matches!(
-                *a,
-                "encircled_energy" | "wavefront_map" | "polarization_pupil_map"
-            ) && wanted("MKLIGHT_COST_FILTER", a)
-        })
+        .filter(|a| wanted("MKLIGHT_COST_FILTER", a))
         .collect()
 }
 
@@ -161,7 +157,15 @@ fn ladder(analysis: &str, system: &OpticalSystem) -> Vec<Value> {
         | "mtf_vs_field" => wave(),
         "image_simulation" => vec![Value::Null, json!({"optics":{"field_grid":5}})],
         "ghost_irradiance" => one("pupil_samples", &[json!(48), json!(96)]),
-        "stray_light" => one("rays", &[json!(20000), json!(100000)]),
+        // Only runs whose transport gives the device sources are routed
+        // by cost: from 163,840 rays on, on designs whose sags the device
+        // intersects in closed form. Every other run is the CPU reference
+        // by rule, on either backend.
+        "stray_light" => [200_000u64, 400_000, 800_000]
+            .into_iter()
+            .filter(|&rays| mklight_stray::gpu::hybrid::planned_share(system, rays, None) > 0.)
+            .map(|rays| json!({"rays": rays}))
+            .collect(),
         "merit_evaluation" => vec![Value::Null],
         "optimize" => {
             let vars = variables(system);
@@ -219,25 +223,7 @@ struct Call {
     ms: f64,
     device_ms: f64,
     used: String,
-    aim: (f64, f64),
     decision: Value,
-}
-
-fn plan_aim(v: &Value, out: &mut (f64, f64)) {
-    match v {
-        Value::Object(m) => {
-            for (k, x) in m {
-                if k == "plan_stats" {
-                    out.0 += x["aiming"]["rays"].as_f64().unwrap_or(0.);
-                    out.1 += x["aiming"]["iterations"].as_f64().unwrap_or(0.);
-                } else {
-                    plan_aim(x, out);
-                }
-            }
-        }
-        Value::Array(a) => a.iter().for_each(|x| plan_aim(x, out)),
-        _ => {}
-    }
 }
 
 fn call(s: &Session, analysis: &str, settings: &Value, backend: Backend) -> Option<Call> {
@@ -250,20 +236,13 @@ fn call(s: &Session, analysis: &str, settings: &Value, backend: Backend) -> Opti
     let ms = start.elapsed().as_secs_f64() * 1e3;
     let device_ms = (mklight_metal::device_seconds() - device) * 1e3;
     match r {
-        Ok(r) => {
-            let mut aim = (0., 0.);
-            for e in &r.backend.execution {
-                plan_aim(&e["settings"], &mut aim);
-            }
-            Some(Call {
-                grid: cost::decided_grid(&r.json),
-                ms,
-                device_ms,
-                used: r.backend.used.clone(),
-                aim,
-                decision: r.backend.cost_decision.clone().unwrap_or(Value::Null),
-            })
-        }
+        Ok(r) => Some(Call {
+            grid: cost::decided_grid(&r.json),
+            ms,
+            device_ms,
+            used: r.backend.used.clone(),
+            decision: r.backend.cost_decision.clone().unwrap_or(Value::Null),
+        }),
         Err(e) => {
             eprintln!("{analysis} {settings}: {e}");
             None
@@ -340,11 +319,10 @@ fn measure(device_open_ms: &mut f64) -> Vec<Value> {
                 let mut dev: BTreeMap<&str, Vec<f64>> = BTreeMap::new();
                 let mut grid = None;
                 let mut used: BTreeMap<&str, String> = BTreeMap::new();
-                let mut aim = (0., 0.);
                 let mut first = None;
                 let mut slow = false;
                 for rep in 0..=reps {
-                    let mut order = ["cpu", "cpu_edit", "metal", "metal_edit"];
+                    let mut order = Mode::ALL.map(Mode::name);
                     if rep % 2 == 1 {
                         order.reverse();
                     }
@@ -371,8 +349,6 @@ fn measure(device_open_ms: &mut f64) -> Vec<Value> {
                         if rep > 0 {
                             ms.entry(mode).or_default().push(c.ms);
                             dev.entry(mode).or_default().push(c.device_ms);
-                            aim.0 += c.aim.0;
-                            aim.1 += c.aim.1;
                         }
                         slow |= c.ms > 8000.;
                         grid = grid.or(c.grid);
@@ -398,8 +374,7 @@ fn measure(device_open_ms: &mut f64) -> Vec<Value> {
                     let r = json!({"design":design,"analysis":analysis,"settings":settings,
                         "normalised":normalised,"mode":mode,"ms":median_ms,"runs":v,
                         "device_ms":device_ms,"grid":grid,
-                        "used":used.get(mode),"aim":{"rays":aim.0,"iterations":aim.1},
-                        "first_ms":first,"load":load()});
+                        "used":used.get(mode),"first_ms":first,"load":load()});
                     emit("COST_CAL", r.clone());
                     writeln!(file, "{r}").unwrap();
                     records.push(r);
@@ -424,11 +399,9 @@ fn fit(records: &[Value], device_open_ms: f64) -> Calibration {
         .into_iter()
         .map(|(n, s)| (n, s.system().clone()))
         .collect();
-    let traces = 1. + cost::PRIOR_ITERATIONS;
-    let mut points: BTreeMap<(String, String), Vec<Point>> = BTreeMap::new();
-    let mut labels: BTreeMap<(String, String), Vec<Value>> = BTreeMap::new();
+    let mut points: BTreeMap<(String, Mode), Vec<Point>> = BTreeMap::new();
+    let mut labels: BTreeMap<(String, Mode), Vec<Value>> = BTreeMap::new();
     let mut first: BTreeMap<String, Vec<f64>> = BTreeMap::new();
-    let mut reference = (0., 0.);
     // A rung measured more than once (a re-measurement on a quieter host)
     // keeps its least loaded record; load discounts the rest.
     let cores = std::thread::available_parallelism().map_or(12, |n| n.get()) as f64;
@@ -452,7 +425,7 @@ fn fit(records: &[Value], device_open_ms: f64) -> Calibration {
         let (Some(design), Some(analysis), Some(mode), Some(ms)) = (
             r["design"].as_str(),
             r["analysis"].as_str(),
-            r["mode"].as_str(),
+            r["mode"].as_str().and_then(Mode::parse),
             r["ms"].as_f64(),
         ) else {
             continue;
@@ -462,7 +435,7 @@ fn fit(records: &[Value], device_open_ms: f64) -> Calibration {
         };
         // Only calls that ran where they were asked to.
         let native = r["used"].as_str().is_some_and(|u| u.starts_with("gpu:"));
-        if native != !mode.starts_with("cpu") || !ms.is_finite() {
+        if native != matches!(mode, Mode::Metal | Mode::MetalEdit) || !ms.is_finite() {
             continue;
         }
         let Some(p) =
@@ -470,54 +443,46 @@ fn fit(records: &[Value], device_open_ms: f64) -> Calibration {
         else {
             continue;
         };
-        let shape = SystemShape::of(system);
+        // The features this mode's coefficients are applied to.
+        let features = mode.features(p.features(&SystemShape::of(system)));
         points
-            .entry((analysis.into(), mode.into()))
+            .entry((analysis.into(), mode))
             .or_default()
-            .push((p.features(&shape, traces), ms, weight(r)));
+            .push((features, ms, weight(r)));
         labels
-            .entry((analysis.into(), mode.into()))
+            .entry((analysis.into(), mode))
             .or_default()
             .push(json!({"design":design,"settings":r["settings"],"load":r["load"]}));
-        if mode == "metal_edit"
+        if mode == Mode::MetalEdit
             && let Some(f) = r["first_ms"].as_f64()
         {
             first.entry(analysis.into()).or_default().push(f - ms);
         }
-        if shape.aimed && native {
-            reference.0 += r["aim"]["rays"].as_f64().unwrap_or(0.);
-            reference.1 += r["aim"]["iterations"].as_f64().unwrap_or(0.);
-        }
     }
     let mut analyses_out = BTreeMap::new();
     for analysis in analyses() {
-        let get = |mode: &str| {
+        let get = |mode: Mode| {
             points
-                .get(&(analysis.to_string(), mode.to_string()))
+                .get(&(analysis.to_string(), mode))
                 .filter(|p| !p.is_empty())
                 .map(|p| cost::model::fit_weighted(p))
         };
         let c = cost::AnalysisCalibration {
-            cpu: get("cpu"),
-            cpu_edit: get("cpu_edit"),
-            metal: get("metal"),
-            metal_edit: get("metal_edit"),
+            cpu: get(Mode::Cpu),
+            cpu_edit: get(Mode::CpuEdit),
+            metal: get(Mode::Metal),
+            metal_edit: get(Mode::MetalEdit),
             first_use_ms: first
                 .get(analysis)
                 .map_or(0., |v| v.iter().copied().fold(0., f64::max).max(0.)),
         };
         emit("COST_FIT", json!({"analysis":analysis,"fit":c}));
         // Residuals, for inspecting the fit.
-        for (mode, fit) in [
-            ("cpu", &c.cpu),
-            ("cpu_edit", &c.cpu_edit),
-            ("metal", &c.metal),
-            ("metal_edit", &c.metal_edit),
-        ] {
+        for mode in Mode::ALL {
             let (Some(fit), Some(p), Some(l)) = (
-                fit,
-                points.get(&(analysis.to_string(), mode.to_string())),
-                labels.get(&(analysis.to_string(), mode.to_string())),
+                c.fit(mode),
+                points.get(&(analysis.to_string(), mode)),
+                labels.get(&(analysis.to_string(), mode)),
             ) else {
                 continue;
             };
@@ -525,7 +490,7 @@ fn fit(records: &[Value], device_open_ms: f64) -> Calibration {
                 let predicted: f64 = fit.stages(f).iter().sum();
                 emit(
                     "COST_RESID",
-                    json!({"analysis":analysis,"mode":mode,"at":l,"ms":ms,"predicted":predicted,"features":f}),
+                    json!({"analysis":analysis,"mode":mode.name(),"at":l,"ms":ms,"predicted":predicted,"features":f}),
                 );
             }
         }
@@ -555,7 +520,6 @@ fn fit(records: &[Value], device_open_ms: f64) -> Calibration {
             "designs": systems.keys().map(|k| if k == "local" { "local project" } else { k.as_str() }).collect::<Vec<_>>(),
             "load1": {"min": loads.iter().copied().fold(f64::INFINITY, f64::min),
                       "max": loads.iter().copied().fold(0., f64::max)},
-            "reference_iterations": (reference.1 > 0.).then(|| reference.1 / reference.0),
             "command": "cargo test --release -p mklight-engine --test cost_calibration -- --ignored --exact calibrate",
         }),
         cpu_threads: rayon::current_num_threads(),

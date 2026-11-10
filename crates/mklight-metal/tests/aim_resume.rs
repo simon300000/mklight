@@ -14,14 +14,13 @@ use support::*;
 fn backend() -> MetalBackend {
     let b = MetalBackend::with_options(&MetalOptions {
         library: LibraryChoice::Precompiled,
-        ..Default::default()
     })
     .unwrap()
     .expect("P1 requires host Metal hardware");
     assert!(b.precision().probe.error_free_transforms());
     b
 }
-fn run(b: &dyn ComputeBackend, p: ResidentPlan) -> (PlanResult, Vec<BufferData>) {
+fn run(b: &dyn QualificationBackend, p: ResidentPlan) -> (PlanResult, Vec<BufferData>) {
     let r = b
         .submit_plan(p, &JobContext::new())
         .unwrap()

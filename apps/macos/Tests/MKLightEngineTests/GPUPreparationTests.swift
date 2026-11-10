@@ -22,6 +22,19 @@ import Testing
             == .failed(device: "Apple M2 Pro", message: "x"))
     }
 
+    /// `ready` carries the engine's `warning` when the saved kernels could
+    /// not be read or written; without the key there is none.
+    @Test func readyCarriesTheKernelCacheWarning() throws {
+        let warned = try decode(
+            #"{"state":"ready","device":"Apple M2 Pro","kernels":205,"from_cache":0,"seconds":31.2,"warning":"kernel archive: permission denied"}"#)
+        #expect(
+            warned
+                == .ready(device: "Apple M2 Pro", kernels: 205, fromCache: 0, seconds: 31.2, warning: "kernel archive: permission denied"))
+        let plain = try decode(#"{"state":"ready","device":"Apple M2 Pro","kernels":205,"from_cache":205,"seconds":0.005}"#)
+        #expect(plain == .ready(device: "Apple M2 Pro", kernels: 205, fromCache: 205, seconds: 0.005, warning: nil))
+        #expect(plain != warned)
+    }
+
     @Test func totalNotYetKnownIsZeroProgress() throws {
         let s = try decode(#"{"state":"preparing","device":"","done":0,"total":0}"#)
         #expect(s.isPreparing && s.fraction == 0)

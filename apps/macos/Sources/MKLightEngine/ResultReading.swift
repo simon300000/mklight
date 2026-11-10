@@ -101,21 +101,27 @@ extension ResultBuffer {
 }
 
 /// How the engine computed a result (the envelope's `backend` object,
-/// docs/RESULTS.md §5): what was requested, what was used, and why another
-/// backend was used, if one was.
+/// docs/RESULTS.md §5): what was requested, what was used, why another
+/// backend was used, if one was, and how the backend was selected.
 public struct BackendReport: Sendable, Hashable {
     public var requested: String
     public var used: String
     public var precision: String
     public var device: String?
     public var fallbackReason: String?
+    /// How the backend was selected (`cost_decision`), as the engine sent it.
+    public var costDecision: JSONValue?
 
-    public init(requested: String, used: String, precision: String, device: String? = nil, fallbackReason: String? = nil) {
+    public init(
+        requested: String, used: String, precision: String, device: String? = nil, fallbackReason: String? = nil,
+        costDecision: JSONValue? = nil
+    ) {
         self.requested = requested
         self.used = used
         self.precision = precision
         self.device = device
         self.fallbackReason = fallbackReason
+        self.costDecision = costDecision
     }
 
     /// Reads the envelope's `backend` object; `nil` when it is missing.
@@ -126,6 +132,7 @@ public struct BackendReport: Sendable, Hashable {
         precision = o["precision"]?.string ?? ""
         device = o["device"]?.string
         fallbackReason = o["fallback_reason"]?.string
+        if let d = o["cost_decision"], d != .null { costDecision = d }
     }
 
     /// e.g. "CPU reference · f64" or "Metal (Apple M2 Pro) · f32".
@@ -145,5 +152,55 @@ public struct BackendReport: Sendable, Hashable {
             default: precision
             }
         return prec.isEmpty ? name + dev : "\(name)\(dev) · \(prec)"
+    }
+}
+
+/// An `nf` number as a property of a Codable mirror of engine JSON: a
+/// quantity that may legitimately be non-finite (an unbounded range is ±∞,
+/// an undefined quantity is NaN). JSON has no such numbers; serde_json
+/// writes a non-finite `f64` as `null`, and the engine's convention for
+/// infinities is the strings `"inf"` / `"-inf"` (CONVENTIONS §2). Decoding
+/// accepts a number, `null` (→ NaN), `"inf"`, `"-inf"` or `"nan"`; encoding
+/// writes ±∞ as those strings and NaN as `null`, so any value round trips.
+/// NaN compares equal to NaN here, so values stay `Equatable`.
+@propertyWrapper
+public struct EngineDouble: Codable, Sendable, Hashable {
+    public var wrappedValue: Double
+    public init(wrappedValue: Double) { self.wrappedValue = wrappedValue }
+
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.singleValueContainer()
+        if c.decodeNil() {
+            wrappedValue = .nan
+        } else if let d = try? c.decode(Double.self) {
+            wrappedValue = d
+        } else {
+            let text = try c.decode(String.self)
+            if text.trimmingCharacters(in: .whitespaces).lowercased() == "nan" {
+                wrappedValue = .nan
+            } else if let v = ExtendedDouble.parse(text) {
+                wrappedValue = v
+            } else {
+                throw DecodingError.dataCorruptedError(in: c, debugDescription: "'\(text)' is not a number, ±inf or nan")
+            }
+        }
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var c = encoder.singleValueContainer()
+        if wrappedValue.isNaN {
+            try c.encodeNil()
+        } else if wrappedValue.isInfinite {
+            try c.encode(wrappedValue > 0 ? "inf" : "-inf")
+        } else {
+            try c.encode(wrappedValue)
+        }
+    }
+
+    public static func == (a: Self, b: Self) -> Bool {
+        a.wrappedValue == b.wrappedValue || (a.wrappedValue.isNaN && b.wrappedValue.isNaN)
+    }
+    public func hash(into h: inout Hasher) {
+        h.combine(wrappedValue.isNaN ? .nan : wrappedValue)
     }
 }

@@ -438,8 +438,9 @@ impl PyJob {
         self.state_value().is_terminal()
     }
 
-    /// Stop optimize/tolerance, retaining the best-so-far result (stopped=True).
-    /// Other active jobs raise UnsupportedError; finished jobs are unchanged.
+    /// Stop a job of an analysis listed as `stoppable`, retaining the
+    /// best-so-far result (stopped=True). Other active jobs raise
+    /// UnsupportedError; finished jobs are unchanged.
     fn stop(&self) -> PyResult<()> {
         if !matches!(*self.lock(), Slot::Pending) {
             return Ok(());

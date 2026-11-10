@@ -7,6 +7,7 @@ pub fn ray_fan_job(
     b: &dyn ComputeBackend,
     t: &SequentialTracer,
     s: &FanSettings,
+    route: &Route,
     ctx: &JobContext,
 ) -> MkResult<FanResult> {
     check_count("fan samples", s.samples, 2, 100_001)?;
@@ -23,7 +24,7 @@ pub fn ray_fan_job(
         .chain(coords.iter().map(|&x| [x, 0.0]))
         .collect();
     let points: Vec<_> = fields.iter().map(|&f| t.field(f).point).collect();
-    let geo = Geometry::new(b, t, ctx)?;
+    let geo = Geometry::new(b, t, ctx)?.with_route(route)?;
     let mut p = ResidentPlan::new(t.system().snapshot.clone());
     p.settings = serde_json::to_value(s).unwrap();
     let mut g = geo.append_grid(
@@ -95,6 +96,7 @@ pub fn opd_fan_job(
     b: &dyn ComputeBackend,
     t: &SequentialTracer,
     s: &FanSettings,
+    route: &Route,
     ctx: &JobContext,
 ) -> MkResult<FanResult> {
     check_count("fan samples", s.samples, 2, 100_001)?;
@@ -111,7 +113,7 @@ pub fn opd_fan_job(
         .chain(coords.iter().map(|&x| [x, 0.0]))
         .collect();
     let pts: Vec<_> = fields.iter().map(|&f| t.field(f).point).collect();
-    let geo = Geometry::new(b, t, ctx)?;
+    let geo = Geometry::new(b, t, ctx)?.with_route(route)?;
     let mut p = ResidentPlan::new(t.system().snapshot.clone());
     p.settings = serde_json::to_value(s).unwrap();
     let mut g = geo.append_grid(

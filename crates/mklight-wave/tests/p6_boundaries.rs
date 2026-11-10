@@ -12,11 +12,9 @@ use mklight_gpu::{
 use mklight_wave::*;
 /// The host Metal backend; None (the test is skipped) without a device.
 fn metal(origin: mklight_metal::LibraryChoice) -> Option<mklight_metal::MetalBackend> {
-    let b = mklight_metal::MetalBackend::with_options(&mklight_metal::MetalOptions {
-        library: origin,
-        ..Default::default()
-    })
-    .unwrap();
+    let b =
+        mklight_metal::MetalBackend::with_options(&mklight_metal::MetalOptions { library: origin })
+            .unwrap();
     if b.is_none() {
         eprintln!("no Metal device: skipped");
     }

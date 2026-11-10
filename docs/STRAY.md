@@ -260,13 +260,19 @@ independent per-ray contributions `xᵢ`, with standard error
 `SE = √(N/(N−1) (Σxᵢ² − (Σxᵢ)²/N))`. This is reported for every class, the
 owned (stray) total, every pixel of every class map and of the owned sum
 map, every path signature, and the net Monte-Carlo weight adjustment.
+A run of a single source ray (`N = 1`) has no standard error: every error
+is then undefined, `None` in the result types and `null` in JSON (the
+per-pixel error maps as a whole; NaN in the engine's error buffers).
 
 **Image moments** per class (and for the owned sum): from the sums
 `S = (F, Σwx, Σwy, Σw(x²+y²))` over detector hits (local detector frame)
 and the 4 × 4 matrix `Q` of per-ray cross products, the centroid
 `(Sx/F, Sy/F)` and RMS radius about it get delta-method errors
 `SE(g)² = N/(N−1) (∇gᵀQ∇g − (∇gᵀS)²/N)`. A test checks them (and the flux
-error) against the scatter of 16 independent runs (ratio 1.05–1.11).
+error) against the scatter of 16 independent runs (ratio 1.05–1.11). The
+RMS radius is not differentiable at zero, so the error of a zero RMS radius
+(a class with a single hit) is undefined (`None`, `null`) in any run. A
+class that detected nothing has all-zero moments, errors included.
 
 **Energy ledger**: every emitted unit ends detected (one class), absorbed
 (by sink), escaped, escaped from a solid (a leak; warned about), truncated
@@ -367,7 +373,8 @@ records the options actually used (`system_options`).
 Result: the resolved source with its reference flux; one irradiance map
 with per-pixel standard errors per included class; the total stray map and
 its errors; stray flux, error and fraction of the reference flux (`None`
-for a zero reference flux); for field sources the obstructed fraction of
+for a zero reference flux; the errors are `None` where undefined,
+"Estimators and errors"); for field sources the obstructed fraction of
 the designed flux (`primary_obstruction`); per-class totals (flux, error,
 fraction, hits, image moments) for all five classes;
 the top path signatures; the energy report; the clear semi-diameters used;
@@ -566,7 +573,7 @@ replacement work.
 Inputs are produced with `fill_buffer`; outputs are borrowed with
 `read_view`. RunInfo records the actual backend, F32Gpu precision, seed,
 scene fingerprint, numeric recipe version, kernel build/probe, the division
-(`design`, `gpu_share`, `sag_mode`), the source counters (device sources,
+(`gpu_share`, `sag_mode`), the source counters (device sources,
 CPU continuations by cause, retraces, CPU-share sources, events on each
 side), stage timings, command/allocation/storage/copy statistics and any
 reference replacement. Widening final values to f64 does not change the
@@ -583,31 +590,42 @@ default.
 
 ### Divisions between the CPU and the GPU
 
-`gpu::Design` (route option `stray`, GPU.md §9.3; `gpu::run_design`,
-`gpu::analyze_design`) selects how a run divides the transport:
+`gpu::TransportOptions::gpu_share` (the route option `stray_share` of an
+engine request, GPU.md §9.3) is the share of the source chunks the device
+transports:
 
-| design | device | CPU |
+| | device | CPU |
 |---|---|---|
-| `cosplit` (default) | the first 64 events of the sources of a fixed share of the source chunks | the reference trace of the other chunks at the same time; the tally and the continuation of the device sources |
-| `wavefront` | the first 64 events of every source | the tally and the continuation of longer path trees |
+| a share of the chunks | the first 64 events of their sources | the reference trace of the other chunks at the same time; the tally and the continuation of the device sources |
+| every chunk (share 1) | the first 64 events of every source | the tally and the continuation of longer path trees |
 
 Which part of a source runs where depends only on the source and on fixed
 options, never on timing, so a seed gives bit-identical results. The device
-share of `cosplit` (`TransportOptions::gpu_share`, else the route option
-`stray_share`, a number in 0…1) is a fixed rule of the scene when not set: 0.2,
+share (a number in 0…1) is a fixed rule of the scene when not set: 0.2,
 and 0 with iteratively intersected sags or when that share is below 32 768
 sources (`gpu::hybrid::default_share`); device chunks come in units of up to
-one plan, spread evenly. With a share of 0 `cosplit` is the reference bit for
-bit, with a share of 1 it is `wavefront`. A machine with a stronger GPU per
-CPU core wants a larger share.
+one plan, spread evenly. With a share of 0 the run is the reference bit for
+bit. A machine with a stronger GPU per CPU core wants a larger share.
+
+`gpu::hybrid::planned_share` gives the same share before a scene exists,
+from the optical system, the ray count and the option: it applies the rule
+to the shapes of the system's surfaces (every sag of the scene is one of
+them or a plane; the edges and barrels are cylinders, which the rule does
+not look at). The engine's `auto` routing uses it: a run whose share is 0 is
+the CPU reference by rule, settled without a cost prediction and without
+opening a device (GPU.md §9.2, "Automatic routing"). The two can differ
+only for an iterative sag on a surface the scene does not build (a dummy
+surface that clips nothing): the planned share is then 0 where the scene's
+is 0.2.
 
 The analysis adapter builds the scene, starts the device transport and then
 runs the obstruction checks of the system fields and the source's primary
 reference on the CPU beside it (`StraySystem::build_scene`); the result,
 warnings and progress are those of the sequential order.
 
-**Grazing handoff on the device** (route option `stray_sag`,
-`ops::Transport::sag_mode`): `f32-scan` (default) is the scan above;
+**Grazing handoff on the device** (`gpu::TransportOptions::sag`, the route
+option `stray_sag`; `ops::Transport::sag_mode`): `f32-scan` (default) is the
+scan above;
 `f32-grazing` also hands a ray whose clipped interval needs more than 32
 cells (oblique and grazing rays) back to the CPU before the event
 (`Ledger::status` 6: the state goes back on the stack, no draw consumed),

@@ -8,6 +8,7 @@ use mklight_gpu::geometry::{self, SurfaceSample, SurfaceSamples, VertexProjectio
 use std::cell::RefCell;
 struct Provider<'a> {
     backend: &'a dyn ComputeBackend,
+    route: &'a Route,
     evidence: RefCell<Vec<RunInfo>>,
 }
 impl LayoutProvider for Provider<'_> {
@@ -16,8 +17,13 @@ impl LayoutProvider for Provider<'_> {
         t: &SequentialTracer,
         ctx: &JobContext,
     ) -> MkResult<mklight_trace::SemiDiameters> {
-        let (sd, run) =
-            super::records::semi_diameters_job(self.backend, t, &Default::default(), ctx)?;
+        let (sd, run) = super::records::semi_diameters_job(
+            self.backend,
+            t,
+            &Default::default(),
+            self.route,
+            ctx,
+        )?;
         self.evidence.borrow_mut().push(run);
         Ok(sd)
     }
@@ -27,7 +33,7 @@ impl LayoutProvider for Provider<'_> {
         samples: &[LayoutVertex],
         ctx: &JobContext,
     ) -> MkResult<Vec<[f64; 3]>> {
-        let geo = Geometry::new(self.backend, t, ctx)?;
+        let geo = Geometry::new(self.backend, t, ctx)?.with_route(self.route)?;
         let slots = t.system().num_surfaces();
         let mut points = Vec::with_capacity(samples.len());
         // Surface meshes can contain millions of repeated topology vertices;
@@ -109,7 +115,7 @@ impl LayoutProvider for Provider<'_> {
         lead: f64,
         ctx: &JobContext,
     ) -> MkResult<Vec<Polyline>> {
-        let geo = Geometry::new(self.backend, t, ctx)?;
+        let geo = Geometry::new(self.backend, t, ctx)?.with_route(self.route)?;
         let slots = t.system().num_surfaces();
         let mut p = ResidentPlan::new(t.system().snapshot.clone());
         // The selected layout fan is small; each job keeps its own field
@@ -211,10 +217,12 @@ pub fn layout_job(
     b: &dyn ComputeBackend,
     t: &SequentialTracer,
     s: &LayoutSettings,
+    route: &Route,
     ctx: &JobContext,
 ) -> MkResult<LayoutScene> {
     let provider = Provider {
         backend: b,
+        route,
         evidence: RefCell::new(Vec::new()),
     };
     let mut scene = layout::layout_with(t, s, ctx, &provider)?;

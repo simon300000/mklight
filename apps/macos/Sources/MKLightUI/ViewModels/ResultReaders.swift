@@ -86,6 +86,11 @@ public enum Fmt {
     public static func percent(_ f: Double, digits: Int = 1) -> String {
         f.isFinite ? String(format: "%.\(digits)f %%", f * 100) : "—"
     }
+
+    /// A run time: whole milliseconds below a second, then seconds.
+    public static func duration(ms: Double) -> String {
+        ms < 1000 ? String(format: "%.0f ms", ms) : String(format: "%.1f s", ms / 1000)
+    }
 }
 
 extension AnalysisOutput {

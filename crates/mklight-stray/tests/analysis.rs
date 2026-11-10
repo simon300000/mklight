@@ -81,18 +81,24 @@ fn energy_closure_and_class_partition() {
         let not_detected =
             e.absorbed + e.escaped + e.escaped_from_solid + e.truncated + e.sampling_failed;
         let closure = all_classes - (e.emitted - not_detected);
-        let zc = closure / e.mc_adjustment_std_error;
+        let zc = closure / e.mc_adjustment_std_error.unwrap();
         println!(
             "{name}: Σ classes {:.6e} W, emitted − absorbed − escaped {:.6e} W, closure {:+.3e} W (z = {zc:+.2}; SE {:.3e} W)\n{}",
             all_classes,
             e.emitted - not_detected,
             closure,
-            e.mc_adjustment_std_error,
+            e.mc_adjustment_std_error.unwrap(),
             e.summary()
         );
-        assert!(e.mc_adjustment_std_error > 0.0);
+        assert!(e.mc_adjustment_std_error.unwrap() > 0.0);
         assert!(zc.abs() < 4.0, "{name}: closure z = {zc}");
-        assert!(closure.abs() < 4.0 * e.detected_std_error.max(e.mc_adjustment_std_error));
+        assert!(
+            closure.abs()
+                < 4.0
+                    * e.detected_std_error
+                        .unwrap()
+                        .max(e.mc_adjustment_std_error.unwrap())
+        );
         // The closed barrel leaks nothing out of the solids.
         assert!(e.escaped_from_solid < 1e-4 * e.emitted, "{}", e.summary());
         assert!(e.truncated == 0.0 && e.sampling_failed == 0.0);
@@ -112,7 +118,7 @@ fn energy_closure_and_class_partition() {
             let t = r.total_of(m.class).flux;
             assert!((s - t).abs() <= 1e-9 * t.max(1e-300), "{:?}", m.class);
         }
-        assert!(r.stray_std_error > 0.0 && r.stray_flux > 0.0);
+        assert!(r.stray_std_error.unwrap() > 0.0 && r.stray_flux > 0.0);
         assert!(
             r.top_signatures
                 .iter()
@@ -259,7 +265,7 @@ fn analysis_is_reproducible_for_any_thread_count() {
     let zz = z(
         a.stray_flux,
         d.stray_flux,
-        a.stray_std_error.hypot(d.stray_std_error),
+        a.stray_std_error.unwrap().hypot(d.stray_std_error.unwrap()),
     );
     assert!(zz.abs() < 4.0, "z = {zz}");
 }
@@ -319,9 +325,9 @@ fn moment_standard_errors_are_calibrated() {
             m.rms_radius,
         ]);
         let se = [
-            r.energy.std_error_in(PathClass::Primary),
-            m.centroid_std_error[1],
-            m.rms_radius_std_error,
+            r.energy.std_error_in(PathClass::Primary).unwrap(),
+            m.centroid_std_error[1].unwrap(),
+            m.rms_radius_std_error.unwrap(),
         ];
         for j in 0..3 {
             reported[j] += se[j] / k as f64;
@@ -588,7 +594,7 @@ fn system_build_and_reference_job_control() {
     };
     let r = run(&sys.scene, &beam.spec, &set);
     let mc = r.energy.detected_in(PathClass::Primary);
-    let se = r.energy.std_error_in(PathClass::Primary);
+    let se = r.energy.std_error_in(PathClass::Primary).unwrap();
     let (zf, zs) = (
         z(mc, reference.flux, se),
         z(mc, reference.sequential_flux, se),
@@ -599,4 +605,70 @@ fn system_build_and_reference_job_control() {
     );
     assert!(zf.abs() < 3.0, "z = {zf}");
     assert!(zs < -5.0, "z = {zs}");
+}
+
+/// A run of one source ray has no standard errors: they are `None` (JSON
+/// `null`), not a number, and the result reads back from its own JSON, as
+/// does a run whose errors are all defined.
+#[test]
+fn undefined_errors_are_null_and_results_round_trip() {
+    let (rs, base) = barrelled();
+    let round_trip = |r: &StrayAnalysisResult| {
+        let json = serde_json::to_string(r).unwrap();
+        let back: StrayAnalysisResult = serde_json::from_str(&json).unwrap();
+        // The compact signatures are not serialised.
+        let mut expected = r.clone();
+        for s in &mut expected.top_signatures {
+            s.signature = Default::default();
+        }
+        assert_eq!(back, expected);
+        json
+    };
+
+    let one = StrayAnalysisSettings {
+        source: StraySource::SystemField {
+            index: 0,
+            margin: 0.1,
+            strength: 1.0,
+        },
+        rays: 1,
+        seed: 3,
+        classes: ClassMask::ALL,
+        detector_pixels: (4, 4),
+        ..base.clone()
+    };
+    let r = analyze(rs.clone(), &one, &JobContext::new()).unwrap();
+    assert_eq!(r.energy.rays, 1);
+    assert_eq!(r.stray_std_error, None);
+    assert_eq!(r.total_irradiance.len(), 16);
+    assert_eq!(r.total_irradiance_std_error, None);
+    assert_eq!(r.maps.len(), 5);
+    assert!(r.maps.iter().all(|m| m.irradiance_std_error.is_none()));
+    assert!(r.totals.iter().all(|t| t.std_error.is_none()));
+    assert!(r.top_signatures.iter().all(|s| s.std_error.is_none()));
+    assert_eq!(r.energy.detected_std_error, None);
+    assert_eq!(r.energy.mc_adjustment_std_error, None);
+    let json = round_trip(&r);
+    assert!(json.contains("\"stray_std_error\":null"));
+    assert!(json.contains("\"total_irradiance_std_error\":null"));
+
+    let many = StrayAnalysisSettings { rays: 2000, ..one };
+    let r = analyze(rs, &many, &JobContext::new()).unwrap();
+    assert!(r.stray_std_error.unwrap() > 0.0);
+    assert_eq!(r.total_irradiance_std_error.as_ref().unwrap().len(), 16);
+    for m in &r.maps {
+        assert_eq!(m.irradiance_std_error.as_ref().unwrap().len(), 16);
+    }
+    for t in &r.totals {
+        assert!(t.std_error.is_some(), "{:?}", t.class);
+        // The error of an RMS radius is undefined exactly when it is zero
+        // although the class detected something (a single hit).
+        assert_eq!(
+            t.moments.rms_radius_std_error.is_none(),
+            t.moments.flux > 0.0 && t.moments.rms_radius == 0.0,
+            "{:?}",
+            t.class
+        );
+    }
+    round_trip(&r);
 }

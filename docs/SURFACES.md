@@ -92,7 +92,7 @@ and QBfs auxiliary basis: [Forbes, Opt. Express 18, 19700–19712 (2010)](https:
 ## 3. Diffractive phase on a base surface
 
 `diffractive` contains `base: SurfaceShape` restricted to `plane`, `conic`,
-or `even_asphere`, and `phase`:
+or `even_asphere` (each also inside sag overlays, §10), and `phase`:
 
 | field | meaning |
 |---|---|
@@ -392,7 +392,9 @@ their unsupported-analysis errors.
 
 `sag_overlay` adds fringe irregularity to a geometric `base` (any shape
 except a coordinate break, ideal lens or diffractive surface; on a
-diffractive surface it wraps the base inside the phase). `norm_radius` is
+diffractive surface it wraps the base inside the phase). Overlays may be
+stacked, on a surface and inside a phase alike: their departures add, and
+the base rules apply to the geometry beneath the stack. `norm_radius` is
 mm, `test_wavelength_um` µm, and `astigmatism`/`spherical` are test fringes
 (one fringe = λ_test/2 PV sag). The formula and RMS are in
 `OPTIMIZATION.md`, Irregularity and rigid elements. An overlay with zero

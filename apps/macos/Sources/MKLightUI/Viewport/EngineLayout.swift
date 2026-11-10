@@ -15,7 +15,6 @@ enum EngineLayout {
     /// `nil` when the output is not a layout the reader understands.
     static func scene(from output: AnalysisOutput?) -> LayoutScene? {
         guard let output else { return nil }
-        if case .layout(let s) = output.result { return s }
         let json = output.json
         let precise = output.buffer(named: "vertices_f64")
         let rough = output.buffer(named: "vertices")

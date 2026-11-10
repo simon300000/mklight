@@ -16,7 +16,6 @@ pub mod rng;
 pub mod samples;
 pub mod serde_util;
 pub mod snapshot;
-pub mod split;
 pub mod surface_math;
 
 pub use error::{MkError, MkResult};

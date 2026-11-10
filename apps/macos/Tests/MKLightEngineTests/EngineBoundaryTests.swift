@@ -5,8 +5,8 @@ import Testing
 @testable import MKLightModel
 
 /// The engine boundary pieces an FFI client relies on, tested without the
-/// engine library: schema handling, request translation, tolerant result
-/// decoding, buffers, error mapping and staleness.
+/// engine library: schema handling, the settings a schema accepts, buffers,
+/// error mapping and staleness.
 @Suite struct EngineBoundaryTests {
     /// A descriptor in the exact JSON form of `mk_engine_list_analyses`,
     /// plus a key a newer engine might add.
@@ -42,65 +42,42 @@ import Testing
         // Minimal descriptors (older engines) decode with defaults.
         let minimal = try MKLightJSON.decode(AnalysisDescriptor.self, from: Data(#"{"name":"x"}"#.utf8))
         #expect(minimal.title == "x" && minimal.available && minimal.settingsFields.isEmpty)
+        // Stop support is what the engine lists; absent means none.
+        #expect(!d.stoppable && !minimal.stoppable)
+        let solver = try MKLightJSON.decode(AnalysisDescriptor.self, from: Data(#"{"name":"optimize","stoppable":true}"#.utf8))
+        #expect(solver.stoppable)
+        let again = try MKLightJSON.decode(AnalysisDescriptor.self, from: try MKLightJSON.encode(solver))
+        #expect(again.stoppable && again == solver)
     }
 
-    /// Swift settings become engine settings: execution → seed, selections →
-    /// indices (or the engine default), and only keys the schema accepts.
-    @Test func typedRequestTranslation() throws {
-        var s = SpotDiagramSettings()
-        s.rings = 9
-        s.pattern = .random
-        s.fields = .index(2)
-        s.wavelengths = .all
-        s.execution.seed = 42
-        let out = AnalysisRequest.spotDiagram(s).engineSettings(for: try descriptor())
-        #expect(out["rings"] == .integer(9))
-        #expect(out["seed"] == .integer(42))
-        #expect(out["fields"] == .integer(2))
-        #expect(out["wavelengths"] == nil, "'all' leaves the engine default")
-        #expect(out["pattern"] == nil, "a value outside the enum is dropped")
-        #expect(out["reference"] == nil && out["configuration"] == nil, "unknown to this schema")
-        var big = s
-        big.execution.seed = UInt64.max
-        #expect(AnalysisRequest.spotDiagram(big).engineSettings(for: try descriptor())["seed"] == .unsigned(.max))
-        #expect(AnalysisKind.firstOrder.engineName == "first_order" && AnalysisKind.mtf.engineName == "mtf")
-    }
-
-    /// A result whose JSON does not match the typed mirror never fails: it
-    /// is shown generically; first-order data is read from any numbers.
-    @Test func tolerantResultDecoding() throws {
-        let odd = JSONValue.object(["rings": .array([.integer(1)]), "new_thing": .string("x")])
-        let buffers = [ResultBuffer(name: "pts", doubles: [1, 2, 3, 4], shape: [2, 2])]
-        guard case .generic(let g) = AnalysisResult.fromEngine(kind: .spotDiagram, json: odd, buffers: buffers) else {
-            Issue.record("expected generic")
-            return
+    /// A mock job can be stopped exactly when its descriptor says so.
+    @Test func mockJobsStopAsTheirDescriptorsSay() async throws {
+        let mock = MockEngine(simulatedLatency: .zero)
+        let snap = try await mock.openSnapshot(SampleSystems.singlet())
+        let descriptors = await mock.analysisDescriptors()
+        #expect(Set(descriptors.filter(\.stoppable).map(\.name)) == ["optimize", "tolerance"])
+        for d in descriptors where d.available {
+            let job = mock.submit(EngineAnalysisRequest(analysis: d.name), on: snap)
+            #expect(job.canStop == d.stoppable, "\(d.name)")
+            job.cancel()
+            _ = try? await job.result()
         }
-        #expect(g.analysis == "spot_diagram" && g.note != nil && g.buffer(named: "pts")?.count == 4)
-        let paraxial = JSONValue.object([
-            "wavelength_um": .number(0.5875618),
-            "first_order": .object(["efl": .number(100.0009), "bfl": .number(95.085), "afocal": .bool(false)]),
-            "image_f_number": .number(5), "magnification": .string("-inf"), "label": .string("ignored"),
+    }
+
+    /// Settings are reduced to what the schema declares: unknown keys,
+    /// values of another type and values outside an enum are dropped, so
+    /// the engine's defaults apply.
+    @Test func acceptedSettingsFollowTheSchema() throws {
+        let out = try descriptor().acceptedSettings([
+            "rings": .integer(9), "seed": .integer(42), "fields": .integer(2), "wavelengths": .string("all"),
+            "pattern": .string("random"), "reference": .string("chief"), "max_frequency": .number(62.5),
         ])
-        guard case .firstOrder(let fo) = AnalysisResult.fromEngine(kind: .firstOrder, json: paraxial, buffers: []) else {
-            Issue.record("expected first-order data")
-            return
-        }
-        #expect(fo["efl"] == 100.0009 && fo["bfl"] == 95.085 && fo["image_f_number"] == 5)
-        #expect(fo["magnification"] == -.infinity && fo["label"] == nil && fo["afocal"] == nil)
-        #expect(fo.wavelengthUm == 0.5875618 && fo["wavelength_um"] == nil)
-        #expect(fo.entries.first { $0.key == "efl" }?.label == "EFL")
-        // A typed first-order result decodes as such.
-        let typed = try JSONValue.from(FirstOrderResult(entries: [.init(key: "efl", label: "EFL", value: 50, unit: "mm")], wavelengthUm: 0.55))
-        guard case .firstOrder(let t) = AnalysisResult.fromEngine(kind: .firstOrder, json: typed, buffers: []) else {
-            Issue.record("typed first order")
-            return
-        }
-        #expect(t["efl"] == 50 && t.entries[0].unit == "mm")
-        // Unknown analyses in the JSON envelope decode as generic.
-        let env = #"{"analysis":"ghost_paths","data":{"paths":3}}"#
-        let r = try MKLightJSON.decode(AnalysisResult.self, from: Data(env.utf8))
-        #expect(r.kind == nil && r.analysisName == "ghost_paths")
-        #expect(try JSONValue.parse(MKLightJSON.encode(r)) == JSONValue.parse(Data(env.utf8)))
+        #expect(out["rings"] == .integer(9) && out["seed"] == .integer(42) && out["max_frequency"] == .number(62.5))
+        #expect(out["fields"] == .integer(2))
+        #expect(out["wavelengths"] == nil, "a string where the schema wants an integer")
+        #expect(out["pattern"] == nil, "a value outside the enum is dropped")
+        #expect(out["reference"] == nil, "unknown to this schema")
+        #expect(try descriptor().acceptedSettings(["fields": .null, "seed": .unsigned(.max)]) == ["fields": .null, "seed": .unsigned(.max)])
     }
 
     @Test func buffersIndexRowMajorAndCompareByContent() throws {
@@ -171,6 +148,9 @@ import Testing
         #expect(EngineError.from(code: .unsupported, message: "no gpu") == .unsupported("no gpu"))
         #expect(EngineError.from(code: .jobFailed, message: "boom") == .failed("boom"))
         #expect(EngineError.from(code: .io, message: "disk") == .engine(.io, "disk"))
+        // What a failed job reports: the code of its own error.
+        #expect(EngineError.from(code: .notFound, message: "unknown material 'X'") == .engine(.notFound, "unknown material 'X'"))
+        #expect(EngineError.from(code: .compute, message: "diverged").errorDescription == "diverged")
         for code in EngineErrorCode.allCases {
             #expect(EngineError.from(code: code, message: "m").code == code, "\(code) round trips")
         }
@@ -186,28 +166,47 @@ import Testing
         #expect(info.precision == .f32GPU && info.warnings == ["unknown precision 'f16_tensor'"])
     }
 
-    /// Staleness compares the front-end request that produced a result and
-    /// both hashes (system and glass library).
+    /// The envelope's `backend` object keeps the engine's `cost_decision`
+    /// as sent; a missing or null one is none.
+    @Test func backendReportCarriesTheCostDecision() throws {
+        let json = """
+            {"requested":"default:auto","used":"gpu:metal","precision":"f32_gpu","device":"Apple M2 Pro","fallback_reason":null,
+             "execution":[],"cost_decision":{"decision":"qualified_metal","rule":"cost model","predicted_ms":{"cpu":556.6,"metal":312.3}}}
+            """
+        let report = try #require(BackendReport(json: try MKLightJSON.decode(JSONValue.self, from: Data(json.utf8))))
+        #expect(report.requested == "default:auto" && report.used == "gpu:metal" && report.fallbackReason == nil)
+        #expect(report.costDecision?["decision"]?.string == "qualified_metal")
+        #expect(report.costDecision?["predicted_ms"]?["metal"]?.nf == 312.3)
+        let explicit = try #require(BackendReport(json: .object(["requested": .string("cpu_reference"), "cost_decision": .null])))
+        #expect(explicit.requested == "cpu_reference" && explicit.costDecision == nil)
+        #expect(try #require(BackendReport(json: .object(["requested": .string("auto")]))).costDecision == nil)
+        #expect(BackendReport(requested: "auto", used: "mock", precision: "f64_reference").costDecision == nil)
+    }
+
+    /// Staleness compares the request that produced a result and both
+    /// hashes (system and glass library).
     @Test func outputStalenessUsesRequestAndLibraryHash() {
         let snap = ModelSnapshot(system: SampleSystems.singlet(), hash: SnapshotHash(hex: "aa"), libraryHash: "L1")
-        let request = AnalysisRequest.mtf(MTFSettings())
+        let request = EngineAnalysisRequest(analysis: "mtf", settings: ["max_frequency": .integer(100)])
         let info = RunInfo(
             engineVersion: "1", snapshotHash: snap.hash, analysis: "mtf", settings: .object(["normalised": .bool(true)]),
             backend: "cpu_reference", precision: .f64Reference, seed: nil, startedUnixMs: 0, durationMs: 1)
-        let out = AnalysisOutput(runInfo: info, result: .generic(GenericResult(analysis: "mtf", json: .null)), libraryHash: "L1", request: request)
+        let out = AnalysisOutput(runInfo: info, json: .null, libraryHash: "L1", engineRequest: request)
         #expect(out.isCurrent(for: snap, request: request), "engine-normalised settings do not matter")
-        var other = MTFSettings()
-        other.maxFrequency = 50
-        #expect(!out.isCurrent(for: snap, request: .mtf(other)))
+        #expect(!out.isCurrent(for: snap, request: EngineAnalysisRequest(analysis: "mtf", settings: ["max_frequency": .integer(50)])))
+        #expect(!out.isCurrent(for: snap, request: EngineAnalysisRequest(analysis: "psf", settings: request.settings)))
         let newLibrary = ModelSnapshot(system: snap.system, hash: snap.hash, libraryHash: "L2")
         #expect(newLibrary != snap)
         #expect(!out.isCurrent(for: newLibrary, request: request), "a catalog change makes it stale")
-        // By name: the engine's recorded settings must contain the request's.
-        let byName = EngineAnalysisRequest(analysis: "mtf", settings: ["normalised": .bool(true)])
-        let generic = AnalysisOutput(runInfo: info, result: .generic(GenericResult(analysis: "mtf", json: .null)), libraryHash: "L1")
-        #expect(generic.isCurrent(for: snap, request: byName))
-        #expect(!generic.isCurrent(for: snap, request: EngineAnalysisRequest(analysis: "mtf", settings: ["normalised": .bool(false)])))
-        #expect(!generic.isCurrent(for: newLibrary, request: byName))
+        let edited = ModelSnapshot(system: snap.system, hash: SnapshotHash(hex: "bb"), libraryHash: "L1")
+        #expect(!out.isCurrent(for: edited, request: request), "an edit makes it stale")
+        // Without its request: the engine's recorded settings must contain
+        // the requested ones.
+        let recorded = EngineAnalysisRequest(analysis: "mtf", settings: ["normalised": .bool(true)])
+        let bare = AnalysisOutput(runInfo: info, json: .null, libraryHash: "L1")
+        #expect(bare.isCurrent(for: snap, request: recorded))
+        #expect(!bare.isCurrent(for: snap, request: EngineAnalysisRequest(analysis: "mtf", settings: ["normalised": .bool(false)])))
+        #expect(!bare.isCurrent(for: newLibrary, request: recorded))
     }
 
     /// The mock runs a few analyses by name in the engine's result format
@@ -217,7 +216,7 @@ import Testing
         let snap = try await mock.openSnapshot(SampleSystems.singlet())
         let job = mock.submit(EngineAnalysisRequest(analysis: "system_summary"), on: snap)
         await #expect(throws: EngineError.self) { try await job.result() }
-        #expect(job.analysis == "system_summary" && job.request == nil)
+        #expect(job.analysis == "system_summary" && job.engineRequest.settings.isEmpty)
         let names = await mock.analysisDescriptors().filter(\.available).map(\.name)
         #expect(["layout", "spot_diagram", "first_order", "optimize"].allSatisfy(names.contains))
         #expect(await mock.analysisDescriptors().contains { $0.name == "psf" && !$0.available })

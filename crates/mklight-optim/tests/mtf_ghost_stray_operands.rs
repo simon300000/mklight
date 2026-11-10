@@ -289,11 +289,12 @@ fn ghost_operands_match_explicit_solvers() {
     settings.paths = Some(vec![path.clone()]);
     settings.wavelengths = vec![s.wavelengths.primary];
     let irr = mklight_ghost::irradiance::ghost_irradiance(&model, &settings, &ctx).unwrap();
-    assert!(irr.total_flux_ratio > 0.0);
+    let (flux, peak) = (irr.total_flux_ratio.unwrap(), irr.total_peak_ratio.unwrap());
+    assert!(flux > 0.0);
     for (metric, reference) in [
-        (GhostMetric::Power, irr.total_flux_ratio),
-        (GhostMetric::Mean, irr.total_flux_ratio),
-        (GhostMetric::Peak, irr.total_peak_ratio),
+        (GhostMetric::Power, flux),
+        (GhostMetric::Mean, flux),
+        (GhostMetric::Peak, peak),
     ] {
         let op = Operand::new(OperandKind::GhostIrradiance {
             pair: None,
@@ -357,7 +358,8 @@ fn worst_ghosts_and_selected_orders_match_solver() {
     settings.wavelengths = vec![s.wavelengths.primary];
     let reference =
         mklight_ghost::irradiance::ghost_irradiance(&model, &settings, &JobContext::new()).unwrap();
-    assert!(reference.total_flux_ratio > 0.0);
+    let total = reference.total_flux_ratio.unwrap();
+    assert!(total > 0.0);
     let op = Operand::new(OperandKind::GhostIrradiance {
         pair: None,
         path: None,
@@ -368,7 +370,7 @@ fn worst_ghosts_and_selected_orders_match_solver() {
     let actual = ev.evaluate_system(&s, &[&op], &JobContext::new()).unwrap()[0]
         .clone()
         .unwrap();
-    assert!((actual - reference.total_flux_ratio).abs() < 1e-12);
+    assert!((actual - total).abs() < 1e-12);
     // Peak focus mode uses real irradiance, rather than the paraxial estimate.
     let mut settings = ev.solvers.ghost.clone();
     settings.paths = Some(vec![mklight_ghost::GhostPath::new(vec![2, 1])]);
@@ -386,7 +388,7 @@ fn worst_ghosts_and_selected_orders_match_solver() {
     let actual = ev.evaluate_system(&s, &[&op], &JobContext::new()).unwrap()[0]
         .clone()
         .unwrap();
-    assert!((actual - reference.ghosts[0].peak_ratio).abs() < 1e-12);
+    assert!((actual - reference.ghosts[0].peak_ratio.unwrap()).abs() < 1e-12);
 }
 
 #[test]

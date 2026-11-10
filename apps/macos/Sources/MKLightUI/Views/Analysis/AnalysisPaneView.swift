@@ -580,16 +580,14 @@ struct BackendBadge: View {
         return t
     }
 
-    private var duration: String {
-        let ms = output.runInfo.durationMs
-        return ms < 1000 ? String(format: "%.0f ms", ms) : String(format: "%.1f s", ms / 1000)
-    }
+    private var duration: String { Fmt.duration(ms: output.runInfo.durationMs) }
 }
 
-/// Run information: backend, why the run was on the CPU, seed, snapshot,
-/// and the warnings, grouped (one line per kind, with the fields it
-/// concerns), with a one-click remedy where the analysis has the setting
-/// for it.
+/// Run information: backend, how an automatic request was routed, why the
+/// run was on the CPU, the tier when it is not design tier, seed,
+/// snapshot, the backend attempts that did not compute the result, and the
+/// warnings, grouped (one line per kind, with the fields it concerns),
+/// with a one-click remedy where the analysis has the setting for it.
 struct RunDetails: View {
     let output: AnalysisOutput
     var pane: AnalysisPane?
@@ -602,14 +600,37 @@ struct RunDetails: View {
             Grid(alignment: .leading, horizontalSpacing: Space.l, verticalSpacing: Space.xs) {
                 row("Computed on", output.backend?.summary ?? info.backend)
                 if let r = output.backend?.requested, !r.isEmpty { row("Requested", r) }
+                if let b = output.backend, let route = RunRoute.line(requested: b.requested, decision: b.costDecision) {
+                    row("Route", route)
+                }
                 if let why = output.backend?.fallbackReason { row("Ran on the CPU", why) }
                 row("Precision", info.precision == .f64Reference ? "f64 reference" : "f32 (GPU, qualified)")
+                if let tier = RunRoute.tier(info.tier) { row("Tier", tier) }
                 if let seed = info.seed { row("Seed", "\(seed)") }
                 row("Snapshot", info.snapshotHash.short)
                 row("Engine", info.engineVersion)
                 row("Time", String(format: "%.1f ms", info.durationMs))
             }
             .font(.callout)
+            let attempts = RunRoute.attempts(info.failedAttempts)
+            if !attempts.isEmpty {
+                Divider()
+                Text(attempts.count == 1 ? "Attempt Not Used" : "\(attempts.count) Attempts Not Used").font(.subheadline.weight(.medium))
+                ForEach(attempts) { a in
+                    VStack(alignment: .leading, spacing: 3) {
+                        Label {
+                            Text(a.title).fixedSize(horizontal: false, vertical: true)
+                        } icon: {
+                            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                        }
+                        .font(.callout)
+                        Text(a.reason).font(.caption).foregroundStyle(.secondary)
+                            .padding(.leading, 22)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .accessibilityElement(children: .combine)
+                }
+            }
             if !info.warnings.isEmpty {
                 Divider()
                 let groups = RunWarnings.group(info.warnings)

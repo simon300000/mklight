@@ -140,17 +140,35 @@ fn samples_check(b: &dyn ComputeBackend) {
 fn cpu_f32_transport_against_f64() {
     samples_check(&CpuF32Backend::new());
 }
+/// A map of more than 2^24 pixels cannot carry its reference bins through
+/// the device map chain exactly: the device job declines it before any
+/// work, as unsupported, which sends the caller to the CPU reference.
+#[test]
+fn maps_beyond_exact_pixel_keys_are_unsupported_on_the_device() {
+    let m = model(plate(1.5, 2., 20., &[0.], None), unclipped());
+    let settings = IrradianceSettings {
+        pupil_samples: 8,
+        fields: vec![0],
+        wavelengths: vec![0],
+        map_bins: [4097, 4096],
+        map_half_size: Some([12.; 2]),
+        ..Default::default()
+    };
+    let r = gpu::ghost_irradiance(&CpuF32Backend::new(), &m, &settings, &JobContext::new());
+    assert!(
+        matches!(&r, Err(mklight_core::MkError::Unsupported(_))),
+        "{:?}",
+        r.err()
+    );
+}
 #[cfg(target_os = "macos")]
 #[test]
 fn metal_transport_both_libraries() {
     use mklight_metal::*;
     for library in [LibraryChoice::Precompiled, LibraryChoice::RuntimeSource] {
-        let b = MetalBackend::with_options(&MetalOptions {
-            library,
-            ..Default::default()
-        })
-        .unwrap()
-        .expect("P9 requires host Metal");
+        let b = MetalBackend::with_options(&MetalOptions { library })
+            .unwrap()
+            .expect("P9 requires host Metal");
         assert!(b.precision().probe.error_free_transforms());
         eprintln!("device={:?} precision={:?}", b.info(), b.precision());
         samples_check(&b);

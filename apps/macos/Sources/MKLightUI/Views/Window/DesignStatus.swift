@@ -168,6 +168,9 @@ struct StatusDetails: View {
                 KeyValueGrid(rows: [("Engine", "\(engine.info.name) \(engine.info.version)")]
                     + (workspace.snapshot.map { [("Snapshot", $0.hash.short)] } ?? [])
                     + (GPUPreparationMonitor.shared.summary.map { [("GPU kernels", $0)] } ?? []))
+                if let note = GPUPreparationMonitor.shared.note {
+                    Text(note).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                }
                 Picker("Compute on", selection: Binding(get: { workspace.backend }, set: { workspace.backend = $0 })) {
                     Text("Automatic").tag(BackendPreference.auto)
                     Text("CPU reference (f64)").tag(BackendPreference.cpuReference)

@@ -17,16 +17,6 @@ pub fn coordinate<E: FpEnv>(p: [Df32; 4], c: [Df32; 4], delta: Df32) -> [Df32; 4
     ]
     .map(|v| v.0)
 }
-pub fn radial<E: FpEnv>(p: [Df32; 2], centre: [Df32; 2]) -> [Df32; 2] {
-    let x = D::<E>::from_df(p[0]) - D::from_df(centre[0]);
-    let y = D::<E>::from_df(p[1]) - D::from_df(centre[1]);
-    let ax = if x.hi() < 0.0 { -x } else { x };
-    let ay = if y.hi() < 0.0 { -y } else { y };
-    [
-        (x * x + y * y).sqrt().0,
-        if (ax - ay).hi() > 0.0 { ax.0 } else { ay.0 },
-    ]
-}
 /// Reduce turns in double-float before transcendental evaluation. CPU and
 /// Metal libm need only meet the characteristic-function tolerance gate.
 pub fn characteristic<E: FpEnv>(p: [Df32; 2], frequency: [Df32; 2], weight: Df32) -> [Df32; 2] {

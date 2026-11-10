@@ -16,7 +16,7 @@ import Testing
             runInfo: RunInfo(
                 engineVersion: "1", snapshotHash: SnapshotHash(hex: "00"), analysis: analysis, settings: settings,
                 backend: "cpu_reference", precision: .f64Reference, seed: nil, startedUnixMs: 0, durationMs: 0),
-            result: .generic(GenericResult(analysis: analysis, json: json, buffers: buffers)))
+            json: json, buffers: buffers)
     }
 
     /// A 3 × 2 field map with two columns: `a = Hx + Hy`, `b = 1 - Hx²`.

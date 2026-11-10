@@ -188,15 +188,16 @@ pub fn hammer<P: Problem + ?Sized>(
         let local = local_with(ev.remaining() / n_local.max(1));
 
         // 2. Local refinement, in parallel (so without progress of its own).
+        // Each solve runs on the problem's instance for one solve, so that
+        // none sees evaluation state another one leaves behind.
         let locals: Vec<MkResult<OptimResult>> = order
             .par_iter()
             .map(|&k| {
-                least_squares(
-                    p,
-                    &cands[k],
-                    &local,
-                    &mon.detached_child(&format!("hammer round {round}")),
-                )
+                let mon = mon.detached_child(&format!("hammer round {round}"));
+                match p.for_solve() {
+                    Some(own) => least_squares(own.as_ref(), &cands[k], &local, &mon),
+                    None => least_squares(p, &cands[k], &local, &mon),
+                }
             })
             .collect();
         let mut round_best: Option<(Vec<f64>, ScalarEval)> = None;

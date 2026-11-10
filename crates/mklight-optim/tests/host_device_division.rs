@@ -3,8 +3,9 @@
 //! f64 reference: agreement within the CONVENTIONS §7 budget on the samples
 //! (CPU-f32 emulation everywhere, Metal when present), rayless operands
 //! equal to the reference, host completion of unresolved device rays,
-//! learned host routing and handover to the reference, equal results with
-//! and without pipelining, finite differences, and least squares with
+//! learned host routing and handover to the reference (per solve, per
+//! batch, device aiming only), anchor seeding, equal results with and
+//! without pipelining, finite differences, and least squares with
 //! speculative Jacobians.
 
 mod common;
@@ -25,7 +26,7 @@ use mklight_optim::merit::operand::{
 };
 use mklight_optim::merit::{
     BuiltinEvaluator, Capability, Operand, OperandEvaluator, OperandRegistry, OperandValue,
-    OpticalProblem, VariableSpec, WavelengthSelector,
+    OpticalProblem, PupilSampling, VariableSpec, WavelengthSelector,
 };
 use mklight_optim::problem::{CandidateBatch, Problem};
 use mklight_optim::{Monitor, Termination};
@@ -345,6 +346,165 @@ fn unresolved_rays_are_completed_and_routed_on_the_host() {
             outcomes.iter().any(|&(_, rays, only)| rays > 0 && !only),
             "{outcomes:?}"
         );
+    }
+}
+
+/// The default spot merit of `sys` at a pupil sampling, without boundaries.
+fn spot_merit(sys: &OpticalSystem, rings: usize, arms: usize) -> Vec<Operand> {
+    DefaultMeritSpec {
+        thickness: None,
+        sampling: PupilSampling {
+            rings,
+            arms,
+            ..Default::default()
+        },
+        ..Default::default()
+    }
+    .generate(sys)
+    .unwrap()
+    .operands
+}
+
+/// Device rays an evaluation hands to plans.
+fn traced(ev: &ResidentEvaluator, systems: &[OpticalSystem], ops: &[Operand]) -> u64 {
+    let before = ev.context.traced_rays();
+    values(ev, systems, ops);
+    ev.context.traced_rays() - before
+}
+
+/// Routing state belongs to one solve. At a device cap of one iteration the
+/// first batch hands the solve over to the reference: its clones (the same
+/// solve) stay handed over, while `for_solve` starts another solve on the
+/// device, which learns and hands over on its own.
+#[test]
+fn routing_state_belongs_to_one_solve() {
+    let backend: Arc<dyn ComputeBackend> = Arc::new(CpuF32Backend::new());
+    let sys = real_aimed(samples::cooke_triplet());
+    let ops = spot_merit(&sys, 3, 6);
+    let cands = candidates(&sys);
+    let ev = evaluator(&backend, &sys)
+        .with_host_aim(false)
+        .with_device_aim_cap(1);
+    assert!(traced(&ev, &cands, &ops) > 0);
+    assert_eq!(traced(&ev, &cands, &ops), 0, "handed over");
+    assert_eq!(traced(&ev.clone(), &cands, &ops), 0, "a clone is the solve");
+    let other = ev.for_solve();
+    assert!(
+        traced(&other, &cands, &ops) > 0,
+        "another solve starts afresh"
+    );
+    assert_eq!(traced(&other, &cands, &ops), 0, "and learns on its own");
+    // Both solves count in the same statistics.
+    assert_eq!(ev.stats().candidates, other.stats().candidates);
+    assert_eq!(ev.stats().candidates, 5 * cands.len() as u64);
+    // Through a problem: `Problem::for_solve` evaluates on such an evaluator.
+    let p = triplet_problem(&sys, ev.clone());
+    let own = p.for_solve().expect("the resident evaluator keeps state");
+    let x0 = p.start_point().unwrap();
+    let x = CandidateBatch::from_points(x0.len(), [&x0[..]]);
+    let before = ev.context.traced_rays();
+    let fresh = own.evaluate_batch(&x, &JobContext::new()).unwrap();
+    assert!(ev.context.traced_rays() > before, "evaluated on the device");
+    let shared = p.evaluate_batch(&x, &JobContext::new()).unwrap();
+    for (a, b) in fresh.residuals.iter().zip(&shared.residuals) {
+        assert!((a - b).abs() <= 1e-7, "{a} vs {b}");
+    }
+    assert!(
+        triplet_problem(&sys, BuiltinEvaluator::builtin())
+            .for_solve()
+            .is_none()
+    );
+}
+
+/// The handover compares what a batch leaves to the host with that batch's
+/// own rays. At a cap of four iterations a dense merit learns more rays
+/// than a candidate of a sparse merit has, and a batch of either leaves a
+/// quarter of its rays to the host: the solve stays on the device for both.
+#[test]
+fn handover_compares_a_batch_with_itself() {
+    let backend: Arc<dyn ComputeBackend> = Arc::new(CpuF32Backend::new());
+    let sys = real_aimed(samples::cooke_triplet());
+    let (dense, sparse) = (spot_merit(&sys, 6, 12), spot_merit(&sys, 3, 6));
+    let cands = candidates(&sys);
+    let reference = values(&BuiltinEvaluator::builtin(), &cands, &sparse);
+    let ev = evaluator(&backend, &sys)
+        .with_host_aim(false)
+        .with_device_aim_cap(4);
+    values(&ev, &cands, &dense);
+    let routed_before = ev.context.stats().polished_rays;
+    let cold = traced(&ev, &cands, &sparse);
+    let warm = traced(&ev, &cands, &sparse);
+    assert!(
+        warm > 0 && warm < cold,
+        "routed, on the device: {cold} {warm}"
+    );
+    assert!(ev.context.stats().polished_rays > routed_before);
+    assert!(compare(&values(&ev, &cands, &sparse), &reference, &sparse) <= 1.0);
+    let st = ev.stats();
+    assert!(st.fallbacks.is_empty(), "{st:?}");
+}
+
+/// Host aiming routes nothing: a host-aimed batch of a solve that has
+/// learned rays hands every ray to the device, completes none, and gives
+/// the values of an evaluator that never learned any.
+#[test]
+fn host_aimed_batches_ignore_learned_routing() {
+    let backend: Arc<dyn ComputeBackend> = Arc::new(CpuF32Backend::new());
+    let sys = real_aimed(samples::cooke_triplet());
+    let ops = spot_merit(&sys, 3, 6);
+    let cands = candidates(&sys);
+    let device = evaluator(&backend, &sys)
+        .with_host_aim(false)
+        .with_device_aim_cap(4);
+    let cold = traced(&device, &cands, &ops);
+    assert!(traced(&device, &cands, &ops) < cold, "rays are routed");
+    // The same solve, its next batch aimed on the host.
+    let host = device.clone().with_host_aim(true);
+    let completed = host.context.stats().polished_rays;
+    let fresh = evaluator(&backend, &sys).with_host_aim(true);
+    let unrouted = traced(&fresh, &cands, &ops);
+    let before = host.context.traced_rays();
+    let v = values(&host, &cands, &ops);
+    assert_eq!(host.context.traced_rays() - before, unrouted);
+    assert_eq!(host.context.stats().polished_rays, completed);
+    for (a, b) in v
+        .iter()
+        .flatten()
+        .zip(values(&fresh, &cands, &ops).iter().flatten())
+    {
+        assert_eq!(a.as_ref().unwrap().to_bits(), b.as_ref().unwrap().to_bits());
+    }
+}
+
+/// A batch near an anchor is seeded from that anchor, whichever candidate
+/// comes first: the probes give the same values, bit for bit, with and
+/// without the anchor among them.
+#[test]
+fn the_given_anchor_seeds_the_batch() {
+    let backend: Arc<dyn ComputeBackend> = Arc::new(CpuF32Backend::new());
+    let sys = real_aimed(samples::cooke_triplet());
+    let ops = operands(&sys);
+    let refs: Vec<&Operand> = ops.iter().collect();
+    // Bent copies first: none of them is the anchor.
+    let mut probes = candidates(&sys);
+    probes.reverse();
+    probes.pop();
+    probes.extend(candidates(&sys).into_iter().skip(1));
+    let mut with_anchor = vec![sys.clone()];
+    with_anchor.extend(probes.iter().cloned());
+    let ctx = JobContext::new();
+    let alone = evaluator(&backend, &sys)
+        .evaluate_batch_near(&probes, &refs, Some(&sys), &ctx)
+        .unwrap();
+    let joined = evaluator(&backend, &sys)
+        .evaluate_batch_near(&with_anchor, &refs, Some(&sys), &ctx)
+        .unwrap();
+    for (a, b) in alone.iter().flatten().zip(joined[1..].iter().flatten()) {
+        match (a, b) {
+            (Ok(a), Ok(b)) => assert_eq!(a.to_bits(), b.to_bits()),
+            (Err(_), Err(_)) => {}
+            _ => panic!("{a:?} vs {b:?}"),
+        }
     }
 }
 

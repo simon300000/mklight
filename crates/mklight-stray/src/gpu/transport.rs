@@ -34,11 +34,33 @@ pub struct TransportOptions {
     /// Events per source on the device before the CPU continues it (0: no
     /// limit).
     pub head_events: u32,
-    /// Share of the source chunks transported by the device
-    /// (`hybrid::Design::CoSplit`); the CPU reference traces the others.
-    /// `None`: the route key `stray_share`, else a fixed rule of the scene
-    /// (`hybrid::default_share`).
+    /// Share of the source chunks transported by the device, in [0, 1];
+    /// the CPU reference traces the others at the same time. `None`: a
+    /// fixed rule of the scene (`hybrid::default_share`).
     pub gpu_share: Option<f64>,
+    /// The device's intersection of extended sags.
+    pub sag: SagMode,
+}
+/// How the device intersects extended sags (aspheres, freeforms:
+/// `ops::Transport::sag_mode`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SagMode {
+    /// The f32 scan of the whole ray.
+    #[default]
+    F32Scan,
+    /// The f32 scan, with oblique and grazing rays (long scans) handed to
+    /// the CPU.
+    F32Grazing,
+}
+impl SagMode {
+    /// `ops::Transport::sag_mode`.
+    pub(super) fn code(self) -> u32 {
+        match self {
+            SagMode::F32Scan => 0,
+            SagMode::F32Grazing => 1,
+        }
+    }
 }
 impl Default for TransportOptions {
     fn default() -> Self {
@@ -48,6 +70,7 @@ impl Default for TransportOptions {
             detections_per_source: 32,
             head_events: 64,
             gpu_share: None,
+            sag: SagMode::default(),
         }
     }
 }
@@ -215,8 +238,8 @@ impl TransportScene {
     /// their detections, ledgers and continuation stacks (`ops::Transport`).
     /// A source stops with a consistent device stack after
     /// `options.head_events` events, or when its stack or detection journal
-    /// is full, for the host to continue; `sag_mode` selects the
-    /// extended-sag intersection (`ops::Transport::sag_mode`).
+    /// is full, for the host to continue; `options.sag` selects the
+    /// extended-sag intersection.
     #[allow(clippy::too_many_arguments)]
     pub fn append(
         &self,
@@ -227,7 +250,6 @@ impl TransportScene {
         first: u64,
         count: usize,
         options: TransportOptions,
-        sag_mode: u32,
     ) -> MkResult<(BufferId, BufferId, BufferId)> {
         // The validated source descriptor and CDF; the device generates the
         // sources inside the first transport command.
@@ -300,7 +322,7 @@ impl TransportScene {
                     ledger,
                     stack,
                     head_events: options.head_events,
-                    sag_mode,
+                    sag_mode: options.sag.code(),
                 },
             ))));
         Ok((output, ledger, stack))
@@ -345,8 +367,10 @@ pub(super) fn history(h: &ops::History) -> MkResult<History> {
     out.set_next_specular(h.next_specular);
     Ok(out)
 }
-/// Explicit resident adapter; unsupported capacities return an error for the
-/// engine's reported fallback policy. Cancellation never invokes reference work.
+/// Explicit resident adapter: the transport divided between the device and
+/// the CPU by `options` (`hybrid`). Unsupported capacities return an error
+/// for the engine's reported fallback policy. Cancellation never invokes
+/// reference work.
 pub fn run(
     b: &dyn ComputeBackend,
     snapshot: Snapshot,
@@ -356,31 +380,7 @@ pub fn run(
     options: TransportOptions,
     ctx: &JobContext,
 ) -> MkResult<StrayResult> {
-    run_design(
-        b,
-        snapshot,
-        scene,
-        source,
-        settings,
-        options,
-        super::hybrid::Design::selected()?,
-        ctx,
-    )
-}
-/// [`run`] with an explicit division of the work instead of the selected
-/// one (`hybrid::Design`).
-#[allow(clippy::too_many_arguments)]
-pub fn run_design(
-    b: &dyn ComputeBackend,
-    snapshot: Snapshot,
-    scene: &Scene,
-    source: &SourceSpec,
-    settings: &StraySettings,
-    options: TransportOptions,
-    design: super::hybrid::Design,
-    ctx: &JobContext,
-) -> MkResult<StrayResult> {
-    run_design_with(
+    run_with(
         b,
         snapshot,
         scene,
@@ -388,17 +388,15 @@ pub fn run_design(
         source,
         settings,
         options,
-        design,
         &mut || Ok(()),
         ctx,
     )
 }
-/// [`run_design`] with the scene's `fingerprint` (`Scene::fingerprint`) and
-/// CPU work of the caller, `side`, that runs once while the device
-/// transports the first plans (before the CPU fallback, which has no
-/// overlap).
+/// [`run`] with the scene's `fingerprint` (`Scene::fingerprint`) and CPU
+/// work of the caller, `side`, that runs once while the device transports
+/// the first plans (before the CPU fallback, which has no overlap).
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn run_design_with(
+pub(crate) fn run_with(
     b: &dyn ComputeBackend,
     snapshot: Snapshot,
     scene: &Scene,
@@ -406,7 +404,6 @@ pub(crate) fn run_design_with(
     source: &SourceSpec,
     settings: &StraySettings,
     options: TransportOptions,
-    design: super::hybrid::Design,
     side: &mut (dyn FnMut() -> MkResult<()> + Send),
     ctx: &JobContext,
 ) -> MkResult<StrayResult> {
@@ -419,7 +416,6 @@ pub(crate) fn run_design_with(
         source,
         settings,
         options,
-        design,
         side,
         ctx,
     ) {

@@ -71,7 +71,8 @@ class Engine:
         ``resolved_cache_capacity``, ``analysis_graph_bytes``,
         ``progress_interval_ms``, ``app_name``, ``app_version``,
         ``default_backend`` (a :data:`Backend`), ``aim_stop``
-        (``"conditioned"`` or ``"requested"``). Unknown keys raise
+        (``"conditioned"`` or ``"requested"``), ``route`` (route options of
+        requests that carry none; see ``Session.submit``). Unknown keys raise
         ``InvalidArgumentError``."""
     def new(self, sample: str | None = None, system: dict[str, JSON] | None = None) -> Session:
         """A new session from a built-in sample, a system dict, or empty."""
@@ -129,6 +130,7 @@ class Session:
         progress: Progress | None = None,
         allow_backend_fallback: bool = False,
         timeout: float | None = None,
+        route: dict[str, JSON] | None = None,
     ) -> Result:
         """Run an analysis and wait (GIL released; Ctrl-C cancels)."""
     def submit(
@@ -139,8 +141,11 @@ class Session:
         backend: Backend = None,
         allow_backend_fallback: bool = False,
         view_key: str | None = None,
+        route: dict[str, JSON] | None = None,
     ) -> Job:
-        """Queue an analysis; returns at once."""
+        """Queue an analysis; returns at once. ``route``: route options
+        (``aiming``, ``aiming_share``, ``fieldmaps``, ``stray_share``,
+        ``stray_sag``, ``solver_aiming``); ``None`` uses the engine's."""
 
 class Job:
     """A queued analysis. Dropping an unfinished Job cancels it."""
@@ -162,7 +167,9 @@ class Job:
     def status(self) -> dict[str, JSON] | None: ...
     def done(self) -> bool: ...
     def stop(self) -> None:
-        """Stop optimize/tolerance and keep the best-so-far result (stopped=True)."""
+        """Stop a job of an analysis listed with ``stoppable: True`` and keep
+        the best-so-far result (stopped=True); other active jobs raise
+        UnsupportedError."""
         ...
     def cancel(self) -> None: ...
     def wait(self, timeout: float | None = None) -> bool:

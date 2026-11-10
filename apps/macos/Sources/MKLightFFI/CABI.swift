@@ -72,10 +72,6 @@ enum CABI {
         try string("mk_engine_list_analyses") { mk_engine_list_analyses(e, $0) }
     }
 
-    static func listBackends(_ e: OpaquePointer) throws -> String {
-        try string("mk_engine_list_backends") { mk_engine_list_backends(e, $0) }
-    }
-
     static func prepareGPU(_ e: OpaquePointer, cacheDirectory: String?) throws {
         try check(withOptionalCString(cacheDirectory) { mk_engine_prepare_gpu(e, $0) }, "mk_engine_prepare_gpu")
     }
@@ -114,26 +110,7 @@ enum CABI {
         return s
     }
 
-    static func sessionOpen(_ e: OpaquePointer, path: String) throws -> OpaquePointer {
-        var s: OpaquePointer?
-        try check(mk_session_open(e, path, &s), "mk_session_open")
-        guard let s else { throw EngineError.engine(.internal, "mk_session_open returned no session") }
-        return s
-    }
-
     static func sessionDestroy(_ s: OpaquePointer) { mk_session_destroy(s) }
-
-    static func sessionSave(_ s: OpaquePointer, path: String?) throws {
-        try check(withOptionalCString(path) { mk_session_save(s, $0) }, "mk_session_save")
-    }
-
-    static func sessionInfo(_ s: OpaquePointer) throws -> String {
-        try string("mk_session_info_json") { mk_session_info_json(s, $0) }
-    }
-
-    static func sessionProject(_ s: OpaquePointer) throws -> String {
-        try string("mk_session_get_project_json") { mk_session_get_project_json(s, $0) }
-    }
 
     static func sessionSystem(_ s: OpaquePointer) throws -> String {
         try string("mk_session_get_system_json") { mk_session_get_system_json(s, $0) }
@@ -142,15 +119,6 @@ enum CABI {
     /// Returns the new snapshot hash.
     static func sessionSetSystem(_ s: OpaquePointer, json: String) throws -> String {
         try string("mk_session_set_system_json") { mk_session_set_system_json(s, json, $0) }
-    }
-
-    /// Returns the new snapshot hash.
-    static func sessionApplyEdits(_ s: OpaquePointer, json: String) throws -> String {
-        try string("mk_session_apply_param_edit") { mk_session_apply_param_edit(s, json, $0) }
-    }
-
-    static func sessionSetSection(_ s: OpaquePointer, section: String, json: String) throws {
-        try check(mk_session_set_project_section_json(s, section, json), "mk_session_set_project_section_json")
     }
 
     static func sessionSnapshotHash(_ s: OpaquePointer) throws -> String {
@@ -213,26 +181,14 @@ enum CABI {
         return (JobState(rawValue: state) ?? .running, progress)
     }
 
-    static func jobStatusJSON(_ e: OpaquePointer, _ job: UInt64) throws -> String {
-        try string("mk_job_status_json") { mk_job_status_json(e, job, $0) }
-    }
-
     static func jobCancel(_ e: OpaquePointer, _ job: UInt64) throws {
         try check(mk_job_cancel(e, job), "mk_job_cancel")
     }
 
-    /// `mk_job_stop` (ABI 1.2): ends an `optimize`/`tolerance` job early,
-    /// keeping its best result so far.
+    /// `mk_job_stop`: ends a job of a stoppable analysis early, keeping
+    /// its best result so far.
     static func jobStop(_ e: OpaquePointer, _ job: UInt64) throws {
         try check(mk_job_stop(e, job), "mk_job_stop")
-    }
-
-    /// Blocks the calling thread (`timeoutMs < 0`: forever). Never call it
-    /// on the main thread.
-    static func jobWait(_ e: OpaquePointer, _ job: UInt64, timeoutMs: Int64) throws -> JobState {
-        var state: MKJobState = 0
-        try check(mk_job_wait(e, job, timeoutMs, &state), "mk_job_wait")
-        return JobState(rawValue: state) ?? .running
     }
 
     /// Takes the result of a finished job: the envelope JSON and its
@@ -292,20 +248,13 @@ enum CABI {
     static func engineCreate(config: String?) throws -> OpaquePointer { throw notLinked }
     static func engineDestroy(_ e: OpaquePointer) {}
     static func listAnalyses(_ e: OpaquePointer) throws -> String { throw notLinked }
-    static func listBackends(_ e: OpaquePointer) throws -> String { throw notLinked }
     static func prepareGPU(_ e: OpaquePointer, cacheDirectory: String?) throws { throw notLinked }
     static func gpuPreparation(_ e: OpaquePointer) throws -> String { throw notLinked }
     static func setJobCallback(_ e: OpaquePointer, hub: JobEventHub?) throws { throw notLinked }
     static func sessionNew(_ e: OpaquePointer) throws -> OpaquePointer { throw notLinked }
-    static func sessionOpen(_ e: OpaquePointer, path: String) throws -> OpaquePointer { throw notLinked }
     static func sessionDestroy(_ s: OpaquePointer) {}
-    static func sessionSave(_ s: OpaquePointer, path: String?) throws { throw notLinked }
-    static func sessionInfo(_ s: OpaquePointer) throws -> String { throw notLinked }
-    static func sessionProject(_ s: OpaquePointer) throws -> String { throw notLinked }
     static func sessionSystem(_ s: OpaquePointer) throws -> String { throw notLinked }
     static func sessionSetSystem(_ s: OpaquePointer, json: String) throws -> String { throw notLinked }
-    static func sessionApplyEdits(_ s: OpaquePointer, json: String) throws -> String { throw notLinked }
-    static func sessionSetSection(_ s: OpaquePointer, section: String, json: String) throws { throw notLinked }
     static func sessionSnapshotHash(_ s: OpaquePointer) throws -> String { throw notLinked }
     static func sessionLibraryHash(_ s: OpaquePointer) throws -> String { throw notLinked }
     static func sessionLoadCatalog(_ s: OpaquePointer, path: String) throws -> String { throw notLinked }
@@ -320,10 +269,8 @@ enum CABI {
     static func jobStatus(_ e: OpaquePointer, _ job: UInt64) throws -> (state: JobState, progress: Double) {
         throw notLinked
     }
-    static func jobStatusJSON(_ e: OpaquePointer, _ job: UInt64) throws -> String { throw notLinked }
     static func jobCancel(_ e: OpaquePointer, _ job: UInt64) throws { throw notLinked }
     static func jobStop(_ e: OpaquePointer, _ job: UInt64) throws { throw notLinked }
-    static func jobWait(_ e: OpaquePointer, _ job: UInt64, timeoutMs: Int64) throws -> JobState { throw notLinked }
     static func jobTakeResult(_ e: OpaquePointer, _ job: UInt64) throws -> (json: String, buffers: [ResultBuffer]) {
         throw notLinked
     }

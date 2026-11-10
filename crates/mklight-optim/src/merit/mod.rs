@@ -16,7 +16,8 @@
 //! model operands with the reference tracer; [`geometric::ModelEvaluator`]
 //! covers model-only operands without tracing. MTF, ghost, stray-light and
 //! plug-in operands come from further evaluators combined with
-//! [`CompositeEvaluator`].
+//! [`CompositeEvaluator`]. [`WithSolves`] applies a candidate's solves before
+//! another evaluator sees it.
 
 pub mod builtin;
 pub mod default;
@@ -28,6 +29,7 @@ pub mod operand;
 pub mod problem;
 pub mod quadrature;
 pub mod reference;
+pub mod solved;
 pub mod solver_eval;
 mod surface;
 pub mod trace_eval;
@@ -46,6 +48,7 @@ pub use operand::{Capability, OperandDescriptor, OperandKind, OperandRegistry};
 pub use operand::{CentroidScope, RayGroup};
 pub use problem::{OpticalProblem, VariableSpec};
 pub use quadrature::{PupilNode, PupilSampling, PupilSymmetry};
+pub use solved::WithSolves;
 pub use trace_eval::{RunResult, TraceEvalSettings, TraceEvaluator};
 
 /// Merit-file schema version. Bump when an existing serialised layout
@@ -554,6 +557,15 @@ pub trait OperandEvaluator: Sync {
     /// values of `kind` need for `scheme`, when the f64 defaults (`√ε`,
     /// `∛ε`) would difference rounding noise. `None` = the defaults.
     fn fd_relative_step(&self, _kind: &OperandKind, _scheme: FdScheme) -> Option<f64> {
+        None
+    }
+
+    /// This evaluator for another solve, when it keeps state between the
+    /// batches of one (the resident evaluator's learned ray routing): the
+    /// same values, with that state starting afresh, so that solves running
+    /// in parallel cannot influence each other. `None` (the default): the
+    /// evaluator keeps no such state and serves every solve.
+    fn for_solve(&self) -> Option<Box<dyn OperandEvaluator + '_>> {
         None
     }
 }

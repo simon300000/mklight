@@ -41,6 +41,8 @@ OperandEvaluator ───┘     (Problem)        ├── ResidentEvaluator (
   `SolverEvaluator`. Engine optimise and tolerance jobs use this full set,
   also after GPU ray evaluation. `Custom` operands still need a plug-in.
   `CompositeEvaluator` routes each operand to its first supporting evaluator.
+* `WithSolves` (`merit::solved`) wraps any of them and applies the solves of
+  every candidate system first (Tolerancing, "Solves").
 
 ## The tracer-backed evaluator
 
@@ -257,7 +259,8 @@ highest enumerated even order, up to the solver's limit of 8. Optional
 limit); explicit signatures select their own order. `metric` is `peak`
 (total map peak/primary peak), `power` (integrated detector ghost/primary
 power), or `mean` (mean ghost/mean primary irradiance over the same detector,
-equal to the power ratio). It uses the explicit ghost solver, with fixed
+equal to the power ratio). A ratio that is undefined (the primary is zero on
+the detector) fails the operand. It uses the explicit ghost solver, with fixed
 32×32 initial pupil cells and 64×64 detector bins; the solver refines clipped
 cells. Detector dimensions come from the sensor or image clear aperture.
 Peak ratios therefore depend on the bin size. `SolverEvaluator::ghost`
@@ -615,6 +618,15 @@ rebuilt with `ToleranceSpec::trial_case_system`) and `seconds_per_trial`, the
 wall time over the completed trials. The engine job `tolerance` wraps both
 drivers (see Engine jobs).
 
+**Solves.** The drivers perturb parameters and evaluate the system as it
+then stands. To keep a model's solves (`docs/SOLVES.md`) in effect, give
+`OpticalToleranceEvaluator` its operand evaluator wrapped in
+`merit::WithSolves`: it applies the solves of every candidate system before
+the inner evaluator sees it, so the perturbed system of a case and each
+candidate of its compensator solve are re-solved, as the engine job does. A
+candidate whose solves cannot be applied has no operand values (`Invalid`,
+with the solver's reason); a system without solves passes through unchanged.
+
 ### Irregularity and rigid elements
 
 `ParamPath::Irregularity` (`{"param":"irregularity","surface":3,"mode":"astigmatism"}`
@@ -752,8 +764,10 @@ below add the meaning. Numbers follow CONVENTIONS §11: NaN is `null`, ±∞ is
 **Progress and interruption.** Progress is reported once per optimiser
 iteration (generation, round) with the stage text
 `"<algorithm> <iteration>: merit <best merit>"`, and once per Monte-Carlo
-batch. Cancelling the job context stops the optimiser between evaluations
-and returns `Cancelled` without final f64 scoring. The scheduler drops cancelled
+batch. Cancelling the job context stops the search of any of these jobs
+between evaluations and returns `Cancelled`: no result, no final f64
+scoring, whether the job runs on the scheduler or in a synchronous
+`Session::run_analysis`. The scheduler drops cancelled
 results, because a superseded result is stale.
 Front ends use `Engine::stop_job`, `mk_job_stop` (ABI 1.2), Python
 `Job.stop()`, or the CLI's first Ctrl-C to keep the result. Stop has its own
@@ -761,7 +775,11 @@ job token: even a queued request is retained until the job starts, and the
 job ends normally (`Done`) with `status: "stopped"` and `stopped: true`.
 A second CLI Ctrl-C cancels. Cancel/supersession still discards the result.
 A stopped sensitivity keeps completed
-operands; stopped Monte Carlo keeps completed trials.
+operands; stopped Monte Carlo keeps completed trials. `status` is the same
+function of how the search ended in every job (`job_status`): `stopped`
+after a Stop, `converged` when the optimiser met a convergence test, else
+`finished` (a budget or time limit, or a search without a convergence
+test that ran to its end: `tolerance`, `glass_substitution`).
 
 **Never worse than the start.** The job evaluates the start and the
 optimiser's answer on the CPU f64 reference and returns the better of the
@@ -788,9 +806,41 @@ an unaimable ray of a bad trial step costs the device a bounded number of
 iterations instead of the reference schedule, while healthy candidate rays
 converge well within the cap.
 
-`optimize` and `merit_evaluation` apply the solves (`docs/SOLVES.md`) to
-the start before building the merit. Solve-controlled parameters are never variables: automatic variables
-skip them and explicit ones are rejected. The search does not re-solve.
+**One model.** The four jobs (`optimize`, `merit_evaluation`, `tolerance`,
+`glass_substitution`) work on the same system and build their merit the
+same way (`SolvedStart`, `PreparedMerit` in `analysis::optim`): the solves
+(`docs/SOLVES.md`) are applied to the snapshot's system, and the merit
+(explicit or generated, fixed boundaries relaxed, extra operands and
+constraints, the EFL hold) is built on that solved start. On a design with
+solves they therefore report the same start merit (tested). No job changes a
+solve-controlled parameter itself: such a parameter is never a variable, a
+tolerance or a compensator. Automatic variables and tolerances skip it, an
+explicit one is rejected (`'<key>'[i]: a solve controls this parameter`),
+and a material variable on a glass whose model or offset parameters a solve
+controls is rejected. Where a job derives other systems from the start:
+
+* `optimize`: the search does not re-solve. The solve-controlled parameters
+  keep the values of the solved start in every candidate and in the result.
+* `glass_substitution`: every glass combination is the start of a
+  re-optimisation of its own, so the solves are applied to the substituted
+  design (built from the solved input) before it; the re-optimisation, like
+  `optimize`'s search, does not re-solve.
+* `tolerance`: the solves stay in effect in every system the job
+  evaluates (`merit::WithSolves`): the perturbed system of each sensitivity
+  limit and Monte Carlo trial is re-solved, and so is each candidate of its
+  compensator solve. A solve then acts like a compensator that is always
+  applied: an F/# solve restores the F/# of every trial, a marginal-height
+  solve on the back focus refocuses it. The previewed case system is the
+  re-solved one, so applying its solves changes nothing and its merit is
+  the reported criterion (tested).
+
+**Settings are checked through.** Beyond the top-level normalisation, each
+job validates its settings recursively against its schema: an unknown key
+or a wrong type inside `default_merit` (its `sampling`, `thickness` and the
+`criterion` variant selected by `type`) is an `InvalidSettings` error, as
+is an unknown key of `options` (below). The serde forms listed above
+(`VariableSpec`, `Operand`, `ToleranceOperand`, `Compensator`,
+`MeritFunctionSpec`) are parsed as their types define.
 
 Both jobs also run with no settings at all: `optimize` then varies every
 curvature and the back focus against the default merit (thickness boundaries
@@ -857,7 +907,9 @@ settings object, the same merit construction (explicit `merit` or
 `default_merit`, extra `operands` and `constraints`, automatic variables,
 fixed-boundary relaxation, the EFL hold that `algorithm` selects, solves
 applied first) and the same operand report, without a search or derivatives.
-A derivative-free EFL penalty is weighted from that one evaluation. On the
+A derivative-free EFL penalty is weighted by the start merit on the CPU
+reference, as in `optimize`, whichever evaluator computed the values, so
+both jobs report the same `merit_spec` on any backend (tested). On the
 CPU every number equals `optimize`'s `start` report (tested). `backend`
 and fallback follow `optimize` with a workload of
 one candidate, so `auto` normally stays on the CPU; an explicit GPU traces
@@ -882,7 +934,7 @@ failure policy.
 | `operands` | array, `[]` | operands appended to the merit (e.g. an EFL target residual) |
 | `constraints` | array, `[]` | operands appended as explicit constraints (role forced to `constraint`) |
 | `algorithm` | `lm` \| `dogleg` \| `de` \| `cma_es` \| `nelder_mead` \| `hammer`, `lm` | the optimiser |
-| `options` | object, `{}` | the algorithm's settings (`LsqSettings`, `DeSettings`, `CmaEsSettings`, `NelderMeadSettings`, `HammerSettings`), laid over the job's defaults: the library defaults except `constraints.max_inner_iterations` 10 (LM, dogleg, hammer's `local`), `init_spread` 0.03 (DE) and `sigma0` 0.05 (CMA-ES) |
+| `options` | object, `{}` | the algorithm's settings (`LsqSettings`, `DeSettings`, `CmaEsSettings`, `NelderMeadSettings`, `HammerSettings`), laid over the job's defaults: the library defaults except `constraints.max_inner_iterations` 10 (LM, dogleg, hammer's `local`), `init_spread` 0.03 (DE) and `sigma0` 0.05 (CMA-ES), with `max_iterations`, `fd_scheme`, `fd_relative_step` and `seed` in their fields. One rule for every algorithm: a key of `options` wins over the job setting that fills the same field (`options.max_iterations` over `max_iterations`, `options.jacobian` or hammer's `options.local.jacobian` over `fd_scheme` and `fd_relative_step`). A key must be a field of the selected algorithm's settings, through nested objects (`jacobian`, `constraints`, `local`); an unknown one is rejected with the valid keys. `method` (LM, dogleg) and `seed` (DE, CMA-ES, hammer) belong to the job's `algorithm` and `seed` and are rejected in `options` |
 | `max_iterations` | integer or null, `null` | iterations (`lm`, `dogleg`, `nelder_mead`), generations (`de`, `cma_es`) or rounds (`hammer`); `null`: 200, 200, 2000, 100, 200, 20 |
 | `fd_scheme` | `forward` \| `central`, `forward` | finite differences of LM / dogleg (and hammer's local runs) |
 | `fd_relative_step` | number > 0 or null, `null` | `null`: chosen per operand and evaluator (Derivatives); 0 or a negative step is rejected |
@@ -955,7 +1007,7 @@ the best point seen. `final` is the better of the answer and the start
 
 | key | type, default | meaning |
 |---|---|---|
-| `tolerances` | array, `[]` | `ToleranceOperand`s (`param`, `minus`, `plus`, `distribution`, `label`); empty: a basic set, ±0.05 mm on every glass and air thickness except the back focus and ±0.5 % on every curvature of a curved optically active surface. A parameter the system does not have (here and in `compensators`) is rejected |
+| `tolerances` | array, `[]` | `ToleranceOperand`s (`param`, `minus`, `plus`, `distribution`, `label`); empty: a basic set, ±0.05 mm on every glass and air thickness except the back focus and ±0.5 % on every curvature of a curved optically active surface, without the solve-controlled ones. A parameter the system does not have, or that a solve controls (here and in `compensators`), is rejected |
 | `compensators` | array, `[]` | `Compensator`s (`param`, `range` around nominal, `scale`), re-optimised by LM for every trial (screened first for an MTF criterion) |
 | `criterion` | object or null, `null` | the criterion `MeritFunctionSpec`; `null` generates it with `DefaultMeritSpec::generate_for_tolerancing` from `default_merit` |
 | `default_merit` | object, the default merit without thickness boundaries | generator settings, laid over that default |
@@ -982,7 +1034,7 @@ results). Progress and a stop request act between batches.
 
 ```jsonc
 {
-  "status": "complete" | "stopped" | "cancelled",
+  "status": "finished" | "stopped",
   "stopped": false,
   "sensitivity": {                                  // null when not run, or stopped before the nominal
     "nominal": {"criterion": 3.97e-4, "ok": true, "compensators": [42.25]},
@@ -1028,7 +1080,9 @@ Buffer 0 (when Monte Carlo ran) is `monte_carlo_criteria` (f64, one per trial).
 | defaults | singlet: variables c₁, c₂ and the back focus, EFL held at its start value (replaced by an explicit `efl` operand); tolerances: the lens thickness and both curvatures |
 | singlet through the scheduler | equi-convex start, EFL = 100 constraint: converged, merit ÷5 or more, EFL within 1e-6, the result applies as a session snapshot with the reported hash |
 | Cooke triplet | default merit with thickness boundaries and EFL constraint, LM 40 iterations: merit −20 % or more, every constraint holds to 1e-6, two runs give identical JSON; seeded DE: identical for a seed, different for another, improves |
-| cancel and stop | cancelled after two LM iterations: `Cancelled` without reference scoring; `Engine::stop_job` through the scheduler: `Done`, `stopped`, improved |
+| cancel and stop | cancelled after two LM iterations: `Cancelled` without reference scoring; `Engine::stop_job` through the scheduler: `Done`, `stopped`, improved; a cancelled `tolerance` run and trial preview: `Cancelled`; `job_status` and the `status` values of the three result schemas |
+| one solved model | a triplet with an F/# solve and a paraxial-focus solve through the four jobs: the same start merit, that of the solved system; automatic variables and tolerances skip the solved parameters, explicit ones (variables, tolerances, compensators) are rejected; every tolerance case (sensitivity limit, trial, compensated trial) is re-solved, its previewed system meets its solves and reproduces the criterion; every glass combination starts from the re-solved substituted design |
+| nested settings | a misspelt key in `default_merit`, its `sampling`, `thickness` or `criterion` is rejected by all four jobs; unknown `options` keys are rejected with the algorithm's valid keys, `method` and `seed` with the setting to use; every field of an algorithm's settings is accepted and wins over the job's setting |
 | tolerance | 6 tolerances, back-focus compensator: ranked sensitivities, compensator moves, Monte Carlo identical for a seed, different for another |
 | GPU backends | `gpu_emulation` everywhere and `gpu` (Metal) when present: GPU precision, no runtime qualification, reported on the reference, merit decreases; `auto` with a handed-over device uses it at both merit sizes |
 | global methods | `cma_es`, `de`, `nelder_mead` with the defaults on the singlet and Cooke triplet: improve, feasible, EFL within 1e-4 relative by the penalty; a DE run that cannot improve returns the start (`improved: false`, same snapshot hash) with a warning |
@@ -1069,11 +1123,14 @@ Every other setting has a default:
 
 `variables`, `merit`, `default_merit`, `operands`, `constraints`,
 `hold_efl`, `fd_scheme`, `fd_relative_step`, `seed`, `backend` and
-`feasibility_tolerance` are those of `optimize`. Empty
+`feasibility_tolerance` are those of `optimize`, and the merit is built by
+the same preparation on the solved start (Engine jobs, "One model"). Empty
 continuous variables select the curvatures of the curved surfaces and the
-back focus; explicit variables may be any `ParamPath`. The re-optimisation is
+back focus; explicit variables may be any `ParamPath` that no solve
+controls. The re-optimisation is
 `optimize`'s LM: the same merit, augmented-Lagrangian constraints, FD steps
-and evaluator. `hold_efl` holds the input EFL as a constraint unless the
+and evaluator. The solves of the design are applied to every substituted
+combination before its re-optimisation. `hold_efl` holds the input EFL as a constraint unless the
 merit has an EFL operand.
 
 ### Candidates and model-glass snapping
@@ -1163,7 +1220,8 @@ apply any entry as one undoable edit. `starting_merit`, `candidate_sets`,
 `merit_spec` and the `backend` record come with it.
 
 With fixed settings and seed, and no time limit or Stop, the result is
-identical for any number of Rayon workers. Progress reports the number of
+identical for any number of Rayon workers, on the CPU reference and on a
+device with either aiming (tested with device aiming on the emulation). Progress reports the number of
 re-optimisations, the best merit and the best combination's glasses. Stop
 (`Engine::stop_job`) ends the search and returns the ranking
 so far, including re-optimisations cut short (`local_termination:
@@ -1175,7 +1233,7 @@ not setup or the final ranking.
 Re-optimisation dominates. For C combinations, n continuous variables and
 I LM iterations, forward differences cost about `C · (1 + I · (n + 1))`
 merit evaluations, plus rejected steps and constraint updates (central
-differences: 2n). One search iteration's combinations run in parallel. All re-optimisations share the resident GPU evaluator, with each FD Jacobian
+differences: 2n). One search iteration's combinations run in parallel. All re-optimisations share the resident GPU evaluator's device context and counters, each with routing state of its own (`ResidentEvaluator::for_solve`), with each FD Jacobian
 in one batch. No candidate/reference checks run during the
 search. `auto` runs the search on the CPU reference: `glass_substitution` is an
 accuracy exclusion (`GPU.md` §9.2, "Automatic routing"). The final ranking
@@ -1253,11 +1311,24 @@ How a batch is divided between host and device is the next section.
   scans on the device in a candidate batch and completes the adaptive
   boundary search and quadrature on the host (`ri_visibility` counts the
   lookups). Model scalars and paraxial operands are host evaluations.
+* **One evaluator per solve.** An evaluator serves one solve: a sequence
+  of batches evaluated one after another. What it learns from its batches
+  (the routing below) belongs to that solve. Clones are the same solve;
+  `ResidentEvaluator::for_solve` gives the evaluator of another one, with
+  the same device context, reference and counters and routing state of its
+  own. Solves that run in parallel each get one: a glass combination's
+  re-optimisation (the engine's problem builder), and each parallel local
+  solve of basin hopping, which asks its problem for an instance
+  (`Problem::for_solve`, `OperandEvaluator::for_solve`). Their values then
+  do not depend on thread timing or on the number of workers (tested).
 * **Independent solves.** `gpu::scheduler::run` rendezvous-batches
   independent serial solvers: each active worker supplies its next optical
   evaluation, and one coordinator combines matching operand lists in stable
   worker order; finished workers leave subsequent rounds. Compensated
-  tolerance trials use it.
+  tolerance trials use it. The joined batches are one sequence in stable
+  order, so the workers share the routing state of the evaluator behind
+  them; a joined batch is evaluated near the anchor of its first worker
+  that has one.
 * **Tall QR.** A `Problem` that returns the context from `gpu_context()`
   gets the resident tall QR of LM from `m·n ≥ 2¹⁶` Jacobian elements
   (GPU.md §9.2, "QR policy"); a rank-deficient factor is a counted reference
@@ -1310,22 +1381,25 @@ through the device's chief-relative coordinates and OPD); no candidate is
 reported whole to the reference. In a finite-difference batch (anchored:
 probes and the re-evaluated base point) a ray completed on the host for one
 candidate is completed on the host for every candidate, so a derivative
-never differences a device ray against an f64 one. Rays that were
+never differences a device ray against an f64 one. Pupil rays that were
 unresolved or slow (more than 6 device iterations) in an eighth of a
-batch's candidates are routed to the host before the plan in the following
-batches, the same for every candidate of a batch, for the evaluator's
-lifetime: the device then runs only lanes that converge in a few
+device-aimed batch's candidates are routed to the host before the plan in
+the following device-aimed batches of the same solve, the same for every
+candidate of a batch, for the rest of that solve (One evaluator per solve,
+above): the device then runs only lanes that converge in a few
 iterations (2–3 ms of device time per plan on the 29-surface lens), and the
-host traces the hard rays while the device works. An evaluator's first
+host traces the hard rays while the device works. A solve's first
 device-aimed batch of four or more candidates is preceded by three of its
 candidates traced alone, to learn those rays (one perturbed Monte Carlo
 trial learned 18 of the 34 rays the batches route on the 35-surface lens,
 three learn all): the Metal executor runs a large
 generation in tiles one after another, each as long as its slowest lane,
 so a cold 91-candidate sensitivity batch spent 370 ms of device time in
-67 command buffers on the 29-surface lens. When the device leaves more than
-half of a candidate's rays to the host (on the 35-surface ultra-wide lens it
-aimed 166 of 570 within the cap), the evaluator hands the rest of the run
+67 command buffers on the 29-surface lens. When a device-aimed batch leaves
+more than half of a candidate's rays to the host, counting the rays of that
+batch routed before its plan and those it adds to the routing against the
+rays of that batch (on the 35-surface ultra-wide lens the device
+aimed 166 of 570 within the cap), the evaluator hands the rest of the solve
 to the reference (`evaluate_batch_near`, counted as a fallback).
 
 **Pipelined batches** (`PIPELINE_FROM`). A batch of at least 64 candidates is split into
@@ -1336,20 +1410,22 @@ the 29- and 35-surface lenses: 1.92 → 1.72 s and 1.98 → 1.75 s), a
 23-candidate Jacobian loses (Double Gauss `optimize` 792 vs 582 ms), so
 Jacobians stay one plan.
 
-**Aiming** (the `aiming` key). *Host aiming:* every pupil ray is aimed on
-the host by the candidate's f64 tracer (`generate_many`: the reference's
+**Aiming** (the route option `solver_aiming`, GPU.md §9.3). *Host aiming:*
+every pupil ray is aimed on the host by the candidate's f64 tracer (`generate_many`: the reference's
 aims, bit for bit) and the device only traces it from the host's starting
 ray (`TraceResident`) and forms the chief-relative coordinates, moments,
 OPD and fits. A ray the host cannot aim fails as on the reference (it
 enters the plan with an aim-outside report and is not completed again);
 there is no device aiming, no probe candidate and no routing. In a
-finite-difference batch the base point is first evaluated on the host and
+finite-difference batch the base point (the anchor the batch is given,
+whichever candidate comes first) is first evaluated on the host and
 its recorded solves seed every candidate's tracer, as in the reference's
 `evaluate_batch_near`, so the probes' aims are the reference's seeded
-aims. *Device aiming:* the device aims with host completion as above.
+aims. A host-aimed batch of a solve that has learned rays under device
+aiming routes none of them. *Device aiming:* the device aims with host completion as above.
 
-*The rule* (`aiming` unset, `gpu::DEVICE_AIM_FROM`) picks per batch: the
-device aims a batch whose estimated device rays times the system's
+*The rule* (`solver_aiming` = `by-batch`, `gpu::DEVICE_AIM_FROM`) picks per
+batch: the device aims a batch whose estimated device rays times the system's
 surfaces without a closed-form intersection (aspheres, polynomial and
 freeform sags; none under paraxial aiming, which solves nothing) reach
 2e6, the host aims every other. Host aiming costs
@@ -1373,11 +1449,10 @@ batches of 128 unless noted; time relative to host aiming):
 Batch size alone does not separate these: the spherical lens loses with
 device aiming at every size, the aspheric zoom wins at default
 tolerance sizes. LM Jacobians, trial points, glass refinements and merit
-evaluations stay far below the threshold. `aiming` set to a device design
-(`device` or `table`; the solvers' rows hold too few rays for a seed table,
-so both mean the same here) pins device aiming for every batch, to
-`host-table` or `split:<share>` host aiming. Reported as `backend.aiming`
-(`by-batch`, `host` or `device`) and `solvers_aiming`; the batches the
+evaluations stay far below the threshold. The route option `solver_aiming`
+set to `device` pins device aiming for every batch, set to `host` host
+aiming; `by-batch` (the default) is the rule above. Reported as
+`backend.aiming` (`by-batch`, `host` or `device`) and `solvers_aiming`; the batches the
 device aimed are counted in `resident_evaluation.device_aimed_batches`.
 
 **Speculative Jacobians** (`LsqSettings::speculative_jacobian`). A trial
@@ -1414,12 +1489,18 @@ boundaries, first-order, aggregate, single and inner real-ray operands
 (emulation and Metal; device and host aiming), host
 completion, routing and handover to the reference at device caps of 1–8
 iterations (the real-aimed Cooke triplet at cap 4 routes rays without
-handing over), equal values of a pipelined batch and its halves,
+handing over), routing state per solve (`for_solve` starts afresh after a
+handover, clones stay handed over), the handover judged per batch (a dense
+merit's learned rays do not hand a sparse merit's batches over), host-aimed
+batches without routing, anchor seeding independent of the candidate order,
+equal values of a pipelined batch and its halves,
 finite-difference column errors (1.8e-7 against f64 central differences on
 the real-aimed Cooke triplet, also with host completion), LM on the
 evaluator, and speculative LM. The engine test `tests/solver_aiming.rs`
 runs both aiming options of all four jobs against the reference under the
-solver-outcome contract (emulation; Metal ignored). A truncated solve
+solver-outcome contract (emulation; Metal ignored), and a basin-hopping
+`optimize` and a glass substitution with device aiming on 1, 2 and 8 rayon
+workers: identical results, counters included. A truncated solve
 (3 LM iterations, 2 local glass iterations) may miss a merit or violation
 gate when it deviates no more than twice as much as the reference itself
 moves under the two differences a device run brings: a perturbation of

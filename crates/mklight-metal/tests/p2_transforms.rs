@@ -6,12 +6,9 @@ use mklight_core::JobContext;
 use mklight_gpu::{resident::*, transforms::*, *};
 use mklight_metal::{LibraryChoice, MetalBackend, MetalOptions};
 fn backend(library: LibraryChoice) -> MetalBackend {
-    let b = MetalBackend::with_options(&MetalOptions {
-        library,
-        ..Default::default()
-    })
-    .unwrap()
-    .expect("P2 qualification requires a host Metal device");
+    let b = MetalBackend::with_options(&MetalOptions { library })
+        .unwrap()
+        .expect("P2 qualification requires a host Metal device");
     eprintln!(
         "P2 device={} build={} probe={:?}",
         b.info().backend_id(),

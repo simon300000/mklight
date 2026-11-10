@@ -108,7 +108,10 @@ int main(int argc, char **argv) {
     CHECK(eng == NULL);
     CHECK(strlen(mk_last_error()) > 0);
     EXPECT(mk_engine_create(NULL, NULL), MK_ERR_INVALID_ARGUMENT);
-    EXPECT(mk_engine_create("{\"worker_threads\": \"many\"}", &eng), MK_ERR_PARSE);
+    /* JSON of the wrong shape, and a key the configuration does not have. */
+    EXPECT(mk_engine_create("{\"worker_threads\": \"many\"}", &eng), MK_ERR_INVALID_ARGUMENT);
+    EXPECT(mk_engine_create("{\"worker_thread\": 2}", &eng), MK_ERR_INVALID_ARGUMENT);
+    CHECK(eng == NULL && strstr(mk_last_error(), "worker_thread") != NULL);
     OK(mk_engine_create("{\"worker_threads\": 2, \"progress_interval_ms\": 5, "
                         "\"app_name\": \"smoke\", \"app_version\": \"1.0\"}",
                         &eng));
@@ -260,6 +263,11 @@ int main(int argc, char **argv) {
     EXPECT(mk_session_submit_analysis(s, "rng_stream", "{oops", NULL, &job), MK_ERR_PARSE);
     EXPECT(mk_session_submit_analysis(s, NULL, NULL, NULL, &job), MK_ERR_INVALID_ARGUMENT);
     CHECK(job == 0);
+    /* A misspelt request key is an error naming it, not a default. */
+    EXPECT(mk_session_submit_analysis_json(s, "{\"analysis\": \"validate\", \"setings\": {}}", &job),
+           MK_ERR_INVALID_ARGUMENT);
+    CHECK(job == 0 && strstr(mk_last_error(), "setings") != NULL);
+    EXPECT(mk_session_submit_analysis_json(s, "{\"analysis\": \"validate\"", &job), MK_ERR_PARSE);
     EXPECT(mk_session_submit_analysis_json(
                s, "{\"analysis\": \"validate\", \"backend\": {\"kind\": \"gpu\", \"name\": \"metal\"}}",
                &job),
@@ -300,7 +308,7 @@ int main(int argc, char **argv) {
     mk_string_free(stage);
     EXPECT(mk_job_take_result(eng, job, &json, &bufs, &nb), MK_ERR_NOT_READY);
     CHECK(json == NULL && bufs == NULL && nb == 0);
-    EXPECT(mk_job_stop(eng, job), MK_ERR_UNSUPPORTED);
+    EXPECT(mk_job_stop(eng, job), MK_ERR_UNSUPPORTED); /* rng_stream is not stoppable */
     OK(mk_job_cancel(eng, job));
     OK(mk_job_wait(eng, job, 30000, &state));
     CHECK(state == MK_JOB_CANCELLED);
@@ -379,7 +387,10 @@ int main(int argc, char **argv) {
     CHECK((mk_abi_version() & 0xffff) >= 1);
     OK(mk_engine_analysis_info(eng, "spot_diagram", &json));
     CHECK(strstr(json, "\"result_schema\"") && strstr(json, "\"gpu_path\":true") &&
-          strstr(json, "\"x-buffers\""));
+          strstr(json, "\"x-buffers\"") && strstr(json, "\"stoppable\":false"));
+    mk_string_free(json);
+    OK(mk_engine_analysis_info(eng, "optimize", &json));
+    CHECK(strstr(json, "\"stoppable\":true"));
     mk_string_free(json);
     EXPECT(mk_engine_analysis_info(eng, "no_such_analysis", &json), MK_ERR_NOT_FOUND);
     CHECK(json == NULL);
@@ -438,8 +449,10 @@ int main(int argc, char **argv) {
     OK(mk_job_status_json(eng, job, &json));
     CHECK(strstr(json, "NOPE-42"));
     mk_string_free(json);
-    EXPECT(mk_job_take_result(eng, job, &json, &bufs, &nb), MK_ERR_JOB_FAILED);
+    /* The failed job returns the status of its own error. */
+    EXPECT(mk_job_take_result(eng, job, &json, &bufs, &nb), MK_ERR_NOT_FOUND);
     CHECK(strstr(mk_last_error(), "NOPE-42") != NULL);
+    CHECK(json == NULL && bufs == NULL && nb == 0);
     /* validate reports it as an issue instead of failing. */
     json = run_job(eng, s2, "validate", NULL, &bufs, &nb);
     CHECK(strstr(json, "\"ok\":false") && strstr(json, "\"code\":\"material\""));

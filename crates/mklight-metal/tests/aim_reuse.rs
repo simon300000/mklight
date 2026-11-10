@@ -20,12 +20,11 @@ use support::*;
 fn backend() -> MetalBackend {
     MetalBackend::with_options(&MetalOptions {
         library: LibraryChoice::Precompiled,
-        ..Default::default()
     })
     .unwrap()
     .expect("aiming reuse requires host Metal hardware")
 }
-fn run(b: &dyn ComputeBackend, p: ResidentPlan) -> (Vec<BufferData>, PlanStats) {
+fn run(b: &dyn QualificationBackend, p: ResidentPlan) -> (Vec<BufferData>, PlanStats) {
     let r = b
         .submit_plan(p, &JobContext::new())
         .unwrap()
@@ -55,7 +54,7 @@ struct Case {
     key: SystemCacheKey,
 }
 impl Case {
-    fn new(b: &dyn ComputeBackend, t: &SequentialTracer, host: bool) -> Self {
+    fn new(b: &dyn QualificationBackend, t: &SequentialTracer, host: bool) -> Self {
         let field = t.fields().len() - 1;
         let points = PupilSampling::Grid { n: 64 }.points();
         assert!(points.len() >= aiming::TABLE_MIN_RAYS_PER_ROW);
@@ -73,7 +72,7 @@ impl Case {
     }
     fn run(
         &self,
-        b: &dyn ComputeBackend,
+        b: &dyn QualificationBackend,
         packed: PackedSystem,
         cached: bool,
     ) -> (Vec<BufferData>, PlanStats) {
@@ -307,8 +306,14 @@ fn cancelled_builds_are_never_reused() {
     let t = testutil::tracer(real(samples::double_gauss()));
     let packed = PackedSystem::pack_all(t.system()).unwrap();
     for (b, stages) in [
-        (&cpu as &dyn ComputeBackend, ["chief aiming", "seed table"]),
-        (&gpu as &dyn ComputeBackend, ["seed table", "pupil aiming"]),
+        (
+            &cpu as &dyn QualificationBackend,
+            ["chief aiming", "seed table"],
+        ),
+        (
+            &gpu as &dyn QualificationBackend,
+            ["seed table", "pupil aiming"],
+        ),
     ] {
         for stage in stages {
             let case = Case::new(b, &t, false);

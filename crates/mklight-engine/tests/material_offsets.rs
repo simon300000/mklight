@@ -163,7 +163,7 @@ fn offset_paraxial_power_matches_thick_lens_formula() {
     }
 }
 
-fn gpu_offset_agreement(backend: &dyn mklight_gpu::ComputeBackend) {
+fn gpu_offset_agreement(backend: &dyn mklight_gpu::QualificationBackend) {
     use mklight_gpu::xval::{XvalSettings, cross_validate};
     for env in [
         Default::default(),

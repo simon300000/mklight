@@ -412,8 +412,9 @@ private struct TypeCell: View {
     }
 }
 
-/// An editable cell: shows the formatted value, edits the exact one. Only
-/// the cell being edited is a text field.
+/// An editable cell: shows the formatted value, edits the exact one, and
+/// commits edited text when the cell is left. Only the cell being edited is
+/// a text field.
 private struct LensCell: View {
     let row: LensRow
     let column: LensColumn
@@ -429,12 +430,16 @@ private struct LensCell: View {
     let cancel: () -> Void
     let commit: (String) -> Bool
     let move: (LensTableView.Move) -> Void
-    @State private var text = ""
-    /// The text last committed, so leaving the field does not commit it again.
-    @State private var committed: String?
+    /// The edit of the cell's text: what is committed is the text itself
+    /// (the lens editor reads it), so text and value are one.
+    @State private var edit = FieldEdit("", LensCell.entry)
+
+    private static let entry = FieldEdit<String>.Format(exact: { $0 }, display: { $0 }, parse: { $0 })
 
     private var id: CellID { CellID(row: row.id, column: column) }
     private var display: String { row.text(column) }
+    /// The text that edits the value: every digit of a number.
+    private var exact: String { row.exact[column] ?? display }
 
     var body: some View {
         HStack(spacing: 3) {
@@ -494,15 +499,14 @@ private struct LensCell: View {
     }
 
     private var field: some View {
-        TextField(column.title, text: $text, prompt: Text(""))
+        TextField(column.title, text: $edit.text, prompt: Text(""))
             .labelsHidden()
             .textFieldStyle(.plain)
             .multilineTextAlignment(column.isNumeric ? .trailing : .leading)
             .font(column.isNumeric ? .body.monospacedDigit() : .body)
             .focused(focus, equals: id)
             .onAppear {
-                text = row.exact[column] ?? display
-                committed = nil
+                edit = FieldEdit(exact, Self.entry)
                 // The field replacing another one can lose the focus to the
                 // grid as the old field goes away: claim it once more.
                 focus.wrappedValue = id
@@ -512,6 +516,7 @@ private struct LensCell: View {
             .onChange(of: focus.wrappedValue == id) { _, isFocused in
                 if !isFocused { end() }
             }
+            .onChange(of: exact) { _, new in edit.valueChanged(new, Self.entry) }
             .onDisappear { _ = finish() }
             .onSubmit {
                 if finish() { move(.down) }
@@ -523,7 +528,7 @@ private struct LensCell: View {
                 step(press.modifiers.contains(.shift) || press.key != .tab ? .left : .right)
             }
             .onKeyPress(.escape) {
-                text = row.exact[column] ?? display
+                edit.revert(Self.entry)
                 cancel()
                 return .handled
             }
@@ -549,7 +554,7 @@ private struct LensCell: View {
     }
 
     private var suggestions: [String] {
-        let q = text.trimmingCharacters(in: .whitespaces).uppercased()
+        let q = edit.text.trimmingCharacters(in: .whitespaces).uppercased()
         guard q.count >= 1 else { return [] }
         return Array(completions.filter { $0.uppercased().hasPrefix(q) && $0.uppercased() != q }.prefix(12))
     }
@@ -560,13 +565,13 @@ private struct LensCell: View {
         return .handled
     }
 
-    /// Commits the text; false when it was rejected.
+    /// Commits edited text; false when it was rejected (the cell then
+    /// shows its value again).
     private func finish() -> Bool {
-        let exact = row.exact[column] ?? display
-        guard text != exact, text != display, text != committed else { return true }
-        let ok = commit(text)
-        if ok { committed = text } else { text = exact }
-        return ok
+        edit.valueChanged(exact, Self.entry)
+        guard case .value(let text) = edit.submit(Self.entry), !commit(text) else { return true }
+        edit.valueChanged(exact, Self.entry)
+        return false
     }
 }
 

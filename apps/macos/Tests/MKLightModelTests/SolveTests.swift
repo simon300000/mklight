@@ -3,7 +3,7 @@ import Testing
 
 @testable import MKLightModel
 
-/// Solves, solve reports and samples against JSON written by the Rust side
+/// Solves and solve reports against JSON written by the Rust side
 /// (`dump_fixtures` in mklight-core, `dump_solve_fixtures` in mklight-trace).
 @Suite struct SolveFixtureTests {
     @Test func everySolveKindRoundTrips() throws {
@@ -117,22 +117,5 @@ import Testing
         var t = SampleSystems.cookeTriplet()
         t.solves = [Solve(target: .semiDiameter(surface: SurfaceID(1)), kind: .pickup(source: .thickness(surface: SurfaceID(1)), scale: 3, offset: 0))]
         #expect(t.structuralIssues().isEmpty)
-    }
-}
-
-@Suite struct SampleTests {
-    @Test func bundledSamplesMatchEngineFixture() throws {
-        struct Entry: Codable, Equatable {
-            var id: String
-            var system: OpticalSystem
-        }
-        let fixture = try Fixtures.roundTrip([Entry].self, "samples")
-        #expect(SampleSystems.bundled.map(\.id) == fixture.map(\.id))
-        #expect(SampleSystems.bundled.map(\.system) == fixture.map(\.system))
-        #expect(fixture.map(\.id).contains("achromat"))
-        for e in fixture {
-            #expect(e.system.structuralIssues().filter { $0.severity == .error }.isEmpty, "\(e.id)")
-        }
-        #expect(SampleSystems.bundled("achromat")?.aperture == .imageSpaceFNumber(5))
     }
 }

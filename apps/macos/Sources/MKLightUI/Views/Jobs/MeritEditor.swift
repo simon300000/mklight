@@ -17,62 +17,38 @@ struct OptionalNumberField: View {
     /// bordered field.
     var compact = false
     let commit: (Double?) -> Void
-    @State private var text = ""
-    /// The text the field was given (on focus, after a commit, with a new
-    /// value): only other text is an edit.
-    @State private var base = ""
-    @FocusState private var focused: Bool
 
     var body: some View {
-        TextField(title, text: $text, prompt: Text(prompt))
-            .labelsHidden()
-            .textFieldStyle(compact ? AnyTextFieldStyle(.plain) : AnyTextFieldStyle(.roundedBorder))
-            .multilineTextAlignment(.trailing)
-            .font(.callout.monospacedDigit())
-            .padding(.horizontal, compact ? 4 : 0)
-            .padding(.vertical, compact ? 1 : 0)
-            .background {
-                if compact {
-                    RoundedRectangle(cornerRadius: 4)
-                        .fill(focused ? AnyShapeStyle(.background) : AnyShapeStyle(.quaternary.opacity(0.6)))
-                        .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(focused ? AnyShapeStyle(.tint) : AnyShapeStyle(.clear)))
+        CommittingField(value: value, format: entry, commit: commit) { text, focused in
+            TextField(title, text: text, prompt: Text(prompt))
+                .labelsHidden()
+                .textFieldStyle(compact ? AnyTextFieldStyle(.plain) : AnyTextFieldStyle(.roundedBorder))
+                .multilineTextAlignment(.trailing)
+                .font(.callout.monospacedDigit())
+                .padding(.horizontal, compact ? 4 : 0)
+                .padding(.vertical, compact ? 1 : 0)
+                .background {
+                    if compact {
+                        RoundedRectangle(cornerRadius: 4)
+                            .fill(focused ? AnyShapeStyle(.background) : AnyShapeStyle(.quaternary.opacity(0.6)))
+                            .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(focused ? AnyShapeStyle(.tint) : AnyShapeStyle(.clear)))
+                    }
                 }
-            }
-            .frame(width: width)
-            .focused($focused)
-            .onSubmit(finish)
-            .onChange(of: focused) { _, f in if f { show() } else { finish() } }
-            .onAppear(perform: show)
-            .onChange(of: value) { _, _ in if !focused || text == base { show() } }
-            .accessibilityLabel(title)
+                .frame(width: width)
+        }
+        .accessibilityLabel(title)
     }
 
-    /// Shows the value: every digit while the field has the focus, the
-    /// formatted value otherwise.
-    private func show() {
-        text = focused ? value.map(NumberDisplay.exact) ?? "" : value.map(format) ?? ""
-        base = text
-    }
-
-    private func finish() {
-        guard text != base else {
-            if !focused { show() }
-            return
-        }
-        let t = text.trimmingCharacters(in: .whitespaces)
-        if t.isEmpty {
-            if value != nil { commit(nil) }
-            base = text
-            return
-        }
-        guard let v = LensValueParser.number(t), v.isFinite || allowsInfinite else {
-            show()
-            return
-        }
-        if v != value { commit(v) }
-        // The typed number: every digit while focused, formatted otherwise.
-        text = focused ? NumberDisplay.exact(v) : format(v)
-        base = text
+    /// Empty text is "none"; a number must be finite unless `∞` is allowed.
+    private var entry: FieldEdit<Double?>.Format {
+        FieldEdit.Format(
+            exact: { $0.map(NumberDisplay.exact) ?? "" }, display: { $0.map(format) ?? "" },
+            parse: { [allowsInfinite] text in
+                let t = text.trimmingCharacters(in: .whitespaces)
+                if t.isEmpty { return .some(nil) }
+                guard let v = LensValueParser.number(t), v.isFinite || allowsInfinite else { return nil }
+                return v
+            })
     }
 }
 
@@ -267,27 +243,26 @@ struct DefaultMeritForm: View {
     }
 }
 
-/// Comma-separated frequencies (cycles/mm).
+/// Comma-separated frequencies (cycles/mm): positive, kept sorted. Commits
+/// on Return or when focus leaves, if the text was edited; text that is not
+/// such a list reverts.
 struct FrequencyListField: View {
     let values: [Double]
     let commit: ([Double]) -> Void
-    @State private var text = ""
 
     var body: some View {
         HStack(spacing: Space.xs) {
-            TextField("Frequencies", text: $text, prompt: Text("10, 30"))
-                .labelsHidden().textFieldStyle(.roundedBorder).font(.callout.monospacedDigit()).frame(width: 110)
-                .onSubmit(finish)
+            CommittingField(value: values, format: Self.entry, commit: commit) { text, _ in
+                TextField("Frequencies", text: text, prompt: Text("10, 30"))
+                    .labelsHidden().textFieldStyle(.roundedBorder).font(.callout.monospacedDigit()).frame(width: 110)
+            }
             Text("cyc/mm").foregroundStyle(.secondary).font(.callout)
         }
-        .onAppear { text = values.map(Fmt.short).joined(separator: ", ") }
-        .onChange(of: values) { _, v in text = v.map(Fmt.short).joined(separator: ", ") }
     }
 
-    private func finish() {
-        let v = text.split(whereSeparator: { $0 == "," || $0 == " " || $0 == ";" }).compactMap { Double($0) }.filter { $0 > 0 }
-        if v.isEmpty { text = values.map(Fmt.short).joined(separator: ", ") } else if v != values { commit(v.sorted()) }
-    }
+    static let entry = FieldEdit<[Double]>.Format(
+        exact: { FrequencyListSetting.text($0, exact: true) }, display: { FrequencyListSetting.text($0) },
+        parse: { FrequencyListSetting.parse($0).flatMap { $0.isEmpty ? nil : $0 } })
 }
 
 /// A menu of checkboxes over indices; every one selected is `nil` (all).
@@ -777,22 +752,30 @@ struct OperandDetail: View {
     }
 }
 
-/// Operand numbers (1-based in the text, 0-based stored).
+/// Operand numbers (1-based in the text, 0-based stored); empty is none.
+/// Commits on Return or when focus leaves, if the text was edited; text
+/// that is not a list of operand numbers reverts.
 struct OperandIndexField: View {
     let indices: [Int]
     let commit: ([Int]) -> Void
-    @State private var text = ""
 
     var body: some View {
-        TextField("Operands", text: $text, prompt: Text("1, 2"))
-            .labelsHidden().textFieldStyle(.roundedBorder).frame(width: 110)
-            .onSubmit {
-                let v = text.split(whereSeparator: { $0 == "," || $0 == " " }).compactMap { Int($0) }.filter { $0 >= 1 }.map { $0 - 1 }
-                commit(v)
-            }
-            .onAppear { text = indices.map { "\($0 + 1)" }.joined(separator: ", ") }
-            .onChange(of: indices) { _, v in text = v.map { "\($0 + 1)" }.joined(separator: ", ") }
+        CommittingField(value: indices, format: Self.entry, commit: commit) { text, _ in
+            TextField("Operands", text: text, prompt: Text("1, 2"))
+                .labelsHidden().textFieldStyle(.roundedBorder).frame(width: 110)
+        }
     }
+
+    static let entry: FieldEdit<[Int]>.Format = {
+        let text: ([Int]) -> String = { $0.map { "\($0 + 1)" }.joined(separator: ", ") }
+        return FieldEdit.Format(
+            exact: text, display: text,
+            parse: { t in
+                let parts = t.split(whereSeparator: { $0 == "," || $0 == ";" || $0 == " " })
+                let v = parts.compactMap { Int($0) }.filter { $0 >= 1 }.map { $0 - 1 }
+                return v.count == parts.count ? v : nil
+            })
+    }()
 }
 
 /// The searchable operand picker, grouped by category.
