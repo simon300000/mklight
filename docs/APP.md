@@ -13,9 +13,9 @@ The package targets **macOS 27** (`swift-tools-version: 6.4`,
 `platforms: [.macOS(.v27)]`); the later iPad target will be **iPadOS 27**. On
 27 every Liquid Glass and SwiftUI API the app uses (glass effects and
 containers, glass button styles, `ToolbarSpacer`, `safeAreaBar`, scroll edge
-effects, `ConcentricRectangle`, `Observations`) is available without
-`#available` checks, and building with the 27 SDK always gives the new
-design: the `UIDesignRequiresCompatibility` opt-out is ignored from 27 on.
+effects) is available without `#available` checks, and building with the
+27 SDK always gives the new design: the `UIDesignRequiresCompatibility`
+opt-out is ignored from 27 on.
 Build with Xcode 27.2 / Swift 6.4.2 (Swift 6 language mode, strict
 concurrency).
 
@@ -218,11 +218,13 @@ What we took from Apple's current guidance, and how MKLight applies it.
   inspector panel);
   Add Analysis and the lens data and layout toggles (on while the panel is
   open in any of the design's windows); the inspector toggle. In the centre,
-  the **status capsule** (`DesignStatus`): a running job ("Optimizing ·
-  479", click to show it) or analysis activity, EFL (EFL y for a design that
-  is not rotationally symmetric), F/# and total track, and the issues button.
-  Its popover has the first-order table, the anamorphic data, the engine,
-  the snapshot and the compute backend picker.
+  the **status capsule** (`DesignStatus`): the GPU kernel preparation at
+  launch while it lasts ("Preparing GPU 42%", see "GPU kernel preparation"
+  under `FFIEngine`), a running job ("Optimizing · 479", click to show it)
+  or analysis activity, EFL (EFL y for a design that is not rotationally
+  symmetric), F/# and total track, and the issues button. Its popover has
+  the first-order table, the anamorphic data, the engine, the snapshot, the
+  state of the GPU kernels and the compute backend picker.
 * **Panels and windows** (`PanelArrangement`, `PanelViews`, `PanelDrag`,
   `DetachedWindows`): the lens data, the layout and every analysis pane are
   panels. The content area is a tree of horizontal and vertical splits whose
@@ -285,10 +287,10 @@ What we took from Apple's current guidance, and how MKLight applies it.
 * **Layout pane**: the engine's `layout` scene in the Metal viewport, edge to
   edge, with glass controls floating over it (title chip, Section / 3D
   selector, display options, fit), a scale bar, and a glass "Design changed"
-  button when stale. The engine draws every surface type (the model
-  schematic is gone). For designs without rotational symmetry the selector
-  offers Y–Z, X–Z and 3D; the layout's `section` setting follows it and the
-  glass fills pair the profiles along the section's own axis. DOE surfaces
+  button when stale. The engine draws every surface type. For designs
+  without rotational symmetry the selector offers Y–Z, X–Z and 3D; the
+  layout's `section` setting follows it and the glass fills pair the
+  profiles along the section's own axis. DOE surfaces
   carry a fine violet hatch (flag bit 2). In 3D the Display menu adds the
   engine's surface mesh (`mesh_rings`, flat shaded, the selected surface in
   the accent) and a Footprints button runs `footprint` and draws every
@@ -316,8 +318,9 @@ What we took from Apple's current guidance, and how MKLight applies it.
   whether a pane's settings are open is saved with the layout
   (`ui.settings_visible`). The plot is content. The footer has
   the key numbers and a backend badge (CPU · f64 neutral, GPU · f32 in the
-  accent, an orange mark for warnings or a fallback, with their count when
-  there are several kinds) that opens the run details.
+  accent, an orange mark for warnings, a fallback from a backend that was
+  asked for or tried among them, with their count when there are several
+  kinds) that opens the run details.
   * *Settings from the schema* (`SettingControls`, `SettingsBar`): every
     control is chosen from the engine's settings schema alone, so no
     setting is ever typed as JSON. Scalars are number fields (with units
@@ -787,20 +790,19 @@ scripts/build-macos.sh --no-engine --engine-only   # remove the library again
   `-MKLightNoWelcome YES`, `-MKLightSidebar hidden`, `-MKLightSelectSurface
   <i>`, `-MKLightInspector system`, `-MKLightViewport 3D`, `-MKLightSheet
   optimize|tolerance|solves` (opens the job panel), `-MKLightAutoRun
-  lm|de|tolerance`, `-MKLightShowIssues YES`, `-MKLightToast <text>`,
+  <algorithm>|tolerance` (an Optimize algorithm: `lm`, `dogleg`, `de`,
+  `cma_es`, `nelder_mead`, `hammer`), `-MKLightShowIssues YES`, `-MKLightToast <text>`,
   `-MKLightAppearance light|dark` (overrides the system appearance),
   `-MKLightSheet glass`, `-MKLightAutoRun glass` (and `-MKLightAutoPick n`),
   `-MKLightAutoStop s` and `-MKLightAutoApply s` (press Stop / Apply after
   s seconds), `-MKLightToleranceTrials n` and `-MKLightTolerancePreview k`
   (with `-MKLightAutoRun tolerance`: the trials, and the k-th largest
   sensitivity previewed once the run ends; `trial` previews the worst
-  trial), `-MKLightFootprints YES`, `-MKLightFit lens`,
-  `-MKLightRunDetails <analysis>` (opens that pane's run details),
-  `-MKLightAutoEdit s` (edits the merit s seconds after the Optimize panel
-  opens and restores it a second later) and `-MKLightAutoConvert s`
-  (presses Convert to Custom; debug builds log every live evaluation's
-  time and merit under the `com.mklight.app` subsystem, category
-  `merit`), and
+  trial), `-MKLightFootprints YES`, `-MKLightFit lens`, `-MKLightYaw
+  <radians>` (the 3-D view's yaw), `-MKLightRunDetails <analysis>` (opens
+  that pane's run details), `-MKLightAutoEdit s` (edits the merit s seconds
+  after the Optimize panel opens and restores it a second later) and
+  `-MKLightAutoConvert s` (presses Convert to Custom), and
   `-MKLightCurvatureBoundsUnit curvature` (the bounds list's unit, an
   `@AppStorage` preference). Pane layouts come from the document's
   `views`.
@@ -816,27 +818,86 @@ same thread).
 | concern | how |
 |---|---|
 | lifetimes | `FFIEngineCore` owns `MKEngine*`, `FFISessionHandle` owns `MKSession*`; both free their handle in `deinit`. A session and every running job keep the core alive. |
-| sessions | `FFIEngine` = core + one session. `makeDocumentEngine()` gives each document window its own session (user catalogs, library hash). `newSession(system:)`, `openProject(at:)`, `save(to:)`, `project()`, `sessionInfo()`, `setProjectSection` cover projects. |
+| sessions | `FFIEngine` = core + one session. `makeDocumentEngine()` gives each open design its own session (user catalogs, library hash). `newSession(system:)`, `openProject(at:)`, `save(to:)`, `project()`, `sessionInfo()`, `setProjectSection` cover projects. |
 | snapshots | `openSnapshot` sets the session's system (`mk_session_set_system_json`) and returns the engine's BLAKE3 hash and the library hash. An invalid model throws `.invalidModel` with the engine's message first, then the mirror's structural errors. |
 | validation | `validate` runs the engine's `validate` analysis (issues with severity, code and surface); a system the engine refuses gives its message plus the mirror's checks. The app runs `validate` as a pane of its own on every snapshot. |
 | edits | `applyParamEdits` applies `ParamPath` edits atomically and returns the new snapshot (the edited system read back from the engine). |
 | solves | `applySolves(settings:to:)` calls `mk_session_apply_solves` and reads the solved system back; the report is the `solves` result. Engines without it fall back to the `solves` dry run plus `OpticalSystem.setValue`. |
 | catalogs | `catalogs()`, `loadCatalog(at:)`, `glasses(in:)`, `materialNames()` (completion). |
-| analyses | `analysisDescriptors()` lists every analysis with its settings schema. The app submits requests by name (`EngineAnalysisRequest`): the analysis, the settings the schema accepts and the backend preference. The older typed requests (`AnalysisRequest`) still work for tools and tests. |
+| analyses | `analysisDescriptors()` lists every analysis with its settings schema (read once, when the engine is created). The app submits every analysis pane and design job by name (`EngineAnalysisRequest`, built by `Workspace.request(for:)` and `Workspace.submitJob`): the analysis, the settings the schema accepts and the backend preference. `FFIEngine` also runs the typed requests (`AnalysisRequest`: eight analyses with one settings struct each, checked by `problems(for:)` before submission), whose results decode into the typed mirrors when the JSON matches; `MockEngine` and the tests use them, the app does not. |
 | jobs | `submit` returns at once; the job's task does the rest off the caller's thread. Submission is one locked step on a global dispatch queue: set the snapshot's system if the session holds another, then `mk_session_submit_analysis_json`, registering the job's event stream before any event can be delivered. Events from the engine's `mklight-events` thread feed the job's `progress` stream; a 250 ms status poll is a safety net. The terminal event takes the result at once. `cancel()` calls `mk_job_cancel`; a job cancelled before it was submitted never reaches the engine and throws `EngineError.cancelled`. |
-| stop | For `optimize` and `tolerance`, `AnalysisJob.canStop` is true and `stop()` calls `mk_job_stop` (ABI 1.2): the job ends normally with its best result so far (`result.stopped: true`). A stop requested before the engine job exists is sent right after submission. |
+| stop | For `optimize`, `tolerance` and `glass_substitution`, `AnalysisJob.canStop` is true and `stop()` calls `mk_job_stop` (ABI 1.2): the job ends normally with its best result so far (`result.stopped: true`). A stop requested before the engine job exists is sent right after submission. |
 | results | The envelope's `run_info` decodes into `RunInfo`, `library_hash` into `AnalysisOutput.libraryHash`, `backend` into `AnalysisOutput.backend` (`BackendReport`: requested, used, precision, device, fallback reason). The result is `.generic(GenericResult)`: the JSON tree plus `ResultBuffer`s, read by the views through tolerant accessors (`JSONValue.nf`, `nfArray`, `[path:]`, `AnalysisOutput.buffer(named:)`). |
 | buffers | `ResultBuffer` points into the engine's memory (no copy) and keeps the buffer array alive; `mk_buffer_free` runs when the last buffer of a result goes. Typed access checks the dtype (`withUnsafeBufferPointer(of:)`); `buffer[[i, j]]` indexes row-major. |
 | errors | `EngineError.from(code:message:)`: cancelled, invalid model, unsupported and failed jobs get their own cases; every other status is `.engine(EngineErrorCode, message)`. Submission errors (unknown analysis, invalid settings) fail the job immediately. |
 
 **Thread safety.** `FFIEngine` is a `Sendable` value; use it from any task.
-The C engine and sessions are thread-safe. The `EngineClient` methods never
-block their caller: C calls that parse, validate, wait for the session lock
-or run jobs go to a global dispatch queue, never the main thread. Only
-`mk_session_new` and `mk_session_destroy` run on the caller's thread, when a
-window's session is created or released. Progress reaches the UI through
-`AsyncStream`s that the `@MainActor` `Workspace` consumes. The engine's
-callback never runs on the main thread and holds no engine lock.
+The C engine and sessions are thread-safe. The asynchronous `EngineClient`
+methods never block their caller: their C calls (parsing, validation, waits
+for the session lock, setting the system and submitting, taking a result)
+run on a global dispatch queue (`offMain`), never the main thread. These C
+calls run on the caller's thread:
+
+* creating and destroying handles: `mk_engine_create` (with
+  `mk_engine_set_job_callback` and `mk_engine_list_analyses`) when the app
+  starts, `mk_session_new` when a design's `Workspace` is created or its
+  session rebuilt and for the welcome window's thumbnails,
+  `mk_session_destroy` and `mk_engine_destroy` on the thread that drops the
+  last reference;
+* `mk_job_cancel` and `mk_job_stop`, from `AnalysisJob.cancel()` and
+  `stop()`;
+* `mk_engine_prepare_gpu`, which returns at once, and
+  `mk_engine_gpu_preparation_json`, which `GPUPreparationMonitor` polls on
+  the main actor;
+* the synchronous helpers, which block their caller: the project calls
+  (`openProject`, `save`, `project`, `sessionInfo`, `setSystem`,
+  `setProjectSection`, …) and `importPrescription(_:format:)`
+  (`mk_import_prescription`), which `ProjectDocument` calls while it reads
+  a `.zmx` or `.seq` file.
+
+Progress reaches the UI through `AsyncStream`s that the `@MainActor`
+`Workspace` consumes. The engine's callback runs on its `mklight-events`
+thread, never on the thread that submitted or cancelled the job, and with
+no engine or session lock held.
+
+**GPU kernel preparation.** Metal compiles the GPU's compute kernels when
+they are first created, which after an install or an update of the app or
+of macOS takes a while (about 30 s for all of them on an M2 Pro). The app
+therefore prepares the kernels when it starts: `MKLightScene` calls
+`GPUPreparationMonitor.start(engine:)` once per app run, which calls
+`EngineClient.prepareGPU(cacheDirectory:)` with
+`~/Library/Caches/<bundle identifier>/GPU Kernels` (`com.mklight.MKLight`
+in the app bundle) and keeps App Nap off (`ProcessInfo.beginActivity`)
+while it follows the preparation.
+
+* *Engine.* `mk_engine_prepare_gpu` (ABI 1.4, `Engine::prepare_gpu`) starts
+  the preparation on its own `mklight-gpu-prepare` thread and returns at
+  once; a second call does nothing. The thread opens the first registered
+  GPU (with its numerics probe) and creates every kernel, loading those
+  saved in the cache directory and saving the ones it compiles, so later
+  launches load them. `mk_engine_gpu_preparation_json` reports the state
+  (`GpuPreparation`): `idle`, `preparing` (device, `done` of `total`),
+  `ready` (device, kernels, how many came `from_cache`, seconds, and a
+  `warning` when the cache could not be read or written), `unavailable`
+  (no GPU, with the reason) or `failed` (the kernels then compile on first
+  use; a panic in the preparation also ends here). When the engine is
+  destroyed, a running preparation stops at its next kernel.
+* *Swift.* `FFIEngine.prepareGPU` records a refusal of
+  `mk_engine_prepare_gpu`, and `gpuPreparation()` then reads `.failed`, as
+  it does when the state cannot be read. `GPUPreparation` mirrors the
+  states. Engines without a GPU (`MockEngine`) keep the protocol's
+  defaults: nothing to prepare, `.idle`.
+* *Window.* `GPUPreparationMonitor` (`@MainActor`, `@Observable`, one per
+  app) reads the state every 200 ms while it is `preparing`, for at most
+  600 s (`followLimit`; a longer preparation keeps running in the engine
+  but is no longer shown). A preparation still running after 400 ms
+  appears at the leading end of the status capsule (`GPUPreparationBadge`)
+  as a small spinner and "Preparing GPU n%" (kernels done of total), with a
+  help tag; one that loads from the cache at once never shows. When a shown
+  preparation ends ready, the capsule says "GPU ready" for 3 s. The status
+  popover's Engine section has a "GPU kernels" row: "Preparing (d of t)",
+  "Ready (n, loaded from cache)", "Ready (n, prepared in s s)", "No GPU:
+  reason" or "Compiled on first use (message)".
 
 ## State model
 
@@ -857,15 +918,16 @@ callback never runs on the main thread and holds no engine lock.
   engine's project format through `ProjectFile`; SwiftUI's document
   machinery provides autosave in place, versions and the dirty state (it
   follows the undo manager).
-* **Engine snapshots** (`Workspace`, per window, `@Observable`,
-  platform-neutral): each design value is debounced (150 ms) and frozen
-  into an immutable engine snapshot (system hash + glass library hash).
-  Analyses run asynchronously against the snapshot they were submitted
-  with; a newer request cancels the older job of the same pane; jobs end
-  with the window. Results are **stale** as soon as the snapshot, the
-  library or the request (settings, backend, seed) differs; panes with
-  automatic update re-run, the others wait for Update. Long analyses (stray
-  light, ghost irradiance, through-focus and MTF vs field) start manual.
+* **Engine snapshots** (`Workspace`, one per open design and shared by its
+  windows, `@Observable`, platform-neutral): each design value is debounced
+  (150 ms) and frozen into an immutable engine snapshot (system hash +
+  glass library hash). Analyses run asynchronously against the snapshot
+  they were submitted with; a newer request cancels the older job of the
+  same pane; jobs end when the design's main window closes. Results are
+  **stale** as soon as the snapshot, the library or the request (settings,
+  backend, seed) differs; panes with automatic update re-run, the others
+  wait for Update. Long analyses (stray light, ghost irradiance,
+  through-focus MTF, MTF vs field and image simulation) start manual.
   The project's glass catalogs are loaded before the first snapshot;
   undoing Load Glass Catalog rebuilds the session without it. A **preview**
   (`Workspace.preview`) snapshots a candidate design (an optimisation or
@@ -891,116 +953,159 @@ callback never runs on the main thread and holds no engine lock.
   `glass_substitution`, `tolerance` and `solves` analyses, follow their
   progress, preview and apply results to the document. The
   window state owns one of each, so a job outlives its panel; closing the
-  window cancels them.
+  design's main window cancels the optimisation, glass substitution and
+  tolerancing jobs and every analysis.
 
 ## Tests
 
-`swift test` in `apps/macos` (269 tests: model 69, engine 33, FFI 39,
-UI 128):
+`swift test` in `apps/macos` runs the package's four test targets
+(`Tests/`, one directory each). `MKLightModelTests` and `MKLightEngineTests`
+need nothing else; `MKLightUITests` runs the view models on `MockEngine`
+and small test engines; `MKLightFFITests` runs against the real engine and
+is skipped while the library is not linked (see "Building").
 
-* `MKLightModelTests`: round trips against JSON written by the Rust side
-  (every model variant including the extended shapes in
-  `extended_shapes.json`, every `ParamPath` form, solve kinds, the 16
-  samples, the project format), strict decoding, `ParamPath` resolution and
-  values checked case by case against the engine's verdicts, shape-kind
-  conversions, XY and Zernike term numbering.
-* `MKLightEngineTests`: schemas, request translation, tolerant decoding,
-  buffers, error mapping, staleness; the mock's analyses by name.
-* `MKLightFFITests` (need the library): BLAKE3 hashes, samples, EFL from
-  engine data, non-blocking submission, progress, reproducible seeds,
-  cancellation, error codes, projects, parameter edits, catalogs,
-  concurrent submissions, handles; and `FFIDesignTests`: **every dedicated
-  result view reads the real engine's result** for 25 analyses (geometric,
-  wave optics, ghosts, radiometry, polarisation), the engine validates the
-  extended shapes and its layout and Seidel refuse them with a clear
-  error, the layout buffers become
-  a scene with rays per field, **Stop** ends a DE optimisation with
-  `stopped: true` and its design applies and undoes, and **Apply Solves**
-  commits the engine's solved back focus.
-* `MKLightUITests`: the workspace (panes run, go stale, automatic vs
-  manual update, settings re-run, unavailable and unknown analyses, an
-  invalid design blocks analyses, newer requests cancel older ones, the
-  layout round-trips through the project's `views`, layout kind codes,
-  catalogs before the first snapshot, session rebuild, jobs end with the
-  window); editing (table rows, typed values incl. `∞` and materials,
-  rejected input, insert / delete / stop with undo and redo, variables with
-  undo, solve markers, the data-driven surface parameters and coefficient
-  lists, parameter paths); surface types (every descriptor's keys and
-  variable paths against the model for all 13 types, term labels, the type
-  menu, the display sags against the closed forms of SURFACES.md — Q
-  polynomials, reductions to the base conic, XY and Zernike terms — DOE
-  power and zone period, the departure map, anamorphic table rows, the
-  anamorphic first-order reader); design jobs (merit progress parsing, Optimize
-  applied as one undoable step, Stop keeps and Cancel discards, tolerance
-  ranking and Monte Carlo, Apply Solves dry run then undoable commit);
-  parsers, viewport math and shaders; the merit editor (add after the
-  selection, reorder, duplicate and delete with `combine` references kept,
-  the operand JSON, the `merit_evaluation` report, live evaluation and
-  conversion on the mock engine, an undone edit dropping its pending
-  evaluation, undo and the saved section), solved parameters (refused as
-  variables, flagged and left out, `curvature` ≡ `curvature_y` on a toroid)
-  and variable bounds (defaults, edit, pin, held when pinned, table
-  marks, undo); glass substitution settings, progress and results; spectrum
-  settings encoding and CSV import; the field-map, glass-map and
-  image-simulation readers; the review round (`PolishTests`): radius ↔
-  curvature bounds with signs, windows through ∞, 0 and refused windows
-  through R = 0, units of every bounded quantity, anamorphic table cells
-  (cylinder, biconic, toroid: shown sections, flat section, edits),
-  number formatting (decimal point, decimal comma input, signed zeros),
-  heat-map scale choice (data range, 0…1, diverging, flat maps, the
-  ramp's monotonic lightness, iso-levels), warning grouping and remedies,
-  the automatic stretch and its projection, area-sampled patterns and the
-  image simulation's starting settings; the stretch saved in `views`,
-  subscripted labels. The analysis
-  defaults round (`AutoSettingsTests`): which settings are automatic and
-  "Auto (n)" read from each result (PSF windows and spacings, the MTF
-  limit, fixed frequencies, the focus range, wavefront grids, the image
-  simulation's PSF window), no bare 0 in the number field, warning fixes
-  going back to automatic (and none for an automatic setting), the patch
-  centre's encoding inside `optics`, the design's field points, snapping,
-  the run's patch from its mapping nodes, the starting settings, and null
-  relative-illumination
-  cells staying no data, clipped at the field's edge. Tolerancing
-  (`ToleranceTests`): presets, the generator over the Cooke's elements
-  (no back focus, irregularity, element motions, catalogue glasses through
-  their offsets, 0 leaving a kind out), grouping, fringes / ΔR / % / arc
-  minutes / % of V_d to engine limits and back, element groups and pivots
-  (labels, moving surfaces, the shared range and pivot, conflicts, an
-  interior range, the design's own element placement, saved and foreign
-  forms), irregularity rows and the one test wavelength, the percentiles
-  and recorded trials (sent, saved, validated, undone), edits with undo
-  and redo keeping row ids, the project round trip (and a spec without
-  app rows), the back-focus default and the compensator menu, the
-  criterion settings and display, shares, worst offenders, the engine's
-  percentiles, nominal, records and timing, time-left estimates,
-  compensator ranges, previews rebuilt by the (mock) engine for a
-  sensitivity case and a trial, the near-section layout of a build, Stop
-  and Cancel, the summary and CSV export, and the run blocked by broken
-  rows only. Glass offsets (`GlassOffsetTests`): the table's suffix and
-  offset-variable marker, Δn_d / ΔV_d validation, one undoable edit,
-  default variable bounds, retyping keeping or dropping the offset, the
-  glass map's offset point, and the substitution note with offset
-  variables left out.
-* FFI additions: the extended shapes run through the layout (x–z section,
-  surface mesh, DOE flag) and Seidel; footprint overlays; the default merit
-  evaluates through `merit_evaluation` to `optimize`'s start merit, its
-  contributions add up to it, and it converts to custom operands that
-  evaluate to the merit shown before; a solved variable is left out (sent
-  as it is, the engine refuses it); custom operands report values; spectrum panes stay current; the glass
-  substitution flow on the achromat (select, run, preview, apply, undo,
-  redo) and Stop keeping the ranking; tolerancing on the Cooke
-  (`FFIToleranceTests`: the whole default set, power and irregularity in
-  test fringes over the layout's apertures, surface and element motions,
-  catalogue index and Abbe with V_d from `glass_info`, and the back-focus
-  compensator; every kind moving the criterion, sensitivity ranked with a
-  nominal RMS spot in µm, Monte Carlo with the requested percentiles,
-  yield, timing, records and the compensator's spread, the same trials for
-  a seed, the CSVs; the trial-preview flow with a fixed seed: the worst
-  trial rebuilt with the run's criterion, perturbations and compensators,
-  element L1 moved and irregular surfaces in the rebuilt system, a
-  sensitivity case with one perturbation at its limit, the design never
-  changed; and Stop keeping partial trials with their nominal); the relative illumination map's null cells outside the field; the new analyses' views read the
-  engine's results; spectra and x/y first order on the real engine.
+* `MKLightModelTests` (`ModelTests`, `FixtureRoundTripTests`,
+  `ExtendedShapeTests`, `SolveTests`, with the fixtures in `Fixtures/`):
+  round trips against JSON written by the Rust side (every model variant
+  including the extended shapes in `extended_shapes.json`, every
+  `ParamPath` form, solve kinds, the 16 samples, the project format),
+  strict decoding, `ParamPath` resolution and values checked case by case
+  against the engine's verdicts, shape-kind conversions, XY and Zernike
+  term numbering.
+* `MKLightEngineTests` (`EngineTests`, `EngineBoundaryTests`,
+  `GPUPreparationTests`): schemas, request translation, tolerant decoding,
+  buffers, error mapping, staleness; the mock's analyses by name; every
+  state of `mk_engine_gpu_preparation_json` in the engine's exact JSON.
+* `MKLightUITests`:
+  * the workspace (`WorkspaceTests`: panes run, go stale, automatic vs
+    manual update, settings re-run, unavailable and unknown analyses, an
+    invalid design blocks analyses, newer requests cancel older ones, the
+    layout round-trips through the project's `views`, the layout buffers
+    become the viewport's scene, catalogs before the first snapshot,
+    session rebuild, dropping the workspace cancels its jobs) and the panel
+    arrangement
+    (`PanelArrangementTests`: tabs, splits merging into one row of the same
+    axis, separate windows, showing and hiding, new panes beside their
+    neighbour, saved with the project);
+  * editing (`EditingTests`: table rows, typed values incl. `∞` and
+    materials, rejected input, insert / delete / stop with undo and redo,
+    variables with undo, solve markers, the data-driven surface parameters
+    and coefficient lists, parameter paths) and surface types
+    (`SurfaceTypeTests`: every descriptor's keys and variable paths against
+    the model for all 13 types, term labels, the type menu, the display
+    sags against the closed forms of SURFACES.md — Q polynomials,
+    reductions to the base conic, XY and Zernike terms — DOE power and zone
+    period, the departure map, anamorphic table rows, the anamorphic
+    first-order reader);
+  * design jobs (`DesignJobTests`: merit progress parsing, Optimize applied
+    as one undoable step, Stop keeps and Cancel discards, tolerance ranking
+    and Monte Carlo, Apply Solves dry run then undoable commit); parsers,
+    viewport math and shaders (`UITests`);
+  * the merit editor (`MeritAndBoundsTests`: add after the selection,
+    reorder, duplicate and delete with `combine` references kept, the
+    operand JSON, the `merit_evaluation` report, live evaluation and
+    conversion on the mock engine, an undone edit dropping its pending
+    evaluation, undo and the saved section), solved parameters (refused as
+    variables, flagged and left out, `curvature` ≡ `curvature_y` on a
+    toroid) and variable bounds (defaults, edit, pin, held when pinned,
+    table marks, undo);
+  * glass substitution settings, progress and results
+    (`GlassSubstitutionTests`); spectrum settings encoding and CSV import
+    (`SpectrumAndFirstOrderTests`); the settings form from the schema
+    (`SettingsSchemaTests`); the field-map, glass-map and image-simulation
+    readers (`MapReaderTests`); the spot diagram's field × focus grid
+    (`SpotGridTests`: points moved to each plane, the single-plane
+    fallback, the marker style, the layout and the box scale); the import
+    report (`ImportReportTests`: warnings grouped by meaning, the document
+    types, a report shown once, an engine without import refusing);
+  * `PolishTests`: radius ↔ curvature bounds with signs, windows through ∞,
+    0 and refused windows through R = 0, units of every bounded quantity,
+    anamorphic table cells (cylinder, biconic, toroid: shown sections, flat
+    section, edits), number formatting (decimal point, decimal comma input,
+    signed zeros), heat-map scale choice (data range, 0…1, diverging, flat
+    maps, the ramp's monotonic lightness, iso-levels), warning grouping and
+    remedies, the automatic stretch and its projection, area-sampled
+    patterns and the image simulation's starting settings; the stretch
+    saved in `views`, subscripted labels;
+  * `AutoSettingsTests`: which settings are automatic and "Auto (n)" read
+    from each result (PSF windows and spacings, the MTF limit, fixed
+    frequencies, the focus range, wavefront grids, the image simulation's
+    PSF window), no bare 0 in the number field, warning fixes going back to
+    automatic (and none for an automatic setting), the patch centre's
+    encoding inside `optics`, the design's field points, snapping, the
+    run's patch from its mapping nodes, the starting settings, and null
+    relative-illumination cells staying no data, clipped at the field's
+    edge;
+  * tolerancing (`ToleranceTests`): presets, the generator over the Cooke's
+    elements (no back focus, irregularity, element motions, catalogue
+    glasses through their offsets, 0 leaving a kind out), grouping, fringes
+    / ΔR / % / arc minutes / % of V_d to engine limits and back, element
+    groups and pivots (labels, moving surfaces, the shared range and pivot,
+    conflicts, an interior range, the design's own element placement, saved
+    and foreign forms), irregularity rows and the one test wavelength, the
+    percentiles and recorded trials (sent, saved, validated, undone), edits
+    with undo and redo keeping row ids, the project round trip (and a spec
+    without app rows), the back-focus default and the compensator menu, the
+    criterion settings and display, shares, worst offenders, the engine's
+    percentiles, nominal, records and timing, time-left estimates,
+    compensator ranges, previews rebuilt by the (mock) engine for a
+    sensitivity case and a trial, the near-section layout of a build, Stop
+    and Cancel, the summary and CSV export, and the run blocked by broken
+    rows only;
+  * glass offsets (`GlassOffsetTests`): the table's suffix and
+    offset-variable marker, Δn_d / ΔV_d validation, one undoable edit,
+    default variable bounds, retyping keeping or dropping the offset, the
+    glass map's offset point, and the substitution note with offset
+    variables left out;
+  * the GPU preparation's window status (`GPUPreparationMonitorTests`: a
+    preparation that never ends is followed up to the limit, the final
+    state is shown).
+* `MKLightFFITests` (need the library):
+  * `FFIEngineTests`: BLAKE3 hashes, samples, EFL from engine data,
+    non-blocking submission, progress, reproducible seeds, cancellation,
+    error codes, projects, parameter edits, catalogs, concurrent
+    submissions, handles; the extended shapes fixture validates in the
+    engine, and the extended shapes run through the layout (x–z section,
+    surface mesh, DOE flag) and Seidel; footprint overlays read as
+    outlines; a refused GPU preparation reads as failed;
+  * `FFIDesignTests`: **every dedicated result view reads the real engine's
+    result** for 25 analyses (geometric, wave optics, ghosts, radiometry,
+    polarisation), the layout buffers become a scene with rays per field,
+    **Stop** ends a DE optimisation with `stopped: true` and its design
+    applies and undoes, **Apply Solves** commits the engine's solved back
+    focus, and the field-map views read the engine's results (the relative
+    illumination map's cells outside the field are no data);
+  * `FFIMeritTests`: the default merit evaluates through
+    `merit_evaluation` to `optimize`'s start merit, its contributions add
+    up to it, and it converts to custom operands that evaluate to the merit
+    shown before; a solved variable is left out (sent as it is, the engine
+    refuses it); custom operands report values; spectrum panes stay
+    current;
+  * `FFIGlassSubstitutionTests`: the glass substitution flow on the
+    achromat (select, run, preview, apply, undo, redo) and Stop keeping the
+    ranking;
+  * `FFIToleranceTests`, tolerancing on the Cooke: the whole default set,
+    power and irregularity in test fringes over the layout's apertures,
+    surface and element motions, catalogue index and Abbe with V_d from
+    `glass_info`, and the back-focus compensator; every kind moving the
+    criterion, sensitivity ranked with a nominal RMS spot in µm, Monte
+    Carlo with the requested percentiles, yield, timing, records and the
+    compensator's spread, the same trials for a seed, the CSVs; the
+    trial-preview flow with a fixed seed: the worst trial rebuilt with the
+    run's criterion, perturbations and compensators, element L1 moved and
+    irregular surfaces in the rebuilt system, a sensitivity case with one
+    perturbation at its limit, the design never changed; and Stop keeping
+    partial trials with their nominal;
+  * `FFISpectrumFirstOrderTests`: analyses with a run-local spectrum,
+    spectra resolved by `system_summary`, and the x/y first order on the
+    real engine; `FFISettingsSchemaTests`: the
+    settings form's mapping over every analysis the engine lists;
+    `PrescriptionImportTests`: `.zmx` / `.seq` import without a session
+    (UTF-16 text), what did not map, and into the document's session;
+  * `RenderSnapshotTests`, `ResultViewRenders` and
+    `ResultViewRendersDirect` render panes and panels to PNGs (light and
+    dark) for a visual check, only when `MKLIGHT_RENDER_DIR` names an
+    output directory.
 
 ## iPadOS readiness
 
@@ -1008,17 +1113,21 @@ Ready:
 
 * `MKLightModel`, `MKLightEngine` and the view models (`DesignDocument`,
   `Workspace`, `AnalysisPane`, `WindowState`, `WorkspaceLayout`,
-  `LensEditor`, `SurfaceTypes`, the design-job sessions, result readers)
-  use Foundation and Observation only.
+  `LensEditor`, `SurfaceTypes`, `PanelArrangement`, the design-job
+  sessions, result readers) import neither SwiftUI nor AppKit or UIKit.
 * The window is `NavigationSplitView` + `.inspector` + toolbar items with
   placements and `ToolbarSpacer` + popovers; design jobs are inspector
-  panels, which become a sheet on compact width. The Liquid Glass APIs used
+  panels. The Liquid Glass APIs used
   (`glassEffect`, `GlassEffectContainer`, `glassEffectID`, `.glass` /
   `.glassProminent`, `safeAreaBar`, `scrollEdgeEffectStyle`) are the same on
   iPadOS 27; `tabViewBottomAccessory` (iOS only) is not needed while the app
   has no tab view.
-* The split layout (`SplitLayout`, `PaneRow`) is pure SwiftUI with drag
-  gestures; only the resize pointer is macOS-specific (`resizePointer`).
+* The panel tree (`PanelArrangement`) is platform-neutral, and its views
+  (`PanelViews`: splits with draggable dividers, tab groups, panel headers
+  as drag handles) are SwiftUI with drag gestures. macOS-only are the
+  drop-zone tracking while a panel is dragged (`PanelDrag`, AppKit events),
+  the separate windows (`DetachedWindows`, `NSWindow`) and the resize and
+  grab pointers (`resizePointer`).
 * The Metal viewport has one bridge (`ViewportBridge`, `ViewportInput`) and
   two representables: `NSViewRepresentable` with mouse, trackpad and scroll
   input, and `UIViewRepresentable` with pan, two-finger pan, pinch and
@@ -1062,9 +1171,6 @@ Remaining for an iPadOS target:
   get variables and solve markers but no pickup UI.
 * Configurations are listed but not editable; multi-configuration analyses
   use the `configuration` setting where the schema has one.
-* Engine 0.1 writes the `layout` kind codes in its enum order while
-  `kind_names` lists another order; the reader detects which by where the
-  rays are (`EngineLayout.kindTable`). The engine should make them agree.
 * Saving goes through the document machinery (atomic write by AppKit), not
   `mk_session_save`, so `relative_path` of catalogs is not recomputed on
   save. Layout changes alone do not mark the document dirty; they are saved

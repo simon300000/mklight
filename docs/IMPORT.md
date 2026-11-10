@@ -75,7 +75,7 @@ again).
 | `NAME`, `NOTE` | `name`, `notes` |
 | `UNIT` (MM, CM, IN, M) | length scale to mm |
 | `ENPD`, `FNUM`, `OBNA`, `FLOA` | entrance pupil diameter, image-space F/#, object-space NA, float by stop size (the stop's `DIAM` becomes its fixed semi-diameter) |
-| `FTYP` | field type (angle, object height, paraxial or real image height) and the numbers of fields and wavelengths |
+| `FTYP` | field type (angle, object height, paraxial or real image height) and the numbers of fields and wavelengths (never more than the file lists) |
 | `XFLN`, `YFLN`, `FWGN`/`FWGT`, `VDXN`, `VDYN`, `VCXN`, `VCYN` | fields, weights, vignetting factors |
 | `WAVM` (or `WAVL`/`WAVN` with `WWGT`/`WWGN`), `PWAV` | wavelengths (µm), weights, primary |
 | `ENVD` | temperature and pressure |

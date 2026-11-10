@@ -161,8 +161,8 @@ is a usage error (1); a file without surfaces is invalid input (2).
 ### `mklight analyses [<name>]`
 
 Lists every analysis in the engine registry with category, availability
-(placeholders of later phases are listed as unavailable with the reason),
-and its settings with defaults. With a name: the description and a settings
+(an analysis that cannot run in this build is listed as unavailable with
+the reason), and its settings with defaults. With a name: the description and a settings
 table (type, default, range, unit, description). JSON: the registry's
 `AnalysisInfo` objects including `settings_schema` and `default_settings`.
 
@@ -183,11 +183,13 @@ registered later by solver crates are available without CLI changes.
 | `--progress` | progress on stderr while the job runs (`progress  42.0%  stage`, or one JSON object per line with `--json`) |
 | `--timeout <s>` | cancel the job after `s` seconds (exit 130) |
 
-The JSON output is the engine's result envelope:
-`{run_info, library_hash, result, buffers: [{index, name, dtype, shape}]}`.
+The JSON output is the engine's result envelope (docs/RESULTS.md §1):
+`{run_info, library_hash, derived_snapshot_hash, backend, result_version,
+result, buffers: [{index, name, dtype, shape}]}`.
 The human output shows the run info, the result JSON and the buffer list.
 
-**Stop and cancellation.** For `optimize` and `tolerance`, the first Ctrl-C
+**Stop and cancellation.** For `optimize`, `tolerance` and
+`glass_substitution`, the first Ctrl-C
 (SIGINT, or SIGTERM) requests Stop through the engine: the job finishes with
 its best-so-far result, `result.stopped: true`, and normal output (exit 0).
 A second signal cancels and discards the result (exit 130). Analyses without
@@ -259,17 +261,18 @@ that already fails a check is allowed when it adds no new error, so a
 broken file can be repaired step by step. That includes a structurally
 invalid file (see `validate`): the edit is applied to the model directly
 and refused (exit 2, nothing written) only if it adds a structural issue
-(a code at a JSON path) the file did not have; the result has `valid`
-(structurally valid after the edit) and `remaining_issues` (the remaining
-structural issues, or, once valid, the full `validate` issues of the
-repaired project, whose `snapshot_hash` is then reported).
-`snapshot_hash_before` is `null` for such a file. New warnings (a real ray that no
+(a code at a JSON path) the file did not have; `valid` is then false
+while structural issues remain and `remaining_issues` lists them, and
+`snapshot_hash_before` is `null`. New warnings (a real ray that no
 longer reaches the image, a wavelength outside a glass's data range, a gap
 sign opposite to the propagation direction) are reported but do not block
 the edit. Otherwise the project is saved atomically (to `--out` if given).
 JSON: `param`, `old` (`null` when the parameter had no value, e.g. an
 automatic semi-diameter), `new`, `changed`, `saved`, `saved_to`,
-`snapshot_hash_before`, `snapshot_hash`, `new_warnings`.
+`snapshot_hash_before`, `snapshot_hash` (`null` while the file is
+structurally invalid), `new_warnings`, `valid` (structurally valid after
+the edit) and `remaining_issues` (the `validate` issues of the edited
+project, or the remaining structural issues while `valid` is false).
 
 `set` does not judge whether a valid, traceable value is sensible (a
 radius of 10⁻⁹ mm on a lens with an F/# aperture traces, because the

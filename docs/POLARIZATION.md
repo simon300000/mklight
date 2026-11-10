@@ -294,17 +294,17 @@ for s in &samples {
   names the outer medium) could apply `fresnel_amplitudes(n_glass, n_outer, cos θ)`
   at such faces. Meanwhile, a `ThinFilm` mirror coating carries an
   angle-dependent phase.
-* The legacy GPU trace mode is scalar `Unpolarized`. The resident P7
-  polarisation service is described in §9; engine routing is a separate step.
+* The host-array GPU trace job (`Job::Trace`) is scalar `Unpolarized`; the
+  resident polarisation service is described in §9.
 
-## 9. Resident GPU service (P7)
+## 9. Resident GPU service
 
 `mklight_gpu::radiometry` implements backend-neutral resident requests with
 matching CPU-f32 code and strict Metal kernels. Coating and transport
 results are bit-identical between the two in a matching floating-point
 environment, except the retardance angles, which leave double-float through
 an f32 `atan2`. This is a service for the
-GPU solver packages; engine capability and `auto` routing are in GPU.md
+GPU solver adapters; engine capability and `auto` routing are in GPU.md
 §9.2. No reference tracer or solver weighting rule is changed.
 
 ### Coatings and immutable material state
@@ -344,14 +344,15 @@ Stacks beyond 32 layers return unsupported for the caller's reference route.
 
 ### Primary transport, maps and reductions
 
-`PreparedRadiometry::append` consumes P1 `ResidentHits` with paired hi/lo
+`PreparedRadiometry::append` consumes the `ResidentHits` of the `aiming`
+module with paired hi/lo
 records, primary slots `0..image` in order and radiometry off. Metadata is
 surface-major/wavelength-minor; the public `PolarizationRequest` can also
 consume plan-local `SurfaceSpec` records. Its material state must match the
-P1 records. The supplied immutable preparation helper prepares one resolved
+trace records. The supplied immutable preparation helper prepares one resolved
 system.
 
-Directions/normals use P1's records. Segment lengths use relative local
+Directions/normals use the trace records. Segment lengths use relative local
 frame transfers and double-float differences, then Beer–Lambert absorption.
 Transport retains the double-pole bases, ideal-lens rotations, mirror
 parity and geometric-rotation removal of §§2–4. `PolarizationValue` contains:
@@ -371,19 +372,16 @@ not substituted for PRT on non-coplanar paths. As with `vector_pupil` and
 factor, as the CPU transmission job does. A wave or pupil-map adapter must
 apply its existing DOE factor once.
 
-`PupilChannels` optionally publishes `Complex32 [4,N]` Jones or `[6,N]`
-vector channels for resident wave consumers, plus an explicit status mask.
-Blocked or reference-required channels are zero; consumers must handle the
-reference mask before publishing a result. `append_summary` extracts
-channel-major double-float data and uses P3's fixed segmented tree. The ten
+`append_summary` extracts channel-major double-float data and uses the
+fixed segmented tree of `collectives`. The ten
 sum/count/min/max channels are scalar intensity, selected-state intensity,
 exact unpolarised intensity, diattenuation, proper retardance squared,
 usable count, surviving count, defined-retarder count, reference-required
 count and numerical-failure count. Physical clipping contributes zero;
 numerically failed rays are excluded from the transmission denominator.
 
-`pupil_plan` builds P1 generation → recorded trace → P7 transport → P3
-summary with no intermediate optical readback. `pupil` is its cancellable
+`pupil_plan` builds generation → recorded trace → transport → summary with
+no intermediate optical readback. `pupil` is its cancellable
 host result adapter; `system_transmission` and `polarization_pupil_map`
 expose the existing result types for all requested fields/wavelengths.
 Reference-required pupil rows and unresolved aims are evaluated with the f64
@@ -393,7 +391,8 @@ physical undefined-retarder contrast remains 1e-24; the device requests f64
 below a 1e-18 conditioning envelope, including the final mask decision.
 Jones matrices are scaled before polar decomposition to prevent determinant
 underflow for nearly opaque pupils. An exactly opaque matrix is completed by
-the reference mask decision without division by zero. A P1 failure retains
+the reference mask decision without division by zero. A failed aim or trace
+retains
 its original status alongside the zero pupil.
 
 Immutable coating and surface tables are produced directly inside
@@ -402,11 +401,11 @@ Immutable coating and surface tables are produced directly inside
 reference completion creates a mutable working copy (reported as
 `reference_read_copy_bytes`). Borrowed host coating-query arrays require one
 input copy, validated while copying and recorded as `input_copy_bytes`;
-direct producers can use `fill_buffer` and the raw request. The existing P0
+direct producers can use `fill_buffer` and the raw request. The
 system-cache API copies cold packed geometry once and reuses it on warm
 jobs; benchmarks report this separately from resident-plan copies. Scalar
 transmission has a dedicated transport kernel that skips PRT and
-retardance, and reads only the P3 summary when no reference completion is
+retardance, and reads only the summary when no reference completion is
 needed. Numeric outputs are final result assembly, not f64-labelled GPU
 arithmetic. Per-ray operation order is independent of tile/command sizes;
 Metal uses adaptive commands aiming at 10 ms (at most `MAX_TILE` rows) and
@@ -418,7 +417,7 @@ metadata.
 `system_transmission` divides its (field, wavelength) rows between the CPU
 and the GPU at the aim: the CPU aims every ray (the reference's f64 packet
 aiming, all cores) and writes the launch rays straight into shared ray
-planes; the GPU traces them and evaluates the P7 transport and the per-ray
+planes; the GPU traces them and evaluates the transport and the per-ray
 summary channels; the host sums each row in f64 from the shared buffer and
 completes the rays the device could not decide with the reference. The
 rows run in blocks of at least 4096 rays (about four): the GPU traces block
@@ -431,6 +430,4 @@ reference by static capability (undefined polarisation axes).
 Tests are `tests/p7_radiometry.rs` in both GPU crates; host Metal tests require
 a device and exercise both precompiled and runtime-source libraries. The
 ignored `p7_bench` harness records cold setup and at least ten warm samples
-for all built-ins, dense grids and 0–32-layer stacks. These paths do not by
-themselves enable production engine routing or qualify arbitrary candidate
-parameter envelopes.
+for all built-ins, dense grids and 0–32-layer stacks.

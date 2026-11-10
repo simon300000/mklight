@@ -5,8 +5,10 @@ ABI. Structured data crosses as UTF-8 JSON; bulk numeric results cross as
 typed binary buffers. The header is `crates/mklight-ffi/include/mklight.h`
 (hand-written, checked against the Rust constants by a unit test), and
 `include/module.modulemap` exposes it to Swift as the module `CMKLight`.
-`crates/mklight-ffi/tests/c/smoke.c` exercises every function and is
-compiled, linked against the static library and run by `cargo test -p mklight-ffi`.
+`crates/mklight-ffi/tests/c/smoke.c` is compiled, linked against the static
+library and run by `cargo test -p mklight-ffi`. It calls every function
+except the two prescription imports and the two GPU-preparation functions,
+which the Rust tests `tests/abi_1_3.rs` and `tests/gpu_preparation.rs` call.
 
 ## Building and linking
 
@@ -161,8 +163,8 @@ submit ──► QUEUED ──► RUNNING ──► DONE
   cancelled immediately; a running job stops at its next check (analyses
   check at bounded intervals). A job whose token was set ends `CANCELLED`
   even if it finished its work.
-* `mk_job_stop(engine, job)` requests cooperative Stop for `optimize` and
-  `tolerance`. A queued job still starts and returns its initial/best result;
+* `mk_job_stop(engine, job)` requests cooperative Stop for `optimize`,
+  `tolerance` and `glass_substitution`. A queued job still starts and returns its initial/best result;
   a running job returns the best completed work as `DONE` with
   `result.stopped: true`. Other active jobs return `MK_ERR_UNSUPPORTED`;
   finished jobs are unchanged. Cancel, supersession and shutdown still
@@ -250,8 +252,7 @@ when some setting is required.
    "title": "CPU reference (f64)", "available": true, "reason": null,
    "precision": "f64_reference",
    "capabilities": { "fp64": true, "reference": true, "analyses": [],
-                     "device_name": null, "unified_memory": null,
-                     "max_rays_per_dispatch": null } }]
+                     "device_name": null, "unified_memory": null } }]
 ```
 
 A backend is requested as `{"kind": "cpu_reference"}`,
@@ -280,11 +281,12 @@ default backend does not implement run on the CPU reference, with a
 
 A selected GPU publishes actual device results without per-snapshot or
 per-candidate reference comparisons. Accuracy is tested offline; static capability
-restrictions keep three analyses on the CPU (GPU §9.2).
+restrictions keep two analyses on the CPU, and `wavefront_map` under `auto`
+(GPU §9.2).
 Unsupported stages, unresolved aiming and resource/device errors retain reported
-f64 fallbacks. Cancellation never starts a replacement. Final optimize, tolerance
-and glass reports are f64-scored after the device search; merit evaluation returns
-the active evaluator's values. `backend.execution` retains device/build/probe and
+f64 fallbacks. Cancellation never starts a replacement. Final optimize and
+glass reports are f64-scored after the device search; tolerance and merit
+evaluation return the active evaluator's values. `backend.execution` retains device/build/probe and
 stage metadata; `backend.cost_decision` records cost-model/capability choices. Explicit
 Metal bypasses the cost model, while static capability restrictions still apply.
 See RESULTS §5 and GPU §9.2.
@@ -331,9 +333,11 @@ through `mk_job_status`).
                 "analysis": "system_summary", "settings": {…},
                 "backend": "cpu_reference", "precision": "f64_reference",
                 "seed": null, "started_unix_ms": 1761840000000,
-                "duration_ms": 0.31, "warnings": [] },
+                "duration_ms": 0.31, "tier": "design",
+                "aim_stop": "conditioned", "warnings": [] },
   "library_hash": "<64 hex>",
-  "backend": { "requested": "default:cpu_reference", "used": "cpu_reference",
+  "derived_snapshot_hash": null,
+  "backend": { "requested": "default:auto", "used": "cpu_reference",
                "precision": "f64_reference", "device": null,
                "fallback_reason": null, "execution": [], "cost_decision": null },
   "result_version": 1,
@@ -384,14 +388,30 @@ atomically (all or none):
  { "path": {"param": "aperture_value"}, "value": 25.0 }]
 ```
 
-`surface` is the stable `SurfaceId`, not the index. Parameters:
-`curvature`, `thickness` (accepts `"inf"`), `conic`, `asphere` (+`index`:
-0 → A4), `paraxial_focal_length`, `model_nd`, `model_vd`, `model_dpgf`,
-`decenter_x`, `decenter_y`, `tilt_x`, `tilt_y`, `tilt_z`, `semi_diameter`,
-`aperture_value`, `field_x`/`field_y`/`field_weight` (+`index`),
-`wavelength_um`/`wavelength_weight` (+`index`), `temperature_c`,
-`pressure_atm`. Both edit functions return the new snapshot hash
-(unchanged when the values were already set).
+`surface` is the stable `SurfaceId`, not the index. Parameters
+(`mklight_core::param::ParamPath`):
+
+* per surface (+`surface`): `curvature`, `thickness` (accepts `"inf"`),
+  `conic`, `asphere` (+`index`: 0 → A4), `paraxial_focal_length`,
+  `model_nd`, `model_vd`, `model_dpgf`, `material_dn_d`/`material_dv_d`
+  (the Δn_d and ΔV_d offsets of a catalogue glass), `decenter_x`,
+  `decenter_y`, `tilt_x`, `tilt_y`, `tilt_z`, `semi_diameter`;
+* `shape_coefficient` (+`surface`, `set`: `odd`, `q`, `phase`,
+  `x_asphere`, `y_asphere`, `xy` or `zernike`, and a zero-based `index`)
+  and `shape_param` (+`surface`, `parameter`: `curvature_x`, `conic_x`,
+  `curvature_y`, `conic_y`, `norm_radius`, `astigmatism_angle_deg`,
+  `design_order`, `design_wavelength_um` or `trace_order`) for the surface
+  types of SURFACES.md;
+* `irregularity` (+`surface`, `mode`: `astigmatism` or `spherical`; test
+  fringes) and `element_placement` (+`surface`, `last`, optional `pivot`,
+  `component`: `decenter_x`, `decenter_y`, `tilt_x`, `tilt_y` or `tilt_z`;
+  the rigid motion of the surfaces `surface..=last`);
+* system: `aperture_value`, `field_x`/`field_y`/`field_weight` (+`index`),
+  `wavelength_um`/`wavelength_weight` (+`index`), `temperature_c`,
+  `pressure_atm`.
+
+Both edit functions return the new snapshot hash (unchanged when the
+values were already set).
 
 `mk_session_get_param(session, path_json, &json)` reads one parameter:
 `{"value": number | "inf" | "-inf" | null}`. Automatic semi-diameters
@@ -423,7 +443,8 @@ writes still set a fixed radius. A path the system does not have is
 
 `mk_session_set_project_section_json(session, section, json)` replaces
 `views` (array of `{key, analysis, settings, ui}`), `merit`, `variables`,
-`tolerances` (opaque until the optimiser defines them) or `metadata`.
+`tolerances` (the front end's tolerance setup: stored, never interpreted by
+the engine) or `metadata`.
 
 ### Glass catalogs
 
@@ -463,22 +484,10 @@ the mapping and the warning kinds.
 
 Every analysis, its settings (with defaults) and its result (fields, units,
 signs, buffer names, dtypes and shapes) is documented in
-**`docs/RESULTS.md`**, whose reference section is generated from the same
-schemas `mk_engine_list_analyses` returns. Registered today:
-
-| category | analyses |
-|---|---|
-| model | `validate`, `system_summary`, `solves` (dry run of `mk_session_apply_solves`) |
-| materials | `glass_info` |
-| geometric | `first_order`, `layout`, `spot_diagram`, `ray_fan`, `opd_fan`, `field_curvature_distortion`, `grid_distortion`, `seidel`, `longitudinal_aberration`, `chromatic_focal_shift`, `lateral_colour`, `relative_illumination`, `footprint`, `encircled_energy`, `geometric_mtf`, `best_focus`, `ray_grid` |
-| radiometry / polarization | `system_transmission`, `polarization_pupil_map` |
-| ghost | `ghost_paths`, `ghost_irradiance` |
-| stray | `stray_light` (with `ghost_partition` for the ghost/stray partition) |
-| diagnostic | `rng_stream` |
-
-The wave-optics names `wavefront_map`, `psf` and `mtf` are reserved and
-listed with `available: false` until `mklight-wave` registers them;
-submitting one returns `MK_ERR_UNSUPPORTED`.
+**`docs/RESULTS.md`**, whose reference section (§8) is generated from the
+same schemas `mk_engine_list_analyses` returns and lists every registered
+analysis. An analysis listed with `available: false` gives its
+`unavailable_reason`; submitting it returns `MK_ERR_UNSUPPORTED`.
 
 ## Project file (`.mklight`)
 
@@ -540,27 +549,6 @@ mk_session_destroy(session)
 mk_engine_destroy(engine)
 ```
 
-## Integration points for later phases
-
-* **Wave optics.** `mklight-wave` analyses are registered in
-  `mklight_engine::analysis::register_all`, one `r.register(Arc::new(…))`
-  line each, replacing the placeholders of the same name; each implements
-  `Analysis` (`settings_schema`, `result_schema`, `run`) and is documented
-  automatically in `docs/RESULTS.md` (regenerate with
-  `MKLIGHT_UPDATE_RESULTS_DOC=1 cargo test -p mklight-engine --test results_doc`).
-* **Optimisation.** `analysis/optim.rs` hooks in at the marked lines of
-  `analysis/mod.rs` (`pub mod optim;` and its registration).
-* Solver crates can also register at run time with
-  `Engine::register_analysis`. Analyses receive the snapshot, the cached
-  `ResolvedSystem`, the selected backend and device and a `JobContext`.
-* GPU backends implement `mklight_gpu::ComputeBackend` and are offered to
-  the engine as a `gpu::GpuProvider` (`Engine::register_backend`); an
-  analysis with a GPU path declares `gpu_path()`, is listed in
-  `analysis::gpu::GPU_ANALYSES`, reads `AnalysisInput::device` and reports
-  what it used with `AnalysisInput::report_backend`.
-* Typed merit/variables/tolerances replace the opaque project sections
-  in a new schema version.
-
 ## GPU kernel preparation
 
 Metal compiles each compute kernel the first time a process creates its
@@ -578,7 +566,8 @@ preparation has not reached yet compiles for the job that needs it.
 
 `mk_engine_gpu_preparation_json` reports the state, for a status display:
 `{"state": "preparing", "device", "done", "total"}`, then
-`{"state": "ready", "device", "kernels", "from_cache", "seconds"}`, or
+`{"state": "ready", "device", "kernels", "from_cache", "seconds"}` (plus a
+`warning` when the saved kernels could not be read or written), or
 `"unavailable"` with a `reason` (no GPU; analyses use the CPU reference) or
 `"failed"` with a `message` (kernels compile on first use instead).
 

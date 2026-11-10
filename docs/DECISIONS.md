@@ -17,25 +17,20 @@ exists in the code today.
 | Random numbers | Philox4x32-10 counter RNG, identical on CPU and GPU, keyed by `(seed, stream, index)`. It is pinned by known-answer tests. | in force |
 | State model | Immutable, content-hashed `Snapshot`s. Every result carries `RunInfo` (engine version, snapshot hash, settings, backend, precision, seed). The UI keeps a separate view state. | in force |
 | Glass data | A small built-in catalog of published Sellmeier coefficients, each checked against its catalog nd/vd. Vendor catalogs are **not shipped**: users load AGF-format files, which avoids redistribution licensing problems. | in force |
-| Engine ↔ app boundary | A C ABI. Structured data crosses as versioned JSON and bulk arrays as binary buffers. The UI never computes optics: layout geometry, sag profiles and ray paths all come from the engine. | planned |
+| Engine ↔ app boundary | A C ABI. Structured data crosses as versioned JSON and bulk arrays as binary buffers. The UI never computes optics: layout geometry, sag profiles and ray paths all come from the engine. | in force |
 | Multi-configuration | Zoom and focus positions are `Configuration` parameter overrides on one base system. | model in place |
 | App windows and panels (2026-11-07) | The lens data, the layout and the analyses are **panels** in a tree of splits and tab groups per window; any panel can be dragged into a tab, a split, a window edge or out into a **separate window** of the same design, and back. The default arrangement is unchanged. A lone panel's header is its handle (no extra chrome); tab strips appear only for groups of several. Separate windows are AppKit windows hosting SwiftUI, sharing one `DesignSession` with the main window (selection, edits, analyses, undo); they close with it and are saved with the project. Closing a separate window closes its panels, like a browser. docs/APP.md "Panels and windows". | in force |
 | Coatings | A thin-film TMM that obeys `R + T + A = 1` per polarisation. Primary transmission, ghosts and stray light all use the same coating code. | in force |
 
 ## Points the brief did not mention (worth deciding)
 
-1. **Polarisation ray tracing.** Coatings are computed per s/p polarisation,
-   but rays carry incoherent intensity. Full Jones/PRT tracing (retardance,
-   diattenuation, polarisation-dependent PSF) is needed for high-NA or
-   heavily coated systems.
-2. **Tolerancing.** "Manufacturing robustness" implies sensitivity analysis,
-   Monte-Carlo tolerancing with compensators (back focus, air spaces), and an
-   ISO 10110 tolerance set. The model has `ParamPath` for this, but the
-   operand set and the UI still need to be specified.
-3. **Solves and pickups.** Marginal-ray-height and angle solves (for example
-   the image distance), F/# solves, and pickups between parameters. Lens
-   designers expect these.
-4. **Interchange formats.** *Partly decided (2026-11-07):* MKLight
+1. **Polarisation-dependent PSF.** Rays carry Jones/PRT matrices, with
+   diattenuation and retardance maps (`POLARIZATION.md`). Vector diffraction,
+   and so a polarisation-dependent PSF, is not implemented (`WAVE.md` §7).
+2. **ISO 10110 tolerance set.** Sensitivity analysis and Monte-Carlo
+   tolerancing with compensators exist (`OPTIMIZATION.md`, "Tolerancing");
+   an ISO 10110 tolerance set does not.
+3. **Interchange formats.** *Partly decided (2026-11-07):* MKLight
    **imports** `.zmx` and `.seq` lens prescription files (`IMPORT.md`):
    surfaces and their common types, stops, apertures, glasses resolved
    against the loaded catalogs (unknown ones become model glasses from the
@@ -47,30 +42,24 @@ exists in the code today.
    (`mklight import`), Python and the app. Still open: exporting either
    format, other prescription formats, ISO 10110 drawings, and STEP/IGES
    mechanical geometry.
-5. **Thermal and environmental analysis.** Glass dn/dT is modelled. Thermal
+4. **Thermal and environmental analysis.** Glass dn/dT is modelled. Thermal
    expansion of spacers and mounts, and athermalisation, are not.
-6. **Freeforms and more surface types.** Q-type (Forbes) aspheres, XY and
-   Zernike polynomials, gratings and GRIN are common in modern camera lenses.
-   `SurfaceShape` is extensible, but every new type must be implemented in the
-   CPU reference **and** in every GPU backend.
-7. **Detector and image simulation.** Pixel-integrated MTF, relative
-   illumination, colour image simulation with a sensor spectral response, and
-   chief-ray-angle checks against microlens limits.
-8. **Scripting and macros.** Python bindings cover headless use. Is an
+5. **More surface types.** GRIN media are not modelled (`SURFACES.md` lists
+   the shapes that are). `SurfaceShape` is extensible, but every new type
+   must be implemented in the CPU reference **and** in every GPU backend.
+6. **Scripting and macros.** Python bindings cover headless use. Is an
    in-app console or macro language also needed?
-9. **Document features.** Undo and redo are in the app. Still open: autosave,
-   versioned project-file migration (`schema_version`), and comparing two
-   designs.
-10. **Distribution.** Code signing, notarisation, the App Sandbox (security-scoped
-    access to user glass catalogs), the minimum macOS version (currently 15),
-    and the licence model.
-11. **CI and validation data.** GitHub-hosted macOS runners have only
-    paravirtualised GPUs, so Metal cross-validation needs a self-hosted Apple
-    Silicon runner. Golden reference results for the sample designs should be
-    frozen and checked on every change.
-12. **Performance targets.** Concrete targets per analysis would guide
+7. **Document features.** Undo, redo and autosave are in the app. Still
+   open: versioned project-file migration (`schema_version`), and comparing
+   two designs.
+8. **Distribution.** Code signing, notarisation, the App Sandbox (security-scoped
+   access to user glass catalogs), the minimum macOS version (currently 27),
+   and the licence model.
+9. **CI.** GitHub-hosted macOS runners have only paravirtualised GPUs, so
+   Metal cross-validation needs a self-hosted Apple Silicon runner.
+10. **Performance targets.** Concrete targets per analysis would guide
     optimisation work: for example spot diagrams in < 16 ms for interactive
     editing, or optimiser evaluations per second.
-13. **Units other than mm** in the UI (inches, µm), and display precision
+11. **Units other than mm** in the UI (inches, µm), and display precision
     settings.
-14. **Accessibility and localisation** of the app.
+12. **Accessibility and localisation** of the app.

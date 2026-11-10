@@ -85,7 +85,7 @@ Type stubs with docstrings: `crates/mklight-py/python/mklight/_mklight.pyi`.
 
 | name | |
 |---|---|
-| `Engine(config=None, **kwargs)` | Engine configuration keys as in `docs/FFI.md` (`worker_threads`, `max_retained_jobs`, `resolved_cache_capacity`, `progress_interval_ms`, `app_name`, `app_version`, `default_backend`). Unknown keys raise `InvalidArgumentError`; `default_backend` takes the `backend` forms of `run`; `max_retained_jobs` defaults to unlimited (see *Job*). |
+| `Engine(config=None, **kwargs)` | Engine configuration keys as in `docs/FFI.md` (`worker_threads`, `max_retained_jobs`, `resolved_cache_capacity`, `analysis_graph_bytes`, `progress_interval_ms`, `app_name`, `app_version`, `default_backend`, `aim_stop`). Unknown keys raise `InvalidArgumentError`; `default_backend` takes the `backend` forms of `run`; `max_retained_jobs` defaults to unlimited (see *Job*). |
 | `default_engine()`, `new(sample=, system=)`, `open(path)` | Convenience wrappers over a lazily created process-wide engine. |
 | `samples()`, `sample(name)` | Built-in sample identifiers; a sample's system dict. |
 | `trace`, `trace_grid`, `paraxial` | Low-level reference tracing (below). |
@@ -151,7 +151,8 @@ the last value seen for a failed or cancelled job), `stage`, `status()`
 progress=None)` → `Result`. Timeouts are seconds; `None` or `inf` wait
 forever; NaN or negative values raise `InvalidArgumentError`.
 
-`stop()` requests an early `optimize`/`tolerance` result: `result()` returns
+`stop()` requests an early `optimize`, `tolerance` or `glass_substitution`
+result: `result()` returns
 normally, the job ends `done`, and `result.data["stopped"]` is true. Queued
 jobs still start; a finished job is unchanged. Other active jobs raise
 `UnsupportedError`. `cancel()` (also after Stop) discards the result.
@@ -222,7 +223,8 @@ mklight.paraxial(session, wavelength=None)
   `(0, 1)` the point hx = 0, hy = 1, `[(0, 1)]` that point as a list;
   `wavelengths`:
   `None` (all), an index or a list; `pupil`: an int `n` (`n × n` grid
-  clipped to the unit disk; default 16), a pattern dict
+  clipped to the unit disk, 1 ≤ `n` ≤ 4096, otherwise
+  `InvalidArgumentError`; default 16), a pattern dict
   (`{"type": "hexapolar", "rings": 6}`, `{"type": "fan_y", "n": 21}`, … as
   `mklight_trace::PupilSampling`) or `(P, 2)` points. Result arrays, with
   leading axes `(F, W, P)` in the order given:
@@ -314,10 +316,3 @@ numerical failure `ComputeError`.
   buffer requests refused; unknown engine keys and out-of-range seeds and
   indices raising `MKLightError` subclasses; afocal paraxial infinities as
   floats.
-
-Automatic selection uses the same static capability policy and calibrated
-cost model as the engine (RESULTS §5, GPU §9.2). Devices without a
-calibration prefer qualified Metal; explicit Metal bypasses the model. The result
-envelope retains `backend.execution` and `backend.cost_decision`, including
-partial reference completion and actual precision. Public f64 buffer storage
-does not make GPU arithmetic f64.

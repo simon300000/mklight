@@ -729,8 +729,8 @@ angle), `distortion`, `lateral_colour`, `wavefront_aberration` and
 Paraxial, model, chief-ray-angle and real-F/# operands stay on the host.
 
 How a batch is split between host and device, the aiming rule, pipelining
-and accuracy are in "Resident optimisation adapter (P8)" and "Host/device
-division of candidate batches" below; routing between the CPU reference and
+and accuracy are in "Resident evaluator" and "Host/device division of
+candidate batches" below; routing between the CPU reference and
 the device is the cost model of `GPU.md` §9.2. The engine reports the
 estimated device rays per candidate as `backend.workload.rays_per_candidate`
 (`gpu::device_rays_per_candidate`).
@@ -741,8 +741,9 @@ estimated device rays per candidate as `backend.workload.rays_per_candidate`
 `optimization`). They run on the scheduler like any analysis, with
 `AnalysisRequest { analysis: "optimize", settings, .. }`, settings
 normalised against their schema, and a `RunInfo` whose `seed` is
-`settings.seed`. The shapes below are meant to be copied into
-`docs/RESULTS.md`. Numbers follow CONVENTIONS §11: NaN is `null`, ±∞ is
+`settings.seed`. The reference of their settings and result fields is
+generated from the schemas (`docs/RESULTS.md` §8); the tables and examples
+below add the meaning. Numbers follow CONVENTIONS §11: NaN is `null`, ±∞ is
 `"inf"` / `"-inf"`. `ParamPath`, `VariableSpec`, `Operand`,
 `MeritFunctionSpec`, `DefaultMeritSpec`, `ToleranceOperand` and
 `Compensator` use their serde forms (for example
@@ -768,7 +769,7 @@ two, feasibility first, then merit (`ScalarEval::better_than` with
 `feasibility_tolerance`). When the optimiser found nothing better,
 `"improved": false`, the result is the start design and a warning says so.
 The global methods never evaluate the start itself, and a GPU-driven search
-ranks on f32 values, so this check is needed for them.
+ranks on the device's values, so this check is needed for them.
 
 **Reported numbers.** The `start` and `final` merits, the operand table and
 the constraint check are always computed on the CPU f64 reference, whichever
@@ -776,8 +777,8 @@ evaluator drove the search. `backend` says what evaluated the search
 (`evaluated_on`, `precision`) and actual device/fallback accounting. Optimize
 and glass reports use the CPU f64 reference at the end; tolerance and merit
 evaluation return the active evaluator's values. Requested/used backend,
-precision, device/build and cost decisions remain in the envelope; qualification
-blobs and caches are removed. Result versions for these four jobs are 2.
+precision, device/build and cost decisions are in the envelope. Result
+versions for these four jobs are 2.
 Unsupported preparation/features, unresolved aiming and resource/device errors
 remain real, counted fallbacks. Cancellation never starts reference replacement.
 With device aiming, the device aims a ray for at most 8 Newton iterations
@@ -819,9 +820,10 @@ methods get a warning. Their populations also start closer to the design
 than the library defaults: DE `init_spread` 0.03 and CMA-ES `sigma0` 0.05
 variable scales (10 % of a curvature by default), instead of 1.0 and 0.3,
 which sample candidates so much worse that the search stays at the start.
-Measured on the seven samples with the default settings, every method
-(`lm`, `dogleg`, `de`, `cma_es`, `nelder_mead`, `hammer`) improved every
-sample and ended feasible.
+In a one-off measurement on seven of the samples with the default settings,
+every method (`lm`, `dogleg`, `de`, `cma_es`, `nelder_mead`, `hammer`)
+improved every sample and ended feasible; the tests below cover the singlet
+and the Cooke triplet.
 
 **End-point feasibility restoration.** A nonlinear equality such as the
 EFL hold can end an LM or dogleg run (and basin hopping's local solves) just
@@ -885,14 +887,14 @@ failure policy.
 | `fd_scheme` | `forward` \| `central`, `forward` | finite differences of LM / dogleg (and hammer's local runs) |
 | `fd_relative_step` | number > 0 or null, `null` | `null`: chosen per operand and evaluator (Derivatives); 0 or a negative step is rejected |
 | `seed` | integer, `0` | seed of `de`, `cma_es`, `hammer` |
-| `backend` | `auto` \| `cpu` \| `gpu` \| `gpu_emulation`, `auto` | merit evaluation. `gpu` uses the GPU device the engine selected for the analysis (`AnalysisInput::device` holding the provider's `GpuDevice`), or the CPU reference with a warning when there is none. `auto` uses that device when the engine handed one over (an engine `auto` request runs these jobs on the CPU reference, `GPU.md` §9.2). `backend.workload` reports the device rays per candidate estimated by `gpu::device_rays_per_candidate` (an upper bound of the resident plan's probes) for the merit's configuration-0 operands on the start system and the batch: the FD Jacobian (n, or 2n central) for `lm` / `dogleg`, the population for `de` (default max(10n, 15)) and `cma_es` (default 4 + ⌊3 ln n⌋), 1 for `nelder_mead`, `candidates_per_round` for `hammer`. A GPU provider lists `optimize` and `tolerance` in its capabilities so that the engine hands them its device. `gpu_emulation` requires the selected `gpu:cpu_f32` provider (validation, tests) |
+| `backend` | `auto` \| `cpu` \| `gpu` \| `gpu_emulation`, `auto` | merit evaluation. `gpu` uses the GPU device the engine selected for the analysis (`AnalysisInput::device` holding the provider's `GpuDevice`), or the CPU reference with a warning when there is none. `auto` uses that device when the engine handed one over (under an engine `auto` request the engine's cost model decides whether it does, `GPU.md` §9.2). `backend.workload` reports the device rays per candidate estimated by `gpu::device_rays_per_candidate` (an upper bound of the resident plan's probes) for the merit's configuration-0 operands on the start system and the batch: the FD Jacobian (n, or 2n central) for `lm` / `dogleg`, the population for `de` (default max(10n, 15)) and `cma_es` (default 4 + ⌊3 ln n⌋), 1 for `nelder_mead`, `candidates_per_round` for `hammer`. A GPU provider lists `optimize` and `tolerance` in its capabilities so that the engine hands them its device. `gpu_emulation` requires the selected `gpu:cpu_f32` provider (validation, tests) |
 | `feasibility_tolerance` | number, `1e-6` | total normalised constraint violation regarded as feasible: best-so-far ranking and `final.feasible` |
 
 ### `optimize` result
 
 ```jsonc
 {
-  "status": "converged" | "finished" | "stopped" | "cancelled",
+  "status": "converged" | "finished" | "stopped",
   "stopped": false,
   "termination": "small_merit_change" | "small_step" | "small_gradient" | "target_reached"
                | "converged" | "max_iterations" | "max_evaluations" | "cancelled"
@@ -923,10 +925,12 @@ failure policy.
   "backend": {"requested": "gpu", "evaluated_on": "metal:Apple M2 Pro" | "cpu-f64-reference",
               "precision": "f32_gpu" | "f64_reference", "reported_on": "cpu-f64-reference",
               "workload": {"rays_per_candidate": 38, "batch": 7},
-              "aiming": "host" | "device",          // runs handed a GPU device: where the
-                                                     // pupil rays are aimed (Host/device division)
+              // The next three only for runs handed a GPU device:
+              "aiming": "by-batch" | "device" | "host",  // where the pupil rays are aimed
+                                                     // (Host/device division)
               "gpu_stats": {"gpu_candidates": 0, "cpu_candidates": 0, "rays": 0,
-                            "dispatches": 0, "device_seconds": 0.0}},
+                            "dispatches": 0, "device_seconds": 0.0},
+              "resident_evaluation": {/* device, host-stage and fallback counters */}},
   "merit_spec": {/* the MeritFunctionSpec used, generated operands included */},
   "system": {/* OpticalSystem, model JSON */},
   "system_hash": "…64 hex digits…"
@@ -937,7 +941,8 @@ failure policy.
 `finished` when it stopped on a budget or a failure (see `termination`).
 Buffer 0 is `merit_history` (f64, shape `[iterations, 4]`: iteration,
 evaluations, merit, best merit). The search merit (`search`) equals `final`
-on the CPU reference, and differs from it by the f32 noise on a GPU. The
+on the CPU reference, and differs from it by the device's rounding on a
+GPU (double-float traces, Derivatives). The
 history holds one row per accepted iteration (LM, dogleg), generation (DE,
 CMA-ES), iteration (Nelder–Mead) or round (hammer). `best_merit` is the
 feasibility-ranked best, so it can rise when a feasible point replaces a
@@ -1215,211 +1220,66 @@ and synthetic catalogues.
 * GPU-batched evaluation keeps the per-candidate host work on the CPU:
   snapshot, resolution and paraxial setup, ray generation (and aiming),
   packing, and operand reads. At the default merit's sampling this work costs
-  as much as the CPU trace it replaces (see Throughput). Device-side ray
-  generation and reductions would remove it. The hybrid designs (Host/device
-  division of candidate batches) overlap the host share with the device but
-  keep it: tracer construction, automatic semi-diameters and the f64
-  failure path of unaimable rays bound their gain.
-* The GPU evaluator traces chief-ray angles, incidence angles, real working
-  F/# and relative illumination on the CPU.
-* The engine, C ABI, Python and CLI expose Stop; the native app still needs
-  to wire its Stop button to `mk_job_stop`.
+  as much as the CPU trace it replaces (see Throughput). The division
+  (Host/device division of candidate batches) overlaps the host share with
+  the device but keeps it: tracer construction, automatic semi-diameters and
+  the f64 failure path of unaimable rays bound its gain.
+* The GPU evaluator evaluates chief-ray angles, incidence angles and real
+  working F/# on the CPU, and of relative illumination only the radial
+  visibility scans run on the device (Resident evaluator).
 * Accuracy evidence is offline. Unchecked Metal output can retain the known
-  residual gaps listed in GPU §9.2; this change does not widen a demonstrated
-  precision envelope or repair those discrepancies.
+  residual gaps listed in GPU §9.2.
 
-## Resident optimisation adapter (P8)
-
-This section describes the adapter as P8 built it. Since the work-split
-study the engine's candidate jobs run its device stages within the hybrid
-division of "Host/device division of candidate batches" below; the P4
-candidate template and reports of whole candidates to the reference
-described here were removed.
+## Resident evaluator
 
 `gpu::ResidentEvaluator` evaluates candidate batches on a device; the
-engine's native candidate jobs use it, and their routing is in GPU.md §9.2. Construct it with a `GpuContext` containing
-the base snapshot and backend, and the configured `BuiltinEvaluator` reference.
-Use it in `OpticalProblem`, or wrap a driver with `ResidentEvaluator::run` to
-retain actual-backend `RunInfo`, library identity, native solver
-metadata and cumulative plan/copy/allocation/fallback counters. Generic batched
-problems can opt into the numerical operations through `gpu::ResidentProblem`.
+engine's candidate jobs use it for a run handed a GPU device, and their
+routing is in GPU.md §9.2. It is constructed from a `GpuContext` (the base
+snapshot and the backend) and the configured `BuiltinEvaluator` reference,
+and `ResidentEvaluator::run` wraps a driver to retain the actual backend's
+`RunInfo` and the cumulative plan, copy, allocation and fallback counters.
+How a batch is divided between host and device is the next section.
 
-The parametric path caches P4's immutable compiled template. It writes candidate
-rows directly into shared buffers, prepares their systems on device, and uses
-P1 generation/aiming and hi/lo tracing. Every candidate keeps its own current
-field and first-order metadata. P5 forms reference-sphere OPD and chief-relative
-coordinates. P3 supplies weighted two-pass spot moments and batched weighted
-piston/tilt QR fits, including the full mirrored pupil on asymmetric candidates.
-The final small field/spectral combinations and operand result packing remain
-host work. A polychromatic piston/tilt reference spanning several wavelength
-groups retains the existing host fit; monochromatic fits and wavefront RMS are
-resident. Unresolved aims and preparation failures select the affected
-candidate's reference values, without replacing neighbouring successful rows.
-The current raw-ray batch domain has common topology and at most 16 wavelengths.
-Pupil metadata and samples are filled directly; sampling patterns are cached.
-Candidates prepare their probes in parallel and merge in candidate order, so
-the plan is identical to a serial pass. A plan holds up to 1024 candidates
-within an estimated-ray budget (786,432 for spot-type merits, 196,608 when OPD
-and fit channels are needed), keeping measured peaks at 60 and 127 MiB.
-Aggregate-only spot queries do not construct host ray arrays or run OPD kernels.
-Aiming-table eligibility is decided per candidate, preserving the same policy
-when a full asymmetric pupil is batched with a symmetric half pupil.
+* **Device stages.** One resident plan per batch (or pipelined sub-batch):
+  `aiming` operations generate or take the rays and trace them in hi + lo,
+  `geometry` forms chief-relative coordinates and reference-sphere OPD, and
+  `collectives` supplies weighted two-pass spot moments and batched weighted
+  piston/tilt QR fits. Field and spectral combinations and the operand
+  values are formed on the host.
+* **Other operand families.** Fixed-sampling MTF operands
+  (`merit::mtf_eval`) and ghost and stray power operands
+  (`merit::solver_eval`) go through the wave, ghost and stray adapters with
+  the same `GpuContext`. Relative illumination runs its radial visibility
+  scans on the device in a candidate batch and completes the adaptive
+  boundary search and quadrature on the host (`ri_visibility` counts the
+  lookups). Model scalars and paraxial operands are host evaluations.
+* **Independent solves.** `gpu::scheduler::run` rendezvous-batches
+  independent serial solvers: each active worker supplies its next optical
+  evaluation, and one coordinator combines matching operand lists in stable
+  worker order; finished workers leave subsequent rounds. Compensated
+  tolerance trials use it.
+* **Tall QR.** A `Problem` that returns the context from `gpu_context()`
+  gets the resident tall QR of LM from `m·n ≥ 2¹⁶` Jacobian elements
+  (GPU.md §9.2, "QR policy"); a rank-deficient factor is a counted reference
+  factorisation, and neither path forms normal equations.
+* **Publication.** Device values publish directly: no candidate, merit,
+  finite-difference or constraint value is re-evaluated on the reference to
+  check it. Final reports are scored as "Reported numbers" above describes.
 
-The evaluator routes fixed-sampling diffraction and geometric MTF through P6
-and P5, preserving complex spectral sums, detector response and focus sign.
-Within a candidate, every frequency of a focused pupil shares its FFT; all
-field/wavelength probes share P6's trace batches. Ghost and stray operands use the
-P9/P10 adapters and retain their native reference-completion reports. Their
-current public adapters prepare uploaded systems per candidate; they do not
-consume the P4 candidate sidecar. Native solver commands across different
-candidates are not fused into one resident plan. RI uses its existing chief-ray
-étendue definition: the initial radial visibility scans run through P1 in a
-candidate batch, then the reference adaptive boundary search and quadrature
-consume those decisions. This host completion is counted; `ri_visibility`
-records consumed and blocked device lookups. There is no duplicate f64 scalar
-comparison before publication; visibility and derivative agreement remain tested offline. The measured forward/central RI steps
-are 1e-6/1e-5. P5's image-point irradiance has a different definition and is not
-substituted for this merit.
-Model scalars, unsupported paraxial quantities, and unimplemented
-operand adapters retain reported host evaluation.
-
-### Offline accuracy and final reports
-
-Resident candidates publish device values directly: no candidate, combined-merit,
-finite-difference or constraint value is re-evaluated on the reference to check
-it. Device status masks, non-finite values, unsupported preparation/features
-and unresolved aiming determine the actual fallbacks, counted separately from
-model-only host work.
-
-Final optimize reports score the start and selected best design in f64. Glass
-reports score and rank kept finalists in f64. Tolerance reports the active
-evaluator's case scores and statistics: rescoring every Monte Carlo trial in f64
-would repeat the whole run on the CPU. Merit evaluation returns actual device operands. Cancellation
-never starts final reference scoring. Existing f64 cross-validation, perturbed
-candidate, known-answer, conservation and derivative tests remain mandatory.
-
-### Derivatives, linear algebra and independent solves
-
-`optim_ops` defines zero-copy double-float residual comparisons, stable
-finite-difference combinations, candidate perturbations, matrix products,
-weighted fit rows/errors and damped least-squares rows. Request shapes and
-indices are checked at the resident boundary. Integer stencil errors produce
-status values. The CPU-f32 specification follows the same arithmetic order as
-Metal; products and command tiles never change the summation order.
-
-`fd_jacobian` retains the existing forward/central/second-order one-sided
-stencils, bound handling, pinned columns, failed-probe retry and evaluation
-budgets; evaluator-specific FD steps are unchanged. Residual and Jacobian
-arrays cross the public `Problem` interface as owned f64 arrays, and every
-published operand value is widened to host f64 after device evaluation, so residual
-targets/hinges, stencil differences and `Jᵀr` are formed on the host: a device
-pass over host-owned values costs one fill of the same size plus a command and
-measured slower at every size (FD differences 0.35–4.7 ms against well under
-1 ms on the host up to 10000×100). `GpuContext::differences` and the
-`Residuals`/`Difference` requests remain for resident chains whose inputs
-already live on the device.
-
-**P11 policy update:** the `m·n²` threshold and timings in the next
-paragraph are historical. The resident tall QR now starts at `m·n ≥ 2¹⁶`
-Jacobian elements, measured on the complete compression (`GPU.md` §9.2).
-Engine `auto` routes candidate jobs by the cost model (`GPU.md` §9.2). The
-following P8/P11 timings are historical and include per-candidate f64 checks.
-
-The local solver hands its tall QR to P3 once the free-column work
-`m·n²` reaches 2²⁴; Thin Q then stays resident for the second-order
-correction's projections and only the small unpermuted factor is reduced on
-the host for the existing serial trust-region secular equation. Below that
-the host Householder QR is faster (complete LM solves, provisional M2 Pro:
-400×100 host 29 ms against 72 ms resident; 4000×32 parity at 46 ms;
-4000×100 host 320 ms against 154 ms). Rank-deficient factorisations receive a
-counted reference factorisation. The separate batched
-`GpuContext::least_squares` API builds `[sqrt(w) J; sqrt(lambda) D]` and its RHS
-and calls P3 QR directly. Neither path forms normal equations.
-
-`gpu::scheduler::run` rendezvous-batches independent serial solvers: each active
-worker supplies its next optical evaluation, then one coordinator combines
-matching operand lists in stable worker order. Finished workers leave subsequent
-rounds. It uses no time window or search pruning. Compensated tolerance trials
-use this scheduler, preserving the 33-point MTF focus screen plus the current
-start. Ordinary uncompensated parameter trials retain P4 preparation; random
-irregularity orientations that change extra model fields use the counted
-complete-system preparation route. Catalogue filtering,
-trial RNG and population/search decisions retain the reference implementation.
-The low-level perturbation and batched QR operations are available to composed
-callers; trial RNG and independent workers' small local linear solves remain
-host stages. Trial summaries stay on the host: they must equal the f64
-reference summary, which costs 0.04 ms for 1000 trials and 0.9 ms for 100000,
-while a device summary (P3 moments plus stable sort) measured 1.9 and 4.9 ms.
-
-### Evidence and cost handoff
-
-Host-required tests are `p8_algebra`, `p8_candidates`, `p8_solvers`,
-`p8_scheduler` and `p8_tolerance`. They include both shader origins and numerics
-probes, exact emulation algebra, all 16 samples with perturbed spot/wavefront
-merits, asymmetric half pupils, an analytic thick-lens derivative, one-sided
-retry, LM solves on both sides of the tall-QR crossover, native mixed operands, MTF step sweeps, cancellation, trial
-replay, matched-method RI visibility with clipped pupils, and independent refinements. A fallback-only result cannot satisfy the
-device-work assertions. Existing CPU reference tests remain in force.
-
-The ignored `p8_bench` harness alternates unchanged f64 and the
-resident path at B=1/16/256/1024, with cold, warm-up and ten measured runs.
-Historical runs included candidate qualification and recorded transfers, device/wall time,
-command counts, allocation reuse, peak plan storage and fallback proportions.
-These measurements do not set engine routing (the cost model of `GPU.md`
-§9.2 does). Exact numerical maxima, provisional median/p95 results, raw records
-and unmeasured acceptance cases are in the task's `P8-evidence.md`.
-
-The additional ignored `p8_workloads` harness measures complete synthetic LM
-solves on both sides of the tall-QR crossover, 32 Cooke tolerance trials with/without
-compensation, three built-in catalogue refinements, and hybrid RI at B=1/16.
-These include qualification and f64 final scoring, and currently remain
-CPU-preferred. `P8_MERIT=wave` runs the default and dense wave counterparts of
-`p8_bench`; its default is spot. Timing evidence remains provisional.
-
-Provisional M2 Pro measurements (2026-11-01), ten measured runs after warm-up,
-show why small candidate jobs favour the CPU. For an exact-input warm
-Cooke default spot evaluation at B=1, CPU / legacy Metal (an f32 evaluator, since removed) / resident medians were
-0.21 / 1.14 / 5.1 ms (about 3.5 ms on a quieter run); at B=1024, 28 / 32 /
-54 ms after parallel preparation and 1024-candidate spot plans (92 ms
-before). These warm rows exclude new candidate qualification. Complete
-changing-candidate workloads include it: 32 compensated Cooke trials took
-7.8 ms CPU versus 127 ms resident, and three catalogue refinements took 1.7
-versus 24 ms; per-candidate geometry qualification commands dominate both.
-Plan peaks are 60 MiB (spot) and 127 MiB (dense wavefront). Cold costs, p95, copies, fallback proportions and raw records are in
-`P8-evidence.md`; these numbers do not set a universal backend threshold.
+Tests: `resident_algebra`, `resident_candidates`, `resident_solvers`,
+`scheduler`, `resident_tolerance` and `host_device_division`
+(`crates/mklight-optim/tests/`); the ignored `resident_bench` and
+`resident_workloads` harnesses time the evaluator against the f64 reference
+(`RESIDENT_BENCH_MERIT=wave` selects the wavefront merits). The adapter's
+earlier design and its measurements are recorded in
+[history/optimization-resident-adapter.md](history/optimization-resident-adapter.md).
 
 ## Host/device division of candidate batches
 
 The engine's candidate jobs (`merit_evaluation`, `optimize`, `tolerance`,
 `glass_substitution`) divide a run handed a GPU device between the CPU and
 the GPU as described here (`gpu::ResidentEvaluator`); CPU-reference runs
-are unaffected. This is the outcome of the work-split study `solvers`. Its
-alternatives were removed with the study key: the fully resident P1/P4
-adapter (master's design: 3.3× the time of this division, up to 7× on
-large cases), joint glass refinements through the rendezvous scheduler
-(1.7×: lock-step rounds wait for the slowest solve), the CPU reference
-with this division's driver (CPU-heavier), plain host/device batches
-without speculation and always-pipelined batches (ties within noise). Of
-the P8 adapter above, the division keeps the device stages (P1 aiming,
-P3 moments and fits, P5 OPD); the P4 candidate template, the separate
-first-order plan and candidates reported whole to the reference are gone.
-The CPU thread layouts of the study `solver_threads` (two lanes, dedicated
-pools) never beat one lane and were removed too.
-
-**Why the fully resident adapter was slow.** On real-aimed lenses (the 29- and
-35-surface benchmark lenses, real aiming at 1e-10) a few pupil rays of
-every candidate cannot be aimed (vignetted rim rays at the outer fields:
-12 of 570 on the 29-surface lens). The resident adapter reported a candidate
-with any unresolved ray whole to the reference, so every candidate was
-evaluated twice: on the device, where the unaimable rays ran their whole
-capped schedule (32 iterations with line searches, 20–90 ms of device time
-per plan, the slowest lane setting the command's duration) behind
-continuation rounds that read the pending count back, and then completely
-on the CPU. A 22-variable optimisation took 30–50 times as long as on the
-CPU. Without real aiming (the Double Gauss) the cost was the fixed latency
-of a plan per evaluation (3–4 ms: P4 system preparation, aiming rounds,
-waits) and a second plan for the first-order operands, against 0.2 ms of
-CPU work per candidate.
+are unaffected.
 
 **The division.** Per batch:
 
@@ -1468,11 +1328,7 @@ half of a candidate's rays to the host (on the 35-surface ultra-wide lens it
 aimed 166 of 570 within the cap), the evaluator hands the rest of the run
 to the reference (`evaluate_batch_near`, counted as a fallback).
 
-`MKLIGHT_SOLVERS_TRACE_ROUTING=1` prints, per batch, the device and
-host-routed rays and the device's unresolved, clipped and slow rays.
-
-**Pipelined batches** (`PIPELINE_FROM`, `ResidentEvaluator::
-with_pipelining_from`). A batch of at least 64 candidates is split into
+**Pipelined batches** (`PIPELINE_FROM`). A batch of at least 64 candidates is split into
 three sub-batches (at least 8 candidates each), and the host preparation of
 sub-batch k + 1 and the finishing of k − 1 overlap the device's work on k:
 Monte Carlo and sensitivity batches gain (1000 trials at 6 × 12 sampling on
@@ -1552,16 +1408,16 @@ substitution 6 % slower without it.
 host-completed rays and rayless operands are the reference's f64 values
 (bit-identical for model and paraxial operands, tested). Forward
 differences take the device steps of "Step size" above.
-`tests/split_designs.rs` checks the division against the reference on
+`tests/host_device_division.rs` checks the division against the reference on
 every sample with a default spot and wavefront merit plus thickness
 boundaries, first-order, aggregate, single and inner real-ray operands
-(emulation and Metal; device and host aiming, one plan and pipelined), host
+(emulation and Metal; device and host aiming), host
 completion, routing and handover to the reference at device caps of 1–8
 iterations (the real-aimed Cooke triplet at cap 4 routes rays without
-handing over), equal values with and without pipelining,
+handing over), equal values of a pipelined batch and its halves,
 finite-difference column errors (1.8e-7 against f64 central differences on
 the real-aimed Cooke triplet, also with host completion), LM on the
-evaluator, and speculative LM. The engine test `tests/solver_splits.rs`
+evaluator, and speculative LM. The engine test `tests/solver_aiming.rs`
 runs both aiming options of all four jobs against the reference under the
 solver-outcome contract (emulation; Metal ignored). A truncated solve
 (3 LM iterations, 2 local glass iterations) may miss a merit or violation

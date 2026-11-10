@@ -16,17 +16,40 @@ implementing the same trait over the same layout.
 ## 1. The backend interface
 
 `mklight_gpu::ComputeBackend` is the only GPU interface a solver sees. It is
-object-safe (`Arc<dyn ComputeBackend>`) and small:
+object-safe (`Arc<dyn ComputeBackend>`):
 
 ```rust
 trait ComputeBackend: Send + Sync {
     fn info(&self) -> &DeviceInfo;                 // name, memory, unified memory, RT support, SIMD width
     fn precision(&self) -> &PrecisionDescriptor;   // numerics contract + measured probe + error budget
     fn supports(&self, kind: JobKind) -> bool;
+
+    // Systems and host-array jobs (this section, §4).
     fn upload_systems(&self, systems: &[PackedSystem]) -> MkResult<SystemHandle>;
     fn release_systems(&self, handle: SystemHandle) -> MkResult<()>;
     fn submit(&self, job: Job, ctx: &JobContext) -> MkResult<Pending<JobResult>>;
-    // provided: upload_system, run (= submit + wait)
+
+    // Resident buffers and plans (§9.2). Provided: `Unsupported`, and empty
+    // statistics, for a backend that has none.
+    fn upload_buffer(&self, desc: BufferDesc, data: BufferData) -> MkResult<BufferHandle>;
+    fn fill_buffer(&self, desc: BufferDesc,
+        fill: &mut dyn FnMut(BufferFill<'_>) -> MkResult<()>) -> MkResult<BufferHandle>;
+    fn import_buffer(&self, desc: BufferDesc, data: HostAllocation) -> MkResult<BufferHandle>;
+    fn read_view(&self, view: BufferView) -> MkResult<ReadView>;
+    fn readback(&self, view: BufferView, ctx: &JobContext) -> MkResult<Readback>;
+    fn submit_plan(&self, plan: ResidentPlan, ctx: &JobContext) -> MkResult<Pending<PlanResult>>;
+    fn upload_systems_cached(&self, key: &SystemCacheKey, systems: &[PackedSystem])
+        -> MkResult<SystemHandle>;
+    fn resident_cache_stats(&self) -> ResidentCacheStats;
+
+    // Provided conveniences.
+    fn upload_system(&self, system: &PackedSystem) -> MkResult<SystemHandle>;
+    fn run(&self, job: Job, ctx: &JobContext) -> MkResult<JobResult>;   // submit + wait
+
+    // Kernel preparation (§6). Provided: nothing to prepare.
+    fn prepare_kernels(&self, cache_dir: Option<&Path>,
+        progress: &(dyn Fn(usize, usize) + Sync), cancel: &AtomicBool)
+        -> MkResult<KernelPreparation>;
 }
 ```
 
@@ -44,7 +67,7 @@ trait ComputeBackend: Send + Sync {
   kernel, §4). Each has a typed `JobOutput`.
   `Job::validate` performs the backend-independent input checks.
 * **Asynchrony.** `submit` returns a `Pending<JobResult>` immediately. It can
-  be awaited (`Future`), waited on (`wait`, `wait_timeout`) or polled. A
+  be waited on (`wait`) or polled (`is_ready`). A
   worker that dies without a result resolves it with an error, never a hang,
   and a worker panic becomes `MkError::Backend` naming the job.
 * **Cancellation and progress.** Every submission has its own cancel token.
@@ -129,7 +152,7 @@ and the aperture sizes.
 | `wavelength_source[16]` | index into the model's wavelength list |
 
 Systems with more than 16 wavelengths are packed in chunks
-(`PackedSystem::pack_chunks`); the packer refuses rather than truncates.
+(`PackOptions::wavelengths`); the packer refuses rather than truncates.
 
 ### 2.2 `MklPackedSurface` (624 bytes)
 
@@ -355,112 +378,33 @@ GPU. Consumers that need the f64 uniform apply `u32_to_unit_f64` to the raw
 words on the host. `Philox::seek(i)` positions the core generator at any
 draw (tested against sequential draws).
 
-### 3.6 Pure f32 variant: measured cost and accuracy
+### 3.6 Pure f32 variant
 
-An opt-in measurement build answers what double-float costs and buys. With
-`MKLIGHT_PURE_F32` (mklight_common.h) every double-float operation becomes
-plain f32 with a zero lo part and compensated sums become plain sums; the
-packed ABI, algorithms and strict flags (§3.2) are unchanged. `build.rs`
-compiles it as a second embedded metallib (both variants' shaders compile
-concurrently). `MetalOptions { precision: MetalPrecision::PureF32, .. }`, or
-`MetalOptions::from_env()` with `MKLIGHT_METAL_PRECISION=f32`, selects it; the
+A second kernel build exists for measuring what double-float costs and buys.
+With `MKLIGHT_PURE_F32` defined (`mklight_common.h`) every double-float
+operation is plain f32 with a zero lo part and compensated sums are plain
+sums; the packed layout, algorithms and strict flags (§3.2) are the same.
+`build.rs` compiles it as a second embedded metallib.
+`MetalOptions { precision: MetalPrecision::PureF32, .. }` selects it, and
+`MetalOptions::from_env()` does when `MKLIGHT_METAL_PRECISION=f32`; the
 precision descriptor (`opl_double_float`, `compensated_reductions` false) and
-`kernel_build` (`pure_f32 …`) name the variant. `MetalOptions::default()`, and
-so the engine's Metal provider (explicit or `auto`), is always double-float. CPU-f32 emulation stays the
-double-float specification.
+`kernel_build` (`pure_f32 …`) name the variant. Below a stop residual of
+`MKL_AIM_F32_FLOOR` (1e-6 of the stop radius) an f32 aim ends unconverged
+when it reaches that floor.
 
-Measured 2026-11-02 on an Apple M2 Pro under normal host load (provisional;
-median of ten alternating runs after a warm-up), Double Gauss trace, three
-fields, 12 surfaces:
-
-| Rays | DF device | f32 device | DF wall | f32 wall | CPU f64 wall |
-|---|---:|---:|---:|---:|---:|
-| 10⁴ | 0.39 ms | 0.13 ms | 1.08 ms | 0.62 ms | 0.94 ms |
-| 10⁶ | 29.5 ms | 7.4 ms | 45.6 ms | 23.7 ms | 76.3 ms |
-
-At 10⁶ rays f32 is **4.0× faster on the device and 1.9× end to end**; on the
-16 sample designs' 64×64 all-surface trace grids the device ratio is 1.8–4.2×.
-Real aiming gets no reliable speed-up (0.09–1.8× DF), because f32 changes
-its convergence.
-
-Accuracy against independent CPU f64 (§5.1 harness, all 16 designs, every
-field and wavelength, 64×64 pupil, all-surface records; maximum error and,
-in parentheses, the fraction of the full §9.4 budget):
-
-| Quantity | Double-float | Pure f32 |
-|---|---:|---:|
-| Position, mm | 2.5e-6 (0.12×) | 7.2e-5 (3.6×) |
-| Direction cosine | 4.2e-8 (0.02×) | 6.2e-7 (0.31×) |
-| OPD, waves | 7.7e-5 (0.015×) | 0.21 (43×) |
-| Per-surface OPL, mm | 3.3e-11 | 8.0e-5 |
-
-Ray statuses agree in both. f32 exceeds the OPD budget on every design (6–43×)
-and the position budget on the Newtonian. Real aiming at the default
-tolerance 1e-10 fails 450 of 4,176 f32 aims (Cooke triplet, Double Gauss,
-relay; none with DF), and f32 aims reported as converged miss the stop by up
-to 2.4e-7 of its radius. The engine never runs it: its Metal provider always
-opens the double-float build (`MetalBackend::new`), and
-only test harnesses select the f32 build (`MetalOptions`). Forced through
-the raw adapters, f32 PSFs are off by 8% L1 (41× budget), optical MTF by 0.016 (8×) and image
-simulation by 80% L1.
-
-**Conclusion.** Double-float stays the default and the only qualified mode.
-Pure f32 is not qualified for OPD, wavefront and wave analyses or real
-aiming, and does not hold the position budget on every design. Reproduce with the ignored tests
+The engine never opens this build: its Metal provider calls
+`MetalBackend::new`, which takes `MetalOptions::default()` (double-float),
+for explicit and `auto` requests alike, and only test harnesses and examples
+call `MetalOptions::from_env()`. The CPU-f32 emulation is always the
+double-float specification. Double-float is the only qualified mode: pure
+f32 exceeds the OPD budget, fails real aims at the default tolerance and
+does not hold the position budget on every design. The ignored tests
 `cargo test --release -p mklight-metal --test f32_study -- --ignored --nocapture`
 (trace, OPL, aiming, speed) and `-p mklight-engine --test f32_study` (engine
-analyses), or `MKLIGHT_METAL_PRECISION=f32` with the trace benchmark (§5.3).
-
-**Selective mixed precision (studied, not adopted).** The question whether an
-f32 *predictor* phase of the aim solve (f32 traces and Jacobians until the
-residual nears the f32 floor, then double-float residuals and corrections)
-could cut the double-float work was measured with the ignored harness
-`cargo test --release -p mklight-engine --test aim_precision_study -- --ignored --nocapture`
-(`MKLIGHT_STUDY_PROJECT` points it at a local project; otherwise three
-samples): 65×65 lattices of every field and wavelength aimed from the host
-chief row with and without the wave path's 25×25 host seed table, with both
-metallibs at stop tolerances from 1e-10 to 1e-4, every start ray retraced to
-the stop in f64. On a 29-surface F/1.4 design (30 field rows, 96,270 rays,
-stop at surface 15; Apple M2 Pro, indicative):
-
-| arithmetic | tolerance | iterations / ray | aiming device ms | true residual (f64 retrace) |
-|---|---:|---:|---:|---:|
-| double-float | 1e-10 | 1.26 | 22.7 | 1e-10 |
-| double-float | 1e-6 | 0.75 | 20.5 | 1e-6 |
-| double-float | 1e-4 | 0 | 10.9 | 3.2e-5 (the seed's error) |
-| pure f32 | 1e-6 | 0.75 | 11.2 | 1.6e-6 |
-| pure f32 | 1e-4 | 0 | 6.0 | 3.2e-5 |
-| pure f32 | 1e-10 | 13.4 (cap) | 1,584 | 0.74; 88 % of the rays fail |
-
-Below its floor the pure-f32 build stops early: a solve asked for a stop
-residual below `MKL_AIM_F32_FLOOR` (1e-6 of the stop radius) ends unconverged
-once it reaches that floor, and the ray's schedule ends with it (later phases
-would only reach the floor again). The ray stays a failed aim, reported as
-before; tolerances at or above the floor (`f32_relaxed`, 1e-6) are unchanged.
-On the lens this takes dense spot (23.6M rays) from 97.8 s to 2.0 s and dense
-geometric MTF from 101 s to 3.5 s; the results remain accuracy failures.
-
-One double-float stop trace in the aim kernel costs 113 ns per ray (7.5 ns
-per ray-surface; the bulk resident trace: 5 ns), one more double-float
-Newton iteration 98 ns; the same in f32 costs 62 ns and 72 ns: the aim kernel
-is bound by its control flow and state, not by the arithmetic, so f32 buys
-1.4× per iteration there against 2–4× in the bulk trace. The f32 floor on
-this design is a stop residual of 1.6e-6 of the stop radius (3e-5 mm), 2.5
-decades above the conditioned stop (6–10e-9) and four above the requested
-one, so a mixed solve always needs the double-float entry evaluation plus at
-least one double-float iteration after the f32 phase: 11.2 + 10.9 + ≈ 3 ms
-against 22.7 ms for double-float alone. It loses; even a free f32 phase would
-save at most one double-float iteration (≈ 9 ms of a 385 ms MTF). At the
-engine level four decades of stop tolerance (conditioned, 1e-8, 1e-6) move
-the MTF device time by less than 10 % (385 / 352 / 375 ms) and the optimize
-device time not at all (663 / 632 / 642 ms). Chief-relative f32 geometry does
-not help either: the f32 rounding of an offset from the chief ray is ε·|δp|,
-and |δp| is 10–20 mm for a marginal ray at the front group of an F/1.4 lens;
-the sag difference at the intersection and the OPL need double-float
-regardless (CONVENTIONS §7). The trace kernel's existing split (§4.1: f32
-decisions and predictors, double-float transfers, hit refinement, direction
-renormalisation and OPL) is already the selective scheme; the double-float
-work left per surface is the part that error propagation requires.
+analyses) reproduce the comparison; the measurements, and those of an f32
+predictor phase for the aim solve (`-p mklight-engine --test
+aim_precision_study`), are recorded in
+[history/gpu-work-packages.md](history/gpu-work-packages.md).
 
 ## 4. The trace kernel
 
@@ -868,53 +812,13 @@ Every common hit meets the full budget: maximum position 1.86e-6 mm,
 direction 5.08e-8, same-point OPL 3.90e-12 mm, including DOE phase.
 The test requires >99% status agreement for each fixture and no common-hit
 geometry/OPL outlier; it does not hide failures in an aperture/TIR band.
-
-Residual classification differences, as `(f64 → f32, count)`:
-
-* Odd: OK→Miss 44, OK→NoConvergence 9, Miss→OK 26.
-* Toroid: OK→Miss 4, Miss→OK 5.
-* Biconic: OK→Miss 9, Miss→OK 8, OutsideDomain→OK 5,
-  OutsideDomain→Miss 1.
-* DOE base (the even-asphere path, §5 strong aspheres): Miss→NoConvergence
-  12, Miss→OutsideDomain 1, NoConvergence→Miss 10,
-  NoConvergence→OutsideDomain 1, OutsideDomain→NoConvergence 2. Both
-  implementations fail all 26.
-* x cylinder: OutsideDomain→Miss 1; both fail.
-
-These are rays whose **reference classification is itself
-ill-conditioned**, not a divergence of the seed or domain logic. The f32
-and f64 conic seeds (from the same start) agree on every differing odd,
-toroid, biconic and cylinder ray. For all but six of them the seed
-misses, so the search starts at the closest approach and Newton walks
-towards an extremum of the residual `g(t)` along a line that does not
-cross the surface nearby; there `g′` falls to ~10⁻⁴ and the step `g/g′`
-amplifies a relative perturbation of the iterate by ~10⁸, so where the
-walk lands (a far root, a backtracking failure, the domain edge) is
-decided by the last bits. Measured:
-
-| fixture | f64 status changes under ±5e-7 mm / ±5e-8 input perturbations | f32 differences | of which such rays | f64 Newton from the f32-rounded start gives the f32 status |
-|---|---:|---:|---:|---:|
-| odd | 276 / 8192 | 79 | 63 | 33 |
-| toroid | 24 / 8192 | 9 | 8 | 5 |
-| biconic | 100 / 8192 | 23 | 15 | 12 |
-| DOE base | 80 / 8192 | 26 | 23 | — |
-| QCon, QBfs, XY, Zernike, cylinders | 0 / 8192 | 0 or 1 | — | — |
-
-The perturbations (each input coordinate and direction cosine moved by
-about the f32 rounding of the ray, twelve variants per ray) flip the f64
-reference's own status for most differing rays; under ±1e-12 mm they
-flip none of them, so the reference is deterministic but ill-conditioned
-there. Running the reference algorithm in f64 from the f32-rounded
-closest-approach point and direction already reproduces the f32 status
-for 50 of the 111 odd, toroid and biconic differences. The rest are the
-same walk decided by the f32 rounding of `g′` itself: the x-cylinder ray
-stalls at an extremum (`g = −2.87 mm`) where the f32 `g′` rounds to
-exactly zero (a `Miss`) while the f64 `g′ = −8e-8` steps out of the
-domain (`OutsideDomain`). The f32-only hits are genuine roots (residual
-≤ 2.7e-5 mm at the rounded output point, mostly gradient-amplified
-coordinate rounding). No f32 search can reproduce these decisions;
-qualification remains mandatory for steep systems, and the sample passes
-above do not claim exhaustive qualification of every ray.
+The status differences that remain are rays whose reference classification
+is itself ill-conditioned: the search starts at the closest approach of a
+line that does not cross the surface nearby, and f32-sized changes of the
+input flip the f64 status too (analysis in
+[history/gpu-work-packages.md](history/gpu-work-packages.md)). No f32 search
+can reproduce these decisions, so the sample passes above do not claim
+exhaustive qualification of every ray of a steep system.
 
 ### 5.1.2 Manufacturing overlays (layout v6)
 
@@ -923,7 +827,8 @@ even-asphere, QCon, XY, nested and DOE bases, and the pupil-grid set a
 tilted, decentred Cooke triplet with overlays on every lens surface. Metal is
 bit-identical to the FTZ emulation; against f64 the common hits stay within
 the budget above (Apple M2 Pro: position 1.9e-6 mm, direction 4.2e-8).
-### 5.2 Precision qualification and CPU fallback
+
+### 5.2 Precision qualification (test utility)
 
 `xval::qualify(backend, tracer, settings, ctx)` runs a small
 cross-validation for one system and returns
@@ -949,9 +854,8 @@ in f32 (for example asphere terms beyond A22), a thin-film coating with
 radiometry, a backend error or a measurement outside the margin all give
 `passed = false` with the reason. Systems with more than 16 wavelengths
 are validated chunk by chunk, as the packer splits them. The only error is
-`MkError::Cancelled`: a cancelled qualification is no verdict, and the
-caller stops instead of falling back. Callers that get a failure run the
-CPU reference and **say so**: `Qualification::record(&mut RunInfo)` writes
+`MkError::Cancelled`: a cancelled qualification is no verdict.
+`Qualification::record(&mut RunInfo)` writes
 
 * on success: `backend = "metal:Apple M2 Pro"`, `precision = F32Gpu`;
 * on failure: `backend = "cpu-f64"`, `precision = F64Reference`, and a
@@ -960,8 +864,11 @@ CPU reference and **say so**: `Qualification::record(&mut RunInfo)` writes
 
 and in both cases the whole qualification (measured errors included) under
 `settings["backend_qualification"]`. A qualification holds for one system
-(snapshot) on one backend. The engine and the candidate solvers do not run it
-at run time (§9.2); it is offline test evidence.
+(snapshot) on one backend. Only tests call `qualify` and `record`
+(`mklight-gpu` and `mklight-metal` `tests/trace.rs`, the engine's
+`tests/p11_routes.rs`): the engine and the candidate solvers run no
+qualification and no qualification fallback at run time (§9.2, "Runtime
+publication policy").
 
 ### 5.3 Throughput
 
@@ -1047,9 +954,28 @@ terms, while the sample designs have sparse, shorter coefficient lists.
   library that fails the numerics probe is replaced by the runtime-compiled
   source when that one passes. The flags or options actually used are in
   `PrecisionDescriptor::kernel_build`.
-* **Device and pipelines.** `DeviceSelector::{Default, NameContains,
-  RegistryId}`. Pipelines are cached by kernel name + function-constant values
-  (`mkl_fc_df_op` at index 0, `mkl_fc_reduce_mode` at index 1).
+* **Device and pipelines.** The system default device. Pipelines are cached
+  by kernel name + function-constant values
+  (`mkl_fc_df_op` at index 0, `mkl_fc_reduce_mode` at index 1); the cache
+  holds at most 512 of them (`PIPELINE_CACHE`).
+* **Kernel preparation.** `prepare_kernels` creates every pipeline the
+  backend uses (all kernels and the common specialisations of the
+  specialised ones) ahead of their first use, on up to six threads, and
+  reports `(done, total)` after each; setting `cancel` stops it early
+  without an error. With a `cache_dir` the pipelines go through a Metal
+  binary archive in that directory
+  (`pipelines-<gpu>-<hash>.metalarchive`, the hash covering the system
+  version and the shader library, so a new build, a system update or another
+  GPU never reads an archive made for something else): pipelines the archive
+  holds are created without compiling (`KernelPreparation::from_cache`), the
+  others are compiled and added, and the archive is saved before the call
+  returns, also when a pipeline failed. Archives of other builds in the
+  directory are removed once unused for 30 days. A cache that cannot be
+  attached or saved is reported as `KernelPreparation::warning`, not as an
+  error: the kernels are ready, and a later process compiles them again. The
+  engine runs the preparation on a background thread (`Engine::prepare_gpu`,
+  state in `Engine::gpu_preparation`; `mk_engine_prepare_gpu` in the C ABI,
+  FFI.md), which the app starts at launch (APP.md).
 * **Memory and soundness.** `SharedBuffer<T: Pod>` wraps
   `MTLStorageModeShared` buffers (unified memory on Apple Silicon:
   uploads/readbacks are memcpys). Encoding and dispatch (`MetalContext::run`,
@@ -1137,7 +1063,7 @@ terms, while the sample designs have sparse, shorter coefficient lists.
   selectable through the route options of §9.3, but nothing measures or
   chooses them per machine yet.
 
-## 9. GPU-first architecture
+## 9. Resident GPU architecture and routing
 
 **GPU for throughput, CPU for latency** (DECISIONS.md, "Compute placement").
 Metal runs large batched work where it is faster end to end; the CPU f64
@@ -1147,26 +1073,16 @@ chooses per request with the calibrated cost model of §9.2; qualification
 per operation and domain decides what may run natively at all. Vulkan is
 deferred. Solvers use the backend-neutral
 `ComputeBackend`, typed buffers and explicitly specified kernels, with Metal
-encoding confined to `mklight-metal`. This section governs new work; §§1–8
-describe the existing implementation and its measured limitations.
+encoding confined to `mklight-metal`. §§1–8 describe the backend interface,
+the trace kernel and their validation; this section describes the resident
+plans built on them, the division of each analysis between host and device,
+and routing.
 
 ### 9.1 Inventory and placement
 
-Source baseline: `mklight-engine/src/{gpu.rs,analysis/gpu.rs}`, the analysis
-registry, `mklight-optim/src/{deriv.rs,tolerance.rs,merit/gpu_eval.rs}` and
-the solver modules named below. Layout v5 and the existing double-float
-trace, reduction and Philox specifications are reused.
-
-At the planning baseline, the five ray-grid analyses and the optimiser evaluator accelerated
-**tracing only**. Host f64 generated/aimed the rays and read/reduced the
-results. P11 retires that engine analysis route and its fixed crossovers. FD evaluations already batch
-their candidate traces; uncompensated tolerance trials do too. Glass
-substitution's local refinements already share `GpuTraceEvaluator`
-(`analysis/glass.rs`), although `GPU_ANALYSES` omits that registry name.
-Jacobian assembly, candidate setup and the outer searches remain on the
-host. Wave optics, field maps, layout, ghost irradiance, stray transport and
-polarisation have no complete Metal path. These distinctions matter when
-measuring the baseline: batching is being extended, not introduced anew.
+The native adapters are the `gpu` modules of the solver crates named below;
+the engine routes to them from `mklight-engine/src/analysis/` (`gpu.rs`
+lists the analyses with a native path, `GPU_ANALYSES`).
 
 Sizes below describe workloads to qualify/benchmark, not new input limits.
 Let S = surfaces (qualification domain ≤30, track ≤1000 mm), F = fields,
@@ -1174,12 +1090,13 @@ W = wavelengths (packed in chunks of ≤16), P = pupil rays, B = systems,
 N = pupil side, M = image side, V = variables, O = operands. Larger domains
 need separate qualification; unqualified work retains reported fallback.
 Precision tags map to §9.4:
-G = geometry (§7 position/direction/survival), OPL = double-float paths and
-OPD (§7), R = compensated statistics (§7 RMS/MTF), E = energy/radiometry,
-T = transforms, D = derivative/conditioning gates. E/T/D add qualification
-tests; they do not relax §7.
+G = geometry (CONVENTIONS §7 position/direction/survival), OPL =
+double-float paths and OPD (CONVENTIONS §7), R = compensated statistics
+(CONVENTIONS §7 RMS/MTF), E = energy/radiometry, T = transforms, D =
+derivative/conditioning gates. E/T/D add qualification tests; they do not
+relax CONVENTIONS §7.
 The placement column is each computation's current division between host
-and device: the defaults the 2026-11 work-split study chose on an M2 Pro.
+and device: the defaults, measured on an M2 Pro.
 The route options of §9.3 select GPU-heavier divisions where they exist.
 
 | Computation / source | Work size | Placement and reason | Precision |
@@ -1196,7 +1113,7 @@ The route options of §9.3 select GPU-heavier divisions where they exist.
 | Huygens PSF/MTF (`wave/psf`) | image points × covered pupil samples; existing cap 2×10¹⁰ terms, M≤1024 | GPU tiled direct sums; bounded tiles preserve cancellation | OPL + T + E; rationalised distance differences, compensated complex sums |
 | Diffraction EE, line spread, Strehl, detector response (`wave/{energy,detector}`) | M² pixels, radii/frequencies and Bessel kernels | GPU shared radial-bin/stencil reductions; isolated scalar analytic reference curves may stay host | R + T + E; normalisation, Parseval and known answers |
 | Image simulation (`wave/image_simulation`) | field-grid PSFs; height×width×C samples, C∈{1,3}; haloed convolution tiles | Host-traced pupils and RI rows; GPU PSF transforms, pattern generation, inverse distortion, resampling, RI multiplication, FFT convolution, pixel integration and noise; file decode/encode host | G + T + E; preserve linear light, low-y row zero, halo flux |
-| Coating TMM/tabulated response, absorption, transmission, PRT/Jones/Stokes pupil maps (`core/materials/coating`, `trace/{radiometry,polarization}`) | FWP×S; angle/wavelength/stack tables; 4 complex Jones entries/ray | Transmission: host aims every ray, GPU traces and evaluates the P7 transport per block of rows while the host aims the next; polarisation pupil map: host reference (static capability); host for a tiny isolated lookup and reference table checks | E + G + OPL for phase; complex f32, double-float where conditioning needs it |
+| Coating TMM/tabulated response, absorption, transmission, PRT/Jones/Stokes pupil maps (`core/materials/coating`, `trace/{radiometry,polarization}`) | FWP×S; angle/wavelength/stack tables; 4 complex Jones entries/ray | Transmission: host aims every ray, GPU traces and evaluates the coating transport (`radiometry`) per block of rows while the host aims the next; polarisation pupil map: host reference (static capability); host for a tiny isolated lookup and reference table checks | E + G + OPL for phase; complex f32, double-float where conditioning needs it |
 | Ghost enumeration/paraxial ranking (`ghost/{path,paraxial}`) | two-bounce O(S²); filtered higher orders ≤8 reflections | Small branch-and-bound enumeration stays host; large path/wavelength ranking batches GPU | exact integer signatures/order; double-float first-order terms |
 | Ghost irradiance/focus (`ghost/{sequence,irradiance}`) | path×FW×pupil², refinement ≤4 levels; measured 0.3–4 M distinct probes on Double Gauss | Four path groups, pipelined: GPU traces one group's probe tiles while the host completes, deduplicates and splits another and gathers finished leaves; GPU segmented maps; the CPU reference traces a fixed 20 % of the path groups beside the device run | G + E; separate s/p products, virtual-segment decisions and exact coverage |
 | Stray sources, BVH queries/intersections, BSDF/TIS, branch transport, tallies/errors (`stray/*`) | 20 k engine-default rays, benchmark 400 k; tens–hundreds of primitives, split path trees | GPU wavefront transport of the first 64 events of the device's sources (`cosplit`: a fixed share of the source chunks beside the CPU reference trace of the others; `wavefront`: every source), writing detections, ledgers and continuation stacks into shared memory; the CPU reads them in place, continues longer path trees and forms the estimators; small scene topology build host; GPU batched bounds/build when large | G + E + exact Philox; double-float close hits/ledger/moments |
@@ -1207,7 +1124,7 @@ The route options of §9.3 select GPU-heavier divisions where they exist.
 | RNG stream, random pupils, optimiser/tolerance/image/stray draws | 1–10⁷ counter blocks | GPU where consumed; tiny diagnostic stream may stay host | exact u32 and specified f32 conversion, CONVENTIONS §6 |
 | Validation, catalogue/project parsing, snapshots/hashes, schemas, result packing, session/jobs/FFI | small irregular graphs/strings, bulk final copies | Host: authoritative boundary validation, I/O and control, no efficient optical GPU work | exact model/metadata; f64 reference values preserved |
 
-Memory planning is part of dispatch: v5 surfaces cost `176 + 624S` bytes
+Memory planning is part of dispatch: packed surfaces cost `176 + 624S` bytes
 plus coefficient pools per wavelength chunk; a resident ray with hi+lo
 position/direction/OPL already needs 56 bytes before weights/status. One
 million rays is therefore tens of MiB; all-surface records cost about
@@ -1220,41 +1137,25 @@ silently resized.
 
 ### 9.2 Shared primitives and interfaces
 
-These are extensions of the existing trait, not a second backend API.
-P0 freezes the following typed contracts before the parallel wave. Names
-below are proposed Rust types; the C layout umbrella remains the authority.
+The resident interface extends `ComputeBackend` (§1); it is not a second
+backend API. Its typed contracts, by module of `mklight_gpu` (the C headers
+in `include/` are the authority for the numeric records):
 
-| Contract | Inputs → outputs | Owner |
+| Contract | Inputs → outputs | Module |
 |---|---|---|
-| `ResidentPlan`, `BufferHandle`, `BufferView`, `PlanStats` | validated typed operations/views → pending resident outputs, explicit final readback and per-stage stats | P0 |
-| `GenerateAim`, `TraceResident`, `ProjectPupil` | uploaded systems + logical field/λ/pupil indices → hi+lo rays/status; trace → hi+lo hits/OPL; reference descriptor → OPD, pupil coordinates | P1 |
-| `TransformPlan`, `CorrelationStencil` | complex grids, dimensions/strides, sign/scale, affine map → complex grids or frequency values | P2 |
-| `SegmentReduce`, `StableCompact`, `StableSort`, `Scan`, `QrFit` | indexed typed resident channels → moments, ordered records, segment outputs or fit factors | P3 |
+| `ResidentPlan`, `BufferHandle`, `BufferView`, `PlanStats` | validated typed operations/views → pending resident outputs, explicit final readback and per-stage stats | `resident` |
+| `GenerateAim`, `TraceResident`, `ProjectPupil` | uploaded systems + logical field/λ/pupil indices → hi+lo rays/status; trace → hi+lo hits/OPL; reference descriptor → OPD, pupil coordinates | `aiming` |
+| `TransformPlan`, `CorrelationStencil` | complex grids, dimensions/strides, sign/scale, affine map → complex grids or frequency values | `transforms` |
+| `SegmentReduce`, `StableCompact`, `StableSort`, `Scan`, `QrFit` | indexed typed resident channels → moments, ordered records, segment outputs or fit factors | `collectives` |
 
-#### Resident interface gate (P0)
+#### Resident interface
 
-The compiling API is `mklight_gpu::resident` and the nine package modules
-in the table below. Engine dispatch is unchanged. Only the compatibility
-`TraceUpload` and `Sum` operations execute in P0; all domain handlers
-return `Unsupported` until their owners qualify them. The solver crates
-(analysis, wave, ghost, stray, optim) depend on `mklight-gpu` and declare an
-empty public `gpu` adapter module for their package to fill in.
-
-`ComputeBackend` adds object-safe methods:
-
-```rust
-fn fill_buffer(&self, desc: BufferDesc,
-    fill: &mut dyn FnMut(BufferFill<'_>) -> MkResult<()>) -> MkResult<BufferHandle>;
-fn import_buffer(&self, desc: BufferDesc, data: HostAllocation) -> MkResult<BufferHandle>;
-fn read_view(&self, view: BufferView) -> MkResult<ReadView>;
-// Copying conveniences for existing owned arrays:
-fn upload_buffer(&self, desc: BufferDesc, data: BufferData) -> MkResult<BufferHandle>;
-fn readback(&self, view: BufferView, ctx: &JobContext) -> MkResult<Readback>;
-fn submit_plan(&self, plan: ResidentPlan, ctx: &JobContext) -> MkResult<Pending<PlanResult>>;
-fn upload_systems_cached(&self, key: &SystemCacheKey, systems: &[PackedSystem])
-    -> MkResult<SystemHandle>;
-fn resident_cache_stats(&self) -> ResidentCacheStats;
-```
+The API is `mklight_gpu::resident` and the nine operation modules in the
+table below. The solver crates (analysis, wave, ghost, stray, optim) depend
+on `mklight-gpu` and hold their adapters in a public `gpu` module. The
+buffer and plan methods of `ComputeBackend` are listed in §1;
+`upload_buffer` and `readback` are the copying conveniences for owned
+arrays.
 
 **Zero-copy host access (unified memory).** Producers write device storage in
 place and consumers read it in place; the borrow checker enforces the rules.
@@ -1310,15 +1211,15 @@ waits for its last committed command before releasing any resources.
 `F32`, `U32` (4 bytes), `DoubleFloat {hi,lo}` and `Complex32 {re,im}` (8 bytes).
 `BufferView { buffer, offset, desc, stride }` and plan-local `PlanView`
 measure offsets/strides in **typed elements**, with the stride applied to
-the flattened row-major index. P0 plan imports and sums require stride 1;
+the flattened row-major index. Plan imports and sums require stride 1;
 `readback` accepts a strided view; `read_view` requires stride 1. Empty buffers are legal;
 a sum requires positive `[channels,count]`. Scratch destinations come from
 an exact-size pool and start with unspecified contents: an operation writes
 every element it publishes. Rust request structs contain host metadata/IDs
-and are never memcpy'd to a shader. The C header umbrella includes one empty
-`include/mklight_<module>_types.h` per package for its numeric records; its
-`MKL_*` defines join the generated Rust constants. Packed system layout v6
-and all existing trace/reduction layouts and constants remain unchanged.
+and are never memcpy'd to a shader. The C header umbrella
+(`mklight_gpu_types.h`) includes one `include/mklight_<module>_types.h` per
+operation module for its numeric records; its `MKL_*` defines join the
+generated Rust constants.
 
 `TraceUpload::new(request, output)` shares its immutable host request between
 plan clones and adapts the existing host ray batch without altering the
@@ -1329,11 +1230,10 @@ outputs are f32 `[10,rays]`, u32 `[3,rays]`, f32
 `Sum { input: PlanView, mode: ReduceMode, output: BufferId }` reads a
 contiguous f32 `[channels,count]` view and writes `DoubleFloat [channels]`
 using the existing two-pass fixed tree. It sums every supplied value;
-masking/compaction belongs to P3. The proof chain selects trace planes by
-view offset, with no intermediate host array or upload. The legacy adapter
-still uploads its initial host rays on each call; P1 owns resident generation.
+masking and compaction are `collectives` operations. A sum selects trace
+planes by view offset, with no intermediate host array or upload.
 
-| Package module | Frozen request variants / output records |
+| Operation module | Request variants / output records |
 |---|---|
 | `aiming` | `GenerateAim`, `TraceResident`, `ProjectPupil`; `ResidentRays`, `ResidentHits`, `PupilReference` |
 | `transforms` | `TransformPlan`, `CorrelationStencil`; explicit dimensions, sign, scale and double-float affine coefficients |
@@ -1341,21 +1241,21 @@ still uploads its initial host rays on each call; P1 owns resident generation.
 | `geometry`, `radiometry` | numeric geometry settings/samples and coating-stack/hit records, with status destinations |
 | `wave_ops`, `ghost_ops`, `stray_ops`, `optim_ops` | numeric solver records and settings views |
 
-Exact field names and types are in each `src/<module>/mod.rs`; these are
-owned by the named package after P0. Requests read uploaded packed systems
+Exact field names and types are in each `src/<module>/mod.rs`. Requests
+read uploaded packed systems
 by their `SystemHandle`. `ResidentRays` uses the 15 existing input
 float planes (including position/direction residuals), two index planes and
 separate two-word logical IDs. `ResidentHits` adds status and optional
-record/residual sidecars; P1 must retain hi+lo geometry internally.
-The central routers invoke the frozen `validate(request, plan)`,
+record/residual sidecars; the aiming kernels keep hi+lo geometry internally.
+The central routers invoke each module's `validate(request, plan)`,
 `accesses(request) -> Access { reads, writes, systems }`, and
 `execute(request, execution, control)` hooks. Referenced immutable systems
 are pinned at submission, and both execution contexts provide a system
 lookup and the operation-cache hooks `cache_key(operation)`, `cached<T>` and
 `cache<T>` for package handlers. CPU execution exposes word
 slices; Metal execution exposes typed view bindings, exclusive output
-leases, pooled temporaries and the existing command encoder. New owners
-change these handlers without editing crate roots or central routers.
+leases, pooled temporaries and the existing command encoder. A module
+changes its handlers without editing crate roots or central routers.
 
 The pool holds at most 256 MiB of idle storage per backend. Immutable
 caches are split into categories with independent byte and entry budgets
@@ -1381,12 +1281,13 @@ completion too). `PlanStats.cache` holds each plan's hits, misses, inserts,
 rejections, evictions, evicted bytes and build seconds (spent, saved,
 evicted) per category; `resident_cache_stats().categories` accumulates them
 with occupancy and budgets. The pipeline cache
-holds at most 128 specialisations; live jobs retain evicted objects. Active leases/handles
+holds at most 512 specialisations (`PIPELINE_CACHE`); live jobs retain
+evicted objects. Active leases/handles
 pin resources outside idle-cache limits. System cache identity includes
 snapshot/library/configuration/spectrum, layout, build and operation
 settings, plus a digest of the actual packed content. Cache hits issue
-independently releasable handles. P0 caps resident trace commands at 262,144
-rays; sums use the backend chunk and partition reduction groups without
+independently releasable handles. Resident trace commands are capped at
+262,144 rays (`MAX_TRACE_CHUNK`); sums use the backend chunk and partition reduction groups without
 changing the tree. The idle pool reuses the most recently returned buffer
 of the exact size and evicts the oldest. Limits
 are resource/cancellation controls, not engine backend selection thresholds.
@@ -1420,14 +1321,13 @@ CPU-f32 executor accepts the same plans and preserves its specified arithmetic.
 The selected budget is recorded in `RunInfo`.
 
 Dependent chains compose by appending operations and retaining `BufferId` /
-`PlanView` references until one final submission. P6's probe builder now uses
-this pattern across its complete rim schedule: each `Lattice::Rim` consumes the
-previous round's bracket state and trace status directly on device, appends
-P1 aiming/trace, and feeds the next round without host inspection. The fixed
-iteration cap, 16-branch probes per round, decisions and summation order are
-unchanged; all unresolved-aim and final-bracket checks run on completed leases.
-This removes the old per-round plan submissions. Candidate ray plans (P1
-trace, P5 coordinates and OPD, P3 moments and fits) and the per-field
+`PlanView` references until one final submission. The wave probe builder
+uses this pattern across its complete rim schedule: each `Lattice::Rim`
+consumes the previous round's bracket state and trace status directly on
+device, appends aiming and trace operations, and feeds the next round
+without host inspection; all unresolved-aim and final-bracket checks run on
+completed leases. Candidate ray plans (`aiming` trace, `geometry`
+coordinates and OPD, `collectives` moments and fits) and the per-field
 transform chains share command buffers within their plans. Host-computed sphere/scale/grid metadata still
 separates plans where the next operation genuinely depends on it; there is no
 public pending-buffer view or implicit asynchronous import.
@@ -1450,7 +1350,7 @@ once and at most 1 GiB of their declared storage (a larger plan runs alone;
 was cancelled while it waited never reaches the device. Consumers may
 therefore run independent plan chains side by side: the GPU wave adapter
 queues each field the host has prepared (host-traced and resampled pupils)
-for up to four device workers (`MKLIGHT_WAVE_CONCURRENT`, 1 = in order),
+for up to four device workers,
 which run its transforms while the host prepares later fields, and merges
 results, statistics and warnings in item order. `PlanStats` records host waits and
 their seconds, admission seconds, command buffers over 50 ms of device time
@@ -1464,11 +1364,10 @@ zero commands at encode time and their timestamps/counts appear in the
 
 Scratch allocations begin at their producer and retire after their last
 consumer; settled retired leases return to the pool after work-bound
-completions, without waiting for a later explicit flush. P6 rim rounds retain
-only intermediate aim checks and the final probe batch. Encoding sites no
-longer add zero command/timestamp fields; actual completion owns those stats.
-The consolidated measurements below supersede the provisional wave/fusion
-numbers; routing between the backends is the cost model ("Automatic
+completions, without waiting for a later explicit flush. Rim rounds of the
+wave probe builder retain only intermediate aim checks and the final probe
+batch. Command counts and timestamps are recorded at completion, not at the
+encoding site. Routing between the backends is the cost model ("Automatic
 routing").
 
 `PlanResult` contains final leases, `PlanStats` and `RunInfo`. Stats include
@@ -1482,8 +1381,9 @@ submission/validation; benchmark end-to-end wall time includes them and final
 readback.
 System transfers/cache retention are reported separately by
 `resident_cache_stats`; peak plan storage excludes cached systems, idle
-pool storage, immutable operation caches and host metadata. P0 returns errors for unsupported/resource
-failures and cancellation; fallback policy remains with the engine adapter.
+pool storage, immutable operation caches and host metadata. A backend
+returns errors for unsupported work, resource failures and cancellation;
+the fallback policy is the engine's (§9.3).
 
 **Residency.** A backend owns its queue, pipelines, system cache and buffer
 pool for its lifetime. Views carry type, shape, stride, owner and generation;
@@ -1610,9 +1510,8 @@ such lane serialises its SIMD group, so bounding the *ray count* of a
 command never bounded its duration (single 4096-ray commands reached 0.5–0.9 s
 and tripped the driver's interactivity watchdog). Device aiming is therefore
 resumable: `mkl_generate_aim` and `mkl_aim_table` run at most a budget of
-iteration units per lane (a phase entry, or one Newton iteration; 4 in a
-tile's first command and 4 in each continuation by default,
-`MKLIGHT_AIM_BUDGET=first,continue` for qualification), park
+iteration units per lane (a phase entry, or one Newton iteration; 4 per
+command by default, `MetalBackend::set_aim_budget` for qualification), park
 unfinished rays in a per-tile `MklAimResume` state buffer
 (`MKL_AIM_STATE_WORDS`) and append their indices to a pending list; the
 executor encodes continuation rounds (`mkl_aim_indirect` sizes
@@ -1639,7 +1538,7 @@ schedule (every solve runs with the iterations left under it, and an
 unconverged solve that reaches it ends the schedule; 0, the default, keeps
 the per-solve cap as the only bound). The candidate evaluator aims on the
 host by default; with device aiming (`aiming=device` or `table`) it sets 8
-(`HYBRID_SCHEDULE_CAP`) and aims every ray the device leaves unresolved
+(`SCHEDULE_CAP`) and aims every ray the device leaves unresolved
 again on the host in f64 with the candidate's tracer, so no candidate is
 reported whole to the reference. Without a cap an unaimable ray of a bad
 trial step (a line-search candidate whose marginal rays miss or vignette)
@@ -1648,7 +1547,10 @@ such candidate against 1–5 ms for a healthy one on a 29-surface F/1.4
 design (Apple M2 Pro, indicative). Healthy candidate rays converge in at
 most 4–6 iterations; a ray the full schedule converges within the cap is
 bitwise unchanged (`aim_resume.rs`). Speculative Jacobians (OPTIMIZATION.md)
-are used only with device aiming. Analyses keep the full schedule.
+are used only with device aiming. The geometric adapters' table-seeded
+device corrections (`aiming=table`, the device share of split generations)
+stop after 12 iterations (`TABLE_SCHEDULE_CAP`, ANALYSIS.md §6.1); every
+other analysis aim keeps the full schedule.
 `MKLIGHT_METAL_TRACE_AIMS=1` prints every generation's convergence
 statistics (rays, failures, iteration sum/maximum, histogram) to stderr.
 
@@ -1669,84 +1571,38 @@ converged ray does not depend on the batch it was aimed in. The
 tables are solved (one batched `generate_many` per row, bitwise the scalar
 `generate` per node) while the batch's chief plan runs on the device.
 
-Keep hi+lo point/direction/OPL through pupil construction. Use the chief's
-unclipped trace and the signed exit-pupil distance for the reference sphere;
-support centroid references via the shared reduction, both sphere sheets,
-telecentric limit, finite conjugates and negative propagation. Evaluate
-`OPL_chief − OPL_ray` and the rationalised sphere correction of WAVE §3 in
-double-float before conversion to waves. Reference and ray states must use
-the same point convention: if exporting rounded geometry, apply the
-CONVENTIONS §12 OPL correction once; internal unrounded geometry needs no such correction.
-Lattice/rim probes retain stable IDs; `ProjectPupil` accepts a reference
-descriptor so the wave consumer can build its centroid without another
-trace. P1 exposes shared trace/normal hooks; consumers do not fork
-`trace.metal`.
+**Operation modules.** What each device service computes, and its
+conventions, is described with its consumer:
 
-**Multiple systems.** Reuse `upload_systems` and ray `system_index`, extending
-them to resident generated rays and parameter batches. A host-validated
-parameter plan maps stable surface IDs/ParamPaths to numeric slots, with
-bounds, configurations, pickup/solve dependencies and material choices.
-Across B candidates, GPU kernels apply parameters, recompute indices,
-frames, first-order/solve data and aperture/aim seeds; never reuse nominal
-values invalidated by a perturbation. Discrete topology/unsupported solves
-use the reference preparation path with a recorded reason. Batch by
-compatible topology, path program, clipping and last surface, preserving
-candidate/configuration/field/λ/pupil order. Source snapshots remain
-immutable; transient candidate IDs refer to the base hash plus parameter
-vectors, and published candidate systems receive their normal content hash.
-
-**Transforms.** Implement portable complex f32 1-D/2-D FFT kernels (radices
-2/3/5/7 and Bluestein for other lengths), tiled transpose, spectral products,
-chirp-z/separable MFT and symmetric affine MFT. Specify signs, normalisation,
-padding and bin order exactly as `wave/fft.rs`. Form large quadratic chirp
-and defocus phases in double-float, reduce modulo a turn before f32 sin/cos.
-Direct autocorrelation keeps the angular-spectrum sensor mapping, coverage
-and interpolation of `wave/mtf.rs`; it is not interchangeable with an
-interpolated FFT curve. Cache stencils across focus planes. Huygens uses
-the same phase/sum primitives with distance tiles. No approximate transform
-replaces the existing finite sum or discards sampling warnings.
-
-**Collectives and RNG.** Extend §3.4's fixed tree to segments keyed by
-candidate/field/λ/path/pixel. Chunk boundaries partition work, not the
-mathematical reduction order. Use hi+lo totals, two-pass chief-relative
-moments, stable radix sort/scan for EE and detector bins; never float
-atomics. Zernike/large least-squares work uses deterministic QR/TSQR with
-rank/condition reporting, not normal equations that square conditioning.
-Reuse Philox4x32-10 and the core stream namespaces. Logical item IDs, not
-thread/queue positions, address draws; preserve the reference draw order
-for tolerance trials and a stray source ray's depth-first split tree.
-Moving to a different RNG addressing scheme would require an explicit
-version and reference implementation, not an unnoticed backend difference.
-
-**Radiometry and non-sequential reuse.** One device coating service provides
-both powers and complex flux-normalised amplitudes, keyed by wavelength,
-incidence side/angle and material/stack. Batch TMM/table construction on GPU;
-qualify interpolation including grazing/critical angles against f64 and
-refine or use direct evaluation where needed. Preserve each solver's model:
-scalar primary/stray products of averages, ghost separate s/p products,
-and polarised PRT are different. Ghost transport adds virtual-segment,
-sensor and DOE-visit rules to shared geometry. Stray uses portable analytic
-intersections and a compute BVH on every Metal device; hardware RT is an
-optional qualified spatial-search implementation, not a requirement or a
-replacement of curved optics by triangles. Stable nearest-hit tie rules,
-shared apertures and exact coverage signatures preserve the solver partition.
+* pupil construction, the reference sphere and OPD: WAVE.md §3 and §9
+  ("Pupils and automatic sampling"); the point convention of exported
+  geometry: CONVENTIONS §12;
+* transforms (FFT, chirp-z and affine MFT, convolution, correlation):
+  `crates/mklight-gpu/src/transforms/README.md` and WAVE.md §9;
+* collectives (segmented fixed-tree reductions, stable compaction, sort and
+  scan, QR fits) and Philox addressing by logical item: §3.4, §3.5 and
+  `mklight_gpu::collectives`;
+* coatings, radiometry and polarisation: POLARIZATION.md §9;
+* ghost probes and maps: GHOST.md §6; stray transport and the compute
+  caster: STRAY.md, "Resident GPU transport";
+* candidate systems: prepared on the host in f64, one packed system per
+  candidate ("Candidate solvers" below).
 
 **Host/device divisions of the analyses.** Each native analysis has one
 default division of its work between the host's f64 reference code (on all
-cores) and the device, chosen by the 2026-11 work-split study on an M2 Pro;
-the route options of §9.3 keep GPU-heavier alternatives where a stronger GPU
-may win.
+cores) and the device, measured on an M2 Pro; the route options of §9.3 keep
+GPU-heavier alternatives where a stronger GPU may win.
 
 * *Geometric analyses*: host aiming with seed tables, split generations for
   dense spot diagrams and geometric MTFs, field-group plans ("Aiming and
   OPD" above; ANALYSIS.md §6.1).
-* *Field maps* (ANALYSIS.md §6.1): relative illumination has one pipelined
+* *Field maps* (ANALYSIS.md §6.2): relative illumination has one pipelined
   division (the host prepares the fields as the reference does and solves
   the pupil nodes' image points in blocks of at least 2048 nodes; the
   device traces each block's differential pencils, `mkl_geometry_ri_rays`,
   while the host solves the next); system transmission has one too (the
   host aims each block of rows, at least 4096 rays, and the device traces
-  it and evaluates the P7 transport while the host aims the next;
+  it and evaluates the coating transport while the host aims the next;
   POLARIZATION.md §9). The chief-ray maps (`chief_ray_angle`,
   `pupil_aberration`, `grid_distortion`) solve their chiefs on the host and
   trace on the device (`fieldmaps=host-chief`, the default) or solve them
@@ -1759,10 +1615,7 @@ may win.
   windows, automatic frequencies, focus ranges); the device runs the
   transforms (PSFs, OTFs, focus sweeps, energy, line spreads, wavefront
   statistics, convolution), and the device transforms early fields while
-  the host prepares later ones. Host transforms beside the device's tied
-  this division, and device resampling, host aiming with device tracing
-  and a fully device-traced pipeline were 1.1×, 2.0× and 3.2× slower on
-  large cases.
+  the host prepares later ones.
 * *Stray light* (STRAY.md, "Divisions between the CPU and the GPU"): the
   device runs the wavefront transport of the first 64 events of its
   sources and writes detections, ledgers and continuation stacks into
@@ -1781,7 +1634,7 @@ may win.
   device for large aspheric batches), one device ray plan per batch ("Candidate solvers" below; OPTIMIZATION.md, "Host/device division
   of candidate batches").
 
-#### Runtime publication policy (2026-11-02)
+#### Runtime publication policy
 
 Edits do not trigger a CPU run. Native Metal results publish immediately as
 `gpu:metal` with their actual f32/double-float precision; there is no sampled
@@ -1795,11 +1648,11 @@ probe, boundary packing checks, device status/finite guards and the kernels'
 conservation sums remain as runtime guards; none repeats the CPU solve.
 
 **Static capability list** (`crates/mklight-engine/src/analysis/routing.rs`).
-Analyses whose Metal output failed the f64 comparison on most default samples
-in P11 always run on the CPU reference, unconditionally and with a deliberate
+Analyses whose Metal output fails the f64 comparison on most default samples
+always run on the CPU reference, unconditionally and with a deliberate
 reported reason, also for explicit Metal requests (`reference_reason`):
 
-| Analysis | P11 default samples failing | Cause |
+| Analysis | Default samples failing | Cause |
 |---|---:|---|
 | `encircled_energy` | 16/16 | the adapter's geometry-uncertainty bin check completed every default result in f64 |
 | `polarization_pupil_map` | 13/16 | fast/diattenuation axes where retardance or diattenuation vanishes differ by 1–2 rad |
@@ -1808,14 +1661,14 @@ reported reason, also for explicit Metal requests (`reference_reason`):
 (`auto_reference_reason`): its native route has no cost calibration yet. An
 explicit Metal request runs it natively on the host-traced lattice, whose
 Zernike fit and Seidel terms are the reference's own (WAVE.md §9), so the
-undefined on-axis Seidel angles that failed in P11 no longer differ.
+on-axis Seidel angles, undefined there, are the same on both backends.
 
 **Residual gaps on Metal.** Native results publish unchecked, so known
 differences are listed here. Under the per-quantity contracts of §9.4,
 `metal_accuracy` (every GPU-capable analysis on the 16 samples at default
 settings, release, real Metal) has no native gate failure; the cases that
 still fail on a complex lens are the `auto` accuracy exclusions below. The
-mechanisms behind earlier mismatches, which the contracts rely on:
+mechanisms the contracts rely on:
 
 * `ghost_irradiance` `rays_traced`: clear apertures are sized by the edge
   field's rim rays, so lattice points can lie exactly on an aperture edge;
@@ -1869,9 +1722,8 @@ point that follows an accepted step is evaluated in one batch with its
 Jacobian's first-pass probes. Forward differences of device operands take
 `η = 1e-6` (ray positions) and `1e-5` (wavefront operands), central
 differences the reference's steps: device values are double-float traces of
-f64 aims (about 1e-12 relative noise), and the f32-era step of `1e-3` made a
-probe of a 35-surface ultra-wide zoom cross a vignetting edge, which stopped
-Metal `optimize` after one iteration. Unsupported preparation/features and
+f64 aims (about 1e-12 relative noise), and a step as large as `1e-3` lets a
+probe of a 35-surface ultra-wide zoom cross a vignetting edge. Unsupported preparation/features and
 actual resource/device failures receive a counted reference completion, and
 a run in which device aiming leaves more than half of a candidate's rays to
 the host continues on the reference (counted as a fallback). The backend block
@@ -1887,6 +1739,30 @@ a reference replacement or report. `auto` routes them by the cost model like
 every other analysis ("Automatic routing" below; `glass_substitution` is an
 accuracy exclusion). An explicit Metal request still runs them natively.
 
+**QR policy.** Resident LM solves use the device tall QR when the Jacobian
+has `m·n ≥ 65,536` elements (and `m ≥ n`), the host Householder QR below.
+The forced probe measures actual tall compression, retained Q, readout and
+the small f64 completion; host QR won up to 400 × 100 (40,000), the device
+from 4000 × 32 (128,000) and 1000 × 100 (100,000, near parity).
+
+| Rows × columns | m·n | CPU ms median / p95 | Resident ms median / p95 |
+|---|---:|---:|---:|
+| 32 × 8 | 256 | 0.003 / 0.003 | 1.166 / 1.208 |
+| 128 × 32 | 4,096 | 0.130 / 0.145 | 4.199 / 4.637 |
+| 400 × 100 | 40,000 | 4.014 / 4.394 | 10.255 / 10.603 |
+| 1000 × 100 | 100,000 | 8.654 / 8.689 | 9.854 / 10.332 |
+| 2000 × 60 | 120,000 | 9.311 / 9.462 | 6.410 / 6.608 |
+| 4000 × 32 | 128,000 | 6.827 / 7.507 | 6.129 / 7.524 |
+| 4225 × 37 | 156,325 | 8.130 / 8.257 | 5.656 / 5.751 |
+| 1600 × 100 | 160,000 | 19.035 / 19.510 | 11.559 / 11.789 |
+| 2000 × 100 | 200,000 | 24.669 / 25.067 | 12.433 / 20.034 |
+| 4000 × 100 | 400,000 | 50.199 / 51.128 | 16.766 / 23.121 |
+| 65536 × 37 | 2,424,832 | 267.163 / 286.784 | 46.402 / 49.793 |
+
+`m·n²` does not separate these shapes (400 × 100 and 4000 × 32 have the same
+work); `m·n` does. A rank-deficient reference factor remains a named,
+counted numerical fallback; an underdetermined system is solved on the host.
+
 #### Automatic routing
 
 `auto` routes each engine job with a calibrated stage-level cost model
@@ -1897,7 +1773,7 @@ its analyses on the reference; then
 
 - *Accuracy exclusions* (`cost::EXCLUSIONS`): analyses whose native output fails
   its f64 contract on the current evidence run on the CPU reference on every
-  device, at every size or from a traced-ray workload up (table below).
+  device, at every size (table below).
   Explicit Metal requests still run natively.
 - *Known failures*: a request that already failed deterministically on the
   device (below) runs on the reference (`rule: "known failure"`).
@@ -1916,13 +1792,10 @@ its analyses on the reference; then
   | device setup | device open (cold provider) + first native use of the analysis in the process | measured by the calibration; charged in full to the first call of an analysis and design family, then spread over up to 4 calls |
   | fallback risk | transient native failure rate × (native + CPU time) | deterministic failures in the device's failure cache route to the CPU outright |
 
-  The features date from when the geometric adapters aimed on the device:
-  with host aiming the default (above), the device-seed-table term and the
-  device-iteration difficulty describe only the device-aiming routes. The
-  shipped table records no device iterations (`reference_iterations` null),
-  so the difficulty factor is 1. The 2026-11 recalibration kept these
-  features: the fit's error fell (below) and `validate` routes within the
-  regret under "Measured routing".
+  The device-seed-table term and the device-iteration difficulty describe
+  the device-aiming routes (`aiming=device`/`table`); host aiming is the
+  default (above). The shipped table records no device iterations
+  (`reference_iterations` null), so the difficulty factor is 1.
   Four non-negative coefficient sets per analysis — CPU and Metal, each on a
   repeated and on a freshly edited snapshot — are fitted by load-weighted
   relative least squares from complete calls. CPU coefficients are measured
@@ -1944,7 +1817,7 @@ its analyses on the reference; then
   sub-perceptual gains from paying a device round trip and contention with
   other GPU work.
 - *Online refinement* (on by default; `MKLIGHT_COST_REFINEMENT=0` or
-  `CostModel::set_refinement(false)` turns it off): every completed call
+  `CostModel::with_table(.., false)` turns it off): every completed call
   updates (a) the CPU's host-contention factor (what other processes cost
   it now: the load-average prior √(load per core / 4), at least 1, times what
   observations learned beyond it (1/3…3×), in all 1/3…30×; it follows the
@@ -1968,15 +1841,18 @@ its analyses on the reference; then
   a device that has since failed on the request deterministically is
   decided again (the reference).
 - Devices without a calibration table (other GPU families, the CPU-f32
-  emulation), and analyses the table does not cover, use qualified Metal.
+  emulation), and analyses the table does not cover, use qualified Metal
+  (`decision: "qualified_metal"`). `wavefront_map`, which the table does
+  not cover, is the exception: the static capability list keeps it on the
+  reference for `auto` (above).
 - The model predicts each analysis's default division (§9.1). A route
   option set for the process (§9.3) applies to every native run, `auto`'s
   included, but does not enter the prediction; `auto` never selects one.
 
 **Calibration status.** The shipped table
 (`crates/mklight-engine/src/analysis/cost/apple-m2-pro.json`, M2 Pro, model
-version 5) was recalibrated on 2026-11-10, after the work-split round changed
-the divisions of most native analyses: host aiming with seed tables,
+version 5) is calibrated (2026-11-10) for the current divisions of the
+native analyses: host aiming with seed tables,
 field-group plans and split generations (geometric), one pipelined division
 for RI and transmission, host-traced pupils with device transforms (wave),
 `cosplit` stray transport, four pipelined ghost path groups with a CPU share,
@@ -2011,24 +1887,24 @@ against both backends on fresh edits and warm repeats.
 `metal_accuracy` on the 16 samples (release, real Metal: 479 rows, 0 native
 gate failures) and a complex 29-surface F/1.4 lens (`project_bench` accuracy
 records, Metal DF vs CPU f64, warm and edited). Analyses not in the table
-pass both. Re-qualified with the 2026-11 divisions and recalibration.
+pass both.
 
 | Analysis | Status | Evidence |
 |---|---|---|
 | `glass_substitution` | excluded | complex lens, warm and edited: the native search returns another finalist glass (finalist merit 3× outside its gate); the CPU is about as fast (900 against 846 ms) |
-| `ghost_irradiance` | routed by cost (excluded until 2026-11) | 16/16; complex lens warm and edited: discrete counts exact (6,092 compared), positions ≤ 3e-7 of their gate; the earlier single `rays_traced` mismatch (1 of 1,656 ghost fields) no longer occurs |
-| `spot_diagram` | routed by cost (dense spots excluded until 2026-11) | 16/16; complex lens at 33.5M rays, warm and edited: `rays_arrived` exact, positions ≤ 3.2e-4 of their gate (the earlier 2-of-767k edge-ray difference no longer occurs); Metal 7.1 s against 12.4 s |
+| `ghost_irradiance` | routed by cost | 16/16; complex lens warm and edited: discrete counts exact (6,092 compared), positions ≤ 3e-7 of their gate |
+| `spot_diagram` | routed by cost | 16/16; complex lens at 33.5M rays, warm and edited: `rays_arrived` exact, positions ≤ 3.2e-4 of their gate; Metal 7.1 s against 12.4 s |
 | `psf`, `mtf`, `line_spread`, `diffraction_encircled_energy`, `through_focus_mtf`, `mtf_vs_field` | routed by cost | 16/16 within contract; complex lens within contract (MTF frequency class ≤ 0.016 of its gate, dense grids included) |
 | `chief_ray_angle`, `pupil_aberration`, `relative_illumination_map`, `grid_distortion` | routed by cost | 16/16; complex lens without mask mismatches (host f64 chief rows) |
 | `field_curvature_distortion` | routed by cost | 16/16; complex lens 2.8e-7 (host f64 differential pencil) |
-| `stray_light` | routed by cost | the Metal route is `cosplit` (STRAY.md, "Divisions between the CPU and the GPU"): on nine lenses, the complex lens included, with six independent seeds per side, class totals and stray flux lie within 2.3 Monte Carlo standard errors of the reference and the irradiance blocks match the CPU control's statistics; with the reference's seeds the device reproduces its paths to rounding. Recalibrated 2026-11 (fit error 1.2 in ln, the table's worst); `validate` regret geometric mean 1.11, worst +5 ms |
+| `stray_light` | routed by cost | the Metal route is `cosplit` (STRAY.md, "Divisions between the CPU and the GPU"): on nine lenses, the complex lens included, with six independent seeds per side, class totals and stray flux lie within 2.3 Monte Carlo standard errors of the reference and the irradiance blocks match the CPU control's statistics; with the reference's seeds the device reproduces its paths to rounding. Fit error 1.2 in ln, the table's worst; `validate` regret geometric mean 1.11, worst +5 ms |
 | `footprint` | routed by cost | 16/16 under the outline contract (newtonian included); complex lens outline 0.07 of its gate |
 
 The other candidate solvers (`optimize`, `tolerance`, `merit_evaluation`)
 have no separate rule: the model predicts them like every other analysis.
 
-*Measured routing* (indicative: Apple M2 Pro, `validate` after the 2026-11
-recalibration: the nine samples and the complex 29-surface F/1.4 lens, every
+*Measured routing* (indicative: Apple M2 Pro, `validate` with the shipped
+table: the nine samples and the complex 29-surface F/1.4 lens, every
 calibrated analysis at its first two workloads, after an edit and as a warm
 repeat, CPU, Metal and `auto` interleaved, median of three repetitions, load
 5–13; the numbers move with load and with every engine change, so the
@@ -2063,8 +1939,7 @@ validation, ...) falls back from the same hint, without opening the device.
 backend attempt that did not produce the result: `failed` (the native run
 failed after `elapsed_ms` and the reference completed the job), `skipped`
 (the same request already failed deterministically on this device),
-`infeasible` (rejected by the analysis' capability/resource preflight before
-preparation), `downgraded` (an explicit request the static capability list
+`downgraded` (an explicit request the static capability list
 ran on the reference; also a warning) and `reference_completion` (the native
 adapter itself completed the whole result in f64). Each device remembers
 deterministic failures (model, support and numerical errors, not
@@ -2072,106 +1947,13 @@ device/driver, I/O or cancellation errors) by request identity — snapshot
 hash, glass library hash, analysis and normalised settings — in a bounded
 LRU (256 requests per device); an edit changes the identity.
 
-#### Consolidated P11 measurements
-
-The measurements and implementation descriptions in this subsection are the
-preceding P11 baseline; the runtime policy is defined above and in §9.3–9.4.
-
-Final release measurements: Apple M2 Pro (12 CPU / 19 GPU cores), macOS build `26A434`, 12 CPU workers; strict precompiled Metal `-fno-fast-math -fmetal-math-mode=safe -fmetal-math-fp32-functions=precise -ffp-contract=off`. The shader source digest and complete compiler/device/probe records accompany every native run.
-
-The host passed a load/process idle gate before measurement; CPU/Metal calls alternate, with first calls and warm-up separated from ten measured pairs. Medians use both middle samples; p95 is nearest rank (the maximum of ten). The raw session manifest records executable hashes, source commit, environment, load, process inventory and sampled RSS. Earlier wave/fusion numbers and superseded P11 source epochs do not set this policy. Inherited literal `provisional` labels in some package harness headers are superseded by the enclosing final session manifest.
-
-Representative matched calls follow; times are **median / p95 in ms**. The transform row has resident inputs; only complete engine job observations below set engine `auto`. All raw old-Metal comparisons, preparation/transfers, readback/packing, device times, copies, allocations, peaks and fallback counts remain in the package rows.
-
-| Package and workload | CPU f64 | New Metal |
-|---|---:|---:|
-| P0 trace→reduce, Cooke 1M | 49.119 / 54.192 | 24.932 / 26.834 |
-| P1 real aim, Double Gauss 821,904 | 218.084 / 225.569 | 56.700 / 58.409 |
-| P2 skew MFT 1024→2048, resident input | 83.779 / 92.297 | 28.702 / 31.436 |
-| P3 trace→moments, Cooke 1M | 59.180 / 67.776 | 19.640 / 19.886 |
-| P5 Cooke footprint, 823,473 rays | 842.594 / 847.701 | 428.991 / 442.493 |
-| P6 PSF lattice 1001, pupil 1024, output 2048 | 443.304 / 453.256 | 230.371 / 242.783 |
-| P7 Double Gauss PRT, 1024 pupil | 343.401 / 362.102 | 233.677 / 239.567 |
-| P8 complete LM, 4000×100 | 303.818 / 314.618 | 135.959 / 140.026 |
-| P9 Double Gauss ghost maps, 20² | 119.509 / 127.044 | 93.359 / 97.297 |
-| P9 Double Gauss ghost maps, 48² | 212.283 / 225.021 | 219.859 / 226.878 |
-| P9 Double Gauss ghost maps, 128² | 590.736 / 634.644 | 758.109 / 819.120 |
-
-These rows measure the P11 package paths. The analyses' CPU/GPU divisions
-have changed since (§9.1, §9.2: host aiming and field groups, host-traced
-wave pupils, grouped ghost paths with a CPU share); the candidate batches
-(P8) and the stray transport (P10) now run the divisions of "Candidate
-solvers" above and of STRAY.md. These package rows, and the P5–P9 analysis
-rows, are kept as the P11 record; the current routing figures are under
-"Automatic routing" ("Measured routing").
-
-Where a predecessor exists, the same-input old/new complete calls are retained below. The old merit adapter had weaker candidate checking; this is a cost comparison, not a qualification of that predecessor.
-
-| Matched predecessor | Old Metal ms median / p95 | Resident ms median / p95 |
-|---|---:|---:|
-| P0 Cooke 1M | 31.229 / 32.372 | 24.932 / 26.834 |
-| P3 Cooke 1M moments | 42.634 / 45.511 | 19.640 / 19.886 |
-| P5 Cooke dense footprint | 482.950 / 492.125 | 428.991 / 442.493 |
-
-The P11 cold-start observations predate the runtime publication policy:
-every cold Metal job then ran an f64 chain qualification, so they do not
-describe current cold calls and are not repeated here. Cold device setup is
-now a measured term of the routing prediction (above).
-
-| Resident call | Peak live plan MiB | Reported warm copied bytes |
-|---|---:|---:|
-| Cooke footprint 823,473 | 172.501 | 0 |
-| PSF lattice 1001 / 1024 / 2048 | 1358.524 | 0 |
-| Double Gauss ghosts 128² | 278.099 | 0 |
-
-These are resident-plan/storage counters, not a zero-copy claim for qualification or public owned results. The engine candidate rows report the separate real validation/owned-output copy totals, candidate IDs/counts and reference time; cold immutable system/operation caches and explicit readback bytes remain separate.
-
-**QR policy.** Resident LM solves use the device tall QR when the Jacobian
-has `m·n ≥ 65,536` elements (and `m ≥ n`), the host Householder QR below.
-The forced probe measures actual tall compression, retained Q, readout and
-the small f64 completion; host QR won up to 400 × 100 (40,000), the device
-from 4000 × 32 (128,000) and 1000 × 100 (100,000, near parity).
-
-| Rows × columns | m·n | CPU ms median / p95 | Resident ms median / p95 |
-|---|---:|---:|---:|
-| 32 × 8 | 256 | 0.003 / 0.003 | 1.166 / 1.208 |
-| 128 × 32 | 4,096 | 0.130 / 0.145 | 4.199 / 4.637 |
-| 400 × 100 | 40,000 | 4.014 / 4.394 | 10.255 / 10.603 |
-| 1000 × 100 | 100,000 | 8.654 / 8.689 | 9.854 / 10.332 |
-| 2000 × 60 | 120,000 | 9.311 / 9.462 | 6.410 / 6.608 |
-| 4000 × 32 | 128,000 | 6.827 / 7.507 | 6.129 / 7.524 |
-| 4225 × 37 | 156,325 | 8.130 / 8.257 | 5.656 / 5.751 |
-| 1600 × 100 | 160,000 | 19.035 / 19.510 | 11.559 / 11.789 |
-| 2000 × 100 | 200,000 | 24.669 / 25.067 | 12.433 / 20.034 |
-| 4000 × 100 | 400,000 | 50.199 / 51.128 | 16.766 / 23.121 |
-| 65536 × 37 | 2,424,832 | 267.163 / 286.784 | 46.402 / 49.793 |
-
-`m·n²` does not separate these shapes (400 × 100 and 4000 × 32 have the same
-work); `m·n` does. Rank-deficient and underdetermined reference factors
-remain named, counted numerical fallbacks.
-
-**Qualification and limits.** Both precompiled and runtime-source libraries run the complete requested-result matrix. Default EE bin ambiguity, ill-conditioned on-axis Seidel/PRT axes and exact discrete/mask disagreements remain reported f64 domains. Those outputs are not counted as Metal results. No candidate envelope is assumed: changed systems receive all-surface geometry and complete operand f64 checks, and finalists are reference-scored. These checks and counted owned validation readbacks remain expensive; primary resident fill/read-view paths avoid staging copies, but the whole validation chain is not claimed zero-copy.
-
-Qualified default maxima: `max_direction` = 4.21012e-08, `max_opd_waves` = 8.01771e-05, `max_position_mm` = 1.89671e-06, `maximum_image_energy_relative` = 4.80666e-07, `maximum_image_l1_relative` = 4.90827e-07. Undefined masks and discrete outputs agree exactly; known answers, conservation, CPU-f32 emulation, f64 cross-checks, cancellation and concurrent repeats are separate tests.
-
-The stray device transport is the wavefront with source-local depth-first Philox state (per bounce, pop, closest-hit and interaction kernels over device-compacted lists), the only device transport: `cosplit` by default, `wavefront` as an option ("Host/device divisions of the analyses" above). The device writes detections, ledgers and continuation stacks into shared memory and the CPU forms the estimators; no tallies run on the device. Complete transport, not first-hit throughput, is what the routing cost model measures. Bounded P1 aiming calibration remains a performance limit; no wider precision or parameter envelope is claimed.
-
-Peak sampled process RSS over the final tasks: 4.401 GiB. This is a one-second sample, not a process high-water guarantee. Per-plan live peaks exclude immutable caches, idle pools and host metadata; those counters remain separate. Owned final/validation copies and explicit readback are reported separately from in-place resident views; overlapping context/backend counters must not be summed.
-
-The binding scratchpad `P11-evidence.md` and final `P11-quiet/` directory contain commands, complete before/after rows, source/executable identities, numerical evidence, cold/warm distributions, copies/peaks, command maxima and the scope/gap ledger. Routing does not use these numbers; it uses the calibration table of "Automatic routing".
-
-Final reported warm command maxima: p7-radiometry.log: 38.548 ms, p7-dense-pupils.log: 43.250 ms, p9-ghosts.log: 16.540 ms. Dense film/PRT work calibrates above 16K items with a 32K tile cap; large full-record resident traces complete 128K-ray tiles. The cheap bare-coating path retains its larger fusion allowance. These controls change submission boundaries, not per-item arithmetic or RNG addressing.
-
-P9 has one 16.540 ms warm outlier above the 10–15 ms aim; its other largest samples are about 13 ms. All remain below the 50 ms cancellation target.
-
 ### 9.3 `auto`, determinism and jobs
 
 The engine initially uses `Auto`; explicit CPU remains available. Native
 geometric, wave/image, radiometry, ghost/stray and candidate adapters share one
 operation catalogue, including glass substitution. A native adapter is a route,
 not a blanket precision certificate: offline suites establish accuracy and the
-static capability list above retains broadly failing analyses on the reference. The legacy host-generated Metal analysis bridge and its ray and
-candidate-count heuristics are retired.
+static capability list above retains broadly failing analyses on the reference.
 
 `auto` applies the cost model of §9.2: accuracy exclusions run on the
 reference on any device; predictions are scoped to the calibrated device
@@ -2268,7 +2050,7 @@ device search; tolerance reports device scores.
 | E: stray Monte Carlo | Identical raw counters and controlled-path tests first; same-sample f64 transport uses the same uniform mapping. Ledger ≤1e-5 of emitted power. Ensemble class flux/maps/moments agree within 5 combined standard errors plus deterministic quadrature error measured by refinement; test rare signatures and split-child correlations, not only total flux. Sampling error cannot excuse a biased ledger or wrong path ownership. |
 | D: RI/pupil maps/curvature | Proposed gates: RI ≤1e-3 absolute, CRA ≤2e-4 degrees, pupil magnification ≤1e-3 relative or 1e-5 absolute; curvature focus ≤1e-3×(1+abs(reference_mm)) mm, cross-checked by close rays. Double-float pencil/Jacobian arithmetic; singular/undefined values match the reference. |
 | D: material/first-order batches | Proposed index error ≤1e-10 absolute (1e-7 mm over a 1000 mm path); first-order lengths ≤1e-6 relative or 2e-5 mm absolute. Check thermal/dispersion offsets and solved constraints against f64, and resulting rays/OPD against §7; ill-conditioned afocal/solve cases preserve undefined values or fall back. |
-| D: fits, FD and optimisation | Proposed reconstructed Zernike OPD/RMS ≤5e-3 waves; coefficients and rank checked against f64 QR with condition-aware residual tests. Scaled FD column error ≤1e-3 vs f64 Richardson (column norm floor 1e-8 in scaled units), plus analytic thick-lens derivative and step sweeps. Evaluator-specific FD steps, remeasured for the candidate division: forward 1e-6 for device ray operands and 1e-5 for wavefront operands, central the reference's (OPTIMIZATION.md, "Step size"). f64 final merit within 1% or 1e-8 absolute of device merit and same feasibility classification outside the recorded constraint uncertainty band; ambiguity gets a reference decision. |
+| D: fits, FD and optimisation | Proposed reconstructed Zernike OPD/RMS ≤5e-3 waves; coefficients and rank checked against f64 QR with condition-aware residual tests. Scaled FD column error ≤1e-3 vs f64 Richardson (column norm floor 1e-8 in scaled units), plus analytic thick-lens derivative and step sweeps. Evaluator-specific FD steps: forward 1e-6 for device ray operands and 1e-5 for wavefront operands, central the reference's (OPTIMIZATION.md, "Step size"). f64 final merit within 1% or 1e-8 absolute of device merit and same feasibility classification outside the recorded constraint uncertainty band; ambiguity gets a reference decision. |
 
 New E/T/D numbers are release gates to demonstrate, not measured claims.
 Compare identical settings/sampling/methods: the CPU's direct-versus-FFT MTF
@@ -2367,40 +2149,50 @@ Newton convergence and roulette thresholds. Hardware RT is qualified for
 hit accuracy and tie rules against the compute caster, not vendor traversal
 bits. A CPU-f32 match alone is never accuracy qualification.
 
-### 9.5 Delivery and measurement
 
-The task briefs and ownership ledger live in the task's `scratchpad/gpu/`
-directory (`PLAN.md`). P0 is a serial interface gate; the **first parallel
-wave is P1–P4**. Shared registration/layout files have one owner; subsequent
-packages use separately registered module/header/shader files. Final engine
-integration is deliberately last, so incomplete kernels never advertise
-production capability.
+## 10. Environment variables
 
-| Package | Goal | Dependencies | Difficulty |
-|---|---|---|---|
-| P0 | Resident backend, buffer lifetimes, frozen interfaces and module seams | — | difficult |
-| P1 | Device generation, aiming, reusable trace state and reference-sphere OPD | P0 | hardest |
-| P2 | FFT, chirp/affine MFT and autocorrelation primitives | P0 | hardest |
-| P3 | Deterministic segmented reductions, sort/scan and QR | P0 | difficult |
-| P4 | Resident multi-system parameter/material/first-order preparation (removed 2026-11 with the resident solver design, its only user) | P0 | hardest |
-| P5 | Geometric analyses, field maps, sizing and layout | P1, P3, P4 | difficult |
-| P7 | Shared coating/radiometry and polarisation | P1, P3, P4 | hardest |
-| P6 | Complete wave/image-simulation pipelines | P1, P2, P3, P5, P7 | hardest |
-| P9 | Ghost path probes, refinement and irradiance | P1, P3, P7 | difficult |
-| P10 | Stray transport, BVH, deterministic tallies | P1, P3, P7 | hardest |
-| P8 | Full merit/FD, optimisation, tolerance and glass batches | P4, P5, P6, P7, P9, P10 | hardest |
-| P11 | Engine routes, qualification, auto policy and release evidence | P5, P6, P7, P8, P9, P10 | difficult |
+Every variable the library code reads, and the families the test harnesses
+read. All are optional; the defaults are the documented behaviour.
 
-Every package supplies f64/appropriate emulation tests, actual-Metal tests,
-determinism/cancellation/progress checks and before/after measurements on
-`mklight_core::samples::all()` (16 current samples). Emulation-only or skipped
-device tests cannot qualify a release. Run `source ~/.cargo/env` before
-Cargo, `cargo test --workspace`, and preserve the reference tests. Benchmark
-the unchanged CPU reference, old Metal path where present and new Metal
-path on identical inputs; retain raw settings, seeds, hardware/build,
-fallback counts, peak memory, cold/warm wall and device timings, and
-median/p95 after warm-up. Use the existing Metal trace, wave interactive,
-ghost/stray bench, optimiser p8_bench and engine glass benchmarks as
-anchors. Include tiny/default/dense loads and end-to-end jobs; kernel-only
-speedups cannot justify `auto`. P11 routes only qualified operation/domain
-combinations and records the measured cost policy.
+**Runtime** (read by library code in a running process):
+
+| Variable | Read in | Effect |
+|---|---|---|
+| `MKLIGHT_SPLIT_<KEY>` (`AIMING`, `FIELDMAPS`, `STRAY`, `STRAY_SHARE`, `STRAY_SAG`) | `mklight-core/src/split.rs` | selects a route option for the process (§9.3); `default` or empty is the default division |
+| `MKLIGHT_DISABLE_GPU=1` | `mklight-engine/src/gpu.rs` | no GPU provider opens its device; requests run on the CPU reference with that reason |
+| `MKLIGHT_COST_CALIBRATION=<file>` | `mklight-engine/src/analysis/cost/model.rs` | loads another calibration table at engine start (§9.2, "Calibration") |
+| `MKLIGHT_COST_REFINEMENT=0` | `mklight-engine/src/analysis/cost/mod.rs` | turns the cost model's online refinement off |
+| `MKLIGHT_METAL_IN_FLIGHT=<n>` | `mklight-metal/src/context.rs` | committed command buffers a worker keeps in flight (default 2, at most 8; 0 completes each before the next) |
+| `MKLIGHT_METAL_ADMIT_PLANS=<n>`, `MKLIGHT_METAL_ADMIT_MIB=<n>` | `mklight-metal/src/admission.rs` | resident plans admitted at once (default 4) and their declared storage (default 1024 MiB) |
+
+**Diagnostics** (read by library code; they print or select a measurement
+build, and change no default result):
+
+| Variable | Read in | Effect |
+|---|---|---|
+| `MKLIGHT_METAL_TRACE_PLANS=1` | `mklight-metal/src/backend.rs` | prints one line per resident plan to stderr |
+| `MKLIGHT_METAL_TRACE_AIMS=1` | `mklight-metal/src/aiming/mod.rs` | prints every aim generation's convergence statistics to stderr |
+| `MKLIGHT_METAL_PRECISION=f32` | `mklight-metal/src/context.rs` (`MetalOptions::from_env`) | selects the pure-f32 kernel build (§3.6); only harnesses and examples call `from_env`, the engine never does |
+
+**Build** (read by `mklight-metal/build.rs`): `MKLIGHT_METAL_TOOLCHAIN_BIN`
+(directory of the Metal compiler) and `MKLIGHT_METAL_SKIP_OFFLINE=1` (skip
+the offline shader compile, so the library is compiled from source at run
+time), §6.
+
+**Harnesses** (read only by tests and benchmarks; the files define their
+meaning):
+
+| Family | Read in |
+|---|---|
+| `MKLIGHT_BENCH_*` | `mklight-engine/tests/project_bench.rs`, `cpu_trace_bench.rs` (`MKLIGHT_BENCH_PROJECT` also in `cost_calibration.rs`) |
+| `MKLIGHT_COST_{CALIBRATION_OUT, DESIGNS, MODES, FILTER, REPS, RECORDS, REFIT, DEVICE_OPEN_MS}` | `mklight-engine/tests/cost_calibration.rs` |
+| `MKLIGHT_QUALIFY_*` | `mklight-engine/tests/aim_stop_qualify.rs` |
+| `MKLIGHT_IDENTITY_*` | `mklight-engine/tests/buffer_identity.rs` |
+| `MKLIGHT_STUDY_*` | `mklight-engine/tests/aim_precision_study.rs` |
+| `MKLIGHT_SEED_PROJECT` | `mklight-engine/tests/seeded_jacobian.rs` |
+| `MKLIGHT_P5_{CASE, SAMPLE}` | `mklight-analysis/tests/p5_bench.rs` |
+| `MKLIGHT_P10_BENCH_{FILTER, ITERS}` | `mklight-stray/tests/p10_support/transport_bench.rs` |
+| `MKLIGHT_UPDATE_GOLDEN`, `MKLIGHT_UPDATE_RESULTS_DOC` | `mklight-analysis/tests/golden.rs`, `mklight-engine/tests/results_doc.rs` (rewrite the stored golden results, the generated block of RESULTS.md) |
+| `MKLIGHT_RENDER_DIR` | `apps/macos/Tests/MKLightFFITests/` (render tests) |
+| unprefixed selectors: `RESIDENT_BENCH_*`, `P11_{SAMPLE, ANALYSES, RUNTIME_SOURCE}`, `F32_STUDY_{SAMPLE, ANALYSES}`, `P1_BENCH_*`, `P6_*`, `P7_*`, `P9_SAMPLE`, `FUSION_BENCH`, `SPLIT_SAMPLE` | `mklight-optim/tests/resident_bench.rs`, `mklight-engine/tests/{p11_routes, f32_study}.rs`, `mklight-metal/tests/{p1_bench, p7_bench, p0_zerocopy}.rs`, `mklight-wave/tests/{p6_native, p6_bench, split_designs}.rs`, `mklight-gpu/tests/p7_support.rs`, `mklight-ghost/tests/p9_bench.rs` |

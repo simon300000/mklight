@@ -22,6 +22,8 @@ Units follow CONVENTIONS §1 (mm, µm, W, W/mm²). Rays carry unpolarised
 | `system` | connection to the sequential tracer: automatic semi-diameters, field and out-of-field sources |
 | `reference` | the deterministic sequential expectation of the `Primary` class, with designed paths checked for obstruction by the scene |
 | `analysis` | the engine entry point (`analyze`, `analyze_system`) |
+| `integrate` | deterministic quadrature that normalises the BSDFs and builds their TIS tables |
+| `gpu` | the resident transport on a `ComputeBackend` and its division with the CPU ("Resident GPU transport") |
 
 ## Connection to the sequential tracer
 
@@ -200,8 +202,7 @@ which integrates to `stray_flux`. The diagnostic `totals` still contains the
 whole Ghost class; its `included` flag means the whole class is selected,
 not that no subset can be owned. `classes` likewise describes whole-class
 selection. Strongest signatures follow per-path ownership.
-The engine adapter uses this same API; `stray_light` result version 2 removes
-`mapped_stray_flux`, `mapped_stray_std_error` and `ambiguous_ghost_flux`.
+The engine adapter uses this same API.
 A coverage longer than the stored signature is rejected at the boundary,
 rather than claiming ambiguous ownership.
 
@@ -393,8 +394,9 @@ Silicon): on-axis field 1.4·10⁶ rays/s (1.5·10⁷ events/s), sun at 20°
   Lambertian disks).
 * Lens edges follow the first surface's axis when an element is tilted or
   decentred (warned).
-* GPU (hardware ray tracing) casters are not implemented yet; the CPU BVH
-  is the reference `RayCaster`.
+* Hardware ray-tracing casters are not implemented. The CPU BVH is the
+  reference `RayCaster`; the device uses the compute caster of "Resident
+  GPU transport".
 
 ## Extended sag geometry and DOE transport
 
@@ -450,7 +452,7 @@ within MC and deterministic pupil-quadrature error. The hybrid DOE test in
 with the obstruction-checked sequential reference on all extended samples,
 reporting z scores and checking quadrature convergence.
 
-## Resident GPU transport (P10)
+## Resident GPU transport
 
 `gpu::{analyze, analyze_system, analyze_with_signatures}` return the native
 analysis result, including aperture/coverage checks and the obstruction-checked
@@ -462,7 +464,7 @@ from the transport backend.
 records, returning the existing `StrayResult`. `gpu::TransportScene` retains
 immutable scene/material leases across plans; `append` exposes raw device
 detections, per-source ledgers and continuation stacks for composed jobs.
-`prepare_geometry`, `generate` and `first_hits` remain available for geometry
+`prepare_geometry` and `generate` remain available for geometry
 diagnostics. Engine capability and `auto` routing are in GPU.md
 §9.2 (`stray_light` is routed by the cost model).
 
@@ -476,7 +478,7 @@ the 64-copy weight window retain the reference bookkeeping.
 
 The portable compute caster uses analytic planes, conics and cylinders,
 local-frame double-float roots/normals and stable original-primitive-ID ties.
-Extended sags reuse P1's packed bases and gradients. Their nearest-hit search
+Extended sags reuse the trace kernel's packed bases and gradients. Their nearest-hit search
 clips to a conservative box/cylinder, scans signed residuals and derivative
 extrema, and refines brackets with safeguarded Newton/bisection; this also
 resolves close root pairs near tangency. A plain-f32 pre-scan skips cells
@@ -492,7 +494,7 @@ sign change that is clear in f32 is solved without the cell's double-float
 end points. Every other extended sag is evaluated by the jets of
 `surface_math.h`. The CPU-f32 specification (`stray_ops/sag.rs`) evaluates
 both forms the same way, so the device's records are the specification's
-bit for bit, the Petzval sample's even aspheres included (P10
+bit for bit, the Petzval sample's even aspheres included (test
 `transport_specification_and_tiles`). The radial form is also the more
 accurate one: the double-float jets sent about 2 sources in 10⁵ of the
 Petzval sample down a spurious sneak path (a specular path crossing a
@@ -506,9 +508,9 @@ build a balanced preorder tree by levels. Traversal is stackless on every Metal
 device, including devices without hardware ray tracing. Optics are never
 triangulated.
 
-Interactions call the P7 coating implementation directly (the shader includes
-P7's source and the CPU-f32 specification uses P7's module, so there is one
-coating algorithm). Angle-dependent TMM
+Interactions call the `radiometry` coating implementation directly (the
+shader includes its source and the CPU-f32 specification uses its module, so
+there is one coating algorithm). Angle-dependent TMM
 and powers run on device, with scalar products of unpolarised averages.
 Beer--Lambert attenuation, all absorption/leak/escape/truncation/failure
 sinks, backside rules, ideal lenses, repeated physical-interface passes,
@@ -537,7 +539,8 @@ first bounce is tiled until the cost of a cast is known. Commands aim at
 Each source has a continuation stack, ledger, detection journal and draw
 cursor in shared memory. A source whose stack or journal is full, that
 reaches the head budget (`TransportOptions::head_events`, 64), or that needs
-reference arithmetic (P7's reference-required precision domain,
+reference arithmetic (the coating evaluation's reference-required precision
+domain,
 unrepresentable sampling arithmetic) stops on the device
 before its next event with a consistent stack, ledger and draw cursor. The CPU
 reads the records in place, tallies them, continues stopped sources from the
@@ -576,12 +579,11 @@ enclosure energy, BSDF integrals, exact coverage and DOE overflow,
 concurrent/chunked jobs, head budgets, cancellation/resource reuse and large
 device scene builds. The actual-Metal harnesses in `tests/p10_support` are
 macOS test targets of this crate; the paired benchmarks there are ignored by
-default. Provisional busy-host timings do not establish an engine routing
-threshold.
+default.
 
 ### Divisions between the CPU and the GPU
 
-`gpu::Design` (work-split study key `stray`, `gpu::run_design`,
+`gpu::Design` (route option `stray`, GPU.md §9.3; `gpu::run_design`,
 `gpu::analyze_design`) selects how a run divides the transport:
 
 | design | device | CPU |
@@ -591,7 +593,7 @@ threshold.
 
 Which part of a source runs where depends only on the source and on fixed
 options, never on timing, so a seed gives bit-identical results. The device
-share of `cosplit` (`TransportOptions::gpu_share`, else the study key
+share of `cosplit` (`TransportOptions::gpu_share`, else the route option
 `stray_share`, a number in 0…1) is a fixed rule of the scene when not set: 0.2,
 and 0 with iteratively intersected sags or when that share is below 32 768
 sources (`gpu::hybrid::default_share`); device chunks come in units of up to
@@ -604,7 +606,7 @@ runs the obstruction checks of the system fields and the source's primary
 reference on the CPU beside it (`StraySystem::build_scene`); the result,
 warnings and progress are those of the sequential order.
 
-**Grazing handoff on the device** (study key `stray_sag`,
+**Grazing handoff on the device** (route option `stray_sag`,
 `ops::Transport::sag_mode`): `f32-scan` (default) is the scan above;
 `f32-grazing` also hands a ray whose clipped interval needs more than 32
 cells (oblique and grazing rays) back to the CPU before the event
@@ -653,17 +655,3 @@ scan takes up to about 3 ms on the device. Device transport reaches about
 small device share is faster than the reference (the Double Gauss at 400 000
 rays: 413 against 633 ms with a share of 0.25).
 
-With the earlier all-device transport, the provisional Apple M2 Pro
-native-analysis benchmark (33 paired workloads,
-median of three warm runs, busy shared host) still prefers the CPU f64 route
-for 32 of them: Metal/CPU median wall time is 1.6–5.1× on the samples at 20k
-and 1M rays, 3.3–3.5× on the split-heavy plate and 3.0–14.5× on the
-36-primitive barrel (1.33/0.24 s at 400k rays on axis, 0.70/0.05 s at 20
-degrees). Only
-the Q-bfs sample at 20k rays is faster on Metal (66/79 ms). Command waits stay
-below 46 ms. The limit is the transport kernel itself: about 3–5 M events/s,
-against 12–20 M events/s for the multi-core reference. The same scenes cast
-first hits at about 37 M rays/s, so the double-float interaction code, not
-traversal or scheduling, dominates. These jobs include the primary-reference
-and public-result work, use default stray ownership, and report zero
-reference replacements and host-copied buffer bytes.

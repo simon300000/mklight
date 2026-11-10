@@ -57,13 +57,17 @@ GPU implementation details.**
 | `mklight-engine` | Facade used by every front end: `Session` (project + undo-free immutable snapshots), the async job scheduler, analysis dispatch, backend selection, project file I/O. |
 | `mklight-ffi` | C ABI for native apps. Structured data crosses as versioned JSON; bulk data as typed binary buffers. |
 | `mklight-py` | Python bindings (pyo3/maturin, `import mklight`) over the engine facade, plus low-level reference tracing; see `docs/PYTHON.md`. |
-| `mklight-cli` | Headless command line `mklight` over the engine facade: projects (`new`, `validate`, `show`, `set`), catalogs, `analyses`/`run` over the analysis registry, reference `trace` and `paraxial`; JSON or tables, documented exit codes (`docs/CLI.md`). |
+| `mklight-cli` | Headless command line `mklight` over the engine facade: `info`, projects (`new`, `validate`, `show`, `set`, `import` of a lens prescription), catalogs, `analyses`/`run` over the analysis registry, reference `trace` and `paraxial`; JSON or tables, documented exit codes (`docs/CLI.md`). |
 
 ## Apps (`apps/`)
 
-* `apps/macos` — Swift package: `MKLightKit` (Swift wrapper over the C ABI,
-  `async` jobs, `Sendable` snapshots) and `MKLight` (SwiftUI/AppKit app with a
-  Metal-backed viewport). Built by `scripts/build-macos.sh` into `MKLight.app`.
+* `apps/macos` — Swift package: `MKLightModel` (value types mirroring the
+  model JSON), `MKLightEngine` (the `EngineClient` boundary: snapshots,
+  requests, results, `async` jobs), `MKLightFFI` (`FFIEngine`, the
+  `EngineClient` over the C ABI), `MKLightUI` (the SwiftUI/AppKit document
+  app with a Metal-backed viewport) and the executable `MKLight`
+  (`apps/macos/README.md`, `docs/APP.md`). Built by `scripts/build-macos.sh`
+  into `MKLight.app`.
 
 ## State model
 

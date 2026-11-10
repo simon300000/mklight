@@ -17,6 +17,7 @@ frames and radiometry are the same as in the reference tracer.
 | `sequence` | the general sequence tracer (`GhostModel::trace_steps` / `trace_from`) |
 | `paraxial` | y–nu along unfolded ghost sequences, `paraxial_ghosts` ranking, `real_ghost_focus` |
 | `irradiance` | `ghost_irradiance`: real-ray maps and ratios (rayon, deterministic, cancellable) |
+| `gpu` | the resident jobs on a `ComputeBackend` (§6) |
 
 ## 1. Paths
 
@@ -333,75 +334,17 @@ The `JobContext` is checked before every block; progress is monotone and
 ends at 1. Results carry `RunInfo` (backend `cpu-f64`, settings of the model
 and of the analysis, no seed: nothing is random).
 
-### Probe cache performance
+The ignored benchmark `tests/bench.rs` times the probe cache
+(`RAYON_NUM_THREADS=5 cargo test --release -p mklight-ghost --test bench --
+--ignored --nocapture`). `mklight-stray/tests/partition.rs` compares the
+ghost flux of a high-reflectance singlet with the stray solver's order-2
+flux (paired flux and per-ray standard errors, |z| < 3 per seed and for the
+combined mean; the ignored `high_reflectance_ghost_flux_large_run` uses
+2,000,000 rays × four seeds × two fields). The measurements and the
+investigation behind that test are in
+[history/wave-ghost-stray-measurements.md](history/wave-ghost-stray-measurements.md).
 
-Double Gauss, 45 two-reflection ghosts plus the primary, fields 0 and 2,
-wavelength 1, overfill 1.5, 64² map, path maps kept; macOS arm64, release,
-five rayon threads; median of seven runs after a warm-up
-(`tests/bench.rs`):
-
-| pupil grid | probes before | probes cached | before (ms) | cached (ms) |
-|---|---:|---:|---:|---:|
-| 20² | 578,242 | 305,537 | 192 | 123 |
-| 48² | 1,908,374 | 946,211 | 439 | 273 |
-| 128² | 8,909,468 | 4,070,403 | 1552 | 914 |
-
-```sh
-RAYON_NUM_THREADS=5 cargo test --release -p mklight-ghost --test bench -- --ignored --nocapture
-```
-
-Lattice coordinates round differently from the former recursive
-`p ± half` arithmetic. Against it, on the Double Gauss (20², 48², 128²;
-21² at overfill 1.3), Cooke triplet, Petzval and finite relay, totals,
-per-path and per-field flux, peaks, ratios, centroids, RMS radii and every
-map bin (relative to the map's peak) agree within 1e-12 relative; dyadic
-grids are bit-identical. The exception is a probe exactly on the sampled
-rim: at overfill 1 such points lie on the entrance-pupil edge, where an
-ulp decides whether a ray passes. Double Gauss at 20², overfill 1, changed
-by up to 1e-6 relative in on-map flux, peaks and map bins, and by up to 2e-4
-in a weak field's off-map flux and RMS radius.
-
-### High-reflectance discrepancy: pupil quadrature, not transport
-
-A singlet with ideal 30 % reflectors, a 24 × 24 mm detector, one wavelength
-(0.55 µm), and ghost path `[2, 1]` exposed aliasing of the detector boundary
-by the old cell-centre grid. Relative to entrance-pupil flux, on axis:
-
-| base grid | old centre-only flux | boundary-refined flux |
-|---|---:|---:|
-| 120² | 2.63592417e-3 | 2.57960188e-3 |
-| 240² | 2.63592417e-3 | 2.57579215e-3 |
-| 480² | 2.59473785e-3 | 2.57778067e-3 |
-| 960² | 2.57043793e-3 | 2.57764714e-3 |
-
-The unchanged 120²/240² answer was false convergence. A sensor accepts only
-a small part of this broad ghost, so whole-cell acceptance inflated its
-pupil area. The same effect explains the small negative z scores at 5 %;
-it scales with the ideal coating weight `(1 − R)² R²`.
-
-Targeted isolation: replay exactly the stray solver's Philox launch rays in
-the sequence tracer, with identical apertures, one wavelength, no scatter,
-no sensor reflection, and enough splitting to follow every order-2 branch.
-At 200,000 rays, seeds 7–9 and both singlet fields, the two order-2 fluxes
-agree within 4e-14 relative. The coefficients are angle independent and
-identical for s/p; both sums are incoherent. Thus neither angle/polarisation,
-sensor absorption, roulette, clipping geometry nor source normalisation
-causes this discrepancy. Compare **order 2**, not all ghost orders: at 30 %,
-higher orders contribute measurable flux.
-
-`mklight-stray/tests/partition.rs` retains the paired flux and exact per-ray
-standard-error checks, requires the 120²/480² refined fluxes to agree within
-0.2 %, and requires |z| < 3 for each seed and the combined mean. The normal
-suite uses 60,000 rays × three seeds × two fields; the ignored large test
-uses 2,000,000 rays × four seeds × two fields. The large run gave
-z from −0.73 to +1.54, with combined-mean z = +1.12 (on axis) and
-+0.76 (off axis):
-
-```sh
-cargo test --release -p mklight-stray --test partition high_reflectance_ghost_flux_large_run -- --ignored --nocapture
-```
-
-## 6. Resident GPU jobs (P9)
+## 6. Resident GPU jobs
 
 `mklight_ghost::gpu` exposes explicit backend-neutral `ghost_irradiance`,
 `paraxial_ghosts`, `paraxial_batch` and `real_ghost_focus` jobs. They take a
@@ -410,7 +353,7 @@ result shapes. The engine's native ghost routes call them; capability and
 `auto` routing are in GPU.md §9.2–9.3.
 
 `GhostTransport` prepares immutable, checked expanded step programs, the
-exact `GhostModel` clips and P7 coating domains for each wavelength and
+exact `GhostModel` clips and the coating domains for each wavelength and
 incidence side. It accepts explicit hi/lo start probes for same-sample
 transport and combined conservation checks. `ProbeResult` borrows completed
 shared memory through a pinned view. Raw probes retain their status, step
@@ -429,17 +372,20 @@ share cached probes; the original depth-first leaf order is reconstructed
 from the same split rule. The source boundary, virtual losses, on/off-map
 regions, repeated wavelengths and leaf counts keep their reference meaning.
 
-Geometry reuses P1 local-frame intersection, transfer and interaction hooks,
+Geometry reuses the trace kernel's local-frame intersection, transfer and
+interaction hooks,
 with double-float geometry. Ghost transport separately implements physical
 virtual-segment rejection, inverse backward ideal-lens power, sensor
 reflection/detection and the expanded DOE visit/order metadata. Each
-completed step evaluates P7's direct coating arithmetic (the same source,
+completed step evaluates the `radiometry` module's direct coating arithmetic
+(the same source,
 included in the ghost kernel) at its incidence and folds the s and p
 channel powers, DOE efficiency and signed Beer–Lambert absorption in step
 order inside the trace, so no per-step query, factor or coating record is
 stored or re-read. A function constant compiles the thin-film matrices only
 when the run has film coatings. There is no independently interpolated
-coating table or second path enumerator. Probes flagged by P7, and
+coating table or second path enumerator. Probes flagged by the coating
+evaluation, and
 numerical trace failures, are completed with the reference and counted.
 Clipping tests whose margin lies within 2⁻²⁸ (relative, of r², |x| or the
 ellipse form) of an aperture edge are completed by the reference as well:
@@ -458,10 +404,10 @@ recorded in the operation settings.
 
 Completed probes remain resident. Gathered leaves carry their stable IDs,
 field/path map segment and quadrature area. One batched map chain computes
-pixel keys, uses P3 stable sorting and scan to find occupied segments,
-reduces those segments with P3's fixed compensated tree, and scatters into
-dense maps. Field/path flux, centroids and two-pass central moments use a
-parallel P3 moments reduction over the same resident leaves. Empty bins never require a large reduction scratch plane.
+pixel keys, uses the stable sort and scan of `collectives` to find occupied
+segments, reduces those segments with its fixed compensated tree, and
+scatters into dense maps. Field/path flux, centroids and two-pass central
+moments use a parallel moments reduction over the same resident leaves. Empty bins never require a large reduction scratch plane.
 Only the occupied-segment count and maximum length cross a host control
 boundary; there are no floating-point atomics. Host code assembles the
 small reduced statistics, ratios, coverage and peak ranking in reference order.
@@ -519,10 +465,7 @@ Lattice plans are tiled at 2²⁰ probes across paths, fields and wavelengths
 (about 170 MB of launch, probe and value records); per-probe storage does
 not grow with path length. Geometry with coatings, gathers, scans and
 reductions use bounded command buffers; the trace tile adapts toward 10 ms
-per command. On a large test lens this replaced about 2,500 plans
-and 12,000 command buffers (coating records of every step row written and
-re-read) by 60 plans and about 1,000 command buffers, with bit-identical
-results. Host
+per command. Host
 deduplication, split decisions, reference completion and leaf traversal
 run in parallel per path or cell, in a fixed order. Progress reserves ranges for
 preparation, refinement, maps and final assembly, and reaches one only
@@ -532,8 +475,8 @@ command counts, memory and fallback counters. Widening public numbers to
 f64 does not relabel device arithmetic as f64.
 
 `paraxial_batch` evaluates marginal/chief recurrences and axial throughput
-across path/wavelength batches in double-float. P7 evaluates the shared
-normal-incidence table once per surface/side/wavelength; device folds keep
+across path/wavelength batches in double-float. The `radiometry` operation
+evaluates the shared normal-incidence table once per surface/side/wavelength; device folds keep
 extra reflections separate from designed-mirror/pass factors, sensor
 detection, DOE efficiency and bulk absorption. Normal powers use the
 reference paraxial product-of-averages model. Non-finite or nearly afocal
@@ -541,7 +484,7 @@ rows (reduced marginal slope <=1e-6 in magnitude), and rows with flagged
 coatings, receive counted f64 completion. Small path enumeration,
 constitutive metadata, vignetting/labels and the final ranking remain host
 work.
-`real_ghost_focus` shares P1's fully aimed meridional launch across paths,
+`real_ghost_focus` shares one fully aimed meridional launch across paths,
 then runs the same ghost sequence geometry without unused coating work.
 
 Explicit jobs currently accept uploaded immutable systems with up to 16

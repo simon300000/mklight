@@ -14,7 +14,10 @@ first-order report. Read `docs/CONVENTIONS.md` first; the module docs in
   data and its prepared fields; `mklight_analysis::tracer_for(system)` builds
   one against the built-in material library.
 * **Settings** are serde structs with `Default` and `#[serde(default)]`, so a
-  partial JSON object is valid and unknown keys are ignored.
+  partial JSON object is valid. Most of these structs ignore unknown keys
+  (those of `field_maps`, `glass_map` and `spectrum` reject them); the
+  engine validates the settings of every analysis against its schema first
+  and rejects unknown keys (RESULTS.md §2).
 * **Results** are serde structs carrying `run_info: RunInfo` (engine version,
   snapshot hash, analysis name, settings JSON, backend `"cpu-f64"`, precision
   `f64_reference`, the seed when a random pupil pattern was used, and the
@@ -62,6 +65,10 @@ first-order report. Read `docs/CONVENTIONS.md` first; the module docs in
 | `best_focus` | `energy` | Brent minimisation of the field-weighted mean polychromatic RMS radius |
 | `layout` | `layout` | global polylines (profiles, rings, element outlines, stop, image, axis, rays) and compact buffers |
 | `system_data` | `system_data` | first-order table with keys, labels and units |
+
+The other modules are `field_maps` and `glass_map` (§5), `footprint_overlay`
+(§5), `spectrum` (§4), `util` (selections, pupil patterns, moments, `nf`)
+and `gpu` (the resident adapters, §6); `lib.rs` lists them all.
 
 ### 2.1 Spots, defocus and best focus
 
@@ -344,52 +351,6 @@ MKLIGHT_UPDATE_GOLDEN=1 cargo test -p mklight-analysis --test golden
 traces a 98 829-ray polychromatic spot diagram of the Double-Gauss; about
 8 Mrays/s on a 12-thread Apple-silicon CPU.
 
-## 4. Compatibility with the macOS app's current shapes
-
-The app (`apps/macos/Sources/MKLightEngine/AnalysisRequest.swift`,
-`AnalysisResults.swift`) currently runs on a mock. The Rust shapes are
-authoritative; these are the differences to align:
-
-* **Envelope.** Rust results embed `run_info`; the app's `AnalysisOutput`
-  keeps `run_info` next to `{analysis, data}`. The engine should move it out
-  (analysis names already match: `layout`, `spot_diagram`, `ray_fan`,
-  `opd_fan`, `field_curvature_distortion`, `first_order`).
-* **Settings.** `configuration` and `execution` (backend, precision, seed)
-  belong to the engine, not to analysis settings; unknown keys are ignored,
-  so the app's JSON decodes. Random pupil sampling takes its seed from the
-  spot settings' own `seed` (the engine should copy `execution.seed` there).
-  `FieldSelection` gains a `list` variant, which the app cannot decode yet.
-* **Spot diagram.** Pattern `dithered` is new; `random` uses `1 + 3r(r+1)`
-  points (the app's comment says `rings²`). `reference`, `centroid` and
-  `chief` are in the image surface's *local* frame (the app says global; equal
-  for untilted images). Added: `chief`, `polychromatic`, `per_wavelength`,
-  `through_focus`, `wavelengths`, `defocus`; `rms_radius`/`geo_radius` are
-  `null` when undefined.
-* **Fans.** Added `cross` (the other transverse component) on ray fans and
-  the `reference` setting.
-* **Field curvature.** Same `field_values`, `field_unit`, `curves[{wavelength,
-  tangential, sagittal, distortion_percent}]`, `wavelengths_um`; added
-  `normalized_field`, close-ray columns, heights and `f·tan θ`/`f·θ`
-  distortion. Values can be `"inf"` (collimated image space), which the app's
-  `[Double?]` does not decode yet. `close_ray_step` is a new setting.
-* **MTF.** `geometric_mtf` returns the app's `MTFResult` shape (`frequencies`,
-  `curves[{field, orientation, modulation}]`, `diffraction_limit` = `null`,
-  `cutoff_frequency`, `field_values`) for the *geometric* MTF; the app's
-  `pupil_sampling` corresponds to `rings` here. The diffraction MTF and PSF
-  belong to `mklight-wave`.
-* **First order.** Same `entries[{key, label, value, unit}]` and
-  `wavelength_um`; added `tables` (one per selected wavelength) and `system`.
-* **Layout.** Same polyline kinds and fields, `elements[{first_surface,
-  last_surface, front, back}]`, `surfaces[{index, id, vertex, semi_diameter,
-  semi_diameter_is_auto}]`, `bounds`, `wavelengths_um`, `field_count`; added
-  element `outline` and `mechanical_semi_diameter`, surface `label`, `axis`,
-  `mechanical_semi_diameter`, `is_mirror`, `is_stop`; mirrors are
-  `surface_profile` polylines flagged through `is_mirror`. New settings:
-  `rings`, `ring_samples`, `edge_margin`, `lead_in`.
-* **New analyses without an app counterpart yet:** grid distortion, Seidel,
-  longitudinal aberration, chromatic focal shift, lateral colour, relative
-  illumination, footprint, encircled energy, best focus.
-
 ## 4. Run-local spectra (engine)
 
 Every wavelength-dependent geometric, wave, radiometry, ghost and stray
@@ -513,7 +474,7 @@ coordinates and markers, and global footprints against the local ones on
 the surface sag. The engine's `tests/analyses.rs` runs all new entries
 through strict result and buffer schema validation.
 
-## 6. Resident geometric adapters (P5)
+## 6. Resident geometric adapters
 
 `mklight_analysis::gpu` exposes backend-neutral job adapters; the engine's
 native geometric routes call them, and capability and `auto` routing are in
@@ -526,14 +487,14 @@ the free function includes that preparation in each call.
 
 | Adapter | Resident computation |
 |---|---|
-| `spot_diagram_job`, `ray_grid_job`, `ray_fan_job`, `opd_fan_job` | Aiming by the adapter's design (§6.1), P1 tracing; chief-relative double-float positions/slopes and reference-sphere OPD; P3 two-pass spot moments; optional requested points |
-| `encircled_energy_job` | Double-float radii/square half-widths; P3 stable distance/ID sort and inclusive weighted scan; device binary-search curve/quantile queries with a bin-uncertainty bound |
-| `geometric_mtf_job` | Double-float turn reduction, weighted complex characteristic functions and P3 fixed reductions; frequency tiles bound scratch storage |
+| `spot_diagram_job`, `ray_grid_job`, `ray_fan_job`, `opd_fan_job` | Aiming by the adapter's design (§6.1), resident tracing; chief-relative double-float positions/slopes and reference-sphere OPD; two-pass spot moments (`collectives`); optional requested points |
+| `encircled_energy_job` | Double-float radii/square half-widths; stable distance/ID sort and inclusive weighted scan (`collectives`); device binary-search curve/quantile queries with a bin-uncertainty bound |
+| `geometric_mtf_job` | Double-float turn reduction, weighted complex characteristic functions and fixed-tree reductions; frequency tiles bound scratch storage |
 | `best_focus_job` | Trace once; one two-pass reduction of centred position/slope products gives each field's exact defocus quadratic, which brackets and drives the host Brent search and the through-focus curve; the optimum is re-reduced two-pass, where the quadratic form could cancel |
-| `field_map_job`, `relative_illumination_job`, `illumination_rows` | Aiming-off pupil probes; real-aimed CRA against the image sag normal; the nested image-point RI solve and implicit direction Jacobian of §2.4, followed by P3 quadrature reductions |
+| `field_map_job`, `relative_illumination_job`, `illumination_rows` | Aiming-off pupil probes; real-aimed CRA against the image sag normal; the nested image-point RI solve and implicit direction Jacobian of §2.4, followed by quadrature reductions |
 | `field_curvature_job`, `grid_distortion_job` | Resident chief/source tables and double-float Coddington pencils; the cross-check column is the host f64 differential pencil (device close rays differenced in double-float failed the f64 budget; `run_info.settings.host_stages`); host packs scalar first-order labels and distortion columns |
 | `longitudinal_aberration_job`, `lateral_colour_job` | Zonal chief crossings and chief-relative spectral offsets; small paraxial reference labels remain host work |
-| `semi_diameters_job`, `footprint_job`, `footprint_overlay_job`, `layout_job` | P1 all-surface records, device radii/extrema and global projection, sag/gradient samples and meshes; host assembles topology, hulls, labels and final result arrays |
+| `semi_diameters_job`, `footprint_job`, `footprint_overlay_job`, `layout_job` | All-surface trace records, device radii/extrema and global projection, sag/gradient samples and meshes; host assembles topology, hulls, labels and final result arrays |
 
 `semi_diameters_job` returns `(SemiDiameters, RunInfo)`, because the reference
 sizing record has no metadata field. `GridResult` contains selected fields,
@@ -554,10 +515,11 @@ serves every plane without focus × ray scratch. Chief rays are traced only
 for adapters that reference them.
 
 The private `mklight_gpu::geometry` operation records are version 1, with
-numeric layouts in `include/mklight_geometry_types.h`. They consume P1
-`ResidentHits` and read uploaded packed systems. `Coordinates`,
-`FocusTerms`, `Opd`, `Coddington`, `CloseFocus`, `IlluminationRays`,
-`SurfaceSamples` and `Records` publish typed buffers for P6/P8 consumers;
+numeric layouts in `include/mklight_geometry_types.h`. They consume the
+`aiming` module's `ResidentHits` and read uploaded packed systems. `Coordinates`,
+`FocusTerms`, `Opd`, `Coddington`, `IlluminationRays`,
+`SurfaceSamples` and `Records` publish typed buffers for the wave and
+optimiser adapters;
 `Geometry::{coordinates,moments,coddington,image_source}` append
 these chains without an intermediate optical readback. `FieldData` kinds are
 0 (image x/y and incidence/x/y angles), 1 (stop x/y and pupil magnifications),
@@ -569,10 +531,8 @@ Coddington differentiates the shared Cartesian sag/phase gradient recurrence
 with a dual scalar, retaining mixed Hessians and the curved-base DOE
 connection term. The odd-cone vertex remains undefined. RI solves the
 source-to-image point on the CPU and traces the differentiation pencils on
-the device, with chord Newton and refresh for the stop aims (§6.1 of the
-field maps). Nodes the device leaves undecided are completed with the f64
-image-point solver and counted in the result warnings; `ri_polish` reports
-attempted, resolved and remaining failed nodes plus CPU time; successful
+the device, with chord Newton and refresh for the stop aims (§6.2). Nodes the device leaves undecided are completed with the f64
+image-point solver and counted (`ri_stages.cpu_finished`); successful
 device nodes are never retraced. EE also bounds the energy that can cross a
 requested bin within the geometry error budget. When that bound exceeds
 0.002, the complete reference EE result preserves its exact bins and automatic
@@ -594,8 +554,8 @@ supply a batched Seidel reduction.
 
 Every generation of a `Geometry` (grid rays, chief rays, layout fans, the
 sizing and field-map grids built on `append_grid`) is aimed before its plan
-is built, by one design read once per adapter from the work-split key
-`aiming` (`mklight_core::split`; `gpu::aim`):
+is built, by one design read once per adapter from the route option
+`aiming` (`mklight_core::split`, GPU.md §9.3; `gpu::aim`):
 
 | `aiming` | Where pupil rays are aimed |
 |---|---|
@@ -641,22 +601,16 @@ slower side sets the time. The footprint (1.00–1.01) and the ray grid
 (0.90–1.17) gained nothing and do not split.
 
 **Host completion.** A device aim cannot always certify the requested stop
-tolerance. When the double-float trace still took the even-asphere slope in
-f32, the evaluated stop hit on wide-angle aspheric designs jittered by 1e-9
-to 1e-8 of the stop radius, above the 1e-10 the reference reaches: on a
-35-surface ultra-wide a third of the device aims, chief rays among them,
-ended unconverged, and the device spot diagram's vignetted fraction differed
-from the reference by up to 0.77. With the slope in double-float (the hit
-refined and its normal formed from `asphere_poly_dp_df`) the device aims
-there converge except for the rays the reference cannot aim either. Every
+tolerance. The device trace takes the even-asphere slope in double-float
+(GPU.md §4.1), so its aims converge except for the rays the reference
+cannot aim either. Every
 device aim reported `MKL_AIM_FAILED` is still aimed again in f64 by the
 reference tracer; a ray it aims replaces the device's (the position and
 report planes are copied once, with the host rays in place), a ray it cannot
 aim stays failed, exactly as on the CPU, and the hard field statuses of the
 host rows are kept. Each plan's `RunInfo.settings.aiming` records the
 design, the host and device rays, iterations and seconds, the completed and
-resolved rays and the seed-table nodes (`MKLIGHT_TRACE_AIM_EVIDENCE=1`
-prints it to stderr).
+resolved rays and the seed-table nodes.
 
 `table` and `device` move the aiming to the GPU. On the M2 Pro they were
 1.15× and 1.63× slower than the default on large geometric cases (CPU time
@@ -696,35 +650,22 @@ version inside that execution evidence. `adapter_fallbacks` records singular
 distortion reference decisions. These plan timings cover backend execution;
 end-to-end benchmark wall time also includes preparation and result packing.
 
-P5's owned harnesses are `tests/p5_geometry.rs` and the ignored
-`tests/p5_bench.rs` in `mklight-analysis`. They compare complete public arrays
-with f64 on all 16 samples; cover both shader origins, matched FTZ bits,
-analytic ideal-lens/disk answers, P1→P5 chaining, concurrent jobs,
-cancellation and resource release. The benchmark compares unchanged f64,
-legacy trace-only Metal plus host statistics, and the resident chain at
-matched settings. Numerical maxima, hardware, raw runs, cold preparation,
-median/p95, copy/storage counters and any qualification gaps are retained
-in the task's `scratchpad/gpu/P5-evidence.md`. Engine routing is the
-calibrated cost model of GPU.md §9.2, not a fixed ray-count assumption.
+The adapters' tests are `tests/p5_geometry.rs` (complete public arrays
+against f64 on all 16 samples, both shader origins, matched flush-to-zero
+bits, analytic ideal-lens and disk answers, chained plans, concurrent jobs,
+cancellation and resource release), `tests/aim_designs.rs` and
+`tests/fieldmaps_split.rs`, and the ignored benchmark `tests/p5_bench.rs`,
+all in `mklight-analysis`. Engine routing is the calibrated cost model of
+GPU.md §9.2, not a fixed ray-count assumption; earlier measurements of these
+adapters are in
+[history/analysis-measurements.md](history/analysis-measurements.md).
 
-On the measured M2 Pro, 113- and 9,845-ray spots and the default spots on
-all 16 samples favor f64. At the capped 823,473-ray square-pupil setting,
-resident spot medians were 23–34 ms versus 37–89 ms f64 across the six dense
-representatives. Complete Cooke global footprints at that density measured
-434 ms resident, 477 ms legacy Metal and 831 ms f64, with 173 MiB peak
-resident-plan scratch (public output and host hull storage excluded).
-Default interactive layouts and Cooke RI at 5²/33² fields still favor f64;
-RI medians were 42/1819 ms resident versus 23/1441 ms f64. Each owned series
-uses one warm run plus ten measured runs. These measurements do not install
-a ray-count crossover or qualify changed candidates. The external evidence retains p95, raw settings/load snapshots,
-explicit copy/fallback counts and the remaining acceptance gaps.
-
-### 6.1 CPU/GPU divisions of the field maps (study key `fieldmaps`)
+### 6.2 CPU/GPU divisions of the field maps (route option `fieldmaps`)
 
 The image-point illumination and the system transmission divide their work
 between the CPU and the GPU one way each (below). The chief-ray maps keep
-two divisions side by side, selected per run by `mklight_core::split` (key
-`fieldmaps`; `MKLIGHT_SPLIT_FIELDMAPS` or the benchmark's variant columns)
+two divisions side by side, selected for the process by the route option
+`fieldmaps` (`mklight_core::split`, `MKLIGHT_SPLIT_FIELDMAPS`; GPU.md §9.3)
 and named in `run_info.settings` (`fieldmaps_variant`, `default:<design>`
 without a selection). Every path returns the reference result type and is
 tested against the f64 reference on all built-in samples
@@ -758,10 +699,9 @@ not finish within its trace budget (48 traces, 16 for a pencil ray seeded
 with a converged aim) fails on the device. A pencil the device leaves
 undecided is finished by the rest of the reference node from the CPU's
 solve (`illumination::finish_nodes`); once a block's pencils are mostly
-undecided, the CPU finishes the blocks not yet submitted. Nodes still
-undecided are completed by the reference (`illumination::reference_nodes`)
-and counted (`ri_stages`, `ri_polish`), so the device path never returns
-fewer nodes than the reference. The host forms the pencils' central
+undecided, the CPU finishes the blocks not yet submitted. Every node is
+therefore decided (`ri_stages` counts the CPU-finished ones), so the device
+path never returns fewer nodes than the reference. The host forms the pencils' central
 differences and the per-field Kahan sums in f64, in the reference's node
 order and weights.
 

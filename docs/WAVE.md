@@ -23,6 +23,12 @@ coordinates); the module docs in
 | `energy` | encircled/ensquared energy through the band-limited interpolant, line-spread functions, Strehl estimates |
 | `detector` | pixel-aperture and diffusion MTF, Nyquist frequencies |
 | `analysis` | engine-facing analyses with serde settings/results and `RunInfo`, plus the `ANALYSES` registry table |
+| `image_simulation` | space-varying incoherent image simulation (§8) |
+| `sampling` | system-derived sampling defaults |
+| `fft` | 2-D FFTs on square grids and the exact matrix Fourier transform |
+| `warnings` | sampling diagnostics attached to results |
+| `linalg`, `special` | least-squares QR; Bessel functions, the Airy pattern, Gauss–Legendre nodes |
+| `gpu` | the resident scalar-wave adapters (§9) |
 
 ## 2. Pupil conventions
 
@@ -358,9 +364,7 @@ cargo test --release -p mklight-wave --test interactive -- --ignored --nocapture
 * `mtf_vs_field` sweeps normalised field points without the system
   fields' vignetting factors (the traced rim still models real
   vignetting).
-* Vector diffraction is not implemented. The reference registry uses CPU f64;
-  the explicit resident scalar service is described in §9. Engine routing is
-  owned by the GPU integration package.
+* Vector diffraction is not implemented.
 * The automatic grid resolves the phase interpolated from the traced lattice;
   it does not adaptively discover features smaller than the `rays` spacing.
   Increase `pupil.rays` for sharply localised wavefront structure.
@@ -454,14 +458,14 @@ mean/variance. `tests/defaults.rs` runs all seven wave analyses, image simulatio
 and the relative-illumination map with untouched defaults on every built-in
 sample and rejects accuracy warnings. Additional closed-form tests pin
 quadratic-phase sampling/blur, ideal-cone frequency/depth defaults and explicit
-overrides; regression tests cross-check the projected FFT against the exact
-skew transform (0.1% of peak and energy).
+overrides.
 
 ## 9. Resident scalar-wave service
 
-`mklight_wave::gpu` composes P1 aiming/tracing/projection, P2 transforms, P3
-collectives/QR, P5 field maps/illumination and P7 scalar throughput through the
-single `ComputeBackend` resident API. The engine's native wave routes call
+`mklight_wave::gpu` composes the `aiming` (aiming, tracing, projection),
+`transforms`, `collectives` (reductions, QR), `geometry` (field maps,
+illumination) and `radiometry` (scalar throughput) operations of
+`mklight-gpu` through the single `ComputeBackend` resident API. The engine's native wave routes call
 it without changing the reference registry; capability and `auto` routing
 are in GPU.md §9.2–9.3. Solver calls report the actual backend and f32
 precision.
@@ -487,7 +491,7 @@ decisions (pupil grids and refinements, image windows, automatic
 frequencies and focus ranges) and report the reference's grids.
 
 Every field's host preparation starts at once on the thread pool, and each
-prepared field is queued for up to `MKLIGHT_WAVE_CONCURRENT` (4) device
+prepared field is queued for up to four device
 workers, so the device transforms early fields while the host still
 prepares later ones. The analyses whose decisions are per field (PSF, line
 spread, MTF with an explicit frequency limit) trace field by field; the
@@ -495,12 +499,8 @@ others trace all pupils first because their automatic frequencies, windows
 and focus ranges span all fields. Image simulation computes the
 relative-illumination rows beside the device PSFs.
 
-The work-split study measured the alternatives on the M2 Pro: host
-transforms beside the device's and a size rule for them tied this
-division; device resampling of host lattices, host aiming with device
-tracing and the fully device-traced pipeline were 1.1×, 2.0× and 3.2×
-slower on large cases. The device pupil tracer below (`PupilTracer`)
-remains for the solvers' MTF operands.
+The device pupil tracer below (`PupilTracer`) serves the solvers' MTF
+operands.
 
 The CPU reference runs fields, wavelengths, focus planes, image-grid nodes
 and Zernike fits side by side on the thread pool (each transform parallel
@@ -510,11 +510,12 @@ results are bit-identical for any thread count.
 ### Pupils and automatic sampling
 
 `PupilTracer::new(backend, tracer, ctx)` prepares reusable packed geometry and
-P7 material tables. `trace(field, wavelength, settings, ctx)` generates the
-requested entrance lattice and guard ring with P1, traces with hi/lo records,
-and uses P7's scalar product of unpolarised interface factors and bulk loss.
-Wavelength chunks always include the primary wavelength for real-image-height
-aiming; P7 receives the original wavelength indices. A wavelength-only DOE
+the `radiometry` material tables. `trace(field, wavelength, settings, ctx)`
+generates the requested entrance lattice and guard ring on the device, traces
+with hi/lo records, and uses the `radiometry` scalar product of unpolarised
+interface factors and bulk loss. Wavelength chunks always include the primary
+wavelength for real-image-height aiming; the radiometry operations receive
+the original wavelength indices. A wavelength-only DOE
 factor cancels in chief-normalised amplitudes and centroid weights; zero
 selected-order throughput remains unusable.
 
@@ -550,12 +551,13 @@ is a ray that cannot be aimed through the stop at that field; the reference
 treats it as vignetted (`Tracing::ray` is `None`) and so does the survival
 mask (on a fast lens 0.7–1.0 of the field, the lower pupil edge fails with
 residuals of 5e-3–1e-1 on both backends, identically). Tolerance-level
-non-convergence, rim brackets, sphere intersections and P7 reference-required
-rows explicitly return `Unsupported`, rather than turning into missing rays
+non-convergence, rim brackets, sphere intersections and radiometry rows that
+require the reference explicitly return `Unsupported`, rather than turning into missing rays
 or silently zero amplitudes.
 
-The chief/centroid reference uses P1's unclipped chief and P3 weighted moments.
-Small reference-frame metadata remains host control. P1 sphere projection and
+The chief/centroid reference uses the unclipped chief and weighted moments
+(`collectives`). Small reference-frame metadata remains host control. Sphere
+projection (`ProjectPupil`) and
 resident amplitude/Jacobian work preserve both sheets, telecentric limits,
 negative propagation and finite conjugates. A device-traced
 `ResidentTracedPupil` retains its resident lattice nodes, mask and
@@ -589,14 +591,14 @@ probe/build, plan version and aggregated stage/copy/fallback statistics.
 Configured callers still apply `ConfiguredTracer::stamp` to retain the base
 snapshot and configuration identity.
 
-* Wavefront statistics use Debye weights, double-float reductions and a P3
-  three-column QR tilt fit (device basis evaluation, pivoted and
+* Wavefront statistics use Debye weights, double-float reductions and a
+  three-column `collectives` QR tilt fit (device basis evaluation, pivoted and
   reorthogonalised QR; a rank failure is an error). The Zernike fit and
   Seidel terms are the reference's own, from the host lattice (§9).
 * `append_psf`, `append_huygens`, `append_correlation` and `append_fft_otf`
   compose into caller plans. FFT/chirp/affine transforms
-  preserve the reference's negligible-skew rule before satisfying P2's exact
-  diagonal/symmetric contracts. Huygens sums use rationalised distances and
+  preserve the reference's negligible-skew rule before satisfying the exact
+  diagonal/symmetric contracts of `transforms`. Huygens sums use rationalised distances and
   fixed 256-sample double-float blocks, one thread per pixel and block, added
   in block order (as are direct-MTF correlations, image queries and radial
   bins); no sample-by-pixel matrix is allocated.
@@ -632,8 +634,8 @@ Published inputs are immutable shared allocations. Producers use `fill_buffer`,
 consumers use `read_view`, and final owned results widen directly from those
 views. `ResidentPupil::opd` is a `BufferView`, so focused planes share their batch
 allocation without copying. `WaveResult` retains `PlanStats` and actual-backend
-`RunInfo`; P8/P11 callers must preserve snapshot/library/qualification identity
-when composing lower-level operations. Cancellation discards outputs and never
+`RunInfo`; callers that compose lower-level operations (the optimiser, the
+engine) must preserve the snapshot and library identity. Cancellation discards outputs and never
 runs a replacement reference computation.
 
 ### Image simulation
@@ -641,7 +643,7 @@ runs a replacement reference computation.
 `gpu::image_simulation::{build_psf_grid,image_simulation_job}` implements the
 same scalar, linear-light model as §8. `ResidentPsfGrid` is reusable across
 source/noise changes and checks snapshot, material-library and optical-settings
-identity. P5 supplies distortion; the spectrally weighted RI of the grid
+identity. The geometric adapter supplies distortion; the spectrally weighted RI of the grid
 nodes is host f64 preparation (the CPU grid's own `illumination_rows`, recorded
 as `illumination` in the grid's RunInfo settings), because the device
 projected-solid-angle kernel solves every pupil node's object and aim problems
@@ -670,38 +672,16 @@ because FTZ would otherwise turn shot noise off. Matching-emulation branch tests
 range. Low-y row zero, RGB/monochrome conversion, unclipped
 noise output and discrete convolution flux are preserved.
 
-### Qualification and timing
+### Tests
 
-Host-required suites in `tests/p6_wave.rs`, `tests/p6_native.rs` and
-`tests/p6_boundaries.rs` cover the
-resident primitives and complete native results against matched f64 methods,
-including automatic sampling. The ignored `all_gpu_traced_pupils` suite checks
-all 144 built-in field/wavelength pupils, with actual P1/P7 work. The image unit
-test checks forced halo tiles and whole-image convolution against independent
-impulse deposition, including edge flux loss. Both shader origins and the
-numerics probe are exercised. No skipped test qualifies Metal.
+`tests/p6_wave.rs`, `tests/p6_native.rs`, `tests/p6_boundaries.rs` and
+`tests/p6_offaxis.rs` cover the resident primitives and the complete native
+results against matched f64 methods, including automatic sampling, on both
+shader origins; the ignored `all_gpu_traced_pupils` suite checks every
+built-in field/wavelength pupil traced on the device, and
+`tests/split_designs.rs` the host/device division. `tests/p6_bench.rs`
+(ignored) times complete native jobs against the CPU f64 reference. Engine
+routing uses the calibrated cost model of GPU.md §9.2, not these timings;
+earlier measurements are in
+[history/wave-ghost-stray-measurements.md](history/wave-ghost-stray-measurements.md).
 
-`tests/p6_bench.rs` measures complete native PSFs on all built-ins, explicit
-64/256/1024 pupils through a 2048 image, dense representative designs,
-11/101/1001-side traced lattices, complete/cached-grid image simulation, and
-matched complete wavefront/MTF/field/focus/energy/line-spread methods.
-It alternates unchanged CPU f64 and GPU runs, separates workload-cold/setup and
-warm-up, and records ten measured runs, median/p95, stages, copies, allocations,
-tracked peak plan bytes and fallback counts. The older prepared-pupil benchmark
-remains a distinct residency case. Timings during concurrent package work are
-provisional; engine routing uses the calibrated cost model of GPU.md §9.2,
-not these timings. Detailed current
-acceptance status, raw logs, numerical maxima and outstanding qualifications
-are maintained in the task's `P6-evidence.md`.
-
-On the qualified M2 Pro measurements (provisional), complete native jobs are
-bound by command round trips (about 0.2 ms each), not arithmetic: after
-batching, a default nine-pupil PSF job issues about 215 commands (it issued
-about 790), most of them per-pupil placement, resampling and PSF steps. GPU now wins the
-default singlet PSF, the 1024/2048 dense PSF and the million-ray lattice;
-other small/default jobs, the Huygens/FFT focus cases and 64×64 or default
-image simulation remain CPU-preferred because the f64 reference traces its
-pupils in parallel in 10–50 ms. Dense 256/1024 transforms with an already
-resident pupil favor GPU, a different cost state from tracing and resampling a
-complete job; the cost model's stage terms keep that distinction (GPU.md
-§9.2). These measurements do not change engine dispatch.

@@ -30,7 +30,8 @@ is `OutsideDomain`.
 `even_asphere` is `B+Σ a_i r^(2i+4)` (zero-based i). Existing coefficients
 and parameter paths keep their meanings and units `mm^(−2i−3)`.
 `odd_asphere` is `B+Σ β_i r^i`, **i=1 onward**, with units `mm^(1−i)`.
-Both use Horner evaluation. Odd coefficients have at most 20 terms.
+Both use Horner evaluation, with at most 20 terms each (the GPU layout
+holds even terms up to A22 and reports a surface beyond it as unsupported).
 The odd `r¹` term is a cone: at exactly the vertex we define the normal as
 `+z` (zero gradient), but **the Hessian does not exist**, and is returned
 as NaN. The formal first-order curvature omits that term and is `c+2β₂`;

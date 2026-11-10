@@ -129,26 +129,45 @@ document on purpose in the same change.
 
 The **CPU f64 tracer (`mklight-trace`) is the reference**. GPU backends compute
 in f32, with double-float (f32 hi + lo pair) arithmetic where the budget
-needs more (`docs/GPU.md` §3–4), using these techniques:
+needs more (`docs/GPU.md` §3–4), using the techniques of §7.1–7.6.
 
-1. Trace in surface-local coordinates. Translate by the (exactly representable)
-   per-surface thickness, never by global positions.
-2. Intersect with cancellation-free closed forms. For a conic, solve
-   `t = B / (A·… )` in the "stable root" form with `B = c·(…)`, choosing the
-   root that avoids subtracting nearly equal numbers. Then take ≤ 3 Newton steps
-   for asphere departures, with the error bounded by a tolerance on the sag
-   residual.
-3. Use the stable vector Snell law
-   `k' = μ·k + (√(1 − μ²(1 − (k·n)²)) − μ·(k·n))·n`, computed with
-   `fma` and `1 − x² = (1 − x)(1 + x)` where that helps.
-4. Accumulate optical path length in **double-float** (`float2` hi/lo via
-   two-sum / fast-two-sum). OPD is formed as a difference against the chief
-   ray in double-float before rounding.
-5. Sum reductions (spot centroids, RMS, energy) with Kahan/Neumaier
-   compensation, or as a pairwise tree.
-6. Prefer `x·x − y·y` in factored form, `hypot`, and `fma`. Never test floats
-   for exact equality, except against the sentinel values listed in the kernel
-   header.
+### 7.1 Local coordinates
+
+Trace in surface-local coordinates. Translate by the (exactly representable)
+per-surface thickness, never by global positions.
+
+### 7.2 Cancellation-free intersections
+
+Intersect with cancellation-free closed forms. For a conic, solve
+`t = B / (A·… )` in the "stable root" form with `B = c·(…)`, choosing the
+root that avoids subtracting nearly equal numbers. Asphere departures are
+then found by Newton iteration to a tolerance on the sag residual (the
+tolerance and the iteration cap are in GPU §4.1).
+
+### 7.3 Stable vector Snell law
+
+Use the stable vector Snell law
+`k' = μ·k + (√(1 − μ²(1 − (k·n)²)) − μ·(k·n))·n`, computed with
+`fma` and `1 − x² = (1 − x)(1 + x)` where that helps.
+
+### 7.4 Double-float optical path
+
+Accumulate optical path length in **double-float** (`float2` hi/lo via
+two-sum / fast-two-sum). OPD is formed as a difference against the chief
+ray in double-float before rounding.
+
+### 7.5 Compensated reductions
+
+Sum reductions (spot centroids, RMS, energy) with Kahan/Neumaier
+compensation, or as a pairwise tree.
+
+### 7.6 Factored forms and exact comparisons
+
+Prefer `x·x − y·y` in factored form, `hypot`, and `fma`. Never test floats
+for exact equality, except against the sentinel values listed in the kernel
+header.
+
+### 7.7 Error budget, CPU packets and aiming
 
 Budget for GPU against the f64 reference, for systems up to 1000 mm of total
 track and 30 surfaces (the cross-validation tests enforce these limits and the
@@ -237,7 +256,7 @@ kernels use finite-difference stencils (GPU.md §9.2, "Aiming and OPD").
   | preview | 1/10 of the preview budgets (GPU §9.4): position 2·10⁻⁵ mm, direction 2·10⁻⁶, OPD 2·10⁻³ waves | 10⁻⁵ of the stop radius |
 
   On a well-conditioned design the derived stop lies well above the
-  model default (measured values: GPU §3.6); a field with a surface near
+  model default; a field with a surface near
   grazing incidence derives a much tighter one. The device aiming kernel
   takes one tolerance per request: the tightest derived stop of the
   request's fields (`SequentialTracer::device_aim_tolerance`).
@@ -270,17 +289,21 @@ edge, well inside the 10⁻⁵ mm band.
 schedule (seed-table solve, chief prediction, four continuation stages, each
 up to the iteration cap) in double-float; a consumer may bound a ray's
 Newton iterations over the whole schedule (`AimOptions::schedule_cap`,
-GPU.md "Bounded aiming commands"). Only the candidate evaluator does
-(32 iterations): it discards every result of a candidate with any unresolved
-ray, so an unaimable ray of a bad trial step need not run the schedule to
-its end. Analyses keep the full schedule; their unresolved rays are checked
-against the reference (`check_aim`). The cap never changes a ray the full
+GPU.md "Bounded aiming commands"). Two consumers do: the candidate
+evaluator's device aims stop after 8 iterations (`SCHEDULE_CAP`), so an
+unaimable ray of a bad trial step need not run the schedule to its end, and
+the geometric adapters' device corrections from a host seed table
+(`aiming=table` and the device share of split generations) after 12
+(`TABLE_SCHEDULE_CAP`). Both complete the rays the device leaves unresolved
+on the host in f64. Every other device aim keeps the full schedule. The cap
+never changes a ray the full
 schedule converges within it (bitwise, `aim_resume.rs`), and the
 arithmetic of every solve is unchanged: GPU precision is not the lever for
 aiming cost. An f32 predictor phase cannot pay, because the f32 stop
 residual floor lies above the aim stop, so a double-float evaluation and
 iteration follow it anyway, and the aim kernel is bound by control flow,
-not arithmetic (measured study: GPU.md §3.6, "Selective mixed precision").
+not arithmetic (GPU.md §3.6; the measurements are in
+`docs/history/gpu-work-packages.md`).
 
 ## 8. Paraxial slopes in solves
 
@@ -450,9 +473,11 @@ override or pickup of it) and the image thickness. Codes:
 `invalid_aperture`, `invalid_mechanical_semi_diameter`, `invalid_scatter`
 (also a TIS outside `[0, 1]`), `invalid_vignetting` (a pupil compression
 `vcx`/`vcy` outside `[0, 1)`),
-`coordinate_break_at_end`, `image_mirror`, `invalid_coating`,
+`coordinate_break_at_end`, `image_mirror`, `invalid_coating` (also an
+empty reflectance table, or one whose wavelengths do not increase),
 `missing_surface` (mechanics, overrides, solves and pickups),
-`invalid_mechanics`, `invalid_sensor`, `invalid_configuration`,
+`invalid_mechanics`, `invalid_sensor` (also a spectral response whose
+wavelengths do not increase), `invalid_configuration`,
 `invalid_solve`, `invalid_sag_overlay_base` (non-geometric overlay base),
 `invalid_element_range` (an unordered or non-interior rigid
 range). A configuration override is checked by the same rules on
