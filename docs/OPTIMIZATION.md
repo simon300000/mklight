@@ -1599,8 +1599,10 @@ batches, the same for every candidate of a batch, for the evaluator's
 lifetime: the device then runs only lanes that converge in a few
 iterations (2–3 ms of device time per plan on the 29-surface lens), and the
 host traces the hard rays while the device works. An evaluator's first
-batch of four or more candidates is preceded by one of its candidates
-traced alone, to learn those rays: the Metal executor runs a large
+device-aimed batch of four or more candidates is preceded by three of its
+candidates traced alone, to learn those rays (one perturbed Monte Carlo
+trial learned 18 of the 34 rays the batches route on the 35-surface lens,
+three learn all): the Metal executor runs a large
 generation in tiles one after another, each as long as its slowest lane,
 so a cold 91-candidate sensitivity batch spent 370 ms of device time in
 67 command buffers on the 29-surface lens. When the device leaves more than
@@ -1620,22 +1622,48 @@ the 29- and 35-surface lenses: 1.92 → 1.72 s and 1.98 → 1.75 s), a
 23-candidate Jacobian loses (Double Gauss `optimize` 792 vs 582 ms), so
 Jacobians stay one plan.
 
-**Aiming** (the `aiming` study). By default every pupil ray is aimed on the
-host by the candidate's f64 tracer (`generate_many`: the reference's aims,
-bit for bit) and the device only traces it from the host's starting ray
-(`TraceResident`) and forms the chief-relative coordinates, moments, OPD
-and fits: 0.89 of device aiming's time over the merit, tolerance and glass
-cases of the benchmark lenses. A ray the host cannot aim fails as on the
-reference (it enters the plan with an aim-outside report and is not
-completed again); there is no device aiming, no probe candidate and no
-routing. In a finite-difference batch the base point is first evaluated on
-the host and its recorded solves seed every candidate's tracer, as in the
-reference's `evaluate_batch_near`, so the probes' aims are the reference's
-seeded aims. With `aiming` set to a device design (`device` or `table`; the
-solvers' rows hold too few rays for a seed table, so both mean the same
-here) the device aims with host completion as above, the GPU-heavier route
-(it frees most of the host's aiming work on large batches). Reported as
-`backend.aiming` (`host` or `device`) and `solvers_aiming`.
+**Aiming** (the `aiming` key). *Host aiming:* every pupil ray is aimed on
+the host by the candidate's f64 tracer (`generate_many`: the reference's
+aims, bit for bit) and the device only traces it from the host's starting
+ray (`TraceResident`) and forms the chief-relative coordinates, moments,
+OPD and fits. A ray the host cannot aim fails as on the reference (it
+enters the plan with an aim-outside report and is not completed again);
+there is no device aiming, no probe candidate and no routing. In a
+finite-difference batch the base point is first evaluated on the host and
+its recorded solves seed every candidate's tracer, as in the reference's
+`evaluate_batch_near`, so the probes' aims are the reference's seeded
+aims. *Device aiming:* the device aims with host completion as above.
+
+*The rule* (`aiming` unset, `gpu::DEVICE_AIM_FROM`) picks per batch: the
+device aims a batch whose estimated device rays times the system's
+surfaces without a closed-form intersection (aspheres, polynomial and
+freeform sags) reach 2e6, the host aims every other. Host aiming costs
+what the reference spends; device aiming saves host work only where a ray
+is expensive on the host and the batch amortises the device's plan and
+its cold first batch. Measured (shuffled, quiet machine, Monte Carlo
+batches of 128 unless noted; time relative to host aiming):
+
+| lens | batch work | device aiming |
+|---|---:|---:|
+| 50 spherical surfaces, 1000 trials at 6 × 12 | 0 | 1.04 |
+| Double Gauss (paraxial aiming), 1000 trials at 6 × 12 | 0 | 1.00 |
+| 29 surfaces, 2 aspheres: default tolerance batches | 4e5 | 1.19 |
+| 29 surfaces, 2 aspheres: 256 trials at 5 × 10 | 1.5e6 | 1.49 |
+| 29 surfaces, 2 aspheres: 1000 trials at 6 × 12 | 2.2e6 | 0.84 |
+| 35 surfaces, 8 aspheres: LM Jacobian (33 candidates) | 6e5 | 1.2 |
+| 35 surfaces, 8 aspheres: 256 trials, default sampling | 2.2e6 | 0.90 |
+| 35 surfaces, 8 aspheres: 1000 trials at 6 × 12 | 8.8e6 | 0.79 |
+| 39 surfaces, 7 aspheres: 1000 trials at 6 × 12 | 7.7e6 | 0.82 |
+
+Batch size alone does not separate these: the spherical lens loses with
+device aiming at every size, the aspheric zoom wins at default
+tolerance sizes. LM Jacobians, trial points, glass refinements and merit
+evaluations stay far below the threshold. `aiming` set to a device design
+(`device` or `table`; the solvers' rows hold too few rays for a seed table,
+so both mean the same here) pins device aiming for every batch, to
+`host-table` or `split:<share>` host aiming. Reported as `backend.aiming`
+(`by-batch`, `host` or `device`) and `solvers_aiming`; the batches the
+device aimed are counted in `resident_evaluation.device_aimed_batches`.
 
 **Speculative Jacobians** (`LsqSettings::speculative_jacobian`). A trial
 point of LM or dogleg that follows an accepted step is evaluated in one
@@ -1650,7 +1678,7 @@ iterations. Every evaluation performed counts against `max_evaluations`. On an
 evaluator whose values do not depend on the batch the iterates are
 bit-identical to the plain run (tested on the Cooke triplet).
 
-Speculation applies with device aiming only. With host aiming every probe
+Speculation applies with device aiming pinned only. With host aiming every probe
 is a host evaluation, as on the CPU reference (which does not speculate),
 and the probes of a rejected trial point sit at a design whose rim rays
 fail and run the whole aiming schedule: on the 35-surface zoom, 8 LM

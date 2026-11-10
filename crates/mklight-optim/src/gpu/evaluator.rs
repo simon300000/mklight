@@ -7,7 +7,7 @@ use crate::merit::{
     gpu_eval::gpu_supports, mtf_eval::MtfEvaluator, solver_eval::SolverEvaluator, *,
 };
 use crate::problem::Problem;
-use mklight_core::{JobContext, MkError, MkResult, OpticalSystem, RunInfo};
+use mklight_core::{JobContext, MkError, MkResult, OpticalSystem, RunInfo, SurfaceShape};
 use mklight_trace::SequentialTracer;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -24,8 +24,20 @@ pub struct EvaluationStats {
     pub device_operands: u64,
     pub host_operands: u64,
     pub fallback_operands: u64,
+    /// Batches whose pupil rays the device aimed.
+    pub device_aimed_batches: u64,
     pub fallbacks: BTreeMap<String, u64>,
 }
+/// Batch [`aiming_work`] from which the device aims the pupil rays (with
+/// host completion) instead of the host. Device aiming pays only where host
+/// aiming is costly: many rays through surfaces without a closed-form hit.
+/// Measured crossover (Monte Carlo batches of 128): host aiming faster at
+/// 1.5e6 (2 aspheres, 5 × 10 pupil sampling, 0.67× the device's time),
+/// device aiming faster from 2.2e6 (the same lens at 6 × 12: 0.84× the
+/// host's; 8 aspheres at default sampling: 0.90×); spherical lenses never
+/// gained (host aiming 0.96× the device's on 1000 trials at 6 × 12), nor
+/// finite-difference Jacobians (6e5 on the 8-asphere lens: host 1.2× faster).
+pub const DEVICE_AIM_FROM: usize = 2_000_000;
 /// Smallest batch the evaluator pipelines in sub-batches (the host
 /// prepares sub-batch k + 1 and finishes k − 1 while the device traces k):
 /// Monte Carlo and sensitivity batches gain (1000 dense trials on the 29-
@@ -59,10 +71,14 @@ pub const DEVICE_FD_RELATIVE_STEP_FORWARD: f64 = 1e-6;
 /// the f32-era `1e-4`.
 pub const DEVICE_WAVEFRONT_FD_RELATIVE_STEP_FORWARD: f64 = 1e-5;
 
-/// Smallest batch for which a hybrid evaluator that has not seen a batch
-/// yet first traces one candidate alone to learn the slow rays: a large
-/// cold batch would hold every aiming tile of its plan up for the slow
-/// lanes (tiles run one after another, each as long as its slowest lane).
+/// Smallest batch for which an evaluator that has not yet aimed a batch on
+/// the device first traces its first `PROBE_MIN_BATCH − 1` candidates
+/// alone to learn the slow rays: a large cold batch would hold every aiming
+/// tile of its plan up for the slow lanes (tiles run one after another,
+/// each as long as its slowest lane). Under the aiming rule the probe
+/// candidates are perturbed designs (Monte Carlo trials), so one learned
+/// 18 of the 34 rays the batches route on the 35-surface zoom (+0.45 s of
+/// device time for 1000 dense trials); three learn all 34.
 const PROBE_MIN_BATCH: usize = 4;
 
 #[derive(Clone)]
@@ -79,8 +95,10 @@ pub struct ResidentEvaluator {
     host_rays: Arc<Mutex<HostRays>>,
     /// Device aiming schedule cap (`None`: [`resident::HYBRID_SCHEDULE_CAP`]).
     aim_cap: Option<u32>,
-    /// Aim every pupil ray on the host, trace on the device.
-    host_aim: bool,
+    /// Aim a batch's pupil rays on the device (with host completion) when
+    /// its [`aiming_work`] reaches this (`Some(0)`: every batch), else on
+    /// the host, which the device then only traces (`None`: every batch).
+    device_aim_from: Option<usize>,
     /// Pipeline batches of at least this many candidates in sub-batches.
     pipeline_from: usize,
 }
@@ -133,7 +151,7 @@ impl ResidentEvaluator {
             stats: Arc::default(),
             host_rays: Arc::default(),
             aim_cap: None,
-            host_aim: true,
+            device_aim_from: Some(DEVICE_AIM_FROM),
             pipeline_from: PIPELINE_FROM,
         }
     }
@@ -147,15 +165,23 @@ impl ResidentEvaluator {
     }
     /// The evaluator with every pupil ray aimed on the host (the
     /// candidates' f64 tracers, the reference's aims) and only traced and
-    /// reduced on the device (the default), or (`false`) aimed on the
-    /// device with host completion.
+    /// reduced on the device, or (`false`) aimed on the device with host
+    /// completion, instead of the default rule ([`DEVICE_AIM_FROM`]).
     pub fn with_host_aim(mut self, host_aim: bool) -> Self {
-        self.host_aim = host_aim;
+        self.device_aim_from = (!host_aim).then_some(0);
         self
     }
-    /// Are the pupil rays aimed on the host?
-    pub fn host_aim(&self) -> bool {
-        self.host_aim
+    /// The aiming rule: device aiming from this [`aiming_work`] per batch.
+    pub fn device_aim_from(&self) -> Option<usize> {
+        self.device_aim_from
+    }
+    /// Does the device aim the pupil rays of a batch of `n` candidates like
+    /// `system` for `ops`?
+    pub fn aims_on_device(&self, system: &OpticalSystem, n: usize, ops: &[&Operand]) -> bool {
+        let settings = self.reference.trace.settings();
+        let ri_nodes = 1 + settings.illumination_rings.max(2) * settings.illumination_arms.max(8);
+        self.device_aim_from
+            .is_some_and(|from| aiming_work(system, ops, ri_nodes).saturating_mul(n) >= from)
     }
     /// The evaluator with another device aiming schedule cap (device aiming
     /// only; Newton iterations per ray before the host completes it): a
@@ -192,9 +218,9 @@ impl ResidentEvaluator {
     }
     /// The ray stage's division: device aiming with host completion (capped
     /// at `aim_cap` iterations per ray when set), or host aiming.
-    fn ray_design(&self) -> RayDesign {
+    fn ray_design(&self, host_aim: bool) -> RayDesign {
         RayDesign {
-            host_aim: self.host_aim,
+            host_aim,
             ..self
                 .aim_cap
                 .map_or(RayDesign::HYBRID, RayDesign::hybrid_capped)
@@ -221,7 +247,10 @@ impl ResidentEvaluator {
         // base's and share its solve path, as the reference's do. (Device
         // aiming keeps unseeded host tracers: seeding them measured no host
         // saving on the 29-surface lens and adds the base evaluation.)
-        let seeds = match (anchored && self.host_aim, systems.first()) {
+        let host_aim = systems
+            .first()
+            .is_none_or(|s| !self.aims_on_device(s, systems.len(), ops));
+        let seeds = match (anchored && host_aim, systems.first()) {
             (true, Some(base)) => {
                 self.reference
                     .trace
@@ -289,7 +318,7 @@ impl ResidentEvaluator {
                 Ok(vec![])
             } else {
                 match route {
-                    0 => self.split_rays(&selected_tracers, &refs, anchored, &inner),
+                    0 => self.split_rays(&selected_tracers, &refs, anchored, host_aim, &inner),
                     1 => self.mtf.evaluate_batch(&selected(), &refs, &inner),
                     _ => self.solvers.evaluate_batch(&selected(), &refs, &inner),
                 }
@@ -433,6 +462,7 @@ impl ResidentEvaluator {
             }
         }
         stats.device_candidates = device_rows.iter().filter(|&&v| v).count() as u64;
+        stats.device_aimed_batches = u64::from(!host_aim);
         stats.cpu_candidates = device_rows
             .iter()
             .zip(&fallback_rows)
@@ -445,6 +475,7 @@ impl ResidentEvaluator {
         total.device_operands += stats.device_operands;
         total.host_operands += stats.host_operands;
         total.fallback_operands += stats.fallback_operands;
+        total.device_aimed_batches += stats.device_aimed_batches;
         for (k, v) in stats.fallbacks {
             *total.fallbacks.entry(k).or_default() += v;
         }
@@ -532,6 +563,19 @@ fn estimated_rays(system: &OpticalSystem, ops: &[&Operand], ri_nodes: usize) -> 
 /// The pass that evaluates an operand: 0 the ray pass (device rays, and the
 /// first-order, model, paraxial and host-only ray operands from the same host
 /// candidates), 1 MTF, 2 the native solvers.
+/// Host aiming work of one candidate of `system` for `ops`: its estimated
+/// device rays times its surfaces without a closed-form intersection
+/// (aspheres, polynomial and freeform sags), whose iterative f64 hits make
+/// host aiming costly.
+fn aiming_work(system: &OpticalSystem, ops: &[&Operand], ri_nodes: usize) -> usize {
+    let iterative = system
+        .surfaces
+        .iter()
+        .filter(|s| !matches!(s.shape, SurfaceShape::Plane | SurfaceShape::Conic { .. }))
+        .count();
+    estimated_rays(system, ops, ri_nodes).0 * iterative
+}
+
 fn route_for(kind: &OperandKind) -> usize {
     if matches!(
         kind,
@@ -773,16 +817,17 @@ impl ResidentEvaluator {
         tracers: &[Arc<SequentialTracer>],
         ops: &[&Operand],
         anchored: bool,
+        host_aim: bool,
         ctx: &JobContext,
     ) -> MkResult<Vec<Vec<OperandValue>>> {
         let n = tracers.len();
         if n == 0 {
             return Ok(vec![]);
         }
-        if n >= PROBE_MIN_BATCH && !self.host_aim && self.host_rays.lock().unwrap().batches == 0 {
+        if n >= PROBE_MIN_BATCH && !host_aim && self.host_rays.lock().unwrap().batches == 0 {
             // The probe's values are not used: a finite difference routes
             // all its candidates alike.
-            self.split_rays(&tracers[..1], ops, false, ctx)?;
+            self.split_rays(&tracers[..PROBE_MIN_BATCH - 1], ops, false, false, ctx)?;
         }
         let cpu = &self.reference.trace;
         if self.host_rays.lock().unwrap().host_only {
@@ -802,7 +847,7 @@ impl ResidentEvaluator {
             return Ok(values);
         }
         let context = &self.context;
-        let design = self.ray_design();
+        let design = self.ray_design(host_aim);
         let limit = batch_limit(
             tracers[0].system().system(),
             ops,
@@ -861,14 +906,18 @@ impl ResidentEvaluator {
         }
         // A ray slow or unresolved in an eighth of the batch's candidates
         // (any, in small batches) goes to the host for the next batches.
+        // Only device aiming learns, so that the first device-aimed batch
+        // of a run is preceded by its probe candidate.
         let threshold = n.div_ceil(8).max(1);
-        self.host_rays.lock().unwrap().record(
-            unresolved
-                .iter()
-                .filter(|&(_, &count)| count >= threshold)
-                .map(|(&key, _)| key),
-            rays_total as f64 / n as f64,
-        );
+        if !host_aim {
+            self.host_rays.lock().unwrap().record(
+                unresolved
+                    .iter()
+                    .filter(|&(_, &count)| count >= threshold)
+                    .map(|(&key, _)| key),
+                rays_total as f64 / n as f64,
+            );
+        }
         if anchored {
             let uniform: BTreeSet<resident::RayKey> = deferred
                 .iter()

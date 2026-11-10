@@ -1,6 +1,6 @@
 //! The solver analyses on a GPU device through the engine, with each of
-//! their aiming options: host aiming (the default) and device aiming
-//! (`aiming` = `device`). Every job (`merit_evaluation`, `optimize`,
+//! their aiming options: the batch rule (the default), device aiming
+//! (`aiming` = `device`) and host aiming (`aiming` = `host-table`) pinned. Every job (`merit_evaluation`, `optimize`,
 //! `tolerance`, `glass_substitution`) names its aiming in the backend report
 //! and agrees with the CPU f64 reference under the solver-outcome contract
 //! of `support/comparison.rs`; for the truncated solves (`optimize` with 3
@@ -62,7 +62,7 @@ fn run(s: &Session, analysis: &str, settings: &Value, backend: Backend) -> Optio
     s.run_analysis(&request, &JobContext::new()).ok()
 }
 
-/// Both aiming options on `systems` and `device` against the CPU reference.
+/// The aiming options on `systems` and `device` against the CPU reference.
 fn check(engine: &Engine, device: &str, systems: Vec<(&str, mklight_core::OpticalSystem)>) {
     // The aiming selection is process-wide: one test selects at a time.
     static SELECTION: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -82,7 +82,11 @@ fn check(engine: &Engine, device: &str, systems: Vec<(&str, mklight_core::Optica
             };
             let spread =
                 solver_spread::reference_movement(&session, &nudged, analysis, &settings, &cpu);
-            for (aiming, expected) in [(None, "host"), (Some("device"), "device")] {
+            for (aiming, expected) in [
+                (None, "by-batch"),
+                (Some("device"), "device"),
+                (Some("host-table"), "host"),
+            ] {
                 split::set("aiming", aiming);
                 let gpu = run(&session, analysis, &settings, Backend::Gpu(device.into()))
                     .unwrap_or_else(|| panic!("{name}/{analysis}/{expected} failed"));
@@ -157,7 +161,7 @@ fn aiming_options_on_emulation() {
 }
 
 #[test]
-#[ignore = "solver outcomes of both aiming options; real Metal required"]
+#[ignore = "solver outcomes of the aiming options; real Metal required"]
 fn aiming_options_on_metal() {
     let engine = engine_with(None);
     assert!(

@@ -113,8 +113,8 @@ pub(super) fn evaluation_backend_schema() -> Value {
             (
                 "aiming",
                 enumeration(
-                    &["device", "host"],
-                    "Where the pupil rays of a run handed a GPU device are aimed: on the host with device tracing (default), or on the device with host completion (`aiming` study set to `device` or `table`).",
+                    &["by-batch", "device", "host"],
+                    "Where the pupil rays of a run handed a GPU device are aimed: by batch (default; `resident_evaluation.device_aimed_batches` counts the device's), every batch on the device with host completion (`aiming` key set to `device` or `table`) or on the host with device tracing (`host-table`, `split:<share>`).",
                 ),
             ),
             (
@@ -360,9 +360,9 @@ struct Evaluation {
     cpu: BuiltinEvaluator,
     /// The GPU evaluator and the engine device behind it.
     gpu: Option<(ResidentEvaluator, Arc<GpuDevice>)>,
-    /// A run handed a GPU device: are the pupil rays aimed on the host
-    /// (`aiming` study)?
-    host_aim: Option<bool>,
+    /// A run handed a GPU device: where the pupil rays are aimed
+    /// (`backend.aiming`).
+    aiming: Option<&'static str>,
     work: Workload,
     fallback_reason: Option<String>,
     /// `"backend"` block of the result.
@@ -370,18 +370,20 @@ struct Evaluation {
     warnings: Vec<String>,
 }
 
-/// Do the solver evaluators aim their pupil rays on the host? Yes by
-/// default: the device only traces and reduces the host's f64 aims (0.89 of
-/// device aiming's time over the merit, tolerance and glass cases of the
-/// benchmark lenses). The `aiming` study's device designs (`device`,
-/// `table`; the solvers' rows hold too few rays for a seed table) select
-/// device aiming with host completion, the GPU-heavier route.
-fn solver_host_aim() -> EngineResult<bool> {
-    use mklight_analysis::gpu::aim::AimDesign;
-    Ok(!matches!(
+/// Does the `aiming` key pin the solvers' pupil-ray aiming: `device` or
+/// `table` every batch on the device with host completion (`Some(false)`),
+/// `host-table` or `split:<share>` every batch on the host (`Some(true)`)?
+/// Unset, the evaluator's rule decides per batch
+/// (`gpu::DEVICE_AIM_FROM`, docs/OPTIMIZATION.md "Aiming").
+fn solver_host_aim() -> EngineResult<Option<bool>> {
+    use mklight_analysis::gpu::aim::{AimDesign, KEY};
+    if mklight_core::split::variant(KEY).is_none() {
+        return Ok(None);
+    }
+    Ok(Some(!matches!(
         AimDesign::selected().map_err(invalid)?,
         AimDesign::Device | AimDesign::Table
-    ))
+    )))
 }
 
 impl Evaluation {
@@ -396,15 +398,22 @@ impl Evaluation {
         let cpu = BuiltinEvaluator::new(input.library.clone());
         let mut warnings = Vec::new();
         let mut fallback_reason = input.selection_note.clone();
-        let mut host_aim = None;
+        let mut aiming = None;
         let gpu = match gpu_backend(choice, input) {
             Ok(Some(device)) => {
                 ctx.check()?;
                 // Where the pupil rays are aimed, read once.
-                let aim = solver_host_aim()?;
-                host_aim = Some(aim);
+                let pinned = solver_host_aim()?;
+                aiming = Some(match pinned {
+                    None => "by-batch",
+                    Some(true) => "host",
+                    Some(false) => "device",
+                });
                 let context = GpuContext::new(device.backend.clone(), snapshot.clone());
-                let evaluator = ResidentEvaluator::new(context, cpu.clone()).with_host_aim(aim);
+                let mut evaluator = ResidentEvaluator::new(context, cpu.clone());
+                if let Some(host) = pinned {
+                    evaluator = evaluator.with_host_aim(host);
+                }
                 Some((evaluator, device))
             }
             Ok(None) => {
@@ -424,7 +433,7 @@ impl Evaluation {
         Ok(Evaluation {
             cpu,
             gpu,
-            host_aim,
+            aiming,
             work,
             fallback_reason,
             report: Value::Null,
@@ -436,7 +445,7 @@ impl Evaluation {
         self.gpu.as_ref().map(|(g, _)| g)
     }
 
-    /// Least-squares solves with device aiming evaluate their trial points
+    /// Least-squares solves with device aiming pinned evaluate their trial points
     /// with the next Jacobian's probes (one device round trip per accepted
     /// iteration instead of two). With host aiming every probe is a host
     /// evaluation, as on the CPU reference (which evaluates a trial point
@@ -444,7 +453,8 @@ impl Evaluation {
     /// and a rejected trial point's probes, at a design whose rim rays fail,
     /// cost as much (`docs/OPTIMIZATION.md`, "Speculative Jacobians").
     fn speculative(&self) -> bool {
-        self.active_gpu().is_some_and(|g| !g.host_aim())
+        self.active_gpu()
+            .is_some_and(|g| g.device_aim_from() == Some(0))
     }
 
     /// Candidates per tolerance evaluation batch (Monte Carlo trials and
@@ -466,8 +476,8 @@ impl Evaluation {
             "reported_on": TraceEvaluator::BACKEND,
             "workload": self.work.report(),
         });
-        if let Some(host) = self.host_aim {
-            b["aiming"] = json!(if host { "host" } else { "device" });
+        if let Some(aiming) = self.aiming {
+            b["aiming"] = json!(aiming);
         }
         // The GPU evaluated the search only if it traced candidates.
         let active = self
@@ -499,8 +509,8 @@ impl Evaluation {
                 vec![],
             );
             g.record(&mut run);
-            if let Some(host) = self.host_aim {
-                run.settings["solvers_aiming"] = json!(if host { "host" } else { "device" });
+            if let Some(aiming) = self.aiming {
+                run.settings["solvers_aiming"] = json!(aiming);
             }
             input.executions.borrow_mut().push(run.settings.clone());
             b["resident_evaluation"] = serde_json::to_value(stats)?;

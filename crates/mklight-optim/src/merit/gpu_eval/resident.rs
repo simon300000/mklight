@@ -71,9 +71,8 @@ pub(crate) struct RayDesign {
     /// pending count back (0: read back after each round group).
     pub speculative_rounds: u32,
     /// Aim every pupil ray on the host (the candidates' f64 tracers, the
-    /// reference's aims) and only trace it on the device (the solvers'
-    /// default; device aiming is the `aiming` key's `device` and `table`
-    /// options).
+    /// reference's aims) and only trace it on the device (chosen per batch,
+    /// `gpu::DEVICE_AIM_FROM`, unless the `aiming` key pins either side).
     pub host_aim: bool,
 }
 impl RayDesign {
