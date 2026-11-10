@@ -27,6 +27,27 @@ def test_numpy_arrays_are_zero_copy_and_read_only(achromat):
     assert buf.flat(3) == u[3]
 
 
+def test_a_repeated_request_shares_the_stored_arrays(achromat):
+    settings = {"pattern": "square", "rings": 12}
+    first = achromat.run("ray_grid", settings)
+    again = achromat.run("ray_grid", settings)
+    assert first.arrays.keys() == again.arrays.keys() and first.arrays
+    for name, a in first.arrays.items():
+        b = again.arrays[name]
+        assert a.size > 0 and not b.flags.writeable
+        # One allocation behind both results: the same address, no copy.
+        assert np.shares_memory(a, b), name
+        assert a.__array_interface__["data"][0] == b.__array_interface__["data"][0]
+    # The arrays keep the memory alive without their results.
+    kept = {name: (a, a.copy()) for name, a in again.arrays.items()}
+    del first, again, a, b
+    import gc
+
+    gc.collect()
+    for name, (a, copy) in kept.items():
+        assert np.array_equal(a, copy, equal_nan=True), name
+
+
 def test_multidimensional_buffer_protocol(achromat):
     g = mklight.trace_grid(achromat, pupil=4)
     p = g["point"]

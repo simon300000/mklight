@@ -313,11 +313,12 @@ pub const MK_DTYPE_U8: i32 = 7;
 
 /// A typed, row-major array (`MKBuffer`). All pointers are owned by the
 /// array returned from `mk_job_take_result` and freed by `mk_buffer_free`.
+/// `data` is the engine's own array, read-only and never copied.
 #[repr(C)]
 pub struct MKBuffer {
     pub name: *const c_char,
     /// `len` elements of `dtype`, suitably aligned. Non-NULL (dangling but
-    /// aligned when `len == 0`).
+    /// aligned when `len == 0`). Points into the payload `owner` holds.
     pub data: *const c_void,
     /// Number of elements (not bytes).
     pub len: usize,
@@ -325,6 +326,10 @@ pub struct MKBuffer {
     pub ndim: u32,
     /// `ndim` extents; their product is `len`.
     pub shape: *const usize,
+    /// Private: one reference to the engine's shared payload
+    /// (`Arc<BufferData>`), which keeps `data` valid. The analysis graph
+    /// and other takes of the same result may hold further references.
+    pub owner: *const c_void,
 }
 
 fn leak_slice<T>(v: Vec<T>) -> *const c_void {
@@ -335,26 +340,19 @@ unsafe fn free_slice<T>(p: *const c_void, len: usize) {
     drop(unsafe { Box::from_raw(ptr::slice_from_raw_parts_mut(p as *mut T, len)) });
 }
 
+/// Hands the buffer's payload to C as it is: `data` is the allocation the
+/// solver filled, kept alive by the reference in `owner`.
 fn export_buffer(b: Buffer) -> MKBuffer {
-    let dtype = b.dtype() as i32;
-    let len = b.data.len();
-    let data = match b.data {
-        BufferData::F64(v) => leak_slice(v),
-        BufferData::F32(v) => leak_slice(v),
-        BufferData::I32(v) => leak_slice(v),
-        BufferData::U32(v) => leak_slice(v),
-        BufferData::I64(v) => leak_slice(v),
-        BufferData::U64(v) => leak_slice(v),
-        BufferData::U8(v) => leak_slice(v),
-    };
+    let payload = b.share();
     let ndim = b.shape.len() as u32;
     MKBuffer {
         name: to_cstring(&b.name).into_raw(),
-        data,
-        len,
-        dtype,
+        data: payload.as_ptr(),
+        len: payload.len(),
+        dtype: payload.dtype() as i32,
         ndim,
         shape: leak_slice(b.shape) as *const usize,
+        owner: Arc::into_raw(payload).cast(),
     }
 }
 
@@ -366,22 +364,18 @@ unsafe fn free_buffer(b: &MKBuffer) {
         if !b.shape.is_null() {
             free_slice::<usize>(b.shape as *const c_void, b.ndim as usize);
         }
-        if !b.data.is_null() {
-            match b.dtype {
-                MK_DTYPE_F64 => free_slice::<f64>(b.data, b.len),
-                MK_DTYPE_F32 => free_slice::<f32>(b.data, b.len),
-                MK_DTYPE_I32 => free_slice::<i32>(b.data, b.len),
-                MK_DTYPE_U32 => free_slice::<u32>(b.data, b.len),
-                MK_DTYPE_I64 => free_slice::<i64>(b.data, b.len),
-                MK_DTYPE_U64 => free_slice::<u64>(b.data, b.len),
-                MK_DTYPE_U8 => free_slice::<u8>(b.data, b.len),
-                _ => {} // corrupted: leak rather than free with the wrong layout
-            }
+        // The payload knows its element type: the array is freed with its
+        // own layout when this was the last reference.
+        if !b.owner.is_null() {
+            drop(Arc::from_raw(b.owner as *const BufferData));
         }
     }
 }
 
-/// Free an array of `count` buffers returned by `mk_job_take_result`.
+/// Free an array of `count` buffers returned by `mk_job_take_result` or
+/// `mk_session_run_analysis_json`: the names, the shapes and this array's
+/// references to the payloads. A payload is freed with its last reference
+/// (the analysis graph and other takes of the result may hold some).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mk_buffer_free(buffers: *mut MKBuffer, count: usize) {
     if buffers.is_null() {
@@ -1448,6 +1442,66 @@ mod tests {
             Box::into_raw(vec![b, export_buffer(Buffer::f64_1d("e", vec![]))].into_boxed_slice())
                 as *mut MKBuffer;
         unsafe { mk_buffer_free(arr, 2) };
+    }
+
+    /// One buffer of every dtype, with spare capacity (as a solver's
+    /// vector may have): `(buffer, address of its first element)`.
+    fn buffers_of_every_dtype() -> Vec<(Buffer, *const c_void)> {
+        fn spare<T: Clone>(x: T) -> Vec<T> {
+            let mut v = Vec::with_capacity(64);
+            v.extend(std::iter::repeat_n(x, 6));
+            v
+        }
+        [
+            BufferData::F64(spare(1.5)),
+            BufferData::F32(spare(2.5)),
+            BufferData::I32(spare(-3)),
+            BufferData::U32(spare(4)),
+            BufferData::I64(spare(-5)),
+            BufferData::U64(spare(6)),
+            BufferData::U8(spare(7)),
+        ]
+        .into_iter()
+        .map(|d| {
+            let p = d.as_ptr();
+            (Buffer::new("b", vec![2, 3], d), p)
+        })
+        .collect()
+    }
+
+    #[test]
+    fn an_export_is_the_solver_allocation_and_keeps_it_alive() {
+        for (engine_side, solver_ptr) in buffers_of_every_dtype() {
+            let dtype = engine_side.dtype();
+            let bytes = 6 * dtype.size_bytes();
+            let read = |b: &MKBuffer| unsafe {
+                std::slice::from_raw_parts(b.data as *const u8, bytes).to_vec()
+            };
+            // Two exports of a buffer the engine also holds (as the
+            // analysis graph holds a stored result's).
+            let a = export_buffer(engine_side.clone());
+            let b = export_buffer(engine_side.clone());
+            for x in [&a, &b] {
+                assert_eq!(x.data, solver_ptr, "{dtype:?}: no copy, no reallocation");
+                assert_eq!((x.len, x.dtype, x.ndim), (6, dtype as i32, 2));
+                assert!(!x.owner.is_null());
+            }
+            let expected = read(&a);
+            let free = |b: MKBuffer| unsafe {
+                mk_buffer_free(
+                    Box::into_raw(vec![b].into_boxed_slice()) as *mut MKBuffer,
+                    1,
+                )
+            };
+            // Freeing one export leaves the other and the engine's valid.
+            free(a);
+            assert_eq!(read(&b), expected, "{dtype:?}");
+            assert_eq!(engine_side.data().as_ptr(), solver_ptr);
+            // The last export frees the array itself.
+            drop(engine_side);
+            assert_eq!(read(&b), expected, "{dtype:?}");
+            free(b);
+        }
     }
 
     #[test]

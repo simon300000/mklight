@@ -647,6 +647,8 @@ pub fn prepare_tier(analysis: &dyn Analysis, settings: &Value, tier: Tier) -> En
 /// time and duration; identical concurrent requests run once. Results
 /// without failed backend attempts are stored: an `auto` result whichever
 /// backend computed it, an explicit request's only from the CPU reference.
+/// The stored result and every result returned for it share their buffers'
+/// allocations.
 pub fn run_analysis(
     analysis: &dyn Analysis,
     input: &AnalysisInput<'_>,
@@ -679,6 +681,9 @@ pub fn run_analysis(
         };
         Ok::<_, EngineError>((r, bytes))
     })?;
+    // A stored result stays in the graph: the caller's copy shares its
+    // buffers (`Buffer` clones share the payload) and clones the JSON and
+    // `RunInfo` only.
     let mut r = Arc::try_unwrap(r).unwrap_or_else(|r| (*r).clone());
     if !built {
         // This call's start time (`RunTimer` keeps it private).
@@ -743,7 +748,7 @@ fn result_bytes(r: &AnalysisResult) -> usize {
     let buffers: usize = r
         .buffers
         .iter()
-        .map(|b| b.data.len() * b.data.dtype().size_bytes())
+        .map(|b| b.data().len() * b.data().dtype().size_bytes())
         .sum();
     1024 + buffers + json(&r.json)
 }

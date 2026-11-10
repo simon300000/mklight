@@ -1,17 +1,19 @@
 //! Offline qualification of the conditioned aim stop and the preview tier
 //! (CONVENTIONS §7): every GPU-capable analysis (solvers excluded) on every
 //! sample with real ray aiming, plus perturbed and adversarial variants,
-//! compared under the per-quantity contract (`support/comparison.rs`, GPU
+//! compared under the per-quantity contract (`mklight_bench::comparison`, GPU
 //! §9.4: one-third margins of the §7 budgets, survival counts and masks exact)
 //! against the CPU f64 reference at the requested 1e-10 tolerance.
 //!
-//! cargo test --release -p mklight-engine --test aim_stop_qualify -- --ignored --nocapture
+//! cargo test --release -p mklight-bench --test aim_stop_qualify -- --ignored --nocapture
 //! MKLIGHT_QUALIFY_METAL=1 also runs the conditioned stop on Metal;
 //! MKLIGHT_QUALIFY_PREVIEW=1 records the preview tier's errors (not gated);
 //! MKLIGHT_QUALIFY_FILTER=name,name limits the systems,
 //! MKLIGHT_QUALIFY_ANALYSES=name,name the analyses,
 //! MKLIGHT_QUALIFY_PROJECT=/path/project.mklight adds a local project (as
 //! saved, with its catalogues; nothing is embedded) under the name `project`.
+//! `../README.md` lists every harness with its command and variables.
+use mklight_bench::{comparison, solver};
 use mklight_core::model::Placement;
 use mklight_core::{
     ApertureSpec, Field, JobContext, OpticalSystem, RayAiming, SemiDiameter, SurfaceShape, samples,
@@ -21,9 +23,6 @@ use mklight_engine::{
     buffer::BufferData, project::Project,
 };
 use serde_json::{Value, json};
-
-#[path = "support/comparison.rs"]
-mod comparison;
 
 fn real(mut sys: OpticalSystem) -> OpticalSystem {
     sys.ray_aiming = RayAiming::Real { tolerance: 1e-10 };
@@ -99,7 +98,7 @@ fn preview_metrics(
     for (x, y) in a.buffers.iter().zip(&b.buffers) {
         if x.name == y.name
             && x.shape == y.shape
-            && let (BufferData::F64(p), BufferData::F64(q)) = (&x.data, &y.data)
+            && let (BufferData::F64(p), BufferData::F64(q)) = (x.data(), y.data())
         {
             let kind = if x.name.starts_with("tangential") || x.name.starts_with("sagittal") {
                 "mtf_abs"
@@ -212,13 +211,7 @@ fn aim_stop_and_preview_qualification() {
         ..Default::default()
     });
     if metal {
-        assert!(
-            engine
-                .backends()
-                .iter()
-                .any(|b| b.id == "gpu:metal" && b.available),
-            "real Metal required"
-        );
+        mklight_bench::require_metal(&engine);
     }
     let mut systems: Vec<(String, OpticalSystem)> = samples::all()
         .into_iter()
@@ -235,10 +228,7 @@ fn aim_stop_and_preview_qualification() {
         .filter(|a| {
             (only.is_empty() || only.contains(&a.name))
                 && a.gpu_path
-                && !matches!(
-                    a.name.as_str(),
-                    "optimize" | "merit_evaluation" | "tolerance" | "glass_substitution"
-                )
+                && !solver::JOBS.contains(&a.name.as_str())
         })
         .collect();
     let mut failures = Vec::new();

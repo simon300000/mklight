@@ -11,7 +11,7 @@
 //! denser result onto the sparser one's coordinates (linear in 1-D, bilinear
 //! on regular 2-D grids). Outlines and loops are compared by their Hausdorff
 //! distance, not by vertex count.
-#![allow(dead_code)]
+
 use mklight_core::JobContext;
 use mklight_engine::{analysis::AnalysisOutput, buffer::BufferData, error::EngineResult};
 use serde_json::Value;
@@ -104,7 +104,7 @@ pub enum Class {
     /// common physical coordinates.
     Sampling,
     /// The value of a first-order table entry `{key, unit, value}`, classed
-    /// by its key and unit ([`entry_class`]).
+    /// by its key and unit (`entry_class`).
     Entry,
 }
 
@@ -1972,7 +1972,7 @@ pub fn compare(
         .buffers
         .iter()
         .find(|b| b.name == "radius_mm")
-        .and_then(|b| buffer_floats(&b.data))
+        .and_then(|b| buffer_floats(b.data()))
         .unwrap_or_else(|| floats(&cpu.json["radius"]).unwrap_or_default());
     let mut c = Comparison {
         analysis: analysis.into(),
@@ -2012,7 +2012,7 @@ pub fn compare(
             continue;
         };
         let dim = va.shape.last().copied().unwrap_or(3);
-        let (Some(fa), Some(fb)) = (buffer_floats(&va.data), buffer_floats(&vb.data)) else {
+        let (Some(fa), Some(fb)) = (buffer_floats(va.data()), buffer_floats(vb.data())) else {
             continue;
         };
         let pick = |f: &[f64], r: [f64; 2]| {
@@ -2053,8 +2053,8 @@ pub fn compare(
                 }
             }
         };
-        let (Some(fa), Some(fb)) = (buffer_floats(&a.data), buffer_floats(&b.data)) else {
-            if a.data != b.data {
+        let (Some(fa), Some(fb)) = (buffer_floats(a.data()), buffer_floats(b.data())) else {
+            if a.data() != b.data() {
                 c.fail(&path, "typed buffer values differ");
             }
             continue;
@@ -2096,7 +2096,7 @@ pub fn compare(
                     cpu.buffers
                         .iter()
                         .find(|b| b.name == n)
-                        .map(|b| b.data.clone())
+                        .map(|b| b.data().clone())
                 };
                 let (Some(BufferData::U8(def)), Some(BufferData::F64(ret))) =
                     (defined("retarder_defined"), defined("retardance"))
@@ -2132,7 +2132,7 @@ pub fn compare(
                     c.fail(&path, &format!("axis {axis_name} missing"));
                     continue;
                 };
-                let (Some(xa), Some(xb)) = (buffer_floats(&xa.data), buffer_floats(&xb.data))
+                let (Some(xa), Some(xb)) = (buffer_floats(xa.data()), buffer_floats(xb.data()))
                 else {
                     continue;
                 };

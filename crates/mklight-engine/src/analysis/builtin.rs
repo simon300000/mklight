@@ -975,11 +975,11 @@ mod tests {
         assert_eq!(s[1]["is_stop"], json!(true));
         let b = &r.buffers[0];
         assert_eq!((b.name.as_str(), b.shape.clone()), ("n_after", vec![4, 3]));
-        match &b.data {
+        match b.data() {
             BufferData::F64(v) => assert_eq!(v[3 + 1], nd),
             _ => panic!(),
         }
-        match &r.buffers[1].data {
+        match r.buffers[1].data() {
             BufferData::F64(v) => assert_eq!(&v[9..12], &[0.0, 0.0, 50.0]),
             _ => panic!(),
         }
@@ -1013,7 +1013,7 @@ mod tests {
         assert_eq!(r.run_info.warnings.len(), 1);
         let b = &r.buffers[0];
         assert_eq!(b.shape, vec![11, 2]);
-        match &b.data {
+        match b.data() {
             BufferData::F64(v) => {
                 assert_eq!(v[0], 0.3);
                 assert!((v[20] - 2.5).abs() < 1e-12);

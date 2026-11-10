@@ -12,8 +12,9 @@
  *    "nullable" accept NULL; all others must not be NULL.
  *  - Strings returned through `char **` are owned by the caller and must be
  *    released with mk_string_free(). On failure they are set to NULL.
- *  - Buffer arrays returned by mk_job_take_result() are released with
- *    mk_buffer_free().
+ *  - Buffer arrays returned by mk_job_take_result() and
+ *    mk_session_run_analysis_json() are released with mk_buffer_free().
+ *    Their data is shared with the engine, never copied, and read-only.
  *  - Structured data is JSON. Infinite lengths are the strings "inf"/"-inf".
  *  - JSON passed in: text that is not JSON is MK_ERR_PARSE; JSON of the
  *    wrong shape (a missing key, a value of the wrong type, a key the object
@@ -87,7 +88,13 @@ typedef int32_t MKDType;
 #define MK_DTYPE_U8 7
 
 /* A named, row-major typed array. All pointers are owned by the enclosing
- * array and stay valid until mk_buffer_free(). */
+ * array and stay valid until mk_buffer_free().
+ *
+ * `data` is the array the engine computed, not a copy: the engine may keep
+ * the same memory for later requests, and another take of the same result
+ * may return the same `data`. It is read-only. Each buffer array holds its
+ * own reference (`owner`), so its pointers stay valid until it is freed,
+ * whatever happens to the engine or to other arrays. */
 typedef struct MKBuffer {
     const char *name;    /* NUL-terminated UTF-8 */
     const void *data;    /* `len` elements of `dtype`, aligned; non-NULL */
@@ -95,10 +102,13 @@ typedef struct MKBuffer {
     MKDType dtype;
     uint32_t ndim;
     const size_t *shape; /* `ndim` extents whose product is `len` */
+    const void *owner;   /* private: keeps `data` alive; do not read or change */
 } MKBuffer;
 
-/* Free an array of `count` buffers from mk_job_take_result(). NULL is
- * ignored. `count` must be the count returned with the array. */
+/* Free an array of `count` buffers from mk_job_take_result() or
+ * mk_session_run_analysis_json(), exactly once. NULL is ignored. `count`
+ * must be the count returned with the array, and the array must be as it
+ * was returned. */
 void mk_buffer_free(MKBuffer *buffers, size_t count);
 
 /* ---- Handles ------------------------------------------------------------ */

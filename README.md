@@ -197,6 +197,7 @@ print(r.run_info["snapshot_hash"])
 | `crates/mklight-optim` | Merit functions, optimisers, glass substitution, tolerancing |
 | `crates/mklight-gpu`, `crates/mklight-metal` | The GPU backend interface and the Metal backend |
 | `crates/mklight-engine` | Sessions, projects, the analysis registry and job scheduler |
+| `crates/mklight-bench` | The engine's measurement and qualification harnesses and the result comparator they share |
 | `crates/mklight-ffi`, `crates/mklight-py`, `crates/mklight-cli` | The C ABI, Python bindings and command line |
 | `apps/macos` | The SwiftUI app |
 

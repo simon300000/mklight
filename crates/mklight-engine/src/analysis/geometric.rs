@@ -1209,7 +1209,7 @@ pub(crate) fn assert_same_buffers(a: &[Buffer], b: &[Buffer]) {
             (&x.name, &x.shape, x.dtype()),
             (&y.name, &y.shape, y.dtype())
         );
-        match (&x.data, &y.data) {
+        match (x.data(), y.data()) {
             (BufferData::F64(p), BufferData::F64(q)) => assert!(
                 p.iter()
                     .map(|v| v.to_bits())

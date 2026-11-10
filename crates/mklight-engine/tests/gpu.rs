@@ -45,7 +45,7 @@ fn run_on(s: &Session, name: &str, settings: Value, backend: Option<Backend>) ->
 }
 
 fn f64s(r: &AnalysisResult, name: &str) -> Vec<f64> {
-    match &r.buffers.iter().find(|b| b.name == name).unwrap().data {
+    match r.buffers.iter().find(|b| b.name == name).unwrap().data() {
         BufferData::F64(v) => v.clone(),
         _ => panic!(),
     }

@@ -1,17 +1,17 @@
 //! Offline accuracy evidence for the unchecked Metal routes: every GPU-capable
 //! analysis on every sample at default settings against the CPU f64 reference,
-//! under the per-quantity contract of `support/comparison.rs` (GPU §9.4),
+//! under the per-quantity contract of `mklight_bench::comparison` (GPU §9.4),
 //! and the solvers' physical outcomes. A native result outside its contract
 //! fails, and so does a native attempt a reference fallback completed
 //! (`RunInfo::failed_attempts`).
-use mklight_core::{JobContext, param::ParamPath, samples};
+//!
+//! cargo test --release -p mklight-bench --test metal_accuracy -- --ignored
+//! --nocapture --test-threads=1
+//! (`../README.md` lists every harness with its command.)
+use mklight_bench::{comparison, solver, solver_spread};
+use mklight_core::{JobContext, samples};
 use mklight_engine::{AnalysisRequest, Engine, EngineConfig, backend::Backend, project::Project};
 use serde_json::{Value, json};
-
-#[path = "support/comparison.rs"]
-mod comparison;
-#[path = "support/solver_spread.rs"]
-mod solver_spread;
 
 #[test]
 #[ignore = "offline default-grid f64 accuracy evidence; real Metal required"]
@@ -21,26 +21,18 @@ fn default_sample_accuracy() {
         default_backend: Backend::CpuReference,
         ..Default::default()
     });
-    assert!(
-        engine
-            .backends()
-            .iter()
-            .any(|b| b.id == "gpu:metal" && b.available),
-        "real Metal required"
-    );
+    mklight_bench::require_metal(&engine);
     let mut unmapped = Vec::new();
     let mut failing = 0;
     // Native attempts a fallback hid count as failures too.
     let mut attempts = Vec::new();
     for (name, system) in samples::all() {
         let session = engine.session_from_project(Project::new(system)).unwrap();
-        for info in engine.analyses().into_iter().filter(|a| {
-            a.gpu_path
-                && !matches!(
-                    a.name.as_str(),
-                    "optimize" | "merit_evaluation" | "tolerance" | "glass_substitution"
-                )
-        }) {
+        for info in engine
+            .analyses()
+            .into_iter()
+            .filter(|a| a.gpu_path && !solver::JOBS.contains(&a.name.as_str()))
+        {
             let mut request = AnalysisRequest::new(&info.name, Value::Null);
             request.backend = Some(Backend::CpuReference);
             let cpu = session.run_analysis(&request, &JobContext::new()).unwrap();
@@ -111,7 +103,7 @@ fn default_sample_accuracy() {
 /// reference on every sample at default settings. The truncated solves'
 /// outcomes (the final design's or a finalist's merit or violation) outside
 /// their gates pass within twice the reference's own movement
-/// (`support/solver_spread.rs`).
+/// (`mklight_bench::solver_spread`).
 #[test]
 #[ignore = "offline solver-outcome evidence; real Metal required"]
 fn solver_outcomes() {
@@ -120,53 +112,17 @@ fn solver_outcomes() {
         default_backend: Backend::CpuReference,
         ..Default::default()
     });
-    assert!(
-        engine
-            .backends()
-            .iter()
-            .any(|b| b.id == "gpu:metal" && b.available),
-        "real Metal required"
-    );
+    mklight_bench::require_metal(&engine);
     let mut failures = Vec::new();
     for (name, system) in samples::all() {
         // The benchmark's solver settings (project_bench): curvatures and
         // bounded thicknesses not controlled by a solve, one glass.
-        let mut vars = Vec::new();
-        for s in &system.surfaces[1..system.surfaces.len() - 1] {
-            if s.shape.curvature() != 0. {
-                vars.push(json!({"param":ParamPath::Curvature{surface:s.id}}));
-            }
-            if s.thickness.is_finite() && s.thickness > 0. {
-                vars.push(json!({"param":ParamPath::Thickness{surface:s.id},
-                    "lower":s.thickness * 0.8,"upper":s.thickness * 1.2}));
-            }
-        }
-        vars.retain(|v| !system.solves.iter().any(|s| json!(s.target) == v["param"]));
-        let glass = system.surfaces[1..]
-            .iter()
-            .find(|s| matches!(s.material, mklight_core::MaterialRef::Catalog { .. }))
-            .map(|g| vec![json!({"surface":g.id,"candidates":{"nearest":3}})])
-            .unwrap_or_default();
+        let jobs = solver::jobs(&solver::variables(&system), &solver::glass(&system));
         let nudged = engine
             .session_from_project(Project::new(solver_spread::nudged(&system)))
             .unwrap();
         let session = engine.session_from_project(Project::new(system)).unwrap();
-        for (analysis, settings) in [
-            ("merit_evaluation", Value::Null),
-            (
-                "optimize",
-                json!({"variables":vars,"max_iterations":3,"options":{"ftol":0.,"xtol":0.,"gtol":0.},"seed":71}),
-            ),
-            (
-                "tolerance",
-                json!({"trials":16,"seed":71,"record_trials":16}),
-            ),
-            (
-                "glass_substitution",
-                json!({"variables":vars,"material_variables":glass,"max_combinations":3,
-                    "local_iterations":2,"top_n":3,"seed":71}),
-            ),
-        ] {
+        for (analysis, settings) in jobs {
             let mut request = AnalysisRequest::new(analysis, settings.clone());
             request.backend = Some(Backend::CpuReference);
             let cpu = match session.run_analysis(&request, &JobContext::new()) {

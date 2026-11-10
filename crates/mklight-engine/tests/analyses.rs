@@ -58,7 +58,7 @@ fn f64s(r: &AnalysisResult, name: &str) -> Vec<f64> {
         .iter()
         .find(|b| b.name == name)
         .unwrap_or_else(|| panic!("no buffer {name}"));
-    match &b.data {
+    match b.data() {
         BufferData::F64(v) => v.clone(),
         BufferData::F32(v) => v.iter().map(|&x| x as f64).collect(),
         _ => panic!("{name} is not a float buffer"),

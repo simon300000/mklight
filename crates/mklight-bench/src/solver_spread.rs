@@ -118,7 +118,7 @@ pub fn within_movement(
         _ => return failures.is_empty(),
     };
     failures.iter().all(|f| {
-        let path = super::comparison::failure_path(f);
+        let path = crate::comparison::failure_path(f);
         path.starts_with(outcome)
             && ((path.ends_with(".merit") && deviation.0 <= 2. * movement.0 + 1e-12)
                 || (path.ends_with(".violation") && deviation.1 <= 2. * movement.1 + 1e-12))

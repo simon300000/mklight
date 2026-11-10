@@ -1,0 +1,31 @@
+[package]
+name = "mklight-bench"
+description = "MKLight measurement and qualification harnesses over the engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+# The library: the result comparator and the helpers the harnesses share.
+[dependencies]
+mklight-core.workspace = true
+mklight-engine.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+# Load average and process CPU time (`host`).
+libc = "0.2"
+
+# What single harnesses (`tests/`) and programs (`examples/`) reach below
+# the engine for.
+[dev-dependencies]
+mklight-trace.workspace = true
+mklight-ghost.workspace = true
+mklight-stray.workspace = true
+mklight-optim.workspace = true
+mklight-gpu.workspace = true
+mklight-metal.workspace = true
+blake3.workspace = true
+rayon.workspace = true
+# tests/aim_precision_study.rs includes mklight-gpu/tests/p1_support.rs.
+bytemuck.workspace = true

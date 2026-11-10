@@ -6,9 +6,9 @@
 //! `profile::Profile::features`), with one non-negative
 //! coefficient set per analysis, backend and resident state ([`Mode`]).
 //! Coefficients are fitted from measured complete calls
-//! (`tests/cost_calibration.rs`) by relative least squares, so a 1 ms and a
-//! 10 s call weigh alike; a mode is fitted with the features it is applied
-//! to ([`Mode::features`]).
+//! (`mklight-bench/tests/cost_calibration.rs`) by relative least squares, so
+//! a 1 ms and a 10 s call weigh alike; a mode is fitted with the features it
+//! is applied to ([`Mode::features`]).
 //! Nothing here is a universal GPU overhead: every analysis has its own
 //! measured fixed cost on each backend.
 use std::collections::BTreeMap;
@@ -163,8 +163,8 @@ impl Calibration {
     }
 
     /// The table to use: `MKLIGHT_COST_CALIBRATION` (a JSON file written by
-    /// `tests/cost_calibration.rs`) when set and readable, else the built-in
-    /// one. Returns the table and where it came from.
+    /// `mklight-bench/tests/cost_calibration.rs`) when set and readable, else
+    /// the built-in one. Returns the table and where it came from.
     pub fn load() -> (Self, String) {
         if let Ok(path) = std::env::var("MKLIGHT_COST_CALIBRATION") {
             match std::fs::read_to_string(&path)

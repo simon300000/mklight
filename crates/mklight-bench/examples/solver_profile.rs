@@ -4,13 +4,13 @@
 //! `mklight_engine::RouteOptions`).
 //!
 //! ```text
-//! cargo run --release -p mklight-engine --example solver_profile -- LENS.mklight ANALYSIS \
+//! cargo run --release -p mklight-bench --example solver_profile -- LENS.mklight ANALYSIS \
 //!     [--backend cpu|metal|auto] [--route KEY=VALUE]... [--settings JSON] [--reps N] [--json]
 //!     [--out FILE]
 //! ```
 //!
-//! Every curved surface's curvature is a variable (as the benchmark
-//! harness's `curvature_variables` setup). One untimed warm-up call precedes
+//! Every curved surface's curvature is a variable (as `backend_bench`'s
+//! `curvature_variables` setup). One untimed warm-up call precedes
 //! `--reps` timed calls, each after a tiny unique edit. Prints the wall time,
 //! the result's `backend` block summary and the resident plan stages
 //! (wall/device seconds and command buffers per stage). `--out` writes the
@@ -19,39 +19,9 @@
 use std::path::Path;
 use std::time::Instant;
 
-use mklight_core::param::ParamPath;
-use mklight_engine::{
-    AnalysisRequest, Engine, EngineConfig, RouteOptions, Session, backend::Backend,
-};
+use mklight_bench::{edit, solver};
+use mklight_engine::{AnalysisRequest, Engine, EngineConfig, RouteOptions, backend::Backend};
 use serde_json::{Value, json};
-
-fn curvature_variables(s: &mut Session) {
-    let vars: Vec<Value> = s.system().surfaces[1..s.system().surfaces.len() - 1]
-        .iter()
-        .filter(|x| x.shape.curvature() != 0.)
-        .map(|x| json!({"param": {"param": "curvature", "surface": x.id}, "lower": null, "upper": null}))
-        .collect();
-    s.set_project_section("variables", Value::Array(vars))
-        .unwrap();
-}
-
-fn edit(s: &mut Session, base: &mklight_core::OpticalSystem, serial: u64) {
-    let mut system = base.clone();
-    let surface = system
-        .surfaces
-        .iter()
-        .skip(1)
-        .find(|s| s.shape.curvature() != 0.)
-        .expect("a curved surface");
-    let param = ParamPath::Curvature {
-        surface: surface.id,
-    };
-    let c = surface.shape.curvature();
-    param
-        .set(&mut system, c * (1. + (1. + serial as f64 * 1e-3) * 1e-9))
-        .unwrap();
-    s.set_system(system).unwrap();
-}
 
 fn stages(v: &Value, out: &mut Vec<(String, f64, f64, u64)>) {
     if let Some(st) = v.get("stages").and_then(Value::as_array)
@@ -108,7 +78,7 @@ fn main() {
     .unwrap();
     let engine = Engine::new(EngineConfig::default());
     let mut s = engine.open_session(Path::new(&lens)).unwrap();
-    curvature_variables(&mut s);
+    solver::set_curvature_variables(&mut s);
     let base = s.system().clone();
     let b = match backend.as_str() {
         "cpu" => Backend::CpuReference,
@@ -116,7 +86,10 @@ fn main() {
         g => Backend::Gpu(g.into()),
     };
     for rep in 0..=reps {
-        edit(&mut s, &base, rep as u64 + 1);
+        assert!(
+            edit::curvature_ppb_growing(&mut s, &base, rep as u64 + 1),
+            "a curved surface"
+        );
         let mut req = AnalysisRequest::new(&analysis, settings.clone());
         req.backend = Some(b.clone());
         req.route = Some(route);

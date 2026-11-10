@@ -4,15 +4,15 @@
 //! larger step. Ignored by default; prints a table. Run with
 //!
 //! ```text
-//! cargo test -p mklight-engine --release --test seeded_jacobian -- --ignored --nocapture
+//! cargo test --release -p mklight-bench --test seeded_jacobian -- --ignored --nocapture
 //! ```
 //!
 //! `MKLIGHT_SEED_PROJECT=/path/project.mklight` adds a project lens.
+//! `../README.md` lists every harness with its command and variables.
 
 use std::sync::Arc;
 
 use mklight_core::materials::MaterialLibrary;
-use mklight_core::param::ParamPath;
 use mklight_core::{JobContext, MkResult, OpticalSystem, samples};
 use mklight_optim::deriv::{FdScheme, JacobianSettings, fd_jacobian};
 use mklight_optim::linalg::Matrix;
@@ -48,27 +48,10 @@ impl<P: Problem> Problem for Unseeded<'_, P> {
     }
 }
 
+/// The project-bench solver variables (`mklight_bench::solver::variables`).
 fn variables(system: &OpticalSystem) -> Vec<VariableSpec> {
-    let mut vars = Vec::new();
-    let n = system.surfaces.len();
-    for s in system.surfaces.iter().skip(1).take(n.saturating_sub(2)) {
-        if s.shape.curvature() != 0. {
-            vars.push(VariableSpec::new(ParamPath::Curvature { surface: s.id }));
-        }
-        if s.thickness.is_finite() && s.thickness > 0. {
-            let mut v = VariableSpec::new(ParamPath::Thickness { surface: s.id });
-            v.lower = Some(s.thickness * 0.8);
-            v.upper = Some(s.thickness * 1.2);
-            vars.push(v);
-        }
-    }
-    vars.retain(|v| {
-        !system
-            .solves
-            .iter()
-            .any(|s| serde_json::to_value(&s.target).ok() == serde_json::to_value(&v.param).ok())
-    });
-    vars
+    let vars = mklight_bench::solver::variables(system);
+    serde_json::from_value(serde_json::Value::Array(vars)).unwrap()
 }
 
 fn column_errors(j: &Matrix, r: &Matrix) -> Vec<f64> {

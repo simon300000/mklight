@@ -1,12 +1,13 @@
 //! Device aiming cost and convergence against the stop tolerance.
 //!
 //! Ignored, env-driven, nothing embedded:
-//! `cargo test --release -p mklight-engine --test aim_precision_study -- --ignored --nocapture`
+//! `cargo test --release -p mklight-bench --test aim_precision_study -- --ignored --nocapture`
 //! `MKLIGHT_STUDY_PROJECT=/path/project.mklight` studies a local project (with
 //! its catalogues) instead of three samples; `MKLIGHT_STUDY_TOLERANCES`
 //! (comma list, default `1e-10,1e-8,1e-6,1e-5,1e-4`), `MKLIGHT_STUDY_ROWS`
 //! (`all` or the number of field rows), `MKLIGHT_STUDY_REPEATS` (default 3,
-//! the minimum device time is reported).
+//! the minimum device time is reported). `../README.md` lists every harness
+//! with its command and variables.
 //!
 //! Every generation aims a 65×65 lattice inside the unit disk from the host
 //! f64 chief row, once with the wave path's 25×25 host seed table and once

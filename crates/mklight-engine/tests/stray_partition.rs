@@ -77,7 +77,7 @@ fn check_books(r: &AnalysisResult) {
     let d = &r.json["detector"];
     let area = 4.0 * f(&d["half_x"]) * f(&d["half_y"])
         / (d["nx"].as_u64().unwrap() * d["ny"].as_u64().unwrap()) as f64;
-    let values = |name: &str| match &r.buffers.iter().find(|b| b.name == name).unwrap().data {
+    let values = |name: &str| match r.buffers.iter().find(|b| b.name == name).unwrap().data() {
         mklight_engine::buffer::BufferData::F64(v) => v,
         _ => panic!("expected f64 map"),
     };
@@ -136,7 +136,7 @@ fn uncovered_ghost_paths_are_handed_back_to_the_stray_total() {
     assert!(f(&one.json["stray_flux"]) > 2.0 * f(&full.json["stray_flux"]));
     // The same random streams: coverage changes the maps, never transport.
     assert_eq!(one.json["totals"], full.json["totals"]);
-    assert_ne!(one.buffers[2].data, full.buffers[2].data);
+    assert_ne!(one.buffers[2].data(), full.buffers[2].data());
     // Handed-back ghosts appear among the reported signatures.
     assert!(
         one.json["top_signatures"]

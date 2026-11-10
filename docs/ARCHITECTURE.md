@@ -55,6 +55,7 @@ GPU implementation details.**
 | `mklight-gpu` | Narrow, backend-agnostic compute interface (`ComputeBackend`), the packed f32 system layout shared bit-for-bit by all GPU backends, and a CPU-f32 emulation backend used to separate *algorithm* error from *precision* error. |
 | `mklight-metal` | Metal backend: MSL kernels (precompiled `.metallib`, runtime-source fallback), command scheduling, shared-memory buffers. |
 | `mklight-engine` | Facade used by every front end: `Session` (project + undo-free immutable snapshots), the async job scheduler, analysis dispatch, backend selection, project file I/O. |
+| `mklight-bench` | Measurement and qualification of the engine, outside every product: the result comparator with its per-quantity contract tables (GPU.md §9.4), its regression suites, the ignored harnesses (Metal accuracy, cost-model calibration, project and tracer timings, aim-stop qualification) and the command-line measurement programs. Its `README.md` lists every command and environment variable. Nothing depends on it. |
 | `mklight-ffi` | C ABI for native apps. Structured data crosses as versioned JSON; bulk data as typed binary buffers. |
 | `mklight-py` | Python bindings (pyo3/maturin, `import mklight`) over the engine facade, plus low-level reference tracing; see `docs/PYTHON.md`. |
 | `mklight-cli` | Headless command line `mklight` over the engine facade: `info`, projects (`new`, `validate`, `show`, `set`, `import` of a lens prescription), catalogs, `analyses`/`run` over the analysis registry, reference `trace` and `paraxial`; JSON or tables, documented exit codes (`docs/CLI.md`). |
@@ -142,8 +143,20 @@ them. Spot statistics without `include_points` allocate no point output; the
 CPU reference traces one field at a time, so only that field's rays are
 alive. Buffer values follow the JSON conventions of the documented result
 (canonical NaN; infinities only where the schema allows them), so the typed
-buffers carry exactly the values the result schema documents. The C ABI hands each
-buffer's allocation to the caller without a copy.
+buffers carry exactly the values the result schema documents.
+
+A buffer's array is allocated once and shared from then on: `Buffer` holds
+it behind a reference count and it is immutable, so cloning a buffer or an
+`AnalysisResult` copies no bulk data. A result stored in the analysis graph
+and every result returned for it (the run that built it and each later
+identical request) hold the same arrays; a request answered from the graph
+clones only the JSON and the `RunInfo`, which it restamps. The graph counts
+a stored result's arrays once in its byte budget; the arrays themselves live
+until the last holder lets go, which may be after the graph has evicted the
+result. The front ends keep sharing: the C ABI exports each array's address
+with a reference that keeps it alive (`MKBuffer`, `docs/FFI.md`), the Python
+`Array` holds the same reference and exposes the memory through the buffer
+protocol, and the CLI reads the arrays in place.
 
 ## Analysis graph
 

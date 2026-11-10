@@ -1,13 +1,14 @@
-//! `mklight.Array`: a read-only, typed, row-major n-d array that owns an
+//! `mklight.Array`: a read-only, typed, row-major n-d array that holds an
 //! engine `Buffer` and exports it through the Python buffer protocol.
 //!
-//! `numpy.asarray(array)` therefore wraps the engine's memory without a
-//! copy (the numpy array is read-only and keeps the `Array` alive). Results
+//! The buffer shares the payload the solver allocated (with the result it
+//! came from and, for a stored result, the engine's analysis graph), so
+//! `numpy.asarray(array)` wraps the engine's memory without a copy (the
+//! numpy array is read-only and keeps the `Array` alive). Results
 //! hand out numpy arrays when numpy is importable (and not disabled with
 //! `mklight.set_numpy_enabled(False)`), otherwise nested lists.
 
 use std::ffi::{CStr, c_int, c_void};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use pyo3::exceptions::{PyBufferError, PyIndexError};
@@ -44,18 +45,6 @@ fn format(d: DType) -> &'static CStr {
     }
 }
 
-fn data_ptr(d: &BufferData) -> *const c_void {
-    match d {
-        BufferData::F64(v) => v.as_ptr().cast(),
-        BufferData::F32(v) => v.as_ptr().cast(),
-        BufferData::I32(v) => v.as_ptr().cast(),
-        BufferData::U32(v) => v.as_ptr().cast(),
-        BufferData::I64(v) => v.as_ptr().cast(),
-        BufferData::U64(v) => v.as_ptr().cast(),
-        BufferData::U8(v) => v.as_ptr().cast(),
-    }
-}
-
 /// Row-major strides in bytes.
 pub fn c_strides(shape: &[usize], itemsize: usize) -> Vec<isize> {
     let mut s = vec![0isize; shape.len()];
@@ -76,13 +65,13 @@ pub fn is_f_contiguous(shape: &[usize]) -> bool {
 
 #[pyclass(frozen, module = "mklight", name = "Array")]
 pub struct Array {
-    buf: Arc<Buffer>,
+    buf: Buffer,
     shape: Vec<isize>,
     strides: Vec<isize>,
 }
 
 impl Array {
-    pub fn new(buf: Arc<Buffer>) -> Self {
+    pub fn new(buf: Buffer) -> Self {
         let shape = buf.shape.iter().map(|&n| n as isize).collect();
         let strides = c_strides(&buf.shape, buf.dtype().size_bytes());
         Array {
@@ -93,7 +82,7 @@ impl Array {
     }
 
     fn item<'py>(&self, py: Python<'py>, i: usize) -> PyResult<Bound<'py, PyAny>> {
-        Ok(match &self.buf.data {
+        Ok(match self.buf.data() {
             BufferData::F64(v) => v[i].into_pyobject(py)?.into_any(),
             BufferData::F32(v) => (v[i] as f64).into_pyobject(py)?.into_any(),
             BufferData::I32(v) => v[i].into_pyobject(py)?.into_any(),
@@ -149,7 +138,7 @@ impl Array {
     /// Total number of elements.
     #[getter]
     fn size(&self) -> usize {
-        self.buf.data.len()
+        self.buf.data().len()
     }
 
     fn __len__(&self) -> usize {
@@ -166,7 +155,7 @@ impl Array {
 
     /// Element at a flat (row-major) index.
     fn flat<'py>(&self, py: Python<'py>, index: usize) -> PyResult<Bound<'py, PyAny>> {
-        if index >= self.buf.data.len() {
+        if index >= self.buf.data().len() {
             return Err(PyIndexError::new_err("flat index out of range"));
         }
         self.item(py, index)
@@ -214,8 +203,8 @@ impl Array {
         // (never mutated) and kept alive by the strong reference stored in
         // `view.obj` until the buffer is released.
         unsafe {
-            (*view).buf = data_ptr(&this.buf.data) as *mut c_void;
-            (*view).len = this.buf.data.len() as isize * itemsize;
+            (*view).buf = this.buf.data().as_ptr() as *mut c_void;
+            (*view).len = this.buf.data().len() as isize * itemsize;
             (*view).readonly = 1;
             (*view).itemsize = itemsize;
             (*view).format = if (flags & ffi::PyBUF_FORMAT) == ffi::PyBUF_FORMAT {
@@ -266,7 +255,7 @@ pub fn numpy(py: Python<'_>) -> Option<Bound<'_, PyModule>> {
 }
 
 /// A buffer as a numpy array (zero copy) or nested lists.
-pub fn export<'py>(py: Python<'py>, buf: Arc<Buffer>) -> PyResult<Bound<'py, PyAny>> {
+pub fn export<'py>(py: Python<'py>, buf: Buffer) -> PyResult<Bound<'py, PyAny>> {
     let arr = Bound::new(py, Array::new(buf))?;
     match numpy(py) {
         Some(np) => np.call_method1("asarray", (arr,)),
@@ -281,7 +270,7 @@ pub fn export_owned<'py>(
     shape: Vec<usize>,
     data: BufferData,
 ) -> PyResult<Bound<'py, PyAny>> {
-    export(py, Arc::new(Buffer::new(name, shape, data)))
+    export(py, Buffer::new(name, shape, data))
 }
 
 #[cfg(test)]

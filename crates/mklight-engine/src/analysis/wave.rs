@@ -1250,7 +1250,7 @@ mod tests {
         assert_eq!(new.buffers.len(), old.buffers.len(), "{what}: buffer count");
         for (a, b) in new.buffers.iter().zip(&old.buffers) {
             assert_eq!((&a.name, &a.shape), (&b.name, &b.shape), "{what}");
-            let (BufferData::F64(x), BufferData::F64(y)) = (&a.data, &b.data) else {
+            let (BufferData::F64(x), BufferData::F64(y)) = (a.data(), b.data()) else {
                 panic!("{what}: {} is not f64", a.name);
             };
             let diff = x

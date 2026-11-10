@@ -2,7 +2,7 @@
 //! edit, and the backend's execution evidence (resident plan stages).
 //!
 //! ```text
-//! cargo run --release -p mklight-engine --example fieldmaps_profile -- LENS.mklight \
+//! cargo run --release -p mklight-bench --example fieldmaps_profile -- LENS.mklight \
 //!     ANALYSIS '{"settings": "json"}' [--backend cpu|metal] [--route KEY=VALUE]... \
 //!     [--reps N] [--evidence] [--serial N]
 //! ```
@@ -18,33 +18,9 @@ use std::hash::{Hash, Hasher};
 use std::path::Path;
 use std::time::Instant;
 
-use mklight_core::{OpticalSystem, param::ParamPath};
-use mklight_engine::{
-    AnalysisRequest, Engine, EngineConfig, RouteOptions, Session, backend::Backend,
-};
+use mklight_bench::{edit, host::cpu_ms};
+use mklight_engine::{AnalysisRequest, Engine, EngineConfig, RouteOptions, backend::Backend};
 use serde_json::Value;
-
-fn edit(s: &mut Session, base: &OpticalSystem, serial: u64) {
-    let mut system = base.clone();
-    let surface = system
-        .surfaces
-        .iter()
-        .skip(1)
-        .find(|s| s.shape.curvature() != 0.)
-        .expect("a curved surface");
-    let param = ParamPath::Curvature {
-        surface: surface.id,
-    };
-    let c = surface.shape.curvature();
-    let sign = if serial.is_multiple_of(2) { 1. } else { -1. };
-    param
-        .set(
-            &mut system,
-            c * (1. + sign * (1. + serial as f64 * 1e-3) * 1e-9),
-        )
-        .unwrap();
-    s.set_system(system).unwrap();
-}
 
 fn main() {
     let mut args = std::env::args().skip(1);
@@ -79,7 +55,10 @@ fn main() {
     let mut cpu_times = Vec::new();
     for rep in 0..=reps {
         serial += 1;
-        edit(&mut s, &base, serial);
+        assert!(
+            edit::curvature_ppb_alternating(&mut s, &base, serial),
+            "a curved surface"
+        );
         let mut req = AnalysisRequest::new(&analysis, settings.clone());
         req.route = Some(route);
         req.backend = Some(match backend.as_str() {
@@ -127,14 +106,6 @@ fn main() {
     );
 }
 
-/// User + system CPU time of the process so far (ms, all threads).
-fn cpu_ms() -> f64 {
-    let mut u: libc::rusage = unsafe { std::mem::zeroed() };
-    unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut u) };
-    let t = |v: libc::timeval| v.tv_sec as f64 * 1e3 + v.tv_usec as f64 * 1e-3;
-    t(u.ru_utime) + t(u.ru_stime)
-}
-
 /// Hash of the result without timings: JSON (minus `run_info`), the
 /// warnings, and the buffers.
 fn digest(r: &mklight_engine::AnalysisResult) -> u64 {
@@ -146,7 +117,7 @@ fn digest(r: &mklight_engine::AnalysisResult) -> u64 {
     json.to_string().hash(&mut h);
     r.run_info.warnings.hash(&mut h);
     for b in &r.buffers {
-        format!("{} {:?} {:?}", b.name, b.shape, b.data).hash(&mut h);
+        format!("{} {:?} {:?}", b.name, b.shape, b.data()).hash(&mut h);
     }
     h.finish()
 }

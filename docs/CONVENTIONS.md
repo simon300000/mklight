@@ -278,7 +278,8 @@ kernels use finite-difference stencils (GPU.md §9.2, "Aiming and OPD").
   GPU §9.4 ("Contracts"): the 16 samples with real aiming, perturbed and
   adversarial variants and a 29-surface F/1.4 design, every GPU-capable
   analysis on the CPU and on Metal, with identical survival masks and every
-  gate met (`aim_stop_qualify`; the decision is in DECISIONS.md).
+  gate met (`aim_stop_qualify` in `mklight-bench`; the decision is in
+  DECISIONS.md).
 
 Neither policy changes the budgets above, the requested-tolerance semantics
 of `requested`, nor the survival rule: a ray's survived/clipped status may

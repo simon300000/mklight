@@ -3,7 +3,8 @@
 //! run records.
 //!
 //! ```text
-//! stray_ghost_profile LENS.mklight ANALYSIS BACKEND [SETTINGS_JSON] [REPS] [KEY=VALUE ...]
+//! cargo run --release -p mklight-bench --example stray_ghost_profile -- LENS.mklight \
+//!     ANALYSIS BACKEND [SETTINGS_JSON] [REPS] [KEY=VALUE ...]
 //! ```
 //!
 //! `KEY=VALUE` sets a route option of the requests
@@ -12,7 +13,7 @@
 use std::path::Path;
 use std::time::Instant;
 
-use mklight_core::param::ParamPath;
+use mklight_bench::edit;
 use mklight_engine::{AnalysisRequest, Engine, EngineConfig, RouteOptions, backend::Backend};
 use serde_json::Value;
 
@@ -63,20 +64,10 @@ fn main() {
     let mut s = engine.open_session(Path::new(lens)).unwrap();
     let base = s.system().clone();
     for rep in 0..=reps {
-        let mut system = base.clone();
-        let surface = system
-            .surfaces
-            .iter()
-            .skip(1)
-            .find(|s| s.shape.curvature() != 0.)
-            .unwrap();
-        let p = ParamPath::Curvature {
-            surface: surface.id,
-        };
-        let c = surface.shape.curvature();
-        p.set(&mut system, c * (1. + (rep as f64 + 1.) * 1e-10))
-            .unwrap();
-        s.set_system(system).unwrap();
+        assert!(
+            edit::curvature_tenth_ppb(&mut s, &base, rep + 1),
+            "a curved surface"
+        );
         let mut req = AnalysisRequest::new(analysis, settings.clone());
         req.backend = Some(backend.clone());
         req.route = Some(route);

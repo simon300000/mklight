@@ -101,7 +101,7 @@ call that fails the same way (`mk_job_take_result`, below).
 | `MKEngine*` | `mk_engine_create` | `mk_engine_destroy` |
 | `MKSession*` | `mk_session_new` / `mk_session_open` | `mk_session_destroy` |
 | `char*` returned through `char**` | the library | `mk_string_free` |
-| `MKBuffer*` array + everything it points to | `mk_job_take_result` | `mk_buffer_free(array, count)` |
+| `MKBuffer*` array + everything it points to | `mk_job_take_result`, `mk_session_run_analysis_json` | `mk_buffer_free(array, count)`, once |
 | `mk_last_error()`, `mk_engine_version()` | the library | never (borrowed) |
 | `stage` passed to the job callback | the library | never; valid only during the call |
 | all input strings | the caller | the caller (copied when needed) |
@@ -206,6 +206,7 @@ submit ──► QUEUED ──► RUNNING ──► DONE
 typedef struct MKBuffer {
     const char *name;   const void *data;   size_t len;
     MKDType dtype;      uint32_t ndim;      const size_t *shape;
+    const void *owner;  /* private */
 } MKBuffer;
 ```
 
@@ -215,6 +216,18 @@ I32=3, U32=4, I64=5, U64=6, U8=7`. The result JSON lists the buffers
 (`buffers: [{index, name, dtype, shape}]`) in the same order as the array,
 so they can be found by name. The whole array is freed with one
 `mk_buffer_free(array, count)` call.
+
+**Shared, read-only data.** `data` is the array the engine computed: no
+copy is made on the way out, for a new result or for one the engine answers
+from its analysis graph. The engine may keep the same array for later
+identical requests, so two takes of the same result can return the same
+`data` address, and the memory must never be written. Each buffer holds a
+reference to the array in `owner` (private: do not read, change or copy it
+into another struct that is freed separately). `data` therefore stays valid
+until the buffer array is passed to `mk_buffer_free`, also after the
+engine and the session are destroyed and after other arrays that share the
+data are freed; the memory is released when its last holder lets go. Free
+each returned array exactly once, unmodified.
 
 ## JSON reference
 

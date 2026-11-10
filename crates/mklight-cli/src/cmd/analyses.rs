@@ -185,7 +185,7 @@ fn envelope(r: &AnalysisResult, with_buffers: bool) -> Value {
     let mut env = r.envelope();
     if with_buffers && let Some(descs) = env["buffers"].as_array_mut() {
         for (d, b) in descs.iter_mut().zip(&r.buffers) {
-            d["data"] = buffer_json(&b.data);
+            d["data"] = buffer_json(b.data());
         }
     }
     env

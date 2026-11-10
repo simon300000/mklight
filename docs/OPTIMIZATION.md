@@ -501,7 +501,7 @@ a central-difference reference stay at the unseeded level (median 1.5e-6,
 max 7e-4), while seeding without the re-evaluated base point raised them to
 2.4e-2 (the unseeded `f0` carries aim errors up to the aiming tolerance that
 cancel only between solves taken from the same start). `seeded_jacobian`
-(ignored test) prints the comparison. Serial CPU work falls 10–20 % (3-iteration LM, glass substitution); with 12 workers the gain is smaller, since the anchor precedes its batch. Prefix re-tracing (reusing rays before
+(ignored test of `mklight-bench`) prints the comparison. Serial CPU work falls 10–20 % (3-iteration LM, glass substitution); with 12 workers the gain is smaller, since the anchor precedes its batch. Prefix re-tracing (reusing rays before
 the first changed surface) does not apply to such lenses: a real-image-height
 field or image-space F-number moves every ray when any surface changes.
 
@@ -1496,7 +1496,7 @@ batches without routing, anchor seeding independent of the candidate order,
 equal values of a pipelined batch and its halves,
 finite-difference column errors (1.8e-7 against f64 central differences on
 the real-aimed Cooke triplet, also with host completion), LM on the
-evaluator, and speculative LM. The engine test `tests/solver_aiming.rs`
+evaluator, and speculative LM. `crates/mklight-bench/tests/solver_aiming.rs`
 runs both aiming options of all four jobs against the reference under the
 solver-outcome contract (emulation; Metal ignored), and a basin-hopping
 `optimize` and a glass substitution with device aiming on 1, 2 and 8 rayon

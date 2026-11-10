@@ -1,7 +1,7 @@
 //! Backend timing matrix for CPU/GPU work-split studies.
 //!
 //! ```text
-//! cargo run --release -p mklight-engine --example backend_bench -- SUITE.json \
+//! cargo run --release -p mklight-bench --example backend_bench -- SUITE.json \
 //!     [--filter TEXT] [--backends cpu,metal,auto] [--reps N] [--out FILE.jsonl] \
 //!     [--label TEXT] [--no-compare] [--budget SECONDS] [--shuffle] [--idle MS]
 //! ```
@@ -58,7 +58,8 @@ use std::path::Path;
 use std::process::Command;
 use std::time::Instant;
 
-use mklight_core::{OpticalSystem, param::ParamPath};
+use mklight_bench::{host, solver};
+use mklight_core::OpticalSystem;
 use mklight_engine::{
     AnalysisRequest, Engine, EngineConfig, RouteOptions, Session, analysis::AnalysisResult,
     backend::Backend, buffer::BufferData,
@@ -115,13 +116,6 @@ fn args() -> Args {
     a
 }
 
-fn load() -> f64 {
-    let mut l = [0f64; 3];
-    // SAFETY: getloadavg writes at most the 3 doubles it is given.
-    unsafe { libc::getloadavg(l.as_mut_ptr(), 3) };
-    l[0]
-}
-
 fn commit() -> String {
     let git = |args: &[&str]| {
         Command::new("git")
@@ -162,35 +156,13 @@ fn backend(name: &str) -> Backend {
     }
 }
 
-/// A unique, tiny change of the first curved surface (relative 1e-9 scale).
-///
-/// `serial` is `pid << 20 | call counter`. Only the counter (and a small
-/// residue of the process id, for uniqueness between processes) sets the
-/// size, so every edit stays between 1e-9 and about 2e-9 relative for the
-/// first 10,000 calls. The sign comes from a hash of the counter, so it does
-/// not follow the column order of an even number of columns.
+/// A unique, tiny change of the first curved surface (relative 1e-9 scale);
+/// `serial` is `pid << 20 | call counter`.
 fn edit(s: &mut Session, base: &OpticalSystem, serial: u64) {
-    let mut system = base.clone();
-    let surface = system
-        .surfaces
-        .iter()
-        .skip(1)
-        .find(|s| s.shape.curvature() != 0.)
-        .expect("a curved surface");
-    let param = ParamPath::Curvature {
-        surface: surface.id,
-    };
-    let c = surface.shape.curvature();
-    let counter = serial & 0xf_ffff;
-    let process = (serial >> 20) % 1000;
-    let sign = if counter.wrapping_mul(0x9e37_79b9_7f4a_7c15) >> 63 == 0 {
-        1.
-    } else {
-        -1.
-    };
-    let size = (1. + counter as f64 * 1e-4 + process as f64 * 1e-6) * 1e-9;
-    param.set(&mut system, c * (1. + sign * size)).unwrap();
-    s.set_system(system).unwrap();
+    assert!(
+        mklight_bench::edit::curvature_ppb_per_process(s, base, serial),
+        "a curved surface"
+    );
 }
 
 fn run(
@@ -257,7 +229,7 @@ fn groups(r: &AnalysisResult) -> BTreeMap<String, Vec<f64>> {
     let mut out = BTreeMap::new();
     leaves(&r.json, "", &mut out);
     for b in &r.buffers {
-        let v: Vec<f64> = match &b.data {
+        let v: Vec<f64> = match b.data() {
             BufferData::F64(x) => x.clone(),
             BufferData::F32(x) => x.iter().map(|&y| y as f64).collect(),
             BufferData::I32(x) => x.iter().map(|&y| y as f64).collect(),
@@ -326,16 +298,6 @@ fn median(v: &[f64]) -> f64 {
     }
 }
 
-fn curvature_variables(s: &mut Session) {
-    let vars: Vec<Value> = s.system().surfaces[1..s.system().surfaces.len() - 1]
-        .iter()
-        .filter(|x| x.shape.curvature() != 0.)
-        .map(|x| json!({"param": {"param": "curvature", "surface": x.id}, "lower": null, "upper": null}))
-        .collect();
-    s.set_project_section("variables", Value::Array(vars))
-        .unwrap();
-}
-
 fn columns(case: &Value, keep: &Option<Vec<String>>) -> Vec<Column> {
     let backends: Vec<String> = case["backends"].as_array().map_or_else(
         || vec!["cpu".into(), "metal".into(), "auto".into()],
@@ -395,7 +357,7 @@ fn main() {
         "# {} commit {commit}, load {:.1}; median ms after an edit; (x) worst relative \
          difference from the CPU reference",
         a.label,
-        load()
+        host::load()
     );
     for case in suite["cases"].as_array().unwrap() {
         let lens = case["lens"].as_str().unwrap();
@@ -424,7 +386,7 @@ fn main() {
         }
         let (s, base, variables) = sessions.get_mut(lens).unwrap();
         if case["setup"].as_str() == Some("curvature_variables") {
-            curvature_variables(s);
+            solver::set_curvature_variables(s);
         } else {
             s.set_project_section("variables", variables.clone())
                 .unwrap();
@@ -446,7 +408,7 @@ fn main() {
             });
             warm.push(r);
         }
-        let load_before = load();
+        let load_before = host::load();
         let n = cols.len();
         let mut times = vec![Vec::new(); n];
         let mut device = vec![Vec::new(); n];
@@ -495,7 +457,7 @@ fn main() {
                 }
             }
         }
-        let load_after = load();
+        let load_after = host::load();
         let mut cells = Vec::new();
         for (i, c) in cols.iter().enumerate() {
             let used_i = used[i].clone().or_else(|| {
@@ -555,5 +517,5 @@ fn main() {
             cells.join(" | ")
         );
     }
-    println!("# load at end {:.1}", load());
+    println!("# load at end {:.1}", host::load());
 }

@@ -1,8 +1,11 @@
 //! CPU f64 tracer throughput on a local project; nothing is embedded.
 //! MKLIGHT_BENCH_PROJECT=/path/project.mklight cargo test --release -p
-//! mklight-engine --test cpu_trace_bench -- --ignored --nocapture
+//! mklight-bench --test cpu_trace_bench -- --ignored --nocapture
 //! Optional: MKLIGHT_BENCH_RINGS (hexapolar rings, default 24),
-//! MKLIGHT_BENCH_REPEATS (default 3; best time is reported).
+//! MKLIGHT_BENCH_REPEATS (default 3; best time is reported),
+//! MKLIGHT_BENCH_CHUNK (rays per `generate_many`/`trace_many` call, default
+//! 256), MKLIGHT_BENCH_AIM_STOP (`conditioned` or `conditioned:preview`).
+//! `../README.md` lists every harness with its command and variables.
 //!
 //! Stages, single thread unless noted: tracer preparation (fields and chief
 //! aims), ray generation (aiming) alone, the clipped image trace of

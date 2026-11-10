@@ -115,7 +115,7 @@ mod tests {
         for name in ["points", "weights"] {
             let a = custom.buffers.iter().find(|b| b.name == name);
             let b = selected.buffers.iter().find(|b| b.name == name);
-            assert_eq!(a.map(|b| &b.data), b.map(|b| &b.data));
+            assert_eq!(a.map(|b| b.data()), b.map(|b| b.data()));
         }
         let base = session
             .run_analysis(

@@ -204,7 +204,10 @@ request on an array that is not also Fortran-contiguous raises
 `BufferError`, as the protocol requires). `numpy.asarray(array)`
 therefore wraps the engine's memory **without copying**; the resulting
 ndarrays are read-only (`arr.copy()` for a writable copy) and keep the data
-alive. `Array` also has `name`, `dtype` (numpy name), `shape`, `ndim`,
+alive. The memory is the array the solver filled: a result the engine
+answers from its analysis graph (a repeated identical request) shares it
+with the earlier result, so their arrays overlap (`numpy.shares_memory`).
+`Array` also has `name`, `dtype` (numpy name), `shape`, `ndim`,
 `size`, `tolist()` and `flat(i)`.
 
 ### Low-level tracing

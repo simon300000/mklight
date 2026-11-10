@@ -87,7 +87,11 @@ fn same(a: &AnalysisResult, b: &AnalysisResult, what: &str) {
     assert_eq!(a.buffers.len(), b.buffers.len(), "{what}: buffers");
     for (x, y) in a.buffers.iter().zip(&b.buffers) {
         assert_eq!((&x.name, &x.shape), (&y.name, &y.shape), "{what}");
-        assert!(bits(&x.data) == bits(&y.data), "{what}: buffer {}", x.name);
+        assert!(
+            bits(x.data()) == bits(y.data()),
+            "{what}: buffer {}",
+            x.name
+        );
     }
 }
 
@@ -305,6 +309,76 @@ fn cancelled_runs_publish_nothing() {
             &run(&b, "psf", &settings),
             "after cancel",
         );
+    }
+}
+
+/// A stored result is allocated once: the result returned by the run that
+/// built it, the one the graph keeps and every later answer hold the same
+/// buffer payloads, and the graph counts their bytes once.
+#[test]
+fn stored_results_share_their_buffers() {
+    use std::sync::Arc;
+    let e = engine(512 << 20);
+    let s = session(&e, &samples::double_gauss());
+    for (name, settings) in [
+        ("ray_grid", json!({"pattern": "square", "rings": 24})),
+        ("spot_diagram", json!({"include_points": true})),
+        ("psf", json!({"pupil": {"rays": 17}, "grid_size": 32})),
+    ] {
+        let stored_before = kind(&e, "result");
+        let built = run(&s, name, &settings);
+        assert!(built.buffers.iter().any(|b| !b.data().is_empty()), "{name}");
+        let payload_bytes: usize = built
+            .buffers
+            .iter()
+            .map(|b| b.data().len() * b.dtype().size_bytes())
+            .sum();
+        // Holders of each payload besides the probe: the returned result
+        // and the stored one.
+        let holders = |r: &AnalysisResult| -> Vec<usize> {
+            r.buffers
+                .iter()
+                .map(|b| Arc::strong_count(&b.share()) - 1)
+                .collect()
+        };
+        assert_eq!(holders(&built), vec![2; built.buffers.len()], "{name}");
+
+        let hit = run(&s, name, &settings);
+        let stats = kind(&e, "result");
+        assert_eq!(stats.builds, stored_before.builds + 1, "{name}");
+        assert_eq!(stats.hits, stored_before.hits + 1, "{name}");
+        same(&built, &hit, name);
+        for (x, y) in built.buffers.iter().zip(&hit.buffers) {
+            assert!(Arc::ptr_eq(&x.share(), &y.share()), "{name}: {}", x.name);
+            assert_eq!(x.data().as_ptr(), y.data().as_ptr(), "{name}: {}", x.name);
+        }
+        assert_eq!(holders(&hit), vec![3; hit.buffers.len()], "{name}");
+
+        // A clone shares, too.
+        let clone = hit.clone();
+        for (x, y) in clone.buffers.iter().zip(&hit.buffers) {
+            assert!(Arc::ptr_eq(&x.share(), &y.share()), "{name}: {}", x.name);
+        }
+        assert_eq!(clone, hit);
+        assert_eq!(holders(&hit), vec![4; hit.buffers.len()], "{name}");
+
+        // The graph accounts for the payload once, however many results
+        // share it.
+        let added = stats.bytes - stored_before.bytes;
+        assert!(
+            added >= payload_bytes && added < 2 * payload_bytes + (1 << 20),
+            "{name}: {added} bytes stored for {payload_bytes} of payload"
+        );
+        assert_eq!(kind(&e, "result").bytes, stats.bytes, "{name}");
+
+        // With every returned result gone the graph still answers with the
+        // same arrays.
+        let pointers: Vec<_> = built.buffers.iter().map(|b| b.data().as_ptr()).collect();
+        drop((built, hit, clone));
+        let later = run(&s, name, &settings);
+        let now: Vec<_> = later.buffers.iter().map(|b| b.data().as_ptr()).collect();
+        assert_eq!(now, pointers, "{name}");
+        assert_eq!(holders(&later), vec![2; later.buffers.len()], "{name}");
     }
 }
 

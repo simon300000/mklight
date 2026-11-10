@@ -2,7 +2,7 @@
 //! validation of its routes. Real Metal, release build, one command:
 //!
 //! MKLIGHT_COST_CALIBRATION_OUT=$PWD/crates/mklight-engine/src/analysis/cost/apple-m2-pro.json \
-//! cargo test --release -p mklight-engine --test cost_calibration -- --ignored \
+//! cargo test --release -p mklight-bench --test cost_calibration -- --ignored \
 //! --exact calibrate --nocapture --test-threads=1
 //!
 //! It times every calibrated analysis on nine designs of different shape
@@ -26,14 +26,17 @@
 //! `MKLIGHT_COST_DEVICE_OPEN_MS` (the measured device-open time).
 //!
 //! `validate` compares `auto` with both backends (default engines, graph on)
-//! on fresh edits and warm repeats and prints the routing table and regret.
+//! on fresh edits and warm repeats and prints the routing table and regret
+//! (the same command with `--exact validate`). `../README.md` lists every
+//! harness with its command and variables.
 #![cfg(target_os = "macos")]
 
 use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Instant;
 
-use mklight_core::{JobContext, OpticalSystem, param::ParamPath, samples};
+use mklight_bench::{edit, host, solver};
+use mklight_core::{JobContext, OpticalSystem, samples};
 use mklight_engine::analysis::cost::{self, Calibration, Features, Mode, SystemShape};
 use mklight_engine::{
     AnalysisRequest, Engine, EngineConfig, Session, backend::Backend, project::Project,
@@ -98,27 +101,6 @@ fn designs(engine: &Engine) -> Vec<(String, Session)> {
     out
 }
 
-/// The project-bench solver variables: curvatures and bounded thicknesses.
-fn variables(system: &OpticalSystem) -> Vec<Value> {
-    let mut vars = Vec::new();
-    for s in system
-        .surfaces
-        .iter()
-        .skip(1)
-        .take(system.surfaces.len() - 2)
-    {
-        if s.shape.curvature() != 0. {
-            vars.push(json!({"param":ParamPath::Curvature{surface:s.id}}));
-        }
-        if s.thickness.is_finite() && s.thickness > 0. {
-            vars.push(json!({"param":ParamPath::Thickness{surface:s.id},
-                "lower":s.thickness * 0.8,"upper":s.thickness * 1.2}));
-        }
-    }
-    vars.retain(|v| !system.solves.iter().any(|s| json!(s.target) == v["param"]));
-    vars
-}
-
 /// Settings ladder of one analysis: default and larger workloads.
 fn ladder(analysis: &str, system: &OpticalSystem) -> Vec<Value> {
     let one = |k: &str, vs: &[Value]| vs.iter().map(|v| json!({k: v})).collect::<Vec<_>>();
@@ -167,52 +149,26 @@ fn ladder(analysis: &str, system: &OpticalSystem) -> Vec<Value> {
             .map(|rays| json!({"rays": rays}))
             .collect(),
         "merit_evaluation" => vec![Value::Null],
+        // The project-bench solver jobs (`solver`), `optimize` also with
+        // more iterations.
         "optimize" => {
-            let vars = variables(system);
+            let vars = solver::variables(system);
             [3, 10]
                 .iter()
-                .map(|n| json!({"variables":vars,"max_iterations":n,"options":{"ftol":0.,"xtol":0.,"gtol":0.},"seed":71}))
+                .map(|&n| solver::optimize(&vars, n))
                 .collect()
         }
+        // Timed without recorded trials, unlike `solver::tolerance`.
         "tolerance" => [16, 64]
             .iter()
             .map(|n| json!({"trials":n,"seed":71}))
             .collect(),
-        "glass_substitution" => {
-            let vars = variables(system);
-            let glass = system
-                .surfaces
-                .iter()
-                .skip(1)
-                .find(|s| matches!(s.material, mklight_core::MaterialRef::Catalog { .. }));
-            vec![json!({"variables":vars,"material_variables":
-                glass.map(|g| vec![json!({"surface":g.id,"candidates":{"nearest":3}})]).unwrap_or_default(),
-                "max_combinations":3,"local_iterations":2,"top_n":3,"seed":71})]
-        }
+        "glass_substitution" => vec![solver::glass_substitution(
+            &solver::variables(system),
+            &solver::glass(system),
+        )],
         _ => vec![Value::Null],
     }
-}
-
-/// A distinct tiny curvature edit (new content hash every call).
-fn edit(s: &mut Session, base: &OpticalSystem, serial: usize) {
-    let mut system = base.clone();
-    let Some(surface) = system
-        .surfaces
-        .iter()
-        .skip(1)
-        .find(|s| s.shape.curvature() != 0.)
-    else {
-        return;
-    };
-    let param = ParamPath::Curvature {
-        surface: surface.id,
-    };
-    let c = surface.shape.curvature();
-    let relative = (if serial.is_multiple_of(2) { 1. } else { -1. })
-        * (1. + serial as f64 / 1_000_000.)
-        * 1e-6;
-    param.set(&mut system, c / (1. + relative)).unwrap();
-    s.set_system(system).unwrap();
 }
 
 /// One fitted call: stage features, measured ms and weight.
@@ -259,18 +215,6 @@ fn median(v: &mut [f64]) -> f64 {
     }
 }
 
-fn load() -> f64 {
-    let out = std::process::Command::new("sysctl")
-        .args(["-n", "vm.loadavg"])
-        .output()
-        .unwrap();
-    String::from_utf8_lossy(&out.stdout)
-        .split_whitespace()
-        .filter_map(|s| s.parse().ok())
-        .next()
-        .unwrap_or(0.)
-}
-
 fn emit(kind: &str, v: Value) {
     println!("{kind} {v}");
 }
@@ -281,13 +225,7 @@ fn metal_engine(graph: usize) -> Engine {
         analysis_graph_bytes: graph,
         ..Default::default()
     });
-    assert!(
-        engine
-            .backends()
-            .iter()
-            .any(|b| b.id == "gpu:metal" && b.available),
-        "real Metal required"
-    );
+    mklight_bench::require_metal(&engine);
     engine
 }
 
@@ -334,7 +272,10 @@ fn measure(device_open_ms: &mut f64) -> Vec<Value> {
                         };
                         if mode.ends_with("_edit") {
                             serial += 1;
-                            edit(&mut session, &base, serial);
+                            // A distinct tiny edit (new content hash every
+                            // call); a design without a curved surface
+                            // stays as it is.
+                            edit::radius_ppm(&mut session, &base, serial);
                         } else {
                             session.set_system(base.clone()).unwrap();
                         }
@@ -374,7 +315,7 @@ fn measure(device_open_ms: &mut f64) -> Vec<Value> {
                     let r = json!({"design":design,"analysis":analysis,"settings":settings,
                         "normalised":normalised,"mode":mode,"ms":median_ms,"runs":v,
                         "device_ms":device_ms,"grid":grid,
-                        "used":used.get(mode),"first_ms":first,"load":load()});
+                        "used":used.get(mode),"first_ms":first,"load":host::load()});
                     emit("COST_CAL", r.clone());
                     writeln!(file, "{r}").unwrap();
                     records.push(r);
@@ -496,7 +437,7 @@ fn fit(records: &[Value], device_open_ms: f64) -> Calibration {
         }
         analyses_out.insert(analysis.to_string(), c);
     }
-    let host = |args: &[&str]| {
+    let sysctl = |args: &[&str]| {
         std::process::Command::new("sysctl")
             .args(args)
             .output()
@@ -515,12 +456,12 @@ fn fit(records: &[Value], device_open_ms: f64) -> Calibration {
         model_version: cost::VERSION,
         device_class: device,
         measured: json!({
-            "cpu": host(&["-n", "machdep.cpu.brand_string"]),
+            "cpu": sysctl(&["-n", "machdep.cpu.brand_string"]),
             "records": records.len(),
             "designs": systems.keys().map(|k| if k == "local" { "local project" } else { k.as_str() }).collect::<Vec<_>>(),
             "load1": {"min": loads.iter().copied().fold(f64::INFINITY, f64::min),
                       "max": loads.iter().copied().fold(0., f64::max)},
-            "command": "cargo test --release -p mklight-engine --test cost_calibration -- --ignored --exact calibrate",
+            "command": "cargo test --release -p mklight-bench --test cost_calibration -- --ignored --exact calibrate",
         }),
         cpu_threads: rayon::current_num_threads(),
         device_open_ms,
@@ -612,7 +553,7 @@ fn validate() {
                             let m = (rep + k) % modes.len();
                             let s = &mut sessions[m][d].1;
                             if phase == "edit" {
-                                edit(s, &base, serial);
+                                edit::radius_ppm(s, &base, serial);
                             }
                             let Some(c) = call(s, analysis, settings, modes[m].1.clone()) else {
                                 continue;
@@ -639,7 +580,7 @@ fn validate() {
                             "cpu_ms":med[0],"metal_ms":med[1],"auto_ms":med[2],
                             "metal_used":used[1],"auto_used":used[2],
                             "regret":med[2] / best.max(1e-3),"excess_ms":med[2] - best,
-                            "decision":decision,"load":load()}),
+                            "decision":decision,"load":host::load()}),
                     );
                 }
             }

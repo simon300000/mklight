@@ -3,7 +3,8 @@
 //! engine's default settings (48² pupil grid).
 //!
 //! ```text
-//! ghost_stages LENS.mklight [REPS] [COLUMNS] [SETTINGS_JSON]
+//! cargo run --release -p mklight-bench --example ghost_stages -- LENS.mklight \
+//!     [REPS] [COLUMNS] [SETTINGS_JSON]
 //! ```
 //!
 //! `COLUMNS` is a comma-separated list of `cpu` (the CPU reference) and
@@ -13,6 +14,7 @@
 use std::path::Path;
 use std::time::Instant;
 
+use mklight_bench::host::cpu_ms;
 use mklight_core::JobContext;
 use mklight_engine::{Engine, EngineConfig};
 use mklight_ghost::{GhostModel, GhostSettings, IrradianceSettings};
@@ -83,15 +85,4 @@ fn main() {
             );
         }
     }
-}
-
-/// Process CPU time (user + system) in ms.
-fn cpu_ms() -> f64 {
-    let mut u = std::mem::MaybeUninit::<libc::rusage>::zeroed();
-    // SAFETY: getrusage writes one rusage record.
-    unsafe { libc::getrusage(libc::RUSAGE_SELF, u.as_mut_ptr()) };
-    // SAFETY: zero-initialised and written by getrusage.
-    let u = unsafe { u.assume_init() };
-    let t = |v: libc::timeval| v.tv_sec as f64 * 1e3 + v.tv_usec as f64 * 1e-3;
-    t(u.ru_utime) + t(u.ru_stime)
 }

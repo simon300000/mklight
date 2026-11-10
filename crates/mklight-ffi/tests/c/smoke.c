@@ -405,6 +405,27 @@ int main(int argc, char **argv) {
     mk_buffer_free(bufs, nb);
     mk_string_free(json);
     OK(mk_engine_set_default_backend(eng, "{\"kind\": \"cpu_reference\"}"));
+    {
+        /* A repeated request is answered with the arrays the engine kept:
+         * the same `data`, valid in each buffer array until that array is
+         * freed. */
+        const char *req = "{\"analysis\": \"ray_grid\", \"settings\": {\"rings\": 3}}";
+        MKBuffer *again = NULL;
+        size_t nagain = 0;
+        OK(mk_session_run_analysis_json(s, req, &json, &bufs, &nb));
+        mk_string_free(json);
+        OK(mk_session_run_analysis_json(s, req, &json, &again, &nagain));
+        mk_string_free(json);
+        CHECK(nb == 4 && nagain == nb);
+        CHECK(bufs[1].len > 0 && bufs[1].dtype == MK_DTYPE_F64);
+        for (size_t i = 0; i < nb; i++) CHECK(again[i].data == bufs[i].data);
+        double first[4];
+        CHECK(bufs[1].len >= 4);
+        memcpy(first, bufs[1].data, sizeof first);
+        mk_buffer_free(bufs, nb);
+        CHECK(memcmp(again[1].data, first, sizeof first) == 0);
+        mk_buffer_free(again, nagain);
+    }
     EXPECT(mk_session_run_analysis_json(s, "{\"analysis\": \"no_such_analysis\"}", &json, &bufs,
                                         &nb),
            MK_ERR_NOT_FOUND);

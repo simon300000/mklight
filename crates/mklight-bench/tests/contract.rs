@@ -1,9 +1,11 @@
-//! The offline accuracy contract (`support/comparison.rs`, GPU §9.4
+//! The offline accuracy contract (`mklight_bench::comparison`, GPU §9.4
 //! "Contracts"): every declared result field is classed, the classes are at
 //! least as strict as the CONVENTIONS §7 budgets they derive from, and the
 //! class rules (relative frequencies, outlines by Hausdorff distance,
 //! statistical counts, comparison at common sampling coordinates) behave as
 //! stated on known answers.
+use mklight_bench::comparison::{self, Class, FIELDS, REFERENCE_ONLY, compare, rule};
+use mklight_bench::solver::JOBS as SOLVERS;
 use mklight_core::JobContext;
 use mklight_engine::{
     Engine,
@@ -11,17 +13,6 @@ use mklight_engine::{
     buffer::{Buffer, BufferData},
 };
 use serde_json::{Value, json};
-
-#[path = "support/comparison.rs"]
-mod comparison;
-use comparison::{Class, FIELDS, REFERENCE_ONLY, compare, rule};
-
-const SOLVERS: [&str; 4] = [
-    "optimize",
-    "merit_evaluation",
-    "tolerance",
-    "glass_substitution",
-];
 
 fn out(json: Value, buffers: Vec<Buffer>) -> AnalysisOutput {
     AnalysisOutput {

@@ -11,6 +11,7 @@ members = [
     "crates/mklight-gpu",
     "crates/mklight-metal",
     "crates/mklight-engine",
+    "crates/mklight-bench",
     "crates/mklight-ffi",
     "crates/mklight-py",
     "crates/mklight-cli",

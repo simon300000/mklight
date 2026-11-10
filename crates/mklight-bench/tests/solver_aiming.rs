@@ -5,18 +5,20 @@
 //! Every job (`merit_evaluation`, `optimize`, `tolerance`,
 //! `glass_substitution`) names its aiming in the backend report
 //! and agrees with the CPU f64 reference under the solver-outcome contract
-//! of `support/comparison.rs`; for the truncated solves (`optimize` with 3
-//! iterations, `glass_substitution` with 2 local iterations) the final
+//! of `mklight_bench::comparison`; for the truncated solves (`optimize` with
+//! 3 iterations, `glass_substitution` with 2 local iterations) the final
 //! design's or a finalist's merit or violation outside its gate passes
-//! within twice the reference's own movement (`support/solver_spread.rs`).
+//! within twice the reference's own movement (`mklight_bench::solver_spread`).
 //! With device aiming, the solves a job runs in parallel give the same
 //! result for any number of workers.
-//! The CPU-f32 emulation runs everywhere; the Metal test is ignored (real
-//! Metal required).
+//! The CPU-f32 emulation runs everywhere (`cargo test -p mklight-bench
+//! --test solver_aiming`); the Metal test is ignored (real Metal required;
+//! `../README.md` has the command).
 
 use std::sync::Arc;
 
-use mklight_core::{JobContext, param::ParamPath, samples};
+use mklight_bench::{comparison, solver, solver_spread};
+use mklight_core::{JobContext, samples};
 use mklight_engine::analysis::AnalysisOutput;
 use mklight_engine::backend::Backend;
 use mklight_engine::gpu::GpuProvider;
@@ -25,39 +27,9 @@ use mklight_engine::route::{RouteOptions, SolverAiming};
 use mklight_engine::{AnalysisRequest, AnalysisResult, Engine, EngineConfig, Session};
 use serde_json::{Value, json};
 
-#[path = "support/comparison.rs"]
-mod comparison;
-#[path = "support/solver_spread.rs"]
-mod solver_spread;
-
+/// The solver jobs with the curvatures as variables and one glass.
 fn settings(system: &mklight_core::OpticalSystem) -> Vec<(&'static str, Value)> {
-    let vars: Vec<Value> = system.surfaces[1..system.surfaces.len() - 1]
-        .iter()
-        .filter(|s| s.shape.curvature() != 0.)
-        .map(|s| json!({"param": ParamPath::Curvature { surface: s.id }}))
-        .collect();
-    let glass = system.surfaces[1..]
-        .iter()
-        .find(|s| matches!(s.material, mklight_core::MaterialRef::Catalog { .. }))
-        .map(|g| vec![json!({"surface": g.id, "candidates": {"nearest": 3}})])
-        .unwrap_or_default();
-    vec![
-        ("merit_evaluation", Value::Null),
-        (
-            "optimize",
-            json!({"variables": vars, "max_iterations": 3,
-                   "options": {"ftol": 0., "xtol": 0., "gtol": 0.}, "seed": 71}),
-        ),
-        (
-            "tolerance",
-            json!({"trials": 16, "seed": 71, "record_trials": 16}),
-        ),
-        (
-            "glass_substitution",
-            json!({"variables": vars, "material_variables": glass, "max_combinations": 3,
-                   "local_iterations": 2, "top_n": 3, "seed": 71}),
-        ),
-    ]
+    solver::jobs(&solver::curvatures(system), &solver::glass(system))
 }
 
 fn run(
@@ -229,12 +201,6 @@ fn device_aimed_parallel_solves_do_not_depend_on_the_workers() {
 #[ignore = "solver outcomes of the aiming options; real Metal required"]
 fn aiming_options_on_metal() {
     let engine = engine_with(None);
-    assert!(
-        engine
-            .backends()
-            .iter()
-            .any(|b| b.id == "gpu:metal" && b.available),
-        "real Metal required"
-    );
+    mklight_bench::require_metal(&engine);
     check(&engine, "metal", samples::all());
 }

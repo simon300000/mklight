@@ -36,7 +36,7 @@ fn run(s: &Session, name: &str, settings: Value) -> AnalysisResult {
 }
 fn data<'a>(r: &'a AnalysisResult, name: &str) -> &'a [f64] {
     let b = r.buffers.iter().find(|b| b.name == name).unwrap();
-    let BufferData::F64(v) = &b.data else {
+    let BufferData::F64(v) = b.data() else {
         panic!("{name}: expected f64")
     };
     assert_eq!(b.shape.iter().product::<usize>(), v.len());

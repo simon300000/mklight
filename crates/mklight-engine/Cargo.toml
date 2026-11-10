@@ -26,7 +26,3 @@ blake3.workspace = true
 rayon.workspace = true
 # Load average: the cost model's prior for host contention.
 libc = "0.2"
-
-[dev-dependencies]
-# tests/aim_precision_study.rs includes mklight-gpu/tests/p1_support.rs.
-bytemuck.workspace = true

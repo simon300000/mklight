@@ -7,18 +7,20 @@
 //! `cpu` precedes another mode, a `BUFFER_CONTRACT` line also judges that
 //! mode's result against the CPU f64 one under the per-quantity contract.
 //!
-//! cargo test --release -p mklight-engine --test buffer_identity -- --ignored
+//! cargo test --release -p mklight-bench --test buffer_identity -- --ignored
 //! --nocapture --test-threads=1
 //! Optional: MKLIGHT_IDENTITY_PROJECT (a local project), MKLIGHT_IDENTITY_SAMPLES=0
 //! (skip the sample designs), MKLIGHT_IDENTITY_MODES (default cpu,metal),
 //! MKLIGHT_IDENTITY_CASES (JSON [{name, analysis, settings}] replacing the
 //! default list), MKLIGHT_IDENTITY_RUNS (timed calls per case, default 1),
 //! MKLIGHT_IDENTITY_GRAPH_BYTES (analysis graph budget; 0 disables it).
+//! `../README.md` lists every harness with its command and variables.
 #![cfg(target_os = "macos")]
 
 use std::path::Path;
 use std::time::Instant;
 
+use mklight_bench::comparison;
 use mklight_core::{JobContext, samples};
 use mklight_engine::{
     AnalysisRequest, Engine, EngineConfig, Session,
@@ -28,9 +30,6 @@ use mklight_engine::{
     project::Project,
 };
 use serde_json::{Value, json};
-
-#[path = "support/comparison.rs"]
-mod comparison;
 
 fn bytes(d: &BufferData) -> &[u8] {
     fn raw<T>(v: &[T]) -> &[u8] {
@@ -54,9 +53,9 @@ fn hashes(r: &AnalysisResult) -> Value {
         .iter()
         .map(|b| {
             let mut h = blake3::Hasher::new();
-            h.update(bytes(&b.data));
+            h.update(bytes(b.data()));
             json!({"name":b.name,"dtype":b.dtype(),"shape":b.shape,
-                "bytes":bytes(&b.data).len(),"hash":h.finalize().to_hex().to_string()})
+                "bytes":bytes(b.data()).len(),"hash":h.finalize().to_hex().to_string()})
         })
         .collect();
     json!({

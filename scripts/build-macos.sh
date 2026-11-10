@@ -63,6 +63,22 @@ refresh_manifest_cache() {
   swift package --package-path "$PKG" purge-cache >/dev/null
 }
 
+# SwiftPM does not recompile the Swift sources that import the C module when
+# the engine's header changes, and objects built against another struct
+# layout crash. Clean the package's build products whenever the header
+# differs from the one the last library was built with.
+refresh_abi_objects() {
+  local header="$ROOT/crates/mklight-ffi/include/mklight.h"
+  local stamp="$LIB_DIR/.mklight.h.sha256"
+  local now
+  now="$(shasum -a 256 "$header" | cut -d' ' -f1)"
+  if [[ -d "$PKG/.build" && "$(cat "$stamp" 2>/dev/null)" != "$now" ]]; then
+    echo "    engine header changed: cleaning the Swift build products"
+    swift package --package-path "$PKG" clean >/dev/null
+  fi
+  echo "$now" > "$stamp"
+}
+
 # ---------------------------------------------------------------------------
 # 1. Rust engine library.
 if [[ "$NO_ENGINE" == "1" ]]; then
@@ -106,6 +122,7 @@ else
     mv -f "$TMP_LIB" "$LIB"
   fi
   [[ "$HAD_LIB" == "0" ]] && refresh_manifest_cache
+  refresh_abi_objects
   echo "    $LIB ($(lipo -archs "$LIB"))"
   if [[ "$ENGINE_ONLY" == "1" ]]; then
     echo "==> engine library ready: swift build / swift test in apps/macos now link it"

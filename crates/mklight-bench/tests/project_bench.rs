@@ -1,6 +1,6 @@
 //! Local-project release measurements; no project or catalogue is embedded.
 //! MKLIGHT_BENCH_PROJECT=/path/project.mklight cargo test --release -p
-//! mklight-engine --test project_bench -- --ignored --nocapture --test-threads=1
+//! mklight-bench --test project_bench -- --ignored --nocapture --test-threads=1
 //! Optional: MKLIGHT_BENCH_AUTOSD_PROJECT, MKLIGHT_BENCH_FILTER (case names),
 //! MKLIGHT_BENCH_RUNS (>=10), MKLIGHT_BENCH_COLD_RUNS (>=3),
 //! MKLIGHT_BENCH_QUIET_SECONDS (default 30). Cold calls use this test binary
@@ -14,7 +14,8 @@
 //! measure next to other builds (every gate record is then provisional),
 //! MKLIGHT_BENCH_AIM_STOP (requested|conditioned) and MKLIGHT_BENCH_TIER
 //! (design|preview) for the accuracy policies. MKLIGHT_BENCH_MIN_RUNS lowers
-//! the run minimums for quick provisional passes.
+//! the run minimums for quick provisional passes. `../README.md` lists
+//! every harness with its command and variables.
 #![cfg(target_os = "macos")]
 
 use std::collections::BTreeMap;
@@ -23,7 +24,8 @@ use std::process::Command;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use mklight_core::{JobContext, OpticalSystem, param::ParamPath};
+use mklight_bench::{comparison, host, solver};
+use mklight_core::{JobContext, OpticalSystem};
 use mklight_engine::{
     AnalysisRequest, Engine, EngineConfig, Session,
     analysis::{AnalysisOutput, AnalysisResult},
@@ -34,16 +36,7 @@ use mklight_gpu::ComputeBackend;
 use mklight_metal::{LibraryChoice, MetalBackend, MetalOptions};
 use serde_json::{Value, json};
 
-#[path = "support/comparison.rs"]
-mod comparison;
-
 const MODES: [&str; 3] = ["cpu", "df", "auto"];
-const SOLVERS: [&str; 4] = [
-    "merit_evaluation",
-    "optimize",
-    "tolerance",
-    "glass_substitution",
-];
 const EDIT_GRAPHS: [&str; 6] = [
     "layout",
     "spot_diagram",
@@ -75,13 +68,6 @@ fn command(program: &str, args: &[&str]) -> String {
     String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 
-fn load() -> Vec<f64> {
-    command("sysctl", &["-n", "vm.loadavg"])
-        .split_whitespace()
-        .filter_map(|s| s.parse().ok())
-        .collect()
-}
-
 // Never compete with a compiler/test invocation. A busy interactive host is
 // allowed after the bounded load gate, and remains labelled provisional.
 fn quiet(label: &str) {
@@ -102,7 +88,7 @@ fn quiet(label: &str) {
     let start = Instant::now();
     let mut observations = Vec::new();
     loop {
-        let loads = load();
+        let loads = host::load_averages();
         let processes = command("ps", &["-axo", "pid=,pcpu=,comm="]);
         let competing: Vec<_> = processes
             .lines()
@@ -208,35 +194,9 @@ fn request(case: &Case, mode: &str) -> AnalysisRequest {
     r
 }
 
-fn variables(system: &OpticalSystem) -> Vec<Value> {
-    let mut vars = Vec::new();
-    for s in system
-        .surfaces
-        .iter()
-        .skip(1)
-        .take(system.surfaces.len() - 2)
-    {
-        if s.shape.curvature() != 0. {
-            vars.push(json!({"param":ParamPath::Curvature{surface:s.id}}));
-        }
-        if s.thickness.is_finite() && s.thickness > 0. {
-            vars.push(json!({"param":ParamPath::Thickness{surface:s.id},
-                "lower":s.thickness * 0.8,"upper":s.thickness * 1.2}));
-        }
-    }
-    // Solves control their targets before merit generation.
-    vars.retain(|v| !system.solves.iter().any(|s| json!(s.target) == v["param"]));
-    vars
-}
-
 fn cases(s: &Session) -> Vec<Case> {
-    let vars = variables(s.system());
-    let glass = s
-        .system()
-        .surfaces
-        .iter()
-        .skip(1)
-        .find(|s| matches!(s.material, mklight_core::MaterialRef::Catalog { .. }));
+    let vars = solver::variables(s.system());
+    let glass = solver::first_glass(s.system());
     let mut cases = Vec::new();
     for info in s.engine().analyses() {
         let settings = match info.name.as_str() {
@@ -246,13 +206,9 @@ fn cases(s: &Session) -> Vec<Case> {
                 }
                 _ => json!({"name":"N-BK7"}),
             },
-            "optimize" => {
-                json!({"variables":vars,"max_iterations":3,"options":{"ftol":0.,"xtol":0.,"gtol":0.},"seed":71})
-            }
-            "tolerance" => json!({"trials":16,"seed":71,"record_trials":16}),
-            "glass_substitution" => json!({"variables":vars,"material_variables":
-                glass.map(|g| vec![json!({"surface":g.id,"candidates":{"nearest":3}})]).unwrap_or_default(),
-                "max_combinations":3,"local_iterations":2,"top_n":3,"seed":71}),
+            "optimize" => solver::optimize(&vars, 3),
+            "tolerance" => solver::tolerance(),
+            "glass_substitution" => solver::glass_substitution(&vars, &solver::glass(s.system())),
             _ => Value::Null,
         };
         cases.push(Case {
@@ -324,22 +280,10 @@ fn cases(s: &Session) -> Vec<Case> {
 // Every edit has a distinct content hash, including across warm/cold blocks.
 // Alternating just two hashes would still hit the immutable operation caches.
 fn edit(s: &mut Session, base: &OpticalSystem, serial: usize) {
-    let mut system = base.clone();
-    let surface = system
-        .surfaces
-        .iter()
-        .skip(1)
-        .find(|s| s.shape.curvature() != 0.)
-        .unwrap();
-    let param = ParamPath::Curvature {
-        surface: surface.id,
-    };
-    let curvature = surface.shape.curvature();
-    let relative = (if serial.is_multiple_of(2) { 1. } else { -1. })
-        * (1. + serial as f64 / 1_000_000.)
-        * 1e-6;
-    param.set(&mut system, curvature / (1. + relative)).unwrap();
-    s.set_system(system).unwrap();
+    assert!(
+        mklight_bench::edit::radius_ppm(s, base, serial),
+        "a curved surface"
+    );
 }
 
 fn output(r: &AnalysisResult) -> AnalysisOutput {
@@ -354,14 +298,14 @@ fn accuracy(a: &AnalysisResult, b: &AnalysisResult, name: &str) -> Value {
     let (mut a, mut b) = (output(a), output(b));
     // Solver execution telemetry and returned designs legitimately differ.
     // Compare their physical score reports, not timing/backend identity.
-    if SOLVERS.contains(&name) {
+    if solver::JOBS.contains(&name) {
         a.json = comparison::solver_scores(name, &a.json);
         b.json = comparison::solver_scores(name, &b.json);
         a.buffers.clear();
         b.buffers.clear();
     }
-    // Per-quantity detail: the contract's classes (support/comparison.rs,
-    // GPU §9.4), each with its worst error as a fraction of its gate.
+    // Per-quantity detail: the contract's classes (`comparison`, GPU §9.4),
+    // each with its worst error as a fraction of its gate.
     let c = comparison::compare(&a, &b, name, &JobContext::new()).unwrap();
     json!({"pass_sampled_margin":c.reason.is_none(),"gate_failure":c.reason,"gate_failures":c.failures,
         "compared":c.compared,"max_abs":c.maximum,"max_path":c.maximum_path,"image_l1_relative":c.image_l1_relative,
@@ -384,7 +328,7 @@ fn measured(
     let wall_ms = start.elapsed().as_secs_f64() * 1e3;
     let device_ms = (mklight_metal::device_seconds() - before) * 1e3;
     let mut record = json!({"case":case.name,"mode":mode,"phase":phase,"round":round,
-        "wall_ms":wall_ms,"device_ms":device_ms,"load":load(),"snapshot":s.snapshot_hash().to_hex()});
+        "wall_ms":wall_ms,"device_ms":device_ms,"load":host::load_averages(),"snapshot":s.snapshot_hash().to_hex()});
     match result {
         Ok(r) => {
             record["used"] = json!(r.backend.used);
@@ -624,7 +568,7 @@ fn project_bench() {
                     emit(
                         "edit_loop",
                         json!({"mode":MODES[mode],"round":round,
-                        "wall_ms":start.elapsed().as_secs_f64()*1e3,"results":results,"errors":errors,"load":load(),
+                        "wall_ms":start.elapsed().as_secs_f64()*1e3,"results":results,"errors":errors,"load":host::load_averages(),
                         "graph":s.engine().analysis_graph_stats()}),
                     );
                     // The same six graphs again on the unchanged snapshot.
@@ -640,7 +584,7 @@ fn project_bench() {
                     emit(
                         "edit_loop_warm",
                         json!({"mode":MODES[mode],"round":round,
-                        "wall_ms":start.elapsed().as_secs_f64()*1e3,"results":used,"load":load()}),
+                        "wall_ms":start.elapsed().as_secs_f64()*1e3,"results":used,"load":host::load_averages()}),
                     );
                 }
             }
@@ -757,7 +701,7 @@ fn project_bench_queued_edit_loop() {
                     json!({
                         "mode":MODES[mode],"round":round,"wall_ms":wall_ms,"device_ms":device_ms,
                         "snapshot":session.snapshot_hash().to_hex(),"library_hash":session.library_hash(),"results":results,"errors":errors,
-                        "load":load(),"graph":engine.analysis_graph_stats()
+                        "load":host::load_averages(),"graph":engine.analysis_graph_stats()
                     }),
                 );
             }
@@ -805,7 +749,7 @@ fn project_bench_cancel_latency() {
                 "cancel",
                 json!({"case":name,"full_ms":full.as_secs_f64()*1e3,"cancel_after_ms":at.as_secs_f64()*1e3,
                 "latency_ms":latency_ms,"cancelled":result.as_ref().is_err_and(|e| e.is_cancelled()),
-                "finished_first":done < cancelled_at,"load":load()}),
+                "finished_first":done < cancelled_at,"load":host::load_averages()}),
             );
         }
     }

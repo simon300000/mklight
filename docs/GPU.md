@@ -1653,9 +1653,10 @@ Edits do not trigger a CPU run. Native Metal results publish immediately as
 per-snapshot geometry qualification, full-chain reference comparison or
 per-candidate f64 check at run time. Accuracy rests on the offline f64
 cross-validation suites (perturbed systems and known answers included) and on
-the ignored `metal_accuracy::default_sample_accuracy` harness, which compares
-every GPU-capable analysis on all samples at default settings with the CPU
-reference under the per-quantity contracts of §9.4. The startup numerics
+the ignored `metal_accuracy::default_sample_accuracy` harness
+(`mklight-bench`), which compares every GPU-capable analysis on all samples
+at default settings with the CPU reference under the per-quantity contracts
+of §9.4. The startup numerics
 probe, boundary packing checks, device status/finite guards and the kernels'
 conservation sums remain as runtime guards; none repeats the CPU solve.
 
@@ -1907,7 +1908,8 @@ The row of `glass_substitution` is measured and never read (accuracy
 exclusion); a unit test (`builtin_table_matches_this_model`) requires a row
 for every analysis of `GPU_ANALYSES` and for no other.
 
-**Calibration.** `tests/cost_calibration.rs::calibrate` (release, real Metal)
+**Calibration.** `calibrate` in
+`crates/mklight-bench/tests/cost_calibration.rs` (release, real Metal)
 measures every analysis with a GPU path at a ladder of two or three
 workloads on nine sample designs (refracting, reflecting, finite,
 anamorphic, freeform, diffractive) and an optional local project
@@ -1926,7 +1928,7 @@ quiet machine, without other GPU work):
 
     MKLIGHT_BENCH_PROJECT=<local project file> \
     MKLIGHT_COST_CALIBRATION_OUT=$PWD/crates/mklight-engine/src/analysis/cost/apple-m2-pro.json \
-    cargo test --release -p mklight-engine --test cost_calibration -- --ignored --exact calibrate --nocapture --test-threads=1
+    cargo test --release -p mklight-bench --test cost_calibration -- --ignored --exact calibrate --nocapture --test-threads=1
 
 then `cargo test -p mklight-engine --lib cost` (the table against the
 registry) and `validate` (same command with `--exact validate`), and update
@@ -2137,7 +2139,7 @@ For insufficient margin use double-float, a better-conditioned formulation
 or the reported reference fallback, never loosen the budget to pass.
 
 **Contracts.** The offline comparators (`metal_accuracy`, `aim_stop_qualify`,
-the `project_bench` accuracy columns; `crates/mklight-engine/tests/support/
+the `project_bench` accuracy columns; `crates/mklight-bench/src/
 comparison.rs`) judge every result field by its **quantity class**, never by
 a tolerance guessed from its name. One table (`FIELDS`) maps every numeric
 field and buffer of every compared analysis to a class; a field it does not
@@ -2175,7 +2177,8 @@ statistical classes gate at their stated confidence.
 | sampling | recorded | — | pupil/image grid sizes and spacings a backend chooses |
 
 Every class is at least as strict as the §7 budget of its physical quantity
-(`tests/contract.rs`). Data on a sampling axis or grid are compared at the
+(`mklight-bench/tests/contract.rs`). Data on a sampling axis or grid are
+compared at the
 **same physical coordinates**: index by index where both results sampled the
 same coordinates (within the axis class), otherwise the denser result is
 resampled onto the sparser one's coordinates (linear on 1-D axes such as
@@ -2255,16 +2258,17 @@ the offline shader compile, so the library is compiled from source at run
 time), §6.
 
 **Harnesses** (read only by tests and benchmarks; the files define their
-meaning):
+meaning). The engine's measurement and qualification harnesses are the crate
+`mklight-bench`; its `README.md` lists each one's command and variables.
 
 | Family | Read in |
 |---|---|
-| `MKLIGHT_BENCH_*` | `mklight-engine/tests/project_bench.rs`, `cpu_trace_bench.rs` (`MKLIGHT_BENCH_PROJECT` also in `cost_calibration.rs`) |
-| `MKLIGHT_COST_{CALIBRATION_OUT, DESIGNS, MODES, FILTER, REPS, RECORDS, REFIT, DEVICE_OPEN_MS}` | `mklight-engine/tests/cost_calibration.rs` |
-| `MKLIGHT_QUALIFY_*` | `mklight-engine/tests/aim_stop_qualify.rs` |
-| `MKLIGHT_IDENTITY_*` | `mklight-engine/tests/buffer_identity.rs` |
-| `MKLIGHT_STUDY_*` | `mklight-engine/tests/aim_precision_study.rs` |
-| `MKLIGHT_SEED_PROJECT` | `mklight-engine/tests/seeded_jacobian.rs` |
+| `MKLIGHT_BENCH_*` | `mklight-bench/tests/project_bench.rs`, `cpu_trace_bench.rs` (`MKLIGHT_BENCH_PROJECT` also in `cost_calibration.rs`) |
+| `MKLIGHT_COST_{CALIBRATION_OUT, DESIGNS, MODES, FILTER, REPS, RECORDS, REFIT, DEVICE_OPEN_MS}` | `mklight-bench/tests/cost_calibration.rs` |
+| `MKLIGHT_QUALIFY_*` | `mklight-bench/tests/aim_stop_qualify.rs` |
+| `MKLIGHT_IDENTITY_*` | `mklight-bench/tests/buffer_identity.rs` |
+| `MKLIGHT_STUDY_*` | `mklight-bench/tests/aim_precision_study.rs` |
+| `MKLIGHT_SEED_PROJECT` | `mklight-bench/tests/seeded_jacobian.rs` |
 | `MKLIGHT_P5_{CASE, SAMPLE}` | `mklight-analysis/tests/p5_bench.rs` |
 | `MKLIGHT_P10_BENCH_{FILTER, ITERS}` | `mklight-stray/tests/p10_support/transport_bench.rs` |
 | `MKLIGHT_UPDATE_GOLDEN`, `MKLIGHT_UPDATE_RESULTS_DOC` | `mklight-analysis/tests/golden.rs`, `mklight-engine/tests/results_doc.rs` (rewrite the stored golden results, the generated block of RESULTS.md) |

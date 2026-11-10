@@ -485,7 +485,7 @@ mod tests {
     fn values<'a>(r: &'a AnalysisResult, name: &str, shape: &[usize]) -> &'a [f64] {
         let b = r.buffers.iter().find(|b| b.name == name).unwrap();
         assert_eq!(b.shape, shape, "{name}");
-        match &b.data {
+        match b.data() {
             BufferData::F64(v) => v,
             _ => panic!("{name} is not f64"),
         }
@@ -535,7 +535,7 @@ mod tests {
         }
         for name in ["class_irradiance_std_error", "total_irradiance_std_error"] {
             let b = r.buffers.iter().find(|b| b.name == name).unwrap();
-            let BufferData::F64(v) = &b.data else {
+            let BufferData::F64(v) = b.data() else {
                 panic!("{name} is not f64")
             };
             assert!(v.iter().all(|e| e.is_finite()), "{name}");

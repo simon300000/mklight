@@ -17,8 +17,8 @@ use crate::convert::{ser_to_py, to_py};
 use crate::errors::{ErrorKind, engine_err, new_err};
 use crate::wait::wait_job;
 
-/// The Rust side of a finished analysis; buffers are shared with the
-/// `Array`s (and numpy arrays) handed to Python.
+/// The Rust side of a finished analysis; the buffers' payloads are shared
+/// with the `Array`s (and numpy arrays) handed to Python.
 pub struct ResultData {
     pub run_info: RunInfo,
     pub backend: BackendReport,
@@ -26,7 +26,7 @@ pub struct ResultData {
     pub library_hash: String,
     pub derived_snapshot_hash: Option<String>,
     pub json: Value,
-    pub buffers: Vec<Arc<Buffer>>,
+    pub buffers: Vec<Buffer>,
 }
 
 impl From<AnalysisResult> for ResultData {
@@ -38,7 +38,7 @@ impl From<AnalysisResult> for ResultData {
             library_hash: r.library_hash,
             derived_snapshot_hash: r.derived_snapshot_hash,
             json: r.json,
-            buffers: r.buffers.into_iter().map(Arc::new).collect(),
+            buffers: r.buffers,
         }
     }
 }

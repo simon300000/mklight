@@ -348,6 +348,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "mklight-bench"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "bytemuck",
+ "libc",
+ "mklight-core",
+ "mklight-engine",
+ "mklight-ghost",
+ "mklight-gpu",
+ "mklight-metal",
+ "mklight-optim",
+ "mklight-stray",
+ "mklight-trace",
+ "rayon",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "mklight-cli"
 version = "0.1.0"
 dependencies = [
@@ -377,7 +397,6 @@ name = "mklight-engine"
 version = "0.1.0"
 dependencies = [
  "blake3",
- "bytemuck",
  "libc",
  "mklight-analysis",
  "mklight-core",
