@@ -1,6 +1,6 @@
 #![cfg(target_os = "macos")]
 //! Complete-workload timings include device search and final report scoring.
-use mklight_core::{JobContext, MaterialRef, Snapshot, param::ParamPath, samples};
+use mklight_core::{JobContext, Snapshot, param::ParamPath, samples};
 use mklight_gpu::ComputeBackend;
 use mklight_optim::{
     Monitor, deriv::*, gpu::*, lsq::*, merit::default::DefaultMeritSpec, merit::*, problem::*,
@@ -77,8 +77,8 @@ fn jacobians_and_solves() {
     }
 }
 #[test]
-#[ignore = "provisional complete compensated/uncompensated trial and glass refinement timings"]
-fn trials_and_glass() {
+#[ignore = "provisional complete compensated/uncompensated trial timings"]
+fn trials() {
     let b = backend();
     let system = samples::cooke_triplet();
     let ctx = JobContext::new();
@@ -160,67 +160,6 @@ fn trials_and_glass() {
                 serde_json::json!({"case":"cooke_tolerance","compensated":compensated,"trials":32,"batch":16,"seed":73,"run":run,"phase":phase(run),"cpu_seconds":cpu_s,"resident_seconds":gpu_s,"cpu_mean":expected.mean,"resident_mean":got.mean,"commands":after.command_buffers-before.command_buffers,"device_seconds":after.device_seconds-before.device_seconds,"copied_bytes":after.copied_bytes-before.copied_bytes,"peak_plan_bytes":after.peak_bytes,"fallback_operands":q.fallback_operands-q0.fallback_operands,"device_operands":q.device_operands-q0.device_operands})
             );
         }
-    }
-    let systems: Vec<_> = ["N-SK16", "N-BAK1", "N-BK7"]
-        .iter()
-        .map(|name| {
-            let mut s = system.clone();
-            s.surfaces[1].material = MaterialRef::Catalog {
-                catalog: None,
-                name: (*name).into(),
-                offset: Default::default(),
-            };
-            s
-        })
-        .collect();
-    let nominal = focus.get(&system).unwrap();
-    let vars = vec![VariableSpec::bounded(focus, nominal - 1., nominal + 1.)];
-    let gpu = ResidentEvaluator::new(
-        GpuContext::new(b, Snapshot::new(system.clone()).unwrap()),
-        reference.clone(),
-    );
-    for run in 0..12 {
-        let t = Instant::now();
-        let cpu = scheduler::run(&reference, systems.len(), &ctx, |i, e| {
-            let p = OpticalProblem::new(
-                systems[i].clone(),
-                vars.clone(),
-                criterion.clone(),
-                e,
-                &registry,
-            )?;
-            least_squares(&p, &p.start_point()?, &lsq, &Monitor::new(ctx.clone()))
-        })
-        .unwrap();
-        let cpu_s = t.elapsed().as_secs_f64();
-        let before = gpu.context.stats();
-        let q0 = gpu.stats();
-        let t = Instant::now();
-        let got = gpu
-            .refine_candidates(&systems, &vars, &criterion, &lsq, &ctx)
-            .unwrap();
-        let gpu_s = t.elapsed().as_secs_f64();
-        assert_eq!(got.len(), systems.len());
-        for (i, r) in got.iter().enumerate() {
-            let p = OpticalProblem::new(
-                systems[i].clone(),
-                vars.clone(),
-                criterion.clone(),
-                reference.clone(),
-                &registry,
-            )
-            .unwrap();
-            let e = evaluate_one(&p, &r.x, &ctx).unwrap();
-            assert_eq!(r.merit, merit(p.weights(), &e.residuals, e.status));
-            assert!((r.merit - cpu[i].merit).abs() < 1e-8 + 0.01 * cpu[i].merit.abs());
-        }
-        let after = gpu.context.stats();
-        let q = gpu.stats();
-        assert!(q.device_operands > q0.device_operands);
-        eprintln!(
-            "P8_WORKLOAD {}",
-            serde_json::json!({"case":"cooke_catalogue_refinements","choices":["N-SK16","N-BAK1","N-BK7"],"variables":1,"run":run,"phase":phase(run),"cpu_seconds":cpu_s,"resident_seconds":gpu_s,"cpu_merits":cpu.iter().map(|r|r.merit).collect::<Vec<_>>(),"resident_merits":got.iter().map(|r|r.merit).collect::<Vec<_>>(),"commands":after.command_buffers-before.command_buffers,"device_seconds":after.device_seconds-before.device_seconds,"copied_bytes":after.copied_bytes-before.copied_bytes,"peak_plan_bytes":after.peak_bytes,"fallback_operands":q.fallback_operands-q0.fallback_operands,"device_operands":q.device_operands-q0.device_operands})
-        );
     }
 }
 

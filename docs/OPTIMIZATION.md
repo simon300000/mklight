@@ -1483,9 +1483,7 @@ rounds. It uses no time window or search pruning. Compensated tolerance trials
 use this scheduler, preserving the 33-point MTF focus screen plus the current
 start. Ordinary uncompensated parameter trials retain P4 preparation; random
 irregularity orientations that change extra model fields use the counted
-complete-system preparation route. `ResidentEvaluator::refine_candidates`
-provides the same scheduling for independent glass/multistart refinements and
-returns independently scored f64 outcomes in input order. Catalogue filtering,
+complete-system preparation route. Catalogue filtering,
 trial RNG and population/search decisions retain the reference implementation.
 The low-level perturbation and batched QR operations are available to composed
 callers; trial RNG and independent workers' small local linear solves remain

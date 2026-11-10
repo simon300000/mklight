@@ -6,7 +6,6 @@ use crate::merit::gpu_eval::resident::{self, RayDesign};
 use crate::merit::{
     gpu_eval::gpu_supports, mtf_eval::MtfEvaluator, solver_eval::SolverEvaluator, *,
 };
-use crate::problem::Problem;
 use mklight_core::{
     JobContext, MkError, MkResult, OpticalSystem, RayAiming, RunInfo, SurfaceShape,
 };
@@ -951,60 +950,5 @@ impl ResidentEvaluator {
             .into_iter()
             .flat_map(|v| v.expect("finished"))
             .collect())
-    }
-
-    /// Independent glass or multistart refinements. Every supplied choice is
-    /// refined; stable input order is retained and final scores come from f64.
-    pub fn refine_candidates(
-        &self,
-        systems: &[OpticalSystem],
-        variables: &[VariableSpec],
-        spec: &MeritFunctionSpec,
-        settings: &crate::lsq::LsqSettings,
-        ctx: &JobContext,
-    ) -> MkResult<Vec<crate::OptimResult>> {
-        let mut results = Vec::with_capacity(systems.len());
-        for chunk in systems.chunks(32) {
-            results.extend(super::scheduler::run(
-                self,
-                chunk.len(),
-                ctx,
-                |i, worker| {
-                    let problem = OpticalProblem::new(
-                        chunk[i].clone(),
-                        variables.to_vec(),
-                        spec.clone(),
-                        worker,
-                        &OperandRegistry::builtin(),
-                    )?;
-                    let start = problem.start_point()?;
-                    crate::discrete::refine_one(
-                        &problem,
-                        &start,
-                        settings,
-                        ctx,
-                        crate::monitor::DEFAULT_FEASIBILITY_TOL,
-                    )
-                },
-            )?);
-        }
-        // This API publishes independent refinements, so score their final
-        // designs once after every device solve has completed.
-        for (system, result) in systems.iter().zip(&mut results) {
-            ctx.check()?;
-            let problem = OpticalProblem::new(
-                system.clone(),
-                variables.to_vec(),
-                spec.clone(),
-                &self.reference,
-                &OperandRegistry::builtin(),
-            )?;
-            let e = crate::problem::evaluate_one(&problem, &result.x, ctx)?;
-            result.merit = crate::problem::merit(problem.weights(), &e.residuals, e.status);
-            result.violation =
-                crate::problem::total_violation(problem.constraints(), &e.constraints, e.status);
-        }
-        ctx.check()?;
-        Ok(results)
     }
 }

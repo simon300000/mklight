@@ -5,7 +5,7 @@ use mklight_optim::{
 };
 use std::sync::Arc;
 #[test]
-fn trial_replay_compensation_and_refinements() {
+fn trial_replay_and_compensation() {
     let b = Arc::new(
         mklight_metal::MetalBackend::new()
             .unwrap()
@@ -99,35 +99,6 @@ fn trial_replay_compensation_and_refinements() {
             "P8 tolerance compensated={compensated} stats={:?}",
             gpu.stats()
         );
-    }
-    let mut alternative = system.clone();
-    alternative.surfaces[1].material = mklight_core::MaterialRef::Model {
-        nd: 1.6,
-        vd: 60.,
-        dpgf: 0.,
-    };
-    let systems = vec![system.clone(), alternative];
-    let vars = vec![VariableSpec::bounded(focus, 40., 60.)];
-    let results = gpu
-        .refine_candidates(&systems, &vars, &criterion, &lsq, &ctx)
-        .unwrap();
-    assert_eq!(results.len(), 2);
-    for (s, result) in systems.iter().zip(&results) {
-        let problem = OpticalProblem::new(
-            s.clone(),
-            vars.clone(),
-            criterion.clone(),
-            reference.clone(),
-            &registry,
-        )
-        .unwrap();
-        let e = mklight_optim::problem::evaluate_one(&problem, &result.x, &ctx).unwrap();
-        let merit = mklight_optim::problem::merit(
-            mklight_optim::problem::Problem::weights(&problem),
-            &e.residuals,
-            e.status,
-        );
-        assert_eq!(result.merit, merit);
     }
     assert!(gpu.stats().device_operands > 0);
 }
