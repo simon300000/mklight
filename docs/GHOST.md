@@ -546,12 +546,10 @@ then runs the same ghost sequence geometry without unused coating work.
 
 Explicit jobs currently accept uploaded immutable systems with up to 16
 wavelengths and default reference intersection settings. Other wavelength
-shapes, custom intersection settings, resident candidate systems and
-irradiance runs whose finite object lies beyond the 1000 mm segment domain
+shapes, custom intersection settings and irradiance runs whose finite object lies beyond the 1000 mm segment domain
 (every probe would need reference completion) return `Unsupported` for the
-caller's reported reference route. `auto` keeps `ghost_irradiance` on
-the CPU reference as an accuracy exclusion (GPU.md §9.2, "Automatic
-routing"). Tests cover all built-in samples, matched CPU-f32/Metal algebra, both
+caller's reported reference route. `auto` routes `ghost_irradiance` by
+the cost model (GPU.md §9.2, "Automatic routing"). Tests cover all built-in samples, matched CPU-f32/Metal algebra, both
 shader-library origins, physical fixtures, fixed-hit map conservation,
 pixel-edge reference handling, bitwise CPU-f32 emulation of the complete
 map chain, concurrent determinism and cancellation.

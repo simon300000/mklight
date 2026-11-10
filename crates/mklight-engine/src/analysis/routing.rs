@@ -471,11 +471,15 @@ mod tests {
             req.backend = Some(Backend::Auto);
             s.run_analysis(&req, &JobContext::new()).unwrap()
         };
-        for (name, rule) in [
-            ("ghost_irradiance", "accuracy exclusion"),
-            ("wavefront_map", "static capability"),
+        let glass = json!({
+            "material_variables": [{"surface": 1, "candidates": {"nearest": 2}}],
+            "max_combinations": 2, "local_iterations": 1
+        });
+        for (name, settings, rule) in [
+            ("glass_substitution", glass, "accuracy exclusion"),
+            ("wavefront_map", Value::Null, "static capability"),
         ] {
-            let r = run(name, Value::Null);
+            let r = run(name, settings);
             assert_eq!(r.run_info.backend, "cpu_reference", "{name}");
             let cost = r.backend.cost_decision.as_ref().unwrap();
             assert_eq!(
@@ -483,7 +487,8 @@ mod tests {
                 (&json!(rule), &json!(true))
             );
             assert!(r.backend.fallback_reason.is_some());
-            assert!(r.run_info.warnings.is_empty() && r.run_info.failed_attempts.is_empty());
+            // No native attempt (the analysis's own warnings may remain).
+            assert!(r.run_info.failed_attempts.is_empty(), "{name}");
         }
         // No GPU path: known from the provider's catalogue.
         let r = run("seidel", Value::Null);

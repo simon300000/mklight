@@ -1583,8 +1583,7 @@ re-uploads of equal content), the exact imported field rows, the host rows
 or the device solve, tolerance and iteration cap. Handles, external cache
 keys, snapshots and plan settings never identify them, so analyses and
 leases with equal inputs share them and any geometry, catalogue or
-environment change misses; device-built systems and rows produced inside a
-plan stay plan-local. `PlanStats.aiming` records each plan's generations
+environment change misses; rows produced inside a plan stay plan-local. `PlanStats.aiming` records each plan's generations
 (rays, failures, iteration sum/maximum and a histogram, reduced on the
 device by `mkl_aim_stats`), `PlanStats.host` the host preparation (rows,
 reused/solved fields, seconds) and `PlanStats.memory` the device allocation
@@ -2001,18 +2000,16 @@ start (format and model version must match). `validate` in the same file compare
 against both backends on fresh edits and warm repeats.
 
 *Accuracy exclusions* are qualified with the per-quantity contracts of §9.4:
-`metal_accuracy` on the 16 samples (release, real Metal: 480 rows, 0 native
+`metal_accuracy` on the 16 samples (release, real Metal: 481 rows, 0 native
 gate failures) and a complex 29-surface F/1.4 lens (`project_bench` accuracy
 records, Metal DF vs CPU f64, warm and edited). Analyses not in the table
-pass both. This evidence predates the 2026-11 divisions (calibration status
-above); the exclusions are to be re-qualified with the recalibration
-(2026-11).
+pass both. Re-qualified with the 2026-11 divisions and recalibration.
 
 | Analysis | Status | Evidence |
 |---|---|---|
-| `ghost_irradiance` | excluded | 16/16 samples pass, but an edited complex-lens snapshot gives one discrete `rays_traced` mismatch (23,442 vs 23,370 in 1 of 1,656 ghost fields; positions 0.035 and flux far inside their contracts) |
-| `glass_substitution` | excluded | complex lens: the native search returns other finalists (merit and violation far outside their gates); the CPU is also faster |
-| `spot_diagram` | excluded from 1M traced rays | complex lens, 23.6M rays after an edit: `rays_arrived` differs by 2 of 767k in 10 field–wavelength rows (edge rays); default spots and the repeated dense spot pass, so smaller spots stay routed by cost |
+| `glass_substitution` | excluded | complex lens, warm and edited: the native search returns another finalist glass (finalist merit 3× outside its gate); the CPU is about as fast (900 against 846 ms) |
+| `ghost_irradiance` | routed by cost (excluded until 2026-11) | 16/16; complex lens warm and edited: discrete counts exact (6,092 compared), positions ≤ 3e-7 of their gate; the earlier single `rays_traced` mismatch (1 of 1,656 ghost fields) no longer occurs |
+| `spot_diagram` | routed by cost (dense spots excluded until 2026-11) | 16/16; complex lens at 33.5M rays, warm and edited: `rays_arrived` exact, positions ≤ 3.2e-4 of their gate (the earlier 2-of-767k edge-ray difference no longer occurs); Metal 7.1 s against 12.4 s |
 | `psf`, `mtf`, `line_spread`, `diffraction_encircled_energy`, `through_focus_mtf`, `mtf_vs_field` | routed by cost | 16/16 within contract; complex lens within contract (MTF frequency class ≤ 0.016 of its gate, dense grids included) |
 | `chief_ray_angle`, `pupil_aberration`, `relative_illumination_map`, `grid_distortion` | routed by cost | 16/16; complex lens without mask mismatches (host f64 chief rows) |
 | `field_curvature_distortion` | routed by cost | 16/16; complex lens 2.8e-7 (host f64 differential pencil) |
