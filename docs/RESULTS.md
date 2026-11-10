@@ -2191,7 +2191,7 @@ Result (`result` in the envelope):
 |---|---|---|---|
 | `algorithm` | string |  | one of `"tabu"`, `"hammer"` |
 | `backend` | object |  |  |
-| `backend.aiming` (optional) | string |  | one of `"by-batch"`, `"device"`, `"host"`; Where the pupil rays of a run handed a GPU device are aimed: by batch (default; `resident_evaluation.device_aimed_batches` counts the device's), every batch on the device with host completion (`aiming` study set to `device` or `table`) or on the host with device tracing (`host-table`, `split:<share>`). |
+| `backend.aiming` (optional) | string |  | one of `"by-batch"`, `"device"`, `"host"`; Where the pupil rays of a run handed a GPU device are aimed: by batch (default; `resident_evaluation.device_aimed_batches` counts the device's), every batch on the device with host completion (`aiming` key set to `device` or `table`) or on the host with device tracing (`host-table`, `split:<share>`). |
 | `backend.evaluated_on` | string |  | Search evaluator backend; envelope uses engine backend ids. |
 | `backend.gpu_stats` (optional) | object |  |  |
 | `backend.gpu_stats.cpu_candidates` | integer |  | ≥ 0 |
@@ -2284,7 +2284,7 @@ Result (`result` in the envelope):
 | field | type | unit | notes |
 |---|---|---|---|
 | `backend` | object |  |  |
-| `backend.aiming` (optional) | string |  | one of `"by-batch"`, `"device"`, `"host"`; Where the pupil rays of a run handed a GPU device are aimed: by batch (default; `resident_evaluation.device_aimed_batches` counts the device's), every batch on the device with host completion (`aiming` study set to `device` or `table`) or on the host with device tracing (`host-table`, `split:<share>`). |
+| `backend.aiming` (optional) | string |  | one of `"by-batch"`, `"device"`, `"host"`; Where the pupil rays of a run handed a GPU device are aimed: by batch (default; `resident_evaluation.device_aimed_batches` counts the device's), every batch on the device with host completion (`aiming` key set to `device` or `table`) or on the host with device tracing (`host-table`, `split:<share>`). |
 | `backend.evaluated_on` | string |  | Search evaluator backend; envelope uses engine backend ids. |
 | `backend.gpu_stats` (optional) | object |  |  |
 | `backend.gpu_stats.cpu_candidates` | integer |  | ≥ 0 |
@@ -2354,7 +2354,7 @@ Result (`result` in the envelope):
 |---|---|---|---|
 | `algorithm` | string |  |  |
 | `backend` | object |  |  |
-| `backend.aiming` (optional) | string |  | one of `"by-batch"`, `"device"`, `"host"`; Where the pupil rays of a run handed a GPU device are aimed: by batch (default; `resident_evaluation.device_aimed_batches` counts the device's), every batch on the device with host completion (`aiming` study set to `device` or `table`) or on the host with device tracing (`host-table`, `split:<share>`). |
+| `backend.aiming` (optional) | string |  | one of `"by-batch"`, `"device"`, `"host"`; Where the pupil rays of a run handed a GPU device are aimed: by batch (default; `resident_evaluation.device_aimed_batches` counts the device's), every batch on the device with host completion (`aiming` key set to `device` or `table`) or on the host with device tracing (`host-table`, `split:<share>`). |
 | `backend.evaluated_on` | string |  | Search evaluator backend; envelope uses engine backend ids. |
 | `backend.gpu_stats` (optional) | object |  |  |
 | `backend.gpu_stats.cpu_candidates` | integer |  | ≥ 0 |
@@ -2469,7 +2469,7 @@ Result (`result` in the envelope):
 | field | type | unit | notes |
 |---|---|---|---|
 | `backend` | object |  |  |
-| `backend.aiming` (optional) | string |  | one of `"by-batch"`, `"device"`, `"host"`; Where the pupil rays of a run handed a GPU device are aimed: by batch (default; `resident_evaluation.device_aimed_batches` counts the device's), every batch on the device with host completion (`aiming` study set to `device` or `table`) or on the host with device tracing (`host-table`, `split:<share>`). |
+| `backend.aiming` (optional) | string |  | one of `"by-batch"`, `"device"`, `"host"`; Where the pupil rays of a run handed a GPU device are aimed: by batch (default; `resident_evaluation.device_aimed_batches` counts the device's), every batch on the device with host completion (`aiming` key set to `device` or `table`) or on the host with device tracing (`host-table`, `split:<share>`). |
 | `backend.evaluated_on` | string |  | Search evaluator backend; envelope uses engine backend ids. |
 | `backend.gpu_stats` (optional) | object |  |  |
 | `backend.gpu_stats.cpu_candidates` | integer |  | ≥ 0 |

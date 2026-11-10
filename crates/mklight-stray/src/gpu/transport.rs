@@ -36,7 +36,7 @@ pub struct TransportOptions {
     pub head_events: u32,
     /// Share of the source chunks transported by the device
     /// (`hybrid::Design::CoSplit`); the CPU reference traces the others.
-    /// `None`: the study key `stray_share`, else a fixed rule of the scene
+    /// `None`: the route key `stray_share`, else a fixed rule of the scene
     /// (`hybrid::default_share`).
     pub gpu_share: Option<f64>,
 }

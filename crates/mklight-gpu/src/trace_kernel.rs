@@ -349,7 +349,7 @@ pub fn asphere_poly<E: FpEnv>(s: &PackedSurface, r2: F<E>) -> (F<E>, F<E>) {
 /// polynomial alone is off by ~6e-8 × |P|, which a steep, deep asphere turns
 /// into position errors above the budget.
 #[inline(always)]
-fn asphere_poly_dp_df<E: FpEnv>(s: &PackedSurface, r2: D<E>) -> (D<E>, D<E>) {
+pub(crate) fn asphere_poly_dp_df<E: FpEnv>(s: &PackedSurface, r2: D<E>) -> (D<E>, D<E>) {
     let n = (s.num_asphere as usize).min(MAX_ASPHERE);
     if n == 0 {
         return (D::ZERO, D::ZERO);

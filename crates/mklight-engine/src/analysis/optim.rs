@@ -114,7 +114,7 @@ pub(super) fn evaluation_backend_schema() -> Value {
                 "aiming",
                 enumeration(
                     &["by-batch", "device", "host"],
-                    "Where the pupil rays of a run handed a GPU device are aimed: by batch (default; `resident_evaluation.device_aimed_batches` counts the device's), every batch on the device with host completion (`aiming` study set to `device` or `table`) or on the host with device tracing (`host-table`, `split:<share>`).",
+                    "Where the pupil rays of a run handed a GPU device are aimed: by batch (default; `resident_evaluation.device_aimed_batches` counts the device's), every batch on the device with host completion (`aiming` key set to `device` or `table`) or on the host with device tracing (`host-table`, `split:<share>`).",
                 ),
             ),
             (
@@ -370,7 +370,7 @@ struct Evaluation {
     warnings: Vec<String>,
 }
 
-/// Does the `aiming` study pin the solvers' pupil-ray aiming: `device` or
+/// Does the `aiming` key pin the solvers' pupil-ray aiming: `device` or
 /// `table` every batch on the device with host completion (`Some(false)`),
 /// `host-table` or `split:<share>` every batch on the host (`Some(true)`)?
 /// Unset, the evaluator's rule decides per batch
@@ -486,7 +486,7 @@ impl Evaluation {
         if let Some((g, device)) = &self.gpu {
             if active {
                 self.warnings.push(format!(
-                    "ray operands evaluated on {} (f32)",
+                    "ray operands evaluated on {} (double-float)",
                     device.backend.info().backend_id()
                 ));
                 b["evaluated_on"] = json!(device.backend.info().backend_id());

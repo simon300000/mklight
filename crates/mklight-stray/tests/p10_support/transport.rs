@@ -114,75 +114,96 @@ fn transport_specification_and_tiles() {
         .unwrap()
         .expect("actual device required");
     let cpu = mklight_gpu::CpuF32Backend::matching(&metal.precision().probe);
-    let sys = common::window(1.5, 2., 10.);
-    let snap = Snapshot::new(sys.clone()).unwrap();
-    let system = StraySystem::new(
-        Arc::new(common::resolve(sys)),
-        &common::no_scatter_options(),
-    )
-    .unwrap();
-    let source = system.system_field_source(0, 0.1, 1.).unwrap().spec;
-    let settings = StraySettings {
-        rays: 65,
-        mode: SplitMode::Split {
-            max_splits: 4,
-            rare_floor: 0.02,
-        },
-        ..Default::default()
-    };
-    let raw = |b: &dyn ComputeBackend, head_events| {
-        let ctx = JobContext::new();
-        let prep = gpu::TransportScene::new(b, &system.scene, &ctx).unwrap();
-        let mut p = mklight_gpu::resident::ResidentPlan::new(snap.clone());
-        let options = gpu::TransportOptions {
-            stack_capacity: 64,
-            head_events,
+    // A flat window, and the Petzval sample, whose even aspheres the device
+    // evaluates in the radial form (the specification too).
+    for (sys, sources) in [
+        (common::window(1.5, 2., 10.), 65usize),
+        (mklight_core::samples::petzval_asphere(), 512),
+    ] {
+        let name = sys.name.clone();
+        let snap = Snapshot::new(sys.clone()).unwrap();
+        let system = StraySystem::new(
+            Arc::new(common::resolve(sys)),
+            &common::no_scatter_options(),
+        )
+        .unwrap();
+        let field = system.resolved().system().fields.fields.len() - 1;
+        let source = system.system_field_source(field, 0.1, 1.).unwrap().spec;
+        let settings = StraySettings {
+            rays: sources as u64,
+            mode: SplitMode::Split {
+                max_splits: 4,
+                rare_floor: 0.02,
+            },
             ..Default::default()
         };
-        let (a, c, s) = prep
-            .append(&mut p, &system.scene, &source, &settings, 0, 65, options, 0)
-            .unwrap();
-        p.outputs = vec![a, c, s];
-        let r = b.submit_plan(p, &ctx).unwrap().wait().unwrap();
-        assert_eq!(r.stats.copied_bytes, 0);
-        let ledger_view = b.read_view(r.outputs[1].view()).unwrap();
-        let ledgers = ops::read_records::<ops::Ledger>(&ledger_view).unwrap();
-        assert_eq!(ledgers.len(), 65);
-        // Detection and stack rows past each source's count are unspecified.
-        let valid = |output: usize, rows: usize, width: usize, count: fn(&ops::Ledger) -> u32| {
-            let words = b
-                .read_view(r.outputs[output].view())
-                .unwrap()
-                .words()
-                .to_vec();
-            ledgers
-                .iter()
-                .enumerate()
-                .flat_map(|(i, l)| words[i * rows * width..][..count(l) as usize * width].to_vec())
-                .collect::<Vec<_>>()
+        let raw = |b: &dyn ComputeBackend, head_events| {
+            let ctx = JobContext::new();
+            let prep = gpu::TransportScene::new(b, &system.scene, &ctx).unwrap();
+            let mut p = mklight_gpu::resident::ResidentPlan::new(snap.clone());
+            let options = gpu::TransportOptions {
+                stack_capacity: 64,
+                head_events,
+                ..Default::default()
+            };
+            let (a, c, s) = prep
+                .append(
+                    &mut p,
+                    &system.scene,
+                    &source,
+                    &settings,
+                    0,
+                    sources,
+                    options,
+                    0,
+                )
+                .unwrap();
+            p.outputs = vec![a, c, s];
+            let r = b.submit_plan(p, &ctx).unwrap().wait().unwrap();
+            assert_eq!(r.stats.copied_bytes, 0);
+            let ledger_view = b.read_view(r.outputs[1].view()).unwrap();
+            let ledgers = ops::read_records::<ops::Ledger>(&ledger_view).unwrap();
+            assert_eq!(ledgers.len(), sources);
+            // Detection and stack rows past each source's count are unspecified.
+            let valid =
+                |output: usize, rows: usize, width: usize, count: fn(&ops::Ledger) -> u32| {
+                    let words = b
+                        .read_view(r.outputs[output].view())
+                        .unwrap()
+                        .words()
+                        .to_vec();
+                    ledgers
+                        .iter()
+                        .enumerate()
+                        .flat_map(|(i, l)| {
+                            words[i * rows * width..][..count(l) as usize * width].to_vec()
+                        })
+                        .collect::<Vec<_>>()
+                };
+            let hits = valid(
+                0,
+                options.detections_per_source,
+                std::mem::size_of::<ops::Detection>() / 4,
+                |l| l.hits,
+            );
+            let stacks = valid(
+                2,
+                options.stack_capacity,
+                std::mem::size_of::<ops::State>() / 4,
+                |l| l.top,
+            );
+            (hits, ledger_view.words().to_vec(), stacks)
         };
-        let hits = valid(
-            0,
-            options.detections_per_source,
-            std::mem::size_of::<ops::Detection>() / 4,
-            |l| l.hits,
-        );
-        let stacks = valid(
-            2,
-            options.stack_capacity,
-            std::mem::size_of::<ops::State>() / 4,
-            |l| l.top,
-        );
-        (hits, ledger_view.words().to_vec(), stacks)
-    };
-    for head in [0, 7] {
-        let a = raw(&cpu, head);
-        let b = raw(&metal, head);
-        assert!(!a.0.is_empty());
-        assert_eq!(
-            a, b,
-            "CPU-f32 specification and Metal records differ (head {head})"
-        );
+        for head in [0, 7] {
+            let a = raw(&cpu, head);
+            let b = raw(&metal, head);
+            // Seven events reach no detector through the Petzval lens.
+            assert!(!a.0.is_empty() || head > 0 && !a.2.is_empty());
+            assert_eq!(
+                a, b,
+                "{name}: CPU-f32 specification and Metal records differ (head {head})"
+            );
+        }
     }
 }
 

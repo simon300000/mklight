@@ -18,51 +18,13 @@ use std::sync::{Arc, Condvar, Mutex};
 /// The host (reference) part of a pupil the host traced.
 #[derive(Clone, Debug)]
 pub struct HostPupil {
-    /// The reference lattice the resident nodes were written from.
+    /// The reference lattice the resident pupil was resampled from.
     pub lattice: Arc<PupilLattice>,
     /// Its `pupil_lattice` node key (`crate::shared`, f64 family).
     pub key: NodeKey,
     /// The reference pupil the resident pupil was written from, at the
     /// resident grid.
     pub pupil: Option<Arc<PupilFunction>>,
-}
-
-/// Resident copies of a host lattice's nodes (DF `[ny, nx, 4]`: u, v,
-/// unwrapped OPD, amplitude) and survival (u32 `[ny, nx]`), written in
-/// place; the layout of [`from_structured`].
-pub(crate) fn lattice_nodes(
-    b: &dyn ComputeBackend,
-    lattice: &PupilLattice,
-) -> MkResult<(BufferHandle, BufferHandle)> {
-    let rays = &lattice.samples;
-    let nodes = b.fill_buffer(
-        BufferDesc::new(ElementType::DoubleFloat, [rays.ny, rays.nx, 4]),
-        &mut |mut a| {
-            for (row, s) in a.as_mut_slice::<Df32>()?.chunks_mut(4).zip(&rays.samples) {
-                let v = match s {
-                    Some(r) => [r.u, r.v, r.opd_waves, r.amplitude],
-                    None => [0.; 4],
-                };
-                for (d, v) in row.iter_mut().zip(v) {
-                    *d = Df32::from_f64(v);
-                    if !d.is_finite() {
-                        return Err(MkError::InvalidParam("non-finite pupil sample".into()));
-                    }
-                }
-            }
-            Ok(())
-        },
-    )?;
-    let valid = b.fill_buffer(
-        BufferDesc::new(ElementType::U32, [rays.ny, rays.nx]),
-        &mut |mut a| {
-            for (v, s) in a.as_mut_slice::<u32>()?.iter_mut().zip(&rays.samples) {
-                *v = s.is_some() as u32;
-            }
-            Ok(())
-        },
-    )?;
-    Ok((nodes, valid))
 }
 
 /// A host pupil written straight into shared allocations (amplitude and
@@ -156,9 +118,9 @@ fn resident_at(
     Ok((resident, pupil, r.1.clone()))
 }
 
-/// Place a host-traced lattice: its nodes become resident, and its pupil
-/// at the lattice's grid ([`PupilLattice::grid_for`]) is resampled on the
-/// host.
+/// Place a host-traced lattice: its pupil at the lattice's grid
+/// ([`PupilLattice::grid_for`]) is resampled on the host and written into
+/// shared allocations.
 pub(crate) fn place(
     b: &dyn ComputeBackend,
     key: NodeKey,
@@ -167,7 +129,6 @@ pub(crate) fn place(
     memo: Option<&dyn Memo>,
     ctx: &JobContext,
 ) -> MkResult<Placed> {
-    let (nodes, valid) = lattice_nodes(b, &lattice)?;
     let n = lattice.grid_for(settings);
     let (pupil, host, resample_warnings) =
         resident_at(b, &lattice, &key, n, settings.supersample, memo, ctx)?;
@@ -185,8 +146,8 @@ pub(crate) fn place(
         value: ResidentTracedPupil {
             pupil,
             info,
-            nodes,
-            valid,
+            nodes: None,
+            valid: None,
             mask: lattice.mask.clone(),
             entrance_rim: lattice.entrance_rim.clone(),
             key,

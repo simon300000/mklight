@@ -141,8 +141,8 @@ pub struct LsqSettings {
     /// previous trial point was accepted: an accepted step then has its next
     /// Jacobian already, so an iteration costs one batch instead of two; a
     /// rejected step wastes the probes (at most one batch per accepted
-    /// step). Set by callers (the engine's work-split study), not by
-    /// settings.
+    /// step). Set by callers (the engine, for runs whose device evaluator
+    /// aims on the device), not by settings.
     #[serde(skip)]
     pub speculative_jacobian: bool,
 }

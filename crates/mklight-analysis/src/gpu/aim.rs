@@ -458,38 +458,6 @@ impl HostJob<'_> {
     }
 }
 
-/// One start ray of [`fill_host_rays`]: the reference ray and its weight
-/// (`None`: not aimed, zero planes), its packed system and wavelength slot,
-/// logical ID and report words.
-pub struct HostRay<'a> {
-    pub ray: Option<(&'a mklight_trace::Ray, f32)>,
-    pub slot: (u32, u32),
-    pub id: u64,
-    pub report: [u32; 4],
-}
-
-/// Write `n` host start rays (`ray(k)` gives ray `k`) into four new shared
-/// buffers in the resident generated-ray layout (`ResidentRays`), filled in
-/// place in parallel column blocks, for callers that aim with their own rule
-/// (the wave analyses' host-aimed design). Returns `[floats, indices,
-/// logical_ids, report]`.
-pub fn fill_host_rays<'r>(
-    b: &dyn ComputeBackend,
-    n: usize,
-    ray: &(dyn Fn(usize) -> HostRay<'r> + Sync),
-) -> MkResult<[BufferHandle; 4]> {
-    let (handles, ()) = ray_buffers(b, n, HOST_CHUNK, |blocks| {
-        blocks.into_par_iter().for_each(|mut cols| {
-            for k in 0..cols.len() {
-                let r = ray(cols.start + k);
-                cols.write(k, r.ray, r.slot, r.id, r.report);
-            }
-        });
-        Ok(())
-    })?;
-    Ok(handles)
-}
-
 /// Split generations ([`Geometry::split_large_generations`]) below this
 /// many rays × surfaces (rays of the generation times the image surface
 /// index) are aimed on the host alone: the device's share does not pay for

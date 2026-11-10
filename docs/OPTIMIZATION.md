@@ -1622,7 +1622,7 @@ the 29- and 35-surface lenses: 1.92 → 1.72 s and 1.98 → 1.75 s), a
 23-candidate Jacobian loses (Double Gauss `optimize` 792 vs 582 ms), so
 Jacobians stay one plan.
 
-**Aiming** (the `aiming` study). *Host aiming:* every pupil ray is aimed on
+**Aiming** (the `aiming` key). *Host aiming:* every pupil ray is aimed on
 the host by the candidate's f64 tracer (`generate_many`: the reference's
 aims, bit for bit) and the device only traces it from the host's starting
 ray (`TraceResident`) and forms the chief-relative coordinates, moments,

@@ -175,29 +175,6 @@ fn suite(b: &dyn ComputeBackend) {
     assert!((response.value[1] - 2. / std::f64::consts::PI).abs() < 1e-6);
     assert!(response.value[2] < 1e-6);
 
-    for ordering in [ZernikeOrdering::Fringe, ZernikeOrdering::Standard] {
-        let basis = ZernikeBasis::new(ordering, 37).unwrap();
-        let expected: Vec<_> = (0..37).map(|i| (i as f64 * 0.7).sin() * 0.1).collect();
-        let samples: Vec<_> = (0..33 * 33)
-            .filter_map(|k| {
-                let u = (k % 33) as f64 / 16. - 1.;
-                let v = (k / 33) as f64 / 16. - 1.;
-                (u * u + v * v < 1.).then(|| RaySample {
-                    u,
-                    v,
-                    amplitude: 1. + 0.1 * v,
-                    opd_waves: basis.eval(u, v, &expected),
-                })
-            })
-            .collect();
-        let fit = gpu::fit_zernike(b, snapshot(), &samples, &basis, &JobContext::new()).unwrap();
-        for (a, v) in fit.value.set.coefficients().iter().zip(expected) {
-            assert!((a - v).abs() < 1e-8, "Zernike {a} {v}");
-        }
-        assert_eq!(fit.value.rank, 37);
-        assert!(fit.value.residual_norm < 1e-8);
-    }
-
     let ctx = JobContext::new();
     for g in [
         PupilGeometry::from_working_f_number(4., 100., 1.).unwrap(),
@@ -1097,8 +1074,8 @@ fn traced_bits(b: &dyn ComputeBackend, r: &gpu::ResidentTracedPupil) -> (Vec<Vec
     let words = |v: mklight_gpu::resident::BufferView| b.read_view(v).unwrap().words().to_vec();
     (
         vec![
-            words(r.nodes.view()),
-            words(r.valid.view()),
+            words(r.nodes.as_ref().unwrap().view()),
+            words(r.valid.as_ref().unwrap().view()),
             words(p.amplitude.view()),
             words(p.coverage.view()),
             words(p.opd.clone()),

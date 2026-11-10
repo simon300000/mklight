@@ -1,4 +1,4 @@
-//! The device illumination rows and maps, the chief-ray map designs (study
+//! The device illumination rows and maps, the chief-ray map designs (route
 //! key `fieldmaps`) and the device system transmission against the f64
 //! reference, on the CPU-f32 emulation of the device kernels and (ignored,
 //! run through the bench lock) on Metal, where the illumination kernels must
