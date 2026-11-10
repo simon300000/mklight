@@ -9,12 +9,14 @@
 //! type system cannot relate to the bound buffers' lengths. Solvers reach the
 //! GPU only through `ComputeBackend`.
 
+use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, VecDeque};
 use std::ffi::c_void;
+use std::path::{Path, PathBuf};
 use std::ptr::NonNull;
-use std::sync::Mutex;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use bytemuck::Pod;
@@ -23,12 +25,14 @@ use mklight_core::{MkError, MkResult};
 use objc2::rc::{Retained, autoreleasepool};
 use objc2::runtime::{NSObjectProtocol, ProtocolObject};
 use objc2::sel;
-use objc2_foundation::{NSError, NSString};
+use objc2_foundation::{NSArray, NSError, NSString, NSURL};
 use objc2_metal::{
-    MTLBarrierScope, MTLCommandBuffer, MTLCommandBufferStatus, MTLCommandEncoder, MTLCommandQueue,
-    MTLCompileOptions, MTLComputeCommandEncoder, MTLComputePipelineState, MTLCopyAllDevices,
-    MTLCreateSystemDefaultDevice, MTLDataType, MTLDevice, MTLFunctionConstantValues,
-    MTLLanguageVersion, MTLLibrary, MTLMathFloatingPointFunctions, MTLMathMode, MTLSize,
+    MTLBarrierScope, MTLBinaryArchive, MTLBinaryArchiveDescriptor, MTLCommandBuffer,
+    MTLCommandBufferStatus, MTLCommandEncoder, MTLCommandQueue, MTLCompileOptions,
+    MTLComputeCommandEncoder, MTLComputePipelineDescriptor, MTLComputePipelineState,
+    MTLCopyAllDevices, MTLCreateSystemDefaultDevice, MTLDataType, MTLDevice, MTLFunction,
+    MTLFunctionConstantValues, MTLLanguageVersion, MTLLibrary, MTLMathFloatingPointFunctions,
+    MTLMathMode, MTLPipelineOption, MTLSize,
 };
 
 use crate::buffer::SharedBuffer;
@@ -138,20 +142,20 @@ pub enum FunctionConstant {
 /// Pipeline cache key: kernel name plus its function-constant values.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct PipelineKey {
-    pub function: &'static str,
+    pub function: Cow<'static, str>,
     pub constants: Vec<FunctionConstant>,
 }
 
 impl PipelineKey {
-    pub fn plain(function: &'static str) -> Self {
+    pub fn plain(function: impl Into<Cow<'static, str>>) -> Self {
         PipelineKey {
-            function,
+            function: function.into(),
             constants: Vec::new(),
         }
     }
-    pub fn with_u32(function: &'static str, index: u16, value: u32) -> Self {
+    pub fn with_u32(function: impl Into<Cow<'static, str>>, index: u16, value: u32) -> Self {
         PipelineKey {
-            function,
+            function: function.into(),
             constants: vec![FunctionConstant::U32 { index, value }],
         }
     }
@@ -167,6 +171,33 @@ pub struct CommandStats {
 }
 
 type Pso = Retained<ProtocolObject<dyn MTLComputePipelineState>>;
+type Archive = Retained<ProtocolObject<dyn MTLBinaryArchive>>;
+
+/// The saved compiled pipelines of this device and shader library (a Metal
+/// binary archive), so a later process creates them without compiling.
+struct PipelineArchive {
+    archive: Archive,
+    path: PathBuf,
+    /// Pipelines added since it was loaded or last saved.
+    added: AtomicUsize,
+}
+
+// SAFETY: Metal binary archives are thread-safe ("MTLBinaryArchive", Apple
+// Metal documentation: adding functions and creating pipelines from an
+// archive may happen concurrently); the other fields are Send + Sync.
+unsafe impl Send for PipelineArchive {}
+unsafe impl Sync for PipelineArchive {}
+
+/// Outcome of [`MetalContext::prepare_pipelines`].
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct PipelinePreparation {
+    /// Pipelines prepared (every kernel and its common specialisations).
+    pub pipelines: usize,
+    /// Of them, created from the saved archive without compiling.
+    pub from_archive: usize,
+    /// Wall time, seconds.
+    pub seconds: f64,
+}
 
 pub struct MetalContext {
     device: Retained<ProtocolObject<dyn MTLDevice>>,
@@ -175,7 +206,81 @@ pub struct MetalContext {
     origin: LibraryOrigin,
     library_build: String,
     pipelines: Mutex<HashMap<PipelineKey, Pso>>,
+    archive: Mutex<Option<Arc<PipelineArchive>>>,
 }
+
+/// Run the calling thread at user-initiated quality of service: Metal's
+/// compiler service schedules a request at its sender's class, and the
+/// preparation is work the user waits for.
+fn raise_qos() {
+    // <pthread/qos.h>: QOS_CLASS_USER_INITIATED.
+    const QOS_CLASS_USER_INITIATED: u32 = 0x19;
+    unsafe extern "C" {
+        fn pthread_set_qos_class_self_np(qos_class: u32, relative_priority: i32) -> i32;
+    }
+    // SAFETY: changes only the calling thread's scheduling class.
+    unsafe {
+        pthread_set_qos_class_self_np(QOS_CLASS_USER_INITIATED, 0);
+    }
+}
+
+/// File-name prefix of pipeline archives ([`MetalContext::attach_pipeline_archive`]).
+const ARCHIVE_PREFIX: &str = "pipelines-";
+
+/// The specialisations [`MetalContext::prepare_pipelines`] creates besides
+/// every unspecialised kernel: (function, constant index, value). Rarer
+/// combinations compile on first use (macOS's shader cache keeps them).
+const PREPARED_PIPELINES: &[(&str, u16, u32)] = {
+    use mklight_gpu::consts::*;
+    const GHOST: u16 = MKL_GHOST_FEATURES_CONSTANT as u16;
+    const STRAY: u16 = MKL_STRAY_FEATURES_CONSTANT as u16;
+    &[
+        // DfOp: the numerics probe and diagnostics.
+        ("mkl_df_ops", 0, 0),
+        ("mkl_df_ops", 0, 1),
+        ("mkl_df_ops", 0, 2),
+        ("mkl_df_ops", 0, 3),
+        ("mkl_df_ops", 0, 4),
+        ("mkl_df_ops", 0, 5),
+        ("mkl_df_ops", 0, 6),
+        ("mkl_df_ops", 0, 7),
+        ("mkl_df_ops", 0, 8),
+        ("mkl_df_ops", 0, 9),
+        // ReduceMode.
+        ("mkl_reduce_pass1", 1, MKL_REDUCE_PLAIN),
+        ("mkl_reduce_pass1", 1, MKL_REDUCE_KAHAN),
+        ("mkl_reduce_pass1", 1, MKL_REDUCE_DF),
+        ("mkl_reduce_pass2", 1, MKL_REDUCE_PLAIN),
+        ("mkl_reduce_pass2", 1, MKL_REDUCE_KAHAN),
+        ("mkl_reduce_pass2", 1, MKL_REDUCE_DF),
+        // Ghost trace: geometry, coatings, thin films.
+        ("mkl_ghost_trace", GHOST, 0),
+        ("mkl_ghost_trace", GHOST, MKL_GHOST_FEATURE_COATINGS),
+        (
+            "mkl_ghost_trace",
+            GHOST,
+            MKL_GHOST_FEATURE_COATINGS | MKL_GHOST_FEATURE_FILMS,
+        ),
+        // Stray transport, weighted mode: plain, Lambertian and fitted
+        // scatter, each with and without aspheres.
+        ("mkl_stray_wave_cast", STRAY, 1),
+        ("mkl_stray_wave_cast", STRAY, 1 | 32),
+        ("mkl_stray_wave_cast", STRAY, 1 | 32 | 64),
+        ("mkl_stray_wave_cast", STRAY, 1 | 8),
+        ("mkl_stray_wave_cast", STRAY, 1 | 32 | 8),
+        ("mkl_stray_wave_cast", STRAY, 1 | 32 | 64 | 8),
+        ("mkl_stray_wave_interact", STRAY, 1),
+        ("mkl_stray_wave_interact", STRAY, 1 | 32),
+        ("mkl_stray_wave_interact", STRAY, 1 | 32 | 64),
+        ("mkl_stray_wave_interact", STRAY, 1 | 8),
+        ("mkl_stray_wave_interact", STRAY, 1 | 32 | 8),
+        ("mkl_stray_wave_interact", STRAY, 1 | 32 | 64 | 8),
+    ]
+};
+
+/// Pipelines kept in memory; compiled ones also live in the archive and the
+/// system shader cache, so eviction costs a lookup, not a compile.
+const PIPELINE_CACHE: usize = 512;
 
 fn ns_error(what: &str, e: &NSError) -> MkError {
     MkError::Backend(format!("{what}: {}", e.localizedDescription()))
@@ -305,6 +410,7 @@ impl MetalContext {
                 origin,
                 library_build,
                 pipelines: Mutex::new(HashMap::new()),
+                archive: Mutex::new(None),
             }))
         })
     }
@@ -316,6 +422,14 @@ impl MetalContext {
     /// buffers, pools and caches on it).
     pub fn allocated_bytes(&self) -> u64 {
         self.device.currentAllocatedSize() as u64
+    }
+    /// Names of every function in the shader library.
+    pub fn function_names(&self) -> Vec<String> {
+        self.library
+            .functionNames()
+            .iter()
+            .map(|n| n.to_string())
+            .collect()
     }
     pub fn library_origin(&self) -> LibraryOrigin {
         self.origin
@@ -341,55 +455,291 @@ impl MetalContext {
         SharedBuffer::filled(&self.device, len, fill)
     }
 
-    /// The compute pipeline for `key`, compiled once and cached.
+    /// The compute pipeline for `key`, compiled once and cached. With a
+    /// pipeline archive attached it comes from the archive when present, and
+    /// is added to it otherwise. The cache lock is not held while compiling,
+    /// so a job does not wait behind another kernel's compilation.
     pub fn pipeline(&self, key: &PipelineKey) -> MkResult<Pso> {
-        let mut cache = self.pipelines.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(p) = cache.get(key) {
+        if let Some(p) = self.lock_pipelines().get(key) {
             return Ok(p.clone());
         }
-        let pso = autoreleasepool(|_| -> MkResult<Pso> {
-            let name = NSString::from_str(key.function);
-            let function = if key.constants.is_empty() {
-                self.library.newFunctionWithName(&name).ok_or_else(|| {
-                    MkError::Backend(format!("kernel '{}' not in library", key.function))
-                })?
-            } else {
-                let values = MTLFunctionConstantValues::new();
-                for c in &key.constants {
-                    // SAFETY: each pointer refers to a live local of the
-                    // matching type for the duration of the call; Metal
-                    // copies the value.
-                    unsafe {
-                        match *c {
-                            FunctionConstant::U32 { index, value } => values
-                                .setConstantValue_type_atIndex(
-                                    NonNull::from(&value).cast::<c_void>(),
-                                    MTLDataType::UInt,
-                                    index as usize,
-                                ),
-                            FunctionConstant::Bool { index, value } => values
-                                .setConstantValue_type_atIndex(
-                                    NonNull::from(&value).cast::<c_void>(),
-                                    MTLDataType::Bool,
-                                    index as usize,
-                                ),
-                        }
-                    }
-                }
-                self.library
-                    .newFunctionWithName_constantValues_error(&name, &values)
-                    .map_err(|e| ns_error(&format!("specialising '{}'", key.function), &e))?
-            };
-            self.device
-                .newComputePipelineStateWithFunction_error(&function)
-                .map_err(|e| ns_error(&format!("pipeline '{}'", key.function), &e))
-        })?;
+        let (pso, _) = self.create_pipeline(key)?;
+        let mut cache = self.lock_pipelines();
         // Jobs retain their own pipeline objects across cache eviction.
-        if cache.len() == 128 {
+        if cache.len() >= PIPELINE_CACHE {
             cache.clear();
         }
         cache.insert(key.clone(), pso.clone());
         Ok(pso)
+    }
+
+    fn lock_pipelines(&self) -> std::sync::MutexGuard<'_, HashMap<PipelineKey, Pso>> {
+        self.pipelines.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// The specialised function of `key`.
+    fn function(&self, key: &PipelineKey) -> MkResult<Retained<ProtocolObject<dyn MTLFunction>>> {
+        let name = NSString::from_str(&key.function);
+        if key.constants.is_empty() {
+            return self.library.newFunctionWithName(&name).ok_or_else(|| {
+                MkError::Backend(format!("kernel '{}' not in library", key.function))
+            });
+        }
+        let values = MTLFunctionConstantValues::new();
+        for c in &key.constants {
+            // SAFETY: each pointer refers to a live local of the matching
+            // type for the duration of the call; Metal copies the value.
+            unsafe {
+                match *c {
+                    FunctionConstant::U32 { index, value } => values.setConstantValue_type_atIndex(
+                        NonNull::from(&value).cast::<c_void>(),
+                        MTLDataType::UInt,
+                        index as usize,
+                    ),
+                    FunctionConstant::Bool { index, value } => values
+                        .setConstantValue_type_atIndex(
+                            NonNull::from(&value).cast::<c_void>(),
+                            MTLDataType::Bool,
+                            index as usize,
+                        ),
+                }
+            }
+        }
+        self.library
+            .newFunctionWithName_constantValues_error(&name, &values)
+            .map_err(|e| ns_error(&format!("specialising '{}'", key.function), &e))
+    }
+
+    /// Create the pipeline of `key`: from the archive when it holds it
+    /// (`true`), otherwise compiled and added to the archive.
+    fn create_pipeline(&self, key: &PipelineKey) -> MkResult<(Pso, bool)> {
+        let archive = self
+            .archive
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        autoreleasepool(|_| {
+            let function = self.function(key)?;
+            let Some(archive) = archive else {
+                let pso = self
+                    .device
+                    .newComputePipelineStateWithFunction_error(&function)
+                    .map_err(|e| ns_error(&format!("pipeline '{}'", key.function), &e))?;
+                return Ok((pso, false));
+            };
+            let desc = MTLComputePipelineDescriptor::new();
+            desc.setComputeFunction(Some(&function));
+            desc.setBinaryArchives(Some(&NSArray::from_retained_slice(std::slice::from_ref(
+                &archive.archive,
+            ))));
+            let create = |options| {
+                self.device
+                    .newComputePipelineStateWithDescriptor_options_reflection_error(
+                        &desc, options, None,
+                    )
+            };
+            if let Ok(pso) = create(MTLPipelineOption::FailOnBinaryArchiveMiss) {
+                return Ok((pso, true));
+            }
+            let pso = create(MTLPipelineOption::None)
+                .map_err(|e| ns_error(&format!("pipeline '{}'", key.function), &e))?;
+            // A failed addition only costs a compile in a later process.
+            if archive
+                .archive
+                .addComputePipelineFunctionsWithDescriptor_error(&desc)
+                .is_ok()
+            {
+                archive.added.fetch_add(1, Ordering::Relaxed);
+            }
+            Ok((pso, false))
+        })
+    }
+
+    /// Attach the pipeline archive of this device and shader library in
+    /// `dir` (created if missing), loading it when a compatible one was
+    /// saved. Archives of other libraries or devices in `dir` are removed:
+    /// they belong to earlier builds. Pipelines created from now on come
+    /// from it or are added to it; [`save_pipeline_archive`] writes it.
+    ///
+    /// [`save_pipeline_archive`]: Self::save_pipeline_archive
+    pub fn attach_pipeline_archive(&self, dir: &Path) -> MkResult<()> {
+        std::fs::create_dir_all(dir)
+            .map_err(|e| MkError::Backend(format!("pipeline cache {}: {e}", dir.display())))?;
+        let name = self.archive_name();
+        let path = dir.join(&name);
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for e in entries.flatten() {
+                let n = e.file_name().to_string_lossy().into_owned();
+                if n.starts_with(ARCHIVE_PREFIX) && n != name {
+                    let _ = std::fs::remove_file(e.path());
+                }
+            }
+        }
+        let open = |url: Option<&NSURL>| {
+            let desc = MTLBinaryArchiveDescriptor::new();
+            desc.setUrl(url);
+            self.device.newBinaryArchiveWithDescriptor_error(&desc)
+        };
+        let archive = autoreleasepool(|_| {
+            let url = path
+                .exists()
+                .then(|| NSURL::fileURLWithPath(&NSString::from_str(&path.to_string_lossy())));
+            // An unreadable or incompatible archive (another OS build) is
+            // replaced by an empty one.
+            match url.as_deref().map(|u| open(Some(u))) {
+                Some(Ok(a)) => Ok(a),
+                _ => open(None),
+            }
+        })
+        .map_err(|e| ns_error("creating the pipeline archive", &e))?;
+        *self.archive.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(PipelineArchive {
+            archive,
+            path,
+            added: AtomicUsize::new(0),
+        }));
+        Ok(())
+    }
+
+    /// Write the attached pipeline archive if pipelines were added to it
+    /// (atomically: a temporary file renamed over the old one). Returns
+    /// whether it wrote.
+    pub fn save_pipeline_archive(&self) -> MkResult<bool> {
+        let Some(a) = self
+            .archive
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+        else {
+            return Ok(false);
+        };
+        if a.added.swap(0, Ordering::Relaxed) == 0 {
+            return Ok(false);
+        }
+        let tmp = a.path.with_extension("tmp");
+        autoreleasepool(|_| {
+            let url = NSURL::fileURLWithPath(&NSString::from_str(&tmp.to_string_lossy()));
+            a.archive
+                .serializeToURL_error(&url)
+                .map_err(|e| ns_error("saving the pipeline archive", &e))
+        })?;
+        std::fs::rename(&tmp, &a.path)
+            .map_err(|e| MkError::Backend(format!("pipeline cache {}: {e}", a.path.display())))?;
+        Ok(true)
+    }
+
+    /// File name of this device's and library's archive: the GPU, the
+    /// arithmetic and a hash of the library, so a new build or another GPU
+    /// never reads a stale archive.
+    fn archive_name(&self) -> String {
+        let gpu: String = self
+            .device
+            .name()
+            .to_string()
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+            .collect();
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        for b in self
+            .library_build
+            .bytes()
+            .chain(self.library_identity().iter().copied())
+        {
+            h = (h ^ b as u64).wrapping_mul(0x100_0000_01b3);
+        }
+        format!("{ARCHIVE_PREFIX}{gpu}-{h:016x}.metalarchive")
+    }
+
+    /// Bytes identifying the shader library: the embedded metallib, or the
+    /// source a runtime library was compiled from.
+    fn library_identity(&self) -> &'static [u8] {
+        match self.origin {
+            LibraryOrigin::Precompiled => if self.library_build.starts_with("pure_f32") {
+                shaders::METALLIB_F32
+            } else {
+                shaders::METALLIB
+            }
+            .unwrap_or_default(),
+            LibraryOrigin::RuntimeSource => shaders::SOURCE.as_bytes(),
+        }
+    }
+
+    /// Create every pipeline the backend uses ([`PREPARED_PIPELINES`]): all
+    /// kernels and the common specialisations of the specialised ones, on
+    /// `threads` threads, reporting `(done, total)` after each. With an
+    /// archive attached, the pipelines come from it or are compiled into it;
+    /// the caller saves it. Stops early, without error, when `cancel` is set.
+    pub fn prepare_pipelines(
+        &self,
+        threads: usize,
+        progress: &(dyn Fn(usize, usize) + Sync),
+        cancel: &AtomicBool,
+    ) -> MkResult<PipelinePreparation> {
+        let start = Instant::now();
+        let keys = self.prepared_keys();
+        let total = keys.len();
+        let next = AtomicUsize::new(0);
+        let done = AtomicUsize::new(0);
+        let from_archive = AtomicUsize::new(0);
+        let error: Mutex<Option<MkError>> = Mutex::new(None);
+        progress(0, total);
+        std::thread::scope(|s| {
+            for _ in 0..threads.max(1) {
+                s.spawn(|| {
+                    raise_qos();
+                    loop {
+                        let i = next.fetch_add(1, Ordering::Relaxed);
+                        if i >= total || cancel.load(Ordering::Relaxed) {
+                            break;
+                        }
+                        match self.create_pipeline(&keys[i]) {
+                            Ok((pso, hit)) => {
+                                if hit {
+                                    from_archive.fetch_add(1, Ordering::Relaxed);
+                                }
+                                let mut cache = self.lock_pipelines();
+                                if cache.len() < PIPELINE_CACHE {
+                                    cache.insert(keys[i].clone(), pso);
+                                }
+                            }
+                            Err(e) => {
+                                error
+                                    .lock()
+                                    .unwrap_or_else(|e| e.into_inner())
+                                    .get_or_insert(e);
+                            }
+                        }
+                        progress(done.fetch_add(1, Ordering::Relaxed) + 1, total);
+                    }
+                });
+            }
+        });
+        if let Some(e) = error.into_inner().unwrap_or_else(|e| e.into_inner()) {
+            return Err(e);
+        }
+        Ok(PipelinePreparation {
+            pipelines: done.into_inner(),
+            from_archive: from_archive.into_inner(),
+            seconds: start.elapsed().as_secs_f64(),
+        })
+    }
+
+    /// Every library function without specialisation constants, plus the
+    /// listed specialisations.
+    fn prepared_keys(&self) -> Vec<PipelineKey> {
+        let specialised: Vec<&str> = PREPARED_PIPELINES.iter().map(|(f, _, _)| *f).collect();
+        let mut names = self.function_names();
+        names.sort();
+        let mut keys: Vec<PipelineKey> = names
+            .into_iter()
+            .filter(|n| !specialised.contains(&n.as_str()))
+            .map(PipelineKey::plain)
+            .collect();
+        keys.extend(
+            PREPARED_PIPELINES
+                .iter()
+                .map(|&(f, index, value)| PipelineKey::with_u32(f, index, value)),
+        );
+        keys
     }
 
     /// Encode one compute command buffer with `encode`, commit it and wait for

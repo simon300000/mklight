@@ -11,6 +11,7 @@ public struct MKLightScene: Scene {
     public init(engine: any EngineClient) {
         self.engine = engine
         ProjectDocument.setImportEngine(engine)
+        GPUPreparationMonitor.shared.start(engine: engine)
     }
 
     public var body: some Scene {

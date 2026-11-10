@@ -22,8 +22,8 @@ use mklight_gpu::layout::{PhiloxParams, ReduceParams, SagParams};
 use mklight_gpu::pending::{JobControl, pending, spawn_job};
 use mklight_gpu::{
     BackendKind, ComputeBackend, DeviceInfo, Df32, ErrorBudget, Job, JobKind, JobOutput, JobResult,
-    JobStats, NumericsProbe, PackedHeader, PackedSurface, PackedSystem, PackedSystemSet, Pending,
-    PrecisionDescriptor, SystemHandle, reduce,
+    JobStats, KernelPreparation, NumericsProbe, PackedHeader, PackedSurface, PackedSystem,
+    PackedSystemSet, Pending, PrecisionDescriptor, SystemHandle, reduce,
 };
 use mklight_gpu::{PreparedTrace, TraceRequest, TraceResult};
 use objc2_metal::{MTLComputePipelineState, MTLDevice, MTLGPUFamily};
@@ -696,6 +696,31 @@ fn philox_output(raw: &SharedBuffer<[u32; 4]>, uni: &SharedBuffer<[f32; 4]>) -> 
 impl ComputeBackend for MetalBackend {
     fn info(&self) -> &DeviceInfo {
         &self.inner.info
+    }
+    /// Every kernel and its common specialisations
+    /// ([`MetalContext::prepare_pipelines`]), from or into the pipeline
+    /// archive in `cache_dir`. A cache that cannot be attached or saved only
+    /// costs compilation in a later process.
+    fn prepare_kernels(
+        &self,
+        cache_dir: Option<&std::path::Path>,
+        progress: &(dyn Fn(usize, usize) + Sync),
+        cancel: &std::sync::atomic::AtomicBool,
+    ) -> MkResult<KernelPreparation> {
+        let gpu = self.context();
+        if let Some(dir) = cache_dir {
+            let _ = gpu.attach_pipeline_archive(dir);
+        }
+        // Metal's compiler service runs about six compiles at once on an M2
+        // Pro: every kernel from scratch took 40 s on 4 threads, 29 s on 6,
+        // 29–31 s on 8 or 12.
+        let p = gpu.prepare_pipelines(6, progress, cancel)?;
+        let _ = gpu.save_pipeline_archive();
+        Ok(KernelPreparation {
+            kernels: p.pipelines,
+            from_cache: p.from_archive,
+            seconds: p.seconds,
+        })
     }
     fn precision(&self) -> &PrecisionDescriptor {
         &self.inner.precision

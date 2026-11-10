@@ -233,6 +233,54 @@ mod tests {
         assert_eq!(g.id, "gpu:cpu_f32");
     }
 
+    /// Poll `e`'s GPU preparation until it leaves `Preparing`.
+    pub(crate) fn settled(e: &crate::Engine) -> GpuPreparation {
+        let start = std::time::Instant::now();
+        loop {
+            match e.gpu_preparation() {
+                GpuPreparation::Preparing { .. } if start.elapsed().as_secs() < 300 => {
+                    std::thread::sleep(std::time::Duration::from_millis(10))
+                }
+                s => return s,
+            }
+        }
+    }
+
+    #[test]
+    fn gpu_preparation_reports_each_outcome_once() {
+        let e = crate::Engine::default();
+        // No GPU registered: unavailable.
+        *e.inner.backends.write().unwrap() = crate::backend::BackendRegistry::cpu_only();
+        assert_eq!(e.gpu_preparation(), GpuPreparation::Idle);
+        assert!(e.prepare_gpu(None));
+        assert!(matches!(settled(&e), GpuPreparation::Unavailable { .. }));
+        assert!(!e.prepare_gpu(None), "a preparation runs once per engine");
+        // A backend without compilation is ready at once.
+        let e = crate::Engine::default();
+        let mut r = crate::backend::BackendRegistry::cpu_only();
+        r.register(Arc::new(GpuProvider::emulation()));
+        *e.inner.backends.write().unwrap() = r;
+        assert!(e.prepare_gpu(None));
+        match settled(&e) {
+            GpuPreparation::Ready { kernels, .. } => assert_eq!(kernels, 0),
+            s => panic!("{s:?}"),
+        }
+        // A device that cannot open: unavailable, with its reason.
+        let e = crate::Engine::default();
+        let mut r = crate::backend::BackendRegistry::cpu_only();
+        r.register(Arc::new(GpuProvider::new("broken", "broken", || {
+            Err("no device here".into())
+        })));
+        *e.inner.backends.write().unwrap() = r;
+        e.prepare_gpu(None);
+        assert_eq!(
+            settled(&e),
+            GpuPreparation::Unavailable {
+                reason: "no device here".into()
+            }
+        );
+    }
+
     #[test]
     fn failing_open_makes_the_backend_unavailable() {
         let p = GpuProvider::new("broken", "broken", || Err("no device here".into()));
@@ -241,4 +289,79 @@ mod tests {
         assert_eq!(i.reason.as_deref(), Some("no device here"));
         assert!(p.device().is_none());
     }
+}
+
+/// Progress of [`crate::Engine::prepare_gpu`]: the GPU's compute kernels
+/// created ahead of their first use (front ends show it while it runs).
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum GpuPreparation {
+    /// Not started.
+    #[default]
+    Idle,
+    /// Creating kernels: `done` of `total`.
+    Preparing {
+        device: String,
+        done: usize,
+        total: usize,
+    },
+    /// Every kernel is ready; `from_cache` of them were loaded from the
+    /// saved cache instead of compiled.
+    Ready {
+        device: String,
+        kernels: usize,
+        from_cache: usize,
+        seconds: f64,
+    },
+    /// No GPU to prepare (analyses run on the CPU reference).
+    Unavailable { reason: String },
+    /// Preparation failed; kernels compile on first use instead.
+    Failed { device: String, message: String },
+}
+
+/// The shared state of a GPU preparation and its cancellation.
+#[derive(Default)]
+pub(crate) struct GpuPreparationState {
+    pub(crate) state: Mutex<GpuPreparation>,
+    pub(crate) cancel: std::sync::atomic::AtomicBool,
+}
+
+impl GpuPreparationState {
+    pub(crate) fn set(&self, s: GpuPreparation) {
+        *self.state.lock().unwrap_or_else(|e| e.into_inner()) = s;
+    }
+    pub(crate) fn get(&self) -> GpuPreparation {
+        self.state.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+}
+
+/// Prepare `device`'s kernels, publishing progress in `state`.
+pub(crate) fn prepare(
+    device: Arc<GpuDevice>,
+    cache_dir: Option<std::path::PathBuf>,
+    state: &GpuPreparationState,
+) {
+    let name = device.device_name();
+    let progress = |done, total| {
+        state.set(GpuPreparation::Preparing {
+            device: name.clone(),
+            done,
+            total,
+        })
+    };
+    let r = device
+        .backend
+        .prepare_kernels(cache_dir.as_deref(), &progress, &state.cancel);
+    state.set(match r {
+        Ok(p) => GpuPreparation::Ready {
+            device: name,
+            kernels: p.kernels,
+            from_cache: p.from_cache,
+            seconds: p.seconds,
+        },
+        Err(e) => GpuPreparation::Failed {
+            device: name,
+            message: e.to_string(),
+        },
+    });
 }

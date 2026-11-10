@@ -221,6 +221,14 @@ public protocol EngineClient: Sendable {
     /// Imports a lens prescription file into this (document) engine's
     /// session, resolving glasses against its user catalogs.
     func importPrescription(at url: URL) async throws -> PrescriptionImport
+
+    /// Starts creating the GPU's compute kernels in the background (once
+    /// per engine), saving the compiled kernels in `cacheDirectory` so later
+    /// launches load them. Progress: `gpuPreparation()`.
+    func prepareGPU(cacheDirectory: URL?)
+
+    /// The state of `prepareGPU`.
+    func gpuPreparation() -> GPUPreparation
 }
 
 /// The outcome of `EngineClient.applySolves`.
@@ -238,6 +246,10 @@ public struct SolveApplication: Sendable {
 
 extension EngineClient {
     public func makeDocumentEngine() -> any EngineClient { self }
+
+    /// Engines without a GPU have nothing to prepare.
+    public func prepareGPU(cacheDirectory: URL?) {}
+    public func gpuPreparation() -> GPUPreparation { .idle }
 
     /// The analyses of `AnalysisKind`, all available, without schemas.
     public func analysisDescriptors() async -> [AnalysisDescriptor] {

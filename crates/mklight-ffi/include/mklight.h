@@ -31,7 +31,7 @@ extern "C" {
 /* ---- Versioning --------------------------------------------------------- */
 
 #define MK_ABI_VERSION_MAJOR 1
-#define MK_ABI_VERSION_MINOR 3
+#define MK_ABI_VERSION_MINOR 4
 /* (major << 16) | minor. A different major version is incompatible; a newer
  * minor version only adds functions and JSON fields. */
 #define MK_ABI_VERSION ((MK_ABI_VERSION_MAJOR << 16) | MK_ABI_VERSION_MINOR)
@@ -345,6 +345,22 @@ MKStatus mk_import_prescription(const uint8_t *bytes, size_t len, const char *fo
  * "snapshot_hash". On failure the session is unchanged. */
 MKStatus mk_session_import_prescription(MKSession *session, const char *path,
                                         char **out_json);
+
+/* ---- GPU kernel preparation (ABI 1.4) ----------------------------------- */
+
+/* Start creating the GPU's compute kernels in the background, so the first
+ * GPU analysis does not wait for shader compilation. Opens the first
+ * registered GPU. cache_dir (nullable): directory where the compiled kernels
+ * are saved, so later launches load them instead of compiling. Returns at
+ * once; a second call is a no-op. */
+MKStatus mk_engine_prepare_gpu(const MKEngine *engine, const char *cache_dir);
+
+/* out_json receives the preparation's state, by "state":
+ *   "idle"; "preparing" {device, done, total};
+ *   "ready" {device, kernels, from_cache, seconds};
+ *   "unavailable" {reason}; "failed" {device, message} (kernels then
+ *   compile on first use). */
+MKStatus mk_engine_gpu_preparation_json(const MKEngine *engine, char **out_json);
 
 #ifdef __cplusplus
 } /* extern "C" */

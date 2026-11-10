@@ -30,7 +30,7 @@ pub fn execute(r: &Placement, x: &mut Execution<'_>, ctl: &JobControl) -> MkResu
     };
     let pipes = names
         .iter()
-        .map(|k| x.gpu.pipeline(&PipelineKey::plain(k)))
+        .map(|k| x.gpu.pipeline(&PipelineKey::plain(*k)))
         .collect::<MkResult<Vec<_>>>()?;
     let nodes = matches!(r, Placement::Nodes { .. });
     let reduced = matches!(r, Placement::Project { .. } | Placement::Slopes { .. });

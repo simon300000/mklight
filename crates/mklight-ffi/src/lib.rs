@@ -41,7 +41,7 @@ use mklight_engine::{
 // Versioning and status codes (mirrored in include/mklight.h)
 
 pub const MK_ABI_VERSION_MAJOR: u32 = 1;
-pub const MK_ABI_VERSION_MINOR: u32 = 3;
+pub const MK_ABI_VERSION_MINOR: u32 = 4;
 /// `(major << 16) | minor`. Major changes break compatibility; minor
 /// versions only add functions or JSON fields.
 pub const MK_ABI_VERSION: u32 = (MK_ABI_VERSION_MAJOR << 16) | MK_ABI_VERSION_MINOR;
@@ -1152,6 +1152,39 @@ pub unsafe extern "C" fn mk_job_release(engine: *const MKEngine, job: u64) -> MK
         let e = unsafe { engine_ref(engine) }?;
         e.engine.release_job(job)?;
         Ok(())
+    })
+}
+
+// ---------------------------------------------------------------------------
+// ABI 1.4: GPU kernel preparation
+
+/// Start creating the GPU's compute kernels in the background
+/// (`Engine::prepare_gpu`). `cache_dir` (nullable): where compiled kernels
+/// are saved and loaded. Returns immediately; a second call is a no-op.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mk_engine_prepare_gpu(
+    engine: *const MKEngine,
+    cache_dir: *const c_char,
+) -> MKStatus {
+    guard(|| {
+        let e = unsafe { engine_ref(engine) }?;
+        let dir = unsafe { in_opt_str(cache_dir, "cache_dir") }?.map(std::path::PathBuf::from);
+        e.engine.prepare_gpu(dir);
+        Ok(())
+    })
+}
+
+/// `*out_json` receives the preparation's state (`Engine::gpu_preparation`).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mk_engine_gpu_preparation_json(
+    engine: *const MKEngine,
+    out_json: *mut *mut c_char,
+) -> MKStatus {
+    unsafe { clear_out(out_json) };
+    guard(|| {
+        let e = unsafe { engine_ref(engine) }?;
+        unsafe { out_ptr(out_json, "out_json") }?;
+        unsafe { put_json(out_json, &e.engine.gpu_preparation()) }
     })
 }
 

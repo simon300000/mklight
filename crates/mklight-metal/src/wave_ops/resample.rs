@@ -48,7 +48,7 @@ pub fn execute(r: &Resample, x: &mut Execution<'_>, ctl: &JobControl) -> MkResul
     ];
     let pipelines = names
         .iter()
-        .map(|n| x.gpu.pipeline(&PipelineKey::plain(n)))
+        .map(|n| x.gpu.pipeline(&PipelineKey::plain(*n)))
         .collect::<MkResult<Vec<_>>>()?;
     let ss = r.supersample * r.supersample;
     // (threads, tile, work units per thread) of each step.

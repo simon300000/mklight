@@ -568,3 +568,49 @@ fn changed_snapshots_and_candidates_never_submit_geometry_probes() {
     }
     assert_eq!(device.traces.load(Ordering::Relaxed), 0);
 }
+
+/// The app prepares Metal's kernels at launch: every kernel compiles (or
+/// loads from the system cache), and the saved pipeline archive then serves
+/// a second engine without compiling.
+#[test]
+fn metal_kernels_prepare_ahead_and_load_from_the_saved_cache() {
+    use mklight_engine::gpu::GpuPreparation;
+    let settled = |e: &Engine| {
+        let start = std::time::Instant::now();
+        loop {
+            match e.gpu_preparation() {
+                GpuPreparation::Preparing { .. } if start.elapsed().as_secs() < 300 => {
+                    std::thread::sleep(std::time::Duration::from_millis(10))
+                }
+                s => return s,
+            }
+        }
+    };
+    let dir = std::env::temp_dir().join(format!("mklight-pipelines-{}", std::process::id()));
+    let e = engine_with(None);
+    assert!(e.prepare_gpu(Some(dir.clone())));
+    let first = match settled(&e) {
+        GpuPreparation::Ready { kernels, .. } => kernels,
+        GpuPreparation::Unavailable { reason } => {
+            return eprintln!("skipping: Metal unavailable ({reason})");
+        }
+        s => panic!("{s:?}"),
+    };
+    assert!(first > 150, "{first} kernels");
+    let saved: Vec<_> = std::fs::read_dir(&dir).unwrap().flatten().collect();
+    assert_eq!(saved.len(), 1, "one archive for this GPU and library");
+    let e = engine_with(None);
+    assert!(e.prepare_gpu(Some(dir.clone())));
+    match settled(&e) {
+        GpuPreparation::Ready {
+            kernels,
+            from_cache,
+            ..
+        } => {
+            assert_eq!(kernels, first);
+            assert_eq!(from_cache, kernels, "every kernel from the archive");
+        }
+        s => panic!("{s:?}"),
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}

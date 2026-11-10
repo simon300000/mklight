@@ -274,6 +274,14 @@ impl BackendRegistry {
         self.providers.push(p);
     }
 
+    /// The first registered GPU provider (registration order, as `auto`).
+    pub(crate) fn first_gpu(&self) -> Option<Arc<dyn BackendProvider>> {
+        self.providers
+            .iter()
+            .find(|p| p.id().starts_with("gpu:"))
+            .cloned()
+    }
+
     pub fn list(&self) -> Vec<BackendInfo> {
         self.providers.iter().map(|p| p.info()).collect()
     }

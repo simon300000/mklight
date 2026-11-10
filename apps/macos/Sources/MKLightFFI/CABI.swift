@@ -76,6 +76,14 @@ enum CABI {
         try string("mk_engine_list_backends") { mk_engine_list_backends(e, $0) }
     }
 
+    static func prepareGPU(_ e: OpaquePointer, cacheDirectory: String?) throws {
+        try check(withOptionalCString(cacheDirectory) { mk_engine_prepare_gpu(e, $0) }, "mk_engine_prepare_gpu")
+    }
+
+    static func gpuPreparation(_ e: OpaquePointer) throws -> String {
+        try string("mk_engine_gpu_preparation_json") { mk_engine_gpu_preparation_json(e, $0) }
+    }
+
     /// Installs (`hub != nil`) or clears the job callback. Events go to
     /// `JobEventHub.deliver` on the engine's `mklight-events` thread. When
     /// this returns after clearing, no thread is inside the old callback.
@@ -285,6 +293,8 @@ enum CABI {
     static func engineDestroy(_ e: OpaquePointer) {}
     static func listAnalyses(_ e: OpaquePointer) throws -> String { throw notLinked }
     static func listBackends(_ e: OpaquePointer) throws -> String { throw notLinked }
+    static func prepareGPU(_ e: OpaquePointer, cacheDirectory: String?) throws { throw notLinked }
+    static func gpuPreparation(_ e: OpaquePointer) throws -> String { throw notLinked }
     static func setJobCallback(_ e: OpaquePointer, hub: JobEventHub?) throws { throw notLinked }
     static func sessionNew(_ e: OpaquePointer) throws -> OpaquePointer { throw notLinked }
     static func sessionOpen(_ e: OpaquePointer, path: String) throws -> OpaquePointer { throw notLinked }

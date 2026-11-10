@@ -16,6 +16,7 @@ struct DesignStatus: View {
 
     var body: some View {
         HStack(spacing: Space.m) {
+            GPUPreparationBadge()
             if let job = window.runningJob {
                 Button {
                     window.open(job)
@@ -51,6 +52,37 @@ struct DesignStatus: View {
         case .glass: window.glass.progress.map { "Glasses · \($0.combinations)" } ?? "Substituting glasses"
         case .tolerance: "Tolerancing"
         case .solves: "Solving"
+        }
+    }
+}
+
+/// The GPU's kernels being prepared at launch, with their progress, then a
+/// short confirmation. Hidden when they load from the cache at once.
+struct GPUPreparationBadge: View {
+    private var monitor = GPUPreparationMonitor.shared
+
+    var body: some View {
+        switch monitor.display {
+        case .hidden:
+            EmptyView()
+        case .preparing:
+            let percent = Int((monitor.state.fraction * 100).rounded())
+            HStack(spacing: Space.xs) {
+                ProgressView().controlSize(.mini)
+                Text("Preparing GPU \(percent)%").monospacedDigit().foregroundStyle(.secondary)
+            }
+            .fixedSize()
+            .help("Compiling the GPU's compute kernels, once after installing or updating MKLight or macOS. A GPU analysis started now waits only for the kernels it needs.")
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Preparing GPU")
+            .accessibilityValue("\(percent) percent")
+        case .finished:
+            // Text, not a Label: in the toolbar a Label shows only its icon,
+            // which would read as the issues button's checkmark.
+            Text("GPU ready")
+                .foregroundStyle(.secondary)
+                .fixedSize()
+                .transition(.opacity)
         }
     }
 }
@@ -136,7 +168,9 @@ struct StatusDetails: View {
                     Label("Mock engine: results are synthetic. The engine library is not linked into this build.", systemImage: "exclamationmark.triangle.fill")
                         .foregroundStyle(.orange).font(.callout).fixedSize(horizontal: false, vertical: true)
                 }
-                KeyValueGrid(rows: [("Engine", "\(engine.info.name) \(engine.info.version)")] + (workspace.snapshot.map { [("Snapshot", $0.hash.short)] } ?? []))
+                KeyValueGrid(rows: [("Engine", "\(engine.info.name) \(engine.info.version)")]
+                    + (workspace.snapshot.map { [("Snapshot", $0.hash.short)] } ?? [])
+                    + (GPUPreparationMonitor.shared.summary.map { [("GPU kernels", $0)] } ?? []))
                 Picker("Compute on", selection: Binding(get: { workspace.backend }, set: { workspace.backend = $0 })) {
                     Text("Automatic").tag(BackendPreference.auto)
                     Text("CPU reference (f64)").tag(BackendPreference.cpuReference)

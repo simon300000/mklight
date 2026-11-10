@@ -43,7 +43,7 @@ pub mod consts {
 
 pub use backend::{
     BackendKind, ComputeBackend, DeviceInfo, DfOp, ErrorBudget, Job, JobKind, JobOutput, JobResult,
-    JobStats, NumericsProbe, PrecisionDescriptor, ReduceMode, SystemHandle,
+    JobStats, KernelPreparation, NumericsProbe, PrecisionDescriptor, ReduceMode, SystemHandle,
 };
 pub use batch::{
     NewtonSettings, PathStep, PreparedTrace, Radiometry, RayBatch, RayStatus, RecordMode, StepMode,

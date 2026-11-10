@@ -496,4 +496,28 @@ pub trait ComputeBackend: Send + Sync {
     fn run(&self, job: Job, ctx: &JobContext) -> MkResult<JobResult> {
         self.submit(job, ctx)?.wait()
     }
+    /// Create the device's compute kernels ahead of their first use, so no
+    /// job waits for shader compilation, reporting `(done, total)`. With
+    /// `cache_dir` the compiled kernels are saved there and later processes
+    /// load them instead of compiling. Stops early when `cancel` is set.
+    /// Backends without compilation do nothing.
+    fn prepare_kernels(
+        &self,
+        _cache_dir: Option<&std::path::Path>,
+        _progress: &(dyn Fn(usize, usize) + Sync),
+        _cancel: &std::sync::atomic::AtomicBool,
+    ) -> MkResult<KernelPreparation> {
+        Ok(KernelPreparation::default())
+    }
+}
+
+/// Outcome of [`ComputeBackend::prepare_kernels`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct KernelPreparation {
+    /// Kernels (pipelines) prepared.
+    pub kernels: usize,
+    /// Of them, loaded from the saved cache instead of compiled.
+    pub from_cache: usize,
+    /// Wall time, seconds.
+    pub seconds: f64,
 }

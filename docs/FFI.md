@@ -30,7 +30,7 @@ further linker flags are needed.
 ## Versioning
 
 * `mk_abi_version()` returns `(major << 16) | minor`; the header has
-  `MK_ABI_VERSION_MAJOR/MINOR` (currently 1.3). A front end must check that
+  `MK_ABI_VERSION_MAJOR/MINOR` (currently 1.4). A front end must check that
   the runtime major equals the compiled major. Minor releases only **add**
   functions and JSON fields, so JSON readers must ignore unknown keys.
   1.1 added `mk_engine_analysis_info`, `mk_engine_set_default_backend`,
@@ -43,6 +43,8 @@ further linker flags are needed.
   tolerancing result, with `result.stopped: true`.
 * 1.3 adds `mk_import_prescription` and `mk_session_import_prescription`
   (lens prescription files, *Lens prescription import* below).
+* 1.4 adds `mk_engine_prepare_gpu` and `mk_engine_gpu_preparation_json`
+  (*GPU kernel preparation* below).
 * Each analysis' result shape has its own `result_version`
   (`docs/RESULTS.md` §2).
 * `mk_engine_version()` is the engine (crate) version recorded in every
@@ -558,3 +560,25 @@ mk_engine_destroy(engine)
   what it used with `AnalysisInput::report_backend`.
 * Typed merit/variables/tolerances replace the opaque project sections
   in a new schema version.
+
+## GPU kernel preparation
+
+Metal compiles each compute kernel the first time a process creates its
+pipeline. All of MKLight's kernels take about 160 CPU-seconds when nothing is
+cached (a new install or update, a macOS update, or an evicted system shader
+cache): about 30 s on an M2 Pro, where Metal's compiler service runs about
+six compiles at once. The first GPU analysis would wait for its kernels. A front end calls `mk_engine_prepare_gpu(engine,
+cache_dir)` at launch: a background thread opens the GPU and creates every
+kernel and the common specialisations of the specialised ones (205
+pipelines, six at a time). With `cache_dir`, the compiled pipelines are kept in a Metal
+binary archive there (one file per GPU and shader library, about 50 MB;
+archives of earlier builds are removed), and later launches load them in
+milliseconds instead of compiling. Analyses may run meanwhile: a kernel the
+preparation has not reached yet compiles for the job that needs it.
+
+`mk_engine_gpu_preparation_json` reports the state, for a status display:
+`{"state": "preparing", "device", "done", "total"}`, then
+`{"state": "ready", "device", "kernels", "from_cache", "seconds"}`, or
+`"unavailable"` with a `reason` (no GPU; analyses use the CPU reference) or
+`"failed"` with a `message` (kernels compile on first use instead).
+

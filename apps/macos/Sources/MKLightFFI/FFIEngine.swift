@@ -62,6 +62,17 @@ public struct FFIEngine: EngineClient {
     /// `mk_engine_list_backends`, verbatim.
     public var backends: JSONValue { core.backendsJSON.value }
 
+    public func prepareGPU(cacheDirectory: URL?) {
+        try? CABI.prepareGPU(core.pointer, cacheDirectory: cacheDirectory?.path)
+    }
+
+    public func gpuPreparation() -> GPUPreparation {
+        guard let text = try? CABI.gpuPreparation(core.pointer),
+              let state = try? decodeJSON(GPUPreparation.self, text)
+        else { return .idle }
+        return state
+    }
+
     // MARK: Sessions and projects
 
     /// A new untitled session on the same engine.

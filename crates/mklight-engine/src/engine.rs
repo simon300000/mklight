@@ -74,7 +74,16 @@ pub(crate) struct EngineInner {
     pub(crate) graph: Option<Arc<AnalysisGraph>>,
     /// `auto` routing (`analysis::cost`): calibration and online state.
     pub(crate) cost: Arc<crate::analysis::cost::CostModel>,
+    /// `prepare_gpu`'s progress, shared with its thread.
+    gpu_preparation: Arc<crate::gpu::GpuPreparationState>,
     next_session: AtomicU64,
+}
+
+impl Drop for EngineInner {
+    /// A running GPU preparation stops at its next kernel.
+    fn drop(&mut self) {
+        self.gpu_preparation.cancel.store(true, Ordering::Relaxed);
+    }
 }
 
 #[derive(Clone)]
@@ -105,6 +114,7 @@ impl Engine {
                 graph: (config.analysis_graph_bytes > 0)
                     .then(|| Arc::new(AnalysisGraph::new(config.analysis_graph_bytes))),
                 cost: Arc::new(crate::analysis::cost::CostModel::default()),
+                gpu_preparation: Arc::default(),
                 next_session: AtomicU64::new(1),
                 config,
             }),
@@ -186,6 +196,65 @@ impl Engine {
     }
 
     /// Make `b` the default for new jobs. Fails if it is unavailable.
+    /// Create the GPU's compute kernels in the background, so the first GPU
+    /// analysis does not wait for shader compilation (several seconds on a
+    /// new install, update or system-cache eviction). Opens the first
+    /// registered GPU. With `cache_dir` the compiled kernels are saved there
+    /// and later launches load them. Progress: [`Self::gpu_preparation`].
+    /// Returns `false` when a preparation already started.
+    pub fn prepare_gpu(&self, cache_dir: Option<std::path::PathBuf>) -> bool {
+        let state = self.inner.gpu_preparation.clone();
+        {
+            let mut s = state.state.lock().unwrap_or_else(|e| e.into_inner());
+            if *s != crate::gpu::GpuPreparation::Idle {
+                return false;
+            }
+            *s = crate::gpu::GpuPreparation::Preparing {
+                device: String::new(),
+                done: 0,
+                total: 0,
+            };
+        }
+        let provider = self.inner.backends.read().unwrap().first_gpu();
+        let spawned = std::thread::Builder::new()
+            .name("mklight-gpu-prepare".into())
+            .spawn(move || {
+                use crate::gpu::{GpuDevice, GpuPreparation};
+                let Some(provider) = provider else {
+                    return state.set(GpuPreparation::Unavailable {
+                        reason: "no GPU backend is registered".into(),
+                    });
+                };
+                // Opening the device runs its numerics probe.
+                match provider
+                    .device()
+                    .and_then(|d| d.downcast::<GpuDevice>().ok())
+                {
+                    Some(device) => crate::gpu::prepare(device, cache_dir, &state),
+                    None => state.set(GpuPreparation::Unavailable {
+                        reason: provider
+                            .info()
+                            .reason
+                            .unwrap_or_else(|| "the GPU is not available".into()),
+                    }),
+                }
+            });
+        if let Err(e) = spawned {
+            self.inner
+                .gpu_preparation
+                .set(crate::gpu::GpuPreparation::Failed {
+                    device: String::new(),
+                    message: e.to_string(),
+                });
+        }
+        true
+    }
+
+    /// Progress of [`Self::prepare_gpu`].
+    pub fn gpu_preparation(&self) -> crate::gpu::GpuPreparation {
+        self.inner.gpu_preparation.get()
+    }
+
     pub fn set_default_backend(&self, b: Backend) -> EngineResult<()> {
         read(&self.inner.backends).select(&b, None, false)?;
         if let Ok(mut d) = self.inner.default_backend.write() {
