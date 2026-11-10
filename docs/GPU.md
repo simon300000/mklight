@@ -2008,7 +2008,7 @@ start (format and model version must match). `validate` in the same file compare
 against both backends on fresh edits and warm repeats.
 
 *Accuracy exclusions* are qualified with the per-quantity contracts of §9.4:
-`metal_accuracy` on the 16 samples (release, real Metal: 481 rows, 0 native
+`metal_accuracy` on the 16 samples (release, real Metal: 479 rows, 0 native
 gate failures) and a complex 29-surface F/1.4 lens (`project_bench` accuracy
 records, Metal DF vs CPU f64, warm and edited). Analyses not in the table
 pass both. Re-qualified with the 2026-11 divisions and recalibration.
