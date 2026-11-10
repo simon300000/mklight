@@ -17,18 +17,16 @@ MKL_STATIC_ASSERT(sizeof(struct MklGeometryParams) == 64, "geometry parameters")
 /* Image-point illumination solve (relative illumination). One field row per
  * image point, host-prepared in f64 and stored as hi/lo pairs: the aiming
  * metadata, the chief aim point and stop-Jacobian inverse that seed every
- * pupil aim, the image point X0 and its tangent basis, the chief object
- * parameters q0 with the chord inverse (dX/dq)^-1 at (q0, P = 0), the object
- * difference step and the image-point tolerance. Stop aims converge at
+ * pupil aim, the tangent basis of the image surface at the image point and
+ * the image-point tolerance. Stop aims converge at
  * 1e-12 of the stop radius; a solve that stalls (or exhausts its steps)
  * within aim_floor of the stop radius (the reference's own aim tolerance,
  * at least the device trace's noise floor) is accepted there. Status
  * nonzero: every node of the field fails. */
-#define MKL_RI_FIELD_WORDS 96u
+#define MKL_RI_FIELD_WORDS 78u
 struct MklRiField {
     struct MklAimField aim;
-    float chief[4], aim_inverse[8], x0[4], basis[12], q0[4], q_inverse[8];
-    float hq[2], tolerance[2];
+    float chief[4], aim_inverse[8], basis[12], tolerance[2];
     MKL_U32 status;
     float aim_floor;
 };

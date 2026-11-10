@@ -330,7 +330,7 @@ impl<'a> Geometry<'a> {
         );
         p.operations
             .push(ResidentOp::Aiming(Request::TraceResident(TraceResident {
-                systems: SystemSet::Uploaded(self.systems),
+                systems: self.systems,
                 input,
                 steps: p.view(steps)?,
                 start_surface: 0,

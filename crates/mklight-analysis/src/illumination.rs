@@ -526,8 +526,8 @@ pub fn q_scale(rt: &SequentialTracer) -> f64 {
 }
 
 /// The f64 per-field data of one image point, as the reference prepares it
-/// before its pupil nodes (module docs): the start of the device solves of
-/// `mklight_gpu::geometry::ri` and of the split designs.
+/// before its pupil nodes (module docs): the start of the host image-point
+/// solves and of the device pencils (`mklight_gpu::geometry::ri`).
 #[derive(Clone, Debug)]
 pub struct ImagePoint {
     /// The real-aimed field (its chief aim and stop Jacobian seed the aims).

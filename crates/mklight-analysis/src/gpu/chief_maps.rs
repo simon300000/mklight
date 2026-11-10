@@ -25,17 +25,17 @@ impl ChiefDesign {
             Self::DeviceChief => "device-chief",
         }
     }
-    /// The selected design and its evidence name.
-    pub fn selected() -> (Self, String) {
+    /// The selected design and its evidence name; an unknown name is an
+    /// error, as for the other route keys.
+    pub fn selected() -> MkResult<(Self, String)> {
         let all = [Self::HostChief, Self::DeviceChief];
         match mklight_core::split::variant(super::SPLIT_KEY) {
-            None => (Self::DEFAULT, format!("default:{}", Self::DEFAULT.name())),
+            None => Ok((Self::DEFAULT, format!("default:{}", Self::DEFAULT.name()))),
             Some(v) => match all.into_iter().find(|d| d.name() == v) {
-                Some(d) => (d, v),
-                None => (
-                    Self::DEFAULT,
-                    format!("unknown:{v}:{}", Self::DEFAULT.name()),
-                ),
+                Some(d) => Ok((d, v)),
+                None => Err(mklight_core::MkError::InvalidParam(format!(
+                    "unknown fieldmaps design '{v}' (host-chief, device-chief)"
+                ))),
             },
         }
     }
@@ -106,10 +106,8 @@ impl Geometry<'_> {
         let generated = rays(p, count);
         p.operations
             .push(ResidentOp::Aiming(Request::GenerateAim(GenerateAim {
-                systems: SystemSet::Uploaded(self.systems),
+                systems: self.systems,
                 samples: p.view(samples)?,
-                sampling: Sampling::Explicit,
-                unresolved: None,
                 field_wavelength: p.view(metadata)?,
                 field_key: None,
                 seeds: None,
@@ -121,7 +119,7 @@ impl Geometry<'_> {
         let out = hits(p, count, if records { last + 1 } else { 0 });
         p.operations
             .push(ResidentOp::Aiming(Request::TraceResident(TraceResident {
-                systems: SystemSet::Uploaded(self.systems),
+                systems: self.systems,
                 input: generated,
                 steps: p.view(steps)?,
                 start_surface: 0,

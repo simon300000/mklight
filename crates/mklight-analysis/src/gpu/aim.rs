@@ -929,10 +929,8 @@ impl Geometry<'_> {
         let out = rays(a, n);
         a.operations
             .push(ResidentOp::Aiming(Request::GenerateAim(GenerateAim {
-                systems: SystemSet::Uploaded(self.systems),
+                systems: self.systems,
                 samples: a.view(samples)?,
-                sampling: Sampling::Explicit,
-                unresolved: None,
                 field_wavelength: a.view(metadata)?,
                 field_key,
                 seeds: Some(a.view(seeds)?),

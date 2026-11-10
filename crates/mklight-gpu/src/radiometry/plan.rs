@@ -73,8 +73,7 @@ impl PreparedRadiometry {
         })
     }
     /// Primary-path records must have slots 0..image in order, radiometry off,
-    /// and belong to this material state. P4 callers may instead construct a
-    /// PolarizationRequest with device-generated SurfaceSpec rows.
+    /// and belong to this material state.
     pub fn append(
         &self,
         p: &mut ResidentPlan,

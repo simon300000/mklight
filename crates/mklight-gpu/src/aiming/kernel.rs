@@ -829,33 +829,3 @@ pub fn project<E: FpEnv>(
         .map(|x| x.0),
     )
 }
-
-/// Procedural lattice/fan mapping, with the same double-float algebra in MSL.
-pub fn sample_at<E: FpEnv>(base: Sample, sampling: Sampling, i: usize, count: usize) -> Sample {
-    let mut out = base;
-    let (kind, side, extent) = sampling.parameters();
-    if kind == 0 {
-        return out;
-    }
-    let coordinate = |k: usize, n: usize| {
-        if n <= 1 {
-            D::ZERO
-        } else {
-            (c::<E>(-1.0) + c::<E>(2.0) * c::<E>(k as f32) / c::<E>((n - 1) as f32))
-                * D::from_df(extent)
-        }
-    };
-    out.pupil = if kind == 1 {
-        [
-            coordinate(i % side as usize, side as usize).0,
-            coordinate(i / side as usize, side as usize).0,
-        ]
-    } else {
-        let mut p = [Df32::ZERO; 2];
-        p[side as usize] = coordinate(i, count).0;
-        p
-    };
-    let id = (base.id[0] as u64 | ((base.id[1] as u64) << 32)).wrapping_add(i as u64);
-    out.id = [id as u32, (id >> 32) as u32];
-    out
-}

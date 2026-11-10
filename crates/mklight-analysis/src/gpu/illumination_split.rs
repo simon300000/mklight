@@ -108,17 +108,7 @@ fn field_row(
         aim_inverse: inverse
             .map(|m| [m[0][0], m[0][1], m[1][0], m[1][1]].map(Df32::from_f64))
             .unwrap_or([Df32::ZERO; 4]),
-        x0: df2(ip.x0),
         basis: [b0.x, b0.y, b0.z, b1.x, b1.y, b1.z].map(Df32::from_f64),
-        q0: df2(ip.q0),
-        q_inverse: [
-            ip.q_inverse[0][0],
-            ip.q_inverse[0][1],
-            ip.q_inverse[1][0],
-            ip.q_inverse[1][1],
-        ]
-        .map(Df32::from_f64),
-        hq: Df32::from_f64(ip.hq),
         tolerance: Df32::from_f64(ip.tolerance),
         status: u32::from(inverse.is_none()),
         aim_floor: aim_floor as f32,
@@ -564,7 +554,7 @@ fn host_solve(
         p.operations
             .push(ResidentOp::Geometry(geometry::Request::IlluminationRays(
                 IlluminationRays {
-                    systems: SystemSet::Uploaded(problem.geo.systems),
+                    systems: problem.geo.systems,
                     fields: p.view(fields)?,
                     tasks: p.view(tasks)?,
                     slots: problem.slots(),

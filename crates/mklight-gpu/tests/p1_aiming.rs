@@ -65,13 +65,22 @@ fn extended_fixtures_and_failed_iterations() {
         .wait()
         .unwrap();
     let d = read_all(&cpu, &r);
-    let sparse = aiming::unresolved(uints(&d[1]), uints(&d[2]));
-    assert!(!sparse.is_empty());
-    assert_eq!(sparse.len() as u64, r.stats.fallback_count);
-    for (i, id, status) in sparse {
+    // Unresolved rays keep their logical IDs and failure reports.
+    let (report, ids) = (uints(&d[1]), uints(&d[2]));
+    let n = points.len();
+    let failed: Vec<_> = (0..n)
+        .filter(|&i| !matches!(report[i], 0 | consts::MKL_AIM_OUTSIDE))
+        .collect();
+    assert!(!failed.is_empty());
+    assert_eq!(failed.len() as u64, r.stats.fallback_count);
+    for i in failed {
+        let id = ids[i] as u64 | ((ids[n + i] as u64) << 32);
         assert_eq!(id, 0x100000000 + i as u64);
-        assert_eq!(status & consts::MKL_RAY_CODE_MASK, consts::MKL_AIM_FAILED);
-        assert_eq!(uints(&d[4])[i], status);
+        assert_eq!(
+            report[i] & consts::MKL_RAY_CODE_MASK,
+            consts::MKL_AIM_FAILED
+        );
+        assert_eq!(uints(&d[4])[i], report[i]);
     }
     cpu.release_systems(h).unwrap();
 }
@@ -155,39 +164,6 @@ fn projection_sheets_centroid_and_telecentric_known_answers() {
                 );
             }
         }
-    }
-}
-
-#[test]
-fn overflowing_resident_extents_are_rejected_at_submission() {
-    use aiming::*;
-    use resident::*;
-    let mut p = ResidentPlan::new(mklight_core::Snapshot::new(samples::singlet()).unwrap());
-    let headers = p.scratch(BufferDesc::new(ElementType::U32, [44]));
-    let surfaces = p.scratch(BufferDesc::new(ElementType::U32, [156]));
-    let coefficients = p.scratch(BufferDesc::new(ElementType::DoubleFloat, [0]));
-    let input = rays(&mut p, 0);
-    let output = hits(&mut p, 0, 0);
-    let steps = p.scratch(BufferDesc::new(ElementType::U32, [1]));
-    for count in [usize::MAX, u32::MAX as usize] {
-        let request = Request::TraceResident(TraceResident {
-            systems: SystemSet::Resident {
-                headers,
-                surfaces,
-                coefficients,
-                count,
-                max_surfaces: u32::MAX as usize,
-                max_wavelengths: 1,
-            },
-            input: input.clone(),
-            steps: p.view(steps).unwrap(),
-            start_surface: 0,
-            apply_apertures: true,
-            radiometry: 0,
-            newton: Default::default(),
-            output: output.clone(),
-        });
-        assert!(aiming::validate(&request, &p).is_err());
     }
 }
 

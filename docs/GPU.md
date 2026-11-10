@@ -1227,14 +1227,13 @@ below are proposed Rust types; the C layout umbrella remains the authority.
 | Contract | Inputs → outputs | Owner |
 |---|---|---|
 | `ResidentPlan`, `BufferHandle`, `BufferView`, `PlanStats` | validated typed operations/views → pending resident outputs, explicit final readback and per-stage stats | P0 |
-| `GenerateAim`, `TraceResident`, `ProjectPupil` | system set + logical field/λ/pupil indices → hi+lo rays/status; trace → hi+lo hits/OPL; reference descriptor → OPD, pupil coordinates | P1 |
+| `GenerateAim`, `TraceResident`, `ProjectPupil` | uploaded systems + logical field/λ/pupil indices → hi+lo rays/status; trace → hi+lo hits/OPL; reference descriptor → OPD, pupil coordinates | P1 |
 | `TransformPlan`, `CorrelationStencil` | complex grids, dimensions/strides, sign/scale, affine map → complex grids or frequency values | P2 |
 | `SegmentReduce`, `StableCompact`, `StableSort`, `Scan`, `QrFit` | indexed typed resident channels → moments, ordered records, segment outputs or fit factors | P3 |
-| `SystemBatchPlan`, `CandidateMap` | immutable topology/material tables + ordered parameter vectors/configurations → resident system set, derived first-order data, candidate status/index map | P4 |
 
 #### Resident interface gate (P0)
 
-The compiling API is `mklight_gpu::resident` and the ten package modules
+The compiling API is `mklight_gpu::resident` and the nine package modules
 in the table below. Engine dispatch is unchanged. Only the compatibility
 `TraceUpload` and `Sum` operations execute in P0; all domain handlers
 return `Unsupported` until their owners qualify them. The solver crates
@@ -1339,14 +1338,12 @@ still uploads its initial host rays on each call; P1 owns resident generation.
 | `aiming` | `GenerateAim`, `TraceResident`, `ProjectPupil`; `ResidentRays`, `ResidentHits`, `PupilReference` |
 | `transforms` | `TransformPlan`, `CorrelationStencil`; explicit dimensions, sign, scale and double-float affine coefficients |
 | `collectives` | `SegmentReduce`, `StableCompact`, `StableSort`, `Scan`, `QrFit`; explicit IDs/counts, factors and rank/condition destinations |
-| `systems` | `SystemBatchPlan`, `CandidateMap`; parameter/dependency/material views and numeric system/first-order sidecars |
 | `geometry`, `radiometry` | numeric geometry settings/samples and coating-stack/hit records, with status destinations |
-| `wave_ops`, `ghost_ops`, `stray_ops`, `optim_ops` | numeric solver records and settings views; ghost/stray share `ghost_ops::Coverage` |
+| `wave_ops`, `ghost_ops`, `stray_ops`, `optim_ops` | numeric solver records and settings views |
 
 Exact field names and types are in each `src/<module>/mod.rs`; these are
-owned by the named package after P0. `SystemSet` accepts an uploaded handle
-or plan-local header/surface/coefficient sidecars, so P4 output can feed P1
-without host materialisation. `ResidentRays` uses the 15 existing input
+owned by the named package after P0. Requests read uploaded packed systems
+by their `SystemHandle`. `ResidentRays` uses the 15 existing input
 float planes (including position/direction residuals), two index planes and
 separate two-word logical IDs. `ResidentHits` adds status and optional
 record/residual sidecars; P1 must retain hi+lo geometry internally.
@@ -1597,9 +1594,10 @@ continuation schedule and configured cap/tolerance (the request's aim-stop
 policy, CONVENTIONS §7: the requested tolerance, normally 1e-10 relative to
 the stop radius, or the tightest conditioned stop of the request's fields,
 `SequentialTracer::device_aim_tolerance`; one value per generation, part of
-`aim_identity`). A rounded f32 stop hit cannot drive that solve. Compact
-only unresolved rays for optional CPU f64 polish; scatter them back at their
-original indices and record counts/reasons. (The CPU reference takes its
+`aim_identity`). A rounded f32 stop hit cannot drive that solve. Unresolved
+rays keep their index, logical ID and failure report; the adapters complete
+them on the host in f64 where they do (host completion above) and record
+counts/reasons. (The CPU reference takes its
 fresh Jacobians from the analytic differential tracer, CONVENTIONS §7; the
 device solve keeps its finite-difference stencil and is seeded with the
 host rows' analytic chief Jacobians.) A failed aim remains a failed
@@ -2085,7 +2083,6 @@ Representative matched calls follow; times are **median / p95 in ms**. The trans
 | P1 real aim, Double Gauss 821,904 | 218.084 / 225.569 | 56.700 / 58.409 |
 | P2 skew MFT 1024→2048, resident input | 83.779 / 92.297 | 28.702 / 31.436 |
 | P3 trace→moments, Cooke 1M | 59.180 / 67.776 | 19.640 / 19.886 |
-| P4 prepare 1,024 Cooke candidates | 9.579 / 10.117 | 1.924 / 2.517 |
 | P5 Cooke footprint, 823,473 rays | 842.594 / 847.701 | 428.991 / 442.493 |
 | P6 PSF lattice 1001, pupil 1024, output 2048 | 443.304 / 453.256 | 230.371 / 242.783 |
 | P7 Double Gauss PRT, 1024 pupil | 343.401 / 362.102 | 233.677 / 239.567 |
@@ -2378,7 +2375,7 @@ production capability.
 | P1 | Device generation, aiming, reusable trace state and reference-sphere OPD | P0 | hardest |
 | P2 | FFT, chirp/affine MFT and autocorrelation primitives | P0 | hardest |
 | P3 | Deterministic segmented reductions, sort/scan and QR | P0 | difficult |
-| P4 | Resident multi-system parameter/material/first-order preparation | P0 | hardest |
+| P4 | Resident multi-system parameter/material/first-order preparation (removed 2026-11 with the resident solver design, its only user) | P0 | hardest |
 | P5 | Geometric analyses, field maps, sizing and layout | P1, P3, P4 | difficult |
 | P7 | Shared coating/radiometry and polarisation | P1, P3, P4 | hardest |
 | P6 | Complete wave/image-simulation pipelines | P1, P2, P3, P5, P7 | hardest |

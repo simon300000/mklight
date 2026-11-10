@@ -555,7 +555,7 @@ for adapters that reference them.
 
 The private `mklight_gpu::geometry` operation records are version 1, with
 numeric layouts in `include/mklight_geometry_types.h`. They consume P1
-`ResidentHits` and accept uploaded or P4 resident systems. `Coordinates`,
+`ResidentHits` and read uploaded packed systems. `Coordinates`,
 `FocusTerms`, `Opd`, `Coddington`, `CloseFocus`, `IlluminationRays`,
 `SurfaceSamples` and `Records` publish typed buffers for P6/P8 consumers;
 `Geometry::{coordinates,moments,coddington,image_source}` append
@@ -679,9 +679,9 @@ below 10 ms, from 10 to 100 ms and above 100 ms of CPU time), with results
 within 1e-7 of it. Encircled energy, best focus, the fans and the chromatic and
 layout adapters build one plan per stage.
 
-High-level `Geometry` metadata belongs to its nominal immutable snapshot.
-Changed candidates must use P4's updated first-order/field metadata through
-the numeric requests, rather than retaining nominal launch descriptors.
+High-level `Geometry` metadata belongs to its nominal immutable snapshot;
+a changed system needs its own `Geometry` (its own upload and field
+metadata) rather than the nominal launch descriptors.
 
 Ray, field, quadrature and vertex inputs are written with `fill_buffer`; final buffers are borrowed with
 `read_view`. No staging ray/optical-intermediate upload/readback array is introduced.
@@ -699,7 +699,7 @@ end-to-end benchmark wall time also includes preparation and result packing.
 P5's owned harnesses are `tests/p5_geometry.rs` and the ignored
 `tests/p5_bench.rs` in `mklight-analysis`. They compare complete public arrays
 with f64 on all 16 samples; cover both shader origins, matched FTZ bits,
-analytic ideal-lens/disk answers, P4→P1→P5 chaining, concurrent jobs,
+analytic ideal-lens/disk answers, P1→P5 chaining, concurrent jobs,
 cancellation and resource release. The benchmark compares unchanged f64,
 legacy trace-only Metal plus host statistics, and the resident chain at
 matched settings. Numerical maxima, hardware, raw runs, cold preparation,

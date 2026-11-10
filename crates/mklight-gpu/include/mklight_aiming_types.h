@@ -23,9 +23,6 @@
  * culling, or carrying MKL_AIM_SKIP in its field word. Never aimed, traced or
  * counted as an aim. */
 #define MKL_AIM_OUTSIDE 14u
-/* A pending ray whose aim has not finished its iteration budget yet; only
- * ever observed between continuation rounds. */
-#define MKL_AIM_PENDING 15u
 #define MKL_AIM_SKIP 0x80000000u
 #define MKL_AIM_RECORD_FLOATS 13u
 /* Seed table: a side² lattice of aim solves per real-aim field row over

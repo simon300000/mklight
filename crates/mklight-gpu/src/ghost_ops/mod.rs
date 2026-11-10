@@ -6,14 +6,6 @@ use bytemuck::{Pod, Zeroable};
 pub use kernel::trace;
 use mklight_core::MkResult;
 
-/// Frozen coverage contract shared with stray; ordered signatures are unchanged.
-#[derive(Clone, Debug)]
-pub struct Coverage {
-    pub aperture_words: PlanView,
-    pub path_offsets: PlanView,
-    pub path_events: PlanView,
-    pub diffraction_visits: PlanView,
-}
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct Step {
@@ -136,7 +128,7 @@ pub enum Request {
         output: BufferId,
     },
     Trace {
-        systems: SystemSet,
+        systems: crate::SystemHandle,
         probes: PlanView,
         /// Path offsets into steps; steps are wavelength-major, with equal
         /// path offsets in each wavelength plane.
@@ -322,7 +314,6 @@ pub fn validate(r: &Request, p: &ResidentPlan) -> MkResult<()> {
             return Ok(());
         }
         Request::Trace {
-            systems,
             probes,
             offsets,
             steps,
@@ -332,9 +323,6 @@ pub fn validate(r: &Request, p: &ResidentPlan) -> MkResult<()> {
             newton,
             ..
         } => {
-            if !matches!(systems, SystemSet::Uploaded(_)) {
-                return unsupported("ghost resident candidate systems");
-            }
             if let Some(c) = coatings {
                 records::<CoatingSpec>(&c.specs, p)?;
                 records::<CoatingLayer>(&c.layers, p)?;
@@ -465,10 +453,7 @@ pub fn accesses(r: &Request) -> Access {
             Access {
                 reads,
                 writes: vec![*output],
-                systems: match systems {
-                    SystemSet::Uploaded(h) => vec![*h],
-                    _ => vec![],
-                },
+                systems: vec![*systems],
             }
         }
     }
@@ -734,19 +719,12 @@ fn execute_in<E: crate::FpEnv>(
             coatings,
             output,
         } => {
-            let (headers, surfaces, pool) = match systems {
-                SystemSet::Uploaded(h) => {
-                    let s = x.system(*h)?;
-                    (
-                        s.headers.clone(),
-                        s.surfaces.clone(),
-                        s.coefficients.clone(),
-                    )
-                }
-                SystemSet::Resident { .. } => {
-                    return unsupported("ghost resident candidate systems");
-                }
-            };
+            let s = x.system(*systems)?;
+            let (headers, surfaces, pool) = (
+                s.headers.clone(),
+                s.surfaces.clone(),
+                s.coefficients.clone(),
+            );
             let n = probes.desc.shape[0];
             for i in 0..n {
                 if i % 256 == 0 {

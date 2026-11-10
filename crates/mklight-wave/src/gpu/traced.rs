@@ -498,7 +498,7 @@ impl<'a> PupilTracer<'a> {
         p.operations
             .push(ResidentOp::Aiming(aim::Request::TraceResident(
                 aim::TraceResident {
-                    systems: SystemSet::Uploaded(self.systems),
+                    systems: self.systems,
                     input: generated.clone(),
                     steps: p.view(steps)?,
                     start_surface: 0,
@@ -594,10 +594,8 @@ impl<'a> PupilTracer<'a> {
         p.operations
             .push(ResidentOp::Aiming(aim::Request::GenerateAim(
                 aim::GenerateAim {
-                    systems: SystemSet::Uploaded(self.systems),
+                    systems: self.systems,
                     samples: p.view(samples)?,
-                    sampling: aim::Sampling::Explicit,
-                    unresolved: None,
                     field_wavelength: p.view(metadata)?,
                     field_key: Some(fields.key.clone()),
                     seeds: Some(p.view(seeds)?),

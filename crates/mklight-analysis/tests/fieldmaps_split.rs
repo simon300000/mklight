@@ -201,6 +201,35 @@ fn cpu_chief_designs() {
     chief_designs(&CpuF32Backend::new());
 }
 
+/// An unknown `fieldmaps` design is an error, not the default.
+#[test]
+fn unknown_chief_designs_are_rejected() {
+    let _guard = SELECTION.lock().unwrap_or_else(|e| e.into_inner());
+    let t = tracer_for(samples::cooke_triplet()).unwrap();
+    let b = CpuF32Backend::new();
+    let s = field_maps::FieldMapSettings {
+        grid: [3, 3],
+        ..Default::default()
+    };
+    let grid = curvature::GridDistortionSettings {
+        grid_size: 3,
+        ..Default::default()
+    };
+    for name in ["nonsense", "cpu", "sized"] {
+        split::set(gpu::SPLIT_KEY, Some(name));
+        let map = gpu::field_map_job(
+            &b,
+            &t,
+            field_maps::FieldAnalysis::ChiefRayAngle,
+            &s,
+            &JobContext::new(),
+        );
+        let distortion = gpu::grid_distortion_job(&b, &t, &grid, &JobContext::new());
+        split::reset();
+        assert!(map.is_err() && distortion.is_err(), "fieldmaps={name}");
+    }
+}
+
 #[cfg(target_os = "macos")]
 #[test]
 #[ignore = "Metal: run through the bench lock"]
