@@ -285,9 +285,9 @@ fn aiming_rule_by_batch() {
         assert!(device.aims_on_device(&sys, 1, &refs));
         // The decision reaches the plan: one pinned device batch, one rule
         // batch of a single candidate.
-        values(&device, &[sys.clone()], &ops);
+        values(&device, std::slice::from_ref(&sys), &ops);
         let rule = evaluator(&backend, &sys, false);
-        values(&rule, &[sys.clone()], &ops);
+        values(&rule, std::slice::from_ref(&sys), &ops);
         assert_eq!(device.stats().device_aimed_batches, 1);
         assert_eq!(rule.stats().device_aimed_batches, 0);
     }
