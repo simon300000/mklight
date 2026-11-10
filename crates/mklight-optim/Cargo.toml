@@ -8,7 +8,7 @@ rust-version.workspace = true
 
 # Optical evaluation is plugged in through `merit::OperandEvaluator`; the
 # reference tracer backs `merit::trace_eval`, any `mklight-gpu` compute
-# backend `merit::gpu_eval`.
+# backend `gpu::ResidentEvaluator`.
 [dependencies]
 mklight-core.workspace = true
 mklight-trace.workspace = true

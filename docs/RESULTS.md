@@ -2205,7 +2205,7 @@ Result (`result` in the envelope):
 | `backend.resident_evaluation` (optional) | object |  | Device evaluation, host-stage and fallback accounting. |
 | `backend.workload` | object |  |  |
 | `backend.workload.batch` | integer |  | ≥ 0 |
-| `backend.workload.rays_per_candidate` | integer? |  |  |
+| `backend.workload.rays_per_candidate` | integer |  | ≥ 0 |
 | `candidate_sets` | array<object> |  | The resolved candidates of each material variable. |
 | `candidate_sets[].glasses` | array<object> |  | Nearest first. |
 | `candidate_sets[].glasses[].catalog` | string |  |  |
@@ -2298,7 +2298,7 @@ Result (`result` in the envelope):
 | `backend.resident_evaluation` (optional) | object |  | Device evaluation, host-stage and fallback accounting. |
 | `backend.workload` | object |  |  |
 | `backend.workload.batch` | integer |  | ≥ 0 |
-| `backend.workload.rays_per_candidate` | integer? |  |  |
+| `backend.workload.rays_per_candidate` | integer |  | ≥ 0 |
 | `merit` | nf |  |  |
 | `merit_spec` | object |  | Effective MeritFunctionSpec, including generated operands and the EFL hold. |
 | `operands` | array<object> |  | Snapshot operand values, residuals and merit shares. |
@@ -2368,7 +2368,7 @@ Result (`result` in the envelope):
 | `backend.resident_evaluation` (optional) | object |  | Device evaluation, host-stage and fallback accounting. |
 | `backend.workload` | object |  |  |
 | `backend.workload.batch` | integer |  | ≥ 0 |
-| `backend.workload.rays_per_candidate` | integer? |  |  |
+| `backend.workload.rays_per_candidate` | integer |  | ≥ 0 |
 | `evaluations` | integer |  | ≥ 0 |
 | `failed_variables` | array<integer> |  |  |
 | `final` | object |  |  |
@@ -2483,7 +2483,7 @@ Result (`result` in the envelope):
 | `backend.resident_evaluation` (optional) | object |  | Device evaluation, host-stage and fallback accounting. |
 | `backend.workload` | object |  |  |
 | `backend.workload.batch` | integer |  | ≥ 0 |
-| `backend.workload.rays_per_candidate` | integer? |  |  |
+| `backend.workload.rays_per_candidate` | integer |  | ≥ 0 |
 | `compensators` | array<object> |  | Model parameter units. |
 | `criterion_spec` | object |  | Effective MeritFunctionSpec. |
 | `monte_carlo` | object? |  |  |

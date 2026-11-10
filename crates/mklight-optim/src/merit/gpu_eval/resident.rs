@@ -1,5 +1,4 @@
-//! Resident candidate traces of the hybrid host/device division. The legacy
-//! evaluator above remains an independent before/after benchmark route.
+//! Resident candidate traces of the hybrid host/device division.
 //!
 //! A batch goes through stages that callers may pipeline across
 //! sub-batches: [`prepare`] (host: candidate plans, chief rays and seeds,
@@ -8,12 +7,22 @@
 //! left unresolved in f64, operand values). [`RayDesign`] selects where the
 //! pupil rays are aimed and the device's aiming schedule.
 mod fits;
+use super::super::trace_eval::{
+    Candidate, ChiefData, FieldKey, GroupKey, NodeRay, RealHit, TraceEvaluator,
+};
+use super::super::{Operand, OperandValue};
 use super::*;
 use crate::gpu::GpuContext;
 use crate::merit::Capability;
 use crate::merit::trace_eval::Plan;
+use mklight_core::{JobContext, MkError, MkResult, Vec3};
+use mklight_gpu::layout::MAX_WAVELENGTHS;
+use mklight_gpu::{ComputeBackend, PackedSystem, SystemHandle};
 use mklight_gpu::{Df32, aiming as a, resident::*};
-use std::collections::BTreeSet;
+use mklight_trace::{Compensated, Ray, TraceStatus};
+use rayon::prelude::*;
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 #[derive(Clone, Copy)]
 enum Dest {
     Chief,

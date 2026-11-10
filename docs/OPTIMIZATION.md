@@ -15,7 +15,7 @@ tolerancing, measured throughput, and the engine's `optimize`,
 ```
 MeritFunctionSpec ──┐                      ┌── TraceEvaluator (paraxial, real ray,
 VariableSpec[] ─────┼─► OpticalProblem ──► │     wavefront, model + auto edges)
-OperandEvaluator ───┘     (Problem)        ├── GpuTraceEvaluator (ray operands of a
+OperandEvaluator ───┘     (Problem)        ├── ResidentEvaluator (ray operands of a
                               │            │     batch traced on a mklight-gpu backend)
                               │            ├── ModelEvaluator (model only)
                               │            └── MTF / ghost / stray evaluators of
@@ -34,10 +34,9 @@ OperandEvaluator ───┘     (Problem)        ├── GpuTraceEvaluator (
   wavefront operand with the CPU double-precision reference tracer
   (`mklight-trace`), plus all model-only operands (so one evaluator covers a
   complete optical merit function).
-* `GpuTraceEvaluator` (`merit::gpu_eval`) traces the ray-based operands of
-  many candidates on a GPU in one dispatch and reads them with the same code;
-  `GpuTraceEvaluator::composite` puts it in front of a `TraceEvaluator` for
-  everything else (see GPU-batched evaluation).
+* `ResidentEvaluator` (`gpu`) traces the ray-based operands of a batch of
+  candidates on a `mklight-gpu` backend and evaluates everything else with
+  its `BuiltinEvaluator` reference (see GPU-batched evaluation).
 * `BuiltinEvaluator` combines `TraceEvaluator`, `MtfEvaluator` and
   `SolverEvaluator`. Engine optimise and tolerance jobs use this full set,
   also after GPU ray evaluation. `Custom` operands still need a plug-in.
@@ -542,9 +541,6 @@ at these sizes. An explicit `relative_step` still wins.
   defaults gave ~3e-5 relative Jacobian column errors on the Cooke triplet.
   `η = 1e-6` (forward) / `1e-4` (central) is chosen automatically. Spot
   (ray-position) operands keep the defaults.
-* **f32 GPU operands** (`GpuTraceEvaluator`, see GPU-batched evaluation):
-  `η = 1e-3` / `3e-3` for ray positions, `1e-4` / `1e-3` for wavefront
-  operands.
 * **Device operands of the resident evaluator** (`ResidentEvaluator`,
   double-float traces of f64 aims, ~1e-12 relative noise): forward
   `η = 1e-6` for ray positions and `1e-5` for wavefront operands; central
@@ -566,21 +562,12 @@ at these sizes. An explicit `relative_step` still wins.
 
 Measured largest relative column error `‖J_j − R_j‖/‖R_j‖` on the Cooke
 triplet (curvatures 1, 3, 6, an air space and the back focus; all fields and
-wavelengths; `R` = f64 central differences, `tests/gpu_eval.rs`):
+wavelengths; `R` = f64 central differences):
 
 | operands, evaluator | forward, `√ε` | forward, automatic | central, automatic |
 |---|---|---|---|
 | spot, f64 reference | 4e-7 | 4e-7 (`√ε`) | 2e-9 (`∛ε`) |
 | wavefront, f64 reference | 2.7e-5 | 8e-7 (`1e-6`) | 8e-9 (`1e-4`) |
-| spot, GPU f32 | 7 | 4.1e-4 (`1e-3`) | 6.1e-5 (`3e-3`) |
-| wavefront, GPU f32 | 0.11 | 8.7e-5 (`1e-4`) | 4.7e-6 (`1e-3`) |
-
-The GPU's best steps sit where the f32 noise (`~δ/h`) meets the truncation
-error: spot columns measured 3.8e-2, 3.9e-3, 4.1e-4, 5.3e-4 at forward
-`η = 1e-5, 1e-4, 1e-3, 3e-3`, and 1.7e-4, 6.1e-5, 2.1e-5 at central
-`1e-3, 3e-3, 1e-2`. Errors of 1e-4 do not slow LM down measurably: 8 GPU LM
-iterations on the triplet reach the merit of the same run on the reference
-(within 5 %, tested).
 
 Analytic derivatives are not implemented. The `Problem::jacobian` hook is
 where they belong: paraxial operands through differentiated y–nu traces, and
@@ -612,8 +599,8 @@ repeats bit-identically in the same engine because an identical request keeps
 its first route (GPU.md §9.2); across engines or hosts `auto` may route
 differently, and `backend: "cpu"` is bit-reproducible across sessions. Both are tested on the Cooke triplet with a back-focus compensator.
 Without compensators every trial is a single evaluation, so the evaluator
-receives a whole batch of perturbed systems in one call (one GPU dispatch
-with `GpuTraceEvaluator`). With compensators, each trial runs its own small LM
+receives a whole batch of perturbed systems in one call (one device batch
+with the resident evaluator). With compensators, each trial runs its own small LM
 in parallel. MTF is not unimodal in focus, so LM from the start point can
 settle on a side lobe: with an MTF criterion, each bounded compensator is
 first screened on 33 evenly spaced values across its range (plus the start
@@ -726,153 +713,27 @@ At 3 × 6 sampling the rays dominate. A single candidate is traced
 sequentially, because its 171 rays are too few to parallelise, which is why
 a one-candidate LM trial step runs at ~5 k evals/s while batches (FD
 Jacobians, DE/CMA-ES populations, basin-hopping screens, tolerance trials)
-run at the full rate. These are single timed runs. The GPU benchmark
-(GPU-batched evaluation) reports the best of repeated runs, so its CPU column
-is up to 1.5× higher for the same evaluator. The GPU evaluator packs every
-candidate (10 µs) instead of patching parameter vectors into a packed base:
-the packer's representability checks and double-float residuals depend on
-the values.
+run at the full rate. These are single timed runs.
 
 ## GPU-batched evaluation
 
-`GpuTraceEvaluator` (`merit::gpu_eval`) evaluates the ray-based operands of
-a batch of candidates on any `mklight-gpu` backend (`ComputeBackend`: the
-Metal GPU, or the CPU-f32 emulation, which produces the same bits). It is
-built with `GpuTraceEvaluator::new(backend, cpu, settings)`, and `composite()` puts it in front of the CPU
-`TraceEvaluator`, which computes every operand the GPU does not.
+`gpu::ResidentEvaluator` evaluates the ray-based operands of a batch of
+candidates on any `mklight-gpu` backend (`ComputeBackend`: the Metal GPU, or
+the CPU emulation, which produces the same bits). Every other operand goes
+to its `BuiltinEvaluator` reference.
 
-**Accelerated operands** (`gpu_supports`): `ray_aberration`, `rms_spot`,
-`spot_centroid`, `real_ray` (every quantity except the incidence angle),
-`distortion`, `lateral_colour`, and, with `GpuEvalSettings::wavefront`
-(default on), `wavefront_aberration` and `wavefront_rms`. Paraxial, model,
-relative-illumination, chief-ray-angle and real-F/# operands stay on the
-CPU.
+**Device operands** (`merit::gpu_eval::gpu_supports`): `ray_aberration`,
+`rms_spot`, `spot_centroid`, `real_ray` (every quantity except the incidence
+angle), `distortion`, `lateral_colour`, `wavefront_aberration` and
+`wavefront_rms`; relative illumination has a device route of its own.
+Paraxial, model, chief-ray-angle and real-F/# operands stay on the host.
 
-**Per batch** (sub-batches of `GpuEvalSettings::batch`, default 512
-candidates):
-
-1. *Host, in parallel over candidates (f64).* Each candidate gets its
-   `SequentialTracer`, exactly as in `TraceEvaluator`. Its operands are
-   planned with the same code: chief rays, pupil samplings (half pupils
-   mirrored on asymmetric candidates), single rays without a group, and real
-   rays to a surface. Every planned ray is generated with the reference
-   field/pupil mapping and ray aiming, and the candidate is packed
-   (`PackedSystem`, all wavelengths, asphere radii from the qualified start).
-2. *Device.* The packed candidates are uploaded as one system set. Their
-   rays, each selecting its system by index, are traced in one request per
-   (clipping, last surface): unclipped chief rays, clipped pupil rays to the
-   image, and real rays to other surfaces. Rays enter in double-float
-   (`RayBatch::push_f64`), with radiometry off.
-3. *Host.* The candidate caches are filled from the outputs. The operands
-   are then read by `TraceEvaluator`'s own code (`Candidate::value`). OPD is
-   formed on the host from the GPU's double-float optical path, against the
-   reference sphere of the GPU's own chief ray (CONVENTIONS §12).
-
-The sub-batches are pipelined: while the GPU traces one, the host prepares
-the next and reads back the previous one.
-
-**Determinism.** A ray's GPU result depends only on the ray and its system:
-chunking changes no bit (`docs/GPU.md` §6), and host work runs in a fixed
-order. A candidate therefore gets the same bits alone, in any batch, and
-under any sub-batch split (tested), and repeated runs are bit-identical.
-
-**Precision and fallback.** Accuracy is established by offline f64 comparisons
-(no runtime qualification). The startup numerics probe still controls trace support. Unpackable candidates,
-unsupported ray features and failed uploads/dispatches use the counted CPU
-reference route. Passive-surface and distant real-ray output restrictions remain
-support limits of the legacy adapter. Cancellation never computes replacement
-values and releases unfinished system sets. `record(&mut RunInfo)` records the
-actual device/build, precision and `gpu_evaluation` counters.
-
-**Agreement with the f64 reference** (`tests/gpu_eval.rs`). The default spot
-and wavefront merits plus every other accelerated kind make 521 operands.
-They are evaluated on each of the seven samples (the Newtonian's mirrors
-and fold, the finite-conjugate relay included), an x-decentered copy
-(mirrored half pupils), a bent copy, two tilted and decentred copies and six
-strongly perturbed candidates (curvatures ±25 %, thicknesses ±30 %), with the
-emulation backend and on the M2 Pro (the two are bit-identical). The worst
-value over all of them is 0.14 of its budget (the Newtonian's distortion).
-The largest |GPU − CPU| on the four refracting samples' unperturbed
-candidates:
-
-| system | ray aberration (mm) | real ray (mm, cosines) | RMS spot (mm) | OPD (waves) | distortion (%) | worst, fraction of budget |
-|---|---:|---:|---:|---:|---:|---:|
-| singlet | 5.7e-7 | 4.3e-7 | 8.0e-8 | 5.3e-5 | 4.9e-6 | 0.022 |
-| Cooke triplet | 1.1e-6 | 1.0e-6 | 7.4e-8 | 1.1e-4 | 4.8e-6 | 0.042 |
-| Double Gauss | 5.5e-7 | 5.3e-7 | 1.1e-7 | 9.0e-5 | 2.5e-6 | 0.020 |
-| Petzval asphere | 2.7e-7 | 1.7e-7 | 3.5e-8 | 5.3e-7 | 2.3e-11 | 0.013 |
-
-The budget per kind is twice the position budget (4e-5 mm) for differences
-of two points, 2e-6 for direction cosines, 0.5 % or 2e-5 mm for RMS spots,
-and 5e-3 waves for OPD.
-
-**Optimisers on GPU evaluations.** Finite-difference Jacobian columns are one
-batch (n or 2n candidates), and DE / CMA-ES populations and basin-hopping
-screens are one batch per generation. The f32 noise needs the larger FD steps
-of Derivatives. On the Cooke triplet, 8 LM iterations on the emulated GPU
-went from 3.97e-4 to 2.67e-4, the same as on the reference. Seeded DE and
-CMA-ES runs were bit-reproducible, and every result re-evaluated on the f64
-reference to within 1e-3 of its GPU merit.
-
-**Throughput**: `cargo test -p mklight-optim --release --test gpu_bench --
---ignored --nocapture --test-threads=1`. The system is the Double Gauss f50
-F/2 sample (default merit, 8 curvatures and the back focus as variables)
-on an Apple M2 Pro (12 rayon threads, Metal). Each figure is the best
-evaluations/s over ~0.3 s at a batch size:
-
-| batch | spot 3 × 6 (171 rays/cand.): CPU / GPU evals/s | wavefront 3 × 6 | spot 6 × 12 (657 rays) | spot 12 × 24 (2601 rays) |
-|---:|---|---|---|---|
-| 1 | 5 703 / 1 956 (0.34) | 5 954 / 2 048 (0.34) | 3 191 / 1 542 (0.48) | 1 098 / 806 (0.73) |
-| 4 | 15 509 / 4 878 (0.31) | 17 824 / 5 561 (0.31) | 7 271 / 3 507 (0.48) | 2 179 / 1 766 (0.81) |
-| 16 | 27 760 / 11 910 (0.43) | 32 673 / 13 162 (0.40) | 8 936 / 6 952 (0.78) | 2 453 / 2 800 (**1.14**) |
-| 64 | 33 257 / 22 183 (0.67) | 38 576 / 25 383 (0.66) | 10 359 / 9 954 (0.96) | 2 732 / 3 390 (**1.24**) |
-| 256 | 36 464 / 27 942 (0.77) | 42 581 / 30 634 (0.72) | 10 626 / 11 224 (**1.06**) | 2 861 / 3 484 (**1.22**) |
-| 1024 | 35 750 / 30 540 (0.85) | 42 778 / 36 617 (0.86) | 10 716 / 12 718 (**1.19**) | 2 767 / 4 218 (**1.52**) |
-| 4096 | 35 410 / 32 435 (0.92) | 41 710 / 37 329 (0.89) | 10 458 / 13 529 (**1.29**) | 2 680 / 4 029 (**1.50**) |
-
-(GPU/CPU ratio in parentheses; measured with the machine otherwise idle,
-±10 % run to run. Sub-batches of 128 or 2048 instead of 512 changed the
-large-batch figures by less than that.)
-
-**Crossover.** It depends on the rays per candidate more than on the batch
-size:
-
-* Default merit (3 rings × 6 arms, half pupil, 171 rays per candidate): there
-  is **no crossover**. The GPU path reaches 0.9× the CPU at 1024–4096
-  candidates and is 3× slower for single LM trial points.
-* 6 × 12 (657 rays): crossover at about **256** candidates, 1.3× at 4096.
-* 12 × 24 (2601 rays): crossover at about **16** candidates, 1.5× from 1024 on.
-
-The CPU f64 reference is efficient: one ray through the Double Gauss costs
-~0.7 µs, and 12 threads trace 5–6 M rays/s. The GPU traces the same rays in
-~5 µs of device time per default-merit candidate at large batches (14 µs
-averaged over all batch sizes, launch overhead included), so the device is
-not the limit. The limit is the per-candidate host work, which both paths
-pay or which the GPU path adds. Measured serially per Double Gauss
-candidate:
-
-| work | µs |
-|---|---:|
-| `Snapshot` (content hash) + `ResolvedSystem` + `SequentialTracer` | 27 (17 of them the hash) |
-| CPU trace of the 162 pupil rays (CPU path only) | 119 |
-| packing (`PackedSystem::pack` + validation; GPU only) | 10 |
-| generating the 171 rays (GPU only) | 3.5 |
-
-The operands are read the same way on both paths (`value_with`, a few µs).
-With the GPU path's extra allocation, the serial upload / concatenation /
-unpacking between pipelined sub-batches, and the 4 efficiency cores, the
-GPU path ends up about even with the CPU at 171 rays. It pulls ahead in
-proportion to the rays a candidate traces. To speed it up further, move ray
-generation and the operand reductions (centroids, RMS) onto the device, and
-skip the snapshot hash for transient candidates (`mklight-core`).
-
-**Use.** The crossover figures above describe the legacy host merit adapter.
-The resident evaluator publishes device values without per-candidate f64
-checks. Engine `auto` routes candidate jobs by the calibrated cost model
-(`GPU.md` §9.2, "Automatic routing"), which on the calibrated M2 Pro usually
-chooses the CPU reference for them; an explicit Metal request runs them on
-the device. `gpu_rays_per_candidate` counts
-the rays in the legacy evaluator's plan.
+How a batch is split between host and device, the aiming rule, pipelining
+and accuracy are in "Resident optimisation adapter (P8)" and "Host/device
+division of candidate batches" below; routing between the CPU reference and
+the device is the cost model of `GPU.md` §9.2. The engine reports the
+estimated device rays per candidate as `backend.workload.rays_per_candidate`
+(`gpu::device_rays_per_candidate`).
 
 ## Engine jobs: `optimize`, `merit_evaluation` and `tolerance`
 
@@ -1024,7 +885,7 @@ failure policy.
 | `fd_scheme` | `forward` \| `central`, `forward` | finite differences of LM / dogleg (and hammer's local runs) |
 | `fd_relative_step` | number > 0 or null, `null` | `null`: chosen per operand and evaluator (Derivatives); 0 or a negative step is rejected |
 | `seed` | integer, `0` | seed of `de`, `cma_es`, `hammer` |
-| `backend` | `auto` \| `cpu` \| `gpu` \| `gpu_emulation`, `auto` | merit evaluation. `gpu` uses the GPU device the engine selected for the analysis (`AnalysisInput::device` holding the provider's `GpuDevice`), or the CPU reference with a warning when there is none. `auto` uses that device when the engine handed one over (an engine `auto` request runs these jobs on the CPU reference, `GPU.md` §9.2). `backend.workload` reports the rays counted by `gpu_rays_per_candidate` for the merit's configuration-0 operands on the start system and the batch: the FD Jacobian (n, or 2n central) for `lm` / `dogleg`, the population for `de` (default max(10n, 15)) and `cma_es` (default 4 + ⌊3 ln n⌋), 1 for `nelder_mead`, `candidates_per_round` for `hammer`. A GPU provider lists `optimize` and `tolerance` in its capabilities so that the engine hands them its device. `gpu_emulation` requires the selected `gpu:cpu_f32` provider (validation, tests) |
+| `backend` | `auto` \| `cpu` \| `gpu` \| `gpu_emulation`, `auto` | merit evaluation. `gpu` uses the GPU device the engine selected for the analysis (`AnalysisInput::device` holding the provider's `GpuDevice`), or the CPU reference with a warning when there is none. `auto` uses that device when the engine handed one over (an engine `auto` request runs these jobs on the CPU reference, `GPU.md` §9.2). `backend.workload` reports the device rays per candidate estimated by `gpu::device_rays_per_candidate` (an upper bound of the resident plan's probes) for the merit's configuration-0 operands on the start system and the batch: the FD Jacobian (n, or 2n central) for `lm` / `dogleg`, the population for `de` (default max(10n, 15)) and `cma_es` (default 4 + ⌊3 ln n⌋), 1 for `nelder_mead`, `candidates_per_round` for `hammer`. A GPU provider lists `optimize` and `tolerance` in its capabilities so that the engine hands them its device. `gpu_emulation` requires the selected `gpu:cpu_f32` provider (validation, tests) |
 | `feasibility_tolerance` | number, `1e-6` | total normalised constraint violation regarded as feasible: best-so-far ranking and `final.feasible` |
 
 ### `optimize` result
@@ -1375,9 +1236,8 @@ division of "Host/device division of candidate batches" below; the P4
 candidate template and reports of whole candidates to the reference
 described here were removed.
 
-`gpu::ResidentEvaluator` is an explicit backend-taking alternative to the
-legacy `GpuTraceEvaluator`; the engine's native candidate jobs use it, and
-their routing is in GPU.md §9.2. Construct it with a `GpuContext` containing
+`gpu::ResidentEvaluator` evaluates candidate batches on a device; the
+engine's native candidate jobs use it, and their routing is in GPU.md §9.2. Construct it with a `GpuContext` containing
 the base snapshot and backend, and the configured `BuiltinEvaluator` reference.
 Use it in `OpticalProblem`, or wrap a driver with `ResidentEvaluator::run` to
 retain actual-backend `RunInfo`, library identity, native solver
@@ -1501,7 +1361,7 @@ retry, LM solves on both sides of the tall-QR crossover, native mixed operands, 
 replay, matched-method RI visibility with clipped pupils, and independent refinements. A fallback-only result cannot satisfy the
 device-work assertions. Existing CPU reference tests remain in force.
 
-The ignored `p8_bench` harness alternates unchanged f64, legacy Metal and the
+The ignored `p8_bench` harness alternates unchanged f64 and the
 resident path at B=1/16/256/1024, with cold, warm-up and ten measured runs.
 Historical runs included candidate qualification and recorded transfers, device/wall time,
 command counts, allocation reuse, peak plan storage and fallback proportions.
@@ -1518,7 +1378,7 @@ CPU-preferred. `P8_MERIT=wave` runs the default and dense wave counterparts of
 
 Provisional M2 Pro measurements (2026-11-01), ten measured runs after warm-up,
 show why small candidate jobs favour the CPU. For an exact-input warm
-Cooke default spot evaluation at B=1, CPU / legacy Metal / resident medians were
+Cooke default spot evaluation at B=1, CPU / legacy Metal (an f32 evaluator, since removed) / resident medians were
 0.21 / 1.14 / 5.1 ms (about 3.5 ms on a quieter run); at B=1024, 28 / 32 /
 54 ms after parallel preparation and 1024-candidate spot plans (92 ms
 before). These warm rows exclude new candidate qualification. Complete

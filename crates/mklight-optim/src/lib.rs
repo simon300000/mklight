@@ -5,7 +5,7 @@
 //! Optical evaluation is plugged in through [`merit::OperandEvaluator`] and
 //! [`merit::OpticalProblem`]: [`merit::TraceEvaluator`] computes paraxial,
 //! real-ray, wavefront and model operands with the CPU f64 reference tracer
-//! (`mklight-trace`), and [`merit::GpuTraceEvaluator`] traces the ray
+//! (`mklight-trace`), and [`gpu::ResidentEvaluator`] traces the ray
 //! operands of whole batches on a `mklight-gpu` backend. MTF, ghost and
 //! stray-light operands come from evaluators of their own crates, combined
 //! with [`merit::CompositeEvaluator`]. See `docs/OPTIMIZATION.md`.
@@ -17,7 +17,7 @@
 //! | [`lsq`] | Levenberg–Marquardt and dogleg trust-region least squares, bounds, augmented Lagrangian |
 //! | [`global`] | differential evolution, Nelder–Mead, CMA-ES, basin-hopping "hammer" |
 //! | [`discrete`] | finite-choice variables (glass substitution) with pluggable neighbourhoods |
-//! | [`merit`] | serialisable merit-function spec, operand registry, pupil quadrature, ray-group references, default merit, parametric evaluator entry point, tracer-backed evaluator, GPU-batched evaluator |
+//! | [`merit`] | serialisable merit-function spec, operand registry, pupil quadrature, ray-group references, default merit, parametric evaluator entry point, tracer-backed evaluator, device operand support |
 //! | [`tolerance`] | tolerance operands, Monte-Carlo sampling, sensitivity analysis |
 //! | [`monitor`] | cancellation/progress, iteration history callback, best-so-far |
 //!

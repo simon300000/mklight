@@ -2400,7 +2400,7 @@ the unchanged CPU reference, old Metal path where present and new Metal
 path on identical inputs; retain raw settings, seeds, hardware/build,
 fallback counts, peak memory, cold/warm wall and device timings, and
 median/p95 after warm-up. Use the existing Metal trace, wave interactive,
-ghost/stray bench, optimiser gpu_bench and engine glass benchmarks as
+ghost/stray bench, optimiser p8_bench and engine glass benchmarks as
 anchors. Include tiny/default/dense loads and end-to-end jobs; kernel-only
 speedups cannot justify `auto`. P11 routes only qualified operation/domain
 combinations and records the measured cost policy.

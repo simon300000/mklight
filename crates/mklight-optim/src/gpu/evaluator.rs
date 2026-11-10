@@ -179,8 +179,7 @@ impl ResidentEvaluator {
     /// Does the device aim the pupil rays of a batch of `n` candidates like
     /// `system` for `ops`?
     pub fn aims_on_device(&self, system: &OpticalSystem, n: usize, ops: &[&Operand]) -> bool {
-        let settings = self.reference.trace.settings();
-        let ri_nodes = 1 + settings.illumination_rings.max(2) * settings.illumination_arms.max(8);
+        let ri_nodes = ri_nodes(&self.reference.trace);
         self.device_aim_from
             .is_some_and(|from| aiming_work(system, ops, ri_nodes).saturating_mul(n) >= from)
     }
@@ -493,6 +492,22 @@ fn batch_limit(system: &OpticalSystem, ops: &[&Operand], ri_nodes: usize) -> usi
     let (rays, wavefront) = estimated_rays(system, ops, ri_nodes);
     let budget = if wavefront { 196_608 } else { 786_432 };
     (budget / rays.max(1)).clamp(1, 1024)
+}
+/// Pupil nodes of one relative-illumination evaluation with the trace
+/// settings of `reference`.
+fn ri_nodes(reference: &TraceEvaluator) -> usize {
+    let s = reference.settings();
+    1 + s.illumination_rings.max(2) * s.illumination_arms.max(8)
+}
+/// Estimated device rays per candidate of `ops` on `system` with the trace
+/// settings of `reference`: an upper bound of the resident plan's probes,
+/// reported as the run's workload.
+pub fn device_rays_per_candidate(
+    reference: &TraceEvaluator,
+    system: &OpticalSystem,
+    ops: &[&Operand],
+) -> usize {
+    estimated_rays(system, ops, ri_nodes(reference)).0
 }
 /// Estimated device rays per candidate of `ops` (an upper bound of the
 /// plan's probes), and whether the operands need OPD and fit channels.
@@ -859,11 +874,7 @@ impl ResidentEvaluator {
         }
         let context = &self.context;
         let design = self.ray_design(host_aim);
-        let limit = batch_limit(
-            tracers[0].system().system(),
-            ops,
-            1 + cpu.settings().illumination_rings.max(2) * cpu.settings().illumination_arms.max(8),
-        );
+        let limit = batch_limit(tracers[0].system().system(), ops, ri_nodes(cpu));
         let overlap = n >= self.pipeline_from;
         let size = if overlap {
             pipeline_chunk(n).min(limit)

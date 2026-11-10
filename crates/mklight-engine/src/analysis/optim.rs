@@ -1,7 +1,7 @@
 //! Optimisation and tolerancing as engine analyses: `optimize` and
 //! `tolerance` (`mklight-optim`), with merit evaluation on the CPU f64
 //! reference or GPU-batched on a `mklight-gpu` backend
-//! (`GpuTraceEvaluator`). Settings and result shapes: `docs/OPTIMIZATION.md`
+//! (`ResidentEvaluator`). Settings and result shapes: `docs/OPTIMIZATION.md`
 //! (Engine jobs).
 //!
 //! * **Progress** is reported per optimiser iteration (stage text
@@ -38,11 +38,11 @@ use mklight_optim::global::cmaes::{CmaEsSettings, cma_es};
 use mklight_optim::global::de::{DeSettings, differential_evolution};
 use mklight_optim::global::hammer::{HammerSettings, hammer};
 use mklight_optim::global::nelder_mead::{NelderMeadSettings, nelder_mead};
+use mklight_optim::gpu::device_rays_per_candidate;
 use mklight_optim::gpu::{GpuContext, ResidentEvaluator};
 use mklight_optim::lsq::{AugLagSettings, LsqMethod, LsqSettings, least_squares};
 use mklight_optim::merit::default::DefaultMeritSpec;
 use mklight_optim::merit::geometric::optical_gaps;
-use mklight_optim::merit::gpu_eval::gpu_rays_per_candidate;
 use mklight_optim::merit::operand::OperandKind;
 use mklight_optim::merit::{
     BuiltinEvaluator, Comparison, MeritFunctionSpec, Operand, OperandEvaluator, OperandRegistry,
@@ -101,10 +101,7 @@ pub(super) fn evaluation_backend_schema() -> Value {
             ),
             (
                 "workload",
-                obj(&[
-                    ("rays_per_candidate", nullable(int(""))),
-                    ("batch", int("")),
-                ]),
+                obj(&[("rays_per_candidate", int("")), ("batch", int(""))]),
             ),
             (
                 "resident_evaluation",
@@ -300,11 +297,11 @@ impl BackendChoice {
     }
 }
 
-/// The work of a run, reported in `backend.workload`: rays the GPU evaluator
-/// would trace per candidate and the typical batch of candidates.
+/// The work of a run, reported in `backend.workload`: the estimated device
+/// rays per candidate and the typical batch of candidates.
 #[derive(Clone, Copy, Debug)]
 struct Workload {
-    rays_per_candidate: Option<usize>,
+    rays_per_candidate: usize,
     batch: usize,
 }
 
@@ -323,7 +320,7 @@ impl Workload {
             .filter(|o| o.config == 0)
             .collect();
         Workload {
-            rays_per_candidate: gpu_rays_per_candidate(cpu, system, &ops, true),
+            rays_per_candidate: device_rays_per_candidate(cpu, system, &ops),
             batch,
         }
     }

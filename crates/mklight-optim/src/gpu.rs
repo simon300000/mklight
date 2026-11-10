@@ -10,7 +10,9 @@ use std::sync::{
 };
 mod evaluator;
 pub mod scheduler;
-pub use evaluator::{DEVICE_AIM_FROM, EvaluationStats, PIPELINE_FROM, ResidentEvaluator};
+pub use evaluator::{
+    DEVICE_AIM_FROM, EvaluationStats, PIPELINE_FROM, ResidentEvaluator, device_rays_per_candidate,
+};
 
 type SamplingCache = Vec<(
     crate::merit::PupilSampling,

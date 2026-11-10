@@ -43,7 +43,7 @@ use crate::deriv::FdScheme;
 use crate::problem::CandidateBatch;
 
 pub use builtin::BuiltinEvaluator;
-pub use gpu_eval::{GpuEvalSettings, GpuEvalStats, GpuTraceEvaluator};
+
 pub use operand::{Capability, OperandDescriptor, OperandKind, OperandRegistry};
 pub use operand::{CentroidScope, RayGroup};
 pub use problem::{OpticalProblem, VariableSpec};
