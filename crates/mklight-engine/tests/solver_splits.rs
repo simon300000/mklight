@@ -1,7 +1,8 @@
 //! The solver analyses on a GPU device through the engine, with each of
-//! their aiming options: the batch rule (the default), device aiming
-//! (`aiming` = `device`) and host aiming (`aiming` = `host-table`) pinned. Every job (`merit_evaluation`, `optimize`,
-//! `tolerance`, `glass_substitution`) names its aiming in the backend report
+//! their aiming options: the batch rule (the default), and device aiming
+//! (`aiming` = `device`) and host aiming (`aiming` = `host-table`) pinned.
+//! Every job (`merit_evaluation`, `optimize`, `tolerance`,
+//! `glass_substitution`) names its aiming in the backend report
 //! and agrees with the CPU f64 reference under the solver-outcome contract
 //! of `support/comparison.rs`; for the truncated solves (`optimize` with 3
 //! iterations, `glass_substitution` with 2 local iterations) a merit or

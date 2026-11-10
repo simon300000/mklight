@@ -1522,8 +1522,9 @@ coarse f64 seed table per row and start each ray's Newton solve from its
 interpolated aim and stop Jacobian (`SequentialTracer::generate_many_from`;
 the reference schedule takes over where it does not converge); smaller
 generations are aimed bitwise as the CPU reference aims them. System
-transmission, the wave analyses' pupil lattices and the solvers' candidate
-rays are aimed on the host as well (§9.1).
+transmission, the wave analyses' pupil lattices and, except for large
+aspheric batches, the solvers' candidate rays are aimed on the host as well
+(§9.1).
 
 *Split generations.* In the spot diagram and the geometric MTF, a
 generation with a seed table and at least 1.5 M rays × surfaces
@@ -1567,7 +1568,7 @@ largest relative deviation from the CPU reference unchanged (≤ 1e-7).
 *Device aiming* (the double-float solve described next) remains for
 `aiming=device` and `aiming=table` (on the M2 Pro 1.63× and 1.15× the
 default's time on large geometric cases, as accurate; kept as routes for
-GPUs with more cores per CPU core), the solvers' `aiming=device`,
+GPUs with more cores per CPU core), the solvers' large aspheric batches,
 `fieldmaps=device-chief`, the chief aims of the ghost device paths and the
 wave `PupilTracer` (the solvers' MTF operands). Chief rows come from the
 host: `ChiefSeed::host` converts the reference tracer's f64
@@ -1779,8 +1780,8 @@ may win.
   tiles while the host completes, deduplicates and splits another; the CPU
   reference traces a fixed 20 % of the path groups (`gpu::CPU_SHARE`)
   beside the device run.
-* *Candidate solvers*: host candidates and aiming, one device ray plan per
-  batch ("Candidate solvers" below; OPTIMIZATION.md, "Host/device division
+* *Candidate solvers*: host candidates, aiming by batch (the host, the
+  device for large aspheric batches), one device ray plan per batch ("Candidate solvers" below; OPTIMIZATION.md, "Host/device division
   of candidate batches").
 
 #### Runtime publication policy (2026-11-02)
@@ -1843,24 +1844,32 @@ mechanisms behind earlier mismatches, which the contracts rely on:
 division of candidate batches"). The host prepares every candidate in f64 in
 parallel (tracers with their real-image-height and chief solves, operand
 plans, the chief rays themselves, model, paraxial and first-order operands)
-and, by default, aims every pupil ray with the candidate's tracer
-(`generate_many`, the reference's aims bit for bit). One device plan per
-batch traces the pupil rays from those start rays and forms chief-relative
+and aims the pupil rays where the batch's rule puts them (below). One device
+plan per batch traces the pupil rays and forms chief-relative
 coordinates, moments, OPD and piston/tilt fits; batches of at least 64
 candidates (`PIPELINE_FROM`) run as three pipelined sub-batches, so the host
 prepares sub-batch k + 1 while the device works on k. The host reads the
 device rays in place, completes the rays the device left unresolved in
 f64 and forms every operand value; the search loops (LM, trust region, Monte Carlo, glass
 search) and their decisions stay on the host, and LM's QR moves to the
-device for tall Jacobians (QR policy below). With `aiming=device` or
-`table` the device aims too (capped at 8 iterations, host completion,
-"Bounded aiming commands" above) and LM and dogleg speculate: a trial point
-that follows an accepted step is evaluated in one batch with its Jacobian's
-first-pass probes. On the M2 Pro host aiming took 0.89 of device aiming's
-time over the merit, tolerance and glass cases of the benchmark lenses;
-device aiming stays as the GPU-heavier route (1000 Monte Carlo trials on a
-35-surface ultra-wide zoom: 0.87× the CPU's time, against 1.03× with host
-aiming). Forward differences of device operands take
+device for tall Jacobians (QR policy below).
+
+The evaluator decides per batch where the pupil rays are aimed
+(`gpu::DEVICE_AIM_FROM`). A batch whose estimated device rays times the
+system's surfaces without a closed-form intersection (aspheres, polynomial
+and freeform sags) reach 2·10⁶ is aimed on the device with host completion
+(capped at 8 iterations, "Bounded aiming commands" above). Every other
+batch is aimed on the host with the candidate's tracer (`generate_many`, the
+reference's aims bit for bit), and the device only traces and reduces it.
+Device aiming pays only where host aiming is expensive per ray and the
+batch amortises the device's plan: dense Monte Carlo on aspheric lenses
+(0.79–0.84× host aiming's time; 1000 trials on a 35-surface ultra-wide zoom
+took 0.69× the CPU's time). It never pays on spherical or paraxially aimed
+lenses, LM Jacobians or single candidates. The `aiming` key pins either side
+for every batch (`device`/`table` → device; `host-table`, `split:<share>` →
+host), and LM and dogleg speculate only with device aiming pinned: a trial
+point that follows an accepted step is evaluated in one batch with its
+Jacobian's first-pass probes. Forward differences of device operands take
 `η = 1e-6` (ray positions) and `1e-5` (wavefront operands), central
 differences the reference's steps: device values are double-float traces of
 f64 aims (about 1e-12 relative noise), and the f32-era step of `1e-3` made a
@@ -2201,7 +2210,7 @@ empty is the default):
 
 | Key | Values (default first) | Moves to the GPU |
 |---|---|---|
-| `aiming` | `host-table`, `split:<share>`, `table`, `device` | the device's share of split generations (`split:<share>`, 0–1; 0 aims on the host alone); every pupil aim of the geometric adapters (`table`: device Newton corrections from host seed tables; `device`: device chief-seeded solve), and the solvers' pupil aims (`table` or `device`) |
+| `aiming` | `host-table`, `split:<share>`, `table`, `device` | the device's share of split generations (`split:<share>`, 0–1; 0 aims on the host alone); every pupil aim of the geometric adapters (`table`: device Newton corrections from host seed tables; `device`: device chief-seeded solve), and every solver batch's pupil aims (`table` or `device`; `host-table` and `split:<share>` pin every solver batch to the host) |
 | `fieldmaps` | `host-chief`, `device-chief` | the chief solves of `chief_ray_angle`, `pupil_aberration` and `grid_distortion` |
 | `stray` | `cosplit`, `wavefront` | the first 64 events of every stray source |
 | `stray_share` | number in [0, 1] (default: the scene rule) | the device's share of `cosplit` source chunks |

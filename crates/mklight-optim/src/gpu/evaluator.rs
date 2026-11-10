@@ -7,7 +7,9 @@ use crate::merit::{
     gpu_eval::gpu_supports, mtf_eval::MtfEvaluator, solver_eval::SolverEvaluator, *,
 };
 use crate::problem::Problem;
-use mklight_core::{JobContext, MkError, MkResult, OpticalSystem, RunInfo, SurfaceShape};
+use mklight_core::{
+    JobContext, MkError, MkResult, OpticalSystem, RayAiming, RunInfo, SurfaceShape,
+};
 use mklight_trace::SequentialTracer;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -560,22 +562,32 @@ fn estimated_rays(system: &OpticalSystem, ops: &[&Operand], ri_nodes: usize) -> 
     (rays, wavefront)
 }
 
-/// The pass that evaluates an operand: 0 the ray pass (device rays, and the
-/// first-order, model, paraxial and host-only ray operands from the same host
-/// candidates), 1 MTF, 2 the native solvers.
 /// Host aiming work of one candidate of `system` for `ops`: its estimated
 /// device rays times its surfaces without a closed-form intersection
 /// (aspheres, polynomial and freeform sags), whose iterative f64 hits make
-/// host aiming costly.
+/// host aiming costly. Paraxial aiming solves nothing: no work.
 fn aiming_work(system: &OpticalSystem, ops: &[&Operand], ri_nodes: usize) -> usize {
+    fn closed_form(shape: &SurfaceShape) -> bool {
+        match shape {
+            SurfaceShape::Plane | SurfaceShape::Conic { .. } => true,
+            SurfaceShape::Diffractive { base, .. } => closed_form(base),
+            _ => false,
+        }
+    }
+    if matches!(system.ray_aiming, RayAiming::Off) {
+        return 0;
+    }
     let iterative = system
         .surfaces
         .iter()
-        .filter(|s| !matches!(s.shape, SurfaceShape::Plane | SurfaceShape::Conic { .. }))
+        .filter(|s| !closed_form(&s.shape))
         .count();
     estimated_rays(system, ops, ri_nodes).0 * iterative
 }
 
+/// The pass that evaluates an operand: 0 the ray pass (device rays, and the
+/// first-order, model, paraxial and host-only ray operands from the same host
+/// candidates), 1 MTF, 2 the native solvers.
 fn route_for(kind: &OperandKind) -> usize {
     if matches!(
         kind,

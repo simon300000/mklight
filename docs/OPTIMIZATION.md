@@ -1637,7 +1637,8 @@ aims. *Device aiming:* the device aims with host completion as above.
 *The rule* (`aiming` unset, `gpu::DEVICE_AIM_FROM`) picks per batch: the
 device aims a batch whose estimated device rays times the system's
 surfaces without a closed-form intersection (aspheres, polynomial and
-freeform sags) reach 2e6, the host aims every other. Host aiming costs
+freeform sags; none under paraxial aiming, which solves nothing) reach
+2e6, the host aims every other. Host aiming costs
 what the reference spends; device aiming saves host work only where a ray
 is expensive on the host and the batch amortises the device's plan and
 its cold first batch. Measured (shuffled, quiet machine, Monte Carlo
