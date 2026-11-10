@@ -120,6 +120,15 @@ pub struct Settings {
     pub wavelengths: u32,
     pub sequence_count: u32,
 }
+// Byte sizes of the matching MSL structs in mklight_stray_ops_types.h
+// (float2 and ulong members, 8-byte aligned).
+const _: () = {
+    use std::mem::size_of;
+    assert!(size_of::<Material>() == 392 && size_of::<Pass>() == 32);
+    assert!(size_of::<Medium>() == 16 && size_of::<History>() == 320);
+    assert!(size_of::<State>() == 408 && size_of::<Detection>() == 352);
+    assert!(size_of::<Ledger>() == 200 && size_of::<Settings>() == 64);
+};
 #[derive(Clone, Debug)]
 pub struct Transport {
     pub primitives: PlanView,

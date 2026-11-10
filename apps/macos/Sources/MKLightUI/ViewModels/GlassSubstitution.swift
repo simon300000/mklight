@@ -139,10 +139,10 @@ public struct GlassCombination: Identifiable, Sendable {
         glasses = (r["glasses"]?.array ?? []).map(SubstitutedGlass.init(json:))
         changes = (r["variables"]?.array ?? []).map { v in
             Change(
-                param: v["param"].flatMap { try? MKLightJSON.decode(ParamPath.self, from: MKLightJSON.encode($0)) },
+                param: v["param"].flatMap { try? $0.decode(ParamPath.self) },
                 start: v["start"]?.nf ?? .nan, value: v["value"]?.nf ?? .nan)
         }
-        system = r["system"].flatMap { try? MKLightJSON.decode(OpticalSystem.self, from: MKLightJSON.encode($0)) }
+        system = r["system"].flatMap { try? $0.decode(OpticalSystem.self) }
         cutShort = r["local_termination"]?.string == "cancelled"
     }
 
@@ -182,7 +182,7 @@ public struct GlassSubstitutionResult: Sendable {
         history = (json["history"]?.array ?? []).compactMap { $0["best_merit"]?.nf }.filter(\.isFinite)
         var counts: [SurfaceID: Int] = [:]
         for c in json["candidate_sets"]?.array ?? [] {
-            if let s = c["surface"]?.int { counts[SurfaceID(UInt64(s))] = c["glasses"]?.array?.count ?? 0 }
+            if let s = c["surface"]?.int.flatMap({ UInt64(exactly: $0) }) { counts[SurfaceID(s)] = c["glasses"]?.array?.count ?? 0 }
         }
         candidateCounts = counts
     }

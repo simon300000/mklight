@@ -20,8 +20,11 @@
 use bytemuck::{Pod, Zeroable};
 use mklight_core::materials::coating::ResolvedCoating;
 use mklight_core::math::Mat3;
+use mklight_core::model::surface::ZernikeOrdering;
 use mklight_core::model::{APERTURE_EDGE_TOLERANCE, ApertureShape, Interaction, SurfaceShape};
-use mklight_core::snapshot::SnapshotHash;
+use mklight_core::surface_math::{
+    MAX_AXIS_TERMS, MAX_ODD_TERMS, MAX_PHASE_TERMS, MAX_Q_TERMS, MAX_XY_TERMS, qbfs_recurrence,
+};
 use mklight_core::{MkError, MkResult, ResolvedSystem};
 
 use crate::consts::*;
@@ -209,7 +212,7 @@ pub fn surface_offsets() -> Vec<(&'static str, usize)> {
 #[derive(Clone, Debug, Default)]
 pub struct PackOptions {
     /// Model wavelength indices to pack, in order. `None` packs all of them
-    /// (an error above [`MAX_WAVELENGTHS`]; use [`PackedSystem::pack_chunks`]).
+    /// (an error above [`MAX_WAVELENGTHS`]; pack such a system in chunks).
     pub wavelengths: Option<Vec<usize>>,
     /// Per-surface radius hints (mm), e.g. the tracer's automatic
     /// semi-diameters. Only used to choose the asphere normalisation radius.
@@ -223,9 +226,6 @@ pub struct PackedSystem {
     pub surfaces: Vec<PackedSurface>,
     /// Shared hi/lo pool, indexed in pairs by each surface.
     pub coefficients: Vec<Df32>,
-    /// Content hash of the snapshot this was packed from (cache key and
-    /// `RunInfo` provenance).
-    pub snapshot_hash: SnapshotHash,
     /// Model wavelength index of each packed wavelength.
     pub wavelengths: Vec<usize>,
 }
@@ -391,13 +391,17 @@ fn pack_shape(
 }
 
 /// Nested overlays summed into one `MKL_OVERLAY_*` polynomial; `None` for
-/// no or zero departure. The radius is a power of two near the aperture, so
-/// U = x/radius is exact.
+/// no or zero departure. The radius is a power of two near the aperture
+/// (near the overlay's own radius when `bounding` is not finite and
+/// positive), so U = x/radius is exact.
 fn overlay_polynomial(mut shape: &SurfaceShape, bounding: Option<f64>) -> Option<[f64; 5]> {
     let SurfaceShape::SagOverlay { norm_radius, .. } = shape else {
         return None;
     };
-    let radius = 2f64.powi(bounding.unwrap_or(*norm_radius).log2().round() as i32);
+    let near = bounding
+        .filter(|r| r.is_finite() && *r > 0.0)
+        .unwrap_or(*norm_radius);
+    let radius = 2f64.powi(near.log2().round() as i32);
     let mut overlay = [1.0 / radius, 0.0, 0.0, 0.0, 0.0];
     while let SurfaceShape::SagOverlay {
         base,
@@ -438,7 +442,6 @@ fn pack_geometry(
     pool: &mut Vec<Df32>,
 ) -> MkResult<()> {
     use SurfaceShape::*;
-    use mklight_core::model::surface::ZernikeOrdering;
     let shape = without_overlay(shape);
     if shape.is_legacy() {
         return pack_legacy(p, shape, bounding, what);
@@ -493,17 +496,8 @@ fn pack_geometry(
             // Forbes' triangular conversion to the auxiliary basis (SURFACES
             // §2) is independent of the ray: done once here, in f64.
             let a = trimmed(coefficients);
-            let (mut f, mut g, mut h) = ([0.0f64; 20], [0.0f64; 20], [0.0f64; 20]);
-            f[0] = 2.0;
-            f[1] = 19.0f64.sqrt() / 2.0;
-            g[0] = -0.5;
-            for m in 2..20 {
-                h[m - 2] = -((m * (m - 1)) as f64) / (2.0 * f[m - 2]);
-                g[m - 1] = -(1.0 + g[m - 2] * h[m - 2]) / f[m - 1];
-                f[m] =
-                    ((m * (m + 1) + 3) as f64 - g[m - 1] * g[m - 1] - h[m - 2] * h[m - 2]).sqrt();
-            }
-            let mut b = [0.0; 22];
+            let (f, g, h) = qbfs_recurrence();
+            let mut b = [0.0; MAX_Q_TERMS + 2];
             for m in (0..a.len()).rev() {
                 b[m] = (a[m] - g[m] * b[m + 1] - h[m] * b[m + 2]) / f[m];
             }
@@ -625,19 +619,24 @@ fn validate_coefficients(s: &PackedSurface, pool: &[Df32]) -> Result<(), &'stati
         }
     };
     let (max_a, max_b, extra) = match s.shape {
-        MKL_SHAPE_ODD_ASPHERE | MKL_SHAPE_Q_CON | MKL_SHAPE_Q_BFS => (20, 0, 0),
-        MKL_SHAPE_XY => (65, 0, 0),
-        MKL_SHAPE_ZERNIKE => ([37, 45][integer(MKL_COEFF_KIND, 1)?], 0, 0),
-        MKL_SHAPE_TOROID => (0, 10, 0),
-        MKL_SHAPE_BICONIC => (10, 10, 0),
+        MKL_SHAPE_ODD_ASPHERE => (MAX_ODD_TERMS, 0, 0),
+        MKL_SHAPE_Q_CON | MKL_SHAPE_Q_BFS => (MAX_Q_TERMS, 0, 0),
+        MKL_SHAPE_XY => (MAX_XY_TERMS, 0, 0),
+        MKL_SHAPE_ZERNIKE => {
+            // `MKL_COEFF_KIND` is 1 for the Standard ordering.
+            let ordering = [ZernikeOrdering::Fringe, ZernikeOrdering::Standard];
+            (ordering[integer(MKL_COEFF_KIND, 1)?].max_terms(), 0, 0)
+        }
+        MKL_SHAPE_TOROID => (0, MAX_AXIS_TERMS, 0),
+        MKL_SHAPE_BICONIC => (MAX_AXIS_TERMS, MAX_AXIS_TERMS, 0),
         _ => {
             // DOE: a plane, conic or even-asphere base and the wavelength
             // factors before the phase coefficients.
             integer(MKL_COEFF_KIND, MKL_SHAPE_EVEN_ASPHERE)?;
-            (10, 0, MAX_WAVELENGTHS)
+            (MAX_PHASE_TERMS, 0, MAX_WAVELENGTHS)
         }
     };
-    let n = integer(MKL_COEFF_NA, max_a)? + integer(MKL_COEFF_NB, max_b)?;
+    let n = integer(MKL_COEFF_NA, max_a as u32)? + integer(MKL_COEFF_NB, max_b as u32)?;
     if d.len() != MKL_COEFF_PREFIX as usize + extra + n {
         return Err("coefficient count");
     }
@@ -648,24 +647,6 @@ impl PackedSystem {
     /// Pack every wavelength of `rs` (at most [`MAX_WAVELENGTHS`]).
     pub fn pack_all(rs: &ResolvedSystem) -> MkResult<Self> {
         Self::pack(rs, &PackOptions::default())
-    }
-
-    /// Pack all wavelengths in chunks of at most [`MAX_WAVELENGTHS`].
-    pub fn pack_chunks(rs: &ResolvedSystem, radius_hints: Option<Vec<f64>>) -> MkResult<Vec<Self>> {
-        let n = rs.wavelengths_um.len();
-        (0..n)
-            .step_by(MAX_WAVELENGTHS)
-            .map(|start| {
-                let wl = (start..(start + MAX_WAVELENGTHS).min(n)).collect();
-                Self::pack(
-                    rs,
-                    &PackOptions {
-                        wavelengths: Some(wl),
-                        radius_hints: radius_hints.clone(),
-                    },
-                )
-            })
-            .collect()
     }
 
     pub fn pack(rs: &ResolvedSystem, opts: &PackOptions) -> MkResult<Self> {
@@ -864,7 +845,6 @@ impl PackedSystem {
             header,
             surfaces,
             coefficients,
-            snapshot_hash: rs.snapshot.hash(),
             wavelengths: wls,
         };
         out.validate()?;
@@ -888,13 +868,17 @@ impl PackedSystem {
                 h.layout_version
             ));
         }
-        if h.num_surfaces as usize != self.surfaces.len() || self.surfaces.len() < 3 {
+        // A path step addresses its surface in `MKL_STEP_SURFACE_MASK` bits.
+        if h.num_surfaces as usize != self.surfaces.len()
+            || self.surfaces.len() < 3
+            || h.num_surfaces > MKL_STEP_SURFACE_MASK + 1
+        {
             return bad(format!("{} surfaces", self.surfaces.len()));
         }
         if h.num_wavelengths == 0 || h.num_wavelengths > MKL_MAX_WAVELENGTHS {
             return bad(format!("{} wavelengths", h.num_wavelengths));
         }
-        if h.stop == 0 || h.stop + 1 >= h.num_surfaces {
+        if h.stop == 0 || h.stop >= h.num_surfaces - 1 {
             return bad(format!("stop {}", h.stop));
         }
         let nw = h.num_wavelengths as usize;
@@ -1010,7 +994,6 @@ pub struct PackedSystemSet {
     pub surfaces: Vec<PackedSurface>,
     /// Shared hi/lo pool, indexed in pairs by each surface.
     pub coefficients: Vec<Df32>,
-    pub hashes: Vec<SnapshotHash>,
 }
 
 impl PackedSystemSet {
@@ -1036,7 +1019,6 @@ impl PackedSystemSet {
                 set.surfaces.push(surface);
             }
             set.coefficients.extend_from_slice(&s.coefficients);
-            set.hashes.push(s.snapshot_hash);
         }
         Ok(set)
     }
@@ -1199,8 +1181,14 @@ mod tests {
             .collect();
         let rs = resolve(s);
         assert!(PackedSystem::pack_all(&rs).is_err());
-        let chunks = PackedSystem::pack_chunks(&rs, None).unwrap();
-        assert_eq!(chunks.len(), 2);
+        let chunk = |wl: std::ops::Range<usize>| {
+            let opts = PackOptions {
+                wavelengths: Some(wl.collect()),
+                radius_hints: None,
+            };
+            PackedSystem::pack(&rs, &opts).unwrap()
+        };
+        let chunks = [chunk(0..16), chunk(16..20)];
         assert_eq!(chunks[0].header.num_wavelengths, 16);
         assert_eq!(chunks[1].header.num_wavelengths, 4);
         assert_eq!(chunks[1].wavelengths, vec![16, 17, 18, 19]);

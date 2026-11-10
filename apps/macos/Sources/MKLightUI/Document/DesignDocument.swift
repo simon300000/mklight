@@ -149,7 +149,7 @@ public final class DesignDocument {
         if kept.count != variables.count { setSection("variables", Self.encode(kept)) }
         revision += 1
         persisted.withLock { $0.system = value; $0.sections["variables"] = project.sections["variables"] }
-        undoManager?.registerUndo(withTarget: self) { doc in
+        undoManager?.registerUndo(withTarget: self) { [weak undoManager] doc in
             MainActor.assumeIsolated {
                 doc.replace(system: previousSystem, actionName: actionName, undoManager: undoManager)
                 if let previousVariables { doc.setSection("variables", previousVariables) }
@@ -163,7 +163,7 @@ public final class DesignDocument {
     /// The design's variables (`variables` section), in order.
     public var variables: [DesignVariable] {
         guard let v = project.sections["variables"], case .array = v,
-            let list = try? MKLightJSON.decode([DesignVariable].self, from: MKLightJSON.encode(v))
+            let list = try? v.decode([DesignVariable].self)
         else { return [] }
         return list
     }
@@ -241,12 +241,6 @@ public final class DesignDocument {
         setSectionUndoable("tolerances", section, actionName: actionName, undoManager: undoManager)
     }
 
-    /// Removes every variable (undoable).
-    public func clearVariables(undoManager: UndoManager?) {
-        guard !variables.isEmpty else { return }
-        setSectionUndoable("variables", .array([]), actionName: "Remove All Variables", undoManager: undoManager)
-    }
-
     static func encode(_ list: [DesignVariable]) -> JSONValue {
         (try? JSONValue.from(list)) ?? .array([])
     }
@@ -278,7 +272,7 @@ public final class DesignDocument {
         let previous = project.sections[key] ?? .null
         guard previous != value else { return }
         setSection(key, value)
-        undoManager?.registerUndo(withTarget: self) { doc in
+        undoManager?.registerUndo(withTarget: self) { [weak undoManager] doc in
             MainActor.assumeIsolated {
                 doc.setSectionUndoable(key, previous, actionName: actionName, undoManager: undoManager)
             }

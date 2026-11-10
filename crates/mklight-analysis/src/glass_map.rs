@@ -156,7 +156,7 @@ pub fn glass_map_job(
             snapshot,
             "glass_map",
             s,
-            "cpu-f64",
+            crate::util::BACKEND,
             Precision::F64Reference,
             None,
             Vec::new(),

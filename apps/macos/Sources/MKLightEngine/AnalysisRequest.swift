@@ -104,7 +104,7 @@ public enum WavelengthSelection: Codable, Sendable, Hashable {
 /// to the CPU reference (and says so in `RunInfo.warnings`) when a backend is
 /// unavailable or cannot meet the error budget for a design (CONVENTIONS §7).
 public enum BackendPreference: String, Codable, Sendable, Hashable, CaseIterable {
-    /// The engine chooses: the GPU when `precision` allows it, else the CPU.
+    /// The engine chooses.
     case auto
     /// The CPU f64 reference tracer.
     case cpuReference = "cpu_reference"
@@ -120,22 +120,20 @@ public enum BackendPreference: String, Codable, Sendable, Hashable, CaseIterable
     }
 }
 
-/// How a job is executed: with the snapshot and the analysis settings, the
-/// rest of a job's identity `(snapshot, settings, backend, precision, seed)`
-/// (ARCHITECTURE §State model). It is part of every settings struct, so it is
-/// recorded in `RunInfo.settings` and takes part in the staleness check:
-/// switching from the f64 reference to GPU f32 makes the old result stale.
+/// How a job is executed: what a front end chooses of a job's identity
+/// `(snapshot, settings, backend, precision, seed)` (ARCHITECTURE §State
+/// model) besides the snapshot and the analysis settings. The engine chooses
+/// the precision with the backend; `RunInfo.precision` records it. It is
+/// part of every typed settings struct, so it is recorded in
+/// `RunInfo.settings` and takes part in the staleness check: another backend
+/// preference makes the old result stale.
 public struct ExecutionSettings: Codable, Sendable, Hashable {
     public var backend = BackendPreference.auto
-    /// Requested floating-point model. `RunInfo.precision` records the one
-    /// actually used.
-    public var precision = Precision.f64Reference
-    /// Philox seed for every stochastic part of an analysis (random pupil
-    /// sampling, Monte-Carlo integration; CONVENTIONS §6).
+    /// Seed of a typed request's stochastic parts (random pupil sampling;
+    /// CONVENTIONS §6). A request by name carries its seed in its settings.
     public var seed: UInt64 = 1
-    public init(backend: BackendPreference = .auto, precision: Precision = .f64Reference, seed: UInt64 = 1) {
+    public init(backend: BackendPreference = .auto, seed: UInt64 = 1) {
         self.backend = backend
-        self.precision = precision
         self.seed = seed
     }
 }
@@ -428,7 +426,7 @@ public struct AnalysisSettingsSet: Codable, Sendable, Hashable {
     public var mtf = MTFSettings()
     public var psf = PSFSettings()
     public var firstOrder = FirstOrderSettings()
-    /// Backend, precision and seed for every analysis of the window.
+    /// Backend and seed for every analysis of the window.
     public var execution = ExecutionSettings()
     public init() {}
 

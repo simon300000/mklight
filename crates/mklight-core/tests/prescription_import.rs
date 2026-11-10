@@ -290,6 +290,28 @@ fn defaults_for_a_bare_prescription() {
 }
 
 #[test]
+fn zmx_counts_beyond_the_data_present_are_clamped() {
+    let lib = MaterialLibrary::with_builtin();
+    let text = "MODE SEQ\nENPD 10\nFTYP 0 0 99999999999 99999999999 0 0 0\n\
+                YFLN 0 2\nWAVM 1 0.55 1\nWAVM 3 0.65 1\n\
+                SURF 0\n  DISZ INFINITY\nSURF 1\n  STOP\n  CURV 0.02\n  DISZ 5\n  GLAS N-BK7\n\
+                SURF 2\n  DISZ 90\nSURF 3\n";
+    let imp = import_prescription(text.as_bytes(), PrescriptionFormat::Zmx, &lib).unwrap();
+    let s = &imp.system;
+    let ys: Vec<f64> = s.fields.fields.iter().map(|f| f.y).collect();
+    assert_eq!(ys, [0.0, 2.0]);
+    let wls: Vec<f64> = s.wavelengths.wavelengths.iter().map(|w| w.um).collect();
+    assert_eq!(wls, [0.55, 0.65]);
+    assert!(
+        imp.warnings
+            .iter()
+            .any(|w| w.kind == K::Defaulted && w.message.contains("FTYP states")),
+        "{:?}",
+        imp.warnings
+    );
+}
+
+#[test]
 fn text_without_surfaces_is_an_error() {
     let lib = MaterialLibrary::with_builtin();
     for (bytes, format) in [

@@ -87,6 +87,24 @@ pub(crate) fn run_info_backend(
     )
 }
 
+/// The seed a run records: the pattern's when it draws random points, else
+/// none.
+pub(crate) fn seed_of(pattern: PupilPattern, seed: u64) -> Option<u64> {
+    matches!(pattern, PupilPattern::Random | PupilPattern::Dithered).then_some(seed)
+}
+
+/// Airy radius `1.22 λ N_w` (mm) at wavelength `wl_um` (µm) and working F/#
+/// `n_w`.
+pub(crate) fn airy_radius(wl_um: f64, n_w: f64) -> f64 {
+    1.22 * wl_um * 1e-3 * n_w
+}
+
+/// Incoherent diffraction cutoff `1/(λ N_w)` (cycles/mm) at wavelength
+/// `wl_um` (µm) and working F/# `n_w`.
+pub(crate) fn diffraction_cutoff(wl_um: f64, n_w: f64) -> f64 {
+    1.0 / (wl_um * 1e-3 * n_w)
+}
+
 /// The warning of analyses that move a **curved** image surface by
 /// transferring each ray along its direction (exact only for planes).
 pub(crate) fn curved_image_warning(tracer: &SequentialTracer) -> Option<String> {

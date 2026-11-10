@@ -127,7 +127,7 @@ pub fn validate(r: &Simulation, p: &ResidentPlan) -> MkResult<()> {
             uv,
         } => {
             raster(source)?;
-            let n = mapping.desc.shape[0].isqrt();
+            let n = mapping.desc.shape.first().copied().unwrap_or(0).isqrt();
             view(mapping, DoubleFloat, &[n * n, 5])?;
             if n < 2
                 || ![1, 3].contains(channels)
@@ -792,8 +792,8 @@ pub fn cpu(
             uv,
             ..
         } => {
-            let source = values(x, source);
-            let mapping = values(x, mapping);
+            let source = x.rows(source);
+            let mapping = x.rows(mapping);
             let mut a = vec![0.; (p.width * p.height * p.channels) as usize];
             let mut coords = vec![[Df32::ZERO; 2]; (p.width * p.height) as usize];
             for (k, v) in coords.iter_mut().enumerate() {
@@ -811,7 +811,7 @@ pub fn cpu(
                 .copy_from_slice(bytemuck::cast_slice(&coords));
         }
         Simulation::Kernel { psf, output, .. } => {
-            let psf = values::<f32>(x, psf);
+            let psf = x.rows::<f32>(psf);
             let side = (2 * p.radius + 1) as usize;
             let m = p.source_width as usize;
             let mut horizontal = vec![Df32::ZERO; m * side];
@@ -844,7 +844,7 @@ pub fn cpu(
                 .copy_from_slice(bytemuck::cast_slice(&out));
         }
         Simulation::Active { uv, output, .. } => {
-            let uv = values::<Df32>(x, uv).as_chunks::<2>().0;
+            let uv = x.rows::<Df32>(uv).as_chunks::<2>().0;
             let mut active = vec![0; (p.grid * p.grid) as usize];
             for k in 0..((p.tile[2] + 2 * p.radius) * (p.tile[3] + 2 * p.radius)) as usize {
                 if k % 4096 == 0 {
@@ -865,8 +865,8 @@ pub fn cpu(
         Simulation::Weighted {
             image, uv, output, ..
         } => {
-            let image = values::<f32>(x, image);
-            let uv = values::<Df32>(x, uv).as_chunks::<2>().0;
+            let image = x.rows::<f32>(image);
+            let uv = x.rows::<Df32>(uv).as_chunks::<2>().0;
             let mut a = vec![[0.; 2]; (p.canvas * p.canvas) as usize];
             for (k, v) in a.iter_mut().enumerate() {
                 if k % 4096 == 0 {
@@ -891,8 +891,8 @@ pub fn cpu(
             output,
             ..
         } => {
-            let planes: Vec<&[[f32; 2]]> = planes.iter().map(|v| values(x, v)).collect();
-            let prev = previous.as_ref().map(|v| values::<f32>(x, v));
+            let planes: Vec<&[[f32; 2]]> = planes.iter().map(|v| x.rows(v)).collect();
+            let prev = previous.as_ref().map(|v| x.rows::<f32>(v));
             let mut a = vec![0.; (p.width * p.height * p.channels) as usize];
             for (k, v) in a.iter_mut().enumerate() {
                 if k % 4096 == 0 {
@@ -920,7 +920,7 @@ pub fn cpu(
             let mut a = vec![0.; (p.width * p.height * p.channels) as usize];
             for (i, v) in tiles.iter().enumerate() {
                 ctl.check()?;
-                let input = values::<f32>(x, v);
+                let input = x.rows::<f32>(v);
                 let w = v.desc.shape[1];
                 let h = v.desc.shape[0];
                 let c = p.channels as usize;
@@ -936,7 +936,7 @@ pub fn cpu(
                 .copy_from_slice(bytemuck::cast_slice(&a));
         }
         Simulation::Noise { input, output, .. } => {
-            let input = values::<f32>(x, input);
+            let input = x.rows::<f32>(input);
             let mut a = vec![0.; input.len()];
             for (k, (v, a)) in a.iter_mut().zip(input).enumerate() {
                 if k % 256 == 0 {

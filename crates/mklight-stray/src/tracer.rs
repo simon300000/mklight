@@ -385,11 +385,18 @@ impl<'a, C: RayCaster> Tracer<'a, C> {
             .unwrap_or(self.wl_cdf.len() - 1)
     }
 
-    fn trace_chunk(&self, chunk: u64, ctx: &JobContext) -> MkResult<ChunkTally> {
-        let n = self.settings.chunk_rays as u64;
-        let (lo, hi) = (chunk * n, ((chunk + 1) * n).min(self.settings.rays));
+    /// An empty tally for one chunk of this run.
+    pub(crate) fn new_chunk(&self) -> ChunkTally {
         let mut tally = ChunkTally::new(self.scene.num_wavelengths(), self.settings.owned_classes);
         tally.track_signatures = self.settings.signatures;
+        tally
+    }
+
+    /// Traces the source rays of chunk `chunk`.
+    pub(crate) fn trace_chunk(&self, chunk: u64, ctx: &JobContext) -> MkResult<ChunkTally> {
+        let n = self.settings.chunk_rays as u64;
+        let (lo, hi) = (chunk * n, ((chunk + 1) * n).min(self.settings.rays));
+        let mut tally = self.new_chunk();
         let mut stack = Vec::with_capacity(32);
         for (k, i) in (lo..hi).enumerate() {
             if k % 64 == 0 {
@@ -975,6 +982,28 @@ pub fn run_with<C: RayCaster>(
     settings: &StraySettings,
     ctx: &JobContext,
 ) -> MkResult<StrayResult> {
+    run_impl(scene, caster, source, settings, None, ctx)
+}
+
+/// [`run`] with the scene's [`Scene::fingerprint`] already computed.
+pub(crate) fn run_fingerprinted(
+    scene: &Scene,
+    source: &SourceSpec,
+    settings: &StraySettings,
+    fingerprint: &str,
+    ctx: &JobContext,
+) -> MkResult<StrayResult> {
+    run_impl(scene, scene.bvh(), source, settings, Some(fingerprint), ctx)
+}
+
+fn run_impl<C: RayCaster>(
+    scene: &Scene,
+    caster: &C,
+    source: &SourceSpec,
+    settings: &StraySettings,
+    fingerprint: Option<&str>,
+    ctx: &JobContext,
+) -> MkResult<StrayResult> {
     validate_run(scene, source, settings)?;
     let timer = RunTimer::start();
     let tracer = Tracer::new(scene, caster, source, settings);
@@ -1001,6 +1030,30 @@ pub fn run_with<C: RayCaster>(
         c = hi;
         ctx.report(c as f64 / n_chunks as f64, stage);
     }
+    let mut result = finish(scene, settings, &tally);
+    result.run_info = scene.snapshot.as_ref().map(|snap| {
+        timer.finish(
+            snap,
+            "stray_light",
+            &RunSettings {
+                settings,
+                source,
+                scene_options: scene.options.as_ref(),
+                scene_fingerprint: fingerprint.map_or_else(|| scene.fingerprint(), str::to_owned),
+            },
+            "cpu-f64",
+            Precision::F64Reference,
+            Some(settings.seed),
+            result.warnings.clone(),
+        )
+    });
+    Ok(result)
+}
+
+/// The result of a run's folded tally, without its `RunInfo`: the detector
+/// maps, the energy report, the labelled signatures, and the warnings of
+/// the scene and of the transport.
+pub(crate) fn finish(scene: &Scene, settings: &StraySettings, tally: &StrayTally) -> StrayResult {
     let (detector, energy, mut signatures) = tally.finish(&scene.detector, settings.owned_classes);
     for sf in &mut signatures {
         sf.label = sf.signature.describe(|p| scene.label(p).to_string());
@@ -1025,29 +1078,13 @@ pub fn run_with<C: RayCaster>(
             energy.truncated, settings.max_events
         ));
     }
-    let run_info = scene.snapshot.as_ref().map(|snap| {
-        timer.finish(
-            snap,
-            "stray_light",
-            &RunSettings {
-                settings,
-                source,
-                scene_options: scene.options.as_ref(),
-                scene_fingerprint: scene.fingerprint(),
-            },
-            "cpu-f64",
-            Precision::F64Reference,
-            Some(settings.seed),
-            warnings.clone(),
-        )
-    });
-    Ok(StrayResult {
+    StrayResult {
         detector,
         energy,
-        run_info,
+        run_info: None,
         warnings,
         signatures,
-    })
+    }
 }
 
 #[cfg(test)]

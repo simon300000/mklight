@@ -27,8 +27,6 @@ pub mod mtf_eval;
 pub mod operand;
 pub mod problem;
 pub mod quadrature;
-#[cfg(test)]
-mod quality_tests;
 pub mod reference;
 pub mod solver_eval;
 mod surface;

@@ -22,8 +22,12 @@ public final class AnalysisPane: Identifiable {
 
     /// Stable key (the project's `views[].key`).
     public let id: String
-    public private(set) var analysis: String
-    public private(set) var settings: [String: JSONValue]
+    public private(set) var analysis: String {
+        didSet { storedRequest = nil }
+    }
+    public private(set) var settings: [String: JSONValue] {
+        didSet { storedRequest = nil }
+    }
     /// Re-run automatically when the design changes; otherwise the result
     /// goes stale and waits for Re-run.
     public var autoUpdate: Bool
@@ -41,7 +45,12 @@ public final class AnalysisPane: Identifiable {
     /// Values read from `output` once per output rather than in every view
     /// update (the layout scene is thousands of points).
     @ObservationIgnored private var derived: (scene: LayoutScene?, autoSemiDiameters: [SurfaceID: Double])?
-    @ObservationIgnored weak var workspace: Workspace?
+    @ObservationIgnored weak var workspace: Workspace? {
+        didSet { storedRequest = nil }
+    }
+    /// The request `Workspace.request(for:)` built from the analysis and
+    /// settings, with the workspace's epoch it was built at.
+    @ObservationIgnored var storedRequest: (epoch: Int, request: EngineAnalysisRequest)?
 
     public init(id: String = "pane-" + UUID().uuidString.prefix(8).lowercased(), analysis: String,
                 settings: [String: JSONValue] = [:], autoUpdate: Bool = true) {

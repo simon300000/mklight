@@ -35,7 +35,7 @@ use crate::reduce;
 use crate::trace_kernel::{KRayIn, KRayOut, KState, trace_ray};
 
 /// Work items between cancellation checks / progress reports.
-const CHUNK: usize = 1 << 16;
+pub(crate) const CHUNK: usize = 1 << 16;
 
 #[derive(Clone)]
 pub struct CpuF32Backend {
@@ -109,7 +109,7 @@ impl CpuF32Backend {
             },
             instance,
             resident: crate::resident::runtime::Runtime::new(instance),
-            cache: Mutex::new(crate::resident::cache::SystemCache::new(64 << 20)),
+            cache: Mutex::new(crate::resident::cache::SystemCache::new()),
             next_id: AtomicU64::new(1),
             systems: Mutex::new(HashMap::new()),
         };
@@ -210,27 +210,20 @@ impl Inner {
                 count,
                 values,
             } => {
-                // Pass 1 in group ranges of about CHUNK values (the same
-                // split the GPU uses for its command buffers), then pass 2.
                 let channels = values.len() / count;
-                let groups = reduce::num_groups(count);
-                let per_group = count.div_ceil(groups);
-                let step = (CHUNK / per_group).clamp(1, groups);
-                let total = channels * groups;
+                let total = channels * reduce::num_groups(count);
                 let mut sums = Vec::with_capacity(channels);
                 let mut done = 0;
                 for c in 0..channels {
                     let x = &values[c * count..(c + 1) * count];
-                    let mut partials = Vec::with_capacity(groups);
-                    for g0 in (0..groups).step_by(step) {
-                        ctl.check()?;
-                        let g1 = (g0 + step).min(groups);
-                        partials.extend(reduce::pass1_in::<E>(mode, x, g0..g1));
+                    let launched = |groups| {
                         stats.command_buffers += 1;
-                        done += g1 - g0;
+                        done += groups;
                         ctl.report(done as f64 / total as f64, "reduce");
-                    }
-                    sums.push(reduce::pass2_in::<E>(mode, &partials));
+                    };
+                    sums.push(reduce::reduce_channel_ranges_in::<E>(
+                        mode, x, CHUNK, ctl, launched,
+                    )?);
                 }
                 ctl.check()?;
                 JobOutput::Sums(sums)
@@ -420,12 +413,6 @@ impl ComputeBackend for CpuF32Backend {
     }
     fn submit(&self, job: Job, ctx: &JobContext) -> MkResult<Pending<JobResult>> {
         job.validate()?;
-        if !self.supports(job.kind()) {
-            return Err(MkError::Unsupported(format!(
-                "cpu-f32 does not implement {:?}",
-                job.kind()
-            )));
-        }
         // Resolve handles now so a released handle fails at submission.
         match &job {
             Job::SagProbe { systems, .. } => {

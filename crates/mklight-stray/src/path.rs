@@ -9,8 +9,8 @@
 //! | `Scatter` | at least one scattering event (BSDF sample) anywhere | stray |
 //! | `Mechanical` | touched non-optical geometry with a specular reflection, no scatter | stray |
 //! | `Sneak` | specular only, but crossed an optical surface outside its sequential clipping aperture | stray |
-//! | `Ghost` | specular only, inside the clipping apertures, an even number ≥ 2 of *stray reflections* in their implied sequential order | ghost for covered paths, otherwise stray |
-//! | `Primary` | specular only, every interface met in designed order with the designed interaction, 0 stray reflections | sequential |
+//! | `Ghost` | specular only, inside the clipping apertures, in the sequential order its reflections imply up to the detector, with at least two *stray reflections* or a DOE order other than the surface's trace order | ghost for covered paths, otherwise stray |
+//! | `Primary` | specular only, every interface met in designed order with the designed interaction, 0 stray reflections, every DOE in its trace order | sequential |
 //! | `Sneak` | anything else specular (including out-of-sequence paths at any reflection order) | stray |
 //!
 //! A *stray reflection* is a specular reflection, including total internal
@@ -148,7 +148,8 @@ pub enum EventKind {
 }
 
 impl EventKind {
-    fn from_code(c: u32) -> Option<EventKind> {
+    /// The kind with discriminant `c`.
+    pub(crate) fn from_code(c: u32) -> Option<EventKind> {
         Some(match c {
             1 => EventKind::Reflect,
             2 => EventKind::Tir,
@@ -159,14 +160,6 @@ impl EventKind {
             7 => EventKind::OutsideClip,
             _ => return None,
         })
-    }
-    /// True for events whose id is a primitive index (non-optical geometry)
-    /// rather than a sequential surface index.
-    pub fn is_mechanical(self) -> bool {
-        matches!(
-            self,
-            EventKind::MechanicalSpecular | EventKind::MechanicalScatter
-        )
     }
 }
 

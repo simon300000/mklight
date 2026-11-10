@@ -10,7 +10,6 @@ pub struct WavefrontStatistics {
     pub rms_tilt_removed: f64,
     pub pv_tilt_removed: f64,
     pub strehl: f64,
-    pub tilt_condition_inf: f64,
 }
 impl ResidentPupil {
     /// Debye-weighted RMS/PV and exact reference-point Strehl. The three-column
@@ -22,7 +21,7 @@ impl ResidentPupil {
         ctx: &JobContext,
     ) -> MkResult<WaveResult<WavefrontStatistics>> {
         let mut p = ResidentPlan::new(snapshot);
-        p.settings = serde_json::json!({"p6":"wavefront_statistics","pupil_input_hash":self.input_hash,"pupil_grid":self.n});
+        p.settings = serde_json::json!({"operation":"wavefront_statistics","pupil_grid":self.n});
         let rows = self.n * self.n;
         let pupil = self.import(&mut p);
         let samples = p.scratch(BufferDesc::new(ElementType::DoubleFloat, [rows, 4]));
@@ -90,7 +89,6 @@ impl ResidentPupil {
                 rms_tilt_removed: a[2].to_f64(),
                 pv_tilt_removed: a[3].to_f64(),
                 strehl: a[4].to_f64(),
-                tilt_condition_inf: info[1].to_f64(),
             },
             run_info: r.run_info,
             stats: r.stats,

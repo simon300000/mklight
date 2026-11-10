@@ -2,7 +2,7 @@ use super::*;
 use crate::{
     footprint_overlay::{FootprintOverlay, OverlaySet, convex_hull},
     illumination::FootprintSettings,
-    util::{default_fields, pupil_points},
+    util::{default_fields, pupil_points, seed_of},
 };
 use mklight_core::{SurfaceShape, Vec3};
 use mklight_gpu::{
@@ -186,7 +186,7 @@ pub fn footprint_overlay_job(
     s: &FootprintSettings,
     ctx: &JobContext,
 ) -> MkResult<FootprintOverlay> {
-    crate::spot::validate_sampling(s.pattern, s.rings)?;
+    crate::spot::validate_sampling(s.rings)?;
     let aug = default_fields(t, &s.fields)?;
     let t = aug.as_ref();
     let fields = s.fields.resolve(t.fields().len())?;
@@ -209,11 +209,7 @@ pub fn footprint_overlay_job(
         );
         let mut p = ResidentPlan::new(t.system().snapshot.clone());
         p.settings = serde_json::to_value(s).unwrap();
-        p.seed = matches!(
-            s.pattern,
-            crate::util::PupilPattern::Random | crate::util::PupilPattern::Dithered
-        )
-        .then_some(s.seed);
+        p.seed = seed_of(s.pattern, s.seed);
         let g = geo.append_grid(
             &mut p,
             &pts,
@@ -250,17 +246,7 @@ pub fn footprint_overlay_job(
                 );
             }
         }
-        if let Some(run) = &mut evidence {
-            run.duration_ms += r.run_info.duration_ms;
-            run.settings["extra_plans"]
-                .as_array_mut()
-                .unwrap()
-                .push(r.run_info.settings);
-        } else {
-            let mut run = r.run_info;
-            run.settings["extra_plans"] = serde_json::json!([]);
-            evidence = Some(run);
-        }
+        plans::merge_run(&mut evidence, r.run_info);
     }
     let mut sets = Vec::with_capacity(clouds.len());
     // Exactly sized: the clouds are released one by one as they are copied.
@@ -297,7 +283,12 @@ pub fn footprint_overlay_job(
         sets,
         points,
         outlines,
-        run_info: stamp(evidence.unwrap(), "footprint", s, t.warnings().to_vec()),
+        run_info: stamp(
+            evidence.unwrap(),
+            "footprint_overlay",
+            s,
+            t.warnings().to_vec(),
+        ),
     })
 }
 
@@ -337,69 +328,78 @@ pub fn ray_grid_job(
     s: &crate::energy::RaySampling,
     ctx: &JobContext,
 ) -> MkResult<GridResult> {
-    crate::spot::validate_sampling(s.pattern, s.rings)?;
+    crate::spot::validate_sampling(s.rings)?;
     let aug = default_fields(t, &s.fields)?;
-    let t = aug.as_ref();
-    let fields = s.fields.resolve(t.fields().len())?;
-    let wls = s
-        .wavelengths
-        .resolve(t.num_wavelengths(), t.system().primary_wavelength)?;
-    let pupil = pupil_points(s.pattern, s.rings, s.seed);
-    let pts: Vec<_> = fields.iter().map(|&f| t.field(f).point).collect();
-    let geo = Geometry::new(b, t, ctx)?;
-    let seed = matches!(
-        s.pattern,
-        crate::util::PupilPattern::Random | crate::util::PupilPattern::Dithered
-    )
-    .then_some(s.seed);
-    let per_field = wls.len() * pupil.len();
-    let total = fields.len() * per_field;
-    let mut points = vec![f64::NAN; 2 * total];
-    let mut directions = vec![f64::NAN; 3 * total];
-    // The host reads the hits; each field group's plan traces while the
-    // next group is aimed.
-    let run = geo.grid_groups(
-        t,
-        &pts,
-        &wls,
-        &pupil,
-        t.system().image_index(),
-        &serde_json::to_value(s).unwrap(),
-        seed,
-        ctx,
-        |range, f, status, n| {
-            let base = range.start * per_field;
-            for (i, &code) in status[..n].iter().enumerate() {
-                if i % 4096 == 0 {
-                    ctx.check()?;
+    Geometry::new(b, aug.as_ref(), ctx)?.ray_grid_job(s, ctx)
+}
+impl Geometry<'_> {
+    /// [`ray_grid_job`] on this adapter: the fields of its tracer (plus the
+    /// default axis fields), with its aiming and thresholds.
+    pub fn ray_grid_job(
+        &self,
+        s: &crate::energy::RaySampling,
+        ctx: &JobContext,
+    ) -> MkResult<GridResult> {
+        crate::spot::validate_sampling(s.rings)?;
+        let geo = self;
+        let aug = default_fields(self.tracer, &s.fields)?;
+        let t = aug.as_ref();
+        let fields = s.fields.resolve(t.fields().len())?;
+        let wls = s
+            .wavelengths
+            .resolve(t.num_wavelengths(), t.system().primary_wavelength)?;
+        let pupil = pupil_points(s.pattern, s.rings, s.seed);
+        let pts: Vec<_> = fields.iter().map(|&f| t.field(f).point).collect();
+        let seed = seed_of(s.pattern, s.seed);
+        let per_field = wls.len() * pupil.len();
+        let total = fields.len() * per_field;
+        let mut points = vec![f64::NAN; 2 * total];
+        let mut directions = vec![f64::NAN; 3 * total];
+        // The host reads the hits; each field group's plan traces while the
+        // next group is aimed.
+        let run = geo.grid_groups(
+            t,
+            &pts,
+            &wls,
+            &pupil,
+            t.system().image_index(),
+            &serde_json::to_value(s).unwrap(),
+            seed,
+            ctx,
+            |range, f, status, n| {
+                let base = range.start * per_field;
+                for (i, &code) in status[..n].iter().enumerate() {
+                    if i % 4096 == 0 {
+                        ctx.check()?;
+                    }
+                    if code == 0 {
+                        let k = base + i;
+                        points[2 * k..2 * k + 2]
+                            .copy_from_slice(&[value(f, n, i, 0), value(f, n, i, 1)]);
+                        directions[3 * k..3 * k + 3].copy_from_slice(&[
+                            value(f, n, i, 3),
+                            value(f, n, i, 4),
+                            value(f, n, i, 5),
+                        ]);
+                    }
                 }
-                if code == 0 {
-                    let k = base + i;
-                    points[2 * k..2 * k + 2]
-                        .copy_from_slice(&[value(f, n, i, 0), value(f, n, i, 1)]);
-                    directions[3 * k..3 * k + 3].copy_from_slice(&[
-                        value(f, n, i, 3),
-                        value(f, n, i, 4),
-                        value(f, n, i, 5),
-                    ]);
-                }
-            }
-            Ok(())
-        },
-    )?;
-    ctx.report(1.0, "ray grid");
-    Ok(GridResult {
-        fields,
-        wavelengths: wls,
-        pupil,
-        points,
-        directions,
-        run_info: stamp(run, "ray_grid", s, t.warnings().to_vec()),
-    })
+                Ok(())
+            },
+        )?;
+        ctx.report(1.0, "ray grid");
+        Ok(GridResult {
+            fields,
+            wavelengths: wls,
+            pupil,
+            points,
+            directions,
+            run_info: stamp(run, "ray_grid", s, t.warnings().to_vec()),
+        })
+    }
 }
 impl Geometry<'_> {
     /// Aim and trace (clipped, to surface `last`) the grid of field points
-    /// `pts` × `wls` × `pupil` in field groups ([`plans::field_groups`]),
+    /// `pts` × `wls` × `pupil` in field groups ([`Self::field_groups`]),
     /// each group a plan submitted once its rays are aimed, and hand every
     /// group's hit planes (`floats`, `status`, ray count) to `read`, in
     /// group order. Returns the plans' merged evidence.
@@ -416,7 +416,7 @@ impl Geometry<'_> {
         ctx: &JobContext,
         mut read: impl FnMut(std::ops::Range<usize>, &[f32], &[u32], usize) -> MkResult<()>,
     ) -> MkResult<RunInfo> {
-        let groups = plans::field_groups(pts.len(), wls.len() * pupil.len());
+        let groups = self.field_groups(pts.len(), wls.len() * pupil.len());
         let mut submitted = Vec::with_capacity(groups.len());
         for (k, range) in groups.iter().enumerate() {
             let sub = ctx.subrange(
@@ -457,11 +457,12 @@ pub fn footprint_job(
     s: &FootprintSettings,
     ctx: &JobContext,
 ) -> MkResult<crate::illumination::FootprintResult> {
-    use crate::illumination::{FootprintRays, FootprintResult};
-    use mklight_gpu::consts::*;
-    crate::spot::validate_sampling(s.pattern, s.rings)?;
+    validate_footprint(t, s)?;
     let aug = default_fields(t, &s.fields)?;
-    let t = aug.as_ref();
+    Geometry::new(b, aug.as_ref(), ctx)?.footprint_job(s, ctx)
+}
+fn validate_footprint(t: &SequentialTracer, s: &FootprintSettings) -> MkResult<()> {
+    crate::spot::validate_sampling(s.rings)?;
     if s.surface == 0 || s.surface > t.system().image_index() {
         return Err(mklight_core::MkError::InvalidModel(format!(
             "footprint surface {} must be in 1…{}",
@@ -469,92 +470,104 @@ pub fn footprint_job(
             t.system().image_index()
         )));
     }
-    let fields = s.fields.resolve(t.fields().len())?;
-    let wls = s
-        .wavelengths
-        .resolve(t.num_wavelengths(), t.system().primary_wavelength)?;
-    let pupil = pupil_points(s.pattern, s.rings, s.seed);
-    let pts: Vec<_> = fields.iter().map(|&f| t.field(f).point).collect();
-    let geo = Geometry::new(b, t, ctx)?;
-    let seed = matches!(
-        s.pattern,
-        crate::util::PupilPattern::Random | crate::util::PupilPattern::Dithered
-    )
-    .then_some(s.seed);
-    let mut extent = [
-        f64::INFINITY,
-        f64::NEG_INFINITY,
-        f64::INFINITY,
-        f64::NEG_INFINITY,
-    ];
-    let mut max_r = f64::NAN;
-    let mut rays = Vec::new();
-    let mut run = geo.grid_groups(
-        t,
-        &pts,
-        &wls,
-        &pupil,
-        s.surface,
-        &serde_json::to_value(s).unwrap(),
-        seed,
-        ctx,
-        |range, f, st, n| {
-            for (gi, &field) in fields[range].iter().enumerate() {
-                for (wi, &wavelength) in wls.iter().enumerate() {
-                    ctx.check()?;
-                    let mut fr = FootprintRays {
-                        field,
-                        wavelength,
-                        points: Vec::new(),
-                        clipped: Vec::new(),
-                        launched: pupil.len(),
-                        lost_before: 0,
-                    };
-                    let start = (gi * wls.len() + wi) * pupil.len();
-                    for (i, &code) in st.iter().enumerate().skip(start).take(pupil.len()) {
-                        let q = [value(f, n, i, 0), value(f, n, i, 1)];
-                        if code == 0 {
-                            fr.points.push(q);
-                            extent = [
-                                extent[0].min(q[0]),
-                                extent[1].max(q[0]),
-                                extent[2].min(q[1]),
-                                extent[3].max(q[1]),
-                            ];
-                            max_r = max_r.max(q[0].hypot(q[1]));
-                        } else if code & MKL_RAY_CODE_MASK == MKL_RAY_VIGNETTED
-                            && (code >> MKL_RAY_SURFACE_SHIFT) as usize == s.surface
-                        {
-                            fr.clipped.push(q);
-                        } else {
-                            fr.lost_before += 1;
+    Ok(())
+}
+impl Geometry<'_> {
+    /// [`footprint_job`] on this adapter: the fields of its tracer (plus the
+    /// default axis fields), with its aiming and thresholds.
+    pub fn footprint_job(
+        &self,
+        s: &FootprintSettings,
+        ctx: &JobContext,
+    ) -> MkResult<crate::illumination::FootprintResult> {
+        use crate::illumination::{FootprintRays, FootprintResult};
+        use mklight_gpu::consts::*;
+        validate_footprint(self.tracer, s)?;
+        let geo = self;
+        let aug = default_fields(self.tracer, &s.fields)?;
+        let t = aug.as_ref();
+        let fields = s.fields.resolve(t.fields().len())?;
+        let wls = s
+            .wavelengths
+            .resolve(t.num_wavelengths(), t.system().primary_wavelength)?;
+        let pupil = pupil_points(s.pattern, s.rings, s.seed);
+        let pts: Vec<_> = fields.iter().map(|&f| t.field(f).point).collect();
+        let seed = seed_of(s.pattern, s.seed);
+        let mut extent = [
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+        ];
+        let mut max_r = f64::NAN;
+        let mut rays = Vec::new();
+        let mut run = geo.grid_groups(
+            t,
+            &pts,
+            &wls,
+            &pupil,
+            s.surface,
+            &serde_json::to_value(s).unwrap(),
+            seed,
+            ctx,
+            |range, f, st, n| {
+                for (gi, &field) in fields[range].iter().enumerate() {
+                    for (wi, &wavelength) in wls.iter().enumerate() {
+                        ctx.check()?;
+                        let mut fr = FootprintRays {
+                            field,
+                            wavelength,
+                            points: Vec::new(),
+                            clipped: Vec::new(),
+                            launched: pupil.len(),
+                            lost_before: 0,
+                        };
+                        let start = (gi * wls.len() + wi) * pupil.len();
+                        for (i, &code) in st.iter().enumerate().skip(start).take(pupil.len()) {
+                            let q = [value(f, n, i, 0), value(f, n, i, 1)];
+                            if code == 0 {
+                                fr.points.push(q);
+                                extent = [
+                                    extent[0].min(q[0]),
+                                    extent[1].max(q[0]),
+                                    extent[2].min(q[1]),
+                                    extent[3].max(q[1]),
+                                ];
+                                max_r = max_r.max(q[0].hypot(q[1]));
+                            } else if code & MKL_RAY_CODE_MASK == MKL_RAY_VIGNETTED
+                                && (code >> MKL_RAY_SURFACE_SHIFT) as usize == s.surface
+                            {
+                                fr.clipped.push(q);
+                            } else {
+                                fr.lost_before += 1;
+                            }
                         }
+                        rays.push(fr);
                     }
-                    rays.push(fr);
                 }
-            }
-            Ok(())
-        },
-    )?;
-    let (sd, sd_run) = geo.semi_diameters(&Default::default(), &ctx.subrange(0.7, 0.95))?;
-    run.duration_ms += sd_run.duration_ms;
-    run.settings["sizing"] = sd_run.settings;
-    let extent = if extent[0].is_finite() {
-        extent.to_vec()
-    } else {
-        vec![f64::NAN; 4]
-    };
-    ctx.report(1.0, "footprint");
-    Ok(FootprintResult {
-        field_values: (0..t.fields().len())
-            .map(|i| crate::util::field_value(t, i))
-            .collect(),
-        surface: s.surface,
-        semi_diameter: sd.values[s.surface],
-        aperture: t.system().surfaces[s.surface].aperture.clone(),
-        rays,
-        extent,
-        max_radius: max_r,
-        run_info: stamp(run, "footprint", s, t.warnings().to_vec()),
-    })
+                Ok(())
+            },
+        )?;
+        let (sd, sd_run) = geo.semi_diameters(&Default::default(), &ctx.subrange(0.7, 0.95))?;
+        run.duration_ms += sd_run.duration_ms;
+        run.settings["sizing"] = sd_run.settings;
+        let extent = if extent[0].is_finite() {
+            extent.to_vec()
+        } else {
+            vec![f64::NAN; 4]
+        };
+        ctx.report(1.0, "footprint");
+        Ok(FootprintResult {
+            field_values: (0..t.fields().len())
+                .map(|i| crate::util::field_value(t, i))
+                .collect(),
+            surface: s.surface,
+            semi_diameter: sd.values[s.surface],
+            aperture: t.system().surfaces[s.surface].aperture.clone(),
+            rays,
+            extent,
+            max_radius: max_r,
+            run_info: stamp(run, "footprint", s, t.warnings().to_vec()),
+        })
+    }
 }

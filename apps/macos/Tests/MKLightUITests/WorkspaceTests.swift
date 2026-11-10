@@ -44,7 +44,7 @@ final class LibraryEngine: EngineClient, @unchecked Sendable {
         self.loadDelay = loadDelay
     }
 
-    var info: EngineInfo { EngineInfo(name: "library engine", version: "1", backends: ["cpu_reference"], isMock: false) }
+    var info: EngineInfo { EngineInfo(name: "library engine", version: "1", isMock: false) }
 
     func makeDocumentEngine() -> any EngineClient {
         let n = shared.sessions.withLock { n in
@@ -156,6 +156,29 @@ final class LibraryEngine: EngineClient, @unchecked Sendable {
         #expect(w.catalogWarnings.count == 1 && w.catalogWarnings[0].contains("“C”"))
     }
 
+    /// A catalog change while a candidate is previewed takes new snapshots
+    /// of both: the design stays the document's and the preview stays on.
+    @Test func catalogChangeDuringAPreviewKeepsTheDesign() async throws {
+        let dir = try catalogDirectory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let w = Workspace(engine: LibraryEngine())
+        await w.loadEngineMetadata()
+        let design = SampleSystems.singlet()
+        await w.open(system: design, catalogs: [ref("A")], projectDirectory: dir)
+        try await waitUntil { w.summary.output?.libraryHash == "lib:A" }
+        var candidate = design
+        candidate.surfaces[1].thickness += 1
+        w.preview(candidate, title: "Candidate 1")
+        try await waitUntil { w.snapshot?.system == candidate }
+        #expect(await w.syncCatalogs([ref("A"), ref("B")], projectDirectory: dir))
+        try await waitUntil { w.snapshot?.libraryHash == "lib:A,B" && w.designSnapshot?.libraryHash == "lib:A,B" }
+        #expect(w.isPreviewing && w.previewTitle == "Candidate 1")
+        #expect(w.snapshot?.system == candidate)
+        #expect(w.designSnapshot?.system == design)
+        w.preview(nil)
+        try await waitUntil { w.snapshot?.system == design }
+    }
+
     /// A window's jobs end with it.
     @Test func droppingTheWorkspaceCancelsItsJobs() async throws {
         let engine = LibraryEngine()
@@ -175,6 +198,45 @@ final class LibraryEngine: EngineClient, @unchecked Sendable {
         #expect(outcome.withLock { $0 as? EngineError } == .cancelled)
         job.cancel()
         _ = await watcher.result
+    }
+
+    /// The workspace tracks running jobs only: a finished job and a removed
+    /// pane's job leave (with their results), and a job submitted under a
+    /// key that still has one cancels it.
+    @Test func liveJobsHoldOnlyRunningJobs() async throws {
+        let done = AnalysisPane(analysis: "first_order")
+        let endless = AnalysisPane(analysis: "forever")
+        let w = Workspace(engine: LibraryEngine(), panes: [done, endless])
+        await w.loadEngineMetadata()
+        w.update(system: SampleSystems.singlet(), immediately: true)
+        try await waitUntil { done.output != nil && endless.isRunning && !w.summary.isRunning && !w.layout.isRunning && !w.validation.isRunning }
+        try await waitUntil { w.liveJobs.keys == [endless.id] }
+        let running = try #require(endless.job)
+        w.removePane(endless)
+        #expect(w.liveJobs.keys.isEmpty)
+        await #expect(throws: EngineError.cancelled) { _ = try await running.result() }
+
+        let first = try w.submitJob("forever", settings: [:], key: "k")
+        let second = try w.submitJob("forever", settings: [:], key: "k")
+        await #expect(throws: EngineError.cancelled) { _ = try await first.result() }
+        #expect(w.liveJobs.keys == ["job:k"])
+        second.cancel()
+        try await waitUntil { w.liveJobs.keys.isEmpty }
+
+        // A job of an earlier request that is set late does not replace the
+        // job of a later one.
+        let engine = LibraryEngine()
+        let snapshot = try await engine.openSnapshot(SampleSystems.singlet())
+        let later = engine.submit(EngineAnalysisRequest(analysis: "forever"), on: snapshot)
+        let earlier = engine.submit(EngineAnalysisRequest(analysis: "forever"), on: snapshot)
+        let jobs = LiveJobs()
+        jobs.set("k", later, request: 2)
+        jobs.set("k", earlier, request: 1)
+        await #expect(throws: EngineError.cancelled) { _ = try await earlier.result() }
+        #expect(jobs.keys == ["k"])
+        jobs.remove("k")
+        await #expect(throws: EngineError.cancelled) { _ = try await later.result() }
+        #expect(jobs.keys.isEmpty)
     }
 
     @Test func cancelAllStopsRunningPanes() async throws {
@@ -230,6 +292,24 @@ final class LibraryEngine: EngineClient, @unchecked Sendable {
         #expect(pane.output?.runInfo.settings["rings"] == .integer(3))
     }
 
+    /// A pane's request follows the pane's analysis and settings, the
+    /// engine's descriptors and the window's backend.
+    @Test func paneRequestFollowsItsInputs() async throws {
+        let pane = AnalysisPane(analysis: "spot_diagram", settings: ["rings": .integer(4), "not_a_setting": .bool(true)])
+        let w = Workspace(engine: MockEngine(simulatedLatency: .zero), panes: [pane])
+        #expect(w.request(for: pane).settings["not_a_setting"] == .bool(true), "no schema yet: sent as it is")
+        await w.loadEngineMetadata()
+        #expect(w.request(for: pane).settings == ["rings": .integer(4)], "reduced to what the schema declares")
+        #expect(w.request(for: pane) == w.request(for: pane))
+        pane.set("rings", .integer(3))
+        #expect(w.request(for: pane).settings == ["rings": .integer(3)])
+        w.backend = .cpuReference
+        #expect(w.request(for: pane).execution.backend == .cpuReference)
+        pane.show("ray_fan", settings: ["samples": .integer(11)])
+        #expect(w.request(for: pane) == EngineAnalysisRequest(
+            analysis: "ray_fan", settings: ["samples": .integer(11)], execution: ExecutionSettings(backend: .cpuReference)))
+    }
+
     @Test func unavailableAndUnknownAnalyses() async throws {
         let seidel = AnalysisPane(analysis: "seidel")
         let unknown = AnalysisPane(analysis: "no_such_analysis")
@@ -251,6 +331,45 @@ final class LibraryEngine: EngineClient, @unchecked Sendable {
         w.update(system: s, immediately: true)
         try await waitUntil { !w.modelErrors.isEmpty }
         #expect(pane.isStale && w.issues.contains { $0.severity == .error })
+    }
+
+    /// Returning to a design the engine accepts (undo of the edit it
+    /// refused) drops the refusal's errors, also when that design's
+    /// validation is still current and does not run again.
+    @Test func returningToAValidDesignDropsTheRefusal() async throws {
+        let w = await make([])
+        let valid = SampleSystems.singlet()
+        w.update(system: valid, immediately: true)
+        try await waitUntil { w.validation.output != nil && !w.isBusy }
+        let before = w.issues
+        #expect(!before.contains { $0.severity == .error })
+        var refused = valid
+        refused.wavelengths.wavelengths = []
+        w.update(system: refused, immediately: true)
+        try await waitUntil { !w.modelErrors.isEmpty }
+        #expect(w.issues.contains { $0.severity == .error })
+        w.update(system: valid, immediately: true)
+        try await waitUntil { w.modelErrors.isEmpty }
+        #expect(w.issues == before)
+    }
+
+    /// Glass numbers asked for while the design is refused are asked for
+    /// again once the engine accepts it.
+    @Test func glassNumbersAreAskedAgainAfterARefusedDesign() async throws {
+        let w = await make([])
+        let valid = SampleSystems.singlet()
+        w.update(system: valid, immediately: true)
+        try await waitUntil { w.snapshot != nil }
+        var refused = valid
+        refused.wavelengths.wavelengths = []
+        w.update(system: refused, immediately: true)
+        try await waitUntil { !w.modelErrors.isEmpty }
+        let glass = MaterialRef.glass("N-BK7")
+        #expect(w.glass(glass) == nil)
+        w.update(system: valid, immediately: true)
+        try await waitUntil { w.modelErrors.isEmpty }
+        try await waitUntil { w.glass(glass) != nil }
+        #expect(w.glass(glass)?.nd == 1.5168)
     }
 
     /// A newer request cancels the older job of the same pane.

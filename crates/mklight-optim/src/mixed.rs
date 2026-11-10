@@ -9,7 +9,9 @@ use std::sync::Mutex;
 
 use mklight_core::{JobContext, MkError, MkResult};
 
-use crate::discrete::{DiscreteProblem, LocallyRefined, Neighbourhood};
+use crate::discrete::{
+    DiscreteProblem, LocallyRefined, Neighbourhood, check_assignment, legal_moves,
+};
 use crate::monitor::{IterationRecord, Monitor, OptimResult, Termination};
 use crate::problem::{ScalarEval, project};
 use crate::rand::{Rng, streams};
@@ -151,6 +153,16 @@ impl Default for MixedHammerSettings {
     }
 }
 
+impl MixedHammerSettings {
+    /// Reject a `step` that is not finite and positive.
+    pub fn validate(&self) -> MkResult<()> {
+        if !(self.step > 0.0 && self.step.is_finite()) {
+            return Err(MkError::InvalidParam("step must be finite and > 0".into()));
+        }
+        Ok(())
+    }
+}
+
 /// Basin hopping over assignment and continuous shape. Each round proposes
 /// `batch` moves (a Gaussian shape perturbation of the current point, plus a
 /// neighbourhood swap with `swap_probability`), refines every one, and takes
@@ -168,6 +180,8 @@ pub fn mixed_hammer<N: Neighbourhood + ?Sized>(
     seed: u64,
     ctx: &JobContext,
 ) -> MkResult<Termination> {
+    s.validate()?;
+    check_assignment(initial, &search.local.choices)?;
     let tol = search.monitor.feasibility_tol;
     let first = search.refine(&[initial.to_vec()], None, ctx)?;
     let vars = (search.local.build)(initial)?.0.variables().to_vec();
@@ -183,8 +197,13 @@ pub fn mixed_hammer<N: Neighbourhood + ?Sized>(
             return Ok(Termination::MaxEvaluations);
         }
         let mut rng = Rng::new(seed, streams::HAMMER | round);
-        let moves = neighbourhood.moves(&current.0, &search.local.choices, &mut rng);
-        let (assignments, starts): (Vec<_>, Vec<_>) = (0..s.batch.min(room))
+        let choices = &search.local.choices;
+        let moves = legal_moves(
+            neighbourhood.moves(&current.0, choices, &mut rng),
+            &current.0,
+            choices,
+        );
+        let (assignments, starts): (Vec<_>, Vec<_>) = (0..s.batch.max(1).min(room))
             .map(|_| {
                 let mut a = current.0.clone();
                 if !moves.is_empty() && rng.uniform() < s.swap_probability {
@@ -226,7 +245,9 @@ pub fn mixed_hammer<N: Neighbourhood + ?Sized>(
         if accepted {
             current = (assignments[pick].clone(), runs[pick].clone());
         }
-        step = (if accepted { step / 0.9 } else { step * 0.9 }).clamp(s.step * 1e-3, s.step * 10.0);
+        step = (if accepted { step / 0.9 } else { step * 0.9 })
+            .max(s.step * 1e-3)
+            .min(s.step * 10.0);
         if stall >= s.stall_rounds {
             return Ok(Termination::Stalled);
         }

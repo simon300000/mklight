@@ -185,10 +185,9 @@ public enum SurfaceShape: Codable, Sendable, Hashable {
         return kind.typeName
     }
 
-    /// Whether the shape belongs to the engine's original solver subset
-    /// (plane, conic, even asphere, paraxial, coordinate break). The engine's
-    /// layout, Seidel, field curvature, ghost and merit evaluation reject
-    /// systems with other shapes (`OpticalSystem::require_legacy_shapes`).
+    /// Whether the shape is one of the engine's basic shapes (plane, conic,
+    /// even asphere, paraxial, coordinate break; the engine's
+    /// `SurfaceShape::is_legacy`). The others are the extended shapes.
     public var isLegacy: Bool {
         if case .sagOverlay = self { return false }
         return kind.isLegacy

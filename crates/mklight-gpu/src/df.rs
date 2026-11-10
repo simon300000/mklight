@@ -39,6 +39,7 @@
 //! double-float values keep their full ≈ 2⁻⁴⁸ relative accuracy for
 //! `|hi| ≥ 2⁻⁷⁸` (optical quantities are many decades above that).
 
+use std::cmp::Ordering;
 use std::ops::{Add, Div, Mul, Neg, Sub};
 
 use bytemuck::{Pod, Zeroable};
@@ -61,7 +62,8 @@ pub fn two_sum(a: f32, b: f32) -> (f32, f32) {
     two_sum_in::<Ieee>(a, b)
 }
 
-/// `s + t = a + b` exactly, provided `|a| ≥ |b|` or `a == 0` (Dekker, 3 flops).
+/// [`fast_two_sum_in`] in the IEEE environment.
+#[cfg(test)]
 #[inline]
 pub fn fast_two_sum(a: f32, b: f32) -> (f32, f32) {
     fast_two_sum_in::<Ieee>(a, b)
@@ -84,7 +86,8 @@ pub fn two_sum_in<E: FpEnv>(a: f32, b: f32) -> (f32, f32) {
     (s, E::add(da, db))
 }
 
-/// [`fast_two_sum`] in environment `E`.
+/// `s + t = a + b` exactly, provided `|a| ≥ |b|` or `a == 0` (Dekker, 3
+/// flops), in environment `E`.
 #[inline]
 pub fn fast_two_sum_in<E: FpEnv>(a: f32, b: f32) -> (f32, f32) {
     let s = E::add(a, b);
@@ -265,6 +268,26 @@ impl Div for Df32 {
     fn div(self, y: Df32) -> Df32 {
         self.div_in::<Ieee>(y)
     }
+}
+
+/// Numeric total order, including a deterministic NaN tail. Signed zero ties.
+pub fn float_cmp(a: f32, b: f32) -> Ordering {
+    match (a.is_nan(), b.is_nan()) {
+        (true, true) => Ordering::Equal,
+        (true, false) => Ordering::Greater,
+        (false, true) => Ordering::Less,
+        (false, false) => a.partial_cmp(&b).unwrap(),
+    }
+}
+/// [`float_cmp`] of the high words, then of the low words; a value with a
+/// NaN word sorts last.
+pub fn df_cmp(a: Df32, b: Df32) -> Ordering {
+    let an = a.hi.is_nan() || a.lo.is_nan();
+    let bn = b.hi.is_nan() || b.lo.is_nan();
+    if an || bn {
+        return an.cmp(&bn);
+    }
+    float_cmp(a.hi, b.hi).then_with(|| float_cmp(a.lo, b.lo))
 }
 
 /// Neumaier's improved Kahan summation in f32 (CONVENTIONS §7.5); twin of

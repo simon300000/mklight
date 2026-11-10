@@ -65,8 +65,9 @@ use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::util::{
-    BackendInfo, FieldSelection, Moments, PupilPattern, WavelengthSelection, check_count,
-    check_finite, curved_image_warning, field_value, linspace, nf, pupil_points, run_info_backend,
+    BackendInfo, FieldSelection, Moments, PupilPattern, WavelengthSelection, airy_radius,
+    check_count, check_finite, curved_image_warning, field_value, linspace, nf, pupil_points,
+    run_info_backend, seed_of,
 };
 
 /// Reference point of the plotted spot.
@@ -643,7 +644,7 @@ pub fn trace_field_rays(
 
 fn stats(
     m: &Moments,
-    launched: f64,
+    launched: usize,
     arrived: usize,
     missing_weight: f64,
     total: f64,
@@ -651,7 +652,7 @@ fn stats(
 ) -> SpotStats {
     let nan_if = |v: f64| if chief_ok { v } else { f64::NAN };
     SpotStats {
-        rays_launched: launched as usize,
+        rays_launched: launched,
         rays_arrived: arrived,
         vignetted_fraction: if total > 0.0 {
             missing_weight / total
@@ -668,8 +669,7 @@ fn stats(
     }
 }
 
-pub(crate) fn validate_sampling(pattern: PupilPattern, rings: usize) -> MkResult<()> {
-    let _ = pattern;
+pub(crate) fn validate_sampling(rings: usize) -> MkResult<()> {
     check_count("rings", rings, 1, 512)
 }
 
@@ -683,7 +683,7 @@ pub fn spot_diagram(
 }
 
 pub(crate) fn validate_spot_settings(settings: &SpotDiagramSettings) -> MkResult<()> {
-    validate_sampling(settings.pattern, settings.rings)?;
+    validate_sampling(settings.rings)?;
     check_finite("defocus", settings.defocus)?;
     if let Some(tf) = &settings.through_focus {
         check_count("through-focus steps", tf.steps, 1, 100_000)?;
@@ -853,7 +853,7 @@ fn spot_reduce(
                 .sum();
             let poly = stats(
                 &m,
-                fr.launched.iter().sum::<usize>() as f64,
+                fr.launched.iter().sum::<usize>(),
                 fr.rays.len(),
                 missing,
                 total,
@@ -898,7 +898,7 @@ fn spot_reduce(
                         ],
                         stats: stats(
                             &mw,
-                            n as f64,
+                            n,
                             fr.arrived[k],
                             (n - fr.arrived[k]) as f64,
                             n as f64,
@@ -987,12 +987,11 @@ fn spot_reduce(
             through_focus: sum.through_focus,
         });
     }
-    let airy = 1.22 * sys.wavelengths_um[sys.primary_wavelength] * 1e-3 * fo.working_f_number;
-    let seed = matches!(
-        settings.pattern,
-        PupilPattern::Random | PupilPattern::Dithered
-    )
-    .then_some(settings.seed);
+    let airy = airy_radius(
+        sys.wavelengths_um[sys.primary_wavelength],
+        fo.working_f_number,
+    );
+    let seed = seed_of(settings.pattern, settings.seed);
     Ok(SpotDiagram {
         fields: out,
         wavelengths_um: sys.wavelengths_um.clone(),

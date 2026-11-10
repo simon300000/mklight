@@ -1,4 +1,4 @@
-//! Native result adapters. Engine routing and qualification policy remain in P11.
+//! Native result adapters. Routing and qualification policy belong to the engine.
 //!
 //! The host traces and resamples every pupil with the reference's code
 //! ([`Source`]) and makes the sampling decisions that read them (image
@@ -9,8 +9,8 @@
 use super::split;
 use super::traced::accumulate;
 use super::*;
-use crate::analysis::{self as a, PupilSampling};
-use crate::{PupilSettings, ReferencePoint, ZernikeBasis};
+use crate::analysis::{self as a, ItemProgress, PupilSampling};
+use crate::{PupilSettings, ReferencePoint};
 use mklight_core::job::RunTimer;
 use mklight_core::memo::Memo;
 use mklight_trace::{PreparedField, SequentialTracer};
@@ -72,6 +72,14 @@ pub(super) enum Staged<T> {
     },
 }
 impl<T> Staged<T> {
+    /// A field prepared on the host, with its warnings.
+    pub(super) fn prepared(value: T, warnings: Vec<String>) -> Self {
+        Staged::Done {
+            value,
+            stats: PlanStats::default(),
+            warnings,
+        }
+    }
     /// The device stage `f` of a prepared field, carrying its statistics and
     /// warnings; skipped fields pass through.
     pub(super) fn then<U>(
@@ -205,7 +213,6 @@ impl<'a> Source<'a> {
         wls: &[(usize, f64)],
         settings: &PupilSettings,
         ctx: &JobContext,
-        stats: &mut PlanStats,
         warnings: &mut Vec<String>,
     ) -> MkResult<Vec<MkResult<Field>>> {
         settings.validate()?;
@@ -246,10 +253,9 @@ impl<'a> Source<'a> {
             let mut error = None;
             for (&(wl, weight), r) in wls.iter().zip(placed.by_ref().take(wls.len())) {
                 match r? {
-                    Ok(p) => {
-                        accumulate(stats, &p.stats);
-                        warnings.extend(p.warnings);
-                        pupils.push((wl, weight, p.value));
+                    Ok((pupil, notes)) => {
+                        warnings.extend(notes);
+                        pupils.push((wl, weight, pupil));
                     }
                     Err(e) => {
                         error.get_or_insert(e);
@@ -295,17 +301,15 @@ impl<'a> Source<'a> {
     }
     /// The usable fields of `requests`, skipping (with a warning) fields
     /// whose pupils fail; fails when none is usable.
-    #[allow(clippy::too_many_arguments)]
     pub(super) fn fields(
         &self,
         requests: &[Request<'_>],
         wls: &[(usize, f64)],
         settings: &PupilSettings,
         ctx: &JobContext,
-        stats: &mut PlanStats,
         warnings: &mut Vec<String>,
     ) -> MkResult<Vec<Field>> {
-        let traced = self.trace(requests, wls, settings, ctx, stats, warnings)?;
+        let traced = self.trace(requests, wls, settings, ctx, warnings)?;
         let mut out = vec![];
         let mut first_error = None;
         for (&(index, _, _), f) in requests.iter().zip(traced) {
@@ -327,7 +331,6 @@ impl<'a> Source<'a> {
     /// The per-field chain inputs of `requests`: requests the host stage
     /// traces one field at a time (`stream`), or the usable fields traced
     /// together.
-    #[allow(clippy::too_many_arguments)]
     pub(super) fn items<'f>(
         &self,
         requests: Vec<Request<'f>>,
@@ -335,7 +338,6 @@ impl<'a> Source<'a> {
         wls: &[(usize, f64)],
         settings: &PupilSettings,
         ctx: &JobContext,
-        stats: &mut PlanStats,
         warnings: &mut Vec<String>,
     ) -> MkResult<Vec<Item<'f>>> {
         if stream {
@@ -343,7 +345,7 @@ impl<'a> Source<'a> {
             return Ok(requests.into_iter().map(Item::Request).collect());
         }
         Ok(self
-            .fields(&requests, wls, settings, ctx, stats, warnings)?
+            .fields(&requests, wls, settings, ctx, warnings)?
             .into_iter()
             .map(Item::Traced)
             .collect())
@@ -356,13 +358,12 @@ impl<'a> Source<'a> {
         wls: &[(usize, f64)],
         settings: &PupilSettings,
         ctx: &JobContext,
-        stats: &mut PlanStats,
         warnings: &mut Vec<String>,
     ) -> MkResult<Result<Field, (usize, MkError)>> {
         match item {
             Item::Traced(f) => Ok(Ok(f)),
             Item::Request(r) => Ok(self
-                .trace(&[r], wls, settings, ctx, stats, warnings)?
+                .trace(&[r], wls, settings, ctx, warnings)?
                 .pop()
                 .expect("one field")
                 .map_err(|e| (r.0, e))),
@@ -444,9 +445,8 @@ impl<'a> Source<'a> {
     }
     /// The smallest [`Self::useful`] of `fields`, evaluated side by side.
     pub(super) fn useful_limit(&self, fields: &[&Field]) -> f64 {
-        concurrent(fields, |_, f| self.useful(f))
-            .into_iter()
-            .fold(f64::INFINITY, f64::min)
+        let each: Vec<f64> = fields.par_iter().map(|f| self.useful(f)).collect();
+        each.into_iter().fold(f64::INFINITY, f64::min)
     }
     pub(super) fn info(
         &self,
@@ -587,7 +587,7 @@ pub fn wavefront_map_shared(
     ctx: &JobContext,
 ) -> MkResult<a::WavefrontResult> {
     let timer = RunTimer::start();
-    let basis = ZernikeBasis::new(s.zernike_ordering, s.zernike_terms)?;
+    let basis = a::wavefront::fit_basis(s)?;
     let idx = a::fields(t, &s.fields)?;
     let wls = a::wavelengths(t, &s.wavelengths)?;
     let mut stats = PlanStats::default();
@@ -598,25 +598,21 @@ pub fn wavefront_map_shared(
         &wls,
         &s.pupil,
         &ctx.subrange(0., 0.7),
-        &mut stats,
         &mut warnings,
     )?;
     let items: Vec<_> = fields
         .iter()
         .flat_map(|f| f.pupils.iter().map(move |(wl, _, p)| (f, *wl, p)))
         .collect();
-    let total = items.len().max(1);
-    let fit_ctx = ctx.subrange(0.7, 1.);
-    let range = |k: usize| fit_ctx.subrange(k as f64 / total as f64, (k + 1) as f64 / total as f64);
+    let progress = ItemProgress::new(ctx.subrange(0.7, 1.), items.len());
     // First the lattice fit (the reference's, on the host lattice), then the
     // statistics and arrays (device reductions). A pupil too sparse for the
     // fit is skipped like an unusable field.
     let results = split::schedule(
         items,
-        |k, item: (&Field, usize, &ResidentTracedPupil)| {
+        |_, item: (&Field, usize, &ResidentTracedPupil)| {
             let (f, wl, p) = item;
-            let sub = range(k);
-            let stats = PlanStats::default();
+            let sub = progress.item();
             let mut warnings = vec![];
             let h = p.host.as_ref().expect("host-traced pupil");
             let fit = crate::analysis::wavefront::fit_samples(&h.lattice.samples, &basis, &sub)
@@ -630,20 +626,23 @@ pub fn wavefront_map_shared(
                 .map(|w| format!("field {}, wavelength {wl}: {w}", f.index))
                 .collect();
             Ok(match fit {
-                Ok(fit) => (item, Ok((fit, stats, warnings))),
+                Ok(fit) => (item, Ok((fit, warnings))),
                 Err(e @ MkError::Numerical(_)) => (item, Err(e)),
                 Err(e) => return Err(e),
             })
         },
-        |k, (item, fit)| {
-            Ok(match fit {
-                Ok((fit, mut stats, warnings)) => {
-                    let data =
-                        device_map(b, t, &item.2.pupil, &range(k).subrange(0.5, 1.), &mut stats)?;
+        |_, (item, fit)| {
+            let map = match fit {
+                Ok((fit, warnings)) => {
+                    let mut stats = PlanStats::default();
+                    let sub = progress.item().subrange(0.5, 1.);
+                    let data = device_map(b, t, &item.2.pupil, &sub, &mut stats)?;
                     Ok((wavefront(item, fit, data)?, stats, warnings))
                 }
                 Err(e) => Err((item.0.index, item.1, e)),
-            })
+            };
+            progress.finish();
+            Ok(map)
         },
     );
     let mut maps = vec![];
@@ -712,33 +711,19 @@ pub fn psf_analysis_shared(
         &wls,
         &s.pupil,
         &ctx.subrange(0., 0.4),
-        &mut stats,
         &mut warnings,
     )?;
-    let total = items.len().max(1);
-    let range = |index: usize| {
-        ctx.subrange(
-            index as f64 / total as f64,
-            (index + 1) as f64 / total as f64,
-        )
-    };
+    let progress = ItemProgress::new(ctx.clone(), items.len());
     let results = split::schedule(
         items,
-        |index, item| {
-            let sub = range(index);
-            let mut stats = PlanStats::default();
+        |_, item| {
+            let sub = progress.item();
             let mut warnings = vec![];
-            let mut f = match src.ready(
-                item,
-                &wls,
-                &s.pupil,
-                &sub.subrange(0., 0.2),
-                &mut stats,
-                &mut warnings,
-            )? {
-                Ok(f) => f,
-                Err((index, error)) => return Ok(Staged::Skipped { index, error }),
-            };
+            let mut f =
+                match src.ready(item, &wls, &s.pupil, &sub.subrange(0., 0.2), &mut warnings)? {
+                    Ok(f) => f,
+                    Err((index, error)) => return Ok(Staged::Skipped { index, error }),
+                };
             let spacing = s.spacing_mm.unwrap_or_else(|| {
                 f.pupils
                     .iter()
@@ -752,15 +737,11 @@ pub fn psf_analysis_shared(
                 &s.pupil,
                 &sub.subrange(0.25, 0.35),
             )?);
-            Ok(Staged::Done {
-                value: (f, grid, spacing),
-                stats,
-                warnings,
-            })
+            Ok(Staged::prepared((f, grid, spacing), warnings))
         },
-        |index, staged| {
-            let sub = range(index);
-            staged.then(|(f, grid, spacing), stats, warnings| {
+        |_, staged| {
+            let sub = progress.item();
+            let psfs = staged.then(|(f, grid, spacing), stats, warnings| {
                 let mut psfs = vec![];
                 let groups: Vec<_> = if s.polychromatic {
                     vec![((f.pupils.len() == 1).then(|| f.pupils[0].0), f.weighted())]
@@ -779,7 +760,6 @@ pub fn psf_analysis_shared(
                             grid_size: grid,
                             spacing_mm: spacing,
                             normalization: s.normalization,
-                            transform: PsfTransform::Matrix,
                         },
                         s.method == a::PsfMethod::Huygens,
                         &sub.subrange(
@@ -796,7 +776,8 @@ pub fn psf_analysis_shared(
                     psfs.push(field_psf(&f, *wl, psf));
                 }
                 Ok(psfs)
-            })
+            });
+            progress.finished(psfs)
         },
     );
     let psfs = gather(results, &mut stats, &mut warnings)?
@@ -843,7 +824,6 @@ fn curve(
                 grid_size: huygens.grid_size,
                 spacing_mm: dx,
                 normalization: PsfNormalization::UnitEnergy,
-                transform: PsfTransform::Matrix,
             },
             true,
             &ctx.subrange(0., 0.7),
@@ -951,7 +931,6 @@ pub fn mtf_analysis_shared(
         &wls,
         &s.pupil,
         &ctx.subrange(0., 0.5),
-        &mut stats,
         &mut warnings,
     )?;
     let maximum = if let Some(f) = s.max_frequency {
@@ -964,39 +943,30 @@ pub fn mtf_analysis_shared(
                 Item::Request(_) => None,
             })
             .collect();
-        src.useful_limit(&fields)
+        let limit = src.useful_limit(&fields);
+        a::check_pos("maximum frequency", limit)?;
+        limit
     };
     let frequencies = a::linspace(0., maximum, s.frequency_samples);
-    let total = items.len().max(1);
-    let range = |i: usize| {
-        ctx.subrange(
-            0.55 + 0.45 * i as f64 / total as f64,
-            0.55 + 0.45 * (i + 1) as f64 / total as f64,
-        )
-    };
+    let progress = ItemProgress::new(ctx.subrange(0.55, 1.), items.len());
     let orientation = |f: &Field| {
         let point = t.field(f.index).point;
         crate::MtfOrientation::from_field(point.hx, point.hy)
     };
     let results = split::schedule(
         items,
-        |i, item| {
-            let mut stats = PlanStats::default();
+        |_, item| {
             let mut warnings = vec![];
             Ok(
-                match src.ready(item, &wls, &s.pupil, &range(i), &mut stats, &mut warnings)? {
-                    Ok(f) => Staged::Done {
-                        value: f,
-                        stats,
-                        warnings,
-                    },
+                match src.ready(item, &wls, &s.pupil, &progress.item(), &mut warnings)? {
+                    Ok(f) => Staged::prepared(f, warnings),
                     Err((index, error)) => Staged::Skipped { index, error },
                 },
             )
         },
-        |i, staged| {
-            let sub = range(i);
-            staged.then(|f, stats, warnings| {
+        |_, staged| {
+            let sub = progress.item();
+            let field = staged.then(|f, stats, warnings| {
                 let o = orientation(&f);
                 let c = curve(
                     b,
@@ -1006,34 +976,14 @@ pub fn mtf_analysis_shared(
                     o,
                     s.method,
                     s.huygens,
-                    &sub.subrange(0., 0.95),
+                    &sub,
                     stats,
                 )?;
                 warnings.extend(c.warnings.iter().map(ToString::to_string));
-                let detector = if let Some(d) = s.detector {
-                    let vectors: Vec<_> = [o.tangential, o.sagittal()]
-                        .iter()
-                        .flat_map(|v| frequencies.iter().map(move |f| [v[0] * f, v[1] * f]))
-                        .collect();
-                    let r = detector_mtf(
-                        b,
-                        t.system().snapshot.clone(),
-                        &d,
-                        &vectors,
-                        &sub.subrange(0.95, 1.),
-                    )?;
-                    accumulate(stats, &r.stats);
-                    Some(crate::detector::DetectorCurve {
-                        tangential: r.value[..frequencies.len()].to_vec(),
-                        sagittal: r.value[frequencies.len()..].to_vec(),
-                        nyquist_tangential: d.nyquist_along(o.tangential),
-                        nyquist_sagittal: d.nyquist_along(o.sagittal()),
-                    })
-                } else {
-                    None
-                };
+                let detector = s.detector.map(|d| d.curve(&frequencies, &o));
                 Ok(field_mtf(&f, o, c, detector))
-            })
+            });
+            progress.finished(field)
         },
     );
     let out = gather(results, &mut stats, &mut warnings)?;
@@ -1114,7 +1064,6 @@ pub fn mtf_vs_field_shared(
             &wls,
             &s.pupil,
             &ctx.subrange(0., 0.6),
-            &mut stats,
             &mut warnings,
         )?
         .into_iter();
@@ -1150,17 +1099,15 @@ pub fn mtf_vs_field_shared(
         .iter()
         .map(|f| f.as_ref().map_or_else(Vec::new, Field::sampling))
         .collect();
-    let range = |i: usize| {
-        ctx.subrange(
-            0.65 + 0.35 * i as f64 / hs.len() as f64,
-            0.65 + 0.35 * (i + 1) as f64 / hs.len() as f64,
-        )
-    };
+    let progress = ItemProgress::new(ctx.subrange(0.65, 1.), hs.len());
     let computed = split::schedule(
         per,
         |_, f| Ok(f),
-        |i, f| {
-            let Some(f) = f else { return Ok(None) };
+        |_, f| {
+            let Some(f) = f else {
+                progress.finish();
+                return Ok(None);
+            };
             let mut stats = PlanStats::default();
             let c = curve(
                 b,
@@ -1170,9 +1117,10 @@ pub fn mtf_vs_field_shared(
                 o,
                 s.method,
                 s.huygens,
-                &range(i),
+                &progress.item(),
                 &mut stats,
             )?;
+            progress.finish();
             Ok(Some((c, stats)))
         },
     );
@@ -1216,10 +1164,6 @@ pub fn line_spread_shared(
 ) -> MkResult<a::LineSpreadResult> {
     let timer = RunTimer::start();
     a::energy::check_grid(s.grid_size, s.padding, s.method)?;
-    a::check_pos("padding", s.padding)?;
-    if s.grid_size > 4096 {
-        return Err(MkError::InvalidParam("PSF grid".into()));
-    }
     let idx = a::fields(t, &s.fields)?;
     let wls = a::wavelengths(t, &s.wavelengths)?;
     let mut stats = PlanStats::default();
@@ -1232,44 +1176,36 @@ pub fn line_spread_shared(
         &wls,
         &s.pupil,
         &ctx.subrange(0., 0.5),
-        &mut stats,
         &mut warnings,
     )?;
-    let total = items.len().max(1);
-    let range = |i: usize| ctx.subrange(i as f64 / total as f64, (i + 1) as f64 / total as f64);
+    let progress = ItemProgress::new(ctx.clone(), items.len());
     let results = split::schedule(
         items,
-        |i, item| {
-            let sub = range(i);
-            let mut stats = PlanStats::default();
+        |_, item| {
+            let sub = progress.item();
             let mut warnings = vec![];
-            let mut f = match src.ready(
-                item,
-                &wls,
-                &s.pupil,
-                &sub.subrange(0., 0.2),
-                &mut stats,
-                &mut warnings,
-            )? {
-                Ok(f) => f,
-                Err((index, error)) => return Ok(Staged::Skipped { index, error }),
-            };
+            let mut f =
+                match src.ready(item, &wls, &s.pupil, &sub.subrange(0., 0.2), &mut warnings)? {
+                    Ok(f) => f,
+                    Err((index, error)) => return Ok(Staged::Skipped { index, error }),
+                };
             let dx = f
                 .pupils
                 .iter()
                 .map(|(_, _, p)| p.pupil.lambda_f() / s.padding)
                 .fold(f64::INFINITY, f64::min);
             let grid = src.image_grid(&f, s.grid_size, dx, s.method);
-            src.ensure_window(&mut f, grid as f64 * dx, &s.pupil, &sub.subrange(0.25, 0.3))?;
-            Ok(Staged::Done {
-                value: (f, grid, dx),
-                stats,
-                warnings,
-            })
+            warnings.extend(src.ensure_window(
+                &mut f,
+                grid as f64 * dx,
+                &s.pupil,
+                &sub.subrange(0.25, 0.3),
+            )?);
+            Ok(Staged::prepared((f, grid, dx), warnings))
         },
-        |i, staged| {
-            let sub = range(i);
-            staged.then(|(f, grid, dx), stats, warnings| {
+        |_, staged| {
+            let sub = progress.item();
+            let field = staged.then(|(f, grid, dx), stats, warnings| {
                 let r = polychromatic_psf(
                     b,
                     t.system().snapshot.clone(),
@@ -1278,7 +1214,6 @@ pub fn line_spread_shared(
                         grid_size: grid,
                         spacing_mm: dx,
                         normalization: PsfNormalization::UnitEnergy,
-                        transform: PsfTransform::Matrix,
                     },
                     s.method == a::PsfMethod::Huygens,
                     &sub.subrange(0.3, 0.9),
@@ -1300,7 +1235,8 @@ pub fn line_spread_shared(
                     x,
                     y,
                 })
-            })
+            });
+            progress.finished(field)
         },
     );
     let out = gather(results, &mut stats, &mut warnings)?;
@@ -1330,8 +1266,7 @@ pub fn diffraction_encircled_energy_shared(
 ) -> MkResult<a::WaveEncircledEnergyResult> {
     let timer = RunTimer::start();
     a::energy::check_grid(s.grid_size, s.padding, s.method)?;
-    a::check_pos("padding", s.padding)?;
-    if !(2..=10001).contains(&s.samples) || s.grid_size > 4096 {
+    if !(2..=10001).contains(&s.samples) {
         return Err(MkError::InvalidParam("energy sampling".into()));
     }
     let idx = a::fields(t, &s.fields)?;
@@ -1344,7 +1279,6 @@ pub fn diffraction_encircled_energy_shared(
         &wls,
         &s.pupil,
         &ctx.subrange(0., 0.3),
-        &mut stats,
         &mut warnings,
     )?;
     let spacing = per
@@ -1352,50 +1286,37 @@ pub fn diffraction_encircled_energy_shared(
         .flat_map(|f| &f.pupils)
         .map(|(_, _, p)| p.pupil.lambda_f() / s.padding)
         .fold(f64::INFINITY, f64::min);
-    let mut grid = s.grid_size;
-    for g in concurrent(&per, |_, f| {
-        src.image_grid(f, s.grid_size, spacing, s.method)
-    }) {
-        grid = grid.max(g);
-    }
+    let grid = per
+        .par_iter()
+        .map(|f| src.image_grid(f, s.grid_size, spacing, s.method))
+        .max()
+        .unwrap_or(s.grid_size);
     let max = s.max_radius_mm.unwrap_or(0.5 * grid as f64 * spacing);
     a::check_pos("maximum radius", max)?;
     let radius = a::linspace(0., max, s.samples);
     let dense = a::linspace(0., max, 8 * s.samples);
     let mut all = radius.clone();
     all.extend_from_slice(&dense);
-    let total = per.len().max(1);
-    let range = |i: usize| {
-        ctx.subrange(
-            0.35 + 0.45 * i as f64 / total as f64,
-            0.35 + 0.45 * (i + 1) as f64 / total as f64,
-        )
-    };
+    let progress = ItemProgress::new(ctx.subrange(0.35, 0.8), per.len());
     let settings = crate::PolyPsfSettings {
         grid_size: grid,
         spacing_mm: spacing,
         normalization: PsfNormalization::UnitEnergy,
-        transform: PsfTransform::Matrix,
     };
     let results = split::schedule(
         per,
-        |i, mut f| {
-            let stats = PlanStats::default();
+        |_, mut f| {
             let warnings = src.ensure_window(
                 &mut f,
                 grid as f64 * spacing,
                 &s.pupil,
-                &range(i).subrange(0., 0.05),
+                &progress.item().subrange(0., 0.05),
             )?;
-            Ok(Staged::Done {
-                value: f,
-                stats,
-                warnings,
-            })
+            Ok(Staged::prepared(f, warnings))
         },
-        |i, staged| {
-            let sub = range(i);
-            staged.then(|f, stats, warnings| {
+        |_, staged| {
+            let sub = progress.item();
+            let field = staged.then(|f, stats, warnings| {
                 let r = polychromatic_psf(
                     b,
                     t.system().snapshot.clone(),
@@ -1418,15 +1339,11 @@ pub fn diffraction_encircled_energy_shared(
                     ],
                     crate::EnergyCenter::Point { x, y } => [x, y],
                 };
-                let sq = psf.energy(
+                let sq = psf.ensquared(
                     b,
                     t.system().snapshot.clone(),
                     &radius,
-                    crate::EnergyCenter::Point {
-                        x: center_mm[0],
-                        y: center_mm[1],
-                    },
-                    true,
+                    center_mm,
                     &sub.subrange(0.32, 0.42),
                 )?;
                 accumulate(stats, &sq.stats);
@@ -1463,7 +1380,8 @@ pub fn diffraction_encircled_energy_shared(
                     psf,
                     dl.value,
                 ))
-            })
+            });
+            progress.finished(field)
         },
     );
     let pending = gather(results, &mut stats, &mut warnings)?;
@@ -1562,7 +1480,6 @@ pub fn through_focus_mtf_analysis_shared(
         &wls,
         &s.pupil,
         &ctx.subrange(0., 0.3),
-        &mut stats,
         &mut warnings,
     )?;
     let frequencies = fixed_frequencies(&src, &per.iter().collect::<Vec<_>>(), &s.frequencies)?;
@@ -1571,7 +1488,7 @@ pub fn through_focus_mtf_analysis_shared(
     } else {
         // max over pupils of max(8 λ N², 4 N · RMS blur)
         let mut half = 0f64;
-        let blurs = concurrent(&per, |_, f| src.blurs(f));
+        let blurs: Vec<_> = per.par_iter().map(|f| src.blurs(f)).collect();
         for (f, blurs) in per.iter().zip(blurs) {
             for ((_, _, p), (_, rms)) in f.pupils.iter().zip(blurs) {
                 let n = p.pupil.geometry.working_f_number();
@@ -1585,18 +1502,11 @@ pub fn through_focus_mtf_analysis_shared(
     } else {
         a::linspace(-half, half, s.focus_samples)
     };
-    let count = per.len().max(1);
-    let range = |i: usize| {
-        ctx.subrange(
-            0.35 + 0.65 * i as f64 / count as f64,
-            0.35 + 0.65 * (i + 1) as f64 / count as f64,
-        )
-    };
+    let progress = ItemProgress::new(ctx.subrange(0.35, 1.), per.len());
     let results = split::schedule(
         per,
-        |i, mut field| {
-            let sub = range(i);
-            let stats = PlanStats::default();
+        |_, mut field| {
+            let sub = progress.item();
             let mut warnings = vec![];
             if s.pupil.grid == 0 {
                 warnings.extend(refine_for_focus(
@@ -1607,15 +1517,11 @@ pub fn through_focus_mtf_analysis_shared(
                     &sub.subrange(0., 0.2),
                 )?);
             }
-            Ok(Staged::Done {
-                value: field,
-                stats,
-                warnings,
-            })
+            Ok(Staged::prepared(field, warnings))
         },
-        |i, staged| {
-            let sub = range(i);
-            staged.then(|field, stats, warnings| {
+        |_, staged| {
+            let sub = progress.item();
+            let field = staged.then(|field, stats, warnings| {
                 let point = t.field(field.index).point;
                 let o = crate::MtfOrientation::from_field(point.hx, point.hy);
                 let vectors: Vec<_> = [o.tangential, o.sagittal()]
@@ -1662,7 +1568,8 @@ pub fn through_focus_mtf_analysis_shared(
                     pupil_sampling: field.sampling(),
                     curves,
                 })
-            })
+            });
+            progress.finished(field)
         },
     );
     let out = gather(results, &mut stats, &mut warnings)?;

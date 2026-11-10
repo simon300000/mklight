@@ -25,9 +25,8 @@
 //! the same expression: the correction term vanishes and
 //! `OPD = (OPL_c − OPL_r) + n (d·w)`, the phase of each ray's plane wave at
 //! `I` (a defocused image beyond focus has positive OPD, as for finite `R`).
-//! (An earlier version referred to the plane through `I` normal to the
-//! chief ray, `n (w·d_c)/(d·d_c)`, which is not that limit and gave the
-//! defocus with the opposite sign.)
+//! The plane through `I` normal to the chief ray, `n (w·d_c)/(d·d_c)`, is
+//! not that limit: it gives the defocus with the opposite sign.
 //!
 //! Results are reported in waves at the ray's wavelength (indices are
 //! relative to air, so the air wavelength is the reference).

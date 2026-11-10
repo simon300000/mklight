@@ -1,8 +1,9 @@
-//! The calibration table and its fit (GPU.md §9.2 "Cost model").
+//! The calibration table and its fit (GPU.md §9.2 "Automatic routing").
 //!
 //! A backend's predicted time for one analysis is a sum of stage terms,
 //! `fixed + prep·f_prep + ray·f_ray + transform·f_transform +
-//! output·f_output` (`profile::Profile::features`), with one non-negative
+//! output·f_output + table·f_table` ([`FEATURES`],
+//! `profile::Profile::features`), with one non-negative
 //! coefficient set per analysis, backend and resident state. Coefficients
 //! are fitted from measured complete calls (`tests/cost_calibration.rs`)
 //! by relative least squares, so a 1 ms and a 10 s call weigh alike.
@@ -224,8 +225,11 @@ mod tests {
     fn builtin_table_matches_this_model() {
         let c = Calibration::builtin();
         assert_eq!((c.format, c.model_version), (FORMAT, super::super::VERSION));
+        // Accuracy exclusions and static CPU routes need no calibration.
         for name in crate::analysis::gpu::GPU_ANALYSES {
-            if !super::super::always_excluded(name) && !super::super::static_route(name) {
+            if super::super::accuracy_exclusion(name).is_none()
+                && crate::analysis::routing::auto_reference_reason(name).is_none()
+            {
                 let a = c.analyses.get(*name);
                 assert!(
                     a.is_some_and(|a| a.cpu.is_some() && a.metal.is_some()),

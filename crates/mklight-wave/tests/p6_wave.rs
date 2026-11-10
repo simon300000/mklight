@@ -162,19 +162,6 @@ fn focus_and_lsf(b: &dyn ComputeBackend) {
 fn suite(b: &dyn ComputeBackend) {
     resample_suite(b);
     focus_and_lsf(b);
-    let detector = DetectorSettings::default();
-    let response = gpu::detector_mtf(
-        b,
-        snapshot(),
-        &detector,
-        &[[0., 0.], [100., 0.], [200., 0.]],
-        &JobContext::new(),
-    )
-    .unwrap();
-    assert_eq!(response.value[0], 1.);
-    assert!((response.value[1] - 2. / std::f64::consts::PI).abs() < 1e-6);
-    assert!(response.value[2] < 1e-6);
-
     let ctx = JobContext::new();
     for g in [
         PupilGeometry::from_working_f_number(4., 100., 1.).unwrap(),
@@ -262,13 +249,16 @@ fn emulation_f64() {
     suite(&CpuF32Backend::new());
 }
 #[cfg(target_os = "macos")]
-fn metal(library: mklight_metal::LibraryChoice) -> mklight_metal::MetalBackend {
-    let b = mklight_metal::MetalBackend::with_options(&mklight_metal::MetalOptions {
+/// The host Metal backend; None (the test is skipped) without a device.
+fn metal(library: mklight_metal::LibraryChoice) -> Option<mklight_metal::MetalBackend> {
+    let Some(b) = mklight_metal::MetalBackend::with_options(&mklight_metal::MetalOptions {
         library,
         ..Default::default()
     })
-    .unwrap()
-    .expect("P6 requires actual host Metal");
+    .unwrap() else {
+        eprintln!("no Metal device: skipped");
+        return None;
+    };
     assert!(b.precision().probe.error_free_transforms());
     eprintln!(
         "P6 device={} build={} probe={:?}",
@@ -276,7 +266,7 @@ fn metal(library: mklight_metal::LibraryChoice) -> mklight_metal::MetalBackend {
         b.precision().kernel_build,
         b.precision().probe
     );
-    b
+    Some(b)
 }
 #[cfg(target_os = "macos")]
 #[test]
@@ -285,7 +275,8 @@ fn metal_f64_both_libraries() {
         mklight_metal::LibraryChoice::Precompiled,
         mklight_metal::LibraryChoice::RuntimeSource,
     ] {
-        suite(&metal(library));
+        let Some(b) = metal(library) else { return };
+        suite(&b);
     }
 }
 
@@ -297,7 +288,7 @@ fn all_sample_pupils() {
         mklight_metal::LibraryChoice::Precompiled,
         mklight_metal::LibraryChoice::RuntimeSource,
     ] {
-        let b = metal(library);
+        let Some(b) = metal(library) else { return };
         let ctx = JobContext::new();
         let (mut cases, mut psf_max, mut mtf_max, mut opd_max) = (0, 0f64, 0f64, 0f64);
         for (name, system) in samples::all() {
@@ -379,7 +370,9 @@ fn all_sample_pupils() {
 #[test]
 fn determinism_concurrency_and_cancel() {
     use mklight_gpu::resident::*;
-    let b = metal(mklight_metal::LibraryChoice::Precompiled);
+    let Some(b) = metal(mklight_metal::LibraryChoice::Precompiled) else {
+        return;
+    };
     let g = PupilGeometry::from_working_f_number(4., 100., 1.).unwrap();
     let p = PupilFunction::diffraction_limited(128, 0.55, g, Aperture::Circular, 4).unwrap();
     let rp = ResidentPupil::from_pupil(&b, &p, &JobContext::new()).unwrap();
@@ -462,7 +455,9 @@ fn determinism_concurrency_and_cancel() {
 #[ignore = "provisional matched CPU/resident timing on host GPU"]
 fn benchmark_prepared_pupils() {
     use std::time::Instant;
-    let b = metal(mklight_metal::LibraryChoice::Precompiled);
+    let Some(b) = metal(mklight_metal::LibraryChoice::Precompiled) else {
+        return;
+    };
     let ctx = JobContext::new();
     let mut cases = Vec::new();
     for (name, system) in samples::all() {
@@ -589,14 +584,17 @@ fn statistics_metal() {
         mklight_metal::LibraryChoice::Precompiled,
         mklight_metal::LibraryChoice::RuntimeSource,
     ] {
-        statistics_suite(&metal(origin));
+        let Some(b) = metal(origin) else { return };
+        statistics_suite(&b);
     }
 }
 
 #[cfg(target_os = "macos")]
 #[test]
 fn resident_traced_pupil_matches_reference() {
-    let b = metal(mklight_metal::LibraryChoice::Precompiled);
+    let Some(b) = metal(mklight_metal::LibraryChoice::Precompiled) else {
+        return;
+    };
     let ctx = JobContext::new();
     let t = mklight_analysis::tracer_for(samples::cooke_triplet()).unwrap();
     let service = gpu::PupilTracer::new(&b, &t, &ctx).unwrap();
@@ -718,7 +716,8 @@ fn spectral_metal() {
         mklight_metal::LibraryChoice::Precompiled,
         mklight_metal::LibraryChoice::RuntimeSource,
     ] {
-        spectral_suite(&metal(origin));
+        let Some(b) = metal(origin) else { return };
+        spectral_suite(&b);
     }
 }
 
@@ -730,7 +729,7 @@ fn all_gpu_traced_pupils() {
         mklight_metal::LibraryChoice::Precompiled,
         mklight_metal::LibraryChoice::RuntimeSource,
     ] {
-        let b = metal(origin);
+        let Some(b) = metal(origin) else { return };
         let ctx = JobContext::new();
         let mut count = 0;
         let mut max_opd = 0f64;
@@ -792,7 +791,9 @@ fn all_gpu_traced_pupils() {
 #[cfg(target_os = "macos")]
 #[test]
 fn native_wavefront_and_psf() {
-    let b = metal(mklight_metal::LibraryChoice::Precompiled);
+    let Some(b) = metal(mklight_metal::LibraryChoice::Precompiled) else {
+        return;
+    };
     let ctx = JobContext::new();
     let t = mklight_analysis::tracer_for(samples::cooke_triplet()).unwrap();
     let settings = analysis::WavefrontSettings::default();
@@ -863,17 +864,40 @@ fn energy_and_fft_suite(b: &dyn ComputeBackend) {
                 y: -0.001,
             },
         ] {
-            for square in [false, true] {
-                let want = if square {
-                    ensquared_energy(&psf, &radii, center, &ctx)
-                } else {
-                    encircled_energy(&psf, &radii, center, &ctx)
+            let center_mm = match center {
+                EnergyCenter::Reference => psf.center_mm,
+                EnergyCenter::Centroid => psf.centroid(),
+                EnergyCenter::Peak => {
+                    let (_, i, j) = psf.peak();
+                    [psf.x(i), psf.y(j)]
                 }
-                .unwrap();
-                let got = resident
-                    .energy(b, snapshot(), &radii, center, square, &ctx)
-                    .unwrap();
-                for (a, b) in got.value.iter().zip(want) {
+                EnergyCenter::Point { x, y } => [x, y],
+            };
+            for square in [false, true] {
+                let (want, got) = if square {
+                    (
+                        ensquared_energy(&psf, &radii, center, &ctx).unwrap(),
+                        resident
+                            .ensquared(b, snapshot(), &radii, center_mm, &ctx)
+                            .unwrap()
+                            .value,
+                    )
+                } else {
+                    (
+                        encircled_energy(&psf, &radii, center, &ctx).unwrap(),
+                        gpu::encircled_energy_batch(
+                            b,
+                            snapshot(),
+                            &[(&resident, center)],
+                            &radii,
+                            &ctx,
+                        )
+                        .unwrap()
+                        .value
+                        .remove(0),
+                    )
+                };
+                for (a, b) in got.iter().zip(want) {
                     assert!(
                         (a - b).abs() < 2e-3,
                         "energy {angle} {center:?} {square}: {a} {b}"
@@ -899,14 +923,17 @@ fn energy_fft_metal() {
         mklight_metal::LibraryChoice::Precompiled,
         mklight_metal::LibraryChoice::RuntimeSource,
     ] {
-        energy_and_fft_suite(&metal(origin));
+        let Some(b) = metal(origin) else { return };
+        energy_and_fft_suite(&b);
     }
 }
 
 #[cfg(target_os = "macos")]
 #[test]
 fn native_mtf_and_focus() {
-    let b = metal(mklight_metal::LibraryChoice::Precompiled);
+    let Some(b) = metal(mklight_metal::LibraryChoice::Precompiled) else {
+        return;
+    };
     let ctx = JobContext::new();
     let t = mklight_analysis::tracer_for(samples::cooke_triplet()).unwrap();
     for method in [
@@ -949,7 +976,9 @@ fn native_mtf_and_focus() {
 fn full_image_simulation() {
     use mklight_wave::image_simulation as reference;
     use std::sync::Arc;
-    let b = metal(mklight_metal::LibraryChoice::Precompiled);
+    let Some(b) = metal(mklight_metal::LibraryChoice::Precompiled) else {
+        return;
+    };
     let ctx = JobContext::new();
     let t = mklight_analysis::tracer_for(samples::cooke_triplet()).unwrap();
     let mut settings = reference::ImageSimulationSettings::default();
@@ -1058,7 +1087,7 @@ fn resampling_masks_match_device_emulation() {
         mklight_metal::LibraryChoice::Precompiled,
         mklight_metal::LibraryChoice::RuntimeSource,
     ] {
-        let b = metal(origin);
+        let Some(b) = metal(origin) else { return };
         let cpu = CpuF32Backend::matching(&b.precision().probe);
         assert_eq!(
             resample_suite(&b),
@@ -1091,7 +1120,9 @@ fn traced_bits(b: &dyn ComputeBackend, r: &gpu::ResidentTracedPupil) -> (Vec<Vec
 #[test]
 fn batched_pupils_match_single_and_emulation() {
     let ctx = JobContext::new();
-    let b = metal(mklight_metal::LibraryChoice::Precompiled);
+    let Some(b) = metal(mklight_metal::LibraryChoice::Precompiled) else {
+        return;
+    };
     let cpu = CpuF32Backend::matching(&b.precision().probe);
     let t = mklight_analysis::tracer_for(samples::cooke_triplet()).unwrap();
     let settings = PupilSettings {

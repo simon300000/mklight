@@ -90,7 +90,7 @@ pub fn tracer(sys: OpticalSystem) -> SequentialTracer {
 pub fn samples() -> Vec<(&'static str, SequentialTracer)> {
     mklight_core::samples::all()
         .into_iter()
-        // Legacy fixture set for the classical rotational identities; extended
+        // The fixture set of the classical rotational identities; extended
         // samples are exercised independently in extended.rs and golden.rs.
         .filter(|(_, s)| !mklight_core::samples::has_extended_surfaces(s))
         .map(|(n, s)| (n, tracer(s)))

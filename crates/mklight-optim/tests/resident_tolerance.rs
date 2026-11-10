@@ -1,16 +1,19 @@
 #![cfg(target_os = "macos")]
+//! Monte Carlo tolerancing on the resident evaluator (host Metal device)
+//! against the reference, with and without compensation, and the host's
+//! trial statistics.
+
+mod common;
+
 use mklight_core::{JobContext, Snapshot, param::ParamPath, samples};
 use mklight_optim::{
     Monitor, gpu::*, lsq::LsqSettings, merit::default::DefaultMeritSpec, merit::*, tolerance::*,
 };
-use std::sync::Arc;
 #[test]
 fn trial_replay_and_compensation() {
-    let b = Arc::new(
-        mklight_metal::MetalBackend::new()
-            .unwrap()
-            .expect("P8 requires host Metal"),
-    );
+    let Some(b) = common::metal() else {
+        return;
+    };
     let system = samples::singlet();
     let ctx = JobContext::new();
     let reference = BuiltinEvaluator::builtin();
@@ -88,7 +91,7 @@ fn trial_replay_and_compensation() {
         for (a, b) in got.criteria.iter().zip(&expected.criteria) {
             relative = relative.max((a - b).abs() / b.abs().max(1e-12));
         }
-        eprintln!("P8 tolerance compensated={compensated} criterion_relative={relative:e}");
+        eprintln!("tolerance compensated={compensated} criterion_relative={relative:e}");
         // Measured 2e-13 (compensated trials end on the f64 reference).
         assert!(relative < 1e-9, "{compensated}: {relative}");
         assert_eq!(got.records.len(), replay.records.len());
@@ -96,7 +99,7 @@ fn trial_replay_and_compensation() {
             assert_eq!(a.perturbations, b.perturbations);
         }
         eprintln!(
-            "P8 tolerance compensated={compensated} stats={:?}",
+            "tolerance compensated={compensated} stats={:?}",
             gpu.stats()
         );
     }

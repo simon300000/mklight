@@ -56,5 +56,5 @@ pub fn tracer_for(system: OpticalSystem) -> MkResult<SequentialTracer> {
     SequentialTracer::new(Arc::new(sys))
 }
 
-/// Resident GPU adapter seam (enabled by the solver package).
+/// Device paths of the geometric analyses on a resident GPU backend.
 pub mod gpu;

@@ -154,9 +154,6 @@ impl Analysis for SystemTransmission {
             vec![],
         )
     }
-    fn gpu_path(&self) -> bool {
-        true
-    }
     fn run(
         &self,
         input: &AnalysisInput<'_>,
@@ -339,9 +336,6 @@ impl Analysis for PolarizationPupilMap {
                 buffer("t_min", "f64", &["N"], "", ""),
             ],
         )
-    }
-    fn gpu_path(&self) -> bool {
-        true
     }
     fn run(
         &self,

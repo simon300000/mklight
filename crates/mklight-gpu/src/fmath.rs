@@ -11,13 +11,7 @@ use crate::layout::PackedSurface;
 pub use mklight_core::rng::u32_to_unit_f32;
 
 /// `a·b` with nested fma, in the same order as `mklight_core::Vec3::dot`:
-/// `fma(a0, b0, fma(a1, b1, a2·b2))`.
-#[inline]
-pub fn dot3(a: [f32; 3], b: [f32; 3]) -> f32 {
-    dot3_in::<Ieee>(a, b)
-}
-
-/// [`dot3`] in environment `E`.
+/// `fma(a0, b0, fma(a1, b1, a2·b2))`, in environment `E`.
 #[inline]
 pub fn dot3_in<E: FpEnv>(a: [f32; 3], b: [f32; 3]) -> f32 {
     E::fma(a[0], b[0], E::fma(a[1], b[1], E::mul(a[2], b[2])))
@@ -25,12 +19,13 @@ pub fn dot3_in<E: FpEnv>(a: [f32; 3], b: [f32; 3]) -> f32 {
 
 /// `1 − x²` as `(1 − x)(1 + x)`: exact factors near |x| = 1, where the direct
 /// form cancels (cosines of near-normal rays, CONVENTIONS §7.3).
+#[cfg(test)]
 #[inline]
 pub fn one_minus_sq(x: f32) -> f32 {
     one_minus_sq_in::<Ieee>(x)
 }
 
-/// [`one_minus_sq`] in environment `E`.
+/// `1 − x²` as `(1 − x)(1 + x)` in environment `E`.
 #[inline]
 pub fn one_minus_sq_in<E: FpEnv>(x: f32) -> f32 {
     E::mul(E::sub(1.0, x), E::add(1.0, x))
@@ -95,13 +90,14 @@ pub fn hypot2_in<E: FpEnv>(x: f32, y: f32) -> f32 {
     E::mul(E::sqrt(E::fma(xs, xs, E::mul(ys, ys))), inv)
 }
 
-/// `|v|` for a 3-vector, overflow-safe like [`hypot2`].
+/// [`hypot3_in`] in the IEEE environment.
+#[cfg(test)]
 #[inline]
 pub fn hypot3(x: f32, y: f32, z: f32) -> f32 {
     hypot3_in::<Ieee>(x, y, z)
 }
 
-/// [`hypot3`] in environment `E`.
+/// `|v|` for a 3-vector, overflow-safe like [`hypot2`], in environment `E`.
 #[inline]
 pub fn hypot3_in<E: FpEnv>(x: f32, y: f32, z: f32) -> f32 {
     let m = x.abs().max(y.abs()).max(z.abs());
@@ -167,14 +163,16 @@ pub fn exp_in<E: FpEnv>(x: f32) -> f32 {
     E::mul(E::mul(p, pow2(k1)), pow2(k - k1))
 }
 
-/// Cancellation-free conic sag `c r² / (1 + √(1 − (1+k) c² r²))` in f32.
-/// Returns NaN outside the conic's domain (the f64 definition returns `None`).
+/// [`conic_sag_in`] in the IEEE environment.
+#[cfg(test)]
 #[inline]
 pub fn conic_sag(c: f32, k: f32, r2: f32) -> f32 {
     conic_sag_in::<Ieee>(c, k, r2)
 }
 
-/// [`conic_sag`] in environment `E`.
+/// Cancellation-free conic sag `c r² / (1 + √(1 − (1+k) c² r²))` in f32, in
+/// environment `E`. Returns NaN outside the conic's domain (the f64
+/// definition returns `None`).
 #[inline]
 pub fn conic_sag_in<E: FpEnv>(c: f32, k: f32, r2: f32) -> f32 {
     let cr2 = E::mul(c, r2);
@@ -186,16 +184,18 @@ pub fn conic_sag_in<E: FpEnv>(c: f32, k: f32, r2: f32) -> f32 {
     E::div(cr2, E::add(1.0, E::sqrt(arg)))
 }
 
-/// Sag of a packed surface at `r²` (mm), the f32 evaluation of the layout
-/// documented in `mklight_gpu_types.h`: conic part plus the normalised even
-/// polynomial `ρ⁴ Σ a_j ρ^(2j)` by Horner in `ρ² = r²/R²`. The surface must
-/// have passed `PackedSystem::validate` (`num_asphere ≤ MAX_ASPHERE`).
+/// [`packed_sag_in`] in the IEEE environment.
+#[cfg(test)]
 #[inline]
 pub fn packed_sag(s: &PackedSurface, r2: f32) -> f32 {
     packed_sag_in::<Ieee>(s, r2)
 }
 
-/// [`packed_sag`] in environment `E`.
+/// Sag of a packed surface at `r²` (mm) in environment `E`, the f32
+/// evaluation of the layout documented in `mklight_gpu_types.h`: conic part
+/// plus the normalised even polynomial `ρ⁴ Σ a_j ρ^(2j)` by Horner in
+/// `ρ² = r²/R²`. The surface must have passed `PackedSystem::validate`
+/// (`num_asphere ≤ MAX_ASPHERE`).
 #[inline]
 pub fn packed_sag_in<E: FpEnv>(s: &PackedSurface, r2: f32) -> f32 {
     match s.shape {

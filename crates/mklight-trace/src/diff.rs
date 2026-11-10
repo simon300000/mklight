@@ -42,9 +42,7 @@
 use mklight_core::{Interaction, ResolvedSystem, SurfaceShape, Vec3};
 
 use crate::numeric::Mat2;
-use crate::trace::{
-    Ray, SurfaceRecord, TraceOptions, TraceResult, trace_ray, transfer_into, transfer_vector,
-};
+use crate::trace::{Ray, SurfaceRecord, transfer_into, transfer_vector};
 
 /// `|N·d|` below which the intersection map is treated as ill-conditioned.
 pub const GRAZING_COS: f64 = 1e-9;
@@ -629,40 +627,10 @@ impl TangentPlan {
     }
 }
 
-/// [`TangentPlan::differentiate`] with a plan built for the call (tests and
-/// one-off uses; the tracer keeps a plan).
-pub fn differentiate(
-    sys: &ResolvedSystem,
-    wl: usize,
-    start: &RayTangent,
-    records: &[SurfaceRecord],
-    last: usize,
-) -> Result<RayTangent, TangentError> {
-    TangentPlan::new(sys).differentiate(sys, wl, start, records, last)
-}
-
-/// [`trace_ray`] with records into `scratch`, then [`differentiate`] to the
-/// trace's last surface. The trace result is bitwise that of `trace_ray`.
-pub fn trace_ray_tangent(
-    sys: &ResolvedSystem,
-    start: &Ray,
-    tangent: &RayTangent,
-    wl: usize,
-    opts: &TraceOptions,
-    scratch: &mut Vec<SurfaceRecord>,
-) -> (TraceResult, Result<RayTangent, TangentError>) {
-    let r = trace_ray(sys, start, wl, opts, Some(scratch));
-    let t = if r.status.is_ok() {
-        differentiate(sys, wl, tangent, scratch, r.surface)
-    } else {
-        Err(TangentError::Incomplete)
-    };
-    (r, t)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::trace::{TraceOptions, TraceResult, trace_ray};
     use mklight_core::materials::MaterialLibrary;
     use mklight_core::{ResolvedSystem, Snapshot, samples};
     use std::sync::Arc;
@@ -670,6 +638,25 @@ mod tests {
     fn resolved(sys: mklight_core::OpticalSystem) -> ResolvedSystem {
         let snap = Snapshot::new(sys).unwrap();
         ResolvedSystem::new(&snap, Arc::new(MaterialLibrary::with_builtin())).unwrap()
+    }
+
+    /// [`trace_ray`] with records into `scratch`, then the tangent at the
+    /// trace's last surface from a plan built for the call.
+    fn trace_ray_tangent(
+        sys: &ResolvedSystem,
+        start: &Ray,
+        tangent: &RayTangent,
+        wl: usize,
+        opts: &TraceOptions,
+        scratch: &mut Vec<SurfaceRecord>,
+    ) -> (TraceResult, Result<RayTangent, TangentError>) {
+        let r = trace_ray(sys, start, wl, opts, Some(scratch));
+        let t = if r.status.is_ok() {
+            TangentPlan::new(sys).differentiate(sys, wl, tangent, scratch, r.surface)
+        } else {
+            Err(TangentError::Incomplete)
+        };
+        (r, t)
     }
 
     /// Start ray `a ↦ (a_x, a_y, z₀) − d (a·d)` with direction `d`, its

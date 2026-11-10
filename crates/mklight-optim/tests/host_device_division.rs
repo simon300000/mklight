@@ -1,10 +1,13 @@
-//! The hybrid host/device division of the resident evaluator (in one plan
-//! per batch and in pipelined sub-batches) against the CPU f64 reference:
-//! agreement within the CONVENTIONS §7 budget on the samples (CPU-f32
-//! emulation everywhere, Metal when present), rayless operands equal to the
-//! reference, host completion of unresolved device rays and learned host
-//! routing, equal results with and without pipelining, finite differences,
-//! and least squares with speculative Jacobians.
+//! The host/device division of the resident evaluator (in one plan per
+//! batch and, for large batches, in pipelined sub-batches) against the CPU
+//! f64 reference: agreement within the CONVENTIONS §7 budget on the samples
+//! (CPU-f32 emulation everywhere, Metal when present), rayless operands
+//! equal to the reference, host completion of unresolved device rays,
+//! learned host routing and handover to the reference, equal results with
+//! and without pipelining, finite differences, and least squares with
+//! speculative Jacobians.
+
+mod common;
 
 use std::sync::{Arc, OnceLock};
 
@@ -13,7 +16,7 @@ use mklight_core::param::ParamPath;
 use mklight_core::{JobContext, RayAiming, Snapshot, samples};
 use mklight_gpu::{ComputeBackend, CpuF32Backend};
 use mklight_optim::deriv::{FdScheme, JacobianSettings, jacobian};
-use mklight_optim::gpu::{DEVICE_AIM_FROM, GpuContext, ResidentEvaluator};
+use mklight_optim::gpu::{DEVICE_AIM_FROM, GpuContext, PIPELINE_FROM, ResidentEvaluator};
 use mklight_optim::linalg::Matrix;
 use mklight_optim::lsq::{LsqSettings, least_squares};
 use mklight_optim::merit::default::{DefaultCriterion, DefaultMeritSpec};
@@ -27,50 +30,23 @@ use mklight_optim::merit::{
 use mklight_optim::problem::{CandidateBatch, Problem};
 use mklight_optim::{Monitor, Termination};
 
-fn metal() -> Option<Arc<dyn ComputeBackend>> {
-    static B: OnceLock<Option<Arc<dyn ComputeBackend>>> = OnceLock::new();
-    let b = B
-        .get_or_init(|| {
-            #[cfg(target_os = "macos")]
-            {
-                mklight_metal::MetalBackend::new()
-                    .ok()
-                    .flatten()
-                    .map(|b| Arc::new(b) as Arc<dyn ComputeBackend>)
-            }
-            #[cfg(not(target_os = "macos"))]
-            {
-                None
-            }
-        })
-        .clone();
-    if b.is_none() {
-        eprintln!("SKIP: no Metal device");
-    }
-    b
-}
-
+/// The emulation and, where the host has one, its Metal device (one
+/// backend for all tests).
 fn backends() -> Vec<(&'static str, Arc<dyn ComputeBackend>)> {
+    static METAL: OnceLock<Option<Arc<dyn ComputeBackend>>> = OnceLock::new();
     let mut b: Vec<(&'static str, Arc<dyn ComputeBackend>)> =
         vec![("emulation", Arc::new(CpuF32Backend::new()))];
-    if let Some(m) = metal() {
-        b.push(("metal", m));
+    if let Some(m) = METAL.get_or_init(common::metal) {
+        b.push(("metal", m.clone()));
     }
     b
 }
 
-/// The hybrid evaluator, every batch in pipelined sub-batches or (`false`)
-/// every batch in one plan.
-fn evaluator(
-    backend: &Arc<dyn ComputeBackend>,
-    system: &OpticalSystem,
-    pipelined: bool,
-) -> ResidentEvaluator {
+fn evaluator(backend: &Arc<dyn ComputeBackend>, system: &OpticalSystem) -> ResidentEvaluator {
     ResidentEvaluator::new(
         GpuContext::new(backend.clone(), Snapshot::new(system.clone()).unwrap()),
         BuiltinEvaluator::builtin(),
     )
-    .with_pipelining_from(if pipelined { 1 } else { usize::MAX })
 }
 
 /// The default spot and wavefront merits with their thickness boundaries
@@ -210,7 +186,7 @@ fn real_aimed(mut sys: OpticalSystem) -> OpticalSystem {
 }
 
 #[test]
-fn hybrid_designs_agree_with_the_reference() {
+fn divisions_agree_with_the_reference() {
     for (backend_name, backend) in backends() {
         for (name, sys) in samples::all()
             .into_iter()
@@ -220,20 +196,16 @@ fn hybrid_designs_agree_with_the_reference() {
             let ops = operands(&sys);
             let cands = candidates(&sys);
             let reference = values(&BuiltinEvaluator::builtin(), &cands, &ops);
-            // Device aiming with host completion (the `aiming` key's
-            // device designs), and host aiming with device tracing.
-            for (pipelined, host_aim) in [(false, false), (true, false), (false, true)] {
-                let ev = evaluator(&backend, &sys, pipelined).with_host_aim(host_aim);
+            // Device aiming with host completion, and host aiming with
+            // device tracing.
+            for host_aim in [false, true] {
+                let ev = evaluator(&backend, &sys).with_host_aim(host_aim);
                 let v = values(&ev, &cands, &ops);
                 let worst = compare(&v, &reference, &ops);
                 eprintln!(
-                    "{backend_name} {name} pipelined {pipelined} host aim {host_aim}: worst \
-                     budget fraction {worst:.3}"
+                    "{backend_name} {name} host aim {host_aim}: worst budget fraction {worst:.3}"
                 );
-                assert!(
-                    worst <= 1.0,
-                    "{backend_name} {name} {pipelined} {host_aim}: {worst}"
-                );
+                assert!(worst <= 1.0, "{backend_name} {name} {host_aim}: {worst}");
                 let st = ev.stats();
                 assert!(st.device_operands > 0, "{name}: {st:?}");
                 assert!(st.fallbacks.is_empty(), "{name}: {st:?}");
@@ -242,6 +214,10 @@ fn hybrid_designs_agree_with_the_reference() {
     }
 }
 
+/// A batch of [`PIPELINE_FROM`] candidates runs in pipelined sub-batches,
+/// its halves in one plan each. Host-aimed, both give the same values bit
+/// for bit; device-aimed (plain and anchored), the pipelined batch agrees
+/// with the reference.
 #[test]
 fn pipelining_gives_the_same_values() {
     let backend: Arc<dyn ComputeBackend> = Arc::new(CpuF32Backend::new());
@@ -249,9 +225,22 @@ fn pipelining_gives_the_same_values() {
     let ops = operands(&sys);
     let mut cands = candidates(&sys);
     cands.extend(candidates(&samples::double_gauss()));
-    let h = values(&evaluator(&backend, &sys, false), &cands, &ops);
-    let p = values(&evaluator(&backend, &sys, true), &cands, &ops);
-    for (a, b) in h.iter().zip(&p) {
+    let curvature = ParamPath::Curvature {
+        surface: sys.surfaces[1].id,
+    };
+    let c = curvature.get(&sys).unwrap();
+    while cands.len() < PIPELINE_FROM {
+        let mut bent = sys.clone();
+        curvature
+            .set(&mut bent, c * (1.0 + 2e-4 * cands.len() as f64))
+            .unwrap();
+        cands.push(bent);
+    }
+    let (first, second) = cands.split_at(cands.len() / 2);
+    let mut plain = values(&evaluator(&backend, &sys), first, &ops);
+    plain.extend(values(&evaluator(&backend, &sys), second, &ops));
+    let pipelined = values(&evaluator(&backend, &sys), &cands, &ops);
+    for (a, b) in plain.iter().zip(&pipelined) {
         for (a, b) in a.iter().zip(b) {
             match (a, b) {
                 (Ok(a), Ok(b)) => assert_eq!(a.to_bits(), b.to_bits()),
@@ -260,6 +249,18 @@ fn pipelining_gives_the_same_values() {
             }
         }
     }
+    let reference = values(&BuiltinEvaluator::builtin(), &cands, &ops);
+    let device = evaluator(&backend, &sys).with_host_aim(false);
+    let worst = compare(&values(&device, &cands, &ops), &reference, &ops);
+    assert!(worst <= 1.0, "device aiming: {worst}");
+    let refs: Vec<&Operand> = ops.iter().collect();
+    let anchored = device
+        .evaluate_batch_near(&cands, &refs, cands.first(), &JobContext::new())
+        .unwrap();
+    let worst = compare(&anchored, &reference, &ops);
+    assert!(worst <= 1.0, "anchored device aiming: {worst}");
+    let st = device.stats();
+    assert!(st.device_operands > 0 && st.fallbacks.is_empty(), "{st:?}");
 }
 
 /// The default aiming rule: a small batch aims on the host and a large one
@@ -268,7 +269,7 @@ fn pipelining_gives_the_same_values() {
 #[test]
 fn aiming_rule_by_batch() {
     let backend: Arc<dyn ComputeBackend> = Arc::new(CpuF32Backend::new());
-    let rule = evaluator(&backend, &samples::cooke_triplet(), false);
+    let rule = evaluator(&backend, &samples::cooke_triplet());
     assert_eq!(rule.device_aim_from(), Some(DEVICE_AIM_FROM));
     for (sys, aspheric) in [
         (real_aimed(samples::petzval_asphere()), true),
@@ -279,14 +280,14 @@ fn aiming_rule_by_batch() {
         let large = 1 << 24;
         assert!(!rule.aims_on_device(&sys, 1, &refs));
         assert_eq!(rule.aims_on_device(&sys, large, &refs), aspheric);
-        let host = evaluator(&backend, &sys, false).with_host_aim(true);
-        let device = evaluator(&backend, &sys, false).with_host_aim(false);
+        let host = evaluator(&backend, &sys).with_host_aim(true);
+        let device = evaluator(&backend, &sys).with_host_aim(false);
         assert!(!host.aims_on_device(&sys, large, &refs));
         assert!(device.aims_on_device(&sys, 1, &refs));
         // The decision reaches the plan: one pinned device batch, one rule
         // batch of a single candidate.
         values(&device, std::slice::from_ref(&sys), &ops);
-        let rule = evaluator(&backend, &sys, false);
+        let rule = evaluator(&backend, &sys);
         values(&rule, std::slice::from_ref(&sys), &ops);
         assert_eq!(device.stats().device_aimed_batches, 1);
         assert_eq!(rule.stats().device_aimed_batches, 0);
@@ -305,38 +306,45 @@ fn unresolved_rays_are_completed_and_routed_on_the_host() {
         let ops = operands(&sys);
         let cands = candidates(&sys);
         let reference = values(&BuiltinEvaluator::builtin(), &cands, &ops);
-        for pipelined in [false, true] {
-            let mut outcomes = Vec::new();
-            for cap in [1, 4, 5, 6, 8] {
-                let ev = evaluator(&backend, &sys, pipelined)
-                    .with_host_aim(false)
-                    .with_device_aim_cap(cap);
-                let first = values(&ev, &cands, &ops);
-                let second = values(&ev, &cands, &ops);
-                let host_rays = ev.context.stats().polished_rays;
-                let host_only = ev.stats().fallbacks.keys().any(|k| k.contains("most rays"));
-                let worst =
-                    compare(&first, &reference, &ops).max(compare(&second, &reference, &ops));
-                eprintln!(
-                    "{backend_name} pipelined {pipelined} cap {cap}: host rays {host_rays}, host only \
-                     {host_only}, worst {worst:.3}"
+        let mut outcomes = Vec::new();
+        for cap in [1, 4, 5, 6, 8] {
+            let ev = evaluator(&backend, &sys)
+                .with_host_aim(false)
+                .with_device_aim_cap(cap);
+            let first = values(&ev, &cands, &ops);
+            let second = values(&ev, &cands, &ops);
+            let host_rays = ev.context.stats().polished_rays;
+            let host_only = ev.stats().fallbacks.keys().any(|k| k.contains("most rays"));
+            if host_only {
+                // Handed over: the reference's values are counted as
+                // fallbacks, none as the device's.
+                let before = ev.stats();
+                let third = values(&ev, &cands, &ops);
+                assert!(compare(&third, &reference, &ops) <= 1.0);
+                let after = ev.stats();
+                assert_eq!(after.device_operands, before.device_operands);
+                assert_eq!(
+                    after.fallback_operands - before.fallback_operands,
+                    (cands.len() * ops.len()) as u64
                 );
-                assert!(
-                    worst <= 1.0,
-                    "{backend_name} pipelined {pipelined} cap {cap}: {worst}"
-                );
-                outcomes.push((cap, host_rays, host_only));
             }
-            // One iteration resolves almost nothing: completed, then handed over.
-            assert!(outcomes[0].1 > 0 && outcomes[0].2, "{outcomes:?}");
-            // The full cap keeps the run on the device.
-            assert!(!outcomes[4].2, "{outcomes:?}");
-            // Some cap in between routes rays to the host without handing over.
-            assert!(
-                outcomes.iter().any(|&(_, rays, only)| rays > 0 && !only),
-                "{outcomes:?}"
+            let worst = compare(&first, &reference, &ops).max(compare(&second, &reference, &ops));
+            eprintln!(
+                "{backend_name} cap {cap}: host rays {host_rays}, host only {host_only}, worst \
+                 {worst:.3}"
             );
+            assert!(worst <= 1.0, "{backend_name} cap {cap}: {worst}");
+            outcomes.push((cap, host_rays, host_only));
         }
+        // One iteration resolves almost nothing: completed, then handed over.
+        assert!(outcomes[0].1 > 0 && outcomes[0].2, "{outcomes:?}");
+        // The full cap keeps the run on the device.
+        assert!(!outcomes[4].2, "{outcomes:?}");
+        // Some cap in between routes rays to the host without handing over.
+        assert!(
+            outcomes.iter().any(|&(_, rays, only)| rays > 0 && !only),
+            "{outcomes:?}"
+        );
     }
 }
 
@@ -374,12 +382,12 @@ fn column_error(j: &Matrix, r: &Matrix) -> f64 {
         .fold(0.0, f64::max)
 }
 
-/// Finite differences of the hybrid evaluator (anchored batches, host
+/// Finite differences of the resident evaluator (anchored batches, host
 /// completion with a low device cap included) at its automatic step stay at
-/// the reference's level against f64 central differences (the f32-era
-/// `1e-3` step measured 1.8e-4 here).
+/// the reference's level against f64 central differences (a `1e-3` step
+/// measures 1.8e-4 here).
 #[test]
-fn hybrid_finite_differences() {
+fn resident_finite_differences() {
     let backend: Arc<dyn ComputeBackend> = Arc::new(CpuF32Backend::new());
     let sys = real_aimed(samples::cooke_triplet());
     let reference = triplet_problem(&sys, BuiltinEvaluator::builtin());
@@ -395,7 +403,7 @@ fn hybrid_finite_differences() {
         .unwrap()
         .residuals;
     for (cap, host_aim) in [(None, false), (Some(2), false), (None, true)] {
-        let mut ev = evaluator(&backend, &sys, true).with_host_aim(host_aim);
+        let mut ev = evaluator(&backend, &sys).with_host_aim(host_aim);
         if let Some(cap) = cap {
             ev = ev.with_device_aim_cap(cap);
         }
@@ -411,7 +419,7 @@ fn hybrid_finite_differences() {
     }
 }
 
-/// Least squares on the hybrid evaluator, with and without speculative
+/// Least squares on the resident evaluator, with and without speculative
 /// Jacobians, reaches the reference's merit; on the reference itself a
 /// speculative run follows the same iterates in fewer batches.
 #[test]
@@ -442,12 +450,12 @@ fn least_squares_with_speculative_jacobians() {
         plain.evaluations, spec.evaluations
     );
     for speculative in [false, true] {
-        let p = triplet_problem(&sys, evaluator(&backend, &sys, true));
+        let p = triplet_problem(&sys, evaluator(&backend, &sys));
         let r = least_squares(&p, &x0, &settings(speculative), &Monitor::new(ctx.clone())).unwrap();
         assert_ne!(r.termination, Termination::Cancelled);
         let rel = (r.merit - plain.merit).abs() / plain.merit;
         eprintln!(
-            "hybrid speculative={speculative}: merit {:.6e} ({rel:.1e} from the reference)",
+            "resident speculative={speculative}: merit {:.6e} ({rel:.1e} from the reference)",
             r.merit
         );
         assert!(rel < 0.05, "speculative={speculative}: {rel}");

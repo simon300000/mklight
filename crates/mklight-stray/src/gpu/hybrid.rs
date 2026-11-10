@@ -32,7 +32,7 @@ use std::sync::Mutex;
 use std::time::Instant;
 
 /// Route key of the transport divisions (`mklight_core::split`).
-pub const STUDY_KEY: &str = "stray";
+pub const DESIGN_KEY: &str = "stray";
 /// Route key of the device share of [`Design::CoSplit`] (a number in
 /// 0…1; unset: [`default_share`]).
 pub const SHARE_KEY: &str = "stray_share";
@@ -58,7 +58,13 @@ const HANDOFF_DETECTIONS: usize = 8;
 /// Resident scratch per plan (two plans are in flight).
 const PLAN_BYTES: usize = 160 << 20;
 
-/// A division of the stray transport between the GPU and the CPU.
+/// A division of the stray transport between the GPU and the CPU: the
+/// share of the source chunks the device transports. The device transports
+/// the first `TransportOptions::head_events` events of each of its sources
+/// in wavefront kernels (each bounce advances every live source by one
+/// event in separate pop, closest-hit and interaction kernels over
+/// device-compacted lists); the CPU continues the longer path trees from
+/// the device stacks and tallies, overlapped with the next plan.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Design {
@@ -67,19 +73,15 @@ pub enum Design {
     /// chunks while the CPU reference traces the other chunks at the same
     /// time.
     CoSplit,
-    /// The device transports every source: the first
-    /// `TransportOptions::head_events` events of each, in wavefront kernels
-    /// (each bounce advances every live source by one event in separate
-    /// pop, closest-hit and interaction kernels over device-compacted
-    /// lists); the CPU continues the longer path trees from the device
-    /// stacks and tallies, overlapped with the next plan.
+    /// The device transports every source chunk ([`Design::CoSplit`] with a
+    /// share of 1, whatever the share options say).
     Wavefront,
 }
 
 impl Design {
     /// The design selected for this run (`None`: the default design).
     pub fn selected() -> MkResult<Design> {
-        Self::named(mklight_core::split::variant(STUDY_KEY).as_deref())
+        Self::named(mklight_core::split::variant(DESIGN_KEY).as_deref())
     }
     pub fn named(name: Option<&str>) -> MkResult<Design> {
         Ok(match name {
@@ -107,25 +109,18 @@ impl Design {
 /// the device, so the device takes the share it finishes in the CPU's time
 /// when that share is at least `MIN_DEVICE_SOURCES` sources; scenes with
 /// iteratively intersected sags (aspheres, freeforms) are 7–50 times faster
-/// on the CPU, and the device gets none of them (provisional M2 Pro
-/// measurements).
+/// on the CPU, and the device gets none of them (measured on an Apple M2
+/// Pro).
 pub fn default_share(scene: &Scene, rays: u64) -> f64 {
-    let iterative = scene.primitives().iter().any(|p| match &p.shape {
-        // The device's closed-form kinds (`prepare_geometry`).
-        Shape::Sag(s) => !match s.shape() {
-            SurfaceShape::Plane | SurfaceShape::Paraxial { .. } | SurfaceShape::Conic { .. } => {
-                true
-            }
-            SurfaceShape::EvenAsphere { coefficients, .. } => coefficients.iter().all(|v| *v == 0.),
-            _ => false,
-        },
-        Shape::Cylinder(_) => false,
-    });
+    let iterative = scene
+        .primitives()
+        .iter()
+        .any(|p| matches!(&p.shape, Shape::Sag(s) if s.conic().is_none()));
     // Lenses with iterative sags: the device is 7–50 times slower per event
     // than the CPU (with the f32 pre-scan), so it gets nothing.
     let share = if iterative { 0. } else { 0.2 };
-    // A device plan has a fixed latency (its longest path trees): below
-    // about two plans of work the device cannot pay for it.
+    // A device plan has a fixed latency (its longest path trees): a device
+    // share of fewer than `MIN_DEVICE_SOURCES` sources cannot pay for it.
     if share * rays as f64 >= MIN_DEVICE_SOURCES {
         share
     } else {
@@ -241,19 +236,24 @@ struct Records<'a> {
     stack_capacity: usize,
 }
 
-fn cpu_state(s: &ops::State) -> State {
+fn cpu_state(s: &ops::State) -> MkResult<State> {
     let v = |a: [Df32; 3]| Vec3::new(a[0].to_f64(), a[1].to_f64(), a[2].to_f64());
-    State {
+    Ok(State {
         ray: Ray {
             origin: v(s.ray.origin),
             dir: v(s.ray.direction),
         },
         w: s.weight.to_f64(),
         medium: s.medium as crate::scene::MediumId,
-        hist: history(&s.history),
+        hist: history(&s.history)?,
         events: s.events,
         splits: s.splits,
-    }
+    })
+}
+
+/// A device record that no kernel of this build writes.
+fn malformed(what: &str) -> MkError {
+    MkError::Backend(format!("stray transport: malformed device {what}"))
 }
 
 struct Finisher<'a> {
@@ -266,6 +266,7 @@ impl Finisher<'_> {
     /// Books source `k` of `r` into `tally`: its device ledger and
     /// detections, then the CPU continuation of a stopped source, or the
     /// whole source on the CPU when the device needed reference arithmetic.
+    /// Device records outside what the kernels write are a backend error.
     fn source(
         &self,
         r: &Records,
@@ -273,9 +274,9 @@ impl Finisher<'_> {
         tally: &mut ChunkTally,
         stack: &mut Vec<State>,
         n: &mut Counters,
-    ) {
+    ) -> MkResult<()> {
         let index = r.first + k as u64;
-        let l = &r.ledgers[k];
+        let l = r.ledgers.get(k).ok_or_else(|| malformed("ledger"))?;
         tally.begin_ray();
         let events = tally.events;
         if l.status == 4 {
@@ -283,10 +284,23 @@ impl Finisher<'_> {
             n.retraced += 1;
             n.cpu_events += tally.events - events;
             tally.end_ray();
-            return;
+            return Ok(());
         }
         let w0 = self.tracer.source_weight();
         let wl = l.wavelength as usize;
+        // The source's used part of a journal of `capacity` records.
+        let used = |n: u32, capacity: usize| {
+            (n as usize <= capacity).then(|| k * capacity..k * capacity + n as usize)
+        };
+        let detections = used(l.hits, r.hit_capacity)
+            .and_then(|range| r.detections.get(range))
+            .ok_or_else(|| malformed("detection count"))?;
+        let stacked = used(l.top, r.stack_capacity)
+            .and_then(|range| r.stacks.get(range))
+            .ok_or_else(|| malformed("stack depth"))?;
+        if wl >= tally.emitted_by_wavelength.len() {
+            return Err(malformed("wavelength index"));
+        }
         tally.rays += 1;
         tally.emitted += w0;
         tally.emitted_by_wavelength[wl] += w0;
@@ -305,9 +319,11 @@ impl Finisher<'_> {
         tally.events += l.events as u64;
         n.device_events += l.events as u64;
         let detector = &self.scene.detector;
-        for d in &r.detections[k * r.hit_capacity..][..l.hits as usize] {
-            let hist = history(&d.history);
-            let class = PathClass::ALL[d.class as usize];
+        for d in detections {
+            let hist = history(&d.history)?;
+            let class = *PathClass::ALL
+                .get(d.class as usize)
+                .ok_or_else(|| malformed("path class"))?;
             let (x, y) = (d.x.to_f64(), d.y.to_f64());
             tally.detect(
                 class,
@@ -330,17 +346,16 @@ impl Finisher<'_> {
                     _ => n.head_budget += 1,
                 }
                 stack.clear();
-                stack.extend(
-                    r.stacks[k * r.stack_capacity..][..l.top as usize]
-                        .iter()
-                        .map(cpu_state),
-                );
+                for s in stacked {
+                    stack.push(cpu_state(s)?);
+                }
                 let before = tally.events;
                 self.tracer.resume(index, l.draws, wl, tally, stack);
                 n.cpu_events += tally.events - before;
             }
         }
         tally.end_ray();
+        Ok(())
     }
 
     /// Finishes a plan: chunk segments in parallel, each in source order.
@@ -383,11 +398,11 @@ impl Finisher<'_> {
             .zip(starts)
             .map(|((c, lo, hi), start)| {
                 ctx.check()?;
-                let mut tally = start.unwrap_or_else(|| self.new_chunk());
+                let mut tally = start.unwrap_or_else(|| self.tracer.new_chunk());
                 let mut stack = Vec::with_capacity(32);
                 let mut n = Counters::default();
                 for i in lo..hi {
-                    self.source(r, (i - r.first) as usize, &mut tally, &mut stack, &mut n);
+                    self.source(r, (i - r.first) as usize, &mut tally, &mut stack, &mut n)?;
                 }
                 Ok((c, hi, tally, n))
             })
@@ -406,28 +421,11 @@ impl Finisher<'_> {
         Ok((out, open, counters))
     }
 
-    fn new_chunk(&self) -> ChunkTally {
-        let mut t = ChunkTally::new(self.scene.num_wavelengths(), self.settings.owned_classes);
-        t.track_signatures = self.settings.signatures;
-        t
-    }
-
     /// Chunk `c` traced by the CPU reference.
     fn cpu_chunk(&self, c: u64, ctx: &JobContext) -> MkResult<(ChunkTally, Counters)> {
-        let chunk = self.settings.chunk_rays as u64;
-        let (lo, hi) = (c * chunk, ((c + 1) * chunk).min(self.settings.rays));
-        let mut tally = self.new_chunk();
-        let mut stack = Vec::with_capacity(32);
-        for (k, i) in (lo..hi).enumerate() {
-            if k % 64 == 0 {
-                ctx.check()?;
-            }
-            tally.begin_ray();
-            self.tracer.trace_ray(i, &mut tally, &mut stack);
-            tally.end_ray();
-        }
+        let tally = self.tracer.trace_chunk(c, ctx)?;
         let n = Counters {
-            cpu_sources: hi - lo,
+            cpu_sources: tally.rays,
             cpu_events: tally.events,
             ..Default::default()
         };
@@ -453,17 +451,20 @@ impl Folder {
 }
 
 /// Runs `design`; `side` runs on the CPU once, while the device transports
-/// the first plans.
+/// the first plans. A run whose device share holds no source chunk is the
+/// CPU reference run ([`crate::tracer::run`]) and is reported as one.
+/// `fingerprint` is the scene's (`Scene::fingerprint`).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run(
     b: &dyn ComputeBackend,
     snapshot: Snapshot,
     scene: &Scene,
+    fingerprint: &str,
     source: &SourceSpec,
     settings: &StraySettings,
     options: TransportOptions,
     design: Design,
-    side: &mut dyn FnMut() -> MkResult<()>,
+    side: &mut (dyn FnMut() -> MkResult<()> + Send),
     ctx: &JobContext,
 ) -> MkResult<StrayResult> {
     crate::tracer::validate_run(scene, source, settings)?;
@@ -476,12 +477,6 @@ pub(crate) fn run(
         || options.gpu_share.is_some_and(|s| !(0.0..=1.0).contains(&s))
     {
         return Err(MkError::InvalidModel("stray transport settings".into()));
-    }
-    // Device weights are double-float with f32 exponents; the estimators
-    // are formed on the CPU in f64.
-    let w0 = source.power() / settings.rays as f64;
-    if !(1e-30..=1e30).contains(&w0) {
-        return Err(unsupported("source weight is outside the device range"));
     }
     let timer = mklight_core::job::RunTimer::start();
     let started = Instant::now();
@@ -516,21 +511,45 @@ pub(crate) fn run(
     let n_chunks = settings.rays.div_ceil(chunk);
     let split = ChunkSplit::new(share, n_chunks, (per_plan / chunk).max(1));
     let plans = device_plans(settings.rays, chunk, per_plan, split);
+    if plans.is_empty() {
+        // The device gets no source: the reference run, with `side` beside
+        // it, labelled as the CPU f64 reference it is.
+        let (sided, result) = rayon::join(&mut *side, || {
+            crate::tracer::run_fingerprinted(scene, source, settings, fingerprint, ctx)
+        });
+        sided?;
+        let mut result = result?;
+        result.run_info = Some(timer.finish(
+            &snapshot,
+            "stray_light",
+            &serde_json::json!({"settings": settings, "source": source, "resident_options": options,
+                "design": design.name(), "gpu_share": share,
+                "requested_backend": b.info().backend_id(), "fallback_count": 0,
+                "scene_fingerprint": fingerprint}),
+            "cpu-f64",
+            mklight_core::job::Precision::F64Reference,
+            Some(settings.seed),
+            result.warnings.clone(),
+        ));
+        ctx.check()?;
+        ctx.report(1., "stray complete");
+        return Ok(result);
+    }
+    // Device weights are double-float with f32 exponents; the estimators
+    // are formed on the CPU in f64.
+    let w0 = source.power() / settings.rays as f64;
+    if !(1e-30..=1e30).contains(&w0) {
+        return Err(unsupported("source weight is outside the device range"));
+    }
     let cpu_chunks: Vec<u64> = (0..n_chunks).filter(|&c| !split.device(c)).collect();
-    let prepared = if plans.is_empty() {
-        None
-    } else {
-        Some(TransportScene::new(b, scene, &ctx.subrange(0., 0.02))?)
-    };
+    let prepared = TransportScene::new(b, scene, &ctx.subrange(0., 0.02))?;
     let preparation_seconds = started.elapsed().as_secs_f64();
     let finisher = Finisher {
         scene,
         settings,
         tracer: Tracer::new(scene, scene.bvh(), source, settings),
     };
-    let fingerprint = scene.fingerprint();
     let submit = |first: u64, count: usize| -> MkResult<_> {
-        let prepared = prepared.as_ref().unwrap();
         let mut plan = ResidentPlan::new(snapshot.clone());
         plan.seed = Some(settings.seed);
         plan.settings = serde_json::json!({"stray_version": mklight_gpu::consts::MKL_STRAY_VERSION,
@@ -659,33 +678,10 @@ pub(crate) fn run(
     counters.add(&cpu_counters.into_inner().unwrap());
     let folder = folder.into_inner().unwrap();
     if folder.next != n_chunks || !folder.waiting.is_empty() {
-        return Err(MkError::Backend("stray hybrid: chunks missing".into()));
+        return Err(MkError::Backend("stray transport: chunks missing".into()));
     }
     let pack_started = Instant::now();
-    let (detector, energy, mut signatures) =
-        folder.tally.finish(&scene.detector, settings.owned_classes);
-    for s in &mut signatures {
-        s.label = s.signature.describe(|p| scene.label(p).to_string());
-    }
-    let mut warnings = scene.warnings.clone();
-    if energy.sampling_failed > 0. {
-        warnings.push(format!(
-            "{:.3e} W lost to BSDF rejection-sampling failures",
-            energy.sampling_failed
-        ));
-    }
-    if energy.escaped_from_solid > 1e-12 * energy.emitted {
-        warnings.push(format!(
-            "{:.3e} W left the scene from inside a solid",
-            energy.escaped_from_solid
-        ));
-    }
-    if energy.truncated > 1e-6 * energy.emitted {
-        warnings.push(format!(
-            "{:.3e} W truncated at {} events per path",
-            energy.truncated, settings.max_events
-        ));
-    }
+    let mut result = crate::tracer::finish(scene, settings, &folder.tally);
     let packing_seconds = pack_started.elapsed().as_secs_f64();
     let info = timer.finish(
         &snapshot,
@@ -702,17 +698,12 @@ pub(crate) fn run(
         &b.info().backend_id(),
         mklight_core::job::Precision::F32Gpu,
         Some(settings.seed),
-        warnings.clone(),
+        result.warnings.clone(),
     );
+    result.run_info = Some(info);
     ctx.check()?;
     ctx.report(1., "stray complete");
-    Ok(StrayResult {
-        detector,
-        energy,
-        signatures,
-        warnings,
-        run_info: Some(info),
-    })
+    Ok(result)
 }
 
 #[cfg(test)]

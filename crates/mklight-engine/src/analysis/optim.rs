@@ -52,8 +52,8 @@ use mklight_optim::problem::{
     CandidateBatch, EvalStatus, Problem, ScalarEval, merit, total_violation,
 };
 use mklight_optim::tolerance::{
-    Compensator, MonteCarloSettings, OpticalToleranceEvaluator, SENSITIVITY_BATCH,
-    ToleranceEvaluator, ToleranceOperand, ToleranceSpec, monte_carlo, sensitivity_batched,
+    Compensator, MonteCarloSettings, OpticalToleranceEvaluator, ToleranceEvaluator,
+    ToleranceOperand, ToleranceSpec, monte_carlo, sensitivity_batched,
 };
 use mklight_optim::{IterationRecord, Monitor, OptimResult, Termination};
 
@@ -67,7 +67,7 @@ use crate::gpu::GpuDevice;
 mod glass;
 
 /// Register continuous optimisation, glass substitution and tolerancing.
-pub fn register(r: &mut AnalysisRegistry) {
+pub fn register_all(r: &mut AnalysisRegistry) {
     r.register(Arc::new(Optimize));
     r.register(Arc::new(Tolerance));
     r.register(Arc::new(glass::GlassSubstitution));
@@ -155,6 +155,13 @@ fn interruptible_for<T>(
     limit: Option<Duration>,
     f: impl FnOnce(&JobContext) -> T,
 ) -> (T, Interrupt) {
+    /// Ends the watcher when the run returns or unwinds.
+    struct Finished<'a>(&'a AtomicBool);
+    impl Drop for Finished<'_> {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::Release);
+        }
+    }
     let mut inner = ctx.subrange(0.0, 1.0);
     inner.cancel = CancelToken::new();
     let done = AtomicBool::new(false);
@@ -175,9 +182,10 @@ fn interruptible_for<T>(
                 std::thread::sleep(Duration::from_millis(2));
             }
         });
-        let r = f(&inner);
-        done.store(true, Ordering::Release);
-        r
+        // Dropped on a panic too: the scope joins the watcher before the
+        // panic propagates.
+        let _finished = Finished(&done);
+        f(&inner)
     });
     let why = if ctx.cancel.is_cancelled() {
         Interrupt::Cancelled
@@ -196,7 +204,7 @@ fn interruptible_for<T>(
 
 /// Finite numbers as numbers, NaN as null, ±∞ as `"inf"`/`"-inf"`
 /// (CONVENTIONS §11).
-fn num(x: f64) -> Value {
+fn json_nf(x: f64) -> Value {
     if x.is_nan() {
         Value::Null
     } else if x.is_infinite() {
@@ -297,6 +305,15 @@ impl BackendChoice {
     }
 }
 
+/// Whose values a result reports (`backend.reported_on`).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Reported {
+    /// The CPU f64 reference (`optimize`, `glass_substitution`).
+    Reference,
+    /// The evaluator of the run (`tolerance`, `merit_evaluation`).
+    Evaluator,
+}
+
 /// The work of a run, reported in `backend.workload`: the estimated device
 /// rays per candidate and the typical batch of candidates.
 #[derive(Clone, Copy, Debug)]
@@ -351,8 +368,8 @@ fn gpu_backend(
     }
 }
 
-/// The merit evaluator of a run: the CPU reference alone, or a qualified
-/// GPU evaluator in front of it.
+/// The merit evaluator of a run: the CPU reference alone, or a GPU
+/// evaluator in front of it.
 struct Evaluation {
     cpu: BuiltinEvaluator,
     /// The GPU evaluator and the engine device behind it.
@@ -454,18 +471,15 @@ impl Evaluation {
             .is_some_and(|g| g.device_aim_from() == Some(0))
     }
 
-    /// Candidates per tolerance evaluation batch (Monte Carlo trials and
-    /// sensitivity points) for a requested batch: at least
-    /// [`TOLERANCE_SPLIT_BATCH`] (trial values do not depend on the
-    /// batching; the CPU's rayon pool otherwise idles at the end of every
-    /// small batch, and the device evaluator pipelines large batches).
-    fn tolerance_batch(&self, requested: usize) -> usize {
-        requested.max(TOLERANCE_SPLIT_BATCH)
-    }
-
-    /// The `"backend"` block: who evaluated the search and the GPU
-    /// work counters. Reports the backend used to the engine.
-    fn finish(&mut self, input: &AnalysisInput<'_>, requested: BackendChoice) -> EngineResult<()> {
+    /// The `"backend"` block: who evaluated the search, whose values the
+    /// result reports and the GPU work counters. Reports the backend used
+    /// to the engine.
+    fn finish(
+        &mut self,
+        input: &AnalysisInput<'_>,
+        requested: BackendChoice,
+        reported: Reported,
+    ) -> EngineResult<()> {
         let mut b = json!({
             "requested": requested.name(),
             "evaluated_on": TraceEvaluator::BACKEND,
@@ -488,6 +502,9 @@ impl Evaluation {
                 ));
                 b["evaluated_on"] = json!(device.backend.info().backend_id());
                 b["precision"] = json!(Precision::F32Gpu);
+                if reported == Reported::Evaluator {
+                    b["reported_on"] = b["evaluated_on"].clone();
+                }
             }
             let stats = g.stats();
             let plans = g.context.stats();
@@ -715,7 +732,7 @@ fn has_efl(spec: &MeritFunctionSpec) -> bool {
 
 fn value_json(v: &OperandValue) -> (Value, Value) {
     match v {
-        Ok(x) => (num(*x), Value::Null),
+        Ok(x) => (json_nf(*x), Value::Null),
         Err(e) => (Value::Null, json!(format!("{e:?}"))),
     }
 }
@@ -737,7 +754,7 @@ fn operand_table(
             let (res, contrib) = match (&end[i], op.role) {
                 (Ok(v), OperandRole::Residual) if op.enabled => {
                     let r = op.residual(*v);
-                    (num(r), op.weight * r * r)
+                    (json_nf(r), op.weight * r * r)
                 }
                 _ => (Value::Null, f64::NAN),
             };
@@ -748,16 +765,16 @@ fn operand_table(
                 "enabled": op.enabled,
                 "role": op.role,
                 "comparison": op.comparison,
-                "target": num(op.target),
-                "weight": num(op.weight),
+                "target": json_nf(op.target),
+                "weight": json_nf(op.weight),
                 "config": op.config,
                 "field": op.field,
                 "wavelength": op.wavelength,
                 "start": v0,
                 "value": v1,
                 "residual": res,
-                "contribution": num(contrib),
-                "contribution_fraction": num(if end_merit > 0.0 { contrib / end_merit } else { f64::NAN }),
+                "contribution": json_nf(contrib),
+                "contribution_fraction": json_nf(if end_merit > 0.0 { contrib / end_merit } else { f64::NAN }),
                 "error": err,
             })
         })
@@ -802,19 +819,21 @@ pub(super) fn operand_schema() -> Value {
     ])
 }
 
-/// Merit, violation and operand values of `points` on the CPU reference.
-struct Reference {
+/// Merit, violation and operand values of candidate points, on the
+/// evaluator that computed the operand values.
+struct PointValues {
     merit: Vec<f64>,
     violation: Vec<f64>,
     status: Vec<EvalStatus>,
     values: Vec<Vec<OperandValue>>,
 }
 
+/// The values of `points` on the CPU reference.
 fn reference_values(
     p: &OpticalProblem<BuiltinEvaluator>,
     points: &[&[f64]],
     ctx: &JobContext,
-) -> EngineResult<Reference> {
+) -> EngineResult<PointValues> {
     ctx.check()?;
     let batch = CandidateBatch::from_points(p.num_variables(), points.iter().copied());
     let inner = JobContext::with(ctx.cancel.clone(), Progress::default());
@@ -825,11 +844,11 @@ fn reference_values(
 fn values_report<E: OperandEvaluator>(
     p: &OpticalProblem<E>,
     vals: Vec<Option<Vec<OperandValue>>>,
-) -> Reference {
+) -> PointValues {
     let count = vals.len();
     let e = p.to_evaluation(vals.clone());
     let n_ops = p.spec().operands.len();
-    Reference {
+    PointValues {
         merit: (0..count)
             .map(|k| merit(p.weights(), e.residuals(k), e.status[k]))
             .collect(),
@@ -853,12 +872,14 @@ fn values_report<E: OperandEvaluator>(
     }
 }
 
-fn interrupt_status(why: Interrupt, termination: Termination) -> &'static str {
-    match why {
-        Interrupt::Cancelled => "cancelled",
-        Interrupt::Stopped => "stopped",
-        Interrupt::None if termination.is_converged() => "converged",
-        Interrupt::None | Interrupt::TimeLimit => "finished",
+/// `status` of an `optimize` result (a cancelled run returns none).
+fn optimize_status(stopped: bool, termination: Termination) -> &'static str {
+    if stopped {
+        "stopped"
+    } else if termination.is_converged() {
+        "converged"
+    } else {
+        "finished"
     }
 }
 
@@ -870,14 +891,16 @@ fn interrupt_status(why: Interrupt, termination: Termination) -> &'static str {
 /// default for `AugLagSettings::max_inner_iterations`).
 const INNER_ITERATIONS: usize = 10;
 
-/// Smallest tolerance evaluation batch (Monte Carlo trials, sensitivity
-/// points): the hundred trials of a default Monte Carlo run go to the
+/// Candidates per tolerance evaluation batch: sensitivity points go to the
+/// evaluator this many at a time, Monte Carlo trials at least this many (the
+/// `batch` setting only raises it; trial values do not depend on the
+/// batching). The hundred trials of a default Monte Carlo run go to the
 /// evaluator as one batch, which the CPU spreads over its pool without a
-/// barrier every 16 trials (29-surface F/1.4 benchmark lens, 12 threads: 155 →
-/// 120 ms for the default tolerance run, 2.4 → 1.9 s for 1000 dense trials,
-/// identical results) and a pipelined evaluator splits into overlapped
-/// device plans.
-const TOLERANCE_SPLIT_BATCH: usize = 128;
+/// barrier every 16 trials (29-surface F/1.4 benchmark lens, 12 threads:
+/// 155 → 120 ms for the default tolerance run, 2.4 → 1.9 s for 1000 dense
+/// trials, identical results) and a pipelined evaluator splits into
+/// overlapped device plans.
+const TOLERANCE_BATCH: usize = 128;
 
 /// The job's initial spreads of the population methods around the start,
 /// in variable scales (`VariableSpec::scale`; 10 % of a curvature by
@@ -1239,7 +1262,7 @@ struct HistoryRow {
 }
 
 fn ser_num<S: serde::Serializer>(x: &f64, s: S) -> Result<S::Ok, S::Error> {
-    num(*x).serialize(s)
+    json_nf(*x).serialize(s)
 }
 
 /// `optimize`: local or global optimisation of model parameters against a
@@ -1305,10 +1328,6 @@ impl Analysis for Optimize {
         })
     }
 
-    fn gpu_path(&self) -> bool {
-        true
-    }
-
     fn result_schema(&self) -> Value {
         use super::schema::*;
         let evaluation = [
@@ -1325,7 +1344,7 @@ impl Analysis for Optimize {
             &[
                 (
                     "status",
-                    enumeration(&["converged", "finished", "stopped", "cancelled"], ""),
+                    enumeration(&["converged", "finished", "stopped"], ""),
                 ),
                 (
                     "stopped",
@@ -1567,7 +1586,7 @@ impl Analysis for Optimize {
             ));
         }
         let final_system = Snapshot::new(reference.apply(&x)?)?;
-        ev.finish(input, s.backend)?;
+        ev.finish(input, s.backend, Reported::Reference)?;
         let hash = final_system.hash().to_hex();
         let history = history.lock().map(|h| h.clone()).unwrap_or_default();
         let variables: Vec<Value> = s
@@ -1579,32 +1598,32 @@ impl Analysis for Optimize {
                 json!({
                     "label": var.name,
                     "param": v.param,
-                    "start": num(x0[j]),
-                    "value": num(x[j]),
-                    "change": num(x[j] - x0[j]),
-                    "lower": v.lower.map(num),
-                    "upper": v.upper.map(num),
+                    "start": json_nf(x0[j]),
+                    "value": json_nf(x[j]),
+                    "change": json_nf(x[j] - x0[j]),
+                    "lower": v.lower.map(json_nf),
+                    "upper": v.upper.map(json_nf),
                     "at_bound": v.lower == Some(x[j]) || v.upper == Some(x[j]),
                 })
             })
             .collect();
         let feasible = refs.violation[k] <= feas_tol;
         let json = json!({
-            "status": interrupt_status(why, result.termination),
+            "status": optimize_status(why == Interrupt::Stopped, result.termination),
             "stopped": why == Interrupt::Stopped,
             "termination": result.termination,
             "algorithm": method,
             "iterations": result.iterations,
             "evaluations": result.evaluations,
             "improved": improved,
-            "start": {"merit": num(refs.merit[0]), "violation": num(refs.violation[0]),
+            "start": {"merit": json_nf(refs.merit[0]), "violation": json_nf(refs.violation[0]),
                 "status": refs.status[0]},
-            "final": {"merit": num(refs.merit[k]), "violation": num(refs.violation[k]),
+            "final": {"merit": json_nf(refs.merit[k]), "violation": json_nf(refs.violation[k]),
                 "status": refs.status[k], "feasible": feasible},
-            "search": {"merit": num(search.0), "violation": num(search.1),
-                "reference_merit": num(refs.merit[1]), "reference_violation": num(refs.violation[1])},
-            "improvement": num(if refs.merit[0] > 0.0 { 1.0 - refs.merit[k] / refs.merit[0] } else { f64::NAN }),
-            "multipliers": result.multipliers.as_ref().map(|m| m.iter().map(|v| num(*v)).collect::<Vec<_>>()),
+            "search": {"merit": json_nf(search.0), "violation": json_nf(search.1),
+                "reference_merit": json_nf(refs.merit[1]), "reference_violation": json_nf(refs.violation[1])},
+            "improvement": json_nf(if refs.merit[0] > 0.0 { 1.0 - refs.merit[k] / refs.merit[0] } else { f64::NAN }),
+            "multipliers": result.multipliers.as_ref().map(|m| m.iter().map(|v| json_nf(*v)).collect::<Vec<_>>()),
             "failed_variables": result.failed_variables,
             "variables": variables,
             "operands": operand_table(&spec, &refs.values[0], &refs.values[k], refs.merit[k]),
@@ -1675,13 +1694,12 @@ pub(super) fn evaluate_merit(
     } else {
         values_report(&reference, values)
     };
-    ev.finish(input, m.settings.backend)?;
-    ev.report["reported_on"] = ev.report["evaluated_on"].clone();
+    ev.finish(input, m.settings.backend, Reported::Evaluator)?;
     ev.warnings.extend(m.warnings);
     Ok(AnalysisOutput {
         json: json!({
-            "merit": num(r.merit[0]),
-            "violation": num(r.violation[0]),
+            "merit": json_nf(r.merit[0]),
+            "violation": json_nf(r.violation[0]),
             "status": r.status[0],
             "operands": operand_table(&m.spec, &r.values[0], &r.values[0], r.merit[0]),
             "merit_spec": m.spec,
@@ -1789,17 +1807,14 @@ impl Analysis for Tolerance {
                 "seed": {"type": "integer", "minimum": 0, "default": 0, "title": "Seed"},
                 "threshold": {"type": ["number", "null"], "default": null, "title": "Yield threshold",
                     "description": "Criterion value for the yield (criterion ≤ threshold)."},
-                "batch": {"type": "integer", "minimum": 1, "default": 16, "title": "Trials per batch"},
+                "batch": {"type": "integer", "minimum": 1, "default": 16, "title": "Trials per batch",
+                    "description": "Monte-Carlo trials per evaluation batch, raised to at least 128 (the criteria do not depend on the batching)."},
                 "compensator_iterations": {"type": "integer", "minimum": 1, "default": 20,
                     "title": "Compensator iterations"},
                 "backend": {"type": "string", "enum": ["auto", "cpu", "gpu", "gpu_emulation"],
                     "default": "auto", "title": "Merit evaluation"},
             }
         })
-    }
-
-    fn gpu_path(&self) -> bool {
-        true
     }
 
     fn result_schema(&self) -> Value {
@@ -2006,7 +2021,7 @@ impl Analysis for Tolerance {
         let mc = MonteCarloSettings {
             trials: s.trials,
             seed: s.seed,
-            batch: s.batch.max(1),
+            batch: s.batch.max(TOLERANCE_BATCH),
             threshold: s.threshold,
             percentiles: s.percentiles.clone(),
             record_trials: s.record_trials,
@@ -2077,9 +2092,9 @@ impl Analysis for Tolerance {
         let batch = if !spec.compensators.is_empty() {
             spec.compensators.len()
         } else if do_mc {
-            mc.batch
+            mc.batch.min(mc.trials)
         } else {
-            SENSITIVITY_BATCH.min(2 * spec.operands.len() + 1)
+            TOLERANCE_BATCH.min(2 * spec.operands.len() + 1)
         };
         let work = Workload::new(
             &TraceEvaluator::new(input.library.clone()),
@@ -2093,7 +2108,6 @@ impl Analysis for Tolerance {
             speculative_jacobian: ev.speculative(),
             ..lsq
         };
-        let sensitivity_batch = ev.tolerance_batch(SENSITIVITY_BATCH);
         if let Some(case) = &s.preview_case {
             let deltas = match case {
                 ToleranceCase::Trial { trial } => spec.sample_trial(s.seed, *trial),
@@ -2150,7 +2164,7 @@ impl Analysis for Tolerance {
                     };
                     let snapshot = Snapshot::new(model)?;
                     json!({"system": snapshot.system(), "system_hash": snapshot.hash().to_hex(),
-                        "criterion": num(outcome.criterion), "compensators": outcome.compensators,
+                        "criterion": json_nf(outcome.criterion), "compensators": outcome.compensators,
                         "perturbations": deltas})
                 }
                 Ok(_) | Err(MkError::Cancelled) => Value::Null,
@@ -2161,7 +2175,7 @@ impl Analysis for Tolerance {
                 Interrupt::Cancelled => "cancelled",
                 _ => "complete",
             };
-            ev.finish(input, s.backend)?;
+            ev.finish(input, s.backend, Reported::Evaluator)?;
             return Ok(AnalysisOutput {
                 json: json!({"status": status, "stopped": why == Interrupt::Stopped,
                     "sensitivity": null, "monte_carlo": null, "preview": preview,
@@ -2180,16 +2194,7 @@ impl Analysis for Tolerance {
             0.0
         };
 
-        let search_mc = MonteCarloSettings {
-            record_trials: if ev.active_gpu().is_some() {
-                mc.trials
-            } else {
-                mc.record_trials
-            },
-            batch: ev.tolerance_batch(mc.batch),
-            ..mc.clone()
-        };
-        let ((sens, mcr), why) = interruptible(&ctx.subrange(0., 0.9), &stop, |inner| {
+        let ((sens, mcr), why) = interruptible(ctx, &stop, |inner| {
             let run = |e: &dyn ToleranceRunner| -> (Option<Result<_, MkError>>, Option<Result<_, MkError>>) {
                 let sens = do_sens.then(|| {
                     let mon = Monitor::new(inner.subrange(0.0, split));
@@ -2200,7 +2205,7 @@ impl Analysis for Tolerance {
                     || matches!(&sens, Some(Ok(r)) if r.cancelled);
                 let mcr = (do_mc && !cancelled).then(|| {
                     let mon = Monitor::new(inner.subrange(split, 1.0));
-                    e.monte_carlo(&spec, &search_mc, &mon)
+                    e.monte_carlo(&spec, &mc, &mon)
                 });
                 (sens, mcr)
             };
@@ -2214,7 +2219,6 @@ impl Analysis for Tolerance {
                         registry: &reg,
                         lsq,
                         spec: &spec,
-                        sensitivity_batch,
                     })
                 }
                 None => run(&Runner {
@@ -2224,7 +2228,6 @@ impl Analysis for Tolerance {
                     registry: &reg,
                     lsq,
                     spec: &spec,
-                    sensitivity_batch,
                 }),
             }
         });
@@ -2238,7 +2241,7 @@ impl Analysis for Tolerance {
             Some(Err(MkError::Cancelled)) | None => None,
             Some(Err(e)) => return Err(e.into()),
         };
-        ev.finish(input, s.backend)?;
+        ev.finish(input, s.backend, Reported::Evaluator)?;
         let status = match why {
             Interrupt::None | Interrupt::TimeLimit => "complete",
             Interrupt::Stopped => "stopped",
@@ -2247,26 +2250,26 @@ impl Analysis for Tolerance {
         let label = |i: usize| spec.operands[i].display_label();
         let sens_json = sens.as_ref().map(|r| {
             json!({
-                "nominal": {"criterion": num(r.nominal.criterion), "ok": r.nominal.ok,
-                    "compensators": r.nominal.compensators.iter().map(|v| num(*v)).collect::<Vec<_>>()},
+                "nominal": {"criterion": json_nf(r.nominal.criterion), "ok": r.nominal.ok,
+                    "compensators": r.nominal.compensators.iter().map(|v| json_nf(*v)).collect::<Vec<_>>()},
                 "operands": r.operands.iter().map(|o| json!({
                     "index": o.index,
                     "label": label(o.index),
                     "param": spec.operands[o.index].param,
-                    "minus": num(spec.operands[o.index].minus),
-                    "plus": num(spec.operands[o.index].plus),
-                    "criterion_minus": num(o.minus.criterion),
-                    "criterion_plus": num(o.plus.criterion),
-                    "change_minus": num(o.change_minus),
-                    "change_plus": num(o.change_plus),
-                    "worst": num(o.worst),
+                    "minus": json_nf(spec.operands[o.index].minus),
+                    "plus": json_nf(spec.operands[o.index].plus),
+                    "criterion_minus": json_nf(o.minus.criterion),
+                    "criterion_plus": json_nf(o.plus.criterion),
+                    "change_minus": json_nf(o.change_minus),
+                    "change_plus": json_nf(o.change_plus),
+                    "worst": json_nf(o.worst),
                     "ok": o.minus.ok && o.plus.ok,
-                    "compensators_minus": o.minus.compensators.iter().map(|v| num(*v)).collect::<Vec<_>>(),
-                    "compensators_plus": o.plus.compensators.iter().map(|v| num(*v)).collect::<Vec<_>>(),
+                    "compensators_minus": o.minus.compensators.iter().map(|v| json_nf(*v)).collect::<Vec<_>>(),
+                    "compensators_plus": o.plus.compensators.iter().map(|v| json_nf(*v)).collect::<Vec<_>>(),
                 })).collect::<Vec<_>>(),
                 "ranking": r.ranking,
-                "rss_change": num(r.rss_change),
-                "predicted_criterion": num(r.nominal.criterion + r.rss_change),
+                "rss_change": json_nf(r.rss_change),
+                "predicted_criterion": json_nf(r.nominal.criterion + r.rss_change),
                 "evaluations": r.evaluations,
                 "cancelled": r.cancelled,
             })
@@ -2275,27 +2278,27 @@ impl Analysis for Tolerance {
         let mc_json = mcr.as_ref().map(|r| {
             buffers.push(Buffer::f64_1d("monte_carlo_criteria", r.criteria.clone()));
             json!({
-                "nominal": {"criterion": num(r.nominal.criterion), "ok": r.nominal.ok,
+                "nominal": {"criterion": json_nf(r.nominal.criterion), "ok": r.nominal.ok,
                     "compensators": r.nominal.compensators},
                 "seconds_per_trial": r.seconds_per_trial,
                 "records": r.records.iter().map(|t| json!({"trial": t.trial,
-                    "criterion": num(t.outcome.criterion), "ok": t.outcome.ok,
+                    "criterion": json_nf(t.outcome.criterion), "ok": t.outcome.ok,
                     "compensators": t.outcome.compensators, "perturbations": t.perturbations}))
                     .collect::<Vec<_>>(),
                 "trials": r.trials,
                 "failures": r.failures,
                 "seed": s.seed,
-                "mean": num(r.mean),
-                "std_dev": num(r.std_dev),
-                "min": num(r.min),
-                "max": num(r.max),
-                "percentiles": r.percentiles.iter().map(|(p, v)| json!({"percentile": p, "value": num(*v)})).collect::<Vec<_>>(),
-                "yield_fraction": r.yield_fraction.map(num),
-                "threshold": s.threshold.map(num),
-                "compensator_mean": r.compensator_mean.iter().map(|v| num(*v)).collect::<Vec<_>>(),
-                "compensator_std": r.compensator_std.iter().map(|v| num(*v)).collect::<Vec<_>>(),
+                "mean": json_nf(r.mean),
+                "std_dev": json_nf(r.std_dev),
+                "min": json_nf(r.min),
+                "max": json_nf(r.max),
+                "percentiles": r.percentiles.iter().map(|(p, v)| json!({"percentile": p, "value": json_nf(*v)})).collect::<Vec<_>>(),
+                "yield_fraction": r.yield_fraction.map(json_nf),
+                "threshold": s.threshold.map(json_nf),
+                "compensator_mean": r.compensator_mean.iter().map(|v| json_nf(*v)).collect::<Vec<_>>(),
+                "compensator_std": r.compensator_std.iter().map(|v| json_nf(*v)).collect::<Vec<_>>(),
                 "cancelled": r.cancelled,
-                "criteria": r.criteria.iter().map(|v| num(*v)).collect::<Vec<_>>(),
+                "criteria": r.criteria.iter().map(|v| json_nf(*v)).collect::<Vec<_>>(),
             })
         });
         let json = json!({
@@ -2339,8 +2342,6 @@ struct Runner<'a, E: OperandEvaluator> {
     registry: &'a OperandRegistry,
     lsq: LsqSettings,
     spec: &'a ToleranceSpec,
-    /// Points per sensitivity evaluation batch.
-    sensitivity_batch: usize,
 }
 
 impl<E: OperandEvaluator> Runner<'_, E> {
@@ -2362,7 +2363,7 @@ impl<E: OperandEvaluator> ToleranceRunner for Runner<'_, E> {
         spec: &ToleranceSpec,
         mon: &Monitor,
     ) -> mklight_core::MkResult<mklight_optim::tolerance::SensitivityReport> {
-        sensitivity_batched(spec, &self.evaluator(), mon, self.sensitivity_batch)
+        sensitivity_batched(spec, &self.evaluator(), mon, TOLERANCE_BATCH)
     }
     fn monte_carlo(
         &self,
@@ -2602,6 +2603,27 @@ mod tests {
         assert!(f(&x.json["final"]["merit"]) < f(&x.json["start"]["merit"]));
     }
 
+    /// A panic in the run reaches the caller: the watcher thread ends with
+    /// it instead of keeping the job running.
+    #[test]
+    fn a_panicking_run_does_not_hang_its_watcher() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let run = || {
+                interruptible(&JobContext::new(), &CancelToken::new(), |_| -> () {
+                    panic!("boom")
+                })
+            };
+            let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(run));
+            let _ = tx.send(caught.map(|((), why)| why == Interrupt::None));
+        });
+        let caught = rx
+            .recv_timeout(Duration::from_secs(30))
+            .expect("the watcher never ended");
+        let message = caught.unwrap_err();
+        assert_eq!(message.downcast_ref::<&str>(), Some(&"boom"));
+    }
+
     /// Wait until the job context reports iteration `n`, then cancel.
     fn cancel_at(ctx: &JobContext, n: usize) -> std::thread::JoinHandle<()> {
         let ctx = ctx.clone();
@@ -2785,7 +2807,7 @@ mod tests {
             ] {
                 let id = system.surfaces[2].id;
                 let settings = json!({"backend":backend,"mode":"monte_carlo","trials":4,"seed":71,"batch":3,
-                    "record_trials":4,"default_merit":{"fields":[0,2],"wavelengths":[1]},
+                    "record_trials":2,"default_merit":{"fields":[0,2],"wavelengths":[1]},
                     "tolerances":[{"param":ParamPath::Irregularity {surface:id,mode:IrregularityMode::Astigmatism},"minus":0.5,"plus":0.5},
                         {"param":ParamPath::Irregularity {surface:id,mode:IrregularityMode::Spherical},"minus":0.25,"plus":0.25}]});
                 let registry = AnalysisRegistry::with_builtin();
@@ -2814,11 +2836,18 @@ mod tests {
                         .unwrap()
                         > 0
                 );
-                let mut rebatch = settings.clone();
-                rebatch["batch"] = json!(1);
+                // The four trials are one evaluation batch, reported on the
+                // device that evaluated them; only the requested records
+                // are kept.
+                let b = &result.json["backend"];
+                assert_eq!(b["workload"]["batch"], 4);
+                assert_eq!(b["reported_on"], b["evaluated_on"]);
                 assert_eq!(
-                    result.json["monte_carlo"]["criteria"],
-                    execute(&rebatch).json["monte_carlo"]["criteria"]
+                    result.json["monte_carlo"]["records"]
+                        .as_array()
+                        .unwrap()
+                        .len(),
+                    2
                 );
                 let mut preview_settings = settings.clone();
                 preview_settings["preview_case"] = json!({"type":"trial","trial":2});
@@ -2964,8 +2993,6 @@ mod tests {
             let r = run_analysis(a.as_ref(), &inp, &s, vec![], &JobContext::new()).unwrap();
             let b = &r.json["backend"];
             assert_eq!(b["precision"], json!("f32_gpu"), "{backend}: {b}");
-            assert!(b.get("qualification").is_none());
-            assert!(b.get("final_qualification").is_none());
             assert!(b["gpu_stats"]["gpu_candidates"].as_u64().unwrap() > 0);
             assert_eq!(b["reported_on"], json!(TraceEvaluator::BACKEND));
             assert_eq!(b["requested"], json!(backend));
@@ -2984,8 +3011,8 @@ mod tests {
             let (m0, m1) = (f(&r.json["start"]["merit"]), f(&r.json["final"]["merit"]));
             assert!(m1 < m0, "{backend}: {m0} -> {m1}");
         }
-        // Emulation has no measured cost exception. Unknown cost uses the
-        // qualified resident path at both candidate sizes.
+        // Backend `auto` evaluates on the device handed over, at a small and
+        // at a larger candidate batch.
         let auto = |s: Value| {
             let reg = AnalysisRegistry::with_builtin();
             let a = reg.get("optimize").unwrap();
@@ -3141,8 +3168,8 @@ mod tests {
         }
     }
 
-    /// Bad input that used to pass silently: a zero FD step, a tolerance or
-    /// compensator on a surface that does not exist, a stop key in use.
+    /// Bad input is rejected: a zero or negative FD step, a tolerance or
+    /// compensator on a surface that does not exist.
     #[test]
     fn rejects_bad_input() {
         let sys = samples::cooke_triplet();
@@ -3198,7 +3225,7 @@ mod tests {
             })
         };
         // 90 tolerances: 181 points, two sensitivity batches of 128 and 53
-        // (`TOLERANCE_SPLIT_BATCH`), so that the stop lands between them.
+        // (`TOLERANCE_BATCH`), so that the stop lands between them.
         let mut tol = Vec::new();
         for (id, size) in [1u64, 2, 3, 4, 5, 6]
             .into_iter()

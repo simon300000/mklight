@@ -18,7 +18,8 @@ pub(super) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
         _ => unreachable!(),
     };
     let nf = freq.desc.shape[0];
-    let tile = (TILE / count).clamp(1, nf);
+    // No samples or no frequencies: neither a zero divisor nor an empty range.
+    let tile = (TILE / count.max(1)).clamp(1, nf.max(1));
     let mut out = x.take_output(output);
     let mut max_command = 0f64;
     let mut account = |x: &mut Execution<'_>, wall: Instant, done: usize| {

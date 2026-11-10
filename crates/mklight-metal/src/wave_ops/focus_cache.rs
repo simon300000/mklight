@@ -72,14 +72,15 @@ pub fn chunked(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> MkResult
     let base = params(r);
     let n2 = base.n as usize * base.n as usize;
     let planes = base.size as usize;
-    let per = CACHE_BYTES / (n2 * 8);
+    // An empty pupil (no divisor) has no phase volume and returns below.
+    let per = CACHE_BYTES / (n2 * 8).max(1);
     if n2 * planes * 8 <= CACHE_BYTES || per == 0 {
         return Ok(false);
     }
     let access = accesses(r);
     let freqs = base.field_side as usize;
     let blocks = n2.div_ceil(SUM_BLOCK);
-    let tile = (super::BLOCK_THREADS / blocks).clamp(1, per * freqs);
+    let tile = (super::BLOCK_THREADS / blocks).clamp(1, (per * freqs).max(1));
     let mut output = x.take_output(access.writes[0]);
     let mut steps = access.writes.get(1).map(|&w| x.take_output(w));
     let mut cache = x.allocate(per * n2 * 2)?;

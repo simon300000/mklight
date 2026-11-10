@@ -458,7 +458,7 @@ public enum SurfaceTypes {
             return .object(o)
         }
         guard let changed = set(json(shape), key.split(separator: ".")[...]) else { return nil }
-        return try? MKLightJSON.decode(SurfaceShape.self, from: MKLightJSON.encode(changed))
+        return try? changed.decode(SurfaceShape.self)
     }
 
     /// Display value of a parameter (a radius for a curvature).

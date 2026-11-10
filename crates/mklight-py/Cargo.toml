@@ -5,6 +5,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
+publish.workspace = true
 
 # Built as the extension module `mklight._mklight` by maturin (see
 # pyproject.toml and docs/PYTHON.md). maturin sets
@@ -22,5 +23,3 @@ serde.workspace = true
 serde_json.workspace = true
 pyo3 = { version = "0.30.1", features = ["abi3-py311"] }
 
-[dev-dependencies]
-approx.workspace = true

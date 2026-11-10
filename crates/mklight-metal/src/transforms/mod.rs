@@ -217,7 +217,7 @@ fn transform(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> MkResult<f
                 out_buf = Some(bufs.len() - 1);
                 bufs.len() - 1
             } else if s.cache && words * 4 <= 64 << 20 {
-                // P0's immutable cache holds ≤64 MiB; larger spectra stay pooled scratch.
+                // The operation cache holds ≤64 MiB; larger spectra stay pooled scratch.
                 x.stats.allocations += 1;
                 bufs.push(Some(Buf::Fresh(x.gpu.buffer_zeroed(words)?)));
                 bufs.len() - 1

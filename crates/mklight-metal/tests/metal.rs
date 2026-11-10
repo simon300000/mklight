@@ -863,3 +863,30 @@ fn async_submission_and_unsupported_jobs() {
     assert!(b.submit(bad, &JobContext::new()).is_err());
     b.release_systems(h).unwrap();
 }
+
+/// A kernel cache directory that cannot be used is the preparation's
+/// warning, not an error. Cancelled before it starts, so nothing compiles.
+#[test]
+fn unusable_kernel_cache_is_a_warning() {
+    let Some(b) = MetalBackend::new().unwrap() else {
+        eprintln!("SKIP: no Metal device");
+        return;
+    };
+    let cancelled = std::sync::atomic::AtomicBool::new(true);
+    let dir = std::env::temp_dir().join(format!("mklight-metal-cache-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let usable = b
+        .prepare_kernels(Some(&dir.join("cache")), &|_, _| {}, &cancelled)
+        .unwrap();
+    assert_eq!(usable.warning, None);
+    // A file where the cache directory's parent should be.
+    let file = dir.join("file");
+    std::fs::write(&file, b"").unwrap();
+    let unusable = b
+        .prepare_kernels(Some(&file.join("cache")), &|_, _| {}, &cancelled)
+        .unwrap();
+    let warning = unusable.warning.expect("a warning");
+    assert!(warning.contains("pipeline cache"), "{warning}");
+    std::fs::remove_dir_all(&dir).unwrap();
+}

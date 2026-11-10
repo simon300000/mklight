@@ -1,5 +1,6 @@
-//! Encoders for P1. Generation copies only a four-byte failure count to the
-//! host; optical outputs, chief seeds and seed tables stay device-resident.
+//! Encoders for device aiming, resident traces and pupil projection.
+//! Generation copies only a four-byte failure count to the host; optical
+//! outputs, chief seeds and seed tables stay device-resident.
 use crate::{
     SharedBuffer,
     backend::Uploaded,
@@ -86,13 +87,7 @@ impl Systems {
     /// The kernel variant: the overlay code only for systems that have sag
     /// overlays.
     fn kernel(&self, plain: &'static str, overlays: &'static str) -> PipelineKey {
-        let any = self
-            .0
-            .set
-            .surfaces
-            .iter()
-            .any(|s| s.flags & MKL_SURF_HAS_SAG_OVERLAY != 0);
-        PipelineKey::plain(if any { overlays } else { plain })
+        PipelineKey::plain(if self.0.sag_overlays { overlays } else { plain })
     }
 }
 fn take_rays(x: &mut Execution<'_>, r: &ResidentRays) -> [Lease; 4] {
@@ -180,27 +175,13 @@ const AIM_COMMAND_SECONDS: f64 = 0.015;
 /// Rays per trace/projection command (bounded work per ray).
 const TRACE_CHUNK: usize = 1 << 18;
 const PROJECT_CHUNK: usize = 1 << 20;
-/// Iteration units per lane of a tile's first command (rays converging from
-/// a table or chief seed need two to three) and of each continuation
-/// command. A unit is at most 24 stop traces; a fully divergent tile of hard
-/// candidate rays ran 87 ms per command at eight units, ~45 ms at four.
-const AIM_FIRST_BUDGET: u32 = 4;
-const AIM_CONTINUE_BUDGET: u32 = 4;
-/// The budgets, or the qualification override `MKLIGHT_AIM_BUDGET=first,
-/// continue` (tests force many continuation rounds with `1,1`).
-fn budgets() -> (u32, u32) {
-    static B: std::sync::OnceLock<(u32, u32)> = std::sync::OnceLock::new();
-    *B.get_or_init(|| {
-        std::env::var("MKLIGHT_AIM_BUDGET")
-            .ok()
-            .and_then(|v| {
-                let (a, b) = v.split_once(',')?;
-                Some((a.trim().parse().ok()?, b.trim().parse().ok()?))
-            })
-            .filter(|&(a, b)| a > 0 && b > 0)
-            .unwrap_or((AIM_FIRST_BUDGET, AIM_CONTINUE_BUDGET))
-    })
-}
+/// Iteration units per lane of a command, by default: of a tile's first
+/// command (rays converging from a table or chief seed need two to three)
+/// and of each continuation command. A unit is at most 24 stop traces; a
+/// fully divergent tile of hard candidate rays ran 87 ms per command at
+/// eight units, ~45 ms at four. `MetalBackend::set_aim_budget` changes it
+/// (tests force many continuation rounds with one unit).
+pub(crate) const AIM_BUDGET: u32 = 4;
 /// Continuation rounds of a tile's first group; each speculative group after
 /// it doubles.
 const AIM_FIRST_ROUNDS: usize = 2;
@@ -321,7 +302,7 @@ fn newton_commands(
         .as_ref()
         .map(|_| x.gpu.pipeline(&PipelineKey::plain("mkl_aim_indirect")))
         .transpose()?;
-    let (first_budget, continue_budget) = budgets();
+    let budget = x.aim_budget;
     let (mut offset, mut next) = (0, MIN);
     while offset < n {
         ctl.check()?;
@@ -329,13 +310,13 @@ fn newton_commands(
         let p = AimParams {
             count: count as u32,
             offset: offset as u32,
-            budget: first_budget,
+            budget,
             ..Zeroable::zeroed()
         };
         let wall = Instant::now();
         let mut resume = cont
             .as_ref()
-            .map(|_| Resume::new(x, count, max_rounds(cap, continue_budget)))
+            .map(|_| Resume::new(x, count, max_rounds(cap, budget)))
             .transpose()?;
         // SAFETY: callers bind plan-validated extents; kernels check every
         // device-provided field, system and wavelength index; the resume
@@ -357,10 +338,6 @@ fn newton_commands(
         if let (Some(r), Some(cont), Some(indirect)) = (&mut resume, &cont, &indirect) {
             let tile = x.ticket();
             let width = Encoder::width(cont) as u32;
-            let p = AimParams {
-                budget: continue_budget,
-                ..p
-            };
             // Rounds `from + 1..=to`, one command buffer each (with `fused`,
             // the first shares the buffer being encoded). A round of a few
             // hard lanes runs as long as one of many (the slowest lane's

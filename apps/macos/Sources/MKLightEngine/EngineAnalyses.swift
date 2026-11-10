@@ -16,9 +16,14 @@ public struct AnalysisDescriptor: Codable, Sendable, Hashable, Identifiable {
     /// JSON-Schema subset (docs/FFI.md): `type`, `properties`, `required`,
     /// `default`, `minimum`, `maximum`, `enum`, `items`, `title`,
     /// `description`, `unit`.
-    public var settingsSchema: JSONValue
+    public var settingsSchema: JSONValue {
+        didSet { settingsFields = Self.fields(of: settingsSchema) }
+    }
     /// Complete default settings; `null` when some setting is required.
     public var defaultSettings: JSONValue
+    /// The schema's properties, in a stable order (required first, then by
+    /// name); read from `settingsSchema` whenever that is set.
+    public private(set) var settingsFields: [SettingsField]
 
     public var id: String { name }
 
@@ -34,6 +39,7 @@ public struct AnalysisDescriptor: Codable, Sendable, Hashable, Identifiable {
         self.unavailableReason = unavailableReason
         self.settingsSchema = settingsSchema
         self.defaultSettings = defaultSettings
+        settingsFields = Self.fields(of: settingsSchema)
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -52,14 +58,13 @@ public struct AnalysisDescriptor: Codable, Sendable, Hashable, Identifiable {
         unavailableReason = try c.decodeIfPresent(String.self, forKey: .unavailableReason)
         settingsSchema = try c.decodeIfPresent(JSONValue.self, forKey: .settingsSchema) ?? .object([:])
         defaultSettings = try c.decodeIfPresent(JSONValue.self, forKey: .defaultSettings) ?? .null
+        settingsFields = Self.fields(of: settingsSchema)
     }
 
-    /// The schema's properties, in a stable order (required first, then by
-    /// name).
-    public var settingsFields: [SettingsField] {
-        guard case .object(let props)? = settingsSchema["properties"] else { return [] }
+    private static func fields(of schema: JSONValue) -> [SettingsField] {
+        guard case .object(let props)? = schema["properties"] else { return [] }
         let required: Set<String> =
-            if case .array(let r)? = settingsSchema["required"] {
+            if case .array(let r)? = schema["required"] {
                 Set(r.compactMap { if case .string(let s) = $0 { s } else { nil } })
             } else { [] }
         return SettingsField.fields(props, required: required)
@@ -70,8 +75,7 @@ public struct AnalysisDescriptor: Codable, Sendable, Hashable, Identifiable {
     /// does not declare (typed settings carry some that not every analysis
     /// takes) are dropped and the engine's defaults apply instead.
     public func acceptedSettings(_ settings: [String: JSONValue]) -> [String: JSONValue] {
-        let fields = Dictionary(uniqueKeysWithValues: settingsFields.map { ($0.name, $0) })
-        return settings.filter { key, value in fields[key]?.accepts(value) ?? false }
+        settings.filter { key, value in settingsFields.first { $0.name == key }?.accepts(value) ?? false }
     }
 }
 
@@ -229,8 +233,8 @@ extension JSONValue {
 public struct EngineAnalysisRequest: Codable, Sendable, Hashable {
     public var analysis: String
     public var settings: [String: JSONValue]
-    /// Backend preference and seed. The seed is sent as the `seed` setting
-    /// when the analysis declares one.
+    /// The backend preference. A seed is the analysis' own `seed` setting;
+    /// `execution.seed` belongs to typed requests and is not sent.
     public var execution: ExecutionSettings
 
     public init(analysis: String, settings: [String: JSONValue] = [:], execution: ExecutionSettings = ExecutionSettings()) {
@@ -422,8 +426,23 @@ public final class ResultBuffer: @unchecked Sendable, Hashable, CustomStringConv
         }
     }
 
-    /// All elements converted to `Double` (a copy).
-    public var doubles: [Double] { (0..<count).map { self[$0] } }
+    /// All elements converted to `Double` (a copy), one pass over the
+    /// memory for the buffer's element type.
+    public var doubles: [Double] {
+        guard let base else { return [] }
+        func all<T>(_: T.Type, _ convert: (T) -> Double) -> [Double] {
+            UnsafeBufferPointer(start: base.assumingMemoryBound(to: T.self), count: count).map(convert)
+        }
+        return switch dtype {
+        case .f64: Array(UnsafeBufferPointer(start: base.assumingMemoryBound(to: Double.self), count: count))
+        case .f32: all(Float.self) { Double($0) }
+        case .i32: all(Int32.self) { Double($0) }
+        case .u32: all(UInt32.self) { Double($0) }
+        case .i64: all(Int64.self) { Double($0) }
+        case .u64: all(UInt64.self) { Double($0) }
+        case .u8: all(UInt8.self) { Double($0) }
+        }
+    }
 
     /// Element at a multi-index (row-major).
     public subscript(index: [Int]) -> Double {
@@ -493,7 +512,7 @@ extension AnalysisResult {
     /// falls back to `.generic`, never an error.
     public static func fromEngine(kind: AnalysisKind, json: JSONValue, buffers: [ResultBuffer]) -> AnalysisResult {
         func typed<T: Decodable>(_ t: T.Type) -> Result<T, any Error> {
-            Result { try MKLightJSON.decode(T.self, from: MKLightJSON.encode(json)) }
+            Result { try json.decode(T.self) }
         }
         let decoded: Result<AnalysisResult, any Error> =
             switch kind {

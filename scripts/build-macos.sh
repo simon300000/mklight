@@ -51,6 +51,8 @@ for arg in "$@"; do
 done
 
 VERSION="0.1.0"
+# Deployment target of the engine library, the viewport shaders and the bundle.
+MACOS_MIN="27.0"
 BUILD_NUMBER="$(git -C "$ROOT" rev-list --count HEAD 2>/dev/null || echo 1)"
 
 # SwiftPM caches the evaluated Package.swift by its contents, so it does not
@@ -85,7 +87,7 @@ else
       exit 1
     fi
     echo "==> cargo build --release -p mklight-ffi --target $t"
-    (cd "$ROOT" && MACOSX_DEPLOYMENT_TARGET=27.0 cargo build --release -p mklight-ffi --target "$t")
+    (cd "$ROOT" && MACOSX_DEPLOYMENT_TARGET="$MACOS_MIN" cargo build --release -p mklight-ffi --target "$t")
     LIBS+=("$ROOT/target/$t/release/libmklight_ffi.a")
   done
   mkdir -p "$LIB_DIR"
@@ -137,8 +139,10 @@ done
 SHADER="$PKG/Sources/MKLightUI/Viewport/Shaders/Viewport.metal"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
-if xcrun metal -c -target air64-apple-macos27.0 -fmetal-math-mode=safe "$SHADER" -o "$TMP/Viewport.air" 2>/dev/null \
-   && xcrun metallib "$TMP/Viewport.air" -o "$APP/Contents/Resources/MKLightViewport.metallib" 2>/dev/null; then
+if xcrun metal --version >/dev/null 2>&1; then
+  # The toolchain is there: a shader that does not compile fails the build.
+  xcrun metal -c -target "air64-apple-macos$MACOS_MIN" -fmetal-math-mode=safe "$SHADER" -o "$TMP/Viewport.air"
+  xcrun metallib "$TMP/Viewport.air" -o "$APP/Contents/Resources/MKLightViewport.metallib"
   echo "    precompiled MKLightViewport.metallib"
 else
   echo "    Metal toolchain not installed: shaders will be compiled at run time"
@@ -158,7 +162,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>${VERSION}</string>
   <key>CFBundleVersion</key><string>${BUILD_NUMBER}</string>
-  <key>LSMinimumSystemVersion</key><string>27.0</string>
+  <key>LSMinimumSystemVersion</key><string>${MACOS_MIN}</string>
   <key>LSApplicationCategoryType</key><string>public.app-category.developer-tools</string>
   <key>NSHighResolutionCapable</key><true/>
   <key>NSPrincipalClass</key><string>NSApplication</string>

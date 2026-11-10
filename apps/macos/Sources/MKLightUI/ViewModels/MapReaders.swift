@@ -68,13 +68,13 @@ struct FieldMapData: Sendable {
     init?(output: AnalysisOutput) {
         let j = output.json
         guard let cols = j["columns"]?.array, !cols.isEmpty,
-            let f = output.buffer(ref: j["field_coordinates"]) ?? output.buffer(named: "field_coordinates"),
-            let v = output.buffer(ref: j["values"]) ?? output.buffer(named: "values"),
+            let f = output.buffer(key: "field_coordinates"),
+            let v = output.buffer(key: "values"),
             f.shape.count == 3, f.shape[2] == 2, v.shape.count == 3
         else { return nil }
         let ny = f.shape[0], nx = f.shape[1], nc = v.shape[2]
         guard nx > 0, ny > 0, v.shape[0] == ny, v.shape[1] == nx, nc == cols.count else { return nil }
-        let img = output.buffer(ref: j["image_mm"]) ?? output.buffer(named: "image_mm")
+        let img = output.buffer(key: "image_mm")
         let n = nx * ny
         self.init(
             nx: nx, ny: ny,
@@ -217,9 +217,6 @@ enum Contours {
         var b: SIMD2<Double>
     }
 
-    /// The segments of the `level` iso-line of `grid`, in the grid's x / y
-    /// units (samples at the nodes, spanning `xRange` × `yRange`). Cells
-    /// with a non-finite corner are skipped.
     /// The iso-line of a map as drawn: a map with no data outside the
     /// field is traced on its finely interpolated grid, so the lines reach
     /// the field's edge instead of stopping a cell short of it.
@@ -228,6 +225,9 @@ enum Contours {
         return segments(grid.upsampled(to: max(4 * max(grid.nx, grid.ny), 48)), level: level)
     }
 
+    /// The segments of the `level` iso-line of `grid`, in the grid's x / y
+    /// units (samples at the nodes, spanning `xRange` × `yRange`). Cells
+    /// with a non-finite corner are skipped.
     static func segments(_ grid: Grid2D, level: Double) -> [Segment] {
         let nx = grid.nx, ny = grid.ny
         guard nx >= 2, ny >= 2, level.isFinite else { return [] }
@@ -276,8 +276,8 @@ enum Contours {
         return out
     }
 
-    /// Round contour levels within a range: `0.5, 0.6, … 0.9, 0.95` for
-    /// relative illumination, else about `count` nice steps.
+    /// Round contour levels strictly inside a range: about `count` nice
+    /// steps.
     static func levels(in r: ClosedRange<Double>, count: Int = 6) -> [Double] {
         guard r.upperBound > r.lowerBound, r.lowerBound.isFinite, r.upperBound.isFinite else { return [] }
         let step = Nice.length((r.upperBound - r.lowerBound) / Double(count))
@@ -292,7 +292,6 @@ enum Contours {
         return out
     }
 
-    /// Illumination levels 0.5…0.9 by 0.1 and 0.95, inside the data range.
     /// Iso-illumination levels: round values strictly inside the data's
     /// range, about five of them (0.88, 0.90, … for a map from 0.87 to 1).
     static func illuminationLevels(in r: ClosedRange<Double>) -> [Double] {
@@ -517,7 +516,7 @@ struct GlassMapData: Sendable {
 
     init?(output: AnalysisOutput) {
         guard let list = output.json["glasses"]?.array else { return nil }
-        let coords = output.buffer(ref: output.json["coordinates"]) ?? output.buffer(named: "coordinates")
+        let coords = output.buffer(key: "coordinates")
         let fromBuffer = coords.map { $0.shape.count == 2 && $0.shape[0] == list.count && $0.shape[1] == 3 } ?? false
         glasses = list.enumerated().map { k, g in
             let kind = GlassMapPoint.Kind(rawValue: g["kind"]?.string ?? "") ?? .catalog
@@ -726,7 +725,7 @@ struct ImageSimulationData: Sendable {
 
     init?(output: AnalysisOutput) {
         let j = output.json
-        guard let b = output.buffer(ref: j["image"]) ?? output.buffer(named: "image"), b.shape.count == 3 else { return nil }
+        guard let b = output.buffer(key: "image"), b.shape.count == 3 else { return nil }
         let h = b.shape[0], w = b.shape[1], c = b.shape[2]
         image = LinearImage(width: w, height: h, channels: c, data: b.doubles)
         guard image.isValid else { return nil }

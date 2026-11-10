@@ -18,11 +18,8 @@ pub struct WaveResult<T> {
 /// PupilFunction; no pupil disk or aperture approximation is introduced here.
 #[derive(Clone, Debug)]
 pub struct ResidentPupil {
-    /// Content identity of the supplied samples and geometry (not a GPU generation).
-    pub input_hash: String,
     pub covered_samples: usize,
     pub clear_area: f64,
-    pub max_phase_step: f64,
     pub amplitude: BufferHandle,
     pub coverage: BufferHandle,
     pub opd: BufferView,
@@ -41,18 +38,12 @@ impl ResidentPupil {
         ctx: &JobContext,
     ) -> MkResult<Self> {
         let n = p.n();
-        let mut hash = blake3::Hasher::new();
-        hash.update(
-            &serde_json::to_vec(&(n, p.wavelength_um(), p.geometry(), p.image_offset_mm()))
-                .unwrap(),
-        );
-        let mut fill = |src: &[f64]| {
+        let fill = |src: &[f64]| {
             backend.fill_buffer(BufferDesc::new(ElementType::F32, [n, n]), &mut |mut b| {
                 for (i, (a, &v)) in b.as_mut_slice::<f32>()?.iter_mut().zip(src).enumerate() {
                     if i % 4096 == 0 {
                         ctx.check()?;
                     }
-                    hash.update(&v.to_le_bytes());
                     *a = v as f32;
                 }
                 Ok(())
@@ -72,17 +63,14 @@ impl ResidentPupil {
                     if i % 4096 == 0 {
                         ctx.check()?;
                     }
-                    hash.update(&v.to_le_bytes());
                     *a = Df32::from_f64(v);
                 }
                 Ok(())
             },
         )?;
         Ok(Self {
-            input_hash: hash.finalize().to_hex().to_string(),
             covered_samples: p.coverage().iter().filter(|&&c| c > 0.).count(),
             clear_area: p.coverage().iter().sum::<f64>() * p.spacing().powi(2),
-            max_phase_step: p.max_phase_step(),
             amplitude,
             coverage,
             opd: opd.view(),
@@ -201,7 +189,7 @@ impl ResidentPupil {
         ));
         let mut b = self.geometry.surface_to_normal();
         // Match the reference's negligible-skew rule, including its origin,
-        // before satisfying P2's exactly diagonal ChirpZ contract.
+        // before satisfying the exactly diagonal ChirpZ contract.
         let separable = b[0][1].abs() < 1e-15 && b[1][0].abs() < 1e-15;
         if separable {
             b[0][1] = 0.;
@@ -323,10 +311,9 @@ impl ResidentPupil {
         ctx: &JobContext,
     ) -> MkResult<WaveResult<Psf>> {
         let mut p = ResidentPlan::new(snapshot);
-        p.settings = serde_json::json!({"p6":"psf","settings":settings,"pupil_grid":self.n});
+        p.settings = serde_json::json!({"operation":"psf","settings":settings,"pupil_grid":self.n});
         let output = self.append_psf(&mut p, settings, [0.; 2])?;
         p.outputs = vec![output.image, output.sums];
-        p.settings["pupil_input_hash"] = self.input_hash.clone().into();
         let mut r = backend.submit_plan(p, &ctx.subrange(0., 0.99))?.wait()?;
         r.run_info
             .warnings
@@ -352,10 +339,10 @@ impl ResidentPupil {
         ctx: &JobContext,
     ) -> MkResult<WaveResult<Psf>> {
         let mut p = ResidentPlan::new(snapshot);
-        p.settings = serde_json::json!({"p6":"huygens","settings":settings,"pupil_grid":self.n});
+        p.settings =
+            serde_json::json!({"operation":"huygens","settings":settings,"pupil_grid":self.n});
         let output = self.append_huygens(&mut p, settings)?;
         p.outputs = vec![output.image, output.sums];
-        p.settings["pupil_input_hash"] = self.input_hash.clone().into();
         let mut r = backend.submit_plan(p, &ctx.subrange(0., 0.99))?.wait()?;
         r.run_info
             .warnings
@@ -373,7 +360,7 @@ impl ResidentPupil {
             stats: r.stats,
         })
     }
-    /// All requested chief-axis focus shifts share a P2 sensor stencil and one
+    /// All requested chief-axis focus shifts share one sensor stencil and one
     /// tiled correlation operation; there is no plan or command per plane.
     pub fn through_focus_otf(
         &self,
@@ -400,7 +387,7 @@ impl ResidentPupil {
             },
         )?;
         let mut p = ResidentPlan::new(snapshot);
-        p.settings = serde_json::json!({"p6":"through_focus_otf","frequencies":frequencies,"chief_shifts_mm":shifts,"pupil_grid":self.n});
+        p.settings = serde_json::json!({"operation":"through_focus_otf","frequencies":frequencies,"chief_shifts_mm":shifts,"pupil_grid":self.n});
         let f = p.import(fs.view());
         let z = p.import(zs.view());
         let steps = p.scratch(BufferDesc::new(ElementType::F32, [shifts.len()]));
@@ -411,7 +398,6 @@ impl ResidentPupil {
             Some(steps),
         )?;
         p.outputs = vec![output, steps];
-        p.settings["pupil_input_hash"] = self.input_hash.clone().into();
         let mut r = backend.submit_plan(p, ctx)?.wait()?;
         focus::add_step_warning(
             &mut r.run_info.warnings,
@@ -571,12 +557,10 @@ impl ResidentPupil {
     ) -> MkResult<WaveResult<Vec<[f64; 2]>>> {
         let fs = frequency_buffer(backend, frequencies, ctx)?;
         let mut p = ResidentPlan::new(snapshot);
-        p.settings =
-            serde_json::json!({"p6":"direct_otf","frequencies":frequencies,"pupil_grid":self.n});
+        p.settings = serde_json::json!({"operation":"direct_otf","frequencies":frequencies,"pupil_grid":self.n});
         let id = p.import(fs.view());
         let output = self.append_correlation(&mut p, p_view(id, fs.desc()))?;
         p.outputs = vec![output];
-        p.settings["pupil_input_hash"] = self.input_hash.clone().into();
         let mut r = backend.submit_plan(p, ctx)?.wait()?;
         r.run_info
             .warnings
@@ -703,46 +687,6 @@ impl PsfOutput {
 mod resample;
 pub use resample::{from_resident_lattice, from_structured};
 
-/// Detector response for a sensor frequency batch, suitable for composing with
-/// the resident optical curves. Nyquist annotations remain small host metadata.
-pub fn detector_mtf(
-    backend: &dyn ComputeBackend,
-    snapshot: Snapshot,
-    settings: &crate::DetectorSettings,
-    frequencies: &[[f64; 2]],
-    ctx: &JobContext,
-) -> MkResult<WaveResult<Vec<f64>>> {
-    settings.validate()?;
-    let fs = frequency_buffer(backend, frequencies, ctx)?;
-    let mut p = ResidentPlan::new(snapshot);
-    p.settings =
-        serde_json::json!({"p6":"detector_mtf","detector":settings,"frequencies":frequencies});
-    let f = p.import(fs.view());
-    let output = p.scratch(BufferDesc::new(ElementType::F32, [frequencies.len()]));
-    let aperture = settings
-        .aperture_mm
-        .unwrap_or(settings.pitch_mm.map(|v| v * settings.fill_factor.sqrt()))
-        .map(|v| v as f32);
-    p.operations.push(ResidentOp::Wave(w::Request::Detector {
-        frequencies: p.view(f)?,
-        aperture,
-        sigma: settings.diffusion_sigma_mm as f32,
-        output,
-    }));
-    p.outputs = vec![output];
-    let r = backend.submit_plan(p, ctx)?.wait()?;
-    let value = backend
-        .read_view(r.outputs[0].view())?
-        .as_slice::<f32>()?
-        .iter()
-        .map(|v| *v as f64)
-        .collect();
-    Ok(WaveResult {
-        value,
-        run_info: r.run_info,
-        stats: r.stats,
-    })
-}
 mod statistics;
 pub use statistics::WavefrontStatistics;
 mod traced;
@@ -751,7 +695,6 @@ mod spectral;
 pub use spectral::{ResidentPsf, polychromatic_otf, polychromatic_otf_method, polychromatic_psf};
 pub mod analysis;
 mod energy;
-mod sampling;
 pub use energy::PsfMetrics;
 mod fft_mtf;
 mod focus;
@@ -762,22 +705,11 @@ pub use shells::{RadialBins, encircled_energy_batch};
 pub mod split;
 pub use split::HostPupil;
 
-/// Independent consumer chains run at once (`MKLIGHT_WAVE_CONCURRENT`; 1 runs
-/// them in order on the caller's thread).
+/// Independent consumer chains run at once.
 const CONCURRENT: usize = 4;
-fn concurrency() -> usize {
-    static N: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-    *N.get_or_init(|| {
-        std::env::var("MKLIGHT_WAVE_CONCURRENT")
-            .ok()
-            .and_then(|v| v.trim().parse().ok())
-            .unwrap_or(CONCURRENT)
-            .clamp(1, 16)
-    })
-}
 /// `f` over `items` on up to [`CONCURRENT`] scoped threads, results in item
 /// order. Each item is an independent chain of resident plans (a pupil's
-/// placement, a field's transforms) that waits on the device between plans;
+/// placement) that waits on the device between plans;
 /// running several keeps the device busy while each chain's host waits, reads
 /// back or prepares, and the backend's admission bounds what executes at
 /// once. Items share no mutable state, so results do not depend on the
@@ -786,7 +718,7 @@ pub(crate) fn concurrent<T: Sync, R: Send>(
     items: &[T],
     f: impl Fn(usize, &T) -> R + Sync,
 ) -> Vec<R> {
-    let threads = concurrency().min(items.len());
+    let threads = CONCURRENT.min(items.len());
     if threads <= 1 {
         return items.iter().enumerate().map(|(i, t)| f(i, t)).collect();
     }

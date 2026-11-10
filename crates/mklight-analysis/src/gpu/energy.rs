@@ -2,7 +2,10 @@ use super::*;
 use crate::{
     energy::*,
     spot::SpotReference,
-    util::{curved_image_warning, default_fields, field_value, linspace, pupil_points},
+    util::{
+        curved_image_warning, default_fields, diffraction_cutoff, field_value, linspace,
+        pupil_points, seed_of,
+    },
 };
 use mklight_gpu::{
     ReduceMode,
@@ -26,7 +29,7 @@ fn setup<'a>(
     delta: f64,
     ctx: &JobContext,
 ) -> MkResult<Setup<'a>> {
-    crate::spot::validate_sampling(s.pattern, s.rings)?;
+    crate::spot::validate_sampling(s.rings)?;
     crate::util::check_finite("defocus", delta)?;
     let fields = s.fields.resolve(t.fields().len())?;
     let wls = s
@@ -36,11 +39,7 @@ fn setup<'a>(
     let points: Vec<_> = fields.iter().map(|&i| t.field(i).point).collect();
     let geo = Geometry::new(b, t, ctx)?;
     let mut p = ResidentPlan::new(t.system().snapshot.clone());
-    p.seed = matches!(
-        s.pattern,
-        crate::util::PupilPattern::Random | crate::util::PupilPattern::Dithered
-    )
-    .then_some(s.seed);
+    p.seed = seed_of(s.pattern, s.seed);
     let mut g = geo.append_grid(
         &mut p,
         &points,
@@ -52,7 +51,7 @@ fn setup<'a>(
         false,
         ctx,
     )?;
-    geo.append_chiefs(&mut p, &mut g)?;
+    geo.append_chiefs(&mut p, &mut g, ctx)?;
     let (q, m) = geo.coordinates(&mut p, &g, delta, false)?;
     let moments = geo.moments(&mut p, q, m, g.pupil_count * wls.len(), true)?;
     Ok(Setup {
@@ -64,17 +63,6 @@ fn setup<'a>(
         moments,
         fields,
     })
-}
-fn evidence(run: &mut RunInfo, r: &PlanResult) {
-    run.duration_ms += r.run_info.duration_ms;
-    run.settings["extra_plans"]
-        .as_array_mut()
-        .unwrap()
-        .push(r.run_info.settings.clone());
-}
-fn begin(mut run: RunInfo) -> RunInfo {
-    run.settings["extra_plans"] = serde_json::json!([]);
-    run
 }
 fn warnings(t: &SequentialTracer, delta: f64) -> Vec<String> {
     let mut w = t.warnings().to_vec();
@@ -116,11 +104,6 @@ pub fn encircled_energy_with_uncertainty_job(
         ));
     }
     crate::energy::validate_ee(s)?;
-    if s.max_radius.is_some_and(|r| r <= 0.0 || !r.is_finite()) {
-        return Err(mklight_core::MkError::InvalidModel(
-            "maximum radius must be positive".into(),
-        ));
-    }
     let augmented = default_fields(t, &s.sampling.fields)?;
     let t = augmented.as_ref();
     let Setup {
@@ -171,7 +154,7 @@ pub fn encircled_energy_with_uncertainty_job(
         })
         .fold(0.0, f64::max);
     let radii = linspace(0.0, s.max_radius.unwrap_or(max), s.samples);
-    let mut run = begin(r.run_info.clone());
+    let mut run = r.run_info.clone();
     let mut ambiguous = Vec::new();
     let mut out = Vec::new();
     for (fi, &field) in fields.iter().enumerate() {
@@ -243,7 +226,7 @@ pub fn encircled_energy_with_uncertainty_job(
                 0.5 + 0.4 * (fi + 1) as f64 / fields.len() as f64,
             ),
         )?;
-        evidence(&mut run, &rr);
+        plans::add_run(&mut run, rr.run_info.clone());
         let mut uncertain = false;
         for h in &rr.outputs[2..] {
             let view = b.read_view(h.view())?;
@@ -300,96 +283,130 @@ pub fn geometric_mtf_job(
     s: &GeometricMtfSettings,
     ctx: &JobContext,
 ) -> MkResult<GeometricMtfResult> {
-    crate::energy::validate_mtf(s)?;
-    crate::spot::validate_sampling(s.sampling.pattern, s.sampling.rings)?;
-    crate::util::check_finite("defocus", s.defocus)?;
+    validate_mtf_job(s)?;
     let augmented = default_fields(t, &s.sampling.fields)?;
-    let t = augmented.as_ref();
-    let fields = s.sampling.fields.resolve(t.fields().len())?;
-    let wls = s
-        .sampling
-        .wavelengths
-        .resolve(t.num_wavelengths(), t.system().primary_wavelength)?;
-    let pupil = pupil_points(s.sampling.pattern, s.sampling.rings, s.sampling.seed);
-    let seed = matches!(
-        s.sampling.pattern,
-        crate::util::PupilPattern::Random | crate::util::PupilPattern::Dithered
-    )
-    .then_some(s.sampling.seed);
-    let geo = Geometry::new(b, t, ctx)?.split_large_generations()?;
-    let cutoff = 1.0
-        / (t.system().wavelengths_um[t.system().primary_wavelength]
-            * 1e-3
-            * t.paraxial().primary().working_f_number);
-    let freqs = linspace(
-        0.0,
-        s.max_frequency
-            .unwrap_or(if cutoff.is_finite() && cutoff > 0.0 {
-                cutoff
-            } else {
-                100.0
-            }),
-        s.frequency_samples,
-    );
-    let mut curves: Vec<_> = fields
-        .iter()
-        .flat_map(|&field| {
-            [
-                MtfCurve {
-                    field,
-                    orientation: MtfOrientation::Tangential,
-                    modulation: Vec::new(),
-                },
-                MtfCurve {
-                    field,
-                    orientation: MtfOrientation::Sagittal,
-                    modulation: Vec::new(),
-                },
-            ]
-        })
-        .collect();
-    let points: Vec<_> = fields.iter().map(|&i| t.field(i).point).collect();
-    let groups = plans::field_groups(fields.len(), wls.len() * pupil.len());
-    let len = pupil.len() * wls.len();
-    // Each group's grid plan is submitted once its rays are aimed; its
-    // characteristic tiles follow once its points exist, while the host
-    // aims the next group.
-    let mut run: Option<RunInfo> = None;
-    let mut tiles: std::collections::VecDeque<MtfTile> = Default::default();
-    let mut previous: Option<(std::ops::Range<usize>, plans::Submitted)> = None;
-    let progress = |k: usize| {
-        ctx.subrange(
-            0.9 * k as f64 / groups.len() as f64,
-            0.9 * (k + 1) as f64 / groups.len() as f64,
-        )
-    };
-    for (k, range) in groups.iter().enumerate() {
-        let sub = progress(k);
-        let mut p = ResidentPlan::new(t.system().snapshot.clone());
-        p.seed = seed;
-        p.settings = serde_json::to_value(s).unwrap();
-        let mut g = geo.append_grid(
-            &mut p,
-            &points[range.clone()],
-            &wls,
-            &pupil,
-            t.aiming(),
-            t.system().image_index(),
-            true,
-            false,
-            &sub,
-        )?;
-        geo.append_chiefs(&mut p, &mut g)?;
-        let (q, m) = geo.coordinates(&mut p, &g, s.defocus, false)?;
-        let moments = geo.moments(&mut p, q, m, len, true)?;
-        p.outputs = vec![q, m, moments];
-        let submitted = geo.submit(p, &sub)?;
-        if let Some((range, sub)) = previous.take() {
+    Geometry::new(b, augmented.as_ref(), ctx)?
+        .split_large_generations()
+        .geometric_mtf_job(s, ctx)
+}
+fn validate_mtf_job(s: &GeometricMtfSettings) -> MkResult<()> {
+    crate::energy::validate_mtf(s)?;
+    crate::spot::validate_sampling(s.sampling.rings)
+}
+impl Geometry<'_> {
+    /// [`geometric_mtf_job`] on this adapter: the fields of its tracer (plus
+    /// the default axis fields), with its aiming and thresholds.
+    pub fn geometric_mtf_job(
+        &self,
+        s: &GeometricMtfSettings,
+        ctx: &JobContext,
+    ) -> MkResult<GeometricMtfResult> {
+        validate_mtf_job(s)?;
+        let geo = self;
+        let augmented = default_fields(self.tracer, &s.sampling.fields)?;
+        let t = augmented.as_ref();
+        let fields = s.sampling.fields.resolve(t.fields().len())?;
+        let wls = s
+            .sampling
+            .wavelengths
+            .resolve(t.num_wavelengths(), t.system().primary_wavelength)?;
+        let pupil = pupil_points(s.sampling.pattern, s.sampling.rings, s.sampling.seed);
+        let seed = seed_of(s.sampling.pattern, s.sampling.seed);
+        let cutoff = diffraction_cutoff(
+            t.system().wavelengths_um[t.system().primary_wavelength],
+            t.paraxial().primary().working_f_number,
+        );
+        let freqs = linspace(
+            0.0,
+            s.max_frequency
+                .unwrap_or(if cutoff.is_finite() && cutoff > 0.0 {
+                    cutoff
+                } else {
+                    100.0
+                }),
+            s.frequency_samples,
+        );
+        let mut curves: Vec<_> = fields
+            .iter()
+            .flat_map(|&field| {
+                [
+                    MtfCurve {
+                        field,
+                        orientation: MtfOrientation::Tangential,
+                        modulation: Vec::new(),
+                    },
+                    MtfCurve {
+                        field,
+                        orientation: MtfOrientation::Sagittal,
+                        modulation: Vec::new(),
+                    },
+                ]
+            })
+            .collect();
+        let points: Vec<_> = fields.iter().map(|&i| t.field(i).point).collect();
+        let groups = geo.field_groups(fields.len(), wls.len() * pupil.len());
+        let len = pupil.len() * wls.len();
+        // Each group's grid plan is submitted once its rays are aimed; its
+        // characteristic tiles follow once its points exist, while the host
+        // aims the next group.
+        let mut run: Option<RunInfo> = None;
+        let mut tiles: std::collections::VecDeque<MtfTile> = Default::default();
+        let mut previous: Option<(usize, std::ops::Range<usize>, plans::Submitted)> = None;
+        // Each group's slice of the progress: its grid, then its tiles.
+        let progress = |k: usize, from: f64, to: f64| {
+            ctx.subrange(
+                k as f64 / groups.len() as f64,
+                (k + 1) as f64 / groups.len() as f64,
+            )
+            .subrange(from, to)
+        };
+        for (k, range) in groups.iter().enumerate() {
+            let sub = progress(k, 0.0, 0.9);
+            let mut p = ResidentPlan::new(t.system().snapshot.clone());
+            p.seed = seed;
+            p.settings = serde_json::to_value(s).unwrap();
+            let mut g = geo.append_grid(
+                &mut p,
+                &points[range.clone()],
+                &wls,
+                &pupil,
+                t.aiming(),
+                t.system().image_index(),
+                true,
+                false,
+                &sub,
+            )?;
+            geo.append_chiefs(&mut p, &mut g, &sub)?;
+            let (q, m) = geo.coordinates(&mut p, &g, s.defocus, false)?;
+            let moments = geo.moments(&mut p, q, m, len, true)?;
+            p.outputs = vec![q, m, moments];
+            let submitted = geo.submit(p, &sub)?;
+            if let Some((k, range, sub)) = previous.take() {
+                let r = geo.finish(sub)?;
+                let info = r.run_info.clone();
+                plans::merge_run(&mut run, info);
+                mtf_tiles(
+                    geo,
+                    t,
+                    &fields,
+                    range,
+                    &r,
+                    &freqs,
+                    len,
+                    &mut tiles,
+                    &mut curves,
+                    &mut run,
+                    &progress(k, 0.9, 1.0),
+                )?;
+            }
+            previous = Some((k, range.clone(), submitted));
+        }
+        if let Some((k, range, sub)) = previous.take() {
             let r = geo.finish(sub)?;
             let info = r.run_info.clone();
             plans::merge_run(&mut run, info);
             mtf_tiles(
-                &geo,
+                geo,
                 t,
                 &fields,
                 range,
@@ -399,42 +416,23 @@ pub fn geometric_mtf_job(
                 &mut tiles,
                 &mut curves,
                 &mut run,
-                ctx,
+                &progress(k, 0.9, 1.0),
             )?;
         }
-        previous = Some((range.clone(), submitted));
+        while let Some(tile) = tiles.pop_front() {
+            tile.finish(geo, &mut curves, &mut run)?;
+        }
+        let run = run.unwrap();
+        ctx.report(1.0, "geometric MTF");
+        Ok(GeometricMtfResult {
+            frequencies: freqs,
+            curves,
+            diffraction_limit: None,
+            cutoff_frequency: cutoff,
+            field_values: fields.iter().map(|&f| field_value(t, f)).collect(),
+            run_info: stamp(run, "geometric_mtf", s, warnings(t, s.defocus)),
+        })
     }
-    if let Some((range, sub)) = previous.take() {
-        let r = geo.finish(sub)?;
-        let info = r.run_info.clone();
-        plans::merge_run(&mut run, info);
-        mtf_tiles(
-            &geo,
-            t,
-            &fields,
-            range,
-            &r,
-            &freqs,
-            len,
-            &mut tiles,
-            &mut curves,
-            &mut run,
-            ctx,
-        )?;
-    }
-    while let Some(tile) = tiles.pop_front() {
-        tile.finish(&geo, &mut curves, &mut run)?;
-    }
-    let run = run.unwrap();
-    ctx.report(1.0, "geometric MTF");
-    Ok(GeometricMtfResult {
-        frequencies: freqs,
-        curves,
-        diffraction_limit: None,
-        cutoff_frequency: cutoff,
-        field_values: fields.iter().map(|&f| field_value(t, f)).collect(),
-        run_info: stamp(run, "geometric_mtf", s, warnings(t, s.defocus)),
-    })
 }
 /// Characteristic-function tiles in flight at most; older tiles are
 /// collected before more are submitted.
@@ -477,7 +475,8 @@ impl MtfTile {
     }
 }
 /// Submit the characteristic tiles of one field group (positions `range`)
-/// whose grid plan `r` produced its points, mask and moments.
+/// whose grid plan `r` produced its points, mask and moments. `ctx` is the
+/// tiles' slice of the progress, shared by frequency.
 #[allow(clippy::too_many_arguments)]
 fn mtf_tiles(
     geo: &Geometry<'_>,
@@ -574,7 +573,13 @@ fn mtf_tiles(
             fields: range.clone(),
             batch,
             weights: weights.clone(),
-            submitted: geo.submit(p, &ctx.subrange(0.9, 1.0))?,
+            submitted: geo.submit(
+                p,
+                &ctx.subrange(
+                    start as f64 / freqs.len() as f64,
+                    end as f64 / freqs.len() as f64,
+                ),
+            )?,
         });
     }
     Ok(())
@@ -623,7 +628,7 @@ pub fn best_focus_job(
         quad,
     ];
     let r = geo.run(p, &ctx.subrange(0.0, 0.8))?;
-    let mut run = begin(r.run_info.clone());
+    let mut run = r.run_info.clone();
     let m0 = b.read_view(r.outputs[4].view())?;
     let m0 = m0.as_slice::<Df32>()?;
     let quad = b.read_view(r.outputs[5].view())?;
@@ -730,7 +735,7 @@ pub fn best_focus_job(
     let m = geo.moments(&mut p, q, m, len, true)?;
     p.outputs = vec![m];
     let rr = geo.run(p, &ctx.subrange(0.8, 0.99))?;
-    evidence(&mut run, &rr);
+    plans::add_run(&mut run, rr.run_info.clone());
     let v = b.read_view(rr.outputs[0].view())?;
     let v = v.as_slice::<Df32>()?;
     let field_rms: Vec<_> = used

@@ -30,7 +30,7 @@ public struct TolerancePreview: Sendable {
 
     public init?(json: JSONValue?, case c: TolerancePreviewCase) {
         guard let j = json, j.object != nil,
-            let s = j["system"].flatMap({ try? MKLightJSON.decode(OpticalSystem.self, from: MKLightJSON.encode($0)) })
+            let s = j["system"].flatMap({ try? $0.decode(OpticalSystem.self) })
         else { return nil }
         previewCase = c
         system = s
@@ -494,7 +494,6 @@ public struct ToleranceResult: Sendable {
     public var sensitivities: [Sensitivity]
     public var rssChange: Double
     public var predicted: Double
-    public var evaluations: Int
     public var sensitivityCancelled: Bool
     // Monte Carlo
     public var trials: Int
@@ -517,14 +516,13 @@ public struct ToleranceResult: Sendable {
     public var threshold: Double?
     public var compensatorMean: [Double]
     public var compensatorStd: [Double]
-    public var monteCarloCancelled: Bool
 
     public init(json: JSONValue, system: OpticalSystem?, display: CriterionDisplay = .merit) {
         self.display = display
         status = json["status"]?.string ?? ""
         stopped = json["stopped"]?.bool ?? (status == "stopped")
         compensators = (json["compensators"]?.array ?? []).compactMap { c in
-            guard let p = c["param"].flatMap({ try? MKLightJSON.decode(ParamPath.self, from: MKLightJSON.encode($0)) }) else { return nil }
+            guard let p = c["param"].flatMap({ try? $0.decode(ParamPath.self) }) else { return nil }
             return Compensator(param: p, range: c["range"]?.nf.flatMap { $0.isFinite ? $0 : nil })
         }
         let s = json["sensitivity"].flatMap { $0 == .null ? nil : $0 }
@@ -534,7 +532,7 @@ public struct ToleranceResult: Sendable {
         nominal = nominalJSON?["criterion"]?.nf ?? .nan
         nominalCompensators = nominalJSON?["compensators"]?.nfArray ?? []
         let ops = (s?["operands"]?.array ?? []).enumerated().map { k, o -> Sensitivity in
-            let path = o["param"].flatMap { try? MKLightJSON.decode(ParamPath.self, from: MKLightJSON.encode($0)) }
+            let path = o["param"].flatMap { try? $0.decode(ParamPath.self) }
             var label = o["label"]?.string ?? ""
             if label.isEmpty || label.hasPrefix("{"), let path, let system { label = path.label(in: system) }
             return Sensitivity(
@@ -549,7 +547,6 @@ public struct ToleranceResult: Sendable {
         sensitivities = ranked.count == ops.count ? ranked : ops.sorted { ($0.worst.isFinite ? $0.worst : -.infinity) > ($1.worst.isFinite ? $1.worst : -.infinity) }
         rssChange = s?["rss_change"]?.nf ?? .nan
         predicted = s?["predicted_criterion"]?.nf ?? .nan
-        evaluations = s?["evaluations"]?.int ?? 0
         sensitivityCancelled = s?["cancelled"]?.bool ?? false
         trials = mc?["trials"]?.int ?? 0
         failures = mc?["failures"]?.int ?? 0
@@ -575,7 +572,6 @@ public struct ToleranceResult: Sendable {
         threshold = mc?["threshold"]?.nf.flatMap { $0.isFinite ? $0 : nil }
         compensatorMean = mc?["compensator_mean"]?.nfArray ?? []
         compensatorStd = mc?["compensator_std"]?.nfArray ?? []
-        monteCarloCancelled = mc?["cancelled"]?.bool ?? false
     }
 
     public var hasMonteCarlo: Bool { trials > 0 }

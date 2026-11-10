@@ -98,7 +98,7 @@ pub fn validate(r: &Lattice, p: &ResidentPlan) -> MkResult<()> {
             status,
             output,
         } => {
-            let n = samples.desc.shape[0];
+            let n = samples.desc.shape.first().copied().unwrap_or(0);
             view(samples, U32, &[n, 8])?;
             view(status, U32, &[3, n])?;
             out(p, *output, U32, &[n])
@@ -115,7 +115,7 @@ pub fn validate(r: &Lattice, p: &ResidentPlan) -> MkResult<()> {
             source,
             final_point,
         } => {
-            let n = edges.desc.shape[0];
+            let n = edges.desc.shape.first().copied().unwrap_or(0);
             view(edges, DoubleFloat, &[n, 4])?;
             view(fields, U32, &[n])?;
             if previous.is_some() != status.is_some()
@@ -316,8 +316,8 @@ pub fn cpu(r: &Lattice, x: &mut crate::resident::cpu::Execution, ctl: &JobContro
             table,
             output,
         } => {
-            let i = values::<u32>(x, indices).to_vec();
-            let t = values::<u32>(x, table).to_vec();
+            let i = x.rows::<u32>(indices).to_vec();
+            let t = x.rows::<u32>(table).to_vec();
             let n = i.len() / 2;
             let out = x.words_mut(*output);
             for k in 0..n {
@@ -355,8 +355,8 @@ pub fn cpu(r: &Lattice, x: &mut crate::resident::cpu::Execution, ctl: &JobContro
             status,
             output,
         } => {
-            let s: &[Sample] = bytemuck::cast_slice(values::<u32>(x, samples));
-            let t = values::<u32>(x, status);
+            let s: &[Sample] = bytemuck::cast_slice(x.rows::<u32>(samples));
+            let t = x.rows::<u32>(status);
             let a: Vec<u32> = s
                 .iter()
                 .enumerate()
@@ -382,12 +382,12 @@ pub fn cpu(r: &Lattice, x: &mut crate::resident::cpu::Execution, ctl: &JobContro
             samples,
             source,
         } => {
-            let e = values::<Df32>(x, edges).as_chunks::<4>().0;
-            let fields = values::<u32>(x, fields);
+            let e = x.rows::<Df32>(edges).as_chunks::<4>().0;
+            let fields = x.rows::<u32>(fields);
             let prev = previous
                 .as_ref()
-                .map(|v| values::<Df32>(x, v).as_chunks::<8>().0);
-            let st = status.as_ref().map(|v| values::<u32>(x, v));
+                .map(|v| x.rows::<Df32>(v).as_chunks::<8>().0);
+            let st = status.as_ref().map(|v| x.rows::<u32>(v));
             let mut a = vec![[Df32::ZERO; 8]; e.len()];
             let mut from = vec![u32::MAX; e.len()];
             let parts = 1usize << levels;
@@ -495,7 +495,7 @@ pub fn cpu(r: &Lattice, x: &mut crate::resident::cpu::Execution, ctl: &JobContro
             source,
             outputs,
         } => {
-            let from = values::<u32>(x, source).to_vec();
+            let from = x.rows::<u32>(source).to_vec();
             let n = from.len();
             for (c, (v, rows)) in channels.iter().enumerate() {
                 ctl.check()?;

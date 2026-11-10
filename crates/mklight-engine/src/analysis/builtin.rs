@@ -1,6 +1,5 @@
-//! Model analyses (`validate`, `system_summary`, `glass_info`), the
-//! `rng_stream` diagnostic, and placeholders that reserve the names of the
-//! wave-optics analyses still to be wired in.
+//! Model analyses (`validate`, `system_summary`, `glass_info`) and the
+//! `rng_stream` diagnostic.
 
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -14,32 +13,23 @@ use mklight_core::{
     ApertureSpec, Interaction, JobContext, MaterialRef, MkError, SemiDiameter, SurfaceShape,
 };
 
+use super::geometric::parse;
 use super::{Analysis, AnalysisInput, AnalysisOutput, AnalysisRegistry};
 use crate::buffer::{Buffer, BufferData};
-use crate::error::{EngineError, EngineResult};
+use crate::error::EngineResult;
 use crate::validation::{self, Issue};
 
-/// Register every built-in analysis and placeholder (registered first, so
-/// the real analyses registered after them replace placeholders).
+/// Register every built-in analysis.
 pub fn register_all(r: &mut AnalysisRegistry) {
     r.register(Arc::new(Validate));
     r.register(Arc::new(SystemSummary));
     r.register(Arc::new(GlassInfo));
     r.register(Arc::new(RngStream));
-    for p in PLANNED {
-        r.register(Arc::new(Planned(p)));
-    }
 }
 
 /// `±∞` as the strings `"inf"`/`"-inf"` (CONVENTIONS §2), NaN as null.
 fn num(x: f64) -> Value {
-    if x.is_nan() {
-        Value::Null
-    } else if x.is_infinite() {
-        json!(if x > 0.0 { "inf" } else { "-inf" })
-    } else {
-        json!(x)
-    }
+    serde_json::to_value(mklight_analysis::util::nf::Num(x)).unwrap_or(Value::Null)
 }
 
 /// Abbe number `(n_d − 1)/(n_F − n_C)` of a medium, `None` when it does not
@@ -47,11 +37,6 @@ fn num(x: f64) -> Value {
 fn abbe(n: impl Fn(f64) -> f64) -> Option<f64> {
     let dfc = n(lines::F) - n(lines::C);
     (dfc.abs() > 1e-12).then(|| (n(lines::D) - 1.0) / dfc)
-}
-
-fn parse<T: for<'de> Deserialize<'de>>(settings: &Value) -> EngineResult<T> {
-    serde_json::from_value(settings.clone())
-        .map_err(|e| EngineError::InvalidSettings(e.to_string()))
 }
 
 // ---------------------------------------------------------------------------
@@ -865,79 +850,12 @@ impl Analysis for RngStream {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Placeholders
-
-/// A reserved analysis name whose solver is not wired in yet.
-pub struct PlannedAnalysis {
-    pub name: &'static str,
-    pub title: &'static str,
-    pub category: &'static str,
-    /// Crate that will provide it.
-    pub provider: &'static str,
-}
-
-/// PLACEHOLDERS: the wave-optics analyses `mklight-wave` registers under
-/// these names (each replacing its placeholder with one `register` line in
-/// `analysis::register_all`). They are listed with `available: false`, and
-/// submitting one fails with `AnalysisUnavailable`.
-pub const PLANNED: &[PlannedAnalysis] = &[
-    PlannedAnalysis {
-        name: "wavefront_map",
-        title: "Wavefront map",
-        category: "wave",
-        provider: "mklight-wave",
-    },
-    PlannedAnalysis {
-        name: "psf",
-        title: "Point spread function",
-        category: "wave",
-        provider: "mklight-wave",
-    },
-    PlannedAnalysis {
-        name: "mtf",
-        title: "MTF",
-        category: "wave",
-        provider: "mklight-wave",
-    },
-];
-
-struct Planned(&'static PlannedAnalysis);
-
-impl Analysis for Planned {
-    fn name(&self) -> &str {
-        self.0.name
-    }
-    fn title(&self) -> &str {
-        self.0.title
-    }
-    fn category(&self) -> &str {
-        self.0.category
-    }
-    fn availability(&self) -> Result<(), String> {
-        Err(format!(
-            "provided by {}, which is not wired into the engine yet",
-            self.0.provider
-        ))
-    }
-    fn run(
-        &self,
-        _: &AnalysisInput<'_>,
-        _: &Value,
-        _: &JobContext,
-    ) -> EngineResult<AnalysisOutput> {
-        Err(EngineError::AnalysisUnavailable {
-            name: self.0.name.into(),
-            reason: self.availability().unwrap_err(),
-        })
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::analysis::run_analysis;
     use crate::backend::BackendInfo;
+    use crate::error::EngineError;
     use mklight_core::{MaterialRef, OpticalSystem, Snapshot, Surface};
 
     fn singlet() -> OpticalSystem {
@@ -962,9 +880,7 @@ mod tests {
         sys: OpticalSystem,
         settings: Value,
     ) -> EngineResult<super::super::AnalysisResult> {
-        // The placeholders again, over the solvers that replace them.
-        let mut reg = AnalysisRegistry::with_builtin();
-        register_all(&mut reg);
+        let reg = AnalysisRegistry::with_builtin();
         let a = reg.get(name)?;
         let input = AnalysisInput::new(
             Snapshot::new(sys).unwrap(),
@@ -1161,12 +1077,8 @@ mod tests {
     }
 
     #[test]
-    fn placeholders_are_unavailable() {
-        let mut reg = AnalysisRegistry::with_builtin();
-        register_all(&mut reg);
-        let info = reg.list();
-        let psf = info.iter().find(|i| i.name == "psf").unwrap();
-        assert!(!psf.available && psf.unavailable_reason.is_some());
+    fn listing_reports_availability_and_defaults() {
+        let info = AnalysisRegistry::with_builtin().list();
         let spot = info.iter().find(|i| i.name == "spot_diagram").unwrap();
         assert!(spot.available && spot.gpu_path);
         assert!(
@@ -1175,10 +1087,6 @@ mod tests {
                 .unwrap()
                 .available
         );
-        assert!(matches!(
-            run("mtf", singlet(), Value::Null),
-            Err(EngineError::AnalysisUnavailable { .. })
-        ));
         // glass_info needs a name, so it has no complete defaults.
         assert_eq!(
             info.iter()

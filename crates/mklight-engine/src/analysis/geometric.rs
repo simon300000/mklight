@@ -27,7 +27,7 @@ use mklight_analysis::{
     curvature, energy, fans, footprint_overlay, illumination, layout, seidel, spot, system_data,
     util,
 };
-use mklight_core::JobContext;
+use mklight_core::{JobContext, MkError};
 use mklight_trace::{Grid, SequentialTracer, TraceOptions, trace_grid_job};
 
 use super::gpu;
@@ -85,9 +85,6 @@ impl Analysis for Geo {
         } else {
             1
         }
-    }
-    fn gpu_path(&self) -> bool {
-        gpu::GPU_ANALYSES.contains(&self.name)
     }
     fn seed(&self, settings: &Value) -> Option<u64> {
         (self.seed)(settings)
@@ -252,9 +249,13 @@ fn through_focus_schema() -> Value {
     s
 }
 
-fn sampling_annotations(extra: Value) -> Value {
+/// Annotations of a flattened pupil sampling. `rings` annotates the
+/// density: [`a_dense_rings`] where the default is `RaySampling`'s dense
+/// square pattern, [`a_rings`] where the analysis defaults to fewer rings
+/// than the preview density (the preview tier then keeps the default).
+fn sampling_annotations(rings: Value, extra: Value) -> Value {
     let mut a = json!({
-        "pattern": a_pattern(), "rings": a_dense_rings(), "fields": a_fields(),
+        "pattern": a_pattern(), "rings": rings, "fields": a_fields(),
         "wavelengths": a_wavelengths(), "seed": a_seed()
     });
     if let (Value::Object(m), Value::Object(e)) = (&mut a, extra) {
@@ -476,7 +477,7 @@ fn all() -> Vec<Geo> {
                 let r = gpu::native_job!(
                     input,
                     |b| mklight_analysis::gpu::longitudinal_aberration_job(b, t, &settings, c),
-                    seidel::longitudinal_aberration(t, &settings)
+                    seidel::longitudinal_aberration_job(t, &settings, c)
                 )?;
                 let (v, w) = crate_json(&r)?;
                 Ok(output(v, vec![], w))
@@ -565,6 +566,7 @@ fn all() -> Vec<Geo> {
                           outlines on every surface for a 3-D overlay. Points in typed buffers.",
             settings: || {
                 settings_from_default::<illumination::FootprintSettings>(sampling_annotations(
+                    a_rings(),
                     json!({
                         "surface": a_count(1, 100_000, "Surface index (1 … image).")
                     }),
@@ -581,6 +583,7 @@ fn all() -> Vec<Geo> {
                           with r50/r80/r90. GPU path.",
             settings: || {
                 settings_from_default::<energy::EncircledEnergySettings>(sampling_annotations(
+                    a_dense_rings(),
                     json!({
                         "reference": a_reference(),
                         "defocus": {"unit": "mm", "description": "Defocus from the image surface."},
@@ -599,11 +602,14 @@ fn all() -> Vec<Geo> {
             description: "Geometric (ray-based) MTF, tangential and sagittal, per field. No \
                           diffraction: compare with the wave-optics MTF. GPU path.",
             settings: || {
-                settings_from_default::<energy::GeometricMtfSettings>(sampling_annotations(json!({
-                    "defocus": {"unit": "mm", "description": "Defocus from the image surface."},
-                    "max_frequency": {"type": ["number", "null"], "minimum": 0.0, "unit": "cycles/mm", "description": "Highest frequency; null = the diffraction cutoff 1/(λN_w) at the primary wavelength."},
-                    "frequency_samples": a_count(2, 100_000, "Frequency samples from 0 to max_frequency.")
-                })))
+                settings_from_default::<energy::GeometricMtfSettings>(sampling_annotations(
+                    a_dense_rings(),
+                    json!({
+                        "defocus": {"unit": "mm", "description": "Defocus from the image surface."},
+                        "max_frequency": {"type": ["number", "null"], "minimum": 0.0, "unit": "cycles/mm", "description": "Highest frequency; null = the diffraction cutoff 1/(λN_w) at the primary wavelength."},
+                        "frequency_samples": a_count(2, 100_000, "Frequency samples from 0 to max_frequency.")
+                    }),
+                ))
             },
             result: geometric_mtf_schema,
             run: run_geometric_mtf,
@@ -615,13 +621,16 @@ fn all() -> Vec<Geo> {
             description: "Defocus minimising the field-weighted mean RMS spot radius (Brent), \
                           with per-field RMS at best and current focus. GPU path.",
             settings: || {
-                settings_from_default::<energy::BestFocusSettings>(sampling_annotations(json!({
-                    "reference": a_reference(),
-                    "range": {"type": ["array", "null"], "items": {"type": "number"}, "unit": "mm", "description": "Search range [min, max] of the defocus; null = automatic."},
-                    "tolerance": {"minimum": 0.0, "unit": "mm", "description": "Absolute tolerance on the defocus."},
-                    "max_evaluations": a_count(3, 100_000, "Merit evaluations allowed."),
-                    "through_focus_samples": a_count(0, 100_000, "Samples of the through-focus merit curve (0: none).")
-                })))
+                settings_from_default::<energy::BestFocusSettings>(sampling_annotations(
+                    a_rings(),
+                    json!({
+                        "reference": a_reference(),
+                        "range": {"type": ["array", "null"], "items": {"type": "number"}, "unit": "mm", "description": "Search range [min, max] of the defocus; null = automatic."},
+                        "tolerance": {"minimum": 0.0, "unit": "mm", "description": "Absolute tolerance on the defocus."},
+                        "max_evaluations": a_count(3, 100_000, "Merit evaluations allowed."),
+                        "through_focus_samples": a_count(0, 100_000, "Samples of the through-focus merit curve (0: none).")
+                    }),
+                ))
             },
             result: best_focus_schema,
             run: run_best_focus,
@@ -633,7 +642,9 @@ fn all() -> Vec<Geo> {
             description: "Image-surface hits (local frame) and directions of a fields × \
                           wavelengths × pupil ray grid, plus the chief rays, as typed buffers \
                           (NaN for rays that did not arrive). GPU path.",
-            settings: || settings_from_default::<RayGridSettings>(sampling_annotations(json!({}))),
+            settings: || {
+                settings_from_default::<RayGridSettings>(sampling_annotations(a_rings(), json!({})))
+            },
             result: ray_grid_schema,
             run: run_ray_grid,
             seed: pattern_seed,
@@ -712,7 +723,10 @@ pub(super) fn paraxial_xy_schema() -> Value {
 
 fn first_order_schema() -> Value {
     let entry = obj(&[
-        ("key", string("Stable key (e.g. `efl`, `bfl`, `epd`).")),
+        (
+            "key",
+            string("Stable key (e.g. `efl`, `bfl`, `entrance_pupil_diameter`)."),
+        ),
         ("label", string("Display label.")),
         ("value", nf()),
         ("unit", string("Unit of `value` (`mm`, `°`, or empty).")),
@@ -1841,7 +1855,7 @@ fn run_footprint(
     )?;
     let mut r = r;
     let rays = std::mem::take(&mut r.rays);
-    let (mut v, w) = crate_json(&r)?;
+    let (mut v, mut w) = crate_json(&r)?;
     v.as_object_mut().map(|o| o.remove("rays"));
     let (n, m) = rays.iter().fold((0, 0), |(n, m), r| {
         (n + r.points.len(), m + r.clipped.len())
@@ -1872,6 +1886,11 @@ fn run_footprint(
         None => footprint_overlay::footprint_overlay_job(t, &settings, &ctx.subrange(0.3, 1.0))?,
     };
     v["overlays"] = serde_json::to_value(o.sets)?;
+    for warning in o.run_info.warnings {
+        if !w.contains(&warning) {
+            w.push(warning);
+        }
+    }
     let (n, m) = (pts.len() / 2, clipped.len() / 2);
     let buffers = vec![
         Buffer::new("points", vec![n, 2], BufferData::F64(pts)),
@@ -2175,6 +2194,7 @@ fn run_ray_grid(
     let pupil = util::pupil_points(sm.pattern, sm.rings, sm.seed);
     let (nf, nw, np) = (fields.len(), wls.len(), pupil.len());
     let mut chief = vec![f64::NAN; nf * nw * 2];
+    let mut warnings = t.warnings().to_vec();
     let (points, dirs) = if let Some(d) = gpu::device(input) {
         // The device job already widened the hits into the buffer layout.
         let h = mklight_analysis::gpu::ray_grid_job(
@@ -2184,10 +2204,21 @@ fn run_ray_grid(
             &ctx.subrange(0.0, 0.95),
         )?;
         gpu::record_native(input, &h.run_info);
-        let (mut p, mut d) = (h.points, h.directions);
-        p.resize(nf * nw * np * 2, f64::NAN);
-        d.resize(nf * nw * np * 3, f64::NAN);
-        (p, d)
+        let rays = nf * nw * np;
+        if h.points.len() != 2 * rays || h.directions.len() != 3 * rays {
+            return Err(MkError::Backend(format!(
+                "ray_grid: the device returned {} point and {} direction values for {rays} rays",
+                h.points.len(),
+                h.directions.len()
+            ))
+            .into());
+        }
+        for warning in h.run_info.warnings {
+            if !warnings.contains(&warning) {
+                warnings.push(warning);
+            }
+        }
+        (h.points, h.directions)
     } else {
         let mut points = vec![f64::NAN; nf * nw * np * 2];
         let mut dirs = vec![f64::NAN; nf * nw * np * 3];
@@ -2234,5 +2265,5 @@ fn run_ray_grid(
         Buffer::new("directions", vec![nf, nw, np, 3], BufferData::F64(dirs)),
         Buffer::new("chief", vec![nf, nw, 2], BufferData::F64(chief)),
     ];
-    Ok(output(json, buffers, t.warnings().to_vec()))
+    Ok(output(json, buffers, warnings))
 }

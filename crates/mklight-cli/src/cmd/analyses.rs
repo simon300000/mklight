@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use mklight_engine::backend::Backend;
 use mklight_engine::buffer::BufferData;
 use mklight_engine::fsutil::atomic_write;
-use mklight_engine::{AnalysisRequest, AnalysisResult, Engine, EngineError, JobState, JobStatus};
+use mklight_engine::{AnalysisRequest, AnalysisResult, EngineError, JobState, JobStatus};
 
 use super::{Ctx, Report, warning_lines};
 use crate::cli::{AimStopChoice, AnalysesArgs, BackendChoice, RunArgs, TierChoice};
@@ -152,16 +152,17 @@ pub fn parse_settings(arg: Option<&str>) -> CliResult<Value> {
     Ok(v)
 }
 
-/// Resolve the `--backend` choice. `auto` is the engine's `auto`: the
-/// first available GPU backend that implements the analysis and qualifies
-/// for the system, else the CPU reference (the envelope's `backend` says
-/// which, and why); `metal` is an explicit request (an error if unavailable
-/// or not implemented for the analysis).
-pub fn choose_backend(_engine: &Engine, _analysis: &str, choice: BackendChoice) -> Backend {
-    match choice {
-        BackendChoice::Cpu => Backend::CpuReference,
-        BackendChoice::Metal => Backend::Gpu("metal".into()),
-        BackendChoice::Auto => Backend::Auto,
+/// The `--backend` choice as an engine backend. `auto` is the engine's
+/// `auto` (the envelope's `backend` says what ran, and why); `metal` is an
+/// explicit request (an error if unavailable or not implemented for the
+/// analysis).
+impl From<BackendChoice> for Backend {
+    fn from(choice: BackendChoice) -> Self {
+        match choice {
+            BackendChoice::Cpu => Backend::CpuReference,
+            BackendChoice::Metal => Backend::Gpu("metal".into()),
+            BackendChoice::Auto => Backend::Auto,
+        }
     }
 }
 
@@ -247,8 +248,8 @@ pub fn run(ctx: &Ctx, a: &RunArgs) -> CliResult<Report> {
     let req = AnalysisRequest {
         analysis: a.analysis.clone(),
         settings,
-        view_key: Some(format!("cli/{}", a.analysis)),
-        backend: Some(choose_backend(engine, &a.analysis, a.backend)),
+        view_key: None,
+        backend: Some(a.backend.into()),
         allow_backend_fallback: false,
         tier: match a.tier {
             TierChoice::Design => mklight_core::Tier::Design,
@@ -263,7 +264,8 @@ pub fn run(ctx: &Ctx, a: &RunArgs) -> CliResult<Report> {
     signal::install();
     let job = session.submit_analysis(&req)?;
     let started = Instant::now();
-    let timeout = a.timeout.map(Duration::from_secs_f64);
+    // A timeout too long for a `Duration` never expires.
+    let timeout = a.timeout.and_then(|t| Duration::try_from_secs_f64(t).ok());
     let mut cancelled_by: Option<CancelReason> = None;
     let mut stopping = false;
     let mut last_shown: Option<(i64, String)> = None;
@@ -387,7 +389,7 @@ fn finish_done(ctx: &Ctx, a: &RunArgs, result: &AnalysisResult) -> CliResult<Rep
         json!({"out": out.display().to_string(), "run_info": env["run_info"]})
     } else {
         text.push_str("\nresult:\n");
-        text.push_str(&output::to_pretty(&result.json));
+        text.push_str(&output::to_pretty(&env["result"]));
         if !result.buffers.is_empty() {
             let mut t = Table::new(&[
                 ("buffer", Align::Left),
@@ -427,23 +429,6 @@ mod tests {
                 .unwrap_err()
                 .exit,
             Exit::Io
-        );
-    }
-
-    #[test]
-    fn auto_backend_is_the_engines_auto() {
-        let e = Engine::default();
-        assert_eq!(
-            choose_backend(&e, "system_summary", BackendChoice::Auto),
-            Backend::Auto
-        );
-        assert_eq!(
-            choose_backend(&e, "x", BackendChoice::Cpu),
-            Backend::CpuReference
-        );
-        assert_eq!(
-            choose_backend(&e, "x", BackendChoice::Metal),
-            Backend::Gpu("metal".into())
         );
     }
 

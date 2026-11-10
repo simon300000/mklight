@@ -112,12 +112,6 @@ pub struct Records {
     pub failures: BufferId,
 }
 #[derive(Clone, Debug)]
-pub struct CloseFocus {
-    pub hits: ResidentHits,
-    pub output: BufferId,
-    pub status: BufferId,
-}
-#[derive(Clone, Debug)]
 pub struct Coddington {
     pub systems: crate::SystemHandle,
     pub hits: ResidentHits,
@@ -184,7 +178,6 @@ pub enum Request {
     FieldData(FieldData),
     Records(Records),
     Coddington(Coddington),
-    CloseFocus(CloseFocus),
     IlluminationRays(IlluminationRays),
     Opd(Opd),
     FocusTerms(FocusTerms),
@@ -294,17 +287,6 @@ pub fn validate(r: &Request, p: &ResidentPlan) -> MkResult<()> {
                 U32,
                 &[n, crate::consts::MKL_RI_RAY_WORDS as usize],
             )
-        }
-        Request::CloseFocus(r) => {
-            let n = r.hits.rays.count;
-            if n % 5 != 0 {
-                return Err(bad("close-ray pencil probes"));
-            }
-            for v in hit_views(&r.hits) {
-                output(p, v.buffer, v.desc.element, &v.desc.shape)?;
-            }
-            output(p, r.output, D, &[n / 5, 3])?;
-            output(p, r.status, U32, &[n / 5])
         }
         Request::Coddington(r) => {
             let n = r.hits.rays.count;
@@ -463,12 +445,7 @@ pub fn accesses(r: &Request) -> Access {
         }
         Request::IlluminationRays(r) => {
             a.reads = vec![r.fields.clone(), r.tasks.clone()];
-            a.systems.push(r.systems);
             a.writes = vec![r.output];
-        }
-        Request::CloseFocus(r) => {
-            a.reads.extend(hit_views(&r.hits));
-            a.writes = vec![r.output, r.status];
         }
         Request::Coddington(r) => {
             for id in [r.hits.records, r.hits.record_low].into_iter().flatten() {
@@ -477,7 +454,6 @@ pub fn accesses(r: &Request) -> Access {
             for id in [r.hits.rays.indices, r.hits.status] {
                 a.reads.push(view(id, ElementType::U32, [0]));
             }
-            a.systems.push(r.systems);
             a.writes = vec![r.output, r.status];
         }
         Request::Records(r) => {
@@ -507,9 +483,9 @@ pub fn accesses(r: &Request) -> Access {
             }
             a.reads.push(r.samples.clone());
             a.writes = vec![r.output, r.status];
-            a.systems.push(r.systems);
         }
     }
+    a.systems.extend(r.systems());
     a
 }
 pub fn execute(

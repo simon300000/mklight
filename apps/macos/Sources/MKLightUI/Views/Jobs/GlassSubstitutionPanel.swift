@@ -22,7 +22,7 @@ struct GlassSubstitutionPanel: View {
     private var slots: [GlassSlot] { GlassSlot.all(in: design.system) }
 
     var body: some View {
-        JobPanelFrame(kind: .glass, subtitle: subtitle, window: window) {
+        JobPanelFrame(kind: .glass, subtitle: subtitle) {
             switch session.state {
             case .setup: setup
             case .running: running
@@ -106,7 +106,7 @@ struct GlassSubstitutionPanel: View {
                     }
                     Text(session.algorithm.detail).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                     LabeledContent("Combinations to try") {
-                        TextField("Combinations", value: $session.maxCombinations, format: .number)
+                        TextField("Combinations", value: $session.maxCombinations.atLeast(1), format: .number)
                             .labelsHidden().multilineTextAlignment(.trailing).frame(width: 80)
                     }
                     LabeledContent("Time limit") {
@@ -118,12 +118,12 @@ struct GlassSubstitutionPanel: View {
                         }
                     }
                     LabeledContent("Shape iterations each") {
-                        TextField("Iterations", value: $session.localIterations, format: .number)
+                        TextField("Iterations", value: $session.localIterations.atLeast(1), format: .number)
                             .labelsHidden().multilineTextAlignment(.trailing).frame(width: 80)
                     }
                     .help("Damped least-squares iterations that re-optimise the shape for each glass combination")
                     LabeledContent("Keep the best") {
-                        TextField("Keep", value: $session.topN, format: .number)
+                        TextField("Keep", value: $session.topN.atLeast(1), format: .number)
                             .labelsHidden().multilineTextAlignment(.trailing).frame(width: 80)
                     }
                 }

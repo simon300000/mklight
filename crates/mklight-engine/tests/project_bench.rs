@@ -185,7 +185,6 @@ fn engine(mode: &str) -> Engine {
             MetalBackend::with_options(&MetalOptions {
                 precision,
                 library: LibraryChoice::Precompiled,
-                ..Default::default()
             })
             .map_err(|e| e.to_string())?
             .map(|b| Arc::new(b) as Arc<dyn ComputeBackend>)
@@ -274,7 +273,7 @@ fn cases(s: &Session) -> Vec<Case> {
             name: info.name.clone(),
             analysis: info.name,
             settings,
-            geometric: info.category == "geometric" || info.category == "layout",
+            geometric: info.category == "geometric",
         });
     }
     for name in [
@@ -378,7 +377,7 @@ fn accuracy(a: &AnalysisResult, b: &AnalysisResult, name: &str) -> Value {
     // Per-quantity detail: the contract's classes (support/comparison.rs,
     // GPU §9.4), each with its worst error as a fraction of its gate.
     let c = comparison::compare(&a, &b, name, &JobContext::new()).unwrap();
-    json!({"pass_sampled_margin":c.reason.is_none(),"chain_failure":c.reason,"gate_failures":c.failures,
+    json!({"pass_sampled_margin":c.reason.is_none(),"gate_failure":c.reason,"gate_failures":c.failures,
         "compared":c.compared,"max_abs":c.maximum,"max_path":c.maximum_path,"image_l1_relative":c.image_l1_relative,
         "image_l1_budget_fraction":c.image_l1_relative/2e-3,"image_energy_relative":c.energy_relative,
         "image_energy_budget_fraction":c.energy_relative/1e-3,"classes":c.classes,
@@ -796,64 +795,6 @@ fn project_bench_queued_edit_loop() {
                         "load":load(),"graph":engine.analysis_graph_stats()
                     }),
                 );
-            }
-        }
-    }
-}
-
-/// Focused strategy experiments. Settings and private inputs stay outside the repo.
-/// MKLIGHT_ASTRA_CASES='[{"name":"spot","analysis":"spot_diagram","settings":{}}]'
-/// MKLIGHT_ASTRA_MODES=cpu,df MKLIGHT_ASTRA_RUNS=10
-#[test]
-#[ignore = "serial release strategy measurements on an idle host"]
-fn astra_strategy_probe() {
-    let path = std::env::var("MKLIGHT_BENCH_PROJECT").expect("local project path");
-    let spec: Vec<Value> =
-        serde_json::from_str(&std::env::var("MKLIGHT_ASTRA_CASES").expect("JSON cases")).unwrap();
-    let modes = std::env::var("MKLIGHT_ASTRA_MODES").unwrap_or("cpu,df".into());
-    let modes: Vec<_> = modes.split(',').collect();
-    let runs = env_usize("MKLIGHT_ASTRA_RUNS", 10);
-    quiet("astra strategy");
-    emit(
-        "astra_setup",
-        json!({"revision":command("git", &["rev-parse", "HEAD"]),
-        "host":command("sysctl", &["-n", "machdep.cpu.brand_string"]),
-        "threads":rayon::current_num_threads(),"runs":runs,"modes":modes}),
-    );
-    let sessions: Vec<_> = modes.iter().map(|m| open(m, Path::new(&path))).collect();
-    for v in spec {
-        let case = Case {
-            name: v["name"].as_str().unwrap().into(),
-            analysis: v["analysis"].as_str().unwrap().into(),
-            settings: v["settings"].clone(),
-            geometric: false,
-        };
-        let mut first = Vec::new();
-        for (s, mode) in sessions.iter().zip(&modes) {
-            measured(s, &case, mode, "astra_warmup", 0, true).unwrap();
-        }
-        for round in 0..runs {
-            let order: Vec<_> = if round % 2 == 0 {
-                (0..modes.len()).collect()
-            } else {
-                (0..modes.len()).rev().collect()
-            };
-            for i in order {
-                let r = measured(&sessions[i], &case, modes[i], "astra_warm", round, true).unwrap();
-                if round == 0 {
-                    first.push((i, r));
-                }
-            }
-        }
-        if let Some((_, reference)) = first.iter().find(|(i, _)| modes[*i] == "cpu") {
-            for (i, r) in &first {
-                if modes[*i] != "cpu" {
-                    emit(
-                        "astra_accuracy",
-                        json!({"case":case.name,"mode":modes[*i],
-                        "comparison":accuracy(reference, r, &case.analysis)}),
-                    );
-                }
             }
         }
     }

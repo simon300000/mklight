@@ -8,12 +8,14 @@ use serde_json::{Value, json};
 
 use mklight_core::{JobContext, samples};
 use mklight_engine::analysis::schema::validate;
+use mklight_engine::backend::Backend;
 use mklight_engine::project::Project;
 use mklight_engine::{AnalysisRequest, AnalysisResult, Engine, EngineConfig, Session};
 
 fn session() -> Session {
     let e = Engine::new(EngineConfig {
         worker_threads: 2,
+        default_backend: Backend::CpuReference,
         ..Default::default()
     });
     e.session_from_project(Project::new(samples::cooke_triplet()))

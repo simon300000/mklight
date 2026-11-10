@@ -103,17 +103,6 @@ impl Matrix {
         }
         m
     }
-    /// Copy of rows `from..to`.
-    pub fn row_block(&self, from: usize, to: usize) -> Matrix {
-        Matrix::from_row_major(
-            to - from,
-            self.cols,
-            self.data[from * self.cols..to * self.cols].to_vec(),
-        )
-    }
-    pub fn max_abs(&self) -> f64 {
-        self.data.iter().fold(0.0, |m, v| m.max(v.abs()))
-    }
 }
 
 impl std::ops::Index<(usize, usize)> for Matrix {
@@ -143,10 +132,6 @@ pub fn norm2(v: &[f64]) -> f64 {
     }
     let s: f64 = v.iter().map(|x| (x / m) * (x / m)).sum();
     m * s.sqrt()
-}
-
-pub fn norm_inf(v: &[f64]) -> f64 {
-    v.iter().fold(0.0_f64, |m, x| m.max(x.abs()))
 }
 
 /// Householder QR factorisation `A = Q·R` of an `m × n` matrix with `m ≥ n`.
@@ -192,13 +177,6 @@ impl Qr {
             }
         }
         Qr { a, beta }
-    }
-
-    pub fn rows(&self) -> usize {
-        self.a.rows
-    }
-    pub fn cols(&self) -> usize {
-        self.a.cols
     }
 
     /// `b ← Qᵀ b`.

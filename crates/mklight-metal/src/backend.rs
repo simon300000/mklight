@@ -9,7 +9,7 @@
 //! `JobStats`. A worker panic becomes an error naming the job.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -45,6 +45,39 @@ fn trace_plans() -> bool {
 /// Default work items per command buffer.
 const DEFAULT_CHUNK: usize = 1 << 20;
 
+/// Most threads creating pipelines in `prepare_kernels`. Metal's compiler
+/// service runs about six compiles at once on an M2 Pro: every kernel from
+/// scratch took 40 s on 4 threads, 29 s on 6, 29–31 s on 8 or 12.
+const PREPARE_THREADS: usize = 6;
+
+/// SIMD-group width the reduction kernels are written for: the last strides
+/// of their trees are `simd_shuffle_down` steps inside one SIMD group
+/// (shaders/reduce.metal, shaders/collectives.metal), which on any other
+/// width would combine different values without an error.
+const REDUCTION_SIMD_WIDTH: u32 = 32;
+
+/// Why `device` cannot run the reduction kernels, if it cannot.
+fn reduction_refusal(device: &str, simd_width: u32) -> Option<String> {
+    (simd_width != REDUCTION_SIMD_WIDTH).then(|| {
+        format!(
+            "reductions need {REDUCTION_SIMD_WIDTH}-wide SIMD groups; \
+             '{device}' runs groups of {simd_width}"
+        )
+    })
+}
+
+/// Whether `op` runs a reduction kernel.
+fn reduces(op: &mklight_gpu::resident::ResidentOp) -> bool {
+    use mklight_gpu::resident::ResidentOp;
+    use mklight_gpu::transforms::Request as Transform;
+    matches!(
+        op,
+        ResidentOp::Sum(_)
+            | ResidentOp::Collectives(_)
+            | ResidentOp::Transforms(Transform::Correlation(_) | Transform::OpticalCorrelation(_))
+    )
+}
+
 pub(crate) struct Uploaded {
     /// Content identity of this immutable storage (`PackedSystemSet::digest`),
     /// shared by every registered lease and by re-uploads of equal content.
@@ -64,6 +97,10 @@ struct Inner {
     next_id: AtomicU64,
     external_copied_bytes: AtomicU64,
     chunk_items: AtomicUsize,
+    aim_budget: AtomicU32,
+    /// Set when the device cannot run the reduction kernels (checked once,
+    /// at creation): jobs and plans that reduce are refused with it.
+    reduction_refusal: Option<String>,
     systems: Mutex<HashMap<u64, Arc<Uploaded>>>,
     resident: crate::resident::Runtime,
     cache: Mutex<mklight_gpu::resident::cache::SystemCache<Uploaded>>,
@@ -231,16 +268,18 @@ impl MetalBackend {
         Ok(Some(MetalBackend {
             inner: Arc::new(Inner {
                 ctx,
+                reduction_refusal: reduction_refusal(&info.name, info.simd_width),
                 info,
                 precision,
                 instance,
                 resident: crate::resident::Runtime::new(instance),
-                cache: Mutex::new(mklight_gpu::resident::cache::SystemCache::new(64 << 20)),
+                cache: Mutex::new(mklight_gpu::resident::cache::SystemCache::new()),
                 next_id: AtomicU64::new(1),
                 external_copied_bytes: AtomicU64::new(
                     crate::buffer::copied_bytes() - copied_before,
                 ),
                 chunk_items: AtomicUsize::new(DEFAULT_CHUNK),
+                aim_budget: AtomicU32::new(crate::aiming::AIM_BUDGET),
                 systems: Mutex::new(HashMap::new()),
                 admission: crate::admission::Admission::new(),
             }),
@@ -256,6 +295,13 @@ impl MetalBackend {
     /// Work items per command buffer (cancellation/progress granularity).
     pub fn set_chunk_items(&self, n: usize) {
         self.inner.chunk_items.store(n.max(1), Ordering::Relaxed);
+    }
+
+    /// Iteration units per lane of one device aiming command (four by
+    /// default). Fewer units give shorter commands and more continuation
+    /// rounds; the aimed rays do not depend on it.
+    pub fn set_aim_budget(&self, units: u32) {
+        self.inner.aim_budget.store(units.max(1), Ordering::Relaxed);
     }
 
     /// Sizes, alignments and offsets of the shared structs as compiled by
@@ -317,14 +363,24 @@ impl Inner {
     fn supports(&self, kind: JobKind) -> bool {
         match kind {
             JobKind::PhiloxStream | JobKind::PhiloxBlocks | JobKind::SagProbe => true,
-            JobKind::DfOps | JobKind::Reduce | JobKind::Trace => {
-                self.precision.probe.error_free_transforms()
+            JobKind::DfOps | JobKind::Trace => self.precision.probe.error_free_transforms(),
+            JobKind::Reduce => {
+                self.precision.probe.error_free_transforms() && self.reduction_refusal.is_none()
             }
         }
     }
 
     fn chunk(&self) -> usize {
         self.chunk_items.load(Ordering::Relaxed)
+    }
+
+    /// Refuses reductions on a device whose SIMD groups the kernels are not
+    /// written for.
+    fn reductions(&self) -> MkResult<()> {
+        match &self.reduction_refusal {
+            Some(why) => Err(MkError::Backend(why.clone())),
+            None => Ok(()),
+        }
     }
 
     /// Split `total` items into command buffers, checking cancellation and
@@ -569,7 +625,7 @@ impl Inner {
             }
         })?;
         // Final SoA planes become the compatibility API's owned output.
-        crate::buffer::record_copy(13 * n * 4);
+        crate::buffer::record_copy((MKL_TRACE_OUT_FLOATS + MKL_TRACE_OUT_UINTS) as usize * n * 4);
         Ok(TraceResult::from_planes(
             out_f.as_slice(),
             out_u.as_slice(),
@@ -700,7 +756,8 @@ impl ComputeBackend for MetalBackend {
     /// Every kernel and its common specialisations
     /// ([`MetalContext::prepare_pipelines`]), from or into the pipeline
     /// archive in `cache_dir`. A cache that cannot be attached or saved only
-    /// costs compilation in a later process.
+    /// costs compilation in a later process, so it is reported as the
+    /// preparation's `warning`, not as an error.
     fn prepare_kernels(
         &self,
         cache_dir: Option<&std::path::Path>,
@@ -708,18 +765,26 @@ impl ComputeBackend for MetalBackend {
         cancel: &std::sync::atomic::AtomicBool,
     ) -> MkResult<KernelPreparation> {
         let gpu = self.context();
-        if let Some(dir) = cache_dir {
-            let _ = gpu.attach_pipeline_archive(dir);
+        let mut warning = None;
+        if let Some(dir) = cache_dir
+            && let Err(e) = gpu.attach_pipeline_archive(dir)
+        {
+            warning = Some(e.to_string());
         }
-        // Metal's compiler service runs about six compiles at once on an M2
-        // Pro: every kernel from scratch took 40 s on 4 threads, 29 s on 6,
-        // 29–31 s on 8 or 12.
-        let p = gpu.prepare_pipelines(6, progress, cancel)?;
-        let _ = gpu.save_pipeline_archive();
+        let threads = std::thread::available_parallelism()
+            .map_or(PREPARE_THREADS, |n| n.get().min(PREPARE_THREADS));
+        let prepared = gpu.prepare_pipelines(threads, progress, cancel);
+        // Saved before a failed pipeline's error is returned, so the next
+        // process does not compile the others again.
+        if let Err(e) = gpu.save_pipeline_archive() {
+            warning.get_or_insert(e.to_string());
+        }
+        let p = prepared?;
         Ok(KernelPreparation {
             kernels: p.pipelines,
             from_cache: p.from_archive,
             seconds: p.seconds,
+            warning,
         })
     }
     fn precision(&self) -> &PrecisionDescriptor {
@@ -830,6 +895,9 @@ impl ComputeBackend for MetalBackend {
         use mklight_gpu::resident::ResidentOp;
         ctx.check()?;
         plan.validate(self.inner.instance, self.info().max_buffer_bytes)?;
+        if plan.operations.iter().any(reduces) {
+            self.inner.reductions()?;
+        }
         if !self.precision().probe.error_free_transforms() {
             return Err(MkError::Unsupported(
                 "resident plan requires strict numerics".into(),
@@ -866,6 +934,7 @@ impl ComputeBackend for MetalBackend {
         let (p, c, ctl) = pending(ctx);
         let b = self.clone();
         let chunk = self.inner.chunk();
+        let aim_budget = self.inner.aim_budget.load(Ordering::Relaxed);
         let submitted = Instant::now();
         spawn_job(
             "mklight-resident-metal",
@@ -888,6 +957,7 @@ impl ComputeBackend for MetalBackend {
                         &prepared,
                         &ctl,
                         chunk,
+                        aim_budget,
                         permit.waited,
                         speculate,
                         &missed,
@@ -913,6 +983,9 @@ impl ComputeBackend for MetalBackend {
     }
     fn submit(&self, job: Job, ctx: &JobContext) -> MkResult<Pending<JobResult>> {
         job.validate()?;
+        if job.kind() == JobKind::Reduce {
+            self.inner.reductions()?;
+        }
         if !self.inner.supports(job.kind()) {
             return Err(MkError::Unsupported(format!(
                 "metal backend cannot run {:?} on '{}' (numerics probe: {:?})",
@@ -935,5 +1008,19 @@ impl ComputeBackend for MetalBackend {
         let what = format!("metal {:?} job", job.kind());
         spawn_job("mklight-metal", what, c, move || inner.execute(job, &ctl))?;
         Ok(p)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reductions_are_refused_off_the_kernels_simd_width() {
+        assert_eq!(reduction_refusal("Apple M2 Pro", 32), None);
+        for width in [1, 8, 16, 64] {
+            let why = reduction_refusal("Some GPU", width).unwrap();
+            assert!(why.contains("Some GPU") && why.contains(&width.to_string()));
+        }
     }
 }

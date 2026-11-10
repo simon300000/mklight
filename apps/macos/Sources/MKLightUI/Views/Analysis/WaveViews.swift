@@ -53,9 +53,7 @@ struct WavefrontView: View {
                 strehl: m["strehl_at_reference"]?.nf ?? .nan,
                 zernike: output.buffer(ref: m[path: "zernike", "coefficients"])?.doubles ?? m[path: "zernike", "coefficients"]?.nfArray ?? [],
                 ordering: m[path: "zernike", "ordering"]?.string ?? "fringe",
-                rim: (m["rim"]?.array ?? []).compactMap { r in
-                    output.buffer(ref: r).map { b in (0..<b.rows).map { (b[$0 * 2], b[$0 * 2 + 1]) } }
-                })
+                rim: (m["rim"]?.array ?? []).compactMap { r in output.buffer(ref: r)?.pairs })
         }
         if maps.isEmpty { return nil }
     }
@@ -151,12 +149,8 @@ struct PSFView: View {
         items = list.compactMap { p in
             let psf = p["psf"]
             guard let n = psf?["size"]?.int, let h = psf?["spacing_mm"]?.nf,
-                var g = Grid2D(output.buffer(ref: psf?["data"]))
+                let g = Grid2D(output.buffer(ref: psf?["data"]))
             else { return nil }
-            let c = psf?["center_mm"]?.nfArray ?? [0, 0]
-            let half = Double(n / 2) * h
-            g.xRange = (c[0] - half)...(c[0] + half)
-            g.yRange = (c[1] - half)...(c[1] + half)
             let wl = psf?["wavelength_um"]?.nf
             let field = p["field"]?.int ?? 0
             return Item(

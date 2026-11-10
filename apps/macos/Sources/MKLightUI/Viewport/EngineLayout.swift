@@ -27,25 +27,24 @@ enum EngineLayout {
         let surf = output.buffer(named: "surfaces"), fld = output.buffer(named: "fields")
         let wav = output.buffer(named: "wavelengths"), flags = output.buffer(named: "flags")
         let n = kinds.count
-        guard offsets.count == n + 1 else { return nil }
+        guard offsets.count == n + 1, verts.count == verts.rows * 3, flags.map({ $0.count == n }) ?? true else { return nil }
         let names = json["kind_names"]?.array?.compactMap(\.string) ?? []
         var polylines: [LayoutScene.Polyline] = []
         polylines.reserveCapacity(n)
         for i in 0..<n {
-            let a = Int(offsets[i]), b = Int(offsets[i + 1])
-            guard a >= 0, b <= verts.rows, a <= b else { continue }
+            guard let a = Int(exactly: offsets[i]), let b = Int(exactly: offsets[i + 1]), a >= 0, b <= verts.rows, a <= b else { continue }
             let pts = (a..<b).map { k in
                 Point3(verts[k * 3] + shift[0], verts[k * 3 + 1] + shift[1], verts[k * 3 + 2] + shift[2])
             }
-            let f = flags.map { Int($0[i]) } ?? 1
+            let f = flags.map { Int(exactly: $0[i]) ?? 0 } ?? 1
             func idx(_ buf: ResultBuffer?) -> Int? {
-                guard let buf, i < buf.count else { return nil }
-                let v = Int(buf[i])
-                return v >= 0 ? v : nil
+                guard let buf, i < buf.count, let v = Int(exactly: buf[i]), v >= 0 else { return nil }
+                return v
             }
+            let name = Int(exactly: kinds[i]).flatMap { names.indices.contains($0) ? names[$0] : nil }
             polylines.append(
                 LayoutScene.Polyline(
-                    kind: names.indices.contains(Int(kinds[i])) ? byName[names[Int(kinds[i])]] ?? .elementEdge : .elementEdge, points: pts, inSection: f & 1 != 0, surface: idx(surf),
+                    kind: name.flatMap { byName[$0] } ?? .elementEdge, points: pts, inSection: f & 1 != 0, surface: idx(surf),
                     field: idx(fld), wavelength: idx(wav), vignetted: f & 2 != 0, doe: f & 4 != 0))
         }
         let section = json["section"]?.string == "xz" ? "xz" : "yz"
@@ -53,9 +52,11 @@ enum EngineLayout {
         let up: (Point3) -> Double = section == "xz" ? { $0.x } : { $0.y }
         markNearSection(&polylines, section: section)
         let surfaces: [LayoutScene.SurfaceInfo] = (json["surfaces"]?.array ?? []).compactMap { s in
-            guard let index = s["index"]?.int, let id = s["id"]?.int, let v = s["vertex"]?.nfArray, v.count == 3 else { return nil }
+            guard let index = s["index"]?.int, let id = s["id"]?.int.flatMap({ UInt64(exactly: $0) }), let v = s["vertex"]?.nfArray,
+                v.count == 3
+            else { return nil }
             return LayoutScene.SurfaceInfo(
-                index: index, id: SurfaceID(UInt64(id)), vertex: Point3(v[0], v[1], v[2]),
+                index: index, id: SurfaceID(id), vertex: Point3(v[0], v[1], v[2]),
                 semiDiameter: s["semi_diameter"]?.nf ?? .nan, semiDiameterIsAuto: s["semi_diameter_is_auto"]?.bool ?? false,
                 isDiffractive: s["is_diffractive"]?.bool ?? false)
         }
@@ -121,7 +122,7 @@ enum EngineLayout {
                 let b = k * 9 + v * 3
                 return Point3(m[b] + o[0], m[b + 1] + o[1], m[b + 2] + o[2])
             }
-            return LayoutScene.MeshTriangle(a: p(0), b: p(1), c: p(2), surface: ids.map { k < $0.count ? Int($0[k]) : -1 } ?? -1)
+            return LayoutScene.MeshTriangle(a: p(0), b: p(1), c: p(2), surface: ids.flatMap { k < $0.count ? Int(exactly: $0[k]) : nil } ?? -1)
         }
     }
 

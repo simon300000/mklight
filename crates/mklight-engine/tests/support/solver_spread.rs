@@ -8,8 +8,9 @@
 //! differs from the reference in two ways: value noise and its
 //! forward-difference step. The reference's movement is the larger of its
 //! deviations from itself on a copy with one curvature changed by 1e-9
-//! (relative) and with the device's step; a gate failure of a merit or
-//! violation passes when the device deviates at most twice as much.
+//! (relative) and with the device's step; a gate failure of the solve's
+//! outcome (the final design's merit or violation, a finalist's) passes
+//! when the device deviates at most twice as much.
 
 use mklight_core::{JobContext, OpticalSystem, param::ParamPath};
 use mklight_engine::backend::Backend;
@@ -99,11 +100,27 @@ pub fn reference_movement(
     (a.0.max(b.0), a.1.max(b.1))
 }
 
-/// Are all gate `failures` merits or violations within twice the
-/// reference's `movement` (`deviation` is the device run's)?
-pub fn within_movement(failures: &[String], deviation: (f64, f64), movement: (f64, f64)) -> bool {
+/// Does the device run of `analysis` pass with its gate `failures`? Only a
+/// truncated solve's outcome is excused: the final design's merit or
+/// violation of an optimisation, a finalist's of a glass substitution,
+/// within twice the reference's `movement` (`deviation` is the device
+/// run's). Every other failure (a start merit, a merit evaluation, a
+/// tolerance figure, a status, a missing value) fails.
+pub fn within_movement(
+    analysis: &str,
+    failures: &[String],
+    deviation: (f64, f64),
+    movement: (f64, f64),
+) -> bool {
+    let outcome = match analysis {
+        "optimize" => "result.final.",
+        "glass_substitution" => "result.finalists[",
+        _ => return failures.is_empty(),
+    };
     failures.iter().all(|f| {
-        (f.contains(".merit:") && deviation.0 <= 2. * movement.0 + 1e-12)
-            || (f.contains(".violation:") && deviation.1 <= 2. * movement.1 + 1e-12)
+        let path = super::comparison::failure_path(f);
+        path.starts_with(outcome)
+            && ((path.ends_with(".merit") && deviation.0 <= 2. * movement.0 + 1e-12)
+                || (path.ends_with(".violation") && deviation.1 <= 2. * movement.1 + 1e-12))
     })
 }

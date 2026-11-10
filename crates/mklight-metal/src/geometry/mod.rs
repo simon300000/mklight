@@ -105,14 +105,6 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                 ..Zeroable::zeroed()
             },
         ),
-        Request::CloseFocus(r) => (
-            "mkl_geometry_close",
-            r.hits.rays.count / 5,
-            Params {
-                chiefs: r.hits.rays.count as u32,
-                ..Zeroable::zeroed()
-            },
-        ),
         Request::Coddington(r) => (
             "mkl_geometry_coddington",
             r.hits.rays.count,
@@ -265,12 +257,6 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                         bind(e, 4, x, &r.tasks);
                         e.set_buffer_mut(5, &mut out[0], 0);
                         e.set_bytes(8, &ri_trace_params());
-                    }
-                    Request::CloseFocus(r) => {
-                        bind(e, 0, x, &view(r.hits.rays.floats, ElementType::F32, [0]));
-                        bind(e, 1, x, &view(r.hits.status, ElementType::U32, [0]));
-                        e.set_buffer_mut(2, &mut out[0], 0);
-                        e.set_buffer_mut(3, &mut out[1], 0);
                     }
                     Request::Coddington(r) => {
                         bind_systems(e, uploaded.as_deref());

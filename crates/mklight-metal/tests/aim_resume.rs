@@ -50,9 +50,8 @@ fn reports(d: &[BufferData], n: usize) -> Vec<[u32; 4]> {
 /// hits and fallback counts must be bitwise the specification's.
 #[test]
 fn continuation_rounds_match_specification() {
-    // Read once by the executor; this test binary aims nothing before it.
-    unsafe { std::env::set_var("MKLIGHT_AIM_BUDGET", "1,1") };
     let gpu = backend();
+    gpu.set_aim_budget(1);
     let cpu = CpuF32Backend::matching(&gpu.precision().probe);
     let mut small = vec![[0., 0.]];
     small.extend((PupilSampling::Grid { n: 7 }).points());

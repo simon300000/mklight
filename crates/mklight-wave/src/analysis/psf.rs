@@ -16,9 +16,11 @@ use mklight_trace::SequentialTracer;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use super::{FieldPupils, check_pos, fields, run_info, system_field_pupils, wavelengths};
+use super::{
+    FieldPupils, ItemProgress, check_pos, fields, run_info, system_field_pupils, wavelengths,
+};
 use crate::psf::{
-    HuygensSettings, ImagePlane, PolyPsfSettings, Psf, PsfNormalization, PsfTransform, huygens_psf,
+    HuygensSettings, ImagePlane, PolyPsfSettings, Psf, PsfNormalization, huygens_psf,
     polychromatic_psf,
 };
 use crate::pupil::PupilFunction;
@@ -134,7 +136,7 @@ fn check_huygens_work(pupils: &[(&PupilFunction, f64)], grid: usize) -> MkResult
     let work = (grid * grid) as f64 * samples as f64;
     if work > MAX_HUYGENS_WORK {
         return Err(MkError::InvalidParam(format!(
-            "Huygens PSF too expensive: {grid}² image points × {samples} pupil samples =              {work:.2e} > limit {MAX_HUYGENS_WORK:.0e}; reduce the image or pupil grid"
+            "Huygens PSF too expensive: {grid}² image points × {samples} pupil samples = {work:.2e} > limit {MAX_HUYGENS_WORK:.0e}; reduce the image or pupil grid"
         )));
     }
     Ok(())
@@ -232,7 +234,6 @@ fn compute_psf_raw(
                     grid_size: grid,
                     spacing_mm: spacing,
                     normalization,
-                    transform: PsfTransform::Matrix,
                 },
                 ctx,
             )?;
@@ -351,7 +352,7 @@ pub fn psf_analysis_shared(
     )?;
     let mut warnings = skipped;
     let mut psfs = Vec::new();
-    let counts: Vec<usize> = per
+    let jobs = per
         .iter()
         .map(|(_, _, fp)| {
             if settings.polychromatic {
@@ -360,24 +361,15 @@ pub fn psf_analysis_shared(
                 fp.pupils.len()
             }
         })
-        .collect();
-    let jobs = counts.iter().sum::<usize>().max(1);
-    let firsts: Vec<usize> = counts
-        .iter()
-        .scan(0, |done, c| {
-            let first = *done;
-            *done += c;
-            Some(first)
-        })
-        .collect();
+        .sum();
+    let progress = ItemProgress::new(ctx.subrange(0.4, 1.0), jobs);
     // Fields (and a field's PSFs) are independent: they run side by side
     // and merge in field order, so results and warnings do not depend on
     // the scheduling.
     type FieldOut = (Vec<String>, Vec<FieldPsf>);
     let fields: Vec<MkResult<FieldOut>> = per
         .into_par_iter()
-        .zip(firsts)
-        .map(|((f, value, mut fp), first)| -> MkResult<FieldOut> {
+        .map(|(f, value, mut fp)| -> MkResult<FieldOut> {
             let mut warnings = fp.warnings.clone();
             let spacing = default_spacing(&fp, settings.spacing_mm, settings.padding)?;
             let grid = image_grid(settings.grid_size, settings.method, &fp.weighted(), spacing);
@@ -402,19 +394,16 @@ pub fn psf_analysis_shared(
             };
             let computed: Vec<MkResult<Psf>> = groups
                 .par_iter()
-                .enumerate()
-                .map(|(j, (_, group))| {
-                    let done = first + j;
-                    let a = 0.4 + 0.6 * done as f64 / jobs as f64;
-                    let b = 0.4 + 0.6 * (done + 1) as f64 / jobs as f64;
-                    compute_psf(
+                .map(|(_, group)| {
+                    let psf = compute_psf(
                         group,
                         settings.method,
                         grid,
                         spacing,
                         settings.normalization,
-                        &ctx.subrange(a, b),
-                    )
+                        &progress.item(),
+                    );
+                    progress.finished(psf)
                 })
                 .collect();
             let mut psfs = Vec::with_capacity(groups.len());

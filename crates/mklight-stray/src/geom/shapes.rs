@@ -201,6 +201,17 @@ impl SagPatch {
         self.mask.as_ref()
     }
 
+    /// Curvature and conic constant when rays meet the sag in closed form:
+    /// a plane (curvature 0) or a conic, whatever variant of
+    /// [`SurfaceShape`] states it (an even asphere without coefficients is
+    /// its base conic). `None` for a sag that is intersected iteratively.
+    pub fn conic(&self) -> Option<(f64, f64)> {
+        match self.kind {
+            Kind::Plane | Kind::Conic { .. } => Some((self.shape.curvature(), self.shape.conic())),
+            Kind::General { .. } => None,
+        }
+    }
+
     /// Sag `S(r²)`, clamped to the domain edge.
     #[inline]
     pub fn sag(&self, r2: f64) -> f64 {

@@ -1,6 +1,9 @@
 //! Resident optimisation algebra. All numeric channels retain double-float
 //! residuals; candidate/stencil order is supplied by the solver, never scheduled
-//! by a kernel. Index errors publish status 1 instead of reading another row.
+//! by a kernel. No operation reads another row for a bad index: a
+//! `Difference` column with a row index out of range publishes status 1 (and
+//! NaN), and a `FitRows` row with a value index out of range is zero, like a
+//! masked one.
 use crate::{Df32, resident::*};
 use mklight_core::MkResult;
 mod cpu;
@@ -59,7 +62,8 @@ pub enum Request {
         output: BufferId,
     },
     /// Weighted damped least squares without normal equations: [sqrt(w) J;
-    /// sqrt(lambda) diag(d)] and [-sqrt(w) r;0], ready for P3 batched QR.
+    /// sqrt(lambda) diag(d)] and [-sqrt(w) r;0], ready for the collectives'
+    /// batched QR.
     LmRows {
         jacobian: PlanView,
         residuals: PlanView,

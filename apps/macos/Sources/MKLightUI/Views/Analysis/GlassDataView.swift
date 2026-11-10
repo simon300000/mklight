@@ -103,8 +103,10 @@ struct GlassDataView: View {
     init?(output: AnalysisOutput, context: AnalysisContext) {
         guard let d = GlassInfoData(output: output) else { return nil }
         data = d
+        // The design's primary is the run's unless the run had its own spectrum.
         let um = context.wavelengthsUm
-        primaryUm = um.indices.contains(context.primaryWavelength) ? um[context.primaryWavelength] : nil
+        primaryUm =
+            !AnalysisContext.hasRunSpectrum(output) && um.indices.contains(context.primaryWavelength) ? um[context.primaryWavelength] : nil
     }
 
     var body: some View {

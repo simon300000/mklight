@@ -256,6 +256,10 @@ static MklCoatingValue revaluate(MklCoatingSpec s,
     }
   return out;
 }
+// Everything above is the coating evaluation that ghost_ops.metal and
+// stray_ops.metal include into their own namespaces; they define
+// MKL_RADIOMETRY_COATING_ONLY so that the kernels below exist only once.
+#ifndef MKL_RADIOMETRY_COATING_ONLY
 kernel void
 mkl_radiometry_coating(device const MklCoatingSpec *specs [[buffer(0)]],
                        device const MklCoatingLayer *layers [[buffer(1)]],
@@ -630,21 +634,6 @@ kernel void mkl_radiometry_count(device const uint *values [[buffer(0)]],
   if (i < p.x && values[i * p.z + p.w] == MKL_RAD_REFERENCE)
     atomic_fetch_add_explicit(count, 1u, memory_order_relaxed);
 }
-kernel void mkl_radiometry_pupil_channels(
-    device const MklPolarizationValue *values [[buffer(0)]],
-    device float2 *output [[buffer(1)]], device uint *status [[buffer(2)]],
-    constant uint4 &p [[buffer(3)]], uint tid [[thread_position_in_grid]]) {
-  uint i = p.y + tid, n = p.x;
-  if (i >= n)
-    return;
-  MklPolarizationValue v = values[i];
-  for (uint c = 0; c < (p.z ? 6u : 4u); c++) {
-    float2 re = p.z ? v.fields[2 * c] : v.jones[2 * c],
-           im = p.z ? v.fields[2 * c + 1] : v.jones[2 * c + 1];
-    output[c * n + i] = v.status ? float2(0) : float2(re.x + re.y, im.x + im.y);
-  }
-  status[i] = v.status;
-}
 kernel void
 mkl_radiometry_scalar(device const MklRadSurface *surfaces [[buffer(0)]],
                       device const MklCoatingLayer *layers [[buffer(1)]],
@@ -716,3 +705,4 @@ mkl_radiometry_scalar(device const MklRadSurface *surfaces [[buffer(0)]],
   out.power[1] = ((sp[0] + sp[1]) * RD(0.5f)).v;
   output[i] = out;
 }
+#endif // MKL_RADIOMETRY_COATING_ONLY

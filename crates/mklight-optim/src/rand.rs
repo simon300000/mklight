@@ -13,7 +13,6 @@ pub mod streams {
     pub const CMAES: u64 = 0x02 << 56;
     pub const HAMMER: u64 = 0x03 << 56;
     pub const DISCRETE: u64 = 0x04 << 56;
-    pub const NELDER_MEAD: u64 = 0x05 << 56;
     pub const TOLERANCE: u64 = 0x06 << 56;
     pub const TOLERANCE_ORIENTATION: u64 = 0x07 << 56;
 }

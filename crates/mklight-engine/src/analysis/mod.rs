@@ -7,7 +7,7 @@
 //!
 //! | module | analyses |
 //! |---|---|
-//! | `builtin` | `validate`, `system_summary`, `glass_info`, `rng_stream`, placeholders for the wave-optics names (`builtin::PLANNED`) |
+//! | `builtin` | `validate`, `system_summary`, `glass_info`, `rng_stream` |
 //! | `geometric` | everything in `mklight-analysis` (first-order data, layout, spots, fans, field curvature, Seidel, illumination, energy, …) and `ray_grid` |
 //! | `ghost` | `ghost_paths`, `ghost_irradiance` (`mklight-ghost`) |
 //! | `stray` | `stray_light` (`mklight-stray`, partitioned against the ghost solver) |
@@ -42,10 +42,11 @@ pub(crate) use cost::is_apple as is_apple_gpu;
 pub(crate) use routing::{AutoRequest, auto_route};
 
 /// Graph key of the reference tracer of a snapshot resolved with a
-/// library (`AnalysisInput::tracer`).
-pub(crate) fn tracer_key(snapshot: &[u8; 32], library_hash: &str) -> NodeKey {
+/// library under a run policy (`AnalysisInput::tracer`): the policy sets
+/// the tracer's aim stop.
+pub(crate) fn tracer_key(snapshot: &[u8; 32], library_hash: &str, policy: &RunPolicy) -> NodeKey {
     let mut h = KeyHasher::new("mklight-engine/tracer/1");
-    h.bytes(snapshot).str(library_hash);
+    h.bytes(snapshot).str(library_hash).json(policy);
     h.finish()
 }
 
@@ -57,7 +58,7 @@ use std::sync::Arc;
 
 use mklight_core::job::{AimStopKind, BackendAttempt, CancelToken, Precision, RunTimer, Tier};
 use mklight_core::materials::MaterialLibrary;
-use mklight_core::{JobContext, MkResult, OpticalSystem, ResolvedSystem, RunInfo, Snapshot};
+use mklight_core::{JobContext, MkResult, ResolvedSystem, RunInfo, Snapshot};
 
 use crate::backend::{Backend, BackendInfo, DeviceHandle};
 use crate::buffer::{Buffer, BufferDesc};
@@ -100,7 +101,8 @@ pub struct AnalysisInfo {
     pub name: String,
     pub title: String,
     /// Grouping for menus: `model`, `materials`, `geometric`, `wave`,
-    /// `ghost`, `stray`, `diagnostic`.
+    /// `ghost`, `stray`, `radiometry`, `polarization`, `optimization`,
+    /// `diagnostic`.
     pub category: String,
     pub description: String,
     /// False for reserved names whose solver is not wired in yet.
@@ -140,10 +142,11 @@ pub struct BackendReport {
     /// GPU device name, when a GPU computed the result.
     pub device: Option<String>,
     /// Why the requested (or automatically preferred) backend was not used:
-    /// unavailable, no GPU path, or a static capability restriction.
-    /// In `run_info.warnings` too, except when an `auto` or
-    /// default preference met an analysis without a GPU path or a ray grid
-    /// covered by recorded CPU cost evidence.
+    /// unavailable, no GPU path, a static capability restriction, a cost
+    /// decision of `auto`, or a native run that failed. In
+    /// `run_info.warnings` too, except for the deliberate routes of an
+    /// `auto` or default preference (no GPU path, static capability, cost
+    /// decision).
     pub fallback_reason: Option<String>,
     /// Native execution evidence: device/build/probe, plan versions and stages.
     pub execution: Vec<Value>,
@@ -304,6 +307,23 @@ impl<'a> AnalysisInput<'a> {
         }
     }
 
+    /// An input of the same run for another snapshot or backend: the
+    /// library and its hash, the run policy, the analysis graph and the
+    /// job-level stop carry over. Device, selection and cost decision are
+    /// the caller's to set.
+    pub(crate) fn derive<'b>(
+        &self,
+        snapshot: Snapshot,
+        backend: BackendInfo,
+        resolver: Resolver<'b>,
+    ) -> AnalysisInput<'b> {
+        AnalysisInput::with_resolver(snapshot, self.library.clone(), backend, resolver)
+            .with_library_hash(self.library_hash().to_string())
+            .with_policy(self.policy)
+            .with_graph(self.graph.clone())
+            .with_stop_token(self.stop.clone())
+    }
+
     /// Report completed runs to the engine's cost model (`cost`).
     pub(crate) fn with_cost_model(mut self, model: Option<Arc<cost::CostModel>>) -> Self {
         self.cost_model = model;
@@ -345,7 +365,7 @@ impl<'a> AnalysisInput<'a> {
         let Some(g) = &self.graph else {
             return Ok(Arc::new(build()?));
         };
-        let key = tracer_key(&self.snapshot.hash().0, self.library_hash());
+        let key = tracer_key(&self.snapshot.hash().0, self.library_hash(), &self.policy);
         Ok(g.node("tracer", key, ctx, tracer_bytes, build)?)
     }
 
@@ -521,23 +541,10 @@ pub trait Analysis: Send + Sync {
         1
     }
     /// True when the analysis has a GPU implementation (it then reads
-    /// `AnalysisInput::device` and reports what it used).
+    /// `AnalysisInput::device` and reports what it used): its name is in
+    /// the catalogue the GPU providers advertise (`gpu::GPU_ANALYSES`).
     fn gpu_path(&self) -> bool {
-        false
-    }
-    /// Capability and resource check of the native path with the opened
-    /// device, before any preparation. `Err(reason)` runs the reference
-    /// instead, with an `infeasible` attempt in `RunInfo::failed_attempts`
-    /// (and a warning for explicit requests). Implement it where a device
-    /// limit is known from the settings and system alone, such as the
-    /// direct-MTF stencil budget or an oversized output.
-    fn native_preflight(
-        &self,
-        _settings: &Value,
-        _system: &OpticalSystem,
-        _device: &mklight_gpu::DeviceInfo,
-    ) -> Result<(), String> {
-        Ok(())
+        gpu::GPU_ANALYSES.contains(&self.name())
     }
     /// The result is a deterministic function of the snapshot, the
     /// material library, the normalised settings and the backend selection
@@ -687,6 +694,8 @@ pub(crate) fn result_key(
         .u64(analysis.result_version() as u64)
         .json(settings)
         .json(&input.policy)
+        // The device divisions in effect (process-wide route options).
+        .json(&mklight_core::split::selection())
         .str(&input.requested_backend);
     if !Backend::is_auto_request(&input.requested_backend) {
         h.str(&input.backend.id)
@@ -816,8 +825,7 @@ fn run_prepared(
     Ok(result)
 }
 
-/// Register every analysis of this build. The wave-optics analyses replace
-/// the builtin placeholders of the same name.
+/// Register every analysis of this build.
 pub fn register_all(r: &mut AnalysisRegistry) {
     builtin::register_all(r);
     geometric::register_all(r);
@@ -827,7 +835,7 @@ pub fn register_all(r: &mut AnalysisRegistry) {
     stray::register_all(r);
     radiometry::register_all(r);
     solves::register_all(r);
-    optim::register(r);
+    optim::register_all(r);
     merit_evaluation::register_all(r);
 }
 
@@ -842,8 +850,7 @@ impl AnalysisRegistry {
         Self::default()
     }
 
-    /// Every registered analysis (`register_all`) plus placeholders for
-    /// the planned ones.
+    /// Every analysis of this build (`register_all`).
     pub fn with_builtin() -> Self {
         let mut r = Self::new();
         register_all(&mut r);
@@ -851,7 +858,6 @@ impl AnalysisRegistry {
     }
 
     /// Add an analysis, replacing (and returning) one with the same name.
-    /// This is how solver crates replace the placeholders.
     pub fn register(&mut self, a: Arc<dyn Analysis>) -> Option<Arc<dyn Analysis>> {
         self.map.insert(a.name().to_string(), a)
     }
@@ -1002,5 +1008,76 @@ mod tests {
         ctx.cancel.cancel();
         let e = run_analysis(&Echo, &input, &Value::Null, vec![], &ctx).unwrap_err();
         assert!(e.is_cancelled());
+    }
+
+    /// The preview tier samples no denser than the design tier: a preview
+    /// default never exceeds the setting's design default.
+    #[test]
+    fn preview_defaults_do_not_exceed_design_defaults() {
+        let registry = AnalysisRegistry::with_builtin();
+        for info in registry.list() {
+            let properties = info.settings_schema["properties"].as_object().unwrap();
+            for (key, p) in properties {
+                if let (Some(preview), Some(design)) =
+                    (p["x-preview"].as_f64(), p["default"].as_f64())
+                {
+                    assert!(preview <= design, "{}.{key}", info.name);
+                }
+            }
+        }
+        let rings = |name: &str, tier| {
+            let a = registry.get(name).unwrap();
+            prepare_tier(a.as_ref(), &Value::Null, tier).unwrap()["rings"].clone()
+        };
+        // Sparse defaults stay; the dense square default halves.
+        for name in ["footprint", "best_focus", "ray_grid"] {
+            assert_eq!(rings(name, Tier::Preview), rings(name, Tier::Design));
+        }
+        assert_eq!(rings("encircled_energy", Tier::Design), 32);
+        assert_eq!(rings("encircled_energy", Tier::Preview), 16);
+    }
+
+    /// The reference tracer carries the policy's aim stop, so the graph
+    /// holds one per policy: runs of one snapshot under different tiers or
+    /// aim stops never share a tracer.
+    #[test]
+    fn the_graph_keeps_one_tracer_per_policy() {
+        let graph = Arc::new(AnalysisGraph::new(1 << 24));
+        let snap = Snapshot::new(mklight_core::samples::cooke_triplet()).unwrap();
+        let library = Arc::new(MaterialLibrary::with_builtin());
+        let ctx = JobContext::new();
+        let tracer = |policy: RunPolicy| {
+            AnalysisInput::new(snap.clone(), library.clone(), BackendInfo::cpu_reference())
+                .with_graph(Some(graph.clone()))
+                .with_policy(policy)
+                .tracer(&ctx)
+                .unwrap()
+        };
+        let design = RunPolicy {
+            tier: Tier::Design,
+            aim_stop: AimStopKind::Conditioned,
+        };
+        let preview = RunPolicy {
+            tier: Tier::Preview,
+            ..design
+        };
+        let first = tracer(design);
+        assert!(Arc::ptr_eq(&first, &tracer(design)));
+        assert_eq!(
+            first.settings().aim_stop,
+            AimStop::Conditioned(AimBudget::DESIGN)
+        );
+        for (other, stop) in [
+            (preview, AimStop::Conditioned(AimBudget::PREVIEW)),
+            (RunPolicy::default(), AimStop::Requested),
+        ] {
+            let t = tracer(other);
+            assert!(!Arc::ptr_eq(&first, &t), "{other:?}");
+            assert_eq!(t.settings().aim_stop, stop);
+            let key =
+                |p: &RunPolicy| tracer_key(&snap.hash().0, library_hash(&library).as_str(), p);
+            assert_ne!(key(&design), key(&other));
+            assert!(graph.contains(&key(&other)));
+        }
     }
 }

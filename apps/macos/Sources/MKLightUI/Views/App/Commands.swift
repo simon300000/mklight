@@ -18,7 +18,6 @@ struct WindowActions {
     var loadCatalog: () -> Void
     var designJob: (DesignJobKind) -> Void
     var showIssues: () -> Void
-    var issueCount: Int
     var addPane: (String) -> Void
     var paneAnalyses: [AnalysisDescriptor]
     var rerun: () -> Void

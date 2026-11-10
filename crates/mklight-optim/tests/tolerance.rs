@@ -865,3 +865,59 @@ fn element_tilt_z_rotates_freeform_axes_and_returns_after_the_range() {
     }
     assert_eq!(a.surfaces[3].frame, b.surfaces[3].frame);
 }
+
+#[test]
+fn a_tolerance_on_a_missing_parameter_is_an_error() {
+    use mklight_core::MkError;
+    let nominal = sys();
+    let reg = OperandRegistry::builtin();
+    let crit = track_spec();
+    let spec = ToleranceSpec::new(vec![
+        ToleranceOperand::symmetric(t(10), 0.1),
+        ToleranceOperand::symmetric(t(999), 0.1),
+    ]);
+    let ev = ModelEvaluator;
+    let te = OpticalToleranceEvaluator {
+        nominal: &nominal,
+        spec: &spec,
+        criterion: &crit,
+        evaluator: &ev,
+        registry: &reg,
+        lsq: LsqSettings::default(),
+    };
+    let mon = Monitor::default();
+    let r = sensitivity(&spec, &te, &mon);
+    assert!(matches!(r, Err(MkError::InvalidParam(_))), "{r:?}");
+    let mc = MonteCarloSettings {
+        trials: 4,
+        ..Default::default()
+    };
+    let r = monte_carlo(&spec, &te, &mc, &mon);
+    assert!(matches!(r, Err(MkError::InvalidParam(_))), "{r:?}");
+}
+
+#[test]
+fn monte_carlo_without_a_successful_trial() {
+    use mklight_core::{MkError, MkResult};
+    use mklight_optim::tolerance::ToleranceEvaluator;
+    let spec = ToleranceSpec::new(vec![ToleranceOperand::symmetric(t(10), 0.1)]);
+    let mc = MonteCarloSettings {
+        trials: 8,
+        ..Default::default()
+    };
+    // Every statistic of the successful trials is undefined.
+    let failing = FnToleranceEvaluator::new(|_| TrialOutcome::failed());
+    let r = monte_carlo(&spec, &failing, &mc, &Monitor::default()).unwrap();
+    assert_eq!((r.trials, r.failures), (8, 8));
+    assert!(r.mean.is_nan() && r.std_dev.is_nan() && r.min.is_nan() && r.max.is_nan());
+
+    /// Answers with no outcome at all.
+    struct Silent;
+    impl ToleranceEvaluator for Silent {
+        fn evaluate_batch(&self, _: &[Vec<f64>], _: &JobContext) -> MkResult<Vec<TrialOutcome>> {
+            Ok(Vec::new())
+        }
+    }
+    let r = monte_carlo(&spec, &Silent, &mc, &Monitor::default());
+    assert!(matches!(r, Err(MkError::Numerical(_))), "{r:?}");
+}

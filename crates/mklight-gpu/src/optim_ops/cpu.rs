@@ -4,10 +4,6 @@ use crate::{
     pending::JobControl,
     resident::cpu::Execution,
 };
-fn words<'a>(x: &'a Execution, v: &PlanView) -> &'a [u32] {
-    let w = v.desc.element.words();
-    &x.words(v.buffer)[v.offset * w..(v.offset + v.desc.len().unwrap()) * w]
-}
 fn d(w: &[u32], i: usize) -> Df32 {
     Df32::new(f32::from_bits(w[2 * i]), f32::from_bits(w[2 * i + 1]))
 }
@@ -21,7 +17,7 @@ pub fn execute(r: &Request, x: &mut Execution, ctl: &JobControl) -> MkResult<()>
 fn run<E: FpEnv>(r: &Request, x: &mut Execution, ctl: &JobControl) -> MkResult<()> {
     let a = accesses(r);
     let p = params(r);
-    let ins: Vec<_> = a.reads.iter().map(|v| words(x, v)).collect();
+    let ins: Vec<_> = a.reads.iter().map(|v| x.view(v)).collect();
     let mut out = vec![Df32::ZERO; p.count as usize];
     let mut status = vec![];
     let mut rhs = vec![];

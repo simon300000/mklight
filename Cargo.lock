@@ -336,7 +336,6 @@ dependencies = [
 name = "mklight-analysis"
 version = "0.1.0"
 dependencies = [
- "approx",
  "blake3",
  "bytemuck",
  "mklight-core",
@@ -352,14 +351,12 @@ dependencies = [
 name = "mklight-cli"
 version = "0.1.0"
 dependencies = [
- "approx",
  "clap",
  "libc",
  "mklight-core",
  "mklight-engine",
  "mklight-ffi",
  "mklight-trace",
- "serde",
  "serde_json",
 ]
 
@@ -379,7 +376,6 @@ dependencies = [
 name = "mklight-engine"
 version = "0.1.0"
 dependencies = [
- "approx",
  "blake3",
  "bytemuck",
  "libc",
@@ -402,7 +398,6 @@ dependencies = [
 name = "mklight-ffi"
 version = "0.1.0"
 dependencies = [
- "approx",
  "mklight-core",
  "mklight-engine",
  "serde",
@@ -413,7 +408,6 @@ dependencies = [
 name = "mklight-ghost"
 version = "0.1.0"
 dependencies = [
- "approx",
  "blake3",
  "bytemuck",
  "libc",
@@ -430,7 +424,6 @@ dependencies = [
 name = "mklight-gpu"
 version = "0.1.0"
 dependencies = [
- "approx",
  "blake3",
  "bytemuck",
  "mklight-core",
@@ -444,7 +437,6 @@ dependencies = [
 name = "mklight-metal"
 version = "0.1.0"
 dependencies = [
- "approx",
  "blake3",
  "block2",
  "bytemuck",
@@ -463,7 +455,6 @@ dependencies = [
 name = "mklight-optim"
 version = "0.1.0"
 dependencies = [
- "approx",
  "blake3",
  "bytemuck",
  "mklight-analysis",
@@ -483,7 +474,6 @@ dependencies = [
 name = "mklight-py"
 version = "0.1.0"
 dependencies = [
- "approx",
  "mklight-core",
  "mklight-engine",
  "mklight-trace",
@@ -496,9 +486,7 @@ dependencies = [
 name = "mklight-stray"
 version = "0.1.0"
 dependencies = [
- "approx",
  "blake3",
- "libc",
  "mklight-core",
  "mklight-ghost",
  "mklight-gpu",
@@ -513,7 +501,6 @@ dependencies = [
 name = "mklight-trace"
 version = "0.1.0"
 dependencies = [
- "approx",
  "mklight-core",
  "rayon",
  "serde",
@@ -524,7 +511,6 @@ dependencies = [
 name = "mklight-wave"
 version = "0.1.0"
 dependencies = [
- "approx",
  "blake3",
  "bytemuck",
  "mklight-analysis",

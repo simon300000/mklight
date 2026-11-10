@@ -289,7 +289,9 @@ enum SceneGeometry {
         if lensOnly, let z0 = pts.map(\.z).min(), let z1 = pts.map(\.z).max() {
             let h = pts.map { max(abs($0.x), abs($0.y)) }.max() ?? 0
             let m = 0.6 * max(z1 - z0, 2 * h)
-            pts += [SIMD3(0, 0, z0 - m), SIMD3(0, 0, z1 + m), SIMD3(0, 1.3 * h, z0), SIMD3(0, -1.3 * h, z0)]
+            // Above and below along the axis the view draws upwards: x in the x–z section.
+            let up = mode == .sectionXZ ? SIMD3(1.3 * h, 0, 0) : SIMD3(0, 1.3 * h, 0)
+            pts += [SIMD3(0, 0, z0 - m), SIMD3(0, 0, z1 + m), SIMD3(0, 0, z0) + up, SIMD3(0, 0, z0) - up]
         }
         return pts
     }

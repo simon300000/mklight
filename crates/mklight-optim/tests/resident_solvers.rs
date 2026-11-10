@@ -1,15 +1,16 @@
 #![cfg(target_os = "macos")]
+//! Solves and solver operands on the host's Metal device: least squares on
+//! both sides of the tall-QR crossover, MTF, ghost and stray-light operands
+//! through the resident evaluator, finite differences of a first-order
+//! operand, and relative illumination with device visibility.
+
+mod common;
+
+use common::OnDevice;
 use mklight_core::{JobContext, Snapshot, samples};
 use mklight_gpu::ComputeBackend;
 use mklight_optim::{Monitor, deriv::*, gpu::*, lsq::*, merit::operand::*, merit::*, problem::*};
 use std::sync::Arc;
-fn backend() -> Arc<dyn ComputeBackend> {
-    Arc::new(
-        mklight_metal::MetalBackend::new()
-            .unwrap()
-            .expect("P8 requires host Metal"),
-    )
-}
 fn context(b: Arc<dyn ComputeBackend>) -> GpuContext {
     GpuContext::new(b, Snapshot::new(samples::singlet()).unwrap())
 }
@@ -17,7 +18,9 @@ fn context(b: Arc<dyn ComputeBackend>) -> GpuContext {
 /// tall QR (with retained Q projections) above it; both reach the optimum.
 #[test]
 fn tall_qr_crossover_and_resident_lm() {
-    let b = backend();
+    let Some(b) = common::metal() else {
+        return;
+    };
     let ctx = JobContext::new();
     for (n, m) in [(8, 32), (100, 400), (64, 4096)] {
         let p = FnProblem::new(
@@ -33,7 +36,7 @@ fn tall_qr_crossover_and_resident_lm() {
                 EvalStatus::Ok
             },
         );
-        let p = ResidentProblem {
+        let p = OnDevice {
             problem: p,
             context: context(b.clone()),
         };
@@ -62,7 +65,7 @@ fn tall_qr_crossover_and_resident_lm() {
         assert_eq!(stats.command_buffers > 0, m * n >= 1 << 16, "V={n} M={m}");
         assert_eq!(stats.fallback_count, 0);
         eprintln!(
-            "P8 V={n} M={m} merit={:e} dx={dx:e} stats={}",
+            "V={n} M={m} merit={:e} dx={dx:e} stats={}",
             gpu.merit,
             serde_json::to_string(&stats).unwrap()
         );
@@ -71,7 +74,9 @@ fn tall_qr_crossover_and_resident_lm() {
 #[test]
 fn host_wave_and_solver_operands() {
     let system = samples::singlet();
-    let b = backend();
+    let Some(b) = common::metal() else {
+        return;
+    };
     let ctx = JobContext::new();
     let mut reference = BuiltinEvaluator::builtin();
     reference.solvers.ghost.pupil_samples = 8;
@@ -102,9 +107,12 @@ fn host_wave_and_solver_operands() {
             orders: vec![],
             max_reflections: 2,
         }),
+        // Enough sources for the stray solver to give the device its share
+        // (a fifth, from 32768 device sources); a smaller run is the CPU
+        // reference and counts as completed in f64.
         Operand::new(OperandKind::StrayLightPower {
             class: StrayPathClass::AllNonPrimary,
-            rays: 100,
+            rays: 5 * 32768,
             seed: 17,
         }),
     ];
@@ -114,7 +122,7 @@ fn host_wave_and_solver_operands() {
             .evaluate_batch(std::slice::from_ref(&system), &[op], &ctx)
             .unwrap();
         let stats = evaluator.stats();
-        eprintln!("P8 {} value={values:?} stats={stats:?}", op.kind.name());
+        eprintln!("{} value={values:?} stats={stats:?}", op.kind.name());
         assert!(values[0][0].as_ref().is_ok_and(|v| v.is_finite()));
         assert!(
             stats.device_operands > 0,
@@ -127,7 +135,9 @@ fn host_wave_and_solver_operands() {
 #[test]
 fn one_sided_retry_and_thick_lens_derivative() {
     use mklight_core::param::ParamPath;
-    let b = backend();
+    let Some(b) = common::metal() else {
+        return;
+    };
     let ctx = JobContext::new();
     let failed = FnProblem::new(vec![Variable::bounded("x", -1., 1.)], 1, |x, r, _| {
         r[0] = x[0] * x[0] + 2. * x[0];
@@ -137,10 +147,6 @@ fn one_sided_retry_and_thick_lens_derivative() {
             EvalStatus::Ok
         }
     });
-    let failed = ResidentProblem {
-        problem: failed,
-        context: context(b.clone()),
-    };
     let f = evaluate_one(&failed, &[0.], &ctx).unwrap();
     let j = fd_jacobian(
         &failed,
@@ -212,7 +218,9 @@ fn one_sided_retry_and_thick_lens_derivative() {
 
 #[test]
 fn host_ri_preserves_adaptive_etendue_model() {
-    let b = backend();
+    let Some(b) = common::metal() else {
+        return;
+    };
     let mut clipped = samples::cooke_triplet();
     clipped.surfaces[1].semi_diameter = mklight_core::SemiDiameter::Fixed { value: 4.5 };
     for (name, system) in [
@@ -254,7 +262,7 @@ fn host_ri_preserves_adaptive_etendue_model() {
         if name == "clipped" {
             assert!(visibility["blocked"].as_u64().unwrap() > 0);
         }
-        eprintln!("P8_RI_VISIBILITY sample={name} counters={visibility}");
+        eprintln!("RI visibility sample={name} counters={visibility}");
         let stats = gpu.context.stats();
         assert!(stats.fallback_count > 0);
         assert!(
@@ -264,7 +272,7 @@ fn host_ri_preserves_adaptive_etendue_model() {
                 .any(|s| s.name == "RI adaptive reference completion")
         );
         eprintln!(
-            "P8_RI sample={name} error={error:e} values={got:?} qualification={:?}",
+            "RI sample={name} error={error:e} values={got:?} stats={:?}",
             gpu.stats()
         );
     }

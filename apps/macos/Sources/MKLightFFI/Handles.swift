@@ -58,7 +58,8 @@ final class FFIEngineCore: @unchecked Sendable {
     /// `mk_engine_list_analyses`, read once (the registry is fixed after
     /// creation).
     let descriptors: [AnalysisDescriptor]
-    let backendsJSON: JSONValueBox
+    /// Why `mk_engine_prepare_gpu` refused to start, if it did.
+    let gpuPreparationError = Mutex<String?>(nil)
 
     init(configuration: String?) throws {
         guard CABI.isLinked else { throw CABI.notLinked }
@@ -73,7 +74,6 @@ final class FFIEngineCore: @unchecked Sendable {
             try CABI.setJobCallback(pointer, hub: hub)
             let list = try CABI.listAnalyses(pointer)
             descriptors = try decodeJSON([AnalysisDescriptor].self, list)
-            backendsJSON = JSONValueBox(try decodeJSON(JSONValue.self, CABI.listBackends(pointer)))
         } catch {
             CABI.engineDestroy(pointer)
             throw error
@@ -112,13 +112,6 @@ final class FFISessionHandle: @unchecked Sendable {
     func locked<T>(_ body: (OpaquePointer) throws -> T) throws -> T {
         try lock.withLock { _ in try body(pointer) }
     }
-}
-
-/// A `JSONValue` in a reference, so engine metadata can live in `let`s of
-/// `Sendable` classes.
-final class JSONValueBox: Sendable {
-    let value: JSONValue
-    init(_ value: JSONValue) { self.value = value }
 }
 
 /// Runs blocking C calls on a global dispatch queue, off the main thread and

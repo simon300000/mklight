@@ -90,7 +90,7 @@ struct FanView: View {
         let j = output.json
         guard let list = j["fields"]?.array, !list.isEmpty else { return nil }
         opd = j["quantity"]?.string == "opd"
-        wavelengthsUm = j["wavelengths_um"]?.nfArray ?? context.wavelengthsUm
+        wavelengthsUm = context.wavelengthsUm(of: output)
         let scale = opd ? 1.0 : 1000.0  // transverse in µm
         func curves(_ v: JSONValue?) -> [Curve] {
             (v?.array ?? []).compactMap { c in
@@ -162,7 +162,7 @@ struct FieldCurvatureView: View {
         guard let f = j["field_values"]?.nfArray, let list = j["curves"]?.array, !list.isEmpty else { return nil }
         field = f
         fieldUnit = j["field_unit"]?.string ?? context.fieldUnit
-        wavelengthsUm = j["wavelengths_um"]?.nfArray ?? context.wavelengthsUm
+        wavelengthsUm = context.wavelengthsUm(of: output)
         curves = list.map {
             Curve(
                 wavelength: $0["wavelength"]?.int ?? 0, t: $0["tangential"]?.nfArray ?? [], s: $0["sagittal"]?.nfArray ?? [],
@@ -268,11 +268,15 @@ struct SeidelView: View {
     let sums: [String: Double]
     let wavefront: [(String, Double)]
     let petzvalRadius: Double
+    /// Why the design has no Seidel coefficients (the engine's `reason`
+    /// with `status: "not_applicable"`: no rotational symmetry).
+    let notApplicable: String?
     @State private var chromatic = false
 
     init?(output: AnalysisOutput, context: AnalysisContext) {
         let j = output.json
         guard let list = j["surfaces"]?.array, let s = j["sums"]?.object else { return nil }
+        notApplicable = j["status"]?.string == "not_applicable" ? j["reason"]?.string ?? "" : nil
         let keys = (Self.terms + Self.colour).map(\.0)
         surfaces = list.map { o in Dictionary(uniqueKeysWithValues: keys.map { ($0, o[$0]?.nf ?? .nan) }) }
         surfaceIndex = list.enumerated().map { $0.element["surface"]?.int ?? $0.offset }
@@ -321,9 +325,17 @@ struct SeidelView: View {
         return out.filter { $0.value.isFinite }
     }
 
-    var body: some View {
+    @ViewBuilder var body: some View {
+        if let notApplicable {
+            ContentUnavailableView("Seidel Coefficients Do Not Apply", systemImage: "circle.slash", description: Text(notApplicable))
+        } else {
+            coefficients
+        }
+    }
+
+    private var coefficients: some View {
         let terms = (chromatic ? Self.colour : Self.terms).map(\.1)
-        VStack(alignment: .leading, spacing: Space.s) {
+        return VStack(alignment: .leading, spacing: Space.s) {
             // The Petzval radius beside the picker, or under it in narrow panes.
             ViewThatFits(in: .horizontal) {
                 HStack {
@@ -380,7 +392,7 @@ struct LongitudinalView: View {
         guard let p = j["pupil"]?.nfArray, let list = j["curves"]?.array, !list.isEmpty else { return nil }
         pupil = p
         curves = list.map { ($0["wavelength"]?.int ?? 0, $0["aberration"]?.nfArray ?? []) }
-        um = context.wavelengthsUm
+        um = context.wavelengthsUm(of: output, entries: list)
     }
 
     var body: some View {
@@ -398,21 +410,18 @@ struct LongitudinalView: View {
 struct ChromaticFocalShiftView: View {
     let um: [Double]
     let shift: [Double]
-    let primary: Double
 
     init?(output: AnalysisOutput) {
         let j = output.json
         guard let w = j["wavelengths_um"]?.nfArray, let s = j["focal_shift"]?.nfArray, w.count == s.count else { return nil }
         um = w
         shift = s
-        primary = j["primary_wavelength_um"]?.nf ?? .nan
     }
 
     var body: some View {
         LineChart(
             series: [Series(id: "shift", label: "", color: Palette.fieldColor(0), points: zip(shift.map { $0 * 1000 }, um).map { ($0, $1) })],
-            xLabel: "Focal shift (µm)", yLabel: "Wavelength (µm)", zeroLine: false,
-            markers: [])
+            xLabel: "Focal shift (µm)", yLabel: "Wavelength (µm)", zeroLine: false)
             .padding(Space.m)
     }
 }
@@ -431,7 +440,7 @@ struct LateralColourView: View {
         unit = j["field_unit"]?.string ?? context.fieldUnit
         curves = list.map { ($0["wavelength"]?.int ?? 0, $0["offset"]?.nfArray ?? []) }
         airy = j["airy_radius"]?.nf ?? .nan
-        um = context.wavelengthsUm
+        um = context.wavelengthsUm(of: output, entries: list)
     }
 
     var body: some View {
@@ -505,22 +514,24 @@ struct FootprintView: View {
 
     init?(output: AnalysisOutput, context: AnalysisContext) {
         let j = output.json
-        guard let sets = j["sets"]?.array, let p = output.buffer(named: "points") else { return nil }
+        // `points` and `clipped` are `[n, 2]`.
+        guard let sets = j["sets"]?.array, let p = output.buffer(named: "points")?.pairs else { return nil }
         var pts: [(Double, Double, Int)] = []
         for s in sets {
-            guard let r = s["points"]?.intArray, r.count == 2 else { continue }
+            guard let r = s["points"]?.intArray, r.count == 2, case (let end, false) = r[0].addingReportingOverflow(r[1]) else { continue }
             let w = s["wavelength"]?.int ?? 0
-            for i in r[0]..<min(r[0] + r[1], p.rows) { pts.append((p[i * 2], p[i * 2 + 1], w)) }
+            for i in max(r[0], 0)..<max(min(end, p.count), max(r[0], 0)) { pts.append((p[i].0, p[i].1, w)) }
         }
         points = pts
         if let c = output.buffer(named: "clipped") {
-            clipped = (0..<c.rows).map { (c[$0 * 2], c[$0 * 2 + 1]) }
+            guard let pairs = c.pairs else { return nil }
+            clipped = pairs
         } else {
             clipped = []
         }
         semiDiameter = j["semi_diameter"]?.nf ?? .nan
         surface = j["surface"]?.int ?? 0
-        um = context.wavelengthsUm
+        um = context.wavelengthsUm(of: output)
     }
 
     var body: some View {
@@ -603,12 +614,12 @@ struct MTFView: View {
     let curves: [Curve]
     let limit: [Double]
     let nyquist: Double?
-    let cutoff: Double?
 
     init?(output: AnalysisOutput, context: AnalysisContext) {
         let j = output.json
         let freq = j["frequencies"]?.nfArray ?? output.buffer(ref: j["frequencies"])?.doubles ?? []
-        guard !freq.isEmpty else { return nil }
+        // The frequency axis runs from 0 to the last frequency.
+        guard let last = freq.last, last >= 0 else { return nil }
         frequencies = freq
         var out: [Int: Curve] = [:]
         var lim: [Double] = []
@@ -624,7 +635,6 @@ struct MTFView: View {
             for (k, f) in out.keys.sorted().enumerated() where values.indices.contains(k) {
                 out[f]?.label = "Field \(f + 1) · " + context.fieldLabel(values[k].nfArray)
             }
-            cutoff = j["cutoff_frequency"]?.nf
         } else if let list = j["fields"]?.array {  // wave mtf
             for (k, f) in list.enumerated() {
                 let i = f["field"]?.int ?? k
@@ -634,7 +644,6 @@ struct MTFView: View {
                     sagittal: output.buffer(ref: f["sagittal"])?.doubles ?? f["sagittal"]?.nfArray ?? [])
                 if lim.isEmpty { lim = output.buffer(ref: f["diffraction_limit"])?.doubles ?? [] }
             }
-            cutoff = list.first?["cutoff"]?.nf
         } else {
             return nil
         }

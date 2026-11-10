@@ -410,7 +410,7 @@ fn solve_system(
             settings,
             configuration,
         },
-        "cpu-f64",
+        crate::BACKEND,
         Precision::F64Reference,
         None,
         warnings.clone(),

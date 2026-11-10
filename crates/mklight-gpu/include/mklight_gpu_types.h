@@ -159,8 +159,8 @@
 /* MklPackedSurface.coating: how the interface splits flux (CONVENTIONS §5).
  *   BARE   uncoated: Fresnel on refracting surfaces, R = 1 on mirrors
  *   IDEAL  constant R = coating_r, T = coating_t (T = 0 on mirrors)
- *   TABLE  thin-film stack or tabulated R(λ): not available on the GPU in
- *          layout v4; traces with radiometry through such a surface are
+ *   TABLE  thin-film stack or tabulated R(λ): the packed surface holds no
+ *          table, so traces with radiometry through such a surface are
  *          refused (geometry-only traces are unaffected). */
 #define MKL_COATING_BARE 0u
 #define MKL_COATING_IDEAL 1u

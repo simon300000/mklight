@@ -138,9 +138,9 @@ public enum SpectrumSetting: Equatable, Hashable, Sendable {
     /// sampling ranges must lie inside them.
     public static let photopicRangeUm = 0.36...0.83
     public static let scotopicRangeUm = 0.38...0.78
-    /// Quick picks for the blackbody temperature (K): daylight, tungsten
-    /// halogen, a D65-like sky, a warm incandescent.
-    public static let blackbodyPresets: [Double] = [5500, 3200, 6500, 2856]
+    /// Quick picks for the blackbody temperature (K): daylight and tungsten
+    /// halogen.
+    public static let blackbodyPresets: [Double] = [5500, 3200]
 
     public var kind: Kind {
         switch self {
@@ -316,7 +316,7 @@ public enum SpectrumSetting: Equatable, Hashable, Sendable {
     }
 
     static func kelvin(_ t: Double) -> String {
-        t.rounded() == t ? "\(Int(t)) K" : String(format: "%.1f K", t)
+        Int(exactly: t).map { "\($0) K" } ?? String(format: "%.1f K", t)
     }
 
     // MARK: Preview

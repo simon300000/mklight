@@ -92,7 +92,7 @@ pub fn validate(r: &FftMtf, p: &ResidentPlan) -> MkResult<()> {
         } => {
             let n = square(data, Complex32)?;
             view(reference, Complex32, &[n, n])?;
-            let count = frequencies.desc.shape[0];
+            let count = frequencies.desc.shape.first().copied().unwrap_or(0);
             view(frequencies, F32, &[count, 2])?;
             if n < 4
                 || !spacing.is_finite()
@@ -335,7 +335,7 @@ pub fn cpu(r: &FftMtf, x: &mut crate::resident::cpu::Execution, ctl: &JobControl
             normal,
             status,
         } => {
-            let c = values::<f32>(x, coverage);
+            let c = x.rows::<f32>(coverage);
             let mut count = 0u32;
             for (k, &c) in c.iter().enumerate() {
                 if k % 4096 == 0 {
@@ -371,9 +371,9 @@ pub fn cpu(r: &FftMtf, x: &mut crate::resident::cpu::Execution, ctl: &JobControl
             ..
         } => {
             let side = (x.words(*field).len() / 2).isqrt();
-            let a = values::<f32>(x, &pupil.amplitude);
-            let c = values::<f32>(x, &pupil.coverage);
-            let w = values::<Df32>(x, &pupil.opd);
+            let a = x.rows::<f32>(&pupil.amplitude);
+            let c = x.rows::<f32>(&pupil.coverage);
+            let w = x.rows::<Df32>(&pupil.opd);
             let mut f = vec![[0.; 2]; side * side];
             let mut m = vec![0.; 3 * n * n];
             for k in 0..n * n {
@@ -394,8 +394,8 @@ pub fn cpu(r: &FftMtf, x: &mut crate::resident::cpu::Execution, ctl: &JobControl
             sums,
             output,
         } => {
-            let a = values::<[f32; 2]>(x, input);
-            let e = values::<Df32>(x, sums)[1].mul_f32((n * n) as f32);
+            let a = x.rows::<[f32; 2]>(input);
+            let e = x.rows::<Df32>(sums)[1].mul_f32((n * n) as f32);
             let mut out = vec![[0.; 2]; n * n];
             for (k, z) in out.iter_mut().enumerate() {
                 if k % 4096 == 0 {
@@ -416,9 +416,9 @@ pub fn cpu(r: &FftMtf, x: &mut crate::resident::cpu::Execution, ctl: &JobControl
             output,
             ..
         } => {
-            let a = values(x, data);
-            let dl = values(x, reference);
-            let fs = values::<f32>(x, frequencies).as_chunks::<2>().0;
+            let a = x.rows(data);
+            let dl = x.rows(reference);
+            let fs = x.rows::<f32>(frequencies).as_chunks::<2>().0;
             let mut out = vec![[0.; 2]; fs.len()];
             for (k, (z, f)) in out.iter_mut().zip(fs).enumerate() {
                 if k % 256 == 0 {

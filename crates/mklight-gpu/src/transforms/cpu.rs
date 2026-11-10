@@ -4,12 +4,14 @@ use crate::consts::*;
 use crate::resident::immutable::CacheCategory::TransformPlans as TRANSFORM_PLANS;
 use std::sync::Arc;
 type C = [f32; 2];
-pub(super) fn cis(mut a: Df32) -> C {
-    a = a.add_f32(-a.hi.round());
-    a = a.add_f32(-a.hi.round());
+/// `exp(2πi·a)` for double-float turns `a`, reduced modulo a turn (to the
+/// nearest integer, ties to even, as the shaders' `rint`) before the f32
+/// trigonometry: `p2_cis` of `transforms.metal`, `wcis` of `wave_ops.metal`.
+pub(crate) fn cis(mut a: Df32) -> C {
+    a = a.add_f32(-a.hi.round_ties_even());
+    a = a.add_f32(-a.hi.round_ties_even());
     let t = (a.hi + a.lo) * std::f32::consts::TAU;
-    let (s, c) = t.sin_cos();
-    [c, s]
+    [t.cos(), t.sin()]
 }
 fn mul(a: C, b: C) -> C {
     [a[0] * b[0] - a[1] * b[1], a[0] * b[1] + a[1] * b[0]]
@@ -170,10 +172,7 @@ fn eval(p: &Params, a: &[C], b: &[C], ctl: &JobControl) -> MkResult<Vec<C>> {
                 .map(|v| v * scale)
             }
             MKL_TRANSFORM_MULTIPLY => {
-                let mut v = b[if p.flags & BROADCAST != 0 { id % w } else { id }];
-                if p.flags & CONJUGATE != 0 {
-                    v[1] = -v[1];
-                }
+                let v = b[if p.flags & BROADCAST != 0 { id % w } else { id }];
                 mul(a[id], v).map(|v| v * scale)
             }
             MKL_TRANSFORM_PHASE => {

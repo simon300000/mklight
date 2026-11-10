@@ -24,7 +24,9 @@ use rayon::prelude::*;
 use crate::backend::ReduceMode;
 use crate::consts::*;
 use crate::df::{Df32, NeumaierF32};
-use crate::fenv::{FpEnv, Ieee};
+use crate::fenv::FpEnv;
+#[cfg(test)]
+use crate::fenv::Ieee;
 
 pub const THREADS: usize = MKL_REDUCE_THREADS as usize;
 pub const MAX_GROUPS: usize = MKL_REDUCE_MAX_GROUPS as usize;
@@ -39,13 +41,7 @@ pub fn num_groups(count: usize) -> usize {
         .clamp(1, MAX_GROUPS)
 }
 
-/// `a ⊕ b` for the tree stages.
-#[inline]
-pub fn combine(mode: ReduceMode, a: Df32, b: Df32) -> Df32 {
-    combine_in::<Ieee>(mode, a, b)
-}
-
-/// [`combine`] in environment `E`.
+/// `a ⊕ b` for the tree stages, in environment `E`.
 #[inline]
 pub fn combine_in<E: FpEnv>(mode: ReduceMode, a: Df32, b: Df32) -> Df32 {
     match mode {
@@ -84,6 +80,7 @@ fn thread_sum<E: FpEnv>(mode: ReduceMode, x: &[f32], g: usize, p: usize) -> Df32
 }
 
 /// Pass 1 for one channel: the `num_groups(x.len())` group partials.
+#[cfg(test)]
 pub fn pass1(mode: ReduceMode, x: &[f32]) -> Vec<Df32> {
     pass1_in::<Ieee>(mode, x, 0..num_groups(x.len()))
 }
@@ -105,12 +102,7 @@ pub fn pass1_in<E: FpEnv>(mode: ReduceMode, x: &[f32], groups: Range<usize>) -> 
         .collect()
 }
 
-/// Pass 2: fold the partials of one channel.
-pub fn pass2(mode: ReduceMode, partials: &[Df32]) -> Df32 {
-    pass2_in::<Ieee>(mode, partials)
-}
-
-/// [`pass2`] in environment `E`.
+/// Pass 2: fold the partials of one channel, in environment `E`.
 pub fn pass2_in<E: FpEnv>(mode: ReduceMode, partials: &[Df32]) -> Df32 {
     let mut v: Vec<Df32> = (0..THREADS)
         .map(|t| {
@@ -124,14 +116,40 @@ pub fn pass2_in<E: FpEnv>(mode: ReduceMode, partials: &[Df32]) -> Df32 {
     tree_acc::<E>(Accumulator::Sum(mode), &mut v)
 }
 
-/// The complete reduction of one channel, bit-identical to the GPU.
+/// [`reduce_channel_in`] in the IEEE environment.
+#[cfg(test)]
 pub fn reduce_channel(mode: ReduceMode, x: &[f32]) -> Df32 {
     reduce_channel_in::<Ieee>(mode, x)
 }
 
-/// [`reduce_channel`] in environment `E`.
+/// The complete reduction of one channel in environment `E`, bit-identical
+/// to the GPU.
 pub fn reduce_channel_in<E: FpEnv>(mode: ReduceMode, x: &[f32]) -> Df32 {
     pass2_in::<E>(mode, &pass1_in::<E>(mode, x, 0..num_groups(x.len())))
+}
+
+/// [`reduce_channel_in`] with pass 1 run in group ranges of about `chunk`
+/// values (the split the GPU uses for its command buffers), so the caller
+/// can stop between them: `ctl` is checked before each range and
+/// `launched(groups)` runs after it. The split changes no bit.
+pub fn reduce_channel_ranges_in<E: FpEnv>(
+    mode: ReduceMode,
+    x: &[f32],
+    chunk: usize,
+    ctl: &crate::pending::JobControl,
+    mut launched: impl FnMut(usize),
+) -> mklight_core::MkResult<Df32> {
+    let groups = num_groups(x.len());
+    let per_group = x.len().div_ceil(groups).max(1);
+    let step = (chunk / per_group).clamp(1, groups);
+    let mut partials = Vec::with_capacity(groups);
+    for g0 in (0..groups).step_by(step) {
+        ctl.check()?;
+        let g1 = (g0 + step).min(groups);
+        partials.extend(pass1_in::<E>(mode, x, g0..g1));
+        launched(g1 - g0);
+    }
+    Ok(pass2_in::<E>(mode, &partials))
 }
 
 /// Accumulator of a fixed tree: a summation mode or a double-float extremum
@@ -150,7 +168,7 @@ fn extremum(a: Df32, b: Df32, max: bool) -> Df32 {
     if b.hi.is_nan() {
         return b;
     }
-    let c = crate::collectives::spec::df_cmp(a, b);
+    let c = crate::df::df_cmp(a, b);
     if (max && c == Less) || (!max && c == Greater) {
         b
     } else {

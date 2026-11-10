@@ -286,8 +286,10 @@
         "backend": "cpu-f64",
         "precision": "f64_reference",
         "seed": null,
-        "started_unix_ms": 1793403559306,
-        "duration_ms": 3.2966670000000002,
+        "started_unix_ms": 1794322034295,
+        "duration_ms": 3.559709,
+        "tier": "design",
+        "aim_stop": "requested",
         "warnings": []
       }
     }
@@ -563,8 +565,10 @@
         "backend": "cpu-f64",
         "precision": "f64_reference",
         "seed": null,
-        "started_unix_ms": 1793403559309,
-        "duration_ms": 1.999583,
+        "started_unix_ms": 1794322034299,
+        "duration_ms": 1.486834,
+        "tier": "design",
+        "aim_stop": "requested",
         "warnings": []
       }
     }
@@ -842,8 +846,10 @@
         "backend": "cpu-f64",
         "precision": "f64_reference",
         "seed": null,
-        "started_unix_ms": 1793403559311,
-        "duration_ms": 1.869,
+        "started_unix_ms": 1794322034300,
+        "duration_ms": 1.4594580000000001,
+        "tier": "design",
+        "aim_stop": "requested",
         "warnings": [
           "configuration 1 overrides Thickness { surface: SurfaceId(2) }, which a solve controls: the solve wins"
         ]

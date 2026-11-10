@@ -448,8 +448,8 @@ struct MklAimResume {
 #define MKL_AIM_UNIT_MORE 0u
 #define MKL_AIM_UNIT_CONVERGED 1u
 #define MKL_AIM_UNIT_FAILED 2u
-// Stop-residual floor of the pure-f32 build, in stop radii (G1: aims at a
-// 1e-6 tolerance converge in 0.75 iterations per ray, true residual 1.6e-6).
+// Stop-residual floor of the pure-f32 build, in stop radii (aims at a 1e-6
+// tolerance converge in 0.75 iterations per ray, true residual 1.6e-6).
 #define MKL_AIM_F32_FLOOR 1e-6f
 
 static inline void mkl_aim_put2(device float* w, MklAimVec2 v) {

@@ -29,7 +29,6 @@ struct JobPanel: View {
 struct JobPanelFrame<Content: View, Actions: View>: View {
     let kind: DesignJobKind
     let subtitle: String
-    @Bindable var window: WindowState
     @ViewBuilder var content: Content
     @ViewBuilder var actions: Actions
 
@@ -65,6 +64,22 @@ struct JobPanelFrame<Content: View, Actions: View>: View {
         }
         .padding(.horizontal, Space.l)
         .padding(.vertical, Space.m)
+    }
+}
+
+extension Binding where Value == Int {
+    /// The binding with a typed value below `minimum` (the engine's minimum
+    /// of the setting) raised to it.
+    func atLeast(_ minimum: Int) -> Binding<Int> {
+        Binding(get: { wrappedValue }, set: { wrappedValue = Swift.max($0, minimum) })
+    }
+}
+
+extension Binding where Value == Int? {
+    /// The binding with a typed value below `minimum` raised to it; an
+    /// empty field stays empty.
+    func atLeast(_ minimum: Int) -> Binding<Int?> {
+        Binding(get: { wrappedValue }, set: { wrappedValue = $0.map { Swift.max($0, minimum) } })
     }
 }
 
@@ -156,7 +171,7 @@ struct OptimizePanel: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        JobPanelFrame(kind: .optimize, subtitle: design.system.name, window: window) {
+        JobPanelFrame(kind: .optimize, subtitle: design.system.name) {
             switch session.state {
             case .setup: setup
             case .running(let p): running(p)
@@ -246,12 +261,12 @@ struct OptimizePanel: View {
                         ForEach(OptimizeSession.algorithms, id: \.id) { Text($0.title).tag($0.id) }
                     }
                     LabeledContent("Iterations") {
-                        TextField("Iterations", value: $session.maxIterations, format: .number, prompt: Text("default"))
+                        TextField("Iterations", value: $session.maxIterations.atLeast(1), format: .number, prompt: Text("default"))
                             .labelsHidden().multilineTextAlignment(.trailing).frame(width: 90)
                     }
                     if stochastic {
                         LabeledContent("Seed") {
-                            TextField("Seed", value: $session.seed, format: .number)
+                            TextField("Seed", value: $session.seed.atLeast(0), format: .number)
                                 .labelsHidden().multilineTextAlignment(.trailing).frame(width: 90)
                         }
                     }
@@ -477,7 +492,7 @@ struct SolvesPanel: View {
 
     var body: some View {
         let n = design.system.solves.count
-        JobPanelFrame(kind: .solves, subtitle: "\(n) solve\(n == 1 ? "" : "s") in \(design.system.name)", window: window) {
+        JobPanelFrame(kind: .solves, subtitle: "\(n) solve\(n == 1 ? "" : "s") in \(design.system.name)") {
             if design.system.solves.isEmpty {
                 ContentUnavailableView(
                     "No Solves", systemImage: "function",

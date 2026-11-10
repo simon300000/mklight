@@ -68,7 +68,9 @@ pub struct NewArgs {
     /// Project file to create.
     pub file: PathBuf,
     /// Start from a built-in sample (`singlet`, `achromat`, `cooke_triplet`,
-    /// `double_gauss`, `newtonian`, `petzval_asphere`, `relay`).
+    /// `double_gauss`, `newtonian`, `petzval_asphere`, `relay`, `hybrid_doe`,
+    /// `anamorphic`, `biconic`, `toroid`, `q_con`, `q_bfs`, `odd_asphere`,
+    /// `xy_freeform`, `zernike_sag`).
     #[arg(long)]
     pub sample: Option<String>,
     /// Overwrite an existing file.

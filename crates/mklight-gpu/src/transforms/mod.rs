@@ -11,6 +11,7 @@ use crate::{Df32, pending::JobControl, resident::*};
 use mklight_core::MkResult;
 pub mod correlation;
 mod cpu;
+pub(crate) use cpu::cis;
 pub mod recipe;
 
 #[derive(Clone, Copy, Debug)]
@@ -69,13 +70,6 @@ pub enum Request {
     PrepareOpticalStencil(OpticalCorrelation),
     Transpose {
         input: PlanView,
-        output: BufferId,
-    },
-    Multiply {
-        left: PlanView,
-        right: PlanView,
-        conjugate: bool,
-        scale: f32,
         output: BufferId,
     },
     /// Circular convolution on the exact common grid, with no implicit padding.
@@ -178,13 +172,7 @@ pub fn validate(r: &Request, p: &ResidentPlan) -> MkResult<()> {
             }
             out(p, *output, &[input.desc.shape[1], input.desc.shape[0]])?;
         }
-        Request::Multiply {
-            left,
-            right,
-            output,
-            ..
-        }
-        | Request::Convolve {
+        Request::Convolve {
             left,
             right,
             output,
@@ -193,11 +181,6 @@ pub fn validate(r: &Request, p: &ResidentPlan) -> MkResult<()> {
             grid(right, ElementType::Complex32)?;
             if left.desc != right.desc {
                 return Err(bad("spectral inputs must have identical grids"));
-            }
-            if let Request::Multiply { scale, .. } = r
-                && !scale.is_finite()
-            {
-                return Err(bad("spectral scale"));
             }
             out(p, *output, &left.desc.shape)?;
         }
@@ -325,13 +308,7 @@ pub fn accesses(r: &Request) -> Access {
         Request::Transpose { input, output } | Request::Phase { input, output, .. } => {
             (vec![input.clone()], *output)
         }
-        Request::Multiply {
-            left,
-            right,
-            output,
-            ..
-        }
-        | Request::Convolve {
+        Request::Convolve {
             left,
             right,
             output,

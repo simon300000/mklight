@@ -506,6 +506,47 @@ fn first_order_job_cancellation_and_symmetry() {
 }
 
 #[test]
+fn irregularity_on_a_cone_term_odd_asphere_keeps_the_first_order_model() {
+    use mklight_core::param::{IrregularityMode, ParamPath};
+    let mut sys = samples::odd_asphere_element();
+    let SurfaceShape::OddAsphere { coefficients, .. } = &mut sys.surfaces[1].shape else {
+        panic!("odd asphere sample");
+    };
+    coefficients[0] = 1e-4;
+    sys.surfaces[1].semi_diameter = mklight_core::SemiDiameter::Fixed { value: 5.0 };
+    let efl = |sys: &mklight_core::OpticalSystem| {
+        let rs = resolve(sys.clone());
+        mklight_trace::paraxial::first_order(&rs, rs.primary_wavelength)
+            .unwrap()
+            .efl
+    };
+    let bare = efl(&sys);
+    assert!(bare.is_finite());
+
+    // One fringe of spherical irregularity has the vertex curvature
+    // −4λ/R², the same as −2λ/R² on the r² coefficient.
+    let mut equivalent = sys.clone();
+    let wave = equivalent.wavelengths.primary_um() * 1e-3;
+    let SurfaceShape::OddAsphere { coefficients, .. } = &mut equivalent.surfaces[1].shape else {
+        panic!("odd asphere sample");
+    };
+    coefficients[1] -= 2.0 * wave / 25.0;
+    let expected = efl(&equivalent);
+    assert!((expected - bare).abs() > 1e-3, "{expected} vs {bare}");
+
+    let spherical = ParamPath::Irregularity {
+        surface: sys.surfaces[1].id,
+        mode: IrregularityMode::Spherical,
+    };
+    spherical.set(&mut sys, 0.0).unwrap();
+    assert_eq!(efl(&sys), bare);
+    spherical.set(&mut sys, 1.0).unwrap();
+    close(efl(&sys), expected, 1e-9);
+    // The real-ray tracer builds on the same first-order model.
+    tracer(sys);
+}
+
+#[test]
 fn reflective_doe_has_signed_focus_and_the_same_phase_lag() {
     let radius = 2.0;
     let f = 40.0;

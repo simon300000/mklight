@@ -153,8 +153,8 @@ fn probe(name: &str, system: OpticalSystem, library: Arc<MaterialLibrary>) {
 }
 
 #[test]
-#[ignore]
-fn seeded_jacobians_match_unseeded() {
+#[ignore = "prints the seeded and unseeded Jacobian errors and times; asserts nothing"]
+fn seeded_jacobian_errors() {
     for (name, system) in samples::all() {
         probe(name, system, Arc::new(MaterialLibrary::with_builtin()));
     }

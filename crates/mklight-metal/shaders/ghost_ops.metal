@@ -1,12 +1,15 @@
-// Ghost-specific sequence rules, with P1 local-frame geometry. Each completed
-// step evaluates its P7 coating at its incidence and folds the separate s/p
-// powers, efficiency and absorption in step order inside the trace, so no
-// per-step query, factor or coating record is stored.
+// Ghost-specific sequence rules, with the trace's local-frame geometry. Each
+// completed step evaluates its coating at its incidence and folds the
+// separate s/p powers, efficiency and absorption in step order inside the
+// trace, so no per-step query, factor or coating record is stored.
 #include "trace_shared.h"
 constant uint mkl_ghost_features [[function_constant(MKL_GHOST_FEATURES_CONSTANT)]];
-// Reuse the P7 implementation verbatim (as stray_ops.metal does).
+// The coating evaluation of radiometry.metal, verbatim and without its
+// kernels (as stray_ops.metal does).
 namespace ghost_coating {
+#define MKL_RADIOMETRY_COATING_ONLY
 #include "radiometry.metal"
+#undef MKL_RADIOMETRY_COATING_ONLY
 }
 static MklCoatingValue ghost_coating_value(uint index,device const MklCoatingSpec* specs,device const MklCoatingLayer* layers,constant MklGhostTraceParams& p,float2 cosine){
  MklCoatingValue out={};out.status=MKL_RAD_REFERENCE;

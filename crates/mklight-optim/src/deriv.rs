@@ -9,10 +9,11 @@
 //! larger `η`: unless `JacobianSettings::relative_step` is set, the problem
 //! chooses it ([`Problem::fd_relative_step`]; an optical problem asks its
 //! evaluators — `1e-6` / `1e-4` for f64 wavefront operands, larger for f32
-//! GPU evaluation, see `docs/OPTIMIZATION.md`). The step is then rounded so
-//! that `x + h` is exactly
-//! representable (`h ← (x + h) − x`), removing one rounding error from the
-//! quotient. Steps never leave the variable bounds: a forward step that would
+//! GPU evaluation, see `docs/OPTIMIZATION.md`). The step of a first-order
+//! (forward or backward) difference is then rounded so that `x + h` is
+//! exactly representable (`h ← (x + h) − x`), removing one rounding error
+//! from the quotient; the second-order stencils use `h` as it is. Steps
+//! never leave the variable bounds: a forward step that would
 //! cross the upper bound is taken backwards, and a central difference that
 //! does not fit is replaced by the second-order one-sided formula
 //! `f'(x) ≈ (−3f(x) + 4f(x+h) − f(x+2h)) / 2h`.
@@ -75,7 +76,6 @@ pub struct Jacobian {
     pub evaluations: usize,
     /// Columns whose perturbed evaluations failed (set to zero).
     pub failed_columns: Vec<usize>,
-    pub analytic: bool,
 }
 
 /// How column `j` is differenced: the offsets (multiples of `h`) evaluated
@@ -211,8 +211,9 @@ fn retry_plan(
 }
 
 impl Stencil {
-    /// Derivative from `f(x)` and the probe values in `offsets()` order.
-    fn combine(self, h: f64, f0: f64, vals: &[f64]) -> f64 {
+    /// Derivative from `f(x)` and the probe values in `offsets()` order (a
+    /// one-probe stencil reads `vals[0]` only).
+    fn combine(self, h: f64, f0: f64, vals: [f64; 2]) -> f64 {
         match self {
             Stencil::Forward => (vals[0] - f0) / h,
             Stencil::Backward => (f0 - vals[0]) / h,
@@ -236,20 +237,10 @@ pub fn fd_jacobian<P: Problem + ?Sized>(
     settings: &JacobianSettings,
     ctx: &JobContext,
 ) -> MkResult<Jacobian> {
-    Ok(fd_jacobian_budget(p, x, f0, settings, ctx, usize::MAX)?.expect("unlimited budget"))
-}
-
-/// [`fd_jacobian`] spending at most `budget` evaluations: `Ok(None)` when the
-/// next batch would exceed it (nothing beyond the budget is evaluated).
-pub(crate) fn fd_jacobian_budget<P: Problem + ?Sized>(
-    p: &P,
-    x: &[f64],
-    f0: &Evaluation,
-    settings: &JacobianSettings,
-    ctx: &JobContext,
-    budget: usize,
-) -> MkResult<Option<Jacobian>> {
-    fd_jacobian_prefetched(p, x, f0, settings, ctx, budget, None)
+    Ok(
+        fd_jacobian_prefetched(p, x, f0, settings, ctx, usize::MAX, None)?
+            .expect("unlimited budget"),
+    )
 }
 
 /// The planned stencils of every column at `x` (pinned columns omitted).
@@ -303,9 +294,11 @@ pub(crate) fn fd_first_batch<P: Problem + ?Sized>(
     (!pending.is_empty()).then(|| pass_batch(p, x, &pending, p.anchored_differences()))
 }
 
-/// [`fd_jacobian_budget`] whose first pass may already be evaluated:
-/// `prefetched` holds [`fd_first_batch`]`(x)` and its evaluation, which is
-/// used (and not counted again) when it is exactly the planned batch.
+/// [`fd_jacobian`] spending at most `budget` evaluations: `Ok(None)` when the
+/// next batch would exceed it (nothing beyond the budget is evaluated). The
+/// first pass may already be evaluated: `prefetched` holds
+/// [`fd_first_batch`]`(x)` and its evaluation, which is used (and not
+/// counted) when it is exactly the planned batch.
 pub(crate) fn fd_jacobian_prefetched<P: Problem + ?Sized>(
     p: &P,
     x: &[f64],
@@ -367,13 +360,16 @@ pub(crate) fn fd_jacobian_prefetched<P: Problem + ?Sized>(
                 .map(|q| offs[q])
                 .collect();
             if bad.is_empty() {
+                // The stencil's first and last probe rows (one row twice
+                // for a one-probe stencil).
+                let (a, b) = (row, row + cnt - 1);
+                let (ra, rb) = (e.residuals(a), e.residuals(b));
                 for i in 0..m {
-                    let vals: Vec<f64> = (0..cnt).map(|q| e.residuals(row + q)[i]).collect();
-                    jr[(i, j)] = st.combine(h, base_r[i], &vals);
+                    jr[(i, j)] = st.combine(h, base_r[i], [ra[i], rb[i]]);
                 }
+                let (ca, cb) = (e.constraints(a), e.constraints(b));
                 for i in 0..k {
-                    let vals: Vec<f64> = (0..cnt).map(|q| e.constraints(row + q)[i]).collect();
-                    jc[(i, j)] = st.combine(h, base_c[i], &vals);
+                    jc[(i, j)] = st.combine(h, base_c[i], [ca[i], cb[i]]);
                 }
             } else {
                 let side = (bad.iter().any(|&o| o > 0.0), bad.iter().any(|&o| o < 0.0));
@@ -392,7 +388,6 @@ pub(crate) fn fd_jacobian_prefetched<P: Problem + ?Sized>(
         constraints: jc,
         evaluations,
         failed_columns: failed,
-        analytic: false,
     }))
 }
 
@@ -404,53 +399,68 @@ pub fn jacobian<P: Problem + ?Sized>(
     settings: &JacobianSettings,
     ctx: &JobContext,
 ) -> MkResult<Jacobian> {
-    Ok(jacobian_budget(p, x, f0, settings, ctx, usize::MAX)?.expect("unlimited budget"))
+    match analytic_jacobian(p, x, settings, ctx)? {
+        Some(j) => Ok(j),
+        None => fd_jacobian(p, x, f0, settings, ctx),
+    }
 }
 
-/// [`jacobian`] with an evaluation budget for the finite-difference path.
-/// Non-finite analytic columns are reported as failed.
-pub(crate) fn jacobian_budget<P: Problem + ?Sized>(
+/// The problem's analytic Jacobian at `x` (`None` when it has none), with
+/// its shape checked. A problem without constraints may return any empty
+/// constraint block.
+fn analytic<P: Problem + ?Sized>(
     p: &P,
     x: &[f64],
-    f0: &Evaluation,
+    ctx: &JobContext,
+) -> MkResult<Option<(Matrix, Matrix)>> {
+    let Some(res) = p.jacobian(x, ctx) else {
+        return Ok(None);
+    };
+    let (jr, jc) = res?;
+    let n = p.num_variables();
+    if jr.rows != p.num_residuals()
+        || jr.cols != n
+        || jc.rows != p.num_constraints()
+        || (jc.rows > 0 && jc.cols != n)
+    {
+        return Err(MkError::Numerical(
+            "analytic Jacobian has the wrong shape".into(),
+        ));
+    }
+    let jc = if jc.rows == 0 {
+        Matrix::zeros(0, n)
+    } else {
+        jc
+    };
+    Ok(Some((jr, jc)))
+}
+
+/// The analytic Jacobian at `x` when the settings allow it and the problem
+/// provides one. Non-finite columns are reported as failed.
+pub(crate) fn analytic_jacobian<P: Problem + ?Sized>(
+    p: &P,
+    x: &[f64],
     settings: &JacobianSettings,
     ctx: &JobContext,
-    budget: usize,
 ) -> MkResult<Option<Jacobian>> {
-    if settings.use_analytic
-        && let Some(res) = p.jacobian(x, ctx)
-    {
-        let (jr, jc) = res?;
-        let n = p.num_variables();
-        if jr.rows != p.num_residuals()
-            || jr.cols != n
-            || jc.rows != p.num_constraints()
-            || (jc.rows > 0 && jc.cols != n)
-        {
-            return Err(MkError::Numerical(
-                "analytic Jacobian has the wrong shape".into(),
-            ));
-        }
-        let jc = if jc.rows == 0 {
-            Matrix::zeros(0, n)
-        } else {
-            jc
-        };
-        let failed_columns = (0..n)
-            .filter(|&j| {
-                (0..jr.rows).any(|i| !jr[(i, j)].is_finite())
-                    || (0..jc.rows).any(|i| !jc[(i, j)].is_finite())
-            })
-            .collect();
-        return Ok(Some(Jacobian {
-            residuals: jr,
-            constraints: jc,
-            evaluations: 0,
-            failed_columns,
-            analytic: true,
-        }));
+    if !settings.use_analytic {
+        return Ok(None);
     }
-    fd_jacobian_budget(p, x, f0, settings, ctx, budget)
+    let Some((jr, jc)) = analytic(p, x, ctx)? else {
+        return Ok(None);
+    };
+    let failed_columns = (0..jr.cols)
+        .filter(|&j| {
+            (0..jr.rows).any(|i| !jr[(i, j)].is_finite())
+                || (0..jc.rows).any(|i| !jc[(i, j)].is_finite())
+        })
+        .collect();
+    Ok(Some(Jacobian {
+        residuals: jr,
+        constraints: jc,
+        evaluations: 0,
+        failed_columns,
+    }))
 }
 
 /// One compared Jacobian entry.
@@ -535,34 +545,39 @@ pub fn check_jacobian<P: Problem + ?Sized>(
     settings: &CheckSettings,
     ctx: &JobContext,
 ) -> MkResult<JacobianCheck> {
-    let Some(res) = p.jacobian(x, ctx) else {
+    let Some((ja, jca)) = analytic(p, x, ctx)? else {
         return Err(MkError::Unsupported(
             "problem has no analytic Jacobian to check".into(),
         ));
     };
-    let (ja, jca) = res?;
     let vars = p.variables();
     let n = vars.len();
     let (m, k) = (p.num_residuals(), p.num_constraints());
 
-    // Points: per column 4 central points (±h, ±h/2), or fallbacks.
+    // Points: per column 4 central points (±h, ±h/2) or 3 one-sided ones
+    // (h, 2h, h/2); none for a pinned variable.
     let mut batch = CandidateBatch::with_capacity(n, 4 * n + 1);
     batch.push(x);
+    // Per column: step, side and the batch row of its first probe.
     let mut steps = Vec::with_capacity(n);
     let mut xp = x.to_vec();
     for (j, v) in vars.iter().enumerate() {
         let (sign, h) = check_plan(v, x[j], fd_step(v, x[j], settings.relative_step));
-        let offs: [f64; 4] = if sign == 0.0 {
-            [1.0, -1.0, 0.5, -0.5]
+        let offs: &[f64] = if !(h > 0.0) {
+            &[]
+        } else if sign == 0.0 {
+            &[1.0, -1.0, 0.5, -0.5]
+        } else if sign > 0.0 {
+            &[1.0, 2.0, 0.5]
         } else {
-            [sign, 2.0 * sign, 0.5 * sign, sign]
+            &[-1.0, -2.0, -0.5]
         };
-        for o in offs {
+        steps.push((h, sign, batch.len()));
+        for &o in offs {
             xp[j] = v.clamp(x[j] + o * h);
             batch.push(&xp);
         }
         xp[j] = x[j];
-        steps.push((h, sign));
     }
     let e = p.evaluate_batch(&batch, ctx)?;
     e.validate(batch.len(), m, k)?;
@@ -592,16 +607,20 @@ pub fn check_jacobian<P: Problem + ?Sized>(
             });
         }
     };
-    for (j, &(h, sign)) in steps.iter().enumerate() {
-        let base = 1 + 4 * j;
+    for (j, &(h, sign, base)) in steps.iter().enumerate() {
         if !(h > 0.0) {
             continue; // pinned variable: nothing to compare
         }
-        if !(base..base + 4).all(|q| e.status[q].is_usable()) {
+        let probes = if sign == 0.0 { 4 } else { 3 };
+        if !(base..base + probes).all(|q| e.status[q].is_usable()) {
             return Err(MkError::Numerical(format!(
                 "evaluation failed while differencing variable {j}"
             )));
         }
+        // Probe values in batch order (zero beyond a column's probes).
+        let values = |value: &dyn Fn(usize) -> f64| -> [f64; 4] {
+            std::array::from_fn(|q| if q < probes { value(base + q) } else { 0.0 })
+        };
         let deriv = |vals: [f64; 4], f0: f64| -> f64 {
             if sign == 0.0 {
                 let d1 = (vals[0] - vals[1]) / (2.0 * h);
@@ -616,12 +635,12 @@ pub fn check_jacobian<P: Problem + ?Sized>(
             }
         };
         for i in 0..m {
-            let v = [0, 1, 2, 3].map(|q| e.residuals(base + q)[i]);
+            let v = values(&|q| e.residuals(q)[i]);
             let fd = deriv(v, e.residuals(0)[i]);
             compare("residual", i, j, ja[(i, j)], fd);
         }
         for i in 0..k {
-            let v = [0, 1, 2, 3].map(|q| e.constraints(base + q)[i]);
+            let v = values(&|q| e.constraints(q)[i]);
             let fd = deriv(v, e.constraints(0)[i]);
             compare("constraint", i, j, jca[(i, j)], fd);
         }

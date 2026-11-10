@@ -422,3 +422,57 @@ fn restore_tiny_nonlinear_constraint_defect_before_ranking() {
     assert_eq!(r.termination, Termination::Cancelled);
     assert!(mon.best.get().unwrap().merit < 0.01);
 }
+
+#[test]
+fn settings_the_solver_cannot_run_with_are_rejected() {
+    let p = rosenbrock();
+    // A zero trust factor gives a zero trust radius.
+    for factor in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+        let s = LsqSettings {
+            initial_trust_factor: factor,
+            ..Default::default()
+        };
+        let r = least_squares(&p, &[-1.2, 1.0], &s, &Monitor::default());
+        assert!(
+            matches!(r, Err(mklight_core::MkError::InvalidParam(_))),
+            "{factor}: {r:?}"
+        );
+    }
+}
+
+/// A point that reaches the target within the monitor's feasibility
+/// tolerance ends a constrained run, also when that tolerance is looser than
+/// the augmented-Lagrangian one.
+#[test]
+fn target_reached_ends_a_constrained_run() {
+    let p = FnProblem::new(vars(1), 1, |x, r, c| {
+        r[0] = x[0];
+        c[0] = x[0];
+        EvalStatus::Ok
+    })
+    .with_constraints(vec![Constraint::equal("c", 1.0 + 1e-6)]);
+    let s = LsqSettings {
+        target_merit: 10.0,
+        ..Default::default()
+    };
+    let mut mon = Monitor::default();
+    mon.feasibility_tol = 1e-3;
+    let r = least_squares(&p, &[1.0], &s, &mon).unwrap();
+    assert_eq!(r.termination, Termination::TargetReached);
+    assert_eq!((r.x.as_slice(), r.evaluations), (&[1.0][..], 1));
+}
+
+/// Speculative probes are finite-difference work: with an analytic Jacobian
+/// a run neither evaluates them nor differences them.
+#[test]
+fn speculation_leaves_an_analytic_jacobian_alone() {
+    let p = rosenbrock();
+    let plain = LsqSettings::default();
+    let speculative = LsqSettings {
+        speculative_jacobian: true,
+        ..plain
+    };
+    let a = least_squares(&p, &[-1.2, 1.0], &plain, &Monitor::default()).unwrap();
+    let b = least_squares(&p, &[-1.2, 1.0], &speculative, &Monitor::default()).unwrap();
+    assert_eq!(a, b);
+}

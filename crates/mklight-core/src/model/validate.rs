@@ -127,7 +127,7 @@ fn check_shape(out: &mut Issues, path: &str, shape: &SurfaceShape) {
             coefficients,
         } => {
             scalars(out, &[("curvature", *curvature), ("conic", *conic)]);
-            series(out, "coefficients", coefficients, usize::MAX);
+            series(out, "coefficients", coefficients, MAX_EVEN_TERMS);
         }
         OddAsphere {
             curvature,
@@ -390,6 +390,22 @@ fn check_aperture_shape(out: &mut Issues, path: &str, a: &ApertureShape) {
     }
 }
 
+/// The wavelengths of a `(λ, value)` table increase strictly (`code` at each
+/// sample that does not exceed its predecessor): the interpolants search
+/// the table in that order and divide by the spacing.
+fn check_increasing(out: &mut Issues, code: &str, path: &str, table: &[(f64, f64)]) {
+    for (k, w) in table.windows(2).enumerate() {
+        let (before, l) = (w[0].0, w[1].0);
+        if l <= before {
+            out.push(
+                code,
+                format!("{path}[{}][0]", k + 1),
+                format!("wavelengths must increase ({l} follows {before})"),
+            );
+        }
+    }
+}
+
 fn check_coating(out: &mut Issues, path: &str, c: &CoatingDef) {
     match c {
         CoatingDef::ThinFilm {
@@ -436,6 +452,19 @@ fn check_coating(out: &mut Issues, path: &str, c: &CoatingDef) {
             }
         }
         CoatingDef::Tabulated { reflectance } => {
+            if reflectance.is_empty() {
+                out.push(
+                    "invalid_coating",
+                    format!("{path}.reflectance"),
+                    "a tabulated coating needs at least one sample",
+                );
+            }
+            check_increasing(
+                out,
+                "invalid_coating",
+                &format!("{path}.reflectance"),
+                reflectance,
+            );
             for (j, &(l, r)) in reflectance.iter().enumerate() {
                 let p = format!("{path}.reflectance[{j}]");
                 out.positive("invalid_coating", format!("{p}[0]"), l);
@@ -773,6 +802,12 @@ impl OpticalSystem {
             if let Some(c) = sn.max_cra_deg {
                 out.finite("sensor.max_cra_deg", c);
             }
+            check_increasing(
+                &mut out,
+                "invalid_sensor",
+                "sensor.spectral_response",
+                &sn.spectral_response,
+            );
             for (k, &(l, r)) in sn.spectral_response.iter().enumerate() {
                 out.positive(
                     "invalid_sensor",
@@ -1274,6 +1309,85 @@ mod tests {
                 })
             },
         );
+    }
+
+    #[test]
+    fn wavelength_tables_meet_the_rules_of_their_interpolants() {
+        let tabulated = |reflectance: Vec<(f64, f64)>| {
+            move |s: &mut OpticalSystem| {
+                s.coatings
+                    .insert("T".into(), CoatingDef::Tabulated { reflectance });
+            }
+        };
+        rejects(
+            "invalid_coating",
+            "coatings[\"T\"].reflectance",
+            tabulated(vec![]),
+        );
+        rejects(
+            "invalid_coating",
+            "coatings[\"T\"].reflectance[2][0]",
+            tabulated(vec![(0.4, 0.01), (0.7, 0.02), (0.55, 0.03)]),
+        );
+        rejects(
+            "invalid_coating",
+            "coatings[\"T\"].reflectance[1][0]",
+            tabulated(vec![(0.4, 0.01), (0.4, 0.02), (0.55, 0.03)]),
+        );
+        let mut s = samples::cooke_triplet();
+        tabulated(vec![(0.4, 0.01), (0.55, 0.03), (0.7, 0.02)])(&mut s);
+        tabulated(vec![(0.55, 0.03)])(&mut s);
+        assert_eq!(s.validation_issues(), vec![]);
+
+        let sensor = |spectral_response: Vec<(f64, f64)>| {
+            move |s: &mut OpticalSystem| {
+                s.sensor = Some(Sensor {
+                    pixels_x: 10,
+                    pixels_y: 10,
+                    pitch_x: 0.004,
+                    pitch_y: 0.004,
+                    max_cra_deg: None,
+                    spectral_response,
+                })
+            }
+        };
+        rejects(
+            "invalid_sensor",
+            "sensor.spectral_response[1][0]",
+            sensor(vec![(0.55, 1.0), (0.45, 0.6), (0.65, 0.7)]),
+        );
+        rejects(
+            "invalid_sensor",
+            "sensor.spectral_response[2][0]",
+            sensor(vec![(0.45, 0.6), (0.55, 1.0), (0.55, 0.7)]),
+        );
+        let mut s = samples::cooke_triplet();
+        sensor(vec![(0.45, 0.6), (0.55, 1.0), (0.65, 0.7)])(&mut s);
+        assert_eq!(s.validation_issues(), vec![]);
+    }
+
+    #[test]
+    fn an_overlay_wraps_a_geometric_sag() {
+        let overlay = |base: SurfaceShape| SurfaceShape::SagOverlay {
+            base: Box::new(base),
+            norm_radius: 5.0,
+            test_wavelength_um: 0.6328,
+            astigmatism: 0.5,
+            astigmatism_angle_deg: 0.0,
+            spherical: 0.25,
+        };
+        // Overlays may be stacked: their departures add.
+        let mut s = samples::cooke_triplet();
+        s.surfaces[2].shape = overlay(overlay(s.surfaces[2].shape.clone()));
+        assert_eq!(s.validation_issues(), vec![]);
+        for base in [
+            SurfaceShape::CoordinateBreak,
+            SurfaceShape::Paraxial { focal_length: 50.0 },
+        ] {
+            rejects("invalid_sag_overlay_base", "surfaces[2].shape.base", |s| {
+                s.surfaces[2].shape = overlay(base)
+            });
+        }
     }
 
     #[test]

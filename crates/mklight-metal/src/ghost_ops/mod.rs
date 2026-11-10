@@ -412,13 +412,16 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
         } => {
             use mklight_gpu::consts::*;
             let up = x.system(*systems)?;
-            // Thin-film matrices are compiled in only when a film record exists.
+            // Thin-film matrices are compiled in only when a film record
+            // exists. Specs an earlier operation of the plan writes are not
+            // on the host: they take the film variant, which evaluates
+            // every kind.
             let features = coatings.as_ref().map_or(0, |c| {
-                let (b, o) = x.buffer(&c.specs);
-                let words = &b.as_slice()[o..o + c.specs.desc.len().unwrap_or(0)];
-                let films = bytemuck::cast_slice::<_, mklight_gpu::radiometry::CoatingSpec>(words)
-                    .iter()
-                    .any(|s| s.kind == MKL_RAD_FILM);
+                let films = x.import_words(&c.specs).is_none_or(|words| {
+                    bytemuck::cast_slice::<_, mklight_gpu::radiometry::CoatingSpec>(words)
+                        .iter()
+                        .any(|s| s.kind == MKL_RAD_FILM)
+                });
                 MKL_GHOST_FEATURE_COATINGS | if films { MKL_GHOST_FEATURE_FILMS } else { 0 }
             });
             let pso = x.gpu.pipeline(&PipelineKey::with_u32(
@@ -498,8 +501,8 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                 offset = end;
                 ctl.report(offset as f64 / n as f64, "ghost probes");
                 if offset < n {
-                    // Probes trace whole ghost paths (~0.1 µs each on the P9
-                    // Double Gauss), so calibrate beyond 2^16 items.
+                    // Probes trace whole ghost paths (~0.1 µs each on the
+                    // Double Gauss sample), so calibrate beyond 2^16 items.
                     tile = crate::radiometry::next_tile(x, tile, 1 << 20, n - offset, 1 << 16)?;
                 }
             }

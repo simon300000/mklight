@@ -49,28 +49,43 @@ public struct FFIEngine: EngineClient {
     }
 
     public var info: EngineInfo {
-        let backends: [String] =
-            if case .array(let list) = core.backendsJSON.value {
-                list.compactMap { b in
-                    guard b["available"] == .bool(true), case .string(let id)? = b["id"] else { return nil }
-                    return id
-                }
-            } else { [] }
-        return EngineInfo(name: "MKLight engine", version: core.version, backends: backends, isMock: false)
+        EngineInfo(name: "MKLight engine", version: core.version, isMock: false)
     }
 
-    /// `mk_engine_list_backends`, verbatim.
-    public var backends: JSONValue { core.backendsJSON.value }
+    /// `mk_engine_list_backends`, verbatim. Listing the backends opens the
+    /// GPU device (shader library, numerics probe), so the call runs off
+    /// the caller's thread.
+    public func backends() async throws -> JSONValue {
+        let core = self.core
+        return try decodeJSON(JSONValue.self, try await offMain { try CABI.listBackends(core.pointer) })
+    }
 
+    /// A preparation the engine refuses to start is reported by
+    /// `gpuPreparation()` as failed.
     public func prepareGPU(cacheDirectory: URL?) {
-        try? CABI.prepareGPU(core.pointer, cacheDirectory: cacheDirectory?.path)
+        let refusal: String?
+        do {
+            try CABI.prepareGPU(core.pointer, cacheDirectory: cacheDirectory?.path)
+            refusal = nil
+        } catch {
+            refusal = Self.describe(error)
+        }
+        core.gpuPreparationError.withLock { $0 = refusal }
     }
 
+    /// The engine's state; `failed` when `prepareGPU` was refused or the
+    /// state cannot be read.
     public func gpuPreparation() -> GPUPreparation {
-        guard let text = try? CABI.gpuPreparation(core.pointer),
-              let state = try? decodeJSON(GPUPreparation.self, text)
-        else { return .idle }
-        return state
+        if let refusal = core.gpuPreparationError.withLock({ $0 }) { return .failed(device: "", message: refusal) }
+        do {
+            return try decodeJSON(GPUPreparation.self, try CABI.gpuPreparation(core.pointer))
+        } catch {
+            return .failed(device: "", message: Self.describe(error))
+        }
+    }
+
+    private static func describe(_ error: any Error) -> String {
+        (error as? EngineError).map(message(of:)) ?? error.localizedDescription
     }
 
     // MARK: Sessions and projects
@@ -170,8 +185,7 @@ public struct FFIEngine: EngineClient {
             let (hash, library) = try await offMain {
                 try session.locked { s in (try CABI.sessionSetSystem(s, json: json), try CABI.sessionLibraryHash(s)) }
             }
-            return ModelSnapshot(
-                system: system, hash: SnapshotHash(hex: hash), warnings: local.map(\.description), libraryHash: library)
+            return ModelSnapshot(system: system, hash: SnapshotHash(hex: hash), libraryHash: library)
         } catch let error as EngineError where error.code == .invalidModel || error.code == .parse {
             // The engine stops at its first error; add the mirror's list.
             let message = error.code == .parse ? (error.errorDescription ?? "") : Self.message(of: error)
@@ -200,7 +214,7 @@ public struct FFIEngine: EngineClient {
             guard case .array(let issues)? = envelope["result"]?["issues"] else { return local }
             return issues.map { i in
                 let severity: ModelIssue.Severity = i["severity"] == .string("error") ? .error : .warning
-                let surface = i["surface"]?.doubleValue.map { Int($0) }
+                let surface = i["surface"]?.int
                 let code = if case .string(let c)? = i["code"] { "[\(c)] " } else { "" }
                 let message = if case .string(let m)? = i["message"] { m } else { "" }
                 return ModelIssue(severity, surface: surface, code + message)
@@ -230,9 +244,7 @@ public struct FFIEngine: EngineClient {
             }
         }
         let system = try decodeJSON(OpticalSystem.self, systemJSON)
-        return ModelSnapshot(
-            system: system, hash: SnapshotHash(hex: hash),
-            warnings: system.structuralIssues().map(\.description), libraryHash: library)
+        return ModelSnapshot(system: system, hash: SnapshotHash(hex: hash), libraryHash: library)
     }
 
     /// Solves the snapshot's system in the engine (`mk_session_apply_solves`)
@@ -251,9 +263,7 @@ public struct FFIEngine: EngineClient {
         let system = try decodeJSON(OpticalSystem.self, systemJSON)
         return SolveApplication(
             report: try decodeJSON(JSONValue.self, report),
-            snapshot: ModelSnapshot(
-                system: system, hash: SnapshotHash(hex: hash), warnings: system.structuralIssues().map(\.description),
-                libraryHash: library))
+            snapshot: ModelSnapshot(system: system, hash: SnapshotHash(hex: hash), libraryHash: library))
     }
 
     // MARK: EngineClient: catalogs
@@ -311,14 +321,11 @@ public struct FFIEngine: EngineClient {
         }
     }
 
+    /// The settings go to the engine as given: what the request leaves out
+    /// (a seed included) takes the engine's default, the one its schema
+    /// declares and the settings form shows.
     public func submit(_ request: EngineAnalysisRequest, on snapshot: ModelSnapshot) -> AnalysisJob {
-        var settings = request.settings
-        if let d = core.descriptor(request.analysis), settings["seed"] == nil,
-            d.settingsFields.contains(where: { $0.name == "seed" })
-        {
-            settings["seed"] = Int64(exactly: request.execution.seed).map(JSONValue.integer) ?? .unsigned(request.execution.seed)
-        }
-        let wire = WireRequest(analysis: request.analysis, settings: settings, execution: request.execution)
+        let wire = WireRequest(analysis: request.analysis, settings: request.settings, execution: request.execution)
         let name = request.analysis
         return start(wire, snapshot: snapshot, request: nil, engineRequest: request) { json, buffers in
             .generic(GenericResult(analysis: name, json: json, buffers: buffers))

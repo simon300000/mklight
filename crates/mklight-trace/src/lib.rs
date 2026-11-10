@@ -11,7 +11,7 @@
 //!
 //! | module | contents |
 //! |---|---|
-//! | [`surface`] | intersections (plane, conic, even asphere, ideal lens, coordinate break) and analytic normals in the surface's local frame |
+//! | [`surface`] | intersections and normals in the surface's local frame: plane, conic, even asphere, ideal lens and coordinate break in their own forms; every other sag shape (and a sag overlay) by Newton iteration on `surface_math`; a diffractive surface as its base |
 //! | [`interact`] | stable vector Snell refraction with TIR detection, reflection, ideal thin lens |
 //! | [`trace`] | [`trace_ray`]: one ray through a [`ResolvedSystem`] using only relative surface-to-surface transforms; status, compensated OPL, internal transmittance, optional per-surface records. [`trace_rays`]: the same for packets of [`PACKET`] rays (SIMD lane kernel for planes and conics), bitwise identical |
 //! | [`paraxial`] | y–nu trace on the unfolded equivalent (signed reduced indices for mirrors), [`FirstOrder`] properties per wavelength |
@@ -97,7 +97,7 @@ pub mod trace;
 pub mod tracer;
 
 pub use batch::{BatchRay, Grid, opd_grid, opd_grid_job, trace_grid, trace_grid_job};
-pub use diff::{RayTangent, TangentError, TangentPlan, differentiate, trace_ray_tangent};
+pub use diff::{RayTangent, TangentError, TangentPlan};
 pub use numeric::Compensated;
 pub use opd::OpdReference;
 pub use paraxial::{
@@ -131,3 +131,6 @@ pub use tracer::{
 };
 
 pub use mklight_core::ResolvedSystem;
+
+/// Backend name in the `RunInfo` of this crate's analyses.
+pub(crate) const BACKEND: &str = "cpu-f64";

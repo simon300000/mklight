@@ -64,9 +64,6 @@ pub struct Hit {
     pub primitive: u32,
     pub reserved: u32,
 }
-pub fn record_desc<T: Pod>(n: usize) -> BufferDesc {
-    BufferDesc::new(ElementType::U32, [n, std::mem::size_of::<T>() / 4])
-}
 /// Produce each numeric record directly into shared storage.
 pub fn fill_records<T: Pod>(
     b: &dyn ComputeBackend,
@@ -102,7 +99,7 @@ pub fn read_records<T: Pod>(view: &ReadView) -> MkResult<&[T]> {
     bytemuck::try_cast_slice(view.as_slice::<u32>()?).map_err(|_| bad("stray record alignment"))
 }
 
-/// P1's packed sag representation, with a bounded coefficient sidecar.
+/// The packed system's sag representation, with a bounded coefficient sidecar.
 /// Geometry-only records never carry a second optical interaction model.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
@@ -115,3 +112,12 @@ impl Default for SurfaceData {
         Self::zeroed()
     }
 }
+// Byte sizes of the matching MSL structs in mklight_stray_ops_types.h
+// (float2 members, 8-byte aligned).
+const _: () = {
+    use std::mem::size_of;
+    assert!(size_of::<Source>() == 136 && size_of::<Ray>() == 64);
+    assert!(size_of::<Primitive>() == 200 && size_of::<Node>() == 56);
+    assert!(size_of::<Hit>() == 64);
+    assert!(size_of::<SurfaceData>() == crate::consts::MKL_PACKED_SURFACE_SIZE as usize + 256 * 8);
+};

@@ -9,6 +9,8 @@ use crate::{
     fx::{D, F},
     layout::PackedSurface,
 };
+use mklight_core::model::surface::ZernikeOrdering;
+use mklight_core::surface_math::zernike_term;
 use std::ops::{Add, Div, Mul, Neg, Sub};
 
 pub(crate) trait Scalar:
@@ -245,35 +247,18 @@ fn zernike<R: Scalar>(
     y: Jet<R>,
     s: Jet<R>,
 ) -> Jet<R> {
+    let ordering = if standard {
+        ZernikeOrdering::Standard
+    } else {
+        ZernikeOrdering::Fringe
+    };
     let mut z = Jet::constant(c(0.0));
     for j in 1..=n {
         let a: R = load(pool, j - 1);
         if a.zero() {
             continue;
         }
-        let (degree, m) = if standard {
-            let mut degree = 0;
-            while (degree + 1) * (degree + 2) / 2 < j {
-                degree += 1;
-            }
-            let k = j - degree * (degree + 1) / 2 - 1;
-            let am = if degree % 2 == 0 {
-                2 * k.div_ceil(2)
-            } else {
-                2 * (k / 2) + 1
-            } as i32;
-            (degree, if j % 2 == 0 { am } else { -am })
-        } else if j == 37 {
-            (12, 0)
-        } else {
-            let mut k = 0;
-            while (k + 1) * (k + 1) < j {
-                k += 1;
-            }
-            let off = j - 1 - k * k;
-            let am = (k - off / 2) as i32;
-            (2 * k - am as usize, if off % 2 == 1 { -am } else { am })
-        };
+        let (degree, m) = zernike_term(ordering, j).expect("validated Zernike count");
         let am = m.unsigned_abs() as usize;
         let (mut re, mut im) = (Jet::constant(c(1.0)), Jet::constant(c(0.0)));
         for _ in 0..am {

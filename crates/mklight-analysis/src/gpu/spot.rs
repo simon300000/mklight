@@ -1,7 +1,7 @@
 use super::*;
 use crate::{
     spot::*,
-    util::{curved_image_warning, default_fields, field_value, pupil_points},
+    util::{airy_radius, curved_image_warning, default_fields, field_value, pupil_points, seed_of},
 };
 /// Complete resident spot pipeline: generation, trace, chief-relative two-pass
 /// moments and optional points. No intermediate optical arrays cross the host.
@@ -11,9 +11,7 @@ pub fn spot_diagram_job(
     s: &SpotDiagramSettings,
     ctx: &JobContext,
 ) -> MkResult<SpotDiagram> {
-    Geometry::new(b, t, ctx)?
-        .split_large_generations()?
-        .spot_job(s, ctx, false)
+    spot(b, t, s, ctx, false)
 }
 /// [`spot_diagram_job`] with the points packed straight from the mapped
 /// device views into [`SpotDiagram::packed_points`] (see
@@ -24,9 +22,22 @@ pub fn spot_diagram_packed_job(
     s: &SpotDiagramSettings,
     ctx: &JobContext,
 ) -> MkResult<SpotDiagram> {
-    Geometry::new(b, t, ctx)?
-        .split_large_generations()?
-        .spot_job(s, ctx, true)
+    spot(b, t, s, ctx, true)
+}
+/// The spot job on an adapter of the tracer with the default axis fields
+/// (`default_fields`), so the adapter prepares each of them once.
+fn spot(
+    b: &dyn ComputeBackend,
+    t: &SequentialTracer,
+    s: &SpotDiagramSettings,
+    ctx: &JobContext,
+    packed: bool,
+) -> MkResult<SpotDiagram> {
+    crate::spot::validate_spot_settings(s)?;
+    let augmented = default_fields(t, &s.fields)?;
+    Geometry::new(b, augmented.as_ref(), ctx)?
+        .split_large_generations()
+        .spot_job(s, ctx, packed)
 }
 /// The device outputs of one field group's spot plan, read in place.
 struct Part {
@@ -93,11 +104,7 @@ impl Geometry<'_> {
         let geo = self;
         let mut p = ResidentPlan::new(t.system().snapshot.clone());
         p.settings = serde_json::to_value(s).unwrap();
-        p.seed = matches!(
-            s.pattern,
-            crate::util::PupilPattern::Random | crate::util::PupilPattern::Dithered
-        )
-        .then_some(s.seed);
+        p.seed = seed_of(s.pattern, s.seed);
         let mut g = geo.append_grid(
             &mut p,
             points,
@@ -109,7 +116,7 @@ impl Geometry<'_> {
             false,
             ctx,
         )?;
-        geo.append_chiefs(&mut p, &mut g)?;
+        geo.append_chiefs(&mut p, &mut g, ctx)?;
         let chief_hits = g.chiefs()?.clone();
         let (q, mask) = geo.coordinates(&mut p, &g, s.defocus, false)?;
         let poly = geo.moments(&mut p, q, mask, wls.len() * pupil.len(), true)?;
@@ -145,7 +152,7 @@ impl Geometry<'_> {
             .resolve(t.num_wavelengths(), t.system().primary_wavelength)?;
         let pupil = pupil_points(s.pattern, s.rings, s.seed);
         let points: Vec<_> = fields.iter().map(|&i| t.field(i).point).collect();
-        let groups = plans::field_groups(fields.len(), wls.len() * pupil.len());
+        let groups = self.field_groups(fields.len(), wls.len() * pupil.len());
         // Each group's rays are aimed while the device works on the groups
         // before it; every plan is collected at the end.
         let mut submitted = Vec::with_capacity(groups.len());
@@ -400,10 +407,10 @@ impl Geometry<'_> {
             fields: out,
             wavelengths_um: t.system().wavelengths_um.clone(),
             wavelengths: wls.to_vec(),
-            airy_radius: 1.22
-                * t.system().wavelengths_um[t.system().primary_wavelength]
-                * 1e-3
-                * t.paraxial().primary().working_f_number,
+            airy_radius: airy_radius(
+                t.system().wavelengths_um[t.system().primary_wavelength],
+                t.paraxial().primary().working_f_number,
+            ),
             defocus: s.defocus,
             run_info: stamp(run, "spot_diagram", s, warnings),
             packed_points: packed,

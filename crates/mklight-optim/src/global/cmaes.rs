@@ -87,7 +87,7 @@ pub fn cma_es<P: Problem + ?Sized>(
     mon: &Monitor,
 ) -> MkResult<OptimResult> {
     let vars = p.variables();
-    require_domain(vars, x0)?;
+    require_domain(p, x0)?;
     let n = vars.len();
     let nf = n as f64;
     let scale: Vec<f64> = vars.iter().map(|v| v.safe_scale()).collect();

@@ -7,8 +7,17 @@ use serde_json::{Value, json};
 use mklight_core::materials::MaterialLibrary;
 use mklight_core::param::ParamPath;
 use mklight_core::{JobContext, Solve, samples};
+use mklight_engine::backend::Backend;
 use mklight_engine::project::Project;
-use mklight_engine::{AnalysisRequest, Engine, EngineError};
+use mklight_engine::{AnalysisRequest, Engine, EngineConfig, EngineError};
+
+/// An engine on the CPU reference: these tests do not depend on a device.
+fn engine() -> Engine {
+    Engine::new(EngineConfig {
+        default_backend: Backend::CpuReference,
+        ..Default::default()
+    })
+}
 
 fn temp_dir(tag: &str) -> std::path::PathBuf {
     let d = std::env::temp_dir().join(format!(
@@ -25,7 +34,7 @@ fn temp_dir(tag: &str) -> std::path::PathBuf {
 
 #[test]
 fn apply_solves_commits_a_new_snapshot() {
-    let e = Engine::default();
+    let e = engine();
     let mut sys = samples::cooke_triplet();
     let img = sys.surfaces.len() - 1;
     let j = img - 1;
@@ -90,7 +99,7 @@ fn apply_solves_commits_a_new_snapshot() {
 /// the snapshot it started from: an edit in between supersedes it.
 #[test]
 fn solves_prepared_from_a_stale_snapshot_are_not_committed() {
-    let e = Engine::default();
+    let e = engine();
     let mut sys = samples::cooke_triplet();
     let j = sys.surfaces.len() - 2;
     sys.surfaces[j].thickness += 2.5;
@@ -128,7 +137,7 @@ fn solves_prepared_from_a_stale_snapshot_are_not_committed() {
 
 #[test]
 fn validate_reports_engine_checks() {
-    let e = Engine::default();
+    let e = engine();
     let mut sys = samples::achromatic_doublet();
     sys.aperture = mklight_core::ApertureSpec::ImageSpaceFNumber { value: 0.0 };
     let err = e.session_from_project(Project::new(sys)).err().unwrap();
@@ -180,7 +189,7 @@ fn validate_reports_engine_checks() {
 #[test]
 fn autosave_writes_a_recoverable_copy_without_touching_the_session() {
     let d = temp_dir("autosave");
-    let e = Engine::default();
+    let e = engine();
     let mut s = e
         .session_from_project(Project::new(samples::singlet()))
         .unwrap();
@@ -210,7 +219,7 @@ fn autosave_writes_a_recoverable_copy_without_touching_the_session() {
 #[test]
 fn files_at_another_schema_version_are_refused() {
     let d = temp_dir("schema");
-    let e = Engine::default();
+    let e = engine();
     let p = d.join("old.mklight");
     // A bare optical system has no schema_version.
     let bare = serde_json::to_string(&samples::singlet()).unwrap();
@@ -223,10 +232,7 @@ fn files_at_another_schema_version_are_refused() {
 
 #[test]
 fn parameter_values() {
-    let e = Engine::new(mklight_engine::EngineConfig {
-        default_backend: mklight_engine::backend::Backend::CpuReference,
-        ..Default::default()
-    });
+    let e = engine();
     for system in [
         samples::singlet(),
         samples::toroidal_element(),

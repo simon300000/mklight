@@ -162,17 +162,22 @@ pub fn parse_wavelengths(v: &Value, n: usize) -> Result<Vec<usize>, String> {
     }
 }
 
-/// An int `n` → `n × n` grid inside the unit disk; a pattern dict
-/// (`{"type": "hexapolar", "rings": 6}`, see `PupilSampling`); or a
-/// sequence of `(px, py)` pairs.
+/// Largest `n` of an `n × n` pupil grid (the largest per-axis sample count
+/// of the engine's analyses): about 13 million points per field and
+/// wavelength.
+pub const MAX_PUPIL_GRID: u64 = 4096;
+
+/// An int `n` → `n × n` grid inside the unit disk (`1..=MAX_PUPIL_GRID`);
+/// a pattern dict (`{"type": "hexapolar", "rings": 6}`, see
+/// `PupilSampling`); or a sequence of `(px, py)` pairs.
 pub fn parse_pupil(v: &Value) -> Result<Vec<[f64; 2]>, String> {
     match v {
-        Value::Number(n) => {
-            let n = n
-                .as_u64()
-                .ok_or_else(|| format!("pupil grid size must be a positive integer, got {n}"))?;
-            Ok(grid(n as usize))
-        }
+        Value::Number(n) => match n.as_u64() {
+            Some(size @ 1..=MAX_PUPIL_GRID) => Ok(grid(size as usize)),
+            _ => Err(format!(
+                "pupil grid size must be an integer in 1..={MAX_PUPIL_GRID}, got {n}"
+            )),
+        },
         Value::Object(_) => serde_json::from_value::<PupilSampling>(v.clone())
             .map(|p| p.points())
             .map_err(|e| format!("invalid pupil pattern {v}: {e}")),
@@ -618,6 +623,11 @@ mod tests {
         assert_eq!(parse_wavelengths(&json!(1), 2).unwrap(), vec![1]);
         assert!(parse_wavelengths(&json!([0, 2]), 2).is_err());
         assert_eq!(parse_pupil(&json!(3)).unwrap().len(), 5); // centre + 4 edge midpoints
+        for bad in [json!(0), json!(-1), json!(2.5), json!(MAX_PUPIL_GRID + 1)] {
+            let e = parse_pupil(&bad).unwrap_err();
+            assert!(e.contains("1..=4096"), "{e}");
+        }
+        assert!(parse_pupil(&json!(u64::MAX)).is_err());
         assert_eq!(
             parse_pupil(&json!({"type": "hexapolar", "rings": 2}))
                 .unwrap()

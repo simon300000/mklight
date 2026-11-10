@@ -2,7 +2,8 @@
 //! packed f32 system layout shared bit-for-bit by every GPU backend, the
 //! double-float numerics specification, and a CPU-f32 emulation backend.
 //!
-//! * [`backend::ComputeBackend`] is the only interface solvers see.
+//! * [`backend::ComputeBackend`] is the only interface solvers see; their
+//!   work runs as [`resident`] plans of the operation modules below.
 //! * [`layout`] mirrors `include/mklight_gpu_types.h`, the single definition
 //!   of every host/GPU struct (also `#include`d by the Metal shaders).
 //! * [`df`], [`fmath`] and [`reduce`] specify the f32 numerics (CONVENTIONS
@@ -63,7 +64,7 @@ pub const INCLUDE_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/include");
 #[doc(hidden)]
 pub mod testutil;
 
-// GPU-first package seams (implementation ownership: docs/GPU.md section 9.2).
+// Operations of resident plans, one module per domain (docs/GPU.md §9.2).
 pub mod aiming;
 pub mod collectives;
 pub mod geometry;

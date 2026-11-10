@@ -53,7 +53,7 @@ public struct ValidationIssue: Identifiable, Hashable, Sendable {
 /// Besides the visible panes there are three internal ones: the layout
 /// (viewport), first-order data (status bar) and validation (issues).
 /// The workspace talks to a per-document engine session, so user glass
-/// catalogs of one window do not affect another; jobs end with the window.
+/// catalogs of one design do not affect another; jobs end with the design.
 ///
 /// Platform-neutral: Foundation and Observation only.
 @MainActor
@@ -61,7 +61,9 @@ public struct ValidationIssue: Identifiable, Hashable, Sendable {
 public final class Workspace {
     public private(set) var engine: any EngineClient
     public private(set) var documentEngine: any EngineClient
-    public private(set) var descriptors: [AnalysisDescriptor] = []
+    public private(set) var descriptors: [AnalysisDescriptor] = [] {
+        didSet { requestEpoch += 1 }
+    }
     public private(set) var catalogs: [CatalogInfo] = []
     public private(set) var catalogWarnings: [String] = []
     /// Glass names for completion in the material column.
@@ -69,16 +71,33 @@ public final class Workspace {
     /// n_d and V_d of the design's catalogue glasses with their offsets
     /// (the engine's `glass_info`), filled on request by `glass(_:)`.
     public private(set) var glassNumbers: [MaterialRef: GlassNumbers] = [:]
-    @ObservationIgnored private var glassRequests: Set<MaterialRef> = []
+    /// The glasses asked for, each with the number of its request. A
+    /// catalog change forgets them, and a request it forgot no longer
+    /// counts when it answers.
+    @ObservationIgnored private var glassRequests: [MaterialRef: Int] = [:]
+    @ObservationIgnored private var glassRequestCount = 0
     public private(set) var snapshot: ModelSnapshot?
     /// Why the engine refused the latest design (no snapshot, analyses wait).
     public private(set) var modelErrors: [String] = []
-    /// The engine's validation of the current snapshot.
-    public private(set) var issues: [ValidationIssue] = []
+    /// The problems of the latest design: the engine's refusal while it
+    /// lasts, else the engine's validation of the current snapshot.
+    public var issues: [ValidationIssue] { refusalIssues.isEmpty ? validationIssues : refusalIssues }
+    /// The messages of the engine's refusal of the latest design, as issues.
+    private var refusalIssues: [ValidationIssue] = []
+    /// The issues of the latest `validate` result.
+    private var validationIssues: [ValidationIssue] = []
     /// Backend preference of every analysis of the window.
     public var backend = BackendPreference.auto {
-        didSet { if backend != oldValue { refresh(forced: true) } }
+        didSet {
+            guard backend != oldValue else { return }
+            requestEpoch += 1
+            refresh(forced: true)
+        }
     }
+    /// Counts the changes of what every pane's request is built from besides
+    /// the pane itself (the descriptors and the backend), so a pane's stored
+    /// request is rebuilt after one.
+    @ObservationIgnored private var requestEpoch = 0
 
     public private(set) var panes: [AnalysisPane] = []
     /// The viewport's scene (`layout`).
@@ -125,7 +144,9 @@ public final class Workspace {
     public private(set) var baseline: [String: AnalysisOutput] = [:]
     private var snapshotTask: Task<Void, Never>?
     private var snapshotsHeld = 0
-    @ObservationIgnored private let liveJobs = LiveJobs()
+    @ObservationIgnored let liveJobs = LiveJobs()
+    /// Counts the job requests of the workspace, in the order they were made.
+    @ObservationIgnored private var jobRequests = 0
 
     public init(engine: any EngineClient, panes: [AnalysisPane] = []) {
         self.engine = engine
@@ -136,6 +157,12 @@ public final class Workspace {
     }
 
     deinit { liveJobs.cancelAll() }
+
+    /// The number of a new job request.
+    private func nextJobRequest() -> Int {
+        jobRequests += 1
+        return jobRequests
+    }
 
     /// Every pane the workspace keeps current.
     var allPanes: [AnalysisPane] { [validation, summary, layout, footprints] + panes }
@@ -152,10 +179,6 @@ public final class Workspace {
     }
 
     public var isBusy: Bool { allPanes.contains(where: \.isRunning) }
-
-    /// The validation errors that block analyses: the engine's refusal, or
-    /// error-severity issues.
-    public var blockingErrors: [String] { modelErrors }
 
     // MARK: Engine
 
@@ -193,6 +216,7 @@ public final class Workspace {
 
     public func removePane(_ pane: AnalysisPane) {
         pane.job?.cancel()
+        liveJobs.remove(pane.id)
         panes.removeAll { $0 === pane }
         if focusedPaneID == pane.id { focusedPaneID = panes.first?.id }
     }
@@ -249,7 +273,7 @@ public final class Workspace {
 
     /// Long-running analyses wait for an explicit re-run by default.
     static func autoUpdateDefault(_ analysis: String) -> Bool {
-        !["stray_light", "ghost_irradiance", "tolerance", "optimize", "through_focus_mtf", "mtf_vs_field", "image_simulation"].contains(analysis)
+        !["stray_light", "ghost_irradiance", "through_focus_mtf", "mtf_vs_field", "image_simulation"].contains(analysis)
     }
 
     func paneChanged(_ pane: AnalysisPane) { refreshPane(pane, force: true) }
@@ -296,11 +320,6 @@ public final class Workspace {
         snapshotTask = Task { [weak self] in await self?.openSnapshot(target) }
     }
 
-    /// Waits for the pending snapshot (tests, sheets that need it current).
-    public func settle() async {
-        await snapshotTask?.value
-    }
-
     private func openSnapshot(_ system: OpticalSystem) async {
         do {
             let snap = try await documentEngine.openSnapshot(system)
@@ -308,11 +327,12 @@ public final class Workspace {
             guard system == latestSystem else { return }
             snapshot = snap
             modelErrors = []
+            refusalIssues = []
             refresh(forced: false)
         } catch let EngineError.invalidModel(messages) {
             guard system == latestSystem else { return }
             modelErrors = messages
-            issues = messages.enumerated().map {
+            refusalIssues = messages.enumerated().map {
                 ValidationIssue(id: $0.offset, severity: .error, code: "", message: $0.element, surface: nil, field: nil)
             }
         } catch {
@@ -323,10 +343,20 @@ public final class Workspace {
 
     // MARK: Running
 
+    /// The pane's request: its settings as the engine takes them, with the
+    /// window's backend. Built once per pane analysis, pane settings,
+    /// descriptors and backend, and kept on the pane (views read
+    /// `isStale` many times per update).
     func request(for pane: AnalysisPane) -> EngineAnalysisRequest {
-        var settings = ImageSourceImport.engineSettings(pane.analysis, pane.settings, defaults: descriptor(pane.analysis)?.defaultSettings)
-        if let d = descriptor(pane.analysis), !d.settingsFields.isEmpty { settings = d.acceptedSettings(settings) }
-        return EngineAnalysisRequest(analysis: pane.analysis, settings: settings, execution: ExecutionSettings(backend: backend))
+        // Read on every call, so whoever observes the result follows them.
+        let analysis = pane.analysis, paneSettings = pane.settings, backend = self.backend, descriptors = self.descriptors
+        if let stored = pane.storedRequest, stored.epoch == requestEpoch { return stored.request }
+        let d = descriptors.first { $0.name == analysis }
+        var settings = ImageSourceImport.engineSettings(analysis, paneSettings, defaults: d?.defaultSettings)
+        if let d, !d.settingsFields.isEmpty { settings = d.acceptedSettings(settings) }
+        let request = EngineAnalysisRequest(analysis: analysis, settings: settings, execution: ExecutionSettings(backend: backend))
+        pane.storedRequest = (requestEpoch, request)
+        return request
     }
 
     /// Whether the pane's output no longer matches the design, the glass
@@ -372,7 +402,7 @@ public final class Workspace {
         }
         pane.job?.cancel()
         let job = documentEngine.submit(request, on: snapshot)
-        liveJobs.set(pane.id, job)
+        liveJobs.set(pane.id, job, request: nextJobRequest())
         pane.job = job
         pane.lastRequest = request
         pane.phase = .running(JobProgress(fraction: 0, stage: "Queued"))
@@ -395,7 +425,7 @@ public final class Workspace {
             case .success(let out):
                 pane.output = out
                 pane.phase = .finished
-                if pane === self?.validation { self?.issues = ValidationIssue.from(validate: out.json) }
+                if pane === self?.validation { self?.validationIssues = ValidationIssue.from(validate: out.json) }
             case .failure(EngineError.cancelled):
                 pane.phase = .cancelled
             case .failure(EngineError.unsupported(let why)):
@@ -422,16 +452,27 @@ public final class Workspace {
     public func glass(_ m: MaterialRef) -> GlassNumbers? {
         guard case .catalog(let cat, let name, let o) = m else { return nil }
         if let g = glassNumbers[m] { return g }
-        guard !glassRequests.contains(m), designSnapshot ?? snapshot != nil else { return nil }
-        glassRequests.insert(m)
+        // A refused design runs no job: its glasses are asked for once the
+        // engine accepts it.
+        guard glassRequests[m] == nil, designSnapshot ?? snapshot != nil, modelErrors.isEmpty else { return nil }
+        glassRequestCount += 1
+        let request = glassRequestCount
+        glassRequests[m] = request
         var s: [String: JSONValue] = ["name": .string(name), "catalog": cat.map(JSONValue.string) ?? .null]
         if !o.isZero { s["offset"] = .object(["dn_d": .number(o.dnD), "dv_d": .number(o.dvD)]) }
+        // One job key per glass, catalog and offset: only a newer request
+        // for the same glass replaces a running one.
+        let key = "glass_info:\(cat ?? ""):\(name):\(o.dnD):\(o.dvD)"
         Task { @MainActor [weak self] in
             guard let self else { return }
             do {
-                let job = try self.submitJob("glass_info", settings: s, key: "glass_info:\(name)")
+                let job = try self.submitJob("glass_info", settings: s, key: key)
                 let out = try await job.result()
-                if let g = GlassNumbers(json: out.json) { self.glassNumbers[m] = g }
+                if self.glassRequests[m] == request, let g = GlassNumbers(json: out.json) { self.glassNumbers[m] = g }
+            } catch EngineError.cancelled, EngineError.invalidModel {
+                // Not answered (the job was cancelled, or the design was
+                // refused before it started): asked again.
+                if self.glassRequests[m] == request { self.glassRequests[m] = nil }
             } catch {
                 // Unknown to the engine: asked once.
             }
@@ -442,7 +483,7 @@ public final class Workspace {
     /// Forgets the glass numbers (the catalogs changed).
     private func resetGlassNumbers() {
         glassNumbers = [:]
-        glassRequests = []
+        glassRequests = [:]
     }
 
     /// Loads a user glass catalog into this document's session.
@@ -507,8 +548,21 @@ public final class Workspace {
         catalogs = await documentEngine.catalogs()
         materialNames = await documentEngine.materialNames()
         snapshotsHeld -= 1
-        if snapshotsHeld == 0, let s = latestSystem { update(system: s, immediately: true) }
+        if snapshotsHeld == 0 { retakeSnapshots() }
         return true
+    }
+
+    /// Takes new snapshots after the session's glass library changed: of
+    /// the design and, while a candidate is previewed, of the candidate too
+    /// (the design stays the document's and the preview stays on).
+    private func retakeSnapshots() {
+        guard let design = designSystem else { return }
+        let candidate = previewSystem
+        snapshotTask?.cancel()
+        snapshotTask = Task { [weak self] in
+            await self?.openSnapshot(design)
+            if let candidate, !Task.isCancelled { await self?.openSnapshot(candidate) }
+        }
     }
 
     // MARK: Design jobs
@@ -526,14 +580,17 @@ public final class Workspace {
         let job = documentEngine.submit(
             EngineAnalysisRequest(analysis: analysis, settings: settings, execution: ExecutionSettings(backend: backend)),
             on: snapshot)
-        liveJobs.set("job:" + (key ?? analysis), job)
+        liveJobs.set("job:" + (key ?? analysis), job, request: nextJobRequest())
         return job
     }
 
-    /// Starts a design job on `system`, a variant of the design (the
-    /// tolerance run's surfaces get placements that return to the axis),
-    /// on a snapshot of its own; the design's snapshot when they are equal.
+    /// Starts a design job on `system`, which may differ from the design (a
+    /// tolerance preview rebuilds a build of the system its run used), on a
+    /// snapshot of its own; the design's snapshot when they are equal.
     public func submitJob(_ analysis: String, settings: [String: JSONValue], on system: OpticalSystem, key: String? = nil) async throws -> AnalysisJob {
+        // The request counts from here: its snapshot is taken first, and a
+        // request made later may reach the engine before this one.
+        let request = nextJobRequest()
         guard let design = designSnapshot ?? snapshot, modelErrors.isEmpty else {
             throw EngineError.invalidModel(modelErrors.isEmpty ? ["The design has not been checked by the engine yet."] : modelErrors)
         }
@@ -544,7 +601,7 @@ public final class Workspace {
         let snap = try await documentEngine.openSnapshot(system)
         let job = documentEngine.submit(
             EngineAnalysisRequest(analysis: analysis, settings: settings, execution: ExecutionSettings(backend: backend)), on: snap)
-        liveJobs.set("job:" + (key ?? analysis), job)
+        liveJobs.set("job:" + (key ?? analysis), job, request: request)
         return job
     }
 
@@ -555,11 +612,37 @@ public final class Workspace {
     }
 }
 
-/// The latest job of each pane, so `deinit` can cancel them.
+/// The running jobs of a workspace by key (a pane's id, or `job:` and a
+/// design job's key), so `deinit` can cancel them. A job leaves when it ends
+/// or its pane is removed, and with it its result and engine buffers. Each
+/// key has one job, that of the latest request: the job of an earlier
+/// request is cancelled, whichever of the two is set first.
 final class LiveJobs: Sendable {
-    private let jobs = Mutex<[String: AnalysisJob]>([:])
-    func set(_ key: String, _ job: AnalysisJob) { jobs.withLock { $0[key] = job } }
+    private let jobs = Mutex<[String: (request: Int, job: AnalysisJob)]>([:])
+
+    /// Tracks `job`, started for the workspace's `request`-th job request.
+    func set(_ key: String, _ job: AnalysisJob, request: Int) {
+        let earlier: AnalysisJob? = jobs.withLock { jobs in
+            if let current = jobs[key], current.request > request { return job }
+            return jobs.updateValue((request, job), forKey: key)?.job
+        }
+        earlier?.cancel()
+        guard earlier !== job else { return }
+        Task { [weak self] in
+            _ = try? await job.result()
+            self?.jobs.withLock { if $0[key]?.job === job { $0[key] = nil } }
+        }
+    }
+
+    /// Cancels and forgets the job of `key`.
+    func remove(_ key: String) {
+        jobs.withLock { $0.removeValue(forKey: key) }?.job.cancel()
+    }
+
+    /// The keys with a running job.
+    var keys: Set<String> { jobs.withLock { Set($0.keys) } }
+
     func cancelAll() {
-        for job in jobs.withLock({ Array($0.values) }) { job.cancel() }
+        for job in jobs.withLock({ $0.values.map(\.job) }) { job.cancel() }
     }
 }

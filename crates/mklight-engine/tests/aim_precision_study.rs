@@ -1,6 +1,7 @@
 //! Device aiming cost and convergence against the stop tolerance and the
 //! kernel arithmetic (double-float and the pure-f32 metallib): the
-//! measurement behind the mixed-precision study (GPU.md §3.6).
+//! measurement behind the mixed-precision study
+//! (docs/history/gpu-work-packages.md).
 //!
 //! Ignored, env-driven, nothing embedded:
 //! `cargo test --release -p mklight-engine --test aim_precision_study -- --ignored --nocapture`
@@ -16,6 +17,7 @@
 //! third lattice node, below the device-table threshold). The generated
 //! start rays are retraced to the stop in f64, so the reported residual is
 //! the true stop miss, not the kernel's own estimate.
+#![cfg(target_os = "macos")]
 use mklight_core::{JobContext, RayAiming, Vec3, samples};
 use mklight_engine::{Engine, EngineConfig};
 use mklight_gpu::{ComputeBackend, aiming::*, consts::*, resident::*, testutil};
@@ -89,7 +91,6 @@ fn aiming_cost_versus_tolerance_and_arithmetic() {
         MetalBackend::with_options(&MetalOptions {
             precision,
             library: LibraryChoice::Precompiled,
-            ..Default::default()
         })
         .unwrap()
         .expect("real Metal required")

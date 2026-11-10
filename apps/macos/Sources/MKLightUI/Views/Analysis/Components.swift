@@ -53,6 +53,16 @@ struct Grid2D: Sendable {
     }
 }
 
+extension ResultBuffer {
+    /// The rows of an `[n, 2]` buffer as pairs; `nil` for any other shape
+    /// (an empty buffer has no rows).
+    var pairs: [(Double, Double)]? {
+        if count == 0 { return [] }
+        guard shape.count == 2, shape[1] == 2, count == shape[0] * 2 else { return nil }
+        return (0..<shape[0]).map { (self[$0 * 2], self[$0 * 2 + 1]) }
+    }
+}
+
 enum HeatScale: Equatable {
     /// Magnitude from `lo` to `hi` (optionally logarithmic); zero recedes
     /// into the plot surface (PSF, irradiance).
@@ -82,11 +92,15 @@ struct HeatMapImage: View {
         }
     }
 
+    /// The smallest value a logarithmic scale tells apart: five decades
+    /// below the largest.
+    static func logFloor(_ r: ClosedRange<Double>) -> Double { max(r.upperBound * 1e-5, 1e-300) }
+
     static func normalise(_ v: Double, scale: HeatScale, range r: ClosedRange<Double>) -> Double {
         switch scale {
         case .sequential(let log):
             if log {
-                let lo = max(r.upperBound * 1e-5, 1e-300)
+                let lo = logFloor(r)
                 return (Foundation.log10(max(v, lo)) - Foundation.log10(lo)) / max(Foundation.log10(r.upperBound) - Foundation.log10(lo), 1e-12)
             }
             return (v - r.lowerBound) / max(r.upperBound - r.lowerBound, 1e-300)
@@ -129,7 +143,9 @@ struct HeatMapImage: View {
     }
 }
 
-/// A vertical colour bar with end labels.
+/// A vertical colour bar with end labels. A logarithmic scale runs from
+/// its floor (`HeatMapImage.logFloor`) to the largest value, evenly in
+/// decades.
 struct ColorBar: View {
     var scale: HeatScale
     var range: ClosedRange<Double>
@@ -142,14 +158,19 @@ struct ColorBar: View {
             HeatMapImage(grid: bar, scale: scale, range: barRange)
                 .frame(width: 10)
                 .clipShape(RoundedRectangle(cornerRadius: 2))
-            Text(label(scale == .diverging ? -max(abs(range.lowerBound), abs(range.upperBound)) : range.lowerBound))
+            Text(label(scale == .diverging ? -max(abs(range.lowerBound), abs(range.upperBound)) : low))
         }
         .fixedSize(horizontal: true, vertical: false)
         .font(.caption2.monospacedDigit())
         .foregroundStyle(.secondary)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Color scale from \(label(range.lowerBound)) to \(label(range.upperBound))")
+        .accessibilityLabel("Color scale from \(label(low)) to \(label(range.upperBound))" + (isLog ? ", logarithmic" : ""))
     }
+
+    private var isLog: Bool { scale == .sequential(log: true) }
+
+    /// The value at the bar's lower end.
+    private var low: Double { isLog ? HeatMapImage.logFloor(range) : range.lowerBound }
 
     private var barRange: ClosedRange<Double> {
         scale == .diverging ? -1...1 : 0...1
@@ -157,9 +178,10 @@ struct ColorBar: View {
 
     private var bar: Grid2D {
         let n = 64
+        let floor = HeatMapImage.logFloor(barRange)
         let values = (0..<n).map { k -> Double in
             let t = Double(k) / Double(n - 1)
-            return scale == .diverging ? 2 * t - 1 : t
+            return scale == .diverging ? 2 * t - 1 : isLog ? pow(floor, 1 - t) : t
         }
         return Grid2D(nx: 1, ny: n, values: values)
     }
@@ -246,28 +268,13 @@ struct SegmentedOrMenu<Value: Hashable>: View {
 /// A titled small chart frame used in grids of plots.
 struct PlotCell<Content: View>: View {
     let title: String
-    var subtitle: String = ""
     @ViewBuilder var content: Content
 
     var body: some View {
         VStack(alignment: .leading, spacing: Space.xs) {
-            // Title and subtitle on one line when they fit, else stacked.
-            ViewThatFits(in: .horizontal) {
-                HStack(alignment: .firstTextBaseline) { titleText; subtitleText }
-                VStack(alignment: .leading, spacing: 0) { titleText; subtitleText }
-            }
+            Text(title).font(.caption.weight(.semibold)).lineLimit(1).truncationMode(.middle)
             content
         }
-    }
-}
-
-extension PlotCell {
-    fileprivate var titleText: some View {
-        Text(title).font(.caption.weight(.semibold)).lineLimit(1).truncationMode(.middle)
-    }
-
-    @ViewBuilder fileprivate var subtitleText: some View {
-        if !subtitle.isEmpty { Text(subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle) }
     }
 }
 

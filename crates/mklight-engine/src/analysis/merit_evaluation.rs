@@ -36,9 +36,6 @@ impl Analysis for MeritEvaluation {
         // An optimize request; `algorithm` still selects the EFL hold.
         optim::Optimize.settings_schema()
     }
-    fn gpu_path(&self) -> bool {
-        true
-    }
     fn result_schema(&self) -> Value {
         use super::schema::*;
         result(

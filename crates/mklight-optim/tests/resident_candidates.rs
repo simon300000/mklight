@@ -1,20 +1,22 @@
 #![cfg(target_os = "macos")]
+//! The resident evaluator on the host's Metal device against the reference:
+//! perturbed candidates of every sample, replay, half pupils of asymmetric
+//! candidates, independence of batch neighbours and cancellation.
+
+mod common;
+
 use mklight_core::{JobContext, Snapshot, param::ParamPath};
-use mklight_gpu::ComputeBackend;
 use mklight_optim::merit::default::DefaultMeritSpec;
 use mklight_optim::{
     gpu::{GpuContext, ResidentEvaluator},
     merit::*,
     problem::{CandidateBatch, Problem},
 };
-use std::sync::Arc;
 #[test]
 fn host_metal_perturbed_samples() {
-    let backend: Arc<dyn ComputeBackend> = Arc::new(
-        mklight_metal::MetalBackend::new()
-            .unwrap()
-            .expect("P8 requires host Metal"),
-    );
+    let Some(backend) = common::metal() else {
+        return;
+    };
     for (name, system) in mklight_core::samples::all() {
         let mut spec = DefaultMeritSpec {
             thickness: None,
@@ -87,13 +89,10 @@ fn host_metal_perturbed_samples() {
         assert!(spot_max < 1e-7, "{name}: {spot_max:e}");
         assert!(wave_max < 3e-7, "{name}: {wave_max:e}");
         eprintln!(
-            "P8_ACCURACY sample={name} spot_max_mm={spot_max:e} wavefront_max_waves={wave_max:e}"
+            "accuracy sample={name} spot_max_mm={spot_max:e} wavefront_max_waves={wave_max:e}"
         );
         let stats = evaluator.stats();
-        eprintln!(
-            "P8 sample={name} {}",
-            serde_json::to_string(&stats).unwrap()
-        );
+        eprintln!("sample={name} {}", serde_json::to_string(&stats).unwrap());
         assert!(stats.fallbacks.is_empty(), "{name}: {stats:?}");
         assert!(
             stats.device_operands > 0,
@@ -108,11 +107,9 @@ fn host_metal_perturbed_samples() {
 #[test]
 fn asymmetric_half_pupils_and_cached_cancellation() {
     use mklight_core::MkError;
-    let backend: Arc<dyn ComputeBackend> = Arc::new(
-        mklight_metal::MetalBackend::new()
-            .unwrap()
-            .expect("P8 requires host Metal"),
-    );
+    let Some(backend) = common::metal() else {
+        return;
+    };
     let mut system = mklight_core::samples::cooke_triplet();
     system.ray_aiming = mklight_core::RayAiming::Real { tolerance: 1e-10 };
     let surface = system.surfaces[1].id;

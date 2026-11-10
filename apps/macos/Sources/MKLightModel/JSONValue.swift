@@ -125,6 +125,11 @@ public enum JSONValue: Codable, Sendable, Hashable {
         try parse(MKLightJSON.encode(value))
     }
 
+    /// Decodes this JSON tree as `type` (the inverse of `from`).
+    public func decode<T: Decodable>(_ type: T.Type) throws -> T {
+        try MKLightJSON.decode(type, from: MKLightJSON.encode(self))
+    }
+
     public subscript(key: String) -> JSONValue? {
         if case .object(let o) = self { return o[key] }
         return nil

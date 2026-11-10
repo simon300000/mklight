@@ -180,7 +180,6 @@ impl BackendProvider for GpuProvider {
                     analyses: GPU_ANALYSES.iter().map(|s| s.to_string()).collect(),
                     device_name: Some(di.name.clone()),
                     unified_memory: Some(di.unified_memory),
-                    max_rays_per_dispatch: None,
                 };
             }
             Err(reason) => info.reason = Some(reason.clone()),
@@ -216,6 +215,85 @@ impl BackendProvider for GpuProvider {
     }
 }
 
+/// Progress of [`crate::Engine::prepare_gpu`]: the GPU's compute kernels
+/// created ahead of their first use (front ends show it while it runs).
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum GpuPreparation {
+    /// Not started.
+    #[default]
+    Idle,
+    /// Creating kernels: `done` of `total`.
+    Preparing {
+        device: String,
+        done: usize,
+        total: usize,
+    },
+    /// Every kernel is ready; `from_cache` of them were loaded from the
+    /// saved cache instead of compiled. `warning`: the saved cache could
+    /// not be read or written, so the next launch compiles again.
+    Ready {
+        device: String,
+        kernels: usize,
+        from_cache: usize,
+        seconds: f64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        warning: Option<String>,
+    },
+    /// No GPU to prepare (analyses run on the CPU reference).
+    Unavailable { reason: String },
+    /// Preparation failed; kernels compile on first use instead.
+    Failed { device: String, message: String },
+}
+
+/// The shared state of a GPU preparation and its cancellation.
+#[derive(Default)]
+pub(crate) struct GpuPreparationState {
+    pub(crate) state: Mutex<GpuPreparation>,
+    pub(crate) cancel: std::sync::atomic::AtomicBool,
+}
+
+impl GpuPreparationState {
+    pub(crate) fn set(&self, s: GpuPreparation) {
+        *self.state.lock().unwrap_or_else(|e| e.into_inner()) = s;
+    }
+    pub(crate) fn get(&self) -> GpuPreparation {
+        self.state.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+}
+
+/// Prepare `device`'s kernels, publishing progress in `state`.
+pub(crate) fn prepare(
+    device: Arc<GpuDevice>,
+    cache_dir: Option<std::path::PathBuf>,
+    state: &GpuPreparationState,
+) {
+    let name = device.device_name();
+    let progress = |done, total| {
+        state.set(GpuPreparation::Preparing {
+            device: name.clone(),
+            done,
+            total,
+        })
+    };
+    let r = device
+        .backend
+        .prepare_kernels(cache_dir.as_deref(), &progress, &state.cancel);
+    state.set(match r {
+        Ok(p) => GpuPreparation::Ready {
+            device: name,
+            kernels: p.kernels,
+            from_cache: p.from_cache,
+            seconds: p.seconds,
+            warning: p.warning,
+        },
+        Err(e) => GpuPreparation::Failed {
+            device: name,
+            message: e.to_string(),
+        },
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -234,7 +312,7 @@ mod tests {
     }
 
     /// Poll `e`'s GPU preparation until it leaves `Preparing`.
-    pub(crate) fn settled(e: &crate::Engine) -> GpuPreparation {
+    fn settled(e: &crate::Engine) -> GpuPreparation {
         let start = std::time::Instant::now();
         loop {
             match e.gpu_preparation() {
@@ -289,79 +367,4 @@ mod tests {
         assert_eq!(i.reason.as_deref(), Some("no device here"));
         assert!(p.device().is_none());
     }
-}
-
-/// Progress of [`crate::Engine::prepare_gpu`]: the GPU's compute kernels
-/// created ahead of their first use (front ends show it while it runs).
-#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
-#[serde(tag = "state", rename_all = "snake_case")]
-pub enum GpuPreparation {
-    /// Not started.
-    #[default]
-    Idle,
-    /// Creating kernels: `done` of `total`.
-    Preparing {
-        device: String,
-        done: usize,
-        total: usize,
-    },
-    /// Every kernel is ready; `from_cache` of them were loaded from the
-    /// saved cache instead of compiled.
-    Ready {
-        device: String,
-        kernels: usize,
-        from_cache: usize,
-        seconds: f64,
-    },
-    /// No GPU to prepare (analyses run on the CPU reference).
-    Unavailable { reason: String },
-    /// Preparation failed; kernels compile on first use instead.
-    Failed { device: String, message: String },
-}
-
-/// The shared state of a GPU preparation and its cancellation.
-#[derive(Default)]
-pub(crate) struct GpuPreparationState {
-    pub(crate) state: Mutex<GpuPreparation>,
-    pub(crate) cancel: std::sync::atomic::AtomicBool,
-}
-
-impl GpuPreparationState {
-    pub(crate) fn set(&self, s: GpuPreparation) {
-        *self.state.lock().unwrap_or_else(|e| e.into_inner()) = s;
-    }
-    pub(crate) fn get(&self) -> GpuPreparation {
-        self.state.lock().unwrap_or_else(|e| e.into_inner()).clone()
-    }
-}
-
-/// Prepare `device`'s kernels, publishing progress in `state`.
-pub(crate) fn prepare(
-    device: Arc<GpuDevice>,
-    cache_dir: Option<std::path::PathBuf>,
-    state: &GpuPreparationState,
-) {
-    let name = device.device_name();
-    let progress = |done, total| {
-        state.set(GpuPreparation::Preparing {
-            device: name.clone(),
-            done,
-            total,
-        })
-    };
-    let r = device
-        .backend
-        .prepare_kernels(cache_dir.as_deref(), &progress, &state.cancel);
-    state.set(match r {
-        Ok(p) => GpuPreparation::Ready {
-            device: name,
-            kernels: p.kernels,
-            from_cache: p.from_cache,
-            seconds: p.seconds,
-        },
-        Err(e) => GpuPreparation::Failed {
-            device: name,
-            message: e.to_string(),
-        },
-    });
 }

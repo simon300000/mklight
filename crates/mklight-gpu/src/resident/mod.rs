@@ -154,19 +154,6 @@ impl BufferData {
             Self::Complex32(x) => bytemuck::cast_slice(x),
         }
     }
-    pub fn from_words(t: ElementType, words: &[u32]) -> Self {
-        match t {
-            ElementType::F32 => Self::F32(bytemuck::cast_slice(words).to_vec()),
-            ElementType::U32 => Self::U32(words.to_vec()),
-            // Df32 is 8-byte aligned; a u32 slice (e.g. an empty one) need not be.
-            ElementType::DoubleFloat => Self::DoubleFloat(
-                (words.as_chunks().0.iter())
-                    .map(|&[hi, lo]| crate::Df32::new(f32::from_bits(hi), f32::from_bits(lo)))
-                    .collect(),
-            ),
-            ElementType::Complex32 => Self::Complex32(bytemuck::cast_slice(words).to_vec()),
-        }
-    }
 }
 /// Element types of typed host views (sealed: layout matches `ElementType`).
 pub trait BufferElement: bytemuck::Pod + element::Sealed {
@@ -259,6 +246,30 @@ pub struct PlanView {
     pub desc: BufferDesc,
     pub stride: usize,
 }
+/// Shape of `n` records of `T` in u32 storage.
+pub fn record_desc<T>(n: usize) -> BufferDesc {
+    BufferDesc::new(ElementType::U32, [n, std::mem::size_of::<T>() / 4])
+}
+/// The record count of a view of `T` records: a contiguous [`record_desc`]
+/// view of at most `u32::MAX` words that starts on an even word of its
+/// storage (MSL records hold `float2` members: 8-byte alignment). `what`
+/// names the operation family in the error.
+pub fn check_records<T>(v: &PlanView, p: &ResidentPlan, what: &str) -> MkResult<usize> {
+    let base = match p.buffers.get(v.buffer.0) {
+        Some(PlanBuffer::Import(input)) => input.offset,
+        Some(PlanBuffer::Scratch(_)) => 0,
+        None => return Err(bad("unknown plan buffer")),
+    };
+    let n = v.desc.shape.first().copied().unwrap_or(0);
+    if v.desc != record_desc::<T>(n)
+        || v.stride != 1
+        || !(base + v.offset).is_multiple_of(2)
+        || v.desc.len()? > u32::MAX as usize
+    {
+        return Err(bad(&format!("{what} record layout")));
+    }
+    Ok(n)
+}
 #[derive(Clone, Debug)]
 pub enum PlanBuffer {
     Import(BufferView),
@@ -279,8 +290,8 @@ pub struct TraceBuffers {
     pub records: BufferId,
     pub record_status: BufferId,
 }
-/// Compatibility adapter for the existing host trace. Its outputs stay resident.
-/// Device generation and aiming use aiming::TraceResident (P1).
+/// Traces a host-described `TraceRequest` inside a plan; its outputs stay
+/// resident. Rays generated or aimed on the device use `aiming::TraceResident`.
 #[derive(Clone, Debug)]
 pub struct TraceUpload {
     request: Arc<TraceRequest>,
@@ -392,7 +403,7 @@ impl ResidentPlan {
             stride: 1,
         })
     }
-    /// Add the legacy trace adapter and allocate its precisely sized planes.
+    /// Add a [`TraceUpload`] and allocate its precisely sized planes.
     pub fn trace(&mut self, request: TraceRequest) -> TraceBuffers {
         let [f, u, r, rs] = trace_descs(&request);
         let out = TraceBuffers {
@@ -420,7 +431,7 @@ impl ResidentPlan {
         }));
         out
     }
-    /// Uploads referenced by either compatibility or domain operations.
+    /// The system uploads the plan's operations reference.
     pub fn system_handles(&self) -> Vec<crate::SystemHandle> {
         self.operations
             .iter()
@@ -523,7 +534,7 @@ impl ResidentPlan {
         Ok(())
     }
 }
-/// Routers stay P0-owned. Later packages implement their own handlers.
+/// Validates a domain operation with its module's validator.
 pub fn route(op: &ResidentOp, plan: &ResidentPlan) -> MkResult<()> {
     match op {
         ResidentOp::Aiming(x) => crate::aiming::validate(x, plan),
@@ -599,6 +610,59 @@ impl PlanStats {
         self.aiming.add(&o.aiming);
         self.host.add(&o.host);
         self.memory.max(&o.memory);
+    }
+    /// Add another plan's statistics. Counters and seconds sum, `peak_bytes`
+    /// takes the maximum, the other plan's stages follow this record's with
+    /// their operation indices continued, and the cache, aiming, host and
+    /// memory records merge as in [`Self::add_activity`].
+    pub fn merge(&mut self, o: &PlanStats) {
+        let PlanStats {
+            copied_bytes,
+            stages,
+            wall_seconds,
+            device_seconds,
+            command_buffers,
+            allocations,
+            reused_allocations,
+            uploaded_bytes,
+            parameter_bytes,
+            readback_bytes,
+            peak_bytes,
+            fallback_count,
+            polished_rays,
+            host_waits,
+            host_wait_seconds,
+            long_commands,
+            speculation_misses,
+            admission_seconds,
+            cache: _,
+            aiming: _,
+            host: _,
+            memory: _,
+        } = o;
+        let offset = self.stages.len();
+        self.stages.extend(stages.iter().cloned().map(|mut s| {
+            s.operation += offset;
+            s
+        }));
+        self.copied_bytes += copied_bytes;
+        self.wall_seconds += wall_seconds;
+        self.device_seconds += device_seconds;
+        self.command_buffers += command_buffers;
+        self.allocations += allocations;
+        self.reused_allocations += reused_allocations;
+        self.uploaded_bytes += uploaded_bytes;
+        self.parameter_bytes += parameter_bytes;
+        self.readback_bytes += readback_bytes;
+        self.peak_bytes = self.peak_bytes.max(*peak_bytes);
+        self.fallback_count += fallback_count;
+        self.polished_rays += polished_rays;
+        self.host_waits += host_waits;
+        self.host_wait_seconds += host_wait_seconds;
+        self.long_commands += long_commands;
+        self.speculation_misses += speculation_misses;
+        self.admission_seconds += admission_seconds;
+        self.add_activity(o);
     }
 }
 /// Iteration statistics of generated (pupil) aims. Bins: 0, 1, 2, 3–4, 5–8,
@@ -710,8 +774,8 @@ impl MemoryStats {
                 return 0;
             }
             let rss = unsafe { u.assume_init() }.maxrss.max(0) as u64;
-            // Darwin reports bytes, Linux kilobytes.
-            if cfg!(target_os = "macos") {
+            // Apple platforms report bytes, Linux kilobytes.
+            if cfg!(target_vendor = "apple") {
                 rss
             } else {
                 rss * 1024

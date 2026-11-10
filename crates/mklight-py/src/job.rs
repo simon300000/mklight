@@ -207,7 +207,7 @@ enum PyJobState {
 impl PyJobState {
     fn name(self) -> String {
         match self {
-            PyJobState::Engine(s) => state_name(s),
+            PyJobState::Engine(s) => state_name(s).into(),
             PyJobState::Evicted => "evicted".into(),
         }
     }
@@ -371,11 +371,15 @@ impl PyJob {
     }
 }
 
-fn state_name(s: JobState) -> String {
-    serde_json::to_value(s)
-        .ok()
-        .and_then(|v| v.as_str().map(str::to_owned))
-        .unwrap_or_default()
+/// The state's name, as the engine serialises it.
+fn state_name(s: JobState) -> &'static str {
+    match s {
+        JobState::Queued => "queued",
+        JobState::Running => "running",
+        JobState::Done => "done",
+        JobState::Failed => "failed",
+        JobState::Cancelled => "cancelled",
+    }
 }
 
 #[pymethods]

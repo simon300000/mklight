@@ -31,7 +31,7 @@ pub(super) fn execute<E: FpEnv>(
             };
             if level == depth && a < n {
                 use super::math::*;
-                let p = rows::<Primitive>(x, &r.primitives)[a];
+                let p = x.rows::<Primitive>(&r.primitives)[a];
                 let mut lo = [D::<E>::f(f32::MAX); 3];
                 let mut hi = [D::<E>::f(-f32::MAX); 3];
                 for k in 0..8 {

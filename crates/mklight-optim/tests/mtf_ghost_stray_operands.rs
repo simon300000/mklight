@@ -1,16 +1,19 @@
-use super::default::{DefaultCriterion, DefaultMeritSpec, MtfCriterion};
-use super::operand::{
-    GhostFocusMetric, GhostMetric, GhostPair, MtfMethod, MtfOrientation, StrayPathClass,
-};
-use super::*;
-use crate::deriv::{CheckSettings, FdScheme, JacobianSettings, check_jacobian, jacobian};
-use crate::linalg::Matrix;
-use crate::problem::{
-    BatchEvaluation, CandidateBatch, Constraint, Problem, Variable, evaluate_one,
-};
+//! MTF, ghost and stray-light merit operands against the analyses and
+//! solvers they wrap, their finite differences and an MTF optimisation.
+
 use mklight_analysis::util::{FieldSelection, WavelengthSelection};
 use mklight_core::param::ParamPath;
 use mklight_core::{JobContext, MkResult, SurfaceId, samples};
+use mklight_optim::deriv::{CheckSettings, FdScheme, JacobianSettings, check_jacobian, jacobian};
+use mklight_optim::linalg::Matrix;
+use mklight_optim::merit::default::{DefaultCriterion, DefaultMeritSpec, MtfCriterion};
+use mklight_optim::merit::operand::{
+    GhostFocusMetric, GhostMetric, GhostPair, MtfMethod, MtfOrientation, StrayPathClass,
+};
+use mklight_optim::merit::*;
+use mklight_optim::problem::{
+    BatchEvaluation, CandidateBatch, Constraint, Problem, Variable, evaluate_one,
+};
 use mklight_wave::analysis::{MtfAnalysisMethod, MtfSettings, mtf_analysis_job};
 use std::sync::Arc;
 
@@ -232,14 +235,14 @@ fn cooke_mtf_worst_field_optimisation_raises_the_minimum() {
                 .fold(f64::INFINITY, f64::min)
         };
         let x = p.start_point().unwrap();
-        let r = crate::lsq::least_squares(
+        let r = mklight_optim::lsq::least_squares(
             &p,
             &x,
-            &crate::lsq::LsqSettings {
+            &mklight_optim::lsq::LsqSettings {
                 max_iterations: 20,
                 ..Default::default()
             },
-            &crate::Monitor::default(),
+            &mklight_optim::Monitor::default(),
         )
         .unwrap();
         (min(&x), min(&r.x))

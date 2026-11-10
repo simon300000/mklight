@@ -114,7 +114,8 @@ fn batch_rays(
 
 /// Trace a full grid in parallel.
 pub fn trace_grid(tracer: &SequentialTracer, grid: &Grid, opts: &TraceOptions) -> Vec<BatchRay> {
-    par_chunks(0..grid.len(), |r| batch_rays(tracer, grid, opts, r))
+    trace_grid_job(tracer, grid, opts, &JobContext::new())
+        .expect("a fresh JobContext is never cancelled")
 }
 
 /// `f` over consecutive sub-ranges of [`CHUNK`] indices, in parallel; the
@@ -206,8 +207,8 @@ pub(crate) fn run_chunks<T: Send>(
 /// OPD (waves) over a grid, `None` where the ray or its chief ray failed.
 /// Same ordering as [`trace_grid`].
 pub fn opd_grid(tracer: &SequentialTracer, grid: &Grid, opts: &TraceOptions) -> Vec<Option<f64>> {
-    let refs = references(tracer, grid);
-    par_chunks(0..grid.len(), |r| opd_range(tracer, grid, opts, &refs, r))
+    opd_grid_job(tracer, grid, opts, &JobContext::new())
+        .expect("a fresh JobContext is never cancelled")
 }
 
 /// [`opd_grid`] with cancellation and progress.
@@ -247,14 +248,6 @@ fn reference(tracer: &SequentialTracer, grid: &Grid, k: usize) -> Option<OpdRefe
     tracer
         .opd_reference(&grid.fields[k / w], grid.wavelengths[k % w])
         .ok()
-}
-
-fn references(tracer: &SequentialTracer, grid: &Grid) -> Vec<Option<OpdReference>> {
-    let w = grid.wavelengths.len();
-    (0..grid.fields.len() * w)
-        .into_par_iter()
-        .map(|k| reference(tracer, grid, k))
-        .collect()
 }
 
 fn opd_range(

@@ -24,11 +24,14 @@ fn parse_value(v: &str) -> Option<u64> {
 
 fn main() {
     let manifest = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
-    let header = manifest.join("include/mklight_gpu_types.h");
+    let include = manifest.join("include");
+    let header = include.join("mklight_gpu_types.h");
+    // The directory covers a sidecar header added to it.
+    println!("cargo:rerun-if-changed={}", include.display());
     println!("cargo:rerun-if-changed={}", header.display());
     let mut text = fs::read_to_string(&header).expect("read mklight_gpu_types.h");
     // Package sidecars share the same constant namespace and rebuild trigger.
-    let mut sidecars: Vec<_> = fs::read_dir(manifest.join("include"))
+    let mut sidecars: Vec<_> = fs::read_dir(&include)
         .unwrap()
         .map(|e| e.unwrap().path())
         .filter(|p| p != &header && p.extension().is_some_and(|x| x == "h"))

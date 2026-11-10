@@ -13,12 +13,17 @@ pub struct SystemCache<T> {
     stats: ResidentCacheStats,
     category: CacheCategoryStats,
 }
+impl<T> Default for SystemCache<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 impl<T> SystemCache<T> {
-    pub fn new(limit: usize) -> Self {
+    pub fn new() -> Self {
         Self {
             entries: VecDeque::new(),
             bytes: 0,
-            limit,
+            limit: CacheCategory::PreparedSystems.budget().0,
             stats: Default::default(),
             category: Default::default(),
         }

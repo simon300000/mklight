@@ -271,25 +271,14 @@ impl TraceEvaluator {
         operands: &[&Operand],
         ctx: &JobContext,
     ) -> MkResult<Vec<OperandValue>> {
-        self.evaluate_one(s, operands, ctx, true)
-    }
-
-    /// [`evaluate_system`](Self::evaluate_system), tracing the candidate's
-    /// ray groups in parallel or not (batches parallelise over candidates).
-    pub(super) fn evaluate_one(
-        &self,
-        s: &OpticalSystem,
-        operands: &[&Operand],
-        ctx: &JobContext,
-        parallel: bool,
-    ) -> MkResult<Vec<OperandValue>> {
         Ok(self
-            .evaluate_seeded(s, operands, ctx, Inner::alone(parallel), &Seeding::None)?
+            .evaluate_seeded(s, operands, ctx, Inner::Nodes, &Seeding::None)?
             .0)
     }
 
-    /// [`Self::evaluate_one`] with the tracer seeded by `seeding`; an
-    /// anchor (`Seeding::Record`) also returns its recorded solves.
+    /// [`Self::evaluate_system`] with the candidate's traces on the pool as
+    /// `inner` says and the tracer seeded by `seeding`; an anchor
+    /// (`Seeding::Record`) also returns its recorded solves.
     fn evaluate_seeded(
         &self,
         s: &OpticalSystem,
@@ -324,7 +313,7 @@ impl TraceEvaluator {
             && operands
                 .iter()
                 .any(|o| is_model_kind(&o.kind) && needs_semi_diameters(&o.kind));
-        let (cand, mut fixed_sd) = match &tracer {
+        let (cand, fixed_sd) = match &tracer {
             Some(Ok(tr)) if wants_sd && inner != Inner::Serial => {
                 let (cand, sd) = rayon::join(
                     || Candidate::build(self, tr, operands, ctx, inner),
@@ -338,20 +327,64 @@ impl TraceEvaluator {
             ),
             _ => (None, None),
         };
+        let cand = match (&tracer, &cand) {
+            (_, Some(c)) => Ok(Some(c)),
+            (Some(Err(e)), _) => Err(e),
+            _ => Ok(None),
+        };
+        Ok((
+            self.operand_values(s, cand, fixed_sd, operands, ctx)?,
+            recorded,
+        ))
+    }
+
+    /// Values of `operands` for `s` from a candidate whose ray caches an
+    /// external tracer filled (the resident evaluator): the operand loop of
+    /// [`Self::evaluate_seeded`], so model operands (automatic
+    /// semi-diameters from `c`'s tracer), paraxial operands and any ray the
+    /// caches lack are computed here in f64.
+    pub(super) fn host_values(
+        &self,
+        s: &OpticalSystem,
+        c: &Candidate<'_>,
+        operands: &[&Operand],
+        ctx: &JobContext,
+    ) -> MkResult<Vec<OperandValue>> {
+        self.operand_values(s, Ok(Some(c)), None, operands, ctx)
+    }
+
+    /// The operand loop: values of `operands` for `s` from its candidate
+    /// `cand` (`Err`: why its tracer could not be built; `Ok(None)`: no
+    /// operand needs one). `fixed_sd` is `s` with its automatic
+    /// semi-diameters fixed, when already traced; else they are traced by
+    /// the candidate's tracer on first use.
+    fn operand_values(
+        &self,
+        s: &OpticalSystem,
+        cand: Result<Option<&Candidate<'_>>, &OperandError>,
+        mut fixed_sd: Option<OpticalSystem>,
+        operands: &[&Operand],
+        ctx: &JobContext,
+    ) -> MkResult<Vec<OperandValue>> {
+        let auto_sd = has_auto_semi_diameters(s);
         let mut memo = GroupMemo::default();
         let mut out = Vec::with_capacity(operands.len());
         for op in operands {
             let v = if is_model_kind(&op.kind) {
                 if auto_sd && needs_semi_diameters(&op.kind) {
-                    match &tracer {
-                        Some(Ok(tr)) => {
+                    match cand {
+                        Ok(Some(c)) => {
                             let sys = fixed_sd.get_or_insert_with(|| {
-                                fix_semi_diameters(s, &tr.semi_diameters(&sd_settings), 0.0)
+                                let sd = c.tr.semi_diameters(&SemiDiameterSettings {
+                                    azimuths: self.settings.semi_diameter_azimuths.max(4),
+                                    clip: self.settings.clip,
+                                });
+                                fix_semi_diameters(s, &sd, 0.0)
                             });
                             model_value(sys, op)
                         }
-                        Some(Err(e)) => Err(e.clone()),
-                        None => model_value(s, op),
+                        Err(e) => Err(e.clone()),
+                        Ok(None) => model_value(s, op),
                     }
                 } else {
                     model_value(s, op)
@@ -364,56 +397,11 @@ impl TraceEvaluator {
             {
                 self.sensitivity(s, op, param, *delta, criterion, ctx)?
             } else {
-                match (&tracer, &cand) {
-                    (_, Some(c)) => c.value_with(op, &mut memo),
-                    (Some(Err(e)), _) => Err(e.clone()),
-                    _ => Err(OperandError::Unsupported),
+                match cand {
+                    Ok(Some(c)) => c.value_with(op, &mut memo),
+                    Err(e) => Err(e.clone()),
+                    Ok(None) => Err(OperandError::Unsupported),
                 }
-            };
-            out.push(v);
-        }
-        Ok((out, recorded))
-    }
-
-    /// Values of `operands` for `s` from a candidate whose ray caches an
-    /// external tracer filled (the hybrid GPU evaluator): the same operand
-    /// loop as [`Self::evaluate_seeded`] with its tracer, so model operands
-    /// (automatic semi-diameters from `c`'s tracer), paraxial operands and
-    /// any ray the caches lack are computed here in f64.
-    pub(super) fn host_values(
-        &self,
-        s: &OpticalSystem,
-        c: &Candidate<'_>,
-        operands: &[&Operand],
-        ctx: &JobContext,
-    ) -> MkResult<Vec<OperandValue>> {
-        let auto_sd = has_auto_semi_diameters(s);
-        let mut fixed_sd: Option<OpticalSystem> = None;
-        let mut memo = GroupMemo::default();
-        let mut out = Vec::with_capacity(operands.len());
-        for op in operands {
-            let v = if is_model_kind(&op.kind) {
-                if auto_sd && needs_semi_diameters(&op.kind) {
-                    let sys = fixed_sd.get_or_insert_with(|| {
-                        let sd = c.tr.semi_diameters(&SemiDiameterSettings {
-                            azimuths: self.settings.semi_diameter_azimuths.max(4),
-                            clip: self.settings.clip,
-                        });
-                        fix_semi_diameters(s, &sd, 0.0)
-                    });
-                    model_value(sys, op)
-                } else {
-                    model_value(s, op)
-                }
-            } else if let OperandKind::ToleranceSensitivity {
-                param,
-                delta,
-                criterion,
-            } = &op.kind
-            {
-                self.sensitivity(s, op, param, *delta, criterion, ctx)?
-            } else {
-                c.value_with(op, &mut memo)
             };
             out.push(v);
         }
@@ -520,11 +508,8 @@ impl OperandEvaluator for TraceEvaluator {
         ctx: &JobContext,
     ) -> MkResult<Vec<Vec<OperandValue>>> {
         let seeds = match anchor {
-            Some(a) if systems.len() >= MIN_SEEDED_BATCH && self.anchored_differences(a) => {
-                self.evaluate_seeded(a, operands, ctx, Inner::Nodes, &Seeding::Record)?
-                    .1
-            }
-            _ => None,
+            Some(a) => self.anchor_seeds(a, systems.len(), operands, ctx)?,
+            None => None,
         };
         let Some(seeds) = seeds else {
             return self.evaluate_batch(systems, operands, ctx);
@@ -589,14 +574,6 @@ pub(super) enum Inner {
     Nodes,
 }
 impl Inner {
-    /// A candidate evaluated on its own, in parallel or not.
-    fn alone(parallel: bool) -> Self {
-        if parallel {
-            Inner::Nodes
-        } else {
-            Inner::Serial
-        }
-    }
     /// A candidate of a batch of `n` evaluated in parallel.
     fn batch(n: usize) -> Self {
         if n >= rayon::current_num_threads() {
@@ -842,7 +819,8 @@ type SpotRays = (Vec<f64>, Vec<f64>, Vec<f64>, PupilSymmetry);
 type RefKey = (FieldKey, usize, SamplingKey, bool, bool);
 
 pub(super) struct Candidate<'a> {
-    /// Completed P3 moments; absent on the unchanged reference evaluator.
+    /// Device piston/tilt fits and spot moments of ray groups, in place of
+    /// their rays (empty on the CPU path).
     pub(super) resident_wavefits: BTreeMap<GroupKey, [[f64; 4]; 2]>,
     pub(super) resident_moments: BTreeMap<GroupKey, [f64; 10]>,
     /// Initial RI radial scans; adaptive boundaries retain the same reference method.
@@ -862,6 +840,9 @@ pub(super) struct Candidate<'a> {
     /// Centroids `[cx, cy, 0]` and piston/tilts of ray groups, computed on
     /// first use (every ray operand of a group shares its reference).
     refs: Mutex<BTreeMap<RefKey, Result<[f64; 3], OperandError>>>,
+    /// On-axis irradiance per wavelength, computed on first use (every
+    /// relative-illumination operand divides by it).
+    axis_irradiance: Mutex<BTreeMap<usize, Result<f64, OperandError>>>,
     /// Is the candidate mirror-symmetric about the meridional plane?
     symmetric: bool,
     /// The x and y first-order sweeps, computed on first use.
@@ -912,6 +893,7 @@ impl<'a> Candidate<'a> {
             singles: BTreeMap::new(),
             real_rays: BTreeMap::new(),
             refs: Mutex::new(BTreeMap::new()),
+            axis_irradiance: Mutex::new(BTreeMap::new()),
             symmetric: is_meridionally_symmetric(tr.system().system()),
             xy: OnceLock::new(),
         };
@@ -1041,14 +1023,7 @@ impl<'a> Candidate<'a> {
         f: FieldKey,
         sampling: &PupilSampling,
     ) -> (Vec<PupilNode>, PupilSymmetry) {
-        self.group_nodes_from(f, sampling, sampling.nodes())
-    }
-    pub(super) fn group_nodes_from(
-        &self,
-        f: FieldKey,
-        sampling: &PupilSampling,
-        mut nodes: Vec<PupilNode>,
-    ) -> (Vec<PupilNode>, PupilSymmetry) {
+        let mut nodes = sampling.nodes();
         let mut symmetry = sampling.symmetry;
         if self.mirrored(f, sampling) {
             let mirrors: Vec<PupilNode> = nodes
@@ -2187,7 +2162,7 @@ impl<'a> Candidate<'a> {
                 let f = self.single_field(op.field)?;
                 let wls = self.wavelengths(op.wavelength)?;
                 weighted_mean(&wls, |&w| {
-                    let axis = self.irradiance(ON_AXIS, w)?;
+                    let axis = self.axis_irradiance(w)?;
                     if !(axis > 0.0) {
                         return Err(OperandError::RayFailure(
                             "no on-axis ray reaches the image".into(),
@@ -2323,6 +2298,18 @@ impl<'a> Candidate<'a> {
             return Err(OperandError::Invalid("afocal image space".into()));
         }
         Ok(1.0 / (2.0 * n * sin))
+    }
+
+    /// Memoised [`Self::irradiance`] on the axis at wavelength `w`.
+    fn axis_irradiance(&self, w: usize) -> Result<f64, OperandError> {
+        if let Some(e) = (self.axis_irradiance.lock().ok()).and_then(|m| m.get(&w).cloned()) {
+            return e;
+        }
+        let e = self.irradiance(ON_AXIS, w);
+        if let Ok(mut m) = self.axis_irradiance.lock() {
+            m.insert(w, e.clone());
+        }
+        e
     }
 
     /// Irradiance (arbitrary but field-independent units) at the image of
@@ -2712,8 +2699,12 @@ mod tests {
                 .collect()
         };
         for sys in [&base, &decentered] {
-            let serial = ev.evaluate_one(sys, &refs, &ctx, false).unwrap();
-            let parallel = ev.evaluate_one(sys, &refs, &ctx, true).unwrap();
+            let (serial, _) = ev
+                .evaluate_seeded(sys, &refs, &ctx, Inner::Serial, &Seeding::None)
+                .unwrap();
+            let (parallel, _) = ev
+                .evaluate_seeded(sys, &refs, &ctx, Inner::Nodes, &Seeding::None)
+                .unwrap();
             assert_eq!(bits(&serial), bits(&parallel));
             let (groups, _) = ev
                 .evaluate_seeded(sys, &refs, &ctx, Inner::Groups, &Seeding::None)

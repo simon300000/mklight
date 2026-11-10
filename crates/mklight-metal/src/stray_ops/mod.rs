@@ -19,12 +19,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
             r.tile(),
             r.output(),
         ),
-        Request::Build(_) => unreachable!(),
-        Request::Transport(_) => {
-            return mklight_gpu::resident::unsupported(
-                "stray split-tree transport is not qualified",
-            );
-        }
+        Request::Build(_) | Request::Transport(_) => unreachable!(),
     };
     let start = Instant::now();
     let pso = x.gpu.pipeline(&PipelineKey::plain(name))?;

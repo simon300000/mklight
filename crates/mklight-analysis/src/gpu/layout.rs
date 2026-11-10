@@ -220,13 +220,8 @@ pub fn layout_job(
     let mut scene = layout::layout_with(t, s, ctx, &provider)?;
     let mut runs = provider.evidence.into_inner().into_iter();
     let mut run = runs.next().unwrap();
-    run.settings["extra_plans"] = serde_json::json!([]);
     for r in runs {
-        run.duration_ms += r.duration_ms;
-        run.settings["extra_plans"]
-            .as_array_mut()
-            .unwrap()
-            .push(r.settings);
+        plans::add_run(&mut run, r);
     }
     scene.run_info = stamp(run, "layout", s, t.warnings().to_vec());
     Ok(scene)

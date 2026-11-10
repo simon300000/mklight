@@ -155,14 +155,6 @@ public enum CoatingDef: Codable, Sendable, Hashable {
     /// Tabulated normal-incidence reflectance `(λ µm, R)`; `T = 1 − R`.
     case tabulated(reflectance: [SpectralSample])
 
-    public var kindName: String {
-        switch self {
-        case .thinFilm: "Thin film"
-        case .ideal: "Ideal"
-        case .tabulated: "Tabulated"
-        }
-    }
-
     public init(from decoder: any Decoder) throws {
         let c = try decoder.container(keyedBy: AnyKey.self)
         switch try c.value("type", as: String.self) {

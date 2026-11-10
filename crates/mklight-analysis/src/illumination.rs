@@ -77,7 +77,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::util::{
     FieldAxes, FieldSelection, PupilPattern, WavelengthSelection, check_count, field_scale,
-    field_sweep, field_unit, gauss_legendre_01, m2, nf, pupil_points, run_info,
+    field_sweep, field_unit, gauss_legendre_01, m2, nf, pupil_points, run_info, seed_of,
     wavelength_or_primary,
 };
 
@@ -298,8 +298,9 @@ impl Probe<'_> {
         ))
     }
 
-    /// The image-point solve of [`Self::node`] alone: the solved `q` and the
-    /// aim point of its converged ray, or `None` (`Node::Failed`).
+    /// Solve `X(q, P) = X₀` from `q₀` (chord Newton, its Jacobian refreshed
+    /// when the iteration stalls): the solved `q` and the aim point of its
+    /// converged ray, or `None` (`Node::Failed`).
     fn solve(&self, q0: [f64; 2], j0inv: &m2::M, p: [f64; 2]) -> Option<([f64; 2], [f64; 2])> {
         let tol = 1e-10 * (1.0 + self.x0[0].hypot(self.x0[1]));
         let (mut q, mut jinv, mut prev) = (q0, *j0inv, f64::INFINITY);
@@ -320,37 +321,13 @@ impl Probe<'_> {
         None
     }
 
-    /// Solve `X(q, P) = X₀` from `q₀` (chord Newton with refresh), then
-    /// the projected-solid-angle density at the solution.
+    /// Solve `X(q, P) = X₀` from `q₀` ([`Self::solve`]), then the
+    /// projected-solid-angle density at the solution.
     fn node(&self, q0: [f64; 2], j0inv: &m2::M, p: [f64; 2]) -> Node {
-        let un = TraceOptions::unclipped();
-        let tol = 1e-10 * (1.0 + self.x0[0].hypot(self.x0[1]));
-        let (mut q, mut jinv, mut prev) = (q0, *j0inv, f64::INFINITY);
-        let mut converged = false;
-        for _ in 0..40 {
-            let Some(x) = self.ray(q, p, &un) else {
-                return Node::Failed;
-            };
-            let r = [x[0] - self.x0[0], x[1] - self.x0[1]];
-            let rn = r[0].hypot(r[1]);
-            if rn <= tol {
-                converged = true;
-                break;
-            }
-            if rn > 0.5 * prev {
-                match self.x_q_inverse(q, p) {
-                    Some(j) => jinv = j,
-                    None => return Node::Failed,
-                }
-            }
-            prev = rn;
-            let dq = m2::apply(&jinv, r);
-            q = [q[0] - dq[0], q[1] - dq[1]];
+        match self.solve(q0, j0inv, p) {
+            Some((q, _)) => self.finish(q, p),
+            None => Node::Failed,
         }
-        if !converged {
-            return Node::Failed;
-        }
-        self.finish(q, p)
     }
 
     /// The rest of [`Self::node`] from the solved `q`: survival, then the
@@ -452,35 +429,12 @@ fn prepare_integral<'a>(
     Some((probe, cra, cos4))
 }
 
-/// One field's integrals: `(Ω_p, surviving share of the pupil area, chief
-/// angle, cos⁴)` and the number of failed pupil nodes. `None` when the
-/// chief ray fails.
-fn integrate_field(
-    rt: &SequentialTracer,
-    field: &PreparedField,
-    wl: usize,
-    nodes: &[(f64, f64, f64)],
-    q_scale: f64,
-) -> Option<([f64; 4], usize)> {
-    let (probe, cra, cos4) = prepare_integral(rt, field, wl, q_scale)?;
-    let q0 = source_params(&field.source);
-    let j0inv = probe.x_q_inverse(q0, [0.0, 0.0])?;
-    let parts: Vec<(f64, bool, bool)> = nodes
-        .par_iter()
-        .map(|&(px, py, _)| match probe.node(q0, &j0inv, [px, py]) {
-            Node::Ok(j) => (j, true, false),
-            Node::Vignetted => (0.0, false, false),
-            Node::Failed => (0.0, false, true),
-        })
-        .collect();
-    Some(reduce_field(&parts, nodes, cra, cos4))
-}
-
 /// Nodes per parallel block of fields in [`illumination_rows`] (its
 /// cancellation and progress granularity).
 const FIELD_BLOCK_NODES: usize = 16384;
 
-/// [`integrate_field`] of a prepared image point: the same nodes and sums.
+/// One image point's integrals: `(Ω_p, surviving share of the pupil area,
+/// chief angle, cos⁴)` and the number of failed pupil nodes.
 fn integrate_image_point(
     rt: &SequentialTracer,
     ip: &ImagePoint,
@@ -665,50 +619,6 @@ pub fn field_nodes(
         .collect()
 }
 
-/// Reference decisions (`Ok` density, vignetted, failed) of selected nodes
-/// `(field point, node index)`, grouped by field: the f64 completion of
-/// device nodes that did not resolve. Returns `(density, survives, failed)`
-/// per entry, in input order. The groups run in parallel, and so do the
-/// nodes of each group.
-pub fn reference_nodes(
-    rt: &SequentialTracer,
-    wl: usize,
-    q_scale: f64,
-    nodes: &[(f64, f64, f64)],
-    selected: &[([f64; 2], usize)],
-    ctx: &JobContext,
-) -> MkResult<Vec<(f64, bool, bool)>> {
-    let mut groups = Vec::new();
-    let mut start = 0;
-    while start < selected.len() {
-        let point = selected[start].0;
-        let mut end = start + 1;
-        while end < selected.len() && selected[end].0 == point {
-            end += 1;
-        }
-        groups.push(start..end);
-        start = end;
-    }
-    let decided: Vec<Vec<(f64, bool, bool)>> = groups
-        .into_par_iter()
-        .map(|range| {
-            ctx.check()?;
-            let group = &selected[range];
-            Ok(match image_point(rt, group[0].0, wl, q_scale) {
-                Ok(ip) => {
-                    let pupil: Vec<[f64; 2]> = group
-                        .iter()
-                        .map(|&(_, k)| [nodes[k].0, nodes[k].1])
-                        .collect();
-                    field_nodes(rt, &ip, wl, &pupil)
-                }
-                Err(_) => vec![(0.0, false, true); group.len()],
-            })
-        })
-        .collect::<MkResult<_>>()?;
-    Ok(decided.concat())
-}
-
 /// Relative illumination and vignetting vs field (module docs).
 pub fn relative_illumination(
     tracer: &SequentialTracer,
@@ -717,8 +627,18 @@ pub fn relative_illumination(
     relative_illumination_job(tracer, settings, &JobContext::new())
 }
 
+/// Real-ray aiming for analyses that need it whatever the tracer's mode:
+/// the tracer's own when it already aims real rays, else with tolerance
+/// `10⁻¹²`.
+pub(crate) fn real_aiming(tracer: &SequentialTracer) -> RayAiming {
+    match tracer.aiming() {
+        real @ RayAiming::Real { .. } => real,
+        _ => RayAiming::Real { tolerance: 1e-12 },
+    }
+}
+
 /// The tracer itself when it already aims real rays, else a copy that does
-/// (module docs).
+/// ([`real_aiming`], module docs).
 pub fn real_aimed(tracer: &SequentialTracer) -> MkResult<Cow<'_, SequentialTracer>> {
     Ok(if matches!(tracer.aiming(), RayAiming::Real { .. }) {
         Cow::Borrowed(tracer)
@@ -726,7 +646,7 @@ pub fn real_aimed(tracer: &SequentialTracer) -> MkResult<Cow<'_, SequentialTrace
         Cow::Owned(SequentialTracer::with_settings(
             tracer.system_arc(),
             TracerSettings {
-                aiming: Some(RayAiming::Real { tolerance: 1e-12 }),
+                aiming: Some(real_aiming(tracer)),
                 ..*tracer.settings()
             },
         )?)
@@ -796,8 +716,10 @@ pub fn illumination_rows(
     let omega0 = match coordinates.iter().position(|p| *p == [0.0; 2]) {
         Some(k) => rows[k][0],
         None => {
-            let on_axis = rt.prepare_field(FieldPoint::normalized(0.0, 0.0))?;
-            integrate_field(rt, &on_axis, wl, &nodes, q_scale).map_or(f64::NAN, |(row, _)| row[0])
+            ctx.check()?;
+            image_point(rt, [0.0; 2], wl, q_scale).map_or(f64::NAN, |ip| {
+                integrate_image_point(rt, &ip, wl, &nodes, &pupil).0[0]
+            })
         }
     };
     if !(omega0 > 0.0) {
@@ -937,7 +859,7 @@ pub fn footprint_job(
             sys.image_index()
         )));
     }
-    check_count("rings", settings.rings, 1, 512)?;
+    crate::spot::validate_sampling(settings.rings)?;
     let fields = settings.fields.resolve(tracer.fields().len())?;
     let wls = settings
         .wavelengths
@@ -1001,11 +923,7 @@ pub fn footprint_job(
     };
     let sd = tracer.semi_diameters(&SemiDiameterSettings::default());
     ctx.report(1.0, "footprint");
-    let seed = matches!(
-        settings.pattern,
-        PupilPattern::Random | PupilPattern::Dithered
-    )
-    .then_some(settings.seed);
+    let seed = seed_of(settings.pattern, settings.seed);
     Ok(FootprintResult {
         field_values: (0..tracer.fields().len())
             .map(|i| crate::util::field_value(tracer, i))

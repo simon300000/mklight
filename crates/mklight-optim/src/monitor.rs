@@ -28,6 +28,9 @@ pub struct IterationRecord {
     pub violation: f64,
     /// Merit of the best point seen so far in this run.
     pub best_merit: f64,
+    /// The method's step-size control: the trust radius `Δ` (`"lm"`,
+    /// `"dogleg"`), the step size `σ` (`"cma_es"`) or the perturbation step
+    /// in variable scales (`"hammer"`).
     #[serde(default)]
     pub trust_radius: Option<f64>,
     #[serde(default)]
@@ -36,6 +39,10 @@ pub struct IterationRecord {
     pub gain_ratio: Option<f64>,
     #[serde(default)]
     pub step_norm: Option<f64>,
+    /// First-order optimality of least squares: the largest cosine between
+    /// a free Jacobian column and the residual vector,
+    /// `max_j |J_jᵀ r| / (‖J_j‖ ‖r‖)` (the measure `gtol` tests), not the
+    /// norm of the gradient.
     #[serde(default)]
     pub gradient_norm: Option<f64>,
     /// Population / simplex spread in scaled variable units.
@@ -68,6 +75,62 @@ impl IterationRecord {
     }
 }
 
+/// What a best-so-far slot holds: a point with its merit and violation.
+pub trait BestEntry: Clone {
+    /// The borrowed form of the point (`[f64]`, `[usize]`).
+    type Point: ?Sized;
+    /// Can `point` be kept at all?
+    fn admissible(_point: &Self::Point) -> bool {
+        true
+    }
+    fn new(point: &Self::Point, e: ScalarEval) -> Self;
+    fn scalar(&self) -> ScalarEval;
+}
+
+/// Thread-safe best-so-far holder. Cloning shares the same slot.
+#[derive(Debug)]
+pub struct Best<B>(Arc<Mutex<Option<B>>>);
+
+impl<B> Clone for Best<B> {
+    fn clone(&self) -> Self {
+        Best(self.0.clone())
+    }
+}
+
+impl<B> Default for Best<B> {
+    fn default() -> Self {
+        Best(Arc::default())
+    }
+}
+
+impl<B: BestEntry> Best<B> {
+    pub fn get(&self) -> Option<B> {
+        self.0.lock().ok().and_then(|g| g.clone())
+    }
+    /// Offer a point; it replaces the current best under the feasibility rule
+    /// of [`ScalarEval::better_than`]. Returns whether it was taken.
+    pub fn offer(&self, point: &B::Point, e: ScalarEval, feas_tol: f64) -> bool {
+        if !e.merit.is_finite() || !B::admissible(point) {
+            return false;
+        }
+        let Ok(mut g) = self.0.lock() else {
+            return false;
+        };
+        let take = g
+            .as_ref()
+            .is_none_or(|b| e.better_than(&b.scalar(), feas_tol));
+        if take {
+            *g = Some(B::new(point, e));
+        }
+        take
+    }
+    pub fn clear(&self) {
+        if let Ok(mut g) = self.0.lock() {
+            *g = None;
+        }
+    }
+}
+
 /// The best point found so far.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct BestPoint {
@@ -86,42 +149,25 @@ impl BestPoint {
     }
 }
 
-/// Thread-safe best-so-far holder. Cloning shares the same slot.
-#[derive(Clone, Debug, Default)]
-pub struct BestSoFar(Arc<Mutex<Option<BestPoint>>>);
-
-impl BestSoFar {
-    pub fn get(&self) -> Option<BestPoint> {
-        self.0.lock().ok().and_then(|g| g.clone())
+impl BestEntry for BestPoint {
+    type Point = [f64];
+    fn admissible(x: &[f64]) -> bool {
+        x.iter().all(|v| v.is_finite())
     }
-    /// Offer a point; it replaces the current best under the feasibility rule
-    /// of [`ScalarEval::better_than`]. Returns whether it was taken.
-    pub fn offer(&self, x: &[f64], e: ScalarEval, feas_tol: f64) -> bool {
-        if !e.merit.is_finite() || x.iter().any(|v| !v.is_finite()) {
-            return false;
+    fn new(x: &[f64], e: ScalarEval) -> Self {
+        BestPoint {
+            x: x.to_vec(),
+            merit: e.merit,
+            violation: e.violation,
         }
-        let Ok(mut g) = self.0.lock() else {
-            return false;
-        };
-        let take = match g.as_ref() {
-            None => true,
-            Some(b) => e.better_than(&b.scalar(), feas_tol),
-        };
-        if take {
-            *g = Some(BestPoint {
-                x: x.to_vec(),
-                merit: e.merit,
-                violation: e.violation,
-            });
-        }
-        take
     }
-    pub fn clear(&self) {
-        if let Ok(mut g) = self.0.lock() {
-            *g = None;
-        }
+    fn scalar(&self) -> ScalarEval {
+        BestPoint::scalar(self)
     }
 }
+
+/// Best-so-far holder for continuous points.
+pub type BestSoFar = Best<BestPoint>;
 
 /// The best discrete assignment found so far (see [`crate::discrete`]).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -131,49 +177,27 @@ pub struct BestAssignment {
     pub violation: f64,
 }
 
-/// Thread-safe best-so-far holder for discrete searches, kept apart from the
-/// continuous [`BestSoFar`] so the two kinds of point never mix.
-#[derive(Clone, Debug, Default)]
-pub struct BestAssignmentSoFar(Arc<Mutex<Option<BestAssignment>>>);
-
-impl BestAssignmentSoFar {
-    pub fn get(&self) -> Option<BestAssignment> {
-        self.0.lock().ok().and_then(|g| g.clone())
-    }
-    /// Offer an assignment under the feasibility rule; returns whether it
-    /// was taken.
-    pub fn offer(&self, a: &[usize], e: ScalarEval, feas_tol: f64) -> bool {
-        if !e.merit.is_finite() {
-            return false;
+impl BestEntry for BestAssignment {
+    type Point = [usize];
+    fn new(a: &[usize], e: ScalarEval) -> Self {
+        BestAssignment {
+            assignment: a.to_vec(),
+            merit: e.merit,
+            violation: e.violation,
         }
-        let Ok(mut g) = self.0.lock() else {
-            return false;
-        };
-        let take = g.as_ref().is_none_or(|b| {
-            e.better_than(
-                &ScalarEval {
-                    merit: b.merit,
-                    violation: b.violation,
-                    status: EvalStatus::Ok,
-                },
-                feas_tol,
-            )
-        });
-        if take {
-            *g = Some(BestAssignment {
-                assignment: a.to_vec(),
-                merit: e.merit,
-                violation: e.violation,
-            });
-        }
-        take
     }
-    pub fn clear(&self) {
-        if let Ok(mut g) = self.0.lock() {
-            *g = None;
+    fn scalar(&self) -> ScalarEval {
+        ScalarEval {
+            merit: self.merit,
+            violation: self.violation,
+            status: EvalStatus::Ok,
         }
     }
 }
+
+/// Best-so-far holder for discrete searches, a slot of its own so that it
+/// never mixes with the continuous [`BestSoFar`].
+pub type BestAssignmentSoFar = Best<BestAssignment>;
 
 type Callback = dyn Fn(&IterationRecord) + Send + Sync;
 
@@ -250,6 +274,14 @@ impl Monitor {
             feasibility_tol: self.feasibility_tol,
             stage: stage.to_string(),
             keep_history: false,
+        }
+    }
+    /// A [`Monitor::child`] for runs nested in parallel: it reports no
+    /// progress, which parallel runs would move back and forth.
+    pub fn detached_child(&self, stage: &str) -> Monitor {
+        Monitor {
+            job: JobContext::with(self.job.cancel.clone(), Default::default()),
+            ..self.child(0.0, 1.0, stage)
         }
     }
     /// Called by every optimiser when it starts: clears the best-so-far

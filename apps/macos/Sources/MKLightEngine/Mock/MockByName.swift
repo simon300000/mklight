@@ -130,7 +130,7 @@ extension MockEngine {
             }
             var settings = descriptor.defaultSettings.object ?? [:]
             for (k, v) in request.settings { settings[k] = v }
-            let seed = request.settings["seed"]?.int.map { UInt64($0) }
+            let seed = request.settings["seed"]?.int.flatMap { UInt64(exactly: $0) }
             let info = RunInfo(
                 engineVersion: Self.version, snapshotHash: snapshot.hash, analysis: name, settings: .object(settings),
                 backend: "mock", precision: .f64Reference, seed: seed,
@@ -216,7 +216,7 @@ extension MockEngine {
             ss.wavelengths = wavelengthSelection(s["wavelengths"])
             if let r = s["rings"]?.int { ss.rings = r }
             if let p = s["pattern"]?.string, let pat = PupilPattern(rawValue: p) { ss.pattern = pat }
-            if let seed = s["seed"]?.int { ss.execution.seed = UInt64(seed) }
+            if let seed = s["seed"]?.int.flatMap({ UInt64(exactly: $0) }) { ss.execution.seed = seed }
             let r = try o.spot(ss)
             var xy: [Double] = [], pw: [Double] = [], pf: [Double] = []
             var fields: [JSONValue] = []
@@ -388,7 +388,7 @@ extension MockEngine {
     static func variables(_ settings: [String: JSONValue], _ system: OpticalSystem) -> [ParamPath] {
         let listed = (settings["variables"]?.array ?? []).compactMap { v -> ParamPath? in
             guard let p = v["param"] else { return nil }
-            return try? MKLightJSON.decode(ParamPath.self, from: MKLightJSON.encode(p))
+            return try? p.decode(ParamPath.self)
         }
         if !listed.isEmpty { return listed }
         var out = system.surfaces.dropFirst().dropLast().filter { $0.shape.hasCurvature && $0.shape.curvature != 0 }
@@ -402,7 +402,7 @@ extension MockEngine {
         _ latency: Duration
     ) async throws -> (JSONValue, [ResultBuffer]) {
         let algorithm = s["algorithm"]?.string ?? "lm"
-        let iterations = s["max_iterations"]?.int ?? 12
+        let iterations = max(s["max_iterations"]?.int ?? 12, 0)
         let vars = variables(s, snap.system)
         var spot = SpotDiagramSettings()
         spot.rings = 3
@@ -547,22 +547,22 @@ extension MockEngine {
     ) async throws -> (JSONValue, [ResultBuffer]) {
         let system = snap.system
         let mode = s["mode"]?.string ?? "both"
-        let trials = s["trials"]?.int ?? 100
-        let seed = UInt64(s["seed"]?.int ?? 0)
+        let trials = max(s["trials"]?.int ?? 100, 0)
+        let seed = s["seed"]?.int.flatMap { UInt64(exactly: $0) } ?? 0
         var rng = SplitMix64(seed: seed &+ 0x9E37_79B9)
         let nominal = 1e-3
         var ops: [JSONValue] = []
         var worst: [(Int, Double)] = []
         // The requested tolerances (else the engine's basic set: every thickness).
         let requested: [(ParamPath, Double, Double, String)] = (s["tolerances"]?.array ?? []).compactMap { o in
-            guard let p = o["param"].flatMap({ try? MKLightJSON.decode(ParamPath.self, from: MKLightJSON.encode($0)) }) else { return nil }
+            guard let p = o["param"].flatMap({ try? $0.decode(ParamPath.self) }) else { return nil }
             return (p, o["minus"]?.nf ?? 0.05, o["plus"]?.nf ?? 0.05, o["label"]?.string ?? "")
         }
         let params = requested.isEmpty
             ? system.surfaces.dropFirst().dropLast().map { (ParamPath.thickness(surface: $0.id), 0.05, 0.05, "") } : requested
         // Compensators sit at their nominal values and move a little per trial.
         let comps: [(ParamPath, Double)] = (s["compensators"]?.array ?? []).compactMap { c in
-            guard let p = c["param"].flatMap({ try? MKLightJSON.decode(ParamPath.self, from: MKLightJSON.encode($0)) }) else { return nil }
+            guard let p = c["param"].flatMap({ try? $0.decode(ParamPath.self) }) else { return nil }
             return (p, system.value(at: p) ?? 0)
         }
         let nominalComps = JSONValue.array(comps.map { .number($0.1) })
@@ -577,7 +577,7 @@ extension MockEngine {
         if let c = s["preview_case"], c != .null {
             let deltas: [Double]
             switch c["type"]?.string {
-            case "trial": deltas = draws(c["trial"]?.int ?? 0)
+            case "trial": deltas = draws(max(c["trial"]?.int ?? 0, 0))
             default:
                 let k = c["operand"]?.int ?? 0
                 guard params.indices.contains(k) else { throw EngineError.invalidSettings(["preview operand out of range"]) }

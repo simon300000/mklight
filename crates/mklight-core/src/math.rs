@@ -257,7 +257,9 @@ impl Frame {
     }
 }
 
-/// Neumaier compensated summation (CONVENTIONS §7.5).
+/// Neumaier compensated summation (CONVENTIONS §7.5): the accurate sum of
+/// many `f64` terms. A quantity that is later differenced before rounding
+/// (an optical path) is carried as `mklight_trace::numeric::Compensated`.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct KahanSum {
     sum: f64,

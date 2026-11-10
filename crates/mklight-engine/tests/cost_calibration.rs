@@ -14,6 +14,8 @@
 //! rung; online refinement absorbs the host's current contention). It then
 //! fits the stage coefficients and writes the table (without `_OUT`, to the target tmp dir). Options:
 //! `MKLIGHT_COST_REPS` (default 2), `MKLIGHT_COST_FILTER` (analyses),
+//! `MKLIGHT_COST_MODES` (of `cpu`, `cpu_edit`, `metal`, `metal_edit`; a run
+//! restricted by either fits a partial table and refuses `_OUT`),
 //! `MKLIGHT_COST_DESIGNS` (sample names and `local`; `all` for the 16),
 //! `MKLIGHT_COST_RECORDS` (measured records, JSON lines; written while
 //! measuring), `MKLIGHT_COST_REFIT=1` (fit those records without measuring;
@@ -385,10 +387,16 @@ fn measure(device_open_ms: &mut f64) -> Vec<Value> {
                     &settings,
                 )
                 .unwrap();
+                // This rung's CPU time (0 when its CPU calls failed).
+                let mut cpu = 0.;
                 for (mode, mut v) in ms {
                     let device_ms = median(dev.get_mut(mode).unwrap());
+                    let median_ms = median(&mut v);
+                    if mode == "cpu" {
+                        cpu = median_ms;
+                    }
                     let r = json!({"design":design,"analysis":analysis,"settings":settings,
-                        "normalised":normalised,"mode":mode,"ms":median(&mut v),"runs":v,
+                        "normalised":normalised,"mode":mode,"ms":median_ms,"runs":v,
                         "device_ms":device_ms,"grid":grid,
                         "used":used.get(mode),"aim":{"rays":aim.0,"iterations":aim.1},
                         "first_ms":first,"load":load()});
@@ -396,12 +404,6 @@ fn measure(device_open_ms: &mut f64) -> Vec<Value> {
                     writeln!(file, "{r}").unwrap();
                     records.push(r);
                 }
-                let cpu = records
-                    .iter()
-                    .rev()
-                    .find(|r| r["mode"] == "cpu" && r["analysis"] == analysis)
-                    .and_then(|r| r["ms"].as_f64())
-                    .unwrap_or(0.);
                 // Larger rungs of a slow analysis add little evidence.
                 if cpu > 4000. || slow {
                     break;
@@ -568,6 +570,16 @@ fn calibrate() {
     if cfg!(debug_assertions) {
         panic!("use --release");
     }
+    // A restricted run fits a partial table, and an analysis or mode missing
+    // from the table routes without calibration: it never replaces a named
+    // table.
+    let restricted = env("MKLIGHT_COST_FILTER").is_some()
+        || (env("MKLIGHT_COST_REFIT").is_none() && env("MKLIGHT_COST_MODES").is_some());
+    assert!(
+        !(restricted && env("MKLIGHT_COST_CALIBRATION_OUT").is_some()),
+        "MKLIGHT_COST_FILTER and MKLIGHT_COST_MODES fit a partial table: unset \
+         MKLIGHT_COST_CALIBRATION_OUT (the table then goes to the target tmp dir)"
+    );
     let mut device_open_ms = 40.;
     let records: Vec<Value> = if env("MKLIGHT_COST_REFIT").is_some() {
         // One or more record files (comma-separated), e.g. a re-measurement

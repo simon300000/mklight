@@ -34,6 +34,27 @@ import Testing
         #expect(rows[2].text(.material).isEmpty, "air is shown blank")
     }
 
+    /// The registered undo and redo steps do not keep their undo manager
+    /// (and with it the whole undo history) alive.
+    @Test func undoStepsDoNotRetainTheirManager() {
+        weak var manager: UndoManager?
+        let doc = DesignDocument(system: SampleSystems.cookeTriplet())
+        autoreleasepool {
+            let undo = UndoManager()
+            undo.groupsByEvent = false
+            manager = undo
+            let id = doc.system.surfaces[1].id
+            step(undo) { doc.edit("Thickness", undoManager: undo) { $0.surfaces[1].thickness += 1 } }
+            step(undo) { doc.setVariable(.curvature(surface: id), true, undoManager: undo) }
+            undo.undo()
+            undo.undo()
+            undo.redo()
+            #expect(doc.system.surfaces[1].thickness == SampleSystems.cookeTriplet().surfaces[1].thickness + 1)
+            #expect(undo.canUndo && undo.canRedo)
+        }
+        #expect(manager == nil)
+    }
+
     @Test func typedValuesBecomeUndoableEdits() {
         let (doc, ed, undo) = editor()
         let id = doc.system.surfaces[1].id

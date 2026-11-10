@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant, SystemTime};
 
 use bytemuck::Pod;
 use dispatch2::DispatchData;
@@ -25,30 +25,18 @@ use mklight_core::{MkError, MkResult};
 use objc2::rc::{Retained, autoreleasepool};
 use objc2::runtime::{NSObjectProtocol, ProtocolObject};
 use objc2::sel;
-use objc2_foundation::{NSArray, NSError, NSString, NSURL};
+use objc2_foundation::{NSArray, NSError, NSProcessInfo, NSString, NSURL};
 use objc2_metal::{
     MTLBarrierScope, MTLBinaryArchive, MTLBinaryArchiveDescriptor, MTLCommandBuffer,
     MTLCommandBufferStatus, MTLCommandEncoder, MTLCommandQueue, MTLCompileOptions,
     MTLComputeCommandEncoder, MTLComputePipelineDescriptor, MTLComputePipelineState,
-    MTLCopyAllDevices, MTLCreateSystemDefaultDevice, MTLDataType, MTLDevice, MTLFunction,
-    MTLFunctionConstantValues, MTLLanguageVersion, MTLLibrary, MTLMathFloatingPointFunctions,
-    MTLMathMode, MTLPipelineOption, MTLSize,
+    MTLCreateSystemDefaultDevice, MTLDataType, MTLDevice, MTLFunction, MTLFunctionConstantValues,
+    MTLLanguageVersion, MTLLibrary, MTLMathFloatingPointFunctions, MTLMathMode, MTLPipelineOption,
+    MTLSize,
 };
 
 use crate::buffer::SharedBuffer;
 use crate::shaders;
-
-/// Which GPU to use.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub enum DeviceSelector {
-    /// The system default device.
-    #[default]
-    Default,
-    /// The first device whose name contains this text (case-insensitive).
-    NameContains(String),
-    /// A device by its stable registry id.
-    RegistryId(u64),
-}
 
 /// Where the shader library comes from.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -90,7 +78,6 @@ impl MetalPrecision {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct MetalOptions {
-    pub device: DeviceSelector,
     pub library: LibraryChoice,
     pub precision: MetalPrecision,
 }
@@ -114,12 +101,6 @@ impl MetalOptions {
 /// Completed command-buffer GPU time in this process, nanoseconds
 /// (see [`device_seconds`]).
 static DEVICE_NANOS: AtomicU64 = AtomicU64::new(0);
-/// Diagnostic (proposal study): `MKLIGHT_METAL_TRACE_DISPATCHES=1` completes
-/// every deferred encode as its own command buffer and prints its device time.
-fn trace_dispatches() -> bool {
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("MKLIGHT_METAL_TRACE_DISPATCHES").is_ok_and(|v| v == "1"))
-}
 
 fn add_device_time(seconds: f64) {
     DEVICE_NANOS.fetch_add((seconds * 1e9) as u64, Ordering::Relaxed);
@@ -136,7 +117,6 @@ pub fn device_seconds() -> f64 {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum FunctionConstant {
     U32 { index: u16, value: u32 },
-    Bool { index: u16, value: bool },
 }
 
 /// Pipeline cache key: kernel name plus its function-constant values.
@@ -172,6 +152,9 @@ pub struct CommandStats {
 
 type Pso = Retained<ProtocolObject<dyn MTLComputePipelineState>>;
 type Archive = Retained<ProtocolObject<dyn MTLBinaryArchive>>;
+/// One cached pipeline, created under its own lock: concurrent requests for
+/// a key share one creation while requests for other keys proceed.
+type PipelineSlot = Arc<Mutex<Option<Pso>>>;
 
 /// The saved compiled pipelines of this device and shader library (a Metal
 /// binary archive), so a later process creates them without compiling.
@@ -190,13 +173,13 @@ unsafe impl Sync for PipelineArchive {}
 
 /// Outcome of [`MetalContext::prepare_pipelines`].
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct PipelinePreparation {
+pub(crate) struct PipelinePreparation {
     /// Pipelines prepared (every kernel and its common specialisations).
-    pub pipelines: usize,
+    pub(crate) pipelines: usize,
     /// Of them, created from the saved archive without compiling.
-    pub from_archive: usize,
+    pub(crate) from_archive: usize,
     /// Wall time, seconds.
-    pub seconds: f64,
+    pub(crate) seconds: f64,
 }
 
 pub struct MetalContext {
@@ -205,7 +188,7 @@ pub struct MetalContext {
     library: Retained<ProtocolObject<dyn MTLLibrary>>,
     origin: LibraryOrigin,
     library_build: String,
-    pipelines: Mutex<HashMap<PipelineKey, Pso>>,
+    pipelines: Mutex<HashMap<PipelineKey, PipelineSlot>>,
     archive: Mutex<Option<Arc<PipelineArchive>>>,
 }
 
@@ -224,8 +207,50 @@ fn raise_qos() {
     }
 }
 
-/// File-name prefix of pipeline archives ([`MetalContext::attach_pipeline_archive`]).
+/// File-name prefix of pipeline archives and their temporary files
+/// ([`MetalContext::attach_pipeline_archive`]).
 const ARCHIVE_PREFIX: &str = "pipelines-";
+/// Time since an archive was last loaded or written beyond which a process
+/// using another archive removes it.
+const ARCHIVE_UNUSED: Duration = Duration::from_secs(30 * 24 * 3600);
+/// Temporary archive files written by this process (part of their names).
+static ARCHIVE_SAVES: AtomicUsize = AtomicUsize::new(0);
+
+/// File name of the archive of one GPU, system version and shader library:
+/// the GPU's name and a hash of the rest, so a new build, a system update or
+/// another GPU never reads an archive made for something else.
+fn archive_file_name(gpu: &str, system: &str, library_build: &str, library: &[u8]) -> String {
+    let gpu: String = gpu
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    // 0xff never occurs in UTF-8 text: it separates the three parts.
+    let parts = [system.as_bytes(), library_build.as_bytes(), library];
+    for b in parts.iter().flat_map(|p| p.iter().copied().chain([0xff])) {
+        h = (h ^ b as u64).wrapping_mul(0x100_0000_01b3);
+    }
+    format!("{ARCHIVE_PREFIX}{gpu}-{h:016x}.metalarchive")
+}
+
+/// Remove the archives and temporary files in `dir`, other than `keep`,
+/// that nothing has loaded or written for [`ARCHIVE_UNUSED`]. Newer ones
+/// belong to builds, libraries or devices that may still be in use (a debug
+/// and a release build share the directory) or to a process saving now.
+fn remove_unused_archives(dir: &Path, keep: &str) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for e in entries.flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        let unused = (e.metadata().and_then(|m| m.modified()).ok())
+            .and_then(|t| t.elapsed().ok())
+            .is_some_and(|age| age > ARCHIVE_UNUSED);
+        if name.starts_with(ARCHIVE_PREFIX) && name != keep && unused {
+            let _ = std::fs::remove_file(e.path());
+        }
+    }
+}
 
 /// The specialisations [`MetalContext::prepare_pipelines`] creates besides
 /// every unspecialised kernel: (function, constant index, value). Rarer
@@ -284,21 +309,6 @@ const PIPELINE_CACHE: usize = 512;
 
 fn ns_error(what: &str, e: &NSError) -> MkError {
     MkError::Backend(format!("{what}: {}", e.localizedDescription()))
-}
-
-fn select_device(sel: &DeviceSelector) -> Option<Retained<ProtocolObject<dyn MTLDevice>>> {
-    match sel {
-        DeviceSelector::Default => MTLCreateSystemDefaultDevice(),
-        DeviceSelector::NameContains(s) => {
-            let s = s.to_lowercase();
-            MTLCopyAllDevices()
-                .iter()
-                .find(|d| d.name().to_string().to_lowercase().contains(&s))
-        }
-        DeviceSelector::RegistryId(id) => {
-            MTLCopyAllDevices().iter().find(|d| d.registryID() == *id)
-        }
-    }
 }
 
 /// Runtime compile options: the same numerics contract as the offline build
@@ -391,10 +401,10 @@ fn load_library(
 }
 
 impl MetalContext {
-    /// `Ok(None)` when no matching Metal device exists.
+    /// The system default device; `Ok(None)` when this machine has none.
     pub fn new(opts: &MetalOptions) -> MkResult<Option<Self>> {
         autoreleasepool(|_| {
-            let Some(device) = select_device(&opts.device) else {
+            let Some(device) = MTLCreateSystemDefaultDevice() else {
                 return Ok(None);
             };
             let queue = device
@@ -455,26 +465,38 @@ impl MetalContext {
         SharedBuffer::filled(&self.device, len, fill)
     }
 
-    /// The compute pipeline for `key`, compiled once and cached. With a
+    /// The compute pipeline for `key`, created once and cached. With a
     /// pipeline archive attached it comes from the archive when present, and
-    /// is added to it otherwise. The cache lock is not held while compiling,
-    /// so a job does not wait behind another kernel's compilation.
+    /// is added to it otherwise. Concurrent requests for one key wait for a
+    /// single creation. The cache lock is not held while compiling, so a job
+    /// does not wait behind another kernel's compilation.
     pub fn pipeline(&self, key: &PipelineKey) -> MkResult<Pso> {
-        if let Some(p) = self.lock_pipelines().get(key) {
-            return Ok(p.clone());
-        }
-        let (pso, _) = self.create_pipeline(key)?;
-        let mut cache = self.lock_pipelines();
-        // Jobs retain their own pipeline objects across cache eviction.
-        if cache.len() >= PIPELINE_CACHE {
-            cache.clear();
-        }
-        cache.insert(key.clone(), pso.clone());
-        Ok(pso)
+        Ok(self.cached_pipeline(key, false)?.0)
     }
 
-    fn lock_pipelines(&self) -> std::sync::MutexGuard<'_, HashMap<PipelineKey, Pso>> {
-        self.pipelines.lock().unwrap_or_else(|e| e.into_inner())
+    /// [`Self::pipeline`], and whether this call created it from the
+    /// archive. With `renew` a cached pipeline is created again, so that one
+    /// made before the archive was attached comes from it or is added to it.
+    fn cached_pipeline(&self, key: &PipelineKey, renew: bool) -> MkResult<(Pso, bool)> {
+        let slot = {
+            let mut cache = self.pipelines.lock().unwrap_or_else(|e| e.into_inner());
+            // Jobs retain their own pipeline objects across cache eviction.
+            if cache.len() >= PIPELINE_CACHE && !cache.contains_key(key) {
+                cache.clear();
+            }
+            cache.entry(key.clone()).or_default().clone()
+        };
+        // Only this key's lock is held from here on. A failed creation
+        // leaves the slot empty, so the next request tries again.
+        let mut slot = slot.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(pso) = &*slot
+            && !renew
+        {
+            return Ok((pso.clone(), false));
+        }
+        let (pso, from_archive) = self.create_pipeline(key)?;
+        *slot = Some(pso.clone());
+        Ok((pso, from_archive))
     }
 
     /// The specialised function of `key`.
@@ -487,22 +509,15 @@ impl MetalContext {
         }
         let values = MTLFunctionConstantValues::new();
         for c in &key.constants {
-            // SAFETY: each pointer refers to a live local of the matching
-            // type for the duration of the call; Metal copies the value.
+            let FunctionConstant::U32 { index, value } = *c;
+            // SAFETY: the pointer refers to a live local of the stated type
+            // for the duration of the call; Metal copies the value.
             unsafe {
-                match *c {
-                    FunctionConstant::U32 { index, value } => values.setConstantValue_type_atIndex(
-                        NonNull::from(&value).cast::<c_void>(),
-                        MTLDataType::UInt,
-                        index as usize,
-                    ),
-                    FunctionConstant::Bool { index, value } => values
-                        .setConstantValue_type_atIndex(
-                            NonNull::from(&value).cast::<c_void>(),
-                            MTLDataType::Bool,
-                            index as usize,
-                        ),
-                }
+                values.setConstantValue_type_atIndex(
+                    NonNull::from(&value).cast::<c_void>(),
+                    MTLDataType::UInt,
+                    index as usize,
+                )
             }
         }
         self.library
@@ -555,43 +570,44 @@ impl MetalContext {
         })
     }
 
-    /// Attach the pipeline archive of this device and shader library in
-    /// `dir` (created if missing), loading it when a compatible one was
-    /// saved. Archives of other libraries or devices in `dir` are removed:
-    /// they belong to earlier builds. Pipelines created from now on come
-    /// from it or are added to it; [`save_pipeline_archive`] writes it.
+    /// Attach the pipeline archive of this device, system version and
+    /// shader library in `dir` (created if missing), loading it when one was
+    /// saved. Other archives in `dir` are removed once unused for
+    /// [`ARCHIVE_UNUSED`] ([`remove_unused_archives`]). Pipelines created
+    /// from now on come from the archive or are added to it;
+    /// [`save_pipeline_archive`] writes it.
     ///
     /// [`save_pipeline_archive`]: Self::save_pipeline_archive
-    pub fn attach_pipeline_archive(&self, dir: &Path) -> MkResult<()> {
+    pub(crate) fn attach_pipeline_archive(&self, dir: &Path) -> MkResult<()> {
         std::fs::create_dir_all(dir)
             .map_err(|e| MkError::Backend(format!("pipeline cache {}: {e}", dir.display())))?;
         let name = self.archive_name();
         let path = dir.join(&name);
-        if let Ok(entries) = std::fs::read_dir(dir) {
-            for e in entries.flatten() {
-                let n = e.file_name().to_string_lossy().into_owned();
-                if n.starts_with(ARCHIVE_PREFIX) && n != name {
-                    let _ = std::fs::remove_file(e.path());
-                }
-            }
-        }
+        remove_unused_archives(dir, &name);
         let open = |url: Option<&NSURL>| {
             let desc = MTLBinaryArchiveDescriptor::new();
             desc.setUrl(url);
             self.device.newBinaryArchiveWithDescriptor_error(&desc)
         };
-        let archive = autoreleasepool(|_| {
+        let (archive, loaded) = autoreleasepool(|_| {
             let url = path
                 .exists()
                 .then(|| NSURL::fileURLWithPath(&NSString::from_str(&path.to_string_lossy())));
-            // An unreadable or incompatible archive (another OS build) is
-            // replaced by an empty one.
+            // An unreadable archive is replaced by an empty one.
             match url.as_deref().map(|u| open(Some(u))) {
-                Some(Ok(a)) => Ok(a),
-                _ => open(None),
+                Some(Ok(a)) => Ok((a, true)),
+                _ => open(None).map(|a| (a, false)),
             }
         })
         .map_err(|e| ns_error("creating the pipeline archive", &e))?;
+        if loaded {
+            // Loading counts as use for other processes' clean-up; a failure
+            // only makes them remove the archive earlier.
+            let _ = std::fs::File::options()
+                .append(true)
+                .open(&path)
+                .and_then(|f| f.set_modified(SystemTime::now()));
+        }
         *self.archive.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(PipelineArchive {
             archive,
             path,
@@ -601,9 +617,10 @@ impl MetalContext {
     }
 
     /// Write the attached pipeline archive if pipelines were added to it
-    /// (atomically: a temporary file renamed over the old one). Returns
-    /// whether it wrote.
-    pub fn save_pipeline_archive(&self) -> MkResult<bool> {
+    /// (atomically: a temporary file of this process renamed over the old
+    /// one). Returns whether it wrote. After a failure the additions stay
+    /// counted, so a later call writes them.
+    pub(crate) fn save_pipeline_archive(&self) -> MkResult<bool> {
         let Some(a) = self
             .archive
             .lock()
@@ -612,41 +629,46 @@ impl MetalContext {
         else {
             return Ok(false);
         };
-        if a.added.swap(0, Ordering::Relaxed) == 0 {
+        let added = a.added.load(Ordering::Relaxed);
+        if added == 0 {
             return Ok(false);
         }
-        let tmp = a.path.with_extension("tmp");
-        autoreleasepool(|_| {
+        let mut tmp = a.path.clone().into_os_string();
+        tmp.push(format!(
+            ".{}.{}.tmp",
+            std::process::id(),
+            ARCHIVE_SAVES.fetch_add(1, Ordering::Relaxed)
+        ));
+        let tmp = PathBuf::from(tmp);
+        let written = autoreleasepool(|_| {
             let url = NSURL::fileURLWithPath(&NSString::from_str(&tmp.to_string_lossy()));
             a.archive
                 .serializeToURL_error(&url)
                 .map_err(|e| ns_error("saving the pipeline archive", &e))
-        })?;
-        std::fs::rename(&tmp, &a.path)
-            .map_err(|e| MkError::Backend(format!("pipeline cache {}: {e}", a.path.display())))?;
+        })
+        .and_then(|()| {
+            std::fs::rename(&tmp, &a.path)
+                .map_err(|e| MkError::Backend(format!("pipeline cache {}: {e}", a.path.display())))
+        });
+        if let Err(e) = written {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(e);
+        }
+        // Pipelines added while it was written stay counted for the next save.
+        a.added.fetch_sub(added, Ordering::Relaxed);
         Ok(true)
     }
 
-    /// File name of this device's and library's archive: the GPU, the
-    /// arithmetic and a hash of the library, so a new build or another GPU
-    /// never reads a stale archive.
+    /// File name of this context's archive ([`archive_file_name`]).
     fn archive_name(&self) -> String {
-        let gpu: String = self
-            .device
-            .name()
-            .to_string()
-            .chars()
-            .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
-            .collect();
-        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-        for b in self
-            .library_build
-            .bytes()
-            .chain(self.library_identity().iter().copied())
-        {
-            h = (h ^ b as u64).wrapping_mul(0x100_0000_01b3);
-        }
-        format!("{ARCHIVE_PREFIX}{gpu}-{h:016x}.metalarchive")
+        archive_file_name(
+            &self.device.name().to_string(),
+            &NSProcessInfo::processInfo()
+                .operatingSystemVersionString()
+                .to_string(),
+            &self.library_build,
+            self.library_identity(),
+        )
     }
 
     /// Bytes identifying the shader library: the embedded metallib, or the
@@ -668,17 +690,24 @@ impl MetalContext {
     /// `threads` threads, reporting `(done, total)` after each. With an
     /// archive attached, the pipelines come from it or are compiled into it;
     /// the caller saves it. Stops early, without error, when `cancel` is set.
-    pub fn prepare_pipelines(
+    /// A pipeline that cannot be created does not stop the others; the first
+    /// such error is returned once all have been tried.
+    pub(crate) fn prepare_pipelines(
         &self,
         threads: usize,
         progress: &(dyn Fn(usize, usize) + Sync),
         cancel: &AtomicBool,
     ) -> MkResult<PipelinePreparation> {
         let start = Instant::now();
+        // Every pipeline goes through an attached archive, also those jobs
+        // have already created, so the saved archive holds them all.
+        let archived = (self.archive.lock())
+            .unwrap_or_else(|e| e.into_inner())
+            .is_some();
         let keys = self.prepared_keys();
         let total = keys.len();
         let next = AtomicUsize::new(0);
-        let done = AtomicUsize::new(0);
+        let done = Mutex::new(0usize);
         let from_archive = AtomicUsize::new(0);
         let error: Mutex<Option<MkError>> = Mutex::new(None);
         progress(0, total);
@@ -691,15 +720,9 @@ impl MetalContext {
                         if i >= total || cancel.load(Ordering::Relaxed) {
                             break;
                         }
-                        match self.create_pipeline(&keys[i]) {
-                            Ok((pso, hit)) => {
-                                if hit {
-                                    from_archive.fetch_add(1, Ordering::Relaxed);
-                                }
-                                let mut cache = self.lock_pipelines();
-                                if cache.len() < PIPELINE_CACHE {
-                                    cache.insert(keys[i].clone(), pso);
-                                }
+                        match self.cached_pipeline(&keys[i], archived) {
+                            Ok((_, hit)) => {
+                                from_archive.fetch_add(hit as usize, Ordering::Relaxed);
                             }
                             Err(e) => {
                                 error
@@ -708,7 +731,11 @@ impl MetalContext {
                                     .get_or_insert(e);
                             }
                         }
-                        progress(done.fetch_add(1, Ordering::Relaxed) + 1, total);
+                        // Counted and reported under one lock, so the
+                        // reported count never steps backwards.
+                        let mut done = done.lock().unwrap_or_else(|e| e.into_inner());
+                        *done += 1;
+                        progress(*done, total);
                     }
                 });
             }
@@ -717,7 +744,7 @@ impl MetalContext {
             return Err(e);
         }
         Ok(PipelinePreparation {
-            pipelines: done.into_inner(),
+            pipelines: done.into_inner().unwrap_or_else(|e| e.into_inner()),
             from_archive: from_archive.into_inner(),
             seconds: start.elapsed().as_secs_f64(),
         })
@@ -900,6 +927,7 @@ impl Encoder<'_> {
         args: &SharedBuffer<u32>,
         offset: usize,
     ) {
+        assert!(offset + 3 <= args.len(), "indirect arguments out of range");
         let w = Self::width(pso);
         self.set_pipeline(pso);
         // The argument buffer is read by the command, not bound to a slot.
@@ -908,8 +936,8 @@ impl Encoder<'_> {
             None => args.assert_settled(false),
         }
         self.work.set(self.work.get().saturating_add(1 << 15));
-        // SAFETY: `args` holds three words at `offset` and its access guard
-        // spans the command; the kernel checks bounds.
+        // SAFETY: `args` holds three words at `offset` (asserted above) and
+        // its access guard spans the command; the kernel checks bounds.
         unsafe {
             self.enc
                 .dispatchThreadgroupsWithIndirectBuffer_indirectBufferOffset_threadsPerThreadgroup(
@@ -1074,12 +1102,6 @@ impl CommandBatch {
         // Work bound supplements the existing package-specific weighted tiles.
         // Each dispatch costs at least 2^15 units, bounding tiny expensive
         // dispatch chains to 32 per batch. Encoding time is a second bound.
-        if trace_dispatches() {
-            let label = label.to_string();
-            let stats = self.flush()?;
-            eprintln!("MKL_DISPATCH {label} {:.6} ms", stats.gpu_seconds * 1e3);
-            return Ok(());
-        }
         if b.work.get() >= self.work_budget || b.start.elapsed().as_secs_f64() >= 0.010 {
             self.submit()?;
         }
@@ -1203,5 +1225,170 @@ impl Drop for CommandBatch {
                 add_device_time((s.cb.GPUEndTime() - s.cb.GPUStartTime()).max(0.));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn context() -> MetalContext {
+        MetalContext::new(&MetalOptions::default())
+            .unwrap()
+            .expect("host Metal required")
+    }
+
+    /// A fresh, empty directory for one test.
+    fn test_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("mklight-metal-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn file_names(dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn archive_name_follows_gpu_system_and_library() {
+        let name = archive_file_name("Apple M2 Pro", "Version 15.1", "flags", b"library");
+        assert!(name.starts_with("pipelines-Apple-M2-Pro-"), "{name}");
+        assert!(name.ends_with(".metalarchive"), "{name}");
+        assert_eq!(
+            name,
+            archive_file_name("Apple M2 Pro", "Version 15.1", "flags", b"library")
+        );
+        for other in [
+            archive_file_name("Apple M3", "Version 15.1", "flags", b"library"),
+            archive_file_name("Apple M2 Pro", "Version 15.2", "flags", b"library"),
+            archive_file_name("Apple M2 Pro", "Version 15.1", "other", b"library"),
+            archive_file_name("Apple M2 Pro", "Version 15.1", "flags", b"changed"),
+            // The parts are hashed separately, not as one concatenation.
+            archive_file_name("Apple M2 Pro", "Version 15.1f", "lags", b"library"),
+        ] {
+            assert_ne!(name, other);
+        }
+    }
+
+    /// Only archives and temporary files unused for longer than
+    /// `ARCHIVE_UNUSED` are removed, and never the archive in use.
+    #[test]
+    fn only_long_unused_archives_are_removed() {
+        let dir = test_dir("unused");
+        let old = SystemTime::now() - ARCHIVE_UNUSED - Duration::from_secs(3600);
+        let recent = SystemTime::now() - ARCHIVE_UNUSED + Duration::from_secs(3600);
+        for (name, modified) in [
+            ("pipelines-mine.metalarchive", old),
+            ("pipelines-old.metalarchive", old),
+            ("pipelines-old.metalarchive.7.0.tmp", old),
+            ("pipelines-recent.metalarchive", recent),
+            ("pipelines-saving.metalarchive.7.0.tmp", SystemTime::now()),
+            ("notes.txt", old),
+        ] {
+            let f = std::fs::File::create(dir.join(name)).unwrap();
+            f.set_modified(modified).unwrap();
+        }
+        remove_unused_archives(&dir, "pipelines-mine.metalarchive");
+        assert_eq!(
+            file_names(&dir),
+            [
+                "notes.txt",
+                "pipelines-mine.metalarchive",
+                "pipelines-recent.metalarchive",
+                "pipelines-saving.metalarchive.7.0.tmp",
+            ]
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A saved archive serves another context of the same device and
+    /// library without compiling; saving leaves no temporary file, writes
+    /// only when pipelines were added, and loading marks the archive used.
+    #[test]
+    fn archive_is_saved_and_loaded() {
+        let dir = test_dir("archive");
+        let key = PipelineKey::plain("mkl_philox_stream");
+        let first = context();
+        first.attach_pipeline_archive(&dir).unwrap();
+        assert!(!first.save_pipeline_archive().unwrap(), "nothing added");
+        assert!(!first.cached_pipeline(&key, false).unwrap().1, "compiled");
+        assert!(first.save_pipeline_archive().unwrap());
+        assert_eq!(file_names(&dir), [first.archive_name()]);
+        assert!(!first.save_pipeline_archive().unwrap(), "nothing new");
+
+        let path = dir.join(first.archive_name());
+        let old = SystemTime::now() - ARCHIVE_UNUSED - Duration::from_secs(3600);
+        let file = std::fs::File::options().append(true).open(&path).unwrap();
+        file.set_modified(old).unwrap();
+        let second = context();
+        second.attach_pipeline_archive(&dir).unwrap();
+        let age = path.metadata().unwrap().modified().unwrap().elapsed();
+        assert!(age.unwrap() < Duration::from_secs(3600), "marked used");
+        assert!(
+            second.cached_pipeline(&key, false).unwrap().1,
+            "from the archive"
+        );
+        // A pipeline cached before the archive was attached is renewed
+        // through it, and found in it once added.
+        let early = PipelineKey::plain("mkl_sag_probe");
+        let third = context();
+        third.pipeline(&early).unwrap();
+        third.attach_pipeline_archive(&dir).unwrap();
+        assert!(!third.cached_pipeline(&early, false).unwrap().1, "cached");
+        assert!(!third.cached_pipeline(&early, true).unwrap().1, "added");
+        assert!(third.cached_pipeline(&early, true).unwrap().1, "found");
+        assert!(third.save_pipeline_archive().unwrap());
+        assert!(!second.save_pipeline_archive().unwrap(), "nothing added");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A save that fails keeps the additions counted: the next save writes
+    /// them, and no temporary file is left behind.
+    #[test]
+    fn failed_archive_save_is_retried() {
+        let dir = test_dir("retry");
+        let ctx = context();
+        ctx.attach_pipeline_archive(&dir).unwrap();
+        ctx.pipeline(&PipelineKey::plain("mkl_philox_stream"))
+            .unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert!(ctx.save_pipeline_archive().is_err());
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(ctx.save_pipeline_archive().unwrap());
+        assert_eq!(file_names(&dir), [ctx.archive_name()]);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Several threads requesting one uncached pipeline share a single
+    /// creation: every caller gets the same pipeline object.
+    #[test]
+    fn concurrent_requests_create_a_pipeline_once() {
+        let ctx = context();
+        let key = PipelineKey::plain("mkl_sag_probe");
+        let start = std::sync::Barrier::new(8);
+        let got: Vec<Pso> = std::thread::scope(|s| {
+            let threads: Vec<_> = (0..8)
+                .map(|_| {
+                    s.spawn(|| {
+                        start.wait();
+                        ctx.pipeline(&key).unwrap()
+                    })
+                })
+                .collect();
+            threads.into_iter().map(|t| t.join().unwrap()).collect()
+        });
+        for p in &got {
+            assert_eq!(Retained::as_ptr(p), Retained::as_ptr(&got[0]));
+        }
+        assert_eq!(
+            Retained::as_ptr(&ctx.pipeline(&key).unwrap()),
+            Retained::as_ptr(&got[0])
+        );
     }
 }

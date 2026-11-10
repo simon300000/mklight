@@ -5,7 +5,12 @@ use serde::{Deserialize, Serialize};
 use std::f64::consts::PI;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+#[serde(
+    remote = "Self",
+    tag = "type",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
 pub enum DiffractionEfficiency {
     #[default]
     Ideal,
@@ -14,6 +19,8 @@ pub enum DiffractionEfficiency {
         levels: std::num::NonZeroU16,
     },
 }
+
+crate::serde_util::strict_unit_variants!(DiffractionEfficiency, "type", ["ideal", "kinoform"]);
 
 fn sinc(x: f64) -> f64 {
     if x == 0.0 {
@@ -146,6 +153,34 @@ pub fn order_efficiency(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn json_form_is_strict() {
+        let four = DiffractionEfficiency::Multilevel {
+            levels: 4.try_into().unwrap(),
+        };
+        for (model, json) in [
+            (DiffractionEfficiency::Ideal, r#"{"type":"ideal"}"#),
+            (DiffractionEfficiency::Kinoform, r#"{"type":"kinoform"}"#),
+            (four, r#"{"type":"multilevel","levels":4}"#),
+        ] {
+            assert_eq!(serde_json::to_string(&model).unwrap(), json);
+            assert_eq!(
+                serde_json::from_str::<DiffractionEfficiency>(json).unwrap(),
+                model
+            );
+        }
+        for json in [
+            r#"{"type":"kinoform","levels":8}"#,
+            r#"{"type":"ideal","levels":2}"#,
+            r#"{"type":"multilevel","levels":4,"blaze":1}"#,
+            r#"{"type":"multilevel","levels":0}"#,
+        ] {
+            assert!(
+                serde_json::from_str::<DiffractionEfficiency>(json).is_err(),
+                "{json}"
+            );
+        }
+    }
     #[test]
     fn scalar_known_answers_and_parseval() {
         let binary = DiffractionEfficiency::Multilevel {

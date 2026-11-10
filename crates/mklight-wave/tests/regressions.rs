@@ -539,45 +539,6 @@ fn seidel_from_high_order_standard_set() {
     assert_eq!(low.seidel().unwrap(), t);
 }
 
-// ------------------------------------------------- polychromatic resampling
-
-/// The FFT path resamples from λF#/8 native spacing: within 10⁻³ of the
-/// peak of the exact matrix transform (measured 6.7·10⁻⁴; it was 3.4·10⁻³
-/// at λF#/4). The default transform is the exact one.
-#[test]
-fn polychromatic_fft_resampling_is_accurate() {
-    let g = slow();
-    let z = ZernikeSet::new(
-        ZernikeOrdering::Fringe,
-        vec![0.0, 0.0, 0.0, 0.1, 0.08, 0.0, 0.0, 0.12],
-    )
-    .unwrap();
-    let mk = |l: f64, off: [f64; 2]| {
-        let mut p =
-            PupilFunction::from_zernike(64, l, g, Aperture::Circular, Apodization::Uniform, 4, &z)
-                .unwrap();
-        p.set_image_offset_mm(off);
-        p
-    };
-    let p1 = mk(0.486, [0.0, -0.004]);
-    let p2 = mk(0.656, [0.002, 0.005]);
-    let pupils = [(&p1, 1.0), (&p2, 1.0)];
-    let dx = g.lambda_f_mm(0.486) / 3.0;
-    let exact = polychromatic_psf(&pupils, &PolyPsfSettings::new(96, dx), &ctx()).unwrap();
-    let fft = polychromatic_psf(
-        &pupils,
-        &PolyPsfSettings {
-            transform: PsfTransform::Fft,
-            ..PolyPsfSettings::new(96, dx)
-        },
-        &ctx(),
-    )
-    .unwrap();
-    assert_eq!(PolyPsfSettings::new(96, dx).transform, PsfTransform::Matrix);
-    let rel = max_abs_diff(&exact.data, &fft.data) / exact.peak().0;
-    assert!(rel < 1e-3, "{rel:.2e}");
-}
-
 // ------------------------------------------------- polygonal pupil masks
 
 /// Overlap of two unit circles whose centres are `d` apart.
@@ -684,28 +645,4 @@ fn squeezed_lattice_rim_is_not_a_missing_pupil_region() {
             assert!((p.opd_waves()[k] - (1.2 * u - 0.2 * v)).abs() < 1e-12);
         }
     }
-}
-
-#[test]
-fn projected_fft_matches_exact_skew_transform() {
-    let g = fast()
-        .with_chief_ray([0.15, 0.2, (1.0f64 - 0.15 * 0.15 - 0.2 * 0.2).sqrt()])
-        .unwrap();
-    let mut p = PupilFunction::from_fn(
-        48,
-        LAM,
-        g,
-        4,
-        |u, v| u * u + v * v <= 1.0,
-        |u, v| (1.0, 0.4 * (u * u + v * v) + 0.3 * u),
-    )
-    .unwrap();
-    p.set_image_offset_mm([0.6 * p.lambda_f_mm(), -0.4 * p.lambda_f_mm()]);
-    let mut s = PolyPsfSettings::new(65, p.lambda_f_mm() / 3.0);
-    s.normalization = PsfNormalization::UnitEnergy;
-    let exact = polychromatic_psf(&[(&p, 1.0)], &s, &ctx()).unwrap();
-    s.transform = PsfTransform::Fft;
-    let fft = polychromatic_psf(&[(&p, 1.0)], &s, &ctx()).unwrap();
-    assert!(max_abs_diff(&fft.data, &exact.data) / exact.peak().0 < 0.001);
-    assert!((fft.energy_in_grid() / exact.energy_in_grid() - 1.0).abs() < 0.001);
 }

@@ -15,6 +15,7 @@
 //! | [`sequence`] | the general sequence tracer (forward/backward, s/p radiometry from the shared coating code) |
 //! | [`paraxial`] | y–nu along unfolded ghost sequences: ghost focus, spot size, irradiance estimate, ranking |
 //! | [`irradiance`] | real-ray ghost irradiance maps and ghost-to-signal ratios (rayon, deterministic, cancellable) |
+//! | [`gpu`] | the resident device jobs: probe transport and maps of the irradiance, the batched paraxial rays, the ghost focus |
 //!
 //! # Usage
 //!

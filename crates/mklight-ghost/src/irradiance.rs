@@ -73,11 +73,14 @@
 //! [`JobContext`] is checked before every block; progress is monotone and
 //! ends at 1.
 //!
-//! # GPU port
+//! # Device route
 //!
 //! The work decomposes into independent rays indexed by
-//! `(path, field, wavelength, lattice point)`. The kernel interface needed
-//! from a GPU backend is described in `docs/GHOST.md`.
+//! `(path, field, wavelength, lattice point)`. With a compute backend
+//! ([`crate::gpu::ghost_irradiance`]) the device traces the lattice probes
+//! of the primary and of most ghost paths and bins their leaves into the
+//! maps, while the CPU reference traces a fixed share of the path groups
+//! beside it (`docs/GHOST.md`).
 
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
@@ -923,7 +926,7 @@ fn run_path(
                 peak: map.peak(),
                 centroid: if flux > 0. { [m[2], m[3]] } else { [0.; 2] },
                 rms_radius: if flux > 0. {
-                    ((m[5] + m[7]) / flux).sqrt()
+                    ((m[5] + m[7]) / flux).max(0.).sqrt()
                 } else {
                     0.
                 },
@@ -2139,7 +2142,7 @@ fn p9_dense_achromat_probe_accuracy() {
     let cache = Probes::refine(&cells, &trace, &JobContext::new(), (0., 1.)).unwrap();
     let b = mklight_metal::MetalBackend::new()
         .unwrap()
-        .expect("P9 requires host Metal");
+        .expect("a host Metal device is required");
     let transport = crate::gpu::GhostTransport::new(
         &b,
         &model,

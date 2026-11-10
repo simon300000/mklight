@@ -123,7 +123,7 @@ pub fn validate(r: &Placement, p: &ResidentPlan) -> MkResult<()> {
             valid,
             output,
         } => {
-            let side = nodes.desc.shape[0];
+            let side = nodes.desc.shape.first().copied().unwrap_or(0);
             if side < 2 {
                 return Err(bad("wave slope side"));
             }
@@ -268,9 +268,9 @@ pub fn cpu(
             output,
         } => {
             let n = hits.desc.shape[1];
-            let h = values::<f32>(x, hits);
+            let h = x.rows::<f32>(hits);
             let power = power.as_ref().map(|v| {
-                bytemuck::cast_slice::<u32, crate::radiometry::PolarizationValue>(values(x, v))
+                bytemuck::cast_slice::<u32, crate::radiometry::PolarizationValue>(x.rows(v))
             });
             let mut a = vec![Df32::ZERO; 3 * count];
             for k in 0..*count {
@@ -300,12 +300,12 @@ pub fn cpu(
             radius,
         } => {
             let n = projection.desc.shape[1];
-            let q = values::<Df32>(x, projection);
-            let status = values::<u32>(x, status);
-            let start = values::<f32>(x, starts);
-            let hit = values::<f32>(x, hits);
+            let q = x.rows::<Df32>(projection);
+            let status = x.rows::<u32>(status);
+            let start = x.rows::<f32>(starts);
+            let hit = x.rows::<f32>(hits);
             let power = power.as_ref().map(|v| {
-                bytemuck::cast_slice::<u32, crate::radiometry::PolarizationValue>(values(x, v))
+                bytemuck::cast_slice::<u32, crate::radiometry::PolarizationValue>(x.rows(v))
             });
             let mut rows = vec![[Df32::ZERO; 8]; n];
             let mut largest = Df32::ZERO;
@@ -354,8 +354,8 @@ pub fn cpu(
             infinite,
             output,
         } => {
-            let raw = values::<Df32>(x, placed).as_chunks::<8>().0;
-            let mask = values::<u32>(x, valid);
+            let raw = x.rows::<Df32>(placed).as_chunks::<8>().0;
+            let mask = x.rows::<u32>(valid);
             let n = side * side;
             let mut amps = vec![None; n];
             let deriv = |k: usize, axis: usize, col: usize| -> Option<[Df32; 2]> {
@@ -411,7 +411,7 @@ pub fn cpu(
             let mut sum = Df32::ZERO;
             let mut count = 0;
             let mut max = Df32::ZERO;
-            for block in amps.chunks(256) {
+            for block in amps.chunks(spec::SUM_BLOCK) {
                 let mut partial = Df32::ZERO;
                 for v in block.iter().flatten() {
                     partial = partial + *v;
@@ -465,8 +465,8 @@ pub fn cpu(
             valid,
             output,
         } => {
-            let a = values::<Df32>(x, nodes).as_chunks::<4>().0;
-            let mask = values::<u32>(x, valid);
+            let a = x.rows::<Df32>(nodes).as_chunks::<4>().0;
+            let mask = x.rows::<u32>(valid);
             let side = nodes.desc.shape[0];
             let mut largest = Df32::ZERO;
             for k in 0..(side - 1) * (side - 1) {

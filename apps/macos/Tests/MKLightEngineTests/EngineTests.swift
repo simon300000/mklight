@@ -18,8 +18,39 @@ private let fast = MockEngine(simulatedLatency: .zero)
         #expect(info.seed == 42)
         #expect(info.snapshotHash.hex.count == 64)
         #expect(info.settings["rings"] == .integer(6) && info.settings["rings"] == .number(6))
+        #expect(info.tier == .design && info.aimStop == .requested && info.failedAttempts.isEmpty)
         let back = try JSONValue.parse(MKLightJSON.encode(info))
         #expect(try JSONValue.parse(data).differences(from: back).isEmpty)
+    }
+
+    /// The tier, the aim stop and the failed backend attempts (a key the
+    /// engine writes only when there are some) round-trip; a result
+    /// without them reads as the engine's defaults, and a tier this app
+    /// does not know reads as not design grade, with a warning.
+    @Test func decodesTierAimStopAndFailedAttempts() throws {
+        let data = try Data(contentsOf: fixtureDir.appendingPathComponent("run_info.json"))
+        guard case .object(var o) = try JSONValue.parse(data) else {
+            Issue.record("run_info.json is not an object")
+            return
+        }
+        func decode() throws -> RunInfo { try MKLightJSON.decode(RunInfo.self, from: MKLightJSON.encode(JSONValue.object(o))) }
+        o["tier"] = .string("preview")
+        o["aim_stop"] = .string("conditioned")
+        o["failed_attempts"] = .array([
+            .object(["backend": .string("gpu:metal"), "outcome": .string("failed"), "reason": .string("device lost"), "elapsed_ms": .number(3.5)])
+        ])
+        let info = try decode()
+        #expect(info.tier == .preview && info.aimStop == .conditioned)
+        #expect(info.failedAttempts == [BackendAttempt(backend: "gpu:metal", outcome: "failed", reason: "device lost", elapsedMs: 3.5)])
+        #expect(try JSONValue.object(o).differences(from: JSONValue.parse(MKLightJSON.encode(info))).isEmpty)
+        o["tier"] = .string("draft")
+        let unknown = try decode()
+        #expect(unknown.tier == .preview && unknown.warnings.contains("unknown tier 'draft'"))
+        o["tier"] = nil
+        o["aim_stop"] = nil
+        o["failed_attempts"] = nil
+        let bare = try decode()
+        #expect(bare.tier == .design && bare.aimStop == .requested && bare.failedAttempts.isEmpty)
     }
 }
 
@@ -144,17 +175,14 @@ private let fast = MockEngine(simulatedLatency: .zero)
         #expect(decoded.seed == 12_345_678_901_234_567_891)
     }
 
-    /// Backend and precision are part of a job's identity: changing either
+    /// The backend preference is part of a job's identity: changing it
     /// makes an existing result stale, and the run info records the request.
     @Test func executionSettingsTakePartInStaleness() async throws {
         let snap = try await fast.openSnapshot(SampleSystems.cookeTriplet())
         var set = AnalysisSettingsSet()
         let out = try await fast.submit(set.request(for: .mtf), on: snap).result()
         #expect(out.runInfo.isCurrent(for: snap, request: set.request(for: .mtf)))
-        #expect(out.runInfo.settings["execution"]?["precision"] == .string("f64_reference"))
-        set.execution.precision = .f32GPU
-        #expect(!out.runInfo.isCurrent(for: snap, request: set.request(for: .mtf)))
-        set.execution.precision = .f64Reference
+        #expect(out.runInfo.settings["execution"]?["backend"] == .string("auto"))
         set.execution.backend = .gpu
         #expect(!out.runInfo.isCurrent(for: snap, request: set.request(for: .mtf)))
         let gpu = try await fast.submit(set.request(for: .mtf), on: snap).result()
@@ -275,7 +303,7 @@ private let fast = MockEngine(simulatedLatency: .zero)
         #expect(abs(fo["efl"]! - f) < 1e-9 * f)
         let bfl = f * (1 - (n - 1) * t / (n * r1))
         #expect(abs(fo["bfl"]! - bfl) < 1e-9 * f)
-        #expect(abs(fo["epd"]! - 20) < 1e-12)
+        #expect(abs(fo["entrance_pupil_diameter"]! - 20) < 1e-12)
         #expect(abs(fo["image_f_number"]! - f / 20) < 1e-9)
     }
 

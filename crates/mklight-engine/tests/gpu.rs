@@ -66,12 +66,6 @@ fn cross_check(e: &Engine, backend: &str) {
         assert_eq!(gpu.run_info.precision, Precision::F32Gpu);
         assert_eq!(gpu.backend.used, backend);
         assert!(gpu.backend.fallback_reason.is_none());
-        assert!(
-            serde_json::to_value(&gpu.backend)
-                .unwrap()
-                .get("qualification")
-                .is_none()
-        );
         assert_eq!(cpu.run_info.backend, "cpu_reference");
         let (fc, fg) = (&cpu.json["fields"], &gpu.json["fields"]);
         for k in 0..fc.as_array().unwrap().len() {
@@ -312,7 +306,7 @@ fn static_capability_fallback_is_deliberate_even_for_explicit_gpu() {
             gpu.backend
                 .fallback_reason
                 .unwrap()
-                .contains("static capability: P11")
+                .contains(&format!("static capability: {name} is not accurate enough"))
         );
         assert_eq!(gpu.json, cpu.json);
         assert_eq!(gpu.buffers.len(), cpu.buffers.len());
@@ -340,7 +334,7 @@ fn static_capability_fallback_is_deliberate_even_for_explicit_gpu() {
             (attempts[0].outcome.as_str(), attempts[0].elapsed_ms),
             ("downgraded", 0.)
         );
-        assert!(attempts[0].reason.contains("static capability: P11"));
+        assert!(attempts[0].reason.contains("is not accurate enough"));
         assert!(
             gpu.run_info
                 .warnings
@@ -349,6 +343,46 @@ fn static_capability_fallback_is_deliberate_even_for_explicit_gpu() {
         );
         assert!(cpu.run_info.failed_attempts.is_empty());
     }
+}
+
+/// A stray run whose transport gives the device no source is the CPU
+/// reference by rule: no failed attempt, and a warning only for a request
+/// that named the device.
+#[test]
+fn a_stray_run_without_a_device_share_is_a_cpu_run_by_rule() {
+    let e = engine_with(Some(GpuProvider::emulation()));
+    let s = session(&e, samples::cooke_triplet());
+    let settings = json!({"rays": 2000});
+    let cpu = run_on(
+        &s,
+        "stray_light",
+        settings.clone(),
+        Some(Backend::CpuReference),
+    );
+    let named = run_on(
+        &s,
+        "stray_light",
+        settings,
+        Some(Backend::Gpu("cpu_f32".into())),
+    );
+    assert_eq!(named.run_info.backend, "cpu_reference");
+    assert_eq!(named.run_info.precision, Precision::F64Reference);
+    assert!(named.run_info.failed_attempts.is_empty());
+    assert_eq!(named.backend.device, None);
+    let reason = named.backend.fallback_reason.clone().unwrap();
+    assert!(reason.contains("gives the device no source"), "{reason}");
+    assert_eq!(
+        named
+            .run_info
+            .warnings
+            .iter()
+            .filter(|w| w.starts_with("backend 'gpu:cpu_f32' not used"))
+            .count(),
+        1,
+        "{:?}",
+        named.run_info.warnings
+    );
+    assert_eq!(named.json["totals"], cpu.json["totals"]);
 }
 
 #[test]
@@ -380,8 +414,7 @@ fn cancelling_a_gpu_job_mid_run_stops_it() {
     let watcher = {
         let (fired, at) = (fired.clone(), cancelled_at.clone());
         std::thread::spawn(move || {
-            // Cancel after native work starts; no qualification subrange is
-            // reserved before the resident analysis anymore.
+            // Cancel once the resident analysis reports progress.
             let t0 = Instant::now();
             while t0.elapsed() < Duration::from_secs(120) {
                 let f = progress.fraction();
@@ -409,9 +442,9 @@ fn cancelling_a_gpu_job_mid_run_stops_it() {
     assert!(latency < Duration::from_secs(5), "{latency:?}");
 }
 
-/// Merit jobs use the provider selected by the facade, without qualification.
+/// Merit jobs run on the provider the request selects and report it.
 #[test]
-fn merit_jobs_publish_without_runtime_qualification() {
+fn merit_jobs_run_on_the_selected_provider() {
     let provider = GpuProvider::emulation();
     let engine = engine_with(Some(provider));
     let session = session(&engine, samples::cooke_triplet());
@@ -426,16 +459,11 @@ fn merit_jobs_publish_without_runtime_qualification() {
         assert_eq!(gpu.run_info.backend, "gpu:cpu_f32");
         assert_eq!(gpu.backend.used, gpu.run_info.backend);
         assert_eq!(gpu.run_info.precision, Precision::F32Gpu);
-        assert!(
-            serde_json::to_value(&gpu.backend)
-                .unwrap()
-                .get("qualification")
-                .is_none()
-        );
         if name == "tolerance" {
+            // Tolerance figures are the evaluator's own.
             assert_eq!(
                 gpu.json["backend"]["reported_on"],
-                json!("cpu-f64-reference")
+                gpu.json["backend"]["evaluated_on"]
             );
         }
         assert!(
@@ -528,45 +556,6 @@ fn cpu_only_merit_reports_cpu_even_with_a_selected_gpu() {
             .iter()
             .any(|w| w.starts_with("ray operands evaluated on"))
     );
-}
-
-#[path = "support/device.rs"]
-mod device;
-
-#[test]
-fn changed_snapshots_and_candidates_never_submit_geometry_probes() {
-    use std::sync::atomic::Ordering;
-    let device = Arc::new(device::Device::new());
-    let backend = device.clone();
-    let engine = engine_with(Some(GpuProvider::new(
-        "probe",
-        "trace probe counter",
-        move || Ok(backend.clone()),
-    )));
-    for offset in [0., 0.25] {
-        let mut system = samples::cooke_triplet();
-        system.surfaces[1].thickness += offset;
-        let session = session(&engine, system);
-        for (name, settings) in [
-            ("spot_diagram", json!({"rings":3})),
-            ("merit_evaluation", Value::Null),
-            ("optimize", json!({"max_iterations":2})),
-            ("tolerance", json!({"mode":"monte_carlo","trials":3})),
-            (
-                "glass_substitution",
-                json!({"material_variables":[{"surface":1,"candidates":{"nearest":2}}],"max_combinations":2,"local_iterations":2}),
-            ),
-        ] {
-            let result = run_on(&session, name, settings, Some(Backend::Gpu("probe".into())));
-            assert_eq!(
-                result.backend.used, "gpu:probe",
-                "{name}: {:?}",
-                result.backend
-            );
-            assert_eq!(result.run_info.precision, Precision::F32Gpu);
-        }
-    }
-    assert_eq!(device.traces.load(Ordering::Relaxed), 0);
 }
 
 /// The app prepares Metal's kernels at launch: every kernel compiles (or

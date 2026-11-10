@@ -10,6 +10,7 @@ use mklight_optim::glass::{
     CandidateSet, DISTANCE_WEIGHTS, GlassChoice, MaterialVariable, model_variables,
 };
 use mklight_optim::mixed::{MixedHammerSettings, RefinedSearch, mixed_hammer};
+use rayon::prelude::*;
 
 /// Nearest glasses (by [`DISTANCE_WEIGHTS`]) a search move can swap to, and
 /// sampled simultaneous two-glass swaps per tabu iteration or hammer round.
@@ -47,6 +48,7 @@ struct LensSpace {
     candidates: Vec<Vec<GlassChoice>>,
     indices: Vec<usize>,
     merit: MeritFunctionSpec,
+    registry: OperandRegistry,
 }
 
 impl LensSpace {
@@ -82,7 +84,7 @@ impl LensSpace {
             self.variables.clone(),
             spec,
             evaluator,
-            &OperandRegistry::builtin(),
+            &self.registry,
         )
     }
 
@@ -120,9 +122,6 @@ impl Analysis for GlassSubstitution {
          re-optimises the continuous variables by LM for every combination, and returns the \
          best combinations ranked, each with its complete optimised system. With no material \
          variables, every model glass is snapped to its nearest real glasses."
-    }
-    fn gpu_path(&self) -> bool {
-        true
     }
 
     fn settings_schema(&self) -> Value {
@@ -460,6 +459,7 @@ impl Analysis for GlassSubstitution {
             materials: s.material_variables,
             candidates,
             merit: spec,
+            registry: reg,
         });
         let coords: Vec<_> = space
             .candidates
@@ -543,17 +543,29 @@ impl Analysis for GlassSubstitution {
             ctx.progress.fraction(),
             "ranking glass combinations on the CPU reference",
         );
+        let entries: Vec<_> = archive.results.iter().collect();
+        let scored: Vec<_> = entries
+            .par_iter()
+            .map(|&(assignment, r)| -> EngineResult<_> {
+                ctx.check()?;
+                let p = space.problem(assignment, cpu.clone())?;
+                let value = reference_score(&p, &r.x, ctx)?;
+                let usable = value.status.is_usable()
+                    && value.merit.is_finite()
+                    && value.violation.is_finite();
+                Ok(if usable {
+                    Some((assignment, p.apply(&r.x)?, &r.x, value, r.termination))
+                } else {
+                    None
+                })
+            })
+            .collect();
         let mut ranked = Vec::new();
-        for (assignment, r) in &archive.results {
-            ctx.check()?;
-            let p = space.problem(assignment, cpu.clone())?;
-            let value = reference_score(&p, &r.x, ctx)?;
-            if value.status.is_usable() && value.merit.is_finite() && value.violation.is_finite() {
-                ranked.push((assignment, p.apply(&r.x)?, &r.x, value, r.termination));
-            }
+        for row in scored {
+            ranked.extend(row?);
         }
-        // `archive.results` iterates in assignment order, and the sort is
-        // stable: ties keep that order.
+        // `scored` keeps the assignment order of `archive.results`, and the
+        // sort is stable: ties keep that order.
         ranked.sort_by(|a, b| a.3.compare(&b.3, s.feasibility_tolerance));
         ranked.truncate(s.top_n);
         let mut results = Vec::new();
@@ -564,17 +576,16 @@ impl Analysis for GlassSubstitution {
                 .iter()
                 .zip(x.iter().zip(&x0))
                 .map(|(v, (&x, &start))| {
-                    json!({"param": v.param, "start": num(start), "value": num(x), "change": num(x - start)})
+                    json!({"param": v.param, "start": json_nf(start), "value": json_nf(x), "change": json_nf(x - start)})
                 })
                 .collect();
-            results.push(json!({"rank": rank + 1, "merit": num(value.merit), "violation": num(value.violation),
+            results.push(json!({"rank": rank + 1, "merit": json_nf(value.merit), "violation": json_nf(value.violation),
                 "feasible": value.violation <= s.feasibility_tolerance, "glasses": space.glasses(a),
                 "variables": variables, "system": snapshot.system(), "system_hash": snapshot.hash().to_hex(),
                 "local_termination": local_termination}));
         }
-        ev.finish(input, s.backend)?;
         // Every published score is on the reference.
-        ev.report["reported_on"] = json!(TraceEvaluator::BACKEND);
+        ev.finish(input, s.backend, Reported::Reference)?;
         warnings.extend(ev.warnings);
         if results.is_empty() {
             warnings
@@ -584,14 +595,14 @@ impl Analysis for GlassSubstitution {
         let json = json!({
             "status": if stopped { "stopped" } else { "finished" }, "stopped": stopped,
             "termination": if why == Interrupt::TimeLimit { json!("time_limit") } else { json!(termination) },
-            "algorithm": s.algorithm, "starting_merit": num(start.merit), "starting_violation": num(start.violation),
+            "algorithm": s.algorithm, "starting_merit": json_nf(start.merit), "starting_violation": json_nf(start.violation),
             "results": results,
             "candidate_sets": space.materials.iter().zip(&space.candidates)
                 .map(|(v, c)| json!({"surface": v.surface, "glasses": c})).collect::<Vec<_>>(),
             "statistics": {"combinations": archive.assignments.len(), "local_runs": archive.local_runs,
                 "continuous_evaluations": archive.evaluations, "failed": archive.failed},
             "history": archive.history.iter().map(|h| json!({"combination": h.iteration, "evaluations": h.evaluations,
-                "merit": num(h.merit), "best_merit": num(h.best_merit), "violation": num(h.violation)})).collect::<Vec<_>>(),
+                "merit": json_nf(h.merit), "best_merit": json_nf(h.best_merit), "violation": json_nf(h.violation)})).collect::<Vec<_>>(),
             "backend": ev.report, "merit_spec": space.merit,
         });
         Ok(AnalysisOutput {
@@ -992,8 +1003,6 @@ mod tests {
             let backend = &r.json["backend"];
             assert_eq!(r.json["statistics"]["combinations"], 2);
             assert_eq!(backend["precision"], "f32_gpu", "{backend}");
-            assert!(backend.get("qualification").is_none());
-            assert!(backend.get("final_qualification").is_none());
             assert_eq!(backend["reported_on"], TraceEvaluator::BACKEND);
             assert!(backend["gpu_stats"]["gpu_candidates"].as_u64().unwrap() > 0);
             if r.backend.used == "gpu:metal" {

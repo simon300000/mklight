@@ -194,11 +194,14 @@ fn newton<E: FpEnv>(
 }
 
 /// Immutable optical data for one field/wavelength. Evaluations trace local
-/// double-float states directly, without rounded legacy record correction.
+/// double-float states directly (`trace_kernel::trace_resident`), without the
+/// point-rounding correction of `trace_kernel::rounded_state`.
 pub struct FieldKernel<'a, E: FpEnv> {
     pub h: &'a PackedHeader,
     pub s: &'a [PackedSurface],
     pub pool: &'a [Df32],
+    /// The sequential path words 1, 2, … up to at least the image surface.
+    pub steps: &'a [u32],
     pub field: &'a FieldSpec,
     pub tolerance: f32,
     pub cap: u32,
@@ -325,12 +328,11 @@ impl<E: FpEnv> FieldKernel<'_, E> {
         }
         let mut ray = self.start(src, a)?;
         ray.wavelength = wl;
-        let steps: Vec<_> = (1..=last).collect();
         let r = tr::trace_resident::<E>(
             self.h,
             self.s,
             self.pool,
-            &steps,
+            &self.steps[..last as usize],
             &self.params(last),
             &ray,
             |_, _| {},
@@ -535,13 +537,12 @@ impl<E: FpEnv> FieldKernel<'_, E> {
         let target = scale(p, self.pupil(2));
         let mut it = 0;
         if let Some((x, jt)) = table.and_then(|(t, side)| table_seed(t, side, p, self.pupil(2))) {
-            let mut s = self.solve_capped(src, wl, target, x, Some(jt), self.budget(it));
+            let s = self.solve_capped(src, wl, target, x, Some(jt), self.budget(it));
             if s.converged {
                 return s;
             }
             it = s.iterations;
             if self.capped(it) {
-                s.iterations = it;
                 return s;
             }
         }
@@ -777,7 +778,8 @@ fn table_seed<E: FpEnv>(
 
 /// Chief-relative reference sphere, including displaced-centre references.
 /// Returns OPD (waves) and the three unit-radius sphere coordinates in the
-/// image frame (z mirrored for negative propagation). P6 selects its basis.
+/// image frame (z mirrored for negative propagation); the wave solver
+/// selects its basis.
 pub fn project<E: FpEnv>(
     ray: &KRayIn,
     chief: &[Df32],

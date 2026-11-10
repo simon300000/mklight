@@ -24,12 +24,12 @@ extension JSONValue {
         }
     }
 
-    /// An integer value (integral numbers only).
+    /// An integer value (integral numbers an `Int` holds only).
     public var int: Int? {
         switch self {
         case .integer(let i): Int(exactly: i)
         case .unsigned(let u): Int(exactly: u)
-        case .number(let d): d.rounded() == d && d.isFinite ? Int(d) : nil
+        case .number(let d): Int(exactly: d)
         default: nil
         }
     }

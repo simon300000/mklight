@@ -599,8 +599,11 @@ pub fn field_curvature_job(
     let fields: Vec<Option<PreparedField>> = sweep
         .coordinates
         .par_iter()
-        .map(|&[hx, hy]| tracer.prepare_field(FieldPoint::normalized(hx, hy)).ok())
-        .collect();
+        .map(|&[hx, hy]| {
+            ctx.check()?;
+            Ok(tracer.prepare_field(FieldPoint::normalized(hx, hy)).ok())
+        })
+        .collect::<MkResult<_>>()?;
     for (xy, f) in sweep.coordinates.iter().zip(&fields) {
         if f.is_none() {
             warnings.push(format!("field {xy:?}: could not be resolved"));
@@ -617,16 +620,17 @@ pub fn field_curvature_job(
         .map(|&w| Ok((first_order_x(tracer, w)?, tracer.paraxial().at(w))))
         .collect::<MkResult<Vec<_>>>()?;
     let nf = fields.len();
-    let all_rows: Vec<[f64; 10]> = (0..wls.len() * nf)
+    let all_rows: Vec<[f64; 9]> = (0..wls.len() * nf)
         .into_par_iter()
         .map(|i| {
+            ctx.check()?;
             let (k, j) = (i / nf, i % nf);
             let (w, (fx, fy)) = (wls[k], &first_order[k]);
             let efl = [fx.efl, fy.efl];
             let (f, h, axis) = (&fields[j], sweep.heights[j], sweep.components[j]);
             let f_eff = n0(w) * efl[axis];
-            let mut row = [f64::NAN; 10];
-            let Some(f) = f else { return row };
+            let mut row = [f64::NAN; 9];
+            let Some(f) = f else { return Ok(row) };
             if let Some(a) = coddington_focus(tracer, f, w) {
                 (row[0], row[1]) = a.axial();
             }
@@ -658,9 +662,9 @@ pub fn field_curvature_job(
                     row[8] = percent(row[4], f_eff * t.atan());
                 }
             }
-            row
+            Ok(row)
         })
-        .collect();
+        .collect::<MkResult<_>>()?;
     ctx.check()?;
     for (k, (&w, rows)) in wls.iter().zip(all_rows.chunks(nf.max(1))).enumerate() {
         // Independent estimates of the same foci: flag disagreements.

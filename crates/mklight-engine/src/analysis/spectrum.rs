@@ -3,20 +3,15 @@ use super::*;
 use mklight_analysis::spectrum::{SpectralSampling, Spectrum};
 
 /// `schema` with the optional `spectrum` setting when the analysis uses
-/// wavelengths.
+/// wavelengths: the categories that trace rays, and by name the model and
+/// material reports that evaluate the design's wavelengths.
 pub(super) fn settings_schema(mut schema: Value, category: &str, name: &str) -> Value {
     if matches!(
         category,
         "geometric" | "wave" | "ghost" | "stray" | "radiometry" | "polarization" | "optimization"
     ) || matches!(
         name,
-        "ray_grid"
-            | "system_transmission"
-            | "polarization_pupil_map"
-            | "system_summary"
-            | "validate"
-            | "glass_info"
-            | "solves"
+        "system_summary" | "validate" | "glass_info" | "solves"
     ) {
         let sampling = super::schema::settings_from_default::<SpectralSampling>(json!({
             "samples": {"minimum":1,"maximum":4096},
@@ -43,20 +38,20 @@ pub(super) fn derived<'a>(
         .map_err(|e| EngineError::InvalidSettings(format!("spectrum: {e}")))?;
     let mut system = input.snapshot.system().clone();
     system.wavelengths = spectrum.wavelengths()?;
-    Ok(AnalysisInput::new(
-        Snapshot::new(system)?,
-        input.library.clone(),
-        input.backend.clone(),
-    )
-    .with_device(input.device.clone())
-    .with_selection(
-        input.requested_backend.clone(),
-        input.selection_note.clone(),
-    )
-    .with_stop_token(input.stop.clone())
-    .with_library_hash(input.library_hash().to_string())
-    .with_cost_decision(input.cost_decision.borrow().clone())
-    .with_graph(input.graph().cloned()))
+    let snapshot = Snapshot::new(system)?;
+    let (s, l) = (snapshot.clone(), input.library.clone());
+    Ok(input
+        .derive(
+            snapshot,
+            input.backend.clone(),
+            Box::new(move || ResolvedSystem::new(&s, l.clone()).map(Arc::new)),
+        )
+        .with_device(input.device.clone())
+        .with_selection(
+            input.requested_backend.clone(),
+            input.selection_note.clone(),
+        )
+        .with_cost_decision(input.cost_decision.borrow().clone()))
 }
 
 #[cfg(test)]
@@ -133,6 +128,70 @@ mod tests {
             Snapshot::new(original).unwrap().hash().to_string()
         );
     }
+    /// A run-local spectrum runs under the request's policy: tier and aim
+    /// stop reach the derived input and are the ones `RunInfo` reports.
+    #[test]
+    fn custom_spectrum_keeps_the_run_policy() {
+        use mklight_core::job::{AimStopKind, Tier};
+        struct Policy;
+        impl Analysis for Policy {
+            fn name(&self) -> &str {
+                "policy_echo"
+            }
+            fn title(&self) -> &str {
+                "policy"
+            }
+            fn category(&self) -> &str {
+                "geometric"
+            }
+            fn run(
+                &self,
+                input: &AnalysisInput<'_>,
+                _: &Value,
+                ctx: &JobContext,
+            ) -> EngineResult<AnalysisOutput> {
+                let tracer = input.tracer(ctx)?;
+                Ok(AnalysisOutput {
+                    json: json!({
+                        "policy": input.policy,
+                        "aim_stop": tracer.settings().aim_stop,
+                        "wavelengths": tracer.num_wavelengths(),
+                    }),
+                    ..Default::default()
+                })
+            }
+        }
+        let engine = Engine::new(EngineConfig::default());
+        engine.register_analysis(Arc::new(Policy));
+        let session = engine
+            .session_from_project(Project::new(samples::cooke_triplet()))
+            .unwrap();
+        let mut req = AnalysisRequest::new(
+            "policy_echo",
+            json!({"spectrum":{"kind":"explicit","wavelengths":[{"um":0.55,"weight":1.0}]}}),
+        );
+        req.tier = Tier::Preview;
+        // Neither is the default policy (design tier, requested aim stop).
+        let policy = RunPolicy {
+            tier: Tier::Preview,
+            aim_stop: AimStopKind::Conditioned,
+        };
+        assert_eq!(engine.config().aim_stop, policy.aim_stop);
+        let r = session.run_analysis(&req, &JobContext::new()).unwrap();
+        assert_eq!(
+            r.json,
+            json!({
+                "policy": policy,
+                "aim_stop": policy.tracer_settings().aim_stop,
+                "wavelengths": 1,
+            })
+        );
+        assert_eq!(
+            (r.run_info.tier, r.run_info.aim_stop),
+            (policy.tier, policy.aim_stop)
+        );
+    }
+
     #[test]
     fn custom_spectrum_material_range_warning() {
         let engine = Engine::new(EngineConfig::default());

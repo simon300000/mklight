@@ -3,20 +3,27 @@
 //! engine's default settings (48² pupil grid).
 //!
 //! ```text
-//! ghost_stages LENS.mklight [REPS] [COLUMNS] [SETTINGS_JSON] [KEY=VARIANT ...]
+//! ghost_stages LENS.mklight [REPS] [COLUMNS] [SETTINGS_JSON]
 //! ```
 //!
-//! `COLUMNS` is a comma-separated list: `cpu` (the CPU
-//! reference) and `metal`, each optionally with `+KEY=VARIANT` work-split
-//! selections of its own.
+//! `COLUMNS` is a comma-separated list of `cpu` (the CPU reference) and
+//! `metal`. Metal is the measured device: other targets build a stub.
+#![cfg_attr(not(target_os = "macos"), allow(dead_code, unused_imports))]
 
 use std::path::Path;
 use std::time::Instant;
 
-use mklight_core::{JobContext, split};
+use mklight_core::JobContext;
 use mklight_engine::{Engine, EngineConfig};
 use mklight_ghost::{GhostModel, GhostSettings, IrradianceSettings};
 
+#[cfg(not(target_os = "macos"))]
+fn main() {
+    eprintln!("ghost_stages measures Metal and runs on macOS only");
+    std::process::exit(2);
+}
+
+#[cfg(target_os = "macos")]
 fn main() {
     let a: Vec<String> = std::env::args().skip(1).collect();
     let reps: usize = a.get(1).map(|s| s.parse().unwrap()).unwrap_or(1);
@@ -36,14 +43,6 @@ fn main() {
         }
         settings = serde_json::from_value(v).unwrap();
     }
-    let extra: Vec<(String, String)> = a
-        .iter()
-        .skip(4)
-        .map(|kv| {
-            let (k, v) = kv.split_once('=').unwrap();
-            (k.to_string(), v.to_string())
-        })
-        .collect();
     let engine = Engine::new(EngineConfig::default());
     let s = engine.open_session(Path::new(&a[0])).unwrap();
     let rs = s.resolved().unwrap();
@@ -52,18 +51,7 @@ fn main() {
     let ctx = JobContext::default();
     let mut reference = None;
     for rep in 0..=reps {
-        for d in &columns {
-            split::reset();
-            for (k, v) in &extra {
-                split::set(k, Some(v));
-            }
-            // A column `NAME+KEY=VARIANT+...` adds its own selections.
-            let mut parts = d.split('+');
-            let column = parts.next().unwrap();
-            for kv in parts {
-                let (k, v) = kv.split_once('=').unwrap();
-                split::set(k, Some(v));
-            }
+        for column in &columns {
             let (t, c0) = (Instant::now(), cpu_ms());
             let r = if column == "cpu" {
                 mklight_ghost::ghost_irradiance(&model, &settings, &ctx).unwrap()
@@ -83,7 +71,7 @@ fn main() {
                 reference = Some((r.total_flux_ratio, peak));
             }
             println!(
-                "rep {rep} {d:>10}: {ms:9.1} ms ({cores:.1} cores), {} ghosts, flux ratio {:.9e} \
+                "rep {rep} {column:>10}: {ms:9.1} ms ({cores:.1} cores), {} ghosts, flux ratio {:.9e} \
                  (rel. diff {diff:.1e} vs cpu), backend {}\n    timings [wall, cpu] {}\n    host wall {}\n    host cpu {}\n    probes {} reference {}",
                 r.ghosts.len(),
                 r.total_flux_ratio,

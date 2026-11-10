@@ -63,7 +63,8 @@ pub struct XvalSettings {
     pub pupil_extra: Vec<PupilSampling>,
     /// Indices into the tracer's prepared fields; `None` = all.
     pub fields: Option<Vec<usize>>,
-    /// System wavelength indices (at most 16); `None` = all.
+    /// System wavelength indices (validated in chunks of
+    /// `MKL_MAX_WAVELENGTHS`); `None` = all.
     pub wavelengths: Option<Vec<usize>>,
     /// Apply apertures (vignetting) to the pupil rays. Chief rays are always
     /// traced unclipped, as for the reference OPD.
@@ -422,8 +423,7 @@ pub fn cross_validate(
     Ok(report)
 }
 
-/// [`cross_validate`] for at most `MKL_MAX_WAVELENGTHS` wavelengths (one
-/// packed system).
+/// One packed chunk of a cross-validation with its sample and chief rays.
 struct PreparedValidation {
     packed: PackedSystem,
     samples: Vec<Sample>,
@@ -493,6 +493,8 @@ fn prepare_validation(
     })
 }
 
+/// [`cross_validate`] for at most `MKL_MAX_WAVELENGTHS` wavelengths (one
+/// packed system).
 fn cross_validate_chunk(
     backend: &dyn ComputeBackend,
     tracer: &SequentialTracer,

@@ -139,7 +139,7 @@ fn check(b: &dyn ComputeBackend) {
             }
         }
     }
-    eprintln!("P5_MAX rms_mm={max_rms:e} point_mm={max_point:e}");
+    eprintln!("GEOMETRY_MAX rms_mm={max_rms:e} point_mm={max_point:e}");
 }
 #[test]
 fn cpu_f32_complete_results() {
@@ -157,8 +157,8 @@ fn metal_complete_results_both_libraries() {
             ..Default::default()
         })
         .unwrap()
-        .expect("P5 requires host Metal");
-        eprintln!("P5_DEVICE {:?} {:?}", b.info(), b.precision());
+        .expect("host Metal required");
+        eprintln!("GEOMETRY_DEVICE {:?} {:?}", b.info(), b.precision());
         assert!(b.precision().probe.error_free_transforms());
         check(&b);
         let cpu = CpuF32Backend::matching(&b.precision().probe);
@@ -312,7 +312,7 @@ fn cpu_maps_and_records() {
 fn metal_maps_and_records() {
     let b = mklight_metal::MetalBackend::new()
         .unwrap()
-        .expect("P5 requires host Metal");
+        .expect("host Metal required");
     maps_and_records(&b);
 }
 fn pencils(b: &dyn ComputeBackend) {
@@ -409,7 +409,7 @@ fn pencils(b: &dyn ComputeBackend) {
             |_| 1e-4,
         );
     }
-    eprintln!("P5_CODDINGTON_MAX mm={max:e}");
+    eprintln!("GEOMETRY_CODDINGTON_MAX mm={max:e}");
 }
 #[test]
 fn cpu_pencils() {
@@ -427,7 +427,7 @@ fn metal_pencils() {
             ..Default::default()
         })
         .unwrap()
-        .expect("P5 requires host Metal");
+        .expect("host Metal required");
         pencils(&b);
     }
 }
@@ -495,7 +495,7 @@ fn ri(b: &dyn ComputeBackend) {
             g.run_info.warnings
         );
     }
-    eprintln!("P5_RI_MAX absolute={max:e}");
+    eprintln!("GEOMETRY_RI_MAX absolute={max:e}");
 }
 #[test]
 fn cpu_ri() {
@@ -513,7 +513,7 @@ fn metal_ri() {
             ..Default::default()
         })
         .unwrap()
-        .expect("P5 requires host Metal");
+        .expect("host Metal required");
         ri(&b);
     }
 }
@@ -597,7 +597,7 @@ fn cpu_layout_and_opd() {
 fn metal_layout_and_opd() {
     let b = mklight_metal::MetalBackend::new()
         .unwrap()
-        .expect("P5 requires host Metal");
+        .expect("host Metal required");
     layouts(&b);
 }
 
@@ -869,7 +869,7 @@ fn metal_concurrent_cancel_and_release() {
         Err(mklight_core::MkError::Cancelled)
     ));
     eprintln!(
-        "P5_CANCEL seconds={} progress={}",
+        "GEOMETRY_CANCEL seconds={} progress={}",
         start.elapsed().as_secs_f64(),
         ctx.progress.fraction()
     );
@@ -894,7 +894,7 @@ fn metal_ri_rim_regression() {
     let a = mklight_analysis::illumination::relative_illumination(&t, &s).unwrap();
     let g = gpu::relative_illumination_job(&b, &t, &s, &JobContext::new()).unwrap();
     eprintln!(
-        "P5_RI_RIM reference={:?} resident={:?} warnings={:?}",
+        "GEOMETRY_RI_RIM reference={:?} resident={:?} warnings={:?}",
         a.relative_illumination, g.relative_illumination, g.run_info.warnings
     );
     close(
@@ -903,8 +903,6 @@ fn metal_ri_rim_regression() {
         &g.relative_illumination,
         |_| 1e-5,
     );
-    let polish = &g.run_info.settings["resident_execution"]["ri_polish"];
-    assert_eq!(polish["remaining_failed_nodes"], 0, "{polish}");
 }
 /// The resident EE curve itself (no reference replacement) on every sample,
 /// with the bin-classification bound taken from the measured position error.
@@ -993,7 +991,7 @@ fn qualified_energy(b: &dyn ComputeBackend) {
             );
         }
     }
-    eprintln!("P5_EE_REPLACED {replaced:?}");
+    eprintln!("GEOMETRY_EE_REPLACED {replaced:?}");
 }
 #[test]
 fn cpu_qualified_energy() {

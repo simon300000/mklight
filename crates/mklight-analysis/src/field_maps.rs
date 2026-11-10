@@ -247,13 +247,16 @@ pub fn field_map_job(
     let mut chiefs = Vec::with_capacity(coords.len());
     for block in coords.chunks(BLOCK) {
         ctx.check()?;
-        let traced: Vec<MkResult<_>> = block
+        let traced: Vec<_> = block
             .par_iter()
             .map(|p| {
                 if skip(p) {
-                    return Ok(None);
+                    return None;
                 }
-                let f = rt.prepare_field(FieldPoint::normalized(p[0], p[1]))?;
+                // A field that cannot be resolved has no chief ray.
+                let Ok(f) = rt.prepare_field(FieldPoint::normalized(p[0], p[1])) else {
+                    return Some(None);
+                };
                 let mut records = Vec::new();
                 let c = rt.trace_with(
                     &f,
@@ -263,15 +266,15 @@ pub fn field_map_job(
                     &TraceOptions::unclipped(),
                     Some(&mut records),
                 );
-                Ok(Some(
+                Some(
                     c.status
                         .is_ok()
                         .then(|| (c.ray, records.last().unwrap().cos_incidence)),
-                ))
+                )
             })
             .collect();
         for (p, t) in block.iter().zip(traced) {
-            match t? {
+            match t {
                 None => {
                     images.push([f64::NAN; 2]);
                     chiefs.push(None);
@@ -320,17 +323,19 @@ pub fn field_map_job(
                     ..*t.settings()
                 },
             )?;
-            let probe = |p: [f64; 2]| -> MkResult<_> {
-                let f = raw.prepare_field(FieldPoint::normalized(p[0], p[1]))?;
-                Ok(pupil(&raw, &f, wl))
+            // `None` (NaN values) for a field that cannot be resolved, as
+            // for a failed probe ray.
+            let probe = |p: [f64; 2]| {
+                let f = raw.prepare_field(FieldPoint::normalized(p[0], p[1])).ok()?;
+                pupil(&raw, &f, wl)
             };
-            let axial = probe([0.0; 2])?;
+            let axial = probe([0.0; 2]);
             let mut values = Vec::with_capacity(6 * coords.len());
             for block in coords.chunks(BLOCK) {
                 ctx.check()?;
-                let probed: Vec<MkResult<_>> = block.par_iter().map(|&p| probe(p)).collect();
+                let probed: Vec<_> = block.par_iter().map(|&p| probe(p)).collect();
                 for v in probed {
-                    values.extend(match (v?, axial) {
+                    values.extend(match (v, axial) {
                         (Some(v), Some(a)) => {
                             [v[0], v[1], v[2], v[3], v[2] / a[2] - 1.0, v[3] / a[3] - 1.0]
                         }
@@ -472,6 +477,35 @@ mod tests {
             let expected = disk(h);
             assert!((row[1] / expected - 1.0).abs() < 1e-8);
             assert!((row[0] - expected / disk(0.0)).abs() < 1e-8);
+        }
+    }
+    #[test]
+    fn unresolvable_fields_are_nan_with_a_warning() {
+        // Real image heights far beyond the lens: only those map points fail.
+        let t = crate::tracer_for(mklight_core::samples::petzval_asphere()).unwrap();
+        assert!(t.prepare_field(FieldPoint::normalized(0.0, 50.0)).is_err());
+        let s = FieldMapSettings {
+            grid: [3, 3],
+            extent: [50.0, 50.0],
+            ..Default::default()
+        };
+        for (kind, columns) in [
+            (FieldAnalysis::ChiefRayAngle, 5),
+            (FieldAnalysis::PupilAberration, 6),
+        ] {
+            let r = field_map_job(&t, kind, &s, &JobContext::new()).unwrap();
+            for (i, row) in r.values.chunks(columns).enumerate() {
+                let centre = r.field_coordinates[i] == [0.0; 2];
+                assert_eq!(r.image_mm[i][0].is_finite(), centre, "{} {i}", kind.name());
+                assert_eq!(row[0].is_finite(), centre, "{} {i}", kind.name());
+            }
+            let failed = r
+                .run_info
+                .warnings
+                .iter()
+                .filter(|w| w.contains("chief ray failed"))
+                .count();
+            assert_eq!(failed, 8, "{}", kind.name());
         }
     }
     #[test]

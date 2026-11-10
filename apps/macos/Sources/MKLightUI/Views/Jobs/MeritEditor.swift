@@ -2,8 +2,9 @@ import MKLightEngine
 import MKLightModel
 import SwiftUI
 
-/// A compact optional number: empty text is "none". Commits on Return or
-/// when focus leaves; rejected text reverts.
+/// A compact optional number: empty text is "none". Shows the formatted
+/// value, edits the exact one, and commits on Return or when focus leaves,
+/// if the text was edited; rejected text reverts.
 struct OptionalNumberField: View {
     let title: String
     let value: Double?
@@ -17,6 +18,9 @@ struct OptionalNumberField: View {
     var compact = false
     let commit: (Double?) -> Void
     @State private var text = ""
+    /// The text the field was given (on focus, after a commit, with a new
+    /// value): only other text is an edit.
+    @State private var base = ""
     @FocusState private var focused: Bool
 
     var body: some View {
@@ -37,28 +41,38 @@ struct OptionalNumberField: View {
             .frame(width: width)
             .focused($focused)
             .onSubmit(finish)
-            .onChange(of: focused) { _, f in
-                if f { text = value.map(NumberDisplay.exact) ?? "" } else { finish() }
-            }
-            .onAppear { text = formatted }
-            .onChange(of: value) { _, _ in if !focused { text = formatted } }
+            .onChange(of: focused) { _, f in if f { show() } else { finish() } }
+            .onAppear(perform: show)
+            .onChange(of: value) { _, _ in if !focused || text == base { show() } }
             .accessibilityLabel(title)
     }
 
-    private var formatted: String { value.map(format) ?? "" }
+    /// Shows the value: every digit while the field has the focus, the
+    /// formatted value otherwise.
+    private func show() {
+        text = focused ? value.map(NumberDisplay.exact) ?? "" : value.map(format) ?? ""
+        base = text
+    }
 
     private func finish() {
+        guard text != base else {
+            if !focused { show() }
+            return
+        }
         let t = text.trimmingCharacters(in: .whitespaces)
         if t.isEmpty {
             if value != nil { commit(nil) }
+            base = text
             return
         }
         guard let v = LensValueParser.number(t), v.isFinite || allowsInfinite else {
-            text = formatted
+            show()
             return
         }
         if v != value { commit(v) }
-        text = format(v)
+        // The typed number: every digit while focused, formatted otherwise.
+        text = focused ? NumberDisplay.exact(v) : format(v)
+        base = text
     }
 }
 
@@ -688,7 +702,7 @@ struct OperandDetail: View {
         case .integer(let lo):
             LabeledContent(p.title) {
                 OptionalNumberField(title: p.title, value: v?.doubleValue, prompt: "\(lo)") { x in
-                    update(name) { $0.kind[p.key] = .integer(Int64(max(Int((x ?? Double(lo)).rounded()), lo))) }
+                    update(name) { $0.kind[p.key] = .integer(Int64(max(Int(saturating: x ?? Double(lo)), lo))) }
                 }
             }
         case .surface:

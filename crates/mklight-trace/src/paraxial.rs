@@ -403,7 +403,7 @@ impl ParaxialXY {
                 &sys.snapshot,
                 "paraxial_xy",
                 &serde_json::json!({}),
-                "cpu-f64",
+                crate::BACKEND,
                 Precision::F64Reference,
                 None,
                 first_order_warnings(sys),

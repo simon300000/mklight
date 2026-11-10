@@ -14,6 +14,38 @@ struct AnalysisContext {
     var primaryWavelength: Int { system?.wavelengths.primary ?? 0 }
 
     func fieldLabel(_ value: [Double]?) -> String { FieldLabel.text(value, unit: fieldUnit) }
+
+    /// Whether the run of `output` had its own spectrum (`spectrum` in its
+    /// recorded settings): the wavelength indices of its result then refer
+    /// to that spectrum's samples, not to the design's wavelengths.
+    static func hasRunSpectrum(_ output: AnalysisOutput) -> Bool {
+        output.runInfo.settings["spectrum"].map { $0 != .null } ?? false
+    }
+
+    /// The wavelengths (µm) that the wavelength indices of `output` refer
+    /// to, from the result where it states them: its `wavelengths_um`, or
+    /// the `wavelength` and `wavelength_um` of each of `entries` (curves).
+    /// Otherwise the run's explicit spectrum, or the design's wavelengths
+    /// when the run had no spectrum of its own. A sampled spectrum the
+    /// result does not state leaves the indices without a wavelength.
+    func wavelengthsUm(of output: AnalysisOutput, entries: [JSONValue] = []) -> [Double] {
+        if let um = output.json["wavelengths_um"]?.nfArray { return um }
+        var um = wavelengthsUm
+        if Self.hasRunSpectrum(output) {
+            if case .explicit(let samples)? = SpectrumSetting(json: output.runInfo.settings["spectrum"]) {
+                um = samples.map(\.um)
+            } else {
+                um = []
+            }
+        }
+        for e in entries {
+            guard let w = e["wavelength"]?.int, let v = e["wavelength_um"]?.nf, (0..<SpectralSampling.sampleLimits.upperBound).contains(w)
+            else { continue }
+            if w >= um.count { um += Array(repeating: .nan, count: w + 1 - um.count) }
+            um[w] = v
+        }
+        return um
+    }
 }
 
 /// One analysis pane: a header (the analysis, its state and its controls
@@ -478,7 +510,7 @@ struct PaneFooter: View {
     /// The warnings themselves on hover; else what the badge is.
     private var badgeHelp: String {
         var parts: [String] = []
-        if let why = output.backend?.fallbackReason { parts.append("Fell back to the CPU: " + why) }
+        if let why = output.backend?.fallbackReason { parts.append("Ran on the CPU: " + why) }
         let groups = RunWarnings.group(output.runInfo.warnings)
         parts += groups.prefix(3).map(\.line)
         if groups.count > 3 { parts.append("… \(groups.count - 3) more") }
@@ -502,8 +534,10 @@ struct PaneFooter: View {
 }
 
 /// The backend that computed a result, as a small tinted capsule: CPU f64
-/// reference in a neutral fill, GPU f32 in the accent's; a warning or a
-/// fallback adds an orange mark. Content, not glass.
+/// reference in a neutral fill, GPU f32 in the accent's; a warning adds an
+/// orange mark. A run the router placed on the CPU is not one: the engine
+/// warns only when a backend that was asked for or tried was not used.
+/// Content, not glass.
 struct BackendBadge: View {
     let output: AnalysisOutput
     /// Only the processor symbol (narrow panes).
@@ -512,9 +546,8 @@ struct BackendBadge: View {
     var body: some View {
         let gpu = output.runInfo.precision != .f64Reference
         let groups = RunWarnings.group(output.runInfo.warnings)
-        let warned = !groups.isEmpty || output.backend?.fallbackReason != nil
         HStack(spacing: Space.xs) {
-            if warned {
+            if !groups.isEmpty {
                 HStack(spacing: 2) {
                     Image(systemName: "exclamationmark.triangle.fill")
                     if groups.count > 1 { Text("\(groups.count)") }
@@ -540,7 +573,7 @@ struct BackendBadge: View {
 
     private func accessibilityText(_ groups: [WarningGroup]) -> String {
         var t = "Computed on \(output.backend?.summary ?? output.runInfo.backend) in \(duration)"
-        if let why = output.backend?.fallbackReason { t += ". Fell back: \(why)" }
+        if let why = output.backend?.fallbackReason { t += ". Ran on the CPU: \(why)" }
         if !groups.isEmpty {
             t += ". \(groups.count) warning\(groups.count == 1 ? "" : "s"): " + groups.map(\.line).joined(separator: ". ")
         }
@@ -553,9 +586,10 @@ struct BackendBadge: View {
     }
 }
 
-/// Run information: backend, fallback, seed, snapshot, and the warnings,
-/// grouped (one line per kind, with the fields it concerns), with a
-/// one-click remedy where the analysis has the setting for it.
+/// Run information: backend, why the run was on the CPU, seed, snapshot,
+/// and the warnings, grouped (one line per kind, with the fields it
+/// concerns), with a one-click remedy where the analysis has the setting
+/// for it.
 struct RunDetails: View {
     let output: AnalysisOutput
     var pane: AnalysisPane?
@@ -568,7 +602,7 @@ struct RunDetails: View {
             Grid(alignment: .leading, horizontalSpacing: Space.l, verticalSpacing: Space.xs) {
                 row("Computed on", output.backend?.summary ?? info.backend)
                 if let r = output.backend?.requested, !r.isEmpty { row("Requested", r) }
-                if let why = output.backend?.fallbackReason { row("Why", why) }
+                if let why = output.backend?.fallbackReason { row("Ran on the CPU", why) }
                 row("Precision", info.precision == .f64Reference ? "f64 reference" : "f32 (GPU, qualified)")
                 if let seed = info.seed { row("Seed", "\(seed)") }
                 row("Snapshot", info.snapshotHash.short)

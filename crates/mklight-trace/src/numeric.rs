@@ -232,7 +232,8 @@ pub(crate) fn seeded_tolerance(tol: f64, r0: f64, floor: f64) -> f64 {
 /// [`newton2`]; with `seed = Some(floor)`, `x0` is a nearby system's
 /// solution: the solve takes at least one Newton step (so it corrects for
 /// the change even when `x0` already meets `tol`) and must meet
-/// [`seeded_tolerance`].
+/// [`seeded_tolerance`]. Runs [`Newton2`] to its end, evaluating `f` at one
+/// point after the other.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn newton2_seeded(
     f: Objective,
@@ -244,148 +245,28 @@ pub(crate) fn newton2_seeded(
     policy: JacobianPolicy,
     seed: Option<f64>,
 ) -> Solve2 {
-    let min_iter = u32::from(seed.is_some());
-    let mut out = Solve2 {
-        x: x0,
-        residual: f64::INFINITY,
-        iterations: 0,
-        converged: false,
-        jacobian: j0,
-        evaluations: 0,
-        jacobian_evaluations: 0,
-        fd_fallbacks: 0,
-    };
-    // A fresh Jacobian at `x` where `f(x) = r` is known (policy above).
-    let fresh_jacobian = |x: [f64; 2], r: [f64; 2], out: &mut Solve2| -> Option<Mat2> {
-        if policy.analytic() {
-            out.jacobian_evaluations += 1;
-            if let Some((_, Some(j))) = f(x, true) {
-                return Some(j);
-            }
-            out.fd_fallbacks += 1;
-        }
-        out.evaluations += 4;
-        fd_jacobian(f, x, r, h)
-    };
-    let want0 = policy.newton() || (policy.analytic() && j0.is_none());
-    if want0 {
-        out.jacobian_evaluations += 1;
-    } else {
-        out.evaluations += 1;
-    }
-    let Some((mut r, ja)) = f(x0, want0) else {
-        return out;
-    };
-    let mut x = x0;
-    let mut rn = norm2d(r);
-    let tol = seed.map_or(tol, |floor| seeded_tolerance(tol, rn, floor));
-    let (mut j, mut fresh) = match (ja, j0) {
-        (Some(j), _) => (j, true),
-        (None, Some(j)) => (j, false),
-        (None, None) => {
-            if want0 {
-                out.fd_fallbacks += 1;
-            }
-            out.evaluations += 4;
-            match fd_jacobian(f, x, r, h) {
-                Some(j) => (j, true),
-                None => {
-                    out.residual = rn;
-                    return out;
-                }
-            }
-        }
-    };
-    let mut it = 0;
-    while it < max_iter {
-        if rn <= tol && it >= min_iter {
+    let mut n = Newton2::new(x0, j0, h, tol, max_iter, policy).seeded(seed);
+    let mut values: [Eval; 4] = [None; 4];
+    loop {
+        let want = n.wants_jacobian();
+        let pending = n.pending();
+        let count = pending.len();
+        if count == 0 {
             break;
         }
-        it += 1;
-        let Some(dx) = solve2(j, [-r[0], -r[1]]) else {
-            if fresh {
-                break;
-            }
-            match fresh_jacobian(x, r, &mut out) {
-                Some(jn) => {
-                    j = jn;
-                    fresh = true;
-                    continue;
-                }
-                None => break,
-            }
-        };
-        let mut lam = 1.0;
-        let mut accepted = None;
-        for _ in 0..16 {
-            let xn = [x[0] + lam * dx[0], x[1] + lam * dx[1]];
-            if policy.newton() {
-                out.jacobian_evaluations += 1;
-            } else {
-                out.evaluations += 1;
-            }
-            if let Some((rnew, jn)) = f(xn, policy.newton()) {
-                let nn = norm2d(rnew);
-                if nn.is_finite() && (nn < rn || nn <= tol) {
-                    accepted = Some((xn, rnew, nn, jn));
-                    break;
-                }
-            }
-            lam *= 0.5;
+        for (v, &x) in values.iter_mut().zip(pending) {
+            *v = f(x, want);
         }
-        match accepted {
-            Some((xn, rnew, nn, jn)) => {
-                match jn {
-                    Some(jn) => {
-                        j = jn;
-                        fresh = true;
-                    }
-                    None => {
-                        broyden(&mut j, x, xn, r, rnew);
-                        fresh = false;
-                    }
-                }
-                let slow = nn > 0.5 * rn;
-                x = xn;
-                r = rnew;
-                rn = nn;
-                if !fresh
-                    && slow
-                    && rn > tol
-                    && let Some(jn) = fresh_jacobian(x, r, &mut out)
-                {
-                    j = jn;
-                    fresh = true;
-                }
-            }
-            None => {
-                if fresh {
-                    break;
-                }
-                match fresh_jacobian(x, r, &mut out) {
-                    Some(jn) => {
-                        j = jn;
-                        fresh = true;
-                    }
-                    None => break,
-                }
-            }
-        }
+        n.resume(&values[..count]);
     }
-    out.x = x;
-    out.residual = rn;
-    out.iterations = it;
-    out.converged = rn <= tol;
-    out.jacobian = Some(j);
-    out
+    n.result().expect("a finished solve has a result")
 }
 
-/// [`newton2`] as a resumable state machine, so that the function
-/// evaluations of many independent solves can be batched (packet traces of
-/// many rays' aims). It performs exactly the same arithmetic in the same
-/// order as [`newton2`] and returns the same [`Solve2`] bit for bit; the
-/// test `newton2_state_machine_matches_newton2` checks this, failure paths
-/// and every policy included.
+/// The solver of [`newton2`] as a resumable state machine, so that the
+/// function evaluations of many independent solves can be batched (packet
+/// traces of many rays' aims). The outcome does not depend on how the
+/// evaluations are grouped: a batch of solves gives each ray the [`Solve2`]
+/// of its own [`newton2_seeded`] bit for bit.
 ///
 /// Use: [`Newton2::pending`] lists the points at which `f` is needed next
 /// (1, or 4 for a finite-difference Jacobian; empty once finished) and
@@ -526,8 +407,8 @@ impl Newton2 {
         self.phase = phase;
     }
 
-    /// A fresh Jacobian at `self.x` (`fresh_jacobian` of [`newton2`]): the
-    /// analytic one first under an analytic policy, else the stencil.
+    /// A fresh Jacobian at `self.x`: the analytic one first under an
+    /// analytic policy (the stencil where it is undefined), else the stencil.
     fn request_fresh(&mut self, why: Refresh) {
         if self.policy.analytic() {
             self.phase = Phase::Analytic(why);
@@ -546,7 +427,7 @@ impl Newton2 {
         self.phase = Phase::Done;
     }
 
-    /// The normal end of [`newton2`]'s loop.
+    /// The end of the iteration: the current point is the outcome.
     fn conclude(&mut self) {
         let out = Solve2 {
             x: self.x,
@@ -561,7 +442,8 @@ impl Newton2 {
         self.finish(out);
     }
 
-    /// The early exits of [`newton2`] before its loop.
+    /// The solve cannot start (`f(x0)` or its first Jacobian is undefined):
+    /// `x0` and `j0` are returned unconverged.
     fn abandon(&mut self, residual: f64) {
         let out = Solve2 {
             x: self.x0,
@@ -576,7 +458,8 @@ impl Newton2 {
         self.finish(out);
     }
 
-    /// Top of [`newton2`]'s `while` loop.
+    /// One iteration: stop when converged or out of iterations, else solve
+    /// for the Newton step and start its line search.
     fn iterate(&mut self) {
         if !(self.it < self.max_iter) || (self.rn <= self.tol && self.it >= self.min_iter) {
             return self.conclude();
@@ -681,7 +564,7 @@ impl Newton2 {
         fd_from_stencil(&v, self.r, self.h)
     }
 
-    /// A fresh Jacobian arrived (`fresh_jacobian` returned `Some`).
+    /// A fresh Jacobian arrived.
     fn refreshed(&mut self, j: Mat2, _why: Refresh) {
         self.j = j;
         self.fresh = true;

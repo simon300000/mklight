@@ -4,6 +4,7 @@
 //! and every session are dropped.
 
 use serde::{Deserialize, Serialize};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
@@ -17,7 +18,7 @@ use crate::error::EngineResult;
 use crate::graph::{AnalysisGraph, GraphStats};
 use crate::project::Project;
 use crate::scheduler::{
-    EventCallback, JobId, JobSpec, JobState, JobStatus, Scheduler, SchedulerConfig,
+    EventCallback, JobId, JobSpec, JobState, JobStatus, Scheduler, SchedulerConfig, panic_message,
 };
 use crate::session::Session;
 
@@ -178,9 +179,7 @@ impl Engine {
 
     /// Add or replace an analysis (how solver crates plug in).
     pub fn register_analysis(&self, a: Arc<dyn Analysis>) {
-        if let Ok(mut r) = self.inner.registry.write() {
-            r.register(a);
-        }
+        write(&self.inner.registry).register(a);
     }
 
     // --- backends
@@ -190,12 +189,9 @@ impl Engine {
     }
 
     pub fn register_backend(&self, p: Arc<dyn BackendProvider>) {
-        if let Ok(mut r) = self.inner.backends.write() {
-            r.register(p);
-        }
+        write(&self.inner.backends).register(p);
     }
 
-    /// Make `b` the default for new jobs. Fails if it is unavailable.
     /// Create the GPU's compute kernels in the background, so the first GPU
     /// analysis does not wait for shader compilation (several seconds on a
     /// new install, update or system-cache eviction). Opens the first
@@ -215,28 +211,45 @@ impl Engine {
                 total: 0,
             };
         }
-        let provider = self.inner.backends.read().unwrap().first_gpu();
+        let provider = read(&self.inner.backends).first_gpu();
         let spawned = std::thread::Builder::new()
             .name("mklight-gpu-prepare".into())
             .spawn(move || {
                 use crate::gpu::{GpuDevice, GpuPreparation};
-                let Some(provider) = provider else {
-                    return state.set(GpuPreparation::Unavailable {
-                        reason: "no GPU backend is registered".into(),
-                    });
+                let prepare = || {
+                    let Some(provider) = provider else {
+                        return state.set(GpuPreparation::Unavailable {
+                            reason: "no GPU backend is registered".into(),
+                        });
+                    };
+                    // Opening the device runs its numerics probe.
+                    match provider
+                        .device()
+                        .and_then(|d| d.downcast::<GpuDevice>().ok())
+                    {
+                        Some(device) => crate::gpu::prepare(device, cache_dir, &state),
+                        None => state.set(GpuPreparation::Unavailable {
+                            reason: provider
+                                .info()
+                                .reason
+                                .unwrap_or_else(|| "the GPU is not available".into()),
+                        }),
+                    }
                 };
-                // Opening the device runs its numerics probe.
-                match provider
-                    .device()
-                    .and_then(|d| d.downcast::<GpuDevice>().ok())
-                {
-                    Some(device) => crate::gpu::prepare(device, cache_dir, &state),
-                    None => state.set(GpuPreparation::Unavailable {
-                        reason: provider
-                            .info()
-                            .reason
-                            .unwrap_or_else(|| "the GPU is not available".into()),
-                    }),
+                // A panic while opening the device or creating its kernels
+                // must not leave the state at `Preparing`.
+                if let Err(panic) = catch_unwind(AssertUnwindSafe(prepare)) {
+                    let device = match state.get() {
+                        GpuPreparation::Preparing { device, .. } => device,
+                        _ => String::new(),
+                    };
+                    state.set(GpuPreparation::Failed {
+                        device,
+                        message: format!(
+                            "internal error (panic): {}",
+                            panic_message(panic.as_ref())
+                        ),
+                    });
                 }
             });
         if let Err(e) = spawned {
@@ -255,11 +268,10 @@ impl Engine {
         self.inner.gpu_preparation.get()
     }
 
+    /// Make `b` the default for new jobs. Fails if it is unavailable.
     pub fn set_default_backend(&self, b: Backend) -> EngineResult<()> {
         read(&self.inner.backends).select(&b, None, false)?;
-        if let Ok(mut d) = self.inner.default_backend.write() {
-            *d = b;
-        }
+        *write(&self.inner.default_backend) = b;
         Ok(())
     }
 
@@ -272,7 +284,7 @@ impl Engine {
     /// a path for the analysis, else the CPU reference; the engine default
     /// is a preference, so analyses it does not implement run on the CPU
     /// reference (with a `RunInfo` warning for an explicit GPU default).
-    pub fn select_backend(
+    fn select_backend(
         &self,
         requested: Option<&Backend>,
         analysis: &str,
@@ -294,7 +306,9 @@ impl Engine {
     /// `snapshot`. An `auto` run (requested, or the engine default) is routed
     /// by the cost model (`analysis::cost`): routes that end on the CPU
     /// reference are decided before any GPU device is opened, and the
-    /// decision travels in `SelectedBackend::cost_decision`.
+    /// decision travels in `SelectedBackend::cost_decision`. `policy` is the
+    /// run's (its reference tracer is a graph node per policy).
+    #[allow(clippy::too_many_arguments)]
     pub fn route_backend(
         &self,
         requested: Option<&Backend>,
@@ -302,17 +316,17 @@ impl Engine {
         settings: &serde_json::Value,
         snapshot: &mklight_core::Snapshot,
         library_hash: &str,
+        policy: &crate::analysis::RunPolicy,
         allow_fallback: bool,
     ) -> EngineResult<SelectedBackend> {
         let Some(id) = self.auto_request_id(requested) else {
             return self.select_backend(requested, analysis, allow_fallback);
         };
         let hash = snapshot.hash().0;
-        let tracer_warm = self
-            .inner
-            .graph
-            .as_ref()
-            .is_some_and(|g| g.contains(&crate::analysis::tracer_key(&hash, library_hash)));
+        let tracer_warm =
+            self.inner.graph.as_ref().is_some_and(|g| {
+                g.contains(&crate::analysis::tracer_key(&hash, library_hash, policy))
+            });
         let mut s = crate::analysis::auto_route(
             &self.inner.cost,
             &read(&self.inner.backends),
@@ -398,15 +412,60 @@ impl Engine {
     pub fn set_event_callback(&self, cb: Option<EventCallback>) {
         self.inner.scheduler.set_callback(cb)
     }
-
-    /// Wait until every job event posted so far has reached the callback
-    /// (see `Scheduler::flush_events`).
-    pub fn flush_events(&self, timeout: Duration) -> bool {
-        self.inner.scheduler.flush_events(timeout)
-    }
 }
 
-/// Poison-tolerant read lock (registries are replaced wholesale per insert).
+/// Poison-tolerant locks: every write is one registration or one assignment,
+/// so a panic elsewhere leaves the data consistent.
 fn read<T>(l: &RwLock<T>) -> std::sync::RwLockReadGuard<'_, T> {
     l.read().unwrap_or_else(|e| e.into_inner())
+}
+
+fn write<T>(l: &RwLock<T>) -> std::sync::RwLockWriteGuard<'_, T> {
+    l.write().unwrap_or_else(|e| e.into_inner())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::gpu::GpuPreparation;
+
+    /// A GPU provider whose device cannot be opened without a panic.
+    struct Panicking;
+
+    impl BackendProvider for Panicking {
+        fn id(&self) -> String {
+            "gpu:panicking".into()
+        }
+        fn info(&self) -> BackendInfo {
+            BackendInfo::cpu_reference()
+        }
+        fn device(&self) -> Option<crate::backend::DeviceHandle> {
+            panic!("the probe blew up")
+        }
+    }
+
+    #[test]
+    fn a_panicking_gpu_preparation_ends_failed() {
+        let e = Engine::default();
+        let mut r = BackendRegistry::cpu_only();
+        r.register(Arc::new(Panicking));
+        *write(&e.inner.backends) = r;
+        assert!(e.prepare_gpu(None));
+        let start = std::time::Instant::now();
+        let state = loop {
+            match e.gpu_preparation() {
+                GpuPreparation::Preparing { .. } if start.elapsed() < Duration::from_secs(60) => {
+                    std::thread::sleep(Duration::from_millis(2))
+                }
+                s => break s,
+            }
+        };
+        match state {
+            GpuPreparation::Failed { message, .. } => {
+                assert!(message.contains("the probe blew up"), "{message}")
+            }
+            s => panic!("{s:?}"),
+        }
+        assert!(!e.prepare_gpu(None), "a preparation runs once per engine");
+    }
 }

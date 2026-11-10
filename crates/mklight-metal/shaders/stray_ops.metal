@@ -305,10 +305,14 @@ kernel void mkl_stray_cast(device const MklStrayPrimitive *prims [[buffer(0)]],
   output[index]=out;
 }
 
-// Reuse the P7 implementation verbatim. Its namespace keeps the runtime-source
-// concatenation and offline translation units equivalent without another TMM.
+// The coating evaluation of radiometry.metal, verbatim and without its
+// kernels. Its namespace keeps the runtime-source concatenation and offline
+// translation units equivalent without another transfer-matrix
+// implementation.
 namespace stray_coating {
+#define MKL_RADIOMETRY_COATING_ONLY
 #include "radiometry.metal"
+#undef MKL_RADIOMETRY_COATING_ONLY
 }
 static MklCoatingValue scoating(MklCoatingSpec s,device const MklCoatingLayer *layers,SD ci){
   if(mkl_stray_features&4)return stray_coating::revaluate(s,layers,stray_coating::RD(ci.x));

@@ -28,7 +28,11 @@ pub fn execute(r: &ImageIntegral, x: &mut Execution<'_>, ctl: &JobControl) -> Mk
     let blocks = pixels.div_ceil(spec::SUM_BLOCK);
     let (total, tile) = if query {
         let queries = p.queries as usize;
-        (queries, ((1 << 16) / blocks).clamp(1, queries))
+        // No pixels or no queries: neither a zero divisor nor an empty range.
+        (
+            queries,
+            ((1 << 16) / blocks.max(1)).clamp(1, queries.max(1)),
+        )
     } else {
         (pixels, 1 << 18)
     };

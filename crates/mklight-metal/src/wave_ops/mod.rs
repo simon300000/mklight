@@ -92,21 +92,19 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
         0 => (p.field_side * p.field_side) as usize,
         1 | 2 => (p.size * p.size) as usize,
         3 => (p.size * p.n * p.n) as usize,
-        4 => p.size as usize,
         6 => (p.size * p.field_side) as usize,
         7 => p.n as usize,
         _ => 2 * p.n as usize,
     };
-    let kernel = [
-        "mkl_wave_prepare",
-        "mkl_wave_intensity",
-        "mkl_wave_huygens",
-        "mkl_wave_focus",
-        "mkl_wave_detector",
-        "mkl_wave_lsf",
-        "mkl_wave_focus_correlation",
-        "mkl_wave_zernike",
-    ][p.mode as usize];
+    let kernel = match p.mode {
+        0 => "mkl_wave_prepare",
+        1 => "mkl_wave_intensity",
+        2 => "mkl_wave_huygens",
+        3 => "mkl_wave_focus",
+        6 => "mkl_wave_focus_correlation",
+        7 => "mkl_wave_zernike",
+        _ => "mkl_wave_lsf",
+    };
     let pipeline = x.gpu.pipeline(&PipelineKey::plain(kernel))?;
     let start = Instant::now();
     let mut stage = StageStats {
@@ -120,7 +118,8 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
     let blocked = matches!(p.mode, 2 | 6);
     let blocks = n2.div_ceil(spec::SUM_BLOCK);
     let tile = if blocked {
-        (BLOCK_THREADS / blocks).clamp(1, total)
+        // No samples or no outputs: neither a zero divisor nor an empty range.
+        (BLOCK_THREADS / blocks.max(1)).clamp(1, total.max(1))
     } else {
         1 << 18
     };

@@ -242,7 +242,6 @@ final class DesignSession {
                 window.showIssues = true
                 showMainWindow()
             },
-            issueCount: workspace.issues.count,
             addPane: { [self] in workspace.addPane($0) },
             paneAnalyses: workspace.paneAnalyses,
             rerun: { [self] in workspace.rerunVisible() },
@@ -274,8 +273,9 @@ final class DesignSession {
     }
 
     private func deleteSelected() {
-        guard let id = window.selection, let i = selectedIndex, i > 0, i < system.imageIndex else { return }
-        window.selection = editor.delete(id)
+        // A surface that cannot be deleted (the last one between object and image) stays selected.
+        guard let id = window.selection, let i = selectedIndex, i > 0, i < system.imageIndex, let next = editor.delete(id) else { return }
+        window.selection = next
     }
 
     private func showMainWindow() {

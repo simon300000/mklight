@@ -1,5 +1,5 @@
 //! Complete resident analysis routes. Capability and cost policy apply to
-//! the whole public result; the legacy host-generated trace route is retired.
+//! the whole public result.
 use std::sync::Arc;
 
 use mklight_core::{RunInfo, job::Precision};
@@ -8,7 +8,8 @@ use serde_json::json;
 use super::{AnalysisInput, BackendUse};
 use crate::gpu::GpuDevice;
 
-/// The same operation catalogue drives registry flags and provider capabilities.
+/// The analyses with a GPU path: the one catalogue behind
+/// `Analysis::gpu_path` and the GPU providers' capabilities.
 pub const GPU_ANALYSES: &[&str] = &[
     "layout",
     "spot_diagram",
@@ -53,6 +54,10 @@ pub fn device(input: &AnalysisInput<'_>) -> Option<Arc<GpuDevice>> {
         .and_then(|d| d.downcast::<GpuDevice>().ok())
 }
 
+/// Reported when a native adapter returns an f64 reference result.
+const REFERENCE_COMPLETION: &str =
+    "the native path completed the whole result on the CPU f64 reference";
+
 pub(crate) fn record_native(input: &AnalysisInput<'_>, run: &RunInfo) {
     let Some(dev) = device(input) else { return };
     input.executions.borrow_mut().push(json!({
@@ -66,7 +71,7 @@ pub(crate) fn record_native(input: &AnalysisInput<'_>, run: &RunInfo) {
         input.record_attempt(mklight_core::job::BackendAttempt {
             backend: dev.id.clone(),
             outcome: "reference_completion".into(),
-            reason: "resident adapter required whole-result f64 completion".into(),
+            reason: REFERENCE_COMPLETION.into(),
             elapsed_ms: run.duration_ms,
         });
     }
@@ -78,9 +83,30 @@ pub(crate) fn record_native(input: &AnalysisInput<'_>, run: &RunInfo) {
         },
         precision: run.precision,
         device: (!reference).then(|| dev.device_name()),
-        fallback_reason: reference
-            .then(|| "resident adapter required whole-result f64 completion".into()),
+        fallback_reason: reference.then(|| REFERENCE_COMPLETION.into()),
         deliberate: false,
+    });
+}
+
+/// A native adapter whose own division gave the device no part of this run
+/// (`reason`): the reference is the run's expected backend, so nothing is
+/// recorded as a failed attempt. An `auto` request reports the reason only;
+/// an explicit device request also gets the warning.
+pub(crate) fn record_reference_by_rule(input: &AnalysisInput<'_>, run: &RunInfo, reason: &str) {
+    if device(input).is_none() {
+        return;
+    }
+    input.executions.borrow_mut().push(json!({
+        "backend": run.backend, "precision": run.precision,
+        "snapshot_hash": run.snapshot_hash, "settings": run.settings,
+        "seed": run.seed, "duration_ms": run.duration_ms,
+    }));
+    input.report_backend(BackendUse {
+        id: "cpu_reference".into(),
+        precision: run.precision,
+        device: None,
+        fallback_reason: Some(reason.into()),
+        deliberate: crate::backend::Backend::is_auto_request(&input.requested_backend),
     });
 }
 

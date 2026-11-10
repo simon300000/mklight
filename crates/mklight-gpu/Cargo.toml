@@ -5,6 +5,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
+publish.workspace = true
 build = "build.rs"
 
 [dependencies]
@@ -16,5 +17,3 @@ bytemuck.workspace = true
 rayon.workspace = true
 blake3.workspace = true
 
-[dev-dependencies]
-approx.workspace = true

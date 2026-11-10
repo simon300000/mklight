@@ -87,25 +87,19 @@ pub fn execute<E: FpEnv>(
                     unreachable!("validated sum shape")
                 };
                 let mut out = x.buffers[s.output.0].take().unwrap();
-                let values: &[f32] = bytemuck::cast_slice(x.words(s.input.buffer));
-                let groups = reduce::num_groups(count);
+                let values: &[f32] = x.rows(&s.input);
                 for c in 0..channels {
-                    let a = s.input.offset + c * count;
-                    let mut partials = Vec::with_capacity(groups);
-                    for g in 0..groups {
-                        ctl.check()?;
-                        partials.extend(reduce::pass1_in::<E>(
-                            s.mode,
-                            &values[a..a + count],
-                            g..g + 1,
-                        ));
-                    }
-                    let sum = reduce::pass2_in::<E>(s.mode, &partials);
+                    let sum = reduce::reduce_channel_ranges_in::<E>(
+                        s.mode,
+                        &values[c * count..(c + 1) * count],
+                        crate::cpu::CHUNK,
+                        ctl,
+                        |_| js.command_buffers += 1,
+                    )?;
                     out.words_mut()[c * 2..c * 2 + 2].copy_from_slice(bytemuck::cast_slice(&[sum]));
                     sub.report((c + 1) as f64 / channels as f64, "sum");
                 }
                 x.buffers[s.output.0] = Some(out);
-                js.command_buffers = 2;
                 "sum"
             }
             _ => {
@@ -198,10 +192,6 @@ impl Execution {
     ) -> OperationCacheKey {
         self.cache.content_key(category, operation)
     }
-    /// Build identity of the executing backend.
-    pub fn kernel_build(&self) -> &str {
-        &self.cache.identity.kernel_build
-    }
     pub fn cached<T: Any + Send + Sync>(
         &self,
         key: &OperationCacheKey,
@@ -243,6 +233,16 @@ impl Execution {
     }
     pub fn words_mut(&mut self, id: BufferId) -> &mut [u32] {
         self.buffers[id.0].as_mut().unwrap().words_mut()
+    }
+    /// The words of a validated input view.
+    pub fn view(&self, v: &PlanView) -> &[u32] {
+        let w = v.desc.element.words();
+        &self.words(v.buffer)[v.offset * w..(v.offset + v.desc.len().unwrap()) * w]
+    }
+    /// A validated input view as its elements, or as the records of a
+    /// [`check_records`] view.
+    pub fn rows<T: bytemuck::Pod>(&self, v: &PlanView) -> &[T] {
+        bytemuck::cast_slice(self.view(v))
     }
 }
 fn dispatch(op: &ResidentOp, x: &mut Execution, ctl: &JobControl) -> MkResult<()> {

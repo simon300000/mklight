@@ -242,12 +242,17 @@ struct SystemInspector: View {
     }
 }
 
-/// A number field inside a grid row (no label).
+/// A number field inside a grid row (no label): shows the formatted value,
+/// edits the exact one, and commits on Return or when focus leaves, if the
+/// text was edited.
 struct CompactNumber: View {
     let value: Double
     var parse: (String) -> Result<Double, LensValueParser.Failure> = LensValueParser.finite
     let commit: (Double) -> Void
     @State private var text = ""
+    /// The text the field was given (on focus, after a commit, with a new
+    /// value): only other text is an edit.
+    @State private var base = ""
     @FocusState private var focused: Bool
 
     var body: some View {
@@ -258,13 +263,26 @@ struct CompactNumber: View {
             .frame(minWidth: 52, maxWidth: 76)
             .focused($focused)
             .onSubmit(finish)
-            .onChange(of: focused) { _, f in if f { text = NumberDisplay.exact(value) } else { finish() } }
-            .onAppear { text = Fmt.short(value) }
-            .onChange(of: value) { _, v in if !focused { text = Fmt.short(v) } }
+            .onChange(of: focused) { _, f in if f { show() } else { finish() } }
+            .onAppear(perform: show)
+            .onChange(of: value) { _, _ in if !focused || text == base { show() } }
+    }
+
+    private func show() {
+        text = focused ? NumberDisplay.exact(value) : Fmt.short(value)
+        base = text
     }
 
     private func finish() {
-        guard text != NumberDisplay.exact(value), text != Fmt.short(value) else { return }
-        if case .success(let v) = parse(text) { commit(v) } else { text = Fmt.short(value) }
+        guard text != base else {
+            if !focused { show() }
+            return
+        }
+        if case .success(let v) = parse(text) {
+            commit(v)
+            base = text
+        } else {
+            show()
+        }
     }
 }

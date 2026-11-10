@@ -1021,7 +1021,7 @@ pub fn trace_ray<E: FpEnv>(
 ) -> KRayOut {
     let out = trace_resident::<E>(h, s, pool, steps, prm, ray, |k, state| {
         if let Some(r) = records.as_deref_mut() {
-            r[k] = rounded_state::<E>(&state);
+            r[k] = rounded_state::<E>(&state());
         }
     });
     KRayOut {
@@ -1034,7 +1034,8 @@ pub fn trace_ray<E: FpEnv>(
 
 /// [`trace_ray`] on unrounded state (`mkl_trace_raw`): `record(slot, state)`
 /// receives the same slots as `trace_ray`'s records, plus the normal, index
-/// and transmittance of each step.
+/// and transmittance of each step. `state()` evaluates the slot's state, so
+/// a caller that keeps no records pays nothing for them.
 pub fn trace_resident<E: FpEnv>(
     h: &PackedHeader,
     s: &[PackedSurface],
@@ -1042,7 +1043,7 @@ pub fn trace_resident<E: FpEnv>(
     steps: &[u32],
     prm: &TraceParams,
     ray: &KRayIn,
-    mut record: impl FnMut(usize, ResidentState),
+    mut record: impl FnMut(usize, &dyn Fn() -> ResidentState),
 ) -> ResidentState {
     let w = ray.wavelength as usize;
     let clip = prm.flags & MKL_TRACE_CLIP != 0;
@@ -1104,10 +1105,9 @@ pub fn trace_resident<E: FpEnv>(
             w_in
         }
     };
-    record(
-        0,
-        state(pos, dir, opl, normal, n_cur, w_in, MKL_RAY_OK, last, 0, 1.0),
-    );
+    record(0, &|| {
+        state(pos, dir, opl, normal, n_cur, w_in, MKL_RAY_OK, last, 0, 1.0)
+    });
     if finite3(hi3(pos)) && finite3(hi3(dir)) && finite3(lo3(pos)) && finite3(lo3(dir)) {
         dir = renorm(dir);
     } else {
@@ -1321,8 +1321,7 @@ pub fn trace_resident<E: FpEnv>(
         }
         k += 1;
         done = k;
-        record(
-            k,
+        record(k, &|| {
             state(
                 pos,
                 dir,
@@ -1334,8 +1333,8 @@ pub fn trace_resident<E: FpEnv>(
                 last,
                 done as u32,
                 exp_in::<E>((-absorb).v()),
-            ),
-        );
+            )
+        });
     }
 
     let transmittance = f::<E>(exp_in::<E>((-absorb).v()));
@@ -1357,7 +1356,7 @@ pub fn trace_resident<E: FpEnv>(
         transmittance.v(),
     );
     for slot in done + 1..=num_steps {
-        record(slot, out);
+        record(slot, &|| out);
     }
     out
 }

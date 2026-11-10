@@ -154,7 +154,6 @@ struct BufferPreview: View {
 /// The JSON tree as disclosure groups.
 struct JSONOutline: View {
     let value: JSONValue
-    var depth = 0
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
@@ -179,7 +178,7 @@ struct JSONOutline: View {
             }
         } else {
             DisclosureGroup {
-                JSONOutline(value: v, depth: depth + 1).padding(.leading, Space.m)
+                JSONOutline(value: v).padding(.leading, Space.m)
             } label: {
                 HStack {
                     Text(key)

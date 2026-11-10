@@ -381,10 +381,6 @@ public struct LensEditor {
         if let i = document.system.surfaceIndex(of: id) { apply(.makeStop(at: i)) }
     }
 
-    public func setKind(_ kind: SurfaceShape.Kind, _ id: SurfaceID) {
-        apply(.setShapeKind(id, kind))
-    }
-
     /// Applies a type-menu choice (a type, or a preset such as a cylinder).
     public func setType(_ choice: SurfaceTypeChoice, _ id: SurfaceID) {
         switch choice {

@@ -1804,3 +1804,26 @@ fn default_mtf_method_is_right_at_low_frequencies() {
     assert!((direct - reference).abs() < 0.01, "{direct} vs {reference}");
     assert!((fft - reference).abs() > 0.02, "{fft} vs {reference}");
 }
+
+/// A Standard fit takes at most [`MAX_ZERNIKE_TERMS`] terms; more are
+/// rejected before any pupil is traced.
+#[test]
+fn wavefront_fit_terms_are_bounded() {
+    let t = tracer_for(samples::singlet()).unwrap();
+    let settings = |terms| WavefrontSettings {
+        fields: FieldSelection::Index { index: 0 },
+        pupil: PupilSettings {
+            rays: 33,
+            ..Default::default()
+        },
+        zernike_ordering: ZernikeOrdering::Standard,
+        zernike_terms: terms,
+        ..Default::default()
+    };
+    let full = wavefront_map(&t, &settings(MAX_ZERNIKE_TERMS)).unwrap();
+    assert_eq!(full.maps[0].zernike.coefficients().len(), MAX_ZERNIKE_TERMS);
+    assert!(matches!(
+        wavefront_map(&t, &settings(MAX_ZERNIKE_TERMS + 1)),
+        Err(mklight_core::MkError::InvalidParam(_))
+    ));
+}

@@ -28,8 +28,6 @@ pub fn from_structured(
     if let Some(mask) = mask {
         mask.validate()?;
     }
-    let mut hash = blake3::Hasher::new();
-    hash.update(&serde_json::to_vec(&(n, supersample, wavelength_um, geometry, mask)).unwrap());
     let nodes = backend.fill_buffer(
         BufferDesc::new(ElementType::DoubleFloat, [rays.ny, rays.nx, 4]),
         &mut |mut b| {
@@ -38,7 +36,6 @@ pub fn from_structured(
                 if i % 4096 == 0 {
                     ctx.check()?;
                 }
-                hash.update(&[u8::from(rays.samples[i].is_some())]);
                 let a = match rays.samples[i] {
                     Some(r) => [r.u, r.v, r.opd_waves, r.amplitude],
                     None => [0.; 4],
@@ -47,7 +44,6 @@ pub fn from_structured(
                     if !a.is_finite() || !Df32::from_f64(a).is_finite() {
                         return Err(MkError::InvalidParam("non-finite pupil sample".into()));
                     }
-                    hash.update(&a.to_le_bytes());
                     *v = Df32::from_f64(a);
                 }
             }
@@ -68,7 +64,6 @@ pub fn from_structured(
         snapshot,
         nodes.view(),
         valid.view(),
-        hash.finalize().to_hex().to_string(),
         n,
         wavelength_um,
         geometry,
@@ -85,7 +80,6 @@ pub fn from_resident_lattice(
     snapshot: Snapshot,
     nodes: BufferView,
     valid: BufferView,
-    input_hash: String,
     n: usize,
     wavelength_um: f64,
     geometry: PupilGeometry,
@@ -131,7 +125,7 @@ pub fn from_resident_lattice(
         Some(PupilMask::Polygons { .. }) => Mask::Polygons,
     };
     let mut p = ResidentPlan::new(snapshot);
-    p.settings = serde_json::json!({"p6":"structured_pupil","grid":n,"supersample":supersample,"wavelength_um":wavelength_um});
+    p.settings = serde_json::json!({"operation":"structured_pupil","grid":n,"supersample":supersample,"wavelength_um":wavelength_um});
     let nodes = p.import(nodes);
     let valid = p.import(valid);
     let edges = p.import(edges.view());
@@ -152,7 +146,6 @@ pub fn from_resident_lattice(
             opd,
             diagnostics,
         })));
-    p.settings["pupil_input_hash"] = input_hash.clone().into();
     let summary = p.scratch(BufferDesc::new(ElementType::DoubleFloat, [10]));
     p.operations.push(ResidentOp::Wave(w::Request::Diagnostics(
         w::diagnostics::Diagnostics {
@@ -200,9 +193,7 @@ pub fn from_resident_lattice(
         .extend(warnings.iter().map(ToString::to_string));
     let covered_samples = d[0].hi as usize;
     let value = ResidentPupil {
-        input_hash,
         covered_samples,
-        max_phase_step: step,
         clear_area: d[9].to_f64() * 4. / (n * n) as f64,
         amplitude: r.outputs[0].clone(),
         coverage: r.outputs[1].clone(),

@@ -169,7 +169,7 @@ fn value(cand: &mut Candidate, s: &OpticalSystem, op: &Operand, ctx: &JobContext
     }
     let wls = wavelengths(cand.tr, op.wavelength, subset)?;
     let (mut sum, mut total) = (0.0, 0.0);
-    for (field, fw) in fields(s, op.field) {
+    for (field, fw) in fields(s, op.field)? {
         let prepared = prepare(cand.tr, field)?;
         let o = Orientation::from_field(prepared.point.hx, prepared.point.hy);
         let (mut t, mut sg) = match method {
@@ -277,18 +277,23 @@ impl OperandEvaluator for MtfEvaluator {
     }
 }
 
-/// Positive-weight system fields for `all`, else the single selection.
-pub(super) fn fields(s: &OpticalSystem, sel: FieldSelector) -> Vec<(FieldSelector, f64)> {
+/// Positive-weight system fields for `all` (an error when there is none),
+/// else the single selection.
+pub(super) fn fields(s: &OpticalSystem, sel: FieldSelector) -> MkResult<Vec<(FieldSelector, f64)>> {
     match sel {
-        FieldSelector::All => s
-            .fields
-            .fields
-            .iter()
-            .enumerate()
-            .filter(|(_, f)| f.weight > 0.0)
-            .map(|(index, f)| (FieldSelector::Index { index }, f.weight))
-            .collect(),
-        f => vec![(f, 1.0)],
+        FieldSelector::All => {
+            let fields: Vec<_> = (s.fields.fields.iter().enumerate())
+                .filter(|(_, f)| f.weight > 0.0)
+                .map(|(index, f)| (FieldSelector::Index { index }, f.weight))
+                .collect();
+            if fields.is_empty() {
+                return Err(MkError::InvalidParam(
+                    "no field with positive weight".into(),
+                ));
+            }
+            Ok(fields)
+        }
+        f => Ok(vec![(f, 1.0)]),
     }
 }
 
@@ -347,8 +352,8 @@ pub(super) fn operand_result(value: MkResult<f64>) -> MkResult<OperandValue> {
 }
 
 impl Candidate<'_> {
-    /// Every frequency of one focused pupil shares its FFT. P1/P7 probes for
-    /// all field/wavelength pupils share the native wave batch scheduler.
+    /// Every frequency of one focused pupil shares its FFT. The pupil probes
+    /// of all fields and wavelengths share the native wave batch scheduler.
     fn prepare_gpu(
         &mut self,
         s: &OpticalSystem,
@@ -368,7 +373,8 @@ impl Candidate<'_> {
                 ..
             } = op.kind
             {
-                for (field, _) in fields(s, op.field) {
+                // An operand without a field fails in `value`.
+                for (field, _) in fields(s, op.field).unwrap_or_default() {
                     for (wl, _) in wavelengths(self.tr, op.wavelength, subset)? {
                         if let Some(q) = queries
                             .iter_mut()

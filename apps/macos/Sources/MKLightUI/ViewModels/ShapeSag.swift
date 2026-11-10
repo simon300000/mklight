@@ -5,7 +5,7 @@ import MKLightModel
 /// previews and sag maps only (docs/SURFACES.md §1–6). Display geometry:
 /// no ray tracing, no first order. The engine's `surface_math` is the
 /// definition; these follow the same formulas and agree with it where
-/// tested (`ShapeSagTests`).
+/// tested (`SurfaceTypeTests`).
 public enum ShapeSag {
     /// Rationalised conic sag `B(c, k, s)` with `s = r²`, or `nil` outside
     /// its real domain.

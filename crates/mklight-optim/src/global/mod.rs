@@ -21,7 +21,9 @@ use std::cmp::Ordering;
 use mklight_core::{MkError, MkResult};
 
 use crate::monitor::{IterationRecord, Monitor, OptimResult, Termination};
-use crate::problem::{CandidateBatch, Problem, ScalarEval, Variable, evaluate_scalar};
+use crate::problem::{
+    CandidateBatch, Problem, ScalarEval, Variable, check_description, check_start, evaluate_scalar,
+};
 use crate::rand::Rng;
 
 /// Batched scalar evaluation with evaluation counting and best-so-far
@@ -72,6 +74,23 @@ impl<'a, P: Problem + ?Sized> Evaluator<'a, P> {
     }
     pub fn record(&mut self, rec: IterationRecord) {
         self.mon.record(&mut self.history, rec);
+    }
+    /// The verdict of a run that used up its iterations: the target, when
+    /// the last of them brought `best` to it.
+    pub fn target_or(
+        &self,
+        termination: Termination,
+        best: &ScalarEval,
+        target_merit: f64,
+    ) -> Termination {
+        if termination == Termination::MaxIterations
+            && best.merit <= target_merit
+            && best.violation <= self.tol()
+        {
+            Termination::TargetReached
+        } else {
+            termination
+        }
     }
     /// Final result from the monitor's best point (or `fallback`). A best
     /// point of the wrong dimension (only possible if the slot was shared
@@ -153,32 +172,17 @@ pub(crate) fn spread(points: &[Vec<f64>], vars: &[Variable]) -> f64 {
     s
 }
 
-pub(crate) fn require_domain(vars: &[Variable], x0: Option<&[f64]>) -> MkResult<()> {
+/// Validate the problem and its start point; without one, every variable
+/// must be bounded.
+pub(crate) fn require_domain<P: Problem + ?Sized>(p: &P, x0: Option<&[f64]>) -> MkResult<()> {
+    let vars = p.variables();
     if let Some(x) = x0 {
-        if x.len() != vars.len() {
-            return Err(MkError::InvalidParam(format!(
-                "start point has {} values for {} variables",
-                x.len(),
-                vars.len()
-            )));
-        }
-        if x.iter().any(|v| !v.is_finite()) {
-            return Err(MkError::InvalidParam("start point is not finite".into()));
-        }
+        check_start(vars, x)?;
     } else if let Some(v) = vars.iter().find(|v| !v.is_bounded()) {
         return Err(MkError::InvalidParam(format!(
             "variable '{}' is unbounded and no start point was given",
             v.name
         )));
     }
-    if vars.is_empty() {
-        return Err(MkError::InvalidParam("problem has no variables".into()));
-    }
-    if let Some(v) = vars.iter().find(|v| v.lo() > v.hi()) {
-        return Err(MkError::InvalidParam(format!(
-            "variable '{}': lower bound above upper bound",
-            v.name
-        )));
-    }
-    Ok(())
+    check_description(p)
 }

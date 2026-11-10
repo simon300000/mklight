@@ -93,8 +93,8 @@ use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::util::{
-    FieldAxes, WavelengthSelection, check_count, doe_power, field_scale, field_sweep, field_unit,
-    linspace, nf, run_info, wavelength_or_primary,
+    FieldAxes, WavelengthSelection, airy_radius, check_count, doe_power, field_scale, field_sweep,
+    field_unit, linspace, nf, run_info, wavelength_or_primary,
 };
 
 #[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
@@ -434,6 +434,40 @@ fn is_coaxial(tracer: &SequentialTracer) -> bool {
         })
 }
 
+/// The Petzval sum `Σ c (n' − n)/(n n')` of a paraxial model (module docs),
+/// with the vertex curvature `c` of the y section. Passive surfaces, ideal
+/// lenses and a DOE's phase power add no Petzval curvature.
+pub(crate) fn petzval_sum(sys: &ResolvedSystem, model: &ParaxialModel) -> f64 {
+    let nn = &model.reduced_index;
+    let mut petzval = 0.0;
+    for j in 1..sys.image_index() {
+        let s = &sys.surfaces[j];
+        if s.is_passive() || matches!(s.shape, SurfaceShape::Paraxial { .. }) {
+            continue;
+        }
+        let base = match &s.shape {
+            SurfaceShape::Diffractive { base, .. } => base.as_ref(),
+            shape => shape,
+        };
+        let cv = mklight_core::surface_math::vertex_curvatures(base)[2];
+        let (n, n2) = (nn[j - 1], nn[j]);
+        petzval += cv * (n2 - n) / (n * n2);
+    }
+    petzval
+}
+
+/// The Petzval radius `−1/(n'_k P)` of the sum `P` (module docs); infinite
+/// for `P = 0`.
+pub(crate) fn petzval_radius(model: &ParaxialModel, petzval: f64) -> f64 {
+    // Signed: the image-space light direction sets the side of the surface.
+    let n_img = model.reduced_index[model.reduced_index.len() - 2];
+    if petzval != 0.0 {
+        -1.0 / (n_img * petzval)
+    } else {
+        f64::INFINITY
+    }
+}
+
 /// Seidel sums (module docs).
 pub fn seidel(tracer: &SequentialTracer, settings: &SeidelSettings) -> MkResult<SeidelResult> {
     let timer = RunTimer::start();
@@ -474,7 +508,6 @@ pub fn seidel(tracer: &SequentialTracer, settings: &SeidelSettings) -> MkResult<
     let img = sys.image_index();
     let mut warnings = Vec::new();
     let mut surfaces = Vec::with_capacity(img);
-    let mut petzval = 0.0;
     for j in 1..img {
         let s = &sys.surfaces[j];
         let mut t = [0.0f64; 7];
@@ -533,8 +566,6 @@ pub fn seidel(tracer: &SequentialTracer, settings: &SeidelSettings) -> MkResult<
                 (sys.wavelengths_um[ws] - sys.wavelengths_um[wlong]) / sys.wavelengths_um[w];
             t[5] = y * (a2 * dr(j) - a * dr(j - 1) + p * y * d_doe);
             t[6] = y * (ab2 * dr(j) - ab * dr(j - 1) + p * yb * d_doe);
-            // The phase plate adds no Petzval curvature.
-            petzval += cv * (n2 - n) / (n * n2);
         }
         surfaces.push(SurfaceSeidel {
             surface: j,
@@ -551,8 +582,7 @@ pub fn seidel(tracer: &SequentialTracer, settings: &SeidelSettings) -> MkResult<
             .value();
     }
     let sums = SeidelTerms::from_array(sums);
-    // Signed: the image-space light direction sets the side of the surface.
-    let n_img = nn[img - 1];
+    let petzval = petzval_sum(sys, &model);
     let wl_mm = sys.wavelengths_um[w] * 1e-3;
     Ok(SeidelResult {
         status: SeidelStatus::Applicable,
@@ -564,11 +594,7 @@ pub fn seidel(tracer: &SequentialTracer, settings: &SeidelSettings) -> MkResult<
         surfaces,
         lagrange_invariant: h,
         petzval_sum: petzval,
-        petzval_radius: if petzval != 0.0 {
-            -1.0 / (n_img * petzval)
-        } else {
-            f64::INFINITY
-        },
+        petzval_radius: petzval_radius(&model, petzval),
         image_marginal_slope: m.nu[img - 1],
         wavefront_mm: WavefrontCoefficients::from_sums(&sums, 1.0),
         wavefront_waves: WavefrontCoefficients::from_sums(&sums, 1.0 / wl_mm),
@@ -651,6 +677,15 @@ pub fn longitudinal_aberration(
     tracer: &SequentialTracer,
     settings: &LongitudinalSettings,
 ) -> MkResult<LongitudinalResult> {
+    longitudinal_aberration_job(tracer, settings, &JobContext::new())
+}
+
+/// [`longitudinal_aberration`] with cancellation and progress (per curve).
+pub fn longitudinal_aberration_job(
+    tracer: &SequentialTracer,
+    settings: &LongitudinalSettings,
+    ctx: &JobContext,
+) -> MkResult<LongitudinalResult> {
     let timer = RunTimer::start();
     let sys = tracer.system();
     check_count("pupil samples", settings.pupil_samples, 2, 100_001)?;
@@ -666,8 +701,11 @@ pub fn longitudinal_aberration(
     };
     let pupil = linspace(lo, 1.0, settings.pupil_samples);
     let opts = TraceOptions::unclipped();
+    let components = settings.axes.components(symmetry);
+    let total = (components.len() * wls.len()) as f64;
     let mut curves = Vec::new();
-    for &component in settings.axes.components(symmetry) {
+    ctx.report(0.0, "longitudinal aberration");
+    for &component in components {
         let axis = [ParaxialAxis::X, ParaxialAxis::Y][component];
         let axis_focus = |w| first_order_axis(sys, w, axis).map(|fo| paraxial_focus(&fo));
         let primary_focus = axis_focus(sys.primary_wavelength)?;
@@ -677,23 +715,24 @@ pub fn longitudinal_aberration(
             let focus: Vec<f64> = pupil
                 .par_iter()
                 .map(|&rho| {
+                    ctx.check()?;
                     if rho == 0.0 {
-                        return pf;
+                        return Ok(pf);
                     }
                     if !chief.status.is_ok() {
-                        return f64::NAN;
+                        return Ok(f64::NAN);
                     }
                     let mut p = [0.0; 2];
                     p[component] = rho;
                     let r = tracer.trace(&field, w, p[0], p[1], &opts);
                     if !r.status.is_ok() {
-                        return f64::NAN;
+                        return Ok(f64::NAN);
                     }
                     let (pc, c) = (chief.ray.pos, chief.ray.dir);
                     let s = crossing_along_chief(pc, c, r.ray.pos, r.ray.dir);
-                    pc.z + s * c.z
+                    Ok(pc.z + s * c.z)
                 })
-                .collect();
+                .collect::<MkResult<_>>()?;
             curves.push(LongitudinalCurve {
                 axis,
                 wavelength: w,
@@ -702,6 +741,7 @@ pub fn longitudinal_aberration(
                 aberration: focus.iter().map(|f| f - primary_focus).collect(),
                 focus,
             });
+            ctx.report(curves.len() as f64 / total, "longitudinal aberration");
         }
     }
     Ok(LongitudinalResult {
@@ -945,7 +985,7 @@ pub fn lateral_colour_job(
         long_wavelength: wl,
         lateral_colour: heights.iter().map(|y| y[ws] - y[wl]).collect(),
         curves,
-        airy_radius: 1.22 * sys.wavelengths_um[primary] * 1e-3 * fo.working_f_number,
+        airy_radius: airy_radius(sys.wavelengths_um[primary], fo.working_f_number),
         run_info: run_info(timer, tracer, "lateral_colour", settings, None, Vec::new()),
     })
 }

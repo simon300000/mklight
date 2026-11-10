@@ -239,7 +239,7 @@ pub fn cpu(r: &Shells, x: &mut crate::resident::cpu::Execution, ctl: &JobControl
             mask,
             positions,
         } => {
-            let a = values::<u32>(x, keys);
+            let a = x.rows::<u32>(keys);
             let m: Vec<u32> = a
                 .iter()
                 .enumerate()
@@ -255,8 +255,8 @@ pub fn cpu(r: &Shells, x: &mut crate::resident::cpu::Execution, ctl: &JobControl
             output,
             summary,
         } => {
-            let a = values::<u32>(x, positions);
-            let n = values::<u32>(x, count)[0] as usize;
+            let a = x.rows::<u32>(positions);
+            let n = x.rows::<u32>(count)[0] as usize;
             let mut out = vec![a.len() as u32; a.len() + 1];
             out[..n].copy_from_slice(&a[..n]);
             let max = (0..n).map(|i| out[i + 1] - out[i]).max().unwrap_or(0);
@@ -271,8 +271,8 @@ pub fn cpu(r: &Shells, x: &mut crate::resident::cpu::Execution, ctl: &JobControl
             output,
         } => {
             let n = spectrum.desc.shape[0];
-            let a = values::<[f32; 2]>(x, spectrum);
-            let ids = values::<u32>(x, order);
+            let a = x.rows::<[f32; 2]>(spectrum);
+            let ids = x.rows::<u32>(order);
             let mut out = vec![Df32::ZERO; ids.len()];
             for (k, (&i, v)) in ids.iter().zip(&mut out).enumerate() {
                 if k % 4096 == 0 {
@@ -302,9 +302,9 @@ pub fn cpu(r: &Shells, x: &mut crate::resident::cpu::Execution, ctl: &JobControl
             frequency_step,
             output,
         } => {
-            let a: Vec<&[Df32]> = fields.iter().map(|v| values(x, v)).collect();
-            let keys = values::<u32>(x, keys);
-            let radii = values::<Df32>(x, radii);
+            let a: Vec<&[Df32]> = fields.iter().map(|v| x.rows(v)).collect();
+            let keys = x.rows::<u32>(keys);
+            let radii = x.rows::<Df32>(radii);
             let mut out = vec![Df32::ZERO; a.len() * radii.len()];
             for (q, &r) in radii.iter().enumerate() {
                 let r = spec::scalar(r);

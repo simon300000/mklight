@@ -1,5 +1,7 @@
-//! Operation-for-operation twin of ghost_ops.metal. Geometry uses P1 hooks;
-//! coating powers come from P7. No optical path is needed for incoherent maps.
+//! Operation-for-operation twin of ghost_ops.metal. Geometry uses the trace
+//! kernel's intersection and transfer; coating powers come from the
+//! radiometry coating evaluation. No optical path is needed for incoherent
+//! maps.
 use super::*;
 use crate::{
     FpEnv,
@@ -83,7 +85,7 @@ pub struct Coatings<'a> {
     pub sensor: Df32,
 }
 impl Coatings<'_> {
-    /// P7 coating value of one step, with the coating kernel's record checks.
+    /// Coating value of one step, with the coating kernel's record checks.
     fn evaluate(&self, coating: u32, cosine: Df32) -> CoatingValue {
         match self.specs.get(coating as usize) {
             Some(s)
@@ -269,9 +271,7 @@ pub fn trace<E: FpEnv>(
             let eta = D::from_df(st.efficiency);
             ws = ws * (a * eta);
             wp = wp * (b * eta);
-            // Rounded through storage precision exactly like the former
-            // per-step factor rows.
-            absorb = absorb + D::from_df((D::<E>::from_df(st.alpha) * t).0);
+            absorb = absorb + D::<E>::from_df(st.alpha) * t;
         }
         dir = next;
         v.done += 1;

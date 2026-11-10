@@ -156,8 +156,9 @@ pub fn u64_arg(obj: &Bound<'_, PyAny>, what: &str, kind: ErrorKind) -> PyResult<
 ///
 /// `Engine(config=None, **kwargs)`: configuration keys are those of the C
 /// ABI (`worker_threads`, `max_retained_jobs`, `resolved_cache_capacity`,
-/// `progress_interval_ms`, `app_name`, `app_version`, `default_backend`);
-/// see [`engine_config`] for validation and the retention default.
+/// `analysis_graph_bytes`, `progress_interval_ms`, `app_name`,
+/// `app_version`, `default_backend`, `aim_stop`); see [`engine_config`] for
+/// validation and the retention default.
 #[pyclass(frozen, module = "mklight", name = "Engine")]
 pub struct PyEngine {
     pub(crate) engine: Engine,
@@ -231,7 +232,9 @@ impl PyEngine {
 
     /// Compute backends and their availability.
     fn backends<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        ser_to_py(py, &self.engine.backends())
+        // Listing opens a GPU device on first use (its numerics probe runs).
+        let backends = py.detach(|| self.engine.backends());
+        ser_to_py(py, &backends)
     }
 
     /// Status dicts of the jobs the engine still knows.
@@ -309,18 +312,26 @@ impl PySession {
 
     /// The reference tracer of the current state (built once per snapshot
     /// and library, GIL released).
+    ///
+    /// The session lock is never held while waiting for the cache lock, so
+    /// a thread waiting for a tracer another thread is building does not
+    /// block edits.
     pub fn tracer(&self, py: Python<'_>) -> PyResult<Arc<SequentialTracer>> {
+        let key_of = |s: &Session| (s.snapshot_hash().to_hex(), s.library_hash().to_string());
         py.detach(|| -> Result<_, EngineError> {
-            let s = self.lock();
-            let key = (s.snapshot_hash().to_hex(), s.library_hash().to_string());
+            let key = key_of(&self.lock());
             let mut cache = self.tracer.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(c) = cache.as_ref()
                 && c.key == key
             {
                 return Ok(c.tracer.clone());
             }
-            let resolved = s.resolved()?;
-            drop(s);
+            // The state may have changed since `key` was read: take the key
+            // and the system it names together.
+            let (key, resolved) = {
+                let s = self.lock();
+                (key_of(&s), s.resolved()?)
+            };
             let tracer = Arc::new(SequentialTracer::new(resolved)?);
             *cache = Some(TracerCache {
                 key,
@@ -383,9 +394,8 @@ impl PySession {
     /// `set_system`).
     #[getter]
     fn system<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        let v =
-            serde_json::to_value(self.lock_py(py).system()).map_err(|e| engine_err(e.into()))?;
-        to_py(py, &v)
+        let v = serde_json::to_value(self.lock_py(py).system());
+        to_py(py, &v.map_err(|e| engine_err(e.into()))?)
     }
 
     #[setter(system)]
@@ -502,8 +512,8 @@ impl PySession {
     /// Glasses of one catalog (case-insensitive), or of all catalogs.
     #[pyo3(signature = (catalog=None))]
     fn glasses<'py>(&self, py: Python<'py>, catalog: Option<&str>) -> PyResult<Bound<'py, PyAny>> {
-        let g = self.lock_py(py).glasses(catalog).map_err(engine_err)?;
-        ser_to_py(py, &g)
+        let g = self.lock_py(py).glasses(catalog);
+        ser_to_py(py, &g.map_err(engine_err)?)
     }
 
     /// Replace a non-system project section (`views`, `merit`,
@@ -515,9 +525,8 @@ impl PySession {
         value: Bound<'_, PyAny>,
     ) -> PyResult<()> {
         let v = from_py(&value)?;
-        self.lock_py(py)
-            .set_project_section(section, v)
-            .map_err(engine_err)
+        let r = self.lock_py(py).set_project_section(section, v);
+        r.map_err(engine_err)
     }
 
     /// Run an analysis on the current snapshot and wait for it (GIL

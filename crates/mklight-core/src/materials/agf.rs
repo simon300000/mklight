@@ -366,11 +366,6 @@ impl AgfCatalog {
             (!excluded).then_some(g)
         })
     }
-
-    /// AGF text of this catalog (see [`write_agf`]).
-    pub fn to_agf_string(&self) -> (String, Vec<AgfWarning>) {
-        write_agf(self)
-    }
 }
 
 // ---------------------------------------------------------------------------

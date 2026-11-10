@@ -225,6 +225,28 @@ impl<D: DiscreteProblem + ?Sized> Cache<'_, D> {
     }
 }
 
+/// The proposed moves that stay inside the choice ranges and change `cur`.
+pub(crate) fn legal_moves(moves: Vec<Move>, cur: &[usize], choices: &[usize]) -> Vec<Move> {
+    moves
+        .into_iter()
+        .filter(|m| {
+            m.0.iter()
+                .all(|&(v, c)| v < choices.len() && c < choices[v])
+                && m.0.iter().any(|&(v, c)| cur[v] != c)
+        })
+        .collect()
+}
+
+/// Is `a` one choice per variable, each inside its range?
+pub(crate) fn check_assignment(a: &[usize], choices: &[usize]) -> MkResult<()> {
+    if a.len() != choices.len() || a.iter().zip(choices).any(|(a, n)| a >= n) {
+        return Err(MkError::InvalidParam(
+            "initial assignment out of range".into(),
+        ));
+    }
+    Ok(())
+}
+
 fn apply(cur: &[usize], m: &Move) -> Vec<usize> {
     let mut a = cur.to_vec();
     for &(v, c) in &m.0 {
@@ -242,11 +264,7 @@ pub fn tabu_search<D: DiscreteProblem + ?Sized, N: Neighbourhood + ?Sized>(
     mon: &Monitor,
 ) -> MkResult<DiscreteResult> {
     let choices = p.num_choices().to_vec();
-    if initial.len() != choices.len() || initial.iter().zip(&choices).any(|(a, n)| a >= n) {
-        return Err(MkError::InvalidParam(
-            "initial assignment out of range".into(),
-        ));
-    }
+    check_assignment(initial, &choices)?;
     mon.begin_run();
     let tol = mon.feasibility_tol;
     let mut cache = Cache {
@@ -282,16 +300,11 @@ pub fn tabu_search<D: DiscreteProblem + ?Sized, N: Neighbourhood + ?Sized>(
         }
         it += 1;
         let mut rng = Rng::new(s.seed, streams::DISCRETE | it as u64);
-        let moves: Vec<Move> = neighbourhood
-            .moves(&cur, &choices, &mut rng)
-            .into_iter()
-            .filter(|m| {
-                m.0.iter()
-                    .all(|&(v, c)| v < choices.len() && c < choices[v])
-                    && m.0.iter().any(|&(v, c)| cur[v] != c)
-            })
-            .collect();
-        let mut moves = moves;
+        let mut moves = legal_moves(
+            neighbourhood.moves(&cur, &choices, &mut rng),
+            &cur,
+            &choices,
+        );
         let mut cands: Vec<Vec<usize>> = moves.iter().map(|m| apply(&cur, m)).collect();
         // Keep the batch within the evaluation budget (cached ones are free).
         let room = s.max_evaluations.saturating_sub(cache.map.len());
@@ -375,6 +388,9 @@ pub fn tabu_search<D: DiscreteProblem + ?Sized, N: Neighbourhood + ?Sized>(
                 }
                 Err(e) => return Err(e),
             };
+            if fcur.better_than(&best.1, tol) {
+                best = (cur.clone(), fcur);
+            }
         }
     }
     Ok(DiscreteResult {
@@ -465,8 +481,10 @@ impl LocallyRefined {
     }
 }
 
-/// Shared archive semantics for ordinary and rendezvous-batched refinements.
-pub(crate) fn refine_one<P: Problem + ?Sized>(
+/// One local solve from `x0`, answering with the best point it saw under
+/// the feasibility rule (re-scored by the problem's reference evaluation
+/// when that is not the solver's own end point).
+fn refine_one<P: Problem + ?Sized>(
     p: &P,
     x0: &[f64],
     settings: &LsqSettings,

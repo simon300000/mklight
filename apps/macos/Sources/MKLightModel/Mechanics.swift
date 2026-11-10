@@ -115,7 +115,6 @@ public struct Sensor: Codable, Sendable, Hashable {
     }
 
     public var halfWidth: Double { 0.5 * Double(pixelsX) * pitchX }
-    public var halfHeight: Double { 0.5 * Double(pixelsY) * pitchY }
 
     public init(from decoder: any Decoder) throws {
         let c = try decoder.container(keyedBy: AnyKey.self)

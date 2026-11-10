@@ -77,6 +77,17 @@ impl Default for HammerSettings {
     }
 }
 
+impl HammerSettings {
+    /// Reject a `step` that is not finite and positive, and local settings
+    /// that [`LsqSettings::validate`] rejects.
+    pub fn validate(&self) -> MkResult<()> {
+        if !(self.step > 0.0 && self.step.is_finite()) {
+            return Err(MkError::InvalidParam("step must be finite and > 0".into()));
+        }
+        self.local.validate()
+    }
+}
+
 /// Global search from `x0` by basin hopping with local least squares.
 pub fn hammer<P: Problem + ?Sized>(
     p: &P,
@@ -85,7 +96,8 @@ pub fn hammer<P: Problem + ?Sized>(
     mon: &Monitor,
 ) -> MkResult<OptimResult> {
     let vars = p.variables();
-    require_domain(vars, Some(x0))?;
+    require_domain(p, Some(x0))?;
+    s.validate()?;
     let n = vars.len();
     let all_bounded = vars.iter().all(|v| v.is_bounded());
     let mut ev = Evaluator::new(p, mon, s.max_evaluations);
@@ -175,8 +187,7 @@ pub fn hammer<P: Problem + ?Sized>(
         order.truncate(n_local);
         let local = local_with(ev.remaining() / n_local.max(1));
 
-        // 2. Local refinement, in parallel.
-        let (f0, f1) = (frac(round + 1), frac(round + 2));
+        // 2. Local refinement, in parallel (so without progress of its own).
         let locals: Vec<MkResult<OptimResult>> = order
             .par_iter()
             .map(|&k| {
@@ -184,7 +195,7 @@ pub fn hammer<P: Problem + ?Sized>(
                     p,
                     &cands[k],
                     &local,
-                    &mon.child(f0, f1, &format!("hammer round {round}")),
+                    &mon.detached_child(&format!("hammer round {round}")),
                 )
             })
             .collect();
@@ -231,7 +242,7 @@ pub fn hammer<P: Problem + ?Sized>(
         // 4. Step adaptation towards 50 % acceptance.
         if s.adapt_step {
             step = if accepted { step / 0.9 } else { step * 0.9 };
-            step = step.clamp(1e-3 * s.step, 10.0 * s.step);
+            step = step.max(1e-3 * s.step).min(10.0 * s.step);
         }
         let mut rec = IterationRecord::new("hammer", done_rounds, ev.evaluations);
         rec.merit = cur.1.merit;
@@ -239,7 +250,7 @@ pub fn hammer<P: Problem + ?Sized>(
         rec.best_merit = best.1.merit;
         rec.trust_radius = Some(step);
         ev.record(rec);
-        mon.progress(f1, "hammer");
+        mon.progress(frac(round + 2), "hammer");
         if cancelled {
             termination = Termination::Cancelled;
             break;
@@ -249,11 +260,6 @@ pub fn hammer<P: Problem + ?Sized>(
             break;
         }
     }
-    if termination == Termination::MaxIterations
-        && best.1.merit <= s.target_merit
-        && best.1.violation <= ev.tol()
-    {
-        termination = Termination::TargetReached;
-    }
+    let termination = ev.target_or(termination, &best.1, s.target_merit);
     ev.finish((&best.0, best.1), termination, done_rounds)
 }

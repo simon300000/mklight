@@ -36,8 +36,6 @@ impl ResidentPupil {
             .view();
         p.warnings
             .retain(|w| !matches!(w, WaveWarning::PupilUndersampled { .. }));
-        p.max_phase_step = 0.;
-        p.input_hash = format!("{}:zero_opd", self.input_hash);
         Ok(p)
     }
     pub(super) fn fft_lattice(&self, p: &mut ResidentPlan) -> MkResult<BufferId> {
@@ -169,7 +167,7 @@ impl ResidentPupil {
                 output,
             })));
         p.outputs = vec![output];
-        p.settings = serde_json::json!({"p6":"fft_otf","frequencies":frequencies,"pupil_input_hash":self.input_hash});
+        p.settings = serde_json::json!({"operation":"fft_otf","frequencies":frequencies});
         let r = b.submit_plan(p, ctx)?.wait()?;
         let value = b
             .read_view(r.outputs[0].view())?

@@ -82,7 +82,6 @@ struct GPUPreparationBadge: View {
             Text("GPU ready")
                 .foregroundStyle(.secondary)
                 .fixedSize()
-                .transition(.opacity)
         }
     }
 }
@@ -110,10 +109,8 @@ struct KeyNumbers: View {
             } else if let e = entries?.entry(["efl"]) {
                 number(anamorphic ? "EFL y" : "EFL", e.formatted)
             }
-            if let e = entries?.entry(["working_f_number", "image_f_number", "f_number", "paraxial_working_f_number"]) {
-                number("F/#", e.formatted)
-            }
-            if let e = entries?.entry(["total_track", "track"]) { number("TT", e.formatted) }
+            if let e = entries?.entry(["working_f_number", "image_f_number"]) { number("F/#", e.formatted) }
+            if let e = entries?.entry(["total_track"]) { number("TT", e.formatted) }
             if entries == nil && (!workspace.modelErrors.isEmpty || workspace.issues.contains { $0.severity == .error }) {
                 Text("Design has errors").foregroundStyle(.secondary)
             } else if entries == nil {
@@ -189,11 +186,11 @@ struct StatusDetails: View {
         .textSelection(.enabled)
     }
 
+    /// The rows and the engine's `first_order` keys they show (the first one present).
     static let keys: [(String, [String])] = [
-        ("Effective focal length", ["efl"]), ("Back focal length", ["bfl"]),
-        ("Working F/#", ["working_f_number", "image_f_number", "f_number", "paraxial_working_f_number"]),
-        ("Entrance pupil diameter", ["epd"]), ("Total track", ["total_track", "track"]),
-        ("Image height", ["image_height", "paraxial_image_height", "max_image_height"]),
+        ("Effective focal length", ["efl"]), ("Back focal length", ["bfl"]), ("Working F/#", ["working_f_number", "image_f_number"]),
+        ("Entrance pupil diameter", ["entrance_pupil_diameter"]), ("Total track", ["total_track"]),
+        ("Image height", ["paraxial_image_height"]),
     ]
 
     /// The rows that are the y section's for an anamorphic design.

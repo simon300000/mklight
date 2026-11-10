@@ -187,6 +187,8 @@ final class ViewportMTKView: MTKView {
 
 struct ViewportView: NSViewRepresentable {
     let content: ViewportContent
+    /// What assistive technologies read for the view.
+    let accessibilityText: String
     @Binding var camera: ViewportCamera
     @Binding var error: String?
     @Environment(\.colorScheme) private var colorScheme
@@ -206,12 +208,6 @@ struct ViewportView: NSViewRepresentable {
         ViewportBridge.update(
             view, content: content, camera: $camera, coordinator: context.coordinator, dark: colorScheme == .dark,
             scale: displayScale)
-    }
-
-    private var accessibilityText: String {
-        guard let s = content.scene else { return "Lens layout, not computed yet" }
-        let rays = s.polylines.filter { $0.kind == .ray }.count
-        return "Lens layout, \(content.mode == .orbit3D ? "3D view" : content.mode == .sectionXZ ? "x–z section" : "meridional section"), \(s.surfaces.count) surfaces, \(rays) rays"
     }
 }
 
@@ -256,6 +252,8 @@ final class ViewportMTKView: MTKView {
 
 struct ViewportView: UIViewRepresentable {
     let content: ViewportContent
+    /// What assistive technologies read for the view.
+    let accessibilityText: String
     @Binding var camera: ViewportCamera
     @Binding var error: String?
     @Environment(\.colorScheme) private var colorScheme
@@ -266,7 +264,7 @@ struct ViewportView: UIViewRepresentable {
     func makeUIView(context: Context) -> ViewportMTKView { ViewportBridge.make(input: ViewportInput(), error: $error) }
 
     func updateUIView(_ view: ViewportMTKView, context: Context) {
-        view.accessibilityLabel = content.scene == nil ? "Lens layout, not computed yet" : "Lens layout"
+        view.accessibilityLabel = accessibilityText
         ViewportBridge.update(
             view, content: content, camera: $camera, coordinator: context.coordinator, dark: colorScheme == .dark,
             scale: displayScale)

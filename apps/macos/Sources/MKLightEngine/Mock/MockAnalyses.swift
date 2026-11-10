@@ -473,7 +473,7 @@ extension MockOptics {
         add("efl", "Effective focal length", efl ?? .infinity, "mm")
         let a = paraxial(y1: 1, u0: 0, w: w)
         if abs(a.nu[k]) > 1e-15 { add("bfl", "Back focal length", -a.y[k] * nk / a.nu[k], "mm") }
-        add("epd", "Entrance pupil diameter", 2 * epRadius, "mm")
+        add("entrance_pupil_diameter", "Entrance pupil diameter", 2 * epRadius, "mm")
         add("ep_position", "Entrance pupil position (from surface 1)", epZ, "mm")
         let (rxp, dxp) = exitPupil()
         add("xp_diameter", "Exit pupil diameter", 2 * rxp, "mm")

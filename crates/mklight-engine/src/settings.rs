@@ -56,9 +56,6 @@ fn check(path: &str, schema: &Value, v: &Value) -> EngineResult<()> {
         }
     }
     if let Some(x) = v.as_f64() {
-        if !x.is_finite() {
-            return err("must be finite".into());
-        }
         if let Some(lo) = schema.get("minimum").and_then(Value::as_f64)
             && x < lo
         {

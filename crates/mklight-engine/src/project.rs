@@ -18,8 +18,6 @@ use crate::time::now_rfc3339;
 
 /// Schema version written by this engine.
 pub const PROJECT_SCHEMA_VERSION: u32 = 1;
-/// File-name extension of project files.
-pub const PROJECT_FILE_EXTENSION: &str = "mklight";
 /// Value of the top-level `format` key, so tools can recognise the file.
 pub const PROJECT_FORMAT_ID: &str = "mklight-project";
 
@@ -123,13 +121,14 @@ pub struct Project {
     pub catalogs: Vec<CatalogRef>,
     #[serde(default)]
     pub views: Vec<AnalysisView>,
-    /// Merit function. Opaque until `mklight-optim` defines its type.
+    /// Merit-function setup of the front end; stored, never interpreted.
     #[serde(default)]
     pub merit: Value,
-    /// Optimisation variables. Opaque until `mklight-optim` defines its type.
+    /// Optimisation-variable setup of the front end; stored, never
+    /// interpreted.
     #[serde(default)]
     pub variables: Value,
-    /// Tolerance set. Opaque until tolerancing defines its type.
+    /// Tolerance setup of the front end; stored, never interpreted.
     #[serde(default)]
     pub tolerances: Value,
     /// Unknown top-level keys, kept so that a round trip does not lose data

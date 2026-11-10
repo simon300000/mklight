@@ -1,4 +1,4 @@
-//! Resident candidate traces of the hybrid host/device division.
+//! Resident candidate traces of the host/device division.
 //!
 //! A batch goes through stages that callers may pipeline across
 //! sub-batches: [`prepare`] (host: candidate plans, chief rays and seeds,
@@ -74,53 +74,27 @@ fn records<T: bytemuck::Pod>(
 /// How the ray stage of a batch is divided between the device and the host.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct RayDesign {
-    /// Newton iterations a device ray may spend over its aiming schedule.
-    pub schedule_cap: u32,
-    /// Aiming continuation rounds the device commits without reading the
-    /// pending count back (0: read back after each round group).
-    pub speculative_rounds: u32,
     /// Aim every pupil ray on the host (the candidates' f64 tracers, the
     /// reference's aims) and only trace it on the device (chosen per batch,
     /// `gpu::DEVICE_AIM_FROM`, unless the `aiming` key pins either side).
+    /// Otherwise the device aims each ray for at most `schedule_cap`
+    /// iterations and the host completes the rest, so the device rounds are
+    /// bounded and committed speculatively (no read-back inside the plan).
     pub host_aim: bool,
-}
-impl RayDesign {
-    /// Host candidates and per-ray host completion: the device aims each ray
-    /// for at most [`HYBRID_SCHEDULE_CAP`] iterations and the host completes
-    /// the rest, so the device rounds are bounded and committed
-    /// speculatively (no read-back inside the plan).
-    pub(crate) const HYBRID: Self = Self {
-        schedule_cap: HYBRID_SCHEDULE_CAP,
-        speculative_rounds: hybrid_rounds(HYBRID_SCHEDULE_CAP),
-        host_aim: false,
-    };
-    /// [`Self::HYBRID`] with another device schedule cap.
-    pub(crate) fn hybrid_capped(cap: u32) -> Self {
-        Self {
-            schedule_cap: cap.max(1),
-            speculative_rounds: hybrid_rounds(cap.max(1)),
-            ..Self::HYBRID
-        }
-    }
+    /// Newton iterations a device-aimed ray may spend over its aiming
+    /// schedule (at least 1).
+    pub schedule_cap: u32,
 }
 /// Device iterations per ray. Healthy rays converge in
 /// 2–6 (chief-seeded); a ray still unconverged at this cap is aimed on the
 /// host, whose schedule is the reference's.
-pub(crate) const HYBRID_SCHEDULE_CAP: u32 = 8;
+pub(crate) const SCHEDULE_CAP: u32 = 8;
 /// Continuation rounds that cover a capped schedule without read-back: the
 /// cap's iterations plus up to six phase entries, less the first command's
 /// four units, at four units per round (the Metal executor's budgets), plus
 /// one spare round. A round with no pending ray dispatches no thread.
-const fn hybrid_rounds(cap: u32) -> u32 {
+const fn speculative_rounds(cap: u32) -> u32 {
     (cap + 2).div_ceil(4) + 1
-}
-
-/// `MKLIGHT_SOLVERS_TRACE_ROUTING=1` prints, per hybrid batch, the rays
-/// routed to the host and the device's unresolved, failed and slow rays
-/// (diagnostics).
-pub(crate) fn trace_routing() -> bool {
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("MKLIGHT_SOLVERS_TRACE_ROUTING").is_ok_and(|v| v == "1"))
 }
 
 /// Identity of one traced ray, shared by the candidates of a batch:
@@ -139,7 +113,7 @@ fn append(
     last: usize,
     clip: bool,
     tolerance: f32,
-    design: &RayDesign,
+    options: a::AimOptions,
     ctx: &JobContext,
 ) -> MkResult<a::ResidentHits> {
     let samples = records(g, p, probes.len(), |i| {
@@ -168,11 +142,7 @@ fn append(
                 tolerance,
                 max_iterations: 60,
                 output: generated.clone(),
-                options: a::AimOptions {
-                    schedule_cap: design.schedule_cap,
-                    speculative_rounds: design.speculative_rounds,
-                    ..Default::default()
-                },
+                options,
             },
         )));
     p.operations
@@ -191,8 +161,8 @@ fn append(
     Ok(hits)
 }
 /// Chief rays generated (aimed) on the host by the candidates' f64 tracers
-/// and traced on the device to the image (unclipped): the hybrid design's
-/// chief rows, which no device aim can leave unresolved. A chief the host
+/// and traced on the device to the image (unclipped): the plan's chief
+/// rows, which no device aim can leave unresolved. A chief the host
 /// cannot generate enters with a failure report and is not traced.
 #[allow(clippy::too_many_arguments)]
 fn host_chief_rays(
@@ -424,12 +394,12 @@ fn unresolved_report(code: u32) -> bool {
 
 /// Group nodes of one candidate that the host traces instead of the device
 /// (rays routed to the host before the plan): group index, key, node
-/// indices and, after [`host_stage`], their f64 traces.
+/// indices and their f64 traces, filled by [`host_stage`].
 struct HostGroup {
     gi: u32,
     key: GroupKey,
     nodes: Vec<usize>,
-    traced: Option<Vec<Option<TraceResult>>>,
+    traced: Vec<Option<TraceResult>>,
 }
 
 /// A batch's host preparation and its resident plan, ready to submit.
@@ -439,8 +409,8 @@ pub(crate) struct Prepared<'a> {
     /// Per candidate, the group nodes routed to the host.
     host: Vec<Vec<HostGroup>>,
     /// Per candidate, the values of the operands that need no ray (model
-    /// and paraxial), computed by [`host_stage`] while the device works.
-    early: Option<Vec<Vec<OperandValue>>>,
+    /// and paraxial), filled by [`host_stage`] while the device works.
+    early: Vec<Vec<OperandValue>>,
     chiefs: Vec<Probe>,
     /// Traced probe partitions by (clipping, last surface), in plan output
     /// order.
@@ -476,11 +446,12 @@ fn rayless(op: &Operand) -> bool {
 /// pool.
 const HOST_RAYS_PER_ITEM: usize = 4;
 
-/// The host's share of a batch, run while the device works on the plan:
-/// the group nodes routed to the host (in parallel over candidates, groups
-/// and runs of nodes), and every operand that needs no ray (model operands, with their automatic semi-diameters, and
-/// paraxial operands). The OPD of the host rays is formed in [`finish`],
-/// against the device chief's reference sphere as for the device rays.
+/// The host's share of a batch, run once while the device works on the
+/// plan: the group nodes routed to the host (in parallel over candidates,
+/// groups and runs of nodes), and every operand that needs no ray (model
+/// operands, with their automatic semi-diameters, and paraxial operands).
+/// The OPD of the host rays is formed in [`finish`], against the device
+/// chief's reference sphere as for the device rays.
 pub(crate) fn host_stage(
     prepared: &mut Prepared<'_>,
     cpu: &TraceEvaluator,
@@ -500,11 +471,9 @@ pub(crate) fn host_stage(
                     .map(move |a| (ci, hi, a, (a + HOST_RAYS_PER_ITEM).min(h.nodes.len())))
             })
         })
-        .filter(|&(ci, hi, _, _)| prepared.host[ci][hi].traced.is_none())
         .collect();
     let host = &prepared.host;
     let early_ops: Vec<&Operand> = operands.iter().copied().filter(|o| rayless(o)).collect();
-    let want_early = prepared.early.is_none();
     // Both on the pool at once: the routed rays and the rayless operands.
     let (traced, early) = rayon::join(
         || {
@@ -517,26 +486,19 @@ pub(crate) fn host_stage(
                 .collect::<Vec<_>>()
         },
         || {
-            want_early.then(|| {
-                candidates
-                    .par_iter()
-                    .enumerate()
-                    .map(|(ci, (c, _))| {
-                        cpu.host_values(tracers[ci].system().system(), c, &early_ops, ctx)
-                    })
-                    .collect::<MkResult<Vec<_>>>()
-            })
+            candidates
+                .par_iter()
+                .enumerate()
+                .map(|(ci, (c, _))| {
+                    cpu.host_values(tracers[ci].system().system(), c, &early_ops, ctx)
+                })
+                .collect::<MkResult<Vec<_>>>()
         },
     );
     for (&(ci, hi, _, _), t) in items.iter().zip(traced) {
-        prepared.host[ci][hi]
-            .traced
-            .get_or_insert_with(Vec::new)
-            .extend(t);
+        prepared.host[ci][hi].traced.extend(t);
     }
-    if let Some(early) = early {
-        prepared.early = Some(early?);
-    }
+    prepared.early = early?;
     Ok(())
 }
 
@@ -587,8 +549,8 @@ pub(crate) fn prepare<'a>(
             .map(|t| PackedSystem::pack(t.system(), &Default::default()))
             .collect::<MkResult<Vec<_>>>()?;
         let h = g.backend.upload_systems(&packed)?;
-        // This legacy boundary owns packed arrays; its copies occur before
-        // the resident plan's own copy counter starts.
+        // The upload owns packed arrays; its copies occur before the
+        // resident plan's own copy counter starts.
         let bytes = packed
             .iter()
             .map(|s| {
@@ -682,8 +644,7 @@ pub(crate) fn prepare<'a>(
             let mut host = Vec::new();
             for (gi, (&key, sampling)) in plan.groups.iter().enumerate() {
                 ctx.check()?;
-                let (nodes, symmetry) =
-                    c.group_nodes_from(key.0, sampling, g.pupil_nodes(sampling));
+                let (nodes, symmetry) = c.group_nodes(key.0, sampling);
                 let slot = slot(key.0, key.1);
                 let mut host_nodes = Vec::new();
                 let probes = local.entry((clip, last)).or_default();
@@ -707,7 +668,7 @@ pub(crate) fn prepare<'a>(
                         gi: gi as u32,
                         key,
                         nodes: host_nodes,
-                        traced: None,
+                        traced: Vec::new(),
                     });
                 }
                 let failed = if aggregates {
@@ -813,8 +774,7 @@ pub(crate) fn prepare<'a>(
     let metadata = records(g, &mut p, field_keys.len(), |i| field_spec(field_keys[i]))?;
     // Chief rows from each candidate's own f64 tracer (system fields are
     // prepared at its construction): the device solves no per-candidate chief
-    // or real-image-height source, the work that once ran on a few threads
-    // for seconds per command.
+    // or real-image-height source.
     let per_candidate = (0..tracers.len())
         .into_par_iter()
         .map(|ci| {
@@ -838,7 +798,7 @@ pub(crate) fn prepare<'a>(
     }
     // Rows are in (candidate, field, wavelength) order, as are field_keys.
     let seeds = records(g, &mut p, seed_rows.len(), |i| Ok(seed_rows[i]))?;
-    // P1's seed-table choice is per candidate, not a side effect of which
+    // The seed-table choice is per candidate, not a side effect of which
     // other candidates share its command. Partition only at that boundary.
     let mut field_counts = vec![0usize; tracers.len()];
     for &(ci, _, _) in &field_keys {
@@ -890,13 +850,14 @@ pub(crate) fn prepare<'a>(
             mklight_core::RayAiming::Real { .. }
         )
     });
-    let design = &RayDesign {
+    let aim = a::AimOptions {
+        schedule_cap: design.schedule_cap,
         speculative_rounds: if real {
-            design.speculative_rounds
+            speculative_rounds(design.schedule_cap)
         } else {
-            design.speculative_rounds.min(1)
+            1
         },
-        ..*design
+        ..Default::default()
     };
     let ch = host_chief_rays(g, &mut p, set, &chiefs, &candidates, tracers, last, ctx)?;
     let reference = g.df(&mut p, [chiefs.len(), 3], &refs)?;
@@ -949,7 +910,7 @@ pub(crate) fn prepare<'a>(
                 last,
                 clip,
                 tolerance,
-                design,
+                aim.clone(),
                 ctx,
             )?
         };
@@ -1088,7 +1049,7 @@ pub(crate) fn prepare<'a>(
         plan: Some(p),
         candidates,
         host,
-        early: None,
+        early: Vec::new(),
         chiefs,
         partitions,
         moment_segments,
@@ -1127,15 +1088,6 @@ pub(crate) fn collect<'a>(
         .map(|o| g.backend.read_view(o.view()))
         .collect::<MkResult<Vec<_>>>()?;
     let chief_status = views[1].as_slice::<u32>()?;
-    if trace_routing() {
-        let k = prepared.chiefs.len();
-        let aim = views[2].as_slice::<u32>()?[..k].iter().filter(|&&s| s != 0);
-        eprintln!(
-            "MKL_SOLVERS chiefs: {k} of {n} candidates, aim-failed {}, trace-failed {}",
-            aim.count(),
-            chief_status[..k].iter().filter(|&&s| s != 0).count()
-        );
-    }
     let mut chief_keys = vec![BTreeSet::new(); n];
     for (i, (q, &status)) in prepared
         .chiefs
@@ -1155,21 +1107,7 @@ pub(crate) fn collect<'a>(
     let mut slow = vec![BTreeSet::new(); n];
     for (bi, ((clip, last), probes)) in prepared.partitions.iter().enumerate() {
         let report = views[3 + 7 * bi + 2].as_slice::<u32>()?;
-        let traced = views[3 + 7 * bi + 1].as_slice::<u32>()?;
         let count = probes.len();
-        if trace_routing() {
-            let aim = (0..count).filter(|&i| unresolved_report(report[i])).count();
-            let clipped = (0..count)
-                .filter(|&i| report[i] == 0 && traced[i] != 0)
-                .count();
-            let slow = (0..count)
-                .filter(|&i| report[i] == 0 && report[count + i] > SLOW_ITERATIONS)
-                .count();
-            eprintln!(
-                "MKL_SOLVERS partition {bi}: {count} probes of {n} candidates, aim-unresolved \
-                 {aim}, trace-failed {clipped}, slow {slow}"
-            );
-        }
         for (i, q) in probes.iter().enumerate() {
             let code = report[i];
             // Unresolved aims are completed by the host in f64. A ray the
@@ -1392,20 +1330,15 @@ pub(crate) fn finish(
             }
         }
     }
-    // Host-routed nodes (traced by `host_stage` while the device ran, or
-    // now), with their OPD against the chiefs just read.
+    // Host-routed nodes (traced by `host_stage` while the device ran),
+    // with their OPD against the chiefs just read.
     let routed = std::time::Instant::now();
-    let mut host = host;
     candidates
         .par_iter_mut()
-        .zip(host.par_iter_mut())
+        .zip(host.par_iter())
         .for_each(|((c, _), groups)| {
             for h in groups {
-                let traced = match h.traced.take() {
-                    Some(t) => t,
-                    None => c.trace_nodes(h.key, &h.nodes),
-                };
-                c.set_nodes(h.key, &h.nodes, &traced);
+                c.set_nodes(h.key, &h.nodes, &h.traced);
             }
         });
     let routed_seconds = routed.elapsed().as_secs_f64();
@@ -1488,9 +1421,6 @@ pub(crate) fn finish(
         .enumerate()
         .map(|(ci, (c, _))| {
             let system = tracers[ci].system().system();
-            let Some(early) = &early else {
-                return cpu.host_values(system, c, operands, ctx);
-            };
             // The rayless values came from the host stage.
             let late: Vec<&Operand> = operands.iter().copied().filter(|o| !rayless(o)).collect();
             let mut late = cpu.host_values(system, c, &late, ctx)?.into_iter();

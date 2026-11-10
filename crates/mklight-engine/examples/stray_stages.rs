@@ -10,7 +10,9 @@
 //! `cosplit`, `wavefront`; `cpu` for the CPU reference transport), each
 //! optionally with `+KEY=VARIANT` selections of its own. `share=X` and
 //! `head=N` set the transport options; other `KEY=VARIANT` pairs select
-//! work-split variants for every column.
+//! work-split variants for every column. Metal is the measured device:
+//! other targets build a stub.
+#![cfg_attr(not(target_os = "macos"), allow(dead_code, unused_imports))]
 
 use std::path::Path;
 use std::time::Instant;
@@ -19,6 +21,13 @@ use mklight_core::{JobContext, split};
 use mklight_engine::{Engine, EngineConfig};
 use mklight_stray::{StrayAnalysisSettings, StraySystem, primary_reference};
 
+#[cfg(not(target_os = "macos"))]
+fn main() {
+    eprintln!("stray_stages measures Metal and runs on macOS only");
+    std::process::exit(2);
+}
+
+#[cfg(target_os = "macos")]
 fn main() {
     let a: Vec<String> = std::env::args().skip(1).collect();
     let rays: u64 = a.get(1).map(|s| s.parse().unwrap()).unwrap_or(20_000);

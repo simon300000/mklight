@@ -1,7 +1,7 @@
 //! Resident stray-light source generation, analytic compute BVH and
 //! transport. The transport writes per-source detections, ledgers and
-//! continuation stacks; the host forms the estimators. Engine
-//! qualification/routing belongs to P11.
+//! continuation stacks; the host forms the estimators. Qualification and
+//! routing belong to the engine.
 mod build;
 mod kernel;
 pub use build::{Build, node_count};
@@ -10,6 +10,7 @@ mod records;
 mod sag;
 mod spec;
 mod transport;
+pub use crate::resident::record_desc;
 use crate::{ComputeBackend, Df32, FpEnv, pending::JobControl, resident::*};
 use mklight_core::{JobContext, MkResult};
 pub use records::*;
@@ -188,17 +189,8 @@ pub enum Request {
     Cast(Cast),
     Transport(Box<Transport>),
 }
-fn check<T: bytemuck::Pod>(v: &PlanView, p: &ResidentPlan) -> MkResult<usize> {
-    let n = v.desc.shape.first().copied().unwrap_or(0);
-    let base = match p.buffers.get(v.buffer.0) {
-        Some(PlanBuffer::Import(v)) => v.offset,
-        Some(_) => 0,
-        None => return Err(bad("stray buffer ID")),
-    };
-    if v.desc != record_desc::<T>(n) || v.stride != 1 || !(base + v.offset).is_multiple_of(2) {
-        return Err(bad("stray record layout"));
-    }
-    Ok(n)
+fn check<T>(v: &PlanView, p: &ResidentPlan) -> MkResult<usize> {
+    check_records::<T>(v, p, "stray")
 }
 fn validate_source(s: Source, cdf: &[Df32], first_ray: u64, ray_count: usize) -> MkResult<()> {
     if s.kind > 3
@@ -297,9 +289,6 @@ pub fn execute(r: &Request, x: &mut cpu::Execution, ctl: &JobControl) -> MkResul
         execute_in::<crate::Ieee>(r, x, ctl)
     }
 }
-fn rows<'a, T: bytemuck::Pod>(x: &'a cpu::Execution, v: &PlanView) -> &'a [T] {
-    bytemuck::cast_slice(&x.words(v.buffer)[v.offset..v.offset + v.desc.len().unwrap()])
-}
 fn execute_in<E: FpEnv>(r: &Request, x: &mut cpu::Execution, ctl: &JobControl) -> MkResult<()> {
     if let Request::Build(r) = r {
         return build::execute::<E>(r, x, ctl);
@@ -310,8 +299,7 @@ fn execute_in<E: FpEnv>(r: &Request, x: &mut cpu::Execution, ctl: &JobControl) -
     let n = match r {
         Request::Generate(r) => r.ray_count,
         Request::Cast(r) => r.rays.desc.shape[0],
-        Request::Build(_) => unreachable!(),
-        Request::Transport(_) => return unsupported("stray transport"),
+        Request::Build(_) | Request::Transport(_) => unreachable!(),
     };
     for i in 0..n {
         if i % 256 == 0 {
@@ -325,10 +313,10 @@ fn execute_in<E: FpEnv>(r: &Request, x: &mut cpu::Execution, ctl: &JobControl) -
             }
             Request::Cast(r) => {
                 let out = kernel::closest_shapes::<E>(
-                    rows(x, &r.primitives),
-                    rows(x, &r.nodes),
-                    rows(x, &r.shapes),
-                    rows::<Ray>(x, &r.rays)[i],
+                    x.rows(&r.primitives),
+                    x.rows(&r.nodes),
+                    x.rows(&r.shapes),
+                    x.rows::<Ray>(&r.rays)[i],
                 );
                 bytemuck::cast_slice_mut::<u32, Hit>(x.words_mut(r.output))[i] = out;
             }

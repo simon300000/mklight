@@ -1,4 +1,5 @@
-//! Host boundary and final assembly for resident P1 -> P7 -> P3 jobs.
+//! Host boundary and final assembly for resident aiming -> radiometry ->
+//! summary jobs.
 use super::transmission::TransmissionRows;
 use super::*;
 use crate::{ComputeBackend, Df32, PackedSystem, aiming};
@@ -52,7 +53,7 @@ impl<T: bytemuck::Pod> AsRef<[T]> for ResultSlice<T> {
 pub struct PupilResult {
     pub values: ResultSlice<PolarizationValue>,
     pub trace_status: ResultSlice<u32>,
-    /// P3 summary [channel][sum,count,min,max], channels as append_summary.
+    /// Collective summary [channel][sum,count,min,max], channels as append_summary.
     pub summary: [[f64; 4]; 10],
     pub run_info: RunInfo,
     pub stats: PlanStats,
@@ -294,7 +295,7 @@ pub fn pupil(
     if fallback > 0 {
         // Rebuild the final summary in fixed input order only after reference
         // rows changed. This small fallback stage is reported, never disguised
-        // as device reduction; the ordinary path uses P3's resident fixed tree.
+        // as device reduction; the ordinary path uses the collectives' resident fixed tree.
         summary = [[0.; 4]; 10];
         let mut sums = [mklight_core::math::KahanSum::default(); 10];
         for c in &mut summary {
@@ -319,7 +320,7 @@ pub fn pupil(
         for c in 0..10 {
             summary[c][0] = sums[c].value();
         }
-        result.run_info.warnings.push(format!("P7 reference evaluated {fallback} pupil rows (coating/retarder conditioning or unresolved aiming); final summary rebuilt in f64"));
+        result.run_info.warnings.push(format!("CPU f64 reference evaluated {fallback} pupil rows (coating/retarder conditioning or unresolved aiming); final summary rebuilt in f64"));
         result.run_info.settings["p7_reference_rows"] = serde_json::json!(fallback);
         result.run_info.settings["reference_read_copy_bytes"] = serde_json::json!(
             (points.len() - fallback) * std::mem::size_of::<PolarizationValue>()
@@ -458,11 +459,6 @@ pub fn system_transmission(
             "transmission empty pupil".into(),
         ));
     }
-    let channel = if matches!(settings.model, RadiometryModel::Unpolarized) {
-        0
-    } else {
-        1
-    };
     let mut points = vec![];
     let mut warnings = t.warnings().to_vec();
     let mut runs = vec![];
@@ -474,7 +470,6 @@ pub fn system_transmission(
         state: &state,
         model: &settings.model,
         clip: settings.clip,
-        channel,
     }
     .run(b, ctx)?;
     for (f, _) in fields.iter().enumerate() {
@@ -544,7 +539,7 @@ pub fn system_transmission(
 }
 
 /// Assemble the reference pupil-map schema from device matrices/properties and
-/// P3 statistics. This only widens/repackages final values; retarder extraction
+/// collective statistics. This only widens/repackages final values; retarder extraction
 /// and all pupil reductions have already run on the backend.
 pub fn polarization_pupil_map(
     b: &dyn ComputeBackend,

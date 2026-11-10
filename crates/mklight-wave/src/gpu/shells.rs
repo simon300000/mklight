@@ -262,7 +262,7 @@ pub fn encircled_energy_batch(
                 output,
             })));
         p.outputs = vec![output];
-        p.settings = serde_json::json!({"p6":"radial_energy_batch","grid":size,"radial_bins":geometry.count,"max_bin_length":geometry.max_segment});
+        p.settings = serde_json::json!({"operation":"radial_energy_batch","grid":size,"radial_bins":geometry.count,"max_bin_length":geometry.max_segment});
         let r = b.submit_plan(p, &sub.subrange(0.05, 1.))?.wait()?;
         accumulate(&mut stats, &r.stats);
         let a = b.read_view(r.outputs[0].view())?;

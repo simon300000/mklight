@@ -20,7 +20,6 @@ struct SpotGrid: Sendable {
     /// One (field, plane) cell.
     struct Cell: Sendable, Identifiable {
         var id: Int
-        var row: Int
         var column: Int
         /// Absolute defocus of the plane from the image surface (mm).
         var defocus: Double
@@ -42,7 +41,6 @@ struct SpotGrid: Sendable {
         /// The field value, e.g. "14°".
         var value: String
         var cells: [Cell]
-        var vignetted: Double?
 
         /// "Field 1 · 14°".
         var label: String { value.isEmpty ? title : title + " · " + value }
@@ -55,8 +53,6 @@ struct SpotGrid: Sendable {
     var planes: [Double]
     /// Planes the engine sampled (before thinning to `planes`).
     var sampledPlanes: Int
-    /// The defocus the points were computed at (mm).
-    var baseDefocus: Double
     /// The column at the base defocus, if one is.
     var baseColumn: Int?
     var rows: [Row]
@@ -75,11 +71,12 @@ struct SpotGrid: Sendable {
         guard let list = j["fields"]?.array, !list.isEmpty else { return nil }
         let pts = output.buffer(named: "points"), pw = output.buffer(named: "point_wavelength")
         let slope = output.buffer(named: "point_slope")
-        wavelengthsUm = j["wavelengths_um"]?.nfArray ?? context.wavelengthsUm
+        // `points` is `[n, 2]`.
+        guard pts.map({ $0.count == $0.rows * 2 }) ?? true else { return nil }
+        wavelengthsUm = context.wavelengthsUm(of: output)
         wavelengths = j["wavelengths"]?.intArray ?? Array(wavelengthsUm.indices)
         airy = j["airy_radius"]?.nf ?? .nan
         let base = j["defocus"]?.nf ?? 0
-        baseDefocus = base
         reference = output.runInfo.settings["reference"]?.string ?? "chief"
         let rmsKey = reference == "centroid" ? "rms_radius_centroid" : "rms_radius_chief"
 
@@ -100,8 +97,8 @@ struct SpotGrid: Sendable {
             let index = f["field"]?.int ?? k
             let entries = f["through_focus"]?.array ?? []
             var range = 0..<0
-            if let pts, let r = f["point_range"]?.intArray, r.count == 2 {
-                let lo = max(r[0], 0), hi = min(r[0] + r[1], pts.rows)
+            if let pts, let r = f["point_range"]?.intArray, r.count == 2, case (let end, false) = r[0].addingReportingOverflow(r[1]) {
+                let lo = max(r[0], 0), hi = min(end, pts.rows)
                 if lo < hi { range = lo..<hi }
             }
             let cells = planeList.enumerated().map { c, d in
@@ -115,7 +112,7 @@ struct SpotGrid: Sendable {
                         if delta != 0, let slope, i * 2 + 1 < slope.count {
                             p += delta * SIMD2(slope[i * 2], slope[i * 2 + 1])
                         }
-                        let w = pw.map { i < $0.count ? Int($0[i]) : 0 } ?? 0
+                        let w = pw.flatMap { i < $0.count ? Int(exactly: $0[i]) : nil } ?? 0
                         if byWavelength[w] == nil { order.append(w) }
                         byWavelength[w, default: []].append(p)
                         let r = (p * p).sum().squareRoot()
@@ -132,13 +129,12 @@ struct SpotGrid: Sendable {
                 let engineGeo = f["geo_radius"]?.nf ?? .nan
                 let geo = isBase && engineGeo.isFinite ? engineGeo : (count > 0 ? extent : .nan)
                 return Cell(
-                    id: k * planeList.count + c, row: k, column: c, defocus: d, groups: groups, pointCount: count,
+                    id: k * planeList.count + c, column: c, defocus: d, groups: groups, pointCount: count,
                     rms: rms, geo: geo, extent: count > 0 ? extent : (geo.isFinite ? geo : 0))
             }
             return Row(
                 id: index, title: "Field \(index + 1)", value: context.fieldLabel(f["field_value"]?.nfArray),
-                cells: cells, vignetted: f[path: "polychromatic", "vignetted_fraction"]?.nf,
-                baseColumn: baseIndex ?? 0)
+                cells: cells, baseColumn: baseIndex ?? 0)
         }
     }
 

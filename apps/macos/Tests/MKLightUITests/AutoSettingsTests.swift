@@ -21,9 +21,29 @@ import Testing
         #expect(AutoSettings.sentinel("max_frequency", analysis: "mtf") == .null)
         #expect(AutoSettings.sentinel("frequencies", analysis: "through_focus_mtf") == .empty)
         #expect(AutoSettings.sentinel("optics.psf_size", analysis: "image_simulation") == .zero)
+        for key in ["through_focus.min", "through_focus.max"] {
+            #expect(AutoSettings.sentinel(key, analysis: "spot_diagram") == .null)
+            #expect(AutoSettings.sentinel(key, analysis: "through_focus_mtf") == nil, "the spot diagram's range only")
+        }
         #expect(AutoSettings.isAuto(.integer(0), .zero) && AutoSettings.isAuto(nil, .zero) && !AutoSettings.isAuto(.integer(128), .zero))
         #expect(AutoSettings.isAuto(.null, .null) && !AutoSettings.isAuto(.number(50), .null))
         #expect(AutoSettings.isAuto(.array([]), .empty) && !AutoSettings.isAuto(.array([.number(10)]), .empty))
+    }
+
+    /// Sizes that are not finite, or beyond `Int`, show as plain "Auto".
+    @Test func sizesWithoutAWholePartAreNotShown() {
+        #expect(AutoSettings.range([282.7]) == "282" && AutoSettings.range([254, 371]) == "254–371" && AutoSettings.range([]) == nil)
+        for bad in [Double.infinity, -.infinity, 1e30, -1e30] {
+            #expect(AutoSettings.range([bad]) == nil, "\(bad)")
+            #expect(AutoSettings.range([128, bad]) == nil, "\(bad)")
+        }
+        #expect(AutoSettings.range([.nan]) == nil)
+        for size in [JSONValue.string("inf"), .number(1e30), .string("nan")] {
+            let sim = output("image_simulation", .object(["psf_size": size]))
+            #expect(AutoSettings.used("optics.psf_size", analysis: "image_simulation", output: sim) == nil)
+            let wf = output("wavefront_map", .object(["maps": .array([.object(["grid": size])])]))
+            #expect(AutoSettings.used("pupil.grid", analysis: "wavefront_map", output: wf) == nil)
+        }
     }
 
     /// "Auto (n)" with the value the engine used, read from each result;

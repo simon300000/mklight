@@ -92,14 +92,12 @@ extension ResultViewRenders {
                 id: "model:M:6", catalog: nil, name: "1.70/40", kind: .model, nd: 1.70, vd: 40, pgf: GlassMapPoint.normalLine(40),
                 status: .unknown, surfaces: [6], excludeSubstitution: nil))
         let data = GlassMapData(glasses: glasses)
-        let start = ContinuousClock.now
         try write(
             GlassMapChart(glasses: data.glasses, highlighted: data.designHighlights, selection: .constant("CAT/G10"), plane: .ndVd).padding(),
             size: CGSize(width: 760, height: 480), to: "\(dir)/glass-chart-1500")
         try write(
             GlassMapChart(glasses: data.glasses, highlighted: data.designHighlights, selection: .constant(nil), plane: .pgfVd).padding(),
             size: CGSize(width: 760, height: 480), to: "\(dir)/glass-chart-1500-pgf")
-        print("glass chart renders", ContinuousClock.now - start)
 
         let engine = try FFIEngine()
         let snap = try await engine.openSnapshot(try #require(SampleSystems.bundled("double_gauss")))

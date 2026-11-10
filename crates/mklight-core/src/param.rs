@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{MkError, MkResult};
 use crate::model::{ApertureSpec, MaterialRef, OpticalSystem, Placement, SurfaceId, SurfaceShape};
+use crate::surface_math::MAX_EVEN_TERMS;
 
 /// Coefficient families; indices are zero-based (SURFACES.md).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
@@ -94,7 +95,8 @@ pub enum ParamPath {
     Conic {
         surface: SurfaceId,
     },
-    /// Even-asphere coefficient `index` (0 → A4, 1 → A6, …).
+    /// Even-asphere coefficient `index` (0 → A4, 1 → A6, …), below
+    /// [`MAX_EVEN_TERMS`].
     Asphere {
         surface: SurfaceId,
         index: usize,
@@ -301,6 +303,9 @@ impl ParamPath {
             },
             Asphere { surface, index } => match geometry(&surf(s, *surface)?.shape) {
                 SurfaceShape::EvenAsphere { coefficients, .. } => {
+                    if *index >= MAX_EVEN_TERMS {
+                        return Err(bad(self, "[coefficient_count] index exceeds shape limit"));
+                    }
                     coefficients.get(*index).copied().unwrap_or(0.0)
                 }
                 _ => return Err(bad(self, "surface is not an even asphere")),
@@ -399,7 +404,10 @@ impl ParamPath {
 
     pub fn set(&self, s: &mut OpticalSystem, v: f64) -> MkResult<()> {
         use ParamPath::*;
-        if !v.is_finite() && !matches!(self, Thickness { .. }) {
+        // The only non-finite value a path may write is ±∞ on a thickness
+        // (an object at infinity); which surfaces may hold it is structural
+        // validation.
+        if v.is_nan() || (v.is_infinite() && !matches!(self, Thickness { .. })) {
             return Err(bad(self, "value must be finite"));
         }
         match self {
@@ -525,6 +533,9 @@ impl ParamPath {
             },
             Asphere { surface, index } => match geometry_mut(&mut surf_mut(s, *surface)?.shape) {
                 SurfaceShape::EvenAsphere { coefficients, .. } => {
+                    if *index >= MAX_EVEN_TERMS {
+                        return Err(bad(self, "[coefficient_count] index exceeds shape limit"));
+                    }
                     if coefficients.len() <= *index {
                         coefficients.resize(*index + 1, 0.0);
                     }
@@ -897,6 +908,55 @@ mod tests {
             assert_eq!(serde_json::from_str::<ParamPath>(&json).unwrap(), path);
         }
         s.validate().unwrap();
+    }
+
+    #[test]
+    fn even_asphere_index_is_bounded() {
+        let mut s = crate::samples::petzval_asphere();
+        let k = s
+            .surfaces
+            .iter()
+            .position(|sf| matches!(sf.shape, SurfaceShape::EvenAsphere { .. }))
+            .unwrap();
+        let id = s.surfaces[k].id;
+        let last = ParamPath::Asphere {
+            surface: id,
+            index: MAX_EVEN_TERMS - 1,
+        };
+        last.set(&mut s, 1e-40).unwrap();
+        assert_eq!(last.get(&s).unwrap(), 1e-40);
+        s.validate().unwrap();
+        for index in [MAX_EVEN_TERMS, 1_000_000_000, usize::MAX] {
+            let p = ParamPath::Asphere { surface: id, index };
+            let e = p.set(&mut s, 1.0).unwrap_err().to_string();
+            assert!(e.contains("coefficient_count"), "{e}");
+            assert!(p.get(&s).is_err());
+        }
+        if let SurfaceShape::EvenAsphere { coefficients, .. } = &mut s.surfaces[k].shape {
+            assert_eq!(coefficients.len(), MAX_EVEN_TERMS);
+            coefficients.push(0.0);
+        }
+        let e = s.validate().unwrap_err().to_string();
+        assert!(e.contains("coefficient_count"), "{e}");
+    }
+
+    #[test]
+    fn only_a_thickness_takes_an_infinity_and_nothing_takes_nan() {
+        let mut s = OpticalSystem::new_empty();
+        let surface = s.surfaces[0].id;
+        let t = ParamPath::Thickness { surface };
+        for v in [f64::NEG_INFINITY, f64::INFINITY] {
+            t.set(&mut s, v).unwrap();
+            assert_eq!(t.get(&s).unwrap(), v);
+        }
+        assert!(t.set(&mut s, f64::NAN).is_err());
+        assert_eq!(t.get(&s).unwrap(), f64::INFINITY);
+        let c = ParamPath::Curvature {
+            surface: s.surfaces[1].id,
+        };
+        for v in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert!(c.set(&mut s, v).is_err());
+        }
     }
 
     #[test]

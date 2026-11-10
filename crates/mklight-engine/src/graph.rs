@@ -211,10 +211,6 @@ impl AnalysisGraph {
         self.state.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    pub fn budget_bytes(&self) -> usize {
-        self.budget
-    }
-
     pub fn stats(&self) -> GraphStats {
         let st = self.lock();
         let mut kinds = st.stats.clone();

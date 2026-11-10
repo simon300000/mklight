@@ -143,8 +143,6 @@ public final class JobReporter: Sendable {
         }
     }
 
-    public var current: JobProgress { state.withLock { $0 } }
-
     /// Throws `CancellationError` once the job has been cancelled.
     public func checkCancelled() throws { try Task.checkCancellation() }
 

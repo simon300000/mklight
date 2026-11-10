@@ -69,7 +69,7 @@ pub fn polychromatic_psf(
     }
     let mut p = ResidentPlan::new(snapshot.clone());
     p.settings =
-        serde_json::json!({"p6":"polychromatic_psf","settings":settings,"huygens":huygens});
+        serde_json::json!({"operation":"polychromatic_psf","settings":settings,"huygens":huygens});
     let mut outputs = vec![];
     let mut warnings = vec![];
     for (pupil, _) in pupils {
@@ -210,7 +210,7 @@ pub fn polychromatic_psf(
     run_info
         .warnings
         .extend(warnings.iter().map(ToString::to_string));
-    run_info.settings = serde_json::json!({"p6":"polychromatic_psf","settings":settings,"huygens":huygens,"resident_stats":stats});
+    run_info.settings = serde_json::json!({"operation":"polychromatic_psf","settings":settings,"huygens":huygens,"resident_stats":stats});
     Ok(WaveResult {
         value: ResidentPsf {
             image: combined.unwrap(),
@@ -316,7 +316,7 @@ pub fn polychromatic_otf_method(
         .map(|v| v.map(f64::from))
         .collect();
     let mut run_info = info.unwrap();
-    run_info.settings = serde_json::json!({"p6":"polychromatic_otf","frequencies":frequencies,"resident_stats":stats});
+    run_info.settings = serde_json::json!({"operation":"polychromatic_otf","frequencies":frequencies,"resident_stats":stats});
     Ok(WaveResult {
         value,
         run_info,

@@ -66,9 +66,9 @@ use serde::{Deserialize, Serialize};
 use mklight_core::{JobContext, MkError, MkResult};
 
 use crate::deriv::{
-    Jacobian, JacobianSettings, fd_first_batch, fd_jacobian_prefetched, jacobian_budget,
+    Jacobian, JacobianSettings, analytic_jacobian, fd_first_batch, fd_jacobian_prefetched,
 };
-use crate::linalg::{Matrix, Qr, dot, norm_inf, norm2, solve_upper, solve_upper_transpose};
+use crate::linalg::{Matrix, Qr, dot, norm2, solve_upper, solve_upper_transpose};
 use crate::monitor::{IterationRecord, Monitor, OptimResult, Termination};
 use crate::problem::{
     BatchEvaluation, CandidateBatch, Evaluation, Problem, ScalarEval, check_problem, merit,
@@ -112,6 +112,26 @@ impl Default for AugLagSettings {
             tol: 1e-9,
             max_inner_iterations: None,
         }
+    }
+}
+
+impl AugLagSettings {
+    /// Reject penalty settings the augmented-Lagrangian loop cannot run with.
+    pub fn validate(&self) -> MkResult<()> {
+        let invalid = |what: &str| Err(MkError::InvalidParam(format!("constraints: {what}")));
+        if !(self.mu0 > 0.0 && self.mu0.is_finite()) {
+            return invalid("mu0 must be finite and > 0");
+        }
+        if !(self.mu_growth > 1.0 && self.mu_growth.is_finite()) {
+            return invalid("mu_growth must be finite and > 1");
+        }
+        if !(self.mu_max > 0.0) {
+            return invalid("mu_max must be > 0");
+        }
+        if !(self.tol >= 0.0) {
+            return invalid("tol must be ≥ 0");
+        }
+        Ok(())
     }
 }
 
@@ -179,6 +199,26 @@ impl LsqSettings {
             LsqMethod::Dogleg => "dogleg",
         }
     }
+    /// Reject values the solver cannot run with: a trust factor that is not
+    /// finite and positive, negative (or NaN) tolerances, and the penalty
+    /// settings [`AugLagSettings::validate`] rejects.
+    pub fn validate(&self) -> MkResult<()> {
+        if !(self.initial_trust_factor > 0.0 && self.initial_trust_factor.is_finite()) {
+            return Err(MkError::InvalidParam(
+                "initial_trust_factor must be finite and > 0".into(),
+            ));
+        }
+        for (name, tol) in [
+            ("ftol", self.ftol),
+            ("xtol", self.xtol),
+            ("gtol", self.gtol),
+        ] {
+            if !(tol >= 0.0) {
+                return Err(MkError::InvalidParam(format!("{name} must be ≥ 0")));
+            }
+        }
+        self.constraints.validate()
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -209,11 +249,7 @@ impl Aug {
     fn new<P: Problem + ?Sized>(p: &P, mu: f64) -> Aug {
         let mut rows = Vec::new();
         for (k, c) in p.constraints().iter().enumerate() {
-            let inv_scale = if c.scale > 0.0 && c.scale.is_finite() {
-                1.0 / c.scale
-            } else {
-                1.0
-            };
+            let inv_scale = 1.0 / c.safe_scale();
             if c.is_equality() {
                 rows.push(ConsRow {
                     k,
@@ -385,6 +421,9 @@ struct Ctx<'a, P: Problem + ?Sized> {
     /// while steps are being rejected, each rejected speculative trial would
     /// waste a whole probe batch.
     last_accepted: bool,
+    /// The problem supplies its Jacobian, so a trial point needs no
+    /// finite-difference probes.
+    analytic: bool,
 }
 
 impl<P: Problem + ?Sized> Ctx<'_, P> {
@@ -402,7 +441,7 @@ impl<P: Problem + ?Sized> Ctx<'_, P> {
     /// [`Self::jacobian`]. Every evaluation performed counts.
     fn eval_trial(&mut self, x: &[f64]) -> MkResult<Evaluation> {
         self.speculated = None;
-        if !self.s.speculative_jacobian || !self.last_accepted {
+        if !self.s.speculative_jacobian || !self.last_accepted || self.analytic {
             return self.eval(x);
         }
         let Some(first) = fd_first_batch(self.p, x, &self.s.jacobian) else {
@@ -439,21 +478,24 @@ impl<P: Problem + ?Sized> Ctx<'_, P> {
         self.speculated = Some((x.to_vec(), first, probes));
         Ok(ev)
     }
-    /// The Jacobian at `x` (`e` its evaluation) within the evaluation
-    /// budget, from a speculative first pass when one was taken at `x`.
+    /// The Jacobian at `x` (`e` its evaluation): analytic when the problem
+    /// provides one and the settings allow it, otherwise finite differences
+    /// within the evaluation budget, from a speculative first pass when one
+    /// was taken at `x`.
     fn jacobian(&mut self, x: &[f64], e: &Evaluation) -> MkResult<Option<Jacobian>> {
-        let budget = self
-            .s
-            .max_evaluations
-            .saturating_sub(self.ctr.evaluations + 1);
         let prefetched = self
             .speculated
             .take()
             .filter(|(at, _, _)| at.as_slice() == x)
             .map(|(_, b, e)| (b, e));
-        if prefetched.is_none() {
-            return jacobian_budget(self.p, x, e, &self.s.jacobian, &self.mon.job, budget);
+        if let Some(j) = analytic_jacobian(self.p, x, &self.s.jacobian, &self.mon.job)? {
+            self.analytic = true;
+            return Ok(Some(j));
         }
+        let budget = self
+            .s
+            .max_evaluations
+            .saturating_sub(self.ctr.evaluations + 1);
         fd_jacobian_prefetched(
             self.p,
             x,
@@ -463,12 +505,6 @@ impl<P: Problem + ?Sized> Ctx<'_, P> {
             budget,
             prefetched,
         )
-        .map(|j| {
-            j.map(|j| Jacobian {
-                analytic: false,
-                ..j
-            })
-        })
     }
     fn budget_left(&self) -> bool {
         self.ctr.evaluations < self.s.max_evaluations
@@ -497,8 +533,8 @@ fn mul_free(j: &Matrix, free: &[usize], p_free: &[f64]) -> Vec<f64> {
 }
 
 /// Jacobian size `m·n` from which the resident tall QR beats the host
-/// Householder QR (P11 quiet host, Apple M2 Pro, GPU.md §9.2: host faster up
-/// to 400×100, device from 1000×100, 4000×32 and 2000×60).
+/// Householder QR (measured on an Apple M2 Pro, GPU.md §9.2 "QR policy":
+/// host faster up to 400×100, device from 1000×100, 4000×32 and 2000×60).
 const RESIDENT_QR_MIN_ELEMENTS: usize = 1 << 16;
 
 /// Compressed free-variable subproblem: `min ‖A₀ p + b₀‖` with
@@ -578,16 +614,6 @@ impl Sub {
                 gn,
             });
         }
-        if let Some(gpu) = gpu.filter(|_| j.rows < j.cols) {
-            gpu.observe(mklight_gpu::resident::PlanStats {
-                fallback_count: 1,
-                stages: vec![mklight_gpu::resident::StageStats {
-                    name: "underdetermined trust region reference".into(),
-                    ..Default::default()
-                }],
-                ..Default::default()
-            });
-        }
         Ok(Self::new(j, r, d))
     }
     fn transform(&self, v: &[f64], ctx: &JobContext) -> MkResult<Vec<f64>> {
@@ -653,7 +679,8 @@ impl Sub {
         if !(hi > 0.0) || !hi.is_finite() {
             hi = f64::MAX.sqrt();
         }
-        let mut lambda = lambda0.clamp(lo, hi);
+        // Not `clamp`: the bounds can cross (or be NaN) for a degenerate radius.
+        let mut lambda = lambda0.max(lo).min(hi);
         if lambda == 0.0 {
             lambda = gnorm / delta.max(f64::MIN_POSITIVE);
         }
@@ -688,8 +715,9 @@ impl Sub {
         }
         best.unwrap_or((vec![0.0; nf], lambda))
     }
-    /// Powell dogleg step.
-    fn dogleg_step(&self, delta: f64) -> Vec<f64> {
+    /// Powell dogleg step, and whether it is the full Gauss–Newton step
+    /// (which lies inside the trust region).
+    fn dogleg_step(&self, delta: f64) -> (Vec<f64>, bool) {
         let nf = self.a0.cols;
         let gn = match &self.gn {
             Some(g) => g.clone(),
@@ -700,7 +728,7 @@ impl Sub {
             }
         };
         if self.dnorm(&gn) <= delta {
-            return gn;
+            return (gn, true);
         }
         let s: Vec<f64> = (0..nf)
             .map(|j| -self.g[j] / (self.d[j] * self.d[j]))
@@ -710,14 +738,15 @@ impl Sub {
         let jj = dot(&js, &js);
         let ds = self.dnorm(&s);
         if !(jj > 0.0) || ds == 0.0 {
-            return s
+            let p = s
                 .iter()
                 .map(|v| v * delta / ds.max(f64::MIN_POSITIVE))
                 .collect();
+            return (p, false);
         }
         let alpha = gsd / jj;
         if alpha * ds >= delta {
-            return s.iter().map(|v| v * delta / ds).collect();
+            return (s.iter().map(|v| v * delta / ds).collect(), false);
         }
         let a: Vec<f64> = s.iter().map(|v| alpha * v).collect();
         let b: Vec<f64> = gn.iter().zip(&a).map(|(g, a)| g - a).collect();
@@ -734,7 +763,7 @@ impl Sub {
             (-qb + disc) / (2.0 * qa)
         };
         let tau = tau.clamp(0.0, 1.0);
-        a.iter().zip(&b).map(|(a, b)| a + tau * b).collect()
+        (a.iter().zip(&b).map(|(a, b)| a + tau * b).collect(), false)
     }
 }
 
@@ -896,9 +925,16 @@ fn inner<P: Problem + ?Sized>(
             if !c.budget_left() {
                 return out(x, e, Termination::MaxEvaluations);
             }
-            let (mut pf, lambda) = match s.method {
-                LsqMethod::LevenbergMarquardt => sub.lm_step(delta, c.lambda),
-                LsqMethod::Dogleg => (sub.dogleg_step(delta), 0.0),
+            // `gauss_newton`: the full Gauss–Newton step was taken.
+            let (mut pf, lambda, gauss_newton) = match s.method {
+                LsqMethod::LevenbergMarquardt => {
+                    let (p, lambda) = sub.lm_step(delta, c.lambda);
+                    (p, lambda, lambda == 0.0)
+                }
+                LsqMethod::Dogleg => {
+                    let (p, gauss_newton) = sub.dogleg_step(delta);
+                    (p, 0.0, gauss_newton)
+                }
             };
             // Optional geodesic acceleration.
             if s.geodesic_acceleration
@@ -978,7 +1014,7 @@ fn inner<P: Problem + ?Sized>(
             if rho < 0.25 {
                 delta = 0.25 * delta.min(pnorm.max(f64::MIN_POSITIVE));
                 c.lambda = lambda * 2.0;
-            } else if rho >= 0.75 || lambda == 0.0 {
+            } else if rho >= 0.75 || gauss_newton {
                 delta = 2.0 * pnorm;
                 c.lambda = 0.5 * lambda;
             } else {
@@ -1040,6 +1076,7 @@ pub fn least_squares<P: Problem + ?Sized>(
     monitor: &Monitor,
 ) -> MkResult<OptimResult> {
     check_problem(p, x0)?;
+    settings.validate()?;
     monitor.begin_run();
     let vars = p.variables();
     let n = vars.len();
@@ -1054,24 +1091,25 @@ pub fn least_squares<P: Problem + ?Sized>(
         failed: Vec::new(),
         speculated: None,
         last_accepted: true,
+        analytic: false,
     };
     let mut x = x0.to_vec();
     project(vars, &mut x);
     let mut e = match c.eval(&x) {
         Ok(e) => e,
         Err(MkError::Cancelled) => {
-            return finish(&c, x, None, Termination::Cancelled, None);
+            return finish(c, x, None, Termination::Cancelled, None);
         }
         Err(err) => return Err(err),
     };
     if !e.status.is_usable() {
-        return finish(&c, x, Some(e), Termination::EvaluationFailure, None);
+        return finish(c, x, Some(e), Termination::EvaluationFailure, None);
     }
     let al = settings.constraints;
     let mut aug = Aug::new(p, al.mu0);
     if aug.rows.is_empty() {
         let o = inner(&mut c, &aug, x, e, "", None)?;
-        return finish(&c, o.x, Some(o.e), o.termination, None);
+        return finish(c, o.x, Some(o.e), o.termination, None);
     }
     let k = p.num_constraints();
     let mut eta = 1.0 / al.mu0.powf(0.1);
@@ -1106,7 +1144,9 @@ pub fn least_squares<P: Problem + ?Sized>(
             break;
         }
         let viol = max_violation(p, &e.constraints);
-        if viol <= al.tol {
+        // A point that reached the target is feasible by the monitor's
+        // tolerance, which may be looser than `tol`: the run ends there.
+        if viol <= al.tol || o.termination == Termination::TargetReached {
             aug.update_multipliers(&e.constraints);
             if o.termination.is_converged() {
                 termination = o.termination;
@@ -1143,7 +1183,7 @@ pub fn least_squares<P: Problem + ?Sized>(
         }
     }
     let mult = aug.multipliers(k);
-    finish(&c, x, Some(e), termination, Some(mult))
+    finish(c, x, Some(e), termination, Some(mult))
 }
 
 /// End-point restoration (`docs/OPTIMIZATION.md`): while the end point is
@@ -1239,7 +1279,7 @@ fn restore_feasibility<P: Problem + ?Sized>(
 }
 
 fn finish<P: Problem + ?Sized>(
-    c: &Ctx<'_, P>,
+    c: Ctx<'_, P>,
     x: Vec<f64>,
     e: Option<Evaluation>,
     mut termination: Termination,
@@ -1269,20 +1309,77 @@ fn finish<P: Problem + ?Sized>(
         iterations: c.ctr.iterations,
         evaluations: c.ctr.evaluations,
         multipliers,
-        history: c.history.clone(),
-        failed_variables: c.failed.clone(),
+        history: c.history,
+        failed_variables: c.failed,
     })
 }
 
-/// Max-norm of the scaled projected gradient `‖P(x − ∇Φ) − x‖∞`, a
-/// first-order optimality measure for bound-constrained problems (exported
-/// for tests and diagnostics).
-pub fn projected_gradient_norm(vars: &[crate::problem::Variable], x: &[f64], grad: &[f64]) -> f64 {
-    let v: Vec<f64> = x
-        .iter()
-        .zip(grad)
-        .zip(vars)
-        .map(|((xi, gi), var)| var.clamp(xi - gi) - xi)
-        .collect();
-    norm_inf(&v)
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `min ‖p + (1, 1)‖` in unit scales: the Gauss–Newton step is `(−1, −1)`.
+    fn unit_sub() -> Sub {
+        Sub::new(Matrix::identity(2), &[1.0, 1.0], vec![1.0, 1.0])
+    }
+
+    #[test]
+    fn lm_step_does_not_panic_when_the_lambda_bounds_cross() {
+        // Δ = 0: the Newton lower bound is +∞, above the upper bound.
+        let (_, lambda) = unit_sub().lm_step(0.0, 0.0);
+        assert!(lambda > 0.0);
+    }
+
+    #[test]
+    fn dogleg_reports_the_full_gauss_newton_step() {
+        let sub = unit_sub();
+        let (p, full) = sub.dogleg_step(10.0);
+        assert!(full);
+        assert!(p.iter().all(|v| (v + 1.0).abs() < 1e-15), "{p:?}");
+        // A radius inside the Gauss–Newton step cuts the path short.
+        let (p, full) = sub.dogleg_step(0.5);
+        assert!(!full);
+        assert!((sub.dnorm(&p) - 0.5).abs() < 1e-15, "{p:?}");
+    }
+
+    #[test]
+    fn settings_are_validated() {
+        let ok = LsqSettings::default();
+        assert!(ok.validate().is_ok());
+        let bad = [
+            LsqSettings {
+                initial_trust_factor: 0.0,
+                ..ok
+            },
+            LsqSettings {
+                initial_trust_factor: f64::NAN,
+                ..ok
+            },
+            LsqSettings { ftol: -1.0, ..ok },
+            LsqSettings {
+                gtol: f64::NAN,
+                ..ok
+            },
+            LsqSettings {
+                constraints: AugLagSettings {
+                    mu0: 0.0,
+                    ..ok.constraints
+                },
+                ..ok
+            },
+            LsqSettings {
+                constraints: AugLagSettings {
+                    mu_growth: 1.0,
+                    ..ok.constraints
+                },
+                ..ok
+            },
+        ];
+        for s in bad {
+            assert!(
+                matches!(s.validate(), Err(MkError::InvalidParam(_))),
+                "{s:?}"
+            );
+        }
+    }
 }

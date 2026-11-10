@@ -5,8 +5,8 @@
 //! branchy, the trace regular.
 //!
 //! * `host-chief` (default): the reference tracer solves every field's
-//!   chief in f64 on all CPU cores (`aiming::host_seeds`), the GPU traces
-//!   the rays.
+//!   chief in f64 on all CPU cores ([`Geometry::append_grid`]), the GPU
+//!   traces the rays.
 //! * `device-chief`: the GPU solves the chiefs too (the aiming kernels'
 //!   own chief solve; no host seeds), so the whole map runs on the device.
 use super::*;
@@ -94,15 +94,7 @@ impl Geometry<'_> {
             s.weight = self.tracer.system().wavelength_weights[wl] as f32;
             Ok(s)
         })?;
-        let tolerance = match aiming {
-            mklight_core::RayAiming::Real { .. } if aiming == self.tracer.aiming() => {
-                self.tracer.device_aim_tolerance() as f32
-            }
-            mklight_core::RayAiming::Real { .. } => {
-                self.tracer_for(aiming)?.device_aim_tolerance() as f32
-            }
-            _ => 1e-10,
-        };
+        let tolerance = self.device_tolerance(aiming)?;
         let generated = rays(p, count);
         p.operations
             .push(ResidentOp::Aiming(Request::GenerateAim(GenerateAim {

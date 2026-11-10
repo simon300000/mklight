@@ -25,12 +25,12 @@ pub struct Params {
     pub span: u32,
     pub sign_bits: u32,
     pub scale_bits: u32,
-    /// Bit 0: conjugate the second operand; bit 1: broadcast it over rows.
+    /// Bit 1 ([`BROADCAST`]): broadcast the second operand over rows. Bit 0
+    /// is reserved.
     pub flags: u32,
     pub reserved: u32,
     pub affine: [[f32; 2]; 6],
 }
-pub const CONJUGATE: u32 = 1;
 pub const BROADCAST: u32 = 2;
 impl Params {
     pub fn new(mode: u32, w: usize, h: usize) -> Self {
@@ -357,14 +357,6 @@ pub fn request(r: &Request) -> MkResult<Recipe> {
     match r {
         Request::Transpose { .. } => {
             out.transpose(0, w, h);
-        }
-        Request::Multiply {
-            scale, conjugate, ..
-        } => {
-            let mut p = Params::new(MKL_TRANSFORM_MULTIPLY, w, h);
-            p.scale_bits = scale.to_bits();
-            p.flags = if *conjugate { CONJUGATE } else { 0 };
-            out.push(0, 1, p);
         }
         Request::Phase { coefficients, .. } => {
             let mut p = Params::new(MKL_TRANSFORM_PHASE, w, h);

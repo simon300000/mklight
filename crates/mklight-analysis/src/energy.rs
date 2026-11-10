@@ -56,12 +56,9 @@ use serde::{Deserialize, Serialize};
 use crate::spot::{FieldRays, RayBatch, SpotReference, trace_field_rays, validate_sampling};
 use crate::util::{
     BackendInfo, FieldSelection, PupilPattern, WavelengthSelection, brent_minimize, check_count,
-    check_finite, curved_image_warning, field_value, linspace, nf, pupil_points, run_info_backend,
+    check_finite, curved_image_warning, diffraction_cutoff, field_value, linspace, nf,
+    pupil_points, run_info_backend, seed_of,
 };
-
-fn seed_of(pattern: PupilPattern, seed: u64) -> Option<u64> {
-    matches!(pattern, PupilPattern::Random | PupilPattern::Dithered).then_some(seed)
-}
 
 /// Common ray sampling of the energy analyses.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -92,7 +89,7 @@ fn trace(
     ctx: &JobContext,
     warnings: &mut Vec<String>,
 ) -> MkResult<RayBatch> {
-    validate_sampling(s.pattern, s.rings)?;
+    validate_sampling(s.rings)?;
     let sys = tracer.system();
     let fields = s.fields.resolve(tracer.fields().len())?;
     let wls = s
@@ -257,7 +254,16 @@ pub fn encircled_energy_job(
 
 pub(crate) fn validate_ee(settings: &EncircledEnergySettings) -> MkResult<()> {
     check_count("radius samples", settings.samples, 2, 100_001)?;
-    check_finite("defocus", settings.defocus)
+    check_finite("defocus", settings.defocus)?;
+    if settings
+        .max_radius
+        .is_some_and(|r| !(r > 0.0 && r.is_finite()))
+    {
+        return Err(MkError::InvalidModel(
+            "maximum radius must be positive".into(),
+        ));
+    }
+    Ok(())
 }
 
 /// Encircled and ensquared energy of a ray batch traced by any backend.
@@ -307,12 +313,7 @@ fn ee_reduce(
         })
         .collect();
     let rmax = match settings.max_radius {
-        Some(r) if r > 0.0 && r.is_finite() => r,
-        Some(_) => {
-            return Err(MkError::InvalidModel(
-                "maximum radius must be positive".into(),
-            ));
-        }
+        Some(r) => r,
         None => per
             .iter()
             .filter_map(|p| p.0.d.last().copied())
@@ -524,7 +525,10 @@ fn mtf_reduce(
         warnings.extend(curved_image_warning(tracer));
     }
     let fo = tracer.paraxial().primary();
-    let cutoff = 1.0 / (sys.wavelengths_um[sys.primary_wavelength] * 1e-3 * fo.working_f_number);
+    let cutoff = diffraction_cutoff(
+        sys.wavelengths_um[sys.primary_wavelength],
+        fo.working_f_number,
+    );
     let fmax = match settings.max_frequency {
         Some(f) => f,
         None if cutoff.is_finite() && cutoff > 0.0 => cutoff,

@@ -225,8 +225,8 @@ impl Psf {
         let (ix, iy) = (fx.floor(), fy.floor());
         let (tx, ty) = (fx - ix, fy - iy);
         let (ix, iy) = (ix as i64, iy as i64);
-        let wx = keys_weights(tx);
-        let wy = keys_weights(ty);
+        let wx = crate::interp::keys_weights(tx);
+        let wy = crate::interp::keys_weights(ty);
         let m = self.size as i64;
         let mut s = 0.0;
         for (b, wyb) in wy.iter().enumerate() {
@@ -244,42 +244,6 @@ impl Psf {
         }
         s
     }
-
-    /// Resampled onto a new grid by bicubic interpolation (normalisation
-    /// metadata unchanged).
-    pub fn resampled(&self, spacing_mm: f64, size: usize, center_mm: [f64; 2]) -> Psf {
-        let c = (size / 2) as f64;
-        let data = (0..size * size)
-            .into_par_iter()
-            .map(|k| {
-                let x = center_mm[0] + ((k % size) as f64 - c) * spacing_mm;
-                let y = center_mm[1] + ((k / size) as f64 - c) * spacing_mm;
-                self.interpolate(x, y)
-            })
-            .collect();
-        Psf {
-            size,
-            spacing_mm,
-            center_mm,
-            data,
-            ..self.clone()
-        }
-    }
-}
-
-fn keys_weights(t: f64) -> [f64; 4] {
-    let a = -0.5;
-    let k = |x: f64| {
-        let x = x.abs();
-        if x <= 1.0 {
-            ((a + 2.0) * x - (a + 3.0)) * x * x + 1.0
-        } else if x < 2.0 {
-            ((a * x - 5.0 * a) * x + 8.0 * a) * x - 4.0 * a
-        } else {
-            0.0
-        }
-    };
-    [k(1.0 + t), k(t), k(1.0 - t), k(2.0 - t)]
 }
 
 /// Raw (unnormalised) `|U|²` on an `size²` grid with spacing `dx`, centred
@@ -766,19 +730,15 @@ pub struct PolyPsfSettings {
     pub grid_size: usize,
     pub spacing_mm: f64,
     pub normalization: PsfNormalization,
-    /// Both transforms evaluate every wavelength exactly on the common grid
-    /// (band-limited resampling), by chirp convolutions on large grids.
-    pub transform: PsfTransform,
 }
 
 impl PolyPsfSettings {
-    /// Exact (matrix-transform) settings, Strehl-normalised.
+    /// Strehl-normalised settings.
     pub fn new(grid_size: usize, spacing_mm: f64) -> Self {
         PolyPsfSettings {
             grid_size,
             spacing_mm,
             normalization: PsfNormalization::Strehl,
-            transform: PsfTransform::Matrix,
         }
     }
 }

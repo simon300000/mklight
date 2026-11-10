@@ -1,10 +1,9 @@
 // Sequential / path ray-trace kernel (mkl_trace).
 //
-// The loop below is the legacy twin of trace_kernel::trace_resident and of
+// The loop below is the twin of trace_kernel::trace_resident and of
 // mkl_trace_raw (trace_shared.h); change all three together. It is kept
 // separate so that the resident state, normal and record hooks cannot shift
-// the compiler's whole-kernel decisions for mkl_trace: its IR is identical
-// to the single-file kernel it replaced.
+// the compiler's whole-kernel decisions for mkl_trace.
 //
 // trace_overlays.metal compiles this file again as mkl_trace_overlays, with
 // the sag-overlay code, in its own translation unit: that code costs

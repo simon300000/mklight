@@ -21,8 +21,6 @@ public struct SnapshotHash: Codable, Sendable, Hashable, CustomStringConvertible
 public struct ModelSnapshot: Sendable, Hashable {
     public let system: OpticalSystem
     public let hash: SnapshotHash
-    /// Non-fatal problems the engine found while validating.
-    public let warnings: [String]
     /// Hash of the glass library the snapshot was taken with (the engine's
     /// `library_hash`; `nil` for engines without user catalogs). A result is
     /// current only while both hashes match (docs/FFI.md, result envelope).
@@ -30,10 +28,9 @@ public struct ModelSnapshot: Sendable, Hashable {
 
     /// Engine implementations create snapshots; front ends receive them from
     /// `EngineClient.openSnapshot`.
-    public init(system: OpticalSystem, hash: SnapshotHash, warnings: [String] = [], libraryHash: String? = nil) {
+    public init(system: OpticalSystem, hash: SnapshotHash, libraryHash: String? = nil) {
         self.system = system
         self.hash = hash
-        self.warnings = warnings
         self.libraryHash = libraryHash
     }
 
@@ -49,16 +46,13 @@ public struct ModelSnapshot: Sendable, Hashable {
 public struct EngineInfo: Sendable, Hashable {
     public var name: String
     public var version: String
-    /// Compute backends available, e.g. `["cpu_reference", "metal"]`.
-    public var backends: [String]
     /// True for engines that return synthetic data (`MockEngine`). Front ends
     /// must label such results.
     public var isMock: Bool
 
-    public init(name: String, version: String, backends: [String], isMock: Bool) {
+    public init(name: String, version: String, isMock: Bool) {
         self.name = name
         self.version = version
-        self.backends = backends
         self.isMock = isMock
     }
 }
@@ -292,7 +286,7 @@ extension EngineClient {
         var system = snapshot.system
         for outcome in report["outcomes"]?.array ?? [] {
             guard let target = outcome["target"], let value = outcome["value"]?.nf, value.isFinite,
-                let path = try? MKLightJSON.decode(ParamPath.self, from: MKLightJSON.encode(target))
+                let path = try? target.decode(ParamPath.self)
             else { continue }
             system.setValue(value, at: path)
         }

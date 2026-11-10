@@ -1541,11 +1541,40 @@ fn native_analysis_result_adapter() {
         &b,
         rs.clone(),
         &settings,
-        gpu::TransportOptions::default(),
+        gpu::TransportOptions {
+            gpu_share: Some(1.),
+            ..Default::default()
+        },
         &ctx,
     )
     .unwrap();
-    let reference = mklight_stray::analyze(rs, &settings, &JobContext::new()).unwrap();
+    let reference = mklight_stray::analyze(rs.clone(), &settings, &JobContext::new()).unwrap();
+    // The share rule gives the device none of so few sources: the run is the
+    // CPU reference and is reported as one.
+    let ctx_cpu = JobContext::new();
+    let (cpu, _) = gpu::analyze_with_signatures(
+        &b,
+        rs,
+        &settings,
+        gpu::TransportOptions::default(),
+        &ctx_cpu,
+    )
+    .unwrap();
+    assert_eq!(cpu.run_info.backend, "cpu-f64");
+    assert_eq!(
+        cpu.run_info.precision,
+        mklight_core::job::Precision::F64Reference
+    );
+    assert_eq!(
+        cpu.run_info.settings["resident"]["settings"]["fallback_count"],
+        0
+    );
+    assert!(gpu::reference_by_division(&cpu.run_info));
+    assert!(!gpu::reference_by_division(&got.run_info));
+    assert_eq!(ctx_cpu.progress.fraction(), 1.);
+    assert_eq!(cpu.energy, reference.energy);
+    assert_eq!(cpu.maps, reference.maps);
+    assert_eq!(cpu.warnings, reference.warnings);
     assert!(got.run_info.backend.starts_with("metal:"));
     assert_eq!(got.run_info.precision, mklight_core::job::Precision::F32Gpu);
     assert_eq!(
@@ -1658,6 +1687,10 @@ fn hybrid_designs_agree() {
     assert_eq!(all_cpu.energy, cpu.energy);
     assert_eq!(all_cpu.detector, cpu.detector);
     assert_eq!(all_cpu.signatures, cpu.signatures);
+    let info = all_cpu.run_info.as_ref().unwrap();
+    assert_eq!(info.backend, "cpu-f64");
+    assert_eq!(info.precision, mklight_core::job::Precision::F64Reference);
+    assert_eq!(info.settings["fallback_count"], 0);
     let all_gpu = run(
         gpu::Design::CoSplit,
         gpu::TransportOptions {

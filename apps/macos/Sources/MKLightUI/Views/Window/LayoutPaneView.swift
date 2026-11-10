@@ -24,7 +24,7 @@ struct LayoutPaneView: View {
                 window: window, system: system, scene: scene, stale: pane.isStale, accent: accent, footprints: footprints,
                 error: $error
             )
-            .accessibilityLabel(accessibilityText(scene))
+            .accessibilityLabel(LayoutViewport.accessibilityText(scene, mode: window.viewportMode, system: system))
             if let error {
                 ContentUnavailableView("Viewport Unavailable", systemImage: "exclamationmark.triangle", description: Text(error))
                     .background(.background)
@@ -76,8 +76,7 @@ struct LayoutPaneView: View {
     private var modes: [ViewportMode] { anamorphic || window.viewportMode == .sectionXZ ? [.section2D, .sectionXZ, .orbit3D] : [.section2D, .orbit3D] }
 
 
-    /// The engine draws the section the view shows (`section`), and the
-    /// surface mesh only when the 3-D view asks for it.
+    /// The engine draws the section the view shows (`section`).
     private func syncSection() {
         let wanted: JSONValue? = window.viewportMode == .sectionXZ ? .string("xz") : nil
         if pane.settings["section"] != wanted { pane.set("section", wanted) }
@@ -105,13 +104,6 @@ struct LayoutPaneView: View {
         }
     }
 
-    private func accessibilityText(_ scene: LayoutScene?) -> String {
-        guard let scene else { return "Layout, not available" }
-        let rays = scene.polylines.filter { $0.kind == .ray }.count
-        let length = scene.bounds.max.z - scene.bounds.min.z
-        return "Layout, \(window.viewportMode == .orbit3D ? "3D view" : window.viewportMode == .sectionXZ ? "x–z section" : "meridional section"), \(system.surfaces.count - 2) surfaces, \(rays) rays, \(Fmt.short(length)) millimetres long"
-    }
-
     private var accent: SIMD3<Float> {
         let r = Color.accentColor.resolve(in: environment)
         return SIMD3(r.red, r.green, r.blue)
@@ -136,7 +128,17 @@ private struct LayoutViewport: View {
                 scene: scene, mode: window.viewportMode, coloring: window.rayColoring,
                 selectedSurface: window.selection.flatMap { system.surfaceIndex(of: $0) }, stale: stale,
                 fitRequest: window.fitRequest, accent: accent, footprints: footprints, fitLens: window.fitLens),
-            camera: $window.camera, error: $error)
+            accessibilityText: Self.accessibilityText(scene, mode: window.viewportMode, system: system), camera: $window.camera,
+            error: $error)
+    }
+
+    /// The layout in words: the view, the surfaces between object and
+    /// image, the rays drawn and the scene's length.
+    static func accessibilityText(_ scene: LayoutScene?, mode: ViewportMode, system: OpticalSystem) -> String {
+        guard let scene else { return "Layout, not available" }
+        let rays = scene.polylines.filter { $0.kind == .ray }.count
+        let length = scene.bounds.max.z - scene.bounds.min.z
+        return "Layout, \(mode == .orbit3D ? "3D view" : mode == .sectionXZ ? "x–z section" : "meridional section"), \(system.surfaces.count - 2) surfaces, \(rays) rays, \(Fmt.short(length)) millimetres long"
     }
 }
 

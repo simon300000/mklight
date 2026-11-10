@@ -5,6 +5,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
+publish.workspace = true
 build = "build.rs"
 
 [dependencies]
@@ -12,7 +13,6 @@ mklight-core.workspace = true
 mklight-gpu.workspace = true
 blake3.workspace = true
 bytemuck.workspace = true
-serde_json.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6.3"
@@ -22,9 +22,9 @@ block2 = "0.6.2"
 dispatch2 = "0.3.0"
 
 [dev-dependencies]
-approx.workspace = true
 mklight-trace.workspace = true
 rayon.workspace = true
+serde_json.workspace = true
 
 [build-dependencies]
 blake3.workspace = true

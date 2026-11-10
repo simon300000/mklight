@@ -11,7 +11,7 @@ use mklight_gpu::geometry::{self, Coddington, FieldData};
 use rayon::prelude::*;
 use std::sync::atomic::AtomicUsize;
 impl Geometry<'_> {
-    /// Resident Coddington output for P6/P8; signed ray distances and dz.
+    /// Resident Coddington output: signed ray distances and dz.
     pub fn coddington(&self, p: &mut ResidentPlan, hits: ResidentHits) -> MkResult<BufferId> {
         let n = hits.rays.count;
         let output = p.scratch(BufferDesc::new(ElementType::DoubleFloat, [n, 3]));
@@ -198,7 +198,6 @@ pub fn field_curvature_job(
     let wls = s
         .wavelengths
         .resolve(t.num_wavelengths(), t.system().primary_wavelength)?;
-    let n = fields.len() * wls.len();
     let geo = Geometry::new(b, t, ctx)?;
     let mut p = ResidentPlan::new(t.system().snapshot.clone());
     p.settings = serde_json::to_value(s).unwrap();
@@ -221,19 +220,22 @@ pub fn field_curvature_job(
     // in double-float lost significance against the f64 reference.
     let close_fallbacks = AtomicUsize::new(0);
     let fb = &close_fallbacks;
-    let cross: Vec<[f64; 2]> = fields
+    // Per field its foci at every wavelength; `None` for a field that
+    // cannot be resolved.
+    let cross: Vec<Option<Vec<[f64; 2]>>> = fields
         .par_iter()
-        .flat_map_iter(|&fp| {
-            let prepared = t.prepare_field(fp).ok();
-            wls.iter().map(move |&w| {
-                prepared
-                    .as_ref()
-                    .and_then(|f| cross_check_focus(t, f, w, s.close_ray_step, fb))
-                    .map_or([f64::NAN; 2], |a| a.axial().into())
-            })
+        .map(|&fp| {
+            ctx.check()?;
+            Ok(t.prepare_field(fp).ok().map(|f| {
+                wls.iter()
+                    .map(|&w| {
+                        cross_check_focus(t, &f, w, s.close_ray_step, fb)
+                            .map_or([f64::NAN; 2], |a| a.axial().into())
+                    })
+                    .collect()
+            }))
         })
-        .collect();
-    debug_assert_eq!(cross.len(), n);
+        .collect::<MkResult<_>>()?;
     let r = geo.run(p, &ctx.subrange(0.0, 0.95))?;
     let views: Vec<_> = r
         .outputs
@@ -246,17 +248,22 @@ pub fn field_curvature_job(
         .collect::<MkResult<_>>()?;
     let rotational = system_symmetry(t.system().system()) == Symmetry::Rotational;
     let mut warnings = t.warnings().to_vec();
+    for (xy, c) in sweep.coordinates.iter().zip(&cross) {
+        if c.is_none() {
+            warnings.push(format!("field {xy:?}: could not be resolved"));
+        }
+    }
     let mut curves = Vec::new();
     let mut fallback_count = 0;
     for (wi, &w) in wls.iter().enumerate() {
         let (scale, efl) = scales(t, w)?;
         let mut rows = Vec::new();
         let mut bad = Vec::new();
-        for fi in 0..fields.len() {
+        for (fi, cross) in cross.iter().enumerate() {
             ctx.check()?;
             let i = fi * wls.len() + wi;
             let a = &v[0][3 * i..];
-            let c = cross[i];
+            let c = cross.as_ref().map_or([f64::NAN; 2], |c| c[wi]);
             let im = &v[1][5 * i..];
             let axis = sweep.components[fi];
             let mut real = im[axis].to_f64();

@@ -135,10 +135,9 @@ public struct ModelIssue: Sendable, Hashable, CustomStringConvertible {
 
 extension OpticalSystem {
     /// The checks of the engine's `OpticalSystem::validate`, collected rather
-    /// than stopping at the first, plus two the engine leaves to its JSON
-    /// boundary or its solvers: values JSON cannot carry (NaN, and ±∞ outside
-    /// the thicknesses that allow it) are errors, and mechanical parts attached
-    /// to missing surfaces are warnings.
+    /// than stopping at the first. Values JSON cannot carry (NaN, and ±∞
+    /// outside the thicknesses that allow it) are errors; a mechanical part
+    /// attached to a missing surface is a warning here.
     public func structuralIssues() -> [ModelIssue] {
         let json = nonRepresentableValueIssues()
         var out: [ModelIssue] = json

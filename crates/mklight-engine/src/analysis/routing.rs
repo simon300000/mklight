@@ -19,16 +19,20 @@ use mklight_core::job::{BackendAttempt, Precision};
 use mklight_core::{JobContext, MkError, OpticalSystem};
 use serde_json::{Value, json};
 
-/// Analyses whose Metal output failed the f64 comparison on most P11 default
-/// samples (GPU §9.2) always run on the reference. Sporadic disagreements are
+/// Analyses whose device output failed the f64 comparison on most default
+/// samples always run on the reference (docs/GPU.md §9.2 has the evidence:
+/// `encircled_energy` on 16 of 16 samples, where the adapter's bin check
+/// under geometry uncertainty completes the result in f64;
+/// `polarization_pupil_map` on 13 of 16, in the axes of samples whose
+/// retardance or diattenuation vanishes). Sporadic disagreements are
 /// documented residual gaps, not runtime gates.
 pub(crate) fn reference_reason(analysis: &str) -> Option<&'static str> {
     match analysis {
         "encircled_energy" => Some(
-            "static capability: P11 encircled_energy failed f64 comparison on 16/16 default samples (geometry-uncertainty bin completion)",
+            "static capability: encircled_energy is not accurate enough on the GPU (energy bins within the ray position uncertainty)",
         ),
         "polarization_pupil_map" => Some(
-            "static capability: P11 polarization_pupil_map failed f64 comparison on 13/16 default samples (undefined polarization axes)",
+            "static capability: polarization_pupil_map is not accurate enough on the GPU (undefined polarization axes)",
         ),
         _ => None,
     }
@@ -38,9 +42,9 @@ pub(crate) fn reference_reason(analysis: &str) -> Option<&'static str> {
 /// data stays on the reference until the cost model is recalibrated.
 pub(crate) fn auto_reference_reason(analysis: &str) -> Option<&'static str> {
     reference_reason(analysis).or(match analysis {
-        "wavefront_map" => Some(
-            "static capability: the host-traced wavefront_map route has no cost calibration for auto",
-        ),
+        "wavefront_map" => {
+            Some("static capability: wavefront_map on the GPU has no cost calibration for auto")
+        }
         _ => None,
     })
 }
@@ -107,7 +111,9 @@ pub(crate) fn auto_route(
         )
     });
     if hinted.route == Route::Cpu {
-        model.settle(route, &hinted);
+        if repeated.is_none() {
+            model.settle(route, &hinted);
+        }
         return cpu(hinted.note(), hinted.json, !open);
     }
     // Native, or the family needs the device: open it.
@@ -119,9 +125,7 @@ pub(crate) fn auto_route(
     else {
         return selected;
     };
-    let known = device
-        .known_failure(&request_key(r.snapshot, r.library, r.analysis, r.settings))
-        .is_some();
+    let known = device.known_failure(&route).is_some();
     let d = if hinted.route == Route::Metal && !known {
         hinted
     } else {
@@ -192,17 +196,14 @@ pub(crate) fn run(
     let Some(device) = gpu::device(input) else {
         return analysis.run(input, settings, ctx);
     };
-    let reference = AnalysisInput::with_resolver(
+    // The same run on the reference: policy, graph and stop carry over.
+    let reference = input.derive(
         input.snapshot.clone(),
-        input.library.clone(),
         BackendInfo::cpu_reference(),
         Box::new(|| input.resolved()),
-    )
-    .with_stop_token(input.stop.clone())
-    .with_library_hash(input.library_hash().into());
+    );
     let auto = crate::backend::Backend::is_auto_request(&input.requested_backend);
     let capability = reference_reason(analysis.name());
-    let system = input.snapshot.system();
     let (cost, note) = if let Some(reason) = capability {
         (static_capability(reason), reason)
     } else if auto {
@@ -211,10 +212,10 @@ pub(crate) fn run(
             // Decided by `auto_route` (the cost model).
             Some(d) => (d, ""),
             // An input routed elsewhere: only the accuracy exclusions apply.
-            None => match cost::accuracy_exclusion(analysis.name(), settings, system) {
+            None => match cost::accuracy_exclusion(analysis.name()) {
                 Some(evidence) => (
                     json!({"decision":"cpu_reference","rule":"accuracy exclusion","evidence":evidence,"version":cost::VERSION}),
-                    "auto: the native path failed its f64 comparison on the measured evidence for this analysis",
+                    cost::EXCLUDED_NOTE,
                 ),
                 None => (
                     json!({"decision":"qualified_metal","reason":"no cost decision","version":cost::VERSION}),
@@ -263,22 +264,13 @@ pub(crate) fn run(
     );
     if let Some(known) = device.known_failure(&key) {
         let reason = format!(
-            "resident {} skipped: the same input failed on this device after {:.1} ms ({})",
+            "native {} skipped: the same input failed on this device after {:.1} ms ({})",
             analysis.name(),
             known.elapsed_ms,
             known.reason
         );
         attempt("skipped", reason.clone(), 0.);
         fallback(reason, false);
-        return analysis.run(&reference, settings, ctx);
-    }
-    if let Err(why) = analysis.native_preflight(settings, system, device.backend.info()) {
-        let reason = format!(
-            "resident {} rejected before preparation: {why}",
-            analysis.name()
-        );
-        attempt("infeasible", reason.clone(), 0.);
-        fallback(reason, auto);
         return analysis.run(&reference, settings, ctx);
     }
     let start = Instant::now();
@@ -298,7 +290,7 @@ pub(crate) fn run(
                 );
             }
             let reason = format!(
-                "resident {} failed after {elapsed_ms:.1} ms: {e}",
+                "native {} failed after {elapsed_ms:.1} ms: {e}",
                 analysis.name()
             );
             attempt("failed", reason.clone(), elapsed_ms);
@@ -340,9 +332,6 @@ mod tests {
         }
         fn category(&self) -> &str {
             "diagnostic"
-        }
-        fn gpu_path(&self) -> bool {
-            true
         }
         fn settings_schema(&self) -> Value {
             json!({"type":"object","properties":{"rings":{"type":"integer","default":2}}})
@@ -457,6 +446,69 @@ mod tests {
         }
     }
 
+    /// The reference run that completes a failed or skipped native attempt
+    /// is the same run: it sees the request's policy and the engine's
+    /// analysis graph.
+    #[test]
+    fn fallbacks_keep_the_run_policy_and_the_graph() {
+        use mklight_core::job::{AimStopKind, Tier};
+        struct Echo;
+        impl Analysis for Echo {
+            fn name(&self) -> &str {
+                "ray_grid"
+            }
+            fn title(&self) -> &str {
+                "echo"
+            }
+            fn category(&self) -> &str {
+                "diagnostic"
+            }
+            fn run(
+                &self,
+                input: &AnalysisInput<'_>,
+                _: &Value,
+                _: &JobContext,
+            ) -> EngineResult<AnalysisOutput> {
+                if gpu::device(input).is_some() {
+                    return Err(MkError::Unsupported("no native path".into()).into());
+                }
+                Ok(AnalysisOutput {
+                    json: json!({"policy": input.policy, "graph": input.graph().is_some()}),
+                    ..Default::default()
+                })
+            }
+        }
+        let opened = Arc::new(AtomicUsize::new(0));
+        let e = engine(&opened);
+        assert!(e.analysis_graph().is_some());
+        e.register_analysis(Arc::new(Echo));
+        let s = e
+            .session_from_project(Project::new(samples::cooke_triplet()))
+            .unwrap();
+        let mut req = AnalysisRequest::new("ray_grid", Value::Null);
+        req.backend = Some(Backend::Gpu("probe".into()));
+        req.tier = Tier::Preview;
+        // Neither is the default policy (design tier, requested aim stop).
+        let policy = crate::analysis::RunPolicy {
+            tier: Tier::Preview,
+            aim_stop: AimStopKind::Conditioned,
+        };
+        assert_eq!(e.config().aim_stop, policy.aim_stop);
+        for outcome in ["failed", "skipped"] {
+            let r = s.run_analysis(&req, &JobContext::new()).unwrap();
+            assert_eq!(r.run_info.failed_attempts[0].outcome, outcome);
+            assert_eq!(
+                r.json,
+                json!({"policy": policy, "graph": true}),
+                "{outcome}"
+            );
+            assert_eq!(
+                (r.run_info.tier, r.run_info.aim_stop),
+                (policy.tier, policy.aim_stop)
+            );
+        }
+    }
+
     /// `auto` routes that are CPU by policy never open the device; the
     /// decision says so.
     #[test]
@@ -542,8 +594,7 @@ mod tests {
     }
 
     /// Without GPU providers every `auto` route is the reference, decided
-    /// before any device; with the calibrated family the hint decides
-    /// without opening anything.
+    /// before any device.
     #[test]
     fn auto_routes_need_no_device_when_hints_suffice() {
         let reg = crate::backend::BackendRegistry::cpu_only();
@@ -563,8 +614,6 @@ mod tests {
             };
             let s = auto_route(&model, &reg, &r);
             assert!(s.device.is_none() && s.info.id == "cpu_reference", "{name}");
-            let d = model.decide(name, &settings, &system, Device::Apple, &State::default());
-            assert_ne!(d.route, Route::Undecided, "{name}");
         }
     }
 

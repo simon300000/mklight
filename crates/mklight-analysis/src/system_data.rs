@@ -11,7 +11,8 @@ use mklight_core::{FieldKind, MkResult, RayAiming, ResolvedSystem, RunInfo, Surf
 use mklight_trace::{FirstOrder, ParaxialModel, ParaxialXY, SequentialTracer};
 use serde::{Deserialize, Serialize};
 
-use crate::util::{WavelengthSelection, doe_power, field_unit, nf, run_info};
+use crate::seidel::{petzval_radius, petzval_sum};
+use crate::util::{WavelengthSelection, airy_radius, doe_power, field_unit, nf, run_info};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -173,18 +174,7 @@ fn table(tracer: &SequentialTracer, w: usize) -> FirstOrderTable {
     let osys = sys.system();
     let fu = field_unit(osys.fields.kind);
     let m = ParaxialModel::new(sys, w);
-    let n = &m.reduced_index;
-    let petzval: f64 = (1..n.len() - 1)
-        .map(|j| {
-            let power = if matches!(sys.surfaces[j].shape, SurfaceShape::Diffractive { .. }) {
-                sys.surfaces[j].shape.curvature() * (n[j] - n[j - 1])
-            } else {
-                m.power[j]
-            };
-            power / (n[j - 1] * n[j])
-        })
-        .sum();
-    let n_img = n[n.len() - 2]; // signed (see `seidel` docs)
+    let petzval = petzval_sum(sys, &m);
     let opt = |v: Option<f64>| v.unwrap_or(f64::NAN);
     let entries = vec![
         entry("efl", "Effective focal length", fo.efl, "mm"),
@@ -275,17 +265,13 @@ fn table(tracer: &SequentialTracer, w: usize) -> FirstOrderTable {
         entry(
             "petzval_radius",
             "Petzval radius",
-            if petzval != 0.0 {
-                -1.0 / (n_img * petzval)
-            } else {
-                f64::INFINITY
-            },
+            petzval_radius(&m, petzval),
             "mm",
         ),
         entry(
             "airy_radius",
             "Airy radius",
-            1.22 * fo.wavelength_um * 1e-3 * fo.working_f_number,
+            airy_radius(fo.wavelength_um, fo.working_f_number),
             "mm",
         ),
     ];

@@ -2,9 +2,9 @@
 //! and the shared host helpers of the resident candidate traces
 //! ([`resident`], driven by [`crate::gpu::ResidentEvaluator`]).
 //!
-//! Reported points are f32 (`docs/GPU.md` §8), so values carry a rounding
-//! noise of about half an f32 ulp of the image coordinates. Finite
-//! differences therefore need larger steps than on the f64 reference
+//! Device rays are double-float traces (hi + lo planes), so values carry a
+//! rounding noise of ~1e-12 relative, against ~1e-16 on the f64 reference.
+//! Forward differences therefore take larger steps than on the reference
 //! (`docs/OPTIMIZATION.md`).
 
 use mklight_trace::{OpdReference, SequentialTracer, TraceResult};
@@ -12,19 +12,20 @@ use mklight_trace::{OpdReference, SequentialTracer, TraceResult};
 use super::OperandError;
 use super::operand::{OperandKind, RayQuantity};
 
-/// Can the device trace operands of `kind` (with wavefront operands enabled
-/// or not)? Everything else (paraxial, model, relative illumination, …) is
-/// evaluated on the host.
-pub fn gpu_supports(kind: &OperandKind, wavefront: bool) -> bool {
+/// Can the device trace operands of `kind`? Everything else (paraxial,
+/// model, …) is evaluated on the host; relative illumination is integrated
+/// there too, with its visibility scans traced on the device.
+pub(crate) fn gpu_supports(kind: &OperandKind) -> bool {
     use OperandKind::*;
     match kind {
         RayAberration { .. }
         | RmsSpot { .. }
         | SpotCentroid { .. }
         | Distortion { .. }
-        | LateralColour { .. } => true,
+        | LateralColour { .. }
+        | WavefrontAberration { .. }
+        | WavefrontRms { .. } => true,
         RealRay { quantity, .. } => *quantity != RayQuantity::IncidenceAngle,
-        WavefrontAberration { .. } | WavefrontRms { .. } => wavefront,
         _ => false,
     }
 }

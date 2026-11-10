@@ -109,16 +109,6 @@ impl PrtMatrix {
     };
     pub const ZERO: PrtMatrix = PrtMatrix { m: [[ZERO; 3]; 3] };
 
-    pub fn from_real(r: &Mat3) -> Self {
-        let mut m = [[ZERO; 3]; 3];
-        for (i, row) in m.iter_mut().enumerate() {
-            for (j, c) in row.iter_mut().enumerate() {
-                *c = C::new(r.m[i][j], 0.0);
-            }
-        }
-        PrtMatrix { m }
-    }
-
     /// `self += c · u vᵀ`.
     fn add_dyad(&mut self, c: C, u: Vec3, v: Vec3) {
         let (u, v) = ([u.x, u.y, u.z], [v.x, v.y, v.z]);
@@ -932,11 +922,6 @@ impl PolarizedRay {
     /// power fraction before bulk absorption.
     pub fn jones(&self) -> JonesMatrix {
         self.prt.jones(self.basis_out, self.basis_in)
-    }
-
-    /// Jones matrix in caller-chosen real orthonormal transverse bases.
-    pub fn jones_in(&self, out: (Vec3, Vec3), inp: (Vec3, Vec3)) -> JonesMatrix {
-        self.prt.jones(out, inp)
     }
 
     /// Amplitude Jones matrix `√τ_internal · J` (the pupil apodisation and

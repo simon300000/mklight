@@ -248,3 +248,66 @@ fn global_methods_honour_cancellation() {
     assert_eq!(r.termination, Termination::Cancelled);
     assert_eq!(calls.load(Ordering::SeqCst), 5);
 }
+
+#[test]
+fn hammer_rejects_a_step_that_is_not_positive() {
+    let p = rastrigin(2, 5.12);
+    for step in [-0.5, 0.0, f64::NAN] {
+        let s = HammerSettings {
+            step,
+            ..Default::default()
+        };
+        let r = hammer(&p, &[1.0; 2], &s, &Monitor::default());
+        assert!(
+            matches!(r, Err(mklight_core::MkError::InvalidParam(_))),
+            "{step}: {r:?}"
+        );
+    }
+}
+
+/// A target reached by the last allowed iteration is reported as reached.
+#[test]
+fn target_reached_in_the_last_iteration() {
+    let p = rastrigin(3, 5.12);
+    let unreachable = f64::NEG_INFINITY;
+    // The first iteration count whose last iteration improves the best merit,
+    // and a target between the merits before and after it.
+    let pick = |run: &dyn Fn(usize, f64) -> mklight_optim::OptimResult| {
+        (1..50)
+            .find_map(|k| {
+                let (before, after) = (run(k - 1, unreachable).merit, run(k, unreachable).merit);
+                (after < before).then_some((k, 0.5 * (before + after)))
+            })
+            .unwrap()
+    };
+    let de = |generations: usize, target: f64| {
+        let s = DeSettings {
+            seed: 5,
+            max_generations: generations,
+            target_merit: target,
+            ..Default::default()
+        };
+        differential_evolution(&p, None, &s, &Monitor::default()).unwrap()
+    };
+    let (k, target) = pick(&de);
+    let r = de(k, target);
+    assert_eq!(
+        (r.termination, r.iterations),
+        (Termination::TargetReached, k)
+    );
+
+    let nm = |iterations: usize, target: f64| {
+        let s = NelderMeadSettings {
+            max_iterations: iterations,
+            target_merit: target,
+            ..Default::default()
+        };
+        nelder_mead(&p, &[1.3, -0.7, 2.1], &s, &Monitor::default()).unwrap()
+    };
+    let (k, target) = pick(&nm);
+    let r = nm(k, target);
+    assert_eq!(
+        (r.termination, r.iterations),
+        (Termination::TargetReached, k)
+    );
+}

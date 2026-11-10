@@ -1,5 +1,6 @@
 //! Portable scalar-wave algebra; trigonometry is tolerance-qualified, not bitwise.
 use super::*;
+pub(crate) use crate::transforms::cis;
 use bytemuck::{Pod, Zeroable};
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
@@ -23,8 +24,7 @@ pub struct Params {
     pub x_axis: [[f32; 2]; 3],
     pub y_axis: [[f32; 2]; 3],
     pub normal: [[f32; 2]; 3],
-    pub aperture: [f32; 2],
-    pub sigma: f32,
+    pub reserved_tail: [f32; 3],
     pub projection: f32,
 }
 pub fn pair(v: Df32) -> [f32; 2] {
@@ -54,7 +54,7 @@ pub fn params(r: &Request) -> Params {
         | Request::Lattice(_)
         | Request::Statistics(_)
         | Request::Diagnostics(_)
-        | Request::Resample(_) => unreachable!("resample has separate parameters"),
+        | Request::Resample(_) => unreachable!("grouped requests have their own parameters"),
         Request::FocusCorrelation {
             on_axis,
             pupil,
@@ -133,18 +133,6 @@ pub fn params(r: &Request) -> Params {
             p.size = shifts.desc.shape[0] as u32;
             Some(geometry)
         }
-        Request::Detector {
-            frequencies,
-            aperture,
-            sigma,
-            ..
-        } => {
-            p.mode = 4;
-            p.size = frequencies.desc.shape[0] as u32;
-            p.aperture = *aperture;
-            p.sigma = *sigma;
-            None
-        }
         Request::LineSpread { image, spacing, .. } => {
             p.mode = 5;
             p.n = image.desc.shape[0] as u32;
@@ -159,12 +147,6 @@ pub fn params(r: &Request) -> Params {
     }
     p
 }
-pub fn cis(mut phase: Df32) -> [f32; 2] {
-    phase = phase.add_f32(-phase.hi.round_ties_even());
-    phase = phase.add_f32(-phase.hi.round_ties_even());
-    let t = scalar(phase) * std::f32::consts::TAU;
-    [t.cos(), t.sin()]
-}
 pub fn direction(p: &Params, k: usize) -> [Df32; 3] {
     let n = p.n as usize;
     let uv = |i| Df32::from_f32((2 * i + 1) as f32) / Df32::from_f32(n as f32) - Df32::from_f32(1.);
@@ -176,8 +158,8 @@ pub fn direction(p: &Params, k: usize) -> [Df32; 3] {
 pub fn dot(a: [Df32; 3], b: [Df32; 3]) -> Df32 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
-/// Pupil samples per partial sum of Huygens and correlation outputs; the
-/// partials are then added in block order.
+/// Samples per partial sum of the blocked wave reductions; the partials are
+/// then added in block order.
 pub const SUM_BLOCK: usize = 256;
 /// Blocked double-float sum of `terms(k)` over `0..n` in the kernels' order.
 pub fn blocked_sum<const C: usize>(
@@ -288,22 +270,10 @@ pub fn huygens_intensity(p: &Params, z: [Df32; 2], s: &[Df32]) -> f32 {
     };
     scalar((z[0] * z[0] + z[1] * z[1]) / div)
 }
-pub fn detector(p: &Params, nu: [f32; 2]) -> f32 {
-    let sinc = |x: f32| {
-        if x == 0. {
-            1.
-        } else {
-            let t = std::f32::consts::PI * x;
-            t.sin() / t
-        }
-    };
-    (sinc(p.aperture[0] * nu[0]) * sinc(p.aperture[1] * nu[1])).abs()
-        * (-2. * std::f32::consts::PI.powi(2) * p.sigma * p.sigma * (nu[0] * nu[0] + nu[1] * nu[1]))
-            .exp()
-}
 
-/// One optical-correlation contribution at a focus shift. Matches P2's
-/// unwrapped phase interpolation and fractional-cell zero-lag restoration.
+/// One optical-correlation contribution at a focus shift. Matches the
+/// transforms' unwrapped phase interpolation and fractional-cell zero-lag
+/// restoration.
 pub fn correlation_term(
     p: &Params,
     k: usize,

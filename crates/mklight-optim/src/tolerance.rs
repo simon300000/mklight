@@ -23,6 +23,7 @@
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Mutex;
 use std::time::Instant;
 
 use mklight_core::param::{IrregularityMode, ParamPath, PlacementComponent};
@@ -33,7 +34,7 @@ use crate::merit::{
     MeritFunctionSpec, Operand, OperandEvaluator, OperandKind, OperandRegistry, OperandValue,
     OpticalProblem, VariableSpec,
 };
-use crate::monitor::{Monitor, Termination};
+use crate::monitor::{DEFAULT_FEASIBILITY_TOL, Monitor, Termination};
 use crate::problem::{CandidateBatch, Problem, merit, total_violation};
 use crate::rand::{Rng, streams};
 
@@ -259,6 +260,13 @@ impl ToleranceSpec {
         }
         Ok(())
     }
+    /// [`Self::validate`], and that the spec applies to `nominal`: every
+    /// toleranced parameter exists there and can be written.
+    pub fn validate_for(&self, nominal: &OpticalSystem) -> MkResult<()> {
+        self.validate()?;
+        self.apply(nominal, &vec![0.0; self.operands.len()])?;
+        Ok(())
+    }
     /// Perturbation vector of Monte-Carlo trial `trial` (reproducible on its
     /// own).
     pub fn sample_trial(&self, seed: u64, trial: u64) -> Vec<f64> {
@@ -382,6 +390,11 @@ impl TrialOutcome {
 
 /// Batched criterion evaluation for perturbation vectors.
 pub trait ToleranceEvaluator: Sync {
+    /// Configuration errors that would fail every trial (a tolerance on a
+    /// parameter the system does not have); checked once before a run.
+    fn validate(&self) -> MkResult<()> {
+        Ok(())
+    }
     fn evaluate_batch(
         &self,
         perturbations: &[Vec<f64>],
@@ -478,6 +491,7 @@ pub fn sensitivity_batched<E: ToleranceEvaluator + ?Sized>(
     batch: usize,
 ) -> MkResult<SensitivityReport> {
     spec.validate()?;
+    evaluator.validate()?;
     let n = spec.operands.len();
     let mut pts = vec![vec![0.0; n]];
     for (i, o) in spec.operands.iter().enumerate() {
@@ -594,9 +608,14 @@ pub fn monte_carlo<E: ToleranceEvaluator + ?Sized>(
             "percentiles must be in [0, 100]".into(),
         ));
     }
-    let nominal = evaluator
-        .evaluate_batch(&[vec![0.0; spec.operands.len()]], &mon.job)?
-        .remove(0);
+    evaluator.validate()?;
+    let mut nominal = evaluator.evaluate_batch(&[vec![0.0; spec.operands.len()]], &mon.job)?;
+    if nominal.len() != 1 {
+        return Err(MkError::Numerical(
+            "tolerance evaluator returned the wrong count".into(),
+        ));
+    }
+    let nominal = nominal.remove(0);
     let start = Instant::now();
     let mut records = Vec::new();
     let mut outcomes: Vec<TrialOutcome> = Vec::with_capacity(s.trials);
@@ -696,7 +715,11 @@ pub fn monte_carlo<E: ToleranceEvaluator + ?Sized>(
         failures: outcomes.len() - ok.len(),
         criteria: outcomes.iter().map(|o| o.criterion).collect(),
         mean: if vals.is_empty() { f64::NAN } else { mean },
-        std_dev: var.sqrt(),
+        std_dev: if vals.is_empty() {
+            f64::NAN
+        } else {
+            var.sqrt()
+        },
         min: vals.first().copied().unwrap_or(f64::NAN),
         max: vals.last().copied().unwrap_or(f64::NAN),
         percentiles: s.percentiles.iter().copied().map(|p| (p, pct(p))).collect(),
@@ -748,6 +771,10 @@ impl<T: OperandEvaluator + ?Sized> OperandEvaluator for &T {
     }
 }
 
+/// Compensator solves one scheduler run takes: each is a thread of its own,
+/// and their evaluations meet in shared device batches.
+const SCHEDULED_SOLVES: usize = 32;
+
 /// Model-level tolerance evaluator: perturb `nominal` by the spec, then
 /// (with compensators) minimise the criterion merit over them by least
 /// squares; the criterion is the resulting merit `Σ w r²`. A trial is `ok`
@@ -767,10 +794,11 @@ impl<E: OperandEvaluator> OpticalToleranceEvaluator<'_, E> {
         // The compensator solve shares the cancellation but not the
         // progress bar: trials run in parallel, and their LM progress would
         // move the caller's bar back and forth.
-        let mon = Monitor::new(JobContext::with(
+        let mut mon = Monitor::new(JobContext::with(
             ctx.cancel.clone(),
             mklight_core::job::Progress::default(),
         ));
+        mon.keep_history = false;
         let ctx = &mon.job;
         let vars: Vec<VariableSpec> = self
             .spec
@@ -795,21 +823,6 @@ impl<E: OperandEvaluator> OpticalToleranceEvaluator<'_, E> {
             self.evaluator,
             self.registry,
         )?;
-        if p.num_variables() == 0 {
-            let vals = p.system_values(&[Some(p.base().clone())], ctx)?;
-            let e = p.to_evaluation(vals);
-            let sc = merit(p.weights(), e.residuals(0), e.status[0]);
-            let viol = total_violation(p.constraints(), e.constraints(0), e.status[0]);
-            return Ok(if sc.is_finite() && viol <= mon.feasibility_tol {
-                TrialOutcome {
-                    criterion: sc,
-                    compensators: Vec::new(),
-                    ok: true,
-                }
-            } else {
-                TrialOutcome::failed()
-            });
-        }
         let mut x0 = p.start_point()?;
         // MTF is not unimodal in focus, so LM from the start can settle on a
         // side lobe. Screen each bounded compensator on a uniform grid first.
@@ -844,7 +857,10 @@ impl<E: OperandEvaluator> OpticalToleranceEvaluator<'_, E> {
             let best = (0..points.len())
                 .min_by(|&a, &b| score(a).total_cmp(&score(b)))
                 .expect("non-empty scan");
-            x0[j] = points[best][j];
+            // A scan without a usable point keeps the start.
+            if score(best).is_finite() {
+                x0[j] = points[best][j];
+            }
         }
         let r = least_squares(&p, &x0, &self.lsq, &mon)?;
         if r.termination == Termination::Cancelled {
@@ -859,6 +875,11 @@ impl<E: OperandEvaluator> OpticalToleranceEvaluator<'_, E> {
 }
 
 impl<E: OperandEvaluator> ToleranceEvaluator for OpticalToleranceEvaluator<'_, E> {
+    fn validate(&self) -> MkResult<()> {
+        self.spec.validate_for(self.nominal)
+    }
+    /// A perturbation that cannot be applied (an invalid parameter value)
+    /// is a failed trial.
     fn evaluate_batch(
         &self,
         perturbations: &[Vec<f64>],
@@ -975,7 +996,9 @@ impl<E: OperandEvaluator> OpticalToleranceEvaluator<'_, E> {
     ) -> MkResult<Vec<TrialOutcome>> {
         if !self.spec.compensators.is_empty() && self.evaluator.gpu_context().is_some() {
             let mut outcomes = Vec::with_capacity(systems.len());
-            for chunk in systems.chunks(32) {
+            // Each solve takes its system out of its slot.
+            let systems: Vec<_> = systems.into_iter().map(Mutex::new).collect();
+            for chunk in systems.chunks(SCHEDULED_SOLVES) {
                 outcomes.extend(crate::gpu::scheduler::run(
                     self.evaluator,
                     chunk.len(),
@@ -989,8 +1012,9 @@ impl<E: OperandEvaluator> OpticalToleranceEvaluator<'_, E> {
                             registry: self.registry,
                             lsq: self.lsq,
                         };
-                        match &chunk[i] {
-                            Some(s) => local.one(s.clone(), ctx),
+                        let system = chunk[i].lock().unwrap().take();
+                        match system {
+                            Some(s) => local.one(s, ctx),
                             None => Ok(TrialOutcome::failed()),
                         }
                     },
@@ -1021,7 +1045,7 @@ impl<E: OperandEvaluator> OpticalToleranceEvaluator<'_, E> {
             Some(e) => e,
             None => p.to_evaluation(p.system_values(&systems, ctx)?),
         };
-        let tol = Monitor::new(ctx.clone()).feasibility_tol;
+        let tol = DEFAULT_FEASIBILITY_TOL;
         Ok((0..systems.len())
             .map(|k| {
                 let m = merit(p.weights(), e.residuals(k), e.status[k]);

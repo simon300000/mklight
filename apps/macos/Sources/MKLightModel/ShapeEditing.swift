@@ -53,15 +53,6 @@ extension SurfaceShape {
             default: false
             }
         }
-
-        /// Types with a normalisation radius (Q, XY, Zernike and the
-        /// diffractive phase).
-        public var isNormalised: Bool {
-            switch self {
-            case .qCon, .qBfs, .xyPolynomial, .zernikeSag, .diffractive: true
-            default: false
-            }
-        }
     }
 
     public var kind: Kind {

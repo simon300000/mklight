@@ -54,11 +54,6 @@ kernel void mkl_wave_intensity(device const float2 *field [[buffer(0)]],device c
 kernel void mkl_wave_focus(device const float *cov [[buffer(1)]],device const float2 *opd [[buffer(2)]],device const float2 *shifts [[buffer(3)]],device float2 *out [[buffer(4)]],constant MklWaveParams &p [[buffer(7)]],uint id [[thread_position_in_grid]]) {
     if(id>=p.count)return;uint k=id+p.first,N=p.n*p.n;out[k]=cov[k%N]>0?mkl_df_add(opd[k%N],wfocus(p,k%N,shifts[k/N])):opd[k%N];
 }
-static float wsinc(float x) {float t=3.14159265358979323846f*x;return x==0?1:sin(t)/t;}
-kernel void mkl_wave_detector(device const float2 *freq [[buffer(0)]],device float *out [[buffer(4)]],constant MklWaveParams &p [[buffer(7)]],uint id [[thread_position_in_grid]]) {
-    if(id>=p.count)return;uint k=id+p.first;float2 v=freq[k];
-    out[k]=abs(wsinc(p.aperture[0]*v.x)*wsinc(p.aperture[1]*v.y))*exp(-2*3.14159265358979323846f*3.14159265358979323846f*p.sigma*p.sigma*(v.x*v.x+v.y*v.y));
-}
 kernel void mkl_wave_lsf(device const float *image [[buffer(0)]],device float *out [[buffer(4)]],constant MklWaveParams &p [[buffer(7)]],uint id [[thread_position_in_grid]]) {
     if(id>=p.count)return;uint k=id+p.first;float2 s=0;
     for(uint j=0;j<p.n;++j)s=mkl_df_add_f32(s,image[k<p.n?j*p.n+k:(k-p.n)*p.n+j]);

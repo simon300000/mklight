@@ -204,8 +204,7 @@ pub struct BackendAttempt {
     /// Backend id (`gpu:metal`).
     pub backend: String,
     /// `failed` (ran and failed), `skipped` (the same input already failed
-    /// deterministically on this device), `infeasible` (rejected by its
-    /// capability/resource check before preparation), `downgraded` (an
+    /// deterministically on this device), `downgraded` (an
     /// explicit request the static capability policy ran on the reference),
     /// or `reference_completion` (the native adapter completed the whole
     /// result on the reference).

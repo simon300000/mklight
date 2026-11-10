@@ -56,7 +56,7 @@ use crate::scene::{DetectorSpec, SceneOptions};
 use crate::source::SourceSpec;
 use crate::system::{Beam, OBSTRUCTION_WARNING, StraySystem, SystemOptions};
 use crate::tally::{EnergyReport, ImageMoments, SignatureFlux};
-use crate::tracer::{SplitMode, StraySettings, run};
+use crate::tracer::{SplitMode, StraySettings, run_fingerprinted};
 
 /// Where the light comes from.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -438,6 +438,7 @@ pub(crate) fn analyze_system_impl(
     let beam = settings.source.resolve(sys)?;
     let mut ss = settings.stray_settings();
     ss.signatures |= all_signatures;
+    let scene_fingerprint = sys.scene.fingerprint();
     // CPU work independent of the transport: the source's primary
     // reference and (deferred) the system fields' obstruction checks.
     // Beside a device transport it reports no progress of its own.
@@ -467,6 +468,7 @@ pub(crate) fn analyze_system_impl(
                 b,
                 sys.resolved().snapshot.clone(),
                 &sys.scene,
+                &scene_fingerprint,
                 &beam.spec,
                 &ss,
                 options,
@@ -485,7 +487,15 @@ pub(crate) fn analyze_system_impl(
             ctx.report(0.02, "stray light: transport");
             let (checked, r) = rayon::join(
                 || side(&quiet),
-                || run(&sys.scene, &beam.spec, &ss, &ctx.subrange(0.02, 1.0)),
+                || {
+                    run_fingerprinted(
+                        &sys.scene,
+                        &beam.spec,
+                        &ss,
+                        &scene_fingerprint,
+                        &ctx.subrange(0.02, 1.0),
+                    )
+                },
             );
             checked?;
             r?
@@ -494,15 +504,10 @@ pub(crate) fn analyze_system_impl(
     drop(side);
     let primary_obstruction = primary_obstruction.flatten();
     // The warnings `StraySystem::build` would have collected.
-    let mut sys_warnings = sys.warnings.clone();
-    if let Some(c) = checks {
-        sys_warnings.extend(c.warnings);
-        for w in &sys.scene.warnings {
-            if !sys_warnings.contains(w) {
-                sys_warnings.push(w.clone());
-            }
-        }
-    }
+    let sys_warnings = match checks {
+        Some(c) => sys.checked_warnings(c.warnings),
+        None => sys.warnings.clone(),
+    };
     let owned = ss.owned_classes;
     let det = &r.detector;
     let area = det.spec.pixel_area();
@@ -582,7 +587,7 @@ pub(crate) fn analyze_system_impl(
             settings,
             system_options: &sys.options,
             source: &beam,
-            scene_fingerprint: sys.scene.fingerprint(),
+            scene_fingerprint,
             resident: execution,
         },
         execution.map_or("cpu-f64", |i| i.backend.as_str()),

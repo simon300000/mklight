@@ -90,6 +90,10 @@ def test_bad_arguments(achromat):
         mklight.trace_grid(achromat, wavelengths=[3])
     with pytest.raises(ValueError):
         mklight.trace_grid(achromat, pupil=[[0.0]])
+    # A grid size outside 1..4096 is refused before anything is allocated.
+    for n in (0, -1, 4097, 10**6, 10**10):
+        with pytest.raises(mklight.InvalidArgumentError, match="pupil grid size"):
+            mklight.trace_grid(achromat, pupil=n)
 
 
 def test_pupil_patterns_and_progress(achromat):

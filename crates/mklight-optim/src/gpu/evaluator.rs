@@ -2,7 +2,7 @@
 //! only unsupported work and device failures invoke the reference evaluator.
 use super::GpuContext;
 use crate::deriv::FdScheme;
-use crate::merit::gpu_eval::resident::{self, RayDesign};
+use crate::merit::gpu_eval::resident::{self, RayDesign, SCHEDULE_CAP};
 use crate::merit::{
     gpu_eval::gpu_supports, mtf_eval::MtfEvaluator, solver_eval::SolverEvaluator, *,
 };
@@ -60,16 +60,16 @@ fn pipeline_chunk(n: usize) -> usize {
 /// ~1e-16 on the f64 reference): with the reference's `√ε` the noise term
 /// gave Jacobian column errors of 2e-6–5e-5 on the samples, at `1e-6`
 /// 3e-8–2e-6 (as close to f64 central differences as the reference's own
-/// forward differences). The f32-era step (`1e-3`) cost up to 1.5e-3 of
-/// truncation and, on a vignetted lens, let a probe cross the vignetting
+/// forward differences). A step of `1e-3` costs up to 1.5e-3 of
+/// truncation and, on a vignetted lens, lets a probe cross the vignetting
 /// edge of a ray that fails at the base point: a penalty jump divided by
-/// the step, one spurious column, and least squares that no longer moved
+/// the step, one spurious column, and a least-squares run that stalls
 /// (`docs/OPTIMIZATION.md`).
 pub const DEVICE_FD_RELATIVE_STEP_FORWARD: f64 = 1e-6;
 /// [`DEVICE_FD_RELATIVE_STEP_FORWARD`] of the wavefront operands (OPD
 /// adds the path-length noise; the reference takes `1e-6`): column errors
 /// 5e-7–2e-5 on the samples against 4e-6–1e-4 at `1e-6` and up to 2e-4 at
-/// the f32-era `1e-4`.
+/// `1e-4`.
 pub const DEVICE_WAVEFRONT_FD_RELATIVE_STEP_FORWARD: f64 = 1e-5;
 
 /// Smallest batch for which an evaluator that has not yet aimed a batch on
@@ -89,28 +89,27 @@ pub struct ResidentEvaluator {
     mtf: MtfEvaluator,
     solvers: SolverEvaluator,
     stats: Arc<Mutex<EvaluationStats>>,
-    /// Rays the device recently left unresolved in a
-    /// quarter or more of a batch's candidates. Later batches route them to
-    /// the host before the plan, where they are traced while the device
-    /// works, so the device's commands are not held up by their slow lanes.
+    /// Rays the device left unresolved, or resolved slowly, in an eighth or
+    /// more of a batch's candidates. Later batches route them to the host
+    /// before the plan, where they are traced while the device works, so
+    /// the device's commands are not held up by their slow lanes.
     host_rays: Arc<Mutex<HostRays>>,
-    /// Device aiming schedule cap (`None`: [`resident::HYBRID_SCHEDULE_CAP`]).
+    /// Device aiming schedule cap (`None`: [`SCHEDULE_CAP`]).
     aim_cap: Option<u32>,
     /// Aim a batch's pupil rays on the device (with host completion) when
     /// its [`aiming_work`] reaches this (`Some(0)`: every batch), else on
     /// the host, which the device then only traces (`None`: every batch).
     device_aim_from: Option<usize>,
-    /// Pipeline batches of at least this many candidates in sub-batches.
-    pipeline_from: usize,
 }
 /// Rays the evaluator routes to the host, learned from the device's
-/// aiming reports (unresolved or slow), and the batches seen so far. A ray
-/// stays with the host for the evaluator's lifetime: the learned rays are
-/// the merit's unaimable and slow rim rays, and one that has become easy
-/// costs the host a few microseconds.
+/// aiming reports (unresolved or slow). A ray stays with the host for the
+/// evaluator's lifetime: the learned rays are the merit's unaimable and
+/// slow rim rays, and one that has become easy costs the host a few
+/// microseconds.
 #[derive(Default)]
 struct HostRays {
-    batches: u64,
+    /// Has a device-aimed batch reported its rays?
+    learned: bool,
     rays: BTreeSet<resident::RayKey>,
     /// The device left so many rays to the host (more than
     /// [`HOST_ONLY_FRACTION`] of a candidate's) that the rest of the run is
@@ -121,7 +120,7 @@ impl HostRays {
     /// Learn `keys`; `rays` is a candidate's traced ray count.
     fn record(&mut self, keys: impl IntoIterator<Item = resident::RayKey>, rays: f64) {
         self.rays.extend(keys);
-        self.batches += 1;
+        self.learned = true;
         if self.rays.len() as f64 > HOST_ONLY_FRACTION * rays {
             self.host_only = true;
         }
@@ -131,6 +130,16 @@ impl HostRays {
 /// the evaluator gives the rest of its run to the reference (on the
 /// 35-surface ultra-wide benchmark lens the device aimed only 166 of 570).
 const HOST_ONLY_FRACTION: f64 = 0.5;
+/// The fallback counted for every value of a batch evaluated by the
+/// reference after [`HostRays::host_only`].
+const HOST_ONLY_FALLBACK: &str = "device aiming left most rays to the host: reference evaluation";
+/// The ray pass's values of a batch and who computed them.
+enum RayPass {
+    /// The host/device division.
+    Split(Vec<Vec<OperandValue>>),
+    /// The reference alone ([`HostRays::host_only`]).
+    Reference(Vec<Vec<OperandValue>>),
+}
 impl ResidentEvaluator {
     pub fn new(mut context: GpuContext, reference: BuiltinEvaluator) -> Self {
         // Same length-prefixed catalogue identity as the engine; computed once.
@@ -153,16 +162,7 @@ impl ResidentEvaluator {
             host_rays: Arc::default(),
             aim_cap: None,
             device_aim_from: Some(DEVICE_AIM_FROM),
-            pipeline_from: PIPELINE_FROM,
         }
-    }
-    /// The evaluator with batches of at least `n` candidates pipelined in
-    /// sub-batches (default [`PIPELINE_FROM`]: Monte Carlo and
-    /// sensitivity batches overlap their host and device work,
-    /// finite-difference Jacobians stay one plan).
-    pub fn with_pipelining_from(mut self, n: usize) -> Self {
-        self.pipeline_from = n;
-        self
     }
     /// The evaluator with every pupil ray aimed on the host (the
     /// candidates' f64 tracers, the reference's aims) and only traced and
@@ -216,14 +216,12 @@ impl ResidentEvaluator {
             info.precision = mklight_core::job::Precision::F32Gpu;
         }
     }
-    /// The ray stage's division: device aiming with host completion (capped
-    /// at `aim_cap` iterations per ray when set), or host aiming.
+    /// The ray stage's division: host aiming, or device aiming with host
+    /// completion (capped at `aim_cap` iterations per ray when set).
     fn ray_design(&self, host_aim: bool) -> RayDesign {
         RayDesign {
             host_aim,
-            ..self
-                .aim_cap
-                .map_or(RayDesign::HYBRID, RayDesign::hybrid_capped)
+            schedule_cap: self.aim_cap.unwrap_or(SCHEDULE_CAP).max(1),
         }
     }
     /// One batch through every route. `anchored`: the batch holds the probes
@@ -314,11 +312,22 @@ impl ResidentEvaluator {
                 .map(|&i| tracers[i].as_ref().unwrap().clone())
                 .collect();
             let native_before = self.context.native_device_calls();
+            // The ray pass handed to the reference: none of its values is
+            // the device's.
+            let mut from_reference = false;
             let attempt = if active.is_empty() {
                 Ok(vec![])
             } else {
                 match route {
-                    0 => self.split_rays(&selected_tracers, &refs, anchored, host_aim, &inner),
+                    0 => self
+                        .split_rays(&selected_tracers, &refs, anchored, host_aim, &inner)
+                        .map(|pass| match pass {
+                            RayPass::Split(values) => values,
+                            RayPass::Reference(values) => {
+                                from_reference = true;
+                                values
+                            }
+                        }),
                     1 => self.mtf.evaluate_batch(&selected(), &refs, &inner),
                     _ => self.solvers.evaluate_batch(&selected(), &refs, &inner),
                 }
@@ -337,6 +346,19 @@ impl ResidentEvaluator {
                             let i = indices[col];
                             // Device status and finite output guards require no f64 rerun.
                             match &value {
+                                _ if from_reference => {
+                                    let usable = value.as_ref().is_ok_and(|v| v.is_finite());
+                                    result[row][i] = value;
+                                    missing[row][col] = false;
+                                    completed[row][i] = usable;
+                                    stats.host_operands += 1;
+                                    stats.fallback_operands += 1;
+                                    fallback_rows[row] = true;
+                                    *stats
+                                        .fallbacks
+                                        .entry(HOST_ONLY_FALLBACK.into())
+                                        .or_default() += 1;
+                                }
                                 Err(OperandError::RayFailure(reason))
                                     if reason.contains("requires reference") =>
                                 {
@@ -349,13 +371,13 @@ impl ResidentEvaluator {
                                         .or_default() += 1;
                                 }
                                 _ if route == 0
-                                    && !gpu_supports(&ops[i].kind, true)
+                                    && !gpu_supports(&ops[i].kind)
                                     && !matches!(
                                         ops[i].kind,
                                         OperandKind::RelativeIllumination
                                     ) =>
                                 {
-                                    // A host stage of the hybrid pass.
+                                    // A host stage of the ray pass.
                                     result[row][i] = value;
                                     missing[row][col] = false;
                                     stats.host_operands += 1;
@@ -603,19 +625,7 @@ fn aiming_work(system: &OpticalSystem, ops: &[&Operand], ri_nodes: usize) -> usi
 /// first-order, model, paraxial and host-only ray operands from the same host
 /// candidates), 1 MTF, 2 the native solvers.
 fn route_for(kind: &OperandKind) -> usize {
-    if matches!(
-        kind,
-        OperandKind::Efl
-            | OperandKind::Bfl
-            | OperandKind::EflX
-            | OperandKind::EflY
-            | OperandKind::BflX
-            | OperandKind::BflY
-            | OperandKind::RelativeIllumination
-    ) || gpu_supports(kind, true)
-    {
-        0
-    } else if matches!(kind, OperandKind::Mtf { .. }) {
+    if matches!(kind, OperandKind::Mtf { .. }) {
         1
     } else if SolverEvaluator::CAPABILITIES.contains(&kind.capability()) {
         2
@@ -648,7 +658,7 @@ impl OperandEvaluator for ResidentEvaluator {
             });
         }
         match scheme {
-            FdScheme::Forward if gpu_supports(kind, true) => Some(
+            FdScheme::Forward if gpu_supports(kind) => Some(
                 if matches!(
                     kind,
                     OperandKind::WavefrontAberration { .. } | OperandKind::WavefrontRms { .. }
@@ -709,7 +719,7 @@ impl OperandEvaluator for ResidentEvaluator {
 }
 
 type Landing<'a> = (usize, resident::Traced<'a>);
-/// What the stages of one hybrid batch share.
+/// What the stages of one batch share.
 struct Stage<'s> {
     context: &'s GpuContext,
     cpu: &'s TraceEvaluator,
@@ -717,8 +727,9 @@ struct Stage<'s> {
     design: &'s RayDesign,
     anchored: bool,
     ctx: &'s JobContext,
-    /// Unresolved rays of the sub-batches finished on landing.
-    unresolved: Mutex<Vec<Vec<resident::RayKey>>>,
+    /// Per ray, the candidates of the landed sub-batches in which the
+    /// device left it unresolved or resolved it slowly.
+    unresolved: BTreeMap<resident::RayKey, usize>,
 }
 /// A prepared sub-batch, its submitted plan and its rays (device and
 /// host-routed).
@@ -728,10 +739,9 @@ type Fed<'a> = (
     usize,
 );
 impl<'s> Stage<'s> {
-    /// Prepare sub-batch `k` and submit its device plan.
+    /// Prepare a sub-batch and submit its device plan.
     fn feed<'a>(
         &self,
-        k: usize,
         chunk: &'a [Arc<SequentialTracer>],
         host_rays: &BTreeSet<resident::RayKey>,
     ) -> MkResult<Fed<'a>>
@@ -751,15 +761,6 @@ impl<'s> Stage<'s> {
         let plan = prepared.plan.take().expect("prepared plan");
         self.context.record_traced_rays(prepared.traced_rays());
         let rays = prepared.traced_rays() + prepared.host_rays();
-        if resident::trace_routing() {
-            eprintln!(
-                "MKL_SOLVERS chunk {k}: {} candidates, {} device rays, {} host-routed rays (set {})",
-                chunk.len(),
-                prepared.traced_rays(),
-                prepared.host_rays(),
-                host_rays.len()
-            );
-        }
         let pending = self.context.submit_async(plan, self.ctx)?;
         Ok((prepared, pending, rays))
     }
@@ -786,7 +787,7 @@ impl<'s> Stage<'s> {
     /// Wait for sub-batch `k`'s plan, read it and finish it (or, in an
     /// anchored batch, keep it for the uniform completion).
     fn land<'a>(
-        &self,
+        &mut self,
         k: usize,
         chunk: &[Arc<SequentialTracer>],
         prepared: resident::Prepared<'a>,
@@ -806,16 +807,14 @@ impl<'s> Stage<'s> {
             ..Default::default()
         });
         let traced = resident::collect(self.context, prepared, result)?;
+        for (unresolved, slow) in traced.unresolved.iter().zip(&traced.slow) {
+            for &key in unresolved.iter().chain(slow) {
+                *self.unresolved.entry(key).or_default() += 1;
+            }
+        }
         if self.anchored {
             deferred.push((k, traced));
         } else {
-            self.unresolved.lock().unwrap().extend(
-                traced
-                    .unresolved
-                    .iter()
-                    .zip(&traced.slow)
-                    .map(|(u, s)| u.iter().chain(s).copied().collect()),
-            );
             values[k] = Some(resident::finish(
                 self.context,
                 self.cpu,
@@ -830,14 +829,16 @@ impl<'s> Stage<'s> {
     }
 }
 impl ResidentEvaluator {
-    /// The ray stage of the hybrid design: host preparation, one device
-    /// plan per sub-batch (aim, trace, reductions), host completion of the
-    /// unresolved rays and every operand value from the host candidates.
-    /// A batch of at least `pipeline_from` candidates overlaps the host
-    /// preparation of the next sub-batch and the finishing of the previous
-    /// one with the device's work on the current one. In an `anchored` batch every sub-batch is
-    /// finished after all are traced, so that a ray completed on the host
-    /// for one candidate is completed for all.
+    /// The ray stage of the host/device division: host preparation, one
+    /// device plan per sub-batch (aim, trace, reductions), host completion
+    /// of the unresolved rays and every operand value from the host
+    /// candidates. A batch of at least [`PIPELINE_FROM`] candidates overlaps
+    /// the host preparation of the next sub-batch and the finishing of the
+    /// previous one with the device's work on the current one. In an
+    /// `anchored` batch every sub-batch is finished after all are traced,
+    /// so that a ray completed on the host for one candidate is completed
+    /// for all. Once the device has left most rays to the host
+    /// ([`HostRays::host_only`]) the reference evaluates the batch.
     fn split_rays(
         &self,
         tracers: &[Arc<SequentialTracer>],
@@ -845,12 +846,12 @@ impl ResidentEvaluator {
         anchored: bool,
         host_aim: bool,
         ctx: &JobContext,
-    ) -> MkResult<Vec<Vec<OperandValue>>> {
+    ) -> MkResult<RayPass> {
         let n = tracers.len();
         if n == 0 {
-            return Ok(vec![]);
+            return Ok(RayPass::Split(vec![]));
         }
-        if n >= PROBE_MIN_BATCH && !host_aim && self.host_rays.lock().unwrap().batches == 0 {
+        if n >= PROBE_MIN_BATCH && !host_aim && !self.host_rays.lock().unwrap().learned {
             // The probe's values are not used: a finite difference routes
             // all its candidates alike.
             self.split_rays(&tracers[..PROBE_MIN_BATCH - 1], ops, false, false, ctx)?;
@@ -864,18 +865,17 @@ impl ResidentEvaluator {
                 .map(|t| t.system().system().clone())
                 .collect();
             let anchor = anchored.then(|| systems[0].clone());
-            let values = cpu.evaluate_batch_near(&systems, ops, anchor.as_ref(), ctx)?;
-            let mut stats = self.stats.lock().unwrap();
-            *stats
-                .fallbacks
-                .entry("device aiming left most rays to the host: reference evaluation".into())
-                .or_default() += (n * ops.len()) as u64;
-            return Ok(values);
+            return Ok(RayPass::Reference(cpu.evaluate_batch_near(
+                &systems,
+                ops,
+                anchor.as_ref(),
+                ctx,
+            )?));
         }
         let context = &self.context;
         let design = self.ray_design(host_aim);
         let limit = batch_limit(tracers[0].system().system(), ops, ri_nodes(cpu));
-        let overlap = n >= self.pipeline_from;
+        let overlap = n >= PIPELINE_FROM;
         let size = if overlap {
             pipeline_chunk(n).min(limit)
         } else {
@@ -884,23 +884,22 @@ impl ResidentEvaluator {
         let chunks: Vec<&[Arc<SequentialTracer>]> = tracers.chunks(size).collect();
         let mut values: Vec<Option<Vec<Vec<OperandValue>>>> = chunks.iter().map(|_| None).collect();
         let mut deferred: Vec<Landing<'_>> = Vec::new();
-        let stage = Stage {
+        let mut stage = Stage {
             context,
             cpu,
             ops,
             design: &design,
             anchored,
             ctx,
-            unresolved: Mutex::default(),
+            unresolved: BTreeMap::new(),
         };
         // One routing for the whole batch, so that a ray is traced by the
         // same side for every candidate of a finite difference.
         let host_rays = self.host_rays.lock().unwrap().rays.clone();
-        let mut unresolved: BTreeMap<resident::RayKey, usize> = BTreeMap::new();
         let mut rays_total = 0usize;
         let mut in_flight = None;
         for (k, chunk) in chunks.iter().enumerate() {
-            let (mut prepared, pending, rays) = stage.feed(k, chunk, &host_rays)?;
+            let (mut prepared, pending, rays) = stage.feed(chunk, &host_rays)?;
             rays_total += rays;
             stage.host_share(chunk, &mut prepared)?;
             if !overlap {
@@ -914,18 +913,6 @@ impl ResidentEvaluator {
         if let Some((j, prev, p)) = in_flight.take() {
             stage.land(j, chunks[j], prev, p, &mut values, &mut deferred)?;
         }
-        for (_, t) in &deferred {
-            for (u, slow) in t.unresolved.iter().zip(&t.slow) {
-                for &key in u.iter().chain(slow) {
-                    *unresolved.entry(key).or_default() += 1;
-                }
-            }
-        }
-        for keys in stage.unresolved.lock().unwrap().drain(..) {
-            for key in keys {
-                *unresolved.entry(key).or_default() += 1;
-            }
-        }
         // A ray slow or unresolved in an eighth of the batch's candidates
         // (any, in small batches) goes to the host for the next batches.
         // Only device aiming learns, so that the first device-aimed batch
@@ -933,7 +920,8 @@ impl ResidentEvaluator {
         let threshold = n.div_ceil(8).max(1);
         if !host_aim {
             self.host_rays.lock().unwrap().record(
-                unresolved
+                stage
+                    .unresolved
                     .iter()
                     .filter(|&(_, &count)| count >= threshold)
                     .map(|(&key, _)| key),
@@ -957,9 +945,11 @@ impl ResidentEvaluator {
                 )?);
             }
         }
-        Ok(values
-            .into_iter()
-            .flat_map(|v| v.expect("finished"))
-            .collect())
+        Ok(RayPass::Split(
+            values
+                .into_iter()
+                .flat_map(|v| v.expect("finished"))
+                .collect(),
+        ))
     }
 }

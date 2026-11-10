@@ -21,19 +21,18 @@ pub fn execute(r: &Simulation, x: &mut Execution<'_>, ctl: &JobControl) -> MkRes
     } else {
         None
     };
-    let names = [
-        "mkl_wave_pattern",
-        "mkl_wave_warp",
-        "mkl_wave_detector_kernel",
-        "mkl_wave_active",
-        "mkl_wave_weighted",
-        "mkl_wave_crop",
-        "mkl_wave_assemble",
-        "mkl_wave_noise",
-    ];
-    let pipe = x
-        .gpu
-        .pipeline(&PipelineKey::plain(names[p.mode as usize]))?;
+    let name = match p.mode {
+        0 => "mkl_wave_pattern",
+        1 => "mkl_wave_warp",
+        3 => "mkl_wave_active",
+        4 => "mkl_wave_weighted",
+        5 => "mkl_wave_crop",
+        6 => "mkl_wave_assemble",
+        7 => "mkl_wave_noise",
+        // Mode 2 (`Simulation::Kernel`) returned above.
+        _ => unreachable!("simulation mode"),
+    };
+    let pipe = x.gpu.pipeline(&PipelineKey::plain(name))?;
     let clear = if p.mode == 3 {
         Some(
             x.gpu

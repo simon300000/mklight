@@ -37,7 +37,7 @@ pub fn ray_fan_job(
         false,
         ctx,
     )?;
-    geo.append_chiefs(&mut p, &mut g)?;
+    geo.append_chiefs(&mut p, &mut g, ctx)?;
     let (q, mask) =
         geo.coordinates(&mut p, &g, 0.0, s.reference == FanReference::SameWavelength)?;
     p.outputs = vec![q, mask];
@@ -125,7 +125,7 @@ pub fn opd_fan_job(
         false,
         ctx,
     )?;
-    geo.append_chiefs(&mut p, &mut g)?;
+    geo.append_chiefs(&mut p, &mut g, ctx)?;
     let chiefs = g.chiefs()?.clone();
     let n = g.hits.rays.count;
     let map = geo.chief_map(&mut p, &g, true)?;

@@ -43,7 +43,7 @@ pub enum Request {
     Statistics(statistics::Statistics),
     /// Compact coverage, phase-step and extrapolation diagnostics.
     Diagnostics(diagnostics::Diagnostics),
-    /// Weighted Zernike design matrix for P3 QR. Samples are DF [rows,4]
+    /// Weighted Zernike design matrix for the collectives' QR. Samples are DF [rows,4]
     /// (u,v,OPD,sqrt(weight)); zero weight masks a row. Terms are U32 [cols,2]
     /// (n,m as signed bits), validated by the basis producer.
     Zernike {
@@ -54,7 +54,7 @@ pub enum Request {
     },
     Resample(resample::Resample),
     /// Many focus planes and frequencies in one tiled operation. Geometry is
-    /// P2's reusable [frequencies,n*n,5] optical correlation stencil.
+    /// the transforms' reusable [frequencies,n*n,5] optical correlation stencil.
     FocusCorrelation {
         on_axis: bool,
         pupil: Pupil,
@@ -108,24 +108,12 @@ pub enum Request {
         output: BufferId,
         phase_steps: Option<BufferId>,
     },
-    /// Pixel-aperture and Gaussian diffusion MTF at arbitrary sensor frequencies.
-    Detector {
-        frequencies: PlanView,
-        aperture: [f32; 2],
-        sigma: f32,
-        output: BufferId,
-    },
     /// Integrate PSF rows and columns, yielding [2,size], x first.
     LineSpread {
         image: PlanView,
         spacing: f32,
         output: BufferId,
     },
-}
-/// Typed elements of a CPU-f32 plan view.
-fn values<'a, T: bytemuck::Pod>(x: &'a crate::resident::cpu::Execution, v: &PlanView) -> &'a [T] {
-    let a = bytemuck::cast_slice(x.words(v.buffer));
-    &a[v.offset..v.offset + v.desc.len().unwrap()]
 }
 fn view(v: &PlanView, ty: ElementType, shape: &[usize]) -> MkResult<()> {
     if v.stride != 1 || v.desc != BufferDesc::new(ty, shape) {
@@ -339,24 +327,6 @@ pub fn validate(r: &Request, p: &ResidentPlan) -> MkResult<()> {
                 out(p, *id, F32, &[shifts.desc.shape[0]])?;
             }
         }
-        Request::Detector {
-            frequencies,
-            aperture,
-            sigma,
-            output,
-        } => {
-            let s = &frequencies.desc.shape;
-            if s.len() != 2
-                || s[1] != 2
-                || aperture.iter().any(|a| !a.is_finite() || *a <= 0.)
-                || !sigma.is_finite()
-                || *sigma < 0.
-            {
-                return Err(bad("detector frequencies/aperture"));
-            }
-            view(frequencies, F32, s)?;
-            out(p, *output, F32, &[s[0]])?;
-        }
         Request::LineSpread {
             image,
             spacing,
@@ -437,11 +407,6 @@ pub fn accesses(r: &Request) -> Access {
             v.push(shifts.clone());
             (v, std::iter::once(*output).chain(*phase_steps).collect())
         }
-        Request::Detector {
-            frequencies,
-            output,
-            ..
-        } => (vec![frequencies.clone()], vec![*output]),
         Request::LineSpread { image, output, .. } => (vec![image.clone()], vec![*output]),
     };
     Access {

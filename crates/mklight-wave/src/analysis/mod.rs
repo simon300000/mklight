@@ -47,6 +47,7 @@ use rayon::prelude::*;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use mklight_core::memo::{Memo, NodeKey};
 
@@ -72,8 +73,8 @@ pub use psf::{
     PsfMethod, PsfResult, psf_analysis, psf_analysis_job, psf_analysis_shared,
 };
 pub use wavefront::{
-    WavefrontMap, WavefrontResult, WavefrontSettings, wavefront_map, wavefront_map_job,
-    wavefront_map_shared,
+    MAX_ZERNIKE_TERMS, WavefrontMap, WavefrontResult, WavefrontSettings, wavefront_map,
+    wavefront_map_job, wavefront_map_shared,
 };
 
 /// Backend recorded in `RunInfo` (the CPU f64 reference tracer).
@@ -534,6 +535,45 @@ pub(crate) fn system_field_pupils(
     }
 }
 
+/// Progress of `total` items that run side by side within `ctx`'s range:
+/// the items finished so far, then the furthest running item within the
+/// next item's share (an index-based share per item would let the last
+/// item's first report fill the bar).
+pub(crate) struct ItemProgress {
+    ctx: JobContext,
+    total: usize,
+    done: AtomicUsize,
+}
+
+impl ItemProgress {
+    pub(crate) fn new(ctx: JobContext, total: usize) -> Self {
+        ItemProgress {
+            ctx,
+            total: total.max(1),
+            done: AtomicUsize::new(0),
+        }
+    }
+    /// The context of an item's stage that starts now: the share after the
+    /// items finished so far.
+    pub(crate) fn item(&self) -> JobContext {
+        let k = self.done.load(Ordering::Relaxed).min(self.total - 1) as f64;
+        let n = self.total as f64;
+        self.ctx.subrange(k / n, (k + 1.0) / n)
+    }
+    /// Count one item finished.
+    pub(crate) fn finish(&self) {
+        let k = self.done.fetch_add(1, Ordering::Relaxed) + 1;
+        self.ctx.report(k as f64 / self.total as f64, "");
+    }
+    /// An item's outcome, counted as finished unless it failed.
+    pub(crate) fn finished<T>(&self, outcome: MkResult<T>) -> MkResult<T> {
+        if outcome.is_ok() {
+            self.finish();
+        }
+        outcome
+    }
+}
+
 /// Positive and finite, or an error naming `what`.
 pub(crate) fn check_pos(what: &str, v: f64) -> MkResult<()> {
     if v > 0.0 && v.is_finite() {
@@ -553,5 +593,34 @@ pub(crate) fn linspace(a: f64, b: f64, n: usize) -> Vec<f64> {
         _ => (0..n)
             .map(|i| a + (b - a) * i as f64 / (n - 1) as f64)
             .collect(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Items that start before any has finished share the first item's
+    /// share of the range, and the bar follows the finished count.
+    #[test]
+    fn item_progress_follows_the_finished_count() {
+        let ctx = JobContext::new();
+        let progress = ItemProgress::new(ctx.subrange(0.5, 1.0), 4);
+        let (first, last) = (progress.item(), progress.item());
+        last.report(1.0, "");
+        assert_eq!(ctx.progress.fraction(), 0.625);
+        progress.finish();
+        first.report(1.0, "");
+        assert_eq!(ctx.progress.fraction(), 0.625);
+        progress.item().report(0.5, "");
+        assert_eq!(ctx.progress.fraction(), 0.6875);
+        // A failed item is not counted.
+        let failed: MkResult<()> = Err(MkError::Cancelled);
+        assert!(progress.finished(failed).is_err());
+        assert_eq!(ctx.progress.fraction(), 0.6875);
+        for _ in 0..3 {
+            assert!(progress.finished(Ok(())).is_ok());
+        }
+        assert_eq!(ctx.progress.fraction(), 1.0);
     }
 }

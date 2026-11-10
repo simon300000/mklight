@@ -92,10 +92,6 @@ impl Array {
         }
     }
 
-    pub fn buffer(&self) -> &Buffer {
-        &self.buf
-    }
-
     fn item<'py>(&self, py: Python<'py>, i: usize) -> PyResult<Bound<'py, PyAny>> {
         Ok(match &self.buf.data {
             BufferData::F64(v) => v[i].into_pyobject(py)?.into_any(),
@@ -194,6 +190,9 @@ impl Array {
         if view.is_null() {
             return Err(PyBufferError::new_err("view is null"));
         }
+        // The buffer protocol wants `view.obj` NULL when the request fails.
+        // SAFETY: `view` is a valid `Py_buffer` supplied by the interpreter.
+        unsafe { (*view).obj = std::ptr::null_mut() };
         if (flags & ffi::PyBUF_WRITABLE) == ffi::PyBUF_WRITABLE {
             return Err(PyBufferError::new_err("mklight arrays are read-only"));
         }

@@ -13,7 +13,6 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
     let mut stats = StageStats {
         name: match r {
             Request::Coating(_) => "coating",
-            Request::PupilChannels { .. } => "complex pupil channels",
             Request::Polarization(r) => {
                 if r.scalar {
                     "scalar transmission"
@@ -27,42 +26,6 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
         ..Default::default()
     };
     match r {
-        Request::PupilChannels {
-            values,
-            vector,
-            output,
-            status,
-        } => {
-            let n = values.desc.shape[0];
-            let pso = x
-                .gpu
-                .pipeline(&PipelineKey::plain("mkl_radiometry_pupil_channels"))?;
-            let mut out = x.take_output(*output);
-            let mut flags = x.take_output(*status);
-            for offset in (0..n).step_by(262144) {
-                ctl.check()?;
-                let wall = Instant::now();
-                // SAFETY: record extent, typed output and exclusive writers validated.
-                unsafe {
-                    x.run("complex pupil channels", |e| {
-                        e.set_pipeline(&pso);
-                        let (b, o) = x.buffer(values);
-                        e.set_buffer(0, b, o);
-                        e.set_buffer_mut(1, &mut out, 0);
-                        e.set_buffer_mut(2, &mut flags, 0);
-                        e.set_bytes(3, &[n as u32, offset as u32, *vector as u32, 0u32]);
-                        e.dispatch_groups([(n - offset).min(262144).div_ceil(256), 1, 1], 256);
-                        Ok(())
-                    })?
-                };
-                stats.max_command_seconds =
-                    stats.max_command_seconds.max(wall.elapsed().as_secs_f64());
-                x.stats.parameter_bytes += 16;
-                ctl.check()?;
-            }
-            x.put_output(*output, out);
-            x.put_output(*status, flags);
-        }
         Request::Coating(r) => {
             let n = r.queries.desc.shape[0];
             let (cap, unmeasured) = if r.layers.desc.shape[0] == 0 {
@@ -162,7 +125,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                 params[12] = r.layers.desc.shape[0] as u32;
                 params[13] = end as u32;
                 params[4..12].copy_from_slice(bytemuck::cast_slice(&r.stokes));
-                // SAFETY: P1 record extents and output ownership were validated.
+                // SAFETY: trace record extents and output ownership were validated.
                 unsafe {
                     x.run("polarization", |e| {
                         e.set_pipeline(&pso);

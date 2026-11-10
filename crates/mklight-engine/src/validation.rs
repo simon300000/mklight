@@ -90,7 +90,7 @@ pub fn tracer_checks(resolved: Arc<ResolvedSystem>) -> Vec<Issue> {
 }
 
 /// Short name of a trace status (`miss`, `clipped`, …).
-pub fn status_name(s: &TraceStatus) -> &'static str {
+fn status_name(s: &TraceStatus) -> &'static str {
     match s {
         TraceStatus::Ok => "ok",
         TraceStatus::Miss { .. } => "miss",

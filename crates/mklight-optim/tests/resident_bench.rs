@@ -1,8 +1,12 @@
 #![cfg(target_os = "macos")]
+//! Candidate-batch timings of the resident evaluator against the reference
+//! on the host's Metal device (ignored: run by name).
+
+mod common;
+
 use mklight_core::{JobContext, Snapshot, param::ParamPath};
-use mklight_gpu::ComputeBackend;
 use mklight_optim::{gpu::*, merit::default::DefaultMeritSpec, merit::*, problem::*};
-use std::{sync::Arc, time::Instant};
+use std::time::Instant;
 /// Per-stage wall/device/command deltas between two cumulative snapshots.
 fn stage_deltas(
     before: &mklight_gpu::resident::PlanStats,
@@ -30,17 +34,15 @@ fn stage_deltas(
 #[ignore = "provisional host benchmark; ten measured runs after cold and warm-up"]
 fn candidate_sweep() {
     let setup = Instant::now();
-    let backend: Arc<dyn ComputeBackend> = Arc::new(
-        mklight_metal::MetalBackend::new()
-            .unwrap()
-            .expect("P8 requires host Metal"),
-    );
+    let Some(backend) = common::metal() else {
+        return;
+    };
     eprintln!(
-        "P8_HARDWARE {}",
+        "RESIDENT_HARDWARE {}",
         serde_json::json!({"device":backend.info(),"precision":backend.precision(),"timings":"provisional","seed":0,"backend_setup_seconds":setup.elapsed().as_secs_f64()})
     );
     for (name, system) in mklight_core::samples::all() {
-        if std::env::var("P8_SAMPLE").is_ok_and(|v| v != name) {
+        if std::env::var("RESIDENT_BENCH_SAMPLE").is_ok_and(|v| v != name) {
             continue;
         }
         let variable = ParamPath::Thickness {
@@ -48,12 +50,12 @@ fn candidate_sweep() {
         };
         let nominal = variable.get(&system).unwrap();
         for b in [1, 16, 256, 1024] {
-            if std::env::var("P8_BATCH").is_ok_and(|v| v != b.to_string()) {
+            if std::env::var("RESIDENT_BENCH_BATCH").is_ok_and(|v| v != b.to_string()) {
                 continue;
             }
             let spec = DefaultMeritSpec {
                 thickness: None,
-                criterion: if std::env::var("P8_MERIT").is_ok_and(|v| v == "wave") {
+                criterion: if std::env::var("RESIDENT_BENCH_MERIT").is_ok_and(|v| v == "wave") {
                     mklight_optim::merit::default::DefaultCriterion::Wavefront {
                         reference: mklight_optim::merit::operand::WavefrontReference::Centroid,
                     }
@@ -107,8 +109,8 @@ fn candidate_sweep() {
                     "{name} B={b}: {q:?}"
                 );
                 eprintln!(
-                    "P8_BENCH {}",
-                    serde_json::json!({"sample":name,"merit":std::env::var("P8_MERIT").unwrap_or_else(|_|"spot".into()),"batch":b,"run":run,"phase":if run==0{"cold"}else if run==1{"warmup"}else{"measured"},"cpu_seconds":cpu_s,"resident_seconds":new_s,"device_seconds":after.device_seconds-stats.device_seconds,"commands":after.command_buffers-stats.command_buffers,"copied_bytes":mem.copied_bytes-cache.copied_bytes,"context_copied_bytes":after.copied_bytes-stats.copied_bytes,"allocations":after.allocations-stats.allocations,"reused":after.reused_allocations-stats.reused_allocations,"peak_plan_bytes":after.peak_bytes,"pool_bytes":mem.pooled_bytes,"fallback_operands":q.fallback_operands-qual.fallback_operands,"new_setup_seconds":new_setup_seconds,"device_operands":q.device_operands-qual.device_operands,"stages":stage_deltas(&stats,&after)})
+                    "RESIDENT_BENCH {}",
+                    serde_json::json!({"sample":name,"merit":std::env::var("RESIDENT_BENCH_MERIT").unwrap_or_else(|_|"spot".into()),"batch":b,"run":run,"phase":if run==0{"cold"}else if run==1{"warmup"}else{"measured"},"cpu_seconds":cpu_s,"resident_seconds":new_s,"device_seconds":after.device_seconds-stats.device_seconds,"commands":after.command_buffers-stats.command_buffers,"copied_bytes":mem.copied_bytes-cache.copied_bytes,"context_copied_bytes":after.copied_bytes-stats.copied_bytes,"allocations":after.allocations-stats.allocations,"reused":after.reused_allocations-stats.reused_allocations,"peak_plan_bytes":after.peak_bytes,"pool_bytes":mem.pooled_bytes,"fallback_operands":q.fallback_operands-qual.fallback_operands,"new_setup_seconds":new_setup_seconds,"device_operands":q.device_operands-qual.device_operands,"stages":stage_deltas(&stats,&after)})
                 );
             }
         }
@@ -119,11 +121,9 @@ fn candidate_sweep() {
 #[ignore = "provisional dense complete-merit benchmark"]
 fn dense_rays() {
     use mklight_optim::merit::operand::SpotReference;
-    let backend: Arc<dyn ComputeBackend> = Arc::new(
-        mklight_metal::MetalBackend::new()
-            .unwrap()
-            .expect("P8 requires host Metal"),
-    );
+    let Some(backend) = common::metal() else {
+        return;
+    };
     for (name, system) in mklight_core::samples::all()
         .into_iter()
         .filter(|(name, _)| {
@@ -150,18 +150,20 @@ fn dense_rays() {
                 ..Default::default()
             };
             let spec = MeritFunctionSpec::new(vec![
-                Operand::new(if std::env::var("P8_MERIT").is_ok_and(|v| v == "wave") {
-                    OperandKind::WavefrontRms {
-                        reference: mklight_optim::merit::operand::WavefrontReference::Centroid,
-                        sampling,
-                    }
-                } else {
-                    OperandKind::RmsSpot {
-                        reference: SpotReference::Centroid,
-                        component: None,
-                        sampling,
-                    }
-                })
+                Operand::new(
+                    if std::env::var("RESIDENT_BENCH_MERIT").is_ok_and(|v| v == "wave") {
+                        OperandKind::WavefrontRms {
+                            reference: mklight_optim::merit::operand::WavefrontReference::Centroid,
+                            sampling,
+                        }
+                    } else {
+                        OperandKind::RmsSpot {
+                            reference: SpotReference::Centroid,
+                            component: None,
+                            sampling,
+                        }
+                    },
+                )
                 .at_field(system.fields.fields.len() - 1),
             ]);
             let vars = vec![VariableSpec::new(param.clone())];
@@ -202,8 +204,8 @@ fn dense_rays() {
                 assert_eq!(expected.status, got.status);
                 assert!(q.device_operands > q0.device_operands, "{name}: {q:?}");
                 eprintln!(
-                    "P8_DENSE {}",
-                    serde_json::json!({"sample":name,"merit":std::env::var("P8_MERIT").unwrap_or_else(|_|"spot".into()),"rings":rings,"arms":arms,"field":system.fields.fields.len()-1,"wavelength":"primary","batch":b,"rays":rings*arms*b,"run":run,"phase":if run==0{"cold"}else if run==1{"warmup"}else{"measured"},"cpu_seconds":cpu_s,"resident_seconds":new_s,"device_seconds":stats.device_seconds-before.device_seconds,"commands":stats.command_buffers-before.command_buffers,"copied_bytes":mem.copied_bytes-cache.copied_bytes,"context_copied_bytes":stats.copied_bytes-before.copied_bytes,"allocations":stats.allocations-before.allocations,"reused":stats.reused_allocations-before.reused_allocations,"peak_plan_bytes":stats.peak_bytes,"pool_bytes":mem.pooled_bytes,"fallback_operands":q.fallback_operands-q0.fallback_operands,"device_operands":q.device_operands-q0.device_operands})
+                    "RESIDENT_DENSE {}",
+                    serde_json::json!({"sample":name,"merit":std::env::var("RESIDENT_BENCH_MERIT").unwrap_or_else(|_|"spot".into()),"rings":rings,"arms":arms,"field":system.fields.fields.len()-1,"wavelength":"primary","batch":b,"rays":rings*arms*b,"run":run,"phase":if run==0{"cold"}else if run==1{"warmup"}else{"measured"},"cpu_seconds":cpu_s,"resident_seconds":new_s,"device_seconds":stats.device_seconds-before.device_seconds,"commands":stats.command_buffers-before.command_buffers,"copied_bytes":mem.copied_bytes-cache.copied_bytes,"context_copied_bytes":stats.copied_bytes-before.copied_bytes,"allocations":stats.allocations-before.allocations,"reused":stats.reused_allocations-before.reused_allocations,"peak_plan_bytes":stats.peak_bytes,"pool_bytes":mem.pooled_bytes,"fallback_operands":q.fallback_operands-q0.fallback_operands,"device_operands":q.device_operands-q0.device_operands})
                 );
             }
         }

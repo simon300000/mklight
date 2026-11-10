@@ -65,8 +65,6 @@ pub(super) struct TransmissionRows<'a> {
     pub state: &'a PolarizationState,
     pub model: &'a RadiometryModel,
     pub clip: bool,
-    /// Summary channel of the model's throughput (0 scalar, 1 polarised).
-    pub channel: usize,
 }
 
 fn aim_failed(s: u32) -> bool {
@@ -79,6 +77,10 @@ impl TransmissionRows<'_> {
     }
     fn scalar(&self) -> bool {
         matches!(self.model, RadiometryModel::Unpolarized)
+    }
+    /// Summary channel of the model's throughput (0 scalar, 1 polarised).
+    fn channel(&self) -> usize {
+        if self.scalar() { 0 } else { 1 }
     }
     fn row(&self, r: usize) -> (usize, usize) {
         (
@@ -301,8 +303,8 @@ impl TransmissionRows<'_> {
             clip: self.clip,
             ..t.options()
         };
-        // Reference completion (as `pupil_mode`) of the rays the device
-        // could not decide, all in parallel.
+        // Reference completion of the rays the device could not decide,
+        // all in parallel.
         let reference: Vec<usize> = (0..n)
             .filter(|&i| {
                 values[i].status == crate::consts::MKL_RAD_REFERENCE || aim_failed(status[i])
@@ -342,7 +344,7 @@ impl TransmissionRows<'_> {
                 }
             }
             out.push(RowSums {
-                sum: sums[self.channel].value()
+                sum: sums[self.channel()].value()
                     * mklight_trace::radiometry::diffraction_product(t.system(), wl),
                 usable: sums[5].value() as usize,
                 ok: sums[6].value() as usize,
@@ -359,7 +361,7 @@ impl TransmissionRows<'_> {
                 "stats": result.stats});
             if fallback > 0 {
                 first.warnings.push(format!(
-                    "P7 reference evaluated {fallback} pupil rays (coating/retarder conditioning or unresolved aiming)"
+                    "CPU f64 reference evaluated {fallback} pupil rays (coating/retarder conditioning or unresolved aiming)"
                 ));
             }
             first.run = serde_json::json!({"backend": run.backend, "settings": run.settings});

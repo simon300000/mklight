@@ -86,10 +86,10 @@ impl PreparedRadiometry {
         let layers = p.import(self.layers.view());
         let records = hits
             .records
-            .ok_or_else(|| bad("polarization needs P1 surface records"))?;
+            .ok_or_else(|| bad("polarization needs the trace's surface records"))?;
         let low = hits
             .record_low
-            .ok_or_else(|| bad("polarization needs P1 residual records"))?;
+            .ok_or_else(|| bad("polarization needs the trace's residual records"))?;
         let output = p.scratch(record_desc::<PolarizationValue>(hits.rays.count));
         p.operations
             .push(ResidentOp::Radiometry(Request::Polarization(
@@ -315,13 +315,13 @@ impl PreparedCoatings {
             }
             values.push(v);
         }
-        if r.stats.fallback_count > 0 {
-            r.run_info.settings["reference_read_copy_bytes"] = serde_json::json!(
-                (queries.len() - r.stats.fallback_count as usize)
-                    * std::mem::size_of::<CoatingValue>()
-            );
-            r.run_info.warnings.push(format!("P7 coating: {} direct evaluations completed with CPU f64 (grazing film or phase range)",r.stats.fallback_count));
-        }
+        r.run_info.settings["reference_read_copy_bytes"] = serde_json::json!(
+            (queries.len() - r.stats.fallback_count as usize) * std::mem::size_of::<CoatingValue>()
+        );
+        r.run_info.warnings.push(format!(
+            "coating: {} direct evaluations completed with CPU f64 (grazing film or phase range)",
+            r.stats.fallback_count
+        ));
         ctx.check()?;
         ctx.report(1., "coating complete");
         Ok(CoatingResult {

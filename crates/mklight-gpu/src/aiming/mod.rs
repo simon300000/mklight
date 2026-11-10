@@ -2,15 +2,16 @@
 //! Row layouts are in `mklight_aiming_types.h`; `kernel` is the CPU-f32
 //! specification of `aiming.metal`.
 //!
-//! * `ResidentRays`: f32 [15,N] in legacy input-plane order (hi planes, then
-//!   position/direction lo), u32 [2,N] (system, wavelength), u32 [2,N]
+//! * `ResidentRays`: f32 [15,N] in `MKL_TRACE_IN_*` plane order (hi planes,
+//!   then position/direction lo), u32 [2,N] (system, wavelength), u32 [2,N]
 //!   logical IDs and u32 [4,N] reports (status, Newton iterations, relative
 //!   stop residual hi/lo bits). Unresolved rays keep their IDs; aim failures
 //!   name the stop in the status surface bits.
 //! * `ResidentHits`: trace status u32 [3,N] (status, last surface, steps) and
 //!   optional paired f32 records [slots,N,13]: position, direction, OPL
-//!   without the legacy rounding correction, weight, unnormalised normal,
-//!   medium index, status bits; the low plane holds the residuals.
+//!   (without the point-rounding correction of `trace_kernel::rounded_state`),
+//!   weight, unnormalised normal, medium index, status bits; the low plane
+//!   holds the residuals.
 //! * `ProjectPupil`: chief DF [7] (position, direction, OPL) and centre DF
 //!   [3] in the image frame give DF [4,N]: OPD in waves and the unit-radius
 //!   sphere x/y/z (z mirrored for negative propagation).
@@ -70,8 +71,8 @@ pub struct GenerateAim {
     pub field_wavelength: PlanView,
     /// Opts into cross-plan reuse of chief rows and seed tables: the caller's
     /// name for its immutable field metadata. The executor keys reuse by
-    /// [`aim_identity`] of the actual inputs, never by this name or by handles.
-    /// None keeps them plan-local (candidate fields).
+    /// [`aim_identity`]: this name together with digests of the actual
+    /// inputs, never handles. None keeps them plan-local (candidate fields).
     pub field_key: Option<String>,
     /// Host-prepared chief seeds, one [`ChiefSeed`] per field row (u32 [rows,
     /// MKL_AIM_CACHE_WORDS]), normally [`ChiefSeed::host`]. When present the
@@ -159,6 +160,12 @@ pub enum Request {
     ProjectPupil(ProjectPupil),
 }
 
+/// Planes of a ray set's float and index buffers, of its aim report and of
+/// a trace's status buffer.
+const RAY_FLOATS: usize = MKL_TRACE_IN_FLOATS as usize;
+const RAY_UINTS: usize = MKL_TRACE_IN_UINTS as usize;
+const REPORT_PLANES: usize = MKL_AIM_REPORT_PLANES as usize;
+const STATUS_PLANES: usize = MKL_TRACE_OUT_UINTS as usize;
 /// Seed-table nodes per field row at the default side.
 pub const TABLE_NODES: usize = (MKL_AIM_TABLE_SIDE * MKL_AIM_TABLE_SIDE) as usize;
 pub fn table_nodes(side: u32) -> usize {
@@ -208,17 +215,17 @@ pub fn aim_identity(
 
 pub fn rays(plan: &mut ResidentPlan, count: usize) -> ResidentRays {
     ResidentRays {
-        floats: plan.scratch(BufferDesc::new(ElementType::F32, [15, count])),
-        indices: plan.scratch(BufferDesc::new(ElementType::U32, [2, count])),
+        floats: plan.scratch(BufferDesc::new(ElementType::F32, [RAY_FLOATS, count])),
+        indices: plan.scratch(BufferDesc::new(ElementType::U32, [RAY_UINTS, count])),
         logical_ids: plan.scratch(BufferDesc::new(ElementType::U32, [2, count])),
-        report: plan.scratch(BufferDesc::new(ElementType::U32, [4, count])),
+        report: plan.scratch(BufferDesc::new(ElementType::U32, [REPORT_PLANES, count])),
         count,
     }
 }
 pub fn hits(plan: &mut ResidentPlan, count: usize, record_slots: usize) -> ResidentHits {
     ResidentHits {
         rays: rays(plan, count),
-        status: plan.scratch(BufferDesc::new(ElementType::U32, [3, count])),
+        status: plan.scratch(BufferDesc::new(ElementType::U32, [STATUS_PLANES, count])),
         records: (record_slots > 0).then(|| {
             plan.scratch(BufferDesc::new(
                 ElementType::F32,
@@ -243,10 +250,10 @@ fn view(id: BufferId, element: ElementType, shape: impl Into<Vec<usize>>) -> Pla
 }
 fn ray_views(r: &ResidentRays) -> Vec<PlanView> {
     vec![
-        view(r.floats, ElementType::F32, [15, r.count]),
-        view(r.indices, ElementType::U32, [2, r.count]),
+        view(r.floats, ElementType::F32, [RAY_FLOATS, r.count]),
+        view(r.indices, ElementType::U32, [RAY_UINTS, r.count]),
         view(r.logical_ids, ElementType::U32, [2, r.count]),
-        view(r.report, ElementType::U32, [4, r.count]),
+        view(r.report, ElementType::U32, [REPORT_PLANES, r.count]),
     ]
 }
 fn ray_ids(r: &ResidentRays) -> Vec<BufferId> {
@@ -254,6 +261,13 @@ fn ray_ids(r: &ResidentRays) -> Vec<BufferId> {
 }
 fn check_view(v: &PlanView, element: ElementType, shape: &[usize]) -> MkResult<()> {
     if v.stride != 1 || v.desc != BufferDesc::new(element, shape) {
+        return Err(bad("aiming input layout"));
+    }
+    Ok(())
+}
+/// A view of `rows` records of `T` (the kernels read them in place).
+fn check_rows<T>(v: &PlanView, p: &ResidentPlan, rows: usize) -> MkResult<()> {
+    if resident::check_records::<T>(v, p, "aiming")? != rows {
         return Err(bad("aiming input layout"));
     }
     Ok(())
@@ -279,37 +293,21 @@ pub fn validate(r: &Request, p: &ResidentPlan) -> MkResult<()> {
     match r {
         Request::GenerateAim(a) => {
             check_rays(&a.output, p)?;
-            check_view(
-                &a.samples,
-                ElementType::U32,
-                &[a.output.count, MKL_AIM_SAMPLE_WORDS as usize],
-            )?;
+            check_rows::<Sample>(&a.samples, p, a.output.count)?;
             let shape = &a.field_wavelength.desc.shape;
             if shape.len() != 2 || shape[0] == 0 || shape[0] > u32::MAX as usize {
                 return Err(bad("aiming field rows"));
             }
-            check_view(
-                &a.field_wavelength,
-                ElementType::U32,
-                &[shape[0], MKL_AIM_FIELD_WORDS as usize],
-            )?;
+            check_rows::<FieldSpec>(&a.field_wavelength, p, shape[0])?;
             if let Some(v) = &a.seeds {
-                check_view(
-                    v,
-                    ElementType::U32,
-                    &[shape[0], MKL_AIM_CACHE_WORDS as usize],
-                )?;
+                check_rows::<ChiefSeed>(v, p, shape[0])?;
             }
             let side = a.options.table_side;
             if !(5..=129).contains(&side) || side % 2 == 0 {
                 return Err(bad("aim table side"));
             }
             if let Some(v) = &a.options.table {
-                check_view(
-                    v,
-                    ElementType::U32,
-                    &[shape[0] * table_nodes(side), MKL_AIM_NODE_WORDS as usize],
-                )?;
+                check_rows::<SeedNode>(v, p, shape[0] * table_nodes(side))?;
             }
             if !a.tolerance.is_finite() || a.tolerance <= 0.0 {
                 return Err(bad("aim tolerance must be positive"));
@@ -333,7 +331,11 @@ pub fn validate(r: &Request, p: &ResidentPlan) -> MkResult<()> {
                 return Err(bad("trace Newton tolerance"));
             }
             check_view(&t.steps, ElementType::U32, &t.steps.desc.shape)?;
-            output(t.output.status, ElementType::U32, &[3, t.input.count])?;
+            output(
+                t.output.status,
+                ElementType::U32,
+                &[STATUS_PLANES, t.input.count],
+            )?;
             if t.output.records.is_some() != t.output.record_low.is_some() {
                 return Err(bad("records require paired residuals"));
             }
@@ -354,7 +356,11 @@ pub fn validate(r: &Request, p: &ResidentPlan) -> MkResult<()> {
         }
         Request::ProjectPupil(q) => {
             check_rays(&q.hits.rays, p)?;
-            output(q.hits.status, ElementType::U32, &[3, q.hits.rays.count])?;
+            output(
+                q.hits.status,
+                ElementType::U32,
+                &[STATUS_PLANES, q.hits.rays.count],
+            )?;
             check_view(&q.reference.chief, ElementType::DoubleFloat, &[7])?;
             check_view(&q.reference.centre, ElementType::DoubleFloat, &[3])?;
             let v = &q.reference;
@@ -386,7 +392,7 @@ pub fn accesses(r: &Request) -> Access {
         }
         Request::TraceResident(t) => {
             a.systems.push(t.systems);
-            a.reads = ray_views(&t.input).into_iter().chain(a.reads).collect();
+            a.reads = ray_views(&t.input);
             a.reads.push(t.steps.clone());
             a.writes = ray_ids(&t.output.rays);
             a.writes.push(t.output.status);
@@ -399,7 +405,11 @@ pub fn accesses(r: &Request) -> Access {
         Request::ProjectPupil(p) => {
             a.reads = ray_views(&p.hits.rays);
             a.reads.extend([
-                view(p.hits.status, ElementType::U32, [3, p.hits.rays.count]),
+                view(
+                    p.hits.status,
+                    ElementType::U32,
+                    [STATUS_PLANES, p.hits.rays.count],
+                ),
                 p.reference.chief.clone(),
                 p.reference.centre.clone(),
             ]);

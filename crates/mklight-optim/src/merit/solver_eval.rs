@@ -242,7 +242,7 @@ impl SolverEvaluator {
             StrayPathClass::AllNonPrimary => ClassMask::ALL_STRAY,
         };
         let (mut value, mut total) = (0.0, 0.0);
-        for (field, weight) in fields(s, op.field) {
+        for (field, weight) in fields(s, op.field)? {
             let source = match field {
                 FieldSelector::Index { index } => StraySource::SystemField {
                     index,

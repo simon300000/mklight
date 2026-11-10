@@ -5,12 +5,12 @@
 //! `glass_substitution`) names its aiming in the backend report
 //! and agrees with the CPU f64 reference under the solver-outcome contract
 //! of `support/comparison.rs`; for the truncated solves (`optimize` with 3
-//! iterations, `glass_substitution` with 2 local iterations) a merit or
-//! violation outside its gate passes within twice the reference's own
-//! movement (`support/solver_spread.rs`). The CPU-f32 emulation runs
-//! everywhere; the Metal test is ignored (real Metal required, run through
-//! the benchmark lock). One test per process section: the aiming selection
-//! is process-global.
+//! iterations, `glass_substitution` with 2 local iterations) the final
+//! design's or a finalist's merit or violation outside its gate passes
+//! within twice the reference's own movement (`support/solver_spread.rs`).
+//! The CPU-f32 emulation runs everywhere; the Metal test is ignored (real
+//! Metal required). One test per process section: the aiming selection is
+//! process-global.
 
 use std::sync::Arc;
 
@@ -119,7 +119,7 @@ fn check(engine: &Engine, device: &str, systems: Vec<(&str, mklight_core::Optica
                     cpu.run_info.duration_ms,
                     gpu.run_info.duration_ms
                 );
-                if !solver_spread::within_movement(&report.failures, dev, spread)
+                if !solver_spread::within_movement(analysis, &report.failures, dev, spread)
                     || !native.is_empty()
                 {
                     failures.push(format!(

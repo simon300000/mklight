@@ -43,13 +43,6 @@ public struct SpectrumControl: View {
         self.resolve = resolve
     }
 
-    /// Design wavelengths of equal weight.
-    public init(value: Binding<JSONValue?>, systemWavelengths: [Double], systemPrimary: Int? = nil, resolve: SpectrumResolver? = nil) {
-        self.init(
-            value: value, systemWavelengths: systemWavelengths.map { SpectrumSample(um: $0, weight: 1) }, systemPrimary: systemPrimary,
-            resolve: resolve)
-    }
-
     private var setting: SpectrumSetting? { SpectrumSetting(json: value) }
 
     public var body: some View {
@@ -173,7 +166,7 @@ public struct SpectrumControl: View {
                         }
                         Text("K").foregroundStyle(.secondary)
                         Spacer(minLength: Space.s)
-                        ForEach(SpectrumSetting.blackbodyPresets.prefix(2), id: \.self) { p in
+                        ForEach(SpectrumSetting.blackbodyPresets, id: \.self) { p in
                             Button(SpectrumSetting.kelvin(p)) { write(.blackbody(temperatureK: p, sampling: sampling)) }
                                 .buttonStyle(.bordered)
                                 .controlSize(.mini)
@@ -189,7 +182,7 @@ public struct SpectrumControl: View {
                 HStack(spacing: Space.xs) {
                     SpectrumNumberField(value: Double(sampling.samples), width: 44, integer: true, label: "Number of samples") { v in
                         var n = sampling
-                        n.samples = min(max(Int(v.rounded()), SpectralSampling.sampleLimits.lowerBound), SpectralSampling.sampleLimits.upperBound)
+                        n.samples = min(max(Int(saturating: v), SpectralSampling.sampleLimits.lowerBound), SpectralSampling.sampleLimits.upperBound)
                         write(s.with(sampling: n))
                     }
                     Picker("Spacing", selection: Binding(get: { sampling.spacing }, set: { sp in
@@ -507,7 +500,7 @@ struct SpectrumNumberField: View {
             .accessibilityLabel(label)
     }
 
-    private var display: String { integer ? String(Int(value.rounded())) : Fmt.short(value) }
+    private var display: String { integer ? String(Int(saturating: value)) : Fmt.short(value) }
 
     private func apply() {
         // Unchanged text keeps the full-precision value it displays.
@@ -517,51 +510,7 @@ struct SpectrumNumberField: View {
             return
         }
         let v = integer ? d.rounded() : d
-        text = integer ? String(Int(v)) : Fmt.short(v)
+        text = integer ? String(Int(saturating: v)) : Fmt.short(v)
         if v != value { commit(v) }
-    }
-}
-
-/// The spectrum as one button for the compact settings bar: its summary,
-/// opening the full control in a popover.
-public struct SpectrumBarButton: View {
-    @Binding var value: JSONValue?
-    let systemWavelengths: [SpectrumSample]
-    var systemPrimary: Int?
-    var resolve: SpectrumResolver?
-    @State private var open = false
-
-    public init(
-        value: Binding<JSONValue?>, systemWavelengths: [SpectrumSample], systemPrimary: Int? = nil, resolve: SpectrumResolver? = nil
-    ) {
-        _value = value
-        self.systemWavelengths = systemWavelengths
-        self.systemPrimary = systemPrimary
-        self.resolve = resolve
-    }
-
-    private var title: String { SpectrumSetting(json: value).map { $0.kind == .design ? "Design" : $0.summary } ?? "Custom" }
-
-    public var body: some View {
-        Button {
-            open = true
-        } label: {
-            HStack(spacing: 3) {
-                Text("Spectrum: \(title)").monospacedDigit()
-                Image(systemName: "chevron.down").font(.caption2.weight(.semibold)).imageScale(.small)
-            }
-            .contentShape(.rect)
-        }
-        .buttonStyle(.plain)
-        .fixedSize()
-        .help("The wavelengths this analysis runs with")
-        .accessibilityLabel("Spectrum")
-        .accessibilityValue(title)
-        .popover(isPresented: $open) {
-            SpectrumControl(value: $value, systemWavelengths: systemWavelengths, systemPrimary: systemPrimary, resolve: resolve)
-                .controlSize(.small)
-                .padding(Space.l)
-                .frame(width: 320)
-        }
     }
 }

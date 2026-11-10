@@ -383,6 +383,10 @@ impl AimSeeds {
     }
 }
 
+/// A caller's start of a real-aim solve: the aim point and the stop Jacobian
+/// there ([`SequentialTracer::generate_many_from`]).
+type AimStartPoint = ([f64; 2], Mat2);
+
 /// How a tracer uses [`AimSeeds`].
 #[derive(Clone, Debug)]
 enum Seeds {
@@ -570,9 +574,15 @@ impl SequentialTracer {
     /// Append analysis-local fields without changing the physical snapshot.
     /// Existing field indices keep their meaning; new ones follow them.
     pub fn with_additional_fields(&self, points: &[FieldPoint]) -> MkResult<Self> {
+        // Independent solves, prepared on the rayon pool and taken in order
+        // (the first failing point is the error).
+        let prepared: Vec<_> = points
+            .par_iter()
+            .map(|&point| self.prepare_field(point))
+            .collect();
         let mut tracer = self.clone();
-        for &point in points {
-            tracer.fields.push(self.prepare_field(point)?);
+        for field in prepared {
+            tracer.fields.push(field?);
         }
         Ok(tracer)
     }
@@ -727,17 +737,23 @@ impl SequentialTracer {
     }
 
     /// The system's requested aiming tolerance as a fraction of the stop
-    /// radius (1e-10 with aiming off).
+    /// radius (the model default with aiming off).
     pub fn requested_tolerance(&self) -> f64 {
         match self.aiming {
             RayAiming::Real { tolerance } => tolerance,
-            RayAiming::Off => 1e-10,
+            RayAiming::Off => RayAiming::DEFAULT_TOLERANCE,
         }
+    }
+
+    /// The stop radius (mm) that relative stop residuals refer to; never
+    /// zero.
+    fn stop_radius(&self) -> f64 {
+        self.pupil.r_stop.max(f64::MIN_POSITIVE)
     }
 
     /// Absolute stop residual (mm) of relative tolerance `rel`.
     fn stop_mm(&self, rel: f64) -> f64 {
-        rel * self.pupil.r_stop.max(f64::MIN_POSITIVE)
+        rel * self.stop_radius()
     }
 
     /// Absolute stop residual (mm) of the requested tolerance: chief-ray
@@ -933,7 +949,7 @@ impl SequentialTracer {
                     chief: s.x,
                     jacobian: jac,
                     converged: s.converged,
-                    residual: s.residual / self.pupil.r_stop,
+                    residual: s.residual / self.stop_radius(),
                     stop_tolerance: None,
                     conditioning: None,
                 }
@@ -963,9 +979,13 @@ impl SequentialTracer {
             (self.settings.aim_stop, self.aiming)
             && self.aiming.explicit_tolerance().is_none()
         {
-            for wl in 0..nw {
-                let c = self.conditioning(&field, wl);
-                let aim = &mut field.aims[wl];
+            // Each wavelength's conditioning reads only that wavelength's
+            // chief aim.
+            let conditioning: Vec<_> = (0..nw)
+                .into_par_iter()
+                .map(|wl| self.conditioning(&field, wl))
+                .collect();
+            for (aim, c) in field.aims.iter_mut().zip(conditioning) {
                 aim.conditioning = c;
                 aim.stop_tolerance = c.map(|c| self.derived_tolerance(&budget, &c));
             }
@@ -984,7 +1004,7 @@ impl SequentialTracer {
     /// `[requested, max_relative]`.
     fn derived_tolerance(&self, budget: &AimBudget, c: &AimConditioning) -> f64 {
         let requested = self.requested_tolerance();
-        let r_stop = self.pupil.r_stop.max(f64::MIN_POSITIVE);
+        let r_stop = self.stop_radius();
         let mm = (budget.position_mm / c.position)
             .min(budget.direction / c.direction)
             .min(budget.opd_waves / c.opd)
@@ -1460,7 +1480,7 @@ impl SequentialTracer {
             .and_then(|j| solve2(j, target))
             .map(|d| [ad.chief[0] + d[0], ad.chief[1] + d[1]])
             .unwrap_or_else(|| {
-                let r = self.pupil.r_stop;
+                let r = self.stop_radius();
                 let p = self.paraxial_aim([target[0] / r, target[1] / r]);
                 [ad.chief[0] + p[0], ad.chief[1] + p[1]]
             })
@@ -1549,7 +1569,6 @@ impl SequentialTracer {
         stats: &mut AimStats,
     ) -> Result<GeneratedRay, AimReport> {
         let ad = &field.aims[wl];
-        let r_stop = self.pupil.r_stop;
         let mut iters = s.iterations;
         stats.rays += 1;
         stats.add(&s);
@@ -1578,7 +1597,7 @@ impl SequentialTracer {
         }
         let report = AimReport {
             iterations: iters,
-            residual: s.residual / r_stop,
+            residual: s.residual / self.stop_radius(),
             converged: s.converged,
         };
         if !s.converged {
@@ -1597,8 +1616,9 @@ impl SequentialTracer {
     /// to generating them one by one. The direct real-aim solves of all rays
     /// advance together ([`Newton2`]) and each round's stop traces run as
     /// packets ([`trace_rays`], or [`trace_rays_recorded`] plus
-    /// [`differentiate`] where the Jacobian is requested); the rare rays
-    /// that need continuation in the pupil radius finish on their own.
+    /// [`TangentPlan::differentiate`] where the Jacobian is requested); the
+    /// rare rays that need continuation in the pupil radius finish on their
+    /// own.
     pub fn generate_many(&self, rays: &[RayRequest]) -> Vec<Result<GeneratedRay, AimReport>> {
         self.generate_many_stats(rays, &mut AimStats::default())
     }
@@ -1609,134 +1629,7 @@ impl SequentialTracer {
         rays: &[RayRequest],
         stats: &mut AimStats,
     ) -> Vec<Result<GeneratedRay, AimReport>> {
-        let mut out = Vec::with_capacity(rays.len());
-        // Direct solves: (ray index, stop target, solver).
-        let mut solves = Vec::new();
-        for (k, &(field, wl, [px, py])) in rays.iter().enumerate() {
-            match self.aim_start(field, wl, px, py) {
-                Ok(AimStart::Solve {
-                    target,
-                    x0,
-                    j0,
-                    seed,
-                    key,
-                }) => {
-                    let n = Newton2::new(
-                        x0,
-                        j0,
-                        self.fd_step(),
-                        self.field_tolerance(field, wl),
-                        self.settings.max_aim_iterations,
-                        AIM_POLICY,
-                    )
-                    .seeded(seed);
-                    solves.push((k, target, n, seed.is_some(), key));
-                    // Placeholder until the solve finishes.
-                    out.push(Err(AimReport {
-                        iterations: 0,
-                        residual: f64::INFINITY,
-                        converged: false,
-                    }));
-                }
-                Ok(AimStart::Ready(g)) => out.push(Ok(g)),
-                Err(e) => out.push(Err(e)),
-            }
-        }
-        let opts = self.stop_options();
-        // Plain traces, and Jacobian traces with their start tangents.
-        let (mut starts, mut wls) = (Vec::new(), Vec::new());
-        let (mut jstarts, mut jwls, mut jtangents) = (Vec::new(), Vec::new(), Vec::new());
-        let mut records: Vec<Vec<SurfaceRecord>> = Vec::new();
-        // Per pending point: no starting ray (`f` undefined there, as in
-        // `stop_eval`), a plain trace, or a Jacobian trace.
-        let mut kind: Vec<u8> = Vec::new();
-        let mut values: Vec<Eval> = Vec::new();
-        loop {
-            starts.clear();
-            wls.clear();
-            jstarts.clear();
-            jwls.clear();
-            jtangents.clear();
-            kind.clear();
-            for (k, _, n, ..) in &solves {
-                let (field, wl, _) = rays[*k];
-                let want = n.wants_jacobian();
-                for &a in n.pending() {
-                    if want {
-                        match self.start_tangent(&field.source, a) {
-                            Some((ray, t)) => {
-                                jstarts.push(ray);
-                                jwls.push(wl);
-                                jtangents.push(t);
-                                kind.push(2);
-                            }
-                            None => kind.push(0),
-                        }
-                    } else {
-                        match self.start_ray(&field.source, a) {
-                            Some(ray) => {
-                                starts.push(ray);
-                                wls.push(wl);
-                                kind.push(1);
-                            }
-                            None => kind.push(0),
-                        }
-                    }
-                }
-            }
-            if kind.is_empty() {
-                break;
-            }
-            let hits = trace_rays(&self.sys, &starts, &wls, &opts);
-            if records.len() < jstarts.len() {
-                records.resize_with(jstarts.len(), || Vec::with_capacity(self.sys.stop + 1));
-            }
-            let jhits = trace_rays_recorded(
-                &self.sys,
-                &jstarts,
-                &jwls,
-                &opts,
-                &mut records[..jstarts.len()],
-            );
-            let mut hit = hits.iter();
-            let mut jhit = jhits.iter().zip(&records).zip(&jtangents);
-            let mut point = kind.iter();
-            for (k, target, n, ..) in &mut solves {
-                let wl = rays[*k].1;
-                values.clear();
-                for _ in 0..n.pending().len() {
-                    let residual =
-                        |r: &TraceResult| [r.ray.pos.x - target[0], r.ray.pos.y - target[1]];
-                    values.push(match *point.next().expect("one kind per pending point") {
-                        0 => None,
-                        1 => {
-                            let r = hit.next().expect("one trace per starting ray");
-                            r.status.is_ok().then(|| (residual(r), None))
-                        }
-                        _ => {
-                            let ((r, rec), t) = jhit.next().expect("one trace per Jacobian ray");
-                            r.status.is_ok().then(|| {
-                                let j = self
-                                    .tangents
-                                    .differentiate(&self.sys, wl, t, rec, r.surface)
-                                    .ok()
-                                    .map(|t| t.xy_jacobian());
-                                (residual(r), j)
-                            })
-                        }
-                    });
-                }
-                if !values.is_empty() {
-                    n.resume(&values);
-                }
-            }
-        }
-        for (k, target, n, seeded, key) in solves {
-            let (field, wl, _) = rays[k];
-            let s = n.result().expect("a finished solve has a result");
-            out[k] = self.finish_seeded(field, wl, target, s, stats, seeded, key);
-        }
-        out
+        self.generate_batch(rays, None, stats)
     }
 
     /// [`Self::generate_many_stats`] with caller start points, for hybrid
@@ -1758,6 +1651,17 @@ impl SequentialTracer {
         stats: &mut AimStats,
     ) -> Vec<Result<GeneratedRay, AimReport>> {
         assert_eq!(rays.len(), starts.len(), "one start per ray");
+        self.generate_batch(rays, Some(starts), stats)
+    }
+
+    /// The batched generator of [`Self::generate_many_stats`] (no `starts`)
+    /// and [`Self::generate_many_from`].
+    fn generate_batch(
+        &self,
+        rays: &[RayRequest],
+        starts: Option<&[Option<AimStartPoint>]>,
+        stats: &mut AimStats,
+    ) -> Vec<Result<GeneratedRay, AimReport>> {
         let mut out = Vec::with_capacity(rays.len());
         // Direct solves: (ray index, stop target, solver, seeded, key, started).
         let mut solves = Vec::new();
@@ -1770,7 +1674,7 @@ impl SequentialTracer {
                     seed,
                     key,
                 }) => {
-                    let (x0, j0, started) = match starts[k] {
+                    let (x0, j0, started) = match starts.and_then(|s| s[k]) {
                         Some((x, j)) if seed.is_none() => (x, Some(j), true),
                         _ => (x0, j0, false),
                     };
@@ -1784,6 +1688,7 @@ impl SequentialTracer {
                     )
                     .seeded(seed);
                     solves.push((k, target, n, seed.is_some(), key, started));
+                    // Placeholder until the solve finishes.
                     out.push(Err(AimReport {
                         iterations: 0,
                         residual: f64::INFINITY,
@@ -1795,9 +1700,12 @@ impl SequentialTracer {
             }
         }
         let opts = self.stop_options();
+        // Plain traces, and Jacobian traces with their start tangents.
         let (mut plain, mut wls) = (Vec::new(), Vec::new());
         let (mut jstarts, mut jwls, mut jtangents) = (Vec::new(), Vec::new(), Vec::new());
         let mut records: Vec<Vec<SurfaceRecord>> = Vec::new();
+        // Per pending point: no starting ray (`f` undefined there, as in
+        // `stop_eval`), a plain trace, or a Jacobian trace.
         let mut kind: Vec<u8> = Vec::new();
         let mut values: Vec<Eval> = Vec::new();
         loop {

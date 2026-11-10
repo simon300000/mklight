@@ -72,7 +72,7 @@ impl VariableSpec {
 /// Typical magnitude of a useful change in a parameter, used for finite
 /// differences, simplex/population spreads and trust regions when the user
 /// gives none. Heuristic, in the parameter's own units (mm, mm⁻¹, degrees).
-pub fn default_scale(p: &ParamPath, value: f64) -> f64 {
+fn default_scale(p: &ParamPath, value: f64) -> f64 {
     use ParamPath::*;
     let a = value.abs();
     match p {
@@ -113,7 +113,7 @@ pub fn default_scale(p: &ParamPath, value: f64) -> f64 {
     }
 }
 
-/// [`default_scale`], except for shape coefficients: their floor is the
+/// `default_scale`, except for shape coefficients: their floor is the
 /// change that moves the sag by about 1 µm (or the phase by 0.1 rad) at the
 /// clear radius, divided by the term's degree so that slopes change by a
 /// similar amount. `0.1 |value|` remains a lower bound.

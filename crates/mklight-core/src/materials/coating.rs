@@ -41,9 +41,6 @@ impl InterfaceRT {
     pub fn t_unpolarized(&self) -> f64 {
         0.5 * (self.ts + self.tp)
     }
-    pub fn a_unpolarized(&self) -> f64 {
-        (1.0 - self.r_unpolarized() - self.t_unpolarized()).max(0.0)
-    }
 }
 
 /// Bare dielectric interface. `cos_i` is the cosine of the incidence angle,

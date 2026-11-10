@@ -120,10 +120,11 @@ fn frozen_settings(name: &str, system: &mklight_core::OpticalSystem) -> Value {
     }
 }
 
-/// Per sample and GPU analysis: the engine's normal backend verdict for each
-/// precision, then the raw analysis adapters (CPU f64, DF, f32) in one
-/// warm-up and ten alternating rounds: median wall/device ms and the errors
-/// of the first measured DF/f32 outputs against CPU f64.
+/// Per sample and GPU analysis: the engine's route of an explicit Metal
+/// request for each precision (`F32_ROUTE`), then the raw analysis adapters
+/// (CPU f64, DF, f32) in one warm-up and ten alternating rounds: median
+/// wall/device ms and the errors of the first measured DF/f32 outputs
+/// against CPU f64.
 #[test]
 #[ignore = "real Metal: engine precision measurement"]
 fn engine_precision_study() {
@@ -135,7 +136,6 @@ fn engine_precision_study() {
         let options = MetalOptions {
             precision,
             library: LibraryChoice::Precompiled,
-            ..Default::default()
         };
         Arc::new(
             MetalBackend::with_options(&options)
@@ -148,7 +148,8 @@ fn engine_precision_study() {
             continue;
         }
         let snapshot = Snapshot::new(system.clone()).unwrap();
-        // One engine per precision, with the unchanged qualification gates.
+        // One engine per precision, for the route it gives an explicit Metal
+        // request.
         let engines = backends.each_ref().map(|b| {
             let engine = Engine::new(EngineConfig {
                 default_backend: Backend::CpuReference,
@@ -203,7 +204,7 @@ fn engine_precision_study() {
                     Err(e) => json!({"error":e.to_string()}),
                 };
                 println!(
-                    "F32_GATE {}",
+                    "F32_ROUTE {}",
                     json!({"sample":name,"analysis":info.name,"mode":mode,"verdict":verdict})
                 );
             }

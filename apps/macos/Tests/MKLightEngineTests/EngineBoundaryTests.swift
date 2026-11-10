@@ -116,7 +116,53 @@ import Testing
         let owner = NSData(bytes: &words, length: 12)
         let u = ResultBuffer(name: "w", dtype: .u32, shape: [3], count: 3, base: owner.bytes, owner: owner)
         #expect(u.doubles == [7, 8, 9])
+        #expect(u[2] == 9 && u.row(1) == [8])
+        // Every dtype converts, element by element and as a whole.
+        func buffer<T>(_ values: [T], _ dtype: BufferDType) -> ResultBuffer {
+            let data = values.withUnsafeBytes { NSData(bytes: $0.baseAddress, length: $0.count) }
+            return ResultBuffer(name: "b", dtype: dtype, shape: [values.count], count: values.count, base: data.bytes, owner: data)
+        }
+        let cases: [(ResultBuffer, [Double])] = [
+            (buffer([1.5, -2.25] as [Double], .f64), [1.5, -2.25]), (buffer([1.5, -2.25] as [Float], .f32), [1.5, -2.25]),
+            (buffer([-7, 8] as [Int32], .i32), [-7, 8]), (buffer([7, .max] as [UInt32], .u32), [7, 4_294_967_295]),
+            (buffer([-7, 1 << 40] as [Int64], .i64), [-7, 1_099_511_627_776]), (buffer([7, 1 << 40] as [UInt64], .u64), [7, 1_099_511_627_776]),
+            (buffer([0, 255] as [UInt8], .u8), [0, 255]),
+        ]
+        for (b, expected) in cases {
+            #expect(b.doubles == expected, "\(b.dtype)")
+            #expect(expected.indices.map { b[$0] } == expected, "\(b.dtype)")
+        }
+        #expect(ResultBuffer(name: "empty", doubles: []).doubles.isEmpty)
         #expect(BufferDType(name: "f32") == .f32 && BufferDType.u8.byteWidth == 1)
+    }
+
+    /// `int` reads whole numbers an `Int` holds, and nothing else.
+    @Test func intReadsOnlyWholeNumbersInRange() {
+        #expect(JSONValue.number(-3).int == -3 && JSONValue.number(0).int == 0 && JSONValue.integer(7).int == 7)
+        #expect(JSONValue.number(2.5).int == nil)
+        for bad in [1e30, -1e30, 9.3e18, Double.infinity, -.infinity, .nan] {
+            #expect(JSONValue.number(bad).int == nil, "\(bad)")
+        }
+        #expect(JSONValue.unsigned(.max).int == nil && JSONValue.string("3").int == nil)
+        #expect(JSONValue.array([.integer(1), .number(1e30)]).intArray == nil)
+    }
+
+    /// The mock takes seeds and counts that no run could have (negative
+    /// ones) without failing.
+    @Test func mockTakesNegativeSeedsAndCounts() async throws {
+        let mock = MockEngine(simulatedLatency: .zero)
+        let snap = try await mock.openSnapshot(SampleSystems.singlet())
+        func run(_ analysis: String, _ settings: [String: JSONValue]) async throws -> AnalysisOutput {
+            try await mock.submit(EngineAnalysisRequest(analysis: analysis, settings: settings), on: snap).result()
+        }
+        let spot = try await run("spot_diagram", ["pattern": .string("random"), "seed": .integer(-1)])
+        #expect(spot.runInfo.seed == nil && spot.buffer(named: "points") != nil)
+        let optimize = try await run("optimize", ["max_iterations": .integer(-3), "seed": .integer(-1)])
+        #expect(optimize.json["iterations"]?.int == 0)
+        let tolerance = try await run("tolerance", ["trials": .integer(-5), "seed": .integer(-9)])
+        #expect(tolerance.json[path: "monte_carlo", "trials"]?.int == 0)
+        let preview = try await run("tolerance", ["preview_case": .object(["type": .string("trial"), "trial": .integer(-2)])])
+        #expect(preview.json["preview"]?.object != nil)
     }
 
     @Test func errorCodesMapToCases() {

@@ -201,8 +201,9 @@ impl RayCaster for Bvh {
                 for k in node.first..node.first + node.count {
                     let pi = self.order[k as usize];
                     if let Some(h) = self.prims[pi as usize].intersect(ray, 0.0, t_best) {
-                        // Ties go to the lower primitive index, as in BruteForce.
-                        if h.t < t_best || best.is_some_and(|b| h.t == t_best && pi < b.prim) {
+                        // A first hit at `t_max` counts; ties go to the lower
+                        // primitive index, as in BruteForce.
+                        if h.t < t_best || best.is_none_or(|b| h.t == t_best && pi < b.prim) {
                             t_best = h.t;
                             best = Some(Hit { prim: pi, local: h });
                         }

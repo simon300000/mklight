@@ -2,9 +2,6 @@ import Foundation
 import MKLightEngine
 import MKLightModel
 import Observation
-#if DEBUG
-import os
-#endif
 
 /// One point of a running optimisation (from the job's stage text
 /// `"<algorithm> <iteration>: merit <best>"`).
@@ -54,8 +51,6 @@ public final class OptimizeSession {
     public private(set) var evaluation: MeritEvaluation?
     public private(set) var evaluating = false
     public private(set) var evaluationError: String?
-    /// How long the last evaluation took, submission to result.
-    public private(set) var lastEvaluationTime: Duration?
     @ObservationIgnored private var evaluationJob: AnalysisJob?
     @ObservationIgnored private var evaluationTask: Task<Void, Never>?
     @ObservationIgnored private var evaluatedKey: JSONValue?
@@ -67,8 +62,6 @@ public final class OptimizeSession {
     public private(set) var result: OptimizeResult?
     public private(set) var applied = false
     @ObservationIgnored private var job: AnalysisJob?
-    /// The seed and settings the result was computed with.
-    public private(set) var settingsUsed: [String: JSONValue] = [:]
 
     public init() {}
 
@@ -165,34 +158,19 @@ public final class OptimizeSession {
         evaluating = true
         var submitted: AnalysisJob?
         do {
-            let started = ContinuousClock.now
             let job = try workspace.submitJob("merit_evaluation", settings: s, key: "merit-evaluation")
-            #if DEBUG
-            Logger(subsystem: "com.mklight.app", category: "merit").notice("merit_evaluation submitted (\(s["merit"] == nil ? "default" : "custom", privacy: .public))")
-            #endif
             submitted = job
             evaluationJob = job
             let out = try await job.result()
             guard evaluationJob === job else { return }
             evaluation = MeritEvaluation(json: out.json)
-            lastEvaluationTime = ContinuousClock.now - started
-            #if DEBUG
-            Logger(subsystem: "com.mklight.app", category: "merit").notice(
-                "merit_evaluation \(String(describing: self.lastEvaluationTime ?? .zero), privacy: .public): merit \(self.evaluation?.merit ?? .nan, privacy: .public)")
-            #endif
             evaluatedKey = key
             pendingKey = nil
             evaluationError = evaluation == nil ? "The engine returned no merit." : nil
             evaluating = false
         } catch EngineError.cancelled {
             // A newer evaluation replaced it.
-            #if DEBUG
-            Logger(subsystem: "com.mklight.app", category: "merit").notice("merit_evaluation cancelled")
-            #endif
         } catch {
-            #if DEBUG
-            Logger(subsystem: "com.mklight.app", category: "merit").notice("merit_evaluation failed: \(error.localizedDescription, privacy: .public)")
-            #endif
             if let submitted, evaluationJob !== submitted { return }
             evaluationError = error.localizedDescription
             evaluatedKey = key
@@ -248,15 +226,14 @@ public final class OptimizeSession {
         let s = settings(variables: variables, system: workspace.designSnapshot?.system ?? workspace.snapshot?.system)
         do {
             let job = try workspace.submitJob("optimize", settings: s)
-            begin(job, settings: s)
+            begin(job)
         } catch {
             state = .failed(error.localizedDescription)
         }
     }
 
-    func begin(_ job: AnalysisJob, settings: [String: JSONValue]) {
+    func begin(_ job: AnalysisJob) {
         self.job = job
-        settingsUsed = settings
         trace = []
         result = nil
         applied = false
@@ -348,14 +325,14 @@ public struct OptimizeResult: Sendable {
         variables = (json["variables"]?.array ?? []).enumerated().map { k, v in
             Variable(
                 id: k, label: v["label"]?.string ?? "",
-                param: v["param"].flatMap { try? MKLightJSON.decode(ParamPath.self, from: MKLightJSON.encode($0)) },
+                param: v["param"].flatMap { try? $0.decode(ParamPath.self) },
                 start: v["start"]?.nf ?? .nan, value: v["value"]?.nf ?? .nan, atBound: v["at_bound"]?.bool ?? false)
         }
         history = (json["history"]?.array ?? []).compactMap { h in
             guard let it = h["iteration"]?.int, let m = (h["best_merit"] ?? h["merit"])?.nf, m.isFinite else { return nil }
             return MeritPoint(iteration: it, merit: m)
         }
-        system = json["system"].flatMap { try? MKLightJSON.decode(OpticalSystem.self, from: MKLightJSON.encode($0)) }
+        system = json["system"].flatMap { try? $0.decode(OpticalSystem.self) }
         evaluatedOn = json[path: "backend", "evaluated_on"]?.string ?? ""
     }
 
@@ -393,6 +370,8 @@ public final class SolvesSession {
             let report = try await job.result().json
             read(report, system: workspace.snapshot?.system)
             state = .finished
+        } catch EngineError.cancelled {
+            // A newer dry run replaced this one and reports instead.
         } catch {
             state = .failed(error.localizedDescription)
         }
@@ -400,7 +379,7 @@ public final class SolvesSession {
 
     func read(_ report: JSONValue, system: OpticalSystem?) {
         outcomes = (report["outcomes"]?.array ?? []).enumerated().map { k, o in
-            let path = o["target"].flatMap { try? MKLightJSON.decode(ParamPath.self, from: MKLightJSON.encode($0)) }
+            let path = o["target"].flatMap { try? $0.decode(ParamPath.self) }
             let kind = o["kind"]?.string ?? ""
             // Curvatures are shown as radii, like everywhere else.
             var previous = o["previous"]?.nf, value = o["value"]?.nf ?? .nan

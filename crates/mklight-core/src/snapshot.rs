@@ -40,14 +40,18 @@ impl Serialize for SnapshotHash {
 impl<'de> Deserialize<'de> for SnapshotHash {
     fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         let s = String::deserialize(d)?;
-        if s.len() != 64 {
-            return Err(serde::de::Error::custom(
-                "snapshot hash must be 64 hex chars",
-            ));
+        let err = || serde::de::Error::custom("snapshot hash must be 64 hex chars");
+        let digit = |b: u8| (b as char).to_digit(16).map(|v| v as u8);
+        let b = s.as_bytes();
+        if b.len() != 64 {
+            return Err(err());
         }
         let mut out = [0u8; 32];
         for (i, o) in out.iter_mut().enumerate() {
-            *o = u8::from_str_radix(&s[2 * i..2 * i + 2], 16).map_err(serde::de::Error::custom)?;
+            *o = match (digit(b[2 * i]), digit(b[2 * i + 1])) {
+                (Some(hi), Some(lo)) => hi << 4 | lo,
+                _ => return Err(err()),
+            };
         }
         Ok(SnapshotHash(out))
     }
@@ -123,5 +127,28 @@ mod tests {
         assert_ne!(a.hash(), c.hash());
         let j = serde_json::to_string(&a.hash()).unwrap();
         assert_eq!(serde_json::from_str::<SnapshotHash>(&j).unwrap(), a.hash());
+    }
+
+    #[test]
+    fn hash_text_is_exactly_64_hex_digits() {
+        let hex = "0123456789abcdefABCDEF".repeat(3);
+        let ok = serde_json::from_str::<SnapshotHash>(&format!("\"{}\"", &hex[..64])).unwrap();
+        assert_eq!(ok.to_hex(), hex[..64].to_lowercase());
+        for bad in [
+            // 64 bytes, but not 64 characters.
+            format!("{}é", &hex[..62]),
+            format!("é{}", &hex[..62]),
+            format!("{}é0", &hex[..61]),
+            // A sign is not a hex digit.
+            format!("+f{}", &hex[..62]),
+            format!("{}g", &hex[..63]),
+            hex[..63].to_string(),
+            hex[..66].to_string(),
+        ] {
+            assert!(
+                serde_json::from_str::<SnapshotHash>(&format!("\"{bad}\"")).is_err(),
+                "{bad}"
+            );
+        }
     }
 }

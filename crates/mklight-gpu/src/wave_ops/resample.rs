@@ -151,10 +151,6 @@ fn inside(p: &Params, edges: &[[Df32; 4]], u: Df32, v: Df32) -> bool {
         }
     }
 }
-fn read<'a, T: Pod>(x: &'a crate::resident::cpu::Execution, v: &PlanView) -> &'a [T] {
-    let a = bytemuck::cast_slice(x.words(v.buffer));
-    &a[v.offset..v.offset + v.desc.len().unwrap()]
-}
 pub fn cpu(
     r: &Resample,
     x: &mut crate::resident::cpu::Execution,
@@ -163,9 +159,9 @@ pub fn cpu(
     let p = params(r);
     let (nx, ny, n, ss) = (p.nx as usize, p.ny as usize, r.size, r.supersample);
     let ns = n * ss;
-    let nodes = read::<Df32>(x, &r.nodes).as_chunks::<4>().0;
-    let valid = read::<u32>(x, &r.valid);
-    let edges = read::<Df32>(x, &r.edges).as_chunks::<4>().0;
+    let nodes = x.rows::<Df32>(&r.nodes).as_chunks::<4>().0;
+    let valid = x.rows::<u32>(&r.valid);
+    let edges = x.rows::<Df32>(&r.edges).as_chunks::<4>().0;
     let mut tris = vec![None; 2 * (nx - 1) * (ny - 1)];
     for j in 0..ny - 1 {
         for i in 0..nx - 1 {
@@ -234,7 +230,10 @@ pub fn cpu(
     let mut opd = vec![Df32::ZERO; n * n];
     let mut diag = vec![0.; 3 * n * n];
     for k in 0..n * n {
-        ctl.check()?;
+        if k % 4096 == 0 {
+            ctl.check()?;
+            ctl.report(k as f64 / (n * n) as f64, "pupil resampling");
+        }
         let (mut a, mut w, mut count) = (Df32::ZERO, Df32::ZERO, 0usize);
         let (mut gap, mut pitch) = (0f32, 1f32);
         for sy in 0..ss {
@@ -306,7 +305,6 @@ pub fn cpu(
         }
         diag[k] = gap;
         diag[n * n + k] = pitch;
-        ctl.report((k + 1) as f64 / (n * n) as f64, "pupil resampling");
     }
     x.words_mut(r.amplitude)
         .copy_from_slice(bytemuck::cast_slice(&amp));

@@ -48,8 +48,8 @@ use mklight_core::{RayAiming, split};
 use mklight_gpu::{consts::*, resident};
 use mklight_trace::{AimReport, FieldPoint, GeneratedRay, PreparedField, RayRequest};
 use rayon::prelude::*;
+use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc;
 use std::time::Instant;
 
@@ -474,28 +474,18 @@ pub const SPLIT_DEVICE_SHARE: f64 = 0.35;
 /// and device).
 const DEVICE_TILE: usize = 1 << 17;
 /// The smallest split tile.
-const MIN_DEVICE_TILE: usize = 1 << 13;
+pub(super) const MIN_DEVICE_TILE: usize = 1 << 13;
 /// Device plans per split generation: few and large, since each plan's
 /// Newton rounds cost a fixed latency (small plans left the device 4–5×
 /// slower per ray than the host); two let the host complete the first while
 /// the second runs.
 const DEVICE_PLANS: usize = 2;
-static SPLIT_MIN: AtomicUsize = AtomicUsize::new(SPLIT_MIN_WORK);
-static MIN_TILE: AtomicUsize = AtomicUsize::new(MIN_DEVICE_TILE);
 
-/// Override [`SPLIT_MIN_WORK`] and the smallest device tile (tests split
-/// small generations into several tiles); `None` restores the defaults.
-#[doc(hidden)]
-pub fn set_split_thresholds(t: Option<(usize, usize)>) {
-    let (work, tile) = t.unwrap_or((SPLIT_MIN_WORK, MIN_DEVICE_TILE));
-    SPLIT_MIN.store(work, Ordering::Relaxed);
-    MIN_TILE.store(tile.max(1), Ordering::Relaxed);
-}
-
-/// The tile of a split generation of `n` rays: a sixteenth of it within
-/// [[`MIN_DEVICE_TILE`], [`DEVICE_TILE`]], whole host chunks.
-fn split_tile(n: usize) -> usize {
-    let min = MIN_TILE.load(Ordering::Relaxed);
+/// The tile of a split generation of `n` rays: a sixteenth of it, at least
+/// `min` ([`MIN_DEVICE_TILE`] unless tuned) and at most [`DEVICE_TILE`]
+/// rays, in whole host chunks.
+fn split_tile(n: usize, min: usize) -> usize {
+    let min = min.max(1);
     (n / 16)
         .clamp(min, DEVICE_TILE.max(min))
         .next_multiple_of(HOST_CHUNK)
@@ -570,14 +560,22 @@ impl Geometry<'_> {
         aiming: RayAiming,
     ) -> MkResult<AimRows> {
         let start = Instant::now();
+        // Unique points by coordinate bits, then by equality: a map grid has
+        // up to a million rows, so no scan of the points per row.
         let mut points: Vec<FieldPoint> = Vec::new();
+        let mut seen: HashMap<(u64, u64), Vec<usize>> = HashMap::new();
         let index: Vec<(usize, usize)> = rows
             .iter()
             .map(|(f, w)| {
-                let i = points.iter().position(|q| q == f).unwrap_or_else(|| {
-                    points.push(*f);
-                    points.len() - 1
-                });
+                let same = seen.entry((f.hx.to_bits(), f.hy.to_bits())).or_default();
+                let i = match same.iter().copied().find(|&i| points[i] == *f) {
+                    Some(i) => i,
+                    None => {
+                        points.push(*f);
+                        same.push(points.len() - 1);
+                        points.len() - 1
+                    }
+                };
                 (i, *w)
             })
             .collect();
@@ -621,7 +619,7 @@ impl Geometry<'_> {
     }
     /// The stop tolerance of a device generation (CONVENTIONS §7: the
     /// tightest derived stop of the prepared fields, or the requested one).
-    fn device_tolerance(&self, aiming: RayAiming) -> MkResult<f32> {
+    pub(super) fn device_tolerance(&self, aiming: RayAiming) -> MkResult<f32> {
         Ok(match aiming {
             RayAiming::Real { .. } => {
                 self.with_tracer(aiming, |t| t.device_aim_tolerance() as f32)?
@@ -655,9 +653,9 @@ impl Geometry<'_> {
             AimDesign::HostTable => {
                 let table = self.host_seed_table(rows, n, ctx)?;
                 let work = n.saturating_mul(self.tracer.system().image_index());
-                let share = self.split_share;
+                let share = if self.split { self.device_share } else { 0.0 };
                 match table {
-                    Some(table) if share > 0.0 && work >= SPLIT_MIN.load(Ordering::Relaxed) => {
+                    Some(table) if share > 0.0 && work >= self.tuning.split_min_work => {
                         self.aim_split(rows, n, spec, &table, share, ctx)?
                     }
                     table => self.aim_host(rows, n, spec, table.as_ref(), ctx)?,
@@ -741,7 +739,7 @@ impl Geometry<'_> {
         let start = Instant::now();
         let slots = self.slots(rows)?;
         let nodes = (table.seed_nodes(), table.side as u32);
-        let per = split_tile(n) / HOST_CHUNK;
+        let per = split_tile(n, self.tuning.split_min_tile) / HOST_CHUNK;
         let device_chunk: Vec<bool> = (0..n.div_ceil(HOST_CHUNK))
             .into_par_iter()
             .map(|c| {
@@ -755,105 +753,111 @@ impl Geometry<'_> {
                     })
             })
             .collect();
-        let (handles, (host, completion)) = self.with_tracer(rows.aiming, |tracer| {
-            let job = HostJob {
-                tracer,
-                rows,
-                slots: &slots,
-                spec,
-                table: Some(table),
-            };
-            ray_buffers(self.backend, n, HOST_CHUNK, |chunks| {
-                let (mut device, mut host) = (Vec::new(), Vec::new());
-                for (c, cols) in chunks.into_iter().enumerate() {
-                    if device_chunk[c] {
-                        device.push(cols);
-                    } else {
-                        host.push(cols);
-                    }
-                }
-                let per_plan = device.len().div_ceil(DEVICE_PLANS).max(1);
-                let mut plans: Vec<Vec<RayColumns<'_>>> = Vec::new();
-                for cols in device {
-                    match plans.last_mut() {
-                        Some(p) if p.len() < per_plan => p.push(cols),
-                        _ => plans.push(vec![cols]),
-                    }
-                }
-                std::thread::scope(|scope| {
-                    let (tx, rx) = mpsc::channel();
-                    let driver = scope.spawn(move || -> MkResult<()> {
-                        // Submit every plan, then copy each as it lands.
-                        let mut submitted = Vec::with_capacity(plans.len());
-                        for cols in plans {
-                            let rays: Vec<usize> = cols
-                                .iter()
-                                .flat_map(|c| c.start..c.start + c.len())
-                                .collect();
-                            let d = self.submit_device(
-                                rows,
-                                rays.len(),
-                                &|k| spec(rays[k]),
-                                Some(&nodes),
-                                ctx,
-                            )?;
-                            submitted.push((d, rays, cols));
+        let (handles, (host, host_seconds, completion)) =
+            self.with_tracer(rows.aiming, |tracer| {
+                let job = HostJob {
+                    tracer,
+                    rows,
+                    slots: &slots,
+                    spec,
+                    table: Some(table),
+                };
+                ray_buffers(self.backend, n, HOST_CHUNK, |chunks| {
+                    let (mut device, mut host) = (Vec::new(), Vec::new());
+                    for (c, cols) in chunks.into_iter().enumerate() {
+                        if device_chunk[c] {
+                            device.push(cols);
+                        } else {
+                            host.push(cols);
                         }
-                        for (d, rays, mut cols) in submitted {
-                            let views = self
-                                .finish_device(d)?
-                                .iter()
-                                .map(|h| self.backend.read_view(h.view()))
-                                .collect::<MkResult<Vec<_>>>()?;
-                            let mut offset = 0;
-                            for c in &mut cols {
-                                c.copy_from(offset, rays.len(), &views)?;
-                                offset += c.len();
+                    }
+                    let per_plan = device.len().div_ceil(DEVICE_PLANS).max(1);
+                    let mut plans: Vec<Vec<RayColumns<'_>>> = Vec::new();
+                    for cols in device {
+                        match plans.last_mut() {
+                            Some(p) if p.len() < per_plan => p.push(cols),
+                            _ => plans.push(vec![cols]),
+                        }
+                    }
+                    std::thread::scope(|scope| {
+                        let (tx, rx) = mpsc::channel();
+                        let driver = scope.spawn(move || -> MkResult<()> {
+                            // Submit every plan, then copy each as it lands.
+                            let mut submitted = Vec::with_capacity(plans.len());
+                            for cols in plans {
+                                let rays: Vec<usize> = cols
+                                    .iter()
+                                    .flat_map(|c| c.start..c.start + c.len())
+                                    .collect();
+                                let d = self.submit_device(
+                                    rows,
+                                    rays.len(),
+                                    &|k| spec(rays[k]),
+                                    Some(&nodes),
+                                    ctx,
+                                )?;
+                                submitted.push((d, rays, cols));
                             }
-                            let report = views[3].as_slice::<u32>()?;
-                            let failed: Vec<u32> = (0..rays.len())
-                                .filter(|&k| report[k] & MKL_RAY_CODE_MASK == MKL_AIM_FAILED)
-                                .map(|k| rays[k] as u32)
-                                .collect();
-                            if tx.send((cols, failed)).is_err() {
-                                return Ok(());
+                            for (d, rays, mut cols) in submitted {
+                                let views = self
+                                    .finish_device(d)?
+                                    .iter()
+                                    .map(|h| self.backend.read_view(h.view()))
+                                    .collect::<MkResult<Vec<_>>>()?;
+                                let mut offset = 0;
+                                for c in &mut cols {
+                                    c.copy_from(offset, rays.len(), &views)?;
+                                    offset += c.len();
+                                }
+                                let report = views[3].as_slice::<u32>()?;
+                                let failed: Vec<u32> = (0..rays.len())
+                                    .filter(|&k| report[k] & MKL_RAY_CODE_MASK == MKL_AIM_FAILED)
+                                    .map(|k| rays[k] as u32)
+                                    .collect();
+                                if tx.send((cols, failed)).is_err() {
+                                    return Ok(());
+                                }
                             }
+                            Ok(())
+                        });
+                        let aimed = job.aim_all(host, ctx);
+                        let host_seconds = start.elapsed().as_secs_f64();
+                        // Host completion of each device plan as it lands: its
+                        // rays, the resolved ones and the seconds they took.
+                        let mut completion = (0u64, 0u64, 0.0f64);
+                        while let Some((mut cols, failed)) = recv_helping(&rx) {
+                            let landed = Instant::now();
+                            let resolved = job.aim_indices(&failed);
+                            completion.0 += failed.len() as u64;
+                            completion.1 += resolved.len() as u64;
+                            for (i, s, g) in resolved {
+                                let c = cols.partition_point(|c| c.start <= i) - 1;
+                                let k = i - cols[c].start;
+                                cols[c].write(
+                                    k,
+                                    Some((&g.ray, s.weight)),
+                                    slots[s.row as usize],
+                                    s.id,
+                                    report_words(&Ok(g), true, 0),
+                                );
+                            }
+                            completion.2 += landed.elapsed().as_secs_f64();
                         }
-                        Ok(())
-                    });
-                    let aimed = job.aim_all(host, ctx);
-                    // Host completion of each device plan as it lands.
-                    let mut completion = (0u64, 0u64);
-                    while let Some((mut cols, failed)) = recv_helping(&rx) {
-                        let resolved = job.aim_indices(&failed);
-                        completion.0 += failed.len() as u64;
-                        completion.1 += resolved.len() as u64;
-                        for (i, s, g) in resolved {
-                            let c = cols.partition_point(|c| c.start <= i) - 1;
-                            let k = i - cols[c].start;
-                            cols[c].write(
-                                k,
-                                Some((&g.ray, s.weight)),
-                                slots[s.row as usize],
-                                s.id,
-                                report_words(&Ok(g), true, 0),
-                            );
-                        }
-                    }
-                    driver
-                        .join()
-                        .map_err(|_| bad("device aiming thread panicked"))??;
-                    Ok((aimed?, completion))
+                        driver
+                            .join()
+                            .map_err(|_| bad("device aiming thread panicked"))??;
+                        Ok((aimed?, host_seconds, completion))
+                    })
                 })
-            })
-        })??;
+            })??;
         self.evidence(|e| {
             e.generations += 1;
             e.rays += n as u64;
             e.host(&host);
-            e.host_seconds += start.elapsed().as_secs_f64();
+            e.host_seconds += host_seconds;
             e.completion_rays += completion.0;
             e.completion_resolved += completion.1;
+            e.completion_seconds += completion.2;
         });
         Ok(handles)
     }
@@ -946,16 +950,6 @@ impl Geometry<'_> {
         let r = d.pending.wait()?;
         let seconds = d.submitted.elapsed().as_secs_f64();
         let stats = &r.stats.aiming;
-        if plans::trace_evidence() >= 3 {
-            eprintln!(
-                "mklight aim generation: rays {} failed {} iterations {} max {} device {:.2} ms",
-                stats.rays,
-                stats.failed,
-                stats.iterations,
-                stats.max_iterations,
-                r.stats.device_seconds * 1e3
-            );
-        }
         self.evidence(|e| {
             e.device_plans += 1;
             e.device_seconds += seconds;
@@ -1404,7 +1398,7 @@ mod tests {
             assert_eq!(device, (1000.0 * share) as usize, "{share}");
         }
         for n in [1usize, 5000, 1 << 20, 1 << 24] {
-            let t = split_tile(n);
+            let t = split_tile(n, MIN_DEVICE_TILE);
             assert_eq!(t % HOST_CHUNK, 0);
             assert!((MIN_DEVICE_TILE..=DEVICE_TILE).contains(&t), "{n}: {t}");
         }

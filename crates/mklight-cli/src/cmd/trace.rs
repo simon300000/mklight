@@ -94,10 +94,9 @@ pub fn trace(ctx: &Ctx, a: &TraceArgs) -> CliResult<Report> {
             nw - 1
         )));
     }
-    let opts = if a.no_clip {
-        TraceOptions::unclipped()
-    } else {
-        tracer.options()
+    let opts = TraceOptions {
+        clip: !a.no_clip,
+        ..tracer.options()
     };
     let field = tracer.field(a.field);
     let mut rec: Vec<SurfaceRecord> = Vec::new();

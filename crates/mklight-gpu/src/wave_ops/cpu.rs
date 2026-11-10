@@ -4,48 +4,32 @@ pub fn execute(
     x: &mut crate::resident::cpu::Execution,
     ctl: &JobControl,
 ) -> MkResult<()> {
-    if let Request::Resample(r) = r {
-        return resample::cpu(r, x, ctl);
-    }
-    if let Request::Diagnostics(r) = r {
-        return diagnostics::cpu(r, x, ctl);
-    }
-    if let Request::Statistics(r) = r {
-        return statistics::cpu(r, x, ctl);
-    }
-    if let Request::Lattice(r) = r {
-        return lattice::cpu(r, x, ctl);
-    }
-    if let Request::Placement(r) = r {
-        return placement::cpu(r, x, ctl);
-    }
-    if let Request::Spectral(r) = r {
-        return spectral::cpu(r, x, ctl);
-    }
-    if let Request::ImageIntegral(r) = r {
-        return image_integrals::cpu(r, x, ctl);
-    }
-    if let Request::FftMtf(r) = r {
-        return fft_mtf::cpu(r, x, ctl);
-    }
-    if let Request::Simulation(r) = r {
-        return simulation::cpu(r, x, ctl);
-    }
-    if let Request::Shells(r) = r {
-        return shells::cpu(r, x, ctl);
-    }
-    let p = params(r);
-    let n = p.n as usize;
-    let count = n * n;
+    // Parameters, grid side `n` and `n²` of the requests evaluated here
+    // (the grouped requests have their own).
+    let grid_params = || {
+        let p = params(r);
+        let n = p.n as usize;
+        (p, n, n * n)
+    };
     match r {
+        Request::Resample(r) => return resample::cpu(r, x, ctl),
+        Request::Diagnostics(r) => return diagnostics::cpu(r, x, ctl),
+        Request::Statistics(r) => return statistics::cpu(r, x, ctl),
+        Request::Lattice(r) => return lattice::cpu(r, x, ctl),
+        Request::Placement(r) => return placement::cpu(r, x, ctl),
+        Request::Spectral(r) => return spectral::cpu(r, x, ctl),
+        Request::ImageIntegral(r) => return image_integrals::cpu(r, x, ctl),
+        Request::FftMtf(r) => return fft_mtf::cpu(r, x, ctl),
+        Request::Simulation(r) => return simulation::cpu(r, x, ctl),
+        Request::Shells(r) => return shells::cpu(r, x, ctl),
         Request::Zernike {
             samples,
             terms,
             matrix,
             rhs,
         } => {
-            let a = values::<Df32>(x, samples).as_chunks::<4>().0;
-            let t = values::<u32>(x, terms).as_chunks::<2>().0;
+            let a = x.rows::<Df32>(samples).as_chunks::<4>().0;
+            let t = x.rows::<u32>(terms).as_chunks::<2>().0;
             let mut design = vec![Df32::ZERO; a.len() * t.len()];
             let mut b = vec![Df32::ZERO; a.len()];
             for (i, row) in a.iter().enumerate() {
@@ -65,17 +49,6 @@ pub fn execute(
                 .copy_from_slice(bytemuck::cast_slice(&design));
             x.words_mut(*rhs).copy_from_slice(bytemuck::cast_slice(&b));
         }
-
-        Request::Shells(_)
-        | Request::Simulation(_)
-        | Request::FftMtf(_)
-        | Request::ImageIntegral(_)
-        | Request::Spectral(_)
-        | Request::Placement(_)
-        | Request::Lattice(_)
-        | Request::Statistics(_)
-        | Request::Diagnostics(_)
-        | Request::Resample(_) => unreachable!(),
         Request::FocusCorrelation {
             pupil,
             stencil,
@@ -84,13 +57,14 @@ pub fn execute(
             phase_steps,
             ..
         } => {
-            let a = values::<f32>(x, &pupil.amplitude);
-            let c = values::<f32>(x, &pupil.coverage);
-            let w = values::<Df32>(x, &pupil.opd);
-            let g = values::<f32>(x, stencil);
+            let (p, n, count) = grid_params();
+            let a = x.rows::<f32>(&pupil.amplitude);
+            let c = x.rows::<f32>(&pupil.coverage);
+            let w = x.rows::<Df32>(&pupil.opd);
+            let g = x.rows::<f32>(stencil);
             let shifts = shifts
                 .as_ref()
-                .map(|v| values::<Df32>(x, v))
+                .map(|v| x.rows::<Df32>(v))
                 .unwrap_or(&[Df32::ZERO]);
             let fs = p.field_side as usize;
             let mut out = vec![[0.; 2]; fs * shifts.len()];
@@ -136,10 +110,11 @@ pub fn execute(
             moments,
             ..
         } => {
+            let (p, n, count) = grid_params();
             let side = (x.words(*field).len() / 2).isqrt();
-            let a = values::<f32>(x, &pupil.amplitude);
-            let c = values::<f32>(x, &pupil.coverage);
-            let w = values::<Df32>(x, &pupil.opd);
+            let a = x.rows::<f32>(&pupil.amplitude);
+            let c = x.rows::<f32>(&pupil.coverage);
+            let w = x.rows::<Df32>(&pupil.opd);
             let mut f = vec![[0.; 2]; side * side];
             let mut m = vec![0.; 3 * count];
             for k in 0..count {
@@ -163,8 +138,9 @@ pub fn execute(
             output,
             ..
         } => {
-            let f = values::<[f32; 2]>(x, field);
-            let s = values::<Df32>(x, sums);
+            let (p, ..) = grid_params();
+            let f = x.rows::<[f32; 2]>(field);
+            let s = x.rows::<Df32>(sums);
             let m = p.size as usize;
             let side = p.field_side as usize;
             let out: Vec<_> = (0..m * m)
@@ -188,10 +164,11 @@ pub fn execute(
             output,
             ..
         } => {
-            let a = values::<f32>(x, &pupil.amplitude);
-            let c = values::<f32>(x, &pupil.coverage);
-            let w = values::<Df32>(x, &pupil.opd);
-            let s = values::<Df32>(x, sums);
+            let (p, _, count) = grid_params();
+            let a = x.rows::<f32>(&pupil.amplitude);
+            let c = x.rows::<f32>(&pupil.coverage);
+            let w = x.rows::<Df32>(&pupil.opd);
+            let s = x.rows::<Df32>(sums);
             let mut out = vec![0.; (p.size * p.size) as usize];
             for (i, v) in out.iter_mut().enumerate() {
                 ctl.check()?;
@@ -209,9 +186,10 @@ pub fn execute(
             phase_steps,
             ..
         } => {
-            let w = values::<Df32>(x, &pupil.opd);
-            let coverage = values::<f32>(x, &pupil.coverage);
-            let shifts = values::<Df32>(x, shifts);
+            let (p, n, count) = grid_params();
+            let w = x.rows::<Df32>(&pupil.opd);
+            let coverage = x.rows::<f32>(&pupil.coverage);
+            let shifts = x.rows::<Df32>(shifts);
             let mut out = Vec::with_capacity(count * shifts.len());
             for &dz in shifts {
                 for (k, &v) in w.iter().enumerate() {
@@ -236,18 +214,9 @@ pub fn execute(
             x.words_mut(*output)
                 .copy_from_slice(bytemuck::cast_slice(&out));
         }
-        Request::Detector {
-            frequencies,
-            output,
-            ..
-        } => {
-            let fs = values::<f32>(x, frequencies).as_chunks::<2>().0;
-            let out: Vec<_> = fs.iter().map(|v| detector(&p, *v)).collect();
-            x.words_mut(*output)
-                .copy_from_slice(bytemuck::cast_slice(&out));
-        }
         Request::LineSpread { image, output, .. } => {
-            let a = values::<f32>(x, image);
+            let (p, n, _) = grid_params();
+            let a = x.rows::<f32>(image);
             let mut out = vec![0.; 2 * n];
             for k in 0..2 * n {
                 ctl.check()?;

@@ -160,19 +160,23 @@ impl Constraint {
     pub fn is_equality(&self) -> bool {
         matches!((self.lower, self.upper), (Some(a), Some(b)) if (a - b).abs() <= 1e-15 * (1.0 + a.abs()))
     }
+    /// A positive, finite scale (falls back to 1).
+    #[inline]
+    pub fn safe_scale(&self) -> f64 {
+        if self.scale.is_finite() && self.scale > 0.0 {
+            self.scale
+        } else {
+            1.0
+        }
+    }
     /// Signed-free violation `max(lo − c, c − hi, 0)`, in units of `scale`.
     pub fn violation(&self, c: f64) -> f64 {
         if !c.is_finite() {
             return f64::INFINITY;
         }
-        let s = if self.scale > 0.0 && self.scale.is_finite() {
-            self.scale
-        } else {
-            1.0
-        };
         let lo = self.lower.map_or(0.0, |l| (l - c).max(0.0));
         let hi = self.upper.map_or(0.0, |h| (c - h).max(0.0));
-        lo.max(hi) / s
+        lo.max(hi) / self.safe_scale()
     }
 }
 
@@ -420,7 +424,12 @@ pub fn project(vars: &[Variable], x: &mut [f64]) {
 
 /// Validate a starting point and the problem's static description.
 pub fn check_problem<P: Problem + ?Sized>(p: &P, x0: &[f64]) -> MkResult<()> {
-    let vars = p.variables();
+    check_start(p.variables(), x0)?;
+    check_description(p)
+}
+
+/// Validate a starting point: one finite value per variable.
+pub(crate) fn check_start(vars: &[Variable], x0: &[f64]) -> MkResult<()> {
     if x0.len() != vars.len() {
         return Err(MkError::InvalidParam(format!(
             "start point has {} values for {} variables",
@@ -428,16 +437,23 @@ pub fn check_problem<P: Problem + ?Sized>(p: &P, x0: &[f64]) -> MkResult<()> {
             vars.len()
         )));
     }
+    if x0.iter().any(|v| !v.is_finite()) {
+        return Err(MkError::InvalidParam("start point is not finite".into()));
+    }
+    Ok(())
+}
+
+/// Validate the problem's static description: variables, bounds, weights.
+pub(crate) fn check_description<P: Problem + ?Sized>(p: &P) -> MkResult<()> {
+    let vars = p.variables();
     if vars.is_empty() {
         return Err(MkError::InvalidParam("problem has no variables".into()));
     }
-    for v in vars {
-        if v.lo() > v.hi() {
-            return Err(MkError::InvalidParam(format!(
-                "variable '{}': lower bound above upper bound",
-                v.name
-            )));
-        }
+    if let Some(v) = vars.iter().find(|v| v.lo() > v.hi()) {
+        return Err(MkError::InvalidParam(format!(
+            "variable '{}': lower bound above upper bound",
+            v.name
+        )));
     }
     if p.weights().len() != p.num_residuals() {
         return Err(MkError::InvalidParam(
@@ -448,9 +464,6 @@ pub fn check_problem<P: Problem + ?Sized>(p: &P, x0: &[f64]) -> MkResult<()> {
         return Err(MkError::InvalidParam(
             "weights must be finite and ≥ 0".into(),
         ));
-    }
-    if x0.iter().any(|v| !v.is_finite()) {
-        return Err(MkError::InvalidParam("start point is not finite".into()));
     }
     Ok(())
 }

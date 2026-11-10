@@ -214,6 +214,7 @@ private struct DesignWindowContent: View {
 
     /// Debug builds: `-MKLightSelectSurface 3`, `-MKLightInspector system`,
     /// `-MKLightSheet optimize`, `-MKLightSidebar hidden`, `-MKLightViewport 3D`,
+    /// `-MKLightFootprints YES`, `-MKLightFit lens`, `-MKLightYaw 0.6`,
     /// `-MKLightShowIssues YES`, `-MKLightToast text` (screenshots, UI checks).
     private func applyLaunchOptions() {
         #if DEBUG

@@ -1,6 +1,6 @@
 //! Resident stray-light transport and analytic compute BVH; the CPU forms
-//! the per-source detector estimators from the device records. Engine
-//! qualification/routing belongs to P11.
+//! the per-source detector estimators from the device records. Capability
+//! flags and routing belong to the engine.
 use crate::{
     Scene, SourceSpec,
     geom::{Aabb, Mask, Primitive, Shape, onb},
@@ -37,17 +37,8 @@ pub fn prepare_geometry(
         let (kind, c, k, ri, ro, mask) = match &p.shape {
             Shape::Cylinder(c) => (2, 0., 0., 0., c.radius, None),
             Shape::Sag(s) => {
-                let conic = match s.shape() {
-                    SurfaceShape::Plane | SurfaceShape::Paraxial { .. } => Some((0., 0.)),
-                    SurfaceShape::Conic { curvature, conic } => Some((*curvature, *conic)),
-                    SurfaceShape::EvenAsphere {
-                        curvature,
-                        conic,
-                        coefficients,
-                    } if coefficients.iter().all(|v| *v == 0.) => Some((*curvature, *conic)),
-                    _ => None,
-                };
-                let (kind, c, k) = conic
+                let (kind, c, k) = s
+                    .conic()
                     .map_or((3, s.shape().curvature(), s.shape().conic()), |(c, k)| {
                         (if c == 0. { 0 } else { 1 }, c, k)
                     });
@@ -126,8 +117,15 @@ pub fn prepare_geometry(
     }
     ctx.check()?;
     let geometry = ops::Geometry::from_fn(b, primitives.len(), &nodes, ctx, pack)?;
-    if !primitives.iter().any(|p|matches!(&p.shape,Shape::Sag(s) if !matches!(s.shape(),SurfaceShape::Plane|SurfaceShape::Paraxial{..}|SurfaceShape::Conic{..}))) {return Ok(geometry);}
-    // Reuse P1's authoritative packing, without duplicating any surface basis.
+    // Only iteratively intersected sags need their surface records.
+    if !primitives
+        .iter()
+        .any(|p| matches!(&p.shape, Shape::Sag(s) if s.conic().is_none()))
+    {
+        return Ok(geometry);
+    }
+    // Reuse the sequential tracer's authoritative surface packing, without
+    // duplicating any surface basis.
     use mklight_core::model::{MaterialRef, OpticalSystem, SemiDiameter, Surface};
     let mut model = OpticalSystem::new_empty();
     model.surfaces = vec![Surface::new(
@@ -194,18 +192,9 @@ fn aperture_record(a: &ApertureShape, outside: bool) -> (u32, [f64; 2]) {
     };
     (kind | if outside { 256 } else { 0 }, v)
 }
-/// Append a source operation. Each logical source ID retains its reference
-/// Philox stream and draw position so a future transport continuation can
-/// consume the next draw without changing the depth-first stream.
-pub fn generate(
-    plan: &mut ResidentPlan,
-    source: &SourceSpec,
-    weights: &[f64],
-    seed: u64,
-    first_ray: u64,
-    count: usize,
-    tile: usize,
-) -> MkResult<BufferId> {
+/// The device record of `source` and the cumulative distribution of the
+/// wavelength `weights`.
+fn source_record(source: &SourceSpec, weights: &[f64]) -> MkResult<(ops::Source, Vec<Df32>)> {
     source.validate()?;
     let (kind, center, axis, normal, radius, inner, cone, distance) = match *source {
         SourceSpec::Collimated {
@@ -294,6 +283,21 @@ pub fn generate(
         cone: Df32::from_f64(cone),
         distance: Df32::from_f64(distance),
     };
+    Ok((source, cdf))
+}
+/// Append a source operation. Each logical source ID retains its reference
+/// Philox stream and draw position so a future transport continuation can
+/// consume the next draw without changing the depth-first stream.
+pub fn generate(
+    plan: &mut ResidentPlan,
+    source: &SourceSpec,
+    weights: &[f64],
+    seed: u64,
+    first_ray: u64,
+    count: usize,
+    tile: usize,
+) -> MkResult<BufferId> {
+    let (source, cdf) = source_record(source, weights)?;
     let output = plan.scratch(ops::record_desc::<ops::Ray>(count));
     plan.operations
         .push(ResidentOp::Stray(ops::Request::Generate(ops::Generate {
@@ -306,37 +310,6 @@ pub fn generate(
             tile,
         })));
     Ok(output)
-}
-/// Complete source → first-hit job. RunInfo names this diagnostic pipeline,
-/// not `stray_light`; no class flux or transport qualification is implied.
-#[allow(clippy::too_many_arguments)]
-pub fn first_hits(
-    b: &dyn ComputeBackend,
-    snapshot: Snapshot,
-    scene: &Scene,
-    source: &SourceSpec,
-    seed: u64,
-    first_ray: u64,
-    count: usize,
-    ctx: &JobContext,
-) -> MkResult<PlanResult> {
-    let geometry = prepare_geometry(b, scene.primitives(), &ctx.subrange(0., 0.1))?;
-    let mut plan = ResidentPlan::new(snapshot);
-    plan.seed = Some(seed);
-    plan.settings = serde_json::json!({"pipeline":"stray_first_hits","version":mklight_gpu::consts::MKL_STRAY_VERSION,"source":source,"first_ray":first_ray,"rays":count,"scene_fingerprint":scene.fingerprint()});
-    let rays = generate(
-        &mut plan,
-        source,
-        &scene.wavelength_weights,
-        seed,
-        first_ray,
-        count,
-        65536,
-    )?;
-    let input = plan.view(rays)?;
-    let hits = geometry.append(&mut plan, input, 65536);
-    plan.outputs = vec![rays, hits];
-    b.submit_plan(plan, &ctx.subrange(0.1, 1.))?.wait()
 }
 
 pub mod hybrid;
@@ -383,6 +356,13 @@ fn analyze_impl(
     ctx.check()?;
     ctx.report(1., "stray light: done");
     Ok((result, signatures))
+}
+/// Whether a device analysis ran as the CPU f64 reference by the
+/// transport's own division: the device took no source of this run
+/// (`hybrid::default_share`), which is not a fallback from the device.
+pub fn reference_by_division(run: &mklight_core::RunInfo) -> bool {
+    run.precision == mklight_core::job::Precision::F64Reference
+        && run.settings["resident"]["settings"]["fallback_count"] == 0
 }
 pub fn analyze_system(
     b: &dyn ComputeBackend,

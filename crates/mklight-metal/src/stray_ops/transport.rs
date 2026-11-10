@@ -80,7 +80,7 @@ pub(super) fn execute(r: &Transport, x: &mut Execution<'_>, ctl: &JobControl) ->
     };
     // Encodes the sources' generation (`first`) and then `bounces` bounces
     // from list `parity`, each of the phases in `phases` (bits: pop, cast,
-    // interact; all three except when profiling the kernels).
+    // interact; a tiled bounce encodes the pop and the tiles separately).
     let gpu = x.gpu;
     let reads = |v: &mklight_gpu::resident::PlanView| x.buffer(v);
     let mut encode = |e: &crate::context::Encoder<'_>,
@@ -198,12 +198,6 @@ pub(super) fn execute(r: &Transport, x: &mut Execution<'_>, ctl: &JobControl) ->
         }
         Ok(())
     };
-    // Diagnostics: MKLIGHT_STRAY_TRACE prints each command;
-    // MKLIGHT_STRAY_TRACE=kernels also runs each kernel phase in its own
-    // command and accumulates its device time.
-    let trace = std::env::var("MKLIGHT_STRAY_TRACE").ok();
-    let profile = trace.as_deref() == Some("kernels");
-    let mut phase_seconds = [0f64; 3];
     let (mut parity, mut bounces, mut commands, mut parameter_bytes) = (0u32, 1usize, 0u64, 0u64);
     // Bounded commands: a bounce whose casts may exceed the command time
     // (long iterative sag scans) runs tiled until one fits; the first is
@@ -217,28 +211,7 @@ pub(super) fn execute(r: &Transport, x: &mut Execution<'_>, ctl: &JobControl) ->
         // thread index by the device count of its list, list entries are
         // distinct sources, and source-local stack and journal slices are
         // disjoint.
-        let gpu_seconds = if profile {
-            let mut total = 0.;
-            for (k, mask) in [1u32, 2, 4].into_iter().enumerate() {
-                let cs = unsafe {
-                    gpu.run("stray wavefront phase", |e| {
-                        encode(
-                            e,
-                            &mut counters,
-                            commands == 0 && k == 0,
-                            1,
-                            parity,
-                            mask,
-                            None,
-                        )
-                    })?
-                };
-                phase_seconds[k] += cs.gpu_seconds;
-                total += cs.gpu_seconds;
-            }
-            bounces = 1;
-            total
-        } else if let Some(size) = tiled {
+        let gpu_seconds = if let Some(size) = tiled {
             // One bounce: the pop, then the cast and interaction of the
             // popped list in tiles of bounded device time.
             let mut total = unsafe {
@@ -288,19 +261,9 @@ pub(super) fn execute(r: &Transport, x: &mut Execution<'_>, ctl: &JobControl) ->
         commands += 1;
         parameter_bytes += (bounces * (2 * std::mem::size_of::<Settings>() + 180)) as u64;
         stats.device_seconds += gpu_seconds;
-        stats.command_buffers += if profile { 3 } else { 1 } + std::mem::take(&mut tile_commands);
+        stats.command_buffers += 1 + std::mem::take(&mut tile_commands);
         stats.max_command_seconds = stats.max_command_seconds.max(seconds);
         let live = counters.as_slice()[parity as usize] as usize;
-        if trace.is_some() {
-            eprintln!(
-                "stray wave cmd {commands}: n {n} bounces {bounces} live {live} gpu {:.2} ms \
-                 (phases pop/cast/interact {:.1}/{:.1}/{:.1} ms)",
-                gpu_seconds * 1e3,
-                phase_seconds[0] * 1e3,
-                phase_seconds[1] * 1e3,
-                phase_seconds[2] * 1e3
-            );
-        }
         if live == 0 {
             break;
         }
@@ -373,70 +336,4 @@ pub(super) fn build(r: &Build, x: &mut Execution<'_>, ctl: &JobControl) -> MkRes
     x.stats.command_buffers += stats.command_buffers;
     x.stats.stages.push(stats);
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::context::{MetalContext, MetalOptions};
-    use mklight_gpu::consts::*;
-    use objc2_metal::MTLComputePipelineState;
-
-    /// Occupancy evidence of the specialised transport kernels (ignored;
-    /// prints a table): maximum threads per threadgroup (register pressure),
-    /// SIMD width and the pipeline build time, for the stray wavefront's
-    /// closest-hit and interaction kernels and the ghost trace.
-    #[test]
-    #[ignore]
-    fn kernel_occupancy() {
-        let Some(ctx) = MetalContext::new(&MetalOptions::default()).unwrap() else {
-            return;
-        };
-        let report = |label: String, key: PipelineKey| {
-            let t = Instant::now();
-            let pso = ctx.pipeline(&key).unwrap();
-            println!(
-                "{label:<52} max threads {:>4}  width {}  build {:6.2} s",
-                pso.maxTotalThreadsPerThreadgroup(),
-                pso.threadExecutionWidth(),
-                t.elapsed().as_secs_f64()
-            );
-        };
-        for (name, features) in [
-            ("weighted plain", 1),
-            ("weighted, Lambertian scatter", 1 | 32),
-            ("weighted, Gaussian/ABg scatter", 1 | 32 | 64),
-            ("weighted, scatter, films", 1 | 32 | 4),
-            ("weighted, scatter, aspheres", 1 | 32 | 8),
-            ("weighted, scatter, DOE", 1 | 32 | 16),
-            ("weighted, scatter, kinoform DOE", 1 | 32 | 16 | 128),
-            ("split, scatter", 2 | 32),
-            ("analog, scatter", 32),
-            ("everything (split)", 0xfe),
-        ] {
-            for function in ["mkl_stray_wave_cast", "mkl_stray_wave_interact"] {
-                report(
-                    format!("{function} / {name}"),
-                    PipelineKey::with_u32(function, MKL_STRAY_FEATURES_CONSTANT as u16, features),
-                );
-            }
-        }
-        for (name, features) in [
-            ("geometry only", 0),
-            ("coatings", MKL_GHOST_FEATURE_COATINGS),
-            (
-                "coatings, films",
-                MKL_GHOST_FEATURE_COATINGS | MKL_GHOST_FEATURE_FILMS,
-            ),
-        ] {
-            report(
-                format!("mkl_ghost_trace / {name}"),
-                PipelineKey::with_u32(
-                    "mkl_ghost_trace",
-                    MKL_GHOST_FEATURES_CONSTANT as u16,
-                    features,
-                ),
-            );
-        }
-    }
 }

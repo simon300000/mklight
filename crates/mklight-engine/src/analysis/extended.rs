@@ -139,9 +139,6 @@ impl Analysis for FieldMap {
             w,
         ))
     }
-    fn gpu_path(&self) -> bool {
-        true
-    }
 }
 struct GlassMap;
 impl Analysis for GlassMap {
@@ -382,7 +379,7 @@ impl Analysis for ImageSimulation {
         let cached = self
             .cache
             .lock()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .as_ref()
             .filter(|(k, _)| k == &key)
             .map(|(_, v)| v.clone());
@@ -391,7 +388,7 @@ impl Analysis for ImageSimulation {
             let cached = self
                 .gpu_cache
                 .lock()
-                .unwrap()
+                .unwrap_or_else(|e| e.into_inner())
                 .as_ref()
                 .filter(|g| g.key == key && Arc::ptr_eq(&g.backend, &d.backend))
                 .map(|g| g.grid.clone());
@@ -406,7 +403,7 @@ impl Analysis for ImageSimulation {
                     )?;
                     super::gpu::record_native(input, &built.run_info);
                     let grid = Arc::new(built.value);
-                    *self.gpu_cache.lock().unwrap() = Some(GpuGrid {
+                    *self.gpu_cache.lock().unwrap_or_else(|e| e.into_inner()) = Some(GpuGrid {
                         key: key.clone(),
                         backend: d.backend.clone(),
                         grid: grid.clone(),
@@ -428,11 +425,11 @@ impl Analysis for ImageSimulation {
                 Some(g) => g,
                 None => {
                     let g = Arc::new(im::build_psf_grid(&t, &s.optics, &ctx.subrange(0.0, 0.65))?);
-                    *self.cache.lock().unwrap() = Some((key, g.clone()));
+                    *self.cache.lock().unwrap_or_else(|e| e.into_inner()) = Some((key, g.clone()));
                     g
                 }
             };
-            im::image_simulation_job(&t, &s, Some(grid), ctx)?
+            im::image_simulation_job(&t, &s, Some(grid), &ctx.subrange(0.65, 1.))?
         };
         let image = std::mem::take(&mut r.image);
         let (mut v, w) = crate_json(&r)?;
@@ -446,9 +443,6 @@ impl Analysis for ImageSimulation {
             )],
             w,
         ))
-    }
-    fn gpu_path(&self) -> bool {
-        true
     }
 }
 

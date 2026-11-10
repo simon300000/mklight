@@ -562,18 +562,3 @@ pub const PENCIL: usize = 9;
 pub fn pupil_step() -> Df32 {
     Df32::from_f64(1e-4)
 }
-/// The thread entry of `mkl_geometry_ri_rays` for the CPU emulation.
-pub fn run_ray<E: FpEnv>(
-    sys: &System,
-    fields: &[RiField],
-    task: &RiTask,
-    check: &dyn Fn() -> bool,
-) -> RiRay {
-    match fields.get(task.field as usize) {
-        Some(f) => ray::<E>(sys, f, task, check),
-        None => RiRay {
-            status: MKL_AIM_INVALID,
-            ..Default::default()
-        },
-    }
-}

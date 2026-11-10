@@ -48,16 +48,21 @@ final class GPUPreparationMonitor {
         }
     }
 
-    private func follow(_ engine: any EngineClient) async {
+    /// How long a preparation is followed. One that takes longer keeps
+    /// running in the engine, but the window status no longer shows it and
+    /// the app may nap again.
+    static let followLimit: Duration = .seconds(600)
+
+    func follow(_ engine: any EngineClient, limit: Duration = followLimit, interval: Duration = .milliseconds(200)) async {
         let begin = ContinuousClock.now
         while true {
             state = engine.gpuPreparation()
-            guard state.isPreparing else { break }
+            guard state.isPreparing, begin.duration(to: .now) < limit else { break }
             // Loading from the cache takes milliseconds: no flash.
             if display == .hidden, begin.duration(to: .now) > .milliseconds(400) {
                 display = .preparing
             }
-            try? await Task.sleep(for: .milliseconds(200))
+            try? await Task.sleep(for: interval)
         }
         guard display == .preparing else { return }
         if case .ready = state {

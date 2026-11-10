@@ -1,5 +1,6 @@
 //! Conservative coefficient bounds, never sampled extrema. The deliberately
-//! loose enclosure is used only by the caster; the sag still comes from P1.
+//! loose enclosure is used only by the caster; the sag still comes from the
+//! shared surface evaluation.
 use super::*;
 use mklight_core::model::surface::ZernikeOrdering;
 fn even(a: &[f64], r: f64) -> f64 {
@@ -156,10 +157,7 @@ fn bound(s: &SurfaceShape, r: f64) -> f64 {
 pub(super) fn local(p: &Primitive) -> MkResult<Aabb> {
     let mut b = p.shape.local_bounds();
     if let Shape::Sag(s) = &p.shape
-        && !matches!(
-            s.shape(),
-            SurfaceShape::Plane | SurfaceShape::Paraxial { .. } | SurfaceShape::Conic { .. }
-        )
+        && s.conic().is_none()
     {
         let z = bound(s.shape(), s.r_outer());
         if !z.is_finite() {

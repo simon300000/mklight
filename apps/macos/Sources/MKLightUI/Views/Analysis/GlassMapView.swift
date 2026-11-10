@@ -14,7 +14,6 @@ enum GlassMapPlane: String, CaseIterable, Identifiable, Sendable {
     var id: String { rawValue }
 
     var title: String { self == .ndVd ? "n_d" : "P_g,F" }
-    var segmentTitle: String { self == .ndVd ? "n_d" : "P_g,F" }
 
     /// The y axis title with its subscript.
     var axisLabel: Text {
@@ -276,7 +275,6 @@ struct GlassCard: View {
 /// The status legend of a glass map, for the statuses present.
 struct GlassStatusLegend: View {
     let statuses: [GlassStatus]
-    var showsDesign = true
     var showsOffset = false
     @Environment(\.colorScheme) private var colorScheme
 
@@ -293,13 +291,11 @@ struct GlassStatusLegend: View {
                     Text(statuses == [.unknown] ? "Catalogue glass" : s.label)
                 }
             }
-            if showsDesign {
-                HStack(spacing: 4) {
-                    Circle().fill(.secondary).frame(width: 8, height: 8)
-                        .overlay(Circle().strokeBorder(Color.accentColor, lineWidth: 2).frame(width: 12, height: 12))
-                        .frame(width: 12, height: 12)
-                    Text("In the design")
-                }
+            HStack(spacing: 4) {
+                Circle().fill(.secondary).frame(width: 8, height: 8)
+                    .overlay(Circle().strokeBorder(Color.accentColor, lineWidth: 2).frame(width: 12, height: 12))
+                    .frame(width: 12, height: 12)
+                Text("In the design")
             }
             if showsOffset {
                 HStack(spacing: 4) {
@@ -353,7 +349,7 @@ struct GlassMapView: View {
         VStack(alignment: .leading, spacing: Space.s) {
             FlowLayout(spacing: Space.m, lineSpacing: Space.xs) {
                 Picker("Plane", selection: $plane) {
-                    ForEach(GlassMapPlane.allCases) { Text($0.segmentTitle).tag($0) }
+                    ForEach(GlassMapPlane.allCases) { Text($0.title).tag($0) }
                 }
                 .help("Refractive index n_d or partial dispersion P_g,F against Abbe number V_d")
                 .pickerStyle(.segmented)

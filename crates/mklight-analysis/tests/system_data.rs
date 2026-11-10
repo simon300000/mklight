@@ -80,3 +80,58 @@ fn afocal_values_serialise_as_infinity() {
             .is_infinite()
     );
 }
+
+#[test]
+fn ideal_lens_adds_no_petzval_curvature() {
+    // A glass singlet followed by an ideal lens: the report's Petzval radius
+    // is the singlet's alone, K/n, and equals the Seidel module's.
+    let (r1, r2) = (60.0, -90.0);
+    let sys = infinite_system(
+        10.0,
+        vec![
+            surf(
+                1,
+                SurfaceShape::sphere(r1),
+                4.0,
+                MaterialRef::glass("N-BK7"),
+            ),
+            surf(2, SurfaceShape::sphere(r2), 5.0, MaterialRef::Air),
+            surf(
+                3,
+                SurfaceShape::Paraxial { focal_length: 80.0 },
+                40.0,
+                MaterialRef::Air,
+            ),
+        ],
+        1,
+        &[0.0, 2.0],
+    );
+    let t = tracer(sys);
+    let n = t.system().surfaces[1].n_after[0];
+    let p = (n - 1.0) * (1.0 / r1 - 1.0 / r2) / n;
+    let r = system_data(&t, &SystemDataSettings::default()).unwrap();
+    let radius = r
+        .entries
+        .iter()
+        .find(|e| e.key == "petzval_radius")
+        .unwrap();
+    assert!(
+        (radius.value + 1.0 / p).abs() < 1e-9 / p,
+        "{} vs {}",
+        radius.value,
+        -1.0 / p
+    );
+    let s = mklight_analysis::seidel::seidel(&t, &Default::default()).unwrap();
+    assert_eq!(radius.value, s.petzval_radius);
+    // Ideal lenses alone: a flat Petzval surface in both.
+    let t = tracer(ideal_lens(100.0, 10.0, &[0.0, 5.0]));
+    let r = system_data(&t, &SystemDataSettings::default()).unwrap();
+    let s = mklight_analysis::seidel::seidel(&t, &Default::default()).unwrap();
+    let radius = r
+        .entries
+        .iter()
+        .find(|e| e.key == "petzval_radius")
+        .unwrap();
+    assert_eq!(radius.value, f64::INFINITY);
+    assert_eq!(s.petzval_radius, f64::INFINITY);
+}

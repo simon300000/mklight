@@ -1,8 +1,57 @@
-//! Standard test problems (Moré, Garbow & Hillstrom 1981 and classics).
+//! Standard test problems (Moré, Garbow & Hillstrom 1981 and classics) and
+//! the device helpers of the resident tests.
 #![allow(dead_code)]
 
+use std::sync::Arc;
+
+use mklight_core::{JobContext, MkResult};
+use mklight_gpu::ComputeBackend;
+use mklight_optim::gpu::GpuContext;
 use mklight_optim::linalg::Matrix;
+use mklight_optim::problem::{BatchEvaluation, CandidateBatch, Problem};
 use mklight_optim::{Constraint, EvalStatus, FnProblem, Variable};
+
+/// A Metal backend on the host's device, or `None` (with a note on stderr)
+/// where there is none: device tests then skip.
+pub fn metal() -> Option<Arc<dyn ComputeBackend>> {
+    #[cfg(target_os = "macos")]
+    let backend = mklight_metal::MetalBackend::new()
+        .expect("Metal backend")
+        .map(|b| Arc::new(b) as Arc<dyn ComputeBackend>);
+    #[cfg(not(target_os = "macos"))]
+    let backend: Option<Arc<dyn ComputeBackend>> = None;
+    if backend.is_none() {
+        eprintln!("SKIP: no Metal device");
+    }
+    backend
+}
+
+/// `problem` with a device context: least squares then factors its tall
+/// Jacobians on the device.
+pub struct OnDevice<P> {
+    pub problem: P,
+    pub context: GpuContext,
+}
+impl<P: Problem> Problem for OnDevice<P> {
+    fn gpu_context(&self) -> Option<&GpuContext> {
+        Some(&self.context)
+    }
+    fn variables(&self) -> &[Variable] {
+        self.problem.variables()
+    }
+    fn num_residuals(&self) -> usize {
+        self.problem.num_residuals()
+    }
+    fn weights(&self) -> &[f64] {
+        self.problem.weights()
+    }
+    fn constraints(&self) -> &[Constraint] {
+        self.problem.constraints()
+    }
+    fn evaluate_batch(&self, x: &CandidateBatch, ctx: &JobContext) -> MkResult<BatchEvaluation> {
+        self.problem.evaluate_batch(x, ctx)
+    }
+}
 
 pub fn vars(n: usize) -> Vec<Variable> {
     (0..n).map(|i| Variable::new(format!("x{i}"))).collect()

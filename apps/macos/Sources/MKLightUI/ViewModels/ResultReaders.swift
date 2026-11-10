@@ -94,6 +94,12 @@ extension AnalysisOutput {
     func buffer(ref: JSONValue?) -> ResultBuffer? {
         ref?.string.flatMap { buffer(named: $0) }
     }
+
+    /// The buffer of the result's key `key`: the one its string value
+    /// names, else the one named `key` itself.
+    func buffer(key: String) -> ResultBuffer? {
+        buffer(ref: json[key]) ?? buffer(named: key)
+    }
 }
 
 /// The engine's first-order data of both sections (`paraxial_xy` of

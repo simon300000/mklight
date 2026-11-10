@@ -1,9 +1,18 @@
 use mklight_core::materials::{MaterialOffset, agf, builtin, lines};
 use mklight_core::{JobContext, MaterialRef, samples};
+use mklight_engine::backend::Backend;
 use mklight_engine::project::Project;
-use mklight_engine::{AnalysisRequest, Engine};
+use mklight_engine::{AnalysisRequest, Engine, EngineConfig};
 use serde_json::{Value, json};
 use std::sync::Arc;
+
+/// An engine on the CPU reference: these tests do not depend on a device.
+fn engine() -> Engine {
+    Engine::new(EngineConfig {
+        default_backend: Backend::CpuReference,
+        ..Default::default()
+    })
+}
 
 #[test]
 fn agf_and_json_catalogue_projects_keep_reference_offsets() {
@@ -20,7 +29,7 @@ fn agf_and_json_catalogue_projects_keep_reference_offsets() {
     cat.name = "OFFSET".into();
     let (text, warnings) = agf::write_agf(&agf::AgfCatalog::from_catalog(cat.clone()));
     assert!(warnings.is_empty());
-    let engine = Engine::default();
+    let engine = engine();
     for (ext, data) in [
         ("agf", text),
         ("json", serde_json::to_string(&cat).unwrap()),
@@ -57,7 +66,7 @@ fn agf_and_json_catalogue_projects_keep_reference_offsets() {
 
 #[test]
 fn glass_map_info_and_substitution_use_the_offset_glass() {
-    let engine = Engine::default();
+    let engine = engine();
     let mut sys = samples::singlet();
     let offset = json!({"dn_d": 0.002, "dv_d": -3.0});
     sys.surfaces[1].material =

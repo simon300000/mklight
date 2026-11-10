@@ -3,25 +3,28 @@
 use mklight_core::{JobContext, samples};
 use mklight_gpu::ComputeBackend;
 use mklight_wave::{analysis as cpu, gpu, image_simulation as image};
-fn backend() -> mklight_metal::MetalBackend {
+/// The host Metal backend; None (the test is skipped) without a device.
+fn backend() -> Option<mklight_metal::MetalBackend> {
     let library = if std::env::var("P6_LIBRARY").as_deref() == Ok("runtime") {
         mklight_metal::LibraryChoice::RuntimeSource
     } else {
         mklight_metal::LibraryChoice::Precompiled
     };
-    let b = mklight_metal::MetalBackend::with_options(&mklight_metal::MetalOptions {
+    let Some(b) = mklight_metal::MetalBackend::with_options(&mklight_metal::MetalOptions {
         library,
         ..Default::default()
     })
-    .unwrap()
-    .expect("P6 qualification requires host Metal");
+    .unwrap() else {
+        eprintln!("no Metal device: skipped");
+        return None;
+    };
     assert!(b.precision().probe.error_free_transforms());
     eprintln!(
         "P6_NATIVE_DEVICE {} {:?}",
         b.info().backend_id(),
         b.precision()
     );
-    b
+    Some(b)
 }
 fn compare(a: &[f64], b: &[f64], limit: f64) -> f64 {
     assert_eq!(a.len(), b.len());
@@ -53,7 +56,7 @@ fn mtf(a: &cpu::WaveMtfResult, b: &cpu::WaveMtfResult) -> f64 {
 #[test]
 #[ignore = "complete host qualification across all 16 native default analyses"]
 fn all_default_native_analyses() {
-    let b = backend();
+    let Some(b) = backend() else { return };
     let ctx = JobContext::new();
     let mut maxima = [0f64; 8];
     let mut cases = 0;
@@ -204,7 +207,7 @@ fn all_default_native_analyses() {
 
 #[test]
 fn diffraction_reference_preserves_lateral_colour() {
-    let b = backend();
+    let Some(b) = backend() else { return };
     let ctx = JobContext::new();
     let t = mklight_analysis::tracer_for(samples::achromatic_doublet()).unwrap();
     let s = cpu::EncircledEnergySettings::default();
@@ -223,7 +226,7 @@ fn diffraction_reference_preserves_lateral_colour() {
 
 #[test]
 fn native_huygens_and_explicit_focus_diagnostics() {
-    let b = backend();
+    let Some(b) = backend() else { return };
     let t = mklight_analysis::tracer_for(samples::cooke_triplet()).unwrap();
     let ctx = JobContext::new();
     let pupil = mklight_wave::PupilSettings {

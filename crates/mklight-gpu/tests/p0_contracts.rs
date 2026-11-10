@@ -96,7 +96,7 @@ fn ill_conditioned_sums_and_reuse() {
     ));
 }
 #[test]
-fn reserved_operation_is_explicitly_unsupported() {
+fn in_place_fft_is_unsupported() {
     let b = CpuF32Backend::new();
     let mut p = ResidentPlan::new(snapshot());
     let id = p.scratch(BufferDesc::new(ElementType::Complex32, vec![4]));

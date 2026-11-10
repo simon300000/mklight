@@ -1,11 +1,9 @@
-use super::traced::accumulate;
 use super::*;
 use mklight_gpu::wave_ops::image_integrals::ImageIntegral;
 #[derive(Clone, Debug)]
 pub struct PsfMetrics {
     pub energy_in_grid: f64,
     pub centroid_mm: [f64; 2],
-    pub peak: f64,
     pub peak_index: usize,
 }
 impl ResidentPsf {
@@ -36,7 +34,6 @@ impl ResidentPsf {
                 self.center_mm[j]
                     + (a[j + 1].to_f64() / weight - (self.size / 2) as f64) * self.spacing_mm
             }),
-            peak: a[3].to_f64(),
             peak_index: a[4].hi as usize,
         };
         Ok(WaveResult {
@@ -73,7 +70,7 @@ impl ResidentPsf {
                 },
             )));
         p.outputs = vec![output];
-        p.settings = serde_json::json!({"p6":"psf_otf","frequencies":frequencies});
+        p.settings = serde_json::json!({"operation":"psf_otf","frequencies":frequencies});
         let r = b.submit_plan(p, ctx)?.wait()?;
         let value = b
             .read_view(r.outputs[0].view())?
@@ -87,44 +84,16 @@ impl ResidentPsf {
             stats: r.stats,
         })
     }
-    /// Band-limited spectral EE/ensquared integration; this is not pixel binning.
-    pub fn energy(
+    /// Band-limited spectral ensquared-energy integration over squares of
+    /// half-widths `radii` centred on `center_mm`; this is not pixel binning.
+    pub fn ensquared(
         &self,
         b: &dyn ComputeBackend,
         snapshot: Snapshot,
         radii: &[f64],
-        center: crate::EnergyCenter,
-        square: bool,
+        center_mm: [f64; 2],
         ctx: &JobContext,
     ) -> MkResult<WaveResult<Vec<f64>>> {
-        if !square {
-            let r = super::encircled_energy_batch(b, snapshot, &[(self, center)], radii, ctx)?;
-            return Ok(WaveResult {
-                value: r.value.into_iter().next().unwrap(),
-                run_info: r.run_info,
-                stats: r.stats,
-            });
-        }
-        let mut stats = PlanStats::default();
-        let point = match center {
-            crate::EnergyCenter::Reference => self.center_mm,
-            crate::EnergyCenter::Point { x, y } => [x, y],
-            other => {
-                let r = self.metrics(b, snapshot.clone(), &ctx.subrange(0., 0.05))?;
-                accumulate(&mut stats, &r.stats);
-                match other {
-                    crate::EnergyCenter::Centroid => r.value.centroid_mm,
-                    _ => [
-                        self.center_mm[0]
-                            + ((r.value.peak_index % self.size) as f64 - (self.size / 2) as f64)
-                                * self.spacing_mm,
-                        self.center_mm[1]
-                            + ((r.value.peak_index / self.size) as f64 - (self.size / 2) as f64)
-                                * self.spacing_mm,
-                    ],
-                }
-            }
-        };
         let queries: Vec<_> = radii.iter().map(|r| [*r, 0.]).collect();
         let queries = query_buffer(b, &queries, ctx)?;
         let mut p = ResidentPlan::new(snapshot);
@@ -165,11 +134,11 @@ impl ResidentPsf {
                 ImageIntegral::Query {
                     input: p.view(spectrum)?,
                     queries: p.view(q)?,
-                    kind: if square { 2 } else { 1 },
+                    kind: 2,
                     spacing: Df32::from_f64(self.spacing_mm),
                     center: std::array::from_fn(|j| {
                         Df32::from_f64(
-                            (point[j] - self.center_mm[j]) / self.spacing_mm
+                            (center_mm[j] - self.center_mm[j]) / self.spacing_mm
                                 + (self.size / 2) as f64,
                         )
                     }),
@@ -180,9 +149,8 @@ impl ResidentPsf {
                 },
             )));
         p.outputs = vec![output];
-        p.settings = serde_json::json!({"p6":"diffraction_energy","radii_mm":radii,"center":center,"square":square});
-        let r = b.submit_plan(p, &ctx.subrange(0.05, 1.))?.wait()?;
-        accumulate(&mut stats, &r.stats);
+        p.settings = serde_json::json!({"operation":"ensquared_energy","radii_mm":radii,"center_mm":center_mm});
+        let r = b.submit_plan(p, ctx)?.wait()?;
         let value = b
             .read_view(r.outputs[0].view())?
             .as_slice::<[f32; 2]>()?
@@ -192,7 +160,7 @@ impl ResidentPsf {
         Ok(WaveResult {
             value,
             run_info: r.run_info,
-            stats,
+            stats: r.stats,
         })
     }
     pub fn line_spread(

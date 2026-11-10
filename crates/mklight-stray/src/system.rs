@@ -384,12 +384,21 @@ impl StraySystem {
     /// Completes a system from [`Self::build_scene`] with its checks.
     pub(crate) fn finish_checks(&mut self, checks: ObstructionChecks) {
         self.obstruction = checks.obstruction;
-        self.warnings.extend(checks.warnings);
+        self.warnings = self.checked_warnings(checks.warnings);
+    }
+
+    /// The warnings of a system from [`Self::build_scene`] once its checks
+    /// have run: its sizing warnings, the checks' `warnings` and the
+    /// scene's.
+    pub(crate) fn checked_warnings(&self, warnings: Vec<String>) -> Vec<String> {
+        let mut all = self.warnings.clone();
+        all.extend(warnings);
         for w in &self.scene.warnings {
-            if !self.warnings.contains(w) {
-                self.warnings.push(w.clone());
+            if !all.contains(w) {
+                all.push(w.clone());
             }
         }
+        all
     }
 
     pub fn tracer(&self) -> &SequentialTracer {

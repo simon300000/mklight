@@ -42,7 +42,7 @@ pub fn register_all(r: &mut AnalysisRegistry) {
 
 /// Engine default for source rays (the crate's is 100 000): interactive
 /// first, raise for converged maps.
-pub const DEFAULT_STRAY_RAYS: u64 = 20_000;
+const DEFAULT_STRAY_RAYS: u64 = 20_000;
 
 /// `StrayAnalysisSettings` with the engine's defaults.
 #[derive(Serialize)]
@@ -61,11 +61,11 @@ impl Default for EngineStraySettings {
 /// The ghost run the stray result is combined with (`ghost_partition`).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Default)]
 #[serde(default)]
-pub struct GhostPartition {
+struct GhostPartition {
     #[serde(flatten)]
-    pub model: GhostModelOptions,
-    pub enumeration: EnumerationSettings,
-    pub paths: Option<Vec<GhostPath>>,
+    model: GhostModelOptions,
+    enumeration: EnumerationSettings,
+    paths: Option<Vec<GhostPath>>,
 }
 
 pub struct StrayLight;
@@ -291,9 +291,6 @@ impl Analysis for StrayLight {
             ],
         )
     }
-    fn gpu_path(&self) -> bool {
-        true
-    }
     fn run(
         &self,
         input: &AnalysisInput<'_>,
@@ -352,7 +349,17 @@ impl Analysis for StrayLight {
                 mklight_stray::gpu::TransportOptions::default(),
                 ctx,
             )?;
-            super::gpu::record_native(input, &result.0.run_info);
+            let run = &result.0.run_info;
+            if mklight_stray::gpu::reference_by_division(run) {
+                super::gpu::record_reference_by_rule(
+                    input,
+                    run,
+                    "stray_light: the transport gives the device no source of this run \
+                     (too few sources, or surfaces it does not intersect in closed form)",
+                );
+            } else {
+                super::gpu::record_native(input, run);
+            }
             result
         } else {
             analyze_with_signatures(rs.clone(), &ss, ctx)?

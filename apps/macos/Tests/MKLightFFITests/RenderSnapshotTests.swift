@@ -154,7 +154,6 @@ import Testing
                 $0.criterion.threshold = nil
                 $0.mode = .monteCarlo
                 $0.trials = 40
-                print("MTF run start", Date())
             }
             session.start(in: w, context: context, merit: doc.merit)
             while session.isRunning || session.result == nil { try await Task.sleep(for: .milliseconds(20)) }

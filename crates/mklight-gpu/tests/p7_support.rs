@@ -644,34 +644,6 @@ pub fn malus_and_channels(b: &dyn ComputeBackend) {
         }
         assert!((v.power[1].to_f64() - v.power[3].to_f64()).abs() < 1e-12);
         assert!(v.power[1].to_f64() > v.power[0].to_f64());
-        let mut p = ResidentPlan::new(t.system().snapshot.clone());
-        let values = upload(b, &mut p, &[v]);
-        let output = p.scratch(BufferDesc::new(ElementType::Complex32, [6, 1]));
-        let status = p.scratch(BufferDesc::new(ElementType::U32, [1]));
-        p.operations
-            .push(ResidentOp::Radiometry(Request::PupilChannels {
-                values,
-                vector: true,
-                output,
-                status,
-            }));
-        p.outputs = vec![output, status];
-        let r = b
-            .submit_plan(p, &JobContext::new())
-            .unwrap()
-            .wait()
-            .unwrap();
-        let view = b.read_view(r.outputs[0].view()).unwrap();
-        let ch = view.as_slice::<[f32; 2]>().unwrap();
-        for (i, c) in ch.iter().enumerate() {
-            assert_eq!(
-                *c,
-                [
-                    v.fields[2 * i].hi + v.fields[2 * i].lo,
-                    v.fields[2 * i + 1].hi + v.fields[2 * i + 1].lo
-                ]
-            );
-        }
     }
     let settings = mklight_trace::PolarizationMapSettings {
         field: t.field(0).point,

@@ -13,7 +13,7 @@ use mklight_core::{
 use mklight_engine::{EngineError, ParamEdit, Project, Session};
 use mklight_trace::{SemiDiameterSettings, SemiDiameterSource, SequentialTracer};
 
-use super::{Ctx, Report, open_warnings, run_sync, save, warning_lines};
+use super::{Ctx, Report, run_sync, save, warning_lines};
 use crate::cli::{NewArgs, SetArgs, ShowArgs};
 use crate::error::{CliError, CliResult, Exit};
 use crate::output::{Align, Table, cell, fmt_f, fmt_g, key_values, num};
@@ -191,7 +191,7 @@ pub fn validate(ctx: &Ctx, path: &Path) -> CliResult<Report> {
         "errors": v["errors"],
         "warnings": v["warnings"],
         "issues": v["issues"],
-        "open_warnings": open_warnings(&session),
+        "open_warnings": session.open_warnings(),
         "snapshot_hash": session.snapshot_hash(),
         "library_hash": session.library_hash(),
     });
@@ -351,7 +351,7 @@ fn aperture_text(a: &ApertureSpec) -> String {
 pub fn show(ctx: &Ctx, a: &ShowArgs) -> CliResult<Report> {
     let session = ctx.open(&a.project)?;
     let sys = session.system().clone();
-    let mut warnings = open_warnings(&session);
+    let mut warnings = session.open_warnings().to_vec();
 
     // Resolved indices (system_summary) and traced semi-diameters, if the
     // system resolves.
@@ -807,6 +807,8 @@ pub fn set(ctx: &Ctx, a: &SetArgs) -> CliResult<Report> {
         "snapshot_hash_before": before_hash,
         "snapshot_hash": session.snapshot_hash(),
         "new_warnings": new_warnings,
+        "valid": true,
+        "remaining_issues": after["issues"],
     });
     let mut text = format!(
         "{}: {} -> {}\n",

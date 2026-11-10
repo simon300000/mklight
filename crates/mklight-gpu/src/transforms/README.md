@@ -1,8 +1,10 @@
-# P2 resident transforms
+# Resident transforms
 
 `Request` runs through `ResidentOp::Transforms`; results inherit the resident
-plan's `RunInfo`, identity, seed and stats. No engine route is enabled here:
-P6 owns the wave adapters, P11 qualification and fallback policy.
+plan's `RunInfo`, identity, seed and stats. The wave adapters
+(`mklight-wave/src/gpu`) build their transform, convolution and correlation
+chains from these operations, and the engine routes the wave analyses and
+image simulation to them (`docs/WAVE.md` §9, `docs/GPU.md` §9.2).
 
 Grids are contiguous complex f32, row-major `[rows, columns]` or `[length]`,
 with an optional element offset. Inputs and outputs are distinct buffers.
@@ -27,8 +29,8 @@ specification and Metal encodes the same steps.
 - **AffineMft** (symmetric skew map) uses a 2-D chirp convolution whose
   quadratic phases are formed in double-float on the device.
 - `Convolve` is **circular** on the common grid (zero-pad for linear).
-  `Multiply` optionally conjugates its second input. `Phase` multiplies by
-  `exp(2πi·(a0x²+a1xy+a2y²+a3x+a4y+a5))`, formed in double-float.
+  `Phase` multiplies by `exp(2πi·(a0x²+a1xy+a2y²+a3x+a4y+a5))`, formed in
+  double-float.
 
 Padding is internal and never changes the requested output lattice.
 
@@ -74,7 +76,3 @@ elements of work; scratch is reused within the plan and returned to the
 pool afterwards. No intermediate host readback. Limits: side ≤8192,
 working set ≤1 GiB, polynomial phases ≤1e9 turns — resource limits, not
 qualification of every grid or design.
-
-`mklight-metal/src/transforms/benchmark.rs` is a standalone driver (built by
-a temporary manifest, see the task's `P2-evidence.md`) comparing against the
-unchanged wave f64 routines.

@@ -53,23 +53,25 @@ fn identity(t: &SequentialTracer, s: &ImageGridSettings) -> String {
     }
     h.finalize().to_hex().to_string()
 }
-fn p5_stats(v: &serde_json::Value, stats: &mut PlanStats) {
+/// Add the plan statistics recorded in a run's settings (and its nested
+/// executions) to `stats`.
+fn recorded_stats(v: &serde_json::Value, stats: &mut PlanStats) {
     if let Some(s) = v.get("plan_stats")
         && let Ok(s) = serde_json::from_value::<PlanStats>(s.clone())
     {
         accumulate(stats, &s);
     }
     if let Some(v) = v.get("resident_execution") {
-        p5_stats(v, stats);
+        recorded_stats(v, stats);
     }
     if let Some(v) = v.get("extra_plans").and_then(|v| v.as_array()) {
         for v in v {
-            p5_stats(v, stats);
+            recorded_stats(v, stats);
         }
     }
 }
-/// Build the optical grid: P5 distortion, host f64 relative illumination,
-/// host-traced pupils (`split`), and resident PSFs.
+/// Build the optical grid: device grid distortion, host f64 relative
+/// illumination, host-traced pupils ([`super::split`]) and resident PSFs.
 pub fn build_psf_grid(
     b: &dyn ComputeBackend,
     t: &SequentialTracer,
@@ -109,7 +111,7 @@ pub fn build_psf_grid_shared(
         },
         &ctx.subrange(0., 0.05),
     )?;
-    p5_stats(&d.run_info.settings, &mut stats);
+    recorded_stats(&d.run_info.settings, &mut stats);
     let evidence = vec![d.run_info.clone()];
     let mut warnings = d.run_info.warnings;
     let coordinates: Vec<_> = d.points.iter().map(|p| p.field).collect();
@@ -184,7 +186,6 @@ pub fn build_psf_grid_shared(
             &wls,
             &s.pupil,
             &ctx.subrange(0.2, 0.6),
-            &mut stats,
             &mut warnings,
         )?
         .into_iter()
@@ -197,11 +198,11 @@ pub fn build_psf_grid_shared(
     });
     let mut size = s.psf_size;
     if size == 0 {
-        for g in concurrent(&per, |_, f| {
-            src.image_grid(f, 0, dx, crate::analysis::PsfMethod::Fft)
-        }) {
-            size = size.max(g);
-        }
+        size = per
+            .par_iter()
+            .map(|f| src.image_grid(f, 0, dx, crate::analysis::PsfMethod::Fft))
+            .max()
+            .unwrap_or(0);
         size = (size | 1).min(2047);
     }
     let kernel_bytes = (size * size * 4) as u64 * per.len() as u64;
@@ -227,18 +228,13 @@ pub fn build_psf_grid_shared(
         let results = super::split::schedule(
             per,
             |i, mut f| {
-                let stats = PlanStats::default();
                 let warnings = src.ensure_window(
                     &mut f,
                     size as f64 * dx,
                     &s.pupil,
                     &range(i).subrange(0., 0.1),
                 )?;
-                Ok(Staged::Done {
-                    value: f,
-                    stats,
-                    warnings,
-                })
+                Ok(Staged::prepared(f, warnings))
             },
             |i, staged| {
                 let sub = range(i);
@@ -251,7 +247,6 @@ pub fn build_psf_grid_shared(
                             grid_size: size,
                             spacing_mm: dx,
                             normalization: PsfNormalization::UnitEnergy,
-                            transform: PsfTransform::Matrix,
                         },
                         false,
                         &sub.subrange(0.1, 0.9),
@@ -284,9 +279,6 @@ pub fn build_psf_grid_shared(
         (results, illumination.join().expect("illumination rows"))
     });
     let nodes = gather(results, &mut stats, &mut warnings)?;
-    if nodes.len() != count {
-        return Err(invalid("field grid contains an unusable pupil"));
-    }
     let (irradiance, axial, illumination_warnings, illumination_seconds) = illumination?;
     warnings.extend(illumination_warnings);
     let mut kernels = vec![];
@@ -304,7 +296,7 @@ pub fn build_psf_grid_shared(
         });
     }
     let mut run_info = src.info(timer, "image_psf_grid", s, &stats, warnings.clone());
-    run_info.settings["p5_evidence"] = serde_json::to_value(evidence).unwrap();
+    run_info.settings["distortion_execution"] = serde_json::to_value(evidence).unwrap();
     run_info.settings["illumination"] =
         serde_json::json!({"backend":"cpu_reference","seconds":illumination_seconds});
     Ok(WaveResult {
@@ -747,12 +739,14 @@ mod tests {
             mklight_metal::LibraryChoice::Precompiled,
             mklight_metal::LibraryChoice::RuntimeSource,
         ] {
-            let b = mklight_metal::MetalBackend::with_options(&mklight_metal::MetalOptions {
+            let Some(b) = mklight_metal::MetalBackend::with_options(&mklight_metal::MetalOptions {
                 library: origin,
                 ..Default::default()
             })
-            .unwrap()
-            .expect("host Metal required");
+            .unwrap() else {
+                eprintln!("no Metal device: skipped");
+                return;
+            };
             let ctx = JobContext::new();
             let t = mklight_analysis::tracer_for(mklight_core::samples::singlet()).unwrap();
             let mut s = ImageSimulationSettings {
@@ -820,7 +814,7 @@ mod tests {
                     s.tile_size = tile;
                     let result = render(&b, &t, &s, Some(grid.clone()), whole, &ctx).unwrap();
                     eprintln!(
-                        "P6_IMAGE_CAP n={n} spacing={spacing} requested_tile={tile} effective_tile={} resident={}",
+                        "IMAGE_CAP n={n} spacing={spacing} requested_tile={tile} effective_tile={} resident={}",
                         result.run_info.settings["effective_tile_size"],
                         result.run_info.settings["resident"]["plan_stats"]
                     );

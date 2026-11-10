@@ -3,7 +3,8 @@
 //! in field groups of several plans, and name themselves in the run
 //! evidence; large generations split between host and device give the same
 //! rays however the work is timed. Selections are process-wide, so every
-//! check holds one lock.
+//! check holds one lock and selects through a guard ([`select`]); the
+//! thresholds are each adapter's own ([`gpu::Tuning`]).
 use mklight_analysis::{
     energy::{self, BestFocusSettings, GeometricMtfResult, GeometricMtfSettings, RaySampling},
     gpu,
@@ -19,6 +20,48 @@ use std::sync::Mutex;
 static SELECTION: Mutex<()> = Mutex::new(());
 
 const AIMS: [&str; 3] = ["host-table", "table", "device"];
+
+/// The aiming selection while the guard lives; dropping it (also when an
+/// assertion fails) removes the in-process selections.
+struct Selected;
+fn select(aiming: Option<&str>) -> Selected {
+    split::set("aiming", aiming);
+    Selected
+}
+impl Drop for Selected {
+    fn drop(&mut self) {
+        split::reset();
+    }
+}
+
+/// Small thresholds so that field groups form several plans.
+fn small_groups() -> gpu::Tuning {
+    gpu::Tuning {
+        group_min_rays: 64,
+        ..Default::default()
+    }
+}
+
+/// Thresholds under which small generations split into several tiles.
+fn small_tiles() -> gpu::Tuning {
+    gpu::Tuning {
+        split_min_work: 0,
+        split_min_tile: 512,
+        ..Default::default()
+    }
+}
+
+/// The device adapter of `t` with thresholds `tuning`, under the aiming
+/// design selected now.
+fn adapter<'a>(
+    b: &'a dyn ComputeBackend,
+    t: &'a SequentialTracer,
+    tuning: gpu::Tuning,
+) -> gpu::Geometry<'a> {
+    gpu::Geometry::new(b, t, &JobContext::new())
+        .unwrap()
+        .with_tuning(tuning)
+}
 
 fn close(what: &str, a: &[f64], g: &[f64], tol: impl Fn(f64) -> f64) {
     assert_eq!(a.len(), g.len(), "{what}: length");
@@ -102,9 +145,12 @@ fn spots(b: &dyn ComputeBackend, aims: &[&str], rings: usize) {
         };
         let a = spot::spot_diagram(&t, &s).unwrap();
         for &aim in aims {
-            split::set("aiming", Some(aim));
-            let g = gpu::spot_diagram_job(b, &t, &s, &JobContext::new()).unwrap();
-            split::reset();
+            let selected = select(Some(aim));
+            let g = adapter(b, &t, small_groups())
+                .split_large_generations()
+                .spot_diagram_job(&s, &JobContext::new())
+                .unwrap();
+            drop(selected);
             let what = format!("{name} {aim}");
             assert_eq!(evidence(&g.run_info), aim, "{what}");
             same_spots(&what, &a, &g);
@@ -149,13 +195,17 @@ fn energies(b: &dyn ComputeBackend, aims: &[&str]) {
             &t.options(),
         );
         for &aim in aims {
-            split::set("aiming", Some(aim));
+            let selected = select(Some(aim));
             let what = format!("{name} {aim}");
-            let gm = gpu::geometric_mtf_job(b, &t, &m, &JobContext::new()).unwrap();
+            let gm = adapter(b, &t, small_groups())
+                .split_large_generations()
+                .geometric_mtf_job(&m, &JobContext::new())
+                .unwrap();
             let gf = gpu::best_focus_job(b, &t, &f, &JobContext::new()).unwrap();
-            let gp = gpu::footprint_job(b, &t, &fp, &JobContext::new()).unwrap();
-            let gg = gpu::ray_grid_job(b, &t, &sampling, &JobContext::new()).unwrap();
-            split::reset();
+            let geo = adapter(b, &t, small_groups());
+            let gp = geo.footprint_job(&fp, &JobContext::new()).unwrap();
+            let gg = geo.ray_grid_job(&sampling, &JobContext::new()).unwrap();
+            drop((geo, selected));
             assert_eq!(evidence(&gm.run_info), aim, "{what}");
             assert_eq!(evidence(&gg.run_info), aim, "{what}");
             same_mtf(&what, &am, &gm);
@@ -196,7 +246,6 @@ fn energies(b: &dyn ComputeBackend, aims: &[&str]) {
 /// whichever side is faster, and within the reference's tolerances; the
 /// device share follows `aiming=split:<share>` (0: host only).
 fn split_designs(b: &dyn ComputeBackend) {
-    gpu::aim::set_split_thresholds(Some((0, 512)));
     for (name, t) in tracers() {
         let s = SpotDiagramSettings {
             rings: 26,
@@ -218,14 +267,13 @@ fn split_designs(b: &dyn ComputeBackend) {
                 .num_threads(threads)
                 .build()
                 .unwrap();
-            split::set("aiming", aiming);
-            let out = pool.install(|| {
-                let g = gpu::spot_diagram_job(b, &t, &s, &JobContext::new()).unwrap();
-                let gm = gpu::geometric_mtf_job(b, &t, &m, &JobContext::new()).unwrap();
+            let _selected = select(aiming);
+            pool.install(|| {
+                let geo = adapter(b, &t, small_tiles()).split_large_generations();
+                let g = geo.spot_diagram_job(&s, &JobContext::new()).unwrap();
+                let gm = geo.geometric_mtf_job(&m, &JobContext::new()).unwrap();
                 (g, gm)
-            });
-            split::reset();
-            out
+            })
         };
         let device_rays = |g: &SpotDiagram| {
             let e = &g.run_info.settings["resident_execution"]["aiming"];
@@ -257,25 +305,14 @@ fn split_designs(b: &dyn ComputeBackend) {
             "{name}: split results differ between runs"
         );
     }
-    gpu::aim::set_split_thresholds(None);
-}
-
-/// Small thresholds so that field groups form several plans.
-fn small_thresholds() {
-    gpu::plans::set_group_min_rays(Some(64));
-}
-fn default_thresholds() {
-    gpu::plans::set_group_min_rays(None);
 }
 
 #[test]
 fn cpu_f32_designs_match_reference() {
     let _g = SELECTION.lock().unwrap_or_else(|e| e.into_inner());
     let b = CpuF32Backend::new();
-    small_thresholds();
     spots(&b, &AIMS, 3);
     energies(&b, &AIMS);
-    default_thresholds();
 }
 
 #[test]
@@ -290,9 +327,8 @@ fn unknown_designs_are_rejected() {
     let (_, t) = tracers().remove(0);
     let b = CpuF32Backend::new();
     for name in ["nonsense", "split:1.5", "split:", "split:-0.1", "host"] {
-        split::set("aiming", Some(name));
+        let _selected = select(Some(name));
         let r = gpu::spot_diagram_job(&b, &t, &Default::default(), &JobContext::new());
-        split::reset();
         assert!(r.is_err(), "aiming={name}");
     }
 }
@@ -304,9 +340,7 @@ fn metal_designs_match_reference() {
     let b = mklight_metal::MetalBackend::new()
         .unwrap()
         .expect("host Metal required");
-    small_thresholds();
     spots(&b, &AIMS, 4);
     energies(&b, &AIMS);
-    default_thresholds();
     split_designs(&b);
 }

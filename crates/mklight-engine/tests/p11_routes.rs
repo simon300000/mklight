@@ -1,5 +1,9 @@
-//! Engine-chain qualification on real devices. These tests require Metal;
-//! sandbox/no-device runs cannot count as release evidence.
+//! Backend routes through the engine: the advertised GPU analyses against
+//! the registry, `auto` against its own cost decision, the reference
+//! fallback after a device resource failure and batched candidate geometry
+//! on the CPU-f32 emulation. The ignored tests need real Metal: every
+//! sample's resident routes (`all_sample_resident_routes`) and the batched
+//! candidate geometry on both kernel libraries.
 use mklight_core::{JobContext, samples};
 use mklight_engine::{AnalysisRequest, Engine, EngineConfig, backend::Backend, project::Project};
 use serde_json::{Value, json};
@@ -22,11 +26,13 @@ fn capabilities_match_registry_routes() {
     assert!(advertised.contains(&"glass_substitution"));
 }
 
-/// Auto routes by the calibrated cost model: a default singlet spot diagram
-/// to the CPU reference, a dense double-Gauss geometric MTF to qualified
-/// Metal; an explicit backend bypasses the model.
+/// Auto routes by the cost model, whose predictions depend on the machine
+/// (its calibration, thread count and load): a small and a dense workload
+/// each run on the backend their recorded decision names, without a
+/// warning, and Metal is chosen only where the model predicts it faster. An
+/// explicit backend bypasses the model.
 #[test]
-fn auto_cost_rules_route_by_workload() {
+fn auto_follows_its_cost_decision() {
     let engine = Engine::default();
     if !engine
         .backends()
@@ -48,30 +54,29 @@ fn auto_cost_rules_route_by_workload() {
         );
         r
     };
-    let small = run(samples::singlet(), "spot_diagram", Value::Null, None);
-    let cost = small.backend.cost_decision.as_ref().unwrap();
-    assert_eq!(small.backend.used, "cpu_reference");
-    assert_eq!(cost["decision"], "cpu_reference");
-    assert_eq!(cost["rule"], "cost model");
-    let predicted = &cost["predicted_ms"];
-    assert!(
-        predicted["cpu"].as_f64() < predicted["metal"].as_f64(),
-        "{cost}"
-    );
-    assert!(small.backend.fallback_reason.unwrap().contains("faster"));
-    assert!(
-        small.run_info.warnings.is_empty(),
-        "{:?}",
-        small.run_info.warnings
-    );
-    // Dense geometric MTF: Metal measured 7× faster on the double Gauss.
-    let dense = json!({"rings":160});
-    let large = run(samples::double_gauss(), "geometric_mtf", dense, None);
-    assert_eq!(
-        large.backend.cost_decision.as_ref().unwrap()["decision"],
-        "qualified_metal"
-    );
-    assert_eq!(large.backend.used, "gpu:metal");
+    for (system, analysis, settings) in [
+        (samples::singlet(), "spot_diagram", Value::Null),
+        (
+            samples::double_gauss(),
+            "geometric_mtf",
+            json!({"rings":160}),
+        ),
+    ] {
+        let r = run(system, analysis, settings, None);
+        let cost = r.backend.cost_decision.as_ref().unwrap();
+        let reference = cost["decision"] == "cpu_reference";
+        assert_eq!(r.backend.used == "cpu_reference", reference, "{cost}");
+        assert_eq!(r.backend.used == "gpu:metal", !reference, "{cost}");
+        assert_eq!(r.backend.fallback_reason.is_some(), reference, "{cost}");
+        assert!(r.run_info.warnings.is_empty(), "{:?}", r.run_info.warnings);
+        if !reference && cost["rule"] == "cost model" {
+            let predicted = &cost["predicted_ms"];
+            assert!(
+                predicted["metal"].as_f64() < predicted["cpu"].as_f64(),
+                "{cost}"
+            );
+        }
+    }
     let explicit = run(
         samples::singlet(),
         "spot_diagram",
@@ -85,6 +90,12 @@ fn auto_cost_rules_route_by_workload() {
     assert_eq!(explicit.backend.used, "gpu:metal");
 }
 
+/// Every GPU analysis except the solvers on every sample, explicitly on
+/// Metal: the result validates against its schema and buffer declarations
+/// and reports its backend consistently. `P11_SAMPLE` and `P11_ANALYSES`
+/// (comma list) restrict the matrix; `P11_RUNTIME_SOURCE` runs the kernels
+/// compiled from source at run time.
+#[cfg(target_os = "macos")]
 #[test]
 #[ignore = "requires real Metal; complete-chain release matrix"]
 fn all_sample_resident_routes() {
@@ -328,130 +339,7 @@ fn resource_fallback_reports_reference_and_cancellation_discards_output() {
     }
 }
 
-#[test]
-#[ignore = "consolidated quiet-host release benchmark; real Metal required"]
-fn consolidated_engine_benchmark() {
-    use std::time::Instant;
-    let filter = std::env::var("P11_BENCH_ANALYSES").ok();
-    let sample = std::env::var("P11_BENCH_SAMPLE").ok();
-    let dense = std::env::var_os("P11_BENCH_DENSE").is_some();
-    let candidates = std::env::var_os("P11_BENCH_CANDIDATES").is_some();
-    for (name, system) in samples::all() {
-        if sample.as_ref().is_some_and(|s| s != name) {
-            continue;
-        }
-        if dense
-            && ![
-                "singlet",
-                "cooke_triplet",
-                "double_gauss",
-                "newtonian",
-                "relay",
-                "hybrid_doe",
-                "anamorphic",
-            ]
-            .contains(&name)
-        {
-            continue;
-        }
-        let engine = Engine::new(EngineConfig {
-            default_backend: Backend::CpuReference,
-            ..Default::default()
-        });
-        use mklight_engine::backend::BackendProvider;
-        let opened = Instant::now();
-        let provider = mklight_engine::gpu::GpuProvider::metal();
-        let device = provider.device().expect("real Metal required");
-        let device = device.downcast::<mklight_engine::gpu::GpuDevice>().unwrap();
-        engine.register_backend(std::sync::Arc::new(provider));
-        println!(
-            "P11_ENGINE_ENV {}",
-            json!({"device":device.backend.info(),"precision":device.backend.precision(),"rayon_threads":rayon::current_num_threads(),"setup_seconds":opened.elapsed().as_secs_f64(),"initial_copied_bytes":device.backend.resident_cache_stats().copied_bytes})
-        );
-        let session = engine.session_from_project(Project::new(system)).unwrap();
-        for info in engine.analyses() {
-            if !info.gpu_path
-                || candidates
-                    != matches!(
-                        info.name.as_str(),
-                        "optimize" | "tolerance" | "glass_substitution"
-                    )
-                || (info.name == "glass_substitution" && name != "cooke_triplet")
-            {
-                continue;
-            }
-            if filter
-                .as_ref()
-                .is_some_and(|v| !v.split(',').any(|v| v == info.name))
-            {
-                continue;
-            }
-            if dense
-                && ![
-                    "spot_diagram",
-                    "ray_grid",
-                    "geometric_mtf",
-                    "best_focus",
-                    "encircled_energy",
-                ]
-                .contains(&info.name.as_str())
-            {
-                continue;
-            }
-            let cases = if dense { vec![5, 56, 512] } else { vec![0] };
-            for rings in cases {
-                let settings = if candidates && info.name == "glass_substitution" {
-                    json!({"material_variables":[
-                        {"surface":1,"candidates":{"nearest":3}},
-                        {"surface":3,"candidates":{"nearest":3}},
-                        {"surface":5,"candidates":{"nearest":3}}],
-                        "max_combinations":12,"local_iterations":8,
-                        "default_merit":{"fields":[0,2],"wavelengths":[1]},
-                        "backend":"auto","seed":17})
-                } else if dense {
-                    json!({"pattern":"square","rings":rings,"fields":{"type":"index","index":2},"wavelengths":{"type":"primary"}})
-                } else {
-                    Value::Null
-                };
-                // One cold pair, one warm-up pair and ten alternating measured pairs.
-                for run in 0..12 {
-                    let execute = |backend| {
-                        let mut request = AnalysisRequest::new(&info.name, settings.clone());
-                        request.backend = Some(backend);
-                        let copied = device.backend.resident_cache_stats().copied_bytes;
-                        let start = Instant::now();
-                        let result = session.run_analysis(&request, &JobContext::new()).unwrap();
-                        (
-                            start.elapsed().as_secs_f64(),
-                            result,
-                            device.backend.resident_cache_stats().copied_bytes - copied,
-                        )
-                    };
-                    let ((cpu_seconds, cpu, _), (metal_seconds, metal, copied_bytes)) =
-                        if run % 2 == 0 {
-                            let cpu = execute(Backend::CpuReference);
-                            let gpu = execute(Backend::Gpu("metal".into()));
-                            (cpu, gpu)
-                        } else {
-                            let gpu = execute(Backend::Gpu("metal".into()));
-                            let cpu = execute(Backend::CpuReference);
-                            (cpu, gpu)
-                        };
-                    println!(
-                        "P11_ENGINE_BENCH {}",
-                        json!({"sample":name,"analysis":info.name,"rings":rings,"run":run,
-                        "phase":if run==0{"cold"}else if run==1{"warmup"}else{"measured"},
-                        "snapshot":cpu.run_info.snapshot_hash,"library":cpu.library_hash,"settings":cpu.run_info.settings,
-                        "cpu_seconds":cpu_seconds,"metal_seconds":metal_seconds,"copied_bytes":copied_bytes,"used":metal.backend.used,
-                        "reason":metal.backend.fallback_reason,
-                        "execution":metal.backend.execution})
-                    );
-                }
-            }
-        }
-    }
-}
-
+#[cfg(target_os = "macos")]
 #[test]
 #[ignore = "requires real Metal; batched per-candidate geometry verdicts"]
 fn host_batched_candidate_geometry() {
@@ -464,158 +352,5 @@ fn host_batched_candidate_geometry() {
         .unwrap()
         .expect("real Metal required");
         check_candidate_geometry(&b);
-    }
-}
-
-#[test]
-#[ignore = "quiet-host independent engine/provider/cache cold starts"]
-fn isolated_engine_cold_starts() {
-    use mklight_engine::backend::BackendProvider;
-    use std::time::Instant;
-    let catalogue = Engine::default().analyses();
-    for (name, system) in samples::all() {
-        for info in &catalogue {
-            if !info.gpu_path
-                || matches!(
-                    info.name.as_str(),
-                    "optimize" | "tolerance" | "glass_substitution"
-                )
-            {
-                continue;
-            }
-            let start = Instant::now();
-            let cpu_engine = Engine::new(EngineConfig {
-                default_backend: Backend::CpuReference,
-                ..Default::default()
-            });
-            let cpu_session = cpu_engine
-                .session_from_project(Project::new(system.clone()))
-                .unwrap();
-            let mut request = AnalysisRequest::new(&info.name, Value::Null);
-            request.backend = Some(Backend::CpuReference);
-            let cpu = cpu_session
-                .run_analysis(&request, &JobContext::new())
-                .unwrap();
-            let cpu_seconds = start.elapsed().as_secs_f64();
-            let start = Instant::now();
-            let engine = Engine::new(EngineConfig {
-                default_backend: Backend::CpuReference,
-                ..Default::default()
-            });
-            let opened = Instant::now();
-            let provider = mklight_engine::gpu::GpuProvider::metal();
-            let device = provider.device().expect("actual Metal required");
-            let device = device.downcast::<mklight_engine::gpu::GpuDevice>().unwrap();
-            let setup_seconds = opened.elapsed().as_secs_f64();
-            engine.register_backend(std::sync::Arc::new(provider));
-            let session = engine
-                .session_from_project(Project::new(system.clone()))
-                .unwrap();
-            request.backend = Some(Backend::Gpu("metal".into()));
-            let metal = session.run_analysis(&request, &JobContext::new()).unwrap();
-            let metal_seconds = start.elapsed().as_secs_f64();
-            println!(
-                "P11_COLD {}",
-                json!({"sample":name,"analysis":info.name,"settings":cpu.run_info.settings,
-                "cpu_seconds":cpu_seconds,"metal_seconds":metal_seconds,"metal_backend_setup_seconds":setup_seconds,
-                "used":metal.backend.used,
-                "execution":metal.backend.execution,
-                "copied_bytes":device.backend.resident_cache_stats().copied_bytes,
-                "scope":"independent engines/sessions; CPU does not warm the Metal engine reference caches"})
-            );
-        }
-    }
-}
-
-#[test]
-#[ignore = "quiet-host explicit resident QR compression calibration"]
-fn qr_crossover_probe() {
-    use mklight_optim::{
-        gpu::GpuContext,
-        linalg::{Matrix, Qr},
-    };
-    use std::{sync::Arc, time::Instant};
-    let backend = Arc::new(
-        mklight_metal::MetalBackend::new()
-            .unwrap()
-            .expect("real Metal required"),
-    );
-    let g = GpuContext::new(
-        backend.clone(),
-        mklight_core::Snapshot::new(samples::singlet()).unwrap(),
-    );
-    for (m, n) in [
-        (400, 100),
-        (1000, 100),
-        (1600, 100),
-        (2000, 100),
-        (4000, 100),
-        (2000, 60),
-        (4225, 37),
-        (32, 8),
-        (128, 32),
-        (4000, 32),
-        (65536, 37),
-    ] {
-        let extra = matches!((m, n), (32, 8) | (128, 32) | (4000, 32) | (65536, 37));
-        if extra != std::env::var_os("P11_QR_EXTRA_ONLY").is_some() {
-            continue;
-        }
-        let a: Vec<_> = (0..m * n)
-            .map(|i| ((i * 37 % 1009) as f64 / 1009. - 0.5) + if i / n == i % n { 2. } else { 0. })
-            .collect();
-        let wanted: Vec<_> = (0..n).map(|i| (i + 1) as f64 / 100.).collect();
-        let rhs: Vec<_> = (0..m)
-            .map(|i| (0..n).map(|j| a[i * n + j] * wanted[j]).sum::<f64>())
-            .collect();
-        for run in 0..12 {
-            let cpu = || {
-                let t = Instant::now();
-                let x = Qr::new(Matrix::from_row_major(m, n, a.clone()))
-                    .solve_ls(&rhs)
-                    .unwrap();
-                (t.elapsed().as_secs_f64(), x)
-            };
-            let metal = || {
-                let before = g.stats();
-                let t = Instant::now();
-                let (_q, factor, qtr) = g
-                    .reduce_qr(
-                        &Matrix::from_row_major(m, n, a.clone()),
-                        &rhs,
-                        &JobContext::new(),
-                    )
-                    .unwrap()
-                    .unwrap();
-                let x = Qr::new(factor).solve_ls(&qtr).unwrap();
-                let wall = t.elapsed().as_secs_f64();
-                let after = g.stats();
-                let stats = json!({"command_buffers":after.command_buffers-before.command_buffers,
-                    "device_seconds":after.device_seconds-before.device_seconds,
-                    "copied_bytes":after.copied_bytes-before.copied_bytes,
-                    "allocations":after.allocations-before.allocations,
-                    "reused_allocations":after.reused_allocations-before.reused_allocations,
-                    "peak_bytes":after.peak_bytes,"fallback_count":after.fallback_count-before.fallback_count,
-                    "stages_cumulative":after.stages});
-                (wall, x, stats)
-            };
-            let ((cpu_seconds, c), (metal_seconds, x, stats)) = if run % 2 == 0 {
-                let c = cpu();
-                (c, metal())
-            } else {
-                let m = metal();
-                (cpu(), m)
-            };
-            let error = c
-                .iter()
-                .zip(&x)
-                .map(|(a, b)| (a - b).abs())
-                .fold(0., f64::max);
-            assert!(error < 1e-8, "{m}x{n}: {error}");
-            println!(
-                "P11_QR {}",
-                json!({"rows":m,"columns":n,"work":m*n*n,"run":run,"phase":if run==0{"cold"}else if run==1{"warmup"}else{"measured"},"cpu_seconds":cpu_seconds,"metal_seconds":metal_seconds,"stats":stats,"maximum_solution_error":error,"forced_resident":true,"operation":"trust_region_qr_compression"})
-            );
-        }
     }
 }

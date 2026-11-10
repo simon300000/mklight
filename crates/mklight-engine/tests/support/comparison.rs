@@ -1365,9 +1365,18 @@ pub struct Comparison {
     outlines: Vec<(String, &'static str, [f64; 2], [f64; 2])>,
 }
 
+/// What a gate failure line starts with, before its path.
+const FAILURE: &str = "gate failure at ";
+
+/// The path of a gate failure line (`result.final.merit`, `@psf_0[3]`).
+pub fn failure_path(line: &str) -> &str {
+    let line = line.strip_prefix(FAILURE).unwrap_or(line);
+    line.split(": ").next().unwrap_or(line)
+}
+
 impl Comparison {
     fn fail(&mut self, path: &str, reason: &str) {
-        let line = format!("chain qualification at {path}: {reason}");
+        let line = format!("{FAILURE}{path}: {reason}");
         if self.reason.is_none() {
             self.reason = Some(line.clone());
         }
@@ -1375,7 +1384,7 @@ impl Comparison {
             && !self
                 .failures
                 .iter()
-                .any(|f| f.starts_with(&format!("chain qualification at {path}:")))
+                .any(|f| f.starts_with(&format!("{FAILURE}{path}:")))
         {
             self.failures.push(line);
         }
@@ -1451,7 +1460,8 @@ impl Comparison {
         rule(&self.analysis, path)
     }
 
-    /// JSON walk over `a` (the reference) against `b`.
+    /// JSON walk over `a` (the reference) against `b`: every key of `a`
+    /// must be in `b`, and `b` may add execution telemetry only.
     fn json(&mut self, ra: &Value, rb: &Value, a: &Value, b: &Value, path: &str) {
         let key = normalise(path);
         let key = key.strip_prefix(".").unwrap_or(&key).to_string();
@@ -1488,6 +1498,11 @@ impl Comparison {
                         continue;
                     }
                     self.json(ra, rb, va, vb, &sub);
+                }
+                for k in ob.keys() {
+                    if !oa.contains_key(k) && !TELEMETRY.contains(&k.as_str()) {
+                        self.fail(&format!("result{path}.{k}"), "extra result key");
+                    }
                 }
             }
             (Value::Array(xa), Value::Array(xb)) => {
@@ -1614,6 +1629,10 @@ impl Comparison {
         yb: &[f64],
         path: &str,
     ) {
+        if ax.is_empty() != bx.is_empty() {
+            self.fail(path, "curve missing");
+            return;
+        }
         let same = ax.len() == bx.len()
             && ax
                 .iter()
@@ -1760,8 +1779,12 @@ impl Comparison {
     }
 }
 
-/// Linear interpolation of `y(x)` at `t` (monotone `x`); NaN outside.
+/// Linear interpolation of `y(x)` at `t` (monotone `x`); NaN outside, and
+/// everywhere for an empty curve.
 fn interpolate(x: &[f64], y: &[f64], t: f64) -> f64 {
+    if x.is_empty() {
+        return f64::NAN;
+    }
     if x.len() == 1 {
         return if x[0] == t { y[0] } else { f64::NAN };
     }
@@ -1853,8 +1876,9 @@ fn points(data: &[f64], dim: usize) -> Vec<[f64; 3]> {
         .collect()
 }
 
-/// Ghost paths of equal irradiance (symmetric relays) rank in either order,
-/// and stray signatures of near-equal flux likewise: match them by identity.
+/// Ghost paths of equal irradiance (symmetric relays) rank in either order:
+/// match them by identity. (Stray signatures of near-equal flux are matched
+/// by [`align_signatures`].)
 fn ranked(analysis: &str, json: &Value) -> Value {
     let mut json = json.clone();
     if matches!(analysis, "ghost_paths" | "ghost_irradiance")
@@ -2328,7 +2352,7 @@ pub fn solver_scores(analysis: &str, v: &Value) -> Value {
 
 /// Native attempts that did not produce the published result, as
 /// `backend outcome: reason` lines. A failed, skipped (a cached
-/// deterministic failure), infeasible or reference-completed native run is a
+/// deterministic failure) or reference-completed native run is a
 /// native failure even when the reference fallback succeeded; `downgraded`
 /// (the static capability list ran an explicit request on the reference) is
 /// a deliberate route, not a failure.

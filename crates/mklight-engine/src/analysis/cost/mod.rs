@@ -7,8 +7,9 @@
 //! * Everything else on a calibrated device class is predicted per stage
 //!   for both backends: host f64 preparation, aiming and tracing (rays ×
 //!   (surfaces + aim traces × stop surfaces), with the aiming difficulty
-//!   from recorded statistics), transforms, output bytes, device setup when
-//!   cold, and the risk of a native fallback. Cache state enters as stage
+//!   from recorded statistics), transforms, output bytes, the device's
+//!   seed-table build of large aimed generations, device setup when cold,
+//!   and the risk of a native fallback. Cache state enters as stage
 //!   terms that vanish when shared CPU intermediates (graph `tracer`,
 //!   `pupil_lattice` nodes) or resident device content are already built;
 //!   a stored graph result is answered before routing and costs nothing on
@@ -60,43 +61,24 @@ pub const MIN_GAIN_MS: f64 = 5.;
 pub const PRIOR_ITERATIONS: f64 = 3.43;
 
 /// Analyses whose native output fails its f64 contract on the current
-/// evidence: `auto` uses the reference on every device, from the given
-/// traced-ray workload up (0: at every size). Explicit Metal requests still
-/// run natively. Re-qualified with the 2026-11 recalibration against
-/// `metal_accuracy` (16 samples) and the complex lens (warm and edited);
-/// see GPU.md §9.2 for the evidence of each entry and of the analyses
-/// that left the list.
-const EXCLUSIONS: &[(&str, f64, &str)] = &[(
+/// evidence, with the finding: `auto` uses the reference on every device
+/// and at every size. Explicit Metal requests still run natively. GPU.md
+/// §9.2 has the evidence of each entry (`metal_accuracy`'s 16 samples and
+/// a complex lens, warm and edited) and of the analyses routed by cost.
+const EXCLUSIONS: &[(&str, &str)] = &[(
     "glass_substitution",
-    0.,
-    "complex lens: the native search returns another finalist glass than f64 (finalist merit 3x outside its gate)",
+    "the GPU search returns another finalist glass than the f64 reference (finalist merit 3x outside its gate)",
 )];
 
-/// The accuracy exclusion of `analysis` with normalised `settings` on
-/// `system`, with its evidence.
-pub(crate) fn accuracy_exclusion(
-    analysis: &str,
-    settings: &Value,
-    system: &OpticalSystem,
-) -> Option<&'static str> {
-    let &(_, from, evidence) = EXCLUSIONS.iter().find(|(a, _, _)| *a == analysis)?;
-    let rays = || profile(analysis, settings, system).map_or(f64::INFINITY, |p| p.rays);
-    (from <= 0. || rays() >= from).then_some(evidence)
-}
+/// The reported reason of an accuracy exclusion.
+pub(crate) const EXCLUDED_NOTE: &str = "auto: this analysis is not accurate enough on the GPU";
 
-/// Excluded at every size (needs no calibration).
-#[cfg(test)]
-pub(crate) fn always_excluded(analysis: &str) -> bool {
+/// The accuracy exclusion of `analysis`, with its evidence.
+pub(crate) fn accuracy_exclusion(analysis: &str) -> Option<&'static str> {
     EXCLUSIONS
         .iter()
-        .any(|(a, from, _)| *a == analysis && *from <= 0.)
-}
-
-/// Analyses `auto` keeps on the reference by static capability
-/// (`routing::auto_reference_reason`); they need no calibration.
-#[cfg(test)]
-pub(crate) fn static_route(analysis: &str) -> bool {
-    super::routing::auto_reference_reason(analysis).is_some()
+        .find(|(a, _)| *a == analysis)
+        .map(|(_, evidence)| *evidence)
 }
 
 /// The device a decision is for.
@@ -151,7 +133,7 @@ impl Decision {
     /// The reported reason for a CPU route.
     pub(crate) fn note(&self) -> &'static str {
         if self.json["rule"] == "accuracy exclusion" {
-            "auto: the native path failed its f64 comparison on the measured evidence for this analysis"
+            EXCLUDED_NOTE
         } else if self.json["rule"] == "known failure" {
             "auto: this request already failed natively on this device"
         } else {
@@ -215,10 +197,12 @@ struct Online {
     /// family and pupil request (an automatic grid depends on the
     /// aberrations; small edits rarely change it).
     grids: LruCache<(u64, String), f64>,
-    /// Host contention: ln(observed / predicted) over every call of a
-    /// backend (CPU, Metal), what other processes cost this one, beyond
-    /// the load-average prior of the moment (CPU).
-    contention: [Ewma; 2],
+    /// Host contention of the CPU reference: ln(observed / predicted) over
+    /// every CPU call, what other processes cost this one beyond the
+    /// load-average prior of the moment. (The device is not shared with
+    /// the host's runnable threads: Metal has no such factor, its
+    /// residuals stay per analysis.)
+    contention: Ewma,
     /// The settled route of each request (`routing::request_key`).
     routes: LruCache<[u8; 32], Decision>,
     decisions: u64,
@@ -242,14 +226,19 @@ const SETUP_CALLS: u32 = 4;
 pub struct CostModel {
     table: Calibration,
     source: String,
-    refine: std::sync::atomic::AtomicBool,
+    /// Online refinement; without it, routes depend only on the table and
+    /// the cache state.
+    refine: bool,
     online: Mutex<Online>,
 }
 
 impl Default for CostModel {
+    /// The table of [`Calibration::load`], refining unless
+    /// `MKLIGHT_COST_REFINEMENT=0`.
     fn default() -> Self {
         let (table, source) = Calibration::load();
-        Self::with_table(table, source)
+        let refine = std::env::var("MKLIGHT_COST_REFINEMENT").map_or(true, |v| v != "0");
+        Self::with_table(table, source, refine)
     }
 }
 
@@ -321,12 +310,13 @@ fn stages_json(s: &Features) -> Value {
 }
 
 impl CostModel {
-    pub fn with_table(table: Calibration, source: String) -> Self {
-        let refine = std::env::var("MKLIGHT_COST_REFINEMENT").map_or(true, |v| v != "0");
+    /// A model over `table` (read from `source`), with online refinement
+    /// when `refine`.
+    pub fn with_table(table: Calibration, source: String, refine: bool) -> Self {
         CostModel {
             table,
             source,
-            refine: refine.into(),
+            refine,
             online: Mutex::new(Online {
                 corrections: LruCache::new(1024),
                 difficulty: LruCache::new(64),
@@ -336,7 +326,7 @@ impl CostModel {
                 calls: LruCache::new(256),
                 native: BTreeSet::new(),
                 transient: BTreeMap::new(),
-                contention: [Ewma::default(); 2],
+                contention: Ewma::default(),
                 grids: LruCache::new(256),
                 routes: LruCache::new(4096),
                 decisions: 0,
@@ -344,20 +334,6 @@ impl CostModel {
                 observations: 0,
             }),
         }
-    }
-
-    pub fn table(&self) -> &Calibration {
-        &self.table
-    }
-
-    /// Enable or disable online refinement (also `MKLIGHT_COST_REFINEMENT=0`).
-    /// Without it, routes depend only on the table and the cache state.
-    pub fn set_refinement(&self, on: bool) {
-        self.refine.store(on, std::sync::atomic::Ordering::Relaxed);
-    }
-
-    fn refining(&self) -> bool {
-        self.refine.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Online> {
@@ -392,10 +368,17 @@ impl CostModel {
         state: &State<'_>,
     ) -> Decision {
         let decision = |route, json| Decision { route, json };
-        if let Some(evidence) = accuracy_exclusion(analysis, settings, system) {
+        if let Some(evidence) = accuracy_exclusion(analysis) {
             return decision(
                 Route::Cpu,
                 json!({"decision":"cpu_reference","rule":"accuracy exclusion","evidence":evidence,"version":VERSION}),
+            );
+        }
+        // On every device, calibrated or not.
+        if state.known_failure {
+            return decision(
+                Route::Cpu,
+                json!({"decision":"cpu_reference","rule":"known failure","version":VERSION}),
             );
         }
         match device {
@@ -407,12 +390,6 @@ impl CostModel {
                 );
             }
             Device::Apple => (),
-        }
-        if state.known_failure {
-            return decision(
-                Route::Cpu,
-                json!({"decision":"cpu_reference","rule":"known failure","version":VERSION}),
-            );
         }
         let fam = family(system);
         let decided = self.lock().grids.get(&(fam, settings["pupil"].to_string()));
@@ -511,14 +488,12 @@ impl CostModel {
         }) / f64::from(calls.min(SETUP_CALLS - 1) + 1);
         let raw_cpu: f64 = cpu.iter().sum();
         let raw_metal: f64 = metal.iter().sum();
-        let refine = self.refining();
-        let contention = [0, 1].map(|b| {
-            if refine {
-                self.contention(&on, b).exp()
-            } else {
-                1.
-            }
-        });
+        let refine = self.refine;
+        let host = if refine {
+            self.contention(&on).exp()
+        } else {
+            1.
+        };
         let mut correction = |backend: &'static str, raw: f64| {
             let key = (analysis.to_string(), backend, fam, decade(raw));
             let c = if refine {
@@ -534,7 +509,7 @@ impl CostModel {
         };
         let (cpu_c, cpu_decade) = correction("cpu", raw_cpu);
         let (metal_c, metal_decade) = correction("metal", raw_metal);
-        let (cpu_c, metal_c) = (cpu_c * contention[0], metal_c * contention[1]);
+        let cpu_c = cpu_c * host;
         let p_fail = on.transient.get(analysis).map_or(0., |e| e.mean);
         drop(on);
         let t_cpu = raw_cpu * cpu_c;
@@ -570,8 +545,8 @@ impl CostModel {
                 },
                 "refinement": {
                     "family": format!("{fam:016x}"),
-                    "cpu": {"decade": cpu_decade, "factor": rounded(cpu_c), "contention": rounded(contention[0])},
-                    "metal": {"decade": metal_decade, "factor": rounded(metal_c), "contention": rounded(contention[1])},
+                    "cpu": {"decade": cpu_decade, "factor": rounded(cpu_c), "contention": rounded(host)},
+                    "metal": {"decade": metal_decade, "factor": rounded(metal_c)},
                 },
                 "calibration": {"device_class": self.table.device_class, "source": self.source},
                 "version": VERSION,
@@ -597,24 +572,29 @@ impl CostModel {
             return;
         };
         let fam = family(system);
+        // The result's JSON is walked before the model is locked. Only the
+        // wave pupils (lattice work) report a decided grid.
+        let grid = work
+            .lattice
+            .then(|| decided_grid(result.json))
+            .flatten()
+            .map(|n| ((fam, settings["pupil"].to_string()), n));
+        // Aimed rays and their iterations over the native plans.
+        let mut aim = (0f64, 0f64);
+        if native {
+            for e in result.execution {
+                aiming_stats(&e["settings"], &mut aim);
+            }
+        }
         let mut on = self.lock();
         on.observations += 1;
         on.seen.insert(resident_key(snapshot, library), ());
-        if let Some(n) = decided_grid(result.json) {
-            on.grids.insert((fam, settings["pupil"].to_string()), n);
+        if let Some((key, n)) = grid {
+            on.grids.insert(key, n);
         }
         if native {
             on.resident.insert(resident_key(snapshot, library), ());
             on.native.insert(analysis.to_string());
-            let mut aim = (0f64, 0f64);
-            for e in result.execution {
-                let mut stats = Vec::new();
-                plan_stats(&e["settings"], &mut stats);
-                for s in stats {
-                    aim.0 += s["aiming"]["rays"].as_f64().unwrap_or(0.);
-                    aim.1 += s["aiming"]["iterations"].as_f64().unwrap_or(0.);
-                }
-            }
             if aim.0 > 0. {
                 let mut d = on.difficulty.get(&fam).unwrap_or_default();
                 d.add(aim.1 / aim.0, ALPHA);
@@ -631,10 +611,15 @@ impl CostModel {
                 .or_default()
                 .add(f64::from(u8::from(failed)), ALPHA);
         }
-        if !self.refining() || failed {
+        if !self.refine || failed {
             return;
         }
-        let Some(d) = result.decision.filter(|d| d["rule"] == "cost model") else {
+        // A replayed decision (`repeated`) predicted the state of its first
+        // request, not of this run: nothing to learn from the difference.
+        let Some(d) = result
+            .decision
+            .filter(|d| d["rule"] == "cost model" && d["repeated"] != true)
+        else {
             return;
         };
         let backend: &'static str = if native { "metal" } else { "cpu" };
@@ -655,54 +640,46 @@ impl CostModel {
         if predicted < 0.05 || measured <= 0. {
             return;
         }
-        // Split ln(measured / predicted) into the host contention shared by
-        // every call of this backend and this analysis' own residual.
-        let b = usize::from(native);
+        // A CPU call splits ln(measured / predicted) into the host
+        // contention shared by every CPU call and this analysis' own
+        // residual; a native call's is all residual.
         let ratio = (measured / predicted).ln();
         let key = (analysis.to_string(), backend, fam, decade as i32);
         let mut e = on.corrections.get(&key).unwrap_or_default();
-        if b == 0 {
+        let host = if native {
+            0.
+        } else {
             let (lo, hi) = CONTENTION;
-            let host = (ratio - e.mean).clamp(lo.ln(), hi.ln()) - self.prior(b);
-            on.contention[b].add(host, ALPHA);
-        }
-        let c = self.contention(&on, b);
+            let host = (ratio - e.mean).clamp(lo.ln(), hi.ln()) - self.prior();
+            on.contention.add(host, ALPHA);
+            self.contention(&on)
+        };
         e.add(
-            (ratio - c).clamp(-MAX_CORRECTION.ln(), MAX_CORRECTION.ln()),
+            (ratio - host).clamp(-MAX_CORRECTION.ln(), MAX_CORRECTION.ln()),
             ALPHA,
         );
         on.corrections.insert(key, e);
     }
 
-    /// ln of the current host contention of backend `b` (0 CPU, 1 Metal):
-    /// for the CPU a prior from the load average now, √(load per core / 4)
-    /// and at least 1 (measured: the reference keeps its speed up to about
-    /// 4 runnable threads per core and slows 5–10× near 25), times what
-    /// observed calls learned beyond that prior;
-    /// for Metal what observed calls learned. The prior follows the load
-    /// even while the CPU is not chosen, so a stale observation from a
-    /// busier moment does not keep it away.
-    fn contention(&self, on: &Online, b: usize) -> f64 {
-        if b == 1 {
-            // The device is not shared with the host's runnable threads; a
-            // global factor learned from one analysis' misprediction would
-            // only skew every other one (residuals stay per analysis).
-            return 0.;
-        }
+    /// ln of the CPU's current host contention: a prior from the load
+    /// average now, √(load per core / 4) and at least 1 (measured: the
+    /// reference keeps its speed up to about 4 runnable threads per core
+    /// and slows 5–10× near 25), times what observed calls learned beyond
+    /// that prior. The prior follows the load even while the CPU is not
+    /// chosen, so a stale observation from a busier moment does not keep
+    /// it away.
+    fn contention(&self, on: &Online) -> f64 {
         let (lo, hi) = CONTENTION;
-        let excess = on.contention[b]
+        let excess = on
+            .contention
             .mean
             .clamp(-HOST_EXCESS.ln(), HOST_EXCESS.ln());
-        (self.prior(b) + excess).clamp(lo.ln(), hi.ln())
+        (self.prior() + excess).clamp(lo.ln(), hi.ln())
     }
 
-    /// ln of the load-average prior of backend `b`.
-    fn prior(&self, b: usize) -> f64 {
-        if b == 0 {
-            (load_per_core() / 4.).sqrt().max(1.).ln()
-        } else {
-            0.
-        }
+    /// ln of the CPU's load-average prior.
+    fn prior(&self) -> f64 {
+        (load_per_core() / 4.).sqrt().max(1.).ln()
     }
 
     /// The table's identity and the online state, for diagnostics.
@@ -712,7 +689,7 @@ impl CostModel {
             "version": VERSION,
             "calibration": {"device_class": self.table.device_class, "source": self.source,
                 "measured": self.table.measured, "analyses": self.table.analyses.len()},
-            "refinement": self.refining(),
+            "refinement": self.refine,
             "decisions": on.decisions,
             "repeated_routes": on.repeats,
             "observations": on.observations,
@@ -722,8 +699,7 @@ impl CostModel {
             "resident_snapshots": on.resident.len(),
             "native_analyses": on.native,
             "transient_failure_rates": on.transient.iter().map(|(k, e)| (k.clone(), json!(e.mean))).collect::<BTreeMap<_, _>>(),
-            "host_contention": {"cpu": self.contention(&on, 0).exp(), "metal": self.contention(&on, 1).exp(),
-                "observed": [on.contention[0].n, on.contention[1].n]},
+            "host_contention": {"cpu": self.contention(&on).exp(), "observed": on.contention.n},
         })
     }
 }
@@ -794,18 +770,21 @@ impl<'a> From<&'a super::AnalysisResult> for Observation<'a> {
     }
 }
 
-fn plan_stats(v: &Value, out: &mut Vec<Value>) {
+/// Adds the aimed rays and aiming iterations of every `plan_stats` record
+/// under `v` to `aim`.
+fn aiming_stats(v: &Value, aim: &mut (f64, f64)) {
     match v {
         Value::Object(m) => {
             for (k, x) in m {
                 if k == "plan_stats" {
-                    out.push(x.clone());
+                    aim.0 += x["aiming"]["rays"].as_f64().unwrap_or(0.);
+                    aim.1 += x["aiming"]["iterations"].as_f64().unwrap_or(0.);
                 } else {
-                    plan_stats(x, out);
+                    aiming_stats(x, aim);
                 }
             }
         }
-        Value::Array(a) => a.iter().for_each(|x| plan_stats(x, out)),
+        Value::Array(a) => a.iter().for_each(|x| aiming_stats(x, aim)),
         _ => {}
     }
 }
@@ -846,9 +825,8 @@ mod tests {
 
     #[test]
     fn metal_needs_a_meaningful_predicted_advantage() {
-        let m = CostModel::with_table(table(), "test".into());
         // Routes from the table alone (no host-load seed).
-        m.set_refinement(false);
+        let m = CostModel::with_table(table(), "test".into(), false);
         let singlet = samples::singlet();
         let spot = |rings: u32| json!({"fields":{"type":"all"},"wavelengths":{"type":"all"},"pattern":"square","rings":rings});
         let snap = [7u8; 32];
@@ -899,7 +877,7 @@ mod tests {
             &warm,
         );
         assert_eq!(excluded.route, Route::Cpu);
-        assert!(excluded.note().contains("f64 comparison"));
+        assert_eq!(excluded.note(), EXCLUDED_NOTE);
         // Unknown and uncalibrated devices.
         assert_eq!(d(6, &warm).route, Route::Cpu);
         assert_eq!(
@@ -912,12 +890,28 @@ mod tests {
                 .route,
             Route::Metal
         );
+        // A known failure is not selected again on an uncalibrated device
+        // either.
+        let known = m.decide(
+            "ray_grid",
+            &spot(6),
+            &singlet,
+            Device::Other,
+            &State {
+                known_failure: true,
+                ..warm
+            },
+        );
+        assert_eq!(
+            (known.route, known.json["rule"].as_str()),
+            (Route::Cpu, Some("known failure"))
+        );
     }
 
     #[test]
     fn refinement_is_bounded_and_can_be_disabled() {
-        let m = CostModel::with_table(table(), "test".into());
-        m.set_refinement(false);
+        let fixed = CostModel::with_table(table(), "test".into(), false);
+        let refining = CostModel::with_table(table(), "test".into(), true);
         let singlet = samples::singlet();
         let settings = json!({"fields":{"type":"all"},"wavelengths":{"type":"all"},"pattern":"square","rings":64});
         let snap = [3u8; 32];
@@ -926,9 +920,8 @@ mod tests {
             device_open: true,
             ..Default::default()
         };
-        let first = m.decide("ray_grid", &settings, &singlet, Device::Apple, &st);
+        let first = fixed.decide("ray_grid", &settings, &singlet, Device::Apple, &st);
         let predicted = first.json["predicted_ms"]["cpu"].as_f64().unwrap();
-        m.set_refinement(true);
         // The CPU keeps running 100× slower than predicted: host contention
         // and the analysis' residual saturate at their bounds.
         let r = Observation {
@@ -940,10 +933,12 @@ mod tests {
             decision: Some(&first.json),
             json: &Value::Null,
         };
-        for _ in 0..20 {
-            m.observe("ray_grid", &settings, &singlet, &snap, "", &r);
+        for m in [&fixed, &refining] {
+            for _ in 0..20 {
+                m.observe("ray_grid", &settings, &singlet, &snap, "", &r);
+            }
         }
-        let later = m.decide("ray_grid", &settings, &singlet, Device::Apple, &st);
+        let later = refining.decide("ray_grid", &settings, &singlet, Device::Apple, &st);
         let factor = later.json["refinement"]["cpu"]["factor"].as_f64().unwrap();
         let bound = (MAX_CORRECTION * HOST_EXCESS * 4.).min(MAX_CORRECTION * CONTENTION.1);
         assert!(factor > 7. && factor <= bound * (1. + 1e-3), "{factor}");
@@ -951,8 +946,55 @@ mod tests {
             .as_f64()
             .unwrap();
         assert!(host > 2.5 && host <= CONTENTION.1 * (1. + 1e-3), "{host}");
-        m.set_refinement(false);
-        let off = m.decide("ray_grid", &settings, &singlet, Device::Apple, &st);
+        // Without refinement the same observations change nothing.
+        let off = fixed.decide("ray_grid", &settings, &singlet, Device::Apple, &st);
         assert_eq!(off.json["predicted_ms"]["cpu"].as_f64().unwrap(), predicted);
+        assert_eq!(fixed.stats()["corrections"], 0);
+    }
+
+    /// A replayed decision predicted its first request's state (cold
+    /// caches, an unseen snapshot), so the run it routes corrects nothing.
+    #[test]
+    fn replayed_decisions_do_not_refine() {
+        let m = CostModel::with_table(table(), "test".into(), true);
+        let singlet = samples::singlet();
+        let settings = json!({"fields":{"type":"all"},"wavelengths":{"type":"all"},"pattern":"square","rings":64});
+        let snap = [5u8; 32];
+        let st = State {
+            snapshot: Some(&snap),
+            device_open: true,
+            ..Default::default()
+        };
+        let first = m.decide("ray_grid", &settings, &singlet, Device::Apple, &st);
+        let key = [9u8; 32];
+        m.settle(key, &first);
+        let replayed = m.repeated(&key).unwrap();
+        assert_eq!(replayed.json["repeated"], true);
+        let run = |decision: &Value| {
+            m.observe(
+                "ray_grid",
+                &settings,
+                &singlet,
+                &snap,
+                "",
+                &Observation {
+                    used: "cpu_reference",
+                    failed: false,
+                    any_attempt: false,
+                    duration_ms: 1e3,
+                    execution: &[],
+                    decision: Some(decision),
+                    json: &Value::Null,
+                },
+            );
+            let stats = m.stats();
+            (
+                stats["corrections"].as_u64().unwrap(),
+                stats["host_contention"]["observed"].as_u64().unwrap(),
+            )
+        };
+        assert_eq!(run(&replayed.json), (0, 0));
+        assert_eq!(run(&first.json), (1, 1));
+        assert_eq!(m.stats()["observations"], 2);
     }
 }

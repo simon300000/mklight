@@ -1,4 +1,4 @@
-//! Wavefront statistics with Debye weights and a P3 QR tilt fit.
+//! Wavefront statistics with Debye weights and a collectives QR tilt fit.
 use super::*;
 #[derive(Clone, Debug)]
 pub enum Statistics {
@@ -85,13 +85,13 @@ pub fn cpu(
             samples,
             sums,
         } => {
-            let a = values::<f32>(x, &pupil.amplitude);
-            let c = values::<f32>(x, &pupil.coverage);
-            let w = values::<Df32>(x, &pupil.opd);
+            let a = x.rows::<f32>(&pupil.amplitude);
+            let c = x.rows::<f32>(&pupil.coverage);
+            let w = x.rows::<Df32>(&pupil.opd);
             let n = pupil.amplitude.desc.shape[0];
             let nn = n * n;
             let mut rows = vec![[Df32::ZERO; 4]; nn];
-            let mut partial = vec![[Df32::ZERO; 4]; nn.div_ceil(256)];
+            let mut partial = vec![[Df32::ZERO; 4]; nn.div_ceil(spec::SUM_BLOCK)];
             let coord = |i| {
                 Df32::from_f32((2 * i + 1) as f32) / Df32::from_f32(n as f32) - Df32::from_f32(1.)
             };
@@ -114,7 +114,7 @@ pub fn cpu(
                 let z = spec::cis(phase);
                 let vals = [wt, wt * phase, wt.mul_f32(z[0]), wt.mul_f32(z[1])];
                 for j in 0..4 {
-                    partial[k / 256][j] = partial[k / 256][j] + vals[j];
+                    partial[k / spec::SUM_BLOCK][j] = partial[k / spec::SUM_BLOCK][j] + vals[j];
                 }
             }
             let mut total = [Df32::ZERO; 4];
@@ -134,11 +134,11 @@ pub fn cpu(
             solution,
             output,
         } => {
-            let a = values::<Df32>(x, samples).as_chunks::<4>().0;
-            let s = values::<Df32>(x, sums);
-            let q = values::<Df32>(x, solution);
+            let a = x.rows::<Df32>(samples).as_chunks::<4>().0;
+            let s = x.rows::<Df32>(sums);
+            let q = x.rows::<Df32>(solution);
             let mean = s[1] / s[0];
-            let mut part = vec![[Df32::ZERO; 6]; a.len().div_ceil(256)];
+            let mut part = vec![[Df32::ZERO; 6]; a.len().div_ceil(spec::SUM_BLOCK)];
             for row in &mut part {
                 row[2] = Df32::from_f32(f32::INFINITY);
                 row[3] = -row[2];
@@ -155,7 +155,7 @@ pub fn cpu(
                 let weight = a[3] * a[3];
                 let r0 = a[2] - mean;
                 let r1 = a[2] - q[0] - q[1] * a[0] - q[2] * a[1];
-                let v = &mut part[k / 256];
+                let v = &mut part[k / spec::SUM_BLOCK];
                 v[0] = v[0] + weight * r0 * r0;
                 v[1] = v[1] + weight * r1 * r1;
                 for (j, r) in [(2, r0), (4, r1)] {

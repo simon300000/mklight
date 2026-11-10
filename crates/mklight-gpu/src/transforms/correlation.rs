@@ -83,10 +83,6 @@ pub fn geometry(p: &Params, k: usize, nu: [f32; 2]) -> [f32; 5] {
     let iy = (dot(shifted, p.frame[1].map(df)) * scale).add_f32(offset);
     [ix.hi + ix.lo, iy.hi + iy.lo, -sz.hi, gamma.hi, -q[2].hi]
 }
-fn values<T: Pod + Copy>(x: &crate::resident::cpu::Execution, v: &PlanView) -> Vec<T> {
-    let a: &[T] = bytemuck::cast_slice(x.words(v.buffer));
-    a[v.offset..v.offset + v.desc.len().unwrap()].to_vec()
-}
 pub(super) fn cpu(
     r: &Request,
     x: &mut crate::resident::cpu::Execution,
@@ -103,7 +99,7 @@ pub(super) fn cpu(
         }
         _ => unreachable!(),
     };
-    let fs = values::<f32>(x, freq);
+    let fs = x.rows::<f32>(freq).to_vec();
     let mut prepared = vec![];
     if let Request::PrepareOpticalStencil(_) = r {
         for nu in fs.as_chunks::<2>().0 {
@@ -124,23 +120,23 @@ pub(super) fn cpu(
     }
     let (field, amp, opd, cov, stencil) = match r {
         Request::Correlation(c) => (
-            values::<[f32; 2]>(x, &c.pupil),
+            x.rows::<[f32; 2]>(&c.pupil).to_vec(),
             vec![],
             vec![],
             c.coverage
                 .as_ref()
-                .map(|v| values::<f32>(x, v))
+                .map(|v| x.rows::<f32>(v).to_vec())
                 .unwrap_or(vec![1.; count]),
             vec![],
         ),
         Request::OpticalCorrelation(c) => (
             vec![],
-            values::<f32>(x, &c.amplitude),
-            values::<Df32>(x, &c.opd),
-            values::<f32>(x, &c.coverage),
+            x.rows::<f32>(&c.amplitude).to_vec(),
+            x.rows::<Df32>(&c.opd).to_vec(),
+            x.rows::<f32>(&c.coverage).to_vec(),
             c.stencil
                 .as_ref()
-                .map(|v| values::<f32>(x, v))
+                .map(|v| x.rows::<f32>(v).to_vec())
                 .unwrap_or_default(),
         ),
         _ => unreachable!(),

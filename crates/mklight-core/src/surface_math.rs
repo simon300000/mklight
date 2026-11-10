@@ -8,6 +8,11 @@ use std::ops::{Add, Div, Mul, Neg, Sub};
 
 /// Polynomial domains include a relative 10⁻¹² rounding margin at the rim.
 pub const DOMAIN_MARGIN: f64 = 1.0 + 1e-12;
+/// Even-asphere terms A4 … A42. The f64 evaluation takes any count; the
+/// limit bounds what a model file or a parameter path can make it allocate.
+/// The GPU layout holds fewer and reports a surface beyond its own limit as
+/// unsupported.
+pub const MAX_EVEN_TERMS: usize = 20;
 pub const MAX_Q_TERMS: usize = 20;
 pub const MAX_PHASE_TERMS: usize = 10;
 pub const MAX_XY_TERMS: usize = 65; // degrees 1 through 10
@@ -307,28 +312,35 @@ fn zernike(c: &[f64], ordering: ZernikeOrdering, x: Jet, y: Jet, s: Jet) -> Jet 
     z
 }
 
+/// The irregularity of the `SagOverlay` `overlay` added to the jet of its
+/// base.
+fn add_irregularity(overlay: &SurfaceShape, base: Jet, x: Jet, y: Jet) -> Jet {
+    let SurfaceShape::SagOverlay {
+        norm_radius,
+        test_wavelength_um,
+        astigmatism,
+        astigmatism_angle_deg,
+        spherical,
+        ..
+    } = overlay
+    else {
+        return base;
+    };
+    // One reflected fringe is λ/2 PV sag; PV(X²−Y²) = 2 and
+    // PV(6r⁴−6r²) = 3/2 on the unit disk. Defined beyond it, no piston.
+    let (u, v) = (x * norm_radius.recip(), y * norm_radius.recip());
+    let s = u * u + v * v;
+    let wave = test_wavelength_um * 1e-3;
+    let (sin, cos) = (2.0 * astigmatism_angle_deg.to_radians()).sin_cos();
+    base + ((u - v) * (u + v) * cos + u * v * (2.0 * sin)) * (astigmatism * wave / 4.0)
+        + (s * s - s) * (spherical * wave * 2.0)
+}
+
 fn sag_jet(shape: &SurfaceShape, x: Jet, y: Jet) -> Option<Jet> {
     use SurfaceShape::*;
     let r2 = x * x + y * y;
     Some(match shape {
-        SagOverlay {
-            base,
-            norm_radius,
-            test_wavelength_um,
-            astigmatism,
-            astigmatism_angle_deg,
-            spherical,
-        } => {
-            // One reflected fringe is λ/2 PV sag; PV(X²−Y²) = 2 and
-            // PV(6r⁴−6r²) = 3/2 on the unit disk. Defined beyond it, no piston.
-            let (u, v) = (x * norm_radius.recip(), y * norm_radius.recip());
-            let s = u * u + v * v;
-            let wave = test_wavelength_um * 1e-3;
-            let (sin, cos) = (2.0 * astigmatism_angle_deg.to_radians()).sin_cos();
-            sag_jet(base, x, y)?
-                + ((u - v) * (u + v) * cos + u * v * (2.0 * sin)) * (astigmatism * wave / 4.0)
-                + (s * s - s) * (spherical * wave * 2.0)
-        }
+        SagOverlay { base, .. } => add_irregularity(shape, sag_jet(base, x, y)?, x, y),
         Plane | Paraxial { .. } | CoordinateBreak => Jet::ZERO,
         Conic {
             curvature,
@@ -537,20 +549,32 @@ pub fn exact_conic(shape: &SurfaceShape) -> Option<(f64, f64)> {
 }
 
 /// Vertex quadratic coefficients for first order. The cone term is omitted
-/// by definition; this is a formal first-order model when β₁ ≠ 0.
+/// by definition; this is a formal first-order model when β₁ ≠ 0. An
+/// irregularity overlay adds its vertex Hessian to that of its base, and a
+/// diffractive surface has the vertex of its base.
 pub fn vertex_curvatures(shape: &SurfaceShape) -> [f64; 3] {
-    if let SurfaceShape::OddAsphere {
-        curvature,
-        coefficients,
-        ..
-    } = shape
-    {
-        let c = curvature + 2.0 * coefficients.get(1).copied().unwrap_or(0.0);
-        [c, 0.0, c]
-    } else {
-        evaluate(shape, 0.0, 0.0)
-            .expect("validated vertex domain")
-            .hessian
+    match shape {
+        SurfaceShape::OddAsphere {
+            curvature,
+            coefficients,
+            ..
+        } => {
+            let c = curvature + 2.0 * coefficients.get(1).copied().unwrap_or(0.0);
+            [c, 0.0, c]
+        }
+        SurfaceShape::SagOverlay { base, .. } => {
+            let base = Jet {
+                h: vertex_curvatures(base),
+                ..Jet::ZERO
+            };
+            add_irregularity(shape, base, Jet::variable(0.0, 0), Jet::variable(0.0, 1)).h
+        }
+        SurfaceShape::Diffractive { base, .. } => vertex_curvatures(base),
+        _ => {
+            evaluate(shape, 0.0, 0.0)
+                .expect("validated vertex domain")
+                .hessian
+        }
     }
 }
 
@@ -738,6 +762,63 @@ mod tests {
     fn close(a: f64, b: f64, tol: f64) {
         assert!((a - b).abs() < tol, "{a} != {b} (tol {tol})");
     }
+    #[test]
+    fn vertex_curvatures_pass_through_overlays_and_diffractive_bases() {
+        let overlay = |base: SurfaceShape| SurfaceShape::SagOverlay {
+            base: Box::new(base),
+            norm_radius: 5.0,
+            test_wavelength_um: 0.6328,
+            astigmatism: 1.5,
+            astigmatism_angle_deg: 30.0,
+            spherical: -0.75,
+        };
+        // The overlay's own vertex Hessian.
+        let wave = 0.6328e-3;
+        let (a, b) = (1.5 * wave / 4.0, -0.75 * wave * 2.0);
+        let (sin, cos) = 60f64.to_radians().sin_cos();
+        let extra = [
+            (2.0 * a * cos - 2.0 * b) / 25.0,
+            2.0 * a * sin / 25.0,
+            (-2.0 * a * cos - 2.0 * b) / 25.0,
+        ];
+        // A cone term leaves the vertex Hessian undefined; the first-order
+        // model omits it under an overlay as it does on the bare surface.
+        let odd = SurfaceShape::OddAsphere {
+            curvature: 0.04,
+            conic: -0.4,
+            coefficients: vec![0.002, 0.001, -0.0002],
+        };
+        let on_odd = overlay(odd.clone());
+        assert!(evaluate(&on_odd, 0.0, 0.0).unwrap().hessian[0].is_nan());
+        let (bare, h) = (vertex_curvatures(&odd), vertex_curvatures(&on_odd));
+        assert_eq!(bare, [0.042, 0.0, 0.042]);
+        for i in 0..3 {
+            close(h[i], bare[i] + extra[i], 1e-17);
+        }
+        // On a regular base it is the Hessian at the vertex.
+        let conic = SurfaceShape::Conic {
+            curvature: 0.04,
+            conic: -0.4,
+        };
+        let on_conic = overlay(conic);
+        let h = vertex_curvatures(&on_conic);
+        assert_eq!(h, evaluate(&on_conic, 0.0, 0.0).unwrap().hessian);
+        for i in 0..3 {
+            close(h[i], [0.04, 0.0, 0.04][i] + extra[i], 1e-17);
+        }
+        let doe = SurfaceShape::Diffractive {
+            base: Box::new(on_conic),
+            phase: DiffractivePhase {
+                norm_radius: 5.0,
+                coefficients: vec![-20.0],
+                design_order: 1,
+                trace_order: 1,
+                design_wavelength_um: 0.55,
+            },
+        };
+        assert_eq!(vertex_curvatures(&doe), h);
+    }
+
     #[test]
     fn cartesian_derivatives_cross_check_finite_differences() {
         for shape in shapes() {

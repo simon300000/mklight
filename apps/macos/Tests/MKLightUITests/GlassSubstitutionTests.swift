@@ -65,4 +65,16 @@ import Testing
         #expect(r.ranked[0].glasses[0].mapID == "BUILTIN/N-BK7")
         #expect(GlassSubstitutionSession.runningMinimum([3, 1, 2]) == [3, 1, 1])
     }
+
+    /// Surface ids that are no ids (negative, not whole, beyond `Int`) are
+    /// left out of a result rather than read.
+    @Test func resultsWithImpossibleSurfaceIDsAreRead() throws {
+        let json = try JSONValue.parse(
+            Data(
+                #"{"results":[{"glasses":[{"surface":-4,"name":"X"},{"surface":1e30,"name":"Y"}]}],"candidate_sets":[{"surface":-1,"glasses":[{}]},{"surface":1e30,"glasses":[{}]},{"surface":2.5,"glasses":[{}]},{"surface":3,"glasses":[{}]}]}"#
+                    .utf8))
+        let r = try #require(GlassSubstitutionResult(json: json))
+        #expect(r.candidateCounts == [SurfaceID(3): 1])
+        #expect(r.ranked[0].glasses.map(\.surface) == [SurfaceID(0), SurfaceID(0)])
+    }
 }

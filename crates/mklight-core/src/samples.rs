@@ -341,8 +341,9 @@ pub fn finite_relay() -> OpticalSystem {
 const RELAY_OBJECT_DISTANCE: f64 = 95.085_347_9;
 const RELAY_IMAGE_DISTANCE: f64 = 95.085_347_9;
 
-/// Extended-surface fixtures; legacy-only solvers can use this predicate in
-/// their cross-validation suites until their extended physics is implemented.
+/// Whether `system` has a surface outside the basic shapes
+/// ([`SurfaceShape::is_legacy`]). Test suites select the extended-surface
+/// samples, or the samples without them, by it.
 pub fn has_extended_surfaces(system: &OpticalSystem) -> bool {
     system.surfaces.iter().any(|s| !s.shape.is_legacy())
 }

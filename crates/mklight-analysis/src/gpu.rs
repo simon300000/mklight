@@ -1,5 +1,5 @@
-//! Backend-neutral resident geometric adapters. These are deliberately not
-//! wired into engine routing; qualification and automatic policy belong there.
+//! Backend-neutral resident geometric adapters: the device paths of the
+//! geometric analyses. The engine decides when a request runs here.
 use mklight_core::{JobContext, MkResult, RunInfo};
 use mklight_gpu::{
     ComputeBackend, Df32, PackOptions, PackedSystem, SystemHandle, aiming::*, resident::*,
@@ -18,7 +18,6 @@ mod maps;
 pub use chief_maps::ChiefDesign;
 pub use layout::layout_job;
 mod illumination;
-mod illumination_split;
 pub use illumination::{IlluminationRows, illumination_rows, relative_illumination_job};
 /// Route key of the chief-ray map divisions ([`ChiefDesign`],
 /// `mklight_core::split`).
@@ -36,6 +35,30 @@ pub use energy::{
 };
 pub use spot::{spot_diagram_job, spot_diagram_packed_job};
 
+/// Thresholds of a [`Geometry`]'s plan and aiming divisions. The defaults
+/// are the fixed values of [`plans::GROUP_MIN_RAYS`] and [`aim`]; tests
+/// lower them to form several field groups and split generations on small
+/// grids ([`Geometry::with_tuning`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Tuning {
+    /// Rays per field group at least ([`plans::field_groups`]).
+    pub group_min_rays: usize,
+    /// Rays × surfaces from which a split generation is aimed by host and
+    /// device together ([`aim::SPLIT_MIN_WORK`]).
+    pub split_min_work: usize,
+    /// Rays of the smallest split tile.
+    pub split_min_tile: usize,
+}
+impl Default for Tuning {
+    fn default() -> Self {
+        Self {
+            group_min_rays: plans::GROUP_MIN_RAYS,
+            split_min_work: aim::SPLIT_MIN_WORK,
+            split_min_tile: aim::MIN_DEVICE_TILE,
+        }
+    }
+}
+
 /// A reusable system upload. Host work is immutable resolution/packing, small
 /// first-order field metadata and f64 chief rows from the reference tracer's
 /// field preparation; pupil generation and tracing run on the backend.
@@ -47,12 +70,14 @@ pub struct Geometry<'a> {
     /// Reference tracers for aiming modes other than the tracer's own (maps
     /// and illumination force real aiming, pupil aberration none).
     others: std::sync::Mutex<Vec<(mklight_core::RayAiming, std::sync::Arc<SequentialTracer>)>>,
-    /// How generations are aimed (work-split key `aiming`, [`aim`]).
+    /// How generations are aimed (work-split key `aiming`, [`aim`]), and
+    /// the selected device share of split generations.
     aim: aim::AimDesign,
-    /// The device's share of large generations aimed by host and device
-    /// together: the selected share once the analysis opts in
-    /// ([`Self::split_large_generations`]), otherwise 0.
-    split_share: f64,
+    device_share: f64,
+    /// Whether large generations are aimed by host and device together
+    /// ([`Self::split_large_generations`]).
+    split: bool,
+    tuning: Tuning,
     /// Aiming work since the last plan, reported with it.
     aim_evidence: std::sync::Mutex<aim::AimEvidence>,
 }
@@ -106,27 +131,31 @@ impl<'a> Geometry<'a> {
             },
             &packed,
         )?;
+        let (aim, device_share) = aim::AimDesign::selection()?;
         Ok(Self {
             backend,
             tracer,
             systems,
             wavelengths: chunks,
             others: Default::default(),
-            aim: aim::AimDesign::selected()?,
-            split_share: 0.0,
+            aim,
+            device_share,
+            split: false,
+            tuning: Tuning::default(),
             aim_evidence: Default::default(),
         })
+    }
+    /// This adapter with the thresholds `tuning` instead of the defaults.
+    pub fn with_tuning(mut self, tuning: Tuning) -> Self {
+        self.tuning = tuning;
+        self
     }
     /// Aim large generations by host and device together (`gpu::aim`, split
     /// generations): for the analyses where that was measured to pay, the
     /// spot diagram and the geometric MTF.
-    pub(crate) fn split_large_generations(mut self) -> MkResult<Self> {
-        self.split_share = aim::AimDesign::selection()?.1;
-        Ok(self)
-    }
-    /// The aiming design of this adapter's generations.
-    pub fn aim_design(&self) -> aim::AimDesign {
-        self.aim
+    pub fn split_large_generations(mut self) -> Self {
+        self.split = true;
+        self
     }
     fn import<T: BufferElement>(
         &self,
@@ -227,23 +256,6 @@ impl<'a> Geometry<'a> {
             chief_source: Some(ChiefSource { rows, steps }),
         })
     }
-    /// Chief rows for (field point, system wavelength) pairs, solved in f64 by
-    /// the reference tracer for `aiming` (its prepared system fields are
-    /// reused), so the backend skips its chief/real-image-height solve.
-    pub fn host_seeds(
-        &self,
-        p: &mut ResidentPlan,
-        rows: &[(FieldPoint, usize)],
-        aiming: mklight_core::RayAiming,
-    ) -> MkResult<BufferId> {
-        let (seeds, host) = if aiming == self.tracer.aiming() {
-            host_seeds(self.tracer, rows)
-        } else {
-            host_seeds(&*self.tracer_for(aiming)?, rows)
-        };
-        p.host.add(&host);
-        self.records::<ChiefSeed>(p, rows.len(), |i| Ok(seeds[i]))
-    }
     fn tracer_for(
         &self,
         aiming: mklight_core::RayAiming,
@@ -265,7 +277,12 @@ impl<'a> Geometry<'a> {
     /// Append the unclipped chief traces of a grid, one per field and chief
     /// wavelength (requested wavelengths plus the primary), aimed now as the
     /// grid's rays are.
-    pub fn append_chiefs(&self, p: &mut ResidentPlan, g: &mut ResidentGrid) -> MkResult<()> {
+    pub fn append_chiefs(
+        &self,
+        p: &mut ResidentPlan,
+        g: &mut ResidentGrid,
+        ctx: &JobContext,
+    ) -> MkResult<()> {
         let Some(ChiefSource { rows, steps }) = g.chief_source.clone() else {
             return Err(mklight_core::MkError::InvalidParam(
                 "grid has no chief metadata".into(),
@@ -278,7 +295,7 @@ impl<'a> Geometry<'a> {
             weight: 1.0,
             id: i as u64,
         };
-        let input = self.aim_rays(p, &rows, nf, &spec, &JobContext::new())?;
+        let input = self.aim_rays(p, &rows, nf, &spec, ctx)?;
         g.chiefs = Some(self.trace_rays(p, input, steps, false, false)?);
         Ok(())
     }

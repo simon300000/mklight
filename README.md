@@ -33,9 +33,9 @@
   single precision would not meet the accuracy budget, and it is checked
   against the reference on every sample design.
 - **Fast where it matters.** The GPU takes the throughput work, such as
-  batched merit evaluations in optimisation and tolerancing. A calibrated
-  cost model sends a job to the GPU only when it will finish sooner there, so
-  small, latency-bound work stays on the CPU. A content-hashed analysis cache
+  dense wave-optics transforms, image simulation and large ghost maps. A
+  calibrated cost model sends a job to the GPU only when it will finish
+  sooner there, so small, latency-bound work stays on the CPU. A content-hashed analysis cache
   rebuilds only what an edit changed.
 - **Reproducible results.** Every result records the engine version, the
   design's content hash, its settings, the backend and precision it ran on,

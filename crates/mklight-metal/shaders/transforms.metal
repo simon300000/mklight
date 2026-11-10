@@ -29,7 +29,7 @@ kernel void mkl_transform(device const float2 *a [[buffer(0)]],device const floa
     }
     case MKL_TRANSFORM_PRE:{uint x=id%w,y=id/w;if(x<p.nx&&y<p.ny)z=p2_cmul(a[y*p.nx+x],p2_cis(mkl_df_mul_f32(p2_pre(p,float(x),float(y)),sign)));break;}
     case MKL_TRANSFORM_POST:{uint x=id%p.ox,y=id/p.ox;z=p2_cmul(a[y*w+x],p2_cis(mkl_df_mul_f32(p2_q(p,float(x),float(y)),sign)))*scale;break;}
-    case MKL_TRANSFORM_MULTIPLY:{float2 v=b[p.flags&2u?id%w:id];if(p.flags&1u)v.y=-v.y;z=p2_cmul(a[id],v)*scale;break;}
+    case MKL_TRANSFORM_MULTIPLY:{float2 v=b[p.flags&2u?id%w:id];z=p2_cmul(a[id],v)*scale;break;}
     case MKL_TRANSFORM_PHASE:{float x=float(id%w),y=float(id/w);float2 ph=mkl_df_add(mkl_df_add(mkl_df_mul_f32(mkl_df_mul_f32(p2_df(p.affine[0]),x),x),mkl_df_mul_f32(mkl_df_mul_f32(p2_df(p.affine[1]),x),y)),mkl_df_mul_f32(mkl_df_mul_f32(p2_df(p.affine[2]),y),y));
         ph=mkl_df_add(ph,mkl_df_add(mkl_df_add(mkl_df_mul_f32(p2_df(p.affine[3]),x),mkl_df_mul_f32(p2_df(p.affine[4]),y)),p2_df(p.affine[5])));z=p2_cmul(a[id],p2_cis(ph));break;}
     }

@@ -149,13 +149,8 @@ pub fn profile_with(
     match analysis {
         "spot_diagram" | "ray_grid" | "encircled_energy" | "footprint" | "geometric_mtf"
         | "best_focus" => {
-            let rings = s
-                .pointer("/rings")
-                .or_else(|| s.pointer("/sampling/rings"))
-                .and_then(Value::as_f64)
-                .unwrap_or(6.);
             p.rows = fw;
-            p.rays = fw * pattern(s, rings);
+            p.rays = fw * pattern(s, num("/rings", 6.));
             match analysis {
                 "spot_diagram" if s["include_points"].as_bool() == Some(true) => {
                     p.output = p.rays * 24.
@@ -178,11 +173,7 @@ pub fn profile_with(
             p.output = surfaces * num("/profile_samples", 41.) * 16.
                 + surfaces * num("/rings", 3.) * num("/ring_samples", 64.) * 24.;
         }
-        "field_curvature_distortion" => {
-            p.rows = num("/field_samples", 21.) * w;
-            p.rays = p.rows;
-        }
-        "lateral_colour" => {
+        "field_curvature_distortion" | "lateral_colour" => {
             p.rows = num("/field_samples", 21.) * w;
             p.rays = p.rows;
         }
@@ -201,9 +192,13 @@ pub fn profile_with(
             p.rays = p.rows * num("/radial_samples", 12.) * num("/azimuth_samples", 48.);
         }
         "pupil_aberration" | "relative_illumination_map" | "chief_ray_angle" => {
-            let g = s["grid"]
-                .as_array()
-                .map_or(25., |a| a.iter().filter_map(Value::as_f64).product());
+            // The map's nodes: the grid, or one of its axes for a sweep.
+            let side = |axis: usize| s["grid"][axis].as_f64().unwrap_or(5.);
+            let g = match s["mode"].as_str() {
+                Some("x") => side(0),
+                Some("y") => side(1),
+                _ => side(0) * side(1),
+            };
             p.rows = g * w;
             p.rays = match analysis {
                 "relative_illumination_map" => {
@@ -215,9 +210,15 @@ pub fn profile_with(
             p.output = p.rows * 64.;
         }
         "system_transmission" => {
-            let n = num("/pupil/n", 32.);
+            // In nodes of the pupil grid's square (n², the unit of the
+            // fit): the disk keeps π/4 of them; a random pupil traces
+            // `count` rays.
+            let nodes = match s["pupil"]["type"].as_str() {
+                Some("random") => num("/pupil/count", 1024.) / std::f64::consts::FRAC_PI_4,
+                _ => num("/pupil/n", 32.).powi(2),
+            };
             p.rows = fw;
-            p.rays = fw * n * n;
+            p.rays = fw * nodes;
         }
         "polarization_pupil_map" => {
             let n = num("/grid", 33.);
@@ -328,5 +329,30 @@ mod tests {
         let f = spot(6).features(&shape, 4.);
         assert_eq!(f[2], 9. * 127. * shape.surfaces);
         assert!(profile("seidel", &json!({}), &cooke).is_none());
+        // A random transmission pupil counts its rays, in the grid's unit.
+        let transmission = |pupil: Value| {
+            profile(
+                "system_transmission",
+                &json!({"fields":[],"wavelengths":[],"pupil":pupil}),
+                &cooke,
+            )
+            .unwrap()
+            .rays
+        };
+        let grid = transmission(json!({"type":"grid","n":32}));
+        assert_eq!(grid, 9. * 1024.);
+        let random = transmission(json!({"type":"random","count":1_000_000,"seed":1}));
+        assert!((random / grid - 1e6 / (1024. * std::f64::consts::FRAC_PI_4)).abs() < 1e-9);
+        // A field map sweeps one axis in the x and y modes.
+        let map = |mode: &str| {
+            profile(
+                "chief_ray_angle",
+                &json!({"grid":[21,5],"mode":mode,"wavelength":0}),
+                &cooke,
+            )
+            .unwrap()
+            .rows
+        };
+        assert_eq!((map("grid"), map("x"), map("y")), (105., 21., 5.));
     }
 }

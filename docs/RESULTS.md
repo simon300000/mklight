@@ -19,6 +19,7 @@ Python `Result.envelope()` return:
                 "analysis": "spot_diagram", "settings": { …complete settings… },
                 "backend": "gpu:metal", "precision": "f32_gpu", "seed": null,
                 "started_unix_ms": 1761840000000, "duration_ms": 4.2,
+                "tier": "design", "aim_stop": "conditioned",
                 "warnings": [] },
   "library_hash": "<64 hex>",
   "derived_snapshot_hash": null,
@@ -31,9 +32,9 @@ Python `Result.envelope()` return:
 ```
 
 * `run_info.settings` holds every effective setting (defaults filled in);
-  resubmitting it reproduces the run. `run_info.seed` is set for stochastic
-  runs (random or dithered pupil patterns, random pupil samples, stray
-  light).
+  resubmitting it reproduces the run. `run_info.seed` is the `seed` setting
+  of an analysis that has one (random or dithered pupil patterns, random
+  pupil samples, stray light, the seeded searches), `null` otherwise.
 * `run_info.backend` is the backend that **computed** the result
   (`cpu_reference`, `gpu:metal`, …), not the one requested; see section 5.
 * `run_info.tier` (`design` | `preview`) and `run_info.aim_stop`
@@ -72,15 +73,15 @@ Python `Result.envelope()` return:
   minor version.
 * Settings may be partial; missing keys take the schema defaults. Unknown
   top-level keys are rejected (`MK_ERR_INVALID_ARGUMENT`); values are
-  checked against the schema's `type`, `minimum`, `maximum`, `exclusiveMinimum`, `exclusiveMaximum` and `enum`
+  checked against the schema's `type`, `minimum`, `maximum`,
+  `exclusiveMinimum`, `exclusiveMaximum`, `enum`, `items` and `required`
   before the job is queued. Nested objects (field selections, source specs,
   …) are validated when the analysis parses them.
 * Settings schemas of analyses implemented in a solver crate are derived
   from that crate's settings `Default`, so the engine's defaults are the
-  crate's. Where the engine deliberately differs it says so in the setting's
-  description and below: `ghost_irradiance.pupil_samples` defaults to 48
-  (crate: 128) and `stray_light.rays` to 20 000 (crate: 100 000), so that the
-  default runs stay interactive.
+  crate's, with two deliberate differences: `ghost_irradiance.pupil_samples`
+  defaults to 48 (crate: 128) and `stray_light.rays` to 20 000 (crate:
+  100 000), so that the default runs stay interactive.
 
 ## 3. Numbers, units, frames
 
@@ -123,7 +124,8 @@ energy and MTF curves, through-focus) stay in the JSON.
   `footprint.sets[].points`) or by an offsets buffer (`layout.offsets`).
 * Each analysis' result schema lists its buffers under `x-buffers`
   (`name`, `dtype`, `shape` axis names, `unit`, `description`); a buffer
-  name ending in `*` would stand for a family. Optional buffers may be
+  name ending in `*` stands for a family (`encircled_*`: one buffer per
+  JSON group, the suffix its position). Optional buffers may be
   absent (`ghost_irradiance.path_maps` without `keep_path_maps`).
 
 ## 5. Backends and GPU paths
@@ -144,8 +146,9 @@ selects a backend; `auto` uses the cost model below.
 
 Native results publish directly with their actual precision, without per-snapshot
 or per-candidate f64 reruns. Accuracy is established offline. Static capability
-restrictions route encircled energy, wavefront maps and polarization pupil maps
-to the CPU reference with deliberate reasons (GPU §9.2). Optimization best
+restrictions route encircled energy and polarization pupil maps to the CPU
+reference with deliberate reasons, and wavefront maps under `auto` only (an
+explicit Metal request runs them natively; GPU §9.2). Optimization best
 designs and glass finalists receive f64 report scores once at the end;
 tolerance and merit evaluation return actual evaluator values.
 
@@ -155,39 +158,44 @@ reports. Unsupported stages, unresolved aiming and resource/device failures
 retain reported reasons and warnings. Public f64 buffers still carry `f32_gpu`
 when computed by Metal.
 
-`backend.cost_decision` records automatic selection: `decision`
-(`cpu_reference` or `qualified_metal`), `rule` (`accuracy exclusion`,
-`static capability`, `known failure` or `cost model`), `version`, and
-`before_device: true` when the route was settled before any GPU device was
-opened. Analyses whose native output fails its f64 budget on the current
-evidence (ghost irradiance, glass substitution, spot diagrams from 1M
-traced rays; GPU §9.2) run on the CPU reference under
-`auto`. Every other analysis is routed by the calibrated stage-level cost
-model of GPU §9.2: the decision records both predicted times
-(`predicted_ms`), their stage terms (`stages_ms`: fixed, preparation, ray
-work, transforms, output; device setup and fallback risk), the cache and
-device state it saw (`state`), the online refinement factors (`refinement`)
-and the calibration table (`calibration`). Metal is chosen only for a
-predicted advantage of at least 1.3× and 5 ms. Devices without a calibration
-table prefer qualified Metal. An `auto` request whose result the analysis
-graph already holds is answered from it without routing (its stored
-decision is returned unchanged). An explicit backend records that the model
-was bypassed. Deliberate CPU choices are reported without a warning. Static
-capability choices are also deliberate; for an explicit request they are a
-`downgraded` attempt with a warning. Unsupported/resource failures retain warnings. Cold calls perform no
-f64 chain verification. Known residual Metal accuracy gaps are listed in GPU
-§9.2.
+`backend.cost_decision` records how the backend was selected. The routing
+policy itself (static capability, accuracy exclusions, the cost model, its
+calibration and refinement) is GPU §9.2; the keys are:
+
+| key | present | meaning |
+|---|---|---|
+| `decision` | always | `cpu_reference`, `qualified_metal`, or `explicit_backend` (an explicit request: the cost rules were bypassed) |
+| `rule` | reference decisions and cost-model decisions | `static capability`, `accuracy exclusion`, `known failure` or `cost model` |
+| `reason` | static capability, `explicit_backend`, and `qualified_metal` without a prediction | the capability reason, `cost rules bypassed`, or why nothing was predicted (no calibration for the device or the analysis) |
+| `evidence` | `accuracy exclusion` | the finding behind the exclusion |
+| `version` | `auto` decisions of the cost module | the routing model version |
+| `before_device` | `auto` decisions | `true` when the route was settled before any GPU device was opened |
+| `repeated` | repeated `auto` requests | `true`: the route is the one the first identical request chose |
+| `predicted_ms` | `cost model` | `{cpu, metal}` predicted times |
+| `advantage`, `required` | `cost model` | predicted CPU/Metal time ratio; the thresholds `{ratio, gain_ms}` Metal must reach |
+| `stages_ms` | `cost model` | `cpu` and `metal` stage terms (`fixed`, `prep`, `ray`, `transform`, `output`, `table`), `metal_setup`, `metal_fallback_risk` |
+| `state` | `cost model` | the cache and device state the decision saw |
+| `refinement` | `cost model` | the online refinement factors applied |
+| `calibration` | `cost model` | the calibration table used (`device_class`, `source`) |
+
+An `auto` request whose result the analysis graph already holds is answered
+from it without routing (its stored decision is returned unchanged).
+Deliberate CPU choices (by cost, exclusion or static capability) are
+reported without a warning; a static capability choice for an explicit
+request is a `downgraded` attempt with a warning. Unsupported/resource
+failures retain warnings. Known residual Metal accuracy gaps are listed in
+GPU §9.2.
 
 `run_info.failed_attempts` (omitted when empty) lists backend attempts that
 did not produce the result, each with `backend`, `outcome` (`failed`,
-`skipped`, `infeasible`, `downgraded`, `reference_completion`), `reason` and
+`skipped`, `downgraded`, `reference_completion`), `reason` and
 `elapsed_ms`, so a fallback's time is visible next to the CPU label. A request
 that failed deterministically on a device is not attempted again there for
 the same snapshot, glass library and settings (`skipped`).
 
 Optimisation's `result.backend.resident_evaluation` reports candidate counts,
 device operands, host operands and actual
-fallback causes. `gpu_stats` retains its compatibility fields: candidate counts
+fallback causes. In `gpu_stats`, candidate counts
 can overlap for partial completion, `rays` counts final ray-operand probes
 (native wave/ghost/stray counts remain in their stage reports), and `dispatches`
 counts completed commands. Start/final tables and published finalists are
@@ -209,12 +217,11 @@ These rules and backend reports are shared by Rust, FFI, CLI and Python.
   explicit `paths`, orders above `max_reflections`, paths pruned by
   `min_reflectance_product` or `max_higher_order_paths`, irregular
   reflection sequences) belong to the stray solver (CONVENTIONS §10): they
-  are added to `stray_flux` as `partition.uncovered_ghost_flux`, with a
-  `run_info` warning. The stray tally splits by class, not by signature, so
-  the maps hold only `partition.mapped_stray_flux` (scatter, mechanical,
-  sneak; exact standard error), not the handed-back ghosts; and the
-  handed-back flux's standard error is the bound `Σ SEₖ` over its
-  signatures, so `stray_std_error` is then an upper bound.
+  are added to `stray_flux` and to the maps as
+  `partition.uncovered_ghost_flux`, with a `run_info` warning. Ownership is
+  decided path by path at each detection, so the covered and the
+  handed-back ghost fluxes have their own per-source-ray standard errors
+  (docs/STRAY.md, "Partition of detected light").
   `result.partition.apertures` equals the ghost result's
   `coverage.apertures`; `partition.ghost_class_flux_mc` (the whole class)
   and `partition.covered_ghost_flux_mc` (the covered part, to compare with
@@ -296,10 +303,11 @@ These rules and backend reports are shared by Rust, FFI, CLI and Python.
 ### Wave optics
 
 `wavefront_map`, `psf`, `mtf`, `diffraction_encircled_energy`,
-`line_spread`, `through_focus_mtf` and `mtf_vs_field` run the CPU f64 wave
-solver on the selected, solved `configuration` (default 0). Their RunInfo
-records the session snapshot hash, configuration, settings and solve/sampling
-warnings. These analyses have no GPU path.
+`line_spread`, `through_focus_mtf` and `mtf_vs_field` run the wave solver
+on the selected, solved `configuration` (default 0). Their RunInfo records
+the session snapshot hash, configuration, settings and solve/sampling
+warnings. They and `image_simulation` run on the CPU f64 reference or
+natively on the GPU (WAVE.md §9; routing: GPU §9.2).
 
 * **Wavefront.** OPD is `OPL_chief − OPL_ray` at the exit-pupil reference
   sphere, in waves at the reported wavelength (µm); the chief ray has zero
@@ -800,7 +808,7 @@ Result (`result` in the envelope):
 | field | type | unit | notes |
 |---|---|---|---|
 | `entries` | array<object> |  | The report at the first selected wavelength. |
-| `entries[].key` | string |  | Stable key (e.g. `efl`, `bfl`, `epd`). |
+| `entries[].key` | string |  | Stable key (e.g. `efl`, `bfl`, `entrance_pupil_diameter`). |
 | `entries[].label` | string |  | Display label. |
 | `entries[].unit` | string |  | Unit of `value` (`mm`, `°`, or empty). |
 | `entries[].value` | nf |  |  |
@@ -823,7 +831,7 @@ Result (`result` in the envelope):
 | `system` | object |  | System summary: name, surfaces, stop, wavelengths_um, primary_wavelength, field_kind, field_unit, max_field, object_at_infinity, ray_aiming. |
 | `tables` | array<object> |  | One report per selected wavelength. |
 | `tables[].entries` | array<object> |  |  |
-| `tables[].entries[].key` | string |  | Stable key (e.g. `efl`, `bfl`, `epd`). |
+| `tables[].entries[].key` | string |  | Stable key (e.g. `efl`, `bfl`, `entrance_pupil_diameter`). |
 | `tables[].entries[].label` | string |  | Display label. |
 | `tables[].entries[].unit` | string |  | Unit of `value` (`mm`, `°`, or empty). |
 | `tables[].entries[].value` | nf |  |  |
@@ -2087,7 +2095,7 @@ Settings:
 | `spectrum` | object\|null |  |  | Optional run-local spectrum; absent/null keeps the design. kind: explicit (wavelengths:[{um,weight}]), photopic, scotopic, blackbody (temperature_k), sensor (table:[[um,response]]). Presets/sensor take sampling. Primary is nearest the energy-weighted mean (first on ties). |
 | `wavelengths` | object | `{"type":"primary"}` |  | System wavelength selection: all, primary, index or list (tagged by type). |
 | `zernike_ordering` | string | `"fringe"` |  | one of `"fringe"`, `"standard"`; Fringe Z1 onward by default; standard uses Noll normalisation. |
-| `zernike_terms` | integer | `37` |  | ≥ 1; Number of fitted terms; Fringe supports at most 37. |
+| `zernike_terms` | integer | `37` |  | 1 … 231; Number of fitted terms; Fringe supports at most 37. |
 
 Result (`result` in the envelope):
 
@@ -2415,7 +2423,7 @@ Result (`result` in the envelope):
 | `start.merit` | nf |  |  |
 | `start.status` | object |  | EvalStatus. |
 | `start.violation` | nf |  |  |
-| `status` | string |  | one of `"converged"`, `"finished"`, `"stopped"`, `"cancelled"` |
+| `status` | string |  | one of `"converged"`, `"finished"`, `"stopped"` |
 | `stopped` | boolean |  | Stop requested; best-so-far result retained. |
 | `system` | object |  | Optimised OpticalSystem. Apply with Session::set_system / mk_session_set_system_json. |
 | `system_hash` | string |  | Hash of the optimised model, not the input snapshot. |
@@ -2447,7 +2455,7 @@ Settings:
 | key | type | default | unit | notes |
 |---|---|---|---|---|
 | `backend` | string | `"auto"` |  | one of `"auto"`, `"cpu"`, `"gpu"`, `"gpu_emulation"` |
-| `batch` | integer | `16` |  | ≥ 1 |
+| `batch` | integer | `16` |  | ≥ 1; Monte-Carlo trials per evaluation batch, raised to at least 128 (the criteria do not depend on the batching). |
 | `compensator_iterations` | integer | `20` |  | ≥ 1 |
 | `compensators` | array | `[]` |  | {"param": ParamPath, "range", "scale"}: re-optimised for every trial. |
 | `criterion` | object\|null | `null` |  | A merit-function spec; null generates the default merit for tolerancing from `default_merit`. |

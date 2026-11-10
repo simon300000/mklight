@@ -4,7 +4,7 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Milliseconds since the Unix epoch (0 if the clock is before 1970).
-pub fn now_unix_ms() -> u64 {
+fn now_unix_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
@@ -18,7 +18,7 @@ pub fn now_rfc3339() -> String {
 
 /// Format Unix seconds as an RFC 3339 UTC timestamp in the proleptic
 /// Gregorian calendar (H. Hinnant's `civil_from_days`).
-pub fn rfc3339_from_unix_secs(secs: i64) -> String {
+fn rfc3339_from_unix_secs(secs: i64) -> String {
     let days = secs.div_euclid(86_400);
     let sod = secs.rem_euclid(86_400);
     let (y, m, d) = civil_from_days(days);

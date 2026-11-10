@@ -2,7 +2,7 @@
 //! Hulls are computed in the surface's local x/y plane, retaining each
 //! vertex's traced sag; global conversion includes placements and mirrors.
 use crate::illumination::FootprintSettings;
-use crate::util::{default_fields, pupil_points, run_info};
+use crate::util::{default_fields, pupil_points, run_info, seed_of};
 use mklight_core::job::RunTimer;
 use mklight_core::{JobContext, MkResult, RunInfo, Vec3};
 use mklight_trace::SequentialTracer;
@@ -90,6 +90,7 @@ pub fn footprint_overlay_job(
     ctx: &JobContext,
 ) -> MkResult<FootprintOverlay> {
     let timer = RunTimer::start();
+    crate::spot::validate_sampling(s.rings)?;
     let tracer = default_fields(t, &s.fields)?;
     let t = tracer.as_ref();
     let fields = s.fields.resolve(t.fields().len())?;
@@ -165,7 +166,14 @@ pub fn footprint_overlay_job(
         sets,
         points,
         outlines,
-        run_info: run_info(timer, t, "footprint", s, None, Vec::new()),
+        run_info: run_info(
+            timer,
+            t,
+            "footprint_overlay",
+            s,
+            seed_of(s.pattern, s.seed),
+            Vec::new(),
+        ),
     })
 }
 #[cfg(test)]

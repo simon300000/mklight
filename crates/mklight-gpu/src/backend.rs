@@ -1,19 +1,26 @@
 //! `ComputeBackend`: the only GPU interface solvers see (ARCHITECTURE,
 //! "Platform backends").
 //!
-//! The interface is deliberately small and data-oriented:
+//! The interface is data-oriented:
 //!
-//! 1. `upload_systems` copies one or more [`PackedSystem`]s to the device and
-//!    returns a [`SystemHandle`] (systems are immutable on the device, like the
-//!    snapshots they come from).
-//! 2. `submit` takes a [`Job`]: a batched, backend-neutral description of work
-//!    over host SoA arrays. It returns a [`Pending`] immediately. The backend
-//!    splits large jobs into command buffers (or launches), checks the job's
+//! 1. `upload_systems` (or `upload_systems_cached`) copies one or more
+//!    [`PackedSystem`]s to the device and returns a [`SystemHandle`] (systems
+//!    are immutable on the device, like the snapshots they come from).
+//! 2. `submit_plan` takes a [`ResidentPlan`](crate::resident::ResidentPlan):
+//!    ordered operations over buffers that stay on the device, filled with
+//!    `fill_buffer` and read in place with `read_view`. The solvers run
+//!    through plans.
+//! 3. `submit` takes a [`Job`]: a batched, backend-neutral description of work
+//!    over host SoA arrays (the numerics self-tests and the host-array
+//!    trace).
+//! 4. Both return a [`Pending`] immediately. The backend splits large work
+//!    into command buffers (or launches), checks the submission's
 //!    `CancelToken` between them and reports progress through the
 //!    `JobContext`.
-//! 3. Each result carries [`JobStats`] (device time, launches), and the
-//!    backend describes itself with [`DeviceInfo`] and a
-//!    [`PrecisionDescriptor`], which go into `RunInfo` for reproducibility.
+//! 5. Each result carries its statistics ([`JobStats`], or
+//!    [`PlanStats`](crate::resident::PlanStats)), and the backend describes
+//!    itself with [`DeviceInfo`] and a [`PrecisionDescriptor`], which go into
+//!    `RunInfo` for reproducibility.
 //!
 //! A backend that cannot run a job kind reports `supports(kind) == false` and
 //! returns `MkError::Unsupported`; the engine then uses the CPU reference
@@ -26,6 +33,11 @@ use mklight_core::{JobContext, MkResult};
 use serde::{Deserialize, Serialize};
 
 use crate::batch::{TraceRequest, TraceResult};
+use crate::consts::{
+    MKL_DFOP_ADD, MKL_DFOP_ADD_F32, MKL_DFOP_DIV, MKL_DFOP_FAST_TWO_SUM, MKL_DFOP_HYPOT2,
+    MKL_DFOP_MUL, MKL_DFOP_MUL_F32, MKL_DFOP_SQRT, MKL_DFOP_TWO_PROD, MKL_DFOP_TWO_SUM,
+    MKL_REDUCE_DF, MKL_REDUCE_KAHAN, MKL_REDUCE_PLAIN,
+};
 use crate::df::Df32;
 use crate::fenv::FpEnv;
 use crate::layout::PackedSystem;
@@ -210,16 +222,16 @@ pub fn next_backend_instance() -> u64 {
 #[serde(rename_all = "snake_case")]
 #[repr(u32)]
 pub enum DfOp {
-    TwoSum = 0,
-    FastTwoSum = 1,
-    TwoProd = 2,
-    Add = 3,
-    Mul = 4,
-    Div = 5,
-    Sqrt = 6,
-    AddF32 = 7,
-    MulF32 = 8,
-    Hypot2 = 9,
+    TwoSum = MKL_DFOP_TWO_SUM,
+    FastTwoSum = MKL_DFOP_FAST_TWO_SUM,
+    TwoProd = MKL_DFOP_TWO_PROD,
+    Add = MKL_DFOP_ADD,
+    Mul = MKL_DFOP_MUL,
+    Div = MKL_DFOP_DIV,
+    Sqrt = MKL_DFOP_SQRT,
+    AddF32 = MKL_DFOP_ADD_F32,
+    MulF32 = MKL_DFOP_MUL_F32,
+    Hypot2 = MKL_DFOP_HYPOT2,
 }
 
 impl DfOp {
@@ -269,11 +281,11 @@ impl DfOp {
 #[repr(u32)]
 pub enum ReduceMode {
     /// Plain f32 (diagnostics/comparison only).
-    Plain = 0,
+    Plain = MKL_REDUCE_PLAIN,
     /// Per-thread Neumaier f32, combined in double-float.
-    Kahan = 1,
+    Kahan = MKL_REDUCE_KAHAN,
     /// Double-float throughout.
-    DoubleFloat = 2,
+    DoubleFloat = MKL_REDUCE_DF,
 }
 
 /// A unit of backend work. Inputs are host arrays; outputs come back in
@@ -512,7 +524,7 @@ pub trait ComputeBackend: Send + Sync {
 }
 
 /// Outcome of [`ComputeBackend::prepare_kernels`].
-#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct KernelPreparation {
     /// Kernels (pipelines) prepared.
     pub kernels: usize,
@@ -520,4 +532,8 @@ pub struct KernelPreparation {
     pub from_cache: usize,
     /// Wall time, seconds.
     pub seconds: f64,
+    /// Why the saved cache could not be loaded or written, if it could not:
+    /// the kernels are ready, but a later process compiles them again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub warning: Option<String>,
 }

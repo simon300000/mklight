@@ -42,9 +42,8 @@ impl ResidentPupil {
         let value = shifts
             .iter()
             .enumerate()
-            .map(|(i, z)| {
+            .map(|(i, _)| {
                 let mut p = self.clone();
-                p.max_phase_step = steps[i] as f64;
                 p.opd = r.outputs[0].view();
                 p.opd.offset = i * self.n * self.n;
                 p.opd.desc.shape = vec![self.n, self.n];
@@ -55,45 +54,10 @@ impl ResidentPupil {
                         max_step_waves: steps[i] as f64,
                     });
                 }
-                p.input_hash = format!("{}:focus:{z}", self.input_hash);
                 p
             })
             .collect();
         add_step_warning(&mut r.run_info.warnings, steps);
-        Ok(WaveResult {
-            value,
-            run_info: r.run_info,
-            stats: r.stats,
-        })
-    }
-    pub fn phase_step(
-        &self,
-        b: &dyn ComputeBackend,
-        snapshot: Snapshot,
-        ctx: &JobContext,
-    ) -> MkResult<WaveResult<f64>> {
-        let zeros = b.fill_buffer(
-            BufferDesc::new(ElementType::F32, [3, self.n * self.n]),
-            &mut |mut a| {
-                a.as_mut_slice::<f32>()?.fill(0.);
-                Ok(())
-            },
-        )?;
-        let mut p = ResidentPlan::new(snapshot);
-        let v = self.import(&mut p);
-        let d = p.import(zeros.view());
-        let output = p.scratch(BufferDesc::new(ElementType::DoubleFloat, [10]));
-        p.operations.push(ResidentOp::Wave(w::Request::Diagnostics(
-            w::diagnostics::Diagnostics {
-                coverage: v.coverage,
-                opd: v.opd,
-                extrapolation: p.view(d)?,
-                output,
-            },
-        )));
-        p.outputs = vec![output];
-        let r = b.submit_plan(p, ctx)?.wait()?;
-        let value = b.read_view(r.outputs[0].view())?.as_slice::<Df32>()?[2].to_f64();
         Ok(WaveResult {
             value,
             run_info: r.run_info,
@@ -170,6 +134,8 @@ pub fn focus_otf(
         )?;
         let mut previous: Option<BufferHandle> = None;
         let mut info = None;
+        // Largest phase step over every pupil and plane: one warning.
+        let mut step = 0f32;
         let chunks = pupils.len().div_ceil(15);
         for (chunk, group) in pupils.chunks(15).enumerate() {
             let mut p = ResidentPlan::new(snapshot.clone());
@@ -230,11 +196,17 @@ pub fn focus_otf(
                 .wait()?;
             accumulate(&mut stats, &r.stats);
             for h in &r.outputs[1..] {
-                add_step_warning(&mut warnings, b.read_view(h.view())?.as_slice::<f32>()?);
+                let steps = b.read_view(h.view())?;
+                step = steps
+                    .as_slice::<f32>()?
+                    .iter()
+                    .copied()
+                    .fold(step, f32::max);
             }
             previous = Some(r.outputs[0].clone());
             info = Some(r.run_info);
         }
+        add_step_warning(&mut warnings, &[step]);
         let mut value = Vec::with_capacity(focus.len() * frequencies.len());
         append_values(&mut value, b, &previous.unwrap(), ctx)?;
         let mut info = info.unwrap();

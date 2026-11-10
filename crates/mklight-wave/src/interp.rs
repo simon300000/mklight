@@ -565,3 +565,20 @@ impl<'a> NearestPoint<'a> {
         best
     }
 }
+
+/// Keys cubic convolution weights (a = −½) for the four samples around a
+/// point at fraction `t` past the second one.
+pub(crate) fn keys_weights(t: f64) -> [f64; 4] {
+    let a = -0.5;
+    let k = |x: f64| {
+        let x = x.abs();
+        if x <= 1.0 {
+            ((a + 2.0) * x - (a + 3.0)) * x * x + 1.0
+        } else if x < 2.0 {
+            ((a * x - 5.0 * a) * x + 8.0 * a) * x - 4.0 * a
+        } else {
+            0.0
+        }
+    };
+    [k(1.0 + t), k(t), k(1.0 - t), k(2.0 - t)]
+}

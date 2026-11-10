@@ -1,4 +1,4 @@
-//! Numeric upload boundary for P1: small first-order field metadata, and chief
+//! Numeric upload boundary of aiming: small first-order field metadata, and chief
 //! rows converted from the reference tracer's f64 field preparation (serial,
 //! per field, and therefore host work). No pupil ray is traced here.
 use super::*;

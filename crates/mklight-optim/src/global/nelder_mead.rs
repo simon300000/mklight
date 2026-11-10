@@ -66,7 +66,7 @@ pub fn nelder_mead<P: Problem + ?Sized>(
     mon: &Monitor,
 ) -> MkResult<OptimResult> {
     let vars = p.variables();
-    require_domain(vars, Some(x0))?;
+    require_domain(p, Some(x0))?;
     let n = vars.len();
     let nf = n as f64;
     let (alpha, beta, gamma, delta) = if s.adaptive && n > 1 {
@@ -288,5 +288,6 @@ pub fn nelder_mead<P: Problem + ?Sized>(
     }
     let bi = (0..=n).min_by(|&a, &b| ev.cmp(&f[a], &f[b])).unwrap_or(0);
     let (bx, bf) = (sim[bi].clone(), f[bi]);
+    let termination = ev.target_or(termination, &bf, s.target_merit);
     ev.finish((&bx, bf), termination, it)
 }

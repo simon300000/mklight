@@ -593,14 +593,14 @@ pub(super) fn execute<E: FpEnv>(
         let nw = set.wavelengths as usize;
         let rr = set.roulette * set.weight;
         let ceiling = set.ceiling * set.weight;
-        let prims = rows::<Primitive>(x, &r.primitives);
-        let nodes = rows::<Node>(x, &r.nodes);
-        let materials = rows::<Material>(x, &r.materials);
-        let passes = rows::<Pass>(x, &r.passes);
-        let media = rows::<Medium>(x, &r.media);
-        let table = rows::<D>(x, &r.tis);
-        let seq = rows::<u32>(x, &r.sequence);
-        let layers = rows::<crate::radiometry::CoatingLayer>(x, &r.layers);
+        let prims = x.rows::<Primitive>(&r.primitives);
+        let nodes = x.rows::<Node>(&r.nodes);
+        let materials = x.rows::<Material>(&r.materials);
+        let passes = x.rows::<Pass>(&r.passes);
+        let media = x.rows::<Medium>(&r.media);
+        let table = x.rows::<D>(&r.tis);
+        let seq = x.rows::<u32>(&r.sequence);
+        let layers = x.rows::<crate::radiometry::CoatingLayer>(&r.layers);
         // The kernel's stop rules (`Transport::stack`), checked before a
         // state is popped so the stack stays consistent.
         let reserve = if v(set.ceiling) == f32::MAX {
@@ -640,7 +640,7 @@ pub(super) fn execute<E: FpEnv>(
             }
             s.events += 1;
             l.events += 1;
-            let hit = kernel::closest_shapes::<E>(prims, nodes, rows(x, &r.shapes), s.ray);
+            let hit = kernel::closest_shapes::<E>(prims, nodes, x.rows(&r.shapes), s.ray);
             let med = media[s.medium as usize * nw + wl];
             if hit.primitive == u32::MAX {
                 book(&mut l, if med.ambient != 0 { 12 } else { 13 }, w);

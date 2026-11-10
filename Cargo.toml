@@ -21,6 +21,7 @@ version = "0.1.0"
 edition = "2024"
 license = "Proprietary"
 rust-version = "1.90"
+publish = false
 
 [workspace.dependencies]
 mklight-core = { path = "crates/mklight-core" }

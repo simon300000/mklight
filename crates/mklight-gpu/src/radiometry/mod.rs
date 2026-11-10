@@ -1,6 +1,6 @@
 //! Resident coating and polarisation service. Direct angle evaluation avoids
 //! interpolation at critical angles; immutable material records can be reused
-//! across plans. Engine routing and optical qualification remain with P11.
+//! across plans. Routing and optical qualification belong to the engine.
 mod jobs;
 mod plan;
 mod records;
@@ -30,12 +30,6 @@ pub struct CoatingRequest {
 }
 #[derive(Clone, Debug)]
 pub enum Request {
-    PupilChannels {
-        values: PlanView,
-        vector: bool,
-        output: BufferId,
-        status: BufferId,
-    },
     Coating(CoatingRequest),
     Polarization(Box<PolarizationRequest>),
     Channels {
@@ -44,8 +38,9 @@ pub enum Request {
         output: BufferId,
     },
 }
-/// Consume P1 all-surface hi/lo records without a host readback. One system
-/// per request; wavelength IDs are the P1 [2,N] ray-index plane.
+/// Consume a resident trace's all-surface hi/lo records without a host
+/// readback. One system per request; wavelength IDs are the trace's [2,N]
+/// ray-index plane.
 #[derive(Clone, Debug)]
 pub struct PolarizationRequest {
     /// Scalar transmission skips PRT/properties; only power[0..2] are populated.
@@ -62,41 +57,11 @@ pub struct PolarizationRequest {
     pub tile: usize,
 }
 
-pub fn record_desc<T>(count: usize) -> BufferDesc {
-    BufferDesc::new(ElementType::U32, [count, std::mem::size_of::<T>() / 4])
-}
 fn check<T>(v: &PlanView, p: &ResidentPlan) -> MkResult<usize> {
-    let base = match p.buffers.get(v.buffer.0) {
-        Some(PlanBuffer::Import(input)) => input.offset,
-        _ => 0,
-    };
-    let n = v.desc.shape.first().copied().unwrap_or(0);
-    if v.desc != record_desc::<T>(n)
-        || v.stride != 1
-        // MSL records hold float2 members: 8-byte (even word) alignment.
-        || !(base + v.offset).is_multiple_of(2)
-        || v.desc.len()? > u32::MAX as usize
-    {
-        return Err(bad("radiometry record layout"));
-    }
-    Ok(n)
+    check_records::<T>(v, p, "radiometry")
 }
 pub fn validate(r: &Request, p: &ResidentPlan) -> MkResult<()> {
     match r {
-        Request::PupilChannels {
-            values,
-            vector,
-            output,
-            status,
-        } => {
-            let n = check::<PolarizationValue>(values, p)?;
-            if p.desc(*output)?
-                != &BufferDesc::new(ElementType::Complex32, [if *vector { 6 } else { 4 }, n])
-                || p.desc(*status)? != &BufferDesc::new(ElementType::U32, [n])
-            {
-                return Err(bad("complex pupil channels"));
-            }
-        }
         Request::Coating(r) => {
             check::<CoatingSpec>(&r.specs, p)?;
             check::<CoatingLayer>(&r.layers, p)?;
@@ -123,7 +88,7 @@ pub fn validate(r: &Request, p: &ResidentPlan) -> MkResult<()> {
                 || r.records.stride != 1
                 || r.record_low.stride != 1
             {
-                return Err(bad("polarization P1 records"));
+                return Err(bad("polarization trace records"));
             }
             let n = shape[1];
             if r.indices.desc != BufferDesc::new(ElementType::U32, [2, n])
@@ -165,16 +130,6 @@ pub fn validate(r: &Request, p: &ResidentPlan) -> MkResult<()> {
 }
 pub fn accesses(r: &Request) -> Access {
     match r {
-        Request::PupilChannels {
-            values,
-            output,
-            status,
-            ..
-        } => Access {
-            reads: vec![values.clone()],
-            writes: vec![*output, *status],
-            systems: vec![],
-        },
         Request::Coating(r) => Access {
             reads: vec![r.specs.clone(), r.layers.clone(), r.queries.clone()],
             writes: vec![r.output],
@@ -203,35 +158,8 @@ pub fn accesses(r: &Request) -> Access {
         },
     }
 }
-fn rows<'a, T: bytemuck::Pod>(x: &'a cpu::Execution, v: &PlanView) -> &'a [T] {
-    bytemuck::cast_slice(&x.words(v.buffer)[v.offset..v.offset + v.desc.len().unwrap()])
-}
 pub fn execute(r: &Request, x: &mut cpu::Execution, ctl: &JobControl) -> MkResult<()> {
     match r {
-        Request::PupilChannels {
-            values,
-            vector,
-            output,
-            status,
-        } => {
-            let n = values.desc.shape[0];
-            for i in 0..n {
-                if i % CPU_CHECK == 0 {
-                    ctl.check()?;
-                }
-                let v = rows::<PolarizationValue>(x, values)[i];
-                let channels = if *vector { &v.fields[..] } else { &v.jones[..] };
-                let dest: &mut [[f32; 2]] = bytemuck::cast_slice_mut(x.words_mut(*output));
-                for (c, z) in channels.as_chunks::<2>().0.iter().enumerate() {
-                    dest[c * n + i] = if v.status == 0 {
-                        [z[0].hi + z[0].lo, z[1].hi + z[1].lo]
-                    } else {
-                        [0.; 2]
-                    };
-                }
-                x.words_mut(*status)[i] = v.status;
-            }
-        }
         Request::Coating(r) => {
             let n = r.queries.desc.shape[0];
             for i in 0..n {
@@ -239,9 +167,9 @@ pub fn execute(r: &Request, x: &mut cpu::Execution, ctl: &JobControl) -> MkResul
                     ctl.check()?;
                     ctl.report(i as f64 / n as f64, "coating");
                 }
-                let q = rows::<CoatingQuery>(x, &r.queries)[i];
-                let specs = rows::<CoatingSpec>(x, &r.specs);
-                let layers = rows::<CoatingLayer>(x, &r.layers);
+                let q = x.rows::<CoatingQuery>(&r.queries)[i];
+                let specs = x.rows::<CoatingSpec>(&r.specs);
+                let layers = x.rows::<CoatingLayer>(&r.layers);
                 let out = if let Some(s) = specs.get(q.coating as usize) {
                     if s.count <= crate::consts::MKL_RAD_MAX_LAYERS
                         && (s.offset as usize + s.count as usize) <= layers.len()
@@ -290,8 +218,8 @@ pub fn execute(r: &Request, x: &mut cpu::Execution, ctl: &JobControl) -> MkResul
                 } else {
                     transport::evaluate(
                         r.scalar,
-                        rows(x, &r.surfaces),
-                        rows(x, &r.layers),
+                        x.rows(&r.surfaces),
+                        x.rows(&r.layers),
                         &bytemuck::cast_slice::<u32, f32>(x.words(r.records.buffer))
                             [r.records.offset..],
                         &bytemuck::cast_slice::<u32, f32>(x.words(r.record_low.buffer))
@@ -319,7 +247,7 @@ pub fn execute(r: &Request, x: &mut cpu::Execution, ctl: &JobControl) -> MkResul
                 if i % CPU_CHECK == 0 {
                     ctl.check()?;
                 }
-                let v = rows::<PolarizationValue>(x, values)[i];
+                let v = x.rows::<PolarizationValue>(values)[i];
                 let status = x.words(trace_status.buffer)[trace_status.offset + i];
                 let channels = summary_channels(v, status);
                 let dest: &mut [crate::Df32] = bytemuck::cast_slice_mut(x.words_mut(*output));

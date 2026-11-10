@@ -7,7 +7,7 @@
 //! automatic frequencies and focus ranges) with the reference's own rules;
 //! the device runs the transforms. Host preparation and device transforms
 //! overlap ([`schedule`]): every item's host stage starts at once, and each
-//! prepared item goes to the first free of [`concurrency`] device workers.
+//! prepared item goes to the first free of [`CONCURRENT`] device workers.
 use super::*;
 use crate::traced::{PupilLattice, PupilSettings};
 use mklight_core::memo::{Memo, NodeKey};
@@ -29,12 +29,10 @@ pub struct HostPupil {
 
 /// A host pupil written straight into shared allocations (amplitude and
 /// coverage f32, OPD double-float), as [`ResidentPupil::from_pupil`] but
-/// identified by `identity` instead of a content digest, and converted in
-/// parallel.
+/// converted in parallel.
 pub(crate) fn upload_pupil(
     b: &dyn ComputeBackend,
     p: &PupilFunction,
-    identity: String,
     ctx: &JobContext,
 ) -> MkResult<ResidentPupil> {
     ctx.check()?;
@@ -69,11 +67,13 @@ pub(crate) fn upload_pupil(
             Ok(())
         },
     )?;
+    let (covered_samples, covered) = p
+        .coverage()
+        .iter()
+        .fold((0, 0.), |(k, sum), &c| (k + usize::from(c > 0.), sum + c));
     Ok(ResidentPupil {
-        input_hash: identity,
-        covered_samples: p.coverage().iter().filter(|&&c| c > 0.).count(),
-        clear_area: p.coverage().iter().sum::<f64>() * p.spacing().powi(2),
-        max_phase_step: p.max_phase_step(),
+        covered_samples,
+        clear_area: covered * p.spacing().powi(2),
         amplitude,
         coverage,
         opd: opd.view(),
@@ -83,19 +83,6 @@ pub(crate) fn upload_pupil(
         image_offset_mm: p.image_offset_mm(),
         warnings: p.sampling_warnings(),
     })
-}
-
-fn identity(key: &NodeKey, n: usize, supersample: usize) -> String {
-    let mut s: String = key.iter().map(|b| format!("{b:02x}")).collect();
-    s += &format!(":{n}:{supersample}");
-    s
-}
-
-/// A pupil traced on the host as a resident traced pupil.
-pub(crate) struct Placed {
-    pub value: ResidentTracedPupil,
-    pub stats: PlanStats,
-    pub warnings: Vec<String>,
 }
 
 /// The resident pupil of a host `lattice` (key `key`) at grid `n`,
@@ -111,12 +98,14 @@ fn resident_at(
     memo: Option<&dyn Memo>,
     ctx: &JobContext,
 ) -> MkResult<(ResidentPupil, Arc<PupilFunction>, Vec<String>)> {
-    let id = identity(key, n, supersample);
     let r = crate::shared::resampled(lattice, key, n, supersample, memo, ctx)?;
     let pupil = Arc::new(r.0.clone());
-    let resident = upload_pupil(b, &pupil, id, ctx)?;
+    let resident = upload_pupil(b, &pupil, ctx)?;
     Ok((resident, pupil, r.1.clone()))
 }
+
+/// A pupil traced on the host as a resident traced pupil, and its warnings.
+pub(crate) type Placed = (ResidentTracedPupil, Vec<String>);
 
 /// Place a host-traced lattice: its pupil at the lattice's grid
 /// ([`PupilLattice::grid_for`]) is resampled on the host and written into
@@ -142,24 +131,21 @@ pub(crate) fn place(
         let sin_e = info.sin_max * (info.clear_area / std::f64::consts::PI).sqrt();
         info.effective_f_number = 0.5 / (info.image_index * sin_e);
     }
-    Ok(Placed {
-        value: ResidentTracedPupil {
-            pupil,
-            info,
-            nodes: None,
-            valid: None,
-            mask: lattice.mask.clone(),
-            entrance_rim: lattice.entrance_rim.clone(),
+    let placed = ResidentTracedPupil {
+        pupil,
+        info,
+        nodes: None,
+        valid: None,
+        mask: lattice.mask.clone(),
+        entrance_rim: lattice.entrance_rim.clone(),
+        key,
+        host: Some(HostPupil {
+            lattice,
             key,
-            host: Some(HostPupil {
-                lattice,
-                key,
-                pupil: Some(host),
-            }),
-        },
-        stats: PlanStats::default(),
-        warnings,
-    })
+            pupil: Some(host),
+        }),
+    };
+    Ok((placed, warnings))
 }
 
 impl ResidentTracedPupil {
@@ -207,7 +193,7 @@ impl ResidentTracedPupil {
 /// `host(i, item)` then `device(i, prepared)` for every item, results in
 /// item order. Every item's host stage starts at once on the host's thread
 /// pool (each parallel inside), and each prepared item is queued as soon as
-/// it is ready; up to [`concurrency`] device workers take items from the
+/// it is ready; up to [`CONCURRENT`] device workers take items from the
 /// front of the queue, so the device transforms item k while the host
 /// still prepares others.
 pub(crate) fn schedule<T: Send, P: Send, R: Send>(
@@ -216,7 +202,7 @@ pub(crate) fn schedule<T: Send, P: Send, R: Send>(
     device: impl Fn(usize, P) -> MkResult<R> + Sync,
 ) -> Vec<MkResult<R>> {
     let count = items.len();
-    let devices = concurrency().min(count);
+    let devices = CONCURRENT.min(count);
     let slots: Vec<Mutex<Option<MkResult<R>>>> = (0..count).map(|_| Mutex::new(None)).collect();
     // Prepared items and whether every host stage has finished.
     let queue = (
@@ -240,10 +226,20 @@ pub(crate) fn schedule<T: Send, P: Send, R: Send>(
         let r = p.and_then(|p| device(i, p));
         *slots[i].lock().unwrap_or_else(|e| e.into_inner()) = Some(r);
     };
+    // Marks the host stages finished when dropped, so the device workers
+    // leave the queue even when a host stage panics.
+    struct Finish<'q, P>(&'q (Mutex<(VecDeque<P>, bool)>, Condvar));
+    impl<P> Drop for Finish<'_, P> {
+        fn drop(&mut self) {
+            self.0.0.lock().unwrap_or_else(|e| e.into_inner()).1 = true;
+            self.0.1.notify_all();
+        }
+    }
     std::thread::scope(|s| {
         for _ in 0..devices {
             s.spawn(worker);
         }
+        let _finish = Finish(&queue);
         items.into_par_iter().enumerate().for_each(|(i, t)| {
             let p = host(i, t);
             queue
@@ -254,8 +250,6 @@ pub(crate) fn schedule<T: Send, P: Send, R: Send>(
                 .push_back((i, p));
             queue.1.notify_all();
         });
-        queue.0.lock().unwrap_or_else(|e| e.into_inner()).1 = true;
-        queue.1.notify_all();
     });
     slots
         .into_iter()
@@ -300,5 +294,22 @@ mod tests {
                 assert_eq!(*r.as_ref().unwrap(), 10 * i + 1);
             }
         }
+    }
+
+    /// A panicking host stage unwinds out of `schedule`; the device workers
+    /// do not wait for items that never come.
+    #[test]
+    fn schedule_propagates_a_host_panic() {
+        let outcome = std::panic::catch_unwind(|| {
+            schedule(
+                (0..9).collect::<Vec<usize>>(),
+                |_, t| {
+                    assert_ne!(t, 4, "host stage");
+                    Ok(t)
+                },
+                |_, p: usize| Ok(p),
+            )
+        });
+        assert!(outcome.is_err());
     }
 }

@@ -481,17 +481,6 @@ public struct ToleranceRow: Identifiable, Hashable, Sendable {
         return (plus ? "+" : "−") + Fmt.short(plus ? self.plus : minus) + u
     }
 
-    /// A perturbation in parameter units written in the row's unit, when it
-    /// is a plain scale of it (mm, degrees ↔ arc minutes, fringes, Δn,
-    /// ΔV_d); `nil` for radii and % (they depend on the design).
-    public func displayValue(ofParameterDelta d: Double) -> Double? {
-        switch unit {
-        case .arcmin: d * 60
-        case .degrees, .mm, .fringes, .index, .abbe, .native: d
-        case .radiusMM, .percent: nil
-        }
-    }
-
     // MARK: Saved form
 
     public var json: JSONValue {
@@ -513,7 +502,7 @@ public struct ToleranceRow: Identifiable, Hashable, Sendable {
         plus = json["plus"]?.nf ?? 0
         unit = json["unit"]?.string.flatMap(ToleranceUnit.init(rawValue:)).flatMap { k.units.contains($0) ? $0 : nil } ?? k.units[0]
         distribution = ToleranceDistribution(json: json["distribution"])
-        param = json["param"].flatMap { try? MKLightJSON.decode(ParamPath.self, from: MKLightJSON.encode($0)) }
+        param = json["param"].flatMap { try? $0.decode(ParamPath.self) }
         if k.isElement {
             last = json["last"]?.int.flatMap { $0 >= 0 ? SurfaceID(UInt64($0)) : nil }
             pivot = json["pivot"]?.int.flatMap { $0 >= 0 ? SurfaceID(UInt64($0)) : nil }
@@ -525,7 +514,7 @@ public struct ToleranceRow: Identifiable, Hashable, Sendable {
     /// the app knows in their natural unit (curvature as ΔR), others as
     /// parameters in their own unit.
     public init?(operand o: JSONValue, system: OpticalSystem) {
-        guard let p = o["param"].flatMap({ try? MKLightJSON.decode(ParamPath.self, from: MKLightJSON.encode($0)) }), let id = p.surface else { return nil }
+        guard let p = o["param"].flatMap({ try? $0.decode(ParamPath.self) }), let id = p.surface else { return nil }
         let m = o["minus"]?.nf ?? 0, pl = o["plus"]?.nf ?? 0
         let d = ToleranceDistribution(json: o["distribution"])
         switch p {
@@ -796,7 +785,7 @@ public struct ToleranceCompensator: Identifiable, Hashable, Sendable {
     }
 
     public init?(json: JSONValue) {
-        guard let p = json["param"].flatMap({ try? MKLightJSON.decode(ParamPath.self, from: MKLightJSON.encode($0)) }) else { return nil }
+        guard let p = json["param"].flatMap({ try? $0.decode(ParamPath.self) }) else { return nil }
         param = p
         range = json["range"]?.nf.flatMap { $0.isFinite ? $0 : nil }
     }
@@ -1018,8 +1007,7 @@ public struct ToleranceSettings: Hashable, Sendable {
     public var percentiles = ToleranceSettings.defaultPercentiles
     /// Trials whose perturbations and compensators are kept for the list.
     public var recordTrials = 200
-    /// Whether the set was ever generated or edited (a new design starts
-    /// from the generator's default set).
+    /// Whether the set has no tolerances and no compensators.
     public var isEmpty: Bool { rows.isEmpty && compensators.isEmpty }
 
     public init() {}

@@ -1216,6 +1216,11 @@ fn timeout_cancels_the_job_and_reports_partial_status() {
         code(&mklight(["run", s(&p), "rng_stream", "--timeout", "-1"])),
         1
     );
+    // A timeout beyond what a duration can hold never expires.
+    assert_eq!(
+        code(&mklight(["run", s(&p), "rng_stream", "--timeout", "1e30"])),
+        0
+    );
 }
 
 #[cfg(unix)]

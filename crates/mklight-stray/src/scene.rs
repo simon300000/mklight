@@ -47,9 +47,12 @@
 //! each side. Designed (sequential) light arrives on the Minus side of a
 //! surface after an even number of mirrors and on the Plus side after an odd
 //! number (CONVENTIONS §2: light travels toward −z after an odd number of
-//! mirrors). The tracer reads the incident medium from the side a ray
-//! arrives on, never from state carried by the ray, so a ray that slips
-//! through a seam cannot keep the wrong index.
+//! mirrors). At an interface the tracer reads the refractive indices from
+//! the side a ray arrives on, never from state carried by the ray, so a ray
+//! that slips through a seam cannot keep the wrong index. The medium id a
+//! ray carries (set at each interface from the side it leaves on) gives
+//! only the bulk absorption along its next segment and tells whether a ray
+//! that leaves the scene was inside a solid.
 //!
 //! # Semi-diameters
 //!
@@ -373,18 +376,10 @@ impl Scene {
     pub fn num_wavelengths(&self) -> usize {
         self.wavelengths_um.len()
     }
-    /// Global bounding box of all geometry.
-    pub fn bounds(&self) -> Aabb {
-        self.bounds
-    }
     /// Centre and radius of a sphere that contains all geometry.
     pub fn bounding_sphere(&self) -> (Vec3, f64) {
         let c = self.bounds.centroid();
         (c, 0.5 * self.bounds.extent().norm())
-    }
-    /// Position of `surface` in `sequence`, if it is an interface or the detector.
-    pub fn sequence_position(&self, surface: usize) -> Option<usize> {
-        self.sequence.iter().position(|&s| s == surface)
     }
     /// BLAKE3 hash (hex) of everything the tracer reads: media, primitives,
     /// behaviours, detector and sequence. It changes with any edit made to

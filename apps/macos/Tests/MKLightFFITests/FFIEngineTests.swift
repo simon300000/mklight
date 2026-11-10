@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 import Testing
 
 @testable import MKLightEngine
@@ -50,7 +51,8 @@ private func paraxialEFL(summary: GenericResult, wavelength w: Int) throws -> (e
     @Test func libraryAndAnalysisList() async throws {
         let e = try engine()
         #expect(!e.info.isMock && !e.info.version.isEmpty)
-        #expect(e.info.backends.contains("cpu_reference"))
+        let backends = try await e.backends()
+        #expect(backends.array?.contains { $0["id"] == .string("cpu_reference") && $0["available"] == .bool(true) } == true)
         let names = await e.analysisDescriptors().map(\.name)
         for n in ["validate", "system_summary", "glass_info", "rng_stream"] { #expect(names.contains(n)) }
         #expect(names.contains(AnalysisKind.firstOrder.engineName))
@@ -100,22 +102,16 @@ private func paraxialEFL(summary: GenericResult, wavelength w: Int) throws -> (e
         let (efl, imageHeight) = try paraxialEFL(summary: summary, wavelength: achromat.wavelengths.primary)
         #expect(abs(efl - 100) < 0.01, "EFL \(efl)")
         #expect(abs(imageHeight) < 1e-6, "the sample's image is at the paraxial focus (y = \(imageHeight))")
-        // The engine's own first-order analysis, once it is available, must
-        // agree: it has to deliver a typed result with a numeric EFL.
-        let descriptors = await e.analysisDescriptors()
+        // The engine's own first-order analysis must agree: it has to
+        // deliver a typed result with a numeric EFL.
         let name = AnalysisKind.firstOrder.engineName
-        if descriptors.first(where: { $0.name == name })?.available == true {
-            let fo = try await e.submit(.firstOrder(FirstOrderSettings()), on: snap).result()
-            guard case .firstOrder(let r) = fo.result else {
-                Issue.record("\(name) did not decode as first-order data: \(fo.result)")
-                return
-            }
-            let engineEFL = try #require(r["efl"], "\(name) reports no 'efl' entry: \(r.entries.map(\.key))")
-            #expect(abs(engineEFL - efl) < 1e-6 * efl, "engine EFL \(engineEFL), y-nu trace \(efl)")
-        } else {
-            let job = e.submit(.firstOrder(FirstOrderSettings()), on: snap)
-            await #expect(throws: EngineError.self) { try await job.result() }
+        let fo = try await e.submit(.firstOrder(FirstOrderSettings()), on: snap).result()
+        guard case .firstOrder(let r) = fo.result else {
+            Issue.record("\(name) did not decode as first-order data: \(fo.result)")
+            return
         }
+        let engineEFL = try #require(r["efl"], "\(name) reports no 'efl' entry: \(r.entries.map(\.key))")
+        #expect(abs(engineEFL - efl) < 1e-6 * efl, "engine EFL \(engineEFL), y-nu trace \(efl)")
     }
 
     /// Submitting never blocks the caller (the main actor in the app):
@@ -154,10 +150,10 @@ private func paraxialEFL(summary: GenericResult, wavelength w: Int) throws -> (e
     @Test func analysisReportsProgressAndIsReproducible() async throws {
         let e = try engine()
         let snap = try await e.openSnapshot(SampleSystems.singlet())
-        func run(seed: UInt64) async throws -> (AnalysisOutput, [JobProgress]) {
-            var r = EngineAnalysisRequest(
-                analysis: "rng_stream", settings: ["count": .integer(4000), "chunk": .integer(500), "delay_ms": .integer(5)])
-            r.execution.seed = seed
+        func run(seed: Int64) async throws -> (AnalysisOutput, [JobProgress]) {
+            let r = EngineAnalysisRequest(
+                analysis: "rng_stream",
+                settings: ["count": .integer(4000), "chunk": .integer(500), "delay_ms": .integer(5), "seed": .integer(seed)])
             let job = e.submit(r, on: snap)
             var updates: [JobProgress] = []
             for await p in job.progress { updates.append(p) }
@@ -180,6 +176,25 @@ private func paraxialEFL(summary: GenericResult, wavelength w: Int) throws -> (e
         #expect(gb.buffer(named: "uniform") == u, "same seed, same stream")
         #expect(gc.buffer(named: "uniform") != u)
         #expect(a.isCurrent(for: snap, request: try #require(a.engineRequest)))
+    }
+
+    /// A request by name runs with exactly its settings: a seed it leaves
+    /// out is the engine's default (the one the settings form shows), not
+    /// one the binding adds, and a seed it sets is the one used.
+    @Test func seedComesFromTheSettingsOnly() async throws {
+        let e = try engine()
+        let snap = try await e.openSnapshot(SampleSystems.singlet())
+        let descriptor = try #require(await e.analysisDescriptors().first { $0.name == "rng_stream" })
+        let shown = try #require(descriptor.settingsFields.first { $0.name == "seed" }?.defaultValue)
+        var r = EngineAnalysisRequest(analysis: "rng_stream", settings: ["count": .integer(16)])
+        r.execution.seed = 99
+        let byDefault = try await e.submit(r, on: snap).result()
+        #expect(byDefault.runInfo.settings["seed"] == shown)
+        #expect(byDefault.runInfo.seed == shown.int.flatMap { UInt64(exactly: $0) })
+        r.settings["seed"] = .integer(5)
+        let explicit = try await e.submit(r, on: snap).result()
+        #expect(explicit.runInfo.settings["seed"] == .integer(5) && explicit.runInfo.seed == 5)
+        #expect(explicit.buffer(named: "uniform") != byDefault.buffer(named: "uniform"))
     }
 
     @Test func cancellingAJobStopsIt() async throws {
@@ -299,20 +314,12 @@ private func paraxialEFL(summary: GenericResult, wavelength w: Int) throws -> (e
         }
     }
 
-    @Test func typedSettingsFailFastAndUnavailableAnalysesExplainWhy() async throws {
+    @Test func typedSettingsFailFast() async throws {
         let e = try engine()
         let snap = try await e.openSnapshot(SampleSystems.singlet())
         var psf = PSFSettings()
         psf.field = 9
         await #expect(throws: EngineError.self) { try await e.submit(.psf(psf), on: snap).result() }
-        let layout = await e.analysisDescriptors().first { $0.name == "layout" }
-        if layout?.available == false {
-            do {
-                _ = try await e.submit(.layout(LayoutSettings()), on: snap).result()
-            } catch let EngineError.unsupported(why) {
-                #expect(why.contains("Layout"))
-            }
-        }
     }
 
     @Test func projectsRoundTripThroughEngineAndMirror() async throws {
@@ -421,6 +428,15 @@ private func paraxialEFL(summary: GenericResult, wavelength w: Int) throws -> (e
             }
             try await g.waitForAll()
         }
+    }
+
+    /// A preparation the engine refused to start reads as failed, with the
+    /// engine's message, rather than as not started.
+    @Test func aRefusedGPUPreparationReadsAsFailed() throws {
+        let e = try FFIEngine()
+        #expect(e.gpuPreparation() == .idle, "not started")
+        e.core.gpuPreparationError.withLock { $0 = "cache_dir is not valid UTF-8" }
+        #expect(e.gpuPreparation() == .failed(device: "", message: "cache_dir is not valid UTF-8"))
     }
 
     /// Engine and session handles are released when the last reference goes.

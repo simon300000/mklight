@@ -123,104 +123,93 @@ impl SourceSpec {
         Ok(s)
     }
 
-    /// Point source at `position` with intensity `intensity` (W/sr), emitting
-    /// into the cone that just covers a sphere of the first interface's
-    /// mechanical semi-diameter around its vertex.
-    pub fn point_toward_entrance(
-        scene: &Scene,
-        position: Vec3,
-        intensity: f64,
-    ) -> MkResult<SourceSpec> {
-        let (c, r) = entrance(scene)?;
-        let v = c - position;
-        let dist = v.norm();
-        let half = if dist > r {
-            (r / dist).asin().to_degrees()
-        } else {
-            180.0
-        };
-        let s = SourceSpec::Point {
-            position,
-            axis: v.normalized(),
-            half_angle_deg: half,
-            intensity,
-        };
-        s.validate()?;
-        Ok(s)
-    }
-
     pub fn validate(&self) -> MkResult<()> {
         let bad = |m: &str| Err(MkError::InvalidModel(format!("source: {m}")));
+        let finite = |v: Vec3| v.x.is_finite() && v.y.is_finite() && v.z.is_finite();
         match *self {
             SourceSpec::Collimated {
                 direction,
+                center,
                 radius,
                 power,
                 start_distance,
-                ..
             } => {
-                if !(direction.norm() > 0.0
+                if !(finite(direction)
+                    && finite(center)
+                    && direction.norm() > 0.0
                     && radius > 0.0
-                    && power >= 0.0
-                    && start_distance.is_finite())
-                {
-                    return bad("collimated source needs a direction, radius > 0 and power ≥ 0");
-                }
-            }
-            SourceSpec::CollimatedThrough {
-                direction,
-                normal,
-                radius,
-                start_distance,
-                power,
-                ..
-            } => {
-                let (d, n) = (direction.norm(), normal.norm());
-                if !(d > 0.0
-                    && n > 0.0
-                    && (direction.dot(normal) / (d * n)).abs() > 1e-9
-                    && radius > 0.0
+                    && radius.is_finite()
                     && power >= 0.0
                     && start_distance.is_finite())
                 {
                     return bad(
-                        "collimated beam needs a direction not parallel to the disk, radius > 0 and power ≥ 0",
+                        "collimated source needs a direction, a finite centre, radius and start distance, radius > 0 and power ≥ 0",
+                    );
+                }
+            }
+            SourceSpec::CollimatedThrough {
+                direction,
+                center,
+                normal,
+                radius,
+                start_distance,
+                power,
+            } => {
+                let (d, n) = (direction.norm(), normal.norm());
+                if !(finite(direction)
+                    && finite(center)
+                    && finite(normal)
+                    && d > 0.0
+                    && n > 0.0
+                    && (direction.dot(normal) / (d * n)).abs() > 1e-9
+                    && radius > 0.0
+                    && radius.is_finite()
+                    && power >= 0.0
+                    && start_distance.is_finite())
+                {
+                    return bad(
+                        "collimated beam needs a direction not parallel to the disk, a finite centre, radius and start distance, radius > 0 and power ≥ 0",
                     );
                 }
             }
             SourceSpec::Point {
+                position,
                 axis,
                 half_angle_deg,
                 intensity,
-                ..
             } => {
-                if !(axis.norm() > 0.0
+                if !(finite(position)
+                    && finite(axis)
+                    && axis.norm() > 0.0
                     && half_angle_deg > 0.0
                     && half_angle_deg <= 180.0
                     && intensity >= 0.0)
                 {
                     return bad(
-                        "point source needs an axis, 0 < half-angle ≤ 180° and intensity ≥ 0",
+                        "point source needs a finite position, an axis, 0 < half-angle ≤ 180° and intensity ≥ 0",
                     );
                 }
             }
             SourceSpec::LambertianDisk {
+                center,
                 normal,
                 radius,
                 inner_radius,
                 radiance,
                 max_angle_deg,
-                ..
             } => {
-                if !(normal.norm() > 0.0
+                if !(finite(center)
+                    && finite(normal)
+                    && normal.norm() > 0.0
                     && radius > inner_radius
+                    && radius.is_finite()
                     && inner_radius >= 0.0
                     && radiance >= 0.0
                     && max_angle_deg > 0.0
                     && max_angle_deg <= 90.0)
                 {
                     return bad(
-                        "Lambertian disk needs radius > inner radius ≥ 0 and 0 < θmax ≤ 90°",
+                        "Lambertian disk needs a finite centre, a normal, ∞ > radius > inner radius ≥ 0 and 0 < θmax ≤ 90°",
                     );
                 }
             }

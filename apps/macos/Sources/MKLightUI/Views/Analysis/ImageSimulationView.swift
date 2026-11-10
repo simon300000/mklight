@@ -510,7 +510,7 @@ enum ImageSimulationSettings {
     }
 
     static func size(_ pane: AnalysisPane) -> Int {
-        Int(pane.value("size")?.array?.first?.doubleValue ?? 64)
+        Int(saturating: pane.value("size")?.array?.first?.doubleValue ?? 64)
     }
 
     static func fieldCenter(_ pane: AnalysisPane) -> SIMD2<Double> {
@@ -706,7 +706,9 @@ enum ImageSourceImport {
     /// The app-only setting recording the field aspect the samples were cropped to.
     nonisolated static let aspectKey = "source_field_aspect"
 
-    private static var decoded: [String: CGImage] = [:]
+    /// The decoded image of each file, with the file's modification date
+    /// and size when it was decoded: a file that changed is decoded again.
+    private static var decoded: [String: (modified: Date, size: Int, image: CGImage)] = [:]
 
     /// The settings to save in the project: an imported image's samples are
     /// dropped (its path stays), so it is decoded again on open.
@@ -722,23 +724,26 @@ enum ImageSourceImport {
     /// down to at most `maxSide` on its longer side.
     nonisolated static func targetSize(_ size: JSONValue?) -> (Int, Int) {
         let a = size?.array?.compactMap(\.doubleValue) ?? []
-        let w = a.count == 2 ? max(Int(a[0]), 2) : 64, h = a.count == 2 ? max(Int(a[1]), 2) : 64
+        let w = a.count == 2 ? max(Int(saturating: a[0]), 2) : 64, h = a.count == 2 ? max(Int(saturating: a[1]), 2) : 64
         let s = min(1, Double(maxSide) / Double(max(w, h)))
         return (max(Int((Double(w) * s).rounded()), 2), max(Int((Double(h) * s).rounded()), 2))
     }
 
     /// Decodes an image file (any format ImageIO reads), at most 2048 px.
     static func decode(_ url: URL) -> CGImage? {
-        if let c = decoded[url.path] { return c }
         let scoped = url.startAccessingSecurityScopedResource()
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
+        let modified = attributes?[.modificationDate] as? Date, size = (attributes?[.size] as? NSNumber)?.intValue
+        if let c = decoded[url.path], c.modified == modified, c.size == size { return c.image }
+        decoded[url.path] = nil
         guard let src = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
         let options: [CFString: Any] = [
             kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceCreateThumbnailWithTransform: true,
             kCGImageSourceThumbnailMaxPixelSize: 2048, kCGImageSourceShouldCacheImmediately: true,
         ]
         guard let image = CGImageSourceCreateThumbnailAtIndex(src, 0, options as CFDictionary) else { return nil }
-        decoded[url.path] = image
+        if let modified, let size { decoded[url.path] = (modified, size, image) }
         return image
     }
 
@@ -819,7 +824,7 @@ enum ImageSourceImport {
         let source = settings["source"] ?? defaults?["source"]
         guard source?["kind"]?.string == "pattern", let name = source?["pattern"]?.string else { return settings }
         let a = (settings["size"] ?? defaults?["size"])?.array?.compactMap(\.doubleValue) ?? []
-        let w = a.count == 2 ? Int(a[0]) : 64, h = a.count == 2 ? Int(a[1]) : 64
+        let w = a.count == 2 ? Int(saturating: a[0]) : 64, h = a.count == 2 ? Int(saturating: a[1]) : 64
         guard (2...maxPatternSide).contains(w), (2...maxPatternSide).contains(h) else { return settings }
         let key = "\(name)-\(w)x\(h)"
         var s = settings

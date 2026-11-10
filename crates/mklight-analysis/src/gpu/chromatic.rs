@@ -1,7 +1,7 @@
 use super::*;
 use crate::{
     seidel::*,
-    util::{check_count, field_scale, field_sweep, field_unit, linspace},
+    util::{airy_radius, check_count, field_scale, field_sweep, field_unit, linspace},
 };
 pub fn lateral_colour_job(
     b: &dyn ComputeBackend,
@@ -32,7 +32,7 @@ pub fn lateral_colour_job(
         false,
         ctx,
     )?;
-    geo.append_chiefs(&mut p, &mut g)?;
+    geo.append_chiefs(&mut p, &mut g, ctx)?;
     let (q, mask) = geo.coordinates(&mut p, &g, 0.0, false)?;
     p.outputs = vec![q, mask];
     let r = geo.run(p, &ctx.subrange(0.0, 0.95))?;
@@ -73,10 +73,10 @@ pub fn lateral_colour_job(
                 offset: offsets.iter().map(|r| r[w]).collect(),
             })
             .collect(),
-        airy_radius: 1.22
-            * t.system().wavelengths_um[t.system().primary_wavelength]
-            * 1e-3
-            * t.paraxial().primary().working_f_number,
+        airy_radius: airy_radius(
+            t.system().wavelengths_um[t.system().primary_wavelength],
+            t.paraxial().primary().working_f_number,
+        ),
         run_info: stamp(r.run_info, "lateral_colour", s, t.warnings().to_vec()),
     })
 }
@@ -124,7 +124,7 @@ pub fn longitudinal_aberration_job(
         false,
         ctx,
     )?;
-    geo.append_chiefs(&mut p, &mut g)?;
+    geo.append_chiefs(&mut p, &mut g, ctx)?;
     let chiefs = g.chiefs()?.clone();
     let n = g.hits.rays.count;
     let index = geo.chief_map(&mut p, &g, true)?;

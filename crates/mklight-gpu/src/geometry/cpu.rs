@@ -9,10 +9,6 @@ use crate::{
 fn df(w: &[u32], i: usize) -> Df32 {
     Df32::new(f32::from_bits(w[2 * i]), f32::from_bits(w[2 * i + 1]))
 }
-fn words<'a>(x: &'a Execution, v: &PlanView) -> &'a [u32] {
-    let s = v.desc.element.words();
-    &x.words(v.buffer)[v.offset * s..(v.offset + v.desc.len().unwrap()) * s]
-}
 fn hit<E: FpEnv>(w: &[u32], n: usize, i: usize) -> [Df32; 4] {
     let f = |k| f32::from_bits(w[k * n + i]);
     let dz = D::<E>::new(f(5), f(14));
@@ -65,7 +61,6 @@ fn run<E: FpEnv>(r: &Request, x: &mut Execution, ctl: &JobControl) -> MkResult<(
         Request::FieldData(r) => r.hits.rays.count / if r.kind == 1 { 5 } else { 1 },
         Request::Records(r) => r.slots * r.hits.rays.count,
         Request::Coddington(r) => r.hits.rays.count,
-        Request::CloseFocus(r) => r.hits.rays.count / 5,
         Request::IlluminationRays(r) => r.tasks.desc.shape[0],
         Request::Opd(r) => r.hits.rays.count,
         Request::FocusTerms(r) => r.mask.desc.len()?,
@@ -81,7 +76,7 @@ fn run<E: FpEnv>(r: &Request, x: &mut Execution, ctl: &JobControl) -> MkResult<(
                     ctl.check()?;
                     ctl.report(i as f64 / n.max(1) as f64, "image coordinates");
                 }
-                let ci = words(x, &r.chief_index)[i] as usize;
+                let ci = x.view(&r.chief_index)[i] as usize;
                 if x.words(r.hits.status)[i] != 0 {
                     continue;
                 }
@@ -106,9 +101,9 @@ fn run<E: FpEnv>(r: &Request, x: &mut Execution, ctl: &JobControl) -> MkResult<(
             x.words_mut(r.mask).copy_from_slice(&mask);
         }
         Request::Radial(r) => {
-            let p = words(x, &r.points);
-            let m = words(x, &r.moments);
-            let mask = words(x, &r.mask);
+            let p = x.view(&r.points);
+            let m = x.view(&r.moments);
+            let mask = x.view(&r.mask);
             let mut radius = vec![Df32::from_f32(f32::INFINITY); n];
             let mut square = radius.clone();
             let mut weight = vec![Df32::ZERO; n];
@@ -143,9 +138,9 @@ fn run<E: FpEnv>(r: &Request, x: &mut Execution, ctl: &JobControl) -> MkResult<(
         Request::Characteristic(r) => {
             let nr = r.mask.desc.len()?;
             let ns = nr / r.segment_len;
-            let p = words(x, &r.points);
-            let mask = words(x, &r.mask);
-            let f = words(x, &r.frequency);
+            let p = x.view(&r.points);
+            let mask = x.view(&r.mask);
+            let f = x.view(&r.frequency);
             let mut out = vec![Df32::ZERO; 2 * n];
             for i in 0..n {
                 if i % 4096 == 0 {
@@ -168,10 +163,10 @@ fn run<E: FpEnv>(r: &Request, x: &mut Execution, ctl: &JobControl) -> MkResult<(
             put(x, r.output, &out);
         }
         Request::FocusTerms(r) => {
-            let p = words(x, &r.points);
-            let mask = words(x, &r.mask);
-            let qm = words(x, &r.position_moments);
-            let tm = words(x, &r.slope_moments);
+            let p = x.view(&r.points);
+            let mask = x.view(&r.mask);
+            let qm = x.view(&r.position_moments);
+            let tm = x.view(&r.slope_moments);
             let mut out = vec![Df32::ZERO; 3 * n];
             for i in 0..n {
                 if i % 4096 == 0 {
@@ -209,8 +204,8 @@ fn run<E: FpEnv>(r: &Request, x: &mut Execution, ctl: &JobControl) -> MkResult<(
             let nc = r.chiefs.rays.count;
             let f = x.words(r.hits.rays.floats);
             let cf = x.words(r.chiefs.rays.floats);
-            let meta = words(x, &r.reference);
-            let index = words(x, &r.chief_index);
+            let meta = x.view(&r.reference);
+            let index = x.view(&r.chief_index);
             let mut out = vec![Df32::from_f32(f32::NAN); n];
             let mut status = vec![1; n];
             let get = |w: &[u32], n: usize, i: usize, k: usize| {
@@ -218,6 +213,18 @@ fn run<E: FpEnv>(r: &Request, x: &mut Execution, ctl: &JobControl) -> MkResult<(
                     f32::from_bits(w[k * n + i]),
                     f32::from_bits(w[(k + 9) * n + i]),
                 )
+            };
+            // The projection takes the chief and centre as slices; the
+            // reference's views are unused.
+            let unused = view(BufferId(0), ElementType::DoubleFloat, [0]);
+            let mut reference = crate::aiming::PupilReference {
+                chief: unused.clone(),
+                centre: unused,
+                radius: Df32::ZERO,
+                image_index: Df32::ZERO,
+                wavelength_um: Df32::ZERO,
+                sphere_sheet: 1,
+                telecentric: false,
             };
             for i in 0..n {
                 if i % 4096 == 0 {
@@ -269,16 +276,11 @@ fn run<E: FpEnv>(r: &Request, x: &mut Execution, ctl: &JobControl) -> MkResult<(
                 let zxp = df(meta, ci * 3);
                 let tele = !zxp.hi.is_finite();
                 let se = (D::<E>::from_df(zxp) - D::from_df(chief[2])) / D::from_df(chief[5]);
-                let dummy = view(BufferId(0), ElementType::DoubleFloat, [0]);
-                let reference = crate::aiming::PupilReference {
-                    chief: dummy.clone(),
-                    centre: dummy,
-                    radius: if se.hi() < 0.0 { (-se).0 } else { se.0 },
-                    image_index: df(meta, ci * 3 + 1),
-                    wavelength_um: df(meta, ci * 3 + 2),
-                    sphere_sheet: if se.hi() < 0.0 { -1 } else { 1 },
-                    telecentric: tele,
-                };
+                reference.radius = if se.hi() < 0.0 { (-se).0 } else { se.0 };
+                reference.image_index = df(meta, ci * 3 + 1);
+                reference.wavelength_um = df(meta, ci * 3 + 2);
+                reference.sphere_sheet = if se.hi() < 0.0 { -1 } else { 1 };
+                reference.telecentric = tele;
                 let ray = crate::trace_kernel::KRayIn {
                     pos: std::array::from_fn(|k| get(f, n, i, k).hi),
                     pos_lo: std::array::from_fn(|k| get(f, n, i, k).lo),
@@ -300,22 +302,23 @@ fn run<E: FpEnv>(r: &Request, x: &mut Execution, ctl: &JobControl) -> MkResult<(
         Request::IlluminationRays(r) => {
             use rayon::prelude::*;
             let set = x.system(r.systems)?;
-            let fields: &[super::ri::RiField] = bytemuck::cast_slice(words(x, &r.fields));
-            let tasks: &[super::ri::RiTask] = bytemuck::cast_slice(words(x, &r.tasks));
+            let fields: &[super::ri::RiField] = x.rows(&r.fields);
+            let tasks: &[super::ri::RiTask] = x.rows(&r.tasks);
+            // The sequential program of every system `ri_header` accepts.
+            let steps: Vec<u32> = (1..r.slots as u32).collect();
             let out: Vec<super::ri::RiRay> = tasks
                 .par_iter()
                 .map(|task| {
                     let f = fields.get(task.field as usize);
-                    match f.and_then(|f| ri_header(&set, f, r.slots)) {
-                        Some((h, s)) => {
-                            let steps: Vec<u32> = (1..h.num_surfaces).collect();
+                    match f.and_then(|f| Some((f, ri_header(&set, f, r.slots)?))) {
+                        Some((f, (h, s))) => {
                             let sys = super::ri::System {
                                 h,
                                 s,
                                 pool: &set.coefficients,
                                 steps: &steps,
                             };
-                            super::ri::run_ray::<E>(&sys, fields, task, &|| ctl.check().is_ok())
+                            super::ri::ray::<E>(&sys, f, task, &|| ctl.check().is_ok())
                         }
                         None => super::ri::RiRay {
                             status: crate::consts::MKL_AIM_INVALID,
@@ -327,21 +330,6 @@ fn run<E: FpEnv>(r: &Request, x: &mut Execution, ctl: &JobControl) -> MkResult<(
             ctl.check()?;
             x.words_mut(r.output)
                 .copy_from_slice(bytemuck::cast_slice(&out));
-        }
-        Request::CloseFocus(r) => {
-            let f = bytemuck::cast_slice(x.words(r.hits.rays.floats));
-            let st = x.words(r.hits.status);
-            let mut out = vec![Df32::from_f32(f32::NAN); n * 3];
-            let mut status = vec![1; n];
-            for i in 0..n {
-                ctl.check()?;
-                if let Some(v) = super::curvature::close::<E>(f, st, r.hits.rays.count, i) {
-                    out[i * 3..i * 3 + 3].copy_from_slice(&v);
-                    status[i] = 0;
-                }
-            }
-            put(x, r.output, &out);
-            x.words_mut(r.status).copy_from_slice(&status);
         }
         Request::Coddington(r) => {
             let owned = x.system(r.systems)?;
@@ -356,7 +344,9 @@ fn run<E: FpEnv>(r: &Request, x: &mut Execution, ctl: &JobControl) -> MkResult<(
             let mut out = vec![Df32::from_f32(f32::NAN); n * 3];
             let mut status = vec![1; n];
             for i in 0..n {
-                ctl.check()?;
+                if i % 4096 == 0 {
+                    ctl.check()?;
+                }
                 if x.words(r.hits.status)[i] != 0 {
                     continue;
                 }
@@ -388,7 +378,7 @@ fn run<E: FpEnv>(r: &Request, x: &mut Execution, ctl: &JobControl) -> MkResult<(
             let nr = r.hits.rays.count;
             let hi = x.words(r.hits.records.unwrap());
             let lo = x.words(r.hits.record_low.unwrap());
-            let frames = words(x, &r.frames);
+            let frames = x.view(&r.frames);
             let mut out = vec![Df32::from_f32(f32::NAN); 3 * n];
             let mut radii = vec![Df32::ZERO; n];
             let mut mask = vec![0; n];
@@ -462,7 +452,9 @@ fn run<E: FpEnv>(r: &Request, x: &mut Execution, ctl: &JobControl) -> MkResult<(
             };
             let mut out = vec![Df32::from_f32(f32::NAN); 5 * n];
             for i in 0..n {
-                ctl.check()?;
+                if i % 4096 == 0 {
+                    ctl.check()?;
+                }
                 if r.kind == 2 {
                     let hi = x.words(r.hits.records.unwrap());
                     let lo = x.words(r.hits.record_low.unwrap());
@@ -533,9 +525,9 @@ fn run<E: FpEnv>(r: &Request, x: &mut Execution, ctl: &JobControl) -> MkResult<(
             put(x, r.output, &out);
         }
         Request::Distribution(r) => {
-            let keys = words(x, &r.keys);
-            let cum = words(x, &r.cumulative);
-            let radii = words(x, &r.radii);
+            let keys = x.view(&r.keys);
+            let cum = x.view(&r.cumulative);
+            let radii = x.view(&r.radii);
             let len = r.keys.desc.len()?;
             let k = r.radii.desc.len()?;
             let total = if len > 0 {
@@ -545,40 +537,35 @@ fn run<E: FpEnv>(r: &Request, x: &mut Execution, ctl: &JobControl) -> MkResult<(
             };
             let mut out = vec![Df32::ZERO; k + 4];
             let mut boundary = vec![Df32::ZERO; k];
+            // Keys below `radius` (or equal to it when `inclusive`).
+            let below = |radius: D<E>, inclusive: bool| {
+                let (mut a, mut b) = (0, len);
+                while a < b {
+                    let mid = (a + b) / 2;
+                    let d = (D::<E>::from_df(df(keys, mid)) - radius).hi();
+                    if if inclusive { d <= 0.0 } else { d < 0.0 } {
+                        a = mid + 1;
+                    } else {
+                        b = mid;
+                    }
+                }
+                a
+            };
+            let bound = |radius: D<E>, inclusive: bool| match below(radius, inclusive) {
+                0 => D::ZERO,
+                a => D::<E>::from_df(df(cum, a - 1)),
+            };
             for (i, v) in out.iter_mut().enumerate() {
-                ctl.check()?;
+                if i % 4096 == 0 {
+                    ctl.check()?;
+                }
                 if i == k + 3 {
                     *v = total.0;
                     continue;
                 }
                 if i < k {
                     let radius = D::<E>::from_df(df(radii, i));
-                    let (mut a, mut b) = (0, len);
-                    while a < b {
-                        let mid = (a + b) / 2;
-                        if (D::<E>::from_df(df(keys, mid)) - radius).hi() <= 0.0 {
-                            a = mid + 1;
-                        } else {
-                            b = mid;
-                        }
-                    }
-                    let bound = |radius: D<E>, inclusive: bool| {
-                        let (mut a, mut b) = (0, len);
-                        while a < b {
-                            let mid = (a + b) / 2;
-                            let d = (D::<E>::from_df(df(keys, mid)) - radius).hi();
-                            if if inclusive { d <= 0.0 } else { d < 0.0 } {
-                                a = mid + 1;
-                            } else {
-                                b = mid;
-                            }
-                        }
-                        if a > 0 {
-                            D::<E>::from_df(df(cum, a - 1))
-                        } else {
-                            D::ZERO
-                        }
-                    };
+                    let a = below(radius, true);
                     if total.hi() > 0.0 {
                         let e = D::from_df(r.uncertainty);
                         boundary[i] =
@@ -618,7 +605,7 @@ fn run<E: FpEnv>(r: &Request, x: &mut Execution, ctl: &JobControl) -> MkResult<(
                 &owned.surfaces[..],
                 &owned.coefficients[..],
             );
-            let samples: &[SurfaceSample] = bytemuck::cast_slice(words(x, &r.samples));
+            let samples: &[SurfaceSample] = x.rows(&r.samples);
             let mut out = vec![Df32::from_f32(f32::NAN); 3 * n];
             let mut status = vec![0; n];
             for (i, s) in samples.iter().enumerate() {
@@ -648,8 +635,8 @@ fn run<E: FpEnv>(r: &Request, x: &mut Execution, ctl: &JobControl) -> MkResult<(
                 }
             }
             if let Some(projection) = &r.projection {
-                let xy = words(x, &projection.xy);
-                let frames = words(x, &projection.frames);
+                let xy = x.view(&projection.xy);
+                let frames = x.view(&projection.frames);
                 let rows = projection.frames.desc.shape[0];
                 for (i, s) in samples.iter().enumerate() {
                     if status[i] != 0 {

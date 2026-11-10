@@ -12,7 +12,7 @@
 //! seamless.
 use crate::analysis::{field_pupils, wavelengths};
 use crate::fft::{Dir, fft2, next_fast_len};
-use crate::{AmplitudeModel, PolyPsfSettings, PsfNormalization, PsfTransform, PupilSettings};
+use crate::{AmplitudeModel, PolyPsfSettings, PsfNormalization, PupilSettings};
 use mklight_analysis::curvature::{GridDistortionSettings, grid_distortion_job};
 use mklight_analysis::illumination::illumination_rows;
 use mklight_core::job::{Progress, RunTimer};
@@ -23,8 +23,8 @@ use num_complex::Complex64;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, OnceLock};
 
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -289,7 +289,6 @@ pub fn build_psf_grid(
                     grid_size: size,
                     spacing_mm: dx,
                     normalization: PsfNormalization::UnitEnergy,
-                    transform: PsfTransform::Fft,
                 },
                 &sub.subrange(0.1, 1.0),
             )?;
@@ -579,6 +578,9 @@ fn kernel_radius(grid: &PsfGrid, pitch: [f64; 2], aperture: Option<[f64; 2]>) ->
         + aperture.map_or(0.0, |a| a[0].max(a[1]) * 0.5);
     (radius / pitch[0].min(pitch[1])).ceil() as usize + 1
 }
+/// Largest total size of the output-lattice kernels shared by the tiles;
+/// beyond it every tile deposits its own.
+const SHARED_KERNEL_BYTES: usize = 256 << 20;
 /// Deposit node `node`'s PSF, with the optional rectangular pixel aperture
 /// (4×4 midpoint quadrature, adequate up to a few output pixels), bilinearly
 /// onto a `(2r+1)²` output-lattice kernel, conserving discrete energy.
@@ -787,6 +789,14 @@ pub fn image_simulation_job(
     // Tiles report their own progress; the FFTs only check cancellation.
     let quiet = JobContext::with(ctx.cancel.clone(), Progress::default());
     let finished = AtomicUsize::new(0);
+    // Each node's output-lattice kernel is deposited once, by the first tile
+    // that uses it.
+    let shared = if grid.kernels.len() * (2 * r + 1).pow(2) * 8 <= SHARED_KERNEL_BYTES {
+        grid.kernels.len()
+    } else {
+        0
+    };
+    let kernels: Vec<OnceLock<Vec<f64>>> = (0..shared).map(|_| OnceLock::new()).collect();
     let tiles = (0..nx * ny)
         .into_par_iter()
         .map(|i| -> MkResult<_> {
@@ -824,8 +834,16 @@ pub fn image_simulation_job(
                             .collect()
                     })
                     .collect();
-                let kernel = kernel(&grid, node, pitch, s.detector_aperture_mm, r);
-                let blurred = convolve(&planes, hw, hh, &kernel, 2 * r + 1, &quiet)?;
+                let deposit = || kernel(&grid, node, pitch, s.detector_aperture_mm, r);
+                let own;
+                let kernel = match kernels.get(node) {
+                    Some(k) => k.get_or_init(deposit),
+                    None => {
+                        own = deposit();
+                        &own
+                    }
+                };
+                let blurred = convolve(&planes, hw, hh, kernel, 2 * r + 1, &quiet)?;
                 for (ch, b) in blurred.iter().enumerate() {
                     for y in 0..th {
                         for x in 0..tw {

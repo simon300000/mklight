@@ -911,20 +911,6 @@ impl DetectorResult {
     pub fn moments_of(&self, class: PathClass) -> &ImageMoments {
         &self.moments[class.index()]
     }
-    /// Sum of the irradiance maps of the classes in `mask` (no standard
-    /// error; use `owned_*` for the owned sum).
-    pub fn irradiance_sum(&self, mask: ClassMask) -> Vec<f64> {
-        let n = self.irradiance[0].len();
-        (0..n)
-            .map(|p| {
-                PathClass::ALL
-                    .iter()
-                    .filter(|c| mask.contains(**c))
-                    .map(|c| self.irradiance[c.index()][p])
-                    .sum()
-            })
-            .collect()
-    }
 }
 
 /// Where the emitted flux went (all in W).
@@ -997,16 +983,6 @@ impl EnergyReport {
     /// Monte-Carlo standard error of `detected_in(class)`.
     pub fn std_error_in(&self, class: PathClass) -> f64 {
         self.detected_std_error_by_class[class.index()].1
-    }
-    /// Relative standard error of `detected_in(class)` (∞ when nothing was
-    /// detected).
-    pub fn relative_error_in(&self, class: PathClass) -> f64 {
-        let f = self.detected_in(class);
-        if f > 0.0 {
-            self.std_error_in(class) / f
-        } else {
-            f64::INFINITY
-        }
     }
     /// `|balance_residual| / emitted`.
     pub fn relative_residual(&self) -> f64 {

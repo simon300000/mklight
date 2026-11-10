@@ -26,7 +26,6 @@ fn backends() -> Option<[MetalBackend; 2]> {
         MetalBackend::with_options(&MetalOptions {
             precision,
             library: LibraryChoice::Precompiled,
-            ..Default::default()
         })
         .unwrap()
     };
@@ -156,7 +155,6 @@ fn pure_f32_runtime_source() {
     let options = MetalOptions {
         precision: MetalPrecision::PureF32,
         library: LibraryChoice::RuntimeSource,
-        ..Default::default()
     };
     let Some(b) = MetalBackend::with_options(&options).unwrap() else {
         return eprintln!("SKIP: no Metal device");

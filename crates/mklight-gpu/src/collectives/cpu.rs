@@ -15,9 +15,8 @@ struct Values<'a> {
 }
 impl<'a> Values<'a> {
     fn new(x: &'a Execution, v: &PlanView) -> Self {
-        let w = v.desc.element.words();
         Self {
-            words: &x.words(v.buffer)[v.offset * w..(v.offset + v.desc.len().unwrap()) * w],
+            words: x.view(v),
             ty: v.desc.element,
         }
     }
@@ -105,7 +104,7 @@ pub fn execute_in<E: FpEnv>(r: &Request, x: &mut Execution, ctl: &JobControl) ->
                     let cmp = if k.ty == Ty::U32 {
                         k.words[a].cmp(&k.words[b])
                     } else {
-                        spec::df_cmp(k.d(a), k.d(b))
+                        crate::df::df_cmp(k.d(a), k.d(b))
                     };
                     cmp.then(ids.words[a].cmp(&ids.words[b])).then(a.cmp(&b))
                 },

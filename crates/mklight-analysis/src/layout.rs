@@ -497,10 +497,16 @@ pub(crate) fn layout_with(
         }
         if settings.include_3d && settings.mesh_rings > 0 && !no_effect {
             let mut triangles = Vec::new();
-            let point = |r: usize, k: usize| {
-                let r = c * r as f64 / settings.mesh_rings as f64;
-                vertices.polar(j, r, r, k, m)
-            };
+            // Each vertex of the ring × azimuth lattice once; the quads
+            // share them.
+            let lattice: Vec<[f64; 3]> = (0..=settings.mesh_rings)
+                .flat_map(|r| {
+                    let r = c * r as f64 / settings.mesh_rings as f64;
+                    let vertices = &vertices;
+                    (0..m).map(move |k| vertices.polar(j, r, r, k, m))
+                })
+                .collect();
+            let point = |r: usize, k: usize| lattice[r * m + k % m];
             for r in 0..settings.mesh_rings {
                 for k in 0..m {
                     let [a, b, c, d] =

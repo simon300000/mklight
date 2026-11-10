@@ -16,7 +16,8 @@ extension UTType {
     public static let seqPrescription = UTType(importedAs: "com.mklight.seq-prescription", conformingTo: .data)
     /// The lens prescription files MKLight imports.
     public static var lensPrescriptions: [UTType] { [.zmxPrescription, .seqPrescription] }
-    /// Everything the app opens: projects, system JSON and lens files.
+    /// Everything the app opens: projects (also under a `.json` name) and
+    /// lens files.
     public static var mklightReadable: [UTType] { [.mklightProject, .json] + lensPrescriptions }
 }
 

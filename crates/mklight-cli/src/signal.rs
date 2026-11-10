@@ -29,5 +29,4 @@ pub fn install() {
         libc::signal(libc::SIGINT, h);
         libc::signal(libc::SIGTERM, h);
     }
-    let _ = &COUNT;
 }

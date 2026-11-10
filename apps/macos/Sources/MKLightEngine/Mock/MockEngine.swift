@@ -21,7 +21,7 @@ public struct MockEngine: EngineClient {
     public static let mockWarning = "MOCK ENGINE: synthetic data, not an optical computation"
 
     public var info: EngineInfo {
-        EngineInfo(name: "Mock engine (synthetic data)", version: Self.version, backends: ["mock"], isMock: true)
+        EngineInfo(name: "Mock engine (synthetic data)", version: Self.version, isMock: true)
     }
 
     public func validate(_ system: OpticalSystem) async -> [ModelIssue] {
@@ -38,7 +38,7 @@ public struct MockEngine: EngineClient {
         } catch {
             throw EngineError.invalidModel(["model cannot be serialised: \(error.localizedDescription)"])
         }
-        return ModelSnapshot(system: system, hash: hash, warnings: issues.map(\.description))
+        return ModelSnapshot(system: system, hash: hash)
     }
 
     /// SHA-256 of the sorted-key JSON. (The Rust engine uses BLAKE3 of its
@@ -73,7 +73,7 @@ public struct MockEngine: EngineClient {
             let result = try Self.compute(request, optics)
             var warnings = [Self.mockWarning] + optics.warnings
             if request.configuration != 0 { warnings.append("mock engine ignores configurations") }
-            if request.execution.precision != .f64Reference || request.execution.backend == .gpu {
+            if request.execution.backend == .gpu {
                 warnings.append("mock engine computes on the CPU in f64 only")
             }
             let info = RunInfo(

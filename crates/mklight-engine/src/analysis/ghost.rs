@@ -26,7 +26,7 @@ use super::geometric::{crate_json, output, parse, plain};
 use super::schema::*;
 use super::{Analysis, AnalysisInput, AnalysisOutput, AnalysisRegistry};
 use crate::buffer::{Buffer, BufferData};
-use crate::error::{EngineError, EngineResult};
+use crate::error::EngineResult;
 
 pub fn register_all(r: &mut AnalysisRegistry) {
     r.register(Arc::new(GhostPaths));
@@ -146,15 +146,15 @@ fn coverage_schema() -> Value {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
-pub struct GhostPathsSettings {
+struct GhostPathsSettings {
     #[serde(flatten)]
-    pub model: GhostModelOptions,
-    pub enumeration: EnumerationSettings,
-    pub paths: Option<Vec<GhostPath>>,
+    model: GhostModelOptions,
+    enumeration: EnumerationSettings,
+    paths: Option<Vec<GhostPath>>,
     /// System wavelength index; null = primary.
-    pub wavelength: Option<usize>,
-    pub signal_diameter_mm: Option<f64>,
-    pub near_focus_factor: f64,
+    wavelength: Option<usize>,
+    signal_diameter_mm: Option<f64>,
+    near_focus_factor: f64,
 }
 
 impl Default for GhostPathsSettings {
@@ -269,9 +269,6 @@ impl Analysis for GhostPaths {
             vec![],
         )
     }
-    fn gpu_path(&self) -> bool {
-        true
-    }
     fn run(
         &self,
         input: &AnalysisInput<'_>,
@@ -304,24 +301,24 @@ impl Analysis for GhostPaths {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
-pub struct GhostIrradianceSettings {
+struct GhostIrradianceSettings {
     #[serde(flatten)]
-    pub model: GhostModelOptions,
-    pub enumeration: EnumerationSettings,
-    pub paths: Option<Vec<GhostPath>>,
-    pub fields: Vec<usize>,
-    pub points: Vec<FieldPoint>,
-    pub wavelengths: Vec<usize>,
-    pub pupil_samples: usize,
-    pub overfill: f64,
-    pub map_bins: [usize; 2],
-    pub map_half_size: Option<[f64; 2]>,
-    pub keep_path_maps: bool,
+    model: GhostModelOptions,
+    enumeration: EnumerationSettings,
+    paths: Option<Vec<GhostPath>>,
+    fields: Vec<usize>,
+    points: Vec<FieldPoint>,
+    wavelengths: Vec<usize>,
+    pupil_samples: usize,
+    overfill: f64,
+    map_bins: [usize; 2],
+    map_half_size: Option<[f64; 2]>,
+    keep_path_maps: bool,
 }
 
 /// Engine default pupil grid: coarser than the crate's 128 for interactive
 /// use (an engine choice, documented in docs/RESULTS.md).
-pub const DEFAULT_GHOST_PUPIL_SAMPLES: usize = 48;
+const DEFAULT_GHOST_PUPIL_SAMPLES: usize = 48;
 
 impl Default for GhostIrradianceSettings {
     fn default() -> Self {
@@ -343,7 +340,7 @@ impl Default for GhostIrradianceSettings {
 }
 
 impl GhostIrradianceSettings {
-    pub fn irradiance(&self) -> IrradianceSettings {
+    fn irradiance(&self) -> IrradianceSettings {
         IrradianceSettings {
             enumeration: self.enumeration.clone(),
             paths: self.paths.clone(),
@@ -508,9 +505,6 @@ impl Analysis for GhostIrradiance {
             ],
         )
     }
-    fn gpu_path(&self) -> bool {
-        true
-    }
     fn run(
         &self,
         input: &AnalysisInput<'_>,
@@ -518,9 +512,6 @@ impl Analysis for GhostIrradiance {
         ctx: &JobContext,
     ) -> EngineResult<AnalysisOutput> {
         let s: GhostIrradianceSettings = parse(settings)?;
-        if s.map_bins[0] == 0 || s.map_bins[1] == 0 {
-            return Err(EngineError::InvalidSettings("map_bins must be ≥ 1".into()));
-        }
         let model = s.model.model(input)?;
         let r = if let Some(d) = super::gpu::device(input) {
             let r = mklight_ghost::gpu::ghost_irradiance(
@@ -538,7 +529,6 @@ impl Analysis for GhostIrradiance {
         let mut r = r;
         let total = std::mem::take(&mut r.total_ghost_map.values);
         let primary_map = r.primary.map.take();
-        let (nx, ny) = (s.map_bins[0], s.map_bins[1]);
         let mut path_maps = Vec::new();
         let mut count = 0usize;
         let mut indices = Vec::with_capacity(r.ghosts.len());
@@ -580,7 +570,7 @@ impl Analysis for GhostIrradiance {
         if s.keep_path_maps {
             buffers.push(Buffer::new(
                 "path_maps",
-                vec![count, ny, nx],
+                vec![count, bins[1], bins[0]],
                 BufferData::F64(path_maps),
             ));
         }

@@ -543,8 +543,9 @@ impl Session {
         )?)
     }
 
-    /// Number of cached resolved systems (for tests and diagnostics).
-    pub fn resolved_cache_len(&self) -> usize {
+    /// Number of cached resolved systems.
+    #[cfg(test)]
+    fn resolved_cache_len(&self) -> usize {
         self.resolved
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -653,7 +654,7 @@ impl Session {
 
     /// Where `autosave(None)` writes: `<project file>.autosave` next to the
     /// project, `None` for an untitled session.
-    pub fn autosave_path(&self) -> Option<PathBuf> {
+    fn autosave_path(&self) -> Option<PathBuf> {
         self.path.as_ref().map(|p| {
             let mut s = p.clone().into_os_string();
             s.push(".autosave");
@@ -661,11 +662,11 @@ impl Session {
         })
     }
 
-    /// Write the current project atomically to `path` (or `autosave_path`)
-    /// without changing the session: its path, dirty flag and saved file
-    /// stay as they are. The file is a normal project (open it to recover);
-    /// catalog paths are recorded as absolute paths. Returns the path
-    /// written.
+    /// Write the current project atomically to `path` (or, with `None`, to
+    /// `<project file>.autosave` next to the project) without changing the
+    /// session: its path, dirty flag and saved file stay as they are. The
+    /// file is a normal project (open it to recover); catalog paths are
+    /// recorded as absolute paths. Returns the path written.
     pub fn autosave(&self, path: Option<&Path>) -> EngineResult<PathBuf> {
         let target = match path {
             Some(p) => p.to_path_buf(),
@@ -721,11 +722,11 @@ impl Session {
             settings,
             &self.current,
             &self.library_hash,
+            policy,
             req.allow_backend_fallback,
         )
     }
 
-    /// Run an analysis on the current snapshot in the calling thread.
     /// The run policy of a request: its tier, and its aim stop or the
     /// engine default. An explicit aiming tolerance in the system (any value
     /// but the model default) is honoured exactly, so the run is `requested`
@@ -741,6 +742,7 @@ impl Session {
         }
     }
 
+    /// Run an analysis on the current snapshot in the calling thread.
     pub fn run_analysis(
         &self,
         req: &AnalysisRequest,
@@ -1200,18 +1202,44 @@ mod tests {
 
     #[test]
     fn submit_errors_surface_immediately() {
+        /// An analysis that reports itself unavailable.
+        struct Unavailable;
+        impl crate::analysis::Analysis for Unavailable {
+            fn name(&self) -> &str {
+                "unavailable"
+            }
+            fn title(&self) -> &str {
+                "Unavailable"
+            }
+            fn category(&self) -> &str {
+                "test"
+            }
+            fn availability(&self) -> Result<(), String> {
+                Err("not wired in".into())
+            }
+            fn run(
+                &self,
+                _: &AnalysisInput<'_>,
+                _: &Value,
+                _: &JobContext,
+            ) -> EngineResult<crate::analysis::AnalysisOutput> {
+                unreachable!("an unavailable analysis never runs")
+            }
+        }
         let e = engine();
-        // Install an unavailable fixture now that the wave solver replaces it.
-        let mut planned = crate::analysis::AnalysisRegistry::new();
-        crate::analysis::builtin::register_all(&mut planned);
-        e.register_analysis(planned.get("psf").unwrap());
+        e.register_analysis(Arc::new(Unavailable));
+        assert!(
+            e.analyses()
+                .iter()
+                .any(|i| i.name == "unavailable" && !i.available && i.unavailable_reason.is_some())
+        );
         let s = e.new_session();
         assert!(matches!(
             s.submit_analysis(&AnalysisRequest::new("nope", Value::Null)),
             Err(EngineError::UnknownAnalysis(_))
         ));
         assert!(matches!(
-            s.submit_analysis(&AnalysisRequest::new("psf", Value::Null)),
+            s.submit_analysis(&AnalysisRequest::new("unavailable", Value::Null)),
             Err(EngineError::AnalysisUnavailable { .. })
         ));
         assert!(matches!(

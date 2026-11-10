@@ -59,9 +59,6 @@ impl Analysis for Wave {
     fn result_schema(&self) -> Value {
         result_schema(self.0.name)
     }
-    fn gpu_path(&self) -> bool {
-        true
-    }
     fn run(
         &self,
         input: &AnalysisInput<'_>,
@@ -74,16 +71,14 @@ impl Analysis for Wave {
             &ctx.subrange(0.0, 0.05),
         )?;
         let c = &ctx.subrange(0.05, 1.0);
-        let Some(d) = super::gpu::device(input) else {
-            let memo = input.memo();
-            let memo = memo.as_ref().map(|m| m as &dyn Memo);
-            return run_cpu(self.0.name, &cfg, settings, memo, c);
-        };
-        let b = d.backend.as_ref();
         // The native division's host-traced lattices and pupils are the
         // reference's and are shared with the CPU analyses (`run_cpu`).
         let memo = input.memo();
         let memo = memo.as_ref().map(|m| m as &dyn Memo);
+        let Some(d) = super::gpu::device(input) else {
+            return run_cpu(self.0.name, &cfg, settings, memo, c);
+        };
+        let b = d.backend.as_ref();
         macro_rules! gpu {
             ($f:ident) => {{
                 let mut r = mklight_wave::gpu::analysis::$f(
@@ -120,26 +115,12 @@ fn run_cpu(
             r.pack()
         }};
     }
-    match name {
-        "wavefront_map" => cpu!(wavefront_map_shared),
-        "psf" => cpu!(psf_analysis_shared),
-        "mtf" => cpu!(mtf_analysis_shared),
-        "mtf_vs_field" => cpu!(mtf_vs_field_shared),
-        "through_focus_mtf" => cpu!(through_focus_mtf_analysis_shared),
-        "diffraction_encircled_energy" => cpu!(diffraction_encircled_energy_shared),
-        "line_spread" => cpu!(line_spread_shared),
-        _ => unreachable!("registered wave operation"),
-    }
+    dispatch!(name, cpu)
 }
 
-/// Solver settings as the JSON entry points parse them (`null` = defaults).
+/// Solver settings as the JSON entry points parse them.
 fn cpu_settings<S: serde::de::DeserializeOwned>(v: &Value) -> MkResult<S> {
-    let v = if v.is_null() {
-        Value::Object(Default::default())
-    } else {
-        v.clone()
-    };
-    serde_json::from_value(v).map_err(|e| MkError::InvalidParam(format!("settings: {e}")))
+    serde_json::from_value(v.clone()).map_err(|e| MkError::InvalidParam(format!("settings: {e}")))
 }
 
 pub fn register_all(r: &mut AnalysisRegistry) {
@@ -168,7 +149,7 @@ fn settings_schema(name: &str) -> Value {
     match name {
         "wavefront_map" => {
             annotations["zernike_ordering"] = json!({"enum": ["fringe", "standard"], "description": "Fringe Z1 onward by default; standard uses Noll normalisation."});
-            annotations["zernike_terms"] = json!({"minimum": 1, "description": "Number of fitted terms; Fringe supports at most 37."});
+            annotations["zernike_terms"] = json!({"minimum": 1, "maximum": mklight_wave::analysis::MAX_ZERNIKE_TERMS, "description": "Number of fitted terms; Fringe supports at most 37."});
         }
         "psf" | "diffraction_encircled_energy" | "line_spread" => {
             annotations["method"] = json!({"enum": ["fft", "huygens"]});
@@ -1129,8 +1110,8 @@ mod tests {
     use super::super::geometric::num_of;
     use super::*;
 
-    // The former route, kept as the reference: the whole result through a
-    // `serde_json::Value` tree, then the arrays walked back into buffers.
+    // The reference packing: the whole result through a `serde_json::Value`
+    // tree, then the arrays walked back into buffers.
     fn json_route(name: &str, mut json: Value) -> AnalysisOutput {
         let warnings = take_run_info(&mut json);
         let buffers = extract_buffers(name, &mut json);
@@ -1434,44 +1415,5 @@ mod tests {
                 poison(&mut f.y);
             }
         });
-    }
-
-    /// Release timing of the result packing alone (old JSON route vs typed),
-    /// on a dense PSF and wavefront map of the double Gauss:
-    /// cargo test --release -p mklight-engine --lib packing_cost -- --ignored --nocapture
-    #[test]
-    #[ignore]
-    fn packing_cost() {
-        fn time<R: Pack + Clone>(what: &str, name: &str, r: R) {
-            let median = |mut t: Vec<f64>| {
-                t.sort_by(f64::total_cmp);
-                t[t.len() / 2]
-            };
-            let (mut old, mut new) = (vec![], vec![]);
-            for _ in 0..7 {
-                let c = r.clone();
-                let t = std::time::Instant::now();
-                std::hint::black_box(json_route(name, serde_json::to_value(c).unwrap()));
-                old.push(t.elapsed().as_secs_f64() * 1e3);
-                let c = r.clone();
-                let t = std::time::Instant::now();
-                std::hint::black_box(c.pack().unwrap());
-                new.push(t.elapsed().as_secs_f64() * 1e3);
-            }
-            println!(
-                "PACKING_COST {what}: json route {:.2} ms, typed {:.3} ms (medians of 7)",
-                median(old),
-                median(new)
-            );
-        }
-        let lib = Arc::new(MaterialLibrary::with_builtin());
-        let cfg = configured_tracer(&samples::double_gauss(), lib, 0).unwrap();
-        let ctx = JobContext::new();
-        let s = json!({"grid_size": 1024, "pupil": {"grid": 256, "rays": 65}});
-        let psf = wa::psf_analysis_job(&cfg.tracer, &cpu_settings(&s).unwrap(), &ctx).unwrap();
-        time("psf 3 fields x 1024^2", "psf", psf);
-        let s = json!({"pupil": {"grid": 512, "rays": 129}});
-        let wf = wa::wavefront_map_job(&cfg.tracer, &cpu_settings(&s).unwrap(), &ctx).unwrap();
-        time("wavefront 3 fields x 512^2", "wavefront_map", wf);
     }
 }

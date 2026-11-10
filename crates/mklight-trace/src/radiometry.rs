@@ -63,9 +63,6 @@ use crate::pupil;
 use crate::trace::{TraceOptions, TraceStatus};
 use crate::tracer::{FieldPoint, PreparedField, SequentialTracer};
 
-/// Backend name reported in [`RunInfo`].
-const BACKEND: &str = "cpu-f64";
-
 /// How interface losses of a ray are combined (module docs).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -432,7 +429,7 @@ pub fn system_transmission(
         &sys.snapshot,
         "system_transmission",
         settings,
-        BACKEND,
+        crate::BACKEND,
         Precision::F64Reference,
         settings.pupil.seed(),
         warnings,
@@ -576,7 +573,7 @@ pub fn polarization_pupil_map(
         &tracer.system().snapshot,
         "polarization_pupil_map",
         settings,
-        BACKEND,
+        crate::BACKEND,
         Precision::F64Reference,
         None,
         warnings,

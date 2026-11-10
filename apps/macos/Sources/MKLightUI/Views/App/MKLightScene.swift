@@ -36,8 +36,3 @@ public struct MKLightScene: Scene {
         #endif
     }
 }
-
-extension EnvironmentValues {
-    /// The engine every window talks to.
-    @Entry public var mklightEngine: any EngineClient = MockEngine()
-}

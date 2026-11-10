@@ -29,7 +29,7 @@ public enum AutoSettings {
         case "focus_range_mm" where analysis == "through_focus_mtf": return .null
         case "spacing_mm" where analysis == "psf": return .null
         case "optics.psf_spacing_mm": return .null
-        case "through_focus.min", "through_focus.max" where analysis == "spot_diagram": return .null
+        case "through_focus.min" where analysis == "spot_diagram", "through_focus.max" where analysis == "spot_diagram": return .null
         case "frequencies" where ["mtf_vs_field", "through_focus_mtf"].contains(analysis): return .empty
         default: return nil
         }
@@ -66,13 +66,13 @@ public enum AutoSettings {
         case ("line_spread", "grid_size"):
             return range((j["fields"]?.array ?? []).compactMap { f in output.buffer(ref: f["positions_mm"]).map { Double($0.count) } })
         case ("mtf", "max_frequency"):
-            guard let f = output.buffer(ref: j["frequencies"]) ?? output.buffer(named: "frequencies"), f.count > 0 else { return nil }
+            guard let f = output.buffer(key: "frequencies"), f.count > 0 else { return nil }
             return String(format: "%.3g", f[f.count - 1])
         case ("mtf_vs_field", "frequencies"), ("through_focus_mtf", "frequencies"):
-            guard let f = output.buffer(ref: j["frequencies"]) ?? output.buffer(named: "frequencies"), f.count > 0 else { return nil }
+            guard let f = output.buffer(key: "frequencies"), f.count > 0 else { return nil }
             return f.doubles.map { String(format: "%.3g", $0) }.joined(separator: ", ")
         case ("through_focus_mtf", "focus_range_mm"):
-            guard let f = output.buffer(ref: j["focus_mm"]) ?? output.buffer(named: "focus_mm"), f.count > 0 else { return nil }
+            guard let f = output.buffer(key: "focus_mm"), f.count > 0 else { return nil }
             let half = f.doubles.map(abs).max() ?? .nan
             return half.isFinite ? "±" + String(format: "%.3g", half) : nil
         case ("spot_diagram", "through_focus"):
@@ -85,7 +85,7 @@ public enum AutoSettings {
             // Wavefront maps report their grids; other analyses do not.
             return range((j["maps"]?.array ?? []).compactMap { $0["grid"]?.doubleValue })
         case ("image_simulation", "optics.psf_size"):
-            return j["psf_size"]?.doubleValue.map { String(Int($0)) }
+            return j["psf_size"]?.doubleValue.flatMap(whole).map { String($0) }
         case ("image_simulation", "optics.psf_spacing_mm"):
             return j["psf_spacing_mm"]?.doubleValue.map { micrometres($0, upper: nil) }
         default:
@@ -93,11 +93,15 @@ public enum AutoSettings {
         }
     }
 
-    /// "282", or "254–371" when the values differ.
+    /// "282", or "254–371" when the values differ; `nil` without values or
+    /// when one has no whole part.
     static func range(_ v: [Double]) -> String? {
-        guard let lo = v.min(), let hi = v.max() else { return nil }
-        return lo == hi ? String(Int(lo)) : "\(Int(lo))–\(Int(hi))"
+        guard let lo = v.min(), let hi = v.max(), let a = whole(lo), let b = whole(hi) else { return nil }
+        return lo == hi ? String(a) : "\(a)–\(b)"
     }
+
+    /// The whole part of `v`; `nil` when `v` is not finite or beyond `Int`.
+    static func whole(_ v: Double) -> Int? { Int(exactly: v.rounded(.towardZero)) }
 
     static func micrometres(_ mm: Double, upper: Double?) -> String {
         let a = String(format: "%.3g", mm * 1000)

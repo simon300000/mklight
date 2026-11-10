@@ -109,8 +109,3 @@ pub fn run_sync(session: &Session, analysis: &str) -> CliResult<Value> {
 pub fn warning_lines(warnings: &[String]) -> String {
     warnings.iter().map(|w| format!("warning: {w}\n")).collect()
 }
-
-/// Session warnings raised while opening (missing or unreadable catalogs).
-pub fn open_warnings(session: &Session) -> Vec<String> {
-    session.open_warnings().to_vec()
-}

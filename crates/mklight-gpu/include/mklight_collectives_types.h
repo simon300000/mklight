@@ -1,4 +1,4 @@
-/* P3 collectives. Offsets and lengths count elements. Included by mklight_gpu_types.h. */
+/* Collectives. Offsets and lengths count elements. Included by mklight_gpu_types.h. */
 #ifndef MKLIGHT_COLLECTIVES_TYPES_H
 #define MKLIGHT_COLLECTIVES_TYPES_H
 #define MKL_COLLECT_SUM 0u

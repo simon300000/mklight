@@ -19,7 +19,9 @@ use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use super::psf::{PsfMethod, check_huygens_grid, compute_psf, image_grid};
-use super::{check_pos, fields, linspace, run_info, system_field_pupils, wavelengths};
+use super::{
+    ItemProgress, check_pos, fields, linspace, run_info, system_field_pupils, wavelengths,
+};
 use crate::energy::{
     EnergyCenter, LsfAxis, encircled_energy_batch, ensquared_energy, line_spread_function,
 };
@@ -176,15 +178,14 @@ pub fn diffraction_encircled_energy_shared(
     let radius = linspace(0.0, rmax, settings.samples);
     let dense = linspace(0.0, rmax, 8 * settings.samples);
     let mut warnings = skipped;
-    let nf = per.len().max(1) as f64;
+    let progress = ItemProgress::new(ctx.subrange(0.3, 0.8), per.len());
     // Fields are independent: they run side by side and merge in field
     // order (results and warnings do not depend on the scheduling).
     let computed: Vec<MkResult<_>> = per
         .into_par_iter()
-        .enumerate()
-        .map(|(k, (f, value, mut fp))| {
+        .map(|(f, value, mut fp)| {
             let mut warnings = fp.warnings.clone();
-            let sub = ctx.subrange(0.3 + 0.5 * k as f64 / nf, 0.3 + 0.5 * (k + 1) as f64 / nf);
+            let sub = progress.item();
             warnings.extend(fp.ensure_window(
                 grid as f64 * spacing,
                 &settings.pupil,
@@ -240,6 +241,7 @@ pub fn diffraction_encircled_energy_shared(
                 }
                 EnergyCenter::Point { x, y } => [x, y],
             };
+            progress.finish();
             Ok((
                 warnings,
                 (f, value, fp.sampling(), center_mm, psf, dl_psf, sq),
@@ -377,15 +379,14 @@ pub fn line_spread_shared(
     )?;
     let mut warnings = skipped;
     let mut out = Vec::new();
-    let nf = per.len().max(1) as f64;
+    let progress = ItemProgress::new(ctx.subrange(0.4, 1.0), per.len());
     // Fields are independent: they run side by side and merge in field
     // order (results and warnings do not depend on the scheduling).
     let computed: Vec<MkResult<_>> = per
         .into_par_iter()
-        .enumerate()
-        .map(|(k, (f, value, mut fp))| {
+        .map(|(f, value, mut fp)| {
             let mut warnings = fp.warnings.clone();
-            let sub = ctx.subrange(0.4 + 0.6 * k as f64 / nf, 0.4 + 0.6 * (k + 1) as f64 / nf);
+            let sub = progress.item();
             let spacing = fp.min_lambda_f() / settings.padding;
             let grid = image_grid(settings.grid_size, settings.method, &fp.weighted(), spacing);
             warnings.extend(fp.ensure_window(
@@ -409,6 +410,7 @@ pub fn line_spread_shared(
                 || line_spread_function(&psf, LsfAxis::X),
                 || line_spread_function(&psf, LsfAxis::Y),
             );
+            progress.finish();
             Ok((
                 warnings,
                 FieldLineSpread {

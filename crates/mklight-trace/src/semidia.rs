@@ -34,8 +34,8 @@ use crate::trace::{SurfaceRecord, TraceOptions, trace_rays_recorded};
 use crate::tracer::{RayRequest, SequentialTracer};
 
 /// Rays traced between two cancellation checks (and progress reports) of
-/// [`SequentialTracer::semi_diameters_with`].
-pub const CANCEL_CHUNK: usize = 64;
+/// [`SequentialTracer::semi_diameters_with`]: one packet batch.
+pub const CANCEL_CHUNK: usize = crate::batch::CHUNK;
 
 /// Settings of [`SequentialTracer::semi_diameters`]. In JSON every field is
 /// optional (defaults below) and unknown keys are rejected, so a misspelt

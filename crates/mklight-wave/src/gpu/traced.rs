@@ -1,5 +1,6 @@
-//! P1 generation/trace/projection and P7 scalar transport, retaining lattice
-//! channels for resampling and fits. Only small rim-loop topology returns to host.
+//! Device pupil generation, trace and projection with scalar radiometric
+//! transport, retaining lattice channels for resampling and fits. Only small
+//! rim-loop topology returns to host.
 //! Every pupil of a batch (fields × wavelengths) shares the chief, lattice,
 //! saddle and rim-bisection commands; placement and resampling stay per pupil.
 use super::*;
@@ -211,27 +212,7 @@ fn rows<T: bytemuck::Pod>(b: &dyn ComputeBackend, v: &[T]) -> MkResult<BufferHan
     })
 }
 pub(crate) fn accumulate(a: &mut PlanStats, b: &PlanStats) {
-    let offset = a.stages.len();
-    a.stages.extend(b.stages.iter().cloned().map(|mut s| {
-        s.operation += offset;
-        s
-    }));
-    a.copied_bytes += b.copied_bytes;
-    a.wall_seconds += b.wall_seconds;
-    a.device_seconds += b.device_seconds;
-    a.command_buffers += b.command_buffers;
-    a.allocations += b.allocations;
-    a.reused_allocations += b.reused_allocations;
-    a.uploaded_bytes += b.uploaded_bytes;
-    a.parameter_bytes += b.parameter_bytes;
-    a.readback_bytes += b.readback_bytes;
-    a.peak_bytes = a.peak_bytes.max(b.peak_bytes);
-    a.fallback_count += b.fallback_count;
-    a.polished_rays += b.polished_rays;
-    a.host_waits += b.host_waits;
-    a.host_wait_seconds += b.host_wait_seconds;
-    a.long_commands += b.long_commands;
-    a.add_activity(b);
+    a.merge(b);
 }
 fn subset(h: &BufferHandle, shape: impl Into<Vec<usize>>) -> BufferView {
     let mut v = h.view();
@@ -312,7 +293,7 @@ impl<'a> PupilTracer<'a> {
             spectrum: String::new(),
             layout: mklight_gpu::consts::MKL_LAYOUT_VERSION,
             kernel_build: backend.precision().kernel_build.clone(),
-            operation_settings: "P6 pupil tracing v1".into(),
+            operation_settings: "wave pupil tracing v1".into(),
         };
         let systems = backend.upload_systems_cached(&key, &packed)?;
         Ok(Self {
@@ -641,7 +622,7 @@ impl<'a> PupilTracer<'a> {
                 .count();
             if count > 0 {
                 return Err(MkError::Unsupported(format!(
-                    "P7 pupil transport requires reference completion for {count} rows"
+                    "pupil radiometric transport requires reference completion for {count} rows"
                 )));
             }
         }
@@ -706,7 +687,7 @@ impl<'a> PupilTracer<'a> {
         }
         if unresolved > 0 {
             return Err(MkError::Unsupported(format!(
-                "P6 has {unresolved} unresolved in-pupil aims; reference completion required (e.g.{detail})"
+                "{unresolved} in-pupil aims are unresolved; reference completion required (e.g.{detail})"
             )));
         }
         Ok(())
@@ -1305,14 +1286,30 @@ impl<'a> PupilTracer<'a> {
             let mut v = p.view(points)?;
             v.desc.shape = vec![3, n];
             v.stride = 1;
-            let summary = super::sampling::reduce(
-                self.backend,
-                &mut p,
-                v,
-                Some(p_view(mask, &BufferDesc::new(ElementType::U32, [n]))),
-                None,
-                col::SegmentKind::Moments2,
-            )?;
+            // One segment over all rays: the masked second moments.
+            let offsets = fill::<u32>(self.backend, [2], |a| {
+                a.copy_from_slice(&[0, n as u32]);
+                Ok(())
+            })?;
+            let offsets = p.import(offsets.view());
+            let summary = p.scratch(BufferDesc::new(ElementType::DoubleFloat, [1, 10]));
+            let status = p.scratch(BufferDesc::new(ElementType::U32, [1]));
+            p.operations
+                .push(ResidentOp::Collectives(col::Request::SegmentReduce(
+                    col::SegmentReduce {
+                        values: v,
+                        offsets: p.view(offsets)?,
+                        mask: Some(p_view(mask, &BufferDesc::new(ElementType::U32, [n]))),
+                        mask_value: 1,
+                        weights: None,
+                        max_segment_len: n,
+                        reference: None,
+                        mode: ReduceMode::DoubleFloat,
+                        kind: col::SegmentKind::Moments2,
+                        output: summary,
+                        status,
+                    },
+                )));
             p.outputs = vec![summary];
             let r = self
                 .backend
@@ -1531,13 +1528,11 @@ impl<'a> PupilTracer<'a> {
             settings,
             &self.radiometry.identity,
         );
-        let identity = key.iter().map(|b| format!("{b:02x}")).collect::<String>();
         let mut result = from_resident_lattice(
             self.backend,
             sys.snapshot.clone(),
             nodes.view(),
             subset(&valid, [side, side]),
-            identity,
             grid,
             sys.wavelengths_um[wl],
             geometry,
@@ -1594,7 +1589,7 @@ impl<'a> PupilTracer<'a> {
             surviving_rays: item.survived,
             rim_points: item.ids.len(),
         };
-        result.run_info.settings = serde_json::json!({"p6":"traced_pupil","field":item.field.point,"wavelength":wl,"pupil":settings,"grid":grid,"resident_stats":stats});
+        result.run_info.settings = serde_json::json!({"operation":"traced_pupil","field":item.field.point,"wavelength":wl,"pupil":settings,"grid":grid,"resident_stats":stats});
         Ok(WaveResult {
             value: ResidentTracedPupil {
                 pupil: result.value,

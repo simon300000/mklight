@@ -32,8 +32,25 @@ pub struct WavefrontSettings {
     pub wavelengths: WavelengthSelection,
     pub pupil: PupilSettings,
     pub zernike_ordering: ZernikeOrdering,
-    /// Number of Zernike terms (at most 37 for Fringe).
+    /// Number of Zernike terms (at most 37 for Fringe and
+    /// [`MAX_ZERNIKE_TERMS`] for Standard).
     pub zernike_terms: usize,
+}
+
+/// Largest number of fitted Zernike terms: the Standard (Noll) terms through
+/// radial order 20. The fit holds `rays × terms` values and costs
+/// `rays × terms²` operations (about 2·10⁸ at the default lattice).
+pub const MAX_ZERNIKE_TERMS: usize = 231;
+
+/// The fit basis of `settings`.
+pub(crate) fn fit_basis(settings: &WavefrontSettings) -> MkResult<ZernikeBasis> {
+    if settings.zernike_terms > MAX_ZERNIKE_TERMS {
+        return Err(MkError::InvalidParam(format!(
+            "{} Zernike terms requested; at most {MAX_ZERNIKE_TERMS} are fitted",
+            settings.zernike_terms
+        )));
+    }
+    ZernikeBasis::new(settings.zernike_ordering, settings.zernike_terms)
 }
 
 impl Default for WavefrontSettings {
@@ -168,7 +185,7 @@ pub fn wavefront_map_shared(
     ctx: &JobContext,
 ) -> MkResult<WavefrontResult> {
     let timer = RunTimer::start();
-    let basis = ZernikeBasis::new(settings.zernike_ordering, settings.zernike_terms)?;
+    let basis = fit_basis(settings)?;
     let idx = fields(tracer, &settings.fields)?;
     let wls = wavelengths(tracer, &settings.wavelengths)?;
     let (per, skipped) = system_field_pupils(
@@ -202,7 +219,7 @@ pub fn wavefront_map_shared(
                     fit_ctx.check()?;
                     // A field with too few surviving rays for the fit is
                     // skipped like an unusable field (`super` module docs).
-                    let fit = match fit_traced(&tp, &basis, &JobContext::new()) {
+                    let fit = match fit_traced(&tp, &basis, &fit_ctx) {
                         Ok(fit) => fit,
                         Err(e @ MkError::Numerical(_)) => {
                             let w = format!("field {f}, wavelength {wl} skipped: {e}");

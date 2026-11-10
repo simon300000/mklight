@@ -1,6 +1,7 @@
 //! Ghost sequence geometry and separate s/p transport. Path expansion and
 //! coverage belong to the solver; this service consumes validated steps.
 mod kernel;
+pub use crate::resident::record_desc;
 use crate::{Df32, pending::JobControl, radiometry::*, resident::*};
 use bytemuck::{Pod, Zeroable};
 pub use kernel::trace;
@@ -73,6 +74,14 @@ pub struct FirstOrderStep {
     pub coating: u32,
     pub channel: u32,
 }
+// Byte sizes of the matching MSL structs in mklight_ghost_ops_types.h
+// (float2 members, 8-byte aligned).
+const _: () = {
+    use std::mem::size_of;
+    assert!(size_of::<Step>() == 48 && size_of::<Probe>() == 56);
+    assert!(size_of::<Value>() == 80 && size_of::<LaunchSample>() == 40);
+    assert!(size_of::<Leaf>() == 32 && size_of::<FirstOrderStep>() == 48);
+};
 #[derive(Clone, Debug)]
 pub enum Request {
     MomentTerms {
@@ -145,7 +154,7 @@ pub enum Request {
     },
 }
 /// Coating records the ghost trace evaluates at each completed step's
-/// incidence with the P7 arithmetic, folding s/p powers, efficiency and
+/// incidence with the radiometry coating arithmetic, folding s/p powers, efficiency and
 /// absorption in step order. No per-step query or coating value is stored.
 #[derive(Clone, Debug)]
 pub struct TraceCoatings {
@@ -153,23 +162,8 @@ pub struct TraceCoatings {
     pub layers: PlanView,
     pub sensor_reflectance: Df32,
 }
-pub fn record_desc<T>(n: usize) -> BufferDesc {
-    crate::radiometry::record_desc::<T>(n)
-}
 fn records<T>(v: &PlanView, p: &ResidentPlan) -> MkResult<usize> {
-    let n = v.desc.shape.first().copied().unwrap_or(0);
-    let base = match &p.buffers[v.buffer.0] {
-        PlanBuffer::Import(v) => v.offset,
-        _ => 0,
-    };
-    if v.desc != record_desc::<T>(n)
-        || v.stride != 1
-        || !(base + v.offset).is_multiple_of(2)
-        || v.desc.len()? > u32::MAX as usize
-    {
-        return Err(bad("ghost record layout"));
-    }
-    Ok(n)
+    check_records::<T>(v, p, "ghost")
 }
 pub fn validate(r: &Request, p: &ResidentPlan) -> MkResult<()> {
     let (probes, offsets, steps, wavelengths, output) = match r {
@@ -294,6 +288,14 @@ pub fn validate(r: &Request, p: &ResidentPlan) -> MkResult<()> {
                 || p.desc(*weights)? != &BufferDesc::new(ElementType::DoubleFloat, [n])
             {
                 return Err(bad("ghost pixel records"));
+            }
+            // Keys are u32: `map · bins + pixel`, and `maps · bins` for a miss.
+            let pixels = u64::from(bins[0]) * u64::from(bins[1]);
+            if (*maps as u64)
+                .checked_mul(pixels)
+                .is_none_or(|keys| keys >= u64::from(u32::MAX))
+            {
+                return Err(bad("ghost pixel keys exceed u32"));
             }
             return Ok(());
         }
@@ -458,12 +460,6 @@ pub fn accesses(r: &Request) -> Access {
         }
     }
 }
-fn rows<'a, T: Pod>(x: &'a cpu::Execution, v: &PlanView) -> &'a [T] {
-    bytemuck::cast_slice(
-        &x.words(v.buffer)[v.offset * v.desc.element.words()
-            ..(v.offset + v.desc.len().unwrap()) * v.desc.element.words()],
-    )
-}
 pub fn execute(r: &Request, x: &mut cpu::Execution, ctl: &JobControl) -> MkResult<()> {
     if x.flush_to_zero {
         execute_in::<crate::Ftz>(r, x, ctl)
@@ -483,7 +479,7 @@ fn execute_in<E: crate::FpEnv>(
                 if i % 4096 == 0 {
                     ctl.check()?;
                 }
-                let v = rows::<Df32>(x, hits);
+                let v = x.rows::<Df32>(hits);
                 let row = [v[5 * i], v[5 * i + 1], v[5 * i + 2]];
                 let out = bytemuck::cast_slice_mut::<_, Df32>(x.words_mut(*output));
                 for k in 0..3 {
@@ -497,7 +493,7 @@ fn execute_in<E: crate::FpEnv>(
                 if i % 4096 == 0 {
                     ctl.check()?;
                 }
-                let ks = rows::<u32>(x, keys);
+                let ks = x.rows::<u32>(keys);
                 let flag = ks[i] < *bins as u32 && (i == 0 || ks[i] != ks[i - 1]);
                 x.words_mut(*output)[i] = flag as u32;
             }
@@ -511,8 +507,8 @@ fn execute_in<E: crate::FpEnv>(
             count,
         } => {
             let n = keys.desc.len()?;
-            let total = rows::<u32>(x, prefix).last().copied().unwrap_or(0);
-            let end = rows::<u32>(x, keys).partition_point(|&k| k < *bins as u32);
+            let total = x.rows::<u32>(prefix).last().copied().unwrap_or(0);
+            let end = x.rows::<u32>(keys).partition_point(|&k| k < *bins as u32);
             x.words_mut(*count)[0] = total;
             x.words_mut(*count)[1] = 0;
             x.words_mut(*offsets)[total as usize] = end as u32;
@@ -520,13 +516,13 @@ fn execute_in<E: crate::FpEnv>(
                 if i % 4096 == 0 {
                     ctl.check()?;
                 }
-                let ks = rows::<u32>(x, keys);
+                let ks = x.rows::<u32>(keys);
                 if ks[i] >= *bins as u32 || (i > 0 && ks[i] == ks[i - 1]) {
                     continue;
                 }
                 let pixel = ks[i];
                 let end = ks.partition_point(|&k| k <= pixel);
-                let dest = rows::<u32>(x, prefix)[i] as usize - 1;
+                let dest = x.rows::<u32>(prefix)[i] as usize - 1;
                 x.words_mut(*offsets)[dest] = i as u32;
                 x.words_mut(*pixels)[dest] = pixel;
                 x.words_mut(*count)[1] = x.words(*count)[1].max((end - i) as u32);
@@ -542,8 +538,8 @@ fn execute_in<E: crate::FpEnv>(
                 if i % 4096 == 0 {
                     ctl.check()?;
                 }
-                let pixel = rows::<u32>(x, pixels)[i] as usize;
-                let value = rows::<Df32>(x, values)[i];
+                let pixel = x.rows::<u32>(pixels)[i] as usize;
+                let value = x.rows::<Df32>(values)[i];
                 bytemuck::cast_slice_mut::<_, Df32>(x.words_mut(*output))[pixel] = value;
             }
         }
@@ -562,7 +558,7 @@ fn execute_in<E: crate::FpEnv>(
                 if i % 256 == 0 {
                     ctl.check()?;
                 }
-                let offsets = rows::<u32>(x, offsets);
+                let offsets = x.rows::<u32>(offsets);
                 let (a, z) = (offsets[i] as usize, offsets[i + 1] as usize);
                 use crate::{
                     consts::*,
@@ -573,10 +569,10 @@ fn execute_in<E: crate::FpEnv>(
                 let sensor = D::from_df(*sensor_reflectance);
                 let mut reference = false;
                 let mut v: [crate::fx::D<E>; 4] = std::array::from_fn(|k| {
-                    crate::fx::D::from_df(rows::<Df32>(x, initial)[4 * i + k])
+                    crate::fx::D::from_df(x.rows::<Df32>(initial)[4 * i + k])
                 });
                 for k in a..z {
-                    let st = rows::<FirstOrderStep>(x, steps)[k];
+                    let st = x.rows::<FirstOrderStep>(steps)[k];
                     let phi = crate::fx::D::from_df(st.power);
                     let index = crate::fx::D::from_df(st.index);
                     let dz = crate::fx::D::from_df(st.distance);
@@ -590,7 +586,7 @@ fn execute_in<E: crate::FpEnv>(
                         MKL_GHOST_AXIAL_TRANSMIT
                         | MKL_GHOST_AXIAL_REFLECT
                         | MKL_GHOST_AXIAL_MIRROR => {
-                            let c = rows::<CoatingValue>(x, coatings)[st.coating as usize];
+                            let c = x.rows::<CoatingValue>(coatings)[st.coating as usize];
                             if c.status != MKL_RAD_OK {
                                 reference = true;
                             } else {
@@ -637,8 +633,8 @@ fn execute_in<E: crate::FpEnv>(
                 if i % 4096 == 0 {
                     ctl.check()?;
                 }
-                let l = rows::<Leaf>(x, leaves)[i];
-                let v = rows::<Value>(x, &sources[l.batch as usize])[l.row as usize];
+                let l = x.rows::<Leaf>(leaves)[i];
+                let v = x.rows::<Value>(&sources[l.batch as usize])[l.row as usize];
                 let w = kernel::leaf_weight::<E>(v, l.weight);
                 let data = bytemuck::cast_slice_mut::<_, Df32>(x.words_mut(*output));
                 data[5 * l.destination as usize..][..5].copy_from_slice(&[
@@ -663,7 +659,7 @@ fn execute_in<E: crate::FpEnv>(
                 if i % 4096 == 0 {
                     ctl.check()?;
                 }
-                let h = rows::<Df32>(x, hits);
+                let h = x.rows::<Df32>(hits);
                 let pixel = if h[5 * i + 4].hi > 0. {
                     h[5 * i + 4].hi as u32 - 1
                 } else {
@@ -690,12 +686,12 @@ fn execute_in<E: crate::FpEnv>(
                 if i % 1024 == 0 {
                     ctl.check()?;
                 }
-                let q = rows::<LaunchSample>(x, samples)[i];
-                let fields = rows::<crate::aiming::FieldSpec>(x, fields);
+                let q = x.rows::<LaunchSample>(samples)[i];
+                let fields = x.rows::<crate::aiming::FieldSpec>(fields);
                 let field = fields
                     .get(q.field as usize)
                     .ok_or_else(|| bad("ghost launch field"))?;
-                let data = rows::<f32>(x, chiefs);
+                let data = x.rows::<f32>(chiefs);
                 let n = fields.len();
                 let j = q.field as usize;
                 let pos =
@@ -720,19 +716,14 @@ fn execute_in<E: crate::FpEnv>(
             output,
         } => {
             let s = x.system(*systems)?;
-            let (headers, surfaces, pool) = (
-                s.headers.clone(),
-                s.surfaces.clone(),
-                s.coefficients.clone(),
-            );
             let n = probes.desc.shape[0];
             for i in 0..n {
                 if i % 256 == 0 {
                     ctl.check()?;
                 }
-                let q = rows::<Probe>(x, probes)[i];
-                let os = rows::<u32>(x, offsets);
-                let ss = rows::<Step>(x, steps);
+                let q = x.rows::<Probe>(probes)[i];
+                let os = x.rows::<u32>(offsets);
+                let ss = x.rows::<Step>(steps);
                 if q.path as usize + 1 >= os.len() || q.wavelength as usize >= *wavelengths {
                     return Err(bad("ghost probe index"));
                 }
@@ -745,14 +736,14 @@ fn execute_in<E: crate::FpEnv>(
                     return Err(bad("ghost path offset"));
                 }
                 let coat = coatings.as_ref().map(|c| kernel::Coatings {
-                    specs: rows::<CoatingSpec>(x, &c.specs),
-                    layers: rows::<CoatingLayer>(x, &c.layers),
+                    specs: x.rows::<CoatingSpec>(&c.specs),
+                    layers: x.rows::<CoatingLayer>(&c.layers),
                     sensor: c.sensor_reflectance,
                 });
                 let v = kernel::trace::<E>(
-                    &headers[0],
-                    &surfaces,
-                    &pool,
+                    &s.headers[0],
+                    &s.surfaces,
+                    &s.coefficients,
                     &ss[q.wavelength as usize * plane + a..q.wavelength as usize * plane + z],
                     q,
                     *reject_virtual,

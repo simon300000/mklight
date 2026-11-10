@@ -21,9 +21,6 @@ impl<K: Eq + Hash + Clone, V: Clone> LruCache<K, V> {
             map: HashMap::new(),
         }
     }
-    pub fn capacity(&self) -> usize {
-        self.capacity
-    }
     pub fn len(&self) -> usize {
         self.map.len()
     }

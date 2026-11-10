@@ -229,21 +229,9 @@ impl TransportScene {
         options: TransportOptions,
         sag_mode: u32,
     ) -> MkResult<(BufferId, BufferId, BufferId)> {
-        // Reuse the validated source descriptor and CDF, then fuse its device
-        // generation into the first transport command.
-        generate(
-            plan,
-            source,
-            &scene.wavelength_weights,
-            settings.seed,
-            first,
-            count,
-            65536,
-        )?;
-        let ResidentOp::Stray(ops::Request::Generate(g)) = plan.operations.pop().unwrap() else {
-            unreachable!()
-        };
-        plan.buffers.pop();
+        // The validated source descriptor and CDF; the device generates the
+        // sources inside the first transport command.
+        let (source_record, cdf) = source_record(source, &scene.wavelength_weights)?;
         let (primitives, nodes, shapes) = self.geometry.import(plan);
         let mut import = |b: &BufferHandle| {
             let id = plan.import(b.view());
@@ -282,8 +270,8 @@ impl TransportScene {
                     media,
                     tis,
                     sequence,
-                    source: g.source,
-                    cdf: g.cdf,
+                    source: source_record,
+                    cdf,
                     settings: ops::Settings {
                         weight: Df32::from_f64(source.power() / settings.rays as f64),
                         roulette: Df32::from_f64(settings.roulette_threshold),
@@ -318,22 +306,20 @@ impl TransportScene {
         Ok((output, ledger, stack))
     }
 }
-pub(super) fn history(h: &ops::History) -> History {
+/// The path history of a device record; a record no kernel of this build
+/// writes is a backend error.
+pub(super) fn history(h: &ops::History) -> MkResult<History> {
+    let malformed = || MkError::Backend("stray transport: malformed device path history".into());
     let mut signature = Signature::default();
-    for e in &h.events[..h.length as usize] {
-        let k = match e >> 28 {
-            1 => EventKind::Reflect,
-            2 => EventKind::Tir,
-            3 => EventKind::ScatterReflect,
-            4 => EventKind::ScatterTransmit,
-            5 => EventKind::MechanicalSpecular,
-            6 => EventKind::MechanicalScatter,
-            7 => EventKind::OutsideClip,
-            _ => unreachable!(),
-        };
+    for e in h.events.get(..h.length as usize).ok_or_else(malformed)? {
+        let k = EventKind::from_code(e >> 28).ok_or_else(malformed)?;
         signature.push(k, (e & 0xfffffff) as usize);
     }
-    for &[tag, order] in &h.orders[..h.order_count as usize] {
+    for &[tag, order] in h
+        .orders
+        .get(..h.order_count as usize)
+        .ok_or_else(malformed)?
+    {
         let order = order as i32;
         signature.diffract(
             (tag & 65535) as usize,
@@ -357,7 +343,7 @@ pub(super) fn history(h: &ops::History) -> History {
     out.scatter_events = h.scatter_events as u16;
     out.signature = signature;
     out.set_next_specular(h.next_specular);
-    out
+    Ok(out)
 }
 /// Explicit resident adapter; unsupported capacities return an error for the
 /// engine's reported fallback policy. Cancellation never invokes reference work.
@@ -370,7 +356,7 @@ pub fn run(
     options: TransportOptions,
     ctx: &JobContext,
 ) -> MkResult<StrayResult> {
-    run_design_with(
+    run_design(
         b,
         snapshot,
         scene,
@@ -378,7 +364,6 @@ pub fn run(
         settings,
         options,
         super::hybrid::Design::selected()?,
-        &mut || Ok(()),
         ctx,
     )
 }
@@ -399,6 +384,7 @@ pub fn run_design(
         b,
         snapshot,
         scene,
+        &scene.fingerprint(),
         source,
         settings,
         options,
@@ -407,19 +393,21 @@ pub fn run_design(
         ctx,
     )
 }
-/// [`run_design`] with CPU work of the caller, `side`, that runs once while
-/// the device transports the first plans (before the CPU fallback, which
-/// has no overlap).
+/// [`run_design`] with the scene's `fingerprint` (`Scene::fingerprint`) and
+/// CPU work of the caller, `side`, that runs once while the device
+/// transports the first plans (before the CPU fallback, which has no
+/// overlap).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_design_with(
     b: &dyn ComputeBackend,
     snapshot: Snapshot,
     scene: &Scene,
+    fingerprint: &str,
     source: &SourceSpec,
     settings: &StraySettings,
     options: TransportOptions,
     design: super::hybrid::Design,
-    side: &mut dyn FnMut() -> MkResult<()>,
+    side: &mut (dyn FnMut() -> MkResult<()> + Send),
     ctx: &JobContext,
 ) -> MkResult<StrayResult> {
     let timer = mklight_core::job::RunTimer::start();
@@ -427,6 +415,7 @@ pub(crate) fn run_design_with(
         b,
         snapshot.clone(),
         scene,
+        fingerprint,
         source,
         settings,
         options,
@@ -437,11 +426,12 @@ pub(crate) fn run_design_with(
         Err(MkError::Unsupported(reason)) => {
             ctx.check()?;
             side()?;
-            let mut result = crate::tracer::run(
+            let mut result = crate::tracer::run_fingerprinted(
                 scene,
                 source,
                 settings,
-                &ctx.subrange(ctx.progress.fraction(), 0.99),
+                fingerprint,
+                &ctx.subrange(0.0, 0.99),
             )?;
             let warning = format!(
                 "{} stray transport fell back to CPU reference: {reason}",

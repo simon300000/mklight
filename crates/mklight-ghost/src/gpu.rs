@@ -1,5 +1,6 @@
-//! Explicit resident ghost jobs. Engine capability flags remain with P11.
-//! Immutable path programs use the solver's checked expansion and exact clips.
+//! Explicit resident ghost jobs; capability flags and routing belong to the
+//! engine. Immutable path programs use the solver's checked expansion and
+//! exact clips.
 use crate::{Action, Clip, Direction, GhostModel, GhostPath, InterfaceKind};
 use bytemuck::Pod;
 use mklight_core::{JobContext, MkError, MkResult, RunInfo, SurfaceShape};
@@ -480,7 +481,7 @@ impl<'a> GhostTransport<'a> {
         run.settings["gpu"] = serde_json::json!({"system_cache":self.backend.resident_cache_stats(),"resident_bytes":self.resident_probes.iter().map(|h|h.desc().byte_len().unwrap()).sum::<usize>(),"version":MKL_GHOST_VERSION,"distinct_probes":self.distinct_probes,"lattice_keys":self.lattice_keys,"reference_probes":self.fallback_probes,"reference_seconds":self.reference_seconds,"boundary_probes":self.boundary_probes,"pixel_migrations":self.pixel_migrations,"host_seconds":self.host_seconds,"host_cpu_seconds":self.host_cpu_seconds,"cpu_paths":self.cpu_paths,"plans":self.stats,"map_plans":*self.map_stats.borrow()});
         if self.fallback_probes > 0 {
             run.warnings.push(format!(
-                "P9: {} probes completed by CPU f64 reference",
+                "ghost transport: {} probes completed by the CPU f64 reference",
                 self.fallback_probes
             ));
         }
@@ -496,7 +497,8 @@ pub(crate) fn ray_out(v: Value) -> crate::irradiance::RayOut {
     }
 }
 /// Explicit GPU job; unsupported setup is returned to the engine adapter.
-/// Per-probe P7 reference masks are completed and counted by the scheduler.
+/// Probes the device flags for reference arithmetic are completed by the
+/// CPU f64 reference and counted by the scheduler.
 pub fn ghost_irradiance(
     backend: &dyn ComputeBackend,
     model: &GhostModel,
@@ -512,8 +514,9 @@ pub(crate) struct MapData {
     pub summaries: Vec<crate::irradiance::LeafSummary>,
 }
 impl GhostTransport<'_> {
-    /// P3 stable sort and fixed-tree pixel segments preserve leaf IDs. All
-    /// bins, offsets and sums are produced on device without floating atomics.
+    /// The stable sort and the fixed-tree pixel segments of the device
+    /// collectives preserve leaf IDs. All bins, offsets and sums are
+    /// produced on device without floating atomics.
     pub(crate) fn map(
         &self,
         mut leaves: Vec<op::Leaf>,
@@ -771,8 +774,9 @@ impl GhostTransport<'_> {
         Ok(batch)
     }
 }
-/// Batched real meridional ghost foci. P1 aims the requested pupil ray;
-/// paths share those resident launches. Lost rays keep their status and NaN.
+/// Batched real meridional ghost foci. The device aims the requested pupil
+/// ray (`mklight_gpu::aiming`); paths share those resident launches. Lost
+/// rays keep their status and NaN.
 pub struct GhostFocus {
     pub run: RunInfo,
     /// Path-major, wavelength-minor; signed image-local z from the sensor.
@@ -968,15 +972,7 @@ pub fn paraxial_batch(
     let os = backend.fill_buffer(
         BufferDesc::new(ElementType::U32, [offsets.len()]),
         &mut |mut f| {
-            let output = f.as_mut_slice::<u32>()?;
-            output[0] = 0;
-            let mut i = 0;
-            for path in &programs {
-                for _ in wavelengths {
-                    output[i + 1] = output[i] + path.len() as u32;
-                    i += 1;
-                }
-            }
+            f.as_mut_slice::<u32>()?.copy_from_slice(&offsets);
             Ok(())
         },
     )?;
@@ -1089,7 +1085,10 @@ pub fn paraxial_batch(
     r.run_info.settings["reference_and_result_seconds"] =
         serde_json::json!(reference_start.elapsed().as_secs_f64());
     if !reference_rows.is_empty() {
-        r.run_info.warnings.push(format!("P9 first order: {} path/wavelength rows completed by CPU f64 for coating, range or afocal conditioning",reference_rows.len()));
+        r.run_info.warnings.push(format!(
+            "ghost first order: {} path/wavelength rows completed by the CPU f64 reference for coating, range or afocal conditioning",
+            reference_rows.len()
+        ));
     }
     let run = timer.finish(
         &model.system().snapshot,

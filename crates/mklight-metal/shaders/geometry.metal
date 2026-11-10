@@ -200,12 +200,6 @@ kernel void mkl_geometry_coddington(constant MklPackedHeader* headers [[buffer(0
     MklDf v[3];if(!geo_coddington(h,surfaces+h.surface_offset,pool,hi,lo,n,i,wl,v))return;for(uint k=0;k<3;++k)out[3ul*i+k]=v[k].v;status[i]=0;
 }
 static inline GeoV gread(device const float* f,uint n,uint i,uint k){GeoV o;for(uint j=0;j<3;++j)o.v[j]=geo_hit(f,n,i,k+j);return o;}
-static inline bool gproject(device const float* f,uint n,uint i,GeoV ip,GeoV cd,thread GeoV& q,thread GeoV& slope){GeoV point=gread(f,n,i,0),d=gread(f,n,i,3);MklDf dc=vd(d,cd);if(dc.v.x<=0)return false;q=va(point,vs(d,vd(vb(ip,point),cd)/dc));slope=vb(vs(d,geo_c(1)/dc),cd);return true;}
-kernel void mkl_geometry_close(device const float* f [[buffer(0)]],device const uint* hit_status [[buffer(1)]],device float2* out [[buffer(2)]],device uint* status [[buffer(3)]],constant MklGeometryParams& p [[buffer(7)]],uint tid [[thread_position_in_grid]]){
-    uint i=p.offset+tid;if(tid>=p.count)return;uint n=p.chiefs,a=5*i;status[i]=1;for(uint j=0;j<3;++j)out[3ul*i+j]=float2(NAN,0);for(uint j=0;j<5;++j)if(hit_status[a+j]!=0)return;
-    GeoV ip=gread(f,n,a,0),cd=gread(f,n,a,3),et=vu(vb(gv(geo_c(0),geo_c(1),geo_c(0)),vs(cd,cd.v[1])));GeoB u={{et,vc(cd,et)}};GeoV q[4],d[4];for(uint k=0;k<4;++k)if(!gproject(f,n,a+1+k,ip,cd,q[k],d[k]))return;
-    GeoV xy=vb(q[0],q[1]),xx=vb(q[2],q[3]),ty=vb(d[0],d[1]),tx=vb(d[2],d[3]);GeoM x={{{vd(xy,u.v[0]),vd(xx,u.v[0])},{vd(xy,u.v[1]),vd(xx,u.v[1])}}},t={{{vd(ty,u.v[0]),vd(tx,u.v[0])},{vd(ty,u.v[1]),vd(tx,u.v[1])}}};MklDf v[3];if(!gf(x,t,u,cd,v))return;for(uint k=0;k<3;++k)out[3ul*i+k]=v[k].v;status[i]=0;
-}
 kernel void mkl_geometry_opd(device const float* f [[buffer(0)]],device const uint* hit_status [[buffer(1)]],device const float* cf [[buffer(2)]],device const uint* chief_status [[buffer(3)]],device const uint* index [[buffer(4)]],device const float2* meta [[buffer(5)]],device float2* out [[buffer(6)]],constant MklGeometryParams& p [[buffer(7)]],device uint* status [[buffer(8)]],uint tid [[thread_position_in_grid]]){
     uint i=p.offset+tid;if(tid>=p.count)return;uint n=p.stride,nc=p.chiefs,j=index[i];out[i]=float2(NAN,0);status[i]=1;if(j>=nc||hit_status[i]!=0||chief_status[j]!=0)return;
     GeoV pos=gread(f,n,i,0),dir=gread(f,n,i,3),cp=gread(cf,nc,j,0),cd=gread(cf,nc,j,3),w=vb(pos,cp);

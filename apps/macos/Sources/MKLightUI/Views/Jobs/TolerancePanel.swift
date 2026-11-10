@@ -37,7 +37,7 @@ struct TolerancePanel: View {
     }
 
     var body: some View {
-        JobPanelFrame(kind: .tolerance, subtitle: subtitle, window: window) {
+        JobPanelFrame(kind: .tolerance, subtitle: subtitle) {
             switch session.state {
             case .setup:
                 ToleranceEditor(design: design, workspace: workspace, session: session, context: context, edit: edit)
@@ -1074,12 +1074,12 @@ struct AnalysisSection: View {
                     HStack(spacing: Space.l) {
                         LabeledContent("Trials") {
                             OptionalNumberField(title: "Trials", value: Double(t.trials), prompt: "200", width: 64, format: { String(Int($0)) }) { v in
-                                if let v, v >= 1 { edit("Change Trials") { $0.trials = min(Int(v.rounded()), 100_000) } }
+                                if let v, v >= 1 { edit("Change Trials") { $0.trials = min(Int(saturating: v), 100_000) } }
                             }
                         }
                         LabeledContent("Seed") {
                             OptionalNumberField(title: "Seed", value: Double(t.seed), prompt: "0", width: 64, format: { String(Int($0)) }) { v in
-                                if let v, v >= 0 { edit("Change Seed") { $0.seed = Int(v.rounded()) } }
+                                if let v, v >= 0 { edit("Change Seed") { $0.seed = Int(saturating: v) } }
                             }
                         }
                     }
@@ -1094,7 +1094,7 @@ struct AnalysisSection: View {
                     LabeledContent("Keep") {
                         HStack(spacing: Space.xs) {
                             OptionalNumberField(title: "Recorded trials", value: Double(t.recordTrials), prompt: "0", width: 64, format: { String(Int($0)) }) { v in
-                                if let v, v >= 0 { edit("Change Recorded Trials") { $0.recordTrials = min(Int(v.rounded()), ToleranceSettings.maxRecordTrials) } }
+                                if let v, v >= 0 { edit("Change Recorded Trials") { $0.recordTrials = min(Int(saturating: v), ToleranceSettings.maxRecordTrials) } }
                             }
                             Text("trials’ perturbations").foregroundStyle(.secondary)
                         }
@@ -1167,16 +1167,13 @@ struct ToleranceProgress: View {
     let progress: JobProgress
 
     /// "Monte Carlo 40 / 200", "Sensitivity", from the engine's stage text
-    /// (or the trials counted from the progress).
+    /// and the trials counted from the progress.
     static func stageText(_ stage: String, trialsDone: Int? = nil, of trials: Int? = nil) -> String {
         let s = stage.lowercased()
         if s.contains("monte carlo") || s.contains("trial") {
-            let nums = stage.split(whereSeparator: { !$0.isNumber }).compactMap { Int($0) }
-            if nums.count >= 2 { return "Monte Carlo \(nums[0]) / \(nums[1])" }
             if let d = trialsDone, let n = trials { return "Monte Carlo \(d) / \(n)" }
             return "Monte Carlo"
         }
-        if s.contains("qualifying") { return "Preparing" }
         if s.contains("sensitiv") { return "Sensitivity" }
         if s.isEmpty || s == "queued" { return "Starting" }
         return stage.prefix(1).uppercased() + stage.dropFirst()
@@ -1913,7 +1910,7 @@ struct CompensatorStats: View {
             let mean = result.compensatorMean[j], sd = result.compensatorStd.indices.contains(j) ? result.compensatorStd[j] : .nan
             let shift = nominal.map { mean - $0 }
             rows.append(("Monte Carlo mean", Fmt.value(mean, unit: unit) + (shift.map { " (" + Fmt.signed($0, decimals: 4).trimmingCharacters(in: .whitespaces) + ")" } ?? "")))
-            rows.append(("Monte Carlo σ (±3σ)", String(format: "%.4g (±%.4g) ", sd, 3 * sd) + unit))
+            rows.append(("Monte Carlo σ (±3σ)", sd.isFinite ? String(format: "%.4g (±%.4g) ", sd, 3 * sd) + unit : "—"))
         }
         return rows
     }

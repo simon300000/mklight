@@ -83,6 +83,8 @@ struct AnalysisResultView: View {
         case "grid_distortion":
             return j["max_abs_distortion_percent"]?.nf.map { [KeyNumber(label: "Max distortion", value: String(format: "%.3f %%", $0))] } ?? []
         case "seidel":
+            // A design without rotational symmetry has no coefficients.
+            if j["status"]?.string == "not_applicable" { return [] }
             return [("Σ S_I", "s1"), ("Σ S_II", "s2"), ("Σ S_III", "s3")].compactMap { l, k in
                 j[path: "sums", k]?.nf.map { KeyNumber(label: l, value: Fmt.short($0)) }
             }

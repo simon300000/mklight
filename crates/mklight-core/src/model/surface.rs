@@ -198,8 +198,10 @@ impl SurfaceShape {
         }
     }
 
-    /// Whether the shape belongs to the original solver subset. Later solvers
-    /// must reject other shapes until their mathematics is implemented.
+    /// Whether the shape is one of the basic shapes: plane, conic, even
+    /// asphere, ideal lens and coordinate break, which the tracers handle in
+    /// closed form and the GPU record holds in fixed fields. A solver that
+    /// does not implement the other (extended) shapes rejects them.
     pub fn is_legacy(&self) -> bool {
         matches!(
             self,

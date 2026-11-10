@@ -61,12 +61,7 @@ pub fn field_map_job(
         .map(|&[x, y]| FieldPoint::normalized(x, y))
         .collect();
     points.push(FieldPoint::normalized(0.0, 0.0));
-    let real = mklight_core::RayAiming::Real {
-        tolerance: match t.aiming() {
-            mklight_core::RayAiming::Real { tolerance } => tolerance,
-            _ => 1e-12,
-        },
-    };
+    let real = crate::illumination::real_aiming(t);
     let hits = geo.append_chief_grid(
         &mut p,
         &points,

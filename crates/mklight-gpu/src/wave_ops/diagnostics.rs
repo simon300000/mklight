@@ -26,10 +26,9 @@ pub fn cpu(
     x: &mut crate::resident::cpu::Execution,
     ctl: &JobControl,
 ) -> MkResult<()> {
-    let read = |v: &PlanView| &x.words(v.buffer)[v.offset * v.desc.element.words()..];
-    let c: &[f32] = bytemuck::cast_slice(read(&r.coverage));
-    let w: &[Df32] = bytemuck::cast_slice(read(&r.opd));
-    let d: &[f32] = bytemuck::cast_slice(read(&r.extrapolation));
+    let c: &[f32] = x.rows(&r.coverage);
+    let w: &[Df32] = x.rows(&r.opd);
+    let d: &[f32] = x.rows(&r.extrapolation);
     let n = r.coverage.desc.shape[0];
     let nn = n * n;
     let mut a = [0., 0., 0., 0., 1., n as f32, n as f32, 0., 0.];
@@ -61,7 +60,7 @@ pub fn cpu(
         }
     }
     let mut area = Df32::ZERO;
-    for block in c[..nn].chunks(256) {
+    for block in c[..nn].chunks(spec::SUM_BLOCK) {
         let sum = block.iter().fold(Df32::ZERO, |sum, v| sum.add_f32(*v));
         area = area.add_f32(spec::scalar(sum));
     }

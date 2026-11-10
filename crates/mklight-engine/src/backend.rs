@@ -85,8 +85,6 @@ pub struct BackendCapabilities {
     pub analyses: Vec<String>,
     pub device_name: Option<String>,
     pub unified_memory: Option<bool>,
-    /// Largest ray batch per dispatch, if limited.
-    pub max_rays_per_dispatch: Option<u64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]

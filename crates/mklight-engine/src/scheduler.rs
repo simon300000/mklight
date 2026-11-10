@@ -220,6 +220,14 @@ fn lock<X>(m: &Mutex<X>) -> MutexGuard<'_, X> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+/// The message of a caught panic.
+pub(crate) fn panic_message(p: &(dyn std::any::Any + Send)) -> String {
+    p.downcast_ref::<&str>()
+        .map(|s| s.to_string())
+        .or_else(|| p.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "unknown panic".into())
+}
+
 struct Table<T> {
     jobs: HashMap<JobId, Arc<Job<T>>>,
     queue: VecDeque<Arc<Job<T>>>,
@@ -231,8 +239,8 @@ struct Table<T> {
 #[derive(Default)]
 struct CallbackSlot {
     cb: Option<EventCallback>,
-    /// Threads currently inside the callback (one entry per nesting level).
-    in_flight: Vec<ThreadId>,
+    /// The event thread is inside the callback.
+    in_flight: bool,
 }
 
 /// Events waiting for the event thread, in posting order.
@@ -276,20 +284,17 @@ impl<T: Send + 'static> Shared<T> {
     }
 
     /// Run the callback (if any) for one event, with no scheduler lock held.
+    /// Only the event thread calls this.
     fn deliver(&self, ev: &JobEvent) {
-        let me = thread::current().id();
         let cb = {
             let mut g = lock(&self.callback);
             let Some(cb) = g.cb.clone() else { return };
-            g.in_flight.push(me);
+            g.in_flight = true;
             cb
         };
         // A panicking callback must not take the event thread down with it.
         let _ = catch_unwind(AssertUnwindSafe(|| cb(ev)));
-        let mut g = lock(&self.callback);
-        if let Some(i) = g.in_flight.iter().position(|t| *t == me) {
-            g.in_flight.swap_remove(i);
-        }
+        lock(&self.callback).in_flight = false;
         self.callback_cv.notify_all();
     }
 
@@ -383,16 +388,10 @@ impl<T: Send + 'static> Shared<T> {
             let ctx = job.ctx.clone();
             let outcome = match catch_unwind(AssertUnwindSafe(|| work(&ctx))) {
                 Ok(r) => r,
-                Err(p) => {
-                    let msg = p
-                        .downcast_ref::<&str>()
-                        .map(|s| s.to_string())
-                        .or_else(|| p.downcast_ref::<String>().cloned())
-                        .unwrap_or_else(|| "unknown panic".into());
-                    Err(EngineError::JobFailed(format!(
-                        "internal error (panic): {msg}"
-                    )))
-                }
+                Err(p) => Err(EngineError::JobFailed(format!(
+                    "internal error (panic): {}",
+                    panic_message(p.as_ref())
+                ))),
             };
             let state = match &outcome {
                 _ if ctx.cancel.is_cancelled() => JobState::Cancelled,
@@ -523,10 +522,6 @@ impl<T: Send + 'static> Scheduler<T> {
         }
     }
 
-    pub fn config(&self) -> &SchedulerConfig {
-        &self.shared.config
-    }
-
     /// Install (or clear) the event callback. It runs on the scheduler's
     /// single event thread, one event at a time, with no scheduler lock
     /// held, so it may call any scheduler (or engine) method, including
@@ -536,13 +531,13 @@ impl<T: Send + 'static> Scheduler<T> {
     /// callback, so whatever it captured may be freed. Calling it from
     /// inside the callback is allowed.
     pub fn set_callback(&self, cb: Option<EventCallback>) {
-        let me = thread::current().id();
+        let on_event_thread = self.shared.event_thread.get() == Some(&thread::current().id());
         let mut g = lock(&self.shared.callback);
         self.shared
             .has_callback
             .store(cb.is_some(), Ordering::Release);
         g.cb = cb;
-        while g.in_flight.iter().any(|t| *t != me) {
+        while g.in_flight && !on_event_thread {
             g = self
                 .shared
                 .callback_cv

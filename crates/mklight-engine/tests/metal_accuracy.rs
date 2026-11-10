@@ -30,7 +30,7 @@ fn default_sample_accuracy() {
     );
     let mut unmapped = Vec::new();
     let mut failing = 0;
-    // Native attempts a fallback hid count as failures too (point 20).
+    // Native attempts a fallback hid count as failures too.
     let mut attempts = Vec::new();
     for (name, system) in samples::all() {
         let session = engine.session_from_project(Project::new(system)).unwrap();
@@ -77,7 +77,7 @@ fn default_sample_accuracy() {
                 "METAL_ACCURACY {}",
                 json!({"sample":name,"analysis":info.name,"published":published,"backend":gpu.backend,
                 "compared":report.compared,"maximum_absolute_error":report.maximum,"maximum_error_path":report.maximum_path,"maximum_image_l1_relative":report.image_l1_relative,
-                "maximum_image_energy_relative":report.energy_relative,"previous_gate_failure":report.reason,
+                "maximum_image_energy_relative":report.energy_relative,"gate_failure":report.reason,
                 "gate_failures":report.failures,"classes":report.classes,"resampled":report.resampled,
                 "sampling_differences":report.sampling_differences,"undefined":report.undefined,
                 "native_failures":native_failures})
@@ -109,8 +109,9 @@ fn default_sample_accuracy() {
 /// The solvers' physical outcomes (merit, violation, feasibility, finalists,
 /// tolerance figures; `comparison::SOLVER_SCORES`) on Metal against the CPU
 /// reference on every sample at default settings. The truncated solves'
-/// merits and violations outside their gates pass within twice the
-/// reference's own movement (`support/solver_spread.rs`).
+/// outcomes (the final design's or a finalist's merit or violation) outside
+/// their gates pass within twice the reference's own movement
+/// (`support/solver_spread.rs`).
 #[test]
 #[ignore = "offline solver-outcome evidence; real Metal required"]
 fn solver_outcomes() {
@@ -189,12 +190,13 @@ fn solver_outcomes() {
                 comparison::compare(&view(&cpu), &view(&gpu), analysis, &JobContext::new())
                     .unwrap();
             let published = gpu.backend.used == "gpu:metal";
-            // Truncated solves: a merit or violation outside its gate passes
-            // within twice the reference's own movement.
+            // Truncated solves: an outcome's merit or violation outside its
+            // gate passes within twice the reference's own movement.
             let deviation = solver_spread::deviation(analysis, &cpu, &gpu);
             let movement =
                 solver_spread::reference_movement(&session, &nudged, analysis, &settings, &cpu);
-            let within = solver_spread::within_movement(&report.failures, deviation, movement);
+            let within =
+                solver_spread::within_movement(analysis, &report.failures, deviation, movement);
             if (published && !within) || !native_failures.is_empty() {
                 failures.push(format!(
                     "{name}/{analysis}: {:?} {:?}",

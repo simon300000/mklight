@@ -101,7 +101,7 @@ struct SurfaceInspector: View {
                     ShapePreview(shape: surface.shape, semiDiameter: semiDiameter, primaryWavelengthUm: primaryWavelength)
                         .padding(.vertical, Space.xs)
                 }
-                TextValueField(title: "Comment", value: surface.label, prompt: "none") { v in
+                TextValueField(title: "Comment", value: surface.label, prompt: "none", owner: surface.id) { v in
                     edit("Change Comment") { $0.label = v }
                 }
             }
@@ -152,7 +152,7 @@ struct SurfaceInspector: View {
                         title: "Thickness", value: surface.thickness, unit: "mm", help: "Distance to the next vertex.",
                         parse: { LensValueParser.thickness($0, allowInfinite: index == 0) },
                         variable: variable(.thickness(surface: surface.id)),
-                        solve: system.solve(for: .thickness(surface: surface.id))?.kind.kind.title
+                        solve: system.solve(for: .thickness(surface: surface.id))?.kind.kind.title, owner: surface.id
                     ) { v in edit("Change Thickness") { $0.thickness = v } }
                     if !surface.isCoordinateBreak && index != 0 {
                         Picker("Interaction", selection: Binding(get: { surface.interaction }, set: { v in edit("Change Interaction") { $0.interaction = v } })) {
@@ -164,7 +164,7 @@ struct SurfaceInspector: View {
                     if !surface.isCoordinateBreak && surface.interaction == .refract {
                         TextValueField(
                             title: "Material", value: surface.material.isAir ? "AIR" : surface.material.displayName, prompt: "AIR",
-                            suggestions: workspace.materialNames
+                            suggestions: workspace.materialNames, owner: surface.id
                         ) { text in
                             switch LensValueParser.material(text) {
                             case .success(let m):
@@ -180,10 +180,10 @@ struct SurfaceInspector: View {
                                 .id(surface.id)
                         }
                         if case .model(let nd, let vd, let dpgf) = surface.material {
-                            NumberField(title: "n_d", value: nd, variable: variable(.modelNd(surface: surface.id))) { v in
+                            NumberField(title: "n_d", value: nd, variable: variable(.modelNd(surface: surface.id)), owner: surface.id) { v in
                                 edit("Change n_d") { $0.material = .model(nd: v, vd: vd, dpgf: dpgf) }
                             }
-                            NumberField(title: "V_d", value: vd, variable: variable(.modelVd(surface: surface.id))) { v in
+                            NumberField(title: "V_d", value: vd, variable: variable(.modelVd(surface: surface.id)), owner: surface.id) { v in
                                 edit("Change V_d") { $0.material = .model(nd: nd, vd: v, dpgf: dpgf) }
                             }
                         }
@@ -227,7 +227,7 @@ struct SurfaceInspector: View {
                 case .failure(let f): .failure(f)
                 }
             },
-            variable: path.map(variable), solve: path.flatMap { system.solve(for: $0)?.kind.kind.title }
+            variable: path.map(variable), solve: path.flatMap { system.solve(for: $0)?.kind.kind.title }, owner: surface.id
         ) { stored in
             let value: JSONValue = p.display == .integer ? .integer(Int64(stored)) : .number(stored)
             edit("Change \(p.title)") { s in
@@ -438,7 +438,7 @@ private struct ApertureSection: View {
                 Text("Fixed").tag(false)
             }
             if case .fixed(let v) = surface.semiDiameter {
-                NumberField(title: "Value", value: v, unit: "mm", parse: LensValueParser.positiveLength, variable: variable(.semiDiameter(surface: surface.id))) { nv in
+                NumberField(title: "Value", value: v, unit: "mm", parse: LensValueParser.positiveLength, variable: variable(.semiDiameter(surface: surface.id)), owner: surface.id) { nv in
                     edit("Change Semi-Diameter") { $0.semiDiameter = .fixed(nv) }
                 }
             } else if let autoValue {
@@ -453,16 +453,16 @@ private struct ApertureSection: View {
             }
             switch surface.aperture {
             case .circular(let r)?:
-                NumberField(title: "Radius", value: r, unit: "mm", parse: LensValueParser.positiveLength) { v in setAperture(.circular(radius: v)) }
+                NumberField(title: "Radius", value: r, unit: "mm", parse: LensValueParser.positiveLength, owner: surface.id) { v in setAperture(.circular(radius: v)) }
             case .annular(let a, let b)?:
-                NumberField(title: "Inner radius", value: a, unit: "mm", parse: LensValueParser.positiveLength) { v in setAperture(.annular(innerRadius: v, outerRadius: b)) }
-                NumberField(title: "Outer radius", value: b, unit: "mm", parse: LensValueParser.positiveLength) { v in setAperture(.annular(innerRadius: a, outerRadius: v)) }
+                NumberField(title: "Inner radius", value: a, unit: "mm", parse: LensValueParser.positiveLength, owner: surface.id) { v in setAperture(.annular(innerRadius: v, outerRadius: b)) }
+                NumberField(title: "Outer radius", value: b, unit: "mm", parse: LensValueParser.positiveLength, owner: surface.id) { v in setAperture(.annular(innerRadius: a, outerRadius: v)) }
             case .rectangular(let x, let y)?:
-                NumberField(title: "Half width x", value: x, unit: "mm", parse: LensValueParser.positiveLength) { v in setAperture(.rectangular(halfX: v, halfY: y)) }
-                NumberField(title: "Half width y", value: y, unit: "mm", parse: LensValueParser.positiveLength) { v in setAperture(.rectangular(halfX: x, halfY: v)) }
+                NumberField(title: "Half width x", value: x, unit: "mm", parse: LensValueParser.positiveLength, owner: surface.id) { v in setAperture(.rectangular(halfX: v, halfY: y)) }
+                NumberField(title: "Half width y", value: y, unit: "mm", parse: LensValueParser.positiveLength, owner: surface.id) { v in setAperture(.rectangular(halfX: x, halfY: v)) }
             case .elliptical(let x, let y)?:
-                NumberField(title: "Semi-axis x", value: x, unit: "mm", parse: LensValueParser.positiveLength) { v in setAperture(.elliptical(semiX: v, semiY: y)) }
-                NumberField(title: "Semi-axis y", value: y, unit: "mm", parse: LensValueParser.positiveLength) { v in setAperture(.elliptical(semiX: x, semiY: v)) }
+                NumberField(title: "Semi-axis x", value: x, unit: "mm", parse: LensValueParser.positiveLength, owner: surface.id) { v in setAperture(.elliptical(semiX: v, semiY: y)) }
+                NumberField(title: "Semi-axis y", value: y, unit: "mm", parse: LensValueParser.positiveLength, owner: surface.id) { v in setAperture(.elliptical(semiX: x, semiY: v)) }
             case nil:
                 EmptyView()
             }
@@ -649,60 +649,5 @@ private struct SolvesSection: View {
             s.solves.removeAll { $0.target == target }
             s.solves.append(Solve(target: target, kind: kind))
         }
-    }
-}
-
-/// A small drawing of the surface's sag profile (display only).
-struct SagPreview: View {
-    let shape: SurfaceShape
-    let semiDiameter: Double?
-
-    var body: some View {
-        Canvas { ctx, size in
-            let rect = CGRect(origin: .zero, size: size).insetBy(dx: 6, dy: 6)
-            var axis = Path()
-            axis.move(to: CGPoint(x: rect.midX, y: rect.minY))
-            axis.addLine(to: CGPoint(x: rect.midX, y: rect.maxY))
-            ctx.stroke(axis, with: .color(.secondary.opacity(0.3)), style: StrokeStyle(lineWidth: 0.5, dash: [2, 2]))
-            switch shape {
-            case .coordinateBreak:
-                let c = CGPoint(x: rect.midX, y: rect.midY)
-                for (dx, dy) in [(1.0, 0.0), (0.0, -1.0)] {
-                    var p = Path()
-                    p.move(to: c)
-                    p.addLine(to: CGPoint(x: c.x + dx * rect.width * 0.4, y: c.y + dy * rect.height * 0.4))
-                    ctx.stroke(p, with: .color(.secondary), lineWidth: 1.5)
-                }
-            case .paraxial(let f):
-                var p = Path()
-                p.move(to: CGPoint(x: rect.midX, y: rect.minY))
-                p.addLine(to: CGPoint(x: rect.midX, y: rect.maxY))
-                ctx.stroke(p, with: .color(.primary), lineWidth: 1.5)
-                let s: CGFloat = f >= 0 ? 1 : -1
-                for (y, dir) in [(rect.minY, CGFloat(1)), (rect.maxY, CGFloat(-1))] {
-                    var a = Path()
-                    a.move(to: CGPoint(x: rect.midX - 6, y: y + dir * 6 * s))
-                    a.addLine(to: CGPoint(x: rect.midX, y: y))
-                    a.addLine(to: CGPoint(x: rect.midX + 6, y: y + dir * 6 * s))
-                    ctx.stroke(a, with: .color(.primary), lineWidth: 1.5)
-                }
-            default:
-                let h = semiDiameter ?? 1
-                guard let pts = SurfaceTypes.profile(shape, semiDiameter: h) else { return }
-                // Height to fit; sag exaggerated so a shallow curve still shows.
-                let zMax = max(pts.map { abs($0.1) }.max() ?? 0, 1e-12)
-                let rScale = rect.height / (2 * h)
-                let zScale = max(rScale, min(rect.width * 0.35 / zMax, rScale * 20))
-                let flip: CGFloat = (pts.map(\.1).max() ?? 0) > 0 ? -1 : 1
-                var p = Path()
-                for (k, q) in pts.enumerated() {
-                    let pt = CGPoint(x: rect.midX + flip * rect.width * 0.15 + CGFloat(q.1) * zScale, y: rect.midY - CGFloat(q.0) * rScale)
-                    if k == 0 { p.move(to: pt) } else { p.addLine(to: pt) }
-                }
-                ctx.stroke(p, with: .color(.primary), style: StrokeStyle(lineWidth: 1.5, lineCap: .round))
-            }
-        }
-        .background(RoundedRectangle(cornerRadius: 6).fill(.quaternary.opacity(0.5)))
-        .accessibilityLabel("Surface profile preview")
     }
 }

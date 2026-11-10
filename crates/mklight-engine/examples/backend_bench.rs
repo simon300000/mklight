@@ -12,7 +12,7 @@
 //! {"lenses": {"dg": "/path/double_gauss.mklight"},
 //!  "cases": [{"lens": "dg", "analysis": "spot_diagram", "settings": {"rings": 100},
 //!             "tag": "dense", "reps": 5, "backends": ["cpu", "metal", "auto"],
-//!             "variants": [{"name": "cpuaim", "set": {"geometric": "cpu-aim"}}],
+//!             "variants": [{"name": "device", "set": {"aiming": "device"}}],
 //!             "setup": "curvature_variables"}]}
 //! ```
 //!
@@ -22,7 +22,8 @@
 //! `variant_backend`) that runs with the work-split selections of `set`
 //! (`mklight_core::split`); the plain `metal` column runs the default
 //! designs. `setup: "curvature_variables"` makes every curved surface's
-//! curvature a variable (for `optimize`, `tolerance` and the other solvers).
+//! curvature a variable for that case (for `optimize`, `tolerance` and the
+//! other solvers); the other cases run with the project's own variables.
 //! `--filter` keeps the cases whose `lens/analysis/tag` contains the text
 //! (comma-separated alternatives); `--backends` keeps the columns named, a
 //! backend name also keeping its variant columns.
@@ -48,7 +49,9 @@
 //! on an idle machine, as an analysis after an interactive edit does.
 //!
 //! Each case and column appends one JSON line to `--out` and each case
-//! prints one row.
+//! prints one row. Metal's device time is part of every record: other
+//! targets build a stub.
+#![cfg_attr(not(target_os = "macos"), allow(dead_code, unused_imports))]
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -375,12 +378,20 @@ fn short(e: &str) -> String {
     e.chars().take(80).collect()
 }
 
+#[cfg(not(target_os = "macos"))]
+fn main() {
+    eprintln!("backend_bench measures Metal and runs on macOS only");
+    std::process::exit(2);
+}
+
+#[cfg(target_os = "macos")]
 fn main() {
     let a = args();
     let suite: Value = serde_json::from_str(&std::fs::read_to_string(&a.suite).unwrap()).unwrap();
     let engine = Engine::new(EngineConfig::default());
     let commit = commit();
-    let mut sessions: BTreeMap<String, (Session, OpticalSystem)> = BTreeMap::new();
+    // Per lens: the session, its system and its own variables section.
+    let mut sessions: BTreeMap<String, (Session, OpticalSystem, Value)> = BTreeMap::new();
     let mut out = a.out.as_ref().map(|p| {
         std::fs::OpenOptions::new()
             .create(true)
@@ -417,11 +428,15 @@ fn main() {
                 .unwrap_or_else(|| panic!("no lens {lens}"));
             let s = engine.open_session(Path::new(path)).unwrap();
             let base = s.system().clone();
-            sessions.insert(lens.to_string(), (s, base));
+            let variables = s.project().variables.clone();
+            sessions.insert(lens.to_string(), (s, base, variables));
         }
-        let (s, base) = sessions.get_mut(lens).unwrap();
+        let (s, base, variables) = sessions.get_mut(lens).unwrap();
         if case["setup"].as_str() == Some("curvature_variables") {
             curvature_variables(s);
+        } else {
+            s.set_project_section("variables", variables.clone())
+                .unwrap();
         }
         let cpu = Column::plain("cpu");
         // Warm-up: each column on a fresh state, after the CPU reference on it.

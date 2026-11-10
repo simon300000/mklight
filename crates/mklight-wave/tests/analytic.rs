@@ -530,27 +530,14 @@ fn polychromatic_psf_and_mtf() {
     let p1 = PupilFunction::diffraction_limited(96, l1, g, Aperture::Circular, 8).unwrap();
     let mut p2 = PupilFunction::diffraction_limited(96, l2, g, Aperture::Circular, 8).unwrap();
     let dx = 0.25 * g.lambda_f_mm(l1);
-    let mk = |t| PolyPsfSettings {
+    let settings = PolyPsfSettings {
         grid_size: 48,
         spacing_mm: dx,
         normalization: PsfNormalization::UnitEnergy,
-        transform: t,
     };
     let pupils = [(&p1, 1.0), (&p2, 3.0)];
-    let a = polychromatic_psf(&pupils, &mk(PsfTransform::Matrix), &ctx()).unwrap();
-    let b = polychromatic_psf(&pupils, &mk(PsfTransform::Fft), &ctx()).unwrap();
+    let a = polychromatic_psf(&pupils, &settings, &ctx()).unwrap();
     let pk = a.peak().0;
-    let worst = a
-        .data
-        .iter()
-        .zip(&b.data)
-        .map(|(x, y)| (x - y).abs())
-        .fold(0.0, f64::max);
-    assert!(
-        worst < 2e-3 * pk,
-        "matrix vs FFT-resampled {:.2e}",
-        worst / pk
-    );
     // Peak (unit energy) is the weighted sum of the Airy peaks.
     let airy = |l: f64| PI / (4.0 * g.lambda_f_mm(l).powi(2));
     let expect = 0.25 * airy(l1) + 0.75 * airy(l2);
@@ -560,7 +547,7 @@ fn polychromatic_psf_and_mtf() {
         &pupils,
         &PolyPsfSettings {
             normalization: PsfNormalization::Strehl,
-            ..mk(PsfTransform::Matrix)
+            ..settings
         },
         &ctx(),
     )
@@ -595,11 +582,11 @@ fn polychromatic_psf_and_mtf() {
         assert!((m.sagittal[k] - (a1 + a2)).abs() < 1e-3, "S {k}");
     }
     // The PSF is the weighted sum of the individually shifted colours.
-    let shifted = polychromatic_psf(&pupils, &mk(PsfTransform::Matrix), &ctx()).unwrap();
+    let shifted = polychromatic_psf(&pupils, &settings, &ctx()).unwrap();
     let one = |p: &PupilFunction| {
         let mut q = p.clone();
         q.set_image_offset_mm([0.0; 2]);
-        polychromatic_psf(&[(&q, 1.0)], &mk(PsfTransform::Matrix), &ctx()).unwrap()
+        polychromatic_psf(&[(&q, 1.0)], &settings, &ctx()).unwrap()
     };
     let (a1, a2) = (one(&p1), one(&p2));
     for j in 8..48 {

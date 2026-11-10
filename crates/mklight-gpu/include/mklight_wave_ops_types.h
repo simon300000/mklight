@@ -9,7 +9,7 @@ typedef struct {
     unsigned int unit_energy, shifted, reserved[2];
     float sin_max[2], wavelength[2], radius[2], spacing[2];
     float origin[3][2], x_axis[3][2], y_axis[3][2], normal[3][2];
-    float aperture[2], sigma, projection;
+    float reserved_tail[3], projection;
 } MklWaveParams;
 typedef struct {
     unsigned int nx,ny,n,supersample,mask,edges,first,count;

@@ -138,7 +138,7 @@ public struct AnalysisOutput: Codable, Sendable, Hashable {
 
     /// Whether this output is current for `snapshot` and `request`: computed
     /// from the same system **and** glass library, with the same settings
-    /// (including backend, precision and seed). Otherwise it is stale.
+    /// (including backend and seed). Otherwise it is stale.
     public func isCurrent(for snapshot: ModelSnapshot?, request: AnalysisRequest) -> Bool {
         guard let snapshot, libraryMatches(snapshot) else { return false }
         if let own = self.request {

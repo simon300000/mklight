@@ -26,7 +26,7 @@ struct Segment {
 struct Uniforms {
     float4x4 viewProjection;
     float2 viewportSize;   // drawable size in pixels
-    float feather;         // anti-aliasing ramp half-width (px)
+    float feather;         // quad margin beyond the line's half-width (px), room for the fragment's 0.5 px edge ramp
     float pad;
 };
 

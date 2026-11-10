@@ -128,6 +128,7 @@ struct GhostIrradianceView: View {
     init?(output: AnalysisOutput) {
         let j = output.json
         let half = j[path: "map", "half_size"]?.nfArray ?? [1, 1]
+        guard half.count == 2, half[0] >= 0, half[1] >= 0 else { return nil }
         let xr = -half[0]...half[0], yr = -half[1]...half[1]
         var maps: [(String, Grid2D)] = []
         if let g = Grid2D(output.buffer(named: "total_ghost_map"), xRange: xr, yRange: yr) { maps.append(("All ghosts", g)) }
@@ -153,6 +154,7 @@ struct StrayLightView: View {
         let j = output.json
         let d = j["detector"]
         let hx = d?["half_x"]?.nf ?? 1, hy = d?["half_y"]?.nf ?? 1
+        guard hx >= 0, hy >= 0 else { return nil }
         let xr = -hx...hx, yr = -hy...hy
         var maps: [(String, Grid2D)] = []
         if let g = Grid2D(output.buffer(named: "total_irradiance"), xRange: xr, yRange: yr) { maps.append(("Stray total", g)) }
@@ -184,12 +186,13 @@ struct PolarizationView: View {
     let values: [Quantity: [Double]]
     let stats: [(String, String)]
     @State private var quantity = Quantity.intensity
-    @Environment(\.colorScheme) private var scheme
 
     init?(output: AnalysisOutput) {
-        guard let p = output.buffer(named: "pupil"), let i = output.buffer(named: "intensity") else { return nil }
-        pupil = (0..<p.rows).map { (p[$0 * 2], p[$0 * 2 + 1]) }
-        reached = output.buffer(named: "reached").map { b in (0..<b.count).map { b[$0] != 0 } } ?? Array(repeating: true, count: p.rows)
+        // `pupil` is `[n, 2]`, with one `reached` flag per sample.
+        guard let p = output.buffer(named: "pupil")?.pairs, let i = output.buffer(named: "intensity") else { return nil }
+        pupil = p
+        reached = output.buffer(named: "reached").map { b in (0..<b.count).map { b[$0] != 0 } } ?? Array(repeating: true, count: p.count)
+        guard reached.count == pupil.count else { return nil }
         values = [
             .intensity: i.doubles, .diattenuation: output.buffer(named: "diattenuation")?.doubles ?? [],
             .retardance: output.buffer(named: "retardance")?.doubles ?? [],

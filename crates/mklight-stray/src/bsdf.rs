@@ -421,34 +421,6 @@ impl Bsdf {
         self.scale * q.value
     }
 
-    /// Largest tabulated TIS over all incidence angles (≤ 1).
-    pub fn max_tis(&self) -> f64 {
-        if self.tis_table.is_empty() {
-            self.tis_const
-        } else {
-            self.tis_table.iter().copied().fold(0.0, f64::max)
-        }
-    }
-
-    /// Sampling pdf per projected solid angle, using the tabulated TIS.
-    pub fn pdf(&self, beta0: [f64; 2], beta: [f64; 2]) -> f64 {
-        let t = self.tis(beta0[0].hypot(beta0[1]));
-        if t > 0.0 {
-            self.eval(beta0, beta) / t
-        } else {
-            0.0
-        }
-    }
-    /// Exact sampling pdf, using the adaptive TIS.
-    pub fn pdf_exact(&self, beta0: [f64; 2], beta: [f64; 2]) -> f64 {
-        let t = self.tis_exact(beta0[0].hypot(beta0[1]));
-        if t > 0.0 {
-            self.eval(beta0, beta) / t
-        } else {
-            0.0
-        }
-    }
-
     /// Probability mass of the polar cell `ρ ∈ [ρ1, ρ2], φ ∈ [φ1, φ2]` around
     /// `β₀` (with `φ` measured from `β₀`'s direction), clipped to the unit disk.
     /// Used by sampling tests and by detector-side importance estimates.

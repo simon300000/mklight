@@ -63,24 +63,6 @@ pub const MK_ERR_COMPUTE: MKStatus = 11;
 pub const MK_ERR_PANIC: MKStatus = 12;
 pub const MK_ERR_INTERNAL: MKStatus = 13;
 
-/// Every status code with its C name (used by the header consistency test).
-pub const STATUS_CODES: &[(&str, MKStatus)] = &[
-    ("MK_OK", MK_OK),
-    ("MK_ERR_INVALID_ARGUMENT", MK_ERR_INVALID_ARGUMENT),
-    ("MK_ERR_PARSE", MK_ERR_PARSE),
-    ("MK_ERR_INVALID_MODEL", MK_ERR_INVALID_MODEL),
-    ("MK_ERR_NOT_FOUND", MK_ERR_NOT_FOUND),
-    ("MK_ERR_IO", MK_ERR_IO),
-    ("MK_ERR_UNSUPPORTED", MK_ERR_UNSUPPORTED),
-    ("MK_ERR_CANCELLED", MK_ERR_CANCELLED),
-    ("MK_ERR_TIMEOUT", MK_ERR_TIMEOUT),
-    ("MK_ERR_NOT_READY", MK_ERR_NOT_READY),
-    ("MK_ERR_JOB_FAILED", MK_ERR_JOB_FAILED),
-    ("MK_ERR_COMPUTE", MK_ERR_COMPUTE),
-    ("MK_ERR_PANIC", MK_ERR_PANIC),
-    ("MK_ERR_INTERNAL", MK_ERR_INTERNAL),
-];
-
 // ---------------------------------------------------------------------------
 // Errors
 
@@ -145,8 +127,10 @@ thread_local! {
     static LAST_ERROR: RefCell<CString> = RefCell::new(CString::default());
 }
 
+/// `s` as a C string; an interior NUL becomes U+FFFD.
 fn to_cstring(s: &str) -> CString {
-    CString::new(s.replace('\0', "\u{FFFD}")).unwrap_or_default()
+    CString::new(s)
+        .unwrap_or_else(|_| CString::new(s.replace('\0', "\u{FFFD}")).unwrap_or_default())
 }
 
 fn set_last_error(msg: &str) {
@@ -1264,6 +1248,53 @@ mod tests {
         assert_eq!(last_error(), "");
     }
 
+    /// Every status code with its C name.
+    const STATUS_CODES: &[(&str, MKStatus)] = &[
+        ("MK_OK", MK_OK),
+        ("MK_ERR_INVALID_ARGUMENT", MK_ERR_INVALID_ARGUMENT),
+        ("MK_ERR_PARSE", MK_ERR_PARSE),
+        ("MK_ERR_INVALID_MODEL", MK_ERR_INVALID_MODEL),
+        ("MK_ERR_NOT_FOUND", MK_ERR_NOT_FOUND),
+        ("MK_ERR_IO", MK_ERR_IO),
+        ("MK_ERR_UNSUPPORTED", MK_ERR_UNSUPPORTED),
+        ("MK_ERR_CANCELLED", MK_ERR_CANCELLED),
+        ("MK_ERR_TIMEOUT", MK_ERR_TIMEOUT),
+        ("MK_ERR_NOT_READY", MK_ERR_NOT_READY),
+        ("MK_ERR_JOB_FAILED", MK_ERR_JOB_FAILED),
+        ("MK_ERR_COMPUTE", MK_ERR_COMPUTE),
+        ("MK_ERR_PANIC", MK_ERR_PANIC),
+        ("MK_ERR_INTERNAL", MK_ERR_INTERNAL),
+    ];
+
+    /// `text` without its `/* … */` comments.
+    fn without_c_comments(text: &str) -> String {
+        let mut out = String::new();
+        let mut rest = text;
+        while let Some(start) = rest.find("/*") {
+            out.push_str(&rest[..start]);
+            rest = rest[start..]
+                .split_once("*/")
+                .map_or("", |(_, after)| after);
+        }
+        out + rest
+    }
+
+    /// The `mk_*` names directly followed by `(` in `code`.
+    fn called_names(code: &str) -> std::collections::BTreeSet<String> {
+        let ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
+        code.split(|c: char| !(ident(c) || c == '('))
+            .filter_map(|token| token.split_once('('))
+            .map(|(name, _)| name.to_string())
+            .filter(|name| name.starts_with("mk_"))
+            .collect()
+    }
+
+    #[test]
+    fn to_cstring_replaces_interior_nuls() {
+        assert_eq!(to_cstring("a b").to_str().unwrap(), "a b");
+        assert_eq!(to_cstring("a\0b").to_str().unwrap(), "a\u{FFFD}b");
+    }
+
     #[test]
     fn header_matches_rust_constants() {
         let h = include_str!("../include/mklight.h");
@@ -1305,23 +1336,29 @@ mod tests {
         }
         // Rust dtypes agree with the C codes.
         use mklight_engine::DType;
-        assert_eq!(DType::F64 as i32, MK_DTYPE_F64);
-        assert_eq!(DType::U8 as i32, MK_DTYPE_U8);
-        // Every exported function is declared in the header.
-        let src = include_str!("lib.rs");
-        for l in src.lines() {
-            if let Some(rest) = l
-                .trim_start()
-                .strip_prefix("pub unsafe extern \"C\" fn ")
-                .or_else(|| l.trim_start().strip_prefix("pub extern \"C\" fn "))
-            {
-                let name = rest.split('(').next().unwrap();
-                assert!(
-                    h.contains(&format!("{name}(")),
-                    "{name} not declared in mklight.h"
-                );
-            }
+        for (dtype, code) in [
+            (DType::F64, MK_DTYPE_F64),
+            (DType::F32, MK_DTYPE_F32),
+            (DType::I32, MK_DTYPE_I32),
+            (DType::U32, MK_DTYPE_U32),
+            (DType::I64, MK_DTYPE_I64),
+            (DType::U64, MK_DTYPE_U64),
+            (DType::U8, MK_DTYPE_U8),
+        ] {
+            assert_eq!(dtype as i32, code, "{dtype:?}");
         }
+        // The header declares exactly the exported functions.
+        let exported: std::collections::BTreeSet<String> = include_str!("lib.rs")
+            .lines()
+            .filter_map(|l| {
+                let l = l.trim_start();
+                l.strip_prefix("pub unsafe extern \"C\" fn ")
+                    .or_else(|| l.strip_prefix("pub extern \"C\" fn "))
+            })
+            .map(|rest| rest.split('(').next().unwrap().to_string())
+            .collect();
+        let declared = called_names(&without_c_comments(h));
+        assert_eq!(declared, exported);
     }
 
     #[test]

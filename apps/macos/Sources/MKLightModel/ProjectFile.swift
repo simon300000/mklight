@@ -142,7 +142,7 @@ public struct ProjectFile: Codable, Sendable, Hashable {
         default: throw Error.notAProject("'format' must be a string")
         }
         guard format == formatName else { throw Error.notAProject("format '\(format)'") }
-        let system = try MKLightJSON.decode(OpticalSystem.self, from: MKLightJSON.encode(systemValue))
+        let system = try systemValue.decode(OpticalSystem.self)
         var file = ProjectFile(system: system)
         for (k, v) in doc where !["format", "schema_version", "system"].contains(k) {
             file.sections[k] = v

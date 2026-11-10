@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import pathlib
 from collections.abc import Callable, Sequence
-from typing import Any, Literal, TypeAlias, overload
+from typing import Any, Literal, TypeAlias
 
 ENGINE_VERSION: str
 __version__: str
@@ -68,9 +68,11 @@ class Engine:
     def __init__(self, config: dict[str, JSON] | None = None, **kwargs: JSON) -> None:
         """Keys: ``worker_threads``, ``max_retained_jobs`` (default: unlimited;
         results are kept until collected or their Job is dropped),
-        ``resolved_cache_capacity``, ``progress_interval_ms``, ``app_name``,
-        ``app_version``, ``default_backend`` (a :data:`Backend`). Unknown keys
-        raise ``InvalidArgumentError``."""
+        ``resolved_cache_capacity``, ``analysis_graph_bytes``,
+        ``progress_interval_ms``, ``app_name``, ``app_version``,
+        ``default_backend`` (a :data:`Backend`), ``aim_stop``
+        (``"conditioned"`` or ``"requested"``). Unknown keys raise
+        ``InvalidArgumentError``."""
     def new(self, sample: str | None = None, system: dict[str, JSON] | None = None) -> Session:
         """A new session from a built-in sample, a system dict, or empty."""
     def open(self, path: str | os.PathLike[str]) -> Session:
@@ -207,23 +209,16 @@ def trace(
     clip: bool = True,
 ) -> dict[str, Any]:
     """Trace one ray with the CPU f64 reference tracer."""
-@overload
 def trace_grid(
     session: Session,
     fields: FieldsArg | None = None,
     wavelengths: int | Sequence[int] | None = None,
-    pupil: int | None = None,
+    pupil: int | dict[str, JSON] | Sequence[Sequence[float]] | ArrayLike | None = None,
     clip: bool = True,
     progress: Progress | None = None,
-) -> dict[str, ArrayLike]: ...
-@overload
-def trace_grid(
-    session: Session,
-    fields: FieldsArg | None = None,
-    wavelengths: int | Sequence[int] | None = None,
-    pupil: dict[str, JSON] | Sequence[Sequence[float]] | ArrayLike = ...,
-    clip: bool = True,
-    progress: Progress | None = None,
-) -> dict[str, ArrayLike]: ...
+) -> dict[str, ArrayLike]:
+    """Trace fields x wavelengths x pupil points. ``pupil``: an int ``n``
+    (``n x n`` grid inside the unit disk, 1 to 4096; default 16), a pattern
+    dict or ``(P, 2)`` points."""
 def paraxial(session: Session, wavelength: int | None = None) -> dict[str, Any]:
     """First-order properties at one wavelength (default: primary)."""

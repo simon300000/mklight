@@ -513,10 +513,11 @@ fn global_record(g: &mut Globals, key: &str, f: &[&str], line: &str, ln: usize, 
 /// Fills the wavelengths; returns the primary wavelength (µm).
 fn wavelengths(sys: &mut OpticalSystem, g: &Globals, w: &mut Warnings) -> f64 {
     let mut list: Vec<Wavelength> = if !g.wavm.is_empty() {
+        // Walk the records present: the stated count only limits them.
         let n = g.ftyp.and_then(|f| f.2).unwrap_or(g.wavm.len());
-        (1..=n)
-            .filter_map(|i| g.wavm.get(&i))
-            .map(|&(um, weight)| Wavelength { um, weight })
+        g.wavm
+            .range(1..=n)
+            .map(|(_, &(um, weight))| Wavelength { um, weight })
             .collect()
     } else {
         g.wavl
@@ -571,7 +572,19 @@ fn fields(sys: &mut OpticalSystem, g: &Globals, units: Units, w: &mut Warnings) 
     let last_set = (0..g.xfln.len().max(g.yfln.len())).rev().find(|&i| {
         g.xfln.get(i).is_some_and(|v| *v != 0.0) || g.yfln.get(i).is_some_and(|v| *v != 0.0)
     });
+    // A stated count beyond the listed values would only add copies of the
+    // axial field, so the values present bound it.
+    let listed = g.xfln.len().max(g.yfln.len()).max(1);
     let n = count.unwrap_or(last_set.map_or(1, |i| i + 1)).max(1);
+    if n > listed {
+        w.push(
+            K::Defaulted,
+            None,
+            None,
+            format!("FTYP states {n} fields but the file lists {listed}; {listed} are imported"),
+        );
+    }
+    let n = n.min(listed);
     let kind = match ftype {
         Some(0) => FieldKind::ObjectAngle,
         Some(1) => FieldKind::ObjectHeight,

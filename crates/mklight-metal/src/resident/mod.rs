@@ -55,6 +55,7 @@ pub(crate) fn execute(
     prepared: &[Option<PreparedTrace>],
     ctl: &JobControl,
     chunk: usize,
+    aim_budget: u32,
     admission_seconds: f64,
     speculate: bool,
     missed: &std::cell::Cell<bool>,
@@ -78,6 +79,7 @@ pub(crate) fn execute(
         cache_stats: RefCell::new(CacheStats::new()),
         cache: rt.operation_cache(plan, &backend.precision().kernel_build),
         speculate,
+        aim_budget,
         unverified: vec![],
         missed,
         aim_lookahead: false,
@@ -297,6 +299,9 @@ pub(crate) struct Execution<'a> {
     cache_stats: RefCell<CacheStats>,
     /// Whether generations may commit speculative continuation rounds.
     pub(crate) speculate: bool,
+    /// Iteration units per lane of one aiming command
+    /// (`MetalBackend::set_aim_budget`).
+    pub(crate) aim_budget: u32,
     /// Whether aiming commits a further round group before reading the
     /// pending count (set once a tile of this plan needed more rounds than
     /// its first group).

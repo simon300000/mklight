@@ -91,7 +91,7 @@ pub fn differential_evolution<P: Problem + ?Sized>(
     mon: &Monitor,
 ) -> MkResult<OptimResult> {
     let vars = p.variables();
-    require_domain(vars, x0)?;
+    require_domain(p, x0)?;
     let n = vars.len();
     let np = if s.population == 0 {
         (10 * n).max(15)
@@ -271,5 +271,6 @@ pub fn differential_evolution<P: Problem + ?Sized>(
         }
     }
     let (bx, bf) = (pop[best].clone(), fit[best]);
+    let termination = ev.target_or(termination, &bf, s.target_merit);
     ev.finish((&bx, bf), termination, gen_done)
 }

@@ -103,9 +103,11 @@ typedef struct MKSession MKSession; /* thread-safe; calls are serialised */
 /* ---- Engine ------------------------------------------------------------- */
 
 /* config_json (nullable): {"worker_threads": 0, "max_retained_jobs": 256,
- * "resolved_cache_capacity": 8, "progress_interval_ms": 50, "app_name": "",
- * "app_version": "", "default_backend": {"kind": "cpu_reference"}}; every
- * key is optional. */
+ * "resolved_cache_capacity": 8, "analysis_graph_bytes": 268435456,
+ * "progress_interval_ms": 50, "app_name": "", "app_version": "",
+ * "default_backend": {"kind": "auto"}, "aim_stop": "conditioned"}; every
+ * key is optional and these are the defaults. "aim_stop" ("conditioned" or
+ * "requested") is the aim-stop policy of requests that name none. */
 MKStatus mk_engine_create(const char *config_json, MKEngine **out_engine);
 
 /* Clears the job callback (waiting for calls in progress), then releases
@@ -230,10 +232,16 @@ MKStatus mk_session_submit_analysis(const MKSession *session, const char *analys
                                     uint64_t *out_job);
 
 /* Same, from {"analysis", "settings", "view_key", "backend",
- * "allow_backend_fallback"}. "backend" is {"kind": "cpu_reference"},
- * {"kind": "gpu", "name": "metal"} or {"kind": "auto"} (a GPU when one
- * implements the analysis and qualifies for the system, else the CPU
- * reference); the result's "backend" object says what was used and why. */
+ * "allow_backend_fallback", "tier", "aim_stop"}; every key but "analysis"
+ * is optional. "backend" is {"kind": "cpu_reference"},
+ * {"kind": "gpu", "name": "metal"} or {"kind": "auto"} (chosen per request
+ * by the engine's cost model: a GPU when it implements the analysis and is
+ * predicted to be faster, else the CPU reference); without it the engine's
+ * default backend applies. The result's "backend" object says what was used
+ * and why. "allow_backend_fallback": run on the CPU reference, with a
+ * run_info warning, when the requested backend is unavailable, instead of
+ * failing. "tier": "design" (default) or "preview". "aim_stop": "requested"
+ * or "conditioned"; null or absent takes the engine configuration's. */
 MKStatus mk_session_submit_analysis_json(const MKSession *session, const char *request_json,
                                          uint64_t *out_job);
 
@@ -248,8 +256,9 @@ MKStatus mk_job_stage(const MKEngine *engine, uint64_t job, char **out_stage);
  *  "superseded_by", "elapsed_ms"} */
 MKStatus mk_job_status_json(const MKEngine *engine, uint64_t job, char **out_json);
 
-/* Stop optimize/tolerance, keeping the best-so-far result as DONE with
- * result.stopped = true. Queued jobs start and return their initial result.
+/* Stop optimize, tolerance or glass_substitution, keeping the best-so-far
+ * result as DONE with result.stopped = true. Queued jobs start and return
+ * their initial result.
  * MK_ERR_UNSUPPORTED for other active jobs. No-op for finished jobs.
  * Cancellation/supersession still discards the result, even after stop. */
 MKStatus mk_job_stop(const MKEngine *engine, uint64_t job);
@@ -285,8 +294,9 @@ MKStatus mk_job_release(const MKEngine *engine, uint64_t job);
 /* One analysis description (an element of mk_engine_list_analyses). */
 MKStatus mk_engine_analysis_info(const MKEngine *engine, const char *name, char **out_json);
 
-/* Default backend for requests that name none: {"kind": "cpu_reference"}
- * (the initial default), {"kind": "auto"} or {"kind": "gpu", "name": ...}.
+/* Default backend for requests that name none: {"kind": "auto"} (the
+ * initial default unless the configuration names another),
+ * {"kind": "cpu_reference"} or {"kind": "gpu", "name": ...}.
  * An unavailable explicit backend is refused (MK_ERR_UNSUPPORTED). */
 MKStatus mk_engine_set_default_backend(const MKEngine *engine, const char *backend_json);
 
@@ -357,7 +367,8 @@ MKStatus mk_engine_prepare_gpu(const MKEngine *engine, const char *cache_dir);
 
 /* out_json receives the preparation's state, by "state":
  *   "idle"; "preparing" {device, done, total};
- *   "ready" {device, kernels, from_cache, seconds};
+ *   "ready" {device, kernels, from_cache, seconds, and "warning" when the
+ *   saved kernels could not be read or written};
  *   "unavailable" {reason}; "failed" {device, message} (kernels then
  *   compile on first use). */
 MKStatus mk_engine_gpu_preparation_json(const MKEngine *engine, char **out_json);

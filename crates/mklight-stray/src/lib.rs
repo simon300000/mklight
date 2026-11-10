@@ -32,16 +32,16 @@
 //!   every designed path checked for obstruction by non-sequential geometry.
 //! * [`analysis`] — the engine entry point: settings, per-class maps with
 //!   standard errors, totals, top path signatures, `RunInfo`.
+//! * [`gpu`] — the resident device transport: a compute backend transports
+//!   a share of the source chunks from the packed scene (primitives, an
+//!   analytic BVH, materials and BSDF tables) and the CPU continues and
+//!   tallies them, with the same per-source random streams as [`tracer`].
 //!
 //! The partition of detected light between the sequential, ghost and
 //! stray solvers is specified in `docs/STRAY.md` and [`path`].
 //!
-//! # Integration points (later phase)
-//!
-//! * A hardware ray-tracing [`geom::RayCaster`] (Metal acceleration
-//!   structures); it also needs the BSDF's TIS table and lobe parameters.
-//! * Rays carry unpolarised (s/p-averaged) flux, while the ghost solver may
-//!   use per-polarisation `R`.
+//! Rays carry unpolarised (s/p-averaged) flux, while the ghost solver may
+//! use per-polarisation `R`.
 //!
 //! Units follow CONVENTIONS §1: mm, µm, W, W/mm².
 

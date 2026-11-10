@@ -126,8 +126,9 @@ impl OpticalSystem {
         )
     }
 
-    /// Apply configuration `k`'s overrides. Configuration `0` and an empty
-    /// configuration list both mean "base system".
+    /// Apply configuration `k`'s overrides. A system without configurations
+    /// has the single configuration `0`, the system itself; any other `k`
+    /// that does not exist is an error.
     ///
     /// Solves are not applied: solves run *after* overrides
     /// (`mklight_trace::solves::apply_solves_configuration`). Never re-apply a

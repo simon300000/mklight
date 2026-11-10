@@ -176,23 +176,6 @@ pub struct Otf {
     pub cutoff: f64,
 }
 
-/// Keys cubic convolution weights (a = −½) for the four samples around a
-/// point at fraction `t` past the second one.
-fn keys_weights(t: f64) -> [f64; 4] {
-    let a = -0.5;
-    let k = |x: f64| {
-        let x = x.abs();
-        if x <= 1.0 {
-            ((a + 2.0) * x - (a + 3.0)) * x * x + 1.0
-        } else if x < 2.0 {
-            ((a * x - 5.0 * a) * x + 8.0 * a) * x - 4.0 * a
-        } else {
-            0.0
-        }
-    };
-    [k(1.0 + t), k(t), k(1.0 - t), k(2.0 - t)]
-}
-
 impl Otf {
     fn lattice(grid: &[C64], m: usize, i: i64, j: i64) -> C64 {
         let mi = m as i64;
@@ -258,8 +241,8 @@ impl Otf {
                 v * back
             }
             Some(dl) => {
-                let wx = keys_weights(fx - ix);
-                let wy = keys_weights(fy - iy);
+                let wx = crate::interp::keys_weights(fx - ix);
+                let wy = crate::interp::keys_weights(fy - iy);
                 let mut d = C64::default();
                 for (b, wyb) in wy.iter().enumerate() {
                     let j = iy as i64 + b as i64 - 1;

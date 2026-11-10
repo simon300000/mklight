@@ -1,5 +1,5 @@
 //! Portable CPU-f32 specification of the collective kernels.
-use crate::{Df32 as D, consts::*, fenv::FpEnv, pending::JobControl};
+use crate::{Df32 as D, consts::*, df::df_cmp, fenv::FpEnv, pending::JobControl};
 use mklight_core::MkResult;
 use std::cmp::Ordering;
 
@@ -49,23 +49,6 @@ fn scan<T: Copy>(
         }
     }
     Ok(out)
-}
-/// Numeric total order, including a deterministic NaN tail. Signed zero ties.
-pub fn float_cmp(a: f32, b: f32) -> Ordering {
-    match (a.is_nan(), b.is_nan()) {
-        (true, true) => Ordering::Equal,
-        (true, false) => Ordering::Greater,
-        (false, true) => Ordering::Less,
-        (false, false) => a.partial_cmp(&b).unwrap(),
-    }
-}
-pub fn df_cmp(a: D, b: D) -> Ordering {
-    let an = a.hi.is_nan() || a.lo.is_nan();
-    let bn = b.hi.is_nan() || b.lo.is_nan();
-    if an || bn {
-        return an.cmp(&bn);
-    }
-    float_cmp(a.hi, b.hi).then_with(|| float_cmp(a.lo, b.lo))
 }
 pub fn permutation(
     n: usize,

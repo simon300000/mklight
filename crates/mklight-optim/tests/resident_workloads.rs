@@ -1,19 +1,15 @@
 #![cfg(target_os = "macos")]
 //! Complete-workload timings include device search and final report scoring.
+
+mod common;
+
+use common::OnDevice;
 use mklight_core::{JobContext, Snapshot, param::ParamPath, samples};
-use mklight_gpu::ComputeBackend;
 use mklight_optim::{
     Monitor, deriv::*, gpu::*, lsq::*, merit::default::DefaultMeritSpec, merit::*, problem::*,
     tolerance::*,
 };
-use std::{sync::Arc, time::Instant};
-fn backend() -> Arc<dyn ComputeBackend> {
-    Arc::new(
-        mklight_metal::MetalBackend::new()
-            .unwrap()
-            .expect("P8 requires host Metal"),
-    )
-}
+use std::time::Instant;
 fn phase(i: usize) -> &'static str {
     if i == 0 {
         "cold"
@@ -26,7 +22,9 @@ fn phase(i: usize) -> &'static str {
 #[test]
 #[ignore = "provisional complete synthetic LM solve timings around the tall-QR crossover"]
 fn jacobians_and_solves() {
-    let b = backend();
+    let Some(b) = common::metal() else {
+        return;
+    };
     let ctx = JobContext::new();
     for (n, m) in [(8, 32), (32, 128), (100, 400), (32, 4000), (100, 4000)] {
         let problem = FnProblem::residuals(
@@ -41,7 +39,7 @@ fn jacobians_and_solves() {
                 }
             },
         );
-        let p = ResidentProblem {
+        let p = OnDevice {
             problem,
             context: GpuContext::new(b.clone(), Snapshot::new(samples::singlet()).unwrap()),
         };
@@ -70,7 +68,7 @@ fn jacobians_and_solves() {
                 m * n >= 1 << 16
             );
             eprintln!(
-                "P8_WORKLOAD {}",
+                "RESIDENT_WORKLOAD {}",
                 serde_json::json!({"case":"synthetic_jacobian_and_solve","variables":n,"residuals":m,"run":run,"phase":phase(run),"cpu_seconds":cpu_s,"resident_seconds":gpu_s,"cpu_merit":cpu.merit,"resident_merit":gpu.merit,"commands":after.command_buffers-before.command_buffers,"device_seconds":after.device_seconds-before.device_seconds,"copied_bytes":after.copied_bytes-before.copied_bytes,"peak_plan_bytes":after.peak_bytes,"fallback_count":after.fallback_count-before.fallback_count})
             );
         }
@@ -79,7 +77,9 @@ fn jacobians_and_solves() {
 #[test]
 #[ignore = "provisional complete compensated/uncompensated trial timings"]
 fn trials() {
-    let b = backend();
+    let Some(b) = common::metal() else {
+        return;
+    };
     let system = samples::cooke_triplet();
     let ctx = JobContext::new();
     let reference = BuiltinEvaluator::builtin();
@@ -156,7 +156,7 @@ fn trials() {
             let q = gpu.stats();
             assert!(q.device_operands > q0.device_operands);
             eprintln!(
-                "P8_WORKLOAD {}",
+                "RESIDENT_WORKLOAD {}",
                 serde_json::json!({"case":"cooke_tolerance","compensated":compensated,"trials":32,"batch":16,"seed":73,"run":run,"phase":phase(run),"cpu_seconds":cpu_s,"resident_seconds":gpu_s,"cpu_mean":expected.mean,"resident_mean":got.mean,"commands":after.command_buffers-before.command_buffers,"device_seconds":after.device_seconds-before.device_seconds,"copied_bytes":after.copied_bytes-before.copied_bytes,"peak_plan_bytes":after.peak_bytes,"fallback_operands":q.fallback_operands-q0.fallback_operands,"device_operands":q.device_operands-q0.device_operands})
             );
         }
@@ -164,9 +164,11 @@ fn trials() {
 }
 
 #[test]
-#[ignore = "provisional matched-method hybrid RI timings"]
+#[ignore = "provisional matched-method RI timings"]
 fn ri_visibility_batches() {
-    let b = backend();
+    let Some(b) = common::metal() else {
+        return;
+    };
     let system = samples::cooke_triplet();
     let ctx = JobContext::new();
     let reference = BuiltinEvaluator::builtin();
@@ -222,7 +224,7 @@ fn ri_visibility_batches() {
             let after = evaluator.context.stats();
             assert!(q.device_operands > q0.device_operands);
             eprintln!(
-                "P8_WORKLOAD {}",
+                "RESIDENT_WORKLOAD {}",
                 serde_json::json!({"case":"cooke_ri_visibility","batch":batch,"run":run,"phase":phase(run),"cpu_seconds":cpu_s,"resident_seconds":new_s,"maximum_error":error,"commands":after.command_buffers-before.command_buffers,"device_seconds":after.device_seconds-before.device_seconds,"copied_bytes":after.copied_bytes-before.copied_bytes,"peak_plan_bytes":after.peak_bytes,"fallback_operands":q.fallback_operands-q0.fallback_operands,"host_completions":after.fallback_count-before.fallback_count,"device_operands":q.device_operands-q0.device_operands})
             );
         }

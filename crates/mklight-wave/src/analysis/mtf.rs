@@ -37,7 +37,7 @@ use serde::{Deserialize, Serialize};
 
 use super::psf::{PsfMethod, check_huygens_grid, compute_psf};
 use super::{
-    FieldPupils, check_pos, field_pupils, field_value, fields, linspace, run_info,
+    FieldPupils, ItemProgress, check_pos, field_pupils, field_value, fields, linspace, run_info,
     system_field_pupils, wavelengths,
 };
 use crate::detector::{DetectorCurve, DetectorSettings};
@@ -277,13 +277,11 @@ pub fn mtf_analysis_shared(
     })?;
     let mut warnings = skipped;
     let mut out = Vec::new();
-    let nf = per.len().max(1) as f64;
+    let progress = ItemProgress::new(ctx.subrange(0.5, 1.0), per.len());
     let computed: Vec<_> = per
         .par_iter()
-        .enumerate()
-        .map(|(k, (f, value, fp))| -> MkResult<_> {
+        .map(|(f, value, fp)| -> MkResult<_> {
             let mut field_warnings = fp.warnings.clone();
-            let sub = ctx.subrange(0.5 + 0.5 * k as f64 / nf, 0.5 + 0.5 * (k + 1) as f64 / nf);
             let o = fp.orientation();
             let c = field_mtf(
                 &o,
@@ -291,8 +289,9 @@ pub fn mtf_analysis_shared(
                 &freqs,
                 settings.method,
                 &settings.huygens,
-                &sub,
+                &progress.item(),
             )?;
+            progress.finish();
             for w in &c.warnings {
                 field_warnings.push(format!("field {f}: {w}"));
             }
@@ -445,22 +444,21 @@ pub fn mtf_vs_field_shared(
         tangential: [dx / len, dy / len],
     };
     let hs = linspace(0.0, 1.0, settings.field_samples);
-    let ns = hs.len() as f64;
     let mut warnings = Vec::new();
     let mut values = Vec::new();
     // `None` for a sample whose pupil cannot be built (NaN in the curves).
     let mut pupils = Vec::new();
     let mut first_error = None;
+    let progress = ItemProgress::new(ctx.subrange(0.0, 0.6), hs.len());
     let traced: Vec<_> = hs
         .par_iter()
-        .enumerate()
-        .map(|(k, &h)| {
-            let sub = ctx.subrange(0.6 * k as f64 / ns, 0.6 * (k + 1) as f64 / ns);
+        .map(|&h| {
+            let sub = progress.item();
             let point = FieldPoint::normalized(h * dx / len, h * dy / len);
             let label = format!("field {h:.3}");
-            let fp = tracer.prepare_field(point).and_then(|prepared| {
+            let fp = progress.finished(tracer.prepare_field(point).and_then(|prepared| {
                 field_pupils(tracer, &prepared, &label, &wls, &settings.pupil, memo, &sub)
-            });
+            }));
             (field_value(tracer, &point), label, fp)
         })
         .collect();
@@ -486,11 +484,12 @@ pub fn mtf_vs_field_shared(
         useful_frequency(pupils.iter().flatten())
     })?;
     let mut per_field = Vec::new();
+    let progress = ItemProgress::new(ctx.subrange(0.6, 1.0), hs.len());
     let computed: Vec<_> = pupils
         .par_iter()
-        .enumerate()
-        .map(|(k, fp)| -> MkResult<_> {
+        .map(|fp| -> MkResult<_> {
             let Some(fp) = fp else {
+                progress.finish();
                 return Ok(None);
             };
             let c = field_mtf(
@@ -499,8 +498,9 @@ pub fn mtf_vs_field_shared(
                 &freqs,
                 settings.method,
                 &settings.huygens,
-                &ctx.subrange(0.6 + 0.4 * k as f64 / ns, 0.6 + 0.4 * (k + 1) as f64 / ns),
+                &progress.item(),
             )?;
+            progress.finish();
             Ok(Some(c))
         })
         .collect();
@@ -685,16 +685,15 @@ pub fn through_focus_mtf_analysis_shared(
     };
     let mut warnings = skipped;
     let mut out = Vec::new();
-    let nf = per.len().max(1) as f64;
+    let progress = ItemProgress::new(ctx.subrange(0.3, 1.0), per.len());
     type FocusField = ((Vec<String>, Vec<String>), ThroughFocusField);
     // Fields are independent: they run side by side and merge in field
     // order (results and warnings do not depend on the scheduling).
     let computed: Vec<MkResult<FocusField>> = per
         .into_par_iter()
-        .enumerate()
-        .map(|(k, (f, value, mut fp))| {
+        .map(|(f, value, mut fp)| {
             let mut warnings: Vec<String> = Vec::new();
-            let sub = ctx.subrange(0.3 + 0.7 * k as f64 / nf, 0.3 + 0.7 * (k + 1) as f64 / nf);
+            let sub = progress.item();
             warnings.extend(fp.warnings.iter().cloned());
             if settings.pupil.grid == 0 {
                 // Automatic pupils also resolve the phase at both focus ends.
@@ -732,12 +731,11 @@ pub fn through_focus_mtf_analysis_shared(
             let curves = if settings.method == MtfAnalysisMethod::Direct {
                 crate::mtf::polychromatic_focus_mtf(&fp.weighted(), &focus, &freqs, &o, &sub)?
             } else {
-                let nz = focus.len() as f64;
+                let planes = ItemProgress::new(sub.clone(), focus.len());
                 // Planes side by side; the first error in plane order wins.
                 focus
                     .par_iter()
-                    .enumerate()
-                    .map(|(z, &dz)| {
+                    .map(|&dz| {
                         let shifted: Vec<PupilFunction> = fp
                             .pupils
                             .iter()
@@ -751,14 +749,15 @@ pub fn through_focus_mtf_analysis_shared(
                             .zip(&fp.pupils)
                             .map(|(p, (_, w, _))| (p, *w))
                             .collect();
-                        field_mtf(
+                        let c = field_mtf(
                             &o,
                             &weighted,
                             &freqs,
                             settings.method,
                             &settings.huygens,
-                            &sub.subrange(z as f64 / nz, (z + 1) as f64 / nz),
-                        )
+                            &planes.item(),
+                        );
+                        planes.finished(c)
                     })
                     .collect::<Vec<_>>()
                     .into_iter()
@@ -775,6 +774,7 @@ pub fn through_focus_mtf_analysis_shared(
                     s[q][z] = ss.as_ref().map_or(c.sagittal[q], |v| v[q]);
                 }
             }
+            progress.finish();
             Ok((
                 (warnings, tagged),
                 ThroughFocusField {

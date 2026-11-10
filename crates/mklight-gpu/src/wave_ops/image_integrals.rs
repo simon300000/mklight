@@ -47,9 +47,8 @@ pub fn validate(r: &ImageIntegral, p: &ResidentPlan) -> MkResult<()> {
             normalization,
             output,
         } => {
-            let n = square(input, if *kind == 0 { F32 } else { Complex32 })?;
-            let _ = n;
-            let count = queries.desc.shape[0];
+            square(input, if *kind == 0 { F32 } else { Complex32 })?;
+            let count = queries.desc.shape.first().copied().unwrap_or(0);
             view(queries, DoubleFloat, &[count, 2])?;
             if *kind > 2
                 || !spacing.is_finite()
@@ -207,18 +206,18 @@ pub fn cpu(
 ) -> MkResult<()> {
     match r {
         ImageIntegral::Metrics { input, output } => {
-            let a = values::<f32>(x, input);
+            let a = x.rows::<f32>(input);
             let n = input.desc.shape[0];
-            let mut partial = vec![[Df32::ZERO; 5]; a.len().div_ceil(256)];
+            let mut partial = vec![[Df32::ZERO; 5]; a.len().div_ceil(spec::SUM_BLOCK)];
             for (k, &v) in a.iter().enumerate() {
                 if k % 4096 == 0 {
                     ctl.check()?;
                 }
-                let row = &mut partial[k / 256];
+                let row = &mut partial[k / spec::SUM_BLOCK];
                 row[0] = row[0].add_f32(v);
                 row[1] = row[1] + Df32::from_f32(v).mul_f32((k % n) as f32);
                 row[2] = row[2] + Df32::from_f32(v).mul_f32((k / n) as f32);
-                if k % 256 == 0 || v > row[3].hi {
+                if k % spec::SUM_BLOCK == 0 || v > row[3].hi {
                     row[3] = Df32::from_f32(v);
                     row[4] = Df32::from_f32(k as f32);
                 }
@@ -244,7 +243,7 @@ pub fn cpu(
             let n = input.desc.len()?;
             let mut out = vec![[0.; 2]; n];
             if *squared {
-                let a = values::<[f32; 2]>(x, input);
+                let a = x.rows::<[f32; 2]>(input);
                 for (k, (v, z)) in out.iter_mut().zip(a).enumerate() {
                     if k % 4096 == 0 {
                         ctl.check()?;
@@ -252,7 +251,7 @@ pub fn cpu(
                     v[0] = z[0] * z[0] + z[1] * z[1];
                 }
             } else {
-                let a = values::<f32>(x, input);
+                let a = x.rows::<f32>(input);
                 for (k, (v, z)) in out.iter_mut().zip(a).enumerate() {
                     if k % 4096 == 0 {
                         ctl.check()?;
@@ -270,12 +269,12 @@ pub fn cpu(
             ..
         } => {
             let p = params(r);
-            let q = values::<Df32>(x, queries).as_chunks::<2>().0;
-            let a = values::<f32>(x, input);
+            let q = x.rows::<Df32>(queries).as_chunks::<2>().0;
+            let a = x.rows::<f32>(input);
             let complex = if p.kind == 0 {
                 None
             } else {
-                Some(values::<[f32; 2]>(x, input))
+                Some(x.rows::<[f32; 2]>(input))
             };
             let mut out = vec![[0.; 2]; q.len()];
             for (i, q) in q.iter().enumerate() {

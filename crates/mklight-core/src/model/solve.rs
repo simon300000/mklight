@@ -192,14 +192,19 @@ impl Solve {
                 let Some(j) = self.target.surface().and_then(index) else {
                     return false;
                 };
-                let shape_param = matches!(
+                // Every parameter of the two sags, and the semi-diameters
+                // that give the default edge radius.
+                let sag_param = matches!(
                     p,
                     ParamPath::Curvature { .. }
                         | ParamPath::Conic { .. }
                         | ParamPath::Asphere { .. }
+                        | ParamPath::ShapeCoefficient { .. }
+                        | ParamPath::ShapeParam { .. }
+                        | ParamPath::Irregularity { .. }
                         | ParamPath::SemiDiameter { .. }
                 );
-                shape_param
+                sag_param
                     && p.surface()
                         .and_then(index)
                         .is_some_and(|i| i == j || i == j + 1)
@@ -541,6 +546,53 @@ mod tests {
         // Pickup c2 (surface 2, shape) before t1? t1 is at surface 1 → first.
         assert_eq!(s.solve_order().unwrap(), vec![2, 1, 0]);
         assert_eq!(s.solved_params(), vec![c(2), t(1), t(2)]);
+    }
+
+    #[test]
+    fn edge_thickness_reads_the_sags_of_its_two_surfaces() {
+        use crate::param::{CoefficientSet, IrregularityMode, ShapeParameter};
+        let s = lens();
+        let edge = Solve::new(
+            t(1),
+            SolveKind::EdgeThickness {
+                value: 2.0,
+                radius: None,
+            },
+        );
+        let paths = |id: u64| {
+            let surface = SurfaceId(id);
+            [
+                c(id),
+                ParamPath::Conic { surface },
+                ParamPath::Asphere { surface, index: 0 },
+                ParamPath::ShapeCoefficient {
+                    surface,
+                    set: CoefficientSet::Odd,
+                    index: 2,
+                },
+                ParamPath::ShapeParam {
+                    surface,
+                    parameter: ShapeParameter::CurvatureY,
+                },
+                ParamPath::Irregularity {
+                    surface,
+                    mode: IrregularityMode::Spherical,
+                },
+                ParamPath::SemiDiameter { surface },
+            ]
+        };
+        for p in paths(1).iter().chain(&paths(2)) {
+            assert!(edge.reads(&s, p), "{p:?}");
+        }
+        for p in paths(3).iter().chain(&[
+            t(1),
+            t(2),
+            ParamPath::TiltX {
+                surface: SurfaceId(1),
+            },
+        ]) {
+            assert!(!edge.reads(&s, p), "{p:?}");
+        }
     }
 
     #[test]
