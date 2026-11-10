@@ -75,7 +75,7 @@ impl LayoutProvider for Provider<'_> {
             p.operations
                 .push(ResidentOp::Geometry(geometry::Request::SurfaceSamples(
                     SurfaceSamples {
-                        systems: SystemSet::Uploaded(geo.systems),
+                        systems: geo.systems,
                         samples: p.view(inputs)?,
                         projection: Some(VertexProjection {
                             xy: p.view(xy)?,
@@ -112,31 +112,15 @@ impl LayoutProvider for Provider<'_> {
         let geo = Geometry::new(self.backend, t, ctx)?;
         let slots = t.system().num_surfaces();
         let mut p = ResidentPlan::new(t.system().snapshot.clone());
-        // The selected layout fan is small; each job keeps its own metadata
+        // The selected layout fan is small; each job keeps its own field
         // row, so arbitrary field/wavelength choices retain the original order.
-        let metadata = geo.records::<FieldSpec>(&mut p, jobs.len(), |i| {
-            let (f, w, _, _, _) = jobs[i];
-            let (si, wi) = geo.chunk(w)?;
-            FieldSpec::new(
-                t.system(),
-                t.paraxial(),
-                t.field(f).point,
-                si,
-                wi,
-                t.aiming(),
-            )
-        })?;
-        let samples = geo.records::<Sample>(&mut p, jobs.len(), |i| {
-            Ok(Sample::new([jobs[i].2, jobs[i].3], i as u32, i as u64))
-        })?;
         let steps = geo.import::<u32>(&mut p, [slots - 1], |out| {
             for (i, v) in out.iter_mut().enumerate() {
                 *v = (i + 1) as u32;
             }
             Ok(())
         })?;
-        let key = geo.field_key(&p, metadata)?;
-        let seeds = geo.host_seeds(
+        let rows = geo.aim_rows(
             &mut p,
             &jobs
                 .iter()
@@ -144,18 +128,14 @@ impl LayoutProvider for Provider<'_> {
                 .collect::<Vec<_>>(),
             t.aiming(),
         )?;
-        let hits = geo.append_trace(
-            &mut p,
-            metadata,
-            key,
-            seeds,
-            samples,
-            jobs.len(),
-            steps,
-            t.aiming(),
-            true,
-            true,
-        )?;
+        let spec = |i: usize| aim::RaySpec {
+            row: i as u32,
+            pupil: [jobs[i].2, jobs[i].3],
+            weight: 1.0,
+            id: i as u64,
+        };
+        let input = geo.aim_rays(&mut p, &rows, jobs.len(), &spec, ctx)?;
+        let hits = geo.trace_rays(&mut p, input, steps, true, true)?;
         let (points, _, mask, _, launch) =
             geo.global_records(&mut p, &hits, slots, [0.0; 3], true)?;
         p.outputs = vec![points, mask, launch, hits.status];

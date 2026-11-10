@@ -50,8 +50,8 @@ pub use problem::{OpticalProblem, VariableSpec};
 pub use quadrature::{PupilNode, PupilSampling, PupilSymmetry};
 pub use trace_eval::{RunResult, TraceEvalSettings, TraceEvaluator};
 
-/// Current merit-file schema version. Bump when an existing serialised
-/// layout changes and add a migration step to `MeritFunctionSpec::migrate`.
+/// Merit-file schema version. Bump when an existing serialised layout
+/// changes; a spec at any other version is refused.
 pub const MERIT_SCHEMA_VERSION: u32 = 1;
 
 fn one() -> f64 {
@@ -268,35 +268,31 @@ impl MeritFunctionSpec {
         Ok(serde_json::to_string_pretty(self)?)
     }
 
-    /// Parse any supported schema version, migrating to the current one.
+    /// Parse a spec at `MERIT_SCHEMA_VERSION` (see `from_value`).
     pub fn from_json(s: &str) -> MkResult<Self> {
         let v: serde_json::Value = serde_json::from_str(s)?;
         Self::from_value(v)
     }
 
-    pub fn from_value(mut v: serde_json::Value) -> MkResult<Self> {
-        let ver = v
-            .get("schema_version")
-            .and_then(|x| x.as_u64())
-            .unwrap_or(1) as u32;
-        if ver > MERIT_SCHEMA_VERSION {
+    /// Parse a spec at `MERIT_SCHEMA_VERSION`; a missing `schema_version`
+    /// means the current one. The version is checked before the layout, so
+    /// a spec at another version gets a version error, not a field error.
+    pub fn from_value(v: serde_json::Value) -> MkResult<Self> {
+        let ver = match v.get("schema_version") {
+            None | Some(serde_json::Value::Null) => u64::from(MERIT_SCHEMA_VERSION),
+            Some(x) => x.as_u64().ok_or_else(|| {
+                MkError::Parse(format!(
+                    "merit function schema_version must be a non-negative integer, got {x}"
+                ))
+            })?,
+        };
+        if ver != u64::from(MERIT_SCHEMA_VERSION) {
             return Err(MkError::Parse(format!(
-                "merit function schema {ver} is newer than supported {MERIT_SCHEMA_VERSION}"
+                "merit function schema {ver} is not supported (this engine reads \
+                 {MERIT_SCHEMA_VERSION})"
             )));
         }
-        Self::migrate(&mut v, ver)?;
-        let mut spec: MeritFunctionSpec = serde_json::from_value(v)?;
-        spec.schema_version = MERIT_SCHEMA_VERSION;
-        Ok(spec)
-    }
-
-    /// Upgrade a serialised spec in place from version `from`. Each schema
-    /// change adds one `from == k` step here.
-    fn migrate(_v: &mut serde_json::Value, from: u32) -> MkResult<()> {
-        match from {
-            0 => Err(MkError::Parse("schema version 0 is invalid".into())),
-            _ => Ok(()), // 1 = current
-        }
+        Ok(serde_json::from_value(v)?)
     }
 
     /// Structural checks: known kinds (a `Custom` kind must name a
@@ -716,9 +712,12 @@ mod tests {
         assert_eq!(m.schema_version, MERIT_SCHEMA_VERSION);
         assert_eq!(m.operands[0].weight, 1.0);
         assert!(m.operands[0].enabled);
-        // Future versions are rejected.
-        let future = r#"{"schema_version":99,"operands":[]}"#;
-        assert!(MeritFunctionSpec::from_json(future).is_err());
+        // Every other version is rejected.
+        for other in [0, 2, 99] {
+            let js = format!(r#"{{"schema_version":{other},"operands":[]}}"#);
+            let e = MeritFunctionSpec::from_json(&js).unwrap_err();
+            assert!(e.to_string().contains("not supported"), "{e}");
+        }
         // Registry knows the built-ins but not the custom kind until registered.
         let mut reg = OperandRegistry::builtin();
         assert!(spec.validate(&reg).is_err());

@@ -1,5 +1,7 @@
-//! Resident stray-light transport, analytic compute BVH and deterministic
-//! per-source detector estimators. Engine qualification/routing belongs to P11.
+//! Resident stray-light source generation, analytic compute BVH and
+//! transport. The transport writes per-source detections, ledgers and
+//! continuation stacks; the host forms the estimators. Engine
+//! qualification/routing belongs to P11.
 mod build;
 mod kernel;
 pub use build::{Build, node_count};
@@ -7,12 +9,10 @@ mod math;
 mod records;
 mod sag;
 mod spec;
-mod tally;
 mod transport;
 use crate::{ComputeBackend, Df32, FpEnv, pending::JobControl, resident::*};
 use mklight_core::{JobContext, MkResult};
 pub use records::*;
-pub use tally::{Query, Tally, TallyParams, same_signature};
 pub use transport::*;
 
 #[derive(Clone, Debug)]
@@ -183,7 +183,6 @@ pub struct Generate {
 }
 #[derive(Clone, Debug)]
 pub enum Request {
-    Tally(Tally),
     Build(Build),
     Generate(Generate),
     Cast(Cast),
@@ -232,7 +231,6 @@ fn validate_source(s: Source, cdf: &[Df32], first_ray: u64, ray_count: usize) ->
 }
 pub fn validate(r: &Request, p: &ResidentPlan) -> MkResult<()> {
     let (n, tile) = match r {
-        Request::Tally(t) => return t.validate(p),
         Request::Build(r) => {
             let n = check::<Primitive>(&r.primitives, p)?;
             if n == 0 || p.desc(r.output)? != &record_desc::<Node>(node_count(n)) {
@@ -266,7 +264,6 @@ pub fn validate(r: &Request, p: &ResidentPlan) -> MkResult<()> {
 }
 pub fn accesses(r: &Request) -> Access {
     match r {
-        Request::Tally(t) => t.accesses(),
         Request::Build(r) => Access {
             reads: vec![r.primitives.clone()],
             writes: vec![r.output],
@@ -288,7 +285,7 @@ pub fn accesses(r: &Request) -> Access {
         },
         Request::Transport(r) => Access {
             reads: r.reads(),
-            writes: vec![r.output, r.ledger],
+            writes: vec![r.output, r.ledger, r.stack],
             ..Default::default()
         },
     }
@@ -304,9 +301,6 @@ fn rows<'a, T: bytemuck::Pod>(x: &'a cpu::Execution, v: &PlanView) -> &'a [T] {
     bytemuck::cast_slice(&x.words(v.buffer)[v.offset..v.offset + v.desc.len().unwrap()])
 }
 fn execute_in<E: FpEnv>(r: &Request, x: &mut cpu::Execution, ctl: &JobControl) -> MkResult<()> {
-    if let Request::Tally(t) = r {
-        return tally::execute(t, x, ctl);
-    }
     if let Request::Build(r) = r {
         return build::execute::<E>(r, x, ctl);
     }
@@ -316,7 +310,7 @@ fn execute_in<E: FpEnv>(r: &Request, x: &mut cpu::Execution, ctl: &JobControl) -
     let n = match r {
         Request::Generate(r) => r.ray_count,
         Request::Cast(r) => r.rays.desc.shape[0],
-        Request::Tally(_) | Request::Build(_) => unreachable!(),
+        Request::Build(_) => unreachable!(),
         Request::Transport(_) => return unsupported("stray transport"),
     };
     for i in 0..n {
@@ -338,7 +332,7 @@ fn execute_in<E: FpEnv>(r: &Request, x: &mut cpu::Execution, ctl: &JobControl) -
                 );
                 bytemuck::cast_slice_mut::<u32, Hit>(x.words_mut(r.output))[i] = out;
             }
-            Request::Tally(_) | Request::Build(_) | Request::Transport(_) => unreachable!(),
+            Request::Build(_) | Request::Transport(_) => unreachable!(),
         }
     }
     Ok(())

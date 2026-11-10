@@ -204,17 +204,17 @@ kernel void mkl_wave_resample(device const float2 *nodes [[buffer(0)]],device co
     cov[k]=float(count)/float(s*s);amp[k]=count?wf(mkl_df_div(a,float2(float(count),0))):0;opd[k]=count?mkl_df_div(w,float2(float(count),0)):float2(0);
     diag[k]=gap;diag[N+k]=pitch;diag[2*N+k]=float(unresolved);
 }
-static float2 wzernike(float2 x,float2 y,uint n,int m,bool standard) {
+static float2 wzernike(float2 x,float2 y,uint n,int m) {
     uint am=uint(abs(m)),degree=(n-am)/2;float b=float(am);float2 one=float2(1,0),t=mkl_df_add_f32(mkl_df_mul_f32(mkl_df_add(mkl_df_mul(x,x),mkl_df_mul(y,y)),2),-1);
     float2 prev=one,cur=mkl_df_add(one,mkl_df_mul_f32(mkl_df_sub(t,one),(b+2)*0.5f));
     for(uint k=1;k<degree;++k){float f=float(k),s=2*f+b,a1=2*(f+1)*(f+b+1)*s,a3=2*f*(f+b)*(s+2);float2 a2=mkl_df_mul_f32(mkl_df_add_f32(mkl_df_mul_f32(t,(s+2)*s),-b*b),s+1);float2 next=mkl_df_div(mkl_df_sub(mkl_df_mul(a2,cur),mkl_df_mul_f32(prev,a3)),float2(a1,0));prev=cur;cur=next;}
     float2 re=one,im=0;for(uint k=0;k<am;++k){float2 r=mkl_df_sub(mkl_df_mul(re,x),mkl_df_mul(im,y)),i=mkl_df_add(mkl_df_mul(re,y),mkl_df_mul(im,x));re=r;im=i;}
-    float2 z=mkl_df_mul(m>=0?re:im,degree?cur:one);if(standard)z=mkl_df_mul(z,mkl_df_sqrt(float2(float(n+1)*(m==0?1:2),0)));return z;
+    return mkl_df_mul(m>=0?re:im,degree?cur:one);
 }
 kernel void mkl_wave_zernike(device const float2 *samples [[buffer(0)]],device const uint2 *terms [[buffer(1)]],device float2 *matrix [[buffer(4)]],device float2 *rhs [[buffer(5)]],constant MklWaveParams &p [[buffer(7)]],uint id [[thread_position_in_grid]]) {
     if(id>=p.count)return;uint row=p.first+id;float2 weight=samples[4*row+3];
     rhs[row]=weight.x>0?mkl_df_mul(samples[4*row+2],weight):float2(0);
-    for(uint j=0;j<p.field_side;++j)matrix[row*p.field_side+j]=weight.x>0?mkl_df_mul(weight,wzernike(samples[4*row],samples[4*row+1],terms[j].x,as_type<int>(terms[j].y),p.size!=0)):float2(0);
+    for(uint j=0;j<p.field_side;++j)matrix[row*p.field_side+j]=weight.x>0?mkl_df_mul(weight,wzernike(samples[4*row],samples[4*row+1],terms[j].x,as_type<int>(terms[j].y))):float2(0);
 }
 
 kernel void mkl_wave_diagnostics(device const float *c [[buffer(0)]],device const float2 *w [[buffer(1)]],device const float *d [[buffer(2)]],device float *part [[buffer(3)]],constant uint *p [[buffer(5)]],uint block [[thread_position_in_grid]]) {
@@ -360,11 +360,6 @@ kernel void mkl_wave_spectral(device const float *v0 [[buffer(0)]],device const 
         if(p.phase){float2 phase=-mkl_df_add(mkl_df_mul_f32(wdf(p.offsets[j][0]),frequency[2*k]),mkl_df_mul_f32(wdf(p.offsets[j][1]),frequency[2*k+1]));float2 q=wcis(phase);z=float2(z.x*q.x-z.y*q.y,z.x*q.y+z.y*q.x);}
         re=mkl_df_add(re,mkl_df_mul_f32(wdf(p.weights[j]),z.x));im=mkl_df_add(im,mkl_df_mul_f32(wdf(p.weights[j]),z.y));
     }out[k*width]=wf(re);if(p.complex)out[k*width+1]=wf(im);
-}
-kernel void mkl_wave_blur(device const float *a [[buffer(0)]],device const float *c [[buffer(1)]],device const float2 *w [[buffer(2)]],device float2 *out [[buffer(3)]],device uint *mask [[buffer(4)]],constant MklWaveBlurParams &p [[buffer(5)]],uint k [[thread_position_in_grid]]){
-    if(k>=p.count)return;for(uint j=0;j<5;++j)out[j*p.count+k]=0;mask[k]=0;uint i=k%p.side*p.step,j=k/p.side*p.step,q=j*p.n+i;if(c[q]<=0||c[q+1]<=0||c[q+p.n]<=0)return;mask[k]=1;
-    float2 x=mkl_df_mul(mkl_df_sub(w[q+1],w[q]),wdf(p.scale)),y=mkl_df_mul(mkl_df_sub(w[q+p.n],w[q]),wdf(p.scale));
-    for(uint axis=0;axis<2;++axis){float2 v=mkl_df_add(mkl_df_add(mkl_df_mul(wdf(p.inverse[axis][0]),x),mkl_df_mul(wdf(p.inverse[axis][1]),y)),wdf(p.offset[axis]));out[axis*p.count+k]=v;out[(axis+2)*p.count+k]=wabs(v);}out[4*p.count+k]=mkl_df_mul(mkl_df_mul(float2(c[q],0),float2(a[q],0)),float2(a[q],0));
 }
 static float wj1(float x){float ax=abs(x);if(ax<=3){float t=(x/3)*(x/3);return x*(.5f+t*(-.56249985f+t*(.21093573f+t*(-.03954289f+t*(.00443319f+t*(-.00031761f+t*.00001109f))))));}float y=3/ax,f=.79788456f+y*(.00000156f+y*(.01659667f+y*(.00017105f+y*(-.00249511f+y*(.00113653f-y*.00020033f))))),th=ax-2.35619449f+y*(.12499612f+y*(.00005650f+y*(-.00637879f+y*(.00074348f+y*(.00079824f-y*.00029166f)))));float r=f*cos(th)/sqrt(ax);return x<0?-r:r;}
 kernel void mkl_wave_image_complex(device const float *input [[buffer(0)]],device float2 *out [[buffer(2)]],constant MklWaveIntegralParams &p [[buffer(4)]],uint id [[thread_position_in_grid]]){

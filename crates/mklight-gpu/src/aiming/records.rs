@@ -295,19 +295,3 @@ pub fn host_tables(
         });
     out
 }
-/// Stable sparse unresolved list for an adapter's optional f64 polish. A
-/// failure is never relabelled converged; polishing is a separate decision.
-/// Excluded samples (`MKL_AIM_OUTSIDE`) are not unresolved.
-pub fn unresolved(report: &[u32], logical_ids: &[u32]) -> Vec<(usize, u64, u32)> {
-    let n = report.len() / MKL_AIM_REPORT_PLANES as usize;
-    (0..n)
-        .filter(|&i| !matches!(report[i], 0 | MKL_AIM_OUTSIDE))
-        .map(|i| {
-            (
-                i,
-                logical_ids[i] as u64 | ((logical_ids[n + i] as u64) << 32),
-                report[i],
-            )
-        })
-        .collect()
-}

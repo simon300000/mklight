@@ -25,27 +25,23 @@ fn bind(e: &crate::context::Encoder<'_>, i: usize, x: &Execution<'_>, v: &PlanVi
     e.set_buffer(i, b, o);
 }
 /// Packed headers, surfaces and coefficients at slots 0-2.
-fn bind_systems(
-    e: &crate::context::Encoder<'_>,
-    x: &Execution<'_>,
-    uploaded: Option<&crate::backend::Uploaded>,
-    systems: &SystemSet,
-) {
+fn bind_systems(e: &crate::context::Encoder<'_>, uploaded: Option<&crate::backend::Uploaded>) {
     if let Some(u) = uploaded {
         e.set_buffer(0, &u.headers, 0);
         e.set_buffer(1, &u.surfaces, 0);
         e.set_buffer(2, &u.coefficients, 0);
-    } else if let SystemSet::Resident {
-        headers,
-        surfaces,
-        coefficients,
-        ..
-    } = *systems
-    {
-        bind(e, 0, x, &view(headers, ElementType::U32, [0]));
-        bind(e, 1, x, &view(surfaces, ElementType::U32, [0]));
-        bind(e, 2, x, &view(coefficients, ElementType::DoubleFloat, [0]));
     }
+}
+/// Unclipped and clipped trace parameters of the illumination machines.
+fn ri_trace_params() -> [mklight_gpu::layout::TraceParams; 2] {
+    let un = mklight_gpu::aiming::kernel::newton_params();
+    [
+        un,
+        mklight_gpu::layout::TraceParams {
+            flags: mklight_gpu::consts::MKL_TRACE_CLIP,
+            ..un
+        },
+    ]
 }
 pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> MkResult<()> {
     let start = Instant::now();
@@ -100,11 +96,11 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                 ..Zeroable::zeroed()
             },
         ),
-        Request::Illumination(r) => (
-            "mkl_geometry_illumination",
-            r.nodes.desc.shape[0],
+        Request::IlluminationRays(r) => (
+            "mkl_geometry_ri_rays",
+            r.tasks.desc.shape[0],
             Params {
-                chiefs: r.chiefs.rays.count as u32,
+                chiefs: r.fields.desc.shape[0] as u32,
                 segment: r.slots as u32,
                 ..Zeroable::zeroed()
             },
@@ -168,15 +164,8 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
     };
     stage.name = name.into();
     p.stride = n as u32;
-    let uploaded = match r.systems() {
-        Some(SystemSet::Uploaded(h)) => Some(x.system(*h)?),
-        _ => None,
-    };
-    p.systems = match (&uploaded, r.systems()) {
-        (Some(u), _) => u.set.headers.len() as u32,
-        (None, Some(SystemSet::Resident { count, .. })) => *count as u32,
-        _ => 0,
-    };
+    let uploaded = r.systems().map(|h| x.system(h)).transpose()?;
+    p.systems = uploaded.as_ref().map_or(0, |u| u.set.headers.len() as u32);
     if let Request::SurfaceSamples(SurfaceSamples {
         projection: Some(v),
         ..
@@ -193,14 +182,12 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
     let a = mklight_gpu::geometry::accesses(r);
     let mut out: Vec<_> = a.writes.iter().map(|&id| x.take_output(id)).collect();
     let pso = x.gpu.pipeline(&PipelineKey::plain(name))?;
-    // RI nodes run nested Newton solves: size those commands adaptively from
-    // measured throughput, starting large enough to occupy the device. The
-    // other kernels are closed-form per thread; fixed chunks only bound the
-    // command time (and so the cancellation latency).
-    let adaptive = matches!(r, Request::Illumination(_));
-    let (minimum, maximum) = (4096, 1 << 18);
-    let mut next = match r {
-        Request::Illumination(_) => minimum,
+    // Fixed chunks bound the command time (and so the cancellation
+    // latency). The illumination rays run up to 48 dependent traces per
+    // thread, so about one device wave per command keeps commands short
+    // without waiting between them.
+    let next = match r {
+        Request::IlluminationRays(_) => 1 << 14,
         Request::Coddington(_) => 1 << 16,
         _ => 1 << 22,
     };
@@ -272,32 +259,12 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                         e.set_buffer_mut(6, &mut out[0], 0);
                         e.set_buffer_mut(8, &mut out[1], 0);
                     }
-                    Request::Illumination(r) => {
-                        bind_systems(e, x, uploaded.as_deref(), &r.systems);
-                        bind(
-                            e,
-                            3,
-                            x,
-                            &view(r.chiefs.records.unwrap(), ElementType::F32, [0]),
-                        );
-                        bind(
-                            e,
-                            4,
-                            x,
-                            &view(r.chiefs.record_low.unwrap(), ElementType::F32, [0]),
-                        );
-                        bind(e, 5, x, &r.fields);
-                        bind(e, 6, x, &r.nodes);
-                        e.set_buffer_mut(8, &mut out[0], 0);
-                        e.set_buffer_mut(9, &mut out[1], 0);
-                        e.set_buffer_mut(12, &mut out[2], 0);
-                        let un = mklight_gpu::aiming::kernel::newton_params();
-                        let clipped = mklight_gpu::layout::TraceParams {
-                            flags: mklight_gpu::consts::MKL_TRACE_CLIP,
-                            ..un
-                        };
-                        e.set_bytes(10, &[un, clipped]);
-                        bind(e, 11, x, &view(r.chiefs.status, ElementType::U32, [0]));
+                    Request::IlluminationRays(r) => {
+                        bind_systems(e, uploaded.as_deref());
+                        bind(e, 3, x, &r.fields);
+                        bind(e, 4, x, &r.tasks);
+                        e.set_buffer_mut(5, &mut out[0], 0);
+                        e.set_bytes(8, &ri_trace_params());
                     }
                     Request::CloseFocus(r) => {
                         bind(e, 0, x, &view(r.hits.rays.floats, ElementType::F32, [0]));
@@ -306,7 +273,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                         e.set_buffer_mut(3, &mut out[1], 0);
                     }
                     Request::Coddington(r) => {
-                        bind_systems(e, x, uploaded.as_deref(), &r.systems);
+                        bind_systems(e, uploaded.as_deref());
                         for (i, (id, ty)) in [
                             (r.hits.records.unwrap(), ElementType::F32),
                             (r.hits.record_low.unwrap(), ElementType::F32),
@@ -372,7 +339,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                         e.set_buffer_mut(4, &mut out[1], 0);
                     }
                     Request::SurfaceSamples(r) => {
-                        bind_systems(e, x, uploaded.as_deref(), &r.systems);
+                        bind_systems(e, uploaded.as_deref());
                         bind(e, 3, x, &r.samples);
                         if let Some(v) = &r.projection {
                             bind(e, 6, x, &v.frames);
@@ -392,18 +359,11 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                 Ok(())
             })?
         };
-        let more = offset + (p.count as usize) < n;
-        let adaptive_seconds = if adaptive && more { x.measure()? } else { 0. };
         stage.max_command_seconds = stage.max_command_seconds.max(t.elapsed().as_secs_f64());
         x.stats.parameter_bytes += size_of::<Params>() as u64;
         ctl.check()?;
         ctl.report((offset + p.count as usize) as f64 / n as f64, "geometry");
         offset += p.count as usize;
-        if adaptive {
-            let fit = (p.count as f64 * 0.010 / adaptive_seconds.max(1e-6)) as usize;
-            next = fit.clamp(minimum, (p.count as usize * 8).clamp(minimum, maximum));
-            x.stats.parameter_bytes += 2 * size_of::<mklight_gpu::layout::TraceParams>() as u64;
-        }
     }
     for (id, b) in a.writes.into_iter().zip(out) {
         x.put_output(id, b);

@@ -14,6 +14,7 @@ mklight-ghost.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 rayon.workspace = true
+libc = "0.2"
 blake3.workspace = true
 
 [dev-dependencies]
@@ -34,6 +35,10 @@ path = "tests/p10_support/transport.rs"
 [[test]]
 name = "p10_bench"
 path = "tests/p10_support/bench.rs"
+
+[[test]]
+name = "p10_device_variants"
+path = "tests/p10_support/device_variants.rs"
 
 [[test]]
 name = "p10_transport_bench"

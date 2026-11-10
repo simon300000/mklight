@@ -27,14 +27,22 @@ pub(crate) fn reference_reason(analysis: &str) -> Option<&'static str> {
         "encircled_energy" => Some(
             "static capability: P11 encircled_energy failed f64 comparison on 16/16 default samples (geometry-uncertainty bin completion)",
         ),
-        "wavefront_map" => Some(
-            "static capability: P11 wavefront_map failed f64 comparison on 16/16 default samples (undefined on-axis Seidel angles)",
-        ),
         "polarization_pupil_map" => Some(
             "static capability: P11 polarization_pupil_map failed f64 comparison on 13/16 default samples (undefined polarization axes)",
         ),
         _ => None,
     }
+}
+
+/// [`reference_reason`] for `auto`: a native route without calibration
+/// data stays on the reference until the cost model is recalibrated.
+pub(crate) fn auto_reference_reason(analysis: &str) -> Option<&'static str> {
+    reference_reason(analysis).or(match analysis {
+        "wavefront_map" => Some(
+            "static capability: the host-traced wavefront_map route has no cost calibration for auto",
+        ),
+        _ => None,
+    })
 }
 
 fn static_capability(reason: &str) -> Value {
@@ -84,10 +92,10 @@ pub(crate) fn auto_route(
         Some(AutoCandidate::Gpu { apple_gpu, open }) => (apple_gpu, open),
         None => (None, false),
     };
-    if let Some(reason) = reference_reason(r.analysis) {
+    if let Some(reason) = auto_reference_reason(r.analysis) {
         return cpu(reason, static_capability(reason), !open);
     }
-    let route = route_key(r);
+    let route = request_key(r.snapshot, r.library, r.analysis, r.settings);
     let repeated = model.repeated(&route);
     let hinted = repeated.clone().unwrap_or_else(|| {
         model.decide(
@@ -173,16 +181,6 @@ pub(crate) fn request_key(
         h.update(part);
     }
     *h.finalize().as_bytes()
-}
-
-/// Identity of an `auto` request for its settled route: `request_key`
-/// without the stop handle, which names the run rather than its content.
-fn route_key(r: &AutoRequest<'_>) -> [u8; 32] {
-    let mut settings = r.settings.clone();
-    if let Some(m) = settings.as_object_mut() {
-        m.remove("stop_key");
-    }
-    request_key(r.snapshot, r.library, r.analysis, &settings)
 }
 
 pub(crate) fn run(
@@ -473,11 +471,15 @@ mod tests {
             req.backend = Some(Backend::Auto);
             s.run_analysis(&req, &JobContext::new()).unwrap()
         };
-        for (name, rule) in [
-            ("ghost_irradiance", "accuracy exclusion"),
-            ("wavefront_map", "static capability"),
+        let glass = json!({
+            "material_variables": [{"surface": 1, "candidates": {"nearest": 2}}],
+            "max_combinations": 2, "local_iterations": 1
+        });
+        for (name, settings, rule) in [
+            ("glass_substitution", glass, "accuracy exclusion"),
+            ("wavefront_map", Value::Null, "static capability"),
         ] {
-            let r = run(name, Value::Null);
+            let r = run(name, settings);
             assert_eq!(r.run_info.backend, "cpu_reference", "{name}");
             let cost = r.backend.cost_decision.as_ref().unwrap();
             assert_eq!(
@@ -485,7 +487,8 @@ mod tests {
                 (&json!(rule), &json!(true))
             );
             assert!(r.backend.fallback_reason.is_some());
-            assert!(r.run_info.warnings.is_empty() && r.run_info.failed_attempts.is_empty());
+            // No native attempt (the analysis's own warnings may remain).
+            assert!(r.run_info.failed_attempts.is_empty(), "{name}");
         }
         // No GPU path: known from the provider's catalogue.
         let r = run("seidel", Value::Null);
@@ -622,16 +625,11 @@ mod tests {
         let replayed = again.cost_decision.unwrap();
         assert_eq!(replayed["repeated"], true);
         assert_eq!(replayed["predicted_ms"], decision["predicted_ms"]);
-        // A stop handle names the run, not its content.
-        let mut stop = settings.clone();
-        stop["stop_key"] = json!("run 2");
-        let s = auto_route(&model, &reg, &request(&stop));
-        assert_eq!(s.cost_decision.unwrap()["repeated"], true);
         // Other settings are a new request.
         let mut other = settings.clone();
         other["rings"] = json!(settings["rings"].as_u64().unwrap() + 1);
         let s = auto_route(&model, &reg, &request(&other));
         assert!(s.device.is_some() && s.cost_decision.unwrap().get("repeated").is_none());
-        assert_eq!(model.stats()["repeated_routes"], 2);
+        assert_eq!(model.stats()["repeated_routes"], 1);
     }
 }

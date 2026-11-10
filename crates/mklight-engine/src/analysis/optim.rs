@@ -8,9 +8,8 @@
 //!   `"<method> <iteration>: merit <best>"`) and per Monte-Carlo batch.
 //! * **Stopping and cancelling.** Cancelling through the job context stops
 //!   the optimiser and returns `Cancelled` without final reference scoring.
-//!   To stop a job *and keep* its best point, call
-//!   `Engine::stop_job` (or give it a `stop_key` and call [`request_stop`]):
-//!   the job then ends normally with `"status": "stopped"`.
+//!   To stop a job *and keep* its best point, call `Engine::stop_job`: the
+//!   job then ends normally with `"status": "stopped"`.
 //! * **Reported numbers** (start and final merit, operand table) are always
 //!   computed with the CPU f64 reference, whatever evaluated the search; the
 //!   result says which backend evaluated it, with its actual precision;
@@ -27,9 +26,8 @@
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use mklight_core::job::{CancelToken, Precision, Progress};
@@ -55,7 +53,7 @@ use mklight_optim::problem::{
 };
 use mklight_optim::tolerance::{
     Compensator, MonteCarloSettings, OpticalToleranceEvaluator, SENSITIVITY_BATCH,
-    ToleranceEvaluator, ToleranceOperand, ToleranceSpec, monte_carlo, sensitivity,
+    ToleranceEvaluator, ToleranceOperand, ToleranceSpec, monte_carlo, sensitivity_batched,
 };
 use mklight_optim::{IterationRecord, Monitor, OptimResult, Termination};
 
@@ -113,6 +111,13 @@ pub(super) fn evaluation_backend_schema() -> Value {
                 opaque("Device evaluation, host-stage and fallback accounting."),
             ),
             (
+                "aiming",
+                enumeration(
+                    &["by-batch", "device", "host"],
+                    "Where the pupil rays of a run handed a GPU device are aimed: by batch (default; `resident_evaluation.device_aimed_batches` counts the device's), every batch on the device with host completion (`aiming` key set to `device` or `table`) or on the host with device tracing (`host-table`, `split:<share>`).",
+                ),
+            ),
+            (
                 "gpu_stats",
                 obj(&[
                     ("gpu_candidates", int("")),
@@ -123,87 +128,8 @@ pub(super) fn evaluation_backend_schema() -> Value {
                 ]),
             ),
         ],
-        &["gpu_stats", "resident_evaluation"],
+        &["gpu_stats", "resident_evaluation", "aiming"],
     )
-}
-
-// ---------------------------------------------------------------------------
-// Stop requests
-
-struct StopEntry {
-    id: u64,
-    token: CancelToken,
-}
-
-fn stops() -> &'static Mutex<HashMap<String, StopEntry>> {
-    static S: OnceLock<Mutex<HashMap<String, StopEntry>>> = OnceLock::new();
-    S.get_or_init(Default::default)
-}
-
-/// Ask the running optimisation, glass-substitution or tolerance job started with
-/// `"stop_key": key` to stop and return its best result so far (the job
-/// ends normally, `"status": "stopped"`). Returns whether such a job was
-/// running.
-pub fn request_stop(key: &str) -> bool {
-    let g = stops().lock().unwrap_or_else(|e| e.into_inner());
-    match g.get(key) {
-        Some(e) => {
-            e.token.cancel();
-            true
-        }
-        None => false,
-    }
-}
-
-/// Registration of a running job's stop token; removed on drop.
-struct StopGuard {
-    key: String,
-    id: u64,
-}
-
-impl StopGuard {
-    /// Register `token` under `key`; a key already held by a running job is
-    /// refused (the first job could otherwise no longer be stopped).
-    fn register(key: &str, token: CancelToken) -> EngineResult<StopGuard> {
-        static NEXT: AtomicU64 = AtomicU64::new(1);
-        let id = NEXT.fetch_add(1, Ordering::Relaxed);
-        let mut g = stops().lock().unwrap_or_else(|e| e.into_inner());
-        if g.contains_key(key) {
-            return Err(invalid(format!(
-                "'stop_key': \"{key}\" is already used by a running job"
-            )));
-        }
-        g.insert(key.to_string(), StopEntry { id, token });
-        Ok(StopGuard {
-            key: key.to_string(),
-            id,
-        })
-    }
-}
-
-/// A job's stop request: the job's stop token (`AnalysisInput::stop`),
-/// also registered under its `stop_key` for the lifetime of the value.
-struct StopRequest {
-    token: CancelToken,
-    _guard: Option<StopGuard>,
-}
-
-impl StopRequest {
-    fn register(key: Option<&str>, token: CancelToken) -> EngineResult<StopRequest> {
-        let _guard = key
-            .map(|k| StopGuard::register(k, token.clone()))
-            .transpose()?;
-        Ok(StopRequest { token, _guard })
-    }
-}
-
-impl Drop for StopGuard {
-    fn drop(&mut self) {
-        let mut g = stops().lock().unwrap_or_else(|e| e.into_inner());
-        if g.get(&self.key).is_some_and(|e| e.id == self.id) {
-            g.remove(&self.key);
-        }
-    }
 }
 
 /// How a run ended early.
@@ -215,12 +141,12 @@ enum Interrupt {
     TimeLimit,
 }
 
-/// Run `f` with a context that is cancelled when `ctx` is or when `stop` is
-/// requested (a watcher thread joins the two tokens), and say which
-/// happened.
+/// Run `f` with a context that is cancelled when `ctx` is or when `stop` (the
+/// job's stop token, `AnalysisInput::stop`) is (a watcher thread joins the
+/// two tokens), and say which happened.
 fn interruptible<T>(
     ctx: &JobContext,
-    stop: &StopRequest,
+    stop: &CancelToken,
     f: impl FnOnce(&JobContext) -> T,
 ) -> (T, Interrupt) {
     interruptible_for(ctx, stop, None, f)
@@ -228,11 +154,10 @@ fn interruptible<T>(
 
 fn interruptible_for<T>(
     ctx: &JobContext,
-    stop: &StopRequest,
+    stop: &CancelToken,
     limit: Option<Duration>,
     f: impl FnOnce(&JobContext) -> T,
 ) -> (T, Interrupt) {
-    let stop = &stop.token;
     let mut inner = ctx.subrange(0.0, 1.0);
     inner.cancel = CancelToken::new();
     let done = AtomicBool::new(false);
@@ -435,11 +360,30 @@ struct Evaluation {
     cpu: BuiltinEvaluator,
     /// The GPU evaluator and the engine device behind it.
     gpu: Option<(ResidentEvaluator, Arc<GpuDevice>)>,
+    /// A run handed a GPU device: where the pupil rays are aimed
+    /// (`backend.aiming`).
+    aiming: Option<&'static str>,
     work: Workload,
     fallback_reason: Option<String>,
     /// `"backend"` block of the result.
     report: Value,
     warnings: Vec<String>,
+}
+
+/// Does the `aiming` key pin the solvers' pupil-ray aiming: `device` or
+/// `table` every batch on the device with host completion (`Some(false)`),
+/// `host-table` or `split:<share>` every batch on the host (`Some(true)`)?
+/// Unset, the evaluator's rule decides per batch
+/// (`gpu::DEVICE_AIM_FROM`, docs/OPTIMIZATION.md "Aiming").
+fn solver_host_aim() -> EngineResult<Option<bool>> {
+    use mklight_analysis::gpu::aim::{AimDesign, KEY};
+    if mklight_core::split::variant(KEY).is_none() {
+        return Ok(None);
+    }
+    Ok(Some(!matches!(
+        AimDesign::selected().map_err(invalid)?,
+        AimDesign::Device | AimDesign::Table
+    )))
 }
 
 impl Evaluation {
@@ -448,18 +392,29 @@ impl Evaluation {
         choice: BackendChoice,
         input: &AnalysisInput<'_>,
         snapshot: &Snapshot,
-        _batch: usize,
         work: Workload,
         ctx: &JobContext,
     ) -> EngineResult<Self> {
         let cpu = BuiltinEvaluator::new(input.library.clone());
         let mut warnings = Vec::new();
         let mut fallback_reason = input.selection_note.clone();
+        let mut aiming = None;
         let gpu = match gpu_backend(choice, input) {
             Ok(Some(device)) => {
                 ctx.check()?;
+                // Where the pupil rays are aimed, read once.
+                let pinned = solver_host_aim()?;
+                aiming = Some(match pinned {
+                    None => "by-batch",
+                    Some(true) => "host",
+                    Some(false) => "device",
+                });
                 let context = GpuContext::new(device.backend.clone(), snapshot.clone());
-                Some((ResidentEvaluator::new(context, cpu.clone()), device))
+                let mut evaluator = ResidentEvaluator::new(context, cpu.clone());
+                if let Some(host) = pinned {
+                    evaluator = evaluator.with_host_aim(host);
+                }
+                Some((evaluator, device))
             }
             Ok(None) => {
                 if super::gpu::device(input).is_some() && choice == BackendChoice::Cpu {
@@ -478,6 +433,7 @@ impl Evaluation {
         Ok(Evaluation {
             cpu,
             gpu,
+            aiming,
             work,
             fallback_reason,
             report: Value::Null,
@@ -487,6 +443,27 @@ impl Evaluation {
 
     fn active_gpu(&self) -> Option<&ResidentEvaluator> {
         self.gpu.as_ref().map(|(g, _)| g)
+    }
+
+    /// Least-squares solves with device aiming pinned evaluate their trial points
+    /// with the next Jacobian's probes (one device round trip per accepted
+    /// iteration instead of two). With host aiming every probe is a host
+    /// evaluation, as on the CPU reference (which evaluates a trial point
+    /// alone: in a batch its anchored base row would change the values),
+    /// and a rejected trial point's probes, at a design whose rim rays fail,
+    /// cost as much (`docs/OPTIMIZATION.md`, "Speculative Jacobians").
+    fn speculative(&self) -> bool {
+        self.active_gpu()
+            .is_some_and(|g| g.device_aim_from() == Some(0))
+    }
+
+    /// Candidates per tolerance evaluation batch (Monte Carlo trials and
+    /// sensitivity points) for a requested batch: at least
+    /// [`TOLERANCE_SPLIT_BATCH`] (trial values do not depend on the
+    /// batching; the CPU's rayon pool otherwise idles at the end of every
+    /// small batch, and the device evaluator pipelines large batches).
+    fn tolerance_batch(&self, requested: usize) -> usize {
+        requested.max(TOLERANCE_SPLIT_BATCH)
     }
 
     /// The `"backend"` block: who evaluated the search and the GPU
@@ -499,6 +476,9 @@ impl Evaluation {
             "reported_on": TraceEvaluator::BACKEND,
             "workload": self.work.report(),
         });
+        if let Some(aiming) = self.aiming {
+            b["aiming"] = json!(aiming);
+        }
         // The GPU evaluated the search only if it traced candidates.
         let active = self
             .active_gpu()
@@ -506,7 +486,7 @@ impl Evaluation {
         if let Some((g, device)) = &self.gpu {
             if active {
                 self.warnings.push(format!(
-                    "ray operands evaluated on {} (f32)",
+                    "ray operands evaluated on {} (double-float)",
                     device.backend.info().backend_id()
                 ));
                 b["evaluated_on"] = json!(device.backend.info().backend_id());
@@ -529,6 +509,9 @@ impl Evaluation {
                 vec![],
             );
             g.record(&mut run);
+            if let Some(aiming) = self.aiming {
+                run.settings["solvers_aiming"] = json!(aiming);
+            }
             input.executions.borrow_mut().push(run.settings.clone());
             b["resident_evaluation"] = serde_json::to_value(stats)?;
         }
@@ -890,6 +873,15 @@ fn interrupt_status(why: Interrupt, termination: Termination) -> &'static str {
 /// default for `AugLagSettings::max_inner_iterations`).
 const INNER_ITERATIONS: usize = 10;
 
+/// Smallest tolerance evaluation batch (Monte Carlo trials, sensitivity
+/// points): the hundred trials of a default Monte Carlo run go to the
+/// evaluator as one batch, which the CPU spreads over its pool without a
+/// barrier every 16 trials (29-surface F/1.4 benchmark lens, 12 threads: 155 →
+/// 120 ms for the default tolerance run, 2.4 → 1.9 s for 1000 dense trials,
+/// identical results) and a pipelined evaluator splits into overlapped
+/// device plans.
+const TOLERANCE_SPLIT_BATCH: usize = 128;
+
 /// The job's initial spreads of the population methods around the start,
 /// in variable scales (`VariableSpec::scale`; 10 % of a curvature by
 /// default). The library defaults (DE 1.0, CMA-ES 0.3) suit a search of a
@@ -959,7 +951,6 @@ struct OptimizeSettings {
     fd_relative_step: Option<f64>,
     seed: u64,
     backend: BackendChoice,
-    gpu_batch: usize,
     feasibility_tolerance: f64,
 }
 
@@ -1192,6 +1183,17 @@ impl Algo {
         })
     }
 
+    /// Least-squares solves (LM, dogleg, basin hopping's local runs)
+    /// evaluate each trial point with the next Jacobian's probes.
+    fn with_speculation(mut self, on: bool) -> Self {
+        match &mut self {
+            Algo::Lsq(l) => l.speculative_jacobian = on,
+            Algo::Hammer(h) => h.local.speculative_jacobian = on,
+            _ => {}
+        }
+        self
+    }
+
     /// Typical candidates per evaluation batch with `n` variables: the FD
     /// Jacobian, the population, the basin-hopping screen.
     fn batch(&self, n: usize) -> usize {
@@ -1294,18 +1296,14 @@ impl Analysis for Optimize {
                     "title": "Finite differences"},
                 "fd_relative_step": {"type": ["number", "null"], "exclusiveMinimum": 0, "default": null,
                     "title": "FD relative step",
-                    "description": "null chooses per operand and backend (wavefront 1e-6/1e-4, MTF 1e-6/1e-5 on the CPU, GPU f32 steps; docs/OPTIMIZATION.md)."},
+                    "description": "null chooses per operand and backend (wavefront 1e-6/1e-4, MTF 1e-6/1e-5 on the CPU; device ray operands 1e-6, wavefront 1e-5 forward; docs/OPTIMIZATION.md)."},
                 "seed": {"type": "integer", "minimum": 0, "default": 0, "title": "Seed"},
                 "backend": {"type": "string", "enum": ["auto", "cpu", "gpu", "gpu_emulation"],
                     "default": "auto", "title": "Merit evaluation",
                     "description": "auto: the device the engine selected for this job (under engine auto, its cost model; docs/GPU.md §9.2), else the CPU reference."},
-                "gpu_batch": {"type": "integer", "minimum": 1, "default": 512,
-                    "title": "GPU sub-batch", "description": "Candidates per GPU dispatch."},
                 "feasibility_tolerance": {"type": "number", "minimum": 0, "default": 1e-6,
                     "title": "Feasibility tolerance",
-                    "description": "Total normalised constraint violation regarded as feasible (best-so-far ranking, `final.feasible`)."},
-                "stop_key": {"type": ["string", "null"], "default": null, "title": "Stop key",
-                    "description": "Key for `request_stop`: stop and keep the best point. One running job per key."}
+                    "description": "Total normalised constraint violation regarded as feasible (best-so-far ranking, `final.feasible`)."}
             }
         })
     }
@@ -1431,7 +1429,7 @@ impl Analysis for Optimize {
         ctx: &JobContext,
     ) -> EngineResult<AnalysisOutput> {
         // Before the merit is prepared, so that a stop meanwhile is kept.
-        let stop = StopRequest::register(settings["stop_key"].as_str(), input.stop.clone())?;
+        let stop = input.stop.clone();
         let mut m = PreparedMerit::new(input, settings, &ctx.subrange(0.0, 0.0))?;
         if m.settings.variables.is_empty() {
             return Err(invalid(
@@ -1458,7 +1456,8 @@ impl Analysis for Optimize {
         let x0 = reference.start_point()?;
         let work = Workload::new(&cpu.trace, system, &spec, algo.batch(x0.len()));
         ctx.report(0.0, "preparing the merit evaluator");
-        let mut ev = Evaluation::new(s.backend, input, &start, s.gpu_batch, work, ctx)?;
+        let mut ev = Evaluation::new(s.backend, input, &start, work, ctx)?;
+        let algo = algo.with_speculation(ev.speculative());
         ctx.check()?;
 
         // The search.
@@ -1657,12 +1656,10 @@ pub(super) fn evaluate_merit(
     let mut m = PreparedMerit::new(input, settings, &ctx.subrange(0.0, 0.0))?;
     let work = Workload::new(&m.cpu.trace, m.snapshot.system(), &m.spec, 1);
     ctx.report(0.0, "preparing the merit evaluator");
-    let (backend, batch) = (m.settings.backend, m.settings.gpu_batch);
     let mut ev = Evaluation::new(
-        backend,
+        m.settings.backend,
         input,
         &m.snapshot,
-        batch,
         work,
         &ctx.subrange(0.0, 0.2),
     )?;
@@ -1681,7 +1678,7 @@ pub(super) fn evaluate_merit(
     } else {
         values_report(&reference, values)
     };
-    ev.finish(input, backend)?;
+    ev.finish(input, m.settings.backend)?;
     ev.report["reported_on"] = ev.report["evaluated_on"].clone();
     ev.warnings.extend(m.warnings);
     Ok(AnalysisOutput {
@@ -1727,8 +1724,6 @@ struct ToleranceSettings {
     batch: usize,
     compensator_iterations: usize,
     backend: BackendChoice,
-    gpu_batch: usize,
-    stop_key: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -1802,8 +1797,6 @@ impl Analysis for Tolerance {
                     "title": "Compensator iterations"},
                 "backend": {"type": "string", "enum": ["auto", "cpu", "gpu", "gpu_emulation"],
                     "default": "auto", "title": "Merit evaluation"},
-                "gpu_batch": {"type": "integer", "minimum": 1, "default": 512, "title": "GPU sub-batch"},
-                "stop_key": {"type": ["string", "null"], "default": null, "title": "Stop key"}
             }
         })
     }
@@ -1986,7 +1979,7 @@ impl Analysis for Tolerance {
         ctx: &JobContext,
     ) -> EngineResult<AnalysisOutput> {
         let mut s: ToleranceSettings = parse(settings, "settings")?;
-        let stop = StopRequest::register(s.stop_key.as_deref(), input.stop.clone())?;
+        let stop = input.stop.clone();
         let mut system = input.snapshot.system().clone();
         // Every parameter must exist on the nominal system (a missing one
         // would fail every trial).
@@ -2098,7 +2091,12 @@ impl Analysis for Tolerance {
             batch,
         );
         ctx.report(0.0, "preparing the merit evaluator");
-        let mut ev = Evaluation::new(s.backend, input, &input.snapshot, s.gpu_batch, work, ctx)?;
+        let mut ev = Evaluation::new(s.backend, input, &input.snapshot, work, ctx)?;
+        let lsq = LsqSettings {
+            speculative_jacobian: ev.speculative(),
+            ..lsq
+        };
+        let sensitivity_batch = ev.tolerance_batch(SENSITIVITY_BATCH);
         if let Some(case) = &s.preview_case {
             let deltas = match case {
                 ToleranceCase::Trial { trial } => spec.sample_trial(s.seed, *trial),
@@ -2191,6 +2189,7 @@ impl Analysis for Tolerance {
             } else {
                 mc.record_trials
             },
+            batch: ev.tolerance_batch(mc.batch),
             ..mc.clone()
         };
         let ((sens, mcr), why) = interruptible(&ctx.subrange(0., 0.9), &stop, |inner| {
@@ -2218,6 +2217,7 @@ impl Analysis for Tolerance {
                         registry: &reg,
                         lsq,
                         spec: &spec,
+                        sensitivity_batch,
                     })
                 }
                 None => run(&Runner {
@@ -2227,6 +2227,7 @@ impl Analysis for Tolerance {
                     registry: &reg,
                     lsq,
                     spec: &spec,
+                    sensitivity_batch,
                 }),
             }
         });
@@ -2341,6 +2342,8 @@ struct Runner<'a, E: OperandEvaluator> {
     registry: &'a OperandRegistry,
     lsq: LsqSettings,
     spec: &'a ToleranceSpec,
+    /// Points per sensitivity evaluation batch.
+    sensitivity_batch: usize,
 }
 
 impl<E: OperandEvaluator> Runner<'_, E> {
@@ -2362,7 +2365,7 @@ impl<E: OperandEvaluator> ToleranceRunner for Runner<'_, E> {
         spec: &ToleranceSpec,
         mon: &Monitor,
     ) -> mklight_core::MkResult<mklight_optim::tolerance::SensitivityReport> {
-        sensitivity(spec, &self.evaluator(), mon)
+        sensitivity_batched(spec, &self.evaluator(), mon, self.sensitivity_batch)
     }
     fn monte_carlo(
         &self,
@@ -2633,48 +2636,32 @@ mod tests {
         w.join().unwrap();
         assert!(out.unwrap_err().is_cancelled());
 
-        // The legacy key and the job-level stop both retain the best point.
-        for keyed in [true, false] {
-            assert!(!request_stop("no-such-job"));
-            let engine = Engine::new(EngineConfig {
-                worker_threads: 1,
-                ..Default::default()
-            });
-            let mut session = engine.new_session();
-            session.set_system(samples::cooke_triplet()).unwrap();
-            s["stop_key"] = if keyed {
-                json!("test-stop-triplet")
-            } else {
-                Value::Null
-            };
-            let job = session
-                .submit_analysis(&AnalysisRequest::new("optimize", s.clone()))
-                .unwrap();
-            let t = Instant::now();
-            loop {
-                let st = engine.job_status(job).unwrap();
-                if st.stage.starts_with("lm 2") || st.state.is_terminal() {
-                    break;
-                }
-                assert!(t.elapsed() < Duration::from_secs(600));
-                std::thread::sleep(Duration::from_millis(1));
+        // The job-level stop retains the best point.
+        let engine = Engine::new(EngineConfig {
+            worker_threads: 1,
+            ..Default::default()
+        });
+        let mut session = engine.new_session();
+        session.set_system(samples::cooke_triplet()).unwrap();
+        let job = session
+            .submit_analysis(&AnalysisRequest::new("optimize", s.clone()))
+            .unwrap();
+        let t = Instant::now();
+        loop {
+            let st = engine.job_status(job).unwrap();
+            if st.stage.starts_with("lm 2") || st.state.is_terminal() {
+                break;
             }
-            if keyed {
-                assert!(request_stop("test-stop-triplet"));
-            } else {
-                engine.stop_job(job).unwrap();
-            }
-            assert_eq!(engine.wait_job(job, LONG).unwrap(), JobState::Done);
-            let r = engine.take_result(job).unwrap();
-            assert_eq!(r.json["status"], json!("stopped"));
-            assert_eq!(r.json["stopped"], true);
-            assert!(r.json["iterations"].as_u64().unwrap() < 200);
-            assert!(f(&r.json["final"]["merit"]) < f(&r.json["start"]["merit"]));
-            assert!(
-                !request_stop("test-stop-triplet"),
-                "unregistered after the run"
-            );
+            assert!(t.elapsed() < Duration::from_secs(600));
+            std::thread::sleep(Duration::from_millis(1));
         }
+        engine.stop_job(job).unwrap();
+        assert_eq!(engine.wait_job(job, LONG).unwrap(), JobState::Done);
+        let r = engine.take_result(job).unwrap();
+        assert_eq!(r.json["status"], json!("stopped"));
+        assert_eq!(r.json["stopped"], true);
+        assert!(r.json["iterations"].as_u64().unwrap() < 200);
+        assert!(f(&r.json["final"]["merit"]) < f(&r.json["start"]["merit"]));
     }
 
     /// Index/Abbe offsets, records and percentiles; a trial preview
@@ -3183,27 +3170,6 @@ mod tests {
                 ),
             }
         }
-        // A second job may not take a running job's stop key.
-        let held = StopRequest::register(Some("test-key-in-use"), CancelToken::new()).unwrap();
-        for (name, s) in [
-            (
-                "optimize",
-                json!({"stop_key": "test-key-in-use", "max_iterations": 1}),
-            ),
-            (
-                "tolerance",
-                json!({"stop_key": "test-key-in-use", "trials": 1}),
-            ),
-        ] {
-            assert!(matches!(
-                run(sys.clone(), name, s),
-                Err(EngineError::InvalidSettings(_))
-            ));
-        }
-        assert!(request_stop("test-key-in-use"));
-        assert!(held.token.is_cancelled());
-        drop(held);
-        assert!(!request_stop("test-key-in-use"));
     }
 
     /// Stopping the tolerance job in the sensitivity phase keeps the
@@ -3214,26 +3180,33 @@ mod tests {
         let settings = prepare(
             &Tolerance,
             &json!({"mode": "sensitivity", "compensators": [{"param": ParamPath::Thickness { surface: SurfaceId(6) }, "range": 1.0}],
-                "compensator_iterations": 4, "stop_key": "test-stop-sensitivity"}),
+                "compensator_iterations": 4}),
         )
         .unwrap();
-        // Stop once the first sensitivity batch has been reported.
+        // Stop (the job's stop token) once the first sensitivity batch has
+        // been reported.
         let ctx = JobContext::new();
+        let stop = CancelToken::new();
         let watch = {
-            let ctx = ctx.clone();
+            let (ctx, stop) = (ctx.clone(), stop.clone());
             std::thread::spawn(move || {
                 let t = Instant::now();
                 while t.elapsed() < Duration::from_secs(600) {
-                    if ctx.progress.fraction() > 0.0 && request_stop("test-stop-sensitivity") {
+                    if ctx.progress.fraction() > 0.0 {
+                        stop.cancel();
                         return;
                     }
                     std::thread::sleep(Duration::from_millis(1));
                 }
             })
         };
-        // 30 tolerances: 61 trials, two sensitivity batches of 32 and 29.
+        // 90 tolerances: 181 points, two sensitivity batches of 128 and 53
+        // (`TOLERANCE_SPLIT_BATCH`), so that the stop lands between them.
         let mut tol = Vec::new();
-        for id in [1u64, 2, 3, 4, 5, 6] {
+        for (id, size) in [1u64, 2, 3, 4, 5, 6]
+            .into_iter()
+            .flat_map(|id| [1e-3, 2e-3, 3e-3].map(|size| (id, size)))
+        {
             for p in [
                 ParamPath::DecenterX {
                     surface: SurfaceId(id),
@@ -3251,12 +3224,14 @@ mod tests {
                     surface: SurfaceId(id),
                 },
             ] {
-                tol.push(json!({"param": p, "minus": 1e-3, "plus": 1e-3}));
+                tol.push(json!({"param": p, "minus": size, "plus": size}));
             }
         }
         let mut settings = settings;
         settings["tolerances"] = json!(tol);
-        let out = Tolerance.run(&input(sys), &settings, &ctx).unwrap();
+        let out = Tolerance
+            .run(&input(sys).with_stop_token(stop), &settings, &ctx)
+            .unwrap();
         watch.join().unwrap();
         let j = &out.json;
         assert_eq!(j["status"], json!("stopped"));
@@ -3264,8 +3239,8 @@ mod tests {
         let n = sens["operands"].as_array().unwrap().len();
         // The last batch may finish before the observing thread runs. A stop
         // keeps every completed operand, including a just-completed full set.
-        assert!(n > 0 && n <= 30, "{n} of 30 operands");
-        assert_eq!(sens["cancelled"], json!(n < 30), "{sens}");
+        assert!(n > 0 && n <= 90, "{n} of 90 operands");
+        assert_eq!(sens["cancelled"], json!(n < 90), "{sens}");
         assert_eq!(sens["ranking"].as_array().unwrap().len(), n);
     }
 

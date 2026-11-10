@@ -799,8 +799,9 @@ impl PathGroup<'_, '_> {
                 |m| levels[m].iter().flat_map(|c| c.around(half)).collect(),
                 ctx,
             )?;
+            // Members in parallel (and each level in parallel), in order.
             levels = levels
-                .iter()
+                .par_iter()
                 .zip(&caches)
                 .enumerate()
                 .map(|(m, (level, cache))| {
@@ -1133,37 +1134,64 @@ pub(crate) fn ghost_irradiance_with_backend(
     let n_jobs = (paths.len() + 1) as f64;
 
     let pstep = model.check_path(&GhostPath::primary())?;
-    let gpu = match backend {
-        Some(b) => {
-            let steps = std::iter::once(pstep.as_slice())
-                .chain(path_steps.iter().map(Vec::as_slice))
-                .collect::<Vec<_>>();
-            Some(resident_maps(
-                b, model, &paths, &steps, &cells, &selected, settings, &template, ctx,
-            )?)
-        }
-        None => None,
+    // Wall seconds per stage (stage profiles; RunInfo settings "timings").
+    // Wall and process-CPU seconds per stage.
+    let mut timings = std::collections::BTreeMap::<&'static str, [f64; 2]>::new();
+    let mut lap = crate::gpu::Lap::now();
+    let mut stage = |name: &'static str, lap: &mut crate::gpu::Lap| {
+        let (wall, cpu) = lap.elapsed();
+        let t = timings.entry(name).or_default();
+        t[0] += wall;
+        t[1] += cpu;
+        *lap = crate::gpu::Lap::now();
     };
-    let gpu_maps = gpu.as_ref().map(|(_, maps)| maps);
-    // Reference: the primary (index 0) and the ghosts, traced in groups of
-    // paths adjacent in step order, so that shared step prefixes are traced
-    // once per lattice point. Results are those of tracing each path alone.
-    let mut runs: Vec<Option<PathRun>> = Vec::new();
-    if gpu.is_none() {
-        let all_steps = std::iter::once(pstep.as_slice())
-            .chain(path_steps.iter().map(Vec::as_slice))
-            .collect::<Vec<_>>();
-        let mut order = (0..all_steps.len()).collect::<Vec<_>>();
-        order.sort_by(|&a, &b| {
-            all_steps[a]
-                .iter()
-                .map(step_key)
-                .cmp(all_steps[b].iter().map(step_key))
-        });
-        let all_cells = cells.iter().flatten().copied().collect::<Vec<_>>();
-        runs = (0..all_steps.len()).map(|_| None).collect();
-        let groups = order.len().div_ceil(GROUP_PATHS) as f64;
-        for (g, group) in order.chunks(GROUP_PATHS).enumerate() {
+    stage("setup", &mut lap);
+    // The primary (index 0) and the ghosts. The CPU reference traces paths
+    // in groups adjacent in step order, so that shared step prefixes are
+    // traced once per lattice point (results are those of tracing each path
+    // alone): all of them without a device, else a fixed share of the
+    // groups (`gpu::CPU_SHARE`) beside the device run of the others.
+    let all_steps = std::iter::once(pstep.as_slice())
+        .chain(path_steps.iter().map(Vec::as_slice))
+        .collect::<Vec<_>>();
+    let mut order = (0..all_steps.len()).collect::<Vec<_>>();
+    order.sort_by(|&a, &b| {
+        all_steps[a]
+            .iter()
+            .map(step_key)
+            .cmp(all_steps[b].iter().map(step_key))
+    });
+    let cpu_groups: Vec<Vec<usize>> = match backend {
+        None => order.chunks(GROUP_PATHS).map(<[usize]>::to_vec).collect(),
+        Some(_) => {
+            let at = |k: usize| (k as f64 * crate::gpu::CPU_SHARE).round() as usize;
+            order
+                .chunks(GROUP_PATHS)
+                .enumerate()
+                .filter(|&(k, _)| at(k + 1) > at(k))
+                // The primary stays on the device (it scales the ratios).
+                .map(|(_, g)| g.iter().copied().filter(|&i| i != 0).collect::<Vec<_>>())
+                .filter(|g| !g.is_empty())
+                .collect()
+        }
+    };
+    let mut on_cpu = vec![false; all_steps.len()];
+    for &i in cpu_groups.iter().flatten() {
+        on_cpu[i] = true;
+    }
+    let all_cells = cells.iter().flatten().copied().collect::<Vec<_>>();
+    let abort = std::sync::atomic::AtomicBool::new(false);
+    // CPU runs of `cpu_groups` and the wall/CPU seconds of their refinement
+    // and of their maps.
+    type CpuRuns = (Vec<(usize, PathRun)>, [f64; 4]);
+    let trace_cpu = |ctx: &JobContext| -> MkResult<CpuRuns> {
+        let mut out = Vec::new();
+        let mut seconds = [0.; 4];
+        let groups = cpu_groups.len() as f64;
+        for (g, group) in cpu_groups.iter().enumerate() {
+            if abort.load(std::sync::atomic::Ordering::Relaxed) {
+                return Err(MkError::Cancelled);
+            }
             let members = group
                 .iter()
                 .map(|&i| PathTrace {
@@ -1176,23 +1204,100 @@ pub(crate) fn ghost_irradiance_with_backend(
                 })
                 .collect::<Vec<_>>();
             let span = (g as f64 / groups, (g + 1) as f64 / groups);
+            let lap = crate::gpu::Lap::now();
             let traced = PathGroup { paths: &members }.refine(&all_cells, ctx, span)?;
-            for (&i, probes) in group.iter().zip(traced) {
-                runs[i] = Some(run_path(
+            let (wall, cpu) = lap.elapsed();
+            seconds[0] += wall;
+            seconds[1] += cpu;
+            // The members' maps are independent: in parallel, kept in order.
+            let lap = crate::gpu::Lap::now();
+            let runs = group
+                .par_iter()
+                .zip(traced)
+                .map(|(&i, probes)| {
+                    run_path(
+                        model,
+                        all_steps[i],
+                        &cells,
+                        &selected,
+                        settings,
+                        &template,
+                        ctx,
+                        span,
+                        None,
+                        Some(probes),
+                    )
+                    .map(|r| (i, r))
+                })
+                .collect::<MkResult<Vec<_>>>()?;
+            out.extend(runs);
+            let (wall, cpu) = lap.elapsed();
+            seconds[2] += wall;
+            seconds[3] += cpu;
+        }
+        Ok((out, seconds))
+    };
+    // Position of each device path among the device paths (primary first).
+    let device = (0..all_steps.len())
+        .filter(|&i| !on_cpu[i])
+        .collect::<Vec<_>>();
+    let mut device_index = vec![usize::MAX; all_steps.len()];
+    for (k, &i) in device.iter().enumerate() {
+        device_index[i] = k;
+    }
+    let mut cpu_stages = None;
+    let (gpu, cpu_runs) = match backend {
+        Some(b) => {
+            let device_paths = device[1..]
+                .iter()
+                .map(|&i| paths[i - 1].clone())
+                .collect::<Vec<_>>();
+            let device_steps = device.iter().map(|&i| all_steps[i]).collect::<Vec<_>>();
+            let quiet = JobContext::with(ctx.cancel.clone(), Default::default());
+            std::thread::scope(|scope| {
+                let cpu = (!cpu_groups.is_empty()).then(|| scope.spawn(|| trace_cpu(&quiet)));
+                let gpu = resident_maps(
+                    b,
                     model,
-                    all_steps[i],
+                    &device_paths,
+                    &device_steps,
                     &cells,
                     &selected,
                     settings,
                     &template,
                     ctx,
-                    span,
-                    None,
-                    Some(probes),
-                )?);
-            }
+                );
+                if gpu.is_err() {
+                    abort.store(true, std::sync::atomic::Ordering::Relaxed);
+                }
+                let cpu = cpu
+                    .map(|h| h.join().expect("CPU share panicked"))
+                    .transpose();
+                let mut gpu = gpu?;
+                gpu.0.cpu_paths = cpu_groups.iter().map(Vec::len).sum();
+                let (runs, seconds) = cpu?.unwrap_or_default();
+                gpu.0.host_seconds.insert("cpu_share_refine", seconds[0]);
+                gpu.0
+                    .host_cpu_seconds
+                    .insert("cpu_share_refine", seconds[1]);
+                gpu.0.host_seconds.insert("cpu_share_maps", seconds[2]);
+                gpu.0.host_cpu_seconds.insert("cpu_share_maps", seconds[3]);
+                MkResult::Ok((Some(gpu), runs))
+            })?
         }
+        None => {
+            let (runs, seconds) = trace_cpu(ctx)?;
+            lap = crate::gpu::Lap::now();
+            cpu_stages = Some(seconds);
+            (None, runs)
+        }
+    };
+    let gpu_maps = gpu.as_ref().map(|(_, maps)| maps);
+    let mut runs: Vec<Option<PathRun>> = (0..all_steps.len()).map(|_| None).collect();
+    for (i, run) in cpu_runs {
+        runs[i] = Some(run);
     }
+    stage("device", &mut lap);
     let prun = match runs.get_mut(0).and_then(Option::take) {
         Some(run) => run,
         None => run_path(
@@ -1208,7 +1313,7 @@ pub(crate) fn ghost_irradiance_with_backend(
             } else {
                 (0.0, 1.0 / n_jobs)
             },
-            gpu_maps.map(|v| (v, 0)),
+            gpu_maps.map(|v| (v, device_index[0])),
             None,
         )?,
     };
@@ -1259,7 +1364,7 @@ pub(crate) fn ghost_irradiance_with_backend(
                 &template,
                 ctx,
                 span,
-                gpu_maps.map(|v| (v, k + 1)),
+                gpu_maps.map(|v| (v, device_index[k + 1])),
                 None,
             )?,
         };
@@ -1300,7 +1405,14 @@ pub(crate) fn ghost_irradiance_with_backend(
     ctx.check()?;
     let total_flux_ratio = ratio(total.flux(), primary_flux);
     let total_peak_ratio = ratio(total.peak(), primary_map.peak());
+    stage("assembly", &mut lap);
+    drop(stage);
+    if let Some(seconds) = cpu_stages {
+        timings.insert("refine", [seconds[0], seconds[1]]);
+        timings.insert("path_maps", [seconds[2], seconds[3]]);
+    }
     let mut run = run_info(model, timer, "ghost.irradiance", settings, warnings);
+    run.settings["timings"] = serde_json::json!(timings);
     if let Some((g, _)) = &gpu {
         g.stamp(&mut run);
     }
@@ -1535,7 +1647,70 @@ fn resident_maps<'a>(
         })
         .collect::<Vec<_>>();
     g.prepare_fields(&points, &ctx.subrange(0.01, 0.03))?;
-    let caches = refine_gpu(
+    // Leaves of a group of paths, gathered as soon as its refinement ends
+    // (while the device traces the other groups), kept per path and per
+    // field in the original order.
+    type Leaves = Vec<(Vec<mklight_gpu::ghost_ops::Leaf>, LeafSummary)>;
+    let mut per_path: Vec<Option<Leaves>> = (0..steps.len()).map(|_| None).collect();
+    let mut leaves_seconds = (0., 0.);
+    let mut gather = |group: std::ops::Range<usize>, caches: &[Probes]| -> MkResult<()> {
+        let started = crate::gpu::Lap::now();
+        // The group's paths in parallel, each field's cells in parallel.
+        let gathered = group
+            .clone()
+            .into_par_iter()
+            .map(|pi| -> MkResult<Leaves> {
+                let path = PathTrace {
+                    model,
+                    steps: steps[pi],
+                    fields,
+                    n: settings.pupil_samples,
+                    overfill: settings.overfill,
+                    map: template,
+                };
+                let mut fields_out = Vec::with_capacity(cells.len());
+                for (fi, field_cells) in cells.iter().enumerate() {
+                    ctx.check()?;
+                    let map = (pi * fields.len() + fi) as u32;
+                    let parts = field_cells
+                        .par_chunks(256)
+                        .map(|block| {
+                            let mut part = (Vec::new(), LeafSummary::default());
+                            for c in block {
+                                path.resident_leaves(
+                                    &caches[pi],
+                                    c.probe,
+                                    HALF,
+                                    c.weight,
+                                    map,
+                                    &mut part,
+                                );
+                            }
+                            part
+                        })
+                        .collect::<Vec<_>>();
+                    let mut leaves = Vec::new();
+                    let mut summary = LeafSummary::default();
+                    for (part, s) in parts {
+                        leaves.extend(part);
+                        summary.traced += s.traced;
+                        summary.virtual_rays += s.virtual_rays;
+                        summary.virtual_flux.add(s.virtual_flux.value());
+                    }
+                    fields_out.push((leaves, summary));
+                }
+                Ok(fields_out)
+            })
+            .collect::<MkResult<Vec<_>>>()?;
+        for (pi, fields_out) in group.clone().zip(gathered) {
+            per_path[pi] = Some(fields_out);
+        }
+        let (wall, cpu) = started.elapsed();
+        leaves_seconds.0 += wall;
+        leaves_seconds.1 += cpu;
+        Ok(())
+    };
+    refine_gpu(
         &mut g,
         model,
         steps,
@@ -1543,48 +1718,56 @@ fn resident_maps<'a>(
         fields,
         settings,
         template,
+        crate::gpu::PIPELINE_GROUPS,
+        &mut gather,
         &ctx.subrange(0.03, 0.8),
     )?;
+    let started = crate::gpu::Lap::now();
     let (mut leaves, mut summaries) = (Vec::new(), Vec::new());
-    for (pi, (steps, cache)) in steps.iter().zip(&caches).enumerate() {
-        let path = PathTrace {
-            model,
-            steps,
-            fields,
-            n: settings.pupil_samples,
-            overfill: settings.overfill,
-            map: template,
-        };
-        for (fi, field_cells) in cells.iter().enumerate() {
-            ctx.check()?;
-            let map = (pi * fields.len() + fi) as u32;
-            let parts = field_cells
-                .par_chunks(256)
-                .map(|block| {
-                    let mut part = (Vec::new(), LeafSummary::default());
-                    for c in block {
-                        path.resident_leaves(cache, c.probe, HALF, c.weight, map, &mut part);
-                    }
-                    part
-                })
-                .collect::<Vec<_>>();
-            let mut summary = LeafSummary::default();
-            for (part, s) in parts {
-                leaves.extend(part);
-                summary.traced += s.traced;
-                summary.virtual_rays += s.virtual_rays;
-                summary.virtual_flux.add(s.virtual_flux.value());
-            }
+    for fields_out in per_path {
+        for (part, summary) in fields_out.expect("every group gathers its leaves") {
+            leaves.extend(part);
             summaries.push(summary);
         }
     }
+    *g.host_seconds.entry("leaves").or_default() += leaves_seconds.0;
+    *g.host_cpu_seconds.entry("leaves").or_default() += leaves_seconds.1;
+    g.host("leaves_concat", started);
+    let started = crate::gpu::Lap::now();
     let maps = g.map(leaves, template, summaries, &ctx.subrange(0.8, 0.9))?;
+    g.host("maps", started);
     Ok((g, maps))
 }
 
-/// Host controls the five breadth-first levels; every batch spans paths,
-/// fields and wavelengths. Cache insertion and leaf traversal keep their
-/// original integer IDs and depth-first order.
+/// A request of one device tile: (path, probe, cache slot, pupil point).
+type Request = (usize, Probe, usize, [f64; 2]);
+
+/// Called with the paths of a group whose refinement has ended.
+type GroupDone<'a> = dyn FnMut(std::ops::Range<usize>, &[Probes]) -> MkResult<()> + 'a;
+
+/// The refinement of a group of paths: the five breadth-first levels, each
+/// with its centres and then (except the last) its corners, one step at a
+/// time. Groups advance independently.
+struct GroupRefine {
+    paths: std::ops::Range<usize>,
+    half: i32,
+    stage: u32,
+    corners: bool,
+    done: bool,
+    /// Device tiles of the current step not yet submitted.
+    tiles: std::collections::VecDeque<Vec<Request>>,
+    /// Tiles of the current step submitted and not yet completed.
+    outstanding: usize,
+}
+
+/// Host controls the five breadth-first levels of each group of paths and
+/// the device traces their probes in tiles that span the group's paths,
+/// fields and wavelengths. With one group every tile spans all paths and a
+/// level ends for all paths at once; with several, the device traces one
+/// group's tile while the host classifies, deduplicates and splits the
+/// others (a pipeline across paths). Each path's probes, their cache
+/// insertion order and its leaves are those of one group: results do not
+/// depend on the grouping.
 #[allow(clippy::too_many_arguments)]
 fn refine_gpu(
     gpu: &mut crate::gpu::GhostTransport,
@@ -1594,6 +1777,8 @@ fn refine_gpu(
     fields: &[SelectedField],
     settings: &IrradianceSettings,
     template: &IrradianceMap,
+    groups: usize,
+    done: &mut GroupDone,
     ctx: &JobContext,
 ) -> MkResult<Vec<Probes>> {
     use mklight_gpu::{Df32, consts::*, ghost_ops::LaunchSample};
@@ -1618,156 +1803,294 @@ fn refine_gpu(
         })
         .collect::<Vec<_>>();
     let nw = model.system().wavelengths_um.len() as u32;
-    let mut half = HALF;
-    for stage in 0..=BOUNDARY_DEPTH {
-        for corners in [false, true] {
-            if corners && half == 1 {
-                break;
-            }
-            // Paths own disjoint caches: deduplicate them in parallel, then
-            // order new keys by (path, field, wavelength, x, y). Keys are
-            // unique, so the unstable sort is the stable order.
-            ctx.check()?;
-            let new = levels
-                .par_iter()
-                .zip(&mut caches)
-                .enumerate()
-                .map(|(pi, (level, cache))| {
-                    let mut new = Vec::new();
-                    for &centre in level {
-                        let around = centre.around(half);
-                        let requested = if corners {
-                            &around[..]
-                        } else {
-                            std::slice::from_ref(&centre)
-                        };
-                        for &p in requested {
-                            if let Entry::Vacant(e) = cache.index.entry(p) {
-                                let id = cache.outs.len();
-                                e.insert(id);
-                                cache.outs.push(Ok(None));
-                                cache.locations.push(None);
-                                let xy = [p.x, p.y]
-                                    .map(|u| pupil(u, settings.pupil_samples, settings.overfill));
-                                if xy[0].mul_add(xy[0], xy[1] * xy[1])
-                                    <= settings.overfill * settings.overfill
-                                {
-                                    new.push((pi, p, id, xy));
-                                }
+    let n = steps.len();
+    let groups = groups.clamp(1, n.max(1));
+    let mut group = (0..groups)
+        .map(|g| GroupRefine {
+            paths: g * n / groups..(g + 1) * n / groups,
+            half: HALF,
+            stage: 0,
+            corners: false,
+            done: false,
+            tiles: Default::default(),
+            outstanding: 0,
+        })
+        .collect::<Vec<_>>();
+    // New lattice keys of a group's current step, in device tiles. Paths
+    // own disjoint caches: deduplicate them in parallel, then order new keys
+    // by (path, field, wavelength, x, y). Keys are unique, so the unstable
+    // sort is the stable order.
+    let prepare = |g: &mut GroupRefine,
+                   levels: &[Vec<Probe>],
+                   caches: &mut [Probes]|
+     -> std::collections::VecDeque<Vec<Request>> {
+        let (half, corners) = (g.half, g.corners);
+        let new = levels[g.paths.clone()]
+            .par_iter()
+            .zip(&mut caches[g.paths.clone()])
+            .enumerate()
+            .map(|(k, (level, cache))| {
+                let pi = g.paths.start + k;
+                let mut new = Vec::new();
+                for &centre in level {
+                    let around = centre.around(half);
+                    let requested = if corners {
+                        &around[..]
+                    } else {
+                        std::slice::from_ref(&centre)
+                    };
+                    for &p in requested {
+                        if let Entry::Vacant(e) = cache.index.entry(p) {
+                            let id = cache.outs.len();
+                            e.insert(id);
+                            cache.outs.push(Ok(None));
+                            cache.locations.push(None);
+                            let xy = [p.x, p.y]
+                                .map(|u| pupil(u, settings.pupil_samples, settings.overfill));
+                            if xy[0].mul_add(xy[0], xy[1] * xy[1])
+                                <= settings.overfill * settings.overfill
+                            {
+                                new.push((pi, p, id, xy));
                             }
                         }
                     }
-                    new.sort_unstable_by_key(|&(_, p, _, _)| (p.field, p.wl, p.x, p.y));
-                    new
+                }
+                new.sort_unstable_by_key(|&(_, p, _, _)| (p.field, p.wl, p.x, p.y));
+                new
+            })
+            .collect::<Vec<_>>()
+            .concat();
+        // A memory tile of probe records, not a plan per path.
+        new.chunks(crate::gpu::PROBE_TILE)
+            .map(<[Request]>::to_vec)
+            .collect()
+    };
+    // Moves a group whose step is complete to its next step with work.
+    let advance =
+        |g: &mut GroupRefine, levels: &mut [Vec<Probe>], caches: &mut [Probes]| -> MkResult<()> {
+            loop {
+                if !g.corners && g.half > 1 {
+                    g.corners = true;
+                } else if g.half == 1 {
+                    g.done = true;
+                    return Ok(());
+                } else {
+                    // Paths in parallel (and each level in parallel).
+                    let (range, half) = (g.paths.clone(), g.half);
+                    levels[range.clone()]
+                        .par_iter_mut()
+                        .zip(&caches[range.clone()])
+                        .enumerate()
+                        .for_each(|(k, (level, cache))| {
+                            let pi = range.start + k;
+                            *level = level
+                                .par_iter()
+                                .with_min_len(1024)
+                                .filter(|&&p| paths[pi].splits(cache, p, half))
+                                .flat_map_iter(|p| p.around(half / 2))
+                                .collect();
+                        });
+                    ctx.check()?;
+                    g.half /= 2;
+                    g.stage += 1;
+                    g.corners = false;
+                }
+                g.tiles = prepare(g, levels, caches);
+                if !g.tiles.is_empty() {
+                    return Ok(());
+                }
+            }
+        };
+    let submit = |gpu: &crate::gpu::GhostTransport, block: &[Request]| {
+        gpu.submit_lattice(
+            block.len(),
+            |i| {
+                let (pi, p, _, xy) = block[i];
+                Ok(LaunchSample {
+                    pupil: xy.map(Df32::from_f64),
+                    lattice: [p.x, p.y],
+                    field: p.field * nw + p.wl,
+                    path: pi as u32,
+                    wavelength: p.wl,
+                    reserved: 0,
                 })
-                .collect::<Vec<_>>()
-                .concat();
-            ctx.check()?;
-            // A memory tile of probe records (every path, field and
-            // wavelength together), not a new plan per path. The next tile
-            // is submitted before this one's host completion, so the device
-            // traces it while the host classifies and completes references.
-            let blocks = new.chunks(crate::gpu::PROBE_TILE).collect::<Vec<_>>();
-            let submit = |gpu: &crate::gpu::GhostTransport,
-                          block: &[(usize, Probe, usize, [f64; 2])]| {
-                gpu.submit_lattice(
-                    block.len(),
-                    |i| {
-                        let (pi, p, _, xy) = block[i];
-                        Ok(LaunchSample {
-                            pupil: xy.map(Df32::from_f64),
-                            lattice: [p.x, p.y],
-                            field: p.field * nw + p.wl,
-                            path: pi as u32,
-                            wavelength: p.wl,
-                            reserved: 0,
-                        })
-                    },
-                    true,
-                    &ctx.subrange(stage as f64 / 5., stage as f64 / 5.),
-                )
-            };
-            let mut pending = blocks.first().map(|b| submit(gpu, b)).transpose()?;
-            for (bi, &block) in blocks.iter().enumerate() {
-                ctx.check()?;
-                let current = pending.take().expect("submitted in order");
-                let values = gpu.finish_lattice(current)?;
-                // Two plans in flight would share the device and shrink each
-                // other's time-calibrated commands: submit the next only now.
-                pending = blocks.get(bi + 1).map(|b| submit(gpu, b)).transpose()?;
-                // Numerical failures, flagged conditioning and pixel-edge hits
-                // are completed with the f64 reference, in parallel.
-                let outcomes = block
-                    .par_iter()
-                    .zip(&values[..])
-                    .with_min_len(256)
-                    .map(|(&(pi, p, _, _), v)| {
-                        let geometric = crate::gpu::ray_out(*v);
-                        let edge =
-                            matches!(geometric, Ok(Some((x, y, _))) if pixel_edge(template, x, y));
-                        let code = v.status & MKL_RAY_CODE_MASK;
-                        let numerical = (MKL_RAY_NONFINITE..=MKL_RAY_EVANESCENT).contains(&code);
-                        if code == MKL_GHOST_REFERENCE || numerical || edge {
-                            let start = std::time::Instant::now();
-                            let reference = paths[pi].trace(p);
-                            (geometric, edge, Some((reference, start.elapsed())))
-                        } else {
-                            (geometric, false, None)
-                        }
-                    })
-                    .collect::<Vec<_>>();
-                ctx.check()?;
-                let batch = gpu.resident_probes.len() - 1;
-                let mut replacements = Vec::new();
-                for (row, (&(pi, _, id, _), (geometric, edge, reference))) in
-                    block.iter().zip(outcomes).enumerate()
-                {
+            },
+            true,
+            &JobContext::with(ctx.cancel.clone(), Default::default()),
+        )
+    };
+    let started = crate::gpu::Lap::now();
+    for g in &mut group {
+        g.tiles = prepare(g, &levels, &mut caches);
+        if g.tiles.is_empty() {
+            advance(g, &mut levels, &mut caches)?;
+        }
+    }
+    gpu.host("dedup", started);
+    for g in &group {
+        if g.done {
+            done(g.paths.clone(), &caches)?;
+        }
+    }
+    let total_steps = (groups * (2 * BOUNDARY_DEPTH as usize + 1)) as f64;
+    let report = |group: &[GroupRefine]| {
+        let steps: usize = group
+            .iter()
+            .map(|g| {
+                if g.done {
+                    2 * BOUNDARY_DEPTH as usize + 1
+                } else {
+                    2 * g.stage as usize + g.corners as usize
+                }
+            })
+            .sum();
+        ctx.report(steps as f64 / total_steps, "refining ghost probes");
+    };
+    // One tile on the device at a time (two would share it and shrink each
+    // other's time-calibrated commands); the next is submitted before the
+    // host completes the current one. The first group with a tile ready
+    // goes first, so groups finish one after another and the host gathers
+    // a finished group's leaves while the device traces the next.
+    let take = |group: &mut [GroupRefine]| {
+        (0..group.len())
+            .find(|&gi| !group[gi].tiles.is_empty())
+            .map(|gi| {
+                let g = &mut group[gi];
+                g.outstanding += 1;
+                (gi, g.tiles.pop_front().unwrap())
+            })
+    };
+    let mut inflight = match take(&mut group) {
+        Some((gi, block)) => Some((gi, submit(gpu, &block)?, block)),
+        None => None,
+    };
+    while let Some((gi, current, block)) = inflight.take() {
+        ctx.check()?;
+        let started = crate::gpu::Lap::now();
+        let values = gpu.finish_lattice(current)?;
+        gpu.host("device_wait", started);
+        inflight = match take(&mut group) {
+            Some((gj, b)) => Some((gj, submit(gpu, &b)?, b)),
+            None => None,
+        };
+        let started = crate::gpu::Lap::now();
+        // Numerical failures, flagged conditioning and pixel-edge hits
+        // are completed with the f64 reference, in parallel.
+        let outcomes = block
+            .par_iter()
+            .zip(&values[..])
+            .with_min_len(256)
+            .map(|(&(pi, p, _, _), v)| {
+                let geometric = crate::gpu::ray_out(*v);
+                let edge = matches!(geometric, Ok(Some((x, y, _))) if pixel_edge(template, x, y));
+                let code = v.status & MKL_RAY_CODE_MASK;
+                let numerical = (MKL_RAY_NONFINITE..=MKL_RAY_EVANESCENT).contains(&code);
+                if code == MKL_GHOST_REFERENCE || numerical || edge {
+                    let start = std::time::Instant::now();
+                    let reference = paths[pi].trace(p);
+                    (geometric, edge, Some((reference, start.elapsed())))
+                } else {
+                    (geometric, false, None)
+                }
+            })
+            .collect::<Vec<_>>();
+        drop(values);
+        ctx.check()?;
+        let batch = gpu.resident_probes.len() - 1;
+        // Rows come in runs of one path (tiles concatenate paths in order):
+        // each run writes its own path's cache, in parallel; counters and
+        // the reference rows are folded in row order.
+        let mut runs: Vec<(usize, std::ops::Range<usize>)> = Vec::new();
+        for (row, &(pi, ..)) in block.iter().enumerate() {
+            match runs.last_mut() {
+                Some((p, r)) if *p == pi => r.end = row + 1,
+                _ => runs.push((pi, row..row + 1)),
+            }
+        }
+        let mut slots: Vec<&mut Probes> = Vec::with_capacity(runs.len());
+        let mut wanted = runs.iter().map(|r| r.0).peekable();
+        for (pi, cache) in caches.iter_mut().enumerate() {
+            if wanted.next_if_eq(&pi).is_some() {
+                slots.push(cache);
+            }
+        }
+        assert_eq!(slots.len(), runs.len(), "tile rows grouped by path");
+        type Folded = ((usize, f64, usize, usize), Vec<(usize, RayOut)>);
+        let parts: Vec<Folded> = runs
+            .par_iter()
+            .zip(slots.par_iter_mut())
+            .map(|((_, rows), cache)| {
+                let mut counts = (0usize, 0f64, 0usize, 0usize);
+                let mut replaced = Vec::new();
+                for row in rows.clone() {
+                    let (_, _, id, _) = block[row];
+                    let (geometric, edge, reference) = outcomes[row];
                     let result = match reference {
                         Some((reference, seconds)) => {
-                            gpu.fallback_probes += 1;
-                            gpu.reference_seconds += seconds.as_secs_f64();
+                            counts.0 += 1;
+                            counts.1 += seconds.as_secs_f64();
                             if edge {
-                                gpu.boundary_probes += 1;
+                                counts.2 += 1;
                                 if let (Ok(Some((x, y, _))), Ok(Some((rx, ry, _)))) =
                                     (geometric, reference)
                                 {
-                                    gpu.pixel_migrations +=
+                                    counts.3 +=
                                         (template.bin_of(x, y) != template.bin_of(rx, ry)) as usize;
                                 }
                             }
-                            replacements.push((row, reference));
+                            replaced.push((row, reference));
                             reference
                         }
                         None => geometric,
                     };
-                    caches[pi].outs[id] = result;
-                    caches[pi].locations[id] = Some([batch, row]);
+                    cache.outs[id] = result;
+                    cache.locations[id] = Some([batch, row]);
                 }
-                if !replacements.is_empty() {
-                    let batch = gpu.reference_batch(&replacements, ctx)?;
-                    for (row, &(original, _)) in replacements.iter().enumerate() {
-                        let (pi, _, id, _) = block[original];
-                        caches[pi].locations[id] = Some([batch, row]);
-                    }
-                }
+                (counts, replaced)
+            })
+            .collect();
+        let mut replacements = Vec::new();
+        for ((fallback, seconds, boundary, migrations), replaced) in parts {
+            gpu.fallback_probes += fallback;
+            gpu.reference_seconds += seconds;
+            gpu.boundary_probes += boundary;
+            gpu.pixel_migrations += migrations;
+            replacements.extend(replaced);
+        }
+        if !replacements.is_empty() {
+            let batch = gpu.reference_batch(&replacements, ctx)?;
+            for (row, &(original, _)) in replacements.iter().enumerate() {
+                let (pi, _, id, _) = block[original];
+                caches[pi].locations[id] = Some([batch, row]);
             }
         }
-        ctx.check()?;
-        ctx.report((stage + 1) as f64 / 5., "refining ghost probes");
-        if half == 1 {
-            break;
+        gpu.host("outcomes", started);
+        let g = &mut group[gi];
+        g.outstanding -= 1;
+        if g.tiles.is_empty() && g.outstanding == 0 {
+            let started = crate::gpu::Lap::now();
+            advance(g, &mut levels, &mut caches)?;
+            gpu.host("splits_dedup", started);
+            if g.done {
+                // Submit work for the device before gathering the leaves.
+                if inflight.is_none() {
+                    inflight = match take(&mut group) {
+                        Some((gj, b)) => Some((gj, submit(gpu, &b)?, b)),
+                        None => None,
+                    };
+                }
+                done(group[gi].paths.clone(), &caches)?;
+            }
+            report(&group);
         }
-        for (pi, level) in levels.iter_mut().enumerate() {
-            *level = level
-                .par_iter()
-                .with_min_len(1024)
-                .filter(|&&p| paths[pi].splits(&caches[pi], p, half))
-                .flat_map_iter(|p| p.around(half / 2))
-                .collect();
-            ctx.check()?;
+        if inflight.is_none() {
+            inflight = match take(&mut group) {
+                Some((gj, b)) => Some((gj, submit(gpu, &b)?, b)),
+                None => None,
+            };
         }
-        half /= 2;
     }
+    debug_assert!(group.iter().all(|g| g.done));
     gpu.lattice_keys = caches.iter().map(|c| c.outs.len()).sum();
     Ok(caches)
 }
@@ -1936,6 +2259,8 @@ fn p9_dense_achromat_probe_accuracy() {
         &fields,
         &settings,
         &map,
+        1,
+        &mut |_, _| Ok(()),
         &JobContext::new(),
     )
     .unwrap();
@@ -2045,6 +2370,9 @@ fn native_refinement_matches_reference_at_aperture_edges() {
             &fields,
             &settings,
             &map,
+            // Groups refine independently; each path's probes are the same.
+            4,
+            &mut |_, _| Ok(()),
             &JobContext::new(),
         )
         .unwrap();

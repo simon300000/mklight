@@ -3,7 +3,7 @@
 //! ```text
 //! cargo run --release -p mklight-engine --example backend_bench -- SUITE.json \
 //!     [--filter TEXT] [--backends cpu,metal,auto] [--reps N] [--out FILE.jsonl] \
-//!     [--label TEXT] [--no-compare]
+//!     [--label TEXT] [--no-compare] [--budget SECONDS] [--shuffle] [--idle MS]
 //! ```
 //!
 //! `SUITE.json` names the projects and the cases:
@@ -37,6 +37,16 @@
 //! relative to the group's largest CPU magnitude; the worst groups are
 //! reported.
 //!
+//! `--budget SECONDS` caps each column's timed calls: after the first timed
+//! call a column runs only as many repetitions as fit the budget (at least
+//! one, at most `reps`), so very slow columns are timed once.
+//!
+//! `--shuffle` times the columns of each repetition in a new pseudo-random
+//! order (seeded, so runs repeat), so no column always follows the same one;
+//! by default the order is fixed (`cpu`, `metal`, its variants, `auto`).
+//! `--idle MS` sleeps that long before every timed call, so each call starts
+//! on an idle machine, as an analysis after an interactive edit does.
+//!
 //! Each case and column appends one JSON line to `--out` and each case
 //! prints one row.
 
@@ -60,6 +70,9 @@ struct Args {
     out: Option<String>,
     label: String,
     compare: bool,
+    budget: Option<f64>,
+    shuffle: bool,
+    idle_ms: u64,
 }
 
 fn args() -> Args {
@@ -71,6 +84,9 @@ fn args() -> Args {
         out: None,
         label: String::new(),
         compare: true,
+        budget: None,
+        shuffle: false,
+        idle_ms: 0,
     };
     let mut it = std::env::args().skip(1);
     while let Some(x) = it.next() {
@@ -82,6 +98,9 @@ fn args() -> Args {
             "--out" => a.out = Some(value()),
             "--label" => a.label = value(),
             "--no-compare" => a.compare = false,
+            "--budget" => a.budget = Some(value().parse().expect("--budget SECONDS")),
+            "--shuffle" => a.shuffle = true,
+            "--idle" => a.idle_ms = value().parse().expect("--idle MS"),
             _ if a.suite.is_empty() => a.suite = x,
             _ => panic!("unexpected argument {x}"),
         }
@@ -146,6 +165,12 @@ fn backend(name: &str) -> Backend {
 }
 
 /// A unique, tiny change of the first curved surface (relative 1e-9 scale).
+///
+/// `serial` is `pid << 20 | call counter`. Only the counter (and a small
+/// residue of the process id, for uniqueness between processes) sets the
+/// size, so every edit stays between 1e-9 and about 2e-9 relative for the
+/// first 10,000 calls. The sign comes from a hash of the counter, so it does
+/// not follow the column order of an even number of columns.
 fn edit(s: &mut Session, base: &OpticalSystem, serial: u64) {
     let mut system = base.clone();
     let surface = system
@@ -158,13 +183,15 @@ fn edit(s: &mut Session, base: &OpticalSystem, serial: u64) {
         surface: surface.id,
     };
     let c = surface.shape.curvature();
-    let sign = if serial % 2 == 0 { 1. } else { -1. };
-    param
-        .set(
-            &mut system,
-            c * (1. + sign * (1. + serial as f64 * 1e-3) * 1e-9),
-        )
-        .unwrap();
+    let counter = serial & 0xf_ffff;
+    let process = (serial >> 20) % 1000;
+    let sign = if counter.wrapping_mul(0x9e37_79b9_7f4a_7c15) >> 63 == 0 {
+        1.
+    } else {
+        -1.
+    };
+    let size = (1. + counter as f64 * 1e-4 + process as f64 * 1e-6) * 1e-9;
+    param.set(&mut system, c * (1. + sign * size)).unwrap();
     s.set_system(system).unwrap();
 }
 
@@ -421,17 +448,39 @@ fn main() {
         let mut used: Vec<Option<String>> = vec![None; n];
         let mut errors: Vec<Option<String>> =
             warm.iter().map(|r| r.as_ref().err().cloned()).collect();
+        let mut want = vec![reps; n];
+        let mut order: Vec<usize> = (0..n).collect();
+        let mut rng = 0x2545_f491_4f6c_dd1d_u64 ^ (key.len() as u64) << 32 ^ n as u64;
         for _ in 0..reps {
-            for (i, c) in cols.iter().enumerate() {
-                if warm[i].is_err() {
+            if a.shuffle {
+                // Fisher-Yates with xorshift64*.
+                for j in (1..n).rev() {
+                    rng ^= rng >> 12;
+                    rng ^= rng << 25;
+                    rng ^= rng >> 27;
+                    let k = (rng.wrapping_mul(0x2545_f491_4f6c_dd1d) % (j as u64 + 1)) as usize;
+                    order.swap(j, k);
+                }
+            }
+            for &i in &order {
+                let c = &cols[i];
+                if warm[i].is_err() || times[i].len() >= want[i] {
                     continue;
                 }
                 serial += 1;
                 edit(s, base, serial);
+                if a.idle_ms > 0 {
+                    std::thread::sleep(std::time::Duration::from_millis(a.idle_ms));
+                }
                 let d0 = mklight_metal::device_seconds();
                 match run(s, analysis, &settings, c) {
                     Ok((ms, r)) => {
                         times[i].push(ms);
+                        if times[i].len() == 1
+                            && let Some(b) = a.budget
+                        {
+                            want[i] = ((b * 1e3 / ms).floor() as usize).clamp(1, reps);
+                        }
                         device[i].push((mklight_metal::device_seconds() - d0) * 1e3);
                         reported[i].push(r.run_info.duration_ms);
                         used[i] = Some(r.run_info.backend.clone());

@@ -466,6 +466,47 @@ it without changing the reference registry; capability and `auto` routing
 are in GPU.md §9.2–9.3. Solver calls report the actual backend and f32
 precision.
 
+### Host/device division
+
+The native jobs (`gpu::analysis`, `gpu::image_simulation::build_psf_grid`)
+divide each analysis between the host (the CPU f64 reference code, in
+parallel) and the device (`gpu::split`): the host traces the pupil
+lattices with the reference tracer (`trace_lattice`), resamples and refines
+the pupils and makes every sampling decision that reads them; the device
+runs the transforms (PSFs, OTFs, focus sweeps, energy, line spreads,
+wavefront statistics, convolution).
+
+Host lattices are the reference's own `PupilLattice`s (shared with the CPU
+analyses through the engine memo, `shared`), and their wavefront maps use
+the reference's lattice Zernike fit (identical Zernike sets and Seidel
+terms, so explicit Metal requests run them; `auto` keeps `wavefront_map`
+on the reference until the cost model is calibrated for it). Host
+resampling yields the reference's `PupilFunction`s, written into shared
+allocations in place, so the native jobs make the reference's own sampling
+decisions (pupil grids and refinements, image windows, automatic
+frequencies and focus ranges) and report the reference's grids.
+
+Every field's host preparation starts at once on the thread pool, and each
+prepared field is queued for up to `MKLIGHT_WAVE_CONCURRENT` (4) device
+workers, so the device transforms early fields while the host still
+prepares later ones. The analyses whose decisions are per field (PSF, line
+spread, MTF with an explicit frequency limit) trace field by field; the
+others trace all pupils first because their automatic frequencies, windows
+and focus ranges span all fields. Image simulation computes the
+relative-illumination rows beside the device PSFs.
+
+The work-split study measured the alternatives on the M2 Pro: host
+transforms beside the device's and a size rule for them tied this
+division; device resampling of host lattices, host aiming with device
+tracing and the fully device-traced pipeline were 1.1×, 2.0× and 3.2×
+slower on large cases. The device pupil tracer below (`PupilTracer`)
+remains for the solvers' MTF operands.
+
+The CPU reference runs fields, wavelengths, focus planes, image-grid nodes
+and Zernike fits side by side on the thread pool (each transform parallel
+inside) and merges every sum, warning and error in the serial order, so its
+results are bit-identical for any thread count.
+
 ### Pupils and automatic sampling
 
 `PupilTracer::new(backend, tracer, ctx)` prepares reusable packed geometry and
@@ -516,9 +557,11 @@ or silently zero amplitudes.
 The chief/centroid reference uses P1's unclipped chief and P3 weighted moments.
 Small reference-frame metadata remains host control. P1 sphere projection and
 resident amplitude/Jacobian work preserve both sheets, telecentric limits,
-negative propagation and finite conjugates. `ResidentTracedPupil` retains its
-original resident lattice, mask and `ExitPupilInfo`; resampling/refinement does
-not trace again or copy a host pupil back to the device.
+negative propagation and finite conjugates. A device-traced
+`ResidentTracedPupil` retains its resident lattice nodes, mask and
+`ExitPupilInfo`; a host-traced one (the native analyses) keeps the reference
+lattice and pupil instead (`host`), uploads only the resampled pupil, and
+refines on the host without tracing again.
 
 `from_structured` and `ResidentPupil::from_pupil` remain explicit input boundaries
 for existing host data. `from_resident_lattice` consumes already resident nodes.
@@ -547,10 +590,9 @@ Configured callers still apply `ConfiguredTracer::stamp` to retain the base
 snapshot and configuration identity.
 
 * Wavefront statistics use Debye weights, double-float reductions and a P3
-  three-column QR tilt fit. The original lattice Zernike fit uses device basis
-  evaluation and pivoted, reorthogonalised QR. Its reported condition is the
-  infinity-norm estimate of equilibrated R, distinct from the reference's
-  spectral condition number; rank failures remain errors.
+  three-column QR tilt fit (device basis evaluation, pivoted and
+  reorthogonalised QR; a rank failure is an error). The Zernike fit and
+  Seidel terms are the reference's own, from the host lattice (§9).
 * `append_psf`, `append_huygens`, `append_correlation` and `append_fft_otf`
   compose into caller plans. FFT/chirp/affine transforms
   preserve the reference's negligible-skew rule before satisfying P2's exact
@@ -571,7 +613,10 @@ snapshot and configuration identity.
   grid whose stencil cannot hold one frequency (4096²) is rejected by the
   direct MTF, field MTF and through-focus jobs before any pupil is traced.
 * Focus sweeps share correlation stencils and cache exact defocus phases up to
-  256 MiB; larger requests evaluate the same phases on the fly. Per-plane GPU
+  256 MiB; larger sweeps run in plane chunks that each cache their planes'
+  phases (the cached phases are the values the on-the-fly path evaluates, five
+  per correlation sample and plane), and only a single plane beyond the limit
+  evaluates them on the fly. Per-plane GPU
   reductions retain phase-step warnings. FFT/Huygens use bounded plane batches.
   Automatic pupils are refined from the phase steps at both focus endpoints.
   Polychromatic fields/OTFs accumulate on device before taking magnitudes.

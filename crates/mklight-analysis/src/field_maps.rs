@@ -17,7 +17,11 @@ use mklight_core::job::RunTimer;
 use mklight_core::model::RayAiming;
 use mklight_core::{JobContext, MkError, MkResult, RunInfo};
 use mklight_trace::{FieldPoint, PreparedField, SequentialTracer, TraceOptions, TracerSettings};
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
+
+/// Fields per parallel block (cancellation granularity).
+const BLOCK: usize = 256;
 
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -237,32 +241,51 @@ pub fn field_map_job(
     let skip = |p: &[f64; 2]| {
         matches!(kind, FieldAnalysis::RelativeIllumination) && p[0].hypot(p[1]) > 1.0 + 1e-12
     };
+    // Fields are independent: their chief solves and traces run in
+    // parallel (each exactly as alone), in blocks for cancellation.
     let mut images = Vec::with_capacity(coords.len());
     let mut chiefs = Vec::with_capacity(coords.len());
-    for p in &coords {
+    for block in coords.chunks(BLOCK) {
         ctx.check()?;
-        if skip(p) {
-            images.push([f64::NAN; 2]);
-            chiefs.push(None);
-            continue;
-        }
-        let f = rt.prepare_field(FieldPoint::normalized(p[0], p[1]))?;
-        let mut records = Vec::new();
-        let c = rt.trace_with(
-            &f,
-            wl,
-            0.0,
-            0.0,
-            &TraceOptions::unclipped(),
-            Some(&mut records),
-        );
-        if c.status.is_ok() {
-            images.push([c.ray.pos.x, c.ray.pos.y]);
-            chiefs.push(Some((c.ray, records.last().unwrap().cos_incidence)));
-        } else {
-            warnings.push(format!("field ({},{}): chief ray failed", p[0], p[1]));
-            images.push([f64::NAN; 2]);
-            chiefs.push(None);
+        let traced: Vec<MkResult<_>> = block
+            .par_iter()
+            .map(|p| {
+                if skip(p) {
+                    return Ok(None);
+                }
+                let f = rt.prepare_field(FieldPoint::normalized(p[0], p[1]))?;
+                let mut records = Vec::new();
+                let c = rt.trace_with(
+                    &f,
+                    wl,
+                    0.0,
+                    0.0,
+                    &TraceOptions::unclipped(),
+                    Some(&mut records),
+                );
+                Ok(Some(
+                    c.status
+                        .is_ok()
+                        .then(|| (c.ray, records.last().unwrap().cos_incidence)),
+                ))
+            })
+            .collect();
+        for (p, t) in block.iter().zip(traced) {
+            match t? {
+                None => {
+                    images.push([f64::NAN; 2]);
+                    chiefs.push(None);
+                }
+                Some(Some((ray, cos))) => {
+                    images.push([ray.pos.x, ray.pos.y]);
+                    chiefs.push(Some((ray, cos)));
+                }
+                Some(None) => {
+                    warnings.push(format!("field ({},{}): chief ray failed", p[0], p[1]));
+                    images.push([f64::NAN; 2]);
+                    chiefs.push(None);
+                }
+            }
         }
     }
     let values = match kind {
@@ -303,14 +326,17 @@ pub fn field_map_job(
             };
             let axial = probe([0.0; 2])?;
             let mut values = Vec::with_capacity(6 * coords.len());
-            for &p in &coords {
+            for block in coords.chunks(BLOCK) {
                 ctx.check()?;
-                values.extend(match (probe(p)?, axial) {
-                    (Some(v), Some(a)) => {
-                        [v[0], v[1], v[2], v[3], v[2] / a[2] - 1.0, v[3] / a[3] - 1.0]
-                    }
-                    _ => [f64::NAN; 6],
-                });
+                let probed: Vec<MkResult<_>> = block.par_iter().map(|&p| probe(p)).collect();
+                for v in probed {
+                    values.extend(match (v?, axial) {
+                        (Some(v), Some(a)) => {
+                            [v[0], v[1], v[2], v[3], v[2] / a[2] - 1.0, v[3] / a[3] - 1.0]
+                        }
+                        _ => [f64::NAN; 6],
+                    });
+                }
             }
             values
         }

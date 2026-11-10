@@ -49,7 +49,8 @@ fn a_long_synchronous_run_does_not_block_the_session() {
         assert_eq!(mk_session_current_snapshot_hash(session, &mut h0), MK_OK);
         let h0 = take(h0);
 
-        // A stray-light run of a second or more on another thread.
+        // A stray-light run of about a second (12-thread CPU) on another
+        // thread, long against the session calls below.
         let done = Arc::new(AtomicBool::new(false));
         let addr = session as usize;
         let worker = {
@@ -58,7 +59,7 @@ fn a_long_synchronous_run_does_not_block_the_session() {
                 let t0 = Instant::now();
                 let s = addr as *const MKSession;
                 let req = c(&json!({"analysis": "stray_light",
-                                    "settings": {"rays": 400_000, "seed": 1}})
+                                    "settings": {"rays": 3_000_000, "seed": 1}})
                 .to_string());
                 let (mut json, mut bufs, mut n) = (ptr::null_mut(), ptr::null_mut(), 0usize);
                 let st =

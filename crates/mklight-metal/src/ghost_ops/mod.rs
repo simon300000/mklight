@@ -411,10 +411,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
             output,
         } => {
             use mklight_gpu::consts::*;
-            let SystemSet::Uploaded(handle) = systems else {
-                return unsupported("ghost resident candidates");
-            };
-            let up = x.system(*handle)?;
+            let up = x.system(*systems)?;
             // Thin-film matrices are compiled in only when a film record exists.
             let features = coatings.as_ref().map_or(0, |c| {
                 let (b, o) = x.buffer(&c.specs);

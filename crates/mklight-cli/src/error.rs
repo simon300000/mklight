@@ -5,7 +5,7 @@
 //! |---|---|
 //! | 0 | success |
 //! | 1 | usage: bad command line; unknown analysis, sample, catalog or parameter path (a path that does not address a parameter of the system); invalid settings JSON or values; index out of range |
-//! | 2 | invalid model: the project cannot be parsed (including non-UTF-8 content) or migrated; it fails validation; materials (also a glass named in analysis settings) or coatings do not resolve; an edit value the parameter cannot take, or an edit that would make the system invalid |
+//! | 2 | invalid model: the project cannot be parsed (including non-UTF-8 content and another `schema_version`); it fails validation; materials (also a glass named in analysis settings) or coatings do not resolve; an edit value the parameter cannot take, or an edit that would make the system invalid |
 //! | 3 | analysis failed: the job failed, the analysis or backend is unavailable, a trace or numerical failure |
 //! | 4 | I/O: a file could not be read or written |
 //! | 130 | cancelled (Ctrl-C or `--timeout`) |

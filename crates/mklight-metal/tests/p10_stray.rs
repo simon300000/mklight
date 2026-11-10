@@ -24,7 +24,6 @@ fn device_sources_and_bvh() {
     for origin in [LibraryChoice::Precompiled, LibraryChoice::RuntimeSource] {
         let b = backend(origin);
         cases::answers(&b);
-        cases::split_child_estimator(&b);
         cases::close_hits(&b);
         let cpu = CpuF32Backend::matching(&b.precision().probe);
         for kind in 0..4 {

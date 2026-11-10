@@ -297,7 +297,6 @@ fn static_capability_fallback_is_deliberate_even_for_explicit_gpu() {
     let s = session(&e, samples::cooke_triplet());
     for (name, settings) in [
         ("encircled_energy", json!({"rings": 24})),
-        ("wavefront_map", Value::Null),
         ("polarization_pupil_map", Value::Null),
     ] {
         let gpu = run_on(

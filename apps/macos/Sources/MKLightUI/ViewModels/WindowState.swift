@@ -193,9 +193,7 @@ public final class WindowState {
 /// The saved layout of a design's windows, stored as the project's `views`
 /// section (`[{key, analysis, settings, ui}]`, docs/FFI.md): one entry per
 /// analysis pane plus a `layout` entry for the viewport and the panel
-/// arrangement (`ui.arrangement`, `PanelArrangement.json`). Projects saved
-/// before panels could move keep split fractions and pane widths instead;
-/// they open in the standard arrangement with those sizes.
+/// arrangement (`ui.arrangement`, `PanelArrangement.json`).
 public struct WorkspaceLayout: Equatable, Sendable {
     public struct Pane: Equatable, Sendable {
         public var key: String
@@ -203,11 +201,10 @@ public struct WorkspaceLayout: Equatable, Sendable {
         public var settings: [String: JSONValue]
         public var autoUpdate: Bool
         public var showsSettings: Bool
-        /// Older projects: the pane's width weight in the analysis row.
-        public var width: Double?
     }
     public var panes: [Pane] = []
-    /// Where the panels are, in every window (`nil`: an older project).
+    /// Where the panels are, in every window (`nil`: the standard
+    /// arrangement).
     public var arrangement: JSONValue?
     public var viewportMode = ViewportMode.section2D
     public var rayColoring = RayColoring.field
@@ -215,10 +212,6 @@ public struct WorkspaceLayout: Equatable, Sendable {
     /// (`nil`: the first fit picks one for a slim design).
     public var stretch: Double?
     public var layoutSettings: [String: JSONValue] = [:]
-    /// Older projects: the standard arrangement's sizes.
-    var editorFraction = 0.36
-    var viewportFraction = 0.42
-    var showViewport = true
 
     public init() {}
 
@@ -226,8 +219,8 @@ public struct WorkspaceLayout: Equatable, Sendable {
     public static var standard: WorkspaceLayout {
         var l = WorkspaceLayout()
         l.panes = [
-            Pane(key: "pane-spot", analysis: "spot_diagram", settings: Workspace.spotStartingSettings, autoUpdate: true, showsSettings: false, width: nil),
-            Pane(key: "pane-fan", analysis: "ray_fan", settings: [:], autoUpdate: true, showsSettings: false, width: nil),
+            Pane(key: "pane-spot", analysis: "spot_diagram", settings: Workspace.spotStartingSettings, autoUpdate: true, showsSettings: false),
+            Pane(key: "pane-fan", analysis: "ray_fan", settings: [:], autoUpdate: true, showsSettings: false),
         ]
         return l
     }
@@ -239,9 +232,6 @@ public struct WorkspaceLayout: Equatable, Sendable {
             let settings = v["settings"]?.object ?? [:]
             if key == "layout" {
                 arrangement = ui["arrangement"].flatMap { $0.object != nil ? $0 : nil }
-                editorFraction = ui["editor_fraction"]?.doubleValue ?? editorFraction
-                viewportFraction = ui["viewport_fraction"]?.doubleValue ?? viewportFraction
-                showViewport = ui["show_viewport"]?.bool ?? true
                 viewportMode = ui["mode"]?.string.flatMap(ViewportMode.init(rawValue:)) ?? .section2D
                 rayColoring = ui["ray_coloring"]?.string.flatMap(RayColoring.init(rawValue:)) ?? .field
                 stretch = ui["stretch"]?.doubleValue.flatMap { $0.isFinite && $0 >= 1 ? $0 : nil }
@@ -250,7 +240,7 @@ public struct WorkspaceLayout: Equatable, Sendable {
                 panes.append(
                     Pane(
                         key: key, analysis: analysis, settings: settings, autoUpdate: ui["auto_update"]?.bool ?? true,
-                        showsSettings: ui["settings_visible"]?.bool ?? false, width: ui["width"]?.doubleValue))
+                        showsSettings: ui["settings_visible"]?.bool ?? false))
             }
         }
     }
@@ -290,7 +280,7 @@ extension WorkspaceLayout {
         panes = workspace.panes.map {
             Pane(
                 key: $0.id, analysis: $0.analysis, settings: ImageSourceImport.persistable($0.settings), autoUpdate: $0.autoUpdate,
-                showsSettings: $0.showsSettings, width: nil)
+                showsSettings: $0.showsSettings)
         }
         self.arrangement = arrangement.json
         viewportMode = window.viewportMode
@@ -310,16 +300,12 @@ extension WorkspaceLayout {
         }
     }
 
-    /// The saved panel arrangement; for an older project, the standard one
-    /// with its saved sizes.
+    /// The saved panel arrangement, or the standard one when none is saved.
     @MainActor
     public func makeArrangement() -> PanelArrangement {
         let keys = panes.map(\.key)
         let known = Set([PanelID.lensData, .layout] + keys.map(PanelID.analysis))
-        if let a = PanelArrangement.decode(arrangement, known: known) { return a }
-        return .standard(
-            panes: keys, showLayout: showViewport, editorFraction: editorFraction, viewportFraction: viewportFraction,
-            widths: Dictionary(panes.compactMap { p in p.width.map { (p.key, $0) } }, uniquingKeysWith: { a, _ in a }))
+        return PanelArrangement.decode(arrangement, known: known) ?? .standard(panes: keys)
     }
 
     @MainActor

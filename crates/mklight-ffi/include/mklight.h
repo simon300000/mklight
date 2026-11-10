@@ -156,7 +156,7 @@ MKStatus mk_engine_set_job_callback(MKEngine *engine, MKJobCallback cb, void *us
 /* New untitled project. */
 MKStatus mk_session_new(const MKEngine *engine, MKSession **out_session);
 
-/* Open a .mklight project (older schema versions are migrated). Missing user
+/* Open a .mklight project (only the current schema version). Missing user
  * catalogs do not fail the open: see "open_warnings" in mk_session_info_json. */
 MKStatus mk_session_open(const MKEngine *engine, const char *path, MKSession **out_session);
 
@@ -169,7 +169,7 @@ void mk_session_destroy(MKSession *session);
 MKStatus mk_session_save(MKSession *session, const char *path);
 
 /* {"session_id", "path", "dirty", "snapshot_hash", "library_hash", "name",
- *  "open_warnings", "migration", "catalogs"} */
+ *  "open_warnings", "catalogs"} */
 MKStatus mk_session_info_json(const MKSession *session, char **out_json);
 
 /* The whole project document (same schema as the .mklight file). */
@@ -289,13 +289,6 @@ MKStatus mk_engine_analysis_info(const MKEngine *engine, const char *name, char 
  * (the initial default), {"kind": "auto"} or {"kind": "gpu", "name": ...}.
  * An unavailable explicit backend is refused (MK_ERR_UNSUPPORTED). */
 MKStatus mk_engine_set_default_backend(const MKEngine *engine, const char *backend_json);
-
-/* Migrate a project file in place to the current schema version. backup != 0
- * keeps the original as "<file>.v<N>.bak"; dry_run != 0 writes nothing.
- * out_json (nullable): {"path", "from_version", "to_version", "notes",
- * "migrated", "backup", "dry_run"}. */
-MKStatus mk_engine_migrate_project(const MKEngine *engine, const char *path, int32_t backup,
-                                   int32_t dry_run, char **out_json);
 
 /* Run an analysis in the calling thread (blocking; no job, no callback, not
  * cancellable) on the current snapshot. request_json as for

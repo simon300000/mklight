@@ -22,9 +22,6 @@ pub fn execute(
     if let Request::Spectral(r) = r {
         return spectral::cpu(r, x, ctl);
     }
-    if let Request::Blur(r) = r {
-        return sampling::cpu(r, x, ctl);
-    }
     if let Request::ImageIntegral(r) = r {
         return image_integrals::cpu(r, x, ctl);
     }
@@ -44,7 +41,6 @@ pub fn execute(
         Request::Zernike {
             samples,
             terms,
-            standard,
             matrix,
             rhs,
         } => {
@@ -62,7 +58,7 @@ pub fn execute(
                 b[i] = row[2] * row[3];
                 for (j, term) in t.iter().enumerate() {
                     design[i * t.len() + j] =
-                        row[3] * zernike(row[0], row[1], term[0], term[1] as i32, *standard);
+                        row[3] * zernike(row[0], row[1], term[0], term[1] as i32);
                 }
             }
             x.words_mut(*matrix)
@@ -74,7 +70,6 @@ pub fn execute(
         | Request::Simulation(_)
         | Request::FftMtf(_)
         | Request::ImageIntegral(_)
-        | Request::Blur(_)
         | Request::Spectral(_)
         | Request::Placement(_)
         | Request::Lattice(_)

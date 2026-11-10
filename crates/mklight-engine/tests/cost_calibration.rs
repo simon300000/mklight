@@ -553,7 +553,7 @@ fn fit(records: &[Value], device_open_ms: f64) -> Calibration {
             "designs": systems.keys().map(|k| if k == "local" { "local project" } else { k.as_str() }).collect::<Vec<_>>(),
             "load1": {"min": loads.iter().copied().fold(f64::INFINITY, f64::min),
                       "max": loads.iter().copied().fold(0., f64::max)},
-            "reference_iterations": (reference.0 > 0.).then(|| reference.1 / reference.0),
+            "reference_iterations": (reference.1 > 0.).then(|| reference.1 / reference.0),
             "command": "cargo test --release -p mklight-engine --test cost_calibration -- --ignored --exact calibrate",
         }),
         cpu_threads: rayon::current_num_threads(),

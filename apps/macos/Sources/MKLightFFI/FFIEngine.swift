@@ -80,9 +80,8 @@ public struct FFIEngine: EngineClient {
         (try? newSession()) ?? self
     }
 
-    /// Opens a `.mklight` project (older schema versions are migrated, user
-    /// catalogs loaded; missing ones are listed in `info.openWarnings`) as a
-    /// new session.
+    /// Opens a `.mklight` project (user catalogs loaded; missing ones are
+    /// listed in `info.openWarnings`) as a new session.
     public func openProject(at url: URL) throws -> FFIEngine {
         let s = try CABI.sessionOpen(core.pointer, path: url.path)
         return FFIEngine(core: core, session: FFISessionHandle(core: core, pointer: s))
@@ -105,7 +104,7 @@ public struct FFIEngine: EngineClient {
     }
 
     /// `mk_session_info_json`: path, dirty flag, hashes, open warnings,
-    /// migration report, catalogs.
+    /// catalogs.
     public func sessionInfo() throws -> FFISessionInfo {
         try decodeJSON(FFISessionInfo.self, try session.locked { try CABI.sessionInfo($0) })
     }
@@ -276,16 +275,14 @@ public struct FFIEngine: EngineClient {
 
     public func analysisDescriptors() async -> [AnalysisDescriptor] { core.descriptors }
 
-    /// A typed analysis runs as the engine analysis
-    /// `kind.engineName(in: descriptors)` (`first_order`, or `paraxial` on
-    /// engines that predate it) with the settings its schema accepts
-    /// (`AnalysisRequest.engineSettings`).
+    /// A typed analysis runs as the engine analysis `kind.engineName` with
+    /// the settings its schema accepts (`AnalysisRequest.engineSettings`).
     /// Its result decodes into the typed mirror when the JSON matches, and
     /// is shown generically otherwise. An analysis the engine lists as
     /// unavailable fails with `EngineError.unsupported` and its reason.
     public func submit(_ request: AnalysisRequest, on snapshot: ModelSnapshot) -> AnalysisJob {
         let problems = request.problems(for: snapshot.system)
-        let name = request.kind.engineName(in: core.descriptors)
+        let name = request.kind.engineName
         guard problems.isEmpty else {
             return AnalysisJob.run(request: request, snapshot: snapshot) { _ in throw EngineError.invalidSettings(problems) }
         }
@@ -477,12 +474,6 @@ final class Submission: Sendable {
 
 /// `mk_session_info_json`.
 public struct FFISessionInfo: Codable, Sendable, Hashable {
-    public struct Migration: Codable, Sendable, Hashable {
-        public var fromVersion: Int
-        public var toVersion: Int
-        public var notes: [String]
-        private enum CodingKeys: String, CodingKey { case fromVersion = "from_version", toVersion = "to_version", notes }
-    }
     public var sessionID: UInt64
     public var path: String?
     public var dirty: Bool
@@ -490,12 +481,11 @@ public struct FFISessionInfo: Codable, Sendable, Hashable {
     public var libraryHash: String
     public var name: String
     public var openWarnings: [String]
-    public var migration: Migration?
     public var catalogs: [CatalogInfo]
 
     private enum CodingKeys: String, CodingKey {
         case sessionID = "session_id", path, dirty, snapshotHash = "snapshot_hash", libraryHash = "library_hash", name
-        case openWarnings = "open_warnings", migration, catalogs
+        case openWarnings = "open_warnings", catalogs
     }
 }
 

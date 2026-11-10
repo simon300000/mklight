@@ -1,8 +1,10 @@
 //! Host boundary and final assembly for resident P1 -> P7 -> P3 jobs.
+use super::transmission::TransmissionRows;
 use super::*;
 use crate::{ComputeBackend, Df32, PackedSystem, aiming};
 use mklight_core::{JobContext, job::RunInfo};
 use mklight_trace::{FieldPoint, PolarizationState, PreparedField, SequentialTracer};
+use rayon::prelude::*;
 
 /// Completed backend rows, borrowed in place unless reference completion
 /// requires a mutable working copy. The view pins its storage independently
@@ -134,10 +136,8 @@ pub fn pupil_plan(
     p.operations
         .push(ResidentOp::Aiming(aiming::Request::GenerateAim(
             aiming::GenerateAim {
-                systems: SystemSet::Uploaded(systems),
+                systems,
                 samples: p.view(samples)?,
-                sampling: aiming::Sampling::Explicit,
-                unresolved: None,
                 field_wavelength: fields,
                 field_key: Some(blake3::hash(bytemuck::bytes_of(&spec)).to_hex().to_string()),
                 seeds: Some(seeds),
@@ -159,7 +159,7 @@ pub fn pupil_plan(
     p.operations
         .push(ResidentOp::Aiming(aiming::Request::TraceResident(
             aiming::TraceResident {
-                systems: SystemSet::Uploaded(systems),
+                systems,
                 input: rays,
                 steps: p.view(program)?,
                 start_surface: 0,
@@ -188,21 +188,6 @@ pub fn pupil(
     clip: bool,
     ctx: &JobContext,
 ) -> MkResult<PupilResult> {
-    pupil_mode(b, t, field, wl, points, state, clip, false, true, ctx)
-}
-#[allow(clippy::too_many_arguments)]
-fn pupil_mode(
-    b: &dyn ComputeBackend,
-    t: &SequentialTracer,
-    field: FieldPoint,
-    wl: usize,
-    points: &[[f64; 2]],
-    state: &PolarizationState,
-    clip: bool,
-    scalar: bool,
-    retain_values: bool,
-    ctx: &JobContext,
-) -> MkResult<PupilResult> {
     ctx.check()?;
     let field = t.prepare_field(field)?;
     let prepared = PreparedRadiometry::new(b, t.system(), &ctx.subrange(0.0, 0.05))?;
@@ -218,17 +203,9 @@ fn pupil_mode(
     };
     let handle = b.upload_systems_cached(&cache_key, std::slice::from_ref(&packed))?;
     let result = (|| {
-        let mut p = pupil_plan(
+        let p = pupil_plan(
             b, t, &prepared, handle, &field, wl, points, state, clip, ctx,
         )?;
-        if scalar {
-            for op in &mut p.operations {
-                if let ResidentOp::Radiometry(Request::Polarization(r)) = op {
-                    r.scalar = true;
-                }
-            }
-            p.settings["scalar"] = serde_json::json!(true);
-        }
         b.submit_plan(p, &ctx.subrange(0.05, 0.9))?.wait()
     })();
     b.release_systems(handle)?;
@@ -246,14 +223,8 @@ fn pupil_mode(
     if result.stats.fallback_count == 0
         && (summary[9][0] == 0. || !status.iter().any(|&s| aim_failed(s)))
     {
-        let (values, trace_status) = if retain_values {
-            (
-                ResultSlice::resident(b.read_view(result.outputs[0].view())?, points.len()),
-                ResultSlice::resident(status_view, points.len()),
-            )
-        } else {
-            (ResultSlice::owned(vec![]), ResultSlice::owned(vec![]))
-        };
+        let values = ResultSlice::resident(b.read_view(result.outputs[0].view())?, points.len());
+        let trace_status = ResultSlice::resident(status_view, points.len());
         ctx.check()?;
         ctx.report(1., "radiometry complete");
         return Ok(PupilResult {
@@ -268,44 +239,56 @@ fn pupil_mode(
     let rows: &[PolarizationValue] = bytemuck::cast_slice(guard.words());
     let mut values = Vec::with_capacity(rows.len());
     let mut trace_status = status.to_vec();
-    let mut fallback = 0;
+    // The rows the device could not decide, traced by the reference in
+    // parallel, then merged in input order.
+    ctx.check()?;
+    let reference: Vec<usize> = (0..rows.len())
+        .filter(|&i| {
+            rows[i].status == crate::consts::MKL_RAD_REFERENCE || aim_failed(trace_status[i])
+        })
+        .collect();
+    let opts = mklight_trace::TraceOptions {
+        clip,
+        ..t.options()
+    };
+    let completed: Vec<(PolarizationValue, u32)> = reference
+        .par_iter()
+        .map(|&i| {
+            let ray = t.trace_polarized(&field, wl, points[i][0], points[i][1], &opts);
+            (
+                reference_value(&ray, state),
+                reference_status(&ray.trace.status),
+            )
+        })
+        .collect();
+    ctx.check()?;
+    let fallback = reference.len();
+    let mut next = reference.iter().zip(&completed).peekable();
     for (i, v) in rows.iter().enumerate() {
         if i % 256 == 0 {
-            ctx.check()?;
             ctx.report(
                 0.9 + 0.09 * i as f64 / rows.len() as f64,
                 "polarization assembly",
             );
         }
-        if v.status == crate::consts::MKL_RAD_REFERENCE || aim_failed(trace_status[i]) {
-            ctx.check()?;
-            let ray = t.trace_polarized(
-                &field,
-                wl,
-                points[i][0],
-                points[i][1],
-                &mklight_trace::TraceOptions {
-                    clip,
-                    ..t.options()
-                },
-            );
-            let value = reference_value(&ray, state);
-            if !value
-                .jones
-                .iter()
-                .chain(&value.proper)
-                .chain(&value.fields)
-                .chain(&value.power)
-                .chain(&value.properties)
-                .all(|v| v.is_finite())
-            {
-                return Err(bad("nonfinite f64 polarization fallback"));
+        match next.peek() {
+            Some(&(&ri, &(value, s))) if ri == i => {
+                if !value
+                    .jones
+                    .iter()
+                    .chain(&value.proper)
+                    .chain(&value.fields)
+                    .chain(&value.power)
+                    .chain(&value.properties)
+                    .all(|v| v.is_finite())
+                {
+                    return Err(bad("nonfinite f64 polarization fallback"));
+                }
+                values.push(value);
+                trace_status[i] = s;
+                next.next();
             }
-            values.push(value);
-            trace_status[i] = reference_status(&ray.trace.status);
-            fallback += 1;
-        } else {
-            values.push(*v);
+            _ => values.push(*v),
         }
     }
     if fallback > 0 {
@@ -353,7 +336,7 @@ fn pupil_mode(
         stats: result.stats,
     })
 }
-fn reference_status(s: &mklight_trace::TraceStatus) -> u32 {
+pub(super) fn reference_status(s: &mklight_trace::TraceStatus) -> u32 {
     use crate::consts::*;
     use mklight_trace::TraceStatus;
     match s {
@@ -375,7 +358,7 @@ fn reference_status(s: &mklight_trace::TraceStatus) -> u32 {
         }
     }
 }
-fn reference_value(
+pub(super) fn reference_value(
     ray: &mklight_trace::PolarizedRay,
     state: &PolarizationState,
 ) -> PolarizationValue {
@@ -483,35 +466,26 @@ pub fn system_transmission(
     let mut points = vec![];
     let mut warnings = t.warnings().to_vec();
     let mut runs = vec![];
-    for (f, field) in fields.iter().enumerate() {
+    let rows = TransmissionRows {
+        t,
+        fields: &fields,
+        wavelengths: &wavelengths,
+        samples: &samples,
+        state: &state,
+        model: &settings.model,
+        clip: settings.clip,
+        channel,
+    }
+    .run(b, ctx)?;
+    for (f, _) in fields.iter().enumerate() {
         for (wi, &wl) in wavelengths.iter().enumerate() {
-            let index = f * wavelengths.len() + wi;
-            let total = fields.len() * wavelengths.len();
-            let r = pupil_mode(
-                b,
-                t,
-                *field,
-                wl,
-                &samples,
-                &state,
-                settings.clip,
-                matches!(settings.model, RadiometryModel::Unpolarized),
-                false,
-                &ctx.subrange(
-                    index as f64 / total as f64 * 0.99,
-                    (index + 1) as f64 / total as f64 * 0.99,
-                ),
-            )?;
-            let sum = r.summary[channel][0]
-                * mklight_trace::radiometry::diffraction_product(t.system(), wl);
-            let usable = r.summary[5][0] as usize;
-            let ok = r.summary[6][0] as usize;
-            let failed = r.summary[9][0] as usize;
+            let r = &rows[f * wavelengths.len() + wi];
+            let (sum, usable, ok, failed) = (r.sum, r.usable, r.ok, r.failed);
             if failed > 0 {
                 warnings.push(format!("field {f}, wavelength {wl}: {failed} of {} pupil samples failed and were excluded",samples.len()));
             }
-            warnings.extend(r.run_info.warnings);
-            runs.push(serde_json::json!({"field":f,"wavelength":wl,"stats":r.stats,"backend":r.run_info.backend,"settings":r.run_info.settings}));
+            warnings.extend(r.warnings.iter().cloned());
+            runs.push(serde_json::json!({"field":f,"wavelength":wl,"run":r.run}));
             points.push(TransmissionPoint {
                 field: f,
                 wavelength: wl,

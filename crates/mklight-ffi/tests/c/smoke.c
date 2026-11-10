@@ -375,7 +375,7 @@ int main(int argc, char **argv) {
     CHECK(s3 == NULL);
 
     /* ---- ABI 1.1: analysis info, synchronous runs, backends, validation,
-     *      solves, autosave, migration, parameter reads ---- */
+     *      solves, autosave, parameter reads ---- */
     CHECK((mk_abi_version() & 0xffff) >= 1);
     OK(mk_engine_analysis_info(eng, "spot_diagram", &json));
     CHECK(strstr(json, "\"result_schema\"") && strstr(json, "\"gpu_path\":true") &&
@@ -425,10 +425,6 @@ int main(int argc, char **argv) {
         mk_session_destroy(rec);
         mk_string_free(written);
     }
-    snprintf(path, sizeof path, "%s/smoke.mklight", dir);
-    OK(mk_engine_migrate_project(eng, path, 1, 0, &json));
-    CHECK(strstr(json, "\"migrated\":false") && strstr(json, "\"to_version\":1"));
-    mk_string_free(json);
 
     /* ---- a job that fails (unknown glass is caught when resolving) ---- */
     char *bad_glass = replace(sys, "\"material\":{\"type\":\"air\"}",

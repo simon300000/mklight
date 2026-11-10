@@ -347,10 +347,9 @@ Stacks beyond 32 layers return unsupported for the caller's reference route.
 `PreparedRadiometry::append` consumes P1 `ResidentHits` with paired hi/lo
 records, primary slots `0..image` in order and radiometry off. Metadata is
 surface-major/wavelength-minor; the public `PolarizationRequest` can also
-consume plan-local `SurfaceSpec` records from a candidate producer. Its
-material state must match the P1 records. The supplied immutable preparation
-helper prepares one resolved system; it does not rebuild P4 candidate
-material tables on the host after each trace.
+consume plan-local `SurfaceSpec` records. Its material state must match the
+P1 records. The supplied immutable preparation helper prepares one resolved
+system.
 
 Directions/normals use P1's records. Segment lengths use relative local
 frame transfers and double-float differences, then Beer–Lambert absorption.
@@ -416,9 +415,22 @@ counters return to the host between resident stages. All jobs carry
 `RunInfo` with plan/build, material, sampling, backend and fallback
 metadata.
 
+`system_transmission` divides its (field, wavelength) rows between the CPU
+and the GPU at the aim: the CPU aims every ray (the reference's f64 packet
+aiming, all cores) and writes the launch rays straight into shared ray
+planes; the GPU traces them and evaluates the P7 transport and the per-ray
+summary channels; the host sums each row in f64 from the shared buffer and
+completes the rays the device could not decide with the reference. The
+rows run in blocks of at least 4096 rays (about four): the GPU traces block
+k while the CPU aims block k+1. Unpolarised rows use the scalar transport
+kernel; the sums, denominators and failure counts are the reference's.
+`pupil` traces its reference-completed rays in parallel before merging them
+in pupil order (unchanged results). `polarization_pupil_map` stays on the
+reference by static capability (undefined polarisation axes).
+
 Tests are `tests/p7_radiometry.rs` in both GPU crates; host Metal tests require
 a device and exercise both precompiled and runtime-source libraries. The
 ignored `p7_bench` harness records cold setup and at least ten warm samples
 for all built-ins, dense grids and 0–32-layer stacks. These paths do not by
-themselves enable production engine routing or qualify arbitrary P4 candidate
+themselves enable production engine routing or qualify arbitrary candidate
 parameter envelopes.

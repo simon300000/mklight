@@ -5,18 +5,24 @@ use mklight_gpu::{
     ComputeBackend, Df32, PackOptions, PackedSystem, SystemHandle, aiming::*, resident::*,
 };
 use mklight_trace::{FieldPoint, SequentialTracer};
+pub mod aim;
 mod chromatic;
 mod energy;
+pub mod plans;
 pub use chromatic::{lateral_colour_job, longitudinal_aberration_job};
 mod curvature;
 pub use curvature::{field_curvature_job, grid_distortion_job};
+mod chief_maps;
 mod layout;
 mod maps;
+pub use chief_maps::ChiefDesign;
 pub use layout::layout_job;
 mod illumination;
-pub use illumination::{
-    IlluminationBuffers, IlluminationRows, illumination_rows, relative_illumination_job,
-};
+mod illumination_split;
+pub use illumination::{IlluminationRows, illumination_rows, relative_illumination_job};
+/// Route key of the chief-ray map divisions ([`ChiefDesign`],
+/// `mklight_core::split`).
+pub const SPLIT_KEY: &str = "fieldmaps";
 mod records;
 pub use records::{
     GridResult, footprint_job, footprint_overlay_job, ray_grid_job, semi_diameters_job,
@@ -41,6 +47,14 @@ pub struct Geometry<'a> {
     /// Reference tracers for aiming modes other than the tracer's own (maps
     /// and illumination force real aiming, pupil aberration none).
     others: std::sync::Mutex<Vec<(mklight_core::RayAiming, std::sync::Arc<SequentialTracer>)>>,
+    /// How generations are aimed (work-split key `aiming`, [`aim`]).
+    aim: aim::AimDesign,
+    /// The device's share of large generations aimed by host and device
+    /// together: the selected share once the analysis opts in
+    /// ([`Self::split_large_generations`]), otherwise 0.
+    split_share: f64,
+    /// Aiming work since the last plan, reported with it.
+    aim_evidence: std::sync::Mutex<aim::AimEvidence>,
 }
 impl Drop for Geometry<'_> {
     fn drop(&mut self) {
@@ -98,7 +112,21 @@ impl<'a> Geometry<'a> {
             systems,
             wavelengths: chunks,
             others: Default::default(),
+            aim: aim::AimDesign::selected()?,
+            split_share: 0.0,
+            aim_evidence: Default::default(),
         })
+    }
+    /// Aim large generations by host and device together (`gpu::aim`, split
+    /// generations): for the analyses where that was measured to pay, the
+    /// spot diagram and the geometric MTF.
+    pub(crate) fn split_large_generations(mut self) -> MkResult<Self> {
+        self.split_share = aim::AimDesign::selection()?.1;
+        Ok(self)
+    }
+    /// The aiming design of this adapter's generations.
+    pub fn aim_design(&self) -> aim::AimDesign {
+        self.aim
     }
     fn import<T: BufferElement>(
         &self,
@@ -131,7 +159,9 @@ impl<'a> Geometry<'a> {
     }
     /// Append resident generation and trace for a field/wavelength/pupil grid.
     /// Rows follow fields, wavelengths, then pupil. Chief rays (including the
-    /// primary wavelength) are traced only by [`Self::append_chiefs`].
+    /// primary wavelength) are traced only by [`Self::append_chiefs`]. The
+    /// rays are aimed now, by this adapter's design ([`aim`]); the plan only
+    /// traces them.
     #[allow(clippy::too_many_arguments)]
     pub fn append_grid(
         &self,
@@ -151,58 +181,42 @@ impl<'a> Geometry<'a> {
         cw.sort_unstable();
         cw.dedup();
         let nf = fields.len() * cw.len();
-        let metadata = self.records::<FieldSpec>(p, nf, |i| {
-            let w = cw[i % cw.len()];
-            let (si, wi) = self.chunk(w)?;
-            FieldSpec::new(
-                self.tracer.system(),
-                self.tracer.paraxial(),
-                fields[i / cw.len()],
-                si,
-                wi,
-                aiming,
-            )
-        })?;
         let steps = self.import::<u32>(p, [last], |out| {
             for (i, v) in out.iter_mut().enumerate() {
                 *v = (i + 1) as u32;
             }
             Ok(())
         })?;
-        // Wavelength rows of the metadata for each requested wavelength.
-        let rows: Vec<_> = wls
-            .iter()
-            .map(|w| cw.iter().position(|v| v == w).unwrap())
-            .collect();
-        let count = fields.len() * wls.len() * pupil.len();
-        let samples = self.records::<Sample>(p, count, |i| {
-            if i % 4096 == 0 {
-                ctx.check()?;
-            }
-            let row = i / pupil.len();
-            let wi = row % wls.len();
-            let index = row / wls.len() * cw.len() + rows[wi];
-            let mut s = Sample::new(pupil[i % pupil.len()], index as u32, i as u64);
-            s.weight = self.tracer.system().wavelength_weights[wls[wi]] as f32;
-            Ok(s)
-        })?;
-        let field_key = self.field_key(p, metadata)?;
+        // Field rows: fields × chief wavelengths (requested plus primary).
         let rows: Vec<_> = (0..nf)
             .map(|i| (fields[i / cw.len()], cw[i % cw.len()]))
             .collect();
-        let seeds = self.host_seeds(p, &rows, aiming)?;
-        let hits = self.append_trace(
-            p,
-            metadata,
-            field_key.clone(),
-            seeds,
-            samples,
-            count,
-            steps,
-            aiming,
-            clip,
-            records,
-        )?;
+        let rows = std::sync::Arc::new(self.aim_rows(p, &rows, aiming)?);
+        // Field row of each requested wavelength.
+        let columns: Vec<_> = wls
+            .iter()
+            .map(|w| cw.iter().position(|v| v == w).unwrap())
+            .collect();
+        let weights: Vec<f32> = wls
+            .iter()
+            .map(|&w| self.tracer.system().wavelength_weights[w] as f32)
+            .collect();
+        let count = fields.len() * wls.len() * pupil.len();
+        let np = pupil.len();
+        let nw = wls.len();
+        let ncw = cw.len();
+        let spec = |i: usize| {
+            let row = i / np;
+            let wi = row % nw;
+            aim::RaySpec {
+                row: (row / nw * ncw + columns[wi]) as u32,
+                pupil: pupil[i % np],
+                weight: weights[wi],
+                id: i as u64,
+            }
+        };
+        let input = self.aim_rays(p, &rows, count, &spec, ctx)?;
+        let hits = self.trace_rays(p, input, steps, clip, records)?;
         Ok(ResidentGrid {
             hits,
             chiefs: None,
@@ -210,7 +224,7 @@ impl<'a> Geometry<'a> {
             fields: fields.len(),
             wavelengths: wls.to_vec(),
             pupil_count: pupil.len(),
-            chief_source: Some((metadata, field_key, seeds, steps, aiming)),
+            chief_source: Some(ChiefSource { rows, steps }),
         })
     }
     /// Chief rows for (field point, system wavelength) pairs, solved in f64 by
@@ -249,19 +263,23 @@ impl<'a> Geometry<'a> {
         Ok(t)
     }
     /// Append the unclipped chief traces of a grid, one per field and chief
-    /// wavelength (requested wavelengths plus the primary).
+    /// wavelength (requested wavelengths plus the primary), aimed now as the
+    /// grid's rays are.
     pub fn append_chiefs(&self, p: &mut ResidentPlan, g: &mut ResidentGrid) -> MkResult<()> {
-        let Some((metadata, key, seeds, steps, aiming)) = g.chief_source.clone() else {
+        let Some(ChiefSource { rows, steps }) = g.chief_source.clone() else {
             return Err(mklight_core::MkError::InvalidParam(
                 "grid has no chief metadata".into(),
             ));
         };
         let nf = g.fields * g.chief_wavelengths.len();
-        let samples =
-            self.records::<Sample>(p, nf, |i| Ok(Sample::new([0.0; 2], i as u32, i as u64)))?;
-        g.chiefs = Some(self.append_trace(
-            p, metadata, key, seeds, samples, nf, steps, aiming, false, false,
-        )?);
+        let spec = |i: usize| aim::RaySpec {
+            row: i as u32,
+            pupil: [0.0; 2],
+            weight: 1.0,
+            id: i as u64,
+        };
+        let input = self.aim_rays(p, &rows, nf, &spec, &JobContext::new())?;
+        g.chiefs = Some(self.trace_rays(p, input, steps, false, false)?);
         Ok(())
     }
     /// Packed wavelength chunk and slot of system wavelength `w`.
@@ -290,49 +308,20 @@ impl<'a> Geometry<'a> {
             _ => None,
         })
     }
-    #[allow(clippy::too_many_arguments)]
-    fn append_trace(
+    /// Append the resident trace of aimed starting rays (`last` steps from
+    /// `steps`), clipped at the apertures when `clip`, with per-surface
+    /// records when `records`.
+    pub(crate) fn trace_rays(
         &self,
         p: &mut ResidentPlan,
-        metadata: BufferId,
-        field_key: Option<String>,
-        seeds: BufferId,
-        samples: BufferId,
-        n: usize,
+        input: ResidentRays,
         steps: BufferId,
-        aiming: mklight_core::RayAiming,
         clip: bool,
         records: bool,
     ) -> MkResult<ResidentHits> {
-        let generated = rays(p, n);
-        // The tightest derived stop of the prepared fields, or the requested
-        // tolerance (CONVENTIONS §7, the aim-stop policy).
-        let tolerance = match aiming {
-            mklight_core::RayAiming::Real { .. } if aiming == self.tracer.aiming() => {
-                self.tracer.device_aim_tolerance() as f32
-            }
-            mklight_core::RayAiming::Real { .. } => {
-                self.tracer_for(aiming)?.device_aim_tolerance() as f32
-            }
-            _ => 1e-10,
-        };
-        p.operations
-            .push(ResidentOp::Aiming(Request::GenerateAim(GenerateAim {
-                systems: SystemSet::Uploaded(self.systems),
-                samples: p.view(samples)?,
-                sampling: Sampling::Explicit,
-                unresolved: None,
-                field_wavelength: p.view(metadata)?,
-                field_key,
-                seeds: Some(p.view(seeds)?),
-                tolerance,
-                max_iterations: 60,
-                output: generated.clone(),
-                options: Default::default(),
-            })));
         let out = hits(
             p,
-            n,
+            input.count,
             if records {
                 p.desc(steps)?.len()? + 1
             } else {
@@ -341,8 +330,8 @@ impl<'a> Geometry<'a> {
         );
         p.operations
             .push(ResidentOp::Aiming(Request::TraceResident(TraceResident {
-                systems: SystemSet::Uploaded(self.systems),
-                input: generated,
+                systems: self.systems,
+                input,
                 steps: p.view(steps)?,
                 start_surface: 0,
                 apply_apertures: clip,
@@ -511,7 +500,8 @@ impl<'a> Geometry<'a> {
         })
     }
     fn run(&self, p: ResidentPlan, ctx: &JobContext) -> MkResult<PlanResult> {
-        self.backend.submit_plan(p, ctx)?.wait()
+        let s = self.submit(p, ctx)?;
+        self.finish(s)
     }
 }
 #[derive(Clone, Debug)]
@@ -523,14 +513,13 @@ pub struct ResidentGrid {
     pub fields: usize,
     pub wavelengths: Vec<usize>,
     pub pupil_count: usize,
-    /// Field metadata, its seed-cache key, trace steps and aiming.
-    chief_source: Option<(
-        BufferId,
-        Option<String>,
-        BufferId,
-        BufferId,
-        mklight_core::RayAiming,
-    )>,
+    /// Prepared field rows and trace steps, for the chief rays.
+    chief_source: Option<ChiefSource>,
+}
+#[derive(Clone, Debug)]
+struct ChiefSource {
+    rows: std::sync::Arc<aim::AimRows>,
+    steps: BufferId,
 }
 impl ResidentGrid {
     pub fn chiefs(&self) -> MkResult<&ResidentHits> {

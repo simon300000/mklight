@@ -250,7 +250,6 @@ fn dispatch(op: &ResidentOp, x: &mut Execution, ctl: &JobControl) -> MkResult<()
         ResidentOp::Aiming(r) => crate::aiming::execute(r, x, ctl),
         ResidentOp::Transforms(r) => crate::transforms::execute(r, x, ctl),
         ResidentOp::Collectives(r) => crate::collectives::execute(r, x, ctl),
-        ResidentOp::Systems(r) => crate::systems::execute(r, x, ctl),
         ResidentOp::Geometry(r) => crate::geometry::execute(r, x, ctl),
         ResidentOp::Radiometry(r) => crate::radiometry::execute(r, x, ctl),
         ResidentOp::Wave(r) => crate::wave_ops::execute(r, x, ctl),

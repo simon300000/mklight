@@ -136,8 +136,8 @@ fn benchmark_zero_copy() {
                 .map(|h| digest(black_box(b.read_view(h.view()).unwrap().words())))
                 .collect();
             let expected: &[u64] = match name {
-                "trace_1m" => &[16663909210024701490],
-                "opd_1024" => &[5738852189248301980, 17415920747824051813],
+                "trace_1m" => &[10683428124538957362],
+                "opd_1024" => &[7341078886716340591, 17415920747824051813],
                 _ => &[13232921648690179073],
             };
             assert_eq!(hashes, expected);
@@ -161,7 +161,7 @@ fn host_views_both_origins() {
         contracts::suite(&b);
         let (opd_plan, opd_system) = opd(&b);
         for (plan, expected) in [
-            (opd_plan, vec![5738852189248301980, 17415920747824051813]),
+            (opd_plan, vec![7341078886716340591, 17415920747824051813]),
             (fft(&b), vec![13232921648690179073]),
         ] {
             let r = b
@@ -185,11 +185,12 @@ fn host_views_both_origins() {
             .wait()
             .unwrap();
         let g = b.read_view(r.outputs[0].view()).unwrap();
-        assert_eq!(digest(g.words()), 16663909210024701490);
+        let traced = 10683428124538957362;
+        assert_eq!(digest(g.words()), traced);
         assert_eq!(r.stats.copied_bytes, 0);
         b.release_systems(h).unwrap();
         drop(r);
         drop(b);
-        assert_eq!(digest(g.words()), 16663909210024701490);
+        assert_eq!(digest(g.words()), traced);
     }
 }

@@ -62,26 +62,15 @@ pub const PRIOR_ITERATIONS: f64 = 3.43;
 /// Analyses whose native output fails its f64 contract on the current
 /// evidence: `auto` uses the reference on every device, from the given
 /// traced-ray workload up (0: at every size). Explicit Metal requests still
-/// run natively. Re-qualified by E1 (point 14) against `metal_accuracy`
-/// (16 samples) and the complex lens under F1's contracts; see GPU.md §9.2
-/// for the evidence of each entry.
-const EXCLUSIONS: &[(&str, f64, &str)] = &[
-    (
-        "ghost_irradiance",
-        0.,
-        "complex lens, edited snapshot: a discrete rays_traced count differs from f64 (23,442 vs 23,370 in 1 of 1,656 ghost fields; positions and flux within their contracts); 16/16 samples pass",
-    ),
-    (
-        "spot_diagram",
-        1e6,
-        "complex lens, 23.6M rays after an edit: rays_arrived counts differ from f64 by 2 of 767k in 10 field-wavelength rows (edge rays); default and repeated dense spots pass",
-    ),
-    (
-        "glass_substitution",
-        0.,
-        "complex lens: the native search returns other finalists than f64 (finalist merit and violation far outside their gates)",
-    ),
-];
+/// run natively. Re-qualified with the 2026-11 recalibration against
+/// `metal_accuracy` (16 samples) and the complex lens (warm and edited);
+/// see GPU.md §9.2 for the evidence of each entry and of the analyses
+/// that left the list.
+const EXCLUSIONS: &[(&str, f64, &str)] = &[(
+    "glass_substitution",
+    0.,
+    "complex lens: the native search returns another finalist glass than f64 (finalist merit 3x outside its gate)",
+)];
 
 /// The accuracy exclusion of `analysis` with normalised `settings` on
 /// `system`, with its evidence.
@@ -103,11 +92,11 @@ pub(crate) fn always_excluded(analysis: &str) -> bool {
         .any(|(a, from, _)| *a == analysis && *from <= 0.)
 }
 
-/// Analyses the static capability list keeps on the reference
-/// (`routing::reference_reason`); they need no calibration.
+/// Analyses `auto` keeps on the reference by static capability
+/// (`routing::auto_reference_reason`); they need no calibration.
 #[cfg(test)]
 pub(crate) fn static_route(analysis: &str) -> bool {
-    super::routing::reference_reason(analysis).is_some()
+    super::routing::auto_reference_reason(analysis).is_some()
 }
 
 /// The device a decision is for.
@@ -903,16 +892,13 @@ mod tests {
             (Route::Cpu, Some("known failure"))
         );
         let excluded = m.decide(
-            "ghost_irradiance",
+            "glass_substitution",
             &json!({}),
             &singlet,
             Device::Unknown,
             &warm,
         );
         assert_eq!(excluded.route, Route::Cpu);
-        // A size-bounded exclusion: dense spots only.
-        assert!(accuracy_exclusion("spot_diagram", &spot(6), &singlet).is_none());
-        assert!(accuracy_exclusion("spot_diagram", &spot(512), &singlet).is_some());
         assert!(excluded.note().contains("f64 comparison"));
         // Unknown and uncalibrated devices.
         assert_eq!(d(6, &warm).route, Route::Cpu);

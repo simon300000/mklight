@@ -52,10 +52,9 @@ public struct CatalogReference: Codable, Sendable, Hashable {
 /// The app edits only `system` (and the catalog list); every other section,
 /// including keys a newer application added, is kept verbatim in `sections`
 /// so a round trip loses nothing. The system itself is decoded strictly, as
-/// the engine does: an unknown model field is an error, never dropped. Older documents are accepted like the
-/// engine's migrations do: a bare `OpticalSystem`, `{"system": …}` without a
-/// `schema_version`, and the app's own early `{"format", "version": 1,
-/// "system"}` envelope. A newer `schema_version` is refused.
+/// the engine does: an unknown model field is an error, never dropped. Like
+/// the engine, only `currentVersion` is read: a document without a
+/// `schema_version` or at another version is refused.
 public struct ProjectFile: Codable, Sendable, Hashable {
     public static let formatName = "mklight-project"
     /// The engine's `PROJECT_SCHEMA_VERSION` this app reads and writes.
@@ -83,8 +82,10 @@ public struct ProjectFile: Codable, Sendable, Hashable {
         case notAProject(String)
         public var errorDescription: String? {
             switch self {
-            case .unsupportedVersion(let v):
+            case .unsupportedVersion(let v) where v > ProjectFile.currentVersion:
                 "This project was written by a newer MKLight (schema version \(v)); please update MKLight."
+            case .unsupportedVersion(let v):
+                "This project uses schema version \(v), which this MKLight does not read (it reads version \(ProjectFile.currentVersion))."
             case .notAProject(let why): "Not an MKLight project: \(why)"
             }
         }
@@ -120,23 +121,20 @@ public struct ProjectFile: Codable, Sendable, Hashable {
     }
 
     public static func decode(_ data: Data) throws -> ProjectFile {
-        guard case .object(var doc) = try JSONValue.parse(data) else {
+        guard case .object(let doc) = try JSONValue.parse(data) else {
             throw Error.notAProject("the document is not a JSON object")
-        }
-        if doc["system"] == nil {
-            guard doc["surfaces"] != nil else { throw Error.notAProject("it has neither 'system' nor 'surfaces'") }
-            doc = ["system": .object(doc)]  // a bare OpticalSystem
         }
         switch doc["schema_version"] {
         case nil, .null?:
-            doc.removeValue(forKey: "version")  // the app's early envelope
-        case .integer(let v)?:
-            guard v >= 0 else { throw Error.notAProject("schema_version must be a non-negative integer") }
-            guard v <= Int64(currentVersion) else { throw Error.unsupportedVersion(Int(clamping: v)) }
-        case let other?:
-            if case .unsigned = other { throw Error.unsupportedVersion(Int.max) }
+            throw Error.notAProject("it has no schema_version")
+        case .integer(let v)? where v >= 0:
+            guard v == Int64(currentVersion) else { throw Error.unsupportedVersion(Int(clamping: v)) }
+        case .unsigned?:
+            throw Error.unsupportedVersion(Int.max)
+        default:
             throw Error.notAProject("schema_version must be a non-negative integer")
         }
+        guard let systemValue = doc["system"] else { throw Error.notAProject("it has no 'system'") }
         let format: String
         switch doc["format"] {
         case nil, .null?: format = formatName
@@ -144,7 +142,7 @@ public struct ProjectFile: Codable, Sendable, Hashable {
         default: throw Error.notAProject("'format' must be a string")
         }
         guard format == formatName else { throw Error.notAProject("format '\(format)'") }
-        let system = try MKLightJSON.decode(OpticalSystem.self, from: MKLightJSON.encode(doc["system"]!))
+        let system = try MKLightJSON.decode(OpticalSystem.self, from: MKLightJSON.encode(systemValue))
         var file = ProjectFile(system: system)
         for (k, v) in doc where !["format", "schema_version", "system"].contains(k) {
             file.sections[k] = v

@@ -11,7 +11,9 @@ pub fn spot_diagram_job(
     s: &SpotDiagramSettings,
     ctx: &JobContext,
 ) -> MkResult<SpotDiagram> {
-    Geometry::new(b, t, ctx)?.spot_job(s, ctx, false)
+    Geometry::new(b, t, ctx)?
+        .split_large_generations()?
+        .spot_job(s, ctx, false)
 }
 /// [`spot_diagram_job`] with the points packed straight from the mapped
 /// device views into [`SpotDiagram::packed_points`] (see
@@ -22,7 +24,51 @@ pub fn spot_diagram_packed_job(
     s: &SpotDiagramSettings,
     ctx: &JobContext,
 ) -> MkResult<SpotDiagram> {
-    Geometry::new(b, t, ctx)?.spot_job(s, ctx, true)
+    Geometry::new(b, t, ctx)?
+        .split_large_generations()?
+        .spot_job(s, ctx, true)
+}
+/// The device outputs of one field group's spot plan, read in place.
+struct Part {
+    /// Field positions of the group.
+    fields: std::ops::Range<usize>,
+    grid: ResidentGrid,
+    views: Vec<ReadView>,
+}
+/// Typed slices of a [`Part`].
+struct PartViews<'v> {
+    start: usize,
+    nf: usize,
+    poly: &'v [Df32],
+    mono: &'v [Df32],
+    chiefs: &'v [f32],
+    cstatus: &'v [u32],
+    nc: usize,
+    quad: &'v [Df32],
+    slope: &'v [Df32],
+    q: &'v [Df32],
+    mask: &'v [u32],
+    n: usize,
+}
+impl Part {
+    fn typed(&self, through_focus: bool, points: bool) -> MkResult<PartViews<'_>> {
+        let v = &self.views;
+        let tf = 4 + 2 * usize::from(through_focus);
+        Ok(PartViews {
+            start: self.fields.start,
+            nf: self.fields.len(),
+            poly: v[0].as_slice()?,
+            mono: v[1].as_slice()?,
+            chiefs: v[2].as_slice()?,
+            cstatus: v[3].as_slice()?,
+            nc: self.grid.chiefs()?.rays.count,
+            quad: if through_focus { v[4].as_slice()? } else { &[] },
+            slope: if through_focus { v[5].as_slice()? } else { &[] },
+            q: if points { v[tf].as_slice()? } else { &[] },
+            mask: if points { v[tf + 1].as_slice()? } else { &[] },
+            n: self.grid.hits.rays.count,
+        })
+    }
 }
 impl Geometry<'_> {
     /// Reuse immutable systems and chief/aim tables across repeated jobs.
@@ -33,23 +79,17 @@ impl Geometry<'_> {
     ) -> MkResult<SpotDiagram> {
         self.spot_job(s, ctx, false)
     }
-    fn spot_job(
+    /// The spot plan of field points `points`: generation, trace, moments,
+    /// optional through-focus terms and points.
+    fn spot_plan(
         &self,
+        t: &SequentialTracer,
         s: &SpotDiagramSettings,
+        points: &[FieldPoint],
+        wls: &[usize],
+        pupil: &[[f64; 2]],
         ctx: &JobContext,
-        packed: bool,
-    ) -> MkResult<SpotDiagram> {
-        let b = self.backend;
-        let t = self.tracer;
-        crate::spot::validate_spot_settings(s)?;
-        let augmented = default_fields(t, &s.fields)?;
-        let t = augmented.as_ref();
-        let fields = s.fields.resolve(t.fields().len())?;
-        let wls = s
-            .wavelengths
-            .resolve(t.num_wavelengths(), t.system().primary_wavelength)?;
-        let pupil = pupil_points(s.pattern, s.rings, s.seed);
-        let points: Vec<_> = fields.iter().map(|&i| t.field(i).point).collect();
+    ) -> MkResult<(ResidentPlan, ResidentGrid)> {
         let geo = self;
         let mut p = ResidentPlan::new(t.system().snapshot.clone());
         p.settings = serde_json::to_value(s).unwrap();
@@ -60,9 +100,9 @@ impl Geometry<'_> {
         .then_some(s.seed);
         let mut g = geo.append_grid(
             &mut p,
-            &points,
-            &wls,
-            &pupil,
+            points,
+            wls,
+            pupil,
             t.aiming(),
             t.system().image_index(),
             true,
@@ -86,32 +126,96 @@ impl Geometry<'_> {
         if s.include_points {
             p.outputs.extend([q, mask]);
         }
-        let r = geo.run(p, &ctx.subrange(0.0, 0.95))?;
-        let views: Vec<_> = r
-            .outputs
+        Ok((p, g))
+    }
+    fn spot_job(
+        &self,
+        s: &SpotDiagramSettings,
+        ctx: &JobContext,
+        packed: bool,
+    ) -> MkResult<SpotDiagram> {
+        let b = self.backend;
+        let t = self.tracer;
+        crate::spot::validate_spot_settings(s)?;
+        let augmented = default_fields(t, &s.fields)?;
+        let t = augmented.as_ref();
+        let fields = s.fields.resolve(t.fields().len())?;
+        let wls = s
+            .wavelengths
+            .resolve(t.num_wavelengths(), t.system().primary_wavelength)?;
+        let pupil = pupil_points(s.pattern, s.rings, s.seed);
+        let points: Vec<_> = fields.iter().map(|&i| t.field(i).point).collect();
+        let groups = plans::field_groups(fields.len(), wls.len() * pupil.len());
+        // Each group's rays are aimed while the device works on the groups
+        // before it; every plan is collected at the end.
+        let mut submitted = Vec::with_capacity(groups.len());
+        for (k, range) in groups.iter().enumerate() {
+            let sub = ctx.subrange(
+                0.95 * k as f64 / groups.len() as f64,
+                0.95 * (k + 1) as f64 / groups.len() as f64,
+            );
+            let (p, g) = self.spot_plan(t, s, &points[range.clone()], &wls, &pupil, &sub)?;
+            submitted.push((range.clone(), g, self.submit(p, &sub)?));
+        }
+        let mut run: Option<RunInfo> = None;
+        let mut parts = Vec::with_capacity(submitted.len());
+        for (fields, grid, sub) in submitted {
+            let r = self.finish(sub)?;
+            let views = r
+                .outputs
+                .iter()
+                .map(|h| b.read_view(h.view()))
+                .collect::<MkResult<_>>()?;
+            plans::merge_run(&mut run, r.run_info);
+            parts.push(Part {
+                fields,
+                grid,
+                views,
+            });
+        }
+        let run = run.unwrap();
+        self.spot_decode(t, s, &fields, &wls, &pupil, &parts, run, ctx, packed)
+    }
+    /// Spot statistics, chief data and points from the device reductions of
+    /// the field groups.
+    #[allow(clippy::too_many_arguments)]
+    fn spot_decode(
+        &self,
+        t: &SequentialTracer,
+        s: &SpotDiagramSettings,
+        fields: &[usize],
+        wls: &[usize],
+        pupil: &[[f64; 2]],
+        parts: &[Part],
+        run: RunInfo,
+        ctx: &JobContext,
+        packed: bool,
+    ) -> MkResult<SpotDiagram> {
+        let tf = s.through_focus.is_some();
+        let views: Vec<PartViews> = parts
             .iter()
-            .map(|h| b.read_view(h.view()))
+            .map(|p| p.typed(tf, s.include_points))
             .collect::<MkResult<_>>()?;
-        let poly = views[0].as_slice::<Df32>()?;
-        let mono = views[1].as_slice::<Df32>()?;
-        let chiefs = views[2].as_slice::<f32>()?;
-        let cstatus = views[3].as_slice::<u32>()?;
-        let nc = chief_hits.rays.count;
+        // The group and local position of field position fi.
+        let at = |fi: usize| {
+            let v = views
+                .iter()
+                .find(|v| (v.start..v.start + v.nf).contains(&fi))
+                .unwrap();
+            (v, fi - v.start)
+        };
+        let chief_wavelengths = &parts[0].grid.chief_wavelengths;
+        let column = |w: usize| chief_wavelengths.iter().position(|&v| v == w).unwrap();
         let np = pupil.len();
         let nf = fields.len();
         let nw = wls.len();
-        let points = 4 + 2 * usize::from(s.through_focus.is_some());
-        let (quad, slope) = if s.through_focus.is_none() {
-            (&[][..], &[][..])
-        } else {
-            (views[4].as_slice::<Df32>()?, views[5].as_slice::<Df32>()?)
-        };
         let planes = s.through_focus.map_or(Vec::new(), |tf| {
             // The automatic range needs the largest centroid RMS over the
             // fields at the base defocus, as the reference computes it.
             let max_rms = (0..nf)
                 .map(|fi| {
-                    stats(&poly[fi * 10..fi * 10 + 10], np * nw, true, 1.0).rms_radius_centroid
+                    let (v, l) = at(fi);
+                    stats(&v.poly[l * 10..l * 10 + 10], np * nw, true, 1.0).rms_radius_centroid
                 })
                 .filter(|v| v.is_finite())
                 .fold(0.0, f64::max);
@@ -123,28 +227,30 @@ impl Geometry<'_> {
         });
         // Centroid- and chief-referenced RMS of field fi at absolute defocus d.
         let focus = |fi: usize, d: f64| {
-            let m = &poly[10 * fi..];
+            let (v, l) = at(fi);
+            let m = &v.poly[10 * l..];
             let w = m[1].to_f64();
             if !(w > 0.0) {
                 return [f64::NAN; 2];
             }
             let e = d - s.defocus;
-            let [a, b2, c] = [0, 1, 2].map(|k| quad[k * nf + fi].to_f64());
+            let [a, b2, c] = [0, 1, 2].map(|k| v.quad[k * v.nf + l].to_f64());
             let var = ((a + e * (2.0 * b2 + e * c)) / w).max(0.0);
             let centroid: [f64; 2] =
-                std::array::from_fn(|k| m[2 + k].to_f64() + e * slope[10 * fi + 2 + k].to_f64());
+                std::array::from_fn(|k| m[2 + k].to_f64() + e * v.slope[10 * l + 2 + k].to_f64());
             [
                 var.sqrt(),
                 (var + centroid[0] * centroid[0] + centroid[1] * centroid[1]).sqrt(),
             ]
         };
         // Shared device storage is read in place; points go straight into
-        // their final arrays, sized by one pass over the arrival mask.
+        // their final arrays, sized by one pass over the arrival masks.
         let mut packed = packed.then(|| {
             let n = if s.include_points {
-                views[points + 1]
-                    .as_slice::<u32>()
-                    .map_or(0, |m| m.iter().filter(|&&v| v != 0).count())
+                views
+                    .iter()
+                    .map(|v| v.mask.iter().filter(|&&m| m != 0).count())
+                    .sum()
             } else {
                 0
             };
@@ -154,13 +260,10 @@ impl Geometry<'_> {
         let mut warnings = t.warnings().to_vec();
         for (fi, &field) in fields.iter().enumerate() {
             ctx.check()?;
-            let ci = fi * g.chief_wavelengths.len()
-                + g.chief_wavelengths
-                    .iter()
-                    .position(|&w| w == t.system().primary_wavelength)
-                    .unwrap();
-            let c = chief(chiefs, cstatus, nc, ci, s.defocus);
-            let v = &poly[fi * 10..fi * 10 + 10];
+            let (pv, l) = at(fi);
+            let ci = l * chief_wavelengths.len() + column(t.system().primary_wavelength);
+            let c = chief(pv.chiefs, pv.cstatus, pv.nc, ci, s.defocus);
+            let v = &pv.poly[l * 10..l * 10 + 10];
             let pol = stats(
                 v,
                 np * nw,
@@ -195,12 +298,11 @@ impl Geometry<'_> {
                 .iter()
                 .enumerate()
                 .map(|(wi, &w)| {
-                    let ci = fi * g.chief_wavelengths.len()
-                        + g.chief_wavelengths.iter().position(|&v| v == w).unwrap();
+                    let ci = l * chief_wavelengths.len() + column(w);
                     // As in the reference, wavelength chiefs are reported
                     // relative to a successful primary chief only.
                     let c = if c[0].is_finite() {
-                        chief(chiefs, cstatus, nc, ci, s.defocus)
+                        chief(pv.chiefs, pv.cstatus, pv.nc, ci, s.defocus)
                     } else {
                         [f64::NAN; 2]
                     };
@@ -210,7 +312,7 @@ impl Geometry<'_> {
                         weight: t.system().wavelength_weights[w],
                         chief: c,
                         stats: stats(
-                            &mono[(fi * nw + wi) * 10..(fi * nw + wi + 1) * 10],
+                            &pv.mono[(l * nw + wi) * 10..(l * nw + wi + 1) * 10],
                             np,
                             c[0].is_finite(),
                             np as f64,
@@ -223,21 +325,19 @@ impl Geometry<'_> {
             // slope differences), the weighted mean for the centroid.
             let center_slope = match s.reference {
                 SpotReference::Centroid if !planes.is_empty() => {
-                    [slope[10 * fi + 2].to_f64(), slope[10 * fi + 3].to_f64()]
+                    [pv.slope[10 * l + 2].to_f64(), pv.slope[10 * l + 3].to_f64()]
                 }
                 _ => [0.0; 2],
             };
+            let (q, mask, n) = (pv.q, pv.mask, pv.n);
+            let rows = l * nw * np..(l + 1) * nw * np;
             if let Some(p) = packed.as_mut() {
                 let start = p.len();
                 if s.include_points {
-                    let q = views[points].as_slice::<Df32>()?;
-                    let mask = views[points + 1].as_slice::<u32>()?;
-                    let n = g.hits.rays.count;
                     let with_slope = !planes.is_empty();
-                    let rows = fi * nw * np..(fi + 1) * nw * np;
-                    for chunk in rows.step_by(POINT_CHUNK) {
+                    for chunk in rows.clone().step_by(POINT_CHUNK) {
                         ctx.check()?;
-                        for i in chunk..(chunk + POINT_CHUNK).min((fi + 1) * nw * np) {
+                        for i in chunk..(chunk + POINT_CHUNK).min(rows.end) {
                             if mask[i] != 0 {
                                 p.push(
                                     fi,
@@ -257,10 +357,7 @@ impl Geometry<'_> {
                 }
                 p.close(start);
             } else if s.include_points {
-                let q = views[points].as_slice::<Df32>()?;
-                let mask = views[points + 1].as_slice::<u32>()?;
-                let n = g.hits.rays.count;
-                for i in fi * nw * np..(fi + 1) * nw * np {
+                for i in rows {
                     if mask[i] != 0 {
                         plotted.push(SpotPoint {
                             x: q[i].to_f64() - center[0],
@@ -302,13 +399,13 @@ impl Geometry<'_> {
         Ok(SpotDiagram {
             fields: out,
             wavelengths_um: t.system().wavelengths_um.clone(),
-            wavelengths: wls,
+            wavelengths: wls.to_vec(),
             airy_radius: 1.22
                 * t.system().wavelengths_um[t.system().primary_wavelength]
                 * 1e-3
                 * t.paraxial().primary().working_f_number,
             defocus: s.defocus,
-            run_info: stamp(r.run_info, "spot_diagram", s, warnings),
+            run_info: stamp(run, "spot_diagram", s, warnings),
             packed_points: packed,
         })
     }

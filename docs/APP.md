@@ -432,10 +432,7 @@ What we took from Apple's current guidance, and how MKLight applies it.
   view's controls set the field of view (full field = the square inscribed
   in the field disk, ½, ¼, 10 %, 5 %, 2 %, each with its width and pixel
   size on the sensor), the centre and the resolution (128 … 1024 px). Image
-  simulation starts manual (seconds per run). Panes saved with the engine's
-  defaults by an older version take these starting settings when the
-  project opens, and wait for Update; panes saved with the earlier fixed
-  sampling (a 161-sample PSF, a 96 grid of 97 rays) go back to automatic. Built-in patterns are drawn by the app with the engine's
+  simulation starts manual (seconds per run). Built-in patterns are drawn by the app with the engine's
   definition, area-sampled (4 × 4 per pixel) and sent as a buffer source
   at the run's size, so both the shown source and the simulation are
   antialiased; a user image (any format ImageIO reads) is cropped to the
@@ -707,9 +704,8 @@ What we took from Apple's current guidance, and how MKLight applies it.
   `ui.arrangement`: `{"main": node, "windows": [{"frame": [x, y, w, h],
   "root": node}]}` with nodes `{"tabs": [keys], "selected": key}` or
   `{"axis": "h"|"v", "children": [nodes], "fractions": [shares]}`; keys are
-  `lens_data`, `layout` or a pane key, frames in screen points. Projects
-  saved before panels could move (split fractions and pane widths) open in
-  the standard arrangement with their sizes.
+  `lens_data`, `layout` or a pane key, frames in screen points. Views
+  without an arrangement open in the standard one.
 
 Keyboard: ⇧⌘I / ⌥⌘I insert before / after, ⌘⌫ delete, ⇧⌘T make stop,
 ⌃⌘V toggle variable, ⌃⌘O optimize, ⌃⌘G glass substitution, ⌃⌘T tolerance,
@@ -954,16 +950,16 @@ UI 128):
   heat-map scale choice (data range, 0…1, diverging, flat maps, the
   ramp's monotonic lightness, iso-levels), warning grouping and remedies,
   the automatic stretch and its projection, area-sampled patterns and the
-  image simulation's starting settings; the stretch saved in `views`, old
-  image-simulation panes migrating, subscripted labels. The analysis
+  image simulation's starting settings; the stretch saved in `views`,
+  subscripted labels. The analysis
   defaults round (`AutoSettingsTests`): which settings are automatic and
   "Auto (n)" read from each result (PSF windows and spacings, the MTF
   limit, fixed frequencies, the focus range, wavefront grids, the image
   simulation's PSF window), no bare 0 in the number field, warning fixes
   going back to automatic (and none for an automatic setting), the patch
   centre's encoding inside `optics`, the design's field points, snapping,
-  the run's patch from its mapping nodes, the starting settings and the
-  migration of the earlier fixed sampling, and null relative-illumination
+  the run's patch from its mapping nodes, the starting settings, and null
+  relative-illumination
   cells staying no data, clipped at the field's edge. Tolerancing
   (`ToleranceTests`): presets, the generator over the Cooke's elements
   (no back focus, irregularity, element motions, catalogue glasses through

@@ -15,9 +15,9 @@
 //!   [3] in the image frame give DF [4,N]: OPD in waves and the unit-radius
 //!   sphere x/y/z (z mirrored for negative propagation).
 //!
-//! There is no automatic f64 polish: `GenerateAim.unresolved` lists the
-//! unresolved indices for an adapter, and `PlanStats::fallback_count` counts
-//! them. Real-image-height fields need the primary wavelength in the packed
+//! There is no automatic f64 polish: unresolved rays keep their failure
+//! report for the adapter, and `PlanStats::fallback_count` counts them.
+//! Real-image-height fields need the primary wavelength in the packed
 //! chunk; a missing primary is reported, never replaced. Samples excluded by
 //! [`AimOptions::cull_outside`] or the `MKL_AIM_SKIP` field flag carry
 //! `MKL_AIM_OUTSIDE`: they are neither aimed, traced, counted nor listed.
@@ -38,7 +38,7 @@
 use crate::{
     Df32,
     consts::*,
-    resident::{self, Access, BufferDesc, ElementType, ResidentPlan, SystemSet, bad},
+    resident::{self, Access, BufferDesc, ElementType, ResidentPlan, bad},
 };
 mod cpu;
 pub mod kernel;
@@ -62,35 +62,11 @@ pub struct ResidentHits {
     pub records: Option<BufferId>,
     pub record_low: Option<BufferId>,
 }
-/// Device construction of regular probes; explicit tables preserve arbitrary
-/// rings, annular boundaries and caller sampling. Lattices include the square
-/// guard nodes outside the disk, for later rim topology and masking.
-#[derive(Clone, Copy, Debug)]
-pub enum Sampling {
-    Explicit,
-    Lattice { side: u32, extent: Df32 },
-    Fan { axis: u32, extent: Df32 },
-}
-impl Sampling {
-    pub fn parameters(self) -> (u32, u32, Df32) {
-        match self {
-            Self::Explicit => (0, 0, Df32::from_f32(1.0)),
-            Self::Lattice { side, extent } => (1, side, extent),
-            Self::Fan { axis, extent } => (2, axis, extent),
-        }
-    }
-}
-
 #[derive(Clone, Debug)]
 pub struct GenerateAim {
-    pub systems: crate::resident::SystemSet,
-    /// Explicit: one Sample per ray. Procedural: one base Sample, with field,
-    /// weight and first logical ID; pupil coordinates are generated on device.
+    pub systems: crate::SystemHandle,
+    /// One Sample per ray.
     pub samples: PlanView,
-    pub sampling: Sampling,
-    /// Optional stable sparse ray indices: u32 [count+1], count at element 0,
-    /// ascending original indices next, unused tail = u32::MAX.
-    pub unresolved: Option<BufferId>,
     pub field_wavelength: PlanView,
     /// Opts into cross-plan reuse of chief rows and seed tables: the caller's
     /// name for its immutable field metadata. The executor keys reuse by
@@ -150,7 +126,7 @@ impl Default for AimOptions {
 }
 #[derive(Clone, Debug)]
 pub struct TraceResident {
-    pub systems: crate::resident::SystemSet,
+    pub systems: crate::SystemHandle,
     pub input: ResidentRays,
     pub steps: PlanView,
     pub start_surface: u32,
@@ -204,11 +180,10 @@ pub fn uses_table(g: &GenerateAim) -> bool {
 /// system content, the exact field rows, the host seed rows (or the device
 /// solve), tolerance, iteration cap and table side. None when the caller
 /// keeps them plan-local (`field_key` None) or an input is not immutable at
-/// submission: device-built systems, or field/seed rows produced inside the
-/// plan.
+/// submission: field or seed rows produced inside the plan.
 pub fn aim_identity(
     g: &GenerateAim,
-    system: Option<blake3::Hash>,
+    system: blake3::Hash,
     fields: Option<&[u32]>,
     seeds: Option<&[u32]>,
 ) -> Option<String> {
@@ -222,7 +197,7 @@ pub fn aim_identity(
     };
     Some(format!(
         "{name}:{}:{}:{seeds}:{}:{}:{}:{}",
-        system?.to_hex(),
+        system.to_hex(),
         blake3::hash(bytemuck::cast_slice(fields?)).to_hex(),
         g.tolerance.to_bits(),
         g.max_iterations,
@@ -294,42 +269,6 @@ fn check_rays(r: &ResidentRays, p: &ResidentPlan) -> MkResult<()> {
     }
     Ok(())
 }
-fn check_systems(s: &SystemSet, p: &ResidentPlan) -> MkResult<()> {
-    if let SystemSet::Resident {
-        headers,
-        surfaces,
-        coefficients,
-        count,
-        max_surfaces,
-        max_wavelengths,
-    } = s
-    {
-        if *count == 0
-            || *count > u32::MAX as usize
-            || *max_surfaces < 2
-            || *max_surfaces > u32::MAX as usize
-            || *max_wavelengths > crate::layout::MAX_WAVELENGTHS
-        {
-            return Err(bad("resident system dimensions"));
-        }
-        let header_words = count
-            .checked_mul(size_of::<crate::layout::PackedHeader>() / 4)
-            .ok_or_else(|| bad("resident system extent overflow"))?;
-        let surface_words = count
-            .checked_mul(*max_surfaces)
-            .and_then(|n| n.checked_mul(size_of::<crate::layout::PackedSurface>() / 4))
-            .ok_or_else(|| bad("resident system extent overflow"))?;
-        if p.desc(*headers)?.element != ElementType::U32
-            || p.desc(*headers)?.len()? != header_words
-            || p.desc(*surfaces)?.element != ElementType::U32
-            || p.desc(*surfaces)?.len()? != surface_words
-            || p.desc(*coefficients)?.element != ElementType::DoubleFloat
-        {
-            return Err(bad("resident system sidecars"));
-        }
-    }
-    Ok(())
-}
 pub fn validate(r: &Request, p: &ResidentPlan) -> MkResult<()> {
     let output = |id, element, shape: &[usize]| {
         if p.desc(id)? != &BufferDesc::new(element, shape) {
@@ -339,33 +278,12 @@ pub fn validate(r: &Request, p: &ResidentPlan) -> MkResult<()> {
     };
     match r {
         Request::GenerateAim(a) => {
-            check_systems(&a.systems, p)?;
             check_rays(&a.output, p)?;
             check_view(
                 &a.samples,
                 ElementType::U32,
-                &[
-                    if matches!(a.sampling, Sampling::Explicit) {
-                        a.output.count
-                    } else {
-                        1
-                    },
-                    MKL_AIM_SAMPLE_WORDS as usize,
-                ],
+                &[a.output.count, MKL_AIM_SAMPLE_WORDS as usize],
             )?;
-            let (kind, side, extent) = a.sampling.parameters();
-            if kind != 0
-                && (!extent.to_f64().is_finite()
-                    || extent.to_f64() <= 0.0
-                    || (kind == 1
-                        && (side == 0 || side as u64 * side as u64 != a.output.count as u64))
-                    || (kind == 2 && side > 1))
-            {
-                return Err(bad("aiming sampling dimensions"));
-            }
-            if let Some(id) = a.unresolved {
-                output(id, ElementType::U32, &[a.output.count + 1])?;
-            }
             let shape = &a.field_wavelength.desc.shape;
             if shape.len() != 2 || shape[0] == 0 || shape[0] > u32::MAX as usize {
                 return Err(bad("aiming field rows"));
@@ -398,7 +316,6 @@ pub fn validate(r: &Request, p: &ResidentPlan) -> MkResult<()> {
             }
         }
         Request::TraceResident(t) => {
-            check_systems(&t.systems, p)?;
             check_rays(&t.input, p)?;
             check_rays(&t.output.rays, p)?;
             if t.input.count != t.output.rays.count
@@ -456,37 +373,19 @@ pub fn validate(r: &Request, p: &ResidentPlan) -> MkResult<()> {
     }
     Ok(())
 }
-fn system_access(s: &SystemSet, a: &mut Access) {
-    match s {
-        SystemSet::Uploaded(h) => a.systems.push(*h),
-        SystemSet::Resident {
-            headers,
-            surfaces,
-            coefficients,
-            ..
-        } => {
-            a.reads.extend([
-                view(*headers, ElementType::U32, [0]),
-                view(*surfaces, ElementType::U32, [0]),
-                view(*coefficients, ElementType::DoubleFloat, [0]),
-            ]);
-        }
-    }
-}
 pub fn accesses(r: &Request) -> Access {
     let mut a = Access::default();
     match r {
         Request::GenerateAim(g) => {
-            system_access(&g.systems, &mut a);
+            a.systems.push(g.systems);
             a.reads
                 .extend([g.samples.clone(), g.field_wavelength.clone()]);
             a.reads.extend(g.seeds.clone());
             a.reads.extend(g.options.table.clone());
             a.writes = ray_ids(&g.output);
-            a.writes.extend(g.unresolved);
         }
         Request::TraceResident(t) => {
-            system_access(&t.systems, &mut a);
+            a.systems.push(t.systems);
             a.reads = ray_views(&t.input).into_iter().chain(a.reads).collect();
             a.reads.push(t.steps.clone());
             a.writes = ray_ids(&t.output.rays);

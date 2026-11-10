@@ -66,9 +66,9 @@ public struct AnalysisDescriptor: Codable, Sendable, Hashable, Identifiable {
     }
 
     /// `settings` reduced to the keys the schema declares, with values of an
-    /// accepted type. The engine rejects unknown keys, so requests built by
-    /// the front end for an engine whose schema differs (a newer or older
-    /// engine) degrade to the engine's defaults instead of failing.
+    /// accepted type. The engine rejects unknown keys, so keys this schema
+    /// does not declare (typed settings carry some that not every analysis
+    /// takes) are dropped and the engine's defaults apply instead.
     public func acceptedSettings(_ settings: [String: JSONValue]) -> [String: JSONValue] {
         let fields = Dictionary(uniqueKeysWithValues: settingsFields.map { ($0.name, $0) })
         return settings.filter { key, value in fields[key]?.accepts(value) ?? false }
@@ -296,20 +296,6 @@ public struct GlassInfo: Codable, Sendable, Hashable {
 extension AnalysisKind {
     /// The engine's registry name of this analysis (its raw value).
     public var engineName: String { rawValue }
-
-    /// Names earlier engine builds listed this analysis under (first-order
-    /// data was a `paraxial` placeholder before `first_order` existed).
-    public var legacyEngineNames: [String] { self == .firstOrder ? ["paraxial"] : [] }
-
-    /// The name to run this analysis as on an engine listing `descriptors`:
-    /// the first *available* of `engineName` and the legacy names, else the
-    /// first one listed (so its unavailability reason is shown), else
-    /// `engineName`.
-    public func engineName(in descriptors: [AnalysisDescriptor]) -> String {
-        let names = [engineName] + legacyEngineNames
-        let listed = names.compactMap { n in descriptors.first { $0.name == n } }
-        return (listed.first { $0.available } ?? listed.first)?.name ?? engineName
-    }
 }
 
 extension AnalysisRequest {

@@ -610,53 +610,59 @@ pub fn field_curvature_job(
     let n0 = |w: usize| sys.n_object[w];
     let fallbacks = AtomicUsize::new(0);
     let mut curves = Vec::with_capacity(wls.len());
-    for (k, &w) in wls.iter().enumerate() {
-        let (fx, fy) = (first_order_x(tracer, w)?, tracer.paraxial().at(w));
-        let efl = [fx.efl, fy.efl];
-        let rows: Vec<[f64; 10]> = fields
-            .par_iter()
-            .zip(&sweep.heights)
-            .zip(&sweep.components)
-            .map(|((f, &h), &axis)| {
-                let f_eff = n0(w) * efl[axis];
-                let mut row = [f64::NAN; 10];
-                let Some(f) = f else { return row };
-                if let Some(a) = coddington_focus(tracer, f, w) {
-                    (row[0], row[1]) = a.axial();
-                }
-                if let Some(a) =
-                    cross_check_focus(tracer, f, w, settings.close_ray_step, &fallbacks)
-                {
-                    (row[2], row[3]) = a.axial();
-                }
-                let c = tracer.chief(f, w);
-                if c.status.is_ok() {
-                    row[4] = [c.ray.pos.x, c.ray.pos.y][axis];
-                }
-                if let Some(p) = paraxial_image_point(&fx, fy, f) {
-                    row[5] = p[axis];
-                }
-                if h == 0.0 && rotational {
-                    row[6] = 0.0;
-                    row[7] = if sys.object_at_infinity {
-                        0.0
-                    } else {
-                        f64::NAN
-                    };
-                    row[8] = row[7];
+    // Every (wavelength, field) row in parallel, then the curves in
+    // wavelength order (each row is independent of the scheduling).
+    let first_order = wls
+        .iter()
+        .map(|&w| Ok((first_order_x(tracer, w)?, tracer.paraxial().at(w))))
+        .collect::<MkResult<Vec<_>>>()?;
+    let nf = fields.len();
+    let all_rows: Vec<[f64; 10]> = (0..wls.len() * nf)
+        .into_par_iter()
+        .map(|i| {
+            let (k, j) = (i / nf, i % nf);
+            let (w, (fx, fy)) = (wls[k], &first_order[k]);
+            let efl = [fx.efl, fy.efl];
+            let (f, h, axis) = (&fields[j], sweep.heights[j], sweep.components[j]);
+            let f_eff = n0(w) * efl[axis];
+            let mut row = [f64::NAN; 10];
+            let Some(f) = f else { return row };
+            if let Some(a) = coddington_focus(tracer, f, w) {
+                (row[0], row[1]) = a.axial();
+            }
+            if let Some(a) = cross_check_focus(tracer, f, w, settings.close_ray_step, &fallbacks) {
+                (row[2], row[3]) = a.axial();
+            }
+            let c = tracer.chief(f, w);
+            if c.status.is_ok() {
+                row[4] = [c.ray.pos.x, c.ray.pos.y][axis];
+            }
+            if let Some(p) = paraxial_image_point(fx, fy, f) {
+                row[5] = p[axis];
+            }
+            if h == 0.0 && rotational {
+                row[6] = 0.0;
+                row[7] = if sys.object_at_infinity {
+                    0.0
                 } else {
-                    row[6] = percent(row[4], row[5]);
-                    if let ObjectSource::Direction { dir } = f.source
-                        && sys.object_at_infinity
-                    {
-                        let t = [dir.x, dir.y][axis] / dir.z;
-                        row[7] = percent(row[4], f_eff * t);
-                        row[8] = percent(row[4], f_eff * t.atan());
-                    }
+                    f64::NAN
+                };
+                row[8] = row[7];
+            } else {
+                row[6] = percent(row[4], row[5]);
+                if let ObjectSource::Direction { dir } = f.source
+                    && sys.object_at_infinity
+                {
+                    let t = [dir.x, dir.y][axis] / dir.z;
+                    row[7] = percent(row[4], f_eff * t);
+                    row[8] = percent(row[4], f_eff * t.atan());
                 }
-                row
-            })
-            .collect();
+            }
+            row
+        })
+        .collect();
+    ctx.check()?;
+    for (k, (&w, rows)) in wls.iter().zip(all_rows.chunks(nf.max(1))).enumerate() {
         // Independent estimates of the same foci: flag disagreements.
         let bad: Vec<[f64; 2]> = rows
             .iter()
@@ -799,11 +805,17 @@ pub fn grid_distortion_job(
     let rotational = system_symmetry(tracer.system().system()) == Symmetry::Rotational;
     let mut points = Vec::with_capacity(n * n);
     let mut failed = 0usize;
-    for (j, &hy) in t.iter().enumerate() {
+    // Rows in blocks of about 1024 points, all points of a block in
+    // parallel (each exactly as alone).
+    let rows_per_block = (1024 / n).max(1);
+    for (b, rows) in t.chunks(rows_per_block).enumerate() {
         ctx.check()?;
-        let row: Vec<GridPoint> = t
+        let row: Vec<GridPoint> = rows
+            .iter()
+            .flat_map(|&hy| t.iter().map(move |&hx| (hx, hy)))
+            .collect::<Vec<_>>()
             .par_iter()
-            .map(|&hx| {
+            .map(|&(hx, hy)| {
                 let (hx, hy) = (hx + settings.field_center[0], hy + settings.field_center[1]);
                 let mut g = GridPoint {
                     field: [hx, hy],
@@ -832,7 +844,10 @@ pub fn grid_distortion_job(
             .collect();
         failed += row.iter().filter(|g| g.real[0].is_nan()).count();
         points.extend(row);
-        ctx.report((j + 1) as f64 / n as f64, "grid distortion");
+        ctx.report(
+            ((b * rows_per_block + rows.len()) as f64 / n as f64).min(1.0),
+            "grid distortion",
+        );
     }
     let mut warnings = Vec::new();
     if failed > 0 {

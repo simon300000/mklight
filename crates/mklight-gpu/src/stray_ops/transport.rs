@@ -96,8 +96,10 @@ pub struct Ledger {
     pub events: u32,
     pub hits: u32,
     pub top: u32,
-    /// 0 complete, 1 continuation, 2 stack capacity, 3 hit capacity,
-    /// 4 reference-required coating/order arithmetic.
+    /// 0 complete, 1 live (device-internal), 2 stack capacity, 3 hit
+    /// capacity, 4 reference-required coating/order arithmetic, 5 head
+    /// budget (`Transport::head_events`), 6 grazing handoff
+    /// (`Transport::sag_mode`).
     pub status: u32,
     pub wavelength: u32,
     pub reserved: u32,
@@ -135,14 +137,34 @@ pub struct Transport {
     pub seed: u64,
     pub first_ray: u64,
     pub ray_count: usize,
-    /// Fixed source tile, independent of command/continuation boundaries.
+    /// Fixed source tile, independent of command boundaries.
     pub stack_capacity: usize,
     pub hit_capacity: usize,
-    pub event_budget: usize,
     /// `hit_capacity` detections per source; rows past `Ledger::hits` are
     /// unspecified.
     pub output: BufferId,
     pub ledger: BufferId,
+    /// The per-source continuation stacks, `stack_capacity` states per
+    /// source. A source whose stack would overflow (`Ledger::status` 2),
+    /// whose detection journal is full (3) or that reached `head_events` (5)
+    /// stops on the device with a consistent stack, ledger and draw cursor,
+    /// and the host continues it; a source that needs reference arithmetic
+    /// (4) stops and is retraced by the host. Nothing grows and nothing fails
+    /// the plan.
+    pub stack: BufferId,
+    /// Events per source on the device before status 5 (0: no limit).
+    pub head_events: u32,
+    /// Extended-sag intersection on the device: 0 scans the cells of the
+    /// clipped ray interval in double-float after a plain-f32 pre-scan that
+    /// skips cells the double-float scan would find empty, so the decided
+    /// roots are the scan's; 1 also stops a source whose scan would be longer
+    /// than `MKL_STRAY_SAG_HANDOFF_CELLS` cells (an oblique or grazing ray)
+    /// before that event (`Ledger::status` 6) for the host to continue. An
+    /// even asphere whose sag is the plain radial form is evaluated as
+    /// `S(u)`, `u = x² + y²`, each bracketed root located in f32 and polished
+    /// by two double-float Newton steps; every other extended sag by the sag
+    /// jets, as in the CPU specification, which never hands off.
+    pub sag_mode: u32,
 }
 impl Transport {
     pub fn reads(&self) -> Vec<PlanView> {
@@ -187,11 +209,11 @@ impl Transport {
             || self.stack_capacity > 8192
             || self.hit_capacity == 0
             || self.hit_capacity > 1024
-            || self.event_budget == 0
-            || self.event_budget > 128
             || self.first_ray.checked_add(self.ray_count as u64).is_none()
             || p.desc(self.output)? != &record_desc::<Detection>(self.ray_count * self.hit_capacity)
             || p.desc(self.ledger)? != &record_desc::<Ledger>(self.ray_count)
+            || p.desc(self.stack)? != &record_desc::<State>(self.ray_count * self.stack_capacity)
+            || self.sag_mode > 1
         {
             return Err(bad("stray transport capacity/output"));
         }

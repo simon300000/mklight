@@ -484,6 +484,37 @@ unaffected resident probes are reused without copying their batch.
 Cancellation checks precede every reference-completion block; cancellation
 never starts a replacement CPU job.
 
+**Division between host and device.** The paths form four groups
+(contiguous path indices) that refine independently: the device traces one
+group's tile while the host completes, deduplicates and splits another, and
+gathers a finished group's leaves; the first group with a tile ready goes
+first, so groups finish one after another. Meanwhile the CPU reference traces
+a fixed share (20 %) of the path groups of §5 (adjacent in step order, shared
+prefixes) beside the device run. Grouping never changes a result: each path's
+probes, cache order and leaves, and the order of leaves in the map chain, are
+those of one group. The primary stays on the device; the paths the CPU traces
+are bit-identical to the reference (tested). `RunInfo.settings.gpu` records
+the CPU paths and the wall seconds of the host stages (`host_seconds`:
+deduplication, device waits, outcomes, splits, leaves, maps) with their
+process CPU time (`host_cpu_seconds`); `settings.timings` holds [wall, CPU]
+pairs of the run's stages on either backend.
+
+Host stages run in parallel where their results allow it: the outcomes of a
+tile per path run, the splits and leaf gathering of a group's paths, the
+per-path maps of the CPU reference's groups, the leaf ordering (a stable
+parallel sort) and the record fills of the device maps; folds stay in their
+fixed order.
+
+The device path traces and chief aims use the shared trace kernel with the
+double-float even-asphere slope, so the device path completes on lenses with
+deep even aspheres. Measured on a quiet M2 Pro at a 24² pupil grid: a
+37-surface zoom with 7 aspheres (630 ghosts) 20.8 s on the CPU and 14.0 s on
+the device; a 35-surface ultra-wide (528 ghosts) 14.5 and 9.2 s; flux and
+peak agree with the CPU to 3e-14. On a 29-surface lens with 276
+two-reflection ghosts (58 M probes) the device traces for about 9 s, and
+without the grouping the host stages (leaves, splits and deduplication,
+outcome classification) added about 7 s that the device waited for.
+
 Lattice plans are tiled at 2²⁰ probes across paths, fields and wavelengths
 (about 170 MB of launch, probe and value records); per-probe storage does
 not grow with path length. Geometry with coatings, gathers, scans and
@@ -515,12 +546,10 @@ then runs the same ghost sequence geometry without unused coating work.
 
 Explicit jobs currently accept uploaded immutable systems with up to 16
 wavelengths and default reference intersection settings. Other wavelength
-shapes, custom intersection settings, resident candidate systems and
-irradiance runs whose finite object lies beyond the 1000 mm segment domain
+shapes, custom intersection settings and irradiance runs whose finite object lies beyond the 1000 mm segment domain
 (every probe would need reference completion) return `Unsupported` for the
-caller's reported reference route. `auto` keeps `ghost_irradiance` on
-the CPU reference as an accuracy exclusion (GPU.md §9.2, "Automatic
-routing"). Tests cover all built-in samples, matched CPU-f32/Metal algebra, both
+caller's reported reference route. `auto` routes `ghost_irradiance` by
+the cost model (GPU.md §9.2, "Automatic routing"). Tests cover all built-in samples, matched CPU-f32/Metal algebra, both
 shader-library origins, physical fixtures, fixed-hit map conservation,
 pixel-edge reference handling, bitwise CPU-f32 emulation of the complete
 map chain, concurrent determinism and cancellation.

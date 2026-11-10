@@ -52,14 +52,21 @@ const UNAIMABLE_RESIDUAL: f32 = 1e-6;
 pub struct ResidentTracedPupil {
     pub pupil: ResidentPupil,
     pub info: ExitPupilInfo,
-    pub nodes: BufferHandle,
-    pub valid: BufferHandle,
+    /// Resident lattice nodes (DF `[side, side, 4]`: u, v, unwrapped OPD,
+    /// amplitude) and survival (u32) of a pupil the device traced; None
+    /// when the host traced it (its lattice is in `host`).
+    pub nodes: Option<BufferHandle>,
+    pub valid: Option<BufferHandle>,
     pub mask: Option<PupilMask>,
     pub entrance_rim: Option<PupilMask>,
     /// Content key of this traced lattice ([`lattice_key`]): the shared
     /// analysis graph's `pupil_lattice` key for the same (tracer, field,
-    /// wavelength, lattice settings), in the Metal double-float family.
+    /// wavelength, lattice settings), in the Metal double-float family; for
+    /// a host-traced pupil the CPU f64 `pupil_lattice` key.
     pub key: mklight_core::memo::NodeKey,
+    /// The reference lattice (and pupil) of a pupil the host traced (the
+    /// native analyses, `gpu::split`); None when the device traced it.
+    pub host: Option<super::split::HostPupil>,
 }
 /// The `pupil_lattice` node key of a Metal traced pupil: the CPU f64
 /// [`crate::shared::lattice_key`] of the same inputs, in a family of its own
@@ -78,36 +85,6 @@ pub fn lattice_key(
         .key(&crate::shared::lattice_key(tracer, field, wl, settings))
         .str(library)
         .finish()
-}
-impl ResidentTracedPupil {
-    pub fn resample(
-        &mut self,
-        b: &dyn ComputeBackend,
-        snapshot: Snapshot,
-        n: usize,
-        supersample: usize,
-        ctx: &JobContext,
-    ) -> MkResult<WaveResult<ResidentPupil>> {
-        let mut r = from_resident_lattice(
-            b,
-            snapshot,
-            self.nodes.view(),
-            subset(
-                &self.valid,
-                [self.nodes.desc().shape[0], self.nodes.desc().shape[1]],
-            ),
-            self.pupil.input_hash.clone(),
-            n,
-            self.pupil.wavelength_um,
-            self.pupil.geometry,
-            self.mask.as_ref(),
-            supersample,
-            ctx,
-        )?;
-        r.value.image_offset_mm = self.pupil.image_offset_mm;
-        self.pupil = r.value.clone();
-        Ok(r)
-    }
 }
 /// Probe rays: generated starts, the five hit channels, survival and power.
 struct Batch {
@@ -467,26 +444,6 @@ impl<'a> PupilTracer<'a> {
             })
             .collect())
     }
-    /// Image-surface chief points of `fields` at the primary wavelength (the
-    /// chief reference when it is not traced); None where the chief fails.
-    pub fn chief_points(
-        &self,
-        fields: &[&PreparedField],
-        ctx: &JobContext,
-        stats: &mut PlanStats,
-    ) -> MkResult<Vec<Option<[f64; 2]>>> {
-        let primary = self.tracer.system().primary_wavelength;
-        let specs: Vec<_> = fields
-            .iter()
-            .map(|f| self.spec(f, primary))
-            .collect::<MkResult<_>>()?;
-        let pupils: Vec<_> = fields.iter().map(|&f| (f, primary)).collect();
-        Ok(self
-            .chief_rays(&pupils, &specs, ctx, stats)?
-            .into_iter()
-            .map(|c| c.map(|c| [c[0].to_f64(), c[1].to_f64()]))
-            .collect())
-    }
     #[allow(clippy::too_many_arguments)]
     fn probe(
         &self,
@@ -524,44 +481,11 @@ impl<'a> PupilTracer<'a> {
         power: bool,
         extra: &[BufferId],
     ) -> MkResult<ProbeLayout> {
-        let metadata = p.import(fields.buffer.view());
-        let seeds = p.import(fields.seeds.view());
-        let table = fields.table.as_ref().map(|t| p.import(t.view()));
         if let Some(h) = fields.host.borrow_mut().take() {
             p.host.add(&h);
         }
         let steps = p.import(self.steps.view());
-        let generated = aim::rays(p, count);
-        // The tightest derived stop of the prepared fields, or the requested
-        // tolerance (CONVENTIONS §7, the aim-stop policy).
-        let tolerance = match self.tracer.aiming() {
-            mklight_core::RayAiming::Real { .. } => self.tracer.device_aim_tolerance() as f32,
-            _ => 1e-10,
-        };
-        p.operations
-            .push(ResidentOp::Aiming(aim::Request::GenerateAim(
-                aim::GenerateAim {
-                    systems: SystemSet::Uploaded(self.systems),
-                    samples: p.view(samples)?,
-                    sampling: aim::Sampling::Explicit,
-                    unresolved: None,
-                    field_wavelength: p.view(metadata)?,
-                    field_key: Some(fields.key.clone()),
-                    seeds: Some(p.view(seeds)?),
-                    tolerance,
-                    max_iterations: 60,
-                    output: generated.clone(),
-                    options: aim::AimOptions {
-                        table: table.map(|t| p.view(t)).transpose()?,
-                        table_side: TABLE_SIDE,
-                        cull_outside: cull,
-                        speculative_rounds: SPECULATIVE_ROUNDS,
-                        // The wave lattice keeps the full schedule: every
-                        // unresolved ray is checked against the reference.
-                        schedule_cap: 0,
-                    },
-                },
-            )));
+        let generated = self.append_aim(p, samples, count, fields, cull)?;
         let hits = aim::hits(
             p,
             count,
@@ -574,7 +498,7 @@ impl<'a> PupilTracer<'a> {
         p.operations
             .push(ResidentOp::Aiming(aim::Request::TraceResident(
                 aim::TraceResident {
-                    systems: SystemSet::Uploaded(self.systems),
+                    systems: self.systems,
                     input: generated.clone(),
                     steps: p.view(steps)?,
                     start_surface: 0,
@@ -584,14 +508,14 @@ impl<'a> PupilTracer<'a> {
                     output: hits.clone(),
                 },
             )));
-        let mut outputs = vec![
-            generated.floats,
+        let mut outputs = vec![generated.floats];
+        outputs.extend([
             hits.rays.floats,
             hits.rays.indices,
             hits.rays.logical_ids,
             hits.rays.report,
             hits.status,
-        ];
+        ]);
         if survival {
             let mask = p.scratch(BufferDesc::new(ElementType::U32, [count]));
             p.operations
@@ -647,6 +571,50 @@ impl<'a> PupilTracer<'a> {
             power,
         })
     }
+    /// Append device aiming of `samples` (GenerateAim with the host seed
+    /// rows and tables of `fields`).
+    fn append_aim(
+        &self,
+        p: &mut ResidentPlan,
+        samples: BufferId,
+        count: usize,
+        fields: &Fields,
+        cull: bool,
+    ) -> MkResult<aim::ResidentRays> {
+        let metadata = p.import(fields.buffer.view());
+        let seeds = p.import(fields.seeds.view());
+        let table = fields.table.as_ref().map(|t| p.import(t.view()));
+        let generated = aim::rays(p, count);
+        // The tightest derived stop of the prepared fields, or the requested
+        // tolerance (CONVENTIONS §7, the aim-stop policy).
+        let tolerance = match self.tracer.aiming() {
+            mklight_core::RayAiming::Real { .. } => self.tracer.device_aim_tolerance() as f32,
+            _ => 1e-10,
+        };
+        p.operations
+            .push(ResidentOp::Aiming(aim::Request::GenerateAim(
+                aim::GenerateAim {
+                    systems: self.systems,
+                    samples: p.view(samples)?,
+                    field_wavelength: p.view(metadata)?,
+                    field_key: Some(fields.key.clone()),
+                    seeds: Some(p.view(seeds)?),
+                    tolerance,
+                    max_iterations: 60,
+                    output: generated.clone(),
+                    options: aim::AimOptions {
+                        table: table.map(|t| p.view(t)).transpose()?,
+                        table_side: TABLE_SIDE,
+                        cull_outside: cull,
+                        speculative_rounds: SPECULATIVE_ROUNDS,
+                        // The wave lattice keeps the full schedule: every
+                        // unresolved ray is checked against the reference.
+                        schedule_cap: 0,
+                    },
+                },
+            )));
+        Ok(generated)
+    }
     fn finish_probe(
         &self,
         layout: &ProbeLayout,
@@ -654,14 +622,16 @@ impl<'a> PupilTracer<'a> {
         ctx: &JobContext,
     ) -> MkResult<(Batch, Vec<BufferHandle>)> {
         let r = &result.outputs[layout.first..layout.first + layout.len];
+        // The device-aimed starts are the first output.
+        let (starts, r) = (r[0].clone(), &r[1..]);
         let (count, survival, power) = (layout.count, layout.survival, layout.power);
         let sample_handle = layout.samples.clone();
-        let mut rest = r[6..].iter().cloned();
+        let mut rest = r[5..].iter().cloned();
         let mask = survival.then(|| rest.next().unwrap());
         let power = power.then(|| rest.next().unwrap());
         let samples = sample_handle.unwrap_or_else(|| rest.next().unwrap());
         let extra = rest.collect();
-        self.check_aim(&samples, &r[4], ctx)?;
+        self.check_aim(&samples, &r[3], ctx)?;
         if let Some(power) = &power {
             let v = self.backend.read_view(power.view())?;
             let rows: &[rad::PolarizationValue] = bytemuck::cast_slice(v.words());
@@ -677,8 +647,8 @@ impl<'a> PupilTracer<'a> {
         }
         Ok((
             Batch {
-                starts: r[0].clone(),
-                hits: std::array::from_fn(|i| r[i + 1].clone()),
+                starts,
+                hits: std::array::from_fn(|i| r[i].clone()),
                 samples,
                 mask,
                 power,
@@ -1629,11 +1599,12 @@ impl<'a> PupilTracer<'a> {
             value: ResidentTracedPupil {
                 pupil: result.value,
                 info,
-                nodes,
-                valid,
+                nodes: Some(nodes),
+                valid: Some(valid),
                 mask,
                 entrance_rim,
                 key,
+                host: None,
             },
             run_info: result.run_info,
             stats,

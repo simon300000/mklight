@@ -493,29 +493,6 @@ enum ImageSimulationSettings {
         ]
     }
 
-    /// Whether `settings` are the engine's defaults, as projects saved
-    /// before the starting settings existed hold them: nothing set, or only
-    /// values equal to the defaults.
-    nonisolated static func isEngineDefault(_ settings: [String: JSONValue], defaults: JSONValue?) -> Bool {
-        settings.allSatisfy { k, v in defaults?[k] == v }
-    }
-
-    /// Settings saved with the earlier starting PSF window and pupil (161
-    /// samples, a 96 grid of 97 rays, chosen when the engine had no
-    /// automatic sampling) go back to automatic; anything else is kept.
-    nonisolated static func migrated(_ settings: [String: JSONValue]) -> [String: JSONValue]? {
-        guard var optics = settings["optics"]?.object, optics["psf_size"]?.int == 161,
-            var pupil = optics["pupil"]?.object, pupil["grid"]?.int == 96, pupil["rays"]?.int == 97
-        else { return nil }
-        optics["psf_size"] = .integer(0)
-        pupil["grid"] = .integer(0)
-        pupil["rays"] = .integer(65)
-        optics["pupil"] = .object(pupil)
-        var s = settings
-        s["optics"] = .object(optics)
-        return s
-    }
-
     static func fieldExtent(_ pane: AnalysisPane) -> Double { pane.value("optics")?["field_extent"]?.doubleValue ?? fullExtent }
 
     /// The run's field extent: half the span of its field mapping nodes.

@@ -28,9 +28,6 @@ struct AimParams {
     cap: u32,
     tolerance: f32,
     table: u32,
-    pattern: u32,
-    side: u32,
-    extent: [f32; 2],
     /// Iteration units per lane of this command.
     budget: u32,
     table_side: u32,
@@ -72,69 +69,29 @@ fn bind(e: &Encoder<'_>, index: usize, x: &Execution<'_>, v: &PlanView) {
     let (b, o) = x.buffer(v);
     e.set_buffer(index, b, o);
 }
-enum Systems {
-    Uploaded(Arc<Uploaded>),
-    Resident {
-        headers: BufferId,
-        surfaces: BufferId,
-        coefficients: BufferId,
-        count: usize,
-    },
-}
+/// The uploaded packed systems of a request.
+struct Systems(Arc<Uploaded>);
 impl Systems {
-    fn new(x: &Execution<'_>, s: &SystemSet) -> MkResult<Self> {
-        Ok(match s {
-            SystemSet::Uploaded(h) => Self::Uploaded(x.system(*h)?),
-            SystemSet::Resident {
-                headers,
-                surfaces,
-                coefficients,
-                count,
-                ..
-            } => Self::Resident {
-                headers: *headers,
-                surfaces: *surfaces,
-                coefficients: *coefficients,
-                count: *count,
-            },
-        })
+    fn new(x: &Execution<'_>, h: mklight_gpu::SystemHandle) -> MkResult<Self> {
+        Ok(Self(x.system(h)?))
     }
     fn count(&self) -> u32 {
-        match self {
-            Self::Uploaded(u) => u.set.headers.len() as u32,
-            Self::Resident { count, .. } => *count as u32,
-        }
+        self.0.set.headers.len() as u32
     }
-    fn bind(&self, e: &Encoder<'_>, x: &Execution<'_>) {
-        match self {
-            Self::Uploaded(u) => {
-                e.set_buffer(0, &u.headers, 0);
-                e.set_buffer(1, &u.surfaces, 0);
-                e.set_buffer(2, &u.coefficients, 0);
-            }
-            Self::Resident {
-                headers,
-                surfaces,
-                coefficients,
-                ..
-            } => {
-                bind(e, 0, x, &view(*headers, ElementType::U32));
-                bind(e, 1, x, &view(*surfaces, ElementType::U32));
-                bind(e, 2, x, &view(*coefficients, ElementType::DoubleFloat));
-            }
-        }
+    fn bind(&self, e: &Encoder<'_>) {
+        e.set_buffer(0, &self.0.headers, 0);
+        e.set_buffer(1, &self.0.surfaces, 0);
+        e.set_buffer(2, &self.0.coefficients, 0);
     }
     /// The kernel variant: the overlay code only for systems that have sag
-    /// overlays, or device-built systems whose surfaces the host cannot see.
+    /// overlays.
     fn kernel(&self, plain: &'static str, overlays: &'static str) -> PipelineKey {
-        let any = match self {
-            Self::Uploaded(u) => u
-                .set
-                .surfaces
-                .iter()
-                .any(|s| s.flags & MKL_SURF_HAS_SAG_OVERLAY != 0),
-            Self::Resident { .. } => true,
-        };
+        let any = self
+            .0
+            .set
+            .surfaces
+            .iter()
+            .any(|s| s.flags & MKL_SURF_HAS_SAG_OVERLAY != 0);
         PipelineKey::plain(if any { overlays } else { plain })
     }
 }
@@ -536,10 +493,9 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
     match r {
         Request::GenerateAim(g) => {
             stage.name = "generate_aim".into();
-            let systems = Systems::new(x, &g.systems)?;
+            let systems = Systems::new(x, g.systems)?;
             let nf = g.field_wavelength.desc.shape[0];
             let n = g.output.count;
-            let (pattern, side, extent) = g.sampling.parameters();
             let table_side = g.options.table_side;
             let params = |p: AimParams| AimParams {
                 stride: n as u32,
@@ -547,9 +503,6 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                 systems: systems.count(),
                 cap: g.max_iterations,
                 tolerance: g.tolerance,
-                pattern,
-                side,
-                extent: [extent.hi, extent.lo],
                 table_side,
                 flags: if g.options.cull_outside { AIM_CULL } else { 0 },
                 schedule_cap: g.options.schedule_cap,
@@ -560,10 +513,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
             // immutable upload, the imported field rows and host seed rows.
             let identity = aim_identity(
                 g,
-                match &systems {
-                    Systems::Uploaded(up) => Some(up.content),
-                    Systems::Resident { .. } => None,
-                },
+                systems.0.content,
                 x.import_words(&g.field_wavelength),
                 g.seeds.as_ref().and_then(|v| x.import_words(v)),
             );
@@ -592,7 +542,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                             (&pso, None),
                             0,
                             |e, x, p| {
-                                systems.bind(e, x);
+                                systems.bind(e);
                                 bind(e, 3, x, &g.field_wavelength);
                                 e.set_buffer_mut(4, seeds, 0);
                                 e.set_bytes(5, &params(p));
@@ -624,7 +574,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                             (&pso, Some(&cont)),
                             0,
                             |e, x, p| {
-                                systems.bind(e, x);
+                                systems.bind(e);
                                 bind(e, 3, x, &g.field_wavelength);
                                 seeds.bind(e, 4, x);
                                 e.set_bytes(5, &params(p));
@@ -653,7 +603,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                 g.options.speculative_rounds as usize,
                 |e, x, p| {
                     let [ff, uu, ids, reports] = &mut out;
-                    systems.bind(e, x);
+                    systems.bind(e);
                     bind(e, 3, x, &g.field_wavelength);
                     seeds.bind(e, 4, x);
                     e.set_bytes(
@@ -687,23 +637,19 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
             }
             x.count_fallbacks(failures);
             put_rays(x, &g.output, out);
-            if let Some(id) = g.unresolved {
-                compact(x, g.output.report, id, n, ctl, &mut stage)?;
-            }
         }
         Request::TraceResident(t) => {
             stage.name = "trace_resident".into();
-            let systems = Systems::new(x, &t.systems)?;
-            if t.radiometry != 0 {
-                match &systems {
-                    Systems::Uploaded(up)
-                        if up
-                            .set
-                            .surfaces
-                            .iter()
-                            .all(|s| s.coating != MKL_COATING_TABLE) => {}
-                    _ => return unsupported("resident table-coating radiometry"),
-                }
+            let systems = Systems::new(x, t.systems)?;
+            if t.radiometry != 0
+                && systems
+                    .0
+                    .set
+                    .surfaces
+                    .iter()
+                    .any(|s| s.coating == MKL_COATING_TABLE)
+            {
+                return unsupported("resident table-coating radiometry");
             }
             let n = t.input.count;
             let mut out = take_rays(x, &t.output.rays);
@@ -766,7 +712,7 @@ pub(crate) fn execute(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> M
                 // wavelength indices are checked before the shared trace core.
                 unsafe {
                     x.run("resident trace", |e| {
-                        systems.bind(e, x);
+                        systems.bind(e);
                         bind(e, 3, x, &t.steps);
                         e.set_bytes(4, &p);
                         bind(e, 5, x, &view(t.input.floats, ElementType::F32));
@@ -913,50 +859,4 @@ const AIM_STATS_WORDS: usize = 12;
 fn trace_aims() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| std::env::var("MKLIGHT_METAL_TRACE_AIMS").is_ok_and(|v| v == "1"))
-}
-
-/// Stable unresolved-index compaction: count, prefix and scatter as three
-/// serial dispatches of one command.
-fn compact(
-    x: &mut Execution<'_>,
-    report: BufferId,
-    output: BufferId,
-    n: usize,
-    ctl: &JobControl,
-    stage: &mut StageStats,
-) -> MkResult<()> {
-    ctl.check()?;
-    let groups = n.div_ceil(256);
-    let mut counts = x.allocate(groups)?;
-    let mut sparse = x.take_output(output);
-    let [count, prefix, scatter] = ["mkl_aim_count", "mkl_aim_prefix", "mkl_aim_scatter"]
-        .map(|k| x.gpu.pipeline(&PipelineKey::plain(k)));
-    let (count, prefix, scatter) = (count?, prefix?, scatter?);
-    let wall = Instant::now();
-    // SAFETY: plan validation fixes the sparse size; each group owns a
-    // disjoint source range and prefix-selected destination range, and the
-    // serial dispatches of one encoder complete in order.
-    unsafe {
-        x.run("aim compaction", |e| {
-            bind(e, 0, x, &view(report, ElementType::U32));
-            e.set_buffer_mut(1, &mut counts, 0);
-            e.set_buffer_mut(2, &mut sparse, 0);
-            e.set_bytes(3, &(n as u32));
-            e.dispatch_1d(&count, groups.max(1));
-            e.set_buffer_mut(0, &mut counts, 0);
-            e.set_buffer_mut(1, &mut sparse, 0);
-            e.set_bytes(2, &(groups as u32));
-            e.dispatch_1d(&prefix, 1);
-            bind(e, 0, x, &view(report, ElementType::U32));
-            e.set_buffer_mut(1, &mut counts, 0);
-            e.set_buffer_mut(2, &mut sparse, 0);
-            e.set_bytes(3, &(n as u32));
-            e.dispatch_1d(&scatter, groups.max(1));
-            Ok(())
-        })?
-    };
-    account(x, stage, wall, 8);
-    x.recycle(counts);
-    x.put_output(output, sparse);
-    Ok(())
 }

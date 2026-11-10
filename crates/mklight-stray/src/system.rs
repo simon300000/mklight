@@ -200,6 +200,13 @@ pub struct StraySystem {
     pub warnings: Vec<String>,
 }
 
+/// Per-system-field obstruction and its warnings ([`StraySystem::obstruction_checks`]).
+#[derive(Clone, Debug, Default)]
+pub(crate) struct ObstructionChecks {
+    pub(crate) obstruction: Vec<Option<f64>>,
+    pub(crate) warnings: Vec<String>,
+}
+
 impl StraySystem {
     /// Builds the tracer, the semi-diameters and the scene.
     pub fn new(rs: Arc<ResolvedSystem>, opts: &SystemOptions) -> MkResult<StraySystem> {
@@ -225,6 +232,15 @@ impl StraySystem {
     pub fn with_tracer_ctx(
         tracer: SequentialTracer,
         opts: &SystemOptions,
+        ctx: &JobContext,
+    ) -> MkResult<StraySystem> {
+        Self::with_tracer_impl(tracer, opts, false, ctx)
+    }
+
+    fn with_tracer_impl(
+        tracer: SequentialTracer,
+        opts: &SystemOptions,
+        defer_checks: bool,
         ctx: &JobContext,
     ) -> MkResult<StraySystem> {
         opts.validate()?;
@@ -301,36 +317,79 @@ impl StraySystem {
                 "{f} sizing rays failed in the sequential trace; automatic semi-diameters may be too small"
             ));
         }
-        let nf = sys.resolved().system().fields.fields.len();
-        for k in 0..nf {
-            let sub = ctx.subrange(
-                0.6 + 0.4 * k as f64 / nf as f64,
-                0.6 + 0.4 * (k + 1) as f64 / nf as f64,
-            );
-            let o = match sys.system_field_source(k, 0.1, 1.0) {
-                Ok(beam) => {
-                    Some(primary_reference(&sys, &beam.spec, OBSTRUCTION_GRID, &sub)?.obstruction())
-                }
-                Err(_) => None,
-            };
+        sys.warnings = warnings;
+        if defer_checks {
+            return Ok(sys);
+        }
+        let checks = sys.obstruction_checks(&ctx.subrange(0.6, 1.0))?;
+        sys.finish_checks(checks);
+        ctx.report(1.0, "");
+        Ok(sys)
+    }
+
+    /// As [`StraySystem::build`] without the obstruction check of the system
+    /// fields: `obstruction` is empty and `warnings` holds only the sizing
+    /// warnings until [`Self::finish_checks`] gets the checks of
+    /// [`Self::obstruction_checks`], which can run beside other work.
+    pub(crate) fn build_scene(
+        rs: Arc<ResolvedSystem>,
+        opts: &SystemOptions,
+        ctx: &JobContext,
+    ) -> MkResult<StraySystem> {
+        ctx.check()?;
+        Self::with_tracer_impl(SequentialTracer::new(rs)?, opts, true, ctx)
+    }
+
+    /// The obstruction of a pupil-filling beam for every system field and
+    /// the warnings it raises (the check [`StraySystem::build`] makes).
+    pub(crate) fn obstruction_checks(&self, ctx: &JobContext) -> MkResult<ObstructionChecks> {
+        use rayon::prelude::*;
+        let mut out = ObstructionChecks::default();
+        let nf = self.resolved().system().fields.fields.len();
+        // Fields in parallel (each reference is parallel over its rows but
+        // too small to fill the cores), kept in field order.
+        let done = std::sync::Mutex::new(0usize);
+        let checks = (0..nf)
+            .into_par_iter()
+            .map(|k| {
+                let quiet = JobContext::with(ctx.cancel.clone(), Default::default());
+                let o = match self.system_field_source(k, 0.1, 1.0) {
+                    Ok(beam) => Some(
+                        primary_reference(self, &beam.spec, OBSTRUCTION_GRID, &quiet)?
+                            .obstruction(),
+                    ),
+                    Err(_) => None,
+                };
+                // Counted and reported under the lock: monotone progress.
+                let mut d = done.lock().unwrap_or_else(|e| e.into_inner());
+                *d += 1;
+                ctx.report(*d as f64 / nf as f64, "");
+                Ok(o)
+            })
+            .collect::<MkResult<Vec<_>>>()?;
+        for (k, o) in checks.into_iter().enumerate() {
             if let Some(o) = o
                 && o > OBSTRUCTION_WARNING
             {
-                warnings.push(format!(
+                out.warnings.push(format!(
                     "field {k}: {:.2} % of the designed flux is obstructed by non-sequential geometry; a purely sequential Primary overcounts it (use the Monte-Carlo Primary or primary_reference)",
                     100.0 * o
                 ));
             }
-            sys.obstruction.push(o);
+            out.obstruction.push(o);
         }
-        for w in &sys.scene.warnings {
-            if !warnings.contains(w) {
-                warnings.push(w.clone());
+        Ok(out)
+    }
+
+    /// Completes a system from [`Self::build_scene`] with its checks.
+    pub(crate) fn finish_checks(&mut self, checks: ObstructionChecks) {
+        self.obstruction = checks.obstruction;
+        self.warnings.extend(checks.warnings);
+        for w in &self.scene.warnings {
+            if !self.warnings.contains(w) {
+                self.warnings.push(w.clone());
             }
         }
-        sys.warnings = warnings;
-        ctx.report(1.0, "");
-        Ok(sys)
     }
 
     pub fn tracer(&self) -> &SequentialTracer {

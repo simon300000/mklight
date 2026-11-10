@@ -524,8 +524,8 @@ pub unsafe extern "C" fn mk_session_new(
     })
 }
 
-/// Open a `.mklight` file. Non-fatal problems (missing user catalogs,
-/// migration notes) are listed in `mk_session_info_json` → `open_warnings`.
+/// Open a `.mklight` file. Non-fatal problems (missing or unreadable user
+/// catalogs) are listed in `mk_session_info_json` → `open_warnings`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mk_session_open(
     engine: *const MKEngine,
@@ -971,7 +971,7 @@ unsafe fn export_result(
 
 // ---------------------------------------------------------------------------
 // ABI 1.1: analysis descriptions, synchronous runs, backends, validation,
-// solves, autosave, migration, parameter reads
+// solves, autosave, parameter reads
 
 /// Description of one analysis (as one element of `mk_engine_list_analyses`:
 /// settings and result schemas included).
@@ -1006,29 +1006,6 @@ pub unsafe extern "C" fn mk_engine_set_default_backend(
             .map_err(|err| FfiError::arg(format!("backend_json: {err}")))?;
         e.engine.set_default_backend(b)?;
         Ok(())
-    })
-}
-
-/// Migrate a project file in place (`backup != 0` keeps the original as
-/// `<file>.v<N>.bak`; `dry_run != 0` writes nothing). `*out_json`
-/// (nullable) receives `{path, from_version, to_version, notes, migrated,
-/// backup, dry_run}`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn mk_engine_migrate_project(
-    engine: *const MKEngine,
-    path: *const c_char,
-    backup: i32,
-    dry_run: i32,
-    out_json: *mut *mut c_char,
-) -> MKStatus {
-    unsafe { clear_out(out_json) };
-    guard(|| {
-        let e = unsafe { engine_ref(engine) }?;
-        let path = unsafe { in_str(path, "path") }?;
-        let r = e
-            .engine
-            .migrate_file(Path::new(path), backup != 0, dry_run != 0)?;
-        unsafe { put_json(out_json, &r) }
     })
 }
 

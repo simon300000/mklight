@@ -343,23 +343,62 @@ pub fn asphere_poly<E: FpEnv>(s: &PackedSurface, r2: F<E>) -> (F<E>, F<E>) {
     (p * rho4, dp * rho2 * s.asphere_inv_norm2)
 }
 
-/// `mkl_asphere_poly_df`: `P(r²)` in double-float from the packed hi + lo
-/// coefficients (Horner in `ρ²`; the power-of-two normalisation is exact),
-/// for the refinement of a converged hit: the f32 polynomial alone is off
-/// by ~6e-8 × |P|, which a steep, deep asphere turns into position errors
-/// above the budget.
+/// `mkl_asphere_poly_dp_df`: `P(r²)` and `dP/d(r²)` in double-float from
+/// the packed hi + lo coefficients (Horner in `ρ²`, the power-of-two
+/// normalisation exact), for the refinement of a converged hit: the f32
+/// polynomial alone is off by ~6e-8 × |P|, which a steep, deep asphere turns
+/// into position errors above the budget.
 #[inline(always)]
-fn asphere_poly_df<E: FpEnv>(s: &PackedSurface, r2: D<E>) -> D<E> {
+pub(crate) fn asphere_poly_dp_df<E: FpEnv>(s: &PackedSurface, r2: D<E>) -> (D<E>, D<E>) {
     let n = (s.num_asphere as usize).min(MAX_ASPHERE);
     if n == 0 {
-        return D::ZERO;
+        return (D::ZERO, D::ZERO);
     }
     let rho2 = r2 * s.asphere_inv_norm2;
-    let mut p = D::new(s.asphere[n - 1], s.asphere_lo[n - 1]);
+    let a = |j: usize| D::new(s.asphere[j], s.asphere_lo[j]);
+    let mut p = a(n - 1);
+    let mut dp = a(n - 1) * ((n + 1) as f32);
     for j in (0..n - 1).rev() {
-        p = p * rho2 + D::new(s.asphere[j], s.asphere_lo[j]);
+        p = p * rho2 + a(j);
+        dp = dp * rho2 + a(j) * ((j + 2) as f32);
     }
-    p * (rho2 * rho2)
+    (p * (rho2 * rho2), (dp * rho2) * s.asphere_inv_norm2)
+}
+
+/// `mkl_asphere_refine_df`: from the f32 hit `t1`, two Newton steps on
+/// `z − sag(r²)` along the exact line with the whole slope in double-float,
+/// then the unnormalised normal `(−x·s, −y·s, w)` from the double-float
+/// slope `s = 2w·dP/d(r²) + c` of the last step. An f32 slope would put the
+/// normal of a steep asphere off by ~1e-8 and make a stop hit through it
+/// jitter between neighbouring aims by 1e-9–1e-8 of the stop radius.
+#[inline(always)]
+fn asphere_refine_df<E: FpEnv>(
+    s: &PackedSurface,
+    q: DV<E>,
+    d: DV<E>,
+    t1: F<E>,
+    cd: D<E>,
+    kcd: D<E>,
+) -> (D<E>, DV<E>, DV<E>) {
+    let mut tb = D::from_f(t1);
+    let mut w = D::from_f(F::ONE);
+    let mut gs = cd;
+    for _ in 0..2 {
+        let x = point_on(q, tb, d);
+        let r2 = x[0] * x[0] + x[1] * x[1];
+        w = (D::from_f(F::ONE) - r2 * (kcd * cd)).sqrt();
+        let csag = (r2 * cd) / (w + F::ONE);
+        let (poly, dpoly) = asphere_poly_dp_df(s, r2);
+        let res = (x[2] - csag) - poly;
+        gs = (w * dpoly) * 2.0 + cd;
+        let gp = d[2] - (gs / w) * (x[0] * d[0] + x[1] * d[1]);
+        let step = res / gp;
+        if step.hi().is_finite() {
+            tb = tb - step;
+        }
+    }
+    let x = point_on(q, tb, d);
+    (tb, x, [-(x[0] * gs), -(x[1] * gs), w])
 }
 
 /// `mkl_asphere_domain`: whether the asphere normal is defined at `p`
@@ -542,20 +581,7 @@ fn intersect_legacy<E: FpEnv>(
     let kcd = kapd * cd;
     let (tb, x, g) = if shape == MKL_SHAPE_EVEN_ASPHERE && s.num_asphere > 0 {
         let t1 = asphere_from(s, qf, df, prm)?;
-        // Refinement on z − sag(r²), conic part in double-float.
-        let x0 = point_on(q, D::from_f(t1), d);
-        let r2 = x0[0] * x0[0] + x0[1] * x0[1];
-        let w = (D::from_f(F::ONE) - r2 * (kcd * cd)).sqrt();
-        let csag = (r2 * cd) / (w + F::ONE);
-        let dpoly = asphere_poly(s, r2.hi()).1;
-        let res = (x0[2] - csag) - asphere_poly_df(s, r2);
-        let (xh, wh) = (hi3(x0), w.hi());
-        let slope_w = (2.0 * wh).fma(dpoly, c);
-        let gp = df[2] - slope_w / wh.max(f(f32::MIN_POSITIVE)) * xh[0].fma(df[0], xh[1] * df[1]);
-        let tb = refine_t(t1, res.hi(), gp);
-        let x = point_on(q, tb, d);
-        let gs = (w * dpoly) * 2.0 + cd;
-        (tb, x, [-(x[0] * gs), -(x[1] * gs), w])
+        asphere_refine_df(s, q, d, t1, cd, kcd)
     } else {
         let (t1, _) = conic_from(c, k, qf, df).ok_or(MISS)?;
         // Refinement on F = c(x² + y² + κz²) − 2z.

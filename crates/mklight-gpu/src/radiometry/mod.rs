@@ -8,6 +8,7 @@ pub use jobs::*;
 pub use plan::*;
 pub(crate) mod coating;
 pub(crate) mod math;
+mod transmission;
 mod transport;
 use crate::{pending::JobControl, resident::*};
 use mklight_core::MkResult;

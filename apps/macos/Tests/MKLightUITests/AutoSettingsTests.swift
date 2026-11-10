@@ -105,7 +105,7 @@ import Testing
     }
 
     /// New panes start on a visible patch with the engine's automatic PSF
-    /// and pupil; panes saved with the earlier fixed sampling migrate.
+    /// and pupil.
     @Test func imageSimulationStartsWithAutomaticSampling() {
         let defaults: JSONValue = .object(["optics": .object([
             "field_extent": .number(0.7071), "psf_size": .integer(0), "field_center": .array([.number(0), .number(0)]),
@@ -117,14 +117,6 @@ import Testing
         #expect(s["optics"]?["pupil"]?["grid"]?.int == 0)
         #expect(ImageSimulationSettings.extentTitle(ImageSimulationSettings.fullExtent) == "full field")
         #expect(ImageSimulationSettings.extentTitle(1) == "full square" && ImageSimulationSettings.extentTitle(0.1) == "10 %")
-        let old: [String: JSONValue] = ["optics": .object([
-            "field_extent": .number(0.1), "psf_size": .integer(161),
-            "pupil": .object(["grid": .integer(96), "rays": .integer(97), "amplitude": .string("radiometric")]),
-        ])]
-        let m = ImageSimulationSettings.migrated(old)
-        #expect(m?["optics"]?["psf_size"]?.int == 0 && m?["optics"]?["pupil"]?["grid"]?.int == 0 && m?["optics"]?["pupil"]?["rays"]?.int == 65)
-        #expect(m?["optics"]?["field_extent"]?.doubleValue == 0.1)
-        #expect(ImageSimulationSettings.migrated(["optics": .object(["psf_size": .integer(201)])]) == nil)
     }
 
     /// Relative illumination cells outside the field are null: they stay

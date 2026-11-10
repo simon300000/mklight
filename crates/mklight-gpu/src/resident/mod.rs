@@ -330,7 +330,6 @@ pub enum ResidentOp {
     Aiming(crate::aiming::Request),
     Transforms(crate::transforms::Request),
     Collectives(crate::collectives::Request),
-    Systems(crate::systems::Request),
     Geometry(crate::geometry::Request),
     Radiometry(crate::radiometry::Request),
     Wave(crate::wave_ops::Request),
@@ -530,7 +529,6 @@ pub fn route(op: &ResidentOp, plan: &ResidentPlan) -> MkResult<()> {
         ResidentOp::Aiming(x) => crate::aiming::validate(x, plan),
         ResidentOp::Transforms(x) => crate::transforms::validate(x, plan),
         ResidentOp::Collectives(x) => crate::collectives::validate(x, plan),
-        ResidentOp::Systems(x) => crate::systems::validate(x, plan),
         ResidentOp::Geometry(x) => crate::geometry::validate(x, plan),
         ResidentOp::Radiometry(x) => crate::radiometry::validate(x, plan),
         ResidentOp::Wave(x) => crate::wave_ops::validate(x, plan),
@@ -834,7 +832,6 @@ pub fn accesses(op: &ResidentOp) -> Access {
         ResidentOp::Aiming(r) => crate::aiming::accesses(r),
         ResidentOp::Transforms(r) => crate::transforms::accesses(r),
         ResidentOp::Collectives(r) => crate::collectives::accesses(r),
-        ResidentOp::Systems(r) => crate::systems::accesses(r),
         ResidentOp::Geometry(r) => crate::geometry::accesses(r),
         ResidentOp::Radiometry(r) => crate::radiometry::accesses(r),
         ResidentOp::Wave(r) => crate::wave_ops::accesses(r),
@@ -842,20 +839,6 @@ pub fn accesses(op: &ResidentOp) -> Access {
         ResidentOp::Stray(r) => crate::stray_ops::accesses(r),
         ResidentOp::Optim(r) => crate::optim_ops::accesses(r),
     }
-}
-
-/// A system set may come from immutable upload or a P4 numeric sidecar.
-#[derive(Clone, Debug)]
-pub enum SystemSet {
-    Uploaded(crate::SystemHandle),
-    Resident {
-        headers: BufferId,
-        surfaces: BufferId,
-        coefficients: BufferId,
-        count: usize,
-        max_surfaces: usize,
-        max_wavelengths: usize,
-    },
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]

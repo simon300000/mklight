@@ -19,6 +19,44 @@ use mklight_gpu::{
 /// trace, so a plan's storage no longer scales with path length; the device
 /// commands within a plan are time-calibrated separately.
 pub(crate) const PROBE_TILE: usize = 1 << 20;
+
+/// Process CPU time (user + system, all threads), seconds.
+pub(crate) fn cpu_seconds() -> f64 {
+    let mut u = std::mem::MaybeUninit::<libc::rusage>::zeroed();
+    // SAFETY: getrusage writes one rusage record into valid storage.
+    unsafe { libc::getrusage(libc::RUSAGE_SELF, u.as_mut_ptr()) };
+    // SAFETY: zero-initialised and written by getrusage.
+    let u = unsafe { u.assume_init() };
+    let t = |v: libc::timeval| v.tv_sec as f64 + v.tv_usec as f64 * 1e-6;
+    t(u.ru_utime) + t(u.ru_stime)
+}
+
+/// A wall-clock and process-CPU start mark (stage profiles).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Lap {
+    wall: std::time::Instant,
+    cpu: f64,
+}
+impl Lap {
+    pub(crate) fn now() -> Lap {
+        Lap {
+            wall: std::time::Instant::now(),
+            cpu: cpu_seconds(),
+        }
+    }
+    /// (wall, CPU) seconds since the mark.
+    pub(crate) fn elapsed(&self) -> (f64, f64) {
+        (self.wall.elapsed().as_secs_f64(), cpu_seconds() - self.cpu)
+    }
+}
+
+/// Path groups of the device refinement: the device traces one group's
+/// tile while the host classifies, deduplicates and splits the others.
+pub(crate) const PIPELINE_GROUPS: usize = 4;
+/// Share of the reference's path groups (adjacent in step order, with
+/// shared prefixes) the CPU traces beside the device run.
+pub(crate) const CPU_SHARE: f64 = 0.2;
+
 pub struct GhostTransport<'a> {
     pub backend: &'a dyn ComputeBackend,
     model: &'a GhostModel,
@@ -41,6 +79,14 @@ pub struct GhostTransport<'a> {
     pub(crate) boundary_probes: usize,
     pub(crate) pixel_migrations: usize,
     pub run: Option<RunInfo>,
+    /// Wall seconds of the host stages (deduplication, device waits,
+    /// outcome classification, splits, leaves, maps), for stage profiles.
+    pub(crate) host_seconds: std::collections::BTreeMap<&'static str, f64>,
+    /// Process CPU seconds (all threads) over the same stages.
+    pub(crate) host_cpu_seconds: std::collections::BTreeMap<&'static str, f64>,
+    /// The paths the CPU reference traced beside the device (irradiance
+    /// jobs).
+    pub(crate) cpu_paths: usize,
 }
 impl Drop for GhostTransport<'_> {
     fn drop(&mut self) {
@@ -63,6 +109,25 @@ pub struct ProbeResult {
     pub values: ProbeValues,
     pub run: RunInfo,
     pub stats: PlanStats,
+}
+/// As [`fill`], records filled in parallel by `f` (a function of the
+/// index only, so the records are those of the sequential fill).
+fn fill_par<T: Pod + Send>(
+    b: &dyn ComputeBackend,
+    n: usize,
+    f: impl Fn(usize) -> MkResult<T> + Sync,
+) -> MkResult<BufferHandle> {
+    use rayon::prelude::*;
+    b.fill_buffer(op::record_desc::<T>(n), &mut |mut out| {
+        bytemuck::cast_slice_mut::<_, T>(out.as_mut_slice::<u32>()?)
+            .par_iter_mut()
+            .with_min_len(4096)
+            .enumerate()
+            .try_for_each(|(i, v)| {
+                *v = f(i)?;
+                Ok(())
+            })
+    })
 }
 fn fill<T: Pod>(
     b: &dyn ComputeBackend,
@@ -185,6 +250,9 @@ impl<'a> GhostTransport<'a> {
             reference_seconds: 0.,
             boundary_probes: 0,
             pixel_migrations: 0,
+            host_seconds: Default::default(),
+            host_cpu_seconds: Default::default(),
+            cpu_paths: 0,
             run: None,
         })
     }
@@ -224,7 +292,7 @@ impl<'a> GhostTransport<'a> {
             .unwrap_or([f32::MAX as f64; 2])
             .map(Df32::from_f64);
         p.operations.push(ResidentOp::Ghost(op::Request::Trace {
-            systems: SystemSet::Uploaded(self.systems),
+            systems: self.systems,
             probes: p.view(probes)?,
             offsets: p.view(offsets)?,
             steps: p.view(steps)?,
@@ -322,10 +390,8 @@ impl<'a> GhostTransport<'a> {
         };
         p.operations.push(ResidentOp::Aiming(
             mklight_gpu::aiming::Request::GenerateAim(GenerateAim {
-                systems: SystemSet::Uploaded(self.systems),
+                systems: self.systems,
                 samples: p.view(samples)?,
-                sampling: Sampling::Explicit,
-                unresolved: None,
                 field_wavelength: p.view(metadata)?,
                 field_key: None,
                 seeds: Some(p.view(seeds)?),
@@ -352,7 +418,7 @@ impl<'a> GhostTransport<'a> {
     pub(crate) fn lattice(
         &mut self,
         n: usize,
-        sample: impl FnMut(usize) -> MkResult<LaunchSample>,
+        sample: impl Fn(usize) -> MkResult<LaunchSample> + Sync,
         powers: bool,
         ctx: &JobContext,
     ) -> MkResult<ProbeValues> {
@@ -364,12 +430,13 @@ impl<'a> GhostTransport<'a> {
     pub(crate) fn submit_lattice(
         &self,
         n: usize,
-        sample: impl FnMut(usize) -> MkResult<LaunchSample>,
+        sample: impl Fn(usize) -> MkResult<LaunchSample> + Sync,
         powers: bool,
         ctx: &JobContext,
     ) -> MkResult<PendingLattice> {
         let (chiefs, fields) = self.chiefs.as_ref().unwrap();
-        let input = fill(self.backend, n, sample)?;
+        // The launch records are a function of the index: filled in parallel.
+        let input = fill_par(self.backend, n, sample)?;
         let mut p = self.plan();
         let chiefs = p.import(chiefs.view());
         let fields = p.import(fields.view());
@@ -397,13 +464,20 @@ impl<'a> GhostTransport<'a> {
         self.run = Some(r.run_info);
         Ok(ProbeValues(v))
     }
+    /// Adds the wall and process CPU time since `since` to host stage
+    /// `stage`.
+    pub(crate) fn host(&mut self, stage: &'static str, since: Lap) {
+        let (wall, cpu) = since.elapsed();
+        *self.host_seconds.entry(stage).or_default() += wall;
+        *self.host_cpu_seconds.entry(stage).or_default() += cpu;
+    }
     pub(crate) fn stamp(&self, run: &mut RunInfo) {
         if let Some(r) = &self.run {
             run.backend = r.backend.clone();
             run.precision = r.precision;
             run.settings["resident_backend"] = r.settings.clone();
         }
-        run.settings["gpu"] = serde_json::json!({"system_cache":self.backend.resident_cache_stats(),"resident_bytes":self.resident_probes.iter().map(|h|h.desc().byte_len().unwrap()).sum::<usize>(),"version":MKL_GHOST_VERSION,"distinct_probes":self.distinct_probes,"lattice_keys":self.lattice_keys,"reference_probes":self.fallback_probes,"reference_seconds":self.reference_seconds,"boundary_probes":self.boundary_probes,"pixel_migrations":self.pixel_migrations,"plans":self.stats,"map_plans":*self.map_stats.borrow()});
+        run.settings["gpu"] = serde_json::json!({"system_cache":self.backend.resident_cache_stats(),"resident_bytes":self.resident_probes.iter().map(|h|h.desc().byte_len().unwrap()).sum::<usize>(),"version":MKL_GHOST_VERSION,"distinct_probes":self.distinct_probes,"lattice_keys":self.lattice_keys,"reference_probes":self.fallback_probes,"reference_seconds":self.reference_seconds,"boundary_probes":self.boundary_probes,"pixel_migrations":self.pixel_migrations,"host_seconds":self.host_seconds,"host_cpu_seconds":self.host_cpu_seconds,"cpu_paths":self.cpu_paths,"plans":self.stats,"map_plans":*self.map_stats.borrow()});
         if self.fallback_probes > 0 {
             run.warnings.push(format!(
                 "P9: {} probes completed by CPU f64 reference",
@@ -451,14 +525,30 @@ impl GhostTransport<'_> {
         let maps = summaries.len();
         let nb = template.values.len() * maps;
         let n = leaves.len();
+        use rayon::prelude::*;
         let mut p = self.plan();
-        for (i, l) in leaves.iter_mut().enumerate() {
-            l.destination = i as u32;
-        }
-        let mut field_counts = vec![0u32; maps];
-        for l in &leaves {
-            field_counts[l.map as usize] += 1;
-        }
+        leaves
+            .par_iter_mut()
+            .enumerate()
+            .for_each(|(i, l)| l.destination = i as u32);
+        let field_counts = leaves
+            .par_chunks(1 << 16)
+            .map(|part| {
+                let mut counts = vec![0u32; maps];
+                for l in part {
+                    counts[l.map as usize] += 1;
+                }
+                counts
+            })
+            .reduce(
+                || vec![0u32; maps],
+                |mut a, b| {
+                    for (x, y) in a.iter_mut().zip(b) {
+                        *x += y;
+                    }
+                    a
+                },
+            );
         let max_field = field_counts.iter().copied().max().unwrap_or(0) as usize;
         let field_offsets = self.backend.fill_buffer(
             BufferDesc::new(ElementType::U32, [maps + 1]),
@@ -472,7 +562,8 @@ impl GhostTransport<'_> {
             },
         )?;
 
-        leaves.sort_by_key(|l| l.batch);
+        // Stable, as the sequential sort.
+        leaves.par_sort_by_key(|l| l.batch);
         let mut batches = leaves.iter().map(|l| l.batch as usize).collect::<Vec<_>>();
         batches.dedup();
         let sources = batches
@@ -482,8 +573,8 @@ impl GhostTransport<'_> {
                 p.view(id)
             })
             .collect::<MkResult<Vec<_>>>()?;
-        let records = fill(self.backend, n, |i| {
-            if i % 4096 == 0 {
+        let records = fill_par(self.backend, n, |i| {
+            if i % 65536 == 0 {
                 ctx.check()?;
             }
             let mut l = leaves[i];

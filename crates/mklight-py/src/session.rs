@@ -213,8 +213,8 @@ impl PyEngine {
         Ok(PySession::wrap(session.map_err(engine_err)?))
     }
 
-    /// Open a `.mklight` project file (older schema versions are migrated;
-    /// see `Session.info["migration"]`).
+    /// Open a `.mklight` project file (only the current schema version is
+    /// read; another version raises).
     fn open(&self, py: Python<'_>, path: PathBuf) -> PyResult<PySession> {
         let engine = self.engine.clone();
         let s = py
@@ -453,7 +453,7 @@ impl PySession {
     }
 
     /// Session state: path, dirty flag, hashes, name, open warnings,
-    /// migration report, catalogs.
+    /// catalogs.
     #[getter]
     fn info<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let v = self.lock_py(py).info();

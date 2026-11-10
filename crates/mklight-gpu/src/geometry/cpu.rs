@@ -23,6 +23,26 @@ fn hit<E: FpEnv>(w: &[u32], n: usize, i: usize) -> [Df32; 4] {
         (D::new(f(4), f(13)) / dz).0,
     ]
 }
+/// Header and surfaces of a field row's system, as the kernels check them.
+fn ri_header<'a>(
+    set: &'a crate::layout::PackedSystemSet,
+    f: &super::ri::RiField,
+    slots: usize,
+) -> Option<(
+    &'a crate::layout::PackedHeader,
+    &'a [crate::layout::PackedSurface],
+)> {
+    let h = set.headers.get(f.aim.system as usize)?;
+    if f.aim.wavelength >= h.num_wavelengths || h.num_surfaces as usize != slots {
+        return None;
+    }
+    Some((
+        h,
+        set.surfaces
+            .get(h.surface_offset as usize..)?
+            .get(..slots)?,
+    ))
+}
 pub fn execute(r: &Request, x: &mut Execution, ctl: &JobControl) -> MkResult<()> {
     if x.flush_to_zero {
         run::<Ftz>(r, x, ctl)
@@ -46,7 +66,7 @@ fn run<E: FpEnv>(r: &Request, x: &mut Execution, ctl: &JobControl) -> MkResult<(
         Request::Records(r) => r.slots * r.hits.rays.count,
         Request::Coddington(r) => r.hits.rays.count,
         Request::CloseFocus(r) => r.hits.rays.count / 5,
-        Request::Illumination(r) => r.nodes.desc.shape[0],
+        Request::IlluminationRays(r) => r.tasks.desc.shape[0],
         Request::Opd(r) => r.hits.rays.count,
         Request::FocusTerms(r) => r.mask.desc.len()?,
     };
@@ -277,84 +297,36 @@ fn run<E: FpEnv>(r: &Request, x: &mut Execution, ctl: &JobControl) -> MkResult<(
             put(x, r.output, &out);
             x.words_mut(r.status).copy_from_slice(&status);
         }
-        Request::Illumination(r) => {
-            let owned;
-            let (headers, surfaces, pool) = match &r.systems {
-                SystemSet::Uploaded(h) => {
-                    owned = x.system(*h)?;
-                    (
-                        &owned.headers[..],
-                        &owned.surfaces[..],
-                        &owned.coefficients[..],
-                    )
-                }
-                SystemSet::Resident {
-                    headers,
-                    surfaces,
-                    coefficients,
-                    count,
-                    max_surfaces,
-                    ..
-                } => (
-                    bytemuck::cast_slice(
-                        &x.words(*headers)[..count * size_of::<crate::layout::PackedHeader>() / 4],
-                    ),
-                    bytemuck::cast_slice(
-                        &x.words(*surfaces)[..count
-                            * max_surfaces
-                            * size_of::<crate::layout::PackedSurface>()
-                            / 4],
-                    ),
-                    bytemuck::cast_slice(x.words(*coefficients)),
-                ),
-            };
-            let hi = bytemuck::cast_slice(x.words(r.chiefs.records.unwrap()));
-            let lo = bytemuck::cast_slice(x.words(r.chiefs.record_low.unwrap()));
-            let fields: &[crate::aiming::FieldSpec] = bytemuck::cast_slice(words(x, &r.fields));
-            let nodes: &[crate::aiming::Sample] = bytemuck::cast_slice(words(x, &r.nodes));
-            let st = x.words(r.chiefs.status);
-            let mut out = vec![Df32::ZERO; 4 * n];
-            let mut status = vec![1; n];
-            for (i, node) in nodes.iter().enumerate() {
-                ctl.check()?;
-                let fi = node.field as usize;
-                let v = fields.get(fi).and_then(|f| {
-                    if st[fi] != 0 {
-                        return None;
+        Request::IlluminationRays(r) => {
+            use rayon::prelude::*;
+            let set = x.system(r.systems)?;
+            let fields: &[super::ri::RiField] = bytemuck::cast_slice(words(x, &r.fields));
+            let tasks: &[super::ri::RiTask] = bytemuck::cast_slice(words(x, &r.tasks));
+            let out: Vec<super::ri::RiRay> = tasks
+                .par_iter()
+                .map(|task| {
+                    let f = fields.get(task.field as usize);
+                    match f.and_then(|f| ri_header(&set, f, r.slots)) {
+                        Some((h, s)) => {
+                            let steps: Vec<u32> = (1..h.num_surfaces).collect();
+                            let sys = super::ri::System {
+                                h,
+                                s,
+                                pool: &set.coefficients,
+                                steps: &steps,
+                            };
+                            super::ri::run_ray::<E>(&sys, fields, task, &|| ctl.check().is_ok())
+                        }
+                        None => super::ri::RiRay {
+                            status: crate::consts::MKL_AIM_INVALID,
+                            ..Default::default()
+                        },
                     }
-                    let h = headers.get(f.system as usize)?;
-                    if f.wavelength >= h.num_wavelengths || h.num_surfaces as usize != r.slots {
-                        return None;
-                    }
-                    super::illumination::node::<E>(
-                        h,
-                        &surfaces[h.surface_offset as usize..][..r.slots],
-                        pool,
-                        f,
-                        hi,
-                        lo,
-                        r.chiefs.rays.count,
-                        fi,
-                        node.pupil,
-                        &|| ctl.check().is_ok(),
-                    )
-                });
-                if let Some(v) = v {
-                    for k in [0, 1, 3] {
-                        out[k * n + i] = (D::<E>::from_df(v[k]) * crate::fx::F::new(node.weight)).0;
-                    }
-                    out[2 * n + i] = v[2];
-                    status[i] = u32::from(v[2].hi != 0.0);
-                } else {
-                    out[2 * n + i] = Df32::from_f32(1.0);
-                }
-                ctl.report((i + 1) as f64 / n as f64, "image-point illumination");
-            }
-            for (i, id) in x.words_mut(r.ids).iter_mut().enumerate() {
-                *id = i as u32;
-            }
-            put(x, r.output, &out);
-            x.words_mut(r.status).copy_from_slice(&status);
+                })
+                .collect();
+            ctl.check()?;
+            x.words_mut(r.output)
+                .copy_from_slice(bytemuck::cast_slice(&out));
         }
         Request::CloseFocus(r) => {
             let f = bytemuck::cast_slice(x.words(r.hits.rays.floats));
@@ -372,36 +344,12 @@ fn run<E: FpEnv>(r: &Request, x: &mut Execution, ctl: &JobControl) -> MkResult<(
             x.words_mut(r.status).copy_from_slice(&status);
         }
         Request::Coddington(r) => {
-            let owned;
-            let (headers, surfaces, pool) = match &r.systems {
-                SystemSet::Uploaded(h) => {
-                    owned = x.system(*h)?;
-                    (
-                        &owned.headers[..],
-                        &owned.surfaces[..],
-                        &owned.coefficients[..],
-                    )
-                }
-                SystemSet::Resident {
-                    headers,
-                    surfaces,
-                    coefficients,
-                    count,
-                    max_surfaces,
-                    ..
-                } => (
-                    bytemuck::cast_slice(
-                        &x.words(*headers)[..count * size_of::<crate::layout::PackedHeader>() / 4],
-                    ),
-                    bytemuck::cast_slice(
-                        &x.words(*surfaces)[..count
-                            * max_surfaces
-                            * size_of::<crate::layout::PackedSurface>()
-                            / 4],
-                    ),
-                    bytemuck::cast_slice(x.words(*coefficients)),
-                ),
-            };
+            let owned = x.system(r.systems)?;
+            let (headers, surfaces, pool) = (
+                &owned.headers[..],
+                &owned.surfaces[..],
+                &owned.coefficients[..],
+            );
             let hi = bytemuck::cast_slice(x.words(r.hits.records.unwrap()));
             let lo = bytemuck::cast_slice(x.words(r.hits.record_low.unwrap()));
             let indices = x.words(r.hits.rays.indices);
@@ -664,36 +612,12 @@ fn run<E: FpEnv>(r: &Request, x: &mut Execution, ctl: &JobControl) -> MkResult<(
             put(x, r.output, &out);
         }
         Request::SurfaceSamples(r) => {
-            let owned;
-            let (headers, surfaces, pool) = match &r.systems {
-                SystemSet::Uploaded(h) => {
-                    owned = x.system(*h)?;
-                    (
-                        &owned.headers[..],
-                        &owned.surfaces[..],
-                        &owned.coefficients[..],
-                    )
-                }
-                SystemSet::Resident {
-                    headers,
-                    surfaces,
-                    coefficients,
-                    count,
-                    max_surfaces,
-                    ..
-                } => (
-                    bytemuck::cast_slice(
-                        &x.words(*headers)[..count * size_of::<crate::layout::PackedHeader>() / 4],
-                    ),
-                    bytemuck::cast_slice(
-                        &x.words(*surfaces)[..count
-                            * max_surfaces
-                            * size_of::<crate::layout::PackedSurface>()
-                            / 4],
-                    ),
-                    bytemuck::cast_slice(x.words(*coefficients)),
-                ),
-            };
+            let owned = x.system(r.systems)?;
+            let (headers, surfaces, pool) = (
+                &owned.headers[..],
+                &owned.surfaces[..],
+                &owned.coefficients[..],
+            );
             let samples: &[SurfaceSample] = bytemuck::cast_slice(words(x, &r.samples));
             let mut out = vec![Df32::from_f32(f32::NAN); 3 * n];
             let mut status = vec![0; n];

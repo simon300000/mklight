@@ -56,9 +56,21 @@ then the operand's configuration):
    needed (field, wavelength), and every pupil sampling (ray group or aggregate
    sampling) at a (field, wavelength).
 3. **Trace** each planned item once into a per-candidate cache. Within one
-   candidate this runs in parallel when the batch is smaller than the rayon
-   pool and the candidate traces at least 256 sampling rays (below that the
-   synchronisation costs more than it saves).
+   candidate this runs in parallel when the candidate traces at least 256
+   sampling rays (below that the synchronisation costs more than it saves):
+   field points, then chief rays per (field, wavelength), then the pupil
+   samplings. A candidate evaluated alone or in a batch smaller than the
+   pool (a trial point, the anchor of a finite difference) traces its
+   samplings in runs of 8 nodes (one trace packet) rather than whole
+   groups, because the unaimable rim rays of the outer fields (~140 µs each
+   against ~6 µs for a healthy ray) would otherwise leave the pool waiting
+   on a few groups; in a batch at least as large as the pool, where the
+   candidates fill it, whole groups aim and trace together in full packets
+   (the runs cost ~15 % more CPU there). The automatic semi-diameters that
+   edge-thickness and surface operands need are traced alongside
+   (`rayon::join`). Every ray is traced exactly as in its whole group
+   (`trace_many` is bitwise equal to tracing one by one) and put back in
+   node order, so the values are bit-identical to the serial ones (tested).
 4. **Read** each operand from the cache. Group references (spot centroids,
    piston/tilt) are computed on first use and shared by every ray operand of
    the group, and single pupil points that are group nodes reuse the group's
@@ -533,6 +545,24 @@ at these sizes. An explicit `relative_step` still wins.
 * **f32 GPU operands** (`GpuTraceEvaluator`, see GPU-batched evaluation):
   `η = 1e-3` / `3e-3` for ray positions, `1e-4` / `1e-3` for wavefront
   operands.
+* **Device operands of the resident evaluator** (`ResidentEvaluator`,
+  double-float traces of f64 aims, ~1e-12 relative noise): forward
+  `η = 1e-6` for ray positions and `1e-5` for wavefront operands; central
+  differences take the reference's steps. Largest relative column error
+  against f64 central differences on the samples (default spot merit,
+  every curvature; Metal and emulation, device and host aiming alike):
+  3e-8–1.6e-6 at `1e-6`, against 4e-6–1.5e-3 with the f32-era `1e-3` it
+  used before and 1.9e-6–4.5e-5 with `√ε`; wavefront merit 5e-7–2.2e-5 at
+  `1e-5`, 4e-6–1.1e-4 at `1e-6`. The f32-era step also broke optimisation
+  of vignetted lenses: on a 35-surface ultra-wide zoom a probe `1e-3` away
+  crossed the vignetting edge of a ray that fails at the base point, so one
+  Jacobian column held the failure penalty divided by the step (7e5 against
+  2e3); the trial steps followed that column and were rejected, the trust
+  region shrank below `xtol · ‖D x‖` (inflated by the column's Moré scale)
+  and LM stopped after one iteration (`small_step`) on every device
+  variant, while the reference improved the merit by 30 % in 65
+  iterations. The reference fails the same way when given
+  `fd_relative_step: 1e-3`.
 
 Measured largest relative column error `‖J_j − R_j‖/‖R_j‖` on the Cooke
 triplet (curvatures 1, 3, 6, an air space and the back focus; all fields and
@@ -868,8 +898,7 @@ Front ends use `Engine::stop_job`, `mk_job_stop` (ABI 1.2), Python
 job token: even a queued request is retained until the job starts, and the
 job ends normally (`Done`) with `status: "stopped"` and `stopped: true`.
 A second CLI Ctrl-C cancels. Cancel/supersession still discards the result.
-The legacy `stop_key` / `analysis::optim::request_stop(key)` remains supported;
-one running job holds each key. A stopped sensitivity keeps completed
+A stopped sensitivity keeps completed
 operands; stopped Monte Carlo keeps completed trials.
 
 **Never worse than the start.** The job evaluates the start and the
@@ -890,13 +919,12 @@ precision, device/build and cost decisions remain in the envelope; qualification
 blobs and caches are removed. Result versions for these four jobs are 2.
 Unsupported preparation/features, unresolved aiming and resource/device errors
 remain real, counted fallbacks. Cancellation never starts reference replacement.
-Because a candidate with any unresolved ray is reported whole, the device
-aims its rays under a schedule cap of 32 Newton iterations
-(`AimOptions::schedule_cap`, GPU.md "Bounded aiming commands"): an unaimable
-ray of a bad trial step fails after a bounded number of iterations instead of
-running the reference schedule to its end, while healthy candidate rays
-converge well within the cap (measurements: GPU.md "Bounded aiming
-commands").
+With device aiming, the device aims a ray for at most 8 Newton iterations
+(`AimOptions::schedule_cap`, GPU.md "Bounded aiming commands") and the host
+completes the rays it leaves unresolved in f64 (Host/device division below):
+an unaimable ray of a bad trial step costs the device a bounded number of
+iterations instead of the reference schedule, while healthy candidate rays
+converge well within the cap.
 
 `optimize` and `merit_evaluation` apply the solves (`docs/SOLVES.md`) to
 the start before building the merit. Solve-controlled parameters are never variables: automatic variables
@@ -967,8 +995,8 @@ settings object, the same merit construction (explicit `merit` or
 fixed-boundary relaxation, the EFL hold that `algorithm` selects, solves
 applied first) and the same operand report, without a search or derivatives.
 A derivative-free EFL penalty is weighted from that one evaluation. On the
-CPU every number equals `optimize`'s `start` report (tested). `backend`,
-`gpu_batch` and fallback follow `optimize` with a workload of
+CPU every number equals `optimize`'s `start` report (tested). `backend`
+and fallback follow `optimize` with a workload of
 one candidate, so `auto` normally stays on the CPU; an explicit GPU traces
 the ray operands there, and `backend.reported_on` names it.
 
@@ -997,9 +1025,7 @@ failure policy.
 | `fd_relative_step` | number > 0 or null, `null` | `null`: chosen per operand and evaluator (Derivatives); 0 or a negative step is rejected |
 | `seed` | integer, `0` | seed of `de`, `cma_es`, `hammer` |
 | `backend` | `auto` \| `cpu` \| `gpu` \| `gpu_emulation`, `auto` | merit evaluation. `gpu` uses the GPU device the engine selected for the analysis (`AnalysisInput::device` holding the provider's `GpuDevice`), or the CPU reference with a warning when there is none. `auto` uses that device when the engine handed one over (an engine `auto` request runs these jobs on the CPU reference, `GPU.md` §9.2). `backend.workload` reports the rays counted by `gpu_rays_per_candidate` for the merit's configuration-0 operands on the start system and the batch: the FD Jacobian (n, or 2n central) for `lm` / `dogleg`, the population for `de` (default max(10n, 15)) and `cma_es` (default 4 + ⌊3 ln n⌋), 1 for `nelder_mead`, `candidates_per_round` for `hammer`. A GPU provider lists `optimize` and `tolerance` in its capabilities so that the engine hands them its device. `gpu_emulation` requires the selected `gpu:cpu_f32` provider (validation, tests) |
-| `gpu_batch` | integer, `512` | candidates per GPU dispatch (`GpuEvalSettings::batch`) |
 | `feasibility_tolerance` | number, `1e-6` | total normalised constraint violation regarded as feasible: best-so-far ranking and `final.feasible` |
-| `stop_key` | string or null, `null` | key for `request_stop`; a key held by a running job is rejected |
 
 ### `optimize` result
 
@@ -1036,6 +1062,8 @@ failure policy.
   "backend": {"requested": "gpu", "evaluated_on": "metal:Apple M2 Pro" | "cpu-f64-reference",
               "precision": "f32_gpu" | "f64_reference", "reported_on": "cpu-f64-reference",
               "workload": {"rays_per_candidate": 38, "batch": 7},
+              "aiming": "host" | "device",          // runs handed a GPU device: where the
+                                                     // pupil rays are aimed (Host/device division)
               "gpu_stats": {"gpu_candidates": 0, "cpu_candidates": 0, "rays": 0,
                             "dispatches": 0, "device_seconds": 0.0}},
   "merit_spec": {/* the MeritFunctionSpec used, generated operands included */},
@@ -1066,7 +1094,7 @@ the best point seen. `final` is the better of the answer and the start
 | `criterion` | object or null, `null` | the criterion `MeritFunctionSpec`; `null` generates it with `DefaultMeritSpec::generate_for_tolerancing` from `default_merit` |
 | `default_merit` | object, the default merit without thickness boundaries | generator settings, laid over that default |
 | `mode` | `sensitivity` \| `monte_carlo` \| `both`, `both` | what to run |
-| `trials`, `seed`, `batch` | `100`, `0`, `16` | Monte Carlo: trial `i` draws from Philox stream `TOLERANCE \| i` of `seed` |
+| `trials`, `seed`, `batch` | `100`, `0`, `16` | Monte Carlo: trial `i` draws from Philox stream `TOLERANCE \| i` of `seed`; `batch` trials per evaluation batch, at least 128 (below) |
 | `threshold` | number or null, `null` | criterion value for the yield |
 | `compensator_iterations` | integer, `20` | LM iterations per trial |
 | `percentiles` | array, `[50, 90, 97.7]` | Monte Carlo percentiles, each in [0, 100] |
@@ -1074,10 +1102,15 @@ the best point seen. `final` is the better of the answer and the start
 | `preview_case` | object or null, `null` | evaluate only `{"type":"trial","trial":k}` or `{"type":"sensitivity","operand":k,"positive":true}` (zero-based) and return it as `preview` instead of `sensitivity`/`monte_carlo` |
 | `irregularity_wavelength_um` | positive number or null, `null` | fringe test wavelength; null keeps an existing overlay's, else the primary wavelength |
 | `random_irregularity_orientation` | boolean, `true` | Monte Carlo: a uniform astigmatism axis in [0, 180)° per toleranced surface and trial, reproducible from the seed; false keeps the model's angle |
-| `backend`, `gpu_batch`, `stop_key` | as for `optimize` | |
+| `backend` | as for `optimize` | |
 
 Without compensators, every trial is a single evaluation, and a batch of trials
-goes to the evaluator as one batch (one GPU dispatch).
+goes to the evaluator as one batch (one GPU dispatch). The job hands the
+evaluator at least 128 trials (and sensitivity points) per batch on either
+backend: values do not depend on the batching, and with 16 trials per batch the CPU's 12 threads
+idled at the end of every batch (29-surface F/1.4 lens: 155 → 120 ms for
+the default run, 2.4 → 1.9 s for 1000 trials at 6 × 12 sampling, identical
+results). Progress and a stop request act between batches.
 
 ### `tolerance` result
 
@@ -1129,15 +1162,15 @@ Buffer 0 (when Monte Carlo ran) is `monte_carlo_criteria` (f64, one per trial).
 | defaults | singlet: variables c₁, c₂ and the back focus, EFL held at its start value (replaced by an explicit `efl` operand); tolerances: the lens thickness and both curvatures |
 | singlet through the scheduler | equi-convex start, EFL = 100 constraint: converged, merit ÷5 or more, EFL within 1e-6, the result applies as a session snapshot with the reported hash |
 | Cooke triplet | default merit with thickness boundaries and EFL constraint, LM 40 iterations: merit −20 % or more, every constraint holds to 1e-6, two runs give identical JSON; seeded DE: identical for a seed, different for another, improves |
-| cancel and stop | cancelled after two LM iterations: `Cancelled` without reference scoring; `stop_key` through the scheduler: `Done`, `stopped`, improved; the key is unregistered afterwards |
+| cancel and stop | cancelled after two LM iterations: `Cancelled` without reference scoring; `Engine::stop_job` through the scheduler: `Done`, `stopped`, improved |
 | tolerance | 6 tolerances, back-focus compensator: ranked sensitivities, compensator moves, Monte Carlo identical for a seed, different for another |
 | GPU backends | `gpu_emulation` everywhere and `gpu` (Metal) when present: GPU precision, no runtime qualification, reported on the reference, merit decreases; `auto` with a handed-over device uses it at both merit sizes |
 | global methods | `cma_es`, `de`, `nelder_mead` with the defaults on the singlet and Cooke triplet: improve, feasible, EFL within 1e-4 relative by the penalty; a DE run that cannot improve returns the start (`improved: false`, same snapshot hash) with a warning |
 | snapshot merit | Cooke triplet and Double Gauss, default RMS spot, worst-field MTF and a custom merit, and the DE penalty hold: equal to the optimize start report; expanded defaults round-trip as custom; CPU-f32 GPU counters record one candidate; solves applied first; per-operand errors |
 | feasibility restoration | nonlinear equality leaves a 2.7e-6 defect after one improving LM/dogleg step: repaired below the ranking tolerance, bounds and hard evaluation budgets respected, cancellation retains the best point; 20 LM iterations on the Double Gauss with the worst-field MTF merit (release, ignored) end 3e-3 off the EFL hold and are restored instead of returning the start |
 | defaults feasible | `{}` on the Cooke triplet (the 1 mm glass minimum relaxed to 0.99997, warned), the Petzval and the relay: feasible, improved, EFL held to 1e-6 mm |
-| bad input | `fd_relative_step` 0 or negative, tolerances or compensators on a missing surface, a `stop_key` in use → `InvalidSettings` |
-| stopped sensitivity | a compensated sensitivity of 30 tolerances stopped after its first batch: `stopped`, 15 operands kept, `cancelled: true` |
+| bad input | `fd_relative_step` 0 or negative, tolerances or compensators on a missing surface → `InvalidSettings` |
+| stopped sensitivity | a compensated sensitivity of 90 tolerances stopped through the job's stop token after its first batch of 128 points: `stopped`, the completed operands kept, `cancelled: true` |
 
 ## Glass substitution: `glass_substitution`
 
@@ -1169,8 +1202,8 @@ Every other setting has a default:
 | `top_n` | 10 | combinations returned |
 
 `variables`, `merit`, `default_merit`, `operands`, `constraints`,
-`hold_efl`, `fd_scheme`, `fd_relative_step`, `seed`, `backend`, `gpu_batch`,
-`feasibility_tolerance` and `stop_key` are those of `optimize`. Empty
+`hold_efl`, `fd_scheme`, `fd_relative_step`, `seed`, `backend` and
+`feasibility_tolerance` are those of `optimize`. Empty
 continuous variables select the curvatures of the curved surfaces and the
 back focus; explicit variables may be any `ParamPath`. The re-optimisation is
 `optimize`'s LM: the same merit, augmented-Lagrangian constraints, FD steps
@@ -1266,7 +1299,7 @@ apply any entry as one undoable edit. `starting_merit`, `candidate_sets`,
 With fixed settings and seed, and no time limit or Stop, the result is
 identical for any number of Rayon workers. Progress reports the number of
 re-optimisations, the best merit and the best combination's glasses. Stop
-(`Engine::stop_job` or `stop_key`) ends the search and returns the ranking
+(`Engine::stop_job`) ends the search and returns the ranking
 so far, including re-optimisations cut short (`local_termination:
 "cancelled"`); Cancel discards the job. `max_seconds` covers the search only,
 not setup or the final ranking.
@@ -1277,7 +1310,7 @@ Re-optimisation dominates. For C combinations, n continuous variables and
 I LM iterations, forward differences cost about `C · (1 + I · (n + 1))`
 merit evaluations, plus rejected steps and constraint updates (central
 differences: 2n). One search iteration's combinations run in parallel. All re-optimisations share the resident GPU evaluator, with each FD Jacobian
-batched and split at `gpu_batch`. No candidate/reference checks run during the
+in one batch. No candidate/reference checks run during the
 search. `auto` runs the search on the CPU reference: `glass_substitution` is an
 accuracy exclusion (`GPU.md` §9.2, "Automatic routing"). The final ranking
 adds one CPU f64 merit evaluation per kept combination.
@@ -1322,7 +1355,10 @@ and synthetic catalogues.
   snapshot, resolution and paraxial setup, ray generation (and aiming),
   packing, and operand reads. At the default merit's sampling this work costs
   as much as the CPU trace it replaces (see Throughput). Device-side ray
-  generation and reductions would remove it.
+  generation and reductions would remove it. The hybrid designs (Host/device
+  division of candidate batches) overlap the host share with the device but
+  keep it: tracer construction, automatic semi-diameters and the f64
+  failure path of unaimable rays bound their gain.
 * The GPU evaluator traces chief-ray angles, incidence angles, real working
   F/# and relative illumination on the CPU.
 * The engine, C ABI, Python and CLI expose Stop; the native app still needs
@@ -1332,6 +1368,12 @@ and synthetic catalogues.
   precision envelope or repair those discrepancies.
 
 ## Resident optimisation adapter (P8)
+
+This section describes the adapter as P8 built it. Since the work-split
+study the engine's candidate jobs run its device stages within the hybrid
+division of "Host/device division of candidate batches" below; the P4
+candidate template and reports of whole candidates to the reference
+described here were removed.
 
 `gpu::ResidentEvaluator` is an explicit backend-taking alternative to the
 legacy `GpuTraceEvaluator`; the engine's native candidate jobs use it, and
@@ -1441,9 +1483,7 @@ rounds. It uses no time window or search pruning. Compensated tolerance trials
 use this scheduler, preserving the 33-point MTF focus screen plus the current
 start. Ordinary uncompensated parameter trials retain P4 preparation; random
 irregularity orientations that change extra model fields use the counted
-complete-system preparation route. `ResidentEvaluator::refine_candidates`
-provides the same scheduling for independent glass/multistart refinements and
-returns independently scored f64 outcomes in input order. Catalogue filtering,
+complete-system preparation route. Catalogue filtering,
 trial RNG and population/search decisions retain the reference implementation.
 The low-level perturbation and batched QR operations are available to composed
 callers; trial RNG and independent workers' small local linear solves remain
@@ -1487,3 +1527,192 @@ changing-candidate workloads include it: 32 compensated Cooke trials took
 versus 24 ms; per-candidate geometry qualification commands dominate both.
 Plan peaks are 60 MiB (spot) and 127 MiB (dense wavefront). Cold costs, p95, copies, fallback proportions and raw records are in
 `P8-evidence.md`; these numbers do not set a universal backend threshold.
+
+## Host/device division of candidate batches
+
+The engine's candidate jobs (`merit_evaluation`, `optimize`, `tolerance`,
+`glass_substitution`) divide a run handed a GPU device between the CPU and
+the GPU as described here (`gpu::ResidentEvaluator`); CPU-reference runs
+are unaffected. This is the outcome of the work-split study `solvers`. Its
+alternatives were removed with the study key: the fully resident P1/P4
+adapter (master's design: 3.3× the time of this division, up to 7× on
+large cases), joint glass refinements through the rendezvous scheduler
+(1.7×: lock-step rounds wait for the slowest solve), the CPU reference
+with this division's driver (CPU-heavier), plain host/device batches
+without speculation and always-pipelined batches (ties within noise). Of
+the P8 adapter above, the division keeps the device stages (P1 aiming,
+P3 moments and fits, P5 OPD); the P4 candidate template, the separate
+first-order plan and candidates reported whole to the reference are gone.
+The CPU thread layouts of the study `solver_threads` (two lanes, dedicated
+pools) never beat one lane and were removed too.
+
+**Why the fully resident adapter was slow.** On real-aimed lenses (the 29- and
+35-surface benchmark lenses, real aiming at 1e-10) a few pupil rays of
+every candidate cannot be aimed (vignetted rim rays at the outer fields:
+12 of 570 on the 29-surface lens). The resident adapter reported a candidate
+with any unresolved ray whole to the reference, so every candidate was
+evaluated twice: on the device, where the unaimable rays ran their whole
+capped schedule (32 iterations with line searches, 20–90 ms of device time
+per plan, the slowest lane setting the command's duration) behind
+continuation rounds that read the pending count back, and then completely
+on the CPU. A 22-variable optimisation took 30–50 times as long as on the
+CPU. Without real aiming (the Double Gauss) the cost was the fixed latency
+of a plan per evaluation (3–4 ms: P4 system preparation, aiming rounds,
+waits) and a second plan for the first-order operands, against 0.2 ms of
+CPU work per candidate.
+
+**The division.** Per batch:
+
+1. *Host, parallel over candidates (f64):* tracers (snapshot, resolution,
+   fields with their real-image-height and chief solves), operand plans,
+   chief seed rows, the chief rays themselves (aimed by the host tracer and
+   handed to the device as rays: on the 35-surface wide-angle lens device
+   aims from the host seeds failed for 13 of 30 field/wavelength chiefs),
+   packed systems, and one resident plan: chief traces, pupil-ray aiming
+   from the host chief seeds, trace, chief-relative coordinates and moment
+   reductions (OPD and piston/tilt fits for wavefront merits). The device's
+   aiming schedule is capped at 8 Newton iterations per ray and its continuation rounds are committed
+   without reading the pending count back (`AimOptions::speculative_rounds`;
+   one round without real aiming).
+2. *Host, while the device runs:* the rays routed to the host (below) and
+   every operand that needs no ray (model operands with their automatic
+   semi-diameters, paraxial and first-order operands), from the same
+   tracers; no separate first-order plan.
+3. *Host, after the plan:* the device rays are read in place; every ray the
+   device left unresolved is aimed and traced again with the candidate's
+   f64 tracer, so an aim fails only when the reference's fails (a ray the
+   device aimed and then traced to an aperture stays clipped); a group with host rays forms its aggregates from rays on
+   the host; then all operand values, with `Candidate::value_with`.
+
+A chief ray the device fails to trace is replaced by the host's, with every
+ray of its field and wavelength traced on the host (they depend on it
+through the device's chief-relative coordinates and OPD); no candidate is
+reported whole to the reference. In a finite-difference batch (anchored:
+probes and the re-evaluated base point) a ray completed on the host for one
+candidate is completed on the host for every candidate, so a derivative
+never differences a device ray against an f64 one. Rays that were
+unresolved or slow (more than 6 device iterations) in an eighth of a
+batch's candidates are routed to the host before the plan in the following
+batches, the same for every candidate of a batch, for the evaluator's
+lifetime: the device then runs only lanes that converge in a few
+iterations (2–3 ms of device time per plan on the 29-surface lens), and the
+host traces the hard rays while the device works. An evaluator's first
+device-aimed batch of four or more candidates is preceded by three of its
+candidates traced alone, to learn those rays (one perturbed Monte Carlo
+trial learned 18 of the 34 rays the batches route on the 35-surface lens,
+three learn all): the Metal executor runs a large
+generation in tiles one after another, each as long as its slowest lane,
+so a cold 91-candidate sensitivity batch spent 370 ms of device time in
+67 command buffers on the 29-surface lens. When the device leaves more than
+half of a candidate's rays to the host (on the 35-surface ultra-wide lens it
+aimed 166 of 570 within the cap), the evaluator hands the rest of the run
+to the reference (`evaluate_batch_near`, counted as a fallback).
+
+`MKLIGHT_SOLVERS_TRACE_ROUTING=1` prints, per batch, the device and
+host-routed rays and the device's unresolved, clipped and slow rays.
+
+**Pipelined batches** (`PIPELINE_FROM`, `ResidentEvaluator::
+with_pipelining_from`). A batch of at least 64 candidates is split into
+three sub-batches (at least 8 candidates each), and the host preparation of
+sub-batch k + 1 and the finishing of k − 1 overlap the device's work on k:
+Monte Carlo and sensitivity batches gain (1000 trials at 6 × 12 sampling on
+the 29- and 35-surface lenses: 1.92 → 1.72 s and 1.98 → 1.75 s), a
+23-candidate Jacobian loses (Double Gauss `optimize` 792 vs 582 ms), so
+Jacobians stay one plan.
+
+**Aiming** (the `aiming` key). *Host aiming:* every pupil ray is aimed on
+the host by the candidate's f64 tracer (`generate_many`: the reference's
+aims, bit for bit) and the device only traces it from the host's starting
+ray (`TraceResident`) and forms the chief-relative coordinates, moments,
+OPD and fits. A ray the host cannot aim fails as on the reference (it
+enters the plan with an aim-outside report and is not completed again);
+there is no device aiming, no probe candidate and no routing. In a
+finite-difference batch the base point is first evaluated on the host and
+its recorded solves seed every candidate's tracer, as in the reference's
+`evaluate_batch_near`, so the probes' aims are the reference's seeded
+aims. *Device aiming:* the device aims with host completion as above.
+
+*The rule* (`aiming` unset, `gpu::DEVICE_AIM_FROM`) picks per batch: the
+device aims a batch whose estimated device rays times the system's
+surfaces without a closed-form intersection (aspheres, polynomial and
+freeform sags; none under paraxial aiming, which solves nothing) reach
+2e6, the host aims every other. Host aiming costs
+what the reference spends; device aiming saves host work only where a ray
+is expensive on the host and the batch amortises the device's plan and
+its cold first batch. Measured (shuffled, quiet machine, Monte Carlo
+batches of 128 unless noted; time relative to host aiming):
+
+| lens | batch work | device aiming |
+|---|---:|---:|
+| 50 spherical surfaces, 1000 trials at 6 × 12 | 0 | 1.04 |
+| Double Gauss (paraxial aiming), 1000 trials at 6 × 12 | 0 | 1.00 |
+| 29 surfaces, 2 aspheres: default tolerance batches | 4e5 | 1.19 |
+| 29 surfaces, 2 aspheres: 256 trials at 5 × 10 | 1.5e6 | 1.49 |
+| 29 surfaces, 2 aspheres: 1000 trials at 6 × 12 | 2.2e6 | 0.84 |
+| 35 surfaces, 8 aspheres: LM Jacobian (33 candidates) | 6e5 | 1.2 |
+| 35 surfaces, 8 aspheres: 256 trials, default sampling | 2.2e6 | 0.90 |
+| 35 surfaces, 8 aspheres: 1000 trials at 6 × 12 | 8.8e6 | 0.79 |
+| 39 surfaces, 7 aspheres: 1000 trials at 6 × 12 | 7.7e6 | 0.82 |
+
+Batch size alone does not separate these: the spherical lens loses with
+device aiming at every size, the aspheric zoom wins at default
+tolerance sizes. LM Jacobians, trial points, glass refinements and merit
+evaluations stay far below the threshold. `aiming` set to a device design
+(`device` or `table`; the solvers' rows hold too few rays for a seed table,
+so both mean the same here) pins device aiming for every batch, to
+`host-table` or `split:<share>` host aiming. Reported as `backend.aiming`
+(`by-batch`, `host` or `device`) and `solvers_aiming`; the batches the
+device aimed are counted in `resident_evaluation.device_aimed_batches`.
+
+**Speculative Jacobians** (`LsqSettings::speculative_jacobian`). A trial
+point of LM or dogleg that follows an accepted step is evaluated in one
+batch with the first-pass finite-difference probes of the Jacobian at it
+(`deriv::fd_first_batch`); when the step is accepted, its Jacobian needs no
+further batch, so an iteration costs one batch instead of two. A rejected
+step wastes the probes, so trial points after a rejection are evaluated
+alone: on the 29-surface lens, whose merit (failed-ray penalties) rejects
+about ten trial points per Jacobian, speculating on every trial point
+evaluated 9× as many candidates (10 177 against 1110) for the same 34
+iterations. Every evaluation performed counts against `max_evaluations`. On an
+evaluator whose values do not depend on the batch the iterates are
+bit-identical to the plain run (tested on the Cooke triplet).
+
+Speculation applies with device aiming pinned only. With host aiming every probe
+is a host evaluation, as on the CPU reference (which does not speculate),
+and the probes of a rejected trial point sit at a design whose rim rays
+fail and run the whole aiming schedule: on the 35-surface zoom, 8 LM
+iterations with every trial rejected took 606–623 ms and 544–577
+evaluations with speculation and 466 ms and 387 evaluations without
+(CPU reference 368 ms, 387 evaluations); on a full optimisation of that
+lens speculation added 64 % of evaluations per iteration. The Double Gauss
+optimisation is unaffected (335–444 against 366–389 ms), its glass
+substitution 6 % slower without it.
+
+**Accuracy.** Device rays are double-float traces of f64 aims;
+host-completed rays and rayless operands are the reference's f64 values
+(bit-identical for model and paraxial operands, tested). Forward
+differences take the device steps of "Step size" above.
+`tests/split_designs.rs` checks the division against the reference on
+every sample with a default spot and wavefront merit plus thickness
+boundaries, first-order, aggregate, single and inner real-ray operands
+(emulation and Metal; device and host aiming, one plan and pipelined), host
+completion, routing and handover to the reference at device caps of 1–8
+iterations (the real-aimed Cooke triplet at cap 4 routes rays without
+handing over), equal values with and without pipelining,
+finite-difference column errors (1.8e-7 against f64 central differences on
+the real-aimed Cooke triplet, also with host completion), LM on the
+evaluator, and speculative LM. The engine test `tests/solver_splits.rs`
+runs both aiming options of all four jobs against the reference under the
+solver-outcome contract (emulation; Metal ignored). A truncated solve
+(3 LM iterations, 2 local glass iterations) may miss a merit or violation
+gate when it deviates no more than twice as much as the reference itself
+moves under the two differences a device run brings: a perturbation of
+the values (the reference on a copy with one curvature changed by 1e-9)
+and the device's forward step (the reference with `fd_relative_step:
+1e-6`). Such trajectories react to tiny perturbations: the nudged
+reference differs by up to 2 % in the Double Gauss's merit after 3
+iterations and by up to 52 % in the glass finalists' merits (anamorphic
+sample; 1.5–3.5 % on the achromat, Double Gauss and relay), against the
+merit gate of 0.33 %; and the reference with the device's step reproduces
+the device's glass finalists to about 1 % (violations of infeasible
+intermediate finalists 4e-5–1e-4 apart, against a gate of 6.7e-6).

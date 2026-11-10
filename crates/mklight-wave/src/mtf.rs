@@ -313,7 +313,7 @@ fn lattice_otf(pupil: &PupilFunction, ctx: &JobContext) -> MkResult<(usize, Vec<
         buf[j * m..j * m + n].copy_from_slice(&field[j * n..(j + 1) * n]);
     }
     fft2(&mut buf, m, Dir::Inverse, n, &ctx.subrange(0.0, 0.5))?;
-    buf.iter_mut()
+    buf.par_iter_mut()
         .for_each(|z| *z = C64::new(z.norm_sqr(), 0.0));
     fft2(&mut buf, m, Dir::Forward, m, &ctx.subrange(0.5, 1.0))?;
     // Σ_k I_k = M²·Σ|p|²; normalise by the area-weighted energy instead
@@ -325,6 +325,7 @@ fn lattice_otf(pupil: &PupilFunction, ctx: &JobContext) -> MkResult<(usize, Vec<
     let c = (m / 2) as i64;
     let mi = m as i64;
     let mut data: Vec<C64> = (0..m * m)
+        .into_par_iter()
         .map(|k| {
             let i = ((k % m) as i64 - c).rem_euclid(mi) as usize;
             let j = ((k / m) as i64 - c).rem_euclid(mi) as usize;
@@ -350,25 +351,30 @@ fn sensor_spectrum(pupil: &PupilFunction) -> MkResult<(Vec<C64>, f64)> {
     let [eu, ev, ew] = map.frame;
     let g = (1.0 - map.sin_max * map.sin_max).sqrt();
     let tau = 2.0 * std::f64::consts::PI;
+    // Samples side by side; the energy sums in sample order.
+    let samples: Vec<Option<(C64, f64)>> = (0..n * n)
+        .into_par_iter()
+        .map(|k| {
+            let (a, b) = (
+                map.sin_max * pupil.coord(k % n),
+                map.sin_max * pupil.coord(k / n),
+            );
+            let (x, y) = (
+                a * eu.x + b * ev.x - g * ew.x,
+                a * eu.y + b * ev.y - g * ew.y,
+            );
+            let (ix, iy, qz) = map.lattice(x, y)?;
+            let (s, c, w) = map.sample(ix, iy);
+            // `s = c·A`: the hard edge counts `c·A²`.
+            (c > 0.0).then(|| (C64::from_polar(s / qz, tau * w), s * s / (c * qz * qz)))
+        })
+        .collect();
     let mut field = vec![C64::default(); n * n];
     let mut energy = mklight_core::math::KahanSum::default();
-    for (k, z) in field.iter_mut().enumerate() {
-        let (a, b) = (
-            map.sin_max * pupil.coord(k % n),
-            map.sin_max * pupil.coord(k / n),
-        );
-        let (x, y) = (
-            a * eu.x + b * ev.x - g * ew.x,
-            a * eu.y + b * ev.y - g * ew.y,
-        );
-        let Some((ix, iy, qz)) = map.lattice(x, y) else {
-            continue;
-        };
-        let (s, c, w) = map.sample(ix, iy);
-        if c > 0.0 {
-            // `s = c·A`: the hard edge counts `c·A²`.
-            energy.add(s * s / (c * qz * qz));
-            *z = C64::from_polar(s / qz, tau * w);
+    for (z, sample) in field.iter_mut().zip(samples) {
+        if let Some((value, e)) = sample {
+            energy.add(e);
+            *z = value;
         }
     }
     Ok((field, energy.value()))
@@ -379,12 +385,17 @@ fn sensor_spectrum(pupil: &PupilFunction) -> MkResult<(Vec<C64>, f64)> {
 /// (for the interpolation, see [`Otf`]).
 pub fn otf_fft(pupil: &PupilFunction, ctx: &JobContext) -> MkResult<Otf> {
     let aberrated = pupil.opd_waves().iter().any(|&w| w != 0.0);
-    let (m, data) = lattice_otf(pupil, &ctx.subrange(0.0, if aberrated { 0.5 } else { 1.0 }))?;
-    let reference = if aberrated {
-        Some(lattice_otf(&pupil.without_aberrations(), &ctx.subrange(0.5, 1.0))?.1)
-    } else {
-        None
-    };
+    // The aberrated and the reference lattice OTF side by side.
+    let (otf, reference) = rayon::join(
+        || lattice_otf(pupil, &ctx.subrange(0.0, if aberrated { 0.5 } else { 1.0 })),
+        || {
+            aberrated
+                .then(|| lattice_otf(&pupil.without_aberrations(), &ctx.subrange(0.5, 1.0)))
+                .transpose()
+        },
+    );
+    let (m, data) = otf?;
+    let reference = reference?.map(|(_, r)| r);
     let spacing = 1.0 / pupil.alias_free_field_mm();
     let c = m / 2;
     let centroid = |z: C64| {
@@ -816,10 +827,18 @@ pub fn polychromatic_mtf(
     let mut warnings = Vec::new();
     let mut cutoff: f64 = 0.0;
     let np = pupils.len() as f64;
-    for (q, (p, w)) in pupils.iter().enumerate() {
-        let sub = ctx.subrange(q as f64 / np, (q + 1) as f64 / np);
+    // The wavelengths' OTFs side by side; the sums run in wavelength order.
+    let otfs: Vec<_> = pupils
+        .par_iter()
+        .enumerate()
+        .map(|(q, (p, _))| {
+            let sub = ctx.subrange(q as f64 / np, (q + 1) as f64 / np);
+            otf_and_reference(p, &nus, method, true, &sub)
+        })
+        .collect();
+    for ((p, w), otf) in pupils.iter().zip(otfs) {
         let wn = w / wsum;
-        let (o, d) = otf_and_reference(p, &nus, method, true, &sub)?;
+        let (o, d) = otf?;
         for k in 0..nus.len() {
             acc[k] += o[k] * wn;
             dl[k] += d[k] * wn;
@@ -985,41 +1004,60 @@ pub(crate) fn polychromatic_focus_mtf(
     let mut warnings = vec![Vec::new(); focus.len()];
     let mut cutoff: f64 = 0.0;
     let np = pupils.len() as f64;
-    for (q, &(p, w)) in pupils.iter().enumerate() {
-        let sub = ctx.subrange(q as f64 / np, (q + 1) as f64 / np);
+    // The wavelengths side by side (each parallel over its planes); every
+    // sum runs in wavelength order.
+    type Planes = Vec<(Vec<C64>, Vec<WaveWarning>)>;
+    let per_pupil: Vec<MkResult<(Vec<C64>, Planes)>> = pupils
+        .par_iter()
+        .enumerate()
+        .map(|(q, &(p, _))| {
+            let sub = ctx.subrange(q as f64 / np, (q + 1) as f64 / np);
+            let prepared = focus_correlations(p, &nus, &sub.subrange(0.0, 0.2))?;
+            let lag: Vec<C64> = prepared
+                .iter()
+                .map(|c| {
+                    let sum: mklight_core::math::KahanSum =
+                        c.terms.iter().map(|t| t.magnitude).collect();
+                    C64::new((sum.value() + c.deficit) / c.norm, 0.0)
+                })
+                .collect();
+            let planes: Planes = focus
+                .par_iter()
+                .map(|&dz| {
+                    sub.check()?;
+                    let (opd, plane_warnings) = p.focus_shifted_opd(dz / p.geometry().chief_ray[2]);
+                    let otf = prepared
+                        .iter()
+                        .map(|c| {
+                            let mut re = mklight_core::math::KahanSum::default();
+                            let mut im = mklight_core::math::KahanSum::default();
+                            for t in &c.terms {
+                                let w: f64 = t
+                                    .neighbours
+                                    .iter()
+                                    .zip(&t.coefficients)
+                                    .map(|(&k, c)| c * opd[k])
+                                    .sum();
+                                let (s, cs) = (tau * (w - opd[t.source])).sin_cos();
+                                re.add(t.magnitude * cs);
+                                im.add(t.magnitude * s);
+                            }
+                            C64::new(re.value() + c.deficit, im.value()) / c.norm * c.offset
+                        })
+                        .collect();
+                    Ok((otf, plane_warnings))
+                })
+                .collect::<MkResult<_>>()?;
+            sub.report(1.0, "through-focus MTF");
+            Ok((lag, planes))
+        })
+        .collect();
+    for (&(p, w), pupil) in pupils.iter().zip(per_pupil) {
         let wn = w / wsum;
-        let prepared = focus_correlations(p, &nus, &sub.subrange(0.0, 0.2))?;
-        for (d, c) in dl.iter_mut().zip(&prepared) {
-            let sum: mklight_core::math::KahanSum = c.terms.iter().map(|t| t.magnitude).collect();
-            *d += C64::new((sum.value() + c.deficit) / c.norm, 0.0) * wn;
+        let (lag, planes) = pupil?;
+        for (d, z) in dl.iter_mut().zip(lag) {
+            *d += z * wn;
         }
-        let planes: Vec<(Vec<C64>, Vec<WaveWarning>)> = focus
-            .par_iter()
-            .map(|&dz| {
-                sub.check()?;
-                let (opd, plane_warnings) = p.focus_shifted_opd(dz / p.geometry().chief_ray[2]);
-                let otf = prepared
-                    .iter()
-                    .map(|c| {
-                        let mut re = mklight_core::math::KahanSum::default();
-                        let mut im = mklight_core::math::KahanSum::default();
-                        for t in &c.terms {
-                            let w: f64 = t
-                                .neighbours
-                                .iter()
-                                .zip(&t.coefficients)
-                                .map(|(&k, c)| c * opd[k])
-                                .sum();
-                            let (s, cs) = (tau * (w - opd[t.source])).sin_cos();
-                            re.add(t.magnitude * cs);
-                            im.add(t.magnitude * s);
-                        }
-                        C64::new(re.value() + c.deficit, im.value()) / c.norm * c.offset
-                    })
-                    .collect();
-                Ok((otf, plane_warnings))
-            })
-            .collect::<MkResult<_>>()?;
         for ((acc, warnings), (otf, plane)) in acc.iter_mut().zip(&mut warnings).zip(planes) {
             for (a, z) in acc.iter_mut().zip(otf) {
                 *a += z * wn;
@@ -1029,7 +1067,6 @@ pub(crate) fn polychromatic_focus_mtf(
             }
         }
         cutoff = cutoff.max(p.geometry().cutoff_frequency(p.wavelength_um()));
-        sub.report(1.0, "through-focus MTF");
     }
     Ok(acc
         .iter()

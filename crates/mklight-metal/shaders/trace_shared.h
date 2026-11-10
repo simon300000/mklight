@@ -189,16 +189,27 @@ static inline float2 mkl_asphere_poly(constant MklPackedSurface& s, float r2) {
     return float2(p * rho4, dp * rho2 * s.asphere_inv_norm2);
 }
 
-// P(r^2) in double-float from the packed hi + lo coefficients.
-static inline float2 mkl_asphere_poly_df(constant MklPackedSurface& s, float2 r2) {
+// (P(r^2), dP/d(r^2)) in double-float from the packed hi + lo coefficients
+// (trace_kernel::asphere_poly_dp_df).
+static inline void mkl_asphere_poly_dp_df(constant MklPackedSurface& s, float2 r2,
+                                          thread float2& p_out, thread float2& dp_out) {
     uint n = min(s.num_asphere, MKL_MAX_ASPHERE);
-    if (n == 0u) return float2(0.0f);
-    float2 rho2 = mkl_df_mul_f32(r2, s.asphere_inv_norm2);
-    float2 p = float2(s.asphere[n - 1u], s.asphere_lo[n - 1u]);
-    for (int j = int(n) - 2; j >= 0; --j) {
-        p = mkl_df_add(mkl_df_mul(p, rho2), float2(s.asphere[j], s.asphere_lo[j]));
+    if (n == 0u) {
+        p_out = float2(0.0f);
+        dp_out = float2(0.0f);
+        return;
     }
-    return mkl_df_mul(p, mkl_df_mul(rho2, rho2));
+    float2 rho2 = mkl_df_mul_f32(r2, s.asphere_inv_norm2);
+    float2 an = float2(s.asphere[n - 1u], s.asphere_lo[n - 1u]);
+    float2 p = an;
+    float2 dp = mkl_df_mul_f32(an, float(n + 1u));
+    for (int j = int(n) - 2; j >= 0; --j) {
+        float2 a = float2(s.asphere[j], s.asphere_lo[j]);
+        p = mkl_df_add(mkl_df_mul(p, rho2), a);
+        dp = mkl_df_add(mkl_df_mul(dp, rho2), mkl_df_mul_f32(a, float(j + 2)));
+    }
+    p_out = mkl_df_mul(p, mkl_df_mul(rho2, rho2));
+    dp_out = mkl_df_mul_f32(mkl_df_mul(dp, rho2), s.asphere_inv_norm2);
 }
 
 static inline bool mkl_asphere_domain(constant MklPackedSurface& s, float3 p) {
@@ -322,22 +333,29 @@ static inline uint mkl_intersect_legacy(constant MklPackedSurface& s, uint shape
     float2 kapd = mkl_df_add_f32(float2(s.conic, s.conic_lo), 1.0f);
     float2 kcd = mkl_df_mul(kapd, cd);
     if (shape == MKL_SHAPE_EVEN_ASPHERE && s.num_asphere > 0u) {
+        // trace_kernel::asphere_refine_df: two double-float Newton steps and
+        // the normal from the double-float slope.
         float t1;
         uint code = mkl_asphere_from(s, qf, dfv, prm, t1);
         if (code != MKL_RAY_OK) return code;
-        MklDv x0 = mkl_point_on(q, float2(t1, 0.0f), d);
-        float2 r2 = mkl_df_add(mkl_df_mul(x0.v[0], x0.v[0]), mkl_df_mul(x0.v[1], x0.v[1]));
-        float2 w = mkl_df_sqrt(mkl_df_sub(float2(1.0f, 0.0f), mkl_df_mul(r2, mkl_df_mul(kcd, cd))));
-        float2 csag = mkl_df_div(mkl_df_mul(r2, cd), mkl_df_add_f32(w, 1.0f));
-        float2 pp = mkl_asphere_poly(s, r2.x);
-        float2 res = mkl_df_sub(mkl_df_sub(x0.v[2], csag), mkl_asphere_poly_df(s, r2));
-        float3 xh = mkl_hi3(x0);
-        float wh = w.x;
-        float slope_w = fma(2.0f * wh, pp.y, c);
-        float gp = dfv.z - slope_w / max(wh, MKL_FLT_MIN) * fma(xh.x, dfv.x, xh.y * dfv.y);
-        float2 tb = mkl_refine_t(t1, res.x, gp);
+        float2 tb = float2(t1, 0.0f);
+        float2 w = float2(1.0f, 0.0f);
+        float2 gs = cd;
+        for (int it = 0; it < 2; ++it) {
+            MklDv xi = mkl_point_on(q, tb, d);
+            float2 r2 = mkl_df_add(mkl_df_mul(xi.v[0], xi.v[0]), mkl_df_mul(xi.v[1], xi.v[1]));
+            w = mkl_df_sqrt(mkl_df_sub(float2(1.0f, 0.0f), mkl_df_mul(r2, mkl_df_mul(kcd, cd))));
+            float2 csag = mkl_df_div(mkl_df_mul(r2, cd), mkl_df_add_f32(w, 1.0f));
+            float2 poly, dpoly;
+            mkl_asphere_poly_dp_df(s, r2, poly, dpoly);
+            float2 res = mkl_df_sub(mkl_df_sub(xi.v[2], csag), poly);
+            gs = mkl_df_add(mkl_df_mul_f32(mkl_df_mul(w, dpoly), 2.0f), cd);
+            float2 gp = mkl_df_sub(d.v[2], mkl_df_mul(mkl_df_div(gs, w),
+                mkl_df_add(mkl_df_mul(xi.v[0], d.v[0]), mkl_df_mul(xi.v[1], d.v[1]))));
+            float2 step = mkl_df_div(res, gp);
+            if (isfinite(step.x)) tb = mkl_df_sub(tb, step);
+        }
         MklDv x = mkl_point_on(q, tb, d);
-        float2 gs = mkl_df_add(mkl_df_mul_f32(mkl_df_mul_f32(w, pp.y), 2.0f), cd);
         hit.tb = tb;
         hit.x = x;
         hit.g.v[0] = mkl_df_neg(mkl_df_mul(x.v[0], gs));

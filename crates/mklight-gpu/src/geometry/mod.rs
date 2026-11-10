@@ -6,7 +6,7 @@ pub const VERSION: u32 = 1;
 pub(crate) const RECORD_FLOATS: usize = crate::consts::MKL_AIM_RECORD_FLOATS as usize;
 mod cpu;
 mod curvature;
-mod illumination;
+pub mod ri;
 mod sag;
 pub mod spec;
 
@@ -50,7 +50,7 @@ pub struct Characteristic {
     pub output: BufferId,
 }
 /// Requested local sag probes. The system and surface index are validated
-/// on the device so resident candidate sidecars can be consumed directly.
+/// on the device.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct SurfaceSample {
@@ -68,7 +68,7 @@ pub struct VertexProjection {
 #[derive(Clone, Debug)]
 pub struct SurfaceSamples {
     pub projection: Option<VertexProjection>,
-    pub systems: SystemSet,
+    pub systems: crate::SystemHandle,
     /// U32 [count,8], SurfaceSample records.
     pub samples: PlanView,
     /// DF [count,3]: sag, gradient x/y; status 0 valid, 1 outside domain,
@@ -119,27 +119,26 @@ pub struct CloseFocus {
 }
 #[derive(Clone, Debug)]
 pub struct Coddington {
-    pub systems: SystemSet,
+    pub systems: crate::SystemHandle,
     pub hits: ResidentHits,
     pub slots: usize,
     /// DF [rays,3]: signed tangential/sagittal focal distances and chief dz.
     pub output: BufferId,
     pub status: BufferId,
 }
+/// Aimed rays of the image-point illumination solve ([`ri`]): one thread
+/// per ray.
 #[derive(Clone, Debug)]
-pub struct Illumination {
-    /// Stable U32 [nodes] logical indices for sparse unresolved compaction.
-    pub ids: BufferId,
-    pub systems: SystemSet,
-    /// FieldSpec rows aligned with chief hits, last row is the q-step scale field.
+pub struct IlluminationRays {
+    pub systems: crate::SystemHandle,
+    /// [`ri::RiField`] rows, U32 [fields, MKL_RI_FIELD_WORDS].
     pub fields: PlanView,
-    pub chiefs: ResidentHits,
+    /// [`ri::RiTask`] rows, U32 [rays, MKL_RI_TASK_WORDS].
+    pub tasks: PlanView,
+    /// Surfaces of the system.
     pub slots: usize,
-    /// Sample rows, field selects a chief, weight is the polar quadrature weight.
-    pub nodes: PlanView,
-    /// DF [4,nodes]: weighted solid-angle/area, failed count, weighted cos4.
+    /// [`ri::RiRay`] rows, U32 [rays, MKL_RI_RAY_WORDS].
     pub output: BufferId,
-    pub status: BufferId,
 }
 #[derive(Clone, Debug)]
 pub struct Opd {
@@ -186,17 +185,17 @@ pub enum Request {
     Records(Records),
     Coddington(Coddington),
     CloseFocus(CloseFocus),
-    Illumination(Illumination),
+    IlluminationRays(IlluminationRays),
     Opd(Opd),
     FocusTerms(FocusTerms),
 }
 impl Request {
     /// The packed systems a request evaluates surfaces of, if any.
-    pub fn systems(&self) -> Option<&SystemSet> {
+    pub fn systems(&self) -> Option<crate::SystemHandle> {
         match self {
-            Request::SurfaceSamples(r) => Some(&r.systems),
-            Request::Coddington(r) => Some(&r.systems),
-            Request::Illumination(r) => Some(&r.systems),
+            Request::SurfaceSamples(r) => Some(r.systems),
+            Request::Coddington(r) => Some(r.systems),
+            Request::IlluminationRays(r) => Some(r.systems),
             _ => None,
         }
     }
@@ -233,40 +232,6 @@ pub fn view(id: BufferId, ty: ElementType, shape: impl Into<Vec<usize>>) -> Plan
 }
 pub fn validate(r: &Request, p: &ResidentPlan) -> MkResult<()> {
     use ElementType::{DoubleFloat as D, U32};
-    if let Some(SystemSet::Resident {
-        headers,
-        surfaces,
-        coefficients,
-        count,
-        max_surfaces,
-        max_wavelengths,
-    }) = r.systems()
-    {
-        if *count == 0
-            || *count > u32::MAX as usize
-            || *max_surfaces < 2
-            || *max_surfaces > u32::MAX as usize
-            || *max_wavelengths > crate::layout::MAX_WAVELENGTHS
-        {
-            return Err(bad("geometry resident system dimensions"));
-        }
-        let hw = count
-            .checked_mul(size_of::<crate::layout::PackedHeader>() / 4)
-            .ok_or_else(|| bad("geometry header extent"))?;
-        let sw = count
-            .checked_mul(*max_surfaces)
-            .and_then(|n| n.checked_mul(size_of::<crate::layout::PackedSurface>() / 4))
-            .ok_or_else(|| bad("geometry surface extent"))?;
-        for (id, len) in [(*headers, hw), (*surfaces, sw)] {
-            let d = p.desc(id)?;
-            if d.element != U32 || d.len()? != len {
-                return Err(bad("geometry resident system sidecar layout"));
-            }
-        }
-        if p.desc(*coefficients)?.element != D {
-            return Err(bad("geometry coefficient layout"));
-        }
-    }
     match r {
         Request::Coordinates(r) => {
             for h in [&r.hits, &r.chiefs] {
@@ -315,31 +280,20 @@ pub fn validate(r: &Request, p: &ResidentPlan) -> MkResult<()> {
             output(p, r.output, D, &[n])?;
             output(p, r.status, U32, &[n])
         }
-        Request::Illumination(r) => {
-            let nr = r.chiefs.rays.count;
-            let n = r.nodes.desc.shape.first().copied().unwrap_or(0);
+        Request::IlluminationRays(r) => {
+            ri_fields(&r.fields, r.slots)?;
+            let n = r.tasks.desc.shape.first().copied().unwrap_or(0);
             input(
-                &r.nodes,
+                &r.tasks,
                 U32,
-                &[n, crate::consts::MKL_AIM_SAMPLE_WORDS as usize],
+                &[n, crate::consts::MKL_RI_TASK_WORDS as usize],
             )?;
-            input(
-                &r.fields,
+            output(
+                p,
+                r.output,
                 U32,
-                &[nr, crate::consts::MKL_AIM_FIELD_WORDS as usize],
-            )?;
-            for id in [r.chiefs.records, r.chiefs.record_low] {
-                output(
-                    p,
-                    id.ok_or_else(|| bad("illumination chief records"))?,
-                    ElementType::F32,
-                    &[r.slots, nr, RECORD_FLOATS],
-                )?;
-            }
-            output(p, r.chiefs.status, U32, &[3, nr])?;
-            output(p, r.ids, U32, &[n])?;
-            output(p, r.output, D, &[4, n])?;
-            output(p, r.status, U32, &[n])
+                &[n, crate::consts::MKL_RI_RAY_WORDS as usize],
+            )
         }
         Request::CloseFocus(r) => {
             let n = r.hits.rays.count;
@@ -453,6 +407,18 @@ pub fn validate(r: &Request, p: &ResidentPlan) -> MkResult<()> {
         }
     }
 }
+fn ri_fields(v: &PlanView, slots: usize) -> MkResult<usize> {
+    let n = v.desc.shape.first().copied().unwrap_or(0);
+    if n == 0 || !(2..=u32::MAX as usize).contains(&slots) {
+        return Err(bad("illumination fields"));
+    }
+    input(
+        v,
+        ElementType::U32,
+        &[n, crate::consts::MKL_RI_FIELD_WORDS as usize],
+    )?;
+    Ok(n)
+}
 fn points(v: &PlanView, mask: &PlanView, segment: usize) -> MkResult<usize> {
     let n = v.desc.shape.get(1).copied().unwrap_or(0);
     let channels = crate::consts::MKL_GEOMETRY_POINT_CHANNELS as usize;
@@ -462,21 +428,6 @@ fn points(v: &PlanView, mask: &PlanView, segment: usize) -> MkResult<usize> {
         return Err(bad("geometry segment length"));
     }
     Ok(n)
-}
-fn system_reads(a: &mut Access, systems: &SystemSet) {
-    match systems {
-        SystemSet::Uploaded(h) => a.systems.push(*h),
-        SystemSet::Resident {
-            headers,
-            surfaces,
-            coefficients,
-            ..
-        } => a.reads.extend([
-            view(*headers, ElementType::U32, [0]),
-            view(*surfaces, ElementType::U32, [0]),
-            view(*coefficients, ElementType::DoubleFloat, [0]),
-        ]),
-    }
 }
 pub fn accesses(r: &Request) -> Access {
     let mut a = Access::default();
@@ -510,20 +461,10 @@ pub fn accesses(r: &Request) -> Access {
             a.reads.extend([r.chief_index.clone(), r.reference.clone()]);
             a.writes = vec![r.output, r.status];
         }
-        Request::Illumination(r) => {
-            a.reads = vec![
-                r.fields.clone(),
-                r.nodes.clone(),
-                view(r.chiefs.status, ElementType::U32, [0]),
-            ];
-            for id in [r.chiefs.records, r.chiefs.record_low]
-                .into_iter()
-                .flatten()
-            {
-                a.reads.push(view(id, ElementType::F32, [0]));
-            }
-            system_reads(&mut a, &r.systems);
-            a.writes = vec![r.output, r.status, r.ids];
+        Request::IlluminationRays(r) => {
+            a.reads = vec![r.fields.clone(), r.tasks.clone()];
+            a.systems.push(r.systems);
+            a.writes = vec![r.output];
         }
         Request::CloseFocus(r) => {
             a.reads.extend(hit_views(&r.hits));
@@ -536,7 +477,7 @@ pub fn accesses(r: &Request) -> Access {
             for id in [r.hits.rays.indices, r.hits.status] {
                 a.reads.push(view(id, ElementType::U32, [0]));
             }
-            system_reads(&mut a, &r.systems);
+            a.systems.push(r.systems);
             a.writes = vec![r.output, r.status];
         }
         Request::Records(r) => {
@@ -566,7 +507,7 @@ pub fn accesses(r: &Request) -> Access {
             }
             a.reads.push(r.samples.clone());
             a.writes = vec![r.output, r.status];
-            system_reads(&mut a, &r.systems);
+            a.systems.push(r.systems);
         }
     }
     a

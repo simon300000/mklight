@@ -9,9 +9,8 @@ use std::sync::{
     atomic::{AtomicBool, AtomicU64, Ordering},
 };
 mod evaluator;
-mod first_order;
 pub mod scheduler;
-pub use evaluator::{EvaluationStats, ResidentEvaluator};
+pub use evaluator::{DEVICE_AIM_FROM, EvaluationStats, PIPELINE_FROM, ResidentEvaluator};
 
 type SamplingCache = Vec<(
     crate::merit::PupilSampling,
@@ -118,8 +117,25 @@ impl GpuContext {
         })
     }
     pub fn submit(&self, p: ResidentPlan, ctx: &JobContext) -> MkResult<PlanResult> {
+        let pending = self.submit_async(p, ctx)?;
+        self.complete(pending)
+    }
+    /// Submit a plan without waiting: the device runs it while the caller
+    /// continues; [`Self::complete`] waits and records its statistics.
+    pub fn submit_async(
+        &self,
+        p: ResidentPlan,
+        ctx: &JobContext,
+    ) -> MkResult<mklight_gpu::pending::Pending<PlanResult>> {
         let inner = JobContext::with(ctx.cancel.clone(), Default::default());
-        let result = self.backend.submit_plan(p, &inner)?.wait()?;
+        self.backend.submit_plan(p, &inner)
+    }
+    /// Wait for a plan of [`Self::submit_async`] and record its statistics.
+    pub fn complete(
+        &self,
+        pending: mklight_gpu::pending::Pending<PlanResult>,
+    ) -> MkResult<PlanResult> {
+        let result = pending.wait()?;
         self.observe(result.stats.clone());
         Ok(result)
     }

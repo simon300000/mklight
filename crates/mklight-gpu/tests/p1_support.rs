@@ -51,7 +51,7 @@ pub fn make_plan(
     let snap = Snapshot::new(t.system().system().clone()).unwrap();
     let mut p = ResidentPlan::new(snap);
     p.seed = Some(42);
-    p.settings = serde_json::json!({"package":"P1","field":field,"wavelength":wl,"aim":t.aiming(),"iterations":cap,"tolerance":1e-10,"sampling":"explicit","seed":42,"records":records});
+    p.settings = serde_json::json!({"package":"P1","field":field,"wavelength":wl,"aim":t.aiming(),"iterations":cap,"tolerance":1e-10,"seed":42,"records":records});
     let spec = FieldSpec::new(
         t.system(),
         t.paraxial(),
@@ -79,10 +79,8 @@ pub fn make_plan(
     let generated = rays(&mut p, points.len());
     p.operations
         .push(ResidentOp::Aiming(Request::GenerateAim(GenerateAim {
-            systems: SystemSet::Uploaded(handle),
+            systems: handle,
             samples: sv,
-            sampling: Sampling::Explicit,
-            unresolved: None,
             field_wavelength: fw,
             field_key: Some(format!("{field}:{wl}:{:?}", bytemuck::bytes_of(&spec))),
             seeds: None,
@@ -107,7 +105,7 @@ pub fn make_plan(
     let hit = hits(&mut p, points.len(), if records { steps + 1 } else { 0 });
     p.operations
         .push(ResidentOp::Aiming(Request::TraceResident(TraceResident {
-            systems: SystemSet::Uploaded(handle),
+            systems: handle,
             input: generated.clone(),
             steps: p.view(si).unwrap(),
             start_surface: 0,
@@ -187,8 +185,8 @@ pub fn host_seeded(
 pub fn rebind(mut p: ResidentPlan, h: SystemHandle) -> ResidentPlan {
     for op in &mut p.operations {
         match op {
-            ResidentOp::Aiming(Request::GenerateAim(g)) => g.systems = SystemSet::Uploaded(h),
-            ResidentOp::Aiming(Request::TraceResident(t)) => t.systems = SystemSet::Uploaded(h),
+            ResidentOp::Aiming(Request::GenerateAim(g)) => g.systems = h,
+            ResidentOp::Aiming(Request::TraceResident(t)) => t.systems = h,
             _ => {}
         }
     }
