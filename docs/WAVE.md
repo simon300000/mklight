@@ -42,9 +42,7 @@ coordinates); the module docs in
   `−(k̂·ê_u, k̂·ê_v)/sinθ'max` (`PupilGeometry::pupil_coords`): a ray from the
   top of the pupil travels downwards. This is the orientation for which the
   PSF kernel `exp(+i2πν·x)` and the Huygens sum agree and a positive tilt
-  `W = t·v` moves the image toward `−y` (`ε = −(λ/NA)∂W/∂v`). (Before the
-  tracer link existed, `pupil_coords` returned `+k̂·ê/sinθ'max`, the
-  point-reflected position; that was a sign error, fixed here.)
+  `W = t·v` moves the image toward `−y` (`ε = −(λ/NA)∂W/∂v`).
 * **Chief-ray frame** `(ê_u, ê_v, ê_w)`: the image surface axes carried by
   the smallest rotation onto the chief ray. FFT PSFs are reported on the
   image surface via the projection `B` (`pupil` module docs); the MTF uses
@@ -98,13 +96,9 @@ waves on every lattice ray of four sample systems). As `R → ∞` it becomes
 `(OPL_c − OPL_r) + n'(b_r − b_c)`, the phase of each ray's plane wave at
 `P`, which is what the Debye integral needs. `mklight_trace::opd` takes the
 same limit, so wave maps and geometric OPD fans agree for telecentric
-systems too (a defocus `δz` beyond focus gives `+n'δz(1 − cosθ)`).
-(`mklight_trace::opd` used to refer telecentric OPDs to the plane through
-`I` normal to the chief ray, `n'(w·d_c)/(d·d_c)`; that is not the
-`R → ∞` limit and reported defocus with the opposite sign,
-`n'δz(1 − 1/cosθ)`, differing at `O(δz·θ²)`. It was fixed together with
-this link; `tests/telecentric_opd.rs` in `mklight-trace` and the wave
-telecentric test pin it.)
+systems too (a defocus `δz` beyond focus gives `+n'δz(1 − cosθ)`;
+`tests/telecentric_opd.rs` in `mklight-trace` and the wave telecentric test
+pin it).
 
 **Pupil scale.** `sinθ'max` is the largest `|(α, β)|` of the traced rays and
 rim points, so the grid always holds the whole beam. It is a scale, not a
@@ -302,9 +296,9 @@ this is a sampling check, not a claim that those designs are corrected.
 **Anamorphic coverage.** The pupil mask is the actual traced boundary on
 the reference sphere, not an assumed circle. The sparse-ray diagnostic
 compares each extrapolation gap with the longer local lattice edge (the
-median triangle edge), rather than `sqrt(2 × triangle area)`. The latter
-is a geometric mean of unequal pitches and falsely flagged the ordinary
-rim of a squeezed pupil. A genuinely missing region still warns (tested
+median triangle edge), not `sqrt(2 × triangle area)`, a geometric mean of
+unequal pitches that would flag the ordinary rim of a squeezed pupil. A
+genuinely missing region still warns (tested
 with rays absent over half of a masked aperture).
 
 **MTF methods.** `direct` (default) evaluates the pupil autocorrelation at
@@ -331,9 +325,9 @@ the lattice through the aperture rim, so its transform is still the PSF at
 `B·x` on the normal-plane lattice `Δν = cutoff/n` (read at `B^{−T}·ν`).
 Only the remainder `(γ_rim − γ)·ê_w`, a fraction of a cell that vanishes
 on the rim (no blurred edge), is interpolated. On axis both are unchanged, bit for bit.
-On the double Gauss (F/2) the change reaches 0.015 at the 14° field, where
-the result agrees with the transformed Huygens PSF to 0.01 (the projection
-was off by up to 0.02). Pupils crossing the sensor horizon (`q_z ≥ 0`) are
+On the double Gauss (F/2) at the 14° field the result differs from the
+projection's by up to 0.015 and agrees with the transformed Huygens PSF to
+0.01 (the projection is off by up to 0.02). Pupils crossing the sensor horizon (`q_z ≥ 0`) are
 rejected. The FFT **PSF** still uses `B`; use the Huygens PSF when the
 longitudinal phase matters.
 
@@ -368,8 +362,8 @@ cargo test --release -p mklight-wave --test tests interactive:: -- --ignored --n
 * The automatic grid resolves the phase interpolated from the traced lattice;
   it does not adaptively discover features smaller than the `rays` spacing.
   Increase `pupil.rays` for sharply localised wavefront structure.
-* The default amplitude model is `transmission` (§3); `radiometric` is
-  more faithful for PSF energy placement but not yet the default.
+* The default amplitude model is `transmission`, not the more faithful
+  `radiometric` (§3).
 
 ## 8. Image simulation
 
@@ -626,9 +620,8 @@ snapshot and configuration identity.
   group equal Fourier radii; batched images share each Bessel kernel. Image
   moments and line-spread reductions also remain resident.
 
-Published inputs are immutable shared allocations. Producers use `fill_buffer`,
-consumers use `read_view`, and final owned results widen directly from those
-views. `ResidentPupil::opd` is a `BufferView`, so focused planes share their batch
+Final owned results widen directly from the `read_view`s of the published
+allocations. `ResidentPupil::opd` is a `BufferView`, so focused planes share their batch
 allocation without copying. `WaveResult` retains `PlanStats` and actual-backend
 `RunInfo`; callers that compose lower-level operations (the optimiser, the
 engine) must preserve the snapshot and library identity. Cancellation discards outputs and never
@@ -677,7 +670,5 @@ shader origins; the ignored `all_gpu_traced_pupils` suite checks every
 built-in field/wavelength pupil traced on the device, and
 `tests/split_designs.rs` the host/device division. `tests/p6_bench.rs`
 (ignored) times complete native jobs against the CPU f64 reference. Engine
-routing uses the calibrated cost model of GPU.md §9.2, not these timings;
-earlier measurements are in
-[history/wave-ghost-stray-measurements.md](history/wave-ghost-stray-measurements.md).
+routing uses the calibrated cost model of GPU.md §9.2, not these timings.
 

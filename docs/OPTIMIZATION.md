@@ -106,9 +106,8 @@ and the wall time of the driver. `run_info` builds the same record from a
 
 ## Conventions
 
-* Units follow CONVENTIONS §1: mm, degrees, OPD in waves at the ray's
-  wavelength. Real-ray positions and directions are in the surface's local
-  frame unless `global`.
+* Units follow CONVENTIONS §1. Real-ray positions and directions are in the
+  surface's local frame unless `global`.
 * **Field and wavelength selectors.** `FieldSelector::Index` names a system
   field (with its vignetting factors). `Normalized { hx, hy }` is an arbitrary
   field point without vignetting factors. `All` means every field with positive
@@ -148,8 +147,7 @@ and the wall time of the driver. `run_info` builds the same record from a
   `Σ w r²` equal to the full-pupil merit and reduces to `v(p)` for a
   symmetric candidate, at twice the ray cost. Tests on the Cooke triplet with
   x decenter, y and z tilts and off-axis field points check it against the
-  mirrored full pupil to 1e-10. Before this check, a half-pupil tolerancing
-  criterion overstated x-decenter and y-tilt sensitivities 18–39×.
+  mirrored full pupil to 1e-10.
 
 ## Operand reference
 
@@ -339,9 +337,6 @@ E ∝ G · |dμ/dh| / |dA'/dh|
   1e-4.
 
 This holds for any lens: real, distorting or vignetting, aplanatic or not.
-The previous ratio of image-space solid angles was right only for aplanatic
-lenses and gave 1.005 for the unvignetted singlet at 5°, where the correct
-value is 0.985.
 
 **Pupil integration.** Along each azimuth, the transmitted radial intervals
 are found from 12 equally spaced samples, and every pass/block transition is
@@ -365,7 +360,7 @@ Tests (`tests/trace_regressions.rs`):
 | ideal lens: cos⁴θ | < 1e-9 |
 | ideal lens behind a 9 mm aperture 20 mm in front of the 10 mm pupil, `cos⁴θ · A∩(d tan θ)/A∩(0)` at 10°, 20°, 35° (RI down to 0.078; at 35° the pupil centre is blocked) | < 2e-6 |
 | finite object, ideal lens, view factor of the pupil disc | < 1e-8 |
-| vignetted Cooke triplet (surfaces 1 and 6 stopped down 15 %): 6 × 16 vs 12 × 32 vs 48 × 256 | agree to 1e-8 (the old dropped-cell grid moved 10 % between 12 × 24 and 96 × 192) |
+| vignetted Cooke triplet (surfaces 1 and 6 stopped down 15 %): 6 × 16 vs 12 × 32 vs 48 × 256 | agree to 1e-8 |
 
 **Cost.** On the Cooke triplet, one operand (field and axis) takes 0.45 ms
 unvignetted and 2.5 ms vignetted.
@@ -457,14 +452,8 @@ clear semi-diameters of the candidate with `SequentialTracer::semi_diameters`
 (all fields and wavelengths, chief plus pupil rim, fixed apertures clipping),
 freezes them (`fix_semi_diameters`, margin 0) and applies the model formula.
 Each surface's sag is taken at its own clear semi-diameter, and the smaller
-surface continues flat out to the larger rim. Before this change, the edge of
-the Double Gauss's cemented L3 was measured at the larger L2 aperture. That
-height lies outside the steep interface's sag domain, so the operand was
-`Invalid` and every candidate failed. The edges now evaluate. Two outer edges
-(L1 and L6) are negative at the sample's own clear apertures, a genuine
-violation that the optimiser removes.
-The edge height therefore moves with the design during optimisation. The
-semi-diameters are computed once per candidate, only when such an operand is
+surface continues flat out to the larger rim, so the edge height moves with
+the design during optimisation. The semi-diameters are computed once per candidate, only when such an operand is
 present and some surface is `Auto`. `ModelEvaluator` alone reports these
 operands as `Invalid`.
 
@@ -495,13 +484,13 @@ chief aims and pupil-ray aims with their stop Jacobians (analytic, one trace)
 (`mklight_trace::AimSeeds`); every candidate of the batch, the re-evaluated
 base point included, starts its solves there, takes at least one Newton step
 and must resolve its change to 1e-6 of itself (never looser than the aiming
-tolerance), else it solves unseeded. Measured on a 29-surface benchmark lens
-(49 variables, real image heights, real aiming 1e-10): column errors against
-a central-difference reference stay at the unseeded level (median 1.5e-6,
-max 7e-4), while seeding without the re-evaluated base point raised them to
-2.4e-2 (the unseeded `f0` carries aim errors up to the aiming tolerance that
-cancel only between solves taken from the same start). `seeded_jacobian`
-(ignored test of `mklight-bench`) prints the comparison. Serial CPU work falls 10–20 % (3-iteration LM, glass substitution); with 12 workers the gain is smaller, since the anchor precedes its batch. Prefix re-tracing (reusing rays before
+tolerance), else it solves unseeded. The base point is re-evaluated because
+an unseeded `f0` carries aim errors up to the aiming tolerance that cancel
+only between solves taken from the same start: on a 29-surface lens (49
+variables, real image heights, real aiming 1e-10) column errors stay at the
+unseeded level (median 1.5e-6, max 7e-4) with it and reach 2.4e-2 without;
+`seeded_jacobian` (ignored test of `mklight-bench`) prints the comparison.
+Serial CPU work falls 10–20 % (3-iteration LM, glass substitution); with 12 workers the gain is smaller, since the anchor precedes its batch. Prefix re-tracing (reusing rays before
 the first changed surface) does not apply to such lenses: a real-image-height
 field or image-space F-number moves every ray when any surface changes.
 
@@ -550,18 +539,14 @@ at these sizes. An explicit `relative_step` still wins.
   differences take the reference's steps. Largest relative column error
   against f64 central differences on the samples (default spot merit,
   every curvature; Metal and emulation, device and host aiming alike):
-  3e-8–1.6e-6 at `1e-6`, against 4e-6–1.5e-3 with the f32-era `1e-3` it
-  used before and 1.9e-6–4.5e-5 with `√ε`; wavefront merit 5e-7–2.2e-5 at
-  `1e-5`, 4e-6–1.1e-4 at `1e-6`. The f32-era step also broke optimisation
-  of vignetted lenses: on a 35-surface ultra-wide zoom a probe `1e-3` away
-  crossed the vignetting edge of a ray that fails at the base point, so one
-  Jacobian column held the failure penalty divided by the step (7e5 against
-  2e3); the trial steps followed that column and were rejected, the trust
-  region shrank below `xtol · ‖D x‖` (inflated by the column's Moré scale)
-  and LM stopped after one iteration (`small_step`) on every device
-  variant, while the reference improved the merit by 30 % in 65
-  iterations. The reference fails the same way when given
-  `fd_relative_step: 1e-3`.
+  3e-8–1.6e-6 at `1e-6`, against 4e-6–1.5e-3 at `1e-3` and 1.9e-6–4.5e-5
+  with `√ε`; wavefront merit 5e-7–2.2e-5 at `1e-5`, 4e-6–1.1e-4 at `1e-6`.
+  A step as large as `1e-3` also breaks optimisation of vignetted lenses:
+  on a 35-surface ultra-wide zoom a probe crosses the vignetting edge of a
+  ray that fails at the base point, so one Jacobian column holds the failure
+  penalty divided by the step, the trial steps that follow it are rejected
+  and LM stops after one iteration (`small_step`); the reference fails the
+  same way when given `fd_relative_step: 1e-3`.
 
 Measured largest relative column error `‖J_j − R_j‖/‖R_j‖` on the Cooke
 triplet (curvatures 1, 3, 6, an air space and the back focus; all fields and
@@ -596,11 +581,10 @@ nominal, it returns the operands whose both limits were evaluated
 (`SensitivityReport::cancelled`). The compensator solves of the trials share
 the job's cancellation but not its progress bar. `monte_carlo` draws trial `i` from Philox stream `TOLERANCE | i`,
 so statistics are bit-reproducible for a seed and any trial can be replayed on
-its own. The CPU reference and a GPU evaluator agree only within the accuracy
-contract (the compensator solves settle within it), so a backend `auto` run
-repeats bit-identically in the same engine because an identical request keeps
-its first route (GPU.md §9.2); across engines or hosts `auto` may route
-differently, and `backend: "cpu"` is bit-reproducible across sessions. Both are tested on the Cooke triplet with a back-focus compensator.
+its own (tested on the Cooke triplet with a back-focus compensator). Across
+backends and under `auto`, reproducibility follows CONVENTIONS §6: the CPU
+reference and a GPU evaluator agree within the accuracy contract, which the
+compensator solves settle within.
 Without compensators every trial is a single evaluation, so the evaluator
 receives a whole batch of perturbed systems in one call (one device batch
 with the resident evaluator). With compensators, each trial runs its own small LM
@@ -671,9 +655,9 @@ moves the inclusive surface range `surface..=last` rigidly: `decenter_x`,
 vertex's axes, about the `pivot` vertex (default: the first). The model keeps
 it as `element_placement` on the first surface; surfaces after the range do
 not move (an entry/return pair). All components on one first surface share
-the range and pivot. A single-surface decentre or tilt set through a
-`ParamPath` on a surface without a placement now returns after that surface
-(`restore_after`), so it no longer moves the rest of the system.
+the range and pivot. A single-surface decentre or tilt `ParamPath` on a
+surface without a placement gets `restore_after`, so it does not move the
+rest of the system (CONVENTIONS §2).
 
 ## End-to-end tests (`tests/trace_optim.rs`)
 
@@ -754,9 +738,8 @@ estimated device rays per candidate as `backend.workload.rays_per_candidate`
 `AnalysisRequest { analysis: "optimize", settings, .. }`, settings
 normalised against their schema, and a `RunInfo` whose `seed` is
 `settings.seed`. The reference of their settings and result fields is
-generated from the schemas (`docs/RESULTS.md` §8); the tables and examples
-below add the meaning. Numbers follow CONVENTIONS §11: NaN is `null`, ±∞ is
-`"inf"` / `"-inf"`. `ParamPath`, `VariableSpec`, `Operand`,
+generated from the schemas (`docs/RESULTS.md` §8); the notes below add the
+meaning. Numbers follow CONVENTIONS §11. `ParamPath`, `VariableSpec`, `Operand`,
 `MeritFunctionSpec`, `DefaultMeritSpec`, `ToleranceOperand` and
 `Compensator` use their serde forms (for example
 `{"param": {"param": "curvature", "surface": 3}, "lower": 0.0}`).
@@ -795,16 +778,9 @@ evaluator drove the search. `backend` says what evaluated the search
 (`evaluated_on`, `precision`) and actual device/fallback accounting. Optimize
 and glass reports use the CPU f64 reference at the end; tolerance and merit
 evaluation return the active evaluator's values. Requested/used backend,
-precision, device/build and cost decisions are in the envelope. Result
-versions for these four jobs are 2.
+precision, device/build and cost decisions are in the envelope.
 Unsupported preparation/features, unresolved aiming and resource/device errors
 remain real, counted fallbacks. Cancellation never starts reference replacement.
-With device aiming, the device aims a ray for at most 8 Newton iterations
-(`AimOptions::schedule_cap`, GPU.md "Bounded aiming commands") and the host
-completes the rays it leaves unresolved in f64 (Host/device division below):
-an unaimable ray of a bad trial step costs the device a bounded number of
-iterations instead of the reference schedule, while healthy candidate rays
-converge well within the cap.
 
 **One model.** The four jobs (`optimize`, `merit_evaluation`, `tolerance`,
 `glass_substitution`) work on the same system and build their merit the
@@ -870,10 +846,6 @@ methods get a warning. Their populations also start closer to the design
 than the library defaults: DE `init_spread` 0.03 and CMA-ES `sigma0` 0.05
 variable scales (10 % of a curvature by default), instead of 1.0 and 0.3,
 which sample candidates so much worse that the search stays at the start.
-In a one-off measurement on seven of the samples with the default settings,
-every method (`lm`, `dogleg`, `de`, `cma_es`, `nelder_mead`, `hammer`)
-improved every sample and ended feasible; the tests below cover the singlet
-and the Cooke triplet.
 
 **End-point feasibility restoration.** A nonlinear equality such as the
 EFL hold can end an LM or dogleg run (and basin hopping's local solves) just
@@ -915,86 +887,71 @@ and fallback follow `optimize` with a workload of
 one candidate, so `auto` normally stays on the CPU; an explicit GPU traces
 the ray operands there, and `backend.reported_on` names it.
 
-The result holds `merit`, `violation` (total normalised), `status`
-(`EvalStatus`), `operands`, `merit_spec` and `backend`, and no buffers.
-`merit_spec` is the expanded `MeritFunctionSpec` (generated operands and the
-EFL hold included), usable as a custom `merit`. `operands` rows are
+The result has no buffers. `merit_spec` (generated operands and the EFL
+hold included) is usable as a custom `merit`. `operands` rows are
 `optimize`'s, with `start` and `value` both the snapshot value. Failed
 operands have a null `value` and an `error`; the totals follow the spec's
 failure policy.
 
 ### `optimize` settings
 
-| key | type, default | meaning |
-|---|---|---|
-| `variables` | array, `[]` | `VariableSpec`s (`param`, optional `lower`, `upper`, `scale`, `fd_step`, `label`); empty: the curvature of every curved, optically active surface and the back focus (the thickness before the image) |
-| `hold_efl` | boolean, `true` | hold the EFL at its start value, unless the merit already has an enabled `efl` operand: a constraint (label `hold EFL`) for `lm`, `dogleg`, `hammer`, a penalty residual (label `hold EFL (penalty)`) for `de`, `cma_es`, `nelder_mead` (Constraints by method) |
-| `merit` | object or null, `null` | a `MeritFunctionSpec`; `null` generates the default merit from `default_merit` for the variables |
-| `default_merit` | object, the full `DefaultMeritSpec` default | generator settings, laid key by key over the defaults (`{"thickness": null}` drops the thickness boundaries; `{"thickness": {"glass_min_centre": 0.9}}` changes one) |
-| `operands` | array, `[]` | operands appended to the merit (e.g. an EFL target residual) |
-| `constraints` | array, `[]` | operands appended as explicit constraints (role forced to `constraint`) |
-| `algorithm` | `lm` \| `dogleg` \| `de` \| `cma_es` \| `nelder_mead` \| `hammer`, `lm` | the optimiser |
-| `options` | object, `{}` | the algorithm's settings (`LsqSettings`, `DeSettings`, `CmaEsSettings`, `NelderMeadSettings`, `HammerSettings`), laid over the job's defaults: the library defaults except `constraints.max_inner_iterations` 10 (LM, dogleg, hammer's `local`), `init_spread` 0.03 (DE) and `sigma0` 0.05 (CMA-ES), with `max_iterations`, `fd_scheme`, `fd_relative_step` and `seed` in their fields. One rule for every algorithm: a key of `options` wins over the job setting that fills the same field (`options.max_iterations` over `max_iterations`, `options.jacobian` or hammer's `options.local.jacobian` over `fd_scheme` and `fd_relative_step`). A key must be a field of the selected algorithm's settings, through nested objects (`jacobian`, `constraints`, `local`); an unknown one is rejected with the valid keys. `method` (LM, dogleg) and `seed` (DE, CMA-ES, hammer) belong to the job's `algorithm` and `seed` and are rejected in `options` |
-| `max_iterations` | integer or null, `null` | iterations (`lm`, `dogleg`, `nelder_mead`), generations (`de`, `cma_es`) or rounds (`hammer`); `null`: 200, 200, 2000, 100, 200, 20 |
-| `fd_scheme` | `forward` \| `central`, `forward` | finite differences of LM / dogleg (and hammer's local runs) |
-| `fd_relative_step` | number > 0 or null, `null` | `null`: chosen per operand and evaluator (Derivatives); 0 or a negative step is rejected |
-| `seed` | integer, `0` | seed of `de`, `cma_es`, `hammer` |
-| `backend` | `auto` \| `cpu` \| `gpu` \| `gpu_emulation`, `auto` | merit evaluation. `gpu` uses the GPU device the engine selected for the analysis (`AnalysisInput::device` holding the provider's `GpuDevice`), or the CPU reference with a warning when there is none. `auto` uses that device when the engine handed one over (under an engine `auto` request the engine's cost model decides whether it does, `GPU.md` §9.2). `backend.workload` reports the device rays per candidate estimated by `gpu::device_rays_per_candidate` (an upper bound of the resident plan's probes) for the merit's configuration-0 operands on the start system and the batch: the FD Jacobian (n, or 2n central) for `lm` / `dogleg`, the population for `de` (default max(10n, 15)) and `cma_es` (default 4 + ⌊3 ln n⌋), 1 for `nelder_mead`, `candidates_per_round` for `hammer`. A GPU provider lists `optimize` and `tolerance` in its capabilities so that the engine hands them its device. `gpu_emulation` requires the selected `gpu:cpu_f32` provider (validation, tests) |
-| `feasibility_tolerance` | number, `1e-6` | total normalised constraint violation regarded as feasible: best-so-far ranking and `final.feasible` |
+Keys, types and defaults are in RESULTS §8. What they mean beyond that:
+
+* `variables`: empty selects the curvature of every curved, optically active
+  surface and the back focus (the thickness before the image).
+* `hold_efl` adds a constraint labelled `hold EFL` for `lm`, `dogleg` and
+  `hammer`, and a penalty residual labelled `hold EFL (penalty)` for `de`,
+  `cma_es` and `nelder_mead` (Constraints by method).
+* `default_merit` is laid key by key over the defaults: `{"thickness": null}`
+  drops the thickness boundaries, `{"thickness": {"glass_min_centre": 0.9}}`
+  changes one.
+* `options` holds the algorithm's settings (`LsqSettings`, `DeSettings`,
+  `CmaEsSettings`, `NelderMeadSettings`, `HammerSettings`), laid over the
+  job's defaults: the library defaults except
+  `constraints.max_inner_iterations` 10 (LM, dogleg, hammer's `local`),
+  `init_spread` 0.03 (DE) and `sigma0` 0.05 (CMA-ES), with `max_iterations`,
+  `fd_scheme`, `fd_relative_step` and `seed` in their fields. One rule for
+  every algorithm: a key of `options` wins over the job setting that fills
+  the same field (`options.max_iterations` over `max_iterations`,
+  `options.jacobian` or hammer's `options.local.jacobian` over `fd_scheme`
+  and `fd_relative_step`). A key must be a field of the selected
+  algorithm's settings, through nested objects (`jacobian`, `constraints`,
+  `local`); an unknown one is rejected with the valid keys. `method` (LM,
+  dogleg) and `seed` (DE, CMA-ES, hammer) belong to the job's `algorithm`
+  and `seed` and are rejected in `options`.
+* `fd_scheme` applies to LM, dogleg and hammer's local runs; a `null`
+  `fd_relative_step` is chosen per operand and evaluator (Derivatives);
+  `seed` seeds `de`, `cma_es` and `hammer`.
+* `backend`: `gpu` uses the GPU device the engine selected for the analysis
+  (`AnalysisInput::device` holding the provider's `GpuDevice`), or the CPU
+  reference with a warning when there is none. `auto` uses that device when
+  the engine handed one over (under an engine `auto` request the engine's
+  cost model decides whether it does, `GPU.md` §9.2). A GPU provider lists
+  `optimize` and `tolerance` in its capabilities so that the engine hands
+  them its device. `gpu_emulation` requires the selected `gpu:cpu_f32`
+  provider (validation, tests). `backend.workload` reports the device rays
+  per candidate estimated by `gpu::device_rays_per_candidate` (an upper
+  bound of the resident plan's probes) for the merit's configuration-0
+  operands on the start system, and the batch: the FD Jacobian (n, or 2n
+  central) for `lm` / `dogleg`, the population for `de` (default
+  max(10n, 15)) and `cma_es` (default 4 + ⌊3 ln n⌋), 1 for `nelder_mead`,
+  `candidates_per_round` for `hammer`.
 
 ### `optimize` result
 
-```jsonc
-{
-  "status": "converged" | "finished" | "stopped",
-  "stopped": false,
-  "termination": "small_merit_change" | "small_step" | "small_gradient" | "target_reached"
-               | "converged" | "max_iterations" | "max_evaluations" | "cancelled"
-               | "evaluation_failure" | "infeasible" | "stalled" | "derivative_failure",
-  "algorithm": "lm",
-  "iterations": 40, "evaluations": 361,
-  "improved": true,                                  // false: the result is the start
-  "start": {"merit": 3.97e-4, "violation": 0.0, "status": {"status": "ok"}},
-  "final": {"merit": 2.6e-4, "violation": 2e-9, "status": {"status": "ok"}, "feasible": true},
-  "search": {"merit": 2.6e-4, "violation": 2e-9,     // the optimiser's answer, as seen by the
-             "reference_merit": 2.6e-4,              // search evaluator, and on the reference
-             "reference_violation": 2e-9},
-  "improvement": 0.35,                               // 1 − final/start (null if start is 0)
-  "multipliers": [/* per constraint */] | null,
-  "failed_variables": [],
-  "variables": [{"label": "...", "param": {/* ParamPath */}, "start": 0.04, "value": 0.045,
-                 "change": 0.005, "lower": null, "upper": null, "at_bound": false}],
-  "operands": [{"index": 0, "kind": "ray_aberration", "label": "", "enabled": true,
-                "role": "residual" | "constraint",
-                "comparison": "equal" | "less_than" | "greater_than",
-                "target": 0.0, "weight": 0.0123, "config": 0,
-                "field": {"field": "index", "index": 1}, "wavelength": {"wavelength": "primary"},
-                "start": 0.0071, "value": 0.0042,     // null where the operand failed
-                "residual": 0.0042, "contribution": 2.2e-7, "contribution_fraction": 8.4e-4,
-                "error": null | "RayFailure(\"…\")"}],
-  "history": [{"iteration": 0, "evaluations": 9, "stage": "", "merit": 3.9e-4,
-               "best_merit": 3.9e-4, "violation": 0.0}],
-  "backend": {"requested": "gpu", "evaluated_on": "metal:Apple M2 Pro" | "cpu-f64-reference",
-              "precision": "f32_gpu" | "f64_reference", "reported_on": "cpu-f64-reference",
-              "workload": {"rays_per_candidate": 38, "batch": 7},
-              // The next three only for runs handed a GPU device:
-              "aiming": "by-batch" | "device" | "host",  // where the pupil rays are aimed
-                                                     // (Host/device division)
-              "gpu_stats": {"gpu_candidates": 0, "cpu_candidates": 0, "rays": 0,
-                            "dispatches": 0, "device_seconds": 0.0},
-              "resident_evaluation": {/* device, host-stage and fallback counters */}},
-  "merit_spec": {/* the MeritFunctionSpec used, generated operands included */},
-  "system": {/* OpticalSystem, model JSON */},
-  "system_hash": "…64 hex digits…"
-}
-```
+Fields are in RESULTS §8. `termination` is one of `small_merit_change`,
+`small_step`, `small_gradient`, `target_reached`, `converged`,
+`max_iterations`, `max_evaluations`, `cancelled`, `evaluation_failure`,
+`infeasible`, `stalled` or `derivative_failure`; a search that stopped on a
+failure has `status: "finished"`. `improved: false` means the result is the
+start. `search` is the optimiser's answer as seen by the search evaluator
+(`merit`, `violation`) and on the reference (`reference_merit`,
+`reference_violation`). A failed operand has a null `value` and an `error`.
+`backend.aiming` (Host/device division), `gpu_stats` and
+`resident_evaluation` appear only for runs handed a GPU device.
 
-`status` is `converged` when the optimiser met a convergence test, and
-`finished` when it stopped on a budget or a failure (see `termination`).
-Buffer 0 is `merit_history` (f64, shape `[iterations, 4]`: iteration,
-evaluations, merit, best merit). The search merit (`search`) equals `final`
-on the CPU reference, and differs from it by the device's rounding on a
-GPU (double-float traces, Derivatives). The
+The search merit equals `final` on the CPU reference, and differs from it
+by the device's rounding on a GPU (double-float traces, Derivatives). The
 history holds one row per accepted iteration (LM, dogleg), generation (DE,
 CMA-ES), iteration (Nelder–Mead) or round (hammer). `best_merit` is the
 feasibility-ranked best, so it can rise when a feasible point replaces a
@@ -1005,72 +962,37 @@ the best point seen. `final` is the better of the answer and the start
 
 ### `tolerance` settings
 
-| key | type, default | meaning |
-|---|---|---|
-| `tolerances` | array, `[]` | `ToleranceOperand`s (`param`, `minus`, `plus`, `distribution`, `label`); empty: a basic set, ±0.05 mm on every glass and air thickness except the back focus and ±0.5 % on every curvature of a curved optically active surface, without the solve-controlled ones. A parameter the system does not have, or that a solve controls (here and in `compensators`), is rejected |
-| `compensators` | array, `[]` | `Compensator`s (`param`, `range` around nominal, `scale`), re-optimised by LM for every trial (screened first for an MTF criterion) |
-| `criterion` | object or null, `null` | the criterion `MeritFunctionSpec`; `null` generates it with `DefaultMeritSpec::generate_for_tolerancing` from `default_merit` |
-| `default_merit` | object, the default merit without thickness boundaries | generator settings, laid over that default |
-| `mode` | `sensitivity` \| `monte_carlo` \| `both`, `both` | what to run |
-| `trials`, `seed`, `batch` | `100`, `0`, `16` | Monte Carlo: trial `i` draws from Philox stream `TOLERANCE \| i` of `seed`; `batch` trials per evaluation batch, at least 128 (below) |
-| `threshold` | number or null, `null` | criterion value for the yield |
-| `compensator_iterations` | integer, `20` | LM iterations per trial |
-| `percentiles` | array, `[50, 90, 97.7]` | Monte Carlo percentiles, each in [0, 100] |
-| `record_trials` | integer, `0` (≤ 10000) | keep `records` of the first this many trials |
-| `preview_case` | object or null, `null` | evaluate only `{"type":"trial","trial":k}` or `{"type":"sensitivity","operand":k,"positive":true}` (zero-based) and return it as `preview` instead of `sensitivity`/`monte_carlo` |
-| `irregularity_wavelength_um` | positive number or null, `null` | fringe test wavelength; null keeps an existing overlay's, else the primary wavelength |
-| `random_irregularity_orientation` | boolean, `true` | Monte Carlo: a uniform astigmatism axis in [0, 180)° per toleranced surface and trial, reproducible from the seed; false keeps the model's angle |
-| `backend` | as for `optimize` | |
+Keys, types and defaults are in RESULTS §8. Beyond them:
 
-Without compensators, every trial is a single evaluation, and a batch of trials
-goes to the evaluator as one batch (one GPU dispatch). The job hands the
-evaluator at least 128 trials (and sensitivity points) per batch on either
-backend: values do not depend on the batching, and with 16 trials per batch the CPU's 12 threads
-idled at the end of every batch (29-surface F/1.4 lens: 155 → 120 ms for
-the default run, 2.4 → 1.9 s for 1000 trials at 6 × 12 sampling, identical
-results). Progress and a stop request act between batches.
+* `tolerances`: empty gives a basic set, ±0.05 mm on every glass and air
+  thickness except the back focus and ±0.5 % on every curvature of a curved
+  optically active surface, without the solve-controlled ones. A parameter
+  the system does not have, or that a solve controls (here and in
+  `compensators`), is rejected.
+* `compensators` (`range` around nominal) are re-optimised by LM for every
+  trial, `compensator_iterations` iterations each, screened first for an
+  MTF criterion (Tolerancing).
+* A `null` `criterion` is generated with
+  `DefaultMeritSpec::generate_for_tolerancing` from `default_merit`, whose
+  default has no thickness boundaries.
+* `percentiles` each lie in [0, 100]. `irregularity_wavelength_um` and
+  `random_irregularity_orientation` are described under Irregularity and
+  rigid elements. `backend` is as for `optimize`.
+
+The job hands the evaluator at least 128 trials (and sensitivity points)
+per batch on either backend, whatever `batch` says: values do not depend on
+the batching, and smaller batches leave the CPU's threads idle at the end of
+every batch (29-surface F/1.4 lens: 155 → 120 ms for the default run, 2.4 →
+1.9 s for 1000 trials at 6 × 12 sampling). Progress and a stop request act
+between batches.
 
 ### `tolerance` result
 
-```jsonc
-{
-  "status": "finished" | "stopped",
-  "stopped": false,
-  "sensitivity": {                                  // null when not run, or stopped before the nominal
-    "nominal": {"criterion": 3.97e-4, "ok": true, "compensators": [42.25]},
-    "operands": [{"index": 0, "label": "...", "param": {/* ParamPath */},
-                  "minus": 0.05, "plus": 0.05,
-                  "criterion_minus": 4.1e-4, "criterion_plus": 4.0e-4,
-                  "change_minus": 1.3e-5, "change_plus": 3e-6, "worst": 1.3e-5, "ok": true,
-                  "compensators_minus": [42.31], "compensators_plus": [42.19]}],
-    "ranking": [2, 0, 5, 1, 4, 3],                   // operand indices, worst first
-    "rss_change": 2.1e-5,
-    "predicted_criterion": 4.18e-4,                  // nominal + rss_change
-    "evaluations": 13,
-    "cancelled": false                               // true: the operands completed before a stop
-  },
-  "monte_carlo": {                                  // null when not run
-    "trials": 100, "failures": 0, "seed": 0,
-    "nominal": {"criterion": 3.97e-4, "ok": true, "compensators": [42.25]},
-    "seconds_per_trial": 0.02,                       // wall time over completed trials
-    "records": [{"trial": 0, "criterion": 4.1e-4, "ok": true,  // first record_trials trials
-                 "compensators": [42.31], "perturbations": [0.01, -0.02]}],
-    "mean": 4.2e-4, "std_dev": 1.1e-5, "min": 4.0e-4, "max": 4.6e-4,
-    "percentiles": [{"percentile": 50.0, "value": 4.2e-4}, …90, 97.7],
-    "yield_fraction": 0.93 | null, "threshold": 4.5e-4 | null,
-    "compensator_mean": [42.25], "compensator_std": [0.04],
-    "cancelled": false,                              // true: statistics of the completed trials
-    "criteria": [/* per trial, "inf" for failed trials */]
-  },
-  "preview": null,                                  // with preview_case: {system, system_hash,
-                                                    //   criterion, compensators, perturbations}
-  "compensators": [/* the Compensators */],
-  "criterion_spec": {/* MeritFunctionSpec */},
-  "backend": {/* as for optimize */}
-}
-```
-
-Buffer 0 (when Monte Carlo ran) is `monte_carlo_criteria` (f64, one per trial).
+Fields are in RESULTS §8. `sensitivity` is null when not run or when
+stopped before the nominal, `monte_carlo` is null when not run, and
+`preview` is set only with `preview_case`. With `cancelled: true`, a
+section holds the operands or the statistics of the trials completed
+before a stop.
 
 ### Tests (`mklight-engine`, `analysis::optim::tests`)
 
@@ -1098,8 +1020,7 @@ Replaces the glasses of chosen lenses with real catalogue glasses. For every
 glass combination it tries, the job re-optimises the continuous variables
 by LM, then ranks the combinations. Use it to replace model or unavailable
 glasses with real ones, and to find better glass pairs. The analysis
-registry and the existing Stop API expose it to every client; no new FFI
-call is needed.
+registry and the Stop API expose it to every client.
 
 The only setting a run needs is which glasses may change. A material
 variable names the **stable id of the surface in front of the glass**; a
@@ -1110,16 +1031,8 @@ cemented doublet is two variables (its front and cemented surfaces):
 ```
 
 With no material variables at all, every model glass is snapped (below).
-Every other setting has a default:
-
-| setting | default | meaning |
-|---|---|---|
-| `material_variables` | `[]` | `[{surface, candidates?}]`; empty: every model glass |
-| `algorithm` | `"tabu"` | `tabu` searches glass combinations; `hammer` hops over glasses and shape together |
-| `max_combinations` | 100 | LM re-optimisations (tabu: distinct combinations; hammer: also the same glasses from another shape) |
-| `max_seconds` | `null` | search wall-time limit; keeps the results so far, `termination: "time_limit"` |
-| `local_iterations` | 100 | LM iterations per re-optimisation |
-| `top_n` | 10 | combinations returned |
+Every other setting has a default (RESULTS §8). Each material variable is
+`{surface, candidates?}`.
 
 `variables`, `merit`, `default_merit`, `operands`, `constraints`,
 `hold_efl`, `fd_scheme`, `fd_relative_step`, `seed`, `backend` and
@@ -1129,8 +1042,7 @@ continuous variables select the curvatures of the curved surfaces and the
 back focus; explicit variables may be any `ParamPath` that no solve
 controls. The re-optimisation is
 `optimize`'s LM: the same merit, augmented-Lagrangian constraints, FD steps
-and evaluator. The solves of the design are applied to every substituted
-combination before its re-optimisation. `hold_efl` holds the input EFL as a constraint unless the
+and evaluator. `hold_efl` holds the input EFL as a constraint unless the
 merit has an EFL operand.
 
 ### Candidates and model-glass snapping
@@ -1233,8 +1145,9 @@ not setup or the final ranking.
 Re-optimisation dominates. For C combinations, n continuous variables and
 I LM iterations, forward differences cost about `C · (1 + I · (n + 1))`
 merit evaluations, plus rejected steps and constraint updates (central
-differences: 2n). One search iteration's combinations run in parallel. All re-optimisations share the resident GPU evaluator's device context and counters, each with routing state of its own (`ResidentEvaluator::for_solve`), with each FD Jacobian
-in one batch. No candidate/reference checks run during the
+differences: 2n). One search iteration's combinations run in parallel. On a
+device each re-optimisation is a solve of its own (Resident evaluator, "One
+evaluator per solve"), with each FD Jacobian in one batch. No candidate/reference checks run during the
 search. `auto` runs the search on the CPU reference: `glass_substitution` is an
 accuracy exclusion (`GPU.md` §9.2, "Automatic routing"). The final ranking
 adds one CPU f64 merit evaluation per kept combination.
@@ -1341,9 +1254,7 @@ Tests: `resident_algebra`, `resident_candidates`, `resident_solvers`,
 `scheduler`, `resident_tolerance` and `host_device_division`
 (`crates/mklight-optim/tests/`); the ignored `resident_bench` and
 `resident_workloads` harnesses time the evaluator against the f64 reference
-(`RESIDENT_BENCH_MERIT=wave` selects the wavefront merits). The adapter's
-earlier design and its measurements are recorded in
-[history/optimization-resident-adapter.md](history/optimization-resident-adapter.md).
+(`RESIDENT_BENCH_MERIT=wave` selects the wavefront merits).
 
 ## Host/device division of candidate batches
 
@@ -1362,7 +1273,10 @@ are unaffected.
    packed systems, and one resident plan: chief traces, pupil-ray aiming
    from the host chief seeds, trace, chief-relative coordinates and moment
    reductions (OPD and piston/tilt fits for wavefront merits). The device's
-   aiming schedule is capped at 8 Newton iterations per ray and its continuation rounds are committed
+   aiming schedule is capped at 8 Newton iterations per ray
+   (`AimOptions::schedule_cap`, CONVENTIONS §7.7), so an unaimable ray of a
+   bad trial step costs a bounded number of iterations while healthy rays
+   converge well within the cap, and its continuation rounds are committed
    without reading the pending count back (`AimOptions::speculative_rounds`;
    one round without real aiming).
 2. *Host, while the device runs:* the rays routed to the host (below) and
@@ -1471,13 +1385,10 @@ bit-identical to the plain run (tested on the Cooke triplet).
 Speculation applies with device aiming pinned only. With host aiming every probe
 is a host evaluation, as on the CPU reference (which does not speculate),
 and the probes of a rejected trial point sit at a design whose rim rays
-fail and run the whole aiming schedule: on the 35-surface zoom, 8 LM
-iterations with every trial rejected took 606–623 ms and 544–577
-evaluations with speculation and 466 ms and 387 evaluations without
-(CPU reference 368 ms, 387 evaluations); on a full optimisation of that
-lens speculation added 64 % of evaluations per iteration. The Double Gauss
-optimisation is unaffected (335–444 against 366–389 ms), its glass
-substitution 6 % slower without it.
+fail and run the whole aiming schedule: on a full optimisation of the
+35-surface zoom speculation added 64 % of evaluations per iteration. The
+Double Gauss optimisation is unaffected, its glass substitution 6 % slower
+without it.
 
 **Accuracy.** Device rays are double-float traces of f64 aims;
 host-completed rays and rayless operands are the reference's f64 values

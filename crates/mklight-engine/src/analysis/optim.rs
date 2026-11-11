@@ -996,7 +996,7 @@ const TOLERANCE_BATCH: usize = 128;
 /// the search ends at or near the start. Measured on the seven samples with
 /// the default merit and variables, 100 DE / 200 CMA-ES generations: DE
 /// improved 2 of 7 at 1.0 and 7 of 7 at 0.03, CMA-ES 6 of 7 at 0.3 (with the
-/// EFL penalty) and 7 of 7 at 0.05 (`docs/OPTIMIZATION.md`).
+/// EFL penalty) and 7 of 7 at 0.05.
 const DE_INIT_SPREAD: f64 = 0.03;
 const CMA_ES_SIGMA0: f64 = 0.05;
 

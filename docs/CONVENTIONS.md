@@ -321,11 +321,9 @@ on the host in f64. Every other device aim keeps the full schedule. The cap
 never changes a ray the full
 schedule converges within it (bitwise, `aim_resume.rs`), and the
 arithmetic of every solve is unchanged: GPU precision is not the lever for
-aiming cost. An f32 predictor phase cannot pay, because the f32 stop
-residual floor lies above the aim stop, so a double-float evaluation and
-iteration follow it anyway, and the aim kernel is bound by control flow,
-not arithmetic (GPU.md §3.6; the measurements are in
-`docs/history/gpu-work-packages.md`).
+aiming cost (an f32 predictor phase cannot pay: DECISIONS.md, "Mixed
+precision", and GPU.md §3.6; the measurements are in
+`docs/history/gpu-numerics.md`).
 
 ## 8. Paraxial slopes in solves
 

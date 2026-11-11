@@ -136,17 +136,9 @@ into `mklight_gpu::consts`, so no constant is written twice.
 **Layout rules:** only 4-byte scalars and fixed arrays (no `float3`: it is 16
 bytes in MSL and 16-byte aligned in GLSL), every struct a multiple of 16
 bytes with explicit `reserved` padding, no implicit padding (the Rust mirror
-derives `bytemuck::Pod`). Any change bumps `MKL_LAYOUT_VERSION` (3: the
-surface record gained ideal-lens vergences, double-float residuals of the
-curvature, conic, indices and transforms, and coating codes; the trace
-kernel's parameter block, path-step words, ray planes and status codes were
-added; now 4: residuals of the ideal-lens power and vergences, the aperture
-sizes and the asphere coefficients, and the trace flag
-`MKL_TRACE_NEWTON_CAP_NOT_CONVERGED`; now **5**: the coefficient-pool
-indices in the former final padding words, extended shape codes, and
-`MKL_RAY_EVANESCENT`; now **6**: an optional sag-overlay suffix and
-`MKL_SURF_HAS_SAG_OVERLAY`); the header carries a magic word and
-the version, and backends validate both on upload.
+derives `bytemuck::Pod`). Any change bumps `MKL_LAYOUT_VERSION` (now
+**6**; the v5 and v6 additions are in §2.2); the header carries a magic word
+and the version, and backends validate both on upload.
 
 **Representability.** The packer rounds each model value once to f32 and
 rejects any whose f32 is infinite, **subnormal**, or zero while the model
@@ -414,7 +406,7 @@ f32, plain sums) was measured and rejected: it exceeds the OPD budget, fails
 real aims at the default tolerance and does not hold the position budget on
 every design, and an f32 predictor phase ahead of the double-float aim solve
 does not pay. The measurements are recorded in
-[history/gpu-work-packages.md](history/gpu-work-packages.md).
+[history/gpu-numerics.md](history/gpu-numerics.md).
 
 ## 4. The trace kernel
 
@@ -826,7 +818,7 @@ The status differences that remain are rays whose reference classification
 is itself ill-conditioned: the search starts at the closest approach of a
 line that does not cross the surface nearby, and f32-sized changes of the
 input flip the f64 status too (analysis in
-[history/gpu-work-packages.md](history/gpu-work-packages.md)). No f32 search
+[history/gpu-numerics.md](history/gpu-numerics.md)). No f32 search
 can reproduce these decisions, so the sample passes above do not claim
 exhaustive qualification of every ray of a steep system.
 
@@ -1290,9 +1282,8 @@ publishes nothing (the CPU specification defers publication to plan
 completion too). `PlanStats.cache` holds each plan's hits, misses, inserts,
 rejections, evictions, evicted bytes and build seconds (spent, saved,
 evicted) per category; `resident_cache_stats().categories` accumulates them
-with occupancy and budgets. The pipeline cache
-holds at most 512 specialisations (`PIPELINE_CACHE`); live jobs retain
-evicted objects. Active leases/handles
+with occupancy and budgets. Live jobs retain pipelines evicted from the
+pipeline cache (§6). Active leases/handles
 pin resources outside idle-cache limits. System cache identity includes
 snapshot/library/configuration/spectrum, layout, build and operation
 settings, plus a digest of the actual packed content. Cache hits issue
@@ -1358,11 +1349,10 @@ copied or formatted. The Metal backend admits at most four resident plans at
 once and at most 1 GiB of their declared storage (a larger plan runs alone;
 `MKLIGHT_METAL_ADMIT_PLANS`, `MKLIGHT_METAL_ADMIT_MIB`); a plan whose consumer
 was cancelled while it waited never reaches the device. Consumers may
-therefore run independent plan chains side by side: the GPU wave adapter
-queues each field the host has prepared (host-traced and resampled pupils)
-for up to four device workers,
-which run its transforms while the host prepares later fields, and merges
-results, statistics and warnings in item order. `PlanStats` records host waits and
+therefore run independent plan chains side by side, as the GPU wave adapter
+does with its per-field transform plans (WAVE.md §9, "Host/device
+division"), merging results, statistics and warnings in item order.
+`PlanStats` records host waits and
 their seconds, admission seconds, command buffers over 50 ms of device time
 (`long_commands`) and speculation misses; `MKLIGHT_METAL_TRACE_PLANS=1`
 prints one line per plan. Device time sums command-buffer spans, so
@@ -1377,8 +1367,7 @@ consumer; settled retired leases return to the pool after work-bound
 completions, without waiting for a later explicit flush. Rim rounds of the
 wave probe builder retain only intermediate aim checks and the final probe
 batch. Command counts and timestamps are recorded at completion, not at the
-encoding site. Routing between the backends is the cost model ("Automatic
-routing").
+encoding site.
 
 `PlanResult` contains final leases, `PlanStats` and `RunInfo`. Stats include
 per-stage wall/device/max-command times, commands, allocations/reuse,
@@ -1422,60 +1411,30 @@ need real aiming are aimed where the analysis's division puts them.
 *Host aiming* is the default. The geometric adapters (`gpu::aim` in
 `mklight-analysis`, route option `aiming`, default `host-table`) aim every
 ray with the reference tracer in f64 and write the start rays straight into
-the shared ray planes the device traces (four `fill_buffer` buffers filled
-in place by the rayon workers; no sample or field records). Generations of
-at least 2,048 rays per field row (`HOST_TABLE_MIN_PER_ROW`) first solve a
-coarse f64 seed table per row and start each ray's Newton solve from its
-interpolated aim and stop Jacobian (`SequentialTracer::generate_many_from`;
-the reference schedule takes over where it does not converge); smaller
-generations are aimed bitwise as the CPU reference aims them. System
-transmission, the wave analyses' pupil lattices and, except for large
-aspheric batches, the solvers' candidate rays are aimed on the host as well
-(§9.1).
+the shared ray planes the device traces; generations of at least 2,048 rays
+per field row (`HOST_TABLE_MIN_PER_ROW`) start from a coarse f64 seed table
+per row (ANALYSIS.md §6.1). System transmission, the wave analyses' pupil
+lattices and, except for large aspheric batches, the solvers' candidate
+rays are aimed on the host as well (§9.1).
 
 *Split generations.* In the spot diagram and the geometric MTF, a
 generation with a seed table and at least 1.5 M rays × surfaces
-(`SPLIT_MIN_WORK`: rays times the image surface index) is aimed by host and
-device together. It is cut into tiles of whole 128-ray chunks (a sixteenth
-of the generation, 2¹³–2¹⁷ rays); a fixed, evenly interleaved share of the
-tiles (`SPLIT_DEVICE_SHARE = 0.35`; the route option `aiming_share` sets
-another, 0 aims everything on the host) goes to the device's double-float
-Newton solve, seeded from the same table. Of its tiles the device takes only the
-chunks whose rays all start inside the seed table's solved nodes: the rays
-the reference cannot aim lie at unsolved nodes, and on the device they
-would run to the end of the schedule before being aimed again on the host.
-The device's chunks form two plans per generation (`DEVICE_PLANS`), both
-submitted from a scoped thread of their own outside the rayon pool (it
-mostly waits for the GPU); the rayon workers aim the host's chunks and then
-complete each device plan's `MKL_AIM_FAILED` rays in f64 as it lands. The
-assignment depends only on the generation and the share, never on which
-side is faster, so the output is bitwise reproducible
-(`crates/mklight-analysis/tests/aim_designs.rs` runs it on one and four
-rayon threads and with other shares). Measured on a quiet M2 Pro (8 + 4 CPU
-cores, 19 GPU cores; shuffled columns against the same build aiming on the
-host alone): dense spot diagrams and geometric MTFs of four complex camera
-lenses (4–13 M rays × surfaces per field group) took 0.94 of the host-only
-time (0.84–1.08 per case), 0.96 between 1.5 and 4 M, and lost up to 18 %
-below 1.5 M; shares 0.5 and 0.65 gave the same mean with worst cases of 1.26
-and 1.32. One device plan per tile ran 4–5× slower per ray than the twelve
-host threads and up to 2.5× slower than host-only aiming, which is why the
-device gets few large plans of table-covered chunks. The footprint and the
-ray grid gained nothing from a split (1.00–1.01, 0.90–1.17) and do not split.
+(`SPLIT_MIN_WORK`) is aimed by host and device together: a fixed share of
+its tiles (`SPLIT_DEVICE_SHARE = 0.35`, route option `aiming_share`) goes
+to the device's double-float Newton solve in two plans per generation
+(`DEVICE_PLANS`), and the host completes their `MKL_AIM_FAILED` rays in f64.
+The assignment depends only on the generation and the share, so the output
+is bitwise reproducible. The tiling, the measurements and why the footprint
+and the ray grid do not split are in ANALYSIS.md §6.1.
 
 *Plans.* Field-group plans are the geometric adapters' only reduction: the
 spot diagram, geometric MTF, footprint and ray grid split their fields into
-groups of at least 2¹⁵ rays (`gpu::plans`), each a plan submitted as soon as
-its rays are aimed, so the host aims group k + 1 while the device traces and
-reduces group k (ANALYSIS.md §6.1). Against one plan per stage the groups
-took 4–7 % off (geometric means 0.93–0.96 by CPU-time class); with the split
-generations, dense spot diagrams and geometric MTFs took 0.81 of the time
-before both (0.66–0.99, 14 cases on four complex camera lenses), their
-largest relative deviation from the CPU reference unchanged (≤ 1e-7).
+groups of at least 2¹⁵ rays (`gpu::plans`), so the host aims group k + 1
+while the device traces and reduces group k (ANALYSIS.md §6.1).
 
 *Device aiming* (the double-float solve described next) remains for
-`aiming=device` and `aiming=table` (on the M2 Pro 1.63× and 1.15× the
-default's time on large geometric cases, as accurate; kept as routes for
-GPUs with more cores per CPU core), the solvers' large aspheric batches,
+`aiming=device` and `aiming=table` (slower than the default on the M2 Pro,
+as accurate; ANALYSIS.md §6.1), the solvers' large aspheric batches,
 `fieldmaps=device-chief`, the chief aims of the ghost device paths and the
 wave `PupilTracer` (the solvers' MTF operands). Chief rows come from the
 host: `ChiefSeed::host` converts the reference tracer's f64
@@ -1547,8 +1506,8 @@ speculation (`PlanStats::speculation_misses`), so results never depend on it.
 `AimOptions::schedule_cap` bounds a ray's Newton iterations over its whole
 schedule (every solve runs with the iterations left under it, and an
 unconverged solve that reaches it ends the schedule; 0, the default, keeps
-the per-solve cap as the only bound). The candidate evaluator aims on the
-host by default; with device aiming (`solver_aiming=device`) it sets 8
+the per-solve cap as the only bound). Where the candidate evaluator aims on the device (`solver_aiming`,
+OPTIMIZATION.md, "Host/device division of candidate batches") it sets 8
 (`SCHEDULE_CAP`) and aims every ray the device leaves unresolved
 again on the host in f64 with the candidate's tracer, so no candidate is
 reported whole to the reference. Without a cap an unaimable ray of a bad
@@ -1577,9 +1536,7 @@ own chief-prediction/continuation schedule) of `table_side` nodes per axis,
 used for every sample of the request whatever its size; without one the
 device builds and caches a table of that side for large generations. The
 wave pupil tracer hands 25×25 host tables to every generation of a batch
-(chief probe, lattice, saddle and rim probes alike), so a sample's
-converged ray does not depend on the batch it was aimed in. The
-tables are solved (one batched `generate_many` per row, bitwise the scalar
+(WAVE.md §9, "Pupils and automatic sampling"); the tables are solved (one batched `generate_many` per row, bitwise the scalar
 `generate` per node) while the batch's chief plan runs on the device.
 
 **Operation modules.** What each device service computes, and its
@@ -1607,45 +1564,25 @@ GPU-heavier alternatives where a stronger GPU may win.
 * *Geometric analyses*: host aiming with seed tables, split generations for
   dense spot diagrams and geometric MTFs, field-group plans ("Aiming and
   OPD" above; ANALYSIS.md §6.1).
-* *Field maps* (ANALYSIS.md §6.2): relative illumination has one pipelined
-  division (the host prepares the fields as the reference does and solves
-  the pupil nodes' image points in blocks of at least 2048 nodes; the
-  device traces each block's differential pencils, `mkl_geometry_ri_rays`,
-  while the host solves the next); system transmission has one too (the
-  host aims each block of rows, at least 4096 rays, and the device traces
-  it and evaluates the coating transport while the host aims the next;
-  POLARIZATION.md §9). The chief-ray maps (`chief_ray_angle`,
-  `pupil_aberration`, `grid_distortion`) solve their chiefs on the host and
-  trace on the device (`fieldmaps=host-chief`, the default) or solve them
-  on the device too (`device-chief`: a fixed 30–100 ms of serial device
-  solves on the M2 Pro, a tie on 41² grid distortion);
-  `field_curvature_distortion` always solves its chiefs on the host.
-* *Wave optics* (WAVE.md §9): one division. The host traces the pupil
-  lattices with the reference tracer, resamples and refines them with the
-  reference's code and makes every sampling decision (pupil grids, image
-  windows, automatic frequencies, focus ranges); the device runs the
-  transforms (PSFs, OTFs, focus sweeps, energy, line spreads, convolution),
-  and the device transforms early fields while the host prepares later
-  ones. `wavefront_map` has no device part: its statistics and Zernike fit
-  are reductions of the f64 pupil the host already holds.
+* *Field maps* (ANALYSIS.md §6.2): pipelined host/device divisions for
+  relative illumination (`mkl_geometry_ri_rays`) and system transmission
+  (POLARIZATION.md §9); the chief-ray maps solve their chiefs on the host
+  (`fieldmaps=host-chief`, the default) or on the device (`device-chief`).
+* *Wave optics* (WAVE.md §9, "Host/device division"): the host traces,
+  resamples and samples the pupils with the reference's code, the device
+  runs the transforms; `wavefront_map` has no device part.
 * *Stray light* (STRAY.md, "Divisions between the CPU and the GPU"): the
-  device runs the wavefront transport of the first 64 events of its
-  sources and writes detections, ledgers and continuation stacks into
-  shared memory; the CPU reads them in place, continues longer path trees
-  and forms the estimators. By default the device gets a fixed share of
-  the source chunks (`gpu::hybrid::default_share`: 0.2, and 0 for scenes
-  with iteratively intersected sags or fewer than 32 768 device sources)
-  while the CPU reference traces the others; `stray_share=1` gives it every
-  source. A run whose share is zero is the CPU reference run, which `auto`
-  selects from the request alone ("Automatic routing" below).
-* *Ghost irradiance* (GHOST.md): one division. The paths form four groups
-  (`gpu::PIPELINE_GROUPS`), pipelined: the device traces one group's probe
-  tiles while the host completes, deduplicates and splits another; the CPU
-  reference traces a fixed 20 % of the path groups (`gpu::CPU_SHARE`)
-  beside the device run.
-* *Candidate solvers*: host candidates, aiming by batch (the host, the
-  device for large aspheric batches), one device ray plan per batch ("Candidate solvers" below; OPTIMIZATION.md, "Host/device division
-  of candidate batches").
+  device transports the first 64 events of a fixed share of the source
+  chunks (`gpu::hybrid::default_share`), the CPU traces the others and
+  continues and tallies the device's; a zero share is the CPU reference
+  run ("Automatic routing" below).
+* *Ghost irradiance* (GHOST.md §6, "Division between host and device"):
+  four pipelined path groups (`gpu::PIPELINE_GROUPS`), of which the CPU
+  reference traces a fixed 20 % (`gpu::CPU_SHARE`) beside the device run.
+* *Candidate solvers* (OPTIMIZATION.md, "Host/device division of candidate
+  batches"): host candidates, aiming by batch (the host, the device for
+  large aspheric batches), one device ray plan per batch ("Candidate
+  solvers" below).
 
 #### Runtime publication policy
 
@@ -1701,50 +1638,21 @@ mechanisms the contracts rely on:
 **Candidate solvers.** `merit_evaluation`, `optimize`, `tolerance` and
 `glass_substitution` divide each batch of candidates between host and device
 (`mklight_optim::gpu::ResidentEvaluator`; OPTIMIZATION.md, "Host/device
-division of candidate batches"). The host prepares every candidate in f64 in
-parallel (tracers with their real-image-height and chief solves, operand
-plans, the chief rays themselves, model, paraxial and first-order operands)
-and aims the pupil rays where the batch's rule puts them (below). One device
-plan per batch traces the pupil rays and forms chief-relative
-coordinates, moments, OPD and piston/tilt fits; batches of at least 64
-candidates (`PIPELINE_FROM`) run as three pipelined sub-batches, so the host
-prepares sub-batch k + 1 while the device works on k. The host reads the
-device rays in place, completes the rays the device left unresolved in
-f64 and forms every operand value; the search loops (LM, trust region, Monte Carlo, glass
-search) and their decisions stay on the host, and LM's QR moves to the
-device for tall Jacobians (QR policy below).
-
-The evaluator decides per batch where the pupil rays are aimed
-(`gpu::DEVICE_AIM_FROM`). A batch whose estimated device rays times the
-system's surfaces without a closed-form intersection (aspheres, polynomial
-and freeform sags) reach 2·10⁶ is aimed on the device with host completion
-(capped at 8 iterations, "Bounded aiming commands" above). Every other
-batch is aimed on the host with the candidate's tracer (`generate_many`, the
-reference's aims bit for bit), and the device only traces and reduces it.
-Device aiming pays only where host aiming is expensive per ray and the
-batch amortises the device's plan: dense Monte Carlo on aspheric lenses
-(0.79–0.84× host aiming's time; 1000 trials on a 35-surface ultra-wide zoom
-took 0.69× the CPU's time). It never pays on spherical or paraxially aimed
-lenses, LM Jacobians or single candidates. The route option `solver_aiming`
-pins either side for every batch (`device`, `host`; `by-batch` is this
-rule), and LM and dogleg speculate only with device aiming pinned: a trial
-point that follows an accepted step is evaluated in one batch with its
-Jacobian's first-pass probes. Forward differences of device operands take
-`η = 1e-6` (ray positions) and `1e-5` (wavefront operands), central
-differences the reference's steps: device values are double-float traces of
-f64 aims (about 1e-12 relative noise), and a step as large as `1e-3` lets a
-probe of a 35-surface ultra-wide zoom cross a vignetting edge. Unsupported preparation/features and
-actual resource/device failures receive a counted reference completion, and
-a run in which device aiming leaves more than half of a candidate's rays to
-the host continues on the reference (counted as a fallback). The backend block
-reports `precision: f32_gpu`, the tag of every native Metal result (f32
+division of candidate batches", which holds the division, the pipelined
+sub-batches (`PIPELINE_FROM`), the per-batch aiming rule
+(`gpu::DEVICE_AIM_FROM`) and its measurements, speculation, the device's
+finite-difference steps and the fallbacks). The host prepares every
+candidate in f64 and aims the pupil rays where the batch's rule puts them;
+one device plan per batch traces them and forms chief-relative coordinates,
+moments, OPD and fits; the host completes unresolved rays in f64 and forms
+every operand value. The search loops and their decisions stay on the host,
+and LM's QR moves to the device for tall Jacobians (QR policy below). The
+backend block reports `precision: f32_gpu`, the tag of every native Metal result (f32
 decisions with double-float geometry, CONVENTIONS §7), not plain f32 values;
-`backend.aiming` says whether the host or the device aimed. The
-final report is scored once in f64: optimisation scores the start and the selected
-design; tolerance scores each completed case with its returned compensators
-(no second compensator solve) and derives the sensitivity/Monte Carlo figures
-from those scores; glass substitution scores and ranks the kept finalists.
-`merit_evaluation` publishes the evaluator's values. Cancellation never starts
+`backend.aiming` says whether the host or the device aimed. Optimisation
+and glass substitution score their final report once in f64 (the start and
+the selected design; the kept finalists); tolerance and `merit_evaluation`
+publish the evaluator's values (OPTIMIZATION.md, "Reported numbers"). Cancellation never starts
 a reference replacement or report. `auto` routes them by the cost model like
 every other analysis ("Automatic routing" below; `glass_substitution` is an
 accuracy exclusion). An explicit Metal request still runs them natively.
@@ -2021,11 +1929,9 @@ operation catalogue, including glass substitution. A native adapter is a route,
 not a blanket precision certificate: offline suites establish accuracy, and an
 analysis whose device result cannot meet its contract has no GPU path (§9.2).
 
-`auto` applies the cost model of §9.2: accuracy exclusions run on the
-reference on any device; predictions are scoped to the calibrated device
-class. A device without a calibration table uses qualified Metal; requests
-do not time-race backends. Routes that end on
-the reference are settled before the device opens. Cold first calls and warm reuse are measured separately. A CPU choice by cost is deliberate and reported without a
+`auto` applies the cost model of §9.2 ("Automatic routing"); requests do
+not time-race backends. Cold first calls and warm reuse are measured
+separately. A CPU choice by cost is deliberate and reported without a
 warning. Small serial host control, I/O and final result packing remain
 host work. Kernel/primitive-only measurements do not set complete-job
 choices.
@@ -2033,9 +1939,8 @@ choices.
 An explicit Metal request bypasses the cost model, including the accuracy
 exclusions and the division rule (a stray run that gives the device no
 source is then reported as the CPU reference it is, with a warning). For an
-analysis without a GPU path it fails, or with `allow_backend_fallback` runs
-on the reference with a warning.
-Preserve existing unavailable-backend/`allow_backend_fallback` behaviour.
+analysis without a GPU path it fails (§9.2, "Deciding before the device
+opens"). Preserve existing unavailable-backend/`allow_backend_fallback` behaviour.
 Unsupported work, resource or device failure produce
 a reported reference fallback; cancellation never triggers fallback. A
 partial solver fallback names stages/candidates, counts polished rays and
@@ -2107,12 +2012,12 @@ the existing solver semantics to a partial success by accident.
 
 ### 9.4 Accuracy and qualification
 
-Accuracy qualification is offline, per operation chain and tested settings/domain.
-No snapshot edit or candidate evaluation runs a reference comparison. Retain
+Accuracy qualification is offline, per operation chain and tested settings/domain;
+no snapshot edit or candidate evaluation runs a reference comparison, and
+only cheap runtime guards remain (§9.2, "Runtime publication policy"). Retain
 all geometry, complete-grid, CPU-f32 and f64 regression tests, with the §5.2
 one-third sampled safety margin as test evidence rather than a runtime gate.
-Device status masks, finite outputs and kernel conservation summaries remain
-cheap runtime guards. Unresolved aiming and unsupported features keep explicit
+Unresolved aiming and unsupported features keep explicit
 reference fallbacks; cancellation yields no replacement result.
 
 The following budgets remain offline acceptance criteria. Final reported
@@ -2130,7 +2035,7 @@ device search; tolerance reports device scores.
 | E: stray Monte Carlo | Identical raw counters and controlled-path tests first; same-sample f64 transport uses the same uniform mapping. Ledger ≤1e-5 of emitted power. Ensemble class flux/maps/moments agree within 5 combined standard errors plus deterministic quadrature error measured by refinement; test rare signatures and split-child correlations, not only total flux. Sampling error cannot excuse a biased ledger or wrong path ownership. |
 | D: RI/pupil maps/curvature | Proposed gates: RI ≤1e-3 absolute, CRA ≤2e-4 degrees, pupil magnification ≤1e-3 relative or 1e-5 absolute; curvature focus ≤1e-3×(1+abs(reference_mm)) mm, cross-checked by close rays. Double-float pencil/Jacobian arithmetic; singular/undefined values match the reference. |
 | D: material/first-order batches | Proposed index error ≤1e-10 absolute (1e-7 mm over a 1000 mm path); first-order lengths ≤1e-6 relative or 2e-5 mm absolute. Check thermal/dispersion offsets and solved constraints against f64, and resulting rays/OPD against §7; ill-conditioned afocal/solve cases preserve undefined values or fall back. |
-| D: fits, FD and optimisation | Proposed reconstructed Zernike OPD/RMS ≤5e-3 waves; coefficients and rank checked against f64 QR with condition-aware residual tests. Scaled FD column error ≤1e-3 vs f64 Richardson (column norm floor 1e-8 in scaled units), plus analytic thick-lens derivative and step sweeps. Evaluator-specific FD steps: forward 1e-6 for device ray operands and 1e-5 for wavefront operands, central the reference's (OPTIMIZATION.md, "Step size"). f64 final merit within 1% or 1e-8 absolute of device merit and same feasibility classification outside the recorded constraint uncertainty band; ambiguity gets a reference decision. |
+| D: fits, FD and optimisation | Proposed reconstructed Zernike OPD/RMS ≤5e-3 waves; coefficients and rank checked against f64 QR with condition-aware residual tests. Scaled FD column error ≤1e-3 vs f64 Richardson (column norm floor 1e-8 in scaled units), plus analytic thick-lens derivative and step sweeps. Evaluator-specific FD steps: OPTIMIZATION.md, "Step size". f64 final merit within 1% or 1e-8 absolute of device merit and same feasibility classification outside the recorded constraint uncertainty band; ambiguity gets a reference decision. |
 
 New E/T/D numbers are release gates to demonstrate, not measured claims.
 Compare identical settings/sampling/methods: the CPU's direct-versus-FFT MTF

@@ -311,24 +311,16 @@ Selection is per analysis: a GPU backend runs only the analyses listed in
 its `capabilities.analyses` (the CPU reference runs all). Requesting it
 explicitly for any other analysis is handled like an unavailable backend
 (error, or fallback with a warning). `auto` chooses per request with the
-calibrated cost model of GPU §9.2 (accuracy exclusions and runs whose
-division gives the device no share on the CPU reference; Metal only for a
-predicted advantage of at least 1.3× and 5 ms); a CPU choice carries no warning, and the
+calibrated cost model of GPU §9.2; a CPU choice carries no warning, and the
 result's `backend.cost_decision` and `backend.fallback_reason` say why. When the request names no
 backend, the engine default (`default_backend` in the configuration, or
 `mk_engine_set_default_backend`) applies as a preference: analyses the
 default backend does not implement run on the CPU reference, with a
 `run_info.warnings` note for an explicit GPU default.
 
-A selected GPU publishes actual device results without per-snapshot or
-per-candidate reference comparisons. Accuracy is tested offline (GPU §9.2).
-Unsupported stages, unresolved aiming and resource/device errors retain reported
-f64 fallbacks. Cancellation never starts a replacement. Final optimize and
-glass reports are f64-scored after the device search; tolerance and merit
-evaluation return the active evaluator's values. `backend.execution` retains device/build/probe and
-stage metadata; `backend.cost_decision` records how `auto` chose. Explicit
-Metal bypasses the cost model.
-See RESULTS §5 and GPU §9.2.
+What a selected GPU publishes, how fallbacks and cancellation are reported
+and what `backend.execution` and `backend.cost_decision` hold are in
+RESULTS §5 and GPU §9.2.
 
 ### Analysis request (`mk_session_submit_analysis_json`)
 
@@ -373,27 +365,10 @@ through `mk_job_status`).
 
 ### Result envelope (`mk_job_take_result`)
 
-```json
-{ "run_info": { "engine_version": "0.1.0", "snapshot_hash": "<64 hex>",
-                "analysis": "system_summary", "settings": {…},
-                "backend": "cpu_reference", "precision": "f64_reference",
-                "seed": null, "started_unix_ms": 1761840000000,
-                "duration_ms": 0.31, "tier": "design",
-                "aim_stop": "conditioned", "warnings": [] },
-  "library_hash": "<64 hex>",
-  "derived_snapshot_hash": null,
-  "backend": { "requested": "default:auto", "used": "cpu_reference",
-               "precision": "f64_reference", "device": null,
-               "fallback_reason": null, "execution": [], "cost_decision": null },
-  "result_version": 1,
-  "result": { … analysis specific (docs/RESULTS.md) … },
-  "buffers": [ {"index": 0, "name": "n_after", "dtype": "f64", "shape": [4, 3]} ] }
-```
-
-`run_info.backend` names the backend that computed the result; `backend`
-adds what was requested and why another backend was used, if one was.
-The envelope also carries `derived_snapshot_hash` for a run-local spectrum
-(null otherwise); `run_info.snapshot_hash` always names the submitted design.
+The envelope (`run_info`, `library_hash`, `derived_snapshot_hash`, `backend`,
+`result_version`, `result`, `buffers`) is described in `docs/RESULTS.md` §1
+and §5. When the request names no backend, `backend.requested` carries the
+`default:` prefix (for example `default:auto`).
 
 A result's inputs are identified by the pair (`run_info.snapshot_hash`,
 `library_hash`): the system and the glass data it was computed with.

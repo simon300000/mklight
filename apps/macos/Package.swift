@@ -17,7 +17,7 @@
 // otherwise the package still builds, `FFIEngine` reports the library as
 // unavailable and its integration tests are skipped. SwiftPM caches the
 // evaluated manifest, so the build script clears that cache when the
-// library appears or disappears (see README.md).
+// library appears or disappears (docs/APP.md, "Building").
 
 import Foundation
 import PackageDescription

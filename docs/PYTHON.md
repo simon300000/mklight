@@ -85,7 +85,7 @@ Type stubs with docstrings: `crates/mklight-py/python/mklight/_mklight.pyi`.
 
 | name | |
 |---|---|
-| `Engine(config=None, **kwargs)` | Engine configuration keys as in `docs/FFI.md` (`worker_threads`, `max_retained_jobs`, `resolved_cache_capacity`, `analysis_graph_bytes`, `progress_interval_ms`, `app_name`, `app_version`, `default_backend`, `aim_stop`, `route`). Unknown keys (also inside `route` and a `default_backend` dict) raise `InvalidArgumentError`; `default_backend` takes the `backend` forms of `run`; `max_retained_jobs` defaults to unlimited (see *Job*). |
+| `Engine(config=None, **kwargs)` | Engine configuration keys as in `docs/FFI.md`. Unknown keys (also inside `route` and a `default_backend` dict) raise `InvalidArgumentError`; `default_backend` takes the `backend` forms of `run`; `max_retained_jobs` defaults to unlimited (see *Job*). |
 | `default_engine()`, `new(sample=, system=)`, `open(path)` | Convenience wrappers over a lazily created process-wide engine. |
 | `samples()`, `sample(name)` | Built-in sample identifiers; a sample's system dict. |
 | `trace`, `trace_grid`, `paraxial` | Low-level reference tracing (below). |
@@ -190,11 +190,11 @@ For `asyncio`, use `await asyncio.to_thread(job.result)`.
 | member | |
 |---|---|
 | `data` | The analysis result dict (also `result["key"]`). |
-| `run_info` | Engine version, snapshot hash, analysis, normalised settings, backend, precision, seed, start time, duration, warnings. |
+| `run_info` | The envelope's `run_info` (`docs/RESULTS.md` §1). |
 | `arrays` | `{name: ndarray}` (or nested lists). |
 | `buffers()` | The underlying `mklight.Array` objects. |
 | `analysis`, `snapshot_hash`, `library_hash`, `seed`, `warnings` | Shortcuts. |
-| `envelope()` | The C ABI JSON envelope (`run_info`, `library_hash`, `backend`, `result_version`, `result`, buffer descriptors). |
+| `envelope()` | The C ABI JSON envelope (`docs/RESULTS.md` §1). |
 
 ### Arrays and zero copy
 
@@ -321,18 +321,14 @@ error; a job that fails otherwise raises its own error's class. There is no
   results.
 * Python (`python -m pytest` in `crates/mklight-py` after `maturin
   develop`): every sample opens, validates and survives save/open with the
-  same snapshot hash; edits, invalid models, catalogs; paraxial EFL of the
-  achromat (100 mm) and F/5; `trace_grid` shapes, dtypes and bitwise
-  agreement with single traces; known answers (on-axis focus, chief-ray
-  height ≈ f·tan θ, chief-ray vertex crossings against `system_summary`);
-  every runnable registered analysis (placeholders must raise
-  `UnsupportedError`); monotone progress; cancellation, timeouts,
-  supersession; seeded determinism; Ctrl-C cancellation of a running job and
-  of a trace; zero-copy read-only arrays and the list fallback; GIL release
-  during `trace_grid` and `run`; 300 uncollected jobs all keep their
-  results (and an explicit retention bound reports `evicted`); NaN /
-  negative / huge timeouts; progress monotone after a cancelled result;
-  `trace` and `trace_grid` reading `(0, 1)` alike; Fortran-contiguous
-  buffer requests refused; unknown engine keys and out-of-range seeds and
-  indices raising `MKLightError` subclasses; afocal paraxial infinities as
+  same snapshot hash; edits, invalid models, catalogs; known answers
+  (paraxial EFL of the achromat, on-axis focus, chief-ray height ≈ f·tan θ);
+  `trace_grid` shapes, dtypes and bitwise agreement with single traces; every
+  runnable registered analysis (placeholders must raise `UnsupportedError`);
+  progress, cancellation, timeouts, supersession and Ctrl-C; seeded
+  determinism; zero-copy read-only arrays and the list fallback; GIL release
+  during `trace_grid` and `run`; result retention (300 uncollected jobs, and
+  `evicted` under an explicit bound); argument checking (timeouts, seeds,
+  indices, `(0, 1)` field reading, Fortran-contiguous requests, unknown engine
+  keys) raising `MKLightError` subclasses; afocal paraxial infinities as
   floats.

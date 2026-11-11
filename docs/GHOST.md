@@ -355,7 +355,7 @@ flux (paired flux and per-ray standard errors, |z| < 3 per seed and for the
 combined mean; the ignored `high_reflectance_ghost_flux_large_run` uses
 2,000,000 rays × four seeds × two fields). The measurements and the
 investigation behind that test are in
-[history/wave-ghost-stray-measurements.md](history/wave-ghost-stray-measurements.md).
+[history/ghost-high-reflectance.md](history/ghost-high-reflectance.md).
 
 ## 6. Resident GPU jobs
 
@@ -424,8 +424,7 @@ moments use a parallel moments reduction over the same resident leaves. Empty bi
 Only the occupied-segment count and maximum length cross a host control
 boundary; there are no floating-point atomics. Host code assembles the
 small reduced statistics, ratios, coverage and peak ranking in reference order.
-Numerical inputs are filled directly in shared buffers and outputs are read
-in place. The existing packed-system upload is cached by snapshot, material,
+The existing packed-system upload is cached by snapshot, material,
 clipping and build identity; its small cold metadata copy is measured
 separately from the zero-copy probe/map pipeline. A leaf's map index and
 reference bin cross the chain as f32 words, exact up to 2²⁴: a map of more
@@ -486,8 +485,7 @@ run in parallel per path or cell, in a fixed order. Progress reserves ranges for
 preparation, refinement, maps and final assembly, and reaches one only
 after a successful result. `RunInfo` retains backend/device/build/probe,
 precision, material identity, operation version, settings, stage timings,
-command counts, memory and fallback counters. Widening public numbers to
-f64 does not relabel device arithmetic as f64.
+command counts, memory and fallback counters.
 
 `paraxial_batch` evaluates marginal/chief recurrences and axial throughput
 across path/wavelength batches in double-float. The `radiometry` operation

@@ -171,11 +171,9 @@ Ownership, precisely:
   the obstruction-checked `primary_reference(...).flux` (or the Monte-Carlo
   `Primary`) as the `Primary` term; scaling a sequential result by
   `1 − obstruction` is exact for the flux of the same source, not for maps.
-* **Explicit ghost solver (`Ghost`)**: deterministic, purely specular paths
-  through the optical interfaces with at least two reflections at
-  refracting interfaces, all inside the clear (clipping) apertures, never
-  touching mechanical geometry. Each ghost is identified by its ordered
-  `(surface, transmit | reflect)` signature over the interfaces it meets.
+* **Explicit ghost solver (`Ghost`)**: the ghost paths its run covers, each
+  identified by its ordered `(surface, transmit | reflect)` signature
+  (GHOST §2).
 * **Stray solver (`Scatter`, `Mechanical`, `Sneak`)**: everything else that
   reaches the detector. It may also report `Ghost` and `Primary`, for
   comparison only.
@@ -208,17 +206,14 @@ whole Ghost class; its `included` flag means the whole class is selected,
 not that no subset can be owned. `classes` likewise describes whole-class
 selection. Strongest signatures follow per-path ownership.
 The engine adapter uses this same API.
-A coverage longer than the stored signature is rejected at the boundary,
-rather than claiming ambiguous ownership.
 
 The identity holds path by path with the obstruction-checked `Primary`. An
 explicit ghost solver that ignores non-sequential geometry overcounts
 obstructed ghost paths in the same way.
 
-This needs both solvers to clip at the same apertures (CONVENTIONS §10):
-the scene's clear apertures come from `mklight_ghost::clip_apertures`, and
-`StraySystem::ghost_apertures` reports the scene's clipping in the ghost
-solver's terms. `StraySystem::check_ghost_coverage(&coverage)` (or
+This needs both solvers to clip at the same apertures (CONVENTIONS §10,
+GHOST §2): `StraySystem::ghost_apertures` reports the scene's clipping in
+the ghost solver's terms. `StraySystem::check_ghost_coverage(&coverage)` (or
 `ghost_coverage` in the analysis settings) refuses a ghost run whose
 `GhostCoverage` has different interface kinds or apertures, e.g. a
 `ClearApertures` margin or other semi-diameter settings. The comparison
@@ -226,8 +221,7 @@ is bit-exact (a ray at the rim must be clipped by both or neither), so
 two independent sizings must agree to the last bit; with non-default
 `semi_diameters`, build the ghost model from the scene's sizing,
 `GhostModel::with_semi_diameters(tracer, settings,
-system.semi_diameters.clone())` (`GhostModel::sized` sizes with given
-settings, cancellably).
+system.semi_diameters.clone())`.
 `tests/partition.rs` checks the sum on a singlet and a Cooke triplet
 coated with an ideal 5 % reflector (orders 2 and 4 in the ghost run,
 on-axis and off-axis fields): the stray `Ghost` class matches the ghost
@@ -575,14 +569,12 @@ the reported reference route: the high-level adapter completes a labelled CPU-f6
 fallback count and reason. Cancellation returns `Cancelled` and never starts
 replacement work.
 
-Inputs are produced with `fill_buffer`; outputs are borrowed with
-`read_view`. RunInfo records the actual backend, F32Gpu precision, seed,
+RunInfo records the actual backend, F32Gpu precision, seed,
 scene fingerprint, numeric recipe version, kernel build/probe, the division
 (`gpu_share`, `sag_mode`), the source counters (device sources,
 CPU continuations by cause, retraces, CPU-share sources, events on each
 side), stage timings, command/allocation/storage/copy statistics and any
-reference replacement. Widening final values to f64 does not change the
-reported computation precision. Preparation and transport use progress
+reference replacement. Preparation and transport use progress
 subranges, and successful public assembly emits the final 1.
 
 Owned harnesses cover all 16 sample geometries and full transports, both
@@ -644,10 +636,11 @@ as well, 40 % and 62 % on the first two (the ultra-wide then hands nearly
 every source to the CPU). The 12-thread f64 reference is still 3–5 times
 faster per event there, so the default share on such lenses stays 0.
 
-**GPU options.** `wavefront`, a forced `stray_share` and `f32-grazing` move
-transport onto the device. On an M2 Pro their time ranges from 0.7 times the
-default's (`wavefront` with `f32-grazing` on the Petzval sample at 20k rays)
-to 2.5–3.6 times (`wavefront` at 400k–2M rays); a forced share of 0.2–0.35
+**GPU options.** A forced `stray_share` (1 puts every source on the device)
+and `f32-grazing` move transport onto the device. On an M2 Pro their time ranges from 0.7 times the
+default's (`stray_share=1` with `f32-grazing` on the Petzval sample at 20k
+rays) to 2.5–3.6 times (`stray_share=1` at 400k–2M rays); a forced share of
+0.2–0.35
 takes 0.9–1.6 times at 20k rays and up to 3 times at 2M rays on an aspheric
 lens. A GPU with more cores per CPU core may favour them, so they stay
 selectable. Their accuracy was checked against the CPU reference on the
@@ -674,7 +667,7 @@ with iteratively intersected sags: two even aspheres in a 29-surface lens make
 the cast kernel 85 % of the wavefront's device time, and one grazing ray's sag
 scan takes up to about 3 ms on the device. Device transport reaches about
 4 M events/s on the Double Gauss and 1 M events/s on that lens, against about
-16 M and 10 M events/s for the 12-thread reference, so only `cosplit` with a
+16 M and 10 M events/s for the 12-thread reference, so only the division with a
 small device share is faster than the reference (the Double Gauss at 400 000
 rays: 413 against 633 ms with a share of 0.25).
 

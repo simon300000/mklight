@@ -41,10 +41,8 @@ first-order report. Read `docs/CONVENTIONS.md` first; the module docs in
   unit weight and no pupil compression. Their coordinates are reported;
   the physical snapshot and its hash are unchanged. Explicit index/list
   selections use only the requested fields.
-* **Non-finite numbers** (`util::nf`): `±∞` are written as `"inf"`/`"-inf"`
-  (the core `serde_util` convention) and NaN, which means *undefined* (a
-  vignetted field, a failed ray), as `null`. Reading accepts numbers, `null`,
-  `"inf"`, `"-inf"` and `"nan"`. See CONVENTIONS §11.
+* **Non-finite numbers** are written and read by `util::nf` as
+  CONVENTIONS §11 defines (NaN, *undefined*, as `null`).
 
 ## 2. Analyses
 
@@ -150,11 +148,10 @@ derivative of the normal from the conic gradient or the sag Hessian,
 differentiated Snell/reflection/diffraction/ideal-lens laws). Projected on
 the transverse basis of the chief direction it gives the pencil matrices
 `X`, `T`, and the foci follow as above (`F = −X T⁻¹` is invariant under the
-parametrisation). It is the `h → 0` limit of the former close-ray pairs at
-pupil offsets `(0, ±h)`, `(±h, 0)`, without their `O(h²)` truncation and
-their cancellation (the two methods now agree to about 10⁻¹² mm on every
-sample, against 10⁻⁶ mm for close rays with `h = 10⁻³`; on Metal the
-double-float close rays lost up to 10⁻⁴ mm). Where the tangent cannot be
+parametrisation). It is the `h → 0` limit of close-ray pairs at pupil
+offsets `(0, ±h)`, `(±h, 0)`, without their `O(h²)` truncation and their
+cancellation (the two methods agree to about 10⁻¹² mm on every sample,
+against 10⁻⁶ mm for close rays with `h = 10⁻³`). Where the tangent cannot be
 formed (grazing incidence `|N·d| < 10⁻⁹`, near total internal reflection,
 an undefined Hessian) the close rays with `close_ray_step` are traced
 instead and a warning counts the samples. `field_curvature` warns where the
@@ -248,9 +245,9 @@ Two cross-checks pin the method:
   order in the aberrations: within 10⁻⁴ on the singlet, but 0.5–0.8 % at
   full field of the triplet and double Gauss.
 
-An earlier version measured the beam of one object point. That gives the
+The beam of one object point is not the image irradiance: it gives the
 solid angle at the beam's own astigmatic foci and grows with field
-curvature (RI > 1 at 5° on the singlet). It is not the image irradiance.
+curvature (RI > 1 at 5° on the singlet).
 
 ### 2.5 Layout
 
@@ -581,17 +578,15 @@ generation and the share, never on which side is faster, so identical input
 gives bitwise identical rays (`tests/aim_designs.rs` runs it on one and four
 rayon threads, and with other shares).
 
-Measured on a quiet M2 Pro (8 + 4 CPU cores, 19 GPU cores; shuffled
-columns, against the same build aiming every generation on the host): spot
-diagrams and geometric MTFs of four complex camera lenses with dense pupils
-(4–13 million rays × surfaces per field group) took
-0.94 of the host-only time at share 0.35 (0.84–1.08 per case); shares 0.5
-and 0.65 gave the same mean but worst cases of 1.26 and 1.32. Between 1.5
-and 4 million rays × surfaces the split took 0.96; below, it lost up to
-18 %. No fixed share suits every lens on this machine: the device aims some
-lenses several times slower per ray than the twelve host threads, and the
-slower side sets the time. The footprint (1.00–1.01) and the ray grid
-(0.90–1.17) gained nothing and do not split.
+On the M2 Pro (8 + 4 CPU cores, 19 GPU cores), against host-only aiming,
+spot diagrams and geometric MTFs of four complex camera lenses with dense
+pupils (4–13 million rays × surfaces per field group) took 0.94 of the time
+at share 0.35 (0.84–1.08 per case); shares 0.5 and 0.65 gave the same mean
+but worst cases of 1.26 and 1.32. Between 1.5 and 4 million rays × surfaces
+the split took 0.96; below, it lost up to 18 %. No fixed share suits every
+lens: the device aims some lenses several times slower per ray than the
+twelve host threads, and the slower side sets the time. The footprint
+(1.00–1.01) and the ray grid (0.90–1.17) gained nothing and do not split.
 
 **Host completion.** A device aim cannot always certify the requested stop
 tolerance. The device trace takes the even-asphere slope in double-float
@@ -649,9 +644,7 @@ bits, analytic ideal-lens and disk answers, chained plans, concurrent jobs,
 cancellation and resource release), `tests/aim_designs.rs` and
 `tests/fieldmaps_split.rs`, and the ignored benchmark `tests/p5_bench.rs`,
 all in `mklight-analysis`. Engine routing is the calibrated cost model of
-GPU.md §9.2, not a fixed ray-count assumption; earlier measurements of these
-adapters are in
-[history/analysis-measurements.md](history/analysis-measurements.md).
+GPU.md §9.2, not a fixed ray-count assumption.
 
 ### 6.2 CPU/GPU divisions of the field maps (route option `fieldmaps`)
 

@@ -183,7 +183,7 @@ registered later by solver crates are available without CLI changes.
 |---|---|
 | `--settings <json>` / `--settings @file` | settings object (partial; missing keys take the schema defaults, unknown keys are rejected) |
 | `--seed <n>` | sets `settings.seed`; only for analyses whose schema has a `seed` |
-| `--backend cpu\|metal\|auto` | `auto` (default): the engine's automatic selection, the calibrated cost model of docs/GPU.md §9.2 (Metal only for a predicted advantage of at least 1.3× and 5 ms; accuracy exclusions and analyses without a GPU path stay on the CPU reference; devices without a calibration prefer qualified Metal); the envelope's `backend` object records which and why (docs/RESULTS.md §5). `metal`: explicit, bypassing the cost model; exit 3 if the Metal backend is unavailable or does not implement the analysis (no silent fallback). `cpu`: the f64 reference |
+| `--backend cpu\|metal\|auto` | `auto` (default): the engine's automatic selection (docs/GPU.md §9.2); the envelope's `backend` object records which backend ran and why (docs/RESULTS.md §5). `metal`: explicit, bypassing the cost model; exit 3 if the Metal backend is unavailable or does not implement the analysis (no silent fallback). `cpu`: the f64 reference |
 | `--tier design\|preview` | accuracy tier, `design` (default) or the opt-in, labelled `preview` (docs/GPU.md §9.4); recorded in `run_info.tier` |
 | `--aim-stop requested\|conditioned` | aim-stop policy (CONVENTIONS §7); omitted, the engine default `conditioned`; an explicit aiming tolerance in the project always runs as `requested`; recorded in `run_info.aim_stop` |
 | `--route KEY=VALUE` | a route option of this run (repeatable; docs/GPU.md §9.3: `aiming`, `aiming_share`, `fieldmaps`, `stray_share`, `stray_sag`, `solver_aiming`), for example `--route fieldmaps=device-chief --route stray_share=1`; keys not given take their defaults; an unknown key or value is a usage error (1) |
@@ -192,10 +192,8 @@ registered later by solver crates are available without CLI changes.
 | `--progress` | progress on stderr while the job runs (`progress  42.0%  stage`, or one JSON object per line with `--json`) |
 | `--timeout <s>` | cancel the job after `s` seconds (exit 130) |
 
-The JSON output is the engine's result envelope (docs/RESULTS.md §1):
-`{run_info, library_hash, derived_snapshot_hash, backend, result_version,
-result, buffers: [{index, name, dtype, shape}]}`.
-The human output shows the run info, the result JSON and the buffer list.
+The JSON output is the engine's result envelope (docs/RESULTS.md §1). The
+human output shows the run info, the result JSON and the buffer list.
 
 **Stop and cancellation.** For the analyses listed with `stoppable: true`
 (`optimize`, `tolerance` and `glass_substitution`), the first Ctrl-C
@@ -292,15 +290,10 @@ pupil shrinks with the focal length).
 `cargo test -p mklight-cli` runs unit tests (formatting, exit-code mapping,
 argument parsing) and integration tests that execute the built binary on
 the sample systems: every command, JSON parsed and checked against known
-answers (paraxial EFL of every sample, the axial marginal ray of every
-sample near the axis at the paraxial focus with its image-space slope
-matching the working F/# (sine condition), achromat EFL ≈ 100 mm at F/5,
-chief-ray height against the paraxial image height, the Newtonian's folded
-image at global (0, −100, −400) for any pupil point, the relay's m = −1 and
-5 mm edge field imaged at −5 mm, coordinate breaks reported without AOI, a user AGF glass with N-BK7 coefficients reproducing N-BK7's
-first-order data), exit codes (including non-UTF-8 projects for every command), `validate` and
-`set` agreeing with `paraxial`/`trace` (F/# 0, negative field weight:
-every structural issue listed, step-by-step repair with `set`),
-atomic `set`, Ctrl-C and
-`--timeout` cancellation with monotone progress, and byte-identical
-`--no-timing` output.
+answers (first-order data and marginal and chief rays of the samples, the
+Newtonian's folded image, coordinate breaks reported without AOI, a user
+AGF glass reproducing N-BK7), exit codes (including non-UTF-8 projects for
+every command), `validate` and `set` agreeing with `paraxial`/`trace`
+(every structural issue listed, step-by-step repair with `set`), atomic
+`set`, Ctrl-C and `--timeout` cancellation with monotone progress, and
+byte-identical `--no-timing` output.

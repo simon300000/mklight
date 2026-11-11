@@ -16,11 +16,32 @@
   <img alt="Swift 6" src="https://img.shields.io/badge/app-SwiftUI-F05138?logo=swift&logoColor=white">
   <img alt="Metal" src="https://img.shields.io/badge/GPU-Metal-0A84FF">
   <img alt="Python 3.11+" src="https://img.shields.io/badge/python-3.11%2B-3776AB?logo=python&logoColor=white">
+  <img alt="Status: pre-release" src="https://img.shields.io/badge/status-pre--release-8E8E93">
+</p>
+
+<p align="center">
+  <a href="#highlights">Highlights</a> ·
+  <a href="#features">Features</a> ·
+  <a href="#gallery">Gallery</a> ·
+  <a href="#getting-started">Getting started</a> ·
+  <a href="#how-it-fits-together">Architecture</a> ·
+  <a href="#documentation">Documentation</a>
 </p>
 
 <p align="center">
   <img src="docs/images/main-window.png" alt="MKLight main window: a Double Gauss lens with lens data, layout, spot diagram, MTF and glass map">
 </p>
+
+<table align="center">
+<tr>
+<td align="center"><b>40+</b><br><sub>analyses</sub></td>
+<td align="center"><b>11</b><br><sub>surface shapes, sphere to freeform</sub></td>
+<td align="center"><b>16</b><br><sub>built-in sample designs</sub></td>
+<td align="center"><b>f64</b><br><sub>CPU reference behind every GPU result</sub></td>
+<td align="center"><b>3</b><br><sub>front ends: app, command line, Python</sub></td>
+<td align="center"><b>1,900</b><br><sub>automated tests</sub></td>
+</tr>
+</table>
 
 ## Highlights
 
@@ -35,8 +56,8 @@
 - **Fast where it matters.** The GPU takes the throughput work, such as
   dense wave-optics transforms, image simulation and large ghost maps. A
   calibrated cost model sends a job to the GPU only when it will finish
-  sooner there, so small, latency-bound work stays on the CPU. A content-hashed analysis cache
-  rebuilds only what an edit changed.
+  sooner there, so small, latency-bound work stays on the CPU. A
+  content-hashed analysis cache rebuilds only what an edit changed.
 - **Reproducible results.** Every result records the engine version, the
   design's content hash, its settings, the backend and precision it ran on,
   and the random seed.
@@ -143,36 +164,38 @@ they close with the main window.
 ### Engine and tests
 
 ```bash
-cargo test --workspace
+scripts/test.sh
 ```
 
-runs every test, one test program after another. Each crate has one program
-for its unit tests and one for its integration tests (`tests/main.rs`, with
-every file of `tests/` as a module), so the tests of one file are
+builds the engine and runs every Rust test, with the test programs side by
+side: about two minutes on an M2 Pro. `cargo test --workspace` runs the same
+tests one program after another, in about four and a half.
+
+<details>
+<summary>Running part of the tests, and the first run after a rebuild</summary>
+
+Each crate has one program for its unit tests and one for its integration
+tests (`tests/main.rs`, with every file of `tests/` as a module), so the
+tests of one file are
 
 ```bash
 cargo test -p mklight-trace --test tests geometry::
 ```
 
-`scripts/test.sh` runs the same tests with the programs side by side, and
-takes the same selections:
-
-```bash
-scripts/test.sh
-```
+`scripts/test.sh` takes the same selections as `cargo test`:
 
 ```bash
 scripts/test.sh -p mklight-trace -p mklight-wave
 ```
 
-On an M2 Pro the whole suite takes about two minutes that way, against four
-and a half through `cargo test`. After a change that rebuilds everything
-allow about a minute to build and three to run: macOS scans every newly
-built program when it first starts (XProtect). macOS has a setting for
-this, *System Settings → Privacy & Security → Developer Tools*: the apps
-listed there (a terminal, or the app that starts the tests) may run locally
-built software without that check. It is a security setting to decide on
-yourself.
+After a change that rebuilds everything allow about a minute to build and
+three to run: macOS scans every newly built program when it first starts
+(XProtect). macOS has a setting for this, *System Settings → Privacy &
+Security → Developer Tools*: the apps listed there (a terminal, or the app
+that starts the tests) may run locally built software without that check.
+It is a security setting to decide on yourself.
+
+</details>
 
 ### The Mac app
 
@@ -212,7 +235,31 @@ r = s.run("spot_diagram")
 print(r.run_info["snapshot_hash"])
 ```
 
-## Repository layout
+## How it fits together
+
+Every front end drives the same engine, every solver reads the same model,
+and every GPU result is checked against the CPU reference tracer.
+
+```mermaid
+flowchart TD
+    app["Mac app<br>SwiftUI, Metal viewport"] --> ffi["mklight-ffi<br>C ABI"]
+    cli["Command line"] --> engine
+    py["Python"] --> engine
+    ffi --> engine["mklight-engine<br>sessions, projects, jobs, analysis cache, backend choice"]
+    engine --> analysis["mklight-analysis<br>geometric"]
+    engine --> wave["mklight-wave<br>PSF, MTF, wavefront"]
+    engine --> ghost["mklight-ghost<br>ghost paths"]
+    engine --> stray["mklight-stray<br>stray light"]
+    engine --> optim["mklight-optim<br>optimisation, tolerancing"]
+    analysis --> trace
+    wave --> trace
+    ghost --> trace
+    stray --> trace
+    optim --> trace
+    trace["mklight-trace<br>CPU f64 reference tracer"] --> core["mklight-core<br>model, materials, coatings"]
+    trace -. "cross-validation" .- gpu["mklight-gpu<br>backend interface, f32 emulation"]
+    gpu --> metal["mklight-metal<br>Metal kernels"]
+```
 
 | path | contents |
 |---|---|
@@ -228,10 +275,12 @@ print(r.run_info["snapshot_hash"])
 | `crates/mklight-bench` | The engine's measurement and qualification harnesses and the result comparator they share |
 | `crates/mklight-ffi`, `crates/mklight-py`, `crates/mklight-cli` | The C ABI, Python bindings and command line |
 | `apps/macos` | The SwiftUI app |
+| `docs` | The reference documents below |
+| `scripts` | Building the app, running the tests |
 
 ## Documentation
 
-| | |
+| Document | Covers |
 |---|---|
 | [Architecture](docs/ARCHITECTURE.md) | Crates, state model, solvers and backends |
 | [Conventions](docs/CONVENTIONS.md) | Units, signs, definitions and the precision budget |

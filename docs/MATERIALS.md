@@ -121,11 +121,9 @@ primary specification, and flagged in the source:
   documentation. `a0 … a6` are verified.
 
 **Open requirement**: one real glass per formula with a known answer.
-Formula 4 and formula 12's `a7` still lack one. Searches of manufacturer
-downloads (visible-glass AGF catalogs and infrared chalcogenide data
-sheets) found no published glass that uses formula 4 or a non-zero
-formula-12 `a7` together with its catalog indices. Until one is found,
-both stay flagged here and in `dispersion.rs`.
+Formula 4 and formula 12's `a7` still lack one (no published glass with its
+catalog indices is known); until one is found, both stay flagged here and
+in `dispersion.rs`.
 
 **Verification of formulas 12 and 13** against the manufacturer's own data.
 Source: Nikon Corporation, glass data in AGF format
@@ -153,12 +151,9 @@ checks that the permuted orders fail. Test values, from the catalog:
 | E-LAKH1 | 12 | 1.748099 | 52.304982 |
 | E-KZFH1 | 12 | 1.612660 | 44.461379 |
 
-The same catalog wraps its `CD` and `TD` records over several lines (a
-line that starts with a number continues the previous record). The reader
-joins such continuation lines after `ED`, `CD`, `TD` and `OD`; before it
-did, every glass of this catalog lost its higher coefficients (J-FK5:
-Δn_d = −2.4·10⁻⁴, ΔV_d = 4.1). With the fix all 379 glasses of the file
-reproduce their catalog n_d and V_d.
+The same catalog wraps its `CD` and `TD` records over several lines
+(continuation lines, "Tolerance and policy" below); all 379 glasses of the
+file reproduce their catalog n_d and V_d.
 
 In the tests, formulas 1 and 2 reproduce published glass data (N-BK7, F2,
 BK7) to the catalog n_d/V_d, and formulas 12 and 13 manufacturer data as
@@ -199,10 +194,10 @@ lib.add_catalog(Arc::new(cat));
 exclude-substitution and climate/stain resistance in `Glass::substitution`.
 `Glass::relative_cost` and `Glass::transmittance` retain OD cost and IT
 samples. `glass_map` reports all these material fields without separate
-metadata; `glass_substitution` filters use the same values. The complete
-AGF metadata (including ΔP_g,F and other resistance codes)
-stays in `AgfCatalog::meta`. The `glass_substitution` job filters the retained
-summary; its candidate settings and distance metric are in `OPTIMIZATION.md`.
+metadata, and the `glass_substitution` job filters on the same values (its
+candidate settings and distance metric are in `OPTIMIZATION.md`). The
+complete AGF metadata (including ΔP_g,F and other resistance codes) stays in
+`AgfCatalog::meta`.
 
 The catalog is named after the file stem. Glass lookups are case-insensitive,
 and a `MaterialRef::Catalog` with `catalog: None` searches the catalogs in

@@ -43,8 +43,8 @@ isotropy `r_p = −r_s`, `t_p = t_s` for any stack; reciprocity of `t̃`
 (forward stack vs reversed stack at the Snell angle) and the Stokes relations
 `|r|² + |t̃|² = 1`, `r' = −r* t̃/t̃*` for lossless stacks.
 
-The polariser case of the task ("an ideal coating with `r_p = 0`") cannot be
-expressed: `CoatingDef::Ideal` has one `R` and one `T` for both
+An ideal polarising coating (`r_p = 0`) cannot be expressed:
+`CoatingDef::Ideal` has one `R` and one `T` for both
 polarisations, and adding a polarising variant would change a shared enum
 that every solver matches on. The Malus-type checks use an ideal polariser
 built directly as an interface PRT matrix (`t̃_s = 0`, `t̃_p = 1`) and a real
@@ -407,8 +407,7 @@ system-cache API copies cold packed geometry once and reuses it on warm
 jobs; benchmarks report this separately from resident-plan copies. Scalar
 transmission has a dedicated transport kernel that skips PRT and
 retardance, and reads only the summary when no reference completion is
-needed. Numeric outputs are final result assembly, not f64-labelled GPU
-arithmetic. Per-ray operation order is independent of tile/command sizes;
+needed. Per-ray operation order is independent of tile/command sizes;
 Metal uses adaptive commands aiming at 10 ms (at most `MAX_TILE` rows) and
 checks cancellation before and after each one. Only integer fallback
 counters return to the host between resident stages. All jobs carry

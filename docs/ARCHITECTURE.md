@@ -213,16 +213,9 @@ stays the independent oracle (CONVENTIONS §7, "CPU packets").
 
 Apple GPUs have no FP64. Metal kernels compute in f32 and switch to
 double-float (`float2` hi + lo pairs, about 48 significand bits) wherever
-the budget needs it (GPU §3–4):
-
-* rays are carried in each surface's local frame, never in large global coordinates;
-* intersections use cancellation-free closed forms; decisions and
-  predictors are f32, while transfers, hit refinement, direction
-  renormalisation and the optical path are double-float;
-* aiming runs its stop hits, finite differences, 2×2 solves and updates in
-  double-float;
-* reductions use compensated (Kahan/Neumaier) or pairwise summation.
-
+the budget needs it, with the techniques of CONVENTIONS §7.1–7.6 (local
+frames, cancellation-free intersections, double-float geometry and optical
+path, compensated reductions); GPU §3–4 says which steps are double-float.
 This is the only kernel arithmetic (GPU §3.6). Every Metal result is
 labelled `f32_gpu`, even where a public buffer widens it to f64.
 
@@ -233,10 +226,9 @@ close-ray cross-check (the f64 differential pencil) and aperture-edge ties
 of ghost lattices. Solver reports are scored once in f64 at the end
 (GPU §9.2).
 
-Budgets are in CONVENTIONS §7; the per-quantity contracts and the preview
-tier are in GPU §9.4. Accuracy is qualified offline: tests compare the
-reference, the CPU-f32 emulation and Metal on the sample designs. `auto`
-routing and its accuracy exclusions are in GPU §9.2.
+Budgets are in CONVENTIONS §7; the per-quantity contracts, the preview
+tier and the offline qualification are in GPU §9.4, `auto` routing and its
+accuracy exclusions in GPU §9.2.
 
 ## Platform backends
 

@@ -45,10 +45,8 @@ wavelength**:
   solves cannot be satisfied there (except trivially).
 * Heights `y` are in mm on the **vertex plane** of a surface. The paraxial
   angle is the **slope** `u = dy/dz` (dimensionless, *not* degrees) after a
-  surface, with `z` the local axis. This is why the angle kinds have a
-  `slope` field rather than an `angle`: UI and FFI must label it "slope"
-  (or "paraxial angle u"), never show it in degrees, and not convert it with
-  `tan`/`atan` (CONVENTIONS §8). After an odd number of mirrors light
+  surface, with `z` the local axis, so the angle kinds have a `slope` field
+  rather than an `angle` (how to present it: CONVENTIONS §8). After an odd number of mirrors light
   travels toward `−z`, so a beam converging toward the axis there has
   `u > 0`: a concave mirror at `y = 10` that focuses 200 mm in front of
   itself has `u = (0 − 10)/(−200) = +0.05`.
@@ -290,18 +288,11 @@ each configuration with `apply_solves_configuration` (or
 `apply_solves_all`).
 
 **Solver jobs.** `optimize`, `merit_evaluation`, `tolerance` and
-`glass_substitution` apply the solves to the snapshot's system and work on
-that solved start (`docs/OPTIMIZATION.md`, Engine jobs, "One model"). A
-solve-controlled parameter is never one of their variables, tolerances or
-compensators: automatic sets skip it and an explicit one is an error.
-`optimize`'s search and the re-optimisations of `glass_substitution` do not
-re-solve: the solved parameters keep their start values. `glass_substitution`
-applies the solves to each substituted design before re-optimising it.
-`tolerance` keeps the solves in effect in every system it evaluates: each
-perturbed case, and each candidate of its compensator solve, is re-solved
-(`mklight_optim::merit::WithSolves`), so a solve acts like a compensator
-that is always applied. These re-solves run on the system as the job
-changed it, with the default `SolveSettings`.
+`glass_substitution` work on the solved start, never vary a
+solve-controlled parameter, and differ only in where they re-solve
+(`docs/OPTIMIZATION.md`, Engine jobs, "One model"). `tolerance`'s re-solves
+(`mklight_optim::merit::WithSolves`) run on the system as the job changed
+it, with the default `SolveSettings`.
 
 ## 6. JSON
 

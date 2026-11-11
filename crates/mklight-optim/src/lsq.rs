@@ -862,7 +862,7 @@ fn inner<P: Problem + ?Sized>(
         c.failed = failed;
         let cn = jm.column_norms();
         // Host-owned J and r: a device product costs one fill of J plus a
-        // command, more than the product itself (measured, OPTIMIZATION.md).
+        // command, more than the product itself (measured).
         let g = jm.tr_mul_vec(&r);
         for j in 0..n {
             if cn[j] > c.d[j] {

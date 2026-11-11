@@ -21,49 +21,9 @@ concurrency).
 
 ## Design brief: Liquid Glass
 
-What we took from Apple's current guidance, and how MKLight applies it.
-
-**Sources read** (the developer.apple.com pages through their JSON form):
-
-* HIG: [Materials](https://developer.apple.com/design/human-interface-guidelines/materials),
-  [Layout](https://developer.apple.com/design/human-interface-guidelines/layout),
-  [Toolbars](https://developer.apple.com/design/human-interface-guidelines/toolbars),
-  [Sidebars](https://developer.apple.com/design/human-interface-guidelines/sidebars),
-  [Split views](https://developer.apple.com/design/human-interface-guidelines/split-views),
-  [Panels](https://developer.apple.com/design/human-interface-guidelines/panels) (inspectors),
-  [Scroll views](https://developer.apple.com/design/human-interface-guidelines/scroll-views),
-  [Tab views](https://developer.apple.com/design/human-interface-guidelines/tab-views),
-  [Color](https://developer.apple.com/design/human-interface-guidelines/color),
-  [Typography](https://developer.apple.com/design/human-interface-guidelines/typography),
-  [SF Symbols](https://developer.apple.com/design/human-interface-guidelines/sf-symbols),
-  [Icons](https://developer.apple.com/design/human-interface-guidelines/icons),
-  [Charts](https://developer.apple.com/design/human-interface-guidelines/charts),
-  [Buttons](https://developer.apple.com/design/human-interface-guidelines/buttons),
-  [Accessibility](https://developer.apple.com/design/human-interface-guidelines/accessibility),
-  [Designing for macOS](https://developer.apple.com/design/human-interface-guidelines/designing-for-macos),
-  [Designing for iPadOS](https://developer.apple.com/design/human-interface-guidelines/designing-for-ipados).
-* Developer documentation: [Adopting Liquid Glass](https://developer.apple.com/documentation/technologyoverviews/adopting-liquid-glass),
-  [Applying Liquid Glass to custom views](https://developer.apple.com/documentation/swiftui/applying-liquid-glass-to-custom-views),
-  SwiftUI [`glassEffect(_:in:)`](https://developer.apple.com/documentation/swiftui/view/glasseffect(_:in:)),
-  [`GlassEffectContainer`](https://developer.apple.com/documentation/swiftui/glasseffectcontainer),
-  [`glassEffectID(_:in:)`](https://developer.apple.com/documentation/swiftui/view/glasseffectid(_:in:)),
-  [`GlassButtonStyle`](https://developer.apple.com/documentation/swiftui/glassbuttonstyle),
-  [`backgroundExtensionEffect()`](https://developer.apple.com/documentation/swiftui/view/backgroundextensioneffect()),
-  [`scrollEdgeEffectStyle(_:for:)`](https://developer.apple.com/documentation/swiftui/view/scrolledgeeffectstyle(_:for:)),
-  [`ToolbarSpacer`](https://developer.apple.com/documentation/swiftui/toolbarspacer),
-  [`inspector(isPresented:content:)`](https://developer.apple.com/documentation/swiftui/view/inspector(ispresented:content:)),
-  [`tabViewBottomAccessory`](https://developer.apple.com/documentation/swiftui/view/tabviewbottomaccessory(content:)),
-  [Swift Charts `Chart3D`](https://developer.apple.com/documentation/charts/chart3d),
-  [Observation](https://developer.apple.com/documentation/observation),
-  [What's new in SwiftUI](https://developer.apple.com/documentation/updates/swiftui).
-* WWDC: [Meet Liquid Glass (WWDC25 219)](https://developer.apple.com/videos/play/wwdc2025/219/),
-  [Get to know the new design system (WWDC25 356)](https://developer.apple.com/videos/play/wwdc2025/356/),
-  [Build a SwiftUI app with the new design (WWDC25 323)](https://developer.apple.com/videos/play/wwdc2025/323/),
-  [What's new in SwiftUI (WWDC25 256)](https://developer.apple.com/videos/play/wwdc2025/256/),
-  [Bring Swift Charts to the third dimension (WWDC25 313)](https://developer.apple.com/videos/play/wwdc2025/313/),
-  [What's new in SwiftUI (WWDC26 269)](https://developer.apple.com/videos/play/wwdc2026/269/),
-  [Modernize your AppKit app (WWDC26 289)](https://developer.apple.com/videos/play/wwdc2026/289/),
-  [Principles of great design (WWDC26 250)](https://developer.apple.com/videos/play/wwdc2026/250/).
+What we took from Apple's current guidance is below, with how MKLight
+applies it. The sources, cited by their short names, are listed at the end of
+this page.
 
 **Principles, and what MKLight does with them**
 
@@ -94,8 +54,8 @@ What we took from Apple's current guidance, and how MKLight applies it.
    menu command* (Toolbars, WWDC25 323). Design jobs | Add Analysis, Layout |
    Inspector, separated by `ToolbarSpacer(.fixed)`; the design's status in
    the centre (`.principal`). All have menu commands and shortcuts.
-6. *Avoid critical information at the bottom of a Mac window* (Layout). The
-   old status bar is gone: activity, EFL, F/#, total track and the issue
+6. *Avoid critical information at the bottom of a Mac window* (Layout). There
+   is no status bar: activity, EFL, F/#, total track and the issue
    count live in the toolbar's status capsule; engine, backend and snapshot
    are in its popover; transient messages float as a glass toast.
 7. *Scroll edge effects instead of bar backgrounds; hard for pinned table
@@ -110,8 +70,8 @@ What we took from Apple's current guidance, and how MKLight applies it.
    `MTKView` are neither cheap nor reliable; the sidebar's glass already
    floats over the window's background.
 9. *Inspectors show the selection and update with it; less modality*
-   (Panels, Designing for macOS). Design jobs moved from modal sheets into
-   the inspector: the design, layout and analyses stay usable while a job
+   (Panels, Designing for macOS). Design jobs are inspector panels, not modal
+   sheets: the design, layout and analyses stay usable while a job
    runs, and a job keeps running when its panel closes (the status capsule
    shows it and reopens it).
 10. *Concentric, capsule and fixed shapes; dense inspectors use small
@@ -277,7 +237,8 @@ What we took from Apple's current guidance, and how MKLight applies it.
   names from the session's catalogs. The type column is a compact menu with
   SF Symbols, grouped Spherical, Aspheric, Freeform, Anamorphic, Diffractive,
   Special (cylinder presets under Anamorphic). Small inline markers show
-  variables (`V`) and solves (`M`, `C`, `F`, `P`, …); validation issues badge
+  variables (`V`, with a small bar under it when bounded and a dot when
+  pinned) and solves (`M`, `C`, `F`, `P`, …); validation issues badge
   their surface. Insert and delete are glass buttons in the header, and in
   the context menu and the Lens menu. A catalogue glass with a melt offset
   (docs/MATERIALS.md) carries it as a small suffix, `N-SK16 +0.0012/−0.8`
@@ -412,7 +373,7 @@ What we took from Apple's current guidance, and how MKLight applies it.
     rays, PSF grid). Values the engine does not report (the pupil grid of
     MTF and PSF, the encircled-energy grid) read "Auto". Stale: dimmed, desaturated, slightly blurred, with a glass card
   and a prominent Update; updating: a progress line and a gentle pulse. The
-  dedicated views are as before (first order with the anamorphic note, spot,
+  dedicated views are: first order with the anamorphic note, spot,
   fans, field curvature, Seidel with S_I … S_V and C_L, C_T set with real
   subscripts in its legend and key numbers (`Subscripted`), MTF, PSF, wavefront, ghosts, stray light,
   polarisation, …); everything else uses the generic view.
@@ -887,8 +848,7 @@ thread, never on the thread that submitted or cancelled the job, and with
 no engine or session lock held.
 
 **GPU kernel preparation.** Metal compiles the GPU's compute kernels when
-they are first created, which after an install or an update of the app or
-of macOS takes a while (about 30 s for all of them on an M2 Pro). The app
+they are first created (docs/FFI.md, "GPU kernel preparation"). The app
 therefore prepares the kernels when it starts: `MKLightScene` calls
 `GPUPreparationMonitor.start(engine:)` once per app run, which calls
 `EngineClient.prepareGPU(cacheDirectory:)` with
@@ -896,18 +856,12 @@ therefore prepares the kernels when it starts: `MKLightScene` calls
 in the app bundle) and keeps App Nap off (`ProcessInfo.beginActivity`)
 while it follows the preparation.
 
-* *Engine.* `mk_engine_prepare_gpu` (ABI 1.4, `Engine::prepare_gpu`) starts
-  the preparation on its own `mklight-gpu-prepare` thread and returns at
-  once; a second call does nothing. The thread opens the first registered
-  GPU (with its numerics probe) and creates every kernel, loading those
-  saved in the cache directory and saving the ones it compiles, so later
-  launches load them. `mk_engine_gpu_preparation_json` reports the state
-  (`GpuPreparation`): `idle`, `preparing` (device, `done` of `total`),
-  `ready` (device, kernels, how many came `from_cache`, seconds, and a
-  `warning` when the cache could not be read or written), `unavailable`
-  (no GPU, with the reason) or `failed` (the kernels then compile on first
-  use; a panic in the preparation also ends here). When the engine is
-  destroyed, a running preparation stops at its next kernel.
+* *Engine.* `mk_engine_prepare_gpu` (ABI 1.4, `Engine::prepare_gpu`) runs on
+  its own `mklight-gpu-prepare` thread; a second call does nothing.
+  `mk_engine_gpu_preparation_json` reports the state (`GpuPreparation`): the
+  states of docs/FFI.md plus `idle` before the first call; a panic in the
+  preparation also ends as `failed`. When the engine is destroyed, a running
+  preparation stops at its next kernel.
 * *Swift.* `FFIEngine.prepareGPU` records a refusal of
   `mk_engine_prepare_gpu`, and `gpuPreparation()` then reads `.failed`, as
   it does when the state cannot be read. `GPUPreparation` mirrors the
@@ -994,157 +948,52 @@ need nothing else; `MKLightUITests` runs the view models on `MockEngine`
 and small test engines; `MKLightFFITests` runs against the real engine and
 is skipped while the library is not linked (see "Building").
 
-* `MKLightModelTests` (`ModelTests`, `FixtureRoundTripTests`,
-  `ExtendedShapeTests`, `SolveTests`, with the fixtures in `Fixtures/`):
-  round trips against JSON written by the Rust side (every model variant
-  including the extended shapes in `extended_shapes.json`, every
-  `ParamPath` form, solve kinds, the 16 samples, the project format),
-  strict decoding, `ParamPath` resolution and values checked case by case
-  against the engine's verdicts, shape-kind conversions, XY and Zernike
-  term numbering.
-* `MKLightEngineTests` (`EngineTests`, `EngineBoundaryTests`,
-  `GPUPreparationTests`): schemas and the settings they accept, buffers,
-  error mapping, staleness, non-finite numbers; jobs on the mock (progress,
+* `MKLightModelTests`: round trips against JSON written by the Rust side
+  (every model variant including the extended shapes, every `ParamPath`
+  form, solve kinds, the 16 samples, the project format, with the fixtures
+  in `Fixtures/`), strict decoding, `ParamPath` resolution and values checked
+  case by case against the engine's verdicts, shape-kind conversions, XY and
+  Zernike term numbering.
+* `MKLightEngineTests`: schemas and the settings they accept, buffers, error
+  mapping, staleness, non-finite numbers; jobs on the mock (progress,
   cancellation, seeds) and its analyses by name; the mock's optics against
   known answers; every state of `mk_engine_gpu_preparation_json` in the
-  engine's exact JSON, `ready` with and without its `warning`; the
-  envelope's `cost_decision` kept in `BackendReport`.
-* `MKLightUITests`:
-  * the workspace (`WorkspaceTests`: panes run, go stale, automatic vs
-    manual update, settings re-run, unavailable and unknown analyses, an
-    invalid design blocks analyses, newer requests cancel older ones, the
-    layout round-trips through the project's `views`, the layout buffers
-    become the viewport's scene, catalogs before the first snapshot,
-    session rebuild, dropping the workspace cancels its jobs) and the panel
-    arrangement
-    (`PanelArrangementTests`: tabs, splits merging into one row of the same
-    axis, separate windows, showing and hiding, new panes beside their
-    neighbour, saved with the project);
-  * editing (`EditingTests`: table rows, typed values incl. `∞` and
-    materials, rejected input, insert / delete / stop with undo and redo,
-    variables with undo, solve markers, the data-driven surface parameters
-    and coefficient lists, parameter paths) and surface types
-    (`SurfaceTypeTests`: every descriptor's keys and variable paths against
-    the model for all 13 types, term labels, the type menu, the display
-    sags against the closed forms of SURFACES.md — Q polynomials,
-    reductions to the base conic, XY and Zernike terms — DOE power and zone
-    period, the departure map, anamorphic table rows, the anamorphic
-    first-order reader);
-  * design jobs (`DesignJobTests`: merit progress parsing, Optimize applied
-    as one undoable step, Stop keeps and Cancel discards, tolerance ranking
-    and Monte Carlo, Apply Solves dry run then undoable commit); parsers,
-    viewport math and shaders (`UITests`);
-  * the merit editor (`MeritAndBoundsTests`: add after the selection,
-    reorder, duplicate and delete with `combine` references kept, the
-    operand JSON, the `merit_evaluation` report, live evaluation and
-    conversion on the mock engine, an undone edit dropping its pending
-    evaluation, undo and the saved section), solved parameters (refused as
-    variables, flagged and left out, `curvature` ≡ `curvature_y` on a
-    toroid) and variable bounds (defaults, edit, pin, held when pinned,
-    table marks, undo);
-  * glass substitution settings, progress and results
-    (`GlassSubstitutionTests`); spectrum settings encoding and CSV import
-    (`SpectrumAndFirstOrderTests`); the settings form from the schema
-    (`SettingsSchemaTests`); the field-map, glass-map and image-simulation
-    readers (`MapReaderTests`); the run details' route line on the engine's
-    JSON of each decision kind, the tier and the attempt rows
-    (`RunRouteTests`); the spot diagram's field × focus grid
-    (`SpotGridTests`: points moved to each plane, the single-plane
-    fallback, the marker style, the layout and the box scale); the import
-    report (`ImportReportTests`: warnings grouped by meaning, the document
-    types, a report shown once, an engine without import refusing);
-  * `PolishTests`: radius ↔ curvature bounds with signs, windows through ∞,
-    0 and refused windows through R = 0, units of every bounded quantity,
-    anamorphic table cells (cylinder, biconic, toroid: shown sections, flat
-    section, edits), number formatting (decimal point, decimal comma input,
-    signed zeros), heat-map scale choice (data range, 0…1, diverging, flat
-    maps, the ramp's monotonic lightness, iso-levels), warning grouping and
-    remedies, the automatic stretch and its projection, area-sampled
-    patterns and the image simulation's starting settings; the stretch
-    saved in `views`, subscripted labels;
-  * `AutoSettingsTests`: which settings are automatic and "Auto (n)" read
-    from each result (PSF windows and spacings, the MTF limit, fixed
-    frequencies, the focus range, wavefront grids, the image simulation's
-    PSF window), no bare 0 in the number field, warning fixes going back to
-    automatic (and none for an automatic setting), the patch centre's
-    encoding inside `optics`, the design's field points, snapping, the
-    run's patch from its mapping nodes, the starting settings, and null
-    relative-illumination cells staying no data, clipped at the field's
-    edge;
-  * tolerancing (`ToleranceTests`): presets, the generator over the Cooke's
-    elements (no back focus, irregularity, element motions, catalogue
-    glasses through their offsets, 0 leaving a kind out), grouping, fringes
-    / ΔR / % / arc minutes / % of V_d to engine limits and back, element
-    groups and pivots (labels, moving surfaces, the shared range and pivot,
-    conflicts, an interior range, the design's own element placement, saved
-    and foreign forms), irregularity rows and the one test wavelength, the
-    percentiles and recorded trials (sent, saved, validated, undone), edits
-    with undo and redo keeping row ids, the project round trip (and a spec
-    without app rows), the back-focus default and the compensator menu, the
-    criterion settings and display, shares, worst offenders, the engine's
-    percentiles, nominal, records and timing, time-left estimates,
-    compensator ranges, previews rebuilt by the (mock) engine for a
-    sensitivity case and a trial, the near-section layout of a build, Stop
-    and Cancel, the summary and CSV export, and the run blocked by broken
-    rows only;
-  * glass offsets (`GlassOffsetTests`): the table's suffix and
-    offset-variable marker, Δn_d / ΔV_d validation, one undoable edit,
-    default variable bounds, retyping keeping or dropping the offset, the
-    glass map's offset point, and the substitution note with offset
-    variables left out;
-  * the GPU preparation's window status (`GPUPreparationMonitorTests`: a
-    preparation that never ends is followed up to the limit, the final
-    state is shown, a kernel-cache warning is a second line);
-  * the text-field rule (`FieldEditTests`: the scenarios the rule exists
-    for, on `FieldEdit` and the fields built on it; `CommittingFieldTests`:
-    the same rule through hosted fields with real focus changes).
-* `MKLightFFITests` (need the library):
-  * `FFIEngineTests`: BLAKE3 hashes, samples, EFL from engine data,
-    non-blocking submission, progress, reproducible seeds, cancellation,
-    error codes, project files between the engine and `ProjectFile`,
-    catalogs, concurrent submissions, handles; the extended shapes fixture
-    validates in the engine, and the extended shapes run through the layout
-    (x–z section, surface mesh, DOE flag) and Seidel; footprint overlays
-    read as outlines; a refused GPU preparation reads as failed; the route
-    decisions of automatic runs read as a line of the run details;
-  * `FFIDesignTests`: **every dedicated result view reads the real engine's
-    result** for 25 analyses (geometric, wave optics, ghosts, radiometry,
-    polarisation), the layout buffers become a scene with rays per field,
-    **Stop** ends a DE optimisation with `stopped: true` and its design
-    applies and undoes, **Apply Solves** commits the engine's solved back
-    focus, and the field-map views read the engine's results (the relative
-    illumination map's cells outside the field are no data);
-  * `FFIMeritTests`: the default merit evaluates through
-    `merit_evaluation` to `optimize`'s start merit, its contributions add
-    up to it, and it converts to custom operands that evaluate to the merit
-    shown before; a solved variable is left out (sent as it is, the engine
-    refuses it); custom operands report values; spectrum panes stay
-    current;
-  * `FFIGlassSubstitutionTests`: the glass substitution flow on the
-    achromat (select, run, preview, apply, undo, redo) and Stop keeping the
-    ranking;
-  * `FFIToleranceTests`, tolerancing on the Cooke: the whole default set,
-    power and irregularity in test fringes over the layout's apertures,
-    surface and element motions, catalogue index and Abbe with V_d from
-    `glass_info`, and the back-focus compensator; every kind moving the
-    criterion, sensitivity ranked with a nominal RMS spot in µm, Monte
-    Carlo with the requested percentiles, yield, timing, records and the
-    compensator's spread, the same trials for a seed, the CSVs; the
-    trial-preview flow with a fixed seed: the worst trial rebuilt with the
-    run's criterion, perturbations and compensators, element L1 moved and
-    irregular surfaces in the rebuilt system, a sensitivity case with one
-    perturbation at its limit, the design never changed; and Stop keeping
-    partial trials with their nominal;
-  * `FFISpectrumFirstOrderTests`: analyses with a run-local spectrum,
-    spectra resolved by `system_summary`, and the x/y first order on the
-    real engine; `FFISettingsSchemaTests`: the
-    settings form's mapping over every analysis the engine lists;
-    `PrescriptionImportTests`: `.zmx` / `.seq` import without a session
-    (UTF-16 text), what did not map, and into the document's session;
-  * `RenderSnapshotTests`, `ResultViewRenders` and
-    `ResultViewRendersDirect` render panes, panels and the run details of
-    recorded runs to PNGs (light and dark) for a visual check, only when
-    `MKLIGHT_RENDER_DIR` names an output directory.
+  engine's exact JSON; the envelope's `cost_decision` kept in
+  `BackendReport`.
+* `MKLightUITests` (view models on `MockEngine` and small test engines):
+  * the workspace (panes run, go stale, automatic vs manual update,
+    settings re-run, unavailable and unknown analyses, newer requests cancel
+    older ones, the layout round-trips through `views`, catalogs before the
+    first snapshot, session rebuild) and the panel arrangement (tabs,
+    splits, separate windows, showing and hiding, saved with the project);
+  * editing, surface types (every descriptor's keys and variable paths
+    against the model for all 13 types, the display sags against the closed
+    forms of SURFACES.md), the text-field rule and the lens table;
+  * design jobs: Optimize applied as one undoable step, Stop keeps and
+    Cancel discards, the merit editor, live evaluation, solved parameters
+    and variable bounds, glass substitution, tolerancing (presets, the
+    generator, element groups and pivots, percentiles and records, previews,
+    export) and Apply Solves;
+  * glass offsets, spectrum settings and CSV import, the settings form from
+    the schema, the field-map, glass-map and image-simulation readers, the
+    run details' route line on the engine's JSON of each decision kind, the
+    spot diagram's field × focus grid, the import report, automatic settings
+    read from results ("Auto (n)"), number formatting, heat-map scales and
+    the GPU preparation's window status.
+* `MKLightFFITests` (need the library), on the real engine: hashes, samples,
+  non-blocking submission, progress, seeds, cancellation, error codes,
+  project files between the engine and `ProjectFile`, catalogs, concurrent
+  submissions; **every dedicated result view reads the real engine's result**
+  for 25 analyses; Stop and Apply Solves; the default merit, its conversion
+  to custom operands and solved variables; the glass substitution flow on the
+  achromat; tolerancing on the Cooke (the whole default set, ranked
+  sensitivities, Monte Carlo, trial previews, Stop); run-local spectra and
+  the x/y first order; the settings form's mapping over every analysis the
+  engine lists; `.zmx` / `.seq` import.
+* `RenderSnapshotTests`, `ResultViewRenders` and `ResultViewRendersDirect`
+  render panes, panels and the run details of recorded runs to PNGs (light
+  and dark) for a visual check, only when `MKLIGHT_RENDER_DIR` names an
+  output directory.
 
 ## iPadOS readiness
 
@@ -1154,13 +1003,12 @@ Ready:
   `Workspace`, `AnalysisPane`, `WindowState`, `WorkspaceLayout`,
   `LensEditor`, `SurfaceTypes`, `PanelArrangement`, the design-job
   sessions, result readers) import neither SwiftUI nor AppKit or UIKit.
-* The window is `NavigationSplitView` + `.inspector` + toolbar items with
-  placements and `ToolbarSpacer` + popovers; design jobs are inspector
-  panels. The Liquid Glass APIs used
-  (`glassEffect`, `GlassEffectContainer`, `glassEffectID`, `.glass` /
-  `.glassProminent`, `safeAreaBar`, `scrollEdgeEffectStyle`) are the same on
-  iPadOS 27; `tabViewBottomAccessory` (iOS only) is not needed while the app
-  has no tab view.
+* The window structure (`NavigationSplitView`, `.inspector`, toolbar
+  items, popovers) and the Liquid Glass APIs used (`glassEffect`,
+  `GlassEffectContainer`, `glassEffectID`, `.glass` / `.glassProminent`,
+  `safeAreaBar`, `scrollEdgeEffectStyle`) are the same on iPadOS 27;
+  `tabViewBottomAccessory` (iOS only) is not needed while the app has no tab
+  view.
 * The panel tree (`PanelArrangement`) is platform-neutral, and its views
   (`PanelViews`: splits with draggable dividers, tab groups, panel headers
   as drag handles) are SwiftUI with drag gestures. macOS-only are the
@@ -1217,22 +1065,19 @@ Remaining for an iPadOS target:
 * The model mirror is strict: when the engine's model gains a field or a
   surface type, the mirror must learn it (then add a `SurfaceTypes`
   descriptor for a new type).
-* Reduce Transparency and Increase Contrast were not checked in screenshots:
-  switching them changes a system accessibility setting, which this
-  verification did not do. The app relies on the system glass adapting to
-  them and uses no custom translucency of its own; Reduce Motion is honoured
-  in code (`accessibilityReduceMotion`).
+* Reduce Transparency and Increase Contrast were not checked in screenshots
+  (they change a system accessibility setting); see principle 14.
 * Engine gaps the UI works around:
   * `optimize` and `merit_evaluation` still refuse a variable on an
     automatic semi-diameter ("semi-diameter is automatic"), although
-    `mk_session_get_param` now reads its resolved value; the bounds list
+    `mk_session_get_param` reads its resolved value; the bounds list
     flags such a variable ("set a value in the lens data first"). A trace
     order of 0.5 is refused (the app rejects non-integer orders before the
     engine sees them).
   * `image_simulation`'s text chart and PNG-path sources come out
     vertically mirrored (their top row lands at the low-y edge); imported
     images go as buffers, which are correct.
-  * `image_simulation` now area-averages its grid and slanted edge and
+  * `image_simulation` area-averages its grid and slanted edge and
     supersamples the star and text chart; the app still sends its own
     area-sampled patterns as buffers (4 × 4 per pixel), which also keeps
     the shown source identical to the simulated one.
@@ -1260,3 +1105,47 @@ Remaining for an iPadOS target:
     infeasible (violation 2.7e-6 after 100 iterations on the Double Gauss),
     so the feasibility-first rule returns the start although the merit
     improved by a quarter.
+
+## Appendix: sources of the design brief
+
+The developer.apple.com pages, read through their JSON form:
+
+* HIG: [Materials](https://developer.apple.com/design/human-interface-guidelines/materials),
+  [Layout](https://developer.apple.com/design/human-interface-guidelines/layout),
+  [Toolbars](https://developer.apple.com/design/human-interface-guidelines/toolbars),
+  [Sidebars](https://developer.apple.com/design/human-interface-guidelines/sidebars),
+  [Split views](https://developer.apple.com/design/human-interface-guidelines/split-views),
+  [Panels](https://developer.apple.com/design/human-interface-guidelines/panels) (inspectors),
+  [Scroll views](https://developer.apple.com/design/human-interface-guidelines/scroll-views),
+  [Tab views](https://developer.apple.com/design/human-interface-guidelines/tab-views),
+  [Color](https://developer.apple.com/design/human-interface-guidelines/color),
+  [Typography](https://developer.apple.com/design/human-interface-guidelines/typography),
+  [SF Symbols](https://developer.apple.com/design/human-interface-guidelines/sf-symbols),
+  [Icons](https://developer.apple.com/design/human-interface-guidelines/icons),
+  [Charts](https://developer.apple.com/design/human-interface-guidelines/charts),
+  [Buttons](https://developer.apple.com/design/human-interface-guidelines/buttons),
+  [Accessibility](https://developer.apple.com/design/human-interface-guidelines/accessibility),
+  [Designing for macOS](https://developer.apple.com/design/human-interface-guidelines/designing-for-macos),
+  [Designing for iPadOS](https://developer.apple.com/design/human-interface-guidelines/designing-for-ipados).
+* Developer documentation: [Adopting Liquid Glass](https://developer.apple.com/documentation/technologyoverviews/adopting-liquid-glass),
+  [Applying Liquid Glass to custom views](https://developer.apple.com/documentation/swiftui/applying-liquid-glass-to-custom-views),
+  SwiftUI [`glassEffect(_:in:)`](https://developer.apple.com/documentation/swiftui/view/glasseffect(_:in:)),
+  [`GlassEffectContainer`](https://developer.apple.com/documentation/swiftui/glasseffectcontainer),
+  [`glassEffectID(_:in:)`](https://developer.apple.com/documentation/swiftui/view/glasseffectid(_:in:)),
+  [`GlassButtonStyle`](https://developer.apple.com/documentation/swiftui/glassbuttonstyle),
+  [`backgroundExtensionEffect()`](https://developer.apple.com/documentation/swiftui/view/backgroundextensioneffect()),
+  [`scrollEdgeEffectStyle(_:for:)`](https://developer.apple.com/documentation/swiftui/view/scrolledgeeffectstyle(_:for:)),
+  [`ToolbarSpacer`](https://developer.apple.com/documentation/swiftui/toolbarspacer),
+  [`inspector(isPresented:content:)`](https://developer.apple.com/documentation/swiftui/view/inspector(ispresented:content:)),
+  [`tabViewBottomAccessory`](https://developer.apple.com/documentation/swiftui/view/tabviewbottomaccessory(content:)),
+  [Swift Charts `Chart3D`](https://developer.apple.com/documentation/charts/chart3d),
+  [Observation](https://developer.apple.com/documentation/observation),
+  [What's new in SwiftUI](https://developer.apple.com/documentation/updates/swiftui).
+* WWDC: [Meet Liquid Glass (WWDC25 219)](https://developer.apple.com/videos/play/wwdc2025/219/),
+  [Get to know the new design system (WWDC25 356)](https://developer.apple.com/videos/play/wwdc2025/356/),
+  [Build a SwiftUI app with the new design (WWDC25 323)](https://developer.apple.com/videos/play/wwdc2025/323/),
+  [What's new in SwiftUI (WWDC25 256)](https://developer.apple.com/videos/play/wwdc2025/256/),
+  [Bring Swift Charts to the third dimension (WWDC25 313)](https://developer.apple.com/videos/play/wwdc2025/313/),
+  [What's new in SwiftUI (WWDC26 269)](https://developer.apple.com/videos/play/wwdc2026/269/),
+  [Modernize your AppKit app (WWDC26 289)](https://developer.apple.com/videos/play/wwdc2026/289/),
+  [Principles of great design (WWDC26 250)](https://developer.apple.com/videos/play/wwdc2026/250/).

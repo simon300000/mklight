@@ -1,15 +1,11 @@
 # History
 
-Records of finished work, moved here verbatim from the reference documents
-in `docs/`: work-package plans, measurement sessions and investigations of
-designs that are no longer in the code. Nothing here describes the present
-system; names, numbers, files and section references are those of the time
-of writing and may no longer exist. The reference documents are the files
-directly in `docs/`.
+Records of finished measurements and investigations that the reference
+documents in `docs/` still cite as the reason for a present design. They do
+not describe the present system: names, numbers and section references are
+those of the time of writing.
 
 | file | holds |
 |---|---|
-| [gpu-work-packages.md](gpu-work-packages.md) | the P0–P11 GPU work packages: plan, interface gate, package briefs, consolidated measurements, the pure-f32 and mixed-precision record, extended-surface classification forensics |
-| [optimization-resident-adapter.md](optimization-resident-adapter.md) | the resident optimisation adapter as work package P8 built it, and the solver work-split record |
-| [analysis-measurements.md](analysis-measurements.md) | geometric-analysis adapter measurements |
-| [wave-ghost-stray-measurements.md](wave-ghost-stray-measurements.md) | wave, ghost and stray adapter measurements and investigations |
+| [gpu-numerics.md](gpu-numerics.md) | why the kernels have one arithmetic (the pure-f32 and mixed-precision measurements), and why a few steep random rays on extended surfaces classify differently in f32 and f64 |
+| [ghost-high-reflectance.md](ghost-high-reflectance.md) | the high-reflectance ghost flux discrepancy that led to the boundary-refined pupil quadrature and the ghost/stray partition test |

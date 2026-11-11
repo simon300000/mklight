@@ -215,8 +215,6 @@ Multilevel Diffractive Flat Optics, Photonics 11, 1200
 and non-sequential transport. System transmission multiplies the selected
 order's η at every DOE (also for polarised transmission and Jones pupil
 maps). Ghost/stray order ownership is CONVENTIONS §10 and GHOST §2.1.
-Ghost paths and stray geometry now support the extended surfaces; their
-entries in §8's earlier guard list are superseded by this implementation.
 
 ## 4. Toroid and biconic
 

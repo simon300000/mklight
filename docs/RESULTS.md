@@ -130,36 +130,20 @@ energy and MTF curves, through-focus) stay in the JSON.
 
 ## 5. Backends and GPU paths
 
-The engine initially uses `auto`. Explicit `cpu_reference` always uses the
-f64 reference. Explicit `gpu:metal` bypasses the cost model, while retaining
-reported resource/unsupported fallbacks. An explicit provider that is
-unavailable, or has no path for the analysis, fails the request unless
-`allow_backend_fallback` is set (the reference then runs, with a warning).
-Cancellation discards the result and never runs a CPU replacement.
-
-The shared resident catalogue covers geometric analyses, field maps, layout,
-wave/image jobs, transmission/polarisation, ghosts, stray light and
-optimisation/merit/tolerance/glass substitution. Isolated first-order, Seidel,
-model, catalogue and I/O reports remain small host computations, and so do
-encircled energy, the polarization pupil map and the wavefront map (GPU
-§9.2, "Analyses without a GPU path"). A capability means a native adapter
-exists; the offline suites establish its usable domains. No ray-count or candidate-count crossover
-selects a backend; `auto` uses the cost model below.
-
-Native results publish directly with their actual precision, without per-snapshot
-or per-candidate f64 reruns. Accuracy is established offline. Optimization best
-designs and glass finalists receive f64 report scores once at the end;
-tolerance and merit evaluation return actual evaluator values.
-
+Which backend runs a request (`auto`, explicit `cpu_reference` or
+`gpu:metal`, `allow_backend_fallback`, cancellation, the analyses without a
+GPU path, the accuracy of native results) is decided by the rules of GPU
+§9.2–§9.3, not by a ray-count or candidate-count crossover; this section
+describes what a result reports about it.
 `backend.execution` preserves device/build/probe, plan versions, identities,
 timings, commands, allocation/copy counters and partial/reference-completion
 reports. Unsupported stages, unresolved aiming and resource/device failures
 retain reported reasons and warnings. Public f64 buffers still carry `f32_gpu`
 when computed by Metal.
 
-`backend.cost_decision` records how the backend was selected. The routing
-policy itself (division rules, accuracy exclusions, the cost model, its
-calibration and refinement) is GPU §9.2; the keys are:
+`backend.cost_decision` records how the backend was selected (the routing
+policy itself: division rules, accuracy exclusions, the cost model, its
+calibration and refinement, is GPU §9.2); the keys are:
 
 | key | present | meaning |
 |---|---|---|
@@ -177,12 +161,9 @@ calibration and refinement) is GPU §9.2; the keys are:
 | `refinement` | `cost model` | the online refinement factors applied |
 | `calibration` | `cost model` | the calibration table used (`device_class`, `source`), with a `note` when the opened device is not that device class |
 
-An `auto` request whose result the analysis graph already holds is answered
-from it without routing (its stored decision is returned unchanged).
-Deliberate CPU choices of `auto` (by cost, exclusion, division rule, or no
-GPU path) are reported without a warning. Unsupported/resource
-failures retain warnings. Known residual Metal accuracy gaps are listed in
-GPU §9.2.
+Deliberate CPU choices of `auto` are reported without a warning;
+unsupported/resource failures retain warnings. Known residual Metal accuracy
+gaps are listed in GPU §9.2.
 
 `run_info.failed_attempts` (omitted when empty) lists backend attempts that
 did not produce the result, each with `backend`, `outcome` (`failed`,
@@ -196,10 +177,7 @@ device operands, host operands and actual
 fallback causes. In `gpu_stats`, candidate counts
 can overlap for partial completion, `rays` counts final ray-operand probes
 (native wave/ghost/stray counts remain in their stage reports), and `dispatches`
-counts completed commands. Start/final tables and published finalists are
-scored in f64. `MKLIGHT_DISABLE_GPU=1` disables provider selection.
-
-These rules and backend reports are shared by Rust, FFI, CLI and Python.
+counts completed commands.
 
 ## 6. Cross-solver conventions
 
