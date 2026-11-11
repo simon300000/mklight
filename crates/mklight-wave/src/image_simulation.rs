@@ -337,7 +337,13 @@ pub(crate) struct Raster {
     pub(crate) c: usize,
     pub(crate) data: Vec<f64>,
 }
-fn source(s: &ImageSimulationSettings) -> MkResult<Raster> {
+/// What the warp samples: a raster (bilinear) or a built-in pattern
+/// (analytic, over each output pixel's footprint).
+enum Scene {
+    Raster(Raster),
+    Pattern(TestPattern),
+}
+fn source(s: &ImageSimulationSettings) -> MkResult<Scene> {
     match &s.source {
         ImageSource::Buffer {
             width,
@@ -355,22 +361,15 @@ fn source(s: &ImageSimulationSettings) -> MkResult<Raster> {
             {
                 return Err(invalid("inconsistent linear-light image buffer"));
             }
-            Ok(Raster {
+            Ok(Scene::Raster(Raster {
                 w: *width,
                 h: *height,
                 c: *channels,
                 data: data.clone(),
-            })
+            }))
         }
-        ImageSource::Path { path } => read_png(path),
-        ImageSource::Pattern { pattern } => {
-            let [w, h] = s.size;
-            let data = (0..w * h)
-                .into_par_iter()
-                .map(|k| pattern_value(*pattern, k % w, k / w, w, h))
-                .collect();
-            Ok(Raster { w, h, c: 1, data })
-        }
+        ImageSource::Path { path } => read_png(path).map(Scene::Raster),
+        ImageSource::Pattern { pattern } => Ok(Scene::Pattern(*pattern)),
     }
 }
 /// Decode an 8- or 16-bit grey or RGB PNG (alpha dropped, palettes and low
@@ -427,8 +426,28 @@ pub(crate) fn read_png(path: &str) -> MkResult<Raster> {
         .collect();
     Ok(Raster { w, h, c, data })
 }
-/// Pixel `(x, y)` of a built-in pattern, area-averaged over the pixel.
+/// Pixel `(x, y)` of a built-in pattern drawn on a `w × h` grid,
+/// area-averaged over the pixel.
+#[cfg(test)]
 fn pattern_value(p: TestPattern, x: usize, y: usize, w: usize, h: usize) -> f64 {
+    let (w_, h_) = (w as f64, h as f64);
+    pattern_box(
+        p,
+        [x as f64 / w_, (x + 1) as f64 / w_],
+        [y as f64 / h_, (y + 1) as f64 / h_],
+        w,
+        h,
+    )
+}
+/// Mean of a built-in pattern over the box `u × v` of source coordinates
+/// (0…1 across the pattern, row zero at low y). The patterns are analytic,
+/// so the box can sit anywhere: the warp evaluates them over each output
+/// pixel's footprint at its exact source position, with no raster in
+/// between. Grid and slanted edge are integrated exactly; the Siemens star
+/// by 16 × 16 midpoint samples; the text chart's glyphs are cells of a
+/// `w × h` grid, integrated exactly by overlap.
+fn pattern_box(p: TestPattern, u: [f64; 2], v: [f64; 2], w: usize, h: usize) -> f64 {
+    let (du, dv) = (u[1] - u[0], v[1] - v[0]);
     match p {
         TestPattern::Grid => {
             // Integral of the white portion of the periodic bar pattern.
@@ -436,19 +455,16 @@ fn pattern_value(p: TestPattern, x: usize, y: usize, w: usize, h: usize) -> f64 
                 let v = 8.0 * t;
                 (0.9 * v.floor() + (v.fract() - 0.1).max(0.0)) / 8.0
             };
-            (white((x + 1) as f64 / w as f64) - white(x as f64 / w as f64))
-                * w as f64
-                * (white((y + 1) as f64 / h as f64) - white(y as f64 / h as f64))
-                * h as f64
+            (white(u[1]) - white(u[0])) / du * (white(v[1]) - white(v[0])) / dv
         }
         TestPattern::SiemensStar => {
             // 16×16 midpoint supersampling of the 24 spokes.
             let mut sum = 0.0;
             for j in 0..16 {
                 for i in 0..16 {
-                    let u = (x as f64 + (i as f64 + 0.5) / 16.0) / w as f64;
-                    let v = (y as f64 + (j as f64 + 0.5) / 16.0) / h as f64;
-                    if ((v - 0.5).atan2(u - 0.5) * 24.0).cos() > 0.0 {
+                    let uu = u[0] + du * (i as f64 + 0.5) / 16.0;
+                    let vv = v[0] + dv * (j as f64 + 0.5) / 16.0;
+                    if ((vv - 0.5).atan2(uu - 0.5) * 24.0).cos() > 0.0 {
                         sum += 1.0;
                     }
                 }
@@ -456,13 +472,12 @@ fn pattern_value(p: TestPattern, x: usize, y: usize, w: usize, h: usize) -> f64 
             sum / 256.0
         }
         TestPattern::SlantedEdge => {
-            // Exact area to the right of a line in this pixel rectangle.
-            let (lo, hi) = (x as f64 / w as f64, (x + 1) as f64 / w as f64);
-            let primitive = |v: f64| {
-                let edge = 0.45 + 0.1 * v;
-                ((hi - edge).max(0.0).powi(2) - (lo - edge).max(0.0).powi(2)) / -0.2
+            // Exact area to the right of a line in the box.
+            let primitive = |t: f64| {
+                let edge = 0.45 + 0.1 * t;
+                ((u[1] - edge).max(0.0).powi(2) - (u[0] - edge).max(0.0).powi(2)) / -0.2
             };
-            (primitive((y + 1) as f64 / h as f64) - primitive(y as f64 / h as f64)) * (w * h) as f64
+            (primitive(v[1]) - primitive(v[0])) / (du * dv)
         }
         TestPattern::TextChart => {
             // Repeated 5x7 bitmap glyphs M K L, at three spatial scales.
@@ -471,19 +486,51 @@ fn pattern_value(p: TestPattern, x: usize, y: usize, w: usize, h: usize) -> f64 
                 [17, 18, 20, 24, 20, 18, 17],
                 [16, 16, 16, 16, 16, 16, 31],
             ];
-            // Glyph bitmaps and scale bands are written top to bottom.
-            let y = h - 1 - y;
-            let band = (y as f64 * 3.0 / h as f64) as usize;
-            let scale = [4, 2, 1][band.min(2)];
-            let (gx, gy) = (x / scale, y / scale);
-            let glyph = (gx / 6) % 3;
-            if gy % 9 < 7 && gx % 6 < 5 && FONT[glyph][gy % 9] & (1 << (4 - gx % 6)) != 0 {
-                0.0
-            } else {
-                1.0
-            }
+            let cell = |x: usize, y: usize| {
+                // Glyph bitmaps and scale bands are written top to bottom.
+                let y = h - 1 - y;
+                let band = (y as f64 * 3.0 / h as f64) as usize;
+                let scale = [4, 2, 1][band.min(2)];
+                let (gx, gy) = (x / scale, y / scale);
+                let glyph = (gx / 6) % 3;
+                if gy % 9 < 7 && gx % 6 < 5 && FONT[glyph][gy % 9] & (1 << (4 - gx % 6)) != 0 {
+                    0.0
+                } else {
+                    1.0
+                }
+            };
+            // Overlap of the box with each cell it touches.
+            let span = |t: [f64; 2], n: usize| {
+                let (a, b) = (t[0] * n as f64, t[1] * n as f64);
+                let first = a.floor().clamp(0.0, (n - 1) as f64) as usize;
+                let last = (b.ceil() - 1.0).clamp(0.0, (n - 1) as f64) as usize;
+                (first..=last.max(first)).filter_map(move |i| {
+                    // Cells beyond the edges repeat the edge cell.
+                    let lo = if i == 0 { a.min(0.0) } else { i as f64 };
+                    let hi = if i == n - 1 {
+                        b.max(n as f64)
+                    } else {
+                        (i + 1) as f64
+                    };
+                    let o = b.min(hi) - a.max(lo);
+                    (o > 0.0).then_some((i, o / (b - a)))
+                })
+            };
+            span(v, h)
+                .flat_map(|(y, wy)| span(u, w).map(move |(x, wx)| wx * wy * cell(x, y)))
+                .sum()
         }
     }
+}
+/// A built-in pattern at source point `uv`, averaged over a box of one
+/// output pixel (`1/w × 1/h` of the source) centred there; black outside
+/// the source, as for rasters.
+fn pattern_at(p: TestPattern, uv: [f64; 2], w: usize, h: usize) -> f64 {
+    if !(0.0..=1.0).contains(&uv[0]) || !(0.0..=1.0).contains(&uv[1]) {
+        return 0.0;
+    }
+    let (hu, hv) = (0.5 / w as f64, 0.5 / h as f64);
+    pattern_box(p, [uv[0] - hu, uv[0] + hu], [uv[1] - hv, uv[1] + hv], w, h)
 }
 fn raster_sample(r: &Raster, u: f64, v: f64, c: usize, mono: bool) -> f64 {
     if !(0.0..=1.0).contains(&u) || !(0.0..=1.0).contains(&v) {
@@ -725,7 +772,7 @@ pub fn image_simulation_job(
         Some(g) => g,
         None => Arc::new(build_psf_grid(t, &s.optics, &ctx.subrange(0.0, 0.65))?),
     };
-    let raster = source(s)?;
+    let scene = source(s)?;
     ctx.report(0.65, "warp source");
     let mut lo = [f64::INFINITY; 2];
     let mut hi = [f64::NEG_INFINITY; 2];
@@ -776,8 +823,17 @@ pub fn image_simulation_job(
                     .iter()
                     .map(|&(k, v)| v * grid.mapping[k].relative_illumination)
                     .sum();
-                for ch in 0..c {
-                    row[x * c + ch] = raster_sample(&raster, src[0], src[1], ch, s.monochrome) * ri;
+                match &scene {
+                    Scene::Raster(r) => {
+                        for ch in 0..c {
+                            row[x * c + ch] =
+                                raster_sample(r, src[0], src[1], ch, s.monochrome) * ri;
+                        }
+                    }
+                    Scene::Pattern(p) => {
+                        let v = pattern_at(*p, src, w, h) * ri;
+                        row[x * c..(x + 1) * c].fill(v);
+                    }
                 }
             }
             Ok(())
@@ -956,6 +1012,53 @@ mod tests {
         // would return black. The star also contains both colours in one pixel.
         assert!((pattern_value(TestPattern::SlantedEdge, 3, 3, 7, 7) - 0.5).abs() < 1e-12);
         assert!((pattern_value(TestPattern::SiemensStar, 0, 0, 1, 1) - 0.5).abs() < 0.04);
+    }
+    /// The warp evaluates patterns over a pixel box at any source point: on
+    /// the grid it is the pixel's area mean, and half a pixel off it is the
+    /// mean of the two pixels it straddles (exactly, for the linear-in-area
+    /// patterns), not a bilinear blend of a raster.
+    #[test]
+    fn patterns_are_sampled_off_the_grid() {
+        let n = 24;
+        for p in [
+            TestPattern::Grid,
+            TestPattern::SiemensStar,
+            TestPattern::SlantedEdge,
+            TestPattern::TextChart,
+        ] {
+            for (x, y) in [(0, 0), (5, 17), (11, 12), (23, 9)] {
+                let centre = [(x as f64 + 0.5) / n as f64, (y as f64 + 0.5) / n as f64];
+                let d = pattern_at(p, centre, n, n) - pattern_value(p, x, y, n, n);
+                assert!(d.abs() < 1e-12, "{p:?} ({x}, {y}): {d}");
+            }
+        }
+        for p in [
+            TestPattern::Grid,
+            TestPattern::SlantedEdge,
+            TestPattern::TextChart,
+        ] {
+            for (x, y) in [(3, 4), (11, 12), (17, 2)] {
+                let between = [(x as f64 + 1.0) / n as f64, (y as f64 + 0.5) / n as f64];
+                // The box covers the right half of pixel x and the left half
+                // of pixel x + 1: half-pixels of a grid twice as fine in x
+                // (text chart cells are uniform, so whole cells there).
+                let mean = if let TestPattern::TextChart = p {
+                    0.5 * (pattern_value(p, x, y, n, n) + pattern_value(p, x + 1, y, n, n))
+                } else {
+                    0.5 * (pattern_value(p, 2 * x + 1, y, 2 * n, n)
+                        + pattern_value(p, 2 * x + 2, y, 2 * n, n))
+                };
+                let d = pattern_at(p, between, n, n) - mean;
+                assert!(d.abs() < 1e-12, "{p:?} ({x}, {y}): {d}");
+            }
+        }
+        // The star's spokes stay sharp at any resolution: far from the
+        // centre a pixel inside a spoke is pure black or white.
+        let spoke = [
+            0.5 + 0.4 * (0.25f64 * std::f64::consts::PI / 24.0).cos(),
+            0.5,
+        ];
+        assert_eq!(pattern_at(TestPattern::SiemensStar, spoke, 4096, 4096), 1.0);
     }
 
     #[test]
@@ -1376,5 +1479,88 @@ mod tests {
         );
         assert_eq!(r.c, 1);
         assert!((r.data[0] - 0.2140482).abs() < 1e-6 && r.data[1] == 1.0);
+    }
+}
+#[cfg(test)]
+mod star_resolution {
+    use super::*;
+    use std::f64::consts::PI;
+    /// The Siemens star shows the lens's resolution: the contrast of its 24
+    /// spokes on a ring of radius r is the on-axis MTF at the spokes'
+    /// frequency 24 / (2πr), times the pixel's sampling (the pixel box of
+    /// the source, the PSF's bilinear deposit and this test's bilinear
+    /// read-out, ≈ sinc⁴), down to rings a few pixels across.
+    #[test]
+    fn star_contrast_follows_the_mtf() {
+        let t = mklight_analysis::tracer_for(mklight_core::samples::cooke_triplet()).unwrap();
+        let optics = ImageGridSettings {
+            field_extent: 0.02,
+            ..Default::default()
+        };
+        let grid = Arc::new(build_psf_grid(&t, &optics, &JobContext::new()).unwrap());
+        let n = 256;
+        let s = ImageSimulationSettings {
+            source: ImageSource::Pattern {
+                pattern: TestPattern::SiemensStar,
+            },
+            size: [n, n],
+            optics,
+            ..Default::default()
+        };
+        let r = image_simulation_job(&t, &s, Some(grid.clone()), &JobContext::new()).unwrap();
+        let pitch = r.pixel_size_mm[0];
+        // The MTF of the centre node's PSF, averaged over directions.
+        let (m, k) = (grid.psf_size, &grid.kernels[grid.kernels.len() / 2]);
+        let total: f64 = k.iter().sum();
+        let mtf = |f: f64| {
+            (0..8)
+                .map(|d| {
+                    let a = d as f64 * PI / 8.0;
+                    let (mut re, mut im) = (0.0, 0.0);
+                    for (i, v) in k.iter().enumerate() {
+                        let (x, y) = (
+                            (i % m) as f64 - (m / 2) as f64,
+                            (i / m) as f64 - (m / 2) as f64,
+                        );
+                        let phase = 2.0 * PI * f * grid.spacing_mm * (x * a.cos() + y * a.sin());
+                        re += v * phase.cos();
+                        im += v * phase.sin();
+                    }
+                    (re * re + im * im).sqrt() / total
+                })
+                .sum::<f64>()
+                / 8.0
+        };
+        let at = |x: f64, y: f64| {
+            let (ix, iy) = (x.floor() as usize, y.floor() as usize);
+            let (a, b) = (x - ix as f64, y - iy as f64);
+            let v = |x: usize, y: usize| r.image[y * n + x];
+            (1.0 - b) * ((1.0 - a) * v(ix, iy) + a * v(ix + 1, iy))
+                + b * ((1.0 - a) * v(ix, iy + 1) + a * v(ix + 1, iy + 1))
+        };
+        let sinc = |x: f64| (PI * x).sin() / (PI * x);
+        for radius in [12.0, 16.0, 24.0, 32.0, 48.0, 64.0, 96.0] {
+            // The 24th azimuthal harmonic relative to the mean; a 0/1
+            // square wave's fundamental is 4/π of its mean.
+            let samples = 2048;
+            let (mut re, mut im, mut mean) = (0.0, 0.0, 0.0);
+            for j in 0..samples {
+                let th = 2.0 * PI * j as f64 / samples as f64;
+                let v = at(
+                    n as f64 / 2.0 + radius * th.cos() - 0.5,
+                    n as f64 / 2.0 + radius * th.sin() - 0.5,
+                );
+                re += v * (24.0 * th).cos();
+                im += v * (24.0 * th).sin();
+                mean += v;
+            }
+            let contrast = 2.0 * (re * re + im * im).sqrt() / mean / (4.0 / PI);
+            let f = 24.0 / (2.0 * PI * radius * pitch);
+            let predicted = mtf(f) * sinc(f * pitch).powi(4);
+            assert!(
+                (contrast - predicted).abs() < 0.03,
+                "r {radius} px, {f:.0} c/mm: contrast {contrast:.3}, MTF × sampling {predicted:.3}"
+            );
+        }
     }
 }

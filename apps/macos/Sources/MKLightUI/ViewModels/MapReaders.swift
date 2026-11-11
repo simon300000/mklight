@@ -642,9 +642,8 @@ struct LinearImage: Sendable, Equatable {
     /// crates/mklight-wave/src/image_simulation.rs). With `supersample` 1
     /// it is sampled at the pixel centres as the engine does (staircase
     /// edges); with n > 1 each pixel is the mean of n × n samples, i.e. the
-    /// pattern's area average: antialiased, as a real target imaged onto
-    /// the sensor would be. The app sends the antialiased pattern as the
-    /// run's source (`ImageSourceImport.engineSettings`).
+    /// pattern's area average: antialiased, as the engine evaluates the
+    /// pattern over each pixel (for display: the engine draws its own).
     static func pattern(_ name: String, width w: Int, height h: Int, supersample n: Int = 1) -> LinearImage? {
         guard w > 0, h > 0, n >= 1, ImageSimulationData.patterns.contains(where: { $0.id == name }) else { return nil }
         let font: [[Int]] = [[17, 27, 21, 17, 17, 17, 17], [17, 18, 20, 24, 20, 18, 17], [16, 16, 16, 16, 16, 16, 31]]
@@ -659,9 +658,9 @@ struct LinearImage: Sendable, Equatable {
                 return cos(atan2(v - 0.5, u - 0.5) * 24) > 0 ? 1 : 0
             case "slanted_edge":
                 return u > 0.5 + 0.1 * (v - 0.5) ? 1 : 0
-            default:  // text_chart: glyphs of whole output pixels
-                let x = min(Int(px), w - 1), y = min(Int(py), h - 1)
-                let band = min(Int((Double(y) + 0.5) / Double(h) * 3), 2)
+            default:  // text_chart: glyphs of whole output pixels, written top to bottom
+                let x = min(Int(px), w - 1), y = h - 1 - min(Int(py), h - 1)
+                let band = min(y * 3 / h, 2)
                 let scale = [4, 2, 1][band]
                 let gx = x / scale, gy = y / scale
                 let glyph = (gx / 6) % 3
@@ -767,11 +766,12 @@ struct ImageSimulationData: Sendable {
 
     static func minRelativeIllumination(_ nodes: [Node]) -> Double? { nodes.map(\.relativeIllumination).filter(\.isFinite).min() }
 
-    /// The source raster at the output size, as the engine samples it:
-    /// patterns are drawn, buffers are the run's own.
+    /// The source at the output size: patterns drawn with the engine's
+    /// definition and area-averaged over each pixel as the engine does,
+    /// buffers the run's own.
     var sourceImage: LinearImage? {
         switch source {
-        case .pattern(let p): LinearImage.pattern(p, width: image.width, height: image.height)
+        case .pattern(let p): LinearImage.pattern(p, width: image.width, height: image.height, supersample: 4)
         case .buffer(let b): b
         case .path: nil
         }

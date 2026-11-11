@@ -352,7 +352,7 @@ public final class Workspace {
         let analysis = pane.analysis, paneSettings = pane.settings, backend = self.backend, descriptors = self.descriptors
         if let stored = pane.storedRequest, stored.epoch == requestEpoch { return stored.request }
         let d = descriptors.first { $0.name == analysis }
-        var settings = ImageSourceImport.engineSettings(analysis, paneSettings, defaults: d?.defaultSettings)
+        var settings = paneSettings
         if let d, !d.settingsFields.isEmpty { settings = d.acceptedSettings(settings) }
         let request = EngineAnalysisRequest(analysis: analysis, settings: settings, execution: ExecutionSettings(backend: backend))
         pane.storedRequest = (requestEpoch, request)

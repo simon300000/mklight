@@ -315,12 +315,20 @@ pub fn build_psf_grid_shared(
         stats,
     })
 }
+/// The pattern's index in the GPU simulation stages.
+fn pattern_kind(p: TestPattern) -> u32 {
+    match p {
+        TestPattern::Grid => 0,
+        TestPattern::SiemensStar => 1,
+        TestPattern::SlantedEdge => 2,
+        TestPattern::TextChart => 3,
+    }
+}
+/// An image source (buffer or PNG) as a resident linear-light raster.
 fn raster(
     b: &dyn ComputeBackend,
-    t: &SequentialTracer,
     s: &ImageSimulationSettings,
     ctx: &JobContext,
-    stats: &mut PlanStats,
 ) -> MkResult<BufferHandle> {
     let fill = |w: usize, h: usize, c: usize, data: &[f64]| -> MkResult<BufferHandle> {
         if w == 0
@@ -359,25 +367,7 @@ fn raster(
             let r = crate::image_simulation::read_png(path)?;
             fill(r.w, r.h, r.c, &r.data)
         }
-        ImageSource::Pattern { pattern } => {
-            let mut p = ResidentPlan::new(t.system().snapshot.clone());
-            let output = p.scratch(BufferDesc::new(ElementType::F32, [s.size[1], s.size[0], 1]));
-            p.operations
-                .push(ResidentOp::Wave(w::Request::Simulation(Op::Pattern {
-                    size: s.size,
-                    kind: match pattern {
-                        TestPattern::Grid => 0,
-                        TestPattern::SiemensStar => 1,
-                        TestPattern::SlantedEdge => 2,
-                        TestPattern::TextChart => 3,
-                    },
-                    output,
-                })));
-            p.outputs = vec![output];
-            let r = b.submit_plan(p, ctx)?.wait()?;
-            accumulate(stats, &r.stats);
-            Ok(r.outputs[0].clone())
-        }
+        ImageSource::Pattern { .. } => Err(invalid("built-in patterns have no raster")),
     }
 }
 /// Full image simulation, with reusable immutable optical grids. File decoding
@@ -450,7 +440,12 @@ fn render(
     if grid.spacing_mm * grid.psf_size as f64 / pitch[0].min(pitch[1]) > 1024. {
         return Err(invalid("PSF exceeds 1024 output pixels"));
     }
-    let source = raster(b, t, s, &ctx.subrange(0.65, 0.66), &mut stats)?;
+    // Built-in patterns are evaluated analytically in the warp, over each
+    // output pixel's footprint; only images become rasters.
+    let (source, pattern) = match &s.source {
+        ImageSource::Pattern { pattern } => (None, pattern_kind(*pattern)),
+        _ => (Some(raster(b, s, &ctx.subrange(0.65, 0.66))?), 0),
+    };
     let nodes = b.fill_buffer(
         BufferDesc::new(ElementType::DoubleFloat, [grid.mapping.len(), 5]),
         &mut |mut a| {
@@ -470,7 +465,7 @@ fn render(
         },
     )?;
     let mut p = ResidentPlan::new(t.system().snapshot.clone());
-    let source = p.import(source.view());
+    let source = source.map(|r| p.import(r.view()));
     let mapping = p.import(nodes.view());
     let warped = p.scratch(BufferDesc::new(ElementType::F32, [height, width, channels]));
     let uv = p.scratch(BufferDesc::new(
@@ -479,7 +474,8 @@ fn render(
     ));
     p.operations
         .push(ResidentOp::Wave(w::Request::Simulation(Op::Warp {
-            source: p.view(source)?,
+            source: source.map(|r| p.view(r)).transpose()?,
+            pattern,
             mapping: p.view(mapping)?,
             size: s.size,
             channels,

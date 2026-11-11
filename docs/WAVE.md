@@ -369,11 +369,20 @@ cargo test --release -p mklight-wave --test tests interactive:: -- --ignored --n
 
 `image_simulation` (`image_simulation` module, registered by the engine)
 accepts built-in `grid`, `siemens_star`, `slanted_edge`, and `text_chart`
-patterns (grid and slanted-edge pixels are analytically area-averaged;
-star and text use deterministic 16×16 midpoint supersampling), `source:{kind:"buffer",width,height,channels:1|3,data:[…]}`
+patterns, `source:{kind:"buffer",width,height,channels:1|3,data:[…]}`
 (row-major interleaved, finite nonnegative linear-light samples), or
 `source:{kind:"path",path:"…"}` (an 8- or 16-bit grey or RGB PNG, alpha
 ignored, decoded from sRGB; other formats come as a buffer).
+Built-in patterns are analytic: there is no pattern raster. Each output
+pixel's source point (through the inverse distortion, below) is evaluated
+directly, averaged over a box of one output pixel centred there (the
+source span divided by `size`; the local distortion's change of that box
+is neglected). Grid and slanted edge are integrated exactly over the box,
+the Siemens star by 16 × 16 midpoint samples, and the text chart's glyph
+cells (a `size` grid, top row first) by overlap. The star's spokes are
+therefore sharp at any output size, and the blur toward its centre is the
+optics' and the pixel's, not a bitmap's resampling. Rasters (buffers and
+PNGs) are sampled bilinearly at the source point.
 Output dimensions are `size:[width,height]`; `monochrome` selects one
 channel, otherwise three. RGB source channels share the run's polychromatic
 energy PSF; there is no implicit colour matching or separate channel response.
@@ -639,7 +648,9 @@ projected-solid-angle kernel solves every pupil node's object and aim problems
 inside one command (≈1.4 s per wavelength against ≈0.2 s on the host for all
 five on a 29-surface lens).
 
-Patterns, inverse bilinear distortion, source resampling, RI multiplication,
+Inverse bilinear distortion, analytic pattern evaluation (in the warp
+stage, `pattern_pixel`, identical to the reference's box), raster
+resampling, RI multiplication,
 node-weighted convolution, detector aperture integration and noise run on GPU.
 PNG decoding and final result assembly stay on the host. Pixel deposition is
 separable and compensated, preserving the reference's 4×4 aperture quadrature.

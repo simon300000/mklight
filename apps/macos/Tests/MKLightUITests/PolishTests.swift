@@ -251,14 +251,6 @@ import Testing
         // The mean stays the pattern's area fraction.
         let mean = soft.data.reduce(0, +) / Double(soft.data.count)
         #expect(abs(mean - 0.5) < 0.01)
-        // The run sends the antialiased pattern as a buffer at the run's size.
-        let s = ImageSourceImport.engineSettings(
-            "image_simulation", ["size": .array([.integer(32), .integer(16)]), "source": .object(["kind": .string("pattern"), "pattern": .string("grid")])],
-            defaults: nil)
-        let buffer = try #require(LinearImage(source: s["source"]))
-        #expect(buffer.width == 32 && buffer.height == 16 && buffer == LinearImage.pattern("grid", width: 32, height: 16, supersample: 4))
-        // Other analyses and imported images are left alone.
-        #expect(ImageSourceImport.engineSettings("psf", ["size": .integer(3)], defaults: nil) == ["size": .integer(3)])
     }
 
     // MARK: Leftovers of the review round

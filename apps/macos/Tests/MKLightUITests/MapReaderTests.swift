@@ -180,8 +180,10 @@ import Testing
         let star = try #require(LinearImage.pattern("siemens_star", width: 32, height: 32))
         #expect(Set(star.data) == [0, 1])
         let text = try #require(LinearImage.pattern("text_chart", width: 30, height: 30))
-        // The first glyph (M) at scale 4: its row 0 is 10001.
-        #expect(text.data[0] == 0 && text.data[4] == 1 && text.data[16] == 0)
+        // The first glyph (M) at scale 4 in the top row (row 0 is the low-y
+        // edge): its row 0 is 10001.
+        let top = 29 * 30
+        #expect(text.data[top] == 0 && text.data[top + 4] == 1 && text.data[top + 16] == 0)
         #expect(LinearImage.pattern("unknown", width: 4, height: 4) == nil)
     }
 
@@ -207,6 +209,8 @@ import Testing
         #expect(d.source == .pattern("siemens_star"))
         #expect(d.sourceTitle == "Siemens star pattern")
         #expect(d.sourceImage?.width == 2)
+        // Shown antialiased, as the engine evaluates the pattern over each pixel.
+        #expect(d.sourceImage == LinearImage.pattern("siemens_star", width: 2, height: 1, supersample: 4))
         #expect(abs(d.nodes[0].distortionPercent + 1) < 1e-9)
         #expect(d.nodes[1].distortionPercent.isNaN)
         #expect(ImageSimulationData.maxDistortionPercent(d.nodes) == d.nodes[0].distortionPercent)

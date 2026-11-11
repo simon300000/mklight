@@ -295,7 +295,7 @@ impl Analysis for ImageSimulation {
     }
     fn settings_schema(&self) -> Value {
         settings_from_default::<im::ImageSimulationSettings>(json!({
-            "source":{"description":"{kind:pattern,pattern:grid|siemens_star|slanted_edge|text_chart}, {kind:buffer,width,height,channels:1|3,data:[linear samples]}, or {kind:path,path:...} (8- or 16-bit grey or RGB PNG, sRGB decoded, alpha ignored)."},
+            "source":{"description":"{kind:pattern,pattern:grid|siemens_star|slanted_edge|text_chart} (evaluated analytically at each output pixel's source point, averaged over the pixel), {kind:buffer,width,height,channels:1|3,data:[linear samples]}, or {kind:path,path:...} (8- or 16-bit grey or RGB PNG, sRGB decoded, alpha ignored)."},
             "size":{"description":"Output [width,height], 2..4096 each."},
             "optics":settings_from_default::<im::ImageGridSettings>(json!({
                 "field_grid":{"minimum":2,"maximum":33},"field_extent":{"exclusiveMinimum":0.0},

@@ -8,8 +8,12 @@ pub enum Simulation {
         kind: u32,
         output: BufferId,
     },
+    /// Maps each output pixel to its source point and samples the source
+    /// there: the raster `source` (bilinear), or with no raster the built-in
+    /// `pattern`, averaged over the pixel's footprint (`pattern_pixel`).
     Warp {
-        source: PlanView,
+        source: Option<PlanView>,
+        pattern: u32,
         mapping: PlanView,
         size: [usize; 2],
         channels: usize,
@@ -118,6 +122,7 @@ pub fn validate(r: &Simulation, p: &ResidentPlan) -> MkResult<()> {
         }
         Simulation::Warp {
             source,
+            pattern,
             mapping,
             size,
             channels,
@@ -126,7 +131,13 @@ pub fn validate(r: &Simulation, p: &ResidentPlan) -> MkResult<()> {
             output,
             uv,
         } => {
-            raster(source)?;
+            match source {
+                Some(v) => {
+                    raster(v)?;
+                }
+                None if *pattern > 3 => return Err(bad("image pattern")),
+                None => {}
+            }
             let n = mapping.desc.shape.first().copied().unwrap_or(0).isqrt();
             view(mapping, DoubleFloat, &[n * n, 5])?;
             if n < 2
@@ -275,13 +286,21 @@ pub fn validate(r: &Simulation, p: &ResidentPlan) -> MkResult<()> {
 pub fn access(r: &Simulation) -> Access {
     let (reads, writes) = match r {
         Simulation::Pattern { output, .. } => (vec![], vec![*output]),
+        // Without a raster the mapping also fills the (unread) source slot,
+        // so the mapping stays at its binding.
         Simulation::Warp {
             source,
             mapping,
             output,
             uv,
             ..
-        } => (vec![source.clone(), mapping.clone()], vec![*output, *uv]),
+        } => (
+            vec![
+                source.clone().unwrap_or_else(|| mapping.clone()),
+                mapping.clone(),
+            ],
+            vec![*output, *uv],
+        ),
         Simulation::Kernel { psf, output, .. } => (vec![psf.clone()], vec![*output]),
         Simulation::Active { uv, output, .. } => (vec![uv.clone()], vec![*output]),
         Simulation::Weighted {
@@ -318,6 +337,7 @@ pub fn params(r: &Simulation) -> Params {
         }
         Simulation::Warp {
             source,
+            pattern,
             mapping,
             size,
             channels,
@@ -329,9 +349,14 @@ pub fn params(r: &Simulation) -> Params {
             p.width = size[0] as u32;
             p.height = size[1] as u32;
             p.channels = *channels as u32;
-            p.source_width = source.desc.shape[1] as u32;
-            p.source_height = source.desc.shape[0] as u32;
-            p.source_channels = source.desc.shape[2] as u32;
+            // `source_channels` 0 selects the analytic pattern.
+            if let Some(source) = source {
+                p.source_width = source.desc.shape[1] as u32;
+                p.source_height = source.desc.shape[0] as u32;
+                p.source_channels = source.desc.shape[2] as u32;
+            } else {
+                p.pattern = *pattern;
+            }
             p.grid = mapping.desc.shape[0].isqrt() as u32;
             p.origin = *origin;
             p.pitch = *pitch;
@@ -457,9 +482,17 @@ fn clamp(v: Df32) -> Df32 {
 pub fn pattern(p: &Params, k: usize) -> f32 {
     let x = (k % p.width as usize) as f32;
     let y = (k / p.width as usize) as f32;
-    let w = d(p.width as f32);
-    let h = d(p.height as f32);
-    match p.pattern {
+    pattern_pixel(p.pattern, p.width, p.height, d(x), d(y))
+}
+/// Mean of built-in pattern `kind`, drawn on a `w × h` pixel grid, over the
+/// unit pixel box with lower corner `(x, y)` in grid pixels; the box need not
+/// sit on the grid (the warp centres it on an output pixel's exact source
+/// point). Grid and slanted edge are integrated exactly, the star by 16 × 16
+/// midpoints, the text chart's cells by overlap (edge cells extended).
+pub fn pattern_pixel(kind: u32, w: u32, h: u32, x: Df32, y: Df32) -> f32 {
+    let wd = d(w as f32);
+    let hd = d(h as f32);
+    match kind {
         0 => {
             let white = |v: Df32| {
                 let a = v.mul_f32(8.);
@@ -467,17 +500,18 @@ pub fn pattern(p: &Params, k: usize) -> f32 {
                 let r = a - d(floor) - d(0.1);
                 (d(0.9).mul_f32(floor) + if r.hi > 0. { r } else { Df32::ZERO }).mul_f32(0.125)
             };
-            f((white(d(x + 1.) / w) - white(d(x) / w))
-                * w
-                * (white(d(y + 1.) / h) - white(d(y) / h))
-                * h)
+            f((white(x.add_f32(1.) / wd) - white(x / wd))
+                * wd
+                * (white(y.add_f32(1.) / hd) - white(y / hd))
+                * hd)
         }
         1 => {
+            let (x, y) = (f(x), f(y));
             let mut sum = 0.;
             for j in 0..16 {
                 for i in 0..16 {
-                    let u = (x + (i as f32 + 0.5) / 16.) / p.width as f32;
-                    let v = (y + (j as f32 + 0.5) / 16.) / p.height as f32;
+                    let u = (x + (i as f32 + 0.5) / 16.) / w as f32;
+                    let v = (y + (j as f32 + 0.5) / 16.) / h as f32;
                     if ((v - 0.5).atan2(u - 0.5) * 24.).cos() > 0. {
                         sum += 1.;
                     }
@@ -486,8 +520,8 @@ pub fn pattern(p: &Params, k: usize) -> f32 {
             sum / 256.
         }
         2 => {
-            let lo = d(x) / w;
-            let hi = d(x + 1.) / w;
+            let lo = x / wd;
+            let hi = x.add_f32(1.) / wd;
             let primitive = |v: Df32| {
                 let edge = d(0.45) + v * d(0.1);
                 let a = hi - edge;
@@ -496,23 +530,43 @@ pub fn pattern(p: &Params, k: usize) -> f32 {
                 let b = if b.hi > 0. { b } else { Df32::ZERO };
                 (a * a - b * b) / d(-0.2)
             };
-            f((primitive(d(y + 1.) / h) - primitive(d(y) / h)) * w * h)
+            f((primitive(y.add_f32(1.) / hd) - primitive(y / hd)) * wd * hd)
         }
         _ => {
-            let y = p.height as usize - 1 - k / p.width as usize;
-            let scale = [4, 2, 1][(y * 3 / p.height as usize).min(2)];
-            let gx = k % p.width as usize / scale;
-            let gy = y / scale;
             let font = [
                 [17, 27, 21, 17, 17, 17, 17],
                 [17, 18, 20, 24, 20, 18, 17],
                 [16, 16, 16, 16, 16, 16, 31],
             ];
-            if gy % 9 < 7 && gx % 6 < 5 && font[(gx / 6) % 3][gy % 9] & (1 << (4 - gx % 6)) != 0 {
-                0.
-            } else {
-                1.
+            let (w, h) = (w as usize, h as usize);
+            let cell = |cx: i64, cy: i64| -> f32 {
+                let x = cx.clamp(0, w as i64 - 1) as usize;
+                let y = h - 1 - cy.clamp(0, h as i64 - 1) as usize;
+                let scale = [4, 2, 1][(y * 3 / h).min(2)];
+                let gx = x / scale;
+                let gy = y / scale;
+                if gy % 9 < 7 && gx % 6 < 5 && font[(gx / 6) % 3][gy % 9] & (1 << (4 - gx % 6)) != 0
+                {
+                    0.
+                } else {
+                    1.
+                }
+            };
+            let (x, y) = (f(x), f(y));
+            let (fx, fy) = (x.floor(), y.floor());
+            let (a, b) = (x - fx, y - fy);
+            let (cx, cy) = (fx as i64, fy as i64);
+            let mut v = (1. - a) * (1. - b) * cell(cx, cy);
+            if a > 0. {
+                v += a * (1. - b) * cell(cx + 1, cy);
             }
+            if b > 0. {
+                v += (1. - a) * b * cell(cx, cy + 1);
+                if a > 0. {
+                    v += a * b * cell(cx + 1, cy + 1);
+                }
+            }
+            v
         }
     }
 }
@@ -623,6 +677,22 @@ pub fn warp(p: &Params, k: usize, source: &[f32], nodes: &[Df32]) -> ([f32; 3], 
         .iter()
         .fold(Df32::ZERO, |a, (k, w)| a + nodes[k * 5 + 4] * *w);
     let mut out = [0.; 3];
+    if p.source_channels == 0 {
+        let inside = coords.iter().all(|v| (0. ..=1.).contains(&v.to_f64()));
+        let value = if inside {
+            pattern_pixel(
+                p.pattern,
+                p.width,
+                p.height,
+                coords[0].mul_f32(p.width as f32).add_f32(-0.5),
+                coords[1].mul_f32(p.height as f32).add_f32(-0.5),
+            )
+        } else {
+            0.
+        };
+        out[..p.channels as usize].fill(value * f(ri));
+        return (out, uv);
+    }
     for (ch, v) in out.iter_mut().enumerate().take(p.channels as usize) {
         *v = raster_sample(p, source, coords[0], coords[1], ch) * f(ri);
     }
@@ -792,7 +862,7 @@ pub fn cpu(
             uv,
             ..
         } => {
-            let source = x.rows(source);
+            let source = source.as_ref().map_or(&[][..], |s| x.rows(s));
             let mapping = x.rows(mapping);
             let mut a = vec![0.; (p.width * p.height * p.channels) as usize];
             let mut coords = vec![[Df32::ZERO; 2]; (p.width * p.height) as usize];

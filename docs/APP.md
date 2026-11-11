@@ -422,12 +422,17 @@ this page.
   view's controls set the field of view (full field = the square inscribed
   in the field disk, ½, ¼, 10 %, 5 %, 2 %, each with its width and pixel
   size on the sensor), the centre and the resolution (128 … 1024 px). Image
-  simulation starts manual (seconds per run). Built-in patterns are drawn by the app with the engine's
-  definition, area-sampled (4 × 4 per pixel) and sent as a buffer source
-  at the run's size, so both the shown source and the simulation are
-  antialiased; a user image (any format ImageIO reads) is cropped to the
-  field, resampled in linear light and sent as a buffer, and the project
-  keeps only its path. The footer has the pixel size, the largest distortion and
+  simulation starts manual (seconds per run). The view's first control is
+  the source menu: the built-in patterns or "Choose Image…"; an image file
+  can also be dropped on the images. Built-in patterns go to the engine as
+  `{kind: pattern}`, which evaluates them analytically at every pixel (so
+  the Siemens star's spokes stay sharp and only the optics blur its
+  centre); the source shown beside the result is drawn by the app with
+  the engine's definition, area-sampled 4 × 4 per pixel. A user image (any
+  format ImageIO reads) is cropped to the field, resampled in linear light
+  and sent as a buffer, and the project keeps only its path. The images
+  are clipped to their area for hit testing as well as drawing, so a
+  zoomed image never takes the clicks of the controls around it. The footer has the pixel size, the largest distortion and
   the lowest relative illumination of the field mapping, which a popover
   lists node by node. The settings form has compact controls for two-number
   settings (grid, extent, size; a field point such as grid distortion's
@@ -1074,13 +1079,8 @@ Remaining for an iPadOS target:
     flags such a variable ("set a value in the lens data first"). A trace
     order of 0.5 is refused (the app rejects non-integer orders before the
     engine sees them).
-  * `image_simulation`'s text chart and PNG-path sources come out
-    vertically mirrored (their top row lands at the low-y edge); imported
-    images go as buffers, which are correct.
-  * `image_simulation` area-averages its grid and slanted edge and
-    supersamples the star and text chart; the app still sends its own
-    area-sampled patterns as buffers (4 × 4 per pixel), which also keeps
-    the shown source identical to the simulated one.
+  * Imported images go to `image_simulation` as JSON buffers (at most
+    512 px a side); the engine's `path` source reads only PNG.
   * `diffraction_encircled_energy` does not report the image grid it chose,
     and `mtf`, `psf` and `line_spread` not the pupil grid; those settings
     read "Auto" without a value.

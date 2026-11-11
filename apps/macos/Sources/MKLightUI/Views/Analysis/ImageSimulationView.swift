@@ -12,8 +12,9 @@ import UniformTypeIdentifiers
 
 /// `image_simulation`: the engine's linear-light image (converted to sRGB
 /// for display, row 0 at the low-y edge) and the source it was run with:
-/// a built-in pattern drawn at the output size exactly as the engine
-/// defines it, or the imported image's samples from the run's settings.
+/// a built-in pattern drawn at the output size with the engine's definition
+/// (the engine itself evaluates it analytically at each pixel's source
+/// point), or the imported image's samples from the run's settings.
 struct ImageSimulationView: View {
     enum Compare: String, CaseIterable { case sideBySide = "Side by Side", split = "Split", blink = "Blink" }
 
@@ -21,8 +22,6 @@ struct ImageSimulationView: View {
     let source: LinearImage?
     /// The pane, for the field of view and resolution controls.
     let pane: AnalysisPane?
-    /// The built-in pattern the run's (antialiased) buffer was drawn from.
-    let pattern: String?
     /// Identifies the result (its start time and snapshot).
     let run: String
     @State private var compare = Compare.sideBySide
@@ -35,6 +34,8 @@ struct ImageSimulationView: View {
     @State private var blinkSource = false
     @State private var showMapping = false
     @State private var cache = Rendered()
+    @State private var dropTargeted = false
+    @State private var dropFailed: String?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     /// The display images, made once per exposure (not on every gesture frame).
@@ -70,20 +71,14 @@ struct ImageSimulationView: View {
         data = d
         source = d.sourceImage
         self.pane = pane
-        // A buffer drawn from a built-in pattern (not an imported file) keeps the pattern's name.
-        if case .buffer = d.source, let p = pane, p.settings[ImageSourceImport.fileKey] == nil,
-            let name = p.value("source")?["pattern"]?.string
-        {
-            pattern = name
-        } else {
-            pattern = nil
-        }
         run = "\(output.runInfo.snapshotHash)-\(output.runInfo.startedUnixMs)-\(output.runInfo.durationMs)"
     }
 
     private var sourceTitle: String {
-        guard let pattern else { return data.sourceTitle }
-        return (ImageSimulationData.patterns.first { $0.id == pattern }?.title ?? pattern) + " pattern"
+        if case .buffer = data.source, let file = pane?.settings[ImageSourceImport.fileKey]?.string {
+            return (file as NSString).lastPathComponent
+        }
+        return data.sourceTitle
     }
 
     private var gain: Double { pow(2, exposure) }
@@ -101,20 +96,45 @@ struct ImageSimulationView: View {
         let _ = cache.update(data, source: source, gain: gain, run: run)
         let simulated = cache.simulated, src = cache.source
         VStack(alignment: .leading, spacing: Space.s) {
-            controls
+            // Controls and caption stay above the images: a zoomed image
+            // never takes their clicks.
+            controls.zIndex(1)
             GeometryReader { geo in
                 content(simulated: simulated, source: src, size: geo.size)
                     .frame(width: geo.size.width, height: geo.size.height)
             }
-            caption
+            .clipped()
+            .contentShape(Rectangle())
+            .overlay {
+                if dropTargeted {
+                    RoundedRectangle(cornerRadius: 6).strokeBorder(.tint, lineWidth: 2).allowsHitTesting(false)
+                }
+            }
+            .dropDestination(for: URL.self) { urls, _ in drop(urls) } isTargeted: { dropTargeted = $0 && pane != nil }
+            caption.zIndex(1)
         }
         .padding(Space.m)
+    }
+
+    /// An image file dropped on the images becomes the run's source.
+    private func drop(_ urls: [URL]) -> Bool {
+        guard let pane, let url = urls.first(where: { (try? $0.resourceValues(forKeys: [.contentTypeKey]))?.contentType?.conforms(to: .image) ?? false })
+        else { return false }
+        let ok = ImageSourceImport.use(url, in: pane)
+        dropFailed = ok ? nil : url.lastPathComponent
+        return ok
+    }
+
+    /// The pane's `source` setting, for the source menu.
+    private var sourceField: SettingsField? {
+        pane.flatMap { p in p.workspace?.descriptor(p.analysis)?.settingsFields.first { $0.name == "source" } }
     }
 
     // MARK: Controls
 
     private var controls: some View {
         FlowLayout(spacing: Space.m, lineSpacing: Space.xs) {
+            if let pane, let sourceField { ImageSourceControl(pane: pane, field: sourceField) }
             if let pane { ImageViewControls(pane: pane, data: data) }
             SegmentedOrMenu(title: "Compare", options: Compare.allCases.map { ($0, $0.rawValue) }, selection: $compare)
                 .disabled(source == nil)
@@ -218,6 +238,9 @@ struct ImageSimulationView: View {
                         split = min(max(split + (d == .increment ? 0.1 : -0.1), 0), 1)
                     }
             }
+            .frame(width: geo.size.width, height: geo.size.height)
+            .clipped()
+            .contentShape(Rectangle())
             .gesture(zoomGesture)
             .simultaneousGesture(panGesture)
         }
@@ -290,12 +313,10 @@ struct ImageSimulationView: View {
                     .help("The PSF window and sample spacing this run used\(psfAuto ? ", chosen by the engine from the blur and diffraction" : "").")
             }
             if clipped > 0.001 { Text(String(format: "%.1f%% clipped", clipped * 100)).foregroundStyle(.orange) }
-            if pattern != nil {
-                Text("Pattern area-sampled").help(
-                    "The built-in pattern is drawn by the app with the engine's definition, averaged over each pixel (4 × 4 samples), and sent to the engine as the source image.")
-            } else if case .pattern = data.source {
-                Text("Source drawn as the engine defines it").help(
-                    "The engine does not return the source; built-in patterns are drawn here at the output size with the engine's definition, for comparison.")
+            if let dropFailed { Text("\(dropFailed) could not be read").foregroundStyle(.orange) }
+            if case .pattern = data.source {
+                Text("Pattern exact").help(
+                    "The engine evaluates the built-in pattern analytically at each pixel's exact source point (through the distortion), averaged over the pixel: no bitmap in between, so the blur is the lens's. The source shown here is drawn with the same definition.")
             }
         }
         .font(.caption.monospacedDigit())
@@ -642,6 +663,8 @@ struct ZoomedImage: View {
             }
             .frame(width: fit.width, height: fit.height)
             .clipped()
+            // Hits too: a zoomed image does not reach past its frame.
+            .contentShape(Rectangle())
             .overlay(Rectangle().strokeBorder(.separator))
             .offset(x: fit.minX, y: fit.minY)
         }
@@ -813,33 +836,6 @@ enum ImageSourceImport {
         pane.setSettings(s)
         return true
     }
-
-    private static var patternCache: [String: JSONValue] = [:]
-
-    /// The settings sent to the engine: a built-in pattern becomes its
-    /// antialiased (area-sampled) image at the run's size, as a buffer
-    /// source; the engine itself samples patterns at pixel centres.
-    static func engineSettings(_ analysis: String, _ settings: [String: JSONValue], defaults: JSONValue?) -> [String: JSONValue] {
-        guard analysis == "image_simulation" else { return settings }
-        let source = settings["source"] ?? defaults?["source"]
-        guard source?["kind"]?.string == "pattern", let name = source?["pattern"]?.string else { return settings }
-        let a = (settings["size"] ?? defaults?["size"])?.array?.compactMap(\.doubleValue) ?? []
-        let w = a.count == 2 ? Int(saturating: a[0]) : 64, h = a.count == 2 ? Int(saturating: a[1]) : 64
-        guard (2...maxPatternSide).contains(w), (2...maxPatternSide).contains(h) else { return settings }
-        let key = "\(name)-\(w)x\(h)"
-        var s = settings
-        if let cached = patternCache[key] {
-            s["source"] = cached
-        } else if let image = LinearImage.pattern(name, width: w, height: h, supersample: 4) {
-            let json = image.sourceJSON
-            patternCache[key] = json
-            s["source"] = json
-        }
-        return s
-    }
-
-    /// The largest pattern drawn by the app (the engine accepts buffers up to 8192).
-    nonisolated static let maxPatternSide = 4096
 
     /// Uses a built-in pattern (and forgets an imported file).
     static func use(pattern: String, in pane: AnalysisPane) {

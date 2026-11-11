@@ -72,13 +72,19 @@ struct AnalysisPaneView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            // The header and settings stay above the result, which is
+            // clipped to its own area for drawing and hit testing alike.
             PaneHeader(pane: pane, workspace: workspace, descriptor: descriptor, system: system, isFocused: isFocused)
+                .zIndex(2)
             if pane.showsSettings, let descriptor, descriptor.available, !descriptor.settingsFields.isEmpty {
                 SettingsPanel(pane: pane, descriptor: descriptor, system: system)
                     .transition(reduceMotion ? .opacity : .move(edge: .top).combined(with: .opacity))
+                    .zIndex(1)
             }
             content
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .clipped()
+                .contentShape(Rectangle())
                 .overlay(alignment: .top) {
                     if let p = pane.progress, pane.output != nil {
                         ProgressView(value: p.fraction > 0 ? p.fraction : nil)
