@@ -187,7 +187,7 @@ private struct LayoutControls: View {
                 ViewThatFits(in: .horizontal) {
                     if !tabbed {
                         HStack(spacing: Space.s) {
-                            Text("Layout").font(.headline)
+                            Label("Layout", systemImage: "rectangle.lefthalf.inset.filled").font(.headline)
                             if pane.isRunning { ProgressView().controlSize(.mini) }
                         }
                         .fixedSize()
@@ -304,6 +304,7 @@ private struct LayoutControls: View {
                         window.fitRequest += 1
                     }
                         .help("Fit the layout (⌘0, or double-click)")
+                    PanelMoreMenu(panel: .layout)
                 }
                 .labelStyle(.iconOnly)
                 .buttonStyle(.glass)

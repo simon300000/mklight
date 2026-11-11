@@ -35,6 +35,31 @@ public enum InspectorTab: String, CaseIterable, Identifiable, Sendable {
     public var id: String { rawValue }
 }
 
+/// A page of the inspector: one tab of its tab bar.
+public enum InspectorPage: Hashable, Sendable {
+    case surface, system
+    case job(DesignJobKind)
+
+    /// The tab bar's order: the design's own inspectors, then the jobs.
+    public static let all: [InspectorPage] = [.surface, .system] + DesignJobKind.allCases.map(InspectorPage.job)
+
+    public var title: String {
+        switch self {
+        case .surface: "Surface"
+        case .system: "System"
+        case .job(let kind): kind.title
+        }
+    }
+
+    public var symbol: String {
+        switch self {
+        case .surface: "circle.lefthalf.filled"
+        case .system: "slider.horizontal.3"
+        case .job(let kind): kind.symbol
+        }
+    }
+}
+
 /// Orthographic viewport camera. Pure view state: it never enters the model.
 public struct ViewportCamera: Equatable, Sendable {
     /// World point (mm) at the centre of the view.
@@ -119,7 +144,9 @@ public final class WindowState {
             MainActor.assumeIsolated {
                 guard let self else { return }
                 self.inspectorPending = false
-                if self.inspectedSurface != self.selection { self.inspectedSurface = self.selection }
+                // A hidden inspector stays built (rebuilding its form made
+                // opening it slow), but does not follow the selection.
+                if self.showInspector && self.inspectedSurface != self.selection { self.inspectedSurface = self.selection }
                 // Selecting a surface shows it in the inspector, unless a job is open.
                 if self.selection != nil && self.activeJob == nil && self.inspectorTab != .surface { self.inspectorTab = .surface }
             }
@@ -127,7 +154,12 @@ public final class WindowState {
     }
     /// A field to highlight in the system inspector (from an issue).
     public var highlightedField: Int?
-    public var showInspector = true
+    public var showInspector = true {
+        didSet {
+            guard showInspector != oldValue else { return }
+            if showInspector && inspectedSurface != selection { inspectedSurface = selection }
+        }
+    }
     public var inspectorTab = InspectorTab.system
     public var showIssues = false
     public var viewportMode = ViewportMode.section2D
@@ -152,26 +184,32 @@ public final class WindowState {
 
     public init() {}
 
-    /// Opens a design job in the inspector.
+    /// Shows a design job in the inspector, opening the inspector if it is
+    /// hidden (so the click is never lost).
     public func open(_ job: DesignJobKind) {
         activeJob = job
         showInspector = true
     }
 
-    /// Whether `job` is the panel shown in the inspector.
-    public func isShowing(_ job: DesignJobKind) -> Bool { activeJob == job && showInspector }
-
-    /// The toolbar's job buttons: open the job, or close it with the
-    /// inspector when it is already showing (like the Inspector button).
-    public func toggle(_ job: DesignJobKind) {
-        if isShowing(job) { closeJob() } else { open(job) }
+    /// What the inspector shows: the surface or system inspector, or a
+    /// design job. Its tab bar selects this; only the Inspector button
+    /// hides the inspector.
+    public var page: InspectorPage {
+        get { activeJob.map(InspectorPage.job) ?? (inspectorTab == .surface ? .surface : .system) }
+        set {
+            switch newValue {
+            case .surface: activeJob = nil; inspectorTab = .surface
+            case .system: activeJob = nil; inspectorTab = .system
+            case .job(let kind): activeJob = kind
+            }
+        }
     }
 
-    /// Closes the job panel and the inspector it was shown in. A running
-    /// job continues; the toolbar shows its progress.
+    /// Leaves the job panel for the surface or system inspector; the
+    /// inspector stays open. A running job continues; the toolbar shows
+    /// its progress.
     public func closeJob() {
         activeJob = nil
-        showInspector = false
     }
 
     /// The running design job, if any.

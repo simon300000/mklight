@@ -72,23 +72,31 @@ private struct DesignWindowContent: View {
 
     var body: some View {
         NavigationSplitView(columnVisibility: $columns) {
-            AnalysisSidebar(workspace: workspace, window: window)
+            AnalysisSidebar(session: session, workspace: workspace, window: window)
                 .navigationSplitViewColumnWidth(min: 200, ideal: 230, max: 320)
         } detail: {
             PanelWindowContent(session: session, model: session.arrangement.main, onWindow: { session.attach(mainWindow: $0) })
+            // Fixed size bounds, without measuring the panels: their sizes
+            // change as panels open and close, and the split view would
+            // answer each change by squeezing the inspector to its minimum.
+            .columnLayout(minWidth: 360, minHeight: 240, idealWidth: 900, idealHeight: 700)
             .overlay(alignment: .bottom) { toast }
-            .inspector(isPresented: $window.showInspector) {
-                // Built only while shown: a hidden inspector stays in the
-                // view tree and would rebuild its form on every selection.
-                Group {
-                    if window.showInspector { InspectorView(design: design, workspace: workspace, window: window) }
-                }
+            .toolbar { toolbar }
+        }
+        // On the split view, not its detail column: only then is the
+        // inspector a full-height column with its own part of the toolbar
+        // (a tracking separator keeps the window's buttons left of it).
+        .inspector(isPresented: $window.showInspector) {
+            // Kept built while hidden: building its form made opening the
+            // inspector stall (~120 ms). Hidden, it does not follow the
+            // selection (`WindowState.inspectedSurface`).
+            InspectorView(design: design, workspace: workspace, window: window)
+                .columnLayout(minWidth: 300, minHeight: 240, idealWidth: 360, idealHeight: 700)
+                .toolbar { inspectorToolbar }
                 .inspectorColumnWidth(min: 300, ideal: 360, max: 560)
-            }
         }
         .environment(\.designSession, session)
         .navigationSubtitle(system.name)
-        .toolbar { toolbar }
         // The menu actions and the saved layout read the selection and the
         // camera; a child view keeps those reads out of this body, so a
         // click or a pan does not rebuild the window.
@@ -161,54 +169,41 @@ private struct DesignWindowContent: View {
 
     // MARK: Toolbar
 
-    /// Three groups, by function: design jobs; the window's content
-    /// (analyses, layout); the inspector at the trailing edge. The design's
-    /// status is in the centre.
+    /// The inspector's page tabs, in the inspector's part of the toolbar.
+    /// Hidden, the inspector's items move to the window's trailing edge:
+    /// the tabs leave the item empty then.
+    @ToolbarContentBuilder private var inspectorToolbar: some ToolbarContent {
+        ToolbarSpacer(.flexible)
+        ToolbarItem {
+            if window.showInspector { InspectorTabBar(window: window) }
+        }
+        .sharedBackgroundVisibility(.hidden)
+        ToolbarSpacer(.flexible)
+    }
+
+    /// The design's status in the centre; Add Analysis and the inspector
+    /// toggle at the content's trailing edge, left of the inspector. The
+    /// toggle stays in this part of the toolbar: declared on the inspector,
+    /// SwiftUI would move it between the inspector's part and this one as
+    /// the inspector opens and closes, and it blinks.
     @ToolbarContentBuilder private var toolbar: some ToolbarContent {
         ToolbarItem(placement: .principal) {
             DesignStatus(workspace: workspace, window: window, engine: engine, system: system)
         }
-        ToolbarItemGroup(placement: .primaryAction) {
-            // Toggles, like the Inspector button: highlighted while the
-            // job's panel is open; a second click closes it.
-            ForEach(DesignJobKind.allCases) { job in
-                Toggle(isOn: Binding(get: { window.isShowing(job) }, set: { _ in window.toggle(job) })) {
-                    Label(job.title, systemImage: job.symbol)
-                }
-                .help(help(job))
-            }
-        }
-        ToolbarSpacer(.fixed, placement: .primaryAction)
-        ToolbarItemGroup(placement: .primaryAction) {
+        ToolbarItem(placement: .primaryAction) {
             Menu {
                 AddPaneMenuItems(workspace: workspace)
             } label: {
-                Label("Add Analysis", systemImage: "plus.rectangle.on.rectangle")
+                Label("Add Analysis", systemImage: "plus")
             }
             .help("Add an analysis pane")
-            Toggle(isOn: shows(.lensData)) { Label("Lens Data", systemImage: "tablecells") }
-                .help("Show or hide the lens data (⌥⌘E)")
-            Toggle(isOn: shows(.layout)) { Label("Layout", systemImage: "rectangle.lefthalf.inset.filled") }
-                .help("Show or hide the layout viewport (⌥⌘L)")
         }
         ToolbarSpacer(.fixed, placement: .primaryAction)
         ToolbarItem(placement: .primaryAction) {
-            Button("Inspector", systemImage: "sidebar.right") { window.showInspector.toggle() }
+            Button("Inspector", systemImage: "sidebar.trailing") { window.showInspector.toggle() }
+                // Fixed text: nothing here reads `showInspector`, so a toggle
+                // does not redraw the item.
                 .help("Show or hide the inspector (⌃⌘I)")
-        }
-    }
-
-    /// The toolbar's panel toggles: on while the panel is open in any window.
-    private func shows(_ panel: PanelID) -> Binding<Bool> {
-        Binding(get: { session.arrangement.contains(panel) }, set: { _ in session.toggle(panel) })
-    }
-
-    private func help(_ job: DesignJobKind) -> String {
-        switch job {
-        case .optimize: "Optimize the design (⌃⌘O)"
-        case .glass: "Replace glasses with catalogue glasses, re-optimising each combination (⌃⌘G)"
-        case .tolerance: "Tolerance analysis: sensitivities and Monte Carlo (⌃⌘T)"
-        case .solves: "Preview and apply the design's solves (⌃⌘L)"
         }
     }
 

@@ -324,6 +324,66 @@ struct PanelMenuItems: View {
     }
 }
 
+// MARK: - Panel headers
+
+/// A panel header's title block, as in the analysis panes: icon and title
+/// (the panel's drag handle), the state line below. As one of several tabs,
+/// the tab carries the title.
+struct PanelHeaderTitle: View {
+    let panel: PanelID
+    let title: String
+    let symbol: String
+    let subtitle: String
+    let help: String
+    @Environment(\.panelTabbed) private var tabbed
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if !tabbed {
+                Label(title, systemImage: symbol)
+                    .font(.headline)
+                    .lineLimit(1)
+                    .fixedSize()
+                    .help(help + "\nDrag to move it, or out of the window to open it in a window of its own.")
+                    .accessibilityAddTraits(.isHeader)
+                    .panelHandle(panel)
+            }
+            Text(subtitle)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .padding(.leading, 2)
+                .frame(minWidth: 0, idealWidth: 0, maxWidth: .infinity, alignment: .leading)
+                .help(subtitle)
+        }
+    }
+}
+
+/// A panel header's More menu: move to a window, hide or close.
+struct PanelMoreMenu: View {
+    let panel: PanelID
+    @Environment(\.designSession) private var session
+
+    var body: some View {
+        if let session {
+            Menu {
+                PanelMenuItems(panel: panel, session: session)
+            } label: {
+                Label("More", systemImage: "ellipsis")
+            }
+            .menuIndicator(.hidden)
+        }
+    }
+}
+
+extension View {
+    /// A panel header's padding, the same for every panel.
+    func panelHeaderPadding() -> some View {
+        padding(.horizontal, Space.m).padding(.top, Space.s).padding(.bottom, Space.xs)
+    }
+}
+
 // MARK: - Drop highlights
 
 /// Where a dragged panel would land in this group: the whole group (a tab)

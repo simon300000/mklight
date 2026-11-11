@@ -164,6 +164,13 @@ final class DesignSession {
         }
     }
 
+    /// Shows the lens data or the layout (opening it if closed) and focuses it.
+    func show(_ panel: PanelID) {
+        if !arrangement.contains(panel) { arrangement.show(panel) }
+        reveal(panel)
+        focus(panel)
+    }
+
     /// Shows a panel: brings its tab to the front and its window forward.
     func reveal(_ panel: PanelID) {
         arrangement.select(panel)

@@ -2,10 +2,10 @@ import MKLightEngine
 import MKLightModel
 import SwiftUI
 
-/// The inspector: the selected surface's parameters, the system's, or the
-/// open design job (Optimize, Tolerance, Solves). It is a column of the
-/// window's glass layer: the Surface / System switch floats in a bar over
-/// the form, which scrolls beneath it.
+/// The inspector: the selected surface's parameters, the system's, or a
+/// design job (Optimize, Glass Substitution, Tolerance, Solves). It is a
+/// full-height column of the window's glass layer with its own part of the
+/// toolbar; its tab bar floats over the content, which scrolls beneath it.
 struct InspectorView: View {
     let design: DesignDocument
     let workspace: Workspace
@@ -46,15 +46,61 @@ struct InspectorView: View {
         }
         .frame(maxHeight: .infinity, alignment: .top)
         .scrollEdgeEffectStyle(.soft, for: .top)
-        .safeAreaBar(edge: .top) {
-            Picker("Inspector", selection: $window.inspectorTab) {
-                ForEach(InspectorTab.allCases) { Text($0.rawValue).tag($0) }
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .controlSize(.large)
-            .padding(.horizontal, Space.l)
-            .padding(.vertical, Space.s)
+    }
+}
+
+/// The inspector's pages as a row of symbols, as in Xcode's inspectors:
+/// the surface and the system, then the design jobs. A running job's tab
+/// carries a dot.
+struct InspectorTabBar: View {
+    @Bindable var window: WindowState
+    @Namespace private var selection
+
+    var body: some View {
+        HStack(spacing: Space.xs) {
+            tab(.surface)
+            tab(.system)
+            Divider().frame(height: 18).padding(.horizontal, Space.xs)
+            ForEach(DesignJobKind.allCases) { tab(.job($0)) }
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Inspector pages")
+    }
+
+    private func tab(_ page: InspectorPage) -> some View {
+        let selected = window.page == page
+        let running: Bool = if case .job(let kind) = page { window.runningJob == kind } else { false }
+        return Button {
+            window.page = page
+        } label: {
+            Image(systemName: page.symbol)
+                .font(.system(size: 15, weight: selected ? .semibold : .regular))
+                .foregroundStyle(selected ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
+                .frame(width: 34, height: 28)
+                .background {
+                    if selected {
+                        Capsule().fill(.tint.opacity(0.14)).matchedGeometryEffect(id: "selection", in: selection)
+                    }
+                }
+                .overlay(alignment: .topTrailing) {
+                    if running { Circle().fill(.tint).frame(width: 6, height: 6).offset(x: -3, y: 3) }
+                }
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(Self.help(page))
+        .accessibilityLabel(page.title)
+        .accessibilityAddTraits(selected ? [.isSelected, .isButton] : .isButton)
+    }
+
+    static func help(_ page: InspectorPage) -> String {
+        switch page {
+        case .surface: "The selected surface"
+        case .system: "Aperture, fields, wavelengths and environment"
+        case .job(.optimize): "Optimize the design (⌃⌘O)"
+        case .job(.glass): "Replace glasses with catalogue glasses, re-optimising each combination (⌃⌘G)"
+        case .job(.tolerance): "Tolerance analysis: sensitivities and Monte Carlo (⌃⌘T)"
+        case .job(.solves): "Preview and apply the design's solves (⌃⌘L)"
         }
     }
 }

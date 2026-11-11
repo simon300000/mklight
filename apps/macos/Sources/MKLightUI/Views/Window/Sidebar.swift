@@ -2,30 +2,39 @@ import MKLightEngine
 import MKLightModel
 import SwiftUI
 
-/// The sidebar: every analysis the engine offers, by category, searchable.
-/// Selecting one shows it in the focused pane; ⌥-click or the context menu
-/// opens a new pane. Open analyses carry a dot; unavailable ones say why.
+/// The sidebar: the lens data and the layout, then every analysis the
+/// engine offers, by category, searchable. Selecting the lens data or the
+/// layout shows that panel; selecting an analysis shows it in the focused
+/// pane, and ⌥-click or the context menu opens a new pane. Open panels
+/// carry a dot; unavailable analyses say why.
 struct AnalysisSidebar: View {
+    let session: DesignSession
     let workspace: Workspace
     @Bindable var window: WindowState
     @State private var query = ""
 
     var body: some View {
         List(selection: selection) {
-            if !workspace.issues.isEmpty {
+            if query.isEmpty || !workspace.issues.isEmpty {
                 Section("Design") {
-                    Button {
-                        window.showIssues = true
-                    } label: {
-                        Label {
-                            Text("Issues")
-                        } icon: {
-                            Image(systemName: worst == .error ? "xmark.octagon" : "exclamationmark.triangle")
-                                .foregroundStyle(worst == .error ? .red : .orange)
-                        }
-                        .badge(workspace.issues.count)
+                    if query.isEmpty {
+                        panelRow(.lensData)
+                        panelRow(.layout)
                     }
-                    .buttonStyle(.plain)
+                    if !workspace.issues.isEmpty {
+                        Button {
+                            window.showIssues = true
+                        } label: {
+                            Label {
+                                Text("Issues")
+                            } icon: {
+                                Image(systemName: worst == .error ? "xmark.octagon" : "exclamationmark.triangle")
+                                    .foregroundStyle(worst == .error ? .red : .orange)
+                            }
+                            .badge(workspace.issues.count)
+                        }
+                        .buttonStyle(.plain)
+                    }
                 }
             }
             ForEach(groups, id: \.category) { group in
@@ -57,12 +66,27 @@ struct AnalysisSidebar: View {
         return AnalysisCatalog.grouped(list)
     }
 
-    /// The focused pane's analysis is the sidebar selection.
+    /// The sidebar's tags for the lens data and the layout (analysis names
+    /// never start with a colon).
+    private static func tag(_ panel: PanelID) -> String { panel == .lensData ? ":lensData" : ":layout" }
+
+    /// The focused panel is the sidebar selection: the lens data, the
+    /// layout, or the focused pane's analysis.
     private var selection: Binding<String?> {
         Binding(
-            get: { workspace.focusedPane?.analysis },
+            get: {
+                switch session.focusedPanel {
+                case .lensData?, .layout?: Self.tag(session.focusedPanel!)
+                default: workspace.focusedPane?.analysis
+                }
+            },
             set: { name in
                 guard let name else { return }
+                if let panel = [PanelID.lensData, .layout].first(where: { Self.tag($0) == name }) {
+                    session.show(panel)
+                    return
+                }
+                if session.focusedPanel?.paneID == nil { session.focusedPanel = nil }
                 #if os(macOS)
                 let newPane = NSEvent.modifierFlags.contains(.option)
                 #else
@@ -70,6 +94,20 @@ struct AnalysisSidebar: View {
                 #endif
                 if workspace.panes.isEmpty { workspace.addPane(name) } else { workspace.open(name, inNewPane: newPane) }
             })
+    }
+
+    private func panelRow(_ panel: PanelID) -> some View {
+        let open = session.arrangement.contains(panel)
+        return HStack(spacing: Space.s) {
+            Label(session.title(of: panel), systemImage: session.symbol(of: panel))
+            Spacer(minLength: 0)
+            if open { Circle().fill(.secondary).frame(width: 5, height: 5).accessibilityLabel("open") }
+        }
+        .tag(Self.tag(panel))
+        .help(panel == .lensData ? "Show the lens data (⌥⌘E)" : "Show the layout viewport (⌥⌘L)")
+        .contextMenu {
+            if open { Button("Close") { session.close(panel) } } else { Button("Show") { session.show(panel) } }
+        }
     }
 
     private func row(_ d: AnalysisDescriptor) -> some View {

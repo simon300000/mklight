@@ -309,31 +309,28 @@ private struct SelectedRow: ViewModifier {
     }
 }
 
-/// The lens table's title bar: counts and the insert / delete buttons.
+/// The lens table's header, styled like the analysis panes': title and
+/// counts, then insert, delete and More.
 private struct LensTableHeader: View {
     let design: DesignDocument
     let window: WindowState
     let editor: LensEditor
-    @Environment(\.panelTabbed) private var tabbed
 
     private var system: OpticalSystem { design.system }
 
+    private var subtitle: String {
+        var s = "\(system.surfaces.count - 2) surfaces · stop on \(system.stop) · mm"
+        let v = design.variables.count
+        if v > 0 { s += " · \(v) variable\(v == 1 ? "" : "s")" }
+        return s
+    }
+
     var body: some View {
-        HStack(spacing: Space.m) {
-            if !tabbed {
-                Text("Lens Data")
-                    .font(.headline)
-                    .help("Drag to move the lens data, or out of the window to open it in a window of its own")
-                    .accessibilityAddTraits(.isHeader)
-                    .panelHandle(.lensData)
-            }
-            Text("\(system.surfaces.count - 2) surfaces · stop on \(system.stop) · mm")
-                .font(.caption).foregroundStyle(.secondary)
-            Spacer()
-            if !design.variables.isEmpty {
-                Label("\(design.variables.count) variable\(design.variables.count == 1 ? "" : "s")", systemImage: "v.square")
-                    .font(.caption).foregroundStyle(.tint)
-            }
+        HStack(alignment: .center, spacing: Space.s) {
+            PanelHeaderTitle(
+                panel: .lensData, title: "Lens Data", symbol: "tablecells", subtitle: subtitle,
+                help: "Lens Data: the design's surfaces")
+            Spacer(minLength: Space.xs)
             GlassEffectContainer(spacing: Space.s) {
                 HStack(spacing: Space.xs) {
                     Button("Insert Surface", systemImage: "plus") {
@@ -346,16 +343,16 @@ private struct LensTableHeader: View {
                     }
                     .help("Delete the selected surface (⌘⌫)")
                     .disabled(!canDelete)
+                    PanelMoreMenu(panel: .lensData)
                 }
                 .labelStyle(.iconOnly)
                 .buttonStyle(.glass)
                 .buttonBorderShape(.circle)
                 .controlSize(.small)
             }
+            .fixedSize()
         }
-        .padding(.horizontal, Space.l)
-        .padding(.vertical, Space.xs)
-        .frame(minHeight: 36)
+        .panelHeaderPadding()
     }
 
     private var canDelete: Bool {

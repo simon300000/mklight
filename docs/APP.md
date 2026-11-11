@@ -51,17 +51,20 @@ this page.
    between its options.
 5. *Group toolbar items by function, at most three groups, spacers between
    them; the primary action and inspector toggle trailing; every item also a
-   menu command* (Toolbars, WWDC25 323). Design jobs | Add Analysis, Layout |
-   Inspector, separated by `ToolbarSpacer(.fixed)`; the design's status in
-   the centre (`.principal`). All have menu commands and shortcuts.
+   menu command* (Toolbars, WWDC25 323). Add Analysis and the inspector
+   toggle trailing, left of the inspector; the inspector's page tabs in
+   its own part of the toolbar; the design's status in
+   the centre (`.principal`). The lens data and the layout are sidebar
+   entries; the design jobs are pages of the inspector. All have menu
+   commands and shortcuts.
 6. *Avoid critical information at the bottom of a Mac window* (Layout). There
    is no status bar: activity, EFL, F/#, total track and the issue
    count live in the toolbar's status capsule; engine, backend and snapshot
    are in its popover; transient messages float as a glass toast.
 7. *Scroll edge effects instead of bar backgrounds; hard for pinned table
    headers, soft elsewhere; one per view* (Scroll views, WWDC25 356). The lens
-   table uses `.hard` at the top; the inspector's Surface / System switch is
-   a `safeAreaBar` over the form with a `.soft` edge; job panels have soft
+   table uses `.hard` at the top; the inspector's form scrolls under the
+   toolbar (its page tabs) with the system's soft edge; job panels have soft
    edges under their header and their action bar.
 8. *Content extends under floating chrome* (Sidebars, Layout,
    `backgroundExtensionEffect`). The viewport draws edge to edge under its
@@ -164,26 +167,41 @@ this page.
 ## Window structure
 
 ```
-┌ toolbar: ◧ title │ ⟳ EFL · F/# · TT · ⓘ │ Optimize Glass Tolerance Solves │ + Lens Layout │ ◨ ┐
-├ sidebar (glass) ─┬ Lens Data (hard scroll edge) ──────────────────────┬ inspector ─────────┤
-│ Analyses         │ Surf Type Comment Radius Thickness Material …      │ [Surface|System]  │
-│  (searchable,    ├─────────────────────────┬──────────────────────────┤ type menu, preview│
-│  by category)    │ Layout (Metal, edge to  │ analysis panes …         │ data-driven form  │
-│  Issues          │ edge) [Layout] [2D|3D]◉⤢│ title ⌄   ⟳ ⚡ ⚙ …        │ — or a job panel: │
+┌ toolbar: ◧ title │ ⟳ EFL · F/# · TT · ⓘ  + ◨ ┬ ◐ ☰ │ ✦ ▦ ± f(x)        ┐
+├ sidebar (glass) ─┬ Lens Data (hard scroll edge) ──────────────────────┤ inspector (full   │
+│ Lens Data, Layout│ Surf Type Comment Radius Thickness Material …      │ height)           │
+│  Issues          ├─────────────────────────┬──────────────────────────┤ type menu, preview│
+│ Analyses         │ Layout (Metal, edge to  │ analysis panes …         │ data-driven form  │
+│  (searchable)    │ edge) [Layout] [2D|3D]◉⤢│ title ⌄   ⟳ ⚡ ⚙ …        │ — or a job panel: │
 │                  │                         │ plot (content)           │ Optimize, Tol.,   │
 │                  │ 20 mm                   │ key numbers  [CPU · f64] │ Solves + actions  │
 └──────────────────┴─────────────────────────┴──────────────────────────┴───────────────────┘
 ```
 
-* **`NavigationSplitView`**: the sidebar lists every engine analysis by
-  category (`.searchable` in the sidebar); a click shows it in the focused
+* **Panel headers**: the lens data and the analysis panes share one
+  header style (icon and title as the drag handle, a caption state line,
+  small circular glass buttons ending in More); the layout keeps its
+  controls floating over the scene, with the same icon and More menu
+  (`PanelHeaderTitle`, `PanelMoreMenu`).
+* **`NavigationSplitView`**: the sidebar's Design section has the lens
+  data and the layout (selecting one shows and focuses that panel, a dot
+  marks it open, its context menu closes it) and the issues; below, it
+  lists every engine analysis by category (`.searchable` in the sidebar); a click shows it in the focused
   pane, ⌥-click or the context menu opens a new pane. Open analyses carry a
   dot, unavailable ones are dimmed with the engine's reason as help.
-* **Toolbar**: three groups separated by `ToolbarSpacer`: the design jobs
-  (Optimize, Glass Substitution, Tolerance, Apply Solves, each opening its
-  inspector panel);
-  Add Analysis and the lens data and layout toggles (on while the panel is
-  open in any of the design's windows); the inspector toggle. In the centre,
+* **Toolbar**: the inspector is a full-height column with its own part of
+  the toolbar (the `.inspector` modifier sits on the `NavigationSplitView`,
+  not its detail column: only then does SwiftUI add the tracking separator
+  for it). That part holds the inspector's page tabs (`InspectorTabBar`:
+  Surface, System and the four design jobs), declared on the inspector's
+  content; while the inspector is hidden the item is empty. Add Analysis
+  and the inspector toggle are the content's `.primaryAction` items, left
+  of the inspector, sliding with its edge. They are not declared on the
+  inspector: SwiftUI would then move them between the two parts of the
+  toolbar as the inspector opens and closes, and they blink. Nothing in
+  the toggle reads `showInspector` (its help text is fixed), so a toggle
+  does not redraw it. Only the toggle (and ⌃⌘I) shows or hides the
+  inspector. In the centre,
   the **status capsule** (`DesignStatus`): the GPU kernel preparation at
   launch while it lasts ("Preparing GPU 42%", see "GPU kernel preparation"
   under `FFIEngine`), a running job ("Optimizing · 479", click to show it)
@@ -471,8 +489,20 @@ this page.
   "Spectrum photopic". A spectrum pane is current while its
   `run_info.snapshot_hash` matches like any other (the engine reports the
   run-local system separately as `derived_snapshot_hash`).
-* **Inspector** (`.inspector`): Surface or System, switched by a segmented
-  control in a `safeAreaBar`. Surface: title with a stop badge, the type
+* **Inspector** (`.inspector`): its pages are a row of symbols in its part
+  of the toolbar (`InspectorTabBar`, as in Xcode): Surface and System, then
+  the design jobs (Optimize, Glass Substitution, Tolerance, Apply Solves),
+  a running job's tab marked with a dot. `WindowState.page` is the
+  selection; a job's Done returns to the surface or system page. The menu
+  commands and the status capsule open a hidden inspector on a job's page.
+  The inspector stays built while hidden (building its form on every open
+  stalled the window for ~120 ms) and does not follow the selection then;
+  both window columns are rooted in a `ColumnLayout`, which answers the
+  split view's size queries from fixed bounds, so opening or closing a
+  panel does not squeeze the inspector. The slide itself still runs below
+  60 fps with analysis panes open (AppKit lays out their platform views on
+  every frame; freezing the panels' width during the slide was measured
+  and made no difference). Surface: title with a stop badge, the type
   menu, the type's summary and preview, then the data-driven sections,
   spacing and medium, aperture, placement, coating, solves. A diffractive
   surface adds Diffraction Efficiency: the order-efficiency model (ideal,
