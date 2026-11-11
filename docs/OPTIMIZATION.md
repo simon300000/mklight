@@ -701,7 +701,7 @@ the range and pivot. A single-surface decentre or tilt set through a
 
 ## Throughput
 
-Benchmark: `cargo test -p mklight-optim --release --test trace_bench --
+Benchmark: `cargo test -p mklight-optim --release --test tests trace_bench:: --
 --ignored --nocapture`. The system is the Double Gauss f50 F/2 sample (13
 surfaces, 3 fields × 3 wavelengths), with 8 curvatures and the back focus as
 variables, on an Apple M2 Pro (12 rayon threads) using the CPU f64 reference

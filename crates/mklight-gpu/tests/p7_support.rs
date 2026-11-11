@@ -202,8 +202,7 @@ pub fn check_coatings(b: &dyn ComputeBackend) {
         r.stats
     );
 }
-#[path = "p1_support.rs"]
-mod p1;
+use crate::p1_support as p1;
 pub fn transport_plan(
     b: &dyn QualificationBackend,
     t: &mklight_trace::SequentialTracer,

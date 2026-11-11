@@ -6,6 +6,8 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 publish.workspace = true
+# One test program for `tests/` (`tests/main.rs`), not one per file.
+autotests = false
 
 [dependencies]
 mklight-gpu.workspace = true
@@ -21,23 +23,6 @@ blake3.workspace = true
 [target.'cfg(target_os = "macos")'.dev-dependencies]
 mklight-metal.workspace = true
 
-# Actual-Metal P10 harnesses; the benchmarks are `#[ignore]`d.
 [[test]]
-name = "p10_metal_geometry"
-path = "tests/p10_support/host.rs"
-
-[[test]]
-name = "p10_transport"
-path = "tests/p10_support/transport.rs"
-
-[[test]]
-name = "p10_bench"
-path = "tests/p10_support/bench.rs"
-
-[[test]]
-name = "p10_device_variants"
-path = "tests/p10_support/device_variants.rs"
-
-[[test]]
-name = "p10_transport_bench"
-path = "tests/p10_support/transport_bench.rs"
+name = "tests"
+path = "tests/main.rs"

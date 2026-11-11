@@ -2,7 +2,7 @@
 //! sum over all reflection orders) and reversibility of the backward
 //! segments and frame transfers.
 
-mod common;
+use crate::common;
 
 use std::sync::Arc;
 

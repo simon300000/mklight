@@ -573,7 +573,7 @@ fn metal_layout_and_opd() {
     layouts(&b);
 }
 
-mod common;
+use crate::common;
 fn known(b: &dyn ComputeBackend) {
     let t = tracer_for(common::ideal_lens(100.0, 10.0, &[0.0, 20.0])).unwrap();
     let settings = mklight_analysis::field_maps::FieldMapSettings {

@@ -2,7 +2,7 @@
 //! Candidate-batch timings of the resident evaluator against the reference
 //! on the host's Metal device (ignored: run by name).
 
-mod common;
+use crate::common;
 
 use mklight_core::{JobContext, Snapshot, param::ParamPath};
 use mklight_optim::{gpu::*, merit::default::DefaultMeritSpec, merit::*, problem::*};

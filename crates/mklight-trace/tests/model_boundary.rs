@@ -3,7 +3,7 @@
 //! already accepted, and the committed solve-report fixture is what
 //! `examples/dump_solve_fixtures` writes.
 
-mod common;
+use crate::common;
 use common::*;
 use mklight_core::model::surface::DiffractivePhase;
 use mklight_core::{MaterialRef, OpticalSystem, SemiDiameter, SurfaceShape, Vec3};

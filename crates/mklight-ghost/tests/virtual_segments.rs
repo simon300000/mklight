@@ -3,7 +3,7 @@
 //! between two physical interactions loses the ray, and primary rays lost
 //! that way are reported.
 
-mod common;
+use crate::common;
 
 use common::*;
 use mklight_core::{

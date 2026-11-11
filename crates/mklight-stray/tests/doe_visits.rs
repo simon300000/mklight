@@ -1,5 +1,5 @@
 //! DOE visit capacity of path signatures.
-mod common;
+use crate::common;
 
 use common::*;
 use mklight_core::model::*;

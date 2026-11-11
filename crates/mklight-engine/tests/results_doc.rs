@@ -3,7 +3,7 @@
 //! Regenerate after an intended change and review the diff:
 //!
 //! ```text
-//! MKLIGHT_UPDATE_RESULTS_DOC=1 cargo test -p mklight-engine --test results_doc
+//! MKLIGHT_UPDATE_RESULTS_DOC=1 cargo test -p mklight-engine --test tests results_doc::
 //! ```
 
 use mklight_engine::Engine;
@@ -75,7 +75,7 @@ fn results_doc_matches_the_registry() {
             .unwrap_or(0);
         panic!(
             "docs/RESULTS.md is out of date (first difference at generated line {line}); \
-             run MKLIGHT_UPDATE_RESULTS_DOC=1 cargo test -p mklight-engine --test results_doc"
+             run MKLIGHT_UPDATE_RESULTS_DOC=1 cargo test -p mklight-engine --test tests results_doc::"
         );
     }
 }

@@ -2,7 +2,7 @@
 //! tallied (class, signature) flux, whose per-class sums are the class
 //! totals (so a front end can re-partition the totals by signature).
 
-mod common;
+use crate::common;
 
 use std::sync::Arc;
 

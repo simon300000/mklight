@@ -1,7 +1,7 @@
 //! Throughput benchmark (ignored by default):
-//! `cargo test --release -p mklight-analysis --test bench -- --ignored --nocapture`.
+//! `cargo test --release -p mklight-analysis --test tests spot_diagram_throughput -- --ignored --nocapture`.
 
-mod common;
+use crate::common;
 
 use std::time::Instant;
 

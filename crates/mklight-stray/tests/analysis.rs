@@ -2,7 +2,7 @@
 //! ghost-solver exclusion, path signatures, Monte-Carlo error calibration,
 //! reproducibility across thread counts, and job control.
 
-mod common;
+use crate::common;
 
 use std::sync::Arc;
 

@@ -3,7 +3,7 @@
 //! against the reference, with and without compensation, and the host's
 //! trial statistics.
 
-mod common;
+use crate::common;
 
 use mklight_core::{JobContext, Snapshot, param::ParamPath, samples};
 use mklight_optim::{

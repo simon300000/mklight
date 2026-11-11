@@ -343,11 +343,11 @@ and conventions:
 After an intended change, regenerate and review the diff:
 
 ```text
-MKLIGHT_UPDATE_GOLDEN=1 cargo test -p mklight-analysis --test golden
+MKLIGHT_UPDATE_GOLDEN=1 cargo test -p mklight-analysis --test tests golden::
 ```
 
 **Benchmark** (ignored by default):
-`cargo test --release -p mklight-analysis --test bench -- --ignored --nocapture`
+`cargo test --release -p mklight-analysis --test tests spot_diagram_throughput -- --ignored --nocapture`
 traces a 98 829-ray polychromatic spot diagram of the Double-Gauss; about
 8 Mrays/s on a 12-thread Apple-silicon CPU.
 

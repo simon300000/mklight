@@ -1,7 +1,7 @@
 //! Plane-parallel plate: exact two-reflection ghost geometry, Fresnel
 //! intensities, coated vs bare, and the paraxial ghost focus shift.
 
-mod common;
+use crate::common;
 
 use common::*;
 use mklight_core::{ApertureSpec, JobContext, MaterialRef, OpticalSystem, SurfaceShape};

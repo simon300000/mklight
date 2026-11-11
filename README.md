@@ -146,7 +146,14 @@ they close with the main window.
 cargo test --workspace
 ```
 
-runs every test, one test program after another (about 170 of them).
+runs every test, one test program after another. Each crate has one program
+for its unit tests and one for its integration tests (`tests/main.rs`, with
+every file of `tests/` as a module), so the tests of one file are
+
+```bash
+cargo test -p mklight-trace --test tests geometry::
+```
+
 `scripts/test.sh` runs the same tests with the programs side by side, and
 takes the same selections:
 
@@ -158,11 +165,11 @@ scripts/test.sh
 scripts/test.sh -p mklight-trace -p mklight-wave
 ```
 
-On an M2 Pro the whole suite takes about two minutes that way instead of
-seven. The first run after a rebuild is slower either way: macOS scans
-every newly built program when it first starts (XProtect, about 5 s each),
-which adds about seven minutes for the whole workspace. macOS has a setting
-for this, *System Settings → Privacy & Security → Developer Tools*: the apps
+On an M2 Pro the whole suite takes about two minutes that way, against four
+and a half through `cargo test`. After a change that rebuilds everything
+allow about a minute to build and three to run: macOS scans every newly
+built program when it first starts (XProtect). macOS has a setting for
+this, *System Settings → Privacy & Security → Developer Tools*: the apps
 listed there (a terminal, or the app that starts the tests) may run locally
 built software without that check. It is a security setting to decide on
 yourself.

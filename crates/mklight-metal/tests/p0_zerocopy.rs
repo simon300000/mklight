@@ -2,8 +2,7 @@
 #![cfg(target_os = "macos")]
 #[path = "../../mklight-gpu/tests/p0_zerocopy.rs"]
 mod contracts;
-#[path = "../../mklight-gpu/tests/p1_support.rs"]
-mod support;
+use crate::p1_support as support;
 use mklight_core::{JobContext, Snapshot};
 use mklight_gpu::{resident::*, transforms, *};
 use mklight_metal::{LibraryChoice, MetalBackend, MetalOptions};

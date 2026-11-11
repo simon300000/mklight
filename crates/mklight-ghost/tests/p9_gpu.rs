@@ -1,4 +1,4 @@
-mod common;
+use crate::common;
 use common::*;
 use mklight_core::{JobContext, samples};
 use mklight_ghost::{gpu::GhostTransport, *};

@@ -9,7 +9,7 @@
 //! the source margin, and its geometric spot matches the sequential
 //! tracer's own pupil-grid spot.
 
-mod common;
+use crate::common;
 
 use common::*;
 use mklight_core::JobContext;

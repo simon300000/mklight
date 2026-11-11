@@ -3,7 +3,7 @@
 //! unseeded tracer far inside the aiming tolerance, needs fewer Newton
 //! iterations, and still generates rays one by one bitwise as in batches.
 
-mod common;
+use crate::common;
 
 use std::sync::Arc;
 

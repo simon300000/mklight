@@ -1,6 +1,6 @@
 //! Known-answer transport tests on a plane-parallel window.
 
-mod common;
+use crate::common;
 
 use common::*;
 use mklight_core::materials::coating::fresnel;

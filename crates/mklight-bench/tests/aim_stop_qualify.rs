@@ -5,7 +5,7 @@
 //! §9.4: one-third margins of the §7 budgets, survival counts and masks exact)
 //! against the CPU f64 reference at the requested 1e-10 tolerance.
 //!
-//! cargo test --release -p mklight-bench --test aim_stop_qualify -- --ignored --nocapture
+//! cargo test --release -p mklight-bench --test tests aim_stop_qualify:: -- --ignored --nocapture
 //! MKLIGHT_QUALIFY_METAL=1 also runs the conditioned stop on Metal;
 //! MKLIGHT_QUALIFY_PREVIEW=1 records the preview tier's errors (not gated);
 //! MKLIGHT_QUALIFY_FILTER=name,name limits the systems,

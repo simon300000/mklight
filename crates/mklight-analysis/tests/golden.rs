@@ -5,12 +5,12 @@
 //! Regenerate after an intended change with
 //!
 //! ```text
-//! MKLIGHT_UPDATE_GOLDEN=1 cargo test -p mklight-analysis --test golden
+//! MKLIGHT_UPDATE_GOLDEN=1 cargo test -p mklight-analysis --test tests golden::
 //! ```
 //!
 //! and review the diff of `tests/golden/*.json`.
 
-mod common;
+use crate::common;
 
 use std::path::PathBuf;
 

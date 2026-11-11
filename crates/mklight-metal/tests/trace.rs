@@ -452,7 +452,7 @@ fn trace_chunks_progress_and_cancellation() {
 /// Throughput: about 1e6 Double-Gauss rays (12 surfaces each) on the GPU,
 /// including packing the planes, upload and download, against the
 /// `mklight-trace` f64 reference on all CPU cores (rayon). Run with
-/// `cargo test --release -p mklight-metal --test trace -- --ignored --nocapture`.
+/// `cargo test --release -p mklight-metal --test tests trace:: -- --ignored --nocapture`.
 #[test]
 #[ignore = "benchmark"]
 fn benchmark_double_gauss_1e6() {

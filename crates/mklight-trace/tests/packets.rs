@@ -4,7 +4,7 @@
 //! real aiming, clipped and unclipped, including rays that miss, clip or
 //! cannot be aimed.
 
-mod common;
+use crate::common;
 
 use common::*;
 use mklight_core::model::ApertureShape;

@@ -4,7 +4,7 @@
 //! the detector receives, with no path counted twice, because the stray
 //! scene clips at exactly the ghost run's apertures.
 
-mod common;
+use crate::common;
 
 use std::sync::Arc;
 

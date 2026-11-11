@@ -1,5 +1,5 @@
 #![cfg(target_os = "macos")]
-mod common;
+use crate::common;
 use common::*;
 use mklight_core::{JobContext, samples};
 use mklight_ghost::{GhostSettings, IrradianceSettings, ghost_irradiance, gpu};

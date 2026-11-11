@@ -3,7 +3,7 @@
   "model_version": 5,
   "device_class": "Apple M2 Pro",
   "measured": {
-    "command": "cargo test --release -p mklight-bench --test cost_calibration -- --ignored --exact calibrate",
+    "command": "cargo test --release -p mklight-bench --test tests -- --ignored --exact cost_calibration::calibrate",
     "cpu": "Apple M2 Pro",
     "designs": [
       "anamorphic",

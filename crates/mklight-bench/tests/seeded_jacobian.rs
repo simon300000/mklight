@@ -4,7 +4,7 @@
 //! larger step. Ignored by default; prints a table. Run with
 //!
 //! ```text
-//! cargo test --release -p mklight-bench --test seeded_jacobian -- --ignored --nocapture
+//! cargo test --release -p mklight-bench --test tests seeded_jacobian:: -- --ignored --nocapture
 //! ```
 //!
 //! `MKLIGHT_SEED_PROJECT=/path/project.mklight` adds a project lens.

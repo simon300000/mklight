@@ -1,7 +1,6 @@
 //! Matched source/first-hit stage benchmark, not a stray-transport benchmark.
 #![cfg(target_os = "macos")]
-#[path = "../common/mod.rs"]
-mod common;
+use crate::common;
 use mklight_core::{JobContext, rng::Philox};
 use mklight_gpu::{ComputeBackend, resident::*, stray_ops as ops};
 use mklight_metal::MetalBackend;

@@ -1,7 +1,7 @@
 //! Apertures as geometry: obscured mirrors, aperture stops, non-clear zones
 //! and surfaces visited twice by the sequential model.
 
-mod common;
+use crate::common;
 
 use common::*;
 use mklight_core::materials::coating::fresnel;

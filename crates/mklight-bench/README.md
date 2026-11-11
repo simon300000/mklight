@@ -17,14 +17,14 @@ any process are in GPU.md §10.
 
     cargo test -p mklight-bench
 
-| Test binary | Checks |
+| Test file | Checks |
 |---|---|
 | `contract` | the comparator: every declared result field has a quantity class, the classes are at least as strict as the CONVENTIONS §7 budgets, and the class rules give known answers |
 | `solver_aiming` | the solver jobs on the CPU-f32 emulation with each `solver_aiming` route option against the CPU reference; reads no variable |
 
 `solver_aiming` has one ignored test, the same check on Metal:
 
-    cargo test -p mklight-bench --test solver_aiming -- --ignored --test-threads=1
+    cargo test -p mklight-bench --test tests solver_aiming:: -- --ignored --test-threads=1
 
 ## Harnesses
 
@@ -38,7 +38,7 @@ Every GPU-capable analysis and the solver outcomes on the 16 samples at
 default settings, Metal against the CPU f64 reference under the contract.
 Reads no variable.
 
-    cargo test --release -p mklight-bench --test metal_accuracy -- --ignored --nocapture --test-threads=1
+    cargo test --release -p mklight-bench --test tests metal_accuracy:: -- --ignored --nocapture --test-threads=1
 
 ### `cost_calibration` (Metal)
 
@@ -47,9 +47,9 @@ Reads no variable.
 
     MKLIGHT_BENCH_PROJECT=<local project file> \
     MKLIGHT_COST_CALIBRATION_OUT=$PWD/crates/mklight-engine/src/analysis/cost/apple-m2-pro.json \
-    cargo test --release -p mklight-bench --test cost_calibration -- --ignored --exact calibrate --nocapture --test-threads=1
+    cargo test --release -p mklight-bench --test tests -- --ignored --exact cost_calibration::calibrate --nocapture --test-threads=1
 
-    cargo test --release -p mklight-bench --test cost_calibration -- --ignored --exact validate --nocapture --test-threads=1
+    cargo test --release -p mklight-bench --test tests -- --ignored --exact cost_calibration::validate --nocapture --test-threads=1
 
 | Variable | Meaning |
 |---|---|
@@ -71,7 +71,7 @@ results under the contract; the edit loop of the app's graphs, the same
 through the worker queue, and cancellation latency.
 
     MKLIGHT_BENCH_PROJECT=/path/project.mklight \
-    cargo test --release -p mklight-bench --test project_bench -- --ignored --nocapture --test-threads=1
+    cargo test --release -p mklight-bench --test tests project_bench:: -- --ignored --nocapture --test-threads=1
 
 | Variable | Meaning |
 |---|---|
@@ -98,7 +98,7 @@ through the worker queue, and cancellation latency.
 Throughput of the CPU f64 tracer's stages on a local project.
 
     MKLIGHT_BENCH_PROJECT=/path/project.mklight \
-    cargo test --release -p mklight-bench --test cpu_trace_bench -- --ignored --nocapture
+    cargo test --release -p mklight-bench --test tests cpu_trace_bench:: -- --ignored --nocapture
 
 | Variable | Meaning |
 |---|---|
@@ -114,7 +114,7 @@ The conditioned aim stop and the preview tier against the CPU reference at
 the requested tolerance, on the samples with real ray aiming and on
 perturbed variants (CONVENTIONS §7).
 
-    cargo test --release -p mklight-bench --test aim_stop_qualify -- --ignored --nocapture
+    cargo test --release -p mklight-bench --test tests aim_stop_qualify:: -- --ignored --nocapture
 
 | Variable | Meaning |
 |---|---|
@@ -130,7 +130,7 @@ Hashes of every result's JSON and buffers with wall and device time, to
 compare two builds line by line, and each non-CPU mode against the CPU
 result under the contract.
 
-    cargo test --release -p mklight-bench --test buffer_identity -- --ignored --nocapture --test-threads=1
+    cargo test --release -p mklight-bench --test tests buffer_identity:: -- --ignored --nocapture --test-threads=1
 
 | Variable | Meaning |
 |---|---|
@@ -145,7 +145,7 @@ result under the contract.
 
 Cost and convergence of device aiming against the stop tolerance.
 
-    cargo test --release -p mklight-bench --test aim_precision_study -- --ignored --nocapture
+    cargo test --release -p mklight-bench --test tests aim_precision_study:: -- --ignored --nocapture
 
 | Variable | Meaning |
 |---|---|
@@ -159,7 +159,7 @@ Cost and convergence of device aiming against the stop tolerance.
 Errors and times of the default merit's finite-difference Jacobians with
 seeded and unseeded aims; prints a table and asserts nothing.
 
-    cargo test --release -p mklight-bench --test seeded_jacobian -- --ignored --nocapture
+    cargo test --release -p mklight-bench --test tests seeded_jacobian:: -- --ignored --nocapture
 
 | Variable | Meaning |
 |---|---|

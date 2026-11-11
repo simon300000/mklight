@@ -1,6 +1,6 @@
 //! Frames, placements, reversibility, aiming, clipping and TIR.
 
-mod common;
+use crate::common;
 
 use common::*;
 use mklight_core::{

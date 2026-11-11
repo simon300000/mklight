@@ -6,6 +6,8 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 publish.workspace = true
+# One test program for `tests/` (`tests/main.rs`), not one per file.
+autotests = false
 
 # Optical evaluation is plugged in through `merit::OperandEvaluator`; the
 # reference tracer backs `merit::trace_eval`, any `mklight-gpu` compute
@@ -28,3 +30,7 @@ blake3.workspace = true
 # GPU-vs-CPU evaluator tests and the throughput benchmark on a real device
 # (an empty shell without Metal; the tests then skip).
 mklight-metal.workspace = true
+
+[[test]]
+name = "tests"
+path = "tests/main.rs"

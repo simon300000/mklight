@@ -2,7 +2,7 @@
 //! calculation (the inner reflections as mirrors in glass), and the real
 //! ghost focus converging to it as the aperture shrinks.
 
-mod common;
+use crate::common;
 
 use common::*;
 use mklight_core::samples;

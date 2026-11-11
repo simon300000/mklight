@@ -1,7 +1,7 @@
 //! Run with `RAYON_NUM_THREADS=5 cargo test --release -p mklight-ghost
-//! --test bench -- --ignored --nocapture`.
+//! --test tests double_gauss_irradiance -- --ignored --nocapture`.
 
-mod common;
+use crate::common;
 
 use common::*;
 use mklight_core::{JobContext, samples};

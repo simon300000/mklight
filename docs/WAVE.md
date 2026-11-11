@@ -352,7 +352,7 @@ and the cached through-focus curves with independent autocorrelations
 wave analysis and image simulation on built-in samples:
 
 ```sh
-cargo test --release -p mklight-wave --test interactive -- --ignored --nocapture
+cargo test --release -p mklight-wave --test tests interactive:: -- --ignored --nocapture
 ```
 
 ## 7. Open points

@@ -1,4 +1,4 @@
-mod common;
+use crate::common;
 use common::*;
 use mklight_core::model::surface::{DiffractivePhase, ZernikeOrdering};
 use mklight_core::surface_math::{Symmetry, evaluate, system_symmetry};

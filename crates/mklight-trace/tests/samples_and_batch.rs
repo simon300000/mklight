@@ -1,7 +1,7 @@
 //! Every sample traces cleanly and is well focused; batches are deterministic
 //! and cancellable; OPD is consistent with transverse aberration.
 
-mod common;
+use crate::common;
 
 use std::time::Instant;
 

@@ -7,7 +7,7 @@
 //! `cpu` precedes another mode, a `BUFFER_CONTRACT` line also judges that
 //! mode's result against the CPU f64 one under the per-quantity contract.
 //!
-//! cargo test --release -p mklight-bench --test buffer_identity -- --ignored
+//! cargo test --release -p mklight-bench --test tests buffer_identity:: -- --ignored
 //! --nocapture --test-threads=1
 //! Optional: MKLIGHT_IDENTITY_PROJECT (a local project), MKLIGHT_IDENTITY_SAMPLES=0
 //! (skip the sample designs), MKLIGHT_IDENTITY_MODES (default cpu,metal),

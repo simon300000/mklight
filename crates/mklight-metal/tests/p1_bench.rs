@@ -1,11 +1,10 @@
 //! P1 end-to-end benchmark: resident aiming + trace (+ OPD for pupil grids)
 //! against the unchanged CPU f64 reference on all cores, with matched
 //! systems, fields, wavelengths, pupil points and settings.
-//! `cargo test --release -p mklight-metal --test p1_bench -- --ignored --nocapture --test-threads=1`
+//! `cargo test --release -p mklight-metal --test tests p1_bench:: -- --ignored --nocapture --test-threads=1`
 //! (`P1_BENCH_SAMPLES=cooke_triplet,...` and `P1_BENCH_RUNS` override defaults).
 #![cfg(target_os = "macos")]
-#[path = "../../mklight-gpu/tests/p1_support.rs"]
-mod support;
+use crate::p1_support as support;
 use mklight_core::{JobContext, OpticalSystem, RayAiming, samples};
 use mklight_gpu::{aiming::*, resident::*, *};
 use mklight_metal::{LibraryChoice, MetalBackend, MetalOptions};

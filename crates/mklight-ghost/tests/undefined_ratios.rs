@@ -2,7 +2,7 @@
 //! are undefined (`None`, JSON `null`): the ranking then goes by absolute
 //! peak irradiance, and the result reads back from its own JSON.
 
-mod common;
+use crate::common;
 
 use common::*;
 use mklight_core::{JobContext, samples};

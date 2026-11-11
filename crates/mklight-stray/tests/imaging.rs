@@ -1,6 +1,6 @@
 //! The designed (Primary) path through real and ideal lenses.
 
-mod common;
+use crate::common;
 
 use common::*;
 use mklight_core::math::Vec3;

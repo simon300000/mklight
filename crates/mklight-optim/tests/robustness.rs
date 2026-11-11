@@ -3,7 +3,7 @@
 //! thickness gaps across stops/dummies/mirrors, half-pupil validity, ray
 //! groups, selector validation and the parametric evaluation path.
 
-mod common;
+use crate::common;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};

@@ -12,7 +12,7 @@
 //! With device aiming, the solves a job runs in parallel give the same
 //! result for any number of workers.
 //! The CPU-f32 emulation runs everywhere (`cargo test -p mklight-bench
-//! --test solver_aiming`); the Metal test is ignored (real Metal required;
+//! --test tests solver_aiming::`); the Metal test is ignored (real Metal required;
 //! `../README.md` has the command).
 
 use std::sync::Arc;

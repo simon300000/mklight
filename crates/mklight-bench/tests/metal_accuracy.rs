@@ -5,7 +5,7 @@
 //! fails, and so does a native attempt a reference fallback completed
 //! (`RunInfo::failed_attempts`).
 //!
-//! cargo test --release -p mklight-bench --test metal_accuracy -- --ignored
+//! cargo test --release -p mklight-bench --test tests metal_accuracy:: -- --ignored
 //! --nocapture --test-threads=1
 //! (`../README.md` lists every harness with its command.)
 use mklight_bench::{comparison, solver, solver_spread};

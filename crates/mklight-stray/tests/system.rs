@@ -1,7 +1,7 @@
 //! Scenes built from optical systems: structure, mechanics, determinism and
 //! job control.
 
-mod common;
+use crate::common;
 
 use common::*;
 use mklight_core::math::Vec3;

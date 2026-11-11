@@ -2,7 +2,7 @@
 
 #![allow(clippy::needless_range_loop)]
 
-mod common;
+use crate::common;
 
 use common::*;
 use mklight_analysis::layout::*;

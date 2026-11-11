@@ -1,7 +1,7 @@
 #![allow(clippy::needless_range_loop)]
 //! Known-answer tests against closed-form optics.
 
-mod common;
+use crate::common;
 
 use common::*;
 use mklight_core::{Interaction, MaterialRef, SurfaceShape, Vec3, samples};

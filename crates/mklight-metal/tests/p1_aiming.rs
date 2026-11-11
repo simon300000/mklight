@@ -1,6 +1,5 @@
 #![cfg(target_os = "macos")]
-#[path = "../../mklight-gpu/tests/p1_support.rs"]
-mod support;
+use crate::p1_support as support;
 use mklight_core::{JobContext, RayAiming, samples};
 use mklight_gpu::*;
 use mklight_metal::{LibraryChoice, MetalBackend, MetalOptions};

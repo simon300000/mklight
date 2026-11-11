@@ -1,4 +1,4 @@
-mod common;
+use crate::common;
 use mklight_core::{
     JobContext, Snapshot,
     math::{Frame, Mat3, Vec3},

@@ -1,7 +1,6 @@
 //! Actual-Metal geometry comparisons for the shared P10 cases.
 #![cfg(target_os = "macos")]
-#[path = "../p10_geometry.rs"]
-mod cases;
+use crate::p10_geometry as cases;
 use mklight_gpu::ComputeBackend;
 use mklight_metal::{LibraryChoice, MetalBackend, MetalOptions};
 #[test]

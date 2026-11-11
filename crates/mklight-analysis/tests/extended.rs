@@ -1,5 +1,5 @@
 //! Extended geometry pinned against surface definitions and independent rays.
-mod common;
+use crate::common;
 
 use common::*;
 use mklight_analysis::{curvature::*, fans::*, layout::*, seidel::*, spot::*, system_data::*};

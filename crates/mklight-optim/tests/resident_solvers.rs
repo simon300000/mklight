@@ -4,7 +4,7 @@
 //! through the resident evaluator, finite differences of a first-order
 //! operand, and relative illumination with device visibility.
 
-mod common;
+use crate::common;
 
 use common::OnDevice;
 use mklight_core::{JobContext, Snapshot, samples};

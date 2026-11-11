@@ -2,7 +2,7 @@
 //! default). Run with
 //!
 //! ```text
-//! cargo test -p mklight-optim --release --test trace_bench -- --ignored --nocapture
+//! cargo test -p mklight-optim --release --test tests trace_bench:: -- --ignored --nocapture
 //! ```
 //!
 //! Results are recorded in `docs/OPTIMIZATION.md`.

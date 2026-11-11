@@ -3,7 +3,7 @@
 
 #![allow(clippy::needless_range_loop)]
 
-mod common;
+use crate::common;
 
 use std::f64::consts::{FRAC_PI_2, PI};
 use std::sync::Arc;

@@ -9,13 +9,11 @@
 #   scripts/test.sh -- --ignored             arguments for every test program
 #   JOBS=4 scripts/test.sh                   programs at a time (default 8)
 #
-# `cargo test` runs the workspace's test programs (about 170) one after
-# another. Run together they finish in about two minutes on an M2 Pro
-# instead of seven; more than 8 at a time gains nothing, the tests already
-# use every core. After a rebuild macOS scans each new program when it
-# first starts (XProtect, about 5 s each, at most two at a time), which
-# adds several minutes to the first run whatever the order; see the README.
-# This script
+# `cargo test` runs the workspace's test programs (about 30: per crate the
+# unit tests and one program for `tests/`) one after another. Run together
+# they finish in about two minutes on an M2 Pro instead of four and a
+# half; more than 8 at a time gains nothing, the tests already use every
+# core. This script
 #
 #   1. builds the test programs with cargo (compile errors print as usual);
 #   2. runs them JOBS at a time, each in its package directory as cargo
@@ -123,7 +121,9 @@ status=0
 if [[ -s "$LOGS/failed" ]]; then
     while IFS=$'\t' read -r dir exe; do
         name="$(basename "$exe")"
-        echo "again, on its own: $name"
+        echo "again, on its own: ${dir#"$ROOT"/} $name"
+        mv "$LOGS/$name.log" "$LOGS/$name.first"
+        grep -E '^test .* FAILED$' "$LOGS/$name.first" | head -20 | sed 's/^/    /'
         if (run_program "$dir" "$exe") > "$LOGS/$name.log" 2>&1; then
             echo "  passed (it failed only while other programs ran)"
         else

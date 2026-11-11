@@ -2,7 +2,7 @@
 //! reflections only inside the sensor rectangle, `FixedApertures` bounds an
 //! `Auto` stop, and the coverage record carries the apertures.
 
-mod common;
+use crate::common;
 
 use common::*;
 use mklight_core::{

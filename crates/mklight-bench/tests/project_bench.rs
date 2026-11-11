@@ -1,6 +1,6 @@
 //! Local-project release measurements; no project or catalogue is embedded.
 //! MKLIGHT_BENCH_PROJECT=/path/project.mklight cargo test --release -p
-//! mklight-bench --test project_bench -- --ignored --nocapture --test-threads=1
+//! mklight-bench --test tests project_bench:: -- --ignored --nocapture --test-threads=1
 //! Optional: MKLIGHT_BENCH_AUTOSD_PROJECT, MKLIGHT_BENCH_FILTER (case names),
 //! MKLIGHT_BENCH_RUNS (>=10), MKLIGHT_BENCH_COLD_RUNS (>=3),
 //! MKLIGHT_BENCH_QUIET_SECONDS (default 30). Cold calls use this test binary

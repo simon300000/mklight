@@ -1,7 +1,6 @@
 //! Actual-Metal transport, estimator and analysis-adapter qualification.
 #![cfg(target_os = "macos")]
-#[path = "../common/mod.rs"]
-mod common;
+use crate::common;
 use mklight_core::{JobContext, Snapshot};
 use mklight_gpu::{ComputeBackend, stray_ops as ops};
 use mklight_metal::{LibraryChoice, MetalBackend, MetalOptions};
@@ -726,7 +725,8 @@ fn split_tree_cancellation_and_release() {
             ctx.cancel.cancel();
             break;
         }
-        assert!(started.elapsed().as_secs() < 30);
+        // The device may be busy with other tests before this plan starts.
+        assert!(started.elapsed().as_secs() < 120);
         std::thread::yield_now();
     }
     let cancelled = std::time::Instant::now();

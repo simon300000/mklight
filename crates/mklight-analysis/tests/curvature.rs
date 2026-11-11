@@ -1,7 +1,7 @@
 //! Field curvature and distortion: analytic cases and the Coddington ↔
 //! close-ray cross-check on every sample.
 
-mod common;
+use crate::common;
 
 use common::*;
 use mklight_analysis::curvature::{

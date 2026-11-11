@@ -2,8 +2,8 @@
 //! validation of its routes. Real Metal, release build, one command:
 //!
 //! MKLIGHT_COST_CALIBRATION_OUT=$PWD/crates/mklight-engine/src/analysis/cost/apple-m2-pro.json \
-//! cargo test --release -p mklight-bench --test cost_calibration -- --ignored \
-//! --exact calibrate --nocapture --test-threads=1
+//! cargo test --release -p mklight-bench --test tests -- --ignored \
+//! --exact cost_calibration::calibrate --nocapture --test-threads=1
 //!
 //! It times every calibrated analysis on nine designs of different shape
 //! (samples, plus an optional local project, `MKLIGHT_BENCH_PROJECT`;
@@ -461,7 +461,7 @@ fn fit(records: &[Value], device_open_ms: f64) -> Calibration {
             "designs": systems.keys().map(|k| if k == "local" { "local project" } else { k.as_str() }).collect::<Vec<_>>(),
             "load1": {"min": loads.iter().copied().fold(f64::INFINITY, f64::min),
                       "max": loads.iter().copied().fold(0., f64::max)},
-            "command": "cargo test --release -p mklight-bench --test cost_calibration -- --ignored --exact calibrate",
+            "command": "cargo test --release -p mklight-bench --test tests -- --ignored --exact cost_calibration::calibrate",
         }),
         cpu_threads: rayon::current_num_threads(),
         device_open_ms,

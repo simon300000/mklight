@@ -3,7 +3,7 @@
 //! propagated error of the looser stop against the requested-tolerance
 //! reference on every sample with real aiming.
 
-mod common;
+use crate::common;
 
 use common::*;
 use mklight_core::{APERTURE_EDGE_TOLERANCE, ApertureSpec, RayAiming, SemiDiameter, samples};

@@ -1,6 +1,6 @@
 //! Relative illumination, vignetting and footprints against closed forms.
 
-mod common;
+use crate::common;
 
 use common::*;
 use mklight_analysis::illumination::*;

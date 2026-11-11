@@ -3,8 +3,7 @@
 //! aimed nor counted, and host seed tables of another side converge to the
 //! same rays within tolerance.
 #![cfg(target_os = "macos")]
-#[path = "../../mklight-gpu/tests/p1_support.rs"]
-mod support;
+use crate::p1_support as support;
 use mklight_core::{JobContext, RayAiming};
 use mklight_gpu::{aiming::*, consts::*, resident::*, *};
 use mklight_metal::{LibraryChoice, MetalBackend, MetalOptions};

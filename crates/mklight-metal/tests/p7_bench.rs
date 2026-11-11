@@ -1,6 +1,5 @@
 #![cfg(target_os = "macos")]
-#[path = "../../mklight-gpu/tests/p7_support.rs"]
-mod support;
+use crate::p7_support as support;
 use mklight_core::{JobContext, samples};
 use mklight_gpu::{radiometry::*, *};
 use mklight_metal::MetalBackend;

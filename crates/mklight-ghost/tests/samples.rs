@@ -2,7 +2,7 @@
 //! enumeration filters and budget; determinism and cancellation; the
 //! partition coverage.
 
-mod common;
+use crate::common;
 
 use common::*;
 use mklight_core::{JobContext, MkError, samples};

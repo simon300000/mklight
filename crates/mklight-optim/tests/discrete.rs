@@ -1,6 +1,6 @@
 //! Discrete optimisation: toy problems checked against brute force.
 
-mod common;
+use crate::common;
 
 use common::vars;
 use mklight_core::JobContext;

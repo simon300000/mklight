@@ -2,7 +2,7 @@
 //! optics and geometry, conservation of constrained sums, coupling,
 //! configurations, serde and validation.
 
-mod common;
+use crate::common;
 
 use std::sync::Arc;
 

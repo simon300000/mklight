@@ -1,7 +1,7 @@
 //! Seidel sums against closed forms and real rays; longitudinal aberration,
 //! chromatic focal shift and lateral colour.
 
-mod common;
+use crate::common;
 
 use common::*;
 use mklight_analysis::seidel::*;

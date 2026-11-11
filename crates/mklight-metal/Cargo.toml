@@ -6,6 +6,8 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 publish.workspace = true
+# One test program for `tests/` (`tests/main.rs`), not one per file.
+autotests = false
 build = "build.rs"
 
 [dependencies]
@@ -28,3 +30,7 @@ serde_json.workspace = true
 
 [build-dependencies]
 blake3.workspace = true
+
+[[test]]
+name = "tests"
+path = "tests/main.rs"

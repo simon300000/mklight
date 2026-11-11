@@ -1,6 +1,5 @@
 #![cfg(target_os = "macos")]
-#[path = "../../mklight-gpu/tests/p7_support.rs"]
-mod support;
+use crate::p7_support as support;
 use mklight_gpu::ComputeBackend;
 use mklight_metal::{LibraryChoice, MetalBackend, MetalOptions};
 #[test]
@@ -94,8 +93,10 @@ fn determinism_concurrency_and_cancellation() {
     );
     b.release_systems(hs).unwrap();
     b.release_systems(hl).unwrap();
-    let huge: Vec<_> = (0..65536)
-        .map(|i| CoatingQuery::new(4, 0.1 + 0.9 * i as f64 / 65536.).unwrap())
+    // Enough small commands to be at work when the cancel arrives, and
+    // bounds that hold on a busy machine.
+    let huge: Vec<_> = (0..262144)
+        .map(|i| CoatingQuery::new(4, 0.1 + 0.9 * i as f64 / 262144.).unwrap())
         .collect();
     let plan = support::plan(&b, &specs, &ls, &huge, 64);
     let ctx = JobContext::new();
@@ -104,7 +105,7 @@ fn determinism_concurrency_and_cancellation() {
     let mut previous = 0.;
     while ctx.progress.fraction() == 0. {
         assert!(!pending.is_ready());
-        assert!(start.elapsed() < Duration::from_secs(10));
+        assert!(start.elapsed() < Duration::from_secs(60));
         std::thread::yield_now();
     }
     for _ in 0..20 {

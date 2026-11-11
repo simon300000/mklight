@@ -5,8 +5,7 @@
 //! identical (new leases, released handles, concurrent plans), never after
 //! geometry, catalogue or environment changes, and never from a cancelled
 //! build.
-#[path = "../../mklight-gpu/tests/p1_support.rs"]
-mod support;
+use crate::p1_support as support;
 use mklight_core::{JobContext, MkError, RayAiming, samples};
 use mklight_gpu::{
     resident::{immutable::CacheCategory, *},

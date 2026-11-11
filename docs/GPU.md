@@ -885,7 +885,7 @@ publication policy").
 ### 5.3 Throughput
 
 `benchmark_double_gauss_1e6` (ignored by default; `cargo test --release
--p mklight-metal --test trace -- --ignored --nocapture`): 992 244 rays of
+-p mklight-metal --test tests trace:: -- --ignored --nocapture`): 992 244 rays of
 the Double Gauss (3 fields, 12 surfaces each), GPU wall time including
 writing the input planes into the shared buffer, the kernel and unpacking
 the outputs, against `mklight_trace::trace_ray` over the same rays on all
@@ -911,7 +911,7 @@ chains (trace → reduce without readback) are the resident plans of §9.2.
 ### 5.4 Extended-shape throughput
 
 Ignored test: `source ~/.cargo/env && cargo test --release -p mklight-metal
---test trace benchmark_extended_shapes -- --ignored --nocapture`.
+--test tests trace::benchmark_extended_shapes -- --ignored --nocapture`.
 Apple M2 Pro, strict offline flags, 262,144 axial input rays over an
 8 mm radius disk, one refracting surface, radiometry off, no records, all
 rays successful. One warm-up round, then the best of ten rounds that
@@ -1929,7 +1929,7 @@ quiet machine, without other GPU work):
 
     MKLIGHT_BENCH_PROJECT=<local project file> \
     MKLIGHT_COST_CALIBRATION_OUT=$PWD/crates/mklight-engine/src/analysis/cost/apple-m2-pro.json \
-    cargo test --release -p mklight-bench --test cost_calibration -- --ignored --exact calibrate --nocapture --test-threads=1
+    cargo test --release -p mklight-bench --test tests -- --ignored --exact cost_calibration::calibrate --nocapture --test-threads=1
 
 then `cargo test -p mklight-engine --lib cost` (the table against the
 registry) and `validate` (same command with `--exact validate`), and update

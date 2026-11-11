@@ -1,7 +1,7 @@
 //! OPD of an image-space telecentric system (exit pupil at infinity): the
 //! `R → ∞` limit of the reference-sphere formula (CONVENTIONS §4).
 
-mod common;
+use crate::common;
 
 use common::*;
 use mklight_core::{MaterialRef, SurfaceShape};

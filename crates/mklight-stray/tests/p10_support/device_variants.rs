@@ -1,8 +1,7 @@
 //! The device's extended-sag intersections (`gpu::SagMode`) agree with the
 //! reference on the aspheric samples.
 #![cfg(target_os = "macos")]
-#[path = "../common/mod.rs"]
-mod common;
+use crate::common;
 use mklight_core::{JobContext, Snapshot};
 use mklight_metal::MetalBackend;
 use mklight_stray::{StraySettings, StraySystem, gpu};

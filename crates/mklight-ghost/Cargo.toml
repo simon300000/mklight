@@ -6,6 +6,8 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 publish.workspace = true
+# One test program for `tests/` (`tests/main.rs`), not one per file.
+autotests = false
 
 [dependencies]
 mklight-gpu.workspace = true
@@ -20,3 +22,7 @@ libc = "0.2"
 
 [target.'cfg(target_os = "macos")'.dev-dependencies]
 mklight-metal.workspace = true
+
+[[test]]
+name = "tests"
+path = "tests/main.rs"

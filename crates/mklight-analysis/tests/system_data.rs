@@ -1,6 +1,6 @@
 //! First-order report.
 
-mod common;
+use crate::common;
 
 use common::*;
 use mklight_analysis::system_data::*;

@@ -4,7 +4,7 @@
 //! iterations; from bad starts it falls back to the reference schedule and
 //! fails exactly where the reference fails.
 
-mod common;
+use crate::common;
 
 use common::*;
 use mklight_core::{RayAiming, samples};

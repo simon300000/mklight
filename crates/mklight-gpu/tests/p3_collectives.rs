@@ -1,3 +1,4 @@
+#[path = "p3_cases.rs"]
 mod p3_cases;
 use mklight_gpu::*;
 #[test]

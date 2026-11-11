@@ -8,7 +8,7 @@
 //! without pipelining, finite differences, and least squares with
 //! speculative Jacobians.
 
-mod common;
+use crate::common;
 
 use std::sync::{Arc, OnceLock};
 

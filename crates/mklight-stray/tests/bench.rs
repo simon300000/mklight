@@ -1,7 +1,7 @@
 //! Throughput benchmark (ignored by default). Run with
-//! `cargo test --release -p mklight-stray --test bench -- --ignored --nocapture`.
+//! `cargo test --release -p mklight-stray --test tests bench_double_gauss_with_barrels -- --ignored --nocapture`.
 
-mod common;
+use crate::common;
 
 use std::sync::Arc;
 use std::time::Instant;

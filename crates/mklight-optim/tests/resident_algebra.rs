@@ -2,7 +2,7 @@
 //! `GpuContext` plans: known answers on the emulation, the same words on
 //! Metal from both shader origins, and cancellation of a running product.
 
-mod common;
+use crate::common;
 
 use mklight_core::{JobContext, Snapshot};
 use mklight_gpu::{ComputeBackend, CpuF32Backend};
@@ -204,9 +204,11 @@ fn cancellation_during_device_product_releases_leases() {
     p.outputs = vec![output];
     let ctx = JobContext::new();
     let pending = b.submit_plan(p, &ctx).unwrap();
-    let deadline = Instant::now() + Duration::from_secs(10);
+    // The device may be busy with other tests before it starts this plan.
+    let deadline = Instant::now() + Duration::from_secs(60);
     let mut prior = 0.;
-    while ctx.progress.fraction() == 0. && Instant::now() < deadline {
+    // One reading per round: the progress may move between two.
+    while prior == 0. && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(1));
         let f = ctx.progress.fraction();
         assert!(f >= prior);

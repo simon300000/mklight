@@ -1,6 +1,5 @@
 #![cfg(target_os = "macos")]
-#[path = "../../mklight-gpu/tests/p3_cases.rs"]
-mod cases;
+use crate::p3_cases as cases;
 use mklight_core::{JobContext, MkError};
 use mklight_gpu::{collectives::*, resident::*, *};
 use mklight_metal::{LibraryChoice, MetalBackend, MetalOptions};

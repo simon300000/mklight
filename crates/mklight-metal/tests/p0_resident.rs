@@ -264,9 +264,17 @@ fn concurrent_cancel_reuse_and_foreign_handles() {
     );
     foreign.outputs = vec![sum];
     assert!(other.submit_plan(foreign, &JobContext::new()).is_err());
-    g.set_chunk_items(64);
+    // A job of very many small commands (four times the rays above, eight
+    // to a command), so that it is still at work when the cancel arrives
+    // on a busy machine.
+    g.set_chunk_items(8);
+    let long = plan(
+        p.snapshot.clone(),
+        TraceRequest::new(h, rays(&t, 200), 0, t.system().image_index() as u32),
+        true,
+    );
     let ctx = JobContext::new();
-    let pending = g.submit_plan(p.clone(), &ctx).unwrap();
+    let pending = g.submit_plan(long, &ctx).unwrap();
     let start = Instant::now();
     let mut last = 0.;
     while ctx.progress.fraction() == 0. && !pending.is_ready() {

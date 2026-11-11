@@ -348,7 +348,7 @@ ends at 1. Results carry `RunInfo` (backend `cpu-f64`, settings of the model
 and of the analysis, no seed: nothing is random).
 
 The ignored benchmark `tests/bench.rs` times the probe cache
-(`RAYON_NUM_THREADS=5 cargo test --release -p mklight-ghost --test bench --
+(`RAYON_NUM_THREADS=5 cargo test --release -p mklight-ghost --test tests double_gauss_irradiance --
 --ignored --nocapture`). `mklight-stray/tests/partition.rs` compares the
 ghost flux of a high-reflectance singlet with the stray solver's order-2
 flux (paired flux and per-ray standard errors, |z| < 3 per seed and for the

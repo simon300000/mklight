@@ -3,7 +3,7 @@
 //! perturbed candidates of every sample, replay, half pupils of asymmetric
 //! candidates, independence of batch neighbours and cancellation.
 
-mod common;
+use crate::common;
 
 use mklight_core::{JobContext, Snapshot, param::ParamPath};
 use mklight_optim::merit::default::DefaultMeritSpec;

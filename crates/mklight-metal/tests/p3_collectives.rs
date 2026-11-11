@@ -1,6 +1,5 @@
 #![cfg(target_os = "macos")]
-#[path = "../../mklight-gpu/tests/p3_cases.rs"]
-mod p3_cases;
+use crate::p3_cases;
 use mklight_gpu::{resident::*, *};
 use mklight_metal::{LibraryChoice, MetalBackend, MetalOptions};
 fn backend(origin: LibraryChoice) -> MetalBackend {

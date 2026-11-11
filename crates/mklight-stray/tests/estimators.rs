@@ -2,7 +2,7 @@
 //! stack of interfaces, exact standard errors, leak reporting and run
 //! metadata.
 
-mod common;
+use crate::common;
 
 use common::*;
 use mklight_core::math::Vec3;

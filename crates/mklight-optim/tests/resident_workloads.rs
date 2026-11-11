@@ -1,7 +1,7 @@
 #![cfg(target_os = "macos")]
 //! Complete-workload timings include device search and final report scoring.
 
-mod common;
+use crate::common;
 
 use common::OnDevice;
 use mklight_core::{JobContext, Snapshot, param::ParamPath, samples};

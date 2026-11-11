@@ -1,7 +1,7 @@
 //! Device aiming cost and convergence against the stop tolerance.
 //!
 //! Ignored, env-driven, nothing embedded:
-//! `cargo test --release -p mklight-bench --test aim_precision_study -- --ignored --nocapture`
+//! `cargo test --release -p mklight-bench --test tests aim_precision_study:: -- --ignored --nocapture`
 //! `MKLIGHT_STUDY_PROJECT=/path/project.mklight` studies a local project (with
 //! its catalogues) instead of three samples; `MKLIGHT_STUDY_TOLERANCES`
 //! (comma list, default `1e-10,1e-8,1e-6,1e-5,1e-4`), `MKLIGHT_STUDY_ROWS`

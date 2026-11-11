@@ -6,6 +6,8 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 publish.workspace = true
+# One test program for `tests/` (`tests/main.rs`), not one per file.
+autotests = false
 
 [dependencies]
 serde.workspace = true
@@ -16,3 +18,7 @@ num-complex.workspace = true
 
 [dev-dependencies]
 approx.workspace = true
+
+[[test]]
+name = "tests"
+path = "tests/main.rs"
