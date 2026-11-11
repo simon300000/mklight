@@ -11,7 +11,8 @@ use mklight_core::import::{
 use mklight_core::materials::MaterialLibrary;
 use mklight_core::materials::agf::{TextEncoding, encode_text};
 use mklight_core::model::{
-    ApertureSpec, FieldKind, Interaction, MaterialRef, SemiDiameter, SolveKind, SurfaceShape,
+    ApertureSpec, FieldKind, Interaction, MaterialRef, RayAiming, SemiDiameter, SolveKind,
+    SurfaceShape,
 };
 
 fn fixture(name: &str) -> PathBuf {
@@ -67,9 +68,121 @@ fn zmx_singlet_maps_every_section() {
     let ys: Vec<f64> = s.fields.fields.iter().map(|f| f.y).collect();
     assert_eq!(ys, [0.0, 3.5, 5.0]);
     assert_eq!(s.environment.temperature_c, 20.0);
-    // Only the ray-aiming setting does not map.
+    // The rear surface's fixed size has no aperture: it does not clip in
+    // the file, so it stays computed and is reported. Ray aiming is off.
+    assert_eq!(s.surfaces[2].semi_diameter, SemiDiameter::Auto);
+    assert_eq!(s.ray_aiming, RayAiming::Off);
     assert_eq!(kinds(&imp), [K::Approximated], "{:?}", imp.warnings);
+    assert!(imp.warnings[0].message.contains("fixed semi-diameter"));
     s.validate().unwrap();
+}
+
+/// A doublet-like stack in inches: `surfaces` are the lines of surfaces 1
+/// to 3 (the stop is surface 2).
+fn zmx_with(global: &str, surfaces: [&str; 3]) -> PrescriptionImport {
+    let text = format!(
+        "MODE SEQ\nUNIT IN\nENPD 0.4\n{global}\nFTYP 0 0 2 1 0 0 0\nYFLN 0 2\n\
+         WAVM 1 0.55 1\nPWAV 1\n\
+         SURF 0\n  DISZ INFINITY\n\
+         SURF 1\n  CURV 0.5\n  DISZ 0.2\n  GLAS N-BK7\n{}\n\
+         SURF 2\n  STOP\n  DISZ 0.1\n{}\n\
+         SURF 3\n  DISZ 3\n{}\n\
+         SURF 4\n",
+        surfaces[0], surfaces[1], surfaces[2]
+    );
+    import_prescription(
+        text.as_bytes(),
+        PrescriptionFormat::Zmx,
+        &MaterialLibrary::with_builtin(),
+    )
+    .unwrap()
+}
+
+#[test]
+fn zmx_floating_apertures_clip_at_the_semi_diameter() {
+    let imp = zmx_with(
+        "",
+        [
+            "  DIAM 0.5 1 0 0 1 \"\"\n  FLAP 0 0.5 0",
+            // On the stop the system aperture sets the size.
+            "  DIAM 0.2 0 0 0 1 \"\"\n  FLAP 0 0.2 0",
+            // Computed size, floating aperture: it still clips there.
+            "  DIAM 0.3 0 0 0 1 \"\"\n  FLAP 0 0.3 0",
+        ],
+    );
+    let sd = |i: usize| imp.system.surfaces[i].semi_diameter;
+    assert_eq!(sd(1), SemiDiameter::Fixed { value: 12.7 });
+    assert_eq!(sd(2), SemiDiameter::Auto);
+    assert_eq!(sd(3), SemiDiameter::Fixed { value: 0.3 * 25.4 });
+    assert!(imp.warnings.is_empty(), "{:?}", imp.warnings);
+    imp.system.validate().unwrap();
+
+    // Without a `DIAM` the aperture's own radius is the size; without
+    // either the record is reported.
+    let imp = zmx_with("", ["  FLAP 0 0.5 0", "", "  FLAP 0 0 0"]);
+    let sd = |i: usize| imp.system.surfaces[i].semi_diameter;
+    assert_eq!(sd(1), SemiDiameter::Fixed { value: 12.7 });
+    assert_eq!(sd(3), SemiDiameter::Auto);
+    assert_eq!(kinds(&imp), [K::Malformed], "{:?}", imp.warnings);
+    assert_eq!(imp.warnings[0].surface, Some(3));
+}
+
+#[test]
+fn zmx_sizes_without_an_aperture_do_not_clip() {
+    let imp = zmx_with(
+        "",
+        [
+            // Fixed by the user, no aperture: reported, twice.
+            "  DIAM 0.5 1 0 0 1 \"\"",
+            "",
+            "  DIAM 0.3 1 0 0 1 \"\"",
+        ],
+    );
+    for i in 1..=3 {
+        assert_eq!(imp.system.surfaces[i].semi_diameter, SemiDiameter::Auto);
+    }
+    assert_eq!(kinds(&imp), [K::Approximated], "{:?}", imp.warnings);
+    assert!(imp.warnings[0].message.ends_with("(2 times)"));
+
+    // Computed sizes are the writer's ray envelope: silently recomputed.
+    // An explicit aperture needs no report either.
+    let imp = zmx_with(
+        "",
+        [
+            "  DIAM 0.5 0 0 0 1 \"\"",
+            "",
+            "  DIAM 0.3 1 0 0 1 \"\"\n  CLAP 0 0.3 0",
+        ],
+    );
+    assert_eq!(imp.system.surfaces[1].semi_diameter, SemiDiameter::Auto);
+    assert!(imp.system.surfaces[3].aperture.is_some());
+    assert!(imp.warnings.is_empty(), "{:?}", imp.warnings);
+}
+
+#[test]
+fn zmx_ray_aiming_mode_is_imported() {
+    let none = ["", "", ""];
+    let real = RayAiming::Real {
+        tolerance: RayAiming::DEFAULT_TOLERANCE,
+    };
+    for (record, aiming, warned) in [
+        ("", RayAiming::Off, false),
+        ("RAIM 0 0 1 1 0 0 0 0 0", RayAiming::Off, false),
+        ("RAIM 0 2 1 1 0 0 0 0 0 1", real, false),
+        ("RAIM 0 1 1 1 0 0 0 0 0", real, true),
+        ("RAIM", RayAiming::Off, false),
+    ] {
+        let imp = zmx_with(record, none);
+        assert_eq!(imp.system.ray_aiming, aiming, "{record}");
+        let w: Vec<_> = imp.warnings.iter().map(|w| w.message.as_str()).collect();
+        if warned {
+            assert_eq!(kinds(&imp), [K::Approximated], "{record}");
+            assert!(w[0].contains("paraxial ray aiming"), "{w:?}");
+        } else {
+            assert!(w.is_empty(), "{record}: {w:?}");
+        }
+        imp.system.validate().unwrap();
+    }
 }
 
 #[test]

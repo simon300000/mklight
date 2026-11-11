@@ -46,7 +46,7 @@ whole system come last.
 | `unknown_glass` | a glass in none of the loaded catalogs |
 | `solve_dropped` | a solve, pickup or optimisation-variable flag; the current value is kept |
 | `non_sequential` | non-sequential data; dropped (a non-sequential component becomes a plane) |
-| `approximated` | a setting MKLight expresses differently (ray aiming, theodolite fields, an image-space NA) |
+| `approximated` | a setting MKLight expresses differently (paraxial ray aiming, a fixed semi-diameter that does not clip, theodolite fields, an image-space NA) |
 | `malformed` | a line whose fields cannot be read; ignored |
 | `defaulted` | something the file does not state (no stop, no aperture, no wavelengths, no image surface); a default is used |
 | `validation` | the imported system has a structural problem (CONVENTIONS §13) |
@@ -78,16 +78,29 @@ again).
 | `FTYP` | field type (angle, object height, paraxial or real image height) and the numbers of fields and wavelengths (never more than the file lists) |
 | `XFLN`, `YFLN`, `FWGN`/`FWGT`, `VDXN`, `VDYN`, `VCXN`, `VCYN` | fields, weights, vignetting factors |
 | `WAVM` (or `WAVL`/`WAVN` with `WWGT`/`WWGN`), `PWAV` | wavelengths (µm), weights, primary |
+| `RAIM` | ray aiming, from the second number: 0 off, 2 real; 1 (paraxial) becomes real aiming, with an `approximated` warning |
 | `ENVD` | temperature and pressure |
 | `GCAT` | preferred catalogs |
 | `SURF`, `TYPE`, `CURV`, `CONI`, `DISZ`, `STOP`, `COMM` | surfaces, shape, thickness (`INFINITY` for the object), stop, label |
 | `GLAS` | material (see *Glasses*) |
 | `PARM`, `XDAT` | shape parameters and extra data, per type below |
 | `CLAP`, `SQAP`, `ELAP` | circular or annular, rectangular, elliptical apertures |
+| `FLAP` with `DIAM` | a floating aperture: a fixed semi-diameter of the `DIAM` size, which clips rays |
 
-`DIAM` sizes are computed by the program that wrote the file; MKLight
-computes its own automatic semi-diameters instead, except for the stop
-when the aperture floats by the stop size.
+A semi-diameter (`DIAM`) clips rays only where the file puts an aperture on
+the surface:
+
+* with a floating aperture (`FLAP`) the surface gets a **fixed
+  semi-diameter** of that size (the `FLAP` record's own radius when there
+  is no `DIAM`). The size is the base configuration's;
+* a `DIAM` marked as fixed (second number 1) without an aperture does not
+  clip in the program that wrote the file. The semi-diameter stays automatic
+  and the surfaces are reported once (`approximated`, with their count), so
+  they can be fixed by hand;
+* a computed `DIAM` is the writer's ray envelope: MKLight computes its own;
+* the stop's `DIAM` is its fixed semi-diameter when the aperture floats by
+  the stop size, and is not used otherwise (the system aperture sizes the
+  stop).
 
 | `TYPE` | MKLight shape |
 |---|---|
@@ -105,8 +118,8 @@ when the aperture floats by the stop size.
 | others | the base sphere or conic, with an `unsupported_surface` warning |
 
 Not imported (reported): solves, pickups and other unknown surface records,
-coatings, obscurations and aperture decentres, ray aiming, multi-
-configuration (`MNUM`, `MOFF`) and tolerance data, non-sequential objects.
+coatings, obscurations and aperture decentres, multi-configuration
+(`MNUM`, `MOFF`) and tolerance data, non-sequential objects.
 Records that only affect drawing or bookkeeping (`HIDE`, `SLAB`, `PFIL`, …)
 are ignored silently.
 

@@ -13,13 +13,13 @@ use crate::materials::MaterialLibrary;
 use crate::model::surface::{DiffractivePhase, ZernikeOrdering};
 use crate::model::{
     ApertureShape, ApertureSpec, Environment, Field, FieldKind, FieldSet, Interaction, MaterialRef,
-    OpticalSystem, Placement, Surface, SurfaceShape, TransformOrder, Vignetting, Wavelength,
-    WavelengthSet,
+    OpticalSystem, Placement, RayAiming, SemiDiameter, Surface, SurfaceShape, TransformOrder,
+    Vignetting, Wavelength, WavelengthSet,
 };
 use crate::surface_math::MAX_PHASE_TERMS;
 
 /// Records of a surface block that only affect drawing or bookkeeping.
-const SILENT_SURFACE: &[&str] = &["HIDE", "SLAB", "POPS", "MIRR", "MEMA", "FLAP", "BLNK"];
+const SILENT_SURFACE: &[&str] = &["HIDE", "SLAB", "POPS", "MIRR", "MEMA", "BLNK"];
 /// Global records that only affect drawing, reports or bookkeeping.
 const SILENT_GLOBAL: &[&str] = &[
     "VERS", "PFIL", "LANG", "GFAC", "GLRS", "HIDE", "MIRD", "SLAB", "POPS", "PUSH", "SDMA", "ROPD",
@@ -28,8 +28,8 @@ const SILENT_GLOBAL: &[&str] = &[
 ];
 /// Keywords that belong to a surface even when not indented.
 const SURFACE_KEYS: &[&str] = &[
-    "TYPE", "CURV", "CONI", "DISZ", "GLAS", "DIAM", "STOP", "PARM", "XDAT", "COMM", "CLAP", "SQAP",
-    "ELAP", "OBSC", "COAT",
+    "TYPE", "CURV", "CONI", "DISZ", "GLAS", "DIAM", "STOP", "PARM", "XDAT", "COMM", "CLAP", "FLAP",
+    "SQAP", "ELAP", "OBSC", "COAT",
 ];
 
 #[derive(Default)]
@@ -42,6 +42,11 @@ struct RawSurface {
     /// Name, the numbers after it, and the line.
     glass: Option<(String, Vec<f64>, usize)>,
     diam: Option<f64>,
+    /// `DIAM` is marked as set by the user, not computed from the rays.
+    diam_fixed: bool,
+    /// `FLAP`: a floating aperture clips at the semi-diameter (its line and
+    /// its own copy of the radius).
+    floating: Option<(usize, Option<f64>)>,
     stop: bool,
     parm: BTreeMap<i64, f64>,
     xdat: BTreeMap<i64, f64>,
@@ -79,6 +84,8 @@ struct Globals {
     pwav: Option<usize>,
     gcat: Vec<String>,
     env: Option<Environment>,
+    /// `RAIM`: rays are aimed at the stop.
+    ray_aiming: bool,
 }
 
 fn numbers(fields: &[&str]) -> Vec<f64> {
@@ -136,6 +143,11 @@ pub(crate) fn parse(
     fields(&mut sys, &g, units, &mut w);
     if let Some(env) = g.env {
         sys.environment = env;
+    }
+    if g.ray_aiming {
+        sys.ray_aiming = RayAiming::Real {
+            tolerance: RayAiming::DEFAULT_TOLERANCE,
+        };
     }
 
     let resolver = GlassResolver {
@@ -205,9 +217,40 @@ pub(crate) fn parse(
             s.interaction = Interaction::Refract;
         }
         medium = s.material.clone();
+        let size = |d: &f64| *d > 0.0 && d.is_finite();
         if rs.stop {
             stop = Some(idx);
             stop_sd = rs.diam.map(|d| units.len(d));
+        } else if idx > 0 && !s.is_coordinate_break() {
+            match rs.floating {
+                // A floating aperture clips at the surface's semi-diameter.
+                Some((line, own)) => match rs.diam.filter(size).or(own.filter(size)) {
+                    Some(d) => {
+                        s.semi_diameter = SemiDiameter::Fixed {
+                            value: units.len(d),
+                        }
+                    }
+                    None => w.push(
+                        K::Malformed,
+                        Some(line),
+                        Some(idx),
+                        "floating aperture without a semi-diameter; ignored",
+                    ),
+                },
+                None if rs.diam_fixed
+                    && rs.diam.is_some_and(|d| size(&d))
+                    && rs.aperture.is_none() =>
+                {
+                    w.once(
+                        "DIAM",
+                        K::Approximated,
+                        Some(rs.line),
+                        "a fixed semi-diameter without an aperture does not clip rays in the \
+                         file; the semi-diameter is computed",
+                    )
+                }
+                None => {}
+            }
         }
         out.push(s);
     }
@@ -262,7 +305,12 @@ fn surface_record(
             Some(t) => s.thickness = t,
             None => bad(w),
         },
-        "DIAM" => s.diam = first,
+        "DIAM" => {
+            let n = numbers(f);
+            s.diam = n.first().copied();
+            s.diam_fixed = n.get(1) == Some(&1.0);
+        }
+        "FLAP" => s.floating = Some((ln, numbers(f).get(1).copied())),
         "STOP" => s.stop = true,
         "COMM" => s.comment = rest_text(line),
         "GLAS" => match f.first() {
@@ -476,12 +524,21 @@ fn global_record(g: &mut Globals, key: &str, f: &[&str], line: &str, ln: usize, 
                 });
             }
         }
-        "RAIM" => w.once(
-            "RAIM",
-            K::Approximated,
-            Some(ln),
-            "ray aiming settings are not imported; ray aiming is off",
-        ),
+        // The second number is the mode: 0 off, 1 paraxial, 2 real.
+        "RAIM" => match numbers(f).get(1) {
+            Some(&m) if m == 1.0 || m == 2.0 => {
+                g.ray_aiming = true;
+                if m == 1.0 {
+                    w.once(
+                        "RAIM",
+                        K::Approximated,
+                        Some(ln),
+                        "paraxial ray aiming is imported as real ray aiming",
+                    );
+                }
+            }
+            _ => g.ray_aiming = false,
+        },
         "TOL" | "TOLE" => w.once(
             "TOL",
             K::UnsupportedRecord,

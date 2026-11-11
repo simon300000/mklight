@@ -37,7 +37,7 @@ private func sampleImport(_ warnings: [ImportWarning], name: String = "") -> Pre
     @Test func groupsByMeaningMostSeriousFirst() {
         let r = ImportReport(
             sampleImport([
-                warning(.approximated, "ray aiming settings are not imported", line: 11),
+                warning(.approximated, "paraxial ray aiming is imported as real ray aiming", line: 11),
                 warning(.unknownGlass, "glass X is not in the loaded catalogs", line: 51, surface: 1),
                 warning(.unsupportedRecord, "tolerance data is not imported", line: 34),
                 warning(.validation, "surfaces[2].thickness: bad"),
