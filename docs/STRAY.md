@@ -43,7 +43,7 @@ solvers clip identically (see "Partition"):
 |---|---|
 | fixed semi-diameter or explicit aperture | its own |
 | `Auto` | traced maximum |
-| `Auto` aperture stop | `max(paraxial stop radius, traced maximum) × (1 + 10⁻¹²)` (the freeze rule of `fix_semi_diameters`, so the stop plate never vignettes the design's own fields, with the ghost solver's guard factor) |
+| `Auto` aperture stop | `max(stop radius, traced maximum) × (1 + 10⁻¹²)` (the stop radius of CONVENTIONS §3) (the freeze rule of `fix_semi_diameters`, so the stop plate never vignettes the design's own fields, with the ghost solver's guard factor) |
 | `Auto` image surface without a sensor | traced maximum `× (1 + detector_margin)` (default 5 %) |
 | value supplied in `SceneOptions::clear_semi_diameters` | the supplied value |
 
@@ -103,12 +103,17 @@ physical over its clear apertures (tested).
 ### Sources
 
 All margins are relative overfills of a radius, so the stop and the mounts,
-never the source, limit the beam.
+never the source, limit the beam. A field source overfills the beam that
+reaches the stop: with real ray aiming the rays through the stop's rim
+start up to a factor `k ≥ 1` further from the chief ray than the paraxial
+pupil's rim (pupil aberration; measured on 32 rim rays at the primary
+wavelength, 1.11 for the Cooke triplet at 20°), and the source grows by
+`k`. With aiming off `k = 1`.
 
 | source | geometry | strength | reference flux |
 |---|---|---|---|
-| field point, object at infinity (`StraySystem::field_source`) | collimated along the field direction, uniform over a disk of radius `r_EP (1 + margin)` on the paraxial entrance-pupil plane `z = z_EP`, centred on the chief ray's aim point | irradiance `E` normal to the beam; power `E π r² \|d_z\|` | `E π r_EP² \|d_z\|` |
-| field point, finite object | point source at the object point, uniform in solid angle in a cone about the line to the chief aim point with `tan α = (1 + margin) tan α_EP` (`α_EP`: largest angle to the pupil rim; telecentric: chief direction and marginal slope) | intensity `I` (W/sr) | `2π I (1 − cos α_EP)` |
+| field point, object at infinity (`StraySystem::field_source`) | collimated along the field direction, uniform over a disk of radius `k r_EP (1 + margin)` on the paraxial entrance-pupil plane `z = z_EP`, centred on the chief ray's aim point | irradiance `E` normal to the beam; power `E π r² \|d_z\|` | `E π r_EP² \|d_z\|` |
+| field point, finite object | point source at the object point, uniform in solid angle in a cone about the line to the chief aim point with `tan α = k (1 + margin) tan α_EP` (`α_EP`: largest angle to the pupil rim; telecentric: chief direction and marginal slope) | intensity `I` (W/sr) | `2π I (1 − cos α_EP)` |
 | out of field (`out_of_field_source`), e.g. the sun | collimated from `(θx, θy)`, uniform on a disk normal to the beam that covers the projection of the whole scene along the beam: centred on the centre of the bounding rectangle of all projected primitive bounding-box corners, radius `(1 + margin)` × their largest distance from it | irradiance `E` | `E π r_front² cos θ` (front mechanical aperture) |
 
 A disk on the pupil plane is uniform in flux even for an oblique beam,

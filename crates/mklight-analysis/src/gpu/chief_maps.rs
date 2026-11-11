@@ -60,7 +60,7 @@ impl Geometry<'_> {
             let (si, wi) = self.chunk(cw[i % cw.len()])?;
             FieldSpec::new(
                 self.tracer.system(),
-                self.tracer.paraxial(),
+                self.tracer,
                 fields[i / cw.len()],
                 si,
                 wi,

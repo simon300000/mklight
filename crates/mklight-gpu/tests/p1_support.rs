@@ -54,7 +54,7 @@ pub fn make_plan(
     p.settings = serde_json::json!({"package":"P1","field":field,"wavelength":wl,"aim":t.aiming(),"iterations":cap,"tolerance":1e-10,"seed":42,"records":records});
     let spec = FieldSpec::new(
         t.system(),
-        t.paraxial(),
+        t,
         t.field(field).point,
         0,
         wl as u32,

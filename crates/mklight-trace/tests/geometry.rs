@@ -360,6 +360,56 @@ fn real_aiming_converges_with_strongly_tilted_stop() {
 }
 
 #[test]
+fn real_aiming_sizes_the_stop_by_the_real_marginal_ray() {
+    let plain = || {
+        let mut s = samples::double_gauss();
+        for f in &mut s.fields.fields {
+            f.vignetting = Default::default();
+        }
+        s
+    };
+    let aimed = |mut s: mklight_core::OpticalSystem| {
+        s.ray_aiming = RayAiming::Real { tolerance: 1e-12 };
+        tracer(s)
+    };
+    let off = tracer(plain());
+    let on = aimed(plain());
+    let (stop, w) = (off.system().stop, off.system().primary_wavelength);
+    let paraxial = off.paraxial().primary().stop_semi_diameter;
+    // Aiming off: the paraxial stop semi-diameter of the aperture.
+    assert_eq!(off.pupil().r_stop, paraxial);
+    // Aiming on: where the real on-axis ray through the rim of the
+    // entrance pupil meets the stop, which is not the paraxial height.
+    let rim = off.generate(off.field(0), w, 0.0, 1.0).unwrap();
+    let hit = trace_ray(
+        off.system(),
+        &rim.ray,
+        w,
+        &TraceOptions::unclipped().to_surface(stop),
+        None,
+    );
+    let r_stop = on.pupil().r_stop;
+    assert!(
+        (r_stop - hit.ray.pos.y).abs() < 1e-12 * paraxial,
+        "{r_stop}"
+    );
+    assert!(
+        (r_stop / paraxial - 1.0).abs() > 1e-3,
+        "{r_stop} {paraxial}"
+    );
+    // So the on-axis rim ray is the same ray with aiming on and off.
+    let aimed_rim = on.generate(on.field(0), w, 0.0, 1.0).unwrap();
+    assert!((aimed_rim.ray.pos - rim.ray.pos).norm() < 1e-9 * paraxial);
+    assert!((aimed_rim.ray.dir - rim.ray.dir).norm() < 1e-9);
+
+    // An aperture that floats by the stop size keeps the stop's own size.
+    let mut s = plain();
+    s.aperture = ApertureSpec::FloatByStopSize;
+    s.surfaces[stop].semi_diameter = SemiDiameter::Fixed { value: 7.0 };
+    assert_eq!(aimed(s).pupil().r_stop, 7.0);
+}
+
+#[test]
 fn real_image_height_fields_land_on_target() {
     let t = tracer(samples::petzval_asphere());
     let w = t.system().primary_wavelength;

@@ -95,7 +95,7 @@ fn field_row(
 ) -> MkResult<RiField> {
     let aim = FieldSpec::new(
         t.system(),
-        t.paraxial(),
+        t,
         FieldPoint::normalized(point[0], point[1]),
         chunk.0,
         chunk.1,

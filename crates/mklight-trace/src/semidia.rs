@@ -5,15 +5,16 @@
 //! over all system fields (with their vignetting factors), all system
 //! wavelengths, the chief ray and the pupil edge sampled at `azimuths`
 //! equally spaced angles. Rays clipped by fixed apertures upstream contribute
-//! only to the surfaces they reach. The stop's semi-diameter is the paraxial
-//! stop radius from the aperture specification; fixed semi-diameters and
+//! only to the surfaces they reach. The stop's semi-diameter is the stop
+//! radius of the aperture specification ([`crate::PupilGeometry::r_stop`],
+//! CONVENTIONS §3); fixed semi-diameters and
 //! explicit apertures report their own (bounding) radius; coordinate breaks
 //! report 0. The object surface reports the largest object height (0 for an
 //! object at infinity).
 //!
 //! The raw traced maxima are kept for every surface in
 //! [`SemiDiameters::traced`]. With ray aiming off, pupil aberration makes real
-//! rays reach the stop slightly above or below its paraxial radius, so
+//! rays reach the stop slightly above or below that radius, so
 //! [`fix_semi_diameters`] freezes the stop at the larger of the two values:
 //! freezing never vignettes the current design.
 //!
@@ -195,7 +196,7 @@ impl SequentialTracer {
 /// A copy of `system` with every `Auto` semi-diameter (except on coordinate
 /// breaks, and on the object surface at infinity) replaced by
 /// `Fixed { value + margin }`, e.g. to freeze apertures before tolerancing.
-/// The stop uses `max(paraxial radius, traced height)` (module docs).
+/// The stop uses `max(stop radius, traced height)` (module docs).
 pub fn fix_semi_diameters(
     system: &OpticalSystem,
     sd: &SemiDiameters,

@@ -4,7 +4,7 @@
 use super::*;
 use bytemuck::{Pod, Zeroable};
 use mklight_core::{FieldKind, RayAiming, ResolvedSystem};
-use mklight_trace::{FieldPoint, ObjectSource, Paraxial, PreparedField, SequentialTracer};
+use mklight_trace::{FieldPoint, ObjectSource, PreparedField, SequentialTracer};
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
@@ -25,13 +25,13 @@ pub struct FieldSpec {
 impl FieldSpec {
     pub fn new(
         sys: &ResolvedSystem,
-        paraxial: &Paraxial,
+        tracer: &SequentialTracer,
         point: FieldPoint,
         system: u32,
         wavelength: u32,
         aiming: mklight_core::RayAiming,
     ) -> MkResult<Self> {
-        let fo = paraxial.primary();
+        let fo = tracer.paraxial().primary();
         let model = sys.system();
         let target = [
             point.hx * model.fields.max_radial(),
@@ -87,7 +87,7 @@ impl FieldSpec {
                 } else {
                     fo.entrance_pupil_radius()
                 },
-                fo.stop_semi_diameter,
+                tracer.pupil().r_stop,
             ]
             .map(Df32::from_f64),
             vignette: [v.vdx, v.vdy, v.vcx, v.vcy].map(Df32::from_f64),

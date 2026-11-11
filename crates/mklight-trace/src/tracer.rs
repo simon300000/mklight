@@ -35,9 +35,15 @@
 //!   the object-space ray.
 //!
 //! With **aiming off**, `a = P'·r_EP` (or `P'·u_marginal`). With **real
-//! aiming**, `a` solves `stop_hit(a) = P'·r_stop` in the stop's local frame
-//! (`r_stop` is the paraxial stop semi-diameter from the aperture
-//! specification), by Newton iteration ([`crate::numeric`]) seeded by a
+//! aiming**, `a` solves `stop_hit(a) = P'·r_stop` in the stop's local frame.
+//! `r_stop` is the stop's own size when the aperture floats by it. For any
+//! other aperture it is the paraxial stop semi-diameter when the system's
+//! ray aiming is off (a tracer that aims such a system anyway keeps it),
+//! and when it is real the stop height of the real on-axis marginal ray
+//! (the mean of the four rays through the rim of the paraxial entrance
+//! pupil, primary wavelength), so that the on-axis beam is the aperture
+//! specification's with aiming on and off. The solve is a Newton iteration
+//! ([`crate::numeric`]) seeded by a
 //! linear prediction from the cached chief-ray aim point and Jacobian of the
 //! (field, wavelength). The Jacobian `∂(stop hit)/∂a` is **analytic**: the
 //! tangent of the starting ray with respect to `a` is carried through the
@@ -58,7 +64,8 @@ use std::sync::{Arc, RwLock};
 use rayon::prelude::*;
 
 use mklight_core::{
-    FieldKind, MkError, MkResult, OpticalSystem, RayAiming, ResolvedSystem, Vec3, Vignetting,
+    ApertureSpec, FieldKind, MkError, MkResult, OpticalSystem, RayAiming, ResolvedSystem, Vec3,
+    Vignetting,
 };
 use serde::{Deserialize, Serialize};
 
@@ -430,7 +437,10 @@ pub struct PupilGeometry {
     pub telecentric: bool,
     /// Marginal object-space slope (telecentric aim scale).
     pub u_marginal: f64,
-    /// Paraxial stop semi-diameter from the aperture specification.
+    /// The stop radius that pupil coordinates refer to under real aiming:
+    /// the paraxial stop semi-diameter of the aperture specification, or,
+    /// when the system's ray aiming is real and the aperture is not the
+    /// stop size itself, the stop height of the real on-axis marginal ray.
     pub r_stop: f64,
 }
 
@@ -511,6 +521,20 @@ impl SequentialTracer {
             tangents,
             seeds,
         };
+        // The stop radius belongs to the system: its own aiming mode sets
+        // it, not a tracer's override of that mode.
+        if matches!(t.sys.system().ray_aiming, RayAiming::Real { .. })
+            && t.sys.system().aperture != ApertureSpec::FloatByStopSize
+        {
+            match t.marginal_stop_radius() {
+                Some(r) => t.pupil.r_stop = r,
+                None => t.warnings.push(
+                    "the on-axis marginal rays do not reach the stop; the paraxial stop radius \
+                     is used"
+                        .into(),
+                ),
+            }
+        }
         // Fields are independent solves; prepare them on the rayon pool
         // (in order, so results and warnings do not depend on threads).
         let n = t.sys.system().fields.fields.len();
@@ -682,6 +706,32 @@ impl SequentialTracer {
         Some((ray, tangent))
     }
 
+    /// The stop radius of real aiming when the aperture is given in object
+    /// or image space (module docs): the mean stop height of the four
+    /// on-axis rays through the rim of the paraxial entrance pupil (primary
+    /// wavelength, unclipped). `None` when one of them does not reach the
+    /// stop.
+    fn marginal_stop_radius(&self) -> Option<f64> {
+        let src = if self.sys.object_at_infinity {
+            ObjectSource::Direction { dir: Vec3::Z }
+        } else {
+            self.object_point(0.0, 0.0).ok()?
+        };
+        let wl = self.sys.system().wavelengths.primary;
+        let opts = self.stop_options();
+        let mut sum = 0.0_f64;
+        for p in [[1.0, 0.0], [-1.0, 0.0], [0.0, 1.0], [0.0, -1.0]] {
+            let ray = self.start_ray(&src, self.paraxial_aim(p))?;
+            let r = trace_ray(&self.sys, &ray, wl, &opts, None);
+            if !r.status.is_ok() {
+                return None;
+            }
+            sum += r.ray.pos.x.hypot(r.ray.pos.y);
+        }
+        let radius = 0.25 * sum;
+        (radius.is_finite() && radius > 0.0).then_some(radius)
+    }
+
     fn stop_options(&self) -> TraceOptions {
         TraceOptions {
             clip: false,
@@ -764,24 +814,51 @@ impl SequentialTracer {
 
     /// The stop tolerance of a prepared field's pupil aims at wavelength
     /// `wl`, as a fraction of the stop radius: the derived stop
-    /// ([`AimStop::Conditioned`]) or the requested tolerance.
+    /// ([`AimStop::Conditioned`]) or the requested tolerance. Rays at the
+    /// edge of a clipping stop are aimed at the requested tolerance
+    /// (CONVENTIONS §7).
     pub fn aim_tolerance_of(&self, field: &PreparedField, wl: usize) -> f64 {
         field.aims[wl]
             .stop_tolerance
             .unwrap_or_else(|| self.requested_tolerance())
     }
 
-    fn field_tolerance(&self, field: &PreparedField, wl: usize) -> f64 {
-        match field.aims[wl].stop_tolerance {
-            Some(rel) => self.stop_mm(rel),
-            None => self.aim_tolerance(),
+    /// Absolute stop tolerance (mm) of a pupil aim at stop point `target`:
+    /// the field's derived stop, or the requested tolerance. Where the stop
+    /// clips, a target within the derived stop of its edge is aimed at the
+    /// requested tolerance, which the edge tolerance of apertures covers
+    /// (CONVENTIONS §2): the ray is not clipped by its own aiming residual.
+    fn field_tolerance(&self, field: &PreparedField, wl: usize, target: [f64; 2]) -> f64 {
+        let requested = self.aim_tolerance();
+        let Some(rel) = field.aims[wl].stop_tolerance else {
+            return requested;
+        };
+        let derived = self.stop_mm(rel);
+        match self.stop_edge() {
+            Some(r) if target[0].hypot(target[1]) + derived > r => requested,
+            _ => derived,
         }
+    }
+
+    /// The radius (mm) at which the stop surface itself clips rays: its
+    /// aperture's bounding radius or its fixed semi-diameter.
+    fn stop_edge(&self) -> Option<f64> {
+        let stop = &self.sys.surfaces[self.sys.stop];
+        stop.aperture
+            .as_ref()
+            .map(|a| a.bounding_radius())
+            .or(stop.fixed_semi_diameter)
     }
 
     /// One stop tolerance for every pupil aim of the prepared fields (a
     /// fraction of the stop radius): the tightest derived stop, or the
-    /// requested tolerance. Device aiming takes one tolerance per request.
+    /// requested tolerance. Device aiming takes one tolerance per request,
+    /// so where the stop clips it is the requested tolerance, which keeps
+    /// rays aimed at the stop's edge (CONVENTIONS §7).
     pub fn device_aim_tolerance(&self) -> f64 {
+        if self.stop_edge().is_some() {
+            return self.requested_tolerance();
+        }
         let derived = self
             .fields
             .iter()
@@ -1434,7 +1511,7 @@ impl SequentialTracer {
                 seed,
                 key,
             } => {
-                let tol = self.field_tolerance(field, wl);
+                let tol = self.field_tolerance(field, wl, target);
                 let s = self.solve_aim_seeded(&field.source, wl, target, x0, j0, seed, tol);
                 let stats = &mut AimStats::default();
                 self.finish_seeded(field, wl, target, s, stats, seed.is_some(), key)
@@ -1458,7 +1535,7 @@ impl SequentialTracer {
         if seeded && !s.converged {
             stats.add(&s);
             let x0 = self.linear_aim(field, wl, target);
-            let tol = self.field_tolerance(field, wl);
+            let tol = self.field_tolerance(field, wl, target);
             s = self.solve_aim(&field.source, wl, target, x0, field.aims[wl].jacobian, tol);
         }
         let g = self.finish_aim(field, wl, target, s, stats);
@@ -1575,7 +1652,7 @@ impl SequentialTracer {
         if !s.converged {
             // Continuation in the pupil radius.
             stats.continued += 1;
-            let tol = self.field_tolerance(field, wl);
+            let tol = self.field_tolerance(field, wl, target);
             let mut x = ad.chief;
             let mut j = ad.jacobian;
             let mut prev = [0.0, 0.0];
@@ -1682,7 +1759,7 @@ impl SequentialTracer {
                         x0,
                         j0,
                         self.fd_step(),
-                        self.field_tolerance(field, wl),
+                        self.field_tolerance(field, wl, target),
                         self.settings.max_aim_iterations,
                         AIM_POLICY,
                     )
@@ -1802,7 +1879,7 @@ impl SequentialTracer {
                         seed,
                         key,
                     }) => {
-                        let tol = self.field_tolerance(field, wl);
+                        let tol = self.field_tolerance(field, wl, target);
                         let s = self.solve_aim_seeded(&field.source, wl, target, x0, j0, seed, tol);
                         self.finish_seeded(field, wl, target, s, stats, seed.is_some(), key)
                     }

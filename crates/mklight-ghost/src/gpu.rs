@@ -353,7 +353,7 @@ impl<'a> GhostTransport<'a> {
         let fields = fill(self.backend, points.len() * nw, |i| {
             let mut f = FieldSpec::new(
                 self.model.system(),
-                self.model.tracer().paraxial(),
+                self.model.tracer(),
                 points[i / nw],
                 0,
                 (i % nw) as u32,

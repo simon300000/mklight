@@ -537,7 +537,10 @@ fn reference_flux_does_not_depend_on_the_margin() {
 /// overfilled pupil-plane disk, clipped by the scene's apertures) matches
 /// the sequential tracer's own spot over a dense real-aimed pupil grid,
 /// which shares no source code with it. A mis-aimed or undersized source
-/// shifts the centroid or shrinks the spot.
+/// shifts the centroid or shrinks the spot: the source follows the beam
+/// that reaches the stop, which on the Cooke triplet at 20° starts 11 %
+/// beyond the paraxial pupil's rim, and a margin of 0.1 on the paraxial
+/// pupil alone makes that spot 2.6 % too small.
 ///
 /// Real aiming makes the stop, not the paraxial entrance pupil, define the
 /// sequential beam, as the stop plate does in the scene. (With paraxial
@@ -586,7 +589,7 @@ fn reference_spot_matches_the_sequential_tracer() {
             );
             // The remaining differences are pupil aberration: the beam is
             // uniform on the entrance-pupil plane, the tracer's grid uniform
-            // on the stop (Cooke triplet: 0.8 % on axis, 1.5 % at 20°).
+            // on the stop (Cooke triplet: 1.0 % on axis, 1.8 % at 20°).
             assert!(dc < 0.02 * rms, "{name} field {k}: centroid off by {dc} mm");
             assert!(
                 (g / rms - 1.0).abs() < 0.02,

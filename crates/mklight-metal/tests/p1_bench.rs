@@ -46,15 +46,7 @@ fn plan(
         .rows
         .iter()
         .map(|&(f, w)| {
-            FieldSpec::new(
-                t.system(),
-                t.paraxial(),
-                t.field(f).point,
-                0,
-                w as u32,
-                t.aiming(),
-            )
-            .unwrap()
+            FieldSpec::new(t.system(), t, t.field(f).point, 0, w as u32, t.aiming()).unwrap()
         })
         .collect();
     let fw = upload(gpu, &mut p, specs.len(), &specs);

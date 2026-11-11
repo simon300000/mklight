@@ -11,7 +11,7 @@
 //! clips at
 //!
 //! * fixed semi-diameters and explicit apertures as given (any surface);
-//! * the stop at `max(paraxial stop radius, traced height)` (the value
+//! * the stop at `max(stop radius, traced height)` (the value
 //!   `fix_semi_diameters` freezes, so the primary beam is never vignetted);
 //! * every other `Auto` surface that is physically present (not
 //!   [`InterfaceKind::Passive`]) at its traced clear semi-diameter plus

@@ -172,7 +172,7 @@ length `f·n_before/n_after`, the exact inverse of the forward crossing.
 **Clipping** (`ClipMode`). Ghost light leaves the designed footprint, so
 apertures matter. `ClearApertures { margin_mm }` (default) clips any surface
 at its fixed aperture if it has one, the stop at
-`max(paraxial stop radius, traced height)`, and every other `Auto` surface
+`max(stop radius, traced height)` (CONVENTIONS §3), and every other `Auto` surface
 that is physically present (not `Passive`, not the image) at its traced
 clear semi-diameter plus the margin. Dummies, coordinate breaks and bare
 same-index planes that are neither the stop nor have an explicit aperture

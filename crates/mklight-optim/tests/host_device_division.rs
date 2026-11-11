@@ -625,7 +625,9 @@ fn least_squares_with_speculative_jacobians() {
 #[test]
 fn speculative_batches_hold_the_trial_point_and_the_next_probes() {
     // A batch-counting reference problem: one batch per accepted iteration
-    // with speculation, two without.
+    // with speculation, two without. The cap keeps the run to the accepted
+    // iterations: the triplet converges in four, and at the floor rejected
+    // trials cost the speculation its batches.
     use std::sync::atomic::{AtomicUsize, Ordering};
     struct Counting<P>(P, AtomicUsize);
     impl<P: Problem> Problem for Counting<P> {
@@ -666,7 +668,7 @@ fn speculative_batches_hold_the_trial_point_and_the_next_probes() {
         );
         let x0 = p.0.start_point().unwrap();
         let s = LsqSettings {
-            max_iterations: 6,
+            max_iterations: 4,
             speculative_jacobian: speculative,
             ..Default::default()
         };

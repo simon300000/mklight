@@ -1502,6 +1502,7 @@ stop hits, finite differences, 2×2 solves and updates, the reference's
 continuation schedule and configured cap/tolerance (the request's aim-stop
 policy, CONVENTIONS §7: the requested tolerance, normally 1e-10 relative to
 the stop radius, or the tightest conditioned stop of the request's fields,
+or again the requested tolerance where the stop surface itself clips,
 `SequentialTracer::device_aim_tolerance`; one value per generation, part of
 `aim_identity`). A rounded f32 stop hit cannot drive that solve. Unresolved
 rays keep their index, logical ID and failure report; the adapters complete

@@ -780,14 +780,7 @@ pub(crate) fn prepare<'a>(
             .field(f)
             .map_err(|e| MkError::Unsupported(format!("field: {e:?}")))?
             .point;
-        a::FieldSpec::new(
-            tr.system(),
-            tr.paraxial(),
-            point,
-            ci as u32,
-            w as u32,
-            tr.aiming(),
-        )
+        a::FieldSpec::new(tr.system(), tr, point, ci as u32, w as u32, tr.aiming())
     };
     let metadata = records(g, &mut p, field_keys.len(), |i| field_spec(field_keys[i]))?;
     // Chief rows from each candidate's own f64 tracer (system fields are

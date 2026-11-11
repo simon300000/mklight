@@ -9,8 +9,8 @@
 //!
 //! * an `Auto` surface gets its largest traced ray height over all system
 //!   fields and wavelengths;
-//! * the `Auto` aperture stop gets `max(paraxial stop radius, traced
-//!   height)`, the same freeze rule as `mklight_trace::fix_semi_diameters`,
+//! * the `Auto` aperture stop gets `max(stop radius, traced height)`,
+//!   the same freeze rule as `mklight_trace::fix_semi_diameters`,
 //!   so the stop plate never vignettes the design's own fields;
 //! * an `Auto` image surface without a sensor gets its traced height times
 //!   `1 + detector_margin`, so the detector covers the whole image;
@@ -40,11 +40,15 @@
 //!
 //! All margins are relative overfills of the entrance-pupil radius (or of
 //! the scene's projected radius), so the stop and the mounts, not the
-//! source, limit the beam.
+//! source, limit the beam. A field source overfills the beam that reaches
+//! the stop: with real ray aiming the rays through the stop's rim start up
+//! to a factor `k ≥ 1` further from the chief ray than the paraxial pupil's
+//! rim (pupil aberration, measured on 32 rim rays at the primary
+//! wavelength), and the source grows by `k`. With aiming off `k = 1`.
 //!
 //! * [`StraySystem::field_source`], object at infinity: a uniform collimated
 //!   beam along the field direction that fills a disk of radius
-//!   `r_EP·(1 + margin)` on the paraxial entrance-pupil plane `z = z_EP`,
+//!   `k·r_EP·(1 + margin)` on the paraxial entrance-pupil plane `z = z_EP`,
 //!   centred on the chief ray's aim point
 //!   ([`SourceSpec::CollimatedThrough`]). `strength` is the irradiance on a
 //!   plane normal to the beam (W/mm²), so the power is
@@ -52,7 +56,7 @@
 //! * [`StraySystem::field_source`], finite object: a point source at the
 //!   object point that emits uniformly in solid angle into a cone around the
 //!   line to the chief ray's aim point, whose half-angle `α` has
-//!   `tan α = (1 + margin)·tan α_EP` (`α_EP`: the largest angle from the
+//!   `tan α = k·(1 + margin)·tan α_EP` (`α_EP`: the largest angle from the
 //!   axis to the entrance-pupil rim). An object-space telecentric system
 //!   uses the chief direction and the marginal slope instead. `strength` is
 //!   the intensity (W/sr).
@@ -82,12 +86,12 @@ use serde::{Deserialize, Serialize};
 use mklight_core::error::{MkError, MkResult};
 use mklight_core::job::JobContext;
 use mklight_core::math::Vec3;
-use mklight_core::model::SurfaceShape;
+use mklight_core::model::{RayAiming, SurfaceShape};
 use mklight_core::resolved::ResolvedSystem;
 use mklight_ghost::{Clip, ClipMode, GhostCoverage, clip_apertures, interface_kinds};
 use mklight_trace::{
-    FieldPoint, ObjectSource, SemiDiameterSettings, SemiDiameterSource, SemiDiameters,
-    SequentialTracer,
+    FieldPoint, ObjectSource, PreparedField, SemiDiameterSettings, SemiDiameterSource,
+    SemiDiameters, SequentialTracer,
 };
 
 use crate::geom::onb;
@@ -491,6 +495,32 @@ impl StraySystem {
         rs
     }
 
+    /// The factor `k ≥ 1` by which the rays through the stop's rim start
+    /// beyond the paraxial pupil's rim (module docs).
+    fn pupil_fill(&self, field: &PreparedField) -> f64 {
+        const RIM: usize = 32;
+        let t = &self.tracer;
+        if !matches!(t.aiming(), RayAiming::Real { .. }) {
+            return 1.0;
+        }
+        let pupil = t.pupil();
+        let scale = if pupil.telecentric {
+            pupil.u_marginal.abs()
+        } else {
+            pupil.r_ep
+        };
+        let wl = t.system().primary_wavelength;
+        let chief = field.aims[wl].chief;
+        let fill = (0..RIM)
+            .filter_map(|k| {
+                let a = 2.0 * PI * k as f64 / RIM as f64;
+                let g = t.generate(field, wl, a.cos(), a.sin()).ok()?;
+                Some((g.aim[0] - chief[0]).hypot(g.aim[1] - chief[1]) / scale)
+            })
+            .fold(1.0, f64::max);
+        if fill.is_finite() { fill } else { 1.0 }
+    }
+
     /// Source for a normalised field point (module docs). `strength` is the
     /// irradiance normal to the beam (W/mm²) for an object at infinity and
     /// the intensity (W/sr) for a finite object.
@@ -501,6 +531,7 @@ impl StraySystem {
         let rs = t.system();
         let pupil = *t.pupil();
         let chief = pf.aims[rs.primary_wavelength].chief;
+        let fill = self.pupil_fill(&pf);
         let (sc, sr) = self.scene.bounding_sphere();
         let what = format!("field ({}, {})", field.hx, field.hy);
         match pf.source {
@@ -511,7 +542,7 @@ impl StraySystem {
                     ));
                 }
                 let center = Vec3::new(chief[0], chief[1], pupil.z_ep);
-                let radius = pupil.r_ep * (1.0 + margin);
+                let radius = pupil.r_ep * fill * (1.0 + margin);
                 let cos = dir.z.abs();
                 let spec = SourceSpec::CollimatedThrough {
                     direction: dir,
@@ -563,7 +594,7 @@ impl StraySystem {
                         "{what}: entrance-pupil cone is undefined"
                     )));
                 }
-                let half = (tan_ep * (1.0 + margin)).atan();
+                let half = (tan_ep * fill * (1.0 + margin)).atan();
                 let spec = SourceSpec::Point {
                     position: p,
                     axis,

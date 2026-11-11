@@ -373,7 +373,7 @@ impl<'a> PupilTracer<'a> {
             .unwrap();
         aim::FieldSpec::new(
             self.tracer.system(),
-            self.tracer.paraxial(),
+            self.tracer,
             field.point,
             chunk as u32,
             slot as u32,

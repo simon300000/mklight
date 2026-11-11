@@ -879,7 +879,7 @@ impl Geometry<'_> {
         let metadata = self.records::<FieldSpec>(a, rows.len(), |i| {
             FieldSpec::new(
                 self.tracer.system(),
-                self.tracer.paraxial(),
+                self.tracer,
                 rows.field(i).point,
                 slots[i].0,
                 slots[i].1,

@@ -94,14 +94,7 @@ pub fn pupil_plan(
     let mut p = ResidentPlan::new(t.system().snapshot.clone());
     p.identity.library_hash = prepared.identity.clone();
     p.settings = serde_json::json!({"operation":"radiometry_pupil","version":crate::consts::MKL_RAD_VERSION,"field":field.point,"wavelength":wl,"state":state,"clip":clip,"point_count":points.len()});
-    let spec = aiming::FieldSpec::new(
-        t.system(),
-        t.paraxial(),
-        field.point,
-        0,
-        wl as u32,
-        t.aiming(),
-    )?;
+    let spec = aiming::FieldSpec::new(t.system(), t, field.point, 0, wl as u32, t.aiming())?;
     let fields = import(b, &mut p, &[spec])?;
     // The chief row comes from the prepared field (f64 source and chief).
     let start = std::time::Instant::now();

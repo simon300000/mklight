@@ -305,15 +305,8 @@ fn batches_and_reordering_preserve_geometry() {
             gpu.release_systems(unused).unwrap();
             let fields: Vec<_> = (0..batch)
                 .map(|k| {
-                    FieldSpec::new(
-                        t.system(),
-                        t.paraxial(),
-                        t.field(2).point,
-                        k as u32,
-                        0,
-                        t.aiming(),
-                    )
-                    .unwrap()
+                    FieldSpec::new(t.system(), &t, t.field(2).point, k as u32, 0, t.aiming())
+                        .unwrap()
                 })
                 .collect();
             let fv = upload(&gpu, &mut p, fields.len(), &fields);
@@ -541,15 +534,8 @@ fn degenerate_finite_launch_is_not_converged() {
     let t = testutil::tracer(model);
     let run = |b: &dyn QualificationBackend| {
         let (mut p, h) = make_plan(b, &t, 0, 0, &[[0., 0.], [0.5, 0.]], false, 40, false);
-        let mut field = FieldSpec::new(
-            t.system(),
-            t.paraxial(),
-            t.field(0).point,
-            0,
-            0,
-            RayAiming::Off,
-        )
-        .unwrap();
+        let mut field =
+            FieldSpec::new(t.system(), &t, t.field(0).point, 0, 0, RayAiming::Off).unwrap();
         // An aim plane through the source produces either a zero-length line
         // or a horizontal line. Neither can launch toward the optical train.
         field.pupil[0] = field.origin[2];

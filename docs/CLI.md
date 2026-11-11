@@ -233,8 +233,8 @@ previous point, re-expressed in the break's frame.
 First-order properties at every system wavelength (columns; `*` marks the
 primary): EFL, BFL, FFL, paraxial image distance, entrance/exit pupil
 diameter and position, image-space and working F/#, object/image NA,
-magnification, Lagrange invariant, total track, stop semi-diameter and
-paraxial image height. JSON adds `image_height_per_tan`,
+magnification, Lagrange invariant, total track, paraxial stop
+semi-diameter and paraxial image height. JSON adds `image_height_per_tan`,
 `image_height_per_object_height` and the primary-wavelength marginal and
 chief rays (`y`, `u`, `nu` per surface); `--rays` prints those as a table.
 Telecentric pupil positions are `"inf"`. Anamorphic systems also print the

@@ -69,6 +69,18 @@ document on purpose in the same change.
   ray aiming off, they map linearly onto the paraxial entrance pupil. With real
   ray aiming, they map linearly onto the stop surface's clear aperture, and the
   aiming solve finds the object-space ray that lands there.
+* The **stop radius** of that clear aperture (`PupilGeometry::r_stop`) is the
+  stop's own size when the aperture floats by the stop size. For every other
+  aperture specification it depends on the system's ray aiming: with aiming
+  off it is the paraxial marginal-ray height at the stop, and with real aiming
+  the stop height of the **real** on-axis marginal ray: the mean over the four
+  rays through `(±1, 0)` and `(0, ±1)` of the paraxial entrance pupil, at the
+  primary wavelength, unclipped. The on-axis beam is therefore the one the
+  aperture specifies with aiming on and off. If one of those rays does not
+  reach the stop, the paraxial height is used and the tracer warns. The stop
+  radius is the system's: an analysis that aims real rays through a system
+  whose aiming is off (relative illumination) keeps the paraxial height.
+  `FirstOrder::stop_semi_diameter` is always the paraxial height.
 * The **chief ray** is `(Px, Py) = (0, 0)`. The **marginal ray** is
   `(0, 1)` at the on-axis field.
 * Vignetting factors `(vdx, vdy, vcx, vcy)` use the usual decenter/compression
@@ -260,6 +272,15 @@ kernels use finite-difference stencils (GPU.md §9.2, "Aiming and OPD").
   grazing incidence derives a much tighter one. The device aiming kernel
   takes one tolerance per request: the tightest derived stop of the
   request's fields (`SequentialTracer::device_aim_tolerance`).
+
+  **Rays at the edge of a clipping stop.** Where the stop surface itself
+  clips (a fixed semi-diameter or an explicit aperture, as when the aperture
+  floats by the stop size), a ray whose stop target lies within the derived
+  stop of that edge is aimed at the requested tolerance, like a chief ray.
+  The edge tolerance of apertures (§2) covers that residual, so a pupil
+  point on the unit circle is never clipped by its own aim. Device aiming,
+  with its one tolerance per request, uses the requested tolerance for such
+  a system.
 
   **An explicit tolerance is honoured exactly.** Any `ray_aiming.tolerance`
   other than the model default (`RayAiming::DEFAULT_TOLERANCE`, 1e-10) is an

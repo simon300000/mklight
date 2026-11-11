@@ -6,7 +6,7 @@
 mod common;
 
 use common::*;
-use mklight_core::{RayAiming, samples};
+use mklight_core::{APERTURE_EDGE_TOLERANCE, ApertureSpec, RayAiming, SemiDiameter, samples};
 use mklight_trace::{
     AimBudget, AimStop, PupilSampling, TraceOptions, TraceStatus, TracerSettings, trace_ray,
 };
@@ -221,4 +221,63 @@ fn an_explicit_tolerance_is_honoured_exactly_by_the_conditioned_policy() {
         },
     );
     assert!(derived.device_aim_tolerance() > RayAiming::DEFAULT_TOLERANCE);
+}
+
+#[test]
+fn rays_aimed_at_the_edge_of_a_clipping_stop_pass_it() {
+    // The aperture floats by a fixed stop size, so pupil points on the unit
+    // circle aim at the stop's own edge.
+    let mut sys = real(samples::double_gauss());
+    for f in &mut sys.fields.fields {
+        f.vignetting = Default::default();
+    }
+    let stop = sys.stop;
+    let radius = tracer(sys.clone()).pupil().r_stop;
+    sys.aperture = ApertureSpec::FloatByStopSize;
+    sys.surfaces[stop].semi_diameter = SemiDiameter::Fixed { value: radius };
+    let t = tracer_with(
+        sys,
+        TracerSettings {
+            aim_stop: AimStop::Conditioned(AimBudget::DESIGN),
+            ..Default::default()
+        },
+    );
+    // The derived stops are looser than the edge tolerance of apertures:
+    // a rim ray aimed at one would be clipped by its own residual.
+    let derived = |f: &mklight_trace::PreparedField, w: usize| f.aims[w].stop_tolerance;
+    assert!(
+        t.fields()
+            .iter()
+            .all(|f| derived(f, 0).is_some_and(|rel| rel > 100.0 * APERTURE_EDGE_TOLERANCE))
+    );
+    // Device aiming has one tolerance per request: the requested one.
+    assert_eq!(t.device_aim_tolerance(), 1e-10);
+    for field in t.fields() {
+        for wl in 0..t.num_wavelengths() {
+            let rim: Vec<[f64; 2]> = (0..48)
+                .map(|k| {
+                    let a = std::f64::consts::TAU * k as f64 / 48.0;
+                    [a.cos(), a.sin()]
+                })
+                .collect();
+            let rays: Vec<_> = rim.iter().map(|&p| (field, wl, p)).collect();
+            // One by one and in packets.
+            let single: Vec<_> = rim
+                .iter()
+                .map(|p| t.generate(field, wl, p[0], p[1]))
+                .collect();
+            let many = t.generate_many(&rays);
+            for ((p, a), b) in rim.iter().zip(&single).zip(&many) {
+                let g = a.as_ref().expect("the rim ray is aimed");
+                assert_eq!(format!("{g:?}"), format!("{:?}", b.as_ref().unwrap()));
+                assert!(g.report.residual <= 1e-10, "{p:?}: {:e}", g.report.residual);
+                let r = trace_ray(t.system(), &g.ray, wl, &t.options().to_surface(stop), None);
+                assert_eq!(r.status, TraceStatus::Ok, "{p:?} is clipped by the stop");
+            }
+            // Inside the edge band the derived stop still applies.
+            let inner = t.generate(field, wl, 0.3, -0.6).unwrap();
+            let r = trace_ray(t.system(), &inner.ray, wl, &t.options(), None);
+            assert!(r.status.is_ok());
+        }
+    }
 }
