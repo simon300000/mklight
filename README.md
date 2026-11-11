@@ -146,6 +146,27 @@ they close with the main window.
 cargo test --workspace
 ```
 
+runs every test, one test program after another (about 170 of them).
+`scripts/test.sh` runs the same tests with the programs side by side, and
+takes the same selections:
+
+```bash
+scripts/test.sh
+```
+
+```bash
+scripts/test.sh -p mklight-trace -p mklight-wave
+```
+
+On an M2 Pro the whole suite takes about two minutes that way instead of
+seven. The first run after a rebuild is slower either way: macOS scans
+every newly built program when it first starts (XProtect, about 5 s each),
+which adds about seven minutes for the whole workspace. macOS has a setting
+for this, *System Settings → Privacy & Security → Developer Tools*: the apps
+listed there (a terminal, or the app that starts the tests) may run locally
+built software without that check. It is a security setting to decide on
+yourself.
+
 ### The Mac app
 
 ```bash

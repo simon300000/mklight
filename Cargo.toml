@@ -52,6 +52,10 @@ lto = "thin"
 codegen-units = 1
 
 [profile.dev]
+# Light optimisation of the workspace's own crates: the tests trace millions
+# of rays, and unoptimised they take about three times as long to run
+# (debug assertions and overflow checks stay on).
+opt-level = 1
 # Line tables keep backtraces readable at a fraction of full debug info.
 debug = "line-tables-only"
 
