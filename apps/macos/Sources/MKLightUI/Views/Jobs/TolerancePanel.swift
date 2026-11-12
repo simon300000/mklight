@@ -117,11 +117,9 @@ struct TolerancePanel: View {
                 .disabled(!session.canStop)
                 .help("End now and keep the sensitivities and trials completed so far")
         case .finished:
-            GlassAction(title: "Edit", id: "secondary", namespace: glass) { session.edit() }
-                .help("Back to the tolerances, compensators and criterion")
-            GlassAction(title: "Run Again", systemImage: "play.fill", prominent: true, id: "primary", namespace: glass, action: run)
+            GlassAction(title: "Done", prominent: true, id: "primary", namespace: glass) { session.edit() }
                 .keyboardShortcut(.defaultAction)
-                .disabled(problem != nil)
+                .help("Back to the tolerances, compensators and criterion; Show Results returns here")
         }
     }
 

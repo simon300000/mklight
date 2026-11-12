@@ -261,7 +261,7 @@ struct LensTableView: View {
             Divider()
             Button("Show in Inspector") {
                 window.selection = id
-                window.inspectorTab = .surface
+                window.page = .surface
                 window.showInspector = true
             }
         }

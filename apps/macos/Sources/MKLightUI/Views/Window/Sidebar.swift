@@ -210,12 +210,12 @@ struct IssuesList: View {
     private func select(_ issue: ValidationIssue) {
         if let s = issue.surface, let sys = workspace.snapshot?.system, sys.surfaces.indices.contains(s) {
             window.selection = sys.surfaces[s].id
-            window.inspectorTab = .surface
+            window.page = .surface
             window.showInspector = true
         } else if let f = issue.field {
             window.selection = nil
             window.highlightedField = f
-            window.inspectorTab = .system
+            window.page = .system
             window.showInspector = true
         }
         window.showIssues = false

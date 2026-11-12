@@ -397,12 +397,9 @@ struct OptimizePanel: View {
                 .help("End now and keep the best design so far")
         case .finished:
             if session.applied {
-                GlassAction(title: "Run Again", id: "secondary", namespace: glass) { session.reset() }
-                GlassAction(title: "Done", prominent: true, id: "primary", namespace: glass) {
-                    session.reset()
-                    window.closeJob()
-                }
-                .keyboardShortcut(.defaultAction)
+                GlassAction(title: "Done", prominent: true, id: "primary", namespace: glass) { session.reset() }
+                    .keyboardShortcut(.defaultAction)
+                    .help("Back to the merit function and variables")
             } else {
                 GlassAction(title: "Discard", id: "secondary", namespace: glass) { session.reset() }
                 GlassAction(title: "Apply to Design", prominent: true, id: "primary", namespace: glass) {
@@ -510,8 +507,11 @@ struct SolvesPanel: View {
         } actions: {
             if session.committed {
                 Text("Applied. Undo with ⌘Z.").font(.callout).foregroundStyle(.secondary).frame(maxWidth: .infinity)
-                GlassAction(title: "Done", prominent: true, id: "primary", namespace: glass) { window.closeJob() }
-                    .keyboardShortcut(.defaultAction)
+                GlassAction(title: "Done", prominent: true, id: "primary", namespace: glass) {
+                    Task { await session.dryRun(in: workspace) }
+                }
+                .keyboardShortcut(.defaultAction)
+                .help("Back to the design's solves")
             } else {
                 GlassAction(title: "Apply to Design", prominent: true, id: "primary", namespace: glass) {
                     Task { await session.commit(in: workspace, document: design, undoManager: undoManager) }

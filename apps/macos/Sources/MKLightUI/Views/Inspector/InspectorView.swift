@@ -151,7 +151,7 @@ struct SurfaceInspector: View {
                     edit("Change Comment") { $0.label = v }
                 }
             }
-            if type.placementFirst { PlacementSection(surface: surface, edit: edit, variable: variable).id(surface.id) }
+            if type.placementFirst { PlacementSection(surface: surface, edit: edit, variable: variable).id(RowsID.placement(surface.id)) }
             if case .diffractive(let base, _) = surface.shape {
                 Section("Base Shape") {
                     Picker("Base", selection: Binding(get: { base.kind }, set: setDiffractiveBase)) {
@@ -168,7 +168,7 @@ struct SurfaceInspector: View {
                     Section {
                         ForEach(section.choices) { c in choiceField(c) }
                         ForEach(params) { p in paramField(p) }
-                        if let list { CoefficientRows(list: list, surface: surface, edit: edit, variable: variable).id(surface.id) }
+                        if let list { CoefficientRows(list: list, surface: surface, edit: edit, variable: variable).id(RowsID.coefficients(surface.id)) }
                     } header: {
                         Text(section.title)
                     } footer: {
@@ -223,7 +223,7 @@ struct SurfaceInspector: View {
                         }
                         if case .catalog = surface.material {
                             MeltOffsetRows(surface: surface, system: system, workspace: workspace, edit: edit, variable: variable)
-                                .id(surface.id)
+                                .id(RowsID.meltOffset(surface.id))
                         }
                         if case .model(let nd, let vd, let dpgf) = surface.material {
                             NumberField(title: "n_d", value: nd, variable: variable(.modelNd(surface: surface.id)), owner: surface.id) { v in
@@ -239,7 +239,7 @@ struct SurfaceInspector: View {
             if !surface.isCoordinateBreak {
                 ApertureSection(surface: surface, autoValue: semiDiameter, edit: edit, variable: variable)
             }
-            if !type.placementFirst && !isEnd { PlacementSection(surface: surface, edit: edit, variable: variable).id(surface.id) }
+            if !type.placementFirst && !isEnd { PlacementSection(surface: surface, edit: edit, variable: variable).id(RowsID.placement(surface.id)) }
             if !isEnd && !surface.isCoordinateBreak {
                 Section("Coating") {
                     Picker("Coating", selection: Binding(get: { surface.coating ?? "" }, set: { v in edit("Change Coating") { $0.coating = v.isEmpty ? nil : v } })) {
@@ -361,6 +361,14 @@ struct TypeMenu: View {
         .accessibilityLabel("Surface type")
         .accessibilityValue(SurfaceTypes.title(of: current))
     }
+}
+
+/// Identities of the inspector's per-surface row groups (their state
+/// resets for another surface). Each needs its own: two groups with the
+/// same explicit id in one grouped form (the asphere terms and the
+/// placement both keyed by the surface) were both drawn empty.
+private enum RowsID: Hashable {
+    case coefficients(SurfaceID), placement(SurfaceID), meltOffset(SurfaceID)
 }
 
 /// The coefficient list of a type (e.g. A₄, A₆, … of an even asphere),

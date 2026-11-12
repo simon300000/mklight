@@ -205,13 +205,6 @@ public final class WindowState {
         }
     }
 
-    /// Leaves the job panel for the surface or system inspector; the
-    /// inspector stays open. A running job continues; the toolbar shows
-    /// its progress.
-    public func closeJob() {
-        activeJob = nil
-    }
-
     /// The running design job, if any.
     public var runningJob: DesignJobKind? {
         optimize.isRunning ? .optimize : glass.isRunning ? .glass : tolerance.isRunning ? .tolerance : nil

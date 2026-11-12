@@ -407,12 +407,9 @@ struct GlassSubstitutionPanel: View {
                 .help("End now and keep the combinations ranked so far")
         case .finished:
             if session.applied {
-                GlassAction(title: "Run Again", id: "secondary", namespace: glass) { session.reset(workspace) }
-                GlassAction(title: "Done", prominent: true, id: "primary", namespace: glass) {
-                    session.reset(workspace)
-                    window.closeJob()
-                }
-                .keyboardShortcut(.defaultAction)
+                GlassAction(title: "Done", prominent: true, id: "primary", namespace: glass) { session.reset(workspace) }
+                    .keyboardShortcut(.defaultAction)
+                    .help("Back to the glasses and the search settings")
             } else {
                 GlassAction(title: "Discard", id: "secondary", namespace: glass) { session.reset(workspace) }
                 GlassAction(title: "Apply to Design", prominent: true, id: "primary", namespace: glass) {

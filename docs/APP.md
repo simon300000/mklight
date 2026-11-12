@@ -47,7 +47,7 @@ this page.
    stale pane. A disabled action dims and loses its tint. Everything else is regular glass or plain.
 4. *Morph glass when controls change state* (`glassEffectID`). The job
    action bar morphs Optimize → [progress, Cancel, Stop] → [Discard, Apply to
-   Design] → [Run Again, Done]; the viewport's Section / 3D selection slides
+   Design] → [Done]; the viewport's Section / 3D selection slides
    between its options.
 5. *Group toolbar items by function, at most three groups, spacers between
    them; the primary action and inspector toggle trailing; every item also a
@@ -493,7 +493,8 @@ this page.
   of the toolbar (`InspectorTabBar`, as in Xcode): Surface and System, then
   the design jobs (Optimize, Glass Substitution, Tolerance, Apply Solves),
   a running job's tab marked with a dot. `WindowState.page` is the
-  selection; a job's Done returns to the surface or system page. The menu
+  selection; a job's Done (its only button after a run is applied) returns
+  the job to its starting page and stays on the job's tab. The menu
   commands and the status capsule open a hidden inspector on a job's page.
   The inspector stays built while hidden (building its form on every open
   stalled the window for ~120 ms) and does not follow the selection then;
