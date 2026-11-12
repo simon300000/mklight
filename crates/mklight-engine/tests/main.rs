@@ -11,5 +11,6 @@ mod policies;
 mod results_doc;
 mod route_options;
 mod session_ops;
+mod spec_conversion;
 mod stray_partition;
 mod wave;

@@ -514,6 +514,17 @@ this page.
   blue–red, PV); DOE the phase profile in waves, its paraxial power at the
   primary wavelength and trace order (and at the design wavelength and
   order), focal length, smallest zone period and zone count.
+  System: name and notes, aperture, fields, wavelengths (with presets),
+  environment, ray aiming, configurations and glass catalogs. Switching the
+  field type or the aperture type converts the numbers so the system stays
+  the same (the engine's `convert_spec`), as one undoable step: each field
+  keeps its chief ray (a real image height is the real chief ray's, at the
+  primary wavelength), weights and vignetting stay; the aperture keeps the
+  paraxial marginal ray, and "Float by stop size" fixes an automatic stop
+  semi-diameter at the beam's current size (a fixed one stays). Where no
+  equivalent exists (an object height or NA with the object at infinity)
+  the numbers stay and validation says why. Configuration overrides of
+  field values are not converted.
 * **Design jobs** are inspector panels (`JobPanel`) with a header, a
   scrolling body and a glass action bar whose buttons morph between states.
   *Optimize*:

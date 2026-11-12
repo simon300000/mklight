@@ -535,3 +535,36 @@ private struct EngineVerdict: Decodable {
         }
     }
 }
+
+/// Applying a `convert_spec` result to the field kind and aperture type.
+@Suite struct SpecConversionTests {
+    @Test func fieldValuesReplaceTheNumbersAndKeepWeights() throws {
+        var s = SampleSystems.cookeTriplet()
+        s.fields.fields[1].weight = 2
+        let json = try JSONValue.parse(Data(#"{"fields": {"kind": "paraxial_image_height", "values": [[0, 0], [0, 3.5], [0, 7]]}, "fields_error": null, "aperture": null, "aperture_error": null, "stop_semi_diameter": 4.2}"#.utf8))
+        let c = try #require(SpecConversion(json: json))
+        #expect(c.stopSemiDiameter == 4.2 && c.aperture == nil)
+        var converted = s
+        converted.setFieldKind(.paraxialImageHeight, conversion: c)
+        #expect(converted.fields.fields.map(\.y) == [0, 3.5, 7] && converted.fields.fields[1].weight == 2)
+        // A result for another field count is not applied.
+        var other = s
+        other.fields.fields.removeLast()
+        let kept = other.fields.fields
+        other.setFieldKind(.paraxialImageHeight, conversion: c)
+        #expect(other.fields.kind == .paraxialImageHeight && other.fields.fields == kept)
+    }
+
+    @Test func floatByStopSizeFixesOnlyAnAutomaticStop() {
+        var s = SampleSystems.cookeTriplet()
+        s.setApertureKind(.floatByStopSize, conversion: SpecConversion(stopSemiDiameter: 4.2))
+        #expect(s.aperture == .floatByStopSize && s.surfaces[s.stop].semiDiameter == .fixed(4.2))
+        var f = SampleSystems.cookeTriplet()
+        f.surfaces[f.stop].semiDiameter = .fixed(3)
+        f.setApertureKind(.floatByStopSize, conversion: SpecConversion(stopSemiDiameter: 4.2))
+        #expect(f.surfaces[f.stop].semiDiameter == .fixed(3), "a fixed stop is the user's")
+        var e = SampleSystems.cookeTriplet()
+        e.setApertureKind(.imageSpaceFNumber, conversion: SpecConversion(aperture: .imageSpaceFNumber(4.5)))
+        #expect(e.aperture == .imageSpaceFNumber(4.5))
+    }
+}

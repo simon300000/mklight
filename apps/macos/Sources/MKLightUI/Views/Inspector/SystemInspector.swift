@@ -105,7 +105,7 @@ struct SystemInspector: View {
 
     private var fieldsSection: some View {
         Section {
-            Picker("Type", selection: Binding(get: { system.fields.kind }, set: { k in edit("Change Field Type") { $0.fields.kind = k } })) {
+            Picker("Type", selection: Binding(get: { system.fields.kind }, set: setFieldKind)) {
                 ForEach(FieldKind.allCases) { Text($0.title).tag($0) }
             }
             Grid(alignment: .trailing, horizontalSpacing: Space.m, verticalSpacing: Space.xs) {
@@ -224,10 +224,25 @@ struct SystemInspector: View {
 
     // MARK: Helpers
 
+    /// Switches the field kind, converting every field's value so it keeps
+    /// its chief ray (the engine's `convert_spec`). Where the engine cannot
+    /// convert (e.g. an object height at infinity) the numbers stay and
+    /// validation says why.
+    private func setFieldKind(_ k: FieldKind) {
+        let before = system
+        Task {
+            let c = await workspace.convertSpec(of: before, fieldKind: k)
+            edit("Change Field Type") { $0.setFieldKind(k, conversion: $0 == before ? c : nil) }
+        }
+    }
+
+    /// Switches the aperture type, converting the value so the paraxial
+    /// marginal ray stays (see `setFieldKind`).
     private func setApertureKind(_ k: ApertureSpec.Kind) {
-        edit("Change Aperture Type") { s in
-            let v = s.aperture.value ?? (k == .objectSpaceNA ? 0.1 : k == .entrancePupilDiameter ? 10 : 4)
-            s.aperture = ApertureSpec(kind: k, value: v)
+        let before = system
+        Task {
+            let c = await workspace.convertSpec(of: before, aperture: k)
+            edit("Change Aperture Type") { $0.setApertureKind(k, conversion: $0 == before ? c : nil) }
         }
     }
 

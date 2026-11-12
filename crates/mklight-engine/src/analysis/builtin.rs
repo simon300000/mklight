@@ -1,5 +1,5 @@
-//! Model analyses (`validate`, `system_summary`, `glass_info`) and the
-//! `rng_stream` diagnostic.
+//! Model analyses (`validate`, `system_summary`, `glass_info`,
+//! `convert_spec`) and the `rng_stream` diagnostic.
 
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -10,8 +10,10 @@ use mklight_core::materials::{Glass, MaterialLibrary, MaterialOffset, ResolvedMa
 use mklight_core::math::KahanSum;
 use mklight_core::rng::Philox;
 use mklight_core::{
-    ApertureSpec, Interaction, JobContext, MaterialRef, MkError, SemiDiameter, SurfaceShape,
+    ApertureSpec, FieldKind, Interaction, JobContext, MaterialRef, MkError, SemiDiameter,
+    SurfaceShape,
 };
+use mklight_trace::paraxial::FirstOrder;
 
 use super::geometric::parse;
 use super::{Analysis, AnalysisInput, AnalysisOutput, AnalysisRegistry};
@@ -24,6 +26,7 @@ pub fn register_all(r: &mut AnalysisRegistry) {
     r.register(Arc::new(Validate));
     r.register(Arc::new(SystemSummary));
     r.register(Arc::new(GlassInfo));
+    r.register(Arc::new(ConvertSpec));
     r.register(Arc::new(RngStream));
 }
 
@@ -729,6 +732,160 @@ impl Analysis for GlassInfo {
             }),
             buffers,
             warnings,
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// convert_spec
+
+/// The system's fields and aperture expressed in another field kind or
+/// aperture type, for front ends that keep the system equivalent when the
+/// user switches the type.
+pub struct ConvertSpec;
+
+#[derive(Deserialize)]
+struct ConvertSpecSettings {
+    field_kind: Option<FieldKind>,
+    aperture: Option<String>,
+}
+
+/// The value of aperture type `kind` that gives the system's paraxial
+/// marginal ray (`fo` at the primary wavelength). `Ok(None)` for
+/// `float_by_stop_size`, which has no value.
+fn aperture_value(fo: &FirstOrder, kind: &str, at_inf: bool) -> Result<Option<f64>, String> {
+    let v = match kind {
+        "entrance_pupil_diameter" => fo.entrance_pupil_diameter,
+        "image_space_f_number" => fo.image_f_number,
+        "object_space_na" if at_inf => return Err("object-space NA needs a finite object".into()),
+        "object_space_na" => fo.object_na,
+        "paraxial_working_f_number" => fo.working_f_number,
+        "float_by_stop_size" => return Ok(None),
+        k => return Err(format!("unknown aperture type '{k}'")),
+    };
+    if v.is_finite() && v > 0.0 {
+        Ok(Some(v))
+    } else {
+        Err(format!(
+            "{} is not defined for this system",
+            kind.replace('_', " ")
+        ))
+    }
+}
+
+impl Analysis for ConvertSpec {
+    fn name(&self) -> &str {
+        "convert_spec"
+    }
+    fn title(&self) -> &str {
+        "Convert field and aperture types"
+    }
+    fn category(&self) -> &str {
+        "model"
+    }
+    fn description(&self) -> &str {
+        "The system's fields in another field kind and its aperture in another aperture type, \
+         each giving the same system: every field keeps its chief ray (object angles and \
+         heights and paraxial image heights through the paraxial entrance pupil and chief \
+         ray, real image heights by tracing the real chief ray at the primary wavelength), \
+         and the aperture keeps the paraxial marginal ray. A conversion that is undefined for \
+         the system (an object height or NA at infinity, a field that cannot be resolved) is \
+         reported in its `*_error` and has a null result."
+    }
+    fn settings_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "field_kind": {"type": ["string", "null"], "default": null,
+                               "enum": ["object_angle", "object_height",
+                                        "paraxial_image_height", "real_image_height", null],
+                               "description": "Field kind to convert the fields to; null skips."},
+                "aperture": {"type": ["string", "null"], "default": null,
+                             "enum": ["entrance_pupil_diameter", "image_space_f_number",
+                                      "object_space_na", "paraxial_working_f_number",
+                                      "float_by_stop_size", null],
+                             "description": "Aperture type to convert to; null skips."}
+            }
+        })
+    }
+    fn result_schema(&self) -> Value {
+        use super::schema::*;
+        result(
+            &[
+                (
+                    "fields",
+                    any("{kind, values: [[x, y], …]} in system field order, or null."),
+                ),
+                (
+                    "fields_error",
+                    any("Why the fields were not converted, or null."),
+                ),
+                (
+                    "aperture",
+                    any("The converted ApertureSpec ({type, value}), or null."),
+                ),
+                (
+                    "aperture_error",
+                    any("Why the aperture was not converted, or null."),
+                ),
+                (
+                    "stop_semi_diameter",
+                    num(
+                        "mm",
+                        "Paraxial marginal-ray height at the stop (primary wavelength).",
+                    ),
+                ),
+            ],
+            vec![],
+        )
+    }
+    fn run(
+        &self,
+        input: &AnalysisInput<'_>,
+        settings: &Value,
+        ctx: &JobContext,
+    ) -> EngineResult<AnalysisOutput> {
+        let s: ConvertSpecSettings = parse(settings)?;
+        let tracer = input.tracer(ctx)?;
+        let fo = tracer.paraxial().primary();
+        let mut fields = Value::Null;
+        let mut fields_error = Value::Null;
+        if let Some(kind) = s.field_kind {
+            let values: Result<Vec<[f64; 2]>, String> = tracer
+                .fields()
+                .iter()
+                .enumerate()
+                .map(|(i, f)| match &f.error {
+                    Some(e) => Err(format!("field {}: {e}", i + 1)),
+                    None => tracer
+                        .field_value(&f.source, kind)
+                        .map_err(|e| format!("field {}: {e}", i + 1)),
+                })
+                .collect();
+            match values {
+                Ok(v) => fields = json!({"kind": kind, "values": v}),
+                Err(e) => fields_error = json!(e),
+            }
+        }
+        let mut aperture = Value::Null;
+        let mut aperture_error = Value::Null;
+        if let Some(kind) = &s.aperture {
+            match aperture_value(fo, kind, tracer.system().object_at_infinity) {
+                Ok(Some(v)) => aperture = json!({"type": kind, "value": v}),
+                Ok(None) => aperture = json!({"type": kind}),
+                Err(e) => aperture_error = json!(e),
+            }
+        }
+        Ok(AnalysisOutput {
+            json: json!({
+                "fields": fields,
+                "fields_error": fields_error,
+                "aperture": aperture,
+                "aperture_error": aperture_error,
+                "stop_semi_diameter": fo.stop_semi_diameter,
+            }),
+            buffers: Vec::new(),
+            warnings: Vec::new(),
         })
     }
 }

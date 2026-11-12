@@ -1310,6 +1310,57 @@ impl SequentialTracer {
         }
     }
 
+    /// The field value `(x, y)` in units of `kind` that resolves to `src`:
+    /// the inverse of [`Self::field_source`] for every kind, so a field
+    /// converted to another kind keeps its chief ray. The image heights are
+    /// those of the paraxial chief ray and of the real chief ray (primary
+    /// wavelength, current aiming). An object height needs a finite object,
+    /// an angle a finite entrance pupil.
+    pub fn field_value(&self, src: &ObjectSource, kind: FieldKind) -> MkResult<[f64; 2]> {
+        let fail = |m: &str| MkError::Trace(m.into());
+        let fo = self.paraxial.primary();
+        match (kind, *src) {
+            (FieldKind::ObjectAngle, ObjectSource::Direction { dir }) => Ok([
+                dir.x.atan2(dir.z).to_degrees(),
+                dir.y.atan2(dir.z).to_degrees(),
+            ]),
+            (FieldKind::ObjectAngle, ObjectSource::Point { point }) => {
+                if self.pupil.telecentric {
+                    return Err(fail("angle fields need a finite entrance pupil"));
+                }
+                // The chief line from the object point through the paraxial
+                // entrance-pupil centre (`object_point_on_chief_line`).
+                let g = start_frame(&self.sys).to_global_point(point);
+                let d = Vec3::new(-g.x, -g.y, self.pupil.z_ep - g.z);
+                if d.z == 0.0 {
+                    return Err(fail("the object lies in the entrance-pupil plane"));
+                }
+                Ok([
+                    (d.x / d.z).atan().to_degrees(),
+                    (d.y / d.z).atan().to_degrees(),
+                ])
+            }
+            (FieldKind::ObjectHeight, ObjectSource::Point { point }) => Ok([point.x, point.y]),
+            (FieldKind::ObjectHeight, ObjectSource::Direction { .. }) => {
+                Err(fail("object height needs a finite object"))
+            }
+            (FieldKind::ParaxialImageHeight, src) => {
+                let p = self.source_params(&src);
+                let h = match src {
+                    ObjectSource::Direction { .. } => fo.image_height_per_tan,
+                    ObjectSource::Point { .. } => fo.image_height_per_object_height,
+                }
+                .filter(|h| h.is_finite())
+                .ok_or_else(|| fail("paraxial chief ray does not reach the image"))?;
+                Ok([p[0] * h, p[1] * h])
+            }
+            (FieldKind::RealImageHeight, src) => self
+                .chief_image_eval(&src, false, None)
+                .map(|(h, _)| h)
+                .ok_or_else(|| fail("the real chief ray does not reach the image")),
+        }
+    }
+
     fn source_params(&self, src: &ObjectSource) -> [f64; 2] {
         match *src {
             ObjectSource::Direction { dir } => [dir.x / dir.z, dir.y / dir.z],

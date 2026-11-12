@@ -342,6 +342,29 @@ settings with defaults, result fields (nested objects and arrays of objects
 flattened as `a.b` and `a[].b`), and buffers.
 
 <!-- BEGIN GENERATED: analysis reference (tests/results_doc.rs) -->
+### `convert_spec` — Convert field and aperture types
+
+Category `model`, result version 1.
+
+The system's fields in another field kind and its aperture in another aperture type, each giving the same system: every field keeps its chief ray (object angles and heights and paraxial image heights through the paraxial entrance pupil and chief ray, real image heights by tracing the real chief ray at the primary wavelength), and the aperture keeps the paraxial marginal ray. A conversion that is undefined for the system (an object height or NA at infinity, a field that cannot be resolved) is reported in its `*_error` and has a null result.
+
+Settings:
+
+| key | type | default | unit | notes |
+|---|---|---|---|---|
+| `aperture` | string\|null | `null` |  | one of `"entrance_pupil_diameter"`, `"image_space_f_number"`, `"object_space_na"`, `"paraxial_working_f_number"`, `"float_by_stop_size"`, `null`; Aperture type to convert to; null skips. |
+| `field_kind` | string\|null | `null` |  | one of `"object_angle"`, `"object_height"`, `"paraxial_image_height"`, `"real_image_height"`, `null`; Field kind to convert the fields to; null skips. |
+
+Result (`result` in the envelope):
+
+| field | type | unit | notes |
+|---|---|---|---|
+| `aperture` | any |  | The converted ApertureSpec ({type, value}), or null. |
+| `aperture_error` | any |  | Why the aperture was not converted, or null. |
+| `fields` | any |  | {kind, values: [[x, y], …]} in system field order, or null. |
+| `fields_error` | any |  | Why the fields were not converted, or null. |
+| `stop_semi_diameter` | number | mm | Paraxial marginal-ray height at the stop (primary wavelength). |
+
 ### `solves` — Solves (preview)
 
 Category `model`, result version 1.

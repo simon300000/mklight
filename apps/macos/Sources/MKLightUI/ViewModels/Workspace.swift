@@ -174,8 +174,11 @@ public final class Workspace {
     /// Analyses a pane can show: everything except design jobs and
     /// internal ones, grouped by category in the engine's order.
     public var paneAnalyses: [AnalysisDescriptor] {
-        // `ray_grid` is raw ray data for scripts (no plot): the spot diagram shows it.
-        descriptors.filter { !["optimization", "diagnostic"].contains($0.category) && !["layout", "ray_grid"].contains($0.name) }
+        // `ray_grid` is raw ray data for scripts (no plot): the spot diagram shows it;
+        // `convert_spec` serves the System inspector's type pickers.
+        descriptors.filter {
+            !["optimization", "diagnostic"].contains($0.category) && !["layout", "ray_grid", "convert_spec"].contains($0.name)
+        }
     }
 
     public var isBusy: Bool { allPanes.contains(where: \.isRunning) }
@@ -603,6 +606,20 @@ public final class Workspace {
             EngineAnalysisRequest(analysis: analysis, settings: settings, execution: ExecutionSettings(backend: backend)), on: snap)
         liveJobs.set("job:" + (key ?? analysis), job, request: request)
         return job
+    }
+
+    /// `system`'s fields and aperture in another field kind or aperture
+    /// type (the engine's `convert_spec`); `nil` when the engine cannot
+    /// answer (a refused design, an engine without the analysis).
+    public func convertSpec(of system: OpticalSystem, fieldKind: FieldKind? = nil, aperture: ApertureSpec.Kind? = nil) async -> SpecConversion? {
+        let settings: [String: JSONValue] = [
+            "field_kind": fieldKind.map { .string($0.rawValue) } ?? .null,
+            "aperture": aperture.map { .string($0.rawValue) } ?? .null,
+        ]
+        guard let job = try? await submitJob("convert_spec", settings: settings, on: system, key: "convert_spec"),
+            let out = try? await job.result()
+        else { return nil }
+        return SpecConversion(json: out.json)
     }
 
     /// Solves the current design in the engine (`applySolves`).
