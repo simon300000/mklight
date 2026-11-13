@@ -29,10 +29,9 @@ extension ToleranceRow {
             guard case .success(let (m, p)) = engineLimits(in: c), let curv = c.system.value(at: .curvature(surface: surface)) else { return nil }
             switch unit {
             case .fringes:
-                guard let h = c.semiDiameter(surface), h > 0 else { return nil }
-                let k = (h * h) / (c.testWavelengthUm * 1e-3)
-                out.minus = m * k
-                out.plus = p * k
+                guard let h = c.semiDiameter(surface), let k = Self.curvaturePerFringe(curv, semiDiameter: h, wavelengthUm: c.testWavelengthUm) else { return nil }
+                out.minus = m / k
+                out.plus = p / k
             case .radiusMM, .percent:
                 guard curv != 0, curv + p != 0, curv - m != 0 else { return nil }
                 let r = 1 / curv

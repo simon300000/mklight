@@ -192,12 +192,16 @@ public enum ToleranceDistribution: Hashable, Sendable {
     case normal(sigmas: Double)
     /// Exactly −minus or +plus (worst-case style).
     case endPoint
+    /// Density ∝ δ², most builds near the limits (a part adjusted only
+    /// until it is within tolerance).
+    case parabolic
 
     public var json: JSONValue {
         switch self {
         case .uniform: .object(["type": .string("uniform")])
         case .normal(let k): .object(["type": .string("truncated_normal"), "sigmas": .number(k)])
         case .endPoint: .object(["type": .string("end_point")])
+        case .parabolic: .object(["type": .string("parabolic")])
         }
     }
 
@@ -205,6 +209,7 @@ public enum ToleranceDistribution: Hashable, Sendable {
         switch json?["type"]?.string {
         case "truncated_normal": self = .normal(sigmas: json?["sigmas"]?.nf ?? 2)
         case "end_point": self = .endPoint
+        case "parabolic": self = .parabolic
         default: self = .uniform
         }
     }
@@ -214,10 +219,11 @@ public enum ToleranceDistribution: Hashable, Sendable {
         case .uniform: "Uniform"
         case .normal(let k): "Normal (limits at ±\(Fmt.short(k)) σ)"
         case .endPoint: "End points"
+        case .parabolic: "Parabolic (mostly near the limits)"
         }
     }
 
-    static let choices: [ToleranceDistribution] = [.uniform, .normal(sigmas: 2), .normal(sigmas: 3), .endPoint]
+    static let choices: [ToleranceDistribution] = [.uniform, .normal(sigmas: 2), .normal(sigmas: 3), .parabolic, .endPoint]
 }
 
 // MARK: - Rows
@@ -295,6 +301,18 @@ public struct ToleranceRow: Identifiable, Hashable, Sendable {
         self.last = kind.isElement ? last : nil
         self.pivot = kind.isElement ? pivot : nil
         self.distribution = distribution
+    }
+
+    /// The curvature change (1/mm) per test fringe of power, as the engine
+    /// converts fringes (`curvature_per_power_fringe`): N fringes are N·λ/2
+    /// of departure from the nominal sphere along the normal at the rim of
+    /// the clear aperture, Δc = N·λ(1 + cos θ)/(2h²) with sin θ = c·h
+    /// (N·λ/h² on a flat, ΔR ≈ 4NλR²/D² on a shallow surface). `nil` when
+    /// the aperture is not inside the sphere.
+    public static func curvaturePerFringe(_ curvature: Double, semiDiameter h: Double, wavelengthUm: Double) -> Double? {
+        let ch2 = (curvature * h) * (curvature * h)
+        guard h > 0, h.isFinite, ch2 < 1, wavelengthUm > 0, wavelengthUm.isFinite else { return nil }
+        return wavelengthUm * 1e-3 * (1 + (1 - ch2).squareRoot()) / (2 * h * h)
     }
 
     /// Whether `m` is a glass (a medium with n_d and V_d).
@@ -378,8 +396,9 @@ public struct ToleranceRow: Identifiable, Hashable, Sendable {
                 guard let h = c.semiDiameter(surface), h > 0 else {
                     return .failure(.message("Fringes need the clear aperture of surface \(i); run the layout or set a semi-diameter."))
                 }
-                // N fringes of power: sag change N·λ/2 at the rim, Δc = N·λ/h².
-                let k = c.testWavelengthUm * 1e-3 / (h * h)
+                guard let k = Self.curvaturePerFringe(curv, semiDiameter: h, wavelengthUm: c.testWavelengthUm) else {
+                    return .failure(.message("The clear aperture of surface \(i) is wider than its sphere."))
+                }
                 return .success((minus * k, plus * k))
             case .radiusMM, .percent:
                 guard curv != 0 else { return .failure(.message("Surface \(i) is flat: give its power in fringes.")) }
@@ -518,6 +537,8 @@ public struct ToleranceRow: Identifiable, Hashable, Sendable {
         let m = o["minus"]?.nf ?? 0, pl = o["plus"]?.nf ?? 0
         let d = ToleranceDistribution(json: o["distribution"])
         switch p {
+        case .curvature where o["unit"]?.string == "fringes":
+            self.init(.radius, surface: id, minus: m, plus: pl, unit: .fringes, distribution: d)
         case .curvature:
             guard let c = system.value(at: p), c != 0 else { self.init(.other, surface: id, minus: m, plus: pl, param: p, distribution: d); return }
             // c in [c − m, c + p] → R in [1/(c + p), 1/(c − m)].
