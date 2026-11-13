@@ -494,19 +494,23 @@ fn ray_groups_bilateral_equals_mirrored_full_pupil() {
 }
 
 /// `Σ w r²` of the generated default merit and the mean squared RMS of the
-/// aggregate operand over the same (field, λ) set agree.
+/// aggregate operand over the same (field, λ) set agree, for the wavefront
+/// about the centroid (piston and tilt removed) and about the chief ray
+/// (piston removed).
 #[test]
 fn default_merit_equals_mean_squared_rms() {
     let sys = samples::cooke_triplet();
     let reg = OperandRegistry::builtin();
-    for spot in [true, false] {
+    for (spot, wf_ref) in [
+        (true, WavefrontReference::Centroid),
+        (false, WavefrontReference::Centroid),
+        (false, WavefrontReference::Chief),
+    ] {
         let gen_ = DefaultMeritSpec {
             criterion: if spot {
                 mklight_optim::merit::default::DefaultCriterion::default()
             } else {
-                mklight_optim::merit::default::DefaultCriterion::Wavefront {
-                    reference: WavefrontReference::Centroid,
-                }
+                mklight_optim::merit::default::DefaultCriterion::Wavefront { reference: wf_ref }
             },
             thickness: None,
             ..Default::default()
@@ -542,7 +546,7 @@ fn default_merit_equals_mean_squared_rms() {
                         }
                     } else {
                         OperandKind::WavefrontRms {
-                            reference: WavefrontReference::Centroid,
+                            reference: wf_ref,
                             sampling,
                         }
                     },
@@ -555,7 +559,7 @@ fn default_merit_equals_mean_squared_rms() {
         let mean_sq = v.iter().map(|x| ok(x).powi(2)).sum::<f64>() / 9.0;
         assert!(
             (phi - mean_sq).abs() < 1e-12 * mean_sq,
-            "spot={spot}: {phi} vs {mean_sq}"
+            "spot={spot} {wf_ref:?}: {phi} vs {mean_sq}"
         );
         // All fields and wavelengths at once: the same mean square.
         let mut all = ops[0].clone();

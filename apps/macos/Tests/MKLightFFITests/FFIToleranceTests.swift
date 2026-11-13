@@ -170,6 +170,8 @@ import Testing
         }
         session.start(in: w, context: context, merit: doc.merit)
         try await wait { session.canStop }
+        // Trials start after the nominal; on a loaded machine that takes seconds.
+        try await wait { session.monteCarloStartedAt != nil }
         try await Task.sleep(for: .milliseconds(600))
         session.stop()
         try await wait { session.state == .finished }

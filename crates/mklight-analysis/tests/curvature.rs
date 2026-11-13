@@ -154,6 +154,95 @@ fn ideal_lens_is_flat_and_distortion_free() {
     assert!(g.max_abs_distortion_percent < 1e-10);
 }
 
+/// An ideal lens with the image plane defocused by `dz`: the chief ray
+/// passes the lens (the stop) undeviated, so its height is `(f + dz) tan θ`
+/// exactly. The `f·tan θ` reference must use that image-surface scale (not
+/// `n₀·EFL = f`, which would give a constant `100 dz/f` % offset that jumps to
+/// the forced 0 on axis): every distortion is 0 and `f·θ` is
+/// `100(tan θ/θ − 1)` as at focus.
+#[test]
+fn defocused_ideal_lens_is_distortion_free() {
+    let (f, dz) = (100.0, 2.0);
+    let mut sys = ideal_lens(f, 10.0, &[0.0, 10.0, 20.0]);
+    sys.surfaces[1].thickness = f + dz;
+    let res = field_curvature(
+        &tracer(sys),
+        &FieldCurvatureSettings {
+            field_samples: 9,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let c = &res.curves[0];
+    for (i, &h) in res.normalized_field.iter().enumerate() {
+        let th = (20.0 * h).to_radians();
+        assert!((c.real_height[i] - (f + dz) * th.tan()).abs() < 1e-11);
+        assert!(c.distortion_percent[i].abs() < 1e-10);
+        assert!(
+            c.f_tan_theta_distortion_percent[i].abs() < 1e-10,
+            "H = {h}: {}",
+            c.f_tan_theta_distortion_percent[i]
+        );
+        let ftheta = if h == 0.0 {
+            0.0
+        } else {
+            100.0 * (th.tan() / th - 1.0)
+        };
+        assert!((c.f_theta_distortion_percent[i] - ftheta).abs() < 1e-9);
+    }
+}
+
+/// Every rotational sample with an object at infinity, its image plane moved
+/// 0.5 mm off focus: the `f·tan θ` and `f·θ` curves tend to 0 continuously
+/// as `H → 0` (the first sample off axis, H = 1/40, is within `H²`-scaled
+/// reach of the axis value), and `f·tan θ` equals the paraxial distortion.
+#[test]
+fn f_tan_theta_distortion_is_continuous_on_axis_off_focus() {
+    let mut checked = 0;
+    for (name, mut sys) in mklight_core::samples::all()
+        .into_iter()
+        .filter(|(_, s)| !mklight_core::samples::has_extended_surfaces(s))
+    {
+        let n = sys.surfaces.len();
+        sys.surfaces[n - 2].thickness += 0.5;
+        let rotational = mklight_core::surface_math::system_symmetry(&sys)
+            == mklight_core::surface_math::Symmetry::Rotational;
+        let t = tracer(sys);
+        if !(rotational && t.system().object_at_infinity) {
+            continue;
+        }
+        let res = field_curvature(
+            &t,
+            &FieldCurvatureSettings {
+                field_samples: 41,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        for c in &res.curves {
+            let (ft, fa) = (
+                &c.f_tan_theta_distortion_percent,
+                &c.f_theta_distortion_percent,
+            );
+            let edge = ft[40].abs().max(fa[40].abs());
+            assert_eq!((ft[0], fa[0]), (0.0, 0.0), "{name}");
+            // Near-axis distortion grows as H²: (1/40)² of the edge value,
+            // with a generous factor, plus a floor for rounding.
+            for v in [ft[1], fa[1]] {
+                assert!(
+                    v.abs() < 1e-6 + 4.0 * edge / 1600.0,
+                    "{name}: {v} (edge {edge})"
+                );
+            }
+            for (i, (&f, &d)) in ft.iter().zip(&c.distortion_percent).enumerate() {
+                assert!((f - d).abs() < 1e-9 * (1.0 + d.abs()), "{name} {i}");
+            }
+        }
+        checked += 1;
+    }
+    assert!(checked >= 2, "{checked}");
+}
+
 /// Spherical mirror of radius `r` between two coordinate breaks with the
 /// same tilts (the second re-aims the axis along the reflected chief ray),
 /// stop at the mirror, image `r/2` behind it.

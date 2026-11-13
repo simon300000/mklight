@@ -677,7 +677,7 @@ impl Analysis for GlassInfo {
                     "wavelength_um": w,
                     "n": num(m.index(w)),
                     "n_catalog": num(m_catalog.index(w)),
-                    "absorption_per_mm": glass.absorption_per_mm(w),
+                    "absorption_per_mm": m.absorption_per_mm(w),
                     "in_range": in_range,
                 })
             })

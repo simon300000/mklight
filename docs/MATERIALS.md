@@ -14,19 +14,38 @@ supports, and how to load glass catalogs. Code: `crates/mklight-core/src/materia
   Vacuum is `1/n_air(λ, T, P)`. `air_index` is the Kohlrausch/Edlén formula at
   15 °C with ideal-gas T/P scaling.
 * **Thermal model.** For a system at temperature `T` and pressure `P`,
-  `ResolvedMaterial::index` does the following:
-  1. `n_rel,ref = n_catalog(λ)` (relative to air at `T_ref`, 1 atm);
-  2. `n_abs,ref = n_rel,ref · n_air(λ, T_ref, 1 atm)`;
-  3. `Δn_abs = (n_abs,ref² − 1)/(2 n_abs,ref) · (D0 ΔT + D1 ΔT² + D2 ΔT³ + (E0 ΔT + E1 ΔT²)/(λ² − λ_tk²))`,
-     with `ΔT = T − T_ref`;
-  4. `n = (n_abs,ref + Δn_abs) / n_air(λ, T, P)`.
+  `ResolvedMaterial::index` does the following, with `λ` the system
+  wavelength, which is a wavelength **in air at `T`, `P`**:
+  1. `λ_ref = λ · n_air(λ, T, P) / n_air(λ, T_ref, 1 atm)`, the same light's
+     wavelength in the catalog's reference air (same vacuum wavelength).
+     The catalog formulas are fits against wavelengths measured in that air,
+     so every catalog datum is evaluated at `λ_ref`
+     (`Glass::reference_wavelength`);
+  2. `n_rel,ref = n_catalog(λ_ref)` (relative to air at `T_ref`, 1 atm);
+  3. `n_abs,ref = n_rel,ref · n_air(λ, T_ref, 1 atm)`;
+  4. `Δn_abs = (n_abs,ref² − 1)/(2 n_abs,ref) · (D0 ΔT + D1 ΔT² + D2 ΔT³ + (E0 ΔT + E1 ΔT²)/(λ_ref² − λ_tk²))`,
+     with `ΔT = T − T_ref` (the `λ_tk` term also at the reference-air
+     wavelength, as OpticStudio does);
+  5. `n = (n_abs,ref + Δn_abs) / n_air(λ, T, P)`.
 
-  At `T_ref` and 1 atm this returns the catalog index unchanged. A glass
-  without `TD` data (`T_ref` = 20 °C, `Δn_abs` = 0) still gets the air-index
-  correction for `T` and `P`.
+  At `T_ref` and 1 atm `λ_ref = λ` and this returns the catalog index
+  unchanged, bit for bit. A glass without `TD` data (`T_ref` = 20 °C,
+  `Δn_abs` = 0) still gets the air-index correction for `T` and `P`. The
+  wavelength scaling matters away from the catalog air: N-BK7 at d in a
+  vacuum system (P = 0) is 1.5172199, 6.7·10⁻⁶ above the formula at the
+  unscaled λ; at 60 °C, 1 atm the shift is 8·10⁻⁷ (more for steep glasses
+  and in the blue, `Δn ≈ λ dn/dλ · Δn_air`). The air indices in steps 1, 3
+  and 5 use `λ`; evaluating them at `λ_ref` instead changes `n` by ~10⁻⁹.
 * Internal absorption uses the catalog internal transmittance `τ` of a sample
   of thickness `d`. The absorption coefficient `α = −ln τ / d` is interpolated
-  linearly in λ, and a path of length `L` transmits `exp(−α L)` (Beer–Lambert).
+  linearly in λ (the reference-air wavelength `λ_ref`, as for the index),
+  and a path of length `L` transmits `exp(−α L)` (Beer–Lambert).
+* Every consumer (CPU and GPU tracing, the paraxial model, offsets,
+  `glass_info`'s `n` and `absorption_per_mm`) reads indices and absorption
+  through `ResolvedMaterial`, so all see the same wavelength. Catalogue-level
+  values (`glass_info`'s `n_catalog`, `nd`/`vd` anchors of the catalogue,
+  the glass map, glass-substitution screening) are at the catalog
+  conditions, where `λ_ref = λ`.
 * Thermal expansion (`Glass::cte`, 1/K) is the catalog TCE for −30…+70 °C.
   When a catalog sets the "ignore thermal expansion" flag, `cte` is `None` and
   the raw value is kept in the AGF metadata.

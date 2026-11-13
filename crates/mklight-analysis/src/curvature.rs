@@ -87,9 +87,15 @@
 //! wavelength: `k·tan θ` for an object at infinity (`k` = paraxial image
 //! height per unit `tan θ` on the actual image surface) and `m·h` for a
 //! finite object. `distortion = 100 (y − y_p)/y_p` %. For objects at
-//! infinity, the `f·tan θ` and `f·θ` distortions use `f = n₀·EFL`, the image
-//! height per unit `tan θ` at the paraxial focal plane. All are 0 on the
-//! axis of a rotational system (their limit) and NaN where undefined.
+//! infinity, the `f·tan θ` and `f·θ` distortions use the same scale
+//! `f = k`, measured where the real height is measured: the paraxial image
+//! height per unit `tan θ` on the actual image surface, i.e. the limit of
+//! `y/tan θ` as `θ → 0`. It equals `n₀·EFL` when the image surface is at the
+//! paraxial focus, and differs from it by a relative `Δz/z_XP` (`Δz` the
+//! defocus, `z_XP` the exit-pupil distance) otherwise; with `n₀·EFL` the
+//! curves would not tend to 0 on axis. So `f·tan θ` equals the paraxial
+//! distortion for objects at infinity. All are 0 on the axis of a
+//! rotational system (their limit) and NaN where undefined.
 //!
 //! The grid distortion map traces the chief rays of a square grid of
 //! normalised fields `(Hx, Hy) ∈ [−a, a]²` (`a = 1/√2` by default, so the
@@ -610,7 +616,6 @@ pub fn field_curvature_job(
         }
     }
     ctx.check()?;
-    let n0 = |w: usize| sys.n_object[w];
     let fallbacks = AtomicUsize::new(0);
     let mut curves = Vec::with_capacity(wls.len());
     // Every (wavelength, field) row in parallel, then the curves in
@@ -626,9 +631,10 @@ pub fn field_curvature_job(
             ctx.check()?;
             let (k, j) = (i / nf, i % nf);
             let (w, (fx, fy)) = (wls[k], &first_order[k]);
-            let efl = [fx.efl, fy.efl];
             let (f, h, axis) = (&fields[j], sweep.heights[j], sweep.components[j]);
-            let f_eff = n0(w) * efl[axis];
+            // Plate scale on the actual image surface (module docs).
+            let f_eff =
+                [fx.image_height_per_tan, fy.image_height_per_tan][axis].unwrap_or(f64::NAN);
             let mut row = [f64::NAN; 9];
             let Some(f) = f else { return Ok(row) };
             if let Some(a) = coddington_focus(tracer, f, w) {

@@ -25,6 +25,25 @@ pub enum WaveWarning {
     PupilUndersampled { max_step_waves: f64 },
     /// Too few pupil samples across the diameter for a meaningful result.
     FewPupilSamples { samples: usize, recommended: usize },
+    /// The traced ray lattice is too coarse for the wavefront's curvature:
+    /// linear interpolation between neighbouring rays misses the wavefront
+    /// by up to `interpolation_error_waves` (limit
+    /// [`crate::interp::LATTICE_INTERPOLATION_LIMIT_WAVES`]), so the
+    /// resampled pupil, and the PSF, Strehl and MTF from it, are biased.
+    /// Typical of fast aspheric systems with strong high-order
+    /// aberration. Trace more rays (`pupil.rays`).
+    LatticeUndersampled {
+        interpolation_error_waves: f64,
+        rays: usize,
+        recommended_rays: usize,
+    },
+    /// The image space is afocal (paraxial image-space NA `image_na` ≈ 0):
+    /// the OPD reference sphere about the chief ray's image point turns
+    /// the collimated beam into a large spurious defocus, so OPD, Zernike,
+    /// PSF, Strehl and MTF describe that, not the system. There is no
+    /// plane-wave (afocal) reference yet; focus the beam with an ideal
+    /// (paraxial) lens in front of the image surface.
+    AfocalImageSpace { image_na: f64 },
     /// The FFT size was rounded, so the image spacing differs from the
     /// request.
     SpacingAdjusted { requested_mm: f64, actual_mm: f64 },
@@ -75,6 +94,23 @@ impl fmt::Display for WaveWarning {
                 f,
                 "only {samples} pupil samples across the diameter (recommended ≥ {recommended})"
             ),
+            WaveWarning::LatticeUndersampled {
+                interpolation_error_waves,
+                rays,
+                recommended_rays,
+            } => write!(
+                f,
+                "pupil.rays = {rays} under-resolves the wavefront (linear interpolation \
+                 error up to {interpolation_error_waves:.3} waves); PSF, Strehl and MTF are \
+                 biased; use pupil.rays ≥ {recommended_rays}"
+            ),
+            WaveWarning::AfocalImageSpace { image_na } => write!(
+                f,
+                "image space is afocal (paraxial image-space NA {image_na:.1e}): the reference \
+                 sphere about the chief ray's image point makes the collimated beam a large \
+                 defocus, so OPD, Zernike, PSF, Strehl and MTF are not meaningful; focus the \
+                 beam with an ideal (paraxial) lens before the image surface"
+            ),
             WaveWarning::SpacingAdjusted {
                 requested_mm,
                 actual_mm,
@@ -107,6 +143,18 @@ impl fmt::Display for WaveWarning {
             ),
         }
     }
+}
+
+/// Paraxial image-space NA below which the image space counts as afocal
+/// (working F/# above 5·10⁸).
+pub const AFOCAL_IMAGE_NA: f64 = 1e-9;
+
+/// [`WaveWarning::AfocalImageSpace`] for a first-order solution whose
+/// image-space marginal ray is (numerically) parallel to the axis.
+pub fn afocal_warning(fo: &mklight_trace::paraxial::FirstOrder) -> Option<WaveWarning> {
+    (!(fo.image_na > AFOCAL_IMAGE_NA)).then_some(WaveWarning::AfocalImageSpace {
+        image_na: fo.image_na,
+    })
 }
 
 /// Push `w` unless an equal-kind warning is already present.

@@ -58,8 +58,8 @@ browser the app targets), plus rustfft's `wasm_simd` algorithms
 (`mklight-wasm` feature `fft-simd`, default); linker
 `--shared-memory --import-memory --max-memory=2 GiB` and the TLS exports
 wasm-bindgen's thread transform needs; `panic = abort` (a panic traps the
-thread; see "Known gaps"). The release profile is the workspace's (thin LTO,
-one codegen unit) without debug info.
+thread; see "Known gaps"). The release profile is the workspace's (thin LTO)
+without debug info.
 
 ### Size
 

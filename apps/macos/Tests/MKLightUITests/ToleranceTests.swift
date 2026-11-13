@@ -357,15 +357,19 @@ import Testing
 
     // MARK: Results
 
-    private func result(compensated: Bool = true) -> ToleranceResult {
+    /// `expected`: with the expected changes of engine result version 3
+    /// (uniform limits: the mean change at the limits / 3).
+    private func result(compensated: Bool = true, expected: Bool = false) -> ToleranceResult {
         func op(_ k: Int, _ p: ParamPath, _ cm: Double, _ cp: Double) -> JSONValue {
-            .object([
+            var o: [String: JSONValue] = [
                 "index": .integer(Int64(k)), "label": .string(""), "param": (try? JSONValue.from(p)) ?? .null, "minus": .number(1e-4), "plus": .number(1e-4),
                 "criterion_minus": .number(cm), "criterion_plus": .number(cp), "change_minus": .number(cm - 4e-4), "change_plus": .number(cp - 4e-4),
                 "worst": .number(max(cm, cp) - 4e-4), "ok": .bool(true),
                 "compensators_minus": .array(compensated ? [.number(42.1 - 0.1 * Double(k))] : []),
                 "compensators_plus": .array(compensated ? [.number(42.1 + 0.2)] : []),
-            ])
+            ]
+            if expected { o["expected_change"] = .number((cm + cp - 8e-4) / 6) }
+            return .object(o)
         }
         let json: JSONValue = .object([
             "status": .string("finished"), "stopped": .bool(false),
@@ -405,6 +409,11 @@ import Testing
         let shares = r.sensitivities.map { r.share($0) }
         #expect(abs(shares.reduce(0, +) - 1) < 1e-12 && shares[0] > 0.8)
         #expect(r.worstOffenders == [0])
+        // With expected changes the bar is the share of the predicted change.
+        let e = result(expected: true)
+        let es = e.sensitivities.map { e.share($0) }
+        #expect(abs(es.reduce(0, +) - 1) < 1e-12 && abs(es[0] - 1e-4 / (1e-4 + 2e-4 / 6 + 0.3e-4 / 6)) < 1e-12)
+        #expect(e.worstOffenders == [0])
         // The engine's percentiles, nominal, timing and trial records.
         #expect(r.percentiles.map(\.percentile) == [50, 90] && r.percentiles.map(\.value) == [6e-4, 9.2e-4])
         #expect(r.nominal == 4e-4 && r.secondsPerTrial == 0.021 && r.records.count == 1 && r.record(0)?.compensators == [42.12])

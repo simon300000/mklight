@@ -55,7 +55,10 @@ web-time = "1"
 [profile.release]
 debug = 1
 lto = "thin"
-codegen-units = 1
+# Default codegen units (16): LLVM works on each crate in parallel. One unit
+# (measured 2026-11-13, packet_bench on the Cooke triplet) built the engine
+# 2.1x slower (93 s vs 44 s from clean) and traced no faster; results are
+# bitwise identical either way.
 
 [profile.dev]
 # Light optimisation of the workspace's own crates: the tests trace millions

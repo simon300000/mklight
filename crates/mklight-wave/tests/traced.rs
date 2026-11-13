@@ -1827,3 +1827,122 @@ fn wavefront_fit_terms_are_bounded() {
         Err(mklight_core::MkError::InvalidParam(_))
     ));
 }
+
+// ------------------------------------------- lattice interpolation accuracy
+
+/// F/1.29 aspheric singlet (n = 1.7848, R = 20 mm with r², r⁴, r⁶ terms,
+/// EPD 20 mm, 0.587 µm): about 2 waves of secondary spherical with a steep
+/// rim. Found by an independent cross-check: with the default 65-ray
+/// lattice the linearly interpolated pupil gave a Strehl ratio 20 % low
+/// (0.0267 against 0.0330 at 257 rays, which an independent FFT-PSF code
+/// also gives at 256 rays) without any warning. The lattice estimator now
+/// reports it, and the recommended sampling is clean and converged.
+#[test]
+fn coarse_lattice_on_a_fast_asphere_is_reported() {
+    let mut s1 = Surface::new(
+        1,
+        SurfaceShape::OddAsphere {
+            curvature: 1.0 / 20.0,
+            conic: 0.0,
+            coefficients: vec![0.0, -2.248851e-4, 0.0, -4.690412e-6, 0.0, -6.404376e-8],
+        },
+        7.0,
+        MaterialRef::Constant {
+            n: 1.7848059679000448,
+        },
+    );
+    s1.semi_diameter = SemiDiameter::Auto;
+    let mut sys = system(
+        20.0,
+        vec![s1, surf(2, SurfaceShape::Plane, 21.56201105)],
+        1,
+        &[0.0],
+    );
+    sys.wavelengths = mono(0.587);
+    let t = tracer_for(sys).unwrap();
+    let run = |rays: usize| {
+        let res = wavefront_map(
+            &t,
+            &WavefrontSettings {
+                pupil: PupilSettings { rays, ..uniform() },
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let warned = res
+            .run_info
+            .warnings
+            .iter()
+            .any(|w| w.contains("under-resolves the wavefront"));
+        (res.maps[0].strehl_at_reference, warned)
+    };
+    let (coarse, coarse_warned) = run(65);
+    let (fine, fine_warned) = run(257);
+    assert!(coarse_warned, "65 rays must be reported");
+    assert!(!fine_warned, "257 rays must be clean");
+    assert!(coarse < 0.85 * fine, "coarse {coarse} vs fine {fine}");
+    assert!((fine - 0.0330).abs() < 0.001, "fine {fine}");
+    // The estimator itself on the traced lattice.
+    let tp = pupil(&t, 0, &uniform());
+    let e = lattice_interpolation_error(&tp.samples);
+    assert!(e > 2.0 * LATTICE_INTERPOLATION_LIMIT_WAVES, "{e}");
+    match lattice_warning(&tp.samples) {
+        Some(WaveWarning::LatticeUndersampled {
+            rays,
+            recommended_rays,
+            ..
+        }) => {
+            assert_eq!(rays, 65);
+            assert!(
+                recommended_rays > 65 && recommended_rays < 257,
+                "{recommended_rays}"
+            );
+            assert!(
+                !run(recommended_rays).1,
+                "{recommended_rays} rays still reported"
+            );
+        }
+        w => panic!("{w:?}"),
+    }
+}
+
+/// A confocal paraboloid beam compressor (f 500 / f −100, EPD 50) is
+/// afocal and aberration-free on axis. The reference sphere about the
+/// chief ray's image point used to report about 23 waves RMS and a Strehl
+/// of 1e-5 with no warning; the afocal image space is now reported. A
+/// focusing paraboloid is not.
+#[test]
+fn afocal_image_space_is_reported() {
+    let mirror = |id, c: f64, t| {
+        let mut m = surf(
+            id,
+            SurfaceShape::Conic {
+                curvature: c,
+                conic: -1.0,
+            },
+            t,
+        );
+        m.interaction = Interaction::Reflect;
+        m
+    };
+    let sys = system(
+        50.0,
+        vec![
+            mirror(1, -1.0 / 1000.0, -400.0),
+            mirror(2, -1.0 / 200.0, 200.0),
+        ],
+        1,
+        &[0.0],
+    );
+    let t = tracer_for(sys).unwrap();
+    assert!(t.paraxial().primary().image_na < 1e-9);
+    let afocal = |t: &SequentialTracer| {
+        let res = wavefront_map(t, &WavefrontSettings::default()).unwrap();
+        res.run_info
+            .warnings
+            .iter()
+            .any(|w| w.contains("image space is afocal"))
+    };
+    assert!(afocal(&t));
+    assert!(!afocal(&paraboloid(100.0, 20.0, 0.0, &[0.0])));
+}
