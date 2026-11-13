@@ -5,7 +5,16 @@ import type { Json, JsonObject } from '../engine/types'
 /* eslint-disable @typescript-eslint/no-explicit-any */
 export type Obj = Record<string, any>
 
-export const CATALOG: Record<string, { nd: number; vd: number }> = {
+export interface GlassEntry {
+  nd: number
+  vd: number
+  catalog?: string
+  status?: string
+}
+
+export const BUILTIN_CATALOG = 'MOCK'
+
+export const CATALOG: Record<string, GlassEntry> = {
   'N-BK7': { nd: 1.5168, vd: 64.17 },
   'N-BAK1': { nd: 1.5725, vd: 57.55 },
   'N-SK16': { nd: 1.62041, vd: 60.32 },

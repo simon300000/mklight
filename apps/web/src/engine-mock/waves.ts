@@ -9,13 +9,13 @@ import type { Obj } from './model'
 const fieldSel = (o: MockOptics, v: unknown) => selectIndices(v, o.sys.fields.length, 'all')
 const wlSel = (o: MockOptics, v: unknown, d: 'all' | 'primary') => selectIndices(v, o.sys.wavelengths.length, d, o.primary)
 
-function spotFor(o: MockOptics, f: number, wls: number[]) {
+export function spotFor(o: MockOptics, f: number, wls: number[]) {
   return spotData(o, { fields: [f], wls, pattern: 'hexapolar', rings: 4, seed: 1, defocus: 0, reference: 'chief' })[0]
 }
 
 // --- MTF ------------------------------------------------------------------
 
-function diffractionMtf(s: number): number {
+export function diffractionMtf(s: number): number {
   if (s >= 1) return 0
   if (s <= 0) return 1
   return (2 / Math.PI) * (Math.acos(s) - s * Math.sqrt(1 - s * s))
@@ -171,7 +171,7 @@ interface WfMap {
   pts: { u: number; v: number; w: number }[]
 }
 
-function buildMap(o: MockOptics, f: number, w: number, n: number): WfMap {
+export function buildMap(o: MockOptics, f: number, w: number, n: number): WfMap {
   const fn = wavefrontFn(o, f, w)
   const coords = Float64Array.from({ length: n }, (_, i) => -1 + (2 * i + 1) / n)
   const opd = new Float64Array(n * n).fill(NaN)
@@ -311,7 +311,7 @@ export function wavefrontMap(o: MockOptics, s: Obj): Out {
 
 // --- PSF ------------------------------------------------------------------
 
-function j1(x: number): number {
+export function j1(x: number): number {
   const ax = Math.abs(x)
   if (ax < 8) {
     const y = x * x

@@ -131,6 +131,12 @@ export function layout(o: MockOptics, s: Obj): Out {
   const m = Math.max(Math.floor(Number(s.profile_samples ?? 41)) | 1, 5)
   const raysPer = Math.max(Math.floor(Number(s.rays_per_field ?? 7)), 1)
   const include3D = s.include_3d !== false
+  const xz = s.section === 'xz'
+  const ax: 0 | 1 = xz ? 0 : 1
+  const ox: 0 | 1 = xz ? 1 : 0
+  const ringCount = Math.max(Math.floor(Number(s.rings ?? 3)), 1)
+  const ringSamples = Math.max(Math.floor(Number(s.ring_samples ?? 64)), 3)
+  const meshRings = include3D ? Math.max(Math.floor(Number(s.mesh_rings ?? 0)), 0) : 0
   const image = n - 1
   const lines: Poly[] = []
   const mech = surfaces.map((x, i) => x.mechSD ?? sd[i] + margin)
@@ -151,10 +157,10 @@ export function layout(o: MockOptics, s: Obj): Out {
   const wls = wlSel(o, s.wavelengths, 'primary')
   for (const f of fieldSel(o, s.fields)) {
     const fp = o.fieldPoint(f)
-    const meridional = sys.fields[f].x === 0
+    const meridional = xz ? sys.fields[f].y === 0 : sys.fields[f].x === 0
     for (const w of wls) {
-      const pupil: [number, number][] = linspace(-1, 1, raysPer).map((v) => [0, v] as [number, number])
-      if (include3D) pupil.push([-1, 0], [1, 0])
+      const pupil: [number, number][] = linspace(-1, 1, raysPer).map((v) => (xz ? [v, 0] : [0, v]) as [number, number])
+      if (include3D) pupil.push(...((xz ? [[0, -1], [0, 1]] : [[-1, 0], [1, 0]]) as [number, number][]))
       for (const [px, py] of pupil) {
         const t = o.trace(o.makeRay(fp, px, py), w)
         const h = t.heights.get(image)
@@ -165,7 +171,7 @@ export function layout(o: MockOptics, s: Obj): Out {
           surface: -1,
           field: f,
           wl: w,
-          flags: (meridional && px === 0 ? 1 : 0) | (t.ok ? 0 : 2),
+          flags: (meridional && (xz ? py === 0 : px === 0) ? 1 : 0) | (t.ok ? 0 : 2),
         })
       }
     }
@@ -189,11 +195,11 @@ export function layout(o: MockOptics, s: Obj): Out {
     r = Math.max(r, 1e-3)
     const kind = i === sys.stop ? 3 : i === image ? 4 : 0
     const dflag = surfaces[i].shape.type === 'diffractive' ? 4 : 0
-    lines.push({ pts: profile(i, -r, r, r, 1), kind, surface: i, field: -1, wl: -1, flags: 1 | dflag })
+    lines.push({ pts: profile(i, -r, r, r, ax), kind, surface: i, field: -1, wl: -1, flags: 1 | dflag })
     if (i === sys.stop) {
       for (const sg of [-1, 1])
         lines.push({
-          pts: [[0, sg * r, o.vertexZ[i]], [0, sg * r * 1.3, o.vertexZ[i]]],
+          pts: (xz ? [[sg * r, 0, o.vertexZ[i]], [sg * r * 1.3, 0, o.vertexZ[i]]] : [[0, sg * r, o.vertexZ[i]], [0, sg * r * 1.3, o.vertexZ[i]]]) as V3[],
           kind: 3,
           surface: i,
           field: -1,
@@ -202,17 +208,20 @@ export function layout(o: MockOptics, s: Obj): Out {
         })
     }
     if (include3D) {
-      lines.push({ pts: profile(i, -r, r, r, 0), kind, surface: i, field: -1, wl: -1, flags: dflag })
-      const z = sagOf(o, i, r * r)
-      if (z !== null)
+      lines.push({ pts: profile(i, -r, r, r, ox), kind, surface: i, field: -1, wl: -1, flags: dflag })
+      for (let k = 1; k <= ringCount; k++) {
+        const rk = (r * k) / ringCount
+        const z = sagOf(o, i, rk * rk)
+        if (z === null) continue
         lines.push({
-          pts: linspace(0, 2 * Math.PI, 65).map((a) => [r * Math.cos(a), r * Math.sin(a), o.vertexZ[i] + z] as V3),
+          pts: linspace(0, 2 * Math.PI, ringSamples + 1).map((a) => [rk * Math.cos(a), rk * Math.sin(a), o.vertexZ[i] + z] as V3),
           kind: 1,
           surface: i,
           field: -1,
           wl: -1,
           flags: dflag,
         })
+      }
     }
   }
 
@@ -223,8 +232,8 @@ export function layout(o: MockOptics, s: Obj): Out {
     if (a.interaction !== 'refract' || a.isCB || b.interaction !== 'refract' || b.isCB) continue
     if (a.material.kind === 'air' || a.material.kind === 'vacuum') continue
     const h = Math.max(sd[i], sd[i + 1])
-    const front = profile(i, -h, h, sd[i], 1)
-    const back = profile(i + 1, -h, h, sd[i + 1], 1)
+    const front = profile(i, -h, h, sd[i], ax)
+    const back = profile(i + 1, -h, h, sd[i + 1], ax)
     if (front.length !== back.length || front.length === 0) continue
     elements.push({ first: i, last: i + 1, front, back, mech: Math.max(mech[i], mech[i + 1]) })
     const f0 = front[0], f1 = front[front.length - 1], b0 = back[0], b1 = back[back.length - 1]
@@ -287,6 +296,37 @@ export function layout(o: MockOptics, s: Obj): Out {
     flags[k] = l.flags
   })
 
+  // Optional 3-D mesh: a fan at the vertex and quad strips per radial subdivision.
+  const meshTri: number[] = []
+  const meshSurf: number[] = []
+  if (meshRings > 0) {
+    const K = Math.max(ringSamples, 3)
+    for (let i = 1; i < n; i++) {
+      if (surfaces[i].isCB) continue
+      let r = sd[i]
+      if (i === image) r = Math.max(imageHeight, Math.abs(o.chiefImagePerUnit * o.fieldParameterY(fpMax)), 1e-3)
+      if (!(r > 0)) continue
+      const vert = (ring: number, k: number): V3 => {
+        const rr = (r * ring) / meshRings
+        const a = (2 * Math.PI * k) / K
+        const zz = sagOf(o, i, rr * rr)
+        return [rr * Math.cos(a) - origin[0], rr * Math.sin(a) - origin[1], o.vertexZ[i] + (zz ?? 0) - origin[2]]
+      }
+      const tri = (a: V3, b: V3, c: V3) => {
+        meshTri.push(...a, ...b, ...c)
+        meshSurf.push(i)
+      }
+      const centre: V3 = [-origin[0], -origin[1], o.vertexZ[i] + (sagOf(o, i, 0) ?? 0) - origin[2]]
+      for (let k = 0; k < K; k++) tri(centre, vert(1, k), vert(1, k + 1))
+      for (let ring = 1; ring < meshRings; ring++)
+        for (let k = 0; k < K; k++) {
+          const a = vert(ring, k), b = vert(ring + 1, k), c = vert(ring + 1, k + 1), d = vert(ring, k + 1)
+          tri(a, b, c)
+          tri(a, c, d)
+        }
+    }
+  }
+
   const surfInfo = surfaces.map((s, i) => ({
     id: s.id,
     index: i,
@@ -313,11 +353,11 @@ export function layout(o: MockOptics, s: Obj): Out {
     kind_names: ['surface_profile', 'surface_rim', 'element_edge', 'stop', 'image_plane', 'ray', 'axis', 'element_outline'],
     polyline_count: P,
     vertex_count: V,
-    section: s.section === 'xz' ? 'xz' : 'yz',
+    section: xz ? 'xz' : 'yz',
     field_count: sys.fields.length,
     field_values: sys.fields.map((f) => pair(f.x, f.y)),
     wavelengths_um: o.wavelengthsUm,
-    mesh_triangle_count: 0,
+    mesh_triangle_count: meshSurf.length,
   })
   addBuf(out, 'vertices', v32, [V, 3])
   addBuf(out, 'vertices_f64', v64, [V, 3])
@@ -327,6 +367,10 @@ export function layout(o: MockOptics, s: Obj): Out {
   addBuf(out, 'fields', fld, [P])
   addBuf(out, 'wavelengths', wav, [P])
   addBuf(out, 'flags', flags, [P])
+  if (meshSurf.length) {
+    addBuf(out, 'surface_mesh', Float32Array.from(meshTri), [meshSurf.length, 3, 3])
+    addBuf(out, 'mesh_surfaces', Uint32Array.from(meshSurf), [meshSurf.length])
+  }
   return out
 }
 
