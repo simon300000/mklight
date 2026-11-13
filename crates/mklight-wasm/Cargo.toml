@@ -7,6 +7,12 @@ license.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 
+[features]
+default = ["fft-simd"]
+# rustfft's WebAssembly SIMD algorithms (needs the `simd128` target feature;
+# scripts/build-wasm.sh --no-simd / --no-fft-simd turn it off).
+fft-simd = ["dep:rustfft", "rustfft/wasm_simd"]
+
 [lib]
 crate-type = ["cdylib", "rlib"]
 
@@ -21,3 +27,5 @@ rayon.workspace = true
 wasm-bindgen = "0.2"
 js-sys = "0.3"
 console_error_panic_hook = "0.1"
+# Only to enable its `wasm_simd` feature for mklight-wave (`fft-simd`).
+rustfft = { workspace = true, optional = true }

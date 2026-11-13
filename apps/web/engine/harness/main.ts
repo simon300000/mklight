@@ -66,6 +66,23 @@ const mk = {
     }
     return ms
   },
+  /** SHA-256 of a fresh run's result JSON and buffer bytes (bitwise identity). */
+  async digest(i: number, req: AnalysisRequest) {
+    const r = await engines[i].submit({ ...req, fresh: true }, snaps[i]).result
+    const parts: Uint8Array[] = [new TextEncoder().encode(JSON.stringify(r.json))]
+    for (const b of r.bufferInfo) {
+      const a = r.buffers[b.name]
+      parts.push(new Uint8Array(a.buffer, a.byteOffset, a.byteLength))
+    }
+    const all = new Uint8Array(parts.reduce((n, p) => n + p.length, 0))
+    let o = 0
+    for (const p of parts) {
+      all.set(p, o)
+      o += p.length
+    }
+    const h = new Uint8Array(await crypto.subtle.digest('SHA-256', all))
+    return Array.from(h.slice(0, 12), (x) => x.toString(16).padStart(2, '0')).join('')
+  },
   async errorOf(fn: () => Promise<unknown>) {
     try {
       await fn()

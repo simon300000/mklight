@@ -47,6 +47,7 @@ png = "0.18"
 approx = "0.5"
 bytemuck = { version = "1.25", features = ["derive"] }
 libc = "0.2"
+libm = "0.2"
 web-time = "1"
 
 [profile.release]

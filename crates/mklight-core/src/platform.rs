@@ -276,3 +276,124 @@ mod wasm {
         Handle { slot }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Fused multiply-add without the instruction
+
+/// `a·b + c` with a single rounding (round to nearest, ties to even): the
+/// same value as `f64::mul_add` (IEEE 754 fusedMultiplyAdd), bit for bit,
+/// for every input. For targets without a fused multiply-add instruction:
+/// wasm32 has none, and `mul_add` there is a call to a slow
+/// integer-arithmetic `fma`; the web build links this one in its place
+/// (`mklight-wasm`), so the tracer's `mul_add`s keep their exact results
+/// at a fraction of the cost. Natively `mul_add` is one instruction and
+/// this function is unused, except by the tests that check it against the
+/// hardware.
+///
+/// Method (Boldo & Melquiond, "Emulation of FMA and correctly rounded sums:
+/// proved algorithms using rounding to odd", IEEE TC 57(4), 2008): the
+/// product exactly as `ph + pl` (Veltkamp split, Dekker product), `c + ph`
+/// exactly as `sh + sl` (TwoSum), `v = RO(sl + pl)` rounded to odd, and the
+/// result `RN(sh + v)`. That is exact when nothing overflows or underflows;
+/// every input outside the range where that is guaranteed (non-finite
+/// operands, nonzero operands with exponents beyond ±500, a nonzero product
+/// below 2⁻⁹⁰⁰, an addend above 2¹⁰⁰⁰ or equal to zero, a tiny nonzero
+/// intermediate sum) takes `fma_exact`, the correctly rounded integer
+/// algorithm, instead.
+#[inline]
+pub fn fma(a: f64, b: f64, c: f64) -> f64 {
+    let (ea, eb, ec) = (biased_exp(a), biased_exp(b), biased_exp(c));
+    // Infinities, NaN and operands too large to split or add without
+    // overflow. (Biased exponents: 0 for zero and subnormals, 2047 for
+    // infinities and NaN.)
+    if (ea > 1523) | (eb > 1523) | (ec > 2023) {
+        return fma_exact(a, b, c);
+    }
+    // The general path, without data-dependent branches: the tracer's
+    // inputs (zero products, exact cancellations of symmetric rays) would
+    // make branches on them unpredictable. A zero operand gives ph = pl = 0
+    // and the result c; an exact cancellation c = -ph gives sh = sl = 0
+    // and the result pl (or +0).
+    let (ph, pl) = two_prod(a, b);
+    let (sh, sl) = two_sum(c, ph);
+    let (v, e) = two_sum(sl, pl);
+    let r = sh + round_to_odd(v, e);
+    // Outside the proved range (one rarely taken branch): a nonzero product
+    // of tiny operands or below 2^-900, where the split or the product's
+    // error could underflow; a tiny nonzero intermediate sum, where the
+    // result could be subnormal; and c = 0, where IEEE's sign of zero
+    // rules need the exact algorithm.
+    let product = (a != 0.0) & (b != 0.0);
+    let risky = (product & ((ea < 523) | (eb < 523) | (ea + eb < 1146)))
+        | ((sh != 0.0) & (biased_exp(sh) < 123))
+        | (c == 0.0);
+    if risky {
+        return fma_exact(a, b, c);
+    }
+    r
+}
+
+#[inline(always)]
+fn biased_exp(x: f64) -> u32 {
+    ((x.to_bits() >> 52) & 0x7ff) as u32
+}
+
+/// `a + b = s + e` exactly (Knuth's TwoSum; no precondition on order).
+#[inline(always)]
+fn two_sum(a: f64, b: f64) -> (f64, f64) {
+    let s = a + b;
+    let bv = s - a;
+    let av = s - bv;
+    (s, (a - av) + (b - bv))
+}
+
+/// Veltkamp split: `x = hi + lo` with both halves 26 bits wide.
+#[inline(always)]
+fn split(x: f64) -> (f64, f64) {
+    let t = 134_217_729.0 * x; // 2^27 + 1
+    let hi = t - (t - x);
+    (hi, x - hi)
+}
+
+/// `a·b = p + e` exactly (Dekker), given no overflow or underflow.
+#[inline(always)]
+fn two_prod(a: f64, b: f64) -> (f64, f64) {
+    let p = a * b;
+    let (ah, al) = split(a);
+    let (bh, bl) = split(b);
+    let e = ((ah * bh - p) + ah * bl + al * bh) + al * bl;
+    (p, e)
+}
+
+/// `RO(v + e)` for `v = RN(v + e)` exactly from TwoSum: `v` itself when the
+/// sum is exact or `v`'s last bit is odd, else the neighbour of `v` towards
+/// `e` (whose last bit is odd). Branch-free; `v` is nonzero whenever `e` is.
+#[inline(always)]
+fn round_to_odd(v: f64, e: f64) -> f64 {
+    let bits = v.to_bits();
+    let adjust = ((e != 0.0) as u64) & !bits & 1;
+    // 0 when e has v's sign (away from zero: +1), 1 when not (towards: -1).
+    let towards_zero = (e.to_bits() ^ bits) >> 63;
+    f64::from_bits(
+        bits.wrapping_add(adjust)
+            .wrapping_sub(2 * adjust * towards_zero),
+    )
+}
+
+/// The correctly rounded fused multiply-add for every input, by integer
+/// arithmetic (`libm::fma`, the algorithm `mul_add` uses where there is no
+/// instruction). Slow; `fma`'s fallback.
+pub fn fma_exact(a: f64, b: f64, c: f64) -> f64 {
+    libm::fma(a, b, c)
+}
+
+/// On wasm32 every `f64::mul_add` is a call to the C symbol `fma`, which
+/// the compiler's builtins define weakly with the slow integer algorithm;
+/// this strong definition replaces it with [`fma`], bit for bit the same
+/// function (docs/WEB.md "Speed"). `--cfg mklight_libm_fma` keeps the
+/// builtin, for measuring the difference.
+#[cfg(all(target_arch = "wasm32", not(mklight_libm_fma)))]
+#[unsafe(export_name = "fma")]
+pub extern "C" fn fma_symbol(a: f64, b: f64, c: f64) -> f64 {
+    fma(a, b, c)
+}

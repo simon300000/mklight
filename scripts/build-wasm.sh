@@ -5,6 +5,12 @@
 #   scripts/build-wasm.sh            release build, wasm-opt -O3, size report
 #   scripts/build-wasm.sh --dev      debug build (fast, large, no wasm-opt)
 #
+# For measurements only (docs/WEB.md "Speed"):
+#   --no-simd       without WebAssembly SIMD (simd128 and rustfft's wasm_simd)
+#   --no-fft-simd   simd128, but rustfft's scalar algorithms
+#   --libm-fma      the compiler's integer `fma` instead of mklight_core::platform::fma
+#   OUT=dir         write the package elsewhere than apps/web/engine/pkg
+#
 # Threads need the wasm `atomics` and `bulk-memory` features and a standard
 # library rebuilt with them (`-Z build-std`), hence a pinned nightly. Native
 # builds keep using the stable toolchain of rust-toolchain.toml.
@@ -26,11 +32,17 @@ MAX_MEMORY=$((2 * 1024 * 1024 * 1024))
 STACK_SIZE=$((2 * 1024 * 1024))
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-OUT="$ROOT/apps/web/engine/pkg"
+OUT="${OUT:-$ROOT/apps/web/engine/pkg}"
 PROFILE=release
+SIMD=",+simd128"
+FEATURES=()
+EXTRA_CFG=""
 for a in "$@"; do
   case "$a" in
     --dev) PROFILE=dev ;;
+    --no-simd) SIMD=""; FEATURES=(--no-default-features) ;;
+    --no-fft-simd) FEATURES=(--no-default-features) ;;
+    --libm-fma) EXTRA_CFG=" --cfg mklight_libm_fma" ;;
     *) echo "unknown option $a" >&2; exit 2 ;;
   esac
 done
@@ -49,7 +61,9 @@ if [[ "$HAVE_BINDGEN" != "$LOCKED_BINDGEN" ]]; then
 fi
 
 export CARGO_TARGET_DIR="$ROOT/target/wasm"
-export RUSTFLAGS="-C target-feature=+atomics,+bulk-memory,+mutable-globals,+nontrapping-fptoint,+sign-ext,+simd128 \
+# simd128: fixed-width SIMD (Chrome 91+, Safari 16.4+), so LLVM vectorises
+# the tracer's packet kernel and rustfft uses its wasm SIMD algorithms.
+export RUSTFLAGS="-C target-feature=+atomics,+bulk-memory,+mutable-globals,+nontrapping-fptoint,+sign-ext$SIMD$EXTRA_CFG \
 -C link-arg=--shared-memory -C link-arg=--import-memory -C link-arg=--max-memory=$MAX_MEMORY \
 -C link-arg=--export=__wasm_init_tls -C link-arg=--export=__tls_size \
 -C link-arg=--export=__tls_align -C link-arg=--export=__tls_base \
@@ -60,11 +74,11 @@ export CARGO_PROFILE_RELEASE_DEBUG=0
 cd "$ROOT"
 if [[ $PROFILE == release ]]; then
   cargo +"$NIGHTLY" build -p mklight-wasm --release --target wasm32-unknown-unknown \
-    -Z build-std=panic_abort,std
+    -Z build-std=panic_abort,std ${FEATURES[@]+"${FEATURES[@]}"}
   WASM="$CARGO_TARGET_DIR/wasm32-unknown-unknown/release/mklight_wasm.wasm"
 else
   cargo +"$NIGHTLY" build -p mklight-wasm --target wasm32-unknown-unknown \
-    -Z build-std=panic_abort,std
+    -Z build-std=panic_abort,std ${FEATURES[@]+"${FEATURES[@]}"}
   WASM="$CARGO_TARGET_DIR/wasm32-unknown-unknown/debug/mklight_wasm.wasm"
 fi
 
@@ -78,7 +92,7 @@ if [[ $PROFILE == release ]]; then
     exit 1
   fi
   wasm-opt -O3 --enable-threads --enable-bulk-memory --enable-mutable-globals \
-    --enable-nontrapping-float-to-int --enable-sign-ext --enable-simd \
+    --enable-nontrapping-float-to-int --enable-sign-ext ${SIMD:+--enable-simd} \
     "$BG" -o "$BG.opt"
   mv "$BG.opt" "$BG"
 fi
