@@ -34,6 +34,8 @@ pub struct WgpuDevice {
     persistent: Mutex<HashMap<u64, Arc<wgpu::Buffer>>>,
     next_key: AtomicU64,
     pool: Mutex<Pool>,
+    /// Persistent keys whose buffers came from the pool (`allocate`).
+    pooled: Mutex<std::collections::HashSet<u64>>,
 }
 
 /// Idle batch buffers by (usage, size class): uploads, scratch and staging
@@ -149,6 +151,7 @@ impl WgpuDevice {
             persistent: Mutex::new(HashMap::new()),
             next_key: AtomicU64::new(1),
             pool: Mutex::new(Pool::default()),
+            pooled: Mutex::new(Default::default()),
         }))
     }
 
@@ -327,19 +330,21 @@ impl WgpuDevice {
         let mut sizes = Vec::with_capacity(batch.resources.len());
         // Pooled scratch is zeroed on the device before the passes.
         let mut clear = Vec::new();
+        // Device-side input copies: (source, word offset, resource, words).
+        let mut slices = Vec::new();
         let mut owned = Vec::new();
         for r in &batch.resources {
             let (b, words) = match r {
                 Resource::Persistent(k) => {
-                    let b = self
-                        .persistent
-                        .lock()
-                        .unwrap()
-                        .get(&k.0)
-                        .cloned()
-                        .ok_or_else(|| MkError::Backend("webgpu: released buffer".into()))?;
+                    let b = self.persistent_buffer(*k)?;
                     let words = (b.size() / 4) as usize;
                     (b, words)
+                }
+                Resource::Slice { key, offset, len } => {
+                    let src = self.persistent_buffer(*key)?;
+                    let b = self.take(*len, storage, "slice")?;
+                    slices.push((src, *offset, buffers.len(), *len));
+                    (Arc::new(b), (*len).max(4))
                 }
                 Resource::Upload(w) => {
                     let b = self.take(w.len(), storage, "upload")?;
@@ -393,6 +398,17 @@ impl WgpuDevice {
         for &i in &clear {
             encoder.clear_buffer(&buffers[i], 0, None);
         }
+        for (src, offset, i, len) in &slices {
+            if *len > 0 {
+                encoder.copy_buffer_to_buffer(
+                    src,
+                    (*offset * 4) as u64,
+                    &buffers[*i],
+                    0,
+                    (*len * 4) as u64,
+                );
+            }
+        }
         for (p, off) in batch.passes.iter().zip(&offsets) {
             let pipe = self.pipeline(p.kernel, &p.shape())?;
             let mut entries = vec![wgpu::BindGroupEntry {
@@ -441,6 +457,19 @@ impl WgpuDevice {
             let [x, y, z] = p.workgroups;
             cp.dispatch_workgroups(x, y, z);
             stats.passes += 1;
+        }
+        for c in &batch.copies {
+            if c.len == 0 {
+                continue;
+            }
+            let to = self.persistent_buffer(c.to)?;
+            encoder.copy_buffer_to_buffer(
+                &buffers[c.from],
+                (c.from_offset * 4) as u64,
+                &to,
+                (c.to_offset * 4) as u64,
+                (c.len * 4) as u64,
+            );
         }
         let mut staging = Vec::with_capacity(batch.reads.len());
         for r in batch.reads {
@@ -557,9 +586,40 @@ impl WgpuDevice {
         Ok(BufferKey(k))
     }
 
+    fn persistent_buffer(&self, k: BufferKey) -> MkResult<Arc<wgpu::Buffer>> {
+        self.persistent
+            .lock()
+            .unwrap()
+            .get(&k.0)
+            .cloned()
+            .ok_or_else(|| MkError::Backend("webgpu: released buffer".into()))
+    }
+
+    /// [`Gpu::allocate`] on the device's own thread: a pooled buffer
+    /// (contents unspecified), returned to the pool on release.
+    pub fn allocate_words(&self, words: usize) -> MkResult<BufferKey> {
+        let b = self.take(
+            words,
+            wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_DST
+                | wgpu::BufferUsages::COPY_SRC,
+            "resident",
+        )?;
+        let k = self.next_key.fetch_add(1, Ordering::Relaxed);
+        self.persistent.lock().unwrap().insert(k, Arc::new(b));
+        self.pooled.lock().unwrap().insert(k);
+        Ok(BufferKey(k))
+    }
+
     /// [`Gpu::release`] on the device's own thread.
     pub fn release_key(&self, key: BufferKey) {
-        self.persistent.lock().unwrap().remove(&key.0);
+        let b = self.persistent.lock().unwrap().remove(&key.0);
+        if self.pooled.lock().unwrap().remove(&key.0)
+            && let Some(b) = b.and_then(|b| Arc::try_unwrap(b).ok())
+        {
+            // Submissions using it are ordered before any later reuse.
+            self.give([b]);
+        }
     }
 
     /// [`Gpu::prepare`] without blocking.
@@ -635,6 +695,9 @@ impl Gpu for WgpuDevice {
     }
     fn release(&self, key: BufferKey) {
         self.release_key(key)
+    }
+    fn allocate(&self, words: usize) -> MkResult<BufferKey> {
+        self.allocate_words(words)
     }
     fn prepare(&self, kernels: &[(Kernel, PassShape)]) -> MkResult<()> {
         pollster::block_on(self.prepare_async(kernels))
