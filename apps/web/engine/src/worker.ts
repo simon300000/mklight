@@ -15,6 +15,8 @@ declare const self: DedicatedWorkerGlobalScope
 const POLL_MS = 30
 /** Shadow stack of each engine thread (a multiple of 64 KiB). */
 const THREAD_STACK = 2 * 1024 * 1024
+/** Attempts to start one worker before giving up (delays 50 ms … 6.4 s). */
+const START_ATTEMPTS = 8
 
 /** A submitted job: client id → engine id, last progress sent. */
 interface Tracked {
@@ -50,18 +52,46 @@ function transferables(r: RawResult): Transferable[] {
 
 const hosts: Worker[] = []
 
+/**
+ * Start a worker from `make` and hand it the module and the shared memory;
+ * resolves once it reports that it runs. A worker the browser refuses to
+ * start (an `error` event before it runs: WebKit does this when a worker
+ * script's response lacks the COEP header, as a server's `304 Not Modified`
+ * often does) is replaced, with growing delays, up to `START_ATTEMPTS`
+ * times. Every engine thread waits for its host, so a refused start must
+ * never be final while a retry can succeed.
+ */
+async function startWorker(make: () => Worker, what: string): Promise<void> {
+  for (let attempt = 1; ; attempt++) {
+    const w = make()
+    hosts.push(w)
+    const ok = await new Promise<boolean>((resolve) => {
+      w.onmessage = () => resolve(true)
+      w.onerror = (e) => {
+        e.preventDefault()
+        resolve(false)
+      }
+      w.postMessage({ module: wasm.wasm_module(), memory: wasm.wasm_memory(), stack: THREAD_STACK })
+    })
+    if (ok) return
+    w.terminate()
+    hosts.splice(hosts.indexOf(w), 1)
+    if (attempt >= START_ATTEMPTS) throw new Error(`${what} could not be started (${attempt} attempts)`)
+    console.warn(`MKLight: the browser refused to start ${what} (attempt ${attempt}); retrying`)
+    await new Promise((r) => setTimeout(r, 25 * 2 ** attempt))
+  }
+}
+
 /** Start one host worker; resolves once it runs (about to take work). */
 function startHost(): Promise<void> {
-  const w = new Worker(new URL('./thread-host.ts', import.meta.url), {
-    type: 'module',
-    name: `mklight-thread-${hosts.length}`,
-  })
-  hosts.push(w)
-  return new Promise((resolve, reject) => {
-    w.onmessage = () => resolve()
-    w.onerror = (e) => reject(new Error(`thread host failed: ${e.message}`))
-    w.postMessage({ module: wasm.wasm_module(), memory: wasm.wasm_memory(), stack: THREAD_STACK })
-  })
+  return startWorker(
+    () =>
+      new Worker(new URL('./thread-host.ts', import.meta.url), {
+        type: 'module',
+        name: `mklight-thread-${hosts.length}`,
+      }),
+    'an engine thread',
+  )
 }
 
 /**
@@ -71,20 +101,23 @@ function startHost(): Promise<void> {
  */
 async function startGpu(): Promise<boolean> {
   if (!('gpu' in navigator) || typeof wasm.gpu_thread !== 'function') return false
-  const w = new Worker(new URL('./gpu-host.ts', import.meta.url), { type: 'module', name: 'mklight-gpu' })
-  hosts.push(w)
-  await new Promise<void>((resolve, reject) => {
-    w.onmessage = () => resolve()
-    w.onerror = (e) => reject(new Error(`GPU worker failed: ${e.message}`))
-    w.postMessage({ module: wasm.wasm_module(), memory: wasm.wasm_memory(), stack: THREAD_STACK })
-  })
+  await startWorker(
+    () => new Worker(new URL('./gpu-host.ts', import.meta.url), { type: 'module', name: 'mklight-gpu' }),
+    'the GPU worker',
+  )
   return true
 }
 
 /** Start the host workers the engine's queued threads still need. */
 function topUpHosts() {
   let n = wasm.wanted_host_threads()
-  while (n-- > 0) void startHost()
+  while (n-- > 0) {
+    startHost().catch((e: Error) => {
+      // Asked for again by the next top-up (every poll while jobs run).
+      console.error(`MKLight: ${e.message}`)
+      wasm.host_start_failed()
+    })
+  }
 }
 
 // ---------------------------------------------------------------------------

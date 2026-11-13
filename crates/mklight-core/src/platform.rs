@@ -255,6 +255,14 @@ pub fn wanted_host_threads() -> usize {
     }
 }
 
+/// The web glue could not start a host thread it was asked for (by
+/// [`wanted_host_threads`]): count it as not starting, so the next call asks
+/// for it again. No effect natively.
+pub fn host_start_failed() {
+    #[cfg(target_arch = "wasm32")]
+    wasm::start_failed();
+}
+
 /// Body of a web host thread: run queued [`spawn`] closures, one at a
 /// time, forever. Called by the web glue in each host worker; never
 /// returns. Natively it is not used and returns at once.
@@ -299,6 +307,11 @@ mod wasm {
         let n = q.tasks.len().saturating_sub(q.idle + q.starting);
         q.starting += n;
         n
+    }
+
+    pub(super) fn start_failed() {
+        let mut q = lock();
+        q.starting = q.starting.saturating_sub(1);
     }
 
     pub(super) fn host_loop() {

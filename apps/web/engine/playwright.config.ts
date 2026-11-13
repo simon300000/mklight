@@ -1,7 +1,8 @@
 // Engine tests in headless Chromium and WebKit (docs/WEB.md "Tests").
 // The harness is built with Vite and served twice: without isolation
 // headers (port 4710, the static-host case: the service worker isolates
-// the page) and with them (port 4711).
+// the page) and with them (port 4711), and with them on 200s only and bare
+// 304 revalidations (4712), on which WebKit refuses some worker starts.
 import { defineConfig, devices } from '@playwright/test'
 
 export default defineConfig({
@@ -34,6 +35,11 @@ export default defineConfig({
     {
       command: 'node tests/static-server.mjs dist 4711 --isolate',
       url: 'http://localhost:4711/',
+      reuseExistingServer: false,
+    },
+    {
+      command: 'node tests/static-server.mjs dist 4712 --isolate-200',
+      url: 'http://localhost:4712/',
       reuseExistingServer: false,
     },
   ],

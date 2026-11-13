@@ -231,6 +231,13 @@ pub fn wanted_host_threads() -> u32 {
     platform::wanted_host_threads() as u32
 }
 
+/// The glue could not start a host worker `wanted_host_threads` asked for;
+/// the next `wanted_host_threads` asks for it again.
+#[wasm_bindgen]
+pub fn host_start_failed() {
+    platform::host_start_failed();
+}
+
 /// The compiled module, for starting host workers on the same code.
 #[wasm_bindgen]
 pub fn wasm_module() -> JsValue {

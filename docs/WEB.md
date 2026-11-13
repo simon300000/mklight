@@ -190,12 +190,6 @@ states, Try Again recomputing); web patterns where they read better:
 
 ### Known gaps
 
-* WebKit and the real engine (engine module, reported to that work):
-  optimisations stall partway (the Cooke triplet at iteration 48, the Double
-  Gauss at 78) and ignore Stop, so the real-engine WebKit optimize test is
-  marked fixme; under the Vite dev server WebKit blocks the engine's
-  thread-host worker by COEP (the built app under `vite preview` or a static
-  host works, with one logged "thread host failed").
 * Undoing Add Glass Catalog starts a new engine session without the catalog
   but does not free the old one until reload.
 * Dragging a panel outside the browser: the browser cannot draw outside its
@@ -365,6 +359,16 @@ thread could never wait for a thread it just asked for. Spawns happen from
 the engine worker (which returns to its event loop at once) or wait for an
 idle host; a finished closure frees its host for the next one.
 
+A browser may refuse to start a worker (an `error` event before it runs;
+see "Isolation" for the case that happens in practice). Every engine thread
+waits for its host, so the engine worker retries a refused start, with
+growing delays (50 ms to 6.4 s, 8 attempts), and a start that fails for
+good is counted as not starting (`host_start_failed`), so the next top-up
+asks for it again. Without that, one refused host left a closure queued
+for good: the optimiser joins a short-lived cancellation-watcher thread at
+every step, so the run hung at the first step whose watcher got no host,
+and Stop, which reaches the run through that watcher, was lost with it.
+
 **Why not wasm-bindgen-rayon's worker glue.** rayon is used as it is, but
 its pool is built with `ThreadPoolBuilder::spawn_handler` over
 `platform::spawn` (`mklight_wasm::init_thread_pool`) instead of
@@ -409,6 +413,22 @@ into the app's `public/`), since a service worker controls only pages at or
 below its own path. `ensureIsolation(swUrl?)` from `@engine` does the same
 programmatically.
 
+**Headers on every response, `304`s included.** WebKit checks a worker
+script's COEP on the headers of the response it gets, and when the
+browser revalidates a cached script, that is the `304 Not Modified`, which
+many servers send without the configured headers (Vite's `server.headers`
+and `preview.headers` among them; a `Cache-Control: no-cache` asset is
+revalidated on every load). WebKit then refuses that worker ("Worker load
+was blocked by Cross-Origin-Embedder-Policy") while other loads of the same
+script start, so a few of the engine's host workers fail at random.
+Chromium takes the headers of the cached `200` the `304` refreshes, and
+Safari 27.0.1 started every worker in the same test, but Playwright's
+WebKit (build 2388) does not. Hosts that set the headers should send them
+on `304`s too; the engine survives a refused start either way (see
+"Threads"), and `tests/static-server.mjs --isolate-200` serves exactly that
+case to the engine's tests. The service worker always answers with a full
+response, so pages it isolates are not affected.
+
 `ready()` (no engine needed) reports `{isolated, threaded, threads,
 hardwareConcurrency, webgpu, reason}`; `reason` is a user-facing sentence
 when the engine cannot run.
@@ -439,8 +459,11 @@ embedded in a non-isolated frame) gets a clear message instead:
 The web app imports it through the alias `@engine` →
 `apps/web/engine/src/index.ts` and needs, in its Vite config,
 `worker: { format: 'es' }` (the workers are ES modules) and the isolation
-headers on the dev server (`server.headers`), as
-`apps/web/engine/vite.config.ts` shows. The module has no npm runtime
+headers on the dev and preview servers through the plugin
+`crossOriginIsolation()` of `apps/web/engine/vite-isolation.ts`, as
+`apps/web/engine/vite.config.ts` shows (not `server.headers` /
+`preview.headers`, which leave the headers off `304` revalidations and off
+some of Vite's own dev modules; see "Isolation"). The module has no npm runtime
 dependencies; its `pkg/` must be built (`scripts/build-wasm.sh`) before the
 app builds.
 
@@ -569,16 +592,19 @@ The global setup builds the native CLI and writes reference results for a
 Cooke triplet (`mklight new --sample cooke_triplet`; `mklight run … --backend
 cpu --buffers`). The harness (`harness/`) is built with Vite and served by a
 plain static server **without** isolation headers (port 4710, the
-GitHub-Pages case, isolated by the service worker) and **with** them (4711).
-The tests check: isolation both ways; the engine loads and lists its
+GitHub-Pages case, isolated by the service worker), **with** them (4711),
+and with them on `200`s but bare `304` revalidations (4712, on which WebKit
+refuses some worker starts). The tests check: isolation both ways; that
+refused worker starts do not stall an optimisation run next to the app's
+other jobs, and that Stop reaches a running one (4712); the engine loads and lists its
 backends and analyses; the Cooke triplet opens with the native snapshot
 hash; `spot_diagram`, `mtf`, `psf` and `ray_fan` on the CPU f64 reference
 match the native results (below); `run_info` equals the native one except
 `started_unix_ms` and `duration_ms`; errors (`invalidModel` with issues,
 `notFound`, `invalidSettings`), project save, catalogs, prescription import,
-document sessions and cancellation; and the rayon speed-up (a 512² PSF at 1
-thread and at `hardwareConcurrency` threads, required > 1.5× with ≥ 4
-cores).
+document sessions and cancellation; and the rayon speed-up (a 250-ring spot
+diagram at 1 thread and at `hardwareConcurrency` threads, required > 2× with
+≥ 4 cores).
 
 **Agreement with native.** The CPU f64 reference on the web computes with
 the same code as natively; the differences are in the elementary functions
@@ -698,8 +724,11 @@ CARGO_TARGET_WASM32_WASIP1_RUNNER="wasmtime run --dir=/" RUSTFLAGS="-C target-fe
   exception handling in the build-std standard library (not yet tried).
 * Ray tracing is about 7× slower than native single-threaded: 70 % of it is
   the software `fma` that bitwise identity requires (see "Speed").
-* Real Safari was not driven by the tests (Playwright's WebKit stands in
-  for it; driving Safari needs "Allow Remote Automation" switched on).
+* Real Safari is not driven by the test suites (Playwright's WebKit stands
+  in for it; driving Safari needs "Allow Remote Automation" switched on).
+  The optimisation and Stop were checked by hand in Safari 27.0.1 (a page
+  that posts its result to a local server, against a server answering
+  revalidations with bare `304`s).
 * Catalog and project files by path: the browser has contents, not paths;
   `loadCatalog(fileName, text)` and `openProject(text)` cover the app's
   needs, and a project's references to catalog files are reported in

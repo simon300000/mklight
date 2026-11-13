@@ -82,6 +82,51 @@ test('isolation by response headers', async ({ page }) => {
   expect(await page.evaluate(() => globalThis.crossOriginIsolated)).toBe(true)
 })
 
+test('refused worker starts (bare 304 revalidations) do not stall an optimisation', async ({ page }) => {
+  // This server sends COOP/COEP on 200s but answers revalidations with a
+  // bare 304; WebKit then refuses some of the engine's worker starts. The
+  // engine retries them, so every engine thread (an optimisation's
+  // cancellation watcher included) gets its host: the run finishes, and
+  // Stop reaches a running one.
+  await page.goto('http://localhost:4712/')
+  await page.waitForFunction(() => globalThis.crossOriginIsolated && 'mk' in window, null, { timeout: 30_000 })
+  const text = readFileSync(join(REF_DIR, 'cooke.mklight'), 'utf8')
+  const settings = {
+    hold_efl: true,
+    default_merit: {
+      criterion: { type: 'rms_spot', reference: 'centroid', scope: 'monochromatic' },
+      sampling: { rings: 3, arms: 6 },
+    },
+    algorithm: 'lm',
+    seed: 0,
+  }
+  const out = await page.evaluate(
+    async ([t, s]) => {
+      await window.mk.create()
+      const e = window.mk.engine(0)
+      const snap = (await window.mk.openProject(0, t as string)).snapshot
+      // The jobs the app submits next to an optimisation, all at once.
+      const others = ['layout', 'first_order', 'validate', 'spot_diagram', 'ray_fan'].map(
+        (a) => e.submit({ analysis: a }, snap).result,
+      )
+      const done = await e.submit({ analysis: 'optimize', settings: s as never }, snap).result
+      await Promise.all(others)
+      // Stop: a long global search ends early with its best result.
+      const long = { ...(s as object), algorithm: 'de', max_iterations: 100000 }
+      const job = e.submit({ analysis: 'optimize', settings: long as never, fresh: true }, snap)
+      setTimeout(() => job.stop(), 1500)
+      const stopped = await job.result
+      return {
+        iterations: (done.json as { iterations: number }).iterations,
+        stopped: (stopped.json as { stopped: boolean }).stopped,
+      }
+    },
+    [text, settings],
+  )
+  expect(out.iterations).toBeGreaterThan(0)
+  expect(out.stopped).toBe(true)
+})
+
 test('Cooke triplet: analyses match the native engine', async ({ page }) => {
   await openHarness(page)
   const created = await page.evaluate(() => window.mk.create())

@@ -49,11 +49,7 @@ test('the real engine: Cooke triplet, edit a radius, spot and MTF', async ({ pag
 
 })
 
-test('the real engine: optimize the Cooke triplet, apply, undo', async ({ page, browserName }) => {
-  test.fixme(
-    browserName === 'webkit',
-    'In WebKit the engine stops reporting at iteration 48 of the Cooke triplet optimization and ignores Stop (reported to the wasm-engine work).',
-  )
+test('the real engine: optimize the Cooke triplet, apply, undo', async ({ page }) => {
   await page.goto('./?engine=wasm&sample=cooke_triplet')
   await expect.poll(() => hooks(page)).toBe(true)
   await expect(page.getByTestId('status-capsule')).toContainText('EFL', { timeout: 60_000 })
@@ -62,14 +58,9 @@ test('the real engine: optimize the Cooke triplet, apply, undo', async ({ page, 
   const panel = page.getByTestId('job-optimize')
   await panel.getByRole('button', { name: 'Optimize', exact: true }).click()
   const apply = panel.getByRole('button', { name: 'Apply to Design' })
-  // Stop after a few iterations keeps the best design so far (WebKit runs the
-  // full 200 iterations much more slowly than Chromium).
-  const progress = page.getByTestId('job-progress')
-  await expect(progress.or(apply)).toBeVisible({ timeout: 60_000 })
-  if (await progress.isVisible()) {
-    await expect(progress.or(apply)).toContainText(/Iteration ([5-9]|\d\d)|Apply/, { timeout: 60_000 }).catch(() => {})
-    if (await progress.isVisible()) await panel.getByRole('button', { name: 'Stop' }).click()
-  }
+  // The run finishes in a few seconds in both engines. (Stopping it early
+  // could leave nothing to apply: the merit first improves near iteration 30.
+  // Stop itself is covered by the engine's own tests.)
   await expect(apply).toBeVisible({ timeout: 90_000 })
   await apply.click()
   await expect(panel.getByTestId('applied-notice')).toBeVisible()

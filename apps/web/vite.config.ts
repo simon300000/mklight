@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url'
 import { defineConfig, type Plugin } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
+import { crossOriginIsolation } from './engine/vite-isolation'
 
 const here = (p: string) => fileURLToPath(new URL(p, import.meta.url))
 
@@ -37,7 +38,7 @@ function isolationWorker(): Plugin {
 
 export default defineConfig({
   base: './',
-  plugins: [react(), tailwindcss(), isolationWorker()],
+  plugins: [react(), tailwindcss(), isolationWorker(), crossOriginIsolation()],
   worker: { format: 'es' },
   resolve: {
     alias: {
@@ -46,20 +47,11 @@ export default defineConfig({
       '@samples': here('../macos/Sources/MKLightModel/Resources/samples.json'),
     },
   },
+  // Cross-origin isolation (COOP/COEP on every response, 304s included), so
+  // the threaded WASM engine can use SharedArrayBuffer: crossOriginIsolation().
   server: {
-    // Cross-origin isolation, so a threaded WASM engine can use SharedArrayBuffer.
-    headers: {
-      'Cross-Origin-Opener-Policy': 'same-origin',
-      'Cross-Origin-Embedder-Policy': 'require-corp',
-    },
     fs: { allow: [here('../..')] },
     watch: { ignored: ['**/engine/pkg/**'] },
-  },
-  preview: {
-    headers: {
-      'Cross-Origin-Opener-Policy': 'same-origin',
-      'Cross-Origin-Embedder-Policy': 'require-corp',
-    },
   },
   build: { target: 'es2023', chunkSizeWarningLimit: 2000 },
   test: {
