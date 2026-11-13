@@ -18,7 +18,6 @@ mklight-trace.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 rayon.workspace = true
-libc = "0.2"
 
 [target.'cfg(target_os = "macos")'.dev-dependencies]
 mklight-metal.workspace = true

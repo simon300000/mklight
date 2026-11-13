@@ -322,7 +322,7 @@ impl<'a> PupilTracer<'a> {
         specs: &[aim::FieldSpec],
         table: Option<HostTable>,
     ) -> MkResult<Fields> {
-        let start = std::time::Instant::now();
+        let start = mklight_core::platform::Instant::now();
         let seeds: Vec<_> = pupils
             .iter()
             .map(|(f, w)| aim::ChiefSeed::host(self.tracer, f, *w))
@@ -356,7 +356,7 @@ impl<'a> PupilTracer<'a> {
     fn tables(&self, pupils: &[(&PreparedField, usize)], rays_per_row: usize) -> Option<HostTable> {
         let real = matches!(self.tracer.aiming(), mklight_core::RayAiming::Real { .. });
         (real && rays_per_row >= 2 * aim::table_nodes(TABLE_SIDE)).then(|| {
-            let start = std::time::Instant::now();
+            let start = mklight_core::platform::Instant::now();
             let nodes = aim::host_tables(self.tracer, pupils, TABLE_SIDE);
             HostTable {
                 nodes,

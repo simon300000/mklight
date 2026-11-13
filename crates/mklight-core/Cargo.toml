@@ -15,9 +15,24 @@ serde_json.workspace = true
 thiserror.workspace = true
 blake3.workspace = true
 num-complex.workspace = true
+# The exact software fma (`platform::fma_exact`).
+libm.workspace = true
+
+# Platform plumbing (`platform`): host statistics natively, the browser
+# clocks on wasm32.
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+web-time.workspace = true
 
 [dev-dependencies]
 approx.workspace = true
+
+# `--cfg mklight_libm_fma`: the web build without `platform::fma_symbol`
+# (scripts/build-wasm.sh --libm-fma, for measurements).
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(mklight_libm_fma)"] }
 
 [[test]]
 name = "tests"

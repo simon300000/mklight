@@ -1,7 +1,7 @@
 //! Minimal UTC timestamp formatting (RFC 3339, second resolution) for project
 //! metadata, without a date-time dependency.
 
-use std::time::{SystemTime, UNIX_EPOCH};
+use mklight_core::platform::{SystemTime, UNIX_EPOCH};
 
 /// Milliseconds since the Unix epoch (0 if the clock is before 1970).
 fn now_unix_ms() -> u64 {

@@ -261,7 +261,7 @@ impl ResidentEvaluator {
     ) -> MkResult<Vec<Vec<OperandValue>>> {
         ctx.check()?;
         let inner = JobContext::with(ctx.cancel.clone(), Default::default());
-        let started = std::time::Instant::now();
+        let started = mklight_core::platform::Instant::now();
         // A finite-difference batch with host aiming: like the reference's
         // `evaluate_batch_near`, the anchor (the base point) is evaluated on
         // the host first and its solves seed every candidate's tracer, so
@@ -800,7 +800,7 @@ impl<'s> Stage<'s> {
         chunk: &[Arc<SequentialTracer>],
         prepared: &mut resident::Prepared<'_>,
     ) -> MkResult<()> {
-        let started = std::time::Instant::now();
+        let started = mklight_core::platform::Instant::now();
         resident::host_stage(prepared, self.cpu, chunk, self.ops, self.ctx)?;
         self.context.observe(mklight_gpu::resident::PlanStats {
             polished_rays: prepared.host_rays() as u64,
@@ -824,7 +824,7 @@ impl<'s> Stage<'s> {
         values: &mut [Option<Vec<Vec<OperandValue>>>],
         deferred: &mut Vec<Landing<'a>>,
     ) -> MkResult<()> {
-        let wait = std::time::Instant::now();
+        let wait = mklight_core::platform::Instant::now();
         let result = self.context.complete(pending)?;
         let waited = wait.elapsed().as_secs_f64();
         self.context.observe(mklight_gpu::resident::PlanStats {

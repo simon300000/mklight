@@ -27,10 +27,10 @@ use crate::{
     tally::{ChunkTally, NUM_SINKS, StrayTally},
     tracer::{State, StrayResult, StraySettings, Tracer},
 };
+use mklight_core::platform::Instant;
 use rayon::prelude::*;
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::Mutex;
-use std::time::Instant;
 
 /// Detections a source keeps on the device before the CPU continues it.
 const HANDOFF_DETECTIONS: usize = 8;

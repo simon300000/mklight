@@ -815,7 +815,7 @@ mod tests {
     #[test]
     fn narrow_lobes() {
         // Very specular finishes: lobes far narrower than the TIS table spacing.
-        let t0 = std::time::Instant::now();
+        let t0 = mklight_core::platform::Instant::now();
         let f = abg(1e-6, 1e-8, 2.0);
         let exact = PI * 1e-6 * (1e8f64).ln_1p();
         assert!((f.tis(0.0) / exact - 1.0).abs() < 1e-9);

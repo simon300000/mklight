@@ -27,13 +27,15 @@
 //!
 //! Locking order: table → job → event queue. Callback slot is taken alone.
 
+use mklight_core::platform::Instant;
+use mklight_core::platform::{self, JoinHandle};
 use serde::Serialize;
 use std::collections::{HashMap, VecDeque};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock};
-use std::thread::{self, JoinHandle, ThreadId};
-use std::time::{Duration, Instant};
+use std::thread::{self, ThreadId};
+use std::time::Duration;
 
 use mklight_core::job::CancelToken;
 use mklight_core::{JobContext, MkError};
@@ -141,7 +143,7 @@ pub struct SchedulerConfig {
 
 impl Default for SchedulerConfig {
     fn default() -> Self {
-        let n = thread::available_parallelism().map_or(2, |n| n.get());
+        let n = platform::available_parallelism();
         SchedulerConfig {
             workers: n.clamp(1, 4),
             max_retained: 256,
@@ -496,25 +498,25 @@ impl<T: Send + 'static> Scheduler<T> {
         for i in 0..workers {
             let s = shared.clone();
             threads.push(
-                thread::Builder::new()
-                    .name(format!("mklight-worker-{i}"))
-                    .spawn(move || s.worker_loop())
+                platform::spawn(format!("mklight-worker-{i}"), move || s.worker_loop())
                     .expect("spawn worker thread"),
             );
         }
         let s = shared.clone();
         threads.push(
-            thread::Builder::new()
-                .name("mklight-progress".into())
-                .spawn(move || s.monitor_loop())
+            platform::spawn("mklight-progress", move || s.monitor_loop())
                 .expect("spawn progress thread"),
         );
         let s = shared.clone();
-        let event_thread = thread::Builder::new()
-            .name("mklight-events".into())
-            .spawn(move || s.event_loop())
-            .expect("spawn event thread");
-        let _ = shared.event_thread.set(event_thread.thread().id());
+        let event_thread = platform::spawn("mklight-events", move || {
+            // Set here too: on wasm32 the id is known only once the thread runs.
+            let _ = s.event_thread.set(thread::current().id());
+            s.event_loop()
+        })
+        .expect("spawn event thread");
+        if let Some(id) = event_thread.thread_id() {
+            let _ = shared.event_thread.set(id);
+        }
         Scheduler {
             shared,
             threads,
@@ -749,7 +751,7 @@ impl<T: Send + 'static> Drop for Scheduler<T> {
         // A job closure may own the last handle; never join the own thread.
         let me = thread::current().id();
         for t in self.threads.drain(..) {
-            if t.thread().id() != me {
+            if t.thread_id() != Some(me) {
                 let _ = t.join();
             }
         }
@@ -759,7 +761,7 @@ impl<T: Send + 'static> Drop for Scheduler<T> {
         lock(&self.shared.events).shutdown = true;
         self.shared.events_cv.notify_all();
         if let Some(t) = self.event_thread.take()
-            && t.thread().id() != me
+            && t.thread_id() != Some(me)
         {
             let _ = t.join();
         }

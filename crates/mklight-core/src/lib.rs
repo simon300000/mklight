@@ -11,6 +11,7 @@ pub mod math;
 pub mod memo;
 pub mod model;
 pub mod param;
+pub mod platform;
 pub mod resolved;
 pub mod rng;
 pub mod samples;
