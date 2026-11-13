@@ -424,7 +424,10 @@ intersection, clipping, interaction) with one split:
 
 * **Decisions in f32**, mirroring the reference operation for operation:
   the closest-approach conic intersection with Kahan's discriminant, stable
-  roots and vertex-sheet selection; the even-asphere Newton iteration from
+  roots, vertex-sheet selection and the root choice between two crossings
+  (SURFACES.md §8: the packed aperture outline as the surface's fixed
+  extent, tested in f32 on the packed sizes; no layout field is added); the
+  even-asphere Newton iteration from
   the conic seed with the reference's Miss / NoConvergence / OutsideDomain
   classification; the TIR test of the stable vector Snell law
   (CONVENTIONS §7.3). These decide the status and give a first `t`.
@@ -475,7 +478,9 @@ double-float step above; all f32 parameters the geometry depends on carry
 their residual in the layout (§2).
 
 f32 tolerances, the only intended differences from the reference: the
-vertex-sheet test uses `1 − κcz ≥ −2⁻²⁰`; asphere Newton converges when
+vertex-sheet test uses `1 − κcz ≥ −2⁻²⁰`; the root choice tests the f32
+crossing against the f32 (hi) aperture sizes, so it can differ only for a
+crossing within f32 rounding of the extent's edge; asphere Newton converges when
 `|g| ≤ tol_abs + tol_rel·(|t| + |z| + |conic sag| + |poly|)` (default
 `1e-9 mm + 2⁻²⁰·…`, the f32 resolution of the residual) within
 `NewtonSettings::max_iterations`, followed by the double-float refinement.

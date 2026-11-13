@@ -34,6 +34,9 @@ document on purpose in the same change.
   annulus's inner radius shrunk by it, so a ray aimed at the rim of the stop
   is not clipped by its own aiming residual. Every CPU and GPU path tests
   these same sizes (`ApertureShape::passes`; the GPU packer packs them).
+  The same fixed outline also decides which of two crossings of a deep
+  surface a steep ray meets (SURFACES.md §8, conic root choice), clipped or
+  not; an automatic semi-diameter does not.
 * **Curvature** `c = 1/R` is stored instead of radius (a plane is `c = 0`).
   `R > 0` means the centre of curvature lies at **+z** from the vertex.
 * **Thickness** `t_i` is the signed distance along the local z axis, after

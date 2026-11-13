@@ -55,6 +55,25 @@ impl ResolvedSurface {
             None => true,
         }
     }
+    /// The fixed extent of the surface that decides which of two crossings
+    /// of its vertex sheet a ray meets (docs/SURFACES.md §8, conic root
+    /// choice): the explicit aperture's outer outline (an annulus filled in,
+    /// since its central obscuration still stops a ray), else the fixed
+    /// semi-diameter's circle. `None` for an automatic semi-diameter, which
+    /// is itself measured from traced rays. The mechanical semi-diameter
+    /// belongs to the stray-light scene and is not used.
+    pub fn root_extent(&self) -> Option<ApertureShape> {
+        match (&self.aperture, self.fixed_semi_diameter) {
+            (Some(ApertureShape::Annular { outer_radius, .. }), _) => {
+                Some(ApertureShape::Circular {
+                    radius: *outer_radius,
+                })
+            }
+            (Some(a), _) => Some(a.clone()),
+            (None, Some(radius)) => Some(ApertureShape::Circular { radius }),
+            (None, None) => None,
+        }
+    }
     pub fn is_mirror(&self) -> bool {
         self.interaction == Interaction::Reflect
     }
@@ -340,6 +359,31 @@ mod tests {
         assert!(r.surfaces[1].to_next_is_axial);
         assert!((r.surfaces[1].n_after[1] - 1.5168).abs() < 2e-5);
         assert_eq!(r.n_before(2, 1), r.surfaces[1].n_after[1]);
+    }
+
+    #[test]
+    fn root_extent_is_the_fixed_outline() {
+        let mut s = singlet();
+        s.surfaces[1].semi_diameter = SemiDiameter::Fixed { value: 12.0 };
+        s.surfaces[2].semi_diameter = SemiDiameter::Fixed { value: 12.0 };
+        s.surfaces[2].aperture = Some(ApertureShape::Annular {
+            inner_radius: 3.0,
+            outer_radius: 9.0,
+        });
+        s.surfaces[2].edge.mechanical_semi_diameter = Some(15.0);
+        let snap = Snapshot::new(s).unwrap();
+        let r = ResolvedSystem::new(&snap, Arc::new(MaterialLibrary::with_builtin())).unwrap();
+        assert_eq!(r.surfaces[3].root_extent(), None, "automatic");
+        assert_eq!(
+            r.surfaces[1].root_extent(),
+            Some(ApertureShape::Circular { radius: 12.0 })
+        );
+        // The shape wins over the semi-diameter; the obscuration is filled
+        // in; the mechanical semi-diameter is not used.
+        assert_eq!(
+            r.surfaces[2].root_extent(),
+            Some(ApertureShape::Circular { radius: 9.0 })
+        );
     }
 
     #[test]

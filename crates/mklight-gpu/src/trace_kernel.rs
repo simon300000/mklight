@@ -284,11 +284,77 @@ fn at<E: FpEnv>(t: F<E>, d: V<E>, q: V<E>) -> V<E> {
     [t.fma(d[0], q[0]), t.fma(d[1], q[1]), t.fma(d[2], q[2])]
 }
 
-/// `mkl_conic_from`: conic intersection steps 2–5 of `mklight_trace::surface`
+/// The surface's fixed extent for the conic root choice
+/// (`mklight_trace::surface` step 6, `ResolvedSurface::root_extent`): the
+/// packed aperture kind and sizes (edge tolerance included; an annulus is
+/// filled in up to its outer radius) and the distance `t₀` from the ray
+/// start to the closest-approach point `q` (`MklPick`).
+#[derive(Clone, Copy)]
+pub struct Pick<E: FpEnv> {
+    pub kind: u32,
+    pub a: [F<E>; 2],
+    pub t0: F<E>,
+}
+
+impl<E: FpEnv> Pick<E> {
+    /// `s`'s packed aperture with `t₀` (`mkl_pick`).
+    pub fn of(s: &PackedSurface, t0: F<E>) -> Self {
+        Pick {
+            kind: s.aperture,
+            a: [f::<E>(s.aperture_params[0]), f::<E>(s.aperture_params[1])],
+            t0,
+        }
+    }
+    /// `mkl_in_extent`: the point lies inside the filled outline (f32).
+    #[inline(always)]
+    fn inside(&self, p: V<E>) -> bool {
+        let r2 = || p[0].fma(p[0], p[1] * p[1]);
+        match self.kind {
+            MKL_APERTURE_CIRCULAR => r2() <= self.a[0] * self.a[0],
+            MKL_APERTURE_ANNULAR => r2() <= self.a[1] * self.a[1],
+            MKL_APERTURE_RECTANGULAR => p[0].abs() <= self.a[0] && p[1].abs() <= self.a[1],
+            MKL_APERTURE_ELLIPTICAL => {
+                let (u, v) = (p[0] / self.a[0], p[1] / self.a[1]);
+                u.fma(u, v * v) <= 1.0
+            }
+            _ => true,
+        }
+    }
+    /// `mkl_keep_first`: whether the root `(t1, p1)` wins over `(t2, p2)`,
+    /// both on the vertex sheet (`mklight_trace::surface::keep_first`).
+    #[inline(always)]
+    fn keep_first(&self, t1: F<E>, p1: V<E>, t2: F<E>, p2: V<E>) -> bool {
+        let nearer = p1[0].fma(p1[0], p1[1] * p1[1]) <= p2[0].fma(p2[0], p2[1] * p2[1]);
+        if self.kind == MKL_APERTURE_NONE {
+            return nearer;
+        }
+        let (in1, in2) = (self.inside(p1), self.inside(p2));
+        if in1 != in2 {
+            return in1;
+        }
+        let (ahead1, ahead2) = (t1 >= -self.t0, t2 >= -self.t0);
+        if !in1 || !(ahead1 || ahead2) {
+            nearer
+        } else if ahead1 && ahead2 {
+            t1 <= t2
+        } else {
+            ahead1
+        }
+    }
+}
+
+/// `mkl_conic_from`: conic intersection steps 2–6 of `mklight_trace::surface`
 /// from the point `q`; the distance from `q` and the f32 hit point, or `None`
-/// for a miss. Also valid for `c = 0` (the plane `z = 0`).
+/// for a miss. Also valid for `c = 0` (the plane `z = 0`). `pick` chooses
+/// between two crossings of the vertex sheet.
 #[inline(always)]
-pub fn conic_from<E: FpEnv>(c: F<E>, k: F<E>, q: V<E>, d: V<E>) -> Option<(F<E>, V<E>)> {
+pub fn conic_from<E: FpEnv>(
+    c: F<E>,
+    k: F<E>,
+    q: V<E>,
+    d: V<E>,
+    pick: Pick<E>,
+) -> Option<(F<E>, V<E>)> {
     let kap = 1.0 + k;
     let a = c * (d[0].fma(d[0], d[1] * d[1]) + kap * d[2] * d[2]);
     let b = c * (q[0].fma(d[0], q[1] * d[1]) + kap * q[2] * d[2]) - d[2];
@@ -314,9 +380,8 @@ pub fn conic_from<E: FpEnv>(c: F<E>, k: F<E>, q: V<E>, d: V<E>) -> Option<(F<E>,
         let t = qq / a;
         let pt = at(t, d, q);
         if t.is_finite() && finite3(pt) && on_sheet(pt) {
-            let r2 = pt[0].fma(pt[0], pt[1] * pt[1]);
             match best {
-                Some((_, b1)) if b1[0].fma(b1[0], b1[1] * b1[1]) <= r2 => {}
+                Some((t1, b1)) if pick.keep_first(t1, b1, t, pt) => {}
                 _ => best = Some((t, pt)),
             }
         }
@@ -424,10 +489,11 @@ pub fn asphere_from<E: FpEnv>(
     s: &PackedSurface,
     q: V<E>,
     d: V<E>,
+    t0: F<E>,
     p: &TraceParams,
 ) -> Result<F<E>, u32> {
     let (c, k) = (f::<E>(s.curvature), f::<E>(s.conic));
-    let seed = conic_from(c, k, q, d);
+    let seed = conic_from(c, k, q, d, Pick::of(s, t0));
     let seed_hit = seed.is_some();
     let mut t = seed.map_or(F::ZERO, |(t, _)| t);
     let kap = 1.0 + k;
@@ -580,10 +646,10 @@ fn intersect_legacy<E: FpEnv>(
     let kapd = D::new(s.conic, s.conic_lo) + F::ONE;
     let kcd = kapd * cd;
     let (tb, x, g) = if shape == MKL_SHAPE_EVEN_ASPHERE && s.num_asphere > 0 {
-        let t1 = asphere_from(s, qf, df, prm)?;
+        let t1 = asphere_from(s, qf, df, t0.hi(), prm)?;
         asphere_refine_df(s, q, d, t1, cd, kcd)
     } else {
-        let (t1, _) = conic_from(c, k, qf, df).ok_or(MISS)?;
+        let (t1, _) = conic_from(c, k, qf, df, Pick::of(s, t0.hi())).ok_or(MISS)?;
         // Refinement on F = c(x² + y² + κz²) − 2z.
         let x0 = point_on(q, D::from_f(t1), d);
         let r2 = x0[0] * x0[0] + x0[1] * x0[1];
@@ -614,9 +680,10 @@ fn sag_from<E: FpEnv>(
     pool: &[Df32],
     q: V<E>,
     d: V<E>,
+    t0: F<E>,
     prm: &TraceParams,
 ) -> Result<F<E>, u32> {
-    let seed = conic_from(f(s.curvature), f(s.conic), q, d);
+    let seed = conic_from(f(s.curvature), f(s.conic), q, d, Pick::of(s, t0));
     let seed_hit = seed.is_some();
     let mut t = seed.map_or(F::ZERO, |(t, _)| t);
     let (mut positive, mut negative): (Option<F<E>>, Option<F<E>>) = (None, None);
@@ -722,7 +789,7 @@ pub fn intersect<E: FpEnv>(
     }
     let ta = -ddot(p, d);
     let q = point_on(p, ta, d);
-    let t = sag_from(s, pool, hi3(q), hi3(d), prm)?;
+    let t = sag_from(s, pool, hi3(q), hi3(d), ta.hi(), prm)?;
     let mut tb = D::from_f(t);
     // Two refinements on the exact line: steep high-order departures can
     // amplify the f32 seed error enough that one step exceeds the budget.

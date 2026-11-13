@@ -157,28 +157,15 @@ fn packet_paths_match_the_scalar_reference() {
     assert!(failures > 100, "{failures}");
 }
 
-/// A steep ray crossing a surface that bulges toward it twice: scalar and
-/// packet traces both take the crossing nearer the vertex (SURFACES.md §8,
-/// conic root choice), bitwise alike, next to ordinary rays.
+/// A steep ray crossing a surface that bulges toward it twice (first
+/// farther from the axis): with a fixed semi-diameter containing both
+/// crossings the trace takes the first along the ray, with an automatic one
+/// the crossing nearer the vertex (SURFACES.md §8, conic root choice).
+/// Scalar and packet traces agree bitwise, next to ordinary rays.
 #[test]
 fn steep_double_crossing_matches_in_packets() {
-    use mklight_core::{MaterialRef, SurfaceShape, Vec3};
+    use mklight_core::{MaterialRef, SemiDiameter, SurfaceShape, Vec3};
     use mklight_trace::Ray;
-    let sys = infinite_system(
-        10.0,
-        vec![
-            surf(1, SurfaceShape::Plane, 2.0, MaterialRef::Air),
-            surf(
-                2,
-                SurfaceShape::sphere(-20.0),
-                10.0,
-                MaterialRef::glass("N-BK7"),
-            ),
-        ],
-        3,
-    );
-    let t = tracer(sys);
-    let o = TraceOptions::unclipped();
     let steep = Vec3::new(0.0, 0.999, 0.05).normalized();
     // Exact crossings of the sphere |x − C| = 20, C = (0, 0, −18).
     let start = Vec3::new(0.0, -30.0, 0.0);
@@ -192,26 +179,56 @@ fn steep_double_crossing_matches_in_packets() {
     // The first crossing lies farther from the axis than the second.
     assert!(first.y < -5.0 && second.y > 3.0, "{first:?} {second:?}");
 
-    let starts = vec![
-        Ray::new(start, steep),
-        Ray::new(Vec3::new(0.0, 2.0, 0.0), Vec3::Z),
-        Ray::new(
-            Vec3::new(1.0, -3.0, 0.0),
-            Vec3::new(0.0, 0.1, 1.0).normalized(),
-        ),
-    ];
-    let wls = vec![0; starts.len()];
-    let scalar: Vec<_> = starts
-        .iter()
-        .map(|s| trace_ray_recorded(t.system(), s, 0, &o))
-        .collect();
-    assert!(
-        (scalar[0].1[2].point - second).norm() < 1e-12,
-        "{:?}",
-        scalar[0].1[2]
-    );
-    let mut records = vec![vec![]; starts.len()];
-    let traced = trace_rays_recorded(t.system(), &starts, &wls, &o, &mut records);
-    let packed: Vec<_> = traced.into_iter().zip(records).collect();
-    same(&scalar, &packed, "steep rays: trace_rays_recorded");
+    for (sd, expected) in [
+        (SemiDiameter::Auto, second),
+        (SemiDiameter::Fixed { value: 8.0 }, first),
+        (SemiDiameter::Fixed { value: 4.5 }, second),
+    ] {
+        let mut sphere = surf(
+            2,
+            SurfaceShape::sphere(-20.0),
+            10.0,
+            MaterialRef::glass("N-BK7"),
+        );
+        sphere.semi_diameter = sd;
+        let sys = infinite_system(
+            10.0,
+            vec![surf(1, SurfaceShape::Plane, 2.0, MaterialRef::Air), sphere],
+            3,
+        );
+        let t = tracer(sys);
+        let o = TraceOptions::unclipped();
+        let starts = vec![
+            Ray::new(start, steep),
+            Ray::new(Vec3::new(0.0, 2.0, 0.0), Vec3::Z),
+            Ray::new(
+                Vec3::new(1.0, -3.0, 0.0),
+                Vec3::new(0.0, 0.1, 1.0).normalized(),
+            ),
+        ];
+        let wls = vec![0; starts.len()];
+        let scalar: Vec<_> = starts
+            .iter()
+            .map(|s| trace_ray_recorded(t.system(), s, 0, &o))
+            .collect();
+        assert!(
+            (scalar[0].1[2].point - expected).norm() < 1e-12,
+            "{sd:?}: {:?}",
+            scalar[0].1[2]
+        );
+        let mut records = vec![vec![]; starts.len()];
+        let traced = trace_rays_recorded(t.system(), &starts, &wls, &o, &mut records);
+        let packed: Vec<_> = traced.into_iter().zip(records).collect();
+        same(
+            &scalar,
+            &packed,
+            &format!("steep rays, {sd:?}: trace_rays_recorded"),
+        );
+        // Clipping does not change the choice: the hit inside the extent
+        // passes the aperture.
+        if matches!(sd, SemiDiameter::Fixed { .. }) {
+            let clipped = trace_ray_recorded(t.system(), &starts[0], 0, &TraceOptions::default());
+            assert_eq!(clipped.1[2].point, scalar[0].1[2].point, "{sd:?}");
+        }
+    }
 }

@@ -18,9 +18,11 @@
 //!   gaps. Composing a backward step with the forward one is the identity
 //!   up to rounding (tested).
 //!
-//! Intersections ([`intersect`]), refraction ([`refract`]), reflection
-//! ([`reflect`]) and the ideal lens ([`ideal_lens`]) are the reference
-//! tracer's functions, called with the ray in the surface's local frame.
+//! Intersections ([`intersect_within`], with the surface's fixed extent
+//! choosing between two crossings as in the sequential trace), refraction
+//! ([`refract`]), reflection ([`reflect`]) and the ideal lens
+//! ([`ideal_lens`]) are the reference tracer's functions, called with the
+//! ray in the surface's local frame.
 //!
 //! # Media
 //!
@@ -78,7 +80,7 @@
 use mklight_core::materials::coating::InterfaceRT;
 use mklight_core::{Interaction, SurfaceShape, Vec3};
 use mklight_trace::interact::{diffract, ideal_lens, reflect, refract};
-use mklight_trace::surface::{IntersectError, intersect};
+use mklight_trace::surface::{IntersectError, intersect_within};
 use mklight_trace::trace::transfer_into;
 use mklight_trace::{Compensated, Ray};
 use serde::{Deserialize, Serialize};
@@ -355,7 +357,14 @@ impl GhostModel {
                 Direction::Backward => surf.alpha_after[wl],
             };
             // 2. Intersection.
-            let hit = match intersect(&surf.shape, ray.pos, ray.dir, &self.settings().intersect) {
+            let extent = surf.root_extent();
+            let hit = match intersect_within(
+                &surf.shape,
+                extent.as_ref(),
+                ray.pos,
+                ray.dir,
+                &self.settings().intersect,
+            ) {
                 Ok(h) => h,
                 Err(e) => {
                     let status = match e {

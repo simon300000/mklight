@@ -335,30 +335,46 @@ unconverged bracket/converging iteration, and leaving the real sag domain.
 
 **Conic root choice** (the conic intersection and every seed taken from
 it). Roots off the vertex sheet (`1 − κcz < 0`) are rejected. When a ray
-crosses the vertex sheet twice, the root **nearer the vertex** (smaller
-`r²`) wins, whatever the sign of `t` (ties go to the root continuous with
-the plane solution). Every backend uses this rule: the scalar trace, the
-CPU packets, the GPU emulation and the Metal kernels (bitwise-pinned on a
-steep double crossing).
+crosses the vertex sheet twice, which crossing is physical depends on how
+far the surface extends, so the choice uses the surface's **fixed extent**
+(`ResolvedSurface::root_extent`):
 
-This is not always the first crossing along the ray. A steep ray travelling
-+z across a surface bulging toward it (`c < 0`) can cross the sheet first
-farther from the axis: with `c = −0.05`, a ray from `(0, −30, −2)` along
-`(0, 0.999, 0.050)` crosses at `t ≈ 24.51` (`y ≈ −5.5`) and then at
-`t ≈ 33.61` (`y ≈ +3.6`), and the trace takes the second. Which crossing
-is physical depends on the surface's extent, which the intersection does
-not know: the rule treats the surface as the smallest cap that contains
-the hit. "First crossing ahead of the start" is not a fix either. Since `r`
-along a line is convex in `t`, the skipped crossing always lies nearer the
-axis than the ray's start, but a start on the object (or the far-field
-start plane) is not inside any aperture, and a wide-field chief ray from a
-finite object would then hit the far side of a concave front surface at
-2.6× the intended height (`tests/analytic.rs`,
-`wide_field_chief_ray_matches_inverse_snell`). A correct rule needs the
-extent: take the first crossing ahead that lies inside a fixed aperture or
-semi-diameter, and keep the nearer-vertex rule when the extent is automatic.
-That needs the aperture in every intersection path (trace, packets, ghost,
-GPU trace and aiming kernels) and is not implemented.
+* the explicit aperture's outline (an annulus filled in to its outer
+  radius, since its central obscuration still stops a ray there), else
+* the fixed semi-diameter's circle, else
+* none: an automatic semi-diameter is measured from traced rays, so it
+  cannot decide which crossing they take. The mechanical semi-diameter is
+  not used: the zone beyond the clear aperture is the stray-light scene's
+  mount or edge geometry, which that scene intersects on its own.
+
+With an extent, a crossing inside it beats one outside it; of two crossings
+inside, the **first ahead of the ray's start** (`t ≥ 0`) wins (the one
+ahead if only one is). Otherwise (both outside, both behind the start, or no
+extent) the crossing **nearer the vertex** (smaller `r²`) wins, ties to the
+root continuous with the plane solution; a hit outside the aperture is then
+clipped as usual. The choice is geometry, not clipping: unclipped traces
+(ray aiming, automatic semi-diameters) make it too. Every backend uses this
+rule on every intersection path: the scalar trace, the CPU packets (lanes
+crossing a surface with an extent twice go through the scalar step, so they
+stay bitwise identical), ghost paths, the GPU trace, ghost and aiming
+kernels in emulation and on Metal (the f32 solve tests the packed aperture
+sizes, edge tolerance included). Aspheres and other sag shapes start Newton
+from that root and converge to the crossing next to it. The object surface,
+where a ray starts rather than arrives, keeps the nearer-vertex rule when a
+field point is placed on it. The stray-light scene already takes the first
+crossing within each bounded surface patch.
+
+Example: a steep ray travelling +z across a surface bulging toward it
+(`c = −0.05`) from `(0, −30, −2)` along `(0, 0.999, 0.050)` crosses at
+`t ≈ 24.51` (`y ≈ −5.5`) and then at `t ≈ 33.61` (`y ≈ +3.6`). With a
+fixed semi-diameter of 8 mm the trace takes the first crossing; with 4.5 mm
+the first misses the lens and it takes the second; with an automatic
+semi-diameter it takes the second (nearer the vertex). "First crossing
+ahead" alone would be wrong: a wide-field chief ray from a finite object
+crosses a concave front surface (`R = −30`) first at `y ≈ −15.7` and then at
+its design height `y = −6`; only a lens wider than 15.7 mm is struck in its
+outer zone (`tests/analytic.rs`, `wide_field_chief_ray_matches_inverse_snell`,
+which checks both with fixed semi-diameters of 10 and 20 mm).
 
 ## 9. Reference samples and verification
 

@@ -68,6 +68,35 @@ fn wide_field_chief_ray_matches_inverse_snell() {
         );
         assert!(at_stop.status.is_ok());
         assert!(at_stop.ray.pos.y.abs() < 1e-9);
+        if !finite {
+            continue;
+        }
+        // From the finite object the steep chief ray crosses the sphere's
+        // vertex sheet twice: first farther out, then at the design height.
+        // The other crossing of the line through the hit is at
+        // s = −2 (X − C)·d from it (C the centre); it lies before the hit.
+        let hit = Vec3::new(0.0, height, sag);
+        let s_far = -2.0 * (hit - Vec3::new(0.0, 0.0, radius)).dot(incident);
+        let far = hit + incident * s_far;
+        assert!(s_far < 0.0 && 1.0 - far.z / radius >= 0.0, "{far:?}");
+        assert!((far.y + 15.7).abs() < 0.05, "{far:?}");
+        // The surface's extent decides which one the ray meets: automatic
+        // (above) and fixed at 10 mm only the design hit is on the lens; a
+        // 20 mm lens is struck first in its outer zone.
+        for (sd, expected) in [(10.0, height), (20.0, far.y)] {
+            let mut system = t.system().snapshot.system().clone();
+            system.surfaces[1].semi_diameter = mklight_core::SemiDiameter::Fixed { value: sd };
+            let fixed = tracer(system);
+            let r = trace_ray(
+                fixed.system(),
+                &ray.ray,
+                0,
+                &TraceOptions::default().to_surface(1),
+                None,
+            );
+            assert!(r.status.is_ok(), "{sd}: {r:?}");
+            assert!((r.ray.pos.y - expected).abs() < 1e-9, "{sd}: {r:?}");
+        }
     }
 }
 

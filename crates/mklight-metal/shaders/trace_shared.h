@@ -125,8 +125,51 @@ static inline bool mkl_on_sheet(float kap, float c, float3 pt) {
     return 1.0f - kap * c * pt.z >= -MKL_SHEET_TOL;
 }
 
-// Conic steps 2-5 of mklight_trace::surface from q; false for a miss.
-static inline bool mkl_conic_from(float c, float k, float3 q, float3 d,
+// The surface's fixed extent for the conic root choice (trace_kernel::Pick):
+// packed aperture kind and sizes (an annulus filled to its outer radius) and
+// t0, the distance from the ray start to q.
+struct MklPick {
+    uint kind;
+    float2 a;
+    float t0;
+};
+
+static inline MklPick mkl_pick(constant MklPackedSurface& s, float t0) {
+    MklPick p;
+    p.kind = s.aperture;
+    p.a = float2(s.aperture_params[0], s.aperture_params[1]);
+    p.t0 = t0;
+    return p;
+}
+
+static inline bool mkl_in_extent(MklPick e, float3 p) {
+    switch (e.kind) {
+        case MKL_APERTURE_CIRCULAR: return fma(p.x, p.x, p.y * p.y) <= e.a.x * e.a.x;
+        case MKL_APERTURE_ANNULAR: return fma(p.x, p.x, p.y * p.y) <= e.a.y * e.a.y;
+        case MKL_APERTURE_RECTANGULAR: return fabs(p.x) <= e.a.x && fabs(p.y) <= e.a.y;
+        case MKL_APERTURE_ELLIPTICAL: {
+            float u = p.x / e.a.x, v = p.y / e.a.y;
+            return fma(u, u, v * v) <= 1.0f;
+        }
+        default: return true;
+    }
+}
+
+// Step 6 (trace_kernel::Pick::keep_first): whether (t1, p1) wins over
+// (t2, p2), both on the vertex sheet.
+static inline bool mkl_keep_first(MklPick e, float t1, float3 p1, float t2, float3 p2) {
+    bool nearer = fma(p1.x, p1.x, p1.y * p1.y) <= fma(p2.x, p2.x, p2.y * p2.y);
+    if (e.kind == MKL_APERTURE_NONE) return nearer;
+    bool in1 = mkl_in_extent(e, p1), in2 = mkl_in_extent(e, p2);
+    if (in1 != in2) return in1;
+    bool ahead1 = t1 >= -e.t0, ahead2 = t2 >= -e.t0;
+    if (!in1 || !(ahead1 || ahead2)) return nearer;
+    if (ahead1 && ahead2) return t1 <= t2;
+    return ahead1;
+}
+
+// Conic steps 2-6 of mklight_trace::surface from q; false for a miss.
+static inline bool mkl_conic_from(float c, float k, float3 q, float3 d, MklPick pick,
                                   thread float& t_out, thread float3& p_out) {
     float kap = 1.0f + k;
     float a = c * (fma(d.x, d.x, d.y * d.y) + kap * d.z * d.z);
@@ -156,8 +199,7 @@ static inline bool mkl_conic_from(float c, float k, float3 q, float3 d,
         float t = qq / a;
         float3 pt = mkl_at(t, d, q);
         if (isfinite(t) && mkl_finite3(pt) && mkl_on_sheet(kap, c, pt)) {
-            float r2 = fma(pt.x, pt.x, pt.y * pt.y);
-            bool keep = have && fma(bp.x, bp.x, bp.y * bp.y) <= r2;
+            bool keep = have && mkl_keep_first(pick, bt, bp, t, pt);
             if (!keep) {
                 have = true;
                 bt = t;
@@ -218,12 +260,12 @@ static inline bool mkl_asphere_domain(constant MklPackedSurface& s, float3 p) {
 
 // Newton on the sag residual from q; 0 and t_out on success, else the
 // MKL_RAY_* failure code.
-static inline uint mkl_asphere_from(constant MklPackedSurface& s, float3 q, float3 d,
+static inline uint mkl_asphere_from(constant MklPackedSurface& s, float3 q, float3 d, float t0,
                                     constant MklTraceParams& p, thread float& t_out) {
     float c = s.curvature, k = s.conic;
     float st;
     float3 sp;
-    bool seed_hit = mkl_conic_from(c, k, q, d, st, sp);
+    bool seed_hit = mkl_conic_from(c, k, q, d, mkl_pick(s, t0), st, sp);
     float t = seed_hit ? st : 0.0f;
     float kap = 1.0f + k;
     float g_first = 0.0f;
@@ -332,7 +374,7 @@ static inline uint mkl_intersect_legacy(constant MklPackedSurface& s, uint shape
         // trace_kernel::asphere_refine_df: two double-float Newton steps and
         // the normal from the double-float slope.
         float t1;
-        uint code = mkl_asphere_from(s, qf, dfv, prm, t1);
+        uint code = mkl_asphere_from(s, qf, dfv, t0.x, prm, t1);
         if (code != MKL_RAY_OK) return code;
         float2 tb = float2(t1, 0.0f);
         float2 w = float2(1.0f, 0.0f);
@@ -360,7 +402,7 @@ static inline uint mkl_intersect_legacy(constant MklPackedSurface& s, uint shape
     } else {
         float t1;
         float3 pt;
-        if (!mkl_conic_from(c, k, qf, dfv, t1, pt)) return MKL_RAY_MISS;
+        if (!mkl_conic_from(c, k, qf, dfv, mkl_pick(s, t0.x), t1, pt)) return MKL_RAY_MISS;
         MklDv x0 = mkl_point_on(q, float2(t1, 0.0f), d);
         float2 r2 = mkl_df_add(mkl_df_mul(x0.v[0], x0.v[0]), mkl_df_mul(x0.v[1], x0.v[1]));
         float2 fv = mkl_df_sub(
@@ -383,9 +425,9 @@ static inline uint mkl_intersect_legacy(constant MklPackedSurface& s, uint shape
 // Safeguarded Newton on z - sag from the conic seed (trace_kernel::sag_from):
 // the reference's bracket, backtracking and Miss / NoConvergence /
 // OutsideDomain decisions in f32.
-template<bool OVERLAYS> static inline uint mkl_sag_from(constant MklPackedSurface& s,constant float* pool,float3 q,float3 d,constant MklTraceParams& prm,thread float& t) {
+template<bool OVERLAYS> static inline uint mkl_sag_from(constant MklPackedSurface& s,constant float* pool,float3 q,float3 d,float t0,constant MklTraceParams& prm,thread float& t) {
     float3 seed_point;
-    bool seed_hit=mkl_conic_from(s.curvature,s.conic,q,d,t,seed_point);
+    bool seed_hit=mkl_conic_from(s.curvature,s.conic,q,d,mkl_pick(s,t0),t,seed_point);
     if (!seed_hit) t=0.0f;
     bool have_pos=false,have_neg=false; float positive=0.0f,negative=0.0f,previous=INFINITY;
     for (uint it=0;it<=prm.max_iterations;++it) {
@@ -436,7 +478,7 @@ template<bool OVERLAYS> static inline uint mkl_intersect(constant MklPackedSurfa
         return mkl_surface_eval<OVERLAYS>(s,pool,MklDf{hit.x.v[0]},MklDf{hit.x.v[1]},v)?MKL_RAY_OK:MKL_RAY_OUTSIDE_DOMAIN;
     }
     float2 ta=mkl_df_neg(mkl_ddot(p,d)); MklDv q=mkl_point_on(p,ta,d);
-    float t; uint code=mkl_sag_from<OVERLAYS>(s,pool,mkl_hi3(q),mkl_hi3(d),prm,t);
+    float t; uint code=mkl_sag_from<OVERLAYS>(s,pool,mkl_hi3(q),mkl_hi3(d),ta.x,prm,t);
     if (code!=MKL_RAY_OK) return code;
     MklDf tb={float2(t,0)};
     for (uint i=0;i<2;++i) {
