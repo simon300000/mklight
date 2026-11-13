@@ -1750,7 +1750,7 @@ Buffers:
 
 ### `diffraction_encircled_energy` — Diffraction encircled energy
 
-Category `wave`, result version 1, **GPU path**.
+Category `wave`, result version 2, **GPU path**.
 
 Encircled and ensquared energy of the diffraction PSF, with the diffraction-limited reference.
 
@@ -1765,7 +1765,7 @@ Settings:
 | `max_radius_mm` | number\|null | `null` | mm | > 0.0; Positive maximum radius; null uses the PSF window. |
 | `method` | string | `"fft"` |  | one of `"fft"`, `"huygens"` |
 | `padding` | number | `2.5` |  | > 0.0; Positive factor: image spacing = smallest wavelength × working F/# / padding. |
-| `pupil` | object | `{"amplitude":"transmission","grid":0,"rays":65,"reference":"chief","rim":true,"rim_tolerance":1e-10,"supersample":4}` |  |  |
+| `pupil` | object | `{"amplitude":"radiometric","grid":0,"rays":65,"reference":"chief","rim":true,"rim_tolerance":1e-10,"supersample":4}` |  |  |
 | `samples` | integer | `51` |  | ≥ 2 |
 | `spectrum` | object\|null |  |  | Optional run-local spectrum; absent/null keeps the design. kind: explicit (wavelengths:[{um,weight}]), photopic, scotopic, blackbody (temperature_k), sensor (table:[[um,response]]). Presets/sensor take sampling. Primary is nearest the energy-weighted mean (first on ties). |
 | `wavelengths` | object | `{"type":"all"}` |  | System wavelength selection: all, primary, index or list (tagged by type). |
@@ -1850,7 +1850,7 @@ Buffers:
 
 ### `line_spread` — Line spread function
 
-Category `wave`, result version 1, **GPU path**.
+Category `wave`, result version 2, **GPU path**.
 
 Diffraction line-spread functions along the image axes.
 
@@ -1863,7 +1863,7 @@ Settings:
 | `grid_size` | integer | `0` |  | ≥ 0; Image samples per axis; 0 selects from traced blur and diffraction (cap 2048); Huygens is limited to 1024. |
 | `method` | string | `"fft"` |  | one of `"fft"`, `"huygens"` |
 | `padding` | number | `2.5` |  | > 0.0; Positive factor: image spacing = smallest wavelength × working F/# / padding. |
-| `pupil` | object | `{"amplitude":"transmission","grid":0,"rays":65,"reference":"chief","rim":true,"rim_tolerance":1e-10,"supersample":4}` |  |  |
+| `pupil` | object | `{"amplitude":"radiometric","grid":0,"rays":65,"reference":"chief","rim":true,"rim_tolerance":1e-10,"supersample":4}` |  |  |
 | `spectrum` | object\|null |  |  | Optional run-local spectrum; absent/null keeps the design. kind: explicit (wavelengths:[{um,weight}]), photopic, scotopic, blackbody (temperature_k), sensor (table:[[um,response]]). Presets/sensor take sampling. Primary is nearest the energy-weighted mean (first on ties). |
 | `wavelengths` | object | `{"type":"all"}` |  | System wavelength selection: all, primary, index or list (tagged by type). |
 
@@ -1891,7 +1891,7 @@ Buffers:
 
 ### `mtf` — MTF
 
-Category `wave`, result version 1, **GPU path**.
+Category `wave`, result version 2, **GPU path**.
 
 Diffraction MTF (FFT, pupil autocorrelation or from the Huygens PSF) vs frequency, tangential and sagittal, with the diffraction limit and an optional detector (pixel) MTF.
 
@@ -1906,7 +1906,7 @@ Settings:
 | `huygens` | object | `{"grid_size":128,"padding":4.0}` |  |  |
 | `max_frequency` | number\|null | `null` | cycles/mm | > 0.0; Positive maximum image-space frequency; null estimates 10% polychromatic contrast including diffraction and lateral colour. |
 | `method` | string | `"direct"` |  | one of `"direct"`, `"fft"`, `"huygens"` |
-| `pupil` | object | `{"amplitude":"transmission","grid":0,"rays":65,"reference":"chief","rim":true,"rim_tolerance":1e-10,"supersample":4}` |  |  |
+| `pupil` | object | `{"amplitude":"radiometric","grid":0,"rays":65,"reference":"chief","rim":true,"rim_tolerance":1e-10,"supersample":4}` |  |  |
 | `spectrum` | object\|null |  |  | Optional run-local spectrum; absent/null keeps the design. kind: explicit (wavelengths:[{um,weight}]), photopic, scotopic, blackbody (temperature_k), sensor (table:[[um,response]]). Presets/sensor take sampling. Primary is nearest the energy-weighted mean (first on ties). |
 | `wavelengths` | object | `{"type":"all"}` |  | System wavelength selection: all, primary, index or list (tagged by type). |
 
@@ -1950,7 +1950,7 @@ Buffers:
 
 ### `mtf_vs_field` — MTF vs field
 
-Category `wave`, result version 1, **GPU path**.
+Category `wave`, result version 2, **GPU path**.
 
 Diffraction MTF at fixed frequencies across the field.
 
@@ -1965,7 +1965,7 @@ Settings:
 | `frequencies` | array<number> | `[]` | cycles/mm | Image-space frequencies; empty selects a round 1-2-5 base and its 2x/4x multiples within the automatic contrast range. |
 | `huygens` | object | `{"grid_size":128,"padding":4.0}` |  |  |
 | `method` | string | `"direct"` |  | one of `"direct"`, `"fft"`, `"huygens"` |
-| `pupil` | object | `{"amplitude":"transmission","grid":0,"rays":65,"reference":"chief","rim":true,"rim_tolerance":1e-10,"supersample":4}` |  |  |
+| `pupil` | object | `{"amplitude":"radiometric","grid":0,"rays":65,"reference":"chief","rim":true,"rim_tolerance":1e-10,"supersample":4}` |  |  |
 | `spectrum` | object\|null |  |  | Optional run-local spectrum; absent/null keeps the design. kind: explicit (wavelengths:[{um,weight}]), photopic, scotopic, blackbody (temperature_k), sensor (table:[[um,response]]). Presets/sensor take sampling. Primary is nearest the energy-weighted mean (first on ties). |
 | `wavelengths` | object | `{"type":"all"}` |  | System wavelength selection: all, primary, index or list (tagged by type). |
 
@@ -1994,7 +1994,7 @@ Buffers:
 
 ### `psf` — Point spread function
 
-Category `wave`, result version 1, **GPU path**.
+Category `wave`, result version 2, **GPU path**.
 
 Diffraction PSF by FFT or Huygens integration, monochromatic or polychromatic, with the Strehl ratio.
 
@@ -2009,7 +2009,7 @@ Settings:
 | `normalization` | string | `"strehl"` |  | one of `"strehl"`, `"unit_energy"`; strehl: ideal peak = 1; unit_energy: integral = 1, in mm^-2. |
 | `padding` | number | `2.5` |  | > 0.0; Positive factor: image spacing = smallest wavelength × working F/# / padding. |
 | `polychromatic` | boolean | `true` |  |  |
-| `pupil` | object | `{"amplitude":"transmission","grid":0,"rays":65,"reference":"chief","rim":true,"rim_tolerance":1e-10,"supersample":4}` |  |  |
+| `pupil` | object | `{"amplitude":"radiometric","grid":0,"rays":65,"reference":"chief","rim":true,"rim_tolerance":1e-10,"supersample":4}` |  |  |
 | `spacing_mm` | number\|null | `null` | mm | > 0.0; Positive explicit spacing; null uses padding. |
 | `spectrum` | object\|null |  |  | Optional run-local spectrum; absent/null keeps the design. kind: explicit (wavelengths:[{um,weight}]), photopic, scotopic, blackbody (temperature_k), sensor (table:[[um,response]]). Presets/sensor take sampling. Primary is nearest the energy-weighted mean (first on ties). |
 | `wavelengths` | object | `{"type":"all"}` |  | System wavelength selection: all, primary, index or list (tagged by type). |
@@ -2048,7 +2048,7 @@ Buffers:
 
 ### `through_focus_mtf` — Through-focus MTF
 
-Category `wave`, result version 1, **GPU path**.
+Category `wave`, result version 2, **GPU path**.
 
 Diffraction MTF at fixed frequencies vs image-plane defocus.
 
@@ -2064,7 +2064,7 @@ Settings:
 | `frequencies` | array<number> | `[]` | cycles/mm | Image-space frequencies; empty selects a round 1-2-5 base and its 2x/4x multiples within the automatic contrast range. |
 | `huygens` | object | `{"grid_size":128,"padding":4.0}` |  |  |
 | `method` | string | `"direct"` |  | one of `"direct"`, `"fft"`, `"huygens"` |
-| `pupil` | object | `{"amplitude":"transmission","grid":0,"rays":65,"reference":"chief","rim":true,"rim_tolerance":1e-10,"supersample":4}` |  |  |
+| `pupil` | object | `{"amplitude":"radiometric","grid":0,"rays":65,"reference":"chief","rim":true,"rim_tolerance":1e-10,"supersample":4}` |  |  |
 | `spectrum` | object\|null |  |  | Optional run-local spectrum; absent/null keeps the design. kind: explicit (wavelengths:[{um,weight}]), photopic, scotopic, blackbody (temperature_k), sensor (table:[[um,response]]). Presets/sensor take sampling. Primary is nearest the energy-weighted mean (first on ties). |
 | `wavelengths` | object | `{"type":"all"}` |  | System wavelength selection: all, primary, index or list (tagged by type). |
 
@@ -2096,7 +2096,7 @@ Buffers:
 
 ### `wavefront_map` — Wavefront map
 
-Category `wave`, result version 1.
+Category `wave`, result version 2.
 
 OPD on the exit-pupil reference sphere from the reference tracer, with RMS/PV, Strehl estimate and Zernike fit.
 
@@ -2106,7 +2106,7 @@ Settings:
 |---|---|---|---|---|
 | `configuration` | integer | `0` |  | ≥ 0; System configuration index; 0 also selects the base system when there are no configurations. |
 | `fields` | object | `{"type":"all"}` |  | System field selection: all, index or list (tagged by type). |
-| `pupil` | object | `{"amplitude":"transmission","grid":0,"rays":65,"reference":"chief","rim":true,"rim_tolerance":1e-10,"supersample":4}` |  |  |
+| `pupil` | object | `{"amplitude":"radiometric","grid":0,"rays":65,"reference":"chief","rim":true,"rim_tolerance":1e-10,"supersample":4}` |  |  |
 | `spectrum` | object\|null |  |  | Optional run-local spectrum; absent/null keeps the design. kind: explicit (wavelengths:[{um,weight}]), photopic, scotopic, blackbody (temperature_k), sensor (table:[[um,response]]). Presets/sensor take sampling. Primary is nearest the energy-weighted mean (first on ties). |
 | `wavelengths` | object | `{"type":"primary"}` |  | System wavelength selection: all, primary, index or list (tagged by type). |
 | `zernike_ordering` | string | `"fringe"` |  | one of `"fringe"`, `"standard"`; Fringe Z1 onward by default; standard uses Noll normalisation. |
@@ -2278,7 +2278,7 @@ Result (`result` in the envelope):
 
 ### `merit_evaluation` — Evaluate merit
 
-Category `optimization`, result version 2, **GPU path**.
+Category `optimization`, result version 3, **GPU path**.
 
 Evaluates the snapshot's merit once, without optimisation or finite differences. Uses optimize's merit settings, solves, default generator and operand report; returns the expanded merit spec for conversion to custom operands.
 
@@ -2347,7 +2347,7 @@ Result (`result` in the envelope):
 
 ### `optimize` — Optimize
 
-Category `optimization`, result version 2, **GPU path**.
+Category `optimization`, result version 3, **GPU path**.
 
 Optimises the variables against a merit function (explicit, or the default RMS spot / wavefront / polychromatic MTF merit with thickness boundaries) with explicit constraints, by Levenberg–Marquardt, dogleg, differential evolution, CMA-ES, Nelder–Mead or basin hopping. Returns the optimised system, the merit history and the operand table.
 
@@ -2461,7 +2461,7 @@ Buffers:
 
 ### `tolerance` — Tolerance analysis
 
-Category `optimization`, result version 3, **GPU path**.
+Category `optimization`, result version 4, **GPU path**.
 
 Sensitivity of a criterion merit (default: the RMS spot merit) to each tolerance at its limits, ranked worst first with the predicted mean criterion, and a reproducible Monte-Carlo analysis, with compensators re-optimised and the model's solves re-applied for every trial.
 

@@ -116,19 +116,26 @@ image surface's `x`, `y` for refracting and reflecting systems alike
 | model | `A` | notes |
 |---|---|---|
 | `uniform` | 1 | classical |
-| `transmission` (default) | `√T` | `T` from `mklight_trace::radiometry` (unpolarised model: coatings, Fresnel, bulk absorption) |
-| `radiometric` | `√(T·m·γ/J)` | adds the ray density `J = |∂(u,v)/∂P|` and the source measure `m` (plane-wavefront area for an object at infinity, `|∂(L,M)/∂P|/cosθ` for an isotropic point source), by lattice differences |
+| `transmission` | `√T` | `T` from `mklight_trace::radiometry` (unpolarised model: coatings, Fresnel, bulk absorption) |
+| `radiometric` (default) | `√(T·m·γ/J)` | adds the ray density `J = |∂(u,v)/∂P|` and the source measure `m` (plane-wavefront area for an object at infinity, `|∂(L,M)/∂P|/cosθ` for an isotropic point source), by lattice differences |
 
-The default `transmission` model leaves out the ray density (pupil
-distortion) and obliquity: rays are resampled onto a uniform `(u, v)` grid,
-so where the exit pupil is distorted the PSF's energy distribution, its
-centroid and its encircled energy are biased. On the singlet sample at
-full field the PSF centroid falls about a third short of the ray centroid
-with `transmission` and within a few per cent with `radiometric`
-(`default_amplitude_model_biases_the_psf_centroid`). Use `radiometric`
-when PSF energy placement matters (centroids, encircled energy of
-systems with pupil aberration); wavefront maps, Zernike fits and Strehl
-ratios of well-corrected systems are hardly affected.
+The `transmission` model leaves out the ray density (pupil distortion)
+and obliquity: rays are resampled onto a uniform `(u, v)` grid, so where
+the exit pupil is distorted the PSF's energy distribution, its centroid
+and its encircled energy are biased. On the singlet sample at full field
+the PSF centroid falls about a third short of the ray centroid with
+`transmission` and within a few per cent with `radiometric`
+(`transmission_amplitude_biases_the_psf_centroid`), which is therefore the
+default. Measured over the built-in samples and an F/1.3 aspheric singlet,
+the switch moves Strehl by ≤ 0.0012, MTF at 25/50/100 % of cutoff by
+≤ 0.002, `r50`/`r80` by < 1 % and wavefront RMS by < 0.3 %, at no
+measurable cost (CPU, Metal and WebGPU). Against the Huygens PSF, which
+keeps the off-axis longitudinal phase, `radiometric` is closer to the ray
+centroid on every pupil-distorted field tried (Cooke triplet, double Gauss,
+singlet). The FFT PSF's chief-normal projection (§5) leaves a few per cent
+of centroid error that does not shrink with sampling, for either model.
+`transmission` and `uniform` remain available, and saved settings that
+name a model keep it.
 
 **Image surface.** PSFs live on the plane through `P` normal to the image
 surface's vertex `z` axis (a warning flags curved image surfaces).
@@ -363,7 +370,7 @@ longitudinal phase matters.
 |---|---|
 | `tests/analytic.rs`, `tests/regressions.rs` | the pupil-function layer against closed forms (Airy pattern and EE, circular/annular/square MTF, defocus Strehl, Parseval, FFT vs Huygens, tilt direction, polychromatic sums, sampling warnings, determinism, cancellation, resampling) |
 | `tests/sensor_mtf.rs` | off-axis MTF on the image surface: Gaussian angular spectra with quadratic phase at 55° (two azimuths) against the closed-form autocorrelation (direct and FFT, 1.5e-3); a sensor translation cancels against the image offset in the complex OTF; a defocused F/2.1 ideal lens at 55° against a spherical-wave sum over the lens plane (2e-3 at 40 and 60 cycles/mm) |
-| `tests/traced.rs` | lattice OPD = `mklight_trace` OPD (1e-9) on triplet, Newtonian, finite relay and Petzval asphere; diffraction-limited ideal lens and paraboloid (Strehl, analytic MTF to 2e-3, Airy zero at 1.2197 λN), achromat at F/10 and singlet at F/20 (Strehl > 0.99, MTF within 0.01, scale = paraxial working F/# to 1 %); defocus: every ray = exact sphere-to-sphere closed form (1e-8 waves), Zernike focus = `δz NA²/(2λ)`, RMS = `W020/√12`; spherical: `6·Z9` = Seidel `W040` (3 %), fit = traced marginal OPD; Cooke triplet off axis: FFT vs Huygens (0.03) vs direct (0.02) MTF, tangential ≠ sagittal; 10-wave defocus: wave MTF → geometric MTF (0.05); vignetted triplet: rim area = 801² ray-grid transmission (2e-3), coverage = mask area, rim beats the hull; telecentric: `R = ∞`, OPD = `n δz (1 − cosθ)` (1e-8), refocus, FFT = plane-wave Huygens (1e-9), chief ray parallel off axis; mirrors: single paraboloid (`propagation_sign = −1`, defocus closed form), Newtonian, and the PSF centroid = ray centroid off axis (paraboloid, Newtonian, triplet; 3 %); radiometric amplitude of an ideal lens `A² = 1/cos³θ` (2e-3) and flat for a 1:1 finite relay; detector sinc zeros at `1/p`, fill factor, diffusion, product and Nyquist; registry JSON runs, round trips, determinism, cancellation (before and during a run, from another thread) and progress (sampled: monotone, with intermediate values); polychromatic = weighted sum of placed monochromatic PSFs; configurations and through-focus symmetry; Airy EE, `r50`, `r80` and LSF normalisation; MTF vs field = MTF at the system fields; `R → ∞` lattice OPD = `mklight_trace` OPD on and off axis; exit pupil beyond the image (`σ = +1`): every ray = far-sheet closed form (1e-8), positive defocus; annular stop: two rim loops, transmission `1 − ε²` (1e-3), mapped clear area (2e-3), analytic annular MTF (3e-3); PSF centroid = ray centroid for `−x` and diagonal fields (triplet, paraboloid); `transmission` amplitude biases the singlet's centroid by > 15 %, `radiometric` < 10 %; Huygens grid and cost limits (`InvalidParam`, no tracing); `psf_truncated` on a defocused PSF but not an Airy one; unusable fields skipped with warnings (`null` in MTF vs field, error when no field is usable); the axial MTF-vs-field sample follows the sweep direction (non-square pixels); configured runs record the base hash, configuration and solve warnings; default MTF right near zero frequency where the FFT interpolation is not |
+| `tests/traced.rs` | lattice OPD = `mklight_trace` OPD (1e-9) on triplet, Newtonian, finite relay and Petzval asphere; diffraction-limited ideal lens and paraboloid (Strehl, analytic MTF to 2e-3, Airy zero at 1.2197 λN), achromat at F/10 and singlet at F/20 (Strehl > 0.99, MTF within 0.01, scale = paraxial working F/# to 1 %); defocus: every ray = exact sphere-to-sphere closed form (1e-8 waves), Zernike focus = `δz NA²/(2λ)`, RMS = `W020/√12`; spherical: `6·Z9` = Seidel `W040` (3 %), fit = traced marginal OPD; Cooke triplet off axis: FFT vs Huygens (0.03) vs direct (0.02) MTF, tangential ≠ sagittal; 10-wave defocus: wave MTF → geometric MTF (0.05); vignetted triplet: rim area = 801² ray-grid transmission (2e-3), coverage = mask area, rim beats the hull; telecentric: `R = ∞`, OPD = `n δz (1 − cosθ)` (1e-8), refocus, FFT = plane-wave Huygens (1e-9), chief ray parallel off axis; mirrors: single paraboloid (`propagation_sign = −1`, defocus closed form), Newtonian, and the PSF centroid = ray centroid off axis (paraboloid, Newtonian, triplet; 3 %); radiometric amplitude of an ideal lens `A² = 1/cos³θ` (2e-3) and flat for a 1:1 finite relay; detector sinc zeros at `1/p`, fill factor, diffusion, product and Nyquist; registry JSON runs, round trips, determinism, cancellation (before and during a run, from another thread) and progress (sampled: monotone, with intermediate values); polychromatic = weighted sum of placed monochromatic PSFs; configurations and through-focus symmetry; Airy EE, `r50`, `r80` and LSF normalisation; MTF vs field = MTF at the system fields; `R → ∞` lattice OPD = `mklight_trace` OPD on and off axis; exit pupil beyond the image (`σ = +1`): every ray = far-sheet closed form (1e-8), positive defocus; annular stop: two rim loops, transmission `1 − ε²` (1e-3), mapped clear area (2e-3), analytic annular MTF (3e-3); PSF centroid = ray centroid for `−x` and diagonal fields (triplet, paraboloid); `transmission` amplitude biases the singlet's centroid by > 15 %, `radiometric` (the default) < 10 %; Huygens grid and cost limits (`InvalidParam`, no tracing); `psf_truncated` on a defocused PSF but not an Airy one; unusable fields skipped with warnings (`null` in MTF vs field, error when no field is usable); the axial MTF-vs-field sample follows the sweep direction (non-square pixels); configured runs record the base hash, configuration and solve warnings; default MTF right near zero frequency where the FFT interpolation is not |
 
 Unit tests compare the chirp transforms with direct sums (including a skew
 projection), the grouped energy kernels with the full spectral integrals
@@ -392,8 +399,6 @@ cargo test --release -p mklight-wave --test tests interactive:: -- --ignored --n
   `pupil.rays`.
 * Afocal image spaces have no plane-wave reference or angular units; they
   are only reported (`afocal_image_space`).
-* The default amplitude model is `transmission`, not the more faithful
-  `radiometric` (§3).
 
 ## 8. Image simulation
 

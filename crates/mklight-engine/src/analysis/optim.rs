@@ -1494,8 +1494,9 @@ fn ser_num<S: serde::Serializer>(x: &f64, s: S) -> Result<S::Ok, S::Error> {
 pub struct Optimize;
 
 impl Analysis for Optimize {
+    /// 3: MTF operands use the radiometric pupil amplitude.
     fn result_version(&self) -> u32 {
-        2
+        3
     }
     fn name(&self) -> &str {
         "optimize"
@@ -1982,8 +1983,9 @@ pub struct Tolerance;
 impl Analysis for Tolerance {
     /// 3: `predicted_criterion` is the expected (Monte-Carlo mean)
     /// criterion, nominal + `expected_change`, no longer nominal + RSS.
+    /// 4: MTF criteria use the radiometric pupil amplitude.
     fn result_version(&self) -> u32 {
-        3
+        4
     }
     fn name(&self) -> &str {
         "tolerance"

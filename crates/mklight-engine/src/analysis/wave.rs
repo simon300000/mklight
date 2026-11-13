@@ -38,6 +38,11 @@ macro_rules! dispatch {
 }
 
 impl Analysis for Wave {
+    /// 2: the default pupil amplitude is `radiometric` (ray density and
+    /// obliquity), no longer `transmission`.
+    fn result_version(&self) -> u32 {
+        2
+    }
     fn memoizable(&self) -> bool {
         true
     }

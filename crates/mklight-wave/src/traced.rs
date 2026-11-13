@@ -73,10 +73,10 @@
 //! model), `m` the object-space measure per unit entrance-pupil area (area
 //! of the plane wavefront, or direction-cosine area over `cos θ` for a point
 //! source) and `J = |∂(u,v)/∂(P_x,P_y)|`. Since the sphere area per unit
-//! `(u, v)` area is `∝ 1/γ`, `A ∝ √(T·m·γ/J)` ([`AmplitudeModel::Radiometric`]).
+//! `(u, v)` area is `∝ 1/γ`, `A ∝ √(T·m·γ/J)` ([`AmplitudeModel::Radiometric`],
+//! the default: PSF energy then sits where the rays land).
 //! [`AmplitudeModel::Transmission`] keeps `√T` only (pupil-distortion and
-//! obliquity factors left out, as is customary), [`AmplitudeModel::Uniform`]
-//! sets `A = 1`. Amplitudes are normalised to 1 at the chief ray (or the
+//! obliquity factors left out), [`AmplitudeModel::Uniform`] sets `A = 1`. Amplitudes are normalised to 1 at the chief ray (or the
 //! largest value when the chief ray is vignetted).
 //!
 //! # Image surface
@@ -120,9 +120,9 @@ pub enum AmplitudeModel {
     /// `A = 1`.
     Uniform,
     /// `A = √T` (coating, Fresnel and bulk transmission of each ray).
-    #[default]
     Transmission,
-    /// `A = √(T·m·γ/J)`: transmission, ray density and obliquity.
+    /// `A = √(T·m·γ/J)`: transmission, ray density and obliquity (default).
+    #[default]
     Radiometric,
 }
 
@@ -154,7 +154,7 @@ impl Default for PupilSettings {
             rays: 65,
             supersample: 4,
             reference: ReferencePoint::Chief,
-            amplitude: AmplitudeModel::Transmission,
+            amplitude: AmplitudeModel::Radiometric,
             rim: true,
             rim_tolerance: 1e-10,
         }

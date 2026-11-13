@@ -1750,12 +1750,15 @@ fn psf_centroid_follows_x_and_diagonal_fields() {
     centroid_check(&tp, 2, "paraboloid diagonal");
 }
 
-/// The default `transmission` amplitude leaves out the ray density, so the
-/// PSF's energy distribution (and centroid) is biased where the pupil is
-/// distorted; `radiometric` restores the moment theorem. Singlet at full
-/// field: the bias is about a third of the centroid shift (WAVE.md §3).
+/// The `transmission` amplitude leaves out the ray density, so the PSF's
+/// energy distribution (and centroid) is biased where the pupil is
+/// distorted; `radiometric`, the default, restores the moment theorem.
+/// Singlet at full field: the bias is about a third of the centroid shift
+/// (WAVE.md §3).
 #[test]
-fn default_amplitude_model_biases_the_psf_centroid() {
+fn transmission_amplitude_biases_the_psf_centroid() {
+    assert_eq!(PupilSettings::default().amplitude, AmplitudeModel::Radiometric);
+    assert_eq!(AmplitudeModel::default(), AmplitudeModel::Radiometric);
     let mut s = samples::singlet();
     s.wavelengths = mono(0.5875618);
     let t = tracer_for(s).unwrap();
