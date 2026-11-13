@@ -24,6 +24,10 @@ rayon.workspace = true
 [dev-dependencies]
 mklight-trace.workspace = true
 
+# The trace benchmarks print Metal's numbers next to WebGPU's.
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+mklight-metal.workspace = true
+
 [[test]]
 name = "tests"
 path = "tests/main.rs"

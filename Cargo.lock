@@ -856,6 +856,7 @@ dependencies = [
  "bytemuck",
  "mklight-core",
  "mklight-gpu",
+ "mklight-metal",
  "mklight-trace",
  "pollster",
  "rayon",
