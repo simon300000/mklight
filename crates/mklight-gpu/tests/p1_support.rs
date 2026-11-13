@@ -344,11 +344,12 @@ pub fn check_f64(
             if reference {
                 let oi = if record { 7 } else { 5 };
                 assert_eq!(uints(&data[oi + 1])[i], 0);
-                let cpu = t
-                    .opd_reference(t.field(field), wl)
-                    .unwrap()
-                    .opd_waves(&traced)
-                    .unwrap();
+                let mut sphere = t.opd_reference(t.field(field), wl).unwrap();
+                // The device OPD kernel measures from the reference sphere
+                // only; afocal image spaces take the plane reference on the
+                // host (GPU.md §9.2), so the kernel is checked on the sphere.
+                sphere.afocal = false;
+                let cpu = sphere.opd_waves(&traced).unwrap();
                 e.opd = e.opd.max((doubles(&data[oi])[i].to_f64() - cpu).abs());
             }
         }
