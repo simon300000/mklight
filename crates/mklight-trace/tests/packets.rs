@@ -268,10 +268,9 @@ fn steep_meniscus(fixed: bool, fields: &[f64]) -> OpticalSystem {
 
 /// Light from an object at infinity starts on a reference plane through the
 /// first vertex, which a steep ray can cross between its two crossings of a
-/// deep front surface. Both lie ahead of the light, which arrives from −∞,
-/// so the first along the line is taken (here also the nearer one), not the
-/// one ahead of the reference point (SURFACES.md §8). Scalar and packets
-/// agree bitwise.
+/// deep front surface. Surface 1 then keeps the nearer-vertex rule (here
+/// also the first crossing along the line), not the crossing ahead of the
+/// reference point (SURFACES.md §8). Scalar and packets agree bitwise.
 #[test]
 fn steep_ray_from_infinity_takes_the_first_crossing() {
     use mklight_core::Vec3;

@@ -172,10 +172,7 @@ struct MklPick {
 fn mkl_pick(s: u32, t0: f32, mode: u32) -> MklPick {
     let sf = &mkl_surfaces[s];
     let kind = select((*sf).aperture, MKL_APERTURE_NONE, mode == MKL_ROOT_NEAREST);
-    // The largest finite f32 (a WGSL constant must be finite): every finite
-    // t is ahead, as with the +∞ of the other backends.
-    let start = select(t0, 3.4028234e38f, mode == MKL_ROOT_FROM_INFINITY);
-    return MklPick(kind, vec2<f32>((*sf).aperture_params[0], (*sf).aperture_params[1]), start);
+    return MklPick(kind, vec2<f32>((*sf).aperture_params[0], (*sf).aperture_params[1]), t0);
 }
 
 fn mkl_in_extent(e: MklPick, p: vec3<f32>) -> bool {
@@ -1016,7 +1013,7 @@ fn mkl_trace_core(hdr: u32, w: u32, input: MklRaw, mode: u32, num_steps: u32) ->
         n_cur = n1;
         let fail_s = si << MKL_RAY_SURFACE_SHIFT;
         // 2. Intersect; optical path and absorption of the segment.
-        let root_mode = select(MKL_ROOT_FROM_START, MKL_ROOT_FROM_INFINITY, !back && si == 1u && at_infinity);
+        let root_mode = select(MKL_ROOT_FROM_START, MKL_ROOT_NEAREST, !back && si == 1u && at_infinity);
         let hit = mkl_intersect(surf, pos, dir, root_mode);
         if (hit.code != MKL_RAY_OK) {
             status = hit.code | fail_s;

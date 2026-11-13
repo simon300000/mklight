@@ -47,7 +47,21 @@ use serde::{Deserialize, Serialize};
 use crate::interact::{diffract, ideal_lens, reflect, refract};
 use crate::numeric::Compensated;
 use crate::paraxial::ideal_lens_object_vergence;
-use crate::surface::{Extent, IntersectError, IntersectSettings, SHEET_TOL, intersect_within};
+use crate::surface::{IntersectError, IntersectSettings, SHEET_TOL, intersect_within};
+
+/// The fixed extent that chooses between two crossings of surface `i`
+/// arriving forward (`ResolvedSurface::root_extent`), except at surface 1
+/// for an object at infinity: those rays have no real start (their start is
+/// a reference point on a plane through the first vertex), so the
+/// nearer-vertex rule applies (docs/SURFACES.md §8).
+#[inline]
+pub fn root_extent(sys: &ResolvedSystem, i: usize) -> Option<mklight_core::ApertureShape> {
+    if i == 1 && sys.object_at_infinity {
+        None
+    } else {
+        sys.surfaces[i].root_extent()
+    }
+}
 
 /// A ray: point and unit direction in one frame.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -307,12 +321,14 @@ fn step(
     w.ray = transfer_into(sys, i, w.ray);
     let s = &sys.surfaces[i];
     let n1 = sys.n_before(i, wl);
-    let outline = s.root_extent();
-    let extent = outline.as_ref().map(|outline| Extent {
-        outline,
-        from_infinity: i == 1 && sys.object_at_infinity,
-    });
-    let hit = match intersect_within(&s.shape, extent, w.ray.pos, w.ray.dir, &opts.intersect) {
+    let extent = root_extent(sys, i);
+    let hit = match intersect_within(
+        &s.shape,
+        extent.as_ref(),
+        w.ray.pos,
+        w.ray.dir,
+        &opts.intersect,
+    ) {
         Ok(h) => h,
         Err(e) => {
             return Err(match e {
@@ -569,7 +585,7 @@ fn lane_surface(sys: &ResolvedSystem, i: usize) -> Option<LaneSurface> {
     Some(LaneSurface {
         shift,
         conic,
-        extent: s.root_extent().is_some(),
+        extent: root_extent(sys, i).is_some(),
         refract,
     })
 }

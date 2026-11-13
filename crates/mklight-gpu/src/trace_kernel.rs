@@ -298,8 +298,7 @@ pub struct Pick<E: FpEnv> {
 
 impl<E: FpEnv> Pick<E> {
     /// `mkl_pick`: `s`'s packed aperture with `t₀` for the root choice
-    /// `root` (`MKL_ROOT_*`): no extent for `NEAREST`, and `t₀ = +∞` (every
-    /// crossing ahead) for `FROM_INFINITY`.
+    /// `root` (`MKL_ROOT_*`): no extent for `NEAREST`.
     pub fn of(s: &PackedSurface, t0: F<E>, root: u32) -> Self {
         Pick {
             kind: if root == MKL_ROOT_NEAREST {
@@ -308,11 +307,7 @@ impl<E: FpEnv> Pick<E> {
                 s.aperture
             },
             a: [f::<E>(s.aperture_params[0]), f::<E>(s.aperture_params[1])],
-            t0: if root == MKL_ROOT_FROM_INFINITY {
-                f::<E>(f32::INFINITY)
-            } else {
-                t0
-            },
+            t0,
         }
     }
     /// `mkl_in_extent`: the point lies inside the filled outline (f32).
@@ -1229,7 +1224,7 @@ pub fn trace_resident<E: FpEnv>(
         let fail = |code: u32| code | ((si as u32) << MKL_RAY_SURFACE_SHIFT);
         // 2. Intersect; optical path and absorption of the segment.
         let root = if !back && si == 1 && at_infinity {
-            MKL_ROOT_FROM_INFINITY
+            MKL_ROOT_NEAREST
         } else {
             MKL_ROOT_FROM_START
         };

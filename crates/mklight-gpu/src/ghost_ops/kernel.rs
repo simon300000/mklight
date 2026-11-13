@@ -150,7 +150,7 @@ pub fn trace<E: FpEnv>(
             tr::xf_forward(&s[si - 1], &mut pos, &mut dir)
         }
         let root = if !back && si == 1 && h.flags & MKL_SYS_OBJECT_AT_INFINITY != 0 {
-            MKL_ROOT_FROM_INFINITY
+            MKL_ROOT_NEAREST
         } else {
             MKL_ROOT_FROM_START
         };

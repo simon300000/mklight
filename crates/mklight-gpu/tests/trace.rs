@@ -287,6 +287,9 @@ fn steep_double_crossing_matches_reference() {
         for (extent, first) in testutil::double_crossing_extents() {
             let mut sys = one_surface(shape.clone());
             (sys.surfaces[1].semi_diameter, sys.surfaces[1].aperture) = extent.clone();
+            // A finite object at the vertex: the ray starts at a real point (surface 1
+            // of an object at infinity keeps the nearer-vertex rule).
+            sys.surfaces[0].thickness = 0.0;
             let rs = testutil::resolve(sys);
             let opts = TraceOptions::unclipped();
             let (res, rec) = trace_ray_recorded(&rs, &ray, 1, &opts);
@@ -319,7 +322,7 @@ fn steep_double_crossing_matches_reference() {
 
 /// Light from an object at infinity: the steep ray's start lies between its
 /// two crossings of a deep front surface, both inside the lens; the kernel
-/// takes the first along the line, as the reference (docs/SURFACES.md §8).
+/// takes the nearer one, as the reference (docs/SURFACES.md §8).
 #[test]
 fn steep_ray_from_infinity_matches_reference() {
     let b = CpuF32Backend::with_subnormals(false);

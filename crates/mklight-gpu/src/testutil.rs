@@ -305,8 +305,9 @@ pub fn double_crossing_extents() -> Vec<((SemiDiameter, Option<ApertureShape>), 
 /// A deep front meniscus (object at infinity, fixed semi-diameters) and a
 /// ray at 89° whose start, on the reference plane through the first vertex,
 /// lies between its two crossings of the front surface, both inside the
-/// lens: light from infinity meets the first (y ≈ −29.15), not the one ahead
-/// of the start (y ≈ 31.7) (docs/SURFACES.md §8).
+/// lens: surface 1 of an object at infinity keeps the nearer crossing
+/// (y ≈ −29.15), not the one ahead of the start (y ≈ 31.7)
+/// (docs/SURFACES.md §8).
 pub fn steep_meniscus_from_infinity() -> (OpticalSystem, mklight_trace::Ray) {
     use mklight_core::Vec3;
     let mut s = plate(false);
@@ -608,7 +609,7 @@ pub fn f64_path(
     use crate::batch::StepMode;
     use mklight_core::materials::coating::fresnel;
     use mklight_trace::interact::{ideal_lens, reflect, refract};
-    use mklight_trace::surface::{Extent, IntersectSettings, intersect_within};
+    use mklight_trace::surface::{IntersectSettings, intersect_within};
     let frame = |j: usize| -> mklight_core::math::Frame {
         match sys.surfaces[j].to_next {
             Some(f) => f,
@@ -638,13 +639,19 @@ pub fn f64_path(
             n_of(s)
         };
         let surf = &sys.surfaces[s];
-        let outline = surf.root_extent();
-        let extent = outline.as_ref().map(|outline| Extent {
-            outline,
-            from_infinity: s == 1 && !st.backward && sys.object_at_infinity,
-        });
-        let hit =
-            intersect_within(&surf.shape, extent, p, d, &IntersectSettings::default()).ok()?;
+        let extent = if st.backward {
+            surf.root_extent()
+        } else {
+            mklight_trace::trace::root_extent(sys, s)
+        };
+        let hit = intersect_within(
+            &surf.shape,
+            extent.as_ref(),
+            p,
+            d,
+            &IntersectSettings::default(),
+        )
+        .ok()?;
         let t = hit.t_transfer + hit.t_surface;
         opl += n1 * t;
         let alpha = if gap == 0 && sys.object_at_infinity {

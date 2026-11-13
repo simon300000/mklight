@@ -139,7 +139,7 @@ static inline MklPick mkl_pick(constant MklPackedSurface& s, float t0, uint root
     MklPick p;
     p.kind = root == MKL_ROOT_NEAREST ? MKL_APERTURE_NONE : s.aperture;
     p.a = float2(s.aperture_params[0], s.aperture_params[1]);
-    p.t0 = root == MKL_ROOT_FROM_INFINITY ? INFINITY : t0;
+    p.t0 = t0;
     return p;
 }
 
@@ -744,7 +744,7 @@ static __attribute__((always_inline)) MklRawState mkl_trace_raw(constant MklPack
         const uint fail_s = si << MKL_RAY_SURFACE_SHIFT;
         // 2. Intersect; optical path and absorption of the segment.
         MklHit hit;
-        const uint root = !back && si == 1u && at_infinity ? MKL_ROOT_FROM_INFINITY : MKL_ROOT_FROM_START;
+        const uint root = !back && si == 1u && at_infinity ? MKL_ROOT_NEAREST : MKL_ROOT_FROM_START;
         uint code = mkl_intersect<OVERLAYS>(surf, coefficients, pos, dir, root, prm, hit);
         if (code != MKL_RAY_OK) {
             status = code | fail_s;

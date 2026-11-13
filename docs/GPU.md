@@ -427,9 +427,9 @@ intersection, clipping, interaction) with one split:
   roots, vertex-sheet selection and the root choice between two crossings
   (SURFACES.md §8: the packed aperture outline as the surface's fixed
   extent, tested in f32 on the packed sizes; no layout field is added;
-  `mkl_intersect` takes `MKL_ROOT_*`: `FROM_INFINITY` on the forward step
-  into surface 1 of an object at infinity, `NEAREST` for the object
-  surface in the aiming kernels, `FROM_START` otherwise); the
+  `mkl_intersect` takes `MKL_ROOT_*`: `NEAREST` on the forward step into
+  surface 1 of an object at infinity and for the object surface in the
+  aiming kernels, `FROM_START` otherwise); the
   even-asphere Newton iteration from
   the conic seed with the reference's Miss / NoConvergence / OutsideDomain
   classification; the TIR test of the stable vector Snell law

@@ -357,12 +357,15 @@ the previous surface travelling away from this one), which keeps the
 sequential convention. Light from an object at infinity arriving at
 surface 1 has no real start: its start point is only a reference on a plane
 through the first vertex normal to the ray, which a steep ray can cross
-between the two crossings of a deep front surface. That light arrives from
-`−∞`, so both crossings lie ahead of it and the first along the line wins
-(`Extent::from_infinity`; `MKL_ROOT_FROM_INFINITY` on the GPU). Taking the
-one ahead of the reference point instead would send a ray at 89° through
-the far rim of a deep front meniscus, travelling backwards, and break the
-aim map of the field. The choice is geometry, not clipping: unclipped traces
+between the two crossings of a deep front surface. Surface 1 of an object at
+infinity therefore keeps the nearer-vertex rule (`trace::root_extent`;
+`MKL_ROOT_NEAREST` on the GPU). Taking the crossing ahead of the reference
+point would send a ray at 89° through the far rim of a deep front meniscus,
+travelling backwards. Taking the first crossing from `−∞` instead is the
+physical event when a deep concave front's own rim shades a steep field,
+but it makes the aim map jump where the rim starts to shade and aiming
+fails there; that self-vignetting is left to the stray-light scene, which
+traces it. The choice is geometry, not clipping: unclipped traces
 (ray aiming, automatic semi-diameters) make it too. Every backend uses this
 rule on every intersection path: the scalar trace, the CPU packets (lanes
 crossing a surface with an extent twice go through the scalar step, so they

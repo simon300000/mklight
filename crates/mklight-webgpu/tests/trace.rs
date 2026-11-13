@@ -1000,8 +1000,10 @@ fn steep_double_crossing_bitwise() {
         for (extent, first) in testutil::double_crossing_extents() {
             let mut sys = testutil::one_surface(shape.clone());
             (sys.surfaces[1].semi_diameter, sys.surfaces[1].aperture) = extent.clone();
-            let t = testutil::tracer(sys);
-            let p = PackedSystem::pack_all(t.system()).unwrap();
+            // A finite object at the vertex: the ray starts at a real point (surface 1
+            // of an object at infinity keeps the nearer-vertex rule).
+            sys.surfaces[0].thickness = 0.0;
+            let p = PackedSystem::pack_all(&testutil::resolve(sys)).unwrap();
             let req = |h| {
                 let mut r = TraceRequest::new(h, rays.clone(), 0, 1);
                 r.record = RecordMode::AllSurfaces;
@@ -1018,7 +1020,7 @@ fn steep_double_crossing_bitwise() {
 
 /// Light from an object at infinity meeting a deep front surface twice
 /// around its start: the device matches the emulation bitwise and takes the
-/// first crossing along the line (`mklight-gpu` trace tests).
+/// nearer crossing (`mklight-gpu` trace tests).
 #[test]
 fn steep_ray_from_infinity_bitwise() {
     let g = crate::gpu_or_skip!();
