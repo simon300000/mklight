@@ -33,6 +33,29 @@ pub struct WgpuDevice {
     pipelines: Mutex<HashMap<(Kernel, PassShape), Arc<Pipeline>>>,
     persistent: Mutex<HashMap<u64, Arc<wgpu::Buffer>>>,
     next_key: AtomicU64,
+    pool: Mutex<Pool>,
+}
+
+/// Idle batch buffers by (usage, size class): uploads, scratch and staging
+/// are reused instead of allocated per batch. At most `POOL_BYTES` idle.
+#[derive(Default)]
+struct Pool {
+    idle: HashMap<(u32, u64), Vec<wgpu::Buffer>>,
+    /// Least recently returned first.
+    order: std::collections::VecDeque<(u32, u64)>,
+    bytes: u64,
+}
+
+const POOL_BYTES: u64 = 256 << 20;
+
+/// The size class of a request: 4 KiB granules up to 1 MiB, then powers of
+/// two (capped at `max`), so repeated plans of similar sizes share buffers.
+fn size_class(bytes: u64, max: u64) -> u64 {
+    if bytes <= 1 << 20 {
+        bytes.div_ceil(4096) * 4096
+    } else {
+        bytes.next_power_of_two().min(max).max(bytes)
+    }
 }
 
 struct Pipeline {
@@ -42,6 +65,8 @@ struct Pipeline {
 
 /// Recorded and submitted work whose readbacks are being mapped.
 pub struct Submitted<'a> {
+    /// Batch buffers, returned to the pool once the batch completed.
+    held: Vec<Arc<wgpu::Buffer>>,
     scope: Option<wgpu::ErrorScopeGuard>,
     staging: Vec<(wgpu::Buffer, &'a mut [u32])>,
     stats: BatchStats,
@@ -123,6 +148,7 @@ impl WgpuDevice {
             pipelines: Mutex::new(HashMap::new()),
             persistent: Mutex::new(HashMap::new()),
             next_key: AtomicU64::new(1),
+            pool: Mutex::new(Pool::default()),
         }))
     }
 
@@ -236,6 +262,59 @@ impl WgpuDevice {
         }))
     }
 
+    /// A pooled buffer of at least `words` words (contents unspecified).
+    fn take(&self, words: usize, usage: wgpu::BufferUsages, label: &str) -> MkResult<wgpu::Buffer> {
+        let size = (words.max(4) * 4) as u64;
+        let class = size_class(size, self.summary.max_buffer_size);
+        let key = (usage.bits(), class);
+        let mut pool = self.pool.lock().unwrap();
+        if let Some(b) = pool.idle.get_mut(&key).and_then(|v| v.pop()) {
+            pool.bytes -= class;
+            if let Some(i) = pool.order.iter().position(|k| *k == key) {
+                pool.order.remove(i);
+            }
+            return Ok(b);
+        }
+        drop(pool);
+        if class > self.summary.max_buffer_size {
+            return Err(MkError::Unsupported(format!(
+                "webgpu: {label} buffer of {size} bytes exceeds maxBufferSize"
+            )));
+        }
+        Ok(self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some(label),
+            size: class,
+            usage,
+            mapped_at_creation: false,
+        }))
+    }
+
+    /// Return batch buffers to the pool, evicting the oldest beyond its cap.
+    fn give(&self, buffers: impl IntoIterator<Item = wgpu::Buffer>) {
+        let mut pool = self.pool.lock().unwrap();
+        for b in buffers {
+            let key = (b.usage().bits(), b.size());
+            pool.bytes += key.1;
+            pool.idle.entry(key).or_default().push(b);
+            pool.order.push_back(key);
+        }
+        while pool.bytes > POOL_BYTES {
+            let Some(key) = pool.order.pop_front() else {
+                break;
+            };
+            if let Some(b) = pool.idle.get_mut(&key).and_then(|v| {
+                if v.is_empty() {
+                    None
+                } else {
+                    Some(v.remove(0))
+                }
+            }) {
+                pool.bytes -= key.1;
+                drop(b);
+            }
+        }
+    }
+
     /// Record and submit `batch`; its readbacks complete after mapping.
     pub fn submit<'a>(&self, batch: Batch<'a>) -> MkResult<Submitted<'a>> {
         let started = Instant::now();
@@ -246,6 +325,9 @@ impl WgpuDevice {
         let scope = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
         let mut buffers: Vec<Arc<wgpu::Buffer>> = Vec::with_capacity(batch.resources.len());
         let mut sizes = Vec::with_capacity(batch.resources.len());
+        // Pooled scratch is zeroed on the device before the passes.
+        let mut clear = Vec::new();
+        let mut owned = Vec::new();
         for r in &batch.resources {
             let (b, words) = match r {
                 Resource::Persistent(k) => {
@@ -260,7 +342,7 @@ impl WgpuDevice {
                     (b, words)
                 }
                 Resource::Upload(w) => {
-                    let b = self.buffer(w.len(), storage, "upload")?;
+                    let b = self.take(w.len(), storage, "upload")?;
                     if !w.is_empty() {
                         self.queue.write_buffer(&b, 0, bytemuck::cast_slice(w));
                     }
@@ -268,9 +350,13 @@ impl WgpuDevice {
                     (Arc::new(b), w.len().max(4))
                 }
                 Resource::Scratch(n) => {
-                    (Arc::new(self.buffer(*n, storage, "scratch")?), (*n).max(4))
+                    clear.push(buffers.len());
+                    (Arc::new(self.take(*n, storage, "scratch")?), (*n).max(4))
                 }
             };
+            if !matches!(r, Resource::Persistent(_)) {
+                owned.push(buffers.len());
+            }
             buffers.push(b);
             sizes.push(words);
         }
@@ -304,6 +390,9 @@ impl WgpuDevice {
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        for &i in &clear {
+            encoder.clear_buffer(&buffers[i], 0, None);
+        }
         for (p, off) in batch.passes.iter().zip(&offsets) {
             let pipe = self.pipeline(p.kernel, &p.shape())?;
             let mut entries = vec![wgpu::BindGroupEntry {
@@ -359,7 +448,7 @@ impl WgpuDevice {
                 continue;
             }
             let bytes = (r.into.len() * 4) as u64;
-            let s = self.buffer(
+            let s = self.take(
                 r.into.len(),
                 wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
                 "readback",
@@ -375,7 +464,9 @@ impl WgpuDevice {
             staging.push((s, r.into));
         }
         self.queue.submit([encoder.finish()]);
+        let held = owned.into_iter().map(|i| buffers[i].clone()).collect();
         Ok(Submitted {
+            held,
             scope: Some(scope),
             staging,
             stats,
@@ -398,6 +489,8 @@ impl WgpuDevice {
     /// Copy the mapped readbacks out (after the device has completed).
     fn finish(&self, s: Submitted<'_>) -> MkResult<BatchStats> {
         let mut stats = s.stats;
+        let mut done = Vec::with_capacity(s.held.len() + s.staging.len());
+        done.extend(s.held.into_iter().filter_map(|b| Arc::try_unwrap(b).ok()));
         for (b, into) in s.staging {
             {
                 let range = b
@@ -408,7 +501,9 @@ impl WgpuDevice {
                 into.copy_from_slice(&bytemuck::cast_slice::<u8, u32>(&range)[..n]);
             }
             b.unmap();
+            done.push(b);
         }
+        self.give(done);
         stats.device_seconds = s.started.elapsed().as_secs_f64();
         Ok(stats)
     }
