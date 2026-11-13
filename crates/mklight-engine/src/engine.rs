@@ -223,9 +223,7 @@ impl Engine {
             };
         }
         let provider = read(&self.inner.backends).first_gpu();
-        let spawned = std::thread::Builder::new()
-            .name("mklight-gpu-prepare".into())
-            .spawn(move || {
+        let spawned = mklight_core::platform::spawn("mklight-gpu-prepare", move || {
                 use crate::gpu::{GpuDevice, GpuPreparation};
                 let prepare = || {
                     let Some(provider) = provider else {
@@ -471,7 +469,7 @@ mod tests {
         r.register(Arc::new(Panicking));
         *write(&e.inner.backends) = r;
         assert!(e.prepare_gpu(None));
-        let start = std::time::Instant::now();
+        let start = mklight_core::platform::Instant::now();
         let state = loop {
             match e.gpu_preparation() {
                 GpuPreparation::Preparing { .. } if start.elapsed() < Duration::from_secs(60) => {

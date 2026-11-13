@@ -51,7 +51,7 @@ use rayon::prelude::*;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::mpsc;
-use std::time::Instant;
+use mklight_core::platform::Instant;
 
 /// How a [`Geometry`] aims its generations (module docs).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

@@ -24,7 +24,7 @@ use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Mutex;
-use std::time::Instant;
+use mklight_core::platform::Instant;
 
 use mklight_core::param::{IrregularityMode, ParamPath, PlacementComponent};
 use mklight_core::{JobContext, MkError, MkResult, OpticalSystem};

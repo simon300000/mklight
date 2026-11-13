@@ -16,7 +16,7 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use mklight_core::platform::Instant;
 
 use mklight_core::job::Precision;
 use mklight_core::rng::philox4x32_10;

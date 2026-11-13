@@ -654,7 +654,7 @@ mod tests {
     use crate::{Engine, EngineConfig};
     use mklight_core::materials::{GlassCatalog, MaterialLibrary, agf, lines};
     use mklight_core::{MaterialRef, SurfaceId, SurfaceShape, samples};
-    use std::time::Instant;
+    use mklight_core::platform::Instant;
 
     const PAIR: [(&str, f64, f64); 4] = [
         ("C_GOOD", 1.52, 60.0),

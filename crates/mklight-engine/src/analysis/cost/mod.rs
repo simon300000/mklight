@@ -709,11 +709,7 @@ pub fn decided_grid(json: &Value) -> Option<f64> {
 
 /// One-minute load average per logical core (0 when unknown).
 pub fn load_per_core() -> f64 {
-    let mut l = [0f64; 3];
-    // SAFETY: `getloadavg` writes at most `l.len()` samples into `l`.
-    let n = unsafe { libc::getloadavg(l.as_mut_ptr(), 3) };
-    let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
-    if n < 1 { 0. } else { l[0] / cores as f64 }
+    mklight_core::platform::load_per_core()
 }
 
 /// What the model learns from one completed run.

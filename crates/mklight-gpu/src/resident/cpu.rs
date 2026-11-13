@@ -7,7 +7,8 @@ use crate::{
     FpEnv, JobStats, PackedSystemSet, SystemHandle, TraceResult, pending::JobControl, reduce,
 };
 use mklight_core::job::RunTimer;
-use std::{any::Any, cell::RefCell, collections::HashMap, time::Instant};
+use std::{any::Any, cell::RefCell, collections::HashMap};
+use mklight_core::platform::Instant;
 
 type Lease = Allocation<HostAllocation>;
 

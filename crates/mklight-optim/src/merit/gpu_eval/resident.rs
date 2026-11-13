@@ -227,7 +227,7 @@ fn host_aimed_rays(
     clip: bool,
     ctx: &JobContext,
 ) -> MkResult<a::ResidentHits> {
-    let started = std::time::Instant::now();
+    let started = mklight_core::platform::Instant::now();
     let rays: Vec<Option<Ray>> = probes
         .par_chunks(HOST_AIM_CHUNK)
         .flat_map_iter(|chunk| {
@@ -526,7 +526,7 @@ pub(crate) fn prepare<'a>(
 ) -> MkResult<Prepared<'a>> {
     let on_host = |key: RayKey| host_rays.contains(&key);
     ctx.check()?;
-    let preparation = std::time::Instant::now();
+    let preparation = mklight_core::platform::Instant::now();
     let wavefront = operands.iter().any(|o| {
         matches!(
             o.kind,
@@ -1172,7 +1172,7 @@ pub(crate) fn finish(
     uniform: Option<&BTreeSet<RayKey>>,
     ctx: &JobContext,
 ) -> MkResult<Vec<Vec<OperandValue>>> {
-    let assembly = std::time::Instant::now();
+    let assembly = mklight_core::platform::Instant::now();
     let Traced {
         prepared,
         views,
@@ -1368,7 +1368,7 @@ pub(crate) fn finish(
     }
     // Host-routed nodes (traced by `host_stage` while the device ran),
     // with their OPD against the chiefs just read.
-    let routed = std::time::Instant::now();
+    let routed = mklight_core::platform::Instant::now();
     candidates
         .par_iter_mut()
         .zip(host.par_iter())
@@ -1418,7 +1418,7 @@ pub(crate) fn finish(
     // Host f64 completion of the unresolved group nodes, in parallel over
     // candidates, groups and runs of nodes (a single candidate's failing
     // aims are the slowest host work of a batch).
-    let completion = std::time::Instant::now();
+    let completion = mklight_core::platform::Instant::now();
     if !completions.is_empty() {
         let groups: Vec<(usize, GroupKey, Vec<usize>)> = completions
             .into_iter()

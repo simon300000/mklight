@@ -10,7 +10,8 @@ use std::sync::{
     Mutex,
     atomic::{AtomicU64, Ordering},
 };
-use std::{collections::HashMap, time::Instant};
+use std::{collections::HashMap};
+use mklight_core::platform::Instant;
 
 /// Word storage of one backend allocation.
 pub trait Storage: Send + Sync + 'static {

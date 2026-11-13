@@ -28,7 +28,7 @@ use mklight_gpu::geometry::{
     ri::{PENCIL, RiField, RiRay, RiTask},
 };
 use rayon::prelude::*;
-use std::time::Instant;
+use mklight_core::platform::Instant;
 
 /// Nodes per plan (bounds plan storage).
 const PLAN_NODES: usize = 1 << 18;

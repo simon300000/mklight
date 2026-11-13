@@ -30,7 +30,7 @@ use crate::{
 use rayon::prelude::*;
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::Mutex;
-use std::time::Instant;
+use mklight_core::platform::Instant;
 
 /// Detections a source keeps on the device before the CPU continues it.
 const HANDOFF_DETECTIONS: usize = 8;

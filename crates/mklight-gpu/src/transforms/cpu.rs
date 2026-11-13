@@ -230,7 +230,7 @@ pub(super) fn execute(
             Some(v) => v,
             None => {
                 let input = |slot: usize| slots[slot].as_deref().map(Vec::as_slice).unwrap_or(&[]);
-                let t = std::time::Instant::now();
+                let t = mklight_core::platform::Instant::now();
                 let v = Arc::new(eval(&s.p, input(s.a), input(s.b), ctl)?);
                 if s.cache {
                     x.cache(key, v.len() * 8, t.elapsed().as_secs_f64(), v.clone());

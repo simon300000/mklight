@@ -37,6 +37,7 @@ use std::time::Duration;
 use mklight_core::job::{CancelToken, Precision, Progress};
 use mklight_core::materials::MaterialLibrary;
 use mklight_core::param::ParamPath;
+use mklight_core::platform;
 use mklight_core::{JobContext, MkError, OpticalSystem, SemiDiameter, Snapshot, SurfaceShape};
 use mklight_optim::deriv::{FdScheme, JacobianSettings};
 use mklight_optim::global::cmaes::{CmaEsSettings, cma_es};
@@ -162,38 +163,48 @@ fn interruptible_for<T>(
     limit: Option<Duration>,
     f: impl FnOnce(&JobContext) -> T,
 ) -> (T, Interrupt) {
-    /// Ends the watcher when the run returns or unwinds.
-    struct Finished<'a>(&'a AtomicBool);
-    impl Drop for Finished<'_> {
+    /// Ends the watcher and joins it when the run returns or unwinds.
+    struct Finished(Arc<AtomicBool>, Option<platform::JoinHandle<()>>);
+    impl Drop for Finished {
         fn drop(&mut self) {
             self.0.store(true, Ordering::Release);
+            if let Some(w) = self.1.take() {
+                let _ = w.join();
+            }
         }
     }
     let mut inner = ctx.subrange(0.0, 1.0);
     inner.cancel = CancelToken::new();
-    let done = AtomicBool::new(false);
-    let timed_out = AtomicBool::new(false);
-    let started = std::time::Instant::now();
-    let out = std::thread::scope(|s| {
-        s.spawn(|| {
+    let done = Arc::new(AtomicBool::new(false));
+    let timed_out = Arc::new(AtomicBool::new(false));
+    let started = platform::Instant::now();
+    // A plain thread rather than a scoped one (`platform::spawn` is the one
+    // spawn that also exists on wasm32), so it owns clones of the tokens.
+    let watcher = {
+        let (done, timed_out) = (done.clone(), timed_out.clone());
+        let (outer, stop, inner) = (ctx.cancel.clone(), stop.clone(), inner.cancel.clone());
+        platform::spawn("mklight-optim-watch", move || {
             while !done.load(Ordering::Acquire) {
-                if ctx.cancel.is_cancelled() || stop.is_cancelled() {
-                    inner.cancel.cancel();
+                if outer.is_cancelled() || stop.is_cancelled() {
+                    inner.cancel();
                     break;
                 }
                 if limit.is_some_and(|d| started.elapsed() >= d) {
                     timed_out.store(true, Ordering::Release);
-                    inner.cancel.cancel();
+                    inner.cancel();
                     break;
                 }
                 std::thread::sleep(Duration::from_millis(2));
             }
-        });
-        // Dropped on a panic too: the scope joins the watcher before the
-        // panic propagates.
-        let _finished = Finished(&done);
+        })
+        .expect("spawn optimisation watcher")
+    };
+    let out = {
+        // Dropped on a panic too: the watcher is joined before the panic
+        // propagates.
+        let _finished = Finished(done.clone(), Some(watcher));
         f(&inner)
-    });
+    };
     let why = if ctx.cancel.is_cancelled() {
         Interrupt::Cancelled
     } else if stop.is_cancelled() {
@@ -2556,7 +2567,7 @@ mod tests {
     use mklight_core::{SurfaceId, samples};
     use mklight_gpu::{ComputeBackend, CpuF32Backend};
     use mklight_optim::merit::operand::OperandKind;
-    use std::time::Instant;
+    use mklight_core::platform::Instant;
 
     const LONG: Option<Duration> = Some(Duration::from_secs(600));
 

@@ -4,7 +4,7 @@
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use crate::platform::{Instant, SystemTime, UNIX_EPOCH};
 
 use crate::error::{MkError, MkResult};
 

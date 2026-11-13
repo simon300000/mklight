@@ -8,7 +8,8 @@
 use super::{SystemCacheKey, bad};
 use mklight_core::MkResult;
 use serde::{Deserialize, Serialize};
-use std::{any::Any, collections::BTreeMap, sync::Arc, time::Instant};
+use std::{any::Any, collections::BTreeMap, sync::Arc};
+use mklight_core::platform::Instant;
 
 /// Independently budgeted cache categories. Prepared (uploaded) systems live
 /// in the backend's system cache; the others in [`ImmutableCache`].

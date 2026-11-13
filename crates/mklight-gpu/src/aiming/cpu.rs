@@ -7,7 +7,8 @@ use crate::{
     resident::cpu::Execution,
     trace_kernel::{self as tr, KRayIn, ResidentState},
 };
-use std::{sync::Arc, time::Instant};
+use std::{sync::Arc};
+use mklight_core::platform::Instant;
 pub(super) fn read_ray(f: &[f32], u: &[u32], n: usize, i: usize) -> KRayIn {
     KRayIn {
         pos: std::array::from_fn(|k| f[k * n + i]),
