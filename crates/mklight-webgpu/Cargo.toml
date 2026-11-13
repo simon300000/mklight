@@ -33,10 +33,7 @@ wasm-bindgen-futures = "0.4"
 mklight-trace.workspace = true
 rustfft.workspace = true
 
-[target.'cfg(target_os = "macos")'.dev-dependencies]
-mklight-metal.workspace = true
-
-# The trace benchmarks print Metal's numbers next to WebGPU's.
+# The benchmarks print Metal's numbers next to WebGPU's.
 [target.'cfg(target_os = "macos")'.dev-dependencies]
 mklight-metal.workspace = true
 

@@ -1,1077 +1,3 @@
-// The sequential / path ray-trace kernel: the WGSL twin, operation for
-// operation, of crates/mklight-metal/shaders/{surface_math.h,
-// trace_shared.h, trace.metal} and of the resident trace (mkl_trace_resident)
-// of aiming.metal. The Rust specification is mklight-gpu's trace_kernel.rs,
-// surface_math.rs and fmath.rs; change all of them together.
-//
-// src/kernels.rs compiles this file twice, prefixed with
-// `const MKL_OVERLAYS: bool = false;` (module "trace") or `true` (module
-// "trace_overlays", for systems with sag overlays), as Metal compiles
-// trace_overlays.metal: the overlay code costs systems without overlays
-// nothing.
-//
-// Numerics (common.wgsl): every floating-point operation is a protected
-// mkl_* operation (one IEEE rounding, never fused or reassociated); plain
-// operators only negate, take absolute values, compare and select. Tests of
-// values that may be NaN use the bit tests (mkl_is_nan / mkl_is_finite) or
-// test NaN explicitly before a negated comparison, since a fast-math
-// compiler may rewrite !(a <= b) as a > b. Hardware `/` and `sqrt` are not
-// correctly rounded on every WebGPU compiler, so the kernel divides and takes
-// square roots with mkl_div_rn / mkl_sqrt_rn (and the double-float
-// operations built on them): every output and record is bitwise the CPU-f32
-// emulation's (NaN payloads aside).
-//
-// Templates: surface_math.h is generic in the scalar R (float or the
-// double-float MklDf). Below it appears twice, with the suffix _f for
-// R = f32 and _d for R = vec2<f32> (hi, lo); the two families are the same
-// text and must stay so.
-//
-// Bindings (group 0): 0 mkl_env (common.wgsl), 1 the parameters, then
-// 2 headers, 3 surfaces, 4 coefficient pool, 5 path program (step words),
-// 6 input planes, 7 output planes, 8 records, every plane `stride` long and
-// starting at the launch's first ray (the host packs each launch's rays):
-//   mkl_trace           in:  MKL_TRACE_IN_FLOATS float planes (bits), then
-//                            MKL_TRACE_IN_UINTS planes (wavelength, system)
-//                       out: MKL_TRACE_OUT_FLOATS float planes, then
-//                            MKL_TRACE_OUT_UINTS planes
-//                       rec: [slot][ray][MKL_TRACE_RECORD_FLOATS] floats,
-//                            then [slot][ray] status words
-//   mkl_trace_resident  in:  15 float planes (aiming ray layout), system,
-//                            wavelength, 2 id planes, 4 report planes
-//   (+ _records)        out: the same 23 planes, then 3 status planes
-//                            (status, last surface, steps)
-//                       rec: [slot][ray][MKL_AIM_RECORD_FLOATS] hi, then lo
-
-struct MklWgslTraceParams {
-    trace: MklTraceParams,
-    // Systems in the bound set (resident rays carry device indices).
-    systems: u32,
-    reserved0: u32,
-    reserved1: u32,
-    reserved2: u32,
-}
-
-@group(0) @binding(1) var<uniform> prm: MklWgslTraceParams;
-@group(0) @binding(2) var<storage, read> mkl_headers: array<MklPackedHeader>;
-@group(0) @binding(3) var<storage, read> mkl_surfaces: array<MklPackedSurface>;
-@group(0) @binding(4) var<storage, read> mkl_pool: array<f32>;
-@group(0) @binding(5) var<storage, read> mkl_steps: array<u32>;
-@group(0) @binding(6) var<storage, read> mkl_in: array<u32>;
-@group(0) @binding(7) var<storage, read_write> mkl_out: array<u32>;
-@group(0) @binding(8) var<storage, read_write> mkl_records: array<u32>;
-
-// The ray of this invocation and the plane stride.
-var<private> g_ray: u32;
-var<private> g_stride: u32;
-
-// 2^-20: vertex-sheet tolerance (trace_kernel::SHEET_TOL).
-fn mkl_sheet_tol() -> f32 {
-    return bitcast<f32>(0x35800000u);
-}
-fn mkl_flt_min() -> f32 {
-    return bitcast<f32>(0x00800000u);
-}
-
-// min() that ignores a NaN operand like MSL fmin / Rust f32::min.
-fn mkl_min_num(a: f32, b: f32) -> f32 {
-    if (mkl_is_nan(a)) {
-        return b;
-    }
-    if (mkl_is_nan(b)) {
-        return a;
-    }
-    return select(b, a, a <= b);
-}
-
-// a <= b, false when either is NaN.
-fn mkl_le_num(a: f32, b: f32) -> bool {
-    return !mkl_is_nan(a) && !mkl_is_nan(b) && a <= b;
-}
-
-// ---------------------------------------------------------------------------
-// Correctly rounded division and square root. WebGPU compilers may lower `/`
-// and `sqrt` to approximations (wgpu on Metal: fast math), and in the
-// trace's f32 decisions (conic roots, Newton iterations, TIR, clipping) one
-// ulp can change a ray's outcome. The hardware result is corrected to the
-// nearest float by exact residual tests (one fma each), so the kernel is
-// bitwise the CPU-f32 emulation. Values whose residuals could leave the
-// normal range keep the hardware result.
-// ---------------------------------------------------------------------------
-
-// The float one ulp from finite nonzero q, toward +inf (`up`) or -inf.
-fn mkl_step_ulp(q: f32, up: bool) -> f32 {
-    let b = bitcast<u32>(q);
-    if ((q > 0.0) == up) {
-        return bitcast<f32>(b + 1u);
-    }
-    return bitcast<f32>(b - 1u);
-}
-
-// |x| within [2^-100, 2^100]: residuals of x-sized operands stay normal.
-fn mkl_rn_range(x: f32) -> bool {
-    let e = (bitcast<u32>(x) >> 23u) & 0xFFu;
-    return e >= 27u && e <= 227u;
-}
-
-// a / b rounded to nearest. From the hardware quotient, step toward a/b
-// while the neighbour's residual a - q b (exact for quotients within an ulp
-// of a/b) is smaller; a/b is never a midpoint.
-fn mkl_div_rn(a: f32, b: f32) -> f32 {
-    var q = mkl_div(a, b);
-    if (!(mkl_rn_range(a) && mkl_rn_range(b) && mkl_rn_range(q))) {
-        return q;
-    }
-    var r = mkl_fma(-q, b, a);
-    for (var k = 0; k < 3; k++) {
-        let q2 = mkl_step_ulp(q, (r > 0.0) == (b > 0.0));
-        let r2 = mkl_fma(-q2, b, a);
-        if (!(abs(r2) < abs(r))) {
-            break;
-        }
-        q = q2;
-        r = r2;
-    }
-    return q;
-}
-
-// sqrt(a) rounded to nearest. With s' the neighbour of s and m their
-// midpoint, a - m^2 = (a - s s') - ((s' - s)/2)^2, where a - s s' is a
-// multiple of a grid coarser than the square: a lies above m exactly when
-// fma(-s, s', a) > 0 (no midpoint is a square root of a float).
-fn mkl_sqrt_rn(a: f32) -> f32 {
-    var s = mkl_sqrt(a);
-    if (!(a > 0.0 && mkl_rn_range(a) && mkl_is_finite(s))) {
-        return s;
-    }
-    for (var k = 0; k < 4; k++) {
-        let up = mkl_step_ulp(s, true);
-        if (mkl_fma(-s, up, a) > 0.0) {
-            s = up;
-            continue;
-        }
-        let down = mkl_step_ulp(s, false);
-        if (mkl_fma(-down, s, a) <= 0.0) {
-            s = down;
-            continue;
-        }
-        break;
-    }
-    return s;
-}
-
-// common.wgsl's mkl_df_div, mkl_df_sqrt and mkl_hypot3 on the rounded
-// operations.
-fn mkl_df_div_rn(x: vec2<f32>, y: vec2<f32>) -> vec2<f32> {
-    let th = mkl_div_rn(x.x, y.x);
-    let r = mkl_df_mul_f32(y, th);
-    let pi_h = mkl_sub(x.x, r.x);
-    let dl = mkl_sub(x.y, r.y);
-    let d = mkl_add(pi_h, dl);
-    let tl = mkl_div_rn(d, y.x);
-    return mkl_fast_two_sum(th, tl);
-}
-
-fn mkl_df_sqrt_rn(x: vec2<f32>) -> vec2<f32> {
-    if (x.x <= 0.0) {
-        if (x.x == 0.0) {
-            return vec2<f32>(0.0, 0.0);
-        }
-        return vec2<f32>(mkl_qnan(), mkl_qnan());
-    }
-    let s = mkl_sqrt_rn(x.x);
-    let p = mkl_two_prod(s, s);
-    let r = mkl_add(mkl_sub(mkl_sub(x.x, p.x), p.y), x.y);
-    let e = mkl_div_rn(r, mkl_mul(2.0, s));
-    return mkl_fast_two_sum(s, e);
-}
-
-fn mkl_hypot3_rn(x: f32, y: f32, z: f32) -> f32 {
-    let m = mkl_max_num(mkl_max_num(abs(x), abs(y)), abs(z));
-    let sp = mkl_hypot_special(m, mkl_is_nan(x) || mkl_is_nan(y) || mkl_is_nan(z));
-    if (sp.y != 0.0) {
-        return sp.x;
-    }
-    let sc = mkl_hypot_scale(m);
-    let v = vec3<f32>(mkl_mul(x, sc.x), mkl_mul(y, sc.x), mkl_mul(z, sc.x));
-    return mkl_mul(mkl_sqrt_rn(mkl_dot3(v, v)), sc.y);
-}
-
-// ---------------------------------------------------------------------------
-// Scalar primitives of the two R types (surface_math.h's MklDf operators,
-// mkl_c, mkl_parts, mkl_sqrt, mkl_le, mkl_zero, mkl_load).
-// ---------------------------------------------------------------------------
-fn add_f(a: f32, b: f32) -> f32 {
-    return mkl_add(a, b);
-}
-fn sub_f(a: f32, b: f32) -> f32 {
-    return mkl_sub(a, b);
-}
-fn mul_f(a: f32, b: f32) -> f32 {
-    return mkl_mul(a, b);
-}
-fn div_f(a: f32, b: f32) -> f32 {
-    return mkl_div_rn(a, b);
-}
-fn neg_f(a: f32) -> f32 {
-    return -a;
-}
-fn sqrt_f(a: f32) -> f32 {
-    return mkl_sqrt_rn(a);
-}
-fn c_f(v: f32) -> f32 {
-    return v;
-}
-fn parts_f(hi: f32, lo: f32) -> f32 {
-    return hi;
-}
-fn le_f(a: f32, b: f32) -> bool {
-    return mkl_le_num(a, b);
-}
-fn zero_f(a: f32) -> bool {
-    return a == 0.0;
-}
-// Element i of the double-float array at float index `base` of the pool.
-fn load_f(base: u32, i: u32) -> f32 {
-    return mkl_pool[base + 2u * i];
-}
-
-fn add_d(a: vec2<f32>, b: vec2<f32>) -> vec2<f32> {
-    return mkl_df_add(a, b);
-}
-fn sub_d(a: vec2<f32>, b: vec2<f32>) -> vec2<f32> {
-    return mkl_df_sub(a, b);
-}
-fn mul_d(a: vec2<f32>, b: vec2<f32>) -> vec2<f32> {
-    return mkl_df_mul(a, b);
-}
-fn div_d(a: vec2<f32>, b: vec2<f32>) -> vec2<f32> {
-    return mkl_df_div_rn(a, b);
-}
-fn neg_d(a: vec2<f32>) -> vec2<f32> {
-    return mkl_df_neg(a);
-}
-fn sqrt_d(a: vec2<f32>) -> vec2<f32> {
-    return mkl_df_sqrt_rn(a);
-}
-fn c_d(v: f32) -> vec2<f32> {
-    return vec2<f32>(v, 0.0);
-}
-fn parts_d(hi: f32, lo: f32) -> vec2<f32> {
-    return vec2<f32>(hi, lo);
-}
-fn le_d(a: vec2<f32>, b: f32) -> bool {
-    return mkl_le_num(mkl_df_add_f32(a, -b).x, 0.0);
-}
-fn zero_d(a: vec2<f32>) -> bool {
-    return a.x == 0.0;
-}
-fn load_d(base: u32, i: u32) -> vec2<f32> {
-    return vec2<f32>(mkl_pool[base + 2u * i], mkl_pool[base + 2u * i + 1u]);
-}
-
-// First-order jets (value, d/dx, d/dy), the sag of a surface with its
-// slopes, and the scaled pupil coordinates u, v and s = u^2 + v^2.
-struct MklJetF {
-    v: f32,
-    x: f32,
-    y: f32,
-}
-struct MklJetD {
-    v: vec2<f32>,
-    x: vec2<f32>,
-    y: vec2<f32>,
-}
-struct MklSagF {
-    ok: bool,
-    j: MklJetF,
-}
-struct MklSagD {
-    ok: bool,
-    j: MklJetD,
-}
-struct MklUvsF {
-    u: MklJetF,
-    v: MklJetF,
-    s: MklJetF,
-}
-struct MklUvsD {
-    u: MklJetD,
-    v: MklJetD,
-    s: MklJetD,
-}
-
-// Float index of a surface's coefficient data in the pool.
-fn mkl_surface_data(s: u32) -> u32 {
-    return 2u * mkl_surfaces[s].coefficient_offset;
-}
-
-// ---- R = f32 (suffix _f) --------------------------------------------------
-fn mkl_jconst_f(v: f32) -> MklJetF {
-    return MklJetF(v, c_f(0.0), c_f(0.0));
-}
-fn mkl_jvar_f(v: f32, is_x: bool) -> MklJetF {
-    if (is_x) {
-        return MklJetF(v, c_f(1.0), c_f(0.0));
-    }
-    return MklJetF(v, c_f(0.0), c_f(1.0));
-}
-fn mkl_jchain_f(a: MklJetF, v: f32, d: f32) -> MklJetF {
-    return MklJetF(v, mul_f(d, a.x), mul_f(d, a.y));
-}
-fn mkl_jscale_f(a: MklJetF, b: f32) -> MklJetF {
-    return MklJetF(mul_f(a.v, b), mul_f(a.x, b), mul_f(a.y, b));
-}
-fn mkl_jadd_f(a: MklJetF, b: f32) -> MklJetF {
-    return MklJetF(add_f(a.v, b), a.x, a.y);
-}
-fn mkl_jsqrt_f(a: MklJetF) -> MklJetF {
-    let v = sqrt_f(a.v);
-    return mkl_jchain_f(a, v, div_f(c_f(0.5), v));
-}
-fn mkl_jrecip_f(a: MklJetF) -> MklJetF {
-    let r = div_f(c_f(1.0), a.v);
-    return mkl_jchain_f(a, r, mul_f(neg_f(r), r));
-}
-fn mkl_jsum_f(a: MklJetF, b: MklJetF) -> MklJetF {
-    return MklJetF(add_f(a.v, b.v), add_f(a.x, b.x), add_f(a.y, b.y));
-}
-fn mkl_jneg_f(a: MklJetF) -> MklJetF {
-    return mkl_jscale_f(a, c_f(-1.0));
-}
-fn mkl_jdiff_f(a: MklJetF, b: MklJetF) -> MklJetF {
-    return mkl_jsum_f(a, mkl_jneg_f(b));
-}
-fn mkl_jmul_f(a: MklJetF, b: MklJetF) -> MklJetF {
-    return MklJetF(
-        mul_f(a.v, b.v),
-        add_f(mul_f(a.x, b.v), mul_f(a.v, b.x)),
-        add_f(mul_f(a.y, b.v), mul_f(a.v, b.y)),
-    );
-}
-fn mkl_jdiv_f(a: MklJetF, b: MklJetF) -> MklJetF {
-    return mkl_jmul_f(a, mkl_jrecip_f(b));
-}
-fn mkl_le_value_f(a: f32, b: f32) -> bool {
-    return le_f(sub_f(a, b), 0.0);
-}
-fn mkl_sag_fail_f() -> MklSagF {
-    return MklSagF(false, mkl_jconst_f(c_f(0.0)));
-}
-fn mkl_poly_f(pool: u32, start: u32, n: u32, t: MklJetF) -> MklJetF {
-    var p = mkl_jconst_f(c_f(0.0));
-    for (var j = i32(n) - 1; j >= 0; j--) {
-        p = mkl_jadd_f(mkl_jmul_f(p, t), load_f(pool, start + u32(j)));
-    }
-    return p;
-}
-fn mkl_even_f(pool: u32, start: u32, n: u32, t: MklJetF) -> MklJetF {
-    return mkl_jmul_f(mkl_jmul_f(mkl_poly_f(pool, start, n, t), t), t);
-}
-fn mkl_conic_sag_jet_f(c: f32, k: f32, t: MklJetF) -> MklSagF {
-    let arg = sub_f(c_f(1.0), mul_f(mul_f(mul_f(add_f(c_f(1.0), k), c), c), t.v));
-    if (!mkl_le_value_f(c_f(0.0), arg)) {
-        return mkl_sag_fail_f();
-    }
-    let w = sqrt_f(arg);
-    return MklSagF(true, mkl_jchain_f(t, div_f(mul_f(c, t.v), add_f(c_f(1.0), w)), div_f(c, mul_f(c_f(2.0), w))));
-}
-fn mkl_scaled_jet_f(x: MklJetF, y: MklJetF, radius: f32) -> MklUvsF {
-    let inv = div_f(c_f(1.0), radius);
-    let u = mkl_jscale_f(x, inv);
-    let v = mkl_jscale_f(y, inv);
-    return MklUvsF(u, v, mkl_jsum_f(mkl_jmul_f(u, u), mkl_jmul_f(v, v)));
-}
-// mkl_normalized_jet's test on a scaled jet.
-fn mkl_normalized_f(q: MklUvsF) -> bool {
-    return mkl_le_value_f(q.s.v, parts_f(1.0, 2e-12));
-}
-fn mkl_jacobi_f(n: u32, b: f32, t: MklJetF) -> MklJetF {
-    var p0 = mkl_jconst_f(c_f(1.0));
-    if (n == 0u) {
-        return p0;
-    }
-    var p1 = mkl_jadd_f(mkl_jscale_f(mkl_jadd_f(t, c_f(-1.0)), div_f(add_f(b, c_f(2.0)), c_f(2.0))), c_f(1.0));
-    for (var ki = 1u; ki < n; ki++) {
-        let k = c_f(f32(ki));
-        let s = add_f(mul_f(c_f(2.0), k), b);
-        let a1 = mul_f(mul_f(mul_f(c_f(2.0), add_f(k, c_f(1.0))), add_f(add_f(k, b), c_f(1.0))), s);
-        let a2 = mkl_jscale_f(mkl_jadd_f(mkl_jscale_f(t, mul_f(add_f(s, c_f(2.0)), s)), neg_f(mul_f(b, b))), add_f(s, c_f(1.0)));
-        let a3 = mul_f(mul_f(mul_f(c_f(2.0), k), add_f(k, b)), add_f(s, c_f(2.0)));
-        let next = mkl_jscale_f(mkl_jdiff_f(mkl_jmul_f(a2, p1), mkl_jscale_f(p0, a3)), div_f(c_f(1.0), a1));
-        p0 = p1;
-        p1 = next;
-    }
-    return p1;
-}
-// Q-con recurrence: v = 2k+4, d = 2(k+1)(k+5)v.
-fn mkl_qcon_d_f(ki: u32, v: f32) -> f32 {
-    let k = c_f(f32(ki));
-    return mul_f(mul_f(mul_f(c_f(2.0), add_f(k, c_f(1.0))), add_f(k, c_f(5.0))), v);
-}
-fn mkl_qcon_a_f(ki: u32, s: MklJetF) -> MklJetF {
-    let v = add_f(mul_f(c_f(2.0), c_f(f32(ki))), c_f(4.0));
-    let d = mkl_qcon_d_f(ki, v);
-    return mkl_jscale_f(
-        mkl_jadd_f(mkl_jscale_f(mkl_jadd_f(mkl_jscale_f(s, c_f(2.0)), c_f(-1.0)), mul_f(add_f(v, c_f(2.0)), v)), c_f(-16.0)),
-        div_f(add_f(v, c_f(1.0)), d),
-    );
-}
-fn mkl_qcon_b_f(ki: u32) -> f32 {
-    let k = c_f(f32(ki));
-    let v = add_f(mul_f(c_f(2.0), k), c_f(4.0));
-    return div_f(mul_f(mul_f(mul_f(c_f(2.0), k), add_f(k, c_f(4.0))), add_f(v, c_f(2.0))), mkl_qcon_d_f(ki, v));
-}
-fn mkl_qcon_f(pool: u32, n: u32, s: MklJetF) -> MklJetF {
-    var b1 = mkl_jconst_f(c_f(0.0));
-    var b2 = b1;
-    for (var k = i32(n) - 1; k >= 0; k--) {
-        let b = mkl_jadd_f(
-            mkl_jdiff_f(mkl_jmul_f(mkl_qcon_a_f(u32(k), s), b1), mkl_jscale_f(b2, mkl_qcon_b_f(u32(k + 1)))),
-            load_f(pool, u32(k)),
-        );
-        b2 = b1;
-        b1 = b;
-    }
-    return mkl_jmul_f(mkl_jmul_f(b1, s), s);
-}
-fn mkl_qbfs_f(pool: u32, n: u32, s: MklJetF) -> MklJetF {
-    var a1 = mkl_jconst_f(c_f(0.0));
-    var a2 = a1;
-    for (var m = i32(n) - 1; m >= 0; m--) {
-        let a = mkl_jadd_f(
-            mkl_jdiff_f(mkl_jmul_f(mkl_jadd_f(mkl_jscale_f(s, c_f(-4.0)), c_f(2.0)), a1), a2),
-            load_f(pool, u32(m)),
-        );
-        a2 = a1;
-        a1 = a;
-    }
-    return mkl_jscale_f(mkl_jsum_f(a1, a2), c_f(2.0));
-}
-fn mkl_zernike_f(pool: u32, n: u32, standard: bool, x: MklJetF, y: MklJetF, s: MklJetF) -> MklJetF {
-    var z = mkl_jconst_f(c_f(0.0));
-    for (var j = 1u; j <= n; j++) {
-        let a = load_f(pool, j - 1u);
-        if (zero_f(a)) {
-            continue;
-        }
-        var degree: u32;
-        var m: i32;
-        if (standard) {
-            degree = 0u;
-            while ((degree + 1u) * (degree + 2u) / 2u < j) {
-                degree++;
-            }
-            let k = j - degree * (degree + 1u) / 2u - 1u;
-            var am: i32;
-            if (degree % 2u == 0u) {
-                am = i32(2u * ((k + 1u) / 2u));
-            } else {
-                am = i32(2u * (k / 2u) + 1u);
-            }
-            m = select(-am, am, j % 2u == 0u);
-        } else if (j == 37u) {
-            degree = 12u;
-            m = 0;
-        } else {
-            var k = 0u;
-            while ((k + 1u) * (k + 1u) < j) {
-                k++;
-            }
-            let off = j - 1u - k * k;
-            let am = i32(k - off / 2u);
-            degree = 2u * k - u32(am);
-            m = select(am, -am, off % 2u == 1u);
-        }
-        let am = u32(abs(m));
-        var re = mkl_jconst_f(c_f(1.0));
-        var im = mkl_jconst_f(c_f(0.0));
-        for (var i = 0u; i < am; i++) {
-            let r = mkl_jdiff_f(mkl_jmul_f(re, x), mkl_jmul_f(im, y));
-            im = mkl_jsum_f(mkl_jmul_f(re, y), mkl_jmul_f(im, x));
-            re = r;
-        }
-        var scale = c_f(1.0);
-        if (standard) {
-            scale = sqrt_f(c_f(f32((degree + 1u) * select(2u, 1u, m == 0))));
-        }
-        var part = im;
-        if (m >= 0) {
-            part = re;
-        }
-        let radial = mkl_jacobi_f((degree - am) / 2u, c_f(f32(am)), mkl_jadd_f(mkl_jscale_f(s, c_f(2.0)), c_f(-1.0)));
-        z = mkl_jsum_f(z, mkl_jscale_f(mkl_jmul_f(radial, part), mul_f(a, scale)));
-    }
-    return z;
-}
-fn mkl_surface_domain_f(s: u32, x: f32, y: f32) -> bool {
-    let data = mkl_surface_data(s);
-    return mkl_normalized_f(mkl_scaled_jet_f(mkl_jvar_f(x, true), mkl_jvar_f(y, false), load_f(data, 0u)));
-}
-fn mkl_phase_f(s: u32, x: f32, y: f32) -> MklJetF {
-    let data = mkl_surface_data(s);
-    let q = mkl_scaled_jet_f(mkl_jvar_f(x, true), mkl_jvar_f(y, false), load_f(data, 0u));
-    let n = u32(mkl_pool[data + 2u * MKL_COEFF_NA]);
-    return mkl_jmul_f(mkl_poly_f(data, MKL_COEFF_PREFIX + MKL_MAX_WAVELENGTHS, n, q.s), q.s);
-}
-fn mkl_extended_sag_f(s: u32, xv: f32, yv: f32) -> MklSagF {
-    let data = mkl_surface_data(s);
-    let radius = load_f(data, 0u);
-    let na = u32(mkl_pool[data + 2u * MKL_COEFF_NA]);
-    let nb = u32(mkl_pool[data + 2u * MKL_COEFF_NB]);
-    let coeff = data + 2u * MKL_COEFF_PREFIX;
-    let x = mkl_jvar_f(xv, true);
-    let y = mkl_jvar_f(yv, false);
-    let r2 = mkl_jsum_f(mkl_jmul_f(x, x), mkl_jmul_f(y, y));
-    let c = parts_f(mkl_surfaces[s].curvature, mkl_surfaces[s].curvature_lo);
-    let k = parts_f(mkl_surfaces[s].conic, mkl_surfaces[s].conic_lo);
-    let shape = mkl_surfaces[s].shape;
-    if (shape == MKL_SHAPE_ODD_ASPHERE) {
-        let base = mkl_conic_sag_jet_f(c, k, r2);
-        if (!base.ok) {
-            return base;
-        }
-        if (zero_f(x.v) && zero_f(y.v)) {
-            return base;
-        }
-        var radial: MklJetF;
-        if (zero_f(r2.v)) {
-            let ax = select(x.v, neg_f(x.v), le_f(x.v, 0.0));
-            let ay = select(y.v, neg_f(y.v), le_f(y.v, 0.0));
-            let scale = select(ax, ay, mkl_le_value_f(ax, ay));
-            let u = div_f(x.v, scale);
-            let v = div_f(y.v, scale);
-            let w = sqrt_f(add_f(mul_f(u, u), mul_f(v, v)));
-            radial = MklJetF(mul_f(scale, w), div_f(u, w), div_f(v, w));
-        } else {
-            radial = mkl_jsqrt_f(r2);
-        }
-        let r = mkl_jscale_f(radial, div_f(c_f(1.0), radius));
-        return MklSagF(true, mkl_jsum_f(base.j, mkl_jmul_f(mkl_poly_f(coeff, 0u, na, r), r)));
-    }
-    if (shape == MKL_SHAPE_TOROID || shape == MKL_SHAPE_BICONIC) {
-        let cx = load_f(data, MKL_COEFF_CX);
-        let inv = div_f(c_f(1.0), radius);
-        let xx = mkl_jscale_f(x, inv);
-        let yy = mkl_jscale_f(y, inv);
-        if (shape == MKL_SHAPE_TOROID) {
-            let base = mkl_conic_sag_jet_f(c, k, mkl_jmul_f(y, y));
-            if (!base.ok) {
-                return base;
-            }
-            let zy = mkl_jsum_f(base.j, mkl_even_f(coeff, na, nb, mkl_jmul_f(yy, yy)));
-            let a = mkl_jadd_f(mkl_jscale_f(mkl_jneg_f(zy), cx), c_f(1.0));
-            let q = mkl_jdiff_f(mkl_jmul_f(a, a), mkl_jscale_f(mkl_jmul_f(x, x), mul_f(cx, cx)));
-            if (le_f(a.v, 0.0) || !mkl_le_value_f(c_f(0.0), q.v)) {
-                return mkl_sag_fail_f();
-            }
-            return MklSagF(true, mkl_jsum_f(zy, mkl_jdiv_f(mkl_jscale_f(mkl_jmul_f(x, x), cx), mkl_jsum_f(a, mkl_jsqrt_f(q)))));
-        }
-        let kx = load_f(data, MKL_COEFF_KX);
-        let arg = mkl_jadd_f(
-            mkl_jsum_f(
-                mkl_jscale_f(mkl_jmul_f(x, x), mul_f(mul_f(neg_f(add_f(c_f(1.0), kx)), cx), cx)),
-                mkl_jscale_f(mkl_jmul_f(y, y), mul_f(mul_f(neg_f(add_f(c_f(1.0), k)), c), c)),
-            ),
-            c_f(1.0),
-        );
-        if (!mkl_le_value_f(c_f(0.0), arg.v)) {
-            return mkl_sag_fail_f();
-        }
-        let num = mkl_jsum_f(mkl_jscale_f(mkl_jmul_f(x, x), cx), mkl_jscale_f(mkl_jmul_f(y, y), c));
-        let z = mkl_jsum_f(
-            mkl_jsum_f(mkl_jdiv_f(num, mkl_jadd_f(mkl_jsqrt_f(arg), c_f(1.0))), mkl_even_f(coeff, 0u, na, mkl_jmul_f(xx, xx))),
-            mkl_even_f(coeff, na, nb, mkl_jmul_f(yy, yy)),
-        );
-        return MklSagF(true, z);
-    }
-    let q = mkl_scaled_jet_f(x, y, radius);
-    if (!mkl_normalized_f(q)) {
-        return mkl_sag_fail_f();
-    }
-    let base = mkl_conic_sag_jet_f(c, k, r2);
-    if (!base.ok) {
-        return base;
-    }
-    let u = q.u;
-    let v = q.v;
-    let t = q.s;
-    if (shape == MKL_SHAPE_Q_CON) {
-        return MklSagF(true, mkl_jsum_f(base.j, mkl_qcon_f(coeff, na, t)));
-    }
-    if (shape == MKL_SHAPE_Q_BFS) {
-        if (na == 0u) {
-            return base;
-        }
-        let w = mkl_jsqrt_f(mkl_jadd_f(mkl_jscale_f(r2, mul_f(neg_f(c), c)), c_f(1.0)));
-        if (zero_f(w.v)) {
-            return mkl_sag_fail_f();
-        }
-        let tt = mkl_jmul_f(mkl_jmul_f(t, mkl_jadd_f(mkl_jneg_f(t), c_f(1.0))), mkl_qbfs_f(coeff, na, t));
-        return MklSagF(true, mkl_jsum_f(base.j, mkl_jdiv_f(tt, w)));
-    }
-    if (shape == MKL_SHAPE_XY) {
-        var start = 0u;
-        var degree = 1u;
-        var z = base.j;
-        while (start < na) {
-            var row = mkl_jconst_f(c_f(0.0));
-            var vn = mkl_jconst_f(c_f(1.0));
-            for (var n = 0u; n <= degree; n++) {
-                var a = c_f(0.0);
-                if (start + n < na) {
-                    a = load_f(coeff, start + n);
-                }
-                row = mkl_jsum_f(mkl_jmul_f(row, u), mkl_jscale_f(vn, a));
-                vn = mkl_jmul_f(vn, v);
-            }
-            z = mkl_jsum_f(z, row);
-            start += degree + 1u;
-            degree++;
-        }
-        return MklSagF(true, z);
-    }
-    let standard = mkl_pool[data + 2u * MKL_COEFF_KIND] != 0.0;
-    return MklSagF(true, mkl_jsum_f(base.j, mkl_zernike_f(coeff, na, standard, u, v, t)));
-}
-// The base of an overlaid surface may be legacy (or a DOE's legacy base).
-fn mkl_legacy_sag_f(s: u32, xv: f32, yv: f32) -> MklSagF {
-    let x = mkl_jvar_f(xv, true);
-    let y = mkl_jvar_f(yv, false);
-    let r2 = mkl_jsum_f(mkl_jmul_f(x, x), mkl_jmul_f(y, y));
-    let sf = &mkl_surfaces[s];
-    let base = mkl_conic_sag_jet_f(parts_f((*sf).curvature, (*sf).curvature_lo), parts_f((*sf).conic, (*sf).conic_lo), r2);
-    if (!base.ok) {
-        return base;
-    }
-    let t = mkl_jscale_f(r2, c_f((*sf).asphere_inv_norm2));
-    var p = mkl_jconst_f(c_f(0.0));
-    for (var j = i32((*sf).num_asphere) - 1; j >= 0; j--) {
-        p = mkl_jadd_f(mkl_jmul_f(p, t), parts_f((*sf).asphere[j], (*sf).asphere_lo[j]));
-    }
-    return MklSagF(true, mkl_jsum_f(base.j, mkl_jmul_f(mkl_jmul_f(p, t), t)));
-}
-// Sag jet of an extended surface or, with MKL_OVERLAYS, of any surface with
-// MKL_SURF_HAS_SAG_OVERLAY. Code without MKL_OVERLAYS never sees the overlay.
-fn mkl_surface_eval_f(s: u32, xv: f32, yv: f32) -> MklSagF {
-    if (!MKL_OVERLAYS || (mkl_surfaces[s].flags & MKL_SURF_HAS_SAG_OVERLAY) == 0u) {
-        return mkl_extended_sag_f(s, xv, yv);
-    }
-    let data = mkl_surface_data(s);
-    var shape = mkl_surfaces[s].shape;
-    if (shape == MKL_SHAPE_DIFFRACTIVE) {
-        shape = u32(mkl_pool[data + 2u * MKL_COEFF_KIND]);
-    }
-    var base: MklSagF;
-    if (shape <= MKL_SHAPE_EVEN_ASPHERE) {
-        base = mkl_legacy_sag_f(s, xv, yv);
-    } else {
-        base = mkl_extended_sag_f(s, xv, yv);
-    }
-    if (!base.ok) {
-        return base;
-    }
-    let d = data + 2u * (mkl_surfaces[s].coefficient_count - MKL_OVERLAY_COUNT);
-    let inv = load_f(d, MKL_OVERLAY_INV_RADIUS);
-    let c = load_f(d, MKL_OVERLAY_COS);
-    let sn = load_f(d, MKL_OVERLAY_SIN);
-    let s4 = load_f(d, MKL_OVERLAY_S4);
-    let two = c_f(2.0);
-    let u = mul_f(xv, inv);
-    let v = mul_f(yv, inv);
-    let t = add_f(mul_f(u, u), mul_f(v, v));
-    let q = add_f(load_f(d, MKL_OVERLAY_S2), mul_f(t, s4));
-    let w = add_f(q, mul_f(t, s4));
-    let o = MklJetF(
-        add_f(add_f(mul_f(c, mul_f(sub_f(u, v), add_f(u, v))), mul_f(mul_f(two, sn), mul_f(u, v))), mul_f(t, q)),
-        mul_f(mul_f(two, inv), add_f(mul_f(u, add_f(c, w)), mul_f(sn, v))),
-        mul_f(mul_f(two, inv), add_f(mul_f(v, sub_f(w, c)), mul_f(sn, u))),
-    );
-    return MklSagF(true, mkl_jsum_f(base.j, o));
-}
-
-// ---- R = double-float (suffix _d) -----------------------------------------
-fn mkl_jconst_d(v: vec2<f32>) -> MklJetD {
-    return MklJetD(v, c_d(0.0), c_d(0.0));
-}
-fn mkl_jvar_d(v: vec2<f32>, is_x: bool) -> MklJetD {
-    if (is_x) {
-        return MklJetD(v, c_d(1.0), c_d(0.0));
-    }
-    return MklJetD(v, c_d(0.0), c_d(1.0));
-}
-fn mkl_jchain_d(a: MklJetD, v: vec2<f32>, d: vec2<f32>) -> MklJetD {
-    return MklJetD(v, mul_d(d, a.x), mul_d(d, a.y));
-}
-fn mkl_jscale_d(a: MklJetD, b: vec2<f32>) -> MklJetD {
-    return MklJetD(mul_d(a.v, b), mul_d(a.x, b), mul_d(a.y, b));
-}
-fn mkl_jadd_d(a: MklJetD, b: vec2<f32>) -> MklJetD {
-    return MklJetD(add_d(a.v, b), a.x, a.y);
-}
-fn mkl_jsqrt_d(a: MklJetD) -> MklJetD {
-    let v = sqrt_d(a.v);
-    return mkl_jchain_d(a, v, div_d(c_d(0.5), v));
-}
-fn mkl_jrecip_d(a: MklJetD) -> MklJetD {
-    let r = div_d(c_d(1.0), a.v);
-    return mkl_jchain_d(a, r, mul_d(neg_d(r), r));
-}
-fn mkl_jsum_d(a: MklJetD, b: MklJetD) -> MklJetD {
-    return MklJetD(add_d(a.v, b.v), add_d(a.x, b.x), add_d(a.y, b.y));
-}
-fn mkl_jneg_d(a: MklJetD) -> MklJetD {
-    return mkl_jscale_d(a, c_d(-1.0));
-}
-fn mkl_jdiff_d(a: MklJetD, b: MklJetD) -> MklJetD {
-    return mkl_jsum_d(a, mkl_jneg_d(b));
-}
-fn mkl_jmul_d(a: MklJetD, b: MklJetD) -> MklJetD {
-    return MklJetD(
-        mul_d(a.v, b.v),
-        add_d(mul_d(a.x, b.v), mul_d(a.v, b.x)),
-        add_d(mul_d(a.y, b.v), mul_d(a.v, b.y)),
-    );
-}
-fn mkl_jdiv_d(a: MklJetD, b: MklJetD) -> MklJetD {
-    return mkl_jmul_d(a, mkl_jrecip_d(b));
-}
-fn mkl_le_value_d(a: vec2<f32>, b: vec2<f32>) -> bool {
-    return le_d(sub_d(a, b), 0.0);
-}
-fn mkl_sag_fail_d() -> MklSagD {
-    return MklSagD(false, mkl_jconst_d(c_d(0.0)));
-}
-fn mkl_poly_d(pool: u32, start: u32, n: u32, t: MklJetD) -> MklJetD {
-    var p = mkl_jconst_d(c_d(0.0));
-    for (var j = i32(n) - 1; j >= 0; j--) {
-        p = mkl_jadd_d(mkl_jmul_d(p, t), load_d(pool, start + u32(j)));
-    }
-    return p;
-}
-fn mkl_even_d(pool: u32, start: u32, n: u32, t: MklJetD) -> MklJetD {
-    return mkl_jmul_d(mkl_jmul_d(mkl_poly_d(pool, start, n, t), t), t);
-}
-fn mkl_conic_sag_jet_d(c: vec2<f32>, k: vec2<f32>, t: MklJetD) -> MklSagD {
-    let arg = sub_d(c_d(1.0), mul_d(mul_d(mul_d(add_d(c_d(1.0), k), c), c), t.v));
-    if (!mkl_le_value_d(c_d(0.0), arg)) {
-        return mkl_sag_fail_d();
-    }
-    let w = sqrt_d(arg);
-    return MklSagD(true, mkl_jchain_d(t, div_d(mul_d(c, t.v), add_d(c_d(1.0), w)), div_d(c, mul_d(c_d(2.0), w))));
-}
-fn mkl_scaled_jet_d(x: MklJetD, y: MklJetD, radius: vec2<f32>) -> MklUvsD {
-    let inv = div_d(c_d(1.0), radius);
-    let u = mkl_jscale_d(x, inv);
-    let v = mkl_jscale_d(y, inv);
-    return MklUvsD(u, v, mkl_jsum_d(mkl_jmul_d(u, u), mkl_jmul_d(v, v)));
-}
-// mkl_normalized_jet's test on a scaled jet.
-fn mkl_normalized_d(q: MklUvsD) -> bool {
-    return mkl_le_value_d(q.s.v, parts_d(1.0, 2e-12));
-}
-fn mkl_jacobi_d(n: u32, b: vec2<f32>, t: MklJetD) -> MklJetD {
-    var p0 = mkl_jconst_d(c_d(1.0));
-    if (n == 0u) {
-        return p0;
-    }
-    var p1 = mkl_jadd_d(mkl_jscale_d(mkl_jadd_d(t, c_d(-1.0)), div_d(add_d(b, c_d(2.0)), c_d(2.0))), c_d(1.0));
-    for (var ki = 1u; ki < n; ki++) {
-        let k = c_d(f32(ki));
-        let s = add_d(mul_d(c_d(2.0), k), b);
-        let a1 = mul_d(mul_d(mul_d(c_d(2.0), add_d(k, c_d(1.0))), add_d(add_d(k, b), c_d(1.0))), s);
-        let a2 = mkl_jscale_d(mkl_jadd_d(mkl_jscale_d(t, mul_d(add_d(s, c_d(2.0)), s)), neg_d(mul_d(b, b))), add_d(s, c_d(1.0)));
-        let a3 = mul_d(mul_d(mul_d(c_d(2.0), k), add_d(k, b)), add_d(s, c_d(2.0)));
-        let next = mkl_jscale_d(mkl_jdiff_d(mkl_jmul_d(a2, p1), mkl_jscale_d(p0, a3)), div_d(c_d(1.0), a1));
-        p0 = p1;
-        p1 = next;
-    }
-    return p1;
-}
-// Q-con recurrence: v = 2k+4, d = 2(k+1)(k+5)v.
-fn mkl_qcon_d_d(ki: u32, v: vec2<f32>) -> vec2<f32> {
-    let k = c_d(f32(ki));
-    return mul_d(mul_d(mul_d(c_d(2.0), add_d(k, c_d(1.0))), add_d(k, c_d(5.0))), v);
-}
-fn mkl_qcon_a_d(ki: u32, s: MklJetD) -> MklJetD {
-    let v = add_d(mul_d(c_d(2.0), c_d(f32(ki))), c_d(4.0));
-    let d = mkl_qcon_d_d(ki, v);
-    return mkl_jscale_d(
-        mkl_jadd_d(mkl_jscale_d(mkl_jadd_d(mkl_jscale_d(s, c_d(2.0)), c_d(-1.0)), mul_d(add_d(v, c_d(2.0)), v)), c_d(-16.0)),
-        div_d(add_d(v, c_d(1.0)), d),
-    );
-}
-fn mkl_qcon_b_d(ki: u32) -> vec2<f32> {
-    let k = c_d(f32(ki));
-    let v = add_d(mul_d(c_d(2.0), k), c_d(4.0));
-    return div_d(mul_d(mul_d(mul_d(c_d(2.0), k), add_d(k, c_d(4.0))), add_d(v, c_d(2.0))), mkl_qcon_d_d(ki, v));
-}
-fn mkl_qcon_d(pool: u32, n: u32, s: MklJetD) -> MklJetD {
-    var b1 = mkl_jconst_d(c_d(0.0));
-    var b2 = b1;
-    for (var k = i32(n) - 1; k >= 0; k--) {
-        let b = mkl_jadd_d(
-            mkl_jdiff_d(mkl_jmul_d(mkl_qcon_a_d(u32(k), s), b1), mkl_jscale_d(b2, mkl_qcon_b_d(u32(k + 1)))),
-            load_d(pool, u32(k)),
-        );
-        b2 = b1;
-        b1 = b;
-    }
-    return mkl_jmul_d(mkl_jmul_d(b1, s), s);
-}
-fn mkl_qbfs_d(pool: u32, n: u32, s: MklJetD) -> MklJetD {
-    var a1 = mkl_jconst_d(c_d(0.0));
-    var a2 = a1;
-    for (var m = i32(n) - 1; m >= 0; m--) {
-        let a = mkl_jadd_d(
-            mkl_jdiff_d(mkl_jmul_d(mkl_jadd_d(mkl_jscale_d(s, c_d(-4.0)), c_d(2.0)), a1), a2),
-            load_d(pool, u32(m)),
-        );
-        a2 = a1;
-        a1 = a;
-    }
-    return mkl_jscale_d(mkl_jsum_d(a1, a2), c_d(2.0));
-}
-fn mkl_zernike_d(pool: u32, n: u32, standard: bool, x: MklJetD, y: MklJetD, s: MklJetD) -> MklJetD {
-    var z = mkl_jconst_d(c_d(0.0));
-    for (var j = 1u; j <= n; j++) {
-        let a = load_d(pool, j - 1u);
-        if (zero_d(a)) {
-            continue;
-        }
-        var degree: u32;
-        var m: i32;
-        if (standard) {
-            degree = 0u;
-            while ((degree + 1u) * (degree + 2u) / 2u < j) {
-                degree++;
-            }
-            let k = j - degree * (degree + 1u) / 2u - 1u;
-            var am: i32;
-            if (degree % 2u == 0u) {
-                am = i32(2u * ((k + 1u) / 2u));
-            } else {
-                am = i32(2u * (k / 2u) + 1u);
-            }
-            m = select(-am, am, j % 2u == 0u);
-        } else if (j == 37u) {
-            degree = 12u;
-            m = 0;
-        } else {
-            var k = 0u;
-            while ((k + 1u) * (k + 1u) < j) {
-                k++;
-            }
-            let off = j - 1u - k * k;
-            let am = i32(k - off / 2u);
-            degree = 2u * k - u32(am);
-            m = select(am, -am, off % 2u == 1u);
-        }
-        let am = u32(abs(m));
-        var re = mkl_jconst_d(c_d(1.0));
-        var im = mkl_jconst_d(c_d(0.0));
-        for (var i = 0u; i < am; i++) {
-            let r = mkl_jdiff_d(mkl_jmul_d(re, x), mkl_jmul_d(im, y));
-            im = mkl_jsum_d(mkl_jmul_d(re, y), mkl_jmul_d(im, x));
-            re = r;
-        }
-        var scale = c_d(1.0);
-        if (standard) {
-            scale = sqrt_d(c_d(f32((degree + 1u) * select(2u, 1u, m == 0))));
-        }
-        var part = im;
-        if (m >= 0) {
-            part = re;
-        }
-        let radial = mkl_jacobi_d((degree - am) / 2u, c_d(f32(am)), mkl_jadd_d(mkl_jscale_d(s, c_d(2.0)), c_d(-1.0)));
-        z = mkl_jsum_d(z, mkl_jscale_d(mkl_jmul_d(radial, part), mul_d(a, scale)));
-    }
-    return z;
-}
-fn mkl_surface_domain_d(s: u32, x: vec2<f32>, y: vec2<f32>) -> bool {
-    let data = mkl_surface_data(s);
-    return mkl_normalized_d(mkl_scaled_jet_d(mkl_jvar_d(x, true), mkl_jvar_d(y, false), load_d(data, 0u)));
-}
-fn mkl_phase_d(s: u32, x: vec2<f32>, y: vec2<f32>) -> MklJetD {
-    let data = mkl_surface_data(s);
-    let q = mkl_scaled_jet_d(mkl_jvar_d(x, true), mkl_jvar_d(y, false), load_d(data, 0u));
-    let n = u32(mkl_pool[data + 2u * MKL_COEFF_NA]);
-    return mkl_jmul_d(mkl_poly_d(data, MKL_COEFF_PREFIX + MKL_MAX_WAVELENGTHS, n, q.s), q.s);
-}
-fn mkl_extended_sag_d(s: u32, xv: vec2<f32>, yv: vec2<f32>) -> MklSagD {
-    let data = mkl_surface_data(s);
-    let radius = load_d(data, 0u);
-    let na = u32(mkl_pool[data + 2u * MKL_COEFF_NA]);
-    let nb = u32(mkl_pool[data + 2u * MKL_COEFF_NB]);
-    let coeff = data + 2u * MKL_COEFF_PREFIX;
-    let x = mkl_jvar_d(xv, true);
-    let y = mkl_jvar_d(yv, false);
-    let r2 = mkl_jsum_d(mkl_jmul_d(x, x), mkl_jmul_d(y, y));
-    let c = parts_d(mkl_surfaces[s].curvature, mkl_surfaces[s].curvature_lo);
-    let k = parts_d(mkl_surfaces[s].conic, mkl_surfaces[s].conic_lo);
-    let shape = mkl_surfaces[s].shape;
-    if (shape == MKL_SHAPE_ODD_ASPHERE) {
-        let base = mkl_conic_sag_jet_d(c, k, r2);
-        if (!base.ok) {
-            return base;
-        }
-        if (zero_d(x.v) && zero_d(y.v)) {
-            return base;
-        }
-        var radial: MklJetD;
-        if (zero_d(r2.v)) {
-            let ax = select(x.v, neg_d(x.v), le_d(x.v, 0.0));
-            let ay = select(y.v, neg_d(y.v), le_d(y.v, 0.0));
-            let scale = select(ax, ay, mkl_le_value_d(ax, ay));
-            let u = div_d(x.v, scale);
-            let v = div_d(y.v, scale);
-            let w = sqrt_d(add_d(mul_d(u, u), mul_d(v, v)));
-            radial = MklJetD(mul_d(scale, w), div_d(u, w), div_d(v, w));
-        } else {
-            radial = mkl_jsqrt_d(r2);
-        }
-        let r = mkl_jscale_d(radial, div_d(c_d(1.0), radius));
-        return MklSagD(true, mkl_jsum_d(base.j, mkl_jmul_d(mkl_poly_d(coeff, 0u, na, r), r)));
-    }
-    if (shape == MKL_SHAPE_TOROID || shape == MKL_SHAPE_BICONIC) {
-        let cx = load_d(data, MKL_COEFF_CX);
-        let inv = div_d(c_d(1.0), radius);
-        let xx = mkl_jscale_d(x, inv);
-        let yy = mkl_jscale_d(y, inv);
-        if (shape == MKL_SHAPE_TOROID) {
-            let base = mkl_conic_sag_jet_d(c, k, mkl_jmul_d(y, y));
-            if (!base.ok) {
-                return base;
-            }
-            let zy = mkl_jsum_d(base.j, mkl_even_d(coeff, na, nb, mkl_jmul_d(yy, yy)));
-            let a = mkl_jadd_d(mkl_jscale_d(mkl_jneg_d(zy), cx), c_d(1.0));
-            let q = mkl_jdiff_d(mkl_jmul_d(a, a), mkl_jscale_d(mkl_jmul_d(x, x), mul_d(cx, cx)));
-            if (le_d(a.v, 0.0) || !mkl_le_value_d(c_d(0.0), q.v)) {
-                return mkl_sag_fail_d();
-            }
-            return MklSagD(true, mkl_jsum_d(zy, mkl_jdiv_d(mkl_jscale_d(mkl_jmul_d(x, x), cx), mkl_jsum_d(a, mkl_jsqrt_d(q)))));
-        }
-        let kx = load_d(data, MKL_COEFF_KX);
-        let arg = mkl_jadd_d(
-            mkl_jsum_d(
-                mkl_jscale_d(mkl_jmul_d(x, x), mul_d(mul_d(neg_d(add_d(c_d(1.0), kx)), cx), cx)),
-                mkl_jscale_d(mkl_jmul_d(y, y), mul_d(mul_d(neg_d(add_d(c_d(1.0), k)), c), c)),
-            ),
-            c_d(1.0),
-        );
-        if (!mkl_le_value_d(c_d(0.0), arg.v)) {
-            return mkl_sag_fail_d();
-        }
-        let num = mkl_jsum_d(mkl_jscale_d(mkl_jmul_d(x, x), cx), mkl_jscale_d(mkl_jmul_d(y, y), c));
-        let z = mkl_jsum_d(
-            mkl_jsum_d(mkl_jdiv_d(num, mkl_jadd_d(mkl_jsqrt_d(arg), c_d(1.0))), mkl_even_d(coeff, 0u, na, mkl_jmul_d(xx, xx))),
-            mkl_even_d(coeff, na, nb, mkl_jmul_d(yy, yy)),
-        );
-        return MklSagD(true, z);
-    }
-    let q = mkl_scaled_jet_d(x, y, radius);
-    if (!mkl_normalized_d(q)) {
-        return mkl_sag_fail_d();
-    }
-    let base = mkl_conic_sag_jet_d(c, k, r2);
-    if (!base.ok) {
-        return base;
-    }
-    let u = q.u;
-    let v = q.v;
-    let t = q.s;
-    if (shape == MKL_SHAPE_Q_CON) {
-        return MklSagD(true, mkl_jsum_d(base.j, mkl_qcon_d(coeff, na, t)));
-    }
-    if (shape == MKL_SHAPE_Q_BFS) {
-        if (na == 0u) {
-            return base;
-        }
-        let w = mkl_jsqrt_d(mkl_jadd_d(mkl_jscale_d(r2, mul_d(neg_d(c), c)), c_d(1.0)));
-        if (zero_d(w.v)) {
-            return mkl_sag_fail_d();
-        }
-        let tt = mkl_jmul_d(mkl_jmul_d(t, mkl_jadd_d(mkl_jneg_d(t), c_d(1.0))), mkl_qbfs_d(coeff, na, t));
-        return MklSagD(true, mkl_jsum_d(base.j, mkl_jdiv_d(tt, w)));
-    }
-    if (shape == MKL_SHAPE_XY) {
-        var start = 0u;
-        var degree = 1u;
-        var z = base.j;
-        while (start < na) {
-            var row = mkl_jconst_d(c_d(0.0));
-            var vn = mkl_jconst_d(c_d(1.0));
-            for (var n = 0u; n <= degree; n++) {
-                var a = c_d(0.0);
-                if (start + n < na) {
-                    a = load_d(coeff, start + n);
-                }
-                row = mkl_jsum_d(mkl_jmul_d(row, u), mkl_jscale_d(vn, a));
-                vn = mkl_jmul_d(vn, v);
-            }
-            z = mkl_jsum_d(z, row);
-            start += degree + 1u;
-            degree++;
-        }
-        return MklSagD(true, z);
-    }
-    let standard = mkl_pool[data + 2u * MKL_COEFF_KIND] != 0.0;
-    return MklSagD(true, mkl_jsum_d(base.j, mkl_zernike_d(coeff, na, standard, u, v, t)));
-}
-// The base of an overlaid surface may be legacy (or a DOE's legacy base).
-fn mkl_legacy_sag_d(s: u32, xv: vec2<f32>, yv: vec2<f32>) -> MklSagD {
-    let x = mkl_jvar_d(xv, true);
-    let y = mkl_jvar_d(yv, false);
-    let r2 = mkl_jsum_d(mkl_jmul_d(x, x), mkl_jmul_d(y, y));
-    let sf = &mkl_surfaces[s];
-    let base = mkl_conic_sag_jet_d(parts_d((*sf).curvature, (*sf).curvature_lo), parts_d((*sf).conic, (*sf).conic_lo), r2);
-    if (!base.ok) {
-        return base;
-    }
-    let t = mkl_jscale_d(r2, c_d((*sf).asphere_inv_norm2));
-    var p = mkl_jconst_d(c_d(0.0));
-    for (var j = i32((*sf).num_asphere) - 1; j >= 0; j--) {
-        p = mkl_jadd_d(mkl_jmul_d(p, t), parts_d((*sf).asphere[j], (*sf).asphere_lo[j]));
-    }
-    return MklSagD(true, mkl_jsum_d(base.j, mkl_jmul_d(mkl_jmul_d(p, t), t)));
-}
-// Sag jet of an extended surface or, with MKL_OVERLAYS, of any surface with
-// MKL_SURF_HAS_SAG_OVERLAY. Code without MKL_OVERLAYS never sees the overlay.
-fn mkl_surface_eval_d(s: u32, xv: vec2<f32>, yv: vec2<f32>) -> MklSagD {
-    if (!MKL_OVERLAYS || (mkl_surfaces[s].flags & MKL_SURF_HAS_SAG_OVERLAY) == 0u) {
-        return mkl_extended_sag_d(s, xv, yv);
-    }
-    let data = mkl_surface_data(s);
-    var shape = mkl_surfaces[s].shape;
-    if (shape == MKL_SHAPE_DIFFRACTIVE) {
-        shape = u32(mkl_pool[data + 2u * MKL_COEFF_KIND]);
-    }
-    var base: MklSagD;
-    if (shape <= MKL_SHAPE_EVEN_ASPHERE) {
-        base = mkl_legacy_sag_d(s, xv, yv);
-    } else {
-        base = mkl_extended_sag_d(s, xv, yv);
-    }
-    if (!base.ok) {
-        return base;
-    }
-    let d = data + 2u * (mkl_surfaces[s].coefficient_count - MKL_OVERLAY_COUNT);
-    let inv = load_d(d, MKL_OVERLAY_INV_RADIUS);
-    let c = load_d(d, MKL_OVERLAY_COS);
-    let sn = load_d(d, MKL_OVERLAY_SIN);
-    let s4 = load_d(d, MKL_OVERLAY_S4);
-    let two = c_d(2.0);
-    let u = mul_d(xv, inv);
-    let v = mul_d(yv, inv);
-    let t = add_d(mul_d(u, u), mul_d(v, v));
-    let q = add_d(load_d(d, MKL_OVERLAY_S2), mul_d(t, s4));
-    let w = add_d(q, mul_d(t, s4));
-    let o = MklJetD(
-        add_d(add_d(mul_d(c, mul_d(sub_d(u, v), add_d(u, v))), mul_d(mul_d(two, sn), mul_d(u, v))), mul_d(t, q)),
-        mul_d(mul_d(two, inv), add_d(mul_d(u, add_d(c, w)), mul_d(sn, v))),
-        mul_d(mul_d(two, inv), add_d(mul_d(v, sub_d(w, c)), mul_d(sn, u))),
-    );
-    return MklSagD(true, mkl_jsum_d(base.j, o));
-}
 
 // ---------------------------------------------------------------------------
 // trace_shared.h: local-frame trace helpers.
@@ -1118,14 +44,14 @@ fn mkl_finite3(v: vec3<f32>) -> bool {
     return mkl_is_finite(v.x) && mkl_is_finite(v.y) && mkl_is_finite(v.z);
 }
 fn mkl_norm3(v: vec3<f32>) -> f32 {
-    return mkl_hypot3_rn(v.x, v.y, v.z);
+    return mkl_hypot3(v.x, v.y, v.z);
 }
 fn mkl_normalized(v: vec3<f32>) -> vec3<f32> {
     let n = mkl_norm3(v);
     if (n == 0.0) {
         return v;
     }
-    return vec3<f32>(mkl_div_rn(v.x, n), mkl_div_rn(v.y, n), mkl_div_rn(v.z, n));
+    return vec3<f32>(mkl_div(v.x, n), mkl_div(v.y, n), mkl_div(v.z, n));
 }
 
 fn mkl_ddot(a: MklDv, b: MklDv) -> vec2<f32> {
@@ -1140,7 +66,7 @@ fn mkl_renorm_along(d: MklDv, g: MklDv) -> MklDv {
     if (h == 0.0) {
         return d;
     }
-    let b = mkl_div_rn(m.x, mkl_mul(2.0, h));
+    let b = mkl_div(m.x, mkl_mul(2.0, h));
     return MklDv(
         mkl_df_sub(d.x, mkl_df_mul_f32(g.x, b)),
         mkl_df_sub(d.y, mkl_df_mul_f32(g.y, b)),
@@ -1246,13 +172,13 @@ fn mkl_conic_from(c: f32, k: f32, q: vec3<f32>, d: vec3<f32>) -> MklRoot {
     if (mkl_is_nan(disc) || disc < 0.0) {
         return MklRoot(false, 0.0, vec3<f32>(0.0));
     }
-    let sq = mkl_sqrt_rn(disc);
+    let sq = mkl_sqrt(disc);
     let qq = -mkl_add(b, select(-sq, sq, b >= 0.0));
     var have = false;
     var bt = 0.0;
     var bp = vec3<f32>(0.0);
     if (qq != 0.0) {
-        let t = mkl_div_rn(cc, qq);
+        let t = mkl_div(cc, qq);
         let pt = mkl_at(t, d, q);
         if (mkl_is_finite(t) && mkl_finite3(pt) && mkl_on_sheet(kap, c, pt)) {
             have = true;
@@ -1265,7 +191,7 @@ fn mkl_conic_from(c: f32, k: f32, q: vec3<f32>, d: vec3<f32>) -> MklRoot {
         bp = q;
     }
     if (a != 0.0 && qq != 0.0) {
-        let t = mkl_div_rn(qq, a);
+        let t = mkl_div(qq, a);
         let pt = mkl_at(t, d, q);
         if (mkl_is_finite(t) && mkl_finite3(pt) && mkl_on_sheet(kap, c, pt)) {
             let r2 = mkl_fma(pt.x, pt.x, mkl_mul(pt.y, pt.y));
@@ -1355,9 +281,9 @@ fn mkl_asphere_from(s: u32, q: vec3<f32>, d: vec3<f32>) -> MklNewton {
         if (mkl_is_nan(arg) || arg < 0.0) {
             return MklNewton(select(MKL_RAY_OUTSIDE_DOMAIN, MKL_RAY_MISS, !seed.ok && !sign_changed), t);
         }
-        let w = mkl_sqrt_rn(arg);
+        let w = mkl_sqrt(arg);
         let pp = mkl_asphere_poly(s, r2);
-        let base = mkl_div_rn(mkl_mul(c, r2), mkl_add(1.0, w));
+        let base = mkl_div(mkl_mul(c, r2), mkl_add(1.0, w));
         let g = mkl_sub(z, mkl_add(base, pp.x));
         var breakdown = select(MKL_RAY_MISS, MKL_RAY_NOT_CONVERGED, sign_changed);
         if (!mkl_is_finite(g)) {
@@ -1370,7 +296,7 @@ fn mkl_asphere_from(s: u32, q: vec3<f32>, d: vec3<f32>) -> MklNewton {
             breakdown = MKL_RAY_NOT_CONVERGED;
         }
         let slope_w = mkl_fma(mkl_mul(2.0, w), pp.y, c);
-        let gp = mkl_sub(d.z, mkl_mul(mkl_div_rn(slope_w, max(w, mkl_flt_min())), mkl_fma(x, d.x, mkl_mul(y, d.y))));
+        let gp = mkl_sub(d.z, mkl_mul(mkl_div(slope_w, max(w, mkl_flt_min())), mkl_fma(x, d.x, mkl_mul(y, d.y))));
         let gp_ok = mkl_is_finite(gp) && gp != 0.0;
         let tol = mkl_add(
             prm.trace.tolerance_abs,
@@ -1378,7 +304,7 @@ fn mkl_asphere_from(s: u32, q: vec3<f32>, d: vec3<f32>) -> MklNewton {
         );
         if (abs(g) <= tol) {
             if (gp_ok) {
-                t = mkl_sub(t, mkl_div_rn(g, gp));
+                t = mkl_sub(t, mkl_div(g, gp));
             }
             let code = select(MKL_RAY_OUTSIDE_DOMAIN, MKL_RAY_OK, mkl_asphere_domain(s, mkl_at(t, d, q)));
             return MklNewton(code, t);
@@ -1391,7 +317,7 @@ fn mkl_asphere_from(s: u32, q: vec3<f32>, d: vec3<f32>) -> MklNewton {
         if (!gp_ok) {
             return MklNewton(breakdown, t);
         }
-        t = mkl_sub(t, mkl_div_rn(g, gp));
+        t = mkl_sub(t, mkl_div(g, gp));
         if (!mkl_is_finite(t)) {
             return MklNewton(breakdown, t);
         }
@@ -1409,7 +335,7 @@ fn mkl_point_on(q: MklDv, t: vec2<f32>, d: MklDv) -> MklDv {
 }
 
 fn mkl_refine_t(t1: f32, r: f32, rp: f32) -> vec2<f32> {
-    let stp = mkl_div_rn(r, rp);
+    let stp = mkl_div(r, rp);
     if (rp != 0.0 && mkl_is_finite(stp)) {
         return mkl_two_sum(t1, -stp);
     }
@@ -1447,7 +373,7 @@ fn mkl_intersect_legacy(s: u32, shape: u32, p: MklDv, d: MklDv) -> MklHit {
         if (d.z.x == 0.0) {
             return mkl_miss(MKL_RAY_MISS);
         }
-        let t = mkl_df_div_rn(mkl_df_neg(p.z), d.z);
+        let t = mkl_df_div(mkl_df_neg(p.z), d.z);
         let x = MklDv(mkl_df_add(p.x, mkl_df_mul(d.x, t)), mkl_df_add(p.y, mkl_df_mul(d.y, t)), vec2<f32>(0.0));
         if (!(mkl_is_finite(x.x.x) && mkl_is_finite(x.y.x))) {
             return mkl_miss(MKL_RAY_MISS);
@@ -1483,16 +409,16 @@ fn mkl_intersect_legacy(s: u32, shape: u32, p: MklDv, d: MklDv) -> MklHit {
         for (var it = 0; it < 2; it++) {
             let xi = mkl_point_on(q, tb, d);
             let r2 = mkl_df_add(mkl_df_mul(xi.x, xi.x), mkl_df_mul(xi.y, xi.y));
-            w = mkl_df_sqrt_rn(mkl_df_sub(vec2<f32>(1.0, 0.0), mkl_df_mul(r2, mkl_df_mul(kcd, cd))));
-            let csag = mkl_df_div_rn(mkl_df_mul(r2, cd), mkl_df_add_f32(w, 1.0));
+            w = mkl_df_sqrt(mkl_df_sub(vec2<f32>(1.0, 0.0), mkl_df_mul(r2, mkl_df_mul(kcd, cd))));
+            let csag = mkl_df_div(mkl_df_mul(r2, cd), mkl_df_add_f32(w, 1.0));
             let pd = mkl_asphere_poly_dp_df(s, r2);
             let res = mkl_df_sub(mkl_df_sub(xi.z, csag), pd.xy);
             gs = mkl_df_add(mkl_df_mul_f32(mkl_df_mul(w, pd.zw), 2.0), cd);
             let gp = mkl_df_sub(
                 d.z,
-                mkl_df_mul(mkl_df_div_rn(gs, w), mkl_df_add(mkl_df_mul(xi.x, d.x), mkl_df_mul(xi.y, d.y))),
+                mkl_df_mul(mkl_df_div(gs, w), mkl_df_add(mkl_df_mul(xi.x, d.x), mkl_df_mul(xi.y, d.y))),
             );
-            let stp = mkl_df_div_rn(res, gp);
+            let stp = mkl_df_div(res, gp);
             if (mkl_is_finite(stp.x)) {
                 tb = mkl_df_sub(tb, stp);
             }
@@ -1570,10 +496,10 @@ fn mkl_sag_from(s: u32, q: vec3<f32>, d: vec3<f32>) -> MklNewton {
             mkl_mul(prm.trace.tolerance_rel, mkl_add(mkl_add(abs(t), abs(pt.z)), abs(v.j.v))),
         );
         if (abs(g) <= tol) {
-            let corrected = mkl_at(mkl_sub(t, mkl_div_rn(g, gp)), d, q);
+            let corrected = mkl_at(mkl_sub(t, mkl_div(g, gp)), d, q);
             let vc = mkl_surface_eval_f(s, corrected.x, corrected.y);
             if (vc.ok) {
-                t = mkl_sub(t, mkl_div_rn(g, gp));
+                t = mkl_sub(t, mkl_div(g, gp));
             }
             return MklNewton(MKL_RAY_OK, t);
         }
@@ -1584,7 +510,7 @@ fn mkl_sag_from(s: u32, q: vec3<f32>, d: vec3<f32>) -> MklNewton {
         if (!mkl_is_finite(g) || gp == 0.0 || !mkl_is_finite(gp)) {
             return MklNewton(failure, t);
         }
-        var next = mkl_sub(t, mkl_div_rn(g, gp));
+        var next = mkl_sub(t, mkl_div(g, gp));
         if (bracket && (mkl_is_nan(next) || !(next > lo && next < hi))) {
             next = mkl_add(lo, mkl_mul(0.5, mkl_sub(hi, lo)));
         }
@@ -1653,7 +579,7 @@ fn mkl_intersect(s: u32, p: MklDv, d: MklDv) -> MklHit {
             return mkl_miss(MKL_RAY_OUTSIDE_DOMAIN);
         }
         let gp = mkl_df_sub(mkl_df_sub(d.z, mkl_df_mul(v.j.x, d.x)), mkl_df_mul(v.j.y, d.y));
-        let stp = mkl_df_div_rn(mkl_df_sub(x.z, v.j.v), gp);
+        let stp = mkl_df_div(mkl_df_sub(x.z, v.j.v), gp);
         if (mkl_is_finite(stp.x)) {
             tb = mkl_df_sub(tb, stp);
         }
@@ -1689,12 +615,12 @@ struct MklTurn {
 // the order's momentum grad projected on the tangent plane of g, then the
 // normal component for the hemisphere; ok false for an evanescent order.
 fn mkl_diffract(k: MklDv, g: MklDv, n1: vec2<f32>, n2: vec2<f32>, gx: vec2<f32>, gy: vec2<f32>, reflected: bool) -> MklTurn {
-    let len = mkl_df_sqrt_rn(mkl_ddot(g, g));
-    let normal = MklDv(mkl_df_div_rn(g.x, len), mkl_df_div_rn(g.y, len), mkl_df_div_rn(g.z, len));
+    let len = mkl_df_sqrt(mkl_ddot(g, g));
+    let normal = MklDv(mkl_df_div(g.x, len), mkl_df_div(g.y, len), mkl_df_div(g.z, len));
     let kn = mkl_ddot(k, normal);
     let grad = MklDv(gx, gy, vec2<f32>(0.0));
     let gn = mkl_ddot(grad, normal);
-    let inv = mkl_df_div_rn(vec2<f32>(1.0, 0.0), n2);
+    let inv = mkl_df_div(vec2<f32>(1.0, 0.0), n2);
     let tangent = MklDv(
         mkl_df_mul(mkl_df_sub(mkl_df_add(mkl_df_mul(mkl_df_sub(k.x, mkl_df_mul(normal.x, kn)), n1), grad.x), mkl_df_mul(normal.x, gn)), inv),
         mkl_df_mul(mkl_df_sub(mkl_df_add(mkl_df_mul(mkl_df_sub(k.y, mkl_df_mul(normal.y, kn)), n1), grad.y), mkl_df_mul(normal.y, gn)), inv),
@@ -1705,7 +631,7 @@ fn mkl_diffract(k: MklDv, g: MklDv, n1: vec2<f32>, n2: vec2<f32>, gx: vec2<f32>,
         return MklTurn(false, k);
     }
     let sgn = select(1.0, -1.0, (kn.x < 0.0) != reflected);
-    let root = mkl_df_mul_f32(mkl_df_sqrt_rn(disc), sgn);
+    let root = mkl_df_mul_f32(mkl_df_sqrt(disc), sgn);
     return MklTurn(
         true,
         MklDv(
@@ -1731,17 +657,17 @@ fn mkl_refract(k: vec3<f32>, normal: vec3<f32>, n1: f32, n2: f32) -> MklSnell {
         cos_i = -cos_i;
     }
     cos_i = mkl_min_num(cos_i, 1.0);
-    let mu = mkl_div_rn(n1, n2);
+    let mu = mkl_div(n1, n2);
     let sin2 = mkl_mul(mkl_sub(1.0, cos_i), mkl_add(1.0, cos_i));
     let disc = mkl_fma(mkl_mul(-mu, mu), sin2, 1.0);
     if (disc < 0.0) {
         return MklSnell(false, cos_i, 0.0);
     }
-    let root = mkl_sqrt_rn(disc);
+    let root = mkl_sqrt(disc);
     let denom = mkl_fma(mu, cos_i, root);
     var gamma: f32;
     if (denom > 0.0) {
-        gamma = mkl_div_rn(mkl_div_rn(mkl_mul(mkl_sub(n2, n1), mkl_add(n2, n1)), mkl_mul(n2, n2)), denom);
+        gamma = mkl_div(mkl_div(mkl_mul(mkl_sub(n2, n1), mkl_add(n2, n1)), mkl_mul(n2, n2)), denom);
     } else {
         gamma = mkl_sub(root, mkl_mul(mu, cos_i));
     }
@@ -1755,7 +681,7 @@ fn mkl_reflect_cos(k: vec3<f32>, n: vec3<f32>) -> f32 {
 }
 
 fn mkl_dnorm(v: MklDv) -> vec2<f32> {
-    return mkl_df_sqrt_rn(mkl_ddot(v, v));
+    return mkl_df_sqrt(mkl_ddot(v, v));
 }
 
 fn mkl_dabs(x: vec2<f32>) -> vec2<f32> {
@@ -1770,19 +696,19 @@ fn mkl_sphere_term(x0: vec2<f32>, x1: vec2<f32>, t: MklDv, rho: vec2<f32>) -> ve
     let tn = mkl_dnorm(t);
     let xx = mkl_df_add(mkl_df_mul(x1, x1), mkl_df_mul(x0, x0));
     let tx = mkl_df_add(mkl_df_mul(t.y, x1), mkl_df_mul(t.x, x0));
-    if (mkl_mul(abs(rho.x), mkl_sqrt_rn(xx.x)) <= tn.x) {
+    if (mkl_mul(abs(rho.x), mkl_sqrt(xx.x)) <= tn.x) {
         let u = MklDv(mkl_df_sub(t.x, mkl_df_mul(x0, rho)), mkl_df_sub(t.y, mkl_df_mul(x1, rho)), t.z);
         let den = mkl_df_add(mkl_dnorm(u), tn);
-        return mkl_df_div_rn(mkl_df_sub(mkl_df_mul(rho, xx), mkl_df_mul_f32(tx, 2.0)), den);
+        return mkl_df_div(mkl_df_sub(mkl_df_mul(rho, xx), mkl_df_mul_f32(tx, 2.0)), den);
     }
-    let a = mkl_df_div_rn(vec2<f32>(1.0, 0.0), rho);
+    let a = mkl_df_div(vec2<f32>(1.0, 0.0), rho);
     let o = MklDv(
         mkl_df_sub(x0, mkl_df_mul(t.x, a)),
         mkl_df_sub(x1, mkl_df_mul(t.y, a)),
         mkl_df_neg(mkl_df_mul(t.z, a)),
     );
     let num = mkl_df_sub(mkl_df_mul_f32(mkl_df_add(mkl_df_mul(o.y, x1), mkl_df_mul(o.x, x0)), 2.0), xx);
-    let q = mkl_df_div_rn(num, mkl_df_add(mkl_dnorm(o), mkl_df_mul(mkl_dabs(a), tn)));
+    let q = mkl_df_div(num, mkl_df_add(mkl_dnorm(o), mkl_df_mul(mkl_dabs(a), tn)));
     if (a.x < 0.0) {
         return mkl_df_neg(q);
     }
@@ -1803,12 +729,12 @@ fn mkl_ideal_lens(px: vec2<f32>, py: vec2<f32>, k: MklDv, phi: vec2<f32>, n1: ve
     // copysign(1, k.z): the sign bit of k.z on 1.
     let sz = vec2<f32>(bitcast<f32>(0x3F800000u | (bitcast<u32>(k.z.x) & 0x80000000u)), 0.0);
     let az = mkl_dabs(k.z);
-    let r = mkl_df_div_rn(n1, n2);
-    let t = MklDv(mkl_df_div_rn(k.x, az), mkl_df_div_rn(k.y, az), sz);
+    let r = mkl_df_div(n1, n2);
+    let t = MklDv(mkl_df_div(k.x, az), mkl_df_div(k.y, az), sz);
     let tx2 = mkl_df_sub(mkl_df_mul(r, t.x), mkl_df_mul(px, phi));
     let ty2 = mkl_df_sub(mkl_df_mul(r, t.y), mkl_df_mul(py, phi));
     let t_out = MklDv(tx2, ty2, sz);
-    let inv = mkl_df_div_rn(vec2<f32>(1.0, 0.0), mkl_dnorm(t_out));
+    let inv = mkl_df_div(vec2<f32>(1.0, 0.0), mkl_dnorm(t_out));
     let d = MklDv(mkl_df_mul(tx2, inv), mkl_df_mul(ty2, inv), mkl_df_mul(sz, inv));
     let rho_b = mkl_df_sub(phi, mkl_df_mul(r, vergence));
     let delta = mkl_df_sub(
@@ -1822,23 +748,23 @@ fn mkl_ideal_lens(px: vec2<f32>, py: vec2<f32>, k: MklDv, phi: vec2<f32>, n1: ve
 fn mkl_fresnel(n1: f32, n2: f32, cos_i: f32) -> vec2<f32> {
     let ci = mkl_min_num(mkl_max_num(cos_i, 0.0), 1.0);
     let sin2_i = mkl_mul(mkl_sub(1.0, ci), mkl_add(1.0, ci));
-    let rr = mkl_div_rn(n1, n2);
+    let rr = mkl_div(n1, n2);
     let sin2_t = mkl_mul(mkl_mul(rr, rr), sin2_i);
     if (sin2_t >= 1.0) {
         return vec2<f32>(1.0, 0.0);
     }
-    let ct = mkl_sqrt_rn(mkl_max_num(mkl_sub(1.0, sin2_t), 0.0));
+    let ct = mkl_sqrt(mkl_max_num(mkl_sub(1.0, sin2_t), 0.0));
     let a = mkl_mul(n1, ci);
     let b = mkl_mul(n2, ct);
     var rs = 1.0;
     if (mkl_add(a, b) != 0.0) {
-        rs = mkl_div_rn(mkl_sub(a, b), mkl_add(a, b));
+        rs = mkl_div(mkl_sub(a, b), mkl_add(a, b));
     }
     let c = mkl_mul(n2, ci);
     let dd = mkl_mul(n1, ct);
     var rp = 1.0;
     if (mkl_add(c, dd) != 0.0) {
-        rp = mkl_div_rn(mkl_sub(c, dd), mkl_add(c, dd));
+        rp = mkl_div(mkl_sub(c, dd), mkl_add(c, dd));
     }
     let rs2 = mkl_mul(rs, rs);
     let rp2 = mkl_mul(rp, rp);
@@ -1875,8 +801,8 @@ fn mkl_passes_aperture(s: u32, x: vec2<f32>, y: vec2<f32>) -> bool {
             return mkl_df_sub(mkl_dabs(x), a0).x <= 0.0 && mkl_df_sub(mkl_dabs(y), a1).x <= 0.0;
         }
         case MKL_APERTURE_ELLIPTICAL: {
-            let u = mkl_df_div_rn(x, a0);
-            let v = mkl_df_div_rn(y, a1);
+            let u = mkl_df_div(x, a0);
+            let v = mkl_df_div(y, a1);
             return mkl_df_add_f32(mkl_df_add(mkl_df_mul(u, u), mkl_df_mul(v, v)), -1.0).x <= 0.0;
         }
         default: {
@@ -2109,8 +1035,8 @@ fn mkl_trace_core(hdr: u32, w: u32, input: MklRaw, mode: u32) -> MklRaw {
                 status = MKL_RAY_TIR | fail_s;
                 break;
             }
-            let mu = mkl_df_div_rn(n1, n_other);
-            let b = mkl_div_rn(sn.gamma, mkl_norm3(mkl_hi3(hit.g)));
+            let mu = mkl_df_div(n1, n_other);
+            let b = mkl_div(sn.gamma, mkl_norm3(mkl_hi3(hit.g)));
             let d2 = MklDv(
                 mkl_df_add(mkl_df_mul(dir.x, mu), mkl_df_mul_f32(hit.g.x, b)),
                 mkl_df_add(mkl_df_mul(dir.y, mu), mkl_df_mul_f32(hit.g.y, b)),
@@ -2124,7 +1050,7 @@ fn mkl_trace_core(hdr: u32, w: u32, input: MklRaw, mode: u32) -> MklRaw {
         } else if (act == 2u) {
             let cos_i = mkl_reflect_cos(dfv, hit.normal);
             let gh = mkl_hi3(hit.g);
-            let b = mkl_div_rn(mkl_mul(-2.0, mkl_dot3(dfv, gh)), mkl_dot3(gh, gh));
+            let b = mkl_div(mkl_mul(-2.0, mkl_dot3(dfv, gh)), mkl_dot3(gh, gh));
             let d2 = MklDv(
                 mkl_df_add(dir.x, mkl_df_mul_f32(hit.g.x, b)),
                 mkl_df_add(dir.y, mkl_df_mul_f32(hit.g.y, b)),

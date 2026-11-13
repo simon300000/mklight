@@ -358,6 +358,106 @@ fn main() {
     }
     let dest = PathBuf::from(env::var("OUT_DIR").unwrap()).join("mklight_types.wgsl");
     fs::write(dest, out).unwrap();
+    trace_kernel();
+}
+
+/// Replace whole-word occurrences of `word` (identifier characters around
+/// it end the match).
+fn replace_word(s: &str, word: &str, by: &str) -> String {
+    let ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(i) = rest.find(word) {
+        let before = rest[..i].chars().next_back();
+        let after = rest[i + word.len()..].chars().next();
+        out.push_str(&rest[..i]);
+        if before.is_some_and(ident) || after.is_some_and(ident) {
+            out.push_str(word);
+        } else {
+            out.push_str(by);
+        }
+        rest = &rest[i + word.len()..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// `trace.wgsl` from `kernels/trace/`: `head.wgsl` (types, helpers and the
+/// scalar primitives) with the correctly rounded division and square root of
+/// `rn.wgsl` inserted before its primitives; the surface math of
+/// `generic.wgsl` written once over a real type `R_` (jet `J_`, sag `S_`,
+/// coordinates `U_`, function suffix `@`) and expanded for f32 (`_f`) and
+/// double-float (`_d`); then the trace itself (`tail.wgsl`). Every division
+/// and square root outside `rn.wgsl` becomes its round-to-nearest variant,
+/// so the kernel is bitwise the CPU-f32 emulation on hardware whose `/` and
+/// `sqrt` are approximations (GPU.md §11).
+fn trace_kernel() {
+    let dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap()).join("kernels/trace");
+    println!("cargo:rerun-if-changed={}", dir.display());
+    let read = |f: &str| {
+        let p = dir.join(f);
+        println!("cargo:rerun-if-changed={}", p.display());
+        fs::read_to_string(p).unwrap()
+    };
+    let rounded = |s: &str| {
+        let mut s = s.to_string();
+        for (a, b) in [
+            ("mkl_div(", "mkl_div_rn("),
+            ("mkl_sqrt(", "mkl_sqrt_rn("),
+            ("mkl_df_div(", "mkl_df_div_rn("),
+            ("mkl_df_sqrt(", "mkl_df_sqrt_rn("),
+            ("mkl_hypot3(", "mkl_hypot3_rn("),
+        ] {
+            s = s.replace(a, b);
+        }
+        s
+    };
+    let head = read("head.wgsl");
+    let cut = head
+        .find("// ---------------------------------------------------------------------------\n// Scalar primitives")
+        .expect("head.wgsl: scalar primitives marker");
+    let rn = read("rn.wgsl");
+    let mut out = format!(
+        "{}{}\n{}",
+        &head[..cut],
+        rn.trim_start_matches('\n'),
+        rounded(&head[cut..])
+    );
+    let generic = rounded(&read("generic.wgsl"));
+    for (suffix, r, j, s, u, title) in [
+        (
+            "_f",
+            "f32",
+            "MklJetF",
+            "MklSagF",
+            "MklUvsF",
+            "R = f32 (suffix _f) ",
+        ),
+        (
+            "_d",
+            "vec2<f32>",
+            "MklJetD",
+            "MklSagD",
+            "MklUvsD",
+            "R = double-float (suffix _d) ",
+        ),
+    ] {
+        out.push_str(&format!(
+            "\n// ---- {title}{}\n",
+            "-".repeat(if suffix == "_f" { 50 } else { 41 })
+        ));
+        let mut g = generic.replace('@', suffix);
+        for (w, by) in [("R_", r), ("J_", j), ("S_", s), ("U_", u)] {
+            g = replace_word(&g, w, by);
+        }
+        out.push_str(&g);
+    }
+    out.push_str(&rounded(&read("tail.wgsl")));
+    fs::write(
+        PathBuf::from(env::var("OUT_DIR").unwrap()).join("trace.wgsl"),
+        out,
+    )
+    .unwrap();
 }
 
 fn mklight_gpu_include() -> String {
