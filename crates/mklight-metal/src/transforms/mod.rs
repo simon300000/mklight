@@ -100,32 +100,16 @@ fn transform(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> MkResult<f
     let mut slot_buf: Vec<usize> = vec![0, 1];
     slot_buf.resize(steps.len() + 2, usize::MAX);
     // Resolve cached spectra, then mark the steps the output still needs.
-    let mut needed = vec![false; steps.len() + 2];
-    needed[recipe.output] = true;
-    for i in (0..steps.len()).rev() {
-        if !needed[i + 2] {
-            continue;
-        }
-        if steps[i].cache
-            && let Some(v) = x.cached::<SharedBuffer<u32>>(&keys[i])?
-        {
-            slot_buf[i + 2] = bufs.len();
-            bufs.push(Some(Buf::Cached(v)));
-            continue;
-        }
-        for d in dependencies(&steps[i]) {
-            needed[d] = true;
-        }
-    }
-    let active: Vec<bool> = (0..steps.len())
-        .map(|i| needed[i + 2] && slot_buf[i + 2] == usize::MAX)
-        .collect();
-    let mut uses = vec![0usize; steps.len() + 2];
-    for (_, s) in steps.iter().enumerate().filter(|(i, _)| active[*i]) {
-        for d in dependencies(s) {
-            uses[d] += 1;
-        }
-    }
+    let Liveness { active, mut uses } = recipe.liveness(|i| {
+        Ok(match x.cached::<SharedBuffer<u32>>(&keys[i])? {
+            Some(v) => {
+                slot_buf[i + 2] = bufs.len();
+                bufs.push(Some(Buf::Cached(v)));
+                true
+            }
+            None => false,
+        })
+    })?;
     // Immutable f64-derived tables: twiddles per row length, chirp factors per step.
     let table = |x: &mut Execution<'_>,
                  name: String,
@@ -276,29 +260,20 @@ fn transform(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> MkResult<f
                     match p.mode {
                         MKL_TRANSFORM_FFT_ROWS if n > LOCAL_MAX => {
                             let tmp = temps[s].unwrap();
-                            let stages = p.stages as usize;
                             let mut src = a;
-                            let mut span = 1;
-                            for k in 0..stages {
-                                let r = p.radix(k);
-                                let to = if (stages - 1 - k).is_multiple_of(2) {
-                                    dst
-                                } else {
-                                    tmp
-                                };
-                                let mut q = p;
-                                q.radices = [r as u32, 0];
-                                q.span = span as u32;
-                                if k + 1 < stages {
-                                    q.scale_bits = 1f32.to_bits();
-                                }
+                            for (q, into_dst) in global_stages(&p) {
+                                let to = if into_dst { dst } else { tmp };
                                 e.set_pipeline(&stage);
                                 bind(&bufs, 0, src);
                                 e.set_buffer(1, &tables[&n], 0);
                                 bind_mut(&mut bufs, 2, to);
                                 e.set_bytes(3, &q);
-                                e.dispatch_groups([(n / r).div_ceil(256), h, 1], 256);
-                                (src, span) = (to, span * r);
+                                let r = q.radices[0] as usize;
+                                e.dispatch_groups(
+                                    [(n / r).div_ceil(STAGE_THREADS), h, 1],
+                                    STAGE_THREADS,
+                                );
+                                src = to;
                                 dispatches += 1;
                             }
                         }
@@ -321,9 +296,7 @@ fn transform(r: &Request, x: &mut Execution<'_>, ctl: &JobControl) -> MkResult<f
                             }
                             bind_mut(&mut bufs, 2, dst);
                             e.set_bytes(3, &p);
-                            let per = if sh > 2048 { 16 } else { 8 };
-                            let t = n.div_ceil(per);
-                            let g = sh / (per * t);
+                            let (_, t, g) = row_geometry(sh, n);
                             e.dispatch_groups([h.div_ceil(g), 1, 1], g * t);
                         }
                         MKL_TRANSFORM_TRANSPOSE => {

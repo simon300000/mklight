@@ -23,6 +23,10 @@ rayon.workspace = true
 
 [dev-dependencies]
 mklight-trace.workspace = true
+rustfft.workspace = true
+
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+mklight-metal.workspace = true
 
 [[test]]
 name = "tests"
