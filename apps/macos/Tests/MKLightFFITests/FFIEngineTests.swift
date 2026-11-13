@@ -521,6 +521,26 @@ private func paraxialEFL(summary: AnalysisOutput, wavelength w: Int) throws -> (
     }
 }
 
+/// A fresh request carries `"fresh": true` on the wire, and only then; it
+/// equals and hashes like the plain request (staleness checks).
+@Suite struct FFIFreshRequestTests {
+    @Test func wireJSONCarriesFresh() throws {
+        let plain = EngineAnalysisRequest(analysis: "psf", settings: ["grid_size": .integer(32)])
+        let wire = { (r: EngineAnalysisRequest) throws -> [String: JSONValue] in
+            try MKLightJSON.decode([String: JSONValue].self, from: Data(FFIEngine.wireJSON(r).utf8))
+        }
+        #expect(try wire(plain)["fresh"] == nil)
+        let fresh = plain.freshened
+        #expect(try wire(fresh)["fresh"] == .bool(true))
+        #expect(try wire(fresh)["analysis"] == .string("psf"))
+        #expect(fresh == plain && fresh.hashValue == plain.hashValue)
+        #expect(EngineAnalysisRequest(analysis: "psf", fresh: true).fresh)
+        // Not persisted: a decoded request is never fresh.
+        let decoded = try MKLightJSON.decode(EngineAnalysisRequest.self, from: MKLightJSON.encode(fresh))
+        #expect(!decoded.fresh && decoded == plain)
+    }
+}
+
 @Suite struct FFIAvailabilityTests {
     /// Without the library, construction fails with a clear error instead of
     /// crashing; with it, it succeeds.

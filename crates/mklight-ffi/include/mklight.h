@@ -256,7 +256,7 @@ MKStatus mk_session_submit_analysis(const MKSession *session, const char *analys
                                     uint64_t *out_job);
 
 /* Same, from {"analysis", "settings", "view_key", "backend",
- * "allow_backend_fallback", "tier", "aim_stop", "route"}; every key but
+ * "allow_backend_fallback", "tier", "aim_stop", "route", "fresh"}; every key but
  * "analysis" is optional. "backend" is {"kind": "cpu_reference"},
  * {"kind": "gpu", "name": "metal"} or {"kind": "auto"} (chosen per request
  * by the engine's cost model: a GPU when it implements the analysis and is
@@ -269,7 +269,9 @@ MKStatus mk_session_submit_analysis(const MKSession *session, const char *analys
  * "route": route options of this request (the object of the engine
  * configuration's "route"; keys left out take their defaults, not the
  * configuration's values); null or absent takes the engine
- * configuration's. Invalid route options fail here. */
+ * configuration's. Invalid route options fail here. "fresh": true
+ * recomputes: no stored analysis-graph result or intermediate is read, and
+ * what the run builds replaces the stored nodes (default false). */
 MKStatus mk_session_submit_analysis_json(const MKSession *session, const char *request_json,
                                          uint64_t *out_job);
 

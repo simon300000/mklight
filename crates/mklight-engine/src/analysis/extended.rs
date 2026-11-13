@@ -383,12 +383,13 @@ impl Analysis for ImageSimulation {
             input.library_hash(),
             serde_json::to_string(&s.optics)?
         );
+        // A fresh run rebuilds the PSF grid (and stores the new one).
         let cached = self
             .cache
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .as_ref()
-            .filter(|(k, _)| k == &key)
+            .filter(|(k, _)| !input.fresh && k == &key)
             .map(|(_, v)| v.clone());
         let t = input.tracer(ctx)?;
         let mut r = if let Some(d) = super::gpu::device(input) {
@@ -397,7 +398,7 @@ impl Analysis for ImageSimulation {
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .as_ref()
-                .filter(|g| g.key == key && Arc::ptr_eq(&g.backend, &d.backend))
+                .filter(|g| !input.fresh && g.key == key && Arc::ptr_eq(&g.backend, &d.backend))
                 .map(|g| g.grid.clone());
             let grid = match cached {
                 Some(grid) => grid,

@@ -268,6 +268,10 @@ pub struct AnalysisInput<'a> {
     /// How the device analyses of this run divide their work
     /// (`crate::route`).
     pub route: RouteOptions,
+    /// A fresh run (`AnalysisRequest::fresh`): every graph node of this
+    /// input (result and intermediates) is rebuilt instead of read, and
+    /// replaces the stored one; adapter-private caches are not read either.
+    pub fresh: bool,
 }
 
 /// Rough bytes of a tracer node (fields × wavelengths of aim data).
@@ -312,12 +316,13 @@ impl<'a> AnalysisInput<'a> {
             cost_model: None,
             policy: RunPolicy::default(),
             route: RouteOptions::default(),
+            fresh: false,
         }
     }
 
     /// An input of the same run for another snapshot or backend: the
     /// library and its hash, the run policy, the route options, the
-    /// analysis graph and the job-level stop carry over. Device, selection and cost decision are
+    /// analysis graph, freshness and the job-level stop carry over. Device, selection and cost decision are
     /// the caller's to set.
     pub(crate) fn derive<'b>(
         &self,
@@ -330,7 +335,15 @@ impl<'a> AnalysisInput<'a> {
             .with_policy(self.policy)
             .with_route(self.route)
             .with_graph(self.graph.clone())
+            .with_fresh(self.fresh)
             .with_stop_token(self.stop.clone())
+    }
+
+    /// Rebuild every graph node of this run instead of reading it
+    /// ([`Self::fresh`]).
+    pub fn with_fresh(mut self, fresh: bool) -> Self {
+        self.fresh = fresh;
+        self
     }
 
     /// Report completed runs to the engine's cost model (`cost`).
@@ -382,7 +395,7 @@ impl<'a> AnalysisInput<'a> {
             return Ok(Arc::new(build()?));
         };
         let key = tracer_key(&self.snapshot.hash().0, self.library_hash(), &self.policy);
-        Ok(g.node("tracer", key, ctx, tracer_bytes, build)?)
+        Ok(g.node("tracer", key, ctx, self.fresh, tracer_bytes, build)?)
     }
 
     /// [`Self::tracer`] with the default axis fields of a geometric field
@@ -414,6 +427,7 @@ impl<'a> AnalysisInput<'a> {
                     "field_tracer",
                     key,
                     ctx,
+                    self.fresh,
                     |t: &Option<Arc<SequentialTracer>>| t.as_deref().map_or(64, tracer_bytes),
                     build,
                 )?
@@ -454,6 +468,7 @@ impl<'a> AnalysisInput<'a> {
             "configured",
             key,
             ctx,
+            self.fresh,
             |c: &ConfiguredTracer| tracer_bytes(&c.tracer),
             build,
         )?)
@@ -466,7 +481,7 @@ impl<'a> AnalysisInput<'a> {
         let scope: NodeKey = KeyHasher::new("mklight-engine/library/1")
             .str(self.library_hash())
             .finish();
-        Some(g.scoped(scope))
+        Some(g.scoped(scope, self.fresh))
     }
 
     pub fn with_stop_token(mut self, stop: CancelToken) -> Self {
@@ -648,7 +663,8 @@ pub fn prepare_tier(analysis: &dyn Analysis, settings: &Value, tier: Tier) -> En
 /// without failed backend attempts are stored: an `auto` result whichever
 /// backend computed it, an explicit request's only from the CPU reference.
 /// The stored result and every result returned for it share their buffers'
-/// allocations.
+/// allocations. A fresh input ([`AnalysisInput::fresh`]) recomputes and its
+/// result replaces the stored one.
 pub fn run_analysis(
     analysis: &dyn Analysis,
     input: &AnalysisInput<'_>,
@@ -666,7 +682,7 @@ pub fn run_analysis(
     let timer = RunTimer::start();
     let started = std::time::Instant::now();
     let mut built = false;
-    let r = graph.single("result", key, ctx, || {
+    let r = graph.single("result", key, ctx, input.fresh, || {
         built = true;
         let r = run_prepared(analysis, input, &settings, extra_warnings, ctx)?;
         // An `auto` result is stored whichever backend computed it (its

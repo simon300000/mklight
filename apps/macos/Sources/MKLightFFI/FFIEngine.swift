@@ -269,9 +269,10 @@ public struct FFIEngine: EngineClient {
     }
 
     /// The request as the C ABI takes it: `{"analysis", "settings",
-    /// "backend", "allow_backend_fallback"}`.
+    /// "backend", "allow_backend_fallback", "fresh"}` (`fresh` only when set).
     static func wireJSON(_ request: EngineAnalysisRequest) -> String {
         var o: [String: JSONValue] = ["analysis": .string(request.analysis), "settings": .object(request.settings)]
+        if request.fresh { o["fresh"] = .bool(true) }
         switch request.execution.backend {
         case .auto: break
         case .cpuReference: o["backend"] = .object(["kind": .string("cpu_reference")])

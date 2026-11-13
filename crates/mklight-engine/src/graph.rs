@@ -35,6 +35,14 @@
 //! wait only for nodes of a strictly lower level, and a batch publishes its
 //! own claims before it waits, so waits cannot form cycles.
 //!
+//! **Rebuild (fresh requests).** A lookup in rebuild mode
+//! (`AnalysisRequest::fresh`) never reads a stored node nor waits for
+//! another caller's build: it builds the node itself and its result
+//! replaces the stored one, so later ordinary lookups get the new value.
+//! It claims the key like a miss when nobody is building it (ordinary
+//! callers then wait for it), and otherwise builds an unclaimed duplicate
+//! that is published over whatever is stored.
+//!
 //! **Cancellation.** Only successful builds are published. A failed,
 //! cancelled or panicking build releases its claim and wakes the waiters,
 //! which then build the node themselves.
@@ -63,6 +71,9 @@ pub struct KindStats {
     /// Built although another caller was building it (inside the rayon
     /// pool, where waiting is unsafe).
     pub duplicate_builds: u64,
+    /// Of the builds, those made in rebuild mode (fresh requests), which
+    /// read nothing stored.
+    pub rebuilds: u64,
     /// Larger than a quarter of the budget: returned, not stored.
     pub rejected: u64,
     pub evictions: u64,
@@ -249,12 +260,14 @@ impl AnalysisGraph {
         let s = st.stats(kind);
         s.builds += 1;
         s.build_seconds += cost;
+        // The new value replaces the stored one, also when it is too large
+        // to be stored itself (a rebuild leaves nothing stale behind).
+        if let Some(old) = st.entries.remove(&key) {
+            st.bytes -= old.bytes;
+        }
         if b.bytes > self.budget / 4 {
             st.stats(kind).rejected += 1;
             return;
-        }
-        if let Some(old) = st.entries.remove(&key) {
-            st.bytes -= old.bytes;
         }
         while st.bytes + b.bytes > self.budget {
             let Some((&victim, _)) = st
@@ -290,6 +303,7 @@ impl AnalysisGraph {
         kind: &'static str,
         key: NodeKey,
         claim: Option<&mut Claim>,
+        rebuild: bool,
         build: &dyn Fn() -> MkResult<Built>,
     ) -> MkResult<NodeValue> {
         let start = Instant::now();
@@ -297,20 +311,25 @@ impl AnalysisGraph {
             let _depth = Depth::enter(kind);
             build()?
         };
-        self.finish(kind, key, claim, &b, start.elapsed().as_secs_f64());
+        let cost = start.elapsed().as_secs_f64();
+        self.finish(kind, key, claim, rebuild, &b, cost);
         Ok(b.value)
     }
 
-    /// Publish a successful build and release its claim.
+    /// Publish a successful build and release its claim. An unclaimed
+    /// duplicate is published only if nothing is stored, unless it is a
+    /// rebuild, which replaces the stored value.
     fn finish(
         &self,
         kind: &'static str,
         key: NodeKey,
         claim: Option<&mut Claim>,
+        rebuild: bool,
         b: &Built,
         cost: f64,
     ) {
         let mut st = self.lock();
+        st.stats(kind).rebuilds += rebuild as u64;
         match claim {
             Some(g) => {
                 if st.building.get(&key) == Some(&g.id) {
@@ -321,7 +340,7 @@ impl AnalysisGraph {
             }
             None => {
                 st.stats(kind).duplicate_builds += 1;
-                if !st.entries.contains_key(&key) {
+                if rebuild || !st.entries.contains_key(&key) {
                     self.publish(&mut st, kind, key, b, cost);
                 }
             }
@@ -330,15 +349,17 @@ impl AnalysisGraph {
         self.changed.notify_all();
     }
 
-    /// `Memo::nodes` with the keys already scoped.
+    /// `Memo::nodes` with the keys already scoped; `rebuild`: module docs.
     fn batch(
         &self,
         kind: &'static str,
         keys: &[NodeKey],
         ctx: &JobContext,
+        rebuild: bool,
         build: &(dyn Fn(usize) -> MkResult<Built> + Sync),
     ) -> Vec<MkResult<NodeValue>> {
-        let may_wait = may_wait(kind);
+        // A rebuild never waits: it builds what others are building too.
+        let may_wait = !rebuild && may_wait(kind);
         let mut out: Vec<Option<MkResult<NodeValue>>> = (0..keys.len()).map(|_| None).collect();
         let mut pending: Vec<usize> = (0..keys.len()).collect();
         let mut waited = false;
@@ -349,7 +370,7 @@ impl AnalysisGraph {
             {
                 let mut st = self.lock();
                 for &i in &pending {
-                    if let Some(v) = st.hit(&keys[i], waited) {
+                    if let Some(v) = (!rebuild).then(|| st.hit(&keys[i], waited)).flatten() {
                         out[i] = Some(Ok(v));
                     } else if st.building.contains_key(&keys[i]) {
                         theirs.push(i);
@@ -370,7 +391,10 @@ impl AnalysisGraph {
             }
             let run = |(i, claim): &mut (usize, Claim)| {
                 let i = *i;
-                (i, self.build(kind, keys[i], Some(claim), &|| build(i)))
+                (
+                    i,
+                    self.build(kind, keys[i], Some(claim), rebuild, &|| build(i)),
+                )
             };
             let built: Vec<(usize, MkResult<NodeValue>)> = if mine.len() > 1 {
                 mine.par_iter_mut().map(run).collect()
@@ -387,7 +411,7 @@ impl AnalysisGraph {
             if !may_wait {
                 let dup: Vec<(usize, MkResult<NodeValue>)> = theirs
                     .par_iter()
-                    .map(|&i| (i, self.build(kind, keys[i], None, &|| build(i))))
+                    .map(|&i| (i, self.build(kind, keys[i], None, rebuild, &|| build(i))))
                     .collect();
                 for (i, r) in dup {
                     out[i] = Some(r);
@@ -423,12 +447,13 @@ impl AnalysisGraph {
     /// One node of `kind`, typed (engine-side nodes), built on this
     /// thread with the protocol of [`Self::batch`]. `build` returns the
     /// value and its bytes; [`UNSTORED`] returns the value without storing
-    /// it.
+    /// it. `rebuild` builds without reading or waiting (module docs).
     pub(crate) fn single<T, E>(
         &self,
         kind: &'static str,
         key: NodeKey,
         ctx: &JobContext,
+        rebuild: bool,
         build: impl FnOnce() -> Result<(T, usize), E>,
     ) -> Result<Arc<T>, E>
     where
@@ -438,7 +463,7 @@ impl AnalysisGraph {
         let may_wait = may_wait(kind);
         let mut waited = false;
         let mut st = self.lock();
-        loop {
+        while !rebuild {
             if let Some(v) = st.hit(&key, waited) {
                 return Ok(mklight_core::memo::downcast::<T>(v));
             }
@@ -481,20 +506,23 @@ impl AnalysisGraph {
             value: value.clone(),
             bytes,
         };
-        self.finish(kind, key, claim.as_mut(), &b, start.elapsed().as_secs_f64());
+        let cost = start.elapsed().as_secs_f64();
+        self.finish(kind, key, claim.as_mut(), rebuild, &b, cost);
         Ok(value)
     }
 
-    /// One node of `kind`, typed (engine-side nodes).
+    /// One node of `kind`, typed (engine-side nodes); `rebuild`: module
+    /// docs.
     pub(crate) fn node<T: Any + Send + Sync>(
         &self,
         kind: &'static str,
         key: NodeKey,
         ctx: &JobContext,
+        rebuild: bool,
         bytes: impl FnOnce(&T) -> usize,
         build: impl FnOnce() -> MkResult<T>,
     ) -> MkResult<Arc<T>> {
-        self.single(kind, key, ctx, || {
+        self.single(kind, key, ctx, rebuild, || {
             let v = build()?;
             let b = bytes(&v);
             Ok((v, b))
@@ -502,11 +530,12 @@ impl AnalysisGraph {
     }
 
     /// A memo for solvers whose keys do not see the material library:
-    /// every key is scoped by `scope`.
-    pub fn scoped(self: &Arc<Self>, scope: NodeKey) -> ScopedMemo {
+    /// every key is scoped by `scope`. `rebuild`: module docs.
+    pub fn scoped(self: &Arc<Self>, scope: NodeKey, rebuild: bool) -> ScopedMemo {
         ScopedMemo {
             graph: self.clone(),
             scope,
+            rebuild,
         }
     }
 }
@@ -515,6 +544,7 @@ impl AnalysisGraph {
 pub struct ScopedMemo {
     graph: Arc<AnalysisGraph>,
     scope: NodeKey,
+    rebuild: bool,
 }
 
 impl Memo for ScopedMemo {
@@ -535,7 +565,7 @@ impl Memo for ScopedMemo {
                     .finish()
             })
             .collect();
-        self.graph.batch(kind, &scoped, ctx, build)
+        self.graph.batch(kind, &scoped, ctx, self.rebuild, build)
     }
 }
 
@@ -553,6 +583,7 @@ mod tests {
             "t",
             k,
             &JobContext::new(),
+            false,
             |_| bytes,
             || {
                 builds.fetch_add(1, Ordering::SeqCst);
@@ -584,10 +615,37 @@ mod tests {
     }
 
     #[test]
+    fn rebuilds_replace_the_stored_node() {
+        let g = AnalysisGraph::new(1 << 20);
+        let ctx = JobContext::new();
+        let v = |rebuild, x: u64| *g.node("t", key(1), &ctx, rebuild, |_| 8, || Ok(x)).unwrap();
+        assert_eq!(v(false, 1), 1);
+        assert_eq!(v(false, 2), 1, "served from the graph");
+        assert_eq!(v(true, 3), 3, "a rebuild reads nothing stored");
+        assert_eq!(v(false, 4), 3, "and replaces the stored value");
+        // Batches (solver memos) too.
+        let b = |rebuild, x: u64| {
+            let r = g.batch("b", &[key(2)], &ctx, rebuild, &|_| Ok(Built::new(x, 8)));
+            *r.into_iter()
+                .next()
+                .unwrap()
+                .unwrap()
+                .downcast::<u64>()
+                .unwrap()
+        };
+        assert_eq!((b(false, 1), b(true, 2), b(false, 3)), (1, 2, 2));
+        let s = g.stats();
+        assert_eq!((s.kinds["t"].builds, s.kinds["t"].rebuilds), (2, 1));
+        assert_eq!((s.kinds["b"].builds, s.kinds["b"].rebuilds), (2, 1));
+        assert_eq!(s.entries, 2);
+        assert!(g.lock().building.is_empty());
+    }
+
+    #[test]
     fn expensive_entries_outlive_cheap_recent_ones() {
         let g = AnalysisGraph::new(1000);
         let slow = g
-            .batch("t", &[key(1)], &JobContext::new(), &|_| {
+            .batch("t", &[key(1)], &JobContext::new(), false, &|_| {
                 std::thread::sleep(Duration::from_millis(30));
                 Ok(Built::new(1u64, 200))
             })
@@ -601,7 +659,7 @@ mod tests {
         let before = n.load(Ordering::SeqCst);
         // Still cached although it is the least recently used.
         let again = g
-            .batch("t", &[key(1)], &JobContext::new(), &|_| {
+            .batch("t", &[key(1)], &JobContext::new(), false, &|_| {
                 Ok(Built::new(2u64, 200))
             })
             .pop()
@@ -615,13 +673,27 @@ mod tests {
     fn failed_and_cancelled_builds_publish_nothing() {
         let g = AnalysisGraph::new(1 << 20);
         let ctx = JobContext::new();
-        let r = g.node("t", key(1), &ctx, |_: &u64| 8, || Err(MkError::Cancelled));
+        let r = g.node(
+            "t",
+            key(1),
+            &ctx,
+            false,
+            |_: &u64| 8,
+            || Err(MkError::Cancelled),
+        );
         assert!(matches!(r, Err(MkError::Cancelled)));
-        let r = g.node::<u64>("t", key(1), &ctx, |_| 8, || Err(MkError::Trace("x".into())));
+        let r = g.node::<u64>(
+            "t",
+            key(1),
+            &ctx,
+            false,
+            |_| 8,
+            || Err(MkError::Trace("x".into())),
+        );
         assert!(r.is_err());
         // A panicking build releases its claim too.
         let p = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            g.node::<u64>("t", key(1), &ctx, |_| 8, || panic!("boom"))
+            g.node::<u64>("t", key(1), &ctx, false, |_| 8, || panic!("boom"))
         }));
         assert!(p.is_err());
         let n = AtomicUsize::new(0);
@@ -641,7 +713,7 @@ mod tests {
                 let (g, n) = (g.clone(), n.clone());
                 std::thread::spawn(move || {
                     let keys: Vec<NodeKey> = (0..6).map(key).collect();
-                    g.batch("t", &keys, &JobContext::new(), &|i| {
+                    g.batch("t", &keys, &JobContext::new(), false, &|i| {
                         n.fetch_add(1, Ordering::SeqCst);
                         std::thread::sleep(Duration::from_millis(20));
                         Ok(Built::new(i as u64, 8))
@@ -671,6 +743,7 @@ mod tests {
                     "t",
                     key(1),
                     &ctx,
+                    false,
                     |_| 8,
                     || {
                         started.wait();
@@ -682,7 +755,7 @@ mod tests {
         };
         started.wait();
         let v = g
-            .node::<u64>("t", key(1), &JobContext::new(), |_| 8, || Ok(5))
+            .node::<u64>("t", key(1), &JobContext::new(), false, |_| 8, || Ok(5))
             .unwrap();
         assert_eq!(*v, 5);
         assert!(builder.join().unwrap().is_err());
@@ -694,6 +767,7 @@ mod tests {
                     "t",
                     key(2),
                     &JobContext::new(),
+                    false,
                     |_| 8,
                     || {
                         std::thread::sleep(Duration::from_millis(200));
@@ -705,7 +779,7 @@ mod tests {
         std::thread::sleep(Duration::from_millis(30));
         let ctx = JobContext::new();
         ctx.cancel.cancel();
-        let r = g.node::<u64>("t", key(2), &ctx, |_| 8, || Ok(2));
+        let r = g.node::<u64>("t", key(2), &ctx, false, |_| 8, || Ok(2));
         assert!(matches!(r, Err(MkError::Cancelled)));
         assert_eq!(*blocker.join().unwrap().unwrap(), 1);
     }
@@ -724,6 +798,7 @@ mod tests {
                 "t",
                 key(1),
                 &JobContext::new(),
+                false,
                 |_| 8,
                 || {
                     gate2.wait();
@@ -733,8 +808,10 @@ mod tests {
             )
         });
         gate.wait();
-        let v = rayon::scope(|_| g.node::<u64>("t", key(1), &JobContext::new(), |_| 8, || Ok(1)))
-            .unwrap();
+        let v = rayon::scope(|_| {
+            g.node::<u64>("t", key(1), &JobContext::new(), false, |_| 8, || Ok(1))
+        })
+        .unwrap();
         assert_eq!(*v, 1);
         release.wait();
         holder.join().unwrap().unwrap();

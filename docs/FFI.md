@@ -328,8 +328,13 @@ RESULTS §5 and GPU §9.2.
 { "analysis": "rng_stream", "settings": {"seed": 1}, "view_key": "win-3",
   "backend": {"kind": "gpu", "name": "metal"}, "allow_backend_fallback": true,
   "tier": "design", "aim_stop": null,
-  "route": { "fieldmaps": "device-chief", "stray_share": 1 } }
+  "route": { "fieldmaps": "device-chief", "stray_share": 1 }, "fresh": false }
 ```
+
+`fresh: true` recomputes the request instead of answering it from the
+analysis graph: no stored result or intermediate is read, and the run's
+result and intermediates replace the stored ones (ARCHITECTURE "Analysis
+graph"). The app sets it for an explicit "Run" / "Try Again".
 
 `tier` (`design`, the default, or `preview`) and `aim_stop` (`requested`,
 `conditioned`, or null for the engine default, `conditioned`; an explicit

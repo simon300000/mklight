@@ -383,6 +383,7 @@ impl PySession {
             tier: Default::default(),
             aim_stop: None,
             route,
+            fresh: false,
         })
     }
 

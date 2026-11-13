@@ -186,7 +186,13 @@ cost per byte; a node larger than a quarter of the budget is returned but
 not stored.
 Concurrent requests claim missing nodes and wait for nodes another job is
 building (outside the rayon pool), so a queued refresh traces each pupil once;
-failed or cancelled builds publish nothing. Metal keeps its own resident
+failed or cancelled builds publish nothing.
+A request with `fresh` set (an explicit user "Run" / "Try Again") recomputes:
+it reads no stored `result` or intermediate node (nor the image-simulation
+PSF-grid cache), never waits for another job's build, and what it builds
+replaces the stored nodes, so later ordinary requests get the new value. The
+resolved-system cache and Metal's content-keyed resident caches below still
+serve it. Metal keeps its own resident
 caches with per-category budgets (GPU §9.2: aiming rows, seed tables,
 transform plans); aiming rows and seed tables are keyed by the uploaded
 content, and transform recipes, tables and chirp spectra by their

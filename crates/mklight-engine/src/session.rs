@@ -66,6 +66,12 @@ pub struct AnalysisRequest {
     /// Route options (`crate::route`); `None` uses the engine default
     /// (`EngineConfig::route`).
     pub route: Option<crate::route::RouteOptions>,
+    /// Recompute: read no stored analysis-graph node (the result and its
+    /// intermediates) nor adapter cache, and replace the stored ones with
+    /// what this run builds, so later identical requests get the new value
+    /// (a user's explicit "Run"/"Try Again"). Material resolution may
+    /// still come from the session's cache.
+    pub fresh: bool,
 }
 
 impl AnalysisRequest {
@@ -699,7 +705,8 @@ impl Session {
 
     /// The backend for `req`. An `auto` request whose result the analysis
     /// graph already holds is answered from it and needs no route (nor any
-    /// device): a stored answer costs nothing on either backend.
+    /// device): a stored answer costs nothing on either backend. A fresh
+    /// request recomputes, so it is always routed.
     fn route(
         &self,
         req: &AnalysisRequest,
@@ -708,7 +715,8 @@ impl Session {
         policy: &crate::analysis::RunPolicy,
         route: crate::route::RouteOptions,
     ) -> EngineResult<crate::backend::SelectedBackend> {
-        if let (Some(id), Some(graph)) = (
+        if let (false, Some(id), Some(graph)) = (
+            req.fresh,
             self.engine.auto_request_id(req.backend.as_ref()),
             self.engine
                 .analysis_graph()
@@ -795,7 +803,8 @@ impl Session {
         .with_graph(self.engine.analysis_graph().cloned())
         .with_cost_model(Some(self.engine.cost_model().clone()))
         .with_policy(policy)
-        .with_route(route);
+        .with_route(route)
+        .with_fresh(req.fresh);
         run_analysis(
             analysis.as_ref(),
             &input,
@@ -825,6 +834,7 @@ impl Session {
         let cost_model = self.engine.cost_model().clone();
         let label = format!("{} @ {}", req.analysis, snap.hash().short());
         let supports_stop = analysis.supports_stop();
+        let fresh = req.fresh;
         let stop = mklight_core::job::CancelToken::new();
         let job_stop = stop.clone();
         let mut spec = JobSpec::new(label, move |ctx: &JobContext| {
@@ -842,7 +852,8 @@ impl Session {
             .with_graph(graph)
             .with_cost_model(Some(cost_model))
             .with_policy(policy)
-            .with_route(route);
+            .with_route(route)
+            .with_fresh(fresh);
             run_analysis(
                 analysis.as_ref(),
                 &input,
@@ -1412,6 +1423,7 @@ mod tests {
             tier: mklight_core::Tier::Preview,
             aim_stop: Some(mklight_core::AimStopKind::Requested),
             route: Some(Default::default()),
+            fresh: true,
         };
         // What the engine writes, it reads.
         let text = serde_json::to_string(&full).unwrap();

@@ -279,6 +279,7 @@ pub fn run(ctx: &Ctx, a: &RunArgs) -> CliResult<Report> {
             AimStopChoice::Conditioned => mklight_core::AimStopKind::Conditioned,
         }),
         route,
+        fresh: false,
     };
 
     signal::install();

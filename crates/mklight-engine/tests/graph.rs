@@ -423,3 +423,50 @@ fn explicit_grids_share_the_lattice() {
     // Tracers: one per snapshot, shared by all wave analyses.
     assert_eq!(kind(&on, "configured").builds, 1);
 }
+
+/// A fresh request (`AnalysisRequest::fresh`) reads no stored node: it
+/// rebuilds the result and its intermediates, and what it builds replaces
+/// the stored nodes, so later ordinary requests are served the new value.
+#[test]
+fn fresh_requests_recompute_and_replace_the_stored_result() {
+    use std::sync::Arc;
+    let e = engine(512 << 20);
+    let s = session(&e, &samples::double_gauss());
+    let settings = json!({"pupil": {"rays": 17}, "grid_size": 32});
+    let req = AnalysisRequest::new("psf", settings);
+    let fresh = AnalysisRequest {
+        fresh: true,
+        ..req.clone()
+    };
+    let go = |r: &AnalysisRequest| s.run_analysis(r, &JobContext::new()).unwrap();
+    let first = go(&req);
+    let again = go(&req);
+    let r = kind(&e, "result");
+    assert_eq!((r.builds, r.hits, r.rebuilds), (1, 1, 0), "{r:?}");
+    same(&first, &again, "stored");
+    let lattice_hits = kind(&e, "pupil_lattice").hits;
+
+    let recomputed = go(&fresh);
+    let r = kind(&e, "result");
+    assert_eq!((r.builds, r.hits, r.rebuilds), (2, 1, 1), "{r:?}");
+    for k in ["configured", "pupil_lattice"] {
+        assert!(kind(&e, k).rebuilds > 0, "{k}: {:?}", kind(&e, k));
+    }
+    assert_eq!(
+        kind(&e, "pupil_lattice").hits,
+        lattice_hits,
+        "a fresh run reads no lattice"
+    );
+    same(&first, &recomputed, "recomputed");
+
+    // The fresh result replaced the stored one: the next ordinary request
+    // is a hit sharing the fresh run's buffers, not the first run's.
+    let after = go(&req);
+    let r = kind(&e, "result");
+    assert_eq!((r.hits, r.entries), (2, 1), "{r:?}");
+    let shares = |a: &AnalysisResult, b: &AnalysisResult| {
+        Arc::ptr_eq(&a.buffers[0].share(), &b.buffers[0].share())
+    };
+    assert!(shares(&after, &recomputed));
+    assert!(!shares(&after, &first));
+}

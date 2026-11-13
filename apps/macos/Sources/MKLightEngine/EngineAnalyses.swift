@@ -266,7 +266,7 @@ public struct ExecutionSettings: Codable, Sendable, Hashable {
 }
 
 /// A request for any engine analysis by name (`{"analysis", "settings",
-/// "view_key", "backend", "allow_backend_fallback"}` on the C ABI).
+/// "view_key", "backend", "allow_backend_fallback", "fresh"}` on the C ABI).
 /// `settings` may be partial: the engine fills in defaults and records the
 /// complete settings in `RunInfo.settings`.
 public struct EngineAnalysisRequest: Codable, Sendable, Hashable {
@@ -274,11 +274,40 @@ public struct EngineAnalysisRequest: Codable, Sendable, Hashable {
     public var settings: [String: JSONValue]
     /// The backend preference.
     public var execution: ExecutionSettings
+    /// Recompute instead of answering from the engine's stored results and
+    /// intermediates (`"fresh": true`); the new result replaces the stored
+    /// one. For an explicit user "Run" / "Try Again". It says how to run, not
+    /// what to compute, so it takes no part in `==`, `hash` or `Codable`: a
+    /// fresh request equals the plain one (staleness checks are unaffected).
+    public var fresh = false
 
-    public init(analysis: String, settings: [String: JSONValue] = [:], execution: ExecutionSettings = ExecutionSettings()) {
+    public init(
+        analysis: String, settings: [String: JSONValue] = [:], execution: ExecutionSettings = ExecutionSettings(),
+        fresh: Bool = false
+    ) {
         self.analysis = analysis
         self.settings = settings
         self.execution = execution
+        self.fresh = fresh
+    }
+
+    /// This request, recomputed by the engine (`fresh`).
+    public var freshened: EngineAnalysisRequest {
+        var r = self
+        r.fresh = true
+        return r
+    }
+
+    private enum CodingKeys: String, CodingKey { case analysis, settings, execution }
+
+    public static func == (a: Self, b: Self) -> Bool {
+        a.analysis == b.analysis && a.settings == b.settings && a.execution == b.execution
+    }
+
+    public func hash(into h: inout Hasher) {
+        h.combine(analysis)
+        h.combine(settings)
+        h.combine(execution)
     }
 
     /// Whether `info` (normalised by the engine) records these settings: each
