@@ -116,16 +116,33 @@ impl Device {
     }
 }
 
-/// WebGPU time over Metal time of each analysis in `WEBGPU_ANALYSES`, both
-/// native on the calibration machine (GPU.md §11, "Routing"): the WebGPU
-/// prediction is the Metal one times this factor.
-const WEBGPU_FACTORS: &[(&str, f64)] = &[];
+/// The WebGPU `auto` rule (GPU.md §11.6): the analyses with a measured
+/// WebGPU gain over the CPU reference in the browser (where WebGPU is the
+/// GPU), each from the ray count (`profile` rays: fields × wavelengths ×
+/// pupil samples) at which WebGPU was at least `RATIO` faster on the
+/// calibration machine. Every other WebGPU analysis runs on the reference
+/// under `auto` (no gain measured) and natively only when requested.
+pub(crate) const WEBGPU_MIN_RAYS: &[(&str, f64)] =
+    &[("ray_grid", 250_000.), ("spot_diagram", 900_000.)];
 
-pub(crate) fn webgpu_factor(analysis: &str) -> Option<f64> {
-    WEBGPU_FACTORS
+fn webgpu_rule(analysis: &str, settings: &Value, system: &OpticalSystem) -> Decision {
+    let rays = profile::profile_with(analysis, settings, system, None).map(|p| p.rays);
+    let min = WEBGPU_MIN_RAYS
         .iter()
         .find(|(a, _)| *a == analysis)
-        .map(|(_, f)| *f)
+        .map(|(_, r)| *r);
+    let native = matches!((rays, min), (Some(r), Some(m)) if r >= m);
+    Decision {
+        route: if native { Route::Metal } else { Route::Cpu },
+        json: json!({
+            "decision": if native { "qualified_webgpu" } else { "cpu_reference" },
+            "rule": "webgpu break-even",
+            "rays": rays,
+            "min_rays": min,
+            "reason": if min.is_none() { "no measured WebGPU gain for this analysis" } else if native { "above the measured break-even" } else { "below the measured break-even" },
+            "version": VERSION,
+        }),
+    }
 }
 
 pub(crate) fn is_apple(info: &DeviceInfo) -> bool {
@@ -408,22 +425,9 @@ impl CostModel {
                     json!({"decision":"qualified_metal","reason":"no cost calibration for this device","version":VERSION}),
                 );
             }
-            Device::Apple | Device::WebGpu => (),
+            Device::WebGpu => return webgpu_rule(analysis, settings, system),
+            Device::Apple => (),
         }
-        let webgpu = device == Device::WebGpu;
-        let gpu_scale = if webgpu {
-            match webgpu_factor(analysis) {
-                Some(f) => f,
-                None => {
-                    return decision(
-                        Route::Metal,
-                        json!({"decision":"qualified_webgpu","reason":"no WebGPU calibration for this analysis","version":VERSION}),
-                    );
-                }
-            }
-        } else {
-            1.
-        };
         let fam = family(system);
         let decided = self.lock().grids.get(&(fam, settings["pupil"].to_string()));
         let (Some(cal), Some(work)) = (
@@ -487,10 +491,7 @@ impl CostModel {
         if state.tracer_warm {
             metal_f[1] = 0.;
         }
-        let mut metal = cal.fit(metal_mode).unwrap_or(warm_fit).stages(&metal_f);
-        for m in &mut metal {
-            *m *= gpu_scale;
-        }
+        let metal = cal.fit(metal_mode).unwrap_or(warm_fit).stages(&metal_f);
         // One-time setup (device open; first native use of the analysis,
         // unless its kernels were prepared ahead), charged in full to the
         // first call of an analysis and design family and spread over up to
@@ -526,8 +527,7 @@ impl CostModel {
             (c, key.3)
         };
         let (cpu_c, cpu_decade) = correction("cpu", raw_cpu);
-        let (metal_c, metal_decade) =
-            correction(if webgpu { "webgpu" } else { "metal" }, raw_metal);
+        let (metal_c, metal_decade) = correction("metal", raw_metal);
         let cpu_c = cpu_c * host;
         let p_fail = on.transient.get(analysis).map_or(0., |e| e.mean);
         drop(on);
@@ -540,13 +540,7 @@ impl CostModel {
         decision(
             if metal_wins { Route::Metal } else { Route::Cpu },
             json!({
-                "decision": match (metal_wins, webgpu) {
-                    (false, _) => "cpu_reference",
-                    (true, false) => "qualified_metal",
-                    (true, true) => "qualified_webgpu",
-                },
-                // The native side's stages are under "metal" for either GPU.
-                "device": if webgpu { "webgpu" } else { "metal" },
+                "decision": if metal_wins { "qualified_metal" } else { "cpu_reference" },
                 "rule": "cost model",
                 "predicted_ms": {"cpu": rounded(t_cpu), "metal": rounded(t_metal)},
                 "advantage": rounded(t_cpu / t_metal.max(1e-6)),
@@ -648,11 +642,6 @@ impl CostModel {
             return;
         };
         let backend: &'static str = if native { "metal" } else { "cpu" };
-        // Native residuals are learnt per GPU backend.
-        let learnt: &'static str = match (native, d["device"].as_str()) {
-            (true, Some("webgpu")) => "webgpu",
-            _ => backend,
-        };
         let (Some(predicted), Some(decade)) = (
             d["stages_ms"][backend]
                 .as_object()
@@ -674,7 +663,7 @@ impl CostModel {
         // contention shared by every CPU call and this analysis' own
         // residual; a native call's is all residual.
         let ratio = (measured / predicted).ln();
-        let key = (analysis.to_string(), learnt, fam, decade as i32);
+        let key = (analysis.to_string(), backend, fam, decade as i32);
         let mut e = on.corrections.get(&key).unwrap_or_default();
         let host = if native {
             0.
@@ -794,6 +783,36 @@ impl<'a> From<&'a super::AnalysisResult> for Observation<'a> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn webgpu_routes_by_measured_break_even() {
+        let dg = mklight_core::samples::double_gauss();
+        let m = CostModel::with_table(Calibration::builtin(), "builtin".into(), false);
+        let st = State {
+            snapshot: None,
+            library: "",
+            device_open: true,
+            tracer_warm: false,
+            known_failure: false,
+            kernels_prepared: true,
+        };
+        let d = |a: &str, s: Value| m.decide(a, &s, &dg, Device::WebGpu, &st);
+        assert_eq!(d("ray_grid", json!({"rings": 128})).route, Route::Metal);
+        assert_eq!(d("ray_grid", json!({"rings": 32})).route, Route::Cpu);
+        assert_eq!(d("spot_diagram", json!({"rings": 250})).route, Route::Metal);
+        assert_eq!(d("spot_diagram", json!({"rings": 64})).route, Route::Cpu);
+        let mtf = d("mtf", json!({}));
+        assert_eq!(mtf.route, Route::Cpu);
+        assert_eq!(
+            mtf.json["reason"],
+            "no measured WebGPU gain for this analysis"
+        );
+        // Analyses the rule lists are WebGPU analyses.
+        for (a, _) in WEBGPU_MIN_RAYS {
+            assert!(crate::analysis::gpu::WEBGPU_ANALYSES.contains(a));
+        }
+    }
+
     use super::*;
     use mklight_core::samples;
 

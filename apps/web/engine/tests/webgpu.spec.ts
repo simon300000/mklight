@@ -116,6 +116,26 @@ test('WebGPU: gpu:webgpu runs analyses within the GPU contracts', async ({ page 
   }
 })
 
+test('WebGPU: auto routes by the measured break-even (GPU.md §11.6)', async ({ page }) => {
+  await openHarness(page)
+  const r = await page.evaluate(() => window.mk.ready())
+  test.skip(!r.webgpu, 'no WebGPU adapter')
+  await page.evaluate(() => window.mk.create())
+  const text = readFileSync(join(REF_DIR, 'cooke.mklight'), 'utf8')
+  await page.evaluate(([t]) => window.mk.openProject(0, t), [text])
+  const used = async (analysis: string, settings: object) => {
+    const { result } = await page.evaluate(
+      ([a, s]) => window.mk.run(0, { analysis: a as string, settings: s as never, backend: 'auto' }),
+      [analysis, settings] as const,
+    )
+    return (result.backend as { used: string }).used
+  }
+  // Cooke triplet: 3 fields × 3 wavelengths × 27 937 rays at 96 rings.
+  expect(await used('ray_grid', { rings: 96 })).toBe('gpu:webgpu')
+  expect(await used('ray_grid', { rings: 8 })).toBe('cpu_reference')
+  expect(await used('mtf', {})).toBe('cpu_reference')
+})
+
 /**
  * CPU (all threads) against WebGPU, fresh runs after a warm-up, best of
  * three: the browser columns of GPU.md §11's benchmark table. Set
@@ -129,7 +149,7 @@ test('WebGPU: timing against the wasm CPU reference', async ({ page }) => {
   test.skip(!r.webgpu, 'no WebGPU adapter')
   const project = process.env.MKLIGHT_WEB_BENCH_PROJECT ?? join(REF_DIR, 'cooke.mklight')
   const text = readFileSync(project, 'utf8')
-  const cases: Array<[string, object, string]> = JSON.parse(
+  const cases: Array<[string, object, string, object?]> = JSON.parse(
     process.env.MKLIGHT_WEB_BENCH_CASES ??
       JSON.stringify([
         ['spot_diagram', { rings: 6 }, 'r6'],
@@ -149,8 +169,14 @@ test('WebGPU: timing against the wasm CPU reference', async ({ page }) => {
       const e = (await window.mk.create()).index
       await window.mk.openProject(e, t as string)
       const out: Array<{ tag: string; cpu: number; gpu: number; used: string }> = []
-      for (const [a, s, tag] of cs as Array<[string, object, string]>) {
-        const req = (b: string) => ({ analysis: a, settings: s as never, backend: b as never })
+      // A case's optional fourth element: route options of its WebGPU run.
+      for (const [a, s, tag, route] of cs as Array<[string, object, string, object?]>) {
+        const req = (b: string) => ({
+          analysis: a,
+          settings: s as never,
+          backend: b as never,
+          ...(route && b === 'gpu' ? { route: route as never } : {}),
+        })
         const used = ((await window.mk.run(e, req('gpu'))).result.backend as { used: string }).used
         await window.mk.time(e, req('cpu_reference'), 1)
         const cpu = Math.min(...(await window.mk.time(e, req('cpu_reference'), 3)))
