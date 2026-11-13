@@ -9,7 +9,9 @@
     "preview": "vite preview",
     "typecheck": "tsc -b",
     "test": "vitest run",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "test:e2e:wasm": "playwright test -c playwright.wasm.config.ts",
+    "build:wasm": "../../scripts/build-wasm.sh"
   },
   "dependencies": {
     "@glideapps/glide-data-grid": "^6.0.3",

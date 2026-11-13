@@ -42,6 +42,17 @@ export type EngineErrorKind =
   | 'failed'
   | 'engine'
   | 'unavailable'
+  // The WASM module's further status kinds (apps/web/engine/src/types.ts).
+  | 'invalidArgument'
+  | 'parse'
+  | 'notFound'
+  | 'io'
+  | 'timeout'
+  | 'notReady'
+  | 'jobFailed'
+  | 'compute'
+  | 'panic'
+  | 'internal'
 
 export class EngineError extends Error {
   kind: EngineErrorKind

@@ -3,9 +3,14 @@
 // build time, choose explicitly.
 
 import * as engineModule from '@engine'
+import { adaptEngine, type RealEngine } from './adapt'
 import type { EngineClient } from './types'
 
-const real = engineModule as { createEngine: () => Promise<EngineClient>; engineMissing?: boolean }
+const real = engineModule as unknown as {
+  createEngine: () => Promise<RealEngine>
+  ready?: () => Promise<{ threaded: boolean; reason: string | null }>
+  engineMissing?: boolean
+}
 
 export * from './types'
 
@@ -19,7 +24,13 @@ export function requestedEngine(): EngineChoice {
 }
 
 export async function loadEngine(choice = requestedEngine()): Promise<EngineClient> {
-  if (choice === 'wasm' && !('engineMissing' in real)) return real.createEngine()
+  if (choice === 'wasm' && !('engineMissing' in real)) {
+    // The engine runs only multithreaded: it needs a cross-origin isolated page
+    // (COOP/COEP headers, or the isolation service worker in index.html).
+    const r = await real.ready?.()
+    if (r && !r.threaded) throw new Error(r.reason ?? 'This browser cannot run the multithreaded engine.')
+    return adaptEngine(await real.createEngine())
+  }
   const { createMockEngine } = await import('@/engine-mock')
   return createMockEngine()
 }
