@@ -35,6 +35,9 @@ interface DocumentState {
   /** Applies a named, undoable edit to a copy of the system. A change that leaves
    *  the system equal is not recorded. Returns false when nothing changed. */
   edit(actionName: string, change: (s: System) => void | boolean): boolean
+  /** A named, undoable edit of the whole project (variables, merit, tolerances,
+   *  catalogs and the system together). The change works on a copy. */
+  editProject(actionName: string, change: (p: Project) => void | boolean): boolean
   /** Replaces the project's other sections (views are not undoable). */
   setViews(views: Json[]): void
   /** Replaces the whole project as one undoable step (Replace with Sample, Apply…). */
@@ -64,6 +67,26 @@ export const useDocument = create<DocumentState>()((set, get) => ({
     if (JSON.stringify(system) === JSON.stringify(before.system)) return false
     set((s) => ({
       project: { ...before, system },
+      past: [...s.past, { name: actionName, project: before }].slice(-MAX_UNDO),
+      future: [],
+      revision: s.revision + 1,
+    }))
+    return true
+  },
+
+  editProject(actionName, change) {
+    const before = get().project
+    const next: Project = clone({ ...before, views: [] as Json[] })
+    const result = change(next)
+    if (result === false) return false
+    next.views = before.views
+    const { views: _a, ...x } = next
+    const { views: _b, ...y } = before
+    void _a
+    void _b
+    if (JSON.stringify(x) === JSON.stringify(y)) return false
+    set((s) => ({
+      project: next,
       past: [...s.past, { name: actionName, project: before }].slice(-MAX_UNDO),
       future: [],
       revision: s.revision + 1,
