@@ -47,8 +47,13 @@ this page.
    stale pane. A disabled action dims and loses its tint. Everything else is regular glass or plain.
 4. *Morph glass when controls change state* (`glassEffectID`). The job
    action bar morphs Optimize → [progress, Cancel, Stop] → [Discard, Apply to
-   Design] → [Done]; the viewport's Section / 3D selection slides
-   between its options.
+   Design] → [Done], or after a failure → [Back, Try Again]; the viewport's
+   Section / 3D selection slides between its options. Every job builds its
+   bar from the same pieces (`JobActions`: failed, running, review, done), shows
+   a failure as one `JobFailure` page, and marks an applied result with the
+   same `AppliedNotice` ("Applied to the design. Undo with ⌘Z.") at the top
+   of the result. A manual retry (Try Again, a pane's Run, ⌘R) asks the
+   engine for a fresh run that skips its stored results.
 5. *Group toolbar items by function, at most three groups, spacers between
    them; the primary action and inspector toggle trailing; every item also a
    menu command* (Toolbars, WWDC25 323). Add Analysis and the inspector
@@ -204,8 +209,8 @@ this page.
   inspector. In the centre,
   the **status capsule** (`DesignStatus`): the GPU kernel preparation at
   launch while it lasts ("Preparing GPU 42%", see "GPU kernel preparation"
-  under `FFIEngine`), a running job ("Optimizing · 479", click to show it)
-  or analysis activity, EFL (EFL y for a design that is not rotationally
+  under `FFIEngine`), each running job ("Optimizing · 479", click to show
+  it; several jobs can run at once) or analysis activity, EFL (EFL y for a design that is not rotationally
   symmetric), F/# and total track, and the issues button. Its popover has
   the first-order table, the anamorphic data, the engine, the snapshot, the
   state of the GPU kernels (with a second line when their cache could not
@@ -218,7 +223,8 @@ this page.
   * *The header is the handle.* A panel alone in its group shows no extra
     chrome: its title (the lens data's and analysis panes' titles, the
     layout's title chip) is what you drag, with a grab pointer and a context
-    menu (Move to New Window, Move to Main Window, Close / Hide). A group of
+    menu (Move to New Window, Move to Main Window, Hide Lens Data / Hide
+    Layout, or Close Pane for an analysis). A group of
     several shows a compact tab strip (the front tab on glass, close on
     hover); tabs switch on click and drag like titles. The analysis menu is
     the chevron beside the title.
@@ -492,7 +498,7 @@ this page.
 * **Inspector** (`.inspector`): its pages are a row of symbols in its part
   of the toolbar (`InspectorTabBar`, as in Xcode): Surface and System, then
   the design jobs (Optimize, Glass Substitution, Tolerance, Apply Solves),
-  a running job's tab marked with a dot. `WindowState.page` is the
+  each running job's tab marked with a dot. `WindowState.page` is the
   selection; a job's Done (its only button after a run is applied) returns
   the job to its starting page and stays on the job's tab. The menu
   commands and the status capsule open a hidden inspector on a job's page.
@@ -749,8 +755,8 @@ Keyboard: ⇧⌘I / ⌥⌘I insert before / after, ⌘⌫ delete, ⇧⌘T make s
 ⌃⌘L apply solves, ⌃⌘E issues, ⌘R run analyses, ⌘. cancel, ⌘2 / ⌥⌘2 / ⌘3
 y–z section / x–z section / 3-D, ⌘0 fit, ⌥⌘L layout, ⌥⌘E lens data,
 ⌃⌘I inspector, ⌃⌘S sidebar. View ▸ Panel has Move to New Window, Move to
-Main Window, Close / Hide and Reset Panel Layout for the focused panel. In a job panel Return is the primary action and
-Esc closes the panel.
+Main Window, Hide Lens Data / Hide Layout / Close Pane and Reset Panel Layout
+for the focused panel. In a job panel Return is the primary action.
 
 ## Surface types
 

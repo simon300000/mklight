@@ -138,7 +138,7 @@ private struct LayoutViewport: View {
         guard let scene else { return "Layout, not available" }
         let rays = scene.polylines.filter { $0.kind == .ray }.count
         let length = scene.bounds.max.z - scene.bounds.min.z
-        return "Layout, \(mode == .orbit3D ? "3D view" : mode == .sectionXZ ? "x–z section" : "meridional section"), \(system.surfaces.count - 2) surfaces, \(rays) rays, \(Fmt.short(length)) millimetres long"
+        return "Layout, \(mode == .orbit3D ? "3D view" : mode == .sectionXZ ? "x–z section" : "meridional section"), \(system.surfaces.count - 2) surfaces, \(rays) rays, \(Fmt.short(length)) millimeters long"
     }
 }
 

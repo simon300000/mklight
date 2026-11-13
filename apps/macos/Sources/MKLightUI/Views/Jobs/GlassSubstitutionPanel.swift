@@ -27,12 +27,7 @@ struct GlassSubstitutionPanel: View {
             case .setup: setup
             case .running: running
             case .finished: results
-            case .failed(let why):
-                ContentUnavailableView {
-                    Label("Glass Substitution Failed", systemImage: "exclamationmark.triangle")
-                } description: {
-                    Text(why)
-                }
+            case .failed(let why): JobFailure(title: "Glass Substitution Failed", reason: why)
             }
         } actions: {
             actions
@@ -82,11 +77,11 @@ struct GlassSubstitutionPanel: View {
                     .controlSize(.small)
                     if session.selected.isEmpty {
                         Text("With no glass ticked, every model glass (n_d, V_d) snaps to its nearest real glasses.")
-                            .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                            .hint()
                     }
                     if let note = session.offsetNote(system: design.system) {
                         Label(note, systemImage: "drop.halffull")
-                            .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                            .hint()
                     }
                 }
                 .padding(Space.xs)
@@ -104,7 +99,7 @@ struct GlassSubstitutionPanel: View {
                     Picker("Search", selection: $session.algorithm) {
                         ForEach(GlassSubstitutionSession.Algorithm.allCases) { Text($0.title).tag($0) }
                     }
-                    Text(session.algorithm.detail).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    Text(session.algorithm.detail).hint()
                     LabeledContent("Combinations to try") {
                         TextField("Combinations", value: $session.maxCombinations.atLeast(1), format: .number)
                             .labelsHidden().multilineTextAlignment(.trailing).frame(width: 80)
@@ -121,7 +116,7 @@ struct GlassSubstitutionPanel: View {
                         TextField("Iterations", value: $session.localIterations.atLeast(1), format: .number)
                             .labelsHidden().multilineTextAlignment(.trailing).frame(width: 80)
                     }
-                    .help("Damped least-squares iterations that re-optimise the shape for each glass combination")
+                    .help("Damped least-squares iterations that re-optimize the shape for each glass combination")
                     LabeledContent("Keep the best") {
                         TextField("Keep", value: $session.topN.atLeast(1), format: .number)
                             .labelsHidden().multilineTextAlignment(.trailing).frame(width: 80)
@@ -135,12 +130,12 @@ struct GlassSubstitutionPanel: View {
                 VStack(alignment: .leading, spacing: Space.xs) {
                     Text(meritSummary).font(.callout).fixedSize(horizontal: false, vertical: true)
                     if design.variables.isEmpty {
-                        Text("Each combination re-optimises every curvature and the back focus.")
-                            .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                        Text("Each combination re-optimizes every curvature and the back focus.")
+                            .hint(.callout)
                     } else {
                         Picker("Shape", selection: $session.useDesignVariables) {
-                            Text("Re-optimise the design variables (\(design.variables.filter { !$0.isPinned }.count))").tag(true)
-                            Text("Re-optimise every curvature and the back focus").tag(false)
+                            Text("Re-optimize the design variables (\(design.variables.filter { !$0.isPinned }.count))").tag(true)
+                            Text("Re-optimize every curvature and the back focus").tag(false)
                         }
                         .pickerStyle(.inline)
                         .labelsHidden()
@@ -216,7 +211,7 @@ struct GlassSubstitutionPanel: View {
             }
             Sparkline(values: session.trace).frame(height: 110).padding(.vertical, Space.s)
             Text("Stop keeps the combinations ranked so far. Cancel discards the run. You can close this panel; the search continues.")
-                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                .hint()
         }
     }
 
@@ -230,7 +225,8 @@ struct GlassSubstitutionPanel: View {
     @ViewBuilder private var results: some View {
         if let r = session.result {
             VStack(alignment: .leading, spacing: Space.l) {
-                Text(statusText(r)).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                if session.applied { AppliedNotice() }
+                Text(statusText(r)).hint(.callout)
                 if r.ranked.isEmpty {
                     ContentUnavailableView("No Combinations", systemImage: "questionmark.circle", description: Text("No combination could be evaluated."))
                 } else {
@@ -275,7 +271,7 @@ struct GlassSubstitutionPanel: View {
 
     private func changeSummary(_ c: GlassCombination) -> String {
         let moved = c.movedChanges.count
-        var s = moved == 0 ? "shape unchanged" : "\(moved) variable\(moved == 1 ? "" : "s") re-optimised"
+        var s = moved == 0 ? "shape unchanged" : "\(moved) variable\(moved == 1 ? "" : "s") re-optimized"
         if c.cutShort { s += " · cut short" }
         return s
     }
@@ -287,7 +283,7 @@ struct GlassSubstitutionPanel: View {
             HStack {
                 Text("Candidate \(c.rank)").font(.headline)
                 Spacer()
-                Text(session.applied ? "Applied to the design" : "Previewed in the window").font(.caption).foregroundStyle(.tint)
+                if !session.applied { Text("Previewed in the window").font(.caption).foregroundStyle(.tint) }
             }
             HStack(alignment: .firstTextBaseline, spacing: Space.xl) {
                 BigNumber(label: "Merit now", value: Fmt.short(start))
@@ -355,7 +351,7 @@ struct GlassSubstitutionPanel: View {
                 }
                 GlassMapChart(glasses: map.glasses, highlighted: highlights, selection: $mapSelection, plane: plane)
                     .frame(height: 260)
-                Text("Ringed: the candidate's glasses, labelled with their surfaces.").font(.caption).foregroundStyle(.secondary)
+                Text("Ringed: the candidate's glasses, labeled with their surfaces.").font(.caption).foregroundStyle(.secondary)
             }
         }
     }
@@ -376,47 +372,38 @@ struct GlassSubstitutionPanel: View {
     }
 
     private func statusText(_ r: GlassSubstitutionResult) -> String {
-        var s = "\(r.combinations) combination\(r.combinations == 1 ? "" : "s") re-optimised"
+        var s = "\(r.combinations) combination\(r.combinations == 1 ? "" : "s") re-optimized"
         if r.failed > 0 { s += ", \(r.failed) failed" }
         s += ". "
         if r.stopped { s += "Stopped early: the ranking so far. " }
         if r.termination == "time_limit" { s += "The time limit ended the search. " }
-        if session.applied { s += "Applied to the design (Undo with ⌘Z)." } else { s += "Select a combination to preview it in the window." }
+        if !session.applied { s += "Select a combination to preview it in the window." }
         return s
     }
 
     // MARK: Actions
 
     @ViewBuilder private var actions: some View {
+        let bar = JobActions(namespace: glass)
+        let cannotRun = workspace.snapshot == nil || !workspace.modelErrors.isEmpty || (session.selected.isEmpty && !slots.contains(where: \.isModel))
         switch session.state {
-        case .setup, .failed:
-            if case .failed = session.state {
-                GlassAction(title: "Back", id: "secondary", namespace: glass) { session.reset(workspace) }
+        case .setup:
+            bar.start("Find Glasses", disabled: cannotRun) { session.start(in: workspace, document: design) }
+        case .failed:
+            bar.failed(back: { session.reset(workspace) }, retryDisabled: cannotRun) {
+                session.start(in: workspace, document: design, fresh: true)
             }
-            GlassAction(title: "Find Glasses", systemImage: "play.fill", prominent: true, id: "primary", namespace: glass) {
-                session.start(in: workspace, document: design)
-            }
-            .keyboardShortcut(.defaultAction)
-            .disabled(workspace.snapshot == nil || !workspace.modelErrors.isEmpty || (session.selected.isEmpty && !slots.contains(where: \.isModel)))
         case .running(let p):
-            GlassProgress(progress: p, detail: session.progress.map { "\($0.combinations) combinations" } ?? "Preparing", namespace: glass)
-            GlassAction(title: "Cancel", role: .destructive, id: "secondary", namespace: glass) { session.cancel() }
-                .help("End the search and discard it")
-            GlassAction(title: "Stop", systemImage: "stop.fill", id: "primary", namespace: glass) { session.stop() }
-                .disabled(!session.canStop)
-                .help("End now and keep the combinations ranked so far")
+            bar.running(
+                p, detail: session.progress.map { "\($0.combinations) combinations" } ?? "Preparing", canStop: session.canStop,
+                stopHelp: "End now and keep the combinations ranked so far", cancel: session.cancel, stop: session.stop)
         case .finished:
             if session.applied {
-                GlassAction(title: "Done", prominent: true, id: "primary", namespace: glass) { session.reset(workspace) }
-                    .keyboardShortcut(.defaultAction)
-                    .help("Back to the glasses and the search settings")
+                bar.done(help: "Back to the glasses and the search settings") { session.reset(workspace) }
             } else {
-                GlassAction(title: "Discard", id: "secondary", namespace: glass) { session.reset(workspace) }
-                GlassAction(title: "Apply to Design", prominent: true, id: "primary", namespace: glass) {
+                bar.review(discard: { session.reset(workspace) }, applyDisabled: session.selectedCombination?.system == nil) {
                     session.apply(to: design, workspace: workspace, undoManager: undoManager)
                 }
-                .keyboardShortcut(.defaultAction)
-                .disabled(session.selectedCombination?.system == nil)
             }
         }
     }
@@ -485,7 +472,7 @@ struct CandidateForm: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: Space.s) {
-            LabeledContent("Catalogues") {
+            LabeledContent("Catalogs") {
                 Menu(candidates.catalogs.isEmpty ? "All loaded" : candidates.catalogs.joined(separator: ", ")) {
                     Button("All loaded") { candidates.catalogs = [] }
                     Divider()
@@ -532,8 +519,8 @@ struct CandidateForm: View {
             NameListField(title: "Never use", names: $candidates.exclude, prompt: "names")
             DisclosureGroup("Limits", isExpanded: $showLimits) {
                 Grid(alignment: .leading, horizontalSpacing: Space.s, verticalSpacing: Space.xs) {
-                    limit("Min. transmission", \.minTransmission, help: "Internal transmission at the shortest wavelength through the lens's centre thickness (0…1)")
-                    limit("Max. relative cost", \.maxRelativeCost, help: "Catalogue relative cost")
+                    limit("Min. transmission", \.minTransmission, help: "Internal transmission at the shortest wavelength through the lens's center thickness (0…1)")
+                    limit("Max. relative cost", \.maxRelativeCost, help: "Catalog relative cost")
                     limit("Max. climate class", \.maxClimateClass, help: "Climate resistance class (CR)")
                     limit("Max. stain class", \.maxStainClass, help: "Stain resistance class (FR)")
                 }

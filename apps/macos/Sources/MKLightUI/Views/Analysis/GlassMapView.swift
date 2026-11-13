@@ -288,7 +288,7 @@ struct GlassStatusLegend: View {
                     } else {
                         Circle().fill(c).frame(width: 6, height: 6)
                     }
-                    Text(statuses == [.unknown] ? "Catalogue glass" : s.label)
+                    Text(statuses == [.unknown] ? "Catalog glass" : s.label)
                 }
             }
             HStack(spacing: 4) {
@@ -307,7 +307,7 @@ struct GlassStatusLegend: View {
                     .frame(width: 14, height: 10)
                     Text("Melt offset")
                 }
-                .help("A design glass with a melt offset, dotted from its catalogue position")
+                .help("A design glass with a melt offset, dotted from its catalog position")
             }
         }
         .font(.caption)
@@ -356,8 +356,8 @@ struct GlassMapView: View {
                 .labelsHidden()
                 .fixedSize()
                 if data.catalogs.count > 1 {
-                    Picker("Catalogue", selection: $catalog) {
-                        Text("All catalogues").tag(String?.none)
+                    Picker("Catalog", selection: $catalog) {
+                        Text("All catalogs").tag(String?.none)
                         ForEach(data.catalogs, id: \.self) { Text($0).tag(String?.some($0)) }
                     }
                     .pickerStyle(.menu)

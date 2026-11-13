@@ -105,7 +105,7 @@ struct FieldMapPlot: View {
             }
         }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("\(title) map over the normalised field, \(grid.nx) by \(grid.ny) samples")
+        .accessibilityLabel("\(title) map over the normalized field, \(grid.nx) by \(grid.ny) samples")
         .accessibilityValue(accessibilityValue)
     }
 
@@ -367,7 +367,7 @@ struct RelativeIlluminationMapView: View {
                 }
             }
             if data.layout == .map && isFraction {
-                Picker("Colour scale", selection: $rangeMode) {
+                Picker("Color scale", selection: $rangeMode) {
                     Text("Data range").tag(HeatRangeMode.data)
                     Text("0 to 1").tag(HeatRangeMode.unit)
                 }
@@ -375,8 +375,8 @@ struct RelativeIlluminationMapView: View {
                 .labelsHidden()
                 .controlSize(.small)
                 .fixedSize()
-                .help("Colours over the map's own range (small differences show), or over 0 to 1 (to compare designs)")
-                .accessibilityLabel("Colour scale")
+                .help("Colors over the map's own range (small differences show), or over 0 to 1 (to compare designs)")
+                .accessibilityLabel("Color scale")
             }
             if data.layout == .map {
                 ViewThatFits(in: .horizontal) {
@@ -670,7 +670,7 @@ struct ChiefRayAngleView: View {
 
     private func accessibilitySummary(_ s: [Sample]) -> String {
         guard let worst = s.max(by: { $0.cra < $1.cra }) else { return "No values" }
-        var t = String(format: "Largest %.2f degrees at %.3g millimetres", worst.cra, worst.h)
+        var t = String(format: "Largest %.2f degrees at %.3g millimeters", worst.cra, worst.h)
         let bad = s.filter { $0.margin < 0 }.count
         if !limit.isEmpty { t += bad == 0 ? ", within the sensor limit" : ", \(bad) samples exceed the sensor limit" }
         return t

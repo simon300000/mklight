@@ -17,7 +17,8 @@ struct DesignStatus: View {
     var body: some View {
         HStack(spacing: Space.m) {
             GPUPreparationBadge()
-            if let job = window.runningJob {
+            let jobs = window.runningJobs
+            ForEach(jobs) { job in
                 Button {
                     window.open(job)
                 } label: {
@@ -27,7 +28,8 @@ struct DesignStatus: View {
                     }
                 }
                 .help("Show the running \(job.title.lowercased()) job")
-            } else if workspace.isBusy {
+            }
+            if jobs.isEmpty && workspace.isBusy {
                 ProgressView().controlSize(.mini).help("Computing").accessibilityLabel("Computing")
             }
             Button {
@@ -169,7 +171,7 @@ struct StatusDetails: View {
                     + (workspace.snapshot.map { [("Snapshot", $0.hash.short)] } ?? [])
                     + (GPUPreparationMonitor.shared.summary.map { [("GPU kernels", $0)] } ?? []))
                 if let note = GPUPreparationMonitor.shared.note {
-                    Text(note).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    Text(note).hint()
                 }
                 Picker("Compute on", selection: Binding(get: { workspace.backend }, set: { workspace.backend = $0 })) {
                     Text("Automatic").tag(BackendPreference.auto)
@@ -181,7 +183,7 @@ struct StatusDetails: View {
             if !workspace.catalogWarnings.isEmpty {
                 Divider()
                 ForEach(workspace.catalogWarnings, id: \.self) { w in
-                    Label(w, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange)
+                    WarningNote(w)
                 }
             }
         }
@@ -343,9 +345,9 @@ struct XYWavelengthTable: View {
                     Text(ParaxialXYData.squeezeText(r.squeeze))
                 }
                 .accessibilityElement(children: .ignore)
-                .accessibilityLabel(String(format: "%.4f micrometres", r.wavelengthUm))
+                .accessibilityLabel(String(format: "%.4f micrometers", r.wavelengthUm))
                 .accessibilityValue(
-                    "EFL x \(Fmt.short(r.eflX)), y \(Fmt.short(r.eflY)) millimetres; BFL x \(Fmt.short(r.bflX)), y \(Fmt.short(r.bflY)); squeeze \(ParaxialXYData.squeezeText(r.squeeze))"
+                    "EFL x \(Fmt.short(r.eflX)), y \(Fmt.short(r.eflY)) millimeters; BFL x \(Fmt.short(r.bflX)), y \(Fmt.short(r.bflY)); squeeze \(ParaxialXYData.squeezeText(r.squeeze))"
                 )
             }
         }

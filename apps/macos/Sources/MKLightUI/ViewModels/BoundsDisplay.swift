@@ -76,7 +76,7 @@ public enum RadiusBounds {
 
     /// The short help shown with radius bounds.
     public static let help =
-        "Bounds as a radius window in mm; the optimiser bounds the curvature c = 1/R. Empty is open on that side. Min above max wraps through flat (R = ∞): min 100, max −100 is |R| ≥ 100. 0 leaves the curvature unbounded on that side."
+        "Bounds as a radius window in mm; the optimizer bounds the curvature c = 1/R. Empty is open on that side. Min above max wraps through flat (R = ∞): min 100, max −100 is |R| ≥ 100. 0 leaves the curvature unbounded on that side."
 }
 
 /// Formatting of variable values and bounds.

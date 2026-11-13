@@ -169,7 +169,7 @@ struct AnalysisPaneView: View {
                 } description: {
                     Text(why)
                 } actions: {
-                    Button("Try Again") { pane.rerun() }.buttonStyle(.glass)
+                    Button("Try Again") { pane.rerun(fresh: true) }.buttonStyle(.glass)
                 }
             }
         default:
@@ -185,7 +185,7 @@ struct AnalysisPaneView: View {
                 ContentUnavailableView {
                     Label("Cancelled", systemImage: "stop.circle")
                 } actions: {
-                    Button("Run") { pane.rerun() }.buttonStyle(.glass)
+                    Button("Run") { pane.rerun(fresh: true) }.buttonStyle(.glass)
                 }
             } else {
                 ProgressView().controlSize(.small)
@@ -336,7 +336,7 @@ struct PaneHeader: View {
                     Button("Cancel", systemImage: "xmark") { pane.cancel() }
                         .help("Cancel this analysis (⌘.)")
                 } else {
-                    Button("Run", systemImage: "arrow.clockwise") { pane.rerun() }
+                    Button("Run", systemImage: "arrow.clockwise") { pane.rerun(fresh: true) }
                         .help("Run again (⌘R)")
                 }
                 if !compact {

@@ -205,9 +205,19 @@ public final class WindowState {
         }
     }
 
-    /// The running design job, if any.
-    public var runningJob: DesignJobKind? {
-        optimize.isRunning ? .optimize : glass.isRunning ? .glass : tolerance.isRunning ? .tolerance : nil
+    /// The running design jobs, in tab order. Each job runs on its own, so
+    /// several can run at once.
+    public var runningJobs: [DesignJobKind] {
+        DesignJobKind.allCases.filter(isRunning)
+    }
+
+    public func isRunning(_ job: DesignJobKind) -> Bool {
+        switch job {
+        case .optimize: optimize.isRunning
+        case .glass: glass.isRunning
+        case .tolerance: tolerance.isRunning
+        case .solves: solves.isRunning
+        }
     }
 
     /// Shows a transient message; it clears itself after a few seconds.

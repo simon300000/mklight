@@ -218,14 +218,15 @@ public final class OptimizeSession {
     /// the population methods).
     static func isEFLHold(_ op: MeritOperand) -> Bool { op.type == "efl" && op.label.hasPrefix("hold EFL") }
 
-    public func start(in workspace: Workspace, variables: [DesignVariable]) {
+    /// `fresh` (Try Again) recomputes instead of reusing stored engine results.
+    public func start(in workspace: Workspace, variables: [DesignVariable], fresh: Bool = false) {
         evaluationTask?.cancel()
         evaluationJob?.cancel()
         pendingKey = nil
         evaluating = false
         let s = settings(variables: variables, system: workspace.designSnapshot?.system ?? workspace.snapshot?.system)
         do {
-            let job = try workspace.submitJob("optimize", settings: s)
+            let job = try workspace.submitJob("optimize", settings: s, fresh: fresh)
             begin(job)
         } catch {
             state = .failed(error.localizedDescription)
@@ -254,7 +255,7 @@ public final class OptimizeSession {
                 guard let self, self.job === job else { return }
                 self.result = OptimizeResult(json: out.json)
                 if let h = self.result?.history, !h.isEmpty { self.trace = h }
-                self.state = self.result == nil ? .failed("The engine returned no optimised design.") : .finished
+                self.state = self.result == nil ? .failed("The engine returned no optimized design.") : .finished
             } catch EngineError.cancelled {
                 guard let self, self.job === job else { return }
                 self.state = .setup
@@ -277,7 +278,7 @@ public final class OptimizeSession {
     /// Applies the optimised design as one undoable step.
     public func apply(to document: DesignDocument, undoManager: UndoManager?) {
         guard let system = result?.system, !applied else { return }
-        document.replace(system: system, actionName: "Optimize", undoManager: undoManager)
+        document.replace(system: system, actionName: "Apply Optimization", undoManager: undoManager)
         applied = true
     }
 
@@ -360,13 +361,15 @@ public final class SolvesSession {
 
     public init() {}
 
+    public var isRunning: Bool { if case .running = state { true } else { false } }
     public var changes: Int { outcomes.filter { $0.previous != $0.value }.count }
 
-    public func dryRun(in workspace: Workspace) async {
+    /// `fresh`: recompute rather than reuse a stored result (Try Again).
+    public func dryRun(in workspace: Workspace, fresh: Bool = false) async {
         state = .running(JobProgress(fraction: 0, stage: "Solving"))
         committed = false
         do {
-            let job = try workspace.submitJob("solves", settings: [:])
+            let job = try workspace.submitJob("solves", settings: [:], fresh: fresh)
             let report = try await job.result().json
             read(report, system: workspace.snapshot?.system)
             state = .finished

@@ -287,7 +287,7 @@ struct ImageSimulationView: View {
 
     /// The patch's field position and where it lands on the sensor.
     private func patchHelp(_ c: SIMD2<Double>) -> String {
-        var t = "Patch centred at normalised field " + ImageSimulationSettings.coordinates(c)
+        var t = "Patch centered at normalized field " + ImageSimulationSettings.coordinates(c)
         if let n = data.nodes.min(by: { simd_distance($0.field, c) < simd_distance($1.field, c) }), n.real.x.isFinite {
             t += ", image point (" + String(format: "%.3f, %.3f", n.real.x, n.real.y) + ") mm"
         }
@@ -364,11 +364,11 @@ struct ImageViewControls: View {
             }
             .menuStyle(.borderlessButton)
             .fixedSize()
-            .help("The simulated part of the field: a square around the patch centre, as a fraction of the field. A smaller patch has finer pixels, so the blur shows.")
+            .help("The simulated part of the field: a square around the patch center, as a fraction of the field. A smaller patch has finer pixels, so the blur shows.")
             .accessibilityLabel("Field of view")
             .accessibilityValue(ImageSimulationSettings.extentTitle(extent))
             Menu {
-                Picker("Patch centre", selection: Binding(get: { center }, set: { ImageSimulationSettings.setFieldCenter($0, in: pane) })) {
+                Picker("Patch center", selection: Binding(get: { center }, set: { ImageSimulationSettings.setFieldCenter($0, in: pane) })) {
                     ForEach(points) { p in Text(p.title).tag(p.field) }
                     if !points.contains(where: { $0.field == center }) {
                         Text(ImageSimulationSettings.centerTitle(center, points: points)).tag(center)
@@ -382,8 +382,8 @@ struct ImageViewControls: View {
             }
             .menuStyle(.borderlessButton)
             .fixedSize()
-            .help("Where the patch is centred: on the axis, at a design field point, or anywhere you pick on the field.")
-            .accessibilityLabel("Patch centre")
+            .help("Where the patch is centered: on the axis, at a design field point, or anywhere you pick on the field.")
+            .accessibilityLabel("Patch center")
             .accessibilityValue(ImageSimulationSettings.centerTitle(center, points: points))
             .popover(isPresented: $picking) {
                 FieldCenterPicker(center: center, extent: extent, points: points) { ImageSimulationSettings.setFieldCenter($0, in: pane) }
@@ -432,7 +432,7 @@ struct FieldCenterPicker: View {
     var body: some View {
         let c = dragged ?? center
         VStack(alignment: .leading, spacing: Space.s) {
-            Text("Patch Centre").font(.headline)
+            Text("Patch Center").font(.headline)
             Canvas { ctx, size in
                 let k = size.width / 2 / span
                 func pt(_ f: SIMD2<Double>) -> CGPoint { CGPoint(x: size.width / 2 + f.x * k, y: size.height / 2 - f.y * k) }
@@ -468,14 +468,14 @@ struct FieldCenterPicker: View {
             )
             .accessibilityElement()
             .accessibilityLabel("Field diagram")
-            .accessibilityValue("Patch centre " + ImageSimulationSettings.centerTitle(c, points: points))
+            .accessibilityValue("Patch center " + ImageSimulationSettings.centerTitle(c, points: points))
             Text(ImageSimulationSettings.centerTitle(c, points: points)).font(.callout.monospacedDigit())
             if ImageSimulationSettings.outsideField(center: c, extent: extent) {
                 Label("Part of the patch lies outside the design's field.", systemImage: "exclamationmark.triangle")
                     .font(.caption).foregroundStyle(.orange)
             }
-            Text("Click to centre the patch; it snaps to the axis and the field points.")
-                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            Text("Click to center the patch; it snaps to the axis and the field points.")
+                .hint()
         }
         .frame(width: side)
     }

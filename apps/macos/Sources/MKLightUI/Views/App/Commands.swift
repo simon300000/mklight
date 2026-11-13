@@ -169,7 +169,7 @@ struct MKLightCommands: Commands {
                     .disabled(panel == nil || actions?.focusedPanelAlone == true)
                 Button("Move to Main Window") { if let panel { actions?.moveToMainWindow(panel) } }
                     .disabled(panel == nil || actions?.focusedPanelDetached != true)
-                Button(panel?.paneID == nil ? "Hide Panel" : "Close Pane") { if let panel { actions?.closePanel(panel) } }
+                Button(panel == .lensData ? "Hide Lens Data" : panel == .layout ? "Hide Layout" : "Close Pane") { if let panel { actions?.closePanel(panel) } }
                     .disabled(panel == nil)
                 Divider()
                 Button("Reset Panel Layout") { actions?.resetLayout() }

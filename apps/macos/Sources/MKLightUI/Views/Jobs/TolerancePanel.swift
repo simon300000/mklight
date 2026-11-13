@@ -48,15 +48,7 @@ struct TolerancePanel: View {
                     ToleranceResultView(design: design, workspace: workspace, window: window, session: session, result: r)
                 }
             case .failed(let why):
-                VStack(alignment: .leading, spacing: Space.l) {
-                    Label {
-                        Text("Tolerancing failed: \(why)").fixedSize(horizontal: false, vertical: true)
-                    } icon: {
-                        Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
-                    }
-                    .font(.callout)
-                    ToleranceEditor(design: design, workspace: workspace, session: session, context: context, edit: edit)
-                }
+                JobFailure(title: "Tolerancing Failed", reason: why)
             }
         } actions: {
             actions
@@ -90,36 +82,32 @@ struct TolerancePanel: View {
         session.edit(design, name, context: context, undoManager: undoManager, change)
     }
 
-    private func run() {
+    private func run() { run(fresh: false) }
+
+    private func run(fresh: Bool) {
         session.load(design)
-        session.start(in: workspace, context: context, merit: design.merit)
+        session.start(in: workspace, context: context, merit: design.merit, fresh: fresh)
     }
 
     @ViewBuilder private var actions: some View {
+        let bar = JobActions(namespace: glass)
         switch session.state {
-        case .setup, .failed:
+        case .setup:
             if session.result != nil {
                 GlassAction(title: "Show Results", id: "secondary", namespace: glass) { session.showResult() }
                     .help("Show the last run's results")
             }
-            GlassAction(title: "Run", systemImage: "play.fill", prominent: true, id: "primary", namespace: glass, action: run)
-                .keyboardShortcut(.defaultAction)
-                .disabled(problem != nil)
-                .help(problem ?? "Run the sensitivity analysis and the Monte-Carlo trials")
+            bar.start("Run", disabled: problem != nil, help: problem ?? "Run the sensitivity analysis and the Monte Carlo trials", action: run)
+        case .failed:
+            bar.failed(back: session.edit, retryDisabled: problem != nil) { run(fresh: true) }
         case .running(let p):
-            GlassProgress(
-                progress: p,
+            bar.running(
+                p,
                 detail: ToleranceProgress.stageText(p.stage, trialsDone: session.timing(at: Date(), progress: p).trialsDone, of: session.settings.trials),
-                namespace: glass)
-            GlassAction(title: "Cancel", role: .destructive, id: "secondary", namespace: glass) { session.cancel() }
-                .help("End the run and discard it")
-            GlassAction(title: "Stop", systemImage: "stop.fill", id: "primary", namespace: glass) { session.stop() }
-                .disabled(!session.canStop)
-                .help("End now and keep the sensitivities and trials completed so far")
+                canStop: session.canStop, stopHelp: "End now and keep the sensitivities and trials completed so far",
+                cancel: session.cancel, stop: session.stop)
         case .finished:
-            GlassAction(title: "Done", prominent: true, id: "primary", namespace: glass) { session.edit() }
-                .keyboardShortcut(.defaultAction)
-                .help("Back to the tolerances, compensators and criterion; Show Results returns here")
+            bar.done(help: "Back to the tolerances, compensators and criterion; Show Results returns here", action: session.edit)
         }
     }
 
@@ -132,7 +120,7 @@ struct TolerancePanel: View {
         let d = UserDefaults.standard
         guard d.string(forKey: "MKLightAutoRun") == "tolerance", case .setup = session.state else { return }
         if let t = d.string(forKey: "MKLightToleranceTrials").flatMap(Int.init) {
-            edit("Trials") { $0.trials = t }
+            edit("Change Trials") { $0.trials = t }
         }
         let stopAfter = d.double(forKey: "MKLightAutoStop")
         Task {
@@ -759,26 +747,26 @@ struct ToleranceGeneratorView: View {
                 row("Radius (power)", \.radiusFringes, "fringes", help: "Power error in test fringes at \(nm) nm over the clear aperture: Δc = N λ / h².")
                 row("Irregularity", \.irregularityFringes, "fringes", help: "Astigmatic and spherical irregularity of every lens surface, each this many test fringes at \(nm) nm (peak to valley over the clear aperture).")
                 row("Thickness", \.thicknessMM, "mm", help: "Every glass and air thickness inside the lens; the back focus is the compensator.")
-                row("Decentre", \.decentreMM, "mm", help: "Every lens surface alone, in x and in y; the rest of the system stays on the axis.")
+                row("Decenter", \.decentreMM, "mm", help: "Every lens surface alone, in x and in y; the rest of the system stays on the axis.")
                 row("Tilt (wedge)", \.tiltArcmin, "′", help: "Every lens surface alone about x and about y, in arc minutes.")
                 header("Elements")
-                row("Decentre", \.elementDecentreMM, "mm", help: "Every element as a rigid body (a cemented group together), in x and in y.")
+                row("Decenter", \.elementDecentreMM, "mm", help: "Every element as a rigid body (a cemented group together), in x and in y.")
                 row("Tilt", \.elementTiltArcmin, "′", help: "Every element as a rigid body about its first vertex, about x and about y; the pivot can be changed per element.")
                 header("Glasses")
-                row("Index", \.index, "Δn_d", help: "n_d of every glass: a model glass's n_d, a catalogue glass's melt offset Δn_d.")
-                row("Abbe number", \.abbePercent, "% of V_d", help: "V_d of every glass: a model glass's V_d, a catalogue glass's melt offset ΔV_d.")
+                row("Index", \.index, "Δn_d", help: "n_d of every glass: a model glass's n_d, a catalog glass's melt offset Δn_d.")
+                row("Abbe number", \.abbePercent, "% of V_d", help: "V_d of every glass: a model glass's V_d, a catalog glass's melt offset ΔV_d.")
             }
             Picker("Distribution", selection: Binding(get: { g.distribution }, set: { d in set("Change Distribution") { $0.distribution = d } })) {
                 ForEach(ToleranceDistribution.choices, id: \.self) { Text($0.title).tag($0) }
             }
-            .help("How Monte-Carlo trials draw each perturbation within its limits")
+            .help("How Monte Carlo trials draw each perturbation within its limits")
             Text("A value of 0 leaves that kind out.")
-                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                .hint()
             HStack {
                 Spacer()
                 Button("Cancel", action: done).keyboardShortcut(.cancelAction)
                 Button("Replace Tolerances") {
-                    edit("Default Tolerances") { $0.generate(for: design.system) }
+                    edit("Replace Tolerances") { $0.generate(for: design.system) }
                     done()
                 }
                 .buttonStyle(.borderedProminent)
@@ -901,8 +889,8 @@ struct CompensatorSection: View {
                 .menuStyle(.borderlessButton)
                 .fixedSize()
                 .controlSize(.small)
-                Text("Re-optimised for every trial within ± the range around its nominal value; empty is free.")
-                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                Text("Re-optimized for every trial within ± the range around its nominal value; empty is free.")
+                    .hint()
             }
             .padding(Space.xs)
         } label: {
@@ -989,7 +977,7 @@ struct CriterionSection: View {
                         .help("Judge by the weakest field and direction at each frequency instead of the weighted mean.")
                 case .designMerit:
                     Text(design.merit.mode == .custom ? "The Optimize panel's custom merit (\(design.merit.operands.count) operands)." : "The Optimize panel's merit: " + design.merit.defaults.summary + ".")
-                        .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                        .hint(.callout)
                 }
                 if c.kind != .designMerit {
                     HStack {
@@ -1018,8 +1006,8 @@ struct CriterionSection: View {
                         if !display.unit.isEmpty { Text(display.unit).foregroundStyle(.secondary) }
                     }
                 }
-                .help("The yield is the share of Monte-Carlo trials that pass.")
-                Text(caption).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                .help("The yield is the share of Monte Carlo trials that pass.")
+                Text(caption).hint()
             }
             .padding(Space.xs)
         } label: {
@@ -1066,7 +1054,7 @@ struct AnalysisSection: View {
                 .labelsHidden()
                 if t.mode != .monteCarlo {
                     Text("Sensitivity: each tolerance at its − and + limit alone (\(2 * t.rows.count + 1) evaluations), ranked, with the root-sum-square prediction.")
-                        .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                        .hint()
                 }
                 if t.mode != .sensitivity {
                     HStack(spacing: Space.l) {
@@ -1099,10 +1087,10 @@ struct AnalysisSection: View {
                     }
                     .help("The first trials keep their perturbations and compensator values for the trial list and the CSV export (at most 10 000). Any trial can be previewed.")
                     Text("Monte Carlo: every tolerance drawn at random per trial; the same seed gives the same trials.")
-                        .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                        .hint()
                     if let spt = session.lastSecondsPerTrial {
                         Label(Self.estimate(secondsPerTrial: spt, trials: t.trials), systemImage: "clock")
-                            .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                            .hint()
                     }
                 }
             }
@@ -1217,7 +1205,7 @@ struct ToleranceProgress: View {
                 + (t.mode == .sensitivity ? "" : " · \(t.trials) trials, seed \(t.seed)"))
                 .font(.callout).foregroundStyle(.secondary)
             Text("Stop keeps the sensitivities and trials completed so far. Cancel discards the run. You can close this panel; the job continues.")
-                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                .hint()
         }
     }
 }
@@ -1279,7 +1267,7 @@ struct ToleranceResultView: View {
                 GridRow {
                     if result.hasNominal {
                         BigNumber(label: "Nominal", value: d.format(d.value(result.nominal)))
-                            .help(result.compensators.isEmpty ? "The design as it is" : "The design as it is, with the compensators re-optimised")
+                            .help(result.compensators.isEmpty ? "The design as it is" : "The design as it is, with the compensators re-optimized")
                     }
                     if result.hasSensitivity {
                         BigNumber(label: "Predicted (RSS)", value: d.format(d.value(result.predicted)))
@@ -1291,7 +1279,7 @@ struct ToleranceResultView: View {
                         GridRow {
                             ForEach(Array(result.percentiles[start..<min(start + 3, result.percentiles.count)].enumerated()), id: \.offset) { _, p in
                                 BigNumber(label: "\(Fmt.short(p.percentile)) % of builds", value: d.format(d.value(p.value)))
-                                    .help("\(Fmt.short(p.percentile)) % of the Monte-Carlo trials reach \(d.higherIsBetter ? "at least" : "at most") this value")
+                                    .help("\(Fmt.short(p.percentile)) % of the Monte Carlo trials reach \(d.higherIsBetter ? "at least" : "at most") this value")
                             }
                         }
                     }
@@ -1302,7 +1290,7 @@ struct ToleranceResultView: View {
                     .font(.callout)
             }
             if let note = statusNote {
-                Label(note, systemImage: "info.circle").font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                Label(note, systemImage: "info.circle").hint()
             }
         }
     }
@@ -1330,7 +1318,7 @@ struct ToleranceResultView: View {
                 }
             }
             if result.hasMonteCarlo {
-                Button("Save Monte-Carlo Trials as CSV…") {
+                Button("Save Monte Carlo Trials as CSV…") {
                     exporting = CSVFile(
                         name: "\(system.name) trials.csv", text: ToleranceReport.trialsCSV(result, rows: rows, system: session.runSystem ?? system))
                 }
@@ -1356,7 +1344,7 @@ struct ToleranceResultView: View {
                 Text("Δ \(d.unit.isEmpty ? d.title : d.unit) at − / +").font(.caption).foregroundStyle(.secondary)
             }
             Text("Each tolerance alone at its limits, largest share of the RSS first. Click a row to select its surface; the eye previews that build.")
-                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                .hint()
                 .padding(.bottom, Space.xs)
             ForEach(Array(list.enumerated()), id: \.element.id) { k, s in
                 SensitivityRow(
@@ -1468,7 +1456,7 @@ struct TrialList: View {
                     .buttonStyle(.link).font(.caption)
             }
             Text(bin == nil ? "Click a bar of the histogram for its trials; the eye rebuilds a trial in the window." : "The eye rebuilds a trial in the window, read-only.")
-                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                .hint()
         }
         .onChange(of: bin) { _, _ in limit = 6 }
     }
@@ -1529,11 +1517,11 @@ struct TolerancePreviewCard: View {
                 Button("End Preview") { session.endPreview(in: workspace) }.controlSize(.small)
             }
             if let error = session.previewError {
-                Label(error, systemImage: "exclamationmark.triangle.fill").font(.caption).foregroundStyle(.orange)
+                WarningNote(error)
                     .fixedSize(horizontal: false, vertical: true)
             } else if let p = session.preview {
                 Text("\(d.title) \(d.formatWithUnit(d.value(p.criterion))) · shown in the layout and the analyses, not applied")
-                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    .hint()
                 if !p.compensators.isEmpty { compensators(p) }
                 perturbations(p)
             } else {
@@ -1568,7 +1556,7 @@ struct TolerancePreviewCard: View {
                     if let n { Text("(" + Fmt.signed(v - n, decimals: 4).trimmingCharacters(in: .whitespaces).replacingOccurrences(of: "-", with: "\u{2212}") + ")").monospacedDigit().foregroundStyle(.secondary) }
                 }
                 .font(.caption)
-                .help("Re-optimised for this build\(n.map { "; nominal " + Fmt.value($0, unit: unit) } ?? "")")
+                .help("Re-optimized for this build\(n.map { "; nominal " + Fmt.value($0, unit: unit) } ?? "")")
             }
         }
     }
@@ -1823,7 +1811,7 @@ struct MonteCarloChart: View {
         .padding(.top, Space.l)
         .font(.caption2)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Distribution of \(shown.count) Monte-Carlo trials of the \(d.title)")
+        .accessibilityLabel("Distribution of \(shown.count) Monte Carlo trials of the \(d.title)")
         .accessibilityValue(
             levels.map { "\(Fmt.short($0.p)) percent of builds \(d.higherIsBetter ? "at least" : "at most") \(d.formatWithUnit($0.v))" }.joined(separator: ", "))
         .accessibilityHint("Select a bar to list its trials")
@@ -1896,7 +1884,7 @@ struct CompensatorStats: View {
 
     private func rowsText(nominal: Double?, used: (Double, Double)?, unit: String) -> [(String, String)] {
         var rows: [(String, String)] = []
-        if let nominal { rows.append(("Nominal (re-optimised)", Fmt.value(nominal, unit: unit))) }
+        if let nominal { rows.append(("Nominal (re-optimized)", Fmt.value(nominal, unit: unit))) }
         if let used { rows.append(("Sensitivity range used", Fmt.signed(used.0, decimals: 4).trimmingCharacters(in: .whitespaces) + " to " + Fmt.signed(used.1, decimals: 4).trimmingCharacters(in: .whitespaces) + " " + unit)) }
         if result.compensatorMean.indices.contains(j) {
             let mean = result.compensatorMean[j], sd = result.compensatorStd.indices.contains(j) ? result.compensatorStd[j] : .nan

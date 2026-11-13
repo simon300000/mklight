@@ -69,7 +69,7 @@ struct InspectorTabBar: View {
 
     private func tab(_ page: InspectorPage) -> some View {
         let selected = window.page == page
-        let running: Bool = if case .job(let kind) = page { window.runningJob == kind } else { false }
+        let running: Bool = if case .job(let kind) = page { window.isRunning(kind) } else { false }
         return Button {
             window.page = page
         } label: {
@@ -98,7 +98,7 @@ struct InspectorTabBar: View {
         case .surface: "The selected surface"
         case .system: "Aperture, fields, wavelengths and environment"
         case .job(.optimize): "Optimize the design (⌃⌘O)"
-        case .job(.glass): "Replace glasses with catalogue glasses, re-optimising each combination (⌃⌘G)"
+        case .job(.glass): "Replace glasses with catalog glasses, re-optimizing each combination (⌃⌘G)"
         case .job(.tolerance): "Tolerance analysis: sensitivities and Monte Carlo (⌃⌘T)"
         case .job(.solves): "Preview and apply the design's solves (⌃⌘L)"
         }
@@ -140,7 +140,7 @@ struct SurfaceInspector: View {
                         Spacer()
                         if !isEnd { TypeMenu(shape: surface.shape) { setType($0) } }
                     }
-                    Text(type.summary).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    Text(type.summary).hint(.callout)
                 }
                 .padding(.vertical, Space.xs)
                 if !isEnd && type.preview != .idealLens && type.preview != .coordinateBreak {
@@ -569,12 +569,12 @@ struct MeltOffsetRows: View {
         if showing {
             NumberField(
                 title: "Δn_d", detail: "melt", value: offset.dnD,
-                help: "The melt's index offset from the catalogue n_d (within ±\(Fmt.short(MaterialOffset.maxDnD))); the dispersion keeps its shape.",
+                help: "The melt's index offset from the catalog n_d (within ±\(Fmt.short(MaterialOffset.maxDnD))); the dispersion keeps its shape.",
                 parse: LensValueParser.offsetDnD, variable: variable(dn), solve: system.solve(for: dn)?.kind.kind.title
             ) { v in set("Change Δn_d") { $0.dnD = v } }
             NumberField(
                 title: "ΔV_d", detail: "melt", value: offset.dvD,
-                help: "The melt's Abbe-number offset from the catalogue V_d (within ±\(Fmt.short(MaterialOffset.maxDvD))).",
+                help: "The melt's Abbe-number offset from the catalog V_d (within ±\(Fmt.short(MaterialOffset.maxDvD))).",
                 parse: LensValueParser.offsetDvD, variable: variable(dv), solve: system.solve(for: dv)?.kind.kind.title
             ) { v in set("Change ΔV_d") { $0.dvD = v } }
             if let g = workspace.glass(surface.material) {
@@ -582,7 +582,7 @@ struct MeltOffsetRows: View {
                     VStack(alignment: .trailing, spacing: 1) {
                         Text("n_d \(String(format: "%.5f", g.nd))  V_d \(String(format: "%.2f", g.vd))").numeric()
                         if !offset.isZero {
-                            Text("catalogue \(String(format: "%.5f", g.catalogNd))  \(String(format: "%.2f", g.catalogVd))")
+                            Text("catalog \(String(format: "%.5f", g.catalogNd))  \(String(format: "%.2f", g.catalogVd))")
                                 .font(.caption).numeric().foregroundStyle(.secondary)
                         }
                     }
@@ -595,12 +595,12 @@ struct MeltOffsetRows: View {
                     set("Remove Melt Offset") { $0 = .zero }
                 }
                 .buttonStyle(.borderless)
-                .help("Back to the catalogue glass")
+                .help("Back to the catalog glass")
             }
         } else {
             Button("Add Melt Offset…") { expanded = true }
                 .buttonStyle(.borderless)
-                .help("Give the catalogue glass a measured melt's Δn_d and ΔV_d")
+                .help("Give the catalog glass a measured melt's Δn_d and ΔV_d")
         }
     }
 

@@ -116,6 +116,93 @@ struct GlassAction: View {
     }
 }
 
+/// The action bar's buttons for the states every job shares, so each job
+/// words them, places them and binds their keys the same way. Setup and
+/// result actions that are the job's own stay in its panel.
+@MainActor
+struct JobActions {
+    let namespace: Namespace.ID
+
+    /// The setup page's primary action, which starts the run.
+    func start(_ title: String, disabled: Bool, help: String? = nil, action: @escaping () -> Void) -> some View {
+        GlassAction(title: title, systemImage: "play.fill", prominent: true, id: "primary", namespace: namespace, action: action)
+            .keyboardShortcut(.defaultAction)
+            .disabled(disabled)
+            .help(help ?? "")
+    }
+
+    /// After a failure: back to the job's settings (when it has a page of
+    /// them) and the same run again, recomputed.
+    @ViewBuilder func failed(back: (() -> Void)?, retryDisabled: Bool = false, retry: @escaping () -> Void) -> some View {
+        if let back {
+            GlassAction(title: "Back", id: "secondary", namespace: namespace, action: back)
+                .help("Back to the job's settings")
+        }
+        GlassAction(title: "Try Again", systemImage: "arrow.clockwise", prominent: true, id: "primary", namespace: namespace, action: retry)
+            .keyboardShortcut(.defaultAction)
+            .disabled(retryDisabled)
+            .help("Run the job again with the same settings")
+    }
+
+    /// While running: progress, Cancel (discard) and Stop (keep the best so far).
+    @ViewBuilder func running(
+        _ progress: JobProgress, detail: String = "", canStop: Bool, stopHelp: String,
+        cancel: @escaping () -> Void, stop: @escaping () -> Void
+    ) -> some View {
+        GlassProgress(progress: progress, detail: detail, namespace: namespace)
+        GlassAction(title: "Cancel", role: .destructive, id: "secondary", namespace: namespace, action: cancel)
+            .help("End the run and discard it")
+        GlassAction(title: "Stop", systemImage: "stop.fill", id: "primary", namespace: namespace, action: stop)
+            .disabled(!canStop)
+            .help(stopHelp)
+    }
+
+    /// A result to review: Discard (when it can be dropped) and Apply to Design.
+    @ViewBuilder func review(discard: (() -> Void)?, applyDisabled: Bool, apply: @escaping () -> Void) -> some View {
+        if let discard {
+            GlassAction(title: "Discard", id: "secondary", namespace: namespace, action: discard)
+                .help("Drop this result; the design stays as it is")
+        }
+        GlassAction(title: "Apply to Design", prominent: true, id: "primary", namespace: namespace, action: apply)
+            .keyboardShortcut(.defaultAction)
+            .disabled(applyDisabled)
+            .help("Apply the result as one step you can undo")
+    }
+
+    /// After the result was applied (or read): back to the job's starting page.
+    func done(help: String, action: @escaping () -> Void) -> some View {
+        GlassAction(title: "Done", prominent: true, id: "primary", namespace: namespace, action: action)
+            .keyboardShortcut(.defaultAction)
+            .help(help)
+    }
+}
+
+/// A job's failure, the same page for every job.
+struct JobFailure: View {
+    let title: String
+    let reason: String
+
+    var body: some View {
+        ContentUnavailableView {
+            Label(title, systemImage: "exclamationmark.triangle")
+        } description: {
+            Text(reason)
+        }
+    }
+}
+
+/// Shown at the top of a job's result once it is applied to the design.
+struct AppliedNotice: View {
+    var body: some View {
+        Label {
+            Text("Applied to the design. Undo with ⌘Z.").foregroundStyle(.secondary)
+        } icon: {
+            Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+        }
+        .font(.callout)
+    }
+}
+
 /// A glass capsule with live progress, between the actions while a job runs.
 struct GlassProgress: View {
     let progress: JobProgress
@@ -176,12 +263,7 @@ struct OptimizePanel: View {
             case .setup: setup
             case .running(let p): running(p)
             case .finished: result
-            case .failed(let why):
-                ContentUnavailableView {
-                    Label("Optimization Failed", systemImage: "exclamationmark.triangle")
-                } description: {
-                    Text(why)
-                }
+            case .failed(let why): JobFailure(title: "Optimization Failed", reason: why)
             }
         } actions: {
             actions
@@ -245,7 +327,7 @@ struct OptimizePanel: View {
                         VariablesBoundsList(design: design, workspace: workspace)
                     } else if design.variables.isEmpty {
                         Text("Mark values with V in the lens data or the inspector to choose them; each gets sensible bounds you can edit here.")
-                            .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                            .hint()
                     }
                     if let why = session.variableProblem(design.variables, system: design.system) {
                         Label(why, systemImage: "pin.fill").font(.caption).foregroundStyle(.orange)
@@ -296,13 +378,14 @@ struct OptimizePanel: View {
                 .frame(height: 120)
                 .padding(.vertical, Space.s)
             Text("Stop keeps the best design so far. Cancel discards the run. You can close this panel; the job continues.")
-                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                .hint()
         }
     }
 
     @ViewBuilder private var result: some View {
         if let r = session.result {
             VStack(alignment: .leading, spacing: Space.l) {
+                if session.applied { AppliedNotice() }
                 HStack(alignment: .firstTextBaseline, spacing: Space.xl) {
                     BigNumber(label: "Merit before", value: Fmt.short(r.startMerit))
                     BigNumber(label: "After", value: Fmt.short(r.finalMerit))
@@ -319,7 +402,7 @@ struct OptimizePanel: View {
                             after: workspace.layout.layoutScene)
                     }
                 }
-                Text(statusText(r)).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                Text(statusText(r)).hint(.callout)
                 if session.trace.count > 1 {
                     Sparkline(values: session.trace.map(\.merit)).frame(height: 64)
                 }
@@ -373,40 +456,30 @@ struct OptimizePanel: View {
         if r.stopped { s += "Stopped early: this is the best design found so far. " }
         if !r.improved { s += "No better design was found; the result equals the start. " }
         if !r.feasible { s += "Some constraints are not met. " }
-        if session.applied { s += "Applied to the design (Undo with ⌘Z)." }
         return s
     }
 
     @ViewBuilder private var actions: some View {
+        let bar = JobActions(namespace: glass)
+        let cannotRun = blocked || session.variableProblem(design.variables, system: design.system) != nil
         switch session.state {
-        case .setup, .failed:
-            if case .failed = session.state {
-                GlassAction(title: "Back", id: "secondary", namespace: glass) { session.reset() }
+        case .setup:
+            bar.start("Optimize", disabled: cannotRun) { session.start(in: workspace, variables: design.variables) }
+        case .failed:
+            bar.failed(back: session.reset, retryDisabled: cannotRun) {
+                session.start(in: workspace, variables: design.variables, fresh: true)
             }
-            GlassAction(title: "Optimize", systemImage: "play.fill", prominent: true, id: "primary", namespace: glass) {
-                session.start(in: workspace, variables: design.variables)
-            }
-            .keyboardShortcut(.defaultAction)
-            .disabled(blocked || session.variableProblem(design.variables, system: design.system) != nil)
         case .running(let p):
-            GlassProgress(progress: p, detail: session.trace.last.map { "Iteration \($0.iteration)" } ?? "", namespace: glass)
-            GlassAction(title: "Cancel", role: .destructive, id: "secondary", namespace: glass) { session.cancel() }
-                .help("End the run and discard it")
-            GlassAction(title: "Stop", systemImage: "stop.fill", id: "primary", namespace: glass) { session.stop() }
-                .disabled(!session.canStop)
-                .help("End now and keep the best design so far")
+            bar.running(
+                p, detail: session.trace.last.map { "Iteration \($0.iteration)" } ?? "", canStop: session.canStop,
+                stopHelp: "End now and keep the best design so far", cancel: session.cancel, stop: session.stop)
         case .finished:
             if session.applied {
-                GlassAction(title: "Done", prominent: true, id: "primary", namespace: glass) { session.reset() }
-                    .keyboardShortcut(.defaultAction)
-                    .help("Back to the merit function and variables")
+                bar.done(help: "Back to the merit function and variables", action: session.reset)
             } else {
-                GlassAction(title: "Discard", id: "secondary", namespace: glass) { session.reset() }
-                GlassAction(title: "Apply to Design", prominent: true, id: "primary", namespace: glass) {
+                bar.review(discard: session.reset, applyDisabled: session.result?.system == nil || session.result?.improved == false) {
                     session.apply(to: design, undoManager: undoManager)
                 }
-                .keyboardShortcut(.defaultAction)
-                .disabled(session.result?.system == nil || session.result?.improved == false)
             }
         }
     }
@@ -499,25 +572,21 @@ struct SolvesPanel: View {
                 case .setup, .running:
                     ProgressView("Solving…").frame(maxWidth: .infinity).padding(Space.xxl)
                 case .failed(let why):
-                    ContentUnavailableView("Solving Failed", systemImage: "exclamationmark.triangle", description: Text(why))
+                    JobFailure(title: "Solving Failed", reason: why)
                 case .finished:
                     report
                 }
             }
         } actions: {
-            if session.committed {
-                Text("Applied. Undo with ⌘Z.").font(.callout).foregroundStyle(.secondary).frame(maxWidth: .infinity)
-                GlassAction(title: "Done", prominent: true, id: "primary", namespace: glass) {
-                    Task { await session.dryRun(in: workspace) }
-                }
-                .keyboardShortcut(.defaultAction)
-                .help("Back to the design's solves")
+            let bar = JobActions(namespace: glass)
+            if case .failed = session.state {
+                bar.failed(back: nil) { Task { await session.dryRun(in: workspace, fresh: true) } }
+            } else if session.committed {
+                bar.done(help: "Back to the design's solves") { Task { await session.dryRun(in: workspace) } }
             } else {
-                GlassAction(title: "Apply to Design", prominent: true, id: "primary", namespace: glass) {
+                bar.review(discard: nil, applyDisabled: session.state != .finished || session.changes == 0) {
                     Task { await session.commit(in: workspace, document: design, undoManager: undoManager) }
                 }
-                .keyboardShortcut(.defaultAction)
-                .disabled(session.state != .finished || session.changes == 0)
             }
         }
         .task(id: design.system) {
@@ -531,8 +600,9 @@ struct SolvesPanel: View {
 
     private var report: some View {
         VStack(alignment: .leading, spacing: Space.m) {
+            if session.committed { AppliedNotice() }
             Text(session.committed ? "The design now holds these solved values." : "Dry run: the values the solves would set. Nothing has changed yet.")
-                .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                .hint(.callout)
             ForEach(session.outcomes) { o in
                 VStack(alignment: .leading, spacing: 1) {
                     HStack {
@@ -553,7 +623,7 @@ struct SolvesPanel: View {
             }
             .textSelection(.enabled)
             ForEach(session.warnings, id: \.self) { w in
-                Label(w, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange)
+                WarningNote(w)
             }
         }
     }

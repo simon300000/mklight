@@ -42,6 +42,26 @@ extension View {
 
     /// Table-like numeric text: monospaced digits.
     func numeric() -> some View { monospacedDigit() }
+
+    /// Explanatory text under or beside a control: secondary, small, and
+    /// wrapping instead of truncating.
+    func hint(_ font: Font = .caption) -> some View {
+        self.font(font).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+    }
+}
+
+/// A warning next to the content it concerns (orange, small, wrapping), the
+/// same everywhere; blocking errors use `ContentUnavailableView` instead.
+struct WarningNote: View {
+    let text: String
+    init(_ text: String) { self.text = text }
+
+    var body: some View {
+        Label(text, systemImage: "exclamationmark.triangle.fill")
+            .font(.caption)
+            .foregroundStyle(.orange)
+            .fixedSize(horizontal: false, vertical: true)
+    }
 }
 
 /// Spacing scale used across the app (points).

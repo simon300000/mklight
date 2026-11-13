@@ -74,7 +74,7 @@ struct ShapePreview: View {
     private func accessibilityProfile(_ series: [Series]) -> String {
         series.map { s in
             let z = s.points.map(\.1)
-            return "\(s.label): sag from \(Fmt.short(z.min() ?? 0)) to \(Fmt.short(z.max() ?? 0)) millimetres over ±\(Fmt.short(h)) millimetres"
+            return "\(s.label): sag from \(Fmt.short(z.min() ?? 0)) to \(Fmt.short(z.max() ?? 0)) millimeters over ±\(Fmt.short(h)) millimeters"
         }.joined(separator: "; ")
     }
 }
@@ -120,7 +120,7 @@ struct DepartureMap: View {
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Departure map from the base conic")
-        .accessibilityValue("Peak to valley \(Fmt.length(pv)) over a radius of \(Fmt.short(radius)) millimetres")
+        .accessibilityValue("Peak to valley \(Fmt.length(pv)) over a radius of \(Fmt.short(radius)) millimeters")
     }
 
     private func axisLabel(_ s: String) -> some View {
@@ -147,7 +147,7 @@ struct PhaseProfile: View {
             .frame(height: 116)
             .font(.caption2)
             .accessibilityLabel("Phase profile")
-            .accessibilityValue("From 0 to \(Fmt.short(pts.last?.1 ?? 0)) waves at a radius of \(Fmt.short(radius)) millimetres")
+            .accessibilityValue("From 0 to \(Fmt.short(pts.last?.1 ?? 0)) waves at a radius of \(Fmt.short(radius)) millimeters")
         }
     }
 }

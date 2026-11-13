@@ -59,7 +59,7 @@ public struct GlassCandidates: Hashable, Sendable {
         case .nearest: parts.append("\(nearest) nearest")
         case .window: parts.append("n_d ±\(Fmt.short(windowNd)), V_d ±\(Fmt.short(windowVd))")
         }
-        parts.append(catalogs.isEmpty ? "all catalogues" : catalogs.joined(separator: ", "))
+        parts.append(catalogs.isEmpty ? "all catalogs" : catalogs.joined(separator: ", "))
         if statuses != ["standard", "preferred", "melt"] { parts.append(Self.allStatuses.filter(statuses.contains).joined(separator: ", ")) }
         if !include.isEmpty { parts.append("+\(include.count)") }
         if !exclude.isEmpty { parts.append("−\(exclude.count)") }
@@ -226,7 +226,7 @@ public final class GlassSubstitutionSession {
         public var title: String { self == .tabu ? "Quick (tabu search)" : "Thorough (global search)" }
         public var detail: String {
             self == .tabu
-                ? "Tries glass combinations, each re-optimised from the current shape."
+                ? "Tries glass combinations, each re-optimized from the current shape."
                 : "Hops over glasses and shape together to escape local minima; slower."
         }
     }
@@ -289,7 +289,8 @@ public final class GlassSubstitutionSession {
         return s
     }
 
-    public func start(in workspace: Workspace, document: DesignDocument) {
+    /// `fresh` (Try Again) recomputes instead of reusing stored engine results.
+    public func start(in workspace: Workspace, document: DesignDocument, fresh: Bool = false) {
         let system = document.system
         let s = settings(system: system, merit: document.merit, variables: document.variables)
         startGlasses = Dictionary(
@@ -299,7 +300,7 @@ public final class GlassSubstitutionSession {
             })
         workspace.preview(nil)
         do {
-            let job = try workspace.submitJob("glass_substitution", settings: s)
+            let job = try workspace.submitJob("glass_substitution", settings: s, fresh: fresh)
             begin(job, workspace: workspace)
         } catch {
             state = .failed(error.localizedDescription)

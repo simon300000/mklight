@@ -111,7 +111,9 @@ public final class AnalysisPane: Identifiable {
         workspace?.settingsChanged(self)
     }
 
-    public func rerun() { workspace?.run(self, force: true) }
+    /// Runs the pane again. `fresh` (a run the user asked for: Run, Try
+    /// Again) skips the engine's stored results and recomputes.
+    public func rerun(fresh: Bool = false) { workspace?.run(self, force: true, fresh: fresh) }
 
     /// The settings a new pane of this analysis starts with (Defaults).
     public var startingSettings: [String: JSONValue] { workspace?.startingSettings(analysis) ?? [:] }

@@ -29,6 +29,8 @@ final class LibraryEngine: EngineClient, @unchecked Sendable {
         let log = Mutex<[String]>([])
         let sessions = Mutex(0)
         let jobs = Mutex<[AnalysisJob]>([])
+        /// Every submission: analysis name and whether it asked for a fresh run.
+        let submissions = Mutex<[(analysis: String, fresh: Bool)]>([])
         func append(_ s: String) { log.withLock { $0.append(s) } }
     }
 
@@ -71,6 +73,7 @@ final class LibraryEngine: EngineClient, @unchecked Sendable {
     }
 
     func submit(_ request: EngineAnalysisRequest, on snapshot: ModelSnapshot) -> AnalysisJob {
+        shared.submissions.withLock { $0.append((request.analysis, request.fresh)) }
         let lib = snapshot.libraryHash
         let job = AnalysisJob.run(engineRequest: request, snapshot: snapshot) { reporter in
             while request.analysis == "forever" {
@@ -133,6 +136,27 @@ final class LibraryEngine: EngineClient, @unchecked Sendable {
 
     /// Undoing Load Glass Catalog removes the reference; the session is
     /// rebuilt without it and results move to the new library.
+    /// A run the user asks for (Try Again, Run, ⌘R, a job's Try Again)
+    /// asks the engine to recompute; automatic refreshes may reuse results.
+    @Test func manualRetriesAskForAFreshRun() async throws {
+        let dir = try catalogDirectory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let engine = LibraryEngine()
+        let w = Workspace(engine: engine)
+        await w.loadEngineMetadata()
+        await w.open(system: SampleSystems.singlet(), catalogs: [], projectDirectory: dir)
+        try await waitUntil { w.summary.output != nil && !w.isBusy }
+        let last = { engine.shared.submissions.withLock { $0.last } }
+        #expect(engine.shared.submissions.withLock { $0.allSatisfy { !$0.fresh } }, "automatic runs reuse results")
+        w.summary.rerun(fresh: true)
+        #expect(last()?.analysis == w.summary.analysis && last()?.fresh == true)
+        w.summary.rerun()
+        #expect(last()?.fresh == false)
+        _ = try w.submitJob("forever", settings: [:], fresh: true)
+        #expect(last()?.analysis == "forever" && last()?.fresh == true)
+        engine.shared.jobs.withLock { $0.forEach { $0.cancel() } }
+    }
+
     @Test func catalogListChangesRebuildTheSession() async throws {
         let dir = try catalogDirectory()
         defer { try? FileManager.default.removeItem(at: dir) }

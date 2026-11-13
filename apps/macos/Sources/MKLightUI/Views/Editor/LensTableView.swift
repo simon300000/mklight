@@ -468,7 +468,7 @@ private struct LensCell: View {
                     .lineLimit(1)
                     .truncationMode(.tail)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .help("Melt offset Δn_d / ΔV_d on the catalogue glass; edit it in the inspector")
+                    .help("Melt offset Δn_d / ΔV_d on the catalog glass; edit it in the inspector")
                     .accessibilityLabel("offset \(note)")
             }
             if let m = row.markers[column] { MarkerBadge(marker: m) }

@@ -60,7 +60,7 @@ struct DiffractionEfficiencySection: View {
                             Text(Fmt.percent(e, digits: 1)).font(.caption.monospacedDigit()).frame(width: 46, alignment: .trailing)
                         }
                         .accessibilityElement(children: .ignore)
-                        .accessibilityLabel("\(Fmt.short(um)) micrometres")
+                        .accessibilityLabel("\(Fmt.short(um)) micrometers")
                         .accessibilityValue(Fmt.percent(e, digits: 1))
                     }
                 }

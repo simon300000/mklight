@@ -344,7 +344,7 @@ struct TableSettingEditor: View {
         VStack(alignment: .leading, spacing: Space.m) {
             Text(title).font(.headline)
             if !help.isEmpty {
-                Text(help).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                Text(help).hint()
             }
             Grid(alignment: .leading, horizontalSpacing: Space.s, verticalSpacing: Space.xs) {
                 GridRow {
@@ -460,7 +460,7 @@ struct SensorLimitEditor: View {
         VStack(alignment: .leading, spacing: Space.m) {
             Text("Sensor CRA Limit").font(.headline)
             Text("Maximum chief-ray incidence against image radius; linear between points, held beyond the ends.")
-                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                .hint()
             Grid(alignment: .leading, horizontalSpacing: Space.s, verticalSpacing: Space.xs) {
                 GridRow {
                     Text("Radius (mm)")

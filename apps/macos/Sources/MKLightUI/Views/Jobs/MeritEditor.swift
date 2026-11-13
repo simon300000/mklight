@@ -142,7 +142,7 @@ struct MeritReadout: View {
     }
 
     private var helpText: String {
-        guard let e = session.evaluation else { return "The merit at the current design, before optimising." }
+        guard let e = session.evaluation else { return "The merit at the current design, before optimizing." }
         let on = e.reportedOn.hasPrefix("cpu") || e.reportedOn.isEmpty ? "CPU f64 reference" : e.reportedOn
         var s = "Merit \(Fmt.short(e.merit)) at the current design (\(on))."
         if e.violation.isFinite && e.violation > 1e-9 { s += " Constraint violation \(Fmt.short(e.violation))." }
@@ -177,7 +177,7 @@ struct DefaultMeritForm: View {
                 }
                 if d.reference == "centroid" {
                     Toggle("White-light centroid", isOn: Binding(get: { d.scope == "polychromatic" }, set: { v in set("Change Centroid") { $0.scope = v ? "polychromatic" : "monochromatic" } }))
-                        .help("One centroid for all wavelengths, so lateral colour counts; otherwise one per wavelength.")
+                        .help("One centroid for all wavelengths, so lateral color counts; otherwise one per wavelength.")
                 }
             case .wavefront:
                 Picker("Reference", selection: bind(\.reference, "Change Reference")) {
@@ -222,7 +222,7 @@ struct DefaultMeritForm: View {
                 }
                 .help("Hold the signed EFL_y / EFL_x at this value (anamorphic designs).")
             }
-            Text(caption).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            Text(caption).hint()
         }
     }
 
@@ -315,8 +315,8 @@ struct ThicknessLimits: View {
                     Text("Glass").font(.caption).foregroundStyle(.secondary)
                     Text("Air").font(.caption).foregroundStyle(.secondary)
                 }
-                row("Min centre", \.glassMinCentre, \.airMinCentre)
-                row("Max centre", \.glassMaxCentre, \.airMaxCentre)
+                row("Min center", \.glassMinCentre, \.airMinCentre)
+                row("Max center", \.glassMaxCentre, \.airMaxCentre)
                 row("Min edge", \.glassMinEdge, \.airMinEdge)
             }
             .disabled(!d.thickness)
@@ -649,11 +649,11 @@ struct OperandDetail: View {
                 }
             }
             if let error = evaluation?.error {
-                Label(error, systemImage: "exclamationmark.triangle.fill").font(.caption).foregroundStyle(.orange)
+                WarningNote(error)
                     .fixedSize(horizontal: false, vertical: true)
             }
             ForEach(operand.localIssues(fieldCount: system.fields.fields.count, wavelengthCount: system.wavelengths.wavelengths.count), id: \.self) {
-                Label($0, systemImage: "exclamationmark.triangle.fill").font(.caption).foregroundStyle(.orange)
+                WarningNote($0)
             }
         }
         .controlSize(.small)
@@ -846,7 +846,7 @@ struct VariablesBoundsList: View {
                     .labelsHidden()
                     .controlSize(.small)
                     .fixedSize()
-                    .help("Enter and read the bounds of radii as a radius window in mm, or as the curvature c = 1/R the optimiser uses")
+                    .help("Enter and read the bounds of radii as a radius window in mm, or as the curvature c = 1/R the optimizer uses")
                     Spacer(minLength: 0)
                     Image(systemName: "questionmark.circle")
                         .font(.caption).foregroundStyle(.secondary)

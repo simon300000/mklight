@@ -46,12 +46,12 @@ public enum ToleranceKind: String, CaseIterable, Sendable, Identifiable {
         case .irregularityAstigmatism: "Astig. irregularity"
         case .irregularitySpherical: "Sph. irregularity"
         case .thickness: "Thickness"
-        case .decenterX: "Surface decentre x"
-        case .decenterY: "Surface decentre y"
+        case .decenterX: "Surface decenter x"
+        case .decenterY: "Surface decenter y"
         case .tiltX: "Surface tilt x"
         case .tiltY: "Surface tilt y"
-        case .elementDecenterX: "Element decentre x"
-        case .elementDecenterY: "Element decentre y"
+        case .elementDecenterX: "Element decenter x"
+        case .elementDecenterY: "Element decenter y"
         case .elementTiltX: "Element tilt x"
         case .elementTiltY: "Element tilt y"
         case .index: "Index"
@@ -66,8 +66,8 @@ public enum ToleranceKind: String, CaseIterable, Sendable, Identifiable {
         switch self {
         case .irregularityAstigmatism: "Irreg. astig."
         case .irregularitySpherical: "Irreg. sph."
-        case .decenterX, .elementDecenterX: "Decentre x"
-        case .decenterY, .elementDecenterY: "Decentre y"
+        case .decenterX, .elementDecenterX: "Decenter x"
+        case .decenterY, .elementDecenterY: "Decenter y"
         case .tiltX, .elementTiltX: "Tilt x"
         case .tiltY, .elementTiltY: "Tilt y"
         default: title
@@ -398,7 +398,7 @@ public struct ToleranceRow: Identifiable, Hashable, Sendable {
             guard i < s.imageIndex else { return .failure(.message("The image surface has no thickness.")) }
             return .success((minus, plus))
         case .decenterX, .decenterY:
-            guard i > 0, i < s.imageIndex else { return .failure(.message("Decentre a surface between the object and the image.")) }
+            guard i > 0, i < s.imageIndex else { return .failure(.message("Decenter a surface between the object and the image.")) }
             return .success((minus, plus))
         case .tiltX, .tiltY, .elementTiltX, .elementTiltY, .elementDecenterX, .elementDecenterY:
             if kind.isElement, let why = elementProblem(in: s, first: i) { return .failure(.message(why)) }

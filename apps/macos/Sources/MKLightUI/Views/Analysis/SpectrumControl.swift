@@ -201,13 +201,13 @@ public struct SpectrumControl: View {
             GridRow {
                 Text("Range").foregroundStyle(.secondary)
                 HStack(spacing: Space.xs) {
-                    SpectrumNumberField(value: sampling.lowerUm, width: 52, label: "Shortest wavelength in micrometres") { v in
+                    SpectrumNumberField(value: sampling.lowerUm, width: 52, label: "Shortest wavelength in micrometers") { v in
                         var n = sampling
                         n.lowerUm = v
                         write(s.with(sampling: n))
                     }
                     Text("–").foregroundStyle(.secondary)
-                    SpectrumNumberField(value: sampling.upperUm, width: 52, label: "Longest wavelength in micrometres") { v in
+                    SpectrumNumberField(value: sampling.upperUm, width: 52, label: "Longest wavelength in micrometers") { v in
                         var n = sampling
                         n.upperUm = v
                         write(s.with(sampling: n))
@@ -233,7 +233,7 @@ public struct SpectrumControl: View {
                         HStack(spacing: Space.xs) {
                             Circle().fill(Palette.wavelengthColor(w.um)).frame(width: 7, height: 7)
                                 .accessibilityHidden(true)
-                            SpectrumNumberField(value: w.um, width: 64, label: "Wavelength \(k + 1) in micrometres") { v in
+                            SpectrumNumberField(value: w.um, width: 64, label: "Wavelength \(k + 1) in micrometers") { v in
                                 var l = list
                                 l[k].um = v
                                 write(.explicit(l))
@@ -468,7 +468,7 @@ struct SpectrumPreview: View {
 
     private func accessibilityValue(_ primary: Int?) -> String {
         guard let lo = samples.map(\.um).min(), let hi = samples.map(\.um).max() else { return "" }
-        var s = String(format: "%d wavelengths from %.3f to %.3f micrometres", samples.count, lo, hi)
+        var s = String(format: "%d wavelengths from %.3f to %.3f micrometers", samples.count, lo, hi)
         if let primary { s += String(format: ", primary %.4f", samples[primary].um) }
         return s
     }

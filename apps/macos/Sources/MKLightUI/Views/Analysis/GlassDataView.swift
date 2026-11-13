@@ -135,7 +135,7 @@ struct GlassDataView: View {
                         .padding(.horizontal, Space.s)
                         .padding(.vertical, Space.xxs)
                         .background(.tint.opacity(0.15), in: .capsule)
-                        .help("Δn_d \(Fmt.signed(data.dnd, decimals: 5)), ΔV_d \(Fmt.signed(data.dvd, decimals: 2)) from the catalogue values")
+                        .help("Δn_d \(Fmt.signed(data.dnd, decimals: 5)), ΔV_d \(Fmt.signed(data.dvd, decimals: 2)) from the catalog values")
                         .accessibilityLabel("Index and Abbe offset applied")
                 }
             }
@@ -147,7 +147,7 @@ struct GlassDataView: View {
                 stat("n_e", NumberDisplay.format(data.ne, decimals: 6), help: "Refractive index at the e line (546.07 nm)", spoken: "n e")
             }
             if data.hasOffset {
-                let line = "Catalogue n_d \(NumberDisplay.format(data.catalogNd, decimals: 6)), V_d \(NumberDisplay.format(data.catalogVd, decimals: 2))"
+                let line = "Catalog n_d \(NumberDisplay.format(data.catalogNd, decimals: 6)), V_d \(NumberDisplay.format(data.catalogVd, decimals: 2))"
                 Self.captionSubscripted(line)
                     .font(.caption).foregroundStyle(.secondary)
                     .accessibilityLabel(Subscripted.spoken(line))
@@ -210,7 +210,7 @@ struct GlassDataView: View {
                 GridRow {
                     Text("λ (µm)").gridColumnAlignment(.leading)
                     Text("n").help("Index relative to air at the analysis temperature and pressure")
-                    Text("n cat.").help("Index at the catalogue's reference conditions")
+                    Text("n cat.").help("Index at the catalog's reference conditions")
                     Text("α (1/mm)").help("Internal absorption coefficient")
                 }
                 .font(.caption.weight(.medium))
@@ -247,8 +247,8 @@ struct GlassDataView: View {
     }
 
     private func rowLabel(_ r: GlassInfoData.Index, primary: Bool) -> String {
-        var s = "\(NumberDisplay.format(r.um, decimals: 4)) micrometres\(primary ? ", primary" : ""): n \(NumberDisplay.format(r.n, decimals: 6))"
-        s += ", catalogue \(NumberDisplay.format(r.nCatalog, decimals: 6))"
+        var s = "\(NumberDisplay.format(r.um, decimals: 4)) micrometers\(primary ? ", primary" : ""): n \(NumberDisplay.format(r.n, decimals: 6))"
+        s += ", catalog \(NumberDisplay.format(r.nCatalog, decimals: 6))"
         if !r.inRange { s += ", outside the data range" }
         return s
     }

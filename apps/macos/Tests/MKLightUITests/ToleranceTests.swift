@@ -93,7 +93,7 @@ import Testing
         #expect(try ToleranceRow(.tiltX, surface: id(1), minus: 1.5).engineLimits(in: c).get() == (0.025, 0.025))
         let op = try ToleranceRow(.decenterY, surface: id(3), minus: 0.02, plus: 0.03, distribution: .normal(sigmas: 2)).operand(in: c).get()
         #expect(op["param"] == .object(["param": .string("decenter_y"), "surface": .integer(Int64(id(3).rawValue))]))
-        #expect(op["minus"]?.nf == 0.02 && op["plus"]?.nf == 0.03 && op["label"]?.string == "Surface decentre y S3")
+        #expect(op["minus"]?.nf == 0.02 && op["plus"]?.nf == 0.03 && op["label"]?.string == "Surface decenter y S3")
         #expect(op["distribution"] == .object(["type": .string("truncated_normal"), "sigmas": .number(2)]))
         // A catalogue glass's index moves its melt offset; its Abbe in % needs the engine's V_d.
         let nd = try ToleranceRow(.index, surface: id(1), minus: 0.001).operand(in: c).get()
@@ -152,7 +152,7 @@ import Testing
         let dec = ToleranceRow(.elementDecenterX, surface: id(3), minus: 0.03, last: id(4))
         let tilt = ToleranceRow(.elementTiltY, surface: id(3), minus: 1, last: id(4))
         t.rows = [dec, tilt]
-        #expect(dec.label(in: cooke) == "Element decentre x L2" && dec.surfaceLabel(in: cooke) == "S3–4")
+        #expect(dec.label(in: cooke) == "Element decenter x L2" && dec.surfaceLabel(in: cooke) == "S3–4")
         #expect(dec.movingSurfaces(in: cooke) == [3, 4] && dec.pivotIndex(in: cooke) == 3, "the pivot defaults to the first vertex")
         let op = try tilt.operand(in: c).get()
         #expect(op["param"]?["param"]?.string == "element_placement" && op["param"]?["last"]?.int == Int(id(4).rawValue))
@@ -167,7 +167,7 @@ import Testing
         // A cemented range: the doublet-like range S3–S5 moves three surfaces.
         t.setElement(dec.id, first: id(3), last: id(5), pivot: nil)
         #expect(t.rows.allSatisfy { $0.last == id(5) && $0.pivot == nil } && t.rows[0].movingSurfaces(in: cooke) == [3, 4, 5])
-        #expect(t.rows[0].label(in: cooke) == "Element decentre x S3–5", "no element spans S3–5")
+        #expect(t.rows[0].label(in: cooke) == "Element decenter x S3–5", "no element spans S3–5")
         #expect(t.issues(in: c).isEmpty)
         // Rows of one first surface that disagree are flagged; a row added there joins the group.
         t.rows[1].last = id(4)
@@ -466,7 +466,7 @@ import Testing
         try await waitUntil { session.preview != nil }
         let p = try #require(session.preview)
         #expect(p.system.surfaces[3].placement?.decenterY == 0.02 && p.system.surfaces[3].placement?.restoreAfter == true)
-        #expect(w.isPreviewing && w.previewTitle?.hasPrefix("Tolerance: Surface decentre y S3 at +0.02") == true)
+        #expect(w.isPreviewing && w.previewTitle?.hasPrefix("Tolerance: Surface decenter y S3 at +0.02") == true)
         let change = try #require(session.changes(p.perturbations).first)
         #expect(change.text == "+0.02 mm" && change.fraction == 1 && session.changes(p.perturbations).count == 1)
         #expect(doc.system == cooke, "a preview never changes the design")
@@ -496,9 +496,9 @@ import Testing
         #expect(text.contains("90 % of builds at most: 30.3") && text.contains("0.021 s per trial"))
         let csv = ToleranceReport.sensitivityCSV(r, rows: rows, system: cooke).split(separator: "\n")
         #expect(csv.count == 4 && csv[0].hasPrefix("rank,tolerance,minus,plus,unit") && csv[1].hasPrefix("1,Radius S1,3,3,fr,Radius 1,"))
-        #expect(csv[2].hasPrefix("2,Surface decentre y S3,0.02,0.02,mm"))
+        #expect(csv[2].hasPrefix("2,Surface decenter y S3,0.02,0.02,mm"))
         let trials = ToleranceReport.trialsCSV(r, rows: rows, system: cooke).split(separator: "\n", omittingEmptySubsequences: false)
-        #expect(trials[0] == "trial,criterion,rms_spot_um,compensator_1,Radius S1,Thickness S1–2,Surface decentre y S3")
+        #expect(trials[0] == "trial,criterion,rms_spot_um,compensator_1,Radius S1,Thickness S1–2,Surface decenter y S3")
         #expect(trials[1] == "1,0.0004,20,42.12,5e-05,-0.01,0" && trials[2].hasPrefix("2,0.0005,22.36") && trials[2].hasSuffix(",,,,"))
     }
 

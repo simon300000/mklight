@@ -66,7 +66,7 @@ struct SystemInspector: View {
                     }
                 }
                 ForEach(workspace.catalogWarnings, id: \.self) { w in
-                    Label(w, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange)
+                    WarningNote(w)
                 }
             }
         }
@@ -208,7 +208,7 @@ struct SystemInspector: View {
                 Menu("Presets") {
                     ForEach(Self.presets, id: \.0) { name, list, primary in
                         Button(name) {
-                            edit("Wavelength Preset") { s in
+                            edit("Apply Wavelength Preset") { s in
                                 s.wavelengths = WavelengthSet(wavelengths: list.map { Wavelength(um: $0.0, weight: $0.1) }, primary: primary)
                             }
                         }

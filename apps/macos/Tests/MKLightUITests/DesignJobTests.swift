@@ -44,7 +44,7 @@ import Testing
         #expect(doc.system == result.system && doc.system != before)
         #expect(doc.system.surfaces[1].shape.curvature != before.surfaces[1].shape.curvature)
         #expect(doc.system.surfaces[2] == before.surfaces[2], "only the variable changed")
-        #expect(undo.undoActionName == "Optimize")
+        #expect(undo.undoActionName == "Apply Optimization")
         undo.undo()
         #expect(doc.system == before)
         undo.redo()

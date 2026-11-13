@@ -106,7 +106,8 @@ struct AnalysisSidebar: View {
         .tag(Self.tag(panel))
         .help(panel == .lensData ? "Show the lens data (⌥⌘E)" : "Show the layout viewport (⌥⌘L)")
         .contextMenu {
-            if open { Button("Close") { session.close(panel) } } else { Button("Show") { session.show(panel) } }
+            let title = session.title(of: panel)
+            if open { Button("Hide \(title)") { session.close(panel) } } else { Button("Show \(title)") { session.show(panel) } }
         }
     }
 

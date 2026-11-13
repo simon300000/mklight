@@ -143,7 +143,7 @@ public enum SurfaceTypes {
     static func normRadius(_ key: String = "norm_radius") -> ShapeParam {
         ShapeParam(
             key: key, title: "Norm radius", unit: "mm",
-            help: "Normalisation radius r_norm: the polynomial is defined for r ≤ r_norm. Usually the clear semi-diameter.",
+            help: "Normalization radius r_norm: the polynomial is defined for r ≤ r_norm. Usually the clear semi-diameter.",
             path: { .shapeParam(surface: $0, parameter: .normRadius) })
     }
 
@@ -280,7 +280,7 @@ public enum SurfaceTypes {
                         ShapeChoice(
                             key: "ordering", title: "Ordering",
                             options: [("fringe", "Fringe (37 terms)"), ("standard", "Standard / Noll (45 terms)")],
-                            help: "Fringe terms are unnormalised; Standard (Noll) terms are normalised.")
+                            help: "Fringe terms are unnormalized; Standard (Noll) terms are normalized.")
                     ]),
                 ParamSection(
                     title: "Zernike Terms",
@@ -371,7 +371,7 @@ public enum SurfaceTypes {
                             key: "phase.trace_order", title: "Trace order", unit: "", display: .integer,
                             help: "The order rays follow; 0 is ordinary refraction or reflection."),
                     ],
-                    footer: "Orders are discrete and never optimisation variables."),
+                    footer: "Orders are discrete and never optimization variables."),
             ],
             preview: .diffractive, orderEfficiency: true),
         SurfaceTypeDescriptor(

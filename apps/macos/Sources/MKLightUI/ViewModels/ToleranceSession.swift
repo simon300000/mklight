@@ -165,14 +165,15 @@ public final class ToleranceSession {
         let blocking = settings.issues(in: context).count
         if blocking > 0 { return blocking == 1 ? "Fix the tolerance marked in red first." : "Fix the \(blocking) tolerances marked in red first." }
         if settings.rows.isEmpty { return "Add a tolerance first." }
-        if settings.mode != .sensitivity && settings.trials < 2 { return "Run at least 2 Monte-Carlo trials." }
+        if settings.mode != .sensitivity && settings.trials < 2 { return "Run at least 2 Monte Carlo trials." }
         return nil
     }
 
     /// Starts the run on the design. A decentre or tilt of one surface
     /// returns to the axis after it, and an element moves its own surfaces
     /// only: the engine does both, so the design is sent as it is.
-    public func start(in workspace: Workspace, context: ToleranceContext, merit: MeritSettings) {
+    /// `fresh` (Try Again) recomputes instead of reusing stored engine results.
+    public func start(in workspace: Workspace, context: ToleranceContext, merit: MeritSettings, fresh: Bool = false) {
         let (s, ids) = settings.jobSettings(in: context, merit: merit)
         let system = context.system
         let rows = ids.compactMap { id in settings.rows.first { $0.id == id } }
@@ -184,7 +185,7 @@ public final class ToleranceSession {
         Task { @MainActor [weak self] in
             guard let self else { return }
             do {
-                let job = try await workspace.submitJob("tolerance", settings: s, on: system)
+                let job = try await workspace.submitJob("tolerance", settings: s, on: system, fresh: fresh)
                 guard case .running = self.state else {
                     job.cancel()
                     return

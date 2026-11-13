@@ -386,8 +386,9 @@ public final class Workspace {
 
     /// Submits the pane's request against the current snapshot, unless its
     /// output is current (or the same job is already running) and `force`
-    /// is false.
-    public func run(_ pane: AnalysisPane, force: Bool) {
+    /// is false. `fresh` asks the engine to recompute instead of returning
+    /// a stored result.
+    public func run(_ pane: AnalysisPane, force: Bool, fresh: Bool = false) {
         guard let snapshot, modelErrors.isEmpty else { return }
         let request = request(for: pane)
         if !force {
@@ -404,7 +405,7 @@ public final class Workspace {
             return
         }
         pane.job?.cancel()
-        let job = documentEngine.submit(request, on: snapshot)
+        let job = documentEngine.submit(fresh ? request.freshened : request, on: snapshot)
         liveJobs.set(pane.id, job, request: nextJobRequest())
         pane.job = job
         pane.lastRequest = request
@@ -440,7 +441,7 @@ public final class Workspace {
     }
 
     public func rerunVisible() {
-        for p in allPanes where p !== footprints || showFootprints { run(p, force: true) }
+        for p in allPanes where p !== footprints || showFootprints { run(p, force: true, fresh: true) }
     }
 
     public func cancelAll() {
@@ -572,7 +573,9 @@ public final class Workspace {
 
     /// Starts a design job (`optimize`, `tolerance`, `solves`) on the
     /// current snapshot. It does not belong to a pane.
-    public func submitJob(_ analysis: String, settings: [String: JSONValue], key: String? = nil) throws -> AnalysisJob {
+    /// `fresh` skips the engine's stored results and recomputes (a retry
+    /// the user asked for).
+    public func submitJob(_ analysis: String, settings: [String: JSONValue], key: String? = nil, fresh: Bool = false) throws -> AnalysisJob {
         // Jobs run on the design, also while a candidate is previewed.
         guard let snapshot = designSnapshot ?? snapshot, modelErrors.isEmpty else {
             throw EngineError.invalidModel(modelErrors.isEmpty ? ["The design has not been checked by the engine yet."] : modelErrors)
@@ -581,7 +584,7 @@ public final class Workspace {
             throw EngineError.unsupported(d.unavailableReason ?? "\(analysis) is not available")
         }
         let job = documentEngine.submit(
-            EngineAnalysisRequest(analysis: analysis, settings: settings, execution: ExecutionSettings(backend: backend)),
+            EngineAnalysisRequest(analysis: analysis, settings: settings, execution: ExecutionSettings(backend: backend), fresh: fresh),
             on: snapshot)
         liveJobs.set("job:" + (key ?? analysis), job, request: nextJobRequest())
         return job
@@ -590,20 +593,23 @@ public final class Workspace {
     /// Starts a design job on `system`, which may differ from the design (a
     /// tolerance preview rebuilds a build of the system its run used), on a
     /// snapshot of its own; the design's snapshot when they are equal.
-    public func submitJob(_ analysis: String, settings: [String: JSONValue], on system: OpticalSystem, key: String? = nil) async throws -> AnalysisJob {
+    public func submitJob(
+        _ analysis: String, settings: [String: JSONValue], on system: OpticalSystem, key: String? = nil, fresh: Bool = false
+    ) async throws -> AnalysisJob {
         // The request counts from here: its snapshot is taken first, and a
         // request made later may reach the engine before this one.
         let request = nextJobRequest()
         guard let design = designSnapshot ?? snapshot, modelErrors.isEmpty else {
             throw EngineError.invalidModel(modelErrors.isEmpty ? ["The design has not been checked by the engine yet."] : modelErrors)
         }
-        guard system != design.system else { return try submitJob(analysis, settings: settings, key: key) }
+        guard system != design.system else { return try submitJob(analysis, settings: settings, key: key, fresh: fresh) }
         if let d = descriptor(analysis), !d.available {
             throw EngineError.unsupported(d.unavailableReason ?? "\(analysis) is not available")
         }
         let snap = try await documentEngine.openSnapshot(system)
         let job = documentEngine.submit(
-            EngineAnalysisRequest(analysis: analysis, settings: settings, execution: ExecutionSettings(backend: backend)), on: snap)
+            EngineAnalysisRequest(analysis: analysis, settings: settings, execution: ExecutionSettings(backend: backend), fresh: fresh),
+            on: snap)
         liveJobs.set("job:" + (key ?? analysis), job, request: request)
         return job
     }
