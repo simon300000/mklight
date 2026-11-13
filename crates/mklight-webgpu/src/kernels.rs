@@ -12,7 +12,21 @@ pub const COMMON: &str = include_str!("../kernels/common.wgsl");
 pub const MODULES: &[(&str, &str)] = &[
     ("numerics", include_str!("../kernels/numerics.wgsl")),
     ("reduce", include_str!("../kernels/reduce.wgsl")),
-    ("trace", include_str!("../kernels/trace.wgsl")),
+    // trace.wgsl twice: without and with sag overlays (its header).
+    (
+        "trace",
+        concat!(
+            "const MKL_OVERLAYS: bool = false;\n",
+            include_str!("../kernels/trace.wgsl")
+        ),
+    ),
+    (
+        "trace_overlays",
+        concat!(
+            "const MKL_OVERLAYS: bool = true;\n",
+            include_str!("../kernels/trace.wgsl")
+        ),
+    ),
     ("transforms", include_str!("../kernels/transforms.wgsl")),
 ];
 
