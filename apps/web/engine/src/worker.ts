@@ -64,6 +64,23 @@ function startHost(): Promise<void> {
   })
 }
 
+/**
+ * Start the GPU worker (docs/GPU.md §11) when this browser exposes WebGPU to
+ * workers; resolves once it runs. The engine then registers `gpu:webgpu`,
+ * whose device the GPU worker opens and serves.
+ */
+async function startGpu(): Promise<boolean> {
+  if (!('gpu' in navigator) || typeof wasm.gpu_thread !== 'function') return false
+  const w = new Worker(new URL('./gpu-host.ts', import.meta.url), { type: 'module', name: 'mklight-gpu' })
+  hosts.push(w)
+  await new Promise<void>((resolve, reject) => {
+    w.onmessage = () => resolve()
+    w.onerror = (e) => reject(new Error(`GPU worker failed: ${e.message}`))
+    w.postMessage({ module: wasm.wasm_module(), memory: wasm.wasm_memory(), stack: THREAD_STACK })
+  })
+  return true
+}
+
 /** Start the host workers the engine's queued threads still need. */
 function topUpHosts() {
   let n = wasm.wanted_host_threads()
@@ -140,9 +157,13 @@ const handlers: { [K in Op]: Handler<K> } = {
     await init()
     // rayon's pool build waits until all its threads run, and a worker can
     // only start while this one is idle: start their hosts first.
-    await Promise.all(Array.from({ length: threads }, () => startHost()))
+    const [, gpu] = await Promise.all([
+      Promise.all(Array.from({ length: threads }, () => startHost())),
+      startGpu().catch(() => false),
+    ])
     wasm.init_thread_pool(threads)
     wasm.engine_create(JSON.stringify(config), cores)
+    if (gpu) wasm.register_webgpu()
     topUpHosts()
     ready = true
     return {

@@ -762,7 +762,7 @@ impl Geometry<'_> {
                             _ => plans.push(vec![cols]),
                         }
                     }
-                    std::thread::scope(|scope| {
+                    mklight_core::platform::scope(|scope| {
                         let (tx, rx) = mpsc::channel();
                         let driver = scope.spawn(move || -> MkResult<()> {
                             // Submit every plan, then copy each as it lands.

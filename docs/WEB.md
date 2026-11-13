@@ -268,8 +268,8 @@ browser the app targets), plus rustfft's `wasm_simd` algorithms
 (`mklight-wasm` feature `fft-simd`, default); linker
 `--shared-memory --import-memory --max-memory=2 GiB` and the TLS exports
 wasm-bindgen's thread transform needs; `panic = abort` (a panic traps the
-thread; see "Known gaps"). The release profile is the workspace's (thin LTO,
-one codegen unit) without debug info.
+thread; see "Known gaps"). The release profile is the workspace's (thin LTO)
+without debug info.
 
 #### Size
 
@@ -277,9 +277,12 @@ Release build, `nightly-2026-11-01`, wasm-opt -O3:
 
 | | bytes |
 |---|---|
-| `mklight_wasm_bg.wasm` | 9.19 MB |
-| gzip -9 | 2.99 MB |
-| brotli -q 11 | 1.99 MB |
+| `mklight_wasm_bg.wasm` | 12.15 MB |
+| gzip -9 | 3.88 MB |
+| brotli -q 11 | 2.58 MB |
+
+(The WebGPU backend, wgpu and its WGSL kernels, adds 2.96 MB raw and
+0.58 MB brotli; the build without it measured 9.19 / 2.99 / 1.99 MB.)
 
 (rustfft's SIMD algorithms add 0.15 MB raw, 0.02 MB brotli.)
 
@@ -330,10 +333,10 @@ Changes in the engine crates (all behaviour-neutral natively):
   engine already reports (`io`; a project's catalog references by path come
   back in `open_warnings`).
 * `mklight-metal` drops out on wasm32 as it does off macOS.
-* `std::thread::scope` remains only in GPU paths (`mklight-analysis` aim,
-  `mklight-wave`, `mklight-ghost` irradiance, `mklight-stray` hybrid,
-  `mklight-optim` GPU scheduler), which run only with a GPU backend; the
-  WebGPU backend will need them moved to `platform::spawn` (see "WebGPU").
+* The GPU paths' scoped threads (`mklight-analysis` aim, `mklight-wave`,
+  `mklight-ghost` irradiance, `mklight-stray` hybrid, `mklight-optim` GPU
+  scheduler) use `platform::scope`: `std::thread::scope` natively, the same
+  API over host threads on wasm32.
 
 `crates/mklight-wasm` is the wasm-bindgen API: the web's counterpart of
 `mklight-ffi`, wrapping the same `mklight-engine` calls (engine, numbered
@@ -512,37 +515,41 @@ copy); never JSON. `u64`/`i64` buffers arrive as `BigUint64Array` /
   (`analysis_graph_bytes`; native default 256 MiB); `createEngine({config})`
   overrides any engine configuration key.
 
-### WebGPU (the seam for `mklight-webgpu`)
+### WebGPU
 
-The engine selects GPU backends through `Engine::register_backend(Arc<dyn
-BackendProvider>)` (`crates/mklight-engine/src/backend.rs`, `gpu.rs`); a
-WebGPU `ComputeBackend` plugs in there, from `mklight-wasm` right after
-`engine_create` (one call, under `#[cfg(feature = "webgpu")]` once the
-crate exists). The client's `backend: 'gpu'` request then reaches it.
+The WebGPU backend (`crates/mklight-webgpu`, docs/GPU.md §11) is the web's
+GPU: `gpu:webgpu`, the backend of the client's `backend: 'gpu'`.
 
-wgpu objects on wasm32 are not `Send` and need an event loop, while engine
-and rayon threads block. The plan:
-
-* **A GPU thread**: one more worker, started by the engine worker, that owns
-  the `GPUDevice` and is never blocked by rayon (it only runs its event
-  loop). `navigator.gpu` is available in dedicated workers in Chrome and
-  Safari.
-* The `ComputeBackend` the engine sees is a **proxy** (`Send + Sync`): each
-  call writes a command into shared memory (buffers stay in the shared wasm
-  heap, so no copies beyond the upload/readback WebGPU itself does),
-  notifies the GPU thread (`Atomics.notify`) and blocks on `Atomics.wait`
-  until the GPU thread has mapped the result back. Engine threads may block;
-  the GPU thread never does.
-* The GPU thread is a host worker running a different entry point (an
-  async Rust loop on `wasm-bindgen-futures` that waits for commands with
-  `Atomics.waitAsync`, which Chrome and Safari support). It is started by
-  the engine worker like the other hosts, so it shares the module and
-  memory.
-* The GPU code paths that use `std::thread::scope` (listed above) move to
-  `platform::spawn` first.
+* **The GPU worker** (`src/gpu-host.ts`): started by the engine worker,
+  next to the host workers, when `navigator.gpu` exists; it shares the
+  module and memory and runs `gpu_thread` (`mklight-wasm`), an async loop
+  that owns the `GPUDevice` (wgpu objects are not `Send`), serves requests
+  from a channel in the shared memory and sleeps in `Atomics.waitAsync`. It
+  never blocks.
+* **The proxy**: engine and rayon threads reach the device through
+  `mklight_webgpu::proxy::GpuProxy`: a call puts a request pointing at the
+  caller's batch (uploads and readback destinations stay in the shared
+  heap) on the channel, notifies the GPU worker and blocks in `Atomics.wait`
+  until the batch's readbacks are written.
+* **Registration**: after `engine_create` the engine worker calls
+  `register_webgpu` (feature `webgpu`, on by default), which registers
+  `GpuProvider::webgpu_browser()`. The device opens on first use (listing
+  the backends opens it): the proxy waits up to 10 s for the GPU worker and
+  runs the numerics probe. A browser without an adapter lists the backend
+  unavailable with the reason.
+* **Threads**: the GPU paths' scoped threads use
+  `mklight_core::platform::scope` (`std::thread::scope` natively, host
+  threads here), and the backends' plan workers `platform::spawn`.
+* **Routing**: `auto` sends ray grids from 250,000 rays and spot diagrams
+  from 900,000 rays to WebGPU, everything else to the CPU reference; an
+  explicit `'gpu'` request runs every WebGPU analysis on the device
+  (GPU.md §11.6, with the browser measurements).
 
 `ready().webgpu` and `info.webgpu` report whether the browser has a WebGPU
-adapter; `info.backends` lists the backend once it is registered.
+adapter; `info.backends` lists `gpu:webgpu` with its availability. Tests:
+`tests/webgpu.spec.ts` (Chromium runs the full browser in new-headless mode
+with WebGPU enabled, since the headless shell has no adapter; WebKit has
+WebGPU as is).
 
 ### Tests
 
@@ -697,6 +704,7 @@ CARGO_TARGET_WASM32_WASIP1_RUNNER="wasmtime run --dir=/" RUSTFLAGS="-C target-fe
   `loadCatalog(fileName, text)` and `openProject(text)` cover the app's
   needs, and a project's references to catalog files are reported in
   `open_warnings` rather than read.
-* `prepareGPU` / `gpuPreparation` are not in the web client yet (no web GPU
-  backend).
+* `prepareGPU` / `gpuPreparation` are not in the web client yet: the first
+  use of a WebGPU kernel compiles its pipeline (30–200 ms per kernel, several
+  seconds for the trace and aiming kernels on a cold driver cache).
 * Job progress is polled (30 ms), not pushed by the engine's event thread.

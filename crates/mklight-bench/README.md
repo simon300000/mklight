@@ -36,7 +36,9 @@ ones marked *Metal* need a real Metal device.
 
 Every GPU-capable analysis and the solver outcomes on the 16 samples at
 default settings, Metal against the CPU f64 reference under the contract.
-Reads no variable.
+`webgpu_sample_accuracy` does the same for the analyses the WebGPU backend
+publishes (GPU.md §11; needs a WebGPU adapter, lines tagged
+`WEBGPU_ACCURACY`). Reads no variable.
 
     cargo test --release -p mklight-bench --test tests metal_accuracy:: -- --ignored --nocapture --test-threads=1
 

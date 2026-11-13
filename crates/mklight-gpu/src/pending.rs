@@ -98,6 +98,8 @@ fn panic_message(p: &(dyn Any + Send)) -> String {
 
 /// Run `work` on a new named thread and complete `completer` with its result.
 /// A panic becomes `MkError::Backend` naming `what` and the panic message.
+/// The thread is `mklight_core::platform::spawn`'s: a host worker in the
+/// browser build (docs/WEB.md "Threads").
 pub fn spawn_job<T: Send + 'static>(
     thread_name: &str,
     what: String,
@@ -105,19 +107,17 @@ pub fn spawn_job<T: Send + 'static>(
     work: impl FnOnce() -> MkResult<T> + Send + 'static,
 ) -> MkResult<()> {
     let err_what = what.clone();
-    std::thread::Builder::new()
-        .name(thread_name.into())
-        .spawn(move || {
-            let r = catch_unwind(AssertUnwindSafe(work)).unwrap_or_else(|p| {
-                Err(MkError::Backend(format!(
-                    "{what}: backend worker panicked: {}",
-                    panic_message(p.as_ref())
-                )))
-            });
-            completer.complete(r);
-        })
-        .map(|_| ())
-        .map_err(|e| MkError::Backend(format!("{err_what}: cannot start a worker thread: {e}")))
+    mklight_core::platform::spawn(thread_name, move || {
+        let r = catch_unwind(AssertUnwindSafe(work)).unwrap_or_else(|p| {
+            Err(MkError::Backend(format!(
+                "{what}: backend worker panicked: {}",
+                panic_message(p.as_ref())
+            )))
+        });
+        completer.complete(r);
+    })
+    .map(|_| ())
+    .map_err(|e| MkError::Backend(format!("{err_what}: cannot start a worker thread: {e}")))
 }
 
 impl<T> Completer<T> {

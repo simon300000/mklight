@@ -9,6 +9,7 @@ validated against the CPU f64 reference. Read `docs/CONVENTIONS.md` first.
 |---|---|
 | `mklight-gpu` | `ComputeBackend` (production) and `QualificationBackend` (offline qualification) traits and job types, the packed layout (`include/mklight_gpu_types.h` + Rust mirror + packer), the double-float / utility-math / reduction / **trace-kernel specifications** in Rust, the CPU-f32 emulation backend, cross-validation against the f64 reference and precision qualification (`xval`) |
 | `mklight-metal` | Metal implementation: MSL kernels (`shaders/`), offline `.metallib` build with runtime-source fallback, device/queue/pipeline/buffer wrappers |
+| `mklight-webgpu` | WebGPU implementation on `wgpu`: WGSL kernels (`kernels/`), the device seam, the browser's GPU thread and proxy (§11) |
 
 Vulkan (AMD/Intel) and CUDA/OptiX (NVIDIA) backends will be further crates
 implementing the same trait over the same layout.
@@ -2157,6 +2158,7 @@ read. All are optional; the defaults are the documented behaviour.
 |---|---|---|
 | `MKLIGHT_METAL_TRACE_PLANS=1` | `mklight-metal/src/backend.rs` | prints one line per resident plan to stderr |
 | `MKLIGHT_METAL_TRACE_AIMS=1` | `mklight-metal/src/aiming/mod.rs` | prints every aim generation's convergence statistics to stderr |
+| `MKLIGHT_WEBGPU_TRACE_PLANS=1` | `mklight-webgpu/src/ops/mod.rs` | prints every WebGPU plan's operations with their placement and wall time to stderr (§11.5) |
 
 **Build** (read by `mklight-metal/build.rs`): `MKLIGHT_METAL_TOOLCHAIN_BIN`
 (directory of the Metal compiler) and `MKLIGHT_METAL_SKIP_OFFLINE=1` (skip
@@ -2180,3 +2182,255 @@ meaning). The engine's measurement and qualification harnesses are the crate
 | `MKLIGHT_UPDATE_GOLDEN`, `MKLIGHT_UPDATE_RESULTS_DOC` | `mklight-analysis/tests/golden.rs`, `mklight-engine/tests/results_doc.rs` (rewrite the stored golden results, the generated block of RESULTS.md) |
 | `MKLIGHT_RENDER_DIR` | `apps/macos/Tests/MKLightFFITests/` (render tests) |
 | unprefixed selectors: `RESIDENT_BENCH_*`, `P11_{SAMPLE, ANALYSES, RUNTIME_SOURCE}`, `P1_BENCH_*`, `P6_*`, `P7_*`, `P9_SAMPLE`, `FUSION_BENCH`, `SPLIT_SAMPLE` | `mklight-optim/tests/resident_bench.rs`, `mklight-engine/tests/p11_routes.rs`, `mklight-metal/tests/{p1_bench, p7_bench, p0_zerocopy}.rs`, `mklight-wave/tests/{p6_native, p6_bench, split_designs}.rs`, `mklight-gpu/tests/p7_support.rs`, `mklight-ghost/tests/p9_bench.rs` |
+
+## 11. WebGPU backend
+
+`mklight-webgpu` implements `ComputeBackend` (and the qualification
+interface for the jobs it runs) on the `wgpu` crate with WGSL kernels over
+the packed f32 layout of §2. It has two uses: natively it runs over Metal,
+Vulkan or D3D12 (on macOS it is registered after Metal as `gpu:webgpu`, an
+explicit choice; `auto` keeps preferring Metal), and in the browser build
+it is the only GPU (`navigator.gpu`), reached from the engine's worker
+threads through a GPU thread (below).
+
+### 11.1 Structure: shared host, device operations
+
+WebGPU memory is not host-visible: a buffer is written with
+`queue.writeBuffer` and read through a mapped staging copy, also on unified
+memory. Plan storage therefore stays on the host, in the CPU-f32 backend's
+resident runtime (`HostAllocation`s: `fill_buffer` and `read_view` remain
+zero-copy for the solvers), and plans run on its executor
+(`CpuF32Backend::submit_plan_hosted`), so validation, system pinning,
+operation caches, cancellation, progress and publication are the shared
+`mklight-gpu` code. The executor offers each operation to the device first
+(`resident::cpu::DeviceOps`): the operations with WGSL kernels upload their
+inputs from the plan's buffers, dispatch, and read their outputs back into
+them; every other operation runs its CPU-f32 specification in the device's
+f32 environment (flush-to-zero when the probe says so), which is the
+arithmetic the kernels specify. `PlanStats` names the placement of every
+stage (`webgpu:sum`, `webgpu:trace`, …, or the specification's name).
+
+Host code moved into `mklight-gpu` for both backends: the numerics probe's
+inputs, expected results and verdict (`mklight_gpu::probe`), the hosted
+plan executor (`CpuF32Backend::submit_plan_hosted`,
+`resident::cpu::{DeviceOps, execute_with}`, `Execution::with_outputs`) and
+the transforms' planning (`transforms::recipe::{liveness, row_geometry,
+global_stages}`, now used by Metal too). The trace, aiming, geometry,
+collectives and wave host paths needed no move: what they share was in
+`mklight-gpu` already (`PreparedTrace`, the operations' `spec` parameter
+builders, `aiming::kernel::excluded`).
+
+The device seam is `mklight_webgpu::device::Gpu`: a `Batch` of buffers
+(persistent system copies, uploads borrowed from the caller, zeroed
+scratch), compute passes and readbacks into host slices, run as one
+submission. Binding convention of every kernel: binding 0 the environment
+block (the opaque zero below), binding 1 the pass's uniform parameters,
+bindings 2… storage buffers. WGSL types and `MKL_*` constants are generated
+from `include/*.h` by `build.rs` (`mklight_types.wgsl`), so no layout
+constant is written twice.
+
+### 11.2 Numerics: one arithmetic under any compiler
+
+WGSL has no f64, no fast-math switch and no contraction switch, and the
+compilers behind it differ: wgpu compiles for Metal with Metal's default
+fast math, and browsers compile through their own translators (Tint, the
+WebKit compiler). The kernels therefore protect the arithmetic themselves:
+every operation of the double-float primitives (`kernels/common.wgsl`, the
+twins of `mklight_common.h` and `mklight_gpu::df`) and every
+cancellation-sensitive f32 expression passes through `mkl_opq`, an XOR with
+a zero read from a uniform at run time. The optimiser cannot see through
+it, so no reassociation or contraction crosses an operation; fusion is
+written with `fma`. NaN and infinity tests use the bit patterns (WGSL has
+no `isnan`, and fast math may fold NaN comparisons).
+
+The start-up probe (§3.3) runs each probe expression twice: plain (what the
+compiler does with unprotected WGSL, recorded in `kernel_build`) and
+protected (the `PrecisionDescriptor` probe; double-float work requires its
+`error_free_transforms()`). Apple M2 Pro, wgpu 30 on Metal:
+
+| | plain | protected |
+|---|---|---|
+| IEEE add/mul, true fma | yes | yes |
+| no contraction | yes | yes |
+| no reassociation | **no** (`(a+b)−b` folded) | yes |
+| correctly rounded `/`, `sqrt` | no | no |
+| subnormals | flushed | flushed |
+
+Division and square root are the hardware's approximations under fast math.
+The double-float primitives of `common.wgsl` correct them with exact
+residuals, so their accuracy holds (df `√` within 8u² instead of 4u²
+against f64, measured), but not their last bit. The trace, aiming, geometry
+and wave kernels therefore divide and take roots through `mkl_div_rn` /
+`mkl_sqrt_rn` (`common.wgsl`): the hardware result corrected to round to
+nearest by an exact `fma` residual test, with exponent scaling for operands
+far from 1. With that, every ported kernel is **bitwise the CPU-f32
+emulation** in the device's environment, statuses, records and reductions
+included, except where the emulation calls the platform's `sin`/`cos`
+(the MTF characteristic function, the focus correlation's and prepared
+field's phases): WGSL's `sin`/`cos` are not accurate enough
+(about 5e-4 absolute minimum precision), so those kernels evaluate the phase
+in double-float or with a polynomial on reduced turns, and agree with the
+emulation within 5e-7. The correction costs 15–45 % of the trace kernel's
+device time.
+
+### 11.3 WebGPU limits
+
+The backend requests the WebGPU default limits, the ones every browser
+grants without asking, also natively, so native tests exercise the browser's
+chunking: 8 storage buffers per stage, 128 MiB per storage binding, 256 MiB
+per buffer, 256 invocations per workgroup, 65,535 workgroups per dimension,
+16 KiB of workgroup storage, 256-byte storage offset alignment. There are no
+64-bit types or atomics and no subgroups: the reduction trees run in
+workgroup memory to stride 1 (Metal's SIMD shuffles below stride 32 are the
+same order), and uniform blocks hold no arrays (parameter structs with
+arrays are bound as read-only storage). Work beyond a limit is chunked; an
+operation whose single item exceeds one (a reduction channel over 128 MiB)
+runs its CPU-f32 specification.
+
+### 11.4 Browser integration: the GPU thread
+
+wgpu's browser objects are JavaScript objects of one worker (not `Send`),
+and buffers map asynchronously, while the engine is synchronous and runs on
+rayon worker threads. One extra worker, the GPU thread, owns the
+`GPUDevice` (`mklight_webgpu::web::run_gpu_thread`): it opens the adapter,
+publishes a request channel in shared memory and runs an event loop that
+pops requests, awaits each batch (`mapAsync` included) and sleeps in
+`Atomics.waitAsync` on the channel's doorbell when idle. Engine threads use
+a `GpuProxy` (`mklight_webgpu::proxy`): a call pushes a request pointing at
+the caller's batch (uploads and readback destinations stay in place: the
+memory is shared), rings the doorbell (`Atomics.notify`) and blocks on the
+request's completion (`Atomics.wait` through `std`'s condition variable).
+The backend sees only the `Gpu` trait, so the native build calls the device
+directly and the web build goes through the proxy; the same protocol runs
+natively over a plain thread in the tests (`proxy::spawn_native`).
+
+The engine worker (`apps/web/engine/src/worker.ts`) starts the GPU worker
+(`gpu-host.ts`, on the same module and memory as a host worker) when
+`navigator.gpu` exists, then calls `register_webgpu` after
+`engine_create` (`mklight-wasm` feature `webgpu`, on by default), which
+registers `GpuProvider::webgpu_browser()`: opening it waits up to 10 s for
+the GPU worker to publish its channel (or the reason it has no adapter)
+and runs the numerics probe through the proxy. Plan workers
+(`pending::spawn_job`) and the GPU paths' scoped threads
+(`mklight_core::platform::scope`, `std::thread::scope` natively) run on
+the engine's host threads (WEB.md, "Threads"). WebGPU adds 0.58 MB brotli
+to the wasm module (2.58 MB in all).
+
+### 11.5 Ported operations and accuracy
+
+The operations with WGSL kernels (`src/ops/*`, `kernels/*`): everything
+the default divisions of the geometric and wave analyses put on the device.
+
+| family | on the device | CPU-f32 specification |
+|---|---|---|
+| numerics, `Sum` | probe, `DfOps`, `Reduce`, plan `Sum` (fixed two-pass tree) | a channel over one binding |
+| trace | `Job::Trace`, `TraceUpload`, `TraceResident` (every shape, overlays, records, path programs, radiometry) | table coatings with radiometry |
+| aiming | `GenerateAim` with host chief seeds (host seed tables or none, paraxial launches, culling, skip flags, schedule caps, Newton–Broyden solves) | device chief solve, device-built seed tables, `ProjectPupil` |
+| geometry | `Coordinates`, `FocusTerms`, `Characteristic` | `Opd`, `Records`, `SurfaceSamples`, `Coddington`, RI rays, `FieldData` |
+| collectives | `SegmentReduce` (all kinds and modes) | `StableCompact`, `Scan`, `StableSort`, `QrFit` |
+| transforms | every variant (FFT, mixed radix, Bluestein, chirp-z, affine MFT, transpose, phase, convolve, correlations) | a buffer over 128 MiB |
+| wave | `FocusCorrelation`, `Focus`, `Prepare`, `Intensity`, `LineSpread`, `Spectral`, `ImageIntegral` | `Huygens`, `Shells`, `FftMtf`, `Placement`, `Resample`, `Lattice`, `Diagnostics`, `Simulation` |
+| radiometry, ghost, stray, optim | none | all |
+
+Every ported kernel is compared with the CPU-f32 emulation on the plans
+and jobs of the Metal suites (`cargo test -p mklight-webgpu --test tests`,
+44 tests): bitwise as described in §11.2, transforms within 3.6e-7 relative
+L2 of f64 and bitwise the specification's FFTs. The trace passes the f64
+cross-validation suite (§5.1) with the largest budget fraction about 0.05
+and no band mismatches. At the engine level,
+`metal_accuracy::webgpu_sample_accuracy` (`mklight-bench`) runs every
+WebGPU analysis on the 16 samples at default settings against the CPU
+reference under the per-quantity contracts of §9.4: 111 runs, all native,
+none outside its contract. The wave analyses are also within the gates of
+Metal's results (worst gate fraction 2.9e-4, PSF image L1). In the browser,
+`apps/web/engine/tests/webgpu.spec.ts` checks spot diagram, MTF and PSF on
+`gpu:webgpu` against the in-browser CPU reference, in Chromium and WebKit.
+
+`MKLIGHT_WEBGPU_TRACE_PLANS=1` prints every plan's operations with their
+placement (`[device]`/`[spec]`) and wall time.
+
+### 11.6 Benchmark and routing
+
+Apple M2 Pro (12 CPU threads), release builds, median of fresh runs after
+an edit (`backend_bench`), Double Gauss unless noted; machine load 5–15
+(other work), so ±15 %.
+
+**Kernels** (native, device time includes WebGPU's copies; Metal's is
+zero-copy):
+
+| | WebGPU device / wall | Metal device / wall | CPU f64 (12 threads) |
+|---|---:|---:|---:|
+| trace, 992 k rays × 12 surfaces | 77 / 95 ms | 29 / 58 ms | 93 ms |
+| trace, even asphere (M rays/s) | 31 / 23 | 213 / 48 | 50 |
+| trace, XY 65 terms (M rays/s) | 9.8 / 8.8 | 33 / 20 | 4 |
+| FFT 1024² / 2048² | 5.8 / 17 ms | 0.9 / 2.6 ms | 17 / 81 ms |
+| chirp-z 1024² / 2048² | 12 / 36 ms | 1.5 / 9 ms | 23 / 80 ms |
+
+**Analyses, native** (ms; CPU = the f64 reference on all threads):
+
+| analysis | CPU | Metal | WebGPU |
+|---|---:|---:|---:|
+| spot diagram, 6 / 32 / 128 / 250 rings | 1.5 / 10 / 43 / 158 | 7.4 / 15 / 26 / 86 | 12 / 24 / 95 / 391 |
+| spot, Petzval asphere 128 rings / XY freeform 64 | 37 / 26 | 24 / 17 | 101 / 45 |
+| geometric MTF, 32 / 128 rings | 14 / 82 | 11 / 37 | 33 / 241 |
+| ray grid, 32 / 128 rings | 5.0 / 35 | 9.2 / 22 | 13 / 69 |
+| PSF default / 256² / 512² pupil | 37 / 41 / 112 | 32 / 37 / 116 | 50 / 66 / 139 |
+| MTF default / FFT 512² | 55 / 225 | 50 / 136 | 104 / 1002 |
+| MTF vs field, through-focus MTF | 68 / 127 | 68 / 129 | 102 / 150 |
+
+Natively WebGPU never beats the native CPU reference: each operation
+uploads its inputs and reads its outputs through the API's staging copies
+(about 10–15 ms of fixed cost per operation; Metal shares memory), and the
+protected arithmetic and round-to-nearest corrections cost the kernels
+2–7× Metal's device time. FFT-MTF's `FftMtf` runs its specification.
+
+**Analyses, browser** (the same machine; `MKLIGHT_WEB_BENCH=1 npx
+playwright test tests/webgpu.spec.ts -g timing`; CPU = the wasm f64
+reference on all threads, 12 in Chromium, 8 in WebKit; best of three):
+
+| analysis | Chromium CPU / WebGPU | WebKit CPU / WebGPU | WebGPU gain |
+|---|---:|---:|---:|
+| spot diagram 32 rings (85 k rays) | 30 / 28 | 32 / 31 | 1.0× |
+| spot diagram 64 / 96 rings | 60 / 89, 120 / 120 | 64 / 66, 138 / 132 | 0.7–1.05× |
+| spot diagram 128 / 180 rings | 265 / 209, 390 / 299 | 233 / 201, 481 / 400 | 1.2–1.3× |
+| spot diagram 250 rings (1.7 M rays) | 745 / 508 | 970 / 708 | 1.4–1.5× |
+| ray grid 32 / 64 rings | 29 / 28, 59 / 59 | 35 / 32, 64 / 68 | 1.0× |
+| ray grid 96 / 128 / 250 rings | 91 / 57, 180 / 86, 599 / 241 | 134 / 67, 202 / 102, 778 / 340 | 1.6–2.5× |
+| geometric MTF 32 / 128 rings | 29 / 35, 302 / 450 | 31 / 67, 427 / 757 | 0.5–0.85× |
+| PSF default / 256² / 512² | 177 / 149, 178 / 180, 270 / 297 | 134 / 135, 137 / 165, 235 / 267 | 0.8–1.2× |
+| MTF default / FFT 512² | 209 / 240, 329 / 1589 | 164 / 265, 298 / 1859 | 0.2–0.9× |
+| MTF vs field, through-focus MTF | 542 / 630, 389 / 357 | 269 / 364, 300 / 303 | 0.7–1.1× |
+
+The `aiming=device` division (the whole spot plan on the device) measured
+the same as the default in the browser. Where WebGPU wins, the gain grows
+with the ray count: the wasm CPU traces about 7× slower per core than
+native (WEB.md, "Speed"), while the device's per-operation cost is fixed.
+The wave analyses stay near parity because their pupils are traced and
+resampled on the host by the reference's code in every division (WAVE.md
+§9); the device runs only their transforms and sums.
+
+**Routing.**
+
+* *Native:* `gpu:webgpu` is registered on macOS after `gpu:metal`, so
+  `auto` takes Metal (the first GPU, §9.2); WebGPU is an explicit choice
+  (`--backend webgpu`, `{"kind":"gpu","name":"webgpu"}`).
+* *Web:* WebGPU is the only GPU. `auto` decides by a measured break-even
+  rule (`cost::WEBGPU_MIN_RAYS`, `decision: "qualified_webgpu"`, `rule:
+  "webgpu break-even"`): **ray grids from 250,000 rays and spot diagrams
+  from 900,000 rays** (fields × wavelengths × pupil samples, the cost
+  profile's rays) run on WebGPU, where it was at least the `RATIO` 1.3×
+  faster in both browsers; smaller ones, and every other analysis, run on
+  the CPU reference. The analyses of `WEBGPU_ANALYSES` (spot diagram, ray
+  grid, geometric MTF, PSF, MTF, MTF vs field, through-focus MTF) all meet
+  their contracts and run natively on an explicit WebGPU request (the web
+  client's `backend: 'gpu'`); the others fall back to the reference with
+  that reason.
+* The rule is one machine's (an M2 Pro's integrated GPU in Chromium and
+  WebKit). A discrete GPU, or a slower CPU, moves the break-even down; the
+  online refinement of §9.2 does not apply to this rule.
+
+**What would move more analyses to WebGPU.** The data movement per
+operation (keeping a plan's buffers on the device between consecutive
+device operations instead of on the host), `FftMtf`, and device pupils for
+the wave analyses (the solvers' device pupil tracer, §9.2) for the web,
+where host tracing is the bottleneck.

@@ -326,6 +326,32 @@ impl ComputeBackend for CpuF32Backend {
         plan: crate::resident::ResidentPlan,
         ctx: &JobContext,
     ) -> MkResult<Pending<crate::resident::PlanResult>> {
+        self.submit_plan_hosted(Arc::new(self.clone()), plan, ctx, |_| {
+            Ok(Box::new(crate::resident::cpu::Specification))
+        })
+    }
+}
+
+/// Device operations a hosted plan runs ([`CpuF32Backend::submit_plan_hosted`]).
+pub type HostedDevice = Box<dyn crate::resident::cpu::DeviceOps + Send>;
+
+impl CpuF32Backend {
+    /// Run `plan` on this backend's storage and CPU-f32 executor on behalf
+    /// of `backend` (whose identity the result's `RunInfo` records), with
+    /// the device operations `device` creates for the pinned systems: a
+    /// backend without host-visible memory (WebGPU) runs the operations it
+    /// has kernels for and leaves the others to their CPU-f32
+    /// specification. Validation, system pinning, cancellation and
+    /// publication are this backend's.
+    pub fn submit_plan_hosted(
+        &self,
+        backend: Arc<dyn ComputeBackend>,
+        plan: crate::resident::ResidentPlan,
+        ctx: &JobContext,
+        device: impl FnOnce(&HashMap<SystemHandle, Arc<PackedSystemSet>>) -> MkResult<HostedDevice>
+        + Send
+        + 'static,
+    ) -> MkResult<Pending<crate::resident::PlanResult>> {
         use crate::resident::ResidentOp;
         ctx.check()?;
         plan.validate(self.inner.instance, self.info().max_buffer_bytes)?;
@@ -343,17 +369,20 @@ impl ComputeBackend for CpuF32Backend {
                 _ => Ok(None),
             })
             .collect::<MkResult<Vec<_>>>()?;
+        #[allow(clippy::too_many_arguments)]
         fn run<E: FpEnv>(
             b: &CpuF32Backend,
+            backend: &dyn ComputeBackend,
             plan: &crate::resident::ResidentPlan,
             pinned: HashMap<SystemHandle, Arc<PackedSystemSet>>,
             prepared: &[Option<PreparedTrace>],
             ctl: &JobControl,
+            device: &mut dyn crate::resident::cpu::DeviceOps,
         ) -> MkResult<crate::resident::PlanResult> {
             let sets = pinned.clone();
-            crate::resident::cpu::execute::<E>(
+            crate::resident::cpu::execute_with::<E>(
                 &b.inner.resident,
-                b,
+                backend,
                 plan,
                 pinned,
                 ctl,
@@ -370,6 +399,7 @@ impl ComputeBackend for CpuF32Backend {
                         stats,
                     )
                 },
+                device,
             )
         }
         let (p, c, ctl) = pending(ctx);
@@ -379,14 +409,34 @@ impl ComputeBackend for CpuF32Backend {
             "CPU resident plan".into(),
             c,
             move || {
+                let mut device = device(&pinned)?;
                 if b.precision().probe.subnormals {
-                    run::<Ieee>(&b, &plan, pinned, &prepared, &ctl)
+                    run::<Ieee>(&b, &*backend, &plan, pinned, &prepared, &ctl, &mut *device)
                 } else {
-                    run::<Ftz>(&b, &plan, pinned, &prepared, &ctl)
+                    run::<Ftz>(&b, &*backend, &plan, pinned, &prepared, &ctl, &mut *device)
                 }
             },
         )?;
         Ok(p)
+    }
+
+    /// The system set behind a handle this backend issued.
+    pub fn system_set(&self, handle: SystemHandle) -> MkResult<Arc<PackedSystemSet>> {
+        self.inner.lookup(handle)
+    }
+
+    /// This backend's instance (the owner of its handles and buffers).
+    pub fn instance(&self) -> u64 {
+        self.inner.instance
+    }
+
+    /// The CPU-f32 emulation of a [`Job`], synchronously on this thread.
+    pub fn execute_job(&self, job: Job, ctl: &JobControl) -> MkResult<JobResult> {
+        if self.inner.precision.probe.subnormals {
+            self.inner.execute::<Ieee>(job, ctl)
+        } else {
+            self.inner.execute::<Ftz>(job, ctl)
+        }
     }
 }
 

@@ -921,3 +921,87 @@ fn monte_carlo_without_a_successful_trial() {
     let r = monte_carlo(&spec, &Silent, &mc, &Monitor::default());
     assert!(matches!(r, Err(MkError::Numerical(_))), "{r:?}");
 }
+
+/// The expected change of each distribution reproduces the Monte-Carlo
+/// mean of a separable quadratic criterion `Φ₀ + Σ gᵢδᵢ + hᵢδᵢ²` exactly
+/// in expectation, also for asymmetric limits.
+#[test]
+fn expected_change_predicts_the_monte_carlo_mean() {
+    use mklight_optim::tolerance::truncated_normal_moments;
+    // E[t²] of the normal truncated at ±2σ: 1 − 2·2φ(2)/(2Φ(2) − 1).
+    let (abs2, sq2) = truncated_normal_moments(2.0);
+    assert!((sq2 - 0.773_741_30).abs() < 1e-8, "{sq2}");
+    assert!((abs2 - 0.722_789_75).abs() < 1e-8, "{abs2}");
+    // Large k: the untruncated half-normal moments.
+    let (abs8, sq8) = truncated_normal_moments(8.0);
+    assert!(
+        (abs8 - (2.0 / std::f64::consts::PI).sqrt()).abs() < 1e-12 && (sq8 - 1.0).abs() < 1e-12
+    );
+    let distributions = [
+        Distribution::Uniform,
+        Distribution::TruncatedNormal { sigmas: 2.0 },
+        Distribution::TruncatedNormal { sigmas: 3.0 },
+        Distribution::EndPoint,
+    ];
+    let limits = [(0.1, 0.1), (0.05, 0.3), (0.2, 0.0), (0.0, 0.15)];
+    let mut ops = Vec::new();
+    let mut coeffs = Vec::new();
+    for (i, d) in distributions.iter().enumerate() {
+        for (j, &(minus, plus)) in limits.iter().enumerate() {
+            ops.push(ToleranceOperand {
+                param: t(1),
+                minus,
+                plus,
+                distribution: *d,
+                label: String::new(),
+            });
+            // Linear terms only where the one-sided quadratic assumption
+            // does not apply (both limits non-zero).
+            let g = if minus > 0.0 && plus > 0.0 {
+                0.3 * (i as f64 - 1.5)
+            } else {
+                0.0
+            };
+            coeffs.push((g, 1.0 + 0.5 * j as f64));
+        }
+    }
+    let nominal = 0.01;
+    let c = coeffs.clone();
+    let ev = FnToleranceEvaluator::new(move |d: &[f64]| TrialOutcome {
+        criterion: nominal
+            + d.iter()
+                .zip(&c)
+                .map(|(x, (g, h))| g * x + h * x * x)
+                .sum::<f64>(),
+        compensators: Vec::new(),
+        ok: true,
+    });
+    let mut spec = ToleranceSpec::new(ops);
+    let r = sensitivity(&spec, &ev, &Monitor::default()).unwrap();
+    let exact: f64 = (spec.operands.iter().zip(&coeffs))
+        .map(|(o, (g, h))| {
+            let (m1, m2) = o.moments();
+            g * m1 + h * m2
+        })
+        .sum();
+    assert!(
+        (r.expected_change - exact).abs() < 1e-14,
+        "{} {exact}",
+        r.expected_change
+    );
+    assert!((r.predicted_criterion() - nominal - exact).abs() < 1e-14);
+    spec.monte_carlo = MonteCarloSettings {
+        trials: 40_000,
+        seed: 7,
+        batch: 4096,
+        ..Default::default()
+    };
+    let mc = monte_carlo(&spec, &ev, &spec.monte_carlo, &Monitor::default()).unwrap();
+    let se = mc.std_dev / (mc.trials as f64).sqrt();
+    assert!(
+        (mc.mean - r.predicted_criterion()).abs() < 4.0 * se,
+        "MC {} ± {se}, predicted {}",
+        mc.mean,
+        r.predicted_criterion()
+    );
+}

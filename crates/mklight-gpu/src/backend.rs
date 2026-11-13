@@ -53,6 +53,9 @@ pub enum BackendKind {
     /// Bit-faithful CPU emulation of the f32 GPU numerics.
     CpuF32,
     Metal,
+    /// WebGPU through wgpu: natively (Metal, Vulkan, D3D12) or the
+    /// browser's `navigator.gpu`.
+    WebGpu,
     Vulkan,
     Cuda,
 }
@@ -62,6 +65,7 @@ impl BackendKind {
         match self {
             BackendKind::CpuF32 => "cpu-f32",
             BackendKind::Metal => "metal",
+            BackendKind::WebGpu => "webgpu",
             BackendKind::Vulkan => "vulkan",
             BackendKind::Cuda => "cuda",
         }

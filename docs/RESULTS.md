@@ -231,7 +231,8 @@ counts completed commands.
 * `field_curvature_distortion`: focus shifts along the image's local `z`
   from the image surface (positive: behind it); distortion
   `100 (y_real − y_ref)/y_ref` against the paraxial chief height,
-  `f·tanθ` and `f·θ`.
+  `f·tanθ` and `f·θ` (`f` = paraxial image height per unit `tanθ` on the
+  image surface; all 0 on axis).
 * `seidel`: positive singlet `S_I > 0`; `W040 > 0` has the OPD sign above;
   Petzval radius with the signed image-space index (docs/ANALYSIS.md §2.3).
 * `relative_illumination`: `Ω_p(H)/Ω_p(0)` (1 on axis).
@@ -273,6 +274,16 @@ counts completed commands.
   Criterion values have the criterion merit's units; `change_minus` and
   `change_plus` are trial − nominal (positive is degradation), `worst` is
   the largest absolute change and `rss_change` is their root sum of squares.
+  `expected_change` (per operand and summed) is the expected change over
+  each tolerance's distribution, from the quadratic through both limits:
+  `a·E[δ] + b·E[δ²]`, i.e. the mean of the two changes times `E[δ²]/L²` for
+  symmetric limits `±L` (1 end point, ⅓ uniform, ≈ 0.193 for the normal
+  truncated at 2σ). `predicted_criterion` = nominal + `expected_change`
+  predicts the Monte-Carlo mean: the criterion is a merit (a mean square
+  such as the squared RMS spot), and independent errors add their expected
+  merit changes. Result version 3; version 2 reported nominal +
+  `rss_change`, which under-predicts a merit (Cooke triplet, ten end-point
+  tolerances: 2.23e-3 against a Monte-Carlo mean of 3.66e-3; now 3.66e-3).
   Compensators report parameter values in model units. Yield is the fraction
   with criterion ≤ threshold; a failed Monte-Carlo trial has criterion `inf`.
   Stop retains completed sensitivity operands and Monte-Carlo trials with
@@ -330,7 +341,10 @@ natively on the GPU (WAVE.md §9; routing: GPU §9.2).
   samples in MTF-versus-field buffers are NaN; unusable per-field pupils
   are skipped with a warning.
 * **Sampling warnings.** `pupil_undersampled` (phase steps over half a
-  wave), `field_wraps` (image window wider than the alias-free field), and
+  wave), `lattice_undersampled` (the traced `pupil.rays` lattice is too
+  coarse for the wavefront's curvature, with a recommended `pupil.rays`),
+  `afocal_image_space` (collimated output; the reference sphere is not
+  meaningful), `field_wraps` (image window wider than the alias-free field), and
   `psf_truncated` (less than 95 % energy in the window) are retained in
   RunInfo as the solver's descriptive warning text. Increase pupil
   sampling or adjust the image window as described in `docs/WAVE.md`.
@@ -775,8 +789,8 @@ Result (`result` in the envelope):
 |---|---|---|---|
 | `curves` | array<object> |  | One per selected wavelength. |
 | `curves[].distortion_percent` | array<nf> | % | 100 (h_real − h_paraxial)/h_paraxial along the sampled field axis. |
-| `curves[].f_tan_theta_distortion_percent` | array<nf> | % | Against f·tanθ. |
-| `curves[].f_theta_distortion_percent` | array<nf> | % | Against f·θ. |
+| `curves[].f_tan_theta_distortion_percent` | array<nf> | % | Object at infinity: against f·tanθ, f = paraxial image height per unit tanθ on the image surface (so equal to distortion_percent; 0 on axis); NaN for a finite object. |
+| `curves[].f_theta_distortion_percent` | array<nf> | % | Against f·θ, the same f as f·tanθ. |
 | `curves[].paraxial_height` | array<nf> | mm | Paraxial chief-ray image height. |
 | `curves[].real_height` | array<nf> | mm | Real chief-ray image height. |
 | `curves[].sagittal` | array<nf> | mm | Sagittal focus shift (Coddington). |
@@ -2447,9 +2461,9 @@ Buffers:
 
 ### `tolerance` — Tolerance analysis
 
-Category `optimization`, result version 2, **GPU path**.
+Category `optimization`, result version 3, **GPU path**.
 
-Sensitivity of a criterion merit (default: the RMS spot merit) to each tolerance at its limits, ranked worst first with the RSS prediction, and a reproducible Monte-Carlo analysis, with compensators re-optimised and the model's solves re-applied for every trial.
+Sensitivity of a criterion merit (default: the RMS spot merit) to each tolerance at its limits, ranked worst first with the predicted mean criterion, and a reproducible Monte-Carlo analysis, with compensators re-optimised and the model's solves re-applied for every trial.
 
 Settings:
 
@@ -2532,6 +2546,7 @@ Result (`result` in the envelope):
 | `sensitivity` | object? |  |  |
 | `sensitivity.cancelled` | boolean |  | Partial sensitivity after a stop. |
 | `sensitivity.evaluations` | integer |  | ≥ 0 |
+| `sensitivity.expected_change` | nf | criterion | Sum of the operands' expected changes. |
 | `sensitivity.nominal` | object |  |  |
 | `sensitivity.nominal.compensators` | array<nf> |  | Parameter values. |
 | `sensitivity.nominal.criterion` | nf |  |  |
@@ -2543,6 +2558,7 @@ Result (`result` in the envelope):
 | `sensitivity.operands[].compensators_plus` | array<nf> |  |  |
 | `sensitivity.operands[].criterion_minus` | nf |  |  |
 | `sensitivity.operands[].criterion_plus` | nf |  |  |
+| `sensitivity.operands[].expected_change` | nf | criterion | Expected change over the tolerance's distribution: a·E[δ] + b·E[δ²] of the quadratic through both limits. |
 | `sensitivity.operands[].index` | integer |  | ≥ 0; Tolerance index. |
 | `sensitivity.operands[].label` | string |  |  |
 | `sensitivity.operands[].minus` | nf |  |  |
@@ -2550,9 +2566,9 @@ Result (`result` in the envelope):
 | `sensitivity.operands[].param` | object |  | ParamPath. |
 | `sensitivity.operands[].plus` | nf |  |  |
 | `sensitivity.operands[].worst` | nf | criterion | Largest absolute criterion change at either limit. |
-| `sensitivity.predicted_criterion` | nf | criterion | Nominal + rss_change. |
+| `sensitivity.predicted_criterion` | nf | criterion | Predicted Monte-Carlo mean: nominal + expected_change (independent perturbations add their expected merit changes). |
 | `sensitivity.ranking` | array<integer> |  | Worst first. |
-| `sensitivity.rss_change` | nf | criterion | Root sum of squared worst changes. |
+| `sensitivity.rss_change` | nf | criterion | Root sum of squared worst changes (for a criterion linear in the perturbations; not the prediction of a merit). |
 | `status` | string |  | one of `"finished"`, `"stopped"`; Cancel discards the result. |
 | `stopped` | boolean |  | Stop requested; completed sensitivity operands/trials retained. |
 

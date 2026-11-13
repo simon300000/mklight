@@ -8,7 +8,10 @@ rust-version.workspace = true
 publish.workspace = true
 
 [features]
-default = ["fft-simd"]
+default = ["fft-simd", "webgpu"]
+# The WebGPU backend (`gpu:webgpu`, docs/GPU.md §11): the GPU worker's entry
+# point `gpu_thread` and `register_webgpu`.
+webgpu = ["dep:mklight-webgpu", "dep:wasm-bindgen-futures"]
 # rustfft's WebAssembly SIMD algorithms (needs the `simd128` target feature;
 # scripts/build-wasm.sh --no-simd / --no-fft-simd turn it off).
 fft-simd = ["dep:rustfft", "rustfft/wasm_simd"]
@@ -27,5 +30,7 @@ rayon.workspace = true
 wasm-bindgen = "0.2"
 js-sys = "0.3"
 console_error_panic_hook = "0.1"
+mklight-webgpu = { workspace = true, optional = true }
+wasm-bindgen-futures = { version = "0.4", optional = true }
 # Only to enable its `wasm_simd` feature for mklight-wave (`fft-simd`).
 rustfft = { workspace = true, optional = true }

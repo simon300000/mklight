@@ -224,7 +224,7 @@ pub fn build_psf_grid_shared(
             0.6 + 0.4 * (i + 1) as f64 / count as f64,
         )
     };
-    let (results, illumination) = std::thread::scope(|scope| {
+    let (results, illumination) = mklight_core::platform::scope(|scope| {
         let illumination = scope.spawn(illumination);
         let results = super::split::schedule(
             per,

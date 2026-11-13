@@ -201,6 +201,29 @@ pub fn init_thread_pool(threads: u32) -> Result<(), JsValue> {
         .map_err(|e| js_error("internal", &format!("rayon pool: {e}")))
 }
 
+/// Body of the GPU worker (docs/GPU.md §11): opens `navigator.gpu`'s
+/// adapter, publishes the request channel in the shared memory and serves
+/// the engine's threads forever; it returns only when the browser has no
+/// usable adapter (the reason then reaches the engine when it opens
+/// `gpu:webgpu`). Never blocks: it sleeps in `Atomics.waitAsync`.
+#[cfg(feature = "webgpu")]
+#[wasm_bindgen]
+pub async fn gpu_thread() {
+    mklight_webgpu::web::run_gpu_thread().await;
+}
+
+/// Register the WebGPU backend `gpu:webgpu` (after `engine_create`, once
+/// the GPU worker is started). Its device opens on first use, through the
+/// GPU worker's proxy.
+#[cfg(feature = "webgpu")]
+#[wasm_bindgen]
+pub fn register_webgpu() -> Result<(), JsValue> {
+    state()?
+        .engine
+        .register_backend(Arc::new(mklight_engine::gpu::GpuProvider::webgpu_browser()));
+    Ok(())
+}
+
 /// Host workers the glue should start now for engine threads that wait for
 /// one (`mklight_core::platform`). Each started worker calls `thread_host`.
 #[wasm_bindgen]

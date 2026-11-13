@@ -10,6 +10,7 @@ members = [
     "crates/mklight-optim",
     "crates/mklight-gpu",
     "crates/mklight-metal",
+    "crates/mklight-webgpu",
     "crates/mklight-engine",
     "crates/mklight-bench",
     "crates/mklight-ffi",
@@ -35,6 +36,7 @@ mklight-stray = { path = "crates/mklight-stray" }
 mklight-optim = { path = "crates/mklight-optim" }
 mklight-gpu = { path = "crates/mklight-gpu" }
 mklight-metal = { path = "crates/mklight-metal" }
+mklight-webgpu = { path = "crates/mklight-webgpu" }
 mklight-engine = { path = "crates/mklight-engine" }
 serde = { version = "1", features = ["derive", "rc"] }
 serde_json = { version = "1", features = ["float_roundtrip"] }
@@ -53,7 +55,10 @@ web-time = "1"
 [profile.release]
 debug = 1
 lto = "thin"
-codegen-units = 1
+# Default codegen units (16): LLVM works on each crate in parallel. One unit
+# (measured 2026-11-13, packet_bench on the Cooke triplet) built the engine
+# 2.1x slower (93 s vs 44 s from clean) and traced no faster; results are
+# bitwise identical either way.
 
 [profile.dev]
 # Light optimisation of the workspace's own crates: the tests trace millions

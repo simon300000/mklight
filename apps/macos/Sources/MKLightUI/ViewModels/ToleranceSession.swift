@@ -457,6 +457,9 @@ public struct ToleranceResult: Sendable {
         public var changeMinus: Double
         public var changePlus: Double
         public var worst: Double
+        /// Expected change over the tolerance's distribution (engine
+        /// result version ≥ 3; NaN before).
+        public var expectedChange: Double = .nan
         public var ok: Bool
         public var compensatorsMinus: [Double]
         public var compensatorsPlus: [Double]
@@ -494,6 +497,8 @@ public struct ToleranceResult: Sendable {
     /// Worst first (the engine's ranking).
     public var sensitivities: [Sensitivity]
     public var rssChange: Double
+    /// Predicted mean criterion: nominal plus the expected changes (engine
+    /// result version ≥ 3; nominal + RSS before).
     public var predicted: Double
     public var sensitivityCancelled: Bool
     // Monte Carlo
@@ -540,7 +545,7 @@ public struct ToleranceResult: Sendable {
                 id: o["index"]?.int ?? k, label: label, param: path, minus: o["minus"]?.nf ?? .nan, plus: o["plus"]?.nf ?? .nan,
                 criterionMinus: o["criterion_minus"]?.nf ?? .nan, criterionPlus: o["criterion_plus"]?.nf ?? .nan,
                 changeMinus: o["change_minus"]?.nf ?? .nan, changePlus: o["change_plus"]?.nf ?? .nan, worst: o["worst"]?.nf ?? .nan,
-                ok: o["ok"]?.bool ?? true, compensatorsMinus: o["compensators_minus"]?.nfArray ?? [],
+                expectedChange: o["expected_change"]?.nf ?? .nan, ok: o["ok"]?.bool ?? true, compensatorsMinus: o["compensators_minus"]?.nfArray ?? [],
                 compensatorsPlus: o["compensators_plus"]?.nfArray ?? [])
         }
         let ranking = s?["ranking"]?.intArray ?? []
@@ -581,21 +586,27 @@ public struct ToleranceResult: Sendable {
     /// The record of trial `k`, if it was kept.
     public func record(_ k: Int) -> TrialRecord? { records.first { $0.trial == k } }
 
-    /// Operand `k`'s share of the RSS prediction: worst² / Σ worst².
+    /// Operand `k`'s share of the predicted change: its expected change over
+    /// the sum of the (non-negative) expected changes; for a result without
+    /// expected changes, worst² / Σ worst² (its share of the RSS).
     public func share(_ s: Sensitivity) -> Double {
-        let total = sensitivities.map { $0.worst.isFinite ? Swift.max($0.worst, 0) * Swift.max($0.worst, 0) : 0 }.reduce(0, +)
-        guard total > 0, s.worst.isFinite else { return 0 }
-        return Swift.max(s.worst, 0) * Swift.max(s.worst, 0) / total
+        let expected = sensitivities.contains { $0.expectedChange.isFinite }
+        let part = { (s: Sensitivity) -> Double in
+            if expected { return s.expectedChange.isFinite ? Swift.max(s.expectedChange, 0) : 0 }
+            return s.worst.isFinite ? Swift.max(s.worst, 0) * Swift.max(s.worst, 0) : 0
+        }
+        let total = sensitivities.map(part).reduce(0, +)
+        guard total > 0 else { return 0 }
+        return part(s) / total
     }
 
     /// The worst offenders: the largest shares that make up half of the
-    /// RSS (at most five, each above 5 %).
+    /// predicted change (at most five, each above 5 %).
     public var worstOffenders: Set<Int> {
         var out = Set<Int>(), sum = 0.0
-        for s in sensitivities {
-            let f = share(s)
+        for (id, f) in sensitivities.map({ ($0.id, share($0)) }).sorted(by: { $0.1 > $1.1 }) {
             guard f > 0.05, sum < 0.5, out.count < 5 else { break }
-            out.insert(s.id)
+            out.insert(id)
             sum += f
         }
         return out

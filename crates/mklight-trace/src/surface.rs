@@ -598,6 +598,24 @@ mod tests {
     }
 
     #[test]
+    fn double_crossing_takes_the_root_nearer_the_vertex() {
+        // c = −0.05 bulges toward the ray, which crosses it twice heading +z
+        // at ~87° to the axis: first at y ≈ −5.5 (t ≈ 24.51), then at
+        // y ≈ +3.6 (t ≈ 33.61). The surface's extent is unknown here, so
+        // the crossing nearer the vertex wins (docs/SURFACES.md §8).
+        let shape = SurfaceShape::sphere(-20.0);
+        let d = unit(0.0, 0.999, 0.050);
+        let p = Vec3::new(0.0, -30.0, -2.0);
+        let m = p - Vec3::new(0.0, 0.0, -20.0);
+        let (b, c) = (m.dot(d), m.dot(m) - 400.0);
+        let t2 = -b + (b * b - c).sqrt();
+        assert!((t2 - 33.61).abs() < 0.01);
+        let h = intersect(&shape, p, d, &IntersectSettings::default()).unwrap();
+        assert!((h.t_transfer + h.t_surface - t2).abs() < 1e-12, "{h:?}");
+        assert!(h.point.y > 3.0, "{h:?}");
+    }
+
+    #[test]
     fn backward_propagation_allowed() {
         // Ray starting beyond the vertex, heading +z, meets the sphere behind it.
         let shape = SurfaceShape::sphere(-30.0);

@@ -14,7 +14,6 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use mklight_core::job::Precision;
-use mklight_core::rng::Philox;
 use mklight_core::{JobContext, MkError, MkResult};
 use mklight_gpu::backend::next_backend_instance;
 use mklight_gpu::consts::*;
@@ -111,58 +110,15 @@ pub struct MetalBackend {
     inner: Arc<Inner>,
 }
 
-/// Deterministic inputs for the numerics probe: random magnitudes and
-/// signs, triples with `c = −fl(a·b)` (where fused and unfused results
-/// differ), and operands whose products land in the subnormal range.
+/// Deterministic inputs for the numerics probe (`mklight_gpu::probe::inputs`).
 pub fn probe_inputs() -> (Vec<f32>, Vec<f32>, Vec<f32>) {
-    let mut r = Philox::new(0x0005_EED0_FA11, 0);
-    let mut rnd = |emin: i32, emax: i32| {
-        let m = 1.0 + r.uniform();
-        let s = if r.uniform() < 0.5 { -1.0 } else { 1.0 };
-        let e = emin + ((emax - emin) as f64 * r.uniform()) as i32;
-        (s * m * 2f64.powi(e)) as f32
-    };
-    let (mut a, mut b, mut c) = (Vec::new(), Vec::new(), Vec::new());
-    for i in 0..4096 {
-        let x = rnd(-20, 20);
-        let y = rnd(-20, 20);
-        let z = match i % 3 {
-            0 => -(x * y),
-            1 => rnd(-20, 20),
-            _ => x * y * rnd(-3, 0),
-        };
-        // Every 8th triple: |a| in [2^-9, 2^13) so (a·2^-70)·2^-70 is subnormal.
-        let x = if i % 8 == 7 { rnd(-9, 12) } else { x };
-        a.push(x);
-        b.push(y);
-        c.push(z);
-    }
-    (a, b, c)
-}
-
-/// The IEEE binary32 results the probe kernel must reproduce.
-fn probe_expected(x: f32, y: f32, z: f32) -> [f32; MKL_PROBE_WORDS as usize] {
-    let p70 = 2f32.powi(-70);
-    [
-        x * y + z,
-        x.mul_add(y, z),
-        x / y,
-        x.abs().sqrt(),
-        x + y,
-        x * y,
-        (x * p70) * p70,
-        (x + y) - y,
-    ]
-}
-
-fn same(a: f32, b: f32) -> bool {
-    a.to_bits() == b.to_bits() || (a.is_nan() && b.is_nan())
+    mklight_gpu::probe::inputs()
 }
 
 fn run_probe(ctx: &MetalContext) -> MkResult<NumericsProbe> {
     let (a, b, c) = probe_inputs();
     let n = a.len();
-    let words = MKL_PROBE_WORDS as usize;
+    let words = mklight_gpu::probe::WORDS;
     let (ba, bb, bc) = (ctx.buffer(&a)?, ctx.buffer(&b)?, ctx.buffer(&c)?);
     let mut out = ctx.buffer_zeroed::<f32>(n * words)?;
     let pso = ctx.pipeline(&PipelineKey::plain("mkl_numerics_probe"))?;
@@ -179,23 +135,7 @@ fn run_probe(ctx: &MetalContext) -> MkResult<NumericsProbe> {
             Ok(())
         })?;
     }
-    let got = out.as_slice();
-    let mut ok = [true; MKL_PROBE_WORDS as usize];
-    for i in 0..n {
-        let want = probe_expected(a[i], b[i], c[i]);
-        for w in 0..words {
-            ok[w] &= same(got[i * words + w], want[w]);
-        }
-    }
-    Ok(NumericsProbe {
-        no_contraction: ok[0],
-        true_fma: ok[1],
-        correctly_rounded_div: ok[2],
-        correctly_rounded_sqrt: ok[3],
-        ieee_add_mul: ok[4] && ok[5],
-        subnormals: ok[6],
-        no_reassociation: ok[7],
-    })
+    Ok(mklight_gpu::probe::evaluate(&a, &b, &c, out.as_slice()))
 }
 
 impl MetalBackend {

@@ -840,7 +840,7 @@ impl<'a> PupilTracer<'a> {
         if !items.is_empty() {
             let specs: Vec<_> = items.iter().map(|i| i.spec).collect();
             let pupils: Vec<_> = items.iter().map(|i| (i.field, i.wl)).collect();
-            let (chiefs, tables) = std::thread::scope(|s| {
+            let (chiefs, tables) = mklight_core::platform::scope(|s| {
                 let tables = s.spawn(|| self.tables(&pupils, n));
                 let chiefs = self.chief_rays(&pupils, &specs, &ctx.subrange(0., 0.03), stats);
                 (chiefs, tables.join().expect("host seed tables"))
@@ -1541,6 +1541,10 @@ impl<'a> PupilTracer<'a> {
             &ctx.subrange(0.8, 1.),
         )?;
         accumulate(&mut stats, &result.stats);
+        if let Some(w) = crate::warnings::afocal_warning(fo) {
+            result.run_info.warnings.push(w.to_string());
+            result.value.warnings.push(w);
+        }
         let clear_area = if uv_loops.is_empty() {
             result.value.clear_area
         } else {

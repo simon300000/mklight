@@ -25,18 +25,25 @@ fn host_metal_perturbed_samples() {
         .generate(&system)
         .unwrap();
         let spot_operands = spec.operands.len();
-        spec.operands.extend(
-            DefaultMeritSpec {
-                thickness: None,
-                criterion: mklight_optim::merit::default::DefaultCriterion::Wavefront {
-                    reference: mklight_optim::merit::operand::WavefrontReference::Centroid,
-                },
-                ..Default::default()
-            }
-            .generate(&system)
-            .unwrap()
-            .operands,
-        );
+        // Both wavefront references: piston/tilt and the device's piston-only
+        // fit (chief) removed from the per-ray OPD.
+        for reference in [
+            mklight_optim::merit::operand::WavefrontReference::Centroid,
+            mklight_optim::merit::operand::WavefrontReference::Chief,
+        ] {
+            spec.operands.extend(
+                DefaultMeritSpec {
+                    thickness: None,
+                    criterion: mklight_optim::merit::default::DefaultCriterion::Wavefront {
+                        reference,
+                    },
+                    ..Default::default()
+                }
+                .generate(&system)
+                .unwrap()
+                .operands,
+            );
+        }
         let index = system.surfaces.len() - 2;
         let param = ParamPath::Thickness {
             surface: system.surfaces[index].id,

@@ -12,7 +12,16 @@ export default defineConfig({
   reporter: [['list']],
   use: { baseURL: 'http://localhost:4710/' },
   projects: [
-    { name: 'chromium', use: { ...devices['Desktop Chrome'] } },
+    // The full Chromium in new-headless mode (the headless shell has no
+    // WebGPU adapter), with WebGPU enabled for the GPU tests.
+    {
+      name: 'chromium',
+      use: {
+        ...devices['Desktop Chrome'],
+        channel: 'chromium',
+        launchOptions: { args: ['--enable-unsafe-webgpu', '--enable-features=Vulkan,WebGPU'] },
+      },
+    },
     { name: 'webkit', use: { ...devices['Desktop Safari'] } },
   ],
   webServer: [

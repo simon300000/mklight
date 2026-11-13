@@ -710,3 +710,47 @@ fn benchmark_extended_shapes() {
         g.release_systems(req.systems).unwrap();
     }
 }
+
+/// A steep ray crossing a surface that bulges toward it twice (the first
+/// crossing lies farther from the axis), next to ordinary rays: the device
+/// matches the emulation bitwise on the conic, even-asphere and general-sag
+/// paths, which take the crossing nearer the vertex (`mklight-gpu` trace
+/// tests).
+#[test]
+fn steep_double_crossing_bitwise() {
+    use mklight_core::SurfaceShape;
+    let g = gpu_or_skip!();
+    let c = CpuF32Backend::matching(&g.precision().probe);
+    let mut rays = RayBatch::with_capacity(3);
+    let d = Vec3::new(0.0, 0.999, 0.050).normalized();
+    rays.push_f64([0.0, -30.0, -2.0], [d.x, d.y, d.z], 1);
+    rays.push_f64([0.0, 2.0, -2.0], [0.0, 0.0, 1.0], 1);
+    let d = Vec3::new(0.0, 0.1, 1.0).normalized();
+    rays.push_f64([1.0, -3.0, -2.0], [d.x, d.y, d.z], 1);
+    for shape in [
+        SurfaceShape::sphere(-20.0),
+        SurfaceShape::EvenAsphere {
+            curvature: -0.05,
+            conic: 0.0,
+            coefficients: vec![1e-9],
+        },
+        SurfaceShape::OddAsphere {
+            curvature: -0.05,
+            conic: 0.0,
+            coefficients: vec![0.0, 0.0, 1e-8],
+        },
+    ] {
+        let t = testutil::tracer(testutil::one_surface(shape.clone()));
+        let p = PackedSystem::pack_all(t.system()).unwrap();
+        let (hg, hc) = (g.upload_system(&p).unwrap(), c.upload_system(&p).unwrap());
+        let req = |h| {
+            let mut r = TraceRequest::new(h, rays.clone(), 0, 1);
+            r.record = RecordMode::AllSurfaces;
+            r
+        };
+        let (a, b) = (trace(g, req(hg)), trace(&c, req(hc)));
+        assert!(b.y[0] > 3.0, "{shape:?}: {}", b.y[0]);
+        assert_bitwise(&a, &b, &format!("{shape:?}"));
+        g.release_systems(hg).unwrap();
+    }
+}

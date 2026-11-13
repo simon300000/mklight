@@ -118,7 +118,23 @@ impl Glass {
         }
     }
 
-    /// Internal absorption coefficient α (1/mm), so that `τ(L) = exp(−α L)`.
+    /// The wavelength in the catalog's reference air (`T_ref`, 1 atm) of light
+    /// whose wavelength is `lambda_um` in air at `env`: the same vacuum
+    /// wavelength, `λ_ref = λ·n_air(λ, T, P)/n_air(λ, T_ref, 1 atm)`. Every
+    /// catalog datum (dispersion formula, thermal `λ_tk` term, internal
+    /// transmittance) is a function of this wavelength (MATERIALS.md).
+    /// Exactly `lambda_um` at the catalog conditions.
+    pub fn reference_wavelength(&self, lambda_um: f64, env: &Environment) -> f64 {
+        let r = self.catalog_environment();
+        if env.temperature_c == r.temperature_c && env.pressure_atm == r.pressure_atm {
+            return lambda_um;
+        }
+        lambda_um * air_index(lambda_um, env.temperature_c, env.pressure_atm)
+            / air_index(lambda_um, r.temperature_c, r.pressure_atm)
+    }
+
+    /// Internal absorption coefficient α (1/mm), so that `τ(L) = exp(−α L)`,
+    /// at a wavelength in the catalog's reference air.
     /// Returns 0 when no transmittance data exists.
     pub fn absorption_per_mm(&self, lambda_um: f64) -> f64 {
         let t = &self.transmittance;
@@ -208,27 +224,35 @@ impl ResolvedMaterial {
                 cauchy[0] + cauchy[1] / (lambda_um * lambda_um) + cauchy[2] / lambda_um.powi(4)
             }
             ResolvedMaterial::Glass { glass, env } => {
-                let n_cat = glass.catalog_index(lambda_um);
                 // The catalog index is relative to air at the glass's own
                 // reference conditions: T_ref from its thermal data (else
-                // CATALOG_T_C) and CATALOG_P_ATM. There ΔT = 0, so it is returned as is.
-                let t_ref = glass.thermal.map_or(CATALOG_T_C, |th| th.t_ref_c);
-                if env.temperature_c == t_ref && env.pressure_atm == CATALOG_P_ATM {
-                    return n_cat;
+                // CATALOG_T_C) and CATALOG_P_ATM. There ΔT = 0 and the
+                // wavelength is already the reference-air one, so it is
+                // returned as is.
+                let r = glass.catalog_environment();
+                if env.temperature_c == r.temperature_c && env.pressure_atm == r.pressure_atm {
+                    return glass.catalog_index(lambda_um);
                 }
-                let n_air_ref = air_index(lambda_um, t_ref, CATALOG_P_ATM);
-                let n_abs_ref = n_cat * n_air_ref;
+                // `lambda_um` is a wavelength in air at the system T, P; the
+                // catalog data are functions of the wavelength in the
+                // reference air (same vacuum wavelength).
+                let n_air = air_index(lambda_um, env.temperature_c, env.pressure_atm);
+                let n_air_ref = air_index(lambda_um, r.temperature_c, r.pressure_atm);
+                let l_ref = lambda_um * n_air / n_air_ref;
+                let n_abs_ref = glass.catalog_index(l_ref) * n_air_ref;
                 let dn = glass.thermal.map_or(0.0, |th| {
-                    th.delta_n_abs(n_abs_ref, lambda_um, env.temperature_c)
+                    th.delta_n_abs(n_abs_ref, l_ref, env.temperature_c)
                 });
-                (n_abs_ref + dn) / air_index(lambda_um, env.temperature_c, env.pressure_atm)
+                (n_abs_ref + dn) / n_air
             }
         }
     }
 
     pub fn absorption_per_mm(&self, lambda_um: f64) -> f64 {
         match self {
-            ResolvedMaterial::Glass { glass, .. } => glass.absorption_per_mm(lambda_um),
+            ResolvedMaterial::Glass { glass, env } => {
+                glass.absorption_per_mm(glass.reference_wavelength(lambda_um, env))
+            }
             ResolvedMaterial::Offset { base, .. } => base.absorption_per_mm(lambda_um),
             _ => 0.0,
         }
@@ -426,7 +450,10 @@ mod tests {
         let l = lines::D;
         let n_cat = glass.catalog_index(l);
         assert_eq!(at(25.0).index(l), n_cat);
-        let expect = n_cat * air_index(l, 25.0, 1.0) / air_index(l, 20.0, 1.0);
+        // The 20 °C system wavelength is λ·n_air(20)/n_air(25) in the 25 °C
+        // reference air.
+        let (a20, a25) = (air_index(l, 20.0, 1.0), air_index(l, 25.0, 1.0));
+        let expect = glass.catalog_index(l * a20 / a25) * a25 / a20;
         let n20 = at(20.0).index(l);
         assert!((n20 - expect).abs() < 1e-15, "{n20} vs {expect}");
         // Air at 25 °C is less refractive than at 20 °C, by about 4.6·10⁻⁶.
@@ -441,6 +468,58 @@ mod tests {
             .unwrap();
         let n = g.index(lines::D);
         assert!((n - 1.5168).abs() < 2e-5, "N-BK7 nd = {n}");
+        // Bit-identical to the catalog formula at the catalog conditions,
+        // at every wavelength, also for the absorption lookup.
+        let glass = lib.find_glass(None, "N-BK7").unwrap();
+        for l in [0.35, lines::F, lines::D, lines::C, 1.06, 2.3] {
+            assert_eq!(g.index(l).to_bits(), glass.catalog_index(l).to_bits());
+            assert_eq!(
+                g.absorption_per_mm(l).to_bits(),
+                glass.absorption_per_mm(l).to_bits()
+            );
+            assert_eq!(glass.reference_wavelength(l, &Environment::default()), l);
+        }
+    }
+
+    /// Off the catalog conditions the formula is evaluated at the wavelength
+    /// in the reference air, `λ·n_air(T, P)/n_air(20 °C, 1 atm)`. The
+    /// expected values are an independent 40-digit evaluation of the Schott
+    /// N-BK7 Sellmeier formula, the Kohlrausch air index and the Schott
+    /// dn/dT model (N-BK7 catalog TD: D0 1.86e-6, D1 1.31e-8, D2 −1.37e-11,
+    /// E0 4.34e-7, E1 6.27e-10, λ_tk 0.17 µm), with the `λ_tk` term at the
+    /// reference-air wavelength.
+    #[test]
+    fn catalog_formula_sees_the_reference_air_wavelength() {
+        let mut g = builtin::catalog().glasses["N-BK7"].clone();
+        let at = |g: &Glass, t: f64, p: f64| ResolvedMaterial::Glass {
+            glass: Arc::new(g.clone()),
+            env: Environment {
+                temperature_c: t,
+                pressure_atm: p,
+            },
+        };
+        let close = |a: f64, b: f64| assert!((a - b).abs() < 2e-13, "{a} vs {b}");
+        // Vacuum system (P = 0): λ_ref = λ/n_air(20 °C), 6.7e-6 above the
+        // old evaluation at λ.
+        close(at(&g, 20.0, 0.0).index(lines::D), 1.517_219_940_557_052);
+        // 60 °C, 1 atm, no thermal data: only the air changes.
+        close(at(&g, 60.0, 1.0).index(lines::D), 1.516_850_540_148_431);
+        g.thermal = Some(ThermalCoefficients {
+            d0: 1.86e-6,
+            d1: 1.31e-8,
+            d2: -1.37e-11,
+            e0: 4.34e-7,
+            e1: 6.27e-10,
+            lambda_tk_um: 0.17,
+            t_ref_c: 20.0,
+        });
+        close(at(&g, 60.0, 1.0).index(lines::D), 1.516_915_971_897_67);
+        close(at(&g, 60.0, 1.0).index(lines::F), 1.522_506_966_010_798);
+        // Still the catalog value at 20 °C, 1 atm.
+        assert_eq!(
+            at(&g, 20.0, 1.0).index(lines::D).to_bits(),
+            g.catalog_index(lines::D).to_bits()
+        );
     }
 
     fn bk7(dn_d: f64, dv_d: f64) -> MaterialRef {

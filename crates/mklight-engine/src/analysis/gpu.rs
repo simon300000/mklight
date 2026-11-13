@@ -44,6 +44,20 @@ pub const GPU_ANALYSES: &[&str] = &[
     "glass_substitution",
 ];
 
+/// The analyses the WebGPU backend (`gpu:webgpu`) runs natively: those
+/// whose device work is dominated by the operations it has WGSL kernels for
+/// and where the measurement of GPU.md §11 shows a throughput gain. A
+/// subset of [`GPU_ANALYSES`]; the others run on the CPU reference there.
+pub const WEBGPU_ANALYSES: &[&str] = &[
+    "spot_diagram",
+    "geometric_mtf",
+    "ray_grid",
+    "psf",
+    "mtf",
+    "mtf_vs_field",
+    "through_focus_mtf",
+];
+
 pub fn device(input: &AnalysisInput<'_>) -> Option<Arc<GpuDevice>> {
     input
         .device

@@ -149,6 +149,8 @@ pub struct ProviderHint {
     /// The device is an Apple GPU (the family of the measured cost rules);
     /// `None` until known.
     pub apple_gpu: Option<bool>,
+    /// The provider is the WebGPU backend (its own cost rules, GPU.md §11).
+    pub webgpu: bool,
     /// The device is already open (no setup to pay).
     pub open: bool,
 }
@@ -185,7 +187,11 @@ pub enum AutoCandidate {
     NoGpu(String),
     /// The first GPU provider `auto` would select, with its device family
     /// when known (`ProviderHint::apple_gpu`) and whether it is open.
-    Gpu { apple_gpu: Option<bool>, open: bool },
+    Gpu {
+        apple_gpu: Option<bool>,
+        webgpu: bool,
+        open: bool,
+    },
 }
 
 /// The outcome of backend selection for one analysis run.
@@ -243,6 +249,7 @@ impl BackendProvider for Static {
             analyses: i.capabilities.analyses.clone(),
             unavailable: (!i.available).then(|| i.reason.clone().unwrap_or_default()),
             apple_gpu: None,
+            webgpu: false,
             open: false,
         })
     }
@@ -260,12 +267,19 @@ impl Default for BackendRegistry {
 }
 
 impl BackendRegistry {
-    /// The CPU reference, plus on macOS the Metal backend (opened on first
-    /// use; unavailable without a qualifying device).
+    /// The CPU reference, plus on macOS the Metal backend and then the
+    /// WebGPU backend (each opened on first use; unavailable without a
+    /// qualifying device). `auto` takes the first GPU registered, so it
+    /// prefers Metal natively; WebGPU is an explicit choice there and the
+    /// GPU of the browser build, which registers it itself
+    /// (`crate::gpu::GpuProvider::webgpu_with`, WEB.md).
+    #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
     pub fn with_defaults() -> Self {
         let mut r = Self::cpu_only();
-        if cfg!(target_os = "macos") {
+        #[cfg(target_os = "macos")]
+        {
             r.register(Arc::new(crate::gpu::GpuProvider::metal()));
+            r.register(Arc::new(crate::gpu::GpuProvider::webgpu()));
         }
         r
     }
@@ -396,6 +410,7 @@ impl BackendRegistry {
             } else {
                 return Some(AutoCandidate::Gpu {
                     apple_gpu: h.apple_gpu,
+                    webgpu: h.webgpu,
                     open: h.open,
                 });
             }

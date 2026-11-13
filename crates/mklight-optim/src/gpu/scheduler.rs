@@ -93,7 +93,7 @@ where
     T: Send,
     F: Fn(usize, &Worker<'_, E>) -> MkResult<T> + Sync,
 {
-    std::thread::scope(|scope| {
+    mklight_core::platform::scope(|scope| {
         let (send, receive) = mpsc::channel();
         let mut replies = Vec::new();
         let mut threads = Vec::new();

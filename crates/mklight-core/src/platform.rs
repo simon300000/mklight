@@ -141,6 +141,107 @@ where
     }
 }
 
+#[cfg(target_arch = "wasm32")]
+pub use scoped::{Scope, ScopedJoinHandle, scope};
+/// Scoped threads (`std::thread::scope` natively): every thread spawned in
+/// the scope may borrow from the caller and is joined before `scope`
+/// returns. On wasm32 the threads are [`spawn`]'s host threads.
+#[cfg(not(target_arch = "wasm32"))]
+pub use std::thread::{Scope, ScopedJoinHandle, scope};
+
+#[cfg(target_arch = "wasm32")]
+mod scoped {
+    use std::marker::PhantomData;
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+    use std::sync::{Arc, Condvar, Mutex};
+
+    /// The live threads of a scope.
+    #[derive(Default)]
+    struct Running {
+        count: Mutex<usize>,
+        done: Condvar,
+    }
+
+    pub struct Scope<'scope, 'env: 'scope> {
+        running: Arc<Running>,
+        _scope: PhantomData<&'scope mut &'scope ()>,
+        _env: PhantomData<&'env mut &'env ()>,
+    }
+
+    type Slot<T> = Arc<(Mutex<Option<std::thread::Result<T>>>, Condvar)>;
+
+    pub struct ScopedJoinHandle<'scope, T> {
+        slot: Slot<T>,
+        _scope: PhantomData<&'scope ()>,
+    }
+
+    impl<T> ScopedJoinHandle<'_, T> {
+        pub fn join(self) -> std::thread::Result<T> {
+            let (m, cv) = &*self.slot;
+            let mut g = m.lock().unwrap_or_else(|e| e.into_inner());
+            loop {
+                if let Some(r) = g.take() {
+                    return r;
+                }
+                g = cv.wait(g).unwrap_or_else(|e| e.into_inner());
+            }
+        }
+        pub fn is_finished(&self) -> bool {
+            self.slot
+                .0
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .is_some()
+        }
+    }
+
+    impl<'scope, 'env> Scope<'scope, 'env> {
+        pub fn spawn<F, T>(&'scope self, f: F) -> ScopedJoinHandle<'scope, T>
+        where
+            F: FnOnce() -> T + Send + 'scope,
+            T: Send + 'scope,
+        {
+            let slot: Slot<T> = Arc::new((Mutex::new(None), Condvar::new()));
+            *self.running.count.lock().unwrap_or_else(|e| e.into_inner()) += 1;
+            let (out, running) = (slot.clone(), self.running.clone());
+            let job: Box<dyn FnOnce() + Send + 'scope> = Box::new(move || {
+                let r = catch_unwind(AssertUnwindSafe(f));
+                *out.0.lock().unwrap_or_else(|e| e.into_inner()) = Some(r);
+                out.1.notify_all();
+                drop(out);
+                let mut n = running.count.lock().unwrap_or_else(|e| e.into_inner());
+                *n -= 1;
+                running.done.notify_all();
+            });
+            // SAFETY: `scope` waits until every job has run to completion
+            // (the count above) before the borrows of 'scope end.
+            let job: Box<dyn FnOnce() + Send + 'static> = unsafe { std::mem::transmute(job) };
+            let _ = super::wasm::spawn(job);
+            ScopedJoinHandle {
+                slot,
+                _scope: PhantomData,
+            }
+        }
+    }
+
+    pub fn scope<'env, F, T>(f: F) -> T
+    where
+        F: for<'scope> FnOnce(&'scope Scope<'scope, 'env>) -> T,
+    {
+        let s = Scope {
+            running: Arc::new(Running::default()),
+            _scope: PhantomData,
+            _env: PhantomData,
+        };
+        let r = f(&s);
+        let mut n = s.running.count.lock().unwrap_or_else(|e| e.into_inner());
+        while *n > 0 {
+            n = s.running.done.wait(n).unwrap_or_else(|e| e.into_inner());
+        }
+        r
+    }
+}
+
 /// Host threads the web glue should still start: queued closures that no
 /// idle host thread will take. Always 0 natively.
 pub fn wanted_host_threads() -> usize {

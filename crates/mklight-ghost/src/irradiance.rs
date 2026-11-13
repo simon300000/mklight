@@ -1293,7 +1293,7 @@ pub(crate) fn ghost_irradiance_with_backend(
                 .collect::<Vec<_>>();
             let device_steps = device.iter().map(|&i| all_steps[i]).collect::<Vec<_>>();
             let quiet = JobContext::with(ctx.cancel.clone(), Default::default());
-            std::thread::scope(|scope| {
+            mklight_core::platform::scope(|scope| {
                 let cpu = (!cpu_groups.is_empty()).then(|| scope.spawn(|| trace_cpu(&quiet)));
                 let gpu = resident_maps(
                     b,

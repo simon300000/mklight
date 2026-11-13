@@ -1,0 +1,45 @@
+[package]
+name = "mklight-webgpu"
+description = "MKLight WebGPU compute backend (wgpu, WGSL kernels)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+# One test program for `tests/` (`tests/main.rs`), not one per file.
+autotests = false
+build = "build.rs"
+
+[dependencies]
+mklight-core.workspace = true
+mklight-gpu.workspace = true
+bytemuck.workspace = true
+wgpu = "30"
+blake3.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+rayon.workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+pollster = "1"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+js-sys = "0.3"
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+
+[dev-dependencies]
+mklight-trace.workspace = true
+mklight-analysis.workspace = true
+rustfft.workspace = true
+# Engine-level wave checks (tests/wave.rs) under the GPU.md §9.4 gates.
+mklight-engine.workspace = true
+mklight-bench = { path = "../mklight-bench" }
+
+# The benchmarks print Metal's numbers next to WebGPU's.
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+mklight-metal.workspace = true
+
+[[test]]
+name = "tests"
+path = "tests/main.rs"

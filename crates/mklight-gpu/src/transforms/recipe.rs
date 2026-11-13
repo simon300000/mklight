@@ -391,3 +391,75 @@ pub fn dependencies(s: &Step) -> Vec<usize> {
         _ => vec![s.a],
     }
 }
+/// The steps a backend runs for a recipe and how many of them read each slot.
+#[derive(Clone, Debug)]
+pub struct Liveness {
+    /// Step i runs: the output needs it and its result is not held already.
+    pub active: Vec<bool>,
+    /// Active steps reading each slot (inputs 0 and 1, then step i at i+2).
+    pub uses: Vec<usize>,
+}
+impl Recipe {
+    /// Walk back from the output, stopping at immutable (`cache`) steps whose
+    /// result `held(i)` reports as already available (a cached chirp
+    /// spectrum); `held` is asked only for needed cacheable steps.
+    pub fn liveness(&self, mut held: impl FnMut(usize) -> MkResult<bool>) -> MkResult<Liveness> {
+        let n = self.steps.len();
+        let mut needed = vec![false; n + 2];
+        let mut have = vec![false; n];
+        needed[self.output] = true;
+        for i in (0..n).rev() {
+            if !needed[i + 2] {
+                continue;
+            }
+            if self.steps[i].cache && held(i)? {
+                have[i] = true;
+                continue;
+            }
+            for d in dependencies(&self.steps[i]) {
+                needed[d] = true;
+            }
+        }
+        let active: Vec<bool> = (0..n).map(|i| needed[i + 2] && !have[i]).collect();
+        let mut uses = vec![0; n + 2];
+        for (s, _) in self.steps.iter().zip(&active).filter(|(_, a)| **a) {
+            for d in dependencies(s) {
+                uses[d] += 1;
+            }
+        }
+        Ok(Liveness { active, uses })
+    }
+}
+/// Geometry of the shared-memory row kernels for rows of `n` points in a
+/// group of `shared` complex elements: (elements per thread E, threads per
+/// row T = ⌈n/E⌉, rows per group G = shared/(E·T)).
+pub fn row_geometry(shared: usize, n: usize) -> (usize, usize, usize) {
+    let per = if shared > 2048 { 16 } else { 8 };
+    let t = n.div_ceil(per);
+    (per, t, shared / (per * t))
+}
+/// Threads per group of the global Stockham stage kernel; a stage of radix
+/// R over `rows` rows of n launches ⌈(n/R)/256⌉ × rows groups.
+pub const STAGE_THREADS: usize = 256;
+/// The global Stockham stages of an `FFT_ROWS` step whose rows are too long
+/// for one shared-memory pass: each stage's parameters (its radix in
+/// `radices[0]`, its `span`, the step's scale on the last stage only) and
+/// whether it writes the step's destination (else a temporary of the same
+/// size), alternating so that the last stage writes the destination.
+pub fn global_stages(p: &Params) -> Vec<(Params, bool)> {
+    let stages = p.stages as usize;
+    let mut span = 1;
+    (0..stages)
+        .map(|k| {
+            let r = p.radix(k);
+            let mut q = *p;
+            q.radices = [r as u32, 0];
+            q.span = span as u32;
+            if k + 1 < stages {
+                q.scale_bits = 1f32.to_bits();
+            }
+            span *= r;
+            (q, (stages - 1 - k).is_multiple_of(2))
+        })
+        .collect()
+}

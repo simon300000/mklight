@@ -293,6 +293,32 @@ Diagnostics are retained at the cap and for explicit coarse settings:
 all built-in samples, including the anamorphic, freeform and DOE designs;
 this is a sampling check, not a claim that those designs are corrected.
 
+**Lattice interpolation.** The pupil grid is interpolated linearly from
+the traced `pupil.rays` lattice, so a fine grid cannot repair a lattice
+that is too coarse for the wavefront's curvature.
+`lattice_undersampled` (`interp::lattice_warning`, CPU and device
+resampling alike) estimates the interpolation error from every three
+consecutive lattice rays along a row or column: the deviation `e` of the
+middle ray's OPD from the straight line through its neighbours in
+`(u, v)`, with error `e/4` inside a cell (exact for a locally quadratic
+wavefront; zero for piston and tilt, and independent of uneven ray
+spacing). It warns above λ/50 (`LATTICE_INTERPOLATION_LIMIT_WAVES`) and
+recommends `pupil.rays` scaled by `1.2·√(error/limit)`. At that limit MTFs
+stay within 2·10⁻³ of a dense lattice and Strehl ratios within a few per
+cent (larger relative errors only on fields with Strehl < 0.05); every
+built-in sample passes at the default 65 rays. An F/1.3 aspheric singlet
+with two waves of secondary spherical (`coarse_lattice_on_a_fast_asphere_is_reported`)
+reaches 0.05 waves at 65 rays and had a 20 % low Strehl ratio
+(0.0267 against 0.0330 converged, which an independent FFT-PSF code also
+gives).
+
+**Afocal image space.** When the paraxial image-space NA is below 10⁻⁹
+(`AFOCAL_IMAGE_NA`), the reference sphere about the chief ray's image
+point turns a collimated output beam into a large spurious defocus, and
+every wave analysis reports `afocal_image_space` (CPU and device). A plane
+(afocal) reference with angular PSF/MTF units is not implemented; focus
+the beam with an ideal (paraxial) lens before the image surface.
+
 **Anamorphic coverage.** The pupil mask is the actual traced boundary on
 the reference sphere, not an assumed circle. The sparse-ray diagnostic
 compares each extrapolation gap with the longer local lattice edge (the
@@ -361,7 +387,11 @@ cargo test --release -p mklight-wave --test tests interactive:: -- --ignored --n
 * Vector diffraction is not implemented.
 * The automatic grid resolves the phase interpolated from the traced lattice;
   it does not adaptively discover features smaller than the `rays` spacing.
-  Increase `pupil.rays` for sharply localised wavefront structure.
+  A lattice too coarse for the wavefront's curvature is reported
+  (`lattice_undersampled`, §5) but not refined automatically; increase
+  `pupil.rays`.
+* Afocal image spaces have no plane-wave reference or angular units; they
+  are only reported (`afocal_image_space`).
 * The default amplitude model is `transmission`, not the more faithful
   `radiometric` (§3).
 

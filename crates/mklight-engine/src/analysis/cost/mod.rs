@@ -86,25 +86,62 @@ pub(crate) enum Device {
     Apple,
     /// A device without a calibration table.
     Other,
+    /// The WebGPU backend: the Apple table's Metal sets scaled by the
+    /// measured WebGPU/Metal ratio of each analysis (`webgpu_factor`).
+    WebGpu,
     /// Not open yet, and its family is not known in advance.
     Unknown,
 }
 
 impl Device {
     pub(crate) fn of(info: &DeviceInfo) -> Self {
-        if is_apple(info) {
+        if info.kind == BackendKind::WebGpu {
+            Device::WebGpu
+        } else if is_apple(info) {
             Device::Apple
         } else {
             Device::Other
         }
     }
 
-    pub(crate) fn hinted(apple: Option<bool>) -> Self {
+    pub(crate) fn hinted(apple: Option<bool>, webgpu: bool) -> Self {
+        if webgpu {
+            return Device::WebGpu;
+        }
         match apple {
             Some(true) => Device::Apple,
             Some(false) => Device::Other,
             None => Device::Unknown,
         }
+    }
+}
+
+/// The WebGPU `auto` rule (GPU.md §11.6): the analyses with a measured
+/// WebGPU gain over the CPU reference in the browser (where WebGPU is the
+/// GPU), each from the ray count (`profile` rays: fields × wavelengths ×
+/// pupil samples) at which WebGPU was at least `RATIO` faster on the
+/// calibration machine. Every other WebGPU analysis runs on the reference
+/// under `auto` (no gain measured) and natively only when requested.
+pub(crate) const WEBGPU_MIN_RAYS: &[(&str, f64)] =
+    &[("ray_grid", 250_000.), ("spot_diagram", 900_000.)];
+
+fn webgpu_rule(analysis: &str, settings: &Value, system: &OpticalSystem) -> Decision {
+    let rays = profile::profile_with(analysis, settings, system, None).map(|p| p.rays);
+    let min = WEBGPU_MIN_RAYS
+        .iter()
+        .find(|(a, _)| *a == analysis)
+        .map(|(_, r)| *r);
+    let native = matches!((rays, min), (Some(r), Some(m)) if r >= m);
+    Decision {
+        route: if native { Route::Metal } else { Route::Cpu },
+        json: json!({
+            "decision": if native { "qualified_webgpu" } else { "cpu_reference" },
+            "rule": "webgpu break-even",
+            "rays": rays,
+            "min_rays": min,
+            "reason": if min.is_none() { "no measured WebGPU gain for this analysis" } else if native { "above the measured break-even" } else { "below the measured break-even" },
+            "version": VERSION,
+        }),
     }
 }
 
@@ -388,6 +425,7 @@ impl CostModel {
                     json!({"decision":"qualified_metal","reason":"no cost calibration for this device","version":VERSION}),
                 );
             }
+            Device::WebGpu => return webgpu_rule(analysis, settings, system),
             Device::Apple => (),
         }
         let fam = family(system);
@@ -745,6 +783,36 @@ impl<'a> From<&'a super::AnalysisResult> for Observation<'a> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn webgpu_routes_by_measured_break_even() {
+        let dg = mklight_core::samples::double_gauss();
+        let m = CostModel::with_table(Calibration::builtin(), "builtin".into(), false);
+        let st = State {
+            snapshot: None,
+            library: "",
+            device_open: true,
+            tracer_warm: false,
+            known_failure: false,
+            kernels_prepared: true,
+        };
+        let d = |a: &str, s: Value| m.decide(a, &s, &dg, Device::WebGpu, &st);
+        assert_eq!(d("ray_grid", json!({"rings": 128})).route, Route::Metal);
+        assert_eq!(d("ray_grid", json!({"rings": 32})).route, Route::Cpu);
+        assert_eq!(d("spot_diagram", json!({"rings": 250})).route, Route::Metal);
+        assert_eq!(d("spot_diagram", json!({"rings": 64})).route, Route::Cpu);
+        let mtf = d("mtf", json!({}));
+        assert_eq!(mtf.route, Route::Cpu);
+        assert_eq!(
+            mtf.json["reason"],
+            "no measured WebGPU gain for this analysis"
+        );
+        // Analyses the rule lists are WebGPU analyses.
+        for (a, _) in WEBGPU_MIN_RAYS {
+            assert!(crate::analysis::gpu::WEBGPU_ANALYSES.contains(a));
+        }
+    }
+
     use super::*;
     use mklight_core::samples;
 

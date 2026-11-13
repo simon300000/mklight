@@ -74,7 +74,7 @@ public enum ToleranceReport {
         if r.stopped { lines.append("Stopped early: statistics of the completed evaluations.") }
         if r.hasSensitivity {
             lines.append("Nominal: \(d.format(d.value(r.nominal)))")
-            lines.append("Predicted (nominal + RSS): \(d.format(d.value(r.predicted)))")
+            lines.append("Predicted mean (nominal + expected changes): \(d.format(d.value(r.predicted)))")
         }
         if r.hasMonteCarlo {
             lines.append("Monte Carlo: \(r.trials) trials, seed \(r.seed)\(r.failures > 0 ? ", \(r.failures) failed" : "")")
@@ -87,7 +87,7 @@ public enum ToleranceReport {
         if r.hasSensitivity {
             lines.append("Largest contributors:")
             for s in r.sensitivities.prefix(5) {
-                lines.append("  \(label(s, rows: rows, system: system)) \(limits(s, rows: rows)): \(Fmt.percent(r.share(s), digits: 0)) of the RSS")
+                lines.append("  \(label(s, rows: rows, system: system)) \(limits(s, rows: rows)): \(Fmt.percent(r.share(s), digits: 0)) of the predicted change")
             }
         }
         for (j, c) in r.compensators.enumerated() {

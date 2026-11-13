@@ -20,6 +20,7 @@ mklight-ghost.workspace = true
 mklight-stray.workspace = true
 mklight-gpu.workspace = true
 mklight-metal.workspace = true
+mklight-webgpu.workspace = true
 mklight-optim.workspace = true
 serde.workspace = true
 serde_json.workspace = true

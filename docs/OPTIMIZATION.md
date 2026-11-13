@@ -123,9 +123,12 @@ and the wall time of the driver. `run_info` builds the same record from a
   **primary** wavelength, so lateral colour stays in the merit. `Centroid`
   follows the `RayGroup` contract.
 * **Wavefront references.** `Chief` uses the CONVENTIONS §4 reference sphere
-  at the operand's wavelength (for `WavefrontRms`, only the piston is
-  removed). `Centroid` removes the least-squares piston and tilt of the
-  group.
+  at the operand's wavelength and removes only the piston: for `WavefrontRms`
+  the weighted mean OPD of its sampling, for a `WavefrontAberration` with a
+  `RayGroup` the group's weighted mean OPD (`w_node · w_λ` over the group's
+  wavelengths; the device's one-column fit when the group is resident), and
+  a `WavefrontAberration` without a group reports the raw OPD. `Centroid`
+  removes the least-squares piston and tilt of the group.
 * **RayGroup contract.** Every node of the group's sampling is traced at the
   operand's field and configuration. A `Monochromatic` group uses the
   operand's wavelength. A `Polychromatic` group uses every positive-weight
@@ -178,7 +181,7 @@ uses the wavelength (`λ1` = one wavelength required).
 | `param_value` | M | any `ParamPath` value | param | – | |
 | `real_ray` | R | `x y z` (mm), `l m n` (direction cosines after the surface), `angle_x/angle_y` = `atan2(l or m, |n|)` (deg), `incidence_angle` (deg), `optical_path` (mm from the start of the trace) at `surface` (default image) for pupil `(px, py)` | mm / – / deg | f1 λ1 | local frame unless `global`; clipped per settings |
 | `ray_aberration` | R | transverse aberration `ε = ray − reference` along `axis` on the image | mm | f1 λ1 | `chief`: primary-λ chief; `centroid`: group centroid |
-| `wavefront_aberration` | W | OPD at `(px, py)` (CONVENTIONS §4 sign) | waves | f1 λ1 | `centroid`: minus the group's piston + tilt |
+| `wavefront_aberration` | W | OPD at `(px, py)` (CONVENTIONS §4 sign) | waves | f1 λ1 | `centroid`: minus the group's piston + tilt; `chief`: minus the group's piston (raw OPD without a group) |
 | `chief_ray_angle` | R | chief-ray angle of incidence on `surface` (default image) | deg | f1 λ1 | unsigned; image: CRA, 0 = telecentric |
 | `rms_spot` | R | RMS spot radius, or one component, over `sampling` | mm | f λ | about the centroid or the primary-λ chief |
 | `spot_centroid` | R | centroid minus the primary-λ chief ray (full default sampling) | mm | f1 λ | |
@@ -376,7 +379,14 @@ so near it the azimuthal rule falls back to O(h²).
 `wavefront_aberration` per node) for every (configuration, field, wavelength).
 The weights are chosen so that `Σ w r²` is the weighted mean of the squared
 RMS spot (or wavefront) radius. A test checks this identity against the
-aggregate operands to 1e-12. A meridionally symmetric system automatically
+aggregate operands to 1e-12, for the spot and for the wavefront about the
+centroid and about the chief ray. With a `chief` wavefront reference the
+per-node residual is the OPD minus the group's weighted mean OPD, so the
+merit is the wavefront variance about the chief sphere, as `wavefront_rms`
+reports it (before 2026-11 the piston stayed in, and the merit was the mean
+square OPD: Double Gauss 17.13 against `wavefront_rms`² 3.35; minimising
+the mean square instead of the variance biases focus balancing, e.g. for
+`W = aρ² + bρ⁴` it gives `a = −¾b` instead of `a = −b`). A meridionally symmetric system automatically
 uses the half pupil, unless a variable (`generate_for`) can break the
 symmetry. For a tolerancing criterion, `generate_for_tolerancing(sys,
 &tolerance_spec)` counts the toleranced parameters and compensators as
@@ -576,7 +586,23 @@ system by the `ToleranceSpec`, re-optimises the compensators (for example the
 back focus, within `±range` of nominal) by LM on the criterion merit, and
 reports the resulting merit. `sensitivity` evaluates the nominal and each
 tolerance at its limits in batches of `SENSITIVITY_BATCH` (32) points and
-ranks the operands worst first, with the RSS prediction. Cancelled after the
+ranks the operands worst first, with the predicted mean criterion
+`SensitivityReport::predicted_criterion` = nominal + `expected_change`. The
+criterion is a merit `Φ = Σ w r²`, a mean square: near the (compensated)
+nominal `Φ(δ) ≈ Φ₀ + gᵀδ + ½δᵀHδ`, and for independent perturbations the
+cross terms vanish in expectation, so `E[Φ] ≈ Φ₀ + Σ E[ΔΦᵢ]` — a plain sum,
+not a root sum of squares (RSS of the changes is right only for a criterion
+linear in δ, and under-predicts a merit by up to √N; `rss_change` is still
+reported). `E[ΔΦᵢ] = a·E[δ] + b·E[δ²]` with `ΔΦ = aδ + bδ²` through both
+limits and the moments of the tolerance's distribution
+(`ToleranceOperand::moments`: end point, uniform on `[−minus, plus]`, normal
+truncated at `k` σ with `E[t²] = 1 − 2kφ(k)/(2Φ(k) − 1)`); a one-sided
+tolerance is taken as quadratic. An RMS display of the criterion (√Φ) is
+the square root of the prediction. Tests: a separable quadratic criterion
+with every distribution and asymmetric limits matches a 40 000-trial Monte
+Carlo within 4 standard errors; Cooke triplet, ten end-point tolerances,
+2000 trials: predicted 3.657e-3, Monte-Carlo mean 3.661e-3 (nominal + RSS
+was 2.233e-3). Cancelled after the
 nominal, it returns the operands whose both limits were evaluated
 (`SensitivityReport::cancelled`). The compensator solves of the trials share
 the job's cancellation but not its progress bar. `monte_carlo` draws trial `i` from Philox stream `TOLERANCE | i`,
