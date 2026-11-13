@@ -4,6 +4,7 @@
 
 import type { Json, JsonObject } from '@/engine/types'
 import { nf } from './format'
+import { applyMaterial, offsetCompactText, offsetOf, parseMaterial as parseMaterialText, type MaterialEdit as ParsedMaterial } from './materials'
 
 export interface Shape extends JsonObject {
   type: string
@@ -209,6 +210,8 @@ export function canDelete(s: System, index: number): boolean {
 
 export function materialText(surface: Surface): string {
   if (surface.interaction === 'reflect') return 'MIRROR'
+  if (surface.interaction === 'dummy') return 'DUMMY'
+  if (surface.shape?.type === 'coordinate_break') return ''
   const m = surface.material
   switch (m.type) {
     case 'air':
@@ -218,7 +221,7 @@ export function materialText(surface: Surface): string {
     case 'catalog':
       return String(m.name ?? '')
     case 'model':
-      return `${sigShort(Number(m.nd))}/${sigShort(Number(m.vd))}`
+      return `${Number(m.nd).toFixed(5)}/${Number(m.vd).toFixed(2)}`
     case 'constant':
       return `n=${sigShort(Number(m.n))}`
     default:
@@ -230,56 +233,18 @@ function sigShort(v: number) {
   return Number.isFinite(v) ? String(Number(v.toPrecision(6))) : '?'
 }
 
-export type MaterialEdit = { interaction: string; material: Material | null } | { error: string }
+export type MaterialEdit = ParsedMaterial
 
-/** Parses the material column: a glass name, `MIRROR`, empty for air, `n=1.5`, `1.5168/64.17`. */
-export function parseMaterial(text: string, known?: Set<string>): MaterialEdit {
-  const t = text.trim()
-  const up = t.toUpperCase()
-  if (t === '' || up === 'AIR') return { interaction: 'refract', material: { type: 'air' } }
-  if (up === 'MIRROR') return { interaction: 'reflect', material: null }
-  if (up === 'VACUUM') return { interaction: 'refract', material: { type: 'vacuum' } }
-  const n = /^n\s*=\s*([0-9.,]+)$/i.exec(t)
-  if (n) {
-    const v = Number(n[1].replace(',', '.'))
-    if (!(v >= 1)) return { error: `Index ${n[1]} is not valid` }
-    return { interaction: 'refract', material: { type: 'constant', n: v } }
-  }
-  const m = /^([0-9.,]+)\s*[/:]\s*([0-9.,]+)$/.exec(t)
-  if (m) {
-    const nd = Number(m[1].replace(',', '.'))
-    const vd = Number(m[2].replace(',', '.'))
-    if (!(nd >= 1 && vd > 0)) return { error: `${t} is not a valid model glass (n_d/V_d)` }
-    return { interaction: 'refract', material: { type: 'model', nd, vd, dpgf: 0 } }
-  }
-  let name = t
-  if (known && known.size) {
-    const hit = [...known].find((g) => g.toUpperCase() === up)
-    if (!hit) return { error: `Unknown glass "${t}"` }
-    name = hit
-  }
-  return { interaction: 'refract', material: { type: 'catalog', catalog: null, name } }
-}
+/** Parses the material column (see `materials.ts`). */
+export const parseMaterial = parseMaterialText
 
-export function setMaterial(surface: Surface, edit: { interaction: string; material: Material | null }) {
-  surface.interaction = edit.interaction
-  if (edit.material) {
-    // Retyping the same glass keeps its melt offset; another glass starts without.
-    const old = surface.material
-    if (old.type === 'catalog' && edit.material.type === 'catalog' && old.name === edit.material.name) return
-    surface.material = edit.material
-  }
-}
+/** Applies a parsed material; retyping the same glass keeps its melt offset,
+ *  another glass starts without. */
+export const setMaterial = applyMaterial
 
 /** Melt offset suffix of a catalogue glass (`+0.0012/−0.8`), or ''. */
 export function meltOffsetText(m: Material): string {
-  const o = m.offset as JsonObject | undefined
-  if (!o) return ''
-  const dn = Number(o.dn_d ?? 0)
-  const dv = Number(o.dv_d ?? 0)
-  if (!dn && !dv) return ''
-  const s = (v: number, d: number) => (v >= 0 ? '+' : '−') + Math.abs(v).toFixed(d)
-  return `${s(dn, 4)}/${s(dv, 1)}`
+  return offsetCompactText(offsetOf(m))
 }
 
 // MARK: New design

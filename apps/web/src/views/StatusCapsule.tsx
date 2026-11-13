@@ -2,6 +2,10 @@ import { AlertTriangle, CheckCircle2, Loader2, XOctagon } from 'lucide-react'
 import type { JsonObject } from '@/engine/types'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { fmt, nf, sig } from '@/model/format'
+import { Segmented } from '@/components/ui/segmented'
+import type { System } from '@/model/system'
+import { BACKEND_CHOICES, usePreferences } from '@/state/preferences'
+import { useDocument } from '@/state/document'
 import { useView } from '@/state/view'
 import { allIssues, SUMMARY, useWorkspace } from '@/state/workspace'
 import { cn } from '@/lib/utils'
@@ -44,6 +48,57 @@ function entry(json: JsonObject | undefined, key: string): number | null {
   return e ? nf(e.value) : null
 }
 
+export interface XYRow {
+  wavelength: number
+  wavelengthUm: number
+  eflX: number
+  eflY: number
+  bflX: number
+  bflY: number
+  squeeze: number
+  doePower: { surface: number; power: number }[]
+}
+
+/** The engine's first order of both sections (`paraxial_xy` of `first_order`,
+ *  docs/RESULTS.md) and whether the design lacks rotational symmetry (the
+ *  engine's `symmetry`; else toroids, biconics and freeforms decide). */
+export function anamorphicSummary(json: JsonObject | undefined | null, system: System | null | undefined) {
+  const xy = (json?.paraxial_xy as JsonObject | undefined) ?? null
+  const symmetry = ((xy?.symmetry ?? json?.symmetry) as string | undefined) ?? null
+  const rows: XYRow[] = ((xy?.wavelengths as JsonObject[] | undefined) ?? []).flatMap((w, k) => {
+    const eflY = nf(w.efl_y)
+    if (Number.isNaN(eflY)) return []
+    const eflX = w.efl_x == null ? NaN : nf(w.efl_x)
+    return [
+      {
+        wavelength: typeof w.wavelength === 'number' ? w.wavelength : k,
+        wavelengthUm: nf(w.wavelength_um),
+        eflX,
+        eflY,
+        bflX: w.bfl_x == null ? NaN : nf(w.bfl_x),
+        bflY: w.bfl_y == null ? NaN : nf(w.bfl_y),
+        squeeze: w.squeeze != null ? nf(w.squeeze) : eflX !== 0 ? eflY / eflX : NaN,
+        doePower: ((w.doe_power as JsonObject[] | undefined) ?? []).map((d) => ({ surface: Number(d.surface), power: nf(d.power) })),
+      },
+    ]
+  })
+  const primaryIndex = typeof xy?.primary_wavelength === 'number' ? xy.primary_wavelength : null
+  const primary = rows.find((r) => r.wavelength === primaryIndex) ?? rows[0] ?? null
+  const nonRotational = ['toroid', 'biconic', 'xy_polynomial', 'zernike_sag']
+  const anamorphic = symmetry ? symmetry !== 'rotational' : !!system?.surfaces?.some((s) => nonRotational.includes(s.shape.type))
+  return {
+    anamorphic,
+    symmetry,
+    primary,
+    rows,
+    squeezeDefinition: (xy?.squeeze_definition as string | undefined) ?? null,
+    warnings: ((xy?.warnings as string[] | undefined) ?? []).filter((w) => typeof w === 'string'),
+  }
+}
+
+/** `1.5000×`, signed. */
+export const squeezeText = (v: number, digits = 4) => (Number.isFinite(v) ? `${v.toFixed(digits).replace('-', '−')}×` : sig(v))
+
 /** The toolbar's status capsule (`DesignStatus`): activity, EFL, F/#, total
  *  track and the issues button; its popover has the first-order table and the
  *  engine's state. */
@@ -61,9 +116,11 @@ export function StatusCapsule() {
   const errors = issues.filter((i) => i.severity === 'error').length
   const busy = pending || Object.values(runs).some((r) => r.status === 'running')
   const json = run?.result?.json
+  const system = useDocument((s) => s.project.system)
   const efl = entry(json, 'efl')
-  const fno = entry(json, 'image_f_number') ?? entry(json, 'working_f_number')
+  const fno = entry(json, 'working_f_number') ?? entry(json, 'image_f_number')
   const tt = entry(json, 'total_track')
+  const xy = anamorphicSummary(json, system)
 
   return (
     <div className="flex h-7 max-w-full items-center rounded-full border border-control-border bg-control/60 text-[12px] shadow-[0_0.5px_1px_rgb(0_0_0/0.06)]">
@@ -94,8 +151,17 @@ export function StatusCapsule() {
                   <span className="text-secondary">Design has errors</span>
                 ) : (
                   <span className={cn('num truncate', run?.status === 'running' && 'opacity-70')}>
-                    <span className="text-secondary">EFL</span> {sig(efl, 5)} <span className="text-secondary">·</span>{' '}
-                    <span className="text-secondary">F/</span>
+                    {xy.anamorphic && xy.primary ? (
+                      <>
+                        <span className="text-secondary">EFL y</span> {sig(xy.primary.eflY, 5)} <span className="text-secondary">· Squeeze</span>{' '}
+                        {squeezeText(xy.primary.squeeze, 2)}
+                      </>
+                    ) : (
+                      <>
+                        <span className="text-secondary">{xy.anamorphic ? 'EFL y' : 'EFL'}</span> {sig(efl, 5)}
+                      </>
+                    )}{' '}
+                    <span className="text-secondary">·</span> <span className="text-secondary">F/</span>
                     {sig(fno, 3)} <span className="text-secondary">· TT</span> {sig(tt, 5)}
                   </span>
                 )}
@@ -133,7 +199,76 @@ export function StatusCapsule() {
   )
 }
 
+const Y_SECTION = new Set(['efl', 'bfl', 'image_f_number', 'working_f_number', 'paraxial_image_height'])
+
+/** The x and y first order at the primary wavelength (anamorphic designs). */
+function AnamorphicTable({ json }: { json: JsonObject | undefined }) {
+  const system = useDocument((s) => s.project.system)
+  const a = anamorphicSummary(json, system)
+  if (!a.anamorphic) return null
+  const p = a.primary
+  if (!p) {
+    return <p className="mt-1.5 text-[11px] text-secondary">This design is not rotationally symmetric. The engine’s first-order data covers the y section.</p>
+  }
+  return (
+    <table className="mt-1.5 w-full text-[12px]" data-testid="anamorphic-table">
+      <thead>
+        <tr className="text-[11px] text-secondary">
+          <th />
+          <th className="text-right font-normal">x (mm)</th>
+          <th className="text-right font-normal">y (mm)</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td className="py-[1px] pr-2 text-secondary">EFL</td>
+          <td className="num text-right">{fmt(p.eflX, 4)}</td>
+          <td className="num text-right">{fmt(p.eflY, 4)}</td>
+        </tr>
+        <tr>
+          <td className="py-[1px] pr-2 text-secondary">BFL</td>
+          <td className="num text-right">{fmt(p.bflX, 4)}</td>
+          <td className="num text-right">{fmt(p.bflY, 4)}</td>
+        </tr>
+        <tr title={`Squeeze: ${a.squeezeDefinition ?? 'signed EFL y / EFL x'}`}>
+          <td className="py-[1px] pr-2 text-secondary">Squeeze</td>
+          <td colSpan={2} className="num text-right">
+            {squeezeText(p.squeeze)}
+          </td>
+        </tr>
+        {a.symmetry && (
+          <tr>
+            <td className="py-[1px] pr-2 text-secondary">Symmetry</td>
+            <td colSpan={2} className="text-right">
+              {a.symmetry === 'meridional' ? 'Meridional plane' : a.symmetry === 'none' ? 'None' : 'Rotational'}
+            </td>
+          </tr>
+        )}
+      </tbody>
+    </table>
+  )
+}
+
+/** Where analyses compute: Automatic, CPU reference (f64) or GPU. */
+export function BackendPicker() {
+  const backend = usePreferences((s) => s.backend)
+  const setBackend = usePreferences((s) => s.setBackend)
+  return (
+    <div className="mt-2 flex items-center justify-between gap-2 text-[12px]" title="Where analyses compute. Automatic uses the GPU where the engine has a path and it pays off.">
+      <span className="text-secondary">Compute on</span>
+      <Segmented
+        label="Compute on"
+        value={backend}
+        onChange={setBackend}
+        options={BACKEND_CHOICES.map((c) => ({ value: c.value, title: c.value === 'cpu_reference' ? 'CPU (f64)' : c.title, help: c.help }))}
+      />
+    </div>
+  )
+}
+
 function StatusDetails({ json }: { json: JsonObject | undefined }) {
+  const system = useDocument((s) => s.project.system)
+  const anamorphic = anamorphicSummary(json, system).anamorphic
   const engine = useWorkspace((s) => s.engine)
   const engineError = useWorkspace((s) => s.engineError)
   const snapshot = useWorkspace((s) => s.snapshot)
@@ -154,7 +289,10 @@ function StatusDetails({ json }: { json: JsonObject | undefined }) {
                 .filter(Boolean)
                 .map((e) => (
                   <tr key={String(e!.key)}>
-                    <td className="py-[1px] pr-2 text-secondary">{String(e!.label)}</td>
+                    <td className="py-[1px] pr-2 text-secondary">
+                      {String(e!.label)}
+                      {anamorphic && Y_SECTION.has(String(e!.key)) ? ' (y)' : ''}
+                    </td>
                     <td className="num text-right">{fmt(nf(e!.value), 4)}</td>
                     <td className="w-8 pl-1 text-secondary">{String(e!.unit ?? '')}</td>
                   </tr>
@@ -162,6 +300,7 @@ function StatusDetails({ json }: { json: JsonObject | undefined }) {
             </tbody>
           </table>
         )}
+        <AnamorphicTable json={json} />
       </section>
       <section>
         <h3 className="mb-1 text-[13px] font-semibold">Engine</h3>
@@ -180,6 +319,7 @@ function StatusDetails({ json }: { json: JsonObject | undefined }) {
               <span className="text-secondary">Snapshot</span>
               <span className="num font-mono text-[11px]">{snapshot ? snapshot.hash.slice(0, 12) : '–'}</span>
             </div>
+            <BackendPicker />
           </>
         ) : (
           <p className="text-secondary">Starting…</p>

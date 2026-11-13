@@ -24,7 +24,17 @@ import { FIXTURES as CURVE_FIXTURES, system as curveSystem } from '../analysis/c
 import { FIXTURES as MAP_FIXTURES, system as mapSystem } from '../analysis/maps/fixtures'
 
 /** One fixture per dedicated renderer, with the system it was made for. */
+// The glass views (src/views/glassmap) from the mock engine's results.
+const glassSystem = (samples as { id: string; system: System }[]).find((x) => x.id === 'double_gauss')!.system
+const glassEngine = createMockEngine({ latencyMs: 0 })
+const glassSnap = await glassEngine.openSnapshot(glassSystem)
+const GLASS_FIXTURES: [string, AnalysisResult, System][] = [
+  ['glass_map', await glassEngine.submit({ analysis: 'glass_map' }, glassSnap).result, glassSystem],
+  ['glass_info', await glassEngine.submit({ analysis: 'glass_info', settings: { name: 'N-BK7' } }, glassSnap).result, glassSystem],
+]
+
 const RENDERER_FIXTURES: [string, AnalysisResult, System][] = [
+  ...GLASS_FIXTURES,
   ...Object.entries(CURVE_FIXTURES).map(([a, r]): [string, AnalysisResult, System] => [a, r, curveSystem]),
   ...MAP_FIXTURES.map(([a, r]): [string, AnalysisResult, System] => [a, r, mapSystem]),
 ]

@@ -4,6 +4,7 @@
 // lists with term labels. The inspector draws any type from its descriptor.
 
 import type { Json, JsonObject } from '@/engine/types'
+import type { ParamPath } from './params'
 import type { Shape, Surface, System } from './system'
 import { conicOf, curvatureOf } from './system'
 
@@ -19,6 +20,8 @@ export interface ShapeParam {
   integer?: boolean
   help?: string
   options?: { value: string; title: string }[]
+  /** The parameter path that makes it a variable or solve target. */
+  path?: (surface: number) => ParamPath
 }
 
 export interface CoefficientList {
@@ -28,6 +31,10 @@ export interface CoefficientList {
   term: (k: number, shape: Shape) => string
   meaning?: (k: number, shape: Shape) => string
   unit?: (k: number) => string
+  /** Path of term k, for variables. */
+  path?: (surface: number, k: number) => ParamPath
+  /** Long lists (XY, Zernike): only nonzero terms show; any term from a menu. */
+  sparse?: boolean
 }
 
 export interface ParamSection {
@@ -35,6 +42,8 @@ export interface ParamSection {
   params: ShapeParam[]
   coefficients?: CoefficientList
   footer?: string
+  /** Whether the section applies to the shape (e.g. a DOE's base). */
+  applies?: (shape: Shape) => boolean
 }
 
 export interface SurfaceTypeDescriptor {
@@ -51,18 +60,33 @@ export const sub = (n: number) => (n < 0 ? '₋' : '') + [...String(Math.abs(n))
 export const sup = (n: number) => (n < 0 ? '⁻' : '') + [...String(Math.abs(n))].map((d) => SUP[+d]).join('')
 const mmPower = (p: number) => (p === 0 ? '' : p === 1 ? 'mm' : 'mm' + sup(p))
 
-const radius = (key = 'curvature', title = 'Radius'): ShapeParam => ({ key, title, unit: 'mm', radius: true })
-const conic = (key = 'conic', title = 'Conic'): ShapeParam => ({
+const curvaturePath = (surface: number): ParamPath => ({ param: 'curvature', surface })
+const conicPath = (surface: number): ParamPath => ({ param: 'conic', surface })
+const shapeParamPath = (parameter: string) => (surface: number): ParamPath => ({ param: 'shape_param', surface, parameter })
+const coefficientPath = (set: string) => (surface: number, index: number): ParamPath => ({ param: 'shape_coefficient', surface, set, index })
+const asphere = (surface: number, index: number): ParamPath => ({ param: 'asphere', surface, index })
+
+const radius = (key = 'curvature', title = 'Radius', path: ShapeParam['path'] = curvaturePath): ShapeParam => ({
+  key,
+  title,
+  unit: 'mm',
+  radius: true,
+  help: 'Radius of curvature; ∞ for a plane. Stored as curvature c = 1/R.',
+  path,
+})
+const conic = (key = 'conic', title = 'Conic', path: ShapeParam['path'] = conicPath): ShapeParam => ({
   key,
   title,
   unit: '',
   help: 'Conic constant k: 0 sphere, −1 paraboloid, < −1 hyperboloid.',
+  path,
 })
 const normRadius = (key = 'norm_radius'): ShapeParam => ({
   key,
   title: 'Norm radius',
   unit: 'mm',
-  help: 'Normalisation radius of the polynomial.',
+  help: 'Normalisation radius r_norm: the polynomial is defined for r ≤ r_norm. Usually the clear semi-diameter.',
+  path: shapeParamPath('norm_radius'),
 })
 
 const axisList = (axis: string, key: string, letter: string): CoefficientList => ({
@@ -72,6 +96,7 @@ const axisList = (axis: string, key: string, letter: string): CoefficientList =>
   term: (k) => `${letter}${sub(2 * k + 4)}`,
   meaning: (k) => axis + sup(2 * k + 4),
   unit: (k) => mmPower(-(2 * k + 3)),
+  path: coefficientPath(key),
 })
 
 /** XY term `X^m Y^n` at zero-based index (SURFACES §5). */
@@ -141,6 +166,7 @@ export const SURFACE_TYPES: SurfaceTypeDescriptor[] = [
           term: (k) => `A${sub(2 * k + 4)}`,
           meaning: (k) => 'r' + sup(2 * k + 4),
           unit: (k) => mmPower(-(2 * k + 3)),
+          path: asphere,
         },
       },
     ],
@@ -162,6 +188,7 @@ export const SURFACE_TYPES: SurfaceTypeDescriptor[] = [
           term: (k) => `β${sub(k + 1)}`,
           meaning: (k) => 'r' + (k === 0 ? '' : sup(k + 1)),
           unit: (k) => mmPower(-k),
+          path: coefficientPath('odd'),
         },
       },
     ],
@@ -183,6 +210,7 @@ export const SURFACE_TYPES: SurfaceTypeDescriptor[] = [
           term: (k) => `a${sub(k)}`,
           meaning: (k) => `u⁴Q${sub(k)}ᶜᵒⁿ`,
           unit: () => 'mm',
+          path: coefficientPath('q'),
         },
       },
     ],
@@ -204,6 +232,7 @@ export const SURFACE_TYPES: SurfaceTypeDescriptor[] = [
           term: (k) => `a${sub(k)}`,
           meaning: (k) => `Q${sub(k)}ᵇᶠˢ`,
           unit: () => 'mm',
+          path: coefficientPath('q'),
         },
       },
     ],
@@ -224,6 +253,8 @@ export const SURFACE_TYPES: SurfaceTypeDescriptor[] = [
           max: () => 65,
           term: (k) => `C(${monomial(xyTerm(k))})`,
           unit: () => 'mm',
+          path: coefficientPath('xy'),
+          sparse: true,
         },
       },
     ],
@@ -261,6 +292,8 @@ export const SURFACE_TYPES: SurfaceTypeDescriptor[] = [
           term: (k) => `Z${sub(k + 1)}`,
           meaning: (k, s) => zernikeName(zernikeTerm(k + 1, String(s.ordering ?? 'fringe'))),
           unit: () => 'mm',
+          path: coefficientPath('zernike'),
+          sparse: true,
         },
       },
     ],
@@ -273,12 +306,12 @@ export const SURFACE_TYPES: SurfaceTypeDescriptor[] = [
     sections: [
       {
         title: 'Y Profile',
-        params: [radius('curvature_y', 'Radius y'), conic('conic_y', 'Conic y')],
+        params: [radius('curvature_y', 'Radius y'), conic('conic_y', 'Conic y', shapeParamPath('conic_y'))],
         coefficients: axisList('y', 'y_asphere', 'B'),
       },
       {
         title: 'Rotation',
-        params: [radius('curvature_x', 'Radius x')],
+        params: [radius('curvature_x', 'Radius x', shapeParamPath('curvature_x'))],
         footer: 'Radius x is the distance from the vertex to the axis of rotation; ∞ makes a y cylinder.',
       },
     ],
@@ -291,12 +324,12 @@ export const SURFACE_TYPES: SurfaceTypeDescriptor[] = [
     sections: [
       {
         title: 'X Section',
-        params: [radius('curvature_x', 'Radius x'), conic('conic_x', 'Conic x')],
+        params: [radius('curvature_x', 'Radius x', shapeParamPath('curvature_x')), conic('conic_x', 'Conic x', shapeParamPath('conic_x'))],
         coefficients: axisList('x', 'x_asphere', 'A'),
       },
       {
         title: 'Y Section',
-        params: [radius('curvature_y', 'Radius y'), conic('conic_y', 'Conic y')],
+        params: [radius('curvature_y', 'Radius y'), conic('conic_y', 'Conic y', shapeParamPath('conic_y'))],
         coefficients: axisList('y', 'y_asphere', 'B'),
       },
     ],
@@ -307,7 +340,11 @@ export const SURFACE_TYPES: SurfaceTypeDescriptor[] = [
     group: 'Diffractive',
     summary: 'A fixed-period phase Φ = Σ Aᵢ ρ²ⁱ (order +1, radians) on a plane, conic or even-asphere base.',
     sections: [
-      { title: 'Base Shape', params: [radius('base.curvature'), conic('base.conic')] },
+      {
+        title: 'Base Shape',
+        params: [radius('base.curvature'), conic('base.conic')],
+        applies: (s) => (s.base as Shape | undefined)?.type !== 'plane',
+      },
       {
         title: 'Base Polynomial',
         params: [],
@@ -317,7 +354,10 @@ export const SURFACE_TYPES: SurfaceTypeDescriptor[] = [
           max: () => 10,
           term: (k) => `A${sub(2 * k + 4)}`,
           meaning: (k) => 'r' + sup(2 * k + 4),
+          unit: (k) => mmPower(-(2 * k + 3)),
+          path: asphere,
         },
+        applies: (s) => (s.base as Shape | undefined)?.type === 'even_asphere',
       },
       {
         title: 'Phase',
@@ -329,15 +369,18 @@ export const SURFACE_TYPES: SurfaceTypeDescriptor[] = [
           term: (k) => `A${sub(k + 1)}`,
           meaning: (k) => 'ρ' + sup(2 * (k + 1)),
           unit: () => 'rad',
+          path: coefficientPath('phase'),
         },
+        footer: 'A focusing phase has negative A₁. Coefficients describe order +1 and stay fixed when the wavelength or order changes.',
       },
       {
         title: 'Orders',
         params: [
-          { key: 'phase.design_order', title: 'Design order', unit: '', integer: true },
-          { key: 'phase.design_wavelength_um', title: 'Design λ', unit: 'µm' },
-          { key: 'phase.trace_order', title: 'Trace order', unit: '', integer: true },
+          { key: 'phase.design_order', title: 'Design order', unit: '', integer: true, help: 'The order the structure is designed for (nonzero). Metadata: it does not rescale the phase.' },
+          { key: 'phase.design_wavelength_um', title: 'Design λ', unit: 'µm', help: 'Design wavelength λ₀. Metadata: it does not rescale the phase.' },
+          { key: 'phase.trace_order', title: 'Trace order', unit: '', integer: true, help: 'The order rays follow; 0 is ordinary refraction or reflection.' },
         ],
+        footer: 'Orders are discrete and never optimization variables.',
       },
     ],
   },
@@ -349,7 +392,7 @@ export const SURFACE_TYPES: SurfaceTypeDescriptor[] = [
     sections: [
       {
         title: 'Ideal Lens',
-        params: [{ key: 'focal_length', title: 'Focal length', unit: 'mm', help: 'Focal length of the ideal lens.' }],
+        params: [{ key: 'focal_length', title: 'Focal length', unit: 'mm', help: 'Focal length of the ideal lens.', path: (surface) => ({ param: 'paraxial_focal_length', surface }) }],
       },
     ],
   },
@@ -366,6 +409,50 @@ export const descriptorFor = (type: string) => SURFACE_TYPES.find((d) => d.id ==
 
 /** `sphere` is the engine's legacy alias of a conic with k = 0. */
 export const typeTitle = (type: string) => descriptorFor(type === 'sphere' ? 'conic' : type)?.title ?? type
+
+/** The power axis when the shape is a cylinder: a biconic with one curved
+ *  axis and the other flat (zero curvature and polynomial). */
+export function cylinderAxis(shape: Shape): 'x' | 'y' | null {
+  if (shape.type !== 'biconic') return null
+  const zero = (v: Json | undefined) => !Array.isArray(v) || v.every((x) => x === 0)
+  const cx = Number(shape.curvature_x ?? 0)
+  const cy = Number(shape.curvature_y ?? 0)
+  const flatX = cx === 0 && zero(shape.x_asphere)
+  const flatY = cy === 0 && zero(shape.y_asphere)
+  if (flatY && cx !== 0) return 'x'
+  if (flatX && cy !== 0) return 'y'
+  return null
+}
+
+/** The type menu's entry a shape is: a cylinder shows as its preset. */
+export function typeChoice(shape: Shape): string {
+  const a = cylinderAxis(shape)
+  if (a) return `cylinder_${a}`
+  return shape.type === 'sphere' ? 'conic' : shape.type
+}
+
+export const CYLINDER_CHOICES = [
+  { id: 'cylinder_x', title: 'Cylinder (power in x)' },
+  { id: 'cylinder_y', title: 'Cylinder (power in y)' },
+]
+
+/** Short type name for the table: a conic of k = 0 is a sphere. */
+export function tableTypeTitle(shape: Shape): string {
+  switch (shape.type) {
+    case 'conic':
+      return Number(shape.conic ?? 0) === 0 ? 'Sphere' : 'Conic'
+    case 'sphere':
+      return 'Sphere'
+    case 'q_con':
+      return 'Q-Con'
+    case 'q_bfs':
+      return 'Q-BFS'
+    case 'biconic':
+      return cylinderAxis(shape) ? 'Cylinder' : 'Biconic'
+    default:
+      return typeTitle(shape.type)
+  }
+}
 
 /** Short type label for the table's type column. */
 export const TYPE_SHORT: Record<string, string> = {
@@ -464,4 +551,20 @@ export function makeCylinder(system: System, index: number, axis: 'x' | 'y') {
     x_asphere: [],
     y_asphere: [],
   }
+}
+
+/** A DOE's base as another type (plane, conic, even asphere), keeping its
+ *  curvature, conic and polynomial where they carry over. */
+export function setDiffractiveBase(shape: Shape, kind: string): Shape {
+  if (shape.type !== 'diffractive') return shape
+  const base = (shape.base as Shape | undefined) ?? { type: 'plane' }
+  const c = curvatureOf(base) ?? 0
+  const k = conicOf(base) ?? 0
+  const next: Shape =
+    kind === 'conic'
+      ? { type: 'conic', curvature: c, conic: k }
+      : kind === 'even_asphere'
+        ? { type: 'even_asphere', curvature: c, conic: k, coefficients: (base.coefficients as number[] | undefined) ?? [] }
+        : { type: 'plane' }
+  return { ...shape, base: next }
 }

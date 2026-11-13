@@ -1,4 +1,5 @@
-import { CircleDot, Circle, MinusCircle, Plus } from 'lucide-react'
+import { AlertTriangle, CircleDot, Circle, MinusCircle, Plus } from 'lucide-react'
+import { useEffect } from 'react'
 import type { JsonObject } from '@/engine/types'
 import { Button } from '@/components/ui/button'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
@@ -7,8 +8,12 @@ import { Switch } from '@/components/ui/switch'
 import { APERTURE_TYPES, FIELD_KINDS, WAVELENGTH_PRESETS, fieldUnit, type System } from '@/model/system'
 import { useDocument } from '@/state/document'
 import { useView } from '@/state/view'
-import { useWorkspace } from '@/state/workspace'
+import { SUMMARY, useWorkspace } from '@/state/workspace'
+import { catalogReferences } from '@/model/materials'
+import { loadGlassCatalog, removeGlassCatalog, useCatalogs } from '@/state/commands'
+import { anamorphicSummary, squeezeText } from '../StatusCapsule'
 import { seriesColor, useDark, wavelengthColor } from '@/lib/theme'
+import { sig } from '@/model/format'
 import { NumberInput } from '../SettingsForm'
 import { FormRow, NumberRow, Section, TextInput } from './Form'
 
@@ -16,16 +21,20 @@ import { FormRow, NumberRow, Section, TextInput } from './Form'
  *  system stays the same; without it the numbers stay (validation says why). */
 async function convertSpec(system: System, change: JsonObject): Promise<JsonObject | null> {
   const ws = useWorkspace.getState()
-  if (!ws.engine || !ws.snapshot) return null
+  if (!ws.engine) return null
   try {
-    const job = ws.engine.submit({ analysis: 'convert_spec', settings: change }, ws.snapshot)
+    // The snapshot of exactly this system (the debounced one may lag an edit).
+    const snap = ws.snapshot && JSON.stringify(ws.snapshot.system) === JSON.stringify(system) ? ws.snapshot : await ws.engine.openSnapshot(system)
+    const job = ws.engine.submit({ analysis: 'convert_spec', settings: change }, snap)
     const r = await job.result
     return r.json
   } catch {
-    void system
     return null
   }
 }
+
+/** Applies a conversion only when the design is still the one converted. */
+const unchanged = (a: System, b: System) => JSON.stringify(a) === JSON.stringify(b)
 
 /** System settings (`SystemInspector`): name and notes, aperture, fields,
  *  wavelengths (with presets), environment and ray aiming. */
@@ -33,30 +42,43 @@ export function SystemPage() {
   const system = useDocument((s) => s.project.system)
   const edit = useDocument((s) => s.edit)
   const dark = useDark()
-  const catalogs = useWorkspace((s) => s.descriptors.length)
   if (!system?.surfaces) return null
   const ap = system.aperture
   const apType = APERTURE_TYPES.find((a) => a.type === ap.type)
   const unit = fieldUnit(system.fields.kind)
 
   const setApertureType = async (type: string) => {
-    const conv = await convertSpec(system, { aperture: type })
-    const value = conv?.aperture && typeof conv.aperture === 'object' ? (conv.aperture as JsonObject).value : undefined
-    const stopSD = conv?.stop_semi_diameter
+    if (type === ap.type) return
+    const before = system
+    const conv0 = await convertSpec(system, { aperture: type })
     edit('Change Aperture Type', (s) => {
-      s.aperture = type === 'float_by_stop_size' ? { type } : { type, value: typeof value === 'number' ? value : (s.aperture.value ?? 10) }
-      // "Float by stop size" fixes an automatic stop semi-diameter at the beam's current size.
-      const stop = s.surfaces[s.stop]
-      if (type === 'float_by_stop_size' && stop.semi_diameter.mode === 'auto' && typeof stopSD === 'number') {
-        stop.semi_diameter = { mode: 'fixed', value: stopSD }
+      const conv = unchanged(s, before) ? conv0 : null
+      const a = conv?.aperture && typeof conv.aperture === 'object' ? (conv.aperture as JsonObject) : null
+      const stopSD = conv?.stop_semi_diameter
+      if (type === 'float_by_stop_size') {
+        s.aperture = { type }
+        // "Float by stop size" fixes an automatic stop semi-diameter at the beam's current size.
+        const stop = s.surfaces[s.stop]
+        if (stop && stop.semi_diameter.mode === 'auto' && !stop.aperture && typeof stopSD === 'number' && stopSD > 0 && Number.isFinite(stopSD)) {
+          stop.semi_diameter = { mode: 'fixed', value: stopSD }
+        }
+        return
       }
+      if (a && a.type === type && typeof a.value === 'number') {
+        s.aperture = { type, value: a.value }
+        return
+      }
+      const v = s.aperture.value ?? (type === 'object_space_na' ? 0.1 : type === 'entrance_pupil_diameter' ? 10 : 4)
+      s.aperture = { type, value: v }
     })
   }
 
   const setFieldKind = async (kind: string) => {
+    if (kind === system.fields.kind) return
+    const before = system
     const conv = await convertSpec(system, { field_kind: kind })
-    const values = (conv?.fields as JsonObject | null | undefined)?.values
     edit('Change Field Type', (s) => {
+      const values = unchanged(s, before) ? (conv?.fields as JsonObject | null | undefined)?.values : null
       s.fields.kind = kind
       // Each field keeps its chief ray; weights and vignetting stay.
       if (Array.isArray(values) && values.length === s.fields.fields.length) {
@@ -94,6 +116,7 @@ export function SystemPage() {
             label="Value"
             unit={apType?.unit}
             value={ap.value ?? null}
+            param={{ param: 'aperture_value' }}
             min={0}
             onCommit={(v) => {
               if (v == null || !(v > 0)) return useView.getState().toast('The aperture value must be positive.', 'warning')
@@ -102,6 +125,8 @@ export function SystemPage() {
           />
         )}
       </Section>
+
+      <AnamorphicSection />
 
       <Section
         title="Fields"
@@ -268,15 +293,121 @@ export function SystemPage() {
           />
         </FormRow>
       </Section>
-      {catalogs > 0 && Array.isArray(system.configurations) && system.configurations.length > 0 && (
-        <Section title="Configurations">
-          {(system.configurations as JsonObject[]).map((c, k) => (
-            <FormRow key={k} label={String(c.name || `Configuration ${k + 1}`)}>
-              <span className="text-secondary">{((c.overrides as unknown[]) ?? []).length} overrides</span>
-            </FormRow>
-          ))}
+      {Array.isArray(system.configurations) && system.configurations.length > 0 && (
+        <Section title="Configurations" testId="configurations">
+          {(system.configurations as JsonObject[]).map((c, k) => {
+            const n = ((c.overrides as unknown[]) ?? []).length
+            return (
+              <FormRow key={k} label={String(c.name || `Configuration ${k + 1}`)}>
+                <span className="text-secondary">
+                  {n} override{n === 1 ? '' : 's'}
+                </span>
+              </FormRow>
+            )
+          })}
         </Section>
       )}
+      <CatalogsSection />
     </div>
+  )
+}
+
+/** The x / y first order of a design that is not rotationally symmetric
+ *  (the engine's `paraxial_xy` at the primary wavelength). */
+function AnamorphicSection() {
+  const system = useDocument((s) => s.project.system)
+  const run = useWorkspace((s) => s.runs[SUMMARY])
+  const a = anamorphicSummary(run?.result?.json, system)
+  if (!a.anamorphic) return null
+  const p = a.primary
+  const mm = (v: number) => `${sig(v, 6)} mm`
+  return (
+    <Section title="First Order" testId="anamorphic-first-order">
+      <div className={run?.status === 'running' ? 'opacity-50' : undefined}>
+        {p ? (
+          <>
+            <FormRow label="EFL x / y">
+              <span className="num">
+                {sig(p.eflX, 6)} / {mm(p.eflY)}
+              </span>
+            </FormRow>
+            <FormRow label="BFL x / y">
+              <span className="num">
+                {sig(p.bflX, 6)} / {mm(p.bflY)}
+              </span>
+            </FormRow>
+            <FormRow label="Squeeze" help={`Squeeze: ${a.squeezeDefinition ?? 'signed EFL y / EFL x'}`}>
+              <span className="num">{squeezeText(p.squeeze)}</span>
+            </FormRow>
+            {a.symmetry && (
+              <FormRow label="Symmetry">
+                <span>{a.symmetry === 'meridional' ? 'Meridional plane' : a.symmetry === 'none' ? 'None' : 'Rotational'}</span>
+              </FormRow>
+            )}
+          </>
+        ) : (
+          <p className="py-1 text-[12px] text-secondary">Not rotationally symmetric. The engine’s first-order data covers the y section.</p>
+        )}
+      </div>
+    </Section>
+  )
+}
+
+/** The session's glass catalogs (built-in first) and the project's catalog
+ *  references, with Load Glass Catalog… and Remove. */
+function CatalogsSection() {
+  const engine = useWorkspace((s) => s.engine)
+  const list = useCatalogs((s) => s.list)
+  const refresh = useCatalogs((s) => s.refresh)
+  const refs = catalogReferences(useDocument((s) => s.project.catalogs))
+  useEffect(() => {
+    void refresh()
+  }, [engine, refresh])
+  const loaded = new Set(list.map((c) => c.name.toUpperCase()))
+  return (
+    <Section
+      title="Glass Catalogs"
+      testId="glass-catalogs"
+      accessory={
+        <Button variant="ghost" size="sm" disabled={!engine} onClick={() => void loadGlassCatalog()}>
+          <Plus /> Load Glass Catalog…
+        </Button>
+      }
+      footer="AGF or GlassCatalog JSON files. The project records the catalog by name; the browser cannot reopen it from its path, so a project's catalogs are loaded again by hand."
+    >
+      {list.length === 0 && refs.length === 0 && <p className="py-1 text-[12px] text-secondary">No catalogs.</p>}
+      {list.map((c) => {
+        const ref = refs.find((r) => r.name.toUpperCase() === c.name.toUpperCase())
+        return (
+          <FormRow key={c.name} label={c.name} help={c.source === 'builtin' ? 'Built into the engine' : ref?.path ?? undefined}>
+            <span className="flex items-center gap-1.5 text-secondary">
+              <span className="num">{c.glass_count} glasses</span>
+              {ref && (
+                <button type="button" aria-label={`Remove ${c.name}`} title="Remove from the project" className="hover:text-label" onClick={() => removeGlassCatalog(ref.name)}>
+                  <MinusCircle className="size-3.5" />
+                </button>
+              )}
+            </span>
+          </FormRow>
+        )
+      })}
+      {refs
+        .filter((r) => !loaded.has(r.name.toUpperCase()))
+        .map((r) => (
+          <FormRow key={r.name} label={r.name} help={r.path ?? undefined}>
+            <span className="flex items-center gap-1.5">
+              <span className="flex items-center gap-1 text-[12px] text-warning">
+                <AlertTriangle className="size-3.5" /> Not loaded
+              </span>
+              <Button variant="ghost" size="sm" onClick={() => void loadGlassCatalog()}>
+                Locate…
+              </Button>
+              <button type="button" aria-label={`Remove ${r.name}`} title="Remove from the project" className="text-secondary hover:text-label" onClick={() => removeGlassCatalog(r.name)}>
+                <MinusCircle className="size-3.5" />
+              </button>
+            </span>
+          </FormRow>
+        ))}
+    </Section>
   )
 }

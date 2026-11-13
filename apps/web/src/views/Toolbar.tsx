@@ -5,6 +5,8 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
   DropdownMenuSeparator,
   DropdownMenuSub,
   DropdownMenuSubContent,
@@ -17,7 +19,9 @@ import { SAMPLES } from '@/model/project'
 import { command } from '@/state/commands'
 import { documentTitle, isDirty, redoName, undoName, useDocument } from '@/state/document'
 import { replaceWithSample } from '@/state/files'
-import { useView } from '@/state/view'
+import { useView, type RayColoring } from '@/state/view'
+import { BACKEND_CHOICES, usePreferences, type BackendPreference } from '@/state/preferences'
+import { LAYOUT_SHORTCUTS, offersXZ } from './layout/shortcuts'
 import { useWorkspace } from '@/state/workspace'
 import { cn, shortcutLabel } from '@/lib/utils'
 import { StatusCapsule } from './StatusCapsule'
@@ -32,11 +36,37 @@ function CommandItem({ id, title }: { id: string; title?: string }) {
   )
 }
 
-/** The app menu: File, Edit, Lens and View, as the macOS menu bar has them. */
+function MenuGroup({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <DropdownMenuSub>
+      <DropdownMenuSubTrigger>{title}</DropdownMenuSubTrigger>
+      <DropdownMenuSubContent className="min-w-[15rem]">{children}</DropdownMenuSubContent>
+    </DropdownMenuSub>
+  )
+}
+
+/** The app menu: File, Edit, Lens, Design, Analysis and View, as the macOS
+ *  menu bar has them (Commands.swift). */
 function AppMenu() {
   const undo = useDocument(undoName)
   const redo = useDocument(redoName)
   const v = useView()
+  const descriptors = useWorkspace((s) => s.descriptors)
+  const addPane = useWorkspace((s) => s.addPane)
+  const backend = usePreferences((s) => s.backend)
+  const setBackend = usePreferences((s) => s.setBackend)
+  const replaceSamples = (
+    <DropdownMenuSub>
+      <DropdownMenuSubTrigger>Replace with Sample</DropdownMenuSubTrigger>
+      <DropdownMenuSubContent>
+        {SAMPLES.map((s) => (
+          <DropdownMenuItem key={s.id} onSelect={() => replaceWithSample(s.id)}>
+            {s.system.name}
+          </DropdownMenuItem>
+        ))}
+      </DropdownMenuSubContent>
+    </DropdownMenuSub>
+  )
   return (
     <DropdownMenu>
       <Tip label="Menu">
@@ -46,50 +76,100 @@ function AppMenu() {
           </Button>
         </DropdownMenuTrigger>
       </Tip>
-      <DropdownMenuContent align="start" className="min-w-[15rem]">
+      <DropdownMenuContent align="start" className="min-w-[15rem]" data-testid="app-menu">
         <DropdownMenuLabel>File</DropdownMenuLabel>
         <CommandItem id="new" />
         <CommandItem id="samples" />
         <CommandItem id="open" />
-        <DropdownMenuSub>
-          <DropdownMenuSubTrigger>Replace with Sample</DropdownMenuSubTrigger>
-          <DropdownMenuSubContent>
-            {SAMPLES.map((s) => (
-              <DropdownMenuItem key={s.id} onSelect={() => replaceWithSample(s.id)}>
-                {s.system.name}
-              </DropdownMenuItem>
-            ))}
-          </DropdownMenuSubContent>
-        </DropdownMenuSub>
         <CommandItem id="save" />
         <CommandItem id="saveAs" />
+        <CommandItem id="welcome" />
         <DropdownMenuSeparator />
         <DropdownMenuLabel>Edit</DropdownMenuLabel>
         <CommandItem id="undo" title={undo ? `Undo ${undo}` : 'Undo'} />
         <CommandItem id="redo" title={redo ? `Redo ${redo}` : 'Redo'} />
         <DropdownMenuSeparator />
-        <DropdownMenuLabel>Lens</DropdownMenuLabel>
-        <CommandItem id="insertBefore" />
-        <CommandItem id="insertAfter" />
-        <CommandItem id="delete" />
-        <CommandItem id="stop" />
-        <DropdownMenuSeparator />
-        <DropdownMenuLabel>View</DropdownMenuLabel>
-        <CommandItem id="lensData" title={v.lensDataVisible ? 'Hide Lens Data' : 'Show Lens Data'} />
-        <CommandItem id="layout" title={v.layoutVisible ? 'Hide Layout' : 'Show Layout'} />
-        <CommandItem id="sidebar" title={v.sidebarVisible ? 'Hide Sidebar' : 'Show Sidebar'} />
-        <CommandItem id="inspector" title={v.inspectorVisible ? 'Hide Inspector' : 'Show Inspector'} />
-        <CommandItem id="issues" />
-        <DropdownMenuSeparator />
-        <DropdownMenuLabel>Design</DropdownMenuLabel>
-        <CommandItem id="optimize" />
-        <CommandItem id="glass" />
-        <CommandItem id="tolerance" />
-        <CommandItem id="solves" />
-        <DropdownMenuSeparator />
-        <DropdownMenuLabel>Analysis</DropdownMenuLabel>
-        <CommandItem id="runAll" />
-        <CommandItem id="cancel" />
+        <MenuGroup title="Lens">
+          <CommandItem id="insertBefore" />
+          <CommandItem id="insertAfter" />
+          <CommandItem id="delete" />
+          <DropdownMenuSeparator />
+          <CommandItem id="stop" />
+          <CommandItem id="toggleVariable" />
+          <DropdownMenuSeparator />
+          {replaceSamples}
+          <CommandItem id="loadCatalog" />
+        </MenuGroup>
+        <MenuGroup title="Design">
+          <CommandItem id="optimize" />
+          <CommandItem id="glass" />
+          <CommandItem id="tolerance" />
+          <CommandItem id="solves" />
+          <DropdownMenuSeparator />
+          <CommandItem id="issues" />
+        </MenuGroup>
+        <MenuGroup title="Analysis">
+          <DropdownMenuSub>
+            <DropdownMenuSubTrigger>New Analysis Pane</DropdownMenuSubTrigger>
+            <DropdownMenuSubContent>
+              {groupedAnalyses(descriptors).map((g) => (
+                <div key={g.category}>
+                  <DropdownMenuLabel>{categoryTitle(g.category)}</DropdownMenuLabel>
+                  {g.items.map((d) => (
+                    <DropdownMenuItem
+                      key={d.name}
+                      inset
+                      disabled={!d.available}
+                      title={d.unavailable_reason ?? d.description}
+                      onSelect={() => useView.getState().set({ focusedPane: addPane(d.name) })}
+                    >
+                      {analysisTitle(d.name, d)}
+                    </DropdownMenuItem>
+                  ))}
+                </div>
+              ))}
+            </DropdownMenuSubContent>
+          </DropdownMenuSub>
+          <DropdownMenuSeparator />
+          <CommandItem id="runAll" />
+          <CommandItem id="cancel" />
+          <DropdownMenuSeparator />
+          <DropdownMenuLabel>Compute On</DropdownMenuLabel>
+          <DropdownMenuRadioGroup value={backend} onValueChange={(b) => setBackend(b as BackendPreference)}>
+            {BACKEND_CHOICES.map((c) => (
+              <DropdownMenuRadioItem key={c.value} value={c.value} title={c.help}>
+                {c.title}
+              </DropdownMenuRadioItem>
+            ))}
+          </DropdownMenuRadioGroup>
+        </MenuGroup>
+        <MenuGroup title="View">
+          <CommandItem id="lensData" title={v.lensDataVisible ? 'Hide Lens Data' : 'Show Lens Data'} />
+          <CommandItem id="layout" title={v.layoutVisible ? 'Hide Layout' : 'Show Layout'} />
+          {/* View ▸ Panel (Move to New Window, Move to Main Window, Hide Lens Data /
+              Hide Layout / Close Pane, Reset Panel Layout) belongs to the panels'
+              owner: render its <PanelMenu /> submenu here. */}
+          <DropdownMenuSeparator />
+          {LAYOUT_SHORTCUTS.map((c) => (
+            <DropdownMenuItem key={c.shortcut} shortcut={c.shortcut} disabled={c.shortcut === 'alt+mod+2' && !offersXZ()} onSelect={() => c.run()}>
+              {c.title}
+            </DropdownMenuItem>
+          ))}
+          <DropdownMenuSub>
+            <DropdownMenuSubTrigger>Ray Colors</DropdownMenuSubTrigger>
+            <DropdownMenuSubContent>
+              <DropdownMenuRadioGroup value={v.rayColoring} onValueChange={(c) => v.set({ rayColoring: c as RayColoring })}>
+                <DropdownMenuRadioItem value="field">Color by Field</DropdownMenuRadioItem>
+                <DropdownMenuRadioItem value="wavelength">Color by Wavelength</DropdownMenuRadioItem>
+              </DropdownMenuRadioGroup>
+            </DropdownMenuSubContent>
+          </DropdownMenuSub>
+          <DropdownMenuSeparator />
+          <CommandItem id="sidebar" title={v.sidebarVisible ? 'Hide Sidebar' : 'Show Sidebar'} />
+          <CommandItem id="inspector" title={v.inspectorVisible ? 'Hide Inspector' : 'Show Inspector'} />
+          <CommandItem id="surfacePage" title="Surface Inspector" />
+          <CommandItem id="systemPage" title="System Inspector" />
+        </MenuGroup>
       </DropdownMenuContent>
     </DropdownMenu>
   )

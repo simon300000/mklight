@@ -3,6 +3,8 @@
 // system. Surfaces are addressed by their stable id, never by index.
 
 import type { Json, JsonObject } from '@/engine/types'
+import { defaultBounds } from './bounds'
+import type { Project } from './project'
 import { nf } from './format'
 import { curvatureOf, type Shape, type System } from './system'
 import { sub } from './surfaceTypes'
@@ -36,8 +38,11 @@ export function paramKey(p: Json): string {
 
 /** `curvature` and `shape_param curvature_y` name one parameter of a toroid or biconic. */
 export function canonicalParam(system: System, p: ParamPath): ParamPath {
-  if (p.param === 'shape_param' && p.parameter === 'curvature_y') return { param: 'curvature', surface: p.surface as number }
-  void system
+  if (p.param === 'shape_param' && p.parameter === 'curvature_y' && typeof p.surface === 'number') {
+    const t = system?.surfaces?.find((x) => x.id === p.surface)?.shape.type
+    // Without the surface (or before the system is known) the two still match.
+    if (t == null || t === 'toroid' || t === 'biconic') return { param: 'curvature', surface: p.surface }
+  }
   return p
 }
 
@@ -187,4 +192,62 @@ export function solvesOf(s: System): { target: ParamPath; kind: JsonObject }[] {
 
 export function solveFor(s: System, p: ParamPath) {
   return solvesOf(s).find((x) => sameParam(s, x.target, p)) ?? null
+}
+
+// MARK: Variables (apps/macos/.../DesignDocument.swift)
+
+/** Whether a parameter names a number of the system. */
+export const paramResolves = (s: System, p: ParamPath) => {
+  const v = getParam(s, p)
+  return v != null && !Number.isNaN(v)
+}
+
+/** The design variable of `p` (by any path naming the same parameter). */
+export function variableOf(project: Pick<Project, 'variables' | 'system'>, p: ParamPath): VariableSpec | null {
+  return variablesOf(project).find((v) => sameParam(project.system, v.param, p)) ?? null
+}
+
+export const isVariable = (project: Pick<Project, 'variables' | 'system'>, p: ParamPath) => variableOf(project, p) != null
+
+/** Why `p` cannot become a variable: a solve sets it, and `optimize` applies
+ *  solves first and refuses solved parameters as variables. */
+export function variableRefusal(s: System, p: ParamPath): string | null {
+  const solve = solveFor(s, p)
+  if (!solve) return null
+  const title = SOLVE_TITLES[String(solve.kind.type)] ?? String(solve.kind.type)
+  return `Set by a solve (${title}), so the optimizer cannot vary it. Remove the solve to make it a variable.`
+}
+
+const SOLVE_TITLES: Record<string, string> = {
+  marginal_ray_height: 'Marginal ray height', marginal_ray_angle: 'Marginal ray angle', chief_ray_height: 'Chief ray height',
+  chief_ray_angle: 'Chief ray angle', f_number: 'F-number', pickup: 'Pickup', position: 'Position',
+  center_of_curvature: 'Centre of curvature', edge_thickness: 'Edge thickness',
+}
+
+/** Makes `p` a variable (with sensible default bounds) or removes it, on a
+ *  project copy. Returns false when nothing changed or a solve refuses it. */
+export function setVariable(project: Project, p: ParamPath, on: boolean): boolean {
+  const s = project.system
+  const list = variablesOf(project)
+  const has = list.some((v) => sameParam(s, v.param, p))
+  if (on) {
+    if (has || variableRefusal(s, p)) return false
+    const b = defaultBounds(p, s)
+    const v: VariableSpec = { param: p, lower: b.lower, upper: b.upper }
+    if (v.lower == null) delete (v as JsonObject).lower
+    if (v.upper == null) delete (v as JsonObject).upper
+    project.variables = [...list, v] as unknown as Json
+    return true
+  }
+  if (!has) return false
+  project.variables = list.filter((v) => !sameParam(s, v.param, p)) as unknown as Json
+  return true
+}
+
+/** How a variable's bounds read in the table: free, a range, or pinned. */
+export function variableBoundsKind(v: VariableSpec): 'free' | 'bounded' | 'pinned' {
+  const lo = typeof v.lower === 'number' ? v.lower : null
+  const hi = typeof v.upper === 'number' ? v.upper : null
+  if (lo != null && lo === hi) return 'pinned'
+  return lo != null || hi != null ? 'bounded' : 'free'
 }
