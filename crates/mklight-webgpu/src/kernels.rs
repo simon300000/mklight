@@ -29,6 +29,15 @@ pub const MODULES: &[(&str, &str)] = &[
         ),
     ),
     ("transforms", include_str!("../kernels/transforms.wgsl")),
+    // The wave operations on the correctly rounded division and square
+    // root of the trace kernel.
+    (
+        "wave",
+        concat!(
+            include_str!("../kernels/trace/rn.wgsl"),
+            include_str!("../kernels/wave.wgsl")
+        ),
+    ),
 ];
 
 /// The complete WGSL source of `module`.

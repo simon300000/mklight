@@ -32,3 +32,4 @@ mod numerics;
 mod proxy;
 mod trace;
 mod transforms;
+mod wave;

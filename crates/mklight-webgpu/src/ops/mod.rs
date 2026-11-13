@@ -18,6 +18,7 @@ use crate::device::*;
 
 pub mod trace;
 pub mod transforms;
+pub mod wave;
 
 /// Whether the trace kernel is ported (the engine opens a device only when
 /// it runs `JobKind::Trace`).
@@ -45,6 +46,7 @@ pub fn pipelines() -> Vec<(Kernel, PassShape)> {
     .into_iter()
     .chain(trace::pipelines())
     .chain(transforms::pipelines())
+    .chain(wave::pipelines())
     .collect()
 }
 
@@ -193,6 +195,7 @@ impl WebGpuOps {
                 trace::run(self, i, op, x, ctl, stats)
             }
             ResidentOp::Transforms(_) => transforms::run(self, i, op, x, ctl, stats),
+            ResidentOp::Wave(_) => wave::run(self, i, op, x, ctl, stats),
             _ => Ok(None),
         }
     }

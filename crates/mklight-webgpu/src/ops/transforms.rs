@@ -129,11 +129,11 @@ pub fn run(
 /// operation-cache entry or an operation's input copy).
 pub struct DeviceTable {
     gpu: Arc<dyn Gpu>,
-    key: BufferKey,
+    pub(super) key: BufferKey,
 }
 
 impl DeviceTable {
-    fn new(gpu: &Arc<dyn Gpu>, words: &[u32]) -> MkResult<Self> {
+    pub(super) fn new(gpu: &Arc<dyn Gpu>, words: &[u32]) -> MkResult<Self> {
         Ok(Self {
             gpu: gpu.clone(),
             key: gpu.persist(words)?,
@@ -171,7 +171,7 @@ fn table(
 }
 
 /// A buffer of the batch being assembled.
-enum Res<'a> {
+pub(super) enum Res<'a> {
     Upload(&'a [u32]),
     Scratch(usize),
     Persistent(BufferKey),
@@ -179,7 +179,7 @@ enum Res<'a> {
 
 /// A batch under construction: resources, passes and the parameter block
 /// every pass binds a range of (binding 2).
-struct Builder<'a> {
+pub(super) struct Builder<'a> {
     res: Vec<Res<'a>>,
     passes: Vec<Pass>,
     params: Vec<u32>,
@@ -190,7 +190,7 @@ struct Builder<'a> {
 }
 
 impl<'a> Builder<'a> {
-    fn new(gpu: &dyn Gpu) -> Self {
+    pub(super) fn new(gpu: &dyn Gpu) -> Self {
         let align = gpu.summary().min_storage_buffer_offset_alignment as usize / 4;
         Self {
             // Resource 0 is the parameter block, uploaded when finished.
@@ -201,24 +201,30 @@ impl<'a> Builder<'a> {
             free: vec![],
         }
     }
-    fn add(&mut self, r: Res<'a>) -> usize {
+    pub(super) fn add(&mut self, r: Res<'a>) -> usize {
         self.res.push(r);
         self.res.len() - 1
     }
     /// Scratch of at least `words`, reusing a freed buffer.
-    fn take(&mut self, words: usize) -> usize {
+    pub(super) fn take(&mut self, words: usize) -> usize {
         if let Some(at) = self.free.iter().position(|&(_, w)| w >= words) {
             return self.free.swap_remove(at).0;
         }
         self.add(Res::Scratch(words))
     }
-    fn release(&mut self, r: usize) {
+    pub(super) fn release(&mut self, r: usize) {
         if let Res::Scratch(w) = self.res[r] {
             self.free.push((r, w));
         }
     }
     /// A pass binding `params` first, then `storage` (resource, access).
-    fn pass(&mut self, kernel: Kernel, params: &[u32], storage: &[(usize, Access)], g: [u32; 3]) {
+    pub(super) fn pass(
+        &mut self,
+        kernel: Kernel,
+        params: &[u32],
+        storage: &[(usize, Access)],
+        g: [u32; 3],
+    ) {
         let off = self.params.len().div_ceil(self.stride) * self.stride;
         self.params.resize(off, 0);
         self.params.extend_from_slice(params);
@@ -240,7 +246,7 @@ impl<'a> Builder<'a> {
         });
     }
     /// The batch: the parameter block, then the resources in order.
-    fn batch(&mut self) -> Batch<'_> {
+    pub(super) fn batch(&mut self) -> Batch<'_> {
         let passes = std::mem::take(&mut self.passes);
         let mut b = Batch::default();
         for (i, r) in self.res.iter().enumerate() {
@@ -258,7 +264,7 @@ impl<'a> Builder<'a> {
 
 /// Groups of 256 covering `count` elements (`p2_linear`): x up to the
 /// dispatch limit, y the rest.
-fn grid_1d(count: usize) -> [u32; 3] {
+pub(super) fn grid_1d(count: usize) -> [u32; 3] {
     let groups = count.div_ceil(256).max(1);
     let gx = groups.min(65535);
     [gx as u32, groups.div_ceil(gx) as u32, 1]
