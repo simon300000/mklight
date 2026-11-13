@@ -646,3 +646,43 @@ fn squeezed_lattice_rim_is_not_a_missing_pupil_region() {
         }
     }
 }
+
+/// The lattice interpolation estimator: zero for piston and tilt, `A·h²/4`
+/// for a quadratic `A·(u² + v²)` on spacing `h` (the error of linear
+/// interpolation inside a cell), independent of uneven ray spacing.
+#[test]
+fn lattice_interpolation_error_known_answers() {
+    let k = 33;
+    let h = 2.0 / (k - 1) as f64;
+    let disk = |u: f64, v: f64| u * u + v * v <= 1.0;
+    let tilt = lattice_rays(k, disk, |u, v| 0.3 + 5.0 * u - 2.0 * v);
+    assert!(lattice_interpolation_error(&tilt) < 1e-12);
+    assert!(lattice_warning(&tilt).is_none());
+    let a = 3.0;
+    let quad = lattice_rays(k, disk, |u, v| a * (u * u + v * v));
+    let e = lattice_interpolation_error(&quad);
+    assert!((e - a * h * h / 4.0).abs() < 1e-12, "{e}");
+    // A distorted lattice (u ↦ u + 0.2u³) carrying a wavefront that is
+    // linear in the distorted coordinates: no interpolation error.
+    let mut warped = lattice_rays(k, disk, |_, _| 0.0);
+    for r in warped.samples.iter_mut().flatten() {
+        r.u += 0.2 * r.u.powi(3);
+        r.opd_waves = 4.0 * r.u + r.v;
+    }
+    assert!(lattice_interpolation_error(&warped) < 1e-12);
+    // Above the limit: reported with a recommendation that brings the
+    // estimate below it (the lattice has a rim node on each side).
+    let steep = lattice_rays(k, disk, |u, v| 40.0 * (u * u + v * v).powi(3));
+    match lattice_warning(&steep) {
+        Some(WaveWarning::LatticeUndersampled {
+            interpolation_error_waves,
+            rays,
+            recommended_rays,
+        }) => {
+            assert!(interpolation_error_waves > LATTICE_INTERPOLATION_LIMIT_WAVES);
+            assert_eq!(rays, k - 2);
+            assert!(recommended_rays > rays && recommended_rays % 2 == 1);
+        }
+        w => panic!("{w:?}"),
+    }
+}

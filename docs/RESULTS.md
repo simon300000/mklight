@@ -330,7 +330,10 @@ natively on the GPU (WAVE.md §9; routing: GPU §9.2).
   samples in MTF-versus-field buffers are NaN; unusable per-field pupils
   are skipped with a warning.
 * **Sampling warnings.** `pupil_undersampled` (phase steps over half a
-  wave), `field_wraps` (image window wider than the alias-free field), and
+  wave), `lattice_undersampled` (the traced `pupil.rays` lattice is too
+  coarse for the wavefront's curvature, with a recommended `pupil.rays`),
+  `afocal_image_space` (collimated output; the reference sphere is not
+  meaningful), `field_wraps` (image window wider than the alias-free field), and
   `psf_truncated` (less than 95 % energy in the window) are retained in
   RunInfo as the solver's descriptive warning text. Increase pupil
   sampling or adjust the image window as described in `docs/WAVE.md`.

@@ -1005,6 +1005,7 @@ pub fn trace_lattice(
         );
     }
     let fo = tracer.paraxial().at(wl);
+    warnings.extend(crate::warnings::afocal_warning(fo).map(|w| w.to_string()));
     let dc = reference.chief_dir;
     let sign = if dc.z > 0.0 {
         1.0
