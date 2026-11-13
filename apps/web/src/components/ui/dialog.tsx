@@ -1,6 +1,7 @@
 import { Dialog as D } from 'radix-ui'
 import { X } from 'lucide-react'
 import * as React from 'react'
+import { usePortalContainer } from '@/views/panels/context'
 import { cn } from '@/lib/utils'
 
 export const Dialog = D.Root
@@ -11,7 +12,7 @@ export const DialogDescription = D.Description
 
 export function DialogContent({ className, children, ...props }: React.ComponentProps<typeof D.Content>) {
   return (
-    <D.Portal>
+    <D.Portal container={usePortalContainer()}>
       <D.Overlay className="fixed inset-0 z-40 bg-black/20" />
       <D.Content
         className={cn(

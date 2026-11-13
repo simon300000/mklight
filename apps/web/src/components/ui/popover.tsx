@@ -1,5 +1,6 @@
 import { Popover as P } from 'radix-ui'
 import * as React from 'react'
+import { usePortalContainer } from '@/views/panels/context'
 import { cn } from '@/lib/utils'
 
 export const Popover = P.Root
@@ -9,7 +10,7 @@ export const PopoverClose = P.Close
 
 export function PopoverContent({ className, align = 'center', sideOffset = 6, ...props }: React.ComponentProps<typeof P.Content>) {
   return (
-    <P.Portal>
+    <P.Portal container={usePortalContainer()}>
       <P.Content
         align={align}
         sideOffset={sideOffset}

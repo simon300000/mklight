@@ -1,5 +1,6 @@
 import { Tooltip as T } from 'radix-ui'
 import * as React from 'react'
+import { usePortalContainer } from '@/views/panels/context'
 import { cn } from '@/lib/utils'
 
 export const TooltipProvider = T.Provider
@@ -10,7 +11,7 @@ export function Tip({ label, children, side = 'bottom' }: { label?: React.ReactN
   return (
     <T.Root>
       <T.Trigger asChild>{children}</T.Trigger>
-      <T.Portal>
+      <T.Portal container={usePortalContainer()}>
         <T.Content
           side={side}
           sideOffset={6}

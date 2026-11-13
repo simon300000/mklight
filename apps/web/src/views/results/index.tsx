@@ -1,7 +1,7 @@
 // Analysis result views: a dedicated renderer per known analysis, the generic
 // data view for everything else, and the key numbers of the pane footer.
 import type { JSX } from 'react'
-import type { AnalysisResult } from '@/engine/types'
+import type { AnalysisResult, JsonObject } from '@/engine/types'
 import type { System } from '@/model/system'
 import { fmt, nf, sig } from '@/model/format'
 import { arr, isObj, maxAbs, nums, obj } from './common'
@@ -13,10 +13,30 @@ import { MtfView } from './Mtf'
 import { PsfView } from './Psf'
 import { SpotGrid } from './SpotGrid'
 import { WavefrontView } from './Wavefront'
+import { CURVE_RENDERERS } from '../analysis/curves'
+import { MAP_RENDERERS } from '../analysis/maps'
+import type { KeyNumber, Renderers } from '../analysis/registry'
 
-export function ResultView(props: { analysis: string; result: AnalysisResult; system: System }): JSX.Element {
+export type { KeyNumber }
+
+/** Dedicated renderers of the analysis groups; they take precedence over the
+ *  built-in views below. */
+export const RENDERERS: Renderers = { ...CURVE_RENDERERS, ...MAP_RENDERERS }
+
+export function ResultView(props: {
+  analysis: string
+  result: AnalysisResult
+  system: System
+  settings?: JsonObject
+  onSettingsChange?: (patch: JsonObject) => void
+}): JSX.Element {
   const { analysis, result, system } = props
   const j = isObj(result.json) ? result.json : {}
+  const r = RENDERERS[analysis]
+  if (r && (!r.accepts || r.accepts(j))) {
+    const settings = props.settings ?? (isObj(result.runInfo.settings) ? result.runInfo.settings : {})
+    return <r.View analysis={analysis} result={result} system={system} settings={settings} onSettingsChange={props.onSettingsChange} />
+  }
   switch (analysis) {
     case 'spot_diagram':
       if (Array.isArray(j.fields)) return <SpotGrid result={result} system={system} />
@@ -44,16 +64,12 @@ export function ResultView(props: { analysis: string; result: AnalysisResult; sy
   return <GenericView analysis={analysis} result={result} />
 }
 
-export interface KeyNumber {
-  label: string
-  value: string
-  help?: string
-}
-
 const um = (mm: number, d = 2) => `${fmt(mm * 1000, d)} µm`
 
-export function keyNumbers(analysis: string, result: AnalysisResult): KeyNumber[] {
+export function keyNumbers(analysis: string, result: AnalysisResult, system?: System): KeyNumber[] {
   const j = isObj(result.json) ? result.json : {}
+  const r = RENDERERS[analysis]
+  if (r?.keyNumbers && (!r.accepts || r.accepts(j))) return r.keyNumbers(result, system)
   const out: KeyNumber[] = []
   switch (analysis) {
     case 'spot_diagram': {

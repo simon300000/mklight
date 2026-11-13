@@ -1,5 +1,6 @@
 import { ContextMenu as M } from 'radix-ui'
 import * as React from 'react'
+import { usePortalContainer } from '@/views/panels/context'
 import { cn, shortcutLabel } from '@/lib/utils'
 
 export const ContextMenu = M.Root
@@ -7,7 +8,7 @@ export const ContextMenuTrigger = M.Trigger
 
 export function ContextMenuContent({ className, ...props }: React.ComponentProps<typeof M.Content>) {
   return (
-    <M.Portal>
+    <M.Portal container={usePortalContainer()}>
       <M.Content className={cn('glass-popover z-50 min-w-[12rem] rounded-lg p-1 text-[13px] text-label', className)} {...props} />
     </M.Portal>
   )

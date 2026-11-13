@@ -1,6 +1,7 @@
 import { DropdownMenu as M } from 'radix-ui'
 import { Check, ChevronRight } from 'lucide-react'
 import * as React from 'react'
+import { usePortalContainer } from '@/views/panels/context'
 import { cn, shortcutLabel } from '@/lib/utils'
 
 export const DropdownMenu = M.Root
@@ -16,7 +17,7 @@ const itemBase =
 
 export function DropdownMenuContent({ className, sideOffset = 4, ...props }: React.ComponentProps<typeof M.Content>) {
   return (
-    <M.Portal>
+    <M.Portal container={usePortalContainer()}>
       <M.Content sideOffset={sideOffset} className={cn(menuContent, className)} {...props} />
     </M.Portal>
   )
@@ -82,7 +83,7 @@ export function DropdownMenuSubTrigger({ className, children, ...props }: React.
 
 export function DropdownMenuSubContent({ className, ...props }: React.ComponentProps<typeof M.SubContent>) {
   return (
-    <M.Portal>
+    <M.Portal container={usePortalContainer()}>
       <M.SubContent className={cn(menuContent, className)} {...props} />
     </M.Portal>
   )

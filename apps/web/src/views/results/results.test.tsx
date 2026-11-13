@@ -19,7 +19,15 @@ import samples from '@samples'
 import { createMockEngine } from '@/engine-mock'
 import type { AnalysisResult, JsonObject } from '@/engine/types'
 import type { System } from '@/model/system'
-import { ResultView, keyNumbers } from './index'
+import { RENDERERS, ResultView, keyNumbers } from './index'
+import { FIXTURES as CURVE_FIXTURES, system as curveSystem } from '../analysis/curves/fixtures'
+import { FIXTURES as MAP_FIXTURES, system as mapSystem } from '../analysis/maps/fixtures'
+
+/** One fixture per dedicated renderer, with the system it was made for. */
+const RENDERER_FIXTURES: [string, AnalysisResult, System][] = [
+  ...Object.entries(CURVE_FIXTURES).map(([a, r]): [string, AnalysisResult, System] => [a, r, curveSystem]),
+  ...MAP_FIXTURES.map(([a, r]): [string, AnalysisResult, System] => [a, r, mapSystem]),
+]
 
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
@@ -77,12 +85,12 @@ async function run(analysis: string, settings?: JsonObject): Promise<AnalysisRes
   return eng.submit({ analysis, settings }, snap).result
 }
 
-async function render(analysis: string, result: AnalysisResult): Promise<HTMLElement> {
+async function render(analysis: string, result: AnalysisResult, sys: System = system as System): Promise<HTMLElement> {
   const el = document.createElement('div')
   el.style.position = 'relative'
   document.body.appendChild(el)
   const root = createRoot(el)
-  await act(async () => root.render(<ResultView analysis={analysis} result={result} system={system as System} />))
+  await act(async () => root.render(<ResultView analysis={analysis} result={result} system={sys} onSettingsChange={() => {}} />))
   const html = el.innerHTML
   await act(async () => root.unmount())
   el.remove()
@@ -114,6 +122,19 @@ describe.each(['null', 'fake'] as const)('result views (canvas %s)', (m) => {
     expect(el.querySelectorAll('canvas[role="img"]').length).toBe(fields * 3)
   })
 
+  it('every dedicated renderer has a fixture', () => {
+    const covered = new Set(RENDERER_FIXTURES.map(([a]) => a))
+    expect(Object.keys(RENDERERS).filter((a) => !covered.has(a))).toEqual([])
+  })
+
+  it.each(RENDERER_FIXTURES)('%s renders its dedicated view', async (analysis, r, sys) => {
+    const accepts = RENDERERS[analysis].accepts
+    expect(accepts ? accepts(r.json) : true).toBe(true)
+    const el = await render(analysis, r, sys)
+    expect(el.textContent ?? '').not.toMatch(/^\s*$/)
+    expect(el.textContent).not.toMatch(/could not be drawn/)
+  })
+
   it('unknown results render as data', async () => {
     const r: AnalysisResult = {
       json: { note: 'mock', analysis: 'whatever', nested: { a: [1, 2, 'inf'], rows: [{ x: 1 }, { x: 2, y: null }] } },
@@ -128,6 +149,13 @@ describe.each(['null', 'fake'] as const)('result views (canvas %s)', (m) => {
 })
 
 describe('keyNumbers', () => {
+  it.each(RENDERER_FIXTURES)('%s (dedicated) gives readable values', (analysis, r, sys) => {
+    for (const x of keyNumbers(analysis, r, sys)) {
+      expect(x.value).not.toMatch(/NaN|undefined/)
+      expect(x.label).not.toMatch(/undefined/)
+    }
+  })
+
   it('spot diagram gives finite RMS and Airy radii', async () => {
     const k = keyNumbers('spot_diagram', await run('spot_diagram'))
     expect(k.map((x) => x.label)).toEqual(['Max RMS radius', 'Airy radius'])
