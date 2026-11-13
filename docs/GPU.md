@@ -2203,12 +2203,26 @@ zero-copy for the solvers), and plans run on its executor
 (`CpuF32Backend::submit_plan_hosted`), so validation, system pinning,
 operation caches, cancellation, progress and publication are the shared
 `mklight-gpu` code. The executor offers each operation to the device first
-(`resident::cpu::DeviceOps`): the operations with WGSL kernels upload their
-inputs from the plan's buffers, dispatch, and read their outputs back into
-them; every other operation runs its CPU-f32 specification in the device's
-f32 environment (flush-to-zero when the probe says so), which is the
-arithmetic the kernels specify. `PlanStats` names the placement of every
-stage (`webgpu:sum`, `webgpu:trace`, …, or the specification's name).
+(`resident::cpu::DeviceOps`); every operation without a WGSL kernel runs its
+CPU-f32 specification in the device's f32 environment (flush-to-zero when
+the probe says so), which is the arithmetic the kernels specify.
+`PlanStats` names the placement of every stage (`webgpu:sum`,
+`webgpu:trace`, …, or the specification's name).
+
+**Residency** (`ops/resident.rs`). A device operation leaves its outputs on
+the device, in a *mirror* of each plan buffer (a pooled writable device
+buffer), and the next device operation reads them there: inputs load from a
+mirror when the device copy is current (a device-side copy of the range
+when a view starts where no binding may, `Resource::Slice`), else from the
+host words; outputs are written to scratch and copied into their mirror on
+the device (`Batch::copies`). The host copy of such a buffer is stale until
+something needs it: before an operation runs its CPU-f32 specification its
+inputs are read back, and when the plan ends (`DeviceOps::finish`) only the
+plan's final outputs are. Host-side inspections inside an operation (aim
+reports for statistics, a path program's length) read only those words.
+A spot-diagram or PSF plan now reads back only its result buffers; before,
+every operation paid an upload and a readback (10–15 ms each, and the
+operations of one direct-MTF plan moved 161 MB).
 
 Host code moved into `mklight-gpu` for both backends: the numerics probe's
 inputs, expected results and verdict (`mklight_gpu::probe`), the hosted
@@ -2221,9 +2235,10 @@ collectives and wave host paths needed no move: what they share was in
 builders, `aiming::kernel::excluded`).
 
 The device seam is `mklight_webgpu::device::Gpu`: a `Batch` of buffers
-(persistent system copies, uploads borrowed from the caller, zeroed
-scratch), compute passes and readbacks into host slices, run as one
-submission. Binding convention of every kernel: binding 0 the environment
+(persistent system copies and plan mirrors, device-side slices of them,
+uploads borrowed from the caller, zeroed scratch), compute passes,
+device-side copies into persistent buffers, and readbacks into host slices,
+run as one submission; `Gpu::allocate` makes a writable persistent buffer. Binding convention of every kernel: binding 0 the environment
 block (the opaque zero below), binding 1 the pass's uniform parameters,
 bindings 2… storage buffers. WGSL types and `MKL_*` constants are generated
 from `include/*.h` by `build.rs` (`mklight_types.wgsl`), so no layout
