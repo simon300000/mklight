@@ -32,6 +32,9 @@ wasm-bindgen-futures = "0.4"
 [dev-dependencies]
 mklight-trace.workspace = true
 rustfft.workspace = true
+# Engine-level wave checks (tests/wave.rs) under the GPU.md §9.4 gates.
+mklight-engine.workspace = true
+mklight-bench = { path = "../mklight-bench" }
 
 # The benchmarks print Metal's numbers next to WebGPU's.
 [target.'cfg(target_os = "macos")'.dev-dependencies]

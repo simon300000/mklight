@@ -259,7 +259,7 @@ fn main() {
     let mut skipped = std::collections::HashSet::<String>::new();
     for path in headers {
         println!("cargo:rerun-if-changed={}", path.display());
-        let text = strip_comments(&fs::read_to_string(&path).unwrap());
+        let text = typedef_structs(&strip_comments(&fs::read_to_string(&path).unwrap()));
         writeln!(out, "\n// {}", path.file_name().unwrap().to_string_lossy()).unwrap();
         for line in text.lines() {
             let Some(rest) = line.trim().strip_prefix("#define ") else {
@@ -359,6 +359,32 @@ fn main() {
     let dest = PathBuf::from(env::var("OUT_DIR").unwrap()).join("mklight_types.wgsl");
     fs::write(dest, out).unwrap();
     trace_kernel();
+}
+
+/// `typedef struct { … } MklName;` as `struct MklName { … };`, the form the
+/// struct parser reads.
+fn typedef_structs(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(i) = rest.find("typedef struct {") {
+        let body_start = i + "typedef struct ".len();
+        let Some(close) = rest[body_start..].find('}').map(|j| j + body_start) else {
+            break;
+        };
+        let Some(semi) = rest[close..].find(';').map(|j| j + close) else {
+            break;
+        };
+        let name = rest[close + 1..semi].trim();
+        out.push_str(&rest[..i]);
+        if name.starts_with("Mkl") && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+            write!(out, "struct {name} {}}};", &rest[body_start..close]).unwrap();
+        } else {
+            out.push_str(&rest[i..=semi]);
+        }
+        rest = &rest[semi + 1..];
+    }
+    out.push_str(rest);
+    out
 }
 
 /// Replace whole-word occurrences of `word` (identifier characters around

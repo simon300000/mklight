@@ -463,24 +463,26 @@ impl AnalysisGraph {
         let may_wait = may_wait(kind);
         let mut waited = false;
         let mut st = self.lock();
-        while !rebuild {
-            if let Some(v) = st.hit(&key, waited) {
-                return Ok(mklight_core::memo::downcast::<T>(v));
-            }
-            if !(may_wait && st.building.contains_key(&key)) {
-                break;
-            }
-            while st.building.contains_key(&key) {
-                if let Err(e) = ctx.check() {
-                    return Err(e.into());
+        if !rebuild {
+            loop {
+                if let Some(v) = st.hit(&key, waited) {
+                    return Ok(mklight_core::memo::downcast::<T>(v));
                 }
-                st = self
-                    .changed
-                    .wait_timeout(st, Duration::from_millis(20))
-                    .unwrap_or_else(|e| e.into_inner())
-                    .0;
+                if !(may_wait && st.building.contains_key(&key)) {
+                    break;
+                }
+                while st.building.contains_key(&key) {
+                    if let Err(e) = ctx.check() {
+                        return Err(e.into());
+                    }
+                    st = self
+                        .changed
+                        .wait_timeout(st, Duration::from_millis(20))
+                        .unwrap_or_else(|e| e.into_inner())
+                        .0;
+                }
+                waited = true;
             }
-            waited = true;
         }
         // Claim it, unless another caller is building it (a duplicate).
         let mut claim = (!st.building.contains_key(&key)).then(|| {
