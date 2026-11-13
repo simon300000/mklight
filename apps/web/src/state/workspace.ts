@@ -17,6 +17,7 @@ import type {
 } from '@/engine/types'
 import { EngineError } from '@/engine/types'
 import type { System } from '@/model/system'
+import { backendRequest, usePreferences } from './preferences'
 
 export type RunStatus = 'idle' | 'running' | 'done' | 'failed' | 'cancelled'
 
@@ -95,6 +96,27 @@ const jobs = new Map<string, AnalysisJob>()
 let snapshotTimer: ReturnType<typeof setTimeout> | null = null
 let snapshotSeq = 0
 let paneSeq = 0
+
+/** A new pane's settings (`Workspace.startingSettings`): a spot diagram shows
+ *  three planes through focus; image simulation starts on a visible patch (10 %
+ *  of the field on axis, 256 px, a Siemens star); glass data samples its
+ *  dispersion curve for the design's first catalogue glass. */
+export function startingSettings(analysis: string, ds: AnalysisDescriptor[], system?: System | null): JsonObject {
+  switch (analysis) {
+    case 'spot_diagram':
+      return { through_focus: { min: null, max: null, steps: 3 } }
+    case 'image_simulation': {
+      const optics = { ...(((descriptorFor(ds, analysis)?.default_settings ?? {}).optics as JsonObject) ?? {}), field_extent: 0.1 }
+      return { size: [256, 256], optics, source: { kind: 'pattern', pattern: 'siemens_star' } }
+    }
+    case 'glass_info': {
+      const glass = system?.surfaces.find((x) => x.material.type === 'catalog')?.material.name
+      return { curve_samples: 200, ...(typeof glass === 'string' ? { name: glass } : {}) }
+    }
+    default:
+      return {}
+  }
+}
 
 export const descriptorFor = (ds: AnalysisDescriptor[], name: string) => ds.find((d) => d.name === name)
 
@@ -224,7 +246,8 @@ export const useWorkspace = create<WorkspaceState>()((set, get) => {
 
     addPane(analysis, opts) {
       const key = opts?.key ?? `pane-${Date.now().toString(36)}-${++paneSeq}`
-      const pane: Pane = { key, analysis, settings: opts?.settings ?? {}, auto: !MANUAL_ANALYSES.has(analysis), settingsOpen: false }
+      const settings = opts?.settings ?? startingSettings(analysis, get().descriptors, get().snapshot?.system as System | undefined)
+      const pane: Pane = { key, analysis, settings, auto: !MANUAL_ANALYSES.has(analysis), settingsOpen: false }
       set((s) => {
         const panes = [...s.panes]
         panes.splice(opts?.at ?? panes.length, 0, pane)
@@ -260,7 +283,9 @@ export const useWorkspace = create<WorkspaceState>()((set, get) => {
     setPaneAnalysis(key, analysis) {
       get().cancel(key)
       set((s) => ({
-        panes: s.panes.map((p) => (p.key === key ? { ...p, analysis, settings: {}, auto: !MANUAL_ANALYSES.has(analysis) } : p)),
+        panes: s.panes.map((p) =>
+          p.key === key ? { ...p, analysis, settings: startingSettings(analysis, s.descriptors, s.snapshot?.system as System | undefined), auto: !MANUAL_ANALYSES.has(analysis) } : p,
+        ),
         runs: { ...s.runs, [key]: { status: 'idle', progress: 0 } },
       }))
       const p = get().panes.find((x) => x.key === key)
@@ -281,7 +306,11 @@ export const useWorkspace = create<WorkspaceState>()((set, get) => {
       const rk = requestKey(req.analysis, req.settings)
       let job: AnalysisJob
       try {
-        job = engine.submit({ analysis: req.analysis, settings: req.settings, fresh: opts?.fresh || undefined }, snapshot)
+        const backend = backendRequest(usePreferences.getState().backend, engine.info)
+        job = engine.submit(
+          { analysis: req.analysis, settings: req.settings, fresh: opts?.fresh || undefined, ...(backend.kind === 'auto' ? {} : { backend }) },
+          snapshot,
+        )
       } catch (e) {
         patchRun(key, { status: 'failed', error: errorText(e) })
         return

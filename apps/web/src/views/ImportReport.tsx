@@ -1,6 +1,34 @@
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog'
 import { IMPORT_GROUPS, importGroup, useImportReport } from '@/state/importReport'
+import { loadGlassCatalog } from '@/state/commands'
+import { useDocument } from '@/state/document'
+import { useView } from '@/state/view'
+import { useWorkspace } from '@/state/workspace'
+import type { System } from '@/model/system'
+
+/** Load Glass Catalog…, then import the lens file again with it (one undoable step). */
+async function loadCatalogAndImportAgain() {
+  const r = useImportReport.getState()
+  const name = await loadGlassCatalog()
+  if (!name || !r.source) return
+  const engine = useWorkspace.getState().engine
+  if (!engine) return
+  try {
+    const imported = await engine.importPrescription(r.source.data.slice(0), r.source.format)
+    const system = imported.system as System
+    if (!system.name) system.name = (r.fileName ?? '').replace(/\.(zmx|seq)$/i, '')
+    const doc = useDocument.getState()
+    doc.replace({ ...doc.project, system }, 'Import Lens File Again')
+    if (imported.warnings.length) r.show(r.fileName ?? '', imported.warnings, r.source)
+    else {
+      r.close()
+      useView.getState().toast(`Imported ${r.fileName} again: everything mapped.`)
+    }
+  } catch (e) {
+    useView.getState().toast(`Import: ${e instanceof Error ? e.message : String(e)}`, 'error')
+  }
+}
 
 /** The import report sheet (`ImportReportSheet`): the warnings grouped, each
  *  with its surface and line, and Copy Report. A clean import shows a note. */
@@ -35,8 +63,13 @@ export function ImportReport() {
         </div>
         <div className="mt-4 flex justify-end gap-2">
           {r.warnings.length > 0 && <Button onClick={() => void navigator.clipboard?.writeText(text)}>Copy Report</Button>}
+          {r.source && r.warnings.some((w) => importGroup(w) === 'Glasses') && (
+            <Button onClick={() => void loadCatalogAndImportAgain()} title="Loads a glass catalog and imports the file again with it">
+              Load Glass Catalog…
+            </Button>
+          )}
           <Button variant="prominent" onClick={r.close}>
-            OK
+            Done
           </Button>
         </div>
       </DialogContent>

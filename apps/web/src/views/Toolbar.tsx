@@ -25,6 +25,33 @@ import { LAYOUT_SHORTCUTS, offersXZ } from './layout/shortcuts'
 import { useWorkspace } from '@/state/workspace'
 import { cn, shortcutLabel } from '@/lib/utils'
 import { StatusCapsule } from './StatusCapsule'
+import { closePanel, commandPanel, isDetached, moveToMainWindow, moveToNewWindow, panelTitle, resetPanelLayout } from './panels/actions'
+import { LAYOUT_PANEL, LENS_DATA } from '@/state/arrangement'
+
+/** View ▸ Panel: for the focused panel (the selected tab of the window in front). */
+function PanelMenu() {
+  const panel = commandPanel()
+  const name = panel ? panelTitle(panel) : null
+  const hide = panel === LENS_DATA ? 'Hide Lens Data' : panel === LAYOUT_PANEL ? 'Hide Layout' : 'Close Pane'
+  return (
+    <DropdownMenuSub>
+      <DropdownMenuSubTrigger>Panel{name ? ` · ${name}` : ''}</DropdownMenuSubTrigger>
+      <DropdownMenuSubContent>
+        <DropdownMenuItem disabled={!panel} onSelect={() => panel && moveToNewWindow(panel)}>
+          Move to New Window
+        </DropdownMenuItem>
+        <DropdownMenuItem disabled={!panel || !isDetached(panel)} onSelect={() => panel && moveToMainWindow(panel)}>
+          Move to Main Window
+        </DropdownMenuItem>
+        <DropdownMenuItem disabled={!panel} onSelect={() => panel && closePanel(panel)}>
+          {hide}
+        </DropdownMenuItem>
+        <DropdownMenuSeparator />
+        <DropdownMenuItem onSelect={() => resetPanelLayout()}>Reset Panel Layout</DropdownMenuItem>
+      </DropdownMenuSubContent>
+    </DropdownMenuSub>
+  )
+}
 
 function CommandItem({ id, title }: { id: string; title?: string }) {
   const c = command(id)
@@ -146,9 +173,7 @@ function AppMenu() {
         <MenuGroup title="View">
           <CommandItem id="lensData" title={v.lensDataVisible ? 'Hide Lens Data' : 'Show Lens Data'} />
           <CommandItem id="layout" title={v.layoutVisible ? 'Hide Layout' : 'Show Layout'} />
-          {/* View ▸ Panel (Move to New Window, Move to Main Window, Hide Lens Data /
-              Hide Layout / Close Pane, Reset Panel Layout) belongs to the panels'
-              owner: render its <PanelMenu /> submenu here. */}
+          <PanelMenu />
           <DropdownMenuSeparator />
           {LAYOUT_SHORTCUTS.map((c) => (
             <DropdownMenuItem key={c.shortcut} shortcut={c.shortcut} disabled={c.shortcut === 'alt+mod+2' && !offersXZ()} onSelect={() => c.run()}>

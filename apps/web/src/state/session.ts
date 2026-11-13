@@ -1,6 +1,7 @@
 // Starts the engine and wires the document to the workspace: every design
 // value goes to the engine as a snapshot, and every change is autosaved.
 
+import { catalogsChanged } from './catalogs'
 import { loadEngine } from '@/engine'
 import { curvatureOf } from '@/model/system'
 import { installPanelSync, onWindowFrames } from '@/views/panels/actions'
@@ -41,6 +42,9 @@ export async function startSession() {
       if (v.selection >= n) v.select(n - 1)
     }
     if (s.revision !== prev.revision || s.savedRevision !== prev.savedRevision) scheduleAutosave()
+    if (s.project.catalogs !== prev.project.catalogs && JSON.stringify(s.project.catalogs) !== JSON.stringify(prev.project.catalogs)) {
+      void catalogsChanged(prev.project, s.project)
+    }
   })
   // The panes, the panel arrangement and the layout's view are saved with the
   // document (not undoable).

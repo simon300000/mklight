@@ -10,6 +10,7 @@ import { useDocument, type DocumentFile } from './document'
 import { useView } from './view'
 import { useWorkspace, LAYOUT, type Pane } from './workspace'
 import { useImportReport } from './importReport'
+import { restoreCatalogs } from './catalogs'
 import * as A from './arrangement'
 import { useArrangement } from './arrangement'
 import type { LayoutMode } from '@/views/layout/camera'
@@ -99,7 +100,7 @@ export function applyViews(views: Json[]) {
 
 /** Default panes of a new window: spot diagram and ray fan. */
 const DEFAULT_PANES: Pane[] = [
-  { key: 'pane-spot', analysis: 'spot_diagram', settings: {}, auto: true, settingsOpen: false },
+  { key: 'pane-spot', analysis: 'spot_diagram', settings: { through_focus: { min: null, max: null, steps: 3 } }, auto: true, settingsOpen: false },
   { key: 'pane-fan', analysis: 'ray_fan', settings: {}, auto: true, settingsOpen: false },
 ]
 
@@ -174,14 +175,20 @@ export async function openFile(file: File, handle: FileSystemFileHandle | null) 
     if (format) {
       const engine = useWorkspace.getState().engine
       if (!engine) throw new Error('The engine is not ready yet.')
-      const result = await engine.importPrescription(await file.arrayBuffer(), format)
+      const data = await file.arrayBuffer()
+      const result = await engine.importPrescription(data.slice(0), format)
       const system = result.system as System
+      if (!system.name) system.name = file.name.replace(/\.(zmx|seq)$/i, '')
       openProject(projectFromSystem(system), { name: file.name, handle: null, imported: true }, { dirty: true })
-      useImportReport.getState().show(file.name, result.warnings)
+      // A clean import shows a short note instead of the report.
+      if (result.warnings.length) useImportReport.getState().show(file.name, result.warnings, { data, format })
+      else toast(`Imported ${file.name}: ${system.surfaces.length - 2} surfaces.`)
       return
     }
     const project = readProject(await file.text())
     openProject(project, { name: file.name, handle, imported: false })
+    const missing = await restoreCatalogs(project)
+    if (missing.length) toast(`Glass catalog${missing.length > 1 ? 's' : ''} not loaded: ${missing.join(', ')}. Load ${missing.length > 1 ? 'them' : 'it'} in the System inspector.`, 'warning')
   } catch (e) {
     const msg = e instanceof ProjectError ? e.message : (e as Error).message
     toast(`${file.name} could not be opened. ${msg}`, 'error')

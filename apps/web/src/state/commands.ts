@@ -2,6 +2,9 @@
 // apps/macos/Sources/MKLightUI/Views/App/Commands.swift): ⌘ on Mac, Ctrl
 // elsewhere (`mod`). Every toolbar item is also a menu command.
 
+import { rememberCatalog } from './catalogs'
+import { LAYOUT_PANEL, LENS_DATA } from './arrangement'
+import { resetPanelLayout, togglePanel } from '@/views/panels/actions'
 import { create } from 'zustand'
 import { canDelete, deleteSurface, imageIndex, insertSurface, type System } from '@/model/system'
 import { isVariable, paramResolves, paramTitle, setVariable, variableRefusal, type ParamPath } from '@/model/params'
@@ -146,6 +149,7 @@ export async function loadGlassCatalog(file?: File | null): Promise<string | nul
   try {
     const text = await f.text()
     const info = await engine.loadCatalog(f.name, text)
+    await rememberCatalog(info.name, f.name, text)
     const materials = await engine.materialNames()
     useWorkspace.setState({ materials })
     doc().editProject('Add Glass Catalog', (p) => {
@@ -217,8 +221,9 @@ export const COMMANDS: Command[] = [
   { id: 'runAll', title: 'Run Analyses', shortcut: 'mod+r', run: () => ws().runAll({ fresh: true }) },
   { id: 'cancel', title: 'Cancel Running Analyses', shortcut: 'mod+Period', run: () => ws().cancelAll() },
   { id: 'issues', title: 'Show Issues', shortcut: 'ctrl+mod+e', run: () => view().set({ issuesOpen: !view().issuesOpen }) },
-  { id: 'lensData', title: 'Lens Data', shortcut: 'alt+mod+e', run: () => view().set({ lensDataVisible: !view().lensDataVisible }) },
-  { id: 'layout', title: 'Layout', shortcut: 'alt+mod+l', run: () => view().set({ layoutVisible: !view().layoutVisible }) },
+  { id: 'lensData', title: 'Lens Data', shortcut: 'alt+mod+e', run: () => togglePanel(LENS_DATA) },
+  { id: 'layout', title: 'Layout', shortcut: 'alt+mod+l', run: () => togglePanel(LAYOUT_PANEL) },
+  { id: 'resetPanels', title: 'Reset Panel Layout', run: () => resetPanelLayout() },
   { id: 'inspector', title: 'Show Inspector', shortcut: 'ctrl+mod+i', run: () => view().set({ inspectorVisible: !view().inspectorVisible }) },
   { id: 'sidebar', title: 'Show Sidebar', shortcut: 'ctrl+mod+s', run: () => view().set({ sidebarVisible: !view().sidebarVisible }) },
   { id: 'surfacePage', title: 'Surface', shortcut: 'mod+1', run: () => view().setPage('surface') },

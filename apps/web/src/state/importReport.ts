@@ -9,7 +9,9 @@ interface ImportReportState {
   fileName: string | null
   warnings: ImportWarning[]
   open: boolean
-  show(fileName: string, warnings: ImportWarning[]): void
+  /** The imported file, to import it again after Load Glass Catalog…. */
+  source: { data: ArrayBuffer; format: 'zmx' | 'seq' } | null
+  show(fileName: string, warnings: ImportWarning[], source?: { data: ArrayBuffer; format: 'zmx' | 'seq' }): void
   close(): void
 }
 
@@ -17,7 +19,8 @@ export const useImportReport = create<ImportReportState>()((set) => ({
   fileName: null,
   warnings: [],
   open: false,
-  show: (fileName, warnings) => set({ fileName, warnings, open: true }),
+  source: null,
+  show: (fileName, warnings, source) => set({ fileName, warnings, open: true, source: source ?? null }),
   close: () => set({ open: false }),
 }))
 
