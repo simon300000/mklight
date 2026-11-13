@@ -28,8 +28,10 @@ use mklight_gpu::resident::{BufferId, PlanView, ResidentOp, ResidentPlan, access
 
 use crate::device::*;
 
-/// Word counts of the buffers read back from the device by any plan of this
-/// process, in order (diagnostics: tests check what is not read back).
+/// Word counts of the last `READ_BACK_LOG` buffers read back from the device
+/// by any plan of this process, in order (diagnostics: tests check what is
+/// not read back).
+pub const READ_BACK_LOG: usize = 4096;
 pub static READ_BACKS: std::sync::Mutex<Vec<usize>> = std::sync::Mutex::new(Vec::new());
 
 struct Mirror {
@@ -148,6 +150,9 @@ impl Mirrors {
         stats.device_seconds += b.device_seconds;
         stats.command_buffers += 1;
         if let Ok(mut log) = READ_BACKS.lock() {
+            if log.len() >= READ_BACK_LOG {
+                log.drain(..READ_BACK_LOG / 2);
+            }
             log.push(m.words);
         }
         m.host = true;
