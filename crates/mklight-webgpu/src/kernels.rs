@@ -1,0 +1,35 @@
+//! WGSL sources. Each module is compiled as the generated layout types
+//! (`mklight_types.wgsl`, from `mklight-gpu/include/*.h`), `common.wgsl`
+//! (double-float primitives) and the module's own file: WGSL has no
+//! `#include`.
+
+/// Generated `const MKL_*` and packed structs.
+pub const TYPES: &str = include_str!(concat!(env!("OUT_DIR"), "/mklight_types.wgsl"));
+/// Double-float and utility numerics shared by every module.
+pub const COMMON: &str = include_str!("../kernels/common.wgsl");
+
+/// `(module, file)` of every kernel module.
+pub const MODULES: &[(&str, &str)] = &[
+    ("numerics", include_str!("../kernels/numerics.wgsl")),
+    ("reduce", include_str!("../kernels/reduce.wgsl")),
+    ("trace", include_str!("../kernels/trace.wgsl")),
+    ("transforms", include_str!("../kernels/transforms.wgsl")),
+];
+
+/// The complete WGSL source of `module`.
+pub fn source(module: &str) -> Option<String> {
+    let (_, body) = MODULES.iter().find(|(m, _)| *m == module)?;
+    Some(format!("{TYPES}\n{COMMON}\n{body}"))
+}
+
+/// A digest of every kernel source (part of `PrecisionDescriptor::kernel_build`).
+pub fn digest() -> String {
+    let mut h = blake3::Hasher::new();
+    h.update(TYPES.as_bytes());
+    h.update(COMMON.as_bytes());
+    for (m, s) in MODULES {
+        h.update(m.as_bytes());
+        h.update(s.as_bytes());
+    }
+    h.finalize().to_hex()[..16].to_string()
+}

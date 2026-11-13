@@ -36,6 +36,7 @@ pub mod fmath;
 pub mod fx;
 pub mod layout;
 pub mod pending;
+pub mod probe;
 pub mod reduce;
 mod surface_math;
 pub mod trace_kernel;

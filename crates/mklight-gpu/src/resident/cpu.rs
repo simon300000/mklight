@@ -11,13 +11,60 @@ use std::{any::Any, cell::RefCell, collections::HashMap, time::Instant};
 
 type Lease = Allocation<HostAllocation>;
 
+/// A device that runs some operations of a plan in place of their CPU-f32
+/// specification, on the same host storage (`HostAllocation` buffers): a
+/// backend whose memory is not the host's, such as WebGPU, uploads an
+/// operation's inputs from and reads its outputs back into the
+/// [`Execution`]'s buffers.
+pub trait DeviceOps {
+    /// Run operation `i` on the device and return its stage name, or
+    /// `Ok(None)` to run its CPU-f32 specification.
+    fn run(
+        &mut self,
+        i: usize,
+        op: &ResidentOp,
+        x: &mut Execution,
+        ctl: &JobControl,
+        stats: &mut JobStats,
+    ) -> MkResult<Option<&'static str>>;
+}
+
+/// No device: every operation runs its specification.
+pub struct Specification;
+impl DeviceOps for Specification {
+    fn run(
+        &mut self,
+        _: usize,
+        _: &ResidentOp,
+        _: &mut Execution,
+        _: &JobControl,
+        _: &mut JobStats,
+    ) -> MkResult<Option<&'static str>> {
+        Ok(None)
+    }
+}
+
 pub fn execute<E: FpEnv>(
     rt: &Runtime<HostAllocation>,
     backend: &dyn ComputeBackend,
     plan: &ResidentPlan,
     systems: HashMap<SystemHandle, Arc<PackedSystemSet>>,
     ctl: &JobControl,
+    trace: impl FnMut(usize, &JobControl, &mut JobStats) -> MkResult<TraceResult>,
+) -> MkResult<PlanResult> {
+    execute_with::<E>(rt, backend, plan, systems, ctl, trace, &mut Specification)
+}
+
+/// [`execute`] with `device` running the operations it claims; `trace`
+/// computes the trace uploads it leaves to the host.
+pub fn execute_with<E: FpEnv>(
+    rt: &Runtime<HostAllocation>,
+    backend: &dyn ComputeBackend,
+    plan: &ResidentPlan,
+    systems: HashMap<SystemHandle, Arc<PackedSystemSet>>,
+    ctl: &JobControl,
     mut trace: impl FnMut(usize, &JobControl, &mut JobStats) -> MkResult<TraceResult>,
+    device: &mut dyn DeviceOps,
 ) -> MkResult<PlanResult> {
     let timer = RunTimer::start();
     let start = Instant::now();
@@ -48,72 +95,78 @@ pub fn execute<E: FpEnv>(
         let sub = ctl.subrange(i as f64 / ops, (i + 1) as f64 / ops);
         let t = Instant::now();
         let mut js = JobStats::default();
-        let name = match op {
-            ResidentOp::TraceUpload(t) => {
-                let r = trace(i, &sub, &mut js)?;
-                let n = r.len();
-                let planes: [&[f32]; 10] = [
-                    &r.x,
-                    &r.y,
-                    &r.z,
-                    &r.l,
-                    &r.m,
-                    &r.n,
-                    &r.opl_hi,
-                    &r.opl_lo,
-                    &r.weight,
-                    &r.transmittance,
-                ];
-                let out = x.words_mut(t.output.floats);
-                for (k, p) in planes.iter().enumerate() {
-                    out[k * n..(k + 1) * n].copy_from_slice(bytemuck::cast_slice(p));
+        let name = match device.run(i, op, &mut x, &sub, &mut js)? {
+            Some(name) => name,
+            None => match op {
+                ResidentOp::TraceUpload(t) => {
+                    let r = trace(i, &sub, &mut js)?;
+                    let n = r.len();
+                    let planes: [&[f32]; 10] = [
+                        &r.x,
+                        &r.y,
+                        &r.z,
+                        &r.l,
+                        &r.m,
+                        &r.n,
+                        &r.opl_hi,
+                        &r.opl_lo,
+                        &r.weight,
+                        &r.transmittance,
+                    ];
+                    let out = x.words_mut(t.output.floats);
+                    for (k, p) in planes.iter().enumerate() {
+                        out[k * n..(k + 1) * n].copy_from_slice(bytemuck::cast_slice(p));
+                    }
+                    let out = x.words_mut(t.output.indices);
+                    for (k, p) in [&r.status, &r.last_surface, &r.steps].iter().enumerate() {
+                        out[k * n..(k + 1) * n].copy_from_slice(p);
+                    }
+                    x.words_mut(t.output.records)
+                        .copy_from_slice(bytemuck::cast_slice(&r.recorded));
+                    x.words_mut(t.output.record_status)
+                        .copy_from_slice(&r.recorded_status);
+                    x.stats.uploaded_bytes += (n
+                        * (crate::consts::MKL_TRACE_IN_FLOATS + crate::consts::MKL_TRACE_IN_UINTS)
+                            as usize
+                        * 4) as u64;
+                    "trace"
                 }
-                let out = x.words_mut(t.output.indices);
-                for (k, p) in [&r.status, &r.last_surface, &r.steps].iter().enumerate() {
-                    out[k * n..(k + 1) * n].copy_from_slice(p);
+                ResidentOp::Sum(s) => {
+                    let [channels, count] = s.input.desc.shape[..] else {
+                        unreachable!("validated sum shape")
+                    };
+                    let mut out = x.buffers[s.output.0].take().unwrap();
+                    let values: &[f32] = x.rows(&s.input);
+                    for c in 0..channels {
+                        let sum = reduce::reduce_channel_ranges_in::<E>(
+                            s.mode,
+                            &values[c * count..(c + 1) * count],
+                            crate::cpu::CHUNK,
+                            ctl,
+                            |_| js.command_buffers += 1,
+                        )?;
+                        out.words_mut()[c * 2..c * 2 + 2]
+                            .copy_from_slice(bytemuck::cast_slice(&[sum]));
+                        sub.report((c + 1) as f64 / channels as f64, "sum");
+                    }
+                    x.buffers[s.output.0] = Some(out);
+                    "sum"
                 }
-                x.words_mut(t.output.records)
-                    .copy_from_slice(bytemuck::cast_slice(&r.recorded));
-                x.words_mut(t.output.record_status)
-                    .copy_from_slice(&r.recorded_status);
-                x.stats.uploaded_bytes += (n
-                    * (crate::consts::MKL_TRACE_IN_FLOATS + crate::consts::MKL_TRACE_IN_UINTS)
-                        as usize
-                    * 4) as u64;
-                "trace"
-            }
-            ResidentOp::Sum(s) => {
-                let [channels, count] = s.input.desc.shape[..] else {
-                    unreachable!("validated sum shape")
-                };
-                let mut out = x.buffers[s.output.0].take().unwrap();
-                let values: &[f32] = x.rows(&s.input);
-                for c in 0..channels {
-                    let sum = reduce::reduce_channel_ranges_in::<E>(
-                        s.mode,
-                        &values[c * count..(c + 1) * count],
-                        crate::cpu::CHUNK,
-                        ctl,
-                        |_| js.command_buffers += 1,
-                    )?;
-                    out.words_mut()[c * 2..c * 2 + 2].copy_from_slice(bytemuck::cast_slice(&[sum]));
-                    sub.report((c + 1) as f64 / channels as f64, "sum");
+                _ => {
+                    dispatch(op, &mut x, &sub)?;
+                    "domain"
                 }
-                x.buffers[s.output.0] = Some(out);
-                "sum"
-            }
-            _ => {
-                dispatch(op, &mut x, &sub)?;
-                "domain"
-            }
+            },
         };
         ctl.check()?;
         ctl.report((i + 1) as f64 / ops, "resident plan");
         x.stats.command_buffers += js.command_buffers;
+        x.stats.device_seconds += js.device_seconds;
         x.stats.stages.push(StageStats {
             operation: i,
             name: name.into(),
             wall_seconds: t.elapsed().as_secs_f64(),
+            device_seconds: js.device_seconds,
             command_buffers: js.command_buffers,
             ..Default::default()
         });
@@ -227,6 +280,32 @@ impl Execution {
             .get(&handle)
             .cloned()
             .ok_or_else(|| bad("system not declared in operation accesses"))
+    }
+    /// Run `f` with the plan-owned outputs `ids` writable while every other
+    /// buffer stays readable through `&Execution` (a device reads an
+    /// operation's inputs and writes its outputs in one call). The ids must
+    /// be distinct destinations of the operation.
+    pub fn with_outputs<R>(
+        &mut self,
+        ids: &[BufferId],
+        f: impl FnOnce(&Execution, &mut [&mut [u32]]) -> R,
+    ) -> R {
+        let mut taken: Vec<Slot> = ids
+            .iter()
+            .map(|id| {
+                self.buffers[id.0]
+                    .take()
+                    .expect("distinct operation outputs")
+            })
+            .collect();
+        let r = {
+            let mut words: Vec<&mut [u32]> = taken.iter_mut().map(|s| s.words_mut()).collect();
+            f(self, &mut words)
+        };
+        for (id, s) in ids.iter().zip(taken) {
+            self.buffers[id.0] = Some(s);
+        }
+        r
     }
     pub fn words(&self, id: BufferId) -> &[u32] {
         self.buffers[id.0].as_ref().unwrap().words()
