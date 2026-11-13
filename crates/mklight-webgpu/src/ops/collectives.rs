@@ -1,11 +1,11 @@
 //! Resident collectives on the device: `collectives::Request::SegmentReduce`
 //! of every kind (`kernels/collectives.wgsl`).
 //!
-//! One batch per operation: the inputs are uploaded, one workgroup per
+//! One batch per operation: the inputs are loaded through the mirrors, one workgroup per
 //! segment reduces every term of its segment by the fixed tree of
 //! `mklight_gpu::reduce::tree_in` (passes of at most
 //! `maxComputeWorkgroupsPerDimension` segments), and the output and status
-//! are read back. Results are bitwise the CPU-f32 specification's. Scans,
+//! are stored into their mirrors (no readback). Results are bitwise the CPU-f32 specification's. Scans,
 //! compaction, sorts and QR fits (no geometric analysis plans them) and
 //! inputs beyond one storage binding run the specification.
 
@@ -56,7 +56,7 @@ pub(crate) fn fits(gpu: &dyn Gpu, words: usize) -> bool {
 }
 
 fn segments(
-    ops: &WebGpuOps,
+    ops: &mut WebGpuOps,
     r: &SegmentReduce,
     x: &mut Execution,
     ctl: &JobControl,
@@ -107,41 +107,37 @@ fn segments(
     if s == 0 {
         return Ok(Some("webgpu:segment_reduce"));
     }
-    x.with_outputs(&[r.output, r.status], |x, out| -> MkResult<()> {
-        let [output, status] = out else {
-            unreachable!("two segment outputs")
-        };
-        let placeholder = [0u32; 4];
-        let mut batch = Batch::default();
-        let bound: Vec<usize> = inputs
-            .iter()
-            .map(|v| match v {
-                Some(v) => batch.upload(x.view(v)),
-                None => batch.upload(&placeholder),
-            })
-            .collect();
-        let o = batch.scratch(2 * out_len.max(1));
-        let st = batch.scratch(s.max(1));
-        let storage: Vec<Binding> = bound
-            .iter()
-            .map(|&b| Binding::read(b))
-            .chain([Binding::write(o), Binding::write(st)])
-            .collect();
-        for first in (0..s).step_by(max_groups) {
-            batch.passes.push(Pass {
-                kernel: SEGMENTS,
-                uniform: Some(params(first)),
-                storage: storage.clone(),
-                workgroups: [(s - first).min(max_groups) as u32, 1, 1],
-            });
-        }
-        batch.read(o, 0, &mut output[..2 * out_len]);
-        batch.read(st, 0, &mut status[..s]);
-        let b = gpu.run(batch)?;
-        stats.device_seconds += b.device_seconds;
-        stats.command_buffers += 1;
-        Ok(())
-    })?;
+    let x: &Execution = x;
+    let placeholder = [0u32; 4];
+    let mut batch = Batch::default();
+    let bound: Vec<usize> = inputs
+        .iter()
+        .map(|v| match v {
+            Some(v) => ops.mirrors.load(&mut batch, x, v),
+            None => batch.upload(&placeholder),
+        })
+        .collect();
+    let o = batch.scratch(2 * out_len.max(1));
+    let st = batch.scratch(s.max(1));
+    let storage: Vec<Binding> = bound
+        .iter()
+        .map(|&b| Binding::read(b))
+        .chain([Binding::write(o), Binding::write(st)])
+        .collect();
+    for first in (0..s).step_by(max_groups) {
+        batch.passes.push(Pass {
+            kernel: SEGMENTS,
+            uniform: Some(params(first)),
+            storage: storage.clone(),
+            workgroups: [(s - first).min(max_groups) as u32, 1, 1],
+        });
+    }
+    ops.mirrors
+        .store(&mut batch, x, o, 0, r.output, 0, 2 * out_len)?;
+    ops.mirrors.store(&mut batch, x, st, 0, r.status, 0, s)?;
+    let b = gpu.run(batch)?;
+    stats.device_seconds += b.device_seconds;
+    stats.command_buffers += 1;
     ctl.check()?;
     ctl.report(1.0, "collectives");
     Ok(Some("webgpu:segment_reduce"))

@@ -108,3 +108,115 @@ fn segment_reduce_matches_cpu_bitwise() {
     });
     same(g, &c, &|b| p3_cases::moments_case(b, short.clone(), 30_001));
 }
+
+/// Focus terms and characteristic terms feed segment sums in one plan whose
+/// inputs are imported: bitwise the CPU-f32 plan's, and no operation reads an
+/// intermediate back (each takes one command buffer; only the final outputs
+/// are read after the last operation).
+fn chained(b: &dyn QualificationBackend) -> ResidentPlan {
+    use mklight_gpu::geometry::{Characteristic, FocusTerms, Request as Geometry, view};
+    let (len, segs, k) = (37usize, 9usize, 3usize);
+    let n = len * segs;
+    let value = |i: usize| ((i as u64 * 2654435761) % 1000003) as f64 / 1000003. - 0.4;
+    let df = |count: usize, salt: usize| {
+        BufferData::DoubleFloat(
+            (0..count)
+                .map(|i| Df32::from_f64(value(i + salt) * [1., 3., 0.01][i % 3]))
+                .collect(),
+        )
+    };
+    let mut p = p3_cases::plan();
+    let points = p3_cases::import(b, &mut p, [5, n], df(5 * n, 0));
+    let mask = p3_cases::import(
+        b,
+        &mut p,
+        [n],
+        BufferData::U32((0..n as u32).map(|i| u32::from(i % 7 != 3)).collect()),
+    );
+    let position_moments = p3_cases::import(b, &mut p, [segs, 10], df(10 * segs, 11));
+    let slope_moments = p3_cases::import(b, &mut p, [segs, 10], df(10 * segs, 29));
+    let frequency = p3_cases::import(b, &mut p, [k, segs, 2], df(k * segs * 2, 5));
+    let focus = p3_cases::scratch(&mut p, ElementType::DoubleFloat, [3, n]);
+    let characteristic = p3_cases::scratch(&mut p, ElementType::DoubleFloat, [2, k * n]);
+    p.operations
+        .push(ResidentOp::Geometry(Geometry::FocusTerms(FocusTerms {
+            points: points.clone(),
+            mask: mask.clone(),
+            position_moments,
+            slope_moments,
+            segment_len: len,
+            centroid: true,
+            output: focus,
+        })));
+    p.operations
+        .push(ResidentOp::Geometry(Geometry::Characteristic(
+            Characteristic {
+                points,
+                mask,
+                segment_len: len,
+                frequency,
+                output: characteristic,
+            },
+        )));
+    let mut outputs = vec![];
+    for (id, channels, count) in [(focus, 3, n), (characteristic, 2, k * n)] {
+        let offsets: Vec<u32> = (0..=segs).map(|s| (s * count / segs) as u32).collect();
+        let offsets = p3_cases::import(b, &mut p, [segs + 1], BufferData::U32(offsets));
+        let status = p3_cases::scratch(&mut p, ElementType::U32, [segs]);
+        let mut r = SegmentReduce {
+            mask: None,
+            mask_value: 0,
+            weights: None,
+            values: view(id, ElementType::DoubleFloat, [channels, count]),
+            offsets,
+            reference: None,
+            max_segment_len: count / segs + 1,
+            mode: ReduceMode::DoubleFloat,
+            kind: SegmentKind::Sum,
+            output: BufferId(0),
+            status,
+        };
+        r.output = p3_cases::scratch(&mut p, ElementType::DoubleFloat, segment_shape(&r));
+        outputs.extend([r.output, status]);
+        p.operations
+            .push(ResidentOp::Collectives(Request::SegmentReduce(r)));
+    }
+    p.outputs = outputs;
+    p
+}
+
+#[test]
+fn geometry_to_segments_stays_on_device() {
+    let g = crate::gpu_or_skip!();
+    let c = CpuF32Backend::matching(&g.precision().probe);
+    let (a, _) = p3_cases::read(&c, chained(&c));
+    let (b, r) = p3_cases::read(g, chained(g));
+    // Focus sums and statuses are bitwise; the characteristic's cos/sin are
+    // within the geometry tolerance, so are its sums.
+    for (a, b) in a[..2].iter().zip(&b[..2]) {
+        p3_cases::assert_bits(a, b);
+    }
+    p3_cases::assert_bits(&a[3], &b[3]);
+    for (x, y) in p3_cases::df(&a[2]).iter().zip(p3_cases::df(&b[2])) {
+        assert!((x - y).abs() <= 1e-4 * (1. + x.abs()), "{x} {y}");
+    }
+    let stages: Vec<_> = r
+        .stats
+        .stages
+        .iter()
+        .filter(|s| s.name != "metadata")
+        .map(|s| (s.name.as_str(), s.command_buffers))
+        .collect();
+    let names: Vec<_> = stages.iter().map(|s| s.0).collect();
+    assert_eq!(
+        names,
+        [
+            "webgpu:focus_terms",
+            "webgpu:characteristic",
+            "webgpu:segment_reduce",
+            "webgpu:segment_reduce"
+        ]
+    );
+    // One batch each: nothing was read back between the operations.
+    assert!(stages.iter().all(|s| s.1 == 1), "{stages:?}");
+}

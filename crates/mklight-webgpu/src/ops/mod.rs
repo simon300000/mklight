@@ -206,7 +206,10 @@ impl DeviceOps for WebGpuOps {
 /// (so device-resident inputs need no readback before it).
 fn resident_inputs(op: &ResidentOp) -> bool {
     // One arm per converted family; `matches!` keeps them as a list.
-    matches!(op, ResidentOp::Sum(_))
+    matches!(
+        op,
+        ResidentOp::Sum(_) | ResidentOp::Geometry(_) | ResidentOp::Collectives(_)
+    )
 }
 
 impl WebGpuOps {
