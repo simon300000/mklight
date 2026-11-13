@@ -56,6 +56,84 @@ pub struct RaySample {
     pub amplitude: f64,
 }
 
+/// Largest tolerated linear-interpolation error of the traced lattice
+/// (waves) before [`WaveWarning::LatticeUndersampled`] is raised.
+///
+/// λ/50: at this level MTFs stay within 2·10⁻³ of a dense lattice and
+/// Strehl ratios within a few per cent (larger relative errors only on
+/// fields with Strehl < 0.05); the default 65-ray lattice passes on every
+/// built-in sample. An F/1.3 aspheric singlet at 0.05 waves underestimates
+/// its Strehl by 20 %.
+pub const LATTICE_INTERPOLATION_LIMIT_WAVES: f64 = 0.02;
+
+/// Largest pupil lattice the warning recommends (the same order as the
+/// automatic pupil-grid cap).
+const MAX_RECOMMENDED_RAYS: usize = 1025;
+
+/// Estimated linear-interpolation error (waves) of the lattice: for every
+/// three consecutive rays along a lattice row or column, the deviation `e`
+/// of the middle ray from the straight line through its neighbours in
+/// `(u, v)`. For a locally quadratic wavefront the error of the barycentric
+/// interpolant inside a cell of the lattice is `e/4`; the largest such
+/// value is returned. Exactly linear wavefronts (piston, tilt) give 0, and
+/// the measure ignores how unevenly the rays are spaced in `(u, v)`.
+pub fn lattice_interpolation_error(rays: &StructuredSamples) -> f64 {
+    let (nx, ny) = (rays.nx, rays.ny);
+    if rays.samples.len() != nx * ny {
+        return 0.0;
+    }
+    let get = |i: usize, j: usize| rays.samples[j * nx + i];
+    let dev = |a: RaySample, b: RaySample, c: RaySample| -> f64 {
+        let (eu, ev) = (c.u - a.u, c.v - a.v);
+        let len2 = eu * eu + ev * ev;
+        if !(len2 > 1e-300) {
+            return 0.0;
+        }
+        let t = ((b.u - a.u) * eu + (b.v - a.v) * ev) / len2;
+        (b.opd_waves - (a.opd_waves + t * (c.opd_waves - a.opd_waves))).abs()
+    };
+    let mut worst: f64 = 0.0;
+    for j in 0..ny {
+        for i in 0..nx {
+            let Some(b) = get(i, j) else { continue };
+            if i > 0
+                && i + 1 < nx
+                && let (Some(a), Some(c)) = (get(i - 1, j), get(i + 1, j))
+            {
+                worst = worst.max(dev(a, b, c));
+            }
+            if j > 0
+                && j + 1 < ny
+                && let (Some(a), Some(c)) = (get(i, j - 1), get(i, j + 1))
+            {
+                worst = worst.max(dev(a, b, c));
+            }
+        }
+    }
+    0.25 * worst
+}
+
+/// [`WaveWarning::LatticeUndersampled`] when the lattice's interpolation
+/// error exceeds [`LATTICE_INTERPOLATION_LIMIT_WAVES`]. The recommendation
+/// scales the ray spacing by `√(limit/error)` (the error is quadratic in
+/// the spacing) with a 20 % margin, since the worst error sits at the rim,
+/// where the lattice is irregular.
+pub fn lattice_warning(rays: &StructuredSamples) -> Option<WaveWarning> {
+    let err = lattice_interpolation_error(rays);
+    let limit = LATTICE_INTERPOLATION_LIMIT_WAVES;
+    (err > limit).then(|| {
+        // Traced lattices carry one rim node beyond the `pupil.rays`
+        // lattice on each side.
+        let n = rays.nx.max(rays.ny).saturating_sub(2).max(2);
+        let k = (1.2 * (n - 1) as f64 * (err / limit).sqrt()).ceil() as usize + 1;
+        WaveWarning::LatticeUndersampled {
+            interpolation_error_waves: err,
+            rays: n,
+            recommended_rays: (k | 1).min(MAX_RECOMMENDED_RAYS),
+        }
+    })
+}
+
 /// Rays traced on a logical lattice; `None` marks a vignetted or failed ray.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct StructuredSamples {
@@ -390,6 +468,7 @@ pub fn grid_from_structured(
         })?;
     let pupil = PupilFunction::from_samples(n, wavelength_um, geometry, amp, cov, opd)?;
     ctx.report(1.0, "pupil resampling");
+    warnings.extend(lattice_warning(rays));
     Ok((pupil, warnings))
 }
 

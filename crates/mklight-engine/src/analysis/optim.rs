@@ -1978,8 +1978,10 @@ fn tolerance_default_merit() -> DefaultMeritSpec {
 pub struct Tolerance;
 
 impl Analysis for Tolerance {
+    /// 3: `predicted_criterion` is the expected (Monte-Carlo mean)
+    /// criterion, nominal + `expected_change`, no longer nominal + RSS.
     fn result_version(&self) -> u32 {
-        2
+        3
     }
     fn name(&self) -> &str {
         "tolerance"
@@ -1995,7 +1997,7 @@ impl Analysis for Tolerance {
     }
     fn description(&self) -> &str {
         "Sensitivity of a criterion merit (default: the RMS spot merit) to each tolerance at its \
-         limits, ranked worst first with the RSS prediction, and a reproducible Monte-Carlo \
+         limits, ranked worst first with the predicted mean criterion, and a reproducible Monte-Carlo \
          analysis, with compensators re-optimised and the model's solves re-applied for every \
          trial."
     }
@@ -2087,6 +2089,13 @@ impl Analysis for Tolerance {
                                             "Largest absolute criterion change at either limit.",
                                         ),
                                     ),
+                                    (
+                                        "expected_change",
+                                        nf_u(
+                                            "criterion",
+                                            "Expected change over the tolerance's distribution: a·E[δ] + b·E[δ²] of the quadratic through both limits.",
+                                        ),
+                                    ),
                                     ("ok", boolean("Both limits evaluated successfully.")),
                                     ("compensators_minus", arr(nf(), "")),
                                     ("compensators_plus", arr(nf(), "")),
@@ -2097,11 +2106,21 @@ impl Analysis for Tolerance {
                         ("ranking", arr(int("Tolerance index."), "Worst first.")),
                         (
                             "rss_change",
-                            nf_u("criterion", "Root sum of squared worst changes."),
+                            nf_u(
+                                "criterion",
+                                "Root sum of squared worst changes (for a criterion linear in the perturbations; not the prediction of a merit).",
+                            ),
+                        ),
+                        (
+                            "expected_change",
+                            nf_u("criterion", "Sum of the operands' expected changes."),
                         ),
                         (
                             "predicted_criterion",
-                            nf_u("criterion", "Nominal + rss_change."),
+                            nf_u(
+                                "criterion",
+                                "Predicted Monte-Carlo mean: nominal + expected_change (independent perturbations add their expected merit changes).",
+                            ),
                         ),
                         ("evaluations", int("")),
                         ("cancelled", boolean("Partial sensitivity after a stop.")),
@@ -2497,13 +2516,15 @@ impl Analysis for Tolerance {
                     "change_minus": json_nf(o.change_minus),
                     "change_plus": json_nf(o.change_plus),
                     "worst": json_nf(o.worst),
+                    "expected_change": json_nf(o.expected_change),
                     "ok": o.minus.ok && o.plus.ok,
                     "compensators_minus": o.minus.compensators.iter().map(|v| json_nf(*v)).collect::<Vec<_>>(),
                     "compensators_plus": o.plus.compensators.iter().map(|v| json_nf(*v)).collect::<Vec<_>>(),
                 })).collect::<Vec<_>>(),
                 "ranking": r.ranking,
                 "rss_change": json_nf(r.rss_change),
-                "predicted_criterion": json_nf(r.nominal.criterion + r.rss_change),
+                "expected_change": json_nf(r.expected_change),
+                "predicted_criterion": json_nf(r.predicted_criterion()),
                 "evaluations": r.evaluations,
                 "cancelled": r.cancelled,
             })
@@ -3075,6 +3096,60 @@ mod tests {
                 assert_eq!(*astigmatism_angle_deg, 0.0);
             }
         }
+    }
+
+    /// The predicted criterion is the Monte-Carlo mean of the merit (a mean
+    /// square: independent perturbations add their expected changes), not
+    /// nominal + RSS. Cooke triplet, ten end-point tolerances, no
+    /// compensator.
+    #[test]
+    fn tolerance_prediction_matches_monte_carlo_mean() {
+        let sys = samples::cooke_triplet();
+        let n = sys.surfaces.len();
+        let mut tols = Vec::new();
+        for sf in &sys.surfaces[1..n - 2] {
+            let id = sf.id;
+            tols.push(json!({"param": ParamPath::Curvature { surface: id },
+                "minus": 2e-4, "plus": 2e-4, "distribution": {"type": "end_point"}}));
+            tols.push(json!({"param": ParamPath::Thickness { surface: id },
+                "minus": 0.05, "plus": 0.05, "distribution": {"type": "end_point"}}));
+        }
+        assert_eq!(tols.len(), 10);
+        let r = run(
+            sys,
+            "tolerance",
+            json!({"tolerances": tols, "mode": "both",
+            "trials": 2000, "seed": 3, "backend": "cpu"}),
+        )
+        .unwrap();
+        let sens = &r.json["sensitivity"];
+        let mc = &r.json["monte_carlo"];
+        assert_eq!(mc["failures"], json!(0));
+        let nominal = f(&sens["nominal"]["criterion"]);
+        let predicted = f(&sens["predicted_criterion"]);
+        let expected: f64 = (sens["operands"].as_array().unwrap().iter())
+            .map(|o| f(&o["expected_change"]))
+            .sum();
+        assert!((f(&sens["expected_change"]) - expected).abs() < 1e-12 * expected);
+        assert_eq!(predicted, nominal + f(&sens["expected_change"]));
+        // End points: each expected change is the mean of the two limits.
+        for o in sens["operands"].as_array().unwrap() {
+            let mean = (f(&o["change_minus"]) + f(&o["change_plus"])) / 2.0;
+            assert!((f(&o["expected_change"]) - mean).abs() <= 1e-12 * mean.abs());
+        }
+        let mean = f(&mc["mean"]);
+        let se = f(&mc["std_dev"]) / 2000f64.sqrt();
+        eprintln!(
+            "nominal {nominal:e} predicted {predicted:e} rss {:e} mc mean {mean:e} ± {se:e}",
+            nominal + f(&sens["rss_change"])
+        );
+        assert!(
+            (predicted - mean).abs() < 0.01 * mean && (predicted - mean).abs() < 4.0 * se,
+            "predicted {predicted:e}, Monte-Carlo mean {mean:e} ± {se:e}"
+        );
+        // Nominal + RSS (the former prediction) is far too optimistic.
+        let rss = nominal + f(&sens["rss_change"]);
+        assert!(rss < 0.75 * mean, "{rss:e} vs {mean:e}");
     }
 
     /// Sensitivity and Monte Carlo on the Cooke triplet with a back-focus

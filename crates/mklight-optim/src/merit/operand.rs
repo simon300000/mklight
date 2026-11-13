@@ -42,7 +42,8 @@ pub enum WavefrontReference {
     /// centroid): the usual optimisation target.
     #[default]
     Centroid,
-    /// The CONVENTIONS §4 reference sphere centred on the chief ray.
+    /// The CONVENTIONS §4 reference sphere centred on the chief ray, piston
+    /// (the group's or sampling's weighted mean OPD) removed.
     Chief,
 }
 
@@ -76,7 +77,9 @@ pub enum CentroidScope {
 /// reference.
 ///
 /// A group may also be attached to a `Chief`-referenced per-ray operand; it
-/// then only declares the sampling the operand belongs to.
+/// then declares the sampling the operand belongs to and, for
+/// `WavefrontAberration`, the rays whose weighted mean OPD (piston) is
+/// removed.
 ///
 /// **Half pupil on an asymmetric candidate.** The half pupil is exact only
 /// when the candidate is mirror-symmetric about the meridional plane (and the
@@ -407,7 +410,8 @@ pub enum OperandKind {
         group: Option<RayGroup>,
     },
     /// OPD at pupil point `(px, py)` (waves), with piston and tilt of
-    /// `group` removed for a `Centroid` reference (which requires `group`).
+    /// `group` removed for a `Centroid` reference (which requires `group`),
+    /// and the piston of `group` (if any) for a `Chief` reference.
     /// The default wavefront merit is built from these.
     WavefrontAberration {
         px: f64,

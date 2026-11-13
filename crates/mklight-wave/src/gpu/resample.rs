@@ -73,6 +73,41 @@ pub fn from_structured(
     )
 }
 
+/// [`crate::interp::lattice_warning`] of a resident lattice. The lattice
+/// (a few thousand nodes) is read back once for this host-side diagnostic,
+/// so device and reference resampling report the same warning.
+fn lattice_warning(
+    backend: &dyn ComputeBackend,
+    nodes: BufferView,
+    valid: BufferView,
+) -> MkResult<Option<WaveWarning>> {
+    let shape = valid.desc.shape.clone();
+    let [ny, nx] = shape[..] else {
+        return Err(MkError::InvalidParam("pupil lattice mask shape".into()));
+    };
+    let mask: Vec<u32> = backend.read_view(valid)?.as_slice::<u32>()?.to_vec();
+    let guard = backend.read_view(nodes)?;
+    let node = guard.as_slice::<Df32>()?;
+    if mask.len() < nx * ny || node.len() < 4 * nx * ny {
+        return Err(MkError::InvalidParam("pupil lattice size".into()));
+    }
+    let samples = (0..nx * ny)
+        .map(|i| {
+            (mask[i] != 0).then(|| crate::RaySample {
+                u: node[4 * i].to_f64(),
+                v: node[4 * i + 1].to_f64(),
+                opd_waves: node[4 * i + 2].to_f64(),
+                amplitude: node[4 * i + 3].to_f64(),
+            })
+        })
+        .collect();
+    Ok(crate::interp::lattice_warning(&StructuredSamples {
+        nx,
+        ny,
+        samples,
+    }))
+}
+
 /// Resample already resident [ny,nx,4] lattice nodes (u,v,OPD,amplitude).
 #[allow(clippy::too_many_arguments)]
 pub fn from_resident_lattice(
@@ -91,6 +126,7 @@ pub fn from_resident_lattice(
     if let Some(mask) = mask {
         mask.validate()?;
     }
+    let (nodes_view, valid_view) = (nodes.clone(), valid.clone());
     let edge_count = match mask {
         Some(PupilMask::Polygons { loops }) => loops.iter().map(Vec::len).sum(),
         _ => 0,
@@ -171,6 +207,7 @@ pub fn from_resident_lattice(
     } else {
         vec![]
     };
+    warnings.extend(lattice_warning(backend, nodes_view, valid_view)?);
     let step = d[2].to_f64();
     let across = if d[0].hi == 0. {
         0

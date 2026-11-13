@@ -82,17 +82,33 @@ pub struct ResolvedSystem {
     pub library: Arc<MaterialLibrary>,
 }
 
+/// The frame a [`Placement`] moves to, in the frame it starts from.
+///
+/// `DecenterThenTilt` decentres by `(dx, dy)`, then tilts about the new x,
+/// then the new y, then the new z axis: `R = R_x R_y R_z`, origin `d`.
+/// `TiltThenDecenter` runs the reverse sequence — tilt about z, then y, then
+/// x, then decentre along the tilted axes: `R = R_z R_y R_x`, origin `R d`.
+/// A placement followed by its negated `TiltThenDecenter` partner is
+/// therefore exactly the identity, which is how a coordinate break is undone.
 fn placement_frame(p: &Placement) -> Frame {
-    let rot = Mat3::rot_x(p.tilt_x.to_radians())
-        .mul_mat(&Mat3::rot_y(p.tilt_y.to_radians()))
-        .mul_mat(&Mat3::rot_z(p.tilt_z.to_radians()));
+    let (rx, ry, rz) = (
+        Mat3::rot_x(p.tilt_x.to_radians()),
+        Mat3::rot_y(p.tilt_y.to_radians()),
+        Mat3::rot_z(p.tilt_z.to_radians()),
+    );
     let dec = Vec3::new(p.decenter_x, p.decenter_y, 0.0);
     match p.order {
-        TransformOrder::DecenterThenTilt => Frame { origin: dec, rot },
-        TransformOrder::TiltThenDecenter => Frame {
-            origin: rot.mul_vec(dec),
-            rot,
+        TransformOrder::DecenterThenTilt => Frame {
+            origin: dec,
+            rot: rx.mul_mat(&ry).mul_mat(&rz),
         },
+        TransformOrder::TiltThenDecenter => {
+            let rot = rz.mul_mat(&ry).mul_mat(&rx);
+            Frame {
+                origin: rot.mul_vec(dec),
+                rot,
+            }
+        }
     }
 }
 
@@ -339,6 +355,82 @@ mod tests {
         assert!(!r.surfaces[1].frame.rot.is_identity());
         assert!(r.surfaces[2].frame.rot.is_identity());
         assert!((r.surfaces[2].frame.origin.z - 5.0).abs() < 1e-15);
+    }
+
+    fn compound(order: TransformOrder, sign: f64) -> Placement {
+        Placement {
+            decenter_x: sign * 1.0,
+            decenter_y: sign * 2.0,
+            tilt_x: sign * 10.0,
+            tilt_y: sign * 20.0,
+            tilt_z: sign * 5.0,
+            order,
+            restore_after: false,
+        }
+    }
+
+    fn max_dev(f: &Frame) -> f64 {
+        let mut d = f.origin.x.abs().max(f.origin.y.abs()).max(f.origin.z.abs());
+        for i in 0..3 {
+            for j in 0..3 {
+                let e = if i == j { 1.0 } else { 0.0 };
+                d = d.max((f.rot.m[i][j] - e).abs());
+            }
+        }
+        d
+    }
+
+    #[test]
+    fn negated_tilt_then_decenter_partner_is_the_identity() {
+        use TransformOrder::*;
+        // Either order followed by its negated partner in the other order.
+        for (a, b) in [
+            (DecenterThenTilt, TiltThenDecenter),
+            (TiltThenDecenter, DecenterThenTilt),
+        ] {
+            let f =
+                placement_frame(&compound(a, 1.0)).compose(&placement_frame(&compound(b, -1.0)));
+            assert!(max_dev(&f) < 1e-12, "{a:?} then negated {b:?}: {f:?}");
+        }
+        // Through the resolver: CB, a gap, the return CB, a gap.
+        let mut s = singlet();
+        let mut cb = Surface::new(9, SurfaceShape::CoordinateBreak, 0.0, MaterialRef::Air);
+        cb.placement = Some(compound(DecenterThenTilt, 1.0));
+        let mut back = Surface::new(10, SurfaceShape::CoordinateBreak, 0.0, MaterialRef::Air);
+        back.placement = Some(compound(TiltThenDecenter, -1.0));
+        s.surfaces.insert(2, back);
+        s.surfaces.insert(2, cb);
+        let snap = Snapshot::new(s).unwrap();
+        let r = ResolvedSystem::new(&snap, Arc::new(MaterialLibrary::with_builtin())).unwrap();
+        let f = r.surfaces[4].frame;
+        assert!((f.origin.z - 5.0).abs() < 1e-12);
+        let f = Frame {
+            origin: Vec3::new(f.origin.x, f.origin.y, f.origin.z - 5.0),
+            rot: f.rot,
+        };
+        assert!(max_dev(&f) < 1e-12, "{f:?}");
+    }
+
+    #[test]
+    fn placement_rotation_orders() {
+        let (ax, ay, az) = (10f64.to_radians(), 20f64.to_radians(), 5f64.to_radians());
+        let (rx, ry, rz) = (Mat3::rot_x(ax), Mat3::rot_y(ay), Mat3::rot_z(az));
+        let d = Vec3::new(1.0, 2.0, 0.0);
+        let close = |a: &Mat3, b: &Mat3| {
+            (0..3).all(|i| (0..3).all(|j| (a.m[i][j] - b.m[i][j]).abs() < 1e-15))
+        };
+        // Decenter, then tilt about x, the new y, the new z.
+        let f = placement_frame(&compound(TransformOrder::DecenterThenTilt, 1.0));
+        assert!(close(&f.rot, &rx.mul_mat(&ry).mul_mat(&rz)));
+        assert_eq!((f.origin.x, f.origin.y, f.origin.z), (1.0, 2.0, 0.0));
+        // Tilt about z, the new y, the new x, then decenter along the new axes.
+        let f = placement_frame(&compound(TransformOrder::TiltThenDecenter, 1.0));
+        let r = rz.mul_mat(&ry).mul_mat(&rx);
+        assert!(close(&f.rot, &r));
+        let o = r.mul_vec(d);
+        assert!((f.origin - o).norm() < 1e-15);
+        // The two orders differ when more than one tilt is set.
+        assert!(!close(&r, &rx.mul_mat(&ry).mul_mat(&rz)));
     }
 
     #[test]

@@ -333,31 +333,32 @@ retain the existing behavior. `Miss`, `NoConvergence` and `OutsideDomain`
 keep the existing distinction between no evidence of crossing, an
 unconverged bracket/converging iteration, and leaving the real sag domain.
 
-`FirstOrder` and `ParaxialModel::new` keep the y-axis sweep. The separate
-`ParaxialXY` reports x and y first-order tables at every wavelength, plus
-**signed squeeze = EFL_y/EFL_x**, primary wavelength, symmetry and RunInfo.
-Its job variant checks cancellation between wavelengths and reports monotone
-progress. The existing EFL convention is unit-index referenced; image-space
-focal length is n' EFL. BFL is the axial distance from the last optical
-surface. Tilts and decenters are ignored by these unfolded sweeps.
+**Conic root choice** (the conic intersection and every seed taken from
+it). Roots off the vertex sheet (`1 − κcz < 0`) are rejected. When a ray
+crosses the vertex sheet twice, the root **nearer the vertex** (smaller
+`r²`) wins, whatever the sign of `t` (ties go to the root continuous with
+the plane solution). Every backend uses this rule: the scalar trace, the
+CPU packets, the GPU emulation and the Metal kernels (bitwise-pinned on a
+steep double crossing).
 
-First-order powers use the vertex Hessian diagonal and signed reduced
-indices, plus DOE power. Higher-order freeforms have only this local
-quadratic meaning; no Seidel interpretation is supplied. Mixed xy power
-couples the axes: the reported diagonal sweeps are projections and emit a
-warning, not principal focal lengths. Piston/tip/tilt terms need an actual
-chief-ray linearisation for physical first order away from the nominal
-vertex. A nonzero odd cone term likewise has only formal quadratic data.
-
-`system_symmetry` classifies geometry as `rotational`, `meridional` (invariant
-under x→−x, the y-z plane), or `none`; placements and aperture shapes are
-included, fields are sampling requests. This classification is conservative
-and can be used to disable symmetry shortcuts. It makes no claim about
-arbitrary coating, mechanics or scatter symmetry.
-
-Every solver supports the extended shapes: the CPU reference and Metal
-tracers, the geometric analyses (Seidel, Coddington, layout), merit
-evaluation, explicit ghosts and stray-light geometry.
+This is not always the first crossing along the ray. A steep ray travelling
++z across a surface bulging toward it (`c < 0`) can cross the sheet first
+farther from the axis: with `c = −0.05`, a ray from `(0, −30, −2)` along
+`(0, 0.999, 0.050)` crosses at `t ≈ 24.51` (`y ≈ −5.5`) and then at
+`t ≈ 33.61` (`y ≈ +3.6`), and the trace takes the second. Which crossing
+is physical depends on the surface's extent, which the intersection does
+not know: the rule treats the surface as the smallest cap that contains
+the hit. "First crossing ahead of the start" is not a fix either. Since `r`
+along a line is convex in `t`, the skipped crossing always lies nearer the
+axis than the ray's start, but a start on the object (or the far-field
+start plane) is not inside any aperture, and a wide-field chief ray from a
+finite object would then hit the far side of a concave front surface at
+2.6× the intended height (`tests/analytic.rs`,
+`wide_field_chief_ray_matches_inverse_snell`). A correct rule needs the
+extent: take the first crossing ahead that lies inside a fixed aperture or
+semi-diameter, and keep the nearer-vertex rule when the extent is automatic.
+That needs the aperture in every intersection path (trace, packets, ghost,
+GPU trace and aiming kernels) and is not implemented.
 
 ## 9. Reference samples and verification
 

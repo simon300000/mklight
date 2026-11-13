@@ -47,9 +47,16 @@ document on purpose in the same change.
 * Indices are **relative to air** at the system temperature and pressure (the
   same convention glass catalogs use at their 20 °C / 1 atm reference). Vacuum
   then has index `1/n_air(λ,T,P)`.
-* **Tilts and decenters** (`Placement`): decenter `(dx, dy)` in mm, then
-  rotations `tilt_x`, `tilt_y` and `tilt_z` in degrees, applied in that order
-  by the right-hand rule, unless `order = TiltThenDecenter`. A `CoordinateBreak`
+* **Tilts and decenters** (`Placement`): decentres `(dx, dy)` in mm, tilts
+  `tilt_x`, `tilt_y`, `tilt_z` in degrees by the right-hand rule, each about
+  the axis of the frame as moved so far. `order = DecenterThenTilt` (the
+  default; OpticStudio order flag 0): decentre, then tilt about x, then y,
+  then z — frame rotation `R = R_x R_y R_z`, origin `(dx, dy, 0)`.
+  `order = TiltThenDecenter` (order flag ≠ 0): the reverse sequence — tilt
+  about z, then y, then x, then decentre along the tilted axes —
+  `R = R_z R_y R_x`, origin `R (dx, dy, 0)`. A placement followed by the same
+  placement negated in the other order is exactly the identity (the usual
+  return coordinate break). A `CoordinateBreak`
   surface only changes the frame. Any surface's placement can be `Restore`d after
   the surface. Rotations act on the frame, so all following surfaces move too.
 * **Rigid ranges.** `element_placement` on a surface moves the inclusive

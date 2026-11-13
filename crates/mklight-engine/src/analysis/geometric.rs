@@ -1452,9 +1452,15 @@ fn field_curvature_schema() -> Value {
         ),
         (
             "f_tan_theta_distortion_percent",
-            nf_vec("%", "Against f·tanθ."),
+            nf_vec(
+                "%",
+                "Object at infinity: against f·tanθ, f = paraxial image height per unit tanθ on the image surface (so equal to distortion_percent; 0 on axis); NaN for a finite object.",
+            ),
         ),
-        ("f_theta_distortion_percent", nf_vec("%", "Against f·θ.")),
+        (
+            "f_theta_distortion_percent",
+            nf_vec("%", "Against f·θ, the same f as f·tanθ."),
+        ),
         ("real_height", nf_vec("mm", "Real chief-ray image height.")),
         (
             "paraxial_height",

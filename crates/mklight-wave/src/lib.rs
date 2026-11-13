@@ -55,7 +55,10 @@ pub use energy::{
     EnergyCenter, LineSpread, LsfAxis, StrehlReport, encircled_energy, ensquared_energy,
     line_spread_function, strehl_marechal, strehl_marechal_classic, strehl_report,
 };
-pub use interp::{RaySample, StructuredSamples, grid_from_scattered_zernike, grid_from_structured};
+pub use interp::{
+    LATTICE_INTERPOLATION_LIMIT_WAVES, RaySample, StructuredSamples, grid_from_scattered_zernike,
+    grid_from_structured, lattice_interpolation_error, lattice_warning,
+};
 pub use mtf::{
     Defocus, MtfCurve, MtfMethod, MtfOrientation, Otf, diffraction_limited_mtf, mtf, mtf_direct,
     mtf_fft, mtf_from_psf, otf_fft, polychromatic_mtf, through_focus_mtf,
