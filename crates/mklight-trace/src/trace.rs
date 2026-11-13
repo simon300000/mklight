@@ -47,7 +47,7 @@ use serde::{Deserialize, Serialize};
 use crate::interact::{diffract, ideal_lens, reflect, refract};
 use crate::numeric::Compensated;
 use crate::paraxial::ideal_lens_object_vergence;
-use crate::surface::{IntersectError, IntersectSettings, SHEET_TOL, intersect_within};
+use crate::surface::{Extent, IntersectError, IntersectSettings, SHEET_TOL, intersect_within};
 
 /// A ray: point and unit direction in one frame.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -307,14 +307,12 @@ fn step(
     w.ray = transfer_into(sys, i, w.ray);
     let s = &sys.surfaces[i];
     let n1 = sys.n_before(i, wl);
-    let extent = s.root_extent();
-    let hit = match intersect_within(
-        &s.shape,
-        extent.as_ref(),
-        w.ray.pos,
-        w.ray.dir,
-        &opts.intersect,
-    ) {
+    let outline = s.root_extent();
+    let extent = outline.as_ref().map(|outline| Extent {
+        outline,
+        from_infinity: i == 1 && sys.object_at_infinity,
+    });
+    let hit = match intersect_within(&s.shape, extent, w.ray.pos, w.ray.dir, &opts.intersect) {
         Ok(h) => h,
         Err(e) => {
             return Err(match e {

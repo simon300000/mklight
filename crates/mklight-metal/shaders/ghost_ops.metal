@@ -56,7 +56,8 @@ kernel void mkl_ghost_trace(constant MklPackedHeader* headers [[buffer(0)]],
  for(uint k=0;k<len;k++){
   MklGhostStep st=steps[q.wavelength*plane+a+k];uint si=st.word&MKL_STEP_SURFACE_MASK;bool back=(st.word&MKL_STEP_BACKWARD)!=0;constant MklPackedSurface& surf=s[si];uint fail=si<<MKL_RAY_SURFACE_SHIFT;
   if(back)mkl_xf_backward(s[si],pos,dir);else mkl_xf_forward(s[si-1],pos,dir);
-  MklHit hit;uint code=mkl_intersect<true>(surf,pool,pos,dir,p.trace,hit);if(code!=0){v.status=fail|code;break;}
+  uint root=!back&&si==1u&&(headers[0].flags&MKL_SYS_OBJECT_AT_INFINITY)!=0u?MKL_ROOT_FROM_INFINITY:MKL_ROOT_FROM_START;
+  MklHit hit;uint code=mkl_intersect<true>(surf,pool,pos,dir,root,p.trace,hit);if(code!=0){v.status=fail|code;break;}
   float2 t=mkl_df_add(hit.ta,hit.tb);if(fabs(t.x)>float(MKL_GHOST_MAX_SEGMENT_MM)){v.status=fail|MKL_GHOST_REFERENCE;break;}if(counting)since=mkl_df_add(since,t);
   if(st.physical!=0){if(counting&&p.reject_virtual!=0&&since.x< -1e-9f){v.status=fail|MKL_GHOST_VIRTUAL;break;}since=float2(0);counting=true;}
   pos=hit.x;

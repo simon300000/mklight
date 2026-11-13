@@ -76,7 +76,8 @@ template<bool OVERLAYS> static inline void mkl_trace_body(constant MklPackedHead
         const uint fail_s = si << MKL_RAY_SURFACE_SHIFT;
         // 2. Intersect; optical path and absorption of the segment.
         MklHit hit;
-        uint code = mkl_intersect<OVERLAYS>(surf, coefficients, pos, dir, prm, hit);
+        const uint root = !back && si == 1u && at_infinity ? MKL_ROOT_FROM_INFINITY : MKL_ROOT_FROM_START;
+        uint code = mkl_intersect<OVERLAYS>(surf, coefficients, pos, dir, root, prm, hit);
         if (code != MKL_RAY_OK) {
             status = code | fail_s;
             break;

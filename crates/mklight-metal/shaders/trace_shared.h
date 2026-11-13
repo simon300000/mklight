@@ -134,11 +134,12 @@ struct MklPick {
     float t0;
 };
 
-static inline MklPick mkl_pick(constant MklPackedSurface& s, float t0) {
+// root: MKL_ROOT_* (trace_kernel::Pick::of).
+static inline MklPick mkl_pick(constant MklPackedSurface& s, float t0, uint root) {
     MklPick p;
-    p.kind = s.aperture;
+    p.kind = root == MKL_ROOT_NEAREST ? MKL_APERTURE_NONE : s.aperture;
     p.a = float2(s.aperture_params[0], s.aperture_params[1]);
-    p.t0 = t0;
+    p.t0 = root == MKL_ROOT_FROM_INFINITY ? INFINITY : t0;
     return p;
 }
 
@@ -260,12 +261,12 @@ static inline bool mkl_asphere_domain(constant MklPackedSurface& s, float3 p) {
 
 // Newton on the sag residual from q; 0 and t_out on success, else the
 // MKL_RAY_* failure code.
-static inline uint mkl_asphere_from(constant MklPackedSurface& s, float3 q, float3 d, float t0,
+static inline uint mkl_asphere_from(constant MklPackedSurface& s, float3 q, float3 d, MklPick pick,
                                     constant MklTraceParams& p, thread float& t_out) {
     float c = s.curvature, k = s.conic;
     float st;
     float3 sp;
-    bool seed_hit = mkl_conic_from(c, k, q, d, mkl_pick(s, t0), st, sp);
+    bool seed_hit = mkl_conic_from(c, k, q, d, pick, st, sp);
     float t = seed_hit ? st : 0.0f;
     float kap = 1.0f + k;
     float g_first = 0.0f;
@@ -327,7 +328,7 @@ static inline float2 mkl_refine_t(float t1, float r, float rp) {
 }
 
 // mklight_trace::surface::intersect from the double-float point p along d.
-static inline uint mkl_intersect_legacy(constant MklPackedSurface& s, uint shape, MklDv p, MklDv d,
+static inline uint mkl_intersect_legacy(constant MklPackedSurface& s, uint shape, MklDv p, MklDv d, uint root,
                                  constant MklTraceParams& prm, thread MklHit& hit) {
     MklDv zg;
     zg.v[0] = float2(0.0f);
@@ -374,7 +375,7 @@ static inline uint mkl_intersect_legacy(constant MklPackedSurface& s, uint shape
         // trace_kernel::asphere_refine_df: two double-float Newton steps and
         // the normal from the double-float slope.
         float t1;
-        uint code = mkl_asphere_from(s, qf, dfv, t0.x, prm, t1);
+        uint code = mkl_asphere_from(s, qf, dfv, mkl_pick(s, t0.x, root), prm, t1);
         if (code != MKL_RAY_OK) return code;
         float2 tb = float2(t1, 0.0f);
         float2 w = float2(1.0f, 0.0f);
@@ -402,7 +403,7 @@ static inline uint mkl_intersect_legacy(constant MklPackedSurface& s, uint shape
     } else {
         float t1;
         float3 pt;
-        if (!mkl_conic_from(c, k, qf, dfv, mkl_pick(s, t0.x), t1, pt)) return MKL_RAY_MISS;
+        if (!mkl_conic_from(c, k, qf, dfv, mkl_pick(s, t0.x, root), t1, pt)) return MKL_RAY_MISS;
         MklDv x0 = mkl_point_on(q, float2(t1, 0.0f), d);
         float2 r2 = mkl_df_add(mkl_df_mul(x0.v[0], x0.v[0]), mkl_df_mul(x0.v[1], x0.v[1]));
         float2 fv = mkl_df_sub(
@@ -425,9 +426,9 @@ static inline uint mkl_intersect_legacy(constant MklPackedSurface& s, uint shape
 // Safeguarded Newton on z - sag from the conic seed (trace_kernel::sag_from):
 // the reference's bracket, backtracking and Miss / NoConvergence /
 // OutsideDomain decisions in f32.
-template<bool OVERLAYS> static inline uint mkl_sag_from(constant MklPackedSurface& s,constant float* pool,float3 q,float3 d,float t0,constant MklTraceParams& prm,thread float& t) {
+template<bool OVERLAYS> static inline uint mkl_sag_from(constant MklPackedSurface& s,constant float* pool,float3 q,float3 d,MklPick pick,constant MklTraceParams& prm,thread float& t) {
     float3 seed_point;
-    bool seed_hit=mkl_conic_from(s.curvature,s.conic,q,d,mkl_pick(s,t0),t,seed_point);
+    bool seed_hit=mkl_conic_from(s.curvature,s.conic,q,d,pick,t,seed_point);
     if (!seed_hit) t=0.0f;
     bool have_pos=false,have_neg=false; float positive=0.0f,negative=0.0f,previous=INFINITY;
     for (uint it=0;it<=prm.max_iterations;++it) {
@@ -462,23 +463,23 @@ template<bool OVERLAYS> static inline uint mkl_sag_from(constant MklPackedSurfac
     }
     return MKL_RAY_NOT_CONVERGED;
 }
-template<bool OVERLAYS> static inline uint mkl_intersect(constant MklPackedSurface& s,constant float* pool,MklDv p,MklDv d,constant MklTraceParams& prm,thread MklHit& hit) {
+template<bool OVERLAYS> static inline uint mkl_intersect(constant MklPackedSurface& s,constant float* pool,MklDv p,MklDv d,uint root,constant MklTraceParams& prm,thread MklHit& hit) {
     bool overlay=OVERLAYS && (s.flags&MKL_SURF_HAS_SAG_OVERLAY)!=0u;
-    if (s.shape<=MKL_SHAPE_COORD_BREAK && !overlay) return mkl_intersect_legacy(s,s.shape,p,d,prm,hit);
+    if (s.shape<=MKL_SHAPE_COORD_BREAK && !overlay) return mkl_intersect_legacy(s,s.shape,p,d,root,prm,hit);
     constant float* data=mkl_surface_data(s,pool);
     if (s.shape==MKL_SHAPE_DIFFRACTIVE && !overlay) {
-        uint code=mkl_intersect_legacy(s,uint(data[2*MKL_COEFF_KIND]),p,d,prm,hit);
+        uint code=mkl_intersect_legacy(s,uint(data[2*MKL_COEFF_KIND]),p,d,root,prm,hit);
         if (code!=MKL_RAY_OK) return code;
         return mkl_surface_domain(s,pool,MklDf{hit.x.v[0]},MklDf{hit.x.v[1]})?MKL_RAY_OK:MKL_RAY_OUTSIDE_DOMAIN;
     }
     if (!overlay && data[2*MKL_COEFF_EXACT_CONIC]!=0.0f) {
-        uint code=mkl_intersect_legacy(s,MKL_SHAPE_CONIC,p,d,prm,hit);
+        uint code=mkl_intersect_legacy(s,MKL_SHAPE_CONIC,p,d,root,prm,hit);
         if (code!=MKL_RAY_OK) return code;
         MklJet<MklDf> v;
         return mkl_surface_eval<OVERLAYS>(s,pool,MklDf{hit.x.v[0]},MklDf{hit.x.v[1]},v)?MKL_RAY_OK:MKL_RAY_OUTSIDE_DOMAIN;
     }
     float2 ta=mkl_df_neg(mkl_ddot(p,d)); MklDv q=mkl_point_on(p,ta,d);
-    float t; uint code=mkl_sag_from<OVERLAYS>(s,pool,mkl_hi3(q),mkl_hi3(d),ta.x,prm,t);
+    float t; uint code=mkl_sag_from<OVERLAYS>(s,pool,mkl_hi3(q),mkl_hi3(d),mkl_pick(s,ta.x,root),prm,t);
     if (code!=MKL_RAY_OK) return code;
     MklDf tb={float2(t,0)};
     for (uint i=0;i<2;++i) {
@@ -743,7 +744,8 @@ static __attribute__((always_inline)) MklRawState mkl_trace_raw(constant MklPack
         const uint fail_s = si << MKL_RAY_SURFACE_SHIFT;
         // 2. Intersect; optical path and absorption of the segment.
         MklHit hit;
-        uint code = mkl_intersect<OVERLAYS>(surf, coefficients, pos, dir, prm, hit);
+        const uint root = !back && si == 1u && at_infinity ? MKL_ROOT_FROM_INFINITY : MKL_ROOT_FROM_START;
+        uint code = mkl_intersect<OVERLAYS>(surf, coefficients, pos, dir, root, prm, hit);
         if (code != MKL_RAY_OK) {
             status = code | fail_s;
             break;

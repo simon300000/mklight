@@ -749,3 +749,39 @@ fn steep_double_crossing_bitwise() {
         }
     }
 }
+
+/// Light from an object at infinity meeting a deep front surface twice
+/// around its start: the device matches the emulation bitwise and takes the
+/// first crossing along the line (`mklight-gpu` trace tests).
+#[test]
+fn steep_ray_from_infinity_bitwise() {
+    let g = gpu_or_skip!();
+    let c = CpuF32Backend::matching(&g.precision().probe);
+    let (sys, ray) = testutil::steep_meniscus_from_infinity();
+    let t = testutil::tracer(sys);
+    let p = PackedSystem::pack_all(t.system()).unwrap();
+    let mut rays = RayBatch::with_capacity(2);
+    let (a, d) = (ray.pos, ray.dir);
+    rays.push_f64([a.x, a.y, a.z], [d.x, d.y, d.z], 1);
+    rays.push_f64([0.0, 1.0, 0.0], [0.0, 0.0, 1.0], 1);
+    let end = t.system().image_index() as u32;
+    for to in [1, end] {
+        let req = |h| {
+            let mut r = TraceRequest::new(h, rays.clone(), 0, to);
+            r.record = RecordMode::AllSurfaces;
+            r
+        };
+        let (hg, hc) = (g.upload_system(&p).unwrap(), c.upload_system(&p).unwrap());
+        let (a, b) = (trace(g, req(hg)), trace(&c, req(hc)));
+        assert_bitwise(&a, &b, "steep ray from infinity");
+        // Ray 0 at surface 1 (record slots are surface-major).
+        let k = 2 * mklight_gpu::batch::RECORD_FLOATS;
+        assert!(
+            (b.recorded[k + 1] + 29.15).abs() < 0.01,
+            "{}",
+            b.recorded[k + 1]
+        );
+        g.release_systems(hg).unwrap();
+        c.release_systems(hc).unwrap();
+    }
+}

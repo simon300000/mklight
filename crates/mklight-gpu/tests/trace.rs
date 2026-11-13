@@ -317,6 +317,38 @@ fn steep_double_crossing_matches_reference() {
     }
 }
 
+/// Light from an object at infinity: the steep ray's start lies between its
+/// two crossings of a deep front surface, both inside the lens; the kernel
+/// takes the first along the line, as the reference (docs/SURFACES.md §8).
+#[test]
+fn steep_ray_from_infinity_matches_reference() {
+    let b = CpuF32Backend::with_subnormals(false);
+    let (sys, ray) = testutil::steep_meniscus_from_infinity();
+    let rs = testutil::resolve(sys);
+    for clip in [true, false] {
+        let mut opts = TraceOptions::default().to_surface(1);
+        opts.clip = clip;
+        let (res, rec) = trace_ray_recorded(&rs, &ray, 1, &opts);
+        assert!(res.status.is_ok(), "{:?}", res.status);
+        assert!((rec[1].point.y + 29.15).abs() < 0.01, "{:?}", rec[1]);
+        let h = b
+            .upload_system(&PackedSystem::pack_all(&rs).unwrap())
+            .unwrap();
+        let mut req = TraceRequest::new(h, batch(&[(ray, 1)]), 0, 1);
+        req.record = RecordMode::AllSurfaces;
+        req.apply_apertures = clip;
+        let r = trace(&b, req);
+        assert!(r.ray_status(0).is_ok(), "{:?}", r.ray_status(0));
+        let k = RECORD_FLOATS;
+        let p = Vec3::new(
+            r.recorded[k] as f64,
+            r.recorded[k + 1] as f64,
+            r.recorded[k + 2] as f64,
+        );
+        assert!((p - rec[1].point).norm() < 2e-5, "{p:?} {:?}", rec[1]);
+    }
+}
+
 /// Every failure class is reported with the reference's status and surface:
 /// misses, asphere non-convergence at the same step cap, leaving the sag
 /// domain, TIR, vignetting and non-finite input.

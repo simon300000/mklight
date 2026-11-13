@@ -35,7 +35,9 @@
 //!    crossing a deep surface twice), given the surface's fixed extent
 //!    (`ResolvedSurface::root_extent`, passed to [`intersect_within`]):
 //!    a root inside the extent beats one outside; of two roots inside, the
-//!    first one ahead of the ray start (`t ≥ 0` from `P`) wins, and if
+//!    first one ahead of the ray start (`t ≥ 0` from `P`; every root for
+//!    light from an object at infinity, whose start is only a reference
+//!    point on the line, [`Extent::from_infinity`]) wins, and if
 //!    neither is ahead, or neither is inside, or the extent is unknown
 //!    (automatic semi-diameter, [`intersect`]), the root **nearer the
 //!    vertex** (smaller `r²`) wins. Ties go to `t₁`. See docs/SURFACES.md §8.
@@ -128,6 +130,37 @@ pub struct Hit {
     pub normal: Vec3,
 }
 
+/// The fixed extent of a surface for the root choice (module docs, step 6).
+#[derive(Clone, Copy, Debug)]
+pub struct Extent<'a> {
+    /// `ResolvedSurface::root_extent`.
+    pub outline: &'a ApertureShape,
+    /// The ray comes from an object at infinity (the first surface): its
+    /// start point is only a reference on its line, and the light arrives
+    /// from `−∞`, so every crossing lies ahead of it.
+    pub from_infinity: bool,
+}
+
+impl<'a> Extent<'a> {
+    /// The extent of a surface reached from a real start point.
+    pub fn new(outline: &'a ApertureShape) -> Self {
+        Extent {
+            outline,
+            from_infinity: false,
+        }
+    }
+    /// The outline and the start's distance from the closest-approach point.
+    #[inline]
+    fn pick(self, t0: f64) -> (&'a ApertureShape, f64) {
+        let start = if self.from_infinity {
+            f64::NEG_INFINITY
+        } else {
+            -t0
+        };
+        (self.outline, start)
+    }
+}
+
 /// Intersect the ray `p + t·d` (local frame, `|d| = 1`) with `shape`, whose
 /// extent is unknown: of two crossings of the vertex sheet the one nearer
 /// the vertex wins (module docs, step 6).
@@ -146,7 +179,7 @@ pub fn intersect(
 /// the extent is still returned when no crossing lies inside it.
 pub fn intersect_within(
     shape: &SurfaceShape,
-    extent: Option<&ApertureShape>,
+    extent: Option<Extent<'_>>,
     p: Vec3,
     d: Vec3,
     settings: &IntersectSettings,
@@ -228,7 +261,7 @@ pub fn intersect_conic(c: f64, k: f64, p: Vec3, d: Vec3) -> Result<Hit, Intersec
 pub fn intersect_conic_within(
     c: f64,
     k: f64,
-    extent: Option<&ApertureShape>,
+    extent: Option<Extent<'_>>,
     p: Vec3,
     d: Vec3,
 ) -> Result<Hit, IntersectError> {
@@ -236,7 +269,7 @@ pub fn intersect_conic_within(
         return intersect_plane(p, d);
     }
     let (t0, q) = to_closest_approach(p, d);
-    let (t1, point) = conic_from(c, k, q, d, extent.map(|e| (e, t0)))?;
+    let (t1, point) = conic_from(c, k, q, d, extent.map(|e| e.pick(t0)))?;
     Ok(Hit {
         t_transfer: t0,
         t_surface: t1,
@@ -247,9 +280,10 @@ pub fn intersect_conic_within(
 
 /// Steps 2–6 from a point `q` (normally the closest approach to the vertex).
 /// Returns the distance from `q` and the hit point. Also valid for `c = 0`
-/// (the plane `z = 0`). `pick` is the surface's fixed extent and the
-/// distance `t₀` from the ray start to `q` (a root is ahead when
-/// `t₀ + t ≥ 0`); `None` keeps the nearer-vertex rule.
+/// (the plane `z = 0`). `pick` is the surface's fixed outline and the
+/// distance from `q` to the ray start (`−t₀`, or `−∞` for light arriving
+/// from an object at infinity): a root is ahead when `t` is not below it.
+/// `None` keeps the nearer-vertex rule.
 #[inline]
 fn conic_from(
     c: f64,
@@ -314,14 +348,14 @@ pub(crate) fn keep_first(
     pick: Option<(&ApertureShape, f64)>,
 ) -> bool {
     let nearer = p1.x.mul_add(p1.x, p1.y * p1.y) <= p2.x.mul_add(p2.x, p2.y * p2.y);
-    let Some((extent, t0)) = pick else {
+    let Some((extent, t_start)) = pick else {
         return nearer;
     };
     let (in1, in2) = (extent.passes(p1.x, p1.y), extent.passes(p2.x, p2.y));
     if in1 != in2 {
         return in1;
     }
-    let (ahead1, ahead2) = (t1 >= -t0, t2 >= -t0);
+    let (ahead1, ahead2) = (t1 >= t_start, t2 >= t_start);
     if !in1 || !(ahead1 || ahead2) {
         nearer
     } else if ahead1 && ahead2 {
@@ -432,7 +466,7 @@ pub fn intersect_even_asphere(
     c: f64,
     k: f64,
     coefficients: &[f64],
-    extent: Option<&ApertureShape>,
+    extent: Option<Extent<'_>>,
     p: Vec3,
     d: Vec3,
     settings: &IntersectSettings,
@@ -441,7 +475,7 @@ pub fn intersect_even_asphere(
         return intersect_conic_within(c, k, extent, p, d);
     }
     let (t0, q) = to_closest_approach(p, d);
-    let seed = conic_from(c, k, q, d, extent.map(|e| (e, t0)));
+    let seed = conic_from(c, k, q, d, extent.map(|e| e.pick(t0)));
     let seed_hit = seed.is_ok();
     let mut t = seed.map_or(0.0, |(t, _)| t);
     let kap = 1.0 + k;
@@ -533,7 +567,7 @@ pub fn intersect_even_asphere(
 /// classes follow the even asphere's (module docs).
 fn intersect_sag(
     shape: &SurfaceShape,
-    extent: Option<&ApertureShape>,
+    extent: Option<Extent<'_>>,
     p: Vec3,
     d: Vec3,
     settings: &IntersectSettings,
@@ -552,7 +586,7 @@ fn intersect_sag(
         shape.conic(),
         q,
         d,
-        extent.map(|e| (e, t0)),
+        extent.map(|e| e.pick(t0)),
     );
     let seed_hit = seed.is_ok();
     let mut t = seed.map_or(0.0, |(t, _)| t);
@@ -700,7 +734,7 @@ mod tests {
         let (p, d, t1, t2) = steep_double_crossing();
         let s = IntersectSettings::default();
         let dist = |extent: Option<ApertureShape>, p: Vec3, d: Vec3| {
-            let h = intersect_within(&shape, extent.as_ref(), p, d, &s).unwrap();
+            let h = intersect_within(&shape, extent.as_ref().map(Extent::new), p, d, &s).unwrap();
             assert!((h.point - (p + d * (h.t_transfer + h.t_surface))).norm() < 1e-12);
             h.t_transfer + h.t_surface
         };
@@ -760,7 +794,8 @@ mod tests {
             },
         ] {
             for (extent, t) in [(None, t2), (Some(circle(10.0)), t1)] {
-                let h = intersect_within(&shape, extent.as_ref(), p, d, &s).unwrap();
+                let h =
+                    intersect_within(&shape, extent.as_ref().map(Extent::new), p, d, &s).unwrap();
                 let at = h.t_transfer + h.t_surface;
                 // The small departures move the crossings by < 0.01 mm.
                 assert!((at - t).abs() < 0.01, "{shape:?} {extent:?}: {at} vs {t}");

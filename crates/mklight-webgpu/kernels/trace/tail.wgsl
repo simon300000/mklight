@@ -168,9 +168,14 @@ struct MklPick {
     t0: f32,
 }
 
-fn mkl_pick(s: u32, t0: f32) -> MklPick {
+// mode: MKL_ROOT_* (trace_kernel::Pick::of).
+fn mkl_pick(s: u32, t0: f32, mode: u32) -> MklPick {
     let sf = &mkl_surfaces[s];
-    return MklPick((*sf).aperture, vec2<f32>((*sf).aperture_params[0], (*sf).aperture_params[1]), t0);
+    let kind = select((*sf).aperture, MKL_APERTURE_NONE, mode == MKL_ROOT_NEAREST);
+    // The largest finite f32 (a WGSL constant must be finite): every finite
+    // t is ahead, as with the +∞ of the other backends.
+    let start = select(t0, 3.4028234e38f, mode == MKL_ROOT_FROM_INFINITY);
+    return MklPick(kind, vec2<f32>((*sf).aperture_params[0], (*sf).aperture_params[1]), start);
 }
 
 fn mkl_in_extent(e: MklPick, p: vec3<f32>) -> bool {
@@ -321,10 +326,10 @@ struct MklNewton {
 
 // Newton on the sag residual from q; MKL_RAY_OK and t on success, else the
 // MKL_RAY_* failure code.
-fn mkl_asphere_from(s: u32, q: vec3<f32>, d: vec3<f32>, t0: f32) -> MklNewton {
+fn mkl_asphere_from(s: u32, q: vec3<f32>, d: vec3<f32>, pick: MklPick) -> MklNewton {
     let c = mkl_surfaces[s].curvature;
     let k = mkl_surfaces[s].conic;
-    let seed = mkl_conic_from(c, k, q, d, mkl_pick(s, t0));
+    let seed = mkl_conic_from(c, k, q, d, pick);
     var t = select(0.0, seed.t, seed.ok);
     let kap = mkl_add(1.0, k);
     var g_first = 0.0;
@@ -411,7 +416,7 @@ fn mkl_miss(code: u32) -> MklHit {
 }
 
 // mklight_trace::surface::intersect from the double-float point p along d.
-fn mkl_intersect_legacy(s: u32, shape: u32, p: MklDv, d: MklDv) -> MklHit {
+fn mkl_intersect_legacy(s: u32, shape: u32, p: MklDv, d: MklDv, mode: u32) -> MklHit {
     let zg = MklDv(vec2<f32>(0.0), vec2<f32>(0.0), vec2<f32>(1.0, 0.0));
     let zn = vec3<f32>(0.0, 0.0, 1.0);
     var hit: MklHit;
@@ -457,7 +462,7 @@ fn mkl_intersect_legacy(s: u32, shape: u32, p: MklDv, d: MklDv) -> MklHit {
     if (shape == MKL_SHAPE_EVEN_ASPHERE && (*sf).num_asphere > 0u) {
         // trace_kernel::asphere_refine_df: two double-float Newton steps and
         // the normal from the double-float slope.
-        let r = mkl_asphere_from(s, qf, dfv, t0.x);
+        let r = mkl_asphere_from(s, qf, dfv, mkl_pick(s, t0.x, mode));
         if (r.code != MKL_RAY_OK) {
             return mkl_miss(r.code);
         }
@@ -486,7 +491,7 @@ fn mkl_intersect_legacy(s: u32, shape: u32, p: MklDv, d: MklDv) -> MklHit {
         hit.x = x;
         hit.g = MklDv(mkl_df_neg(mkl_df_mul(x.x, gs)), mkl_df_neg(mkl_df_mul(x.y, gs)), w);
     } else {
-        let root = mkl_conic_from(c, k, qf, dfv, mkl_pick(s, t0.x));
+        let root = mkl_conic_from(c, k, qf, dfv, mkl_pick(s, t0.x, mode));
         if (!root.ok) {
             return mkl_miss(MKL_RAY_MISS);
         }
@@ -519,8 +524,8 @@ fn mkl_intersect_legacy(s: u32, shape: u32, p: MklDv, d: MklDv) -> MklHit {
 // Safeguarded Newton on z - sag from the conic seed (trace_kernel::sag_from):
 // the reference's bracket, backtracking and Miss / NoConvergence /
 // OutsideDomain decisions in f32.
-fn mkl_sag_from(s: u32, q: vec3<f32>, d: vec3<f32>, t0: f32) -> MklNewton {
-    let seed = mkl_conic_from(mkl_surfaces[s].curvature, mkl_surfaces[s].conic, q, d, mkl_pick(s, t0));
+fn mkl_sag_from(s: u32, q: vec3<f32>, d: vec3<f32>, pick: MklPick) -> MklNewton {
+    let seed = mkl_conic_from(mkl_surfaces[s].curvature, mkl_surfaces[s].conic, q, d, pick);
     var t = select(0.0, seed.t, seed.ok);
     var have_pos = false;
     var have_neg = false;
@@ -596,15 +601,16 @@ fn mkl_sag_from(s: u32, q: vec3<f32>, d: vec3<f32>, t0: f32) -> MklNewton {
     return MklNewton(MKL_RAY_NOT_CONVERGED, t);
 }
 
-fn mkl_intersect(s: u32, p: MklDv, d: MklDv) -> MklHit {
+// mode: MKL_ROOT_*, the choice between two crossings of a conic vertex sheet.
+fn mkl_intersect(s: u32, p: MklDv, d: MklDv, mode: u32) -> MklHit {
     let shape = mkl_surfaces[s].shape;
     let overlay = MKL_OVERLAYS && (mkl_surfaces[s].flags & MKL_SURF_HAS_SAG_OVERLAY) != 0u;
     if (shape <= MKL_SHAPE_COORD_BREAK && !overlay) {
-        return mkl_intersect_legacy(s, shape, p, d);
+        return mkl_intersect_legacy(s, shape, p, d, mode);
     }
     let data = mkl_surface_data(s);
     if (shape == MKL_SHAPE_DIFFRACTIVE && !overlay) {
-        var h = mkl_intersect_legacy(s, u32(mkl_pool[data + 2u * MKL_COEFF_KIND]), p, d);
+        var h = mkl_intersect_legacy(s, u32(mkl_pool[data + 2u * MKL_COEFF_KIND]), p, d, mode);
         if (h.code != MKL_RAY_OK) {
             return h;
         }
@@ -614,7 +620,7 @@ fn mkl_intersect(s: u32, p: MklDv, d: MklDv) -> MklHit {
         return h;
     }
     if (!overlay && mkl_pool[data + 2u * MKL_COEFF_EXACT_CONIC] != 0.0) {
-        var h = mkl_intersect_legacy(s, MKL_SHAPE_CONIC, p, d);
+        var h = mkl_intersect_legacy(s, MKL_SHAPE_CONIC, p, d, mode);
         if (h.code != MKL_RAY_OK) {
             return h;
         }
@@ -625,7 +631,7 @@ fn mkl_intersect(s: u32, p: MklDv, d: MklDv) -> MklHit {
     }
     let ta = mkl_df_neg(mkl_ddot(p, d));
     let q = mkl_point_on(p, ta, d);
-    let r = mkl_sag_from(s, mkl_hi3(q), mkl_hi3(d), ta.x);
+    let r = mkl_sag_from(s, mkl_hi3(q), mkl_hi3(d), mkl_pick(s, ta.x, mode));
     if (r.code != MKL_RAY_OK) {
         return mkl_miss(r.code);
     }
@@ -1010,7 +1016,8 @@ fn mkl_trace_core(hdr: u32, w: u32, input: MklRaw, mode: u32, num_steps: u32) ->
         n_cur = n1;
         let fail_s = si << MKL_RAY_SURFACE_SHIFT;
         // 2. Intersect; optical path and absorption of the segment.
-        let hit = mkl_intersect(surf, pos, dir);
+        let root_mode = select(MKL_ROOT_FROM_START, MKL_ROOT_FROM_INFINITY, !back && si == 1u && at_infinity);
+        let hit = mkl_intersect(surf, pos, dir, root_mode);
         if (hit.code != MKL_RAY_OK) {
             status = hit.code | fail_s;
             break;

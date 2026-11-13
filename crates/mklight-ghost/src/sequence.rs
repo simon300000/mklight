@@ -80,7 +80,7 @@
 use mklight_core::materials::coating::InterfaceRT;
 use mklight_core::{Interaction, SurfaceShape, Vec3};
 use mklight_trace::interact::{diffract, ideal_lens, reflect, refract};
-use mklight_trace::surface::{IntersectError, intersect_within};
+use mklight_trace::surface::{Extent, IntersectError, intersect_within};
 use mklight_trace::trace::transfer_into;
 use mklight_trace::{Compensated, Ray};
 use serde::{Deserialize, Serialize};
@@ -357,10 +357,17 @@ impl GhostModel {
                 Direction::Backward => surf.alpha_after[wl],
             };
             // 2. Intersection.
-            let extent = surf.root_extent();
+            let outline = surf.root_extent();
+            let extent = outline.as_ref().map(|outline| Extent {
+                outline,
+                // Only the start arrives forward at surface 1.
+                from_infinity: s == 1
+                    && sys.object_at_infinity
+                    && matches!(st.direction, Direction::Forward),
+            });
             let hit = match intersect_within(
                 &surf.shape,
-                extent.as_ref(),
+                extent,
                 ray.pos,
                 ray.dir,
                 &self.settings().intersect,

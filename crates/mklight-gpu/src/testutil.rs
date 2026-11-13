@@ -302,6 +302,28 @@ pub fn double_crossing_extents() -> Vec<((SemiDiameter, Option<ApertureShape>), 
     ]
 }
 
+/// A deep front meniscus (object at infinity, fixed semi-diameters) and a
+/// ray at 89° whose start, on the reference plane through the first vertex,
+/// lies between its two crossings of the front surface, both inside the
+/// lens: light from infinity meets the first (y ≈ −29.15), not the one ahead
+/// of the start (y ≈ 31.7) (docs/SURFACES.md §8).
+pub fn steep_meniscus_from_infinity() -> (OpticalSystem, mklight_trace::Ray) {
+    use mklight_core::Vec3;
+    let mut s = plate(false);
+    s.surfaces[1].shape = SurfaceShape::sphere(78.0);
+    s.surfaces[1].thickness = 2.5;
+    s.surfaces[1].material = MaterialRef::Constant { n: 1.6 };
+    s.surfaces[1].semi_diameter = SemiDiameter::Fixed { value: 31.7 };
+    s.surfaces[1].aperture = None;
+    s.surfaces[2].shape = SurfaceShape::sphere(15.9);
+    s.surfaces[2].semi_diameter = SemiDiameter::Fixed { value: 15.85 };
+    s.surfaces[2].aperture = None;
+    let theta = 89f64.to_radians();
+    let d = Vec3::new(0.0, theta.sin(), theta.cos());
+    let p = Vec3::new(0.0, -theta.cos(), theta.sin()) * 6.16;
+    (s, mklight_trace::Ray::new(p, d))
+}
+
 /// Strong even aspheres whose polynomial fights the conic (molded-asphere
 /// style), where the conic seed is a poor Newton start and the reference
 /// needs up to ~40 steps for some rays (to be swept with [`sweep_rays`]).
@@ -586,7 +608,7 @@ pub fn f64_path(
     use crate::batch::StepMode;
     use mklight_core::materials::coating::fresnel;
     use mklight_trace::interact::{ideal_lens, reflect, refract};
-    use mklight_trace::surface::{IntersectSettings, intersect_within};
+    use mklight_trace::surface::{Extent, IntersectSettings, intersect_within};
     let frame = |j: usize| -> mklight_core::math::Frame {
         match sys.surfaces[j].to_next {
             Some(f) => f,
@@ -616,15 +638,13 @@ pub fn f64_path(
             n_of(s)
         };
         let surf = &sys.surfaces[s];
-        let extent = surf.root_extent();
-        let hit = intersect_within(
-            &surf.shape,
-            extent.as_ref(),
-            p,
-            d,
-            &IntersectSettings::default(),
-        )
-        .ok()?;
+        let outline = surf.root_extent();
+        let extent = outline.as_ref().map(|outline| Extent {
+            outline,
+            from_infinity: s == 1 && !st.backward && sys.object_at_infinity,
+        });
+        let hit =
+            intersect_within(&surf.shape, extent, p, d, &IntersectSettings::default()).ok()?;
         let t = hit.t_transfer + hit.t_surface;
         opl += n1 * t;
         let alpha = if gap == 0 && sys.object_at_infinity {
