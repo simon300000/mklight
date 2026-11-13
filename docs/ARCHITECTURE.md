@@ -57,6 +57,7 @@ GPU implementation details.**
 | `mklight-engine` | Facade used by every front end: `Session` (project + undo-free immutable snapshots), the async job scheduler, analysis dispatch, backend selection, project file I/O. |
 | `mklight-bench` | Measurement and qualification of the engine, outside every product: the result comparator with its per-quantity contract tables (GPU.md §9.4), its regression suites, the ignored harnesses (Metal accuracy, cost-model calibration, project and tracer timings, aim-stop qualification) and the command-line measurement programs. Its `README.md` lists every command and environment variable. Nothing depends on it. |
 | `mklight-ffi` | C ABI for native apps. Structured data crosses as versioned JSON; bulk data as typed binary buffers. |
+| `mklight-wasm` | The engine for the web: the wasm-bindgen API (the same calls and JSON as `mklight-ffi`) that the web engine worker drives; empty on native targets. See `docs/WEB.md`. |
 | `mklight-py` | Python bindings (pyo3/maturin, `import mklight`) over the engine facade, plus low-level reference tracing; see `docs/PYTHON.md`. |
 | `mklight-cli` | Headless command line `mklight` over the engine facade: `info`, projects (`new`, `validate`, `show`, `set`, `import` of a lens prescription), catalogs, `analyses`/`run` over the analysis registry, reference `trace` and `paraxial`; JSON or tables, documented exit codes (`docs/CLI.md`). |
 
@@ -69,6 +70,10 @@ GPU implementation details.**
   app with a Metal-backed viewport) and the executable `MKLight`
   (`apps/macos/README.md`, `docs/APP.md`). Built by `scripts/build-macos.sh`
   into `MKLight.app`.
+* `apps/web/engine` — `@engine`, the web app's engine: the wasm engine
+  (`mklight-wasm`, built by `scripts/build-wasm.sh`) in a Web Worker with
+  real threads, and a typed TypeScript `EngineClient` mirroring the Swift
+  one (`docs/WEB.md`). No optics logic is written in TypeScript.
 
 ## State model
 
@@ -237,6 +242,13 @@ tier and the offline qualification are in GPU §9.4, `auto` routing and its
 accuracy exclusions in GPU §9.2.
 
 ## Platform backends
+
+**One engine codebase.** Every crate from `mklight-core` to `mklight-engine`
+also compiles for `wasm32-unknown-unknown` (the web build), with the same
+algorithms. The platform-specific plumbing (clocks, thread start, host
+statistics) is confined to `mklight_core::platform`, which is `std` on
+native targets; on wasm32 threads are Web Workers sharing the module's
+memory (`docs/WEB.md`).
 
 `mklight-gpu::ComputeBackend` is the only interface a solver sees. Metal is
 implemented now; Vulkan (AMD/Intel) and CUDA/OptiX (NVIDIA) slot in as further

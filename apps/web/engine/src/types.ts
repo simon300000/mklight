@@ -326,8 +326,6 @@ export interface EngineClient {
 export interface CreateEngineOptions {
   /** Rayon threads; default `navigator.hardwareConcurrency`. */
   threads?: number
-  /** Force the single-threaded build even when isolated. */
-  singleThreaded?: boolean
   /** Extra `EngineConfig` keys (docs/FFI.md), e.g. `analysis_graph_bytes`. */
   config?: JSONObject
 }
