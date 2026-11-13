@@ -19,14 +19,15 @@ cargo build -p mklight-ffi --release   # → target/release/libmklight_ffi.a
 Link `libmklight_ffi.a` plus the native libraries it needs
 (`cargo rustc -p mklight-ffi --lib --crate-type staticlib -- --print
 native-static-libs` lists them): on macOS the library contains the Metal
-backend, so link `-framework Metal -framework Foundation -framework
-CoreFoundation -lobjc -liconv` (`-lSystem` is implicit); on Linux
+and WebGPU backends, so link `-framework Metal -framework Foundation
+-framework CoreFoundation -framework CoreGraphics -framework QuartzCore
+-lobjc -liconv` (`-lSystem` is implicit); on Linux
 `-lpthread -ldl -lm`.
 
 Swift: add `crates/mklight-ffi/include` to the import search paths (it holds
 the module map), make the static library findable (`-L<dir>`), then
 `import CMKLight`. The module map autolinks `mklight_ffi` and the Metal,
-Foundation and CoreFoundation frameworks plus `objc` and `iconv`, so no
+Foundation, CoreFoundation, CoreGraphics and QuartzCore frameworks plus `objc` and `iconv`, so no
 further linker flags are needed.
 
 ## Versioning

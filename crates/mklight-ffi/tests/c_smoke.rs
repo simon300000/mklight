@@ -42,6 +42,11 @@ fn native_libs() -> &'static [&'static str] {
             "Foundation",
             "-framework",
             "CoreFoundation",
+            // The WebGPU backend's wgpu (docs/GPU.md §11).
+            "-framework",
+            "CoreGraphics",
+            "-framework",
+            "QuartzCore",
         ]
     } else {
         &["-lpthread", "-ldl", "-lm", "-lc"]
