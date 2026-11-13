@@ -3,7 +3,9 @@ import { Button } from '@/components/ui/button'
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from '@/components/ui/context-menu'
 import { Tip } from '@/components/ui/tooltip'
 import { analysisTitle, categoryTitle, groupedAnalyses } from '@/model/catalog'
+import { LAYOUT_PANEL, LENS_DATA } from '@/state/arrangement'
 import { useView } from '@/state/view'
+import { closePanel, isDetached, moveToMainWindow, showPanel } from './panels/actions'
 import { allIssues, useWorkspace } from '@/state/workspace'
 import { cn, shortcutLabel } from '@/lib/utils'
 import { AnalysisIcon } from './AnalysisIcon'
@@ -46,6 +48,28 @@ function Row({
   )
 }
 
+/** The lens data or the layout: a click shows and focuses the panel (opening
+ *  it where it belongs if closed), its context menu hides or shows it. */
+function DesignRow({ panel, icon, title, open, testId }: { panel: string; icon: React.ReactNode; title: string; open: boolean; testId: string }) {
+  return (
+    <ContextMenu>
+      <ContextMenuTrigger asChild>
+        <div>
+          <Row icon={icon} title={title} open={open} onClick={() => showPanel(panel)} testId={testId} />
+        </div>
+      </ContextMenuTrigger>
+      <ContextMenuContent>
+        {open ? (
+          <ContextMenuItem onSelect={() => closePanel(panel)}>Hide {title}</ContextMenuItem>
+        ) : (
+          <ContextMenuItem onSelect={() => showPanel(panel)}>Show {title}</ContextMenuItem>
+        )}
+        {open && isDetached(panel) && <ContextMenuItem onSelect={() => moveToMainWindow(panel)}>Move to Main Window</ContextMenuItem>}
+      </ContextMenuContent>
+    </ContextMenu>
+  )
+}
+
 /** The sidebar (`Sidebar`): the design's lens data, layout and issues, then
  *  every engine analysis by category, searchable. A click shows the analysis
  *  in the focused pane; ⌥-click or the context menu opens a new pane. */
@@ -65,8 +89,9 @@ export function Sidebar() {
     if (newPane || !focused) {
       const key = ws.addPane(name)
       v.set({ focusedPane: key })
-    } else if (focused.analysis !== name) {
-      ws.setPaneAnalysis(focused.key, name)
+    } else {
+      if (focused.analysis !== name) ws.setPaneAnalysis(focused.key, name)
+      showPanel(focused.key)
     }
   }
 
@@ -97,8 +122,8 @@ export function Sidebar() {
         {!q && (
           <>
             <h4 className="px-2 pb-0.5 pt-1 text-[11px] font-semibold text-secondary">Design</h4>
-            <Row icon={<Table2 />} title="Lens Data" open={v.lensDataVisible} onClick={() => v.set({ lensDataVisible: true })} testId="sidebar-lens-data" />
-            <Row icon={<ScanLine />} title="Layout" open={v.layoutVisible} onClick={() => v.set({ layoutVisible: true })} testId="sidebar-layout" />
+            <DesignRow panel={LENS_DATA} icon={<Table2 />} title="Lens Data" open={v.lensDataVisible} testId="sidebar-lens-data" />
+            <DesignRow panel={LAYOUT_PANEL} icon={<ScanLine />} title="Layout" open={v.layoutVisible} testId="sidebar-layout" />
             <Row
               icon={issues.length === 0 ? <CheckCircle2 /> : errors ? <XOctagon className="text-danger" /> : <AlertTriangle className="text-warning" />}
               title="Issues"

@@ -2,7 +2,7 @@
 // autosave to IndexedDB. Uses the File System Access API where the browser has
 // it (Chrome) and falls back to a file input and a download (Safari).
 
-import { get as idbGet, set as idbSet } from 'idb-keyval'
+import { del as idbDel, get as idbGet, set as idbSet } from 'idb-keyval'
 import type { Json, JsonObject } from '@/engine/types'
 import { readProject, writeProject, projectFromSystem, type Project, SAMPLES, ProjectError } from '@/model/project'
 import { newSystem, clone, type System } from '@/model/system'
@@ -10,8 +10,14 @@ import { useDocument, type DocumentFile } from './document'
 import { useView } from './view'
 import { useWorkspace, LAYOUT, type Pane } from './workspace'
 import { useImportReport } from './importReport'
+import * as A from './arrangement'
+import { useArrangement } from './arrangement'
+import type { LayoutMode } from '@/views/layout/camera'
+import { fromSavedFrame, toSavedFrame } from '@/views/panels/windows'
 
 const AUTOSAVE_KEY = 'mklight-autosave-v1'
+/** An autosaved document with unsaved changes, kept aside until the user recovers or discards it. */
+const RECOVERY_KEY = 'mklight-recovery-v1'
 
 type PickerWindow = Window & {
   showOpenFilePicker?: (o?: object) => Promise<FileSystemFileHandle[]>
@@ -27,7 +33,8 @@ const OPEN_TYPES = [
 
 // MARK: Views ↔ panes
 
-/** Writes the panes and the layout's settings into the project's `views`. */
+/** Writes the panes and the layout's settings and view (mode, ray colours,
+ *  stretch, the panel arrangement of every window) into the project's `views`. */
 export function viewsFromWorkspace(): Json[] {
   const ws = useWorkspace.getState()
   const v = useView.getState()
@@ -37,26 +44,27 @@ export function viewsFromWorkspace(): Json[] {
     settings: p.settings,
     ui: { auto: p.auto, settings_visible: p.settingsOpen },
   }))
-  views.unshift({
-    key: LAYOUT,
-    analysis: 'layout',
-    settings: ws.layoutSettings,
-    ui: { web: { lens_share: v.lensShare, layout_share: v.layoutShare } },
-  })
+  const arr = A.cloneArrangement(useArrangement.getState().arr)
+  for (const w of arr.windows) if (w.frame) w.frame = toSavedFrame(w.frame)
+  const ui: JsonObject = { mode: v.layoutMode, ray_coloring: v.rayColoring, arrangement: A.encode(arr) }
+  if (v.stretchChosen || v.stretch !== 1) ui.stretch = v.stretch
+  views.unshift({ key: LAYOUT, analysis: 'layout', settings: ws.layoutSettings, ui })
   return views
 }
+
+const MODES = ['yz', 'xz', '3d']
 
 export function applyViews(views: Json[]) {
   const panes: Pane[] = []
   let layoutSettings: JsonObject | null = null
+  let layoutUI: JsonObject = {}
   for (const raw of views) {
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue
     const v = raw as JsonObject
     const ui = (v.ui as JsonObject) ?? {}
     if (v.key === LAYOUT || v.analysis === 'layout') {
       layoutSettings = (v.settings as JsonObject) ?? null
-      const web = ui.web as JsonObject | undefined
-      if (web) useView.getState().set({ lensShare: Number(web.lens_share) || 0.36, layoutShare: Number(web.layout_share) || 0.5 })
+      layoutUI = ui
       continue
     }
     if (typeof v.analysis !== 'string') continue
@@ -64,12 +72,28 @@ export function applyViews(views: Json[]) {
       key: String(v.key ?? `pane-${panes.length}`),
       analysis: v.analysis,
       settings: (v.settings as JsonObject) ?? {},
-      auto: ui.auto !== false,
+      auto: ui.auto !== false && ui.auto_update !== false,
       settingsOpen: ui.settings_visible === true,
     })
   }
+  // The layout's view: a saved stretch (even ×1) is kept instead of the automatic choice.
+  const mode = typeof layoutUI.mode === 'string' && MODES.includes(layoutUI.mode) ? (layoutUI.mode as LayoutMode)
+    : layoutSettings?.section === 'xz' ? 'xz' : 'yz'
+  const stretch = typeof layoutUI.stretch === 'number' && Number.isFinite(layoutUI.stretch) && layoutUI.stretch >= 1 ? layoutUI.stretch : null
+  useView.getState().set({
+    layoutMode: mode,
+    rayColoring: layoutUI.ray_coloring === 'wavelength' ? 'wavelength' : 'field',
+    stretch: stretch ?? 1,
+    stretchChosen: stretch !== null,
+  })
+  // The arrangement first, so the panes find their places.
+  const known = new Set<string>([A.LENS_DATA, A.LAYOUT_PANEL, ...panes.map((p) => p.key)])
+  const arr = A.decode(layoutUI.arrangement, known) ?? A.standard(panes.map((p) => p.key))
+  for (const w of arr.windows) if (w.frame) w.frame = fromSavedFrame(w.frame)
+  useArrangement.getState().replace(arr)
   const ws = useWorkspace.getState()
-  if (layoutSettings) useWorkspace.setState({ layoutSettings: { ...ws.layoutSettings, ...layoutSettings } })
+  const base = { ...ws.layoutSettings, ...(layoutSettings ?? {}) }
+  useWorkspace.setState({ layoutSettings: { ...base, section: mode === 'xz' ? 'xz' : 'yz', include_3d: mode === '3d' } })
   ws.setPanes(panes)
 }
 
@@ -81,9 +105,17 @@ const DEFAULT_PANES: Pane[] = [
 
 function openProject(project: Project, file: DocumentFile | null, opts?: { dirty?: boolean; keepPanes?: boolean }) {
   useDocument.getState().open(project, file, opts)
-  useView.getState().set({ selection: Math.min(1, project.system.surfaces.length - 1), welcomeOpen: false })
+  const v = useView.getState()
+  v.set({ selection: Math.min(1, project.system.surfaces.length - 1), welcomeOpen: false, layoutEpoch: v.layoutEpoch + 1 })
   if (project.views.length) applyViews(project.views)
-  else if (!opts?.keepPanes) useWorkspace.getState().setPanes(DEFAULT_PANES.map((p) => ({ ...p })))
+  else if (!opts?.keepPanes) {
+    // Views without an arrangement open in the standard one.
+    v.set({ layoutMode: 'yz', stretch: 1, stretchChosen: false })
+    const panes = DEFAULT_PANES.map((p) => ({ ...p }))
+    useArrangement.getState().replace(A.standard(panes.map((p) => p.key)))
+    useWorkspace.getState().setPanes(panes)
+    useWorkspace.getState().setLayoutSettings({ section: 'yz', include_3d: false })
+  }
 }
 
 // MARK: New, samples
@@ -244,18 +276,73 @@ export async function autosaveNow() {
   }
 }
 
-/** Restores the autosaved document; false when there is none. */
+interface Autosave {
+  text: string
+  file: { name: string; imported: boolean } | null
+  handle: FileSystemFileHandle | null
+  dirty: boolean
+  time?: number
+}
+
+/** Restores the autosaved document when it had no unsaved changes; false when
+ *  there is none. One with unsaved changes is not opened silently: it is kept
+ *  aside and offered in the welcome window ("Recovered: …"). */
 export async function restoreAutosave(): Promise<boolean> {
   try {
-    const saved = (await idbGet(AUTOSAVE_KEY)) as
-      | { text: string; file: { name: string; imported: boolean } | null; handle: FileSystemFileHandle | null; dirty: boolean }
-      | undefined
-    if (!saved?.text) return false
-    const project = readProject(saved.text)
-    const file = saved.file ? { ...saved.file, handle: saved.handle ?? null } : null
-    openProject(project, file, { dirty: saved.dirty })
+    const saved = (await idbGet(AUTOSAVE_KEY)) as Autosave | undefined
+    if (!saved?.text) {
+      await offerRecovery()
+      return false
+    }
+    if (saved.dirty) {
+      await idbSet(RECOVERY_KEY, saved)
+      await offerRecovery()
+      return false
+    }
+    openAutosave(saved)
+    await offerRecovery()
     return true
   } catch {
     return false
   }
+}
+
+function openAutosave(saved: Autosave) {
+  const project = readProject(saved.text)
+  const file = saved.file ? { ...saved.file, handle: saved.handle ?? null } : null
+  openProject(project, file, { dirty: saved.dirty })
+}
+
+function recoveryName(saved: Autosave): string {
+  if (saved.file?.name) return saved.file.name
+  try {
+    return readProject(saved.text).system.name || 'Untitled'
+  } catch {
+    return 'Untitled'
+  }
+}
+
+/** Shows the kept-aside document, if any, in the welcome window. */
+async function offerRecovery() {
+  const saved = (await idbGet(RECOVERY_KEY).catch(() => undefined)) as Autosave | undefined
+  useView.getState().set({ recovery: saved?.text ? { name: recoveryName(saved), time: saved.time ?? Date.now() } : null })
+}
+
+/** Opens the recovered document, with its unsaved changes. */
+export async function recover() {
+  try {
+    const saved = (await idbGet(RECOVERY_KEY)) as Autosave | undefined
+    if (!saved?.text) return
+    openAutosave(saved)
+    await idbDel(RECOVERY_KEY)
+    useView.getState().set({ recovery: null })
+  } catch (e) {
+    useView.getState().toast(`The recovered design could not be opened. ${(e as Error).message}`, 'error')
+  }
+}
+
+/** Discards the recovered document. */
+export async function discardRecovery() {
+  await idbDel(RECOVERY_KEY).catch(() => undefined)
+  useView.getState().set({ recovery: null })
 }

@@ -1,9 +1,9 @@
-import { FolderOpen, Plus } from 'lucide-react'
+import { FolderOpen, History, Plus, X } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog'
 import { isSurfaceTypeSample, SAMPLES, type Sample } from '@/model/project'
-import { newDocument, openFromPicker, openSample } from '@/state/files'
+import { discardRecovery, newDocument, openFromPicker, openSample, recover } from '@/state/files'
 import { useView } from '@/state/view'
 import { useWorkspace } from '@/state/workspace'
 import { cssVar, seriesColor, useDark } from '@/lib/theme'
@@ -111,6 +111,30 @@ function SampleCard({ sample }: { sample: Sample }) {
 /** The welcome window: New Design (prominent) and Open, and the engine's
  *  sample designs as cards; samples with extended surface types are listed
  *  under "Surface Types". */
+/** An autosaved design with unsaved changes from an earlier visit: open it or discard it. */
+function RecoveryCard() {
+  const r = useView((s) => s.recovery)
+  if (!r) return null
+  const when = new Date(r.time)
+  const today = new Date().toDateString() === when.toDateString()
+  const time = today ? when.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }) : when.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })
+  return (
+    <div className="mb-4 flex items-center gap-3 rounded-xl border border-accent/40 bg-accent-soft px-3 py-2" data-testid="recovery">
+      <History className="size-5 shrink-0 text-accent" />
+      <div className="min-w-0 flex-1">
+        <div className="truncate text-[13px] font-semibold">Recovered: {r.name}</div>
+        <div className="text-[12px] text-secondary">Edited {time} · unsaved changes</div>
+      </div>
+      <Button variant="prominent" onClick={() => void recover()}>
+        Open
+      </Button>
+      <Button variant="ghost" size="icon" aria-label="Discard recovered design" title="Discard" onClick={() => void discardRecovery()}>
+        <X />
+      </Button>
+    </div>
+  )
+}
+
 export function Welcome() {
   const open = useView((s) => s.welcomeOpen)
   const set = useView((s) => s.set)
@@ -132,6 +156,7 @@ export function Welcome() {
           </Button>
         </div>
         <div className="max-h-[64vh] overflow-y-auto px-6 py-4">
+          <RecoveryCard />
           <h3 className="mb-2 text-[12px] font-semibold text-secondary">Samples</h3>
           <div className="grid grid-cols-[repeat(auto-fill,minmax(212px,1fr))] gap-3">
             {basic.map((s) => (

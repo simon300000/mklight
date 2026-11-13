@@ -3,6 +3,9 @@
 
 import { loadEngine } from '@/engine'
 import { curvatureOf } from '@/model/system'
+import { installPanelSync, onWindowFrames } from '@/views/panels/actions'
+import { installTeardown } from '@/views/panels/windows'
+import { useArrangement } from './arrangement'
 import { useDocument } from './document'
 import { newDocument, openSample, restoreAutosave, scheduleAutosave } from './files'
 import { useView } from './view'
@@ -16,6 +19,7 @@ function exposeHooks() {
     document: useDocument,
     workspace: useWorkspace,
     view: useView,
+    arrangement: useArrangement,
     radius(i: number) {
       const c = curvatureOf(useDocument.getState().project.system.surfaces[i].shape) ?? 0
       return c === 0 ? Infinity : 1 / c
@@ -38,10 +42,20 @@ export async function startSession() {
     }
     if (s.revision !== prev.revision || s.savedRevision !== prev.savedRevision) scheduleAutosave()
   })
-  // The arrangement of panes is saved with the document (not undoable).
+  // The panes, the panel arrangement and the layout's view are saved with the
+  // document (not undoable).
   useWorkspace.subscribe((s, prev) => {
     if (s.panes !== prev.panes || s.layoutSettings !== prev.layoutSettings) scheduleAutosave()
   })
+  useArrangement.subscribe((s, prev) => {
+    if (s.arr !== prev.arr) scheduleAutosave()
+  })
+  useView.subscribe((s, prev) => {
+    if (s.layoutMode !== prev.layoutMode || s.rayColoring !== prev.rayColoring || s.stretch !== prev.stretch) scheduleAutosave()
+  })
+  onWindowFrames(scheduleAutosave)
+  installPanelSync()
+  installTeardown()
 
   const params = new URLSearchParams(location.search)
   const sample = params.get('sample')
