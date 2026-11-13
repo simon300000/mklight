@@ -599,3 +599,119 @@ fn analyses_within_gates() {
         }
     }
 }
+
+/// A device that counts what its batches read back.
+struct Counting {
+    inner: std::sync::Arc<dyn mklight_webgpu::Gpu>,
+    readback: std::sync::atomic::AtomicU64,
+}
+
+impl mklight_webgpu::Gpu for Counting {
+    fn summary(&self) -> &mklight_webgpu::device::AdapterSummary {
+        self.inner.summary()
+    }
+    fn persist(&self, words: &[u32]) -> mklight_core::MkResult<mklight_webgpu::device::BufferKey> {
+        self.inner.persist(words)
+    }
+    fn allocate(&self, words: usize) -> mklight_core::MkResult<mklight_webgpu::device::BufferKey> {
+        self.inner.allocate(words)
+    }
+    fn release(&self, key: mklight_webgpu::device::BufferKey) {
+        self.inner.release(key)
+    }
+    fn prepare(
+        &self,
+        kernels: &[(
+            mklight_webgpu::device::Kernel,
+            mklight_webgpu::device::PassShape,
+        )],
+    ) -> mklight_core::MkResult<()> {
+        self.inner.prepare(kernels)
+    }
+    fn run(
+        &self,
+        batch: mklight_webgpu::device::Batch<'_>,
+    ) -> mklight_core::MkResult<mklight_webgpu::device::BatchStats> {
+        let s = self.inner.run(batch)?;
+        self.readback
+            .fetch_add(s.readback_bytes, std::sync::atomic::Ordering::Relaxed);
+        Ok(s)
+    }
+}
+
+/// The PSF plan's chain Prepare, Sum, Transform, Intensity keeps its
+/// intermediates (field, moments, sums, the transformed field) on the
+/// device: only the intensity is read back, and it equals the CPU-f32
+/// plan's within the transform gate.
+#[test]
+fn chained_plan_reads_back_only_its_output() {
+    use std::sync::atomic::Ordering::Relaxed;
+    let b = crate::gpu_or_skip!();
+    let counting = std::sync::Arc::new(Counting {
+        inner: b.gpu().clone(),
+        readback: Default::default(),
+    });
+    let bc = mklight_webgpu::WebGpuBackend::with_gpu(counting.clone()).unwrap();
+    let cpu = spec(&bc);
+    // The numerics probe read back too.
+    let before = counting.readback.load(Relaxed);
+    let (n, side, size) = (29, 64, 59);
+    let inputs = pupil(n);
+    let normal = [0.1, -0.2, -(1. - 0.05f64).sqrt()].map(Df32::from_f64);
+    let build = |p: &mut ResidentPlan, v: &[PlanView]| {
+        let field = p.scratch(BufferDesc::new(ElementType::Complex32, [side, side]));
+        let moments = p.scratch(BufferDesc::new(ElementType::F32, [3, n * n]));
+        p.operations.push(ResidentOp::Wave(w::Request::Prepare {
+            pupil: wave_pupil(v),
+            geometry: geometry(80.),
+            normal,
+            field,
+            moments,
+        }));
+        let m = p.view(moments).unwrap();
+        let sums = p.sum(m, ReduceMode::DoubleFloat);
+        let spectrum = p.scratch(BufferDesc::new(ElementType::Complex32, [side, side]));
+        let input = p.view(field).unwrap();
+        p.operations
+            .push(ResidentOp::Transforms(tr::Request::Transform(
+                tr::TransformPlan {
+                    kind: tr::TransformKind::Fft,
+                    input,
+                    output: spectrum,
+                    dimensions: vec![side, side],
+                    output_dimensions: vec![side, side],
+                    sign: -1,
+                    scale: 1.,
+                    affine: [Df32::ZERO; 6],
+                },
+            )));
+        let out = p.scratch(BufferDesc::new(ElementType::F32, [size, size]));
+        let (field, sums) = (p.view(spectrum).unwrap(), p.view(sums).unwrap());
+        p.operations.push(ResidentOp::Wave(w::Request::Intensity {
+            field,
+            sums,
+            geometry: geometry(80.),
+            pupil_side: n,
+            size,
+            shifted: true,
+            unit_energy: true,
+            projection: 0.93,
+            output: out,
+        }));
+        vec![out]
+    };
+    let (g, names) = run(&bc, &inputs, build);
+    on_device(&names);
+    let read = counting.readback.load(Relaxed) - before;
+    let (c, _) = run(&cpu, &inputs, build);
+    // The intermediates alone (the two fields) are 8 * side^2 bytes each.
+    assert_eq!(read, (size * size * 4) as u64, "bytes read back");
+    let (mut err, mut norm) = (0f64, 0f64);
+    for (a, b) in floats(&g[0]).iter().zip(floats(&c[0])) {
+        err += ((a - b) as f64).powi(2);
+        norm += (*b as f64).powi(2);
+    }
+    let rel = (err / norm).sqrt();
+    eprintln!("chained plan: relative L2 {rel:.2e}");
+    assert!(rel <= 1e-4, "chained intensity: {rel:e}");
+}

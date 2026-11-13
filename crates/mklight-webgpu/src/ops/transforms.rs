@@ -36,14 +36,15 @@ use mklight_gpu::JobStats;
 use mklight_gpu::consts::*;
 use mklight_gpu::pending::JobControl;
 use mklight_gpu::reduce;
-use mklight_gpu::resident::ResidentOp;
 use mklight_gpu::resident::cpu::Execution;
 use mklight_gpu::resident::immutable::CacheCategory::TransformPlans;
+use mklight_gpu::resident::{BufferDesc, BufferId, ElementType, PlanView, ResidentOp};
 use mklight_gpu::transforms::correlation;
 use mklight_gpu::transforms::recipe::*;
 use mklight_gpu::transforms::{Request, accesses};
 
 use super::WebGpuOps;
+use super::resident::Mirrors;
 use crate::device::*;
 
 /// Longest row transformed in one shared-memory pass (16 KiB of workgroup
@@ -110,18 +111,19 @@ pub fn run(
         return Ok(None);
     };
     let gpu = ops.backend.gpu().clone();
+    let m = &mut ops.mirrors;
     match r {
-        Request::Correlation(_) => correlate(&gpu, r, x, ctl, stats, "webgpu:correlation"),
+        Request::Correlation(_) => correlate(&gpu, m, r, x, ctl, stats, "webgpu:correlation"),
         Request::OpticalCorrelation(_) => {
-            correlate(&gpu, r, x, ctl, stats, "webgpu:optical-correlation")
+            correlate(&gpu, m, r, x, ctl, stats, "webgpu:optical-correlation")
         }
         Request::PrepareOpticalStencil(_) => {
-            correlate(&gpu, r, x, ctl, stats, "webgpu:optical-stencil")
+            correlate(&gpu, m, r, x, ctl, stats, "webgpu:optical-stencil")
         }
-        Request::Transform(_) => transform(&gpu, r, x, ctl, stats, "webgpu:transform"),
-        Request::Transpose { .. } => transform(&gpu, r, x, ctl, stats, "webgpu:transpose"),
-        Request::Convolve { .. } => transform(&gpu, r, x, ctl, stats, "webgpu:convolve"),
-        Request::Phase { .. } => transform(&gpu, r, x, ctl, stats, "webgpu:phase"),
+        Request::Transform(_) => transform(&gpu, m, r, x, ctl, stats, "webgpu:transform"),
+        Request::Transpose { .. } => transform(&gpu, m, r, x, ctl, stats, "webgpu:transpose"),
+        Request::Convolve { .. } => transform(&gpu, m, r, x, ctl, stats, "webgpu:convolve"),
+        Request::Phase { .. } => transform(&gpu, m, r, x, ctl, stats, "webgpu:phase"),
     }
 }
 
@@ -133,6 +135,13 @@ pub struct DeviceTable {
 }
 
 impl DeviceTable {
+    /// An uninitialised device buffer of `words` words, for copies to fill.
+    pub(super) fn allocated(gpu: &Arc<dyn Gpu>, words: usize) -> MkResult<Self> {
+        Ok(Self {
+            gpu: gpu.clone(),
+            key: gpu.allocate(words)?,
+        })
+    }
     pub(super) fn new(gpu: &Arc<dyn Gpu>, words: &[u32]) -> MkResult<Self> {
         Ok(Self {
             gpu: gpu.clone(),
@@ -170,18 +179,17 @@ fn table(
     Ok(t)
 }
 
-/// A buffer of the batch being assembled.
-pub(super) enum Res<'a> {
-    Upload(&'a [u32]),
-    Scratch(usize),
-    Persistent(BufferKey),
-}
+/// A buffer of the batch being assembled (the batch's own resource forms:
+/// upload, scratch, persistent buffer or device-side slice).
+pub(super) use crate::device::Resource as Res;
 
 /// A batch under construction: resources, passes and the parameter block
 /// every pass binds a range of (binding 2).
 pub(super) struct Builder<'a> {
     res: Vec<Res<'a>>,
     passes: Vec<Pass>,
+    /// Device-side copies into plan-buffer mirrors, after the passes.
+    copies: Vec<Copy>,
     params: Vec<u32>,
     /// Words between parameter records (the storage offset alignment).
     stride: usize,
@@ -196,6 +204,7 @@ impl<'a> Builder<'a> {
             // Resource 0 is the parameter block, uploaded when finished.
             res: vec![Res::Scratch(0)],
             passes: vec![],
+            copies: vec![],
             params: vec![],
             stride: align.max(1),
             free: vec![],
@@ -204,6 +213,31 @@ impl<'a> Builder<'a> {
     pub(super) fn add(&mut self, r: Res<'a>) -> usize {
         self.res.push(r);
         self.res.len() - 1
+    }
+    /// Plan input `v` through the mirrors: the device copy (or a slice of
+    /// it) when current, else an upload of the host words.
+    pub(super) fn load(&mut self, mirrors: &mut Mirrors, x: &'a Execution, v: &PlanView) -> usize {
+        let mut t = Batch::default();
+        mirrors.load(&mut t, x, v);
+        self.add(t.resources.pop().expect("one resource"))
+    }
+    /// Copy `len` words of resource `from` (at `from_offset`) into output
+    /// `id` at `to_offset` on the device, after the passes.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn store(
+        &mut self,
+        mirrors: &mut Mirrors,
+        x: &Execution,
+        from: usize,
+        from_offset: usize,
+        id: BufferId,
+        to_offset: usize,
+        len: usize,
+    ) -> MkResult<()> {
+        let mut t = Batch::default();
+        mirrors.store(&mut t, x, from, from_offset, id, to_offset, len)?;
+        self.copies.extend(t.copies);
+        Ok(())
     }
     /// Scratch of at least `words`, reusing a freed buffer.
     pub(super) fn take(&mut self, words: usize) -> usize {
@@ -255,9 +289,11 @@ impl<'a> Builder<'a> {
                 Res::Upload(w) => b.upload(w),
                 Res::Scratch(w) => b.scratch(*w),
                 Res::Persistent(k) => b.persistent(*k),
+                Res::Slice { key, offset, len } => b.slice(*key, *offset, *len),
             };
         }
         b.passes = passes;
+        b.copies = self.copies.clone();
         b
     }
 }
@@ -314,6 +350,7 @@ fn fits(recipe: &Recipe, inputs: &[usize], max_binding: u64) -> bool {
 
 fn transform(
     gpu: &Arc<dyn Gpu>,
+    mirrors: &mut Mirrors,
     r: &Request,
     x: &mut Execution,
     ctl: &JobControl,
@@ -382,11 +419,13 @@ fn transform(
     }
     let output = access.writes[0];
     let reads = access.reads.clone();
-    let (b, spectra) = x.with_outputs(&[output], |x, out| -> MkResult<_> {
+    let out_words = x.words(output).len();
+    let (b, spectra) = {
+        let x: &Execution = x;
         let mut bld = Builder::new(&**gpu);
-        let first = bld.add(Res::Upload(x.view(&reads[0])));
+        let first = bld.load(mirrors, x, &reads[0]);
         let second = if reads.len() > 1 {
-            bld.add(Res::Upload(x.view(&reads[1])))
+            bld.load(mirrors, x, &reads[1])
         } else {
             first
         };
@@ -533,14 +572,14 @@ fn transform(
             .iter()
             .map(|&(i, _)| (i, vec![0u32; steps[i].p.count as usize * 2]))
             .collect();
+        bld.store(mirrors, x, slot[recipe.output], 0, output, 0, out_words)?;
         let mut batch = bld.batch();
         for ((_, res), (_, v)) in fresh.iter().zip(spectra.iter_mut()) {
             batch.read(*res, 0, v);
         }
-        batch.read(slot[recipe.output], 0, out[0]);
         let b = gpu.run(batch)?;
-        Ok((b, spectra))
-    })?;
+        (b, spectra)
+    };
     stats.device_seconds += b.device_seconds;
     stats.command_buffers += 1;
     for (i, v) in spectra {
@@ -551,8 +590,53 @@ fn transform(
     Ok(Some(name))
 }
 
+/// An input a multi-batch operation binds in every batch: a persistent copy
+/// of host words (uploaded once), or a plan view the mirrors serve from the
+/// device.
+pub(super) enum Held {
+    Table(DeviceTable),
+    View(PlanView),
+}
+
+impl Held {
+    pub(super) fn new(
+        gpu: &Arc<dyn Gpu>,
+        mirrors: &Mirrors,
+        x: &Execution,
+        v: &PlanView,
+    ) -> MkResult<Self> {
+        if mirrors.on_device(v.buffer) {
+            Ok(Self::View(v.clone()))
+        } else {
+            Ok(Self::Table(DeviceTable::new(gpu, x.view(v))?))
+        }
+    }
+    pub(super) fn bind<'a>(
+        &self,
+        bld: &mut Builder<'a>,
+        mirrors: &mut Mirrors,
+        x: &'a Execution,
+    ) -> usize {
+        match self {
+            Self::Table(t) => bld.add(Res::Persistent(t.key)),
+            Self::View(v) => bld.load(mirrors, x, v),
+        }
+    }
+}
+
+/// Words `from..from + len` of `v`'s words as a flat f32 view.
+pub(super) fn word_range(v: &PlanView, from: usize, len: usize) -> PlanView {
+    PlanView {
+        offset: v.offset * v.desc.element.words() + from,
+        desc: BufferDesc::new(ElementType::F32, [len]),
+        stride: 1,
+        ..v.clone()
+    }
+}
+
 fn correlate(
     gpu: &Arc<dyn Gpu>,
+    mirrors: &mut Mirrors,
     r: &Request,
     x: &mut Execution,
     ctl: &JobControl,
@@ -592,9 +676,9 @@ fn correlate(
         Request::PrepareOpticalStencil(_) => vec![freq],
         _ => unreachable!(),
     };
-    let mut copies: Vec<DeviceTable> = vec![];
+    let mut copies: Vec<Held> = vec![];
     for v in &views {
-        copies.push(DeviceTable::new(gpu, x.view(v))?);
+        copies.push(Held::new(gpu, mirrors, x, v)?);
     }
     let prepared = match r {
         Request::OpticalCorrelation(c) => c.stencil.clone(),
@@ -602,41 +686,42 @@ fn correlate(
     };
     let groups = reduce::num_groups(count);
     let out_words = if stencil { count * 5 } else { 2 };
-    x.with_outputs(&[output], |x, out| -> MkResult<()> {
-        let out = &mut *out[0];
+    {
+        let x: &Execution = x;
         for first in (0..nf).step_by(tile) {
             ctl.check()?;
             let nt = tile.min(nf - first);
             (p.first, p.frequencies) = (first as u32, nt as u32);
             let params: &[u32] = bytemuck::cast_slice(std::slice::from_ref(&p));
-            let mut batch = Batch::default();
-            let pr = batch.upload(params);
-            let dst = &mut out[first * out_words..(first + nt) * out_words];
+            let mut bld = Builder::new(&**gpu);
+            let pr = bld.add(Res::Upload(params));
+            let (dst_at, dst_len) = (first * out_words, nt * out_words);
             if stencil {
-                let f = batch.persistent(copies[0].key);
-                let d = batch.scratch(nt * count * 5);
-                batch.passes.push(Pass {
+                let f = copies[0].bind(&mut bld, mirrors, x);
+                let d = bld.add(Res::Scratch(nt * count * 5));
+                bld.passes.push(Pass {
                     kernel: STENCIL,
                     uniform: None,
                     storage: vec![Binding::read(pr), Binding::read(f), Binding::write(d)],
                     workgroups: [count.div_ceil(256) as u32, nt as u32, 1],
                 });
-                batch.read(d, 0, dst);
+                bld.store(mirrors, x, d, 0, output, dst_at, dst_len)?;
             } else {
-                let [field, opd, cov, f] = [0, 1, 2, 3].map(|k| batch.persistent(copies[k].key));
+                let [field, opd, cov, f] =
+                    [0, 1, 2, 3].map(|k| copies[k].bind(&mut bld, mirrors, x));
                 let st = match &prepared {
                     Some(v) => {
-                        let w = &x.view(v)[first * count * 5..(first + nt) * count * 5];
-                        batch.upload(w)
+                        let w = word_range(v, first * count * 5, nt * count * 5);
+                        bld.load(mirrors, x, &w)
                     }
                     None => field,
                 };
                 let channels = 3 * nt;
-                let terms = batch.scratch(channels * count);
-                let partials = batch.scratch(channels * groups * 2);
-                let sums = batch.scratch(channels * 2);
-                let result = batch.scratch(nt * 2);
-                batch.passes.push(Pass {
+                let terms = bld.add(Res::Scratch(channels * count));
+                let partials = bld.add(Res::Scratch(channels * groups * 2));
+                let sums = bld.add(Res::Scratch(channels * 2));
+                let result = bld.add(Res::Scratch(nt * 2));
+                bld.passes.push(Pass {
                     kernel: TERMS,
                     uniform: None,
                     storage: [pr, field, opd, cov, f, st]
@@ -661,19 +746,19 @@ fn correlate(
                     Binding::write(partials),
                     Binding::write(sums),
                 ];
-                batch.passes.push(Pass {
+                bld.passes.push(Pass {
                     kernel: REDUCE_PASS1,
                     uniform: Some(rp.clone()),
                     storage: reduce.clone(),
                     workgroups: [groups as u32, channels as u32, 1],
                 });
-                batch.passes.push(Pass {
+                bld.passes.push(Pass {
                     kernel: REDUCE_PASS2,
                     uniform: Some(rp),
                     storage: reduce,
                     workgroups: [1, channels as u32, 1],
                 });
-                batch.passes.push(Pass {
+                bld.passes.push(Pass {
                     kernel: NORMALIZE,
                     uniform: None,
                     storage: vec![
@@ -683,14 +768,13 @@ fn correlate(
                     ],
                     workgroups: [nt.div_ceil(64) as u32, 1, 1],
                 });
-                batch.read(result, 0, dst);
+                bld.store(mirrors, x, result, 0, output, dst_at, dst_len)?;
             }
-            let b = gpu.run(batch)?;
+            let b = gpu.run(bld.batch())?;
             stats.device_seconds += b.device_seconds;
             stats.command_buffers += 1;
             ctl.report((first + nt) as f64 / nf as f64, "correlation");
         }
-        Ok(())
-    })?;
+    }
     Ok(Some(name))
 }
