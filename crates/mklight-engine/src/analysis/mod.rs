@@ -680,7 +680,7 @@ pub fn run_analysis(
     let key = result_key(analysis, input, &settings, &extra_warnings);
     let auto = Backend::is_auto_request(&input.requested_backend);
     let timer = RunTimer::start();
-    let started = std::time::Instant::now();
+    let started = mklight_core::platform::Instant::now();
     let mut built = false;
     let r = graph.single("result", key, ctx, input.fresh, || {
         built = true;

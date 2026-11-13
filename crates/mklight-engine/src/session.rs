@@ -138,6 +138,16 @@ pub fn read_catalog_file(path: &Path, format: CatalogFormat) -> EngineResult<Gla
     let bytes = std::fs::read(path).map_err(|e| {
         EngineError::Core(MkError::Io(format!("cannot read {}: {e}", path.display())))
     })?;
+    parse_catalog_bytes(path, &bytes, format)
+}
+
+/// Parse the contents of a catalog file named `path` (only its name is
+/// used: the file stem names an AGF catalog, and messages show it).
+pub fn parse_catalog_bytes(
+    path: &Path,
+    bytes: &[u8],
+    format: CatalogFormat,
+) -> EngineResult<GlassCatalog> {
     let stem = path
         .file_stem()
         .map(|s| s.to_string_lossy().into_owned())
@@ -145,7 +155,7 @@ pub fn read_catalog_file(path: &Path, format: CatalogFormat) -> EngineResult<Gla
     let mut cat = match format {
         // Vendor AGF files are often UTF-16; `parse_agf_bytes` detects the encoding.
         CatalogFormat::Agf => {
-            let agf = agf::parse_agf_bytes(&stem, &bytes, &agf::AgfOptions::default())?;
+            let agf = agf::parse_agf_bytes(&stem, bytes, &agf::AgfOptions::default())?;
             if agf.catalog.glasses.is_empty() {
                 let detail: Vec<String> = agf.warnings.iter().map(|w| w.to_string()).collect();
                 return Err(EngineError::Core(MkError::Parse(format!(
@@ -156,7 +166,7 @@ pub fn read_catalog_file(path: &Path, format: CatalogFormat) -> EngineResult<Gla
             }
             agf.catalog
         }
-        CatalogFormat::Json => serde_json::from_slice::<GlassCatalog>(&bytes)?,
+        CatalogFormat::Json => serde_json::from_slice::<GlassCatalog>(bytes)?,
     };
     if cat.name.is_empty() {
         cat.name = stem;
@@ -388,6 +398,36 @@ impl Session {
 
     // --- files
 
+    /// The project with its save metadata (modified time, app and engine
+    /// versions) brought up to date.
+    fn stamped_project(&self) -> Project {
+        let mut p = self.project.clone();
+        let cfg = self.engine.config();
+        p.metadata.modified = now_rfc3339();
+        if p.metadata.created.is_empty() {
+            p.metadata.created = p.metadata.modified.clone();
+        }
+        if !cfg.app_name.is_empty() {
+            p.metadata.app_name = cfg.app_name.clone();
+        }
+        if !cfg.app_version.is_empty() {
+            p.metadata.app_version = cfg.app_version.clone();
+        }
+        p.metadata.engine_version = mklight_core::ENGINE_VERSION.to_string();
+        p
+    }
+
+    /// The project as `.mklight` text, as `save` would write it, without a
+    /// file (the web build's save): catalog references are kept as they
+    /// are. Marks the session clean.
+    pub fn save_to_string(&mut self) -> EngineResult<String> {
+        let p = self.stamped_project();
+        let text = p.to_json_string()?;
+        self.project = p;
+        self.dirty = false;
+        Ok(text)
+    }
+
     /// Save atomically to `path`, or to the current path when `None`.
     /// Stamps `modified`, the app and engine versions, and records catalog
     /// paths relative to the project directory where possible: from the
@@ -404,19 +444,7 @@ impl Session {
                 ))
             })?,
         };
-        let mut p = self.project.clone();
-        let cfg = self.engine.config();
-        p.metadata.modified = now_rfc3339();
-        if p.metadata.created.is_empty() {
-            p.metadata.created = p.metadata.modified.clone();
-        }
-        if !cfg.app_name.is_empty() {
-            p.metadata.app_name = cfg.app_name.clone();
-        }
-        if !cfg.app_version.is_empty() {
-            p.metadata.app_version = cfg.app_version.clone();
-        }
-        p.metadata.engine_version = mklight_core::ENGINE_VERSION.to_string();
+        let mut p = self.stamped_project();
         // Catalog paths are canonical, so compare against the canonical
         // project directory (symlinked temp dirs, `..` components).
         if let Some(dir) = path
@@ -461,6 +489,34 @@ impl Session {
     }
 
     // --- materials
+
+    /// Load a user glass catalog from the contents of a file named
+    /// `file_name` (AGF, or JSON by `.json` extension; no file is read: the
+    /// web build's catalog load). It is recorded in the project by that
+    /// name, relative to the project's folder.
+    pub fn load_catalog_bytes(
+        &mut self,
+        file_name: &str,
+        bytes: &[u8],
+    ) -> EngineResult<CatalogSummary> {
+        let path = Path::new(file_name);
+        let format = CatalogFormat::from_path(path);
+        let cat = parse_catalog_bytes(path, bytes, format)?;
+        let summary = CatalogSummary {
+            name: cat.name.clone(),
+            source: "user",
+            path: None,
+            glass_count: cat.glasses.len(),
+        };
+        let r = CatalogRef {
+            name: cat.name.clone(),
+            path: None,
+            relative_path: Some(file_name.to_string()),
+            format,
+        };
+        self.add_catalog(cat, Some(r));
+        Ok(summary)
+    }
 
     /// Load a user glass catalog (AGF, or JSON by `.json` extension), add it
     /// to the library and record it in the project. Replaces a catalog of

@@ -3,4 +3,5 @@
 //! `cargo test -p mklight-core --test tests <file>::`.
 
 mod app_fixtures;
+mod fma;
 mod prescription_import;

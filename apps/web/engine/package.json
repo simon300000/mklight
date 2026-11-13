@@ -1,0 +1,23 @@
+{
+  "name": "@mklight/engine",
+  "private": true,
+  "version": "0.1.0",
+  "description": "MKLight engine for the web: the wasm engine worker and its typed client (docs/WEB.md)",
+  "type": "module",
+  "main": "src/index.ts",
+  "scripts": {
+    "build:wasm": "../../../scripts/build-wasm.sh",
+    "typecheck": "tsc --noEmit",
+    "dev": "vite",
+    "build:harness": "vite build",
+    "test": "playwright test",
+    "test:chromium": "playwright test --project=chromium",
+    "test:webkit": "playwright test --project=webkit"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.56.0",
+    "@types/node": "^22.0.0",
+    "typescript": "^5.9.0",
+    "vite": "^7.1.0"
+  }
+}

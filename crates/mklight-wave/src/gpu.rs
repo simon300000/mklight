@@ -723,7 +723,7 @@ pub(crate) fn concurrent<T: Sync, R: Send>(
     let next = std::sync::atomic::AtomicUsize::new(0);
     let slots: Vec<std::sync::Mutex<Option<R>>> =
         items.iter().map(|_| std::sync::Mutex::new(None)).collect();
-    std::thread::scope(|s| {
+    mklight_core::platform::scope(|s| {
         for _ in 0..threads {
             s.spawn(|| {
                 loop {

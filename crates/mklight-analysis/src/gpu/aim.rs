@@ -45,13 +45,13 @@
 
 use super::*;
 use mklight_core::RayAiming;
+use mklight_core::platform::Instant;
 use mklight_gpu::{consts::*, resident};
 use mklight_trace::{AimReport, FieldPoint, GeneratedRay, PreparedField, RayRequest};
 use rayon::prelude::*;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::mpsc;
-use std::time::Instant;
 
 /// How a [`Geometry`] aims its generations (module docs).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -762,7 +762,7 @@ impl Geometry<'_> {
                             _ => plans.push(vec![cols]),
                         }
                     }
-                    std::thread::scope(|scope| {
+                    mklight_core::platform::scope(|scope| {
                         let (tx, rx) = mpsc::channel();
                         let driver = scope.spawn(move || -> MkResult<()> {
                             // Submit every plan, then copy each as it lands.

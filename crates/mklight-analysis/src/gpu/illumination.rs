@@ -22,13 +22,13 @@ use crate::illumination::{
 };
 use crate::util::{check_count, field_scale, field_sweep, field_unit, m2, wavelength_or_primary};
 use mklight_core::math::KahanSum;
+use mklight_core::platform::Instant;
 use mklight_gpu::consts::*;
 use mklight_gpu::geometry::{
     self, IlluminationRays,
     ri::{PENCIL, RiField, RiRay, RiTask},
 };
 use rayon::prelude::*;
-use std::time::Instant;
 
 /// Nodes per plan (bounds plan storage).
 const PLAN_NODES: usize = 1 << 18;

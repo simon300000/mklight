@@ -23,25 +23,19 @@ pub(crate) const PROBE_TILE: usize = 1 << 20;
 
 /// Process CPU time (user + system, all threads), seconds.
 pub(crate) fn cpu_seconds() -> f64 {
-    let mut u = std::mem::MaybeUninit::<libc::rusage>::zeroed();
-    // SAFETY: getrusage writes one rusage record into valid storage.
-    unsafe { libc::getrusage(libc::RUSAGE_SELF, u.as_mut_ptr()) };
-    // SAFETY: zero-initialised and written by getrusage.
-    let u = unsafe { u.assume_init() };
-    let t = |v: libc::timeval| v.tv_sec as f64 + v.tv_usec as f64 * 1e-6;
-    t(u.ru_utime) + t(u.ru_stime)
+    mklight_core::platform::process_cpu_seconds()
 }
 
 /// A wall-clock and process-CPU start mark (stage profiles).
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Lap {
-    wall: std::time::Instant,
+    wall: mklight_core::platform::Instant,
     cpu: f64,
 }
 impl Lap {
     pub(crate) fn now() -> Lap {
         Lap {
-            wall: std::time::Instant::now(),
+            wall: mklight_core::platform::Instant::now(),
             cpu: cpu_seconds(),
         }
     }
@@ -1071,7 +1065,7 @@ pub fn paraxial_batch(
     let flag_view = backend.read_view(r.outputs[2].view())?;
     let flags = flag_view.as_slice::<u32>()?;
     let (mut rays, mut throughputs, mut reference_rows) = (Vec::new(), Vec::new(), Vec::new());
-    let reference_start = std::time::Instant::now();
+    let reference_start = mklight_core::platform::Instant::now();
     for (i, ns) in indices.into_iter().enumerate() {
         ctx.check()?;
         let (a, z) = (offsets[i] as usize, offsets[i + 1] as usize);

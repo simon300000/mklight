@@ -273,6 +273,7 @@ impl BackendRegistry {
     /// prefers Metal natively; WebGPU is an explicit choice there and the
     /// GPU of the browser build, which registers it itself
     /// (`crate::gpu::GpuProvider::webgpu_with`, WEB.md).
+    #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
     pub fn with_defaults() -> Self {
         let mut r = Self::cpu_only();
         #[cfg(target_os = "macos")]

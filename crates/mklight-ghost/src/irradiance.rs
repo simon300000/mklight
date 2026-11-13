@@ -1293,7 +1293,7 @@ pub(crate) fn ghost_irradiance_with_backend(
                 .collect::<Vec<_>>();
             let device_steps = device.iter().map(|&i| all_steps[i]).collect::<Vec<_>>();
             let quiet = JobContext::with(ctx.cancel.clone(), Default::default());
-            std::thread::scope(|scope| {
+            mklight_core::platform::scope(|scope| {
                 let cpu = (!cpu_groups.is_empty()).then(|| scope.spawn(|| trace_cpu(&quiet)));
                 let gpu = resident_maps(
                     b,
@@ -2021,7 +2021,7 @@ fn refine_gpu(
                 let code = v.status & MKL_RAY_CODE_MASK;
                 let numerical = (MKL_RAY_NONFINITE..=MKL_RAY_EVANESCENT).contains(&code);
                 if code == MKL_GHOST_REFERENCE || numerical || edge {
-                    let start = std::time::Instant::now();
+                    let start = mklight_core::platform::Instant::now();
                     let reference = paths[pi].trace(p);
                     (geometric, edge, Some((reference, start.elapsed())))
                 } else {

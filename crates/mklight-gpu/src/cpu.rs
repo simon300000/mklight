@@ -13,10 +13,10 @@
 //! compensated reduction, the packed-sag probe and the sequential / path
 //! trace kernel ([`crate::trace_kernel`]).
 
+use mklight_core::platform::Instant;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
 
 use mklight_core::job::Precision;
 use mklight_core::rng::philox4x32_10;

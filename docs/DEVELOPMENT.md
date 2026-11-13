@@ -28,9 +28,10 @@ system is in [ARCHITECTURE.md](ARCHITECTURE.md).
 | `crates/mklight-engine` | Sessions, projects, the analysis registry and job scheduler |
 | `crates/mklight-bench` | Measurement and qualification harnesses and the result comparator they share |
 | `crates/mklight-ffi`, `crates/mklight-py`, `crates/mklight-cli` | The C ABI, Python bindings and command line |
+| `crates/mklight-wasm`, `apps/web/engine` | The engine for the web: the wasm-bindgen API and the `@engine` worker and TypeScript client ([WEB.md](WEB.md)) |
 | `apps/macos` | The SwiftUI app ([apps/macos/README.md](../apps/macos/README.md) has its package layout) |
 | `docs` | The reference documents; `docs/history` keeps two measurement records they cite |
-| `scripts` | `build-macos.sh` builds the app, `test.sh` runs the Rust tests |
+| `scripts` | `build-macos.sh` builds the app, `build-wasm.sh` the web engine, `test.sh` runs the Rust tests |
 
 ARCHITECTURE.md has the diagram of how the crates depend on each other and
 what each one holds.
@@ -56,6 +57,16 @@ cargo build -p mklight-cli --release    # → target/release/mklight
 ```
 
 [CLI.md](CLI.md) describes the commands.
+
+### The web engine
+
+```bash
+scripts/build-wasm.sh                   # → apps/web/engine/pkg (pinned nightly, wasm-opt -O3)
+```
+
+It needs a pinned nightly (installed by the script), `wasm-bindgen-cli`
+and binaryen; [WEB.md](WEB.md#building) lists them. Native builds stay on
+stable.
 
 ### The Python package
 
@@ -116,6 +127,20 @@ cd apps/macos && swift test
 
 Without the engine library the package still builds and the tests against
 the real engine are skipped ([APP.md](APP.md#tests)).
+
+### Web engine
+
+```bash
+scripts/build-wasm.sh
+cd apps/web/engine && npm install && npx playwright install chromium webkit
+npm test                                # headless Chromium and WebKit
+```
+
+The tests compare the web engine with the native one on the same machine;
+[WEB.md](WEB.md#tests) describes them. A change to `mklight_core::platform`
+or to how a crate starts threads or reads clocks needs this run as well as
+the Rust tests (`cargo check --target wasm32-unknown-unknown` alone does
+not catch a blocking or thread-start problem).
 
 ### Python
 

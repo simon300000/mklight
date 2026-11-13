@@ -27,8 +27,6 @@ serde_json.workspace = true
 thiserror.workspace = true
 blake3.workspace = true
 rayon.workspace = true
-# Load average: the cost model's prior for host contention.
-libc = "0.2"
 
 [[test]]
 name = "tests"

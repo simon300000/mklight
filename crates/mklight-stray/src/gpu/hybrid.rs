@@ -27,10 +27,10 @@ use crate::{
     tally::{ChunkTally, NUM_SINKS, StrayTally},
     tracer::{State, StrayResult, StraySettings, Tracer},
 };
+use mklight_core::platform::Instant;
 use rayon::prelude::*;
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::Mutex;
-use std::time::Instant;
 
 /// Detections a source keeps on the device before the CPU continues it.
 const HANDOFF_DETECTIONS: usize = 8;
@@ -567,7 +567,7 @@ pub(crate) fn run(
     let (mut wait_seconds, mut finish_seconds, mut side_seconds) = (0., 0., 0.);
     let cpu_counters = Mutex::new(Counters::default());
     let abort = std::sync::atomic::AtomicBool::new(false);
-    std::thread::scope(|scope| -> MkResult<()> {
+    mklight_core::platform::scope(|scope| -> MkResult<()> {
         // The CPU's share runs in the rayon pool beside the device.
         let cpu = (!cpu_chunks.is_empty()).then(|| {
             scope.spawn(|| -> MkResult<()> {

@@ -131,7 +131,7 @@ pub fn build_psf_grid_shared(
     // samples) against ≈0.2 s on the host for all five wavelengths. It runs
     // beside the device PSFs.
     let illumination = || -> MkResult<(Vec<f64>, f64, Vec<String>, f64)> {
-        let clock = std::time::Instant::now();
+        let clock = mklight_core::platform::Instant::now();
         let mut warnings = vec![];
         let mut irradiance = vec![0.; coordinates.len()];
         let mut axial = 0.;
@@ -224,7 +224,7 @@ pub fn build_psf_grid_shared(
             0.6 + 0.4 * (i + 1) as f64 / count as f64,
         )
     };
-    let (results, illumination) = std::thread::scope(|scope| {
+    let (results, illumination) = mklight_core::platform::scope(|scope| {
         let illumination = scope.spawn(illumination);
         let results = super::split::schedule(
             per,

@@ -1,10 +1,10 @@
 //! Job framework: cooperative cancellation, progress reporting and run
 //! metadata for reproducibility (ARCHITECTURE §State model).
 
+use crate::platform::{Instant, SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use crate::error::{MkError, MkResult};
 

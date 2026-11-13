@@ -235,7 +235,7 @@ pub(crate) fn schedule<T: Send, P: Send, R: Send>(
             self.0.1.notify_all();
         }
     }
-    std::thread::scope(|s| {
+    mklight_core::platform::scope(|s| {
         for _ in 0..devices {
             s.spawn(worker);
         }

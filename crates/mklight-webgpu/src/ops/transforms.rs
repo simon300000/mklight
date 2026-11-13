@@ -27,9 +27,9 @@
 //! terms, the double-float reduction of `reduce.wgsl` and normalisation, one
 //! batch per tile over persistent copies of the inputs.
 
+use crate::clock::Instant;
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Instant;
 
 use mklight_core::MkResult;
 use mklight_gpu::JobStats;
