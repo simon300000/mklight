@@ -609,13 +609,15 @@ extension MockEngine {
                     "param": (try? JSONValue.from(p)) ?? .null,
                     "minus": .number(minus), "plus": .number(plus), "criterion_minus": .number(nominal + dm),
                     "criterion_plus": .number(nominal + dp), "change_minus": .number(dm), "change_plus": .number(dp),
-                    "worst": .number(max(dm, dp)), "ok": .bool(true),
+                    "worst": .number(max(dm, dp)), "expected_change": .number((dm + dp) / 6), "ok": .bool(true),
                     "compensators_minus": .array(comps.map { .number($0.1 - 0.01 * Double(k + 1)) }),
                     "compensators_plus": .array(comps.map { .number($0.1 + 0.02 * Double(k + 1)) }),
                 ]))
             reporter.report(0.3 * Double(k + 1) / Double(max(params.count, 1)), stage: "tolerance sensitivity")
         }
         let rss = sqrt(worst.map { $0.1 * $0.1 }.reduce(0, +))
+        // Uniform limits: the mean change at the limits times E[δ²]/L² = ⅓.
+        let expected = ops.compactMap { $0["expected_change"]?.nf }.reduce(0, +)
         var criteria: [Double] = []
         var records: [JSONValue] = []
         let recordTrials = s["record_trials"]?.int ?? 0
@@ -674,7 +676,8 @@ extension MockEngine {
                 : .object([
                     "nominal": .object(["criterion": .number(nominal), "ok": .bool(true), "compensators": nominalComps]), "operands": .array(ops),
                     "ranking": .array(worst.sorted { $0.1 > $1.1 }.map { .integer(Int64($0.0)) }),
-                    "rss_change": .number(rss), "predicted_criterion": .number(nominal + rss),
+                    "rss_change": .number(rss), "expected_change": .number(expected),
+                    "predicted_criterion": .number(nominal + expected),
                     "evaluations": .integer(Int64(2 * ops.count + 1)), "cancelled": .bool(false),
                 ]),
             "monte_carlo": mc, "compensators": s["compensators"] ?? .array([]),

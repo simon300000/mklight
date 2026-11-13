@@ -586,7 +586,23 @@ system by the `ToleranceSpec`, re-optimises the compensators (for example the
 back focus, within `±range` of nominal) by LM on the criterion merit, and
 reports the resulting merit. `sensitivity` evaluates the nominal and each
 tolerance at its limits in batches of `SENSITIVITY_BATCH` (32) points and
-ranks the operands worst first, with the RSS prediction. Cancelled after the
+ranks the operands worst first, with the predicted mean criterion
+`SensitivityReport::predicted_criterion` = nominal + `expected_change`. The
+criterion is a merit `Φ = Σ w r²`, a mean square: near the (compensated)
+nominal `Φ(δ) ≈ Φ₀ + gᵀδ + ½δᵀHδ`, and for independent perturbations the
+cross terms vanish in expectation, so `E[Φ] ≈ Φ₀ + Σ E[ΔΦᵢ]` — a plain sum,
+not a root sum of squares (RSS of the changes is right only for a criterion
+linear in δ, and under-predicts a merit by up to √N; `rss_change` is still
+reported). `E[ΔΦᵢ] = a·E[δ] + b·E[δ²]` with `ΔΦ = aδ + bδ²` through both
+limits and the moments of the tolerance's distribution
+(`ToleranceOperand::moments`: end point, uniform on `[−minus, plus]`, normal
+truncated at `k` σ with `E[t²] = 1 − 2kφ(k)/(2Φ(k) − 1)`); a one-sided
+tolerance is taken as quadratic. An RMS display of the criterion (√Φ) is
+the square root of the prediction. Tests: a separable quadratic criterion
+with every distribution and asymmetric limits matches a 40 000-trial Monte
+Carlo within 4 standard errors; Cooke triplet, ten end-point tolerances,
+2000 trials: predicted 3.657e-3, Monte-Carlo mean 3.661e-3 (nominal + RSS
+was 2.233e-3). Cancelled after the
 nominal, it returns the operands whose both limits were evaluated
 (`SensitivityReport::cancelled`). The compensator solves of the trials share
 the job's cancellation but not its progress bar. `monte_carlo` draws trial `i` from Philox stream `TOLERANCE | i`,

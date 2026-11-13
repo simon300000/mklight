@@ -1270,8 +1270,8 @@ struct ToleranceResultView: View {
                             .help(result.compensators.isEmpty ? "The design as it is" : "The design as it is, with the compensators re-optimized")
                     }
                     if result.hasSensitivity {
-                        BigNumber(label: "Predicted (RSS)", value: d.format(d.value(result.predicted)))
-                            .help("Nominal plus the root-sum-square of every tolerance's worst change")
+                        BigNumber(label: "Predicted mean", value: d.format(d.value(result.predicted)))
+                            .help("The expected value over random builds: nominal plus every tolerance's expected change over its distribution (independent errors add their changes of the mean-square criterion)")
                     }
                 }
                 if result.hasMonteCarlo {
@@ -1343,7 +1343,7 @@ struct ToleranceResultView: View {
                 Spacer()
                 Text("Δ \(d.unit.isEmpty ? d.title : d.unit) at − / +").font(.caption).foregroundStyle(.secondary)
             }
-            Text("Each tolerance alone at its limits, largest share of the RSS first. Click a row to select its surface; the eye previews that build.")
+            Text("Each tolerance alone at its limits, largest change first; the bar is its share of the predicted change. Click a row to select its surface; the eye previews that build.")
                 .hint()
                 .padding(.bottom, Space.xs)
             ForEach(Array(list.enumerated()), id: \.element.id) { k, s in
@@ -1667,9 +1667,9 @@ struct SensitivityRow: View {
         .onHover { hovering = $0 }
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(rank). \(row?.label(in: system) ?? s.label)\(isWorst ? ", a worst offender" : "")")
-        .accessibilityValue("\(ContributionBar.percent(share)) of the RSS")
+        .accessibilityValue("\(ContributionBar.percent(share)) of the predicted change")
         .accessibilityAddTraits(.isButton)
-        .help("\(row?.label(in: system) ?? s.label): \(ContributionBar.percent(share)) of the RSS. Click to select the surface.")
+        .help("\(row?.label(in: system) ?? s.label): \(ContributionBar.percent(share)) of the predicted change. Click to select the surface.")
     }
 
     private var background: AnyShapeStyle {
@@ -1679,7 +1679,7 @@ struct SensitivityRow: View {
     }
 }
 
-/// A share of the RSS as a bar with its percentage.
+/// A share of the predicted change as a bar with its percentage.
 struct ShareBar: View {
     let fraction: Double
     var highlighted = false

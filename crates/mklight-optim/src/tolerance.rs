@@ -123,6 +123,49 @@ impl ToleranceOperand {
             None => name,
         }
     }
+    /// `(E[δ], E[δ²])` of the perturbations [`Self::sample`] draws.
+    pub fn moments(&self) -> (f64, f64) {
+        let (m, p) = (self.minus, self.plus);
+        match self.distribution {
+            Distribution::Uniform if m + p > 0.0 => ((p - m) / 2.0, (p * p - p * m + m * m) / 3.0),
+            Distribution::Uniform => (0.0, 0.0),
+            Distribution::TruncatedNormal { sigmas } => {
+                // z = t/k, t standard normal truncated to |t| ≤ k; each side
+                // scaled to its own limit with probability ½.
+                let k = if sigmas > 0.0 { sigmas } else { 2.0 };
+                let (abs, sq) = truncated_normal_moments(k);
+                (
+                    (p - m) / 2.0 * abs / k,
+                    (p * p + m * m) / 2.0 * sq / (k * k),
+                )
+            }
+            Distribution::EndPoint => ((p - m) / 2.0, (p * p + m * m) / 2.0),
+        }
+    }
+    /// Expected criterion change over this tolerance's distribution, from
+    /// the changes at its limits: `ΔΦ(δ) = aδ + bδ²` through
+    /// `(−minus, change_minus)`, `(0, 0)`, `(+plus, change_plus)`, so
+    /// `E[ΔΦ] = a·E[δ] + b·E[δ²]`. Symmetric limits `±L`: the mean of the two
+    /// changes times `E[δ²]/L²` (1 end point, ⅓ uniform, ≈ 0.193 for the
+    /// normal truncated at 2σ). A one-sided tolerance is taken as quadratic.
+    pub fn expected_change(&self, change_minus: f64, change_plus: f64) -> f64 {
+        let (cm, cp) = (change_minus, change_plus);
+        if !(cm.is_finite() && cp.is_finite()) {
+            return cm + cp;
+        }
+        let (m, p) = (self.minus, self.plus);
+        let (a, b) = match (m > 0.0, p > 0.0) {
+            (true, true) => {
+                let b = (cp / p + cm / m) / (p + m);
+                (cp / p - b * p, b)
+            }
+            (false, true) => (0.0, cp / (p * p)),
+            (true, false) => (0.0, cm / (m * m)),
+            (false, false) => (0.0, 0.0),
+        };
+        let (e1, e2) = self.moments();
+        a * e1 + b * e2
+    }
     /// Draw one perturbation.
     pub fn sample(&self, rng: &mut Rng) -> f64 {
         match self.distribution {
@@ -145,6 +188,39 @@ impl ToleranceOperand {
             }
         }
     }
+}
+
+/// `(E[|t|], E[t²])` of a standard normal truncated to `|t| ≤ k`.
+pub fn truncated_normal_moments(k: f64) -> (f64, f64) {
+    let k = k.abs();
+    let phi = |x: f64| (-0.5 * x * x).exp() / (2.0 * std::f64::consts::PI).sqrt();
+    let mass = erf(k / std::f64::consts::SQRT_2);
+    if !(mass > 0.0) {
+        // k → 0: t uniform-like on [−k, k].
+        return (k / 2.0, k * k / 3.0);
+    }
+    (
+        2.0 * (phi(0.0) - phi(k)) / mass,
+        1.0 - 2.0 * k * phi(k) / mass,
+    )
+}
+
+/// The error function, `erf x = 2/√π · e^{−x²} Σ 2ⁿ x^{2n+1} / (2n+1)!!`
+/// (positive terms, no cancellation); 1 beyond `x = 6`.
+fn erf(x: f64) -> f64 {
+    let a = x.abs();
+    if a > 6.0 {
+        return x.signum();
+    }
+    let (mut term, mut sum) = (a, a);
+    for n in 1..2000 {
+        term *= 2.0 * a * a / (2 * n + 1) as f64;
+        sum += term;
+        if term < 1e-17 * sum {
+            break;
+        }
+    }
+    (2.0 / std::f64::consts::PI.sqrt() * (-a * a).exp() * sum).copysign(x)
 }
 
 /// A parameter re-optimised after perturbation (back focus, an air space…).
@@ -447,6 +523,10 @@ pub struct OperandSensitivity {
     pub change_plus: f64,
     /// `max(|change_minus|, |change_plus|)`.
     pub worst: f64,
+    /// Expected change over the tolerance's distribution
+    /// ([`ToleranceOperand::expected_change`]).
+    #[serde(default)]
+    pub expected_change: f64,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -456,9 +536,18 @@ pub struct SensitivityReport {
     pub operands: Vec<OperandSensitivity>,
     /// Operand indices, worst first.
     pub ranking: Vec<usize>,
-    /// Root-sum-square of the worst changes: predicted change of the
-    /// criterion with every tolerance at its limit (statistical estimate).
+    /// Root-sum-square of the worst changes. The statistical combination
+    /// for a criterion linear in the perturbations; the criterion here is a
+    /// merit `Φ = Σ w r²`, for which [`Self::expected_change`] is the
+    /// prediction.
     pub rss_change: f64,
+    /// Sum of the operands' expected changes: for a merit (a mean square,
+    /// e.g. the squared RMS spot or wavefront), independent perturbations
+    /// add their expected changes, `E[Φ] ≈ Φ₀ + Σ E[ΔΦᵢ]` (the cross terms
+    /// of `Φ`'s second-order expansion vanish in expectation), which
+    /// predicts the Monte-Carlo mean.
+    #[serde(default)]
+    pub expected_change: f64,
     pub evaluations: usize,
     /// True when cancelled: `operands`, `ranking` and `rss_change` cover the
     /// operands whose both limits were evaluated.
@@ -529,12 +618,15 @@ pub fn sensitivity_batched<E: ToleranceEvaluator + ?Sized>(
     let done = (out.len() - 1) / 2;
     let mut ops = Vec::with_capacity(done);
     let mut rss = 0.0;
+    let mut expected = mklight_core::math::KahanSum::default();
     for (i, o) in spec.operands.iter().enumerate().take(done) {
         let (m, p) = (out[1 + 2 * i].clone(), out[2 + 2 * i].clone());
         let cm = m.criterion - nominal.criterion;
         let cp = p.criterion - nominal.criterion;
         let worst = cm.abs().max(cp.abs());
         rss += worst * worst;
+        let expected_change = o.expected_change(cm, cp);
+        expected.add(expected_change);
         ops.push(OperandSensitivity {
             index: i,
             label: o.display_label(),
@@ -543,6 +635,7 @@ pub fn sensitivity_batched<E: ToleranceEvaluator + ?Sized>(
             change_minus: cm,
             change_plus: cp,
             worst,
+            expected_change,
         });
     }
     let mut ranking: Vec<usize> = (0..done).collect();
@@ -555,9 +648,17 @@ pub fn sensitivity_batched<E: ToleranceEvaluator + ?Sized>(
         operands: ops,
         ranking,
         rss_change: rss.sqrt(),
+        expected_change: expected.value(),
         evaluations: out.len(),
         cancelled,
     })
+}
+
+impl SensitivityReport {
+    /// Predicted mean criterion: `nominal + expected_change`.
+    pub fn predicted_criterion(&self) -> f64 {
+        self.nominal.criterion + self.expected_change
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
