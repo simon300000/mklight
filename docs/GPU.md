@@ -1616,6 +1616,23 @@ belong to families that otherwise have native routes:
 | `polarization_pupil_map` | its fast and diattenuation axes are undefined where retardance or diattenuation vanishes, and f32 rounding turns them by 1–2 rad there |
 | `wavefront_map` | the host traces and resamples every wave pupil in f64 (WAVE.md §9); the map's statistics, Zernike fit and Seidel terms are reductions of those arrays, which a device could only read back at lower precision |
 
+**Afocal image spaces.** A system whose paraxial image NA is at most 10⁻⁹
+measures OPD from a plane normal to the chief ray (WAVE.md §5). The device
+OPD kernels (the `opd_fan` geometry request, the solvers' resident
+wavefront operands) and the device pupil placement (`PupilTracer`, used by
+the solvers' MTF operands) know only the reference sphere, so afocal work
+there is completed by the f64 reference on every backend, including an
+explicit device request: `opd_fan` returns the reference result with a
+warning (reported as `reference_completion`), the evaluator hands every
+chief ray of an afocal candidate to the host when the merit has wavefront
+operands, and `PupilTracer` traces afocal pupils with
+`traced::trace_lattice` and uploads the host-resampled pupil. The native
+wave analyses (Metal and WebGPU) already trace on the host and only
+transform on the device; the afocal pupil is a plane-wave (telecentric)
+geometry, so their transforms are unchanged and native
+(`crates/mklight-engine/tests/afocal.rs` checks every available backend).
+`image_simulation` rejects afocal systems on every backend.
+
 **Residual gaps on Metal.** Native results publish unchecked, so known
 differences are listed here. Under the per-quantity contracts of §9.4,
 `metal_accuracy` (every GPU-capable analysis on the 16 samples at default

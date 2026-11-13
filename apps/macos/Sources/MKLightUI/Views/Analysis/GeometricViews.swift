@@ -573,10 +573,12 @@ struct FootprintView: View {
 struct EncircledEnergyView: View {
     struct Curve { var field: Int; var label: String; var radius: [Double]; var encircled: [Double]; var limit: [Double]; var r80: Double }
     let curves: [Curve]
+    let units: ImageUnits
 
     init?(output: AnalysisOutput, context: AnalysisContext) {
         let j = output.json
         guard let list = j["fields"]?.array, !list.isEmpty else { return nil }
+        units = ImageUnits(j)
         let shared = j["radius"]?.nfArray ?? output.buffer(ref: j["radius_mm"])?.doubles ?? []
         curves = list.enumerated().compactMap { k, f in
             let enc = f["encircled"]?.nfArray ?? output.buffer(ref: f["encircled"])?.doubles ?? []
@@ -592,7 +594,7 @@ struct EncircledEnergyView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Space.s) {
             FlowLayout(spacing: Space.m) {
-                ForEach(curves, id: \.field) { c in LegendItem(color: Palette.fieldColor(c.field), label: c.label + " · r80 \(Fmt.length(c.r80))") }
+                ForEach(curves, id: \.field) { c in LegendItem(color: Palette.fieldColor(c.field), label: c.label + " · r80 \(units.length(c.r80))") }
                 if curves.contains(where: { !$0.limit.isEmpty }) { LegendItem(color: .secondary, label: "Diffraction limit", dashed: true) }
             }
             LineChart(
@@ -600,7 +602,7 @@ struct EncircledEnergyView: View {
                     Series(id: "\(c.field)", label: c.label, color: Palette.fieldColor(c.field), points: zip(c.radius.map { $0 * 1000 }, c.encircled).map { ($0, $1) })
                 } + curves.prefix(1).filter { !$0.limit.isEmpty }.map { c in
                     Series(id: "limit", label: "", color: .secondary, points: zip(c.radius.map { $0 * 1000 }, c.limit).map { ($0, $1) }, dashed: true)
-                }, xLabel: "Radius (µm)", yLabel: "Encircled energy", yDomain: 0...1.02, zeroLine: false)
+                }, xLabel: "Radius (\(units.micro))", yLabel: "Encircled energy", yDomain: 0...1.02, zeroLine: false)
         }
         .padding(Space.m)
     }
@@ -614,9 +616,11 @@ struct MTFView: View {
     let curves: [Curve]
     let limit: [Double]
     let nyquist: Double?
+    let units: ImageUnits
 
     init?(output: AnalysisOutput, context: AnalysisContext) {
         let j = output.json
+        units = ImageUnits(j)
         let freq = j["frequencies"]?.nfArray ?? output.buffer(ref: j["frequencies"])?.doubles ?? []
         // The frequency axis runs from 0 to the last frequency.
         guard let last = freq.last, last >= 0 else { return nil }
@@ -668,7 +672,7 @@ struct MTFView: View {
                             Series(id: "s\(c.field)", label: "", color: Palette.fieldColor(c.field), points: zip(frequencies, c.sagittal).map { ($0, $1) }, dashed: true),
                         ]
                     },
-                xLabel: "Spatial frequency (cycles/mm)", yLabel: "Modulation", xDomain: 0...(frequencies.last ?? 1), yDomain: 0...1.02,
+                xLabel: "Spatial frequency (\(units.frequency))", yLabel: "Modulation", xDomain: 0...(frequencies.last ?? 1), yDomain: 0...1.02,
                 zeroLine: false, markers: nyquist.map { [(x: $0, label: "Nyquist")] } ?? [])
         }
         .padding(Space.m)

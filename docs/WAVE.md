@@ -319,12 +319,54 @@ reaches 0.05 waves at 65 rays and had a 20 % low Strehl ratio
 (0.0267 against 0.0330 converged, which an independent FFT-PSF code also
 gives).
 
-**Afocal image space.** When the paraxial image-space NA is below 10⁻⁹
-(`AFOCAL_IMAGE_NA`), the reference sphere about the chief ray's image
-point turns a collimated output beam into a large spurious defocus, and
-every wave analysis reports `afocal_image_space` (CPU and device). A plane
-(afocal) reference with angular PSF/MTF units is not implemented; focus
-the beam with an ideal (paraxial) lens before the image surface.
+**Afocal image space.** When the paraxial image-space NA at the primary
+wavelength is at most 10⁻⁹ (`mklight_trace::opd::AFOCAL_IMAGE_NA`,
+`SequentialTracer::afocal_image_space`), a sphere about the chief ray's
+image point would turn the collimated output beam into a large spurious
+defocus (tens of waves on a 5× beam compressor). Every wavelength of such
+a system then uses a **plane reference** and **angular units**:
+
+* *OPD* (`mklight_trace::opd`, the OPD fan, the solvers' wavefront
+  operands, every wave analysis): OPL difference to the plane normal to the
+  chief ray (with `pupil.reference = centroid`, to the flux-weighted mean
+  direction) through the paraxial exit-pupil point (the chief ray's image
+  point when the exit pupil is at infinity), in the image-space medium.
+  `OPD = (OPL_c − OPL_r) + n[w·d_c − s_E(1 − d·d_c)]/(d·d_c)`; a converging
+  output beam has positive OPD at the edge (CONVENTIONS §4 sign).
+* *Pupil*: `(u, v)` are transverse positions in that plane over the beam
+  half-width `a` (`exit_pupil.beam_radius_mm`); maps and Zernike fits are
+  in these exit-beam coordinates, in the chief-ray frame.
+* *Image space*: the far field is the image of an ideal (aplanatic) lens of
+  focal length 1000 mm normal to the chief ray (`AFOCAL_FOCAL_LENGTH_MM`),
+  taken in the plane-wave form of a telecentric beam (`sinθ'max = a/1000`):
+  every field named `*_mm` holds **mrad** (and µm: µrad) of angle about the
+  chief ray, frequencies are **cycles/mrad** (cutoff `D/λ` cycles/rad),
+  and a focus shift is a vergence change in **millidioptres** (positive:
+  more convergent; `W = V·a²/2`). mrad keeps the numbers exact and decimal
+  (1 mrad = 3.44 arcmin; arcmin and arcsec would need conversion factors in
+  every field). The lens's Debye weight `1/γ` departs from one by
+  `(a/1 m)²/2` at the beam edge (3·10⁻⁴ for a 50 mm beam); beams wider
+  than 1 m are rejected. Huygens routes sum plane waves (the far field).
+  PSFs are centred at `reference_mm` = 1000 × the chief ray's direction
+  sine (mrad), so lateral colour is angular; `exit_pupil.field_angle_deg`
+  gives the image-space field angle.
+* Every wave result has `units` (`{afocal, position, frequency, focus}`,
+  `mm`/`cycles/mm`/`mm` when focal); `afocal_image_space` is now an
+  informational note. `image_simulation` rejects afocal systems (no image
+  positions); focus the beam with an ideal (paraxial) lens to simulate it.
+* *Devices* (docs/GPU.md §9.2): the native wave analyses already trace
+  their pupils on the host, so their transforms run natively on Metal and
+  WebGPU; the device pupil tracer (the solvers' MTF operands), the device
+  OPD fan and the solvers' device wavefront operands measure OPD from a
+  sphere only and hand afocal systems to the f64 reference.
+
+Tests: `crates/mklight-wave/tests/afocal.rs` (compressor, Keplerian 10×
+and Galilean 5× telescopes: zero RMS, Strehl 1, MTF on `D/λ`, Airy ring
+at `1.22λ/D`, field angles, Huygens = FFT, vergence = defocus, an `r⁴`
+phase plate at the exit pupil gives `(n − 1)A r⁴`),
+`crates/mklight-trace/tests/afocal_opd.rs` (plane reference on an exact
+spherical wave and its tangent) and `crates/mklight-engine/tests/afocal.rs`
+(every backend).
 
 **Anamorphic coverage.** The pupil mask is the actual traced boundary on
 the reference sphere, not an assumed circle. The sparse-ray diagnostic
@@ -397,8 +439,9 @@ cargo test --release -p mklight-wave --test tests interactive:: -- --ignored --n
   A lattice too coarse for the wavefront's curvature is reported
   (`lattice_undersampled`, §5) but not refined automatically; increase
   `pupil.rays`.
-* Afocal image spaces have no plane-wave reference or angular units; they
-  are only reported (`afocal_image_space`).
+* Afocal image spaces (§5) are recognised by the paraxial image NA at a
+  fixed threshold (10⁻⁹); a nearly afocal design (an output beam focusing
+  kilometres away) still uses the reference sphere about the image point.
 
 ## 8. Image simulation
 

@@ -2,6 +2,7 @@
 //! this directory is a module of it, so the tests of one file are
 //! `cargo test -p mklight-engine --test tests <file>::`.
 
+mod afocal;
 mod analyses;
 mod gpu;
 mod graph;

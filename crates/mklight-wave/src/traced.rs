@@ -46,6 +46,19 @@
 //! every ray (a defocused image beyond focus has positive OPD,
 //! `n'·δz·(1 − cosθ)`).
 //!
+//! # Afocal image space
+//!
+//! When the image space is afocal (`SequentialTracer::afocal_image_space`)
+//! the reference is the plane of `mklight_trace::opd` (normal to the chief
+//! ray, or to the flux-weighted mean ray direction with
+//! [`ReferencePoint::Centroid`], through the exit-pupil point) and every
+//! ray carries the OPD to that plane. Its point on the plane relative to
+//! the plane's point, divided by [`AFOCAL_FOCAL_LENGTH_MM`], takes the
+//! place of the sphere point over `R`, and the geometry is
+//! [`PupilGeometry::afocal`] (on axis, in the plane's frame): `(u, v)` are
+//! transverse beam coordinates over the beam half-width, and image-space
+//! lengths are angles (`crate::pupil`, "Afocal image spaces").
+//!
 //! # Pupil coordinates and mirrors
 //!
 //! Positions on the sphere relative to `P` are scaled to the normalised

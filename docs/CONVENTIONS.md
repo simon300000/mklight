@@ -106,7 +106,13 @@ document on purpose in the same change.
   with the image surface and passes through the chief ray's exit-pupil point.
   Reported in waves at the ray's wavelength, with the chief ray's OPD = 0 by
   construction. With this sign, a wavefront that converges *more* than the
-  reference sphere has positive OPD at the pupil edge.
+  reference sphere has positive OPD at the pupil edge. In an **afocal image
+  space** (paraxial image NA ≤ 10⁻⁹ at the primary wavelength) the
+  reference is the plane normal to the chief ray through the exit-pupil
+  point, the pupil is in transverse beam coordinates, and image-space
+  results are angular: mrad, cycles/mrad, focus as vergence in
+  millidioptres (WAVE.md §5, "Afocal image space"; each wave result
+  states its `units`).
 * **Zernike**: Fringe (University of Arizona) ordering, unit-disk normalised,
   coefficients in waves. A Noll-normalised standard ordering is also available.
 * **MTF**: normalised to 1 at zero frequency. Tangential means frequency along

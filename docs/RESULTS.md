@@ -343,8 +343,8 @@ natively on the GPU (WAVE.md §9; routing: GPU §9.2).
 * **Sampling warnings.** `pupil_undersampled` (phase steps over half a
   wave), `lattice_undersampled` (the traced `pupil.rays` lattice is too
   coarse for the wavefront's curvature, with a recommended `pupil.rays`),
-  `afocal_image_space` (collimated output; the reference sphere is not
-  meaningful), `field_wraps` (image window wider than the alias-free field), and
+  `afocal_image_space` (informational: collimated output, plane reference,
+  angular units as given by `units`), `field_wraps` (image window wider than the alias-free field), and
   `psf_truncated` (less than 95 % energy in the window) are retained in
   RunInfo as the solver's descriptive warning text. Increase pupil
   sampling or adjust the image window as described in `docs/WAVE.md`.
@@ -1107,7 +1107,7 @@ Result (`result` in the envelope):
 
 ### `opd_fan` — OPD fans
 
-Category `geometric`, result version 1, **GPU path**.
+Category `geometric`, result version 2, **GPU path**.
 
 Optical path difference (waves) against the exit-pupil reference sphere versus normalised pupil coordinate, tangential and sagittal.
 
@@ -1790,6 +1790,11 @@ Result (`result` in the envelope):
 | `fields[].r90_mm` | nf | mm | Radius enclosing 90 % of total energy. |
 | `fields[].spacing_mm` | number | mm | Actual PSF image sample spacing. |
 | `radius_mm` | string | mm | Buffer name; radii / square half-widths. |
+| `units` | object |  | Units of the image-space quantities; fields named *_mm or cycles/mm carry these units. |
+| `units.afocal` | boolean |  | Afocal image space: plane OPD reference and angular units. |
+| `units.focus` | string |  | one of `"mm"`, `"mD"`; Unit of focus shifts: image-plane mm, or vergence in millidioptres (positive: more convergent). |
+| `units.frequency` | string |  | one of `"cycles/mm"`, `"cycles/mrad"`; Unit of spatial frequencies. |
+| `units.position` | string |  | one of `"mm"`, `"mrad"`; Unit of every image coordinate, spacing and radius named *_mm (and µm: µrad); mrad is the angle about the chief ray. |
 
 Buffers:
 
@@ -1880,6 +1885,11 @@ Result (`result` in the envelope):
 | `fields[].pupil_sampling[].wavelength` | integer |  | ≥ 0; System wavelength index. |
 | `fields[].x` | string | mm^-1 | Buffer name; integral of the unit-energy PSF over y. |
 | `fields[].y` | string | mm^-1 | Buffer name; integral of the unit-energy PSF over x. |
+| `units` | object |  | Units of the image-space quantities; fields named *_mm or cycles/mm carry these units. |
+| `units.afocal` | boolean |  | Afocal image space: plane OPD reference and angular units. |
+| `units.focus` | string |  | one of `"mm"`, `"mD"`; Unit of focus shifts: image-plane mm, or vergence in millidioptres (positive: more convergent). |
+| `units.frequency` | string |  | one of `"cycles/mm"`, `"cycles/mrad"`; Unit of spatial frequencies. |
+| `units.position` | string |  | one of `"mm"`, `"mrad"`; Unit of every image coordinate, spacing and radius named *_mm (and µm: µrad); mrad is the angle about the chief ray. |
 
 Buffers:
 
@@ -1934,6 +1944,11 @@ Result (`result` in the envelope):
 | `fields[].tangential_direction` | [nf; 2] |  | Tangential unit vector in image x/y; sagittal is perpendicular. |
 | `frequencies` | string | cycles/mm | Buffer name; image-space spatial frequencies. |
 | `nyquist` | [nf; 2]? |  |  |
+| `units` | object |  | Units of the image-space quantities; fields named *_mm or cycles/mm carry these units. |
+| `units.afocal` | boolean |  | Afocal image space: plane OPD reference and angular units. |
+| `units.focus` | string |  | one of `"mm"`, `"mD"`; Unit of focus shifts: image-plane mm, or vergence in millidioptres (positive: more convergent). |
+| `units.frequency` | string |  | one of `"cycles/mm"`, `"cycles/mrad"`; Unit of spatial frequencies. |
+| `units.position` | string |  | one of `"mm"`, `"mrad"`; Unit of every image coordinate, spacing and radius named *_mm (and µm: µrad); mrad is the angle about the chief ray. |
 
 Buffers:
 
@@ -1981,6 +1996,11 @@ Result (`result` in the envelope):
 | `frequencies` | string | cycles/mm | Buffer name; image-space frequencies. |
 | `normalized_field` | string | 1 | Buffer name; normalised radial field from axis to edge. |
 | `pupil_sampling` | array<array<object>> |  | One pupil sampling list per field sample; empty for skipped fields. |
+| `units` | object |  | Units of the image-space quantities; fields named *_mm or cycles/mm carry these units. |
+| `units.afocal` | boolean |  | Afocal image space: plane OPD reference and angular units. |
+| `units.focus` | string |  | one of `"mm"`, `"mD"`; Unit of focus shifts: image-plane mm, or vergence in millidioptres (positive: more convergent). |
+| `units.frequency` | string |  | one of `"cycles/mm"`, `"cycles/mrad"`; Unit of spatial frequencies. |
+| `units.position` | string |  | one of `"mm"`, `"mrad"`; Unit of every image coordinate, spacing and radius named *_mm (and µm: µrad); mrad is the angle about the chief ray. |
 
 Buffers:
 
@@ -2039,6 +2059,11 @@ Result (`result` in the envelope):
 | `psfs[].reference_mm` | [nf; 2] |  | Common image-local reference point, mm. |
 | `psfs[].strehl` | number | 1 | Peak / aberration-free peak for the same pupil and spectral weights. |
 | `psfs[].wavelength` | integer? |  |  |
+| `units` | object |  | Units of the image-space quantities; fields named *_mm or cycles/mm carry these units. |
+| `units.afocal` | boolean |  | Afocal image space: plane OPD reference and angular units. |
+| `units.focus` | string |  | one of `"mm"`, `"mD"`; Unit of focus shifts: image-plane mm, or vergence in millidioptres (positive: more convergent). |
+| `units.frequency` | string |  | one of `"cycles/mm"`, `"cycles/mrad"`; Unit of spatial frequencies. |
+| `units.position` | string |  | one of `"mm"`, `"mrad"`; Unit of every image coordinate, spacing and radius named *_mm (and µm: µrad); mrad is the angle about the chief ray. |
 
 Buffers:
 
@@ -2084,6 +2109,11 @@ Result (`result` in the envelope):
 | `fields[].pupil_sampling[].wavelength` | integer |  | ≥ 0; System wavelength index. |
 | `focus_mm` | string | mm | Buffer name; image-plane shift, positive along propagation. |
 | `frequencies` | string | cycles/mm | Buffer name; image-space frequencies. |
+| `units` | object |  | Units of the image-space quantities; fields named *_mm or cycles/mm carry these units. |
+| `units.afocal` | boolean |  | Afocal image space: plane OPD reference and angular units. |
+| `units.focus` | string |  | one of `"mm"`, `"mD"`; Unit of focus shifts: image-plane mm, or vergence in millidioptres (positive: more convergent). |
+| `units.frequency` | string |  | one of `"cycles/mm"`, `"cycles/mrad"`; Unit of spatial frequencies. |
+| `units.position` | string |  | one of `"mm"`, `"mrad"`; Unit of every image coordinate, spacing and radius named *_mm (and µm: µrad); mrad is the angle about the chief ray. |
 
 Buffers:
 
@@ -2120,11 +2150,14 @@ Result (`result` in the envelope):
 | `maps[].amplitude` | string | 1 | Buffer name; relative field amplitude, zero outside the pupil. |
 | `maps[].coordinates` | string | 1 | Buffer name; cell centres over [-1, 1], shared by u and v. |
 | `maps[].exit_pupil` | object |  |  |
+| `maps[].exit_pupil.afocal` (optional) | boolean |  | Present and true for an afocal image space: plane reference through exit_pupil_point_mm; reference_point_mm is 1000 × the beam direction; sin_max, numerical_aperture and effective_f_number are those of an ideal 1000 mm lens. |
+| `maps[].exit_pupil.beam_radius_mm` (optional) | number | mm | Afocal only: output beam half-width scaling the pupil. |
 | `maps[].exit_pupil.chief_direction` | [number; 3] |  | Chief direction, image-local. |
 | `maps[].exit_pupil.chief_point_mm` | [nf; 3] |  | Chief image point, image-local mm. |
 | `maps[].exit_pupil.clear_area` | number | 1 | Clear area in normalised pupil coordinates. |
 | `maps[].exit_pupil.effective_f_number` | number | 1 | Working F/# including the clear-area scale. |
 | `maps[].exit_pupil.exit_pupil_point_mm` | [nf; 3]? |  |  |
+| `maps[].exit_pupil.field_angle_deg` (optional) | [number; 2] |  | Afocal only: image-space field angle of the beam [x, y]. |
 | `maps[].exit_pupil.image_index` | number | 1 | Image-space refractive index. |
 | `maps[].exit_pupil.lattice_rays` | integer |  | ≥ 0 |
 | `maps[].exit_pupil.numerical_aperture` | number | 1 | Image index × sin_max. |
@@ -2168,6 +2201,11 @@ Result (`result` in the envelope):
 | `maps[].zernike.ordering` | string |  | one of `"fringe"`, `"standard"`; Fringe by default. |
 | `maps[].zernike_condition` | number | 1 | Fit condition estimate. |
 | `maps[].zernike_residual_rms` | number | waves | Weighted fit residual RMS. |
+| `units` | object |  | Units of the image-space quantities; fields named *_mm or cycles/mm carry these units. |
+| `units.afocal` | boolean |  | Afocal image space: plane OPD reference and angular units. |
+| `units.focus` | string |  | one of `"mm"`, `"mD"`; Unit of focus shifts: image-plane mm, or vergence in millidioptres (positive: more convergent). |
+| `units.frequency` | string |  | one of `"cycles/mm"`, `"cycles/mrad"`; Unit of spatial frequencies. |
+| `units.position` | string |  | one of `"mm"`, `"mrad"`; Unit of every image coordinate, spacing and radius named *_mm (and µm: µrad); mrad is the angle about the chief ray. |
 
 Buffers:
 
@@ -2181,7 +2219,7 @@ Buffers:
 
 ### `glass_substitution` — Glass substitution
 
-Category `optimization`, result version 2, **GPU path**.
+Category `optimization`, result version 3, **GPU path**.
 
 Replaces the glasses of chosen lenses with real catalogue glasses: searches the combinations (tabu search, or basin hopping over glasses and shape together), re-optimises the continuous variables by LM for every combination, and returns the best combinations ranked, each with its complete optimised system. With no material variables, every model glass is snapped to its nearest real glasses.
 

@@ -97,7 +97,7 @@ impl OpdReference {
         let n = self.n_image;
         if self.afocal {
             let (dd, s_e) = (d.dot(self.chief_dir), self.plane_offset());
-            if !(dd > 0.0) {
+            if dd.is_nan() || dd <= 0.0 {
                 return None;
             }
             let one_minus = 0.5 * (d - self.chief_dir).norm2();
@@ -158,7 +158,7 @@ impl OpdReference {
         if self.afocal {
             let dc = self.chief_dir;
             let dd = d.dot(dc);
-            if !(dd > 0.0) {
+            if dd.is_nan() || dd <= 0.0 {
                 return None;
             }
             let s = (self.plane_offset() - w.dot(dc)) / dd;
@@ -199,7 +199,8 @@ impl SequentialTracer {
     /// number). The OPD reference of every wavelength is then a plane
     /// (module docs).
     pub fn afocal_image_space(&self) -> bool {
-        !(self.paraxial().primary().image_na > AFOCAL_IMAGE_NA)
+        let na = self.paraxial().primary().image_na;
+        na.is_nan() || na <= AFOCAL_IMAGE_NA
     }
 
     /// Build the reference sphere of a field at wavelength `wl` from its

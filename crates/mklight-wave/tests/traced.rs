@@ -1912,7 +1912,8 @@ fn coarse_lattice_on_a_fast_asphere_is_reported() {
 /// A confocal paraboloid beam compressor (f 500 / f −100, EPD 50) is
 /// afocal and aberration-free on axis. The reference sphere about the
 /// chief ray's image point used to report about 23 waves RMS and a Strehl
-/// of 1e-5 with no warning; the afocal image space is now reported. A
+/// of 1e-5 with no warning; the afocal image space is now reported (and
+/// measured from a plane reference, `afocal.rs`). A
 /// focusing paraboloid is not.
 #[test]
 fn afocal_image_space_is_reported() {
