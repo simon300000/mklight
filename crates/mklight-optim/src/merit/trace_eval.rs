@@ -815,8 +815,20 @@ fn pmap<T: Sync, R: Send>(
 type SpotRays = (Vec<f64>, Vec<f64>, Vec<f64>, PupilSymmetry);
 
 /// Memo key of a group reference: (field, operand λ, sampling,
-/// polychromatic scope, wavefront (piston/tilt) rather than spot centroid).
-type RefKey = (FieldKey, usize, SamplingKey, bool, bool);
+/// polychromatic scope, kind of reference).
+type RefKey = (FieldKey, usize, SamplingKey, bool, RefKind);
+
+/// What a group reference removes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum RefKind {
+    /// Spot centroid `[x, y, 0]`.
+    Centroid,
+    /// OPD piston and tilt `[a, bx, by]` (centroid-referenced wavefront).
+    PistonTilt,
+    /// OPD piston only `[a, 0, 0]`: the weighted mean OPD
+    /// (chief-referenced wavefront).
+    Piston,
+}
 
 pub(super) struct Candidate<'a> {
     /// Device piston/tilt fits and spot moments of ray groups, in place of
@@ -1597,12 +1609,12 @@ impl<'a> Candidate<'a> {
         let w = self.single_wavelength(op.wavelength).ok()?;
         let rays = self.group(f, w, &g.sampling).ok()?;
         let reference = match (wavefront, chief_ref) {
-            (true, true) => Ok([0.0; 3]),
-            (true, false) => self.group_reference(f, w, g, true),
+            (true, true) => self.group_reference(f, w, g, RefKind::Piston),
+            (true, false) => self.group_reference(f, w, g, RefKind::PistonTilt),
             (false, true) => self
                 .chief(f, self.primary())
                 .map(|c| [c.ray.pos.x, c.ray.pos.y, 0.0]),
-            (false, false) => self.group_reference(f, w, g, false),
+            (false, false) => self.group_reference(f, w, g, RefKind::Centroid),
         };
         let sphere = if wavefront {
             self.reference(f, w).map(|_| ())
@@ -1713,24 +1725,25 @@ impl<'a> Candidate<'a> {
         f: FieldKey,
         w: usize,
         g: &RayGroup,
-        wavefront: bool,
+        kind: RefKind,
     ) -> Result<[f64; 3], OperandError> {
         let key = (
             f,
             w,
             SamplingKey::of(&g.sampling),
             g.scope == CentroidScope::Polychromatic,
-            wavefront,
+            kind,
         );
         if let Some(r) = self.refs.lock().ok().and_then(|m| m.get(&key).cloned()) {
             return r;
         }
         let wls = self.group_wavelengths(g, w);
-        let r = if wavefront {
-            self.piston_tilt(f, &wls, &g.sampling)
-        } else {
-            self.centroid(f, &wls, &g.sampling)
-                .map(|c| [c[0], c[1], 0.0])
+        let r = match kind {
+            RefKind::PistonTilt => self.piston_tilt(f, &wls, &g.sampling),
+            RefKind::Piston => self.piston(f, &wls, &g.sampling).map(|a| [a, 0.0, 0.0]),
+            RefKind::Centroid => self
+                .centroid(f, &wls, &g.sampling)
+                .map(|c| [c[0], c[1], 0.0]),
         };
         if let Ok(mut m) = self.refs.lock() {
             m.insert(key, r.clone());
@@ -1806,6 +1819,44 @@ impl<'a> Candidate<'a> {
         }
         piston_tilt(&px, &py, &wt, &opd, symmetry)
             .ok_or_else(|| OperandError::RayFailure("too few rays for piston and tilt".into()))
+    }
+
+    /// Piston of a group's OPD over `wls`: the `w_node · w_λ`-weighted mean
+    /// (the device's one-column fit when resident), as `wavefront_ms`
+    /// removes for a chief reference.
+    fn piston(
+        &self,
+        f: FieldKey,
+        wls: &[(usize, f64)],
+        s: &PupilSampling,
+    ) -> Result<f64, OperandError> {
+        if wls.len() == 1
+            && let Some(fits) = self
+                .resident_wavefits
+                .get(&(f, wls[0].0, SamplingKey::of(s)))
+        {
+            let a = fits[0][0];
+            return if a.is_finite() {
+                Ok(a)
+            } else {
+                Err(OperandError::RayFailure("no fitted OPD in pupil".into()))
+            };
+        }
+        let mut sw = 0.0;
+        let mut so = mklight_core::math::KahanSum::default();
+        for &(w, ww) in wls {
+            let g = self.group(f, w, s)?;
+            for (n, r) in g.nodes.iter().zip(&g.rays) {
+                if let Some(o) = r.opd {
+                    sw += n.weight * ww;
+                    so.add(n.weight * ww * o);
+                }
+            }
+        }
+        if !(sw > 0.0) {
+            return Err(OperandError::RayFailure("no OPD in the pupil".into()));
+        }
+        Ok(so.value() / sw)
     }
 
     /// Unit vector along the field direction on the image (`+y` on axis).
@@ -1968,7 +2019,7 @@ impl<'a> Candidate<'a> {
                         let g = group.as_ref().ok_or_else(|| {
                             OperandError::Invalid("centroid reference needs a ray group".into())
                         })?;
-                        let c = self.group_reference(f, w, g, false)?;
+                        let c = self.group_reference(f, w, g, RefKind::Centroid)?;
                         [c[0], c[1]]
                     }
                 };
@@ -1993,13 +2044,21 @@ impl<'a> Candidate<'a> {
             } => {
                 let f = self.single_field(op.field)?;
                 let w = self.single_wavelength(op.wavelength)?;
-                let fit = match reference {
-                    WavefrontReference::Chief => [0.0; 3],
-                    WavefrontReference::Centroid => {
-                        let g = group.as_ref().ok_or_else(|| {
-                            OperandError::Invalid("centroid reference needs a ray group".into())
-                        })?;
-                        self.group_reference(f, w, g, true)?
+                // Chief: the group's piston (weighted mean OPD) removed, so
+                // Σ w·r² of a group is its squared RMS about the chief
+                // sphere (`WavefrontRms`); without a group, the raw OPD.
+                let fit = match (reference, group) {
+                    (WavefrontReference::Chief, None) => [0.0; 3],
+                    (WavefrontReference::Chief, Some(g)) => {
+                        self.group_reference(f, w, g, RefKind::Piston)?
+                    }
+                    (WavefrontReference::Centroid, None) => {
+                        return Err(OperandError::Invalid(
+                            "centroid reference needs a ray group".into(),
+                        ));
+                    }
+                    (WavefrontReference::Centroid, Some(g)) => {
+                        self.group_reference(f, w, g, RefKind::PistonTilt)?
                     }
                 };
                 let e = |px: f64| -> OperandValue {
@@ -2193,21 +2252,8 @@ impl<'a> Candidate<'a> {
         let g = self.group(f, w, s)?;
         let fit = match reference {
             WavefrontReference::Centroid => self.piston_tilt(f, &[(w, 1.0)], s)?,
-            WavefrontReference::Chief => {
-                // Piston only: the weighted mean OPD.
-                let mut sw = 0.0;
-                let mut so = mklight_core::math::KahanSum::default();
-                for (n, r) in g.nodes.iter().zip(&g.rays) {
-                    if let Some(o) = r.opd {
-                        sw += n.weight;
-                        so.add(n.weight * o);
-                    }
-                }
-                if !(sw > 0.0) {
-                    return Err(OperandError::RayFailure("no OPD in the pupil".into()));
-                }
-                [so.value() / sw, 0.0, 0.0]
-            }
+            // Piston only: the weighted mean OPD.
+            WavefrontReference::Chief => [self.piston(f, &[(w, 1.0)], s)?, 0.0, 0.0],
         };
         let mut sw = 0.0;
         let mut s2 = mklight_core::math::KahanSum::default();
