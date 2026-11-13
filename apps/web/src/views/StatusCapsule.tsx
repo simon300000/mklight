@@ -177,7 +177,12 @@ export function EngineInfoTable() {
       <span className="text-secondary">WebGPU</span>
       <span>{yes(info.webgpu)}</span>
       <span className="text-secondary">Backends</span>
-      <span>{info.backends.join(', ') || '–'}</span>
+      <span>
+        {info.backends
+          .filter((b) => typeof b === 'string' || b.available !== false)
+          .map((b) => (typeof b === 'string' ? b : (b.title ?? b.id)))
+          .join(', ') || '–'}
+      </span>
     </div>
   )
 }

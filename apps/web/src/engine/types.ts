@@ -16,8 +16,8 @@ export type OpticalSystem = JsonObject
 export interface EngineInfo {
   name: string
   version: string
-  /** Backend ids the engine can run (`cpu_reference`, `gpu:webgpu`, …). */
-  backends: string[]
+  /** Backends the engine lists: ids, or `mk_engine_list_backends` entries ({id, title, available, …}). */
+  backends: (string | { id: string; title?: string; available?: boolean })[]
   /** Worker threads of the engine's pool. */
   threads: number
   /** `crossOriginIsolated` in the page (needed for threads). */

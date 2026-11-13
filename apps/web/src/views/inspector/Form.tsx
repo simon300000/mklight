@@ -20,7 +20,7 @@ export function Section({ title, children, footer, accessory }: { title?: string
 
 export function FormRow({ label, help, unit, children, className }: { label: React.ReactNode; help?: string; unit?: string; children: React.ReactNode; className?: string }) {
   return (
-    <div className={cn('grid grid-cols-[minmax(0,1fr)_minmax(0,1.3fr)_2rem] items-center gap-x-2 py-[3px]', className)} title={help}>
+    <div className={cn('grid grid-cols-[minmax(0,0.8fr)_minmax(0,1.6fr)_2rem] items-center gap-x-2 py-[3px]', className)} title={help}>
       <span className="truncate text-secondary">{label}</span>
       <span className="flex min-w-0 justify-end">{children}</span>
       <span className="truncate text-[11px] text-secondary">{unit}</span>

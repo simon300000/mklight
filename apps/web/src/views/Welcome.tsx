@@ -1,67 +1,96 @@
 import { FolderOpen, Plus } from 'lucide-react'
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog'
 import { isSurfaceTypeSample, SAMPLES, type Sample } from '@/model/project'
-import { curvatureOf, materialText } from '@/model/system'
-import { nf } from '@/model/format'
 import { newDocument, openFromPicker, openSample } from '@/state/files'
 import { useView } from '@/state/view'
-import { cssVar, useDark } from '@/lib/theme'
+import { useWorkspace } from '@/state/workspace'
+import { cssVar, seriesColor, useDark } from '@/lib/theme'
+import { readScene, type Scene } from './LayoutView'
 
-/** A small sketch of the sample's elements from its prescription (no optics:
- *  vertices from thicknesses, spherical profiles from curvatures, display only). */
+const thumbCache = new Map<string, Promise<Scene | null>>()
+
+/** The sample's layout, computed by the engine on a snapshot of its own (`SampleThumbnails`). */
+function sampleScene(sample: Sample): Promise<Scene | null> {
+  let p = thumbCache.get(sample.id)
+  if (!p) {
+    const engine = useWorkspace.getState().engine
+    if (!engine) return Promise.resolve(null)
+    p = engine
+      .openSnapshot(sample.system)
+      .then((snap) => engine.submit({ analysis: 'layout', settings: { rays_per_field: 3, include_3d: false } }, snap).result)
+      .then(readScene)
+      .catch(() => null)
+    thumbCache.set(sample.id, p)
+  }
+  return p
+}
+
 function Thumbnail({ sample }: { sample: Sample }) {
   const ref = useRef<HTMLCanvasElement>(null)
   const dark = useDark()
+  const engine = useWorkspace((s) => s.engine)
+  const [scene, setScene] = useState<Scene | null>(null)
+  useEffect(() => {
+    let live = true
+    if (engine) void sampleScene(sample).then((sc) => live && setScene(sc))
+    return () => {
+      live = false
+    }
+  }, [sample, engine])
   useEffect(() => {
     const c = ref.current
     const g = c?.getContext('2d')
-    if (!c || !g) return
+    if (!c || !g || !scene) return
     const w = 200, h = 96, dpr = devicePixelRatio || 1
     c.width = w * dpr
     c.height = h * dpr
     g.setTransform(dpr, 0, 0, dpr, 0, 0)
-    const s = sample.system.surfaces
-    const zs: number[] = []
-    let z = 0
-    for (let i = 1; i < s.length; i++) {
-      zs[i] = z
-      const t = nf(s[i].thickness)
-      z += Number.isFinite(t) ? Math.abs(t) : 0
-    }
-    // Frame the lens: the elements, not the long back focus.
-    const glass = s.map((x, i) => (i > 0 && i < s.length - 1 && (materialText(x) !== '' || materialText(s[i - 1]) !== '') ? i : -1)).filter((i) => i > 0)
-    const idx = glass.length ? glass : s.map((_, i) => i).slice(1, -1)
-    const z0 = Math.min(...idx.map((i) => zs[i])), z1 = Math.max(...idx.map((i) => zs[i]))
-    const span = Math.max(z1 - z0, 1)
-    const ap = nf((sample.system.aperture as { value?: number }).value) || 10
-    const semi = Math.max(ap / 2, span * 0.25, 1)
-    const scale = Math.min((w - 40) / span, (h - 16) / (2 * semi * 1.15))
-    const X = (zz: number) => w / 2 + (zz - (z0 + z1) / 2) * scale
-    const Y = (y: number) => h / 2 - y * scale
     g.clearRect(0, 0, w, h)
-    g.strokeStyle = cssVar('--label')
-    g.lineWidth = 1
-    for (const i of idx) {
-      const c0 = curvatureOf(s[i].shape) ?? 0
-      g.beginPath()
-      for (let k = 0; k <= 24; k++) {
-        const y = -semi + (2 * semi * k) / 24
-        const q = 1 - c0 * c0 * y * y
-        const sg = q > 0 ? (c0 * y * y) / (1 + Math.sqrt(q)) : 0
-        if (k) g.lineTo(X(zs[i] + sg), Y(y))
-        else g.moveTo(X(zs[i] + sg), Y(y))
+    const { xyz, offsets, kinds, flags, fields } = scene
+    // Slim, long designs are framed on their lens.
+    let z0 = Infinity, z1 = -Infinity, hm = 0
+    for (let p = 0; p < kinds.length; p++) {
+      if (!(flags[p] & 1) || (kinds[p] !== 0 && kinds[p] !== 7)) continue
+      for (let i = offsets[p]; i < offsets[p + 1]; i++) {
+        z0 = Math.min(z0, xyz[3 * i + 2]); z1 = Math.max(z1, xyz[3 * i + 2]); hm = Math.max(hm, Math.abs(xyz[3 * i + 1]))
       }
-      g.stroke()
     }
-    g.strokeStyle = cssVar('--secondary')
-    g.setLineDash([3, 3])
+    if (!Number.isFinite(z0)) return
+    const scale = Math.min((w - 24) / Math.max(z1 - z0, 1e-6), (h - 12) / Math.max(2 * hm, 1e-6))
+    const X = (z: number) => w / 2 + (z - (z0 + z1) / 2) * scale
+    const Y = (y: number) => h / 2 - y * scale
+    const path = (p: number) => {
+      g.beginPath()
+      for (let i = offsets[p]; i < offsets[p + 1]; i++) {
+        const x = X(xyz[3 * i + 2]), y = Y(xyz[3 * i + 1])
+        if (i === offsets[p]) g.moveTo(x, y)
+        else g.lineTo(x, y)
+      }
+    }
+    g.save()
     g.beginPath()
-    g.moveTo(4, h / 2)
-    g.lineTo(w - 4, h / 2)
-    g.stroke()
-  }, [sample, dark])
+    g.rect(0, 0, w, h)
+    g.clip()
+    for (const k of [7, 5, 0, 4]) {
+      for (let p = 0; p < kinds.length; p++) {
+        if (kinds[p] !== k || !(flags[p] & 1)) continue
+        path(p)
+        if (k === 7) {
+          g.fillStyle = dark ? 'rgba(120,170,255,0.16)' : 'rgba(80,140,230,0.13)'
+          g.fill()
+        } else {
+          g.strokeStyle = k === 5 ? seriesColor(Math.max(fields[p], 0), dark) : cssVar('--label')
+          g.globalAlpha = k === 5 ? 0.55 : 1
+          g.lineWidth = k === 5 ? 0.6 : 0.9
+          g.stroke()
+          g.globalAlpha = 1
+        }
+      }
+    }
+    g.restore()
+  }, [scene, dark])
   return <canvas ref={ref} style={{ width: 200, height: 96 }} aria-hidden />
 }
 

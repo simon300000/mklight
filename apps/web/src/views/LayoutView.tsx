@@ -10,7 +10,7 @@ import { isStale, LAYOUT, useWorkspace } from '@/state/workspace'
 import { cssVar, seriesColor, useDark } from '@/lib/theme'
 
 /** Polylines of the engine's `layout` scene (docs/RESULTS.md "layout"). */
-interface Scene {
+export interface Scene {
   xyz: Float64Array
   offsets: Uint32Array
   kinds: Uint8Array
