@@ -63,13 +63,13 @@ fn module(overlays: bool) -> &'static str {
     if overlays { "trace_overlays" } else { "trace" }
 }
 
-fn has_overlays(set: &PackedSystemSet) -> bool {
+pub(super) fn has_overlays(set: &PackedSystemSet) -> bool {
     set.surfaces
         .iter()
         .any(|s| s.flags & MKL_SURF_HAS_SAG_OVERLAY != 0)
 }
 
-fn shape() -> PassShape {
+pub(super) fn shape() -> PassShape {
     use Access::*;
     PassShape {
         uniform: true,
@@ -101,7 +101,7 @@ fn launch_rays(gpu: &dyn Gpu, words: usize) -> usize {
 }
 
 /// The parameter block (`MklWgslTraceParams`).
-fn uniform(p: &TraceParams, systems: u32) -> Vec<u32> {
+pub(super) fn uniform(p: &TraceParams, systems: u32) -> Vec<u32> {
     let mut w = bytemuck::cast_slice::<TraceParams, u32>(std::slice::from_ref(p)).to_vec();
     w.extend([systems, 0, 0, 0]);
     uniform_words(&w)

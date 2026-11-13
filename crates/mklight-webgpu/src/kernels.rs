@@ -29,6 +29,23 @@ pub const MODULES: &[(&str, &str)] = &[
         ),
     ),
     ("transforms", include_str!("../kernels/transforms.wgsl")),
+    // aiming.wgsl (build.rs): the trace followed by kernels/aiming.wgsl.
+    (
+        "aiming",
+        concat!(
+            "const MKL_OVERLAYS: bool = false;\n",
+            include_str!(concat!(env!("OUT_DIR"), "/aiming.wgsl"))
+        ),
+    ),
+    (
+        "aiming_overlays",
+        concat!(
+            "const MKL_OVERLAYS: bool = true;\n",
+            include_str!(concat!(env!("OUT_DIR"), "/aiming.wgsl"))
+        ),
+    ),
+    ("geometry", include_str!("../kernels/geometry.wgsl")),
+    ("collectives", include_str!("../kernels/collectives.wgsl")),
 ];
 
 /// The complete WGSL source of `module`.

@@ -383,14 +383,15 @@ fn replace_word(s: &str, word: &str, by: &str) -> String {
 }
 
 /// `trace.wgsl` from `kernels/trace/`: `head.wgsl` (types, helpers and the
-/// scalar primitives) with the correctly rounded division and square root of
-/// `rn.wgsl` inserted before its primitives; the surface math of
-/// `generic.wgsl` written once over a real type `R_` (jet `J_`, sag `S_`,
-/// coordinates `U_`, function suffix `@`) and expanded for f32 (`_f`) and
-/// double-float (`_d`); then the trace itself (`tail.wgsl`). Every division
-/// and square root outside `rn.wgsl` becomes its round-to-nearest variant,
-/// so the kernel is bitwise the CPU-f32 emulation on hardware whose `/` and
-/// `sqrt` are approximations (GPU.md §11).
+/// scalar primitives); the surface math of `generic.wgsl` written once over a
+/// real type `R_` (jet `J_`, sag `S_`, coordinates `U_`, function suffix `@`)
+/// and expanded for f32 (`_f`) and double-float (`_d`); then the trace
+/// itself (`tail.wgsl`). Every division and square root becomes its
+/// round-to-nearest variant (`common.wgsl`'s `mkl_div_rn` …), so the kernel
+/// is bitwise the CPU-f32 emulation on hardware whose `/` and `sqrt` are
+/// approximations (GPU.md §11). `aiming.wgsl` is the trace followed by
+/// `kernels/aiming.wgsl` (the aim solver calls the trace core), rounded
+/// alike.
 fn trace_kernel() {
     let dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap()).join("kernels/trace");
     println!("cargo:rerun-if-changed={}", dir.display());
@@ -412,17 +413,7 @@ fn trace_kernel() {
         }
         s
     };
-    let head = read("head.wgsl");
-    let cut = head
-        .find("// ---------------------------------------------------------------------------\n// Scalar primitives")
-        .expect("head.wgsl: scalar primitives marker");
-    let rn = read("rn.wgsl");
-    let mut out = format!(
-        "{}{}\n{}",
-        &head[..cut],
-        rn.trim_start_matches('\n'),
-        rounded(&head[cut..])
-    );
+    let mut out = rounded(&read("head.wgsl"));
     let generic = rounded(&read("generic.wgsl"));
     for (suffix, r, j, s, u, title) in [
         (
@@ -453,11 +444,12 @@ fn trace_kernel() {
         out.push_str(&g);
     }
     out.push_str(&rounded(&read("tail.wgsl")));
-    fs::write(
-        PathBuf::from(env::var("OUT_DIR").unwrap()).join("trace.wgsl"),
-        out,
-    )
-    .unwrap();
+    let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
+    let aiming = dir.join("../aiming.wgsl");
+    println!("cargo:rerun-if-changed={}", aiming.display());
+    let aiming = format!("{out}\n{}", rounded(&fs::read_to_string(aiming).unwrap()));
+    fs::write(out_dir.join("trace.wgsl"), out).unwrap();
+    fs::write(out_dir.join("aiming.wgsl"), aiming).unwrap();
 }
 
 fn mklight_gpu_include() -> String {

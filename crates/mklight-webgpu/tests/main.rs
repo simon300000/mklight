@@ -28,6 +28,9 @@ macro_rules! gpu_or_skip {
     };
 }
 
+mod aiming;
+mod collectives;
+mod geometry;
 mod numerics;
 mod proxy;
 mod trace;

@@ -28,7 +28,7 @@ use mklight_webgpu::ops::trace::set_chunk_rays;
 use rayon::prelude::*;
 
 #[path = "../../mklight-gpu/tests/p1_support.rs"]
-mod p1_support;
+pub(crate) mod p1_support;
 
 fn trace(b: &dyn QualificationBackend, req: TraceRequest) -> TraceResult {
     match b

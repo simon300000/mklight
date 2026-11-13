@@ -31,6 +31,7 @@ wasm-bindgen-futures = "0.4"
 
 [dev-dependencies]
 mklight-trace.workspace = true
+mklight-analysis.workspace = true
 rustfft.workspace = true
 
 # The benchmarks print Metal's numbers next to WebGPU's.
