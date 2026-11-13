@@ -1,6 +1,7 @@
 // Starts the engine and wires the document to the workspace: every design
 // value goes to the engine as a snapshot, and every change is autosaved.
 
+import { installUrlState } from './url'
 import { catalogsChanged } from './catalogs'
 import { loadEngine } from '@/engine'
 import { curvatureOf } from '@/model/system'
@@ -72,11 +73,20 @@ export async function startSession() {
     useWorkspace.getState().setEngineError((e as Error).message)
   }
 
-  if (sample) openSample(sample)
+  if (sample) {
+    openSample(sample)
+    // A link opens the sample once; reload then restores the (autosaved) edits.
+    const q = new URLSearchParams(location.search)
+    q.delete('sample')
+    q.delete('fresh')
+    history.replaceState(null, '', location.pathname + (q.toString() ? `?${q}` : '') + location.hash)
+  }
   else if (fresh || !(await restoreAutosave())) {
     newDocument()
     if (!fresh) useView.getState().set({ welcomeOpen: true })
   }
   const sys = useDocument.getState().project.system
   if (sys?.surfaces) useWorkspace.getState().designChanged(sys)
+  // The inspector page, the selected surface and an open dialog follow the URL.
+  installUrlState()
 }

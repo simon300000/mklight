@@ -8,7 +8,23 @@ export function cn(...inputs: ClassValue[]) {
 export const isMac = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent)
 
 /** A shortcut as shown in menus: ⌘ on Mac, Ctrl elsewhere. `mod` is ⌘/Ctrl. */
-export function shortcutLabel(s: string): string {
+/** A shortcut in this platform's terms. Off the Mac, ⌃ is not a separate
+ *  modifier from ⌘ (both are Ctrl), so the Mac's ⌃⌘ shortcuts become
+ *  Ctrl+Alt+Shift there. Canonical order: ctrl, alt, shift, mod, key. */
+export function platformShortcut(s: string): string {
+  const parts = s.split('+')
+  const key = parts.pop()!
+  const mods = new Set(parts)
+  if (!isMac && mods.has('ctrl')) {
+    mods.delete('ctrl')
+    mods.add('alt')
+    mods.add('shift')
+  }
+  return [...['ctrl', 'alt', 'shift', 'mod'].filter((m) => mods.has(m)), key].join('+')
+}
+
+export function shortcutLabel(shortcut: string): string {
+  const s = platformShortcut(shortcut)
   const parts = s.split('+')
   const key = parts.pop()!
   const names: Record<string, string> = { Backspace: '⌫', Enter: '↩', Escape: 'Esc', ArrowUp: '↑', ArrowDown: '↓', Period: '.' }

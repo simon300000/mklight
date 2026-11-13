@@ -12,8 +12,8 @@ import { SurfacePage } from './SurfacePage'
 import { SystemPage } from './SystemPage'
 
 const PAGES: { id: InspectorPage; title: string; icon: React.ReactNode; shortcut: string; job?: JobKind }[] = [
-  { id: 'surface', title: 'Surface', icon: <Circle />, shortcut: 'mod+1' },
-  { id: 'system', title: 'System', icon: <SlidersHorizontal />, shortcut: 'alt+mod+1' },
+  { id: 'surface', title: 'Surface', icon: <Circle />, shortcut: 'alt+mod+1' },
+  { id: 'system', title: 'System', icon: <SlidersHorizontal />, shortcut: 'alt+mod+2' },
   ...(['optimize', 'glass', 'tolerance', 'solves'] as JobKind[]).map((k) => ({
     id: k as InspectorPage,
     title: JOB_TITLES[k],

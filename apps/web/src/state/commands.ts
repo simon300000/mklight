@@ -3,13 +3,14 @@
 // elsewhere (`mod`). Every toolbar item is also a menu command.
 
 import { rememberCatalog } from './catalogs'
+import { usePalette } from './palette'
 import { LAYOUT_PANEL, LENS_DATA } from './arrangement'
 import { resetPanelLayout, togglePanel } from '@/views/panels/actions'
 import { create } from 'zustand'
 import { canDelete, deleteSurface, imageIndex, insertSurface, type System } from '@/model/system'
 import { isVariable, paramResolves, paramTitle, setVariable, variableRefusal, type ParamPath } from '@/model/params'
 import { addCatalogReference, catalogReference, catalogReferences } from '@/model/materials'
-import { isMac } from '@/lib/utils'
+import { isMac, platformShortcut } from '@/lib/utils'
 import { useDocument } from './document'
 import { newDocument, openFromPicker, save, saveAs } from './files'
 import { useView } from './view'
@@ -195,18 +196,19 @@ export const useCatalogs = create<CatalogsState>()((set) => ({
 // MARK: Commands
 
 export const COMMANDS: Command[] = [
+  { id: 'palette', title: 'Command Palette…', shortcut: 'mod+k', run: () => usePalette.getState().set(!usePalette.getState().open) },
   { id: 'new', title: 'New Design', shortcut: 'alt+mod+n', run: newDocument },
-  { id: 'samples', title: 'Samples…', shortcut: 'shift+mod+n', run: () => view().set({ welcomeOpen: true }) },
-  { id: 'welcome', title: 'Show Welcome Window', shortcut: 'shift+mod+1', run: () => view().set({ welcomeOpen: true }) },
+  { id: 'samples', title: 'Samples…', shortcut: 'alt+mod+o', run: () => view().set({ welcomeOpen: true }) },
+  { id: 'welcome', title: 'Show Welcome Window', run: () => view().set({ welcomeOpen: true }) },
   { id: 'open', title: 'Open…', shortcut: 'mod+o', run: () => void openFromPicker() },
   { id: 'save', title: 'Save', shortcut: 'mod+s', run: () => void save() },
   { id: 'saveAs', title: 'Save As…', shortcut: 'shift+mod+s', run: () => void saveAs() },
   { id: 'undo', title: 'Undo', shortcut: 'mod+z', run: () => doc().undo(), enabled: () => doc().past.length > 0 },
   { id: 'redo', title: 'Redo', shortcut: 'shift+mod+z', run: () => doc().redo(), enabled: () => doc().future.length > 0 },
   { id: 'insertBefore', title: 'Insert Surface Before', shortcut: 'shift+mod+i', run: () => insertSurfaceAt(Math.max(view().selection, 1)) },
-  { id: 'insertAfter', title: 'Insert Surface After', shortcut: 'alt+mod+i', run: () => insertSurfaceAt(view().selection + 1) },
+  { id: 'insertAfter', title: 'Insert Surface After', shortcut: 'alt+shift+mod+i', run: () => insertSurfaceAt(view().selection + 1) },
   { id: 'delete', title: 'Delete Surface', shortcut: 'mod+Backspace', run: deleteSelectedSurface, enabled: () => canDelete(doc().project.system, view().selection) },
-  { id: 'stop', title: 'Make Aperture Stop', shortcut: 'shift+mod+t', run: () => makeStop(), enabled: hasSurfaceSelection },
+  { id: 'stop', title: 'Make Aperture Stop', shortcut: 'alt+shift+mod+t', run: () => makeStop(), enabled: hasSurfaceSelection },
   {
     id: 'toggleVariable',
     title: 'Toggle Variable',
@@ -218,7 +220,7 @@ export const COMMANDS: Command[] = [
     },
   },
   { id: 'loadCatalog', title: 'Load Glass Catalog…', run: () => void loadGlassCatalog(), enabled: () => !!ws().engine },
-  { id: 'runAll', title: 'Run Analyses', shortcut: 'mod+r', run: () => ws().runAll({ fresh: true }) },
+  { id: 'runAll', title: 'Run Analyses', shortcut: 'mod+Enter', run: () => ws().runAll({ fresh: true }) },
   { id: 'cancel', title: 'Cancel Running Analyses', shortcut: 'mod+Period', run: () => ws().cancelAll() },
   { id: 'issues', title: 'Show Issues', shortcut: 'ctrl+mod+e', run: () => view().set({ issuesOpen: !view().issuesOpen }) },
   { id: 'lensData', title: 'Lens Data', shortcut: 'alt+mod+e', run: () => togglePanel(LENS_DATA) },
@@ -226,8 +228,8 @@ export const COMMANDS: Command[] = [
   { id: 'resetPanels', title: 'Reset Panel Layout', run: () => resetPanelLayout() },
   { id: 'inspector', title: 'Show Inspector', shortcut: 'ctrl+mod+i', run: () => view().set({ inspectorVisible: !view().inspectorVisible }) },
   { id: 'sidebar', title: 'Show Sidebar', shortcut: 'ctrl+mod+s', run: () => view().set({ sidebarVisible: !view().sidebarVisible }) },
-  { id: 'surfacePage', title: 'Surface', shortcut: 'mod+1', run: () => view().setPage('surface') },
-  { id: 'systemPage', title: 'System', shortcut: 'alt+mod+1', run: () => view().setPage('system') },
+  { id: 'surfacePage', title: 'Surface', shortcut: 'alt+mod+1', run: () => view().setPage('surface') },
+  { id: 'systemPage', title: 'System', shortcut: 'alt+mod+2', run: () => view().setPage('system') },
   { id: 'optimize', title: 'Optimize…', shortcut: 'ctrl+mod+o', run: () => view().setPage('optimize') },
   { id: 'glass', title: 'Glass Substitution…', shortcut: 'ctrl+mod+g', run: () => view().setPage('glass') },
   { id: 'tolerance', title: 'Tolerance…', shortcut: 'ctrl+mod+t', run: () => view().setPage('tolerance') },
@@ -236,7 +238,8 @@ export const COMMANDS: Command[] = [
 
 export const command = (id: string) => COMMANDS.find((c) => c.id === id)!
 
-const KEY_NAMES: Record<string, string> = { '.': 'Period', Backspace: 'Backspace', Delete: 'Backspace' }
+const KEY_NAMES: Record<string, string> = {
+  Enter: 'Enter', '.': 'Period', Backspace: 'Backspace', Delete: 'Backspace' }
 
 /** The shortcut string of a key event, in the commands' notation. */
 export function eventShortcut(e: KeyboardEvent): string | null {
@@ -266,7 +269,7 @@ function inTextField(e: KeyboardEvent): boolean {
 export function handleShortcut(e: KeyboardEvent): boolean {
   const sc = eventShortcut(e)
   if (!sc) return false
-  const cmd = COMMANDS.find((c) => c.shortcut === sc)
+  const cmd = COMMANDS.find((c) => c.shortcut && platformShortcut(c.shortcut) === sc)
   if (!cmd) return false
   // Text fields keep their own undo, redo and delete.
   if (inTextField(e) && ['undo', 'redo', 'delete'].includes(cmd.id)) return false

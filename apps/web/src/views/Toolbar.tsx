@@ -25,6 +25,7 @@ import { LAYOUT_SHORTCUTS, offersXZ } from './layout/shortcuts'
 import { useWorkspace } from '@/state/workspace'
 import { cn, shortcutLabel } from '@/lib/utils'
 import { StatusCapsule } from './StatusCapsule'
+import { CommandPalette } from './CommandPalette'
 import { closePanel, commandPanel, isDetached, moveToMainWindow, moveToNewWindow, panelTitle, resetPanelLayout } from './panels/actions'
 import { LAYOUT_PANEL, LENS_DATA } from '@/state/arrangement'
 
@@ -279,6 +280,7 @@ export function Toolbar() {
           <PanelRight />
         </Button>
       </Tip>
+          <CommandPalette />
     </header>
   )
 }
