@@ -205,10 +205,8 @@ impl DeviceOps for WebGpuOps {
 /// Whether `op`'s device path takes its inputs through [`resident::Mirrors`]
 /// (so device-resident inputs need no readback before it).
 fn resident_inputs(op: &ResidentOp) -> bool {
-    match op {
-        ResidentOp::Sum(_) => true,
-        _ => false,
-    }
+    // One arm per converted family; `matches!` keeps them as a list.
+    matches!(op, ResidentOp::Sum(_))
 }
 
 impl WebGpuOps {

@@ -100,6 +100,7 @@ impl Mirrors {
 
     /// Copy `len` words of `batch` resource `from` (at `from_offset`) into
     /// output `id` at `to_offset`, on the device, after the passes.
+    #[allow(clippy::too_many_arguments)]
     pub fn store(
         &mut self,
         batch: &mut Batch<'_>,
