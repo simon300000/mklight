@@ -208,7 +208,11 @@ fn resident_inputs(op: &ResidentOp) -> bool {
     // One arm per converted family; `matches!` keeps them as a list.
     matches!(
         op,
-        ResidentOp::Sum(_) | ResidentOp::Geometry(_) | ResidentOp::Collectives(_)
+        ResidentOp::Sum(_)
+            | ResidentOp::Geometry(_)
+            | ResidentOp::Collectives(_)
+            | ResidentOp::TraceUpload(_)
+            | ResidentOp::Aiming(_)
     )
 }
 

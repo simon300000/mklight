@@ -28,6 +28,10 @@ use mklight_gpu::resident::{BufferId, PlanView, ResidentOp, ResidentPlan, access
 
 use crate::device::*;
 
+/// Word counts of the buffers read back from the device by any plan of this
+/// process, in order (diagnostics: tests check what is not read back).
+pub static READ_BACKS: std::sync::Mutex<Vec<usize>> = std::sync::Mutex::new(Vec::new());
+
 struct Mirror {
     key: BufferKey,
     words: usize,
@@ -77,6 +81,12 @@ impl Mirrors {
         }
     }
 
+    /// The mirror of `id` as a read-only resource of `batch` when the device
+    /// copy is current (for kernels that pack several plan buffers).
+    pub fn resource(&mut self, batch: &mut Batch<'_>, id: BufferId) -> Option<usize> {
+        self.map.get(&id).map(|m| batch.persistent(m.key))
+    }
+
     /// The mirror of output `id` (allocated on first use), for a kernel to
     /// write whole or for [`Mirrors::store`]; the host copy becomes stale.
     pub fn output(&mut self, x: &Execution, id: BufferId) -> MkResult<BufferKey> {
@@ -117,7 +127,14 @@ impl Mirrors {
         Ok(())
     }
 
-    fn read_back(&mut self, id: BufferId, x: &mut Execution, stats: &mut JobStats) -> MkResult<()> {
+    /// Make `id` current on the host (a small explicit readback for words
+    /// the host inspects inside an operation).
+    pub fn read_back(
+        &mut self,
+        id: BufferId,
+        x: &mut Execution,
+        stats: &mut JobStats,
+    ) -> MkResult<()> {
         let Some(m) = self.map.get_mut(&id) else {
             return Ok(());
         };
@@ -130,6 +147,9 @@ impl Mirrors {
         let b = self.gpu.run(batch)?;
         stats.device_seconds += b.device_seconds;
         stats.command_buffers += 1;
+        if let Ok(mut log) = READ_BACKS.lock() {
+            log.push(m.words);
+        }
         m.host = true;
         Ok(())
     }

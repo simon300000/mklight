@@ -73,7 +73,7 @@ pub fn run(
 }
 
 fn generate(
-    ops: &WebGpuOps,
+    ops: &mut WebGpuOps,
     g: &GenerateAim,
     x: &mut Execution,
     ctl: &JobControl,
@@ -83,6 +83,13 @@ fn generate(
         return Ok(None);
     };
     let set = x.system(g.systems)?;
+    // The host reads the field rows and samples (validation, culling) and
+    // packs the seeds and table into the input words.
+    let mut inputs = vec![g.field_wavelength.buffer, g.samples.buffer, seeds.buffer];
+    inputs.extend(g.options.table.iter().map(|t| t.buffer));
+    for id in inputs {
+        ops.mirrors.read_back(id, x, stats)?;
+    }
     let fields: &[FieldSpec] = x.rows(&g.field_wavelength);
     // A device seed table serves real aims only (paraxial launches never
     // read it): build it with the specification.
@@ -154,55 +161,76 @@ fn generate(
     );
     let cull = g.options.cull_outside;
     let o = &g.output;
-    x.with_outputs(&[o.floats, o.indices, o.logical_ids, o.report], |_, out| {
-        // Output planes in kernel order.
-        let mut planes: Vec<&mut [u32]> = Vec::with_capacity(PLANES);
-        for (b, k) in out.iter_mut().zip([15, 2, 2, 4]) {
-            planes.extend(b[..k * n].chunks_mut(n.max(1)));
-        }
-        let mut input = head.clone();
-        let mut start = 0;
-        while start < n {
-            ctl.check()?;
-            let len = launch.min(n - start);
-            input.truncate(samples_at);
-            input[0] = len as u32;
-            for s in &samples[start..start + len] {
-                let mut s = *s;
-                if kernel::excluded(&s, cull) {
-                    s.field |= MKL_AIM_SKIP;
-                }
-                input.extend_from_slice(bytemuck::cast_slice(std::slice::from_ref(&s)));
+    let mirrors = &mut ops.mirrors;
+    let x_ref: &Execution = x;
+    // Output planes in kernel order; the reports are also read back (the
+    // host accounts the aim statistics), the rest stays on the device.
+    let outs = [
+        (o.floats, 15),
+        (o.indices, 2),
+        (o.logical_ids, 2),
+        (o.report, 4),
+    ];
+    let mut report = vec![0u32; 4 * n];
+    let mut report_planes: Vec<&mut [u32]> = report.chunks_mut(n.max(1)).collect();
+    let mut input = head.clone();
+    let mut start = 0;
+    while start < n {
+        ctl.check()?;
+        let len = launch.min(n - start);
+        input.truncate(samples_at);
+        input[0] = len as u32;
+        for s in &samples[start..start + len] {
+            let mut s = *s;
+            if kernel::excluded(&s, cull) {
+                s.field |= MKL_AIM_SKIP;
             }
-            let mut batch = Batch::default();
-            let mut storage = vec![
-                Binding::read(batch.persistent(dev.headers)),
-                Binding::read(batch.persistent(dev.surfaces)),
-                Binding::read(batch.persistent(dev.coefficients)),
-                Binding::read(batch.upload(&steps)),
-                Binding::read(batch.upload(&input)),
-            ];
-            let result = batch.scratch(PLANES * len);
-            let unused = batch.scratch(4);
-            storage.extend([Binding::write(result), Binding::write(unused)]);
-            batch.passes.push(Pass {
-                kernel,
-                uniform: Some(params.clone()),
-                storage,
-                workgroups: [len.div_ceil(GROUP) as u32, 1, 1],
-            });
-            for (k, plane) in planes.iter_mut().enumerate() {
-                batch.read(result, k * len, &mut plane[start..start + len]);
-            }
-            let b = gpu.run(batch)?;
-            stats.device_seconds += b.device_seconds;
-            stats.command_buffers += 1;
-            start += len;
-            ctl.report(start as f64 / n as f64, "pupil aiming");
+            input.extend_from_slice(bytemuck::cast_slice(std::slice::from_ref(&s)));
         }
-        ctl.check()
-    })?;
-    let report = x.words(o.report);
+        let mut batch = Batch::default();
+        let mut storage = vec![
+            Binding::read(batch.persistent(dev.headers)),
+            Binding::read(batch.persistent(dev.surfaces)),
+            Binding::read(batch.persistent(dev.coefficients)),
+            Binding::read(batch.upload(&steps)),
+            Binding::read(batch.upload(&input)),
+        ];
+        let result = batch.scratch(PLANES * len);
+        let unused = batch.scratch(4);
+        storage.extend([Binding::write(result), Binding::write(unused)]);
+        batch.passes.push(Pass {
+            kernel,
+            uniform: Some(params.clone()),
+            storage,
+            workgroups: [len.div_ceil(GROUP) as u32, 1, 1],
+        });
+        let mut plane = 0;
+        for (id, k) in outs {
+            for j in 0..k {
+                mirrors.store(
+                    &mut batch,
+                    x_ref,
+                    result,
+                    plane * len,
+                    id,
+                    j * n + start,
+                    len,
+                )?;
+                plane += 1;
+            }
+        }
+        for (j, r) in report_planes.iter_mut().enumerate() {
+            batch.read(result, (PLANES - 4 + j) * len, &mut r[start..start + len]);
+        }
+        let b = gpu.run(batch)?;
+        stats.device_seconds += b.device_seconds;
+        stats.command_buffers += 1;
+        start += len;
+        ctl.report(start as f64 / n as f64, "pupil aiming");
+    }
+    ctl.check()?;
+    drop(report_planes);
+    let report = &report[..];
     let fallbacks = (0..n)
         .filter(|&i| report[i] != 0 && report[i] != MKL_AIM_OUTSIDE)
         .count();
