@@ -98,7 +98,37 @@ fn panic_message(p: &(dyn Any + Send)) -> String {
 
 /// Run `work` on a new named thread and complete `completer` with its result.
 /// A panic becomes `MkError::Backend` naming `what` and the panic message.
+///
+/// In the browser build (wasm32), where `std` cannot start threads, the
+/// work runs as a task of rayon's global pool (the Web Workers of
+/// `wasm-bindgen-rayon`); it may block there on a device (the WebGPU
+/// proxy), so the pool needs a thread more than the engine keeps busy.
 pub fn spawn_job<T: Send + 'static>(
+    thread_name: &str,
+    what: String,
+    completer: Completer<T>,
+    work: impl FnOnce() -> MkResult<T> + Send + 'static,
+) -> MkResult<()> {
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = thread_name;
+        rayon::spawn(move || {
+            let r = catch_unwind(AssertUnwindSafe(work)).unwrap_or_else(|p| {
+                Err(MkError::Backend(format!(
+                    "{what}: backend worker panicked: {}",
+                    panic_message(p.as_ref())
+                )))
+            });
+            completer.complete(r);
+        });
+        Ok(())
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    spawn_thread(thread_name, what, completer, work)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn spawn_thread<T: Send + 'static>(
     thread_name: &str,
     what: String,
     completer: Completer<T>,
