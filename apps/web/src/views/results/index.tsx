@@ -16,12 +16,18 @@ import { WavefrontView } from './Wavefront'
 import { CURVE_RENDERERS } from '../analysis/curves'
 import { MAP_RENDERERS } from '../analysis/maps'
 import type { KeyNumber, Renderers } from '../analysis/registry'
+import { GlassInfoResultView, GlassMapResultView } from '../glassmap/GlassMapView'
 
 export type { KeyNumber }
 
 /** Dedicated renderers of the analysis groups; they take precedence over the
  *  built-in views below. */
-export const RENDERERS: Renderers = { ...CURVE_RENDERERS, ...MAP_RENDERERS }
+export const RENDERERS: Renderers = {
+  ...CURVE_RENDERERS,
+  ...MAP_RENDERERS,
+  glass_map: { accepts: (j) => Array.isArray(j.glasses), View: ({ result, system }) => <GlassMapResultView result={result} system={system} /> },
+  glass_info: { View: ({ result, system }) => <GlassInfoResultView result={result} system={system} /> },
+}
 
 export function ResultView(props: {
   analysis: string
