@@ -16,12 +16,48 @@ use serde_json::{Value, json};
 #[test]
 #[ignore = "offline default-grid f64 accuracy evidence; real Metal required"]
 fn default_sample_accuracy() {
-    use mklight_engine::analysis::AnalysisOutput;
     let engine = Engine::new(EngineConfig {
         default_backend: Backend::CpuReference,
         ..Default::default()
     });
     mklight_bench::require_metal(&engine);
+    sample_accuracy(&engine, "metal");
+}
+
+/// The same evidence for the WebGPU backend (GPU.md §11): every analysis it
+/// publishes (`WEBGPU_ANALYSES`; the others run on the reference with that
+/// reason) under the same contracts. Lines are tagged `WEBGPU_ACCURACY`.
+#[test]
+#[ignore = "offline default-grid f64 accuracy evidence; a WebGPU adapter required"]
+fn webgpu_sample_accuracy() {
+    let engine = Engine::new(EngineConfig {
+        default_backend: Backend::CpuReference,
+        ..Default::default()
+    });
+    assert!(
+        engine
+            .backends()
+            .iter()
+            .any(|b| b.id == "gpu:webgpu" && b.available),
+        "a WebGPU adapter required"
+    );
+    sample_accuracy(&engine, "webgpu");
+}
+
+/// Every GPU-capable analysis on every sample on `gpu:<gpu>` against the
+/// CPU reference (`default_sample_accuracy`).
+fn sample_accuracy(engine: &Engine, device: &str) {
+    use mklight_engine::analysis::AnalysisOutput;
+    let tag = device.to_uppercase();
+    let id = format!("gpu:{device}");
+    // The analyses this backend implements (explicit requests for others
+    // are refused).
+    let supported: Vec<String> = engine
+        .backends()
+        .into_iter()
+        .find(|b| b.id == id)
+        .map(|b| b.capabilities.analyses)
+        .unwrap_or_default();
     let mut unmapped = Vec::new();
     let mut failing = 0;
     // Native attempts a fallback hid count as failures too.
@@ -31,14 +67,18 @@ fn default_sample_accuracy() {
         for info in engine
             .analyses()
             .into_iter()
-            .filter(|a| a.gpu_path && !solver::JOBS.contains(&a.name.as_str()))
+            .filter(|a| {
+                a.gpu_path
+                    && supported.contains(&a.name)
+                    && !solver::JOBS.contains(&a.name.as_str())
+            })
         {
             let mut request = AnalysisRequest::new(&info.name, Value::Null);
             request.backend = Some(Backend::CpuReference);
             let cpu = session.run_analysis(&request, &JobContext::new()).unwrap();
-            request.backend = Some(Backend::Gpu("metal".into()));
+            request.backend = Some(Backend::Gpu(device.into()));
             let gpu = session.run_analysis(&request, &JobContext::new()).unwrap();
-            let published = gpu.backend.used == "gpu:metal";
+            let published = gpu.backend.used == id;
             let native_failures = comparison::native_failures(&gpu.run_info);
             attempts.extend(
                 native_failures
@@ -66,7 +106,7 @@ fn default_sample_accuracy() {
             );
             failing += usize::from(published && report.reason.is_some());
             println!(
-                "METAL_ACCURACY {}",
+                "{tag}_ACCURACY {}",
                 json!({"sample":name,"analysis":info.name,"published":published,"backend":gpu.backend,
                 "compared":report.compared,"maximum_absolute_error":report.maximum,"maximum_error_path":report.maximum_path,"maximum_image_l1_relative":report.image_l1_relative,
                 "maximum_image_energy_relative":report.energy_relative,"gate_failure":report.reason,
@@ -81,7 +121,7 @@ fn default_sample_accuracy() {
         }
     }
     println!(
-        "METAL_ACCURACY_SUMMARY {}",
+        "{tag}_ACCURACY_SUMMARY {}",
         json!({"native_gate_failures":failing,"native_attempt_failures":attempts})
     );
     // A field the contract does not class is a harness defect, never a pass.
