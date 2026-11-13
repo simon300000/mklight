@@ -111,7 +111,8 @@ fn optional(text: &str, what: &str) -> R<Value> {
     if text.trim().is_empty() {
         return Ok(Value::Null);
     }
-    serde_json::from_str(text).map_err(|e| EngineErrorJs("parse", format!("{what}: invalid JSON: {e}")))
+    serde_json::from_str(text)
+        .map_err(|e| EngineErrorJs("parse", format!("{what}: invalid JSON: {e}")))
 }
 
 fn to_json(v: &impl serde::Serialize) -> R<String> {
@@ -275,7 +276,9 @@ pub fn session_set_system(id: u32, system_json: &str) -> Result<String, JsValue>
     let sys: OpticalSystem = object(system_json, "system_json")?;
     let mut g = lock(&s);
     let h = g.set_system(sys).map_err(EngineErrorJs::from)?;
-    Ok(to_json(&serde_json::json!({"hash": h.to_hex(), "library_hash": g.library_hash()}))?)
+    Ok(to_json(
+        &serde_json::json!({"hash": h.to_hex(), "library_hash": g.library_hash()}),
+    )?)
 }
 
 /// `mk_session_get_system_json`.
@@ -327,12 +330,18 @@ pub fn session_load_catalog(id: u32, file_name: &str, bytes: &[u8]) -> Result<St
 pub fn session_apply_solves(id: u32, settings_json: &str) -> Result<String, JsValue> {
     let s = session(id)?;
     let settings = optional(settings_json, "settings_json")?;
-    let pending = lock(&s).prepare_solves(&settings).map_err(EngineErrorJs::from)?;
-    let (sys, report) = pending.run(&JobContext::new()).map_err(EngineErrorJs::from)?;
+    let pending = lock(&s)
+        .prepare_solves(&settings)
+        .map_err(EngineErrorJs::from)?;
+    let (sys, report) = pending
+        .run(&JobContext::new())
+        .map_err(EngineErrorJs::from)?;
     let hash = lock(&s)
         .commit_solves(&pending, sys)
         .map_err(EngineErrorJs::from)?;
-    Ok(to_json(&serde_json::json!({"report": report, "hash": hash.to_hex()}))?)
+    Ok(to_json(
+        &serde_json::json!({"report": report, "hash": hash.to_hex()}),
+    )?)
 }
 
 /// Replace the session with a `.mklight` project given as text. Catalog
@@ -362,10 +371,12 @@ pub fn session_save_project(id: u32) -> Result<String, JsValue> {
 /// `mk_import_prescription`: `.zmx` / `.seq` bytes, glasses resolved against
 /// the built-in catalog plus this session's catalogs when `session` is not 0.
 #[wasm_bindgen]
-pub fn import_prescription_bytes(session_id: u32, bytes: &[u8], format: &str) -> Result<String, JsValue> {
-    let format: PrescriptionFormat = format
-        .parse()
-        .map_err(|e: MkError| arg(e.to_string()))?;
+pub fn import_prescription_bytes(
+    session_id: u32,
+    bytes: &[u8],
+    format: &str,
+) -> Result<String, JsValue> {
+    let format: PrescriptionFormat = format.parse().map_err(|e: MkError| arg(e.to_string()))?;
     let library = if session_id == 0 {
         Arc::new(MaterialLibrary::with_builtin())
     } else {
@@ -387,7 +398,10 @@ pub fn session_submit(id: u32, request_json: &str) -> Result<f64, JsValue> {
     let req: AnalysisRequest = object(request_json, "request_json")?;
     let (engine, spec) = {
         let g = lock(&s);
-        (g.engine().clone(), g.analysis_job(&req).map_err(EngineErrorJs::from)?)
+        (
+            g.engine().clone(),
+            g.analysis_job(&req).map_err(EngineErrorJs::from)?,
+        )
     };
     let job = engine.submit_job(spec).map_err(EngineErrorJs::from)?;
     Ok(job as f64)
@@ -396,7 +410,12 @@ pub fn session_submit(id: u32, request_json: &str) -> Result<f64, JsValue> {
 /// Set the session to `system_json` unless it already holds snapshot
 /// `hash`, then submit (one locked step, like the Swift client).
 #[wasm_bindgen]
-pub fn session_submit_on(id: u32, hash: &str, system_json: &str, request_json: &str) -> Result<f64, JsValue> {
+pub fn session_submit_on(
+    id: u32,
+    hash: &str,
+    system_json: &str,
+    request_json: &str,
+) -> Result<f64, JsValue> {
     let s = session(id)?;
     let req: AnalysisRequest = object(request_json, "request_json")?;
     let (engine, spec) = {
@@ -405,7 +424,10 @@ pub fn session_submit_on(id: u32, hash: &str, system_json: &str, request_json: &
             let sys: OpticalSystem = object(system_json, "system_json")?;
             g.set_system(sys).map_err(EngineErrorJs::from)?;
         }
-        (g.engine().clone(), g.analysis_job(&req).map_err(EngineErrorJs::from)?)
+        (
+            g.engine().clone(),
+            g.analysis_job(&req).map_err(EngineErrorJs::from)?,
+        )
     };
     let job = engine.submit_job(spec).map_err(EngineErrorJs::from)?;
     Ok(job as f64)
@@ -414,7 +436,10 @@ pub fn session_submit_on(id: u32, hash: &str, system_json: &str, request_json: &
 /// `mk_job_status_json`.
 #[wasm_bindgen]
 pub fn job_status(job: f64) -> Result<String, JsValue> {
-    let st = state()?.engine.job_status(job as u64).map_err(EngineErrorJs::from)?;
+    let st = state()?
+        .engine
+        .job_status(job as u64)
+        .map_err(EngineErrorJs::from)?;
     Ok(to_json(&st)?)
 }
 
@@ -437,19 +462,28 @@ pub fn job_statuses(jobs: &[f64]) -> Result<String, JsValue> {
 
 #[wasm_bindgen]
 pub fn job_cancel(job: f64) -> Result<(), JsValue> {
-    state()?.engine.cancel_job(job as u64).map_err(EngineErrorJs::from)?;
+    state()?
+        .engine
+        .cancel_job(job as u64)
+        .map_err(EngineErrorJs::from)?;
     Ok(())
 }
 
 #[wasm_bindgen]
 pub fn job_stop(job: f64) -> Result<(), JsValue> {
-    state()?.engine.stop_job(job as u64).map_err(EngineErrorJs::from)?;
+    state()?
+        .engine
+        .stop_job(job as u64)
+        .map_err(EngineErrorJs::from)?;
     Ok(())
 }
 
 #[wasm_bindgen]
 pub fn job_release(job: f64) -> Result<(), JsValue> {
-    state()?.engine.release_job(job as u64).map_err(EngineErrorJs::from)?;
+    state()?
+        .engine
+        .release_job(job as u64)
+        .map_err(EngineErrorJs::from)?;
     Ok(())
 }
 
@@ -458,7 +492,10 @@ pub fn job_release(job: f64) -> Result<(), JsValue> {
 /// copy of the engine's buffer, ready to be transferred.
 #[wasm_bindgen]
 pub fn job_take_result(job: f64) -> Result<JsValue, JsValue> {
-    let r = state()?.engine.take_result(job as u64).map_err(EngineErrorJs::from)?;
+    let r = state()?
+        .engine
+        .take_result(job as u64)
+        .map_err(EngineErrorJs::from)?;
     let envelope = to_json(&r.envelope())?;
     let buffers = Array::new();
     for b in &r.buffers {

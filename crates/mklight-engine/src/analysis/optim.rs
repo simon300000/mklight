@@ -2564,10 +2564,10 @@ mod tests {
     use mklight_core::materials::MaterialLibrary;
     use mklight_core::model::{ApertureSpec, SurfaceShape};
     use mklight_core::param::ParamPath;
+    use mklight_core::platform::Instant;
     use mklight_core::{SurfaceId, samples};
     use mklight_gpu::{ComputeBackend, CpuF32Backend};
     use mklight_optim::merit::operand::OperandKind;
-    use mklight_core::platform::Instant;
 
     const LONG: Option<Duration> = Some(Duration::from_secs(600));
 

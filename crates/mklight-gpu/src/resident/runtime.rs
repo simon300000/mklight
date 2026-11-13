@@ -6,12 +6,12 @@ use super::immutable::{
 use super::pool::{Allocation, Pool};
 use super::*;
 use mklight_core::job::RunTimer;
+use mklight_core::platform::Instant;
+use std::collections::HashMap;
 use std::sync::{
     Mutex,
     atomic::{AtomicU64, Ordering},
 };
-use std::{collections::HashMap};
-use mklight_core::platform::Instant;
 
 /// Word storage of one backend allocation.
 pub trait Storage: Send + Sync + 'static {

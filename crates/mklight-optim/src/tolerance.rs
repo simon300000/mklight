@@ -20,11 +20,11 @@
 //! reporting it. It is generic over any [`OperandEvaluator`], so it works
 //! today with model-only operands and later with the tracer.
 
+use mklight_core::platform::Instant;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Mutex;
-use mklight_core::platform::Instant;
 
 use mklight_core::param::{IrregularityMode, ParamPath, PlacementComponent};
 use mklight_core::{JobContext, MkError, MkResult, OpticalSystem};

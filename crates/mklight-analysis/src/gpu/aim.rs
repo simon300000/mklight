@@ -45,13 +45,13 @@
 
 use super::*;
 use mklight_core::RayAiming;
+use mklight_core::platform::Instant;
 use mklight_gpu::{consts::*, resident};
 use mklight_trace::{AimReport, FieldPoint, GeneratedRay, PreparedField, RayRequest};
 use rayon::prelude::*;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::mpsc;
-use mklight_core::platform::Instant;
 
 /// How a [`Geometry`] aims its generations (module docs).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

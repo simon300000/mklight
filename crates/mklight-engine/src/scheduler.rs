@@ -27,15 +27,15 @@
 //!
 //! Locking order: table → job → event queue. Callback slot is taken alone.
 
+use mklight_core::platform::Instant;
+use mklight_core::platform::{self, JoinHandle};
 use serde::Serialize;
 use std::collections::{HashMap, VecDeque};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock};
 use std::thread::{self, ThreadId};
-use mklight_core::platform::{self, JoinHandle};
 use std::time::Duration;
-use mklight_core::platform::Instant;
 
 use mklight_core::job::CancelToken;
 use mklight_core::{JobContext, MkError};
