@@ -67,6 +67,16 @@ fn double_gauss_default_merit_throughput() {
             DefaultMeritSpec::default(),
         ),
         (
+            "spot, 3 x 6, per-wavelength centroid",
+            DefaultMeritSpec {
+                criterion: mklight_optim::merit::default::DefaultCriterion::RmsSpot {
+                    reference: Default::default(),
+                    scope: mklight_optim::merit::CentroidScope::Monochromatic,
+                },
+                ..Default::default()
+            },
+        ),
+        (
             "spot, 6 rings x 12 arms (half pupil)",
             DefaultMeritSpec {
                 sampling: mklight_optim::merit::PupilSampling {

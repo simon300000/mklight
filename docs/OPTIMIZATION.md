@@ -386,7 +386,38 @@ merit is the wavefront variance about the chief sphere, as `wavefront_rms`
 reports it (before 2026-11 the piston stayed in, and the merit was the mean
 square OPD: Double Gauss 17.13 against `wavefront_rms`² 3.35; minimising
 the mean square instead of the variance biases focus balancing, e.g. for
-`W = aρ² + bρ⁴` it gives `a = −¾b` instead of `a = −b`). A meridionally symmetric system automatically
+`W = aρ² + bρ⁴` it gives `a = −¾b` instead of `a = −b`).
+
+**White-light centroid.** The spot criterion measures every wavelength's
+rays from the centroid of the white-light spot (`scope: "polychromatic"`,
+the default since 2026-11): the centroid of all positive-weight
+wavelengths' nodes, each weighted `w_node · w_λ`. The merit is then the
+field mean of the squared polychromatic RMS spot radius (tested to 1e-12
+against `rms_spot` over all wavelengths), so a colour-dependent image shift
+— lateral colour — costs what it does in the image. With
+`scope: "monochromatic"` each wavelength is measured from its own centroid
+and lateral colour costs nothing (the default before 2026-11). A missing
+`scope` key now means `polychromatic`: a saved project or script whose
+merit omitted it changes behaviour, while one that stored either value
+(the app writes it with every saved merit) keeps it. The reference rays
+are the ones the per-wavelength merit traces anyway, so the cost per
+evaluation is unchanged (Double Gauss, 3 × 6 half pupil: 1.35 against
+1.44 ms single-candidate, 0.69 against 0.67 ms per FD-Jacobian column,
+within the bench's noise); the GPU and resident evaluators form the same
+reference from their per-wavelength moments (the host/device and resident
+tests cover the default merit). The default merit of the built-in samples
+changes only where there is lateral colour: Double Gauss +9.6 %,
+anamorphic +5.8 %, Petzval with asphere +0.7 %, the rest below 0.2 %
+(Cooke triplet +0.013 %), and not at all for the Newtonian or a
+single-wavelength system. Fifteen LM iterations (default variables) on the
+Double Gauss reduce the largest short-minus-long lateral colour over the
+field to 1.83 µm instead of 3.27 µm (nominal 13.6 µm), with the
+polychromatic RMS spot within ±4 % per field (19.0 / 14.6 / 19.2 µm
+against 18.4 / 15.1 / 19.7 µm) and MTF at 30 and 50 cycles/mm within
+±0.035; on the Cooke triplet (0.45 µm of lateral colour) the two results
+agree within 0.3 µm of RMS spot.
+
+A meridionally symmetric system automatically
 uses the half pupil, unless a variable (`generate_for`) can break the
 symmetry. For a tolerancing criterion, `generate_for_tolerancing(sys,
 &tolerance_spec)` counts the toleranced parameters and compensators as

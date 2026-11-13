@@ -537,8 +537,8 @@ this page.
   *Optimize*:
   * **Merit function** (`MeritFunctionSection`), Default or Custom, with the
     merit at the current design read out live. *Default* edits the engine's
-    generator: criterion RMS spot (centroid or chief, per-wavelength or
-    white-light centroid), RMS wavefront, or MTF (frequencies, target,
+    generator: criterion RMS spot (centroid or chief, white-light centroid
+    by default or per wavelength), RMS wavefront, or MTF (frequencies, target,
     diffraction or geometric, weakest field); rings and arms; fields and
     wavelengths as checklists; glass and air thickness limits; the
     anamorphic squeeze target. *Custom* is an operand list: a searchable

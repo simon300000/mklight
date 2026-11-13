@@ -332,7 +332,8 @@ fn default_merit_schema(default: Value) -> Value {
             {"type": "object", "required": ["type"], "properties": {
                 "type": {"const": "rms_spot"},
                 "reference": reference,
-                "scope": {"type": "string", "enum": ["monochromatic", "polychromatic"], "default": "monochromatic"}
+                "scope": {"type": "string", "enum": ["monochromatic", "polychromatic"], "default": "polychromatic",
+                    "description": "Spot centroid of the white-light spot (polychromatic; penalises lateral colour) or of each wavelength's own spot (monochromatic)."}
             }},
             {"type": "object", "required": ["type"], "properties": {
                 "type": {"const": "wavefront"},

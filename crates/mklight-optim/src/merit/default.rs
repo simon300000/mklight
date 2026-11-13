@@ -61,8 +61,11 @@ pub enum DefaultCriterion {
     RmsSpot {
         #[serde(default)]
         reference: SpotReference,
-        /// Centroid per wavelength or of the white-light spot.
-        #[serde(default)]
+        /// Spot centroid of the white-light spot (default) or per
+        /// wavelength. A missing key is `polychromatic` (before 2026-11 it
+        /// was `monochromatic`: each wavelength measured from its own
+        /// centroid, so lateral colour cost nothing).
+        #[serde(default = "white_light")]
         scope: CentroidScope,
     },
     Wavefront {
@@ -75,9 +78,15 @@ impl Default for DefaultCriterion {
     fn default() -> Self {
         DefaultCriterion::RmsSpot {
             reference: SpotReference::Centroid,
-            scope: CentroidScope::Monochromatic,
+            scope: CentroidScope::Polychromatic,
         }
     }
+}
+
+/// The default spot scope: the white-light centroid, so that the merit
+/// sees lateral colour (a wavelength-dependent image shift).
+fn white_light() -> CentroidScope {
+    CentroidScope::Polychromatic
 }
 
 /// Thickness boundary values (mm). `None` disables a boundary.

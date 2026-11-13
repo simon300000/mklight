@@ -302,8 +302,10 @@ public struct DefaultMeritSettings: Hashable, Sendable {
     public var criterion = Criterion.rmsSpot
     /// Spot reference: centroid or chief.
     public var reference = "centroid"
-    /// Spot centroid per wavelength (`monochromatic`) or of the white-light spot.
-    public var scope = "monochromatic"
+    /// Spot centroid of the white-light spot (`polychromatic`, the engine's
+    /// default: lateral colour counts) or per wavelength (`monochromatic`).
+    /// A saved merit without the key reads as the engine's default.
+    public var scope = "polychromatic"
     public var mtfFrequencies: [Double] = [10, 30]
     public var mtfTarget = 0.5
     public var mtfMethod = "diffraction"
