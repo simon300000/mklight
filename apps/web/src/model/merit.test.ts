@@ -7,6 +7,8 @@ import {
   meritJobSettings,
   meritSection,
   moveOperand,
+  moveOperandsTo,
+  duplicateOperands,
   newOperand,
   operandDescriptor,
   readDefaultMerit,
@@ -73,6 +75,22 @@ describe('custom operands', () => {
     ops = moveOperand(ops, 1, 0)
     expect(ops.map((o) => o.kind.type)).toEqual(['bfl', 'rms_spot', 'combine'])
     expect(ops[2].kind.args).toEqual([0])
+  })
+
+  it('moves a multi-selection to a gap and duplicates a selection', () => {
+    const ops = [op('efl'), op('bfl'), op('rms_spot'), op('mtf'), combine([0, 2])]
+    const m = moveOperandsTo(ops, [0, 2], 4)
+    expect(m.operands.map((o) => o.kind.type)).toEqual(['bfl', 'mtf', 'efl', 'rms_spot', 'combine'])
+    expect(m.indices).toEqual([2, 3])
+    expect(m.operands[4].kind.args).toEqual([2, 3])
+    const up = moveOperandsTo(ops, [3], 0)
+    expect(up.operands.map((o) => o.kind.type)).toEqual(['mtf', 'efl', 'bfl', 'rms_spot', 'combine'])
+    expect(up.operands[4].kind.args).toEqual([1, 3])
+    expect(moveOperandsTo(ops, [1], 2).operands).toBe(ops)
+    const d = duplicateOperands(ops, [0, 2])
+    expect(d.operands.map((o) => o.kind.type)).toEqual(['efl', 'efl', 'bfl', 'rms_spot', 'rms_spot', 'mtf', 'combine'])
+    expect(d.indices).toEqual([1, 4])
+    expect(d.operands[6].kind.args).toEqual([0, 3])
   })
 
   it('searches by category', () => {

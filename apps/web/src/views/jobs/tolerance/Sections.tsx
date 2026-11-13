@@ -21,7 +21,8 @@ import { Select } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { sig } from '@/model/format'
 import { getParam, paramKey, paramUnit, surfaceIndexOfId, variablesOf, type ParamPath } from '@/model/params'
-import type { System } from '@/model/system'
+import { fieldUnit, type System } from '@/model/system'
+import { fieldMenuLabel } from '@/model/merit'
 import {
   CRITERION_KINDS,
   DISPLAY,
@@ -141,7 +142,7 @@ export function CriterionSection({ settings, system, merit }: { settings: Tolera
   const display = criterionDisplay(c, merit)
   const setC = (name: string, change: (c: Criterion) => void) => editTolerances(name, (t) => change(t.criterion))
   const setD = <K extends keyof CriterionDefaults>(name: string, key: K, v: CriterionDefaults[K]) => setC(name, (x) => void (x.defaults[key] = v))
-  const fieldUnit = system.fields.kind === 'object_angle' ? '°' : ' mm'
+  const fUnit = fieldUnit(system.fields.kind) || (system.fields.kind === 'object_angle' ? '°' : 'mm')
   const unit = DISPLAY.unit(display)
   return (
     <Section title="Criterion" footer={criterionCaption(display)}>
@@ -210,7 +211,7 @@ export function CriterionSection({ settings, system, merit }: { settings: Tolera
           <div className="flex flex-wrap gap-1.5 py-1">
             <IndexChecklist
               title="Fields"
-              items={system.fields.fields.map((f, k) => `${k + 1}: ${sig(f.x, 4)}, ${sig(f.y, 4)}${fieldUnit}`)}
+              items={system.fields.fields.map((f, k) => fieldMenuLabel(k, f, fUnit))}
               selected={d.fields}
               onChange={(v) => setD('Change Criterion Fields', 'fields', v)}
             />

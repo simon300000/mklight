@@ -5,7 +5,7 @@
 // life cycle is the shared `useJobs` kind 'glass'.
 
 import { create } from 'zustand'
-import type { AnalysisResult } from '@/engine/types'
+import type { AnalysisResult, ModelSnapshot } from '@/engine/types'
 import {
   defaultCandidates,
   glassSlots,
@@ -37,7 +37,10 @@ interface GlassSubstitutionState extends GlassSearchSettings {
   startGlasses: Record<number, string>
   /** Glass gaps the selection was configured for. */
   configuredFor: number[]
-  /** The design's glass map (by snapshot hash), for the result's map. */
+  /** The layouts' snapshots from just before Apply (the design, the candidate),
+   *  so the before/after card stays after it. */
+  appliedLayouts: { before: ModelSnapshot | null; after: ModelSnapshot | null } | null
+  /** The design's glass map (by `mapKey`), for the result's map. */
   map: { hash: string; result: AnalysisResult } | null
   mapPlane: 'nd' | 'pgf'
 
@@ -62,6 +65,13 @@ export function combinationOf(rank: number | null): GlassCombination | null {
 
 let mapLoading: string | null = null
 
+/** The glass map's identity: the snapshot, its library and the material names. */
+export function mapKey(hash: string, libraryHash: string | null | undefined, materials: string[]): string {
+  let h = 0
+  for (const m of materials) for (let i = 0; i < m.length; i++) h = (Math.imul(h, 31) + m.charCodeAt(i)) | 0
+  return `${hash}|${libraryHash ?? ''}|${materials.length}:${h >>> 0}`
+}
+
 export const useGlassSubstitution = create<GlassSubstitutionState>()((set, get) => ({
   selected: [],
   candidates: defaultCandidates(),
@@ -79,6 +89,7 @@ export const useGlassSubstitution = create<GlassSubstitutionState>()((set, get) 
   startGlasses: {},
   configuredFor: [],
   map: null,
+  appliedLayouts: null,
   mapPlane: 'nd',
 
   set(p) {
@@ -115,7 +126,7 @@ export const useGlassSubstitution = create<GlassSubstitutionState>()((set, get) 
     const { project } = useDocument.getState()
     const system = project.system
     const settings = glassSubstitutionSettings(system, project.merit, variablesOf(project), get())
-    set({ trace: [], progress: null, selectedRank: null, startGlasses: startGlasses(system) })
+    set({ trace: [], progress: null, selectedRank: null, startGlasses: startGlasses(system), appliedLayouts: null })
     void useWorkspace.getState().setPreview(null)
     if (fresh) {
       // Try Again recomputes the same run (its settings were stored on start).
@@ -143,6 +154,8 @@ export const useGlassSubstitution = create<GlassSubstitutionState>()((set, get) 
     const c = combinationOf(get().selectedRank)
     const job = useJobs.getState().jobs.glass
     if (!c?.system || job.phase !== 'review') return
+    const ws = useWorkspace.getState()
+    set({ appliedLayouts: { before: ws.snapshot, after: ws.preview?.label === `Candidate ${c.rank}` ? ws.preview.snapshot : null } })
     const doc = useDocument.getState()
     doc.replace({ ...doc.project, system: c.system }, 'Apply Glass Substitution')
     useJobs.getState().applied('glass')
@@ -151,15 +164,18 @@ export const useGlassSubstitution = create<GlassSubstitutionState>()((set, get) 
 
   reset() {
     void useWorkspace.getState().setPreview(null)
-    set({ trace: [], progress: null, selectedRank: null })
+    set({ trace: [], progress: null, selectedRank: null, appliedLayouts: null })
   },
 
   loadMap() {
     const ws = useWorkspace.getState()
     const snap = ws.snapshot
     if (!ws.engine || !snap) return
-    if (get().map?.hash === snap.hash || mapLoading === snap.hash) return
-    mapLoading = snap.hash
+    // The snapshot and the loaded catalogs: adding or removing a catalog
+    // reloads the map even when the design is the same.
+    const key = mapKey(snap.hash, snap.libraryHash, ws.materials)
+    if (get().map?.hash === key || mapLoading === key) return
+    mapLoading = key
     let job
     try {
       job = ws.engine.submit({ analysis: 'glass_map', settings: {} }, snap)
@@ -169,11 +185,11 @@ export const useGlassSubstitution = create<GlassSubstitutionState>()((set, get) 
     }
     job.result.then(
       (result) => {
-        if (mapLoading === snap.hash) mapLoading = null
-        set({ map: { hash: snap.hash, result } })
+        if (mapLoading === key) mapLoading = null
+        set({ map: { hash: key, result } })
       },
       () => {
-        if (mapLoading === snap.hash) mapLoading = null
+        if (mapLoading === key) mapLoading = null
       },
     )
   },

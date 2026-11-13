@@ -181,8 +181,9 @@ function Summary({ result, rows, system }: { result: ToleranceResult; rows: Tole
           </div>
         )}
         {hasMonteCarlo(result) &&
-          result.percentiles.map((p) => (
-            <div key={p.percentile} title={`${short(p.percentile)} % of the Monte Carlo trials reach ${DISPLAY.higherIsBetter(d) ? 'at least' : 'at most'} this value`}>
+          // Rows of three, starting below Nominal and RSS (as macOS).
+          result.percentiles.map((p, k) => (
+            <div key={p.percentile} className={cn(k % 3 === 0 && 'col-start-1')} data-testid="tolerance-percentile" title={`${short(p.percentile)} % of the Monte Carlo trials reach ${DISPLAY.higherIsBetter(d) ? 'at least' : 'at most'} this value`}>
               <BigNumber label={`${short(p.percentile)} % of builds`} value={DISPLAY.format(d, DISPLAY.value(d, p.value))} />
             </div>
           ))}

@@ -6,7 +6,7 @@
 // symmetry. Every change is one undoable step saved in the document.
 
 import { ChevronRight, Copy, Link2, Minus, Plus, Waves, Wand2 } from 'lucide-react'
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger } from '@/components/ui/context-menu'
 import {
@@ -85,8 +85,22 @@ export function ToleranceTable({ settings, context, issues }: { settings: Tolera
   const rows = settings.rows
   const selection = new Set(useTolerance((s) => s.selection))
   const collapsed = new Set(useTolerance((s) => s.collapsed))
-  const select = (ids: string[]) => useTolerance.setState({ selection: ids })
+  const select = (ids: string[], anchorId?: string | null) => {
+    useTolerance.setState({ selection: ids })
+    if (anchorId !== undefined) anchor.current = anchorId
+  }
+  // The row a ⇧-click range starts from (the last plain or ⌘-click).
+  const anchor = useRef<string | null>(null)
   const groups = groupRows(rows, system)
+  // The rows in the order they are shown (collapsed groups left out).
+  const visible = groups.flatMap((g) => (collapsed.has(g.key) ? [] : g.rows.map((r) => r.id)))
+  const click = (id: string, mode: 'single' | 'toggle' | 'range') => {
+    if (mode === 'single') return select([id], id)
+    if (mode === 'toggle') return select(selection.has(id) ? [...selection].filter((x) => x !== id) : [...selection, id], id)
+    const a = anchor.current && visible.includes(anchor.current) ? anchor.current : ([...selection].find((x) => visible.includes(x)) ?? id)
+    const i = visible.indexOf(a), j = visible.indexOf(id)
+    select(visible.slice(Math.min(i, j), Math.max(i, j) + 1))
+  }
   // The first element row of each start surface shows the shared range and pivot.
   const leading = new Set<string>()
   const seen = new Set<number>()
@@ -109,7 +123,7 @@ export function ToleranceTable({ settings, context, issues }: { settings: Tolera
     // After the last row on this surface or before it.
     const after = [...rows].reverse().find((r) => surfaceIndexOfId(system, r.surface) <= at)?.id ?? null
     editTolerances('Add Tolerance', (t) => addRows(t, [row], after))
-    select([row.id])
+    select([row.id], row.id)
   }
 
   return (
@@ -192,10 +206,7 @@ export function ToleranceTable({ settings, context, issues }: { settings: Tolera
                         issue={issues.get(r.id)}
                         showsElementLine={leading.has(r.id)}
                         selected={selection.has(r.id)}
-                        onSelect={(additive) => {
-                          if (!additive) return select([r.id])
-                          select(selection.has(r.id) ? [...selection].filter((x) => x !== r.id) : [...selection, r.id])
-                        }}
+                        onSelect={(mode) => click(r.id, mode)}
                         onDuplicate={() => duplicate(new Set([r.id]))}
                         onDelete={() => remove(new Set([r.id]))}
                       />
@@ -227,7 +238,7 @@ function RowView({
   issue?: string
   showsElementLine: boolean
   selected: boolean
-  onSelect: (additive: boolean) => void
+  onSelect: (mode: 'single' | 'toggle' | 'range') => void
   onDuplicate: () => void
   onDelete: () => void
 }) {
@@ -252,13 +263,14 @@ function RowView({
           aria-selected={selected}
           aria-label={`${label}, ${limitsText(row)}`}
           className={cn('rounded-[5px] px-1 py-[1px]', selected && 'bg-accent-soft')}
-          onContextMenu={() => !selected && onSelect(false)}
+          onContextMenu={() => !selected && onSelect('single')}
         >
           <div className="grid grid-cols-[minmax(0,1fr)_3.25rem_6.75rem_1.75rem] items-center gap-x-1.5">
             <span
               className="min-w-0 cursor-default truncate"
               title={label}
-              onClick={(e) => onSelect(e.metaKey || e.ctrlKey || e.shiftKey)}
+              onMouseDown={(e) => e.shiftKey && e.preventDefault()}
+              onClick={(e) => onSelect(e.shiftKey ? 'range' : (isMac ? e.metaKey : e.ctrlKey) ? 'toggle' : 'single')}
             >
               {row.kind === 'other' ? label : KINDS[row.kind].short}
             </span>

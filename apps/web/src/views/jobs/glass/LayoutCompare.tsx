@@ -101,14 +101,16 @@ function Thumb({ title, snap }: { title: string; snap: ModelSnapshot | null }) {
   )
 }
 
-/** Before: the design's snapshot; Candidate: the previewed one. */
-export function LayoutCompare() {
+/** Before: the design's snapshot; Candidate: the previewed one. Once a
+ *  result is applied, pass the snapshots kept from before the apply (the
+ *  design then is the candidate). */
+export function LayoutCompare({ before, after }: { before?: ModelSnapshot | null; after?: ModelSnapshot | null } = {}) {
   const snap = useWorkspace((s) => s.snapshot)
   const preview = useWorkspace((s) => s.preview)
   return (
     <div className="flex gap-2" data-testid="layout-compare">
-      <Thumb title="Before" snap={snap} />
-      <Thumb title="Candidate" snap={preview?.snapshot ?? null} />
+      <Thumb title="Before" snap={before !== undefined ? before : snap} />
+      <Thumb title="Candidate" snap={after !== undefined ? after : (preview?.snapshot ?? null)} />
     </div>
   )
 }

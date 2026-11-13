@@ -93,6 +93,9 @@ export function GlassMapChart({
   const [box, size] = useSize<HTMLDivElement>()
   const canvas = useRef<HTMLCanvasElement>(null)
   const [hover, setHover] = useState<string | null>(null)
+  // Keyboard focus: arrow keys move a ring between glasses, Return inspects.
+  const [focusId, setFocusId] = useState<string | null>(null)
+  const [focused, setFocused] = useState(false)
 
   const yOf = (g: GlassMapPoint) => (plane === 'nd' ? g.nd : g.pgf)
   const shown = useMemo(() => (catalog ? all.filter((g) => g.catalog === catalog || inDesign(g)) : all), [all, catalog])
@@ -269,7 +272,16 @@ export function GlassMapChart({
       g.stroke()
       g.setLineDash([])
     }
-  }, [plotted, labels, sel, dark, w, h, plane, xd, yd, all])
+    const f = focused && focusId ? plotted.find((p) => p.id === focusId) : null
+    if (f) {
+      const [x, y] = at(f)
+      g.strokeStyle = accent
+      g.lineWidth = 2.5
+      g.beginPath()
+      g.arc(x, y, labels.has(f.id) ? 12 : 8, 0, 2 * Math.PI)
+      g.stroke()
+    }
+  }, [plotted, labels, sel, dark, w, h, plane, xd, yd, all, focused, focusId])
 
   const nearest = (e: React.MouseEvent): string | null => {
     const r = (e.currentTarget as HTMLElement).getBoundingClientRect()
@@ -289,26 +301,88 @@ export function GlassMapChart({
     return bd <= 100 ? best : null
   }
 
-  const hovered = hover ? plotted.find((p) => p.id === hover) : null
+  const focusGlass = focused && focusId ? (plotted.find((p) => p.id === focusId) ?? null) : null
+  const hovered = (hover ? plotted.find((p) => p.id === hover) : null) ?? focusGlass
   const marked = [...labels.entries()].map(([id, l]) => {
     const g = all.find((x) => x.id === id)
     return g ? `${g.name} ${l}` : null
   })
+  const selectedGlass = sel ? all.find((g) => g.id === sel) : null
+
+  /** The glass nearest the focused one in an arrow's direction (screen space;
+   *  V_d decreases to the right). */
+  const step = (from: GlassMapPoint, key: string): GlassMapPoint | null => {
+    const [fx, fy] = at(from)
+    const [ux, uy] = key === 'ArrowRight' ? [1, 0] : key === 'ArrowLeft' ? [-1, 0] : key === 'ArrowUp' ? [0, -1] : [0, 1]
+    let best: GlassMapPoint | null = null
+    let bs = Infinity
+    for (const p of plotted) {
+      if (p.id === from.id) continue
+      const [x, y] = at(p)
+      const along = (x - fx) * ux + (y - fy) * uy
+      if (along <= 0.5) continue
+      const across = Math.abs((x - fx) * uy - (y - fy) * ux)
+      const score = along + 2 * across
+      if (score < bs) {
+        bs = score
+        best = p
+      }
+    }
+    return best
+  }
+  const startGlass = () =>
+    plotted.find((p) => p.id === focusId) ?? plotted.find((p) => p.id === sel) ?? plotted.find((p) => labels.has(p.id)) ?? plotted[0] ?? null
+  const onKeyDown = (e: React.KeyboardEvent) => {
+    if (e.metaKey || e.ctrlKey || e.altKey) return
+    const cur = startGlass()
+    if (!cur) return
+    if (e.key.startsWith('Arrow')) {
+      e.preventDefault()
+      const next = focusId === cur.id ? step(cur, e.key) : cur
+      if (next) setFocusId(next.id)
+    } else if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault()
+      e.stopPropagation()
+      select(cur.id)
+      setFocusId(cur.id)
+    } else if (e.key === 'Escape' && sel) {
+      e.preventDefault()
+      select(null)
+    }
+  }
   return (
     <div
       ref={box}
-      className={cn('relative w-full select-none', className)}
       style={{ height }}
-      role="img"
+      role="group"
+      aria-roledescription="glass map"
+      tabIndex={0}
       aria-label={`Glass map, ${plane === 'nd' ? 'n_d' : 'P_g,F'} against Abbe number, ${plotted.length} glasses${system?.name ? ' for ' + system.name : ''}. ${
-        marked.filter(Boolean).length ? 'Marked: ' + marked.filter(Boolean).join('; ') : ''
-      }`}
+        marked.filter(Boolean).length ? 'Marked: ' + marked.filter(Boolean).join('; ') + '. ' : ''
+      }${selectedGlass ? `Selected ${selectedGlass.name}. ` : ''}Arrow keys move between glasses, Return inspects one.`}
       data-testid="glass-map"
       onMouseMove={(e) => setHover(nearest(e))}
       onMouseLeave={() => setHover(null)}
-      onClick={(e) => select(nearest(e))}
+      onClick={(e) => {
+        const id = nearest(e)
+        select(id)
+        if (id) setFocusId(id)
+      }}
+      onFocus={(e) => {
+        if (e.target !== e.currentTarget) return
+        setFocused(true)
+        if (!focusId || !plotted.some((p) => p.id === focusId)) setFocusId(startGlass()?.id ?? null)
+      }}
+      onBlur={() => setFocused(false)}
+      onKeyDown={onKeyDown}
+      className={cn('relative w-full select-none rounded-md outline-none focus-visible:ring-2 focus-visible:ring-accent/40', className)}
     >
-      <canvas ref={canvas} className="absolute inset-0" />
+      <canvas ref={canvas} className="absolute inset-0" aria-hidden />
+      <span className="sr-only" aria-live="polite" data-testid="glass-map-focus">
+        {focusGlass
+          ? `${focusGlass.name}${focusGlass.catalog ? ', ' + focusGlass.catalog : ''}, n d ${Number.isFinite(focusGlass.nd) ? focusGlass.nd.toFixed(5) : 'unknown'}, V d ${Number.isFinite(focusGlass.vd) ? focusGlass.vd.toFixed(2) : 'unknown'}${focusGlass.surfaces.length ? ', surfaces ' + surfaceLabel(focusGlass) : ''}${focusGlass.id === sel ? ', selected' : ''}`
+          : ''}
+      </span>
       {hovered && <Tooltip glass={hovered} x={at(hovered)[0]} y={at(hovered)[1]} w={w} h={h} />}
     </div>
   )

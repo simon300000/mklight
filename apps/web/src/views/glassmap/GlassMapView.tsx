@@ -14,6 +14,7 @@ import type { System } from '@/model/system'
 import { useView } from '@/state/view'
 import { cssVar, useDark, wavelengthColor } from '@/lib/theme'
 import { FONT, niceTicks, setupCanvas, useSize } from '../results/common'
+import { Legend, Swatch } from '../results/Legend'
 import { GlassCard, GlassMapChart, GlassStatusLegend, Sub, type GlassMapPlane } from './GlassMapChart'
 
 export function GlassMapResultView({ result, system }: { result: AnalysisResult; system: System }) {
@@ -160,7 +161,10 @@ export function GlassInfoResultView({ result, system }: { result: AnalysisResult
           Dispersion {range && <span className="font-normal text-secondary">valid {range}</span>}
         </h4>
         {d.curve.length > 1 ? (
-          <DispersionChart info={d} />
+          <>
+            <DispersionChart info={d} />
+            {d.indices.length > 0 && <WavelengthLegend um={d.indices.map((r) => r.um)} />}
+          </>
         ) : (
           <p className="text-secondary">Set Curve Samples above zero to plot the index over the glass’s range.</p>
         )}
@@ -222,6 +226,18 @@ export function GlassInfoResultView({ result, system }: { result: AnalysisResult
         {d.comment && <p className="mt-1 select-text text-[11px] text-secondary">{d.comment}</p>}
       </section>
     </div>
+  )
+}
+
+/** The system wavelengths marked on the dispersion curve (WavelengthLegend). */
+function WavelengthLegend({ um }: { um: number[] }) {
+  const dark = useDark()
+  return (
+    <Legend className="px-0">
+      {um.map((w, k) =>
+        Number.isFinite(w) ? <Swatch key={k} kind="dot" color={wavelengthColor(w, dark)} label={<span className="num">{fmt(w, 4)} µm</span>} /> : null,
+      )}
+    </Legend>
   )
 }
 

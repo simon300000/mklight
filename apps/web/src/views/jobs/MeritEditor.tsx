@@ -22,11 +22,12 @@ import {
   comparisonSymbol,
   defaultMeritCaption,
   deleteOperands,
-  duplicateOperand,
+  fieldMenuLabel,
+  duplicateOperands,
   evaluationHelp,
   evaluationRow,
   localIssues,
-  moveOperand,
+  moveOperandsTo,
   newOperand,
   operandDescriptor,
   operandParameters,
@@ -45,7 +46,8 @@ import {
 import { fieldUnit, imageIndex, type System } from '@/model/system'
 import { useDocument } from '@/state/document'
 import { editMerit, meritOf, useOptimize } from '@/state/optimize'
-import { useWorkspace } from '@/state/workspace'
+import { SUMMARY, useWorkspace } from '@/state/workspace'
+import { anamorphicSummary } from '../StatusCapsule'
 import { cn, isMac } from '@/lib/utils'
 import { NumberInput } from '../SettingsForm'
 import { FormRow, Section, TextInput } from '../inspector/Form'
@@ -149,7 +151,9 @@ function DefaultMeritForm({ system, merit }: { system: System; merit: MeritSetti
   const set = (name: string, change: (d: DefaultMerit) => Partial<DefaultMerit>) =>
     editMerit(name, (m) => ({ ...m, defaults: { ...m.defaults, ...change(m.defaults) } }))
   const unit = fieldUnit(system.fields.kind)
-  const anamorphic = system.surfaces.some((s) => /toroid|biconic|cylind/.test(String(s.shape?.type)))
+  // The engine's symmetry from the summary run (paraxial_xy.symmetry); else the surface kinds.
+  const summary = useWorkspace((s) => s.runs[SUMMARY]?.result?.json)
+  const anamorphic = anamorphicSummary(summary, system).anamorphic
 
   return (
     <div className="border-t border-separator pt-1">
@@ -216,7 +220,7 @@ function DefaultMeritForm({ system, merit }: { system: System; merit: MeritSetti
       <div className="flex flex-wrap gap-2 py-1">
         <IndexChecklist
           title="Fields"
-          all={system.fields.fields.map((f, k) => `${k + 1}: ${sig(f.x, 4)}, ${sig(f.y, 4)} ${unit}`)}
+          all={system.fields.fields.map((f, k) => fieldMenuLabel(k, f, unit))}
           selected={d.fields}
           onChange={(v) => set('Change Merit Fields', () => ({ fields: v }))}
         />
@@ -311,55 +315,91 @@ function ThicknessLimits({ d, set }: { d: DefaultMerit; set: (name: string, chan
 
 function OperandTable({ system, merit }: { system: System; merit: MeritSettings }) {
   const ops = merit.operands
-  const [selected, setSelected] = useState<number | null>(ops.length ? 0 : null)
+  // The selected operands (sorted) and the anchor of ⇧-click ranges.
+  const [selection, setSelection] = useState<number[]>(ops.length ? [0] : [])
+  const [anchor, setAnchor] = useState<number | null>(null)
   const [picker, setPicker] = useState(false)
+  // The gap a drag would drop into (0…length), while dragging.
+  const [dropGap, setDropGap] = useState<number | null>(null)
+  const dragging = useRef<number[] | null>(null)
   const evaluation = useOptimize((s) => s.evaluation)
   const list = useRef<HTMLDivElement>(null)
-  const sel = selected != null && selected < ops.length ? selected : ops.length ? ops.length - 1 : null
+  const selected = selection.filter((k) => k < ops.length)
+  const sel = selected.length === 1 ? selected[0] : null
+  const first = selected[0] ?? null
+  const select = (v: number[], a?: number | null) => {
+    setSelection([...new Set(v)].sort((x, y) => x - y))
+    if (a !== undefined) setAnchor(a)
+  }
 
   useEffect(() => {
-    list.current?.querySelector(`[data-index="${sel}"]`)?.scrollIntoView({ block: 'nearest' })
-  }, [sel])
+    const last = selection.at(-1)
+    if (last != null) list.current?.querySelector(`[data-index="${last}"]`)?.scrollIntoView({ block: 'nearest' })
+  }, [selection])
 
   const edit = (name: string, change: (ops: Operand[]) => Operand[]) => editMerit(name, (m) => ({ ...m, operands: change(m.operands) }))
   const add = (d: OperandDescriptor) => {
     let at = 0
     edit('Add Operand', (o) => {
-      const r = addOperand(o, newOperand(d), sel ?? (o.length ? o.length - 1 : null))
+      const r = addOperand(o, newOperand(d), first ?? (o.length ? o.length - 1 : null))
       at = r.index
       return r.operands
     })
-    setSelected(at)
+    select([at], at)
     setPicker(false)
   }
   const del = () => {
-    if (sel == null) return
-    edit('Delete Operand', (o) => deleteOperands(o, [sel]))
-    setSelected(Math.max(0, sel - 1))
+    if (!selected.length) return
+    edit(selected.length === 1 ? 'Delete Operand' : 'Delete Operands', (o) => deleteOperands(o, selected))
+    const next = Math.min(selected[0], ops.length - selected.length - 1)
+    select(next >= 0 ? [next] : [], null)
   }
   const dup = () => {
-    if (sel == null) return
-    let at = sel
-    edit('Duplicate Operand', (o) => {
-      const r = duplicateOperand(o, sel)
-      at = r.index
+    if (!selected.length) return
+    let at: number[] = []
+    edit(selected.length === 1 ? 'Duplicate Operand' : 'Duplicate Operands', (o) => {
+      const r = duplicateOperands(o, selected)
+      at = r.indices
       return r.operands
     })
-    setSelected(at)
+    select(at, at[0] ?? null)
+  }
+  const moveTo = (from: number[], gap: number) => {
+    let at: number[] = from
+    const changed = edit(from.length === 1 ? 'Move Operand' : 'Move Operands', (o) => {
+      const r = moveOperandsTo(o, from, gap)
+      at = r.indices
+      return r.operands
+    })
+    if (changed) select(at, at[0] ?? null)
   }
   const move = (step: number) => {
     if (sel == null) return
     const to = sel + step
     if (to < 0 || to >= ops.length) return
-    edit('Move Operand', (o) => moveOperand(o, sel, to))
-    setSelected(to)
+    moveTo([sel], step > 0 ? to + 1 : to)
   }
   const update = (name: string, change: (op: Operand) => Operand) => {
     if (sel == null) return
     edit(name, (o) => o.map((op, k) => (k === sel ? change(structuredClone(op)) : op)))
   }
+  const click = (k: number, e: React.MouseEvent) => {
+    if (e.shiftKey) {
+      const a = anchor ?? first ?? k
+      const lo = Math.min(a, k), hi = Math.max(a, k)
+      const range = Array.from({ length: hi - lo + 1 }, (_, i) => lo + i)
+      select(e.metaKey || e.ctrlKey ? [...selected, ...range] : range)
+    } else if (isMac ? e.metaKey : e.ctrlKey) {
+      select(selected.includes(k) ? selected.filter((x) => x !== k) : [...selected, k], k)
+    } else select([k], k)
+  }
+  const gapAt = (k: number, e: React.DragEvent) => {
+    const r = (e.currentTarget as HTMLElement).getBoundingClientRect()
+    return e.clientY < r.top + r.height / 2 ? k : k + 1
+  }
 
   const mod = isMac ? '⌥⌘' : 'Ctrl+Alt+'
+  const many = selected.length > 1
   return (
     <div className="border-t border-separator pt-1.5">
       <div className="flex items-center gap-1 pb-1.5">
@@ -373,10 +413,10 @@ function OperandTable({ system, merit }: { system: System; merit: MeritSettings 
             <OperandPicker pick={add} />
           </PopoverContent>
         </Popover>
-        <Button size="iconSm" variant="ghost" aria-label="Delete" title="Delete the selected operand (⌫)" disabled={sel == null} onClick={del}>
+        <Button size="iconSm" variant="ghost" aria-label="Delete" title={many ? 'Delete the selected operands (⌫)' : 'Delete the selected operand (⌫)'} disabled={!selected.length} onClick={del}>
           <Minus />
         </Button>
-        <Button size="iconSm" variant="ghost" aria-label="Duplicate" title="Duplicate the selected operand" disabled={sel == null} onClick={dup}>
+        <Button size="iconSm" variant="ghost" aria-label="Duplicate" title={many ? 'Duplicate the selected operands' : 'Duplicate the selected operand'} disabled={!selected.length} onClick={dup}>
           <Copy />
         </Button>
         <Button size="iconSm" variant="ghost" aria-label="Move Up" title={`Move up (${mod}↑)`} disabled={sel == null || sel === 0} onClick={() => move(-1)}>
@@ -386,7 +426,7 @@ function OperandTable({ system, merit }: { system: System; merit: MeritSettings 
           <ArrowDown />
         </Button>
         <span className="ml-auto text-[11px] text-secondary">
-          {ops.length} operand{ops.length === 1 ? '' : 's'}
+          {many ? `${selected.length} of ${ops.length} selected` : `${ops.length} operand${ops.length === 1 ? '' : 's'}`}
         </span>
       </div>
       {ops.length === 0 ? (
@@ -396,7 +436,9 @@ function OperandTable({ system, merit }: { system: System; merit: MeritSettings 
           ref={list}
           role="listbox"
           aria-label="Merit operands"
+          aria-multiselectable
           tabIndex={0}
+          title="Drag to reorder; ⇧- or ⌘-click to select several"
           className="max-h-[260px] overflow-y-auto rounded-md border border-separator outline-none focus-visible:border-accent"
           data-testid="operand-list"
           onKeyDown={(e) => {
@@ -406,11 +448,23 @@ function OperandTable({ system, merit }: { system: System; merit: MeritSettings 
             } else if (e.altKey && (e.metaKey || e.ctrlKey) && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
               e.preventDefault()
               move(e.key === 'ArrowUp' ? -1 : 1)
+            } else if ((e.key === 'a' || e.key === 'A') && (isMac ? e.metaKey : e.ctrlKey)) {
+              e.preventDefault()
+              select(ops.map((_, k) => k), 0)
             } else if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
               e.preventDefault()
-              const k = (sel ?? 0) + (e.key === 'ArrowUp' ? -1 : 1)
-              setSelected(Math.min(Math.max(k, 0), ops.length - 1))
+              const step = e.key === 'ArrowUp' ? -1 : 1
+              const from = step < 0 ? selected[0] : selected.at(-1)
+              const k = Math.min(Math.max((from ?? -step) + step, 0), ops.length - 1)
+              if (e.shiftKey && selected.length) {
+                const a = anchor ?? selected[0]
+                const lo = Math.min(a, k), hi = Math.max(a, k)
+                select(Array.from({ length: hi - lo + 1 }, (_, i) => lo + i))
+              } else select([k], k)
             }
+          }}
+          onDragLeave={(e) => {
+            if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDropGap(null)
           }}
         >
           {ops.map((op, k) => (
@@ -418,10 +472,37 @@ function OperandTable({ system, merit }: { system: System; merit: MeritSettings 
               key={k}
               index={k}
               operand={op}
-              selected={k === sel}
+              selected={selected.includes(k)}
+              dropBefore={dropGap === k}
+              dropAfter={dropGap === ops.length && k === ops.length - 1}
               row={evaluationRow(evaluation, k, op.kind.type)}
               issues={localIssues(op, system.fields.fields.length, system.wavelengths.wavelengths.length)}
-              onSelect={() => setSelected(k)}
+              onClick={(e) => click(k, e)}
+              onDragStart={(e) => {
+                const from = selected.includes(k) ? selected : [k]
+                if (!selected.includes(k)) select([k], k)
+                dragging.current = from
+                e.dataTransfer.effectAllowed = 'move'
+                e.dataTransfer.setData('application/x-mklight-operands', from.join(','))
+              }}
+              onDragOver={(e) => {
+                if (!dragging.current) return
+                e.preventDefault()
+                e.dataTransfer.dropEffect = 'move'
+                setDropGap(gapAt(k, e))
+              }}
+              onDrop={(e) => {
+                const from = dragging.current
+                if (!from) return
+                e.preventDefault()
+                moveTo(from, gapAt(k, e))
+                dragging.current = null
+                setDropGap(null)
+              }}
+              onDragEnd={() => {
+                dragging.current = null
+                setDropGap(null)
+              }}
             />
           ))}
         </div>
@@ -429,6 +510,7 @@ function OperandTable({ system, merit }: { system: System; merit: MeritSettings 
       {sel != null && ops[sel] && (
         <OperandDetail index={sel} operand={ops[sel]} system={system} row={evaluationRow(evaluation, sel, ops[sel].kind.type)} update={update} />
       )}
+      {many && <p className="py-2 text-center text-[11px] text-secondary">{selected.length} operands selected. Select one to edit it.</p>}
     </div>
   )
 }
@@ -437,16 +519,28 @@ function OperandRow({
   index,
   operand,
   selected,
+  dropBefore,
+  dropAfter,
   row,
   issues,
-  onSelect,
+  onClick,
+  onDragStart,
+  onDragOver,
+  onDrop,
+  onDragEnd,
 }: {
   index: number
   operand: Operand
   selected: boolean
+  dropBefore: boolean
+  dropAfter: boolean
   row: EvaluationRow | null
   issues: string[]
-  onSelect: () => void
+  onClick: (e: React.MouseEvent) => void
+  onDragStart: (e: React.DragEvent) => void
+  onDragOver: (e: React.DragEvent) => void
+  onDrop: (e: React.DragEvent) => void
+  onDragEnd: () => void
 }) {
   const problem = row?.error ? `The engine could not evaluate it: ${row.error}` : (issues[0] ?? null)
   const parts: string[] = []
@@ -461,13 +555,24 @@ function OperandRow({
       role="option"
       aria-selected={selected}
       data-index={index}
+      draggable
       className={cn(
-        'flex cursor-default items-center gap-2 border-b border-separator px-1.5 py-1 last:border-b-0',
+        'relative flex cursor-default items-center gap-2 border-b border-separator px-1.5 py-1 last:border-b-0',
         selected ? 'bg-accent-soft' : 'hover:bg-hover',
         !operand.enabled && 'opacity-45',
       )}
-      onClick={onSelect}
+      onClick={onClick}
+      onMouseDown={(e) => {
+        // ⇧-click selects a range, not text.
+        if (e.shiftKey) e.preventDefault()
+      }}
+      onDragStart={onDragStart}
+      onDragOver={onDragOver}
+      onDrop={onDrop}
+      onDragEnd={onDragEnd}
     >
+      {dropBefore && <span className="pointer-events-none absolute inset-x-1 -top-px h-0.5 rounded-full bg-accent" aria-hidden />}
+      {dropAfter && <span className="pointer-events-none absolute inset-x-1 -bottom-px h-0.5 rounded-full bg-accent" aria-hidden />}
       <span className="num w-5 shrink-0 text-right text-[11px] text-tertiary">{index + 1}</span>
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-1">
@@ -540,7 +645,7 @@ function OperandDetail({
           {(!single || fieldValue === 'all') && <option value="all">All fields (weighted)</option>}
           {system.fields.fields.map((f, k) => (
             <option key={k} value={k}>
-              {k + 1}: {sig(f.x, 4)}, {sig(f.y, 4)} {unit}
+              {fieldMenuLabel(k, f, unit)}
             </option>
           ))}
         </Select>

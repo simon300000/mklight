@@ -20,7 +20,8 @@ export const JOB_ICONS: Record<JobKind, React.ReactNode> = {
 }
 
 /** Header, a scrolling body, and the glass action bar at the bottom. Return
- *  triggers the element marked `data-primary` in the bar. */
+ *  triggers the element marked `data-primary` in the bar; from a number or
+ *  text field it commits the field first, then runs the action. */
 export function JobPanelFrame({
   kind,
   subtitle,
@@ -39,12 +40,25 @@ export function JobPanelFrame({
       data-testid={`job-${kind}`}
       onKeyDown={(e) => {
         const t = e.target as HTMLElement
-        if (e.key !== 'Enter' || e.defaultPrevented || t.tagName === 'TEXTAREA' || t.tagName === 'BUTTON' || t.tagName === 'SELECT') return
-        // A text field commits first (on blur); then the primary action runs.
-        const primary = bar.current?.querySelector<HTMLButtonElement>('[data-primary]:not(:disabled)')
-        if (primary && t.tagName !== 'INPUT') {
+        if (e.key !== 'Enter' || e.defaultPrevented || e.nativeEvent.isComposing || e.metaKey || e.ctrlKey || e.altKey) return
+        if (t.tagName === 'TEXTAREA' || t.tagName === 'BUTTON' || t.tagName === 'SELECT' || t.tagName === 'A') return
+        // Only the panel's own fields: a popover's search (portalled) keeps its Return.
+        if (!e.currentTarget.contains(t) || t.closest('[role="combobox"],[role="menu"],[role="dialog"]')) return
+        const primary = () => bar.current?.querySelector<HTMLButtonElement>('[data-primary]:not(:disabled)')
+        if (t.tagName === 'INPUT') {
+          const type = (t as HTMLInputElement).type
+          if (type !== 'text' && type !== 'number' && type !== '') return
+          // The field commits on Return (blur); the primary action runs once the
+          // commit has rendered, so it sees the new value (macOS default action).
           e.preventDefault()
-          primary.click()
+          ;(t as HTMLInputElement).blur()
+          setTimeout(() => primary()?.click(), 0)
+          return
+        }
+        const p = primary()
+        if (p) {
+          e.preventDefault()
+          p.click()
         }
       }}
     >

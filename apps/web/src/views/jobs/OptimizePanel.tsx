@@ -32,6 +32,7 @@ import { cn } from '@/lib/utils'
 import { NumberInput } from '../SettingsForm'
 import { FormRow, Section } from '../inspector/Form'
 import { AppliedNotice, BigNumber, JobActions, JobFailure, JobPanelFrame, Sparkline } from './JobPanel'
+import { LayoutCompare } from './glass/LayoutCompare'
 import { MeritFunctionSection } from './MeritEditor'
 import { VariablesBoundsList } from './VariablesBounds'
 
@@ -78,9 +79,10 @@ export function OptimizePanel() {
 
   // A finished, unapplied result is previewed in the window.
   const resultSystem = (job.result?.json.system ?? null) as System | null
+  const improved = job.result?.json.improved !== false
   useEffect(() => {
-    if (phase === 'review' && resultSystem) void useWorkspace.getState().setPreview(resultSystem, PREVIEW_LABEL).catch(() => {})
-  }, [phase, resultSystem])
+    if (phase === 'review' && resultSystem && improved) void useWorkspace.getState().setPreview(resultSystem, PREVIEW_LABEL).catch(() => {})
+  }, [phase, resultSystem, improved])
   useEffect(
     () => () => {
       const ws = useWorkspace.getState()
@@ -125,7 +127,7 @@ export function OptimizePanel() {
       })
       break
     case 'review':
-      actions = JobActions.review('optimize', apply, { applyDisabled: !job.result?.json.system })
+      actions = JobActions.review('optimize', apply, { applyDisabled: !job.result?.json.system || !improved })
       break
     case 'done':
       actions = JobActions.done('optimize', 'Back to the merit function and variables')
@@ -293,7 +295,7 @@ function Review({ job, system, applied }: { job: JobState; system: System; appli
         <BigNumber label="After" value={sig(finalMerit, 4)} testId="optimize-final-merit" />
         <BigNumber label="Improvement" value={percent(improvement)} />
       </div>
-      {!applied && resultSystem && (
+      {!applied && resultSystem && improved && (
         <label className="flex items-center justify-between gap-2" title="Show the optimized design in the layout and analyses before applying it">
           <span>Preview in the window</span>
           <Switch
@@ -303,6 +305,7 @@ function Review({ job, system, applied }: { job: JobState; system: System; appli
           />
         </label>
       )}
+      {!applied && resultSystem && improved && preview?.label === PREVIEW_LABEL && <LayoutCompare />}
       <p className="text-[12px] text-secondary">{status}</p>
       {history.length > 1 && (
         <div className="rounded-lg bg-content px-2 py-2 shadow-[0_0_0_0.5px_var(--separator)]">

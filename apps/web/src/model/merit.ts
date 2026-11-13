@@ -562,6 +562,45 @@ export function moveOperand(ops: Operand[], from: number, to: number): Operand[]
   )
 }
 
+/** A field for menus as specified (FieldLabel): `1: 14°`, `2: (3, 4) mm`. */
+export function fieldMenuLabel(k: number, f: { x: number; y: number }, unit: string): string {
+  const u = unit === '°' ? '°' : unit ? ' ' + unit : ''
+  const v = f.x === 0 ? sig(f.y, 6) : `(${sig(f.x, 6)}, ${sig(f.y, 6)})`
+  return `${k + 1}: ${v}${u}`
+}
+
+/** Duplicates the operands at `indices`, each right after itself; returns the
+ *  list and the copies' indices (MeritSettings.duplicate). */
+export function duplicateOperands(ops: Operand[], indices: number[]): { operands: Operand[]; indices: number[] } {
+  let next = ops
+  const sorted = [...new Set(indices)].filter((k) => k >= 0 && k < ops.length).sort((a, b) => a - b)
+  // From the end, so the earlier indices stay valid.
+  for (const k of [...sorted].reverse()) next = duplicateOperand(next, k).operands
+  // Copy j sits after its original, shifted by the j copies inserted before it.
+  return { operands: next, indices: sorted.map((k, j) => k + j + 1) }
+}
+
+/** Moves the operands at `from` to the insertion offset `to` (a gap in the
+ *  current list, 0…length; List `onMove` semantics), keeping `combine`
+ *  references; returns the list and the moved operands' new indices. */
+export function moveOperandsTo(ops: Operand[], from: number[], to: number): { operands: Operand[]; indices: number[] } {
+  const moving = [...new Set(from)].filter((k) => k >= 0 && k < ops.length).sort((a, b) => a - b)
+  if (!moving.length) return { operands: ops, indices: [] }
+  const set = new Set(moving)
+  const rest = ops.map((_, k) => k).filter((k) => !set.has(k))
+  const at = Math.max(0, Math.min(to, ops.length)) - moving.filter((k) => k < to).length
+  const order = [...rest.slice(0, at), ...moving, ...rest.slice(at)]
+  if (order.every((old, k) => old === k)) return { operands: ops, indices: moving }
+  const newIndex = new Map(order.map((old, k) => [old, k]))
+  return {
+    operands: remapCombine(
+      order.map((k) => ops[k]),
+      (old) => newIndex.get(old) ?? null,
+    ),
+    indices: moving.map((k) => newIndex.get(k)!),
+  }
+}
+
 /** The EFL hold the engine adds (`hold EFL`, or `hold EFL (penalty)`). */
 export const isEflHold = (op: Operand) => op.kind.type === 'efl' && op.label.startsWith('hold EFL')
 

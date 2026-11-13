@@ -342,6 +342,8 @@ function display(v: number, p: ParamPath | null): number {
 function Comparison({ c, start, system, applied }: { c: GlassCombination; start: number; system: System; applied: boolean }) {
   const before = useGlassSubstitution((s) => s.startGlasses)
   const previewError = useGlassSubstitution((s) => s.previewError)
+  const appliedLayouts = useGlassSubstitution((s) => s.appliedLayouts)
+  const design = useWorkspace((s) => s.snapshot)
   const moved = movedChanges(c)
   return (
     <div className="select-text rounded-lg bg-hover p-3" data-testid="glass-comparison">
@@ -389,11 +391,10 @@ function Comparison({ c, start, system, applied }: { c: GlassCombination; start:
           </div>
         </details>
       )}
-      {!applied && (
-        <div className="mt-2">
-          <LayoutCompare />
-        </div>
-      )}
+      <div className="mt-2">
+        {/* While previewed, the candidate's layout; once applied, the design's. */}
+        {applied ? <LayoutCompare before={appliedLayouts?.before ?? null} after={appliedLayouts?.after ?? design} /> : <LayoutCompare />}
+      </div>
     </div>
   )
 }
@@ -405,7 +406,10 @@ function CandidateMap({ c, system }: { c: GlassCombination | null; system: Syste
   const set = useGlassSubstitution((s) => s.set)
   const loadMap = useGlassSubstitution((s) => s.loadMap)
   const snapHash = useWorkspace((s) => s.snapshot?.hash)
-  useEffect(() => loadMap(), [snapHash, loadMap])
+  const libraryHash = useWorkspace((s) => s.snapshot?.libraryHash)
+  // Reloads when the design or the glass catalogs change.
+  const materials = useWorkspace((s) => s.materials)
+  useEffect(() => loadMap(), [snapHash, libraryHash, materials, loadMap])
   const highlighted = useMemo(() => (c ? combinationHighlights(c, system) : []), [c, system])
   if (!map) return null
   return (
