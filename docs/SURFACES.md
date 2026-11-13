@@ -357,7 +357,7 @@ clipped as usual. The choice is geometry, not clipping: unclipped traces
 rule on every intersection path: the scalar trace, the CPU packets (lanes
 crossing a surface with an extent twice go through the scalar step, so they
 stay bitwise identical), ghost paths, the GPU trace, ghost and aiming
-kernels in emulation and on Metal (the f32 solve tests the packed aperture
+kernels in emulation, on Metal and on WebGPU (the f32 solve tests the packed aperture
 sizes, edge tolerance included). Aspheres and other sag shapes start Newton
 from that root and converge to the crossing next to it. The object surface,
 where a ray starts rather than arrives, keeps the nearer-vertex rule when a

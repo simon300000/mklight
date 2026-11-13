@@ -159,8 +159,67 @@ struct MklRoot {
     p: vec3<f32>,
 }
 
-// Conic steps 2-5 of mklight_trace::surface from q; ok false for a miss.
-fn mkl_conic_from(c: f32, k: f32, q: vec3<f32>, d: vec3<f32>) -> MklRoot {
+// The surface's fixed extent for the conic root choice (trace_kernel::Pick):
+// packed aperture kind and sizes (an annulus filled to its outer radius) and
+// t0, the distance from the ray start to q.
+struct MklPick {
+    kind: u32,
+    a: vec2<f32>,
+    t0: f32,
+}
+
+fn mkl_pick(s: u32, t0: f32) -> MklPick {
+    let sf = &mkl_surfaces[s];
+    return MklPick((*sf).aperture, vec2<f32>((*sf).aperture_params[0], (*sf).aperture_params[1]), t0);
+}
+
+fn mkl_in_extent(e: MklPick, p: vec3<f32>) -> bool {
+    switch (e.kind) {
+        case MKL_APERTURE_CIRCULAR: {
+            return mkl_fma(p.x, p.x, mkl_mul(p.y, p.y)) <= mkl_mul(e.a.x, e.a.x);
+        }
+        case MKL_APERTURE_ANNULAR: {
+            return mkl_fma(p.x, p.x, mkl_mul(p.y, p.y)) <= mkl_mul(e.a.y, e.a.y);
+        }
+        case MKL_APERTURE_RECTANGULAR: {
+            return abs(p.x) <= e.a.x && abs(p.y) <= e.a.y;
+        }
+        case MKL_APERTURE_ELLIPTICAL: {
+            let u = mkl_div(p.x, e.a.x);
+            let v = mkl_div(p.y, e.a.y);
+            return mkl_fma(u, u, mkl_mul(v, v)) <= 1.0;
+        }
+        default: {
+            return true;
+        }
+    }
+}
+
+// Step 6 (trace_kernel::Pick::keep_first): whether (t1, p1) wins over
+// (t2, p2), both on the vertex sheet.
+fn mkl_keep_first(e: MklPick, t1: f32, p1: vec3<f32>, t2: f32, p2: vec3<f32>) -> bool {
+    let nearer = mkl_fma(p1.x, p1.x, mkl_mul(p1.y, p1.y)) <= mkl_fma(p2.x, p2.x, mkl_mul(p2.y, p2.y));
+    if (e.kind == MKL_APERTURE_NONE) {
+        return nearer;
+    }
+    let in1 = mkl_in_extent(e, p1);
+    let in2 = mkl_in_extent(e, p2);
+    if (in1 != in2) {
+        return in1;
+    }
+    let ahead1 = t1 >= -e.t0;
+    let ahead2 = t2 >= -e.t0;
+    if (!in1 || !(ahead1 || ahead2)) {
+        return nearer;
+    }
+    if (ahead1 && ahead2) {
+        return t1 <= t2;
+    }
+    return ahead1;
+}
+
+// Conic steps 2-6 of mklight_trace::surface from q; ok false for a miss.
+fn mkl_conic_from(c: f32, k: f32, q: vec3<f32>, d: vec3<f32>, pick: MklPick) -> MklRoot {
     let kap = mkl_add(1.0, k);
     let a = mkl_mul(c, mkl_add(mkl_fma(d.x, d.x, mkl_mul(d.y, d.y)), mkl_mul(mkl_mul(kap, d.z), d.z)));
     let b = mkl_sub(mkl_mul(c, mkl_add(mkl_fma(q.x, d.x, mkl_mul(q.y, d.y)), mkl_mul(mkl_mul(kap, q.z), d.z))), d.z);
@@ -194,8 +253,7 @@ fn mkl_conic_from(c: f32, k: f32, q: vec3<f32>, d: vec3<f32>) -> MklRoot {
         let t = mkl_div(qq, a);
         let pt = mkl_at(t, d, q);
         if (mkl_is_finite(t) && mkl_finite3(pt) && mkl_on_sheet(kap, c, pt)) {
-            let r2 = mkl_fma(pt.x, pt.x, mkl_mul(pt.y, pt.y));
-            let keep = have && mkl_fma(bp.x, bp.x, mkl_mul(bp.y, bp.y)) <= r2;
+            let keep = have && mkl_keep_first(pick, bt, bp, t, pt);
             if (!keep) {
                 have = true;
                 bt = t;
@@ -263,10 +321,10 @@ struct MklNewton {
 
 // Newton on the sag residual from q; MKL_RAY_OK and t on success, else the
 // MKL_RAY_* failure code.
-fn mkl_asphere_from(s: u32, q: vec3<f32>, d: vec3<f32>) -> MklNewton {
+fn mkl_asphere_from(s: u32, q: vec3<f32>, d: vec3<f32>, t0: f32) -> MklNewton {
     let c = mkl_surfaces[s].curvature;
     let k = mkl_surfaces[s].conic;
-    let seed = mkl_conic_from(c, k, q, d);
+    let seed = mkl_conic_from(c, k, q, d, mkl_pick(s, t0));
     var t = select(0.0, seed.t, seed.ok);
     let kap = mkl_add(1.0, k);
     var g_first = 0.0;
@@ -399,7 +457,7 @@ fn mkl_intersect_legacy(s: u32, shape: u32, p: MklDv, d: MklDv) -> MklHit {
     if (shape == MKL_SHAPE_EVEN_ASPHERE && (*sf).num_asphere > 0u) {
         // trace_kernel::asphere_refine_df: two double-float Newton steps and
         // the normal from the double-float slope.
-        let r = mkl_asphere_from(s, qf, dfv);
+        let r = mkl_asphere_from(s, qf, dfv, t0.x);
         if (r.code != MKL_RAY_OK) {
             return mkl_miss(r.code);
         }
@@ -428,7 +486,7 @@ fn mkl_intersect_legacy(s: u32, shape: u32, p: MklDv, d: MklDv) -> MklHit {
         hit.x = x;
         hit.g = MklDv(mkl_df_neg(mkl_df_mul(x.x, gs)), mkl_df_neg(mkl_df_mul(x.y, gs)), w);
     } else {
-        let root = mkl_conic_from(c, k, qf, dfv);
+        let root = mkl_conic_from(c, k, qf, dfv, mkl_pick(s, t0.x));
         if (!root.ok) {
             return mkl_miss(MKL_RAY_MISS);
         }
@@ -461,8 +519,8 @@ fn mkl_intersect_legacy(s: u32, shape: u32, p: MklDv, d: MklDv) -> MklHit {
 // Safeguarded Newton on z - sag from the conic seed (trace_kernel::sag_from):
 // the reference's bracket, backtracking and Miss / NoConvergence /
 // OutsideDomain decisions in f32.
-fn mkl_sag_from(s: u32, q: vec3<f32>, d: vec3<f32>) -> MklNewton {
-    let seed = mkl_conic_from(mkl_surfaces[s].curvature, mkl_surfaces[s].conic, q, d);
+fn mkl_sag_from(s: u32, q: vec3<f32>, d: vec3<f32>, t0: f32) -> MklNewton {
+    let seed = mkl_conic_from(mkl_surfaces[s].curvature, mkl_surfaces[s].conic, q, d, mkl_pick(s, t0));
     var t = select(0.0, seed.t, seed.ok);
     var have_pos = false;
     var have_neg = false;
@@ -567,7 +625,7 @@ fn mkl_intersect(s: u32, p: MklDv, d: MklDv) -> MklHit {
     }
     let ta = mkl_df_neg(mkl_ddot(p, d));
     let q = mkl_point_on(p, ta, d);
-    let r = mkl_sag_from(s, mkl_hi3(q), mkl_hi3(d));
+    let r = mkl_sag_from(s, mkl_hi3(q), mkl_hi3(d), ta.x);
     if (r.code != MKL_RAY_OK) {
         return mkl_miss(r.code);
     }

@@ -980,3 +980,38 @@ fn benchmark_extended_shapes() {
         }
     }
 }
+
+/// A steep ray crossing a surface that bulges toward it twice (the first
+/// crossing lies farther from the axis), next to ordinary rays: the device
+/// matches the emulation bitwise on the conic, even-asphere and general-sag
+/// paths for every kind of extent, and takes the root the extent calls for
+/// (docs/SURFACES.md §8; the twin of the Metal test).
+#[test]
+fn steep_double_crossing_bitwise() {
+    let g = crate::gpu_or_skip!();
+    let c = CpuF32Backend::matching(&g.precision().probe);
+    let mut rays = RayBatch::with_capacity(3);
+    let d = Vec3::new(0.0, 0.999, 0.050).normalized();
+    rays.push_f64([0.0, -30.0, -2.0], [d.x, d.y, d.z], 1);
+    rays.push_f64([0.0, 2.0, -2.0], [0.0, 0.0, 1.0], 1);
+    let d = Vec3::new(0.0, 0.1, 1.0).normalized();
+    rays.push_f64([1.0, -3.0, -2.0], [d.x, d.y, d.z], 1);
+    for shape in testutil::double_crossing_shapes() {
+        for (extent, first) in testutil::double_crossing_extents() {
+            let mut sys = testutil::one_surface(shape.clone());
+            (sys.surfaces[1].semi_diameter, sys.surfaces[1].aperture) = extent.clone();
+            let t = testutil::tracer(sys);
+            let p = PackedSystem::pack_all(t.system()).unwrap();
+            let req = |h| {
+                let mut r = TraceRequest::new(h, rays.clone(), 0, 1);
+                r.record = RecordMode::AllSurfaces;
+                r.apply_apertures = false;
+                r
+            };
+            let what = format!("{shape:?} {extent:?}");
+            let a = run_both(g, &c, &p, &req, &what);
+            let y = a.y[0];
+            assert!(if first { y < -5.0 } else { y > 3.0 }, "{what}: {y}");
+        }
+    }
+}

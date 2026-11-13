@@ -64,15 +64,9 @@ fn sample_accuracy(engine: &Engine, device: &str) {
     let mut attempts = Vec::new();
     for (name, system) in samples::all() {
         let session = engine.session_from_project(Project::new(system)).unwrap();
-        for info in engine
-            .analyses()
-            .into_iter()
-            .filter(|a| {
-                a.gpu_path
-                    && supported.contains(&a.name)
-                    && !solver::JOBS.contains(&a.name.as_str())
-            })
-        {
+        for info in engine.analyses().into_iter().filter(|a| {
+            a.gpu_path && supported.contains(&a.name) && !solver::JOBS.contains(&a.name.as_str())
+        }) {
             let mut request = AnalysisRequest::new(&info.name, Value::Null);
             request.backend = Some(Backend::CpuReference);
             let cpu = session.run_analysis(&request, &JobContext::new()).unwrap();
