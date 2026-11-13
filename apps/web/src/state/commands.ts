@@ -206,9 +206,9 @@ export const COMMANDS: Command[] = [
   { id: 'undo', title: 'Undo', shortcut: 'mod+z', run: () => doc().undo(), enabled: () => doc().past.length > 0 },
   { id: 'redo', title: 'Redo', shortcut: 'shift+mod+z', run: () => doc().redo(), enabled: () => doc().future.length > 0 },
   { id: 'insertBefore', title: 'Insert Surface Before', shortcut: 'shift+mod+i', run: () => insertSurfaceAt(Math.max(view().selection, 1)) },
-  { id: 'insertAfter', title: 'Insert Surface After', shortcut: 'alt+shift+mod+i', run: () => insertSurfaceAt(view().selection + 1) },
+  { id: 'insertAfter', title: 'Insert Surface After', shortcut: 'alt+mod+Enter', run: () => insertSurfaceAt(view().selection + 1) },
   { id: 'delete', title: 'Delete Surface', shortcut: 'mod+Backspace', run: deleteSelectedSurface, enabled: () => canDelete(doc().project.system, view().selection) },
-  { id: 'stop', title: 'Make Aperture Stop', shortcut: 'alt+shift+mod+t', run: () => makeStop(), enabled: hasSurfaceSelection },
+  { id: 'stop', title: 'Make Aperture Stop', shortcut: 'alt+mod+p', run: () => makeStop(), enabled: hasSurfaceSelection },
   {
     id: 'toggleVariable',
     title: 'Toggle Variable',

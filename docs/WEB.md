@@ -13,115 +13,200 @@ Two parts: the web UI (`apps/web`, this section first) and the engine module
 
 ### Run and build
 
-Requirements: Node 22 or later and pnpm 10 or later.
+Requirements: Node 22 or later and pnpm 10 or later; for the real engine the
+wasm toolchain of "The engine" below.
 
 ```sh
 cd apps/web
 pnpm install
+pnpm build:wasm     # scripts/build-wasm.sh → engine/pkg (once, and after engine changes)
 pnpm dev            # http://localhost:5173, cross-origin isolated
-pnpm build          # static dist/, relative paths (base './')
+pnpm build          # static dist/: the app, the wasm, its workers, the isolation worker
 pnpm preview        # serves dist/ with the COOP/COEP headers
 ```
 
-`pnpm build` writes a static `dist/` with relative asset paths, so it works
-from any static host and any subpath (`https://example.org/tools/mklight/`).
-There is no server code and no SSR. For the threaded engine the host must
-send `Cross-Origin-Opener-Policy: same-origin` and
-`Cross-Origin-Embedder-Policy: require-corp` (the dev and preview servers do);
-without them the page still works, and the status popover shows
-"Cross-origin isolated: No".
+`pnpm build` writes a static `dist/` with relative paths (`base: './'`), so it
+works from any static host and any subpath (`https://example.org/tools/mklight/`):
+checked in Chromium and WebKit from a subpath of a plain static server that
+sends no special headers. There is no server code and no SSR. The threaded
+engine needs a cross-origin isolated page; a host that cannot send
+`Cross-Origin-Opener-Policy: same-origin` and
+`Cross-Origin-Embedder-Policy: require-corp` (GitHub Pages) gets them from
+`coi-serviceworker.js`, which the build places next to `index.html` and which
+`index.html` loads first. The status popover shows the engine, its threads,
+cross-origin isolation and WebGPU.
 
 **Engine choice.** The UI imports the engine as `@engine`
-(`apps/web/engine/src/index.ts`, `createEngine()`). When that module is not in
-the checkout, `@engine` resolves to a stub and the app runs on the **mock
-engine** (`src/engine-mock`): synthetic but correctly shaped results from a
-small rotationally symmetric ray trace, labelled "Mock" in the toolbar and
-"backend mock" in every result. Choose explicitly with `VITE_ENGINE=mock|wasm`
-at build time or `?engine=mock|wasm` in the URL. Other URL parameters:
+(`apps/web/engine/src/index.ts`). When its wasm package (`engine/pkg`) is
+built, the app runs on the **real engine** by default. Without it, or with
+`VITE_ENGINE=mock` at build time or `?engine=mock` in the URL, it runs on the
+**mock engine** (`src/engine-mock`): synthetic but correctly shaped results
+for every analysis and design job from a small rotationally symmetric ray
+trace, labelled "Mock" in the toolbar and in every result. `src/engine/adapt.ts`
+maps the module's wrappers onto the UI's contract (`src/engine/types.ts`):
+progress stage text parsed into live detail as the macOS app does, buffer
+shapes, the envelope, backend requests and errors. Other URL parameters:
 `?sample=double_gauss` opens a sample, `?fresh` skips the autosaved document.
 
 **Tests.**
 
 ```sh
-pnpm test                                   # Vitest: model, state, mock engine, renderers
+pnpm test                                     # Vitest: model, state, mock engine, renderers, arrangement
 pnpm exec playwright install chromium webkit  # once
-pnpm test:e2e                               # Playwright smoke tests, Chromium and WebKit
+pnpm test:e2e                                 # Playwright on the mock engine, Chromium and WebKit
+pnpm test:e2e:wasm                            # Playwright on the real engine (needs engine/pkg)
 pnpm typecheck
 ```
 
-The Playwright tests build the app with the mock engine, serve it with
-`vite preview` on port 4317 and walk the basic workflow: open a sample, edit a
-radius in the lens table, add a spot diagram pane, undo.
+`test:e2e` builds with the mock engine and serves it on port 4317: open a
+sample, edit a radius in the lens table, add a spot diagram pane, undo; the
+System page and the status popover; Optimize → Apply to Design → Undo; the
+panel arrangement, 3-D and a separate window. `test:e2e:wasm` builds with
+the real engine and serves it on port 4318: the Cooke triplet, a radius edit,
+spot and MTF panes computed by the engine, and Optimize → Apply → Undo.
 
 ### Structure
 
 | path | role |
 |---|---|
-| `src/engine/types.ts` | The engine boundary as the UI codes against it (mirrors the Swift `EngineClient`; JSON keeps the engine's snake_case keys) |
-| `src/engine/index.ts` | Chooses the WASM engine or the mock |
+| `src/engine/types.ts`, `adapt.ts`, `index.ts` | The engine boundary as the UI codes against it, the adapter to the WASM module, the choice of engine |
 | `src/engine-mock/` | The mock engine (`createMockEngine`), real descriptors from `mklight analyses --json` |
-| `src/model/` | Pure model code: number format, system edits, surface-type descriptors, the `.mklight` file, samples, analysis titles |
+| `src/model/` | Pure model code: number format, system edits, surface types, param paths, solves, materials, sag, merit, bounds, tolerances, glasses, spectrum, the `.mklight` file, samples |
 | `src/state/document.ts` | Simulation state: the project and its undo history (named actions) |
-| `src/state/workspace.ts` | Snapshots, panes and runs (stale, automatic update, cancel, fresh runs) |
-| `src/state/view.ts` | Window state: selection, inspector page, panel visibility, toasts |
-| `src/state/files.ts` | New, Samples, Open/Save, Import, IndexedDB autosave |
+| `src/state/workspace.ts` | Snapshots, preview snapshots, panes and runs (stale, automatic update, cancel, fresh runs) |
+| `src/state/jobs.ts` and `optimize.ts`, `tolerance.ts`, `glassSubstitution.ts`, `solves.ts` | The design jobs: the shared run life cycle and each job's own session |
+| `src/state/arrangement.ts` | The panel tree of splits and tab groups per window (`PanelArrangement`) |
+| `src/state/view.ts`, `preferences.ts` | Window state; the backend preference |
+| `src/state/files.ts`, `catalogs.ts` | Documents, import, autosave and recovery; glass catalogs |
 | `src/state/commands.ts` | Menu commands and keyboard shortcuts |
-| `src/views/` | The window: toolbar, sidebar, lens data, layout, analysis panes, inspector |
-| `src/views/results/` | Result renderers (spot, fans, MTF, PSF, field curvature, wavefront, tables, generic) |
+| `src/views/` | The window: toolbar, sidebar, lens data, layout (2-D and WebGL2 3-D), panels and separate windows, analysis panes, inspector, job panels |
+| `src/views/results/`, `src/views/analysis/`, `src/views/glassmap/` | A view for every analysis, pane settings, run details, the glass map |
 | `src/components/ui/` | shadcn/ui-style components on Radix and Tailwind |
 
 Document state and view state are separate, as in the Swift app. Every edit
-replaces the system with a new value and records the previous project under
-the action's name (`Change Radius`, `Insert Surface`, `Apply Wavelength
-Preset`, …, the macOS names), so Undo and Redo restore whole design states and
-the menu says what they undo. Each design value is debounced (150 ms) and
-frozen into an engine snapshot; panes run against snapshots, are stale as soon
-as the snapshot or their settings differ, and re-run when their automatic
-update is on. Run and Try Again send `fresh: true`.
+replaces the system (or the project's variables, merit, tolerances and
+catalogs) with a new value and records the previous project under the
+action's name (`Change Radius`, `Insert Surface`, `Apply Wavelength Preset`,
+`Apply Optimization`, `Apply Solves`, `Apply Glass Substitution`, `Replace
+Tolerances`, `Change Trials`, …, the macOS names), so Undo and Redo restore
+whole design states and the menu says what they undo. Each design value is
+debounced (150 ms) and frozen into an engine snapshot; panes run against
+snapshots, are stale as soon as the snapshot or their settings differ, and
+re-run when their automatic update is on. Run and Try Again send
+`fresh: true`. A preview (an optimisation, substitution or tolerance build)
+shows a candidate snapshot in the layout and every pane, labelled "not
+applied"; design jobs always run on the design's own snapshot.
 
 ### Documents
 
 * **New**, **Samples…** (the gallery of `samples.json`, read at build time from
-  `apps/macos/Sources/MKLightModel/Resources/samples.json`), **Open…**,
-  **Save**, **Save As…**, **Replace with Sample** (undoable).
+  `apps/macos/Sources/MKLightModel/Resources/samples.json`, thumbnails drawn
+  from the engine's layout), **Open…**, **Save**, **Save As…**, **Replace with
+  Sample** (undoable).
 * **File access.** Where the browser has the File System Access API (Chrome,
   Edge), Open and Save use real file handles and Save writes in place. Elsewhere
   (Safari, Firefox) Open uses a file input and Save downloads the file.
 * **Import.** `.zmx` and `.seq` files open through the engine's importer, by
   Open… or by dropping them on the window; the import report groups the
-  warnings as in the macOS app. Imported files are never written: Save asks for
-  a new `.mklight` file.
-* **Autosave.** The current document (with its panes) is kept in IndexedDB and
-  restored on the next visit, with its file handle where the browser allows.
+  warnings as in the macOS app and offers Load Glass Catalog…, which imports
+  the file again with it. A clean import shows a short note. Imported files are
+  never written: Save asks for a new `.mklight` file.
+* **Autosave and recovery.** The current document (with its panes and panel
+  arrangement) is kept in IndexedDB. A document with unsaved changes is
+  offered for recovery in the welcome window on the next visit.
 
 ### Window
 
-The sidebar (Lens Data, Layout, Issues, then every engine analysis by
-category, searchable; a click shows the analysis in the focused pane, ⌥-click
-or the context menu opens a new pane), the content (lens data across the top,
-the layout and the analysis panes side by side under it, dividers to drag,
-double-click for equal shares) and the full-height inspector whose part of the
-toolbar holds its page tabs (Surface, System). The toolbar has the app menu
-(File, Edit, Lens, View, Analysis), the document title, the status capsule
-(EFL, F/#, total track, issues; its popover has the first-order data and the
-engine: readiness, threads, cross-origin isolation, WebGPU, backends), Add
-Analysis and the inspector toggle.
+Sidebar, content and a full-height inspector, as in the macOS app. The
+content is a tree of splits whose leaves are tab groups: panels (the lens
+data, the layout, every analysis pane) drag by their header or tab onto drop
+zones outlined in the accent colour; dividers drag (double click: equal
+shares); View ▸ Panel has Move to New Window, Move to Main Window, Hide/Close
+and Reset Panel Layout. The inspector's tabs in its part of the toolbar are
+Surface, System and the design jobs (Optimize, Glass Substitution, Tolerance,
+Apply Solves), each running job's tab marked with a dot; the status capsule
+shows each running job ("Optimizing · 479", click to show it), EFL (EFL y and
+the squeeze for anamorphic designs), F/#, total track and the issues; its
+popover has the first-order data, the engine and the backend picker.
 
-Keyboard (⌘ on Mac, Ctrl elsewhere): ⌘O open, ⌘S save, ⇧⌘S save as, ⌥⌘N new,
-⇧⌘N samples, ⌘Z / ⇧⌘Z undo / redo, ⇧⌘I / ⌥⌘I insert before / after, ⌘⌫ delete
-surface, ⇧⌘T make stop, ⌘R run analyses, ⌘. cancel, ⌃⌘I inspector, ⌃⌘S
-sidebar, ⌃⌘E issues, ⌥⌘E lens data, ⌥⌘L layout, ⌘1 / ⌥⌘1 Surface / System.
-Browsers reserve some keys (⌘N, ⌘T, ⌘W): New is ⌥⌘N on the web, and ⇧⌘T may
-reopen a closed tab in some browsers before the page sees it.
+Keyboard (⌘ on Mac, Ctrl elsewhere; the Mac's ⌃⌘ shortcuts are
+Ctrl+Alt+Shift elsewhere): ⌘K command palette, ⌘O open, ⌘S save, ⇧⌘S save
+as, ⌥⌘N new, ⌥⌘O samples, ⌘Z / ⇧⌘Z undo / redo, ⇧⌘I / ⌥⌘↩ insert before /
+after, ⌘⌫ delete surface, ⌥⌘P make stop, ⌃⌘V toggle variable, ⌃⌘O optimize,
+⌃⌘G glass substitution, ⌃⌘T tolerance, ⌃⌘L apply solves, ⌃⌘E issues, ⌘↩ run
+analyses, ⌘. cancel, ⌥⌘Y / ⌥⌘X / ⌥⌘3 y–z / x–z / 3-D, ⌥⌘0 fit, ⌥⌘L layout,
+⌥⌘E lens data, ⌃⌘I inspector, ⌃⌘S sidebar, ⌥⌘1 / ⌥⌘2 Surface / System. In a
+job panel Return commits a field and runs the primary action.
+
+### Web equivalents of macOS features
+
+Where a browser cannot do what the Mac app does, the web app does the nearest
+thing:
+
+* **Menu bar** → the app menu in the toolbar (File, Edit, Lens, Design, View,
+  Analysis) with the same commands and shortcuts. Browsers keep ⌘N, ⌘T and ⌘W:
+  New is ⌥⌘N, and ⇧⌘T may reopen a closed tab in some browsers before the page
+  sees it.
+* **Separate windows** → same-origin popup windows rendered from the main
+  page with React portals, so they share the design live; they open on a user
+  action (popup blockers), close with the main window and reopen with the
+  project (a blocked popup leaves the panels docked, with Open Windows in a
+  toast).
+* **Document files** → the File System Access API where available, else an
+  input and a download; autosave in IndexedDB instead of autosave in place.
+* **Glass catalog paths** → a catalog's text is kept in IndexedDB by name and
+  loaded again when a project lists it; one never loaded in this browser
+  shows as not loaded, with Locate… to choose the file.
+* **Image simulation source files** → the chosen image is kept with the
+  pane's settings in the project instead of its path.
+* **Metal viewport** → a WebGL2 3-D view and a 2-D canvas for the sections.
+* **Liquid Glass** → backdrop-filter translucency on the toolbar and popovers
+  only; system font, light and dark from the system.
 
 ### Differences from the macOS app
 
-Not yet on the web: the design jobs (Optimize, Glass Substitution, Tolerance,
-Apply Solves), the 3-D layout, separate windows and drag-and-drop panel
-arrangement (tabs and splits), variables and solve markers in the table, melt
-offsets in the inspector, the run-local spectrum control, glass catalogs,
-configurations editing, dedicated views for the field maps, glass map, image
-simulation, ghosts and stray light (they show with the generic result view).
+Same features, concepts, engine behaviour and wording (undo names, job
+states, Try Again recomputing); web patterns where they read better:
+
+* **Command palette** (⌘K) over every command, analysis, surface and sample,
+  beside the toolbar's app menu.
+* **URL state**: the inspector page (a design job included), the selected
+  surface and the samples dialog are in the URL hash, so reload and
+  Back/Forward behave; `?sample=` opens a sample once.
+* **Shortcuts** avoid the browser's own: ⌘-digits (tabs), ⌘0 (zoom), ⌘R
+  (reload), ⇧⌘T, ⇧⌘N, ⌘N, ⌘T, ⌘W and ⌥⌘I (developer tools) are left alone, so
+  Run Analyses is ⌘↩, the layout views are ⌥⌘Y / ⌥⌘X / ⌥⌘3 / ⌥⌘0, the
+  inspector pages ⌥⌘1 / ⌥⌘2, Insert Surface After ⌥⌘↩ and Make Stop ⌥⌘P;
+  a test keeps every shortcut unique on the Mac and elsewhere.
+* **Narrow windows and tablets** (below 900 px): the sidebar is a drawer, the
+  inspector a sheet (a scrim or Escape closes them) and the panels stack in a
+  scrolling column; panels drag by touch, and each panel's More menu is the
+  tap alternative to dragging; charts and maps show values on tap.
+* **Standard web dialogs, menus and toasts** (Radix), focusable and labelled
+  for assistive technology; the glass map and the operand list take keyboard
+  focus.
+* **Narrow panes** fold by their width (about 360 / 300 / 260 px), not at
+  fixed macOS points; lens column widths are kept per browser session.
+
+### Known gaps
+
+* WebKit and the real engine (engine module, reported to that work):
+  optimisations stall partway (the Cooke triplet at iteration 48, the Double
+  Gauss at 78) and ignore Stop, so the real-engine WebKit optimize test is
+  marked fixme; under the Vite dev server WebKit blocks the engine's
+  thread-host worker by COEP (the built app under `vite preview` or a static
+  host works, with one logged "thread host failed").
+* Undoing Add Glass Catalog starts a new engine session without the catalog
+  but does not free the old one until reload.
+* Dragging a panel outside the browser: the browser cannot draw outside its
+  own windows, so the new-window outline shows only where it overlaps them.
+* While popups are blocked, a project's separate windows stay docked, and an
+  autosave made then no longer lists them.
+* The glass map: Return marks a glass in the substitution panel; the glass's
+  data card opens only in the glass map pane.
+* The mock engine cannot unload a glass catalog: undoing Add Glass Catalog
+  rebuilds the real engine's session without it, but on the mock the glasses
+  stay until reload.
 
 ## The engine
 

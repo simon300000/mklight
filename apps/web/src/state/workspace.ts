@@ -111,8 +111,12 @@ interface WorkspaceState {
 }
 
 const jobs = new Map<string, AnalysisJob>()
+/** What each running job computes: its snapshot's hash and its request. */
+const jobRequests = new WeakMap<AnalysisJob, string>()
 let snapshotTimer: ReturnType<typeof setTimeout> | null = null
 let snapshotSeq = 0
+/** The latest preview request: an older one that finishes later is dropped. */
+let previewSeq = 0
 let paneSeq = 0
 
 /** A new pane's settings (`Workspace.startingSettings`): a spot diagram shows
@@ -211,6 +215,7 @@ export const useWorkspace = create<WorkspaceState>()((set, get) => {
     preview: null,
 
     async setPreview(system, label = '') {
+      const seq = ++previewSeq
       const engine = get().engine
       if (!system || !engine) {
         if (get().preview) {
@@ -221,9 +226,11 @@ export const useWorkspace = create<WorkspaceState>()((set, get) => {
       }
       try {
         const snap = await engine.openSnapshot(system)
+        if (seq !== previewSeq) return
         set({ preview: { snapshot: snap, label } })
         get().refresh()
       } catch (e) {
+        if (seq !== previewSeq) return
         set({ preview: null })
         throw e
       }
@@ -249,6 +256,8 @@ export const useWorkspace = create<WorkspaceState>()((set, get) => {
         try {
           const snap = await engine.openSnapshot(system)
           if (seq !== snapshotSeq) return
+          // A design change ends the preview, and one still opening.
+          previewSeq++
           set({ snapshot: snap, snapshotPending: false, modelIssues: [], preview: null })
           get().refresh()
         } catch (e) {
@@ -334,6 +343,7 @@ export const useWorkspace = create<WorkspaceState>()((set, get) => {
         return
       }
       jobs.set(key, job)
+      jobRequests.set(job, snapshot.hash + ' ' + rk)
       patchRun(key, { status: 'running', progress: 0, stage: null, error: undefined })
       job.onProgress((p) => {
         if (jobs.get(key) === job) patchRun(key, { progress: p.progress, stage: p.stage ?? null })
@@ -397,7 +407,10 @@ export const useWorkspace = create<WorkspaceState>()((set, get) => {
         if (!req) continue
         const run = s.runs[k]
         const current = run?.result && run.status !== 'failed' && !isStale(s, run, req.analysis, req.settings)
-        if (!current) s.run(k)
+        // A job already computing this snapshot and request keeps running.
+        const job = jobs.get(k)
+        const computing = job && jobRequests.get(job) === activeSnapshot(s)!.hash + ' ' + requestKey(req.analysis, req.settings)
+        if (!current && !computing) s.run(k)
       }
     },
   }

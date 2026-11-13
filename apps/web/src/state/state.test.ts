@@ -5,6 +5,8 @@ import { clone, curvatureOf } from '@/model/system'
 import { useDocument, undoName, redoName, isDirty } from './document'
 import { useWorkspace, isStale, LAYOUT } from './workspace'
 import { eventShortcut } from './commands'
+import { useJobs } from './jobs'
+import { openSample } from './files'
 
 const dg = () => clone(SAMPLES.find((s) => s.id === 'double_gauss')!.system)
 
@@ -53,6 +55,59 @@ describe('workspace', () => {
     await new Promise((r) => setTimeout(r, 400))
     const s = useWorkspace.getState()
     expect(isStale(s, s.runs[key], 'spot_diagram', {})).toBe(true)
+  })
+
+  it('keeps only the latest preview: an older one that opens later is dropped', async () => {
+    const ws = useWorkspace.getState()
+    await ws.setEngine(createMockEngine({ latencyMs: 0 }))
+    ws.designChanged(dg())
+    await new Promise((r) => setTimeout(r, 400))
+    const a = dg()
+    a.surfaces[1].thickness = 3
+    const first = useWorkspace.getState().setPreview(a, 'Candidate 1')
+    // Ended before the first one's snapshot opened.
+    await useWorkspace.getState().setPreview(null)
+    await first
+    expect(useWorkspace.getState().preview).toBeNull()
+    // A design change ends a preview that is still opening.
+    const second = useWorkspace.getState().setPreview(a, 'Candidate 2')
+    useWorkspace.getState().designChanged(dg())
+    await second
+    await new Promise((r) => setTimeout(r, 400))
+    expect(useWorkspace.getState().preview).toBeNull()
+  })
+
+  it('does not restart a job that already computes the current snapshot', async () => {
+    const ws = useWorkspace.getState()
+    const engine = createMockEngine({ latencyMs: 200 })
+    const submitted: string[] = []
+    const submit = engine.submit.bind(engine)
+    engine.submit = (req, snap) => (submitted.push(req.analysis), submit(req, snap))
+    await ws.setEngine(engine)
+    ws.designChanged(dg())
+    await new Promise((r) => setTimeout(r, 300))
+    const key = useWorkspace.getState().addPane('ray_fan')
+    expect(useWorkspace.getState().runs[key].status).toBe('running')
+    useWorkspace.getState().refresh()
+    await new Promise((r) => setTimeout(r, 600))
+    expect(useWorkspace.getState().runs[key].status).toBe('done')
+    expect(submitted.filter((a) => a === 'ray_fan')).toHaveLength(1)
+    useWorkspace.getState().removePane(key)
+  })
+
+  it('opening another document drops the design jobs of the previous one', async () => {
+    const ws = useWorkspace.getState()
+    await ws.setEngine(createMockEngine({ latencyMs: 0 }))
+    openSample('double_gauss')
+    await new Promise((r) => setTimeout(r, 400))
+    useJobs.getState().start('optimize', { max_iterations: 5 })
+    expect(useJobs.getState().jobs.optimize.phase).toBe('running')
+    openSample('cooke_triplet')
+    expect(useJobs.getState().jobs.optimize.phase).toBe('setup')
+    await new Promise((r) => setTimeout(r, 600))
+    // The old run's result never arrives in the new document.
+    expect(useJobs.getState().jobs.optimize.phase).toBe('setup')
+    expect(useJobs.getState().jobs.optimize.result).toBeNull()
   })
 
   it('reports structural errors as issues', async () => {

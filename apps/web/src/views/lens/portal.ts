@@ -8,7 +8,8 @@
 // table is mounted in a popup, the popup gets its own `#portal` element and
 // the main document's lookup of `portal` answers with it; Glide's outside-click
 // listener also listens only on the main document, so a press elsewhere in the
-// popup is forwarded to it.
+// popup is forwarded to it, and so are the presses, releases and moves Glide
+// follows on the global window.
 import { useEffect } from 'react'
 
 let override: HTMLElement | null = null
@@ -40,7 +41,20 @@ export function useGlidePortal(container: HTMLElement | null) {
     }
     const kinds = ['mousedown', 'touchend', 'contextmenu'] as const
     for (const k of kinds) doc.addEventListener(k, forward, true)
+    // Glide follows the mouse on the global window (press, release, move), which
+    // never sees the popup's events: each one is relayed to it as a main-window
+    // event with the popup's target, so selecting and editing work there too.
+    const popup = doc.defaultView
+    const relay = (e: MouseEvent) => {
+      const copy = new MouseEvent(e.type, e)
+      Object.defineProperty(copy, 'target', { value: e.target })
+      window.dispatchEvent(copy)
+      if (copy.defaultPrevented) e.preventDefault()
+    }
+    const pointer = ['mousedown', 'mouseup', 'mousemove'] as const
+    if (popup && popup !== window) for (const k of pointer) popup.addEventListener(k, relay)
     return () => {
+      if (popup && popup !== window) for (const k of pointer) popup.removeEventListener(k, relay)
       for (const k of kinds) doc.removeEventListener(k, forward, true)
       if (override === el) override = null
       el.remove()

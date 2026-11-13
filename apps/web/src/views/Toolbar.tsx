@@ -243,6 +243,7 @@ export function Toolbar() {
   const title = useDocument(documentTitle)
   const dirty = useDocument(isDirty)
   const imported = useDocument((s) => s.file?.imported ?? false)
+  const hasFile = useDocument((s) => s.file != null)
   const sidebarVisible = useView((s) => s.sidebarVisible)
   const inspectorVisible = useView((s) => s.inspectorVisible)
   const set = useView((s) => s.set)
@@ -261,7 +262,8 @@ export function Toolbar() {
           {title}
         </span>
         <span className="truncate text-[11px] text-secondary">
-          {imported ? 'Imported' : dirty ? 'Edited' : 'Saved'}
+          {/* A new design or a sample was never saved: no "Saved" for it. */}
+          {imported ? 'Imported' : dirty ? 'Edited' : hasFile ? 'Saved' : ''}
         </span>
       </div>
       <div className="flex flex-1 justify-center px-2">

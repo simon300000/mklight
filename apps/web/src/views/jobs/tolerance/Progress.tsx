@@ -15,6 +15,8 @@ function detailTrials(detail: Json | null): number | null {
   if (!detail || typeof detail !== 'object' || Array.isArray(detail)) return null
   const o = detail as JsonObject
   for (const k of ['trials_done', 'completed_trials', 'trials_completed', 'trial']) if (typeof o[k] === 'number') return o[k] as number
+  // The engine's Monte-Carlo detail (`{stage: 'monte_carlo', done, trials}`).
+  if (o.stage === 'monte_carlo' && typeof o.done === 'number') return o.done
   return null
 }
 

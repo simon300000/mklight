@@ -14,7 +14,6 @@ import { useDocument } from '@/state/document'
 import { useJobs } from '@/state/jobs'
 import {
   endTolerancePreview,
-  noteMonteCarloStarted,
   noteSecondsPerTrial,
   retryTolerance,
   startTolerance,
@@ -52,11 +51,6 @@ export function TolerancePanel() {
     [job.result, runSystem, system, runDisplay],
   )
 
-  // A new run starts its own Monte-Carlo clock.
-  useEffect(() => useTolerance.setState({ monteCarloStartedAt: null }), [job.startedAt])
-  useEffect(() => {
-    if (job.phase === 'running' && /monte carlo|trial/i.test(job.stage ?? '')) noteMonteCarloStarted()
-  }, [job.phase, job.stage])
   useEffect(() => noteSecondsPerTrial(result?.secondsPerTrial ?? null), [result])
   // Previews belong to the results page; the design changing ends them too.
   useEffect(() => {

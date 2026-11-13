@@ -269,5 +269,12 @@ export class Gl3D {
     this.free(this.footFill)
     this.gl.deleteProgram(this.line)
     this.gl.deleteProgram(this.mesh)
+    // Release the context once its canvas has left the page: browsers keep only
+    // a few, and every remount of the layout (a tab, a separate window) makes a
+    // new one. A canvas still in the page (React's development remount) keeps it.
+    const gl = this.gl
+    setTimeout(() => {
+      if (!(gl.canvas as HTMLCanvasElement).isConnected) gl.getExtension('WEBGL_lose_context')?.loseContext()
+    }, 0)
   }
 }

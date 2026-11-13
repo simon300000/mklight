@@ -92,6 +92,28 @@ test('panels: dragging out of the window previews the new window; Escape cancels
   await expect(page.getByTestId('lens-data')).toHaveCount(0)
 })
 
+test('panels: the lens data edits in a separate window', async ({ page }) => {
+  await openSample(page)
+  await page.getByTestId('lens-data').getByRole('button', { name: 'More' }).first().click()
+  const popupPromise = page.waitForEvent('popup')
+  await page.getByRole('menuitem', { name: 'Move to New Window' }).click()
+  const popup = await popupPromise
+  const grid = popup.getByTestId('lens-data').locator('canvas').first()
+  await expect(grid).toBeVisible()
+  // A click selects the surface (Glide follows the mouse on the main window).
+  const box = (await grid.boundingBox())!
+  const radius = { x: box.x + 58 + 80 + 110 + 55, y: (row: number) => box.y + 26 + row * 24 + 12 }
+  await popup.mouse.click(radius.x, radius.y(3))
+  await expect.poll(() => page.evaluate(() => (window as unknown as { mklight: { view: { getState(): { selection: number } } } }).mklight.view.getState().selection)).toBe(3)
+  // A double click opens the editor in the separate window.
+  await popup.mouse.dblclick(radius.x, radius.y(1))
+  const editor = popup.locator('#portal textarea, #portal input').first()
+  await expect(editor).toBeVisible()
+  await editor.fill('41')
+  await editor.press('Enter')
+  await expect.poll(() => page.evaluate(() => (window as unknown as { mklight: { radius(i: number): number } }).mklight.radius(1))).toBeCloseTo(41, 6)
+})
+
 test('panels: blocked pop-ups dock the separate windows; Open Window restores them at their frames', async ({ page }) => {
   await openSample(page)
   await page.getByTestId('layout').getByRole('button', { name: 'More' }).click()

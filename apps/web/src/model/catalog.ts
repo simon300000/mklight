@@ -41,7 +41,7 @@ const CATEGORY_TITLES: Record<string, string> = {
 const CATEGORY_ORDER = ['geometric', 'wave', 'model', 'radiometry', 'polarization', 'ghost', 'stray', 'materials']
 
 /** Analyses that are design jobs or internal; not offered as panes. */
-const NOT_PANES = new Set(['optimize', 'tolerance', 'glass_substitution', 'merit_evaluation', 'rng_stream', 'layout'])
+const NOT_PANES = new Set(['convert_spec', 'optimize', 'tolerance', 'glass_substitution', 'merit_evaluation', 'rng_stream', 'layout'])
 
 const SMALL = new Set(['a', 'an', 'and', 'at', 'by', 'for', 'in', 'of', 'on', 'or', 'the', 'to', 'vs'])
 function titleCase(s: string) {

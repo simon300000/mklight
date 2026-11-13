@@ -245,6 +245,16 @@ export function noteMonteCarloStarted() {
   if (useTolerance.getState().monteCarloStartedAt == null) set({ monteCarloStartedAt: Date.now() })
 }
 
+// The Monte-Carlo clock follows the job even while the panel is closed (and
+// reopening the panel does not restart it): a new run starts its own clock.
+useJobs.subscribe((s, prev) => {
+  const job = s.jobs.tolerance
+  const was = prev.jobs.tolerance
+  if (job === was) return
+  if (job.startedAt !== was.startedAt) set({ monteCarloStartedAt: null })
+  if (job.phase === 'running' && /monte carlo|trial/i.test(job.stage ?? '')) noteMonteCarloStarted()
+})
+
 export function noteSecondsPerTrial(s: number | null) {
   if (s != null && s > 0 && s !== useTolerance.getState().lastSecondsPerTrial) set({ lastSecondsPerTrial: s })
 }

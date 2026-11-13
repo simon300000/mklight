@@ -10,6 +10,8 @@ import { useDocument, type DocumentFile } from './document'
 import { useView } from './view'
 import { useWorkspace, LAYOUT, type Pane } from './workspace'
 import { useImportReport } from './importReport'
+import { useJobs } from './jobs'
+import { endTolerancePreview } from './tolerance'
 import { restoreCatalogs } from './catalogs'
 import * as A from './arrangement'
 import { useArrangement } from './arrangement'
@@ -106,6 +108,9 @@ const DEFAULT_PANES: Pane[] = [
 ]
 
 function openProject(project: Project, file: DocumentFile | null, opts?: { dirty?: boolean; keepPanes?: boolean }) {
+  // A design job's run or result belongs to the design it was started on.
+  endTolerancePreview()
+  useJobs.getState().reset()
   useDocument.getState().open(project, file, opts)
   const v = useView.getState()
   v.set({ selection: Math.min(1, project.system.surfaces.length - 1), welcomeOpen: false, layoutEpoch: v.layoutEpoch + 1 })

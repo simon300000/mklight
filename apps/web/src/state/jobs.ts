@@ -91,6 +91,9 @@ interface JobsStore {
   /** Done: back to the job's starting page. */
   done(kind: JobKind): void
   patch(kind: JobKind, p: Partial<JobState>): void
+  /** Another document opened: every run is cancelled and every result dropped
+   *  (a result belongs to the design it was computed for). */
+  reset(): void
 }
 
 const handles = new Map<JobKind, AnalysisJob>()
@@ -190,6 +193,13 @@ export const useJobs = create<JobsStore>()((set, get) => {
 
     done(kind) {
       patch(kind, { ...initial(), settings: get().jobs[kind].settings })
+    },
+
+    reset() {
+      for (const job of handles.values()) job.cancel()
+      handles.clear()
+      set({ jobs: { optimize: initial(), glass: initial(), tolerance: initial(), solves: initial() } })
+      void useWorkspace.getState().setPreview(null)
     },
   }
 })
