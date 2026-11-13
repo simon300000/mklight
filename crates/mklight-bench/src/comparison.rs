@@ -1150,6 +1150,8 @@ pub const REFERENCE_ONLY: &[(&str, &[Rule])] = &[
             r("*", Exact),
         ],
     ),
+    // Host f64 conversions, reference only.
+    ("convert_spec", &[r("*", Exact)]),
     ("validate", &[r("*", Exact)]),
     (
         "wavefront_map",
