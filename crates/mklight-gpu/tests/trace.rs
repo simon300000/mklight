@@ -271,6 +271,55 @@ fn one_surface(shape: SurfaceShape) -> OpticalSystem {
     s
 }
 
+/// A steep ray crossing a surface that bulges toward it twice (first at
+/// y ≈ −5.5, then +3.6): the kernel takes the reference's root, the one
+/// nearer the vertex, on the conic, even-asphere and general-sag paths.
+#[test]
+fn steep_double_crossing_matches_reference() {
+    let b = CpuF32Backend::with_subnormals(false);
+    let ray = Ray::new(
+        Vec3::new(0.0, -30.0, -2.0),
+        Vec3::new(0.0, 0.999, 0.050).normalized(),
+    );
+    for shape in [
+        SurfaceShape::sphere(-20.0),
+        SurfaceShape::EvenAsphere {
+            curvature: -0.05,
+            conic: 0.0,
+            coefficients: vec![1e-9],
+        },
+        SurfaceShape::OddAsphere {
+            curvature: -0.05,
+            conic: 0.0,
+            coefficients: vec![0.0, 0.0, 1e-8],
+        },
+    ] {
+        let rs = testutil::resolve(one_surface(shape.clone()));
+        let opts = TraceOptions::unclipped();
+        let (res, rec) = trace_ray_recorded(&rs, &ray, 1, &opts);
+        assert!(res.status.is_ok(), "{shape:?}: {:?}", res.status);
+        assert!(rec[1].point.y > 3.0, "{shape:?}: {:?}", rec[1]);
+        let h = b
+            .upload_system(&PackedSystem::pack_all(&rs).unwrap())
+            .unwrap();
+        let mut req = TraceRequest::new(h, batch(&[(ray, 1)]), 0, 1);
+        req.record = RecordMode::AllSurfaces;
+        let r = trace(&b, req);
+        assert!(r.ray_status(0).is_ok(), "{shape:?}: {:?}", r.ray_status(0));
+        let k = RECORD_FLOATS;
+        let p = Vec3::new(
+            r.recorded[k] as f64,
+            r.recorded[k + 1] as f64,
+            r.recorded[k + 2] as f64,
+        );
+        assert!(
+            (p - rec[1].point).norm() < 2e-5,
+            "{shape:?}: {p:?} {:?}",
+            rec[1]
+        );
+    }
+}
+
 /// Every failure class is reported with the reference's status and surface:
 /// misses, asphere non-convergence at the same step cap, leaving the sag
 /// domain, TIR, vignetting and non-finite input.
