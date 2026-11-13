@@ -82,7 +82,7 @@ export function AnalysisPane({ pane }: { pane: Pane }) {
 
   return (
     <section
-      className={cn('@container flex h-full min-h-0 min-w-0 flex-col bg-content', focused && 'shadow-[inset_0_2px_0_var(--accent)]')}
+      className={cn('@container flex h-full min-h-0 min-w-0 flex-col overflow-hidden bg-content', focused && 'shadow-[inset_0_2px_0_var(--accent)]')}
       aria-label={title}
       data-testid={`pane-${pane.analysis}`}
       onPointerDown={() => !focused && setView({ focusedPane: pane.key })}

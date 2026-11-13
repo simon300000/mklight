@@ -80,9 +80,9 @@ function Content() {
               onReset={() => v.set({ layoutShare: 0.5 })}
             />
           )}
-          <div className="flex min-w-0 flex-1">
+          <div className="flex min-w-0 flex-1 overflow-x-auto overflow-y-hidden">
             {panes.map((p, k) => (
-              <div key={p.key} className="flex min-w-0" style={{ flex: `${shares[k]} 1 0` }}>
+              <div key={p.key} className="flex min-w-[250px]" style={{ flex: `${shares[k]} 1 0` }}>
                 {k > 0 && (
                   <Divider
                     axis="h"
@@ -98,7 +98,7 @@ function Content() {
                     onReset={() => setPaneShares(panes.map(() => 1 / panes.length))}
                   />
                 )}
-                <div className="min-w-[180px] flex-1">
+                <div className="min-w-0 flex-1">
                   <AnalysisPane pane={p} />
                 </div>
               </div>
@@ -152,7 +152,7 @@ export function App() {
         }}
       >
         {sidebar && <Sidebar />}
-        <main className="flex min-w-0 flex-1 flex-col">
+        <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
           <Toolbar />
           <Content />
         </main>

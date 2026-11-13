@@ -29,7 +29,16 @@ export function mtf(o: MockOptics, s: Obj): Out {
   if (!Number.isFinite(nw)) nw = 10
   const lamMin = Math.min(...wls.map((w) => o.wavelengthsUm[w] * 1e-3))
   const cutoff = 1 / (lamMin * nw)
-  const maxF = typeof s.max_frequency === 'number' && s.max_frequency > 0 ? s.max_frequency : cutoff
+  // Automatic limit: where the sharpest field's estimate falls to 10 % contrast
+  // (the engine estimates 10 % polychromatic contrast).
+  let autoF = 0
+  for (const f of fields) {
+    const st = spotFor(o, f, wls).poly
+    const sigma = Math.max(Number(st.rms_x) || 0, Number(st.rms_y) || 0)
+    autoF = Math.max(autoF, sigma > 0 ? Math.sqrt(Math.log(10) / 2) / (Math.PI * sigma) : cutoff)
+  }
+  autoF = Math.min(Math.max(autoF, cutoff * 0.02), cutoff)
+  const maxF = typeof s.max_frequency === 'number' && s.max_frequency > 0 ? s.max_frequency : autoF
   const freqs = Float64Array.from({ length: nS }, (_, i) => (i / (nS - 1)) * maxF)
   const out = newOut({})
   addBuf(out, 'frequencies', freqs, [nS])

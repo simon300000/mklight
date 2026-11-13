@@ -48,7 +48,7 @@ export const useView = create<ViewState>()((set, get) => ({
   issuesOpen: false,
   sidebarQuery: '',
   lensShare: 0.36,
-  layoutShare: 0.5,
+  layoutShare: 0.4,
   toasts: [],
   select: (i) => set({ selection: i }),
   setPage: (p) => set({ inspectorPage: p, inspectorVisible: true }),
