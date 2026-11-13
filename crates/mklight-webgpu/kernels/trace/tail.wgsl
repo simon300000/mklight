@@ -891,12 +891,11 @@ fn mkl_rec(mode: u32, slot: u32, st: MklRaw) {
 // at wavelength `w`. Records go to slot 0 (the input), slot k+1 after step
 // k, and the final state repeated for skipped slots of a failed ray. The
 // host has validated the program, the systems and the wavelengths.
-fn mkl_trace_core(hdr: u32, w: u32, input: MklRaw, mode: u32) -> MklRaw {
+fn mkl_trace_core(hdr: u32, w: u32, input: MklRaw, mode: u32, num_steps: u32) -> MklRaw {
     let clip = (prm.trace.flags & MKL_TRACE_CLIP) != 0u;
     let radiometry = (prm.trace.flags & MKL_TRACE_RADIOMETRY) != 0u;
     let at_infinity = (mkl_headers[hdr].flags & MKL_SYS_OBJECT_AT_INFINITY) != 0u;
     let sb = mkl_headers[hdr].surface_offset;
-    let num_steps = prm.trace.num_steps;
 
     var pos = input.pos;
     var dir = input.dir;
@@ -1140,9 +1139,9 @@ fn mkl_trace(@builtin(global_invocation_id) gid: vec3<u32>) {
     input.weight = mkl_in_f(MKL_TRACE_IN_WEIGHT);
     var st: MklRaw;
     if ((prm.trace.flags & MKL_TRACE_RECORD) != 0u) {
-        st = mkl_trace_core(hdr, w, input, MKL_REC_TRACE);
+        st = mkl_trace_core(hdr, w, input, MKL_REC_TRACE, prm.trace.num_steps);
     } else {
-        st = mkl_trace_core(hdr, w, input, MKL_REC_NONE);
+        st = mkl_trace_core(hdr, w, input, MKL_REC_NONE, prm.trace.num_steps);
     }
     let opl = mkl_report_opl(st.pos, st.dir, st.opl, st.index);
     mkl_put_f(MKL_TRACE_OUT_X, st.pos.x.x);
@@ -1230,7 +1229,7 @@ fn mkl_trace_resident_ray(i: u32, mode: u32) {
                 current = si;
             }
             if (valid) {
-                ray = mkl_trace_core(system, wl, ray, mode);
+                ray = mkl_trace_core(system, wl, ray, mode, prm.trace.num_steps);
             }
         }
         if (!valid) {

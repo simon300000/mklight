@@ -886,6 +886,7 @@ dependencies = [
  "blake3",
  "bytemuck",
  "js-sys",
+ "mklight-analysis",
  "mklight-bench",
  "mklight-core",
  "mklight-engine",

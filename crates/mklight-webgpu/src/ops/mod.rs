@@ -16,6 +16,9 @@ use mklight_gpu::{JobStats, PackedSystemSet, ReduceMode, SystemHandle, TraceRequ
 use crate::backend::WebGpuBackend;
 use crate::device::*;
 
+pub mod aiming;
+pub mod collectives;
+pub mod geometry;
 pub mod trace;
 pub mod transforms;
 pub mod wave;
@@ -47,6 +50,9 @@ pub fn pipelines() -> Vec<(Kernel, PassShape)> {
     .chain(trace::pipelines())
     .chain(transforms::pipelines())
     .chain(wave::pipelines())
+    .chain(aiming::pipelines())
+    .chain(geometry::pipelines())
+    .chain(collectives::pipelines())
     .collect()
 }
 
@@ -196,6 +202,9 @@ impl WebGpuOps {
             }
             ResidentOp::Transforms(_) => transforms::run(self, i, op, x, ctl, stats),
             ResidentOp::Wave(_) => wave::run(self, i, op, x, ctl, stats),
+            ResidentOp::Aiming(_) => aiming::run(self, i, op, x, ctl, stats),
+            ResidentOp::Geometry(_) => geometry::run(self, i, op, x, ctl, stats),
+            ResidentOp::Collectives(_) => collectives::run(self, i, op, x, ctl, stats),
             _ => Ok(None),
         }
     }

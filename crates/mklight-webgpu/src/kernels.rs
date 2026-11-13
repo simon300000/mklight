@@ -29,15 +29,24 @@ pub const MODULES: &[(&str, &str)] = &[
         ),
     ),
     ("transforms", include_str!("../kernels/transforms.wgsl")),
-    // The wave operations on the correctly rounded division and square
-    // root of the trace kernel.
+    ("wave", include_str!("../kernels/wave.wgsl")),
+    // aiming.wgsl (build.rs): the trace followed by kernels/aiming.wgsl.
     (
-        "wave",
+        "aiming",
         concat!(
-            include_str!("../kernels/trace/rn.wgsl"),
-            include_str!("../kernels/wave.wgsl")
+            "const MKL_OVERLAYS: bool = false;\n",
+            include_str!(concat!(env!("OUT_DIR"), "/aiming.wgsl"))
         ),
     ),
+    (
+        "aiming_overlays",
+        concat!(
+            "const MKL_OVERLAYS: bool = true;\n",
+            include_str!(concat!(env!("OUT_DIR"), "/aiming.wgsl"))
+        ),
+    ),
+    ("geometry", include_str!("../kernels/geometry.wgsl")),
+    ("collectives", include_str!("../kernels/collectives.wgsl")),
 ];
 
 /// The complete WGSL source of `module`.
