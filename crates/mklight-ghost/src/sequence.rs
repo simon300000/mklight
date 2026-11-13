@@ -497,7 +497,9 @@ impl GhostModel {
                         opl,
                     );
                 }
-                split = surf.coating.rt(lambda, n_in, n_in, cos_i, true);
+                split = surf
+                    .coating
+                    .rt(lambda, n_in, n_in, cos_i, true, st.direction.arrival());
                 applied = [split.rs, split.rp];
                 let k_ref = reflect(dir_in, hit.normal).0;
                 ray.dir = match surf.shape {
@@ -522,7 +524,9 @@ impl GhostModel {
                 };
             } else {
                 // Refracting surface.
-                split = surf.coating.rt(lambda, n_in, n_far, cos_i, false);
+                split = surf
+                    .coating
+                    .rt(lambda, n_in, n_far, cos_i, false, st.direction.arrival());
                 match (st.action, &surf.shape) {
                     (Action::Pass, SurfaceShape::Paraxial { focal_length }) => {
                         let f = match st.direction {

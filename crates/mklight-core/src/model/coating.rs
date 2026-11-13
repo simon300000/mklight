@@ -20,16 +20,43 @@ pub struct Layer {
     pub extinction: f64,
 }
 
+/// Which medium of a refracting surface carries a thin-film stack.
+///
+/// The choice is made once per surface, so the stack keeps its order at every
+/// wavelength and angle and for light arriving from either side.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CoatingSubstrate {
+    /// The medium with the higher refractive index at the coating's
+    /// `reference_wavelength_um` (the medium after the surface when the two
+    /// are equal there). Right for ordinary coatings on glass in air.
+    #[default]
+    HigherIndex,
+    /// The medium before the surface in sequence order.
+    Before,
+    /// The medium after the surface in sequence order.
+    After,
+}
+
+impl CoatingSubstrate {
+    pub fn is_default(&self) -> bool {
+        *self == CoatingSubstrate::HigherIndex
+    }
+}
+
 /// A named coating, used by surfaces through `Surface::coating`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum CoatingDef {
     /// Multilayer stack. Layers are listed **outward from the substrate**
-    /// (`layers[0]` touches the substrate). The substrate is the side with the
-    /// higher index at the reference wavelength. On a mirror it is the medium
-    /// behind the mirror, given by `mirror_substrate`. The TMM code orders the
-    /// stack by the side the light arrives from, so one coating definition
-    /// works on both faces of a lens.
+    /// (`layers[0]` touches the substrate). On a refracting surface the
+    /// substrate is chosen by `substrate`, once per surface (by default the
+    /// medium with the higher index at `reference_wavelength_um`); the
+    /// choice holds at every wavelength, even where the two media's
+    /// dispersion curves cross. On a mirror it is the medium behind the
+    /// mirror, given by `mirror_substrate`. The TMM code orders the stack by
+    /// the side the light arrives from, so one coating definition works on
+    /// both faces of a lens.
     ThinFilm {
         reference_wavelength_um: f64,
         layers: Vec<Layer>,
@@ -37,6 +64,10 @@ pub enum CoatingDef {
         /// (for example aluminium). Ignored on refracting surfaces.
         #[serde(default)]
         mirror_substrate: Option<(f64, f64)>,
+        /// Which medium of a refracting surface the stack sits on. Optional
+        /// (default `higher_index`), so older projects load unchanged.
+        #[serde(default, skip_serializing_if = "CoatingSubstrate::is_default")]
+        substrate: CoatingSubstrate,
     },
     /// Ideal coating with fixed intensity reflectance and transmittance,
     /// independent of angle and wavelength. Absorption is `1 − R − T`.

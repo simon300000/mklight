@@ -198,6 +198,7 @@ fn paraxial_batches() {
                         })
                         .collect(),
                     mirror_substrate: None,
+                    substrate: Default::default(),
                 },
             );
             let image = system.surfaces.len() - 1;

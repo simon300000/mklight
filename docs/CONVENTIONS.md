@@ -118,7 +118,9 @@ document on purpose in the same change.
 * Every surface interaction splits flux into transmitted `T`, reflected `R` and
   absorbed `A`, with `T + R + A = 1` for the same `(λ, θ, polarisation)` and
   coating. Bare interfaces use the Fresnel equations. Coated ones use the
-  thin-film characteristic matrix (TMM).
+  thin-film characteristic matrix (TMM). A thin film's substrate side is
+  fixed once per surface (`docs/MATERIALS.md`, thin-film coatings), so the
+  stack order does not depend on wavelength.
 * s and p are defined relative to the local plane of incidence. "Unpolarised"
   means the incoherent average of s and p.
 * Absorption inside glass uses the catalog's internal transmittance, scaled

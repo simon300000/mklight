@@ -249,6 +249,7 @@ fn kitchen_sink() -> OpticalSystem {
                 },
             ],
             mirror_substrate: None,
+            substrate: Default::default(),
         },
     );
     s.coatings.insert(
@@ -262,6 +263,7 @@ fn kitchen_sink() -> OpticalSystem {
                 extinction: 0.0,
             }],
             mirror_substrate: Some((0.12, 3.4)),
+            substrate: Default::default(),
         },
     );
     s.coatings.insert(
@@ -1054,6 +1056,7 @@ fn structural_validation_cases() -> Vec<ValidationCase> {
                 reference_wavelength_um: film.reference_wavelength_um,
                 layers: vec![film.layer],
                 mirror_substrate: Some(film.mirror_substrate),
+                substrate: Default::default(),
             },
         )
     };

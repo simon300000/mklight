@@ -322,7 +322,14 @@ impl GhostModel {
         let s = &sys.surfaces[surface];
         let (n_in, n_out) = self.media(surface, direction, wl);
         s.coating
-            .rt(sys.wavelengths_um[wl], n_in, n_out, 1.0, false)
+            .rt(
+                sys.wavelengths_um[wl],
+                n_in,
+                n_out,
+                1.0,
+                false,
+                direction.arrival(),
+            )
             .r_unpolarized()
     }
 

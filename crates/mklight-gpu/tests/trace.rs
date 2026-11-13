@@ -474,6 +474,7 @@ fn trace_requests_are_validated() {
             reference_wavelength_um: 0.55,
             layers: vec![],
             mirror_substrate: Some((1.0, 6.0)),
+            substrate: Default::default(),
         },
     );
     sys.surfaces[1].coating = Some("HR".into());
@@ -800,6 +801,7 @@ fn qualification_and_fallback_recording() {
             reference_wavelength_um: 0.55,
             layers: vec![],
             mirror_substrate: None,
+            substrate: Default::default(),
         },
     );
     sys.surfaces[1].coating = Some("AR".into());

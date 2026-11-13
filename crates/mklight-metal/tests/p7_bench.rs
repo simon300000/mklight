@@ -54,6 +54,7 @@ fn grids() {
                     })
                     .collect(),
                 mirror_substrate: if metal { Some((0.96, 6.69)) } else { None },
+                substrate: Default::default(),
             },
         );
         for surface in &mut model.surfaces {
@@ -245,6 +246,7 @@ fn coating_stacks() {
                 })
                 .collect(),
             mirror_substrate: None,
+            substrate: Default::default(),
         };
         let coating = ResolvedCoating::resolve(
             if count == 0 { None } else { Some(&def) },
@@ -256,7 +258,18 @@ fn coating_stacks() {
         let specs: Vec<_> = [0.45, 0.55, 0.65]
             .into_iter()
             .flat_map(|w| [(w, 1., 1.52), (w, 1.52, 1.)])
-            .map(|(w, a, z)| CoatingSpec::resolve(&coating, w, a, z, false, &mut layers).unwrap())
+            .map(|(w, a, z)| {
+                CoatingSpec::resolve(
+                    &coating,
+                    w,
+                    a,
+                    z,
+                    false,
+                    mklight_core::materials::coating::Arrival::forward(z >= a),
+                    &mut layers,
+                )
+                .unwrap()
+            })
             .collect();
         for n in [100, 10_000, 1_000_000] {
             if !selected(&format!("coating:{count}:{n}")) {
@@ -294,6 +307,9 @@ fn coating_stacks() {
                             s.n_out.to_f64(),
                             q.cosine.to_f64(),
                             false,
+                            mklight_core::materials::coating::Arrival::forward(
+                                s.n_out.to_f64() >= s.n_in.to_f64(),
+                            ),
                         );
                         let p = a.power();
                         (
@@ -318,6 +334,9 @@ fn coating_stacks() {
                     spec.n_out.to_f64(),
                     q.cosine.to_f64(),
                     false,
+                    mklight_core::materials::coating::Arrival::forward(
+                        spec.n_out.to_f64() >= spec.n_in.to_f64(),
+                    ),
                 );
                 let rt = a.power();
                 assert_eq!(v.status, 0);

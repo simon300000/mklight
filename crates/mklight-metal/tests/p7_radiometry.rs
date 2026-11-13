@@ -49,7 +49,18 @@ fn determinism_concurrency_and_cancellation() {
     let mut ls = vec![];
     let specs: Vec<_> = support::coatings()
         .iter()
-        .map(|c| CoatingSpec::resolve(c, 0.55, 1., 1.52, false, &mut ls).unwrap())
+        .map(|c| {
+            CoatingSpec::resolve(
+                c,
+                0.55,
+                1.,
+                1.52,
+                false,
+                mklight_core::materials::coating::Arrival::Before,
+                &mut ls,
+            )
+            .unwrap()
+        })
         .collect();
     let q: Vec<_> = (0..257)
         .map(|i| CoatingQuery::new((i % specs.len()) as u32, 0.1 + 0.9 * i as f64 / 257.).unwrap())
@@ -131,6 +142,7 @@ fn determinism_concurrency_and_cancellation() {
             n_in: 1.,
             n_out: 1.69,
             mirror: false,
+            arrival: mklight_core::materials::coating::Arrival::Before,
         }],
         &JobContext::new(),
     )
@@ -195,6 +207,7 @@ fn transport_matches_cpu_emulation() {
                 quarter_waves: None,
             }],
             mirror_substrate: None,
+            substrate: Default::default(),
         },
     );
     for s in &mut model.surfaces[1..] {

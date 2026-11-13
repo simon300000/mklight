@@ -247,7 +247,8 @@ impl ResolvedSystem {
                 s.coating.as_ref().and_then(|c| sys.coatings.get(c)),
                 &library,
                 &env,
-            )?;
+            )?
+            .orient(&medium_before, &medium_after);
             let to_next = if i + 1 < n && i > 0 {
                 Some(frames[i + 1].relative_to(&frames[i]))
             } else if i == 0 && !object_at_infinity {

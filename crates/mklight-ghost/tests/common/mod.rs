@@ -91,6 +91,7 @@ pub fn quarter_wave(nf: f64, lambda: f64) -> CoatingDef {
             extinction: 0.0,
         }],
         mirror_substrate: None,
+        substrate: Default::default(),
     }
 }
 

@@ -8,7 +8,7 @@ pub mod spec;
 pub mod surface;
 pub mod validate;
 
-pub use coating::{CoatingDef, Layer};
+pub use coating::{CoatingDef, CoatingSubstrate, Layer};
 pub use material::MaterialRef;
 pub use mechanics::{MechanicalPart, ScatterModel, Sensor};
 pub use solve::{Solve, SolveKind};

@@ -185,6 +185,33 @@ exact algebraic identities with the plain Sellmeier sum.
 terms and then square-rooted. A negative `n²` gives NaN rather than a wrong
 number.
 
+## Thin-film coatings: substrate side
+
+A `thin_film` coating lists its layers outward from the substrate
+(`layers[0]` touches it). On a refracting surface the substrate is one of
+the surface's two media, chosen **once per surface** by the coating's
+optional `substrate` field:
+
+* `higher_index` (default): the medium with the higher index at the
+  coating's `reference_wavelength_um` (its design wavelength, where
+  `quarter_waves` thicknesses are fixed). A tie puts it after the surface.
+* `before` / `after`: the medium before / after the surface in sequence
+  order, for a coating that really sits on the lower-index medium (for
+  example a film on a low-index crystal immersed in a denser liquid).
+
+The choice holds at every wavelength and incidence angle, so the stack
+does not flip where the two media's dispersion curves cross. Light
+arriving from the substrate meets `layers[0]` first; light from the other
+medium meets the outermost layer first. On a mirror the substrate is
+`mirror_substrate`, behind the reflector, and light always meets the
+outermost layer first. `ResolvedCoating::orient` fixes the side when the
+system is resolved; every solver orders the layers through
+`ResolvedCoating::layer_order` with the side the light arrives from
+(`Arrival::Before` for forward sequential light, `Arrival::After` for a
+ghost's backward legs, by hit side in the stray tracer), and the GPU coating
+packers use the same call, so all paths agree. Projects without the field
+load unchanged and are written without it.
+
 ## Loading catalogs
 
 MKLight ships only a small built-in catalog (`BUILTIN`: N-BK7, F2, N-SF6,

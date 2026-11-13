@@ -568,3 +568,18 @@ private struct EngineVerdict: Decodable {
         #expect(e.aperture == .imageSpaceFNumber(4.5))
     }
 }
+
+@Suite struct CoatingSubstrateTests {
+    @Test func substrateSideRoundTripsAndDefaultsToHigherIndex() throws {
+        let old = #"{"type":"thin_film","reference_wavelength_um":0.55,"layers":[]}"#
+        let def = try JSONDecoder().decode(CoatingDef.self, from: Data(old.utf8))
+        #expect(def == .thinFilm(referenceWavelengthUm: 0.55, layers: [], mirrorSubstrate: nil))
+        let written = String(decoding: try JSONEncoder().encode(def), as: UTF8.self)
+        #expect(!written.contains("\"substrate\""))
+        let set = #"{"type":"thin_film","reference_wavelength_um":0.55,"layers":[],"substrate":"before"}"#
+        let side = try JSONDecoder().decode(CoatingDef.self, from: Data(set.utf8))
+        #expect(side == .thinFilm(referenceWavelengthUm: 0.55, layers: [], mirrorSubstrate: nil, substrate: .before))
+        let again = try JSONDecoder().decode(CoatingDef.self, from: try JSONEncoder().encode(side))
+        #expect(again == side)
+    }
+}

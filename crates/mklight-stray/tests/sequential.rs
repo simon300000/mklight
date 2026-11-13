@@ -416,6 +416,7 @@ fn coated_absorbing_triplet_primary_matches_sequential() {
                 extinction: 0.003,
             }],
             mirror_substrate: None,
+            substrate: Default::default(),
         },
     );
     let n = s.surfaces.len();
