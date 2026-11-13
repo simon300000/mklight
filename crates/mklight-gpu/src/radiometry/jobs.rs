@@ -97,7 +97,7 @@ pub fn pupil_plan(
     let spec = aiming::FieldSpec::new(t.system(), t, field.point, 0, wl as u32, t.aiming())?;
     let fields = import(b, &mut p, &[spec])?;
     // The chief row comes from the prepared field (f64 source and chief).
-    let start = std::time::Instant::now();
+    let start = mklight_core::platform::Instant::now();
     let seed = aiming::ChiefSeed::host(t, field, wl);
     p.host.add(&crate::resident::HostPreparation {
         seed_rows: 1,

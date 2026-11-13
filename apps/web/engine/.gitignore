@@ -1,0 +1,7 @@
+node_modules/
+pkg/
+dist/
+test-results/
+playwright-report/
+tests/.reference/
+dist-*/

@@ -180,7 +180,7 @@ pub fn host_seeds(
     rows: &[(FieldPoint, usize)],
 ) -> (Vec<ChiefSeed>, resident::HostPreparation) {
     use rayon::prelude::*;
-    let start = std::time::Instant::now();
+    let start = mklight_core::platform::Instant::now();
     let mut points: Vec<FieldPoint> = Vec::new();
     for (f, _) in rows {
         if !points.contains(f) {

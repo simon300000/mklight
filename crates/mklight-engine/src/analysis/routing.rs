@@ -9,7 +9,7 @@
 //!   failed deterministically on the same input and device, and records
 //!   every attempt that did not produce the result
 //!   (`RunInfo::failed_attempts`).
-use std::time::Instant;
+use mklight_core::platform::Instant;
 
 use super::cost::{self, CostModel, Device, Route, State};
 use super::{Analysis, AnalysisInput, AnalysisOutput, BackendUse, gpu};

@@ -313,7 +313,7 @@ mod tests {
 
     /// Poll `e`'s GPU preparation until it leaves `Preparing`.
     fn settled(e: &crate::Engine) -> GpuPreparation {
-        let start = std::time::Instant::now();
+        let start = mklight_core::platform::Instant::now();
         loop {
             match e.gpu_preparation() {
                 GpuPreparation::Preparing { .. } if start.elapsed().as_secs() < 300 => {

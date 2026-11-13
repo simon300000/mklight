@@ -2021,7 +2021,7 @@ fn refine_gpu(
                 let code = v.status & MKL_RAY_CODE_MASK;
                 let numerical = (MKL_RAY_NONFINITE..=MKL_RAY_EVANESCENT).contains(&code);
                 if code == MKL_GHOST_REFERENCE || numerical || edge {
-                    let start = std::time::Instant::now();
+                    let start = mklight_core::platform::Instant::now();
                     let reference = paths[pi].trace(p);
                     (geometric, edge, Some((reference, start.elapsed())))
                 } else {

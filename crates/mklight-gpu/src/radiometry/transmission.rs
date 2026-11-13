@@ -292,7 +292,7 @@ impl TransmissionRows<'_> {
         let t = self.t;
         let np = self.samples.len();
         let n = rows.len() * np;
-        let clock = std::time::Instant::now();
+        let clock = mklight_core::platform::Instant::now();
         let values = b.read_view(result.outputs[0].view())?;
         let values: &[PolarizationValue] = bytemuck::cast_slice(values.words());
         let status = b.read_view(result.outputs[1].view())?;
@@ -394,14 +394,14 @@ impl TransmissionRows<'_> {
             {
                 let next = match block {
                     Some(rows) => {
-                        let clock = std::time::Instant::now();
+                        let clock = mklight_core::platform::Instant::now();
                         let submitted = self.submit_rows(b, &prep, rows.clone(), ctx)?;
                         Some((rows, submitted, clock.elapsed().as_secs_f64() * 1e3))
                     }
                     None => None,
                 };
                 if let Some((rows, submitted, aim_ms)) = pending.take() {
-                    let clock = std::time::Instant::now();
+                    let clock = mklight_core::platform::Instant::now();
                     let result = submitted.wait()?;
                     let wait_ms = clock.elapsed().as_secs_f64() * 1e3;
                     out.extend(self.sum_rows(

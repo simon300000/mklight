@@ -223,46 +223,41 @@ impl Engine {
             };
         }
         let provider = read(&self.inner.backends).first_gpu();
-        let spawned = std::thread::Builder::new()
-            .name("mklight-gpu-prepare".into())
-            .spawn(move || {
-                use crate::gpu::{GpuDevice, GpuPreparation};
-                let prepare = || {
-                    let Some(provider) = provider else {
-                        return state.set(GpuPreparation::Unavailable {
-                            reason: "no GPU backend is registered".into(),
-                        });
-                    };
-                    // Opening the device runs its numerics probe.
-                    match provider
-                        .device()
-                        .and_then(|d| d.downcast::<GpuDevice>().ok())
-                    {
-                        Some(device) => crate::gpu::prepare(device, cache_dir, &state),
-                        None => state.set(GpuPreparation::Unavailable {
-                            reason: provider
-                                .info()
-                                .reason
-                                .unwrap_or_else(|| "the GPU is not available".into()),
-                        }),
-                    }
-                };
-                // A panic while opening the device or creating its kernels
-                // must not leave the state at `Preparing`.
-                if let Err(panic) = catch_unwind(AssertUnwindSafe(prepare)) {
-                    let device = match state.get() {
-                        GpuPreparation::Preparing { device, .. } => device,
-                        _ => String::new(),
-                    };
-                    state.set(GpuPreparation::Failed {
-                        device,
-                        message: format!(
-                            "internal error (panic): {}",
-                            panic_message(panic.as_ref())
-                        ),
+        let spawned = mklight_core::platform::spawn("mklight-gpu-prepare", move || {
+            use crate::gpu::{GpuDevice, GpuPreparation};
+            let prepare = || {
+                let Some(provider) = provider else {
+                    return state.set(GpuPreparation::Unavailable {
+                        reason: "no GPU backend is registered".into(),
                     });
+                };
+                // Opening the device runs its numerics probe.
+                match provider
+                    .device()
+                    .and_then(|d| d.downcast::<GpuDevice>().ok())
+                {
+                    Some(device) => crate::gpu::prepare(device, cache_dir, &state),
+                    None => state.set(GpuPreparation::Unavailable {
+                        reason: provider
+                            .info()
+                            .reason
+                            .unwrap_or_else(|| "the GPU is not available".into()),
+                    }),
                 }
-            });
+            };
+            // A panic while opening the device or creating its kernels
+            // must not leave the state at `Preparing`.
+            if let Err(panic) = catch_unwind(AssertUnwindSafe(prepare)) {
+                let device = match state.get() {
+                    GpuPreparation::Preparing { device, .. } => device,
+                    _ => String::new(),
+                };
+                state.set(GpuPreparation::Failed {
+                    device,
+                    message: format!("internal error (panic): {}", panic_message(panic.as_ref())),
+                });
+            }
+        });
         if let Err(e) = spawned {
             self.inner
                 .gpu_preparation
@@ -471,7 +466,7 @@ mod tests {
         r.register(Arc::new(Panicking));
         *write(&e.inner.backends) = r;
         assert!(e.prepare_gpu(None));
-        let start = std::time::Instant::now();
+        let start = mklight_core::platform::Instant::now();
         let state = loop {
             match e.gpu_preparation() {
                 GpuPreparation::Preparing { .. } if start.elapsed() < Duration::from_secs(60) => {

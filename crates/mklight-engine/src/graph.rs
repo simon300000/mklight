@@ -47,10 +47,11 @@
 //! cancelled or panicking build releases its claim and wakes the waiters,
 //! which then build the node themselves.
 
+use mklight_core::platform::Instant;
 use std::any::Any;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use mklight_core::memo::{Built, KeyHasher, Memo, NodeKey, NodeValue};
 use mklight_core::{JobContext, MkError, MkResult};

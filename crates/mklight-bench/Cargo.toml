@@ -22,6 +22,8 @@ libc = "0.2"
 # the engine for.
 [dev-dependencies]
 mklight-trace.workspace = true
+mklight-analysis.workspace = true
+mklight-wave.workspace = true
 mklight-ghost.workspace = true
 mklight-stray.workspace = true
 mklight-optim.workspace = true
