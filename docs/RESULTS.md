@@ -231,7 +231,8 @@ counts completed commands.
 * `field_curvature_distortion`: focus shifts along the image's local `z`
   from the image surface (positive: behind it); distortion
   `100 (y_real − y_ref)/y_ref` against the paraxial chief height,
-  `f·tanθ` and `f·θ`.
+  `f·tanθ` and `f·θ` (`f` = paraxial image height per unit `tanθ` on the
+  image surface; all 0 on axis).
 * `seidel`: positive singlet `S_I > 0`; `W040 > 0` has the OPD sign above;
   Petzval radius with the signed image-space index (docs/ANALYSIS.md §2.3).
 * `relative_illumination`: `Ω_p(H)/Ω_p(0)` (1 on axis).
@@ -778,8 +779,8 @@ Result (`result` in the envelope):
 |---|---|---|---|
 | `curves` | array<object> |  | One per selected wavelength. |
 | `curves[].distortion_percent` | array<nf> | % | 100 (h_real − h_paraxial)/h_paraxial along the sampled field axis. |
-| `curves[].f_tan_theta_distortion_percent` | array<nf> | % | Against f·tanθ. |
-| `curves[].f_theta_distortion_percent` | array<nf> | % | Against f·θ. |
+| `curves[].f_tan_theta_distortion_percent` | array<nf> | % | Object at infinity: against f·tanθ, f = paraxial image height per unit tanθ on the image surface (so equal to distortion_percent; 0 on axis); NaN for a finite object. |
+| `curves[].f_theta_distortion_percent` | array<nf> | % | Against f·θ, the same f as f·tanθ. |
 | `curves[].paraxial_height` | array<nf> | mm | Paraxial chief-ray image height. |
 | `curves[].real_height` | array<nf> | mm | Real chief-ray image height. |
 | `curves[].sagittal` | array<nf> | mm | Sagittal focus shift (Coddington). |

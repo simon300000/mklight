@@ -51,23 +51,20 @@ impl Geometry<'_> {
         Ok(output)
     }
 }
-fn scales(t: &SequentialTracer, w: usize) -> MkResult<([f64; 2], [f64; 2])> {
+fn scales(t: &SequentialTracer, w: usize) -> MkResult<[f64; 2]> {
     let fx = first_order_x(t, w)?;
     let fy = t.paraxial().at(w);
-    Ok((
-        if t.system().object_at_infinity {
-            [
-                fx.image_height_per_tan.unwrap_or(f64::NAN),
-                fy.image_height_per_tan.unwrap_or(f64::NAN),
-            ]
-        } else {
-            [
-                fx.image_height_per_object_height.unwrap_or(f64::NAN),
-                fy.image_height_per_object_height.unwrap_or(f64::NAN),
-            ]
-        },
-        [fx.efl, fy.efl],
-    ))
+    Ok(if t.system().object_at_infinity {
+        [
+            fx.image_height_per_tan.unwrap_or(f64::NAN),
+            fy.image_height_per_tan.unwrap_or(f64::NAN),
+        ]
+    } else {
+        [
+            fx.image_height_per_object_height.unwrap_or(f64::NAN),
+            fy.image_height_per_object_height.unwrap_or(f64::NAN),
+        ]
+    })
 }
 pub fn grid_distortion_job(
     b: &dyn ComputeBackend,
@@ -133,7 +130,7 @@ pub fn grid_distortion_job(
         ));
         return Ok(out);
     }
-    let (scale, _) = scales(t, w)?;
+    let scale = scales(t, w)?;
     let rotational = system_symmetry(t.system().system()) == Symmetry::Rotational;
     let points: Vec<_> = coords
         .iter()
@@ -258,7 +255,7 @@ pub fn field_curvature_job(
     let mut curves = Vec::new();
     let mut fallback_count = 0;
     for (wi, &w) in wls.iter().enumerate() {
-        let (scale, efl) = scales(t, w)?;
+        let scale = scales(t, w)?;
         let mut rows = Vec::new();
         let mut bad = Vec::new();
         for (fi, cross) in cross.iter().enumerate() {
@@ -298,7 +295,8 @@ pub fn field_curvature_job(
             } else {
                 100.0 * (real - paraxial) / paraxial
             };
-            let f = t.system().n_object[w] * efl[axis];
+            // Image-surface plate scale, as on the CPU (curvature module docs).
+            let f = scale[axis];
             let (dt, da) = if !t.system().object_at_infinity {
                 (f64::NAN, f64::NAN)
             } else if sweep.heights[fi] == 0.0 && rotational {
