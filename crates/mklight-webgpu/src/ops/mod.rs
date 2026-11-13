@@ -58,6 +58,54 @@ pub struct WebGpuOps {
     /// The plan's pinned systems (their device copies:
     /// `WebGpuBackend::device_systems`).
     pub systems: HashMap<SystemHandle, Arc<PackedSystemSet>>,
+    /// `MKLIGHT_WEBGPU_TRACE_PLANS=1`: each operation's name, placement and
+    /// wall time (from its offer to the next offer), printed on drop.
+    trace: Option<Trace>,
+}
+
+struct Trace {
+    plan: crate::clock::Instant,
+    last: Option<(String, crate::clock::Instant)>,
+    lines: Vec<(String, f64)>,
+}
+
+impl Trace {
+    fn close(&mut self) {
+        if let Some((name, t)) = self.last.take() {
+            self.lines.push((name, t.elapsed().as_secs_f64() * 1e3));
+        }
+    }
+}
+
+impl Drop for WebGpuOps {
+    fn drop(&mut self) {
+        if let Some(t) = &mut self.trace {
+            t.close();
+            let ops: Vec<String> = t
+                .lines
+                .iter()
+                .map(|(n, ms)| format!("{n} {ms:.2}"))
+                .collect();
+            eprintln!(
+                "webgpu plan {:.2} ms: {}",
+                t.plan.elapsed().as_secs_f64() * 1e3,
+                ops.join(", ")
+            );
+        }
+    }
+}
+
+/// The variant path of an operation (`Wave::Intensity`).
+fn op_name(op: &ResidentOp) -> String {
+    let d = format!("{op:?}");
+    let mut parts = d
+        .split(|c: char| !(c.is_alphanumeric() || c == '_'))
+        .filter(|p| !p.is_empty());
+    let a = parts.next().unwrap_or("?");
+    match parts.next() {
+        Some(b) if b.chars().next().is_some_and(char::is_uppercase) => format!("{a}::{b}"),
+        _ => a.to_string(),
+    }
 }
 
 impl WebGpuOps {
@@ -65,15 +113,51 @@ impl WebGpuOps {
         backend: WebGpuBackend,
         pinned: &HashMap<SystemHandle, Arc<PackedSystemSet>>,
     ) -> Self {
+        let trace = std::env::var("MKLIGHT_WEBGPU_TRACE_PLANS")
+            .is_ok_and(|v| v == "1")
+            .then(|| Trace {
+                plan: crate::clock::Instant::now(),
+                last: None,
+                lines: Vec::new(),
+            });
         Self {
             backend,
             systems: pinned.clone(),
+            trace,
         }
     }
 }
 
 impl DeviceOps for WebGpuOps {
     fn run(
+        &mut self,
+        i: usize,
+        op: &ResidentOp,
+        x: &mut Execution,
+        ctl: &JobControl,
+        stats: &mut JobStats,
+    ) -> MkResult<Option<&'static str>> {
+        // An operation's time runs from its offer to the next one's: the
+        // device run inside `offer`, or the specification after it.
+        let start = crate::clock::Instant::now();
+        if let Some(t) = &mut self.trace {
+            t.close();
+        }
+        let r = self.offer(i, op, x, ctl, stats);
+        if let Some(t) = &mut self.trace {
+            let place = match &r {
+                Ok(Some(_)) => "device",
+                Ok(None) => "spec",
+                Err(_) => "error",
+            };
+            t.last = Some((format!("{}[{place}]", op_name(op)), start));
+        }
+        r
+    }
+}
+
+impl WebGpuOps {
+    fn offer(
         &mut self,
         i: usize,
         op: &ResidentOp,

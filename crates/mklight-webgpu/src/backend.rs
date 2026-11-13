@@ -324,7 +324,18 @@ impl ComputeBackend for WebGpuBackend {
         key: &SystemCacheKey,
         systems: &[PackedSystem],
     ) -> MkResult<SystemHandle> {
-        self.inner.host.upload_systems_cached(key, systems)
+        // Keys name this backend's kernel build; the host's cache checks its
+        // own (the content digest still identifies the upload).
+        if key.kernel_build != self.inner.precision.kernel_build {
+            return Err(MkError::Backend(
+                "system cache layout/build mismatch".into(),
+            ));
+        }
+        let host_key = SystemCacheKey {
+            kernel_build: self.inner.host.precision().kernel_build.clone(),
+            ..key.clone()
+        };
+        self.inner.host.upload_systems_cached(&host_key, systems)
     }
     fn release_systems(&self, handle: SystemHandle) -> MkResult<()> {
         self.inner.host.release_systems(handle)

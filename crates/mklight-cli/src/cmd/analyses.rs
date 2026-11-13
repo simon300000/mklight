@@ -163,6 +163,7 @@ impl From<BackendChoice> for Backend {
         match choice {
             BackendChoice::Cpu => Backend::CpuReference,
             BackendChoice::Metal => Backend::Gpu("metal".into()),
+            BackendChoice::Webgpu => Backend::Gpu("webgpu".into()),
             BackendChoice::Auto => Backend::Auto,
         }
     }
