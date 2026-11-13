@@ -201,7 +201,14 @@ impl WgpuDevice {
                 layout: Some(&pl),
                 module: &module,
                 entry_point: Some(kernel.entry),
-                compilation_options: Default::default(),
+                // Every kernel writes its workgroup memory before reading
+                // it. naga's zero-initialisation is one invocation storing
+                // the whole array per group (a 2048² FFT ran 100× slower);
+                // browsers initialise regardless.
+                compilation_options: wgpu::PipelineCompilationOptions {
+                    zero_initialize_workgroup_memory: false,
+                    ..Default::default()
+                },
                 cache: None,
             });
         let p = Arc::new(Pipeline { layout, pipeline });
