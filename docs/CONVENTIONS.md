@@ -215,6 +215,33 @@ the scalar per-surface step. The packet results are therefore **bitwise
 identical** to `trace_ray` / `generate` / `trace` one ray at a time, which
 stay the independent oracle (`crates/mklight-trace/tests/packets.rs`).
 
+*What is vectorised* (measured 2026-11-13, `mklight-bench` example
+`packet_bench`; the numbers below are for one thread). The lane kernel is plain
+Rust that LLVM vectorises on its own. On aarch64, `trace_packets` has about 700 NEON `f64x2`
+instructions (`fmul.2d`, `fmla.2d`, `fdiv.2d`, `fsqrt.2d`, …). Apple's
+`objdump` prints them as `fmul.2d v0, v1, v2`, so grep for `\.2d`. Turning
+the vectoriser off (`-C no-vectorize-slp -C no-vectorize-loops`) makes
+`trace_rays` 1.28× slower and `trace_grid` / `opd_grid` about 1.2–1.25×
+slower on the Cooke triplet and the double Gauss, and about 1.1× slower on
+a 35 mm asphere lens (its aspheres take the scalar step). An explicit
+whole-packet SIMD type (element-wise `[f64; 8]` operations, `mul_add` kept
+as a per-lane `fma` so the results stayed bitwise identical) was tried and
+not kept. It was 13–17 % slower on aarch64 because eight-lane values
+spill, and 1.9× slower when walked in register-width chunks. On x86_64 and
+wasm32 it vectorised no better than the plain loops. On x86_64, LLVM
+leaves the kernel scalar even with AVX2 + FMA. Without `+fma` (the default
+x86_64 target) every `mul_add` is a call to `fma` (113 calls in
+`trace_packets`). On wasm32, with or without `simd128`, every `mul_add` is
+a call to a software `fma` (117 calls), and the rest of the kernel stays
+scalar. simd128 has no fused `f64x2` multiply–add. `relaxed_madd` may or
+may not fuse, so it would break bitwise identity. Native packed f64 on
+x86_64 would need intrinsics (for example the `wide` crate) and an
+x86-64-v3 build. `wide`'s `mul_add` is unfused without `fma`, so it is
+not bitwise identical on baseline x86_64 or wasm32. That is a
+per-architecture path, worth it only if x86 throughput matters.
+Building x86_64 releases with `-C target-cpu=x86-64-v3` (inline FMA) is
+the cheaper first step.
+
 **Aiming Jacobians.** The real-aim solve (`SequentialTracer`, 2-D Newton with
 Broyden updates, `AIM_POLICY = JacobianPolicy::AnalyticRefresh`) takes every *fresh* Jacobian `∂(stop hit)/∂(aim point)`
 from the analytic differential tracer (`mklight_trace::diff`): the tangent

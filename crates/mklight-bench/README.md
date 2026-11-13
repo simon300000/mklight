@@ -7,7 +7,7 @@ product; the engine does not depend on this crate.
 |---|---|
 | `src/` | what the harnesses share: the result comparator and its contract tables (`comparison`, GPU.md §9.4), the allowance of the solver-outcome checks (`solver_spread`), the solver jobs' variables and settings (`solver`), the unique tiny edits of a session (`edit`), load average and CPU time (`host`), and `require_metal` |
 | `tests/` | two regression suites that need the comparator, which run with `cargo test`, and eight harnesses, which are `#[ignore]` and run by hand |
-| `examples/` | six command-line measurement programs |
+| `examples/` | seven command-line measurement programs |
 
 This file is the one list of the commands and of the environment variables
 each harness reads. The variables the engine and the Metal backend read in
@@ -178,6 +178,7 @@ arguments and the output.
 | `stray_ghost_profile` | one analysis (stray light, ghosts) on one backend, with the stage timings of its run |
 | `ghost_stages` | `ghost_irradiance` below the engine, the CPU reference and Metal alternated |
 | `stray_stages` | `stray_light` below the engine: system build, primary reference and the CPU and Metal transports |
+| `packet_bench` | the CPU packet path (`trace_rays`) inside `trace_grid`, `opd_grid` and a traced wave pupil, Cooke triplet and double Gauss (and an optional imported lens), on one thread and on all |
 
     cargo run --release -p mklight-bench --example backend_bench -- SUITE.json \
         [--filter TEXT] [--backends cpu,metal,auto] [--reps N] [--out FILE.jsonl] \
@@ -199,3 +200,6 @@ arguments and the output.
 
     cargo run --release -p mklight-bench --example stray_stages -- LENS.mklight \
         [RAYS] [REPS] [SETTINGS_JSON] [COLUMNS] [KEY=VALUE ...]
+
+    cargo run --release -p mklight-bench --example packet_bench -- \
+        [RINGS] [REPEATS] [LENS.zmx|LENS.seq]
