@@ -43,7 +43,7 @@ export function viewsFromWorkspace(): Json[] {
     key: p.key,
     analysis: p.analysis,
     settings: p.settings,
-    ui: { auto: p.auto, settings_visible: p.settingsOpen },
+    ui: { ...p.ui, auto: p.auto, settings_visible: p.settingsOpen },
   }))
   const arr = A.cloneArrangement(useArrangement.getState().arr)
   for (const w of arr.windows) if (w.frame) w.frame = toSavedFrame(w.frame)
@@ -75,6 +75,7 @@ export function applyViews(views: Json[]) {
       settings: (v.settings as JsonObject) ?? {},
       auto: ui.auto !== false && ui.auto_update !== false,
       settingsOpen: ui.settings_visible === true,
+      ui: Object.fromEntries(Object.entries(ui).filter(([k]) => !['auto', 'auto_update', 'settings_visible'].includes(k))),
     })
   }
   // The layout's view: a saved stretch (even ×1) is kept instead of the automatic choice.

@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { JsonObject } from '@/engine/types'
 import { Button } from '@/components/ui/button'
 import { Segmented } from '@/components/ui/segmented'
-import { LAYOUT_PANEL, locate, useArrangement } from '@/state/arrangement'
+import { LAYOUT_PANEL } from '@/state/arrangement'
 import { useDocument } from '@/state/document'
 import { useView } from '@/state/view'
 import { isStale, LAYOUT, SUMMARY, useWorkspace } from '@/state/workspace'
@@ -32,6 +32,7 @@ import {
   MenuTrigger,
 } from './panels/Menu'
 import { PanelMenuItems, usePanelHandle } from './panels/PanelArea'
+import { usePanelTabbed } from './panels/context'
 
 export { readScene, type Scene }
 
@@ -169,7 +170,7 @@ function LayoutControls({ running, xz, footprints }: { running: boolean; xz: boo
   const mode = useView((s) => s.layoutMode)
   const stretch = useView((s) => s.stretch)
   const showFootprints = useView((s) => s.showFootprints)
-  const tabbed = useArrangement((s) => (locate(s.arr, LAYOUT_PANEL)?.group.panels.length ?? 1) > 1)
+  const tabbed = usePanelTabbed()
   const handle = usePanelHandle(LAYOUT_PANEL)
   const modes: { value: LayoutMode; title: string }[] = xz || mode === 'xz'
     ? [
@@ -204,7 +205,9 @@ function LayoutControls({ running, xz, footprints }: { running: boolean; xz: boo
             options={modes.map((m) => ({
               value: m.value,
               title: m.title,
-              help: xz ? 'Y–Z section, X–Z section or 3D view (⌘2, ⌥⌘2, ⌘3)' : 'Meridional section or 3D view (⌘2, ⌘3)',
+              help: xz
+                ? `Y–Z section, X–Z section or 3D view (${shortcutLabel('alt+mod+y')}, ${shortcutLabel('alt+mod+x')}, ${shortcutLabel('alt+mod+3')})`
+                : `Meridional section or 3D view (${shortcutLabel('alt+mod+y')}, ${shortcutLabel('alt+mod+3')})`,
             }))}
             onChange={setLayoutMode}
             className="bg-transparent"
@@ -244,7 +247,7 @@ function LayoutControls({ running, xz, footprints }: { running: boolean; xz: boo
               {showFootprints && footprints.running ? <Loader2 className="animate-spin" /> : <CircleDashed />}
             </Button>
           )}
-          <Button variant="ghost" size="iconSm" aria-label="Fit Lens" title={`Fit the layout (${shortcutLabel('mod+0')}, or double-click)`} onClick={() => useView.getState().fit(false)}>
+          <Button variant="ghost" size="iconSm" aria-label="Fit Lens" title={`Fit the layout (${shortcutLabel('alt+mod+0')}, or double-click)`} onClick={() => useView.getState().fit(false)}>
             <Maximize2 />
           </Button>
           <Menu>

@@ -27,6 +27,9 @@ interface ViewState {
   inspectorPage: InspectorPage
   inspectorVisible: boolean
   sidebarVisible: boolean
+  /** A narrow window or a tablet (under 900 px): the sidebar is a drawer and
+   *  the inspector a sheet over the content, and the main window's panels stack. */
+  narrow: boolean
   /** Whether the lens data and the layout are open in one of the design's
    *  windows; they follow the panel arrangement, and setting them shows or
    *  hides the panel. */
@@ -70,6 +73,7 @@ export const useView = create<ViewState>()((set, get) => ({
   inspectorPage: 'surface',
   inspectorVisible: true,
   sidebarVisible: true,
+  narrow: false,
   lensDataVisible: true,
   layoutVisible: true,
   focusedPane: null,

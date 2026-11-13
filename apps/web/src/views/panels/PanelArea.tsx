@@ -6,6 +6,7 @@ import { LayoutPanelLeft, PanelsTopLeft, ScanLine, Table2, X } from 'lucide-reac
 import { memo, useRef, useState } from 'react'
 import * as A from '@/state/arrangement'
 import { LAYOUT_PANEL, LENS_DATA, MAIN, useArrangement, type GroupNode, type PanelKey, type PanelNode, type SplitNode } from '@/state/arrangement'
+import { useView } from '@/state/view'
 import { useWorkspace } from '@/state/workspace'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
@@ -14,8 +15,9 @@ import { AnalysisPane } from '@/views/AnalysisPane'
 import { LayoutView } from '@/views/LayoutView'
 import { LensData } from '@/views/LensData'
 import { closePanel, dockAll, focusPanel, isAloneInWindow, isDetached, moveToMainWindow, moveToNewWindow, panelTitle, showPanel } from './actions'
-import { usePanelWindow } from './context'
+import { PanelTabbedContext, usePanelWindow } from './context'
 import { pressHandle, useDrag } from './drag'
+import { clientOrigin } from './windows'
 import { MenuItem, MenuSeparator, PointMenu } from './Menu'
 
 export function PanelIcon({ panel, className }: { panel: PanelKey; className?: string }) {
@@ -57,6 +59,8 @@ export function usePanelHandle(panel: PanelKey) {
         setMenu({ x: e.clientX, y: e.clientY })
       },
       title: `${panelTitle(panel)}. Drag to move it, or out of the window to open it in a window of its own.`,
+      // A touch drags the panel instead of scrolling.
+      style: { touchAction: 'none' } as React.CSSProperties,
     },
     menu: (
       <PointMenu at={menu} onClose={() => setMenu(null)}>
@@ -96,7 +100,7 @@ function PanelFrame({ panel }: { panel: PanelKey }) {
       data-panel={panel}
       className={cn(
         'flex min-h-0 min-w-0 flex-1 flex-col [&>section]:min-h-0 [&>section]:flex-1',
-        panel !== LAYOUT_PANEL && '[&>section>div:first-child]:cursor-grab',
+        panel !== LAYOUT_PANEL && '[&>section>div:first-child]:cursor-grab [&>section>div:first-child]:touch-none',
         dragging && 'opacity-45',
       )}
       onPointerDownCapture={() => focusPanel(panel)}
@@ -241,12 +245,46 @@ function DragGhost({ windowId }: { windowId: string }) {
   )
 }
 
+/** A narrow main window (under 900 px, a tablet): its panels stack in one
+ *  scrolling column, each at least a usable height. Separate windows keep their tree. */
+function useStacked(): boolean {
+  const { id } = usePanelWindow()
+  const narrow = useView((s) => s.narrow)
+  return narrow && id === MAIN
+}
+
+/** Outside the design's windows: the window a drop would open, outlined where
+ *  it would appear (each window draws the part that overlaps it). */
+function NewWindowOutline({ windowId }: { windowId: string }) {
+  const outline = useDrag((s) => s.outline)
+  const dragging = useDrag((s) => s.dragging)
+  if (!outline || !dragging) return null
+  const o = clientOrigin(windowId)
+  if (!o) return null
+  return (
+    <div
+      data-testid="new-window-outline"
+      className="pointer-events-none fixed z-[79] rounded-2xl border-2 border-accent/80 bg-accent/10"
+      style={{ left: outline[0] - o.x, top: outline[1] - o.y, width: outline[2], height: outline[3] }}
+    >
+      <span className="glass-popover absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 rounded-full px-3 py-1 text-[13px] font-medium text-secondary">
+        New Window
+      </span>
+    </div>
+  )
+}
+
 function GroupView({ group }: { group: GroupNode }) {
   const panel = A.current(group)
+  const stacked = useStacked()
   return (
-    <div data-panel-group={group.id} className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-content">
+    <div data-panel-group={group.id} className={cn('relative flex min-w-0 flex-1 flex-col overflow-hidden bg-content', stacked ? 'min-h-[320px]' : 'min-h-0')}>
       {group.panels.length > 1 && <TabStrip group={group} />}
-      {panel && <PanelFrame key={panel} panel={panel} />}
+      {panel && (
+        <PanelTabbedContext.Provider value={group.panels.length > 1}>
+          <PanelFrame key={panel} panel={panel} />
+        </PanelTabbedContext.Provider>
+      )}
       <GroupHighlight gid={group.id} />
     </div>
   )
@@ -307,14 +345,16 @@ function Divider({ split, k, box }: { split: SplitNode; k: number; box: React.Re
 
 function SplitView({ split }: { split: SplitNode }) {
   const box = useRef<HTMLDivElement>(null)
-  const h = split.axis === 'h'
+  const stacked = useStacked()
+  const h = split.axis === 'h' && !stacked
+  const axisSplit = stacked ? { ...split, axis: 'v' as const } : split
   return (
-    <div ref={box} className={cn('flex min-h-0 min-w-0 flex-1', h ? 'flex-row' : 'flex-col')}>
+    <div ref={box} className={cn('flex min-w-0 flex-1', h ? 'flex-row' : 'flex-col', stacked ? 'min-h-fit' : 'min-h-0')}>
       {split.children.map((c, k) => (
         <div key={c.id} className="contents">
-          {k > 0 && <Divider split={split} k={k - 1} box={box} />}
+          {k > 0 && <Divider split={axisSplit} k={k - 1} box={box} />}
           <div
-            className={cn('flex min-h-0 min-w-0', h ? 'min-w-[120px]' : 'min-h-[80px]')}
+            className={cn('flex min-w-0', stacked ? 'min-h-fit' : h ? 'min-h-0 min-w-[120px]' : 'min-h-[80px]')}
             style={{ flex: `${split.fractions[k] ?? 0} 1 0px` }}
           >
             <NodeView node={c} />
@@ -355,10 +395,13 @@ function EmptyPanels() {
 /** A window's content: its panel tree, the window-edge drop zones and the drag chip. */
 export function PanelWindowView({ windowId }: { windowId: string }) {
   const root = useArrangement((s) => A.windowById(s.arr, windowId)?.root ?? null)
+  const stacked = useView((s) => s.narrow) && windowId === MAIN
+  const tree = root ? <NodeView node={root} /> : windowId === MAIN ? <EmptyPanels /> : null
   return (
-    <div data-panel-window={windowId} className="relative flex min-h-0 min-w-0 flex-1">
-      {root ? <NodeView node={root} /> : windowId === MAIN ? <EmptyPanels /> : null}
+    <div data-panel-window={windowId} className={cn('relative flex min-h-0 min-w-0 flex-1', stacked && 'overflow-y-auto overscroll-contain')}>
+      {stacked ? <div className="flex min-h-full w-full flex-col">{tree}</div> : tree}
       <WindowEdgeHighlight windowId={windowId} />
+      <NewWindowOutline windowId={windowId} />
       <DragGhost windowId={windowId} />
     </div>
   )

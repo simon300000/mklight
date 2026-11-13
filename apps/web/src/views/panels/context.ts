@@ -17,3 +17,9 @@ export const usePanelWindow = () => useContext(WindowContext)
 
 /** The container for Radix portals of the window a view is in (undefined in the main window). */
 export const usePortalContainer = () => useContext(WindowContext).portal ?? undefined
+
+/** Whether a panel is one of several tabs in its group: the tab carries its
+ *  title, so the panel's header shows only its caption and buttons. */
+export const PanelTabbedContext = createContext(false)
+
+export const usePanelTabbed = () => useContext(PanelTabbedContext)

@@ -177,7 +177,7 @@ function AppMenu() {
           <PanelMenu />
           <DropdownMenuSeparator />
           {LAYOUT_SHORTCUTS.map((c) => (
-            <DropdownMenuItem key={c.shortcut} shortcut={c.shortcut} disabled={c.shortcut === 'alt+mod+2' && !offersXZ()} onSelect={() => c.run()}>
+            <DropdownMenuItem key={c.shortcut} shortcut={c.shortcut} disabled={c.shortcut === 'alt+mod+x' && !offersXZ()} onSelect={() => c.run()}>
               {c.title}
             </DropdownMenuItem>
           ))}

@@ -1,5 +1,6 @@
-// The layout's view commands (docs/APP.md "Keyboard"): ⌘2 Y–Z section,
-// ⌥⌘2 X–Z section, ⌘3 3-D, ⌘0 fit.
+// The layout's view commands (docs/APP.md "Keyboard"). The macOS app's ⌘2,
+// ⌥⌘2, ⌘3 and ⌘0 switch tabs and reset the zoom in a browser, so the web
+// app uses ⌥⌘Y (Y–Z section), ⌥⌘X (X–Z section), ⌥⌘3 (3-D) and ⌥⌘0 (fit).
 
 import { eventShortcut } from '@/state/commands'
 import { useDocument } from '@/state/document'
@@ -37,13 +38,13 @@ export function syncLayoutSettings() {
 export const fitLayout = () => useView.getState().fit(false)
 
 export const LAYOUT_SHORTCUTS: { shortcut: string; title: string; run: () => void }[] = [
-  { shortcut: 'mod+2', title: 'Y–Z Section', run: () => setLayoutMode('yz') },
-  { shortcut: 'alt+mod+2', title: 'X–Z Section', run: () => setLayoutMode('xz') },
-  { shortcut: 'mod+3', title: '3D View', run: () => setLayoutMode('3d') },
-  { shortcut: 'mod+0', title: 'Fit Layout', run: fitLayout },
+  { shortcut: 'alt+mod+y', title: 'Y–Z Section', run: () => setLayoutMode('yz') },
+  { shortcut: 'alt+mod+x', title: 'X–Z Section', run: () => setLayoutMode('xz') },
+  { shortcut: 'alt+mod+3', title: '3D View', run: () => setLayoutMode('3d') },
+  { shortcut: 'alt+mod+0', title: 'Fit Layout', run: fitLayout },
 ]
 
-/** Handles ⌘2 / ⌥⌘2 / ⌘3 / ⌘0; true when the key was one of them. */
+/** Handles ⌥⌘Y / ⌥⌘X / ⌥⌘3 / ⌥⌘0; true when the key was one of them. */
 export function handleLayoutShortcut(e: KeyboardEvent): boolean {
   const sc = eventShortcut(e)
   const c = sc ? LAYOUT_SHORTCUTS.find((x) => x.shortcut === sc) : null

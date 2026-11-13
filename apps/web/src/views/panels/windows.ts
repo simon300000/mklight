@@ -61,29 +61,75 @@ export function clientOrigin(id: string): { x: number; y: number } | null {
   return { x: w.screenX + (w.outerWidth - w.innerWidth) / 2, y: w.screenY + Math.max(w.outerHeight - w.innerHeight, 0) }
 }
 
-/** The design's windows under a screen point, front (most recently focused) first. */
+/** Per window: its outer frame on screen (title bar included), read when the
+ *  window opens, gains the focus, resizes or moves, and polled during a drag. */
+const frames = new Map<string, Frame>()
+
+/** Reads every window's frame now (cheap; called on each pointer move of a drag). */
+export function refreshFrames() {
+  for (const id of windowIds()) {
+    const w = windowOf(id)
+    if (w && !w.closed) frames.set(id, frameOf(w))
+    else frames.delete(id)
+  }
+}
+
+/** A window's outer frame on screen, as last read. */
+export function outerFrame(id: string): Frame | null {
+  const w = windowOf(id)
+  if (!w || w.closed) return null
+  return frames.get(id) ?? frameOf(w)
+}
+
+/** Brings a window to the front of the hit-test order (it was focused or clicked). */
+export function markFront(id: string) {
+  focusTimes.set(id, performance.now())
+}
+
+/** The design's windows whose frame holds a screen point, front (most
+ *  recently focused) first: a drop is judged against the front one. */
 export function windowsAt(sx: number, sy: number): string[] {
   const ids = windowIds().filter((id) => {
-    const w = windowOf(id)
-    const o = clientOrigin(id)
-    if (!w || !o) return false
-    return sx >= o.x && sx < o.x + w.innerWidth && sy >= o.y && sy < o.y + w.innerHeight
+    const f = outerFrame(id)
+    return !!f && sx >= f[0] && sx < f[0] + f[2] && sy >= f[1] && sy < f[1] + f[3]
   })
   return ids.sort((a, b) => (focusTimes.get(b) ?? 0) - (focusTimes.get(a) ?? 0))
 }
 
-/** Watches a window's pointer (for its screen origin) and focus. */
+/** Whether a screen point is in a window's content (not its title bar or border). */
+export function inClientArea(id: string, sx: number, sy: number): boolean {
+  const w = windowOf(id)
+  const o = clientOrigin(id)
+  if (!w || !o) return false
+  return sx >= o.x && sx < o.x + w.innerWidth && sy >= o.y && sy < o.y + w.innerHeight
+}
+
+/** Watches a window's pointer (for its screen origin), focus and frame. */
 export function trackWindow(id: string, w: Window): () => void {
   const move = (e: PointerEvent) => origins.set(id, { x: e.screenX - e.clientX, y: e.screenY - e.clientY })
-  const focus = () => focusTimes.set(id, performance.now())
+  const front = () => {
+    markFront(id)
+    frames.set(id, frameOf(w))
+  }
+  const resize = () => {
+    frames.set(id, frameOf(w))
+    origins.delete(id)
+  }
   w.addEventListener('pointermove', move, { capture: true, passive: true })
   w.addEventListener('pointerdown', move, { capture: true, passive: true })
-  w.addEventListener('focus', focus)
-  if (w.document.hasFocus()) focus()
+  w.addEventListener('pointerdown', front, { capture: true, passive: true })
+  w.addEventListener('focus', front)
+  w.addEventListener('resize', resize)
+  frames.set(id, frameOf(w))
+  if (w.document.hasFocus()) front()
   return () => {
     w.removeEventListener('pointermove', move, { capture: true })
     w.removeEventListener('pointerdown', move, { capture: true })
-    w.removeEventListener('focus', focus)
+    w.removeEventListener('pointerdown', front, { capture: true })
+    w.removeEventListener('focus', front)
+    w.removeEventListener('resize', resize)
+    frames.delete(id)
+    origins.delete(id)
   }
 }
 
@@ -156,7 +202,10 @@ export function openPopup(id: string, frame: Frame | null, title: string): Popup
     }
     const now = frameOf(win!)
     if (now.some((v, k) => v !== last[k])) {
+      // Moved or resized: the measured client origin is stale until the pointer comes back.
+      if (now[0] !== last[0] || now[1] !== last[1]) origins.delete(id)
       last = now
+      frames.set(id, now)
       onFrameChange(id, now)
     }
   }
