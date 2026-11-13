@@ -68,7 +68,7 @@ export RUSTFLAGS="-C target-feature=+atomics,+bulk-memory,+mutable-globals,+nont
 -C link-arg=--export=__wasm_init_tls -C link-arg=--export=__tls_size \
 -C link-arg=--export=__tls_align -C link-arg=--export=__tls_base \
 -C link-arg=-zstack-size=$STACK_SIZE"
-# Release: the workspace profile (thin LTO, one codegen unit) without debug info.
+# Release: the workspace profile (thin LTO) without debug info.
 export CARGO_PROFILE_RELEASE_DEBUG=0
 
 cd "$ROOT"
