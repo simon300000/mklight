@@ -7,10 +7,10 @@
 import { expect, type Page, test } from '@playwright/test'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { REF_DIR } from './reference'
+import { REF_DIR, ISOLATED_URL } from './reference'
 
 async function openHarness(page: Page) {
-  await page.goto('http://localhost:4711/')
+  await page.goto(ISOLATED_URL)
   await page.waitForFunction(() => globalThis.crossOriginIsolated && 'mk' in window, null, { timeout: 30_000 })
 }
 
@@ -157,7 +157,7 @@ test('WebGPU: calibration is measured, cached, reused, and routes auto', async (
   console.log('calibration', JSON.stringify(measured))
   expect(measured.state).toBe('ready')
   expect(measured.calibration.source).toBe('measured')
-  expect(Object.keys(measured.calibration.analyses as object).sort()).toEqual(['ray_grid', 'spot_diagram'])
+  expect(Object.keys(measured.calibration.analyses as object).sort()).toEqual(['geometric_mtf', 'ray_grid', 'spot_diagram'])
   expect(measured.calibration.seconds as number).toBeLessThan(30)
   // The next engine reuses it from IndexedDB (the worker stores it once ready).
   await page.waitForTimeout(500)

@@ -6,6 +6,12 @@ import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, rmSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 
+/** Harness ports: `MKLIGHT_WEB_PORT` (default 4710) without isolation
+ * headers, the next port with them (parallel checkouts pick their own). */
+export const PORT = Number(process.env.MKLIGHT_WEB_PORT ?? 4710)
+export const PLAIN_URL = `http://localhost:${PORT}/`
+export const ISOLATED_URL = `http://localhost:${PORT + 1}/`
+
 export const REF_DIR = resolve(import.meta.dirname, '.reference')
 export const ROOT = resolve(import.meta.dirname, '../../../..')
 

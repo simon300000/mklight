@@ -6,7 +6,7 @@
 import { expect, type Page, test } from '@playwright/test'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { COMPARED, REF_DIR, ROOT } from './reference'
+import { COMPARED, REF_DIR, ROOT, ISOLATED_URL, PLAIN_URL } from './reference'
 
 /** Agreement with the native engine: relative 1e-9 with an absolute floor
  * of 1e-12 (wasm and native differ only in libm's last bits; docs/WEB.md). */
@@ -67,7 +67,7 @@ function compare(a: unknown, b: unknown, path: string, s: Stats) {
 const newStats = (): Stats => ({ numbers: 0, identical: 0, maxAbs: 0, maxRel: 0, worst: '', mismatches: [] })
 
 test('isolation by the service worker on a header-less static host', async ({ page }) => {
-  await openHarness(page, 'http://localhost:4710/')
+  await openHarness(page, PLAIN_URL)
   const r = await page.evaluate(() => window.mk.ready())
   expect(r.isolated).toBe(true)
   expect(r.threaded).toBe(true)
@@ -77,7 +77,7 @@ test('isolation by the service worker on a header-less static host', async ({ pa
 })
 
 test('isolation by response headers', async ({ page }) => {
-  await page.goto('http://localhost:4711/')
+  await page.goto(ISOLATED_URL)
   await page.waitForFunction(() => 'mk' in window)
   expect(await page.evaluate(() => globalThis.crossOriginIsolated)).toBe(true)
 })

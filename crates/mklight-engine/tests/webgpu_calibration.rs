@@ -57,7 +57,7 @@ fn calibration_runs_installs_and_routes() {
         }
     };
     eprintln!("calibration {}", serde_json::to_string(&cal).unwrap());
-    assert_eq!(cal.analyses.len(), 2);
+    assert_eq!(cal.analyses.len(), 3);
     assert_eq!(cal.source, "measured");
     let d = decision(8);
     assert_eq!(d["rule"], "webgpu calibration", "{d}");

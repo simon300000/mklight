@@ -5,8 +5,8 @@
 //! The browser is the WebGPU backend's main use, and there the CPU is the
 //! wasm reference on however many threads the browser grants while the GPU
 //! is whatever adapter it exposes: no shipped table can predict either. So
-//! the engine measures them ([`calibrate`]): the spot diagram and the ray
-//! grid of a built-in sample at two small sizes on the CPU reference and on
+//! the engine measures them ([`calibrate`]): the spot diagram, the ray grid
+//! and the geometric MTF of a built-in sample at two small sizes on the CPU reference and on
 //! `gpu:webgpu` (after an untimed warm-up that pays pipeline compilation),
 //! about 0.3–1 s in all, and fits each analysis and backend a line
 //! `fixed_ms + per_mwork_ms · work`, with `work` the cost profile's rays ×
@@ -26,7 +26,7 @@ use super::profile::{SystemShape, profile_with};
 use super::{Decision, MIN_GAIN_MS, RATIO, Route, VERSION};
 
 /// The analyses calibrated (and routed by the calibration).
-pub const CALIBRATED: &[&str] = &["spot_diagram", "ray_grid"];
+pub const CALIBRATED: &[&str] = &["spot_diagram", "ray_grid", "geometric_mtf"];
 
 /// Calibration format.
 pub const FORMAT: u32 = 1;
@@ -34,8 +34,11 @@ pub const FORMAT: u32 = 1;
 /// The prior (GPU.md §11.6): the ray count from which WebGPU measured at
 /// least `RATIO` faster in Chromium and WebKit on one machine (an Apple M2
 /// Pro), used until a calibration is installed.
-pub(crate) const WEBGPU_MIN_RAYS: &[(&str, f64)] =
-    &[("ray_grid", 250_000.), ("spot_diagram", 900_000.)];
+pub(crate) const WEBGPU_MIN_RAYS: &[(&str, f64)] = &[
+    ("ray_grid", 250_000.),
+    ("spot_diagram", 400_000.),
+    ("geometric_mtf", 400_000.),
+];
 
 /// One backend's cost of one analysis (ms).
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
