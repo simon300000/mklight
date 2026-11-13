@@ -95,7 +95,7 @@ test('WebGPU: gpu:webgpu runs analyses within the GPU contracts', async ({ page 
   await openHarness(page)
   const r = await page.evaluate(() => window.mk.ready())
   test.skip(!r.webgpu, `this browser has no WebGPU adapter (${JSON.stringify(r)})`)
-  const created = await page.evaluate(() => window.mk.create())
+  const created = await page.evaluate(() => window.mk.create(undefined, 'off'))
   const webgpu = created.info.backends.find((b) => b.id === 'gpu:webgpu')
   console.log('gpu:webgpu', JSON.stringify(webgpu))
   expect(webgpu, 'gpu:webgpu registered').toBeTruthy()
@@ -116,11 +116,12 @@ test('WebGPU: gpu:webgpu runs analyses within the GPU contracts', async ({ page 
   }
 })
 
-test('WebGPU: auto routes by the measured break-even (GPU.md §11.6)', async ({ page }) => {
+test('WebGPU: auto routes by the prior break-even before calibration (GPU.md §11.6)', async ({ page }) => {
   await openHarness(page)
   const r = await page.evaluate(() => window.mk.ready())
   test.skip(!r.webgpu, 'no WebGPU adapter')
-  await page.evaluate(() => window.mk.create())
+  // The prior (no calibration).
+  await page.evaluate(() => window.mk.create(undefined, 'off'))
   const text = readFileSync(join(REF_DIR, 'cooke.mklight'), 'utf8')
   await page.evaluate(([t]) => window.mk.openProject(0, t), [text])
   const used = async (analysis: string, settings: object) => {
@@ -134,6 +135,68 @@ test('WebGPU: auto routes by the measured break-even (GPU.md §11.6)', async ({ 
   expect(await used('ray_grid', { rings: 96 })).toBe('gpu:webgpu')
   expect(await used('ray_grid', { rings: 8 })).toBe('cpu_reference')
   expect(await used('mtf', {})).toBe('cpu_reference')
+})
+
+test('WebGPU: calibration is measured, cached, reused, and routes auto', async ({ page }) => {
+  test.setTimeout(240_000)
+  await openHarness(page)
+  const r = await page.evaluate(() => window.mk.ready())
+  test.skip(!r.webgpu, 'no WebGPU adapter')
+  // A new engine on an empty IndexedDB (a fresh browser context) measures.
+  const first = await page.evaluate(() => window.mk.create())
+  const settle = (i: number) =>
+    page.evaluate(async (k) => {
+      for (let n = 0; n < 1200; n++) {
+        const s = (await window.mk.calibration(k)) as { state: string }
+        if (s.state !== 'running' && s.state !== 'idle') return s
+        await new Promise((res) => setTimeout(res, 100))
+      }
+      return window.mk.calibration(k)
+    }, i)
+  const measured = (await settle(first.index)) as { state: string; calibration: Record<string, unknown> }
+  console.log('calibration', JSON.stringify(measured))
+  expect(measured.state).toBe('ready')
+  expect(measured.calibration.source).toBe('measured')
+  expect(Object.keys(measured.calibration.analyses as object).sort()).toEqual(['ray_grid', 'spot_diagram'])
+  expect(measured.calibration.seconds as number).toBeLessThan(30)
+  // The next engine reuses it from IndexedDB (the worker stores it once ready).
+  await page.waitForTimeout(500)
+  const second = await page.evaluate(() => window.mk.create())
+  const reused = (await settle(second.index)) as { state: string; calibration: Record<string, unknown> }
+  expect(reused.calibration.source).toBe('cached')
+  expect(reused.calibration.analyses).toEqual(measured.calibration.analyses)
+
+  // Forced estimates change the route; the decision records its inputs.
+  const text = readFileSync(join(REF_DIR, 'cooke.mklight'), 'utf8')
+  await page.evaluate(([t, i]) => window.mk.openProject(i as number, t as string), [text, second.index] as const)
+  const auto = async (rings: number) => {
+    const { result } = await page.evaluate(
+      ([i, n]) => window.mk.run(i as number, { analysis: 'ray_grid', settings: { rings: n } as never, backend: 'auto', fresh: true }),
+      [second.index, rings] as const,
+    )
+    return result.backend as { used: string; cost_decision: Record<string, unknown> }
+  }
+  const forced = (gpu: { fixed_ms: number; per_mwork_ms: number }) => {
+    const c = structuredClone(measured.calibration) as { analyses: Record<string, { cpu: object; webgpu: object }>; source: string }
+    for (const a of Object.values(c.analyses)) {
+      a.cpu = { fixed_ms: 50, per_mwork_ms: 500 }
+      a.webgpu = gpu
+    }
+    c.source = 'forced'
+    return c
+  }
+  await page.evaluate(([i, c]) => window.mk.setCalibration(i as number, c as never), [second.index, forced({ fixed_ms: 0, per_mwork_ms: 1 })] as const)
+  const fast = await auto(8)
+  expect(fast.used).toBe('gpu:webgpu')
+  expect(fast.cost_decision.rule).toBe('webgpu calibration')
+  expect((fast.cost_decision.calibration as { source: string }).source).toBe('forced')
+  await page.evaluate(([i, c]) => window.mk.setCalibration(i as number, c as never), [second.index, forced({ fixed_ms: 1e6, per_mwork_ms: 1 })] as const)
+  const slow = await auto(250)
+  expect(slow.used).toBe('cpu_reference')
+  expect(slow.cost_decision.rule).toBe('webgpu calibration')
+  // Back to the prior.
+  await page.evaluate((i) => window.mk.setCalibration(i, null), second.index)
+  expect((await auto(8)).cost_decision.rule).toBe('webgpu break-even')
 })
 
 /**
@@ -166,7 +229,8 @@ test('WebGPU: timing against the wasm CPU reference', async ({ page }) => {
   )
   const rows = await page.evaluate(
     async ([t, cs]) => {
-      const e = (await window.mk.create()).index
+      // No background calibration competing with the timed runs.
+      const e = (await window.mk.create(undefined, 'off')).index
       await window.mk.openProject(e, t as string)
       const out: Array<{ tag: string; cpu: number; gpu: number; used: string }> = []
       // A case's optional fourth element: route options of its WebGPU run.

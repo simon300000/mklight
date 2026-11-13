@@ -224,6 +224,36 @@ pub fn register_webgpu() -> Result<(), JsValue> {
     Ok(())
 }
 
+/// Start the WebGPU calibration on an engine thread (docs/GPU.md §11.6);
+/// false when one ran or runs. Start host threads afterwards.
+#[cfg(feature = "webgpu")]
+#[wasm_bindgen]
+pub fn webgpu_calibration_start() -> Result<bool, JsValue> {
+    Ok(state()?.engine.start_webgpu_calibration())
+}
+
+/// The calibration's state as JSON: `{"state": "idle" | "running" |
+/// "ready" | "failed", "calibration"?, "message"?}`.
+#[cfg(feature = "webgpu")]
+#[wasm_bindgen]
+pub fn webgpu_calibration_state() -> Result<String, JsValue> {
+    Ok(to_json(&state()?.engine.webgpu_calibration_state())?)
+}
+
+/// Install a calibration (the host's cache, or a forced estimate in
+/// tests); empty text removes it (the prior again).
+#[cfg(feature = "webgpu")]
+#[wasm_bindgen]
+pub fn webgpu_calibration_set(calibration_json: &str) -> Result<(), JsValue> {
+    let c = if calibration_json.trim().is_empty() {
+        None
+    } else {
+        Some(object(calibration_json, "calibration_json")?)
+    };
+    state()?.engine.set_webgpu_calibration(c);
+    Ok(())
+}
+
 /// Host workers the glue should start now for engine threads that wait for
 /// one (`mklight_core::platform`). Each started worker calls `thread_host`.
 #[wasm_bindgen]

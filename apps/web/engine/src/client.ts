@@ -304,6 +304,14 @@ class Client implements EngineClient {
     return (await this.conn.call('sessionInfo', { sid: await this.sid })) as unknown as SessionInfo
   }
 
+  async webgpuCalibration(): Promise<JSONObject> {
+    return (await this.conn.call('webgpuCalibration', {})) as JSONObject
+  }
+
+  async setWebgpuCalibration(calibration: JSONObject | null): Promise<void> {
+    await this.conn.call('setWebgpuCalibration', { calibration })
+  }
+
   makeDocumentEngine(): EngineClient {
     return new Client(this.conn, this.info, this.conn.call('sessionNew', {}), this.descriptors)
   }
@@ -337,6 +345,7 @@ export async function createEngine(opts: CreateEngineOptions = {}): Promise<Engi
     threads,
     cores: r.hardwareConcurrency,
     config: { ...WEB_CONFIG, ...(opts.config ?? {}) },
+    webgpuCalibration: opts.webgpuCalibration ?? 'auto',
   })
   const sid = await conn.call('sessionNew', {})
   const info: EngineInfo = {

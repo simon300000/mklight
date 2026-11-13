@@ -81,6 +81,77 @@ async function startGpu(): Promise<boolean> {
   return true
 }
 
+// ---------------------------------------------------------------------------
+// WebGPU routing calibration (docs/GPU.md §11.6), cached in IndexedDB
+
+const CAL_DB = 'mklight-webgpu-calibration'
+const CAL_STORE = 'calibrations'
+
+function idb<T>(mode: IDBTransactionMode, f: (s: IDBObjectStore) => IDBRequest<T>): Promise<T | undefined> {
+  return new Promise((resolve) => {
+    let open: IDBOpenDBRequest
+    try {
+      open = indexedDB.open(CAL_DB, 1)
+    } catch {
+      return resolve(undefined)
+    }
+    open.onupgradeneeded = () => open.result.createObjectStore(CAL_STORE)
+    open.onerror = () => resolve(undefined)
+    open.onsuccess = () => {
+      try {
+        const r = f(open.result.transaction(CAL_STORE, mode).objectStore(CAL_STORE))
+        r.onsuccess = () => resolve(r.result)
+        r.onerror = () => resolve(undefined)
+      } catch {
+        resolve(undefined)
+      }
+    }
+  })
+}
+
+/** What a calibration is valid for: the adapter, the CPU threads and the
+ * engine version. */
+async function calibrationKey(threads: number): Promise<string> {
+  let adapter = 'unknown'
+  try {
+    const a = await (navigator as unknown as { gpu: { requestAdapter(): Promise<{ info?: Record<string, string> } | null> } }).gpu.requestAdapter()
+    const i = a?.info ?? {}
+    adapter = [i.vendor, i.architecture, i.device, i.description].filter(Boolean).join('/') || 'unknown'
+  } catch {
+    /* keyed as unknown */
+  }
+  return `${adapter}|threads=${threads}|engine=${wasm.engine_version()}`
+}
+
+let calibrationTimer: ReturnType<typeof setInterval> | null = null
+
+/** Install the cached calibration, or measure one in the background and
+ * cache it when it is ready. */
+async function startCalibration(threads: number) {
+  const key = await calibrationKey(threads)
+  const cached = await idb<string>('readonly', (s) => s.get(key))
+  if (cached) {
+    const c = JSON.parse(cached)
+    c.source = 'cached'
+    wasm.webgpu_calibration_set(JSON.stringify(c))
+    return
+  }
+  if (!wasm.webgpu_calibration_start()) return
+  topUpHosts()
+  calibrationTimer = setInterval(() => {
+    // The calibration's analyses start threads (plan workers, scoped
+    // threads) like any job: give them hosts.
+    topUpHosts()
+    const s = json(wasm.webgpu_calibration_state()) as { state: string; calibration?: JSONObject }
+    if (s.state === 'running') return
+    clearInterval(calibrationTimer!)
+    calibrationTimer = null
+    if (s.state === 'ready' && s.calibration) {
+      void idb('readwrite', (st) => st.put(JSON.stringify(s.calibration), key))
+    }
+  }, 100)
+}
+
 /** Start the host workers the engine's queued threads still need. */
 function topUpHosts() {
   let n = wasm.wanted_host_threads()
@@ -153,7 +224,7 @@ function snapshotOf(sid: number) {
 }
 
 const handlers: { [K in Op]: Handler<K> } = {
-  async init({ threads, cores, config }) {
+  async init({ threads, cores, config, webgpuCalibration }) {
     await init()
     // rayon's pool build waits until all its threads run, and a worker can
     // only start while this one is idle: start their hosts first.
@@ -165,6 +236,7 @@ const handlers: { [K in Op]: Handler<K> } = {
     wasm.engine_create(JSON.stringify(config), cores)
     if (gpu) wasm.register_webgpu()
     topUpHosts()
+    if (gpu && webgpuCalibration !== 'off') void startCalibration(threads)
     ready = true
     return {
       version: wasm.engine_version(),
@@ -174,6 +246,16 @@ const handlers: { [K in Op]: Handler<K> } = {
     }
   },
   listAnalyses: () => json(wasm.list_analyses()),
+  webgpuCalibration: () =>
+    typeof wasm.webgpu_calibration_state === 'function' ? json(wasm.webgpu_calibration_state()) : { state: 'idle' },
+  setWebgpuCalibration({ calibration }) {
+    if (calibrationTimer !== null) {
+      clearInterval(calibrationTimer)
+      calibrationTimer = null
+    }
+    wasm.webgpu_calibration_set(calibration ? JSON.stringify(calibration) : '')
+    return null
+  },
   sessionNew: () => wasm.session_new(),
   sessionFree: ({ sid }) => (wasm.session_free(sid), null),
   sessionInfo: ({ sid }) => json(wasm.session_info(sid)),

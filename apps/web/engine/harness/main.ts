@@ -35,8 +35,8 @@ const snaps: ModelSnapshot[] = []
 const mk = {
   ready,
   /** Create an engine; returns its index. */
-  async create(threads?: number) {
-    const e = await createEngine(threads ? { threads } : {})
+  async create(threads?: number, webgpuCalibration?: 'auto' | 'off') {
+    const e = await createEngine({ ...(threads ? { threads } : {}), ...(webgpuCalibration ? { webgpuCalibration } : {}) })
     engines.push(e)
     return { index: engines.length - 1, info: e.info }
   },
@@ -92,6 +92,8 @@ const mk = {
     }
   },
   engine: (i: number) => engines[i],
+  calibration: (i: number) => engines[i].webgpuCalibration(),
+  setCalibration: (i: number, c: Record<string, unknown> | null) => engines[i].setWebgpuCalibration(c as never),
 }
 
 declare global {
