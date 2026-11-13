@@ -14,6 +14,7 @@
 //! (`PreparedTrace`); resident traces check their device-made system,
 //! wavelength and path indices in the kernel, as Metal's do.
 
+use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use mklight_core::MkResult;
@@ -26,6 +27,7 @@ use mklight_gpu::resident::{BufferId, ResidentOp, TraceUpload};
 use mklight_gpu::{JobStats, PackedSystemSet, PreparedTrace, TraceRequest, TraceResult};
 
 use super::WebGpuOps;
+use super::resident::Mirrors;
 use crate::backend::{DeviceSystems, WebGpuBackend};
 use crate::device::*;
 
@@ -107,6 +109,34 @@ pub(super) fn uniform(p: &TraceParams, systems: u32) -> Vec<u32> {
     uniform_words(&w)
 }
 
+/// A launch's packed input: uploaded words or a device buffer.
+#[derive(Clone, Copy)]
+enum Input<'a> {
+    Words(&'a [u32]),
+    Key(BufferKey),
+}
+
+/// A temporary device buffer, released on drop.
+struct Temp {
+    gpu: Arc<dyn Gpu>,
+    key: BufferKey,
+}
+
+impl Temp {
+    fn new(gpu: &Arc<dyn Gpu>, words: usize) -> MkResult<Self> {
+        Ok(Self {
+            gpu: gpu.clone(),
+            key: gpu.allocate(words.max(1))?,
+        })
+    }
+}
+
+impl Drop for Temp {
+    fn drop(&mut self) {
+        self.gpu.release(self.key);
+    }
+}
+
 /// One launch of `kernel` over `len` rays: packed `input`, `out_words` output
 /// and `rec_words` record words; `reads` copies them into place.
 #[allow(clippy::too_many_arguments)]
@@ -116,11 +146,11 @@ fn launch<'a>(
     kernel: Kernel,
     params: Vec<u32>,
     steps: &'a [u32],
-    input: &'a [u32],
+    input: Input<'a>,
     len: usize,
     out_words: usize,
     rec_words: usize,
-    reads: impl FnOnce(&mut Batch<'a>, usize, usize),
+    reads: impl FnOnce(&mut Batch<'a>, usize, usize) -> MkResult<()>,
     stats: &mut JobStats,
 ) -> MkResult<()> {
     let mut batch = Batch::default();
@@ -129,7 +159,10 @@ fn launch<'a>(
         Binding::read(batch.persistent(dev.surfaces)),
         Binding::read(batch.persistent(dev.coefficients)),
         Binding::read(batch.upload(steps)),
-        Binding::read(batch.upload(input)),
+        Binding::read(match input {
+            Input::Words(w) => batch.upload(w),
+            Input::Key(k) => batch.persistent(k),
+        }),
     ];
     let out = batch.scratch(out_words);
     let rec = batch.scratch(rec_words.max(4));
@@ -143,7 +176,7 @@ fn launch<'a>(
         storage,
         workgroups: [len.div_ceil(GROUP) as u32, 1, 1],
     });
-    reads(&mut batch, out, rec);
+    reads(&mut batch, out, rec)?;
     let b = gpu.run(batch)?;
     stats.device_seconds += b.device_seconds;
     stats.command_buffers += 1;
@@ -160,8 +193,25 @@ struct TraceOut<'a> {
     record_status: &'a mut [u32],
 }
 
+/// Where the plain trace's outputs go.
+enum Dest<'d> {
+    /// Host slices (`Job::Trace`).
+    Host(TraceOut<'d>),
+    /// The device mirrors of plan buffers (floats, indices, records,
+    /// record status), never read back by the trace.
+    Device(&'d mut Mirrors, &'d Execution, [BufferId; 4]),
+}
+
+/// The host slices of [`Dest::Host`], one per plane.
+struct HostPlanes<'a> {
+    floats: Vec<&'a mut [u32]>,
+    indices: Vec<&'a mut [u32]>,
+    records: Vec<&'a mut [u32]>,
+    record_status: Vec<&'a mut [u32]>,
+}
+
 /// The plain trace of the request's rays (`f`, `u`: its input planes) into
-/// `out`, in launches.
+/// `dest`, in launches.
 #[allow(clippy::too_many_arguments)]
 fn trace_planes(
     backend: &WebGpuBackend,
@@ -170,7 +220,7 @@ fn trace_planes(
     n: usize,
     f: &[f32],
     u: &[u32],
-    out: TraceOut<'_>,
+    dest: Dest<'_>,
     ctl: &JobControl,
     stats: &mut JobStats,
     stage: &str,
@@ -186,21 +236,27 @@ fn trace_planes(
     } else {
         &prep.steps
     };
-    let TraceOut {
-        floats,
-        indices,
-        records,
-        record_status,
-    } = out;
-    let mut floats: Vec<&mut [u32]> = floats[..MKL_TRACE_OUT_FLOATS as usize * n]
-        .chunks_mut(n.max(1))
-        .collect();
-    let mut indices: Vec<&mut [u32]> = indices[..3 * n].chunks_mut(n.max(1)).collect();
-    let mut records: Vec<&mut [u32]> = records[..slots * n * RECORD]
-        .chunks_mut((n * RECORD).max(1))
-        .collect();
-    let mut record_status: Vec<&mut [u32]> =
-        record_status[..slots * n].chunks_mut(n.max(1)).collect();
+    let (mut host, mut device) = match dest {
+        Dest::Host(TraceOut {
+            floats,
+            indices,
+            records,
+            record_status,
+        }) => (
+            Some(HostPlanes {
+                floats: floats[..MKL_TRACE_OUT_FLOATS as usize * n]
+                    .chunks_mut(n.max(1))
+                    .collect(),
+                indices: indices[..3 * n].chunks_mut(n.max(1)).collect(),
+                records: records[..slots * n * RECORD]
+                    .chunks_mut((n * RECORD).max(1))
+                    .collect(),
+                record_status: record_status[..slots * n].chunks_mut(n.max(1)).collect(),
+            }),
+            None,
+        ),
+        Dest::Device(mirrors, x, ids) => (None, Some((mirrors, x, ids))),
+    };
     let mut input = Vec::new();
     let mut start = 0;
     while start < n {
@@ -218,32 +274,50 @@ fn trace_planes(
             stride: len as u32,
             ..prep.params
         };
-        let (floats, indices, records, record_status) =
-            (&mut floats, &mut indices, &mut records, &mut record_status);
+        let (host, device) = (host.as_mut(), device.as_mut());
         launch(
             gpu,
             &dev,
             kernel,
             uniform(&p, dev.count),
             steps,
-            &input,
+            Input::Words(&input),
             len,
             OUT_PLANES * len,
             slots * len * (RECORD + 1),
-            |batch, out, rec| {
-                let planes = floats.iter_mut().chain(indices.iter_mut());
-                for (k, plane) in planes.enumerate() {
-                    batch.read(out, k * len, &mut plane[start..start + len]);
+            move |batch, out, rec| {
+                if let Some(h) = host {
+                    let planes = h.floats.iter_mut().chain(h.indices.iter_mut());
+                    for (k, plane) in planes.enumerate() {
+                        batch.read(out, k * len, &mut plane[start..start + len]);
+                    }
+                    for (slot, plane) in h.records.iter_mut().enumerate() {
+                        let r = &mut plane[start * RECORD..(start + len) * RECORD];
+                        batch.read(rec, slot * len * RECORD, r);
+                    }
+                    let status = slots * len * RECORD;
+                    for (slot, plane) in h.record_status.iter_mut().enumerate() {
+                        let r = &mut plane[start..start + len];
+                        batch.read(rec, status + slot * len, r);
+                    }
                 }
-                for (slot, plane) in records.iter_mut().enumerate() {
-                    let r = &mut plane[start * RECORD..(start + len) * RECORD];
-                    batch.read(rec, slot * len * RECORD, r);
+                if let Some((mirrors, x, ids)) = device {
+                    let floats = MKL_TRACE_OUT_FLOATS as usize;
+                    for k in 0..floats {
+                        mirrors.store(batch, x, out, k * len, ids[0], k * n + start, len)?;
+                    }
+                    for k in 0..3 {
+                        let from = (floats + k) * len;
+                        mirrors.store(batch, x, out, from, ids[1], k * n + start, len)?;
+                    }
+                    for slot in 0..slots {
+                        let (from, to) = (slot * len * RECORD, (slot * n + start) * RECORD);
+                        mirrors.store(batch, x, rec, from, ids[2], to, len * RECORD)?;
+                        let from = slots * len * RECORD + slot * len;
+                        mirrors.store(batch, x, rec, from, ids[3], slot * n + start, len)?;
+                    }
                 }
-                let status = slots * len * RECORD;
-                for (slot, plane) in record_status.iter_mut().enumerate() {
-                    let r = &mut plane[start..start + len];
-                    batch.read(rec, status + slot * len, r);
-                }
+                Ok(())
             },
             stats,
         )?;
@@ -275,12 +349,12 @@ pub fn job(
         n,
         &f,
         &u,
-        TraceOut {
+        Dest::Host(TraceOut {
             floats: bytemuck::cast_slice_mut(&mut out_f),
             indices: &mut out_u,
             records: bytemuck::cast_slice_mut(&mut rec_f),
             record_status: &mut rec_u,
-        },
+        }),
         ctl,
         stats,
         "webgpu trace",
@@ -305,9 +379,10 @@ pub fn run(
     }
 }
 
-/// `ResidentOp::TraceUpload` (Metal's `resident::trace`).
+/// `ResidentOp::TraceUpload` (Metal's `resident::trace`): the rays are
+/// request data and uploaded; the outputs stay on the device.
 fn trace_upload(
-    ops: &WebGpuOps,
+    ops: &mut WebGpuOps,
     t: &TraceUpload,
     x: &mut Execution,
     ctl: &JobControl,
@@ -319,30 +394,21 @@ fn trace_upload(
     let n = req.rays.len();
     let (f, u) = PreparedTrace::input_planes(&req.rays);
     let o = &t.output;
-    x.with_outputs(
-        &[o.floats, o.indices, o.records, o.record_status],
-        |_, out| {
-            let [floats, indices, records, record_status] = out else {
-                unreachable!("four trace outputs")
-            };
-            trace_planes(
-                &ops.backend,
-                &set,
-                &prep,
-                n,
-                &f,
-                &u,
-                TraceOut {
-                    floats,
-                    indices,
-                    records,
-                    record_status,
-                },
-                ctl,
-                stats,
-                "resident trace",
-            )
-        },
+    trace_planes(
+        &ops.backend,
+        &set,
+        &prep,
+        n,
+        &f,
+        &u,
+        Dest::Device(
+            &mut ops.mirrors,
+            x,
+            [o.floats, o.indices, o.records, o.record_status],
+        ),
+        ctl,
+        stats,
+        "resident trace",
     )?;
     x.stats.uploaded_bytes += (n * IN_PLANES * 4) as u64;
     Ok(Some("webgpu:trace"))
@@ -352,7 +418,7 @@ fn trace_upload(
 /// path program from plan buffers; the kernel validates each ray's system,
 /// wavelength and the program as Metal's does.
 fn trace_resident(
-    ops: &WebGpuOps,
+    ops: &mut WebGpuOps,
     t: &TraceResident,
     x: &mut Execution,
     ctl: &JobControl,
@@ -382,8 +448,12 @@ fn trace_resident(
     {
         return Ok(None);
     }
-    let backend = &ops.backend;
-    let gpu = &**backend.gpu();
+    // The path program is read by the host (its length sizes the records).
+    ops.mirrors.read_back(t.steps.buffer, x, stats)?;
+    let (backend, mirrors) = (&ops.backend, &mut ops.mirrors);
+    let x: &Execution = x;
+    let gpu_arc = backend.gpu().clone();
+    let gpu = &*gpu_arc;
     let dev = backend.device_systems(&set)?;
     let n = t.input.count;
     let steps = x.view(&t.steps).to_vec();
@@ -410,79 +480,116 @@ fn trace_resident(
             0
         }
         | if recorded { MKL_TRACE_RECORD } else { 0 };
-    let n_out = outputs.len();
-    x.with_outputs(&outputs, |x, out| {
-        let planes = |id: BufferId, k: usize| &x.words(id)[..k * n];
-        let input_planes = [
-            planes(t.input.floats, RAY_FLOATS),
-            planes(t.input.indices, 2),
-            planes(t.input.logical_ids, 2),
-            planes(t.input.report, 4),
-        ];
-        let (rays, rest) = out.split_at_mut(5);
-        // Output planes in kernel order, records per slot.
-        let mut out_planes: Vec<&mut [u32]> = Vec::with_capacity(RES_OUT_PLANES);
-        for (b, k) in rays.iter_mut().zip([RAY_FLOATS, 2, 2, 4, 3]) {
-            out_planes.extend(b[..k * n].chunks_mut(n.max(1)));
-        }
-        let mut rec: Vec<Vec<&mut [u32]>> = rest[..n_out - 5]
-            .iter_mut()
-            .map(|b| {
-                b[..slots * n * RES_RECORD]
-                    .chunks_mut((n * RES_RECORD).max(1))
-                    .collect()
-            })
-            .collect();
-        let mut input = Vec::new();
-        let mut start = 0;
-        while start < n {
-            ctl.check()?;
-            let len = chunk.min(n - start);
+    // Input planes in kernel order: the kernel binds one packed buffer. When
+    // any input is device-resident the launch's planes are packed on the
+    // device into a temporary buffer (a copy batch before the launch).
+    let in_ids = [
+        (t.input.floats, RAY_FLOATS),
+        (t.input.indices, 2),
+        (t.input.logical_ids, 2),
+        (t.input.report, 4),
+    ];
+    let packed = if in_ids.iter().any(|&(id, _)| mirrors.on_device(id)) {
+        Some(Temp::new(&gpu_arc, RES_IN_PLANES * chunk.min(n.max(1)))?)
+    } else {
+        None
+    };
+    let rays = [
+        t.output.rays.floats,
+        t.output.rays.indices,
+        t.output.rays.logical_ids,
+        t.output.rays.report,
+        t.output.status,
+    ];
+    let halves: Vec<BufferId> = t
+        .output
+        .records
+        .into_iter()
+        .chain(t.output.record_low)
+        .collect();
+    let mut input = Vec::new();
+    let mut start = 0;
+    while start < n {
+        ctl.check()?;
+        let len = chunk.min(n - start);
+        let words = if let Some(tmp) = &packed {
+            let mut b = Batch::default();
+            let mut at = 0;
+            for &(id, k) in &in_ids {
+                let res = mirrors.resource(&mut b, id);
+                for j in 0..k {
+                    match res {
+                        Some(r) => {
+                            b.copy(r, j * n + start, tmp.key, at, len);
+                            mirrors.saved_bytes += (len * 4) as u64;
+                        }
+                        None => {
+                            let up = b.upload(&x.words(id)[j * n + start..][..len]);
+                            b.copy(up, 0, tmp.key, at, len);
+                        }
+                    }
+                    at += len;
+                }
+            }
+            let r = gpu.run(b)?;
+            stats.device_seconds += r.device_seconds;
+            stats.command_buffers += 1;
+            Input::Key(tmp.key)
+        } else {
             input.clear();
-            for (p, k) in input_planes.iter().zip([RAY_FLOATS, 2, 2, 4]) {
+            for &(id, k) in &in_ids {
+                let p = &x.words(id)[..k * n];
                 for j in 0..k {
                     input.extend_from_slice(&p[j * n + start..][..len]);
                 }
             }
-            let p = TraceParams {
-                num_rays: len as u32,
-                stride: len as u32,
-                num_steps: steps.len() as u32,
-                start_surface: t.start_surface,
-                flags,
-                max_iterations: t.newton.max_iterations,
-                tolerance_abs: t.newton.tolerance_abs,
-                tolerance_rel: t.newton.tolerance_rel,
-            };
-            let (out_planes, rec) = (&mut out_planes, &mut rec);
-            launch(
-                gpu,
-                &dev,
-                kernel,
-                uniform(&p, dev.count),
-                &steps,
-                &input,
-                len,
-                RES_OUT_PLANES * len,
-                slots * len * 2 * RES_RECORD,
-                |batch, out, records| {
-                    for (k, plane) in out_planes.iter_mut().enumerate() {
-                        batch.read(out, k * len, &mut plane[start..start + len]);
+            Input::Words(&input)
+        };
+        let p = TraceParams {
+            num_rays: len as u32,
+            stride: len as u32,
+            num_steps: steps.len() as u32,
+            start_surface: t.start_surface,
+            flags,
+            max_iterations: t.newton.max_iterations,
+            tolerance_abs: t.newton.tolerance_abs,
+            tolerance_rel: t.newton.tolerance_rel,
+        };
+        let (mirrors, halves, rays) = (&mut *mirrors, &halves, &rays);
+        launch(
+            gpu,
+            &dev,
+            kernel,
+            uniform(&p, dev.count),
+            &steps,
+            words,
+            len,
+            RES_OUT_PLANES * len,
+            slots * len * 2 * RES_RECORD,
+            move |batch, out, records| {
+                // Output planes in kernel order, records per slot.
+                let mut k = 0;
+                for (&id, planes) in rays.iter().zip([RAY_FLOATS, 2, 2, 4, 3]) {
+                    for j in 0..planes {
+                        mirrors.store(batch, x, out, k * len, id, j * n + start, len)?;
+                        k += 1;
                     }
-                    for (half, planes) in rec.iter_mut().enumerate() {
-                        let base = half * slots * len * RES_RECORD;
-                        for (slot, plane) in planes.iter_mut().enumerate() {
-                            let r = &mut plane[start * RES_RECORD..(start + len) * RES_RECORD];
-                            batch.read(records, base + slot * len * RES_RECORD, r);
-                        }
+                }
+                for (half, &id) in halves.iter().enumerate() {
+                    let base = half * slots * len * RES_RECORD;
+                    for slot in 0..slots {
+                        let from = base + slot * len * RES_RECORD;
+                        let to = (slot * n + start) * RES_RECORD;
+                        mirrors.store(batch, x, records, from, id, to, len * RES_RECORD)?;
                     }
-                },
-                stats,
-            )?;
-            start += len;
-            ctl.report(start as f64 / n as f64, "resident trace");
-        }
-        ctl.check()
-    })?;
+                }
+                Ok(())
+            },
+            stats,
+        )?;
+        start += len;
+        ctl.report(start as f64 / n as f64, "resident trace");
+    }
+    ctl.check()?;
     Ok(Some("webgpu:trace_resident"))
 }
