@@ -5,6 +5,38 @@ import { fmt, nf, sig } from '@/model/format'
 import { useView } from '@/state/view'
 import { allIssues, SUMMARY, useWorkspace } from '@/state/workspace'
 import { cn } from '@/lib/utils'
+import { JOB_VERBS, useJobs, type JobKind } from '@/state/jobs'
+
+/** One entry per running job ("Optimizing · 479"); a click shows its panel. */
+function JobEntries() {
+  const jobs = useJobs((s) => s.jobs)
+  const setPage = useView((s) => s.setPage)
+  const running = (Object.keys(jobs) as JobKind[]).filter((k) => jobs[k].phase === 'running')
+  if (!running.length) return null
+  return (
+    <>
+      {running.map((k) => {
+        const d = jobs[k].detail as Record<string, unknown> | null
+        const n = d && (d.iteration ?? d.evaluations ?? d.trials ?? d.combinations)
+        return (
+          <button
+            key={k}
+            type="button"
+            data-testid={`status-job-${k}`}
+            onClick={() => setPage(k)}
+            className="flex h-full shrink-0 cursor-default items-center gap-1.5 border-r border-separator px-3 hover:bg-hover first:rounded-l-full"
+          >
+            <Loader2 className="size-3 animate-spin text-accent" />
+            <span className="num">
+              {JOB_VERBS[k]}
+              {n != null ? ` · ${String(n)}` : ` · ${Math.round(jobs[k].progress * 100)}%`}
+            </span>
+          </button>
+        )
+      })}
+    </>
+  )
+}
 import { IssuesList } from './Issues'
 
 function entry(json: JsonObject | undefined, key: string): number | null {
@@ -35,6 +67,7 @@ export function StatusCapsule() {
 
   return (
     <div className="flex h-7 max-w-full items-center rounded-full border border-control-border bg-control/60 text-[12px] shadow-[0_0.5px_1px_rgb(0_0_0/0.06)]">
+      <JobEntries />
       <Popover>
         <PopoverTrigger asChild>
           <button

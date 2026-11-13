@@ -66,6 +66,14 @@ interface WorkspaceState {
   panes: Pane[]
   runs: Record<string, PaneRun>
   layoutSettings: JsonObject
+  /** A candidate design shown in the layout and every pane instead of the
+   *  document's (`Workspace.preview`); any design change ends it. Design jobs
+   *  always run on the design's own `snapshot`. */
+  preview: { snapshot: ModelSnapshot; label: string } | null
+
+  /** Shows a candidate system (an optimisation or substitution result, a
+   *  tolerance build) everywhere, labelled as not applied. */
+  setPreview(system: System | null, label?: string): Promise<void>
 
   setEngine(engine: EngineClient): Promise<void>
   setEngineError(message: string): void
@@ -106,10 +114,21 @@ export function effectiveSettings(d: AnalysisDescriptor | undefined, own: JsonOb
   return { ...(d?.default_settings ?? {}), ...own }
 }
 
-export function isStale(ws: Pick<WorkspaceState, 'snapshot'>, run: PaneRun | undefined, analysis: string, settings: JsonObject): boolean {
+/** The snapshot analyses show: the preview's, else the design's. */
+export function activeSnapshot(ws: { snapshot: ModelSnapshot | null; preview?: { snapshot: ModelSnapshot } | null }): ModelSnapshot | null {
+  return ws.preview?.snapshot ?? ws.snapshot
+}
+
+export function isStale(
+  ws: { snapshot: ModelSnapshot | null; preview?: { snapshot: ModelSnapshot } | null },
+  run: PaneRun | undefined,
+  analysis: string,
+  settings: JsonObject,
+): boolean {
   if (!run?.result) return false
-  if (!ws.snapshot) return true
-  if (run.result.runInfo.snapshot_hash !== ws.snapshot.hash) return true
+  const snap = activeSnapshot(ws)
+  if (!snap) return true
+  if (run.result.runInfo.snapshot_hash !== snap.hash) return true
   return run.resultRequest !== requestKey(analysis, settings)
 }
 
@@ -149,6 +168,26 @@ export const useWorkspace = create<WorkspaceState>()((set, get) => {
     panes: [],
     runs: {},
     layoutSettings: { section: 'yz', rays_per_field: 7, include_3d: false },
+    preview: null,
+
+    async setPreview(system, label = '') {
+      const engine = get().engine
+      if (!system || !engine) {
+        if (get().preview) {
+          set({ preview: null })
+          get().refresh()
+        }
+        return
+      }
+      try {
+        const snap = await engine.openSnapshot(system)
+        set({ preview: { snapshot: snap, label } })
+        get().refresh()
+      } catch (e) {
+        set({ preview: null })
+        throw e
+      }
+    },
 
     async setEngine(engine) {
       set({ engine, engineError: null })
@@ -170,7 +209,7 @@ export const useWorkspace = create<WorkspaceState>()((set, get) => {
         try {
           const snap = await engine.openSnapshot(system)
           if (seq !== snapshotSeq) return
-          set({ snapshot: snap, snapshotPending: false, modelIssues: [] })
+          set({ snapshot: snap, snapshotPending: false, modelIssues: [], preview: null })
           get().refresh()
         } catch (e) {
           if (seq !== snapshotSeq) return
@@ -234,7 +273,8 @@ export const useWorkspace = create<WorkspaceState>()((set, get) => {
     },
 
     run(key, opts) {
-      const { engine, snapshot } = get()
+      const { engine } = get()
+      const snapshot = activeSnapshot(get())
       const req = requestFor(key)
       if (!engine || !snapshot || !req) return
       jobs.get(key)?.cancel()
@@ -298,7 +338,7 @@ export const useWorkspace = create<WorkspaceState>()((set, get) => {
      *  validation and every pane with automatic update. */
     refresh() {
       const s = get()
-      if (!s.snapshot) return
+      if (!activeSnapshot(s)) return
       const keys = [LAYOUT, SUMMARY, VALIDATE, ...s.panes.filter((p) => p.auto).map((p) => p.key)]
       for (const k of keys) {
         const req = requestFor(k)

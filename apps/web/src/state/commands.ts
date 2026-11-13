@@ -71,6 +71,10 @@ export const COMMANDS: Command[] = [
   { id: 'inspector', title: 'Show Inspector', shortcut: 'ctrl+mod+i', run: () => view().set({ inspectorVisible: !view().inspectorVisible }) },
   { id: 'sidebar', title: 'Show Sidebar', shortcut: 'ctrl+mod+s', run: () => view().set({ sidebarVisible: !view().sidebarVisible }) },
   { id: 'surfacePage', title: 'Surface', shortcut: 'mod+1', run: () => view().setPage('surface') },
+  { id: 'optimize', title: 'Optimize…', shortcut: 'ctrl+mod+o', run: () => view().setPage('optimize') },
+  { id: 'glass', title: 'Glass Substitution…', shortcut: 'ctrl+mod+g', run: () => view().setPage('glass') },
+  { id: 'tolerance', title: 'Tolerance…', shortcut: 'ctrl+mod+t', run: () => view().setPage('tolerance') },
+  { id: 'solves', title: 'Apply Solves…', shortcut: 'ctrl+mod+l', run: () => view().setPage('solves') },
   { id: 'systemPage', title: 'System', shortcut: 'alt+mod+1', run: () => view().setPage('system') },
 ]
 

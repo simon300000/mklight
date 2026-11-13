@@ -72,6 +72,7 @@ function niceLength(target: number) {
 export function LayoutView() {
   const run = useWorkspace((s) => s.runs[LAYOUT])
   const snapshot = useWorkspace((s) => s.snapshot)
+  const preview = useWorkspace((s) => s.preview)
   const settings = useWorkspace((s) => s.layoutSettings)
   const setLayoutSettings = useWorkspace((s) => s.setLayoutSettings)
   const selection = useView((s) => s.selection)
@@ -88,7 +89,7 @@ export function LayoutView() {
   const section = String(settings.section ?? 'yz')
   const axis = section === 'xz' ? 0 : 1
   // The layout always updates by itself; it reads as stale only when that failed or was cancelled.
-  const stale = isStale({ snapshot }, run, 'layout', settings) && run?.status !== 'running'
+  const stale = isStale({ snapshot, preview }, run, 'layout', settings) && run?.status !== 'running'
 
   useEffect(() => {
     const el = wrap.current
@@ -299,6 +300,13 @@ export function LayoutView() {
           </Tip>
         </div>
       </div>
+      {preview && (
+        <div className="pointer-events-none absolute inset-x-0 top-11 flex justify-center">
+          <div className="glass-popover rounded-full px-3 py-1 text-[12px]" data-testid="preview-label">
+            Previewing {preview.label} · <span className="text-secondary">not applied</span>
+          </div>
+        </div>
+      )}
       {stale && (
         <div className="absolute inset-0 flex items-center justify-center">
           <Button variant="prominent" className="rounded-full" onClick={() => useWorkspace.getState().run(LAYOUT)}>

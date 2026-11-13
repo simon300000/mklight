@@ -81,6 +81,12 @@ function AppMenu() {
         <CommandItem id="inspector" title={v.inspectorVisible ? 'Hide Inspector' : 'Show Inspector'} />
         <CommandItem id="issues" />
         <DropdownMenuSeparator />
+        <DropdownMenuLabel>Design</DropdownMenuLabel>
+        <CommandItem id="optimize" />
+        <CommandItem id="glass" />
+        <CommandItem id="tolerance" />
+        <CommandItem id="solves" />
+        <DropdownMenuSeparator />
         <DropdownMenuLabel>Analysis</DropdownMenuLabel>
         <CommandItem id="runAll" />
         <CommandItem id="cancel" />
