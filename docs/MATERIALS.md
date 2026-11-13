@@ -25,7 +25,7 @@ supports, and how to load glass catalogs. Code: `crates/mklight-core/src/materia
   3. `n_abs,ref = n_rel,ref · n_air(λ, T_ref, 1 atm)`;
   4. `Δn_abs = (n_abs,ref² − 1)/(2 n_abs,ref) · (D0 ΔT + D1 ΔT² + D2 ΔT³ + (E0 ΔT + E1 ΔT²)/(λ_ref² − λ_tk²))`,
      with `ΔT = T − T_ref` (the `λ_tk` term also at the reference-air
-     wavelength, as OpticStudio does);
+     wavelength, like the catalogue formula itself);
   5. `n = (n_abs,ref + Δn_abs) / n_air(λ, T, P)`.
 
   At `T_ref` and 1 atm `λ_ref = λ` and this returns the catalog index

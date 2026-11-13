@@ -50,7 +50,7 @@ document on purpose in the same change.
 * **Tilts and decenters** (`Placement`): decentres `(dx, dy)` in mm, tilts
   `tilt_x`, `tilt_y`, `tilt_z` in degrees by the right-hand rule, each about
   the axis of the frame as moved so far. `order = DecenterThenTilt` (the
-  default; OpticStudio order flag 0): decentre, then tilt about x, then y,
+  default; `.zmx` coordinate-break order flag 0): decentre, then tilt about x, then y,
   then z — frame rotation `R = R_x R_y R_z`, origin `(dx, dy, 0)`.
   `order = TiltThenDecenter` (order flag ≠ 0): the reverse sequence — tilt
   about z, then y, then x, then decentre along the tilted axes —
