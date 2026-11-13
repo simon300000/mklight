@@ -246,7 +246,6 @@ impl<'a> Source<'a> {
             .map(|(k, r)| place(k, r))
             .collect();
         let mut placed = placed.into_iter();
-        let primary = self.t.system().primary_wavelength;
         let mut out = vec![];
         for &(index, value, field) in requests {
             let mut pupils = vec![];
@@ -268,14 +267,8 @@ impl<'a> Source<'a> {
             }
             let first = pupils[0].2.info.reference_point_mm;
             let reference = match settings.reference {
-                ReferencePoint::Chief => {
-                    let c = self.t.chief(field, primary);
-                    if c.status.is_ok() {
-                        [c.ray.pos.x, c.ray.pos.y]
-                    } else {
-                        [first[0], first[1]]
-                    }
-                }
+                ReferencePoint::Chief => crate::traced::chief_reference_xy(self.t, field)
+                    .unwrap_or([first[0], first[1]]),
                 ReferencePoint::Centroid => {
                     let mut v = [0.; 2];
                     for (_, w, p) in &pupils {
@@ -606,6 +599,7 @@ pub fn psf_analysis_shared(
         .collect();
     ctx.report(1., "PSF");
     Ok(a::PsfResult {
+        units: a::WaveUnits::of(t),
         psfs,
         run_info: src.info(timer, "psf", s, &stats, warnings),
     })
@@ -809,6 +803,7 @@ pub fn mtf_analysis_shared(
     let out = gather(results, &mut stats, &mut warnings)?;
     ctx.report(1., "MTF");
     Ok(a::WaveMtfResult {
+        units: a::WaveUnits::of(t),
         frequencies,
         fields: out,
         nyquist: s.detector.map(|d| d.nyquist()),
@@ -957,6 +952,7 @@ pub fn mtf_vs_field_shared(
     }
     ctx.report(1., "MTF vs field");
     Ok(a::MtfVsFieldResult {
+        units: a::WaveUnits::of(t),
         pupil_sampling: sampling,
         normalized_field: hs,
         field_values: values,
@@ -1062,6 +1058,7 @@ pub fn line_spread_shared(
     let out = gather(results, &mut stats, &mut warnings)?;
     ctx.report(1., "line spread");
     Ok(a::LineSpreadResult {
+        units: a::WaveUnits::of(t),
         fields: out,
         run_info: src.info(timer, "line_spread", s, &stats, warnings),
     })
@@ -1253,6 +1250,7 @@ pub fn diffraction_encircled_energy_shared(
         .collect();
     ctx.report(1., "encircled energy");
     Ok(a::WaveEncircledEnergyResult {
+        units: a::WaveUnits::of(t),
         radius_mm: radius,
         fields: out,
         run_info: src.info(timer, "diffraction_encircled_energy", s, &stats, warnings),
@@ -1395,6 +1393,7 @@ pub fn through_focus_mtf_analysis_shared(
     let out = gather(results, &mut stats, &mut warnings)?;
     ctx.report(1., "through-focus MTF");
     Ok(a::ThroughFocusResult {
+        units: a::WaveUnits::of(t),
         focus_mm: focus,
         frequencies,
         fields: out,

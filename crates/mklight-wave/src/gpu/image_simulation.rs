@@ -90,6 +90,7 @@ pub fn build_psf_grid_shared(
 ) -> MkResult<WaveResult<ResidentPsfGrid>> {
     use super::analysis::{Source, Staged, gather};
     let timer = RunTimer::start();
+    crate::image_simulation::reject_afocal(t)?;
     if !(2..=33).contains(&s.field_grid)
         || !s.field_extent.is_finite()
         || s.field_extent <= 0.
@@ -379,6 +380,7 @@ pub fn image_simulation_job(
     grid: Option<Arc<ResidentPsfGrid>>,
     ctx: &JobContext,
 ) -> MkResult<ImageSimulationResult> {
+    crate::image_simulation::reject_afocal(t)?;
     render(b, t, s, grid, true, ctx)
 }
 

@@ -201,6 +201,8 @@ pub struct WaveMtfResult {
     pub fields: Vec<FieldMtf>,
     /// Detector Nyquist frequencies `(1/(2p_x), 1/(2p_y))` (with a detector).
     pub nyquist: Option<[f64; 2]>,
+    /// Units of the image-space quantities ([`super::WaveUnits`]).
+    pub units: super::WaveUnits,
     pub run_info: RunInfo,
 }
 
@@ -321,6 +323,7 @@ pub fn mtf_analysis_shared(
     }
     ctx.report(1.0, "MTF");
     Ok(WaveMtfResult {
+        units: super::WaveUnits::of(tracer),
         frequencies: freqs,
         fields: out,
         nyquist: settings.detector.map(|d| d.nyquist()),
@@ -397,6 +400,8 @@ pub struct MtfVsFieldResult {
     pub frequencies: Vec<f64>,
     /// One curve per frequency (system MTF when a detector is given).
     pub curves: Vec<MtfFieldCurve>,
+    /// Units of the image-space quantities ([`super::WaveUnits`]).
+    pub units: super::WaveUnits,
     pub run_info: RunInfo,
 }
 
@@ -539,6 +544,7 @@ pub fn mtf_vs_field_shared(
         .collect();
     ctx.report(1.0, "MTF vs field");
     Ok(MtfVsFieldResult {
+        units: super::WaveUnits::of(tracer),
         pupil_sampling: pupils
             .iter()
             .map(|fp| fp.as_ref().map_or_else(Vec::new, |fp| fp.sampling()))
@@ -608,6 +614,8 @@ pub struct ThroughFocusResult {
     pub focus_mm: Vec<f64>,
     pub frequencies: Vec<f64>,
     pub fields: Vec<ThroughFocusField>,
+    /// Units of the image-space quantities ([`super::WaveUnits`]).
+    pub units: super::WaveUnits,
     pub run_info: RunInfo,
 }
 
@@ -808,6 +816,7 @@ pub fn through_focus_mtf_analysis_shared(
     }
     ctx.report(1.0, "through-focus MTF");
     Ok(ThroughFocusResult {
+        units: super::WaveUnits::of(tracer),
         focus_mm: focus,
         frequencies: freqs,
         fields: out,

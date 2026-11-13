@@ -382,6 +382,7 @@ fn backend_reference(
         s_exit_pupil: s_e,
         n_image: sys.n_before(img, wl),
         wavelength_um: sys.wavelengths_um[wl],
+        afocal: tracer.afocal_image_space(),
     })
 }
 

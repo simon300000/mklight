@@ -1202,23 +1202,28 @@ pub(crate) fn finish(
         image,
         ..
     } = prepared;
-    // Chief rays the host takes over (failed on the device, here or, in a
-    // finite difference, for another candidate): with every ray of their
-    // field and wavelength.
-    let host_chiefs: BTreeSet<(usize, FieldKey, usize)> = chiefs
-        .iter()
-        .filter(|q| {
-            let key = ray_key(q, false, image);
-            rays[q.candidate].contains(&key) || uniform.is_some_and(|u| u.contains(&key))
-        })
-        .map(|q| (q.candidate, q.field, q.wavelength))
-        .collect();
     let wavefront = operands.iter().any(|o| {
         matches!(
             o.kind,
             OperandKind::WavefrontAberration { .. } | OperandKind::WavefrontRms { .. }
         )
     });
+    // Chief rays the host takes over (failed on the device, here or, in a
+    // finite difference, for another candidate): with every ray of their
+    // field and wavelength. The device OPD is measured from a reference
+    // sphere only, so a candidate with an afocal image space (plane
+    // reference, `mklight_trace::opd`) has its wavefront work completed by
+    // the host's f64 reference.
+    let host_chiefs: BTreeSet<(usize, FieldKey, usize)> = chiefs
+        .iter()
+        .filter(|q| {
+            let key = ray_key(q, false, image);
+            rays[q.candidate].contains(&key)
+                || uniform.is_some_and(|u| u.contains(&key))
+                || (wavefront && tracers[q.candidate].afocal_image_space())
+        })
+        .map(|q| (q.candidate, q.field, q.wavelength))
+        .collect();
     let f = views[0].as_slice::<f32>()?;
     let status = views[1].as_slice::<u32>()?;
     for (i, q) in chiefs.iter().enumerate() {

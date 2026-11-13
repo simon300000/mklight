@@ -1495,6 +1495,8 @@ pub struct Optimize;
 
 impl Analysis for Optimize {
     /// 3: MTF operands use the radiometric pupil amplitude.
+    /// Also: wavefront operands of afocal image spaces use the plane OPD
+    /// reference.
     fn result_version(&self) -> u32 {
         3
     }
@@ -1984,6 +1986,8 @@ impl Analysis for Tolerance {
     /// 3: `predicted_criterion` is the expected (Monte-Carlo mean)
     /// criterion, nominal + `expected_change`, no longer nominal + RSS.
     /// 4: MTF criteria use the radiometric pupil amplitude.
+    /// Also: wavefront criteria of afocal image spaces use the plane OPD
+    /// reference.
     fn result_version(&self) -> u32 {
         4
     }

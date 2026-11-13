@@ -44,6 +44,24 @@
 //! the reference point), refocusing uses `W = (n'/λ)·dz·(1 − γ)` and
 //! [`crate::huygens_psf`] sums plane waves.
 //!
+//! # Afocal image spaces
+//!
+//! A collimated output beam ([`PupilGeometry::afocal`]) has a plane
+//! reference normal to the chief ray (`mklight_trace::opd`), and `(u, v)`
+//! are transverse positions in that plane, `(x, y)/a` with `a` the beam's
+//! half-width. The far field is described as the image formed by an ideal
+//! lens of focal length `F = ` [`AFOCAL_FOCAL_LENGTH_MM`] normal to the chief
+//! ray, taken in the plane-wave form of the telecentric beam above with
+//! `sinθ'max = a/F`: an image point `x` mm lies at the field angle
+//! `x/F` rad, i.e. **x mrad** about the chief ray (sine of the angle; the
+//! axes are the chief-ray frame's sagittal and tangential directions), a
+//! frequency of `ν` cycles/mm is **ν cycles/mrad**, the cutoff `2a/(λF)` is
+//! `D/λ` cycles/rad, and a focus shift `dz` mm is a vergence change
+//! `dz/F²` = **dz millidioptres** (positive: the beam made more convergent).
+//! The lens's `1/γ` (Debye) weight differs from one by `(a/F)²/2` at the
+//! beam edge (3·10⁻⁴ for a 50 mm beam), the only departure from the
+//! paraxial Fraunhofer far field. Beams wider than `F` are rejected.
+//!
 //! The Fourier transform of the pupil gives the PSF in the plane normal to
 //! the chief ray. Results are reported on the **image surface** (CONVENTIONS
 //! §4) by the projection `x_n = B·x_s` ([`PupilGeometry::surface_to_normal`]):
@@ -108,7 +126,17 @@ pub struct PupilGeometry {
     /// undefined (`a = R = ∞`); `None` for a finite reference sphere.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub telecentric_sin_max: Option<f64>,
+    /// An afocal image space ([`PupilGeometry::afocal`]): `(u, v)` are
+    /// transverse beam coordinates and image-plane lengths are angles
+    /// (module docs, "Afocal image spaces").
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub afocal: bool,
 }
+
+/// Focal length (mm) of the ideal lens that maps an afocal beam onto the
+/// image plane ([`PupilGeometry::afocal`]): with 1000 mm, image-plane mm are
+/// mrad of field angle, µm are µrad and cycles/mm are cycles/mrad.
+pub const AFOCAL_FOCAL_LENGTH_MM: f64 = 1000.0;
 
 fn on_axis() -> [f64; 3] {
     [0.0, 0.0, 1.0]
@@ -130,6 +158,7 @@ impl PupilGeometry {
             image_index,
             chief_ray: on_axis(),
             telecentric_sin_max: None,
+            afocal: false,
         };
         g.validate()?;
         Ok(g)
@@ -144,9 +173,27 @@ impl PupilGeometry {
             image_index,
             chief_ray: on_axis(),
             telecentric_sin_max: Some(sin_max),
+            afocal: false,
         };
         g.validate()?;
         Ok(g)
+    }
+
+    /// Geometry of an afocal (collimated) output beam of half-width
+    /// `beam_radius_mm` about the chief ray: the beam as focused by an ideal
+    /// lens of focal length [`AFOCAL_FOCAL_LENGTH_MM`] normal to the chief
+    /// ray, taken in its plane-wave (`R = ∞`) form, so
+    /// `sinθ'max = a/1000 mm` and the chief ray is on axis (module docs).
+    pub fn afocal(beam_radius_mm: f64, image_index: f64) -> MkResult<Self> {
+        let mut g = Self::telecentric(beam_radius_mm / AFOCAL_FOCAL_LENGTH_MM, image_index)?;
+        g.afocal = true;
+        Ok(g)
+    }
+
+    /// `true` for an afocal image space ([`Self::afocal`]); such a geometry
+    /// is also [`Self::is_telecentric`].
+    pub fn is_afocal(&self) -> bool {
+        self.afocal
     }
 
     /// `true` for an image-space telecentric beam (`R = ∞`).

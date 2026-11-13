@@ -99,7 +99,7 @@ use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::interp::{RaySample, StructuredSamples, grid_from_structured};
-use crate::pupil::{PupilFunction, PupilGeometry, PupilMask};
+use crate::pupil::{AFOCAL_FOCAL_LENGTH_MM, PupilFunction, PupilGeometry, PupilMask};
 
 /// Centre of the reference sphere.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -222,6 +222,22 @@ pub struct ExitPupilInfo {
     pub lattice_rays: usize,
     pub surviving_rays: usize,
     pub rim_points: usize,
+    /// Afocal image space (module docs): the reference is the plane normal
+    /// to the chief ray through `exit_pupil_point_mm`, `reference_point_mm`
+    /// is 1000 × the plane normal (its `x`, `y`: the beam direction in mrad
+    /// of direction sine), `reference_radius_mm` is `"inf"`, and `sin_max`,
+    /// `numerical_aperture` and `effective_f_number` are those of the
+    /// ideal 1000 mm lens (`crate::pupil`, "Afocal image spaces").
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub afocal: bool,
+    /// Afocal only: the beam half-width `a` (mm) that scales the pupil.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub beam_radius_mm: Option<f64>,
+    /// Afocal only: the image-space field angle of the beam (the plane
+    /// normal), `[atan(d_x/d_z), atan(d_y/d_z)]` in degrees, in the frame
+    /// of the propagation (`propagation_sign`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub field_angle_deg: Option<[f64; 2]>,
 }
 
 /// A traced pupil: the sampled [`PupilFunction`] plus everything it was
@@ -572,6 +588,87 @@ impl Sphere {
         let (b, _, s) = self.terms(q, d)?;
         let x = (q - self.p) + d * (-b + self.sheet * s);
         Some(x * (-self.sheet / self.r))
+    }
+}
+
+/// The reference plane of an afocal image space (module docs).
+struct ReferencePlane {
+    /// Point of the plane: the exit-pupil point (the chief ray's image
+    /// point when the exit pupil is at infinity).
+    p0: Vec3,
+    /// Unit normal (direction of propagation).
+    normal: Vec3,
+    /// The chief ray's path from its image point to the plane.
+    s_c: f64,
+    n: f64,
+    reference: OpdReference,
+    /// The normal is the chief ray, so the OPD is exactly
+    /// [`OpdReference::opd_mm`].
+    chief: bool,
+}
+
+impl ReferencePlane {
+    /// The plane of `reference` with the chief-ray normal, or with the
+    /// normalised `mean_direction` for [`ReferencePoint::Centroid`].
+    fn new(
+        reference: &OpdReference,
+        point: ReferencePoint,
+        mean_direction: impl FnOnce() -> Vec3,
+    ) -> MkResult<Self> {
+        let dc = reference.chief_dir;
+        let s_e = if reference.s_exit_pupil.is_finite() {
+            reference.s_exit_pupil
+        } else {
+            0.0
+        };
+        let p0 = reference.center + dc * s_e;
+        let normal = match point {
+            ReferencePoint::Chief => dc,
+            ReferencePoint::Centroid => {
+                let m = mean_direction();
+                let len = m.norm();
+                if !(len > 0.0 && len.is_finite()) {
+                    return Err(MkError::Numerical("no flux reaches the image".into()));
+                }
+                m / len
+            }
+        };
+        let dn = dc.dot(normal);
+        if !(dn > 0.0) {
+            return Err(MkError::Trace("chief ray misses the reference plane".into()));
+        }
+        Ok(ReferencePlane {
+            p0,
+            normal,
+            s_c: (p0 - reference.center).dot(normal) / dn,
+            n: reference.n_image,
+            reference: *reference,
+            chief: point == ReferencePoint::Chief,
+        })
+    }
+
+    /// Path `s` from a ray's image point to the plane; `None` unless the
+    /// ray travels toward the plane's side of propagation.
+    fn path(&self, t: &TraceResult) -> Option<f64> {
+        let dn = t.ray.dir.dot(self.normal);
+        (dn > 0.0).then(|| (self.p0 - t.ray.pos).dot(self.normal) / dn)
+    }
+
+    /// OPD (mm) of a ray, `(OPL_c + n s_c) − (OPL_r + n s)`; with the
+    /// chief-ray normal exactly [`OpdReference::opd_mm`].
+    fn opd_mm(&self, t: &TraceResult) -> Option<f64> {
+        if self.chief {
+            return self.reference.opd_mm(t);
+        }
+        let s = self.path(t)?;
+        let d_opl = self.reference.chief_opl.diff(&t.opl);
+        Some(self.n.mul_add(self.s_c - s, d_opl))
+    }
+
+    /// The ray's point on the plane relative to `p0` (image-surface frame).
+    fn point(&self, t: &TraceResult) -> Option<Vec3> {
+        let s = self.path(t)?;
+        Some((t.ray.pos - self.p0) + t.ray.dir * s)
     }
 }
 
@@ -999,13 +1096,14 @@ pub fn trace_lattice(
         .opd_reference(field, wl)
         .map_err(|st| MkError::Trace(format!("chief ray failed: {st:?}")))?;
     let img = sys.image_index();
-    if !matches!(sys.surfaces[img].shape, mklight_core::SurfaceShape::Plane) {
+    let afocal = tracer.afocal_image_space();
+    if !afocal && !matches!(sys.surfaces[img].shape, mklight_core::SurfaceShape::Plane) {
         warnings.push(
             "curved image surface: the PSF plane is normal to the image's vertex axis".into(),
         );
     }
     let fo = tracer.paraxial().at(wl);
-    warnings.extend(crate::warnings::afocal_warning(fo).map(|w| w.to_string()));
+    warnings.extend(crate::warnings::afocal_warning(tracer).map(|w| w.to_string()));
     let dc = reference.chief_dir;
     let sign = if dc.z > 0.0 {
         1.0
@@ -1110,6 +1208,7 @@ pub fn trace_lattice(
     // --- Reference point and sphere -----------------------------------------
     let weight = |r: &NodeRay| if needs_t { r.throughput } else { 1.0 };
     let centre = match settings.reference {
+        _ if afocal => reference.center,
         ReferencePoint::Chief => reference.center,
         ReferencePoint::Centroid => {
             let (mut sx, mut sy, mut sw) = (
@@ -1139,8 +1238,23 @@ pub fn trace_lattice(
         }
     };
     let s_e = reference.s_exit_pupil;
-    let telecentric = !s_e.is_finite();
-    let (p, e_pt, r, sheet, axis) = if telecentric {
+    let telecentric = !afocal && !s_e.is_finite();
+    // Afocal image space: the plane normal to the chief ray (or to the
+    // flux-weighted mean direction) through the exit-pupil point.
+    let plane = if afocal {
+        Some(ReferencePlane::new(&reference, settings.reference, || {
+            let mut sum = Vec3::ZERO;
+            for r in rays.iter().flatten() {
+                sum += r.trace.ray.dir * weight(r);
+            }
+            sum
+        })?)
+    } else {
+        None
+    };
+    let (p, e_pt, r, sheet, axis) = if let Some(pl) = &plane {
+        (fl(pl.p0), Some(pl.p0), f64::INFINITY, -1.0, fl(pl.normal))
+    } else if telecentric {
         (fl(centre), None, f64::INFINITY, -1.0, fl(dc))
     } else {
         if s_e == 0.0 {
@@ -1161,12 +1275,14 @@ pub fn trace_lattice(
         n: reference.n_image,
         reference,
     };
-    let (b_c, q_c, _) = sphere
-        .terms(fl(reference.center), fl(dc))
-        .ok_or_else(|| MkError::Trace("chief ray misses the reference sphere".into()))?;
-    sphere.b_c = b_c;
-    sphere.q_c = q_c;
-    let geom0 = if telecentric {
+    if plane.is_none() {
+        let (b_c, q_c, _) = sphere
+            .terms(fl(reference.center), fl(dc))
+            .ok_or_else(|| MkError::Trace("chief ray misses the reference sphere".into()))?;
+        sphere.b_c = b_c;
+        sphere.q_c = q_c;
+    }
+    let geom0 = if telecentric || plane.is_some() {
         PupilGeometry::telecentric(0.5, sphere.n)
     } else {
         PupilGeometry::new(0.5 * r, r, sphere.n)
@@ -1179,8 +1295,16 @@ pub fn trace_lattice(
     let place = |nr: &NodeRay| -> Option<(f64, f64, f64, f64)> {
         let q = fl(nr.trace.ray.pos);
         let d = fl(nr.trace.ray.dir);
-        let x = sphere.unit_point(q, d)?;
-        let opd = sphere.opd_mm(&nr.trace, q, d)? / lam_mm;
+        let (x, opd) = match &plane {
+            // Transverse beam position over the ideal lens's focal length
+            // (`crate::pupil`, "Afocal image spaces").
+            Some(pl) => (
+                fl(pl.point(&nr.trace)?) / AFOCAL_FOCAL_LENGTH_MM,
+                pl.opd_mm(&nr.trace)?,
+            ),
+            None => (sphere.unit_point(q, d)?, sphere.opd_mm(&nr.trace, q, d)?),
+        };
+        let opd = opd / lam_mm;
         // The ray's γ against the axis (Debye factor of its direction).
         Some((x.dot(eu), x.dot(ev), d.dot(ew).abs(), opd))
     };
@@ -1198,17 +1322,28 @@ pub fn trace_lattice(
         ));
     }
     let sin_max = sin_max * (1.0 + 1e-9);
+    if plane.is_some() && !(sin_max < 1.0) {
+        return Err(MkError::Trace(format!(
+            "afocal output beam radius {:.6e} mm is not below {AFOCAL_FOCAL_LENGTH_MM} mm",
+            sin_max * AFOCAL_FOCAL_LENGTH_MM
+        )));
+    }
     if !(sin_max > 0.0 && sin_max < 1.0) {
         return Err(MkError::Trace(format!(
             "beam half-angle sine {sin_max} out of range"
         )));
     }
-    let geometry = if telecentric {
-        PupilGeometry::telecentric(sin_max, sphere.n)
+    let geometry = if plane.is_some() {
+        // On axis: the pupil is already in the chief-ray (plane) frame.
+        let mut g = PupilGeometry::telecentric(sin_max, sphere.n)?;
+        g.afocal = true;
+        g
+    } else if telecentric {
+        PupilGeometry::telecentric(sin_max, sphere.n)?
+            .with_chief_ray([axis.x, axis.y, axis.z])?
     } else {
-        PupilGeometry::new(sin_max * r, r, sphere.n)
-    }?
-    .with_chief_ray([axis.x, axis.y, axis.z])?;
+        PupilGeometry::new(sin_max * r, r, sphere.n)?.with_chief_ray([axis.x, axis.y, axis.z])?
+    };
 
     // --- Amplitudes -----------------------------------------------------------
     let amp: Vec<f64> = match settings.amplitude {
@@ -1297,6 +1432,14 @@ pub fn trace_lattice(
         even_odd_area(&ep_loops) / std::f64::consts::PI
     };
     let sin_e = sin_max * (clear_area / std::f64::consts::PI).sqrt();
+    let afocal_info = plane.as_ref().map(|pl| {
+        let a = fl(pl.normal);
+        (
+            sin_max * AFOCAL_FOCAL_LENGTH_MM,
+            [a.x.atan2(a.z).to_degrees(), a.y.atan2(a.z).to_degrees()],
+            v3(pl.normal * AFOCAL_FOCAL_LENGTH_MM),
+        )
+    });
     let info = ExitPupilInfo {
         wavelength_um: sys.wavelengths_um[wl],
         paraxial_position_mm: fo.exit_pupil_position,
@@ -1306,7 +1449,7 @@ pub fn trace_lattice(
         chief_direction: v3(dc),
         exit_pupil_point_mm: e_pt.map(v3),
         reference: settings.reference,
-        reference_point_mm: v3(centre),
+        reference_point_mm: afocal_info.map_or(v3(centre), |a| a.2),
         reference_radius_mm: r,
         propagation_sign: sign,
         image_index: sphere.n,
@@ -1318,6 +1461,9 @@ pub fn trace_lattice(
         lattice_rays,
         surviving_rays: surviving,
         rim_points: rim.len(),
+        afocal: plane.is_some(),
+        beam_radius_mm: afocal_info.map(|a| a.0),
+        field_angle_deg: afocal_info.map(|a| a.1),
     };
     Ok(PupilLattice {
         info,
@@ -1333,6 +1479,24 @@ pub fn trace_lattice(
 
 fn v3(v: Vec3) -> [f64; 3] {
     [v.x, v.y, v.z]
+}
+
+/// The common reference point `[x, y]` of a field's pupils under
+/// [`ReferencePoint::Chief`] (`crate::analysis`): the primary wavelength's
+/// chief-ray image point, or in an afocal image space 1000 × its direction
+/// (mrad of direction sine, as [`ExitPupilInfo::reference_point_mm`]);
+/// `None` when that chief ray fails.
+pub(crate) fn chief_reference_xy(tracer: &SequentialTracer, field: &PreparedField) -> Option<[f64; 2]> {
+    let c = tracer.chief(field, tracer.system().primary_wavelength);
+    if !c.status.is_ok() {
+        return None;
+    }
+    Some(if tracer.afocal_image_space() {
+        let d = c.ray.dir * AFOCAL_FOCAL_LENGTH_MM;
+        [d.x, d.y]
+    } else {
+        [c.ray.pos.x, c.ray.pos.y]
+    })
 }
 
 /// `√(T·m·γ/J)` per lattice node (module docs), from central (or

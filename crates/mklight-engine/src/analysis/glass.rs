@@ -121,8 +121,10 @@ impl LensSpace {
 pub struct GlassSubstitution;
 
 impl Analysis for GlassSubstitution {
+    /// 3: wavefront operands of afocal image spaces use the plane OPD
+    /// reference.
     fn result_version(&self) -> u32 {
-        2
+        3
     }
     fn name(&self) -> &str {
         "glass_substitution"

@@ -751,6 +751,44 @@ impl<'a> PupilTracer<'a> {
             })
             .collect())
     }
+    /// A pupil traced by the f64 reference ([`crate::traced::trace_lattice`])
+    /// and resampled on the host into shared allocations, as the native
+    /// analyses' pupils (`super::split`).
+    fn host_pupil(
+        &self,
+        field: &PreparedField,
+        wl: usize,
+        settings: &PupilSettings,
+        ctx: &JobContext,
+    ) -> MkResult<WaveResult<ResidentTracedPupil>> {
+        let timer = mklight_core::job::RunTimer::start();
+        let lattice = crate::traced::trace_lattice(self.tracer, field, wl, settings, ctx)?;
+        let key = crate::shared::lattice_key(self.tracer, field, wl, settings);
+        let (pupil, warnings) = super::split::place(
+            self.backend,
+            key,
+            std::sync::Arc::new(lattice),
+            settings,
+            None,
+            ctx,
+        )?;
+        let stats = PlanStats::default();
+        let mut run_info = super::analysis::info(
+            self.backend,
+            self.tracer,
+            timer,
+            "traced_pupil",
+            &serde_json::json!({"field": field.point, "wavelength": wl, "pupil": settings}),
+            &stats,
+            warnings,
+        );
+        run_info.precision = mklight_core::job::Precision::F64Reference;
+        Ok(WaveResult {
+            value: pupil,
+            run_info,
+            stats,
+        })
+    }
     pub fn trace(
         &self,
         field: &PreparedField,
@@ -814,6 +852,16 @@ impl<'a> PupilTracer<'a> {
                 results[position] = Some(Err(MkError::Numerical(
                     "pupil transmits no selected-order light".into(),
                 )));
+                continue;
+            }
+            if self.tracer.afocal_image_space() {
+                // The device places rays on a reference sphere only; an
+                // afocal image space (plane reference) is traced by the f64
+                // reference and resampled on the host (docs/GPU.md §9.2).
+                results[position] = Some(
+                    self.host_pupil(field, wl, settings, ctx)
+                        .or_else(|e| Err(per_pupil(e)?)),
+                );
                 continue;
             }
             match self.spec(field, wl) {
@@ -1541,10 +1589,6 @@ impl<'a> PupilTracer<'a> {
             &ctx.subrange(0.8, 1.),
         )?;
         accumulate(&mut stats, &result.stats);
-        if let Some(w) = crate::warnings::afocal_warning(fo) {
-            result.run_info.warnings.push(w.to_string());
-            result.value.warnings.push(w);
-        }
         let clear_area = if uv_loops.is_empty() {
             result.value.clear_area
         } else {
@@ -1592,6 +1636,10 @@ impl<'a> PupilTracer<'a> {
             lattice_rays,
             surviving_rays: item.survived,
             rim_points: item.ids.len(),
+            // Afocal image spaces are traced on the host (`Self::host_pupil`).
+            afocal: false,
+            beam_radius_mm: None,
+            field_angle_deg: None,
         };
         result.run_info.settings = serde_json::json!({"operation":"traced_pupil","field":item.field.point,"wavelength":wl,"pupil":settings,"grid":grid,"resident_stats":stats});
         Ok(WaveResult {

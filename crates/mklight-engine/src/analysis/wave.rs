@@ -40,6 +40,8 @@ macro_rules! dispatch {
 impl Analysis for Wave {
     /// 2: the default pupil amplitude is `radiometric` (ray density and
     /// obliquity), no longer `transmission`.
+    /// Also: `units` (focal mm / afocal mrad), and afocal image spaces measured
+    /// from a plane reference in angular units.
     fn result_version(&self) -> u32 {
         2
     }
@@ -315,7 +317,44 @@ fn curve_buffers(axis: &str) -> Vec<Value> {
         .collect()
 }
 
+/// The `units` object of every wave result (`mklight_wave::analysis::WaveUnits`).
+fn units_schema() -> Value {
+    describe(
+        obj(&[
+            ("afocal", boolean("Afocal image space: plane OPD reference and angular units.")),
+            (
+                "position",
+                enumeration(
+                    &["mm", "mrad"],
+                    "Unit of every image coordinate, spacing and radius named *_mm (and µm: µrad); mrad is the angle about the chief ray.",
+                ),
+            ),
+            (
+                "frequency",
+                enumeration(&["cycles/mm", "cycles/mrad"], "Unit of spatial frequencies."),
+            ),
+            (
+                "focus",
+                enumeration(
+                    &["mm", "mD"],
+                    "Unit of focus shifts: image-plane mm, or vergence in millidioptres (positive: more convergent).",
+                ),
+            ),
+        ]),
+        "Units of the image-space quantities; fields named *_mm or cycles/mm carry these units.",
+    )
+}
+
 fn result_schema(name: &str) -> Value {
+    let mut v = result_schema_without_units(name);
+    v["properties"]["units"] = units_schema();
+    if let Some(Value::Array(r)) = v.get_mut("required") {
+        r.push(json!("units"));
+    }
+    v
+}
+
+fn result_schema_without_units(name: &str) -> Value {
     match name {
         "wavefront_map" => wavefront_schema(),
         "psf" => psf_schema(),
@@ -580,7 +619,7 @@ pub(super) fn pupil_sampling_schema() -> Value {
 }
 
 fn exit_pupil_schema() -> Value {
-    obj(&[
+    obj_opt(&[
         ("wavelength_um", num("µm", "")),
         (
             "paraxial_position_mm",
@@ -641,7 +680,16 @@ fn exit_pupil_schema() -> Value {
         ("lattice_rays", int("")),
         ("surviving_rays", int("")),
         ("rim_points", int("")),
-    ])
+        (
+            "afocal",
+            boolean("Present and true for an afocal image space: plane reference through exit_pupil_point_mm; reference_point_mm is 1000 × the beam direction; sin_max, numerical_aperture and effective_f_number are those of an ideal 1000 mm lens."),
+        ),
+        ("beam_radius_mm", num("mm", "Afocal only: output beam half-width scaling the pupil.")),
+        (
+            "field_angle_deg",
+            tuple(num("degrees", ""), 2, "Afocal only: image-space field angle of the beam [x, y]."),
+        ),
+    ], &["afocal", "beam_radius_mm", "field_angle_deg"])
 }
 
 fn wavefront_schema() -> Value {

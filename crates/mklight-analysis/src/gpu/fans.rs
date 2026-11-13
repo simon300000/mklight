@@ -92,6 +92,10 @@ pub fn ray_fan_job(
     })
 }
 
+/// Warning of an OPD fan of an afocal image space on a device request.
+pub const AFOCAL_REFERENCE: &str = "afocal image space: the OPD (plane reference) was computed \
+     by the f64 reference; the device measures OPD from a reference sphere only";
+
 pub fn opd_fan_job(
     b: &dyn ComputeBackend,
     t: &SequentialTracer,
@@ -99,6 +103,14 @@ pub fn opd_fan_job(
     route: &Route,
     ctx: &JobContext,
 ) -> MkResult<FanResult> {
+    if t.afocal_image_space() {
+        // The device OPD is measured from a reference sphere; an afocal
+        // image space needs the plane reference (`mklight_trace::opd`),
+        // which the f64 reference computes (docs/GPU.md §9.2).
+        let mut r = crate::fans::opd_fan_job(t, s, ctx)?;
+        r.run_info.warnings.push(AFOCAL_REFERENCE.into());
+        return Ok(r);
+    }
     check_count("fan samples", s.samples, 2, 100_001)?;
     let aug = default_fields(t, &s.fields)?;
     let t = aug.as_ref();

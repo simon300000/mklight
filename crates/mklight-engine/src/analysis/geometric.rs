@@ -79,6 +79,8 @@ impl Analysis for Geo {
                 | "relative_illumination"
                 | "lateral_colour"
                 | "longitudinal_aberration"
+                // 2: afocal image spaces use the plane OPD reference.
+                | "opd_fan"
         ) {
             2
         } else {
