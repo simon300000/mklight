@@ -366,7 +366,7 @@ function readTolerances(list: unknown, system: Obj): Tol[] {
       const p = asPath(e.param)
       if (!p) continue
       if (getParamValue(system, p) === null) throw new EngineError('invalidSettings', `tolerance: the system has no parameter ${paramLabel(system, p)}`)
-      out.push({ path: p, minus: Math.abs(num(e.minus, 0.05)), plus: Math.abs(num(e.plus, 0.05)), distribution: String(e.distribution ?? 'uniform'), label: typeof e.label === 'string' ? e.label : '' })
+      out.push({ path: p, minus: Math.abs(num(e.minus, 0.05)), plus: Math.abs(num(e.plus, 0.05)), distribution: typeof e.distribution === 'string' ? e.distribution : String((e.distribution as Obj | undefined)?.type ?? 'uniform'), label: typeof e.label === 'string' ? e.label : '' })
     }
     return out
   }
@@ -432,7 +432,7 @@ export async function tolerance(s: Obj, system: Obj, ctx: JobCtx): Promise<Out> 
   const draws = (trial: number): number[] => {
     const r = rngOf(seed * 7919 + trial * 104729 + 17)
     return tols.map((t) => {
-      if (t.distribution === 'normal' || t.distribution === 'gaussian') {
+      if (/normal|gauss/.test(t.distribution)) {
         const sigma = (t.minus + t.plus) / 4
         return Math.max(-t.minus, Math.min(t.plus, gauss(r) * sigma))
       }

@@ -160,12 +160,37 @@ export function operandJson(o: Operand): Json {
   }
 }
 
+/** Spot growth (mm) the mock attributes to surface irregularity and element placement errors. */
+function perturbationBlur(system: Obj, o: MockOptics, fieldFrac: number): number {
+  const surfaces: Obj[] = system.surfaces ?? []
+  const efl = Math.abs(o.efl(o.primary) ?? 100)
+  let v2 = 0
+  surfaces.forEach((sf, i) => {
+    const irr = sf.irregularity as Obj | undefined
+    if (irr) {
+      const sd = Math.max(sf.semi_diameter?.mode === 'fixed' ? Number(sf.semi_diameter.value) : o.epRadius, 1)
+      for (const k of ['astigmatism', 'spherical'])
+        if (typeof irr[k] === 'number') v2 += (2 * 0.6 * Math.abs(irr[k]) * efl / sd) ** 2 * (k === 'spherical' ? 1 : 0.7 + fieldFrac)
+    }
+    const pl = sf.element_placement as Obj | undefined
+    if (pl) {
+      const dec = Math.hypot(Number(pl.decenter_x ?? 0), Number(pl.decenter_y ?? 0))
+      const tilt = (Math.hypot(Number(pl.tilt_x ?? 0), Number(pl.tilt_y ?? 0), Number(pl.tilt_z ?? 0)) * Math.PI) / 180
+      // Coma-like growth, stronger off axis.
+      v2 += ((0.1 * dec + 0.1 * tilt * efl) * (0.4 + fieldFrac)) ** 2
+    }
+    void i
+  })
+  return Math.sqrt(v2)
+}
+
 interface SpotRows {
   dx: number[]
   dy: number[]
   failed: number
   n: number
   rms: number
+  extra: number
 }
 
 /** Evaluates the merit of one system. */
@@ -177,6 +202,7 @@ export function evaluateMerit(system: Obj, setup: MeritSetup): Eval {
     return { rows: [1], merit: 1e6, violation: 0, operands: [], ok: false }
   }
   const pupil = pupilSamples('hexapolar', setup.rings, 1)
+  const hasPerturb = ((system.surfaces ?? []) as Obj[]).some((sf) => sf.irregularity || sf.element_placement)
   const cache = new Map<string, SpotRows>()
   const spot = (f: number, w: number): SpotRows => {
     const key = `${f}:${w}`
@@ -198,8 +224,11 @@ export function evaluateMerit(system: Obj, setup: MeritSetup): Eval {
     const cy = ys.reduce((a, b) => a + b, 0) / (m || 1)
     const dx = xs.map((x) => x - cx)
     const dy = ys.map((y) => y - cy)
-    const rms = m ? Math.sqrt(dx.reduce((a, d, i) => a + d * d + dy[i] * dy[i], 0) / m) : 1
-    const r: SpotRows = { dx, dy, failed, n: pupil.length, rms }
+    const rms0 = m ? Math.sqrt(dx.reduce((a, d, i) => a + d * d + dy[i] * dy[i], 0) / m) : 1
+    const frac = o.maxField > 0 ? Math.hypot(o.sys.fields[f].x, o.sys.fields[f].y) / o.maxField : 0
+    const extra = hasPerturb ? perturbationBlur(system, o, frac) : 0
+    const rms = Math.sqrt(rms0 * rms0 + extra * extra)
+    const r: SpotRows = { dx, dy, failed, n: pupil.length, rms, extra }
     cache.set(key, r)
     return r
   }
@@ -246,6 +275,7 @@ export function evaluateMerit(system: Obj, setup: MeritSetup): Eval {
             const c = k / Math.sqrt(sp.n)
             for (let i = 0; i < sp.dx.length; i++) spotRows.push(c * sp.dx[i], c * sp.dy[i])
             for (let i = 0; i < sp.failed; i++) spotRows.push(c)
+            if (sp.extra > 0) spotRows.push(k * sp.extra)
           }
         }
       }

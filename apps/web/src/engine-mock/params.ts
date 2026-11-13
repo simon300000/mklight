@@ -15,6 +15,8 @@ export const surfaceIndex = (system: Obj, id: number) => (system.surfaces as Obj
 
 const baseShape = (shape: Obj): Obj => (shape.type === 'diffractive' || shape.type === 'sag_overlay' ? ((shape.base as Obj) ?? shape) : shape)
 
+const PLACEMENTS = ['decenter_x', 'decenter_y', 'tilt_x', 'tilt_y', 'tilt_z']
+
 function curvatureKey(shape: Obj): string | null {
   const b = baseShape(shape)
   if (b.type === 'toroid' || b.type === 'biconic') return 'curvature_y'
@@ -51,8 +53,13 @@ export function getParamValue(system: Obj, p: Path): number | null {
     case 'curvature': {
       if (!surf) return null
       const k = curvatureKey(surf.shape ?? {})
-      return k ? Number(baseShape(surf.shape)[k]) || 0 : null
+      if (!k) return baseShape(surf.shape ?? {}).type === 'plane' ? 0 : null
+      return Number(baseShape(surf.shape)[k]) || 0
     }
+    case 'irregularity':
+      return surf && (p.mode === 'astigmatism' || p.mode === 'spherical') ? Number(surf.irregularity?.[p.mode] ?? 0) : null
+    case 'element_placement':
+      return surf && PLACEMENTS.includes(String(p.component)) ? Number(surf.element_placement?.[String(p.component)] ?? 0) : null
     case 'thickness':
       return surf ? (parseNum(surf.thickness) ?? null) : null
     case 'conic': {
@@ -71,7 +78,8 @@ export function getParamValue(system: Obj, p: Path): number | null {
       return typeof v === 'number' ? v : null
     }
     case 'model_nd':
-    case 'model_vd': {
+    case 'model_vd':
+    case 'model_dpgf': {
       const m = surf?.material
       return m?.type === 'model' ? Number(m[p.param.slice(6)] ?? 0) : null
     }
@@ -103,10 +111,23 @@ export function setParamValue(system: Obj, p: Path, v: number): boolean {
     case 'curvature': {
       if (!surf) return false
       const k = curvatureKey(surf.shape ?? {})
-      if (!k) return false
+      if (!k) {
+        if (baseShape(surf.shape ?? {}).type !== 'plane') return false
+        // A plane given curvature becomes a conic.
+        if (v !== 0) surf.shape = { type: 'conic', curvature: v, conic: 0 }
+        return true
+      }
       baseShape(surf.shape)[k] = v
       return true
     }
+    case 'irregularity':
+      if (!surf || (p.mode !== 'astigmatism' && p.mode !== 'spherical')) return false
+      surf.irregularity = { ...(surf.irregularity ?? {}), [p.mode]: v }
+      return true
+    case 'element_placement':
+      if (!surf || !PLACEMENTS.includes(String(p.component))) return false
+      surf.element_placement = { last: p.last ?? surf.id, pivot: p.pivot ?? null, ...(surf.element_placement ?? {}), [String(p.component)]: v }
+      return true
     case 'thickness':
       if (!surf) return false
       surf.thickness = v
@@ -134,6 +155,7 @@ export function setParamValue(system: Obj, p: Path, v: number): boolean {
       return true
     case 'model_nd':
     case 'model_vd':
+    case 'model_dpgf':
       if (surf?.material?.type !== 'model') return false
       surf.material[p.param.slice(6)] = v
       return true
@@ -171,6 +193,8 @@ export function paramLabel(system: Obj, p: Path): string {
     case 'shape_coefficient': return `${String(p.set)}[${i}] S${S}`
     case 'model_nd': return `n_d S${S}`
     case 'model_vd': return `V_d S${S}`
+    case 'irregularity': return `Irreg. ${String(p.mode)} S${S}`
+    case 'element_placement': return `${String(p.component).replace('_', ' ')} S${S}–${typeof p.last === 'number' ? surfaceIndex(system, p.last) : '?'}`
     case 'material_dn_d': return `Δn_d S${S}`
     case 'material_dv_d': return `ΔV_d S${S}`
     case 'semi_diameter': return `SD${S}`

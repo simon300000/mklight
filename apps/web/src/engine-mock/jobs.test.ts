@@ -405,3 +405,26 @@ describe('import and catalogs', () => {
     expect((r.json as Obj).catalog).toBe('MINI')
   })
 })
+
+describe('tolerance with the web default set', () => {
+  it('runs the double gauss default tolerances', async () => {
+    const { defaultSettings, jobSettings, makeContext, readMeritInfo } = await import('../model/tolerance')
+    const sys = clone(byId('double_gauss')) as Obj
+    const ctx = makeContext(sys, { semiDiameters: Object.fromEntries(sys.surfaces.map((s: Obj) => [s.id, 10])), abbeNumbers: Object.fromEntries(sys.surfaces.map((s: Obj) => [s.id, 50])) })
+    const t = defaultSettings(sys)
+    t.trials = 20
+    const { settings, rows } = jobSettings(t, ctx, readMeritInfo(null))
+    const kinds = new Set((settings.tolerances as Obj[]).map((o) => o.param.param))
+    expect(kinds.has('irregularity')).toBe(true)
+    expect(kinds.has('element_placement')).toBe(true)
+    const j = (await run('tolerance', settings, sys)).json as Obj
+    expect(j.sensitivity.operands).toHaveLength(rows.length)
+    expect(j.monte_carlo.trials).toBe(20)
+    const worst = (j.sensitivity.operands as Obj[]).filter((o) => o.param.param === 'irregularity' || o.param.param === 'element_placement')
+    expect(worst.some((o) => o.worst > 0)).toBe(true)
+    // A plane's curvature is readable and perturbable.
+    const plane = (sys.surfaces as Obj[]).find((s) => s.shape.type === 'plane' && s.id !== 0)
+    const jp = (await run('tolerance', { tolerances: [{ param: { param: 'curvature', surface: plane.id }, minus: 0.001, plus: 0.001 }], mode: 'sensitivity' }, sys)).json as Obj
+    expect(jp.sensitivity.operands[0].ok).toBe(true)
+  })
+})
