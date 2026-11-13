@@ -710,6 +710,7 @@ dependencies = [
  "mklight-stray",
  "mklight-trace",
  "mklight-wave",
+ "mklight-webgpu",
  "rayon",
  "serde",
  "serde_json",
@@ -854,6 +855,7 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "bytemuck",
+ "js-sys",
  "mklight-core",
  "mklight-gpu",
  "mklight-trace",
@@ -861,6 +863,9 @@ dependencies = [
  "rayon",
  "serde",
  "serde_json",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-time",
  "wgpu",
 ]
 
@@ -1581,6 +1586,16 @@ name = "web-sys"
 version = "0.3.107"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d7d179596ff5ec0f6de4db64d54011bde6289cc49603d3a6e4ce3f329207ab88"
+dependencies = [
+ "js-sys",
+ "wasm-bindgen",
+]
+
+[[package]]
+name = "web-time"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5a6580f308b1fad9207618087a65c04e7a10bc77e02c8e84e9b00dd4b12fa0bb"
 dependencies = [
  "js-sys",
  "wasm-bindgen",

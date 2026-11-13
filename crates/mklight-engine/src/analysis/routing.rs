@@ -97,8 +97,12 @@ pub(crate) fn auto_route(
     };
     let (apple, open) = match registry.auto_candidate(r.analysis) {
         Some(AutoCandidate::NoGpu(note)) => return cpu(&note, Value::Null, true),
-        Some(AutoCandidate::Gpu { apple_gpu, open }) => (apple_gpu, open),
-        None => (None, false),
+        Some(AutoCandidate::Gpu {
+            apple_gpu,
+            webgpu,
+            open,
+        }) => (Device::hinted(apple_gpu, webgpu), open),
+        None => (Device::Unknown, false),
     };
     if let Some(reason) = reference_by_division(r) {
         return cpu(reason, no_device_share(reason), !open);
@@ -106,13 +110,7 @@ pub(crate) fn auto_route(
     let route = request_key(r.snapshot, r.library, r.analysis, r.settings);
     let repeated = model.repeated(&route);
     let hinted = repeated.clone().unwrap_or_else(|| {
-        model.decide(
-            r.analysis,
-            r.settings,
-            r.system,
-            Device::hinted(apple),
-            &state(open, false),
-        )
+        model.decide(r.analysis, r.settings, r.system, apple, &state(open, false))
     });
     if hinted.route == Route::Cpu {
         if repeated.is_none() {

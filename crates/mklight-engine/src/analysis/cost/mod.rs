@@ -86,26 +86,46 @@ pub(crate) enum Device {
     Apple,
     /// A device without a calibration table.
     Other,
+    /// The WebGPU backend: the Apple table's Metal sets scaled by the
+    /// measured WebGPU/Metal ratio of each analysis (`webgpu_factor`).
+    WebGpu,
     /// Not open yet, and its family is not known in advance.
     Unknown,
 }
 
 impl Device {
     pub(crate) fn of(info: &DeviceInfo) -> Self {
-        if is_apple(info) {
+        if info.kind == BackendKind::WebGpu {
+            Device::WebGpu
+        } else if is_apple(info) {
             Device::Apple
         } else {
             Device::Other
         }
     }
 
-    pub(crate) fn hinted(apple: Option<bool>) -> Self {
+    pub(crate) fn hinted(apple: Option<bool>, webgpu: bool) -> Self {
+        if webgpu {
+            return Device::WebGpu;
+        }
         match apple {
             Some(true) => Device::Apple,
             Some(false) => Device::Other,
             None => Device::Unknown,
         }
     }
+}
+
+/// WebGPU time over Metal time of each analysis in `WEBGPU_ANALYSES`, both
+/// native on the calibration machine (GPU.md §11, "Routing"): the WebGPU
+/// prediction is the Metal one times this factor.
+const WEBGPU_FACTORS: &[(&str, f64)] = &[];
+
+pub(crate) fn webgpu_factor(analysis: &str) -> Option<f64> {
+    WEBGPU_FACTORS
+        .iter()
+        .find(|(a, _)| *a == analysis)
+        .map(|(_, f)| *f)
 }
 
 pub(crate) fn is_apple(info: &DeviceInfo) -> bool {
@@ -388,8 +408,22 @@ impl CostModel {
                     json!({"decision":"qualified_metal","reason":"no cost calibration for this device","version":VERSION}),
                 );
             }
-            Device::Apple => (),
+            Device::Apple | Device::WebGpu => (),
         }
+        let webgpu = device == Device::WebGpu;
+        let gpu_scale = if webgpu {
+            match webgpu_factor(analysis) {
+                Some(f) => f,
+                None => {
+                    return decision(
+                        Route::Metal,
+                        json!({"decision":"qualified_webgpu","reason":"no WebGPU calibration for this analysis","version":VERSION}),
+                    );
+                }
+            }
+        } else {
+            1.
+        };
         let fam = family(system);
         let decided = self.lock().grids.get(&(fam, settings["pupil"].to_string()));
         let (Some(cal), Some(work)) = (
@@ -453,7 +487,10 @@ impl CostModel {
         if state.tracer_warm {
             metal_f[1] = 0.;
         }
-        let metal = cal.fit(metal_mode).unwrap_or(warm_fit).stages(&metal_f);
+        let mut metal = cal.fit(metal_mode).unwrap_or(warm_fit).stages(&metal_f);
+        for m in &mut metal {
+            *m *= gpu_scale;
+        }
         // One-time setup (device open; first native use of the analysis,
         // unless its kernels were prepared ahead), charged in full to the
         // first call of an analysis and design family and spread over up to
@@ -489,7 +526,8 @@ impl CostModel {
             (c, key.3)
         };
         let (cpu_c, cpu_decade) = correction("cpu", raw_cpu);
-        let (metal_c, metal_decade) = correction("metal", raw_metal);
+        let (metal_c, metal_decade) =
+            correction(if webgpu { "webgpu" } else { "metal" }, raw_metal);
         let cpu_c = cpu_c * host;
         let p_fail = on.transient.get(analysis).map_or(0., |e| e.mean);
         drop(on);
@@ -502,7 +540,13 @@ impl CostModel {
         decision(
             if metal_wins { Route::Metal } else { Route::Cpu },
             json!({
-                "decision": if metal_wins { "qualified_metal" } else { "cpu_reference" },
+                "decision": match (metal_wins, webgpu) {
+                    (false, _) => "cpu_reference",
+                    (true, false) => "qualified_metal",
+                    (true, true) => "qualified_webgpu",
+                },
+                // The native side's stages are under "metal" for either GPU.
+                "device": if webgpu { "webgpu" } else { "metal" },
                 "rule": "cost model",
                 "predicted_ms": {"cpu": rounded(t_cpu), "metal": rounded(t_metal)},
                 "advantage": rounded(t_cpu / t_metal.max(1e-6)),
@@ -604,6 +648,11 @@ impl CostModel {
             return;
         };
         let backend: &'static str = if native { "metal" } else { "cpu" };
+        // Native residuals are learnt per GPU backend.
+        let learnt: &'static str = match (native, d["device"].as_str()) {
+            (true, Some("webgpu")) => "webgpu",
+            _ => backend,
+        };
         let (Some(predicted), Some(decade)) = (
             d["stages_ms"][backend]
                 .as_object()
@@ -625,7 +674,7 @@ impl CostModel {
         // contention shared by every CPU call and this analysis' own
         // residual; a native call's is all residual.
         let ratio = (measured / predicted).ln();
-        let key = (analysis.to_string(), backend, fam, decade as i32);
+        let key = (analysis.to_string(), learnt, fam, decade as i32);
         let mut e = on.corrections.get(&key).unwrap_or_default();
         let host = if native {
             0.

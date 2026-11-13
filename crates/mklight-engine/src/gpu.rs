@@ -15,7 +15,7 @@ use mklight_core::job::Precision;
 use mklight_gpu::{ComputeBackend, CpuF32Backend, JobKind};
 use std::sync::{Arc, Mutex, OnceLock};
 
-use crate::analysis::gpu::GPU_ANALYSES;
+use crate::analysis::gpu::{GPU_ANALYSES, WEBGPU_ANALYSES};
 use crate::backend::{
     Backend, BackendCapabilities, BackendInfo, BackendProvider, DeviceHandle, ProviderHint,
 };
@@ -87,6 +87,10 @@ pub struct GpuProvider {
     /// The device family before opening: every Metal device on Apple
     /// silicon is the Apple GPU.
     apple_gpu: Option<bool>,
+    /// Analyses with a native path on this backend.
+    analyses: &'static [&'static str],
+    /// The WebGPU backend (`gpu:webgpu`): its own analyses and cost rules.
+    webgpu: bool,
 }
 
 impl GpuProvider {
@@ -103,6 +107,28 @@ impl GpuProvider {
             device: OnceLock::new(),
             apple_gpu: (name == "metal" && cfg!(all(target_os = "macos", target_arch = "aarch64")))
                 .then_some(true),
+            analyses: GPU_ANALYSES,
+            webgpu: false,
+        }
+    }
+
+    /// The WebGPU backend on the default native adapter (`gpu:webgpu`).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn webgpu() -> Self {
+        Self::webgpu_with(open_webgpu)
+    }
+
+    /// The WebGPU backend on a device `open` creates: in the browser build,
+    /// a `mklight_webgpu::WebGpuBackend` over the GPU thread's proxy
+    /// (WEB.md). It runs the analyses of `WEBGPU_ANALYSES` natively.
+    pub fn webgpu_with(
+        open: impl Fn() -> Result<Arc<dyn ComputeBackend>, String> + Send + Sync + 'static,
+    ) -> Self {
+        GpuProvider {
+            analyses: WEBGPU_ANALYSES,
+            webgpu: true,
+            apple_gpu: Some(false),
+            ..Self::new("webgpu", "WebGPU (f32)", open)
         }
     }
 
@@ -155,6 +181,32 @@ fn open_metal() -> Result<Arc<dyn ComputeBackend>, String> {
     }
 }
 
+impl GpuProvider {
+    /// The browser build's WebGPU backend (`gpu:webgpu`): the device is
+    /// owned by the GPU worker (`mklight_webgpu::web::run_gpu_thread`, which
+    /// the web host starts), and the engine's threads reach it through the
+    /// proxy (GPU.md §11). Opening waits up to 10 s for that worker.
+    #[cfg(target_arch = "wasm32")]
+    pub fn webgpu_browser() -> Self {
+        Self::webgpu_with(|| {
+            let gpu = mklight_webgpu::web::connect(std::time::Duration::from_secs(10))
+                .map_err(|e| e.to_string())?;
+            mklight_webgpu::WebGpuBackend::with_gpu(Arc::new(gpu))
+                .map(|b| Arc::new(b) as Arc<dyn ComputeBackend>)
+                .map_err(|e| format!("the WebGPU device could not be opened: {e}"))
+        })
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn open_webgpu() -> Result<Arc<dyn ComputeBackend>, String> {
+    match mklight_webgpu::WebGpuBackend::new() {
+        Ok(Some(b)) => Ok(Arc::new(b)),
+        Ok(None) => Err("this machine has no WebGPU adapter".into()),
+        Err(e) => Err(format!("the WebGPU device could not be opened: {e}")),
+    }
+}
+
 impl BackendProvider for GpuProvider {
     fn id(&self) -> String {
         self.backend.id()
@@ -177,7 +229,7 @@ impl BackendProvider for GpuProvider {
                 info.capabilities = BackendCapabilities {
                     fp64: false,
                     reference: false,
-                    analyses: GPU_ANALYSES.iter().map(|s| s.to_string()).collect(),
+                    analyses: self.analyses.iter().map(|s| s.to_string()).collect(),
                     device_name: Some(di.name.clone()),
                     unified_memory: Some(di.unified_memory),
                 };
@@ -206,7 +258,8 @@ impl BackendProvider for GpuProvider {
                 ..Default::default()
             },
             known => ProviderHint {
-                analyses: GPU_ANALYSES.iter().map(|s| s.to_string()).collect(),
+                analyses: self.analyses.iter().map(|s| s.to_string()).collect(),
+                webgpu: self.webgpu,
                 apple_gpu: known.as_ref().map_or(self.apple_gpu, |k| k.clone().ok()),
                 open: known.is_some(),
                 ..Default::default()

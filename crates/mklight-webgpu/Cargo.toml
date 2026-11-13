@@ -15,11 +15,19 @@ mklight-core.workspace = true
 mklight-gpu.workspace = true
 bytemuck.workspace = true
 wgpu = "30"
-pollster = "1"
 blake3.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 rayon.workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+pollster = "1"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+web-time = "1"
+js-sys = "0.3"
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
 
 [dev-dependencies]
 mklight-trace.workspace = true

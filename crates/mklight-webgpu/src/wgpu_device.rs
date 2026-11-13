@@ -8,6 +8,8 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
+use crate::clock::Instant;
+
 use mklight_core::{MkError, MkResult};
 
 use crate::device::*;
@@ -40,9 +42,10 @@ struct Pipeline {
 
 /// Recorded and submitted work whose readbacks are being mapped.
 pub struct Submitted<'a> {
+    scope: Option<wgpu::ErrorScopeGuard>,
     staging: Vec<(wgpu::Buffer, &'a mut [u32])>,
     stats: BatchStats,
-    started: std::time::Instant,
+    started: Instant,
 }
 
 fn backend_error(what: &str, e: impl std::fmt::Display) -> MkError {
@@ -52,6 +55,7 @@ fn backend_error(what: &str, e: impl std::fmt::Display) -> MkError {
 impl WgpuDevice {
     /// Open the default high-performance adapter natively with the design
     /// limits. `Ok(None)` when there is no adapter.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn open_native() -> MkResult<Option<Self>> {
         pollster::block_on(Self::open(wgpu::Instance::new(
             wgpu::InstanceDescriptor::new_without_display_handle_from_env(),
@@ -128,16 +132,14 @@ impl WgpuDevice {
         }
         let src = kernels::source(name)
             .ok_or_else(|| MkError::Backend(format!("webgpu: no kernel module {name}")))?;
-        let scope = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
+        // Validation errors surface through the error scope of the batch
+        // (or preparation) that first uses the module.
         let m = self
             .device
             .create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: Some(name),
                 source: wgpu::ShaderSource::Wgsl(src.into()),
             });
-        if let Some(e) = pollster::block_on(scope.pop()) {
-            return Err(backend_error(&format!("module {name}"), e));
-        }
         let m = Arc::new(m);
         self.modules.lock().unwrap().insert(name, m.clone());
         Ok(m)
@@ -179,7 +181,6 @@ impl WgpuDevice {
                 count: None,
             });
         }
-        let scope = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
         let layout = self
             .device
             .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -203,12 +204,6 @@ impl WgpuDevice {
                 compilation_options: Default::default(),
                 cache: None,
             });
-        if let Some(e) = pollster::block_on(scope.pop()) {
-            return Err(backend_error(
-                &format!("pipeline {}::{}", kernel.module, kernel.entry),
-                e,
-            ));
-        }
         let p = Arc::new(Pipeline { layout, pipeline });
         self.pipelines.lock().unwrap().insert(key, p.clone());
         Ok(p)
@@ -236,7 +231,7 @@ impl WgpuDevice {
 
     /// Record and submit `batch`; its readbacks complete after mapping.
     pub fn submit<'a>(&self, batch: Batch<'a>) -> MkResult<Submitted<'a>> {
-        let started = std::time::Instant::now();
+        let started = Instant::now();
         let mut stats = BatchStats::default();
         let storage = wgpu::BufferUsages::STORAGE
             | wgpu::BufferUsages::COPY_SRC
@@ -373,21 +368,28 @@ impl WgpuDevice {
             staging.push((s, r.into));
         }
         self.queue.submit([encoder.finish()]);
-        if let Some(e) = pollster::block_on(scope.pop()) {
-            return Err(backend_error("batch", e));
-        }
-        for (s, _) in &staging {
-            s.slice(..).map_async(wgpu::MapMode::Read, |_| {});
-        }
         Ok(Submitted {
+            scope: Some(scope),
             staging,
             stats,
             started,
         })
     }
 
+    /// Request the mapping of `s`'s readbacks; `done` completes once all
+    /// of them are mapped (or one failed).
+    fn map(s: &Submitted<'_>, done: &MapWait) {
+        done.expect(s.staging.len());
+        for (b, _) in &s.staging {
+            let d = done.clone();
+            b.slice(..).map_async(wgpu::MapMode::Read, move |r| {
+                d.complete(r.err().map(|e| e.to_string()))
+            });
+        }
+    }
+
     /// Copy the mapped readbacks out (after the device has completed).
-    pub fn finish(&self, s: Submitted<'_>) -> MkResult<BatchStats> {
+    fn finish(&self, s: Submitted<'_>) -> MkResult<BatchStats> {
         let mut stats = s.stats;
         for (b, into) in s.staging {
             {
@@ -405,6 +407,7 @@ impl WgpuDevice {
     }
 
     /// Block (natively) until every submission completed.
+    #[cfg(not(target_arch = "wasm32"))]
     fn wait(&self) -> MkResult<()> {
         self.device
             .poll(wgpu::PollType::Wait {
@@ -418,13 +421,27 @@ impl WgpuDevice {
     pub fn device(&self) -> &wgpu::Device {
         &self.device
     }
-}
 
-impl Gpu for WgpuDevice {
-    fn summary(&self) -> &AdapterSummary {
+    /// The adapter and limits (also on the web, where `Gpu` is the proxy's).
+    pub fn adapter_summary(&self) -> &AdapterSummary {
         &self.summary
     }
-    fn persist(&self, words: &[u32]) -> MkResult<BufferKey> {
+
+    /// [`Gpu::run`] without blocking: the browser's GPU thread awaits the
+    /// batch in its event loop (`crate::proxy`).
+    pub async fn run_async(&self, batch: Batch<'_>) -> MkResult<BatchStats> {
+        let mut s = self.submit(batch)?;
+        if let Some(e) = s.scope.take().unwrap().pop().await {
+            return Err(backend_error("batch", e));
+        }
+        let wait = MapWait::default();
+        Self::map(&s, &wait);
+        wait.await?;
+        self.finish(s)
+    }
+
+    /// [`Gpu::persist`] on the device's own thread.
+    pub fn persist_words(&self, words: &[u32]) -> MkResult<BufferKey> {
         let b = self.buffer(
             words.len(),
             wgpu::BufferUsages::STORAGE
@@ -437,18 +454,98 @@ impl Gpu for WgpuDevice {
         self.persistent.lock().unwrap().insert(k, Arc::new(b));
         Ok(BufferKey(k))
     }
-    fn release(&self, key: BufferKey) {
+
+    /// [`Gpu::release`] on the device's own thread.
+    pub fn release_key(&self, key: BufferKey) {
         self.persistent.lock().unwrap().remove(&key.0);
     }
-    fn prepare(&self, kernels: &[(Kernel, PassShape)]) -> MkResult<()> {
+
+    /// [`Gpu::prepare`] without blocking.
+    pub async fn prepare_async(&self, kernels: &[(Kernel, PassShape)]) -> MkResult<()> {
+        let scope = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
         for (k, s) in kernels {
             self.pipeline(*k, s)?;
         }
-        Ok(())
+        match scope.pop().await {
+            Some(e) => Err(backend_error("pipeline preparation", e)),
+            None => Ok(()),
+        }
+    }
+}
+
+/// Completion of a batch's readback mappings, as a future.
+#[derive(Clone, Default)]
+struct MapWait(Arc<Mutex<MapState>>);
+
+#[derive(Default)]
+struct MapState {
+    remaining: usize,
+    error: Option<String>,
+    waker: Option<std::task::Waker>,
+}
+
+impl MapWait {
+    fn expect(&self, n: usize) {
+        self.0.lock().unwrap().remaining = n;
+    }
+    fn complete(&self, error: Option<String>) {
+        let mut st = self.0.lock().unwrap();
+        st.remaining = st.remaining.saturating_sub(1);
+        if error.is_some() {
+            st.error = error;
+        }
+        if (st.remaining == 0 || st.error.is_some())
+            && let Some(w) = st.waker.take()
+        {
+            w.wake();
+        }
+    }
+}
+
+impl std::future::Future for MapWait {
+    type Output = MkResult<()>;
+    fn poll(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<MkResult<()>> {
+        let mut st = self.0.lock().unwrap();
+        if let Some(e) = st.error.take() {
+            return std::task::Poll::Ready(Err(backend_error("readback mapping", e)));
+        }
+        if st.remaining == 0 {
+            return std::task::Poll::Ready(Ok(()));
+        }
+        st.waker = Some(cx.waker().clone());
+        std::task::Poll::Pending
+    }
+}
+
+/// Natively the device is `Send + Sync` and records batches on the caller's
+/// thread. In the browser its objects belong to the GPU thread, which serves
+/// the engine's threads through `crate::proxy`.
+#[cfg(not(target_arch = "wasm32"))]
+impl Gpu for WgpuDevice {
+    fn summary(&self) -> &AdapterSummary {
+        &self.summary
+    }
+    fn persist(&self, words: &[u32]) -> MkResult<BufferKey> {
+        self.persist_words(words)
+    }
+    fn release(&self, key: BufferKey) {
+        self.release_key(key)
+    }
+    fn prepare(&self, kernels: &[(Kernel, PassShape)]) -> MkResult<()> {
+        pollster::block_on(self.prepare_async(kernels))
     }
     fn run(&self, batch: Batch<'_>) -> MkResult<BatchStats> {
-        let s = self.submit(batch)?;
+        let mut s = self.submit(batch)?;
+        if let Some(e) = pollster::block_on(s.scope.take().unwrap().pop()) {
+            return Err(backend_error("batch", e));
+        }
+        let wait = MapWait::default();
+        Self::map(&s, &wait);
         self.wait()?;
+        pollster::block_on(wait)?;
         self.finish(s)
     }
 }

@@ -16,7 +16,8 @@
 //! (`webgpu:<operation>` or the specification's name).
 
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+
+use crate::clock::Instant;
 
 use mklight_core::job::Precision;
 use mklight_core::{JobContext, MkError, MkResult};
@@ -105,6 +106,7 @@ fn run_probe(gpu: &dyn Gpu) -> MkResult<(NumericsProbe, NumericsProbe)> {
 impl WebGpuBackend {
     /// The default native adapter through wgpu, or `Ok(None)` when there is
     /// none.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn new() -> MkResult<Option<Self>> {
         match crate::WgpuDevice::open_native()? {
             Some(d) => Self::with_gpu(Arc::new(d)).map(Some),

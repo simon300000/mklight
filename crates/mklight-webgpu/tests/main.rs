@@ -29,5 +29,6 @@ macro_rules! gpu_or_skip {
 }
 
 mod numerics;
+mod proxy;
 mod trace;
 mod transforms;
