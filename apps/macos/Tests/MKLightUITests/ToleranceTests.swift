@@ -82,7 +82,7 @@ import Testing
         let cosTheta = (1 - curv * curv * 64).squareRoot()
         #expect(abs(fr.0 - 3 * 0.6328e-3 * (1 + cosTheta) / 128) < 1e-15 && fr.0 == fr.1)
         #expect(fr.0 < 3 * 0.6328e-3 / 64, "a curved surface needs less curvature change per fringe than a flat")
-        #expect(ToleranceRow.curvaturePerFringe(0, semiDiameter: 8, wavelengthUm: 0.6328) == 0.6328e-3 / 64)
+        #expect(abs(ToleranceRow.curvaturePerFringe(0, semiDiameter: 8, wavelengthUm: 0.6328)! - 0.6328e-3 / 64) < 1e-18)
         #expect(ToleranceRow.curvaturePerFringe(0.2, semiDiameter: 8, wavelengthUm: 0.6328) == nil, "rim beyond the sphere")
         // Parabolic Monte Carlo draws round-trip as the engine's `parabolic`.
         let para = try ToleranceRow(.decenterX, surface: id(3), minus: 0.02, distribution: .parabolic).operand(in: c).get()
@@ -227,7 +227,8 @@ import Testing
         let (job, _) = t.jobSettings(in: c, merit: MeritSettings())
         #expect(job["irregularity_wavelength_um"]?.nf == 0.5461)
         let power = try #require(job["tolerances"]?.array?[1]["minus"]?.nf)
-        #expect(abs(power - 3 * 0.5461e-3 / 64) < 1e-15)
+        let c1 = try #require(cooke.value(at: .curvature(surface: id(1))))
+        #expect(abs(power - 3 * 0.5461e-3 * (1 + (1 - c1 * c1 * 64).squareRoot()) / 128) < 1e-15)
         let back = ToleranceSettings(section: t.section(context: c), system: cooke)
         #expect(back.testWavelengthUm == 0.5461 && back == t)
         // A foreign spec's irregularity operand reads back as a row.
