@@ -2,9 +2,10 @@
 //! Coordinates, FocusTerms, Characteristic}` (`kernels/geometry.wgsl`), the
 //! per-ray steps of the spot, ray-grid, best-focus and geometric-MTF plans.
 //!
-//! One batch per operation: the input planes are uploaded, passes of at most
+//! One batch per operation: the input planes are loaded through the
+//! mirrors (device copies when current), passes of at most
 //! `maxComputeWorkgroupsPerDimension` workgroups write the output planes and
-//! the batch reads them back. Coordinates and focus terms are bitwise the
+//! the batch stores them into the outputs' mirrors (no readback). Coordinates and focus terms are bitwise the
 //! CPU-f32 specification's; the characteristic function's cos/sin are
 //! double-float evaluations rounded once (the specification calls libm;
 //! both meet its tolerance). Other geometry requests, and operations whose
@@ -16,7 +17,7 @@ use mklight_gpu::consts::*;
 use mklight_gpu::geometry::Request;
 use mklight_gpu::pending::JobControl;
 use mklight_gpu::resident::cpu::Execution;
-use mklight_gpu::resident::{BufferId, ResidentOp};
+use mklight_gpu::resident::{BufferDesc, BufferId, ElementType, PlanView, ResidentOp};
 
 use super::WebGpuOps;
 use super::collectives::fits;
@@ -44,33 +45,52 @@ pub fn pipelines() -> Vec<(Kernel, PassShape)> {
 }
 
 /// One element-parallel operation: its kernel, the parameter words after
-/// `count` and `offset` (`MklWgslGeometryParams`), up to five inputs and two
-/// outputs (words).
-struct Elementwise<'a> {
+/// `count` and `offset` (`MklWgslGeometryParams`), up to five input views
+/// and two outputs (buffer, words written from word 0).
+struct Elementwise {
     kernel: Kernel,
     elements: usize,
     params: [u32; 8],
-    inputs: Vec<&'a [u32]>,
-    outputs: [usize; 2],
+    inputs: Vec<PlanView>,
+    outputs: [Option<(BufferId, usize)>; 2],
+}
+
+/// The first `words` words of `buffer` as a plain word view.
+fn prefix(buffer: BufferId, words: usize) -> PlanView {
+    PlanView {
+        buffer,
+        offset: 0,
+        desc: BufferDesc::new(ElementType::U32, [words]),
+        stride: 1,
+    }
 }
 
 fn launch(
-    gpu: &dyn Gpu,
-    e: Elementwise<'_>,
-    out: &mut [&mut [u32]],
+    ops: &mut WebGpuOps,
+    x: &Execution,
+    e: Elementwise,
     stats: &mut JobStats,
 ) -> MkResult<()> {
+    let gpu = ops.backend.gpu().clone();
     let placeholder = [0u32; 4];
     let mut batch = Batch::default();
-    let mut storage: Vec<Binding> = e
-        .inputs
-        .iter()
-        .map(|w| Binding::read(batch.upload(if w.is_empty() { &placeholder } else { w })))
-        .collect();
+    let mut storage: Vec<Binding> = Vec::new();
+    for v in &e.inputs {
+        let r = if v.desc.len().unwrap_or(0) == 0 {
+            batch.upload(&placeholder)
+        } else {
+            ops.mirrors.load(&mut batch, x, v)
+        };
+        storage.push(Binding::read(r));
+    }
     while storage.len() < 5 {
         storage.push(Binding::read(batch.upload(&placeholder)));
     }
-    let o: Vec<usize> = e.outputs.iter().map(|&w| batch.scratch(w.max(4))).collect();
+    let o: Vec<usize> = e
+        .outputs
+        .iter()
+        .map(|w| batch.scratch(w.map_or(0, |w| w.1).max(4)))
+        .collect();
     storage.extend(o.iter().map(|&o| Binding::write(o)));
     let per_pass = gpu.summary().max_compute_workgroups_per_dimension as usize * GROUP;
     for offset in (0..e.elements).step_by(per_pass) {
@@ -84,9 +104,11 @@ fn launch(
             workgroups: [count.div_ceil(GROUP) as u32, 1, 1],
         });
     }
-    for ((&o, dest), &words) in o.iter().zip(out.iter_mut()).zip(&e.outputs) {
-        if words > 0 {
-            batch.read(o, 0, &mut dest[..words]);
+    for (&o, out) in o.iter().zip(&e.outputs) {
+        if let Some((id, words)) = *out
+            && words > 0
+        {
+            ops.mirrors.store(&mut batch, x, o, 0, id, 0, words)?;
         }
     }
     let b = gpu.run(batch)?;
@@ -148,71 +170,68 @@ pub fn run(
         return Ok(None);
     }
     ctl.check()?;
+    let x: &Execution = x;
     match r {
         Request::Coordinates(r) => {
             let n = r.hits.rays.count;
             let nc = r.chiefs.rays.count;
             let d = r.defocus;
-            x.with_outputs(&[r.output, r.mask], |x, out| {
-                launch(
-                    gpu,
-                    Elementwise {
-                        kernel: COORDINATES,
-                        elements: n,
-                        params: [
-                            n as u32,
-                            nc as u32,
-                            0,
-                            0,
-                            0,
-                            0,
-                            d.hi.to_bits(),
-                            d.lo.to_bits(),
-                        ],
-                        inputs: vec![
-                            &x.words(r.hits.rays.floats)[..floats * n],
-                            &x.words(r.hits.status)[..n],
-                            &x.words(r.chiefs.rays.floats)[..floats * nc],
-                            &x.words(r.chiefs.status)[..nc],
-                            x.view(&r.chief_index),
-                        ],
-                        outputs: [10 * n, n],
-                    },
-                    out,
-                    stats,
-                )
-            })?;
+            launch(
+                ops,
+                x,
+                Elementwise {
+                    kernel: COORDINATES,
+                    elements: n,
+                    params: [
+                        n as u32,
+                        nc as u32,
+                        0,
+                        0,
+                        0,
+                        0,
+                        d.hi.to_bits(),
+                        d.lo.to_bits(),
+                    ],
+                    inputs: vec![
+                        prefix(r.hits.rays.floats, floats * n),
+                        prefix(r.hits.status, n),
+                        prefix(r.chiefs.rays.floats, floats * nc),
+                        prefix(r.chiefs.status, nc),
+                        r.chief_index.clone(),
+                    ],
+                    outputs: [Some((r.output, 10 * n)), Some((r.mask, n))],
+                },
+                stats,
+            )?;
         }
         Request::FocusTerms(r) => {
             let n = r.mask.desc.len()?;
-            x.with_outputs(&[r.output], |x, out| {
-                launch(
-                    gpu,
-                    Elementwise {
-                        kernel: FOCUS_TERMS,
-                        elements: n,
-                        params: [
-                            n as u32,
-                            0,
-                            r.segment_len as u32,
-                            u32::from(r.centroid),
-                            0,
-                            0,
-                            0,
-                            0,
-                        ],
-                        inputs: vec![
-                            x.view(&r.points),
-                            x.view(&r.mask),
-                            x.view(&r.position_moments),
-                            x.view(&r.slope_moments),
-                        ],
-                        outputs: [6 * n, 0],
-                    },
-                    out,
-                    stats,
-                )
-            })?;
+            launch(
+                ops,
+                x,
+                Elementwise {
+                    kernel: FOCUS_TERMS,
+                    elements: n,
+                    params: [
+                        n as u32,
+                        0,
+                        r.segment_len as u32,
+                        u32::from(r.centroid),
+                        0,
+                        0,
+                        0,
+                        0,
+                    ],
+                    inputs: vec![
+                        r.points.clone(),
+                        r.mask.clone(),
+                        r.position_moments.clone(),
+                        r.slope_moments.clone(),
+                    ],
+                    outputs: [Some((r.output, 6 * n)), None],
+                },
+                stats,
+            )?;
         }
         Request::Characteristic(r) => {
             let nr = r.mask.desc.len()?;
@@ -220,20 +239,18 @@ pub fn run(
             if total > u32::MAX as usize / 4 {
                 return Ok(None);
             }
-            x.with_outputs(&[r.output], |x, out| {
-                launch(
-                    gpu,
-                    Elementwise {
-                        kernel: CHARACTERISTIC,
-                        elements: total,
-                        params: [nr as u32, total as u32, r.segment_len as u32, 0, 0, 0, 0, 0],
-                        inputs: vec![x.view(&r.points), x.view(&r.mask), x.view(&r.frequency)],
-                        outputs: [4 * total, 0],
-                    },
-                    out,
-                    stats,
-                )
-            })?;
+            launch(
+                ops,
+                x,
+                Elementwise {
+                    kernel: CHARACTERISTIC,
+                    elements: total,
+                    params: [nr as u32, total as u32, r.segment_len as u32, 0, 0, 0, 0, 0],
+                    inputs: vec![r.points.clone(), r.mask.clone(), r.frequency.clone()],
+                    outputs: [Some((r.output, 4 * total)), None],
+                },
+                stats,
+            )?;
         }
         _ => unreachable!(),
     }
