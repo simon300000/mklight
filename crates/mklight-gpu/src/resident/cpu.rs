@@ -28,6 +28,18 @@ pub trait DeviceOps {
         ctl: &JobControl,
         stats: &mut JobStats,
     ) -> MkResult<Option<&'static str>>;
+
+    /// Called once every operation has run, before the plan's outputs are
+    /// published: a device that kept results in its own memory writes the
+    /// plan's final outputs (`plan.outputs`) into their host buffers.
+    fn finish(
+        &mut self,
+        _plan: &ResidentPlan,
+        _x: &mut Execution,
+        _ctl: &JobControl,
+    ) -> MkResult<()> {
+        Ok(())
+    }
 }
 
 /// No device: every operation runs its specification.
@@ -172,6 +184,7 @@ pub fn execute_with<E: FpEnv>(
             ..Default::default()
         });
     }
+    device.finish(plan, &mut x, ctl)?;
     // Entries publish only once every operation completed uncancelled, as on
     // a device; a cancelled build never reaches the shared cache.
     ctl.check()?;
@@ -307,6 +320,11 @@ impl Execution {
             self.buffers[id.0] = Some(s);
         }
         r
+    }
+    /// Whether `id` is an imported (read-only, published) buffer rather
+    /// than plan-owned scratch.
+    pub fn is_import(&self, id: BufferId) -> bool {
+        matches!(self.buffers[id.0], Some(Slot::Import(..)))
     }
     pub fn words(&self, id: BufferId) -> &[u32] {
         self.buffers[id.0].as_ref().unwrap().words()

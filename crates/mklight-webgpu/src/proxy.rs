@@ -33,6 +33,7 @@ use crate::device::*;
 enum Command {
     Run(*mut Option<Batch<'static>>),
     Persist(*const [u32]),
+    Allocate(usize),
     Release(BufferKey),
     Prepare(*const [(Kernel, PassShape)]),
 }
@@ -73,6 +74,7 @@ impl Request {
             match self.command {
                 Command::Run(b) => Outcome::Stats(Gpu::run(device, (*b).take().unwrap())),
                 Command::Persist(w) => Outcome::Key(device.persist_words(&*w)),
+                Command::Allocate(n) => Outcome::Key(device.allocate_words(n)),
                 Command::Release(k) => {
                     device.release_key(k);
                     Outcome::Unit(Ok(()))
@@ -93,6 +95,7 @@ impl Request {
                     Outcome::Stats(device.run_async(batch).await)
                 }
                 Command::Persist(w) => Outcome::Key(device.persist_words(&*w)),
+                Command::Allocate(n) => Outcome::Key(device.allocate_words(n)),
                 Command::Release(k) => {
                     device.release_key(k);
                     Outcome::Unit(Ok(()))
@@ -158,7 +161,7 @@ impl Channel {
             let e = || MkError::Backend(format!("webgpu: {reason}"));
             let o = match r.command {
                 Command::Run(_) => Outcome::Stats(Err(e())),
-                Command::Persist(_) => Outcome::Key(Err(e())),
+                Command::Persist(_) | Command::Allocate(_) => Outcome::Key(Err(e())),
                 _ => Outcome::Unit(Err(e())),
             };
             r.finish(o);
@@ -225,6 +228,12 @@ impl Gpu for GpuProxy {
     }
     fn release(&self, key: BufferKey) {
         let _ = self.call(Command::Release(key));
+    }
+    fn allocate(&self, words: usize) -> MkResult<BufferKey> {
+        match self.call(Command::Allocate(words))? {
+            Outcome::Key(k) => k,
+            _ => Err(protocol()),
+        }
     }
     fn prepare(&self, kernels: &[(Kernel, PassShape)]) -> MkResult<()> {
         match self.call(Command::Prepare(kernels as *const _))? {

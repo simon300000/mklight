@@ -50,7 +50,7 @@ pub use analysis::{
 };
 pub use backend::{Backend, BackendInfo};
 pub use buffer::{Buffer, BufferData, DType};
-pub use engine::{Engine, EngineConfig};
+pub use engine::{Engine, EngineConfig, WebGpuCalibrationState};
 pub use error::{EngineError, EngineResult, ErrorKind};
 pub use project::{PROJECT_SCHEMA_VERSION, Project};
 pub use route::RouteOptions;

@@ -2203,12 +2203,26 @@ zero-copy for the solvers), and plans run on its executor
 (`CpuF32Backend::submit_plan_hosted`), so validation, system pinning,
 operation caches, cancellation, progress and publication are the shared
 `mklight-gpu` code. The executor offers each operation to the device first
-(`resident::cpu::DeviceOps`): the operations with WGSL kernels upload their
-inputs from the plan's buffers, dispatch, and read their outputs back into
-them; every other operation runs its CPU-f32 specification in the device's
-f32 environment (flush-to-zero when the probe says so), which is the
-arithmetic the kernels specify. `PlanStats` names the placement of every
-stage (`webgpu:sum`, `webgpu:trace`, …, or the specification's name).
+(`resident::cpu::DeviceOps`); every operation without a WGSL kernel runs its
+CPU-f32 specification in the device's f32 environment (flush-to-zero when
+the probe says so), which is the arithmetic the kernels specify.
+`PlanStats` names the placement of every stage (`webgpu:sum`,
+`webgpu:trace`, …, or the specification's name).
+
+**Residency** (`ops/resident.rs`). A device operation leaves its outputs on
+the device, in a *mirror* of each plan buffer (a pooled writable device
+buffer), and the next device operation reads them there: inputs load from a
+mirror when the device copy is current (a device-side copy of the range
+when a view starts where no binding may, `Resource::Slice`), else from the
+host words; outputs are written to scratch and copied into their mirror on
+the device (`Batch::copies`). The host copy of such a buffer is stale until
+something needs it: before an operation runs its CPU-f32 specification its
+inputs are read back, and when the plan ends (`DeviceOps::finish`) only the
+plan's final outputs are. Host-side inspections inside an operation (aim
+reports for statistics, a path program's length) read only those words.
+A spot-diagram or PSF plan now reads back only its result buffers; before,
+every operation paid an upload and a readback (10–15 ms each, and the
+operations of one direct-MTF plan moved 161 MB).
 
 Host code moved into `mklight-gpu` for both backends: the numerics probe's
 inputs, expected results and verdict (`mklight_gpu::probe`), the hosted
@@ -2221,9 +2235,10 @@ collectives and wave host paths needed no move: what they share was in
 builders, `aiming::kernel::excluded`).
 
 The device seam is `mklight_webgpu::device::Gpu`: a `Batch` of buffers
-(persistent system copies, uploads borrowed from the caller, zeroed
-scratch), compute passes and readbacks into host slices, run as one
-submission. Binding convention of every kernel: binding 0 the environment
+(persistent system copies and plan mirrors, device-side slices of them,
+uploads borrowed from the caller, zeroed scratch), compute passes,
+device-side copies into persistent buffers, and readbacks into host slices,
+run as one submission; `Gpu::allocate` makes a writable persistent buffer. Binding convention of every kernel: binding 0 the environment
 block (the opaque zero below), binding 1 the pass's uniform parameters,
 bindings 2… storage buffers. WGSL types and `MKL_*` constants are generated
 from `include/*.h` by `build.rs` (`mklight_types.wgsl`), so no layout
@@ -2313,8 +2328,8 @@ the GPU worker to publish its channel (or the reason it has no adapter)
 and runs the numerics probe through the proxy. Plan workers
 (`pending::spawn_job`) and the GPU paths' scoped threads
 (`mklight_core::platform::scope`, `std::thread::scope` natively) run on
-the engine's host threads (WEB.md, "Threads"). WebGPU adds 0.58 MB brotli
-to the wasm module (2.58 MB in all).
+the engine's host threads (WEB.md, "Threads"). WebGPU adds 0.73 MB brotli
+to the wasm module (2.72 MB in all).
 
 ### 11.5 Ported operations and accuracy
 
@@ -2366,71 +2381,91 @@ zero-copy):
 | FFT 1024² / 2048² | 5.8 / 17 ms | 0.9 / 2.6 ms | 17 / 81 ms |
 | chirp-z 1024² / 2048² | 12 / 36 ms | 1.5 / 9 ms | 23 / 80 ms |
 
-**Analyses, native** (ms; CPU = the f64 reference on all threads):
+**Analyses, native** (ms; CPU = the f64 reference on all threads; WebGPU
+before and after residency, §11.1; machine load 10 and 55):
 
-| analysis | CPU | Metal | WebGPU |
-|---|---:|---:|---:|
-| spot diagram, 6 / 32 / 128 / 250 rings | 1.5 / 10 / 43 / 158 | 7.4 / 15 / 26 / 86 | 12 / 24 / 95 / 391 |
-| spot, Petzval asphere 128 rings / XY freeform 64 | 37 / 26 | 24 / 17 | 101 / 45 |
-| geometric MTF, 32 / 128 rings | 14 / 82 | 11 / 37 | 33 / 241 |
-| ray grid, 32 / 128 rings | 5.0 / 35 | 9.2 / 22 | 13 / 69 |
-| PSF default / 256² / 512² pupil | 37 / 41 / 112 | 32 / 37 / 116 | 50 / 66 / 139 |
-| MTF default / FFT 512² | 55 / 225 | 50 / 136 | 104 / 1002 |
-| MTF vs field, through-focus MTF | 68 / 127 | 68 / 129 | 102 / 150 |
+| analysis | CPU | Metal | WebGPU | WebGPU resident |
+|---|---:|---:|---:|---:|
+| spot diagram, 6 / 32 / 128 / 250 rings | 1.5 / 10 / 43 / 158 | 7.4 / 15 / 26 / 86 | 12 / 24 / 95 / 391 | 37 / 28 / 99 / 356 |
+| spot, Petzval asphere 128 rings / XY freeform 64 | 37 / 26 | 24 / 17 | 101 / 45 | 84 / 50 |
+| geometric MTF, 32 / 128 rings | 14 / 82 | 11 / 37 | 33 / 241 | 27 / 185 |
+| ray grid, 32 / 128 rings | 5.0 / 35 | 9.2 / 22 | 13 / 69 | 14 / 57 |
+| PSF default / 256² / 512² pupil | 37 / 41 / 112 | 32 / 37 / 116 | 50 / 66 / 139 | 50 / 67 / 123 |
+| MTF default / FFT 512² | 55 / 225 | 50 / 136 | 104 / 1002 | 65 / 879 |
+| MTF vs field, through-focus MTF | 68 / 127 | 68 / 129 | 102 / 150 | 87 / 134 |
 
-Natively WebGPU never beats the native CPU reference: each operation
-uploads its inputs and reads its outputs through the API's staging copies
-(about 10–15 ms of fixed cost per operation; Metal shares memory), and the
-protected arithmetic and round-to-nearest corrections cost the kernels
-2–7× Metal's device time. FFT-MTF's `FftMtf` runs its specification.
+Natively WebGPU does not beat the native CPU reference: the protected
+arithmetic and round-to-nearest corrections cost the kernels 2–7× Metal's
+device time, and inputs that come from the host (the host-aimed rays, the
+host-traced pupils) still cross the API's staging copies, which Metal's
+shared memory avoids. FFT-MTF's `FftMtf` runs its specification.
 
 **Analyses, browser** (the same machine; `MKLIGHT_WEB_BENCH=1 npx
 playwright test tests/webgpu.spec.ts -g timing`; CPU = the wasm f64
-reference on all threads, 12 in Chromium, 8 in WebKit; best of three):
+reference on all threads, 12 in Chromium, 8 in WebKit; best of three; the
+gain is CPU ÷ WebGPU, Chromium / WebKit; machine load 5–50, about ±15 %):
 
-| analysis | Chromium CPU / WebGPU | WebKit CPU / WebGPU | WebGPU gain |
+| analysis (Double Gauss) | before residency | resident | CPU, resident run (ms) |
 |---|---:|---:|---:|
-| spot diagram 32 rings (85 k rays) | 30 / 28 | 32 / 31 | 1.0× |
-| spot diagram 64 / 96 rings | 60 / 89, 120 / 120 | 64 / 66, 138 / 132 | 0.7–1.05× |
-| spot diagram 128 / 180 rings | 265 / 209, 390 / 299 | 233 / 201, 481 / 400 | 1.2–1.3× |
-| spot diagram 250 rings (1.7 M rays) | 745 / 508 | 970 / 708 | 1.4–1.5× |
-| ray grid 32 / 64 rings | 29 / 28, 59 / 59 | 35 / 32, 64 / 68 | 1.0× |
-| ray grid 96 / 128 / 250 rings | 91 / 57, 180 / 86, 599 / 241 | 134 / 67, 202 / 102, 778 / 340 | 1.6–2.5× |
-| geometric MTF 32 / 128 rings | 29 / 35, 302 / 450 | 31 / 67, 427 / 757 | 0.5–0.85× |
-| PSF default / 256² / 512² | 177 / 149, 178 / 180, 270 / 297 | 134 / 135, 137 / 165, 235 / 267 | 0.8–1.2× |
-| MTF default / FFT 512² | 209 / 240, 329 / 1589 | 164 / 265, 298 / 1859 | 0.2–0.9× |
-| MTF vs field, through-focus MTF | 542 / 630, 389 / 357 | 269 / 364, 300 / 303 | 0.7–1.1× |
+| spot diagram 6 / 32 rings | 1.1 / 1.05, 1.1 / 1.0 | 0.9 / 1.2, 1.2 / 0.8 | 21 / 35, 27 / 32 |
+| spot diagram 64 / 128 rings | 0.7 / 1.0, 1.3 / 1.2 | 1.0 / 0.9, 1.7 / 1.6 | 54 / 66, 206 / 245 |
+| spot diagram 250 rings (1.7 M rays) | 1.5 / 1.4 | 1.6 / 1.7 | 777 / 910 |
+| ray grid 32 / 64 rings | 1.0 / 1.1, 1.0 / 1.0 | 0.9 / 1.0, 0.9 / 1.6 | 23 / 40, 54 / 64 |
+| ray grid 128 / 250 rings | 2.1 / 2.0, 2.5 / 2.3 | 2.1 / 1.8, 2.1 / 2.3 | 178 / 207, 637 / 759 |
+| geometric MTF 32 / 128 rings | 0.85 / 0.5, 0.7 / 0.6 | 1.1 / 1.2, 1.6 / 1.4 | 27 / 40, 328 / 400 |
+| PSF default / 256² / 512² | 1.2 / 1.0, 1.0 / 0.8, 0.9 / 0.9 | 1.0 / 0.9, 1.2 / 0.8, 1.0 / 1.0 | 153 / 107, 170 / 120, 270 / 266 |
+| MTF default / FFT 512² | 0.9 / 0.6, 0.2 / 0.2 | 1.1 / 1.3, 0.2 / 0.2 | 205 / 182, 325 / 314 |
+| MTF vs field, through-focus MTF | 0.9 / 0.7, 1.1 / 1.0 | 0.8 / 0.8, 1.1 / 1.4 | 482 / 309, 361 / 319 |
 
-The `aiming=device` division (the whole spot plan on the device) measured
-the same as the default in the browser. Where WebGPU wins, the gain grows
-with the ray count: the wasm CPU traces about 7× slower per core than
-native (WEB.md, "Speed"), while the device's per-operation cost is fixed.
-The wave analyses stay near parity because their pupils are traced and
-resampled on the host by the reference's code in every division (WAVE.md
-§9); the device runs only their transforms and sums.
+Residency moved the geometric MTF from a loss to a gain and the dense spot
+diagrams from 1.2–1.5× to 1.6–1.7×. The `aiming=device` division (the whole
+spot plan on the device, no host aiming) measured the same as the default.
+Where WebGPU wins, the gain grows with the ray count: the wasm CPU traces
+about 7× slower per core than native (WEB.md, "Speed"), while the device's
+cost per call is mostly fixed. The wave analyses stay near parity: their
+pupils are traced and resampled on the host by the reference's code in
+every division (WAVE.md §9), now the bulk of their time; the device runs
+only their transforms and sums.
 
 **Routing.**
 
 * *Native:* `gpu:webgpu` is registered on macOS after `gpu:metal`, so
   `auto` takes Metal (the first GPU, §9.2); WebGPU is an explicit choice
   (`--backend webgpu`, `{"kind":"gpu","name":"webgpu"}`).
-* *Web:* WebGPU is the only GPU. `auto` decides by a measured break-even
-  rule (`cost::WEBGPU_MIN_RAYS`, `decision: "qualified_webgpu"`, `rule:
-  "webgpu break-even"`): **ray grids from 250,000 rays and spot diagrams
-  from 900,000 rays** (fields × wavelengths × pupil samples, the cost
-  profile's rays) run on WebGPU, where it was at least the `RATIO` 1.3×
-  faster in both browsers; smaller ones, and every other analysis, run on
-  the CPU reference. The analyses of `WEBGPU_ANALYSES` (spot diagram, ray
-  grid, geometric MTF, PSF, MTF, MTF vs field, through-focus MTF) all meet
-  their contracts and run natively on an explicit WebGPU request (the web
-  client's `backend: 'gpu'`); the others fall back to the reference with
-  that reason.
-* The rule is one machine's (an M2 Pro's integrated GPU in Chromium and
-  WebKit). A discrete GPU, or a slower CPU, moves the break-even down; the
-  online refinement of §9.2 does not apply to this rule.
+* *Web:* WebGPU is the only GPU, and `auto` decides from a **calibration of
+  this device** (`analysis::cost::webgpu`): the engine runs the spot
+  diagram, ray grid and geometric MTF of the Cooke triplet at 12 and 40
+  rings on the CPU reference and on `gpu:webgpu` (an untimed warm-up each,
+  which pays pipeline compilation, then three fresh runs per size; 0.6 s
+  natively, a few seconds in a browser including compilation), and fits
+  each analysis and backend a line `fixed_ms + per_mwork_ms · work`, work
+  being the cost profile's rays × the system's surfaces. A request goes to
+  WebGPU when the predicted CPU time is at least `RATIO` (1.3) times
+  WebGPU's and saves at least `MIN_GAIN_MS` (5 ms), as for Metal
+  (`rule: "webgpu calibration"`). The decision, its predictions and the
+  calibration it used (source, adapter, threads, engine version, lines) are
+  recorded in the result's `backend.cost_decision`.
+* The web host (`apps/web/engine/src/worker.ts`) installs the calibration
+  cached in IndexedDB (database `mklight-webgpu-calibration`) under the
+  adapter's vendor/architecture/device, the thread count and the engine
+  version, or starts one in the background right after the engine is
+  created (`Engine::start_webgpu_calibration`) and caches it when it is
+  ready. Until then `auto` uses the **prior** (`rule: "webgpu
+  break-even"`, `WEBGPU_MIN_RAYS`): ray grids from 250,000 rays, spot
+  diagrams and geometric MTFs from 400,000 rays (fields × wavelengths ×
+  pupil samples) run on WebGPU, where it measured at least 1.3× faster in
+  both browsers on an M2 Pro. `createEngine({webgpuCalibration: 'off'})`
+  keeps the prior; the client's `webgpuCalibration()` and
+  `setWebgpuCalibration(c)` read and force it (tests).
+* Every other WebGPU analysis (PSF, MTF, MTF vs field, through-focus MTF)
+  runs on the CPU reference under `auto`, with that reason; they meet their
+  contracts and run on the device on an explicit WebGPU request (the web
+  client's `backend: 'gpu'`).
 
-**What would move more analyses to WebGPU.** The data movement per
-operation (keeping a plan's buffers on the device between consecutive
-device operations instead of on the host), `FftMtf`, and device pupils for
-the wave analyses (the solvers' device pupil tracer, §9.2) for the web,
-where host tracing is the bottleneck.
+**What would move more analyses to WebGPU.** Device pupils for the wave
+analyses: tracing, rim finding and resampling the pupil lattice on the
+device (the solvers' `PupilTracer`, WAVE.md §9) instead of on the host,
+which in the browser is now the wave analyses' bottleneck; this is a new
+division of the analyses on every GPU and needs the lattice, placement,
+resampling, rim, radiometry and pupil-projection operations in WGSL.
+`FftMtf` for the FFT MTF.

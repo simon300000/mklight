@@ -9,8 +9,8 @@ use std::sync::Arc;
 use mklight_core::MkResult;
 use mklight_gpu::pending::JobControl;
 use mklight_gpu::reduce;
-use mklight_gpu::resident::ResidentOp;
 use mklight_gpu::resident::cpu::{DeviceOps, Execution};
+use mklight_gpu::resident::{PlanView, ResidentOp, ResidentPlan};
 use mklight_gpu::{JobStats, PackedSystemSet, ReduceMode, SystemHandle, TraceRequest, TraceResult};
 
 use crate::backend::WebGpuBackend;
@@ -19,6 +19,7 @@ use crate::device::*;
 pub mod aiming;
 pub mod collectives;
 pub mod geometry;
+pub mod resident;
 pub mod trace;
 pub mod transforms;
 pub mod wave;
@@ -66,6 +67,8 @@ pub struct WebGpuOps {
     /// The plan's pinned systems (their device copies:
     /// `WebGpuBackend::device_systems`).
     pub systems: HashMap<SystemHandle, Arc<PackedSystemSet>>,
+    /// Plan buffers kept on the device between device operations.
+    pub mirrors: resident::Mirrors,
     /// `MKLIGHT_WEBGPU_TRACE_PLANS=1`: each operation's name, placement and
     /// wall time (from its offer to the next offer), printed on drop.
     trace: Option<Trace>,
@@ -129,6 +132,7 @@ impl WebGpuOps {
                 lines: Vec::new(),
             });
         Self {
+            mirrors: resident::Mirrors::new(backend.gpu().clone()),
             backend,
             systems: pinned.clone(),
             trace,
@@ -151,7 +155,20 @@ impl DeviceOps for WebGpuOps {
         if let Some(t) = &mut self.trace {
             t.close();
         }
+        // Operations whose device path does not load its inputs through the
+        // mirrors (and every specification) read the host copies.
+        if !resident_inputs(op) {
+            self.mirrors.sync_reads(op, x, stats)?;
+        }
         let r = self.offer(i, op, x, ctl, stats);
+        match &r {
+            Ok(None) => {
+                self.mirrors.sync_reads(op, x, stats)?;
+                self.mirrors.after(op);
+            }
+            Ok(Some(_)) => self.mirrors.after(op),
+            Err(_) => {}
+        }
         if let Some(t) = &mut self.trace {
             let place = match &r {
                 Ok(Some(_)) => "device",
@@ -162,6 +179,43 @@ impl DeviceOps for WebGpuOps {
         }
         r
     }
+
+    fn finish(
+        &mut self,
+        plan: &ResidentPlan,
+        x: &mut Execution,
+        _ctl: &JobControl,
+    ) -> MkResult<()> {
+        let mut stats = JobStats::default();
+        let r = self.mirrors.finish(plan, x, &mut stats);
+        if let Some(t) = &mut self.trace {
+            t.close();
+            t.lines.push((
+                format!(
+                    "final readback (resident saved {:.1} MB)",
+                    self.mirrors.saved_bytes as f64 / 1e6
+                ),
+                stats.device_seconds * 1e3,
+            ));
+        }
+        r
+    }
+}
+
+/// Whether `op`'s device path takes its inputs through [`resident::Mirrors`]
+/// (so device-resident inputs need no readback before it).
+fn resident_inputs(op: &ResidentOp) -> bool {
+    // One arm per converted family; `matches!` keeps them as a list.
+    matches!(
+        op,
+        ResidentOp::Sum(_)
+            | ResidentOp::Geometry(_)
+            | ResidentOp::Collectives(_)
+            | ResidentOp::TraceUpload(_)
+            | ResidentOp::Aiming(_)
+            | ResidentOp::Transforms(_)
+            | ResidentOp::Wave(_)
+    )
 }
 
 impl WebGpuOps {
@@ -182,18 +236,28 @@ impl WebGpuOps {
                 if !sum_fits(&*gpu, count) {
                     return Ok(None);
                 }
-                x.with_outputs(&[s.output], |x, out| {
-                    sum(
-                        &*gpu,
-                        s.mode,
-                        channels,
-                        count,
-                        x.view(&s.input),
-                        out[0],
-                        ctl,
-                        stats,
-                    )
-                })?;
+                let step = sum_step(&*gpu, count);
+                for c0 in (0..channels).step_by(step) {
+                    ctl.check()?;
+                    let nc = step.min(channels - c0);
+                    let part = PlanView {
+                        offset: s.input.offset + c0 * count,
+                        desc: mklight_gpu::resident::BufferDesc::new(
+                            mklight_gpu::resident::ElementType::F32,
+                            [nc, count],
+                        ),
+                        ..s.input.clone()
+                    };
+                    let mut batch = Batch::default();
+                    let input = self.mirrors.load(&mut batch, x, &part);
+                    let sums = sum_passes(&mut batch, s.mode, nc, count, input);
+                    self.mirrors
+                        .store(&mut batch, x, sums, 0, s.output, c0 * 2, nc * 2)?;
+                    let b = gpu.run(batch)?;
+                    stats.device_seconds += b.device_seconds;
+                    stats.command_buffers += 1;
+                    ctl.report((c0 + nc) as f64 / channels as f64, "webgpu sum");
+                }
                 Ok(Some("webgpu:sum"))
             }
             ResidentOp::TraceUpload(_)
@@ -234,48 +298,13 @@ pub fn sum(
             "webgpu: a reduction channel exceeds maxStorageBufferBindingSize".into(),
         ));
     }
-    let groups = reduce::num_groups(count);
-    let s = gpu.summary();
-    let per_binding = (s.max_storage_buffer_binding_size as usize / (count * 4).max(1)).max(1);
-    let step = per_binding
-        .min(s.max_compute_workgroups_per_dimension as usize)
-        .min((1 << 22) / count.max(1) + 1);
+    let step = sum_step(gpu, count);
     for c0 in (0..channels).step_by(step) {
         ctl.check()?;
         let nc = step.min(channels - c0);
-        let params = |first_group: u32| {
-            uniform_words(&[
-                count as u32,
-                count as u32,
-                groups as u32,
-                first_group,
-                mode as u32,
-                0,
-                0,
-                0,
-            ])
-        };
         let mut batch = Batch::default();
         let x = batch.upload(&values[c0 * count..(c0 + nc) * count]);
-        let partials = batch.scratch(nc * groups * 2);
-        let sums = batch.scratch(nc * 2);
-        let storage = vec![
-            Binding::read(x),
-            Binding::write(partials),
-            Binding::write(sums),
-        ];
-        batch.passes.push(Pass {
-            kernel: REDUCE_PASS1,
-            uniform: Some(params(0)),
-            storage: storage.clone(),
-            workgroups: [groups as u32, nc as u32, 1],
-        });
-        batch.passes.push(Pass {
-            kernel: REDUCE_PASS2,
-            uniform: Some(params(0)),
-            storage,
-            workgroups: [1, nc as u32, 1],
-        });
+        let sums = sum_passes(&mut batch, mode, nc, count, x);
         batch.read(sums, 0, &mut out[c0 * 2..(c0 + nc) * 2]);
         let b = gpu.run(batch)?;
         stats.device_seconds += b.device_seconds;
@@ -283,6 +312,52 @@ pub fn sum(
         ctl.report((c0 + nc) as f64 / channels as f64, "webgpu sum");
     }
     Ok(())
+}
+
+/// Channels per sum batch: within one storage binding, the workgroup grid
+/// and about 4 M values.
+fn sum_step(gpu: &dyn Gpu, count: usize) -> usize {
+    let s = gpu.summary();
+    let per_binding = (s.max_storage_buffer_binding_size as usize / (count * 4).max(1)).max(1);
+    per_binding
+        .min(s.max_compute_workgroups_per_dimension as usize)
+        .min((1 << 22) / count.max(1) + 1)
+}
+
+/// The two fixed-tree passes over `nc` channels of `count` values in batch
+/// resource `x`; returns the resource holding the `nc` double-float sums.
+fn sum_passes(batch: &mut Batch<'_>, mode: ReduceMode, nc: usize, count: usize, x: usize) -> usize {
+    let groups = reduce::num_groups(count);
+    let params = uniform_words(&[
+        count as u32,
+        count as u32,
+        groups as u32,
+        0,
+        mode as u32,
+        0,
+        0,
+        0,
+    ]);
+    let partials = batch.scratch(nc * groups * 2);
+    let sums = batch.scratch(nc * 2);
+    let storage = vec![
+        Binding::read(x),
+        Binding::write(partials),
+        Binding::write(sums),
+    ];
+    batch.passes.push(Pass {
+        kernel: REDUCE_PASS1,
+        uniform: Some(params.clone()),
+        storage: storage.clone(),
+        workgroups: [groups as u32, nc as u32, 1],
+    });
+    batch.passes.push(Pass {
+        kernel: REDUCE_PASS2,
+        uniform: Some(params),
+        storage,
+        workgroups: [1, nc as u32, 1],
+    });
+    sums
 }
 
 /// `Job::Trace` on the device.

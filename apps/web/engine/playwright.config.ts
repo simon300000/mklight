@@ -1,9 +1,12 @@
 // Engine tests in headless Chromium and WebKit (docs/WEB.md "Tests").
-// The harness is built with Vite and served twice: without isolation
-// headers (port 4710, the static-host case: the service worker isolates
-// the page) and with them (port 4711), and with them on 200s only and bare
-// 304 revalidations (4712), on which WebKit refuses some worker starts.
+// The harness is built with Vite and served three times: without isolation
+// headers (port MKLIGHT_WEB_PORT, default 4710, the static-host case: the
+// service worker isolates the page), with them (the next port), and with
+// them on 200s only and bare 304 revalidations (the port after), on which
+// WebKit refuses some worker starts.
 import { defineConfig, devices } from '@playwright/test'
+
+const PORT = Number(process.env.MKLIGHT_WEB_PORT ?? 4710)
 
 export default defineConfig({
   testDir: 'tests',
@@ -11,7 +14,7 @@ export default defineConfig({
   workers: 1,
   globalSetup: './tests/reference.ts',
   reporter: [['list']],
-  use: { baseURL: 'http://localhost:4710/' },
+  use: { baseURL: `http://localhost:${PORT}/` },
   projects: [
     // The full Chromium in new-headless mode (the headless shell has no
     // WebGPU adapter), with WebGPU enabled for the GPU tests.
@@ -27,19 +30,19 @@ export default defineConfig({
   ],
   webServer: [
     {
-      command: 'npx vite build && node tests/static-server.mjs dist 4710',
-      url: 'http://localhost:4710/',
+      command: `npx vite build && node tests/static-server.mjs dist ${PORT}`,
+      url: `http://localhost:${PORT}/`,
       reuseExistingServer: false,
       timeout: 120_000,
     },
     {
-      command: 'node tests/static-server.mjs dist 4711 --isolate',
-      url: 'http://localhost:4711/',
+      command: `node tests/static-server.mjs dist ${PORT + 1} --isolate`,
+      url: `http://localhost:${PORT + 1}/`,
       reuseExistingServer: false,
     },
     {
-      command: 'node tests/static-server.mjs dist 4712 --isolate-200',
-      url: 'http://localhost:4712/',
+      command: `node tests/static-server.mjs dist ${PORT + 2} --isolate-200`,
+      url: `http://localhost:${PORT + 2}/`,
       reuseExistingServer: false,
     },
   ],

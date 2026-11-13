@@ -45,6 +45,7 @@ use crate::lru::LruCache;
 
 pub mod model;
 pub mod profile;
+pub mod webgpu;
 
 pub use model::{AnalysisCalibration, Calibration, FEATURES, Features, Fit, Mode};
 pub use profile::{AIM_TRACES, Profile, SystemShape, profile};
@@ -113,35 +114,6 @@ impl Device {
             Some(false) => Device::Other,
             None => Device::Unknown,
         }
-    }
-}
-
-/// The WebGPU `auto` rule (GPU.md §11.6): the analyses with a measured
-/// WebGPU gain over the CPU reference in the browser (where WebGPU is the
-/// GPU), each from the ray count (`profile` rays: fields × wavelengths ×
-/// pupil samples) at which WebGPU was at least `RATIO` faster on the
-/// calibration machine. Every other WebGPU analysis runs on the reference
-/// under `auto` (no gain measured) and natively only when requested.
-pub(crate) const WEBGPU_MIN_RAYS: &[(&str, f64)] =
-    &[("ray_grid", 250_000.), ("spot_diagram", 900_000.)];
-
-fn webgpu_rule(analysis: &str, settings: &Value, system: &OpticalSystem) -> Decision {
-    let rays = profile::profile_with(analysis, settings, system, None).map(|p| p.rays);
-    let min = WEBGPU_MIN_RAYS
-        .iter()
-        .find(|(a, _)| *a == analysis)
-        .map(|(_, r)| *r);
-    let native = matches!((rays, min), (Some(r), Some(m)) if r >= m);
-    Decision {
-        route: if native { Route::Metal } else { Route::Cpu },
-        json: json!({
-            "decision": if native { "qualified_webgpu" } else { "cpu_reference" },
-            "rule": "webgpu break-even",
-            "rays": rays,
-            "min_rays": min,
-            "reason": if min.is_none() { "no measured WebGPU gain for this analysis" } else if native { "above the measured break-even" } else { "below the measured break-even" },
-            "version": VERSION,
-        }),
     }
 }
 
@@ -267,6 +239,8 @@ pub struct CostModel {
     /// the cache state.
     refine: bool,
     online: Mutex<Online>,
+    /// The WebGPU device's calibration, once measured or installed.
+    webgpu: Mutex<Option<webgpu::WebGpuCalibration>>,
 }
 
 impl Default for CostModel {
@@ -347,6 +321,22 @@ fn stages_json(s: &Features) -> Value {
 }
 
 impl CostModel {
+    /// Install (or with `None` remove) the WebGPU device's calibration
+    /// (`webgpu` module); until then WebGPU routes by the prior.
+    pub fn set_webgpu_calibration(&self, c: Option<webgpu::WebGpuCalibration>) {
+        *self.webgpu.lock().unwrap_or_else(|e| e.into_inner()) = c;
+        // Routes repeated from decisions of another calibration are stale.
+        self.lock().routes.clear();
+    }
+
+    /// The installed WebGPU calibration.
+    pub fn webgpu_calibration(&self) -> Option<webgpu::WebGpuCalibration> {
+        self.webgpu
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
     /// A model over `table` (read from `source`), with online refinement
     /// when `refine`.
     pub fn with_table(table: Calibration, source: String, refine: bool) -> Self {
@@ -369,6 +359,7 @@ impl CostModel {
                 repeats: 0,
                 observations: 0,
             }),
+            webgpu: Mutex::new(None),
         }
     }
 
@@ -425,7 +416,14 @@ impl CostModel {
                     json!({"decision":"qualified_metal","reason":"no cost calibration for this device","version":VERSION}),
                 );
             }
-            Device::WebGpu => return webgpu_rule(analysis, settings, system),
+            Device::WebGpu => {
+                let cal = self
+                    .webgpu
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .clone();
+                return webgpu::decide(analysis, settings, system, cal.as_ref());
+            }
             Device::Apple => (),
         }
         let fam = family(system);
@@ -808,7 +806,7 @@ mod tests {
             "no measured WebGPU gain for this analysis"
         );
         // Analyses the rule lists are WebGPU analyses.
-        for (a, _) in WEBGPU_MIN_RAYS {
+        for (a, _) in webgpu::WEBGPU_MIN_RAYS {
             assert!(crate::analysis::gpu::WEBGPU_ANALYSES.contains(a));
         }
     }

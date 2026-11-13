@@ -980,3 +980,74 @@ fn benchmark_extended_shapes() {
         }
     }
 }
+
+/// `GenerateAim → TraceResident → Sum` keeps every intermediate on the
+/// device: only the plan's outputs are read back, and they equal the
+/// CPU-f32 plan bit for bit.
+#[test]
+fn aim_trace_sum_stays_resident() {
+    use mklight_gpu::aiming::{Request, TraceResident};
+    use mklight_webgpu::ops::resident::READ_BACKS;
+    let g = crate::gpu_or_skip!();
+    let c = CpuF32Backend::matching(&g.precision().probe);
+    let t = testutil::tracer(testutil::xval_systems()[0].1.clone());
+    // A count no other test uses, so its buffer sizes identify its reads.
+    let n = 1237;
+    let points: Vec<[f64; 2]> = (0..n)
+        .map(|i| {
+            let a = i as f64 * 0.618;
+            let r = (i as f64 / n as f64).sqrt() * 0.9;
+            [r * a.cos(), r * a.sin()]
+        })
+        .collect();
+    let build = |b: &dyn QualificationBackend| {
+        let (p, h) = p1_support::make_plan(b, &t, 0, 0, &points, false, 40, false);
+        let mut p = p1_support::host_seeded(b, p, &t, 0, 0);
+        let hit = p
+            .operations
+            .iter()
+            .find_map(|op| match op {
+                ResidentOp::Aiming(Request::TraceResident(TraceResident { output, .. })) => {
+                    Some(output.clone())
+                }
+                _ => None,
+            })
+            .unwrap();
+        let sums = p.sum(p.view(hit.rays.floats).unwrap(), ReduceMode::DoubleFloat);
+        p.outputs = vec![hit.status, sums];
+        (p, h)
+    };
+    let (pg, hg) = build(g);
+    let status_words = 3 * n;
+    READ_BACKS.lock().unwrap().clear();
+    let r = g
+        .submit_plan(pg, &JobContext::new())
+        .unwrap()
+        .wait()
+        .unwrap();
+    let reads: Vec<usize> = READ_BACKS
+        .lock()
+        .unwrap()
+        .iter()
+        .copied()
+        .filter(|w| [2, 3, 4, 15].iter().any(|k| w == &(k * n)))
+        .collect();
+    let names: Vec<String> = r.stats.stages.iter().map(|s| s.name.clone()).collect();
+    for stage in ["webgpu:generate_aim", "webgpu:trace_resident", "webgpu:sum"] {
+        assert!(names.iter().any(|s| s == stage), "{names:?}");
+    }
+    // The status plane is the only n-sized plan output (the sum is tiny).
+    assert!(
+        reads.iter().all(|&w| w == status_words),
+        "intermediates were read back: {reads:?}"
+    );
+    let (pc, hc) = build(&c);
+    let rc = c
+        .submit_plan(pc, &JobContext::new())
+        .unwrap()
+        .wait()
+        .unwrap();
+    p1_support::bits(&p1_support::read_all(g, &r), &p1_support::read_all(&c, &rc));
+    g.release_systems(hg).unwrap();
+    c.release_systems(hc).unwrap();
+}

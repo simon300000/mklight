@@ -59,6 +59,26 @@ pub enum Resource<'a> {
     Upload(&'a [u32]),
     /// Zero-initialised device storage of this many words.
     Scratch(usize),
+    /// Words `offset..offset + len` of a persistent buffer, copied on the
+    /// device into fresh storage at the start of the batch (a range of
+    /// device-resident data at an offset no binding may start at).
+    Slice {
+        key: BufferKey,
+        offset: usize,
+        len: usize,
+    },
+}
+
+/// A device-side copy after the passes, before the reads: `len` words of
+/// resource `from` at `from_offset` into the persistent buffer `to` at
+/// `to_offset` (results kept on the device).
+#[derive(Clone, Copy, Debug)]
+pub struct Copy {
+    pub from: usize,
+    pub from_offset: usize,
+    pub to: BufferKey,
+    pub to_offset: usize,
+    pub len: usize,
 }
 
 /// A storage binding: a whole resource, or the word range `offset..offset+len`
@@ -109,6 +129,7 @@ pub struct Read<'a> {
 pub struct Batch<'a> {
     pub resources: Vec<Resource<'a>>,
     pub passes: Vec<Pass>,
+    pub copies: Vec<Copy>,
     pub reads: Vec<Read<'a>>,
 }
 
@@ -124,6 +145,26 @@ impl<'a> Batch<'a> {
     pub fn persistent(&mut self, key: BufferKey) -> usize {
         self.resources.push(Resource::Persistent(key));
         self.resources.len() - 1
+    }
+    pub fn slice(&mut self, key: BufferKey, offset: usize, len: usize) -> usize {
+        self.resources.push(Resource::Slice { key, offset, len });
+        self.resources.len() - 1
+    }
+    pub fn copy(
+        &mut self,
+        from: usize,
+        from_offset: usize,
+        to: BufferKey,
+        to_offset: usize,
+        len: usize,
+    ) {
+        self.copies.push(Copy {
+            from,
+            from_offset,
+            to,
+            to_offset,
+            len,
+        });
     }
     pub fn read(&mut self, resource: usize, offset: usize, into: &'a mut [u32]) {
         self.reads.push(Read {
@@ -169,8 +210,12 @@ pub struct AdapterSummary {
 /// A WebGPU device as the backend uses it (module docs).
 pub trait Gpu: Send + Sync {
     fn summary(&self) -> &AdapterSummary;
-    /// Upload words to a persistent read-only buffer.
+    /// Upload words to a persistent buffer.
     fn persist(&self, words: &[u32]) -> MkResult<BufferKey>;
+    /// A persistent buffer of at least `words` words (contents unspecified)
+    /// that passes may write and copies may fill: plan data kept on the
+    /// device. Released with [`Gpu::release`].
+    fn allocate(&self, words: usize) -> MkResult<BufferKey>;
     /// Free a persistent buffer (later batches must not name it).
     fn release(&self, key: BufferKey);
     /// Create the pipelines of `kernels` ahead of their first use.

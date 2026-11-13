@@ -82,7 +82,25 @@ pub(crate) struct EngineInner {
     pub(crate) cost: Arc<crate::analysis::cost::CostModel>,
     /// `prepare_gpu`'s progress, shared with its thread.
     gpu_preparation: Arc<crate::gpu::GpuPreparationState>,
+    /// `start_webgpu_calibration`'s state.
+    webgpu_calibration: Arc<std::sync::Mutex<WebGpuCalibrationState>>,
     next_session: AtomicU64,
+}
+
+/// Progress of [`Engine::start_webgpu_calibration`].
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum WebGpuCalibrationState {
+    #[default]
+    Idle,
+    Running,
+    /// Measured and installed in the cost model.
+    Ready {
+        calibration: crate::analysis::cost::webgpu::WebGpuCalibration,
+    },
+    Failed {
+        message: String,
+    },
 }
 
 impl Drop for EngineInner {
@@ -121,6 +139,7 @@ impl Engine {
                     .then(|| Arc::new(AnalysisGraph::new(config.analysis_graph_bytes))),
                 cost: Arc::new(crate::analysis::cost::CostModel::default()),
                 gpu_preparation: Arc::default(),
+                webgpu_calibration: Arc::default(),
                 next_session: AtomicU64::new(1),
                 config,
             }),
@@ -209,6 +228,148 @@ impl Engine {
     /// registered GPU. With `cache_dir` the compiled kernels are saved there
     /// and later launches load them. Progress: [`Self::gpu_preparation`].
     /// Returns `false` when a preparation already started.
+    /// Measure the WebGPU backend against the CPU reference on this machine
+    /// (`analysis::cost::webgpu`) on an engine thread and install the
+    /// result in the cost model; `auto` routes WebGPU by the prior until
+    /// then. Returns false when a calibration already ran or runs (see
+    /// [`Engine::webgpu_calibration_state`]).
+    pub fn start_webgpu_calibration(&self) -> bool {
+        {
+            let mut s = self
+                .inner
+                .webgpu_calibration
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            if matches!(
+                *s,
+                WebGpuCalibrationState::Running | WebGpuCalibrationState::Ready { .. }
+            ) {
+                return false;
+            }
+            *s = WebGpuCalibrationState::Running;
+        }
+        let engine = self.clone();
+        let spawned = mklight_core::platform::spawn("mklight-webgpu-calibration", move || {
+            let r = engine.calibrate_webgpu();
+            let state = match r {
+                Ok(c) => {
+                    engine.inner.cost.set_webgpu_calibration(Some(c.clone()));
+                    WebGpuCalibrationState::Ready { calibration: c }
+                }
+                Err(e) => WebGpuCalibrationState::Failed {
+                    message: e.to_string(),
+                },
+            };
+            *engine
+                .inner
+                .webgpu_calibration
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = state;
+        });
+        if let Err(e) = spawned {
+            *self
+                .inner
+                .webgpu_calibration
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = WebGpuCalibrationState::Failed {
+                message: e.to_string(),
+            };
+        }
+        true
+    }
+
+    /// The state of the WebGPU calibration.
+    pub fn webgpu_calibration_state(&self) -> WebGpuCalibrationState {
+        self.inner
+            .webgpu_calibration
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    /// Install a calibration measured earlier (the web host's cache), or a
+    /// forced one; `None` returns WebGPU to the prior.
+    pub fn set_webgpu_calibration(
+        &self,
+        c: Option<crate::analysis::cost::webgpu::WebGpuCalibration>,
+    ) {
+        *self
+            .inner
+            .webgpu_calibration
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = match &c {
+            Some(c) => WebGpuCalibrationState::Ready {
+                calibration: c.clone(),
+            },
+            None => WebGpuCalibrationState::Idle,
+        };
+        self.inner.cost.set_webgpu_calibration(c);
+    }
+
+    /// The calibration runs of `analysis::cost::webgpu` on the Cooke
+    /// triplet: an untimed warm-up per analysis and backend (pipeline
+    /// compilation, first allocations), then three fresh runs of each size.
+    fn calibrate_webgpu(&self) -> EngineResult<crate::analysis::cost::webgpu::WebGpuCalibration> {
+        use crate::analysis::cost::webgpu::{self as w, Point};
+        let start = mklight_core::platform::Instant::now();
+        let info = self
+            .backends()
+            .into_iter()
+            .find(|b| b.id == "gpu:webgpu" && b.available)
+            .ok_or_else(|| {
+                crate::EngineError::InvalidArgument("the WebGPU backend is not available".into())
+            })?;
+        let system = mklight_core::samples::cooke_triplet();
+        let session = self.session_from_project(crate::project::Project::new(system.clone()))?;
+        let ctx = mklight_core::JobContext::new();
+        let mut points = Vec::new();
+        for (name, backend) in [
+            ("cpu", Backend::CpuReference),
+            ("webgpu", Backend::Gpu("webgpu".into())),
+        ] {
+            let mut warmed = std::collections::HashSet::new();
+            for (analysis, settings) in w::runs() {
+                let mut req = crate::session::AnalysisRequest::new(analysis, settings.clone());
+                req.backend = Some(backend.clone());
+                req.fresh = true;
+                if warmed.insert(analysis) {
+                    session.run_analysis(&req, &ctx)?;
+                }
+                let mwork = w::mwork(analysis, &settings, &system).unwrap_or(0.);
+                for _ in 0..3 {
+                    let t = mklight_core::platform::Instant::now();
+                    let r = session.run_analysis(&req, &ctx)?;
+                    if r.backend.used != info.id && name == "webgpu" {
+                        return Err(crate::EngineError::InvalidArgument(format!(
+                            "calibration: {analysis} did not run on WebGPU ({:?})",
+                            r.backend.fallback_reason
+                        )));
+                    }
+                    points.push(Point {
+                        analysis: analysis.into(),
+                        backend: name.into(),
+                        mwork,
+                        ms: t.elapsed().as_secs_f64() * 1e3,
+                    });
+                }
+            }
+        }
+        Ok(w::WebGpuCalibration {
+            format: w::FORMAT,
+            engine_version: mklight_core::ENGINE_VERSION.into(),
+            adapter: info
+                .capabilities
+                .device_name
+                .clone()
+                .unwrap_or_else(|| info.id.clone()),
+            threads: rayon::current_num_threads(),
+            analyses: w::fit(&points),
+            points,
+            seconds: start.elapsed().as_secs_f64(),
+            source: "measured".into(),
+        })
+    }
+
     pub fn prepare_gpu(&self, cache_dir: Option<std::path::PathBuf>) -> bool {
         let state = self.inner.gpu_preparation.clone();
         {

@@ -14,3 +14,4 @@ mod session_ops;
 mod spec_conversion;
 mod stray_partition;
 mod wave;
+mod webgpu_calibration;

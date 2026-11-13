@@ -321,6 +321,12 @@ export interface EngineClient {
   makeDocumentEngine(): EngineClient
   /** Release this session (the engine worker stays while others use it). */
   dispose(): void
+  /** The WebGPU calibration of this engine (docs/GPU.md §11.6):
+   * `{state: 'idle' | 'running' | 'ready' | 'failed', calibration?, message?}`;
+   * `calibration.source` is `measured`, `cached` (IndexedDB) or `forced`. */
+  webgpuCalibration(): Promise<JSONObject>
+  /** Install a calibration (a forced estimate), or `null` for the prior. */
+  setWebgpuCalibration(calibration: JSONObject | null): Promise<void>
 }
 
 export interface CreateEngineOptions {
@@ -328,4 +334,9 @@ export interface CreateEngineOptions {
   threads?: number
   /** Extra `EngineConfig` keys (docs/FFI.md), e.g. `analysis_graph_bytes`. */
   config?: JSONObject
+  /** WebGPU routing calibration: `'auto'` (default) installs the one cached
+   * in IndexedDB for this adapter, thread count and engine version, or
+   * measures one in the background (the prior routes meanwhile); `'off'`
+   * keeps the prior. */
+  webgpuCalibration?: 'auto' | 'off'
 }

@@ -271,12 +271,12 @@ Release build, `nightly-2026-11-01`, wasm-opt -O3:
 
 | | bytes |
 |---|---|
-| `mklight_wasm_bg.wasm` | 12.15 MB |
-| gzip -9 | 3.88 MB |
-| brotli -q 11 | 2.58 MB |
+| `mklight_wasm_bg.wasm` | 13.10 MB |
+| gzip -9 | 4.23 MB |
+| brotli -q 11 | 2.72 MB |
 
-(The WebGPU backend, wgpu and its WGSL kernels, adds 2.96 MB raw and
-0.58 MB brotli; the build without it measured 9.19 / 2.99 / 1.99 MB.)
+(The WebGPU backend, wgpu and its WGSL kernels, adds 3.91 MB raw and
+0.73 MB brotli; the build without it measured 9.19 / 2.99 / 1.99 MB.)
 
 (rustfft's SIMD algorithms add 0.15 MB raw, 0.02 MB brotli.)
 
@@ -563,16 +563,27 @@ GPU: `gpu:webgpu`, the backend of the client's `backend: 'gpu'`.
 * **Threads**: the GPU paths' scoped threads use
   `mklight_core::platform::scope` (`std::thread::scope` natively, host
   threads here), and the backends' plan workers `platform::spawn`.
-* **Routing**: `auto` sends ray grids from 250,000 rays and spot diagrams
-  from 900,000 rays to WebGPU, everything else to the CPU reference; an
-  explicit `'gpu'` request runs every WebGPU analysis on the device
-  (GPU.md §11.6, with the browser measurements).
+* **Routing**: `auto` decides from a calibration of this device: right
+  after the engine is created, the worker installs the one cached in
+  IndexedDB (`mklight-webgpu-calibration`, keyed by the adapter's
+  vendor/architecture/device, the thread count and the engine version) or
+  starts a measurement in the background (spot diagram, ray grid and
+  geometric MTF at two small sizes on both backends; a few seconds with
+  pipeline compilation) and caches it. Meanwhile the prior routes: ray
+  grids from 250,000 rays, spot diagrams and geometric MTFs from 400,000
+  rays to WebGPU, everything else to the CPU reference. An explicit
+  `'gpu'` request runs every WebGPU analysis on the device. GPU.md §11.6
+  has the rule and the browser measurements; `createEngine({
+  webgpuCalibration: 'off' })` keeps the prior, and the client's
+  `webgpuCalibration()` / `setWebgpuCalibration(c)` read and force it.
 
 `ready().webgpu` and `info.webgpu` report whether the browser has a WebGPU
 adapter; `info.backends` lists `gpu:webgpu` with its availability. Tests:
 `tests/webgpu.spec.ts` (Chromium runs the full browser in new-headless mode
 with WebGPU enabled, since the headless shell has no adapter; WebKit has
-WebGPU as is).
+WebGPU as is; it checks the calibration is measured, cached, reused and
+changes routing when forced). `MKLIGHT_WEB_PORT` (default 4710) moves the
+harness's two ports, for test runs of two checkouts at once.
 
 ### Tests
 

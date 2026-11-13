@@ -6,7 +6,7 @@ import type { EngineErrorKind, JSONObject, JSONValue, TypedArray } from './types
 /** Every call the client makes, with its arguments and result type. */
 export interface Calls {
   init: {
-    args: { threads: number; cores: number; config: JSONObject }
+    args: { threads: number; cores: number; config: JSONObject; webgpuCalibration: 'auto' | 'off' }
     result: { version: string; backends: JSONValue; threads: number; analyses: JSONValue }
   }
   listAnalyses: { args: Record<string, never>; result: JSONValue }
@@ -37,6 +37,10 @@ export interface Calls {
   }
   cancel: { args: { job: number }; result: null }
   stop: { args: { job: number }; result: null }
+  /** The WebGPU calibration's state (docs/GPU.md §11.6). */
+  webgpuCalibration: { args: Record<string, never>; result: JSONValue }
+  /** Install a calibration (`null`: the prior again). */
+  setWebgpuCalibration: { args: { calibration: JSONObject | null }; result: null }
   /** Test support: run in the worker thread itself (blocking it). */
   runSync: { args: { sid: number; request: JSONObject }; result: RawResult }
 }
