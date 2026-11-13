@@ -21,7 +21,7 @@ export function MtfView(props: { result: AnalysisResult; system: System }) {
     const limit = fields.length ? buffer(r, fields[0].diffraction_limit) : null
     if (limit) {
       data.push(gaps(limit))
-      series.push({ stroke: cssVar('--secondary') || '#888', width: 1, points: { show: false } })
+      series.push({ label: 'Diffraction limit', stroke: cssVar('--secondary') || '#888', width: 1, points: { show: false } })
     }
     fields.forEach((f, k) => {
       const color = seriesColor(k, dark)
@@ -29,11 +29,11 @@ export function MtfView(props: { result: AnalysisResult; system: System }) {
       const s = buffer(r, f.sagittal)
       if (t) {
         data.push(gaps(t))
-        series.push({ stroke: color, width: LINE, points: { show: false } })
+        series.push({ label: `Field ${(typeof f.field === 'number' ? f.field : k) + 1} T`, stroke: color, width: LINE, points: { show: false } })
       }
       if (s) {
         data.push(gaps(s))
-        series.push({ stroke: color, width: LINE, dash: DASH, points: { show: false } })
+        series.push({ label: `Field ${(typeof f.field === 'number' ? f.field : k) + 1} S`, stroke: color, width: LINE, dash: DASH, points: { show: false } })
       }
     })
     return { data: data as uPlot.AlignedData, series }

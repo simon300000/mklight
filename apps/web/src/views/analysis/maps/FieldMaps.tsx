@@ -82,7 +82,7 @@ function SweepPlot({ data, column }: { data: FieldMapData; column: number }) {
       cursor: calmCursor,
       scales: { x: { time: false } },
       axes: [axis(layoutOf(data) === 'sweepX' ? 'Hx' : 'Hy'), axis(columnTitleWithUnit(col), { size: 48 })],
-      series: [{}, { stroke: seriesColor(0, dark), width: LINE * 1.3, points: { show: pts.length <= 41, size: 4 } }],
+      series: [{}, { label: columnTitle(col), stroke: seriesColor(0, dark), width: LINE * 1.3, points: { show: pts.length <= 41, size: 4 } }],
     }),
     [data, col, dark, pts.length],
   )
@@ -143,7 +143,7 @@ export function RelativeIlluminationMapView(p: RendererProps) {
       cursor: calmCursor,
       scales: { x: { time: false }, y: { range: [yr[0] - pad, yr[1] + pad] } },
       axes: [axis('Image radius (mm)'), axis(col ? columnTitle(col) : '', { size: 44 })],
-      series: [{}, { stroke: seriesColor(0, dark), width: line ? 1.6 : 0, points: { show: true, size: line ? 4 : 5, fill: seriesColor(0, dark) } }],
+      series: [{}, { label: col ? columnTitle(col) : undefined, stroke: seriesColor(0, dark), width: line ? 1.6 : 0, points: { show: true, size: line ? 4 : 5, fill: seriesColor(0, dark) } }],
     }
   }, [radial, isFraction, rangeMode, col, dark, line])
   if (!data || !col) return <Empty text="No field map in this result." />
@@ -280,10 +280,10 @@ function CraCurve({ data, inc, limit, dark }: { data: FieldMapData; inc: number;
     const ymax = Math.max((finiteRange(ys)?.max ?? 1) * 1.08, 1e-3)
     const series: uPlot.Series[] = [
       {},
-      { stroke: seriesColor(0, dark), width: 1.8, spanGaps: true, points: { show: false } },
-      { stroke: seriesColor(0, dark), width: 0, points: { show: true, size: 4, fill: seriesColor(0, dark) } },
+      { label: 'Incidence', stroke: seriesColor(0, dark), width: 1.8, spanGaps: true, points: { show: false } },
+      { label: 'Incidence', stroke: seriesColor(0, dark), width: 0, points: { show: true, size: 4, fill: seriesColor(0, dark) } },
     ]
-    if (plotData.length > 3) series.push({ stroke: secondary, width: 1.4, dash: DASH, points: { show: false } })
+    if (plotData.length > 3) series.push({ label: 'Sensor limit', stroke: secondary, width: 1.4, dash: DASH, points: { show: false } })
     return {
       legend: { show: false },
       cursor: calmCursor,

@@ -10,6 +10,7 @@ import { Button } from '@/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Select } from '@/components/ui/select'
 import { nf } from '@/model/format'
+import { cn } from '@/lib/utils'
 import { nums, obj } from '@/views/results/common'
 import type { KeyNumber, RendererProps } from '../registry'
 import { SegmentedOrMenu } from './Controls'
@@ -51,6 +52,52 @@ type Compare = 'side' | 'split' | 'blink'
 /** Decoded user images by the source object they produced (to resample on a
  *  size change without decoding again); the samples live in the settings. */
 const originals = new WeakMap<object, { name: string; pixels: ImageData }>()
+
+/** The project keeps the imported image's reference, as the macOS app keeps
+ *  its file path: a browser has no path it may read again, so the reference
+ *  is the image itself, downscaled to at most this many pixels on a side and
+ *  stored as a PNG data URL with the pane's view state (`views[].ui.
+ *  source_image: {name, png}`, never sent to the engine). After a reload it
+ *  is what a resolution change resamples from. */
+const STORED_SIDE = 1024
+
+/** A PNG data URL of `px`, at most STORED_SIDE on a side. */
+function storedPng(px: ImageData): string | null {
+  try {
+    const s = Math.min(1, STORED_SIDE / Math.max(px.width, px.height))
+    const full = document.createElement('canvas')
+    full.width = px.width
+    full.height = px.height
+    full.getContext('2d')?.putImageData(px, 0, 0)
+    if (s === 1) return full.toDataURL('image/png')
+    const c = document.createElement('canvas')
+    c.width = Math.max(1, Math.round(px.width * s))
+    c.height = Math.max(1, Math.round(px.height * s))
+    const ctx = c.getContext('2d')
+    if (!ctx) return null
+    ctx.imageSmoothingQuality = 'high'
+    ctx.drawImage(full, 0, 0, c.width, c.height)
+    return c.toDataURL('image/png')
+  } catch {
+    return null
+  }
+}
+
+/** Stored references decoded in this session, by data URL. */
+const decodedPngs = new Map<string, ImageData>()
+
+async function decodePng(url: string): Promise<ImageData | null> {
+  const hit = decodedPngs.get(url)
+  if (hit) return hit
+  try {
+    const blob = await (await fetch(url)).blob()
+    const px = await decodeFile(new File([blob], 'source.png', { type: 'image/png' }))
+    if (px) decodedPngs.set(url, px)
+    return px
+  } catch {
+    return null
+  }
+}
 
 /** Decodes an image file to sRGB pixels, at most 2048 px on a side. */
 async function decodeFile(file: File): Promise<ImageData | null> {
@@ -126,7 +173,7 @@ function Frame(props: { img: LinearImage | null; gain: number; aspect: number; z
   const tf = `translate(${props.pan[0]}px, ${props.pan[1]}px) scale(${props.zoom})`
   return (
     <div ref={setBox} className="relative flex h-full min-h-0 w-full min-w-0 items-center justify-center">
-      <div className="relative overflow-hidden bg-black shadow-[0_0_0_0.5px_var(--separator)]" style={{ width: w || '100%', height: h || '100%' }}>
+      <div data-sim-frame className="relative overflow-hidden bg-black shadow-[0_0_0_0.5px_var(--separator)]" style={{ width: w || '100%', height: h || '100%' }}>
         {props.under !== undefined && <ImageCanvas img={props.under} gain={props.underGain ?? 1} className="absolute inset-0 h-full w-full" style={{ transform: tf }} />}
         <div className="absolute inset-0" style={props.split !== undefined ? { clipPath: `inset(0 ${(1 - props.split) * 100}% 0 0)` } : undefined}>
           <ImageCanvas img={props.img} gain={props.gain} className="absolute inset-0 h-full w-full" style={{ transform: tf }} />
@@ -254,6 +301,61 @@ export function ImageSimulationView(p: RendererProps) {
     return () => clearInterval(t)
   }, [compare])
 
+  // Pinch to zoom (a trackpad pinch arrives as a wheel with ctrlKey, which
+  // the page must not take as browser zoom) and two-finger scroll to pan, as
+  // the macOS magnify and scroll gestures; touch screens pinch and pan with
+  // two fingers. The listener is not passive so it can keep the page still.
+  const view = useRef({ zoom, pan })
+  view.current = { zoom, pan }
+  const [images, setImages] = useState<HTMLDivElement | null>(null)
+  useEffect(() => {
+    if (!images) return
+    const onWheel = (e: WheelEvent) => {
+      const { zoom: z, pan: p0 } = view.current
+      if (e.ctrlKey || e.metaKey) {
+        e.preventDefault()
+        zoomAbout(z * Math.exp(-e.deltaY * (e.deltaMode === 1 ? 0.05 : 0.01)), e.clientX, e.clientY, e.target)
+      } else if (z > 1) {
+        e.preventDefault()
+        const k = e.deltaMode === 1 ? 16 : 1
+        setPan([p0[0] - e.deltaX * k, p0[1] - e.deltaY * k])
+      }
+    }
+    images.addEventListener('wheel', onWheel, { passive: false })
+    return () => images.removeEventListener('wheel', onWheel)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [images])
+  // The stored reference of an imported image (see STORED_SIDE).
+  const stored = obj(p.ui?.source_image)
+  const storedUrl = typeof stored?.png === 'string' ? stored.png : null
+  const storedName = typeof stored?.name === 'string' ? stored.name : undefined
+  const [storedPixels, setStoredPixels] = useState<ImageData | null>(null)
+  useEffect(() => {
+    let live = true
+    setStoredPixels(storedUrl ? (decodedPngs.get(storedUrl) ?? null) : null)
+    if (storedUrl && !decodedPngs.has(storedUrl)) void decodePng(storedUrl).then((px) => live && setStoredPixels(px))
+    return () => void (live = false)
+  }, [storedUrl])
+  const touches = useRef(new Map<number, { x: number; y: number }>())
+  const pinch = useRef<{ dist: number; mid: [number, number]; zoom: number; pan: [number, number] } | null>(null)
+
+  /** Zooms to `z` keeping the image point under (cx, cy) in place. */
+  function zoomAbout(z: number, cx: number, cy: number, target: EventTarget | null) {
+    const { zoom: z0, pan: p0 } = view.current
+    const n = Math.min(Math.max(z, 1), 32)
+    if (n === 1) {
+      setZoomState(1)
+      setPan([0, 0])
+      return
+    }
+    const frame = (target instanceof Element && target.closest('[data-sim-frame]')) || images?.querySelector('[data-sim-frame]')
+    const r = frame?.getBoundingClientRect()
+    const px = r ? cx - (r.left + r.width / 2) : 0, py = r ? cy - (r.top + r.height / 2) : 0
+    const f = n / z0
+    setZoomState(n)
+    setPan([px - (px - p0[0]) * f, py - (py - p0[1]) * f])
+  }
+
   if (!data) return <div className="p-4 text-secondary">No simulated image in this result.</div>
 
   const gain = Math.pow(2, exposure)
@@ -301,6 +403,8 @@ export function ImageSimulationView(p: RendererProps) {
     const src = sourceJSON(lin)
     originals.set(src, { name: file.name, pixels: px })
     edit?.({ source: src })
+    const png = storedPng(px)
+    p.onUiChange?.({ source_image: png ? { name: file.name, png } : null })
   }
 
   const setSize = (n: number) => {
@@ -309,7 +413,7 @@ export function ImageSimulationView(p: RendererProps) {
     const cur = obj(p.settings.source)
     if (cur?.kind === 'buffer') {
       const [w, h] = targetSize([n, n])
-      const orig = originals.get(cur)
+      const orig = originals.get(cur) ?? (storedPixels ? { name: storedName ?? 'Imported image', pixels: storedPixels } : undefined)
       const img = orig ? resampleSrgb(orig.pixels, w, h, fieldAspect(p.result.json)) : readSource(cur).kind === 'buffer' ? resampleLinear((readSource(cur) as { image: LinearImage }).image, w, h) : null
       if (img) {
         const src = sourceJSON(img)
@@ -322,7 +426,7 @@ export function ImageSimulationView(p: RendererProps) {
 
   const curSource = obj(p.settings.source)
   const sourceValue = curSource?.kind === 'buffer' ? '__image' : curSource?.kind === 'path' ? '__path' : String(curSource?.pattern ?? 'grid')
-  const importedName = curSource ? originals.get(curSource)?.name : undefined
+  const importedName = (curSource ? originals.get(curSource)?.name : undefined) ?? (curSource?.kind === 'buffer' ? storedName : undefined)
   const sourceTitle = source.kind === 'pattern' ? `${PATTERNS.find((x) => x.id === source.pattern)?.title ?? source.pattern} pattern` : source.kind === 'buffer' ? (importedName ?? 'Imported image') : source.path.split('/').pop()
 
   const runCenter = centerFromRun(data)
@@ -330,11 +434,32 @@ export function ImageSimulationView(p: RendererProps) {
 
   const panHandlers = {
     onPointerDown: (e: React.PointerEvent) => {
+      if (e.pointerType === 'touch') {
+        touches.current.set(e.pointerId, { x: e.clientX, y: e.clientY })
+        if (touches.current.size === 2) {
+          const [a, b] = [...touches.current.values()]
+          pinch.current = { dist: Math.hypot(a.x - b.x, a.y - b.y), mid: [(a.x + b.x) / 2, (a.y + b.y) / 2], zoom, pan }
+          dragFrom.current = null
+          return
+        }
+      }
       if (compare === 'split' && e.altKey) return
       dragFrom.current = { x: e.clientX, y: e.clientY, pan }
       ;(e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId)
     },
     onPointerMove: (e: React.PointerEvent) => {
+      if (e.pointerType === 'touch' && touches.current.has(e.pointerId)) {
+        touches.current.set(e.pointerId, { x: e.clientX, y: e.clientY })
+        const p0 = pinch.current
+        if (p0 && touches.current.size === 2) {
+          const [a, b] = [...touches.current.values()]
+          const mid: [number, number] = [(a.x + b.x) / 2, (a.y + b.y) / 2]
+          view.current = { zoom: p0.zoom, pan: p0.pan }
+          zoomAbout(p0.zoom * (Math.hypot(a.x - b.x, a.y - b.y) / Math.max(p0.dist, 1)), p0.mid[0], p0.mid[1], e.target)
+          setPan((q) => [q[0] + mid[0] - p0.mid[0], q[1] + mid[1] - p0.mid[1]])
+          return
+        }
+      }
       const d = dragFrom.current
       if (!d) return
       if (compare === 'split' && zoom === 1) {
@@ -344,10 +469,15 @@ export function ImageSimulationView(p: RendererProps) {
       }
       if (zoom > 1) setPan([d.pan[0] + e.clientX - d.x, d.pan[1] + e.clientY - d.y])
     },
-    onPointerUp: () => (dragFrom.current = null),
-    onWheel: (e: React.WheelEvent) => {
-      if (!e.ctrlKey && !e.metaKey) return
-      setZoom(zoom * (e.deltaY < 0 ? 1.25 : 0.8))
+    onPointerUp: (e: React.PointerEvent) => {
+      touches.current.delete(e.pointerId)
+      if (touches.current.size < 2) pinch.current = null
+      dragFrom.current = null
+    },
+    onPointerCancel: (e: React.PointerEvent) => {
+      touches.current.delete(e.pointerId)
+      pinch.current = null
+      dragFrom.current = null
     },
     onDragOver: (e: React.DragEvent) => edit && e.preventDefault(),
     onDrop: (e: React.DragEvent) => {
@@ -369,7 +499,10 @@ export function ImageSimulationView(p: RendererProps) {
               onChange={(e) => {
                 const v = e.target.value
                 if (v === '__choose') fileInput.current?.click()
-                else if (!v.startsWith('__')) edit({ source: { kind: 'pattern', pattern: v } })
+                else if (!v.startsWith('__')) {
+                  edit({ source: { kind: 'pattern', pattern: v } })
+                  if (stored) p.onUiChange?.({ source_image: null })
+                }
               }}
             >
               {PATTERNS.map((x) => (
@@ -479,7 +612,12 @@ export function ImageSimulationView(p: RendererProps) {
           </PopoverContent>
         </Popover>
       </div>
-      <div className="relative min-h-0 flex-1 cursor-grab touch-none overflow-hidden select-none" {...panHandlers} aria-label="Images; drag to pan, drop an image file to use it as the source">
+      <div
+        ref={setImages}
+        className={cn('relative min-h-0 flex-1 touch-none overflow-hidden select-none', zoom > 1 && 'cursor-grab active:cursor-grabbing')}
+        {...panHandlers}
+        aria-label="Images; pinch or ⌘-scroll to zoom, drag or scroll to pan, drop an image file to use it as the source"
+      >
         {compare === 'side' ? (
           <div className="flex h-full gap-2 @max-[480px]:flex-col">
             <Frame img={sourceImage} gain={1} aspect={aspect} zoom={zoom} pan={pan} title={`Source · ${sourceTitle}`} />

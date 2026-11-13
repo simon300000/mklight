@@ -5,6 +5,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { cssVar } from '@/lib/theme'
 import { sig } from '@/model/format'
 import { FONT, niceTicks, rgbCss, setupCanvas, useSize } from '@/views/results/common'
+import { Readout } from '@/views/results/Readout'
 import { logFloor, nodeAt, outsideDisk, upsample, type Grid, type Range, type RGB, type Segment } from './heatScale'
 
 export interface ColorBarSpec {
@@ -283,40 +284,62 @@ export function MapCanvas(p: MapCanvasProps) {
     }
   }, [p, display, rect, size.w, size.h]) // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Hover: the nearest sample of a node grid, the cell under the pointer of
+  // a pixel map, or the nearest scatter cell.
   const onMove = (e: React.PointerEvent) => {
-    const g = p.grid
-    if (!g || p.cells) return
     const b = (e.currentTarget as HTMLElement).getBoundingClientRect()
     const X = e.clientX - b.left, Y = e.clientY - b.top
     if (X < rect.x0 - 6 || X > rect.x0 + rect.w + 6 || Y < rect.y0 - 6 || Y > rect.y0 + rect.h + 6) return setHover(null)
-    let best = -1, bd = Infinity
-    for (let k = 0; k < g.nx * g.ny; k++) {
-      const [x, y] = nodeAt(g, k)
-      const d = Math.hypot(px(x) - X, py(y) - Y)
-      if (d < bd) ((bd = d), (best = k))
+    const g = p.grid
+    if (g && p.cells) {
+      const i = Math.floor(((X - rect.x0) / rect.w) * g.nx), j = Math.floor(((rect.y0 + rect.h - Y) / rect.h) * g.ny)
+      if (i < 0 || j < 0 || i >= g.nx || j >= g.ny) return setHover(null)
+      return setHover({ k: j * g.nx + i, X, Y })
     }
-    setHover(best >= 0 ? { k: best, X, Y } : null)
+    if (g) {
+      let best = -1, bd = Infinity
+      for (let k = 0; k < g.nx * g.ny; k++) {
+        const [x, y] = nodeAt(g, k)
+        const d = Math.hypot(px(x) - X, py(y) - Y)
+        if (d < bd) ((bd = d), (best = k))
+      }
+      return setHover(best >= 0 ? { k: best, X, Y } : null)
+    }
+    if (p.scatter) {
+      const s = p.scatter
+      const reach = Math.max((s.size / (ext.x[1] - ext.x[0])) * rect.w, 6)
+      let best = -1, bd = reach
+      s.points.forEach((q, k) => {
+        const d = Math.hypot(px(q[0]) - X, py(q[1]) - Y)
+        if (d < bd) ((bd = d), (best = k))
+      })
+      return setHover(best >= 0 ? { k: best, X, Y } : null)
+    }
   }
 
   let tip: ReactNode = null
-  if (hover && p.grid) {
-    const [x, y] = nodeAt(p.grid, hover.k)
-    const v = p.grid.values[hover.k]
-    tip = (
-      <div
-        className="pointer-events-none absolute z-10 rounded-[5px] border border-separator bg-content px-1.5 py-0.5 text-[11px] whitespace-nowrap shadow-sm"
-        style={{ left: Math.min(px(x) + 8, rect.x0 + rect.w - 90), top: Math.max(py(y) - 34, rect.y0) }}
-      >
-        <div className="num font-semibold">{Number.isFinite(v) ? fmt(v) : p.grid.unitDisk && outsideDisk(x, y) ? 'Outside the field' : 'No value'}</div>
-        <div className="num text-secondary">
-          Hx {sig(x, 3)} Hy {sig(y, 3)}
-        </div>
-      </div>
-    )
+  if (hover) {
+    const unit = p.bar?.unit && p.bar.unit !== '1' ? ` ${p.bar.unit}` : ''
+    const at = (x: number, y: number) => `${p.xLabel.replace(/\s*\(.*\)$/, '')} ${sig(x, 3)}  ${p.yLabel.replace(/\s*\(.*\)$/, '')} ${sig(y, 3)}`
+    let x = NaN, y = NaN, v = NaN
+    if (p.grid && p.cells) {
+      const g = p.grid, i = hover.k % g.nx, j = Math.floor(hover.k / g.nx)
+      x = g.x[0] + ((i + 0.5) / g.nx) * (g.x[1] - g.x[0])
+      y = g.y[0] + ((j + 0.5) / g.ny) * (g.y[1] - g.y[0])
+      v = g.values[hover.k]
+    } else if (p.grid) {
+      ;[x, y] = nodeAt(p.grid, hover.k)
+      v = p.grid.values[hover.k]
+    } else if (p.scatter) {
+      ;[x, y] = p.scatter.points[hover.k]
+      v = p.scatter.values[hover.k]
+    }
+    const value = Number.isFinite(v) ? fmt(v) + unit : p.grid?.unitDisk && outsideDisk(x, y) ? 'Outside the field' : 'No value'
+    tip = <Readout x={hover.X} y={hover.Y} width={size.w} title={at(x, y)} rows={[{ value }]} />
   }
 
   return (
-    <div ref={box} className="relative h-full min-h-0 w-full min-w-0 overflow-hidden" onPointerMove={onMove} onPointerLeave={() => setHover(null)}>
+    <div ref={box} className="relative h-full min-h-0 w-full min-w-0 overflow-hidden" onPointerMove={onMove} onPointerDown={(e) => e.pointerType === 'touch' && onMove(e)} onPointerLeave={(e) => e.pointerType !== 'touch' && setHover(null)}>
       <canvas ref={ref} role="img" aria-label={p.label} className="absolute inset-0" />
       {tip}
       {p.children}

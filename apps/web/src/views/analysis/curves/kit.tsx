@@ -2,12 +2,13 @@
 // macOS panes use them (`Fmt`), subscripted labels (`Subscripted`), JSON or
 // buffer series, and two small canvas charts (lines over x/y, grouped bars)
 // that follow the pane's size and the light or dark appearance.
-import { Fragment, useEffect, useRef, type ReactNode } from 'react'
+import { Fragment, useEffect, useRef, useState, type ReactNode } from 'react'
 import type { AnalysisResult, Json, JsonObject } from '@/engine/types'
 import { nf, sig } from '@/model/format'
 import type { System } from '@/model/system'
 import { cssVar, useDark } from '@/lib/theme'
 import { FONT, arr, buffer, isObj, niceTicks, nums, setupCanvas, systemFieldUnit, useSize } from '../../results/common'
+import { Guide, Readout, type ReadoutRow } from '../../results/Readout'
 
 // MARK: Formats
 
@@ -173,6 +174,8 @@ export interface XYSeries {
   width?: number
   /** Dots instead of a line. */
   dots?: boolean
+  /** Name in the hover readout (the colour stands for it otherwise). */
+  label?: string
 }
 
 export interface XYPlotProps {
@@ -257,22 +260,77 @@ function drawAxes(ctx: CanvasRenderingContext2D, W: number, H: number, xd: [numb
   return { px, py, ml, mt, pw, ph, secondary }
 }
 
-/** A canvas filling its parent, redrawn on size and appearance changes. */
-export function CanvasBox({ label, draw, deps, className }: { label: string; draw: (ctx: CanvasRenderingContext2D, w: number, h: number, dark: boolean) => void; deps: unknown[]; className?: string }) {
+/** What a chart shows under the pointer: a title (x), rows of values and
+ *  optionally a vertical guide. */
+export interface Hit {
+  title?: ReactNode
+  rows: ReadoutRow[]
+  guide?: { x: number; top: number; height: number }
+}
+export type HitTest = (x: number, y: number) => Hit | null
+
+/** A canvas filling its parent, redrawn on size and appearance changes. A
+ *  `draw` that returns a hit test gets a hover readout (a tap on touch). */
+export function CanvasBox({
+  label,
+  draw,
+  deps,
+  className,
+}: {
+  label: string
+  draw: (ctx: CanvasRenderingContext2D, w: number, h: number, dark: boolean) => HitTest | void
+  deps: unknown[]
+  className?: string
+}) {
   const [box, size] = useSize<HTMLDivElement>()
   const ref = useRef<HTMLCanvasElement>(null)
+  const hit = useRef<HitTest | null>(null)
+  const [hover, setHover] = useState<(Hit & { x: number; y: number }) | null>(null)
   const dark = useDark()
   useEffect(() => {
     const ctx = setupCanvas(ref.current, size.w, size.h)
+    hit.current = null
+    setHover(null)
     if (!ctx || size.w < 40 || size.h < 40) return
-    draw(ctx, size.w, size.h, dark)
+    hit.current = draw(ctx, size.w, size.h, dark) ?? null
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [size.w, size.h, dark, ...deps])
+  const onMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!hit.current) return
+    const b = e.currentTarget.getBoundingClientRect()
+    const x = e.clientX - b.left, y = e.clientY - b.top
+    const h = hit.current(x, y)
+    setHover(h && (h.rows.length || h.title != null) ? { ...h, x, y } : null)
+  }
   return (
-    <div ref={box} className={className ?? 'relative h-full w-full min-w-0 overflow-hidden'}>
+    <div
+      ref={box}
+      className={className ?? 'relative h-full w-full min-w-0 overflow-hidden'}
+      onPointerMove={onMove}
+      onPointerDown={(e) => e.pointerType === 'touch' && onMove(e)}
+      onPointerLeave={(e) => e.pointerType !== 'touch' && setHover(null)}
+    >
       <canvas ref={ref} role="img" aria-label={label} className="absolute inset-0" />
+      {hover?.guide && <Guide {...hover.guide} />}
+      {hover && <Readout x={hover.x} y={hover.y} width={size.w} title={hover.title} rows={hover.rows} />}
     </div>
   )
+}
+
+/** The y of a series at x: interpolated between the samples around x (lines),
+ *  null outside the series or across a gap. */
+export function seriesAt(xs: ArrayLike<number>, ys: ArrayLike<number>, x: number): number | null {
+  const n = Math.min(xs.length, ys.length)
+  for (let i = 0; i + 1 < n; i++) {
+    const a = xs[i], b = xs[i + 1]
+    if (!Number.isFinite(a) || !Number.isFinite(b) || !Number.isFinite(ys[i]) || !Number.isFinite(ys[i + 1])) continue
+    if ((x - a) * (x - b) > 0) continue
+    if (a === b) return ys[i]
+    const t = (x - a) / (b - a)
+    return ys[i] + t * (ys[i + 1] - ys[i])
+  }
+  if (n === 1 && xs[0] === x && Number.isFinite(ys[0])) return ys[0]
+  return null
 }
 
 /** Lines (or dots) over x and y with calm axes; series need not share x. */
@@ -363,6 +421,32 @@ export function XYPlot(p: XYPlotProps) {
             ctx.fillText(m.label, X + (ctx.textAlign === 'right' ? -3 : 3), mt + 3)
           }
         }
+        return (mx, my) => {
+          if (mx < ml || mx > ml + pw || my < mt || my > mt + ph) return null
+          const xv = xd[0] + ((mx - ml) / pw) * (xd[1] - xd[0])
+          const rows: ReadoutRow[] = []
+          let title: string = `${p.xLabel.replace(/\s*\(.*\)$/, '')} ${sig(xv, 4)}`
+          for (const s of p.series) {
+            if (s.dots) {
+              // The nearest dot within reach.
+              let best = -1, bd = 12
+              const n = Math.min(s.x.length, s.y.length)
+              for (let i = 0; i < n; i++) {
+                if (!Number.isFinite(s.x[i]) || !Number.isFinite(s.y[i])) continue
+                const d = Math.hypot(px(s.x[i]) - mx, py(s.y[i]) - my)
+                if (d < bd) ((bd = d), (best = i))
+              }
+              if (best >= 0) {
+                title = `${p.xLabel.replace(/\s*\(.*\)$/, '')} ${sig(s.x[best], 4)}`
+                rows.push({ label: s.label, value: sig(s.y[best], 4), color: s.color })
+              }
+              continue
+            }
+            const v = seriesAt(s.x, s.y, xv)
+            if (v !== null) rows.push({ label: s.label, value: sig(v, 4), color: s.color, dash: s.dash })
+          }
+          return { title, rows, guide: { x: mx, top: mt, height: ph } }
+        }
       }}
     />
   )
@@ -411,6 +495,12 @@ export function BarPlot(p: { categories: string[]; groups: BarGroup[]; xLabel: s
           if (ci % every !== 0 && ci !== n - 1) return
           ctx.fillText(c, ml + (ci + 0.5) * cw, mt + ph + 4)
         })
+        return (mx, my) => {
+          if (mx < ml || mx > ml + pw || my < mt || my > mt + ph) return null
+          const ci = Math.min(n - 1, Math.max(0, Math.floor((mx - ml) / cw)))
+          const rows = p.groups.flatMap((grp) => (Number.isFinite(grp.values[ci]) ? [{ label: grp.label, value: sig(grp.values[ci], 4), color: grp.color }] : []))
+          return { title: p.categories[ci], rows }
+        }
       }}
     />
   )

@@ -46,22 +46,47 @@ const designSamples = (system: System): Sample[] => (system.wavelengths?.wavelen
 
 /** The compact button and its popover editor. `value` is the setting
  *  (absent/null: the design); `onChange(null)` removes it. */
-export function SpectrumButton({ value, system, onChange }: { value: Json | undefined; system: System; onChange: (v: JsonObject | null) => void }) {
+export function SpectrumButton({
+  value,
+  system,
+  onChange,
+  compact,
+}: {
+  value: Json | undefined
+  system: System
+  onChange: (v: JsonObject | null) => void
+  /** The pinned bar's form: a small "Spectrum: …" capsule. */
+  compact?: boolean
+}) {
   const s = parseSpectrum(value)
   const kindTitle = s ? SPECTRUM_KINDS.find((k) => k.kind === s.kind)?.title : 'Unreadable'
+  const text = s ? (s.kind === 'design' ? 'Design' : spectrumSummary(s)) : 'Unreadable'
   return (
     <Popover>
       <PopoverTrigger asChild>
-        <button
-          type="button"
-          className="flex h-6 w-full min-w-0 cursor-default items-center justify-end gap-1 truncate rounded-md border border-control-border bg-control px-2 text-[13px] hover:bg-hover"
-          aria-label={`Spectrum: ${s ? spectrumSummary(s) : 'unreadable'}`}
-          title={kindTitle}
-        >
-          <span className="truncate">{s ? (s.kind === 'design' ? 'Design' : spectrumSummary(s)) : 'Unreadable'}</span>
-        </button>
+        {compact ? (
+          <button
+            type="button"
+            className="flex h-[22px] max-w-full min-w-0 cursor-default items-center gap-1 rounded-full bg-selected px-2 text-[11px] hover:bg-hover focus-visible:outline-2"
+            aria-label={`Spectrum: ${s ? spectrumSummary(s) : 'unreadable'}`}
+            title={`The wavelengths this analysis runs with: ${kindTitle}`}
+            data-testid="pinned-spectrum"
+          >
+            <span className="shrink-0 text-secondary">Spectrum:</span>
+            <span className="truncate font-medium">{text}</span>
+          </button>
+        ) : (
+          <button
+            type="button"
+            className="flex h-6 w-full min-w-0 cursor-default items-center justify-end gap-1 truncate rounded-md border border-control-border bg-control px-2 text-[13px] hover:bg-hover"
+            aria-label={`Spectrum: ${s ? spectrumSummary(s) : 'unreadable'}`}
+            title={kindTitle}
+          >
+            <span className="truncate">{text}</span>
+          </button>
+        )}
       </PopoverTrigger>
-      <PopoverContent className="w-[340px]" align="end">
+      <PopoverContent className="w-[340px] max-w-[calc(100vw-16px)]" align={compact ? 'start' : 'end'}>
         <SpectrumEditor value={value} system={system} onChange={onChange} />
       </PopoverContent>
     </Popover>

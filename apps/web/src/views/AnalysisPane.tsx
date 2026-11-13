@@ -17,6 +17,7 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import { Tip } from '@/components/ui/tooltip'
 import { analysisShortTitle, analysisTitle, categoryTitle, groupedAnalyses } from '@/model/catalog'
 import { useDocument } from '@/state/document'
+import { command } from '@/state/commands'
 import { useView } from '@/state/view'
 import { descriptorFor, effectiveSettings, isStale, useWorkspace, type Pane } from '@/state/workspace'
 import { cn, shortcutLabel } from '@/lib/utils'
@@ -26,6 +27,8 @@ import { SettingsForm, settingsSummary } from './SettingsForm'
 import { keyNumbers, ResultView } from './results'
 import { badgeHelp, durationText, remedyFor, runFacts, warningLine } from './analysis/runInfo'
 import { Subscripted } from './analysis/Subscripted'
+import { SpectrumButton } from './analysis/SpectrumControl'
+import { PanelMenuItems } from './panels/PanelArea'
 
 /** Unknown or malformed results are shown as data, never as an error page. */
 class RenderGuard extends Component<{ children: ReactNode; resetKey: unknown }, { error: string | null; key: unknown }> {
@@ -44,8 +47,16 @@ class RenderGuard extends Component<{ children: ReactNode; resetKey: unknown }, 
 
 /** An analysis pane (`AnalysisPaneView`): header with title, analysis menu and
  *  a state or settings summary, and a cluster of Run (Cancel while running),
- *  automatic update, Settings and More; the plot; a footer with key numbers
- *  and a backend badge that opens the run details. */
+ *  automatic update, Settings and More; the pinned bar (the "Spectrum: …"
+ *  button) while the settings are closed; the plot; a footer with key numbers
+ *  and a backend badge that opens the run details.
+ *
+ *  Narrow panes fold like the macOS header, by the pane's own width
+ *  (container queries; about 240 px at the last step): automatic update and
+ *  Settings go into More first (below 360 px), then the title takes a type
+ *  step smaller (300 px), then its abbreviation (260 px; the full title stays
+ *  in the help tag and the accessible label); the state line truncates and
+ *  never decides the layout. */
 export function AnalysisPane({ pane }: { pane: Pane }) {
   const ws = useWorkspace()
   const system = useDocument((s) => s.project.system)
@@ -61,6 +72,20 @@ export function AnalysisPane({ pane }: { pane: Pane }) {
   const title = analysisTitle(pane.analysis, d)
   const shortTitle = analysisShortTitle(pane.analysis)
   const setOwn = (patch: JsonObject) => ws.updatePane(pane.key, { settings: { ...pane.settings, ...patch } })
+  const setUi = (patch: JsonObject) => {
+    const next: JsonObject = { ...pane.ui }
+    for (const [k, v] of Object.entries(patch)) if (v === null) delete next[k]
+    else next[k] = v
+    ws.updatePane(pane.key, { ui: next })
+  }
+  const hasSpectrum = !!(d?.settings_schema?.properties as JsonObject | undefined)?.spectrum
+  const setSpectrum = (v: JsonObject | null) => {
+    const next = { ...pane.settings }
+    // The design's wavelengths: the setting is left out (unless the analysis defaults to another spectrum).
+    if (v === null && (d?.default_settings?.spectrum === undefined || d?.default_settings?.spectrum === null)) delete next.spectrum
+    else next.spectrum = v
+    ws.updatePane(pane.key, { settings: next })
+  }
   const summary = settingsSummary(d?.default_settings ?? null, pane.settings)
   const caption = running
     ? run.stage
@@ -106,9 +131,9 @@ export function AnalysisPane({ pane }: { pane: Pane }) {
                 aria-label={`${title}, choose analysis`}
                 title={title}
               >
-                <h2 className="truncate text-[13px] font-semibold @max-[360px]:text-[12px]">
-                  <span className="@max-[300px]:hidden">{title}</span>
-                  <span className="hidden @max-[300px]:inline" aria-hidden>
+                <h2 className="truncate text-[13px] font-semibold @max-[300px]:text-[12px]">
+                  <span className="@max-[260px]:sr-only">{title}</span>
+                  <span className="hidden @max-[260px]:inline" aria-hidden>
                     {shortTitle}
                   </span>
                 </h2>
@@ -139,7 +164,7 @@ export function AnalysisPane({ pane }: { pane: Pane }) {
             </Button>
           </Tip>
         ) : (
-          <Tip label={`Run (${shortcutLabel('mod+r')})`}>
+          <Tip label={`Run (${shortcutLabel(command('runAll').shortcut!)})`}>
             <Button variant="ghost" size="iconSm" aria-label="Run" onClick={() => ws.run(pane.key, { fresh: true })}>
               <Play />
             </Button>
@@ -151,7 +176,7 @@ export function AnalysisPane({ pane }: { pane: Pane }) {
             size="iconSm"
             aria-label="Automatic update"
             aria-pressed={pane.auto}
-            className={cn('@max-[340px]:hidden', pane.auto && 'text-accent')}
+            className={cn('@max-[360px]:hidden', pane.auto && 'text-accent')}
             onClick={() => ws.updatePane(pane.key, { auto: !pane.auto })}
           >
             <Zap />
@@ -163,7 +188,7 @@ export function AnalysisPane({ pane }: { pane: Pane }) {
             size="iconSm"
             aria-label="Settings"
             aria-pressed={pane.settingsOpen}
-            className={cn('@max-[340px]:hidden', pane.settingsOpen && 'bg-selected')}
+            className={cn('@max-[360px]:hidden', pane.settingsOpen && 'bg-selected')}
             onClick={() => ws.updatePane(pane.key, { settingsOpen: !pane.settingsOpen })}
           >
             <Settings2 />
@@ -187,14 +212,20 @@ export function AnalysisPane({ pane }: { pane: Pane }) {
             <DropdownMenuItem onSelect={() => ws.updatePane(pane.key, { settings: {} })}>Reset Settings</DropdownMenuItem>
             {result && <DropdownMenuItem onSelect={() => setDetailsOpen(true)}>Run Details…</DropdownMenuItem>}
             <DropdownMenuItem onSelect={() => ws.addPane(pane.analysis, { settings: pane.settings })}>Duplicate Pane</DropdownMenuItem>
+            {result && <DropdownMenuItem onSelect={() => void navigator.clipboard?.writeText(JSON.stringify(result.json, null, 2))}>Copy Result as JSON</DropdownMenuItem>}
             <DropdownMenuSeparator />
-            <DropdownMenuItem onSelect={() => ws.removePane(pane.key)}>Close Pane</DropdownMenuItem>
+            <PanelMenuItems panel={pane.key} Item={DropdownMenuItem} Separator={DropdownMenuSeparator} />
           </DropdownMenuContent>
         </DropdownMenu>
       </PanelHeader>
       {running && (
         <div className="relative h-[2px] shrink-0 overflow-hidden bg-selected" role="progressbar" aria-valuenow={Math.round(run.progress * 100)}>
           <div className="h-full bg-accent transition-[width]" style={{ width: `${Math.max(run.progress, 0.04) * 100}%` }} />
+        </div>
+      )}
+      {hasSpectrum && !pane.settingsOpen && (
+        <div className="flex h-7 shrink-0 items-center gap-2 overflow-hidden border-b border-separator px-2.5" data-testid="pinned-bar">
+          <SpectrumButton compact value={pane.settings.spectrum ?? d?.default_settings?.spectrum ?? undefined} system={system} onChange={setSpectrum} />
         </div>
       )}
       {pane.settingsOpen && d && (
@@ -213,7 +244,7 @@ export function AnalysisPane({ pane }: { pane: Pane }) {
         {result && (
           <div className={cn('absolute inset-0', stale && !running && 'pointer-events-none opacity-50 blur-[1.5px] saturate-50', running && stale && 'updating')}>
             <RenderGuard resetKey={result}>
-              <ResultView analysis={pane.analysis} result={result} system={system} settings={settings} onSettingsChange={setOwn} />
+              <ResultView analysis={pane.analysis} result={result} system={system} settings={settings} onSettingsChange={setOwn} ui={pane.ui} onUiChange={setUi} />
             </RenderGuard>
           </div>
         )}

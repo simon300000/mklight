@@ -37,12 +37,30 @@ export interface Pane {
   settings: JsonObject
   auto: boolean
   settingsOpen: boolean
+  /** View-only state saved with the pane in `views[].ui` and never sent to
+   *  the engine (the image simulation's imported image, `source_image`). */
+  ui?: JsonObject
 }
 
 export interface Issue {
   message: string
   severity: 'error' | 'warning' | 'info'
   surface: number | null
+  /** The engine's stable code (docs/RESULTS.md §6), when it gives one. */
+  code?: string
+  /** The field the issue concerns, as a system index (0-based; shown from 1). */
+  field?: number | null
+}
+
+/** `field 2` / `field index 2` in an engine message → 2, the system index as
+ *  the engine writes it (its messages count fields from 0). */
+export function fieldIndexIn(message: string): number | null {
+  const words = message.toLowerCase().split(/[^\p{L}\p{N}]+/u)
+  for (let k = 0; k < words.length; k++) {
+    if (words[k] !== 'field') continue
+    for (const next of words.slice(k + 1, k + 3)) if (/^\d+$/.test(next)) return Number(next)
+  }
+  return null
 }
 
 /** Internal runs that are not panes. */
@@ -328,11 +346,16 @@ export const useWorkspace = create<WorkspaceState>()((set, get) => {
           if (key === VALIDATE) {
             const issues = (result.json.issues as JsonObject[] | undefined) ?? []
             set({
-              validationIssues: issues.map((i) => ({
-                message: String(i.message ?? ''),
-                severity: (i.severity as Issue['severity']) ?? 'warning',
-                surface: typeof i.surface === 'number' ? i.surface : null,
-              })),
+              validationIssues: issues.map((i) => {
+                const message = String(i.message ?? '')
+                return {
+                  message,
+                  severity: (i.severity as Issue['severity']) ?? 'warning',
+                  surface: typeof i.surface === 'number' ? i.surface : null,
+                  code: typeof i.code === 'string' ? i.code : '',
+                  field: typeof i.field === 'number' ? i.field : fieldIndexIn(message),
+                }
+              }),
             })
           }
         },

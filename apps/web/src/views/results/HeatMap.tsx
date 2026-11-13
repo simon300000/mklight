@@ -1,8 +1,9 @@
 // A square heat-map canvas with axes and an optional colour bar.
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { cssVar } from '@/lib/theme'
 import { sig } from '@/model/format'
 import { FONT, niceTicks, rgbCss, setupCanvas, useSize } from './common'
+import { Readout } from './Readout'
 
 type RGB = [number, number, number]
 
@@ -27,18 +28,23 @@ export interface HeatMapProps {
   frame?: boolean
 }
 
+/** The square plot area in CSS pixels. */
+function frameOf(W: number, H: number, bar: boolean) {
+  const ml = 48, mb = 34, mt = 8, mr = bar ? 72 : 12
+  const side = Math.floor(Math.min(W - ml - mr, H - mt - mb))
+  return { side, x0: ml + Math.max(0, Math.floor((W - ml - mr - side) / 2)), y0: mt }
+}
+
 export function HeatMap(p: HeatMapProps) {
   const [box, size] = useSize<HTMLDivElement>()
   const ref = useRef<HTMLCanvasElement>(null)
+  const [hover, setHover] = useState<{ ix: number; iy: number; X: number; Y: number } | null>(null)
   useEffect(() => {
     const W = size.w, H = size.h
     const ctx = setupCanvas(ref.current, W, H)
     if (!ctx) return
-    const ml = 48, mb = 34, mt = 8, mr = p.colorBar ? 72 : 12
-    const side = Math.floor(Math.min(W - ml - mr, H - mt - mb))
+    const { side, x0, y0 } = frameOf(W, H, !!p.colorBar)
     if (side < 20 || p.nx < 1 || p.ny < 1) return
-    const x0 = ml + Math.max(0, Math.floor((W - ml - mr - side) / 2))
-    const y0 = mt
     const secondary = cssVar('--secondary') || '#888'
     const grid = cssVar('--grid') || 'rgba(128,128,128,0.25)'
 
@@ -128,9 +134,41 @@ export function HeatMap(p: HeatMapProps) {
       ctx.restore()
     }
   }, [p, size.w, size.h])
+
+  // Hover: the cell under the pointer.
+  const onMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    const b = e.currentTarget.getBoundingClientRect()
+    const X = e.clientX - b.left, Y = e.clientY - b.top
+    const { side, x0, y0 } = frameOf(size.w, size.h, !!p.colorBar)
+    const ix = Math.floor(((X - x0) / side) * p.nx), iy = Math.floor(((y0 + side - Y) / side) * p.ny)
+    setHover(side >= 20 && ix >= 0 && iy >= 0 && ix < p.nx && iy < p.ny ? { ix, iy, X, Y } : null)
+  }
+  let tip = null
+  if (hover) {
+    const v = p.data[hover.iy * p.nx + hover.ix]
+    const x = p.x[0] + ((hover.ix + 0.5) / p.nx) * (p.x[1] - p.x[0])
+    const y = p.y[0] + ((hover.iy + 0.5) / p.ny) * (p.y[1] - p.y[0])
+    const name = (l: string) => l.replace(/\s*\(.*\)$/, '')
+    tip = (
+      <Readout
+        x={hover.X}
+        y={hover.Y}
+        width={size.w}
+        title={`${name(p.xLabel)} ${sig(x, 3)}  ${name(p.yLabel)} ${sig(y, 3)}`}
+        rows={[{ label: p.colorBar?.label, value: Number.isFinite(v) ? sig(v, 4) : 'No value' }]}
+      />
+    )
+  }
   return (
-    <div ref={box} className="relative h-full w-full min-w-0 overflow-hidden">
+    <div
+      ref={box}
+      className="relative h-full w-full min-w-0 overflow-hidden"
+      onPointerMove={onMove}
+      onPointerDown={(e) => e.pointerType === 'touch' && onMove(e)}
+      onPointerLeave={(e) => e.pointerType !== 'touch' && setHover(null)}
+    >
       <canvas ref={ref} role="img" aria-label={p.label} className="absolute inset-0" />
+      {tip}
     </div>
   )
 }

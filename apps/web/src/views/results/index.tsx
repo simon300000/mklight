@@ -35,13 +35,15 @@ export function ResultView(props: {
   system: System
   settings?: JsonObject
   onSettingsChange?: (patch: JsonObject) => void
+  ui?: JsonObject
+  onUiChange?: (patch: JsonObject) => void
 }): JSX.Element {
   const { analysis, result, system } = props
   const j = isObj(result.json) ? result.json : {}
   const r = RENDERERS[analysis]
   if (r && (!r.accepts || r.accepts(j))) {
     const settings = props.settings ?? (isObj(result.runInfo.settings) ? result.runInfo.settings : {})
-    return <r.View analysis={analysis} result={result} system={system} settings={settings} onSettingsChange={props.onSettingsChange} />
+    return <r.View analysis={analysis} result={result} system={system} settings={settings} onSettingsChange={props.onSettingsChange} ui={props.ui} onUiChange={props.onUiChange} />
   }
   switch (analysis) {
     case 'spot_diagram':

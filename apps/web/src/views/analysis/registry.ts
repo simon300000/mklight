@@ -21,6 +21,10 @@ export interface RendererProps {
   /** Merges a patch into the pane's own settings (view controls such as the
    *  image simulation's source and field of view); absent in read-only use. */
   onSettingsChange?: (patch: JsonObject) => void
+  /** The pane's view-only state (`views[].ui`, never sent to the engine). */
+  ui?: JsonObject
+  /** Merges a patch into that state; a null value removes its key. */
+  onUiChange?: (patch: JsonObject) => void
 }
 
 export interface Renderer {

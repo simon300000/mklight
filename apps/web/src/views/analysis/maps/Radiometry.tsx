@@ -7,6 +7,8 @@ import type { AnalysisResult, Json, JsonObject } from '@/engine/types'
 import { Select } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { useDark } from '@/lib/theme'
+import { cn } from '@/lib/utils'
+import { useView } from '@/state/view'
 import { nf, sig } from '@/model/format'
 import { arr, buffer, isObj, nums, obj } from '@/views/results/common'
 import type { KeyNumber, RendererProps } from '../registry'
@@ -26,6 +28,14 @@ const short = (v: number | null, unit = '') => (v === null ? '—' : `${sig(v, 4
 const fixed2 = (v: number | null) => (v === null ? '—' : v.toFixed(2).replace(/^-/, '−'))
 
 // MARK: Ghost paths
+
+/** Selects a surface and shows it in the inspector (a ghost row's first
+ *  reflecting surface, as the macOS rows do on a click). */
+function selectSurface(i: number) {
+  const v = useView.getState()
+  v.select(i)
+  v.setPage('surface')
+}
 
 export function GhostPathsView(p: RendererProps) {
   const j = p.result.json
@@ -52,21 +62,33 @@ export function GhostPathsView(p: RendererProps) {
             </tr>
           </thead>
           <tbody>
-            {ghosts.map((g, k) => (
-              <tr key={k} className="border-t border-separator/60">
-                <td className="whitespace-nowrap py-[2px] pr-4">
-                  <span className="inline-flex items-center gap-1">
-                    {String(g.label ?? '') || nums(g.path).join('·')}
-                    {g.near_focus === true && <AlertTriangle className="size-3 text-warning" aria-label="near focus" />}
-                  </span>
-                </td>
-                <td className="px-2 text-right">{sci(defined(g.relative_irradiance))}</td>
-                <td className="px-2 text-right">{fixed2(defined(g.focus_from_sensor))}</td>
-                <td className="px-2 text-right">{fixed2(defined(g.spot_diameter))}</td>
-                <td className="px-2 text-right">{sci(defined(g.reflectance_product))}</td>
-                <td className="px-2 text-right">{fixed2(defined(g.image_height))}</td>
-              </tr>
-            ))}
+            {ghosts.map((g, k) => {
+              const first = nums(g.path)[0]
+              const target = Number.isInteger(first) ? first : null
+              const open = () => target !== null && selectSurface(target)
+              return (
+                <tr
+                  key={k}
+                  className={cn('border-t border-separator/60', target !== null && 'hover:bg-hover focus-visible:bg-hover')}
+                  title={target !== null ? `Select surface ${target}` : undefined}
+                  tabIndex={target !== null ? 0 : undefined}
+                  onClick={open}
+                  onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), open())}
+                >
+                  <td className="whitespace-nowrap py-[2px] pr-4">
+                    <span className="inline-flex items-center gap-1">
+                      {String(g.label ?? '') || nums(g.path).join('·')}
+                      {g.near_focus === true && <AlertTriangle className="size-3 text-warning" aria-label="near focus" />}
+                    </span>
+                  </td>
+                  <td className="px-2 text-right">{sci(defined(g.relative_irradiance))}</td>
+                  <td className="px-2 text-right">{fixed2(defined(g.focus_from_sensor))}</td>
+                  <td className="px-2 text-right">{fixed2(defined(g.spot_diameter))}</td>
+                  <td className="px-2 text-right">{sci(defined(g.reflectance_product))}</td>
+                  <td className="px-2 text-right">{fixed2(defined(g.image_height))}</td>
+                </tr>
+              )
+            })}
           </tbody>
         </table>
       </div>

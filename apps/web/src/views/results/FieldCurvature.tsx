@@ -50,9 +50,10 @@ export function FieldCurvatureView(props: { result: AnalysisResult; system: Syst
       const t = nums(c.tangential), s = nums(c.sagittal), d = nums(c.distortion_percent)
       fcMax = Math.max(fcMax, maxAbs(t), maxAbs(s))
       fcData.push(pick(t), pick(s))
-      fcSeries.push({ stroke: color, width: LINE, points: { show: false } }, { stroke: color, width: LINE, dash: DASH, points: { show: false } })
+      const wl = Number.isFinite(wls[Number(c.wavelength)]) ? `${sig(wls[Number(c.wavelength)], 4)} µm` : ''
+      fcSeries.push({ label: `${wl} T`.trim(), stroke: color, width: LINE, points: { show: false } }, { label: `${wl} S`.trim(), stroke: color, width: LINE, dash: DASH, points: { show: false } })
       dData.push(pick(d))
-      dSeries.push({ stroke: color, width: LINE, points: { show: false } })
+      dSeries.push({ label: wl || undefined, stroke: color, width: LINE, points: { show: false } })
     }
     const dMax = maxDistortion(j)
     return {

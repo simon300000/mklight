@@ -255,9 +255,9 @@ function RelativeIllumination({ result, system }: RendererProps) {
   const ri = nums(j.relative_illumination)
   const vig = nums(j.vignetting_fraction)
   const cos4 = nums(j.cos4_object)
-  const plot: XYSeries[] = [{ x: field, y: ri, color: seriesColor(0, dark) }]
-  if (vig.length) plot.push({ x: field, y: vig, color: seriesColor(1, dark), dash: true })
-  if (cos4.some(Number.isFinite)) plot.push({ x: field, y: cos4, color: secondaryColor(), width: 1 })
+  const plot: XYSeries[] = [{ x: field, y: ri, color: seriesColor(0, dark), label: 'RI' }]
+  if (vig.length) plot.push({ x: field, y: vig, color: seriesColor(1, dark), dash: true, label: 'Vignetted' })
+  if (cos4.some(Number.isFinite)) plot.push({ x: field, y: cos4, color: secondaryColor(), width: 1, label: 'cos⁴' })
   return (
     <PlotPane
       legend={

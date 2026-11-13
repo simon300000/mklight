@@ -15,7 +15,7 @@ import {
   CompactSelection,
 } from '@glideapps/glide-data-grid'
 import '@glideapps/glide-data-grid/dist/index.css'
-import { Minus, Plus, Table2 } from 'lucide-react'
+import { Ellipsis, Minus, Plus, Table2 } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import type { JsonObject } from '@/engine/types'
@@ -53,13 +53,18 @@ import {
   type System,
 } from '@/model/system'
 import { CYLINDER_CHOICES, GROUPS, SURFACE_TYPES, cylinderAxis, tableTypeTitle, typeChoice } from '@/model/surfaceTypes'
-import { deleteSurfaceAt, insertSurfaceAt, makeStop, setParamVariable, useValueFocus } from '@/state/commands'
+import { command, deleteSurfaceAt, insertSurfaceAt, makeStop, setParamVariable, useValueFocus } from '@/state/commands'
+import { LENS_DATA } from '@/state/arrangement'
 import { useDocument } from '@/state/document'
 import { useView } from '@/state/view'
 import { allIssues, LAYOUT, useWorkspace, type Issue } from '@/state/workspace'
 import { cssVar, useDark } from '@/lib/theme'
 import { cn, shortcutLabel } from '@/lib/utils'
 import { PanelHeader } from './PanelHeader'
+import { usePortalContainer } from './panels/context'
+import { PanelMenuItems } from './panels/PanelArea'
+import { useGlidePortal } from './lens/portal'
+import { useColumnWidths } from './lens/columnWidths'
 import { applyTypeChoice } from './inspector/SurfacePage'
 
 type ColumnId = 'surf' | 'type' | 'comment' | 'radius' | 'thickness' | 'material' | 'semi' | 'conic'
@@ -248,6 +253,8 @@ const LensCellEditor: ProvideEditorComponent<LensCell> = ({ value, onChange, onF
   const d = value.data
   const refs = useRef<(HTMLInputElement | null)[]>([])
   const materials = useWorkspace((s) => s.materials)
+  // The completions open in the window the table is in.
+  const portalTo = usePortalContainer() ?? document.body
   const [hi, setHi] = useState(0)
   const [focused, setFocused] = useState(0)
   const started = useRef(false)
@@ -340,7 +347,7 @@ const LensCellEditor: ProvideEditorComponent<LensCell> = ({ value, onChange, onF
             </li>
           ))}
         </ul>,
-        document.body,
+        portalTo,
         )
       )}
     </div>
@@ -618,10 +625,15 @@ export function LensData() {
 
   const rows = system?.surfaces?.length ?? 0
   const wideMaterial = !!system?.surfaces?.some((s) => offsetCompactText(offsetOf(s.material)) !== '')
+  const [widths, setWidth, resetWidths] = useColumnWidths()
   const columns: GridColumn[] = useMemo(
-    () => COLUMNS.map((c) => ({ id: c.id, title: c.title, width: c.id === 'material' && wideMaterial ? MATERIAL_WIDE : c.width })),
-    [wideMaterial],
+    () => COLUMNS.map((c) => ({ id: c.id, title: c.title, width: widths[c.id] ?? (c.id === 'material' && wideMaterial ? MATERIAL_WIDE : c.width) })),
+    [wideMaterial, widths],
   )
+  // Glide opens its cell editor in `#portal` of the main document; in a
+  // separate window it must open in that window's document.
+  const portalContainer = usePortalContainer()
+  useGlidePortal(portalContainer ?? null)
 
   const getCellContent = useCallback(([col, row]: Item): GridCell => (ctx ? cellFor(ctx, col, row) : { kind: GridCellKind.Loading, allowOverlay: false }), [ctx])
 
@@ -744,16 +756,48 @@ export function LensData() {
   return (
     <section className="flex h-full min-h-0 flex-col bg-content" aria-label="Lens Data" data-testid="lens-data">
       <PanelHeader icon={<Table2 />} title="Lens Data" caption={caption}>
-        <Tip label={`Insert Surface (${shortcutLabel('shift+mod+i')})`}>
+        <Tip label={`Insert Surface (${shortcutLabel(command('insertBefore').shortcut!)})`}>
           <Button variant="ghost" size="iconSm" aria-label="Insert Surface" onClick={() => insertSurfaceAt(Math.max(selection, 1))}>
             <Plus />
           </Button>
         </Tip>
-        <Tip label={`Delete Surface (${shortcutLabel('mod+Backspace')})`}>
+        <Tip label={`Delete Surface (${shortcutLabel(command('delete').shortcut!)})`}>
           <Button variant="ghost" size="iconSm" aria-label="Delete Surface" disabled={!canDelete(system, selection)} onClick={() => deleteSurfaceAt(selection)}>
             <Minus />
           </Button>
         </Tip>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button variant="ghost" size="iconSm" aria-label="More">
+              <Ellipsis />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="min-w-[14rem]">
+            <DropdownMenuLabel>Lens Data</DropdownMenuLabel>
+            <DropdownMenuItem onSelect={() => insertSurfaceAt(Math.max(selection, 1))} shortcut={command('insertBefore').shortcut}>
+              Insert Surface Before
+            </DropdownMenuItem>
+            <DropdownMenuItem onSelect={() => insertSurfaceAt(Math.min(selection + 1, imageIndex(system)))} shortcut={command('insertAfter').shortcut}>
+              Insert Surface After
+            </DropdownMenuItem>
+            <DropdownMenuItem onSelect={() => deleteSurfaceAt(selection)} disabled={!canDelete(system, selection)} shortcut={command('delete').shortcut}>
+              Delete Surface
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              onSelect={() => makeStop(selection)}
+              disabled={selection === 0 || selection === imageIndex(system) || selection === system.stop}
+              shortcut={command('stop').shortcut}
+            >
+              Make Aperture Stop
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem onSelect={resetWidths} disabled={Object.keys(widths).length === 0}>
+              Reset Column Widths
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
+            <PanelMenuItems panel={LENS_DATA} Item={DropdownMenuItem} Separator={DropdownMenuSeparator} />
+          </DropdownMenuContent>
+        </DropdownMenu>
       </PanelHeader>
       <div ref={box} className="relative min-h-0 flex-1" title={hoverTitle} onContextMenu={(e) => e.preventDefault()}>
         <DataEditor
@@ -762,6 +806,9 @@ export function LensData() {
           height={size.h}
           theme={theme}
           columns={columns}
+          onColumnResize={(c, w) => setWidth(c.id as ColumnId, w)}
+          minColumnWidth={40}
+          maxColumnWidth={400}
           rows={rows}
           rowHeight={24}
           headerHeight={26}
@@ -876,17 +923,17 @@ function RowMenu({ state, onClose }: { state: { row: number; x: number; y: numbe
       <DropdownMenuContent align="start" className="min-w-[14rem]" aria-label={state.context ? 'Surface' : 'Surface type'}>
         {state.context ? (
           <>
-            <DropdownMenuItem onSelect={() => insertSurfaceAt(Math.max(state.row, 1))} shortcut="shift+mod+i">
+            <DropdownMenuItem onSelect={() => insertSurfaceAt(Math.max(state.row, 1))} shortcut={command('insertBefore').shortcut}>
               Insert Surface Before
             </DropdownMenuItem>
-            <DropdownMenuItem onSelect={() => insertSurfaceAt(Math.min(state.row + 1, img))} shortcut="alt+mod+i">
+            <DropdownMenuItem onSelect={() => insertSurfaceAt(Math.min(state.row + 1, img))} shortcut={command('insertAfter').shortcut}>
               Insert Surface After
             </DropdownMenuItem>
-            <DropdownMenuItem onSelect={() => deleteSurfaceAt(state.row)} disabled={!canDelete(system, state.row)} shortcut="mod+Backspace">
+            <DropdownMenuItem onSelect={() => deleteSurfaceAt(state.row)} disabled={!canDelete(system, state.row)} shortcut={command('delete').shortcut}>
               Delete Surface
             </DropdownMenuItem>
             <DropdownMenuSeparator />
-            <DropdownMenuItem onSelect={() => makeStop(state.row)} disabled={fixedEnd || state.row === system.stop} shortcut="shift+mod+t">
+            <DropdownMenuItem onSelect={() => makeStop(state.row)} disabled={fixedEnd || state.row === system.stop} shortcut={command('stop').shortcut}>
               Make Aperture Stop
             </DropdownMenuItem>
             <DropdownMenuSub>

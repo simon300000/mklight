@@ -1,16 +1,24 @@
 import { AlertTriangle, CheckCircle2, Info, XOctagon } from 'lucide-react'
 import { useView } from '@/state/view'
-import { allIssues, useWorkspace, type Issue } from '@/state/workspace'
+import { allIssues, fieldIndexIn, useWorkspace, type Issue } from '@/state/workspace'
 
 const RANK = { error: 0, warning: 1, info: 2 } as const
 
-/** Field index of an issue that names one (`field 2: …`), 0-based. */
-function fieldOf(i: Issue): number | null {
-  const f = (i as Issue & { field?: number | null }).field
-  if (typeof f === 'number') return f
-  const m = /\bfield\s+(\d+)/i.exec(i.message)
-  // Messages count fields from 1.
-  return m ? Number(m[1]) - 1 : null
+/** Field index of an issue that names one (`field 2: …`), 0-based as the
+ *  engine writes it. */
+export function fieldOf(i: Issue): number | null {
+  if (typeof i.field === 'number') return i.field
+  return fieldIndexIn(i.message)
+}
+
+/** The message with its field numbered from 1, as everywhere in the app
+ *  (the engine's `field 0: …` reads `Field 1: …`). */
+export function issueText(i: Issue): string {
+  const f = fieldOf(i)
+  if (f == null) return i.message
+  return i.message.replace(/\b(field)(\s+(?:index\s+)?)(\d+)/i, (_m, w: string, sp: string, n: string) =>
+    Number(n) === f ? `${w[0].toUpperCase()}${w.slice(1)}${sp.replace(/index\s+/i, '')}${f + 1}` : _m,
+  )
 }
 
 /** The design's validation issues, errors first; choosing one selects the
@@ -35,7 +43,7 @@ export function IssuesList() {
       setPage('surface')
     } else if (f != null) setPage('system')
     else return
-    setView({ issuesOpen: false })
+    setView({ issuesOpen: false, inspectorVisible: true })
   }
   return (
     <div>
@@ -53,7 +61,7 @@ export function IssuesList() {
         <ul className="-mx-1 max-h-[50vh] space-y-0.5 overflow-y-auto" data-testid="issues-list">
           {issues.map((i, k) => {
             const f = fieldOf(i)
-            const target = i.surface != null ? `Select surface ${i.surface}` : f != null ? `Show the fields` : undefined
+            const target = i.surface != null ? `Select surface ${i.surface}` : f != null ? `Show field ${f + 1}` : undefined
             return (
               <li key={k}>
                 <button
@@ -71,9 +79,13 @@ export function IssuesList() {
                     <Info className="mt-[1px] size-3.5 shrink-0 text-secondary" aria-label="info" />
                   )}
                   <span className="min-w-0">
-                    <span className="block select-text text-label">{i.message}</span>
-                    {(i.surface != null || f != null) && (
-                      <span className="block text-[11px] text-secondary">{i.surface != null ? `Surface ${i.surface}` : `Field ${f! + 1}`}</span>
+                    <span className="block select-text text-label">{issueText(i)}</span>
+                    {(i.code || i.surface != null || f != null) && (
+                      <span className="flex gap-2 text-[11px] text-secondary">
+                        {i.code && <span className="font-mono">{i.code}</span>}
+                        {i.surface != null && <span>Surface {i.surface}</span>}
+                        {f != null && <span>Field {f + 1}</span>}
+                      </span>
                     )}
                   </span>
                 </button>

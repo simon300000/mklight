@@ -41,7 +41,7 @@ function FanPlot(props: { fans: Fan[]; xLabel: string; yLabel: string; range: nu
       cursor: calmCursor,
       scales: { x: { time: false, range: [-1, 1] }, y: { range: [-range, range] } },
       axes: [axis(props.xLabel, { size: 30 }), axis(props.yLabel, { size: 46 })],
-      series: [{}, ...fans.filter((f) => f.pupil.length).map((f) => ({ stroke: wlColor(wls, f.wavelength, dark), width: LINE, points: { show: false } }))],
+      series: [{}, ...fans.filter((f) => f.pupil.length).map((f) => ({ label: Number.isFinite(wls[f.wavelength]) ? `${sig(wls[f.wavelength], 4)} µm` : undefined, stroke: wlColor(wls, f.wavelength, dark), width: LINE, points: { show: false } }))],
     }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [fans, range, wls, dark, props.xLabel, props.yLabel],
