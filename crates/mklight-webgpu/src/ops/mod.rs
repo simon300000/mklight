@@ -213,6 +213,8 @@ fn resident_inputs(op: &ResidentOp) -> bool {
             | ResidentOp::Collectives(_)
             | ResidentOp::TraceUpload(_)
             | ResidentOp::Aiming(_)
+            | ResidentOp::Transforms(_)
+            | ResidentOp::Wave(_)
     )
 }
 

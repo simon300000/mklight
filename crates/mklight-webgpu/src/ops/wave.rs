@@ -37,7 +37,8 @@ use mklight_gpu::wave_ops::image_integrals::{self, ImageIntegral};
 use mklight_gpu::wave_ops::{Request, spec, spectral};
 
 use super::WebGpuOps;
-use super::transforms::{Builder, DeviceTable, Res, grid_1d};
+use super::resident::Mirrors;
+use super::transforms::{Builder, DeviceTable, Held, Res, grid_1d, word_range};
 use crate::device::*;
 
 const FOCUS: Kernel = Kernel::new("wave", "mkl_wave_focus");
@@ -121,7 +122,7 @@ pub fn run(
     ops: &mut WebGpuOps,
     _i: usize,
     op: &ResidentOp,
-    x: &mut Execution,
+    x: &Execution,
     ctl: &JobControl,
     stats: &mut JobStats,
 ) -> MkResult<Option<&'static str>> {
@@ -131,9 +132,11 @@ pub fn run(
     let gpu = ops.backend.gpu().clone();
     let mut d = Device {
         gpu: &gpu,
+        mirrors: &mut ops.mirrors,
         ctl,
         stats,
     };
+    let x: &Execution = x;
     match r {
         Request::FocusCorrelation { .. } => d.focus_correlation(r, x),
         Request::Focus { .. } => d.focus(r, x),
@@ -152,6 +155,7 @@ fn words<T: bytemuck::Pod>(p: &T) -> &[u32] {
 
 struct Device<'a> {
     gpu: &'a Arc<dyn Gpu>,
+    mirrors: &'a mut Mirrors,
     ctl: &'a JobControl,
     stats: &'a mut JobStats,
 }
@@ -163,22 +167,14 @@ impl Device<'_> {
         words.iter().all(|&w| (w as u64) * 4 <= max)
     }
 
-    fn submit(&mut self, mut bld: Builder<'_>, reads: Vec<(usize, &mut [u32])>) -> MkResult<()> {
-        let mut batch = bld.batch();
-        for (res, into) in reads {
-            batch.read(res, 0, into);
-        }
-        let b = self.gpu.run(batch)?;
+    fn submit(&mut self, mut bld: Builder<'_>) -> MkResult<()> {
+        let b = self.gpu.run(bld.batch())?;
         self.stats.device_seconds += b.device_seconds;
         self.stats.command_buffers += 1;
         Ok(())
     }
 
-    fn focus_correlation(
-        &mut self,
-        r: &Request,
-        x: &mut Execution,
-    ) -> MkResult<Option<&'static str>> {
+    fn focus_correlation(&mut self, r: &Request, x: &Execution) -> MkResult<Option<&'static str>> {
         let Request::FocusCorrelation {
             on_axis,
             pupil,
@@ -225,35 +221,32 @@ impl Device<'_> {
                 }
             }
         }
-        let zero = [0u32; 2];
         let tables = [
-            x.view(&pupil.amplitude),
-            x.view(&pupil.coverage),
-            x.view(&pupil.opd),
-            shifts.as_ref().map_or(&zero[..], |v| x.view(v)),
-        ]
-        .into_iter()
-        .map(|w| DeviceTable::new(self.gpu, w))
-        .collect::<MkResult<Vec<_>>>()?;
-        let stencils = x
-            .view(stencil)
-            .chunks(chunk * count * 5)
-            .map(|w| DeviceTable::new(self.gpu, w))
+            Held::new(self.gpu, self.mirrors, x, &pupil.amplitude)?,
+            Held::new(self.gpu, self.mirrors, x, &pupil.coverage)?,
+            Held::new(self.gpu, self.mirrors, x, &pupil.opd)?,
+            match shifts {
+                Some(v) => Held::new(self.gpu, self.mirrors, x, v)?,
+                None => Held::Table(DeviceTable::new(self.gpu, &[0u32; 2])?),
+            },
+        ];
+        let stencil_words = stencil.desc.len()? * stencil.desc.element.words();
+        let stencils = (0..stencil_words)
+            .step_by(chunk * count * 5)
+            .map(|w0| {
+                let len = (chunk * count * 5).min(stencil_words - w0);
+                Held::new(self.gpu, self.mirrors, x, &word_range(stencil, w0, len))
+            })
             .collect::<MkResult<Vec<_>>>()?;
-        let mut outs = vec![*output];
-        outs.extend(*phase_steps);
         let tile = (BLOCK_THREADS / blocks).max(1);
         let total = units.len();
-        x.with_outputs(&outs, |_, out| -> MkResult<()> {
-            let (first, rest) = out.split_at_mut(1);
-            let result = &mut *first[0];
-            let mut steps = rest.first_mut().map(|s| &mut **s);
+        {
             for (done, &(slice, z0, nz, f0, nf)) in units.iter().enumerate() {
                 self.ctl.check()?;
                 let mut bld = Builder::new(&**self.gpu);
                 let [amp, cov, opd, sh] =
-                    [0, 1, 2, 3].map(|k| bld.add(Res::Persistent(tables[k].key)));
-                let st = bld.add(Res::Persistent(stencils[slice].key));
+                    [0, 1, 2, 3].map(|k| tables[k].bind(&mut bld, self.mirrors, x));
+                let st = stencils[slice].bind(&mut bld, self.mirrors, x);
                 let phases = bld.add(Res::Scratch(nz * count * 2));
                 let mut p = base;
                 (p.first, p.count) = (z0 as u32, nz as u32);
@@ -280,8 +273,7 @@ impl Device<'_> {
                 } else {
                     amp
                 };
-                let mut reads = vec![];
-                let step_out = (f0 == 0 && steps.is_some()).then(|| {
+                let step_out = (f0 == 0 && phase_steps.is_some()).then(|| {
                     let partial = bld.add(Res::Scratch(nz * blocks));
                     let s = bld.add(Res::Scratch(nz));
                     let storage = [
@@ -332,20 +324,19 @@ impl Device<'_> {
                         [nt.div_ceil(64) as u32, 1, 1],
                     );
                 }
-                reads.push((result_res, &mut result[o0 * 2..(o0 + n_out) * 2]));
-                if let (Some(s), Some(dst)) = (step_out, steps.as_deref_mut()) {
-                    reads.push((s, &mut dst[z0..z0 + nz]));
+                bld.store(self.mirrors, x, result_res, 0, *output, o0 * 2, n_out * 2)?;
+                if let (Some(s), Some(dst)) = (step_out, phase_steps) {
+                    bld.store(self.mirrors, x, s, 0, *dst, z0, nz)?;
                 }
-                self.submit(bld, reads)?;
+                self.submit(bld)?;
                 self.ctl
                     .report((done + 1) as f64 / total as f64, "focus correlation");
             }
-            Ok(())
-        })?;
+        }
         Ok(Some("webgpu:focus-correlation"))
     }
 
-    fn focus(&mut self, r: &Request, x: &mut Execution) -> MkResult<Option<&'static str>> {
+    fn focus(&mut self, r: &Request, x: &Execution) -> MkResult<Option<&'static str>> {
         let Request::Focus {
             pupil,
             shifts,
@@ -365,19 +356,14 @@ impl Device<'_> {
         }
         let max_binding = self.gpu.summary().max_storage_buffer_binding_size as usize;
         let per = (max_binding / (count * 8)).clamp(1, planes.max(1));
-        let mut outs = vec![*output];
-        outs.extend(*phase_steps);
-        x.with_outputs(&outs, |x, out| -> MkResult<()> {
-            let (first, rest) = out.split_at_mut(1);
-            let result = &mut *first[0];
-            let mut steps = rest.first_mut().map(|s| &mut **s);
+        {
             for z0 in (0..planes).step_by(per) {
                 self.ctl.check()?;
                 let nz = per.min(planes - z0);
                 let mut bld = Builder::new(&**self.gpu);
-                let cov = bld.add(Res::Upload(x.view(&pupil.coverage)));
-                let opd = bld.add(Res::Upload(x.view(&pupil.opd)));
-                let sh = bld.add(Res::Upload(x.view(shifts)));
+                let cov = bld.load(self.mirrors, x, &pupil.coverage);
+                let opd = bld.load(self.mirrors, x, &pupil.opd);
+                let sh = bld.load(self.mirrors, x, shifts);
                 let phases = bld.add(Res::Scratch(nz * count * 2));
                 let mut p = base;
                 (p.first, p.count) = (z0 as u32, nz as u32);
@@ -392,8 +378,16 @@ impl Device<'_> {
                     ],
                     grid_1d(nz * count),
                 );
-                let mut reads = vec![(phases, &mut result[z0 * count * 2..(z0 + nz) * count * 2])];
-                if let Some(dst) = steps.as_deref_mut() {
+                bld.store(
+                    self.mirrors,
+                    x,
+                    phases,
+                    0,
+                    *output,
+                    z0 * count * 2,
+                    nz * count * 2,
+                )?;
+                if let Some(dst) = phase_steps {
                     let partial = bld.add(Res::Scratch(nz * blocks));
                     let s = bld.add(Res::Scratch(nz));
                     let storage = [
@@ -409,17 +403,16 @@ impl Device<'_> {
                         &storage,
                         [nz.div_ceil(64) as u32, 1, 1],
                     );
-                    reads.push((s, &mut dst[z0..z0 + nz]));
+                    bld.store(self.mirrors, x, s, 0, *dst, z0, nz)?;
                 }
-                self.submit(bld, reads)?;
+                self.submit(bld)?;
                 self.ctl.report((z0 + nz) as f64 / planes as f64, "focus");
             }
-            Ok(())
-        })?;
+        }
         Ok(Some("webgpu:focus"))
     }
 
-    fn prepare(&mut self, r: &Request, x: &mut Execution) -> MkResult<Option<&'static str>> {
+    fn prepare(&mut self, r: &Request, x: &Execution) -> MkResult<Option<&'static str>> {
         let Request::Prepare {
             pupil,
             field,
@@ -438,11 +431,11 @@ impl Device<'_> {
             return Ok(None);
         }
         self.ctl.check()?;
-        x.with_outputs(&[*field, *moments], |x, out| -> MkResult<()> {
+        {
             let mut bld = Builder::new(&**self.gpu);
-            let amp = bld.add(Res::Upload(x.view(&pupil.amplitude)));
-            let cov = bld.add(Res::Upload(x.view(&pupil.coverage)));
-            let opd = bld.add(Res::Upload(x.view(&pupil.opd)));
+            let amp = bld.load(self.mirrors, x, &pupil.amplitude);
+            let cov = bld.load(self.mirrors, x, &pupil.coverage);
+            let opd = bld.load(self.mirrors, x, &pupil.opd);
             let f = bld.add(Res::Scratch(field_words));
             let m = bld.add(Res::Scratch(3 * count));
             bld.pass(
@@ -457,14 +450,16 @@ impl Device<'_> {
                 ],
                 grid_1d(side * side),
             );
-            let (a, b) = out.split_at_mut(1);
-            self.submit(bld, vec![(f, &mut *a[0]), (m, &mut *b[0])])
-        })?;
+            let moment_words = x.words(*moments).len();
+            bld.store(self.mirrors, x, f, 0, *field, 0, field_words)?;
+            bld.store(self.mirrors, x, m, 0, *moments, 0, moment_words)?;
+            self.submit(bld)?;
+        }
         self.ctl.report(1.0, "wave");
         Ok(Some("webgpu:wave-prepare"))
     }
 
-    fn intensity(&mut self, r: &Request, x: &mut Execution) -> MkResult<Option<&'static str>> {
+    fn intensity(&mut self, r: &Request, x: &Execution) -> MkResult<Option<&'static str>> {
         let Request::Intensity {
             field,
             sums,
@@ -481,10 +476,10 @@ impl Device<'_> {
             return Ok(None);
         }
         self.ctl.check()?;
-        x.with_outputs(&[*output], |x, out| -> MkResult<()> {
+        {
             let mut bld = Builder::new(&**self.gpu);
-            let f = bld.add(Res::Upload(x.view(field)));
-            let s = bld.add(Res::Upload(x.view(sums)));
+            let f = bld.load(self.mirrors, x, field);
+            let s = bld.load(self.mirrors, x, sums);
             let o = bld.add(Res::Scratch(size * size));
             bld.pass(
                 INTENSITY,
@@ -492,13 +487,14 @@ impl Device<'_> {
                 &[(f, Access::Read), (s, Access::Read), (o, Access::ReadWrite)],
                 grid_1d(size * size),
             );
-            self.submit(bld, vec![(o, &mut *out[0])])
-        })?;
+            bld.store(self.mirrors, x, o, 0, *output, 0, x.words(*output).len())?;
+            self.submit(bld)?;
+        }
         self.ctl.report(1.0, "wave");
         Ok(Some("webgpu:wave-intensity"))
     }
 
-    fn line_spread(&mut self, r: &Request, x: &mut Execution) -> MkResult<Option<&'static str>> {
+    fn line_spread(&mut self, r: &Request, x: &Execution) -> MkResult<Option<&'static str>> {
         let Request::LineSpread { image, output, .. } = r else {
             unreachable!()
         };
@@ -508,9 +504,9 @@ impl Device<'_> {
             return Ok(None);
         }
         self.ctl.check()?;
-        x.with_outputs(&[*output], |x, out| -> MkResult<()> {
+        {
             let mut bld = Builder::new(&**self.gpu);
-            let a = bld.add(Res::Upload(x.view(image)));
+            let a = bld.load(self.mirrors, x, image);
             let o = bld.add(Res::Scratch(2 * n));
             bld.pass(
                 LSF,
@@ -518,8 +514,9 @@ impl Device<'_> {
                 &[(a, Access::Read), (o, Access::ReadWrite)],
                 [(2 * n).div_ceil(64) as u32, 1, 1],
             );
-            self.submit(bld, vec![(o, &mut *out[0])])
-        })?;
+            bld.store(self.mirrors, x, o, 0, *output, 0, x.words(*output).len())?;
+            self.submit(bld)?;
+        }
         self.ctl.report(1.0, "wave");
         Ok(Some("webgpu:line-spread"))
     }
@@ -527,7 +524,7 @@ impl Device<'_> {
     fn spectral(
         &mut self,
         r: &spectral::Spectral,
-        x: &mut Execution,
+        x: &Execution,
     ) -> MkResult<Option<&'static str>> {
         let p = spectral::params(r);
         let width = if p.complex != 0 { 2 } else { 1 };
@@ -537,16 +534,36 @@ impl Device<'_> {
         }
         self.ctl.check()?;
         // The inputs concatenated: up to 16 of them exceed the storage
-        // bindings of a pass.
-        let mut inputs = Vec::with_capacity(len * r.inputs.len());
-        for v in &r.inputs {
-            inputs.extend_from_slice(x.view(v));
+        // bindings of a pass. Host inputs are joined on the host; with any
+        // input on the device, the pieces are copied into one device buffer
+        // first.
+        let mut inputs = vec![];
+        let mut joined = None;
+        if r.inputs.iter().any(|v| self.mirrors.on_device(v.buffer)) {
+            let t = DeviceTable::allocated(self.gpu, len * r.inputs.len())?;
+            let mut batch = Batch::default();
+            for (k, v) in r.inputs.iter().enumerate() {
+                let res = self.mirrors.load(&mut batch, x, v);
+                batch.copy(res, 0, t.key, k * len, len);
+            }
+            let b = self.gpu.run(batch)?;
+            self.stats.device_seconds += b.device_seconds;
+            self.stats.command_buffers += 1;
+            joined = Some(t);
+        } else {
+            inputs.reserve(len * r.inputs.len());
+            for v in &r.inputs {
+                inputs.extend_from_slice(x.view(v));
+            }
         }
-        x.with_outputs(&[r.output], |x, out| -> MkResult<()> {
+        {
             let mut bld = Builder::new(&**self.gpu);
-            let a = bld.add(Res::Upload(&inputs));
+            let a = match &joined {
+                Some(t) => bld.add(Res::Persistent(t.key)),
+                None => bld.add(Res::Upload(&inputs)),
+            };
             let f = match &r.frequencies {
-                Some(v) => bld.add(Res::Upload(x.view(v))),
+                Some(v) => bld.load(self.mirrors, x, v),
                 None => a,
             };
             let o = bld.add(Res::Scratch(len));
@@ -556,8 +573,9 @@ impl Device<'_> {
                 &[(a, Access::Read), (f, Access::Read), (o, Access::ReadWrite)],
                 grid_1d(p.count as usize),
             );
-            self.submit(bld, vec![(o, &mut *out[0])])
-        })?;
+            bld.store(self.mirrors, x, o, 0, r.output, 0, len)?;
+            self.submit(bld)?;
+        }
         self.ctl.report(1.0, "spectral");
         Ok(Some("webgpu:spectral"))
     }
@@ -565,7 +583,7 @@ impl Device<'_> {
     fn image_integral(
         &mut self,
         r: &ImageIntegral,
-        x: &mut Execution,
+        x: &Execution,
     ) -> MkResult<Option<&'static str>> {
         let mut p = image_integrals::params(r);
         let count = (p.n * p.n) as usize;
@@ -576,34 +594,32 @@ impl Device<'_> {
         self.ctl.check()?;
         match r {
             ImageIntegral::Metrics { input, output } => {
-                x.with_outputs(&[*output], |x, out| -> MkResult<()> {
-                    let mut bld = Builder::new(&**self.gpu);
-                    let a = bld.add(Res::Upload(x.view(input)));
-                    let part = bld.add(Res::Scratch(blocks * 10));
-                    let o = bld.add(Res::Scratch(10));
-                    let storage = [
-                        (a, Access::Read),
-                        (part, Access::ReadWrite),
-                        (o, Access::ReadWrite),
-                    ];
-                    bld.pass(METRICS, words(&p), &storage, grid_1d(blocks));
-                    bld.pass(METRICS_FINISH, words(&p), &storage, [1, 1, 1]);
-                    self.submit(bld, vec![(o, &mut *out[0])])
-                })?;
+                let mut bld = Builder::new(&**self.gpu);
+                let a = bld.load(self.mirrors, x, input);
+                let part = bld.add(Res::Scratch(blocks * 10));
+                let o = bld.add(Res::Scratch(10));
+                let storage = [
+                    (a, Access::Read),
+                    (part, Access::ReadWrite),
+                    (o, Access::ReadWrite),
+                ];
+                bld.pass(METRICS, words(&p), &storage, grid_1d(blocks));
+                bld.pass(METRICS_FINISH, words(&p), &storage, [1, 1, 1]);
+                bld.store(self.mirrors, x, o, 0, *output, 0, 10)?;
+                self.submit(bld)?;
             }
             ImageIntegral::Complex { input, output, .. } => {
-                x.with_outputs(&[*output], |x, out| -> MkResult<()> {
-                    let mut bld = Builder::new(&**self.gpu);
-                    let a = bld.add(Res::Upload(x.view(input)));
-                    let o = bld.add(Res::Scratch(count * 2));
-                    bld.pass(
-                        IMAGE_COMPLEX,
-                        words(&p),
-                        &[(a, Access::Read), (o, Access::ReadWrite)],
-                        grid_1d(count),
-                    );
-                    self.submit(bld, vec![(o, &mut *out[0])])
-                })?;
+                let mut bld = Builder::new(&**self.gpu);
+                let a = bld.load(self.mirrors, x, input);
+                let o = bld.add(Res::Scratch(count * 2));
+                bld.pass(
+                    IMAGE_COMPLEX,
+                    words(&p),
+                    &[(a, Access::Read), (o, Access::ReadWrite)],
+                    grid_1d(count),
+                );
+                bld.store(self.mirrors, x, o, 0, *output, 0, count * 2)?;
+                self.submit(bld)?;
             }
             ImageIntegral::Query {
                 input,
@@ -616,15 +632,15 @@ impl Device<'_> {
                 // (bounded block sums).
                 let per_batch = (limits::batch_terms() / count.max(1)).clamp(1, nq.max(1));
                 let tile = (BLOCK_THREADS / blocks.max(1)).max(1);
-                x.with_outputs(&[*output], |x, out| -> MkResult<()> {
-                    let input = DeviceTable::new(self.gpu, x.view(input))?;
-                    let queries = DeviceTable::new(self.gpu, x.view(queries))?;
+                {
+                    let input = Held::new(self.gpu, self.mirrors, x, input)?;
+                    let queries = Held::new(self.gpu, self.mirrors, x, queries)?;
                     for q0 in (0..nq).step_by(per_batch) {
                         self.ctl.check()?;
                         let nb = per_batch.min(nq - q0);
                         let mut bld = Builder::new(&**self.gpu);
-                        let a = bld.add(Res::Persistent(input.key));
-                        let q = bld.add(Res::Persistent(queries.key));
+                        let a = input.bind(&mut bld, self.mirrors, x);
+                        let q = queries.bind(&mut bld, self.mirrors, x);
                         let acc = bld.add(Res::Scratch(tile.min(nb) * blocks * 4));
                         let o = bld.add(Res::Scratch(nq * 2));
                         for t0 in (0..nb).step_by(tile) {
@@ -650,14 +666,12 @@ impl Device<'_> {
                                 [p.count.div_ceil(64), 1, 1],
                             );
                         }
-                        let mut part = vec![0u32; nq * 2];
-                        self.submit(bld, vec![(o, &mut part[..])])?;
-                        out[0][q0 * 2..(q0 + nb) * 2].copy_from_slice(&part[q0 * 2..(q0 + nb) * 2]);
+                        bld.store(self.mirrors, x, o, q0 * 2, *output, q0 * 2, nb * 2)?;
+                        self.submit(bld)?;
                         self.ctl
                             .report((q0 + nb) as f64 / nq as f64, "image integral");
                     }
-                    Ok(())
-                })?;
+                }
             }
         }
         self.ctl.report(1.0, "image integral");
