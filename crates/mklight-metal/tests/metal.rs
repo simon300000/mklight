@@ -844,6 +844,7 @@ fn async_submission_and_unsupported_jobs() {
             reference_wavelength_um: 0.55,
             layers: vec![],
             mirror_substrate: None,
+            substrate: Default::default(),
         },
     );
     sys.surfaces[1].coating = Some("AR".into());

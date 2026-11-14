@@ -166,6 +166,12 @@ import Testing
         // Signed columns: no "−0.0000", zero keeps the sign's place.
         #expect(Fmt.length(-1e-7) == "0.00 µm" && Fmt.length(-0.02) == "-20.00 µm")
         #expect(Fmt.signed(-0.00001) == "\u{2007}0.0000" && Fmt.signed(0.0123) == "+0.0123" && Fmt.signed(-2) == "-2.0000")
+        // Wave results of an afocal image space are angular (`units`).
+        let afocal = ImageUnits(.object(["units": .object(["afocal": .bool(true)])]))
+        #expect(afocal.afocal && afocal.frequency == "cycles/mrad" && afocal.focusAxis == "Vergence (mD)")
+        #expect(afocal.barLabel(0.05) == "50 µrad" && afocal.length(0.02) == "20.00 µrad")
+        let focal = ImageUnits(.object([:]))
+        #expect(!focal.afocal && focal.frequency == "cycles/mm" && focal.barLabel(0.05) == Nice.lengthLabel(0.05))
         // Typed numbers accept a decimal comma too.
         #expect(LensValueParser.number("1,5") == 1.5)
         #expect(LensValueParser.number("−2,25") == -2.25)

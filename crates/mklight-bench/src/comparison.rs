@@ -1158,6 +1158,9 @@ pub const REFERENCE_ONLY: &[(&str, &[Rule])] = &[
     (
         "wavefront_map",
         &[
+            // Afocal image spaces only.
+            r("maps[].exit_pupil.beam_radius_mm", Position),
+            r("maps[].exit_pupil.field_angle_deg[]", Angle),
             r("maps[].exit_pupil.chief_direction[]", Direction),
             r("maps[].exit_pupil.chief_point_mm[]", Position),
             r("maps[].exit_pupil.clear_area", Generic),

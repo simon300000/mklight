@@ -494,21 +494,35 @@ fn ray_groups_bilateral_equals_mirrored_full_pupil() {
 }
 
 /// `Σ w r²` of the generated default merit and the mean squared RMS of the
-/// aggregate operand over the same (field, λ) set agree, for the wavefront
-/// about the centroid (piston and tilt removed) and about the chief ray
-/// (piston removed).
+/// aggregate operand over the same (field, λ) set agree: for the spot about
+/// each wavelength's centroid and about the white-light centroid (the
+/// default), for the wavefront about the centroid (piston and tilt removed)
+/// and about the chief ray (piston removed).
 #[test]
 fn default_merit_equals_mean_squared_rms() {
+    use mklight_optim::merit::default::DefaultCriterion;
     let sys = samples::cooke_triplet();
     let reg = OperandRegistry::builtin();
-    for (spot, wf_ref) in [
-        (true, WavefrontReference::Centroid),
-        (false, WavefrontReference::Centroid),
-        (false, WavefrontReference::Chief),
+    assert_eq!(
+        DefaultCriterion::default(),
+        DefaultCriterion::RmsSpot {
+            reference: SpotReference::Centroid,
+            scope: CentroidScope::Polychromatic
+        }
+    );
+    let mut merits = Vec::new();
+    for (spot, scope, wf_ref) in [
+        (true, CentroidScope::Monochromatic, WavefrontReference::Centroid),
+        (true, CentroidScope::Polychromatic, WavefrontReference::Centroid),
+        (false, CentroidScope::Monochromatic, WavefrontReference::Centroid),
+        (false, CentroidScope::Monochromatic, WavefrontReference::Chief),
     ] {
         let gen_ = DefaultMeritSpec {
             criterion: if spot {
-                mklight_optim::merit::default::DefaultCriterion::default()
+                DefaultCriterion::RmsSpot {
+                    reference: SpotReference::Centroid,
+                    scope,
+                }
             } else {
                 mklight_optim::merit::default::DefaultCriterion::Wavefront { reference: wf_ref }
             },
@@ -530,6 +544,7 @@ fn default_merit_equals_mean_squared_rms() {
         let e = evaluate_one(&p, &x0, &JobContext::new()).unwrap();
         assert_eq!(e.status, EvalStatus::Ok);
         let phi = merit(p.weights(), &e.residuals, e.status);
+        merits.push(phi);
         let sampling = PupilSampling {
             symmetry: PupilSymmetry::Bilateral,
             ..Default::default()
@@ -555,6 +570,24 @@ fn default_merit_equals_mean_squared_rms() {
                 ));
             }
         }
+        if scope == CentroidScope::Polychromatic {
+            // About the white-light centroid: the field mean of the squared
+            // polychromatic RMS spot radius (equal spectral weights).
+            let poly: Vec<Operand> = (0..3)
+                .map(|f| {
+                    let mut o = ops[3 * f].clone();
+                    o.wavelength = mklight_optim::merit::WavelengthSelector::All;
+                    o
+                })
+                .collect();
+            let v = eval(&sys, &poly);
+            let mean_sq = v.iter().map(|x| ok(x).powi(2)).sum::<f64>() / 3.0;
+            assert!(
+                (phi - mean_sq).abs() < 1e-12 * mean_sq,
+                "white light: {phi} vs {mean_sq}"
+            );
+            continue;
+        }
         let v = eval(&sys, &ops);
         let mean_sq = v.iter().map(|x| ok(x).powi(2)).sum::<f64>() / 9.0;
         assert!(
@@ -577,6 +610,9 @@ fn default_merit_equals_mean_squared_rms() {
             assert!((a * a - mean_sq).abs() < 1e-12 * mean_sq);
         }
     }
+    // The white-light centroid adds the lateral colour (each wavelength's
+    // centroid offset from the white-light one) to the per-wavelength spots.
+    assert!(merits[1] > merits[0], "{merits:?}");
 }
 
 #[test]

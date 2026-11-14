@@ -157,28 +157,15 @@ fn packet_paths_match_the_scalar_reference() {
     assert!(failures > 100, "{failures}");
 }
 
-/// A steep ray crossing a surface that bulges toward it twice: scalar and
-/// packet traces both take the crossing nearer the vertex (SURFACES.md §8,
-/// conic root choice), bitwise alike, next to ordinary rays.
+/// A steep ray crossing a surface that bulges toward it twice (first
+/// farther from the axis): with a fixed semi-diameter containing both
+/// crossings the trace takes the first along the ray, with an automatic one
+/// the crossing nearer the vertex (SURFACES.md §8, conic root choice).
+/// Scalar and packet traces agree bitwise, next to ordinary rays.
 #[test]
 fn steep_double_crossing_matches_in_packets() {
-    use mklight_core::{MaterialRef, SurfaceShape, Vec3};
+    use mklight_core::{MaterialRef, SemiDiameter, SurfaceShape, Vec3};
     use mklight_trace::Ray;
-    let sys = infinite_system(
-        10.0,
-        vec![
-            surf(1, SurfaceShape::Plane, 2.0, MaterialRef::Air),
-            surf(
-                2,
-                SurfaceShape::sphere(-20.0),
-                10.0,
-                MaterialRef::glass("N-BK7"),
-            ),
-        ],
-        3,
-    );
-    let t = tracer(sys);
-    let o = TraceOptions::unclipped();
     let steep = Vec3::new(0.0, 0.999, 0.05).normalized();
     // Exact crossings of the sphere |x − C| = 20, C = (0, 0, −18).
     let start = Vec3::new(0.0, -30.0, 0.0);
@@ -192,26 +179,163 @@ fn steep_double_crossing_matches_in_packets() {
     // The first crossing lies farther from the axis than the second.
     assert!(first.y < -5.0 && second.y > 3.0, "{first:?} {second:?}");
 
-    let starts = vec![
-        Ray::new(start, steep),
-        Ray::new(Vec3::new(0.0, 2.0, 0.0), Vec3::Z),
-        Ray::new(
-            Vec3::new(1.0, -3.0, 0.0),
-            Vec3::new(0.0, 0.1, 1.0).normalized(),
-        ),
+    for (sd, expected) in [
+        (SemiDiameter::Auto, second),
+        (SemiDiameter::Fixed { value: 8.0 }, first),
+        (SemiDiameter::Fixed { value: 4.5 }, second),
+    ] {
+        let mut sphere = surf(
+            2,
+            SurfaceShape::sphere(-20.0),
+            10.0,
+            MaterialRef::glass("N-BK7"),
+        );
+        sphere.semi_diameter = sd;
+        let sys = infinite_system(
+            10.0,
+            vec![surf(1, SurfaceShape::Plane, 2.0, MaterialRef::Air), sphere],
+            3,
+        );
+        let t = tracer(sys);
+        let o = TraceOptions::unclipped();
+        let starts = vec![
+            Ray::new(start, steep),
+            Ray::new(Vec3::new(0.0, 2.0, 0.0), Vec3::Z),
+            Ray::new(
+                Vec3::new(1.0, -3.0, 0.0),
+                Vec3::new(0.0, 0.1, 1.0).normalized(),
+            ),
+        ];
+        let wls = vec![0; starts.len()];
+        let scalar: Vec<_> = starts
+            .iter()
+            .map(|s| trace_ray_recorded(t.system(), s, 0, &o))
+            .collect();
+        assert!(
+            (scalar[0].1[2].point - expected).norm() < 1e-12,
+            "{sd:?}: {:?}",
+            scalar[0].1[2]
+        );
+        let mut records = vec![vec![]; starts.len()];
+        let traced = trace_rays_recorded(t.system(), &starts, &wls, &o, &mut records);
+        let packed: Vec<_> = traced.into_iter().zip(records).collect();
+        same(
+            &scalar,
+            &packed,
+            &format!("steep rays, {sd:?}: trace_rays_recorded"),
+        );
+        // Clipping does not change the choice: the hit inside the extent
+        // passes the aperture.
+        if matches!(sd, SemiDiameter::Fixed { .. }) {
+            let clipped = trace_ray_recorded(t.system(), &starts[0], 0, &TraceOptions::default());
+            assert_eq!(clipped.1[2].point, scalar[0].1[2].point, "{sd:?}");
+        }
+    }
+}
+
+/// A deep negative meniscus in front of the stop, a field out to 89° and
+/// real aiming (a fisheye-like front group), with fixed or automatic
+/// semi-diameters.
+fn steep_meniscus(fixed: bool, fields: &[f64]) -> OpticalSystem {
+    use mklight_core::{MaterialRef, SemiDiameter, SurfaceShape};
+    let glass = |n| MaterialRef::Constant { n };
+    let rows = [
+        (SurfaceShape::sphere(78.0), 2.5, glass(1.6), 31.7),
+        (SurfaceShape::sphere(15.9), 11.8, MaterialRef::Air, 15.85),
+        (SurfaceShape::sphere(22.2), 2.5, glass(1.6), 13.9),
+        (SurfaceShape::sphere(13.3), 7.5, MaterialRef::Air, 10.7),
+        (SurfaceShape::Plane, 3.0, MaterialRef::Air, 3.0),
+        (SurfaceShape::sphere(12.0), 4.0, glass(1.7), 6.0),
+        (SurfaceShape::sphere(-12.0), 15.0, MaterialRef::Air, 6.0),
     ];
-    let wls = vec![0; starts.len()];
-    let scalar: Vec<_> = starts
-        .iter()
-        .map(|s| trace_ray_recorded(t.system(), s, 0, &o))
+    let body = rows
+        .into_iter()
+        .enumerate()
+        .map(|(i, (shape, t, m, sd))| {
+            let mut s = surf(i as u64 + 1, shape, t, m);
+            if fixed {
+                s.semi_diameter = SemiDiameter::Fixed { value: sd };
+            }
+            s
+        })
         .collect();
-    assert!(
-        (scalar[0].1[2].point - second).norm() < 1e-12,
-        "{:?}",
-        scalar[0].1[2]
-    );
-    let mut records = vec![vec![]; starts.len()];
-    let traced = trace_rays_recorded(t.system(), &starts, &wls, &o, &mut records);
-    let packed: Vec<_> = traced.into_iter().zip(records).collect();
-    same(&scalar, &packed, "steep rays: trace_rays_recorded");
+    let mut s = infinite_system(1.0, body, 8);
+    s.stop = 5;
+    s.fields = angle_fields(fields);
+    s.ray_aiming = RayAiming::Real { tolerance: 1e-10 };
+    s
+}
+
+/// Light from an object at infinity starts on a reference plane through the
+/// first vertex, which a steep ray can cross between its two crossings of a
+/// deep front surface. Surface 1 then keeps the nearer-vertex rule (here
+/// also the first crossing along the line), not the crossing ahead of the
+/// reference point (SURFACES.md §8). Scalar and packets agree bitwise.
+#[test]
+fn steep_ray_from_infinity_takes_the_first_crossing() {
+    use mklight_core::Vec3;
+    use mklight_trace::Ray;
+    let theta = 89f64.to_radians();
+    let d = Vec3::new(0.0, theta.sin(), theta.cos());
+    let start = Vec3::new(0.0, -theta.cos(), theta.sin()) * 6.16;
+    // Crossings of the front sphere |x − (0, 0, 78)| = 78.
+    let m = start - Vec3::new(0.0, 0.0, 78.0);
+    let (b, c) = (m.dot(d), m.dot(m) - 78.0 * 78.0);
+    let (t1, t2) = (-b - (b * b - c).sqrt(), -b + (b * b - c).sqrt());
+    let (first, ahead) = (start + d * t1, start + d * t2);
+    let r = |p: Vec3| p.x.hypot(p.y);
+    // The reference point lies between them, both inside the 31.7 mm lens
+    // and on the vertex sheet (z below the centre).
+    assert!(t1 < 0.0 && t2 > 0.0, "{t1} {t2}");
+    assert!(r(first) < r(ahead) && r(ahead) < 31.7 && ahead.z < 78.0);
+    for fixed in [false, true] {
+        let t = tracer(steep_meniscus(fixed, &[0.0]));
+        for o in [TraceOptions::default(), TraceOptions::unclipped()] {
+            let rays = vec![Ray::new(start, d), Ray::new(Vec3::ZERO, Vec3::Z)];
+            let o = o.to_surface(1);
+            let (res, rec) = trace_ray_recorded(t.system(), &rays[0], 0, &o);
+            assert!(res.status.is_ok(), "{fixed}: {res:?}");
+            assert!(
+                (rec[1].point - first).norm() < 1e-9,
+                "{fixed}: {:?}",
+                rec[1]
+            );
+            let mut records = vec![vec![]; 2];
+            let packed = trace_rays_recorded(t.system(), &rays, &[0], &o, &mut records);
+            let scalar: Vec<_> = rays
+                .iter()
+                .map(|s| trace_ray_recorded(t.system(), s, 0, &o))
+                .collect();
+            let packed: Vec<_> = packed.into_iter().zip(records).collect();
+            same(&scalar, &packed, "steep ray from infinity");
+        }
+    }
+}
+
+/// With fixed semi-diameters the steep meniscus aims and traces every grid
+/// ray of an 89° field exactly as with automatic ones: the root choice
+/// keeps the aim map of the nearer-vertex rule there.
+#[test]
+fn fixed_extents_keep_the_steep_field_aim_map() {
+    let fields = [0.0, 45.0, 72.0, 89.0];
+    let pupil = PupilSampling::Grid { n: 21 }.points();
+    let run = |fixed: bool| {
+        let t = tracer(steep_meniscus(fixed, &fields));
+        let f = t.fields().to_vec();
+        let grid = Grid {
+            fields: &f,
+            wavelengths: &[0],
+            pupil: &pupil,
+        };
+        trace_grid(&t, &grid, &TraceOptions::unclipped())
+    };
+    let (auto, fixed) = (run(false), run(true));
+    let ok = auto.iter().filter(|r| r.status.is_ok()).count();
+    let steep = auto[3 * pupil.len()..]
+        .iter()
+        .filter(|r| r.status.is_ok())
+        .count();
+    eprintln!("ok {ok} of {}, 89°: {steep}", auto.len());
+    assert!(ok > auto.len() / 2 && steep > 0, "{ok} {steep}");
+    same(&auto, &fixed, "steep meniscus grid");
 }

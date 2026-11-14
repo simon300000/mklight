@@ -96,6 +96,8 @@ pub struct FieldPsf {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PsfResult {
     pub psfs: Vec<FieldPsf>,
+    /// Units of the image-space quantities ([`super::WaveUnits`]).
+    pub units: super::WaveUnits,
     pub run_info: RunInfo,
 }
 
@@ -440,6 +442,7 @@ pub fn psf_analysis_shared(
     }
     ctx.report(1.0, "PSF");
     Ok(PsfResult {
+        units: super::WaveUnits::of(tracer),
         psfs,
         run_info: run_info(timer, tracer, "psf", settings, warnings),
     })

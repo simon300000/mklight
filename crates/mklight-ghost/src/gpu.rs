@@ -1205,6 +1205,7 @@ fn prepare_coatings(
         n_in: 1.,
         n_out: 1.,
         mirror: false,
+        arrival: mklight_core::materials::coating::Arrival::Before,
     }];
     let ns = sys.num_surfaces();
     let mut coating_ids = vec![[0u32; 2]; nw * ns];
@@ -1231,6 +1232,9 @@ fn prepare_coatings(
                     n_in: n1,
                     n_out: if surface.is_mirror() { n1 } else { n2 },
                     mirror: surface.is_mirror(),
+                    arrival: mklight_core::materials::coating::Arrival::forward(
+                        direction == Direction::Forward,
+                    ),
                 });
             }
         }

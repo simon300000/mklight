@@ -76,9 +76,25 @@ import Testing
     @Test func rowsBecomeEngineOperands() throws {
         let c = context
         let curv = try #require(cooke.value(at: .curvature(surface: id(1))))
-        // 3 fringes at 632.8 nm over h = 8 mm: Δc = 3 λ / h².
+        // 3 fringes at 632.8 nm over h = 8 mm: Δc = 3 λ (1 + cos θ) / (2h²), sin θ = c·h
+        // (the engine's conversion of fringes of power); 3 λ / h² on a flat.
         let fr = try ToleranceRow(.radius, surface: id(1), minus: 3).engineLimits(in: c).get()
-        #expect(abs(fr.0 - 3 * 0.6328e-3 / 64) < 1e-15 && fr.0 == fr.1)
+        let cosTheta = (1 - curv * curv * 64).squareRoot()
+        #expect(abs(fr.0 - 3 * 0.6328e-3 * (1 + cosTheta) / 128) < 1e-15 && fr.0 == fr.1)
+        #expect(fr.0 < 3 * 0.6328e-3 / 64, "a curved surface needs less curvature change per fringe than a flat")
+        #expect(abs(ToleranceRow.curvaturePerFringe(0, semiDiameter: 8, wavelengthUm: 0.6328)! - 0.6328e-3 / 64) < 1e-18)
+        #expect(ToleranceRow.curvaturePerFringe(0.2, semiDiameter: 8, wavelengthUm: 0.6328) == nil, "rim beyond the sphere")
+        // Parabolic Monte Carlo draws round-trip as the engine's `parabolic`.
+        let para = try ToleranceRow(.decenterX, surface: id(3), minus: 0.02, distribution: .parabolic).operand(in: c).get()
+        #expect(para["distribution"] == .object(["type": .string("parabolic")]))
+        #expect(ToleranceDistribution(json: para["distribution"]) == .parabolic)
+        // A curvature tolerance written in fringes elsewhere (Python, CLI) reads back as a fringe row.
+        let fringeOperand: JSONValue = .object([
+            "param": .object(["param": .string("curvature"), "surface": .integer(Int64(id(1).rawValue))]), "minus": .number(2), "plus": .number(4),
+            "unit": .string("fringes"), "distribution": .object(["type": .string("parabolic")]),
+        ])
+        let readBack = try #require(ToleranceRow(operand: fringeOperand, system: cooke))
+        #expect(readBack.kind == .radius && readBack.unit == .fringes && readBack.minus == 2 && readBack.plus == 4 && readBack.distribution == .parabolic)
         // ΔR = 0.1 mm: c in [1/(R + 0.1), 1/(R − 0.1)].
         let r = 1 / curv
         let mm = try ToleranceRow(.radius, surface: id(1), minus: 0.1, unit: .radiusMM).engineLimits(in: c).get()
@@ -211,7 +227,8 @@ import Testing
         let (job, _) = t.jobSettings(in: c, merit: MeritSettings())
         #expect(job["irregularity_wavelength_um"]?.nf == 0.5461)
         let power = try #require(job["tolerances"]?.array?[1]["minus"]?.nf)
-        #expect(abs(power - 3 * 0.5461e-3 / 64) < 1e-15)
+        let c1 = try #require(cooke.value(at: .curvature(surface: id(1))))
+        #expect(abs(power - 3 * 0.5461e-3 * (1 + (1 - c1 * c1 * 64).squareRoot()) / 128) < 1e-15)
         let back = ToleranceSettings(section: t.section(context: c), system: cooke)
         #expect(back.testWavelengthUm == 0.5461 && back == t)
         // A foreign spec's irregularity operand reads back as a row.

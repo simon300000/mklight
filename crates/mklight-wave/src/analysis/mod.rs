@@ -80,6 +80,46 @@ pub use wavefront::{
 /// Backend recorded in `RunInfo` (the CPU f64 reference tracer).
 pub const BACKEND: &str = "cpu-f64";
 
+/// Units of a wave result's image-space quantities. In a focal image space
+/// they are lengths on the image surface; in an afocal one
+/// ([`SequentialTracer::afocal_image_space`]) the same fields hold angles
+/// (`crate::pupil`, "Afocal image spaces"): every image-plane coordinate,
+/// spacing, radius or position named `*_mm` is in **mrad** (and µm in
+/// µrad), every spatial frequency in **cycles/mrad**, and a focus shift
+/// is a vergence change in **millidioptres** (positive: the beam made more
+/// convergent). Settings given in those fields take the same units.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, serde::Deserialize)]
+pub struct WaveUnits {
+    /// The image space is afocal (plane OPD reference, angular units).
+    pub afocal: bool,
+    /// Unit of image-plane coordinates, spacings and radii: `"mm"` or
+    /// `"mrad"`.
+    pub position: String,
+    /// Unit of spatial frequencies: `"cycles/mm"` or `"cycles/mrad"`.
+    pub frequency: String,
+    /// Unit of focus shifts: `"mm"` (image-plane shift) or `"mD"` (vergence
+    /// change, millidioptres).
+    pub focus: String,
+}
+
+impl WaveUnits {
+    /// The units of `tracer`'s image space.
+    pub fn of(tracer: &SequentialTracer) -> Self {
+        let afocal = tracer.afocal_image_space();
+        let (position, frequency, focus) = if afocal {
+            ("mrad", "cycles/mrad", "mD")
+        } else {
+            ("mm", "cycles/mm", "mm")
+        };
+        WaveUnits {
+            afocal,
+            position: position.into(),
+            frequency: frequency.into(),
+            focus: focus.into(),
+        }
+    }
+}
+
 /// One wave analysis for registries: name, menu text and a JSON entry
 /// point (settings JSON in, result JSON out; missing settings take their
 /// defaults).
@@ -433,16 +473,10 @@ fn place_pupils(
     }
     let point_of = |p: &TracedPupil| p.info.reference_point_mm;
     let reference_mm = match settings.reference {
-        ReferencePoint::Chief => {
-            let sys = tracer.system();
-            let c = tracer.chief(field, sys.primary_wavelength);
-            if c.status.is_ok() {
-                [c.ray.pos.x, c.ray.pos.y]
-            } else {
-                let r = point_of(&pupils[0].2);
-                [r[0], r[1]]
-            }
-        }
+        ReferencePoint::Chief => crate::traced::chief_reference_xy(tracer, field).unwrap_or_else(|| {
+            let r = point_of(&pupils[0].2);
+            [r[0], r[1]]
+        }),
         ReferencePoint::Centroid => {
             let mut c = Vec3::ZERO;
             for (_, w, p) in &pupils {

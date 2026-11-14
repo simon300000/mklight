@@ -161,11 +161,27 @@ fn invalid(s: &str) -> MkError {
     MkError::InvalidParam(format!("image simulation: {s}"))
 }
 
+/// Image simulation maps an object onto image-surface positions, which an
+/// afocal image space does not have (its image is at infinity, its PSFs
+/// are angular: `crate::pupil`, "Afocal image spaces"): such systems are
+/// rejected. Focus the beam with an ideal (paraxial) lens to simulate it.
+pub fn reject_afocal(t: &SequentialTracer) -> MkResult<()> {
+    if t.afocal_image_space() {
+        return Err(MkError::InvalidModel(
+            "image simulation: the image space is afocal (no image surface positions); \
+             focus the beam with an ideal (paraxial) lens before the image surface"
+                .into(),
+        ));
+    }
+    Ok(())
+}
+
 pub fn build_psf_grid(
     t: &SequentialTracer,
     s: &ImageGridSettings,
     ctx: &JobContext,
 ) -> MkResult<PsfGrid> {
+    reject_afocal(t)?;
     if !(2..=33).contains(&s.field_grid)
         || !(s.field_extent > 0.0 && s.field_extent.is_finite())
         || s.field_center.iter().any(|v| !v.is_finite())
@@ -758,6 +774,7 @@ pub fn image_simulation_job(
     ctx: &JobContext,
 ) -> MkResult<ImageSimulationResult> {
     let timer = RunTimer::start();
+    reject_afocal(t)?;
     if s.size.iter().any(|n| !(2..=4096).contains(n))
         || !(4..=512).contains(&s.tile_size)
         || !(s.read_noise_sigma >= 0.0 && s.read_noise_sigma.is_finite())

@@ -418,6 +418,7 @@ fn check_coating(out: &mut Issues, path: &str, c: &CoatingDef) {
             reference_wavelength_um,
             layers,
             mirror_substrate,
+            ..
         } => {
             out.positive(
                 "invalid_coating",
@@ -987,6 +988,7 @@ mod tests {
                     extinction: 0.0,
                 }],
                 mirror_substrate: None,
+                substrate: Default::default(),
             },
         );
         s.surfaces[1].coating = Some("AR".into());

@@ -863,6 +863,7 @@ fn controlled_film_bulk_weights() {
                 quarter_waves: None,
             }],
             mirror_substrate: None,
+            substrate: Default::default(),
         },
     );
     for s in &mut sys.surfaces[1..3] {

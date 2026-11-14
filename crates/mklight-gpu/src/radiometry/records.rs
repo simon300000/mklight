@@ -2,7 +2,10 @@
 //! material state; angle evaluation and matrix products run on the backend.
 use crate::{Df32, consts::*, resident::bad};
 use bytemuck::{Pod, Zeroable};
-use mklight_core::{MkResult, materials::coating::ResolvedCoating};
+use mklight_core::{
+    MkResult,
+    materials::coating::{Arrival, ResolvedCoating},
+};
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
@@ -64,19 +67,22 @@ impl CoatingSpec {
         n_in: f64,
         n_out: f64,
         mirror: bool,
+        arrival: Arrival,
         layers: &mut Vec<CoatingLayer>,
     ) -> MkResult<Self> {
         let offset = layers.len() as u32;
-        Self::resolve_with(c, wavelength, n_in, n_out, mirror, offset, |l| {
+        Self::resolve_with(c, wavelength, n_in, n_out, mirror, arrival, offset, |l| {
             layers.push(l)
         })
     }
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn resolve_with(
         c: &ResolvedCoating,
         wavelength: f64,
         n_in: f64,
         n_out: f64,
         mirror: bool,
+        arrival: Arrival,
         offset: u32,
         mut layer: impl FnMut(CoatingLayer),
     ) -> MkResult<Self> {
@@ -125,13 +131,9 @@ impl CoatingSpec {
                     s.substrate_n = Df32::from_f64(n);
                     s.substrate_k = Df32::from_f64(k);
                 }
-                for j in 0..ls.len() {
-                    let i = if mirror || n_out >= n_in {
-                        ls.len() - 1 - j
-                    } else {
-                        j
-                    };
-                    let l = &ls[i];
+                // The order the light meets the layers, decided by the
+                // coating's per-surface substrate side (shared with the CPU).
+                for l in c.layer_order(arrival, mirror) {
                     layer(CoatingLayer {
                         n: Df32::from_f64(l.material.index(wavelength)),
                         k: Df32::from_f64(l.extinction),
@@ -238,6 +240,7 @@ pub(super) fn visit_surface_specs(
                 sys.n_before(i, w),
                 s.n_after[w],
                 s.is_mirror(),
+                Arrival::Before,
                 offset,
                 &mut layer,
             )?;

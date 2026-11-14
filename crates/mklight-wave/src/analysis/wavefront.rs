@@ -108,6 +108,8 @@ pub struct WavefrontMap {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct WavefrontResult {
     pub maps: Vec<WavefrontMap>,
+    /// Units of the image-space quantities ([`super::WaveUnits`]).
+    pub units: super::WaveUnits,
     pub run_info: RunInfo,
 }
 
@@ -306,6 +308,7 @@ pub fn wavefront_map_shared(
     }
     ctx.report(1.0, "wavefront map");
     Ok(WavefrontResult {
+        units: super::WaveUnits::of(tracer),
         maps,
         run_info: run_info(timer, tracer, "wavefront_map", settings, warnings),
     })

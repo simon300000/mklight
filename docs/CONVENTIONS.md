@@ -34,6 +34,9 @@ document on purpose in the same change.
   annulus's inner radius shrunk by it, so a ray aimed at the rim of the stop
   is not clipped by its own aiming residual. Every CPU and GPU path tests
   these same sizes (`ApertureShape::passes`; the GPU packer packs them).
+  The same fixed outline also decides which of two crossings of a deep
+  surface a steep ray meets (SURFACES.md §8, conic root choice), clipped or
+  not; an automatic semi-diameter does not.
 * **Curvature** `c = 1/R` is stored instead of radius (a plane is `c = 0`).
   `R > 0` means the centre of curvature lies at **+z** from the vertex.
 * **Thickness** `t_i` is the signed distance along the local z axis, after
@@ -50,7 +53,7 @@ document on purpose in the same change.
 * **Tilts and decenters** (`Placement`): decentres `(dx, dy)` in mm, tilts
   `tilt_x`, `tilt_y`, `tilt_z` in degrees by the right-hand rule, each about
   the axis of the frame as moved so far. `order = DecenterThenTilt` (the
-  default; OpticStudio order flag 0): decentre, then tilt about x, then y,
+  default; `.zmx` coordinate-break order flag 0): decentre, then tilt about x, then y,
   then z — frame rotation `R = R_x R_y R_z`, origin `(dx, dy, 0)`.
   `order = TiltThenDecenter` (order flag ≠ 0): the reverse sequence — tilt
   about z, then y, then x, then decentre along the tilted axes —
@@ -103,7 +106,13 @@ document on purpose in the same change.
   with the image surface and passes through the chief ray's exit-pupil point.
   Reported in waves at the ray's wavelength, with the chief ray's OPD = 0 by
   construction. With this sign, a wavefront that converges *more* than the
-  reference sphere has positive OPD at the pupil edge.
+  reference sphere has positive OPD at the pupil edge. In an **afocal image
+  space** (paraxial image NA ≤ 10⁻⁹ at the primary wavelength) the
+  reference is the plane normal to the chief ray through the exit-pupil
+  point, the pupil is in transverse beam coordinates, and image-space
+  results are angular: mrad, cycles/mrad, focus as vergence in
+  millidioptres (WAVE.md §5, "Afocal image space"; each wave result
+  states its `units`).
 * **Zernike**: Fringe (University of Arizona) ordering, unit-disk normalised,
   coefficients in waves. A Noll-normalised standard ordering is also available.
 * **MTF**: normalised to 1 at zero frequency. Tangential means frequency along
@@ -115,7 +124,9 @@ document on purpose in the same change.
 * Every surface interaction splits flux into transmitted `T`, reflected `R` and
   absorbed `A`, with `T + R + A = 1` for the same `(λ, θ, polarisation)` and
   coating. Bare interfaces use the Fresnel equations. Coated ones use the
-  thin-film characteristic matrix (TMM).
+  thin-film characteristic matrix (TMM). A thin film's substrate side is
+  fixed once per surface (`docs/MATERIALS.md`, thin-film coatings), so the
+  stack order does not depend on wavelength.
 * s and p are defined relative to the local plane of incidence. "Unpolarised"
   means the incoherent average of s and p.
 * Absorption inside glass uses the catalog's internal transmittance, scaled

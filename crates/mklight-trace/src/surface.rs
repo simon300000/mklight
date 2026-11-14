@@ -29,10 +29,19 @@
 //!    textbook `(−B ± √Δ)/A` form would divide `0/0`.
 //! 5. **Sheet selection**: a point lies on the vertex sheet iff
 //!    `1 − κ c z ≥ 0` (on that sheet `1 − κcz = √(1 − κc²r²)`). Roots on the
-//!    other sheet of a sphere, ellipsoid or hyperboloid are rejected. If both
-//!    roots lie on the vertex sheet (a ray crossing a deep surface twice),
-//!    the one nearer the vertex (smaller `r²`) is chosen; ties go to `t₁`.
-//!    No root on the vertex sheet is a miss.
+//!    other sheet of a sphere, ellipsoid or hyperboloid are rejected. No root
+//!    on the vertex sheet is a miss.
+//! 6. **Root choice** when both roots lie on the vertex sheet (a steep ray
+//!    crossing a deep surface twice), given the surface's fixed extent
+//!    (`ResolvedSurface::root_extent`, passed to [`intersect_within`]):
+//!    a root inside the extent beats one outside; of two roots inside, the
+//!    first one ahead of the ray start (`t ≥ 0` from `P`) wins, and if
+//!    neither is ahead, or neither is inside, or the extent is unknown
+//!    (automatic semi-diameter, [`intersect`]), the root **nearer the
+//!    vertex** (smaller `r²`) wins. Ties go to `t₁`. Light from an object at
+//!    infinity has no real start (its start point is a reference on a plane
+//!    through the first vertex), so the trace passes no extent for surface 1
+//!    there. See docs/SURFACES.md §8.
 //!
 //! The unit normal is `∇F`-based: `N ∝ (−c x, −c y, 1 − κ c z)`, which needs
 //! no square root of the sag argument and stays finite at the rim. It points
@@ -40,8 +49,8 @@
 //!
 //! # Even asphere
 //!
-//! The base conic intersection from `Q` (the plane `z = 0` when `c = 0`)
-//! seeds Newton's method on the sag residual `g(t) = z(t) − sag(r²(t))` with
+//! The base conic intersection from `Q` (the plane `z = 0` when `c = 0`,
+//! with the same root choice) seeds Newton's method on the sag residual `g(t) = z(t) − sag(r²(t))` with
 //! `g'(t) = D_z − 2 sag'(r²)(x D_x + y D_y)`. Iteration stops when
 //! `|g| ≤ tol` (then one last Newton correction is applied, which squares the
 //! error); otherwise it gives up after `max_iter` Newton steps.
@@ -68,7 +77,7 @@
 //! coordinate break has no geometry: the ray point is carried unchanged
 //! (`t = 0`), which keeps 90° breaks well defined.
 
-use mklight_core::{SurfaceShape, Vec3};
+use mklight_core::{ApertureShape, SurfaceShape, Vec3};
 use serde::{Deserialize, Serialize};
 
 use crate::numeric::discriminant;
@@ -122,23 +131,41 @@ pub struct Hit {
     pub normal: Vec3,
 }
 
-/// Intersect the ray `p + t·d` (local frame, `|d| = 1`) with `shape`.
+/// Intersect the ray `p + t·d` (local frame, `|d| = 1`) with `shape`, whose
+/// extent is unknown: of two crossings of the vertex sheet the one nearer
+/// the vertex wins (module docs, step 6).
 pub fn intersect(
     shape: &SurfaceShape,
     p: Vec3,
     d: Vec3,
     settings: &IntersectSettings,
 ) -> Result<Hit, IntersectError> {
+    intersect_within(shape, None, p, d, settings)
+}
+
+/// [`intersect`] for a surface with the fixed extent `extent`
+/// (`ResolvedSurface::root_extent`), which chooses between two crossings of
+/// the vertex sheet (module docs, step 6). It does not clip: a hit outside
+/// the extent is still returned when no crossing lies inside it.
+pub fn intersect_within(
+    shape: &SurfaceShape,
+    extent: Option<&ApertureShape>,
+    p: Vec3,
+    d: Vec3,
+    settings: &IntersectSettings,
+) -> Result<Hit, IntersectError> {
     match shape {
         SurfaceShape::Plane | SurfaceShape::Paraxial { .. } => intersect_plane(p, d),
-        SurfaceShape::Conic { curvature, conic } => intersect_conic(*curvature, *conic, p, d),
+        SurfaceShape::Conic { curvature, conic } => {
+            intersect_conic_within(*curvature, *conic, extent, p, d)
+        }
         SurfaceShape::EvenAsphere {
             curvature,
             conic,
             coefficients,
-        } => intersect_even_asphere(*curvature, *conic, coefficients, p, d, settings),
+        } => intersect_even_asphere(*curvature, *conic, coefficients, extent, p, d, settings),
         SurfaceShape::Diffractive { base, .. } => {
-            let hit = intersect(base, p, d, settings)?;
+            let hit = intersect_within(base, extent, p, d, settings)?;
             if !mklight_core::surface_math::in_domain(shape, hit.point.x, hit.point.y) {
                 return Err(IntersectError::OutsideDomain);
             }
@@ -150,14 +177,14 @@ pub fn intersect(
             astigmatism: 0.0,
             spherical: 0.0,
             ..
-        } => intersect(base, p, d, settings),
+        } => intersect_within(base, extent, p, d, settings),
         SurfaceShape::CoordinateBreak => Ok(Hit {
             t_transfer: 0.0,
             t_surface: 0.0,
             point: p,
             normal: Vec3::Z,
         }),
-        _ => intersect_sag(shape, p, d, settings),
+        _ => intersect_sag(shape, extent, p, d, settings),
     }
 }
 
@@ -195,13 +222,24 @@ fn to_closest_approach(p: Vec3, d: Vec3) -> (f64, Vec3) {
     )
 }
 
-/// Conic intersection (module docs, steps 1–5).
+/// Conic intersection of unknown extent (module docs, steps 1–6).
 pub fn intersect_conic(c: f64, k: f64, p: Vec3, d: Vec3) -> Result<Hit, IntersectError> {
+    intersect_conic_within(c, k, None, p, d)
+}
+
+/// Conic intersection with the fixed extent `extent` (module docs, steps 1–6).
+pub fn intersect_conic_within(
+    c: f64,
+    k: f64,
+    extent: Option<&ApertureShape>,
+    p: Vec3,
+    d: Vec3,
+) -> Result<Hit, IntersectError> {
     if c == 0.0 {
         return intersect_plane(p, d);
     }
     let (t0, q) = to_closest_approach(p, d);
-    let (t1, point) = conic_from(c, k, q, d)?;
+    let (t1, point) = conic_from(c, k, q, d, extent.map(|e| (e, -t0)))?;
     Ok(Hit {
         t_transfer: t0,
         t_surface: t1,
@@ -210,11 +248,19 @@ pub fn intersect_conic(c: f64, k: f64, p: Vec3, d: Vec3) -> Result<Hit, Intersec
     })
 }
 
-/// Steps 2–5 from a point `q` (normally the closest approach to the vertex).
+/// Steps 2–6 from a point `q` (normally the closest approach to the vertex).
 /// Returns the distance from `q` and the hit point. Also valid for `c = 0`
-/// (the plane `z = 0`).
+/// (the plane `z = 0`). `pick` is the surface's fixed outline and the
+/// distance `−t₀` from `q` to the ray start: a root is ahead when `t` is not
+/// below it. `None` keeps the nearer-vertex rule.
 #[inline]
-fn conic_from(c: f64, k: f64, q: Vec3, d: Vec3) -> Result<(f64, Vec3), IntersectError> {
+fn conic_from(
+    c: f64,
+    k: f64,
+    q: Vec3,
+    d: Vec3,
+    pick: Option<(&ApertureShape, f64)>,
+) -> Result<(f64, Vec3), IntersectError> {
     let kap = 1.0 + k;
     let a = c * (d.x.mul_add(d.x, d.y * d.y) + kap * d.z * d.z);
     let b = c * (q.x.mul_add(d.x, q.y * d.y) + kap * q.z * d.z) - d.z;
@@ -251,14 +297,41 @@ fn conic_from(c: f64, k: f64, q: Vec3, d: Vec3) -> Result<(f64, Vec3), Intersect
         let t = qq / a;
         let pt = at(t);
         if t.is_finite() && pt.is_finite() && on_vertex_sheet(pt) {
-            let r2 = pt.x.mul_add(pt.x, pt.y * pt.y);
             match best {
-                Some((_, b1)) if b1.x.mul_add(b1.x, b1.y * b1.y) <= r2 => {}
+                Some((t1, p1)) if keep_first(t1, p1, t, pt, pick) => {}
                 _ => best = Some((t, pt)),
             }
         }
     }
     best.ok_or(IntersectError::Miss)
+}
+
+/// Step 6: whether the root `(t1, p1)` wins over `(t2, p2)` when both lie on
+/// the vertex sheet. `pick` as in [`conic_from`].
+#[inline]
+pub(crate) fn keep_first(
+    t1: f64,
+    p1: Vec3,
+    t2: f64,
+    p2: Vec3,
+    pick: Option<(&ApertureShape, f64)>,
+) -> bool {
+    let nearer = p1.x.mul_add(p1.x, p1.y * p1.y) <= p2.x.mul_add(p2.x, p2.y * p2.y);
+    let Some((extent, t_start)) = pick else {
+        return nearer;
+    };
+    let (in1, in2) = (extent.passes(p1.x, p1.y), extent.passes(p2.x, p2.y));
+    if in1 != in2 {
+        return in1;
+    }
+    let (ahead1, ahead2) = (t1 >= t_start, t2 >= t_start);
+    if !in1 || !(ahead1 || ahead2) {
+        nearer
+    } else if ahead1 && ahead2 {
+        t1 <= t2
+    } else {
+        ahead1
+    }
 }
 
 /// Unit normal of a conic at a point on it: `(−cx, −cy, 1 − κcz)/‖·‖`.
@@ -362,15 +435,16 @@ pub fn intersect_even_asphere(
     c: f64,
     k: f64,
     coefficients: &[f64],
+    extent: Option<&ApertureShape>,
     p: Vec3,
     d: Vec3,
     settings: &IntersectSettings,
 ) -> Result<Hit, IntersectError> {
     if coefficients.iter().all(|a| *a == 0.0) {
-        return intersect_conic(c, k, p, d);
+        return intersect_conic_within(c, k, extent, p, d);
     }
     let (t0, q) = to_closest_approach(p, d);
-    let seed = conic_from(c, k, q, d);
+    let seed = conic_from(c, k, q, d, extent.map(|e| (e, -t0)));
     let seed_hit = seed.is_ok();
     let mut t = seed.map_or(0.0, |(t, _)| t);
     let kap = 1.0 + k;
@@ -462,6 +536,7 @@ pub fn intersect_even_asphere(
 /// classes follow the even asphere's (module docs).
 fn intersect_sag(
     shape: &SurfaceShape,
+    extent: Option<&ApertureShape>,
     p: Vec3,
     d: Vec3,
     settings: &IntersectSettings,
@@ -469,13 +544,19 @@ fn intersect_sag(
     use mklight_core::surface_math::{evaluate, exact_conic};
     // Coincident conics keep the closed-form solution exactly.
     if let Some((c, k)) = exact_conic(shape) {
-        let hit = intersect_conic(c, k, p, d)?;
+        let hit = intersect_conic_within(c, k, extent, p, d)?;
         return evaluate(shape, hit.point.x, hit.point.y)
             .map(|_| hit)
             .ok_or(IntersectError::OutsideDomain);
     }
     let (t0, q) = to_closest_approach(p, d);
-    let seed = conic_from(shape.curvature(), shape.conic(), q, d);
+    let seed = conic_from(
+        shape.curvature(),
+        shape.conic(),
+        q,
+        d,
+        extent.map(|e| (e, -t0)),
+    );
     let seed_hit = seed.is_ok();
     let mut t = seed.map_or(0.0, |(t, _)| t);
     let at = |t: f64| {
@@ -597,22 +678,97 @@ mod tests {
         assert!((h.normal.dot(radial) - 1.0).abs() < 1e-14);
     }
 
-    #[test]
-    fn double_crossing_takes_the_root_nearer_the_vertex() {
-        // c = −0.05 bulges toward the ray, which crosses it twice heading +z
-        // at ~87° to the axis: first at y ≈ −5.5 (t ≈ 24.51), then at
-        // y ≈ +3.6 (t ≈ 33.61). The surface's extent is unknown here, so
-        // the crossing nearer the vertex wins (docs/SURFACES.md §8).
-        let shape = SurfaceShape::sphere(-20.0);
+    /// A steep ray across `c = −0.05` (bulging toward it) at ~87° to the
+    /// axis: the start, direction and the two exact crossings of the sphere
+    /// `|x − C| = 20`, `C = (0, 0, −20)`, as distances from the start.
+    fn steep_double_crossing() -> (Vec3, Vec3, f64, f64) {
         let d = unit(0.0, 0.999, 0.050);
         let p = Vec3::new(0.0, -30.0, -2.0);
         let m = p - Vec3::new(0.0, 0.0, -20.0);
         let (b, c) = (m.dot(d), m.dot(m) - 400.0);
-        let t2 = -b + (b * b - c).sqrt();
-        assert!((t2 - 33.61).abs() < 0.01);
-        let h = intersect(&shape, p, d, &IntersectSettings::default()).unwrap();
-        assert!((h.t_transfer + h.t_surface - t2).abs() < 1e-12, "{h:?}");
-        assert!(h.point.y > 3.0, "{h:?}");
+        let (t1, t2) = (-b - (b * b - c).sqrt(), -b + (b * b - c).sqrt());
+        // First at y ≈ −5.5 (farther from the axis), then at y ≈ +3.6.
+        assert!((t1 - 24.51).abs() < 0.01 && (t2 - 33.61).abs() < 0.01);
+        assert!((p + d * t1).y < -5.0 && (p + d * t2).y > 3.0);
+        (p, d, t1, t2)
+    }
+
+    fn circle(radius: f64) -> ApertureShape {
+        ApertureShape::Circular { radius }
+    }
+
+    #[test]
+    fn double_crossing_root_follows_the_fixed_extent() {
+        let shape = SurfaceShape::sphere(-20.0);
+        let (p, d, t1, t2) = steep_double_crossing();
+        let s = IntersectSettings::default();
+        let dist = |extent: Option<ApertureShape>, p: Vec3, d: Vec3| {
+            let h = intersect_within(&shape, extent.as_ref(), p, d, &s).unwrap();
+            assert!((h.point - (p + d * (h.t_transfer + h.t_surface))).norm() < 1e-12);
+            h.t_transfer + h.t_surface
+        };
+        let near = |a: f64, b: f64| (a - b).abs() < 1e-12;
+        // Unknown extent (automatic semi-diameter): the crossing nearer the
+        // vertex, though the ray meets the other one first.
+        assert!(near(dist(None, p, d), t2));
+        assert!(near(
+            intersect(&shape, p, d, &s)
+                .map(|h| h.t_transfer + h.t_surface)
+                .unwrap(),
+            t2
+        ));
+        // Both crossings inside the extent: the first one along the ray.
+        assert!(near(dist(Some(circle(10.0)), p, d), t1));
+        let rect = ApertureShape::Rectangular {
+            half_x: 1.0,
+            half_y: 6.0,
+        };
+        assert!(near(dist(Some(rect), p, d), t1));
+        // Only the second inside: the first crossing misses the surface.
+        assert!(near(dist(Some(circle(4.5)), p, d), t2));
+        let ellipse = ApertureShape::Elliptical {
+            semi_x: 10.0,
+            semi_y: 4.5,
+        };
+        assert!(near(dist(Some(ellipse), p, d), t2));
+        // Neither inside: the nearer-vertex rule (clipping then stops it).
+        assert!(near(dist(Some(circle(2.0)), p, d), t2));
+        // Starting between the crossings: the one ahead, in either direction.
+        let mid = p + d * 28.0;
+        assert!(near(dist(Some(circle(10.0)), mid, d), t2 - 28.0));
+        assert!(near(dist(Some(circle(10.0)), mid, -d), 28.0 - t1));
+        assert!(
+            near(dist(None, mid, -d), 28.0 - t2),
+            "behind, nearer the vertex"
+        );
+        // Both behind the start: the nearer-vertex rule.
+        let past = p + d * 40.0;
+        assert!(near(dist(Some(circle(10.0)), past, d), t2 - 40.0));
+    }
+
+    #[test]
+    fn asphere_seeds_inherit_the_root_choice() {
+        let (p, d, t1, t2) = steep_double_crossing();
+        let s = IntersectSettings::default();
+        for shape in [
+            SurfaceShape::EvenAsphere {
+                curvature: -0.05,
+                conic: 0.0,
+                coefficients: vec![1e-9],
+            },
+            SurfaceShape::OddAsphere {
+                curvature: -0.05,
+                conic: 0.0,
+                coefficients: vec![0.0, 0.0, 1e-8],
+            },
+        ] {
+            for (extent, t) in [(None, t2), (Some(circle(10.0)), t1)] {
+                let h = intersect_within(&shape, extent.as_ref(), p, d, &s).unwrap();
+                let at = h.t_transfer + h.t_surface;
+                // The small departures move the crossings by < 0.01 mm.
+                assert!((at - t).abs() < 0.01, "{shape:?} {extent:?}: {at} vs {t}");
+            }
+        }
     }
 
     #[test]

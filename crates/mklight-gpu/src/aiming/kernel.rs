@@ -261,6 +261,7 @@ impl<E: FpEnv> FieldKernel<'_, E> {
             self.pool,
             at,
             [D::ZERO, D::ZERO, c(1.0)],
+            MKL_ROOT_NEAREST,
             &self.params(0),
         )
         .ok()?;
@@ -282,9 +283,16 @@ impl<E: FpEnv> FieldKernel<'_, E> {
             let dir = self.local(unit([p[0], p[1], c(1.0)]), false);
             let point = self.local([D::ZERO, D::ZERO, self.pupil(0)], true);
             Some(
-                tr::intersect(&self.s[0], self.pool, point, dir, &self.params(0))
-                    .ok()?
-                    .x,
+                tr::intersect(
+                    &self.s[0],
+                    self.pool,
+                    point,
+                    dir,
+                    MKL_ROOT_NEAREST,
+                    &self.params(0),
+                )
+                .ok()?
+                .x,
             )
         } else {
             self.source(p)

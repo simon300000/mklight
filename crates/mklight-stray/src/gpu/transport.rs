@@ -99,6 +99,7 @@ impl TransportScene {
                     1.,
                     1.,
                     false,
+                    mklight_core::materials::coating::Arrival::Before,
                     &mut layers,
                 )?; 2],
                 ..Default::default()
@@ -133,6 +134,7 @@ impl TransportScene {
                             m.index[side].to_f64(),
                             m.index[1 - side].to_f64(),
                             m.kind == 2,
+                            i.arrival(if side == 0 { Side::Minus } else { Side::Plus }),
                             &mut layers,
                         )?;
                     }

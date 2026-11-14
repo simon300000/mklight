@@ -146,10 +146,21 @@ public struct CoatingLayer: Codable, Sendable, Hashable {
 /// Complex refractive index `n + ik`, serialised as `[n, k]`.
 public typealias ComplexIndex = Pair<Double, Double>
 
+/// Which medium of a refracting surface carries a thin film, fixed once per
+/// surface. `higherIndex` (the default, omitted from files) is the denser
+/// medium at the coating's reference wavelength.
+public enum CoatingSubstrate: String, Codable, Sendable, Hashable, CaseIterable {
+    case higherIndex = "higher_index"
+    case before
+    case after
+}
+
 /// A named coating definition.
 public enum CoatingDef: Codable, Sendable, Hashable {
     /// Multilayer stack, layers listed outward from the substrate.
-    case thinFilm(referenceWavelengthUm: Double, layers: [CoatingLayer], mirrorSubstrate: ComplexIndex?)
+    case thinFilm(
+        referenceWavelengthUm: Double, layers: [CoatingLayer], mirrorSubstrate: ComplexIndex?,
+        substrate: CoatingSubstrate = .higherIndex)
     /// Fixed reflectance and transmittance; absorption `1 − R − T`.
     case ideal(reflectance: Double, transmittance: Double)
     /// Tabulated normal-incidence reflectance `(λ µm, R)`; `T = 1 − R`.
@@ -159,10 +170,11 @@ public enum CoatingDef: Codable, Sendable, Hashable {
         let c = try decoder.container(keyedBy: AnyKey.self)
         switch try c.value("type", as: String.self) {
         case "thin_film":
-            try c.allowOnly("type", "reference_wavelength_um", "layers", "mirror_substrate")
+            try c.allowOnly("type", "reference_wavelength_um", "layers", "mirror_substrate", "substrate")
             self = .thinFilm(
                 referenceWavelengthUm: try c.value("reference_wavelength_um"), layers: try c.value("layers"),
-                mirrorSubstrate: try c.optional("mirror_substrate"))
+                mirrorSubstrate: try c.optional("mirror_substrate"),
+                substrate: try c.optional("substrate") ?? .higherIndex)
         case "ideal":
             try c.allowOnly("type", "reflectance", "transmittance")
             self = .ideal(reflectance: try c.value("reflectance"), transmittance: try c.value("transmittance"))
@@ -177,11 +189,12 @@ public enum CoatingDef: Codable, Sendable, Hashable {
     public func encode(to encoder: any Encoder) throws {
         var c = encoder.container(keyedBy: AnyKey.self)
         switch self {
-        case .thinFilm(let ref, let layers, let sub):
+        case .thinFilm(let ref, let layers, let sub, let side):
             try c.put("thin_film", "type")
             try c.put(ref, "reference_wavelength_um")
             try c.put(layers, "layers")
             try c.putOptional(sub, "mirror_substrate")
+            if side != .higherIndex { try c.put(side, "substrate") }
         case .ideal(let r, let t):
             try c.put("ideal", "type")
             try c.put(r, "reflectance")

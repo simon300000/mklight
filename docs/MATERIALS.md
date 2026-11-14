@@ -25,7 +25,7 @@ supports, and how to load glass catalogs. Code: `crates/mklight-core/src/materia
   3. `n_abs,ref = n_rel,ref · n_air(λ, T_ref, 1 atm)`;
   4. `Δn_abs = (n_abs,ref² − 1)/(2 n_abs,ref) · (D0 ΔT + D1 ΔT² + D2 ΔT³ + (E0 ΔT + E1 ΔT²)/(λ_ref² − λ_tk²))`,
      with `ΔT = T − T_ref` (the `λ_tk` term also at the reference-air
-     wavelength, as OpticStudio does);
+     wavelength, like the catalogue formula itself);
   5. `n = (n_abs,ref + Δn_abs) / n_air(λ, T, P)`.
 
   At `T_ref` and 1 atm `λ_ref = λ` and this returns the catalog index
@@ -184,6 +184,33 @@ exact algebraic identities with the plain Sellmeier sum.
 `n²`-type formulas are evaluated as a compensated (Neumaier) sum of their
 terms and then square-rooted. A negative `n²` gives NaN rather than a wrong
 number.
+
+## Thin-film coatings: substrate side
+
+A `thin_film` coating lists its layers outward from the substrate
+(`layers[0]` touches it). On a refracting surface the substrate is one of
+the surface's two media, chosen **once per surface** by the coating's
+optional `substrate` field:
+
+* `higher_index` (default): the medium with the higher index at the
+  coating's `reference_wavelength_um` (its design wavelength, where
+  `quarter_waves` thicknesses are fixed). A tie puts it after the surface.
+* `before` / `after`: the medium before / after the surface in sequence
+  order, for a coating that really sits on the lower-index medium (for
+  example a film on a low-index crystal immersed in a denser liquid).
+
+The choice holds at every wavelength and incidence angle, so the stack
+does not flip where the two media's dispersion curves cross. Light
+arriving from the substrate meets `layers[0]` first; light from the other
+medium meets the outermost layer first. On a mirror the substrate is
+`mirror_substrate`, behind the reflector, and light always meets the
+outermost layer first. `ResolvedCoating::orient` fixes the side when the
+system is resolved; every solver orders the layers through
+`ResolvedCoating::layer_order` with the side the light arrives from
+(`Arrival::Before` for forward sequential light, `Arrival::After` for a
+ghost's backward legs, by hit side in the stray tracer), and the GPU coating
+packers use the same call, so all paths agree. Projects without the field
+load unchanged and are written without it.
 
 ## Loading catalogs
 

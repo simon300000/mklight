@@ -1750,12 +1750,15 @@ fn psf_centroid_follows_x_and_diagonal_fields() {
     centroid_check(&tp, 2, "paraboloid diagonal");
 }
 
-/// The default `transmission` amplitude leaves out the ray density, so the
-/// PSF's energy distribution (and centroid) is biased where the pupil is
-/// distorted; `radiometric` restores the moment theorem. Singlet at full
-/// field: the bias is about a third of the centroid shift (WAVE.md §3).
+/// The `transmission` amplitude leaves out the ray density, so the PSF's
+/// energy distribution (and centroid) is biased where the pupil is
+/// distorted; `radiometric`, the default, restores the moment theorem.
+/// Singlet at full field: the bias is about a third of the centroid shift
+/// (WAVE.md §3).
 #[test]
-fn default_amplitude_model_biases_the_psf_centroid() {
+fn transmission_amplitude_biases_the_psf_centroid() {
+    assert_eq!(PupilSettings::default().amplitude, AmplitudeModel::Radiometric);
+    assert_eq!(AmplitudeModel::default(), AmplitudeModel::Radiometric);
     let mut s = samples::singlet();
     s.wavelengths = mono(0.5875618);
     let t = tracer_for(s).unwrap();
@@ -1909,7 +1912,8 @@ fn coarse_lattice_on_a_fast_asphere_is_reported() {
 /// A confocal paraboloid beam compressor (f 500 / f −100, EPD 50) is
 /// afocal and aberration-free on axis. The reference sphere about the
 /// chief ray's image point used to report about 23 waves RMS and a Strehl
-/// of 1e-5 with no warning; the afocal image space is now reported. A
+/// of 1e-5 with no warning; the afocal image space is now reported (and
+/// measured from a plane reference, `afocal.rs`). A
 /// focusing paraboloid is not.
 #[test]
 fn afocal_image_space_is_reported() {

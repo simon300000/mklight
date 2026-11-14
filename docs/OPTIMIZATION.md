@@ -386,7 +386,38 @@ merit is the wavefront variance about the chief sphere, as `wavefront_rms`
 reports it (before 2026-11 the piston stayed in, and the merit was the mean
 square OPD: Double Gauss 17.13 against `wavefront_rms`² 3.35; minimising
 the mean square instead of the variance biases focus balancing, e.g. for
-`W = aρ² + bρ⁴` it gives `a = −¾b` instead of `a = −b`). A meridionally symmetric system automatically
+`W = aρ² + bρ⁴` it gives `a = −¾b` instead of `a = −b`).
+
+**White-light centroid.** The spot criterion measures every wavelength's
+rays from the centroid of the white-light spot (`scope: "polychromatic"`,
+the default since 2026-11): the centroid of all positive-weight
+wavelengths' nodes, each weighted `w_node · w_λ`. The merit is then the
+field mean of the squared polychromatic RMS spot radius (tested to 1e-12
+against `rms_spot` over all wavelengths), so a colour-dependent image shift
+— lateral colour — costs what it does in the image. With
+`scope: "monochromatic"` each wavelength is measured from its own centroid
+and lateral colour costs nothing (the default before 2026-11). A missing
+`scope` key now means `polychromatic`: a saved project or script whose
+merit omitted it changes behaviour, while one that stored either value
+(the app writes it with every saved merit) keeps it. The reference rays
+are the ones the per-wavelength merit traces anyway, so the cost per
+evaluation is unchanged (Double Gauss, 3 × 6 half pupil: 1.35 against
+1.44 ms single-candidate, 0.69 against 0.67 ms per FD-Jacobian column,
+within the bench's noise); the GPU and resident evaluators form the same
+reference from their per-wavelength moments (the host/device and resident
+tests cover the default merit). The default merit of the built-in samples
+changes only where there is lateral colour: Double Gauss +9.6 %,
+anamorphic +5.8 %, Petzval with asphere +0.7 %, the rest below 0.2 %
+(Cooke triplet +0.013 %), and not at all for the Newtonian or a
+single-wavelength system. Fifteen LM iterations (default variables) on the
+Double Gauss reduce the largest short-minus-long lateral colour over the
+field to 1.83 µm instead of 3.27 µm (nominal 13.6 µm), with the
+polychromatic RMS spot within ±4 % per field (19.0 / 14.6 / 19.2 µm
+against 18.4 / 15.1 / 19.7 µm) and MTF at 30 and 50 cycles/mm within
+±0.035; on the Cooke triplet (0.45 µm of lateral colour) the two results
+agree within 0.3 µm of RMS spot.
+
+A meridionally symmetric system automatically
 uses the half pupil, unless a variable (`generate_for`) can break the
 symmetry. For a tolerancing criterion, `generate_for_tolerancing(sys,
 &tolerance_spec)` counts the toleranced parameters and compensators as
@@ -596,7 +627,8 @@ linear in δ, and under-predicts a merit by up to √N; `rss_change` is still
 reported). `E[ΔΦᵢ] = a·E[δ] + b·E[δ²]` with `ΔΦ = aδ + bδ²` through both
 limits and the moments of the tolerance's distribution
 (`ToleranceOperand::moments`: end point, uniform on `[−minus, plus]`, normal
-truncated at `k` σ with `E[t²] = 1 − 2kφ(k)/(2Φ(k) − 1)`); a one-sided
+truncated at `k` σ with `E[t²] = 1 − 2kφ(k)/(2Φ(k) − 1)`, parabolic with
+`E[|z|] = 3/4`, `E[z²] = 3/5`); a one-sided
 tolerance is taken as quadratic. An RMS display of the criterion (√Φ) is
 the square root of the prediction. Tests: a separable quadratic criterion
 with every distribution and asymmetric limits matches a 40 000-trial Monte
@@ -636,6 +668,86 @@ the inner evaluator sees it, so the perturbed system of a case and each
 candidate of its compensator solve are re-solved, as the engine job does. A
 candidate whose solves cannot be applied has no operand values (`Invalid`,
 with the solver's reason); a system without solves passes through unchanged.
+
+### Distributions
+
+A tolerance's Monte-Carlo draws (`Distribution`) lie in `[−minus, +plus]`.
+Every distribution but the uniform one draws a symmetric `z ∈ [−1, 1]` and
+scales each side to its own limit (`δ = z·plus` for `z ≥ 0`, `z·minus`
+otherwise):
+
+| `distribution` | density of `z` | `E[z²]` | draw |
+|---|---|---|---|
+| `uniform` (default) | uniform on `[−minus, plus]` itself | ⅓ (symmetric) | `u` |
+| `truncated_normal {sigmas: k}` | normal, limits at ±kσ | `(1 − 2kφ(k)/(2Φ(k) − 1))/k²` | rejection |
+| `parabolic` | `3z²/2` | ⅗ | `z = ∛(2u − 1)` |
+| `end_point` | ±1, probability ½ each | 1 | `u < ½` |
+
+The parabolic density grows quadratically towards the limits: 7/8 of the
+draws lie in the outer half of the range, `E[|z|] = 3/4`. It models a
+parameter that is adjusted or selected only until it is within tolerance,
+so that parts pile up near the limits (centring, decentres and tilts of
+mounted elements are the usual case); it sits between the uniform and the
+end-point (worst-case) draws. It takes one uniform per draw through the
+inverse CDF `F(z) = (z³ + 1)/2`, from the trial's Philox stream like the
+others (CONVENTIONS §6), so trials stay independently reproducible. A test
+checks its variance, `E|δ|` and the ⅛ fraction inside half the limit over
+40 000 draws, and the expected-change prediction against the Monte-Carlo
+mean of a separable quadratic criterion.
+
+On the Cooke triplet (default RMS spot criterion shown as √Φ, back focus
+compensated), ±50 µm decentres in x and y of each of the six surfaces, 500
+trials, seed 0, yield at 1.15 × the nominal 19.92 µm:
+
+| distribution | predicted mean | Monte-Carlo mean | 50 % | 90 % | 97.7 % | yield |
+|---|---|---|---|---|---|---|
+| uniform | 22.03 µm | 22.15 µm | 21.61 | 26.01 | 28.73 | 65.2 % |
+| normal, limits at ±2σ | 21.17 | 21.01 | 20.65 | 24.08 | 25.63 | 79.8 % |
+| parabolic | 23.58 | 23.62 | 23.09 | 28.62 | 32.01 | 48.6 % |
+
+The same limits cost a parabolic process more (the √ of the predicted mean
+follows the Monte-Carlo mean within 0.8 %); the time per trial is the same for
+all three (about 1.2 ms on 12 threads).
+
+### Radius tolerances in fringes of power
+
+A curvature tolerance may give its limits in **test fringes of power**:
+`{"param": {"param": "curvature", "surface": 3}, "minus": 3, "plus": 3,
+"unit": "fringes"}` (`ToleranceOperand::power_fringes`). The engine's
+`tolerance` job converts the limits to curvature before the run, over the
+surface's nominal clear aperture `h` (its aperture's bounding radius, else
+its fixed semi-diameter, else the traced one) at the test wavelength
+`irregularity_wavelength_um` (the primary wavelength when null), with
+
+```
+Δc = N · λ (1 + w) / (2 h²),   w = cos θ = √(1 − c²h²),
+```
+
+`tolerance::curvature_per_power_fringe`. One fringe is λ/2 of departure
+from the nominal sphere at the rim of the clear aperture along the surface
+normal, the double-pass path of a test plate or an interferometer at normal
+incidence (as for irregularity). Two spheres touching at the vertex, radii
+`R` and `R + ΔR`, part at the rim by `ΔR (1 − cos θ)` along the normal,
+`sin θ = h/R`, so `Nλ/2 = |ΔR| (1 − w)`; with `Δc = −c² ΔR` and
+`c² h² = (1 − w)(1 + w)` this is the formula above. It holds for flats
+(`Δc = Nλ/h²`, no radius needed) and reduces to the usual
+`ΔR ≈ 4NλR²/D²` (`D = 2h`) for a shallow surface; on a fast one the
+curvature change per fringe is smaller (`(1 + w)/2` of the shallow value,
+0.93 at `c·h = 0.5`). It is first order in `N` (the departure of the
+converted sphere is `Nλ/2` within 0.1 % for any surface, tested on
+four spheres up to `h/R = 0.99`). Positive fringes increase the curvature
+algebraically (the rim moves towards +z). The map is linear, so a
+distribution keeps its shape, and the moments, draws and every result are
+those of the equivalent curvature tolerance; a test checks that a fringe
+tolerance gives bit-identical sensitivity and Monte-Carlo results to the
+curvature tolerance of the converted limits. The result's `fringe_scale`
+lists the curvature change per fringe of each fringe tolerance (null for
+the others); limits, perturbations and sensitivities stay in parameter
+units. A fringe unit on another parameter, or a clear aperture that does
+not fit inside the sphere (`c·h ≥ 1`), is rejected; `ToleranceSpec::validate`
+rejects limits still in fringes, so library callers convert them with
+`ToleranceOperand::resolve_fringes`. The app converts the fringes, ΔR and
+% of R of its radius rows with the same formula.
 
 ### Irregularity and rigid elements
 
@@ -1001,9 +1113,14 @@ Keys, types and defaults are in RESULTS §8. Beyond them:
 * A `null` `criterion` is generated with
   `DefaultMeritSpec::generate_for_tolerancing` from `default_merit`, whose
   default has no thickness boundaries.
-* `percentiles` each lie in [0, 100]. `irregularity_wavelength_um` and
+* `percentiles` each lie in [0, 100]. `irregularity_wavelength_um` (the
+  test wavelength of irregularity and of radius tolerances in fringes) and
   `random_irregularity_orientation` are described under Irregularity and
-  rigid elements. `backend` is as for `optimize`.
+  rigid elements and Radius tolerances in fringes of power. `backend` is as
+  for `optimize`.
+* A tolerance's `distribution` is `uniform` (default), `truncated_normal`,
+  `parabolic` or `end_point` (Distributions); `"unit": "fringes"` on a
+  curvature gives its limits in test fringes of power.
 
 The job hands the evaluator at least 128 trials (and sensitivity points)
 per batch on either backend, whatever `batch` says: values do not depend on

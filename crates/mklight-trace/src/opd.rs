@@ -30,6 +30,25 @@
 //!
 //! Results are reported in waves at the ray's wavelength (indices are
 //! relative to air, so the air wavelength is the reference).
+//!
+//! # Afocal image space
+//!
+//! When the image space is afocal (paraxial image-space NA at the primary
+//! wavelength at most [`AFOCAL_IMAGE_NA`], [`SequentialTracer::afocal_image_space`])
+//! the beam leaves collimated and a sphere about the chief ray's image point
+//! would turn it into a large spurious defocus. Every wavelength of such a
+//! system then uses a **plane reference**: the plane normal to the chief
+//! ray through the exit-pupil point `E = I + s_E d_c` (through `I` when the
+//! paraxial exit pupil is at infinity). A ray meets it after
+//! `s = (s_E − w·d_c)/(d·d_c)` (with `w = Q − I`), the chief ray after
+//! `s_E`, so
+//!
+//! `OPD = (OPL_c − OPL_r) + n (s_E − s)
+//!      = (OPL_c − OPL_r) + n [w·d_c − s_E (1 − d·d_c)]/(d·d_c)`,
+//!
+//! with `1 − d·d_c = |d − d_c|²/2` (free of cancellation). The sign is that
+//! of §4: an output beam that converges (a real focus downstream) has
+//! positive OPD at the pupil edge, a diverging one negative.
 
 use mklight_core::Vec3;
 use serde::{Deserialize, Serialize};
@@ -39,7 +58,13 @@ use crate::numeric::Compensated;
 use crate::trace::{TraceOptions, TraceResult, TraceStatus};
 use crate::tracer::{PreparedField, SequentialTracer};
 
-/// The reference sphere of one (field, wavelength).
+/// Paraxial image-space NA (primary wavelength) at or below which the image
+/// space counts as afocal (working F/# above 5·10⁸) and the OPD reference
+/// is a plane (module docs).
+pub const AFOCAL_IMAGE_NA: f64 = 1e-9;
+
+/// The reference sphere (or, in an afocal image space, plane) of one
+/// (field, wavelength).
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct OpdReference {
     pub chief_opl: Compensated,
@@ -53,6 +78,10 @@ pub struct OpdReference {
     /// Index of image space.
     pub n_image: f64,
     pub wavelength_um: f64,
+    /// Afocal image space: the reference is the plane normal to the chief
+    /// ray through the exit-pupil point (module docs), not a sphere.
+    #[serde(default)]
+    pub afocal: bool,
 }
 
 impl OpdReference {
@@ -66,6 +95,14 @@ impl OpdReference {
         let w = ray.ray.pos - self.center;
         let d = ray.ray.dir;
         let n = self.n_image;
+        if self.afocal {
+            let (dd, s_e) = (d.dot(self.chief_dir), self.plane_offset());
+            if dd.is_nan() || dd <= 0.0 {
+                return None;
+            }
+            let one_minus = 0.5 * (d - self.chief_dir).norm2();
+            return Some(n.mul_add((w.dot(self.chief_dir) - s_e * one_minus) / dd, d_opl));
+        }
         if !self.s_exit_pupil.is_finite() {
             // R → ∞ limit of the sphere formula (module docs).
             return Some(n.mul_add(d.dot(w), d_opl));
@@ -82,6 +119,17 @@ impl OpdReference {
         Some(n.mul_add(b + corr, d_opl))
     }
 
+    /// Distance from the chief ray's image point to the afocal reference
+    /// plane along the chief ray: `s_E`, or 0 when the exit pupil is at
+    /// infinity.
+    fn plane_offset(&self) -> f64 {
+        if self.s_exit_pupil.is_finite() {
+            self.s_exit_pupil
+        } else {
+            0.0
+        }
+    }
+
     /// OPD in waves at this reference's wavelength.
     pub fn opd_waves(&self, ray: &TraceResult) -> Option<f64> {
         self.opd_mm(ray).map(|o| o / (self.wavelength_um * 1e-3))
@@ -95,8 +143,10 @@ impl OpdReference {
     /// moves along the sphere, `u·(δQ + δs d + s δd) = 0` with `u = S − I`,
     /// and `OPD = OPL_c − OPL_r − n s + const` gives
     /// `δOPD = −n (d·δQ − u·(δQ + s δd)/(u·d))`; in the `R → ∞` limit
-    /// `δOPD = n w·δd`. `None` where [`Self::opd_mm`] is undefined or the ray
-    /// runs along the sphere.
+    /// `δOPD = n w·δd`. For the afocal plane the same argument with the
+    /// plane normal `d_c` in place of `u` gives `δs = −d_c·(δQ + s δd)/(d·d_c)`.
+    /// `None` where [`Self::opd_mm`] is undefined or the ray runs along the
+    /// sphere (or plane).
     pub fn opd_tangent(&self, ray: &TraceResult, t: &RayTangent) -> Option<[f64; 2]> {
         if !ray.status.is_ok() {
             return None;
@@ -105,6 +155,19 @@ impl OpdReference {
         let d = ray.ray.dir;
         let n = self.n_image;
         let per_mm = 1.0 / (self.wavelength_um * 1e-3);
+        if self.afocal {
+            let dc = self.chief_dir;
+            let dd = d.dot(dc);
+            if dd.is_nan() || dd <= 0.0 {
+                return None;
+            }
+            let s = (self.plane_offset() - w.dot(dc)) / dd;
+            return Some(std::array::from_fn(|j| {
+                let (dq, ddir) = (t.dpos[j], t.ddir[j]);
+                let ds = -dc.dot(dq + ddir * s) / dd;
+                -n * (d.dot(dq) + ds) * per_mm
+            }));
+        }
         if !self.s_exit_pupil.is_finite() {
             return Some(std::array::from_fn(|j| n * w.dot(t.ddir[j]) * per_mm));
         }
@@ -131,8 +194,18 @@ impl OpdReference {
 }
 
 impl SequentialTracer {
+    /// `true` when the image space is afocal: the paraxial image-space NA
+    /// at the primary wavelength is at most [`AFOCAL_IMAGE_NA`] (or not a
+    /// number). The OPD reference of every wavelength is then a plane
+    /// (module docs).
+    pub fn afocal_image_space(&self) -> bool {
+        let na = self.paraxial().primary().image_na;
+        na.is_nan() || na <= AFOCAL_IMAGE_NA
+    }
+
     /// Build the reference sphere of a field at wavelength `wl` from its
-    /// (unclipped) chief ray. Fails with the chief ray's status.
+    /// (unclipped) chief ray (the reference plane in an afocal image
+    /// space). Fails with the chief ray's status.
     pub fn opd_reference(
         &self,
         field: &PreparedField,
@@ -163,6 +236,7 @@ impl SequentialTracer {
             s_exit_pupil: s_e,
             n_image: sys.n_before(img, wl),
             wavelength_um: sys.wavelengths_um[wl],
+            afocal: self.afocal_image_space(),
         })
     }
 

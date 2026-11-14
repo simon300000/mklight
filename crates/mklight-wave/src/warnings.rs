@@ -37,12 +37,12 @@ pub enum WaveWarning {
         rays: usize,
         recommended_rays: usize,
     },
-    /// The image space is afocal (paraxial image-space NA `image_na` ≈ 0):
-    /// the OPD reference sphere about the chief ray's image point turns
-    /// the collimated beam into a large spurious defocus, so OPD, Zernike,
-    /// PSF, Strehl and MTF describe that, not the system. There is no
-    /// plane-wave (afocal) reference yet; focus the beam with an ideal
-    /// (paraxial) lens in front of the image surface.
+    /// Informational: the image space is afocal (paraxial image-space NA
+    /// `image_na` at the primary wavelength at most [`AFOCAL_IMAGE_NA`]).
+    /// The OPD is measured from a plane normal to the chief ray
+    /// (`mklight_trace::opd`), and image-space results are angular: PSF
+    /// coordinates in mrad, frequencies in cycles/mrad, through-focus as
+    /// vergence in millidioptres ([`crate::traced`], "Afocal image space").
     AfocalImageSpace { image_na: f64 },
     /// The FFT size was rounded, so the image spacing differs from the
     /// request.
@@ -106,10 +106,10 @@ impl fmt::Display for WaveWarning {
             ),
             WaveWarning::AfocalImageSpace { image_na } => write!(
                 f,
-                "image space is afocal (paraxial image-space NA {image_na:.1e}): the reference \
-                 sphere about the chief ray's image point makes the collimated beam a large \
-                 defocus, so OPD, Zernike, PSF, Strehl and MTF are not meaningful; focus the \
-                 beam with an ideal (paraxial) lens before the image surface"
+                "image space is afocal (paraxial image-space NA {image_na:.1e}): the OPD is \
+                 measured from a plane normal to the chief ray; PSF positions are angles in \
+                 mrad (µrad where shown in µm), frequencies in cycles/mrad and focus as \
+                 vergence in millidioptres"
             ),
             WaveWarning::SpacingAdjusted {
                 requested_mm,
@@ -145,16 +145,20 @@ impl fmt::Display for WaveWarning {
     }
 }
 
-/// Paraxial image-space NA below which the image space counts as afocal
-/// (working F/# above 5·10⁸).
-pub const AFOCAL_IMAGE_NA: f64 = 1e-9;
+/// Paraxial image-space NA (primary wavelength) at or below which the image
+/// space counts as afocal (working F/# above 5·10⁸).
+pub use mklight_trace::opd::AFOCAL_IMAGE_NA;
 
-/// [`WaveWarning::AfocalImageSpace`] for a first-order solution whose
-/// image-space marginal ray is (numerically) parallel to the axis.
-pub fn afocal_warning(fo: &mklight_trace::paraxial::FirstOrder) -> Option<WaveWarning> {
-    (!(fo.image_na > AFOCAL_IMAGE_NA)).then_some(WaveWarning::AfocalImageSpace {
-        image_na: fo.image_na,
-    })
+/// [`WaveWarning::AfocalImageSpace`] for a tracer whose image space is
+/// afocal ([`mklight_trace::SequentialTracer::afocal_image_space`]: the
+/// primary wavelength's image-space marginal ray is, numerically, parallel
+/// to the axis).
+pub fn afocal_warning(tracer: &mklight_trace::SequentialTracer) -> Option<WaveWarning> {
+    tracer
+        .afocal_image_space()
+        .then(|| WaveWarning::AfocalImageSpace {
+            image_na: tracer.paraxial().primary().image_na,
+        })
 }
 
 /// Push `w` unless an equal-kind warning is already present.

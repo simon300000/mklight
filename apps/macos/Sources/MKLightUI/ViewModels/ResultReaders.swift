@@ -212,3 +212,37 @@ extension OpticalSystem {
         surfaces.contains { [.toroid, .biconic, .xyPolynomial, .zernikeSag].contains($0.shape.kind) }
     }
 }
+
+/// Units of a wave result's image-space quantities (the result's `units`,
+/// docs/WAVE.md §5): lengths on the image surface, or, for an afocal image
+/// space, angles about the chief ray. Fields named `*_mm` then hold mrad,
+/// frequencies are cycles/mrad and focus shifts are vergence in mD.
+public struct ImageUnits: Sendable, Equatable {
+    public var afocal: Bool
+
+    public init(afocal: Bool = false) { self.afocal = afocal }
+    /// From a result JSON (`units.afocal`; absent: focal).
+    public init(_ result: JSONValue) { afocal = result["units"]?["afocal"]?.bool ?? false }
+
+    public var frequency: String { afocal ? "cycles/mrad" : "cycles/mm" }
+    /// The unit of a `*_mm` value × 1000.
+    public var micro: String { afocal ? "µrad" : "µm" }
+    /// Per unit length (or angle), as a line-spread density.
+    public var density: String { afocal ? "mrad⁻¹" : "mm⁻¹" }
+    public var focusAxis: String { afocal ? "Vergence (mD)" : "Focus shift (mm)" }
+
+    /// A scale-bar label for a `*_mm` value.
+    public func barLabel(_ v: Double) -> String {
+        guard afocal else {
+            return v >= 1 ? String(format: "%g mm", v) : v >= 0.001 ? String(format: "%g µm", v * 1000) : String(format: "%g nm", v * 1e6)
+        }
+        return v >= 1 ? String(format: "%g mrad", v) : v >= 0.001 ? String(format: "%g µrad", v * 1000) : String(format: "%g nrad", v * 1e6)
+    }
+
+    /// A `*_mm` value as `Fmt.length`, or as an angle.
+    public func length(_ v: Double) -> String {
+        guard afocal else { return Fmt.length(v) }
+        guard v.isFinite else { return Fmt.short(v) }
+        return abs(v) < 0.1 ? String(format: "%.2f µrad", v * 1000) : String(format: "%.4f mrad", v)
+    }
+}

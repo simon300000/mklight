@@ -25,6 +25,7 @@ fn absorbing_coating() -> CoatingDef {
             extinction: 0.03,
         }],
         mirror_substrate: None,
+        substrate: Default::default(),
     }
 }
 

@@ -18,9 +18,11 @@
 //!   gaps. Composing a backward step with the forward one is the identity
 //!   up to rounding (tested).
 //!
-//! Intersections ([`intersect`]), refraction ([`refract`]), reflection
-//! ([`reflect`]) and the ideal lens ([`ideal_lens`]) are the reference
-//! tracer's functions, called with the ray in the surface's local frame.
+//! Intersections ([`intersect_within`], with the surface's fixed extent
+//! choosing between two crossings as in the sequential trace), refraction
+//! ([`refract`]), reflection ([`reflect`]) and the ideal lens
+//! ([`ideal_lens`]) are the reference tracer's functions, called with the
+//! ray in the surface's local frame.
 //!
 //! # Media
 //!
@@ -78,7 +80,7 @@
 use mklight_core::materials::coating::InterfaceRT;
 use mklight_core::{Interaction, SurfaceShape, Vec3};
 use mklight_trace::interact::{diffract, ideal_lens, reflect, refract};
-use mklight_trace::surface::{IntersectError, intersect};
+use mklight_trace::surface::{IntersectError, intersect_within};
 use mklight_trace::trace::transfer_into;
 use mklight_trace::{Compensated, Ray};
 use serde::{Deserialize, Serialize};
@@ -355,7 +357,17 @@ impl GhostModel {
                 Direction::Backward => surf.alpha_after[wl],
             };
             // 2. Intersection.
-            let hit = match intersect(&surf.shape, ray.pos, ray.dir, &self.settings().intersect) {
+            let extent = match st.direction {
+                Direction::Forward => mklight_trace::trace::root_extent(sys, s),
+                Direction::Backward => surf.root_extent(),
+            };
+            let hit = match intersect_within(
+                &surf.shape,
+                extent.as_ref(),
+                ray.pos,
+                ray.dir,
+                &self.settings().intersect,
+            ) {
                 Ok(h) => h,
                 Err(e) => {
                     let status = match e {
@@ -488,7 +500,9 @@ impl GhostModel {
                         opl,
                     );
                 }
-                split = surf.coating.rt(lambda, n_in, n_in, cos_i, true);
+                split = surf
+                    .coating
+                    .rt(lambda, n_in, n_in, cos_i, true, st.direction.arrival());
                 applied = [split.rs, split.rp];
                 let k_ref = reflect(dir_in, hit.normal).0;
                 ray.dir = match surf.shape {
@@ -513,7 +527,9 @@ impl GhostModel {
                 };
             } else {
                 // Refracting surface.
-                split = surf.coating.rt(lambda, n_in, n_far, cos_i, false);
+                split = surf
+                    .coating
+                    .rt(lambda, n_in, n_far, cos_i, false, st.direction.arrival());
                 match (st.action, &surf.shape) {
                     (Action::Pass, SurfaceShape::Paraxial { focal_length }) => {
                         let f = match st.direction {

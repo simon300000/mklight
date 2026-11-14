@@ -163,6 +163,8 @@ pub struct CoatingDomain {
     pub n_in: f64,
     pub n_out: f64,
     pub mirror: bool,
+    /// The side of the surface the light arrives from (orders a thin film).
+    pub arrival: mklight_core::materials::coating::Arrival,
 }
 /// Persistent material/side/wavelength records; independent of angle sampling.
 pub struct PreparedCoatings {
@@ -200,6 +202,7 @@ impl PreparedCoatings {
                         d.n_in,
                         d.n_out,
                         d.mirror,
+                        d.arrival,
                         offset as u32,
                         |v| {
                             layers[j] = v;
@@ -291,10 +294,16 @@ impl PreparedCoatings {
                     d.n_out,
                     q.cosine.to_f64(),
                     d.mirror,
+                    d.arrival,
                 );
-                let rt = d
-                    .coating
-                    .rt(d.wavelength, d.n_in, d.n_out, q.cosine.to_f64(), d.mirror);
+                let rt = d.coating.rt(
+                    d.wavelength,
+                    d.n_in,
+                    d.n_out,
+                    q.cosine.to_f64(),
+                    d.mirror,
+                    d.arrival,
+                );
                 for (k, z) in [a.rs, a.rp, a.ts_flux(), a.tp_flux()].iter().enumerate() {
                     v.amplitudes[2 * k] = Df32::from_f64(z.re);
                     v.amplitudes[2 * k + 1] = Df32::from_f64(z.im);

@@ -59,8 +59,9 @@ use mklight_optim::problem::{
     CandidateBatch, EvalStatus, Problem, ScalarEval, merit, total_violation,
 };
 use mklight_optim::tolerance::{
-    Compensator, MonteCarloSettings, OpticalToleranceEvaluator, ToleranceEvaluator,
-    ToleranceOperand, ToleranceSpec, monte_carlo, sensitivity_batched,
+    Compensator, LimitUnit, MonteCarloSettings, OpticalToleranceEvaluator, ToleranceEvaluator,
+    ToleranceOperand, ToleranceSpec, curvature_per_power_fringe, monte_carlo,
+    sensitivity_batched,
 };
 use mklight_optim::{IterationRecord, Monitor, OptimResult, Termination};
 
@@ -332,7 +333,8 @@ fn default_merit_schema(default: Value) -> Value {
             {"type": "object", "required": ["type"], "properties": {
                 "type": {"const": "rms_spot"},
                 "reference": reference,
-                "scope": {"type": "string", "enum": ["monochromatic", "polychromatic"], "default": "monochromatic"}
+                "scope": {"type": "string", "enum": ["monochromatic", "polychromatic"], "default": "polychromatic",
+                    "description": "Spot centroid of the white-light spot (polychromatic; penalises lateral colour) or of each wavelength's own spot (monochromatic)."}
             }},
             {"type": "object", "required": ["type"], "properties": {
                 "type": {"const": "wavefront"},
@@ -1492,8 +1494,11 @@ fn ser_num<S: serde::Serializer>(x: &f64, s: S) -> Result<S::Ok, S::Error> {
 pub struct Optimize;
 
 impl Analysis for Optimize {
+    /// 3: MTF operands use the radiometric pupil amplitude.
+    /// Also: wavefront operands of afocal image spaces use the plane OPD
+    /// reference.
     fn result_version(&self) -> u32 {
-        2
+        3
     }
     fn name(&self) -> &str {
         "optimize"
@@ -1980,8 +1985,11 @@ pub struct Tolerance;
 impl Analysis for Tolerance {
     /// 3: `predicted_criterion` is the expected (Monte-Carlo mean)
     /// criterion, nominal + `expected_change`, no longer nominal + RSS.
+    /// 4: MTF criteria use the radiometric pupil amplitude.
+    /// Also: wavefront criteria of afocal image spaces use the plane OPD
+    /// reference.
     fn result_version(&self) -> u32 {
-        3
+        4
     }
     fn name(&self) -> &str {
         "tolerance"
@@ -2007,7 +2015,7 @@ impl Analysis for Tolerance {
             "type": "object",
             "properties": {
                 "tolerances": {"type": "array", "default": [], "title": "Tolerances",
-                    "description": "Tolerance operands: {\"param\": ParamPath, \"minus\", \"plus\", \"distribution\", \"label\"}. material_dn_d / material_dv_d perturb catalogue index / Abbe offsets around the saved melt values. Empty: ±0.05 mm on every thickness but the back focus and ±0.5 % on every curvature, without the solve-controlled ones. A solve-controlled parameter is rejected."},
+                    "description": "Tolerance operands: {\"param\": ParamPath, \"minus\", \"plus\", \"distribution\", \"label\", \"unit\"}. distribution: uniform (default), truncated_normal {sigmas}, end_point or parabolic (density ∝ δ²). unit \"fringes\" on a curvature: limits in test fringes of power over the surface's clear aperture at irregularity_wavelength_um. material_dn_d / material_dv_d perturb catalogue index / Abbe offsets around the saved melt values. Empty: ±0.05 mm on every thickness but the back focus and ±0.5 % on every curvature, without the solve-controlled ones. A solve-controlled parameter is rejected."},
                 "compensators": {"type": "array", "default": [], "title": "Compensators",
                     "description": "{\"param\": ParamPath, \"range\", \"scale\"}: re-optimised for every trial. A solve-controlled parameter is rejected."},
                 "criterion": {"type": ["object", "null"], "default": null, "title": "Criterion",
@@ -2023,7 +2031,7 @@ impl Analysis for Tolerance {
                 "preview_case": {"type": ["object", "null"], "default": null, "title": "Preview case",
                     "description": "Evaluate only this case and return its compensated system: {type:trial,trial} or {type:sensitivity,operand,positive}; zero-based."},
                 "irregularity_wavelength_um": {"type": ["number", "null"], "exclusiveMinimum": 0, "default": null, "unit": "µm",
-                    "title": "Irregularity test wavelength", "description": "Fringe test wavelength; null keeps an existing overlay's, else the primary wavelength."},
+                    "title": "Test wavelength", "description": "Test wavelength of fringe tolerances (irregularity and power); null: an irregularity keeps an existing overlay's, else (and for power) the primary wavelength."},
                 "random_irregularity_orientation": {"type":"boolean", "default":true,
                     "title":"Random irregularity orientation", "description":"Monte Carlo: independent uniform astigmatism axes in [0,180) degrees per surface and trial, reproducible from the seed. False keeps the model angle; sensitivity always keeps it."},
                 "trials": {"type": "integer", "minimum": 1, "default": 100, "title": "Monte-Carlo trials"},
@@ -2186,6 +2194,16 @@ impl Analysis for Tolerance {
                     ])),
                 ),
                 (
+                    "fringe_scale",
+                    arr(
+                        nf_u(
+                            "1/mm",
+                            "Curvature change per fringe of power; null for a tolerance not in fringes.",
+                        ),
+                        "In tolerance order. Limits, perturbations and sensitivities are in parameter units (curvature for fringes).",
+                    ),
+                ),
+                (
                     "compensators",
                     arr(
                         opaque("Compensator: param, range, scale."),
@@ -2250,10 +2268,59 @@ impl Analysis for Tolerance {
         }
         // Every trial re-solves the solve-controlled parameters (below), so
         // none of them is a tolerance or a compensator.
-        let tolerances =
+        let mut tolerances =
             start.parameters("tolerances", s.tolerances.clone(), auto_tolerances, |t| {
                 &t.param
             })?;
+        // Clear semi-diameters of the nominal system, traced once if a
+        // fringe tolerance needs them.
+        let mut traced: Option<Vec<f64>> = None;
+        let mut traced_radii = |system: &OpticalSystem| -> EngineResult<Vec<f64>> {
+            if traced.is_none() {
+                traced = Some(
+                    TraceEvaluator::new(input.library.clone())
+                        .tracer(system)
+                        .map_err(|e| invalid(format!("{e:?}")))?
+                        .semi_diameters_with(&Default::default(), &ctx.subrange(0.0, 0.0))?
+                        .values,
+                );
+            }
+            Ok(traced.clone().unwrap_or_default())
+        };
+        // Fringes of power become curvature limits over the surface's
+        // nominal clear aperture (its aperture, else its fixed or traced
+        // semi-diameter) at the test wavelength.
+        let wavelength = (s.irregularity_wavelength_um)
+            .unwrap_or_else(|| start.system.wavelengths.primary_um());
+        let mut fringe_scale = vec![None; tolerances.len()];
+        for (k, o) in tolerances.iter_mut().enumerate() {
+            if o.unit != LimitUnit::Fringes {
+                continue;
+            }
+            let system = &start.system;
+            let ParamPath::Curvature { surface } = o.param else {
+                return Err(invalid(format!(
+                    "'tolerances'[{k}]: fringes of power apply to a curvature"
+                )));
+            };
+            let i = (system.surface_index(surface))
+                .ok_or_else(|| invalid(format!("'tolerances'[{k}]: no surface {}", surface.0)))?;
+            let sf = &system.surfaces[i];
+            let h = match (&sf.aperture, sf.semi_diameter) {
+                (Some(a), _) => a.bounding_radius(),
+                (None, SemiDiameter::Fixed { value }) => value,
+                _ => traced_radii(system)?[i],
+            };
+            let c = o.param.get(system)?;
+            let per_fringe = curvature_per_power_fringe(c, h, wavelength).ok_or_else(|| {
+                invalid(format!(
+                    "'tolerances'[{k}]: fringes of power need a clear aperture inside the \
+                     sphere (surface {i}: curvature {c}, clear semi-diameter {h} mm)"
+                ))
+            })?;
+            o.resolve_fringes(per_fringe)?;
+            fringe_scale[k] = Some(per_fringe);
+        }
         if tolerances.is_empty() {
             return Err(invalid(
                 "'tolerances': none given, and the system has nothing to tolerance",
@@ -2285,18 +2352,13 @@ impl Analysis for Tolerance {
             .filter(|p| matches!(p, ParamPath::Irregularity { .. }))
             .collect();
         if !irregular.is_empty() {
+            let radii = traced_radii(&start.system)?;
             let system = &mut start.system;
-            let radii = TraceEvaluator::new(input.library.clone())
-                .tracer(system)
-                .map_err(|e| invalid(format!("{e:?}")))?
-                .semi_diameters_with(&Default::default(), &ctx.subrange(0.0, 0.0))?;
             for p in irregular {
                 let i = system.surface_index(p.surface().unwrap()).unwrap();
                 let semi = system.surfaces[i].semi_diameter;
                 if semi == SemiDiameter::Auto {
-                    system.surfaces[i].semi_diameter = SemiDiameter::Fixed {
-                        value: radii.values[i],
-                    };
+                    system.surfaces[i].semi_diameter = SemiDiameter::Fixed { value: radii[i] };
                 }
                 let fringes = p.get(system)?;
                 p.set(system, fringes)?;
@@ -2447,6 +2509,7 @@ impl Analysis for Tolerance {
             return Ok(AnalysisOutput {
                 json: json!({"status": job_status(stopped, None), "stopped": stopped,
                     "sensitivity": null, "monte_carlo": null, "preview": preview,
+                    "fringe_scale": fringe_scale,
                     "compensators": spec.compensators, "criterion_spec": criterion,
                     "backend": ev.report}),
                 warnings: ev.warnings,
@@ -2562,6 +2625,7 @@ impl Analysis for Tolerance {
             "preview": null,
             "sensitivity": sens_json,
             "monte_carlo": mc_json,
+            "fringe_scale": fringe_scale,
             "compensators": spec.compensators,
             "criterion_spec": criterion,
             "backend": ev.report,
@@ -3150,6 +3214,86 @@ mod tests {
         // Nominal + RSS (the former prediction) is far too optimistic.
         let rss = nominal + f(&sens["rss_change"]);
         assert!(rss < 0.75 * mean, "{rss:e} vs {mean:e}");
+    }
+
+    /// Radius tolerances in fringes of power are the curvature tolerances
+    /// of the converted limits: bit-identical sensitivity and Monte Carlo
+    /// (parabolic draws included), with the curvature per fringe reported.
+    /// A flat converts too; a fringe unit on another parameter is rejected.
+    #[test]
+    fn tolerance_power_fringes_equal_curvature_limits() {
+        let mut sys = samples::cooke_triplet();
+        let traced = TraceEvaluator::builtin()
+            .tracer(&sys)
+            .unwrap()
+            .semi_diameters_with(&Default::default(), &JobContext::new())
+            .unwrap()
+            .values;
+        // Surface 2 has a fixed semi-diameter, surface 1 a traced one.
+        let fixed = traced[2] + 0.5;
+        sys.surfaces[2].semi_diameter = SemiDiameter::Fixed { value: fixed };
+        let wavelength = 0.6328;
+        let curv = |id: u64| ParamPath::Curvature {
+            surface: SurfaceId(id),
+        };
+        let mut fringes = Vec::new();
+        let mut native = Vec::new();
+        let mut scale = Vec::new();
+        for (id, h, minus, plus, d) in [
+            (1, traced[1], 3.0, 3.0, "uniform"),
+            (2, fixed, 2.0, 5.0, "parabolic"),
+        ] {
+            let c = curv(id).get(&sys).unwrap();
+            let k = curvature_per_power_fringe(c, h, wavelength).unwrap();
+            scale.push(json!(k));
+            fringes.push(json!({"param": curv(id), "minus": minus, "plus": plus,
+                "unit": "fringes", "distribution": {"type": d}}));
+            native.push(json!({"param": curv(id), "minus": minus * k, "plus": plus * k,
+                "distribution": {"type": d}}));
+        }
+        let decentre = json!({"param": ParamPath::DecenterY { surface: SurfaceId(3) },
+            "minus": 0.02, "plus": 0.02, "distribution": {"type": "parabolic"}});
+        fringes.push(decentre.clone());
+        native.push(decentre);
+        scale.push(Value::Null);
+        let settings = |tols: &Vec<Value>| {
+            json!({"tolerances": tols, "trials": 40, "seed": 5, "backend": "cpu",
+                "irregularity_wavelength_um": wavelength, "record_trials": 40})
+        };
+        let a = run(sys.clone(), "tolerance", settings(&fringes)).unwrap();
+        let b = run(sys.clone(), "tolerance", settings(&native)).unwrap();
+        assert_eq!(a.json["fringe_scale"], json!(scale));
+        assert_eq!(b.json["fringe_scale"], json!([null, null, null]));
+        for key in ["sensitivity", "monte_carlo"] {
+            let (mut x, mut y) = (a.json[key].clone(), b.json[key].clone());
+            for v in [&mut x, &mut y] {
+                v.as_object_mut().unwrap().remove("seconds_per_trial");
+                if key == "sensitivity" {
+                    for o in v["operands"].as_array_mut().unwrap() {
+                        o.as_object_mut().unwrap().remove("label");
+                    }
+                }
+            }
+            assert_eq!(x, y, "{key}");
+        }
+        // Limits are reported in curvature.
+        let ops = a.json["sensitivity"]["operands"].as_array().unwrap();
+        assert_eq!(f(&ops[0]["plus"]), 3.0 * f(&scale[0]));
+        // A flat converts with Nλ/h² (surface 1 flattened).
+        let mut flat = sys.clone();
+        curv(1).set(&mut flat, 0.0).unwrap();
+        flat.surfaces[1].semi_diameter = SemiDiameter::Fixed { value: 9.0 };
+        let r = run(flat, "tolerance", json!({"tolerances": [fringes[0].clone()],
+            "mode": "sensitivity", "backend": "cpu", "irregularity_wavelength_um": wavelength}))
+        .unwrap();
+        assert_eq!(f(&r.json["fringe_scale"][0]), wavelength * 1e-3 / 81.0);
+        // Fringes of power on a thickness are rejected.
+        let bad = json!({"param": ParamPath::Thickness { surface: SurfaceId(1) },
+            "minus": 1, "plus": 1, "unit": "fringes"});
+        let e = run(sys, "tolerance", json!({"tolerances": [bad], "backend": "cpu"}))
+            .err()
+            .unwrap();
+        assert!(e.to_string().contains("curvature"), "{e}");
     }
 
     /// Sensitivity and Monte Carlo on the Cooke triplet with a back-focus

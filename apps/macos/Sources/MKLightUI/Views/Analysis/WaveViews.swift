@@ -141,11 +141,13 @@ struct ZernikeTable: View {
 struct PSFView: View {
     struct Item { var title: String; var grid: Grid2D; var strehl: Double; var spacing: Double; var size: Int }
     let items: [Item]
+    let units: ImageUnits
     @State private var selected = 0
     @State private var log = false
 
     init?(output: AnalysisOutput, context: AnalysisContext) {
         guard let list = output.json["psfs"]?.array, !list.isEmpty else { return nil }
+        units = ImageUnits(output.json)
         items = list.compactMap { p in
             let psf = p["psf"]
             guard let n = psf?["size"]?.int, let h = psf?["spacing_mm"]?.nf,
@@ -179,7 +181,7 @@ struct PSFView: View {
                         let bar = Nice.length(width / 4)
                         VStack(alignment: .leading, spacing: 2) {
                             Rectangle().frame(width: side * CGFloat(bar / width), height: 1.5)
-                            Text(Nice.lengthLabel(bar)).font(.caption2)
+                            Text(units.barLabel(bar)).font(.caption2)
                         }
                         .foregroundStyle(.secondary)
                         .padding(Space.s)
@@ -200,9 +202,11 @@ struct PSFView: View {
 struct MTFVsFieldView: View {
     let field: [Double]
     let curves: [(Double, [Double], [Double])]
+    let units: ImageUnits
 
     init?(output: AnalysisOutput, context: AnalysisContext) {
         let j = output.json
+        units = ImageUnits(j)
         guard let f = output.buffer(ref: j["normalized_field"])?.doubles ?? j["normalized_field"]?.nfArray,
             let list = j["curves"]?.array, !list.isEmpty
         else { return nil }
@@ -219,7 +223,7 @@ struct MTFVsFieldView: View {
         VStack(alignment: .leading, spacing: Space.s) {
             FlowLayout(spacing: Space.m) {
                 ForEach(Array(curves.enumerated()), id: \.offset) { k, c in
-                    LegendItem(color: Palette.fieldColor(k), label: Fmt.short(c.0) + " cycles/mm")
+                    LegendItem(color: Palette.fieldColor(k), label: Fmt.short(c.0) + " " + units.frequency)
                 }
                 LegendItem(color: .secondary, label: "T solid, S dashed")
             }
@@ -239,10 +243,12 @@ struct ThroughFocusMTFView: View {
     struct FieldCurves { var title: String; var curves: [(Double, [Double], [Double])] }
     let focus: [Double]
     let fields: [FieldCurves]
+    let units: ImageUnits
     @State private var selected = 0
 
     init?(output: AnalysisOutput, context: AnalysisContext) {
         let j = output.json
+        units = ImageUnits(j)
         guard let f = output.buffer(ref: j["focus_mm"])?.doubles ?? j["focus_mm"]?.nfArray, let list = j["fields"]?.array, !list.isEmpty
         else { return nil }
         focus = f
@@ -270,7 +276,7 @@ struct ThroughFocusMTFView: View {
             ItemPicker(titles: fields.map(\.title), selection: $selected)
             FlowLayout(spacing: Space.m) {
                 ForEach(Array(f.curves.enumerated()), id: \.offset) { k, c in
-                    LegendItem(color: Palette.fieldColor(k), label: Fmt.short(c.0) + " cycles/mm")
+                    LegendItem(color: Palette.fieldColor(k), label: Fmt.short(c.0) + " " + units.frequency)
                 }
                 LegendItem(color: .secondary, label: "T solid, S dashed")
             }
@@ -280,7 +286,7 @@ struct ThroughFocusMTFView: View {
                         Series(id: "t\(k)", label: "", color: Palette.fieldColor(k), points: zip(focus, c.1).map { ($0, $1) }),
                         Series(id: "s\(k)", label: "", color: Palette.fieldColor(k), points: zip(focus, c.2).map { ($0, $1) }, dashed: true),
                     ]
-                }, xLabel: "Focus shift (mm)", yLabel: "Modulation", xDomain: focusDomain, yDomain: 0...1.02, zeroLine: false,
+                }, xLabel: units.focusAxis, yLabel: "Modulation", xDomain: focusDomain, yDomain: 0...1.02, zeroLine: false,
                 markers: [(x: 0, label: "Image")])
         }
         .padding(Space.m)
@@ -290,9 +296,11 @@ struct ThroughFocusMTFView: View {
 struct LineSpreadView: View {
     struct Item { var field: Int; var x: [Double]; var lx: [Double]; var ly: [Double] }
     let items: [Item]
+    let units: ImageUnits
 
     init?(output: AnalysisOutput, context: AnalysisContext) {
         guard let list = output.json["fields"]?.array, !list.isEmpty else { return nil }
+        units = ImageUnits(output.json)
         items = list.enumerated().compactMap { k, f in
             guard let x = output.buffer(ref: f["positions_mm"])?.doubles else { return nil }
             return Item(
@@ -314,7 +322,7 @@ struct LineSpreadView: View {
                         Series(id: "x\(i.field)", label: "", color: Palette.fieldColor(i.field), points: zip(i.x, i.lx).map { ($0, $1) }),
                         Series(id: "y\(i.field)", label: "", color: Palette.fieldColor(i.field), points: zip(i.x, i.ly).map { ($0, $1) }, dashed: true),
                     ]
-                }, xLabel: "Position (µm)", yLabel: "Line spread (mm⁻¹)", zeroLine: false)
+                }, xLabel: "Position (\(units.micro))", yLabel: "Line spread (\(units.density))", zeroLine: false)
         }
         .padding(Space.m)
     }

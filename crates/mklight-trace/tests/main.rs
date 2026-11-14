@@ -4,6 +4,7 @@
 
 mod common;
 
+mod afocal_opd;
 mod aim_stop;
 mod analytic;
 mod extended_surfaces;

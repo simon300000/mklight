@@ -19,7 +19,9 @@
 //! # Per surface
 //!
 //! 1. transfer into the surface frame (above);
-//! 2. intersect ([`crate::surface::intersect`]); the signed distance times the
+//! 2. intersect ([`crate::surface::intersect_within`], with the surface's
+//!    fixed extent `ResolvedSurface::root_extent` choosing between two
+//!    crossings, clipping or not); the signed distance times the
 //!    index before the surface is added to the optical path with exact
 //!    products and compensated sums; internal absorption `exp(−α·t)` of the
 //!    medium before the surface is accumulated as a sum of exponents;
@@ -45,7 +47,21 @@ use serde::{Deserialize, Serialize};
 use crate::interact::{diffract, ideal_lens, reflect, refract};
 use crate::numeric::Compensated;
 use crate::paraxial::ideal_lens_object_vergence;
-use crate::surface::{IntersectError, IntersectSettings, SHEET_TOL, intersect};
+use crate::surface::{IntersectError, IntersectSettings, SHEET_TOL, intersect_within};
+
+/// The fixed extent that chooses between two crossings of surface `i`
+/// arriving forward (`ResolvedSurface::root_extent`), except at surface 1
+/// for an object at infinity: those rays have no real start (their start is
+/// a reference point on a plane through the first vertex), so the
+/// nearer-vertex rule applies (docs/SURFACES.md §8).
+#[inline]
+pub fn root_extent(sys: &ResolvedSystem, i: usize) -> Option<mklight_core::ApertureShape> {
+    if i == 1 && sys.object_at_infinity {
+        None
+    } else {
+        sys.surfaces[i].root_extent()
+    }
+}
 
 /// A ray: point and unit direction in one frame.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -305,7 +321,14 @@ fn step(
     w.ray = transfer_into(sys, i, w.ray);
     let s = &sys.surfaces[i];
     let n1 = sys.n_before(i, wl);
-    let hit = match intersect(&s.shape, w.ray.pos, w.ray.dir, &opts.intersect) {
+    let extent = root_extent(sys, i);
+    let hit = match intersect_within(
+        &s.shape,
+        extent.as_ref(),
+        w.ray.pos,
+        w.ray.dir,
+        &opts.intersect,
+    ) {
         Ok(h) => h,
         Err(e) => {
             return Err(match e {
@@ -526,6 +549,9 @@ struct LaneSurface {
     shift: Option<f64>,
     /// `Some((c, k))` for a conic with `c ≠ 0`, `None` for a plane.
     conic: Option<(f64, f64)>,
+    /// The surface has a fixed extent (`ResolvedSurface::root_extent`):
+    /// rays crossing its vertex sheet twice go through [`step`].
+    extent: bool,
     refract: bool,
 }
 
@@ -559,6 +585,7 @@ fn lane_surface(sys: &ResolvedSystem, i: usize) -> Option<LaneSurface> {
     Some(LaneSurface {
         shift,
         conic,
+        extent: root_extent(sys, i).is_some(),
         refract,
     })
 }
@@ -641,13 +668,19 @@ fn lane_step(
                 let v2 =
                     t2.is_finite() && x2.is_finite() && y2.is_finite() && z2.is_finite() && sheet2;
                 // Both on the vertex sheet: the one nearer the vertex, ties
-                // to t₁ (`conic_from`).
+                // to t₁ (`conic_from` without an extent). With an extent the
+                // choice also depends on it: such lanes go through `step`.
                 let first = v1 && (!v2 || x1.mul_add(x1, y1 * y1) <= x2.mul_add(x2, y2 * y2));
                 ts[l] = if first { t1 } else { t2 };
                 hx[l] = if first { x1 } else { x2 };
                 hy[l] = if first { y1 } else { y2 };
                 hz[l] = if first { z1 } else { z2 };
-                ok[l] = !disc.is_nan() && disc >= 0.0 && qq != 0.0 && a[l] != 0.0 && (v1 || v2);
+                ok[l] = !disc.is_nan()
+                    && disc >= 0.0
+                    && qq != 0.0
+                    && a[l] != 0.0
+                    && (v1 || v2)
+                    && !(ls.extent && v1 && v2);
             }
             // `conic_normal`: (−cx, −cy, 1 − κcz) normalised as `Vec3::norm`.
             for l in 0..N {

@@ -424,7 +424,13 @@ intersection, clipping, interaction) with one split:
 
 * **Decisions in f32**, mirroring the reference operation for operation:
   the closest-approach conic intersection with Kahan's discriminant, stable
-  roots and vertex-sheet selection; the even-asphere Newton iteration from
+  roots, vertex-sheet selection and the root choice between two crossings
+  (SURFACES.md §8: the packed aperture outline as the surface's fixed
+  extent, tested in f32 on the packed sizes; no layout field is added;
+  `mkl_intersect` takes `MKL_ROOT_*`: `NEAREST` on the forward step into
+  surface 1 of an object at infinity and for the object surface in the
+  aiming kernels, `FROM_START` otherwise); the
+  even-asphere Newton iteration from
   the conic seed with the reference's Miss / NoConvergence / OutsideDomain
   classification; the TIR test of the stable vector Snell law
   (CONVENTIONS §7.3). These decide the status and give a first `t`.
@@ -475,7 +481,9 @@ double-float step above; all f32 parameters the geometry depends on carry
 their residual in the layout (§2).
 
 f32 tolerances, the only intended differences from the reference: the
-vertex-sheet test uses `1 − κcz ≥ −2⁻²⁰`; asphere Newton converges when
+vertex-sheet test uses `1 − κcz ≥ −2⁻²⁰`; the root choice tests the f32
+crossing against the f32 (hi) aperture sizes, so it can differ only for a
+crossing within f32 rounding of the extent's edge; asphere Newton converges when
 `|g| ≤ tol_abs + tol_rel·(|t| + |z| + |conic sag| + |poly|)` (default
 `1e-9 mm + 2⁻²⁰·…`, the f32 resolution of the residual) within
 `NewtonSettings::max_iterations`, followed by the double-float refinement.
@@ -1610,6 +1618,23 @@ belong to families that otherwise have native routes:
 | `encircled_energy` | its curve is a step function of the ray distances: a ray within the device's position budget of a radius sample falls on either side of it, so the energy bins need the f64 positions |
 | `polarization_pupil_map` | its fast and diattenuation axes are undefined where retardance or diattenuation vanishes, and f32 rounding turns them by 1–2 rad there |
 | `wavefront_map` | the host traces and resamples every wave pupil in f64 (WAVE.md §9); the map's statistics, Zernike fit and Seidel terms are reductions of those arrays, which a device could only read back at lower precision |
+
+**Afocal image spaces.** A system whose paraxial image NA is at most 10⁻⁹
+measures OPD from a plane normal to the chief ray (WAVE.md §5). The device
+OPD kernels (the `opd_fan` geometry request, the solvers' resident
+wavefront operands) and the device pupil placement (`PupilTracer`, used by
+the solvers' MTF operands) know only the reference sphere, so afocal work
+there is completed by the f64 reference on every backend, including an
+explicit device request: `opd_fan` returns the reference result with a
+warning (reported as `reference_completion`), the evaluator hands every
+chief ray of an afocal candidate to the host when the merit has wavefront
+operands, and `PupilTracer` traces afocal pupils with
+`traced::trace_lattice` and uploads the host-resampled pupil. The native
+wave analyses (Metal and WebGPU) already trace on the host and only
+transform on the device; the afocal pupil is a plane-wave (telecentric)
+geometry, so their transforms are unchanged and native
+(`crates/mklight-engine/tests/afocal.rs` checks every available backend).
+`image_simulation` rejects afocal systems on every backend.
 
 **Residual gaps on Metal.** Native results publish unchecked, so known
 differences are listed here. Under the per-quantity contracts of §9.4,

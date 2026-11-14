@@ -313,7 +313,9 @@ GPU solver adapters; engine capability and `auto` routing are in GPU.md
 layouts in `include/mklight_radiometry_types.h`. Use `record_desc::<T>` for
 U32 record buffers. The immutable domains contain resolved wavelength,
 incident/exit index, incidence side, coating definition and layer indices;
-`CoatingSpec::resolve` preserves the reference stack reversal rule. Small
+`CoatingSpec::resolve` takes the incidence side (`Arrival`) and orders the
+layers with `ResolvedCoating::layer_order`, the reference's per-surface
+substrate side (`docs/MATERIALS.md`). Small
 material resolution and spectral table interpolation use the existing host
 material service. All angle-dependent amplitudes, powers and thin-film
 matrix products run on the device. `PreparedCoatings` retains shared-memory

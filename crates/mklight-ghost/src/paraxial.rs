@@ -198,9 +198,14 @@ pub fn axial_throughput(model: &GhostModel, steps: &[Step], wl: usize) -> (f64, 
             st.direction == Direction::Backward,
         );
         if s.interaction == Interaction::Reflect {
-            t *= s.coating.rt(lambda, n_in, n_in, 1.0, true).r_unpolarized();
+            t *= s
+                .coating
+                .rt(lambda, n_in, n_in, 1.0, true, st.direction.arrival())
+                .r_unpolarized();
         } else {
-            let rt = s.coating.rt(lambda, n_in, n_far, 1.0, false);
+            let rt = s
+                .coating
+                .rt(lambda, n_in, n_far, 1.0, false, st.direction.arrival());
             match st.action {
                 Action::Pass => t *= rt.t_unpolarized(),
                 Action::Reflect => r *= rt.r_unpolarized(),

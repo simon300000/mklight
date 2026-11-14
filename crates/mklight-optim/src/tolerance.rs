@@ -57,13 +57,71 @@ pub enum Distribution {
     /// Exactly `−minus` or `+plus`, each with probability ½ (worst-case
     /// style Monte Carlo).
     EndPoint,
+    /// Parabolic: density `p(z) = 3z²/2` on `z ∈ [−1, 1]`, each side scaled
+    /// to its own limit (`δ = z·plus` for `z ≥ 0`, `z·minus` otherwise). The
+    /// density grows quadratically towards the limits, so most draws lie
+    /// near them (`E[z²] = 3/5`, between uniform ⅓ and end point 1): a
+    /// process that is adjusted only until it is within tolerance.
+    /// Sampled by the inverse CDF `z = ∛(2u − 1)` from one uniform draw.
+    Parabolic,
+}
+
+/// The unit of a tolerance's limits.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LimitUnit {
+    /// The parameter's own unit.
+    #[default]
+    Parameter,
+    /// Test fringes of power, for a curvature
+    /// ([`curvature_per_power_fringe`]). A caller converts the limits to
+    /// curvature with [`ToleranceOperand::resolve_fringes`] before a run
+    /// (the engine's `tolerance` job does, from the surface's clear
+    /// aperture and the test wavelength).
+    Fringes,
+}
+
+impl LimitUnit {
+    fn is_parameter(&self) -> bool {
+        *self == LimitUnit::Parameter
+    }
+}
+
+/// Curvature change (1/mm) per test fringe of power on a surface of
+/// curvature `c` over a clear aperture of radius `h` (mm), at the test
+/// wavelength `λ` (µm); `None` when the aperture is not inside the sphere
+/// (`c·h ≥ 1`) or not positive.
+///
+/// A fringe of power is λ/2 of departure from the nominal sphere at the
+/// rim of the clear aperture, measured along the surface normal (the
+/// double-pass path of a test plate or an interferometer at normal
+/// incidence). A sphere of radius `R + ΔR` touching the nominal one at the
+/// vertex departs from it by `ΔR (1 − cos θ)` at the rim, `sin θ = c·h`, so
+/// `N λ/2 = |ΔR| (1 − w)` with `w = cos θ = √(1 − c²h²)`, and, since
+/// `Δc = −ΔR c²` and `c² = (1 − w)(1 + w)/h²`,
+///
+/// `Δc = N · λ (1 + w) / (2 h²)`,
+///
+/// which holds for flats too (`Δc = Nλ/h²`). It is exact to first order in
+/// `N`. For a shallow surface it is the usual `ΔR ≈ 4NλR²/D²`, `D = 2h`;
+/// on a fast surface the curvature change per fringe is smaller (a
+/// hemisphere, `w = 0`, has half of it). Positive fringes increase the
+/// curvature algebraically: the rim moves towards +z relative to the vertex.
+pub fn curvature_per_power_fringe(c: f64, h: f64, wavelength_um: f64) -> Option<f64> {
+    let ch2 = (c * h) * (c * h);
+    if !(h > 0.0 && h.is_finite() && ch2 < 1.0 && wavelength_um > 0.0 && wavelength_um.is_finite())
+    {
+        return None;
+    }
+    let w = (1.0 - ch2).sqrt();
+    Some(wavelength_um * 1e-3 * (1.0 + w) / (2.0 * h * h))
 }
 
 /// One toleranced parameter.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ToleranceOperand {
     pub param: ParamPath,
-    /// Magnitude of the negative limit (≥ 0), parameter units.
+    /// Magnitude of the negative limit (≥ 0), in `unit`.
     pub minus: f64,
     /// Positive limit (≥ 0).
     pub plus: f64,
@@ -71,6 +129,10 @@ pub struct ToleranceOperand {
     pub distribution: Distribution,
     #[serde(default)]
     pub label: String,
+    /// The limits' unit: the parameter's (default) or test fringes of power
+    /// on a curvature.
+    #[serde(default, skip_serializing_if = "LimitUnit::is_parameter")]
+    pub unit: LimitUnit,
 }
 
 impl ToleranceOperand {
@@ -81,11 +143,43 @@ impl ToleranceOperand {
             plus: tol,
             distribution: Distribution::Uniform,
             label: String::new(),
+            unit: LimitUnit::Parameter,
         }
     }
     pub fn with_distribution(mut self, d: Distribution) -> Self {
         self.distribution = d;
         self
+    }
+    /// A curvature tolerance of `±fringes` test fringes of power.
+    pub fn power_fringes(surface: mklight_core::SurfaceId, fringes: f64) -> Self {
+        ToleranceOperand {
+            unit: LimitUnit::Fringes,
+            ..Self::symmetric(ParamPath::Curvature { surface }, fringes)
+        }
+    }
+    /// Convert fringe limits to curvature with `curvature_per_fringe`
+    /// ([`curvature_per_power_fringe`]); the unit becomes the parameter's.
+    /// The map is linear, so every distribution keeps its shape and the
+    /// draws and moments scale exactly. Limits already in parameter units
+    /// are left alone.
+    pub fn resolve_fringes(&mut self, curvature_per_fringe: f64) -> MkResult<()> {
+        if self.unit != LimitUnit::Fringes {
+            return Ok(());
+        }
+        if !matches!(self.param, ParamPath::Curvature { .. }) {
+            return Err(MkError::InvalidParam(
+                "fringes of power apply to a curvature tolerance".into(),
+            ));
+        }
+        if !(curvature_per_fringe > 0.0 && curvature_per_fringe.is_finite()) {
+            return Err(MkError::InvalidParam(
+                "fringes of power need a clear aperture inside the sphere".into(),
+            ));
+        }
+        self.minus *= curvature_per_fringe;
+        self.plus *= curvature_per_fringe;
+        self.unit = LimitUnit::Parameter;
+        Ok(())
     }
     /// `label`, or a readable name for the parameter.
     pub fn display_label(&self) -> String {
@@ -140,14 +234,16 @@ impl ToleranceOperand {
                 )
             }
             Distribution::EndPoint => ((p - m) / 2.0, (p * p + m * m) / 2.0),
+            // E[|z|] = 3/4 and E[z²] = 3/5 under the density 3z²/2 on [−1, 1].
+            Distribution::Parabolic => ((p - m) / 2.0 * 0.75, (p * p + m * m) / 2.0 * 0.6),
         }
     }
     /// Expected criterion change over this tolerance's distribution, from
     /// the changes at its limits: `ΔΦ(δ) = aδ + bδ²` through
     /// `(−minus, change_minus)`, `(0, 0)`, `(+plus, change_plus)`, so
     /// `E[ΔΦ] = a·E[δ] + b·E[δ²]`. Symmetric limits `±L`: the mean of the two
-    /// changes times `E[δ²]/L²` (1 end point, ⅓ uniform, ≈ 0.193 for the
-    /// normal truncated at 2σ). A one-sided tolerance is taken as quadratic.
+    /// changes times `E[δ²]/L²` (1 end point, ⅗ parabolic, ⅓ uniform,
+    /// ≈ 0.193 for the normal truncated at 2σ). A one-sided tolerance is taken as quadratic.
     pub fn expected_change(&self, change_minus: f64, change_plus: f64) -> f64 {
         let (cm, cp) = (change_minus, change_plus);
         if !(cm.is_finite() && cp.is_finite()) {
@@ -184,6 +280,15 @@ impl ToleranceOperand {
                     -self.minus
                 } else {
                     self.plus
+                }
+            }
+            Distribution::Parabolic => {
+                // Inverse CDF of 3z²/2: F(z) = (z³ + 1)/2.
+                let z = (2.0 * rng.uniform() - 1.0).cbrt();
+                if z >= 0.0 {
+                    z * self.plus
+                } else {
+                    z * self.minus
                 }
             }
         }
@@ -314,6 +419,12 @@ impl ToleranceSpec {
         }
         let mut ranges = BTreeMap::new();
         for (i, o) in self.operands.iter().enumerate() {
+            if o.unit != LimitUnit::Parameter {
+                return Err(MkError::InvalidParam(format!(
+                    "tolerance {i}: limits in fringes must first be converted to curvature \
+                     (ToleranceOperand::resolve_fringes)"
+                )));
+            }
             if !(o.minus >= 0.0 && o.plus >= 0.0 && o.minus.is_finite() && o.plus.is_finite()) {
                 return Err(MkError::InvalidParam(format!(
                     "tolerance {i}: limits must be finite and ≥ 0"

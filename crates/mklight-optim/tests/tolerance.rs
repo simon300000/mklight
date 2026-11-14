@@ -117,6 +117,14 @@ fn distributions_have_the_right_moments() {
     let (_, v, xs) = stats(&mk(Distribution::EndPoint));
     assert!(xs.iter().all(|x| x.abs() == a));
     assert!((v / (a * a) - 1.0).abs() < 0.01);
+    // Parabolic, density 3z²/2 on [−1, 1]: variance ⅗a², E|δ| = ¾a, and the
+    // fraction inside half the limit is (½)³ = ⅛.
+    let (m, v, xs) = stats(&mk(Distribution::Parabolic));
+    assert!(m.abs() < 3e-3 && (v / (0.6 * a * a) - 1.0).abs() < 0.02, "{m} {v}");
+    let abs = xs.iter().map(|x| x.abs()).sum::<f64>() / n as f64;
+    assert!((abs / (0.75 * a) - 1.0).abs() < 0.01, "{abs}");
+    let inner = xs.iter().filter(|x| x.abs() < a / 2.0).count() as f64 / n as f64;
+    assert!((inner - 0.125).abs() < 0.006, "{inner}");
     // Each trial is reproducible on its own and independent of trial order.
     let s = mk(Distribution::Uniform);
     assert_eq!(s.sample_trial(5, 123), s.sample_trial(5, 123));
@@ -136,6 +144,7 @@ fn sensitivity_with_and_without_compensator() {
             plus: 0.3,
             distribution: Distribution::Uniform,
             label: "air".into(),
+            unit: Default::default(),
         },
     ]);
     let ev = ModelEvaluator;
@@ -942,6 +951,7 @@ fn expected_change_predicts_the_monte_carlo_mean() {
         Distribution::TruncatedNormal { sigmas: 2.0 },
         Distribution::TruncatedNormal { sigmas: 3.0 },
         Distribution::EndPoint,
+        Distribution::Parabolic,
     ];
     let limits = [(0.1, 0.1), (0.05, 0.3), (0.2, 0.0), (0.0, 0.15)];
     let mut ops = Vec::new();
@@ -954,6 +964,7 @@ fn expected_change_predicts_the_monte_carlo_mean() {
                 plus,
                 distribution: *d,
                 label: String::new(),
+                unit: Default::default(),
             });
             // Linear terms only where the one-sided quadratic assumption
             // does not apply (both limits non-zero).
@@ -1004,4 +1015,63 @@ fn expected_change_predicts_the_monte_carlo_mean() {
         mc.mean,
         r.predicted_criterion()
     );
+}
+
+/// Fringes of power: the curvature change per fringe is λ(1 + cos θ)/(2h²);
+/// the changed sphere departs from the nominal one by Nλ/2 along the normal
+/// at the rim of the clear aperture; flats and shallow surfaces give the
+/// usual Nλ/h² and ΔR ≈ 4NλR²/D².
+#[test]
+fn power_fringes_convert_to_curvature() {
+    use mklight_optim::tolerance::curvature_per_power_fringe;
+    let lam = 0.6328;
+    let flat = curvature_per_power_fringe(0.0, 10.0, lam).unwrap();
+    assert!((flat - lam * 1e-3 / 100.0).abs() < 1e-18);
+    let (r, h) = (500.0, 10.0);
+    let dr = curvature_per_power_fringe(1.0 / r, h, lam).unwrap() * r * r;
+    let approx = 4.0 * lam * 1e-3 * r * r / (2.0 * h).powi(2);
+    assert!((dr / approx - 1.0).abs() < 1e-3, "{dr} {approx}");
+    let n = 3.0;
+    for (r, h) in [(20.0, 15.0), (-30.0, 12.0), (50.0, 49.0), (-8.0, 7.9)] {
+        let c: f64 = 1.0 / r;
+        let r2 = 1.0 / (c + n * curvature_per_power_fringe(c, h, lam).unwrap());
+        // The normal through the rim point passes through the nominal
+        // centre (0, R); intersect it with the changed sphere (centre
+        // (0, R′), touching the nominal one at the vertex).
+        let s0 = r - r.signum() * (r * r - h * h).sqrt();
+        let u = [h / r.abs(), (s0 - r) / r.abs()];
+        let d = [0.0, r - r2];
+        let du = d[0] * u[0] + d[1] * u[1];
+        let disc = du * du - (d[0] * d[0] + d[1] * d[1]) + r2 * r2;
+        let t = [-du + disc.sqrt(), -du - disc.sqrt()]
+            .into_iter()
+            .min_by(|a, b| (a - r.abs()).abs().total_cmp(&(b - r.abs()).abs()))
+            .unwrap();
+        let departure = (t - r.abs()).abs();
+        let want = n * lam * 1e-3 / 2.0;
+        assert!(
+            (departure / want - 1.0).abs() < 1e-3,
+            "R {r} h {h}: {departure} vs {want}"
+        );
+        // Positive fringes move the rim towards +z.
+        let s1 = r2 - r2.signum() * (r2 * r2 - h * h).sqrt();
+        assert!(s1 > s0, "R {r}: {s1} {s0}");
+    }
+    // The rim must lie on the sphere.
+    assert!(curvature_per_power_fringe(0.1, 10.0, lam).is_none());
+    // Converted limits keep every distribution's shape: draws scale exactly.
+    let curv = ParamPath::Curvature {
+        surface: SurfaceId(10),
+    };
+    let mut o = ToleranceOperand::power_fringes(SurfaceId(10), 2.0)
+        .with_distribution(Distribution::Parabolic);
+    assert!(ToleranceSpec::new(vec![o.clone()]).validate().is_err());
+    let k = curvature_per_power_fringe(1.0 / 50.0, 12.0, lam).unwrap();
+    o.resolve_fringes(k).unwrap();
+    let native =
+        ToleranceOperand::symmetric(curv, 2.0 * k).with_distribution(Distribution::Parabolic);
+    assert_eq!(o, native);
+    let mut not_curvature = ToleranceOperand::power_fringes(SurfaceId(10), 1.0);
+    not_curvature.param = t(10);
+    assert!(not_curvature.resolve_fringes(k).is_err());
 }

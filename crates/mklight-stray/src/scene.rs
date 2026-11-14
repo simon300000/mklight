@@ -216,6 +216,13 @@ impl Interface {
     pub fn surface(&self) -> usize {
         self.passes[0].surface
     }
+    /// The side of the surface, in the sequential order of the first pass,
+    /// that light arriving on `side` comes from: the first pass's incident
+    /// side holds the medium before that surface. It orders a thin film the
+    /// same way as the sequential and ghost solvers.
+    pub fn arrival(&self, side: Side) -> mklight_core::materials::coating::Arrival {
+        mklight_core::materials::coating::Arrival::forward(side == self.passes[0].incident_side)
+    }
     pub fn medium(&self, side: Side) -> MediumId {
         match side {
             Side::Minus => self.medium_minus,

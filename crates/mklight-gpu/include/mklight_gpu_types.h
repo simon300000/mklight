@@ -146,6 +146,16 @@
 #define MKL_APERTURE_RECTANGULAR 3u
 #define MKL_APERTURE_ELLIPTICAL 4u
 
+/* Root choice of an intersection between two crossings of a conic's vertex
+ * sheet (docs/SURFACES.md §8), an argument of mkl_intersect:
+ *   NEAREST     the crossing nearer the vertex: no extent (the object
+ *               surface; surface 1 for an object at infinity, whose rays
+ *               have no real start)
+ *   FROM_START  the surface's packed aperture outline as its extent, the
+ *               ray arriving from its start point */
+#define MKL_ROOT_NEAREST 0u
+#define MKL_ROOT_FROM_START 1u
+
 /* MklPackedSurface.flags */
 #define MKL_SURF_HAS_TO_NEXT (1u << 0)     /* to_next_* fields are valid */
 #define MKL_SURF_AXIAL (1u << 1)           /* to_next is a pure shift: rot = I, origin = (0, 0, thickness) */

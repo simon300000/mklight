@@ -497,7 +497,7 @@ struct RuleIssues {
 
     mutating func coating(_ c: CoatingDef, _ path: String) {
         switch c {
-        case .thinFilm(let reference, let layers, let substrate):
+        case .thinFilm(let reference, let layers, let substrate, _):
             positive("invalid_coating", "\(path).reference_wavelength_um", reference)
             for (j, layer) in layers.enumerated() {
                 let p = "\(path).layers[\(j)]"

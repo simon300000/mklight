@@ -56,7 +56,7 @@
 // Small fixed-size matrix code reads best with explicit indices.
 #![allow(clippy::needless_range_loop)]
 
-use mklight_core::materials::coating::{Complex64, InterfaceAmplitudes, InterfaceRT};
+use mklight_core::materials::coating::{Arrival, Complex64, InterfaceAmplitudes, InterfaceRT};
 use mklight_core::math::Mat3;
 use mklight_core::resolved::ResolvedSurface;
 use mklight_core::{
@@ -715,6 +715,7 @@ fn step_power(
         s.n_after[wl],
         cos_i,
         s.interaction == Interaction::Reflect,
+        Arrival::Before,
     )
 }
 
@@ -806,7 +807,9 @@ pub fn interface_steps(
                 g,
             )
         } else {
-            let a = s.coating.amplitudes(lambda, n1, n2, ci, mirror);
+            let a = s
+                .coating
+                .amplitudes(lambda, n1, n2, ci, mirror, Arrival::Before);
             let sv = s_vector(k_in, normal);
             if ideal {
                 // Reflect on the lens plane, then the ideal-lens rotation.

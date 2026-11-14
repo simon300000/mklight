@@ -149,7 +149,12 @@ pub fn trace<E: FpEnv>(
         } else {
             tr::xf_forward(&s[si - 1], &mut pos, &mut dir)
         }
-        let hit = match tr::intersect(surf, pool, pos, dir, &prm) {
+        let root = if !back && si == 1 && h.flags & MKL_SYS_OBJECT_AT_INFINITY != 0 {
+            MKL_ROOT_NEAREST
+        } else {
+            MKL_ROOT_FROM_START
+        };
+        let hit = match tr::intersect(surf, pool, pos, dir, root, &prm) {
             Ok(h) => h,
             Err(c) => {
                 v.status = fail(c);

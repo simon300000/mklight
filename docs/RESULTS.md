@@ -343,8 +343,8 @@ natively on the GPU (WAVE.md §9; routing: GPU §9.2).
 * **Sampling warnings.** `pupil_undersampled` (phase steps over half a
   wave), `lattice_undersampled` (the traced `pupil.rays` lattice is too
   coarse for the wavefront's curvature, with a recommended `pupil.rays`),
-  `afocal_image_space` (collimated output; the reference sphere is not
-  meaningful), `field_wraps` (image window wider than the alias-free field), and
+  `afocal_image_space` (informational: collimated output, plane reference,
+  angular units as given by `units`), `field_wraps` (image window wider than the alias-free field), and
   `psf_truncated` (less than 95 % energy in the window) are retained in
   RunInfo as the solver's descriptive warning text. Increase pupil
   sampling or adjust the image window as described in `docs/WAVE.md`.
@@ -1107,7 +1107,7 @@ Result (`result` in the envelope):
 
 ### `opd_fan` — OPD fans
 
-Category `geometric`, result version 1, **GPU path**.
+Category `geometric`, result version 2, **GPU path**.
 
 Optical path difference (waves) against the exit-pupil reference sphere versus normalised pupil coordinate, tangential and sagittal.
 
@@ -1750,7 +1750,7 @@ Buffers:
 
 ### `diffraction_encircled_energy` — Diffraction encircled energy
 
-Category `wave`, result version 1, **GPU path**.
+Category `wave`, result version 2, **GPU path**.
 
 Encircled and ensquared energy of the diffraction PSF, with the diffraction-limited reference.
 
@@ -1765,7 +1765,7 @@ Settings:
 | `max_radius_mm` | number\|null | `null` | mm | > 0.0; Positive maximum radius; null uses the PSF window. |
 | `method` | string | `"fft"` |  | one of `"fft"`, `"huygens"` |
 | `padding` | number | `2.5` |  | > 0.0; Positive factor: image spacing = smallest wavelength × working F/# / padding. |
-| `pupil` | object | `{"amplitude":"transmission","grid":0,"rays":65,"reference":"chief","rim":true,"rim_tolerance":1e-10,"supersample":4}` |  |  |
+| `pupil` | object | `{"amplitude":"radiometric","grid":0,"rays":65,"reference":"chief","rim":true,"rim_tolerance":1e-10,"supersample":4}` |  |  |
 | `samples` | integer | `51` |  | ≥ 2 |
 | `spectrum` | object\|null |  |  | Optional run-local spectrum; absent/null keeps the design. kind: explicit (wavelengths:[{um,weight}]), photopic, scotopic, blackbody (temperature_k), sensor (table:[[um,response]]). Presets/sensor take sampling. Primary is nearest the energy-weighted mean (first on ties). |
 | `wavelengths` | object | `{"type":"all"}` |  | System wavelength selection: all, primary, index or list (tagged by type). |
@@ -1790,6 +1790,11 @@ Result (`result` in the envelope):
 | `fields[].r90_mm` | nf | mm | Radius enclosing 90 % of total energy. |
 | `fields[].spacing_mm` | number | mm | Actual PSF image sample spacing. |
 | `radius_mm` | string | mm | Buffer name; radii / square half-widths. |
+| `units` | object |  | Units of the image-space quantities; fields named *_mm or cycles/mm carry these units. |
+| `units.afocal` | boolean |  | Afocal image space: plane OPD reference and angular units. |
+| `units.focus` | string |  | one of `"mm"`, `"mD"`; Unit of focus shifts: image-plane mm, or vergence in millidioptres (positive: more convergent). |
+| `units.frequency` | string |  | one of `"cycles/mm"`, `"cycles/mrad"`; Unit of spatial frequencies. |
+| `units.position` | string |  | one of `"mm"`, `"mrad"`; Unit of every image coordinate, spacing and radius named *_mm (and µm: µrad); mrad is the angle about the chief ray. |
 
 Buffers:
 
@@ -1850,7 +1855,7 @@ Buffers:
 
 ### `line_spread` — Line spread function
 
-Category `wave`, result version 1, **GPU path**.
+Category `wave`, result version 2, **GPU path**.
 
 Diffraction line-spread functions along the image axes.
 
@@ -1863,7 +1868,7 @@ Settings:
 | `grid_size` | integer | `0` |  | ≥ 0; Image samples per axis; 0 selects from traced blur and diffraction (cap 2048); Huygens is limited to 1024. |
 | `method` | string | `"fft"` |  | one of `"fft"`, `"huygens"` |
 | `padding` | number | `2.5` |  | > 0.0; Positive factor: image spacing = smallest wavelength × working F/# / padding. |
-| `pupil` | object | `{"amplitude":"transmission","grid":0,"rays":65,"reference":"chief","rim":true,"rim_tolerance":1e-10,"supersample":4}` |  |  |
+| `pupil` | object | `{"amplitude":"radiometric","grid":0,"rays":65,"reference":"chief","rim":true,"rim_tolerance":1e-10,"supersample":4}` |  |  |
 | `spectrum` | object\|null |  |  | Optional run-local spectrum; absent/null keeps the design. kind: explicit (wavelengths:[{um,weight}]), photopic, scotopic, blackbody (temperature_k), sensor (table:[[um,response]]). Presets/sensor take sampling. Primary is nearest the energy-weighted mean (first on ties). |
 | `wavelengths` | object | `{"type":"all"}` |  | System wavelength selection: all, primary, index or list (tagged by type). |
 
@@ -1880,6 +1885,11 @@ Result (`result` in the envelope):
 | `fields[].pupil_sampling[].wavelength` | integer |  | ≥ 0; System wavelength index. |
 | `fields[].x` | string | mm^-1 | Buffer name; integral of the unit-energy PSF over y. |
 | `fields[].y` | string | mm^-1 | Buffer name; integral of the unit-energy PSF over x. |
+| `units` | object |  | Units of the image-space quantities; fields named *_mm or cycles/mm carry these units. |
+| `units.afocal` | boolean |  | Afocal image space: plane OPD reference and angular units. |
+| `units.focus` | string |  | one of `"mm"`, `"mD"`; Unit of focus shifts: image-plane mm, or vergence in millidioptres (positive: more convergent). |
+| `units.frequency` | string |  | one of `"cycles/mm"`, `"cycles/mrad"`; Unit of spatial frequencies. |
+| `units.position` | string |  | one of `"mm"`, `"mrad"`; Unit of every image coordinate, spacing and radius named *_mm (and µm: µrad); mrad is the angle about the chief ray. |
 
 Buffers:
 
@@ -1891,7 +1901,7 @@ Buffers:
 
 ### `mtf` — MTF
 
-Category `wave`, result version 1, **GPU path**.
+Category `wave`, result version 2, **GPU path**.
 
 Diffraction MTF (FFT, pupil autocorrelation or from the Huygens PSF) vs frequency, tangential and sagittal, with the diffraction limit and an optional detector (pixel) MTF.
 
@@ -1906,7 +1916,7 @@ Settings:
 | `huygens` | object | `{"grid_size":128,"padding":4.0}` |  |  |
 | `max_frequency` | number\|null | `null` | cycles/mm | > 0.0; Positive maximum image-space frequency; null estimates 10% polychromatic contrast including diffraction and lateral colour. |
 | `method` | string | `"direct"` |  | one of `"direct"`, `"fft"`, `"huygens"` |
-| `pupil` | object | `{"amplitude":"transmission","grid":0,"rays":65,"reference":"chief","rim":true,"rim_tolerance":1e-10,"supersample":4}` |  |  |
+| `pupil` | object | `{"amplitude":"radiometric","grid":0,"rays":65,"reference":"chief","rim":true,"rim_tolerance":1e-10,"supersample":4}` |  |  |
 | `spectrum` | object\|null |  |  | Optional run-local spectrum; absent/null keeps the design. kind: explicit (wavelengths:[{um,weight}]), photopic, scotopic, blackbody (temperature_k), sensor (table:[[um,response]]). Presets/sensor take sampling. Primary is nearest the energy-weighted mean (first on ties). |
 | `wavelengths` | object | `{"type":"all"}` |  | System wavelength selection: all, primary, index or list (tagged by type). |
 
@@ -1934,6 +1944,11 @@ Result (`result` in the envelope):
 | `fields[].tangential_direction` | [nf; 2] |  | Tangential unit vector in image x/y; sagittal is perpendicular. |
 | `frequencies` | string | cycles/mm | Buffer name; image-space spatial frequencies. |
 | `nyquist` | [nf; 2]? |  |  |
+| `units` | object |  | Units of the image-space quantities; fields named *_mm or cycles/mm carry these units. |
+| `units.afocal` | boolean |  | Afocal image space: plane OPD reference and angular units. |
+| `units.focus` | string |  | one of `"mm"`, `"mD"`; Unit of focus shifts: image-plane mm, or vergence in millidioptres (positive: more convergent). |
+| `units.frequency` | string |  | one of `"cycles/mm"`, `"cycles/mrad"`; Unit of spatial frequencies. |
+| `units.position` | string |  | one of `"mm"`, `"mrad"`; Unit of every image coordinate, spacing and radius named *_mm (and µm: µrad); mrad is the angle about the chief ray. |
 
 Buffers:
 
@@ -1950,7 +1965,7 @@ Buffers:
 
 ### `mtf_vs_field` — MTF vs field
 
-Category `wave`, result version 1, **GPU path**.
+Category `wave`, result version 2, **GPU path**.
 
 Diffraction MTF at fixed frequencies across the field.
 
@@ -1965,7 +1980,7 @@ Settings:
 | `frequencies` | array<number> | `[]` | cycles/mm | Image-space frequencies; empty selects a round 1-2-5 base and its 2x/4x multiples within the automatic contrast range. |
 | `huygens` | object | `{"grid_size":128,"padding":4.0}` |  |  |
 | `method` | string | `"direct"` |  | one of `"direct"`, `"fft"`, `"huygens"` |
-| `pupil` | object | `{"amplitude":"transmission","grid":0,"rays":65,"reference":"chief","rim":true,"rim_tolerance":1e-10,"supersample":4}` |  |  |
+| `pupil` | object | `{"amplitude":"radiometric","grid":0,"rays":65,"reference":"chief","rim":true,"rim_tolerance":1e-10,"supersample":4}` |  |  |
 | `spectrum` | object\|null |  |  | Optional run-local spectrum; absent/null keeps the design. kind: explicit (wavelengths:[{um,weight}]), photopic, scotopic, blackbody (temperature_k), sensor (table:[[um,response]]). Presets/sensor take sampling. Primary is nearest the energy-weighted mean (first on ties). |
 | `wavelengths` | object | `{"type":"all"}` |  | System wavelength selection: all, primary, index or list (tagged by type). |
 
@@ -1981,6 +1996,11 @@ Result (`result` in the envelope):
 | `frequencies` | string | cycles/mm | Buffer name; image-space frequencies. |
 | `normalized_field` | string | 1 | Buffer name; normalised radial field from axis to edge. |
 | `pupil_sampling` | array<array<object>> |  | One pupil sampling list per field sample; empty for skipped fields. |
+| `units` | object |  | Units of the image-space quantities; fields named *_mm or cycles/mm carry these units. |
+| `units.afocal` | boolean |  | Afocal image space: plane OPD reference and angular units. |
+| `units.focus` | string |  | one of `"mm"`, `"mD"`; Unit of focus shifts: image-plane mm, or vergence in millidioptres (positive: more convergent). |
+| `units.frequency` | string |  | one of `"cycles/mm"`, `"cycles/mrad"`; Unit of spatial frequencies. |
+| `units.position` | string |  | one of `"mm"`, `"mrad"`; Unit of every image coordinate, spacing and radius named *_mm (and µm: µrad); mrad is the angle about the chief ray. |
 
 Buffers:
 
@@ -1994,7 +2014,7 @@ Buffers:
 
 ### `psf` — Point spread function
 
-Category `wave`, result version 1, **GPU path**.
+Category `wave`, result version 2, **GPU path**.
 
 Diffraction PSF by FFT or Huygens integration, monochromatic or polychromatic, with the Strehl ratio.
 
@@ -2009,7 +2029,7 @@ Settings:
 | `normalization` | string | `"strehl"` |  | one of `"strehl"`, `"unit_energy"`; strehl: ideal peak = 1; unit_energy: integral = 1, in mm^-2. |
 | `padding` | number | `2.5` |  | > 0.0; Positive factor: image spacing = smallest wavelength × working F/# / padding. |
 | `polychromatic` | boolean | `true` |  |  |
-| `pupil` | object | `{"amplitude":"transmission","grid":0,"rays":65,"reference":"chief","rim":true,"rim_tolerance":1e-10,"supersample":4}` |  |  |
+| `pupil` | object | `{"amplitude":"radiometric","grid":0,"rays":65,"reference":"chief","rim":true,"rim_tolerance":1e-10,"supersample":4}` |  |  |
 | `spacing_mm` | number\|null | `null` | mm | > 0.0; Positive explicit spacing; null uses padding. |
 | `spectrum` | object\|null |  |  | Optional run-local spectrum; absent/null keeps the design. kind: explicit (wavelengths:[{um,weight}]), photopic, scotopic, blackbody (temperature_k), sensor (table:[[um,response]]). Presets/sensor take sampling. Primary is nearest the energy-weighted mean (first on ties). |
 | `wavelengths` | object | `{"type":"all"}` |  | System wavelength selection: all, primary, index or list (tagged by type). |
@@ -2039,6 +2059,11 @@ Result (`result` in the envelope):
 | `psfs[].reference_mm` | [nf; 2] |  | Common image-local reference point, mm. |
 | `psfs[].strehl` | number | 1 | Peak / aberration-free peak for the same pupil and spectral weights. |
 | `psfs[].wavelength` | integer? |  |  |
+| `units` | object |  | Units of the image-space quantities; fields named *_mm or cycles/mm carry these units. |
+| `units.afocal` | boolean |  | Afocal image space: plane OPD reference and angular units. |
+| `units.focus` | string |  | one of `"mm"`, `"mD"`; Unit of focus shifts: image-plane mm, or vergence in millidioptres (positive: more convergent). |
+| `units.frequency` | string |  | one of `"cycles/mm"`, `"cycles/mrad"`; Unit of spatial frequencies. |
+| `units.position` | string |  | one of `"mm"`, `"mrad"`; Unit of every image coordinate, spacing and radius named *_mm (and µm: µrad); mrad is the angle about the chief ray. |
 
 Buffers:
 
@@ -2048,7 +2073,7 @@ Buffers:
 
 ### `through_focus_mtf` — Through-focus MTF
 
-Category `wave`, result version 1, **GPU path**.
+Category `wave`, result version 2, **GPU path**.
 
 Diffraction MTF at fixed frequencies vs image-plane defocus.
 
@@ -2064,7 +2089,7 @@ Settings:
 | `frequencies` | array<number> | `[]` | cycles/mm | Image-space frequencies; empty selects a round 1-2-5 base and its 2x/4x multiples within the automatic contrast range. |
 | `huygens` | object | `{"grid_size":128,"padding":4.0}` |  |  |
 | `method` | string | `"direct"` |  | one of `"direct"`, `"fft"`, `"huygens"` |
-| `pupil` | object | `{"amplitude":"transmission","grid":0,"rays":65,"reference":"chief","rim":true,"rim_tolerance":1e-10,"supersample":4}` |  |  |
+| `pupil` | object | `{"amplitude":"radiometric","grid":0,"rays":65,"reference":"chief","rim":true,"rim_tolerance":1e-10,"supersample":4}` |  |  |
 | `spectrum` | object\|null |  |  | Optional run-local spectrum; absent/null keeps the design. kind: explicit (wavelengths:[{um,weight}]), photopic, scotopic, blackbody (temperature_k), sensor (table:[[um,response]]). Presets/sensor take sampling. Primary is nearest the energy-weighted mean (first on ties). |
 | `wavelengths` | object | `{"type":"all"}` |  | System wavelength selection: all, primary, index or list (tagged by type). |
 
@@ -2084,6 +2109,11 @@ Result (`result` in the envelope):
 | `fields[].pupil_sampling[].wavelength` | integer |  | ≥ 0; System wavelength index. |
 | `focus_mm` | string | mm | Buffer name; image-plane shift, positive along propagation. |
 | `frequencies` | string | cycles/mm | Buffer name; image-space frequencies. |
+| `units` | object |  | Units of the image-space quantities; fields named *_mm or cycles/mm carry these units. |
+| `units.afocal` | boolean |  | Afocal image space: plane OPD reference and angular units. |
+| `units.focus` | string |  | one of `"mm"`, `"mD"`; Unit of focus shifts: image-plane mm, or vergence in millidioptres (positive: more convergent). |
+| `units.frequency` | string |  | one of `"cycles/mm"`, `"cycles/mrad"`; Unit of spatial frequencies. |
+| `units.position` | string |  | one of `"mm"`, `"mrad"`; Unit of every image coordinate, spacing and radius named *_mm (and µm: µrad); mrad is the angle about the chief ray. |
 
 Buffers:
 
@@ -2096,7 +2126,7 @@ Buffers:
 
 ### `wavefront_map` — Wavefront map
 
-Category `wave`, result version 1.
+Category `wave`, result version 2.
 
 OPD on the exit-pupil reference sphere from the reference tracer, with RMS/PV, Strehl estimate and Zernike fit.
 
@@ -2106,7 +2136,7 @@ Settings:
 |---|---|---|---|---|
 | `configuration` | integer | `0` |  | ≥ 0; System configuration index; 0 also selects the base system when there are no configurations. |
 | `fields` | object | `{"type":"all"}` |  | System field selection: all, index or list (tagged by type). |
-| `pupil` | object | `{"amplitude":"transmission","grid":0,"rays":65,"reference":"chief","rim":true,"rim_tolerance":1e-10,"supersample":4}` |  |  |
+| `pupil` | object | `{"amplitude":"radiometric","grid":0,"rays":65,"reference":"chief","rim":true,"rim_tolerance":1e-10,"supersample":4}` |  |  |
 | `spectrum` | object\|null |  |  | Optional run-local spectrum; absent/null keeps the design. kind: explicit (wavelengths:[{um,weight}]), photopic, scotopic, blackbody (temperature_k), sensor (table:[[um,response]]). Presets/sensor take sampling. Primary is nearest the energy-weighted mean (first on ties). |
 | `wavelengths` | object | `{"type":"primary"}` |  | System wavelength selection: all, primary, index or list (tagged by type). |
 | `zernike_ordering` | string | `"fringe"` |  | one of `"fringe"`, `"standard"`; Fringe Z1 onward by default; standard uses Noll normalisation. |
@@ -2120,11 +2150,14 @@ Result (`result` in the envelope):
 | `maps[].amplitude` | string | 1 | Buffer name; relative field amplitude, zero outside the pupil. |
 | `maps[].coordinates` | string | 1 | Buffer name; cell centres over [-1, 1], shared by u and v. |
 | `maps[].exit_pupil` | object |  |  |
+| `maps[].exit_pupil.afocal` (optional) | boolean |  | Present and true for an afocal image space: plane reference through exit_pupil_point_mm; reference_point_mm is 1000 × the beam direction; sin_max, numerical_aperture and effective_f_number are those of an ideal 1000 mm lens. |
+| `maps[].exit_pupil.beam_radius_mm` (optional) | number | mm | Afocal only: output beam half-width scaling the pupil. |
 | `maps[].exit_pupil.chief_direction` | [number; 3] |  | Chief direction, image-local. |
 | `maps[].exit_pupil.chief_point_mm` | [nf; 3] |  | Chief image point, image-local mm. |
 | `maps[].exit_pupil.clear_area` | number | 1 | Clear area in normalised pupil coordinates. |
 | `maps[].exit_pupil.effective_f_number` | number | 1 | Working F/# including the clear-area scale. |
 | `maps[].exit_pupil.exit_pupil_point_mm` | [nf; 3]? |  |  |
+| `maps[].exit_pupil.field_angle_deg` (optional) | [number; 2] |  | Afocal only: image-space field angle of the beam [x, y]. |
 | `maps[].exit_pupil.image_index` | number | 1 | Image-space refractive index. |
 | `maps[].exit_pupil.lattice_rays` | integer |  | ≥ 0 |
 | `maps[].exit_pupil.numerical_aperture` | number | 1 | Image index × sin_max. |
@@ -2168,6 +2201,11 @@ Result (`result` in the envelope):
 | `maps[].zernike.ordering` | string |  | one of `"fringe"`, `"standard"`; Fringe by default. |
 | `maps[].zernike_condition` | number | 1 | Fit condition estimate. |
 | `maps[].zernike_residual_rms` | number | waves | Weighted fit residual RMS. |
+| `units` | object |  | Units of the image-space quantities; fields named *_mm or cycles/mm carry these units. |
+| `units.afocal` | boolean |  | Afocal image space: plane OPD reference and angular units. |
+| `units.focus` | string |  | one of `"mm"`, `"mD"`; Unit of focus shifts: image-plane mm, or vergence in millidioptres (positive: more convergent). |
+| `units.frequency` | string |  | one of `"cycles/mm"`, `"cycles/mrad"`; Unit of spatial frequencies. |
+| `units.position` | string |  | one of `"mm"`, `"mrad"`; Unit of every image coordinate, spacing and radius named *_mm (and µm: µrad); mrad is the angle about the chief ray. |
 
 Buffers:
 
@@ -2181,7 +2219,7 @@ Buffers:
 
 ### `glass_substitution` — Glass substitution
 
-Category `optimization`, result version 2, **GPU path**.
+Category `optimization`, result version 3, **GPU path**.
 
 Replaces the glasses of chosen lenses with real catalogue glasses: searches the combinations (tabu search, or basin hopping over glasses and shape together), re-optimises the continuous variables by LM for every combination, and returns the best combinations ranked, each with its complete optimised system. With no material variables, every model glass is snapped to its nearest real glasses.
 
@@ -2192,7 +2230,7 @@ Settings:
 | `algorithm` | string | `"tabu"` |  | one of `"tabu"`, `"hammer"`; tabu: search glass combinations, every one re-optimised from the input shape. hammer: basin hopping over glasses and shape together, to escape local minima. |
 | `backend` | string | `"auto"` |  | one of `"auto"`, `"cpu"`, `"gpu"`, `"gpu_emulation"`; auto: the device the engine selected for this job (under engine auto, its cost model; docs/GPU.md §9.2), else the CPU reference. |
 | `constraints` | array | `[]` |  | Operands appended as explicit constraints (role forced to constraint). |
-| `default_merit` | object | `{"auto_symmetry":true,"configs":[],"criterion":{"reference":"centroid","scope":"monochromatic","type":"rms_spot"},"fields":null,"sampling":{"arm_offset_deg":0.0,"arms":6,"obscuration":0.0,"rings":3,"symmetry":"none"},"thickness":{"air_max_centre":null,"air_min_centre":0.1,"air_min_edge":0.1,"as_constraints":true,"auto_semi_diameters":false,"glass_max_centre":30.0,"glass_min_centre":1.0,"glass_min_edge":1.0,"weight":1.0},"wavelengths":null,"weight":1.0}` |  | Default-merit generator: RMS spot, wavefront or polychromatic MTF; fields, wavelengths, sampling and thickness boundaries. |
+| `default_merit` | object | `{"auto_symmetry":true,"configs":[],"criterion":{"reference":"centroid","scope":"polychromatic","type":"rms_spot"},"fields":null,"sampling":{"arm_offset_deg":0.0,"arms":6,"obscuration":0.0,"rings":3,"symmetry":"none"},"thickness":{"air_max_centre":null,"air_min_centre":0.1,"air_min_edge":0.1,"as_constraints":true,"auto_semi_diameters":false,"glass_max_centre":30.0,"glass_min_centre":1.0,"glass_min_edge":1.0,"weight":1.0},"wavelengths":null,"weight":1.0}` |  | Default-merit generator: RMS spot, wavefront or polychromatic MTF; fields, wavelengths, sampling and thickness boundaries. |
 | `fd_relative_step` | number\|null | `null` |  | > 0; null chooses per operand and backend (wavefront 1e-6/1e-4, MTF 1e-6/1e-5 on the CPU; device ray operands 1e-6, wavefront 1e-5 forward; docs/OPTIMIZATION.md). |
 | `fd_scheme` | string | `"forward"` |  | one of `"forward"`, `"central"` |
 | `feasibility_tolerance` | number | `1e-6` |  | ≥ 0; Total normalised constraint violation regarded as feasible (ranking, results[].feasible). |
@@ -2278,7 +2316,7 @@ Result (`result` in the envelope):
 
 ### `merit_evaluation` — Evaluate merit
 
-Category `optimization`, result version 2, **GPU path**.
+Category `optimization`, result version 3, **GPU path**.
 
 Evaluates the snapshot's merit once, without optimisation or finite differences. Uses optimize's merit settings, solves, default generator and operand report; returns the expanded merit spec for conversion to custom operands.
 
@@ -2289,7 +2327,7 @@ Settings:
 | `algorithm` | string | `"lm"` |  | one of `"lm"`, `"dogleg"`, `"de"`, `"cma_es"`, `"nelder_mead"`, `"hammer"` |
 | `backend` | string | `"auto"` |  | one of `"auto"`, `"cpu"`, `"gpu"`, `"gpu_emulation"`; auto: the device the engine selected for this job (under engine auto, its cost model; docs/GPU.md §9.2), else the CPU reference. |
 | `constraints` | array | `[]` |  | Operands appended as explicit constraints (role forced to constraint). |
-| `default_merit` | object | `{"auto_symmetry":true,"configs":[],"criterion":{"reference":"centroid","scope":"monochromatic","type":"rms_spot"},"fields":null,"sampling":{"arm_offset_deg":0.0,"arms":6,"obscuration":0.0,"rings":3,"symmetry":"none"},"thickness":{"air_max_centre":null,"air_min_centre":0.1,"air_min_edge":0.1,"as_constraints":true,"auto_semi_diameters":false,"glass_max_centre":30.0,"glass_min_centre":1.0,"glass_min_edge":1.0,"weight":1.0},"wavelengths":null,"weight":1.0}` |  | Default-merit generator: RMS spot, wavefront or polychromatic MTF; fields, wavelengths, sampling and thickness boundaries. |
+| `default_merit` | object | `{"auto_symmetry":true,"configs":[],"criterion":{"reference":"centroid","scope":"polychromatic","type":"rms_spot"},"fields":null,"sampling":{"arm_offset_deg":0.0,"arms":6,"obscuration":0.0,"rings":3,"symmetry":"none"},"thickness":{"air_max_centre":null,"air_min_centre":0.1,"air_min_edge":0.1,"as_constraints":true,"auto_semi_diameters":false,"glass_max_centre":30.0,"glass_min_centre":1.0,"glass_min_edge":1.0,"weight":1.0},"wavelengths":null,"weight":1.0}` |  | Default-merit generator: RMS spot, wavefront or polychromatic MTF; fields, wavelengths, sampling and thickness boundaries. |
 | `fd_relative_step` | number\|null | `null` |  | > 0; null chooses per operand and backend (wavefront 1e-6/1e-4, MTF 1e-6/1e-5 on the CPU; device ray operands 1e-6, wavefront 1e-5 forward; docs/OPTIMIZATION.md). |
 | `fd_scheme` | string | `"forward"` |  | one of `"forward"`, `"central"` |
 | `feasibility_tolerance` | number | `1e-6` |  | ≥ 0; Total normalised constraint violation regarded as feasible (best-so-far ranking, `final.feasible`). |
@@ -2347,7 +2385,7 @@ Result (`result` in the envelope):
 
 ### `optimize` — Optimize
 
-Category `optimization`, result version 2, **GPU path**.
+Category `optimization`, result version 3, **GPU path**.
 
 Optimises the variables against a merit function (explicit, or the default RMS spot / wavefront / polychromatic MTF merit with thickness boundaries) with explicit constraints, by Levenberg–Marquardt, dogleg, differential evolution, CMA-ES, Nelder–Mead or basin hopping. Returns the optimised system, the merit history and the operand table.
 
@@ -2358,7 +2396,7 @@ Settings:
 | `algorithm` | string | `"lm"` |  | one of `"lm"`, `"dogleg"`, `"de"`, `"cma_es"`, `"nelder_mead"`, `"hammer"` |
 | `backend` | string | `"auto"` |  | one of `"auto"`, `"cpu"`, `"gpu"`, `"gpu_emulation"`; auto: the device the engine selected for this job (under engine auto, its cost model; docs/GPU.md §9.2), else the CPU reference. |
 | `constraints` | array | `[]` |  | Operands appended as explicit constraints (role forced to constraint). |
-| `default_merit` | object | `{"auto_symmetry":true,"configs":[],"criterion":{"reference":"centroid","scope":"monochromatic","type":"rms_spot"},"fields":null,"sampling":{"arm_offset_deg":0.0,"arms":6,"obscuration":0.0,"rings":3,"symmetry":"none"},"thickness":{"air_max_centre":null,"air_min_centre":0.1,"air_min_edge":0.1,"as_constraints":true,"auto_semi_diameters":false,"glass_max_centre":30.0,"glass_min_centre":1.0,"glass_min_edge":1.0,"weight":1.0},"wavelengths":null,"weight":1.0}` |  | Default-merit generator: RMS spot, wavefront or polychromatic MTF; fields, wavelengths, sampling and thickness boundaries. |
+| `default_merit` | object | `{"auto_symmetry":true,"configs":[],"criterion":{"reference":"centroid","scope":"polychromatic","type":"rms_spot"},"fields":null,"sampling":{"arm_offset_deg":0.0,"arms":6,"obscuration":0.0,"rings":3,"symmetry":"none"},"thickness":{"air_max_centre":null,"air_min_centre":0.1,"air_min_edge":0.1,"as_constraints":true,"auto_semi_diameters":false,"glass_max_centre":30.0,"glass_min_centre":1.0,"glass_min_edge":1.0,"weight":1.0},"wavelengths":null,"weight":1.0}` |  | Default-merit generator: RMS spot, wavefront or polychromatic MTF; fields, wavelengths, sampling and thickness boundaries. |
 | `fd_relative_step` | number\|null | `null` |  | > 0; null chooses per operand and backend (wavefront 1e-6/1e-4, MTF 1e-6/1e-5 on the CPU; device ray operands 1e-6, wavefront 1e-5 forward; docs/OPTIMIZATION.md). |
 | `fd_scheme` | string | `"forward"` |  | one of `"forward"`, `"central"` |
 | `feasibility_tolerance` | number | `1e-6` |  | ≥ 0; Total normalised constraint violation regarded as feasible (best-so-far ranking, `final.feasible`). |
@@ -2461,7 +2499,7 @@ Buffers:
 
 ### `tolerance` — Tolerance analysis
 
-Category `optimization`, result version 3, **GPU path**.
+Category `optimization`, result version 4, **GPU path**.
 
 Sensitivity of a criterion merit (default: the RMS spot merit) to each tolerance at its limits, ranked worst first with the predicted mean criterion, and a reproducible Monte-Carlo analysis, with compensators re-optimised and the model's solves re-applied for every trial.
 
@@ -2474,8 +2512,8 @@ Settings:
 | `compensator_iterations` | integer | `20` |  | ≥ 1 |
 | `compensators` | array | `[]` |  | {"param": ParamPath, "range", "scale"}: re-optimised for every trial. A solve-controlled parameter is rejected. |
 | `criterion` | object\|null | `null` |  | A merit-function spec; null generates the default merit for tolerancing from `default_merit`. |
-| `default_merit` | object | `{"auto_symmetry":true,"configs":[],"criterion":{"reference":"centroid","scope":"monochromatic","type":"rms_spot"},"fields":null,"sampling":{"arm_offset_deg":0.0,"arms":6,"obscuration":0.0,"rings":3,"symmetry":"none"},"thickness":null,"wavelengths":null,"weight":1.0}` |  | Default-merit generator: RMS spot, wavefront or polychromatic MTF; fields, wavelengths, sampling and thickness boundaries. |
-| `irregularity_wavelength_um` | number\|null | `null` | µm | > 0; Fringe test wavelength; null keeps an existing overlay's, else the primary wavelength. |
+| `default_merit` | object | `{"auto_symmetry":true,"configs":[],"criterion":{"reference":"centroid","scope":"polychromatic","type":"rms_spot"},"fields":null,"sampling":{"arm_offset_deg":0.0,"arms":6,"obscuration":0.0,"rings":3,"symmetry":"none"},"thickness":null,"wavelengths":null,"weight":1.0}` |  | Default-merit generator: RMS spot, wavefront or polychromatic MTF; fields, wavelengths, sampling and thickness boundaries. |
+| `irregularity_wavelength_um` | number\|null | `null` | µm | > 0; Test wavelength of fringe tolerances (irregularity and power); null: an irregularity keeps an existing overlay's, else (and for power) the primary wavelength. |
 | `mode` | string | `"both"` |  | one of `"sensitivity"`, `"monte_carlo"`, `"both"` |
 | `percentiles` | array<number> | `[50,90,97.7]` |  | Monte Carlo percentiles of the successful criteria, linearly interpolated. |
 | `preview_case` | object\|null | `null` |  | Evaluate only this case and return its compensated system: {type:trial,trial} or {type:sensitivity,operand,positive}; zero-based. |
@@ -2484,7 +2522,7 @@ Settings:
 | `seed` | integer | `0` |  | ≥ 0 |
 | `spectrum` | object\|null |  |  | Optional run-local spectrum; absent/null keeps the design. kind: explicit (wavelengths:[{um,weight}]), photopic, scotopic, blackbody (temperature_k), sensor (table:[[um,response]]). Presets/sensor take sampling. Primary is nearest the energy-weighted mean (first on ties). |
 | `threshold` | number\|null | `null` |  | Criterion value for the yield (criterion ≤ threshold). |
-| `tolerances` | array | `[]` |  | Tolerance operands: {"param": ParamPath, "minus", "plus", "distribution", "label"}. material_dn_d / material_dv_d perturb catalogue index / Abbe offsets around the saved melt values. Empty: ±0.05 mm on every thickness but the back focus and ±0.5 % on every curvature, without the solve-controlled ones. A solve-controlled parameter is rejected. |
+| `tolerances` | array | `[]` |  | Tolerance operands: {"param": ParamPath, "minus", "plus", "distribution", "label", "unit"}. distribution: uniform (default), truncated_normal {sigmas}, end_point or parabolic (density ∝ δ²). unit "fringes" on a curvature: limits in test fringes of power over the surface's clear aperture at irregularity_wavelength_um. material_dn_d / material_dv_d perturb catalogue index / Abbe offsets around the saved melt values. Empty: ±0.05 mm on every thickness but the back focus and ±0.5 % on every curvature, without the solve-controlled ones. A solve-controlled parameter is rejected. |
 | `trials` | integer | `100` |  | ≥ 1 |
 
 Result (`result` in the envelope):
@@ -2509,6 +2547,7 @@ Result (`result` in the envelope):
 | `backend.workload.rays_per_candidate` | integer |  | ≥ 0 |
 | `compensators` | array<object> |  | Model parameter units. |
 | `criterion_spec` | object |  | Effective MeritFunctionSpec. |
+| `fringe_scale` | array<nf> |  | In tolerance order. Limits, perturbations and sensitivities are in parameter units (curvature for fringes). |
 | `monte_carlo` | object? |  |  |
 | `monte_carlo.cancelled` | boolean |  | Statistics of completed trials after a stop. |
 | `monte_carlo.compensator_mean` | array<nf> |  |  |

@@ -77,11 +77,13 @@ pub fn coatings() -> Vec<ResolvedCoating> {
             reference_wavelength_um: 0.55,
             layers: vec![layer(1.3, 0., 1.)],
             mirror_substrate: None,
+            substrate: Default::default(),
         }),
         Some(CoatingDef::ThinFilm {
             reference_wavelength_um: 0.55,
             layers: vec![layer(2.1, 0.2, 0.6), layer(1.38, 0., 1.)],
             mirror_substrate: Some((0.96, 6.69)),
+            substrate: Default::default(),
         }),
     ];
     defs.iter()
@@ -106,7 +108,12 @@ pub fn check_coatings(b: &dyn ComputeBackend) {
             for mirror in [false, true] {
                 for wl in [0.4, 0.55, 0.7] {
                     let id = specs.len() as u32;
-                    specs.push(CoatingSpec::resolve(c, wl, n1, n2, mirror, &mut layers).unwrap());
+                    // Standalone coatings keep the substrate behind the surface, so
+                    // light from the denser side arrives from it.
+                    let side = mklight_core::materials::coating::Arrival::forward(n2 >= n1);
+                    specs.push(
+                        CoatingSpec::resolve(c, wl, n1, n2, mirror, side, &mut layers).unwrap(),
+                    );
                     let mut angles = vec![
                         0.0,
                         1e-12,
@@ -133,8 +140,8 @@ pub fn check_coatings(b: &dyn ComputeBackend) {
                     for ci in angles {
                         queries.push(CoatingQuery::new(id, ci).unwrap());
                         refs.push((
-                            c.amplitudes(wl, n1, n2, ci, mirror),
-                            c.rt(wl, n1, n2, ci, mirror),
+                            c.amplitudes(wl, n1, n2, ci, mirror, side),
+                            c.rt(wl, n1, n2, ci, mirror, side),
                         ));
                     }
                 }
@@ -381,6 +388,7 @@ pub fn fixtures(b: &dyn ComputeBackend) {
                 quarter_waves: None,
             }],
             mirror_substrate: Some((0.96, 6.69)),
+            substrate: Default::default(),
         },
         CoatingDef::Ideal {
             reflectance: 0.,
@@ -395,6 +403,7 @@ pub fn fixtures(b: &dyn ComputeBackend) {
                 quarter_waves: None,
             }],
             mirror_substrate: None,
+            substrate: Default::default(),
         },
     ];
     for def in defs {
@@ -509,6 +518,7 @@ pub fn known_answers(b: &dyn ComputeBackend) {
             n_in: 1.,
             n_out: 1.5,
             mirror: false,
+            arrival: mklight_core::materials::coating::Arrival::Before,
         },
         CoatingDomain {
             coating: cs[0].clone(),
@@ -516,6 +526,7 @@ pub fn known_answers(b: &dyn ComputeBackend) {
             n_in: 1.51,
             n_out: 1.,
             mirror: false,
+            arrival: mklight_core::materials::coating::Arrival::After,
         },
         CoatingDomain {
             coating: cs[3].clone(),
@@ -523,6 +534,7 @@ pub fn known_answers(b: &dyn ComputeBackend) {
             n_in: 1.,
             n_out: 1.69,
             mirror: false,
+            arrival: mklight_core::materials::coating::Arrival::Before,
         },
         CoatingDomain {
             coating: cs[3].clone(),
@@ -530,6 +542,7 @@ pub fn known_answers(b: &dyn ComputeBackend) {
             n_in: 1.69,
             n_out: 1.,
             mirror: false,
+            arrival: mklight_core::materials::coating::Arrival::After,
         },
         CoatingDomain {
             coating: cs[4].clone(),
@@ -537,6 +550,7 @@ pub fn known_answers(b: &dyn ComputeBackend) {
             n_in: 1.,
             n_out: 1.5,
             mirror: true,
+            arrival: mklight_core::materials::coating::Arrival::Before,
         },
     ];
     let prepared = PreparedCoatings::new(b, &domains, &JobContext::new()).unwrap();
@@ -583,7 +597,14 @@ pub fn known_answers(b: &dyn ComputeBackend) {
     assert!((v[5].amplitudes[1].to_f64() + v[5].amplitudes[3].to_f64()).abs() < 1e-12);
     assert_eq!(r.stats.fallback_count, 1);
     assert_eq!(r.run_info.warnings.len(), 1);
-    let refa = domains[2].coating.amplitudes(0.55, 1., 1.69, 1e-7, false);
+    let refa = domains[2].coating.amplitudes(
+        0.55,
+        1.,
+        1.69,
+        1e-7,
+        false,
+        mklight_core::materials::coating::Arrival::Before,
+    );
     assert!((v[6].powers[2].to_f64() - refa.power().ts).abs() < 1e-12);
     // A changed wavelength/medium produces a distinct immutable table, while
     // the old lease still returns its original answer.
@@ -665,6 +686,7 @@ pub fn geometric_and_dim_fixtures(b: &dyn ComputeBackend) {
             reference_wavelength_um: 0.55,
             layers: vec![],
             mirror_substrate: Some((0.96, 6.69)),
+            substrate: Default::default(),
         },
     );
     for s in &mut mirror.surfaces {
@@ -809,6 +831,7 @@ pub fn singular_retarder(b: &dyn ComputeBackend) {
                 reference_wavelength_um: 0.55,
                 layers: vec![],
                 mirror_substrate: Some((1.5, 0.)),
+                substrate: Default::default(),
             },
         );
         let t = testutil::tracer(s);

@@ -184,7 +184,7 @@ struct MklAimFieldKernel {
         MklDv at = s[0].shape > MKL_SHAPE_COORD_BREAK ? mkl_aim_vec3(mkl_aim_c(0), mkl_aim_norm(p), mkl_aim_c(0))
                                                       : mkl_aim_vec3(p.v[0], p.v[1], mkl_aim_c(0));
         MklHit hit;
-        uint code = mkl_intersect<OV>(s[0], pool, at, mkl_aim_vec3(mkl_aim_c(0), mkl_aim_c(0), mkl_aim_c(1)),
+        uint code = mkl_intersect<OV>(s[0], pool, at, mkl_aim_vec3(mkl_aim_c(0), mkl_aim_c(0), mkl_aim_c(1)), MKL_ROOT_NEAREST,
                                       *newton, hit);
         out = mkl_aim_vec3(p.v[0], p.v[1], MklDf{hit.x.v[2]});
         return code == 0;
@@ -201,7 +201,7 @@ struct MklAimFieldKernel {
             MklDv dir = local(mkl_aim_unit(mkl_aim_vec3(p.v[0], p.v[1], mkl_aim_c(1))), false),
                   point = local(mkl_aim_vec3(mkl_aim_c(0), mkl_aim_c(0), pupil(0)), true);
             MklHit hit;
-            uint code = mkl_intersect<OV>(s[0], pool, point, dir, *newton, hit);
+            uint code = mkl_intersect<OV>(s[0], pool, point, dir, MKL_ROOT_NEAREST, *newton, hit);
             out = hit.x;
             return code == 0;
         }

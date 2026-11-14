@@ -67,6 +67,7 @@ fn thin_film(layers: Vec<Layer>, mirror: Option<(f64, f64)>) -> CoatingDef {
         reference_wavelength_um: D_LINE,
         layers,
         mirror_substrate: mirror,
+        substrate: Default::default(),
     }
 }
 
@@ -802,6 +803,7 @@ fn energy_is_conserved_along_real_rays() {
                             s.n_after[wl],
                             st.cos_incidence,
                             s.is_mirror(),
+                            mklight_core::materials::coating::Arrival::Before,
                         );
                         assert!(rt_diff(&rt, &st.power) < 1e-12, "{rt:?} {:?}", st.power);
                         // Amplitudes reproduce the shared power coefficients…
@@ -880,7 +882,15 @@ fn lossless_plate_closes_with_all_reflected_orders() {
     // Snell inside the plate.
     let sin_in = (1.0 - st2.cos_incidence.powi(2)).sqrt();
     assert!((ng * sin_in - 35f64.to_radians().sin()).abs() < 1e-14);
-    let back = c.rt(D_LINE, ng, 1.0, st2.cos_incidence, false);
+    // Surface 1's film seen from inside the glass, as on surface 2.
+    let back = c.rt(
+        D_LINE,
+        ng,
+        1.0,
+        st2.cos_incidence,
+        false,
+        mklight_core::materials::coating::Arrival::After,
+    );
     for (pol, x) in [
         ("s", JonesVector::linear(0.0)),
         ("p", JonesVector::linear(FRAC_PI_2)),

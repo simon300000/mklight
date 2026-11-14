@@ -89,6 +89,8 @@ pub struct WaveEncircledEnergyResult {
     /// Radii (encircled) and half-widths (ensquared), mm.
     pub radius_mm: Vec<f64>,
     pub fields: Vec<FieldEnergy>,
+    /// Units of the image-space quantities ([`super::WaveUnits`]).
+    pub units: super::WaveUnits,
     pub run_info: RunInfo,
 }
 
@@ -284,6 +286,7 @@ pub fn diffraction_encircled_energy_shared(
         .collect();
     ctx.report(1.0, "encircled energy");
     Ok(WaveEncircledEnergyResult {
+        units: super::WaveUnits::of(tracer),
         radius_mm: radius,
         fields: out,
         run_info: run_info(
@@ -339,6 +342,8 @@ pub struct FieldLineSpread {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct LineSpreadResult {
     pub fields: Vec<FieldLineSpread>,
+    /// Units of the image-space quantities ([`super::WaveUnits`]).
+    pub units: super::WaveUnits,
     pub run_info: RunInfo,
 }
 
@@ -431,6 +436,7 @@ pub fn line_spread_shared(
     }
     ctx.report(1.0, "line spread");
     Ok(LineSpreadResult {
+        units: super::WaveUnits::of(tracer),
         fields: out,
         run_info: run_info(timer, tracer, "line_spread", settings, warnings),
     })

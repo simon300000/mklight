@@ -56,6 +56,10 @@ pub enum Direction {
 }
 
 impl Direction {
+    /// The side of the surface the light arrives from (orders a thin film).
+    pub fn arrival(self) -> mklight_core::materials::coating::Arrival {
+        mklight_core::materials::coating::Arrival::forward(self == Direction::Forward)
+    }
     pub fn reversed(self) -> Self {
         match self {
             Direction::Forward => Direction::Backward,

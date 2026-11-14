@@ -10,7 +10,28 @@ use std::f64::consts::PI;
 
 use crate::error::{MkError, MkResult};
 use crate::materials::{MaterialLibrary, ResolvedMaterial};
-use crate::model::{CoatingDef, Environment};
+use crate::model::{CoatingDef, CoatingSubstrate, Environment};
+
+/// The side of a surface light arrives from, in sequence order: `Before` is
+/// the medium before the surface (forward light on a sequential path),
+/// `After` the medium after it (light travelling backward, such as a ghost's
+/// return leg). Only a thin film on a refracting surface depends on it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Arrival {
+    Before,
+    After,
+}
+
+impl Arrival {
+    /// `Before` when `forward`, else `After`.
+    pub fn forward(forward: bool) -> Arrival {
+        if forward {
+            Arrival::Before
+        } else {
+            Arrival::After
+        }
+    }
+}
 
 /// Power reflectance and transmittance for s and p polarisation.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -83,6 +104,12 @@ pub enum ResolvedCoating {
         layers: Vec<ResolvedLayer>,
         reference_wavelength_um: f64,
         mirror_substrate: Option<(f64, f64)>,
+        /// The model's substrate rule.
+        substrate: CoatingSubstrate,
+        /// Whether the stack sits on the medium after the surface. Fixed per
+        /// surface by [`ResolvedCoating::orient`]; `resolve` alone leaves
+        /// `true` for `HigherIndex` (substrate behind the surface).
+        substrate_after: bool,
     },
     Ideal {
         reflectance: f64,
@@ -136,6 +163,7 @@ impl ResolvedCoating {
                 reference_wavelength_um,
                 layers,
                 mirror_substrate,
+                substrate,
             } => {
                 let mut out = Vec::with_capacity(layers.len());
                 for l in layers {
@@ -161,15 +189,69 @@ impl ResolvedCoating {
                     layers: out,
                     reference_wavelength_um: *reference_wavelength_um,
                     mirror_substrate: *mirror_substrate,
+                    substrate: *substrate,
+                    substrate_after: *substrate != CoatingSubstrate::Before,
                 }
             }
         })
     }
 
-    /// Power coefficients for light arriving from medium `n_in` at an
-    /// interface with medium `n_out` on the other side. `cos_i` lies in
-    /// [0, 1]. For a reflecting surface, `n_out` is ignored, and the
-    /// transmitted power counts as absorbed (`T = 0`).
+    /// Fixes the substrate side of a thin film for a surface between media
+    /// `before` and `after` (sequence order). `HigherIndex` compares the two
+    /// indices once, at the coating's reference wavelength (a tie puts the
+    /// substrate after the surface), so the stack keeps its order at every
+    /// wavelength and angle. Other coatings are returned unchanged.
+    pub fn orient(mut self, before: &ResolvedMaterial, after: &ResolvedMaterial) -> Self {
+        if let ResolvedCoating::ThinFilm {
+            reference_wavelength_um,
+            substrate,
+            substrate_after,
+            ..
+        } = &mut self
+        {
+            let w = *reference_wavelength_um;
+            *substrate_after = match substrate {
+                CoatingSubstrate::Before => false,
+                CoatingSubstrate::After => true,
+                CoatingSubstrate::HigherIndex => after.index(w) >= before.index(w),
+            };
+        }
+        self
+    }
+
+    /// Whether light arriving from `arrival` meets a thin film from its
+    /// substrate side (`layers[0]` first). `false` for every other coating.
+    pub fn from_substrate(&self, arrival: Arrival) -> bool {
+        match self {
+            ResolvedCoating::ThinFilm {
+                substrate_after, ..
+            } => *substrate_after == (arrival == Arrival::After),
+            _ => false,
+        }
+    }
+
+    /// A thin film's layers in the order light arriving from `arrival` meets
+    /// them; on a mirror the outermost layer always comes first. Empty for
+    /// other coatings. Every solver (CPU and GPU packers) orders through it.
+    pub fn layer_order(&self, arrival: Arrival, mirror: bool) -> Vec<&ResolvedLayer> {
+        match self {
+            ResolvedCoating::ThinFilm { layers, .. } => {
+                if !mirror && self.from_substrate(arrival) {
+                    layers.iter().collect()
+                } else {
+                    layers.iter().rev().collect()
+                }
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    /// Power coefficients for light arriving from medium `n_in`, on side
+    /// `arrival` of the surface, at an interface with medium `n_out` on the
+    /// other side. `cos_i` lies in [0, 1]. For a reflecting surface, `n_out`
+    /// and `arrival` are ignored, and the transmitted power counts as
+    /// absorbed (`T = 0`). `arrival` orders a thin film's layers
+    /// ([`Self::layer_order`]).
     pub fn rt(
         &self,
         lambda_um: f64,
@@ -177,6 +259,7 @@ impl ResolvedCoating {
         n_out: f64,
         cos_i: f64,
         mirror: bool,
+        arrival: Arrival,
     ) -> InterfaceRT {
         match self {
             ResolvedCoating::Bare => {
@@ -242,13 +325,11 @@ impl ResolvedCoating {
                     return r;
                 }
                 let no = C::new(n_out, 0.0);
-                let seq: Vec<(C, f64)> = if n_out >= n_in {
-                    // The substrate is on the far side: outermost layer first.
-                    layers.iter().rev().map(|l| layer_n(l, lambda_um)).collect()
-                } else {
-                    // Arriving from inside the substrate: layer 0 first.
-                    layers.iter().map(|l| layer_n(l, lambda_um)).collect()
-                };
+                let seq: Vec<(C, f64)> = self
+                    .layer_order(arrival, false)
+                    .into_iter()
+                    .map(|l| layer_n(l, lambda_um))
+                    .collect();
                 tmm(ni, &seq, no, cos_i, lambda_um)
             }
         }
@@ -636,6 +717,7 @@ impl ResolvedCoating {
         n_out: f64,
         cos_i: f64,
         mirror: bool,
+        arrival: Arrival,
     ) -> InterfaceAmplitudes {
         match self {
             ResolvedCoating::Bare => {
@@ -665,7 +747,7 @@ impl ResolvedCoating {
                 }
             }
             ResolvedCoating::Tabulated { .. } => {
-                let p = self.rt(lambda_um, n_in, n_out, cos_i, mirror);
+                let p = self.rt(lambda_um, n_in, n_out, cos_i, mirror, arrival);
                 if mirror {
                     let r = p.rs.sqrt();
                     return InterfaceAmplitudes {
@@ -708,11 +790,11 @@ impl ResolvedCoating {
                     return tmm_amplitudes(ni, &seq, sub, cos_i, lambda_um).opaque();
                 }
                 let no = C::new(n_out, 0.0);
-                let seq: Vec<(C, f64)> = if n_out >= n_in {
-                    layers.iter().rev().map(|l| layer_n(l, lambda_um)).collect()
-                } else {
-                    layers.iter().map(|l| layer_n(l, lambda_um)).collect()
-                };
+                let seq: Vec<(C, f64)> = self
+                    .layer_order(arrival, false)
+                    .into_iter()
+                    .map(|l| layer_n(l, lambda_um))
+                    .collect();
                 tmm_amplitudes(ni, &seq, no, cos_i, lambda_um)
             }
         }
@@ -772,15 +854,16 @@ mod tests {
                 extinction: 0.0,
             }],
             mirror_substrate: None,
+            substrate: Default::default(),
         };
         let c = ResolvedCoating::resolve(Some(&def), &lib, &env).unwrap();
-        let r = c.rt(0.55, 1.0, 1.69, 1.0, false);
+        let r = c.rt(0.55, 1.0, 1.69, 1.0, false, Arrival::Before);
         assert!(r.r_unpolarized() < 1e-12, "{r:?}");
         // Same coating seen from inside the glass gives the same R (reciprocity).
-        let r2 = c.rt(0.55, 1.69, 1.0, 1.0, false);
+        let r2 = c.rt(0.55, 1.69, 1.0, 1.0, false, Arrival::After);
         assert!(r2.r_unpolarized() < 1e-12);
         // Energy conservation at oblique incidence and off-design wavelength.
-        let r3 = c.rt(0.45, 1.0, 1.69, 0.6, false);
+        let r3 = c.rt(0.45, 1.0, 1.69, 0.6, false, Arrival::Before);
         assert!((r3.rs + r3.ts - 1.0).abs() < 1e-12 && (r3.rp + r3.tp - 1.0).abs() < 1e-12);
     }
 
@@ -808,7 +891,7 @@ mod tests {
 #[cfg(test)]
 mod amplitude_tests {
     use super::*;
-    use crate::model::{Layer, MaterialRef};
+    use crate::model::{CoatingSubstrate, Layer, MaterialRef};
     use crate::rng::Philox;
 
     fn close(a: C, b: C, tol: f64) -> bool {
@@ -1072,11 +1155,13 @@ mod amplitude_tests {
                 reference_wavelength_um: 0.55,
                 layers: vec![layer(2.1, 1.0, 0.0), layer(1.38, 1.0, 0.0)],
                 mirror_substrate: None,
+                substrate: Default::default(),
             }),
             Some(CoatingDef::ThinFilm {
                 reference_wavelength_um: 0.55,
                 layers: vec![layer(1.6, 1.0, 0.02), layer(1.38, 0.7, 0.0)],
                 mirror_substrate: Some((0.96, 6.69)),
+                substrate: Default::default(),
             }),
         ];
         for def in &defs {
@@ -1086,8 +1171,9 @@ mod amplitude_tests {
                     let ci = deg.to_radians().cos();
                     for mirror in [false, true] {
                         for lam in [0.45, 0.55, 0.65] {
-                            let a = c.amplitudes(lam, n_in, n_out, ci, mirror);
-                            let p = c.rt(lam, n_in, n_out, ci, mirror);
+                            let side = Arrival::forward(n_out >= n_in);
+                            let a = c.amplitudes(lam, n_in, n_out, ci, mirror, side);
+                            let p = c.rt(lam, n_in, n_out, ci, mirror, side);
                             assert_power_eq(
                                 a.power(),
                                 p,
@@ -1106,12 +1192,13 @@ mod amplitude_tests {
             for (n_in, n_out) in [(1.0, 1.52), (1.52, 1.0), (1.62, 1.52)] {
                 for ci in [0.0, 1e-300, 1e-200, 1e-160, 1e-12, 1e-9, 1e-8, 1e-7] {
                     for mirror in [false, true] {
-                        let a = c.amplitudes(0.55, n_in, n_out, ci, mirror);
+                        let side = Arrival::forward(n_out >= n_in);
+                        let a = c.amplitudes(0.55, n_in, n_out, ci, mirror, side);
                         let what = format!("{def:?} n=({n_in},{n_out}) c={ci:e} m={mirror}");
                         for z in [a.rs, a.rp, a.ts, a.tp] {
                             assert!(z.re.is_finite() && z.im.is_finite(), "{what}: {a:?}");
                         }
-                        let p = c.rt(0.55, n_in, n_out, ci, mirror);
+                        let p = c.rt(0.55, n_in, n_out, ci, mirror, side);
                         assert_power_eq(a.power(), p, 1e-12, &what);
                     }
                 }
@@ -1119,7 +1206,7 @@ mod amplitude_tests {
         }
         // Ideal coatings are non-polarising: r_p = −r_s, t_p = t_s at any angle.
         let c = ResolvedCoating::resolve(defs[1].as_ref(), &lib, &env).unwrap();
-        let a = c.amplitudes(0.55, 1.0, 1.5, 0.6, false);
+        let a = c.amplitudes(0.55, 1.0, 1.5, 0.6, false, Arrival::Before);
         assert!(a.rp == -a.rs && a.tp == a.ts);
         assert!(a.rs.re < 0.0 && a.ts.im == 0.0 && a.ts.re > 0.0);
     }
@@ -1154,6 +1241,165 @@ mod amplitude_tests {
         assert!(
             close(a.rs, b.rs, 1e-15) && close(a.rp, b.rp, 1e-15),
             "{a:?} {b:?}"
+        );
+    }
+
+    /// An asymmetric, absorbing two-layer stack (its reflectance depends on
+    /// the side the light comes from), with the given substrate rule.
+    fn asymmetric_film(reference: f64, substrate: CoatingSubstrate) -> CoatingDef {
+        CoatingDef::ThinFilm {
+            reference_wavelength_um: reference,
+            layers: vec![
+                Layer {
+                    material: MaterialRef::Constant { n: 2.1 },
+                    thickness_um: 0.0,
+                    quarter_waves: Some(1.0),
+                    extinction: 0.05,
+                },
+                Layer {
+                    material: MaterialRef::Constant { n: 1.38 },
+                    thickness_um: 0.0,
+                    quarter_waves: Some(1.0),
+                    extinction: 0.0,
+                },
+            ],
+            mirror_substrate: None,
+            substrate,
+        }
+    }
+
+    fn film_layers(c: &ResolvedCoating, lambda_um: f64) -> Vec<(C, f64)> {
+        match c {
+            ResolvedCoating::ThinFilm { layers, .. } => {
+                layers.iter().map(|l| layer_n(l, lambda_um)).collect()
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn substrate_side_is_fixed_across_a_dispersion_crossing() {
+        // Two model glasses whose dispersion curves cross inside the band:
+        // the flint-like one is lower at long wavelengths, higher at short.
+        let lib = MaterialLibrary::with_builtin();
+        let env = Environment::default();
+        let model = |nd, vd| MaterialRef::Model { nd, vd, dpgf: 0.0 };
+        let a = lib.resolve(&model(1.60, 25.0), &env).unwrap();
+        let b = lib.resolve(&model(1.61, 60.0), &env).unwrap();
+        let wls: Vec<f64> = (0..=30).map(|k| 0.42 + 0.01 * k as f64).collect();
+        let diff = |w: f64| b.index(w) - a.index(w);
+        assert!(diff(wls[0]) < 0.0 && diff(wls[30]) > 0.0, "no crossing");
+        // Designed at 0.65 µm, where `b` (after the surface) is denser.
+        let def = asymmetric_film(0.65, CoatingSubstrate::HigherIndex);
+        let c = ResolvedCoating::resolve(Some(&def), &lib, &env)
+            .unwrap()
+            .orient(&a, &b);
+        assert!(c.from_substrate(Arrival::After) && !c.from_substrate(Arrival::Before));
+        let mut flips = 0;
+        for &w in &wls {
+            let (na, nb) = (C::new(a.index(w), 0.0), C::new(b.index(w), 0.0));
+            let ls = film_layers(&c, w);
+            let rev: Vec<_> = ls.iter().rev().copied().collect();
+            for ci in [1.0, 0.8, 0.5] {
+                // Forward light comes from `a`: outermost layer first, at
+                // every wavelength, on both sides of the crossing.
+                let fwd = tmm(na, &rev, nb, ci, w);
+                let got = c.rt(w, na.re, nb.re, ci, false, Arrival::Before);
+                assert_power_eq(got, fwd, 1e-13, &format!("forward {w} {ci}"));
+                let amp = c.amplitudes(w, na.re, nb.re, ci, false, Arrival::Before);
+                assert_power_eq(amp.power(), fwd, 1e-12, &format!("amp {w} {ci}"));
+                // Backward light comes from the substrate `b`: layer 0 first.
+                let back = tmm(nb, &ls, na, ci, w);
+                let got = c.rt(w, nb.re, na.re, ci, false, Arrival::After);
+                assert_power_eq(got, back, 1e-13, &format!("backward {w} {ci}"));
+                // The reversed stack is measurably different, so the old
+                // per-wavelength rule (substrate = denser medium at λ) would
+                // have changed the answer where `a` is denser.
+                if diff(w) < 0.0 && ci == 1.0 {
+                    let flipped = tmm(na, &ls, nb, ci, w);
+                    if (flipped.rs - fwd.rs).abs() > 1e-4 {
+                        flips += 1;
+                    }
+                }
+            }
+        }
+        assert!(flips > 0);
+    }
+
+    #[test]
+    fn coating_on_the_lower_index_medium() {
+        let lib = MaterialLibrary::with_builtin();
+        let env = Environment::default();
+        let before = lib
+            .resolve(&MaterialRef::Constant { n: 1.45 }, &env)
+            .unwrap();
+        let after = lib
+            .resolve(&MaterialRef::Constant { n: 1.62 }, &env)
+            .unwrap();
+        let oriented = |s| {
+            ResolvedCoating::resolve(Some(&asymmetric_film(0.55, s)), &lib, &env)
+                .unwrap()
+                .orient(&before, &after)
+        };
+        let low = oriented(CoatingSubstrate::Before);
+        let high = oriented(CoatingSubstrate::HigherIndex);
+        let explicit_after = oriented(CoatingSubstrate::After);
+        // Forward light arrives from the substrate when the film sits on the
+        // lower-index medium before the surface.
+        assert!(low.from_substrate(Arrival::Before));
+        assert!(!high.from_substrate(Arrival::Before));
+        let ls = film_layers(&low, 0.55);
+        let rev: Vec<_> = ls.iter().rev().copied().collect();
+        let (n1, n2) = (C::new(1.45, 0.0), C::new(1.62, 0.0));
+        for ci in [1.0, 0.7] {
+            let on_low = tmm(n1, &ls, n2, ci, 0.55);
+            let on_high = tmm(n1, &rev, n2, ci, 0.55);
+            assert_power_eq(
+                low.rt(0.55, 1.45, 1.62, ci, false, Arrival::Before),
+                on_low,
+                1e-14,
+                "low",
+            );
+            assert_power_eq(
+                high.rt(0.55, 1.45, 1.62, ci, false, Arrival::Before),
+                on_high,
+                1e-14,
+                "high",
+            );
+            assert_power_eq(
+                explicit_after.rt(0.55, 1.45, 1.62, ci, false, Arrival::Before),
+                on_high,
+                0.0,
+                "explicit after",
+            );
+            assert!((on_low.rs - on_high.rs).abs() > 1e-3);
+        }
+        // A mirror ignores the side: the light meets the outermost layer first.
+        let m = low.rt(0.55, 1.45, 1.45, 0.9, true, Arrival::Before);
+        let mh = high.rt(0.55, 1.45, 1.45, 0.9, true, Arrival::After);
+        assert_eq!(m, mh);
+    }
+
+    #[test]
+    fn substrate_field_is_optional_in_saved_projects() {
+        let old = r#"{"type":"thin_film","reference_wavelength_um":0.55,"layers":[]}"#;
+        let def: CoatingDef = serde_json::from_str(old).unwrap();
+        assert!(matches!(
+            def,
+            CoatingDef::ThinFilm {
+                substrate: CoatingSubstrate::HigherIndex,
+                ..
+            }
+        ));
+        // The default is not written, so saved files are unchanged.
+        let json = serde_json::to_string(&def).unwrap();
+        assert!(!json.contains(r#""substrate""#), "{json}");
+        let set = r#"{"type":"thin_film","reference_wavelength_um":0.55,"layers":[],"substrate":"before"}"#;
+        let def: CoatingDef = serde_json::from_str(set).unwrap();
+        assert!(
+            serde_json::to_string(&def)
+                .unwrap()
+                .contains(r#""substrate":"before""#)
         );
     }
 }

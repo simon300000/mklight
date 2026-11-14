@@ -268,9 +268,14 @@ pub fn path_transmittance(
         }
         let n1 = rs.n_before(i, wl);
         let mirror = s.interaction == Interaction::Reflect;
-        let rt = s
-            .coating
-            .rt(lambda, n1, s.n_after[wl], r.cos_incidence, mirror);
+        let rt = s.coating.rt(
+            lambda,
+            n1,
+            s.n_after[wl],
+            r.cos_incidence,
+            mirror,
+            mklight_core::materials::coating::Arrival::Before,
+        );
         t *= if mirror {
             rt.r_unpolarized()
         } else {

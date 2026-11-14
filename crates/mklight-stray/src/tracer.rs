@@ -695,7 +695,7 @@ impl<'a, C: RayCaster> Tracer<'a, C> {
                         let n1 = scene.media[m_in as usize].n[wl];
                         let n2 = scene.media[m_out as usize].n[wl];
                         let cos_i = (-d.dot(n_inc)).clamp(0.0, 1.0);
-                        let rt = i.coating.rt(lambda, n1, n2, cos_i, mirror);
+                        let rt = i.coating.rt(lambda, n1, n2, cos_i, mirror, i.arrival(side));
                         let mut r = rt.r_unpolarized();
                         let mut t = if mirror { 0.0 } else { rt.t_unpolarized() };
                         let mut trans = None;

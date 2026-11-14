@@ -537,8 +537,8 @@ this page.
   *Optimize*:
   * **Merit function** (`MeritFunctionSection`), Default or Custom, with the
     merit at the current design read out live. *Default* edits the engine's
-    generator: criterion RMS spot (centroid or chief, per-wavelength or
-    white-light centroid), RMS wavefront, or MTF (frequencies, target,
+    generator: criterion RMS spot (centroid or chief, white-light centroid
+    by default or per wavelength), RMS wavefront, or MTF (frequencies, target,
     diffraction or geometric, weakest field); rings and arms; fields and
     wavelengths as checklists; glass and air thickness limits; the
     anamorphic squeeze target. *Custom* is an operand list: a searchable
@@ -634,7 +634,8 @@ this page.
     *Default Tolerances…* generates a set from a class of manufacture,
     Commercial / Precision / High precision, with every value editable (0
     leaves a kind out), in three groups: surfaces (power in test fringes
-    over the clear aperture, Δc = Nλ/h²; astigmatic and spherical
+    over the clear aperture, Δc = Nλ(1 + cos θ)/(2h²) with sin θ = c·h,
+    the engine's conversion, Nλ/h² on a flat; astigmatic and spherical
     irregularity in test fringes; thickness; decentre and tilt of each
     surface alone), elements (decentre and tilt of each element as a rigid
     body, a cemented group together) and glasses (index Δn_d and Abbe
@@ -651,8 +652,9 @@ this page.
     changing which converts the limits. Add has a Surface section (by kind
     and surface) and an Element section (by kind and element);
     duplicate (⌘D) and delete (⌫); the context menu sets the unit, the
-    distribution (uniform, normal with the limits at ±2σ or ±3σ, end
-    points) and symmetric / asymmetric limits. Problems show under their
+    distribution (uniform, normal with the limits at ±2σ or ±3σ,
+    parabolic — density ∝ δ², most builds near the limits — or end points)
+    and symmetric / asymmetric limits. Problems show under their
     row in red and block the run. Every change is undoable and saved; rows
     keep their identity across undo (aligned by content).
   * **Element tolerances** (`element_placement`): the element's first row

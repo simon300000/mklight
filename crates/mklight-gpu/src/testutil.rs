@@ -239,6 +239,92 @@ pub fn one_surface(shape: SurfaceShape) -> OpticalSystem {
     s
 }
 
+/// Conic, even-asphere and general-sag shapes on a `c = −0.05` vertex
+/// sheet, for the steep double-crossing tests.
+pub fn double_crossing_shapes() -> Vec<SurfaceShape> {
+    vec![
+        SurfaceShape::sphere(-20.0),
+        SurfaceShape::EvenAsphere {
+            curvature: -0.05,
+            conic: 0.0,
+            coefficients: vec![1e-9],
+        },
+        SurfaceShape::OddAsphere {
+            curvature: -0.05,
+            conic: 0.0,
+            coefficients: vec![0.0, 0.0, 1e-8],
+        },
+    ]
+}
+
+/// Extents of a surface crossed twice by the steep test ray from
+/// `(0, −30, −2)` along `(0, 0.999, 0.050)` on a [`double_crossing_shapes`]
+/// surface (first at y ≈ −5.5, then +3.6), and whether the first crossing is
+/// the one taken (docs/SURFACES.md §8, conic root choice).
+#[allow(clippy::type_complexity)]
+pub fn double_crossing_extents() -> Vec<((SemiDiameter, Option<ApertureShape>), bool)> {
+    let fixed = |value| SemiDiameter::Fixed { value };
+    vec![
+        ((SemiDiameter::Auto, None), false),
+        ((fixed(8.0), None), true),
+        ((fixed(4.5), None), false),
+        ((fixed(2.0), None), false),
+        (
+            (
+                SemiDiameter::Auto,
+                Some(ApertureShape::Annular {
+                    inner_radius: 6.0,
+                    outer_radius: 10.0,
+                }),
+            ),
+            true,
+        ),
+        (
+            (
+                fixed(4.5),
+                Some(ApertureShape::Rectangular {
+                    half_x: 1.0,
+                    half_y: 6.0,
+                }),
+            ),
+            true,
+        ),
+        (
+            (
+                fixed(8.0),
+                Some(ApertureShape::Elliptical {
+                    semi_x: 10.0,
+                    semi_y: 4.5,
+                }),
+            ),
+            false,
+        ),
+    ]
+}
+
+/// A deep front meniscus (object at infinity, fixed semi-diameters) and a
+/// ray at 89° whose start, on the reference plane through the first vertex,
+/// lies between its two crossings of the front surface, both inside the
+/// lens: surface 1 of an object at infinity keeps the nearer crossing
+/// (y ≈ −29.15), not the one ahead of the start (y ≈ 31.7)
+/// (docs/SURFACES.md §8).
+pub fn steep_meniscus_from_infinity() -> (OpticalSystem, mklight_trace::Ray) {
+    use mklight_core::Vec3;
+    let mut s = plate(false);
+    s.surfaces[1].shape = SurfaceShape::sphere(78.0);
+    s.surfaces[1].thickness = 2.5;
+    s.surfaces[1].material = MaterialRef::Constant { n: 1.6 };
+    s.surfaces[1].semi_diameter = SemiDiameter::Fixed { value: 31.7 };
+    s.surfaces[1].aperture = None;
+    s.surfaces[2].shape = SurfaceShape::sphere(15.9);
+    s.surfaces[2].semi_diameter = SemiDiameter::Fixed { value: 15.85 };
+    s.surfaces[2].aperture = None;
+    let theta = 89f64.to_radians();
+    let d = Vec3::new(0.0, theta.sin(), theta.cos());
+    let p = Vec3::new(0.0, -theta.cos(), theta.sin()) * 6.16;
+    (s, mklight_trace::Ray::new(p, d))
+}
+
 /// Strong even aspheres whose polynomial fights the conic (molded-asphere
 /// style), where the conic seed is a poor Newton start and the reference
 /// needs up to ~40 steps for some rays (to be swept with [`sweep_rays`]).
@@ -523,7 +609,7 @@ pub fn f64_path(
     use crate::batch::StepMode;
     use mklight_core::materials::coating::fresnel;
     use mklight_trace::interact::{ideal_lens, reflect, refract};
-    use mklight_trace::surface::{IntersectSettings, intersect};
+    use mklight_trace::surface::{IntersectSettings, intersect_within};
     let frame = |j: usize| -> mklight_core::math::Frame {
         match sys.surfaces[j].to_next {
             Some(f) => f,
@@ -553,7 +639,19 @@ pub fn f64_path(
             n_of(s)
         };
         let surf = &sys.surfaces[s];
-        let hit = intersect(&surf.shape, p, d, &IntersectSettings::default()).ok()?;
+        let extent = if st.backward {
+            surf.root_extent()
+        } else {
+            mklight_trace::trace::root_extent(sys, s)
+        };
+        let hit = intersect_within(
+            &surf.shape,
+            extent.as_ref(),
+            p,
+            d,
+            &IntersectSettings::default(),
+        )
+        .ok()?;
         let t = hit.t_transfer + hit.t_surface;
         opl += n1 * t;
         let alpha = if gap == 0 && sys.object_at_infinity {
