@@ -142,11 +142,6 @@ export function StatusCapsule() {
             ) : (
               <>
                 {busy && <Loader2 className="size-3 shrink-0 animate-spin text-secondary" aria-label="Computing" />}
-                {engine.info.isMock && (
-                  <span className="rounded bg-warning/15 px-1 text-[10px] font-semibold uppercase tracking-wide text-warning" title="Mock engine: synthetic results">
-                    Mock
-                  </span>
-                )}
                 {errors > 0 ? (
                   <span className="text-secondary">Design has errors</span>
                 ) : (
@@ -308,12 +303,6 @@ function StatusDetails({ json }: { json: JsonObject | undefined }) {
           <p className="text-danger">{engineError}</p>
         ) : info ? (
           <>
-            {info.isMock && (
-              <p className="mb-1.5 flex gap-1.5 text-[12px] text-warning">
-                <AlertTriangle className="mt-[1px] size-3.5 shrink-0" />
-                Mock engine: results are synthetic. The WASM engine is not part of this build.
-              </p>
-            )}
             <EngineInfoTable />
             <div className="mt-1 grid grid-cols-[auto_1fr] gap-x-3 text-[12px]">
               <span className="text-secondary">Snapshot</span>

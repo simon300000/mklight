@@ -325,7 +325,7 @@ function BackendBadge({
   const backend = String(ri.backend ?? '')
   const gpu = backend.startsWith('gpu')
   const precision = String(ri.precision ?? (gpu ? 'f32' : 'f64')).replace(/_.*/, '')
-  const label = backend === 'mock' ? 'Mock' : `${gpu ? 'GPU' : 'CPU'} · ${precision}`
+  const label = `${gpu ? 'GPU' : 'CPU'} · ${precision}`
   const facts = useMemo(() => runFacts(result), [result])
   const marks = facts.groups.length + (facts.fallback ? 1 : 0)
   const spoken = [

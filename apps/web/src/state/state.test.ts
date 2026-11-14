@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest'
-import { createMockEngine } from '@/engine-mock'
+import { createReplayEngine } from '@/test-engine/replay'
 import { projectFromSystem, SAMPLES } from '@/model/project'
 import { clone, curvatureOf } from '@/model/system'
 import { useDocument, undoName, redoName, isDirty } from './document'
@@ -38,7 +38,7 @@ describe('document undo', () => {
 describe('workspace', () => {
   it('runs panes against snapshots and marks results stale when the design changes', async () => {
     const ws = useWorkspace.getState()
-    await ws.setEngine(createMockEngine({ latencyMs: 0 }))
+    await ws.setEngine(createReplayEngine({ latencyMs: 0 }))
     const sys = dg()
     ws.designChanged(sys)
     await new Promise((r) => setTimeout(r, 400))
@@ -59,7 +59,7 @@ describe('workspace', () => {
 
   it('keeps only the latest preview: an older one that opens later is dropped', async () => {
     const ws = useWorkspace.getState()
-    await ws.setEngine(createMockEngine({ latencyMs: 0 }))
+    await ws.setEngine(createReplayEngine({ latencyMs: 0 }))
     ws.designChanged(dg())
     await new Promise((r) => setTimeout(r, 400))
     const a = dg()
@@ -79,7 +79,7 @@ describe('workspace', () => {
 
   it('does not restart a job that already computes the current snapshot', async () => {
     const ws = useWorkspace.getState()
-    const engine = createMockEngine({ latencyMs: 200 })
+    const engine = createReplayEngine({ latencyMs: 200 })
     const submitted: string[] = []
     const submit = engine.submit.bind(engine)
     engine.submit = (req, snap) => (submitted.push(req.analysis), submit(req, snap))
@@ -97,7 +97,7 @@ describe('workspace', () => {
 
   it('opening another document drops the design jobs of the previous one', async () => {
     const ws = useWorkspace.getState()
-    await ws.setEngine(createMockEngine({ latencyMs: 0 }))
+    await ws.setEngine(createReplayEngine({ latencyMs: 0 }))
     openSample('double_gauss')
     await new Promise((r) => setTimeout(r, 400))
     useJobs.getState().start('optimize', { max_iterations: 5 })

@@ -3,4 +3,4 @@ dist
 test-results
 playwright-report
 *.tsbuildinfo
-dist-wasm
+dist-e2e

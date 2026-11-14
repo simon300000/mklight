@@ -28,7 +28,6 @@ describe('warning grouping', () => {
       'field 2: pupil sampling coarse (0.72 waves per sample); increase the pupil sampling',
       'field 2: pupil sampling coarse (0.73 waves per sample); increase the pupil sampling',
       'image grid too small; enlarge the grid',
-      'MOCK ENGINE: synthetic data',
     ])
     expect(g).toHaveLength(2)
     expect(g[0].scopes).toEqual(['Field 1', 'Field 3'])

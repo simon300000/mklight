@@ -13,7 +13,7 @@ Two parts: the web UI (`apps/web`, this section first) and the engine module
 
 ### Run and build
 
-Requirements: Node 22 or later and pnpm 10 or later; for the real engine the
+Requirements: Node 22 or later and pnpm 10 or later; for the engine the
 wasm toolchain of "The engine" below.
 
 ```sh
@@ -36,41 +36,53 @@ engine needs a cross-origin isolated page; a host that cannot send
 `index.html` loads first. The status popover shows the engine, its threads,
 cross-origin isolation and WebGPU.
 
-**Engine choice.** The UI imports the engine as `@engine`
-(`apps/web/engine/src/index.ts`). When its wasm package (`engine/pkg`) is
-built, the app runs on the **real engine** by default. Without it, or with
-`VITE_ENGINE=mock` at build time or `?engine=mock` in the URL, it runs on the
-**mock engine** (`src/engine-mock`): synthetic but correctly shaped results
-for every analysis and design job from a small rotationally symmetric ray
-trace, labelled "Mock" in the toolbar and in every result. `src/engine/adapt.ts`
-maps the module's wrappers onto the UI's contract (`src/engine/types.ts`):
-progress stage text parsed into live detail as the macOS app does, buffer
-shapes, the envelope, backend requests and errors. Other URL parameters:
-`?sample=double_gauss` opens a sample, `?fresh` skips the autosaved document.
+**The engine.** The UI imports the engine as `@engine`
+(`apps/web/engine/src/index.ts`) and shows only what the real engine computes;
+there is no stand-in. The wasm package (`engine/pkg`, `pnpm build:wasm`) must
+be built. Without it the app still builds (so `pnpm build` does not need the
+pinned nightly toolchain), `@engine` points at `src/engine/missing.ts`, and the
+app starts in an error state: the status capsule says "Engine unavailable" and
+its popover "Engine not built: run npm run build:wasm in apps/web, then
+reload", with no results anywhere. `src/engine/adapt.ts` maps the module's
+wrappers onto the UI's contract (`src/engine/types.ts`): progress stage text
+parsed into live detail as the macOS app does, buffer shapes, the envelope,
+backend requests and errors. URL parameters: `?sample=double_gauss` opens a
+sample, `?fresh` skips the autosaved document.
 
 **Tests.**
 
 ```sh
-pnpm test                                     # Vitest: model, state, mock engine, renderers, arrangement
+pnpm test                                     # Vitest: model, state, renderers, arrangement (no engine, no browser)
 pnpm exec playwright install chromium webkit  # once
-pnpm test:e2e                                 # Playwright on the mock engine, Chromium and WebKit
-pnpm test:e2e:wasm                            # Playwright on the real engine (needs engine/pkg)
+pnpm build:wasm                               # once: the Playwright suite runs on the real engine
+pnpm test:e2e                                 # Playwright on the real engine, Chromium and WebKit
 pnpm typecheck
+pnpm record:engine                            # re-record src/test-engine/recordings.json
 ```
 
-`test:e2e` builds with the mock engine and serves it on port 4317: open a
-sample, edit a radius in the lens table, add a spot diagram pane, undo; the
-System page and the status popover; Optimize → Apply to Design → Undo; the
-panel arrangement, 3-D and a separate window. `test:e2e:wasm` builds with
-the real engine and serves it on port 4318: the Cooke triplet, a radius edit,
-spot and MTF panes computed by the engine, and Optimize → Apply → Undo.
+Vitest needs no engine. The few unit tests that need engine data (workspace
+runs, jobs, result renderers) use the replay engine in `src/test-engine/`: an
+`EngineClient` that serves results recorded from the real engine
+(`recordings.json`, the double Gauss sample, small settings) after a short
+latency, and rejects any request it has no recording for. It is imported by
+tests only and is not part of the app bundle. `pnpm record:engine`
+(`src/test-engine/record.mjs`) records them again with the CLI
+(`target/release/mklight run <project> <analysis> --json --buffers --no-timing`;
+build it with `cargo build --release -p mklight-cli`); re-record after a change
+of the result formats.
+
+`test:e2e` builds the app and serves it on port 4318 (cross-origin isolated):
+open a sample, edit a radius in the lens table, add a spot diagram pane, undo;
+the System page and the status popover; Optimize → Apply to Design → Undo; the
+panel arrangement, 3-D and a separate window; the Cooke triplet with spot and
+MTF panes. The tests run one at a time (the engine's thread pool is per page).
 
 ### Structure
 
 | path | role |
 |---|---|
-| `src/engine/types.ts`, `adapt.ts`, `index.ts` | The engine boundary as the UI codes against it, the adapter to the WASM module, the choice of engine |
-| `src/engine-mock/` | The mock engine (`createMockEngine`), real descriptors from `mklight analyses --json` |
+| `src/engine/types.ts`, `adapt.ts`, `index.ts` | The engine boundary as the UI codes against it, the adapter to the WASM module, the loader (with the "not built" error) |
+| `src/test-engine/` | Tests only: the replay engine and its recordings of the real engine |
 | `src/model/` | Pure model code: number format, system edits, surface types, param paths, solves, materials, sag, merit, bounds, tolerances, glasses, spectrum, the `.mklight` file, samples |
 | `src/state/document.ts` | Simulation state: the project and its undo history (named actions) |
 | `src/state/workspace.ts` | Snapshots, preview snapshots, panes and runs (stale, automatic update, cancel, fresh runs) |
@@ -198,9 +210,6 @@ states, Try Again recomputing); web patterns where they read better:
   autosave made then no longer lists them.
 * The glass map: Return marks a glass in the substitution panel; the glass's
   data card opens only in the glass map pane.
-* The mock engine cannot unload a glass catalog: undoing Add Glass Catalog
-  rebuilds the real engine's session without it, but on the mock the glasses
-  stay until reload.
 
 ## The engine
 
