@@ -34,6 +34,13 @@
 //!    [`crate::paraxial::ideal_lens_object_vergence`] (an `O(i)` scalar y–nu
 //!    sweep, done only when a ray reaches an ideal lens).
 //!
+//! Before its step a surface is *prepared* (`Prepared`): its transfer, its
+//! shape and its outlines are read from the [`ResolvedSystem`] once, a
+//! circular extent or clip keeps its edge-tolerant squared radius, and
+//! planes and conics are intersected without the general shape dispatch.
+//! Every prepared value is formed with the general code's operations, so
+//! the results are bitwise those of steps 1–4 as written.
+//!
 //! The object surface (index 0) never interacts. A trace of an object at
 //! infinity starts its optical path at the input ray's point; ray generation
 //! places all rays of one field on a common plane normal to their direction,
@@ -41,13 +48,17 @@
 //!
 //! Nothing in the no-record path allocates.
 
-use mklight_core::{Interaction, ResolvedSystem, SurfaceShape, Vec3};
+use mklight_core::math::Frame;
+use mklight_core::{ApertureShape, Interaction, ResolvedSystem, SurfaceShape, Vec3};
 use serde::{Deserialize, Serialize};
 
 use crate::interact::{diffract, ideal_lens, reflect, refract};
 use crate::numeric::Compensated;
 use crate::paraxial::ideal_lens_object_vergence;
-use crate::surface::{IntersectError, IntersectSettings, SHEET_TOL, intersect_within};
+use crate::surface::{
+    Circle, Extent, Hit, IntersectError, IntersectSettings, SHEET_TOL, intersect_conic_within,
+    intersect_plane, intersect_within,
+};
 
 /// The fixed extent that chooses between two crossings of surface `i`
 /// arriving forward (`ResolvedSurface::root_extent`), except at surface 1
@@ -198,22 +209,52 @@ pub struct TraceResult {
 /// `i == 1`) into surface `i`'s frame.
 #[inline]
 pub fn transfer_into(sys: &ResolvedSystem, i: usize, ray: Ray) -> Ray {
-    debug_assert!(i >= 1);
-    if i == 1 && sys.object_at_infinity {
-        let f = &sys.surfaces[1].frame;
-        if f.rot.is_identity() && f.origin == Vec3::ZERO {
-            return ray;
+    Transfer::of(sys, i).apply(ray)
+}
+
+/// The transform of [`transfer_into`] into surface `i`.
+#[derive(Clone, Copy, Debug)]
+enum Transfer {
+    /// The frames coincide.
+    None,
+    /// The exact translation `z − t`.
+    Axial(f64),
+    /// A general rigid motion.
+    Frame(Frame),
+}
+
+impl Transfer {
+    #[inline]
+    fn of(sys: &ResolvedSystem, i: usize) -> Self {
+        debug_assert!(i >= 1);
+        if i == 1 && sys.object_at_infinity {
+            let f = sys.surfaces[1].frame;
+            return if f.rot.is_identity() && f.origin == Vec3::ZERO {
+                Transfer::None
+            } else {
+                Transfer::Frame(f)
+            };
         }
-        return Ray::new(f.to_local_point(ray.pos), f.to_local_dir(ray.dir));
+        let prev = &sys.surfaces[i - 1];
+        if prev.to_next_is_axial {
+            return Transfer::Axial(prev.thickness);
+        }
+        match prev.to_next {
+            Some(f) => Transfer::Frame(f),
+            None => Transfer::None,
+        }
     }
-    let prev = &sys.surfaces[i - 1];
-    if prev.to_next_is_axial {
-        let p = ray.pos;
-        return Ray::new(Vec3::new(p.x, p.y, p.z - prev.thickness), ray.dir);
-    }
-    match &prev.to_next {
-        Some(f) => Ray::new(f.to_local_point(ray.pos), f.to_local_dir(ray.dir)),
-        None => ray,
+
+    #[inline(always)]
+    fn apply(&self, ray: Ray) -> Ray {
+        match self {
+            Transfer::None => ray,
+            Transfer::Axial(t) => {
+                let p = ray.pos;
+                Ray::new(Vec3::new(p.x, p.y, p.z - t), ray.dir)
+            }
+            Transfer::Frame(f) => Ray::new(f.to_local_point(ray.pos), f.to_local_dir(ray.dir)),
+        }
     }
 }
 
@@ -275,7 +316,7 @@ impl Walk {
             ray: self.ray,
             surface,
             opl: self.opl,
-            transmittance: (-self.absorb).exp(),
+            transmittance: transmittance(self.absorb),
         }
     }
 }
@@ -302,33 +343,157 @@ fn first_record(start: &Ray) -> SurfaceRecord {
     }
 }
 
+/// A fixed outline of a surface: a circle with its edge tolerance applied
+/// once, or an aperture of another shape.
+#[derive(Clone, Debug)]
+enum Outline {
+    Circle(Circle),
+    Shape(ApertureShape),
+}
+
+impl Outline {
+    fn of(aperture: &ApertureShape) -> Self {
+        match *aperture {
+            ApertureShape::Circular { radius } => Outline::Circle(Circle::new(radius)),
+            _ => Outline::Shape(aperture.clone()),
+        }
+    }
+}
+
+impl Extent for Outline {
+    #[inline(always)]
+    fn contains(&self, x: f64, y: f64) -> bool {
+        match self {
+            Outline::Circle(c) => c.contains(x, y),
+            Outline::Shape(a) => a.passes(x, y),
+        }
+    }
+}
+
+/// The shapes [`step`] intersects without the general [`intersect_within`]
+/// dispatch.
+#[derive(Clone, Copy, Debug)]
+enum Shape {
+    Plane,
+    Conic {
+        c: f64,
+        k: f64,
+    },
+    /// Everything else: [`intersect_within`] on the surface's shape.
+    General,
+}
+
+/// Surface `i` as one step of a trace needs it, read from the
+/// [`ResolvedSystem`] once instead of at every operation: the transfer into
+/// its frame, its shape, its root extent ([`root_extent`]) and clipping
+/// aperture (`ResolvedSurface::passes_aperture`) with their edge tolerances
+/// applied, and whether it interacts. Every value is formed with the
+/// operations of the general code, so a step over a prepared surface is
+/// bitwise the general step.
+///
+/// Preparing a surface costs a few loads and compares next to the step's
+/// square roots and divisions, and the compiler interleaves it with them:
+/// a table of prepared surfaces kept across traces measured no faster than
+/// preparing at every step, and could go stale when a system is edited in
+/// place.
+#[derive(Clone, Debug)]
+struct Prepared {
+    transfer: Transfer,
+    shape: Shape,
+    extent: Option<Outline>,
+    /// `None`: nothing clips (no fixed aperture, or a coordinate break).
+    clip: Option<Outline>,
+    /// Neither the image surface nor a coordinate break.
+    interacts: bool,
+}
+
+impl Prepared {
+    #[inline]
+    fn of(sys: &ResolvedSystem, i: usize) -> Self {
+        let s = &sys.surfaces[i];
+        let is_cb = matches!(s.shape, SurfaceShape::CoordinateBreak);
+        // `ResolvedSurface::root_extent`.
+        let extent = if i == 1 && sys.object_at_infinity {
+            None
+        } else {
+            match (&s.aperture, s.fixed_semi_diameter) {
+                (Some(ApertureShape::Annular { outer_radius, .. }), _) => {
+                    Some(Outline::Circle(Circle::new(*outer_radius)))
+                }
+                (Some(a), _) => Some(Outline::of(a)),
+                (None, Some(radius)) => Some(Outline::Circle(Circle::new(radius))),
+                (None, None) => None,
+            }
+        };
+        // `ResolvedSurface::passes_aperture`.
+        let clip = match (&s.aperture, s.fixed_semi_diameter) {
+            _ if is_cb => None,
+            (Some(a), _) => Some(Outline::of(a)),
+            (None, Some(radius)) => Some(Outline::Circle(Circle::new(radius))),
+            (None, None) => None,
+        };
+        let shape = match s.shape {
+            SurfaceShape::Plane => Shape::Plane,
+            SurfaceShape::Conic { curvature, conic } => Shape::Conic {
+                c: curvature,
+                k: conic,
+            },
+            _ => Shape::General,
+        };
+        Prepared {
+            transfer: Transfer::of(sys, i),
+            shape,
+            extent,
+            clip,
+            interacts: i < sys.surfaces.len() - 1 && !is_cb,
+        }
+    }
+
+    /// [`intersect_within`] for this surface, of shape `shape`.
+    #[inline(always)]
+    fn intersect(
+        &self,
+        shape: &SurfaceShape,
+        p: Vec3,
+        d: Vec3,
+        settings: &IntersectSettings,
+    ) -> Result<Hit, IntersectError> {
+        let extent = self.extent.as_ref();
+        match self.shape {
+            Shape::Plane => intersect_plane(p, d),
+            Shape::Conic { c, k } => intersect_conic_within(c, k, extent, p, d),
+            Shape::General => intersect_within(shape, extent, p, d, settings),
+        }
+    }
+
+    /// Whether a hit at `(x, y)` passes the clipping aperture.
+    #[inline(always)]
+    fn passes(&self, x: f64, y: f64) -> bool {
+        self.clip.as_ref().is_none_or(|c| c.contains(x, y))
+    }
+}
+
 /// One surface of a trace (module docs, "Per surface"): transfer into
-/// surface `i`, intersect, clip and interact. On failure `w` holds the last
-/// valid state and the status is returned. The scalar [`trace_ray`] and the
-/// interleaved [`trace_rays`] both run exactly this code, so they agree
-/// bitwise.
+/// surface `i` (prepared as `ps`), intersect, clip and interact. On failure
+/// `w` holds the last valid state and the status is returned. The scalar
+/// [`trace_ray`] and the interleaved [`trace_rays`] both run exactly this
+/// code, so they agree bitwise.
 #[inline(always)]
+#[allow(clippy::too_many_arguments)]
 fn step(
     sys: &ResolvedSystem,
     i: usize,
+    ps: &Prepared,
     wl: usize,
     alpha_object: f64,
     opts: &TraceOptions,
     w: &mut Walk,
     record: Option<&mut Vec<SurfaceRecord>>,
 ) -> Result<(), TraceStatus> {
-    let image = sys.surfaces.len() - 1;
-    w.ray = transfer_into(sys, i, w.ray);
+    w.ray = ps.transfer.apply(w.ray);
     let s = &sys.surfaces[i];
     let n1 = sys.n_before(i, wl);
-    let extent = root_extent(sys, i);
-    let hit = match intersect_within(
-        &s.shape,
-        extent.as_ref(),
-        w.ray.pos,
-        w.ray.dir,
-        &opts.intersect,
-    ) {
+    let hit = match ps.intersect(&s.shape, w.ray.pos, w.ray.dir, &opts.intersect) {
         Ok(h) => h,
         Err(e) => {
             return Err(match e {
@@ -361,13 +526,12 @@ fn step(
             reason: FailReason::NonFinite,
         });
     }
-    let is_cb = matches!(s.shape, SurfaceShape::CoordinateBreak);
-    if opts.clip && !is_cb && !s.passes_aperture(hit.point.x, hit.point.y) {
+    if opts.clip && !ps.passes(hit.point.x, hit.point.y) {
         return Err(TraceStatus::Clipped { surface: i });
     }
 
     let mut cos_i = w.ray.dir.dot(hit.normal).abs().min(1.0);
-    if i < image && !is_cb {
+    if ps.interacts {
         match (&s.shape, s.interaction) {
             // Dummy is a pass-through for every shape, ideal lenses included.
             (_, Interaction::Dummy) => {}
@@ -473,6 +637,19 @@ pub fn trace_ray(
     start: &Ray,
     wl: usize,
     opts: &TraceOptions,
+    record: Option<&mut Vec<SurfaceRecord>>,
+) -> TraceResult {
+    trace_prepared(sys, |i| Prepared::of(sys, i), start, wl, opts, record)
+}
+
+/// [`trace_ray`] with surface `i` prepared as `prepared(i)`.
+#[inline(always)]
+fn trace_prepared<P: std::borrow::Borrow<Prepared>>(
+    sys: &ResolvedSystem,
+    prepared: impl Fn(usize) -> P,
+    start: &Ray,
+    wl: usize,
+    opts: &TraceOptions,
     mut record: Option<&mut Vec<SurfaceRecord>>,
 ) -> TraceResult {
     let last = last_surface(sys, opts);
@@ -489,6 +666,7 @@ pub fn trace_ray(
         if let Err(status) = step(
             sys,
             i,
+            prepared(i).borrow(),
             wl,
             alpha_object,
             opts,
@@ -555,29 +733,19 @@ struct LaneSurface {
     refract: bool,
 }
 
-fn lane_surface(sys: &ResolvedSystem, i: usize) -> Option<LaneSurface> {
-    let image = sys.surfaces.len() - 1;
-    let shift = if i == 1 && sys.object_at_infinity {
-        let f = &sys.surfaces[1].frame;
-        (f.rot.is_identity() && f.origin == Vec3::ZERO).then_some(None)?
-    } else {
-        let prev = &sys.surfaces[i - 1];
-        if prev.to_next_is_axial {
-            Some(prev.thickness)
-        } else if prev.to_next.is_none() {
-            None
-        } else {
-            return None;
-        }
+fn lane_surface(sys: &ResolvedSystem, i: usize, ps: &Prepared) -> Option<LaneSurface> {
+    let shift = match ps.transfer {
+        Transfer::None => None,
+        Transfer::Axial(t) => Some(t),
+        Transfer::Frame(_) => return None,
     };
-    let s = &sys.surfaces[i];
-    let conic = match s.shape {
-        SurfaceShape::Plane => None,
-        SurfaceShape::Conic { curvature, conic } if curvature != 0.0 => Some((curvature, conic)),
+    let conic = match ps.shape {
+        Shape::Plane => None,
+        Shape::Conic { c, k } if c != 0.0 => Some((c, k)),
         _ => return None,
     };
-    let refract = i < image
-        && match s.interaction {
+    let refract = ps.interacts
+        && match sys.surfaces[i].interaction {
             Interaction::Refract => true,
             Interaction::Dummy => false,
             _ => return None,
@@ -585,7 +753,7 @@ fn lane_surface(sys: &ResolvedSystem, i: usize) -> Option<LaneSurface> {
     Some(LaneSurface {
         shift,
         conic,
-        extent: root_extent(sys, i).is_some(),
+        extent: ps.extent.is_some(),
         refract,
     })
 }
@@ -606,7 +774,7 @@ fn lane_step(
     st: &Lanes,
     out: &mut Lanes,
     regular: &mut [bool; PACKET],
-    incidence: &mut ([Lane; 3], Lane),
+    incidence: Option<&mut ([Lane; 3], Lane)>,
 ) {
     const N: usize = PACKET;
     let [px, py, mut pz] = st.p;
@@ -715,13 +883,15 @@ fn lane_step(
         ab[l] = if alpha[l] != 0.0 { absorbed } else { ab[l] };
     }
     let (mut ox, mut oy, mut oz) = (dx, dy, dz);
-    // `cos_incidence` of the record: |d·n| clamped, replaced by refraction's.
+    // `cos_incidence` of the record: |d·n| clamped, or refraction's.
     let mut cosines = [0.0; N];
-    for l in 0..N {
-        cosines[l] = dx[l]
-            .mul_add(nx[l], dy[l].mul_add(ny[l], dz[l] * nz[l]))
-            .abs()
-            .min(1.0);
+    if incidence.is_some() && !ls.refract {
+        for l in 0..N {
+            cosines[l] = dx[l]
+                .mul_add(nx[l], dy[l].mul_add(ny[l], dz[l] * nz[l]))
+                .abs()
+                .min(1.0);
+        }
     }
     if ls.refract {
         for l in 0..N {
@@ -752,7 +922,9 @@ fn lane_step(
             ok[l] &= disc >= 0.0 || disc.is_nan();
         }
     }
-    *incidence = ([nx, ny, nz], cosines);
+    if let Some(incidence) = incidence {
+        *incidence = ([nx, ny, nz], cosines);
+    }
     *out = Lanes {
         p: [hx, hy, hz],
         d: [ox, oy, oz],
@@ -777,7 +949,15 @@ pub fn trace_rays(
     wls: &[usize],
     opts: &TraceOptions,
 ) -> Vec<TraceResult> {
-    trace_packets(sys, starts, wls, opts, None)
+    let prepared = prepare(sys, opts);
+    trace_packets(sys, &prepared, starts, wls, opts, None)
+}
+
+/// The surfaces a trace with `opts` reaches, prepared.
+fn prepare(sys: &ResolvedSystem, opts: &TraceOptions) -> Vec<Prepared> {
+    (1..=last_surface(sys, opts))
+        .map(|i| Prepared::of(sys, i))
+        .collect()
 }
 
 /// [`trace_rays`] with per-surface records: `records[k]` is cleared and
@@ -790,11 +970,13 @@ pub fn trace_rays_recorded(
     records: &mut [Vec<SurfaceRecord>],
 ) -> Vec<TraceResult> {
     assert_eq!(records.len(), starts.len());
-    trace_packets(sys, starts, wls, opts, Some(records))
+    trace_packets(sys, &prepare(sys, opts), starts, wls, opts, Some(records))
 }
 
 fn trace_packets(
     sys: &ResolvedSystem,
+    // Surfaces 1..=last at least, at index i − 1.
+    prepared: &[Prepared],
     starts: &[Ray],
     wls: &[usize],
     opts: &TraceOptions,
@@ -803,8 +985,8 @@ fn trace_packets(
     assert!(wls.len() == starts.len() || wls.len() == 1);
     let wl_of = |k: usize| if wls.len() == 1 { wls[0] } else { wls[k] };
     let last = last_surface(sys, opts);
-    let fast: Vec<Option<LaneSurface>> = (0..=last)
-        .map(|i| (i >= 1).then(|| lane_surface(sys, i)).flatten())
+    let fast: Vec<Option<LaneSurface>> = (1..=last)
+        .map(|i| lane_surface(sys, i, &prepared[i - 1]))
         .collect();
     let mut out = Vec::with_capacity(starts.len());
     for (c, chunk) in starts.chunks(PACKET).enumerate() {
@@ -835,7 +1017,8 @@ fn trace_packets(
         let mut i = 1;
         while live > 0 && i <= last {
             let s = &sys.surfaces[i];
-            if let Some(ls) = &fast[i] {
+            let ps = &prepared[i - 1];
+            if let Some(ls) = &fast[i - 1] {
                 let (mut n1, mut n2, mut alpha) = ([1.0; PACKET], [1.0; PACKET], [0.0; PACKET]);
                 for l in 0..n {
                     let w = lane_wl[l];
@@ -858,13 +1041,13 @@ fn trace_packets(
                     &lanes,
                     &mut next,
                     &mut regular,
-                    &mut incidence,
+                    records.is_some().then_some(&mut incidence),
                 );
                 for l in 0..n {
                     if done[l].is_some() {
                         continue;
                     }
-                    if regular[l] && (!opts.clip || s.passes_aperture(next.p[0][l], next.p[1][l])) {
+                    if regular[l] && (!opts.clip || ps.passes(next.p[0][l], next.p[1][l])) {
                         let w = next.walk(l);
                         if let Some(r) = records.as_deref_mut() {
                             let ([nx, ny, nz], cos) = &incidence;
@@ -882,7 +1065,7 @@ fn trace_packets(
                     }
                     let mut w = lanes.walk(l);
                     let rec = records.as_deref_mut().map(|r| &mut r[base + l]);
-                    match step(sys, i, lane_wl[l], alpha0[l], opts, &mut w, rec) {
+                    match step(sys, i, ps, lane_wl[l], alpha0[l], opts, &mut w, rec) {
                         Ok(()) => lanes.set(l, &w),
                         Err(status) => {
                             done[l] = Some(w.result(status, i));
@@ -895,7 +1078,7 @@ fn trace_packets(
                     if done[l].is_none() {
                         let mut w = lanes.walk(l);
                         let rec = records.as_deref_mut().map(|r| &mut r[base + l]);
-                        match step(sys, i, lane_wl[l], alpha0[l], opts, &mut w, rec) {
+                        match step(sys, i, ps, lane_wl[l], alpha0[l], opts, &mut w, rec) {
                             Ok(()) => lanes.set(l, &w),
                             Err(status) => {
                                 done[l] = Some(w.result(status, i));
@@ -936,4 +1119,243 @@ pub fn to_global(sys: &ResolvedSystem, surface: usize, ray: &Ray) -> Ray {
         sys.surfaces[surface].frame
     };
     Ray::new(f.to_global_point(ray.pos), f.to_global_dir(ray.dir))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use mklight_core::materials::MaterialLibrary;
+    use mklight_core::model::{Placement, SemiDiameter, TransformOrder};
+    use mklight_core::{OpticalSystem, Snapshot, samples};
+
+    use super::*;
+    use crate::pupil::PupilSampling;
+    use crate::tracer::SequentialTracer;
+
+    /// The transfer as written before [`Transfer`].
+    fn transfer_reference(sys: &ResolvedSystem, i: usize, ray: Ray) -> Ray {
+        if i == 1 && sys.object_at_infinity {
+            let f = &sys.surfaces[1].frame;
+            if f.rot.is_identity() && f.origin == Vec3::ZERO {
+                return ray;
+            }
+            return Ray::new(f.to_local_point(ray.pos), f.to_local_dir(ray.dir));
+        }
+        let prev = &sys.surfaces[i - 1];
+        if prev.to_next_is_axial {
+            let p = ray.pos;
+            return Ray::new(Vec3::new(p.x, p.y, p.z - prev.thickness), ray.dir);
+        }
+        match &prev.to_next {
+            Some(f) => Ray::new(f.to_local_point(ray.pos), f.to_local_dir(ray.dir)),
+            None => ray,
+        }
+    }
+
+    /// Surface `i` through the general code only: [`intersect_within`] on
+    /// the surface's shape, and [`ApertureShape::passes`] (which applies the
+    /// edge tolerance at every call) on the root extent and the clipping
+    /// aperture as `ResolvedSurface::root_extent` and `passes_aperture` form
+    /// them.
+    fn reference(sys: &ResolvedSystem, i: usize) -> Prepared {
+        let s = &sys.surfaces[i];
+        let is_cb = matches!(s.shape, SurfaceShape::CoordinateBreak);
+        let clip = match (&s.aperture, s.fixed_semi_diameter) {
+            _ if is_cb => None,
+            (Some(a), _) => Some(a.clone()),
+            (None, Some(radius)) => Some(ApertureShape::Circular { radius }),
+            (None, None) => None,
+        };
+        Prepared {
+            transfer: Transfer::of(sys, i),
+            shape: Shape::General,
+            extent: root_extent(sys, i).map(Outline::Shape),
+            clip: clip.map(Outline::Shape),
+            interacts: i < sys.surfaces.len() - 1 && !is_cb,
+        }
+    }
+
+    fn bits(r: &TraceResult) -> (TraceStatus, usize, [u64; 9]) {
+        let (p, d) = (r.ray.pos, r.ray.dir);
+        (
+            r.status,
+            r.surface,
+            [
+                p.x,
+                p.y,
+                p.z,
+                d.x,
+                d.y,
+                d.z,
+                r.opl.hi,
+                r.opl.lo,
+                r.transmittance,
+            ]
+            .map(f64::to_bits),
+        )
+    }
+
+    fn record_bits(r: &[SurfaceRecord]) -> Vec<[u64; 12]> {
+        r.iter()
+            .map(|r| {
+                let (p, d, n) = (r.point, r.dir, r.normal);
+                [
+                    p.x,
+                    p.y,
+                    p.z,
+                    d.x,
+                    d.y,
+                    d.z,
+                    n.x,
+                    n.y,
+                    n.z,
+                    r.cos_incidence,
+                    r.opl,
+                    r.transmittance,
+                ]
+                .map(f64::to_bits)
+            })
+            .collect()
+    }
+
+    /// Every sample, and variants that reach each fallback of the prepared
+    /// step: tilted and decentred surfaces (general transfers), fixed
+    /// semi-diameters and circular, annular, rectangular and elliptical
+    /// apertures that clip (circle and general outlines, both as root
+    /// extents and as clips).
+    fn systems() -> Vec<(String, OpticalSystem)> {
+        let mut out: Vec<(String, OpticalSystem)> = samples::all()
+            .into_iter()
+            .map(|(n, s)| (n.to_string(), s))
+            .collect();
+        let mut dg = samples::double_gauss();
+        dg.surfaces[3].placement = Some(Placement {
+            decenter_x: 0.3,
+            decenter_y: -0.2,
+            tilt_x: 1.5,
+            tilt_y: -0.7,
+            ..Default::default()
+        });
+        dg.surfaces[9].placement = Some(Placement {
+            decenter_y: 0.4,
+            tilt_x: -2.0,
+            order: TransformOrder::TiltThenDecenter,
+            restore_after: true,
+            ..Default::default()
+        });
+        dg.surfaces[1].aperture = Some(ApertureShape::Circular { radius: 11.0 });
+        dg.surfaces[2].aperture = Some(ApertureShape::Rectangular {
+            half_x: 12.0,
+            half_y: 9.5,
+        });
+        dg.surfaces[5].aperture = Some(ApertureShape::Elliptical {
+            semi_x: 8.0,
+            semi_y: 6.5,
+        });
+        dg.surfaces[7].aperture = Some(ApertureShape::Annular {
+            inner_radius: 1.5,
+            outer_radius: 8.0,
+        });
+        dg.surfaces[10].semi_diameter = SemiDiameter::Fixed { value: 10.5 };
+        dg.surfaces[11].semi_diameter = SemiDiameter::Fixed { value: 10.0 };
+        out.push(("double gauss (tilted, decentred, apertures)".into(), dg));
+        let mut pz = samples::petzval_asphere();
+        let n = pz.surfaces.len();
+        for (j, s) in pz.surfaces.iter_mut().enumerate().take(n - 1).skip(1) {
+            s.semi_diameter = SemiDiameter::Fixed {
+                value: 7.0 + 0.3 * j as f64,
+            };
+        }
+        out.push(("petzval asphere (fixed semi-diameters)".into(), pz));
+        let mut ck = samples::cooke_triplet();
+        ck.surfaces[2].placement = Some(Placement {
+            tilt_y: 3.0,
+            ..Default::default()
+        });
+        ck.surfaces[4].aperture = Some(ApertureShape::Circular { radius: 5.0 });
+        out.push(("cooke (tilted, stop aperture)".into(), ck));
+        out
+    }
+
+    /// The prepared trace ([`trace_ray`], [`trace_rays`] and their records)
+    /// is bitwise the general one, on rays that pass, miss, clip and
+    /// totally reflect.
+    #[test]
+    fn prepared_surfaces_trace_as_the_general_code() {
+        let lib = Arc::new(MaterialLibrary::with_builtin());
+        let mut pupil = PupilSampling::Hexapolar { rings: 6 }.points();
+        pupil.extend([[1.0, 0.0], [0.0, -1.0], [0.95, 0.4], [1.3, 0.2], [0.0, 2.5]]);
+        let mut fallbacks = [false; 4];
+        let mut outcomes = [0usize; 4];
+        for (name, system) in systems() {
+            let sys = ResolvedSystem::new(&Snapshot::new(system).unwrap(), lib.clone()).unwrap();
+            let tracer = SequentialTracer::new(Arc::new(sys)).unwrap();
+            let sys = tracer.system();
+            let image = sys.surfaces.len() - 1;
+            let general: Vec<_> = (1..=image).map(|i| reference(sys, i)).collect();
+            for i in 1..=image {
+                let p = Prepared::of(sys, i);
+                fallbacks[0] |= matches!(p.transfer, Transfer::Frame(_));
+                fallbacks[1] |= matches!(p.shape, Shape::General);
+                fallbacks[2] |= matches!(p.extent, Some(Outline::Shape(_)));
+                fallbacks[3] |= matches!(p.clip, Some(Outline::Shape(_)));
+            }
+            let mut starts = Vec::new();
+            let mut wls = Vec::new();
+            for f in tracer.fields() {
+                for w in 0..tracer.num_wavelengths() {
+                    for &[px, py] in &pupil {
+                        let Ok(g) = tracer.generate(f, w, px, py) else {
+                            continue;
+                        };
+                        // The aimed ray, and one turned well off its course.
+                        let d = g.ray.dir;
+                        let turned = Vec3::new(d.x + 0.35, d.y - 0.2, d.z).normalized();
+                        for ray in [g.ray, Ray::new(g.ray.pos, turned)] {
+                            starts.push(ray);
+                            wls.push(w);
+                        }
+                    }
+                }
+            }
+            assert!(!starts.is_empty(), "{name}");
+            for opts in [
+                tracer.options(),
+                TraceOptions::unclipped(),
+                tracer.options().to_surface(sys.stop.max(1)),
+            ] {
+                let packets = trace_rays(sys, &starts, &wls, &opts);
+                let mut rec = Vec::new();
+                let mut rec_ref = Vec::new();
+                for (k, (start, &wl)) in starts.iter().zip(&wls).enumerate() {
+                    let general = |i: usize| &general[i - 1];
+                    let want = trace_prepared(sys, general, start, wl, &opts, Some(&mut rec_ref));
+                    let got = trace_ray(sys, start, wl, &opts, Some(&mut rec));
+                    let what = format!("{name}, ray {k}, {opts:?}");
+                    assert_eq!(bits(&got), bits(&want), "{what}");
+                    assert_eq!(bits(&packets[k]), bits(&want), "{what}: packets");
+                    assert_eq!(record_bits(&rec), record_bits(&rec_ref), "{what}: records");
+                    for i in 1..rec.len().min(image + 1) {
+                        // The transfer of the previous record's ray.
+                        let r = Ray::new(rec[i - 1].point, rec[i - 1].dir);
+                        let (a, b) = (transfer_into(sys, i, r), transfer_reference(sys, i, r));
+                        assert_eq!(
+                            [a.pos, a.dir].map(|v| [v.x, v.y, v.z].map(f64::to_bits)),
+                            [b.pos, b.dir].map(|v| [v.x, v.y, v.z].map(f64::to_bits)),
+                            "{what}: transfer into {i}"
+                        );
+                    }
+                    outcomes[match want.status {
+                        TraceStatus::Ok => 0,
+                        TraceStatus::Miss { .. } => 1,
+                        TraceStatus::Clipped { .. } => 2,
+                        _ => 3,
+                    }] += 1;
+                }
+            }
+        }
+        assert_eq!(fallbacks, [true; 4], "transfer, shape, extent, clip");
+        assert!(outcomes.iter().all(|&n| n > 0), "{outcomes:?}");
+    }
 }
