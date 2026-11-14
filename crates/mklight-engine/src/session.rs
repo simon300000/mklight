@@ -768,7 +768,24 @@ impl Session {
             let mut last_err = None;
             for cand in r.candidates(dir.as_deref()) {
                 match read_catalog_file(&cand, r.format) {
-                    Ok(c) => return Ok(self.replace_project_catalog(&r.name, c)),
+                    Ok(c) => {
+                        // A library catalog of the same name is read again
+                        // too, so removing the project's copy later does
+                        // not bring back stale glasses.
+                        if let Ok(i) = self.library_index(&r.name)
+                            && let Some(p) = self.library_catalogs[i].path.clone()
+                            && let Ok(lc) =
+                                read_catalog_file(Path::new(&p), self.library_catalogs[i].format)
+                        {
+                            let stamp = file_stamp(Path::new(&p));
+                            let entry = &mut self.library_catalogs[i];
+                            let mut lc = lc;
+                            lc.name = entry.catalog.name.clone();
+                            entry.catalog = Arc::new(lc);
+                            entry.stamp = stamp;
+                        }
+                        return Ok(self.replace_project_catalog(&r.name, c));
+                    }
                     Err(e) => last_err = Some(e),
                 }
             }
@@ -1960,6 +1977,27 @@ LD 0.32 2.5\r\n";
             .unwrap();
         assert!(s3.reload_catalog("WEB").is_err());
         assert!(s3.reload_catalog_bytes("WEB", LIB_AGF.as_bytes()).is_ok());
+    }
+
+    #[test]
+    fn reloading_a_project_catalog_also_refreshes_the_library_copy() {
+        let dir = TempDir::new("reload-both");
+        let p = dir.path().join("LIBCAT.agf");
+        std::fs::write(&p, LIB_AGF).unwrap();
+        let e = engine();
+        let mut s = e.new_session();
+        s.add_library_catalog_file(&p).unwrap();
+        s.load_catalog_file(&p).unwrap();
+        std::fs::write(&p, LIB_AGF.replace("LIBCROWN", "LIBNEW")).unwrap();
+        s.reload_catalog("LIBCAT").unwrap();
+        s.remove_catalog("LIBCAT").unwrap();
+        let names: Vec<String> = s
+            .glasses(Some("LIBCAT"))
+            .unwrap()
+            .into_iter()
+            .map(|g| g.name)
+            .collect();
+        assert_eq!(names, ["LIBFLINT", "LIBNEW"]);
     }
 
     #[test]
