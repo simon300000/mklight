@@ -220,16 +220,16 @@ import Testing
     }
 
     @Test func glassStatuses() {
-        #expect(GlassStatus(json: .string("preferred")) == .preferred)
-        #expect(GlassStatus(json: .string("Obsolete")) == .obsolete)
-        #expect(GlassStatus(json: .string("melt")) == .melt)
-        #expect(GlassStatus(json: .object(["other": .integer(7)])) == .other(7))
-        #expect(GlassStatus(json: .null) == .unknown)
-        #expect(GlassStatus(json: nil) == .unknown)
-        #expect(GlassStatus.other(7).group == .unknown && GlassStatus.other(7).label == "Status 7")
-        #expect(GlassStatus.obsolete.hollow && !GlassStatus.preferred.hollow)
+        #expect(GlassMapStatus(json: .string("preferred")) == .preferred)
+        #expect(GlassMapStatus(json: .string("Obsolete")) == .obsolete)
+        #expect(GlassMapStatus(json: .string("melt")) == .melt)
+        #expect(GlassMapStatus(json: .object(["other": .integer(7)])) == .other(7))
+        #expect(GlassMapStatus(json: .null) == .unknown)
+        #expect(GlassMapStatus(json: nil) == .unknown)
+        #expect(GlassMapStatus.other(7).group == .unknown && GlassMapStatus.other(7).label == "Status 7")
+        #expect(GlassMapStatus.obsolete.hollow && !GlassMapStatus.preferred.hollow)
         // Every legend status has its own colour.
-        let colours = GlassStatus.allCases.map { $0.rgb(dark: false) }
+        let colours = GlassMapStatus.allCases.map { $0.rgb(dark: false) }
         #expect(Set(colours.map { "\($0)" }).count == colours.count)
     }
 

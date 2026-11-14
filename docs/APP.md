@@ -736,6 +736,74 @@ this page.
   and line, Copy Report, and, when glasses were not found, Load Glass
   Catalog…, which loads a catalog and imports the file again (undoable).
   A clean import shows a short note instead.
+* **Glass catalogs** (`GlassLibrary`, `GlassBrowserModel`,
+  `Views/Glass`). Three sources, composed by the engine in this order (a
+  later catalog of the same name wins):
+  1. the built-in catalog;
+  2. the **app-wide library**: catalog files and folders (every `.agf` and
+     `.json` file in them) the user registers once, and the user's own
+     glass catalogs. Stored in `~/Library/Application Support/MKLight`
+     (`Glass Library.json`, `User Glasses/<name>.json`), never in projects.
+     Every design's session loads them (`Workspace.syncLibrary`,
+     `mk_session_set_library_catalogs`; unchanged files are not read
+     again), and again after any change;
+  3. the **project's catalogs** (`catalogs` section), added with Lens ▸ Add
+     Glass Catalog to Design… or the window below.
+
+  *Portability*: a design records in its project only the library catalogs
+  it actually uses. After each snapshot the window asks the engine which
+  library catalogs the design's materials resolve to
+  (`mk_session_library_catalogs_in_use`), and `DesignDocument.savedProject`
+  adds those references (name, absolute path, format) to the saved
+  `catalogs`, so the project opens on a machine without that library
+  entry. A project catalog that cannot be found is not reported while the
+  library has a catalog of that name.
+
+  *Statuses* (preferred, standard, special, melt, obsolete, and "excluded
+  from glass substitution") are app-wide user settings, kept with the
+  library, not per project: they describe what the user can buy, which is
+  the same for every design. They reach the engine as availability
+  overrides (`mk_session_set_glass_overrides`), which the session applies
+  to the library's glasses: the glass map shows them, Glass Substitution's
+  status filter and exclusion use them, and the library hash changes with
+  them (results recompute). They are not a design change and are not
+  undoable; "Catalog (…)" in the Status menu returns a glass to the
+  catalog's own value.
+
+  The **Glass Catalogs window** (Lens ▸ Glass Catalogs… ⌥⌘G, or Glass
+  Catalogs… in the System inspector) follows the key design window and reads
+  that design's session, so it shows exactly the glasses the design
+  resolves against (with no design open it has a session of its own with
+  the library). Sidebar: All Glasses, Built-in Glasses, Library, User
+  Glasses and the design's own catalogs, with glass counts. A bar above the
+  table names the selected catalog's origin and file and has Reload (the
+  engine reads the file again and a sheet lists added, removed and changed
+  glasses with their n_d and V_d before and after; a library catalog is
+  then reloaded in every open design), Remove from Design (undoable, also
+  with Edit ▸ Undo in this window) or Remove from Library. The table is
+  searchable (name, and catalog under All Glasses), sortable by every
+  column (name, catalog, n_d, V_d, ΔP_g,F, status, density, relative cost,
+  TCE, λ80 (10 mm, 80 % internal transmittance, from the `IT` data) and
+  range) and filterable (Hide Obsolete, Preferred Only, Usable in Glass
+  Substitution); a person mark shows a status the user set, a crossed
+  circle a glass excluded from substitution. The detail column shows the
+  glass (`mk_session_glass_details`): Use for Surface *n* (the selected
+  surface's following medium, as one undoable edit; double-click a row does
+  the same), Copy Name, the status and substitution settings, n_d, V_d,
+  P_g,F, ΔP_g,F (computed, and the catalog's `ED` value), the indices at
+  the standard lines, an index curve, the dispersion formula and its
+  coefficients, density, both TCEs, relative cost, climate, stain, acid,
+  alkali and phosphate resistance, transmission range, λ80 and the glass
+  code.
+
+  *User glasses*: New Glass… (a model glass by n_d, V_d and ΔP_g,F, or an
+  AGF formula 1–13 with its coefficients), Duplicate… of any catalog glass
+  (keeps its thermal, transmission and AGF data), Edit…, Delete; range,
+  density, TCE, relative cost, status, exclusion and a comment. The engine
+  makes the glass and computes n_d and V_d (`mk_glass_from_spec`), shown
+  live in the editor. User catalogs can be created, renamed, exported as
+  AGF (`mk_catalog_to_agf`; glasses AGF cannot express are listed) and moved
+  to the Trash. Vendor catalog files are never written.
 * **Welcome window**: New Design (prominent glass) and Open (glass), and the
   engine's sample designs as cards with thumbnails of their layouts,
   computed by the engine on a session of their own (`SampleThumbnails`);
@@ -753,7 +821,7 @@ this page.
   without an arrangement open in the standard one.
 
 Keyboard: ⇧⌘I / ⌥⌘I insert before / after, ⌘⌫ delete, ⇧⌘T make stop,
-⌃⌘V toggle variable, ⌃⌘O optimize, ⌃⌘G glass substitution, ⌃⌘T tolerance,
+⌃⌘V toggle variable, ⌥⌘G glass catalogs, ⌃⌘O optimize, ⌃⌘G glass substitution, ⌃⌘T tolerance,
 ⌃⌘L apply solves, ⌃⌘E issues, ⌘R run analyses, ⌘. cancel, ⌘2 / ⌥⌘2 / ⌘3
 y–z section / x–z section / 3-D, ⌘0 fit, ⌥⌘L layout, ⌥⌘E lens data,
 ⌃⌘I inspector, ⌃⌘S sidebar. View ▸ Panel has Move to New Window, Move to
@@ -841,7 +909,11 @@ scripts/build-macos.sh --no-engine --engine-only   # remove the library again
   (with `-MKLightAutoRun tolerance`: the trials, and the k-th largest
   sensitivity previewed once the run ends; `trial` previews the worst
   trial), `-MKLightFootprints YES`, `-MKLightFit lens`, `-MKLightYaw
-  <radians>` (the 3-D view's yaw), `-MKLightRunDetails <analysis>` (opens
+  <radians>` (the 3-D view's yaw), `-MKLightGlassCatalogs YES` (opens the
+  Glass Catalogs window), `-MKLightGlassScope <catalog>` and
+  `-MKLightGlassSearch <text>` (its sidebar selection and search),
+  `-MKLightSupportDirectory <path>` (the glass library's folder instead of
+  Application Support, for checks with a scratch library), `-MKLightRunDetails <analysis>` (opens
   that pane's run details), `-MKLightAutoEdit s` (edits the merit s seconds
   after the Optimize panel opens and restores it a second later) and
   `-MKLightAutoConvert s` (presses Convert to Custom), and
@@ -867,7 +939,7 @@ checks the two against each other.
 | snapshots | `openSnapshot` sets the session's system (`mk_session_set_system_json`) and returns the engine's BLAKE3 hash and the library hash. An invalid model throws `.invalidModel` with the engine's message first, then the mirror's structural errors. |
 | validation | The app runs the engine's `validate` analysis (issues with severity, code and surface) as a pane of its own on every snapshot. A system the engine refuses has no snapshot: its message and the mirror's checks are the error of `openSnapshot`. |
 | solves | `applySolves(settings:to:)` calls `mk_session_apply_solves` and reads the solved system back; the report is the `solves` result. Engines without it fall back to the `solves` dry run plus `OpticalSystem.setValue`. |
-| catalogs | `catalogs()`, `loadCatalog(at:)`, `glasses(in:)`, `materialNames()` (completion). |
+| catalogs | `catalogs()` (each marked `library` / `inProject`), `loadCatalog(at:)`, `removeCatalog(named:)`, `reloadCatalog(named:)` → `CatalogChanges`, `setLibraryCatalogs(_:)` → `LibrarySync`, `setGlassOverrides(_:)`, `glassRows(in:)`, `glassDetails(catalog:name:)`, `libraryCatalogsInUse()`, `glass(from:)` (a user glass from a `GlassSpec`), `agf(of:)`, `materialNames()` (completion). Engines without them (the mock) answer empty or `unsupported`. |
 | analyses | `analysisDescriptors()` lists every analysis with its settings schema (read once, when the engine is created). The app submits every analysis pane and design job by name (`EngineAnalysisRequest`, built by `Workspace.request(for:)` and `Workspace.submitJob`): the analysis, the settings the schema accepts and the backend preference. That is the only way to run an analysis; `MockEngine` answers the same requests in the engine's result format. |
 | jobs | `submit` returns at once; the job's task does the rest off the caller's thread. Submission is one locked step on a global dispatch queue: set the snapshot's system if the session holds another, then `mk_session_submit_analysis_json`, registering the job's event stream before any event can be delivered. Events from the engine's `mklight-events` thread feed the job's `progress` stream; a 250 ms status poll is a safety net. The terminal event takes the result at once. `cancel()` calls `mk_job_cancel`; a job cancelled before it was submitted never reaches the engine and throws `EngineError.cancelled`. |
 | stop | For the analyses whose descriptor is `stoppable` (the engine's listing), `AnalysisJob.canStop` is true and `stop()` calls `mk_job_stop` (ABI 1.2): the job ends normally with its best result so far (`result.stopped: true`). A stop requested before the engine job exists is sent right after submission. |
@@ -967,8 +1039,11 @@ while it follows the preparation.
   backend, seed) differs; panes with automatic update re-run, the others
   wait for Update. Long analyses (stray light, ghost irradiance,
   through-focus MTF, MTF vs field and image simulation) start manual.
-  The project's glass catalogs are loaded before the first snapshot;
-  undoing Load Glass Catalog rebuilds the session without it. A **preview**
+  The library's and the project's glass catalogs are loaded before the
+  first snapshot; a catalog the project no longer lists (Remove from
+  Design, undoing Add Glass Catalog) is removed from the session
+  (`mk_session_remove_catalog`; an engine that cannot remove one gets a new
+  session). A **preview**
   (`Workspace.preview`) snapshots a candidate design (an optimisation or
   glass substitution result) instead of the document's, so the layout and
   every pane show it; the outputs of the design just before are kept as a
@@ -1111,6 +1186,9 @@ Remaining for an iPadOS target:
   list only shows compensator moves for recorded trials (any trial can be
   previewed). Pickups have no editor anywhere in the app, so melt offsets
   get variables and solve markers but no pickup UI.
+* Glass library entries store plain paths, not security-scoped bookmarks (the app is not
+  sandboxed). Renaming a user catalog does not rewrite designs that name it
+  in a `CATALOG:GLASS` reference.
 * Configurations are listed but not editable; multi-configuration analyses
   use the `configuration` setting where the schema has one.
 * Saving goes through the document machinery (atomic write by AppKit), not

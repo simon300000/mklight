@@ -11,6 +11,34 @@ struct SystemInspector: View {
     @Environment(\.undoManager) private var undoManager
 
     private var system: OpticalSystem { design.system }
+    @Environment(\.openWindow) private var openWindow
+    @Environment(\.designSession) private var designSession
+
+    /// Where a catalog comes from, for its row.
+    static func origin(of c: CatalogInfo) -> String {
+        switch (c.isBuiltin, c.library, c.inProject) {
+        case (true, _, _): "Built into MKLight"
+        case (_, true, true): "Library, recorded in the design"
+        case (_, true, false): "Library"
+        default: "This design"
+        }
+    }
+
+    private func showBrowser(_ catalog: String?) {
+        if let catalog { GlassBrowserModel.shared.scope = .catalog(catalog) }
+        openWindow(id: GlassBrowserView.windowID)
+    }
+
+    private func reload(_ c: CatalogInfo) {
+        Task {
+            do {
+                let changes = try await workspace.reloadCatalog(named: c.name)
+                window.flash("\(c.name) reloaded: \(changes.summary.lowercased()).")
+            } catch {
+                window.flash("\(c.name): \(error.localizedDescription)")
+            }
+        }
+    }
 
     var body: some View {
         Form {
@@ -59,15 +87,37 @@ struct SystemInspector: View {
                     }
                 }
             }
-            Section("Glass Catalogs") {
+            Section {
                 ForEach(workspace.catalogs) { c in
-                    LabeledContent(c.name) {
+                    LabeledContent {
                         Text("\(c.glassCount) glasses").foregroundStyle(.secondary)
+                    } label: {
+                        Text(c.isBuiltin ? "Built-in" : c.name)
+                        Text(Self.origin(of: c)).font(.caption).foregroundStyle(.secondary)
+                    }
+                    .help(c.path ?? "")
+                    .contextMenu {
+                        Button("Show in Glass Catalogs") { showBrowser(c.name) }
+                        if c.path != nil {
+                            Button("Reload from Disk") { reload(c) }
+                        }
+                        if c.inProject {
+                            Button("Remove from Design") { design.removeCatalog(named: c.name, undoManager: undoManager) }
+                        }
                     }
                 }
-                ForEach(workspace.catalogWarnings, id: \.self) { w in
+                ForEach(workspace.catalogWarnings + workspace.libraryWarnings, id: \.self) { w in
                     WarningNote(w)
                 }
+                HStack {
+                    Button("Glass Catalogs…") { showBrowser(nil) }
+                    Button("Add to Design…") { designSession?.requestCatalog() }
+                }
+            } header: {
+                Text("Glass Catalogs")
+            } footer: {
+                Text("Library catalogs load into every design; a design records the ones it uses when saved. Right-click a catalog to reload or remove it.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)

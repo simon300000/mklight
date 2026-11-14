@@ -325,27 +325,22 @@ pub struct AgfCatalog {
 }
 
 impl AgfCatalog {
-    /// Wraps a catalog without AGF metadata (e.g. built-in or edited glasses)
-    /// so it can be written.
+    /// Wraps a catalog so it can be written. Each glass's own AGF data
+    /// (`Glass::agf`, kept from an AGF read) is the base of its metadata;
+    /// status, exclusion and climate/stain resistance come from
+    /// `Glass::substitution`, which may have been edited since.
     pub fn from_catalog(catalog: GlassCatalog) -> Self {
         let meta = catalog
             .glasses
             .iter()
             .map(|(name, g)| {
                 let s = g.substitution;
-                (
-                    name.clone(),
-                    AgfGlassMeta {
-                        status: s.status,
-                        exclude_substitution: s.exclude_substitution,
-                        ordering: OrderingData {
-                            climate_resistance: s.climate_resistance,
-                            stain_resistance: s.stain_resistance,
-                            ..Default::default()
-                        },
-                        ..Default::default()
-                    },
-                )
+                let mut m = g.agf.as_deref().cloned().unwrap_or_default();
+                m.status = s.status;
+                m.exclude_substitution = s.exclude_substitution;
+                m.ordering.climate_resistance = s.climate_resistance;
+                m.ordering.stain_resistance = s.stain_resistance;
+                (name.clone(), m)
             })
             .collect();
         AgfCatalog {
@@ -527,6 +522,7 @@ pub fn model_glass(name: &str, nd: f64, vd: f64, dpgf: f64) -> MkResult<Glass> {
         relative_cost: None,
         substitution: Default::default(),
         comment: format!("model glass nd={nd} vd={vd} dPgF={dpgf}"),
+        agf: None,
     })
 }
 
@@ -719,6 +715,7 @@ impl Reader<'_> {
             climate_resistance: meta.ordering.climate_resistance,
             stain_resistance: meta.ordering.stain_resistance,
         };
+        glass.agf = Some(Box::new(meta.clone()));
         self.out.meta.insert(name.clone(), meta);
         self.out.catalog.glasses.insert(name, glass);
     }
@@ -840,6 +837,7 @@ pub fn parse_agf_with(name: &str, text: &str, opts: &AgfOptions) -> MkResult<Agf
                     relative_cost: None,
                     substitution: Default::default(),
                     comment: String::new(),
+                    agf: None,
                 },
                 meta: AgfGlassMeta {
                     mil_code: mil,
@@ -1685,6 +1683,14 @@ CD 1.5 0.01 0.001
         assert_eq!(again.catalog, c.catalog);
     }
 
+    /// `cat` without the AGF data the reader attaches to each glass.
+    fn without_agf(mut cat: GlassCatalog) -> GlassCatalog {
+        for g in cat.glasses.values_mut() {
+            g.agf = None;
+        }
+        cat
+    }
+
     #[test]
     fn round_trip_builtin_catalog() {
         let cat = builtin::catalog();
@@ -1692,8 +1698,11 @@ CD 1.5 0.01 0.001
         assert!(warnings.is_empty());
         let back = parse_agf_with(&cat.name, &text, &AgfOptions::default()).unwrap();
         assert!(back.warnings.is_empty(), "{:?}", back.warnings);
-        assert_eq!(back.catalog, cat);
+        assert_eq!(without_agf(back.catalog.clone()), cat);
         assert_eq!(back.meta["N-BK7"].mil_code.as_deref(), Some("517642"));
+        // Read glasses carry their AGF data, so a second cycle keeps them.
+        let (again, _) = write_agf(&AgfCatalog::from_catalog(back.catalog.clone()));
+        assert_eq!(again, text);
     }
 
     /// Every formula number survives formula → Dispersion → formula, and a
@@ -1720,7 +1729,7 @@ CD 1.5 0.01 0.001
         let (text, w) = write_agf(&AgfCatalog::from_catalog(cat.clone()));
         assert!(w.is_empty());
         let back = parse(&text);
-        assert_eq!(back.catalog.glasses, cat.glasses);
+        assert_eq!(without_agf(back.catalog.clone()).glasses, cat.glasses);
         for f in 1..=13u32 {
             assert_eq!(back.meta[&format!("F{f}")].formula, f);
         }

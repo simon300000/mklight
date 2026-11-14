@@ -94,6 +94,11 @@ public final class DesignDocument {
     /// machinery may save off the main thread).
     @ObservationIgnored nonisolated let persisted: Mutex<ProjectFile>
 
+    /// App-wide library catalogs the design uses that the project does not
+    /// record yet; a save records them (`savedProject`), so the project
+    /// opens where the library differs.
+    @ObservationIgnored nonisolated let libraryCatalogsInUse = Mutex<[CatalogReference]>([])
+
     /// What importing the lens file this design came from left out, until
     /// its window takes it (`takeImportReport`).
     @ObservationIgnored private var pendingImportReport: ImportReport?
@@ -105,12 +110,24 @@ public final class DesignDocument {
         pendingImportReport = importReport
     }
 
+    /// Records which library catalogs the design uses (not a design change).
+    public func setLibraryCatalogsInUse(_ refs: [CatalogReference]) {
+        libraryCatalogsInUse.withLock { $0 = refs }
+    }
+
     public nonisolated convenience init(system: OpticalSystem = .newEmpty()) {
         self.init(project: ProjectFile(system: system))
     }
 
-    /// A copy of the project for saving (any thread).
-    public nonisolated var savedProject: ProjectFile { persisted.withLock { $0 } }
+    /// A copy of the project for saving (any thread), with the library
+    /// catalogs the design uses added to its catalog list.
+    public nonisolated var savedProject: ProjectFile {
+        var file = persisted.withLock { $0 }
+        for r in libraryCatalogsInUse.withLock({ $0 }) where !file.catalogs.contains(where: { $0.name == r.name }) {
+            file.addCatalog(r)
+        }
+        return file
+    }
 
     /// The import report of a design opened from a lens prescription file,
     /// once: later calls return `nil`.
@@ -256,6 +273,15 @@ public final class DesignDocument {
         next.addCatalog(ref)
         guard next.sections["catalogs"] != project.sections["catalogs"] else { return }
         setSectionUndoable("catalogs", next.sections["catalogs"] ?? .array([]), actionName: "Add Glass Catalog", undoManager: undoManager)
+    }
+
+    /// Removes a glass catalog from the project (undoable). A catalog of
+    /// the same name in the app-wide library stays loaded.
+    public func removeCatalog(named name: String, undoManager: UndoManager?) {
+        var next = project
+        next.catalogs = next.catalogs.filter { $0.name != name }
+        guard next.sections["catalogs"] != project.sections["catalogs"] else { return }
+        setSectionUndoable("catalogs", next.sections["catalogs"] ?? .array([]), actionName: "Remove Glass Catalog", undoManager: undoManager)
     }
 
     /// The saved window layout (`views` section).

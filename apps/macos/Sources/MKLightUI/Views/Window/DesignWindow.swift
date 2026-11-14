@@ -42,6 +42,7 @@ struct DesignWindow: View {
             let window = WindowState()
             layout.apply(to: window)
             let ws = Workspace(engine: engine, panes: layout.makePanes())
+            ws.glassLibrary = .shared
             ws.layout.setSettings(layout.layoutSettings)
             session = DesignSession(design: document.design, workspace: ws, window: window, arrangement: layout.makeArrangement())
         }
@@ -60,6 +61,7 @@ private struct DesignWindowContent: View {
     @State private var columns = NavigationSplitViewVisibility.all
     @State private var importingCatalog = false
     @Environment(\.openDocument) private var openDocument
+    @Environment(\.openWindow) private var openWindow
     /// The import report on screen (a design opened from a lens file).
     @State private var importReport: ImportReport?
     /// The report sheet asked for a catalog: pick one when it has closed.
@@ -149,6 +151,13 @@ private struct DesignWindowContent: View {
         .onChange(of: design.catalogs) { _, refs in
             Task { await workspace.syncCatalogs(refs, projectDirectory: projectDirectory) }
         }
+        .onChange(of: GlassLibrary.shared.revision) { _, _ in
+            Task { await workspace.syncLibrary() }
+        }
+        // A save records the library catalogs the design uses.
+        .task(id: LibraryUse(snapshot: workspace.designSnapshot?.hash.hex, catalogs: workspace.catalogRevision)) {
+            design.setLibraryCatalogsInUse(await workspace.libraryCatalogsInUse())
+        }
     }
 
     /// A transient message (a rejected edit) floating over the content.
@@ -220,6 +229,7 @@ private struct DesignWindowContent: View {
             window.selection = system.surfaces[i].id
         }
         if let t = d.string(forKey: "MKLightInspector") { window.inspectorTab = t == "system" ? .system : .surface }
+        if d.bool(forKey: "MKLightGlassCatalogs") { openWindow(id: GlassBrowserView.windowID) }
         if d.string(forKey: "MKLightSidebar") == "hidden" { columns = .detailOnly }
         if d.string(forKey: "MKLightViewport") == "3D" { window.viewportMode = .orbit3D }
         if d.bool(forKey: "MKLightFootprints") { workspace.showFootprints = true }
@@ -311,6 +321,12 @@ private struct DesignWindowContent: View {
         }
         return true
     }
+}
+
+/// What decides which library catalogs a design uses.
+private struct LibraryUse: Hashable {
+    var snapshot: String?
+    var catalogs: Int
 }
 
 /// Publishes the window's menu actions and saves its layout. Its body

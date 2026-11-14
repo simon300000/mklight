@@ -153,6 +153,40 @@ enum CABI {
         try string("mk_session_list_glasses") { out in withOptionalCString(catalog) { mk_session_list_glasses(s, $0, out) } }
     }
 
+    // MARK: Glass catalog management (ABI 1.5)
+
+    static func sessionRemoveCatalog(_ s: OpaquePointer, name: String) throws -> String {
+        try string("mk_session_remove_catalog") { mk_session_remove_catalog(s, name, $0) }
+    }
+
+    static func sessionReloadCatalog(_ s: OpaquePointer, name: String) throws -> String {
+        try string("mk_session_reload_catalog") { mk_session_reload_catalog(s, name, $0) }
+    }
+
+    static func sessionSetLibraryCatalogs(_ s: OpaquePointer, pathsJSON: String) throws -> String {
+        try string("mk_session_set_library_catalogs") { mk_session_set_library_catalogs(s, pathsJSON, $0) }
+    }
+
+    static func sessionSetGlassOverrides(_ s: OpaquePointer, json: String) throws {
+        try check(mk_session_set_glass_overrides(s, json), "mk_session_set_glass_overrides")
+    }
+
+    static func sessionGlassDetails(_ s: OpaquePointer, catalog: String?, name: String) throws -> String {
+        try string("mk_session_glass_details") { out in withOptionalCString(catalog) { mk_session_glass_details(s, $0, name, out) } }
+    }
+
+    static func sessionLibraryCatalogsInUse(_ s: OpaquePointer) throws -> String {
+        try string("mk_session_library_catalogs_in_use") { mk_session_library_catalogs_in_use(s, $0) }
+    }
+
+    static func glassFromSpec(_ json: String) throws -> String {
+        try string("mk_glass_from_spec") { mk_glass_from_spec(json, $0) }
+    }
+
+    static func catalogToAGF(_ json: String) throws -> String {
+        try string("mk_catalog_to_agf") { mk_catalog_to_agf(json, $0) }
+    }
+
     /// `mk_session_apply_solves`: the solve report and the new snapshot hash.
     static func sessionApplySolves(_ s: OpaquePointer, settings: String?) throws -> (report: String, hash: String) {
         var report: UnsafeMutablePointer<CChar>?
@@ -262,6 +296,14 @@ enum CABI {
     static func importPrescription(_ data: Data, format: String) throws -> String { throw notLinked }
     static func sessionImportPrescription(_ s: OpaquePointer, path: String) throws -> String { throw notLinked }
     static func sessionListGlasses(_ s: OpaquePointer, catalog: String?) throws -> String { throw notLinked }
+    static func sessionRemoveCatalog(_ s: OpaquePointer, name: String) throws -> String { throw notLinked }
+    static func sessionReloadCatalog(_ s: OpaquePointer, name: String) throws -> String { throw notLinked }
+    static func sessionSetLibraryCatalogs(_ s: OpaquePointer, pathsJSON: String) throws -> String { throw notLinked }
+    static func sessionSetGlassOverrides(_ s: OpaquePointer, json: String) throws { throw notLinked }
+    static func sessionGlassDetails(_ s: OpaquePointer, catalog: String?, name: String) throws -> String { throw notLinked }
+    static func sessionLibraryCatalogsInUse(_ s: OpaquePointer) throws -> String { throw notLinked }
+    static func glassFromSpec(_ json: String) throws -> String { throw notLinked }
+    static func catalogToAGF(_ json: String) throws -> String { throw notLinked }
     static func submit(_ s: OpaquePointer, requestJSON: String) throws -> UInt64 { throw notLinked }
     static func sessionApplySolves(_ s: OpaquePointer, settings: String?) throws -> (report: String, hash: String) {
         throw notLinked

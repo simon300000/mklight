@@ -11,6 +11,7 @@ public struct MKLightScene: Scene {
     public init(engine: any EngineClient) {
         self.engine = engine
         ProjectDocument.setImportEngine(engine)
+        GlassBrowserModel.shared.engine = engine
         GPUPreparationMonitor.shared.start(engine: engine)
     }
 
@@ -23,6 +24,12 @@ public struct MKLightScene: Scene {
         }
         .defaultSize(width: 1520, height: 940)
         .commands { MKLightCommands() }
+
+        Window("Glass Catalogs", id: GlassBrowserView.windowID) {
+            GlassBrowserView(model: .shared)
+                .environment(\.locale, NumberDisplay.locale)
+        }
+        .defaultSize(width: 1420, height: 780)
 
         Window("Welcome to MKLight", id: WelcomeView.windowID) {
             WelcomeView(engine: engine)

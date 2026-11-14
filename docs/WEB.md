@@ -330,6 +330,12 @@ Changes in the engine crates (all behaviour-neutral natively):
 * `Session::load_catalog_bytes` and `Session::save_to_string`: the
   path-free forms of `load_catalog_file` and `save` (split out of them,
   sharing their code), for a browser that has file contents but no paths.
+  Glass catalog management has bytes forms too (`session_add_library_catalog`,
+  `session_reload_catalog` with the new contents, `session_remove_catalog`,
+  `session_restore_catalog`, `session_set_glass_overrides`,
+  `session_glass_details`, `session_library_catalogs_in_use`,
+  `glass_from_spec`, `catalog_to_agf`; FFI.md *Glass catalogs*); the web app
+  does not use them yet.
 * `mklight-bench`'s host statistics (`host.rs`) read the load average and
   CPU time only on unix, so the benches also build for wasm32-wasip1.
 * File I/O stays as it is: on wasm32 `std::fs` returns errors, which the

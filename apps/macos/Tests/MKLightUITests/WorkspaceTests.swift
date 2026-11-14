@@ -91,7 +91,7 @@ final class LibraryEngine: EngineClient, @unchecked Sendable {
 
     func catalogs() async -> [CatalogInfo] {
         [CatalogInfo(name: "BUILTIN", source: "builtin", path: nil, glassCount: 13)]
-            + loaded.withLock { $0 }.map { CatalogInfo(name: $0, source: "user", path: nil, glassCount: 1) }
+            + loaded.withLock { $0 }.map { CatalogInfo(name: $0, source: "user", path: nil, glassCount: 1, inProject: true) }
     }
 
     func loadCatalog(at url: URL) async throws -> CatalogInfo {
@@ -99,7 +99,7 @@ final class LibraryEngine: EngineClient, @unchecked Sendable {
         shared.append("load \(session) \(name)")
         if loadDelay > .zero { try await Task.sleep(for: loadDelay) }
         loaded.withLock { list in if !list.contains(name) { list.append(name) } }
-        return CatalogInfo(name: name, source: "user", path: url.path, glassCount: 1)
+        return CatalogInfo(name: name, source: "user", path: url.path, glassCount: 1, inProject: true)
     }
 }
 

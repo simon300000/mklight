@@ -163,6 +163,78 @@ public struct FFIEngine: EngineClient {
         return try decodeJSON(CatalogInfo.self, text)
     }
 
+    public func removeCatalog(named name: String) async throws {
+        let session = self.session
+        _ = try await offMain { try session.locked { try CABI.sessionRemoveCatalog($0, name: name) } }
+    }
+
+    public func reloadCatalog(named name: String) async throws -> CatalogChanges {
+        let session = self.session
+        let text = try await offMain { try session.locked { try CABI.sessionReloadCatalog($0, name: name) } }
+        guard let changes = CatalogChanges(json: try decodeJSON(JSONValue.self, text)) else {
+            throw EngineError.engine(.parse, "unexpected engine JSON for a catalog reload")
+        }
+        return changes
+    }
+
+    public func setLibraryCatalogs(_ files: [URL]) async -> LibrarySync {
+        let session = self.session
+        let paths = String(decoding: (try? MKLightJSON.encode(files.map(\.path))) ?? Data("[]".utf8), as: UTF8.self)
+        do {
+            let text = try await offMain { try session.locked { try CABI.sessionSetLibraryCatalogs($0, pathsJSON: paths) } }
+            let v = try decodeJSON(JSONValue.self, text)
+            let catalogs = try v["catalogs"].map { try $0.decode([CatalogInfo].self) } ?? []
+            let errors = (v["errors"]?.array ?? []).compactMap { e -> LibrarySync.Failure? in
+                guard let p = e["path"]?.string, let m = e["message"]?.string else { return nil }
+                return LibrarySync.Failure(path: p, message: m)
+            }
+            return LibrarySync(catalogs: catalogs, errors: errors, changed: v["changed"]?.bool ?? false)
+        } catch {
+            return LibrarySync(errors: [LibrarySync.Failure(path: "", message: Self.describe(error))])
+        }
+    }
+
+    public func setGlassOverrides(_ overrides: [GlassOverride]) async throws {
+        let session = self.session
+        let json = String(decoding: try MKLightJSON.encode(overrides), as: UTF8.self)
+        try await offMain { try session.locked { try CABI.sessionSetGlassOverrides($0, json: json) } }
+    }
+
+    public func glassRows(in catalog: String?) async throws -> [GlassRow] {
+        let session = self.session
+        let text = try await offMain { try session.locked { try CABI.sessionListGlasses($0, catalog: catalog) } }
+        return (try decodeJSON(JSONValue.self, text).array ?? []).compactMap(GlassRow.init(json:))
+    }
+
+    public func glassDetails(catalog: String?, name: String) async throws -> GlassDetails {
+        let session = self.session
+        let text = try await offMain { try session.locked { try CABI.sessionGlassDetails($0, catalog: catalog, name: name) } }
+        guard let d = GlassDetails(json: try decodeJSON(JSONValue.self, text)) else {
+            throw EngineError.engine(.parse, "unexpected engine JSON for glass details")
+        }
+        return d
+    }
+
+    public func libraryCatalogsInUse() async -> [CatalogReference] {
+        let session = self.session
+        guard let text = try? await offMain({ try session.locked { try CABI.sessionLibraryCatalogsInUse($0) } }) else { return [] }
+        return (try? decodeJSON([CatalogReference].self, text)) ?? []
+    }
+
+    public func glass(from spec: JSONValue) throws -> JSONValue {
+        let json = String(decoding: try MKLightJSON.encode(spec), as: UTF8.self)
+        return try decodeJSON(JSONValue.self, try CABI.glassFromSpec(json))
+    }
+
+    public func agf(of catalog: JSONValue) throws -> AGFExport {
+        let json = String(decoding: try MKLightJSON.encode(catalog), as: UTF8.self)
+        let v = try decodeJSON(JSONValue.self, try CABI.catalogToAGF(json))
+        let warnings = (v["warnings"]?.array ?? []).map { w in
+            [w["glass"]?.string, w["message"]?.string].compactMap { $0 }.joined(separator: ": ")
+        }
+        return AGFExport(text: v["text"]?.string ?? "", warnings: warnings)
+    }
+
     // MARK: EngineClient: lens prescription files
 
     public func importPrescription(_ data: Data, format: PrescriptionFormat) throws -> PrescriptionImport {

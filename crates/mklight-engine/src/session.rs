@@ -1,6 +1,7 @@
 //! `Session`: one open document. It holds the project, the material library
-//! (built-in plus the user catalogs the project references) and the current
-//! immutable `Snapshot`.
+//! (built-in, the front end's app-wide library catalogs, and the user
+//! catalogs the project references, with the user's availability overrides
+//! applied) and the current immutable `Snapshot`.
 //!
 //! Every edit builds a new snapshot (validated, content-hashed) and swaps it
 //! in only if it is valid, so the session never holds an invalid system and
@@ -18,6 +19,10 @@ use std::sync::{Arc, Mutex};
 
 use mklight_core::import::{PrescriptionImport, read_prescription_file};
 use mklight_core::materials::builtin::BUILTIN_CATALOG_NAME;
+use mklight_core::materials::manage::{
+    CatalogChanges, GlassDetails, GlassOverride, GlassRow, apply_overrides, diff_catalogs,
+    glass_details, glass_row,
+};
 use mklight_core::materials::{GlassCatalog, MaterialLibrary, agf};
 use mklight_core::param::ParamPath;
 use mklight_core::snapshot::SnapshotHash;
@@ -95,16 +100,52 @@ pub struct CatalogSummary {
     pub source: &'static str,
     pub path: Option<String>,
     pub glass_count: usize,
+    /// Loaded from the front end's app-wide library.
+    pub library: bool,
+    /// Recorded in the project (`Project::catalogs`). A catalog can be both;
+    /// the project's copy is the one in effect then.
+    pub in_project: bool,
 }
 
+/// A glass table row (`mklight_core::materials::manage::GlassRow`).
+pub type GlassSummary = GlassRow;
+
+/// A catalog of the app-wide library: loaded into the session by the front
+/// end, not recorded in the project until the design uses it (see
+/// `Session::library_catalogs_in_use`).
+#[derive(Clone, Debug)]
+struct LibraryCatalog {
+    catalog: Arc<GlassCatalog>,
+    /// Canonical path, for catalogs read from a file.
+    path: Option<String>,
+    /// File name, for catalogs given as bytes.
+    file_name: Option<String>,
+    format: CatalogFormat,
+    /// Modification time and size when read, so an unchanged file is not
+    /// read again.
+    stamp: Option<(std::time::SystemTime, u64)>,
+}
+
+/// A library file `set_library_catalog_files` could not load.
 #[derive(Clone, Debug, PartialEq, Serialize)]
-pub struct GlassSummary {
-    pub catalog: String,
-    pub name: String,
-    pub nd: f64,
-    pub vd: f64,
-    pub min_um: f64,
-    pub max_um: f64,
+pub struct LibraryError {
+    pub path: String,
+    pub message: String,
+}
+
+/// The outcome of `set_library_catalog_files`.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct LibrarySync {
+    /// The library catalogs now loaded, in order.
+    pub catalogs: Vec<CatalogSummary>,
+    pub errors: Vec<LibraryError>,
+    /// Whether the material library changed.
+    pub changed: bool,
+}
+
+fn file_stamp(path: &Path) -> Option<(std::time::SystemTime, u64)> {
+    let m = std::fs::metadata(path).ok()?;
+    Some((m.modified().ok()?, m.len()))
 }
 
 type ResolvedCache = Arc<Mutex<LruCache<(SnapshotHash, u64), Arc<ResolvedSystem>>>>;
@@ -124,6 +165,16 @@ pub struct Session {
     path: Option<PathBuf>,
     dirty: bool,
     open_warnings: Vec<String>,
+    /// App-wide library catalogs, in the front end's order.
+    library_catalogs: Vec<LibraryCatalog>,
+    /// Catalogs loaded for the project, or added in memory, in load order.
+    project_catalogs: Vec<Arc<GlassCatalog>>,
+    /// Project catalog references that could not be loaded, with why.
+    missing_catalogs: Vec<(String, String)>,
+    /// The user's availability overrides, applied to the library.
+    overrides: Vec<GlassOverride>,
+    /// Catalogs removed from the project, for `restore_catalog`.
+    removed: Vec<(CatalogRef, Arc<GlassCatalog>)>,
 }
 
 /// A project section's value as its type; a value of another shape is an
@@ -184,6 +235,29 @@ pub fn parse_catalog_bytes(
     Ok(cat)
 }
 
+/// `(catalog, name)` of every catalog material in a system's JSON form.
+fn collect_catalog_materials(v: &Value, out: &mut Vec<(Option<String>, String)>) {
+    match v {
+        Value::Object(m) => {
+            if m.get("type").and_then(Value::as_str) == Some("catalog")
+                && let Some(name) = m.get("name").and_then(Value::as_str)
+            {
+                let catalog = m.get("catalog").and_then(Value::as_str).map(str::to_string);
+                out.push((catalog, name.to_string()));
+            }
+            for x in m.values() {
+                collect_catalog_materials(x, out);
+            }
+        }
+        Value::Array(a) => {
+            for x in a {
+                collect_catalog_materials(x, out);
+            }
+        }
+        _ => {}
+    }
+}
+
 fn resolve_cached(
     cache: &ResolvedCache,
     snapshot: &Snapshot,
@@ -226,6 +300,11 @@ impl Session {
             path,
             dirty: false,
             open_warnings: Vec::new(),
+            library_catalogs: Vec::new(),
+            project_catalogs: Vec::new(),
+            missing_catalogs: Vec::new(),
+            overrides: Vec::new(),
+            removed: Vec::new(),
         };
         s.reload_catalogs();
         Ok(s)
@@ -254,7 +333,8 @@ impl Session {
                 }
             })
             .map(Path::to_path_buf);
-        let mut lib = MaterialLibrary::with_builtin();
+        self.project_catalogs.clear();
+        self.missing_catalogs.clear();
         for r in &mut self.project.catalogs {
             let mut last_err = None;
             let mut loaded = false;
@@ -262,7 +342,7 @@ impl Session {
                 match read_catalog_file(&cand, r.format) {
                     Ok(mut c) => {
                         c.name = r.name.clone();
-                        lib.add_catalog(Arc::new(c));
+                        self.project_catalogs.push(Arc::new(c));
                         let abs = std::fs::canonicalize(&cand).unwrap_or(cand);
                         r.path = Some(abs.display().to_string());
                         loaded = true;
@@ -272,18 +352,67 @@ impl Session {
                 }
             }
             if !loaded {
-                self.open_warnings.push(format!(
-                    "glass catalog '{}' could not be loaded ({})",
-                    r.name,
-                    last_err.unwrap_or_else(|| "no path recorded".into())
+                self.missing_catalogs.push((
+                    r.name.clone(),
+                    last_err.unwrap_or_else(|| "no path recorded".into()),
                 ));
             }
         }
+        self.rebuild_library();
+    }
+
+    /// The catalogs in effect, before overrides, in library order:
+    /// built-in, library, project; a later catalog replaces an earlier one
+    /// of the same name (case-insensitive).
+    fn effective_catalogs(&self) -> Vec<Arc<GlassCatalog>> {
+        let mut lib = MaterialLibrary::with_builtin();
+        for c in &self.library_catalogs {
+            lib.add_catalog(c.catalog.clone());
+        }
+        for c in &self.project_catalogs {
+            lib.add_catalog(c.clone());
+        }
+        lib.catalogs().to_vec()
+    }
+
+    /// The catalog named `name` as loaded, before overrides.
+    fn original_catalog(&self, name: &str) -> Option<Arc<GlassCatalog>> {
+        self.effective_catalogs()
+            .into_iter()
+            .find(|c| c.name.eq_ignore_ascii_case(name))
+    }
+
+    /// Composes the material library from its parts and applies the
+    /// overrides. A project catalog that could not be loaded but that the
+    /// library provides is not reported as missing.
+    fn rebuild_library(&mut self) {
+        let mut lib = MaterialLibrary::new();
+        for c in self.effective_catalogs() {
+            match apply_overrides(&c, &self.overrides) {
+                Some(o) => lib.add_catalog(Arc::new(o)),
+                None => lib.add_catalog(c),
+            }
+        }
+        self.open_warnings = self
+            .missing_catalogs
+            .iter()
+            .filter(|(n, _)| {
+                !lib.catalogs()
+                    .iter()
+                    .any(|c| c.name.eq_ignore_ascii_case(n))
+            })
+            .map(|(n, why)| format!("glass catalog '{n}' could not be loaded ({why})"))
+            .collect();
         self.set_library(lib);
     }
 
     fn set_library(&mut self, lib: MaterialLibrary) {
-        self.library_hash = library_hash(&lib);
+        let hash = library_hash(&lib);
+        if hash == self.library_hash && self.library_generation > 0 {
+            // Same content: keep the library and the resolved cache.
+            return;
+        }
+        self.library_hash = hash;
         self.library = Arc::new(lib);
         self.library_generation += 1;
         self.resolved
@@ -414,6 +543,17 @@ impl Session {
             p.metadata.app_version = cfg.app_version.clone();
         }
         p.metadata.engine_version = mklight_core::ENGINE_VERSION.to_string();
+        // The library catalogs the design uses go into the project, so it
+        // opens where the library is different.
+        for r in self.library_catalogs_in_use() {
+            if !p
+                .catalogs
+                .iter()
+                .any(|c| c.name.eq_ignore_ascii_case(&r.name))
+            {
+                p.catalogs.push(r);
+            }
+        }
         p
     }
 
@@ -502,20 +642,15 @@ impl Session {
         let path = Path::new(file_name);
         let format = CatalogFormat::from_path(path);
         let cat = parse_catalog_bytes(path, bytes, format)?;
-        let summary = CatalogSummary {
-            name: cat.name.clone(),
-            source: "user",
-            path: None,
-            glass_count: cat.glasses.len(),
-        };
         let r = CatalogRef {
             name: cat.name.clone(),
             path: None,
             relative_path: Some(file_name.to_string()),
             format,
         };
+        let name = cat.name.clone();
         self.add_catalog(cat, Some(r));
-        Ok(summary)
+        Ok(self.summary(&name))
     }
 
     /// Load a user glass catalog (AGF, or JSON by `.json` extension), add it
@@ -525,28 +660,25 @@ impl Session {
         let format = CatalogFormat::from_path(path);
         let cat = read_catalog_file(path, format)?;
         let abs = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-        let summary = CatalogSummary {
-            name: cat.name.clone(),
-            source: "user",
-            path: Some(abs.display().to_string()),
-            glass_count: cat.glasses.len(),
-        };
         let r = CatalogRef {
             name: cat.name.clone(),
-            path: summary.path.clone(),
+            path: Some(abs.display().to_string()),
             relative_path: None,
             format,
         };
+        let name = cat.name.clone();
         self.add_catalog(cat, Some(r));
-        Ok(summary)
+        Ok(self.summary(&name))
     }
 
     /// Add an in-memory catalog. With a `CatalogRef` it is recorded in the
     /// project so it reloads on open.
     pub fn add_catalog(&mut self, cat: GlassCatalog, reference: Option<CatalogRef>) {
-        let mut lib = (*self.library).clone();
-        lib.add_catalog(Arc::new(cat));
-        self.set_library(lib);
+        self.project_catalogs
+            .retain(|c| !c.name.eq_ignore_ascii_case(&cat.name));
+        self.missing_catalogs
+            .retain(|(n, _)| !n.eq_ignore_ascii_case(&cat.name));
+        self.project_catalogs.push(Arc::new(cat));
         if let Some(r) = reference {
             self.project
                 .catalogs
@@ -554,30 +686,461 @@ impl Session {
             self.project.catalogs.push(r);
             self.dirty = true;
         }
+        self.rebuild_library();
+    }
+
+    /// Remove a catalog from the project (its reference and, unless the
+    /// app-wide library has a catalog of that name, its glasses). Returns
+    /// the removed reference; `restore_catalog` undoes the removal. The
+    /// built-in catalog and library catalogs the project does not record
+    /// cannot be removed here (`remove_library_catalog` removes those).
+    pub fn remove_catalog(&mut self, name: &str) -> EngineResult<CatalogRef> {
+        let reference = self
+            .project
+            .catalogs
+            .iter()
+            .find(|c| c.name.eq_ignore_ascii_case(name))
+            .cloned();
+        let loaded = self
+            .project_catalogs
+            .iter()
+            .find(|c| c.name.eq_ignore_ascii_case(name))
+            .cloned();
+        if reference.is_none() && loaded.is_none() {
+            return Err(EngineError::Core(MkError::UnknownMaterial(format!(
+                "no project catalog named '{name}'"
+            ))));
+        }
+        self.project
+            .catalogs
+            .retain(|c| !c.name.eq_ignore_ascii_case(name));
+        self.project_catalogs
+            .retain(|c| !c.name.eq_ignore_ascii_case(name));
+        self.missing_catalogs
+            .retain(|(n, _)| !n.eq_ignore_ascii_case(name));
+        let reference = reference.unwrap_or_else(|| CatalogRef {
+            name: loaded.as_ref().map_or(name, |c| &c.name).to_string(),
+            path: None,
+            relative_path: None,
+            format: CatalogFormat::Json,
+        });
+        if let Some(c) = loaded {
+            self.removed
+                .retain(|(r, _)| !r.name.eq_ignore_ascii_case(&reference.name));
+            self.removed.push((reference.clone(), c));
+        }
+        self.dirty = true;
+        self.rebuild_library();
+        Ok(reference)
+    }
+
+    /// Put back a catalog `remove_catalog` removed, with the data it had
+    /// (no file is read).
+    pub fn restore_catalog(&mut self, name: &str) -> EngineResult<CatalogSummary> {
+        let i = self
+            .removed
+            .iter()
+            .rposition(|(r, _)| r.name.eq_ignore_ascii_case(name))
+            .ok_or_else(|| {
+                EngineError::Core(MkError::UnknownMaterial(format!(
+                    "no removed catalog named '{name}'"
+                )))
+            })?;
+        let (r, c) = self.removed.remove(i);
+        let recorded = r.path.is_some() || r.relative_path.is_some();
+        let name = c.name.clone();
+        self.add_catalog((*c).clone(), recorded.then_some(r));
+        Ok(self.summary(&name))
+    }
+
+    /// Read a catalog again from its file and report what changed. The
+    /// project's copy is reloaded when the project records the catalog
+    /// (paths as on open), else the library's.
+    pub fn reload_catalog(&mut self, name: &str) -> EngineResult<CatalogChanges> {
+        let dir = self.project_dir();
+        let reference = self
+            .project
+            .catalogs
+            .iter()
+            .find(|c| c.name.eq_ignore_ascii_case(name))
+            .cloned();
+        if let Some(r) = reference {
+            let mut last_err = None;
+            for cand in r.candidates(dir.as_deref()) {
+                match read_catalog_file(&cand, r.format) {
+                    Ok(c) => {
+                        // A library catalog of the same name is read again
+                        // too, so removing the project's copy later does
+                        // not bring back stale glasses.
+                        if let Ok(i) = self.library_index(&r.name)
+                            && let Some(p) = self.library_catalogs[i].path.clone()
+                            && let Ok(lc) =
+                                read_catalog_file(Path::new(&p), self.library_catalogs[i].format)
+                        {
+                            let stamp = file_stamp(Path::new(&p));
+                            let entry = &mut self.library_catalogs[i];
+                            let mut lc = lc;
+                            lc.name = entry.catalog.name.clone();
+                            entry.catalog = Arc::new(lc);
+                            entry.stamp = stamp;
+                        }
+                        return Ok(self.replace_project_catalog(&r.name, c));
+                    }
+                    Err(e) => last_err = Some(e),
+                }
+            }
+            return Err(last_err.unwrap_or_else(|| {
+                EngineError::InvalidArgument(format!(
+                    "catalog '{}' has no file to reload (load it again)",
+                    r.name
+                ))
+            }));
+        }
+        let i = self.library_index(name)?;
+        let lc = &self.library_catalogs[i];
+        let Some(path) = lc.path.clone() else {
+            return Err(EngineError::InvalidArgument(format!(
+                "catalog '{}' was not read from a file (load it again)",
+                lc.catalog.name
+            )));
+        };
+        let c = read_catalog_file(Path::new(&path), lc.format)?;
+        Ok(self.replace_library_catalog(i, c, file_stamp(Path::new(&path))))
+    }
+
+    /// `reload_catalog` with the file's new contents (the web build): the
+    /// catalog keeps its name and format.
+    pub fn reload_catalog_bytes(
+        &mut self,
+        name: &str,
+        bytes: &[u8],
+    ) -> EngineResult<CatalogChanges> {
+        let reference = self
+            .project
+            .catalogs
+            .iter()
+            .find(|c| c.name.eq_ignore_ascii_case(name))
+            .cloned();
+        if let Some(r) = reference {
+            let file = r
+                .relative_path
+                .clone()
+                .or(r.path.clone())
+                .unwrap_or_default();
+            let c = parse_catalog_bytes(Path::new(&file), bytes, r.format)?;
+            return Ok(self.replace_project_catalog(&r.name, c));
+        }
+        if self
+            .project_catalogs
+            .iter()
+            .any(|c| c.name.eq_ignore_ascii_case(name))
+        {
+            return Err(EngineError::InvalidArgument(format!(
+                "catalog '{name}' is not recorded with a format (load it again)"
+            )));
+        }
+        let i = self.library_index(name)?;
+        let lc = &self.library_catalogs[i];
+        let file = lc.file_name.clone().or(lc.path.clone()).unwrap_or_default();
+        let c = parse_catalog_bytes(Path::new(&file), bytes, lc.format)?;
+        let stamp = lc.stamp;
+        Ok(self.replace_library_catalog(i, c, stamp))
+    }
+
+    fn project_dir(&self) -> Option<PathBuf> {
+        self.path
+            .as_deref()
+            .and_then(Path::parent)
+            .map(|d| {
+                if d.as_os_str().is_empty() {
+                    Path::new(".")
+                } else {
+                    d
+                }
+            })
+            .map(Path::to_path_buf)
+    }
+
+    fn library_index(&self, name: &str) -> EngineResult<usize> {
+        self.library_catalogs
+            .iter()
+            .position(|c| c.catalog.name.eq_ignore_ascii_case(name))
+            .ok_or_else(|| {
+                EngineError::Core(MkError::UnknownMaterial(format!(
+                    "no user catalog named '{name}'"
+                )))
+            })
+    }
+
+    fn replace_project_catalog(&mut self, name: &str, mut c: GlassCatalog) -> CatalogChanges {
+        c.name = name.to_string();
+        let before = self
+            .project_catalogs
+            .iter()
+            .find(|p| p.name.eq_ignore_ascii_case(name))
+            .cloned()
+            .unwrap_or_else(|| {
+                Arc::new(GlassCatalog {
+                    name: name.to_string(),
+                    ..Default::default()
+                })
+            });
+        let changes = diff_catalogs(&before, &c);
+        self.project_catalogs
+            .retain(|p| !p.name.eq_ignore_ascii_case(name));
+        self.missing_catalogs
+            .retain(|(n, _)| !n.eq_ignore_ascii_case(name));
+        self.project_catalogs.push(Arc::new(c));
+        self.rebuild_library();
+        changes
+    }
+
+    fn replace_library_catalog(
+        &mut self,
+        i: usize,
+        mut c: GlassCatalog,
+        stamp: Option<(std::time::SystemTime, u64)>,
+    ) -> CatalogChanges {
+        let lc = &mut self.library_catalogs[i];
+        c.name = lc.catalog.name.clone();
+        let changes = diff_catalogs(&lc.catalog, &c);
+        lc.catalog = Arc::new(c);
+        lc.stamp = stamp;
+        self.rebuild_library();
+        changes
+    }
+
+    // --- app-wide library
+
+    /// Add (or replace, by catalog name) a catalog of the front end's
+    /// app-wide library from a file. Library catalogs are not recorded in
+    /// the project, except those the design uses, which `save` records.
+    pub fn add_library_catalog_file(&mut self, path: &Path) -> EngineResult<CatalogSummary> {
+        let format = CatalogFormat::from_path(path);
+        let cat = read_catalog_file(path, format)?;
+        let abs = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+        let name = cat.name.clone();
+        let stamp = file_stamp(&abs);
+        self.put_library_catalog(LibraryCatalog {
+            catalog: Arc::new(cat),
+            path: Some(abs.display().to_string()),
+            file_name: None,
+            format,
+            stamp,
+        });
+        self.rebuild_library();
+        Ok(self.summary(&name))
+    }
+
+    /// `add_library_catalog_file` from the contents of a file named
+    /// `file_name` (the web build).
+    pub fn add_library_catalog_bytes(
+        &mut self,
+        file_name: &str,
+        bytes: &[u8],
+    ) -> EngineResult<CatalogSummary> {
+        let path = Path::new(file_name);
+        let format = CatalogFormat::from_path(path);
+        let cat = parse_catalog_bytes(path, bytes, format)?;
+        let name = cat.name.clone();
+        self.put_library_catalog(LibraryCatalog {
+            catalog: Arc::new(cat),
+            path: None,
+            file_name: Some(file_name.to_string()),
+            format,
+            stamp: None,
+        });
+        self.rebuild_library();
+        Ok(self.summary(&name))
+    }
+
+    fn put_library_catalog(&mut self, c: LibraryCatalog) {
+        match self
+            .library_catalogs
+            .iter()
+            .position(|x| x.catalog.name.eq_ignore_ascii_case(&c.catalog.name))
+        {
+            Some(i) => self.library_catalogs[i] = c,
+            None => self.library_catalogs.push(c),
+        }
+    }
+
+    /// Remove a library catalog from this session. Returns whether there was one.
+    pub fn remove_library_catalog(&mut self, name: &str) -> bool {
+        let n = self.library_catalogs.len();
+        self.library_catalogs
+            .retain(|c| !c.catalog.name.eq_ignore_ascii_case(name));
+        let removed = self.library_catalogs.len() != n;
+        if removed {
+            self.rebuild_library();
+        }
+        removed
+    }
+
+    /// Make the library catalogs exactly those of `paths`, in that order.
+    /// A file already loaded and unchanged on disk (same modification time
+    /// and size) is not read again; files that cannot be read, and a
+    /// second catalog of a name already loaded, are reported and left out.
+    /// Library catalogs given as bytes are kept.
+    pub fn set_library_catalog_files(&mut self, paths: &[PathBuf]) -> LibrarySync {
+        let mut next: Vec<LibraryCatalog> = Vec::new();
+        let mut errors = Vec::new();
+        for p in paths {
+            let abs = std::fs::canonicalize(p).unwrap_or_else(|_| p.clone());
+            let key = abs.display().to_string();
+            let stamp = file_stamp(&abs);
+            let old = self
+                .library_catalogs
+                .iter()
+                .find(|c| c.path.as_deref() == Some(key.as_str()));
+            let entry = match old {
+                Some(old) if stamp.is_some() && old.stamp == stamp => old.clone(),
+                _ => {
+                    let format = CatalogFormat::from_path(&abs);
+                    match read_catalog_file(&abs, format) {
+                        Ok(c) => LibraryCatalog {
+                            catalog: Arc::new(c),
+                            path: Some(key.clone()),
+                            file_name: None,
+                            format,
+                            stamp,
+                        },
+                        Err(e) => {
+                            errors.push(LibraryError {
+                                path: key,
+                                message: e.to_string(),
+                            });
+                            continue;
+                        }
+                    }
+                }
+            };
+            if let Some(dup) = next
+                .iter()
+                .find(|x| x.catalog.name.eq_ignore_ascii_case(&entry.catalog.name))
+            {
+                errors.push(LibraryError {
+                    path: key,
+                    message: format!(
+                        "a catalog named '{}' is already loaded from {}",
+                        entry.catalog.name,
+                        dup.path.as_deref().unwrap_or("memory")
+                    ),
+                });
+                continue;
+            }
+            next.push(entry);
+        }
+        for c in &self.library_catalogs {
+            if c.path.is_none()
+                && !next
+                    .iter()
+                    .any(|x| x.catalog.name.eq_ignore_ascii_case(&c.catalog.name))
+            {
+                next.push(c.clone());
+            }
+        }
+        let before = self.library_hash.clone();
+        self.library_catalogs = next;
+        self.rebuild_library();
+        let names: Vec<String> = self
+            .library_catalogs
+            .iter()
+            .map(|c| c.catalog.name.clone())
+            .collect();
+        LibrarySync {
+            catalogs: names.iter().map(|n| self.summary(n)).collect(),
+            errors,
+            changed: self.library_hash != before,
+        }
+    }
+
+    /// The user's availability overrides (status, exclusion from
+    /// substitution) applied to the library. Front-end preferences: not
+    /// recorded in the project and not a design change.
+    pub fn set_glass_overrides(&mut self, overrides: Vec<GlassOverride>) {
+        if overrides != self.overrides {
+            self.overrides = overrides;
+            self.rebuild_library();
+        }
+    }
+
+    pub fn glass_overrides(&self) -> &[GlassOverride] {
+        &self.overrides
+    }
+
+    /// References to the library catalogs the design uses that the project
+    /// does not record yet: catalogs a catalog material of the system
+    /// (surfaces, coatings, configurations) resolves to. `save` and
+    /// `save_to_string` add them to the project.
+    pub fn library_catalogs_in_use(&self) -> Vec<CatalogRef> {
+        let mut out: Vec<CatalogRef> = Vec::new();
+        let mut refs = Vec::new();
+        if let Ok(v) = serde_json::to_value(self.current.system()) {
+            collect_catalog_materials(&v, &mut refs);
+        }
+        for (catalog, name) in refs {
+            let Some((cat, _)) = self.library.locate_glass(catalog.as_deref(), &name) else {
+                continue;
+            };
+            let known = |c: &CatalogRef| c.name.eq_ignore_ascii_case(&cat.name);
+            if self.project.catalogs.iter().any(known) || out.iter().any(known) {
+                continue;
+            }
+            if let Some(lc) = self
+                .library_catalogs
+                .iter()
+                .find(|c| c.catalog.name.eq_ignore_ascii_case(&cat.name))
+            {
+                out.push(CatalogRef {
+                    name: lc.catalog.name.clone(),
+                    path: lc.path.clone(),
+                    relative_path: lc.file_name.clone(),
+                    format: lc.format,
+                });
+            }
+        }
+        out
+    }
+
+    fn summary(&self, name: &str) -> CatalogSummary {
+        let found = self
+            .library
+            .catalogs()
+            .iter()
+            .find(|c| c.name.eq_ignore_ascii_case(name));
+        let library = self
+            .library_catalogs
+            .iter()
+            .find(|c| c.catalog.name.eq_ignore_ascii_case(name));
+        let reference = self
+            .project
+            .catalogs
+            .iter()
+            .find(|r| r.name.eq_ignore_ascii_case(name));
+        let builtin = name == BUILTIN_CATALOG_NAME;
+        CatalogSummary {
+            name: found.map_or(name, |c| &c.name).to_string(),
+            source: if builtin { "builtin" } else { "user" },
+            path: reference
+                .and_then(|r| r.path.clone())
+                .or_else(|| library.and_then(|l| l.path.clone())),
+            glass_count: found.map_or(0, |c| c.glasses.len()),
+            library: library.is_some(),
+            in_project: reference.is_some(),
+        }
     }
 
     pub fn catalogs(&self) -> Vec<CatalogSummary> {
         self.library
             .catalogs()
             .iter()
-            .map(|c| {
-                let builtin = c.name == BUILTIN_CATALOG_NAME;
-                CatalogSummary {
-                    name: c.name.clone(),
-                    source: if builtin { "builtin" } else { "user" },
-                    path: self
-                        .project
-                        .catalogs
-                        .iter()
-                        .find(|r| r.name.eq_ignore_ascii_case(&c.name))
-                        .and_then(|r| r.path.clone()),
-                    glass_count: c.glasses.len(),
-                }
-            })
+            .map(|c| self.summary(&c.name))
             .collect()
     }
 
-    /// Glasses of one catalog (case-insensitive name), or of all catalogs.
+    /// Glasses of one catalog (case-insensitive name), or of all catalogs,
+    /// as table rows with the overrides applied.
     pub fn glasses(&self, catalog: Option<&str>) -> EngineResult<Vec<GlassSummary>> {
         let cats: Vec<_> = self
             .library
@@ -592,19 +1155,43 @@ impl Session {
                 "no catalog named '{n}'"
             ))));
         }
+        let originals = self.effective_catalogs();
         Ok(cats
             .iter()
             .flat_map(|c| {
-                c.glasses.values().map(|g| GlassSummary {
-                    catalog: c.name.clone(),
-                    name: g.name.clone(),
-                    nd: g.nd,
-                    vd: g.vd,
-                    min_um: g.min_um,
-                    max_um: g.max_um,
+                let original = originals
+                    .iter()
+                    .find(|o| o.name.eq_ignore_ascii_case(&c.name));
+                c.glasses.iter().map(move |(k, g)| {
+                    glass_row(&c.name, g, original.and_then(|o| o.glasses.get(k)))
                 })
             })
             .collect())
+    }
+
+    /// Everything about one glass (see `GlassDetails`), resolved as a
+    /// material would be: the named catalog, or the first that has it.
+    pub fn glass_details(&self, catalog: Option<&str>, name: &str) -> EngineResult<GlassDetails> {
+        let (cat, g) = self.library.locate_glass(catalog, name).ok_or_else(|| {
+            EngineError::Core(MkError::UnknownMaterial(match catalog {
+                Some(c) => format!("{c}:{name}"),
+                None => name.to_string(),
+            }))
+        })?;
+        let original = self
+            .original_catalog(&cat.name)
+            .and_then(|o| o.glasses.get(&g.name).cloned())
+            .unwrap_or_else(|| g.clone());
+        Ok(glass_details(&cat.name, g, &original))
+    }
+
+    /// One catalog as loaded (before overrides), e.g. to export it.
+    pub fn catalog(&self, name: &str) -> EngineResult<Arc<GlassCatalog>> {
+        self.original_catalog(name).ok_or_else(|| {
+            EngineError::Core(MkError::UnknownMaterial(format!(
+                "no catalog named '{name}'"
+            )))
+        })
     }
 
     /// The current snapshot resolved against the library (cached).
@@ -1084,6 +1671,7 @@ mod tests {
                 relative_cost: None,
                 substitution: Default::default(),
                 comment: String::new(),
+                agf: None,
             },
         );
         g
@@ -1234,6 +1822,241 @@ mod tests {
         assert_eq!(r2.library_hash, s.library_hash());
         assert_ne!(r2.library_hash, r1.library_hash);
         assert_eq!(r2.envelope()["library_hash"], s.library_hash());
+    }
+
+    /// A synthetic AGF catalog with two made-up glasses.
+    const LIB_AGF: &str = "NM LIBCROWN 2 517642 1.5168 64.17 0 0 0\r\n\
+CD 1.03961212 0.00600069867 0.231792344 0.0200179144 1.01046945 103.560653 0 0 0 0\r\n\
+LD 0.3 2.5\r\n\
+NM LIBFLINT 2 620364 1.62004 36.37 0 0 0\r\n\
+CD 1.34533359 0.00997743871 0.209073176 0.0470450767 0.937357162 111.886764 0 0 0 0\r\n\
+LD 0.32 2.5\r\n";
+
+    fn use_glass(s: &mut Session, catalog: Option<&str>, name: &str) {
+        let mut sys = s.system().clone();
+        sys.surfaces[1].material = MaterialRef::Catalog {
+            catalog: catalog.map(str::to_string),
+            name: name.into(),
+            offset: Default::default(),
+        };
+        s.set_system(sys).unwrap();
+    }
+
+    #[test]
+    fn library_catalogs_load_without_being_recorded_until_used() {
+        let dir = TempDir::new("library");
+        let lib_path = dir.path().join("LIBCAT.agf");
+        std::fs::write(&lib_path, LIB_AGF).unwrap();
+        let e = engine();
+        let mut s = e.new_session();
+        let sync = s.set_library_catalog_files(std::slice::from_ref(&lib_path));
+        assert!(sync.errors.is_empty() && sync.changed, "{sync:?}");
+        assert_eq!(sync.catalogs[0].name, "LIBCAT");
+        assert!(sync.catalogs[0].library && !sync.catalogs[0].in_project);
+        assert!(s.project().catalogs.is_empty());
+        assert!(!s.is_dirty());
+        // Unchanged file: nothing reread, nothing changed.
+        let again = s.set_library_catalog_files(std::slice::from_ref(&lib_path));
+        assert!(!again.changed);
+        assert!(s.library_catalogs_in_use().is_empty());
+
+        // Used by the design: recorded on save, with a path relative to the
+        // project when it lies in the project's folder.
+        use_glass(&mut s, None, "LIBFLINT");
+        let used = s.library_catalogs_in_use();
+        assert_eq!(used.len(), 1);
+        assert_eq!(used[0].name, "LIBCAT");
+        let proj = dir.path().join("p.mklight");
+        s.save(Some(&proj)).unwrap();
+        let r = &s.project().catalogs[0];
+        assert_eq!(r.name, "LIBCAT");
+        assert_eq!(r.relative_path.as_deref(), Some("LIBCAT.agf"));
+        assert!(s.catalogs().iter().any(|c| c.library && c.in_project));
+
+        // Opened without the library, the project still finds the catalog.
+        let s2 = e.open_session(&proj).unwrap();
+        assert!(s2.open_warnings().is_empty(), "{:?}", s2.open_warnings());
+        assert!(s2.resolved().is_ok());
+
+        // An unreadable file and a duplicate name are reported, not fatal.
+        let bad = dir.path().join("BAD.agf");
+        std::fs::write(&bad, "nonsense").unwrap();
+        let copy = dir.path().join("copy.json");
+        let mut cat = read_catalog_file(&lib_path, CatalogFormat::Agf).unwrap();
+        cat.name = "LIBCAT".into();
+        std::fs::write(&copy, serde_json::to_string(&cat).unwrap()).unwrap();
+        let mut s3 = e.new_session();
+        let sync = s3.set_library_catalog_files(&[lib_path.clone(), bad, copy]);
+        assert_eq!(sync.catalogs.len(), 1);
+        assert_eq!(sync.errors.len(), 2, "{:?}", sync.errors);
+        assert!(s3.remove_library_catalog("libcat"));
+        assert_eq!(s3.catalogs().len(), 1);
+    }
+
+    #[test]
+    fn a_missing_project_catalog_is_satisfied_by_the_library() {
+        let dir = TempDir::new("missing");
+        let lib_path = dir.path().join("LIBCAT.agf");
+        std::fs::write(&lib_path, LIB_AGF).unwrap();
+        let e = engine();
+        let mut s = e.new_session();
+        s.load_catalog_file(&lib_path).unwrap();
+        use_glass(&mut s, Some("LIBCAT"), "LIBCROWN");
+        let proj = dir.path().join("sub/p.mklight");
+        std::fs::create_dir_all(proj.parent().unwrap()).unwrap();
+        s.save(Some(&proj)).unwrap();
+        let moved = dir.path().join("elsewhere.agf");
+        std::fs::rename(&lib_path, &moved).unwrap();
+        let mut s2 = e.open_session(&proj).unwrap();
+        assert_eq!(s2.open_warnings().len(), 1);
+        let mut renamed = dir.path().join("LIB2");
+        std::fs::create_dir_all(&renamed).unwrap();
+        renamed.push("LIBCAT.agf");
+        std::fs::rename(&moved, &renamed).unwrap();
+        s2.set_library_catalog_files(&[renamed]);
+        assert!(s2.open_warnings().is_empty(), "{:?}", s2.open_warnings());
+        assert!(s2.resolved().is_ok());
+    }
+
+    #[test]
+    fn remove_restore_and_reload_report_changes() {
+        let dir = TempDir::new("reload");
+        let p = dir.path().join("LIBCAT.agf");
+        std::fs::write(&p, LIB_AGF).unwrap();
+        let e = engine();
+        let mut s = e.new_session();
+        s.load_catalog_file(&p).unwrap();
+        let h1 = s.library_hash().to_string();
+        let r = s.remove_catalog("libcat").unwrap();
+        assert_eq!(r.name, "LIBCAT");
+        assert!(s.project().catalogs.is_empty());
+        assert_eq!(s.catalogs().len(), 1);
+        assert!(s.remove_catalog("LIBCAT").is_err());
+        assert!(s.remove_catalog(BUILTIN_CATALOG_NAME).is_err());
+        let back = s.restore_catalog("LIBCAT").unwrap();
+        assert!(back.in_project);
+        assert_eq!(s.library_hash(), h1);
+        assert_eq!(s.project().catalogs[0], r);
+
+        // Edit the file: one glass changed, one removed, one added.
+        let edited = LIB_AGF
+            .replace("1.62004 36.37", "1.62010 36.40")
+            .replace("LIBCROWN", "LIBNEW");
+        std::fs::write(&p, edited).unwrap();
+        let changes = s.reload_catalog("LIBCAT").unwrap();
+        assert_eq!(changes.added, ["LIBNEW"]);
+        assert_eq!(changes.removed, ["LIBCROWN"]);
+        assert_eq!(changes.changed.len(), 1);
+        let c = &changes.changed[0];
+        assert_eq!(
+            (c.name.as_str(), c.nd_before, c.nd_after),
+            ("LIBFLINT", 1.62004, 1.6201)
+        );
+        assert_eq!((c.vd_before, c.vd_after), (36.37, 36.4));
+        assert_ne!(s.library_hash(), h1);
+        // Reloading again changes nothing.
+        let none = s.reload_catalog("LIBCAT").unwrap();
+        assert!(none.is_empty() && none.unchanged == 2);
+        // The web form.
+        let changes = s
+            .reload_catalog_bytes("LIBCAT", LIB_AGF.as_bytes())
+            .unwrap();
+        assert_eq!(changes.added, ["LIBCROWN"]);
+        assert!(s.reload_catalog("NOPE").is_err());
+
+        // A library catalog reloads from its file too.
+        std::fs::write(&p, LIB_AGF).unwrap();
+        let mut s2 = e.new_session();
+        s2.add_library_catalog_file(&p).unwrap();
+        std::fs::write(&p, LIB_AGF.replace("LIBFLINT", "LIBOTHER")).unwrap();
+        let changes = s2.reload_catalog("LIBCAT").unwrap();
+        assert_eq!((changes.added.len(), changes.removed.len()), (1, 1));
+        // Bytes-loaded library catalogs reload from bytes only.
+        let mut s3 = e.new_session();
+        s3.add_library_catalog_bytes("WEB.agf", LIB_AGF.as_bytes())
+            .unwrap();
+        assert!(s3.reload_catalog("WEB").is_err());
+        assert!(s3.reload_catalog_bytes("WEB", LIB_AGF.as_bytes()).is_ok());
+    }
+
+    #[test]
+    fn reloading_a_project_catalog_also_refreshes_the_library_copy() {
+        let dir = TempDir::new("reload-both");
+        let p = dir.path().join("LIBCAT.agf");
+        std::fs::write(&p, LIB_AGF).unwrap();
+        let e = engine();
+        let mut s = e.new_session();
+        s.add_library_catalog_file(&p).unwrap();
+        s.load_catalog_file(&p).unwrap();
+        std::fs::write(&p, LIB_AGF.replace("LIBCROWN", "LIBNEW")).unwrap();
+        s.reload_catalog("LIBCAT").unwrap();
+        s.remove_catalog("LIBCAT").unwrap();
+        let names: Vec<String> = s
+            .glasses(Some("LIBCAT"))
+            .unwrap()
+            .into_iter()
+            .map(|g| g.name)
+            .collect();
+        assert_eq!(names, ["LIBFLINT", "LIBNEW"]);
+    }
+
+    #[test]
+    fn overrides_reach_the_glass_table_glass_map_and_substitution() {
+        use mklight_core::materials::agf::GlassStatus;
+        let e = engine();
+        let mut s = e.new_session();
+        s.add_library_catalog_bytes("LIBCAT.agf", LIB_AGF.as_bytes())
+            .unwrap();
+        let h0 = s.library_hash().to_string();
+        let o = GlassOverride {
+            catalog: "LIBCAT".into(),
+            name: "LIBFLINT".into(),
+            status: Some(GlassStatus::Obsolete),
+            exclude_substitution: Some(true),
+        };
+        s.set_glass_overrides(vec![o.clone()]);
+        assert_ne!(s.library_hash(), h0);
+        assert!(!s.is_dirty());
+        let rows = s.glasses(Some("LIBCAT")).unwrap();
+        let flint = rows.iter().find(|r| r.name == "LIBFLINT").unwrap();
+        assert_eq!(flint.status, GlassStatus::Obsolete);
+        assert!(flint.exclude_substitution && flint.overridden);
+        let d = s.glass_details(None, "libflint").unwrap();
+        assert_eq!(d.catalog_status, GlassStatus::Standard);
+        assert_eq!(d.glass.substitution.status, GlassStatus::Standard);
+        // The glass map reports the overridden availability by default.
+        let r = s
+            .run_analysis(
+                &AnalysisRequest::new("glass_map", Value::Null),
+                &JobContext::new(),
+            )
+            .unwrap();
+        let v = r.json.clone();
+        let g = v["glasses"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|g| g["name"] == "LIBFLINT")
+            .unwrap();
+        assert_eq!(g["status"], "obsolete");
+        assert_eq!(g["exclude_substitution"], true);
+        // Glass substitution's candidates leave the excluded glass out.
+        use_glass(&mut s, Some("LIBCAT"), "LIBCROWN");
+        let cands = mklight_optim::glass::CandidateSet {
+            nearest: None,
+            ..Default::default()
+        };
+        let sys = s.system().clone();
+        let names: Vec<String> = cands
+            .resolve(&sys, sys.surfaces[1].id, s.library())
+            .unwrap()
+            .into_iter()
+            .map(|c| c.name)
+            .collect();
+        assert_eq!(names, ["LIBCROWN"]);
+        s.set_glass_overrides(Vec::new());
+        assert_eq!(s.library_hash(), h0);
+        assert_eq!(s.glass_overrides(), &[] as &[GlassOverride]);
     }
 
     #[test]

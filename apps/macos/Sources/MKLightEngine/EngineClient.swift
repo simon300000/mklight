@@ -192,6 +192,37 @@ public protocol EngineClient: Sendable {
     /// `.json`), replacing one of the same name. Changes the library hash.
     func loadCatalog(at url: URL) async throws -> CatalogInfo
 
+    /// Removes a catalog the project records from this session.
+    func removeCatalog(named name: String) async throws
+
+    /// Reads a catalog again from its file and reports what changed.
+    func reloadCatalog(named name: String) async throws -> CatalogChanges
+
+    /// Makes the session's app-wide library catalogs exactly these files,
+    /// in order (unchanged files are not read again).
+    func setLibraryCatalogs(_ files: [URL]) async -> LibrarySync
+
+    /// The user's availability overrides (status, exclusion from glass
+    /// substitution), applied to the session's glass library.
+    func setGlassOverrides(_ overrides: [GlassOverride]) async throws
+
+    /// Glass table rows of one catalog, or of every catalog.
+    func glassRows(in catalog: String?) async throws -> [GlassRow]
+
+    /// Everything about one glass (`catalog` nil: the first that has it).
+    func glassDetails(catalog: String?, name: String) async throws -> GlassDetails
+
+    /// The library catalogs the design uses that the project does not
+    /// record yet; a saved project records them.
+    func libraryCatalogsInUse() async -> [CatalogReference]
+
+    /// A catalog glass (engine JSON) from an editor's specification
+    /// (`GlassSpec`, docs/FFI.md), with n_d and V_d computed.
+    func glass(from spec: JSONValue) throws -> JSONValue
+
+    /// A catalog in the engine's JSON form as AGF text.
+    func agf(of catalog: JSONValue) throws -> AGFExport
+
     /// Solves the snapshot's system (docs/SOLVES.md) and returns the solve
     /// report (the `solves` result) with the snapshot of the solved system.
     /// The `solves` analysis is the dry run of this.
@@ -241,6 +272,34 @@ extension EngineClient {
 
     public func loadCatalog(at url: URL) async throws -> CatalogInfo {
         throw EngineError.unsupported("\(info.name) cannot load glass catalogs")
+    }
+
+    public func removeCatalog(named name: String) async throws {
+        throw EngineError.unsupported("\(info.name) cannot remove glass catalogs")
+    }
+
+    public func reloadCatalog(named name: String) async throws -> CatalogChanges {
+        throw EngineError.unsupported("\(info.name) cannot reload glass catalogs")
+    }
+
+    public func setLibraryCatalogs(_ files: [URL]) async -> LibrarySync { LibrarySync() }
+
+    public func setGlassOverrides(_ overrides: [GlassOverride]) async throws {}
+
+    public func glassRows(in catalog: String?) async throws -> [GlassRow] { [] }
+
+    public func glassDetails(catalog: String?, name: String) async throws -> GlassDetails {
+        throw EngineError.unsupported("\(info.name) has no glass data")
+    }
+
+    public func libraryCatalogsInUse() async -> [CatalogReference] { [] }
+
+    public func glass(from spec: JSONValue) throws -> JSONValue {
+        throw EngineError.unsupported("\(info.name) cannot make glasses")
+    }
+
+    public func agf(of catalog: JSONValue) throws -> AGFExport {
+        throw EngineError.unsupported("\(info.name) cannot write AGF catalogs")
     }
 
     public func importPrescription(_ data: Data, format: PrescriptionFormat) throws -> PrescriptionImport {

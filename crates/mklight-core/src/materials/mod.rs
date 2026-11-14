@@ -7,6 +7,7 @@ pub mod builtin;
 pub mod coating;
 pub mod diffraction;
 pub mod dispersion;
+pub mod manage;
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -87,6 +88,13 @@ pub struct Glass {
     pub substitution: GlassSubstitution,
     #[serde(default)]
     pub comment: String,
+    /// The AGF record data of a glass read from an AGF catalog (MIL code,
+    /// formula number, ΔP_g,F, the second TCE, acid/alkali/phosphate
+    /// resistance, unknown records), so that it shows in a glass's details
+    /// and survives a JSON save and an AGF export. `None` for other glasses.
+    /// Status and exclusion are `substitution`'s, which wins over the copy here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agf: Option<Box<agf::AgfGlassMeta>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Default, Serialize, Deserialize)]
@@ -327,7 +335,14 @@ impl MaterialLibrary {
         &self.catalogs
     }
 
-    pub fn find_glass(&self, catalog: Option<&str>, name: &str) -> MkResult<Arc<Glass>> {
+    /// The catalog a glass reference resolves to and the glass in it: the
+    /// first catalog in library order (or the named one) that has the
+    /// glass, an exact name before a case-insensitive one.
+    pub fn locate_glass(
+        &self,
+        catalog: Option<&str>,
+        name: &str,
+    ) -> Option<(&Arc<GlassCatalog>, &Glass)> {
         for cat in &self.catalogs {
             if let Some(c) = catalog
                 && !cat.name.eq_ignore_ascii_case(c)
@@ -335,20 +350,27 @@ impl MaterialLibrary {
                 continue;
             }
             if let Some(g) = cat.glasses.get(name) {
-                return Ok(Arc::new(g.clone()));
+                return Some((cat, g));
             }
             if let Some((_, g)) = cat
                 .glasses
                 .iter()
                 .find(|(k, _)| k.eq_ignore_ascii_case(name))
             {
-                return Ok(Arc::new(g.clone()));
+                return Some((cat, g));
             }
         }
-        Err(MkError::UnknownMaterial(match catalog {
-            Some(c) => format!("{c}:{name}"),
-            None => name.to_string(),
-        }))
+        None
+    }
+
+    pub fn find_glass(&self, catalog: Option<&str>, name: &str) -> MkResult<Arc<Glass>> {
+        match self.locate_glass(catalog, name) {
+            Some((_, g)) => Ok(Arc::new(g.clone())),
+            None => Err(MkError::UnknownMaterial(match catalog {
+                Some(c) => format!("{c}:{name}"),
+                None => name.to_string(),
+            })),
+        }
     }
 
     pub fn resolve(&self, m: &MaterialRef, env: &Environment) -> MkResult<ResolvedMaterial> {
