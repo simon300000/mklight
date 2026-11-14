@@ -285,6 +285,48 @@ final class DesignSession {
         window.selection = next
     }
 
+    // MARK: Glass catalogs
+
+    /// What the Glass Catalogs window needs of this design.
+    var browserTarget: GlassBrowserTarget {
+        GlassBrowserTarget(
+            id: ObjectIdentifier(self),
+            title: { [weak self] in
+                guard let self else { return "" }
+                #if os(macOS)
+                if let t = self.mainWindow?.title, !t.isEmpty { return t }
+                #endif
+                return self.system.name.isEmpty ? "Design" : self.system.name
+            },
+            workspace: workspace,
+            glassSurface: { [weak self] in
+                guard let self, let i = self.selectedIndex, i > 0, i < self.system.imageIndex else { return nil }
+                return i
+            },
+            assign: { [weak self] i, catalog, name in
+                guard let self else { return }
+                self.design.edit("Change Material", undoManager: self.undoManager) { s in
+                    guard s.surfaces.indices.contains(i) else { return }
+                    s.surfaces[i].material = s.surfaces[i].material.replaced(by: .catalog(catalog: catalog, name: name))
+                }
+            },
+            addCatalog: { [weak self] url in
+                guard let self else { throw CancellationError() }
+                let access = url.startAccessingSecurityScopedResource()
+                defer { if access { url.stopAccessingSecurityScopedResource() } }
+                let info = try await self.workspace.loadCatalog(at: url)
+                self.design.addCatalog(
+                    CatalogReference(name: info.name, path: url.path, format: url.pathExtension.lowercased() == "json" ? "json" : "agf"),
+                    undoManager: self.undoManager)
+                return info
+            },
+            removeCatalog: { [weak self] name in
+                guard let self else { return }
+                self.design.removeCatalog(named: name, undoManager: self.undoManager)
+            },
+            undo: { [weak self] in self?.undoState })
+    }
+
     private func showMainWindow() {
         #if os(macOS)
         mainWindow?.makeKeyAndOrderFront(nil)
@@ -297,6 +339,7 @@ final class DesignSession {
     @ObservationIgnored private var controllers: [UUID: DetachedPanelWindowController] = [:]
     @ObservationIgnored private(set) weak var mainWindow: NSWindow?
     @ObservationIgnored private var closeObserver: (any NSObjectProtocol)?
+    @ObservationIgnored private var keyObserver: (any NSObjectProtocol)?
     @ObservationIgnored private var tearingDown = false
 
     /// The main window is on screen: separate windows saved with the
@@ -309,6 +352,16 @@ final class DesignSession {
             [weak self] _ in
             MainActor.assumeIsolated { self?.tearDown() }
         }
+        // The Glass Catalogs window follows the key design window.
+        if let keyObserver { NotificationCenter.default.removeObserver(keyObserver) }
+        keyObserver = NotificationCenter.default.addObserver(forName: NSWindow.didBecomeKeyNotification, object: w, queue: .main) {
+            [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                GlassBrowserModel.shared.attach(self.browserTarget)
+            }
+        }
+        GlassBrowserModel.shared.attach(browserTarget)
         syncWindows()
     }
 
@@ -338,6 +391,9 @@ final class DesignSession {
         controllers = [:]
         if let closeObserver { NotificationCenter.default.removeObserver(closeObserver) }
         closeObserver = nil
+        if let keyObserver { NotificationCenter.default.removeObserver(keyObserver) }
+        keyObserver = nil
+        GlassBrowserModel.shared.detach(ObjectIdentifier(self))
     }
 
     /// The user closed a separate window: its panels close with it.

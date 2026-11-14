@@ -64,8 +64,20 @@ public final class Workspace {
     public private(set) var descriptors: [AnalysisDescriptor] = [] {
         didSet { requestEpoch += 1 }
     }
-    public private(set) var catalogs: [CatalogInfo] = []
+    public private(set) var catalogs: [CatalogInfo] = [] {
+        didSet { catalogRevision += 1 }
+    }
+    /// Counts every read of the catalogs (their glasses or statuses may
+    /// have changed even when the list is the same).
+    public private(set) var catalogRevision = 0
     public private(set) var catalogWarnings: [String] = []
+    /// Library catalog files the session could not load.
+    public private(set) var libraryWarnings: [String] = []
+    /// The app-wide glass library the session loads (set by the window
+    /// before `open`); `syncLibrary` loads it again after a change.
+    @ObservationIgnored public var glassLibrary: GlassLibrary?
+    /// The library revision and overrides the session has.
+    @ObservationIgnored private var loadedLibrary: (revision: Int, overrides: [GlassOverride])?
     /// Glass names for completion in the material column.
     public private(set) var materialNames: [String] = []
     /// n_d and V_d of the design's catalogue glasses with their offsets
@@ -506,27 +518,110 @@ public final class Workspace {
         try await documentEngine.importPrescription(at: url)
     }
 
-    /// The first snapshot of a document: the project's catalogs are loaded
-    /// before the system is snapshotted.
+    /// The first snapshot of a document: the library's and the project's
+    /// catalogs are loaded before the system is snapshotted.
     public func open(system: OpticalSystem, catalogs refs: [CatalogReference], projectDirectory: URL?) async {
         latestSystem = system
         designSystem = system
+        snapshotsHeld += 1
+        await loadLibrary()
+        snapshotsHeld -= 1
         if await !syncCatalogs(refs, projectDirectory: projectDirectory) {
             update(system: latestSystem ?? system, immediately: true)
         }
     }
 
-    /// Makes the session's user catalogs match the project's list. A
-    /// catalog the project no longer references (undo of Load Glass
-    /// Catalog) rebuilds the session, since the engine cannot unload one.
+    /// Loads the app-wide library into the session again when it changed
+    /// (catalog files, user glasses, overrides) and takes new snapshots if
+    /// the glass library changed.
+    public func syncLibrary() async {
+        guard let lib = glassLibrary, loadedLibrary?.revision != lib.revision else { return }
+        snapshotsHeld += 1
+        let changed = await loadLibrary()
+        snapshotsHeld -= 1
+        if changed, snapshotsHeld == 0 { retakeSnapshots() }
+    }
+
+    /// Gives the session the library's catalog files and overrides. Returns
+    /// whether the session's glass library changed.
+    @discardableResult
+    private func loadLibrary() async -> Bool {
+        guard let lib = glassLibrary else { return false }
+        let revision = lib.revision, overrides = lib.overrides
+        let sync = await documentEngine.setLibraryCatalogs(lib.catalogFiles)
+        var changed = sync.changed
+        if loadedLibrary?.overrides != overrides {
+            do {
+                try await documentEngine.setGlassOverrides(overrides)
+                changed = true
+            } catch {
+                libraryWarnings.append("Glass status settings: \(error.localizedDescription)")
+            }
+        }
+        loadedLibrary = (revision, overrides)
+        libraryWarnings = sync.errors.map { e in
+            let file = e.path.isEmpty ? "Glass library" : URL(fileURLWithPath: e.path).lastPathComponent
+            return "\(file): \(e.message)"
+        }
+        if changed { await refreshCatalogInfo() }
+        return changed
+    }
+
+    /// Reads the catalogs and glass names again (the library changed).
+    private func refreshCatalogInfo() async {
+        resetGlassNumbers()
+        catalogs = await documentEngine.catalogs()
+        materialNames = await documentEngine.materialNames()
+    }
+
+    /// Reads a catalog again from its file and returns what changed. A
+    /// library catalog is then reloaded in every open design.
+    public func reloadCatalog(named name: String) async throws -> CatalogChanges {
+        let changes = try await documentEngine.reloadCatalog(named: name)
+        await refreshCatalogInfo()
+        if snapshotsHeld == 0 { retakeSnapshots() }
+        if catalogs.first(where: { $0.name == name })?.library == true, let lib = glassLibrary {
+            loadedLibrary?.revision = lib.revision + 1
+            lib.touch()
+        }
+        return changes
+    }
+
+    /// Glass table rows of one catalog, or of every catalog.
+    public func glassRows(in catalog: String?) async throws -> [GlassRow] {
+        try await documentEngine.glassRows(in: catalog)
+    }
+
+    /// Everything about one glass.
+    public func glassDetails(catalog: String?, name: String) async throws -> GlassDetails {
+        try await documentEngine.glassDetails(catalog: catalog, name: name)
+    }
+
+    /// The library catalogs the design uses that its project does not
+    /// record yet (saving records them).
+    public func libraryCatalogsInUse() async -> [CatalogReference] {
+        await documentEngine.libraryCatalogsInUse()
+    }
+
+    /// Makes the session's project catalogs match the project's list: loads
+    /// the new ones and removes the ones it no longer references (undo of
+    /// Add Glass Catalog, Remove Glass Catalog). An engine that cannot
+    /// remove a catalog gets a new session.
     @discardableResult
     public func syncCatalogs(_ refs: [CatalogReference], projectDirectory: URL?) async -> Bool {
-        let loaded = Set(await documentEngine.catalogs().filter { $0.source == "user" }.map(\.name))
+        let loaded = Set(await documentEngine.catalogs().filter(\.inProject).map(\.name))
         var toLoad = refs.filter { !loaded.contains($0.name) }
-        if !loaded.isSubset(of: Set(refs.map(\.name))) {
-            cancelAll()
-            documentEngine = engine.makeDocumentEngine()
-            toLoad = refs
+        let extra = loaded.subtracting(refs.map(\.name))
+        if !extra.isEmpty {
+            do {
+                for name in extra.sorted() { try await documentEngine.removeCatalog(named: name) }
+            } catch {
+                cancelAll()
+                documentEngine = engine.makeDocumentEngine()
+                loadedLibrary = nil
+                toLoad = refs
+                await loadLibrary()
+            }
         } else if toLoad.isEmpty {
             catalogWarnings = []
             return false

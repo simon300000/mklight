@@ -76,7 +76,7 @@ extension ResultViewRenders {
     @Test func renderDirect() async throws {
         guard let dir = ProcessInfo.processInfo.environment["MKLIGHT_RENDER_DIR"] else { return }
         var rng = SystemRandomNumberGenerator()
-        let statuses: [GlassStatus] = [.preferred, .standard, .obsolete, .special, .melt, .unknown]
+        let statuses: [GlassMapStatus] = [.preferred, .standard, .obsolete, .special, .melt, .unknown]
         var glasses: [GlassMapPoint] = (0..<1500).map { k in
             let vd = Double.random(in: 20...95, using: &rng)
             let nd = 1.45 + (95 - vd) / 75 * 0.35 + Double.random(in: -0.08...0.12, using: &rng)

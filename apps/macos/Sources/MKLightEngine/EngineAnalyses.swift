@@ -325,16 +325,37 @@ public struct CatalogInfo: Codable, Sendable, Hashable, Identifiable {
     public var source: String
     public var path: String?
     public var glassCount: Int
+    /// Loaded from the app-wide library.
+    public var library: Bool
+    /// Recorded in the project (it may be in the library too).
+    public var inProject: Bool
     public var id: String { name }
 
-    public init(name: String, source: String, path: String?, glassCount: Int) {
+    public var isBuiltin: Bool { source == "builtin" }
+
+    public init(name: String, source: String, path: String?, glassCount: Int, library: Bool = false, inProject: Bool = false) {
         self.name = name
         self.source = source
         self.path = path
         self.glassCount = glassCount
+        self.library = library
+        self.inProject = inProject
     }
 
-    private enum CodingKeys: String, CodingKey { case name, source, path, glassCount = "glass_count" }
+    private enum CodingKeys: String, CodingKey {
+        case name, source, path, glassCount = "glass_count", library, inProject = "in_project"
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        name = try c.decode(String.self, forKey: .name)
+        source = try c.decode(String.self, forKey: .source)
+        path = try c.decodeIfPresent(String.self, forKey: .path)
+        glassCount = try c.decode(Int.self, forKey: .glassCount)
+        library = try c.decodeIfPresent(Bool.self, forKey: .library) ?? false
+        // Engines before the library recorded every user catalog in the project.
+        inProject = try c.decodeIfPresent(Bool.self, forKey: .inProject) ?? (source == "user")
+    }
 }
 
 /// One glass of a catalog (`mk_session_list_glasses`).

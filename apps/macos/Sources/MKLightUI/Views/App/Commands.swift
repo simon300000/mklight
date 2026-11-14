@@ -114,7 +114,10 @@ struct MKLightCommands: Commands {
                 }
             }
             .disabled(actions == nil)
-            Button("Load Glass Catalog…") { actions?.loadCatalog() }
+            Divider()
+            Button("Glass Catalogs…") { openWindow(id: GlassBrowserView.windowID) }
+                .keyboardShortcut("g", modifiers: [.command, .option])
+            Button("Add Glass Catalog to Design…") { actions?.loadCatalog() }
                 .disabled(actions == nil)
         }
         CommandMenu("Design") {

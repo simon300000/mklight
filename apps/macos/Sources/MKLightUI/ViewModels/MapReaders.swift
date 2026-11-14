@@ -391,10 +391,10 @@ extension Grid2D {
 // MARK: - Glass map
 
 /// A glass's retained catalogue status (AGF), or unknown.
-enum GlassStatus: Hashable, Sendable, CaseIterable {
+enum GlassMapStatus: Hashable, Sendable, CaseIterable {
     case preferred, standard, obsolete, special, melt, other(Int), unknown
 
-    static let allCases: [GlassStatus] = [.preferred, .standard, .special, .melt, .obsolete, .unknown]
+    static let allCases: [GlassMapStatus] = [.preferred, .standard, .special, .melt, .obsolete, .unknown]
 
     init(json: JSONValue?) {
         switch json {
@@ -427,7 +427,7 @@ enum GlassStatus: Hashable, Sendable, CaseIterable {
     }
 
     /// The legend group (unrecognised codes join "Unknown").
-    var group: GlassStatus {
+    var group: GlassMapStatus {
         if case .other = self { return .unknown }
         return self
     }
@@ -463,7 +463,7 @@ struct GlassMapPoint: Identifiable, Hashable, Sendable {
     var nd: Double
     var vd: Double
     var pgf: Double
-    var status: GlassStatus
+    var status: GlassMapStatus
     /// Surface indices whose following medium is this glass.
     var surfaces: [Int]
     var excludeSubstitution: Bool?
@@ -530,7 +530,7 @@ struct GlassMapData: Sendable {
                 id: GlassMapPoint.id(catalog: g["catalog"]?.string, name: name, kind: kind, surfaces: surfaces),
                 catalog: g["catalog"]?.string, name: name, kind: kind,
                 nd: coord(0, "nd"), vd: coord(1, "vd"), pgf: coord(2, "pgf"),
-                status: GlassStatus(json: g["status"]), surfaces: surfaces,
+                status: GlassMapStatus(json: g["status"]), surfaces: surfaces,
                 excludeSubstitution: g["exclude_substitution"]?.bool,
                 offset: kind == .offset
                     ? MaterialOffset(dnD: g[path: "offset", "dn_d"]?.nf ?? 0, dvD: g[path: "offset", "dv_d"]?.nf ?? 0) : nil)

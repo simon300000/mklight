@@ -274,7 +274,7 @@ struct GlassCard: View {
 
 /// The status legend of a glass map, for the statuses present.
 struct GlassStatusLegend: View {
-    let statuses: [GlassStatus]
+    let statuses: [GlassMapStatus]
     var showsOffset = false
     @Environment(\.colorScheme) private var colorScheme
 
@@ -316,7 +316,7 @@ struct GlassStatusLegend: View {
     }
 }
 
-extension GlassStatus {
+extension GlassMapStatus {
     /// The status colour: a categorical slot, or neutral grey when unknown.
     func rgb(dark: Bool) -> SIMD3<Double> {
         slot < 0 ? (dark ? Palette.rgb(0x9a9a95) : Palette.rgb(0x8a8a85)) : Palette.slotRGB(slot, dark: dark)
@@ -345,7 +345,7 @@ struct GlassMapView: View {
     }
 
     var body: some View {
-        let statuses = GlassStatus.allCases.filter { s in data.glasses.contains { $0.status.group == s && $0.kind == .catalog } }
+        let statuses = GlassMapStatus.allCases.filter { s in data.glasses.contains { $0.status.group == s && $0.kind == .catalog } }
         VStack(alignment: .leading, spacing: Space.s) {
             FlowLayout(spacing: Space.m, lineSpacing: Space.xs) {
                 Picker("Plane", selection: $plane) {
