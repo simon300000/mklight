@@ -34,7 +34,6 @@ pub mod energy;
 mod fft;
 pub mod image_simulation;
 pub mod interp;
-mod linalg;
 pub mod mtf;
 pub mod psf;
 pub mod pupil;

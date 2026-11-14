@@ -23,8 +23,8 @@
 use mklight_core::{JobContext, MkError, MkResult};
 use serde::{Deserialize, Serialize};
 
-use crate::linalg::lstsq;
 use crate::warnings::WaveWarning;
+use mklight_core::linalg::lstsq_equilibrated;
 
 /// Index ordering and normalisation of a coefficient vector.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -594,7 +594,7 @@ pub fn fit_zernike(
         b.push(sw * v);
     }
     ctx.check()?;
-    let sol = lstsq(cols, b, ctx)?;
+    let sol = lstsq_equilibrated(cols, b, ctx)?;
     let mut warnings = Vec::new();
     if sol.condition > settings.warn_condition {
         warnings.push(WaveWarning::IllConditioned {

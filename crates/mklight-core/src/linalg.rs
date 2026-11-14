@@ -1,10 +1,18 @@
-//! Small dense linear algebra for the optimisers.
+//! Small dense linear algebra, shared by the optimisers (`mklight-optim`)
+//! and the wave fits (`mklight-wave` Zernike fits).
 //!
-//! Problems here are "tall and thin" (many residuals, at most a few hundred
-//! variables), so everything is plain row-major `f64` with Householder QR as
-//! the workhorse. Normal equations `JᵀJ` are never formed for solving: they
-//! square the condition number of `J` (lens Jacobians are notoriously badly
-//! conditioned). The symmetric eigen solver (cyclic Jacobi) is used by CMA-ES.
+//! Problems here are "tall and thin" (many residuals or samples, at most a
+//! few hundred unknowns), so everything is plain row-major `f64` with
+//! Householder QR as the workhorse. Normal equations `JᵀJ` are never formed
+//! for solving: they square the condition number of `J` (lens Jacobians are
+//! notoriously badly conditioned). [`lstsq_equilibrated`] adds column
+//! equilibration and a singular-value condition estimate (one-sided Jacobi on
+//! `R`); the symmetric eigen solver (cyclic Jacobi) is used by CMA-ES.
+
+// Index loops mirror the textbook algorithms; `!(a > b)` keeps NaN failing.
+#![allow(clippy::neg_cmp_op_on_partial_ord, clippy::needless_range_loop)]
+
+use crate::{JobContext, MkError, MkResult};
 
 /// Dense row-major matrix.
 #[derive(Clone, Debug, PartialEq, Default)]
@@ -163,16 +171,28 @@ impl Qr {
             }
             beta[k] = -v0 / alpha;
             a[(k, k)] = alpha;
-            for j in k + 1..n {
-                let mut s = a[(k, j)];
-                for i in k + 1..m {
-                    s = a[(i, k)].mul_add(a[(i, j)], s);
-                }
-                s *= beta[k];
-                a[(k, j)] -= s;
+            // Apply H to the trailing columns, sweeping whole rows (the
+            // storage order). Each column's sum still runs over `i` in
+            // order, so this is the column-by-column update reordered.
+            if k + 1 < n {
+                let mut s: Vec<f64> = a.row(k)[k + 1..].to_vec();
                 for i in k + 1..m {
                     let vik = a[(i, k)];
-                    a[(i, j)] = (-s).mul_add(vik, a[(i, j)]);
+                    for (sj, aij) in s.iter_mut().zip(&a.row(i)[k + 1..]) {
+                        *sj = vik.mul_add(*aij, *sj);
+                    }
+                }
+                for sj in &mut s {
+                    *sj *= beta[k];
+                }
+                for (akj, sj) in a.row_mut(k)[k + 1..].iter_mut().zip(&s) {
+                    *akj -= sj;
+                }
+                for i in k + 1..m {
+                    let vik = a[(i, k)];
+                    for (aij, sj) in a.row_mut(i)[k + 1..].iter_mut().zip(&s) {
+                        *aij = (-sj).mul_add(vik, *aij);
+                    }
                 }
             }
         }
@@ -342,9 +362,148 @@ pub fn sym_eigen(a: &Matrix) -> (Vec<f64>, Matrix) {
     ((0..n).map(|i| m[(i, i)]).collect(), v)
 }
 
+/// Solution of `min ‖A·x − b‖₂` by [`lstsq_equilibrated`].
+#[derive(Clone, Debug)]
+pub struct Lstsq {
+    pub x: Vec<f64>,
+    /// 2-norm condition number of the column-equilibrated `A`.
+    pub condition: f64,
+    /// `‖A·x − b‖₂`.
+    pub residual_norm: f64,
+}
+
+/// Least squares with `A` given column-major (`cols[j][i] = A[i][j]`).
+/// Columns are scaled to unit norm first, so the reported condition number
+/// does not depend on the basis normalisation. Fails if `A` is rank
+/// deficient (a zero column, fewer rows than columns, or `σ_min/σ_max` below
+/// `1e-13`).
+pub fn lstsq_equilibrated(cols: Vec<Vec<f64>>, b: Vec<f64>, ctx: &JobContext) -> MkResult<Lstsq> {
+    let k = cols.len();
+    let m = b.len();
+    if k == 0 {
+        return Ok(Lstsq {
+            x: vec![],
+            condition: 1.0,
+            residual_norm: norm2(&b),
+        });
+    }
+    if m < k {
+        return Err(MkError::Numerical(format!(
+            "least squares needs at least {k} samples, got {m}"
+        )));
+    }
+    let mut scale = vec![0.0; k];
+    let mut a = Matrix::zeros(m, k);
+    for (j, c) in cols.iter().enumerate() {
+        let s = norm2(c);
+        if s == 0.0 || !s.is_finite() {
+            return Err(MkError::Numerical(format!(
+                "least squares: basis function {j} vanishes on all samples"
+            )));
+        }
+        for (i, v) in c.iter().enumerate() {
+            a[(i, j)] = v / s;
+        }
+        scale[j] = s;
+    }
+    ctx.check()?;
+    let qr = Qr::new(a);
+    ctx.check()?;
+    let r = qr.r();
+    let mut rcols: Vec<Vec<f64>> = (0..k).map(|j| r.col(j)).collect();
+    let sv = singular_values(&mut rcols);
+    let smax = sv.iter().cloned().fold(0.0, f64::max);
+    let smin = sv.iter().cloned().fold(f64::INFINITY, f64::min);
+    if !(smin > 1e-13 * smax) {
+        return Err(MkError::Numerical(format!(
+            "least squares: rank-deficient system (σmin/σmax = {:.2e})",
+            smin / smax
+        )));
+    }
+    let mut qb = b;
+    qr.apply_qt(&mut qb);
+    let mut x = solve_upper(&r, &qb[..k]);
+    for (xi, s) in x.iter_mut().zip(&scale) {
+        *xi /= s;
+    }
+    Ok(Lstsq {
+        x,
+        condition: smax / smin,
+        residual_norm: norm2(&qb[k..]),
+    })
+}
+
+/// Singular values of a square matrix given as columns (one-sided Jacobi,
+/// Hestenes). The columns are overwritten.
+pub fn singular_values(cols: &mut [Vec<f64>]) -> Vec<f64> {
+    let k = cols.len();
+    for _sweep in 0..60 {
+        let mut rotated = false;
+        for p in 0..k {
+            for q in p + 1..k {
+                let (a, b, g) = {
+                    let (cp, cq) = (&cols[p], &cols[q]);
+                    let a: f64 = cp.iter().map(|x| x * x).sum();
+                    let b: f64 = cq.iter().map(|x| x * x).sum();
+                    let g: f64 = cp.iter().zip(cq).map(|(x, y)| x * y).sum();
+                    (a, b, g)
+                };
+                if g.abs() <= 1e-15 * (a * b).sqrt() || g == 0.0 {
+                    continue;
+                }
+                rotated = true;
+                let zeta = (b - a) / (2.0 * g);
+                let t = zeta.signum() / (zeta.abs() + (1.0 + zeta * zeta).sqrt());
+                let c = 1.0 / (1.0 + t * t).sqrt();
+                let s = c * t;
+                let (lo, hi) = cols.split_at_mut(q);
+                for (x, y) in lo[p].iter_mut().zip(hi[0].iter_mut()) {
+                    let (xp, yq) = (*x, *y);
+                    *x = c * xp - s * yq;
+                    *y = s * xp + c * yq;
+                }
+            }
+        }
+        if !rotated {
+            break;
+        }
+    }
+    cols.iter().map(|c| norm2(c)).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lstsq_solves_overdetermined_exactly() {
+        // y = 1 + 2t − 3t² sampled exactly.
+        let ts: Vec<f64> = (0..20).map(|i| i as f64 / 7.0 - 1.0).collect();
+        let cols = vec![
+            ts.iter().map(|_| 1.0).collect(),
+            ts.clone(),
+            ts.iter().map(|t| t * t).collect(),
+        ];
+        let b: Vec<f64> = ts.iter().map(|t| 1.0 + 2.0 * t - 3.0 * t * t).collect();
+        let s = lstsq_equilibrated(cols, b, &JobContext::new()).unwrap();
+        assert!((s.x[0] - 1.0).abs() < 1e-13);
+        assert!((s.x[1] - 2.0).abs() < 1e-13);
+        assert!((s.x[2] + 3.0).abs() < 1e-13);
+        assert!(s.residual_norm < 1e-12);
+    }
+
+    #[test]
+    fn singular_values_of_diagonal_and_rank_deficiency() {
+        let mut c = vec![vec![3.0, 0.0], vec![0.0, 0.5]];
+        let mut sv = singular_values(&mut c);
+        sv.sort_by(f64::total_cmp);
+        assert!((sv[0] - 0.5).abs() < 1e-15 && (sv[1] - 3.0).abs() < 1e-15);
+        // Two identical columns: rank deficient.
+        let col: Vec<f64> = (0..5).map(|i| i as f64).collect();
+        assert!(
+            lstsq_equilibrated(vec![col.clone(), col], vec![1.0; 5], &JobContext::new()).is_err()
+        );
+    }
 
     #[test]
     fn qr_least_squares_matches_exact_fit() {

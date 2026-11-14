@@ -14,7 +14,7 @@
 //! |---|---|
 //! | [`problem`] | variables, bounds, constraints, batched evaluation, failure status |
 //! | [`deriv`] | batched finite-difference Jacobians, analytic hook, derivative check |
-//! | [`linalg`] | dense row-major matrices, Householder QR, symmetric eigen-decomposition |
+//! | [`linalg`] | re-export of `mklight_core::linalg`: dense row-major matrices, Householder QR, symmetric eigen-decomposition |
 //! | [`lsq`] | Levenberg–Marquardt and dogleg trust-region least squares, bounds, augmented Lagrangian |
 //! | [`global`] | differential evolution, Nelder–Mead, CMA-ES, basin-hopping "hammer" |
 //! | [`discrete`] | finite-choice variables (glass substitution) with pluggable neighbourhoods |
@@ -38,7 +38,8 @@ pub mod discrete;
 pub mod glass;
 pub mod global;
 pub mod gpu;
-pub mod linalg;
+// Moved to `mklight-core` (shared with the wave fits); the old path stays.
+pub use mklight_core::linalg;
 pub mod lsq;
 pub mod merit;
 pub mod mixed;

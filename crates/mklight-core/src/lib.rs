@@ -6,6 +6,7 @@
 pub mod error;
 pub mod import;
 pub mod job;
+pub mod linalg;
 pub mod materials;
 pub mod math;
 pub mod memo;
