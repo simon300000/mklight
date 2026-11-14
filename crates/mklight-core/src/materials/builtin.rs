@@ -37,6 +37,7 @@ fn sellmeier3(
         relative_cost: None,
         substitution: Default::default(),
         comment: String::new(),
+        agf: None,
     }
 }
 

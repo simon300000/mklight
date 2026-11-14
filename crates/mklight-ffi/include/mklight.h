@@ -36,7 +36,7 @@ extern "C" {
 /* ---- Versioning --------------------------------------------------------- */
 
 #define MK_ABI_VERSION_MAJOR 1
-#define MK_ABI_VERSION_MINOR 4
+#define MK_ABI_VERSION_MINOR 5
 /* (major << 16) | minor. A different major version is incompatible; a newer
  * minor version only adds functions and JSON fields. */
 #define MK_ABI_VERSION ((MK_ABI_VERSION_MAJOR << 16) | MK_ABI_VERSION_MINOR)
@@ -408,6 +408,64 @@ MKStatus mk_engine_prepare_gpu(const MKEngine *engine, const char *cache_dir);
  *   "unavailable" {reason}; "failed" {device, message} (kernels then
  *   compile on first use). */
 MKStatus mk_engine_gpu_preparation_json(const MKEngine *engine, char **out_json);
+
+/* ---- Glass catalog management (ABI 1.5) --------------------------------- */
+
+/* The session's material library is the built-in catalog, the front end's
+ * app-wide library catalogs, then the project's catalogs (a later catalog
+ * replaces an earlier one of the same name), with the user's availability
+ * overrides applied. mk_session_list_catalogs marks each catalog "library"
+ * and/or "in_project"; mk_session_list_glasses rows carry pgf, dpgf,
+ * status, exclude_substitution, overridden, density, relative_cost, tce,
+ * climate/stain resistance, transmission range and lambda80_um. */
+
+/* Remove a catalog from the project. out_json (nullable) receives the
+ * removed reference {"name", "path", "relative_path", "format"}. */
+MKStatus mk_session_remove_catalog(MKSession *session, const char *name, char **out_json);
+
+/* Put back a removed catalog with its data (no file is read). out_json
+ * (nullable) receives the catalog summary. */
+MKStatus mk_session_restore_catalog(MKSession *session, const char *name, char **out_json);
+
+/* Read a project or library catalog again from its file. out_json
+ * (nullable) receives {"catalog", "added", "removed", "changed": [{"name",
+ * "nd_before", "nd_after", "vd_before", "vd_after", "fields"}],
+ * "unchanged"}. */
+MKStatus mk_session_reload_catalog(MKSession *session, const char *name, char **out_json);
+
+/* Add (or replace, by name) a library catalog from a file. Library catalogs
+ * are not recorded in the project until the design uses them. */
+MKStatus mk_session_add_library_catalog(MKSession *session, const char *path,
+                                        char **out_json);
+
+/* Remove a library catalog (MK_ERR_NOT_FOUND when there is none). */
+MKStatus mk_session_remove_library_catalog(MKSession *session, const char *name);
+
+/* Make the library catalogs exactly the files of paths_json (a JSON array
+ * of paths), in order. Unchanged files are not read again. out_json
+ * (nullable) receives {"catalogs": [summary], "errors": [{"path",
+ * "message"}], "changed"}. */
+MKStatus mk_session_set_library_catalogs(MKSession *session, const char *paths_json,
+                                         char **out_json);
+
+/* Set the availability overrides: a JSON array of {"catalog", "name",
+ * "status"?, "exclude_substitution"?}. Not a design change. */
+MKStatus mk_session_set_glass_overrides(MKSession *session, const char *overrides_json);
+
+/* Everything about one glass of catalog (NULL: the first that has it). */
+MKStatus mk_session_glass_details(const MKSession *session, const char *catalog,
+                                  const char *name, char **out_json);
+
+/* The library catalogs the design uses that the project does not record
+ * yet (JSON array of references). Saving records them. */
+MKStatus mk_session_library_catalogs_in_use(const MKSession *session, char **out_json);
+
+/* A catalog glass from an editor's specification (GlassSpec JSON); out_json
+ * receives the glass in catalog JSON form with n_d and V_d computed. */
+MKStatus mk_glass_from_spec(const char *spec_json, char **out_json);
+
+/* A GlassCatalog JSON as AGF text: out_json receives {"text", "warnings"}. */
+MKStatus mk_catalog_to_agf(const char *catalog_json, char **out_json);
 
 #ifdef __cplusplus
 } /* extern "C" */

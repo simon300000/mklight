@@ -4,6 +4,7 @@
 
 mod abi_1_1;
 mod abi_1_3;
+mod abi_1_5;
 mod c_smoke;
 mod callback_reentrancy;
 mod errors_and_keys;

@@ -31,7 +31,8 @@ use serde_json::Value;
 use wasm_bindgen::prelude::*;
 
 use mklight_core::import::{PrescriptionFormat, import_prescription};
-use mklight_core::materials::MaterialLibrary;
+use mklight_core::materials::manage::{self, GlassSpec};
+use mklight_core::materials::{GlassCatalog, MaterialLibrary};
 use mklight_core::{JobContext, MkError, OpticalSystem, platform};
 use mklight_engine::buffer::BufferData;
 use mklight_engine::project::Project;
@@ -382,6 +383,101 @@ pub fn session_load_catalog(id: u32, file_name: &str, bytes: &[u8]) -> Result<St
         .load_catalog_bytes(file_name, bytes)
         .map_err(EngineErrorJs::from)?;
     Ok(to_json(&summary)?)
+}
+
+/// `mk_session_remove_catalog`: returns the removed catalog reference.
+#[wasm_bindgen]
+pub fn session_remove_catalog(id: u32, name: &str) -> Result<String, JsValue> {
+    let s = session(id)?;
+    let r = lock(&s).remove_catalog(name).map_err(EngineErrorJs::from)?;
+    Ok(to_json(&r)?)
+}
+
+/// `mk_session_restore_catalog`.
+#[wasm_bindgen]
+pub fn session_restore_catalog(id: u32, name: &str) -> Result<String, JsValue> {
+    let s = session(id)?;
+    let r = lock(&s)
+        .restore_catalog(name)
+        .map_err(EngineErrorJs::from)?;
+    Ok(to_json(&r)?)
+}
+
+/// `mk_session_reload_catalog` with the file's new contents: returns what
+/// changed.
+#[wasm_bindgen]
+pub fn session_reload_catalog(id: u32, name: &str, bytes: &[u8]) -> Result<String, JsValue> {
+    let s = session(id)?;
+    let r = lock(&s)
+        .reload_catalog_bytes(name, bytes)
+        .map_err(EngineErrorJs::from)?;
+    Ok(to_json(&r)?)
+}
+
+/// `mk_session_add_library_catalog` from the contents of a file named
+/// `file_name`.
+#[wasm_bindgen]
+pub fn session_add_library_catalog(
+    id: u32,
+    file_name: &str,
+    bytes: &[u8],
+) -> Result<String, JsValue> {
+    let s = session(id)?;
+    let r = lock(&s)
+        .add_library_catalog_bytes(file_name, bytes)
+        .map_err(EngineErrorJs::from)?;
+    Ok(to_json(&r)?)
+}
+
+/// `mk_session_remove_library_catalog`: whether there was one.
+#[wasm_bindgen]
+pub fn session_remove_library_catalog(id: u32, name: &str) -> Result<bool, JsValue> {
+    Ok(lock(&*session(id)?).remove_library_catalog(name))
+}
+
+/// `mk_session_set_glass_overrides`.
+#[wasm_bindgen]
+pub fn session_set_glass_overrides(id: u32, overrides_json: &str) -> Result<(), JsValue> {
+    let v = optional(overrides_json, "overrides_json")?;
+    let o = serde_json::from_value(v).map_err(|e| arg(format!("overrides_json: {e}")))?;
+    lock(&*session(id)?).set_glass_overrides(o);
+    Ok(())
+}
+
+/// `mk_session_glass_details`; empty `catalog` means the first catalog that
+/// has the glass.
+#[wasm_bindgen]
+pub fn session_glass_details(id: u32, catalog: &str, name: &str) -> Result<String, JsValue> {
+    let s = session(id)?;
+    let d = lock(&s)
+        .glass_details((!catalog.is_empty()).then_some(catalog), name)
+        .map_err(EngineErrorJs::from)?;
+    Ok(to_json(&d)?)
+}
+
+/// `mk_session_library_catalogs_in_use`.
+#[wasm_bindgen]
+pub fn session_library_catalogs_in_use(id: u32) -> Result<String, JsValue> {
+    Ok(to_json(&lock(&*session(id)?).library_catalogs_in_use())?)
+}
+
+/// `mk_glass_from_spec`.
+#[wasm_bindgen]
+pub fn glass_from_spec(spec_json: &str) -> Result<String, JsValue> {
+    let spec: GlassSpec = object(spec_json, "spec_json")?;
+    let g =
+        manage::glass_from_spec(&spec).map_err(|e| EngineErrorJs::from(EngineError::from(e)))?;
+    Ok(to_json(&g)?)
+}
+
+/// `mk_catalog_to_agf`: `{"text", "warnings"}`.
+#[wasm_bindgen]
+pub fn catalog_to_agf(catalog_json: &str) -> Result<String, JsValue> {
+    let cat: GlassCatalog = object(catalog_json, "catalog_json")?;
+    let (text, warnings) = manage::catalog_to_agf(&cat);
+    Ok(to_json(
+        &serde_json::json!({"text": text, "warnings": warnings}),
+    )?)
 }
 
 /// `mk_session_apply_solves`: returns `{"report", "hash"}`. Runs in the

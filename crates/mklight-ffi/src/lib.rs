@@ -27,7 +27,8 @@ use std::time::Duration;
 use serde_json::Value;
 
 use mklight_core::import::{PrescriptionFormat, import_prescription};
-use mklight_core::materials::MaterialLibrary;
+use mklight_core::materials::manage::{GlassSpec, catalog_to_agf, glass_from_spec};
+use mklight_core::materials::{GlassCatalog, MaterialLibrary};
 use mklight_core::param::ParamPath;
 use mklight_core::{JobContext, MkError, OpticalSystem};
 use mklight_engine::ErrorKind;
@@ -42,7 +43,7 @@ use mklight_engine::{
 // Versioning and status codes (mirrored in include/mklight.h)
 
 pub const MK_ABI_VERSION_MAJOR: u32 = 1;
-pub const MK_ABI_VERSION_MINOR: u32 = 4;
+pub const MK_ABI_VERSION_MINOR: u32 = 5;
 /// `(major << 16) | minor`. Major changes break compatibility; minor
 /// versions only add functions or JSON fields.
 pub const MK_ABI_VERSION: u32 = (MK_ABI_VERSION_MAJOR << 16) | MK_ABI_VERSION_MINOR;
@@ -1227,6 +1228,214 @@ pub unsafe extern "C" fn mk_session_import_prescription(
         v["snapshot_hash"] = Value::from(g.snapshot_hash().to_hex());
         drop(g);
         unsafe { put_json(out_json, &v) }
+    })
+}
+
+// ---------------------------------------------------------------------------
+// ABI 1.5: glass catalog management
+
+/// Remove a catalog from the project. `*out_json` (nullable) receives the
+/// removed catalog reference `{"name", "path", "relative_path", "format"}`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mk_session_remove_catalog(
+    session: *mut MKSession,
+    name: *const c_char,
+    out_json: *mut *mut c_char,
+) -> MKStatus {
+    unsafe { clear_out(out_json) };
+    guard(|| {
+        let s = unsafe { session_ref(session) }?;
+        let name = unsafe { in_str(name, "name") }?;
+        let r = s.lock().remove_catalog(name)?;
+        unsafe { put_json(out_json, &r) }
+    })
+}
+
+/// Put back a catalog `mk_session_remove_catalog` removed, with its data.
+/// `*out_json` (nullable) receives the catalog summary.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mk_session_restore_catalog(
+    session: *mut MKSession,
+    name: *const c_char,
+    out_json: *mut *mut c_char,
+) -> MKStatus {
+    unsafe { clear_out(out_json) };
+    guard(|| {
+        let s = unsafe { session_ref(session) }?;
+        let name = unsafe { in_str(name, "name") }?;
+        let r = s.lock().restore_catalog(name)?;
+        unsafe { put_json(out_json, &r) }
+    })
+}
+
+/// Read a catalog again from its file. `*out_json` (nullable) receives what
+/// changed: `{"catalog", "added", "removed", "changed": [{"name",
+/// "nd_before", "nd_after", "vd_before", "vd_after", "fields"}], "unchanged"}`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mk_session_reload_catalog(
+    session: *mut MKSession,
+    name: *const c_char,
+    out_json: *mut *mut c_char,
+) -> MKStatus {
+    unsafe { clear_out(out_json) };
+    guard(|| {
+        let s = unsafe { session_ref(session) }?;
+        let name = unsafe { in_str(name, "name") }?;
+        let r = s.lock().reload_catalog(name)?;
+        unsafe { put_json(out_json, &r) }
+    })
+}
+
+/// Add (or replace, by name) a catalog of the app-wide library from a file.
+/// Library catalogs are not recorded in the project until the design uses
+/// them. `*out_json` (nullable) receives the catalog summary.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mk_session_add_library_catalog(
+    session: *mut MKSession,
+    path: *const c_char,
+    out_json: *mut *mut c_char,
+) -> MKStatus {
+    unsafe { clear_out(out_json) };
+    guard(|| {
+        let s = unsafe { session_ref(session) }?;
+        let path = unsafe { in_str(path, "path") }?;
+        let r = s.lock().add_library_catalog_file(Path::new(path))?;
+        unsafe { put_json(out_json, &r) }
+    })
+}
+
+/// Remove a library catalog from the session (`MK_ERR_NOT_FOUND` when there
+/// is none of that name).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mk_session_remove_library_catalog(
+    session: *mut MKSession,
+    name: *const c_char,
+) -> MKStatus {
+    guard(|| {
+        let s = unsafe { session_ref(session) }?;
+        let name = unsafe { in_str(name, "name") }?;
+        if s.lock().remove_library_catalog(name) {
+            Ok(())
+        } else {
+            Err(FfiError::new(
+                MK_ERR_NOT_FOUND,
+                format!("no library catalog named '{name}'"),
+            ))
+        }
+    })
+}
+
+/// Make the library catalogs exactly the files of `paths_json` (a JSON
+/// array of paths), in order; unchanged files are not read again.
+/// `*out_json` (nullable) receives `{"catalogs": [summary], "errors":
+/// [{"path", "message"}], "changed"}`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mk_session_set_library_catalogs(
+    session: *mut MKSession,
+    paths_json: *const c_char,
+    out_json: *mut *mut c_char,
+) -> MKStatus {
+    unsafe { clear_out(out_json) };
+    guard(|| {
+        let s = unsafe { session_ref(session) }?;
+        let v = serde_json::from_str(unsafe { in_str(paths_json, "paths_json") }?)
+            .map_err(|e| not_json("paths_json", e))?;
+        let paths: Vec<std::path::PathBuf> = typed(v, "paths_json")?;
+        let r = s.lock().set_library_catalog_files(&paths);
+        unsafe { put_json(out_json, &r) }
+    })
+}
+
+/// Set the user's availability overrides: a JSON array of `{"catalog",
+/// "name", "status"?, "exclude_substitution"?}`. Not a design change.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mk_session_set_glass_overrides(
+    session: *mut MKSession,
+    overrides_json: *const c_char,
+) -> MKStatus {
+    guard(|| {
+        let s = unsafe { session_ref(session) }?;
+        let v = serde_json::from_str(unsafe { in_str(overrides_json, "overrides_json") }?)
+            .map_err(|e| not_json("overrides_json", e))?;
+        let o = typed(v, "overrides_json")?;
+        s.lock().set_glass_overrides(o);
+        Ok(())
+    })
+}
+
+/// Everything about one glass of `catalog` (NULL: the first catalog that has
+/// it): the table row, formula and coefficients, AGF data, line indices,
+/// an index curve and the glass itself (docs/FFI.md).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mk_session_glass_details(
+    session: *const MKSession,
+    catalog: *const c_char,
+    name: *const c_char,
+    out_json: *mut *mut c_char,
+) -> MKStatus {
+    unsafe { clear_out(out_json) };
+    guard(|| {
+        let s = unsafe { session_ref(session) }?;
+        let catalog = unsafe { in_opt_str(catalog, "catalog") }?;
+        let name = unsafe { in_str(name, "name") }?;
+        unsafe { out_ptr(out_json, "out_json") }?;
+        let d = s.lock().glass_details(catalog, name)?;
+        unsafe { put_json(out_json, &d) }
+    })
+}
+
+/// The library catalogs the design uses that the project does not record
+/// yet (a JSON array of catalog references); saving records them.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mk_session_library_catalogs_in_use(
+    session: *const MKSession,
+    out_json: *mut *mut c_char,
+) -> MKStatus {
+    unsafe { clear_out(out_json) };
+    guard(|| {
+        let s = unsafe { session_ref(session) }?;
+        unsafe { out_ptr(out_json, "out_json") }?;
+        let r = s.lock().library_catalogs_in_use();
+        unsafe { put_json(out_json, &r) }
+    })
+}
+
+/// A catalog glass from an editor's specification (`GlassSpec`: name, a
+/// model `{nd, vd, dpgf}` or a formula number and coefficients, range,
+/// density, tce, relative cost, status, comment, base glass). `*out_json`
+/// receives the glass in the catalog JSON form, n_d and V_d computed.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mk_glass_from_spec(
+    spec_json: *const c_char,
+    out_json: *mut *mut c_char,
+) -> MKStatus {
+    unsafe { clear_out(out_json) };
+    guard(|| {
+        let spec: GlassSpec = unsafe { in_object(spec_json, "spec_json") }?;
+        unsafe { out_ptr(out_json, "out_json") }?;
+        let g = glass_from_spec(&spec).map_err(EngineError::from)?;
+        unsafe { put_json(out_json, &g) }
+    })
+}
+
+/// A catalog in the `GlassCatalog` JSON form as AGF text. `*out_json`
+/// receives `{"text", "warnings": [{"glass", "kind", "message"}]}`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mk_catalog_to_agf(
+    catalog_json: *const c_char,
+    out_json: *mut *mut c_char,
+) -> MKStatus {
+    unsafe { clear_out(out_json) };
+    guard(|| {
+        let cat: GlassCatalog = unsafe { in_object(catalog_json, "catalog_json") }?;
+        unsafe { out_ptr(out_json, "out_json") }?;
+        let (text, warnings) = catalog_to_agf(&cat);
+        unsafe {
+            put_json(
+                out_json,
+                &serde_json::json!({"text": text, "warnings": warnings}),
+            )
+        }
     })
 }
 
