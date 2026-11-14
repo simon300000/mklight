@@ -4,8 +4,8 @@
 // and the FFI JSON shapes (docs/FFI.md, docs/RESULTS.md). JSON that crosses the
 // boundary keeps the engine's snake_case keys; the UI never computes optics.
 //
-// The real module (apps/web/engine, `@engine`) exports `createEngine()`; the mock
-// in src/engine-mock implements the same interface with synthetic data.
+// The engine module (apps/web/engine, `@engine`) exports `createEngine()`; ./adapt.ts
+// maps it to this interface. Tests use the recorded replay engine in src/test-engine.
 
 export type Json = null | boolean | number | string | Json[] | { [key: string]: Json }
 export type JsonObject = { [key: string]: Json }
@@ -24,8 +24,6 @@ export interface EngineInfo {
   isolated: boolean
   /** WebGPU adapter available. */
   webgpu: boolean
-  /** True for engines that return synthetic data; the UI labels them. */
-  isMock?: boolean
 }
 
 export interface ModelSnapshot {

@@ -5,9 +5,11 @@ type Hooks = { mklight: { radius(i: number): number; document: { getState(): { p
 const systemJson = (page: import('@playwright/test').Page) =>
   page.evaluate(() => JSON.stringify((window as unknown as Hooks).mklight.document.getState().project.system))
 
-test('optimize against the mock engine, apply, undo', async ({ page }) => {
-  await page.goto('./?engine=mock&sample=double_gauss')
-  await expect(page.getByTestId('status-capsule')).toContainText('EFL')
+// The Cooke triplet: the optimisation finishes in a few seconds. (Stopping it
+// early could leave nothing to apply; Stop is covered by the engine's own tests.)
+test('optimize on the engine, apply, undo', async ({ page }) => {
+  await page.goto('./?sample=cooke_triplet')
+  await expect(page.getByTestId('status-capsule')).toContainText('EFL', { timeout: 60_000 })
   const before = await systemJson(page)
 
   await page.getByRole('tab', { name: 'Optimize' }).click()
@@ -19,7 +21,7 @@ test('optimize against the mock engine, apply, undo', async ({ page }) => {
   await expect(page.getByTestId('job-progress').or(panel.getByRole('button', { name: 'Apply to Design' }))).toBeVisible()
 
   const apply = panel.getByRole('button', { name: 'Apply to Design' })
-  await expect(apply).toBeVisible({ timeout: 20_000 })
+  await expect(apply).toBeVisible({ timeout: 90_000 })
   await apply.click()
   await expect(panel.getByTestId('applied-notice')).toBeVisible()
   await expect.poll(() => systemJson(page)).not.toBe(before)

@@ -3,7 +3,11 @@ import { expect, test, type Page } from '@playwright/test'
 const mod = process.platform === 'darwin' ? 'Meta' : 'Control'
 
 async function openSample(page: Page) {
-  await page.goto('./?engine=mock&fresh')
+  await page.goto('./?fresh')
+  // The real engine takes a moment to start; the app opens its first document
+  // only then, so wait for it before touching the menus.
+  await page.waitForFunction(() => (window as unknown as { mklight?: { workspace: { getState(): { engine: unknown } } } }).mklight?.workspace.getState().engine != null, null, { timeout: 60_000 })
+  await expect(page.getByTestId('status-capsule')).not.toContainText('Starting engine')
   await page.getByRole('button', { name: 'Menu' }).click()
   await page.getByRole('menuitem', { name: 'Samples…' }).click()
   await page.getByTestId('sample-double_gauss').click()

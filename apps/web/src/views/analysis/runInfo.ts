@@ -56,12 +56,10 @@ function remedyKind(s: string): RemedyKind | null {
   return null
 }
 
-/** Groups warnings by message (numbers masked), in first-seen order. Mock
- *  engine notices are left out. */
+/** Groups warnings by message (numbers masked), in first-seen order. */
 export function groupWarnings(warnings: readonly string[]): WarningGroup[] {
   const groups = new Map<string, WarningGroup>()
   for (const w of warnings) {
-    if (/^MOCK ENGINE/.test(w)) continue
     const [scope, message] = splitWarning(w)
     const key = maskNumbers(message)
     const g = groups.get(key)
@@ -147,11 +145,11 @@ export function attempts(list: Json | undefined): Attempt[] {
   })
 }
 
-/** "CPU reference · f64", "Metal (Apple M2 Pro) · f32", "Mock". */
+/** "CPU reference · f64", "Metal (Apple M2 Pro) · f32". */
 export function backendSummary(r: AnalysisResult): string {
   const be = obj(r.envelope?.backend)
   const used = String(be?.used ?? r.runInfo.backend ?? '')
-  const name = used === 'cpu_reference' ? 'CPU reference' : used.startsWith('gpu:') ? used.charAt(4).toUpperCase() + used.slice(5) : used === 'mock' ? 'Mock' : used
+  const name = used === 'cpu_reference' ? 'CPU reference' : used.startsWith('gpu:') ? used.charAt(4).toUpperCase() + used.slice(5) : used
   const dev = typeof be?.device === 'string' && be.device ? ` (${be.device})` : ''
   const p = String(be?.precision ?? r.runInfo.precision ?? '')
   const prec = p === 'f64_reference' ? 'f64' : p === 'f32_gpu' ? 'f32' : p
@@ -162,7 +160,7 @@ export interface RunFacts {
   rows: [string, string][]
   attempts: Attempt[]
   groups: WarningGroup[]
-  /** Raw engine messages (mock notices left out). */
+  /** Raw engine messages. */
   raw: string[]
   fallback: string | null
 }
@@ -186,7 +184,7 @@ export function runFacts(r: AnalysisResult): RunFacts {
     ['Engine', String(ri.engine_version ?? '')],
     ['Time', ri.duration_ms != null ? `${Number(ri.duration_ms).toFixed(1)} ms` : ''],
   ]
-  const raw = (ri.warnings ?? []).filter((w) => !/^MOCK ENGINE/.test(w))
+  const raw = ri.warnings ?? []
   return { rows: rows.filter(([, v]) => v), attempts: attempts(ri.failed_attempts), groups: groupWarnings(raw), raw, fallback }
 }
 

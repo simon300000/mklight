@@ -16,7 +16,7 @@ vi.hoisted(() => {
   })) as unknown as typeof window.matchMedia
 })
 import samples from '@samples'
-import { createMockEngine } from '@/engine-mock'
+import { createReplayEngine } from '@/test-engine/replay'
 import type { AnalysisResult, JsonObject } from '@/engine/types'
 import type { System } from '@/model/system'
 import { RENDERERS, ResultView, keyNumbers } from './index'
@@ -24,9 +24,9 @@ import { FIXTURES as CURVE_FIXTURES, system as curveSystem } from '../analysis/c
 import { FIXTURES as MAP_FIXTURES, system as mapSystem } from '../analysis/maps/fixtures'
 
 /** One fixture per dedicated renderer, with the system it was made for. */
-// The glass views (src/views/glassmap) from the mock engine's results.
+// The glass views (src/views/glassmap) from the recorded results.
 const glassSystem = (samples as { id: string; system: System }[]).find((x) => x.id === 'double_gauss')!.system
-const glassEngine = createMockEngine({ latencyMs: 0 })
+const glassEngine = createReplayEngine({ latencyMs: 0 })
 const glassSnap = await glassEngine.openSnapshot(glassSystem)
 const GLASS_FIXTURES: [string, AnalysisResult, System][] = [
   ['glass_map', await glassEngine.submit({ analysis: 'glass_map' }, glassSnap).result, glassSystem],
@@ -43,7 +43,7 @@ const RENDERER_FIXTURES: [string, AnalysisResult, System][] = [
 
 type Sample = { id: string; system: JsonObject }
 const system = (samples as unknown as Sample[]).find((s) => s.id === 'double_gauss')!.system
-const eng = createMockEngine({ latencyMs: 0 })
+const eng = createReplayEngine({ latencyMs: 0 })
 
 const ANALYSES = ['spot_diagram', 'ray_fan', 'opd_fan', 'mtf', 'psf', 'field_curvature_distortion', 'wavefront_map', 'first_order']
 const EXTRA = ['system_summary', 'validate', 'seidel']
@@ -90,9 +90,16 @@ afterAll(() => {
   HTMLElement.prototype.getBoundingClientRect = saved.rect
 })
 
+/** The settings each analysis was recorded with (src/test-engine/record.mjs). */
+const RECORDED: Record<string, JsonObject> = {
+  spot_diagram: { through_focus: { min: null, max: null, steps: 3 } },
+  psf: { grid_size: 32, wavelengths: { type: 'primary' } },
+  wavefront_map: { pupil: { grid: 32 }, fields: { type: 'all' } },
+}
+
 async function run(analysis: string, settings?: JsonObject): Promise<AnalysisResult> {
   const snap = await eng.openSnapshot(system)
-  return eng.submit({ analysis, settings }, snap).result
+  return eng.submit({ analysis, settings: settings ?? RECORDED[analysis] }, snap).result
 }
 
 async function render(analysis: string, result: AnalysisResult, sys: System = system as System): Promise<HTMLElement> {
@@ -124,7 +131,7 @@ describe.each(['null', 'fake'] as const)('result views (canvas %s)', (m) => {
   })
 
   it('spot diagram through focus has one column per plane', async () => {
-    const r = await run('spot_diagram', { through_focus: { steps: 3 } })
+    const r = await run('spot_diagram')
     const el = await render('spot_diagram', r)
     expect(el.textContent).toMatch(/Δ/)
     expect(el.textContent).toMatch(/Box/)
@@ -147,13 +154,13 @@ describe.each(['null', 'fake'] as const)('result views (canvas %s)', (m) => {
 
   it('unknown results render as data', async () => {
     const r: AnalysisResult = {
-      json: { note: 'mock', analysis: 'whatever', nested: { a: [1, 2, 'inf'], rows: [{ x: 1 }, { x: 2, y: null }] } },
+      json: { note: 'data', analysis: 'whatever', nested: { a: [1, 2, 'inf'], rows: [{ x: 1 }, { x: 2, y: null }] } },
       buffers: { b: new Float64Array(4) },
       shapes: { b: [2, 2] },
       runInfo: { snapshot_hash: '', analysis: 'whatever', settings: {}, backend: 'cpu_reference', warnings: [] },
     }
     const el = await render('whatever', r)
-    expect(el.textContent).toMatch(/mock/)
+    expect(el.textContent).toMatch(/data/)
     expect(el.textContent).toMatch(/2 × 2/)
   })
 })

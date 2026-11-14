@@ -8,13 +8,14 @@ import { crossOriginIsolation } from './engine/vite-isolation'
 
 const here = (p: string) => fileURLToPath(new URL(p, import.meta.url))
 
-// The real engine module lives in ./engine; its wasm package (engine/pkg) is
-// built by scripts/build-wasm.sh. Without the package `@engine` points at a
-// stub that reports it as missing, and the app runs on the mock engine
-// (src/engine-mock). VITE_ENGINE=mock also leaves the wasm out of the build.
+// The engine module lives in ./engine; its wasm package (engine/pkg) is built by
+// `npm run build:wasm` (scripts/build-wasm.sh, pinned nightly). Without the
+// package `@engine` points at a stub and the app starts in an "engine not
+// built" error state; the build still succeeds, so `npm run build` does not
+// need the nightly toolchain.
 const realEngine = here('./engine/src/index.ts')
 const hasWasm = existsSync(here('./engine/pkg/mklight_wasm.js'))
-const engineEntry = hasWasm && process.env.VITE_ENGINE !== 'mock' ? realEngine : here('./src/engine/missing.ts')
+const engineEntry = hasWasm ? realEngine : here('./src/engine/missing.ts')
 
 // The isolation service worker (engine/coi-serviceworker.js): served at the
 // app's base path in development and emitted next to index.html in the build,

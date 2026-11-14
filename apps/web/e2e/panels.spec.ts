@@ -3,7 +3,7 @@ import { expect, test, type Page } from '@playwright/test'
 const mod = process.platform === 'darwin' ? 'Meta' : 'Control'
 
 async function openSample(page: Page) {
-  await page.goto('./?engine=mock&sample=double_gauss')
+  await page.goto('./?sample=double_gauss')
   await expect(page.getByTestId('status-capsule')).toContainText('EFL')
   await expect(page.getByTestId('pane-spot_diagram')).toBeVisible()
 }
@@ -136,7 +136,7 @@ test('panels: blocked pop-ups dock the separate windows; Open Window restores th
     window.open = ((...a: Parameters<typeof window.open>) =>
       (window as unknown as { __allowPopups: boolean }).__allowPopups ? open(...a) : null) as typeof window.open
   })
-  await page.goto('./?engine=mock')
+  await page.goto('./')
   await expect(page.getByTestId('layout')).toBeVisible()
   const toast = page.getByText(/blocked a separate window/)
   await expect(toast).toBeVisible()

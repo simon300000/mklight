@@ -1,7 +1,7 @@
 // Adapts the WASM engine module (`@engine`, apps/web/engine/src/types.ts) to the
 // contract the UI codes against (./types.ts). The two agree on the JSON (the
 // engine's snake_case keys) and on the calls; they differ only in a few
-// TS-side wrappers, mapped here so the UI and the mock stay as they are:
+// TS-side wrappers, mapped here so the UI keeps its own contract:
 //
 // * progress: `{fraction, stage}` → `{progress, stage, detail}`, with `detail`
 //   parsed from the engine's stage text as the macOS app does
@@ -143,7 +143,6 @@ export function adaptEngine(real: RealEngine): EngineClient {
     info: {
       ...real.info,
       backends: real.info.backends,
-      isMock: false,
     },
     openSnapshot: (system) => call('openSnapshot', system),
     analysisDescriptors: () => call('analysisDescriptors'),
