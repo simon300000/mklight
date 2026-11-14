@@ -33,7 +33,7 @@ further linker flags are needed.
 ## Versioning
 
 * `mk_abi_version()` returns `(major << 16) | minor`; the header has
-  `MK_ABI_VERSION_MAJOR/MINOR` (currently 1.4). A front end must check that
+  `MK_ABI_VERSION_MAJOR/MINOR` (currently 1.5). A front end must check that
   the runtime major equals the compiled major. Minor releases only **add**
   functions and JSON fields, so JSON readers must ignore unknown keys.
   1.1 added `mk_engine_analysis_info`, `mk_engine_set_default_backend`,
@@ -48,6 +48,14 @@ further linker flags are needed.
   (lens prescription files, *Lens prescription import* below).
 * 1.4 adds `mk_engine_prepare_gpu` and `mk_engine_gpu_preparation_json`
   (*GPU kernel preparation* below).
+* 1.5 adds glass catalog management (*Glass catalogs* below):
+  `mk_session_remove_catalog`, `mk_session_restore_catalog`,
+  `mk_session_reload_catalog`, `mk_session_add_library_catalog`,
+  `mk_session_remove_library_catalog`, `mk_session_set_library_catalogs`,
+  `mk_session_set_glass_overrides`, `mk_session_glass_details`,
+  `mk_session_library_catalogs_in_use`, `mk_glass_from_spec`,
+  `mk_catalog_to_agf`, and the catalog fields `library`, `in_project` and
+  the glass-row fields of `mk_session_list_glasses`.
 * Each analysis' result shape has its own `result_version`
   (`docs/RESULTS.md` §2).
 * `mk_engine_version()` is the engine (crate) version recorded in every
@@ -392,7 +400,8 @@ sits beside `run_info` until `RunInfo` in mklight-core carries it.)
 { "session_id": 1, "path": "/…/lens.mklight", "dirty": false,
   "snapshot_hash": "<64 hex>", "library_hash": "<64 hex>", "name": "Untitled",
   "open_warnings": ["glass catalog 'MYCAT' could not be loaded (…)"],
-  "catalogs": [ {"name": "BUILTIN", "source": "builtin", "path": null, "glass_count": 13} ] }
+  "catalogs": [ {"name": "BUILTIN", "source": "builtin", "path": null, "glass_count": 13,
+                  "library": false, "in_project": false} ] }
 ```
 
 ### Optical system and parameter edits
@@ -474,20 +483,97 @@ the engine) or `metadata`.
 
 ### Glass catalogs
 
+A session's material library is composed, in this order, of the built-in
+catalog, the front end's **library catalogs** (app-wide, not recorded in the
+project) and the **project's catalogs**; a later catalog replaces an earlier
+one of the same name (case-insensitive), so a project's copy wins. The
+user's **availability overrides** are then applied to the glasses'
+substitution data, which the glass map and glass substitution read.
+
 * `mk_session_load_catalog(session, path, &json)` reads an AGF-format text
   file, or a `GlassCatalog` JSON file when the extension is `.json`, adds it
   to the session's material library (replacing a catalog of the same name)
   and records it in the project. AGF catalogs are named after the file stem.
-  The name `BUILTIN` is reserved. Result:
-  `{"name", "source": "user", "path", "glass_count"}`.
-* `mk_session_list_catalogs` → array of the same objects (built-in first).
-* `mk_session_list_glasses(session, catalog|NULL)` →
-  `[{"catalog", "name", "nd", "vd", "min_um", "max_um"}]`.
+  The name `BUILTIN` is reserved. Result (a *catalog summary*):
+  `{"name", "source": "builtin"|"user", "path", "glass_count", "library",
+  "in_project"}`.
+* `mk_session_list_catalogs` → array of summaries (library order, built-in
+  first).
+* `mk_session_list_glasses(session, catalog|NULL)` → glass rows:
+  `{"catalog", "name", "nd", "vd", "pgf", "dpgf", "min_um", "max_um",
+  "status", "exclude_substitution", "overridden", "density",
+  "relative_cost", "tce", "climate_resistance", "stain_resistance",
+  "transmission_min_um", "transmission_max_um", "lambda80_um"}`. `nd`, `vd`
+  are the catalog's values; `pgf`, `dpgf` are computed from the dispersion
+  formula (null when g…C lies outside the range); `status` and
+  `exclude_substitution` are in effect (after overrides), `overridden` says
+  an override changed them; `tce` is 10⁻⁶/K (−30…+70 °C); `lambda80_um` is
+  the shortest wavelength where 10 mm transmit 80 % internally (`IT` data).
+  Optional values are null when the catalog has none. `status` is
+  `"standard"`, `"preferred"`, `"obsolete"`, `"special"`, `"melt"` or
+  `{"other": code}`.
+* `mk_session_glass_details(session, catalog|NULL, name, &json)` → the row
+  plus `catalog_status`, `catalog_exclude_substitution` (before overrides),
+  `formula`, `formula_name`, `coefficients` (the AGF `CD` values, or a model
+  glass's Cauchy A, B, C), `computed_nd`, `computed_vd`, `model` (`{nd, vd,
+  dpgf}` for a model glass), `catalog_dpgf`, `tce_100_300`, `mil_code`,
+  `melt_frequency`, `acid_resistance`, `alkali_resistance`,
+  `phosphate_resistance`, `thermal`, `transmittance`, `comment`, `lines`
+  (`[{line, um, n}]` at the standard lines in range), `index_curve` (81
+  `[λ µm, n]` pairs over the range, clipped to 0.25–2.5 µm) and `glass` (the
+  glass in catalog JSON form, before overrides). Unknown glass:
+  `MK_ERR_NOT_FOUND`.
+* `mk_session_remove_catalog(session, name, &json)` removes a catalog from
+  the project (its reference, and its glasses unless a library catalog has
+  that name); `json` is the removed reference. `mk_session_restore_catalog`
+  puts it back with the data it had. A catalog the project does not hold:
+  `MK_ERR_NOT_FOUND`.
+* `mk_session_reload_catalog(session, name, &json)` reads a project or
+  library catalog again from its file and returns what changed:
+  `{"catalog", "added": [names], "removed": [names], "changed": [{"name",
+  "nd_before", "nd_after", "vd_before", "vd_after", "fields"}],
+  "unchanged"}`, where `fields` names what differs (`nd`, `vd`,
+  `dispersion`, `range`, `thermal`, `transmittance`, `availability`,
+  `cost`, `density`, `expansion`, `comment`, `other`). Reloading a project
+  catalog also re-reads a library catalog of the same name.
+* `mk_session_set_library_catalogs(session, paths_json, &json)` makes the
+  library catalogs exactly the files of a JSON array of paths, in order;
+  a file unchanged on disk (modification time and size) is not read again.
+  Result: `{"catalogs": [summaries], "errors": [{"path", "message"}],
+  "changed"}`; unreadable files and a second catalog of a loaded name are
+  errors and are left out. `mk_session_add_library_catalog(session, path,
+  &json)` adds one; `mk_session_remove_library_catalog(session, name)`
+  removes one.
+* `mk_session_set_glass_overrides(session, json)`: a JSON array of
+  `{"catalog", "name", "status"?, "exclude_substitution"?}` (an absent
+  field keeps the catalog's value). Not a design change: the session stays
+  clean, the library hash changes.
+* `mk_session_library_catalogs_in_use(session, &json)` → references (as in
+  the project's `catalogs`) of the library catalogs the current system's
+  catalog materials resolve to and that the project does not record.
+  `mk_session_save` (and the web build's save) adds them to the project, so
+  a saved project lists every catalog it uses.
+* `mk_glass_from_spec(spec_json, &json)` (no session) makes a catalog glass
+  from an editor's `GlassSpec`: `{"name", "model": {nd, vd, dpgf}` *or*
+  `"formula": 1…13, "coefficients": […]`, `"min_um"?, "max_um"?,
+  "density"?, "tce"?, "relative_cost"?, "status"?,
+  "exclude_substitution"?, "comment"?, "base"?}`. `base` is a glass (catalog
+  JSON) whose other data (thermal, transmittance, AGF records) are kept.
+  n_d and V_d are computed from the dispersion (0 when the d line is outside
+  the range). A name with whitespace, a formula outside 1–13, or a model
+  with n_d ≤ 1 are `MK_ERR_INVALID_ARGUMENT` / `MK_ERR_INVALID_MODEL`.
+* `mk_catalog_to_agf(catalog_json, &json)` (no session) writes a
+  `GlassCatalog` JSON as AGF text: `{"text", "warnings"}` (glasses AGF
+  cannot express, renamed names).
+
+Glasses read from an AGF file keep their AGF data (`Glass.agf`: formula
+number, MIL code, the `ED` and `OD` values, unknown records), so a catalog
+saved as JSON and exported again loses nothing.
 
 Vendor catalogs are never embedded in project files, only referenced (by
 absolute path and by path relative to the project file). A catalog that
-cannot be found on open is reported in `open_warnings`; the reference is
-kept.
+cannot be found on open is reported in `open_warnings` (unless the library
+provides a catalog of that name); the reference is kept.
 
 ### Lens prescription import
 
