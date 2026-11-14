@@ -77,7 +77,7 @@
 //! coordinate break has no geometry: the ray point is carried unchanged
 //! (`t = 0`), which keeps 90° breaks well defined.
 
-use mklight_core::{ApertureShape, SurfaceShape, Vec3};
+use mklight_core::{APERTURE_EDGE_TOLERANCE, ApertureShape, SurfaceShape, Vec3};
 use serde::{Deserialize, Serialize};
 
 use crate::numeric::discriminant;
@@ -115,6 +115,44 @@ pub enum IntersectError {
     OutsideDomain,
 }
 
+/// A surface's fixed extent as the root choice sees it (module docs,
+/// step 6): which local points `(x, y)` lie inside it, edge tolerance
+/// included.
+pub trait Extent {
+    fn contains(&self, x: f64, y: f64) -> bool;
+}
+
+impl Extent for ApertureShape {
+    #[inline]
+    fn contains(&self, x: f64, y: f64) -> bool {
+        self.passes(x, y)
+    }
+}
+
+/// A circle about the vertex with the edge tolerance already applied: the
+/// same test as [`ApertureShape::passes`] of a circular aperture, bit for
+/// bit, without rebuilding the tolerant shape at every call.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Circle {
+    /// Squared tolerant radius.
+    r2: f64,
+}
+
+impl Circle {
+    #[inline]
+    pub fn new(radius: f64) -> Self {
+        let r = radius * (1.0 + APERTURE_EDGE_TOLERANCE);
+        Circle { r2: r * r }
+    }
+}
+
+impl Extent for Circle {
+    #[inline(always)]
+    fn contains(&self, x: f64, y: f64) -> bool {
+        x * x + y * y <= self.r2
+    }
+}
+
 /// A valid intersection. The signed distance from the incoming ray point to
 /// the hit is `t_transfer + t_surface`; it is kept in two parts so the
 /// optical path can be accumulated without rounding the sum first.
@@ -140,16 +178,16 @@ pub fn intersect(
     d: Vec3,
     settings: &IntersectSettings,
 ) -> Result<Hit, IntersectError> {
-    intersect_within(shape, None, p, d, settings)
+    intersect_within(shape, None::<&ApertureShape>, p, d, settings)
 }
 
 /// [`intersect`] for a surface with the fixed extent `extent`
 /// (`ResolvedSurface::root_extent`), which chooses between two crossings of
 /// the vertex sheet (module docs, step 6). It does not clip: a hit outside
 /// the extent is still returned when no crossing lies inside it.
-pub fn intersect_within(
+pub fn intersect_within<E: Extent>(
     shape: &SurfaceShape,
-    extent: Option<&ApertureShape>,
+    extent: Option<&E>,
     p: Vec3,
     d: Vec3,
     settings: &IntersectSettings,
@@ -189,7 +227,7 @@ pub fn intersect_within(
 }
 
 /// Intersection with the plane `z = 0`.
-#[inline]
+#[inline(always)]
 pub fn intersect_plane(p: Vec3, d: Vec3) -> Result<Hit, IntersectError> {
     if d.z == 0.0 {
         return Err(IntersectError::Miss);
@@ -209,7 +247,7 @@ pub fn intersect_plane(p: Vec3, d: Vec3) -> Result<Hit, IntersectError> {
 
 /// Step 1: transfer to the point of closest approach to the vertex.
 /// Returns `(t₀, Q)` with `t₀ = −P·D`.
-#[inline]
+#[inline(always)]
 fn to_closest_approach(p: Vec3, d: Vec3) -> (f64, Vec3) {
     let t0 = -p.dot(d);
     (
@@ -224,14 +262,15 @@ fn to_closest_approach(p: Vec3, d: Vec3) -> (f64, Vec3) {
 
 /// Conic intersection of unknown extent (module docs, steps 1–6).
 pub fn intersect_conic(c: f64, k: f64, p: Vec3, d: Vec3) -> Result<Hit, IntersectError> {
-    intersect_conic_within(c, k, None, p, d)
+    intersect_conic_within(c, k, None::<&ApertureShape>, p, d)
 }
 
 /// Conic intersection with the fixed extent `extent` (module docs, steps 1–6).
-pub fn intersect_conic_within(
+#[inline(always)]
+pub fn intersect_conic_within<E: Extent>(
     c: f64,
     k: f64,
-    extent: Option<&ApertureShape>,
+    extent: Option<&E>,
     p: Vec3,
     d: Vec3,
 ) -> Result<Hit, IntersectError> {
@@ -253,13 +292,13 @@ pub fn intersect_conic_within(
 /// (the plane `z = 0`). `pick` is the surface's fixed outline and the
 /// distance `−t₀` from `q` to the ray start: a root is ahead when `t` is not
 /// below it. `None` keeps the nearer-vertex rule.
-#[inline]
-fn conic_from(
+#[inline(always)]
+fn conic_from<E: Extent>(
     c: f64,
     k: f64,
     q: Vec3,
     d: Vec3,
-    pick: Option<(&ApertureShape, f64)>,
+    pick: Option<(&E, f64)>,
 ) -> Result<(f64, Vec3), IntersectError> {
     let kap = 1.0 + k;
     let a = c * (d.x.mul_add(d.x, d.y * d.y) + kap * d.z * d.z);
@@ -309,18 +348,12 @@ fn conic_from(
 /// Step 6: whether the root `(t1, p1)` wins over `(t2, p2)` when both lie on
 /// the vertex sheet. `pick` as in [`conic_from`].
 #[inline]
-pub(crate) fn keep_first(
-    t1: f64,
-    p1: Vec3,
-    t2: f64,
-    p2: Vec3,
-    pick: Option<(&ApertureShape, f64)>,
-) -> bool {
+fn keep_first<E: Extent>(t1: f64, p1: Vec3, t2: f64, p2: Vec3, pick: Option<(&E, f64)>) -> bool {
     let nearer = p1.x.mul_add(p1.x, p1.y * p1.y) <= p2.x.mul_add(p2.x, p2.y * p2.y);
     let Some((extent, t_start)) = pick else {
         return nearer;
     };
-    let (in1, in2) = (extent.passes(p1.x, p1.y), extent.passes(p2.x, p2.y));
+    let (in1, in2) = (extent.contains(p1.x, p1.y), extent.contains(p2.x, p2.y));
     if in1 != in2 {
         return in1;
     }
@@ -335,7 +368,7 @@ pub(crate) fn keep_first(
 }
 
 /// Unit normal of a conic at a point on it: `(−cx, −cy, 1 − κcz)/‖·‖`.
-#[inline]
+#[inline(always)]
 pub fn conic_normal(c: f64, k: f64, p: Vec3) -> Vec3 {
     Vec3::new(-c * p.x, -c * p.y, (-(1.0 + k) * c).mul_add(p.z, 1.0)).normalized()
 }
@@ -431,11 +464,11 @@ fn asphere_normal(c: f64, k: f64, coefficients: &[f64], p: Vec3) -> Option<Vec3>
 }
 
 /// Even asphere: conic seed, then Newton on the sag residual (module docs).
-pub fn intersect_even_asphere(
+pub fn intersect_even_asphere<E: Extent>(
     c: f64,
     k: f64,
     coefficients: &[f64],
-    extent: Option<&ApertureShape>,
+    extent: Option<&E>,
     p: Vec3,
     d: Vec3,
     settings: &IntersectSettings,
@@ -534,9 +567,9 @@ pub fn intersect_even_asphere(
 /// approach frame. A bracket restricts Newton to its interval; backtracking
 /// keeps unbracketed steps in-domain and decreases the sag residual. Failure
 /// classes follow the even asphere's (module docs).
-fn intersect_sag(
+fn intersect_sag<E: Extent>(
     shape: &SurfaceShape,
-    extent: Option<&ApertureShape>,
+    extent: Option<&E>,
     p: Vec3,
     d: Vec3,
     settings: &IntersectSettings,
@@ -744,6 +777,54 @@ mod tests {
         // Both behind the start: the nearer-vertex rule.
         let past = p + d * 40.0;
         assert!(near(dist(Some(circle(10.0)), past, d), t2 - 40.0));
+    }
+
+    /// A [`Circle`] extent is bitwise the circular aperture's test, at its
+    /// tolerant edge too, and picks the same roots.
+    #[test]
+    fn circle_extent_is_the_circular_aperture() {
+        for r in [0.0, 2.0, 4.5, 10.0, 11.3, 1e6] {
+            let (a, c) = (circle(r), Circle::new(r));
+            let edge = r * (1.0 + APERTURE_EDGE_TOLERANCE);
+            for scale in [
+                0.0,
+                0.5,
+                1.0 - 1e-12,
+                1.0,
+                1.0 + 1e-16,
+                1.0 + 2e-16,
+                1.0 + 1e-9,
+                2.0,
+            ] {
+                for (ux, uy) in [(1.0, 0.0), (0.0, -1.0), (0.6, 0.8), (-0.28, 0.96)] {
+                    for (x, y) in [
+                        (r * scale * ux, r * scale * uy),
+                        (edge * scale * ux, edge * scale * uy),
+                    ] {
+                        assert_eq!(c.contains(x, y), a.passes(x, y), "r {r} at ({x}, {y})");
+                    }
+                }
+            }
+        }
+        let (p, d, _, _) = steep_double_crossing();
+        let s = IntersectSettings::default();
+        let shapes = [
+            SurfaceShape::sphere(-20.0),
+            SurfaceShape::EvenAsphere {
+                curvature: -0.05,
+                conic: 0.0,
+                coefficients: vec![1e-9],
+            },
+        ];
+        for shape in &shapes {
+            for r in [2.0, 4.5, 10.0] {
+                for (p, d) in [(p, d), (p + d * 28.0, d), (p + d * 28.0, -d)] {
+                    let a = intersect_within(shape, Some(&circle(r)), p, d, &s).unwrap();
+                    let c = intersect_within(shape, Some(&Circle::new(r)), p, d, &s).unwrap();
+                    assert_eq!(format!("{a:?}"), format!("{c:?}"), "{shape:?} r {r}");
+                }
+            }
+        }
     }
 
     #[test]
