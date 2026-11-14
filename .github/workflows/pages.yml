@@ -1,0 +1,89 @@
+# Builds the web app (apps/web) with the engine compiled to threaded WASM and
+# publishes it to GitHub Pages. The build is static: relative paths, and the
+# isolation service worker supplies cross-origin isolation (docs/WEB.md).
+name: Deploy web app to Pages
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - "crates/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "scripts/build-wasm.sh"
+      - "apps/web/**"
+      - "apps/macos/Sources/MKLightModel/Resources/samples.json"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One deployment at a time; a newer push replaces a queued one but never
+# cancels a deployment in progress.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      # The pinned nightly (with rust-src for -Z build-std) is the one in
+      # scripts/build-wasm.sh; the script installs it if it is missing.
+      - name: Rust nightly for the wasm build
+        run: |
+          NIGHTLY=$(sed -n 's/^NIGHTLY="\(.*\)"/\1/p' scripts/build-wasm.sh)
+          rustup toolchain install "$NIGHTLY" --profile minimal --component rust-src --target wasm32-unknown-unknown
+          echo "BINDGEN=$(awk '/^name = "wasm-bindgen"$/{getline; gsub(/version = |"/,""); print; exit}' Cargo.lock)" >> "$GITHUB_ENV"
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target/wasm"
+
+      - name: wasm-bindgen-cli (the version in Cargo.lock)
+        uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-bindgen@${{ env.BINDGEN }}
+
+      - name: wasm-opt (binaryen)
+        run: |
+          curl -sSL https://github.com/WebAssembly/binaryen/releases/download/version_133/binaryen-version_133-x86_64-linux.tar.gz | tar xz -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/binaryen-version_133/bin" >> "$GITHUB_PATH"
+
+      - name: Build the engine
+        run: scripts/build-wasm.sh
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: apps/web/pnpm-lock.yaml
+
+      - name: Build the web app
+        working-directory: apps/web
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v4
+        with:
+          path: apps/web/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

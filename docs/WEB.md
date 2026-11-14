@@ -36,6 +36,12 @@ engine needs a cross-origin isolated page; a host that cannot send
 `index.html` loads first. The status popover shows the engine, its threads,
 cross-origin isolation and WebGPU.
 
+**Deployment.** `.github/workflows/pages.yml` builds the engine
+(`scripts/build-wasm.sh`, with the pinned nightly, the Cargo.lock version of
+wasm-bindgen-cli and binaryen's wasm-opt) and the app, and publishes
+`apps/web/dist` to GitHub Pages on every push to `master` that touches the
+engine, the web app or the samples, or when run by hand.
+
 **The engine.** The UI imports the engine as `@engine`
 (`apps/web/engine/src/index.ts`) and shows only what the real engine computes;
 there is no stand-in. The wasm package (`engine/pkg`, `pnpm build:wasm`) must
