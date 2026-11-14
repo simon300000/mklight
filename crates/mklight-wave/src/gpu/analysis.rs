@@ -267,8 +267,9 @@ impl<'a> Source<'a> {
             }
             let first = pupils[0].2.info.reference_point_mm;
             let reference = match settings.reference {
-                ReferencePoint::Chief => crate::traced::chief_reference_xy(self.t, field)
-                    .unwrap_or([first[0], first[1]]),
+                ReferencePoint::Chief => {
+                    crate::traced::chief_reference_xy(self.t, field).unwrap_or([first[0], first[1]])
+                }
                 ReferencePoint::Centroid => {
                     let mut v = [0.; 2];
                     for (_, w, p) in &pupils {

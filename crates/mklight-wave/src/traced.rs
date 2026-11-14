@@ -648,7 +648,9 @@ impl ReferencePlane {
         };
         let dn = dc.dot(normal);
         if !(dn > 0.0) {
-            return Err(MkError::Trace("chief ray misses the reference plane".into()));
+            return Err(MkError::Trace(
+                "chief ray misses the reference plane".into(),
+            ));
         }
         Ok(ReferencePlane {
             p0,
@@ -1352,8 +1354,7 @@ pub fn trace_lattice(
         g.afocal = true;
         g
     } else if telecentric {
-        PupilGeometry::telecentric(sin_max, sphere.n)?
-            .with_chief_ray([axis.x, axis.y, axis.z])?
+        PupilGeometry::telecentric(sin_max, sphere.n)?.with_chief_ray([axis.x, axis.y, axis.z])?
     } else {
         PupilGeometry::new(sin_max * r, r, sphere.n)?.with_chief_ray([axis.x, axis.y, axis.z])?
     };
@@ -1499,7 +1500,10 @@ fn v3(v: Vec3) -> [f64; 3] {
 /// chief-ray image point, or in an afocal image space 1000 × its direction
 /// (mrad of direction sine, as [`ExitPupilInfo::reference_point_mm`]);
 /// `None` when that chief ray fails.
-pub(crate) fn chief_reference_xy(tracer: &SequentialTracer, field: &PreparedField) -> Option<[f64; 2]> {
+pub(crate) fn chief_reference_xy(
+    tracer: &SequentialTracer,
+    field: &PreparedField,
+) -> Option<[f64; 2]> {
     let c = tracer.chief(field, tracer.system().primary_wavelength);
     if !c.status.is_ok() {
         return None;

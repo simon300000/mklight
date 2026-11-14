@@ -35,7 +35,12 @@ fn system(epd: f64, body: Vec<Surface>, fields: &[f64]) -> OpticalSystem {
         primary: 0,
     };
     let n = body.len() as u64;
-    s.surfaces = vec![surf(0, SurfaceShape::Plane, f64::INFINITY, MaterialRef::Air)];
+    s.surfaces = vec![surf(
+        0,
+        SurfaceShape::Plane,
+        f64::INFINITY,
+        MaterialRef::Air,
+    )];
     s.surfaces.extend(body);
     s.surfaces
         .push(surf(n + 1, SurfaceShape::Plane, 0.0, MaterialRef::Air));
@@ -63,7 +68,10 @@ fn mirror(id: u64, c: f64, t: f64) -> Surface {
 fn compressor() -> SequentialTracer {
     tracer_for(system(
         50.0,
-        vec![mirror(1, -1.0 / 1000.0, -400.0), mirror(2, -1.0 / 200.0, 200.0)],
+        vec![
+            mirror(1, -1.0 / 1000.0, -400.0),
+            mirror(2, -1.0 / 200.0, 200.0),
+        ],
         &[0.0],
     ))
     .unwrap()
@@ -157,10 +165,18 @@ fn aberration_free_telescopes_are_diffraction_limited_in_angle() {
         let psf = psf_analysis(&t, &PsfAnalysisSettings::default()).unwrap();
         assert_eq!(psf.units.position, "mrad");
         for p in &psf.psfs {
-            assert!((p.strehl - 1.0).abs() < 1e-6, "{label}: Strehl {}", p.strehl);
+            assert!(
+                (p.strehl - 1.0).abs() < 1e-6,
+                "{label}: Strehl {}",
+                p.strehl
+            );
             // The PSF sits at the beam direction: 1000 × its direction sine.
             let expect = tan_out.map_or(0.0, |t| {
-                if p.field == 0 { 0.0 } else { 1000.0 * t.atan().sin() }
+                if p.field == 0 {
+                    0.0
+                } else {
+                    1000.0 * t.atan().sin()
+                }
             });
             assert!(
                 (p.reference_mm[1] - expect).abs() < 1e-9,
@@ -206,7 +222,10 @@ fn aberration_free_telescopes_are_diffraction_limited_in_angle() {
         let (r0, r1k) = (ee.radius_mm[k - 1], ee.radius_mm[k]);
         let s = (r1 - r0) / (r1k - r0);
         let at = f.encircled[k - 1] + s * (f.encircled[k] - f.encircled[k - 1]);
-        assert!((at - 0.838).abs() < 0.01, "{label}: EE at the dark ring {at}");
+        assert!(
+            (at - 0.838).abs() < 0.01,
+            "{label}: EE at the dark ring {at}"
+        );
     }
 }
 
@@ -297,7 +316,10 @@ fn huygens_and_through_focus_in_angular_units() {
         .filter(|(a, _)| a.is_finite())
         .map(|(a, b)| (a - b).abs())
         .fold(0.0, f64::max);
-    assert!(worst < 1e-3 * w020, "vergence vs defocus: {worst} of {w020}");
+    assert!(
+        worst < 1e-3 * w020,
+        "vergence vs defocus: {worst} of {w020}"
+    );
 }
 
 /// A thin plate with an `A·r⁴` face at the exit pupil of a 10× Keplerian
@@ -325,8 +347,18 @@ fn phase_plate_at_the_exit_pupil_gives_the_closed_form_wavefront() {
     let t = tracer_for(system(
         5.0,
         vec![
-            surf(1, SurfaceShape::Paraxial { focal_length: f1 }, f1 + f2, MaterialRef::Air),
-            surf(2, SurfaceShape::Paraxial { focal_length: f2 }, z_xp, MaterialRef::Air),
+            surf(
+                1,
+                SurfaceShape::Paraxial { focal_length: f1 },
+                f1 + f2,
+                MaterialRef::Air,
+            ),
+            surf(
+                2,
+                SurfaceShape::Paraxial { focal_length: f2 },
+                z_xp,
+                MaterialRef::Air,
+            ),
             glass,
             surf(4, SurfaceShape::Plane, 100.0, MaterialRef::Air),
         ],

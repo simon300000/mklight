@@ -120,7 +120,10 @@ fn distributions_have_the_right_moments() {
     // Parabolic, density 3z²/2 on [−1, 1]: variance ⅗a², E|δ| = ¾a, and the
     // fraction inside half the limit is (½)³ = ⅛.
     let (m, v, xs) = stats(&mk(Distribution::Parabolic));
-    assert!(m.abs() < 3e-3 && (v / (0.6 * a * a) - 1.0).abs() < 0.02, "{m} {v}");
+    assert!(
+        m.abs() < 3e-3 && (v / (0.6 * a * a) - 1.0).abs() < 0.02,
+        "{m} {v}"
+    );
     let abs = xs.iter().map(|x| x.abs()).sum::<f64>() / n as f64;
     assert!((abs / (0.75 * a) - 1.0).abs() < 0.01, "{abs}");
     let inner = xs.iter().filter(|x| x.abs() < a / 2.0).count() as f64 / n as f64;

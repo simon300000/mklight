@@ -321,7 +321,10 @@ fn curve_buffers(axis: &str) -> Vec<Value> {
 fn units_schema() -> Value {
     describe(
         obj(&[
-            ("afocal", boolean("Afocal image space: plane OPD reference and angular units.")),
+            (
+                "afocal",
+                boolean("Afocal image space: plane OPD reference and angular units."),
+            ),
             (
                 "position",
                 enumeration(
@@ -331,7 +334,10 @@ fn units_schema() -> Value {
             ),
             (
                 "frequency",
-                enumeration(&["cycles/mm", "cycles/mrad"], "Unit of spatial frequencies."),
+                enumeration(
+                    &["cycles/mm", "cycles/mrad"],
+                    "Unit of spatial frequencies.",
+                ),
             ),
             (
                 "focus",
@@ -619,77 +625,92 @@ pub(super) fn pupil_sampling_schema() -> Value {
 }
 
 fn exit_pupil_schema() -> Value {
-    obj_opt(&[
-        ("wavelength_um", num("µm", "")),
-        (
-            "paraxial_position_mm",
-            nf_u("mm", "Paraxial exit-pupil position from the image."),
-        ),
-        (
-            "paraxial_radius_mm",
-            nf_u("mm", "Paraxial exit-pupil radius."),
-        ),
-        ("telecentric", boolean("Exit pupil at infinity.")),
-        (
-            "chief_point_mm",
-            tuple(nf(), 3, "Chief image point, image-local mm."),
-        ),
-        (
-            "chief_direction",
-            tuple(num("1", ""), 3, "Chief direction, image-local."),
-        ),
-        (
-            "exit_pupil_point_mm",
-            nullable(tuple(
-                nf(),
-                3,
-                "Exit-pupil point, image-local mm; null for telecentric beams.",
-            )),
-        ),
-        ("reference", enumeration(&["chief", "centroid"], "")),
-        (
-            "reference_point_mm",
-            tuple(nf(), 3, "Reference-sphere centre, image-local mm."),
-        ),
-        (
-            "reference_radius_mm",
-            nf_u(
-                "mm",
-                "Reference-sphere radius; infinity for telecentric beams.",
+    obj_opt(
+        &[
+            ("wavelength_um", num("µm", "")),
+            (
+                "paraxial_position_mm",
+                nf_u("mm", "Paraxial exit-pupil position from the image."),
             ),
-        ),
-        (
-            "propagation_sign",
-            num("1", "Sign of propagation along image-local z."),
-        ),
-        ("image_index", num("1", "Image-space refractive index.")),
-        ("sin_max", num("1", "Pupil angular scale.")),
-        ("numerical_aperture", num("1", "Image index × sin_max.")),
-        (
-            "clear_area",
-            num("1", "Clear area in normalised pupil coordinates."),
-        ),
-        (
-            "transmitted_fraction",
-            num("1", "Surviving entrance-pupil area fraction."),
-        ),
-        (
-            "effective_f_number",
-            num("1", "Working F/# including the clear-area scale."),
-        ),
-        ("lattice_rays", int("")),
-        ("surviving_rays", int("")),
-        ("rim_points", int("")),
-        (
-            "afocal",
-            boolean("Present and true for an afocal image space: plane reference through exit_pupil_point_mm; reference_point_mm is 1000 × the beam direction; sin_max, numerical_aperture and effective_f_number are those of an ideal 1000 mm lens."),
-        ),
-        ("beam_radius_mm", num("mm", "Afocal only: output beam half-width scaling the pupil.")),
-        (
-            "field_angle_deg",
-            tuple(num("degrees", ""), 2, "Afocal only: image-space field angle of the beam [x, y]."),
-        ),
-    ], &["afocal", "beam_radius_mm", "field_angle_deg"])
+            (
+                "paraxial_radius_mm",
+                nf_u("mm", "Paraxial exit-pupil radius."),
+            ),
+            ("telecentric", boolean("Exit pupil at infinity.")),
+            (
+                "chief_point_mm",
+                tuple(nf(), 3, "Chief image point, image-local mm."),
+            ),
+            (
+                "chief_direction",
+                tuple(num("1", ""), 3, "Chief direction, image-local."),
+            ),
+            (
+                "exit_pupil_point_mm",
+                nullable(tuple(
+                    nf(),
+                    3,
+                    "Exit-pupil point, image-local mm; null for telecentric beams.",
+                )),
+            ),
+            ("reference", enumeration(&["chief", "centroid"], "")),
+            (
+                "reference_point_mm",
+                tuple(nf(), 3, "Reference-sphere centre, image-local mm."),
+            ),
+            (
+                "reference_radius_mm",
+                nf_u(
+                    "mm",
+                    "Reference-sphere radius; infinity for telecentric beams.",
+                ),
+            ),
+            (
+                "propagation_sign",
+                num("1", "Sign of propagation along image-local z."),
+            ),
+            ("image_index", num("1", "Image-space refractive index.")),
+            ("sin_max", num("1", "Pupil angular scale.")),
+            ("numerical_aperture", num("1", "Image index × sin_max.")),
+            (
+                "clear_area",
+                num("1", "Clear area in normalised pupil coordinates."),
+            ),
+            (
+                "transmitted_fraction",
+                num("1", "Surviving entrance-pupil area fraction."),
+            ),
+            (
+                "effective_f_number",
+                num("1", "Working F/# including the clear-area scale."),
+            ),
+            ("lattice_rays", int("")),
+            ("surviving_rays", int("")),
+            ("rim_points", int("")),
+            (
+                "afocal",
+                boolean(
+                    "Present and true for an afocal image space: plane reference through exit_pupil_point_mm; reference_point_mm is 1000 × the beam direction; sin_max, numerical_aperture and effective_f_number are those of an ideal 1000 mm lens.",
+                ),
+            ),
+            (
+                "beam_radius_mm",
+                num(
+                    "mm",
+                    "Afocal only: output beam half-width scaling the pupil.",
+                ),
+            ),
+            (
+                "field_angle_deg",
+                tuple(
+                    num("degrees", ""),
+                    2,
+                    "Afocal only: image-space field angle of the beam [x, y].",
+                ),
+            ),
+        ],
+        &["afocal", "beam_radius_mm", "field_angle_deg"],
+    )
 }
 
 fn wavefront_schema() -> Value {

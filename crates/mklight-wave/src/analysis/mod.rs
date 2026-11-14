@@ -473,10 +473,12 @@ fn place_pupils(
     }
     let point_of = |p: &TracedPupil| p.info.reference_point_mm;
     let reference_mm = match settings.reference {
-        ReferencePoint::Chief => crate::traced::chief_reference_xy(tracer, field).unwrap_or_else(|| {
-            let r = point_of(&pupils[0].2);
-            [r[0], r[1]]
-        }),
+        ReferencePoint::Chief => {
+            crate::traced::chief_reference_xy(tracer, field).unwrap_or_else(|| {
+                let r = point_of(&pupils[0].2);
+                [r[0], r[1]]
+            })
+        }
         ReferencePoint::Centroid => {
             let mut c = Vec3::ZERO;
             for (_, w, p) in &pupils {

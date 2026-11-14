@@ -1757,7 +1757,10 @@ fn psf_centroid_follows_x_and_diagonal_fields() {
 /// (WAVE.md §3).
 #[test]
 fn transmission_amplitude_biases_the_psf_centroid() {
-    assert_eq!(PupilSettings::default().amplitude, AmplitudeModel::Radiometric);
+    assert_eq!(
+        PupilSettings::default().amplitude,
+        AmplitudeModel::Radiometric
+    );
     assert_eq!(AmplitudeModel::default(), AmplitudeModel::Radiometric);
     let mut s = samples::singlet();
     s.wavelengths = mono(0.5875618);

@@ -50,7 +50,10 @@ fn compressor() -> SequentialTracer {
     };
     tracer(infinite_system(
         50.0,
-        vec![mirror(1, -1.0 / 1000.0, -400.0), mirror(2, -1.0 / 200.0, 200.0)],
+        vec![
+            mirror(1, -1.0 / 1000.0, -400.0),
+            mirror(2, -1.0 / 200.0, 200.0),
+        ],
         3,
     ))
 }
@@ -71,7 +74,9 @@ fn collimated_beams_have_zero_opd() {
             let reference = t.opd_reference(field, 0).unwrap();
             assert!(reference.afocal);
             for (px, py) in [(0.0, 1.0), (0.0, -1.0), (0.6, 0.3), (-1.0, 0.0)] {
-                let o = reference.opd_waves(&t.trace(field, 0, px, py, &opts)).unwrap();
+                let o = reference
+                    .opd_waves(&t.trace(field, 0, px, py, &opts))
+                    .unwrap();
                 assert!(o.abs() < 1e-7, "{label} field {fi} ({px}, {py}): {o}");
             }
         }

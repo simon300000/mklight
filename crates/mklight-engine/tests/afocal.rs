@@ -9,8 +9,8 @@ use serde_json::{Value, json};
 use std::sync::Arc;
 
 use mklight_core::{
-    ApertureSpec, Field, FieldKind, FieldSet, Interaction, JobContext, MaterialRef,
-    OpticalSystem, Surface, SurfaceShape, Wavelength, WavelengthSet,
+    ApertureSpec, Field, FieldKind, FieldSet, Interaction, JobContext, MaterialRef, OpticalSystem,
+    Surface, SurfaceShape, Wavelength, WavelengthSet,
 };
 use mklight_engine::backend::Backend;
 use mklight_engine::buffer::BufferData;
@@ -138,7 +138,11 @@ fn afocal_compressor_on_every_backend() {
             json!({"merit": spec, "hold_efl": false}),
             b,
         );
-        assert_eq!(merit.json["operands"].as_array().unwrap().len(), 1, "{label}");
+        assert_eq!(
+            merit.json["operands"].as_array().unwrap().len(),
+            1,
+            "{label}"
+        );
         let m = merit.json["merit"].as_f64().unwrap();
         assert!(m < 1e-10, "{label}: wavefront merit {m}");
     }

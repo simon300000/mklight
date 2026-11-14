@@ -60,8 +60,7 @@ use mklight_optim::problem::{
 };
 use mklight_optim::tolerance::{
     Compensator, LimitUnit, MonteCarloSettings, OpticalToleranceEvaluator, ToleranceEvaluator,
-    ToleranceOperand, ToleranceSpec, curvature_per_power_fringe, monte_carlo,
-    sensitivity_batched,
+    ToleranceOperand, ToleranceSpec, curvature_per_power_fringe, monte_carlo, sensitivity_batched,
 };
 use mklight_optim::{IterationRecord, Monitor, OptimResult, Termination};
 
@@ -2290,8 +2289,8 @@ impl Analysis for Tolerance {
         // Fringes of power become curvature limits over the surface's
         // nominal clear aperture (its aperture, else its fixed or traced
         // semi-diameter) at the test wavelength.
-        let wavelength = (s.irregularity_wavelength_um)
-            .unwrap_or_else(|| start.system.wavelengths.primary_um());
+        let wavelength =
+            (s.irregularity_wavelength_um).unwrap_or_else(|| start.system.wavelengths.primary_um());
         let mut fringe_scale = vec![None; tolerances.len()];
         for (k, o) in tolerances.iter_mut().enumerate() {
             if o.unit != LimitUnit::Fringes {
@@ -3248,8 +3247,10 @@ mod tests {
             scale.push(json!(k));
             fringes.push(json!({"param": curv(id), "minus": minus, "plus": plus,
                 "unit": "fringes", "distribution": {"type": d}}));
-            native.push(json!({"param": curv(id), "minus": minus * k, "plus": plus * k,
-                "distribution": {"type": d}}));
+            native.push(
+                json!({"param": curv(id), "minus": minus * k, "plus": plus * k,
+                "distribution": {"type": d}}),
+            );
         }
         let decentre = json!({"param": ParamPath::DecenterY { surface: SurfaceId(3) },
             "minus": 0.02, "plus": 0.02, "distribution": {"type": "parabolic"}});
@@ -3283,16 +3284,24 @@ mod tests {
         let mut flat = sys.clone();
         curv(1).set(&mut flat, 0.0).unwrap();
         flat.surfaces[1].semi_diameter = SemiDiameter::Fixed { value: 9.0 };
-        let r = run(flat, "tolerance", json!({"tolerances": [fringes[0].clone()],
-            "mode": "sensitivity", "backend": "cpu", "irregularity_wavelength_um": wavelength}))
+        let r = run(
+            flat,
+            "tolerance",
+            json!({"tolerances": [fringes[0].clone()],
+            "mode": "sensitivity", "backend": "cpu", "irregularity_wavelength_um": wavelength}),
+        )
         .unwrap();
         assert_eq!(f(&r.json["fringe_scale"][0]), wavelength * 1e-3 / 81.0);
         // Fringes of power on a thickness are rejected.
         let bad = json!({"param": ParamPath::Thickness { surface: SurfaceId(1) },
             "minus": 1, "plus": 1, "unit": "fringes"});
-        let e = run(sys, "tolerance", json!({"tolerances": [bad], "backend": "cpu"}))
-            .err()
-            .unwrap();
+        let e = run(
+            sys,
+            "tolerance",
+            json!({"tolerances": [bad], "backend": "cpu"}),
+        )
+        .err()
+        .unwrap();
         assert!(e.to_string().contains("curvature"), "{e}");
     }
 

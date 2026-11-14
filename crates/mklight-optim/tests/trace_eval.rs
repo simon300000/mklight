@@ -512,10 +512,26 @@ fn default_merit_equals_mean_squared_rms() {
     );
     let mut merits = Vec::new();
     for (spot, scope, wf_ref) in [
-        (true, CentroidScope::Monochromatic, WavefrontReference::Centroid),
-        (true, CentroidScope::Polychromatic, WavefrontReference::Centroid),
-        (false, CentroidScope::Monochromatic, WavefrontReference::Centroid),
-        (false, CentroidScope::Monochromatic, WavefrontReference::Chief),
+        (
+            true,
+            CentroidScope::Monochromatic,
+            WavefrontReference::Centroid,
+        ),
+        (
+            true,
+            CentroidScope::Polychromatic,
+            WavefrontReference::Centroid,
+        ),
+        (
+            false,
+            CentroidScope::Monochromatic,
+            WavefrontReference::Centroid,
+        ),
+        (
+            false,
+            CentroidScope::Monochromatic,
+            WavefrontReference::Chief,
+        ),
     ] {
         let gen_ = DefaultMeritSpec {
             criterion: if spot {
