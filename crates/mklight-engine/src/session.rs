@@ -564,6 +564,47 @@ impl Session {
         Ok(())
     }
 
+    /// Replace the whole project from a front end's document (as
+    /// `project()` returns it): the system and every other section,
+    /// including top-level keys the engine does not know, so that `save`
+    /// and `autosave` write everything the front end holds. The document's
+    /// `catalogs` are ignored: the session's catalogs are managed by the
+    /// catalog calls. An invalid system leaves the session unchanged. The
+    /// session becomes dirty only when something changed. Returns the
+    /// snapshot hash.
+    pub fn set_project(&mut self, project: Project) -> EngineResult<SnapshotHash> {
+        let Project {
+            format: _,
+            schema_version: _,
+            metadata,
+            system,
+            catalogs: _,
+            views,
+            merit,
+            variables,
+            tolerances,
+            extra,
+        } = project;
+        let snap = Snapshot::new(system)?;
+        let p = &mut self.project;
+        if p.metadata != metadata
+            || p.views != views
+            || p.merit != merit
+            || p.variables != variables
+            || p.tolerances != tolerances
+            || p.extra != extra
+        {
+            p.metadata = metadata;
+            p.views = views;
+            p.merit = merit;
+            p.variables = variables;
+            p.tolerances = tolerances;
+            p.extra = extra;
+            self.dirty = true;
+        }
+        Ok(self.commit(snap))
+    }
+
     // --- files
 
     /// The project with its save metadata (modified time, app and engine
