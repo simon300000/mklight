@@ -58,14 +58,17 @@ public sealed partial class DesignWindow : Window
         Status.IssueInvoked += i => { if (i.Surface is int s) session.SelectedSurface = s; };
 
         Status.SizeChanged += (_, _) => UpdatePassthrough();
+        Menus.SizeChanged += (_, _) => UpdatePassthrough();
         Root.SizeChanged += (_, _) => UpdatePassthrough();
         BuildAccelerators();
+        BuildMenus();
         UpdateTitle();
         UpdateStatus();
         // The capsule's issue glyphs are brushes picked in code.
         Root.ActualThemeChanged += (_, _) => UpdateStatus();
         UpdateAddMenu();
-        AddCommands();
+        _panels.Arrangement.Changed += () => { UpdateSidebarState(); UpdateMenus(); };
+        InitDocuments();
         Closed += (_, _) => session.Dispose();
         AppWindow.Closing += OnClosing;
         AppHooks.RaiseWindowCreated(this);
@@ -78,6 +81,18 @@ public sealed partial class DesignWindow : Window
     {
         if (_closeConfirmed || !_session.Document.IsDirty || App.Options.IsScripted) return;
         args.Cancel = true;
+        await CloseAsync();
+    }
+
+    /// <summary>Closes the window (File ▸ Close), asking about unsaved changes first; false when the user cancels.</summary>
+    public async Task<bool> CloseAsync()
+    {
+        if (_closeConfirmed || !_session.Document.IsDirty || App.Options.IsScripted)
+        {
+            _closeConfirmed = true;
+            Close();
+            return true;
+        }
         var dialog = new ContentDialog
         {
             Title = $"Save the changes to “{_session.Document.DisplayName}”?",
@@ -86,10 +101,11 @@ public sealed partial class DesignWindow : Window
             DefaultButton = ContentDialogButton.Primary, XamlRoot = Root.XamlRoot, RequestedTheme = Root.ActualTheme,
         };
         var answer = await dialog.ShowAsync();
-        if (answer == ContentDialogResult.None) return;
-        if (answer == ContentDialogResult.Primary && !await SaveAsync(false)) return;
+        if (answer == ContentDialogResult.None) return false;
+        if (answer == ContentDialogResult.Primary && !await SaveAsync(false)) return false;
         _closeConfirmed = true;
         Close();
+        return true;
     }
 
     public DesignSession Session => _session;
@@ -100,18 +116,55 @@ public sealed partial class DesignWindow : Window
     /// <summary>The window's root element (its theme, keyboard accelerators, XamlRoot).</summary>
     public FrameworkElement RootElement => Root;
 
-    void SyncThemeMenu()
-    {
-        var theme = AppSettings.Theme;
-        ThemeSystem.IsChecked = theme == ElementTheme.Default;
-        ThemeLight.IsChecked = theme == ElementTheme.Light;
-        ThemeDark.IsChecked = theme == ElementTheme.Dark;
-    }
-
-    /// <summary>The capsule sits over the title bar's drag area: let the pointer through to it.</summary>
+    /// <summary>
+    /// The capsule sits over the title bar's drag area: let the pointer through to it (and to the menu bar).
+    /// It stays centred on the window unless that would cover the menu bar or the trailing buttons; the
+    /// design's name after the menu bar shows only where it fits before the capsule.
+    /// </summary>
     void UpdatePassthrough()
     {
         if (Root.XamlRoot is null || Status.ActualWidth == 0) return;
+        // The trailing buttons end before the caption buttons.
+        var inset = Math.Round(AppWindow.TitleBar.RightInset / Root.XamlRoot.RasterizationScale) + 8;
+        if (Math.Abs(RightButtons.Margin.Right - inset) > 0.5)
+        {
+            RightButtons.Margin = new Thickness(0, 0, inset, 0);
+            DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, UpdatePassthrough);
+            return;
+        }
+        var menuEnd = Menus.TransformToVisual(Root).TransformPoint(new global::Windows.Foundation.Point(Menus.ActualWidth, 0)).X;
+        var buttonsStart = RightButtons.TransformToVisual(Root).TransformPoint(default).X;
+        // A narrow window: Undo and Redo leave the title bar (the Edit menu has them) so the capsule fits.
+        var room = buttonsStart - menuEnd - 24 - Status.ActualWidth;
+        var compact = UndoButton.Visibility == Visibility.Collapsed;
+        if (compact ? room >= 80 : room < 0)
+        {
+            UndoButton.Visibility = RedoButton.Visibility = UndoDivider.Visibility = compact ? Visibility.Visible : Visibility.Collapsed;
+            DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, UpdatePassthrough);
+            return;
+        }
+        // The capsule is bounded by the room between the menu bar and the trailing buttons (a long one, such as
+        // "Preparing GPU" with anamorphic numbers, is cut there rather than run into the buttons).
+        var maxWidth = Math.Max(120, Math.Floor(buttonsStart - menuEnd - 24));
+        if (Math.Abs(Status.MaxWidth - maxWidth) > 1) Status.MaxWidth = maxWidth;
+        var width = Math.Min(Status.ActualWidth, maxWidth);
+        // Centred on the window unless that covers the menu bar or the buttons; moved by a transform, which
+        // leaves the layout alone (a margin changes the capsule's room, its width, and so the margin again).
+        var centredLeft = (Root.ActualWidth - width) / 2;
+        var left = Math.Max(centredLeft, menuEnd + 16);
+        if (left + width > buttonsStart - 8) left = Math.Max(menuEnd + 8, buttonsStart - 8 - width);
+        var shift = Math.Round(left - centredLeft);
+        DocTitle.Visibility = left - menuEnd - 10 >= 80 ? Visibility.Visible : Visibility.Collapsed;
+        DocTitle.MaxWidth = Math.Max(0, left - menuEnd - 26);
+        if (Status.RenderTransform is not Microsoft.UI.Xaml.Media.TranslateTransform move)
+            Status.RenderTransform = move = new Microsoft.UI.Xaml.Media.TranslateTransform();
+        if (Math.Abs(move.X - shift) > 0.5)
+        {
+            move.X = shift;
+            // The regions follow once it has moved.
+            DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, UpdatePassthrough);
+            return;
+        }
         var scale = Root.XamlRoot.RasterizationScale;
         global::Windows.Graphics.RectInt32 Rect(FrameworkElement e, double padLeft = 0)
         {
@@ -121,7 +174,7 @@ public sealed partial class DesignWindow : Window
         // Setting the regions replaces the title bar's own, so its buttons and pane toggle are listed too.
         Microsoft.UI.Input.InputNonClientPointerSource.GetForWindowId(AppWindow.Id)
             .SetRegionRects(Microsoft.UI.Input.NonClientRegionKind.Passthrough,
-                [Rect(Status), Rect(RightButtons), new global::Windows.Graphics.RectInt32(0, 0, (int)(52 * scale), (int)(AppTitleBar.ActualHeight * scale))]);
+                [Rect(Status), Rect(RightButtons), Rect(Menus), new global::Windows.Graphics.RectInt32(0, 0, (int)(52 * scale), (int)(AppTitleBar.ActualHeight * scale))]);
     }
 
     // ---- Title, status ----
@@ -131,8 +184,8 @@ public sealed partial class DesignWindow : Window
         var doc = _session.Document;
         var name = doc.DisplayName + (doc.IsDirty ? " •" : "");
         Title = $"{doc.DisplayName} — MKLight";
-        AppTitleBar.Title = name;
-        AppTitleBar.Subtitle = doc.System.Name;
+        DocTitle.Text = name;
+        ToolTipService.SetToolTip(DocTitle, doc.Path);
         UndoButton.IsEnabled = doc.CanUndo;
         RedoButton.IsEnabled = doc.CanRedo;
         ToolTipService.SetToolTip(UndoButton, doc.UndoActionName is { } u ? $"Undo {u} (Ctrl+Z)" : "Undo (Ctrl+Z)");
@@ -198,7 +251,24 @@ public sealed partial class DesignWindow : Window
         var item = new NavigationViewItem { Content = title, Tag = tag, Icon = new FontIcon { Glyph = glyph } };
         ToolTipService.SetToolTip(item, tip);
         var menu = new MenuFlyout();
-        if (!tag.StartsWith(':'))
+        if (tag is ":lens" or ":layout")
+        {
+            var panel = tag == ":lens" ? PanelId.LensData : PanelId.Layout;
+            var show = new MenuFlyoutItem { Text = "Show " + title };
+            show.Click += (_, _) => _panels.ShowPanel(panel.Key);
+            var hide = new MenuFlyoutItem { Text = "Hide " + title };
+            hide.Click += (_, _) => _panels.Close(panel);
+            menu.Items.Add(show);
+            menu.Items.Add(hide);
+            menu.Opening += (_, _) =>
+            {
+                var shown = _panels.Arrangement.Contains(panel);
+                show.Visibility = shown ? Visibility.Collapsed : Visibility.Visible;
+                hide.Visibility = shown ? Visibility.Visible : Visibility.Collapsed;
+            };
+            item.ContextFlyout = menu;
+        }
+        else if (!tag.StartsWith(':'))
         {
             var open = new MenuFlyoutItem { Text = "Open in New Pane" };
             open.Click += (_, _) => _session.Workspace.AddPane(tag, after: _session.Workspace.FocusedPane);
@@ -217,6 +287,15 @@ public sealed partial class DesignWindow : Window
         if (ws.Issues.Count > 0 != _sidebarItems.ContainsKey(":issues") && _query.Length == 0) { BuildSidebar(); return; }
         foreach (var (tag, item) in _sidebarItems)
         {
+            if (tag is ":lens" or ":layout")
+            {
+                // A hidden panel's row is dimmed (a click shows it again).
+                var title = tag == ":lens" ? "lens data" : "layout";
+                var shown = _panels.Arrangement.Contains(tag == ":lens" ? PanelId.LensData : PanelId.Layout);
+                item.Opacity = shown ? 1 : 0.5;
+                ToolTipService.SetToolTip(item, shown ? $"Show the {title}" : $"The {title} is hidden: click to show it");
+                continue;
+            }
             if (tag.StartsWith(':')) continue;
             var pane = ws.Panes.FirstOrDefault(p => p.Analysis == tag);
             item.InfoBadge = pane is null ? null : new InfoBadge { Width = 6, Height = 6, MinWidth = 6, Opacity = pane.IsRunning ? 1 : 0.55, Background = ThemeLookup.Brush(Root, pane.IsRunning ? "AccentFillColorDefaultBrush" : "TextFillColorTertiaryBrush") };
@@ -288,30 +367,11 @@ public sealed partial class DesignWindow : Window
         Add(VirtualKey.S, VirtualKeyModifiers.Control | VirtualKeyModifiers.Shift, () => _ = SaveAsync(true));
         Add(VirtualKey.O, VirtualKeyModifiers.Control, () => _ = App.OpenWithPickerAsync(this));
         Add(VirtualKey.N, VirtualKeyModifiers.Control, App.ShowWelcome);
+        Add(VirtualKey.W, VirtualKeyModifiers.Control, () => _ = CloseAsync());
         Add(VirtualKey.F5, VirtualKeyModifiers.None, () => _session.Workspace.RerunAll());
         Add(VirtualKey.Escape, VirtualKeyModifiers.Control, () => _session.Workspace.CancelAll());
         Add(VirtualKey.P, VirtualKeyModifiers.Control | VirtualKeyModifiers.Menu, ToggleInspector);
         Add(VirtualKey.Number0, VirtualKeyModifiers.Control, () => _panels.Layout.Fit());
-    }
-
-    /// <summary>Commands features registered (<see cref="AppHooks.Commands"/>): File menu items and shortcuts.</summary>
-    void AddCommands()
-    {
-        var at = FileMenu.Items.IndexOf(ThemeSeparator);
-        foreach (var c in AppHooks.Commands.OrderBy(c => c.Order))
-        {
-            var item = new MenuFlyoutItem { Text = c.Text, Icon = new FontIcon { Glyph = c.Glyph } };
-            item.Click += (_, _) => c.Invoke(this);
-            if (c.Key is { } key)
-            {
-                item.KeyboardAcceleratorTextOverride = Shortcut(key, c.Modifiers);
-                var a = new KeyboardAccelerator { Key = key, Modifiers = c.Modifiers };
-                a.Invoked += (_, e) => { c.Invoke(this); e.Handled = true; };
-                Root.KeyboardAccelerators.Add(a);
-            }
-            FileMenu.Items.Insert(at++, item);
-        }
-        if (AppHooks.Commands.Count > 0) FileMenu.Items.Insert(at, new MenuFlyoutSeparator());
     }
 
     static string Shortcut(VirtualKey key, VirtualKeyModifiers m) =>
@@ -326,10 +386,6 @@ public sealed partial class DesignWindow : Window
 
     void OnUndo(object sender, RoutedEventArgs e) => _session.Document.Undo();
     void OnRedo(object sender, RoutedEventArgs e) => _session.Document.Redo();
-    void OnNew(object sender, RoutedEventArgs e) => App.ShowWelcome();
-    void OnOpen(object sender, RoutedEventArgs e) => _ = App.OpenWithPickerAsync(this);
-    void OnSave(object sender, RoutedEventArgs e) => _ = SaveAsync(false);
-    void OnSaveAs(object sender, RoutedEventArgs e) => _ = SaveAsync(true);
 
     public async Task<bool> SaveAsync(bool saveAs, string? path = null)
     {
@@ -359,19 +415,34 @@ public sealed partial class DesignWindow : Window
         }
     }
 
-    void OnTheme(object sender, RoutedEventArgs e)
-    {
-        ThemeSwitch.Set((sender as FrameworkElement)?.Tag switch { "light" => ElementTheme.Light, "dark" => ElementTheme.Dark, _ => ElementTheme.Default });
-    }
-
     void OnInspectorToggle(object sender, RoutedEventArgs e) => SetInspector(InspectorToggle.IsChecked == true);
     void ToggleInspector() { InspectorToggle.IsChecked = !(InspectorToggle.IsChecked == true); SetInspector(InspectorToggle.IsChecked == true); }
 
+    bool IsInspectorVisible => InspectorToggle.IsChecked == true;
+
     void SetInspector(bool visible)
     {
+        InspectorToggle.IsChecked = visible;
         Inspector.Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
         InspectorColumn.Width = visible ? new GridLength(320) : new GridLength(0);
     }
 
-    void OnPaneToggleRequested(TitleBar sender, object args) => Nav.IsPaneOpen = !Nav.IsPaneOpen;
+    /// <summary>The title bar's pane button: a hidden sidebar comes back, a shown one switches between full and compact.</summary>
+    void OnPaneToggleRequested(TitleBar sender, object args)
+    {
+        if (!Nav.IsPaneVisible) { Nav.IsPaneVisible = true; Nav.IsPaneOpen = true; }
+        else Nav.IsPaneOpen = !Nav.IsPaneOpen;
+    }
+
+    // ---- Seams for the document commands and launch options ----
+
+    /// <summary>The sidebar column is shown (View ▸ Sidebar, <c>--sidebar hidden</c>).</summary>
+    public bool IsSidebarVisible
+    {
+        get => Nav.IsPaneVisible;
+        set => Nav.IsPaneVisible = value;
+    }
+
+    /// <summary>Opens the issues list of the status capsule (Design ▸ Show Issues, <c>--show-issues</c>).</summary>
+    public void ShowIssues() => Status.ShowIssues();
 }
