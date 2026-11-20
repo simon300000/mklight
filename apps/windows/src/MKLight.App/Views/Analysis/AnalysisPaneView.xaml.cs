@@ -96,6 +96,14 @@ public sealed partial class AnalysisPaneView : UserControl
             try
             {
                 _data = ResultHosting.Data(_pane.Analysis, output, _session.Workspace.PreviewSystem ?? _session.Document.System);
+                var ws = _session.Workspace;
+                if (ws.IsPreviewing && ws.Baseline.TryGetValue(_pane.Id, out var designOutput) && !ReferenceEquals(designOutput, output))
+                    _data = new ResultData
+                    {
+                        Analysis = _data.Analysis, Json = _data.Json, Buffers = _data.Buffers, WavelengthsUm = _data.WavelengthsUm,
+                        FieldLabels = _data.FieldLabels, Settings = _data.Settings,
+                        Baseline = ResultHosting.Data(_pane.Analysis, designOutput, _session.Document.System),
+                    };
                 var (view, summary) = ResultViews.Create(_data, ActualTheme, _pane.SpotScale);
                 if (view is SpotDiagramView spot) spot.BoxScaleChanged += scale => _pane.SpotScale = scale;
                 ResultHost.Content = view;
