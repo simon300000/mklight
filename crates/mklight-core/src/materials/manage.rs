@@ -541,8 +541,13 @@ pub fn glass_details(catalog: &str, glass: &Glass, original: &Glass) -> GlassDet
             })
         })
         .collect();
-    let lo = glass.min_um.max(0.25);
-    let hi = glass.max_um.min(2.5);
+    // Over the glass's own valid range (an infrared glass gets its infrared
+    // curve); 0.25-2.5 µm when the catalog gives it none.
+    let (lo, hi) = if glass.max_um < 1e3 && glass.max_um > glass.min_um.max(0.1) {
+        (glass.min_um.max(0.1), glass.max_um)
+    } else {
+        (0.25, 2.5)
+    };
     let index_curve = if hi > lo {
         (0..=80)
             .filter_map(|k| {
@@ -785,6 +790,20 @@ LD 2.0 14.0\r\n";
         assert_eq!((ir.catalog_nd, ir.catalog_vd), (1.0, 0.0));
         let json = serde_json::to_value(&ir).unwrap();
         assert!(json["nd"].is_null() && json["vd"].is_null(), "{json}");
+        // Its index curve covers its own 2-14 µm range, not 0.25-2.5 µm.
+        let d = glass_details(
+            "LISTED",
+            &c.catalog.glasses["IRTEST"],
+            &c.catalog.glasses["IRTEST"],
+        );
+        assert_eq!(d.index_curve.len(), 81);
+        assert_eq!(d.index_curve[0][0], 2.0);
+        assert!((d.index_curve[80][0] - 14.0).abs() < 1e-12);
+        // A glass with no LD line falls back to 0.25-2.5 µm.
+        let mut none = c.catalog.glasses["WRONGNM"].clone();
+        (none.min_um, none.max_um) = (0.0, f64::MAX);
+        let d = glass_details("LISTED", &none, &none);
+        assert_eq!((d.index_curve[0][0], d.index_curve[80][0]), (0.25, 2.5));
         // A range with the d line but not the F line: n_d only.
         let mut half = c.catalog.glasses["WRONGNM"].clone();
         half.min_um = 0.5;

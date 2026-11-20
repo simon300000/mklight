@@ -531,7 +531,7 @@ substitution data, which the glass map and glass substitution read.
   `melt_frequency`, `acid_resistance`, `alkali_resistance`,
   `phosphate_resistance`, `thermal`, `transmittance`, `comment`, `lines`
   (`[{line, um, n}]` at the standard lines in range), `index_curve` (81
-  `[λ µm, n]` pairs over the range, clipped to 0.25–2.5 µm) and `glass` (the
+  `[λ µm, n]` pairs over the glass's own wavelength range, 0.25–2.5 µm when the catalog gives none) and `glass` (the
   glass in catalog JSON form, before overrides). Unknown glass:
   `MK_ERR_NOT_FOUND`.
 * `mk_session_remove_catalog(session, name, &json)` removes a catalog from

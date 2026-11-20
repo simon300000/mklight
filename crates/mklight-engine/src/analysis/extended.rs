@@ -187,7 +187,7 @@ impl Analysis for GlassMap {
                                 "nd",
                                 nf_u(
                                     "1",
-                                    "Catalogue d-line index; design offset and model glasses computed at catalogue reference conditions.",
+                                    "Computed d-line index; design offset and model glasses computed at catalogue reference conditions.",
                                 ),
                             ),
                             ("vd", nf_u("1", "Abbe number.")),
@@ -234,7 +234,25 @@ impl Analysis for GlassMap {
                                 ),
                             ),
                         ]),
-                        "All loaded glasses in catalogue order, then offset and model design glasses in surface order. Offset surfaces mark the shifted point only.",
+                        "Loaded glasses with a computable n_d and V_d in catalogue order, then offset and model design glasses in surface order. Offset surfaces mark the shifted point only.",
+                    ),
+                ),
+                (
+                    "omitted",
+                    arr(
+                        obj(&[
+                            ("catalog", string("Catalogue name.")),
+                            ("name", string("")),
+                            ("reason", string("Why the glass has no map coordinates.")),
+                            (
+                                "surfaces",
+                                arr(
+                                    int(""),
+                                    "Surface indices whose following medium is this glass.",
+                                ),
+                            ),
+                        ]),
+                        "Catalogue glasses left off the map because their wavelength range does not cover the d, F and C lines (e.g. infrared glasses).",
                     ),
                 ),
                 ("coordinates", string("Buffer name.")),
