@@ -46,25 +46,25 @@ public static class AnalysisCatalog
     /// <summary>Segoe Fluent Icons glyphs, chosen to echo the Mac app's SF Symbols.</summary>
     static readonly Dictionary<string, string> Glyphs = new()
     {
-        ["first_order"] = "", ["system_summary"] = "", ["validate"] = "",
-        ["spot_diagram"] = "", ["ray_fan"] = "", ["opd_fan"] = "",
-        ["field_curvature_distortion"] = "", ["grid_distortion"] = "",
-        ["seidel"] = "", ["longitudinal_aberration"] = "", ["chromatic_focal_shift"] = "",
-        ["lateral_colour"] = "", ["relative_illumination"] = "", ["footprint"] = "",
-        ["encircled_energy"] = "", ["geometric_mtf"] = "", ["best_focus"] = "",
-        ["ray_grid"] = "", ["wavefront_map"] = "", ["psf"] = "", ["mtf"] = "",
-        ["mtf_vs_field"] = "", ["through_focus_mtf"] = "",
-        ["diffraction_encircled_energy"] = "", ["line_spread"] = "", ["ghost_paths"] = "",
-        ["ghost_irradiance"] = "", ["stray_light"] = "", ["polarization_pupil_map"] = "",
-        ["system_transmission"] = "", ["glass_info"] = "", ["solves"] = "",
-        ["pupil_aberration"] = "", ["relative_illumination_map"] = "",
-        ["chief_ray_angle"] = "", ["glass_map"] = "", ["image_simulation"] = "",
+        ["first_order"] = "\uE8FD", ["system_summary"] = "\uE8A9", ["validate"] = "\uE930",
+        ["spot_diagram"] = "\uECCB", ["ray_fan"] = "\uEAFC", ["opd_fan"] = "\uE95E",
+        ["field_curvature_distortion"] = "\uE7AD", ["grid_distortion"] = "\uE809",
+        ["seidel"] = "\uE9D2", ["longitudinal_aberration"] = "\uE8AB", ["chromatic_focal_shift"] = "\uE790",
+        ["lateral_colour"] = "\uE771", ["relative_illumination"] = "\uE706", ["footprint"] = "\uE81D",
+        ["encircled_energy"] = "\uEA3A", ["geometric_mtf"] = "\uE9D2", ["best_focus"] = "\uE8A3",
+        ["ray_grid"] = "\uE80A", ["wavefront_map"] = "\uE909", ["psf"] = "\uE734", ["mtf"] = "\uE9D2",
+        ["mtf_vs_field"] = "\uE9D2", ["through_focus_mtf"] = "\uEAFC",
+        ["diffraction_encircled_energy"] = "\uEA3A", ["line_spread"] = "\uE9D9", ["ghost_paths"] = "\uE7AD",
+        ["ghost_irradiance"] = "\uE7B3", ["stray_light"] = "\uE82F", ["polarization_pupil_map"] = "\uE9E9",
+        ["system_transmission"] = "\uE72A", ["glass_info"] = "\uEB42", ["solves"] = "\uE943",
+        ["pupil_aberration"] = "\uECCA", ["relative_illumination_map"] = "\uE793",
+        ["chief_ray_angle"] = "\uE741", ["glass_map"] = "\uE9D2", ["image_simulation"] = "\uE91B",
     };
 
-    public const string LensDataGlyph = "";
-    public const string LayoutGlyph = "";
-    public const string WarningGlyph = "";
-    public const string ErrorGlyph = "";
+    public const string LensDataGlyph = "\uE80A";
+    public const string LayoutGlyph = "\uE81E";
+    public const string WarningGlyph = "\uE7BA";
+    public const string ErrorGlyph = "\uEA39";
 
     static readonly Dictionary<string, string> CategoryTitles = new()
     {
@@ -79,7 +79,7 @@ public static class AnalysisCatalog
         Titles.TryGetValue(name, out var t) ? t : engineTitle is { Length: > 0 } ? TitleCase(engineTitle) : TitleCase(name.Replace('_', ' '));
 
     public static string ShortTitle(string name) => ShortTitles.TryGetValue(name, out var t) ? t : Title(name);
-    public static string Glyph(string name) => Glyphs.TryGetValue(name, out var g) ? g : "";
+    public static string Glyph(string name) => Glyphs.TryGetValue(name, out var g) ? g : "\uE9D2";
     public static string CategoryTitle(string c) => CategoryTitles.TryGetValue(c, out var t) ? t : TitleCase(c);
 
     /// <summary>Category order: the known categories first, then the rest alphabetically.</summary>

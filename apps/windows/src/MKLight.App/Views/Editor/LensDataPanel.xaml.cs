@@ -6,4 +6,5 @@ namespace MKLight.App.Views;
 public sealed partial class LensDataPanel : UserControl
 {
     public LensDataPanel() { InitializeComponent(); }
+    public MKLight.App.ViewModels.ILensDataHost? Host { get; set; }
 }

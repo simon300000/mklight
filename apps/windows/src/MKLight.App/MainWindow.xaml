@@ -1,8 +1,0 @@
-<Window x:Class="MKLight.App.MainWindow"
-        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        xmlns:canvas="using:Microsoft.Graphics.Canvas.UI.Xaml">
-  <Grid>
-    <StackPanel><TextBlock Text="0123" Typography.NumeralAlignment="Tabular"/><TitleBar Title="x"/></StackPanel>
-  </Grid>
-</Window>

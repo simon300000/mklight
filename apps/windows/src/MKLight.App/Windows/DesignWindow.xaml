@@ -21,11 +21,8 @@
             <TitleBar.IconSource>
                 <ImageIconSource ImageSource="ms-appx:///Assets/AppIcon.png" />
             </TitleBar.IconSource>
-            <TitleBar.Content>
-                <views:StatusCapsule x:Name="Status" HorizontalAlignment="Center" />
-            </TitleBar.Content>
             <TitleBar.RightHeader>
-                <StackPanel Orientation="Horizontal" Spacing="2" Margin="0,0,4,0" VerticalAlignment="Center">
+                <StackPanel x:Name="RightButtons" Orientation="Horizontal" Spacing="2" Margin="0,0,4,0" VerticalAlignment="Center">
                     <Button x:Name="UndoButton" Style="{StaticResource CircleButton}" Content="&#xE7A7;" Click="OnUndo" ToolTipService.ToolTip="Undo (Ctrl+Z)" />
                     <Button x:Name="RedoButton" Style="{StaticResource CircleButton}" Content="&#xE7A6;" Click="OnRedo" ToolTipService.ToolTip="Redo (Ctrl+Y)" />
                     <Border Width="1" Height="18" Margin="6,0" Background="{ThemeResource DividerBrush}" />
@@ -58,6 +55,9 @@
                 </StackPanel>
             </TitleBar.RightHeader>
         </TitleBar>
+
+        <!-- The status capsule, centred on the window (pointer input passes through the title bar there). -->
+        <views:StatusCapsule x:Name="Status" HorizontalAlignment="Center" VerticalAlignment="Center" />
 
         <NavigationView x:Name="Nav" Grid.Row="1"
                         PaneDisplayMode="Left" IsBackButtonVisible="Collapsed" IsPaneToggleButtonVisible="False"

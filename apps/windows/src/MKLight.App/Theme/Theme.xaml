@@ -25,6 +25,16 @@
             <Color x:Key="WarningColor">#FFE07800</Color>
             <Color x:Key="ErrorColor">#FFD13438</Color>
             <Color x:Key="StaleCardColor">#E6FFFFFF</Color>
+            <SolidColorBrush x:Key="ContentSurfaceBrush" Color="{StaticResource ContentSurfaceColor}" />
+            <SolidColorBrush x:Key="ContentStrokeBrush" Color="{StaticResource ContentStrokeColor}" />
+            <SolidColorBrush x:Key="DividerBrush" Color="{StaticResource DividerColor}" />
+            <SolidColorBrush x:Key="RowStripeBrush" Color="{StaticResource RowStripeColor}" />
+            <SolidColorBrush x:Key="HeaderRuleBrush" Color="{StaticResource HeaderRuleColor}" />
+            <SolidColorBrush x:Key="CapsuleBrush" Color="{StaticResource CapsuleColor}" />
+            <SolidColorBrush x:Key="CapsuleStrokeBrush" Color="{StaticResource CapsuleStrokeColor}" />
+            <SolidColorBrush x:Key="WarningBrush" Color="{StaticResource WarningColor}" />
+            <SolidColorBrush x:Key="ErrorBrush" Color="{StaticResource ErrorColor}" />
+            <SolidColorBrush x:Key="StaleCardBrush" Color="{StaticResource StaleCardColor}" />
         </ResourceDictionary>
         <ResourceDictionary x:Key="Dark">
             <Color x:Key="ContentSurfaceColor">#FF1A1A19</Color>
@@ -41,6 +51,16 @@
             <Color x:Key="WarningColor">#FFFF9F2E</Color>
             <Color x:Key="ErrorColor">#FFFF6B6B</Color>
             <Color x:Key="StaleCardColor">#D92C2C2C</Color>
+            <SolidColorBrush x:Key="ContentSurfaceBrush" Color="{StaticResource ContentSurfaceColor}" />
+            <SolidColorBrush x:Key="ContentStrokeBrush" Color="{StaticResource ContentStrokeColor}" />
+            <SolidColorBrush x:Key="DividerBrush" Color="{StaticResource DividerColor}" />
+            <SolidColorBrush x:Key="RowStripeBrush" Color="{StaticResource RowStripeColor}" />
+            <SolidColorBrush x:Key="HeaderRuleBrush" Color="{StaticResource HeaderRuleColor}" />
+            <SolidColorBrush x:Key="CapsuleBrush" Color="{StaticResource CapsuleColor}" />
+            <SolidColorBrush x:Key="CapsuleStrokeBrush" Color="{StaticResource CapsuleStrokeColor}" />
+            <SolidColorBrush x:Key="WarningBrush" Color="{StaticResource WarningColor}" />
+            <SolidColorBrush x:Key="ErrorBrush" Color="{StaticResource ErrorColor}" />
+            <SolidColorBrush x:Key="StaleCardBrush" Color="{StaticResource StaleCardColor}" />
         </ResourceDictionary>
         <ResourceDictionary x:Key="HighContrast">
             <Color x:Key="ContentSurfaceColor">#FF000000</Color>
@@ -57,19 +77,19 @@
             <Color x:Key="WarningColor">#FFFFFF00</Color>
             <Color x:Key="ErrorColor">#FFFF0000</Color>
             <Color x:Key="StaleCardColor">#FF000000</Color>
+            <SolidColorBrush x:Key="ContentSurfaceBrush" Color="{StaticResource ContentSurfaceColor}" />
+            <SolidColorBrush x:Key="ContentStrokeBrush" Color="{StaticResource ContentStrokeColor}" />
+            <SolidColorBrush x:Key="DividerBrush" Color="{StaticResource DividerColor}" />
+            <SolidColorBrush x:Key="RowStripeBrush" Color="{StaticResource RowStripeColor}" />
+            <SolidColorBrush x:Key="HeaderRuleBrush" Color="{StaticResource HeaderRuleColor}" />
+            <SolidColorBrush x:Key="CapsuleBrush" Color="{StaticResource CapsuleColor}" />
+            <SolidColorBrush x:Key="CapsuleStrokeBrush" Color="{StaticResource CapsuleStrokeColor}" />
+            <SolidColorBrush x:Key="WarningBrush" Color="{StaticResource WarningColor}" />
+            <SolidColorBrush x:Key="ErrorBrush" Color="{StaticResource ErrorColor}" />
+            <SolidColorBrush x:Key="StaleCardBrush" Color="{StaticResource StaleCardColor}" />
         </ResourceDictionary>
     </ResourceDictionary.ThemeDictionaries>
 
-    <SolidColorBrush x:Key="ContentSurfaceBrush" Color="{ThemeResource ContentSurfaceColor}" />
-    <SolidColorBrush x:Key="ContentStrokeBrush" Color="{ThemeResource ContentStrokeColor}" />
-    <SolidColorBrush x:Key="DividerBrush" Color="{ThemeResource DividerColor}" />
-    <SolidColorBrush x:Key="RowStripeBrush" Color="{ThemeResource RowStripeColor}" />
-    <SolidColorBrush x:Key="HeaderRuleBrush" Color="{ThemeResource HeaderRuleColor}" />
-    <SolidColorBrush x:Key="CapsuleBrush" Color="{ThemeResource CapsuleColor}" />
-    <SolidColorBrush x:Key="CapsuleStrokeBrush" Color="{ThemeResource CapsuleStrokeColor}" />
-    <SolidColorBrush x:Key="WarningBrush" Color="{ThemeResource WarningColor}" />
-    <SolidColorBrush x:Key="ErrorBrush" Color="{ThemeResource ErrorColor}" />
-    <SolidColorBrush x:Key="StaleCardBrush" Color="{ThemeResource StaleCardColor}" />
 
     <!-- The sidebar and the content area: the sidebar sits on Mica; content is opaque. -->
     <SolidColorBrush x:Key="NavigationViewContentBackground" Color="Transparent" />

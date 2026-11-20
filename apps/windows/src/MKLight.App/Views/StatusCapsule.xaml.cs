@@ -2,11 +2,12 @@ using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Media;
+using MKLight.App.Support;
 
 namespace MKLight.App.Views;
 
 /// <summary>A validation issue as the capsule lists it.</summary>
-public sealed record IssueItem(string Severity, string Message, string? Where);
+public sealed record IssueItem(string Severity, string Message, string? Where, int? Surface = null);
 
 /// <summary>
 /// The status capsule in the title bar's centre (the Mac app's DesignStatus):
@@ -75,15 +76,15 @@ public sealed partial class StatusCapsule : UserControl
         var errors = issues.Count(i => i.Severity == "error");
         if (issues.Count == 0)
         {
-            IssuesGlyph.Glyph = "";
-            IssuesGlyph.Foreground = (Brush)Application.Current.Resources["TextFillColorTertiaryBrush"];
+            IssuesGlyph.Glyph = "\uE930";
+            IssuesGlyph.Foreground = ThemeLookup.Brush(this, "TextFillColorTertiaryBrush");
             IssuesCount.Visibility = Visibility.Collapsed;
             ToolTipService.SetToolTip(IssuesButton, "The engine found no problems in the design");
         }
         else
         {
-            IssuesGlyph.Glyph = errors > 0 ? "" : "";
-            var brush = (Brush)Application.Current.Resources[errors > 0 ? "ErrorBrush" : "WarningBrush"];
+            IssuesGlyph.Glyph = errors > 0 ? "\uEA39" : "\uE7BA";
+            var brush = ThemeLookup.Brush(this, errors > 0 ? "ErrorBrush" : "WarningBrush");
             IssuesGlyph.Foreground = brush;
             IssuesCount.Foreground = brush;
             IssuesCount.Text = issues.Count.ToString(System.Globalization.CultureInfo.InvariantCulture);
@@ -107,8 +108,8 @@ public sealed partial class StatusCapsule : UserControl
             var isError = issue.Severity == "error";
             row.Children.Add(new FontIcon
             {
-                Glyph = isError ? "" : issue.Severity == "warning" ? "" : "", FontSize = 14,
-                Foreground = (Brush)Application.Current.Resources[isError ? "ErrorBrush" : issue.Severity == "warning" ? "WarningBrush" : "TextFillColorSecondaryBrush"],
+                Glyph = isError ? "\uEA39" : issue.Severity == "warning" ? "\uE7BA" : "\uE946", FontSize = 14,
+                Foreground = ThemeLookup.Brush(this, isError ? "ErrorBrush" : issue.Severity == "warning" ? "WarningBrush" : "TextFillColorSecondaryBrush"),
                 VerticalAlignment = VerticalAlignment.Top, Margin = new Thickness(0, 2, 0, 0),
             });
             var text = new StackPanel { Spacing = 1 };
