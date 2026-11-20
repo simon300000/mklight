@@ -4,6 +4,7 @@ using MKLight.App.ViewModels;
 using MKLight.App.Windows;
 using MKLight.Engine;
 using MKLight.Model;
+using static MKLight.Tests.Engine.EngineTestSupport;
 
 namespace MKLight.Tests.Documents;
 
@@ -71,9 +72,9 @@ public sealed class DocumentsTests : IDisposable
         var file = Path.Combine(_dir, "lens.mklight");
         saved.Write(file);
         var changed = saved with { System = saved.System with { Name = "Changed" } };
-        Autosaves.Write(changed, file + Autosaves.Suffix, "1.0");
+        Autosaves.Write(SharedEngine(), changed, file + Autosaves.Suffix, file);
         var untitled = Autosaves.PathFor(null, Guid.NewGuid(), support);
-        Autosaves.Write(changed, untitled, null);
+        Autosaves.Write(SharedEngine(), changed, untitled, null);
         File.SetLastWriteTime(untitled, DateTime.Now.AddMinutes(-5));
 
         var found = Autosaves.Find(support, [file, file, Path.Combine(_dir, "missing.mklight")]);
@@ -83,7 +84,8 @@ public sealed class DocumentsTests : IDisposable
         Assert.Null(found[1].Original);
 
         // Beside a file: undo goes back to the saved file; the recovered state is one undoable step.
-        var recovered = ProjectFile.Read(found[0].Path);
+        var (recovered, warnings) = Autosaves.Read(SharedEngine(), found[0].Path);
+        Assert.Empty(warnings);
         var doc = new DesignDocument(Autosaves.RecoveryBase(found[0], recovered), file);
         Assert.True(doc.EditProject("Recover Unsaved Changes", _ => recovered));
         Assert.True(doc.IsDirty);
@@ -92,7 +94,7 @@ public sealed class DocumentsTests : IDisposable
         Assert.Equal(saved.System.Name, doc.System.Name);
 
         // Untitled: the autosave (stamped with metadata) differs from its bare system, so it shows as changed.
-        var u = ProjectFile.Read(found[1].Path);
+        var u = Autosaves.Read(SharedEngine(), found[1].Path).Project;
         var udoc = new DesignDocument(Autosaves.RecoveryBase(found[1], u));
         Assert.True(udoc.EditProject("Recover Unsaved Changes", _ => u));
         Assert.True(udoc.IsDirty);

@@ -1,3 +1,4 @@
+using MKLight.Engine;
 using MKLight.Model;
 
 namespace MKLight.App.Windows;
@@ -50,12 +51,23 @@ public static class Autosaves
         return found.OrderByDescending(e => e.Modified).ToList();
     }
 
-    /// <summary>Writes <paramref name="project"/> to <paramref name="path"/> (a complete file or none).</summary>
-    public static void Write(ProjectFile project, string path, string? engineVersion)
+    /// <summary>
+    /// Writes <paramref name="project"/> to <paramref name="path"/> through the engine (ABI 1.7: every section and
+    /// catalog reference, missing ones included; a complete file or none). <paramref name="documentPath"/>: the
+    /// design's file, whose folder the catalogs' relative paths are written for (none for an untitled design).
+    /// </summary>
+    public static void Write(FFIEngine engine, ProjectFile project, string path, string? documentPath)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-        var version = typeof(Autosaves).Assembly.GetName().Version?.ToString(3) ?? "0.1.0";
-        project.StampMetadata("MKLight for Windows", version, engineVersion).Write(path);
+        var doc = project.WithRelativeCatalogPaths(documentPath is null ? null : Path.GetDirectoryName(Path.GetFullPath(documentPath)));
+        engine.AutosaveProject(doc.Encoded(), path);
+    }
+
+    /// <summary>An autosave read back through the engine: the project and the catalogs it could not load.</summary>
+    public static (ProjectFile Project, IReadOnlyList<string> Warnings) Read(FFIEngine engine, string path)
+    {
+        var (json, warnings) = engine.OpenProject(path);
+        return (ProjectFile.Decode(json), warnings);
     }
 
     // ---- Ownership: an autosave a running instance still writes is never offered to another launch ----

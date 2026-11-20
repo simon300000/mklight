@@ -86,6 +86,14 @@ internal static unsafe class CAbi
         return new EngineHandle(engine);
     }
 
+    /// <summary>A session opened from a project file (<c>mk_session_open</c>); unreadable catalogs do not fail it.</summary>
+    public static SessionHandle SessionOpen(EngineHandle engine, string path)
+    {
+        Check(Native.mk_session_open(engine, path, out var session), "mk_session_open");
+        if (session == 0) throw EngineException.Engine(EngineErrorCode.Internal, "mk_session_open returned no session");
+        return new SessionHandle(session, engine);
+    }
+
     public static SessionHandle SessionNew(EngineHandle engine)
     {
         Check(Native.mk_session_new(engine, out var session), "mk_session_new");

@@ -217,7 +217,8 @@ public sealed partial class DesignWindow
         {
             _panels.SaveNow();
             Autosaves.Hold(path); // before the file appears, so no other launch offers it
-            Autosaves.Write(_session.Document.Project, path, _session.Workspace.Engine.Info.Version);
+            if (App.Engine is not FFIEngine engine) throw new InvalidOperationException("no engine to autosave with");
+            Autosaves.Write(engine, _session.Document.Project, path, _session.Document.Path);
             _autosavesWritten.Add(path);
             _changedSince = null;
             return path;

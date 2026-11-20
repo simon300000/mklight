@@ -8,7 +8,7 @@ statuses describe the end of round 3 and are updated as rounds land.
 
 Legend: ✅ done, 🟡 partial, ⬜ not started. The "Windows notes" column says
 where the feature lives or what is missing. "Binding ready" means the engine
-binding (`MKLight.Engine`, ABI 1.6) already supports it and only the UI is
+binding (`MKLight.Engine`, ABI 1.7) already supports it and only the UI is
 missing.
 
 ## 1. Window and chrome
@@ -431,7 +431,7 @@ add library catalog, glass overrides, glass details, `mk_glass_from_spec`,
 | Sample cards with engine-computed layout thumbnails; Surface Types group | ✅ | |
 | Mock engine mark in the welcome window | ⬜ | Not ported by design: no mock engine |
 | Import report sheet (groups, Copy Report, Load Glass Catalog) | ✅ | `Windows/ImportReport*.cs`: groups, Copy Report, Load Glass Catalog |
-| Autosave, versions; dirty state follows undo | 🟡 | Autosave by the app's own writer, recovery at launch (`Windows/AutosaveRecovery.cs`); dirty follows undo; versions ⬜ |
+| Autosave, versions; dirty state follows undo | 🟡 | Autosave and recovery through the engine (ABI 1.7: `mk_session_set_project_json` with the catalog references, `mk_session_autosave`, `mk_session_open`), recovery at launch (`Windows/AutosaveRecovery.cs`); dirty follows undo; versions ⬜ |
 | Save stamps metadata and library-catalog references | ✅ | Metadata stamp and library-catalog references (`DesignDocument`) |
 | Project sections preserved (system, catalogs, variables, views, merit, tolerances, metadata, unknown keys) | ✅ | Unknown sections kept verbatim |
 | Undo/redo naming for all edits across windows | ✅ | Whole-state undo; one window |
@@ -544,10 +544,10 @@ adopted in round 4:
 * `glass_map` leaves infrared glasses out and lists them in `omitted`, which the
   glass map shows beside the plot with the reason.
 * The glass details index curve spans the glass's own range.
-* `mk_session_set_project_json` can carry every project section into
-  `mk_session_autosave`. The app keeps its own autosave writer: Save uses the same
-  writer, and the engine would write the session's catalog list rather than the
-  document's catalog references (with their relative paths).
+* `mk_session_set_project_json` carries every project section into
+  `mk_session_autosave`, and since ABI 1.7 the document's catalog references too
+  (kept as given, missing ones recorded). Autosave and recovery go through the
+  engine since then; Save keeps the app's writer (see docs/WINDOWS.md).
 
 ## Design notes for later rounds
 
