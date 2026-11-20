@@ -270,7 +270,7 @@ public class EngineBoundaryTests
         Assert.Equal(snap, snap with { SystemJson = "{\"other\":1}" });
         // Without its request: the engine's recorded settings must contain the requested ones.
         var recorded = new EngineAnalysisRequest("mtf", EngineTestSupport.Settings(("normalised", true)));
-        var bare = output.WithRequest(null);
+        var bare = new AnalysisOutput(output.RunInfo, output.Json, libraryHash: output.LibraryHash, backend: output.Backend);
         Assert.True(bare.IsCurrent(snap, recorded));
         Assert.False(bare.IsCurrent(snap, new EngineAnalysisRequest("mtf", EngineTestSupport.Settings(("normalised", false)))));
         Assert.False(bare.IsCurrent(newLibrary, recorded));

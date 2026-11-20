@@ -138,7 +138,7 @@ public sealed partial class AnalysisPaneView : UserControl
 
     string StateLine(AnalysisDescriptor? d, bool running)
     {
-        if (running) return _pane.Progress.Stage is { Length: > 0 } s ? $"{s} · {_pane.Progress.Fraction * 100:0}%".Replace(",", ".") : "Computing";
+        if (running) return _pane.Progress.Stage is { Length: > 0 } s ? s + " · " + (_pane.Progress.Fraction * 100).ToString("0", CultureInfo.InvariantCulture) + "%" : "Computing";
         if (_pane.Phase == PanePhase.Failed && _pane.Output is not null) return "Last run failed: " + _pane.Message;
         if (d is not null)
         {

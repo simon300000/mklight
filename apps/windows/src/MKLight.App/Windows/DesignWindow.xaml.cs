@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.Json.Nodes;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
@@ -137,7 +138,7 @@ public sealed partial class DesignWindow : Window
         var ws = _session.Workspace;
         var running = ws.Panes.Where(p => p.IsRunning).ToList();
         Status.SetActivity(ws.IsBusy ? (running.Count == 1 && running[0].Progress.Fraction > 0
-            ? $"{AnalysisCatalog.ShortTitle(running[0].Analysis)} {running[0].Progress.Fraction * 100:0}%".Replace(',', '.')
+            ? AnalysisCatalog.ShortTitle(running[0].Analysis) + " " + (running[0].Progress.Fraction * 100).ToString("0", CultureInfo.InvariantCulture) + "%"
             : "") : null);
         var json = ws.Summary.Output?.Json;
         var entries = (json?["entries"] as JsonArray ?? []).OfType<JsonObject>()
@@ -166,7 +167,7 @@ public sealed partial class DesignWindow : Window
     static string GpuText(GpuPreparation p) => p switch
     {
         GpuPreparation.Preparing x => $"Preparing ({x.Done} of {x.Total})",
-        GpuPreparation.Ready x => x.FromCache > 0 ? $"Ready ({x.Kernels}, loaded from cache)" : $"Ready ({x.Kernels}, prepared in {x.Seconds:0.0} s)".Replace(',', '.'),
+        GpuPreparation.Ready x => x.FromCache > 0 ? $"Ready ({x.Kernels}, loaded from cache)" : $"Ready ({x.Kernels}, prepared in {x.Seconds.ToString("0.0", CultureInfo.InvariantCulture)} s)",
         GpuPreparation.Unavailable x => "No GPU: " + x.Reason,
         GpuPreparation.Failed x => $"Compiled on first use ({x.Message})",
         _ => "Not prepared",

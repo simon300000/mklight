@@ -520,6 +520,23 @@ Windows has its own set (docs/WINDOWS.md "Launch options"): `--sample`, `--analy
 | 21. Debug launch options | 3 | 1 | 14 | 18 |
 | **Total** | **90** | **74** | **194** | **358** |
 
+## Known issues for round 2
+
+From the round-1 review; not features of the Mac app, so not counted above.
+
+* **Document sessions of closed windows** are not disposed. Dispose only sessions a
+  window owns: `MakeDocumentEngine()` may return the shared engine, which must stay.
+* **Project catalogs**: an opened project's `catalogs` (`ProjectFile.Catalogs`) are not
+  loaded into its session yet, so a design that uses a user catalog fails to resolve
+  its glasses.
+* **Native DLL per platform**: `scripts/build-windows.ps1 -Platform ARM64` copies the
+  ARM64 DLL into the same `apps/windows/native/` as the x64 one; use a per-platform
+  directory so the two cannot be mixed up.
+* **Prescription import on the UI thread**: `.zmx` / `.seq` files are imported with the
+  blocking `ImportPrescription`; use `ImportPrescriptionAsync` on the document engine.
+* **Replaced results** are freed by the garbage collector (their native size is reported
+  as memory pressure), not disposed as soon as the pane's view has switched.
+
 ## Design notes for later rounds
 
 * **Previewing an unapplied candidate (optimizer, glass substitution,

@@ -21,8 +21,9 @@ public static class NumberText
 
     /// <summary>
     /// A number, accepting "∞"/"inf", a Unicode minus sign, a decimal comma
-    /// ("1,5", as typed in regions that write one) and surrounding space.
-    /// NaN and grouping separators are rejected.
+    /// ("1,5", as typed in regions that write one) and surrounding space. NaN is rejected.
+    /// The app never groups digits, so a lone comma is always the decimal comma: "1,000"
+    /// is 1, as in the lens table, the model's parser and the Mac app.
     /// </summary>
     public static double? Parse(string text)
     {

@@ -235,6 +235,7 @@ public sealed class Workspace
         if (Descriptor(pane.Analysis) is { Available: false } d)
         {
             pane.Job?.Cancel();
+            pane.Job = null; // the cancelled job's outcome must not replace this state
             SetPhase(pane, PanePhase.Unavailable, d.UnavailableReason ?? "Not available in this engine build.");
             return;
         }

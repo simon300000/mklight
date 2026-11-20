@@ -42,6 +42,12 @@ internal static unsafe partial class Native
     /// <summary><c>MK_ABI_VERSION_MAJOR</c> this app was built against.</summary>
     public const uint AbiVersionMajor = 1;
 
+    /// <summary>
+    /// The oldest minor version this binding needs: it calls functions of ABI 1.4 (GPU kernel
+    /// preparation) and 1.5 (glass catalog management). A newer minor only adds.
+    /// </summary>
+    public const uint AbiVersionMinor = 5;
+
     /// <summary><c>MK_OK</c>.</summary>
     public const int Ok = 0;
 

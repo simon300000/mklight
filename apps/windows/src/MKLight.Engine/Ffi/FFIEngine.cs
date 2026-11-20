@@ -407,12 +407,16 @@ public sealed class FFIEngine : IEngineClient, IDisposable
                 {
                     if (submission.IsCancelled) throw EngineException.Cancelled();
                     Hold(s, snapshot);
-                    return core.Hub.Submit(() => CAbi.Submit(s, requestJson));
+                    return core.Hub.Submit(() =>
+                    {
+                        // Only the submission's refusal is about the settings (setting the system above is not).
+                        try { return CAbi.Submit(s, requestJson); }
+                        catch (EngineException e) when (e.Kind == EngineErrorKind.Engine && e.Code == EngineErrorCode.InvalidArgument)
+                        {
+                            throw EngineException.InvalidSettings([e.Detail]);
+                        }
+                    });
                 }).ConfigureAwait(false);
-            }
-            catch (EngineException e) when (e.Kind == EngineErrorKind.Engine && e.Code == EngineErrorCode.InvalidArgument)
-            {
-                throw EngineException.InvalidSettings([e.Detail]);
             }
             catch (ObjectDisposedException)
             {
@@ -499,6 +503,12 @@ public sealed class FFIEngine : IEngineClient, IDisposable
                         core.Hub.Deliver(id, new JobEvent(state, fraction, ""));
                         return;
                     }
+                }
+                catch (EngineException e) when (e.Code == EngineErrorCode.NotFound)
+                {
+                    // The engine no longer knows the job: end it, so a pane cannot stay running.
+                    core.Hub.Deliver(id, new JobEvent(JobState.Failed, 0, ""));
+                    return;
                 }
                 catch (EngineException)
                 {

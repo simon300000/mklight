@@ -84,6 +84,7 @@ public class FmtTests
                 Assert.Equal("12.3400 mm", Fmt.Length(12.34));
                 Assert.Equal("0.5876 µm", Fmt.Wavelength(0.5876));
                 Assert.Equal(1.5, NumberText.Parse("1,5"));
+                Assert.Equal(1.0, NumberText.Parse("1,000")); // a lone comma is the decimal comma: the app never groups
                 Assert.Equal(1234.5, NumberText.Parse("1234.5"));
                 Assert.Equal("0.1", NumberText.Exact(0.1));
             }

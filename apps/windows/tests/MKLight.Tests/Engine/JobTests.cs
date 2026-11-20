@@ -158,6 +158,7 @@ public class HeaderConstantsTests
     {
         var defines = Defines();
         Assert.Equal(Native.AbiVersionMajor, (uint)defines["MK_ABI_VERSION_MAJOR"]);
+        Assert.True((uint)defines["MK_ABI_VERSION_MINOR"] >= Native.AbiVersionMinor);
         Assert.Equal(Native.Ok, (int)defines["MK_OK"]);
         Matches<EngineErrorCode>("MK_ERR_", defines);
         Matches<BufferDType>("MK_DTYPE_", defines);

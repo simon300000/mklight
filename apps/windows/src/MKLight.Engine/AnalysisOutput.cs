@@ -46,10 +46,6 @@ public sealed class AnalysisOutput(
     bool LibraryMatches(ModelSnapshot snapshot) =>
         LibraryHash is null || snapshot.LibraryHash is null || LibraryHash == snapshot.LibraryHash;
 
-    /// <summary>A copy that shares the buffers, with another (or no) producing request.</summary>
-    public AnalysisOutput WithRequest(EngineAnalysisRequest? request) =>
-        new(RunInfo, Json, Buffers, LibraryHash, request, Backend);
-
     public void Dispose()
     {
         foreach (var b in Buffers) b.Dispose();

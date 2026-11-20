@@ -15,7 +15,7 @@ internal static unsafe class CAbi
     static readonly Lazy<string?> loadFailure = new(ProbeLibrary);
 
     /// <summary>
-    /// <c>null</c> when the library loads and its ABI major version matches; else why not.
+    /// <c>null</c> when the library loads, its ABI major version matches and its minor version is at least the one the binding needs; else why not.
     /// Never throws.
     /// </summary>
     public static string? LoadFailure => loadFailure.Value;
@@ -24,8 +24,13 @@ internal static unsafe class CAbi
     {
         try
         {
-            var major = Native.mk_abi_version() >> 16;
-            return major == Native.AbiVersionMajor ? null : $"engine ABI major version {major}, app built for {Native.AbiVersionMajor}";
+            var version = Native.mk_abi_version();
+            uint major = version >> 16, minor = version & 0xffff;
+            if (major != Native.AbiVersionMajor)
+                return $"The engine DLL has ABI {major}.{minor}; this app needs {Native.AbiVersionMajor}.{Native.AbiVersionMinor} or a later {Native.AbiVersionMajor}.x.";
+            if (minor < Native.AbiVersionMinor)
+                return $"The engine DLL is too old: ABI {major}.{minor}, this app needs {major}.{Native.AbiVersionMinor} or later. Rebuild it with scripts/build-windows.ps1 -EngineOnly.";
+            return null;
         }
         catch (Exception e) when (e is DllNotFoundException or EntryPointNotFoundException or BadImageFormatException)
         {
@@ -66,9 +71,10 @@ internal static unsafe class CAbi
     public static string String(string function, StringCall call)
     {
         var status = call(out var p);
-        var text = Take(p);
-        Check(status, function);
-        return text ?? "";
+        // Read the engine's message before freeing (it is valid until the next mk_* call).
+        try { Check(status, function); }
+        catch { Take(p); throw; }
+        return Take(p) ?? "";
     }
 
     // Engine
@@ -137,12 +143,17 @@ internal static unsafe class CAbi
     public static (string Json, ResultBuffer[] Buffers) JobTakeResult(EngineHandle e, ulong job)
     {
         var status = Native.mk_job_take_result(e, job, out var json, out var array, out var count);
-        var text = Take(json) ?? "{}";
         if (status != Native.Ok)
         {
-            Native.mk_buffer_free(array, count);
-            Check(status, "mk_job_take_result");
+            // The engine's message is read before any other mk_* call (it is valid until the next one).
+            try { Check(status, "mk_job_take_result"); }
+            finally
+            {
+                Native.mk_string_free(json);
+                Native.mk_buffer_free(array, count);
+            }
         }
+        var text = Take(json) ?? "{}";
         if (array is null || count == 0) return (text, []);
         return (text, BufferArray.Wrap(array, count));
     }
@@ -158,18 +169,26 @@ internal sealed unsafe class BufferArray : BufferOwner
 {
     nint array;
     readonly nuint count;
+    readonly long bytes;
     int references;
 
-    BufferArray(MKBuffer* array, nuint count, int references)
+    /// <param name="bytes">The data the array keeps alive: reported to the GC as memory
+    /// pressure, so replaced results are collected before native memory piles up.</param>
+    BufferArray(MKBuffer* array, nuint count, int references, long bytes)
     {
         this.array = (nint)array;
         this.count = count;
         this.references = references;
+        this.bytes = bytes;
+        if (bytes > 0) GC.AddMemoryPressure(bytes);
     }
 
     public static ResultBuffer[] Wrap(MKBuffer* array, nuint count)
     {
-        var owner = new BufferArray(array, count, checked((int)count));
+        long bytes = 0;
+        for (nuint i = 0; i < count; i++)
+            if (Enum.IsDefined((BufferDType)array[i].DType)) bytes += (long)array[i].Len * ((BufferDType)array[i].DType).ByteWidth();
+        var owner = new BufferArray(array, count, checked((int)count), bytes);
         var buffers = new ResultBuffer[(int)count];
         for (int i = 0; i < buffers.Length; i++)
         {
@@ -195,7 +214,9 @@ internal sealed unsafe class BufferArray : BufferOwner
     void Free()
     {
         var p = Interlocked.Exchange(ref array, 0);
-        if (p != 0) Native.mk_buffer_free((MKBuffer*)p, count);
+        if (p == 0) return;
+        Native.mk_buffer_free((MKBuffer*)p, count);
+        if (bytes > 0) GC.RemoveMemoryPressure(bytes);
         GC.SuppressFinalize(this);
     }
 
