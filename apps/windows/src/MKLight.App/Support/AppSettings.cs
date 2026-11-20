@@ -18,7 +18,8 @@ public static class AppSettings
     public static string SupportDirectory =>
         Environment.GetEnvironmentVariable("MKLIGHT_SUPPORT_DIRECTORY") is { Length: > 0 } d ? d : Directory;
 
-    static string FilePath => Path.Combine(Directory, "settings.json");
+    // Settings and recent files follow the support folder, so checks with a scratch folder never touch the user's.
+    static string FilePath => Path.Combine(SupportDirectory, "settings.json");
 
     static JsonObject Load()
     {
@@ -30,7 +31,7 @@ public static class AppSettings
     {
         try
         {
-            System.IO.Directory.CreateDirectory(Directory);
+            System.IO.Directory.CreateDirectory(SupportDirectory);
             File.WriteAllText(FilePath, o.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
         }
         catch (Exception) { /* preferences are best effort */ }
