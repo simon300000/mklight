@@ -143,16 +143,25 @@ public sealed partial class DesignWindow : Window
             DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, UpdatePassthrough);
             return;
         }
-        var centredLeft = (Root.ActualWidth - Status.ActualWidth) / 2;
+        // The capsule is bounded by the room between the menu bar and the trailing buttons (a long one, such as
+        // "Preparing GPU" with anamorphic numbers, is cut there rather than run into the buttons).
+        var maxWidth = Math.Max(120, Math.Floor(buttonsStart - menuEnd - 24));
+        if (Math.Abs(Status.MaxWidth - maxWidth) > 1) Status.MaxWidth = maxWidth;
+        var width = Math.Min(Status.ActualWidth, maxWidth);
+        // Centred on the window unless that covers the menu bar or the buttons; moved by a transform, which
+        // leaves the layout alone (a margin changes the capsule's room, its width, and so the margin again).
+        var centredLeft = (Root.ActualWidth - width) / 2;
         var left = Math.Max(centredLeft, menuEnd + 16);
-        if (left + Status.ActualWidth > buttonsStart - 8) left = Math.Max(menuEnd + 8, buttonsStart - 8 - Status.ActualWidth);
+        if (left + width > buttonsStart - 8) left = Math.Max(menuEnd + 8, buttonsStart - 8 - width);
         var shift = Math.Round(left - centredLeft);
         DocTitle.Visibility = left - menuEnd - 10 >= 80 ? Visibility.Visible : Visibility.Collapsed;
         DocTitle.MaxWidth = Math.Max(0, left - menuEnd - 26);
-        if (Math.Abs(Status.Margin.Left - shift * 2) > 1)
+        if (Status.RenderTransform is not Microsoft.UI.Xaml.Media.TranslateTransform move)
+            Status.RenderTransform = move = new Microsoft.UI.Xaml.Media.TranslateTransform();
+        if (Math.Abs(move.X - shift) > 0.5)
         {
-            // A left margin moves the centred capsule by half of it; the regions follow once it has moved.
-            Status.Margin = new Thickness(shift * 2, 0, 0, 0);
+            move.X = shift;
+            // The regions follow once it has moved.
             DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, UpdatePassthrough);
             return;
         }
