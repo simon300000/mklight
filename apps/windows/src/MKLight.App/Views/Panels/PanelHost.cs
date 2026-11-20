@@ -47,7 +47,6 @@ public sealed class PanelHost : UserControl
         Arrangement.Changed += Refresh;
         session.Workspace.PanesChanged += OnPanesChanged;
         session.Workspace.StateChanged += FollowFocus;
-        ActualThemeChanged += (_, _) => Refresh();
         OnPanesChanged();
         Refresh();
     }
@@ -102,7 +101,6 @@ public sealed class PanelHost : UserControl
         _window = window;
         _main.HostWindow = window;
         window.Closed += (_, _) => TearDown();
-        window.RootElement.ActualThemeChanged += (_, _) => { foreach (var w in _windows.Values) w.FollowTheme(); };
         _saveTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
         // Pane toggles (automatic update, settings shown) raise no event: saved within a second.
         _saveTimer.Tick += (_, _) => Save();
@@ -356,7 +354,7 @@ public sealed class PanelHost : UserControl
     /// Every tree follows the arrangement. Views that move are taken out of their old place first (a view
     /// has one parent); the others stay where they are.
     /// </summary>
-    void Refresh()
+    internal void Refresh()
     {
         var rebuild = Trees.Where(t => t.NeedsRebuild).ToHashSet();
         foreach (var (panel, gv) in _hostOf.ToList())

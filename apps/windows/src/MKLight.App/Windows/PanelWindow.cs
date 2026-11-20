@@ -3,6 +3,7 @@ using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Markup;
+using MKLight.App.Support;
 using MKLight.App.ViewModels;
 using MKLight.App.Views.Panels;
 using Windows.System;
@@ -72,7 +73,7 @@ public sealed partial class PanelWindow : Window
         ((DropDownButton)_root.FindName("AddButton")).Flyout = add;
         ((Button)_root.FindName("DockButton")).Click += (_, _) => host.Dock(model);
 
-        FollowTheme();
+        ThemeSwitch.Attach(this, _root);
         BuildAccelerators();
         PlaceOnScreen();
         if (AppWindow.Presenter is OverlappedPresenter p)
@@ -103,15 +104,6 @@ public sealed partial class PanelWindow : Window
         Close();
     }
 
-    /// <summary>The design window's appearance (light, dark or the system's), caption buttons included.</summary>
-    internal void FollowTheme()
-    {
-        if (_host.Window is { } main) _root.RequestedTheme = main.RootElement.RequestedTheme;
-        var dark = _root.ActualTheme == ElementTheme.Dark
-            || (_root.RequestedTheme == ElementTheme.Default && Application.Current.RequestedTheme == ApplicationTheme.Dark);
-        AppWindow.TitleBar.ButtonForegroundColor = dark ? Microsoft.UI.Colors.White : Microsoft.UI.Colors.Black;
-        AppWindow.TitleBar.ButtonHoverForegroundColor = AppWindow.TitleBar.ButtonForegroundColor;
-    }
 
     /// <summary>The panels in front, e.g. "Spot Diagram, Ray Fan"; the design's name below.</summary>
     internal void UpdateTitle()

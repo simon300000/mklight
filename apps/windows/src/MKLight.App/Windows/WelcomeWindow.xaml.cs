@@ -26,13 +26,14 @@ public sealed partial class WelcomeWindow : Window
         ExtendsContentIntoTitleBar = true;
         SetTitleBar(DragRegion);
         AppWindow.SetIcon(Path.Combine(AppContext.BaseDirectory, "Assets", "MKLight.ico"));
-        Root.RequestedTheme = AppSettings.Theme;
-        var dark = Root.ActualTheme == ElementTheme.Dark || (AppSettings.Theme == ElementTheme.Default && Application.Current.RequestedTheme == ApplicationTheme.Dark);
-        AppWindow.TitleBar.ButtonForegroundColor = dark ? Microsoft.UI.Colors.White : Microsoft.UI.Colors.Black;
+        ThemeSwitch.Attach(this, Root);
         EngineText.Text = App.Engine is { } e ? $"{e.Info.Name} {e.Info.Version}" : "Engine unavailable";
         BuildRecent();
         BuildGallery();
     }
+
+    /// <summary>Leaves the recent files out (screenshots for the docs show no one's paths).</summary>
+    internal void HideRecent() => RecentPanel.Visibility = Visibility.Collapsed;
 
     public void ShowError(string message)
     {
@@ -80,10 +81,13 @@ public sealed partial class WelcomeWindow : Window
         var thumb = new SampleThumbnail(sample);
         var thumbBorder = new Border
         {
-            Height = 120, CornerRadius = new CornerRadius(10), BorderThickness = new Thickness(1),
-            BorderBrush = ThemeLookup.Brush(Root, "CardStrokeColorDefaultBrush"),
-            Background = ThemeLookup.Brush(Root, "ContentSurfaceBrush"), Child = thumb,
+            Height = 120, CornerRadius = new CornerRadius(10), BorderThickness = new Thickness(1), Child = thumb,
         };
+        ThemeLookup.Follow(thumbBorder, () =>
+        {
+            thumbBorder.BorderBrush = ThemeLookup.Brush(thumbBorder, "CardStrokeColorDefaultBrush");
+            thumbBorder.Background = ThemeLookup.Brush(thumbBorder, "ContentSurfaceBrush");
+        });
         var text = new StackPanel { Spacing = 1, Margin = new Thickness(4, 8, 4, 0) };
         text.Children.Add(new TextBlock { Text = sample.System.Name, Style = (Style)Application.Current.Resources["PanelTitleText"], FontSize = 14 });
         text.Children.Add(new TextBlock { Text = Detail(sample.System), Style = (Style)Application.Current.Resources["CaptionText"], FontSize = 12, TextWrapping = TextWrapping.Wrap, MaxLines = 2, TextTrimming = TextTrimming.CharacterEllipsis });

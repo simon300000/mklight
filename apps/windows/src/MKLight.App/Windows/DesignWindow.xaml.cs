@@ -41,8 +41,7 @@ public sealed partial class DesignWindow : Window
         SetTitleBar(AppTitleBar);
         AppWindow.TitleBar.PreferredHeightOption = TitleBarHeightOption.Tall;
         AppWindow.SetIcon(Path.Combine(AppContext.BaseDirectory, "Assets", "MKLight.ico"));
-        Root.RequestedTheme = AppSettings.Theme;
-        SyncThemeMenu();
+        ThemeSwitch.Attach(this, Root, SyncThemeMenu);
 
         _panels = new PanelHost(session);
         ContentCard.Child = _panels;
@@ -63,6 +62,8 @@ public sealed partial class DesignWindow : Window
         BuildAccelerators();
         UpdateTitle();
         UpdateStatus();
+        // The capsule's issue glyphs are brushes picked in code.
+        Root.ActualThemeChanged += (_, _) => UpdateStatus();
         UpdateAddMenu();
         AddCommands();
         Closed += (_, _) => session.Dispose();
@@ -99,20 +100,12 @@ public sealed partial class DesignWindow : Window
     /// <summary>The window's root element (its theme, keyboard accelerators, XamlRoot).</summary>
     public FrameworkElement RootElement => Root;
 
-    public static void ApplyTheme(ElementTheme theme)
-    {
-        foreach (var w in App.Windows.OfType<DesignWindow>()) { w.Root.RequestedTheme = theme; w.SyncThemeMenu(); }
-    }
-
     void SyncThemeMenu()
     {
-        ThemeSystem.IsChecked = AppSettings.Theme == ElementTheme.Default;
-        ThemeLight.IsChecked = AppSettings.Theme == ElementTheme.Light;
-        ThemeDark.IsChecked = AppSettings.Theme == ElementTheme.Dark;
-        // The caption buttons follow the content's theme.
-        var dark = Root.ActualTheme == ElementTheme.Dark;
-        AppWindow.TitleBar.ButtonForegroundColor = dark ? Microsoft.UI.Colors.White : Microsoft.UI.Colors.Black;
-        AppWindow.TitleBar.ButtonHoverForegroundColor = AppWindow.TitleBar.ButtonForegroundColor;
+        var theme = AppSettings.Theme;
+        ThemeSystem.IsChecked = theme == ElementTheme.Default;
+        ThemeLight.IsChecked = theme == ElementTheme.Light;
+        ThemeDark.IsChecked = theme == ElementTheme.Dark;
     }
 
     /// <summary>The capsule sits over the title bar's drag area: let the pointer through to it.</summary>
@@ -415,13 +408,7 @@ public sealed partial class DesignWindow : Window
 
     void OnTheme(object sender, RoutedEventArgs e)
     {
-        AppSettings.Theme = (sender as FrameworkElement)?.Tag switch { "light" => ElementTheme.Light, "dark" => ElementTheme.Dark, _ => ElementTheme.Default };
-        ApplyTheme(AppSettings.Theme);
-        // Theme resources WinUI resolves for the whole app (styles set in code, e.g. the lens table's
-        // cells) follow the app's theme, which is fixed at launch.
-        var app = Application.Current.RequestedTheme == ApplicationTheme.Dark ? ElementTheme.Dark : ElementTheme.Light;
-        if (AppSettings.Theme != ElementTheme.Default && AppSettings.Theme != app)
-            ShowToast("The appearance is fully applied the next time MKLight starts.");
+        ThemeSwitch.Set((sender as FrameworkElement)?.Tag switch { "light" => ElementTheme.Light, "dark" => ElementTheme.Dark, _ => ElementTheme.Default });
     }
 
     void OnInspectorToggle(object sender, RoutedEventArgs e) => SetInspector(InspectorToggle.IsChecked == true);

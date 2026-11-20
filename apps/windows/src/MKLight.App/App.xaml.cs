@@ -24,8 +24,8 @@ public partial class App : Application
 
     public App()
     {
-        // The app's own theme follows the chosen appearance, so theme resources that WinUI resolves
-        // at the application level (styles applied in code) match the windows (docs/WINDOWS.md "Look").
+        // The app's own theme starts as the chosen appearance (it can only be set here), so the windows
+        // rarely need to switch while they open; later switches are live (Support/ThemeSwitch.cs).
         var args = Environment.GetCommandLineArgs();
         var i = Array.IndexOf(args, "--theme");
         var theme = i >= 0 && i + 1 < args.Length ? (args[i + 1] == "dark" ? ElementTheme.Dark : ElementTheme.Light) : AppSettings.Theme;
