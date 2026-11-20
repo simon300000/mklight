@@ -20,7 +20,7 @@ struct SystemInspector: View {
         case (true, _, _): "Built into MKLight"
         case (_, true, true): "Library, recorded in the design"
         case (_, true, false): "Library"
-        default: "This design"
+        default: "This design only (not in the library)"
         }
     }
 
@@ -90,7 +90,7 @@ struct SystemInspector: View {
             Section {
                 ForEach(workspace.catalogs) { c in
                     LabeledContent {
-                        Text("\(c.glassCount) glasses").foregroundStyle(.secondary)
+                        Text(glassCountText(c.glassCount)).foregroundStyle(.secondary)
                     } label: {
                         Text(c.isBuiltin ? "Built-in" : c.name)
                         Text(Self.origin(of: c)).font(.caption).foregroundStyle(.secondary)

@@ -14,10 +14,12 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use mklight_core::import::{PrescriptionImport, read_prescription_file};
+use mklight_core::materials::agf::AgfWarning;
 use mklight_core::materials::builtin::BUILTIN_CATALOG_NAME;
 use mklight_core::materials::manage::{
     CatalogChanges, GlassDetails, GlassOverride, GlassRow, apply_overrides, diff_catalogs,
@@ -105,6 +107,10 @@ pub struct CatalogSummary {
     /// Recorded in the project (`Project::catalogs`). A catalog can be both;
     /// the project's copy is the one in effect then.
     pub in_project: bool,
+    /// What the reader reported when the catalog in effect was read: one
+    /// entry per skipped, replaced or inconsistent glass (`line`, `glass`,
+    /// `kind`, `message`; see `agf::AgfWarning`). Empty for JSON catalogs.
+    pub warnings: Vec<AgfWarning>,
 }
 
 /// A glass table row (`mklight_core::materials::manage::GlassRow`).
@@ -124,6 +130,8 @@ struct LibraryCatalog {
     /// Modification time and size when read, so an unchanged file is not
     /// read again.
     stamp: Option<(std::time::SystemTime, u64)>,
+    /// The reader's warnings.
+    warnings: Vec<AgfWarning>,
 }
 
 /// A library file `set_library_catalog_files` could not load.
@@ -171,6 +179,8 @@ pub struct Session {
     project_catalogs: Vec<Arc<GlassCatalog>>,
     /// Project catalog references that could not be loaded, with why.
     missing_catalogs: Vec<(String, String)>,
+    /// The reader's warnings of each project catalog, by upper-case name.
+    project_warnings: HashMap<String, Vec<AgfWarning>>,
     /// The user's availability overrides, applied to the library.
     overrides: Vec<GlassOverride>,
     /// Catalogs removed from the project, for `restore_catalog`.
@@ -186,10 +196,18 @@ fn section_value<T: serde::de::DeserializeOwned>(section: &str, value: Value) ->
 
 /// Read a catalog file. AGF files are named by their file stem.
 pub fn read_catalog_file(path: &Path, format: CatalogFormat) -> EngineResult<GlassCatalog> {
+    Ok(read_catalog_file_with_warnings(path, format)?.0)
+}
+
+/// `read_catalog_file`, with the reader's warnings (AGF only).
+pub fn read_catalog_file_with_warnings(
+    path: &Path,
+    format: CatalogFormat,
+) -> EngineResult<(GlassCatalog, Vec<AgfWarning>)> {
     let bytes = std::fs::read(path).map_err(|e| {
         EngineError::Core(MkError::Io(format!("cannot read {}: {e}", path.display())))
     })?;
-    parse_catalog_bytes(path, &bytes, format)
+    parse_catalog_bytes_with_warnings(path, &bytes, format)
 }
 
 /// Parse the contents of a catalog file named `path` (only its name is
@@ -199,11 +217,22 @@ pub fn parse_catalog_bytes(
     bytes: &[u8],
     format: CatalogFormat,
 ) -> EngineResult<GlassCatalog> {
+    Ok(parse_catalog_bytes_with_warnings(path, bytes, format)?.0)
+}
+
+/// `parse_catalog_bytes`, with the reader's warnings (AGF only): every
+/// skipped or replaced glass and every glass whose listed n_d/V_d disagree
+/// with its coefficients.
+pub fn parse_catalog_bytes_with_warnings(
+    path: &Path,
+    bytes: &[u8],
+    format: CatalogFormat,
+) -> EngineResult<(GlassCatalog, Vec<AgfWarning>)> {
     let stem = path
         .file_stem()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let mut cat = match format {
+    let (mut cat, warnings) = match format {
         // Vendor AGF files are often UTF-16; `parse_agf_bytes` detects the encoding.
         CatalogFormat::Agf => {
             let agf = agf::parse_agf_bytes(&stem, bytes, &agf::AgfOptions::default())?;
@@ -215,9 +244,9 @@ pub fn parse_catalog_bytes(
                     detail.join("; ")
                 ))));
             }
-            agf.catalog
+            (agf.catalog, agf.warnings)
         }
-        CatalogFormat::Json => serde_json::from_slice::<GlassCatalog>(bytes)?,
+        CatalogFormat::Json => (serde_json::from_slice::<GlassCatalog>(bytes)?, Vec::new()),
     };
     if cat.name.is_empty() {
         cat.name = stem;
@@ -232,7 +261,7 @@ pub fn parse_catalog_bytes(
             "a user catalog cannot be named '{BUILTIN_CATALOG_NAME}'"
         ))));
     }
-    Ok(cat)
+    Ok((cat, warnings))
 }
 
 /// `(catalog, name)` of every catalog material in a system's JSON form.
@@ -303,6 +332,7 @@ impl Session {
             library_catalogs: Vec::new(),
             project_catalogs: Vec::new(),
             missing_catalogs: Vec::new(),
+            project_warnings: HashMap::new(),
             overrides: Vec::new(),
             removed: Vec::new(),
         };
@@ -335,13 +365,16 @@ impl Session {
             .map(Path::to_path_buf);
         self.project_catalogs.clear();
         self.missing_catalogs.clear();
+        self.project_warnings.clear();
         for r in &mut self.project.catalogs {
             let mut last_err = None;
             let mut loaded = false;
             for cand in r.candidates(dir.as_deref()) {
-                match read_catalog_file(&cand, r.format) {
-                    Ok(mut c) => {
+                match read_catalog_file_with_warnings(&cand, r.format) {
+                    Ok((mut c, warnings)) => {
                         c.name = r.name.clone();
+                        self.project_warnings
+                            .insert(r.name.to_ascii_uppercase(), warnings);
                         self.project_catalogs.push(Arc::new(c));
                         let abs = std::fs::canonicalize(&cand).unwrap_or(cand);
                         r.path = Some(abs.display().to_string());
@@ -644,7 +677,7 @@ impl Session {
     ) -> EngineResult<CatalogSummary> {
         let path = Path::new(file_name);
         let format = CatalogFormat::from_path(path);
-        let cat = parse_catalog_bytes(path, bytes, format)?;
+        let (cat, warnings) = parse_catalog_bytes_with_warnings(path, bytes, format)?;
         let r = CatalogRef {
             name: cat.name.clone(),
             path: None,
@@ -653,6 +686,8 @@ impl Session {
         };
         let name = cat.name.clone();
         self.add_catalog(cat, Some(r));
+        self.project_warnings
+            .insert(name.to_ascii_uppercase(), warnings);
         Ok(self.summary(&name))
     }
 
@@ -661,7 +696,7 @@ impl Session {
     /// the same name.
     pub fn load_catalog_file(&mut self, path: &Path) -> EngineResult<CatalogSummary> {
         let format = CatalogFormat::from_path(path);
-        let cat = read_catalog_file(path, format)?;
+        let (cat, warnings) = read_catalog_file_with_warnings(path, format)?;
         let abs = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
         let r = CatalogRef {
             name: cat.name.clone(),
@@ -671,12 +706,15 @@ impl Session {
         };
         let name = cat.name.clone();
         self.add_catalog(cat, Some(r));
+        self.project_warnings
+            .insert(name.to_ascii_uppercase(), warnings);
         Ok(self.summary(&name))
     }
 
     /// Add an in-memory catalog. With a `CatalogRef` it is recorded in the
     /// project so it reloads on open.
     pub fn add_catalog(&mut self, cat: GlassCatalog, reference: Option<CatalogRef>) {
+        self.project_warnings.remove(&cat.name.to_ascii_uppercase());
         self.project_catalogs
             .retain(|c| !c.name.eq_ignore_ascii_case(&cat.name));
         self.missing_catalogs
@@ -752,7 +790,11 @@ impl Session {
         let (r, c) = self.removed.remove(i);
         let recorded = r.path.is_some() || r.relative_path.is_some();
         let name = c.name.clone();
+        let warnings = self.project_warnings.remove(&name.to_ascii_uppercase());
         self.add_catalog((*c).clone(), recorded.then_some(r));
+        if let Some(w) = warnings {
+            self.project_warnings.insert(name.to_ascii_uppercase(), w);
+        }
         Ok(self.summary(&name))
     }
 
@@ -770,15 +812,17 @@ impl Session {
         if let Some(r) = reference {
             let mut last_err = None;
             for cand in r.candidates(dir.as_deref()) {
-                match read_catalog_file(&cand, r.format) {
-                    Ok(c) => {
+                match read_catalog_file_with_warnings(&cand, r.format) {
+                    Ok((c, warnings)) => {
                         // A library catalog of the same name is read again
                         // too, so removing the project's copy later does
                         // not bring back stale glasses.
                         if let Ok(i) = self.library_index(&r.name)
                             && let Some(p) = self.library_catalogs[i].path.clone()
-                            && let Ok(lc) =
-                                read_catalog_file(Path::new(&p), self.library_catalogs[i].format)
+                            && let Ok((lc, lw)) = read_catalog_file_with_warnings(
+                                Path::new(&p),
+                                self.library_catalogs[i].format,
+                            )
                         {
                             let stamp = file_stamp(Path::new(&p));
                             let entry = &mut self.library_catalogs[i];
@@ -786,8 +830,9 @@ impl Session {
                             lc.name = entry.catalog.name.clone();
                             entry.catalog = Arc::new(lc);
                             entry.stamp = stamp;
+                            entry.warnings = lw;
                         }
-                        return Ok(self.replace_project_catalog(&r.name, c));
+                        return Ok(self.replace_project_catalog(&r.name, c, warnings));
                     }
                     Err(e) => last_err = Some(e),
                 }
@@ -807,8 +852,8 @@ impl Session {
                 lc.catalog.name
             )));
         };
-        let c = read_catalog_file(Path::new(&path), lc.format)?;
-        Ok(self.replace_library_catalog(i, c, file_stamp(Path::new(&path))))
+        let (c, warnings) = read_catalog_file_with_warnings(Path::new(&path), lc.format)?;
+        Ok(self.replace_library_catalog(i, c, warnings, file_stamp(Path::new(&path))))
     }
 
     /// `reload_catalog` with the file's new contents (the web build): the
@@ -830,8 +875,9 @@ impl Session {
                 .clone()
                 .or(r.path.clone())
                 .unwrap_or_default();
-            let c = parse_catalog_bytes(Path::new(&file), bytes, r.format)?;
-            return Ok(self.replace_project_catalog(&r.name, c));
+            let (c, warnings) =
+                parse_catalog_bytes_with_warnings(Path::new(&file), bytes, r.format)?;
+            return Ok(self.replace_project_catalog(&r.name, c, warnings));
         }
         if self
             .project_catalogs
@@ -845,9 +891,9 @@ impl Session {
         let i = self.library_index(name)?;
         let lc = &self.library_catalogs[i];
         let file = lc.file_name.clone().or(lc.path.clone()).unwrap_or_default();
-        let c = parse_catalog_bytes(Path::new(&file), bytes, lc.format)?;
+        let (c, warnings) = parse_catalog_bytes_with_warnings(Path::new(&file), bytes, lc.format)?;
         let stamp = lc.stamp;
-        Ok(self.replace_library_catalog(i, c, stamp))
+        Ok(self.replace_library_catalog(i, c, warnings, stamp))
     }
 
     fn project_dir(&self) -> Option<PathBuf> {
@@ -875,7 +921,12 @@ impl Session {
             })
     }
 
-    fn replace_project_catalog(&mut self, name: &str, mut c: GlassCatalog) -> CatalogChanges {
+    fn replace_project_catalog(
+        &mut self,
+        name: &str,
+        mut c: GlassCatalog,
+        warnings: Vec<AgfWarning>,
+    ) -> CatalogChanges {
         c.name = name.to_string();
         let before = self
             .project_catalogs
@@ -888,12 +939,15 @@ impl Session {
                     ..Default::default()
                 })
             });
-        let changes = diff_catalogs(&before, &c);
+        let mut changes = diff_catalogs(&before, &c);
+        changes.warnings = warnings.clone();
         self.project_catalogs
             .retain(|p| !p.name.eq_ignore_ascii_case(name));
         self.missing_catalogs
             .retain(|(n, _)| !n.eq_ignore_ascii_case(name));
         self.project_catalogs.push(Arc::new(c));
+        self.project_warnings
+            .insert(name.to_ascii_uppercase(), warnings);
         self.rebuild_library();
         changes
     }
@@ -902,11 +956,14 @@ impl Session {
         &mut self,
         i: usize,
         mut c: GlassCatalog,
+        warnings: Vec<AgfWarning>,
         stamp: Option<(std::time::SystemTime, u64)>,
     ) -> CatalogChanges {
         let lc = &mut self.library_catalogs[i];
         c.name = lc.catalog.name.clone();
-        let changes = diff_catalogs(&lc.catalog, &c);
+        let mut changes = diff_catalogs(&lc.catalog, &c);
+        changes.warnings = warnings.clone();
+        lc.warnings = warnings;
         lc.catalog = Arc::new(c);
         lc.stamp = stamp;
         self.rebuild_library();
@@ -920,7 +977,7 @@ impl Session {
     /// the project, except those the design uses, which `save` records.
     pub fn add_library_catalog_file(&mut self, path: &Path) -> EngineResult<CatalogSummary> {
         let format = CatalogFormat::from_path(path);
-        let cat = read_catalog_file(path, format)?;
+        let (cat, warnings) = read_catalog_file_with_warnings(path, format)?;
         let abs = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
         let name = cat.name.clone();
         let stamp = file_stamp(&abs);
@@ -930,6 +987,7 @@ impl Session {
             file_name: None,
             format,
             stamp,
+            warnings,
         });
         self.rebuild_library();
         Ok(self.summary(&name))
@@ -944,7 +1002,7 @@ impl Session {
     ) -> EngineResult<CatalogSummary> {
         let path = Path::new(file_name);
         let format = CatalogFormat::from_path(path);
-        let cat = parse_catalog_bytes(path, bytes, format)?;
+        let (cat, warnings) = parse_catalog_bytes_with_warnings(path, bytes, format)?;
         let name = cat.name.clone();
         self.put_library_catalog(LibraryCatalog {
             catalog: Arc::new(cat),
@@ -952,6 +1010,7 @@ impl Session {
             file_name: Some(file_name.to_string()),
             format,
             stamp: None,
+            warnings,
         });
         self.rebuild_library();
         Ok(self.summary(&name))
@@ -1000,13 +1059,14 @@ impl Session {
                 Some(old) if stamp.is_some() && old.stamp == stamp => old.clone(),
                 _ => {
                     let format = CatalogFormat::from_path(&abs);
-                    match read_catalog_file(&abs, format) {
-                        Ok(c) => LibraryCatalog {
+                    match read_catalog_file_with_warnings(&abs, format) {
+                        Ok((c, warnings)) => LibraryCatalog {
                             catalog: Arc::new(c),
                             path: Some(key.clone()),
                             file_name: None,
                             format,
                             stamp,
+                            warnings,
                         },
                         Err(e) => {
                             errors.push(LibraryError {
@@ -1122,6 +1182,19 @@ impl Session {
             .iter()
             .find(|r| r.name.eq_ignore_ascii_case(name));
         let builtin = name == BUILTIN_CATALOG_NAME;
+        // The project's copy is the one in effect when there is one.
+        let in_project_catalogs = self
+            .project_catalogs
+            .iter()
+            .any(|c| c.name.eq_ignore_ascii_case(name));
+        let warnings = if in_project_catalogs {
+            self.project_warnings
+                .get(&name.to_ascii_uppercase())
+                .cloned()
+                .unwrap_or_default()
+        } else {
+            library.map(|l| l.warnings.clone()).unwrap_or_default()
+        };
         CatalogSummary {
             name: found.map_or(name, |c| &c.name).to_string(),
             source: if builtin { "builtin" } else { "user" },
@@ -1131,6 +1204,7 @@ impl Session {
             glass_count: found.map_or(0, |c| c.glasses.len()),
             library: library.is_some(),
             in_project: reference.is_some(),
+            warnings,
         }
     }
 
@@ -1896,6 +1970,47 @@ LD 0.32 2.5\r\n";
         assert_eq!(s3.catalogs().len(), 1);
     }
 
+    /// A catalog is named after its file, spaces included. A design that
+    /// refers to it as `CATALOG:NAME` (front ends upper-case both) resolves,
+    /// is recorded on save and reopens.
+    #[test]
+    fn catalog_names_with_spaces_work_in_references_and_projects() {
+        let dir = TempDir::new("spaces");
+        let lib_path = dir
+            .path()
+            .join("vendor glasses preferred Spring Edition B.agf");
+        std::fs::write(&lib_path, LIB_AGF).unwrap();
+        let e = engine();
+        let mut s = e.new_session();
+        let sync = s.set_library_catalog_files(std::slice::from_ref(&lib_path));
+        assert_eq!(
+            sync.catalogs[0].name,
+            "vendor glasses preferred Spring Edition B"
+        );
+        use_glass(
+            &mut s,
+            Some("VENDOR GLASSES PREFERRED SPRING EDITION B"),
+            "LIBFLINT",
+        );
+        assert!(s.resolved().is_ok());
+        let proj = dir.path().join("p.mklight");
+        s.save(Some(&proj)).unwrap();
+        assert_eq!(
+            s.project().catalogs[0].relative_path.as_deref(),
+            Some("vendor glasses preferred Spring Edition B.agf")
+        );
+        let s2 = e.open_session(&proj).unwrap();
+        assert!(s2.open_warnings().is_empty(), "{:?}", s2.open_warnings());
+        assert!(s2.resolved().is_ok());
+        let d = s2
+            .glass_details(
+                Some("Vendor Glasses Preferred Spring Edition B"),
+                "libflint",
+            )
+            .unwrap();
+        assert_eq!(d.row.catalog, "vendor glasses preferred Spring Edition B");
+    }
+
     #[test]
     fn a_missing_project_catalog_is_satisfied_by_the_library() {
         let dir = TempDir::new("missing");
@@ -1980,6 +2095,53 @@ LD 0.32 2.5\r\n";
             .unwrap();
         assert!(s3.reload_catalog("WEB").is_err());
         assert!(s3.reload_catalog_bytes("WEB", LIB_AGF.as_bytes()).is_ok());
+    }
+
+    #[test]
+    fn catalog_loads_report_the_readers_warnings_per_glass() {
+        // A second LIBFLINT (lower case) replaces the first, and a glass
+        // without CD is skipped.
+        let bad = format!(
+            "{LIB_AGF}nm libflint 2 0 0 0 0 0 0\ncd 1.3 0.01 0.2 0.05 0.9 110\n\
+             NM NOCD 2 0 1.5 60 0 0 0\n"
+        );
+        let ok = LIB_AGF.replace("LIBCROWN", "LIBCROWN2");
+        let check = |w: &[AgfWarning]| {
+            let w: Vec<_> = w
+                .iter()
+                .map(|w| (w.glass.as_deref(), w.kind, w.line.is_some()))
+                .collect();
+            assert!(
+                w.contains(&(Some("libflint"), agf::AgfWarningKind::DuplicateGlass, true))
+                    && w.contains(&(Some("NOCD"), agf::AgfWarningKind::MissingDispersion, true)),
+                "{w:?}"
+            );
+        };
+        let e = engine();
+        let mut s = e.new_session();
+        let summary = s.load_catalog_bytes("LIBCAT.agf", bad.as_bytes()).unwrap();
+        check(&summary.warnings);
+        let listed = s.catalogs();
+        check(&listed.iter().find(|c| c.name == "LIBCAT").unwrap().warnings);
+        // Reloading reports the new file's warnings (none here).
+        let changes = s.reload_catalog_bytes("LIBCAT", ok.as_bytes()).unwrap();
+        assert!(changes.warnings.is_empty(), "{:?}", changes.warnings);
+        let changes = s.reload_catalog_bytes("LIBCAT", bad.as_bytes()).unwrap();
+        check(&changes.warnings);
+        // Removing and restoring keeps them; the JSON lists them.
+        s.remove_catalog("LIBCAT").unwrap();
+        let back = s.restore_catalog("LIBCAT").unwrap();
+        check(&back.warnings);
+        let json = serde_json::to_value(&back).unwrap();
+        assert!(json["warnings"][0]["kind"].is_string() && json["warnings"][0]["line"].is_number());
+        // Library catalogs report theirs too.
+        let mut s2 = e.new_session();
+        let lib = s2
+            .add_library_catalog_bytes("LIB.agf", bad.as_bytes())
+            .unwrap();
+        check(&lib.warnings);
+        // The built-in catalog has none.
+        assert!(s2.catalogs()[0].warnings.is_empty());
     }
 
     #[test]

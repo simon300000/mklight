@@ -75,7 +75,15 @@ final class GlassBrowserModel {
     }
     private(set) var details: GlassDetails?
     /// A short note about the last action (shown in the window's footer).
-    var message: String?
+    var message: String? {
+        didSet { if message != removalMessage { removal = nil } }
+    }
+    /// The library entry the last Remove from Library took out, while its
+    /// note is up (the footer offers Undo).
+    private(set) var removal: (entry: GlassLibrary.Entry, index: Int)?
+    private var removalMessage: String?
+    /// The user glass whose deletion waits for the user's confirmation.
+    var pendingDeletion: GlassRow?
     /// What the last reload changed, while its sheet is up.
     var reloadReport: CatalogChanges?
     /// The user glass being edited, while its sheet is up.
@@ -222,15 +230,27 @@ final class GlassBrowserModel {
             message = "\(info.name) is not a registered library file."
             return
         }
+        let index = library.entries.firstIndex(of: e) ?? library.entries.count
         library.remove(e)
-        message = e.isFolder ? "Removed the folder \(e.title) from the library." : "Removed \(info.name) from the library."
+        let note = e.isFolder ? "Removed the folder \(e.title) from the library." : "Removed \(info.name) from the library."
+        removalMessage = note
+        message = note
+        removal = (e, index)
+    }
+
+    /// Puts the entry the last Remove from Library took out back.
+    func undoRemoval() {
+        guard let r = removal else { return }
+        library.restore(r.entry, at: r.index)
+        removalMessage = nil
+        message = "Restored \(r.entry.title) to the library."
     }
 
     func addToDesign(_ url: URL) async {
         guard let t = target else { return }
         do {
             let info = try await t.addCatalog(url)
-            message = "Added \(info.name) (\(info.glassCount) glasses) to \(t.title())."
+            message = "Added \(info.name) (\(glassCountText(info.glassCount))) to \(t.title())." + warningsNote(info.warnings)
         } catch {
             message = error.localizedDescription
         }
@@ -247,7 +267,7 @@ final class GlassBrowserModel {
         do {
             let changes = try await ws.reloadCatalog(named: info.name)
             reloadReport = changes
-            message = "\(info.name) reloaded: \(changes.summary.lowercased())."
+            message = "\(info.name) reloaded: \(changes.summary.lowercased())." + warningsNote(changes.warnings)
             await refresh()
         } catch {
             message = "\(info.name) could not be reloaded: \(error.localizedDescription)"
@@ -304,11 +324,12 @@ final class GlassBrowserModel {
         editor = GlassEditorModel(editing: d, library: library)
     }
 
-    func deleteSelected() {
-        guard let row = selectedRow, library.isUserCatalog(row.catalog) else { return }
+    /// Deletes a user glass (after the window confirmed it).
+    func delete(_ row: GlassRow) {
+        guard library.isUserCatalog(row.catalog) else { return }
         do {
             try library.deleteGlass(row.name, from: row.catalog)
-            selection = nil
+            if selection == row.id { selection = nil }
             message = "Deleted \(row.name)."
         } catch {
             message = error.localizedDescription
@@ -419,33 +440,75 @@ final class GlassEditorModel {
     private static func withoutOverrides(_ d: GlassDetails) -> JSONValue { d.glass }
 
     private func load(_ d: GlassDetails) {
+        let c = Self.clean
         if let m = d.model {
             kind = .model
-            nd = m.nd
-            vd = m.vd
-            dpgf = m.dpgf
+            nd = c(m.nd)
+            vd = c(m.vd)
+            dpgf = c(m.dpgf)
         } else if let f = d.formula {
             kind = .formula
             formula = f
             coefficients = Self.resized(d.coefficients, to: Self.coefficientNames(f).count)
-            nd = d.row.nd
-            vd = d.row.vd
-            dpgf = d.row.dpgf ?? 0
+            nd = c(d.row.nd ?? nd)
+            vd = c(d.row.vd ?? vd)
+            dpgf = c(d.row.dpgf ?? 0)
         } else {
             // Tabulated or other data without a formula: a model glass at its n_d, V_d.
             kind = .model
-            nd = d.row.nd
-            vd = d.row.vd
-            dpgf = d.row.dpgf ?? 0
+            nd = c(d.row.nd ?? nd)
+            vd = c(d.row.vd ?? vd)
+            dpgf = c(d.row.dpgf ?? 0)
         }
         minUm = d.row.minUm
         maxUm = d.row.unrestrictedRange ? nil : d.row.maxUm
+        // A model glass's default range stays the default (not a set range).
+        if d.model != nil, let lo = minUm, let hi = maxUm,
+            abs(lo - Self.modelRange.lowerBound) < 1e-9, abs(hi - Self.modelRange.upperBound) < 1e-9
+        {
+            minUm = nil
+            maxUm = nil
+        }
         density = d.row.density
         tce = d.row.tce
         relativeCost = d.row.relativeCost
         status = d.catalogStatus
         excludeSubstitution = d.catalogExcludeSubstitution
         comment = d.comment
+    }
+
+    /// The range a model glass has when none is set (µm).
+    static let modelRange = 0.35...1.1
+
+    /// A number read back from the engine, without the rounding noise of
+    /// its computation (ΔP_g,F of 2·10⁻¹⁶ is 0; n_d keeps 10 decimals).
+    static func clean(_ v: Double) -> Double {
+        guard v.isFinite else { return v }
+        if abs(v) < 1e-12 { return 0 }
+        return (v * 1e10).rounded() / 1e10
+    }
+
+    /// An engine refusal as one sentence, without the error kind repeated
+    /// ("Invalid model: invalid model: …").
+    static func describe(_ error: any Error) -> String {
+        func strip(_ m: String) -> String {
+            var t = m.trimmingCharacters(in: .whitespaces)
+            for p in ["invalid model:", "invalid glass:"] where t.lowercased().hasPrefix(p) {
+                t = String(t.dropFirst(p.count)).trimmingCharacters(in: .whitespaces)
+            }
+            return t.prefix(1).uppercased() + t.dropFirst()
+        }
+        switch error as? EngineError {
+        case .engine(_, let m)?: return strip(m)
+        case .invalidModel(let issues)?: return issues.map(strip).joined(separator: "; ")
+        default: return error.localizedDescription
+        }
+    }
+
+    /// Whether saving renames an existing glass (designs that name it lose it).
+    var renames: Bool {
+        guard let o = originalName else { return false }
+        return o.caseInsensitiveCompare(name.trimmingCharacters(in: .whitespaces)) != .orderedSame
     }
 
     /// The names of formula `f`'s `CD` coefficients, in order.
@@ -515,10 +578,7 @@ final class GlassEditorModel {
             return g
         } catch {
             preview = nil
-            problem = (error as? EngineError).map { e -> String in
-                if case .engine(_, let m) = e { return m }
-                return e.localizedDescription
-            } ?? error.localizedDescription
+            problem = Self.describe(error)
             return nil
         }
     }
@@ -540,4 +600,14 @@ final class GlassEditorModel {
             return false
         }
     }
+}
+
+/// "1 glass", "13 glasses".
+func glassCountText(_ n: Int) -> String { n == 1 ? "1 glass" : "\(n) glasses" }
+
+/// " The reader reported 3 warnings (first: …)." after a catalog load, or "".
+func warningsNote(_ warnings: [CatalogWarning]) -> String {
+    guard let first = warnings.first else { return "" }
+    let count = warnings.count == 1 ? "1 warning" : "\(warnings.count) warnings"
+    return " Reading it reported \(count) (first: \(first.text))."
 }

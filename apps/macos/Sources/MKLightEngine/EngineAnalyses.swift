@@ -318,6 +318,30 @@ public struct EngineAnalysisRequest: Codable, Sendable, Hashable {
     }
 }
 
+/// Something the catalog reader reported about one glass or record: a
+/// skipped or replaced glass, listed n_d/V_d its coefficients do not give, …
+public struct CatalogWarning: Codable, Sendable, Hashable {
+    /// 1-based line in the file.
+    public var line: Int?
+    public var glass: String?
+    /// `missing_dispersion`, `unsupported_formula`, `duplicate_glass`,
+    /// `index_mismatch`, `malformed_record`, `unknown_record`, …
+    public var kind: String
+    public var message: String
+
+    public init(line: Int? = nil, glass: String? = nil, kind: String, message: String) {
+        self.line = line
+        self.glass = glass
+        self.kind = kind
+        self.message = message
+    }
+
+    /// "line 12: NAME: message".
+    public var text: String {
+        (line.map { "line \($0): " } ?? "") + (glass.map { "\($0): " } ?? "") + message
+    }
+}
+
 /// A glass catalog of a session (`mk_session_list_catalogs`).
 public struct CatalogInfo: Codable, Sendable, Hashable, Identifiable {
     public var name: String
@@ -329,21 +353,27 @@ public struct CatalogInfo: Codable, Sendable, Hashable, Identifiable {
     public var library: Bool
     /// Recorded in the project (it may be in the library too).
     public var inProject: Bool
+    /// What the reader reported when the catalog was read.
+    public var warnings: [CatalogWarning]
     public var id: String { name }
 
     public var isBuiltin: Bool { source == "builtin" }
 
-    public init(name: String, source: String, path: String?, glassCount: Int, library: Bool = false, inProject: Bool = false) {
+    public init(
+        name: String, source: String, path: String?, glassCount: Int, library: Bool = false, inProject: Bool = false,
+        warnings: [CatalogWarning] = []
+    ) {
         self.name = name
         self.source = source
         self.path = path
         self.glassCount = glassCount
         self.library = library
         self.inProject = inProject
+        self.warnings = warnings
     }
 
     private enum CodingKeys: String, CodingKey {
-        case name, source, path, glassCount = "glass_count", library, inProject = "in_project"
+        case name, source, path, glassCount = "glass_count", library, inProject = "in_project", warnings
     }
 
     public init(from decoder: any Decoder) throws {
@@ -355,6 +385,7 @@ public struct CatalogInfo: Codable, Sendable, Hashable, Identifiable {
         library = try c.decodeIfPresent(Bool.self, forKey: .library) ?? false
         // Engines before the library recorded every user catalog in the project.
         inProject = try c.decodeIfPresent(Bool.self, forKey: .inProject) ?? (source == "user")
+        warnings = (try? c.decodeIfPresent([CatalogWarning].self, forKey: .warnings)) ?? []
     }
 }
 

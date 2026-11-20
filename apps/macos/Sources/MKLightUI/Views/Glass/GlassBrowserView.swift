@@ -11,6 +11,8 @@ extension UTType {
 
 /// Sort keys of the optional columns: glasses without a value sort last.
 extension GlassRow {
+    var sortNd: Double { nd ?? .infinity }
+    var sortVd: Double { vd ?? .infinity }
     var sortPgf: Double { dpgf ?? .infinity }
     var sortDensity: Double { density ?? .infinity }
     var sortCost: Double { relativeCost ?? .infinity }
@@ -45,7 +47,7 @@ struct GlassBrowserView: View {
                 .navigationSplitViewColumnWidth(min: 270, ideal: 300, max: 420)
         }
         .navigationTitle(scopeTitle)
-        .navigationSubtitle(model.designTitle.map { "Glasses of \($0)" } ?? "Library")
+        .navigationSubtitle(model.designTitle.map { "Glasses of \($0)" } ?? "No design open")
         .searchable(text: $model.search, placement: .toolbar, prompt: "Glass name")
         .toolbar { toolbar }
         .overlay(alignment: .bottom) { footer }
@@ -104,6 +106,16 @@ struct GlassBrowserView: View {
             }
         } message: {
             Text("Designs that use its glasses will not find them.")
+        }
+        .confirmationDialog(
+            "Delete “\(model.pendingDeletion?.name ?? "")”?",
+            isPresented: Binding(get: { model.pendingDeletion != nil }, set: { if !$0 { model.pendingDeletion = nil } })
+        ) {
+            Button("Delete", role: .destructive) {
+                if let g = model.pendingDeletion { model.delete(g) }
+            }
+        } message: {
+            Text("The glass is removed from \(model.pendingDeletion?.catalog ?? "its catalog"). Designs that use it will not find it. This cannot be undone.")
         }
         .onAppear(perform: applyLaunchOptions)
         // Edit ▸ Undo undoes the design's changes made here.
@@ -181,16 +193,24 @@ struct GlassBrowserView: View {
 
     @ViewBuilder private var footer: some View {
         if let m = model.message {
-            Label(m, systemImage: "info.circle")
+            HStack(spacing: Space.m) {
+                Label(m, systemImage: "info.circle")
+                    .lineLimit(2)
+                if model.removal != nil {
+                    Button("Undo") { model.undoRemoval() }
+                        .buttonStyle(.link)
+                        .help("Put the catalog back in the library")
+                }
+            }
                 .font(.callout)
-                .lineLimit(2)
                 .padding(.horizontal, Space.l)
                 .padding(.vertical, Space.m)
                 .glassEffect(.regular, in: .capsule)
                 .padding(.bottom, Space.l)
                 .onTapGesture { model.message = nil }
                 .task(id: m) {
-                    try? await Task.sleep(for: .seconds(6))
+                    // Longer while it offers Undo.
+                    try? await Task.sleep(for: .seconds(model.removal != nil ? 12 : 6))
                     if model.message == m { model.message = nil }
                 }
         }
@@ -240,11 +260,9 @@ private struct GlassCatalogSidebar: View {
                             showInFinder(c)
                         }
                 }
-                if model.libraryCatalogs.isEmpty {
-                    Button("Add Catalog…") { importing = .library }
-                        .buttonStyle(.link)
-                        .help("Catalogs and folders in the library load into every design")
-                }
+                Button("Add Catalog…") { importing = .library }
+                    .buttonStyle(.link)
+                    .help("Catalogs and folders in the library load into every design")
             } header: {
                 Text("Library")
             }
@@ -332,9 +350,9 @@ struct GlassTable: View {
                     .width(min: 90, ideal: 120)
                 TableColumn("Catalog", value: \.catalog) { (r: GlassRow) in Text(r.catalog).foregroundStyle(.secondary) }
                     .width(min: 60, ideal: 100)
-                TableColumn("nd", value: \.nd) { (r: GlassRow) in NumberCell(text: r.ndText) }
+                TableColumn("nd", value: \.sortNd) { (r: GlassRow) in NumberCell(text: r.ndText) }
                     .width(min: 60, ideal: 70)
-                TableColumn("Vd", value: \.vd) { (r: GlassRow) in NumberCell(text: r.vdText) }
+                TableColumn("Vd", value: \.sortVd) { (r: GlassRow) in NumberCell(text: r.vdText) }
                     .width(min: 46, ideal: 54)
                 TableColumn("ΔPg,F", value: \.sortPgf) { (r: GlassRow) in NumberCell(text: r.dpgfText) }
                     .width(min: 54, ideal: 62)
@@ -377,7 +395,7 @@ struct GlassTable: View {
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
             HStack {
-                Text("\(rows.count) of \(model.rows.count) glasses")
+                Text("\(rows.count) of \(glassCountText(model.rows.count))")
                 Spacer()
                 Text("Double-click a glass to use it for the selected surface")
             }
@@ -390,7 +408,7 @@ struct GlassTable: View {
     }
 
     private var emptyText: String {
-        if let n = model.scopeCatalog, model.library.isUserCatalog(n) { return "Add a glass with the + button." }
+        if let n = model.scopeCatalog, model.library.isUserCatalog(n) { return "Add a glass with New Glass…." }
         return "This catalog has no glasses."
     }
 
@@ -422,6 +440,9 @@ private struct CatalogBar: View {
                 }
             }
             Spacer(minLength: Space.m)
+            if !catalog.warnings.isEmpty {
+                CatalogWarningsButton(warnings: catalog.warnings)
+            }
             if user {
                 Button("New Glass…", systemImage: "plus") { model.newGlass() }
             } else if catalog.path != nil {
@@ -450,7 +471,33 @@ private struct CatalogBar: View {
         switch (catalog.library, catalog.inProject) {
         case (true, true): return "Library · recorded in this design"
         case (true, false): return "Library · loaded into every design"
-        default: return "This design only"
+        default: return "This design only · not in the library"
+        }
+    }
+}
+
+/// What the catalog reader reported (skipped, replaced or inconsistent
+/// glasses), in a popover.
+private struct CatalogWarningsButton: View {
+    let warnings: [CatalogWarning]
+    @State private var shown = false
+
+    var body: some View {
+        Button(warnings.count == 1 ? "1 Warning" : "\(warnings.count) Warnings", systemImage: "exclamationmark.triangle") {
+            shown = true
+        }
+        .help("What reading the catalog file reported: skipped, replaced or inconsistent glasses")
+        .popover(isPresented: $shown) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: Space.xs) {
+                    ForEach(Array(warnings.enumerated()), id: \.offset) { _, w in
+                        Text(w.text).font(.callout).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .padding()
+            }
+            .frame(width: 440)
+            .frame(maxHeight: 360)
         }
     }
 }
@@ -477,8 +524,19 @@ private struct NumberCell: View {
 }
 
 extension GlassRow {
-    var ndText: String { GlassTable.fixed(nd, 5) }
-    var vdText: String { GlassTable.fixed(vd, 2) }
+    /// Whether the glass has n_d: an infrared glass whose range leaves out
+    /// the d line has none (the engine reports null).
+    var hasDLine: Bool { nd != nil }
+    var ndText: String { nd.map { GlassTable.fixed($0, 5) } ?? "—" }
+    var vdText: String { vd.map { GlassTable.fixed($0, 2) } ?? "—" }
+    /// The catalog file lists n_d/V_d its coefficients do not give (beyond
+    /// the reader's tolerances, 1·10⁻⁴ in n_d or 0.2 in V_d).
+    var listedValuesDiffer: Bool {
+        guard let nd, let cnd = catalogNd, cnd > 1 else { return false }
+        if abs(nd - cnd) > 1e-4 { return true }
+        guard let vd, let cvd = catalogVd, cvd > 0 else { return false }
+        return abs(vd - cvd) > 0.2
+    }
     var dpgfText: String { dpgf.map { GlassTable.signed($0, 4) } ?? "—" }
     var densityText: String { density.map { GlassTable.fixed($0, 2) } ?? "—" }
     var costText: String { relativeCost.map { GlassTable.fixed($0, 1) } ?? "—" }
@@ -516,6 +574,9 @@ private struct GlassRowMenu: View {
         Divider()
         Button(model.library.isUserCatalog(row.catalog) ? "Duplicate…" : "Duplicate to User Glasses…") {
             Task { await model.duplicate(row) }
+        }
+        if model.library.isUserCatalog(row.catalog) {
+            Button("Delete…", role: .destructive) { model.pendingDeletion = row }
         }
     }
 
@@ -610,7 +671,7 @@ private struct GlassDetailView: View {
                 Button("Copy Name") { copy(d.row.name) }
                 if user {
                     Button("Edit…") { model.editSelected() }
-                    Button("Delete", role: .destructive) { model.deleteSelected() }
+                    Button("Delete…", role: .destructive) { model.pendingDeletion = model.selectedRow }
                 } else {
                     Button("Duplicate…") { model.duplicateSelected() }
                         .help("Copy this glass into a user catalog to edit it")
@@ -648,8 +709,16 @@ private struct GlassDetailView: View {
     private func numbers(_ d: GlassDetails) -> some View {
         GroupBox("Optical Data") {
             Grid(alignment: .leading, horizontalSpacing: Space.l, verticalSpacing: Space.xs) {
-                gridRow("nd", Self.fmt(d.row.nd, 6))
-                gridRow("Vd", Self.fmt(d.row.vd, 3))
+                if let nd = d.row.nd {
+                    gridRow("nd", Self.fmt(nd, 6))
+                    gridRow("Vd", d.row.vd.map { Self.fmt($0, 3) } ?? "none (F or C line outside the range)")
+                    if d.row.listedValuesDiffer, let cnd = d.row.catalogNd {
+                        gridRow("Catalog lists", "nd \(Self.fmt(cnd, 6)), Vd \(Self.fmt(d.row.catalogVd ?? 0, 2))")
+                            .help("The catalog file's nd and Vd disagree with its dispersion coefficients. MKLight uses the coefficients.")
+                    }
+                } else {
+                    gridRow("nd, Vd", "none (the d line is outside the range)")
+                }
                 if let p = d.row.pgf { gridRow("Pg,F", Self.fmt(p, 4)) }
                 if let p = d.row.dpgf { gridRow("ΔPg,F", GlassTable.signedText(p)) }
                 if let p = d.catalogDpgf { gridRow("ΔPg,F (catalog)", GlassTable.signedText(p)) }

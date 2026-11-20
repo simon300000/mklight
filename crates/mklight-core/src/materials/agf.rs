@@ -34,6 +34,17 @@
 //! drop such glasses instead. The check runs only when the d line lies inside
 //! the glass's `LD` range and the catalog gives `n_d > 0` and `V_d > 0`
 //! (IR materials often list zeros).
+//!
+//! Record tags are case-insensitive (`nm` is `NM`). When two glasses have the
+//! same name (compared case-insensitively, as materials resolve), the later
+//! one replaces the earlier, with an [`AgfWarningKind::DuplicateGlass`]
+//! warning naming both lines. Every skipped or replaced glass is reported.
+//!
+//! `Glass::nd`/`Glass::vd` keep the values the `NM` record lists, so that a
+//! catalog round-trips; tables show the values computed from the
+//! coefficients (`manage::GlassRow`). A glass whose range leaves out the d
+//! line is written with `n_d` 1 and `V_d` 0, as vendor catalogs list infrared
+//! materials.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -252,7 +263,8 @@ pub enum AgfWarningKind {
     UnsupportedFormula,
     /// No `LD` record. The glass is kept with an unrestricted range.
     MissingRange,
-    /// A later glass with the same name replaced an earlier one.
+    /// A later glass with the same name (compared case-insensitively)
+    /// replaced an earlier one: the last definition wins.
     DuplicateGlass,
     /// The coefficients do not reproduce the catalog `n_d`/`V_d`.
     IndexMismatch,
@@ -502,6 +514,24 @@ pub fn computed_nd_vd(d: &Dispersion) -> (f64, f64) {
     (nd, (nd - 1.0) / (d.index(lines::F) - d.index(lines::C)))
 }
 
+/// `(n_d, V_d)` of a glass computed from its dispersion formula: `n_d` when
+/// the d line lies inside the glass's range, `V_d` when the d, F and C lines
+/// all do; `None` otherwise or when the value is not finite. These are the
+/// values the material traces with, unlike the catalog's listed
+/// `Glass::nd`/`Glass::vd`.
+pub fn d_line_values(g: &Glass) -> (Option<f64>, Option<f64>) {
+    let inside = |l: f64| g.min_um <= l && l <= g.max_um;
+    if !inside(lines::D) {
+        return (None, None);
+    }
+    let finite = |x: f64| x.is_finite().then_some(x);
+    let (nd, vd) = computed_nd_vd(&g.dispersion);
+    let vd = (inside(lines::F) && inside(lines::C))
+        .then_some(vd)
+        .and_then(finite);
+    (finite(nd), vd)
+}
+
 /// A model glass (`n_d`, `V_d`, `ΔP_g,F`) as a catalog [`Glass`], so it can be
 /// exported. It uses the same Cauchy fit as `MaterialRef::Model`, which is
 /// anchored at the g, F, d and C lines; its range is set to 0.35–1.1 µm,
@@ -556,12 +586,12 @@ pub fn read_agf_file(path: impl AsRef<Path>, opts: &AgfOptions) -> MkResult<AgfC
     parse_agf_bytes(&name, &bytes, opts)
 }
 
-/// A numeric field. `-` (and an absent field) is `None`. Fortran-style `D`
+/// A numeric field. `-` or `_` (and an absent field) is `None`. Fortran-style `D`
 /// exponents are accepted. `Err` means the field is present but not a finite number.
 fn field(tok: Option<&&str>) -> Result<Option<f64>, ()> {
     let Some(t) = tok else { return Ok(None) };
     let t = t.trim();
-    if t.is_empty() || t == "-" {
+    if t.is_empty() || t == "-" || t == "_" {
         return Ok(None);
     }
     let v = t
@@ -592,6 +622,8 @@ struct Reader<'a> {
     opts: &'a AgfOptions,
     out: AgfCatalog,
     unknown_tags: BTreeSet<String>,
+    /// Upper-case name → (name, `NM` line) of every glass kept so far.
+    seen: BTreeMap<String, (String, usize)>,
 }
 
 impl Reader<'_> {
@@ -701,12 +733,22 @@ impl Reader<'_> {
                 }
             }
         }
-        if self.out.catalog.glasses.contains_key(&name) {
+        // Glasses resolve by name case-insensitively, so names that differ
+        // only in case are duplicates too. The later definition wins: it is
+        // the one a reader of the file sees last.
+        if let Some((old, old_line)) = self
+            .seen
+            .insert(name.to_ascii_uppercase(), (name.clone(), line))
+        {
+            self.out.catalog.glasses.remove(&old);
+            self.out.meta.remove(&old);
             self.warn(
                 line,
                 n,
                 AgfWarningKind::DuplicateGlass,
-                "duplicate glass name; the later definition replaces the earlier".into(),
+                format!(
+                    "duplicate of glass '{old}' at line {old_line}; this later definition replaces it"
+                ),
             );
         }
         glass.substitution = super::GlassSubstitution {
@@ -767,6 +809,7 @@ pub fn parse_agf_with(name: &str, text: &str, opts: &AgfOptions) -> MkResult<Agf
             ..Default::default()
         },
         unknown_tags: BTreeSet::new(),
+        seen: BTreeMap::new(),
     };
     let text = text.strip_prefix('\u{FEFF}').unwrap_or(text);
     let normalized = text.replace("\r\n", "\n");
@@ -937,7 +980,26 @@ pub fn parse_agf_with(name: &str, text: &str, opts: &AgfOptions) -> MkResult<Agf
                 }
             }
             "OD" => {
-                if let Some(v) = fields(6, &mut r) {
+                // Field by field: catalogs write ranges such as `1-2` for
+                // a resistance class; such a field is unknown, the rest stay.
+                let v: Vec<Option<f64>> = (0..6)
+                    .map(|k| {
+                        field(f.get(k)).unwrap_or_else(|()| {
+                            r.warn(
+                                ln,
+                                g,
+                                MalformedRecord,
+                                format!(
+                                    "OD: field {} '{}' is not a number; taken as unknown",
+                                    k + 1,
+                                    f[k]
+                                ),
+                            );
+                            None
+                        })
+                    })
+                    .collect();
+                {
                     let pos = |k: usize| v[k].filter(|x| *x >= 0.0);
                     p.meta.ordering = OrderingData {
                         relative_cost: pos(0),
@@ -1068,6 +1130,20 @@ impl WriteLog {
     }
 }
 
+/// The `n_d`, `V_d` the `NM` record lists: the glass's own listed values
+/// when it has them (`n_d > 0`, as read from a catalog, so they round-trip;
+/// vendor infrared glasses list 1 and 0), else the values computed from the
+/// dispersion, else 1 and 0 (no d line in the range), the vendor convention.
+fn listed_nd_vd(g: &Glass, log: &mut WriteLog) -> (f64, f64) {
+    let nd = log.finite(&g.name, "nd", Some(g.nd));
+    let vd = log.finite(&g.name, "vd", Some(g.vd));
+    match (nd, d_line_values(g)) {
+        (Some(nd), _) if nd > 0.0 => (nd, vd.unwrap_or(0.0)),
+        (_, (Some(nd), vd)) => (nd, vd.unwrap_or(0.0)),
+        _ => (1.0, 0.0),
+    }
+}
+
 /// `-` for an unknown value. The reader maps `-` back to `None`.
 fn dash(v: Option<f64>) -> String {
     v.map_or_else(|| "-".into(), num)
@@ -1091,7 +1167,11 @@ fn minus_one(v: Option<f64>) -> String {
 ///   glass's name, a `_2`, `_3`, … suffix is added;
 /// * unknown values are written as `-` in `ED` (so a missing CTE never reads
 ///   back as 0) and as −1 in `OD`. Non-finite values are written as unknown;
-///   non-finite `n_d`/`V_d` as 0 (which disables the consistency check);
+/// * `NM` lists the glass's own `n_d`/`V_d` when it has them; a glass without
+///   (`n_d` ≤ 0 or not finite) gets the values computed from its dispersion,
+///   or `n_d` 1, `V_d` 0 when its range leaves out the d line (as vendor
+///   catalogs list infrared materials; the reader skips its consistency
+///   check for them);
 /// * free text (`CC`, `GC`) is split at every line break, a MIL code that is
 ///   empty or contains whitespace is replaced by the one computed from
 ///   `n_d`/`V_d`, and kept unknown records that span lines or use a known tag
@@ -1161,8 +1241,7 @@ pub fn write_agf(cat: &AgfCatalog) -> (String, Vec<AgfWarning>) {
         }
         emitted.insert(name.clone());
 
-        let nd = log.finite(&g.name, "nd", Some(g.nd)).unwrap_or(0.0);
-        let vd = log.finite(&g.name, "vd", Some(g.vd)).unwrap_or(0.0);
+        let (nd, vd) = listed_nd_vd(g, &mut log);
         let mil = match &meta.mil_code {
             Some(m) if !m.is_empty() && !m.contains(char::is_whitespace) => m.clone(),
             other => {
@@ -1180,14 +1259,17 @@ pub fn write_agf(cat: &AgfCatalog) -> (String, Vec<AgfWarning>) {
                 computed
             }
         };
+        // An unknown melt frequency is left out, as catalogs do.
+        let melt = meta
+            .melt_frequency
+            .map_or_else(String::new, |m| format!(" {m}"));
         let _ = write!(
             s,
-            "NM {name} {formula} {mil} {} {} {} {} {}{nl}",
+            "NM {name} {formula} {mil} {} {} {} {}{melt}{nl}",
             num(nd),
             num(vd),
             u8::from(meta.exclude_substitution),
             meta.status.code(),
-            meta.melt_frequency.unwrap_or(0),
         );
         if !g.comment.is_empty() {
             for line in text_lines(&g.comment) {
@@ -1723,12 +1805,16 @@ CD 1.5 0.01 0.001
             assert_eq!(dispersion_from_agf(f2, &cd2).unwrap(), d);
             let mut g = model_glass(&format!("F{f}"), 1.5, 60.0, 0.0).unwrap();
             g.dispersion = d;
-            g.nd = 0.0; // skip the nd/vd check: these are not real glasses
+            g.nd = 0.0; // no listed values: the writer lists the computed ones
             cat.glasses.insert(g.name.clone(), g);
         }
         let (text, w) = write_agf(&AgfCatalog::from_catalog(cat.clone()));
         assert!(w.is_empty());
         let back = parse(&text);
+        assert!(back.warnings.is_empty(), "{:?}", back.warnings);
+        for g in cat.glasses.values_mut() {
+            (g.nd, g.vd) = listed_nd_vd(g, &mut WriteLog(Vec::new()));
+        }
         assert_eq!(without_agf(back.catalog.clone()).glasses, cat.glasses);
         for f in 1..=13u32 {
             assert_eq!(back.meta[&format!("F{f}")].formula, f);
@@ -1817,7 +1903,10 @@ CD 1.5 0.01 0.001
         cat.glasses.insert(g.name.clone(), g.clone());
         let (text, w) = write_agf(&AgfCatalog::from_catalog(cat));
         assert!(w.is_empty());
-        assert!(text.contains("NM MY_GLASS 1 600400 1.6 40 0 0 0"), "{text}");
+        assert!(
+            text.contains("NM MY_GLASS 1 600400 1.6 40 0 0\r\n"),
+            "{text}"
+        );
         let back = parse(&text);
         assert!(back.warnings.is_empty(), "{:?}", back.warnings);
         let b = &back.catalog.glasses["MY_GLASS"];
@@ -1927,6 +2016,99 @@ LD 0.3 2.5
         assert_eq!(m.extra_records, vec!["XY fine"]);
     }
 
+    /// Five records (made-up names, N-BK7-like coefficients): one without
+    /// `CD`, one with an unknown formula, a glass defined twice (the second
+    /// time in lower case), and lower-case `nm`/`cd`/`ld` keys.
+    const PROBLEMS: &str = "\
+NM NOCD 2 517642 1.5168 64.17 0 0 0
+LD 0.3 2.5
+NM BADFORMULA 99 517642 1.5168 64.17 0 0 0
+CD 1.03961212 0.00600069867 0.231792344 0.0200179144 1.01046945 103.560653
+LD 0.3 2.5
+NM TWICE 2 517642 1.5168 64.17 0 0 0
+CD 1.03961212 0.00600069867 0.231792344 0.0200179144 1.01046945 103.560653
+LD 0.3 2.5
+nm lower 2 517642 1.5168 64.17 0 1 0
+cd 1.03961212 0.00600069867 0.231792344 0.0200179144 1.01046945 103.560653
+ld 0.3 2.5
+NM twice 2 517642 1.5168 64.17 0 3 0
+CD 1.03961212 0.00600069867 0.231792344 0.0200179144 1.01046945 103.560653
+LD 0.3 2.5
+";
+
+    #[test]
+    fn every_skipped_or_replaced_glass_is_reported_with_its_line() {
+        let c = parse(PROBLEMS);
+        // Lower-case keys are read like upper-case ones.
+        let names: Vec<_> = c.catalog.glasses.keys().cloned().collect();
+        assert_eq!(names, ["lower", "twice"]);
+        assert_eq!(c.catalog.glasses["lower"].max_um, 2.5);
+        let w: Vec<_> = c
+            .warnings
+            .iter()
+            .map(|w| (w.line, w.glass.as_deref(), w.kind))
+            .collect();
+        assert_eq!(
+            w,
+            [
+                (Some(1), Some("NOCD"), AgfWarningKind::MissingDispersion),
+                (
+                    Some(3),
+                    Some("BADFORMULA"),
+                    AgfWarningKind::UnsupportedFormula
+                ),
+                (Some(12), Some("twice"), AgfWarningKind::DuplicateGlass),
+            ]
+        );
+        // The later definition wins; the warning names the earlier one.
+        assert!(c.warnings[2].message.contains("'TWICE' at line 6"));
+        assert_eq!(
+            c.catalog.glasses["twice"].substitution.status,
+            GlassStatus::Special
+        );
+        assert!(!c.meta.contains_key("TWICE"));
+    }
+
+    #[test]
+    fn utf16le_with_bom_and_crlf_reads_like_utf8() {
+        let crlf = PROBLEMS.replace('\n', "\r\n");
+        let bytes = encode_text(&crlf, TextEncoding::Utf16Le);
+        assert_eq!(bytes[..2], [0xFF, 0xFE]);
+        let c = parse_agf_bytes("TEST", &bytes, &AgfOptions::default()).unwrap();
+        assert_eq!(c.encoding, Some(TextEncoding::Utf16Le));
+        let plain = parse(PROBLEMS);
+        assert_eq!(c.catalog, plain.catalog);
+        assert_eq!(c.warnings, plain.warnings);
+    }
+
+    /// `_` marks an unknown value like `-`; a class range such as `1-2` in
+    /// `OD` makes that field unknown, not the whole record. A missing melt
+    /// frequency stays missing through write → read.
+    #[test]
+    fn od_keeps_known_fields_and_unknown_melt_frequency_round_trips() {
+        let text = NBK7_NO_ED
+            .replace("64.17 0 1 0", "64.17 0 1")
+            .replace("LD 0.3 2.5\n", "OD 1.8 _ 1-2 1.0 2.0 _\nLD 0.3 2.5\n");
+        let c = parse(&text);
+        assert_eq!(kinds(&c), [AgfWarningKind::MalformedRecord]);
+        let m = &c.meta["N-BK7"];
+        assert_eq!(m.melt_frequency, None);
+        let o = m.ordering;
+        assert_eq!(
+            (o.relative_cost, o.climate_resistance, o.stain_resistance),
+            (Some(1.8), None, None)
+        );
+        assert_eq!(
+            (o.acid_resistance, o.phosphate_resistance),
+            (Some(1.0), None)
+        );
+        let (out, w) = write_agf(&c);
+        assert!(w.is_empty(), "{w:?}");
+        let back = parse(&out);
+        assert!(back.warnings.is_empty(), "{:?}", back.warnings);
+        assert_eq!(back.catalog, c.catalog);
+    }
+
     #[test]
     fn writer_resolves_name_collisions_and_rejects_non_finite_data() {
         let base = parse(NBK7_NO_ED).catalog.glasses["N-BK7"].clone();
@@ -1958,8 +2140,9 @@ LD 0.3 2.5
             back.catalog.glasses.keys().collect::<Vec<_>>(),
             vec!["MY_GLASS", "MY_GLASS_2", "NAN_ND"]
         );
+        // A non-finite listed n_d is written as the computed one.
         let n = &back.catalog.glasses["NAN_ND"];
-        assert_eq!((n.nd, n.density), (0.0, None));
+        assert_eq!((n.nd, n.density), (d_line_values(&base).0.unwrap(), None));
         assert_eq!(n.dispersion, base.dispersion);
     }
 

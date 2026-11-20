@@ -764,7 +764,8 @@ this page.
   library, not per project: they describe what the user can buy, which is
   the same for every design. They reach the engine as availability
   overrides (`mk_session_set_glass_overrides`), which the session applies
-  to the library's glasses: the glass map shows them, Glass Substitution's
+  to the library's glasses: the lens table marks a material whose glass
+  is not standard with a status dot (`Workspace.glassStatuses`), the glass map shows them, Glass Substitution's
   status filter and exclusion use them, and the library hash changes with
   them (results recompute). They are not a design change and are not
   undoable; "Catalog (…)" in the Status menu returns a glass to the

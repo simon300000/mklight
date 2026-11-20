@@ -496,16 +496,26 @@ substitution data, which the glass map and glass substitution read.
   and records it in the project. AGF catalogs are named after the file stem.
   The name `BUILTIN` is reserved. Result (a *catalog summary*):
   `{"name", "source": "builtin"|"user", "path", "glass_count", "library",
-  "in_project"}`.
+  "in_project", "warnings"}`. `warnings` lists what the reader reported for
+  the catalog in effect, one `{"line", "glass", "kind", "message"}` per
+  skipped, replaced or inconsistent glass or malformed record (`line`,
+  `glass` may be null; `kind` is e.g. `missing_dispersion`,
+  `unsupported_formula`, `duplicate_glass`, `index_mismatch`,
+  `malformed_record`, `unknown_record`, `missing_range`). Empty for JSON
+  catalogs and the built-in catalog.
 * `mk_session_list_catalogs` → array of summaries (library order, built-in
   first).
 * `mk_session_list_glasses(session, catalog|NULL)` → glass rows:
-  `{"catalog", "name", "nd", "vd", "pgf", "dpgf", "min_um", "max_um",
-  "status", "exclude_substitution", "overridden", "density",
-  "relative_cost", "tce", "climate_resistance", "stain_resistance",
-  "transmission_min_um", "transmission_max_um", "lambda80_um"}`. `nd`, `vd`
-  are the catalog's values; `pgf`, `dpgf` are computed from the dispersion
-  formula (null when g…C lies outside the range); `status` and
+  `{"catalog", "name", "nd", "vd", "catalog_nd", "catalog_vd", "pgf",
+  "dpgf", "min_um", "max_um", "status", "exclude_substitution",
+  "overridden", "density", "relative_cost", "tce", "climate_resistance",
+  "stain_resistance", "transmission_min_um", "transmission_max_um",
+  "lambda80_um"}`. `nd`, `vd` are computed from the dispersion formula (what
+  tracing uses) and are **null** when the glass's range leaves out the d
+  line (`vd`: the d, F or C line), as for infrared glasses; before this they
+  were the catalog's listed values, now `catalog_nd`, `catalog_vd` (vendor
+  files list infrared glasses as 1 and 0). `pgf`, `dpgf` are computed from
+  the dispersion formula (null when g…C lies outside the range); `status` and
   `exclude_substitution` are in effect (after overrides), `overridden` says
   an override changed them; `tce` is 10⁻⁶/K (−30…+70 °C); `lambda80_um` is
   the shortest wavelength where 10 mm transmit 80 % internally (`IT` data).
@@ -515,7 +525,8 @@ substitution data, which the glass map and glass substitution read.
 * `mk_session_glass_details(session, catalog|NULL, name, &json)` → the row
   plus `catalog_status`, `catalog_exclude_substitution` (before overrides),
   `formula`, `formula_name`, `coefficients` (the AGF `CD` values, or a model
-  glass's Cauchy A, B, C), `computed_nd`, `computed_vd`, `model` (`{nd, vd,
+  glass's Cauchy A, B, C), `computed_nd`, `computed_vd` (the same as `nd`,
+  `vd`), `model` (`{nd, vd,
   dpgf}` for a model glass), `catalog_dpgf`, `tce_100_300`, `mil_code`,
   `melt_frequency`, `acid_resistance`, `alkali_resistance`,
   `phosphate_resistance`, `thermal`, `transmittance`, `comment`, `lines`
@@ -532,9 +543,11 @@ substitution data, which the glass map and glass substitution read.
   library catalog again from its file and returns what changed:
   `{"catalog", "added": [names], "removed": [names], "changed": [{"name",
   "nd_before", "nd_after", "vd_before", "vd_after", "fields"}],
-  "unchanged"}`, where `fields` names what differs (`nd`, `vd`,
+  "unchanged", "warnings"}`, where `fields` names what differs (`nd`, `vd`,
   `dispersion`, `range`, `thermal`, `transmittance`, `availability`,
-  `cost`, `density`, `expansion`, `comment`, `other`). Reloading a project
+  `cost`, `density`, `expansion`, `comment`, `other`; `nd`/`vd` here are
+  the listed values) and `warnings` are the reader's for the new file (as
+  in a catalog summary). Reloading a project
   catalog also re-reads a library catalog of the same name.
 * `mk_session_set_library_catalogs(session, paths_json, &json)` makes the
   library catalogs exactly the files of a JSON array of paths, in order;
