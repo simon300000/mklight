@@ -63,7 +63,17 @@ public sealed class DesignSession : ILensDataHost, IDisposable
     string? ProjectDirectory => Document.Path is { } p ? System.IO.Path.GetDirectoryName(p) : null;
 
     /// <summary>A catalog added to or removed from the project (or undone): the session follows.</summary>
+    readonly SemaphoreSlim _catalogSync = new(1, 1);
+
+    /// <summary>One sync at a time, each against the project as it is when it runs (undo and redo can come quickly).</summary>
     async Task SyncProjectCatalogsAsync()
+    {
+        await _catalogSync.WaitAsync();
+        try { await SyncProjectCatalogsOnceAsync(); }
+        finally { _catalogSync.Release(); }
+    }
+
+    async Task SyncProjectCatalogsOnceAsync()
     {
         var wanted = Document.Project.Catalogs.Select(c => c.Name).ToHashSet();
         try

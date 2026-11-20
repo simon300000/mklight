@@ -93,7 +93,7 @@ sealed partial class SystemPage : UserControl
             using var output = await Ws.Engine.Submit(request, snapshot).ResultAsync();
             return SpecConversion.FromJson(output.Json);
         }
-        catch (EngineException)
+        catch (Exception e) when (e is EngineException or ObjectDisposedException)
         {
             return null;
         }

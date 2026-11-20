@@ -156,6 +156,7 @@ public sealed class Workspace
     public void Update(OpticalSystem system, bool immediately = false)
     {
         _design = system;
+        DesignSnapshot = null; // until the new design is frozen: jobs never run on an older one
         if (PreviewSystem is not null)
         {
             PreviewSystem = null;
@@ -177,7 +178,20 @@ public sealed class Workspace
     /// <summary>Take the snapshot again now (after a glass catalog change: the library hash differs).</summary>
     public void Resnapshot()
     {
-        if (_design is not null) Schedule(PreviewSystem ?? _design, TimeSpan.Zero);
+        if (_design is null) return;
+        DesignSnapshot = null;
+        if (PreviewSystem is not null) _ = FreezeDesignAsync(_design); // the design's own snapshot takes the new library too
+        Schedule(PreviewSystem ?? _design, TimeSpan.Zero);
+    }
+
+    async Task FreezeDesignAsync(OpticalSystem design)
+    {
+        try
+        {
+            var snap = await Engine.OpenSnapshotAsync(ModelJson.Encode(design));
+            if (ReferenceEquals(design, _design)) DesignSnapshot = snap;
+        }
+        catch (EngineException) { }
     }
 
     // ---- Preview of a candidate design (an optimisation or glass substitution result) ----
