@@ -4,6 +4,6 @@
     <RootNamespace>MKLight.Engine</RootNamespace>
   </PropertyGroup>
   <ItemGroup>
-    <ProjectReference Include="..\MKLight.Model\MKLight.Model.csproj" />
+    <InternalsVisibleTo Include="MKLight.Tests" />
   </ItemGroup>
 </Project>
