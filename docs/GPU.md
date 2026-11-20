@@ -484,7 +484,10 @@ their residual in the layout (§2).
 f32 tolerances, the only intended differences from the reference: the
 vertex-sheet test uses `1 − κcz ≥ −2⁻²⁰`; the root choice tests the f32
 crossing against the f32 (hi) aperture sizes, so it can differ only for a
-crossing within f32 rounding of the extent's edge; asphere Newton converges when
+crossing within f32 rounding of the extent's edge (the ghost transport keeps
+the packed aperture as that extent and marks a ghost clip that differs from
+it on its steps, `MKL_GHOST_STEP_ROOT_NEAREST` and `MKL_GHOST_STEP_NO_CLIP`);
+asphere Newton converges when
 `|g| ≤ tol_abs + tol_rel·(|t| + |z| + |conic sag| + |poly|)` (default
 `1e-9 mm + 2⁻²⁰·…`, the f32 resolution of the residual) within
 `NewtonSettings::max_iterations`, followed by the double-float refinement.

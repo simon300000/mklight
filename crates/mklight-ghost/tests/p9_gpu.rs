@@ -4,7 +4,19 @@ use mklight_core::{JobContext, samples};
 use mklight_ghost::{gpu::GhostTransport, *};
 use mklight_gpu::{ComputeBackend, CpuF32Backend, Df32, consts::*, ghost_ops::Probe};
 
+/// Normalised pupil points of the transport comparisons.
+const PUPILS: [[f64; 2]; 5] = [
+    [0., 0.],
+    [0.13, 0.17],
+    [-0.41, 0.33],
+    [0.7, -0.2],
+    [-0.9, 0.],
+];
+
 fn compare(b: &dyn ComputeBackend, m: &GhostModel, paths: &[GhostPath]) {
+    compare_at(b, m, paths, &PUPILS);
+}
+fn compare_at(b: &dyn ComputeBackend, m: &GhostModel, paths: &[GhostPath], pupils: &[[f64; 2]]) {
     let g = GhostTransport::new(b, m, paths, &JobContext::new()).unwrap();
     let mut probes = Vec::new();
     let mut refs = Vec::new();
@@ -12,13 +24,7 @@ fn compare(b: &dyn ComputeBackend, m: &GhostModel, paths: &[GhostPath]) {
         let steps = m.check_path(p).unwrap();
         for field in m.tracer().fields() {
             for w in 0..m.system().wavelengths_um.len() {
-                for pupil in [
-                    [0., 0.],
-                    [0.13, 0.17],
-                    [-0.41, 0.33],
-                    [0.7, -0.2],
-                    [-0.9, 0.],
-                ] {
+                for pupil in pupils {
                     let geometry = m.tracer().pupil();
                     let scale = if geometry.telecentric {
                         geometry.u_marginal.abs()
@@ -139,6 +145,35 @@ fn samples_check(b: &dyn ComputeBackend) {
 #[test]
 fn cpu_f32_transport_against_f64() {
     samples_check(&CpuF32Backend::new());
+}
+/// Overfilled ghost probes cross deep surfaces' vertex sheets twice. The
+/// crossing is chosen by the surface's fixed extent as in the reference
+/// sequence (SURFACES.md §8), not by the ghost clip: none for an automatic
+/// semi-diameter clipped at its clear radius, the fixed outline for a
+/// surface that does not clip (`ClipMode::None`).
+#[test]
+fn cpu_f32_transport_root_choice_follows_the_fixed_extent() {
+    let pupils: Vec<[f64; 2]> = (-6..=6)
+        .flat_map(|i| (-6..=6).map(move |j| [i as f64 * 0.5, j as f64 * 0.5]))
+        .collect();
+    let mut fixed = samples::double_gauss();
+    let image = fixed.surfaces.len() - 1;
+    for s in &mut fixed.surfaces[1..image] {
+        if matches!(s.semi_diameter, mklight_core::SemiDiameter::Auto) {
+            s.semi_diameter = mklight_core::SemiDiameter::Fixed { value: 12.0 };
+        }
+    }
+    for (system, settings) in [
+        (samples::double_gauss(), GhostSettings::default()),
+        (fixed, unclipped()),
+    ] {
+        let m = model(system, settings);
+        let e = enumerate(&m, &EnumerationSettings::default()).unwrap();
+        let paths = std::iter::once(GhostPath::primary())
+            .chain(e.paths.iter().map(|p| p.path.clone()))
+            .collect::<Vec<_>>();
+        compare_at(&CpuF32Backend::new(), &m, &paths, &pupils);
+    }
 }
 /// A map of more than 2^24 pixels cannot carry its reference bins through
 /// the device map chain exactly: the device job declines it before any

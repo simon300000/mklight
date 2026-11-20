@@ -466,10 +466,14 @@ fn pattern_box(p: TestPattern, u: [f64; 2], v: [f64; 2], w: usize, h: usize) -> 
     let (du, dv) = (u[1] - u[0], v[1] - v[0]);
     match p {
         TestPattern::Grid => {
-            // Integral of the white portion of the periodic bar pattern.
+            // Integral of the white portion of the periodic bar pattern. The
+            // phase is `v - floor(v)`, not `fract` (which is negative below
+            // zero): a box that starts a rounding error left of the source
+            // edge must not lose a whole period's white.
             let white = |t: f64| {
                 let v = 8.0 * t;
-                (0.9 * v.floor() + (v.fract() - 0.1).max(0.0)) / 8.0
+                let floor = v.floor();
+                (0.9 * floor + (v - floor - 0.1).max(0.0)) / 8.0
             };
             (white(u[1]) - white(u[0])) / du * (white(v[1]) - white(v[0])) / dv
         }
@@ -1029,6 +1033,20 @@ mod tests {
         // would return black. The star also contains both colours in one pixel.
         assert!((pattern_value(TestPattern::SlantedEdge, 3, 3, 7, 7) - 0.5).abs() < 1e-12);
         assert!((pattern_value(TestPattern::SiemensStar, 0, 0, 1, 1) - 0.5).abs() < 0.04);
+    }
+    /// A box that starts a rounding error left of or below the source edge
+    /// (the first pixel's footprint, with the inverse mapping's last-digit
+    /// error) has the edge pixel's value, not an extra period of white.
+    #[test]
+    fn grid_pattern_is_continuous_at_the_source_edge() {
+        let n = 64;
+        let edge = pattern_value(TestPattern::Grid, 0, 0, n, n);
+        for e in [1e-17, 1e-15, 1e-12] {
+            let c = 0.5 / n as f64 - e;
+            let v = pattern_at(TestPattern::Grid, [c, c], n, n);
+            assert!((0.0..=1.0).contains(&v), "{e}: {v}");
+            assert!((v - edge).abs() < 1e-9, "{e}: {v} against {edge}");
+        }
     }
     /// The warp evaluates patterns over a pixel box at any source point: on
     /// the grid it is the pixel's area mean, and half a pixel off it is the

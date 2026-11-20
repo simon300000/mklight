@@ -56,13 +56,14 @@ kernel void mkl_ghost_trace(constant MklPackedHeader* headers [[buffer(0)]],
  for(uint k=0;k<len;k++){
   MklGhostStep st=steps[q.wavelength*plane+a+k];uint si=st.word&MKL_STEP_SURFACE_MASK;bool back=(st.word&MKL_STEP_BACKWARD)!=0;constant MklPackedSurface& surf=s[si];uint fail=si<<MKL_RAY_SURFACE_SHIFT;
   if(back)mkl_xf_backward(s[si],pos,dir);else mkl_xf_forward(s[si-1],pos,dir);
-  uint root=!back&&si==1u&&(headers[0].flags&MKL_SYS_OBJECT_AT_INFINITY)!=0u?MKL_ROOT_NEAREST:MKL_ROOT_FROM_START;
+  uint root=(!back&&si==1u&&(headers[0].flags&MKL_SYS_OBJECT_AT_INFINITY)!=0u)||(st.word&MKL_GHOST_STEP_ROOT_NEAREST)!=0u?MKL_ROOT_NEAREST:MKL_ROOT_FROM_START;
   MklHit hit;uint code=mkl_intersect<true>(surf,pool,pos,dir,root,p.trace,hit);if(code!=0){v.status=fail|code;break;}
   float2 t=mkl_df_add(hit.ta,hit.tb);if(fabs(t.x)>float(MKL_GHOST_MAX_SEGMENT_MM)){v.status=fail|MKL_GHOST_REFERENCE;break;}if(counting)since=mkl_df_add(since,t);
   if(st.physical!=0){if(counting&&p.reject_virtual!=0&&since.x< -1e-9f){v.status=fail|MKL_GHOST_VIRTUAL;break;}since=float2(0);counting=true;}
   pos=hit.x;
-  if(ghost_aperture_tie(surf,pos.v[0],pos.v[1])){v.status=fail|MKL_GHOST_REFERENCE;break;}
-  if(!mkl_passes_aperture(surf,pos.v[0],pos.v[1])){v.status=fail|MKL_RAY_VIGNETTED;break;}
+  bool clip=(st.word&MKL_GHOST_STEP_NO_CLIP)==0u;
+  if(clip&&ghost_aperture_tie(surf,pos.v[0],pos.v[1])){v.status=fail|MKL_GHOST_REFERENCE;break;}
+  if(clip&&!mkl_passes_aperture(surf,pos.v[0],pos.v[1])){v.status=fail|MKL_RAY_VIGNETTED;break;}
   if(st.channel==4&&(fabs(pos.v[0].x)>p.sensor[0].x||fabs(pos.v[1].x)>p.sensor[1].x)){v.status=fail|MKL_RAY_VIGNETTED;break;}
   float2 n1=mkl_index(s[back?si:si-1],q.wavelength),n2=mkl_index(s[back?si-1:si],q.wavelength);
   bool refl=st.channel==2||st.channel==4;if(refl)n2=n1;
