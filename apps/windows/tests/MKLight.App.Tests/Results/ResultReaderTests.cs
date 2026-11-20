@@ -147,7 +147,7 @@ public class ResultReaderTests
         Assert.Equal(255, px[0]);   // input (0, 1) = 1 → white
         Assert.Equal(0, px[8]);     // input (0, 0) = 0 → black
         Assert.Equal("Pixel 10.00 µm  ·  Max distortion -1.000 %  ·  Min RI 0.900", KeyNumbers.Text(d));
-        Assert.Null(ImageSimulationData.Read(d).SourceImage()); // no settings: unknown source
+        Assert.Null(ImageSimulationData.Read(d)?.SourceImage()); // no settings: unknown source
     }
 
     [Fact]
