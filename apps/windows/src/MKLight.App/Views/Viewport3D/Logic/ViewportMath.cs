@@ -225,6 +225,20 @@ public static class ViewportMath
         return c;
     }
 
+    /// <summary>
+    /// One step of a two-finger touch gesture: zooms by <paramref name="scale"/> about where the
+    /// pinch centre was (<paramref name="x"/>, <paramref name="y"/>: its position now, in points
+    /// from the top-left corner, y down, less this step's <paramref name="dx"/>, <paramref name="dy"/>),
+    /// then pans by the centre's move, so the scene under the fingers stays under them.
+    /// </summary>
+    public static ViewportCamera Pinch(ViewportCamera camera, ViewportMode mode, double scale, double x, double y, double dx, double dy,
+        double width, double height)
+    {
+        var before = (X: x - dx - width / 2, Y: height / 2 - (y - dy));
+        var c = Zoom(camera, mode, double.IsFinite(scale) && scale > 0 ? scale : 1, before.X, before.Y);
+        return Pan(c, mode, dx, -dy);
+    }
+
     /// <summary>Orbits by a screen delta in points (y up).</summary>
     public static ViewportCamera Orbit(ViewportCamera camera, double dx, double dy)
     {
