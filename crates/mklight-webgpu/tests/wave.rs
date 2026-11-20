@@ -637,6 +637,15 @@ impl mklight_webgpu::Gpu for Counting {
             .fetch_add(s.readback_bytes, std::sync::atomic::Ordering::Relaxed);
         Ok(s)
     }
+    fn kind(&self) -> mklight_gpu::BackendKind {
+        self.inner.kind()
+    }
+    fn kernel_build(&self, raw: &mklight_gpu::NumericsProbe) -> Option<String> {
+        self.inner.kernel_build(raw)
+    }
+    fn ports(&self, family: &str) -> bool {
+        self.inner.ports(family)
+    }
 }
 
 /// The PSF plan's chain Prepare, Sum, Transform, Intensity keeps its

@@ -27,7 +27,7 @@ use mklight_gpu::resident::{
     ReadView, Readback, ResidentCacheStats, ResidentPlan, SystemCacheKey,
 };
 use mklight_gpu::{
-    BackendKind, ComputeBackend, CpuF32Backend, DeviceInfo, Df32, ErrorBudget, Job, JobKind,
+    ComputeBackend, CpuF32Backend, DeviceInfo, Df32, ErrorBudget, Job, JobKind,
     JobOutput, JobResult, JobStats, KernelPreparation, NumericsProbe, PackedSystem,
     PackedSystemSet, Pending, PrecisionDescriptor, QualificationBackend, SystemHandle,
 };
@@ -120,8 +120,9 @@ impl WebGpuBackend {
         let (raw, probe) = run_probe(&*gpu)?;
         let s = gpu.summary().clone();
         let host = CpuF32Backend::matching(&probe);
+        let kind = gpu.kind();
         let info = DeviceInfo {
-            kind: BackendKind::WebGpu,
+            kind,
             name: s.name.clone(),
             vendor: if s.backend == "Metal" && s.name.starts_with("Apple") {
                 "Apple".into()
@@ -147,7 +148,7 @@ impl WebGpuBackend {
             compensated_reductions: true,
             probe,
             budget: ErrorBudget::CONVENTIONS,
-            kernel_build: format!(
+            kernel_build: gpu.kernel_build(&raw).unwrap_or_else(|| format!(
                 "WGSL {} via {} ({}); opaque-barrier double-float; compiler without barriers: \
                  contraction {}, reassociation {}, correctly rounded div {} / sqrt {}",
                 kernels::digest(),
@@ -157,7 +158,7 @@ impl WebGpuBackend {
                 yn(!raw.no_reassociation),
                 yn(raw.correctly_rounded_div),
                 yn(raw.correctly_rounded_sqrt),
-            ),
+            )),
         };
         Ok(Self {
             inner: Arc::new(Inner {
@@ -291,7 +292,8 @@ impl WebGpuBackend {
             }
             other => {
                 return Err(MkError::Unsupported(format!(
-                    "webgpu does not run {:?} jobs",
+                    "{} does not run {:?} jobs",
+                    self.inner.info.kind.as_str(),
                     other.kind()
                 )));
             }
@@ -312,7 +314,9 @@ impl ComputeBackend for WebGpuBackend {
     fn supports(&self, kind: JobKind) -> bool {
         match kind {
             JobKind::DfOps | JobKind::Reduce => self.double_float(),
-            JobKind::Trace => self.double_float() && crate::ops::TRACE_PORTED,
+            JobKind::Trace => {
+                self.double_float() && crate::ops::TRACE_PORTED && self.inner.gpu.ports("trace")
+            }
             _ => false,
         }
     }
@@ -396,7 +400,8 @@ impl QualificationBackend for WebGpuBackend {
         job.validate()?;
         if !self.supports(job.kind()) {
             return Err(MkError::Unsupported(format!(
-                "webgpu does not run {:?} jobs on '{}' (numerics probe: {:?})",
+                "{} does not run {:?} jobs on '{}' (numerics probe: {:?})",
+                self.info().kind.as_str(),
                 job.kind(),
                 self.info().name,
                 self.precision().probe
@@ -407,7 +412,7 @@ impl QualificationBackend for WebGpuBackend {
         }
         let (p, c, ctl) = pending(ctx);
         let b = self.clone();
-        let what = format!("webgpu {:?} job", job.kind());
+        let what = format!("{} {:?} job", self.info().kind.as_str(), job.kind());
         spawn_job("mklight-webgpu", what, c, move || b.execute_job(job, &ctl))?;
         Ok(p)
     }

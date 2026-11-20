@@ -222,6 +222,23 @@ pub trait Gpu: Send + Sync {
     fn prepare(&self, kernels: &[(Kernel, PassShape)]) -> MkResult<()>;
     /// Run `batch` and block until it completed and its reads are written.
     fn run(&self, batch: Batch<'_>) -> MkResult<BatchStats>;
+    /// The backend this device presents itself as: WebGPU, or another API
+    /// implementing the same kernels and binding convention (CUDA).
+    fn kind(&self) -> mklight_gpu::BackendKind {
+        mklight_gpu::BackendKind::WebGpu
+    }
+    /// The `PrecisionDescriptor::kernel_build` of a device that is not
+    /// WebGPU (`raw`: its probe of unprotected expressions).
+    fn kernel_build(&self, _raw: &mklight_gpu::NumericsProbe) -> Option<String> {
+        None
+    }
+    /// Whether the device has the kernels of an operation family (`"sum"`,
+    /// `"trace"`, `"transforms"`, `"wave"`, `"aiming"`, `"geometry"`,
+    /// `"collectives"`); the operations of a family it lacks run their
+    /// CPU-f32 specification. Every WebGPU device has them all.
+    fn ports(&self, _family: &str) -> bool {
+        true
+    }
 }
 
 /// The binding shape of a pass, which with the kernel identifies a pipeline.
