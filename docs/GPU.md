@@ -2194,7 +2194,9 @@ read. All are optional; the defaults are the documented behaviour.
 the offline shader compile, so the library is compiled from source at run
 time), §6. Read by `mklight-cuda/build.rs`: `MKLIGHT_CUDA_ARCHS` (the
 built-in kernel targets, default `75,80,89,90,ptx90`; `89` builds only an
-Ada CUBIN, `none` none, so kernels compile at run time), §12.2.
+Ada CUBIN, `none` none, so kernels compile at run time) and
+`MKLIGHT_CUDA_REQUIRE_KERNELS=1` (a build without built-in kernels fails),
+§12.2.
 
 **Harnesses** (read only by tests and benchmarks; the files define their
 meaning). The engine's measurement and qualification harnesses are the crate
@@ -2570,24 +2572,37 @@ NVIDIA's Vulkan driver, and D3D12's compiler rejects the aim kernel.
   Its uploads and uniform blocks are staged at aligned offsets of one
   page-locked block (copied in parallel) and moved by one transfer into one
   stream-ordered allocation; its scratch and slices share a second one,
-  zeroed by one memset; readbacks come back through the same staging.
-  Allocations come from the device's memory pool (kept, release threshold
-  ∞); plan mirrors are pool allocations on an admin stream, since
-  `cuMemFree` synchronises the device.
+  zeroed by one memset; readbacks come back through the same staging (a
+  lane keeps at most 64 MiB of it; a larger batch stages through a block
+  of its own). Allocations come from the device's memory pool, which keeps
+  up to 1 GiB of freed memory for later batches; plan mirrors are pool
+  allocations on an admin stream, since `cuMemFree` synchronises the
+  device.
+* **Availability** (`Gpu::unavailable`, as the WebGPU watchdog's). After a
+  failed call the device synchronises its context: a sticky error (a
+  kernel fault, a launch the operating system stopped, an uncorrectable
+  memory error, a lost device) leaves the context unusable, so the device
+  is unavailable from then on with the reason, every later call fails at
+  once, and the engine routes `auto` to the CPU and refuses explicit
+  requests. Out of memory and other errors fail only their request.
 
 ### 12.2 Loading and kernel preparation
 
 The driver (`nvcuda.dll`, `libcuda.so`) is loaded at run time (`cudarc`
 with dynamic loading), so every platform builds without a CUDA toolkit;
-without a driver or device the backend is unavailable with that reason, and
-on macOS and wasm the crate is empty.
+without a driver or device, or with a driver older than CUDA 12.4, the
+backend is unavailable with that reason, and on macOS and wasm the crate
+is empty.
 
 **Kernels are built in.** The build script compiles every unit with NVRTC
 when the build machine has it (`src/sources.rs` and `src/nvrtc.rs` are
 shared with it) into CUBINs for sm_75, sm_80 (which the 8.6 parts run),
-sm_89 and sm_90 and PTX for compute_90, deflated and embedded: 11 MB of
-the library (52 MB uncompressed), about a minute of build time on 24
-threads when a kernel changes. At run time a unit loads the device's CUBIN,
+sm_89 and sm_90 and PTX for compute_90 (with NVRTC 12.8 or later also
+sm_100 and sm_120), deflated and embedded: 11 MB of the library (52 MB
+uncompressed), about a minute of build time on 24 threads when a kernel
+changes (images are cached by their inputs, so other reruns take seconds).
+`MKLIGHT_CUDA_REQUIRE_KERNELS=1` makes a build without them an error;
+`scripts/build-windows.ps1` sets it for the app's engine. At run time a unit loads the device's CUBIN,
 else the newest CUBIN of its major version, else the PTX (compiled by the
 driver, which caches it). Only a build without NVRTC
 (`MKLIGHT_CUDA_ARCHS=none`, or none installed) compiles at run time with
