@@ -1,7 +1,5 @@
-using System.Text.Json.Nodes;
-using Microsoft.UI.Xaml;
-using Microsoft.UI.Xaml.Controls;
 using MKLight.App.Support;
+using Fmt = MKLight.App.Views.Analysis.Results.Readers.Fmt;
 using MKLight.Engine;
 using MKLight.Model;
 
@@ -35,30 +33,4 @@ public static class ResultHosting
         return system.Fields.Fields.Select(f =>
             f.X == 0 ? Fmt.Short(f.Y) + unit : $"({Fmt.Short(f.X)}, {Fmt.Short(f.Y)}){unit}").ToList();
     }
-
-    /// <summary>
-    /// The result view factory (Results/ResultViews.Create once the dedicated
-    /// views are in); until then every result shows as a short data summary.
-    /// </summary>
-    public static Func<ResultData, ElementTheme, (UIElement View, ResultSummary Summary)> CreateView { get; set; } = Fallback;
-
-    /// <summary>The settings form factory (Settings/SettingsForm.Create once it is in).</summary>
-    public static Func<JsonObject, JsonObject, SettingsContextData, Action<JsonObject>, UIElement>? CreateSettingsForm { get; set; }
-
-    /// <summary>The one-line summary of settings that differ from the defaults.</summary>
-    public static Func<JsonObject, JsonObject, string>? DescribeSettings { get; set; }
-
-    static (UIElement, ResultSummary) Fallback(ResultData data, ElementTheme theme)
-    {
-        var keys = data.Json is JsonObject o ? string.Join(", ", o.Select(kv => kv.Key).Take(8)) : "";
-        var text = new TextBlock
-        {
-            Text = $"Result fields: {keys}\nBuffers: {string.Join(", ", data.Buffers.Select(b => $"{b.Name} [{string.Join("×", b.Shape)}]"))}",
-            Style = (Style)Application.Current.Resources["SecondaryText"], TextWrapping = TextWrapping.Wrap, Margin = new Thickness(12),
-        };
-        return (text, new ResultSummary(""));
-    }
 }
-
-/// <summary>What a settings form needs to know about the design (labels for fields, wavelengths and surfaces).</summary>
-public sealed record SettingsContextData(IReadOnlyList<string> Fields, IReadOnlyList<double> WavelengthsUm, IReadOnlyList<string> Surfaces);

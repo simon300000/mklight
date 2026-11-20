@@ -5,6 +5,7 @@ using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
 using MKLight.App.Support;
+using Fmt = MKLight.App.Views.Analysis.Results.Readers.Fmt;
 using MKLight.App.ViewModels;
 using MKLight.App.Views;
 using MKLight.App.Views.Analysis;

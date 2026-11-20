@@ -26,6 +26,8 @@ public sealed class AnalysisPaneModel
     public JsonObject Settings { get; internal set; }
     public bool AutoUpdate { get; set; }
     public bool ShowsSettings { get; set; }
+    /// <summary>The spot diagram's box scale: common to the grid or per field.</summary>
+    public Views.Analysis.Results.Readers.SpotScale SpotScale { get; set; }
 
     public AnalysisOutput? Output { get; internal set; }
     public PanePhase Phase { get; internal set; }

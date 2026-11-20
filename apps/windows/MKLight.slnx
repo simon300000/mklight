@@ -6,7 +6,10 @@
   <Folder Name="/src/">
     <Project Path="src/MKLight.Model/MKLight.Model.csproj" />
     <Project Path="src/MKLight.Engine/MKLight.Engine.csproj" />
-    <Project Path="src/MKLight.App/MKLight.App.csproj" />
+    <Project Path="src/MKLight.App/MKLight.App.csproj">
+      <Platform Solution="*|x64" Project="x64" />
+      <Platform Solution="*|ARM64" Project="ARM64" />
+    </Project>
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/MKLight.Tests/MKLight.Tests.csproj" />

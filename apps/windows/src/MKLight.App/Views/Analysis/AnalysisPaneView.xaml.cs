@@ -4,6 +4,9 @@ using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
 using MKLight.App.Support;
+using MKLight.App.Views.Analysis.Results;
+using MKLight.App.Views.Analysis.Results.Readers;
+using MKLight.App.Views.Analysis.Settings;
 using MKLight.App.ViewModels;
 using MKLight.Engine;
 using MKLight.Model;
@@ -22,6 +25,7 @@ public sealed partial class AnalysisPaneView : UserControl
     readonly DesignSession _session;
     readonly AnalysisPaneModel _pane;
     AnalysisOutput? _shown;
+    ResultData? _data;
     ElementTheme _shownTheme;
 
     public AnalysisPaneView(DesignSession session, AnalysisPaneModel pane)
@@ -89,8 +93,12 @@ public sealed partial class AnalysisPaneView : UserControl
             _shownTheme = ActualTheme;
             try
             {
-                var (view, summary) = ResultHosting.CreateView(ResultHosting.Data(_pane.Analysis, output, _session.Document.System), ActualTheme);
+                _data = ResultHosting.Data(_pane.Analysis, output, _session.Document.System);
+                var (view, summary) = ResultViews.Create(_data, ActualTheme, _pane.SpotScale);
+                if (view is SpotDiagramView spot) spot.BoxScaleChanged += scale => _pane.SpotScale = scale;
                 ResultHost.Content = view;
+                // The form's "Auto (n)" values come from the latest result.
+                if (_pane.ShowsSettings) SettingsContent.Content = null;
                 KeyNumbers.Text = summary.KeyNumbers;
             }
             catch (Exception e)
@@ -133,9 +141,9 @@ public sealed partial class AnalysisPaneView : UserControl
     {
         if (running) return _pane.Progress.Stage is { Length: > 0 } s ? $"{s} · {_pane.Progress.Fraction * 100:0}%".Replace(",", ".") : "Computing";
         if (_pane.Phase == PanePhase.Failed && _pane.Output is not null) return "Last run failed: " + _pane.Message;
-        if (d is not null && ResultHosting.DescribeSettings is { } describe)
+        if (d is not null)
         {
-            var s = describe(d.ToJson(), _pane.Settings);
+            var s = SettingsSummary.Describe(d.ToJson(), _pane.Settings, _data);
             if (!string.IsNullOrEmpty(s)) return s;
         }
         return _pane.AutoUpdate ? "Default settings" : "Default settings · manual";
@@ -202,15 +210,20 @@ public sealed partial class AnalysisPaneView : UserControl
     {
         var d = _session.Workspace.Descriptor(_pane.Analysis);
         if (d is null) return;
-        if (ResultHosting.CreateSettingsForm is not { } create)
-        {
-            SettingsContent.Content = new TextBlock { Text = "Settings arrive with the settings form.", Style = (Style)Application.Current.Resources["SecondaryText"] };
-            return;
-        }
         var sys = _session.Document.System;
-        var ctx = new SettingsContextData(ResultHosting.FieldLabels(sys), sys.Wavelengths.Wavelengths.Select(w => w.Um).ToList(),
-            Enumerable.Range(0, sys.Surfaces.Count).Select(i => i == 0 ? "OBJ" : i == sys.Surfaces.Count - 1 ? "IMA" : i.ToString(CultureInfo.InvariantCulture)).ToList());
-        SettingsContent.Content = create(d.ToJson(), (JsonObject)_pane.Settings.DeepClone(), ctx, s => _pane.SetSettings(s));
+        var n = sys.Surfaces.Count;
+        var ctx = new SettingsContext
+        {
+            Analysis = _pane.Analysis,
+            FieldLabels = ResultHosting.FieldLabels(sys),
+            WavelengthsUm = sys.Wavelengths.Wavelengths.Select(w => w.Um).ToList(),
+            PrimaryWavelength = sys.Wavelengths.Primary,
+            SurfaceLabels = Enumerable.Range(0, n).Select(i => i == 0 ? "Object" : i == n - 1 ? "Image"
+                : i == sys.Stop ? $"{i} (stop)" : i.ToString(CultureInfo.InvariantCulture)).ToList(),
+            HasConfigurations = sys.Configurations.Count > 0,
+            LastResult = _data,
+        };
+        SettingsContent.Content = SettingsForm.Create(d.ToJson(), (JsonObject)_pane.Settings.DeepClone(), ctx, s => _pane.SetSettings(s));
     }
 
     void OnRun(object sender, RoutedEventArgs e)
