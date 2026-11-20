@@ -7,7 +7,7 @@
     </Window.SystemBackdrop>
     <!-- Welcome: on Mica, the app, New Design (the one prominent action), Open and recent
          files; on the content surface, the engine's sample designs with layout thumbnails. -->
-    <Grid x:Name="Root">
+    <Grid x:Name="Root" Background="Transparent">
         <Grid.ColumnDefinitions>
             <ColumnDefinition Width="340" />
             <ColumnDefinition Width="*" />
@@ -43,9 +43,21 @@
             <StackPanel Grid.Row="2" Margin="0,32,0,0" Spacing="2" x:Name="RecentPanel">
                 <TextBlock Text="Recent" Style="{StaticResource ColumnHeaderText}" Margin="4,0,0,6" />
             </StackPanel>
-            <StackPanel Grid.Row="3" Orientation="Horizontal" Spacing="8">
-                <FontIcon Glyph="&#xE950;" FontSize="12" Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
-                <TextBlock x:Name="EngineText" Style="{StaticResource CaptionText}" />
+            <StackPanel Grid.Row="3" Spacing="10">
+                <!-- The drop hint: projects and lens files dropped anywhere on the window open. -->
+                <Grid ColumnSpacing="8">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+                    <FontIcon Glyph="&#xE896;" FontSize="12" VerticalAlignment="Top" Margin="0,2,0,0" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                    <TextBlock Grid.Column="1" Text="Drop a project or a .zmx or .seq lens file here to open it." Style="{StaticResource CaptionText}"
+                               TextWrapping="Wrap" TextTrimming="None" />
+                </Grid>
+                <StackPanel Orientation="Horizontal" Spacing="8">
+                    <FontIcon Glyph="&#xE950;" FontSize="12" Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
+                    <TextBlock x:Name="EngineText" Style="{StaticResource CaptionText}" />
+                </StackPanel>
             </StackPanel>
         </Grid>
 
