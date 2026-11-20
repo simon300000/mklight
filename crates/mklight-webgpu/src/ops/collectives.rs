@@ -1,37 +1,43 @@
 //! Resident collectives on the device: `collectives::Request::SegmentReduce`
 //! of every kind (`kernels/collectives.wgsl`).
 //!
-//! One batch per operation: the inputs are loaded through the mirrors, one workgroup per
-//! segment reduces every term of its segment by the fixed tree of
-//! `mklight_gpu::reduce::tree_in` (passes of at most
-//! `maxComputeWorkgroupsPerDimension` segments), and the output and status
-//! are stored into their mirrors (no readback). Results are bitwise the CPU-f32 specification's. Scans,
+//! One batch per operation: the inputs are loaded through the mirrors, every
+//! term of every segment is reduced by the fixed tree of
+//! `mklight_gpu::reduce::tree_in` in two passes per phase (pass 1: one
+//! workgroup per pass-1 group, term and segment into a partials scratch;
+//! pass 2: one workgroup per segment; tiles of segments bounded by the
+//! dispatch and binding limits), and the output and status are stored into
+//! their mirrors (no readback). Results are bitwise the CPU-f32 specification's. Scans,
 //! compaction, sorts and QR fits (no geometric analysis plans them) and
 //! inputs beyond one storage binding run the specification.
 
 use mklight_core::MkResult;
 use mklight_gpu::JobStats;
-use mklight_gpu::collectives::{Request, SegmentReduce, segment_shape};
+use mklight_gpu::collectives::{Request, SegmentKind, SegmentReduce, segment_shape};
 use mklight_gpu::pending::JobControl;
+use mklight_gpu::reduce;
 use mklight_gpu::resident::cpu::Execution;
 use mklight_gpu::resident::{PlanView, ResidentOp};
 
 use super::WebGpuOps;
 use crate::device::*;
 
-const SEGMENTS: Kernel = Kernel::new("collectives", "mkl_segment_reduce");
+const PASS1: Kernel = Kernel::new("collectives", "mkl_segment_pass1");
+const PASS2: Kernel = Kernel::new("collectives", "mkl_segment_pass2");
 
 fn shape() -> PassShape {
     use Access::*;
     PassShape {
         uniform: true,
-        storage: vec![Read, Read, Read, Read, Read, ReadWrite, ReadWrite],
+        storage: vec![
+            Read, Read, Read, Read, Read, ReadWrite, ReadWrite, ReadWrite,
+        ],
     }
 }
 
 /// The collective pipelines (`prepare_kernels`).
 pub fn pipelines() -> Vec<(Kernel, PassShape)> {
-    vec![(SEGMENTS, shape())]
+    vec![(PASS1, shape()), (PASS2, shape())]
 }
 
 /// Run a collective of a plan on the device, or `Ok(None)` for its CPU-f32
@@ -85,8 +91,27 @@ fn segments(
     {
         return Ok(None);
     }
+    let terms = |phase: usize| match r.kind {
+        SegmentKind::Moments2 => [4, 6][phase],
+        SegmentKind::Summary => 4 * c,
+        _ => c,
+    };
+    let phases = if r.kind == SegmentKind::Moments2 {
+        2
+    } else {
+        1
+    };
+    let max_terms = (0..phases).map(terms).max().unwrap_or(1);
+    let maxg = reduce::num_groups(r.max_segment_len);
+    let max_dim = gpu.summary().max_compute_workgroups_per_dimension as usize;
+    // Segments per tile: one grid dimension, partials within one binding.
+    let binding_words = (gpu.summary().max_storage_buffer_binding_size / 4) as usize;
+    let tile = max_dim.min(binding_words / (2 * max_terms * maxg)).max(1);
+    if max_terms > max_dim || !fits(&*gpu, 2 * max_terms * maxg) {
+        return Ok(None);
+    }
     let w = |v: Option<&PlanView>| v.map_or(0, |v| v.desc.element.words() as u32);
-    let params = |first: usize| {
+    let params = |first: usize, phase: usize| {
         uniform_words(&[
             n as u32,
             c as u32,
@@ -100,9 +125,11 @@ fn segments(
             w(Some(&r.values)),
             w(r.weights.as_ref()),
             w(r.reference.as_ref()),
+            phase as u32,
+            maxg as u32,
+            terms(phase) as u32,
         ])
     };
-    let max_groups = gpu.summary().max_compute_workgroups_per_dimension as usize;
     ctl.check()?;
     if s == 0 {
         return Ok(Some("webgpu:segment_reduce"));
@@ -119,18 +146,27 @@ fn segments(
         .collect();
     let o = batch.scratch(2 * out_len.max(1));
     let st = batch.scratch(s.max(1));
+    let partials = batch.scratch(2 * tile.min(s) * max_terms * maxg);
     let storage: Vec<Binding> = bound
         .iter()
         .map(|&b| Binding::read(b))
-        .chain([Binding::write(o), Binding::write(st)])
+        .chain([o, st, partials].map(Binding::write))
         .collect();
-    for first in (0..s).step_by(max_groups) {
-        batch.passes.push(Pass {
-            kernel: SEGMENTS,
-            uniform: Some(params(first)),
-            storage: storage.clone(),
-            workgroups: [(s - first).min(max_groups) as u32, 1, 1],
-        });
+    for first in (0..s).step_by(tile) {
+        let segs = (s - first).min(tile) as u32;
+        for phase in 0..phases {
+            for (kernel, workgroups) in [
+                (PASS1, [maxg as u32, terms(phase) as u32, segs]),
+                (PASS2, [segs, 1, 1]),
+            ] {
+                batch.passes.push(Pass {
+                    kernel,
+                    uniform: Some(params(first, phase)),
+                    storage: storage.clone(),
+                    workgroups,
+                });
+            }
+        }
     }
     ops.mirrors
         .store(&mut batch, x, o, 0, r.output, 0, 2 * out_len)?;

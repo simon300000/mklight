@@ -2,24 +2,32 @@
 // of mklight_gpu::collectives::cpu's `segments`, term for term, and of the
 // fixed two-pass tree of mklight_gpu::reduce::tree_in for every term.
 //
-// One workgroup of MKL_REDUCE_THREADS threads per segment runs every term of
-// that segment in output order: for each pass-1 group g of the tree (the
-// group count depends on the segment length only) thread t folds records
-// g·T + t, g·T + t + G·T, … of the segment from the term's identity, the
-// group's binary tree (strides T/2 … 1) leaves the group partial in
-// workgroup memory, and pass 2 folds partial t into the identity and runs
-// the same tree. The order is the specification's, so every term is bitwise
-// the CPU-f32 result; no atomics, no subgroups.
+// Two entries per phase (moments have two phases, the second centred on the
+// first's means), so that a few long segments fill the device:
+// * mkl_segment_pass1, workgroup (g, term, segment): if g is below the
+//   segment's group count G (a function of its length only), thread t folds
+//   records g·T + t, g·T + t + G·T, … of the segment from the term's
+//   identity, and the group's binary tree (strides T/2 … 1) leaves the group
+//   partial in partials[(segment · terms + term) · max_groups + g] (segment
+//   relative to `first`).
+// * mkl_segment_pass2, one workgroup per segment: for every term of the
+//   phase thread t folds partial t into the identity and runs the same tree;
+//   it writes the output, the status and the moments' means or the source
+//   products.
+// Each partial depends only on (segment, term, g), so the order is the
+// specification's and every term is bitwise the CPU-f32 result; no atomics,
+// no subgroups.
 //
 // Bindings: 0 env, 1 parameters, 2 values (channel-major words, f32 or
 // double-float), 3 offsets, 4 mask, 5 weights, 6 reference (absent inputs
-// bind a placeholder), 7 output (double-float), 8 status.
+// bind a placeholder), 7 output (double-float), 8 status, 9 partials
+// (double-float scratch).
 
 struct MklWgslSegmentParams {
     count: u32,
     channels: u32,
     segments: u32,
-    // First segment of this dispatch (workgroup x adds to it).
+    // First segment of this dispatch (the segment workgroup index adds to it).
     first: u32,
     kind: u32,
     mode: u32,
@@ -30,6 +38,11 @@ struct MklWgslSegmentParams {
     value_words: u32,
     weight_words: u32,
     reference_words: u32,
+    // Phase of this pass pair, pass-1 group cap of the segments
+    // (reduce::num_groups(max_len)) and terms of the phase (partial strides).
+    phase: u32,
+    max_groups: u32,
+    terms: u32,
 }
 
 @group(0) @binding(1) var<uniform> sp: MklWgslSegmentParams;
@@ -40,6 +53,7 @@ struct MklWgslSegmentParams {
 @group(0) @binding(6) var<storage, read> s_reference: array<u32>;
 @group(0) @binding(7) var<storage, read_write> s_out: array<vec2<f32>>;
 @group(0) @binding(8) var<storage, read_write> s_status: array<u32>;
+@group(0) @binding(9) var<storage, read_write> s_partials: array<vec2<f32>>;
 
 const SEG_T: u32 = MKL_REDUCE_THREADS;
 // Accumulators: MKL_REDUCE_PLAIN / KAHAN / DF sums, then the extrema.
@@ -47,13 +61,8 @@ const SEG_MIN: u32 = MKL_COLLECT_MIN;
 const SEG_MAX: u32 = MKL_COLLECT_MAX;
 
 var<workgroup> seg_v: array<vec2<f32>, MKL_REDUCE_THREADS>;
-var<workgroup> seg_partials: array<vec2<f32>, MKL_REDUCE_MAX_GROUPS>;
-// Results of the segment's terms (at most 10 for moments; summary and
-// source products publish as they go).
-var<workgroup> seg_terms: array<vec2<f32>, 10>;
 var<workgroup> seg_len: u32;
 var<workgroup> seg_start: u32;
-var<workgroup> seg_valid: u32;
 
 fn seg_df(words: u32, i: u32) -> vec2<f32> {
     if (words == 2u) {
@@ -260,8 +269,85 @@ fn seg_tree(tid: u32, op: u32) -> vec2<f32> {
     return r;
 }
 
+const SEG_INVALID: u32 = 0xffffffffu;
+
+// Length of segment z (SEG_INVALID if its offsets are not valid) as a
+// workgroup-uniform value; seg_start holds its first record.
+fn seg_range(tid: u32, z: u32) -> u32 {
+    if (tid == 0u) {
+        let a = s_offsets[z];
+        let b = s_offsets[z + 1u];
+        let ok = a <= b && b <= sp.count && b - a <= sp.max_len;
+        seg_start = a;
+        seg_len = select(SEG_INVALID, b - a, ok);
+    }
+    return workgroupUniformLoad(&seg_len);
+}
+fn seg_groups(len: u32) -> u32 {
+    return clamp((len + SEG_T * MKL_REDUCE_ITEMS_PER_THREAD - 1u) / (SEG_T * MKL_REDUCE_ITEMS_PER_THREAD), 1u, MKL_REDUCE_MAX_GROUPS);
+}
+
 @compute @workgroup_size(MKL_REDUCE_THREADS)
-fn mkl_segment_reduce(
+fn mkl_segment_pass1(
+    @builtin(local_invocation_id) lid: vec3<u32>,
+    @builtin(workgroup_id) group: vec3<u32>,
+) {
+    mkl_enter();
+    let tid = lid.x;
+    let g = group.x;
+    let term = group.y;
+    let z = sp.first + group.z;
+    let phase = sp.phase;
+    let len = seg_range(tid, z);
+    if (len == SEG_INVALID) {
+        return;
+    }
+    let groups = seg_groups(len);
+    if (g >= groups) {
+        return;
+    }
+    let a = seg_start;
+    let step = groups * SEG_T;
+    var mean = vec2<f32>(0.0, 0.0);
+    var mean_y = vec2<f32>(0.0, 0.0);
+    if (phase == 1u) {
+        mean = s_out[z * 10u + 2u];
+        mean_y = s_out[z * 10u + 3u];
+    }
+    let op = seg_op(phase, term);
+    let id = seg_identity(op);
+    var acc = id;
+    if (op == MKL_REDUCE_PLAIN) {
+        var s = id.x;
+        for (var i = g * SEG_T + tid; i < len; i += step) {
+            let q = seg_value(z, phase, term, a + i, id, mean, mean_y);
+            s = mkl_add(s, mkl_add(q.x, q.y));
+        }
+        acc = vec2<f32>(s, 0.0);
+    } else if (op == MKL_REDUCE_KAHAN) {
+        var sc = vec2<f32>(0.0, 0.0);
+        for (var i = g * SEG_T + tid; i < len; i += step) {
+            let q = seg_value(z, phase, term, a + i, id, mean, mean_y);
+            sc = mkl_neumaier_add(sc, q.x);
+            if (q.y != 0.0) {
+                sc = mkl_neumaier_add(sc, q.y);
+            }
+        }
+        acc = mkl_two_sum(sc.x, sc.y);
+    } else {
+        for (var i = g * SEG_T + tid; i < len; i += step) {
+            acc = seg_combine(op, acc, seg_value(z, phase, term, a + i, id, mean, mean_y));
+        }
+    }
+    seg_v[tid] = acc;
+    let r = seg_tree(tid, op);
+    if (tid == 0u) {
+        s_partials[(group.z * sp.terms + term) * sp.max_groups + g] = r;
+    }
+}
+
+@compute @workgroup_size(MKL_REDUCE_THREADS)
+fn mkl_segment_pass2(
     @builtin(local_invocation_id) lid: vec3<u32>,
     @builtin(workgroup_id) group: vec3<u32>,
 ) {
@@ -269,104 +355,47 @@ fn mkl_segment_reduce(
     let tid = lid.x;
     let z = sp.first + group.x;
     let c = sp.channels;
-    let phases = select(1u, 2u, sp.kind == MKL_COLLECT_MOMENTS2);
-    let products = select(0u, c * (c + 1u) / 2u, sp.kind == MKL_COLLECT_SOURCE_PRODUCTS);
+    let phase = sp.phase;
+    let len = seg_range(tid, z);
     if (tid == 0u) {
-        let a = s_offsets[z];
-        let b = s_offsets[z + 1u];
-        let ok = a <= b && b <= sp.count && b - a <= sp.max_len;
-        seg_valid = u32(ok);
-        seg_start = a;
-        seg_len = select(0u, b - a, ok);
-        s_status[z] = u32(!ok);
+        s_status[z] = u32(len == SEG_INVALID);
     }
-    let valid = workgroupUniformLoad(&seg_valid);
-    if (valid == 0u) {
+    if (len == SEG_INVALID) {
         if (tid == 0u) {
-            for (var phase = 0u; phase < phases; phase++) {
-                for (var t = 0u; t < seg_terms_of(phase) + products; t++) {
-                    s_out[seg_slot(z, phase, t)] = vec2<f32>(mkl_qnan(), 0.0);
+            let phases = select(1u, 2u, sp.kind == MKL_COLLECT_MOMENTS2);
+            let products = select(0u, c * (c + 1u) / 2u, sp.kind == MKL_COLLECT_SOURCE_PRODUCTS);
+            for (var ph = 0u; ph < phases; ph++) {
+                for (var t = 0u; t < seg_terms_of(ph) + products; t++) {
+                    s_out[seg_slot(z, ph, t)] = vec2<f32>(mkl_qnan(), 0.0);
                 }
             }
         }
         return;
     }
-    let len = workgroupUniformLoad(&seg_len);
-    let a = seg_start;
-    let groups = clamp((len + SEG_T * MKL_REDUCE_ITEMS_PER_THREAD - 1u) / (SEG_T * MKL_REDUCE_ITEMS_PER_THREAD), 1u, MKL_REDUCE_MAX_GROUPS);
-    let step = groups * SEG_T;
-    var mean = vec2<f32>(0.0, 0.0);
-    var mean_y = vec2<f32>(0.0, 0.0);
-    for (var phase = 0u; phase < phases; phase++) {
-        let terms = seg_terms_of(phase);
-        for (var term = 0u; term < terms; term++) {
-            let op = seg_op(phase, term);
-            let id = seg_identity(op);
-            for (var g = 0u; g < groups; g++) {
-                var acc = id;
-                if (op == MKL_REDUCE_PLAIN) {
-                    var s = id.x;
-                    for (var i = g * SEG_T + tid; i < len; i += step) {
-                        let q = seg_value(z, phase, term, a + i, id, mean, mean_y);
-                        s = mkl_add(s, mkl_add(q.x, q.y));
-                    }
-                    acc = vec2<f32>(s, 0.0);
-                } else if (op == MKL_REDUCE_KAHAN) {
-                    var sc = vec2<f32>(0.0, 0.0);
-                    for (var i = g * SEG_T + tid; i < len; i += step) {
-                        let q = seg_value(z, phase, term, a + i, id, mean, mean_y);
-                        sc = mkl_neumaier_add(sc, q.x);
-                        if (q.y != 0.0) {
-                            sc = mkl_neumaier_add(sc, q.y);
-                        }
-                    }
-                    acc = mkl_two_sum(sc.x, sc.y);
-                } else {
-                    for (var i = g * SEG_T + tid; i < len; i += step) {
-                        acc = seg_combine(op, acc, seg_value(z, phase, term, a + i, id, mean, mean_y));
-                    }
-                }
-                seg_v[tid] = acc;
-                let r = seg_tree(tid, op);
-                if (tid == 0u) {
-                    seg_partials[g] = r;
-                }
-            }
-            workgroupBarrier();
-            var acc = id;
-            if (tid < groups) {
-                acc = seg_combine(op, id, seg_partials[tid]);
-            }
-            seg_v[tid] = acc;
-            let r = seg_tree(tid, op);
-            if (tid == 0u) {
-                if (sp.kind == MKL_COLLECT_MOMENTS2) {
-                    seg_terms[phase * 4u + term] = r;
-                } else {
-                    s_out[seg_slot(z, phase, term)] = r;
-                }
-            }
+    let groups = seg_groups(len);
+    for (var term = 0u; term < sp.terms; term++) {
+        let op = seg_op(phase, term);
+        let id = seg_identity(op);
+        var acc = id;
+        if (tid < groups) {
+            acc = seg_combine(op, id, s_partials[(group.x * sp.terms + term) * sp.max_groups + tid]);
         }
-        if (sp.kind == MKL_COLLECT_MOMENTS2 && phase == 0u) {
-            if (tid == 0u) {
-                let w = seg_terms[1];
-                for (var k = 0u; k < 2u; k++) {
-                    var m = vec2<f32>(mkl_qnan(), 0.0);
-                    if (w.x > 0.0) {
-                        m = mkl_df_div_rn(seg_terms[2u + k], w);
-                    }
-                    seg_terms[2u + k] = m;
-                }
-            }
-            workgroupBarrier();
-            mean = seg_terms[2];
-            mean_y = seg_terms[3];
+        seg_v[tid] = acc;
+        let r = seg_tree(tid, op);
+        if (tid == 0u) {
+            s_out[seg_slot(z, phase, term)] = r;
         }
     }
     if (tid == 0u) {
-        if (sp.kind == MKL_COLLECT_MOMENTS2) {
-            for (var k = 0u; k < 10u; k++) {
-                s_out[z * 10u + k] = seg_terms[k];
+        if (sp.kind == MKL_COLLECT_MOMENTS2 && phase == 0u) {
+            // The means replace the weighted sums (slots 2, 3).
+            let w = s_out[z * 10u + 1u];
+            for (var k = 0u; k < 2u; k++) {
+                var m = vec2<f32>(mkl_qnan(), 0.0);
+                if (w.x > 0.0) {
+                    m = mkl_df_div_rn(s_out[z * 10u + 2u + k], w);
+                }
+                s_out[z * 10u + 2u + k] = m;
             }
         } else if (sp.kind == MKL_COLLECT_SOURCE_PRODUCTS) {
             let base = seg_slot(z, 0u, 0u);

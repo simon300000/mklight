@@ -41,17 +41,19 @@ fn segment_known_answers() {
     p3_cases::segment_answers(g);
 }
 
-/// Values of every kind and mode, segments empty, short and spanning
-/// several tree groups, f32 and double-float, invalid offsets.
+/// Values of every kind and mode over `n` records split by `offsets` (at
+/// most `bound` each), f32 and double-float.
+#[allow(clippy::too_many_arguments)]
 fn random_case(
     b: &dyn QualificationBackend,
     kind: SegmentKind,
     mode: ReduceMode,
     df: bool,
     channels: usize,
+    offsets: &[u32],
+    n: usize,
+    bound: usize,
 ) -> ResidentPlan {
-    let offsets: Vec<u32> = vec![0, 0, 1, 7, 300, 4096, 4097, 13001, 30001, 30002, 29000];
-    let n = 30002;
     let value = |i: usize| {
         let u = ((i as u64 * 2654435761) % 1000003) as f64 / 1000003.;
         (u - 0.3) * [1., 1e4, 1e-3][i % 3] + if i.is_multiple_of(97) { 1e7 } else { 0. }
@@ -65,7 +67,7 @@ fn random_case(
     } else {
         BufferData::F32((0..channels * n).map(|i| value(i) as f32).collect())
     };
-    let mut p = p3_cases::segment(b, data, channels, offsets, kind, None, 17001);
+    let mut p = p3_cases::segment(b, data, channels, offsets.to_vec(), kind, None, bound);
     let ResidentOp::Collectives(Request::SegmentReduce(r)) = &mut p.operations[0] else {
         unreachable!()
     };
@@ -90,7 +92,12 @@ fn segment_reduce_matches_cpu_bitwise() {
                 (SegmentKind::Moments2, 3),
             ] {
                 eprintln!("{kind:?} {mode:?} df={df}");
-                same(g, &c, &|b| random_case(b, kind, mode, df, channels));
+                // Segments empty, short and spanning several tree groups,
+                // invalid offsets.
+                let offsets = [0, 0, 1, 7, 300, 4096, 4097, 13001, 30001, 30002, 29000];
+                same(g, &c, &|b| {
+                    random_case(b, kind, mode, df, channels, &offsets, 30002, 17001)
+                });
             }
         }
     }
@@ -107,6 +114,28 @@ fn segment_reduce_matches_cpu_bitwise() {
         p3_cases::moments_case(b, short[..601].to_vec(), 18_300)
     });
     same(g, &c, &|b| p3_cases::moments_case(b, short.clone(), 30_001));
+}
+
+/// A few long segments (a spot diagram's fields × wavelengths): one beyond
+/// the 256-group cap, one of a few groups, one record, one empty.
+#[test]
+fn segment_reduce_long_segments_bitwise() {
+    let g = crate::gpu_or_skip!();
+    let c = CpuF32Backend::matching(&g.precision().probe);
+    let offsets = [0, 1_300_000, 1_310_001, 1_310_002, 1_310_002];
+    for (kind, mode, channels) in [
+        (SegmentKind::Sum, ReduceMode::Plain, 2),
+        (SegmentKind::Summary, ReduceMode::Kahan, 2),
+        (SegmentKind::SourceProducts, ReduceMode::DoubleFloat, 3),
+        (SegmentKind::Moments2, ReduceMode::DoubleFloat, 3),
+    ] {
+        eprintln!("{kind:?} {mode:?}");
+        same(g, &c, &|b| {
+            random_case(
+                b, kind, mode, true, channels, &offsets, 1_310_002, 1_300_000,
+            )
+        });
+    }
 }
 
 /// Focus terms and characteristic terms feed segment sums in one plan whose
