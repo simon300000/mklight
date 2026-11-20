@@ -48,10 +48,23 @@ pub type CudaBackend = WebGpuBackend;
 pub fn open() -> MkResult<Option<CudaBackend>> {
     #[cfg(any(windows, target_os = "linux"))]
     {
-        match CudaDevice::open()? {
+        // The driver is loaded at run time and its functions looked up on
+        // first use; a driver without one of them makes that lookup panic.
+        // That is an unusable driver, not a crash.
+        let open = std::panic::catch_unwind(|| match CudaDevice::open()? {
             Some(d) => WebGpuBackend::with_gpu(std::sync::Arc::new(d)).map(Some),
             None => Ok(None),
-        }
+        });
+        open.unwrap_or_else(|panic| {
+            let why = panic
+                .downcast_ref::<String>()
+                .cloned()
+                .or_else(|| panic.downcast_ref::<&str>().map(|s| s.to_string()))
+                .unwrap_or_default();
+            Err(mklight_core::MkError::Unsupported(format!(
+                "cuda: the NVIDIA driver could not be used ({why})"
+            )))
+        })
     }
     #[cfg(not(any(windows, target_os = "linux")))]
     {

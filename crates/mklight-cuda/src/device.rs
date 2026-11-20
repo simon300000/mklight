@@ -72,12 +72,33 @@ impl Drop for Pinned {
     }
 }
 
+/// The oldest driver API used (`cuDriverGetVersion`: CUDA 12.4).
+const MIN_DRIVER: i32 = 12040;
+
+/// The largest page-locked staging block a lane keeps (larger batches
+/// allocate their own for the batch).
+const STAGING_MAX: usize = 64 << 20;
+
 /// A stream with its staging buffer and timing events.
 struct Lane {
+    ctx: sys::CUcontext,
     stream: sys::CUstream,
     staging: Option<Pinned>,
     start: sys::CUevent,
     end: sys::CUevent,
+}
+
+impl Drop for Lane {
+    fn drop(&mut self) {
+        // SAFETY: the lane's batch has completed or failed; nothing else
+        // uses its stream or events.
+        unsafe {
+            let _ = cu::ctx::set_current(self.ctx);
+            let _ = cu::stream::destroy(self.stream);
+            let _ = cu::event::destroy(self.start);
+            let _ = cu::event::destroy(self.end);
+        }
+    }
 }
 
 unsafe impl Send for Lane {}
@@ -156,6 +177,22 @@ impl CudaDevice {
         if !driver_present() {
             return Ok(None);
         }
+        // The driver API the backend calls (stream-ordered allocation and
+        // memory pools among it) is that of CUDA 12.4; an older driver lacks
+        // some of its functions.
+        let mut driver_version = 0;
+        check("cuDriverGetVersion", unsafe {
+            sys::cuDriverGetVersion(&mut driver_version)
+        })?;
+        if driver_version < MIN_DRIVER {
+            return Err(MkError::Unsupported(format!(
+                "cuda: the NVIDIA driver supports CUDA {}.{}; CUDA {}.{} or later is needed                  (update the driver)",
+                driver_version / 1000,
+                driver_version % 1000 / 10,
+                MIN_DRIVER / 1000,
+                MIN_DRIVER % 1000 / 10
+            )));
+        }
         cu::init().map_err(|e| err("cuInit", e))?;
         if cu::device::get_count().map_err(|e| err("cuDeviceGetCount", e))? < 1 {
             return Ok(None);
@@ -171,15 +208,13 @@ impl CudaDevice {
             attr(A::CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR)?,
         );
         let name = cu::device::get_name(dev).map_err(|e| err("cuDeviceGetName", e))?;
-        let mut driver_version = 0;
-        check("cuDriverGetVersion", unsafe {
-            sys::cuDriverGetVersion(&mut driver_version)
-        })?;
         // Keep freed stream-ordered allocations in the pool (batches allocate
         // their uploads and scratch there).
         unsafe {
             let pool = cu::device::get_default_mem_pool(dev).map_err(|e| err("mem pool", e))?;
-            let mut threshold: u64 = u64::MAX;
+            // Freed batch memory stays in the pool up to 1 GiB, and is
+            // returned to the system beyond it.
+            let mut threshold: u64 = 1 << 30;
             check(
                 "cuMemPoolSetAttribute",
                 sys::cuMemPoolSetAttribute(
@@ -431,6 +466,7 @@ impl CudaDevice {
                 .map_err(|e| err("cuEventCreate", e))
         };
         Ok(Lane {
+            ctx: self.ctx,
             stream,
             staging: None,
             start: ev()?,
@@ -491,15 +527,23 @@ impl CudaDevice {
         }
         let read_bytes: usize = batch.reads.iter().map(|r| r.into.len() * 4).sum();
         let staging_bytes = input_bytes.max(read_bytes).max(ALIGN);
-        if lane
-            .staging
-            .as_ref()
-            .is_none_or(|p| p.bytes < staging_bytes)
-        {
-            lane.staging = None;
-            lane.staging = Some(Pinned::new(staging_bytes)?);
-        }
-        let staging = lane.staging.as_ref().unwrap();
+        // A lane keeps its staging block (up to STAGING_MAX) for later
+        // batches; a larger batch stages through a block of its own.
+        let own;
+        let staging = if staging_bytes > STAGING_MAX {
+            own = Pinned::new(staging_bytes)?;
+            &own
+        } else {
+            if lane
+                .staging
+                .as_ref()
+                .is_none_or(|p| p.bytes < staging_bytes)
+            {
+                lane.staging = None;
+                lane.staging = Some(Pinned::new(staging_bytes)?);
+            }
+            lane.staging.as_ref().unwrap()
+        };
         let stage = unsafe { std::slice::from_raw_parts_mut(staging.ptr, staging.bytes) };
         // Stage the inputs first (large ones in parallel), so the device
         // clock below starts with the transfer.
@@ -915,6 +959,8 @@ impl CudaDevice {
             let workers: Vec<_> = (0..threads)
                 .map(|_| {
                     scope.spawn(|| -> MkResult<()> {
+                        // Every worker looks functions up in the context.
+                        self.bind()?;
                         while !cancel.load(Ordering::Relaxed) {
                             let Some(k) = ks.get(next.fetch_add(1, Ordering::Relaxed)) else {
                                 break;
