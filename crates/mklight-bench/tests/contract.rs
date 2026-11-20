@@ -274,6 +274,32 @@ fn monte_carlo_counts_are_statistical_and_survival_counts_exact() {
     let strong = list(vec![sig("q", 2e-5), sig("r", 2.1e-5)]);
     assert!(run("stray_light", &a, &strong).reason.is_some());
 
+    // Ghost flux by reflection pair is a sparse ledger map: a pair one route
+    // lists and the other does not (one path at the roulette weight taking
+    // another branch) is zero flux on the other side, gated as a ledger
+    // entry; a strong pair may not go missing.
+    let pairs = |p: Value| {
+        out(
+            json!({"energy":{"emitted":600.0,"ghost_by_pair":p}}),
+            vec![],
+        )
+    };
+    let reference = pairs(json!([[3, 1, 0.84], [8, 7, 3.0e-5], [9, 7, 0.58]]));
+    let flipped = pairs(json!([[3, 1, 0.84], [9, 7, 0.58], [10, 8, 3.0e-5]]));
+    let c = run("stray_light", &reference, &flipped);
+    assert!(c.reason.is_none(), "{:?}", c.reason);
+    assert_eq!(c.sampling_differences.len(), 2);
+    let extra = pairs(json!([
+        [3, 1, 0.84],
+        [8, 7, 3.0e-5],
+        [9, 7, 0.58],
+        [10, 8, 3.0e-5]
+    ]));
+    let c = run("stray_light", &reference, &extra);
+    assert!(c.reason.is_none(), "{:?}", c.reason);
+    let dropped = pairs(json!([[8, 7, 3.0e-5], [9, 7, 0.58]]));
+    assert!(run("stray_light", &reference, &dropped).reason.is_some());
+
     // Fractions of ray counts are survival exact, not float-order exact.
     let spot = |f: f64| {
         out(

@@ -1957,6 +1957,45 @@ fn align_signatures(c: &mut Comparison, a: &mut Value, b: &mut Value) {
     b["top_signatures"] = Value::Array(pb);
 }
 
+/// Ghost flux by the first two stray reflections is a sparse ledger map: a
+/// pair is listed once some detected ghost path starts with it, and an
+/// unlisted pair carries zero flux. A path that takes another branch in one
+/// route (a roulette survivor, at the roulette weight) adds or drops a whole
+/// pair, so the lists are matched by identity, a pair missing on one side
+/// counting as zero flux, and every pair is gated as a ledger entry.
+fn align_ghost_pairs(c: &mut Comparison, a: &mut Value, b: &mut Value) {
+    let (Some(la), Some(lb)) = (
+        a["energy"]["ghost_by_pair"].as_array(),
+        b["energy"]["ghost_by_pair"].as_array(),
+    ) else {
+        return;
+    };
+    let id = |p: &Value| (p[0].as_u64(), p[1].as_u64());
+    let map =
+        |l: &Vec<Value>| -> BTreeMap<_, Value> { l.iter().map(|p| (id(p), p.clone())).collect() };
+    let (ma, mb) = (map(la), map(lb));
+    if ma.len() != la.len() || mb.len() != lb.len() {
+        // Duplicate pairs are a tally defect: compare the lists as they are.
+        return;
+    }
+    let zero = |p: &Value| Value::Array(vec![p[0].clone(), p[1].clone(), Value::from(0.)]);
+    let (mut pa, mut pb) = (Vec::new(), Vec::new());
+    for key in ma.keys().chain(mb.keys().filter(|k| !ma.contains_key(k))) {
+        let (x, y) = (ma.get(key), mb.get(key));
+        if let (Some(p), None) | (None, Some(p)) = (x, y) {
+            let side = if x.is_some() { "reference" } else { "result" };
+            c.sampling_differences.push(format!(
+                "ghost_by_pair ({}, {}) only in the {side}: flux {} against zero",
+                p[0], p[1], p[2]
+            ));
+        }
+        pa.push(x.cloned().unwrap_or_else(|| zero(y.unwrap())));
+        pb.push(y.cloned().unwrap_or_else(|| zero(x.unwrap())));
+    }
+    a["energy"]["ghost_by_pair"] = Value::Array(pa);
+    b["energy"]["ghost_by_pair"] = Value::Array(pb);
+}
+
 /// The image grid of a PSF buffer: x and y relative to the PSF's reference
 /// point (its position is compared separately, as a position).
 fn psf_grid(json: &Value, buffer: &str) -> Option<(Vec<f64>, Vec<f64>)> {
@@ -2013,6 +2052,7 @@ pub fn compare(
     let (mut ja, mut jb) = (ranked(analysis, &cpu.json), ranked(analysis, &gpu.json));
     if analysis == "stray_light" {
         align_signatures(&mut c, &mut ja, &mut jb);
+        align_ghost_pairs(&mut c, &mut ja, &mut jb);
     }
     c.json(&ja, &jb, &ja, &jb, "");
     let find = |o: &AnalysisOutput, name: &str| o.buffers.iter().find(|b| b.name == name).cloned();

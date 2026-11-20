@@ -2099,7 +2099,7 @@ statistical classes gate at their stated confidence.
 | illumination | 1e-3 | D | relative illumination |
 | relative 1e-3 | 1e-3 relative | D, E | projected solid angle, integrated PSF energy, diffraction peak |
 | radiometric | 1e-5 relative + 1e-10 | E, GHOST §6 | fluxes, transmissions, ghost peaks |
-| ledger | 1e-5 of emitted + 1e-10 | E stray | stray energy report |
+| ledger | 1e-5 of emitted + 1e-10 | E stray | stray energy report; ghost flux by reflection pair matched by pair identity, an unlisted pair counting as zero flux |
 | polarimetric, retardance | 1e-4; 1e-3 rad | E | diattenuation, intensity; retardance; fast axis only where the retarder is defined |
 | Jones | 1e-4‖J‖ + 1e-7/√2 | E | Jones matrices |
 | image | L1 2e-3, energy 1e-3 | E | PSF, LSF, irradiance and simulated images |
