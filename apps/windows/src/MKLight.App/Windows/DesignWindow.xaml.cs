@@ -66,6 +66,7 @@ public sealed partial class DesignWindow : Window
         Root.ActualThemeChanged += (_, _) => UpdateStatus();
         UpdateAddMenu();
         AddCommands();
+        InitDocuments();
         Closed += (_, _) => session.Dispose();
         AppWindow.Closing += OnClosing;
         AppHooks.RaiseWindowCreated(this);
@@ -374,4 +375,16 @@ public sealed partial class DesignWindow : Window
     }
 
     void OnPaneToggleRequested(TitleBar sender, object args) => Nav.IsPaneOpen = !Nav.IsPaneOpen;
+
+    // ---- Seams for the document commands and launch options ----
+
+    /// <summary>The sidebar column is shown (View ▸ Sidebar, <c>--sidebar hidden</c>).</summary>
+    public bool IsSidebarVisible
+    {
+        get => Nav.IsPaneOpen;
+        set => Nav.IsPaneOpen = value;
+    }
+
+    /// <summary>Opens the issues list of the status capsule (Design ▸ Show Issues, <c>--show-issues</c>).</summary>
+    public void ShowIssues() => Status.ShowIssues();
 }
