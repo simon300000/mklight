@@ -40,6 +40,10 @@ public sealed class GlassSubstitutionSession
     public bool Applied { get; private set; }
     /// <summary>The design's glasses when the run started (with their melt offsets), for the comparison.</summary>
     public IReadOnlyDictionary<SurfaceID, string> StartGlasses { get; private set; } = new Dictionary<SurfaceID, string>();
+    /// <summary>The design the run started from (the before layout, and the glasses on the map a candidate replaces).</summary>
+    public OpticalSystem? StartSystem { get; private set; }
+    /// <summary>Whether the candidate's glass map shows the P_g,F plane (else n_d).</summary>
+    public bool MapPgf { get; set; }
 
     public bool IsRunning => Phase == JobPhase.Running;
     public bool CanStop => IsRunning && (_job?.CanStop ?? false);
@@ -57,6 +61,7 @@ public sealed class GlassSubstitutionSession
         var system = _s.Document.System;
         var settings = Settings.Settings(system, MeritSettings.FromSection(_s.Document.Section("merit")), DesignVariables.Of(_s.Document));
         StartGlasses = GlassSlot.All(system).ToDictionary(x => x.Id, x => x.Label);
+        StartSystem = system;
         EndPreview();
         var job = _s.Workspace.SubmitDesignJob(new EngineAnalysisRequest("glass_substitution", settings, new ExecutionSettings(_s.Workspace.Backend), fresh));
         if (job is null)

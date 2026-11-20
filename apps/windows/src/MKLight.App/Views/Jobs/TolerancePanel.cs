@@ -2,6 +2,7 @@ using System.Globalization;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Shapes;
@@ -17,8 +18,10 @@ namespace MKLight.App.Views.Jobs;
 /// The Tolerance page (the Mac app's <c>TolerancePanel</c>): the tolerance set grouped by element (each row's kind,
 /// surface, limits and unit; distribution and symmetry in its context menu), the Default Tolerances generator,
 /// the test wavelength, compensators, the criterion and the analysis; while running the stage, elapsed time and
-/// time left; then the results: nominal, RSS prediction, levels and yield, the sensitivities by share (an eye
-/// previews a build at its worse limit), the Monte-Carlo histogram with the worst trials (a click previews one).
+/// time left; then the results: nominal, RSS prediction, levels and yield, the Export menu (Copy Summary, the tables
+/// as CSV), the sensitivities by share (an eye previews a build at its worse limit), the Monte-Carlo histogram (a
+/// click on a bar lists its trials, else the worst; a click on a trial previews it) and each compensator's range used
+/// against the range allowed. The table's groups collapse; an element row shows its moving surfaces and pivot.
 /// </summary>
 public sealed partial class TolerancePanel : UserControl
 {
@@ -212,24 +215,21 @@ public sealed partial class TolerancePanel : UserControl
         _selection.Clear();
     }
 
-    /// <summary>The rows grouped by element (<c>L1 · N-SK16</c>, <c>Air after L1</c>, <c>Stop S6</c>).</summary>
+    /// <summary>
+    /// The rows grouped by element (<c>L1 · N-SK16</c>, <c>Air after L1</c>, <c>Stop S6</c>), each group collapsible (a closed
+    /// one shows its count, in red when a row in it cannot run).
+    /// </summary>
     UIElement Table(ToleranceSettings st, OpticalSystem sys, Dictionary<Guid, ToleranceIssue> issues)
     {
-        var groups = LensElements.Groups(sys);
         var list = new StackPanel();
-        string? current = null;
+        var leading = ToleranceTableGroup.LeadingElementRows(st.Rows);
         var k = 0;
-        foreach (var row in st.Rows)
+        foreach (var group in ToleranceTableGroup.Of(st.Rows, sys))
         {
-            var title = LensElements.GroupTitle(row, sys, groups);
-            if (title != current)
-            {
-                current = title;
-                var head = JobUI.Text(title, "ColumnHeaderText");
-                head.Margin = new Thickness(8, list.Children.Count == 0 ? 6 : 10, 0, 2);
-                list.Children.Add(head);
-            }
-            list.Children.Add(Row(row, sys, issues.GetValueOrDefault(row.Id), k++ % 2 == 1));
+            var closed = _s.CollapsedGroups.Contains(group.Key);
+            list.Children.Add(GroupHeader(group, closed, group.Rows.Count(r => issues.ContainsKey(r.Id)), list.Children.Count == 0));
+            if (closed) continue;
+            foreach (var row in group.Rows) list.Children.Add(Row(row, sys, issues.GetValueOrDefault(row.Id), k++ % 2 == 1, leading.Contains(row.Id)));
         }
         var frame = new Border { Child = list, CornerRadius = new CornerRadius(6), BorderThickness = new Thickness(1), Padding = new Thickness(0, 0, 0, 4) };
         JobUI.Bind(frame, "CardStrokeColorDefaultBrush", b => frame.BorderBrush = b);
@@ -238,7 +238,173 @@ public sealed partial class TolerancePanel : UserControl
         return frame;
     }
 
-    UIElement Row(ToleranceRow row, OpticalSystem sys, ToleranceIssue? issue, bool alternate)
+    /// <summary>Whether <paramref name="d"/> lies inside a button (a click there is not a row selection).</summary>
+    static bool InButton(DependencyObject? d)
+    {
+        for (; d is not null; d = VisualTreeHelper.GetParent(d))
+        {
+            if (d is ButtonBase) return true;
+            if (d is Border { Tag: "tolerance-row" }) return false;
+        }
+        return false;
+    }
+
+    /// <summary>A group's title with a disclosure chevron; closed, its count of tolerances.</summary>
+    Button GroupHeader(ToleranceTableGroup group, bool closed, int problems, bool first)
+    {
+        var g = new Grid { ColumnSpacing = 6 };
+        g.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        g.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        g.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        var chevron = new FontIcon { Glyph = closed ? "\uE76C" : "\uE70D", FontSize = 9, VerticalAlignment = VerticalAlignment.Center };
+        JobUI.Bind(chevron, "TextFillColorSecondaryBrush", b => chevron.Foreground = b);
+        g.Children.Add(chevron);
+        var title = JobUI.Text(group.Title, "ColumnHeaderText");
+        title.TextTrimming = TextTrimming.CharacterEllipsis;
+        Grid.SetColumn(title, 1);
+        g.Children.Add(title);
+        if (closed)
+        {
+            var count = JobUI.Text(group.Rows.Count.ToString(C), "SecondaryNumberText", 11.5);
+            if (problems > 0) JobUI.Bind(count, "ErrorBrush", b => count.Foreground = b);
+            Grid.SetColumn(count, 2);
+            g.Children.Add(count);
+        }
+        var b = new Button
+        {
+            Content = g, HorizontalAlignment = HorizontalAlignment.Stretch, HorizontalContentAlignment = HorizontalAlignment.Stretch,
+            Padding = new Thickness(8, 3, 8, 3), Margin = new Thickness(0, first ? 4 : 6, 0, 1), MinHeight = 0,
+            Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent), BorderThickness = new Thickness(0),
+        };
+        b.Click += (_, _) => _s.ToggleGroup(group.Key);
+        var n = group.Rows.Count.ToString(C);
+        ToolTipService.SetToolTip(b, closed ? $"Show the {n} tolerances of {group.Key}" : $"Hide the tolerances of {group.Key}");
+        AutomationProperties.SetName(b, group.Title);
+        AutomationProperties.SetItemStatus(b, closed ? $"Collapsed, {n} tolerances" + (problems > 0 ? $", {problems.ToString(C)} with problems" : "") : "Expanded");
+        AutomationProperties.SetHeadingLevel(b, Microsoft.UI.Xaml.Automation.Peers.AutomationHeadingLevel.Level3);
+        return b;
+    }
+
+    /// <summary>A borderless button opening a menu (the surface column).</summary>
+    static Button MenuButton(string text, MenuFlyout menu, string help)
+    {
+        var b = new Button
+        {
+            Content = JobUI.Text(text, "SecondaryNumberText"), Flyout = menu, Padding = new Thickness(4, 1, 4, 2), MinWidth = 0, MinHeight = 0,
+            Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent), BorderThickness = new Thickness(0), VerticalAlignment = VerticalAlignment.Center,
+        };
+        ToolTipService.SetToolTip(b, help);
+        AutomationProperties.SetName(b, $"{text}: {help}");
+        return b;
+    }
+
+    static string SurfaceTitle(OpticalSystem sys, int i) => $"S{i.ToString(C)}" + (i == sys.Stop ? " (stop)" : "");
+
+    static MenuFlyoutItem Item(string text, Action click, bool enabled = true)
+    {
+        var item = new MenuFlyoutItem { Text = text, IsEnabled = enabled };
+        item.Click += (_, _) => click();
+        return item;
+    }
+
+    /// <summary>
+    /// The surface column's menu: a surface row's surface; an element row's element (its range), first and last surface,
+    /// the pivot kept where it sits.
+    /// </summary>
+    MenuFlyout SurfaceMenu(ToleranceRow row, OpticalSystem sys)
+    {
+        var id = row.Id;
+        var menu = new MenuFlyout();
+        var last = Math.Max(sys.ImageIndex - 1, 1);
+        if (!row.Kind.IsElement())
+        {
+            for (var i = 1; i <= last && i < sys.Surfaces.Count; i++)
+            {
+                var sid = sys.Surfaces[i].Id;
+                menu.Items.Add(Item(SurfaceTitle(sys, i), () => Edit("Change Tolerance Surface", s => { if (s.Rows.FirstOrDefault(r => r.Id == id) is { } r) r.Surface = sid; }), sid != row.Surface));
+            }
+            return menu;
+        }
+        var moving = row.MovingSurfaces(sys);
+        var pivot = TolerancePivotChoice.Of(row, sys);
+        foreach (var g in LensElements.Groups(sys))
+        {
+            int f = g.Surfaces[0], l = g.Surfaces[^1];
+            menu.Items.Add(Item($"{g.Title} · S{f.ToString(C)}–{l.ToString(C)}", () => SetElement(id, f, l, TolerancePivotChoice.First),
+                !(moving.Count > 0 && moving[0] == f && moving[^1] == l)));
+        }
+        menu.Items.Add(new MenuFlyoutSeparator());
+        var firstSub = new MenuFlyoutSubItem { Text = "First Surface" };
+        for (var i = 1; i <= last; i++)
+        {
+            var f = i;
+            firstSub.Items.Add(Item(SurfaceTitle(sys, i), () => SetElement(id, f, Math.Max(f, moving.Count > 0 ? moving[^1] : f), pivot), moving.Count == 0 || moving[0] != i));
+        }
+        menu.Items.Add(firstSub);
+        var lastSub = new MenuFlyoutSubItem { Text = "Last Surface" };
+        for (var i = moving.Count > 0 ? moving[0] : 1; i <= last; i++)
+        {
+            var l = i;
+            lastSub.Items.Add(Item(SurfaceTitle(sys, i), () => SetElement(id, moving.Count > 0 ? moving[0] : l, l, pivot), moving.Count == 0 || moving[^1] != i));
+        }
+        menu.Items.Add(lastSub);
+        return menu;
+    }
+
+    void SetElement(Guid id, int first, int last, TolerancePivotChoice pivot, string name = "Change Element") =>
+        Edit(name, s => pivot.Apply(s, id, _session.Document.System, first, last));
+
+    /// <summary>
+    /// "S3 S4 S5 move together · pivot S3, first vertex" under the first element row of a group (the rows starting on one
+    /// surface share range and pivot); the pivot a menu.
+    /// </summary>
+    UIElement ElementLine(ToleranceRow row, OpticalSystem sys)
+    {
+        var id = row.Id;
+        var moving = row.MovingSurfaces(sys);
+        var pivotText = TolerancePivotChoice.Text(row.PivotIndex(sys), moving);
+        var link = new FontIcon { Glyph = "\uE71B", FontSize = 10, VerticalAlignment = VerticalAlignment.Center };
+        JobUI.Bind(link, "TextFillColorTertiaryBrush", b => link.Foreground = b);
+        var menu = new MenuFlyout();
+        if (moving.Count > 0)
+        {
+            int f = moving[0], l = moving[^1];
+            var current = TolerancePivotChoice.Of(row, sys);
+            ToggleMenuFlyoutItem Choice(string text, TolerancePivotChoice c)
+            {
+                var item = new ToggleMenuFlyoutItem { Text = text, IsChecked = c == current };
+                item.Click += (_, _) => SetElement(id, f, l, c, "Change Element Pivot");
+                return item;
+            }
+            menu.Items.Add(Choice($"First Vertex (S{f.ToString(C)})", TolerancePivotChoice.First));
+            if (l != f) menu.Items.Add(Choice($"Last Vertex (S{l.ToString(C)})", TolerancePivotChoice.Last));
+            var surfaces = new MenuFlyoutSubItem { Text = "Surface" };
+            for (var i = 1; i <= Math.Max(sys.ImageIndex - 1, 1); i++)
+                surfaces.Items.Add(Choice(SurfaceTitle(sys, i), new TolerancePivotChoice(TolerancePivotPlace.Surface, i)));
+            menu.Items.Add(new MenuFlyoutSeparator());
+            menu.Items.Add(surfaces);
+        }
+        var label = JobUI.Text("pivot " + pivotText, "CaptionText", 11.5);
+        JobUI.Bind(label, "AccentTextFillColorPrimaryBrush", b => label.Foreground = b);
+        var pivot = new Button
+        {
+            Content = label, Flyout = menu, Padding = new Thickness(3, 0, 3, 1), MinWidth = 0, MinHeight = 0, VerticalAlignment = VerticalAlignment.Center,
+            Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent), BorderThickness = new Thickness(0),
+        };
+        ToolTipService.SetToolTip(pivot, $"The vertex the element tilts about; every element tolerance starting on S{(moving.Count > 0 ? moving[0] : 0).ToString(C)} uses it");
+        AutomationProperties.SetName(pivot, $"Pivot {pivotText}");
+        var moves = JobUI.Text(TolerancePivotChoice.MovingText(moving), "CaptionText", 11.5);
+        moves.VerticalAlignment = VerticalAlignment.Center;
+        var dot = JobUI.Text("·", "CaptionText", 11.5);
+        dot.VerticalAlignment = VerticalAlignment.Center;
+        var line = JobUI.Row(5, link, moves, dot, pivot);
+        line.Margin = new Thickness(10, 0, 8, 2);
+        line.Tag = "tolerance-element-line";
+        AutomationProperties.SetName(line, $"Moves {string.Join(", ", moving.Select(i => "surface " + i.ToString(C)))}, pivot {pivotText}");
+        return line;
+    }
+
+    UIElement Row(ToleranceRow row, OpticalSystem sys, ToleranceIssue? issue, bool alternate, bool elementLine)
     {
         var id = row.Id;
         var selected = _selection.Contains(id);
@@ -247,8 +413,11 @@ public sealed partial class TolerancePanel : UserControl
         g.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         g.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(40) });
         var kind = JobUI.Text(row.Kind.ShortTitle());
-        var surface = JobUI.Text(row.Kind == ToleranceKind.Other ? "" : row.SurfaceLabel(sys), "SecondaryNumberText");
-        var name = JobUI.Row(6, kind, surface);
+        kind.VerticalAlignment = VerticalAlignment.Center;
+        UIElement surface = row.Kind == ToleranceKind.Other ? JobUI.Text("", "SecondaryNumberText")
+            : MenuButton(row.Kind.IsElement() ? row.ElementTitle(sys) ?? row.SurfaceLabel(sys) : row.SurfaceLabel(sys), SurfaceMenu(row, sys),
+                row.Kind.IsElement() ? "The element: the surfaces that move together" : "The surface (a thickness is the gap after it)");
+        var name = JobUI.Row(2, kind, surface);
         name.VerticalAlignment = VerticalAlignment.Center;
         ToolTipService.SetToolTip(name, row.Label(sys) + " · " + row.Distribution.Title);
         g.Children.Add(name);
@@ -288,6 +457,7 @@ public sealed partial class TolerancePanel : UserControl
         Grid.SetColumn(unit, 2);
         g.Children.Add(unit);
         var content = new StackPanel { Children = { g } };
+        if (elementLine && row.Kind.IsElement()) content.Children.Add(ElementLine(row, sys));
         if (issue is not null)
         {
             var t = JobUI.Text(issue.Text, "CaptionText");
@@ -297,7 +467,7 @@ public sealed partial class TolerancePanel : UserControl
             JobUI.Bind(t, "ErrorBrush", b => t.Foreground = b);
             content.Children.Add(t);
         }
-        var border = new Border { Child = content };
+        var border = new Border { Child = content, Tag = "tolerance-row" };
         void Paint()
         {
             if (selected)
@@ -311,7 +481,7 @@ public sealed partial class TolerancePanel : UserControl
         border.ActualThemeChanged += (_, _) => Paint();
         border.Tapped += (_, e) =>
         {
-            if (e.OriginalSource is TextBox) return;
+            if (e.OriginalSource is TextBox || InButton(e.OriginalSource as DependencyObject)) return;
             var ctrl = Microsoft.UI.Input.InputKeyboardSource.GetKeyStateForCurrentThread(VirtualKey.Control).HasFlag(global::Windows.UI.Core.CoreVirtualKeyStates.Down);
             if (!ctrl) _selection.Clear();
             if (!_selection.Remove(id)) _selection.Add(id);
@@ -505,6 +675,19 @@ public sealed partial class TolerancePanel : UserControl
         if (_s.Result is not { } r) return p;
         var d = r.Display;
         var sys = _s.RunSystem ?? _session.Document.System;
+        var head = new Grid();
+        var criterion = JobUI.Text(d.Title() + (d.Unit().Length == 0 ? "" : $" ({d.Unit()})"), "PanelTitleText");
+        criterion.VerticalAlignment = VerticalAlignment.Center;
+        head.Children.Add(criterion);
+        var export = new DropDownButton
+        {
+            Content = JobUI.Row(6, new FontIcon { Glyph = "\uE72D", FontSize = 12 }, new TextBlock { Text = "Export" }), Flyout = ExportMenu(r),
+            HorizontalAlignment = HorizontalAlignment.Right, MinHeight = 28, FontSize = 12.5, Padding = new Thickness(10, 3, 8, 4),
+        };
+        ToolTipService.SetToolTip(export, "Copy a summary as text, or save the tables as CSV");
+        AutomationProperties.SetName(export, "Export");
+        head.Children.Add(export);
+        p.Children.Add(head);
         if (r.Stopped) p.Children.Add(JobUI.Hint("Stopped early: the results of what completed."));
         var big = JobUI.Row(24);
         if (r.HasNominal) big.Children.Add(JobUI.BigNumber("Nominal", d.FormatWithUnit(d.Value(r.Nominal))));
@@ -539,16 +722,143 @@ public sealed partial class TolerancePanel : UserControl
         if (_s.Previewed is not null) p.Children.Add(PreviewCard(r, d));
         if (r.HasSensitivity && r.Sensitivities.Count > 0) p.Children.Add(Sensitivities(r, d, sys));
         if (r.HasMonteCarlo && r.Criteria.Count > 0) p.Children.Add(Histogram(r, d));
-        var copy = JobUI.Secondary("Copy Summary", "\uE8C8", () =>
+        if (r.Compensators.Count > 0) p.Children.Add(Compensators(r, sys));
+        return p;
+    }
+
+    /// <summary>Copy Summary; Save Sensitivity Table / Monte Carlo Trials as CSV (the trials with their recorded compensators and perturbations).</summary>
+    MenuFlyout ExportMenu(ViewModels.Jobs.ToleranceResult r)
+    {
+        var menu = new MenuFlyout();
+        var copy = new MenuFlyoutItem { Text = "Copy Summary", Icon = new FontIcon { Glyph = "\uE8C8" } };
+        copy.Click += (_, _) =>
         {
+            if (_s.SummaryText() is not { } text) return;
             var package = new DataPackage();
-            package.SetText(ToleranceReport.Summary(r, _s.ResultRows, sys, _session.Document.System.Name));
+            package.SetText(text);
             Clipboard.SetContent(package);
             _session.ShowToast("The tolerance summary is on the clipboard.");
-        }, "Copy a text summary of the results");
-        copy.HorizontalAlignment = HorizontalAlignment.Left;
-        p.Children.Add(copy);
-        return p;
+        };
+        menu.Items.Add(copy);
+        menu.Items.Add(new MenuFlyoutSeparator());
+        var name = _session.Document.System.Name;
+        if (r.HasSensitivity)
+        {
+            var item = new MenuFlyoutItem { Text = "Save Sensitivity Table as CSV\u2026" };
+            item.Click += (_, _) => _ = SaveCsvAsync(ToleranceExport.FileName(name, "sensitivity"), _s.SensitivityCsv());
+            menu.Items.Add(item);
+        }
+        if (r.HasMonteCarlo)
+        {
+            var item = new MenuFlyoutItem { Text = "Save Monte Carlo Trials as CSV\u2026" };
+            item.Click += (_, _) => _ = SaveCsvAsync(ToleranceExport.FileName(name, "trials"), _s.TrialsCsv());
+            menu.Items.Add(item);
+        }
+        return menu;
+    }
+
+    async Task SaveCsvAsync(string suggested, string? text)
+    {
+        if (text is null) return;
+        var window = global::MKLight.App.App.Windows.OfType<global::MKLight.App.Windows.DesignWindow>().FirstOrDefault(w => w.Session == _session);
+        if (window is null) return;
+        var picker = new Microsoft.Windows.Storage.Pickers.FileSavePicker(window.AppWindow.Id)
+        {
+            SuggestedFileName = System.IO.Path.GetFileNameWithoutExtension(suggested), DefaultFileExtension = ".csv",
+            SuggestedStartLocation = Microsoft.Windows.Storage.Pickers.PickerLocationId.DocumentsLibrary,
+        };
+        picker.FileTypeChoices.Add("CSV (comma-separated values)", [".csv"]);
+        if ((await picker.PickSaveFileAsync())?.Path is not { } path) return;
+        try
+        {
+            await System.IO.File.WriteAllTextAsync(path, text);
+            _session.ShowToast($"Saved {System.IO.Path.GetFileName(path)}.");
+        }
+        catch (Exception e) when (e is System.IO.IOException or UnauthorizedAccessException) { _session.ShowToast($"Could not save: {e.Message}"); }
+    }
+
+    /// <summary>Each compensator: the range the sensitivity evaluations used against the range allowed, its nominal and its Monte-Carlo spread.</summary>
+    UIElement Compensators(ViewModels.Jobs.ToleranceResult r, OpticalSystem sys)
+    {
+        var p = new StackPanel { Spacing = 16 };
+        for (var j = 0; j < r.Compensators.Count; j++)
+        {
+            var c = r.Compensators[j];
+            var unit = c.Param.Unit(sys);
+            var usage = ToleranceCompensatorUsage.Of(r, j);
+            var nominal = j < r.NominalCompensators.Count ? r.NominalCompensators[j] : (double?)null;
+            var box = new StackPanel { Spacing = 5 };
+            var head = new Grid();
+            var title = JobUI.Text(new ToleranceCompensator(c.Param, c.Range).Title(sys));
+            title.FontWeight = Microsoft.UI.Text.FontWeights.SemiBold;
+            head.Children.Add(title);
+            if (c.Range is { } rg)
+            {
+                var allowed = JobUI.Text($"allowed \u00B1{MeritFormat.Short(rg)} {unit}", "CaptionText");
+                allowed.HorizontalAlignment = HorizontalAlignment.Right;
+                head.Children.Add(allowed);
+            }
+            box.Children.Add(head);
+            if (usage is { Fractions: { } f } u)
+            {
+                var bar = RangeBar(f.From, f.To, u.AtLimit);
+                ToolTipService.SetToolTip(bar, $"The sensitivity evaluations moved it from {MeritFormat.Short(u.Low)} to +{MeritFormat.Short(u.High)} {unit} of \u00B1{MeritFormat.Short(u.Range!.Value)} allowed");
+                box.Children.Add(bar);
+            }
+            var pairs = new Grid { ColumnSpacing = 8, RowSpacing = 2 };
+            pairs.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            pairs.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            void Pair(string label, string value, string help)
+            {
+                pairs.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+                var l = JobUI.Text(label, "SecondaryText", 12);
+                ToolTipService.SetToolTip(l, help);
+                Grid.SetRow(l, pairs.RowDefinitions.Count - 1);
+                pairs.Children.Add(l);
+                var v = JobUI.Text(value, "NumberText", 12, wrap: true);
+                v.TextAlignment = TextAlignment.Right;
+                Grid.SetRow(v, pairs.RowDefinitions.Count - 1);
+                Grid.SetColumn(v, 1);
+                pairs.Children.Add(v);
+            }
+            if (nominal is { } n) Pair("Nominal", $"{MeritFormat.Short(n)} {unit}", "The compensator re-optimized on the design as it is");
+            if (usage is { } used)
+                Pair("Range used", $"{ToleranceCompensatorUsage.Signed4(used.Low)} to {ToleranceCompensatorUsage.Signed4(used.High)} {unit}", "The moves the sensitivity evaluations needed, from nominal");
+            if (j < r.CompensatorMean.Count)
+            {
+                var mean = r.CompensatorMean[j];
+                Pair("Monte Carlo mean", $"{MeritFormat.Short(mean)} {unit}" + (nominal is { } n0 ? $" ({ToleranceCompensatorUsage.Signed4(mean - n0)})" : ""), "The mean over the trials, and its shift from nominal");
+                var sd = j < r.CompensatorStd.Count ? r.CompensatorStd[j] : double.NaN;
+                Pair("Monte Carlo \u03C3", double.IsFinite(sd) ? $"{sd.ToString("G4", C)} (\u00B13\u03C3 {(3 * sd).ToString("G4", C)}) {unit}" : "\u2014", "The standard deviation over the trials, and three times it");
+            }
+            box.Children.Add(pairs);
+            if (usage is { AtLimit: true }) box.Children.Add(JobUI.Warning("It reached its limit: some builds need more adjustment than allowed."));
+            p.Children.Add(box);
+        }
+        return JobUI.Group("Compensators", p);
+    }
+
+    /// <summary>The used part of a compensator's \u00B1range (fractions \u22121 \u2026 1), centred on nominal; orange when it reached the limit.</summary>
+    static Grid RangeBar(double from, double to, bool atLimit)
+    {
+        var g = new Grid { Height = 10, Margin = new Thickness(0, 1, 0, 1) };
+        g.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(Math.Max(1 + from, 0), GridUnitType.Star) });
+        g.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(Math.Max(to - from, 0.004), GridUnitType.Star) });
+        g.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(Math.Max(1 - to, 0), GridUnitType.Star) });
+        var back = new Border { Height = 5, CornerRadius = new CornerRadius(2.5), VerticalAlignment = VerticalAlignment.Center };
+        Grid.SetColumnSpan(back, 3);
+        JobUI.Bind(back, "SubtleFillColorTertiaryBrush", b => back.Background = b);
+        g.Children.Add(back);
+        var fill = new Border { Height = 5, MinWidth = 2, CornerRadius = new CornerRadius(2.5), VerticalAlignment = VerticalAlignment.Center };
+        Grid.SetColumn(fill, 1);
+        JobUI.Bind(fill, atLimit ? "WarningBrush" : "AccentFillColorDefaultBrush", b => fill.Background = b);
+        g.Children.Add(fill);
+        var tick = new Border { Width = 1, HorizontalAlignment = HorizontalAlignment.Center };
+        Grid.SetColumnSpan(tick, 3);
+        JobUI.Bind(tick, "TextFillColorSecondaryBrush", b => tick.Background = b);
+        g.Children.Add(tick);
+        AutomationProperties.SetAccessibilityView(g, Microsoft.UI.Xaml.Automation.Peers.AccessibilityView.Raw);
+        return g;
     }
 
     UIElement PreviewCard(ViewModels.Jobs.ToleranceResult r, CriterionDisplay d)
@@ -637,43 +947,70 @@ public sealed partial class TolerancePanel : UserControl
     {
         var values = r.Criteria.Select(x => d.Value(x)).Where(double.IsFinite).ToList();
         if (values.Count == 0) return new StackPanel();
+        var bins = ToleranceHistogram.Bins(r);
+        var selected = _s.SelectedBin is { } sb && sb < bins.Count ? sb : (int?)null;
+        var previewed = _s.Previewed is TolerancePreviewCase.Trial pt && pt.K < r.TrialCriteria.Count ? d.Value(r.TrialCriteria[pt.K]) : double.NaN;
         var p = new StackPanel { Spacing = 6 };
-        var canvas = new Canvas { Height = 120 };
+        var canvas = new Canvas { Height = 120, Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent) };
         var lo = values.Min();
         var hi = values.Max();
         if (r.HasNominal) { lo = Math.Min(lo, d.Value(r.Nominal)); hi = Math.Max(hi, d.Value(r.Nominal)); }
-        if (hi - lo < 1e-12) hi = lo + 1;
-        const int Bins = 24;
-        var counts = new int[Bins];
-        foreach (var v in values) counts[Math.Clamp((int)((v - lo) / (hi - lo) * Bins), 0, Bins - 1)]++;
-        var max = Math.Max(1, counts.Max());
+        if (hi - lo < 1e-12) { lo -= 0.5; hi += 0.5; }
+        var max = Math.Max(1, bins.Max(b => b.Count));
         void Draw()
         {
             canvas.Children.Clear();
             var w = canvas.ActualWidth;
             if (w <= 0) return;
-            var h = canvas.Height;
+            var h = canvas.Height - 6;
+            double X(double v) => (v - lo) / (hi - lo) * w;
+            var dark = canvas.ActualTheme == ElementTheme.Dark;
             var accent = Support.ThemeLookup.Brush(canvas, "AccentFillColorDefaultBrush");
-            for (var i = 0; i < Bins; i++)
+            var bar = new SolidColorBrush(Support.Palette.Field(0, dark));
+            for (var i = 0; i < bins.Count; i++)
             {
-                var bh = counts[i] / (double)max * (h - 4);
-                var rect = new Rectangle { Width = Math.Max(1, w / Bins - 2), Height = bh, Fill = accent, RadiusX = 1.5, RadiusY = 1.5, Opacity = 0.85 };
-                Canvas.SetLeft(rect, i * w / Bins + 1);
+                if (bins[i].Count == 0) continue;
+                var x0 = X(bins[i].Low);
+                var x1 = bins.Count == 1 ? x0 + Math.Max(w / 24, 4) : X(bins[i].High);
+                var bh = Math.Max(1.5, bins[i].Count / (double)max * (h - 4));
+                var on = selected == i;
+                var rect = new Rectangle
+                {
+                    Width = Math.Max(1, x1 - x0 - 2), Height = bh, Fill = on ? accent : bar, RadiusX = 1.5, RadiusY = 1.5,
+                    Opacity = on ? 1 : selected is null ? 0.75 : 0.4,
+                };
+                Canvas.SetLeft(rect, x0 + 1);
                 Canvas.SetTop(rect, h - bh);
                 canvas.Children.Add(rect);
             }
-            void Mark(double v, string key, double opacity)
+            void Mark(double v, string key, double opacity, bool dashed)
             {
-                var x = (v - lo) / (hi - lo) * w;
-                canvas.Children.Add(new Line { X1 = x, X2 = x, Y1 = 0, Y2 = h, Stroke = Support.ThemeLookup.Brush(canvas, key), StrokeThickness = 1.5, StrokeDashArray = [3, 2], Opacity = opacity });
+                var x = X(v);
+                var line = new Line { X1 = x, X2 = x, Y1 = 0, Y2 = h, Stroke = Support.ThemeLookup.Brush(canvas, key), StrokeThickness = dashed ? 1 : 1.6, Opacity = opacity };
+                if (dashed) line.StrokeDashArray = [3, 3];
+                canvas.Children.Add(line);
             }
-            if (r.HasNominal) Mark(d.Value(r.Nominal), "TextFillColorPrimaryBrush", 0.8);
-            foreach (var pc in r.Percentiles) Mark(d.Value(pc.Value), "WarningBrush", 0.9);
-            var axis = new Line { X1 = 0, X2 = w, Y1 = h, Y2 = h, Stroke = Support.ThemeLookup.Brush(canvas, "DividerBrush"), StrokeThickness = 1 };
-            canvas.Children.Add(axis);
+            foreach (var pc in r.Percentiles) Mark(d.Value(pc.Value), "TextFillColorSecondaryBrush", 0.9, true);
+            if (r.HasNominal) Mark(d.Value(r.Nominal), "AccentFillColorDefaultBrush", 1, false);
+            canvas.Children.Add(new Line { X1 = 0, X2 = w, Y1 = h, Y2 = h, Stroke = Support.ThemeLookup.Brush(canvas, "DividerBrush"), StrokeThickness = 1 });
+            if (double.IsFinite(previewed))
+            {
+                var x = X(previewed);
+                canvas.Children.Add(new Polygon { Points = { new(x, h), new(x - 5, h + 6), new(x + 5, h + 6) }, Fill = accent });
+            }
         }
         canvas.SizeChanged += (_, _) => Draw();
         canvas.ActualThemeChanged += (_, _) => Draw();
+        canvas.Tapped += (_, e) =>
+        {
+            var w = canvas.ActualWidth;
+            if (w <= 0) return;
+            var v = lo + e.GetPosition(canvas).X / w * (hi - lo);
+            var hit = ToleranceHistogram.IndexOf(bins, v) is { } k && bins[k].Count > 0 ? k : (int?)null;
+            _s.SelectBin(hit == selected ? null : hit);
+        };
+        ToolTipService.SetToolTip(canvas, "Click a bar to list its trials");
+        AutomationProperties.SetName(canvas, $"Distribution of {values.Count.ToString(C)} Monte Carlo trials of the {d.Title()}");
         p.Children.Add(canvas);
         var scale = new Grid();
         scale.Children.Add(JobUI.Text(d.Format(lo), "CaptionText"));
@@ -681,34 +1018,83 @@ public sealed partial class TolerancePanel : UserControl
         right.HorizontalAlignment = HorizontalAlignment.Right;
         scale.Children.Add(right);
         p.Children.Add(scale);
-        p.Children.Add(JobUI.Hint("Dashed: the nominal (gray) and the levels (orange).", 11));
-        var trials = r.TrialsWorstFirst.Where(k => r.Record(k) is not null).Take(8).ToList();
-        if (trials.Count > 0)
+        var levels = string.Join(", ", r.Percentiles.Select(x => MeritFormat.Short(x.Level)));
+        p.Children.Add(JobUI.Hint((r.HasNominal ? $"Solid: the nominal {d.FormatWithUnit(d.Value(r.Nominal))}. " : "") + (levels.Length > 0 ? $"Dashed: {levels} % of builds." : ""), 11));
+
+        // The selected bar's trials, or the worst.
+        var trials = selected is { } bin ? ToleranceHistogram.Trials(r, bins, bin) : r.TrialsWorstFirst;
+        if (_limitBin != selected) { _limitBin = selected; _trialLimit = 6; }
+        var head = new Grid { Margin = new Thickness(0, 4, 0, 0) };
+        var title = JobUI.Text(selected is { } sel ? ToleranceHistogram.Title(d, bins[sel], trials.Count) : "Worst trials");
+        title.FontWeight = Microsoft.UI.Text.FontWeights.SemiBold;
+        head.Children.Add(title);
+        if (selected is not null)
         {
-            p.Children.Add(JobUI.Text("Worst trials", "CaptionText"));
-            foreach (var k in trials)
-            {
-                var c = new TolerancePreviewCase.Trial(k);
-                var on = Equals(_s.Previewed, c);
-                var b = new Button
-                {
-                    HorizontalAlignment = HorizontalAlignment.Stretch, HorizontalContentAlignment = HorizontalAlignment.Stretch, Padding = new Thickness(6, 2, 6, 2),
-                    Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent), BorderThickness = new Thickness(0),
-                };
-                var g = new Grid();
-                var label = JobUI.Text($"Trial {(k + 1).ToString(C)}", on ? "PanelTitleText" : "BodyText");
-                if (on) JobUI.Bind(label, "AccentTextFillColorPrimaryBrush", x => label.Foreground = x);
-                g.Children.Add(label);
-                var v = JobUI.Text(d.FormatWithUnit(d.Value(r.TrialCriteria[k])), "NumberText");
-                v.HorizontalAlignment = HorizontalAlignment.Right;
-                g.Children.Add(v);
-                b.Content = g;
-                ToolTipService.SetToolTip(b, on ? "End the preview" : "Preview this build in the window");
-                b.Click += (_, _) => _ = _s.PreviewAsync(on ? null : c);
-                p.Children.Add(b);
-            }
+            var worst = new HyperlinkButton { Content = "Worst Trials", Padding = new Thickness(0), FontSize = 12, HorizontalAlignment = HorizontalAlignment.Right };
+            worst.Click += (_, _) => _s.SelectBin(null);
+            ToolTipService.SetToolTip(worst, "List the worst trials instead of the selected bar's");
+            head.Children.Add(worst);
         }
-        return JobUI.Group("Monte Carlo", p, JobUI.Text($"{r.Trials.ToString(C)} builds", "CaptionText"));
+        p.Children.Add(head);
+        if (trials.Count == 0) p.Children.Add(JobUI.Hint("No trial in this bar."));
+        foreach (var k in trials.Take(_trialLimit)) p.Children.Add(TrialRow(r, d, k));
+        if (trials.Count > _trialLimit)
+        {
+            var more = new HyperlinkButton { Content = $"Show {Math.Min(trials.Count - _trialLimit, 20).ToString(C)} more", Padding = new Thickness(0), FontSize = 12 };
+            more.Click += (_, _) => { _trialLimit += 20; Queue(); };
+            p.Children.Add(more);
+        }
+        p.Children.Add(JobUI.Hint(selected is null ? "Click a bar of the histogram for its trials; the eye rebuilds a trial in the window." : "The eye rebuilds a trial in the window, read-only.", 11));
+        var group = JobUI.Group("Monte Carlo", p, JobUI.Text($"{r.Trials.ToString(C)} builds", "CaptionText"));
+        group.Tag = "tolerance-monte-carlo";
+        return group;
+    }
+
+    int _trialLimit = 6;
+    int? _limitBin;
+
+    /// <summary>A trial: its number, value and first compensator's move; a click previews it (or ends its preview).</summary>
+    Button TrialRow(ViewModels.Jobs.ToleranceResult r, CriterionDisplay d, int k)
+    {
+        var c = new TolerancePreviewCase.Trial(k);
+        var on = Equals(_s.Previewed, c);
+        var b = new Button
+        {
+            HorizontalAlignment = HorizontalAlignment.Stretch, HorizontalContentAlignment = HorizontalAlignment.Stretch, Padding = new Thickness(6, 2, 6, 2),
+            Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent), BorderThickness = new Thickness(0), MinHeight = 0,
+        };
+        if (on) b.Loaded += (_, _) =>
+        {
+            var accent = (global::Windows.UI.Color)Support.ThemeLookup.Resource(b.ActualTheme, "SystemAccentColor");
+            b.Background = new SolidColorBrush(global::Windows.UI.Color.FromArgb(b.ActualTheme == ElementTheme.Dark ? (byte)56 : (byte)36, accent.R, accent.G, accent.B));
+        };
+        var g = new Grid { ColumnSpacing = 8 };
+        g.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(64) });
+        g.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        g.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        g.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        g.Children.Add(JobUI.Text($"Trial {(k + 1).ToString(C)}", "NumberText"));
+        var value = d.FormatWithUnit(d.Value(r.TrialCriteria[k]));
+        var v = JobUI.Text(value, "NumberText");
+        Grid.SetColumn(v, 1);
+        g.Children.Add(v);
+        if (r.Record(k) is { Compensators.Count: > 0 } rec && r.NominalCompensators.Count > 0 && r.Compensators.Count > 0 && _s.RunSystem is { } rs)
+        {
+            var comp = JobUI.Text(new ToleranceCompensator(r.Compensators[0].Param).Title(rs) + " " + ToleranceCompensatorUsage.Move(rec.Compensators[0] - r.NominalCompensators[0]), "SecondaryNumberText", 11.5);
+            comp.TextTrimming = TextTrimming.CharacterEllipsis;
+            comp.VerticalAlignment = VerticalAlignment.Center;
+            Grid.SetColumn(comp, 2);
+            g.Children.Add(comp);
+        }
+        var eye = new FontIcon { Glyph = "\uE7B3", FontSize = 13 };
+        JobUI.Bind(eye, on ? "AccentTextFillColorPrimaryBrush" : "TextFillColorSecondaryBrush", x => eye.Foreground = x);
+        Grid.SetColumn(eye, 3);
+        g.Children.Add(eye);
+        b.Content = g;
+        ToolTipService.SetToolTip(b, on ? "End the preview" : $"Preview trial {(k + 1).ToString(C)} in the window: its perturbations{(r.Compensators.Count == 0 ? "" : " and re-optimized compensators")}; not applied");
+        AutomationProperties.SetName(b, $"Trial {(k + 1).ToString(C)}, {value}");
+        b.Click += (_, _) => _ = _s.PreviewAsync(on ? null : c);
+        return b;
     }
 
     // ---- Actions ----

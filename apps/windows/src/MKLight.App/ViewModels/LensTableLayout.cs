@@ -1,7 +1,18 @@
 namespace MKLight.App.ViewModels;
 
 /// <summary>A column of the lens grid: its width limits (device-independent pixels).</summary>
-public readonly record struct LensGridColumn(LensColumn Column, double Min, double Ideal, double Max = double.PositiveInfinity);
+public readonly record struct LensGridColumn(LensColumn Column, double Min, double Ideal, double Max = double.PositiveInfinity)
+{
+    /// <summary><paramref name="width"/> within the column's limits.</summary>
+    public double Clamp(double width) => Math.Clamp(width, Min, Max);
+
+    /// <summary>The column held at a width the user chose (within its limits).</summary>
+    public LensGridColumn Fixed(double width)
+    {
+        var w = Clamp(width);
+        return this with { Min = w, Ideal = w, Max = w };
+    }
+}
 
 /// <summary>
 /// Column widths of the lens grid (the Mac app's <c>LensGridLayout</c>): every row and the header compute
