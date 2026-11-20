@@ -19,6 +19,9 @@ public static class ResultViews
         "polarization_pupil_map", "system_transmission", "validate", "ray_grid",
     ];
 
+    /// <summary>How long the last <see cref="Create"/> took (ms): the result's view and key numbers (for --do bench-panes).</summary>
+    public static double LastBuildMs { get; private set; }
+
     /// <summary>The analyses with a dedicated view.</summary>
     public static IReadOnlyList<string> Dedicated { get; } = Own.Concat(LineReaders.Analyses).ToArray();
 
@@ -29,6 +32,7 @@ public static class ResultViews
     /// <param name="spotScale">The spot diagram's box scale to start with (the pane may keep it with its layout).</param>
     public static (UIElement View, ResultSummary Summary) Create(ResultData data, ElementTheme theme, SpotScale spotScale = SpotScale.Grid)
     {
+        var started = System.Diagnostics.Stopwatch.GetTimestamp();
         string keys;
         try { keys = KeyNumbers.Compared(data); }
         catch (Exception) { keys = ""; }
@@ -41,6 +45,7 @@ public static class ResultViews
         {
             view = null; // a result of an unexpected shape is shown as data
         }
+        LastBuildMs = System.Diagnostics.Stopwatch.GetElapsedTime(started).TotalMilliseconds;
         view ??= new GenericResultView(data);
         return (view, new ResultSummary(keys));
     }

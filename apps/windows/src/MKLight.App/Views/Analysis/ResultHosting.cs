@@ -12,6 +12,7 @@ public sealed class EngineResultArray(ResultBuffer buffer) : IResultArray
     public IReadOnlyList<int> Shape => buffer.Shape;
     public int Count => buffer.Count;
     public double this[int index] => buffer[index];
+    public void CopyTo(Span<double> destination) => buffer.CopyTo(destination);
 }
 
 /// <summary>Builds the views' input from an engine output and the design it was computed for.</summary>

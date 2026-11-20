@@ -91,6 +91,38 @@ public class SpotGridTests
     }
 
     [Fact]
+    public void ADenseGridKeepsCoverageMasksWithTheSameStatistics()
+    {
+        // One field of 30 000 points on a circle of radius 0.01 (two wavelengths), base plane only: above DensePoints.
+        const int n = 30_000;
+        var xy = new double[2 * n];
+        var w = new double[n];
+        for (var i = 0; i < n; i++)
+        {
+            var a = 2 * Math.PI * i / n;
+            (xy[2 * i], xy[2 * i + 1], w[i]) = (0.01 * Math.Cos(a), 0.01 * Math.Sin(a), i % 2);
+        }
+        var json = """
+            { "defocus": 0.0, "wavelengths": [0, 1], "wavelengths_um": [0.4861, 0.5876],
+              "fields": [ { "field": 0, "field_value": [0, 0], "rms_radius": 0.01, "geo_radius": 0.0101, "point_range": [0, 30000] } ] }
+            """;
+        var g = SpotGridData.Read(TestData.Result("spot_diagram", json, [0.4861, 0.5876], ["0°"],
+            TestData.Buffer("points", [n, 2], xy), TestData.Vector("point_wavelength", w)))!;
+        var cell = g.Rows[0].Cells.Single();
+        Assert.Empty(cell.Groups);
+        Assert.Equal(n, cell.PointCount);
+        Assert.Equal(0.01, cell.Extent, 9);
+        var masks = cell.Masks!;
+        Assert.Equal([0, 1], masks.Select(m => m.Wavelength));
+        var size = SpotGridData.MaskSize;
+        // Covered on the circle (its rightmost point), empty at the centre.
+        Assert.Equal(1, masks[0].Mask[(size / 2) * size + size - 1]);
+        Assert.Equal(0, masks[0].Mask[(size / 2) * size + size / 2]);
+        // A small grid keeps its points.
+        Assert.Null(SpotGridData.Read(Data())!.Rows[0].Cells[0].Masks);
+    }
+
+    [Fact]
     public void ANarrowPaneFoldsToTheBasePlane()
     {
         var g = SpotGridData.Read(Data())!;

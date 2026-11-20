@@ -27,6 +27,9 @@ public sealed class AnalysisOutput(
     /// <summary>The envelope's backend report (requested, used, fallback reason, cost decision), if the engine sent one.</summary>
     public BackendReport? Backend { get; } = backend;
 
+    /// <summary>When this output was built from the engine's result (<see cref="System.Diagnostics.Stopwatch.GetTimestamp"/>): for timing.</summary>
+    public long ReceivedTimestamp { get; } = System.Diagnostics.Stopwatch.GetTimestamp();
+
     /// <summary>The first buffer of that name, or <c>null</c>.</summary>
     public ResultBuffer? Buffer(string name) => Buffers.FirstOrDefault(b => b.Name == name);
 
