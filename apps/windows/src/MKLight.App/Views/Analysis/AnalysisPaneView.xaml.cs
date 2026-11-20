@@ -134,6 +134,7 @@ public sealed partial class AnalysisPaneView : UserControl
                 // The form's "Auto (n)" values come from the latest result.
                 if (_pane.ShowsSettings) SettingsContent.Content = null;
                 KeyNumbers.Text = summary.KeyNumbers;
+                ToolTipService.SetToolTip(KeyNumbers, string.IsNullOrEmpty(summary.KeyNumbers) ? null : summary.KeyNumbers); // narrow panes cut it
                 _drawError = null;
             }
             catch (Exception e)

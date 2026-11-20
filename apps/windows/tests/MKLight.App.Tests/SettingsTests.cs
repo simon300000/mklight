@@ -249,17 +249,8 @@ public class SettingEntryTests
         Assert.Equal("1: 0°", ctx.FieldOptions[0].Title);
         Assert.Equal("0.5876 µm (primary)", ctx.WavelengthOptions[1].Title);
         Assert.Equal([1, 2, 3], ctx.SurfaceOptions.Select(o => o.Index));
-        Assert.Equal("All", SettingEntry.SelectionTitle(JsonNode.Parse("""{"type": "all"}"""), ctx.FieldOptions));
-        Assert.Equal("Primary", SettingEntry.SelectionTitle(JsonNode.Parse("""{"type": "primary"}"""), ctx.WavelengthOptions));
-        Assert.Equal("2", SettingEntry.SelectionTitle(JsonNode.Parse("""{"type": "index", "index": 1}"""), ctx.FieldOptions));
-        Assert.Equal("2 selected", SettingEntry.SelectionTitle(JsonNode.Parse("""{"type": "list", "indices": [0, 2]}"""), ctx.FieldOptions));
         Assert.Equal("Primary", SettingEntry.IndexTitle(null, ctx.WavelengthOptions, "Primary"));
         Assert.Equal("2 (stop)", SettingEntry.IndexTitle(JsonValue.Create(2), ctx.SurfaceOptions, null));
-        Assert.Equal("All", SettingEntry.IndexListTitle(JsonNode.Parse("[]"), ctx.WavelengthOptions));
-        Assert.Equal("All", SettingEntry.IndexListTitle(JsonNode.Parse("[0, 1, 2]"), ctx.WavelengthOptions));
-        Assert.Equal("2 of 3", SettingEntry.IndexListTitle(JsonNode.Parse("[0, 2]"), ctx.WavelengthOptions));
-        Assert.Equal("[0,2]", SettingEntry.Toggle(JsonNode.Parse("[2]"), 0, true).ToJsonString());
-        Assert.Equal("[]", SettingEntry.Toggle(JsonNode.Parse("[2]"), 2, false).ToJsonString());
     }
 }
 

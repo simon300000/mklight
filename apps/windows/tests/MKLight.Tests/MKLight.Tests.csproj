@@ -28,7 +28,7 @@
   <ItemGroup>
     <Compile Include="..\..\src\MKLight.App\Views\Viewport3D\Logic\*.cs" Link="Viewport\App\%(Filename)%(Extension)" />
   </ItemGroup>
-    <ItemGroup><Compile Include="..\..\src\MKLight.App\ViewModels\PanelArrangement*.cs;..\..\src\MKLight.App\ViewModels\WorkspaceLayout*.cs" Link="Panels\App\%(Filename)%(Extension)" /></ItemGroup>
+  <ItemGroup><Compile Include="..\..\src\MKLight.App\ViewModels\PanelArrangement*.cs;..\..\src\MKLight.App\ViewModels\WorkspaceLayout*.cs;..\..\src\MKLight.App\Views\Analysis\Results\ImageSimulationImport.cs" Link="Panels\App\%(Filename)%(Extension)" /></ItemGroup>
   <ItemGroup><Compile Include="..\..\src\MKLight.App\ViewModels\GlassLibrary*.cs;..\..\src\MKLight.App\ViewModels\GlassBrowser*.cs" Link="Glass\App\%(Filename)%(Extension)" /></ItemGroup>
   <ItemGroup><Compile Include="..\..\src\MKLight.App\ViewModels\SurfaceTypes.cs;..\..\src\MKLight.App\ViewModels\ShapeSag.cs;..\..\src\MKLight.App\ViewModels\InspectorModel.cs" Link="Inspector\App\%(Filename)%(Extension)" /></ItemGroup>
   <ItemGroup><Compile Include="..\..\src\MKLight.App\Windows\ImportReport.cs;..\..\src\MKLight.App\Windows\DocumentFiles.cs;..\..\src\MKLight.App\Support\LaunchOptions.cs" Link="Documents\App\%(Filename)%(Extension)" /></ItemGroup>
