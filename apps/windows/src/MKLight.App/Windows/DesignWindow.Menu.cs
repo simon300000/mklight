@@ -378,7 +378,7 @@ public sealed partial class DesignWindow
         Separator(m);
         var compute = Sub("Compute On");
         Radios(compute.Items, "backend", [("Automatic", BackendPreference.Auto), ("CPU Reference (f64)", BackendPreference.CpuReference), ("GPU", BackendPreference.Gpu)],
-            () => ws.Backend, b => { ws.Backend = b; ws.RerunAll(); UpdateStatus(); });
+            () => ws.Backend, b => ChooseBackend(new ExecutionSettings(b, b == BackendPreference.Gpu ? ws.GpuName : null))); // saved with the design like the picker's choice
         _menus[m].Items.Add(compute);
         bool arrHasLayout() => _panels.Arrangement.Contains(PanelId.Layout);
     }
