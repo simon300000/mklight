@@ -1,5 +1,6 @@
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
+using Microsoft.UI.Xaml.Automation.Peers;
 using Microsoft.UI.Xaml.Controls;
 using MKLight.App.ViewModels;
 
@@ -16,10 +17,14 @@ sealed partial class LensRowView : Grid
     readonly Grid _grid = new();
     readonly Border _pill;
     readonly Func<string, Style> _style;
+    readonly ILensCellActions _actions;
+    /// <summary>The element in each grid column (measured to fit a column to its content).</summary>
+    readonly List<FrameworkElement> _cells = [];
 
-    public LensRowView(Func<string, Style> style)
+    public LensRowView(Func<string, Style> style, ILensCellActions actions)
     {
         _style = style;
+        _actions = actions;
         Height = 26;
         _background = new Border { Style = style("LensRow") };
         _pill = new Border { Style = style("LensSelectionPill"), Visibility = Visibility.Collapsed };
@@ -29,6 +34,8 @@ sealed partial class LensRowView : Grid
     }
 
     public LensRow? Row { get; private set; }
+
+    protected override Microsoft.UI.Xaml.Automation.Peers.AutomationPeer OnCreateAutomationPeer() => new LensRowAutomationPeer(this, _actions);
 
     /// <summary>The element showing each value (an x section has its own), by column: hit target and editor anchor.</summary>
     public Dictionary<LensColumn, Slot> Slots { get; } = [];
@@ -56,6 +63,18 @@ sealed partial class LensRowView : Grid
         for (var i = 0; i < widths.Length; i++) _grid.ColumnDefinitions[i].Width = new GridLength(widths[i]);
     }
 
+    /// <summary>The width grid column <paramref name="k"/> needs to show its content in full (padding included).</summary>
+    public double ContentWidth(int k)
+    {
+        if (k < 0 || k >= _cells.Count) return 0;
+        var cell = _cells[k];
+        cell.Measure(new global::Windows.Foundation.Size(double.PositiveInfinity, Height));
+        var width = cell.DesiredSize.Width;
+        // The next layout pass measures it in its column again.
+        _grid.InvalidateMeasure();
+        return width;
+    }
+
     public void SetSelection(bool selected, bool emphasized, bool alternate)
     {
         _background.Style = _style(selected ? (emphasized ? "LensSelectedRow" : "LensSelectedInactiveRow") : alternate ? "LensStripeRow" : "LensRow");
@@ -67,6 +86,7 @@ sealed partial class LensRowView : Grid
     {
         Row = row;
         _grid.Children.Clear();
+        _cells.Clear();
         Slots.Clear();
         var k = 0;
         foreach (var column in LensColumns.Visible)
@@ -80,15 +100,11 @@ sealed partial class LensRowView : Grid
             cell.Margin = new Thickness(column == LensColumn.Type ? 2 : 6, 0, column == LensColumn.Type ? 2 : 6, 0);
             Grid.SetColumn(cell, k++);
             _grid.Children.Add(cell);
+            _cells.Add(cell);
         }
         if (editing is { } c && Slots.TryGetValue(c, out var slot)) slot.Text.Opacity = 0;
-        AutomationProperties.SetName(this, row.Role switch
-        {
-            LensRowRole.Object => "Object",
-            LensRowRole.Image => "Image",
-            LensRowRole.Stop => $"Surface {row.Index}, aperture stop",
-            _ => $"Surface {row.Index}",
-        });
+        AutomationProperties.SetName(this, LensCellView.RowName(row));
+        AutomationProperties.SetAutomationId(this, $"LensRow.{row.Index}");
     }
 
     /// <summary><c>OBJ</c>, <c>1</c>, <c>STO</c> with its marker, …, <c>IMA</c>; an issue badge before the label.</summary>
@@ -104,26 +120,37 @@ sealed partial class LensRowView : Grid
             AutomationProperties.SetName(badge, messages);
             panel.Children.Add(badge);
         }
-        panel.Children.Add(new TextBlock
+        var label = new TextBlock
         {
             Text = row.SurfaceText,
             Style = _style(row.Role switch { LensRowRole.Surface => "LensSurfaceLabel", LensRowRole.Stop => "LensStopLabel", _ => "LensRoleLabel" }),
-        });
+        };
+        AutomationProperties.SetAccessibilityView(label, AccessibilityView.Raw);
+        panel.Children.Add(label);
         if (row.Role == LensRowRole.Stop)
         {
             var stop = new FontIcon { Style = _style("LensStopGlyph") };
             ToolTipService.SetToolTip(stop, "Aperture stop");
+            AutomationProperties.SetAccessibilityView(stop, AccessibilityView.Raw);
             panel.Children.Add(stop);
         }
-        return panel;
+        var cell = new LensCellView(row, LensColumn.Surface, _actions);
+        cell.Children.Add(panel);
+        return cell;
     }
 
     /// <summary>The surface type: a compact menu button (glyph, title, chevron); plain text on the object and image.</summary>
     FrameworkElement TypeCell(LensRow row)
     {
         var entry = SurfaceTypeCatalog.EntryFor(row.TypeChoice);
+        var cell = new LensCellView(row, LensColumn.Type, _actions);
         if (row.Role is LensRowRole.Object or LensRowRole.Image)
-            return new TextBlock { Text = row.TypeTitle, Style = _style("LensSecondaryText"), Margin = new Thickness(6, 0, 0, 0) };
+        {
+            var text = new TextBlock { Text = row.TypeTitle, Style = _style("LensSecondaryText"), Margin = new Thickness(6, 0, 0, 0) };
+            AutomationProperties.SetAccessibilityView(text, AccessibilityView.Raw);
+            cell.Children.Add(text);
+            return cell;
+        }
         var content = new Grid();
         content.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         content.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
@@ -137,11 +164,15 @@ sealed partial class LensRowView : Grid
         content.Children.Add(chevron);
         var button = new Button { Style = _style("LensTypeButton"), Content = content };
         ToolTipService.SetToolTip(button, entry.Title);
-        AutomationProperties.SetName(button, "Surface type");
-        AutomationProperties.SetItemStatus(button, entry.Title);
+        // The cell is the automation element (value: the type; invoke: the menu).
+        AutomationProperties.SetAccessibilityView(button, AccessibilityView.Raw);
         button.Click += (_, _) => TypeMenuRequested?.Invoke(this, button);
-        return button;
+        cell.Children.Add(button);
+        return cell;
     }
+
+    /// <summary>The type cell's menu button, if the row has one.</summary>
+    public Button? TypeButton => _cells.Count > 1 && _cells[1] is LensCellView { Children: [Button b] } ? b : null;
 
     /// <summary>A value cell: one value, or the y and x sections of an anamorphic surface side by side.</summary>
     FrameworkElement ValueCell(LensRow row, LensColumn column)
@@ -176,8 +207,10 @@ sealed partial class LensRowView : Grid
                 ? (!editable ? "LensSecondaryNumber" : row.IsDimmed(c) ? "LensDimNumber" : "LensNumber")
                 : (!editable ? "LensSecondaryText" : "LensText")),
         };
+        // The cell's automation value is the text.
+        AutomationProperties.SetAccessibilityView(text, AccessibilityView.Raw);
         var marker = row.Markers.TryGetValue(c, out var m) ? Markers(m, leading: numeric) : null;
-        var cell = new Grid();
+        var cell = new LensCellView(row, c, _actions);
         var slot = new Border();
         cell.Children.Add(slot);
         Slots[c] = new Slot(slot, text);
@@ -187,8 +220,9 @@ sealed partial class LensRowView : Grid
             if (marker is not null) line.Children.Add(marker);
             if (row.Hints.TryGetValue(c, out var hint))
             {
-                // The axis sits right before its value.
+                // The axis sits right before its value (the cell's name carries it).
                 var h = new TextBlock { Text = hint, Style = _style("LensHint") };
+                AutomationProperties.SetAccessibilityView(h, AccessibilityView.Raw);
                 ToolTipService.SetToolTip(h, HintHelp(row, c, hint));
                 line.Children.Add(h);
             }
