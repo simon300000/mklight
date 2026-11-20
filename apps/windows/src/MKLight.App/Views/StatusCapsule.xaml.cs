@@ -20,6 +20,21 @@ public sealed partial class StatusCapsule : UserControl
     /// <summary>Raised when an issue that names a surface is clicked.</summary>
     public event Action<IssueItem>? IssueInvoked;
 
+    Action? _activityOpen;
+
+    /// <summary>What a click on the activity does (a running job: open its page).</summary>
+    public void SetActivityAction(Action? open)
+    {
+        _activityOpen = open;
+        if (!_activityHooked)
+        {
+            _activityHooked = true;
+            Activity.Tapped += (_, _) => _activityOpen?.Invoke();
+        }
+        ToolTipService.SetToolTip(Activity, open is null ? null : "Show the running job");
+    }
+    bool _activityHooked;
+
     public void SetActivity(string? text)
     {
         Activity.Visibility = text is null ? Visibility.Collapsed : Visibility.Visible;

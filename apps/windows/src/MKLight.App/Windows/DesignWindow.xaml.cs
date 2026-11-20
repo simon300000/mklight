@@ -150,6 +150,7 @@ public sealed partial class DesignWindow : Window
     {
         var ws = _session.Workspace;
         var running = ws.Panes.Where(p => p.IsRunning).ToList();
+        Status.SetActivityAction(_session.RunningJobs.Values.Select(j => j.Open).FirstOrDefault(o => o is not null));
         Status.SetActivity(_session.RunningJobs.Count > 0 ? string.Join("  ·  ", _session.RunningJobs.Values.Select(j => j.Text)) : ws.IsBusy ? (running.Count == 1 && running[0].Progress.Fraction > 0
             ? AnalysisCatalog.ShortTitle(running[0].Analysis) + " " + (running[0].Progress.Fraction * 100).ToString("0", CultureInfo.InvariantCulture) + "%"
             : "") : null);

@@ -1,3 +1,4 @@
+using System.Text.Json.Nodes;
 using MKLight.Model;
 
 namespace MKLight.App.ViewModels;
@@ -113,9 +114,28 @@ public sealed class DesignDocument
 
     void Commit(ProjectFile after, string actionName)
     {
+        if (after.System != Project.System) after = DropStaleVariables(after);
         _undo.Push(new Step(Project, actionName, _revision));
         _redo.Clear();
         Restore(after, ++_nextRevision);
+    }
+
+    /// <summary>
+    /// Variables whose parameter the system no longer has (a deleted surface, another shape type) go with the
+    /// edit that removed it, in the same undoable step (the Mac app's rule).
+    /// </summary>
+    static ProjectFile DropStaleVariables(ProjectFile project)
+    {
+        if (!project.Sections.TryGetValue("variables", out var section) || section.Node is not JsonArray list) return project;
+        var kept = new JsonArray();
+        foreach (var entry in list)
+        {
+            bool resolves;
+            try { resolves = ParamPath.FromJson(entry?["param"]).Resolves(project.System); }
+            catch (Exception e) when (e is global::System.Text.Json.JsonException or ArgumentException or InvalidOperationException) { resolves = false; }
+            if (resolves) kept.Add(entry?.DeepClone());
+        }
+        return kept.Count == list.Count ? project : project with { Sections = project.Sections.Set("variables", new JsonTree(kept)) };
     }
 
     public void Undo()
