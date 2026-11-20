@@ -234,10 +234,11 @@ pub trait Gpu: Send + Sync {
     }
     /// Whether the device has the kernels of an operation family (`"sum"`,
     /// `"trace"`, `"transforms"`, `"wave"`, `"aiming"`, `"geometry"`,
-    /// `"collectives"`); the operations of a family it lacks run their
-    /// CPU-f32 specification. Every WebGPU device has them all.
-    fn ports(&self, _family: &str) -> bool {
-        true
+    /// `"collectives"`, `"fft_mtf"`); the operations of a family it lacks
+    /// run their CPU-f32 specification. Every WebGPU device has them all but
+    /// `"fft_mtf"` (`FftMtf` of the wave family, which has no WGSL kernels).
+    fn ports(&self, family: &str) -> bool {
+        family != "fft_mtf"
     }
 }
 

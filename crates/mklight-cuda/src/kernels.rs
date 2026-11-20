@@ -121,6 +121,19 @@ pub const MODULES: &[(&str, &str)] = &[
         "aiming_overlays",
         concat!("#define MKL_OVERLAYS true\n", include_str!("../kernels/aiming.cu")),
     ),
+    // FftMtf (CUDA only): after wave.cu, whose helpers it uses.
+    (
+        "fft_mtf",
+        concat!(include_str!("../kernels/wave.cu"), include_str!("../kernels/fft_mtf.cu")),
+    ),
+];
+
+/// Block sizes of the entries without a WGSL twin (`block_size`).
+const CUDA_ENTRIES: &[(&str, &str, [u32; 3])] = &[
+    ("fft_mtf", "mkl_fft_mtf_domain", [256, 1, 1]),
+    ("fft_mtf", "mkl_fft_mtf_sensor", [256, 1, 1]),
+    ("fft_mtf", "mkl_fft_mtf_normalize", [256, 1, 1]),
+    ("fft_mtf", "mkl_fft_mtf_sample", [256, 1, 1]),
 ];
 
 /// The module a WebGPU operation family needs (`Gpu::ports`).
@@ -172,8 +185,11 @@ pub fn digest() -> String {
 
 /// The block size of a WGSL entry point: its `@workgroup_size(x[, y[, z]])`,
 /// whose terms are literals or `const`s of the module (the generated layout
-/// constants included).
+/// constants included); for CUDA-only entries, `CUDA_ENTRIES`.
 pub fn block_size(module: &str, entry: &str) -> Option<[u32; 3]> {
+    if let Some(&(_, _, b)) = CUDA_ENTRIES.iter().find(|(m, e, _)| *m == module && *e == entry) {
+        return Some(b);
+    }
     let wgsl = mklight_webgpu::kernels::source(module)?;
     let at = wgsl.find(&format!("fn {entry}("))?;
     let before = &wgsl[..at];

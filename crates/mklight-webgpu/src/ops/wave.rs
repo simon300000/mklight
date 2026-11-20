@@ -3,8 +3,10 @@
 //!
 //! Ported: `FocusCorrelation` (the dominant cost of the direct and
 //! through-focus MTF plans), `Focus`, `Prepare`, `Intensity`, `LineSpread`,
-//! `Spectral` and `ImageIntegral`. The other requests (`Huygens`, `Shells`,
-//! `FftMtf`, `Placement`, `Resample`, `Lattice`, `Diagnostics`,
+//! `Spectral` and `ImageIntegral`; `FftMtf` on devices that port the
+//! `"fft_mtf"` family (CUDA's `kernels/fft_mtf.cu`: WGSL has no kernels for
+//! it, so WebGPU devices run its specification). The other requests
+//! (`Huygens`, `Shells`, `Placement`, `Resample`, `Lattice`, `Diagnostics`,
 //! `Simulation`) return `Ok(None)` and run their CPU-f32 specification.
 //!
 //! Each operation evaluates the specification's arithmetic
@@ -33,6 +35,7 @@ use mklight_gpu::JobStats;
 use mklight_gpu::pending::JobControl;
 use mklight_gpu::resident::ResidentOp;
 use mklight_gpu::resident::cpu::Execution;
+use mklight_gpu::wave_ops::fft_mtf::{self, FftMtf};
 use mklight_gpu::wave_ops::image_integrals::{self, ImageIntegral};
 use mklight_gpu::wave_ops::{Request, spec, spectral};
 
@@ -56,6 +59,12 @@ const METRICS_FINISH: Kernel = Kernel::new("wave", "mkl_wave_metrics_finish");
 const IMAGE_COMPLEX: Kernel = Kernel::new("wave", "mkl_wave_image_complex");
 const QUERY: Kernel = Kernel::new("wave", "mkl_wave_image_query");
 const QUERY_FINISH: Kernel = Kernel::new("wave", "mkl_wave_image_query_finish");
+// FftMtf (family "fft_mtf"): not in `pipelines()`, which every WebGPU
+// device prepares; the devices that port it build them on first use.
+const FFT_MTF_DOMAIN: Kernel = Kernel::new("fft_mtf", "mkl_fft_mtf_domain");
+const FFT_MTF_SENSOR: Kernel = Kernel::new("fft_mtf", "mkl_fft_mtf_sensor");
+const FFT_MTF_NORMALIZE: Kernel = Kernel::new("fft_mtf", "mkl_fft_mtf_normalize");
+const FFT_MTF_SAMPLE: Kernel = Kernel::new("fft_mtf", "mkl_fft_mtf_sample");
 
 /// Sample terms (outputs × pupil samples) per focus-correlation batch.
 pub const BATCH_TERMS: usize = 1 << 25;
@@ -145,6 +154,7 @@ pub fn run(
         Request::LineSpread { .. } => d.line_spread(r, x),
         Request::Spectral(s) => d.spectral(s, x),
         Request::ImageIntegral(i) => d.image_integral(i, x),
+        Request::FftMtf(f) if gpu.ports("fft_mtf") => d.fft_mtf(f, x),
         _ => Ok(None),
     }
 }
@@ -676,5 +686,128 @@ impl Device<'_> {
         }
         self.ctl.report(1.0, "image integral");
         Ok(Some("webgpu:image-integral"))
+    }
+
+    /// `FftMtf` on the device: one pass per request, bitwise the
+    /// specification but for the trigonometry (`kernels/fft_mtf.cu`).
+    fn fft_mtf(&mut self, r: &FftMtf, x: &Execution) -> MkResult<Option<&'static str>> {
+        use Access::{Read, ReadWrite};
+        let mut p = fft_mtf::params(r);
+        let n = p.n as usize;
+        let nn = n * n;
+        self.ctl.check()?;
+        let mut bld = Builder::new(&**self.gpu);
+        match r {
+            FftMtf::Domain {
+                coverage, status, ..
+            } => {
+                // The count (zeroed scratch, counted atomically) is stored
+                // and read back for the specification's error.
+                let cov = bld.load(self.mirrors, x, coverage);
+                let s = bld.add(Res::Scratch(1));
+                bld.pass(
+                    FFT_MTF_DOMAIN,
+                    words(&p),
+                    &[(cov, Read), (s, ReadWrite)],
+                    grid_1d(nn),
+                );
+                bld.store(self.mirrors, x, s, 0, *status, 0, 1)?;
+                let mut count = [0u32];
+                let mut batch = bld.batch();
+                batch.read(s, 0, &mut count);
+                let b = self.gpu.run(batch)?;
+                self.stats.device_seconds += b.device_seconds;
+                self.stats.command_buffers += 1;
+                if count[0] > 0 {
+                    return Err(mklight_core::MkError::InvalidParam(format!(
+                        "pupil crosses image-surface horizon at {} covered cells",
+                        count[0]
+                    )));
+                }
+            }
+            FftMtf::Sensor {
+                pupil,
+                field,
+                moments,
+                ..
+            } => {
+                let field_words = x.words(*field).len();
+                let side = (field_words / 2).isqrt();
+                if !self.fits(&[field_words, 3 * nn]) {
+                    return Ok(None);
+                }
+                (p.side, p.count) = (side as u32, (side * side) as u32);
+                let amp = bld.load(self.mirrors, x, &pupil.amplitude);
+                let cov = bld.load(self.mirrors, x, &pupil.coverage);
+                let opd = bld.load(self.mirrors, x, &pupil.opd);
+                let f = bld.add(Res::Scratch(field_words));
+                let m = bld.add(Res::Scratch(3 * nn));
+                bld.pass(
+                    FFT_MTF_SENSOR,
+                    words(&p),
+                    &[
+                        (amp, Read),
+                        (cov, Read),
+                        (opd, Read),
+                        (f, ReadWrite),
+                        (m, ReadWrite),
+                    ],
+                    grid_1d(side * side),
+                );
+                bld.store(self.mirrors, x, f, 0, *field, 0, field_words)?;
+                bld.store(self.mirrors, x, m, 0, *moments, 0, 3 * nn)?;
+                self.submit(bld)?;
+            }
+            FftMtf::Normalize {
+                input,
+                sums,
+                output,
+            } => {
+                if !self.fits(&[2 * nn]) {
+                    return Ok(None);
+                }
+                p.count = nn as u32;
+                let a = bld.load(self.mirrors, x, input);
+                let s = bld.load(self.mirrors, x, sums);
+                let o = bld.add(Res::Scratch(2 * nn));
+                bld.pass(
+                    FFT_MTF_NORMALIZE,
+                    words(&p),
+                    &[(a, Read), (s, Read), (o, ReadWrite)],
+                    grid_1d(nn),
+                );
+                bld.store(self.mirrors, x, o, 0, *output, 0, 2 * nn)?;
+                self.submit(bld)?;
+            }
+            FftMtf::Sample {
+                data,
+                reference,
+                frequencies,
+                output,
+                ..
+            } => {
+                let count = p.count as usize;
+                if count == 0 {
+                    return Ok(None);
+                }
+                if !self.fits(&[2 * nn, 2 * count]) {
+                    return Ok(None);
+                }
+                let a = bld.load(self.mirrors, x, data);
+                let dl = bld.load(self.mirrors, x, reference);
+                let f = bld.load(self.mirrors, x, frequencies);
+                let o = bld.add(Res::Scratch(2 * count));
+                bld.pass(
+                    FFT_MTF_SAMPLE,
+                    words(&p),
+                    &[(a, Read), (dl, Read), (f, Read), (o, ReadWrite)],
+                    grid_1d(count),
+                );
+                bld.store(self.mirrors, x, o, 0, *output, 0, 2 * count)?;
+                self.submit(bld)?;
+            }
+        }
+        self.ctl.report(1.0, "fft mtf");
+        Ok(Some("webgpu:fft-mtf"))
     }
 }
