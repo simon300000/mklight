@@ -1025,7 +1025,14 @@ fn derivatives_of_real_optical_operands_validate() {
     ];
     // OPD carries an absolute rounding noise of ~1e-14 mm (path lengths of
     // ~100 mm), i.e. ~2e-11 waves, so wavefront operands need larger steps
-    // than the √ε / ∛ε defaults (docs/OPTIMIZATION.md).
+    // than the √ε / ∛ε defaults (docs/OPTIMIZATION.md). The forward check
+    // uses the measured optimum: OPD noise σ ≈ 2.5e-11 waves (ray aiming off,
+    // so no solver tolerance is involved) and |∂²W/∂t₂²| ≈ 0.07 waves/mm² put
+    // the worst column (air space t₂ = 6.0 mm, ∂W/∂t₂ ≈ 0.0147) at a
+    // relative error of ~2σ/(η·t₂·0.0147) ≈ 6e-4 for η = 1e-6, i.e. up to
+    // ~1.2e-3 depending on the platform's last bits; η = 3e-6 gives a max
+    // relative error of 2.5e-4 over the whole Jacobian (2e-6..1e-5: ≤ 4.5e-4,
+    // truncation in the curvature columns dominates beyond 1e-5).
     for (criterion, central_step, forward_step) in [
         (
             mklight_optim::merit::default::DefaultCriterion::default(),
@@ -1037,7 +1044,7 @@ fn derivatives_of_real_optical_operands_validate() {
                 reference: WavefrontReference::Centroid,
             },
             Some(1e-4),
-            Some(1e-6),
+            Some(3e-6),
         ),
     ] {
         let mut spec = DefaultMeritSpec {
