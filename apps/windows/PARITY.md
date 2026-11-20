@@ -4,15 +4,12 @@ Purpose: every feature of the macOS SwiftUI app (`apps/macos`, the reference)
 with its status in the native Windows app (`apps/windows`, WinUI 3, design in
 `docs/WINDOWS.md`). The list comes from an inventory of the Swift sources; each
 row is one inventory item (a few trivially duplicate items are merged). The
-statuses describe the end of round 2 (design jobs pending: areas 12–16 and the
-lens-table variable rows are not updated yet) and are updated as rounds land.
+statuses describe the end of round 2 and are updated as rounds land.
 
 Legend: ✅ done, 🟡 partial, ⬜ not started. The "Windows notes" column says
 where the feature lives or what is missing. "Binding ready" means the engine
 binding (`MKLight.Engine`, ABI 1.5) already supports it and only the UI is
-missing. The lens data table was built by a separate agent in round 1: its rows
-are marked 🟡 "round 1 (lens table agent): verify" until their status is checked
-after the merge.
+missing.
 
 ## 1. Window and chrome
 
@@ -25,9 +22,9 @@ after the merge.
 | Toolbar centre: status capsule | ✅ | Centred in the title bar |
 | Toolbar trailing: Add Analysis menu (+) by category | ✅ | Title bar drop-down: categories → analyses, adds a pane after the focused one |
 | Toolbar trailing: inspector toggle | ✅ | Button and Ctrl+Alt+P (Ctrl+Alt+I inserts a surface after) |
-| Inspector toolbar tab bar (Surface, System, Optimize, Glass Substitution, Tolerance, Apply Solves, running dot) | ✅ | `Views/Inspector/InspectorView.cs`: Surface and System as words, job pages as glyphs, dot on a running job; job pages are placeholders (areas 12–16) |
+| Inspector toolbar tab bar (Surface, System, Optimize, Glass Substitution, Tolerance, Apply Solves, running dot) | ✅ | `Views/Inspector/InspectorView.cs`: Surface and System as words, job pages (Optimize, Glass Substitution, Tolerance, Apply Solves) as glyphs, dot on a running job |
 | Capsule: GPU preparation badge (Preparing n%, GPU ready) | 🟡 | State shown only in the details flyout, no badge |
-| Capsule: one button per running job | 🟡 | Running jobs show as activity text in the capsule (`DesignSession.SetJobActivity`); no per-job buttons |
+| Capsule: one button per running job | ✅ | Running job shown in the capsule (`DesignSession.SetJobActivity`); a click reopens its page |
 | Capsule: "Computing" spinner when analyses busy | ✅ | Activity spinner / percent |
 | Capsule: key numbers EFL, F/#, TT; stale dim; error / name fallback; anamorphic EFL y and squeeze | 🟡 | EFL · F/# · TT from `first_order`; anamorphic variants and stale dimming ⬜; no mock engine |
 | Capsule: issues button (checkmark / severity icon and count) | ✅ | Button with count |
@@ -62,12 +59,12 @@ after the merge.
 | View: Show/Hide Lens Data, Show/Hide Layout | 🟡 | A sidebar row shows a hidden panel (`PanelHost.ShowPanel`); hide by the panel's context menu or tab close; no menu commands |
 | View > Panel: Move to New/Main Window, Hide/Close, Reset Panel Layout | ✅ | Panel context menus and tab close buttons; Reset Panel Layout in the File menu |
 | View: Section, X-Z Section, 3D View, Fit Layout, Ray Colors | ✅ | Section / 3D and Y–Z / X–Z selector and Display menu in the layout; Fit Ctrl+0 |
-| Lens menu: Insert Before/After, Delete, Make Aperture Stop, Toggle Variable | 🟡 | Round 1 (lens table agent): verify; no menu bar, keys on the table |
+| Lens menu: Insert Before/After, Delete, Make Aperture Stop, Toggle Variable | 🟡 | No menu bar: the table's context menu and keys (Ctrl+Shift+I / Ctrl+Alt+I, Ctrl+Delete, Ctrl+Shift+T, Ctrl+Shift+V) |
 | Lens menu: Replace with Sample | ⬜ | |
 | Lens menu: Glass Catalogs…, Add Glass Catalog to Design… | ✅ | File menu commands (`Windows/GlassCatalogsRegistration.cs`) |
-| Design menu: Optimize, Glass Substitution, Tolerance, Apply Solves, Show Issues | ⬜ | Show Issues: the sidebar Issues row and capsule button exist |
+| Design menu: Optimize, Glass Substitution, Tolerance, Apply Solves, Show Issues | 🟡 | Inspector tabs open each job; Show Issues is the sidebar row and capsule button; no Design menu |
 | Analysis menu: New Analysis Pane, Run Analyses, Cancel Running, Compute On | 🟡 | F5 run all, Ctrl+Esc cancel all, sidebar opens panes; Compute On is the backend picker in the status details |
-| Job panels: Return is primary action, Escape cancels | ⬜ | |
+| Job panels: Return is primary action, Escape cancels | 🟡 | Ctrl+Enter is the primary action; Return and Esc ⬜ |
 | Menu items disabled by context | ⬜ | No menu bar |
 
 ## 3. Panels and arrangement
@@ -101,7 +98,7 @@ Checked after the merge of the round-1 table (`Views/Editor`, `ViewModels/LensTa
 
 | Feature | Status | Windows notes |
 |---|---|---|
-| Header: title, caption "N surfaces · stop on S · mm · V variables", Insert / Delete / More buttons | ✅ | Title, caption "11 surfaces · stop on 6 · mm", insert (+) and delete (−) circle buttons; no More menu |
+| Header: title, caption "N surfaces · stop on S · mm · V variables", Insert / Delete / More buttons | ✅ | Title, caption "11 surfaces · stop on 6 · mm", "N variables" button (opens Optimize), insert (+) and delete (−) circle buttons; no More menu |
 | Columns Surf, Type, Comment, Radius, Thickness, Material, Semi-Diameter, Conic; pinned header; resizable; horizontal scroll | 🟡 | All eight columns, pinned header, vertical scroll; not resizable, no horizontal scroll |
 | Rows OBJ, numbered, STO marker, IMA; object/image partly read-only | ✅ | OBJ, numbers, STO with an accent marker, IMA; object/image read-only where the Mac is |
 | Alternating rows; selection emphasis only when table focused | ✅ | Stripes; accent tint and pill while the table has focus, neutral otherwise |
@@ -118,12 +115,12 @@ Checked after the merge of the round-1 table (`Views/Editor`, `ViewModels/LensTa
 | Anamorphic radius/conic two sections ("y"/"x"), Tab y then x | ✅ | Both sections ("y ∞   x −50"), each editable |
 | Cylinder: flat section dimmed, biconic shows both conics | ✅ | Flat section dimmed; biconic shows both conics |
 | Automatic semi-diameters dimmed; editing fixes it | ✅ | Engine's resolved value from the layout, dimmed; typing a value fixes it |
-| Variable marker V badge (bounded bar, pinned dot, orange when solved) | 🟡 | V badges from the project's variables (bounded, pinned); no toggle (needs an undoable section edit) |
+| Variable marker V badge (bounded bar, pinned dot, orange when solved) | ✅ | V badges from the project's variables (bounded, pinned); toggle by context menu and Ctrl+Shift+V |
 | Solve marker letters M C F P D O E | ✅ | Letters before numbers so digits stay aligned |
 | Validation issue badge on the surface label | ✅ | Warning/error glyph in the Surf cell, messages as tooltip |
 | Insert before/after, delete (disabled rules), make stop | ✅ | Buttons, context menu, Ctrl+Shift+I / Ctrl+Alt+I, Ctrl+Delete, Ctrl+Shift+T |
-| Context menu: Insert, Delete, Make Stop, Variables submenu, Show in Inspector | 🟡 | Insert, Delete, Make Stop; no Variables submenu or Show in Inspector |
-| Variables menu and toggle refuse a solve-controlled parameter | ⬜ | Not in round 1 scope |
+| Context menu: Insert, Delete, Make Stop, Variables submenu, Show in Inspector | 🟡 | Insert, Delete, Make Stop, Make / Remove Variable and a Variables submenu; no Show in Inspector |
+| Variables menu and toggle refuse a solve-controlled parameter | ✅ | `DesignVariables.Refusal`, shown as a toast |
 | Every edit an undoable named step; invalidated solves/overrides dropped in same step | ✅ | DesignDocument.Edit with the Mac action names; whole-state undo |
 | Setting type keeps carry-over parameters | ✅ | Model SetShapeKind |
 | Table accessibility labels and Edit action | 🟡 | Automation names on rows, type button and badges; no Edit action pattern |
@@ -318,81 +315,81 @@ All 13 types plus the cylinder preset are descriptors in `ViewModels/SurfaceType
 
 ## 12. Design jobs: common
 
-UI not started. The engine binding supports job submit, stop (best so far) and cancel, and `ApplySolvesAsync`.
+Built in round 2 (`Views/Jobs`, `ViewModels/Jobs`) on the engine binding's job submit, stop (best so far), cancel and `ApplySolvesAsync`.
 
 | Feature | Status | Windows notes |
 |---|---|---|
-| Job panel structure: header, body, action bar | ⬜ | Binding ready |
-| Action bar states (setup, running, review, done, failed) | ⬜ | |
-| Failure page and "Applied to the design" notice | ⬜ | |
-| Done returns job to its starting page | ⬜ | |
-| Jobs keep running when the panel closes; capsule reopens | ⬜ | |
-| Jobs end when the main window closes | ⬜ | |
-| Apply is one undoable step | ⬜ | Whole-state undo exists |
+| Job panel structure: header, body, action bar | ✅ | `Views/Jobs`, `ViewModels/Jobs` |
+| Action bar states (setup, running, review, done, failed) | ✅ | `Views/Jobs`, `ViewModels/Jobs` |
+| Failure page and "Applied to the design" notice | ✅ | `Views/Jobs`, `ViewModels/Jobs` |
+| Done returns job to its starting page | ✅ | `Views/Jobs`, `ViewModels/Jobs` |
+| Jobs keep running when the panel closes; capsule reopens | ✅ | Capsule activity, a click reopens the page |
+| Jobs end when the main window closes | ✅ | `DesignJobs.CancelAll` on window close |
+| Apply is one undoable step | ✅ | Variables that vanished are dropped in the same step |
 
 ## 13. Optimize
 
 | Feature | Status | Windows notes |
 |---|---|---|
-| Merit Function box (Default/Custom, live readout, Convert to Custom, hold focal length) | ⬜ | |
-| Default merit: criterion, reference, MTF options, rings/arms, fields/wavelengths, limits, squeeze | ⬜ | |
-| Custom merit: operand list and searchable picker | ⬜ | |
-| Operand editor | ⬜ | |
-| Operand list actions (add, delete, duplicate, move, reorder, multi-select) | ⬜ | |
-| Live merit evaluation (200 ms) | ⬜ | |
-| Merit edits undoable, saved in `merit` section | ⬜ | Model keeps the section verbatim |
-| Variables group ("Vary" choice) | ⬜ | |
-| Variables and bounds list | ⬜ | |
-| Algorithm group (method, iterations, seed) | ⬜ | |
-| Running view (iteration, merit, sparkline) | ⬜ | |
-| Result: before/after, preview in the window, variable list | ⬜ | See design notes (preview) |
-| "Fix the design's errors first" and blocked start | ⬜ | |
+| Merit Function box (Default/Custom, live readout, Convert to Custom, hold focal length) | ✅ | Default / Custom, live readout, Convert to Custom, hold focal length |
+| Default merit: criterion, reference, MTF options, rings/arms, fields/wavelengths, limits, squeeze | ✅ | `Views/Jobs`, `ViewModels/Jobs` |
+| Custom merit: operand list and searchable picker | ✅ | `Views/Jobs`, `ViewModels/Jobs` |
+| Operand editor | ✅ | `Views/Jobs`, `ViewModels/Jobs` |
+| Operand list actions (add, delete, duplicate, move, reorder, multi-select) | ✅ | `Views/Jobs`, `ViewModels/Jobs` |
+| Live merit evaluation (200 ms) | ✅ | `Views/Jobs`, `ViewModels/Jobs` |
+| Merit edits undoable, saved in `merit` section | ✅ | `Views/Jobs`, `ViewModels/Jobs` |
+| Variables group ("Vary" choice) | ✅ | `Views/Jobs`, `ViewModels/Jobs` |
+| Variables and bounds list | ✅ | Radius windows, pin and problems (`VariablesBoundsList.cs`) |
+| Algorithm group (method, iterations, seed) | ✅ | `Views/Jobs`, `ViewModels/Jobs` |
+| Running view (iteration, merit, sparkline) | ✅ | Iteration, merit, log sparkline |
+| Result: before/after, preview in the window, variable list | 🟡 | Preview titled with the merit, spot before/after from the baseline, variables before → after; layout thumbnails ⬜ |
+| "Fix the design's errors first" and blocked start | ✅ | `Views/Jobs`, `ViewModels/Jobs` |
 
 ## 14. Glass Substitution
 
 | Feature | Status | Windows notes |
 |---|---|---|
-| Glasses That May Change (checkbox per gap) | ⬜ | |
-| Per-slot override button | ⬜ | |
-| Candidates for every lens (catalogs, status filter, rule, limits) | ⬜ | Binding ready for glass rows/catalogs |
-| Search (Quick/Thorough, max combinations, time, iterations, keep N) | ⬜ | |
-| Merit/variables group, Edit Merit and Variables… | ⬜ | |
-| Running view, Stop keeps ranking, Cancel discards | ⬜ | Binding has stop/cancel |
-| Ranked results list | ⬜ | |
-| Candidate detail (glasses, shape changes, layouts, glass map) | ⬜ | |
-| Preview selected row; Apply as one undoable step | ⬜ | See design notes (preview) |
+| Glasses That May Change (checkbox per gap) | ✅ | `Views/Jobs`, `ViewModels/Jobs` |
+| Per-slot override button | ✅ | `Views/Jobs`, `ViewModels/Jobs` |
+| Candidates for every lens (catalogs, status filter, rule, limits) | ✅ | `Views/Jobs`, `ViewModels/Jobs` |
+| Search (Quick/Thorough, max combinations, time, iterations, keep N) | ✅ | `Views/Jobs`, `ViewModels/Jobs` |
+| Merit/variables group, Edit Merit and Variables… | ✅ | `Views/Jobs`, `ViewModels/Jobs` |
+| Running view, Stop keeps ranking, Cancel discards | ✅ | `Views/Jobs`, `ViewModels/Jobs` |
+| Ranked results list | ✅ | `Views/Jobs`, `ViewModels/Jobs` |
+| Candidate detail (glasses, shape changes, layouts, glass map) | 🟡 | Glasses, shape changes and merit; glass map and layout thumbnails ⬜ |
+| Preview selected row; Apply as one undoable step | ✅ | `Views/Jobs`, `ViewModels/Jobs` |
 
 ## 15. Tolerance
 
 | Feature | Status | Windows notes |
 |---|---|---|
-| "Show the last results" shortcut | ⬜ | |
-| Tolerances table grouped by element | ⬜ | |
-| Row kinds | ⬜ | |
-| Row editing (limits, surface menu, unit conversion, problems) | ⬜ | |
-| Row context menu (unit, distribution, symmetric, duplicate, delete) | ⬜ | |
-| Add menu (surface and element sections) | ⬜ | |
-| Default Tolerances… generator | ⬜ | |
-| Test fringes wavelength field | ⬜ | |
-| Element tolerances (move together, pivot, range) | ⬜ | |
-| Compensators | ⬜ | |
-| Criterion section | ⬜ | |
-| Analysis section (mode, trials, seed, percentiles) | ⬜ | |
-| Running view (stage, elapsed, time left; Stop/Cancel) | ⬜ | Binding has stop/cancel |
-| Results (nominal, RSS, percentiles, yield, Export menu) | ⬜ | |
-| Sensitivity table | ⬜ | |
-| Monte Carlo histogram | ⬜ | |
-| Compensator results | ⬜ | |
-| Preview card and layout caption | ⬜ | See design notes (preview) |
-| Tolerance spec saved in `tolerances` section | ⬜ | Model keeps the section verbatim |
+| "Show the last results" shortcut | ✅ | `Views/Jobs`, `ViewModels/Jobs` |
+| Tolerances table grouped by element | 🟡 | Grouped by element; groups not collapsible |
+| Row kinds | ✅ | `Views/Jobs`, `ViewModels/Jobs` |
+| Row editing (limits, surface menu, unit conversion, problems) | ✅ | `Views/Jobs`, `ViewModels/Jobs` |
+| Row context menu (unit, distribution, symmetric, duplicate, delete) | ✅ | `Views/Jobs`, `ViewModels/Jobs` |
+| Add menu (surface and element sections) | ✅ | `Views/Jobs`, `ViewModels/Jobs` |
+| Default Tolerances… generator | ✅ | Generator flyout |
+| Test fringes wavelength field | ✅ | `Views/Jobs`, `ViewModels/Jobs` |
+| Element tolerances (move together, pivot, range) | 🟡 | Move together; pivot and range UI ⬜ |
+| Compensators | ✅ | `Views/Jobs`, `ViewModels/Jobs` |
+| Criterion section | ✅ | `Views/Jobs`, `ViewModels/Jobs` |
+| Analysis section (mode, trials, seed, percentiles) | ✅ | `Views/Jobs`, `ViewModels/Jobs` |
+| Running view (stage, elapsed, time left; Stop/Cancel) | ✅ | `Views/Jobs`, `ViewModels/Jobs` |
+| Results (nominal, RSS, percentiles, yield, Export menu) | 🟡 | Nominal, RSS, levels, yield; no CSV export |
+| Sensitivity table | ✅ | `Views/Jobs`, `ViewModels/Jobs` |
+| Monte Carlo histogram | 🟡 | Histogram and worst trials (click previews one); bins not clickable |
+| Compensator results | 🟡 | Compensator values; range bars ⬜ |
+| Preview card and layout caption | 🟡 | Preview of a build or trial; layout caption ⬜ |
+| Tolerance spec saved in `tolerances` section | ✅ | `Views/Jobs`, `ViewModels/Jobs` |
 
 ## 16. Apply Solves
 
 | Feature | Status | Windows notes |
 |---|---|---|
-| Empty state "No solves" | ⬜ | |
-| Dry run list (target, kind, previous → value, residual) | ⬜ | `ApplySolvesAsync` ready |
-| Caption and Apply to Design as one undoable commit | ⬜ | |
+| Empty state "No solves" | ✅ | `Views/Jobs`, `ViewModels/Jobs` |
+| Dry run list (target, kind, previous → value, residual) | ✅ | `Views/Jobs`, `ViewModels/Jobs` |
+| Caption and Apply to Design as one undoable commit | ✅ | `Views/Jobs`, `ViewModels/Jobs` |
 
 ## 17. Glass catalogs
 
@@ -461,9 +458,9 @@ add library catalog, glass overrides, glass details, `mk_glass_from_spec`,
 | Descriptors, schemas, availability read once at engine creation | ✅ | |
 | Per-design session; snapshot and library hash; validate on every snapshot | ✅ | |
 | Glass library and project catalogs synced before first snapshot | ✅ | `AppHooks.SessionStarting`, `Workspace.LoadProjectCatalogsAsync` |
-| Preview mechanism for candidate designs with "not applied" labels | 🟡 | `Workspace.Preview` / `Baseline`; strip on every pane and the layout, badge and End Preview in the capsule; spot Design | Candidate switch ⬜ |
-| `convert_spec`, `glass_info` cache, `merit_evaluation`, `merit_spec`, `apply_solves`, `preview_case` | 🟡 | `convert_spec` (System page) and `glass_info` (glass browser) in use; `merit_*`, `apply_solves`, `preview_case` ⬜ |
-| Job streaming progress, Stop vs Cancel | 🟡 | Binding done and used by analyses; design-job UI ⬜ |
+| Preview mechanism for candidate designs with "not applied" labels | 🟡 | `Workspace.Preview` / `Baseline`; jobs name the candidate ("Optimize result · merit …"), strip on every pane and the layout, badge and End Preview in the capsule; spot Design | Candidate switch ⬜ |
+| `convert_spec`, `glass_info` cache, `merit_evaluation`, `merit_spec`, `apply_solves`, `preview_case` | ✅ | `convert_spec` (System page), `glass_info`, `merit_evaluation`, `merit_spec`, `apply_solves`, `preview_case` (jobs) |
+| Job streaming progress, Stop vs Cancel | ✅ | Used by analyses and the design jobs (stop keeps the best so far, cancel discards) |
 | Engine is the authority: no optics in the UI | ✅ | Display formulas only where the Mac has them |
 
 ## 21. Debug launch options
@@ -477,9 +474,9 @@ Windows has its own set (docs/WINDOWS.md "Launch options"): `--sample`, `--analy
 | `-MKLightSelectSurface <i>` | ✅ | `--select <i>` |
 | `-MKLightInspector system` | ✅ | `--do inspector-system` / `inspector-surface` |
 | `-MKLightViewport 3D` | ✅ | `--do layout-3d` |
-| `-MKLightSheet` (optimize, tolerance, solves, glass) | ⬜ | |
-| `-MKLightAutoRun`, `-AutoPick`, `-AutoStop`, `-AutoApply` | ⬜ | |
-| `-MKLightToleranceTrials`, `-MKLightTolerancePreview` | ⬜ | |
+| `-MKLightSheet` (optimize, tolerance, solves, glass) | ✅ | `--do job=<optimize|glass_substitution|tolerance|solves>` |
+| `-MKLightAutoRun`, `-AutoPick`, `-AutoStop`, `-AutoApply` | 🟡 | `optimize-run`, `optimize-running=<s>`, `optimize-apply`, `glass-run`, `glass-apply`, `solves-run`; no auto-stop |
+| `-MKLightToleranceTrials`, `-MKLightTolerancePreview` | ✅ | `--do tolerance-run[=trials]`, `tolerance-preview=<k|sN>` |
 | `-MKLightShowIssues YES` | ⬜ | |
 | `-MKLightToast <text>` | ⬜ | |
 | `-MKLightAppearance light` or `dark` | ✅ | `--theme light` or `dark` |
@@ -487,7 +484,7 @@ Windows has its own set (docs/WINDOWS.md "Launch options"): `--sample`, `--analy
 | `-MKLightGlassCatalogs`, `-GlassScope`, `-GlassSearch` | ✅ | `--do glass-catalogs`, `-search`, `-scope` |
 | `-MKLightSupportDirectory <path>` | ⬜ | |
 | `-MKLightRunDetails <analysis>` | ✅ | `--do run-details` |
-| `-MKLightAutoEdit`, `-MKLightAutoConvert` (merit editor) | ⬜ | `--edit` exists for lens edits only |
+| `-MKLightAutoEdit`, `-MKLightAutoConvert` (merit editor) | 🟡 | `--do merit-custom`, `add-solve`, `variables=`; `--edit` for lens edits |
 | `-MKLightCurvatureBoundsUnit curvature` | ⬜ | |
 | Test render hook `MKLIGHT_RENDER_DIR` | 🟡 | `--screenshot <file.png>` renders the whole window (as composed), plus `--size`, `--delay` |
 
@@ -495,10 +492,10 @@ Windows has its own set (docs/WINDOWS.md "Launch options"): `--sample`, `--analy
 
 | Area | Done | Partial | Not started | Total |
 |---|---|---|---|---|
-| 1. Window and chrome | 17 | 11 | 3 | 31 |
-| 2. Menus, commands and keyboard shortcuts | 5 | 6 | 4 | 15 |
+| 1. Window and chrome | 18 | 10 | 3 | 31 |
+| 2. Menus, commands and keyboard shortcuts | 5 | 8 | 2 | 15 |
 | 3. Panels and arrangement | 18 | 2 | 0 | 20 |
-| 4. Lens data table | 19 | 6 | 1 | 26 |
+| 4. Lens data table | 21 | 5 | 0 | 26 |
 | 5. Inspector: Surface page | 20 | 0 | 0 | 20 |
 | 6. Inspector: System page | 10 | 0 | 0 | 10 |
 | 7. Surface types | 19 | 0 | 0 | 19 |
@@ -506,17 +503,17 @@ Windows has its own set (docs/WINDOWS.md "Launch options"): `--sample`, `--analy
 | 9. Analysis panes (generic chrome) | 11 | 7 | 2 | 20 |
 | 10. Analysis settings form | 21 | 2 | 0 | 23 |
 | 11. Dedicated result views | 32 | 4 | 1 | 37 |
-| 12. Design jobs: common | 0 | 0 | 7 | 7 |
-| 13. Optimize | 0 | 0 | 13 | 13 |
-| 14. Glass Substitution | 0 | 0 | 9 | 9 |
-| 15. Tolerance | 0 | 0 | 19 | 19 |
-| 16. Apply Solves | 0 | 0 | 3 | 3 |
+| 12. Design jobs: common | 7 | 0 | 0 | 7 |
+| 13. Optimize | 12 | 1 | 0 | 13 |
+| 14. Glass Substitution | 8 | 1 | 0 | 9 |
+| 15. Tolerance | 13 | 6 | 0 | 19 |
+| 16. Apply Solves | 3 | 0 | 0 | 3 |
 | 17. Glass catalogs | 17 | 0 | 0 | 17 |
 | 18. Documents, welcome and import | 6 | 2 | 3 | 11 |
 | 19. Appearance and accessibility | 5 | 2 | 2 | 9 |
-| 20. Engine integration | 7 | 4 | 0 | 11 |
-| 21. Debug launch options | 7 | 2 | 9 | 18 |
-| **Total** | **229** | **51** | **78** | **358** |
+| 20. Engine integration | 9 | 2 | 0 | 11 |
+| 21. Debug launch options | 9 | 4 | 5 | 18 |
+| **Total** | **279** | **59** | **20** | **358** |
 
 ## Known issues
 
@@ -547,12 +544,6 @@ Not features of the Mac app, so not counted above.
   * The status capsule and the window title also mark an active preview, and
     one "End Preview" button is always visible; applying or ending the preview
     removes every mark at once.
-* The engine binding already provides what the design jobs need (submit, stop,
-  cancel, `ApplySolvesAsync`); the rounds that follow are UI and view-model work.
-  The preview seam (`Workspace.Preview`, `SubmitDesignJob`, `DesignSession.SetJobActivity`,
-  `ShowInspectorPage`, the inspector page registry) is in place for them.
-* The lens data table statuses (section 4) must be re-checked by the
-  coordinator after the lens table agent's merge.
 * Known gaps in the Swift app, which do not require parity (not counted
   above): configurations are listed but not editable; pickups have no editor
   (only the solve marker); tolerancing has no element tilt z, no irregularity

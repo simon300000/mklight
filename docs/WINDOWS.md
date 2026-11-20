@@ -87,6 +87,10 @@ window sets `AppHooks.ScreenshotTarget` so that window is captured:
 * settings and run details: `spectrum`, `spectrum-csv`, `settings-scroll`,
   `run-details`, `remedy`, `popup`;
 * results: `result-view`, `image-simulation-start`, `dump-results`;
+* design jobs: `job=<id>` (`optimize`, `glass_substitution`, `tolerance`, `solves`; opens the page),
+  `variables=c1,c3,t11` (make those values variables), `optimize-run[=algorithm]`,
+  `optimize-running=<s>`, `optimize-apply`, `merit-custom`, `add-solve`, `solves-run`,
+  `glass-run[=rank]`, `glass-apply`, `tolerance-run[=trials]`, `tolerance-preview[=k|sN]`;
 * glass catalogs: `glass-catalogs` and `glass-catalogs-search`, `-scope`, `-filter`,
   `-select`, `-reload`, `-new-glass`, `-edit`, `-add-to-design`.
 
@@ -155,7 +159,7 @@ so none edits `App.xaml.cs`, `LaunchOptions.cs` or `DesignWindow` to be added:
 
 * **`InspectorPages`**: the inspector's page registry (id, title or glyph,
   order, factory per design window). Surface and System are registered by
-  `Views/Inspector`, the design jobs register theirs; pages are built once per
+  `Views/Inspector`, the design jobs register theirs (`Views/Jobs`); pages are built once per
   window and kept while hidden. `DesignSession.ShowInspectorPage` selects one.
 * **`AppHooks`**: `LaunchActions` (`--do`), `Commands` (File menu items with
   shortcuts), `WindowCreated` (per design window), `SessionStarting` (before a
@@ -218,6 +222,20 @@ so none edits `App.xaml.cs`, `LaunchOptions.cs` or `DesignWindow` to be added:
   glass editor, user catalogs and AGF export; Use for Surface; adding and removing
   catalogs is undoable and a saved project records the library catalogs it uses.
   The vendor files are never written.
+* **Design jobs** (`Views/Jobs`, `ViewModels/Jobs`). The four job pages in the
+  inspector share one frame with action-bar states (setup, running, review, done,
+  failed); a running job shows in the status capsule (a click reopens its page)
+  and ends if the window closes. Apply is one undoable step that drops variables
+  that no longer exist. Optimize: Default or Custom merit (operand editor,
+  Convert to Custom, live evaluation), variables and bounds, algorithm, running
+  statistics with a sparkline, and a result previewed on every pane with spot
+  before / after and the variables before and after. Glass Substitution: glasses
+  that may change, candidates, search, ranked results, preview and apply.
+  Tolerance: rows, generator, compensators, criterion, sensitivities, Monte-Carlo
+  histogram and previews of builds and trials. Apply Solves: dry-run list and apply.
+  The lens table's variable toggle (context menu, Ctrl+Shift+V) and its "N variables"
+  button feed the Optimize page. Documents open `.zmx` / `.seq` prescriptions
+  off the UI thread.
 
 ## `FFIEngine`
 
