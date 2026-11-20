@@ -37,6 +37,13 @@ public static class RunRoute
             case ("cpu_reference", "accuracy exclusion"): line = "CPU: this analysis is not accurate enough on the GPU"; break;
             case ("cpu_reference", "no device share"): line = "CPU: the GPU takes no part of a run of this size and shape"; break;
             case ("cpu_reference", "known failure"): line = "CPU: this request already failed on the GPU"; break;
+            // The browser GPU's own rules: its measured timings, or the break-even of its prior.
+            case ("gpu", "webgpu calibration"): line = "GPU by measured timings" + Predicted(d); break;
+            case ("cpu_reference", "webgpu calibration"): line = "CPU: the GPU's measured gain is too small" + Predicted(d); break;
+            case ("gpu", "webgpu break-even"): line = "GPU: a run above the measured break-even"; break;
+            case ("cpu_reference", "webgpu break-even"):
+                line = Json.Number(d["min_rays"]) is null ? "CPU: no measured GPU gain for this analysis" : "CPU: a run below the measured break-even";
+                break;
             case ("gpu", null):
                 line = Json.Str(d["reason"]) switch
                 {
@@ -71,6 +78,34 @@ public static class RunRoute
     /// <summary><c>gpu:metal</c> → <c>GPU</c>; other ids as the engine names them.</summary>
     public static string BackendName(string id) =>
         id.StartsWith("gpu:", StringComparison.Ordinal) ? "GPU" : id == "cpu_reference" ? "CPU reference" : id;
+
+    /// <summary>
+    /// What was requested, in words: "Automatic", "CPU reference", "GPU (cuda)"; the engine default
+    /// (<c>default:…</c>) says so ("Automatic (the engine's default)").
+    /// </summary>
+    public static string Requested(string requested)
+    {
+        var isDefault = requested.StartsWith("default:", StringComparison.Ordinal);
+        var asked = isDefault ? requested["default:".Length..] : requested;
+        var name = asked switch
+        {
+            "auto" => "Automatic",
+            "cpu_reference" => "CPU reference",
+            var s when s.StartsWith("gpu:", StringComparison.Ordinal) => $"GPU ({s[4..]})",
+            var s => s,
+        };
+        return isDefault ? name + " (the engine's default)" : name;
+    }
+
+    /// <summary>
+    /// The backend badge's label: "CPU · f64", or a GPU with its backend's name ("GPU · f32 · cuda").
+    /// </summary>
+    public static string Badge(string used, string precision)
+    {
+        var gpu = used.StartsWith("gpu", StringComparison.Ordinal);
+        var p = precision switch { "f32_gpu" => "f32", "f64_reference" => "f64", { Length: > 0 } x => x, _ => gpu ? "f32" : "f64" };
+        return used.StartsWith("gpu:", StringComparison.Ordinal) && used.Length > 4 ? $"GPU · {p} · {used[4..]}" : $"{(gpu ? "GPU" : "CPU")} · {p}";
+    }
 
     /// <summary>Both predicted times (GPU, CPU) in ms, when the decision has them (the device key is any but <c>cpu</c>).</summary>
     static (double Gpu, double Cpu)? Times(JsonObject d)

@@ -83,7 +83,7 @@ public sealed class GlassBrowserTests : IDisposable
         Assert.Equal("—", GlassFormat.Fixed(double.NaN, 2));
         var ir = Row("C", "IR", null, GlassStatus.Standard) with { CatalogNd = 2.4, MinUm = 2, MaxUm = 12 };
         Assert.Equal("—", GlassFormat.Nd(ir));
-        Assert.Contains("nd 2.40000", GlassFormat.IrTip(ir));
+        Assert.Contains("nd 2.4", GlassFormat.IrTip(ir));
         Assert.Null(GlassFormat.IrTip(Row("C", "G", 1.5, GlassStatus.Standard)));
         Assert.Equal("2.00–12.00", GlassFormat.Range(ir));
         var change = new CatalogChanges.Change("G", 1.5, 1.50012, 60, 60, ["nd", "density"]);
@@ -120,7 +120,7 @@ public sealed class GlassBrowserTests : IDisposable
         editor.Name = "MYGLASS";
         (editor.Nd, editor.Vd) = (1.6, 40);
         Assert.True(editor.Save(engine));
-        Assert.Equal(1.6, editor.PreviewNumbers!.Value.Nd, 6);
+        Assert.Equal(1.6, editor.PreviewNumbers!.Value.Nd!.Value, 6);
         lib.SetStatus(GlassStatus.Obsolete, "TESTCAT", "TK1");
 
         Assert.True(await GlassLibrarySync.SyncAsync(engine, lib));

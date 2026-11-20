@@ -67,7 +67,7 @@ public sealed class GlassDetailView : UserControl
         stack.Children.Add(Header(d));
         stack.Children.Add(Actions(d));
         stack.Children.Add(Section("Availability", Availability(d)));
-        if (d.IndexCurve.Count > 1) stack.Children.Add(Section("Index", new IndexCurveView { Details = d }));
+        if (Index(d) is { } index) stack.Children.Add(Section("Index", index));
         stack.Children.Add(Section("Optical Data", Optical(d)));
         stack.Children.Add(Section("Dispersion", Dispersion(d)));
         stack.Children.Add(Section("Physical and Catalog Data", Physical(d)));
@@ -215,18 +215,36 @@ public sealed class GlassDetailView : UserControl
         g.Children.Add(control);
     }
 
+    /// <summary>The index curve, with a caption when it covers only part of the glass's range (an IR glass).</summary>
+    static UIElement? Index(GlassDetails d)
+    {
+        var note = GlassFormat.CurveNote(d);
+        var curve = d.IndexCurve.Count > 1 ? new IndexCurveView { Details = d } : null;
+        if (note is null) return curve;
+        var p = new StackPanel { Spacing = 6 };
+        if (curve is not null) p.Children.Add(curve);
+        p.Children.Add(new TextBlock { Text = note, Style = S("CaptionText"), TextWrapping = TextWrapping.Wrap });
+        return p;
+    }
+
     UIElement Optical(GlassDetails d)
     {
         var g = new Rows();
         var r = d.Row;
-        g.Add("nd", r.Nd is { } nd ? GlassFormat.Fixed(nd, 6) : "—  (outside the range)", GlassFormat.IrTip(r));
-        g.Add("Vd", GlassFormat.Fixed(r.Vd, 3), GlassFormat.IrTip(r));
-        if (r.Nd is null && r.CatalogNd is { } cn && cn > 0) g.Add("nd, Vd (catalog)", GlassFormat.Fixed(cn, 5) + (r.CatalogVd is { } cv && cv > 0 ? ",  " + GlassFormat.Fixed(cv, 2) : ""));
+        // An IR glass: "—", why in the tooltip and a note, and what the catalog lists (vendors list n_d 1, V_d 0).
+        var tip = GlassFormat.IrTip(r);
+        g.Add("nd", GlassFormat.Fixed(r.Nd, 6), tip);
+        g.Add("Vd", GlassFormat.Fixed(r.Vd, 3), tip);
+        if (tip is not null && GlassFormat.CatalogListed(r) is { } listed) g.Add("Catalog lists", listed, tip);
         if (r.Pgf is { } pgf) g.Add("Pg,F", GlassFormat.Fixed(pgf, 4));
         if (r.Dpgf is { } dp) g.Add("ΔPg,F", GlassFormat.Signed(dp));
-        if (d.CatalogDpgf is { } cdp) g.Add("ΔPg,F (catalog)", GlassFormat.Signed(cdp));
+        // An IR glass's file lists ΔPg,F 0 as a placeholder (its g, F, C lines are outside the range).
+        if (d.CatalogDpgf is { } cdp && !(cdp == 0 && r.Pgf is null)) g.Add("ΔPg,F (catalog)", GlassFormat.Signed(cdp));
         g.Add("Range", r.UnrestrictedRange ? "unrestricted" : $"{GlassFormat.Fixed(r.MinUm, 3)} – {GlassFormat.Fixed(r.MaxUm, 3)} µm");
         foreach (var l in d.Lines) g.Add($"n{l.Line}  ({GlassFormat.Fixed(l.Um * 1000, 1)} nm)", GlassFormat.Fixed(l.N, 6));
+        if (tip is not null) g.Note(r.Nd is null
+            ? "No nd or Vd: the d line (587.6 nm) is outside this glass's range."
+            : "No Vd: the F or C line is outside this glass's range.");
         return g.Grid;
     }
 
@@ -327,6 +345,17 @@ public sealed class GlassDetailView : UserControl
             Grid.SetColumn(v, 1);
             Grid.Children.Add(l);
             Grid.Children.Add(v);
+        }
+
+        /// <summary>A caption across both columns.</summary>
+        public void Note(string text)
+        {
+            var i = Grid.RowDefinitions.Count;
+            Grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            var t = new TextBlock { Text = text, Style = S("CaptionText"), TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 4, 0, 0) };
+            Grid.SetRow(t, i);
+            Grid.SetColumnSpan(t, 2);
+            Grid.Children.Add(t);
         }
     }
 }

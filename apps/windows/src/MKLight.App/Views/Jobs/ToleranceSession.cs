@@ -128,7 +128,7 @@ public sealed class ToleranceSession
         var (settings, ids) = Settings.JobSettings(Context(), merit);
         var system = _s.Document.System;
         EndPreview();
-        var job = _s.Workspace.SubmitDesignJob(new EngineAnalysisRequest("tolerance", settings, new ExecutionSettings(_s.Workspace.Backend), fresh));
+        var job = _s.Workspace.SubmitDesignJob(new EngineAnalysisRequest("tolerance", settings, _s.Workspace.Execution, fresh));
         if (job is null)
         {
             Phase = JobPhase.Failed;
@@ -297,7 +297,7 @@ public sealed class ToleranceSession
             var engine = _s.Workspace.Engine;
             var snapshot = await engine.OpenSnapshotAsync(ModelJson.Encode(RunSystem));
             if (!Equals(Previewed, c)) return;
-            var job = engine.Submit(new EngineAnalysisRequest("tolerance", settings, new ExecutionSettings(_s.Workspace.Backend), viewKey: "tolerance-preview"), snapshot);
+            var job = engine.Submit(new EngineAnalysisRequest("tolerance", settings, _s.Workspace.Execution, viewKey: "tolerance-preview"), snapshot);
             _previewJob = job;
             using var output = await job.ResultAsync();
             if (!Equals(Previewed, c)) return;

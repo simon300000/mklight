@@ -202,7 +202,7 @@ public sealed class OptimizeSession
         try { await Task.Delay(delay, ct); }
         catch (TaskCanceledException) { return; }
         _evaluationJob?.Cancel();
-        var job = Workspace.SubmitDesignJob(new EngineAnalysisRequest("merit_evaluation", settings, new ExecutionSettings(Workspace.Backend), viewKey: "merit-evaluation"));
+        var job = Workspace.SubmitDesignJob(new EngineAnalysisRequest("merit_evaluation", settings, Workspace.Execution, viewKey: "merit-evaluation"));
         if (job is null) { _pendingKey = null; Evaluating = false; EvaluationChanged?.Invoke(); return; }
         _evaluationJob = job;
         try
@@ -233,7 +233,7 @@ public sealed class OptimizeSession
         Load();
         var defaults = Merit.Clone();
         defaults.Mode = MeritMode.Default;
-        var job = Workspace.SubmitDesignJob(new EngineAnalysisRequest("merit_evaluation", Settings(defaults, evaluation: true), new ExecutionSettings(Workspace.Backend)));
+        var job = Workspace.SubmitDesignJob(new EngineAnalysisRequest("merit_evaluation", Settings(defaults, evaluation: true), Workspace.Execution));
         if (job is null) return;
         MeritEvaluation? e;
         Evaluating = true;
@@ -276,7 +276,7 @@ public sealed class OptimizeSession
         _evaluationJob?.Cancel();
         _pendingKey = null;
         Evaluating = false;
-        var job = Workspace.SubmitDesignJob(new EngineAnalysisRequest("optimize", Settings(), new ExecutionSettings(Workspace.Backend), fresh));
+        var job = Workspace.SubmitDesignJob(new EngineAnalysisRequest("optimize", Settings(), Workspace.Execution, fresh));
         if (job is null)
         {
             Phase = JobPhase.Failed;

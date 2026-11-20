@@ -238,7 +238,7 @@ public sealed partial class AnalysisPaneView : UserControl
     void UpdateBackendBadge(AnalysisOutput output)
     {
         var gpu = output.Backend?.Used.StartsWith("gpu", StringComparison.Ordinal) == true;
-        BackendText.Text = $"{(gpu ? "GPU" : "CPU")} · {RunDetailsView.Precision(output)}  {RunDetailsView.Time(output)}";
+        BackendText.Text = RunDetailsView.Badge(output) + "  " + RunDetailsView.Time(output);
         BackendGlyph.Glyph = gpu ? "\uE945" : "\uE950";
         var brush = ThemeLookup.Brush(this, gpu ? "AccentTextFillColorPrimaryBrush" : "TextFillColorSecondaryBrush");
         BackendText.Foreground = brush;
