@@ -1,0 +1,14 @@
+<Project>
+  <!-- Shared settings for every project of the Windows app (docs/WINDOWS.md). -->
+  <PropertyGroup>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <InvariantGlobalization>false</InvariantGlobalization>
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+    <!-- The engine DLL built by scripts/build-windows.ps1 (git-ignored). -->
+    <MKLightNativeDir>$(MSBuildThisFileDirectory)native\</MKLightNativeDir>
+    <WindowsTargetFramework>net11.0-windows10.0.26100.0</WindowsTargetFramework>
+  </PropertyGroup>
+</Project>

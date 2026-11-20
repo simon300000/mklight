@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net11.0</TargetFramework>
+    <IsPackable>false</IsPackable>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>MKLight.Tests</RootNamespace>
+    <UseMicrosoftTestingPlatformRunner>true</UseMicrosoftTestingPlatformRunner>
+    <TestingPlatformDotnetTestSupport>true</TestingPlatformDotnetTestSupport>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="xunit.v3" Version="4.0.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="4.0.1" />
+  </ItemGroup>
+  <ItemGroup>
+    <Using Include="Xunit" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\MKLight.Model\MKLight.Model.csproj" />
+    <ProjectReference Include="..\..\src\MKLight.Engine\MKLight.Engine.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="$(MKLightNativeDir)mklight_ffi.dll" Condition="Exists('$(MKLightNativeDir)mklight_ffi.dll')" Link="mklight_ffi.dll" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>

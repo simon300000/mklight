@@ -10,7 +10,7 @@ publish.workspace = true
 autotests = false
 
 [lib]
-crate-type = ["staticlib", "rlib"]
+crate-type = ["staticlib", "cdylib", "rlib"]
 
 [dependencies]
 mklight-core.workspace = true
