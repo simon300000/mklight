@@ -23,7 +23,12 @@ use mklight_core::{CancelToken, JobContext, MkError, MkResult};
 struct Shared<T> {
     result: Mutex<Option<MkResult<T>>>,
     cv: Condvar,
+    /// Work not started yet, which [`Pending::wait`] runs itself
+    /// ([`spawn_job_or_run_on_wait`]).
+    job: Mutex<Option<Job>>,
 }
+
+type Job = Box<dyn FnOnce() + Send>;
 
 /// The receiving side: the eventual result of a submitted job. Dropping it
 /// before the job finishes cancels the job (a superseded request stops
@@ -72,6 +77,7 @@ pub fn pending<T>(ctx: &JobContext) -> (Pending<T>, Completer<T>, JobControl) {
     let shared = Arc::new(Shared {
         result: Mutex::new(None),
         cv: Condvar::new(),
+        job: Mutex::new(None),
     });
     let own = CancelToken::new();
     (
@@ -107,17 +113,52 @@ pub fn spawn_job<T: Send + 'static>(
     work: impl FnOnce() -> MkResult<T> + Send + 'static,
 ) -> MkResult<()> {
     let err_what = what.clone();
-    mklight_core::platform::spawn(thread_name, move || {
-        let r = catch_unwind(AssertUnwindSafe(work)).unwrap_or_else(|p| {
-            Err(MkError::Backend(format!(
-                "{what}: backend worker panicked: {}",
-                panic_message(p.as_ref())
-            )))
-        });
-        completer.complete(r);
+    mklight_core::platform::spawn(thread_name, move || run_job(what, completer, work))
+        .map(|_| ())
+        .map_err(|e| MkError::Backend(format!("{err_what}: cannot start a worker thread: {e}")))
+}
+
+/// [`spawn_job`] for the work of `pending`, which [`Pending::wait`] runs on
+/// the waiting thread when the worker has not started it yet: the result
+/// never waits for a thread to start (0.2 ms on an idle machine, tens of
+/// milliseconds on a loaded one), and the worker, starting later, finds
+/// nothing to do.
+pub fn spawn_job_or_run_on_wait<T: Send + 'static>(
+    pending: &Pending<T>,
+    thread_name: &str,
+    what: String,
+    completer: Completer<T>,
+    work: impl FnOnce() -> MkResult<T> + Send + 'static,
+) -> MkResult<()> {
+    let err_what = what.clone();
+    *pending.job() = Some(Box::new(move || run_job(what, completer, work)));
+    let shared = pending.shared.clone();
+    let started = mklight_core::platform::spawn(thread_name, move || {
+        let job = lock_job(&shared).take();
+        if let Some(job) = job {
+            job();
+        }
+    });
+    started.map(|_| ()).map_err(|e| {
+        // Dropping the work drops its completer: `pending` fails too.
+        pending.job().take();
+        MkError::Backend(format!("{err_what}: cannot start a worker thread: {e}"))
     })
-    .map(|_| ())
-    .map_err(|e| MkError::Backend(format!("{err_what}: cannot start a worker thread: {e}")))
+}
+
+/// Run `work`, completing `completer` with its result or its panic.
+fn run_job<T>(what: String, completer: Completer<T>, work: impl FnOnce() -> MkResult<T>) {
+    let r = catch_unwind(AssertUnwindSafe(work)).unwrap_or_else(|p| {
+        Err(MkError::Backend(format!(
+            "{what}: backend worker panicked: {}",
+            panic_message(p.as_ref())
+        )))
+    });
+    completer.complete(r);
+}
+
+fn lock_job<T>(shared: &Shared<T>) -> std::sync::MutexGuard<'_, Option<Job>> {
+    shared.job.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 impl<T> Completer<T> {
@@ -150,8 +191,13 @@ impl<T> Pending<T> {
     pub fn is_ready(&self) -> bool {
         self.lock().is_some()
     }
-    /// Block until the result is available.
+    /// Block until the result is available; work not started yet
+    /// ([`spawn_job_or_run_on_wait`]) runs on this thread.
     pub fn wait(self) -> MkResult<T> {
+        let job = self.job().take();
+        if let Some(job) = job {
+            job();
+        }
         let mut result = self.lock();
         loop {
             if let Some(r) = result.take() {
@@ -163,6 +209,9 @@ impl<T> Pending<T> {
                 .wait(result)
                 .unwrap_or_else(|e| e.into_inner());
         }
+    }
+    fn job(&self) -> std::sync::MutexGuard<'_, Option<Job>> {
+        lock_job(&self.shared)
     }
     fn lock(&self) -> std::sync::MutexGuard<'_, Option<MkResult<T>>> {
         self.shared.result.lock().unwrap_or_else(|e| e.into_inner())
@@ -222,6 +271,39 @@ mod tests {
         drop(p);
         assert_eq!(w.check(), Err(MkError::Cancelled));
         assert!(!ctx.cancel.is_cancelled());
+    }
+
+    /// Work a waiter may run itself runs exactly once, whoever starts it.
+    #[test]
+    fn work_runs_once_on_worker_or_waiter() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let runs = Arc::new(AtomicUsize::new(0));
+        for i in 0..200 {
+            let (p, c, _) = pending::<u32>(&JobContext::new());
+            let r = runs.clone();
+            spawn_job_or_run_on_wait(&p, "test-worker", "test job".into(), c, move || {
+                r.fetch_add(1, Ordering::SeqCst);
+                Ok(i)
+            })
+            .unwrap();
+            if i % 2 == 0 {
+                std::thread::yield_now();
+            }
+            assert_eq!(p.wait(), Ok(i));
+        }
+        // A dropped `Pending` leaves its work to the worker.
+        let (p, c, _) = pending::<u32>(&JobContext::new());
+        let r = runs.clone();
+        spawn_job_or_run_on_wait(&p, "test-worker", "test job".into(), c, move || {
+            r.fetch_add(1, Ordering::SeqCst);
+            Ok(0)
+        })
+        .unwrap();
+        drop(p);
+        while runs.load(Ordering::SeqCst) < 201 {
+            std::thread::yield_now();
+        }
+        assert_eq!(runs.load(Ordering::SeqCst), 201);
     }
 
     #[test]

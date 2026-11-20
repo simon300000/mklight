@@ -150,6 +150,10 @@ impl<'a> Batch<'a> {
         self.resources.push(Resource::Slice { key, offset, len });
         self.resources.len() - 1
     }
+    /// Queue a copy; one that continues the previous copy on both sides
+    /// (the next words of the same source into the next words of the same
+    /// destination) extends it, so contiguous planes cost one device copy.
+    /// Copies within one buffer are never merged.
     pub fn copy(
         &mut self,
         from: usize,
@@ -158,6 +162,16 @@ impl<'a> Batch<'a> {
         to_offset: usize,
         len: usize,
     ) {
+        if let Some(c) = self.copies.last_mut()
+            && c.from == from
+            && c.to == to
+            && c.from_offset + c.len == from_offset
+            && c.to_offset + c.len == to_offset
+            && !matches!(self.resources.get(from), Some(Resource::Persistent(k)) if *k == to)
+        {
+            c.len += len;
+            return;
+        }
         self.copies.push(Copy {
             from,
             from_offset,
@@ -286,4 +300,41 @@ pub fn uniform_words(words: &[u32]) -> Vec<u32> {
     let mut v = words.to_vec();
     v.resize(words.len().div_ceil(4).max(1) * 4, 0);
     v
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn contiguous_copies_merge() {
+        let words = [0u32; 8];
+        let mut b = Batch::default();
+        let r = b.upload(&words);
+        let own = b.persistent(BufferKey(1));
+        // Three planes of 2 words into consecutive destination words: one copy.
+        for j in 0..3 {
+            b.copy(r, 2 * j, BufferKey(1), 10 + 2 * j, 2);
+        }
+        // A gap on either side starts a new copy; so does a copy within one buffer.
+        b.copy(r, 7, BufferKey(1), 16, 1);
+        b.copy(r, 8, BufferKey(2), 17, 1);
+        b.copy(own, 0, BufferKey(1), 0, 1);
+        b.copy(own, 1, BufferKey(1), 1, 1);
+        let c: Vec<_> = b
+            .copies
+            .iter()
+            .map(|c| (c.from, c.from_offset, c.to.0, c.to_offset, c.len))
+            .collect();
+        assert_eq!(
+            c,
+            [
+                (r, 0, 1, 10, 6),
+                (r, 7, 1, 16, 1),
+                (r, 8, 2, 17, 1),
+                (own, 0, 1, 0, 1),
+                (own, 1, 1, 1, 1)
+            ]
+        );
+    }
 }

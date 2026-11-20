@@ -34,6 +34,10 @@ use crate::device::*;
 pub const READ_BACK_LOG: usize = 4096;
 pub static READ_BACKS: std::sync::Mutex<Vec<usize>> = std::sync::Mutex::new(Vec::new());
 
+/// Words one readback batch carries at most (several small buffers share a
+/// batch; a device stages a batch's reads together).
+const READ_BATCH_WORDS: usize = 16 << 20;
+
 struct Mirror {
     key: BufferKey,
     words: usize,
@@ -137,25 +141,67 @@ impl Mirrors {
         x: &mut Execution,
         stats: &mut JobStats,
     ) -> MkResult<()> {
-        let Some(m) = self.map.get_mut(&id) else {
-            return Ok(());
-        };
-        if m.host {
+        self.read_back_all(vec![id], x, stats)
+    }
+
+    /// [`Mirrors::read_back`] of every buffer of `ids`, in as few batches as
+    /// [`READ_BATCH_WORDS`] allows.
+    pub fn read_back_all(
+        &mut self,
+        mut ids: Vec<BufferId>,
+        x: &mut Execution,
+        stats: &mut JobStats,
+    ) -> MkResult<()> {
+        ids.sort_by_key(|b| b.0);
+        ids.dedup();
+        ids.retain(|id| self.map.get(id).is_some_and(|m| !m.host));
+        let (mut group, mut words) = (Vec::new(), 0);
+        for id in ids {
+            let w = self.map[&id].words;
+            if !group.is_empty() && words + w > READ_BATCH_WORDS {
+                self.read_group(std::mem::take(&mut group), x, stats)?;
+                words = 0;
+            }
+            group.push(id);
+            words += w;
+        }
+        if group.is_empty() {
             return Ok(());
         }
-        let mut batch = Batch::default();
-        let r = batch.persistent(m.key);
-        batch.read(r, 0, &mut x.words_mut(id)[..m.words]);
-        let b = self.gpu.run(batch)?;
+        self.read_group(group, x, stats)
+    }
+
+    /// One batch reading back the distinct stale mirrors `ids`.
+    fn read_group(
+        &mut self,
+        ids: Vec<BufferId>,
+        x: &mut Execution,
+        stats: &mut JobStats,
+    ) -> MkResult<()> {
+        // Only device operations' outputs have mirrors: plan-owned buffers.
+        let (gpu, map) = (&self.gpu, &self.map);
+        let b = x.with_outputs(&ids, |_, words| {
+            let mut batch = Batch::default();
+            for (id, w) in ids.iter().zip(words.iter_mut()) {
+                let m = &map[id];
+                let r = batch.persistent(m.key);
+                batch.read(r, 0, &mut w[..m.words]);
+            }
+            gpu.run(batch)
+        })?;
         stats.device_seconds += b.device_seconds;
         stats.command_buffers += 1;
-        if let Ok(mut log) = READ_BACKS.lock() {
-            if log.len() >= READ_BACK_LOG {
-                log.drain(..READ_BACK_LOG / 2);
+        let mut log = READ_BACKS.lock().ok();
+        for id in &ids {
+            let m = self.map.get_mut(id).unwrap();
+            if let Some(log) = &mut log {
+                if log.len() >= READ_BACK_LOG {
+                    log.drain(..READ_BACK_LOG / 2);
+                }
+                log.push(m.words);
             }
-            log.push(m.words);
+            m.host = true;
         }
-        m.host = true;
         Ok(())
     }
 
@@ -166,16 +212,11 @@ impl Mirrors {
         x: &mut Execution,
         stats: &mut JobStats,
     ) -> MkResult<()> {
-        let mut ids: Vec<BufferId> = accesses(op).reads.iter().map(|v| v.buffer).collect();
         if let ResidentOp::TraceUpload(_) = op {
-            ids.clear();
+            return Ok(());
         }
-        ids.sort_by_key(|b| b.0);
-        ids.dedup();
-        for id in ids {
-            self.read_back(id, x, stats)?;
-        }
-        Ok(())
+        let ids = accesses(op).reads.iter().map(|v| v.buffer).collect();
+        self.read_back_all(ids, x, stats)
     }
 
     /// After operation `op` ran (on the device or as its specification):
@@ -198,13 +239,7 @@ impl Mirrors {
         x: &mut Execution,
         stats: &mut JobStats,
     ) -> MkResult<()> {
-        let mut ids = plan.outputs.clone();
-        ids.sort_by_key(|b| b.0);
-        ids.dedup();
-        for id in ids {
-            self.read_back(id, x, stats)?;
-        }
-        Ok(())
+        self.read_back_all(plan.outputs.clone(), x, stats)
     }
 }
 

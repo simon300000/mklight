@@ -87,9 +87,7 @@ fn generate(
     // packs the seeds and table into the input words.
     let mut inputs = vec![g.field_wavelength.buffer, g.samples.buffer, seeds.buffer];
     inputs.extend(g.options.table.iter().map(|t| t.buffer));
-    for id in inputs {
-        ops.mirrors.read_back(id, x, stats)?;
-    }
+    ops.mirrors.read_back_all(inputs, x, stats)?;
     let fields: &[FieldSpec] = x.rows(&g.field_wavelength);
     // A device seed table serves real aims only (paraxial launches never
     // read it): build it with the specification.
