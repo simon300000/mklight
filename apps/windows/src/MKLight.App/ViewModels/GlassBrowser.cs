@@ -213,11 +213,17 @@ public sealed class GlassBrowserModel
         {
             GlassColumn.Name => (a, b) => GlassLibrary.NameOrder.Compare(a.Name, b.Name),
             GlassColumn.Catalog => (a, b) => GlassLibrary.NameOrder.Compare(a.Catalog, b.Catalog),
-            _ => (a, b) => SortKey(a, column).CompareTo(SortKey(b, column)),
+            _ => (a, b) => (SortKey(a, column), SortKey(b, column)) switch
+            {
+                (double x, double y) => x.CompareTo(y),
+                _ => 0, // a missing value is placed below, whatever the direction
+            },
         };
-        // Ties keep the name order.
+        // Glasses without a value (an IR glass's n_d) sort last in either direction; ties keep the name order.
         list.Sort((a, b) =>
         {
+            var missing = (SortKey(a, column) is null).CompareTo(SortKey(b, column) is null);
+            if (missing != 0) return missing;
             var c = by(a, b);
             if (!ascending) c = -c;
             return c != 0 ? c : GlassLibrary.NameOrder.Compare(a.Name, b.Name) is var n && n != 0 ? n : GlassLibrary.NameOrder.Compare(a.Catalog, b.Catalog);
@@ -225,17 +231,17 @@ public sealed class GlassBrowserModel
         return list;
     }
 
-    /// <summary>A numeric column's sort key: glasses without a value sort last.</summary>
-    public static double SortKey(GlassRow r, GlassColumn column) => column switch
+    /// <summary>A sortable column's numeric key; null when the glass has no value (it sorts last). Name and catalog have none.</summary>
+    public static double? SortKey(GlassRow r, GlassColumn column) => column switch
     {
-        GlassColumn.Nd => r.Nd ?? double.PositiveInfinity,
-        GlassColumn.Vd => r.Vd ?? double.PositiveInfinity,
-        GlassColumn.Dpgf => r.Dpgf ?? double.PositiveInfinity,
+        GlassColumn.Nd => r.Nd,
+        GlassColumn.Vd => r.Vd,
+        GlassColumn.Dpgf => r.Dpgf,
         GlassColumn.Status => StatusRank(r.Status),
-        GlassColumn.Density => r.Density ?? double.PositiveInfinity,
-        GlassColumn.Cost => r.RelativeCost ?? double.PositiveInfinity,
-        GlassColumn.Tce => r.Tce ?? double.PositiveInfinity,
-        GlassColumn.Lambda80 => r.Lambda80Um ?? double.PositiveInfinity,
+        GlassColumn.Density => r.Density,
+        GlassColumn.Cost => r.RelativeCost,
+        GlassColumn.Tce => r.Tce,
+        GlassColumn.Lambda80 => r.Lambda80Um,
         GlassColumn.Range => r.MaxUm,
         _ => 0,
     };
