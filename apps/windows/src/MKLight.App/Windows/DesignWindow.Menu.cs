@@ -534,6 +534,15 @@ public sealed partial class DesignWindow
             await Task.Delay(200);
         }
         await Task.Delay(300);
+        await OverlayOpenPopupsAsync();
+    }
+
+    /// <summary>
+    /// Renders every open menu into an overlay of the window at its place, so a capture of the
+    /// window shows them (on the popup's fallback colour, as acrylic does not render to a bitmap).
+    /// </summary>
+    internal async Task OverlayOpenPopupsAsync()
+    {
         var overlay = new Canvas { IsHitTestVisible = false };
         Grid.SetRowSpan(overlay, 2);
         var fill = ThemeLookup.Brush(Root, "AcrylicBackgroundFillColorDefaultBrush") is Microsoft.UI.Xaml.Media.AcrylicBrush a

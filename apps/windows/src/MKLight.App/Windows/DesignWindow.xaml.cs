@@ -418,15 +418,20 @@ public sealed partial class DesignWindow : Window
         InspectorColumn.Width = visible ? new GridLength(320) : new GridLength(0);
     }
 
-    void OnPaneToggleRequested(TitleBar sender, object args) => Nav.IsPaneOpen = !Nav.IsPaneOpen;
+    /// <summary>The title bar's pane button: a hidden sidebar comes back, a shown one switches between full and compact.</summary>
+    void OnPaneToggleRequested(TitleBar sender, object args)
+    {
+        if (!Nav.IsPaneVisible) { Nav.IsPaneVisible = true; Nav.IsPaneOpen = true; }
+        else Nav.IsPaneOpen = !Nav.IsPaneOpen;
+    }
 
     // ---- Seams for the document commands and launch options ----
 
     /// <summary>The sidebar column is shown (View ▸ Sidebar, <c>--sidebar hidden</c>).</summary>
     public bool IsSidebarVisible
     {
-        get => Nav.IsPaneOpen;
-        set => Nav.IsPaneOpen = value;
+        get => Nav.IsPaneVisible;
+        set => Nav.IsPaneVisible = value;
     }
 
     /// <summary>Opens the issues list of the status capsule (Design ▸ Show Issues, <c>--show-issues</c>).</summary>
