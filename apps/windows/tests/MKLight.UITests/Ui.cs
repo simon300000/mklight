@@ -26,7 +26,7 @@ sealed class Ui(AppSession app)
         {
             T? v = null;
             try { v = probe(); }
-            catch (Exception e) when (e is System.Runtime.InteropServices.COMException or InvalidOperationException
+            catch (Exception e) when (e is System.Runtime.InteropServices.COMException or InvalidOperationException or TimeoutException
                 or FlaUI.Core.Exceptions.PropertyNotSupportedException or FlaUI.Core.Exceptions.ElementNotAvailableException) { }
             if (v is not null) return v;
             if (DateTime.UtcNow > end) throw new TimeoutException($"Timed out waiting for {what}.");
@@ -74,45 +74,37 @@ sealed class Ui(AppSession app)
 
     // ---- Lens data ----
 
-    /// <summary>Wanted id: <c>Panel.lens_data</c>.</summary>
+    /// <summary>The lens data panel (its content group; no id of its own: <c>Panel.lens_data.Header</c> is the title).</summary>
     public AutomationElement LensData => Wait(() => ByName("Lens data", ControlType.Group), "the lens data");
 
-    public void WaitForLensRows() => Wait(() => LensRowOrNull(1), "the lens data's rows");
+    public void WaitForLensRows() => Wait(() => ById("LensRow.1"), "the lens data's rows");
 
-    AutomationElement? LensRowOrNull(int index)
-    {
-        var data = ByName("Lens data", ControlType.Group);
-        return data?.FindAllDescendants(Cf.ByControlType(ControlType.Group))
-            .FirstOrDefault(e => NameOf(e) is var n && (n == $"Surface {index}" || n.StartsWith($"Surface {index},", StringComparison.Ordinal)));
-    }
-
-    /// <summary>The row of surface <paramref name="index"/> ("Surface 3", "Surface 6, aperture stop"). Wanted id: <c>LensRow.{index}</c>.</summary>
-    public AutomationElement LensRow(int index) => Wait(() => LensRowOrNull(index), $"lens row {index}");
+    /// <summary>Row <c>LensRow.{index}</c>: 0 is the object, then surface by surface ("Surface 6, aperture stop").</summary>
+    public AutomationElement LensRow(int index) => Wait(() => ById($"LensRow.{index}"), $"lens row {index}");
 
     public string LensRowName(int index) => NameOf(LensRow(index));
 
-    /// <summary>A column title of the lens grid ("Radius").</summary>
-    AutomationElement ColumnHeader(string title) =>
-        Wait(() => ById("HorizontalScroller", LensData)?.FindFirstChild(Cf.ByName(title).And(Cf.ByControlType(ControlType.Text))), $"the {title} column");
-
-    /// <summary>The middle of a cell (its row × its column title). Wanted id: <c>LensCell.{row}.{column}</c> on the cell's slot.</summary>
-    public Point LensCell(int row, string column)
+    /// <summary>Selects a row as a click does: its SelectionItem, else its Invoke.</summary>
+    public void SelectLensRow(int index)
     {
-        var r = Bounds(LensRow(row));
-        var c = Bounds(ColumnHeader(column));
-        return new Point(c.X + c.Width / 2, r.Y + r.Height / 2);
+        var row = LensRow(index);
+        if (row.Patterns.SelectionItem.IsSupported) row.Patterns.SelectionItem.Pattern.Select();
+        else if (row.Patterns.Invoke.IsSupported) row.Patterns.Invoke.Pattern.Invoke();
+        else throw new InvalidOperationException($"LensRow.{index} supports neither SelectionItem nor Invoke.");
     }
 
-    /// <summary>The text shown in a cell. Wanted: the cell's own element (<c>LensCell.{row}.{column}</c>) with a Value or Name.</summary>
-    public string LensCellText(int row, string column)
-    {
-        var c = Bounds(ColumnHeader(column));
-        var texts = LensRow(row).FindAllChildren(Cf.ByControlType(ControlType.Text));
-        return texts.Where(t => Bounds(t) is { Width: > 0 } b && b.X < c.Right && b.Right > c.X).Select(NameOf).FirstOrDefault() ?? "";
-    }
+    /// <summary>
+    /// A cell, <c>LensCell.{row}.{key}</c> (key: surface, type, comment, radius, thickness, material,
+    /// semi_diameter, conic …): Value reads and commits like typing, Invoke starts editing.
+    /// </summary>
+    public AutomationElement LensCell(int row, string key) => Wait(() => ById($"LensCell.{row}.{key}"), $"lens cell {row}.{key}");
 
-    /// <summary>The in-place editor while a cell edits. Wanted id: <c>LensEditor</c>.</summary>
-    public AutomationElement? LensEditorOrNull() => LensData.FindFirstDescendant(Cf.ByControlType(ControlType.Edit));
+    /// <summary>The text shown in a cell (its Value).</summary>
+    public string LensCellText(int row, string key) => LensCell(row, key).Patterns.Value.Pattern.Value.ValueOrDefault ?? "";
+
+    /// <summary>The in-place text editor while a cell edits: the one Edit in the lens data that is not a cell. Wanted id: <c>LensEditor</c>.</summary>
+    public AutomationElement? LensEditorOrNull() => LensData.FindAllDescendants(Cf.ByControlType(ControlType.Edit))
+        .FirstOrDefault(e => !IdOf(e).StartsWith("LensCell.", StringComparison.Ordinal) && Shown(e));
 
     public AutomationElement LensEditor => Wait(LensEditorOrNull, "the lens cell editor");
 
@@ -151,27 +143,25 @@ sealed class Ui(AppSession app)
 
     // ---- Analysis panes ----
 
-    /// <summary>A pane's title button (it opens the pane's menu and is the drag handle). Wanted id: <c>Panel.{analysis}.Header</c>.</summary>
-    public AutomationElement PaneTitle(string title) =>
-        Wait(() => W.FindAllDescendants(Cf.ByAutomationId("TitleButton"))
-            .FirstOrDefault(b => b.FindFirstChild(Cf.ByAutomationId("TitleText")) is { } t && NameOf(t) == title), $"the {title} pane");
+    /// <summary>Pane <c>Pane.{analysis}</c> (analysis id: "mtf", "spot_diagram" …).</summary>
+    public AutomationElement Pane(string analysis) => Wait(() => ById($"Pane.{analysis}"), $"the {analysis} pane");
 
-    public AutomationElement? PaneTitleOrNull(string title) =>
-        W.FindAllDescendants(Cf.ByAutomationId("TitleButton"))
-            .FirstOrDefault(b => b.FindFirstChild(Cf.ByAutomationId("TitleText")) is { } t && NameOf(t) == title);
+    public AutomationElement? PaneOrNull(string analysis) => ById($"Pane.{analysis}");
 
-    /// <summary>
-    /// A control in a pane's header row by x:Name ("RunButton", "SettingsButton", "StateText"): the
-    /// nearest one right of the title on the same line (panes have no container element in the
-    /// automation tree yet). Wanted ids: <c>Pane.{analysis}.Run</c>, <c>Pane.{analysis}.Settings</c>, <c>Pane.{analysis}.State</c>.
-    /// </summary>
-    public AutomationElement PaneControl(string title, string xName) => Wait(() =>
-    {
-        var t = Bounds(PaneTitle(title));
-        return W.FindAllDescendants(Cf.ByAutomationId(xName))
-            .Where(b => Bounds(b) is var r && r.Width > 0 && Math.Abs(r.Y - t.Y) < t.Height * 3 && r.X >= t.X)
-            .OrderBy(b => Bounds(b).X - t.X).FirstOrDefault();
-    }, $"{xName} of the {title} pane");
+    /// <summary>The analyses of the panes in the main window (their <c>Pane.{analysis}</c> ids).</summary>
+    public List<string> PaneIds() => W.FindAllDescendants(Cf.ByClassName("AnalysisPane"))
+        .Select(IdOf).Where(i => i.StartsWith("Pane.", StringComparison.Ordinal)).Select(i => i["Pane.".Length..]).ToList();
+
+    public int PaneCount() => PaneIds().Count;
+
+    /// <summary>A pane part, <c>Pane.{analysis}.{part}</c>: Header, Title (the drag handle), Run, AutoUpdate, Settings, State, More, Backend …</summary>
+    public AutomationElement PaneControl(string analysis, string part) => Wait(() => ById($"Pane.{analysis}.{part}"), $"{part} of the {analysis} pane");
+
+    /// <summary>The analysis id of a pane titled <paramref name="title"/> ("Ray Fan" gives "ray_fan"), or null when no pane shows it.</summary>
+    public string? PaneWithTitle(string title) =>
+        W.FindAllDescendants(Cf.ByName(title).And(Cf.ByControlType(ControlType.Button)))
+            .Select(IdOf).FirstOrDefault(id => id.StartsWith("Pane.", StringComparison.Ordinal) && id.EndsWith(".Title", StringComparison.Ordinal)) is { } i
+            ? i["Pane.".Length..^".Title".Length] : null;
 
     /// <summary>A field of an open settings form, by its label ("Max Frequency"). Wanted id: <c>Settings.{analysis}.{field}</c>.</summary>
     public AutomationElement SettingsField(string label) => Wait(() =>
@@ -181,14 +171,12 @@ sealed class Ui(AppSession app)
         return e is null || e.Patterns.Value.IsSupported ? e : e.FindFirstDescendant(Cf.ByControlType(ControlType.Edit));
     }, $"the settings field {label}");
 
-    /// <summary>A text field of the inspector's current page, by its label ("Radius", "Comment"). Wanted id: <c>Inspector.{page}.{field}</c>.</summary>
-    public AutomationElement InspectorField(string label) => Wait(() =>
+    /// <summary>The text field of inspector row <c>Inspector.Row.{field}</c> ("radius", "comment"): the row itself when it takes a value, else its Edit.</summary>
+    public AutomationElement InspectorField(string field) => Wait(() =>
     {
-        var tabs = ByName("Inspector pages", ControlType.Group);
-        var t = tabs is null ? Rectangle.Empty : Bounds(tabs);
-        return W.FindAllDescendants(Cf.ByName(label).And(Cf.ByControlType(ControlType.Edit)))
-            .FirstOrDefault(e => Bounds(e) is var r && r.Width > 0 && r.X >= t.X - t.Width / 4);
-    }, $"the inspector field {label}");
+        var row = ById($"Inspector.Row.{field}");
+        return row is null || row.ControlType == ControlType.Edit ? row : row.FindFirstDescendant(Cf.ByControlType(ControlType.Edit));
+    }, $"the inspector field {field}");
 
     /// <summary>The texts shown on the inspector's current page (below its page buttons). Wanted id: <c>Inspector.Page</c> on the page host, with the page's id.</summary>
     public List<string> InspectorPageTexts()
@@ -214,9 +202,8 @@ sealed class Ui(AppSession app)
 
     // ---- Layout ----
 
-    /// <summary>The layout's canvas (its name describes the view). Wanted id: <c>Layout.Canvas</c> (x:Name "Surface" today).</summary>
-    public AutomationElement LayoutCanvas => Wait(() => W.FindAllDescendants(Cf.ByAutomationId("Surface"))
-        .FirstOrDefault(e => NameOf(e).StartsWith("Layout", StringComparison.Ordinal)), "the layout canvas");
+    /// <summary>The layout's canvas, <c>Layout.Canvas</c> (its name describes the view).</summary>
+    public AutomationElement LayoutCanvas => Wait(() => ById("Layout.Canvas"), "the layout canvas");
 
     /// <summary>The scale bar's name ("Scale bar 20 mm"): it follows the zoom.</summary>
     public string ScaleBarName() => NameOf(Wait(() => ById("ScaleBar"), "the layout's scale bar"));
@@ -226,14 +213,13 @@ sealed class Ui(AppSession app)
 
     // ---- Panels ----
 
-    /// <summary>The lens data's title text (its drag handle). Wanted id: <c>Panel.lens_data.Header</c>.</summary>
-    public AutomationElement LensDataHeader => Wait(() => ByName("Lens Data", ControlType.Text, LensData), "the lens data's title");
+    /// <summary>A panel's title, <c>Panel.{key}.Header</c> (its drag handle).</summary>
+    public AutomationElement PanelHeader(string key) => Wait(() => ById($"Panel.{key}.Header"), $"the {key} panel's title");
 
     // ---- Inspector ----
 
-    /// <summary>An inspector page button ("Surface", "System", "Optimize"). Wanted id: <c>Inspector.Tab.{id}</c>.</summary>
-    public AutomationElement InspectorTab(string title) =>
-        Wait(() => ByName(title, ControlType.Button, ByName("Inspector pages", ControlType.Group)), $"the inspector's {title} page button");
+    /// <summary>An inspector page button, <c>Inspector.Tab.{id}</c> (surface, system, optimize, glass_substitution, tolerance, solves).</summary>
+    public AutomationElement InspectorTab(string id) => Wait(() => ById($"Inspector.Tab.{id}"), $"the inspector's {id} page button");
 
     /// <summary>Whether text reading <paramref name="text"/> shows anywhere in the window.</summary>
     public bool ShowsText(string text) => W.FindAllDescendants(Cf.ByName(text)).Any(Shown);

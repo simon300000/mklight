@@ -60,9 +60,9 @@ fallback:
 | Gesture | Verified through |
 |---|---|
 | click on a sidebar entry | SelectionItem.Select |
-| click on a lens row (select) | ShowContextMenu on the row (IUIAutomationElement3), which selects it like a right click |
-| double click on a lens cell, typing a radius | the inspector's Radius field: SetFocus, ValuePattern.SetValue, focus away |
-| right click on a lens row → Make Stop / Insert | ShowContextMenu on the row, Invoke on the menu item |
+| click on a lens row (select) | SelectionItem.Select on `LensRow.{i}` |
+| double click on a lens cell, typing a radius | Invoke on `LensCell.{row}.radius` (starts editing), ValuePattern.SetValue on the editor, focus away; also ValuePattern on the cell itself |
+| right click on a lens row → Make Stop / Insert | ShowContextMenu on the row (IUIAutomationElement3), Invoke on the menu item |
 | drag of a pane's title onto another panel | the title's context menu (ShowContextMenu): Move to New Window |
 | drag on the 3-D layout (orbit), wheel (zoom) | nothing yet: the camera has no automation surface |
 
@@ -72,21 +72,19 @@ covers the feature. Should WinUI ever honour the messages, they start passing by
 
 ## Element lookups
 
-All lookups live in `Ui.cs`. Many app elements have no `AutomationProperties.AutomationId` yet;
-until they do, `Ui` finds them by name, by position, or by the x:Name WinUI exposes as the
-AutomationId. The ids the tests would rather use (each noted on its lookup):
+All lookups live in `Ui.cs`, by AutomationId where the app has one: `LensRow.{i}` (0 is the
+object), `LensCell.{row}.{key}`, `Pane.{analysis}` and `.Title`, `.Run`, `.AutoUpdate`,
+`.Settings`, `.State`, `Panel.{key}.Header`, `Layout.Canvas`, `Inspector.Tab.{id}`,
+`Inspector.Row.{key}` (the sphere's radius is `Inspector.Row.type.Shape.curvature`), and x:Names
+WinUI exposes as ids (`UndoButton`, `RedoButton`, `FileButton`, `AddAnalysisButton`,
+`NumbersButton`, `ScaleBar`). Still found another way, with the id they would rather have:
 
 | Wanted id | Element | Found today by |
 |---|---|---|
-| `LensRow.{i}` | a lens data row | its name "Surface i" |
-| `LensCell.{row}.{column}` | a cell's slot (also giving its text as Name/Value) | row bounds × column title bounds |
-| `LensEditor` | the in-place cell editor | the one Edit in the lens data |
-| `Panel.lens_data` | the lens data panel | its name "Lens data" |
-| `Panel.{key}.Header` | a panel's title / drag handle | x:Name `TitleButton` + its `TitleText` |
-| `Pane.{analysis}.Run`, `.Settings`, `.Auto`, `.State` | a pane's header controls | x:Names `RunButton` …, nearest right of the title |
+| `LensEditor` | the in-place cell editor | the one Edit in the lens data that is not a `LensCell` |
+| `Panel.lens_data` | the lens data panel's container | its name "Lens data" |
 | `Settings.{analysis}.{field}` | a settings form field | its label as Name |
-| `Layout.Canvas` | the layout canvas | x:Name `Surface` with a name starting "Layout" |
-| `Layout.Mode.{mode}` | Section / 3D view buttons | their names |
-| `Inspector.Tab.{id}` | an inspector page button | its name inside "Inspector pages" |
+| `Layout.Mode.{mode}` (SelectionItem) | Section / 3D view buttons | their names; the mode is read from pixels, as `Layout.Canvas`'s name does not follow it |
 | `Sidebar.{analysis}` | a sidebar entry | its title |
 | `Status.EFL` | the EFL in the status capsule | the text after "EFL" in `NumbersButton` |
+| `AddAnalysis.{category}`, `AddAnalysis.{analysis}` | Add Analysis menu items | their titles |

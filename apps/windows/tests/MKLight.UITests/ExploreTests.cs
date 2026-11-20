@@ -59,7 +59,7 @@ public sealed class ExploreTests
                     Thread.Sleep(50);
                 }
                 Thread.Sleep(1500);
-                var opened = app.Ui.PaneTitleOrNull(names[k]) is not null;
+                var opened = app.Ui.PaneWithTitle(names[k]) is not null;
                 log.Add($"{Win32.ClassName(h)} {mode} →{(opened ? "OPENED" : "nothing")} ({names[k]})");
                 if (opened) k++;
             }

@@ -27,9 +27,9 @@ public sealed class WindowTests
         {
             var ui = app.Ui;
             var windows = app.TopLevelWindows().Length;
-            ui.OpenMenu(() => Ui.ShowContextMenu(ui.PaneTitle("MTF")), "Move to New Window").Patterns.Invoke.Pattern.Invoke();
+            ui.OpenMenu(() => Ui.ShowContextMenu(ui.PaneControl("mtf", "Title")), "Move to New Window").Patterns.Invoke.Pattern.Invoke();
             Ui.WaitUntil(() => app.TopLevelWindows().Length > windows, "a new window for the MTF pane");
-            Ui.WaitUntil(() => ui.PaneTitleOrNull("MTF") is null, "MTF to leave the main window");
+            Ui.WaitUntil(() => ui.PaneOrNull("mtf") is null, "MTF to leave the main window");
         });
     }
 
@@ -61,18 +61,18 @@ public sealed class WindowTests
         app.Run(() =>
         {
             var ui = app.Ui;
-            Ui.ShowContextMenu(ui.LensRow(3)); // selects surface 3
+            ui.SelectLensRow(3);
             Ui.WaitUntil(() => ui.InspectorShowsSurface(3), "the surface page for surface 3");
             ui.FocusAway();
 
-            ui.InspectorTab("System").Patterns.Invoke.Pattern.Invoke();
+            ui.InspectorTab("system").Patterns.Invoke.Pattern.Invoke();
             Ui.WaitUntil(() => !ui.InspectorShowsSurface(3), "the System page");
             var system = ui.InspectorPageTexts();
 
-            ui.InspectorTab("Optimize").Patterns.Invoke.Pattern.Invoke();
+            ui.InspectorTab("optimize").Patterns.Invoke.Pattern.Invoke();
             Ui.WaitUntil(() => !ui.InspectorPageTexts().SequenceEqual(system), "the Optimize page");
 
-            ui.InspectorTab("Surface").Patterns.Invoke.Pattern.Invoke();
+            ui.InspectorTab("surface").Patterns.Invoke.Pattern.Invoke();
             Ui.WaitUntil(() => ui.InspectorShowsSurface(3), "the Surface page again");
         });
     }
@@ -87,7 +87,7 @@ public sealed class WindowTests
         {
             var ui = app.Ui;
             var lens = Ui.Bounds(ui.LensData);
-            var title = Ui.Bounds(ui.PaneTitle("MTF"));
+            var title = Ui.Bounds(ui.PaneControl("mtf", "Title"));
             Assert.True(title.Y > lens.Bottom, "MTF starts below the lens data");
 
             // Onto the lens data's right edge (its outer 30 %: a split to the right).
@@ -96,11 +96,11 @@ public sealed class WindowTests
             app.Mouse.Drag(from, to, steps: 16);
 
             // The arrangement, read from the automation tree: MTF now sits beside the lens data, which gave up width.
-            WindowMouse.ExpectEffect(() => Ui.Bounds(ui.PaneTitle("MTF")).Y < Ui.Bounds(ui.LensData).Bottom,
+            WindowMouse.ExpectEffect(() => Ui.Bounds(ui.PaneControl("mtf", "Title")).Y < Ui.Bounds(ui.LensData).Bottom,
                 "drag of the MTF pane's title", nameof(PanelMenuMovesAPaneToANewWindow));
             var after = Ui.Bounds(ui.LensData);
             Assert.True(after.Width < lens.Width * 0.8, $"the lens data is narrower ({lens.Width} → {after.Width})");
-            Assert.True(Ui.Bounds(ui.PaneTitle("MTF")).X >= after.Right - 16, "MTF is right of the lens data");
+            Assert.True(Ui.Bounds(ui.PaneControl("mtf", "Title")).X >= after.Right - 16, "MTF is right of the lens data");
         });
     }
 

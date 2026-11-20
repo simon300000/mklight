@@ -33,8 +33,12 @@ sealed class AppSession : IDisposable
         Automation = new UIA3Automation();
         // By id: FlaUI's Application owns (and disposes) the Process it attaches to.
         var app = Application.Attach(process.Id);
-        Window = app.GetMainWindow(Automation, TimeSpan.FromSeconds(60))
-            ?? throw new InvalidOperationException("The app's main window did not appear.");
+        // UIA calls can time out while the app is still starting (and the machine is busy): try again.
+        Window = Ui.Wait(() =>
+        {
+            try { return app.GetMainWindow(Automation, TimeSpan.FromSeconds(5)); }
+            catch (TimeoutException) { return null; }
+        }, "the app's main window", TimeSpan.FromSeconds(90));
         Hwnd = Window.Properties.NativeWindowHandle.Value;
         Mouse = new WindowMouse(Hwnd);
         Ui = new Ui(this);
