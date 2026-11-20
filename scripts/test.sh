@@ -93,6 +93,8 @@ run_program() {
     done < "$LOGS/args"
     deps="$(dirname "$exe")"
     cd "$dir"
+    # Windows finds DLLs on PATH (run_program always runs in a subshell).
+    [[ "${OS:-}" != Windows_NT ]] || PATH="$deps:$(dirname "$deps"):$PATH"
     CARGO_MANIFEST_DIR="$dir" \
         DYLD_FALLBACK_LIBRARY_PATH="$deps:$(dirname "$deps")${DYLD_FALLBACK_LIBRARY_PATH:+:$DYLD_FALLBACK_LIBRARY_PATH}" \
         "$exe" ${args[@]+"${args[@]}"}
@@ -125,13 +127,13 @@ if [[ -s "$LOGS/failed" ]]; then
         name="$(basename "$exe")"
         echo "again, on its own: ${dir#"$ROOT"/} $name"
         mv "$LOGS/$name.log" "$LOGS/$name.first"
-        grep -E '^test .* FAILED$' "$LOGS/$name.first" | head -20 | sed 's/^/    /'
+        grep -E '^test .* FAILED$' "$LOGS/$name.first" | head -20 | sed 's/^/    /' || true
         if (run_program "$dir" "$exe") > "$LOGS/$name.log" 2>&1; then
             echo "  passed (it failed only while other programs ran)"
         else
             status=1
             echo "  FAILED: ${dir#"$ROOT"/} $name"
-            grep -E '^test .* FAILED$|panicked at|^error' "$LOGS/$name.log" | head -40 | sed 's/^/    /'
+            grep -E '^test .* FAILED$|panicked at|^error' "$LOGS/$name.log" | head -40 | sed 's/^/    /' || true
             echo "    full output: $LOGS/$name.log"
         fi
     done < "$LOGS/failed"
@@ -142,7 +144,7 @@ if [[ -n "$doc_pid" ]]; then
         if grep -q 'test result: FAILED' "$LOGS/doc.log"; then
             status=1
             echo "FAILED: doc tests"
-            grep -E '^test .* FAILED$|panicked at' "$LOGS/doc.log" | head -40 | sed 's/^/    /'
+            grep -E '^test .* FAILED$|panicked at' "$LOGS/doc.log" | head -40 | sed 's/^/    /' || true
             echo "    full output: $LOGS/doc.log"
         else
             # A selection of single targets has no doc tests to run.
