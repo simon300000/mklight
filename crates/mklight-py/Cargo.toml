@@ -22,10 +22,9 @@ mklight-trace.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 pyo3 = { version = "0.30.1", features = ["abi3-py311"] }
-mimalloc = { version = "0.1", optional = true, default-features = false }
 
-# Opt-in: mimalloc as the global allocator. Measured on Windows, whose
-# system heap makes the CPU analyses 1.15-1.4x slower (docs/DEVELOPMENT.md,
-# "Windows"); results are bitwise the same.
-[features]
-mimalloc = ["dep:mimalloc"]
+# Windows: mimalloc as the global allocator; the Windows heap made the CPU
+# analyses 1.15-1.4x slower (docs/DEVELOPMENT.md, "Windows"). Results are
+# bitwise the same. Other systems keep their own.
+[target.'cfg(windows)'.dependencies]
+mimalloc = { version = "0.1", default-features = false }

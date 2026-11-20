@@ -18,6 +18,13 @@ mklight-engine.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 
+# Windows: mimalloc is the global allocator of the library and of
+# everything that links it (the Windows app's DLL, the command line); the
+# Windows heap made the CPU analyses 1.15-1.4x slower (docs/DEVELOPMENT.md,
+# "Windows"). Results are bitwise the same. Other systems keep their own.
+[target.'cfg(windows)'.dependencies]
+mimalloc = { version = "0.1", default-features = false }
+
 [[test]]
 name = "tests"
 path = "tests/main.rs"

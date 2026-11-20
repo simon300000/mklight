@@ -84,12 +84,12 @@ Wheels and the package layout are in
 
 `.cargo/config.toml` builds the Windows x86_64 target for x86-64-v3, so
 `mul_add` is an inline FMA instead of a call into the C runtime
-([CONVENTIONS §7](CONVENTIONS.md), "CPU packets"). The command line and
-the Python package also take `--features mimalloc` (for maturin,
-`maturin develop --release --features mimalloc`), which replaces the
-Windows heap: on an i9-12900KS the CPU analyses ran 1.15–1.4× faster
-with it (spot diagram, ray grid, geometric MTF, PSF, MTF; bitwise the
-same results). `--features mklight-engine/windows-worker-priority` runs
+([CONVENTIONS §7](CONVENTIONS.md), "CPU packets"). On Windows the C ABI
+library (and so the Windows app's DLL and the command line, which links
+it) and the Python package use mimalloc as their global allocator instead
+of the Windows heap: on an i9-12900KS the CPU analyses ran 1.15–1.4×
+faster with it (spot diagram, ray grid, geometric MTF, PSF, MTF; bitwise
+the same results). Other systems keep their own allocator. `--features mklight-engine/windows-worker-priority` runs
 the rayon workers one step above normal priority, which keeps the
 fork–join analyses from stalling on preempted workers when other
 processes load every core (spot diagram 950 → 72 ms next to 24 busy

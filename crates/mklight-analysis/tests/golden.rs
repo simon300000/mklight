@@ -22,6 +22,12 @@ use serde_json::{Value, json};
 
 const REL: f64 = 1e-9;
 const ABS: f64 = 1e-12;
+/// The absolute floor of values in percent (`*_percent` fields, e.g. the
+/// distortion): they are a ratio scaled by 100, so the rounding noise of a
+/// numerical zero (about 1e-14 of the ratio, which differs in the last bits
+/// between platforms' libm) reaches ~1e-12 there. `ABS` scaled by the same
+/// 100.
+const ABS_PERCENT: f64 = 1e-10;
 
 fn golden_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/golden")
@@ -106,7 +112,8 @@ fn compare(path: &str, a: &Value, b: &Value, errs: &mut Vec<String>) {
     match (a, b) {
         (Value::Number(x), Value::Number(y)) => {
             let (x, y) = (x.as_f64().unwrap(), y.as_f64().unwrap());
-            if (x - y).abs() > REL * x.abs().max(y.abs()) + ABS {
+            let abs = if path.contains("_percent") { ABS_PERCENT } else { ABS };
+            if (x - y).abs() > REL * x.abs().max(y.abs()) + abs {
                 errs.push(format!("{path}: {x:e} (now) vs {y:e} (golden)"));
             }
         }

@@ -706,7 +706,6 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "libc",
- "mimalloc",
  "mklight-core",
  "mklight-engine",
  "mklight-ffi",
@@ -754,6 +753,7 @@ dependencies = [
 name = "mklight-ffi"
 version = "0.1.0"
 dependencies = [
+ "mimalloc",
  "mklight-core",
  "mklight-engine",
  "serde",
