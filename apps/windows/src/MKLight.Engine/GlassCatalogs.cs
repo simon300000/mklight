@@ -10,9 +10,12 @@ namespace MKLight.Engine;
 /// <param name="Source"><c>builtin</c> or <c>user</c>.</param>
 /// <param name="Library">Loaded from the app-wide library.</param>
 /// <param name="InProject">Recorded in the project (it may be in the library too).</param>
+/// <remarks><see cref="Warnings"/>: what the engine noticed while reading the file (missing dispersion, duplicates, …).</remarks>
 public sealed record CatalogInfo(string Name, string Source, string? Path, int GlassCount, bool Library = false, bool InProject = false)
 {
     public bool IsBuiltin => Source == "builtin";
+
+    public IReadOnlyList<CatalogWarning> Warnings { get; init; } = [];
 
     public static CatalogInfo FromJson(JsonNode? json)
     {
@@ -22,11 +25,23 @@ public sealed record CatalogInfo(string Name, string Source, string? Path, int G
             name, source, json.At("path").StringOrNull(), (int)(json.At("glass_count").IntOrNull() ?? throw Bad("glass_count")),
             json.At("library").BoolOrNull() ?? false,
             // Engines before the library recorded every user catalog in the project.
-            json.At("in_project").BoolOrNull() ?? source == "user");
+            json.At("in_project").BoolOrNull() ?? source == "user")
+        {
+            Warnings = CatalogWarning.ListFromJson(json.At("warnings")),
+        };
     }
 
     static EngineException Bad(string key) =>
         EngineException.Engine(EngineErrorCode.Parse, $"unexpected engine JSON for a catalog: no '{key}'");
+}
+
+/// <summary>A problem found while reading a catalog file (<c>warnings</c> of a catalog summary or reload report).</summary>
+/// <param name="Kind"><c>missing_dispersion</c>, <c>unsupported_formula</c>, <c>duplicate_glass</c>, <c>index_mismatch</c>, <c>malformed_record</c>, <c>unknown_record</c>, <c>missing_range</c>, or a newer kind.</param>
+public sealed record CatalogWarning(int? Line, string? Glass, string Kind, string Message)
+{
+    public static IReadOnlyList<CatalogWarning> ListFromJson(JsonNode? json) =>
+        (json.ArrayOrNull() ?? []).Select(w => new CatalogWarning(
+            (int?)w.At("line").IntOrNull(), w.At("glass").StringOrNull(), w.At("kind").StringOrNull() ?? "", w.At("message").StringOrNull() ?? "")).ToArray();
 }
 
 /// <summary>One glass of a catalog (<c>mk_session_list_glasses</c>), with the engine's non-finite numbers (NaN, ±∞).</summary>
@@ -118,6 +133,9 @@ public sealed record GlassRow
     /// <summary>Null for a glass whose range excludes the d line (an IR glass).</summary>
     public double? Nd { get; init; }
     public double? Vd { get; init; }
+    /// <summary>The values the catalog file lists (n_d and V_d above are computed from the dispersion formula).</summary>
+    public double? CatalogNd { get; init; }
+    public double? CatalogVd { get; init; }
     public double? Pgf { get; init; }
     public double? Dpgf { get; init; }
     public double MinUm { get; init; }
@@ -152,6 +170,8 @@ public sealed record GlassRow
             Name = name,
             Nd = Finite.Of(v.At("nd")),
             Vd = Finite.Of(v.At("vd")),
+            CatalogNd = Finite.Of(v.At("catalog_nd")),
+            CatalogVd = Finite.Of(v.At("catalog_vd")),
             Pgf = Finite.Of(v.At("pgf")),
             Dpgf = Finite.Of(v.At("dpgf")),
             MinUm = v.At("min_um").DoubleValue() ?? 0,
@@ -249,6 +269,9 @@ public sealed record CatalogChanges(
 {
     public sealed record Change(string Name, double NdBefore, double NdAfter, double VdBefore, double VdAfter, IReadOnlyList<string> Fields);
 
+    /// <summary>What the engine noticed while reading the file again.</summary>
+    public IReadOnlyList<CatalogWarning> Warnings { get; init; } = [];
+
     /// <summary><c>null</c> without a catalog name.</summary>
     public static CatalogChanges? FromJson(JsonNode? v)
     {
@@ -260,7 +283,7 @@ public sealed record CatalogChanges(
                 ? new Change(name, c.At("nd_before").DoubleValue() ?? double.NaN, c.At("nd_after").DoubleValue() ?? double.NaN,
                     c.At("vd_before").DoubleValue() ?? double.NaN, c.At("vd_after").DoubleValue() ?? double.NaN, Strings(c.At("fields")))
                 : null).OfType<Change>().ToArray(),
-            (int)(v.At("unchanged").IntOrNull() ?? 0));
+            (int)(v.At("unchanged").IntOrNull() ?? 0)) { Warnings = CatalogWarning.ListFromJson(v.At("warnings")) };
     }
 
     public bool IsEmpty => Added.Count == 0 && Removed.Count == 0 && Changed.Count == 0;

@@ -330,3 +330,19 @@ public class EngineBoundaryTests
         Assert.Equal(4, changes.Unchanged);
     }
 }
+
+public class GlassCatalogJsonTests
+{
+    [Fact]
+    public void ReadsCatalogValuesNullableNumbersAndLoadWarnings()
+    {
+        var row = GlassRow.FromJson(JsonNode.Parse("""{"catalog":"IR","name":"ZNSE","nd":null,"vd":null,"catalog_nd":2.4,"catalog_vd":0,"min_um":0.6,"max_um":18,"future_key":1}"""))!;
+        Assert.Null(row.Nd);
+        Assert.Null(row.Vd);
+        Assert.Equal(2.4, row.CatalogNd);
+        var catalog = CatalogInfo.FromJson(JsonNode.Parse("""{"name":"IR","source":"user","path":"/ir.agf","glass_count":1,"warnings":[{"line":12,"glass":"ZNSE","kind":"index_mismatch","message":"n_d differs"},{"line":null,"glass":null,"kind":"missing_range","message":"m"}]}"""));
+        Assert.Equal(2, catalog.Warnings.Count);
+        Assert.Equal(new CatalogWarning(12, "ZNSE", "index_mismatch", "n_d differs"), catalog.Warnings[0]);
+        Assert.Null(catalog.Warnings[1].Line);
+    }
+}
