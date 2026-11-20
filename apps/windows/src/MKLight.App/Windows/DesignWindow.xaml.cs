@@ -59,6 +59,28 @@ public sealed partial class DesignWindow : Window
         RebuildPanes();
         UpdateLayout();
         Closed += (_, _) => session.Workspace.CancelAll();
+        AppWindow.Closing += OnClosing;
+    }
+
+    bool _closeConfirmed;
+
+    /// <summary>Unsaved changes: Save, Don't Save or Cancel (the window's one modal question).</summary>
+    async void OnClosing(Microsoft.UI.Windowing.AppWindow sender, Microsoft.UI.Windowing.AppWindowClosingEventArgs args)
+    {
+        if (_closeConfirmed || !_session.Document.IsDirty || App.Options.IsScripted) return;
+        args.Cancel = true;
+        var dialog = new ContentDialog
+        {
+            Title = $"Save the changes to “{_session.Document.DisplayName}”?",
+            Content = "Your changes are lost if you don't save them.",
+            PrimaryButtonText = "Save", SecondaryButtonText = "Don't Save", CloseButtonText = "Cancel",
+            DefaultButton = ContentDialogButton.Primary, XamlRoot = Root.XamlRoot, RequestedTheme = Root.ActualTheme,
+        };
+        var answer = await dialog.ShowAsync();
+        if (answer == ContentDialogResult.None) return;
+        if (answer == ContentDialogResult.Primary && !await SaveAsync(false)) return;
+        _closeConfirmed = true;
+        Close();
     }
 
     public DesignSession Session => _session;

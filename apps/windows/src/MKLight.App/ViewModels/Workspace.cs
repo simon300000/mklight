@@ -170,6 +170,7 @@ public sealed class Workspace
             Snapshot = snap;
             ModelErrors = [];
             _refusal = [];
+            UpdateIssuesBySurface();
             StateChanged?.Invoke();
             Refresh(forced: false);
         }

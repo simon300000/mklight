@@ -33,9 +33,9 @@ public sealed partial class AnalysisPaneView : UserControl
         _session = session;
         _pane = pane;
         InitializeComponent();
-        pane.Changed += Update;
         ActualThemeChanged += (_, _) => Update();
-        Loaded += (_, _) => Update();
+        // Follow the pane while in the tree; the window re-parents views when panes change.
+        Loaded += (_, _) => { pane.Changed -= Update; pane.Changed += Update; Update(); };
         Unloaded += (_, _) => pane.Changed -= Update;
         PointerPressed += (_, _) => Focused?.Invoke(this);
         BuildAnalysisMenu();

@@ -220,6 +220,8 @@ sealed class LensCellEditor
     void Accept(string name, bool finish)
     {
         SetText(name);
+        // TextChanged arrives asynchronously: the pick must reach the edit before it is submitted.
+        if (_edit is not null) _edit.Text = name;
         ClosePopup();
         if (finish) Finish();
     }
