@@ -477,6 +477,31 @@ int main(int argc, char **argv) {
         mk_string_free(json);
         mk_session_destroy(rec);
         mk_string_free(written);
+
+        /* ABI 1.7: a catalog reference the front end could not load is kept
+         * as given and reported as missing, through autosave and recovery. */
+        OK(mk_session_get_project_json(s, &json));
+        /* Prepended to the catalog loaded above, which stays loaded. */
+        whole = replace(json, "\"catalogs\":[",
+                        "\"catalogs\":[{\"name\":\"NETCAT\",\"format\":\"agf\","
+                        "\"path\":null,\"relative_path\":\"net/NETCAT.agf\"},");
+        mk_string_free(json);
+        CHECK(whole != NULL);
+        OK(mk_session_set_project_json(s, whole, NULL));
+        free(whole);
+        OK(mk_session_info_json(s, &json));
+        CHECK(strstr(json, "'NETCAT'") != NULL);
+        mk_string_free(json);
+        OK(mk_session_autosave(s, NULL, &written));
+        OK(mk_session_open(eng, written, &rec));
+        OK(mk_session_get_project_json(rec, &json));
+        CHECK(strstr(json, "\"relative_path\":\"net/NETCAT.agf\"") != NULL);
+        mk_string_free(json);
+        OK(mk_session_info_json(rec, &json));
+        CHECK(strstr(json, "'NETCAT'") != NULL);
+        mk_string_free(json);
+        mk_session_destroy(rec);
+        mk_string_free(written);
     }
 
     /* ---- a job that fails (unknown glass is caught when resolving) ---- */

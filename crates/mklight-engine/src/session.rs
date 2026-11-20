@@ -14,7 +14,7 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -185,6 +185,10 @@ pub struct Session {
     overrides: Vec<GlassOverride>,
     /// Catalogs removed from the project, for `restore_catalog`.
     removed: Vec<(CatalogRef, Arc<GlassCatalog>)>,
+    /// Upper-case names of references whose `relative_path` a front end
+    /// supplied through `set_project_with_catalogs`: `save` keeps it as
+    /// given instead of recomputing it.
+    supplied_relative: HashSet<String>,
 }
 
 /// A project section's value as its type; a value of another shape is an
@@ -341,6 +345,7 @@ impl Session {
             project_warnings: HashMap::new(),
             overrides: Vec::new(),
             removed: Vec::new(),
+            supplied_relative: HashSet::new(),
         };
         s.reload_catalogs();
         Ok(s)
@@ -569,9 +574,9 @@ impl Session {
     /// including top-level keys the engine does not know, so that `save`
     /// and `autosave` write everything the front end holds. The document's
     /// `catalogs` are ignored: the session's catalogs are managed by the
-    /// catalog calls. An invalid system leaves the session unchanged. The
-    /// session becomes dirty only when something changed. Returns the
-    /// snapshot hash.
+    /// catalog calls (`set_project_with_catalogs` takes them). An invalid
+    /// system leaves the session unchanged. The session becomes dirty only
+    /// when something changed. Returns the snapshot hash.
     pub fn set_project(&mut self, project: Project) -> EngineResult<SnapshotHash> {
         let Project {
             format: _,
@@ -603,6 +608,92 @@ impl Session {
             self.dirty = true;
         }
         Ok(self.commit(snap))
+    }
+
+    /// `set_project`, with the document's `catalogs` taken as the project's
+    /// catalog references (the front end resolved and loaded the catalog
+    /// files itself, through the catalog calls). Each reference is kept
+    /// exactly as given; nothing is loaded and no file is read:
+    ///
+    /// * a reference whose catalog the session has loaded keeps resolving;
+    /// * one that is not loaded is recorded as missing, as `open` records a
+    ///   catalog file it cannot read (an `open_warnings` entry unless the
+    ///   library provides a catalog of that name), and `save` and
+    ///   `autosave` write it, so that recovery sees it;
+    /// * a catalog the session records in the project but the list leaves
+    ///   out is removed as by `remove_catalog` (reference and glasses gone,
+    ///   `restore_catalog` brings it back), so that the session resolves
+    ///   glasses as the saved document will when it is opened again.
+    ///   Catalogs added in memory without a reference are not recorded in
+    ///   any document and stay.
+    ///
+    /// `save` keeps a supplied `relative_path` as given (see `save`).
+    /// Duplicate (case-insensitive) or empty names are an error. Atomic:
+    /// an error leaves the session unchanged.
+    pub fn set_project_with_catalogs(&mut self, project: Project) -> EngineResult<SnapshotHash> {
+        let refs = project.catalogs.clone();
+        for (i, r) in refs.iter().enumerate() {
+            if r.name.trim().is_empty() {
+                return Err(EngineError::Core(MkError::InvalidParam(
+                    "catalogs: a catalog reference has no name".into(),
+                )));
+            }
+            if refs[..i]
+                .iter()
+                .any(|o| o.name.eq_ignore_ascii_case(&r.name))
+            {
+                return Err(EngineError::Core(MkError::InvalidParam(format!(
+                    "catalogs: '{}' is listed twice",
+                    r.name
+                ))));
+            }
+        }
+        let h = self.set_project(project)?;
+        self.set_catalog_references(refs);
+        Ok(h)
+    }
+
+    fn set_catalog_references(&mut self, refs: Vec<CatalogRef>) {
+        let has = |name: &str| refs.iter().any(|r| r.name.eq_ignore_ascii_case(name));
+        let dropped: Vec<String> = self
+            .project
+            .catalogs
+            .iter()
+            .filter(|c| !has(&c.name))
+            .map(|c| c.name.clone())
+            .collect();
+        for name in dropped {
+            // Recorded, so it cannot fail.
+            let _ = self.remove_catalog(&name);
+        }
+        for r in &refs {
+            let loaded = self
+                .project_catalogs
+                .iter()
+                .any(|c| c.name.eq_ignore_ascii_case(&r.name));
+            let known = self
+                .missing_catalogs
+                .iter()
+                .any(|(n, _)| n.eq_ignore_ascii_case(&r.name));
+            if !loaded && !known {
+                let why = match r.relative_path.as_ref().or(r.path.as_ref()) {
+                    Some(at) => format!("not loaded in this session; recorded at {at}"),
+                    None => "no path recorded".into(),
+                };
+                self.missing_catalogs.push((r.name.clone(), why));
+            }
+            let key = r.name.to_ascii_uppercase();
+            if r.relative_path.is_some() {
+                self.supplied_relative.insert(key);
+            } else {
+                self.supplied_relative.remove(&key);
+            }
+        }
+        if self.project.catalogs != refs {
+            self.project.catalogs = refs;
+            self.dirty = true;
+        }
+        self.rebuild_library();
     }
 
     // --- files
@@ -654,7 +745,12 @@ impl Session {
     /// catalog's (resolved) absolute path when it lies under the directory;
     /// otherwise the previous relative path is kept only while the absolute
     /// path is unusable (the catalog file was not found), since it is then
-    /// the only location information left.
+    /// the only location information left. A `relative_path` supplied
+    /// through `set_project_with_catalogs` is kept as given when saving into
+    /// the session's folder (or an untitled session's first save): the
+    /// front end wrote it relative to that folder. Saving into another
+    /// folder recomputes it as above, since the given one would point
+    /// elsewhere.
     pub fn save(&mut self, path: Option<&Path>) -> EngineResult<()> {
         let path = match path {
             Some(p) => p.to_path_buf(),
@@ -665,6 +761,24 @@ impl Session {
             })?,
         };
         let mut p = self.stamped_project();
+        let canonical_dir = |p: &Path| {
+            p.parent()
+                .map(|d| {
+                    if d.as_os_str().is_empty() {
+                        Path::new(".")
+                    } else {
+                        d
+                    }
+                })
+                .and_then(|d| std::fs::canonicalize(d).ok())
+        };
+        let same_folder = match &self.path {
+            None => true,
+            Some(old) => canonical_dir(old) == canonical_dir(&path),
+        };
+        if !same_folder {
+            self.supplied_relative.clear();
+        }
         // Catalog paths are canonical, so compare against the canonical
         // project directory (symlinked temp dirs, `..` components).
         if let Some(dir) = path
@@ -679,6 +793,13 @@ impl Session {
             .and_then(|d| std::fs::canonicalize(d).ok())
         {
             for c in &mut p.catalogs {
+                if c.relative_path.is_some()
+                    && self
+                        .supplied_relative
+                        .contains(&c.name.to_ascii_uppercase())
+                {
+                    continue;
+                }
                 let abs = c.path.as_deref().map(Path::new);
                 // Stored with `/` on every system, so that a project saved
                 // on Windows opens elsewhere (Windows reads `/` as well).
@@ -768,6 +889,7 @@ impl Session {
             .retain(|(n, _)| !n.eq_ignore_ascii_case(&cat.name));
         self.project_catalogs.push(Arc::new(cat));
         if let Some(r) = reference {
+            self.supplied_relative.remove(&r.name.to_ascii_uppercase());
             self.project
                 .catalogs
                 .retain(|c| !c.name.eq_ignore_ascii_case(&r.name));
@@ -837,8 +959,14 @@ impl Session {
         let (r, c) = self.removed.remove(i);
         let recorded = r.path.is_some() || r.relative_path.is_some();
         let name = c.name.clone();
+        let key = r.name.to_ascii_uppercase();
+        // A reference a front end supplied keeps its relative path as given.
+        let supplied = self.supplied_relative.contains(&key);
         let warnings = self.project_warnings.remove(&name.to_ascii_uppercase());
         self.add_catalog((*c).clone(), recorded.then_some(r));
+        if supplied {
+            self.supplied_relative.insert(key);
+        }
         if let Some(w) = warnings {
             self.project_warnings.insert(name.to_ascii_uppercase(), w);
         }

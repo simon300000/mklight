@@ -50,7 +50,7 @@ fn unstamped(mut p: Value) -> Value {
 
 #[test]
 fn whole_project_survives_autosave_and_recovery() {
-    assert_eq!(mk_abi_version() & 0xffff, 6);
+    assert!(mk_abi_version() & 0xffff >= 6);
     let dir = std::env::temp_dir().join(format!("mklight-ffi-abi16-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let file = dir.join("lens.mklight");

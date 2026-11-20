@@ -8,7 +8,7 @@ use mklight_core::materials::MaterialLibrary;
 use mklight_core::param::ParamPath;
 use mklight_core::{JobContext, Solve, samples};
 use mklight_engine::backend::Backend;
-use mklight_engine::project::Project;
+use mklight_engine::project::{CatalogFormat, CatalogRef, Project};
 use mklight_engine::{AnalysisRequest, Engine, EngineConfig, EngineError};
 
 /// An engine on the CPU reference: these tests do not depend on a device.
@@ -357,4 +357,205 @@ fn parameter_values() {
             .is_err()
         );
     }
+}
+
+/// A synthetic AGF catalog with two made-up glasses; catalogs are named
+/// after the file stem.
+const AGF: &str = "NM SYNCROWN 2 517642 1.5168 64.17 0 0 0\r\n\
+CD 1.03961212 0.00600069867 0.231792344 0.0200179144 1.01046945 103.560653 0 0 0 0\r\n\
+LD 0.3 2.5\r\n\
+NM SYNFLINT 2 620364 1.62004 36.37 0 0 0\r\n\
+CD 1.34533359 0.00997743871 0.209073176 0.0470450767 0.937357162 111.886764 0 0 0 0\r\n\
+LD 0.32 2.5\r\n";
+
+fn reference(name: &str, path: Option<&str>, rel: Option<&str>) -> CatalogRef {
+    CatalogRef {
+        name: name.into(),
+        path: path.map(Into::into),
+        relative_path: rel.map(Into::into),
+        format: CatalogFormat::Agf,
+    }
+}
+
+fn resolves(s: &mklight_engine::Session, catalog: &str) -> bool {
+    s.library().find_glass(Some(catalog), "SYNCROWN").is_ok()
+}
+
+fn warns_about(s: &mklight_engine::Session, catalog: &str) -> bool {
+    s.open_warnings()
+        .iter()
+        .any(|w| w.contains(&format!("'{catalog}'")))
+}
+
+/// The front end resolved the catalog files itself: the one on an offline
+/// share was not found, so only the local one was loaded. Its reference
+/// still survives autosave, recovery and save, reported as missing.
+#[test]
+fn set_project_with_catalogs_keeps_an_unloaded_reference_as_missing() {
+    let d = temp_dir("catalog-refs-missing");
+    let proj = d.join("proj");
+    std::fs::create_dir_all(&proj).unwrap();
+    let local = proj.join("LOCAL.agf");
+    std::fs::write(&local, AGF).unwrap();
+    let offline = d.join("share").join("NETCAT.agf"); // never exists
+    let file = proj.join("lens.mklight");
+
+    let e = engine();
+    let mut s = e
+        .session_from_project(Project::new(samples::singlet()))
+        .unwrap();
+    s.save(Some(&file)).unwrap();
+    s.load_catalog_file(&local).unwrap();
+
+    let mut doc = s.project().clone();
+    let net = reference(
+        "NETCAT",
+        Some(offline.to_str().unwrap()),
+        Some("../optics/NETCAT.agf"),
+    );
+    let loc = reference("LOCAL", Some(local.to_str().unwrap()), Some("LOCAL.agf"));
+    doc.catalogs = vec![net.clone(), loc.clone()];
+    s.set_project_with_catalogs(doc).unwrap();
+    assert!(s.is_dirty());
+    assert_eq!(s.project().catalogs, vec![net.clone(), loc.clone()]);
+    assert!(resolves(&s, "LOCAL"));
+    assert!(warns_about(&s, "NETCAT"), "{:?}", s.open_warnings());
+    assert!(!warns_about(&s, "LOCAL"));
+
+    // Autosave, recover, save: the reference is still there, as written.
+    let a = s.autosave(None).unwrap();
+    let mut r = e.open_session(&a).unwrap();
+    assert!(warns_about(&r, "NETCAT"), "{:?}", r.open_warnings());
+    assert!(resolves(&r, "LOCAL"));
+    assert_eq!(r.project().catalogs[0], net);
+    r.save(Some(&file)).unwrap();
+    let saved = Project::load(&file).unwrap();
+    let n = saved.catalogs.iter().find(|c| c.name == "NETCAT").unwrap();
+    assert_eq!(n, &net);
+    let again = e.open_session(&file).unwrap();
+    assert!(warns_about(&again, "NETCAT"));
+    assert!(resolves(&again, "LOCAL"));
+    std::fs::remove_dir_all(&d).ok();
+}
+
+/// A relative path the front end supplies is written as given, so that the
+/// project still finds the catalog after its folder moves.
+#[test]
+fn set_project_with_catalogs_keeps_the_given_relative_path() {
+    let d = temp_dir("catalog-refs-relative");
+    let proj = d.join("proj");
+    let optics = d.join("optics");
+    std::fs::create_dir_all(&proj).unwrap();
+    std::fs::create_dir_all(&optics).unwrap();
+    let cat = optics.join("SHARED.agf");
+    std::fs::write(&cat, AGF).unwrap();
+    let file = proj.join("lens.mklight");
+
+    let e = engine();
+    let mut s = e
+        .session_from_project(Project::new(samples::singlet()))
+        .unwrap();
+    s.save(Some(&file)).unwrap();
+    // Loaded by path: the engine records no relative path.
+    s.load_catalog_file(&cat).unwrap();
+    assert_eq!(s.project().catalogs[0].relative_path, None);
+
+    let given = reference(
+        "SHARED",
+        Some(cat.to_str().unwrap()),
+        Some("../optics/SHARED.agf"),
+    );
+    let mut doc = s.project().clone();
+    doc.catalogs = vec![given.clone()];
+    s.set_project_with_catalogs(doc).unwrap();
+    assert!(resolves(&s, "SHARED"));
+    assert!(s.open_warnings().is_empty());
+
+    // Autosave and save both write it as given (the file lies outside the
+    // project folder, where a computed relative path would be none).
+    let a = s.autosave(None).unwrap();
+    assert_eq!(Project::load(&a).unwrap().catalogs, vec![given.clone()]);
+    s.save(None).unwrap();
+    assert_eq!(Project::load(&file).unwrap().catalogs, vec![given.clone()]);
+
+    // Move the whole folder: the absolute path fails, the relative one works.
+    let moved = d.with_extension("moved");
+    std::fs::rename(&d, &moved).unwrap();
+    for f in ["lens.mklight", "lens.mklight.autosave"] {
+        let r = e.open_session(&moved.join("proj").join(f)).unwrap();
+        assert!(r.open_warnings().is_empty(), "{f}: {:?}", r.open_warnings());
+        assert!(resolves(&r, "SHARED"), "{f}");
+        assert_eq!(
+            r.project().catalogs[0].relative_path.as_deref(),
+            Some("../optics/SHARED.agf")
+        );
+    }
+
+    // Saving into another folder recomputes it (the given one would point
+    // elsewhere): the file lies outside that folder, so there is none.
+    let other = moved.join("elsewhere");
+    std::fs::create_dir_all(&other).unwrap();
+    let mut r = e
+        .open_session(&moved.join("proj").join("lens.mklight"))
+        .unwrap();
+    let mut doc = r.project().clone();
+    doc.catalogs[0].relative_path = Some("../optics/SHARED.agf".into());
+    r.set_project_with_catalogs(doc).unwrap();
+    r.save(Some(&other.join("copy.mklight"))).unwrap();
+    assert_eq!(r.project().catalogs[0].relative_path, None);
+    std::fs::remove_dir_all(&moved).ok();
+}
+
+/// A catalog the project records but the given list leaves out is removed
+/// as by `remove_catalog`; catalogs added in memory without a reference
+/// stay; errors change nothing.
+#[test]
+fn set_project_with_catalogs_removes_recorded_catalogs_left_out() {
+    let d = temp_dir("catalog-refs-dropped");
+    let keep = d.join("KEEP.agf");
+    let gone = d.join("GONE.agf");
+    std::fs::write(&keep, AGF).unwrap();
+    std::fs::write(&gone, AGF).unwrap();
+    let e = engine();
+    let mut s = e
+        .session_from_project(Project::new(samples::singlet()))
+        .unwrap();
+    s.load_catalog_file(&keep).unwrap();
+    s.load_catalog_file(&gone).unwrap();
+    let mut mem = s.library().catalogs().last().unwrap().as_ref().clone();
+    mem.name = "INMEMORY".into();
+    s.add_catalog(mem, None);
+    assert!(resolves(&s, "GONE") && resolves(&s, "INMEMORY"));
+
+    let kept = s.project().catalogs[0].clone();
+    assert_eq!(kept.name, "KEEP");
+    let before = s.project().clone();
+    let library = s.library_hash().to_string();
+
+    // Duplicate names are refused and leave everything as it was.
+    let mut dup = s.project().clone();
+    dup.catalogs = vec![kept.clone(), reference("keep", None, None)];
+    assert!(s.set_project_with_catalogs(dup).is_err());
+    assert_eq!(s.project(), &before);
+    assert_eq!(s.library_hash(), library);
+
+    let mut doc = s.project().clone();
+    doc.catalogs = vec![kept.clone()];
+    s.set_project_with_catalogs(doc).unwrap();
+    assert_eq!(s.project().catalogs, vec![kept]);
+    assert!(resolves(&s, "KEEP"));
+    assert!(!resolves(&s, "GONE"));
+    assert!(resolves(&s, "INMEMORY"));
+    assert!(s.open_warnings().is_empty());
+    s.restore_catalog("GONE").unwrap();
+    assert!(resolves(&s, "GONE"));
+    assert_eq!(s.project().catalogs.len(), 2);
+
+    // Without catalogs (`set_project`), the references are untouched.
+    let mut doc = s.project().clone();
+    doc.catalogs.clear();
+    s.set_project(doc).unwrap();
+    assert_eq!(s.project().catalogs.len(), 2);
+    assert!(resolves(&s, "GONE"));
+    std::fs::remove_dir_all(&d).ok();
 }

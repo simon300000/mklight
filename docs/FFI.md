@@ -59,6 +59,9 @@ further linker flags are needed.
 * 1.6 adds `mk_session_set_project_json` (the whole project in one call, so
   that autosave and recovery keep every section: *Validation, solves,
   autosave* below).
+* 1.7: `mk_session_set_project_json` takes the document's `catalogs` as the
+  project's catalog references (as given, nothing loaded; unloaded ones are
+  recorded as missing). Without a `catalogs` key it behaves as in 1.6.
 * Each analysis' result shape has its own `result_version`
   (`docs/RESULTS.md` §2).
 * `mk_engine_version()` is the engine (crate) version recorded in every
@@ -501,23 +504,66 @@ replaces the whole project from a document of the `.mklight` schema, as
 required): the system, `metadata`, `views`, `merit`, `variables`,
 `tolerances` and any top-level key the engine does not know (a front end's
 own section, such as a window layout), which is kept verbatim and written
-by `mk_session_save` and `mk_session_autosave`. `catalogs` is ignored: the
-catalog calls manage it. The call is atomic: text that is not JSON is
+by `mk_session_save` and `mk_session_autosave`. The call is atomic: text that is not JSON is
 `MK_ERR_PARSE`, a document of another shape or schema version
 `MK_ERR_INVALID_ARGUMENT`, a system that fails validation
 `MK_ERR_INVALID_MODEL`, and each leaves the session unchanged. The session
 becomes dirty only when something changed; `hash` (nullable) receives the
 snapshot hash.
 
+**Catalogs (ABI 1.7).** When the document has a `catalogs` key, its array
+becomes the project's catalog references, each kept exactly as given, in the
+given order: `{"name", "format": "agf"|"json", "path": absolute or null,
+"relative_path": relative to the project's folder or null}` (`format`
+defaults to `"agf"`). Nothing is loaded and no file is read; a front end
+that resolves catalog files itself loads the ones it finds with the catalog
+calls (`mk_session_load_catalog` and others) and passes every reference, found
+or not.
+
+* A reference whose catalog the session has loaded (matched by name,
+  case-insensitively) stays loaded and keeps resolving glasses; the given
+  reference replaces the one the load recorded.
+* A reference whose catalog is not loaded is recorded as missing exactly as
+  `mk_session_open` records a catalog file it cannot read: an
+  `open_warnings` entry in `mk_session_info_json` (`glass catalog 'NAME'
+  could not be loaded (not loaded in this session; recorded at PATH)`),
+  unless a library catalog of that name provides the glasses. `save` and
+  `autosave` write it, so `mk_session_open` of the autosave tries its paths
+  again (relative first) and reports it as missing if they still fail.
+* A catalog the project records but the array leaves out is removed as by
+  `mk_session_remove_catalog`: its reference goes and its glasses stop
+  resolving (unless a library catalog of that name provides them), and
+  `mk_session_restore_catalog` brings it back. The session then resolves
+  glasses as the saved document will when it is opened again. A catalog
+  added in memory without a reference is not part of any document and stays.
+* `mk_session_save` keeps a `relative_path` given here as it is when saving
+  into the session's folder (or an untitled session's first save), instead
+  of recomputing it from `path`; saving into another folder recomputes it as
+  for catalogs the engine loaded, since the given one would point elsewhere.
+  Catalogs loaded through the catalog calls and not passed here keep the
+  usual rule (computed at save time). Loading a catalog again replaces its
+  reference with the engine's own.
+* Duplicate (case-insensitive) or empty names are `MK_ERR_INVALID_ARGUMENT`
+  and change nothing. A change of the references marks the session dirty.
+
+Without a `catalogs` key the session's catalogs are left as they are (the
+ABI 1.6 behaviour; the catalog calls manage them).
+
 A front end that keeps project sections in its own model autosaves the
 whole project through the engine with
 
 1. `mk_session_set_project_json(session, document, NULL)` (or the section
-   setters) whenever its sections change, or just before autosaving;
+   setters) whenever its sections change, or just before autosaving. A front
+   end that resolves catalog files itself includes `catalogs` with every
+   reference as written, found or not, so that the autosave keeps the ones
+   it could not load and their relative paths;
 2. `mk_session_autosave(session, NULL or path, &written)`;
 
 and recovers it with `mk_session_open(engine, written, &session)` and
-`mk_session_get_project_json`, which returns every section it set.
+`mk_session_get_project_json`, which returns every section it set and every
+catalog reference; catalogs still unreadable are listed in `open_warnings`
+of `mk_session_info_json`, and `mk_session_save` writes their references
+again.
 
 ### Glass catalogs
 

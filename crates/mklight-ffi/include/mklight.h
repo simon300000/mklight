@@ -36,7 +36,7 @@ extern "C" {
 /* ---- Versioning --------------------------------------------------------- */
 
 #define MK_ABI_VERSION_MAJOR 1
-#define MK_ABI_VERSION_MINOR 6
+#define MK_ABI_VERSION_MINOR 7
 /* (major << 16) | minor. A different major version is incompatible; a newer
  * minor version only adds functions and JSON fields. */
 #define MK_ABI_VERSION ((MK_ABI_VERSION_MAJOR << 16) | MK_ABI_VERSION_MINOR)
@@ -225,7 +225,18 @@ MKStatus mk_session_set_project_section_json(MKSession *session, const char *sec
  * "schema_version"): the system, metadata, views, merit, variables,
  * tolerances and any top-level key the engine does not know (kept
  * verbatim), so that mk_session_save and mk_session_autosave write all of
- * them. "catalogs" is ignored (use the catalog calls). Atomic: an invalid
+ * them. ABI 1.7: a "catalogs" array sets the project's catalog references
+ * exactly as given ({"name", "format", "path", "relative_path"}); nothing is
+ * loaded and no file is read. A reference whose catalog the session has
+ * loaded (mk_session_load_catalog...) keeps resolving; one that is not
+ * loaded is recorded as missing, as mk_session_open records an unreadable
+ * catalog (an "open_warnings" entry in mk_session_info_json), and save and
+ * autosave write it. A catalog the project records but the array leaves out
+ * is removed as by mk_session_remove_catalog (mk_session_restore_catalog
+ * brings it back). mk_session_save keeps a given relative_path when saving
+ * into the session's folder. Duplicate or empty names:
+ * MK_ERR_INVALID_ARGUMENT. Without a "catalogs" key the catalogs are left
+ * as they are (ABI 1.6 behaviour). Atomic: an invalid
  * system (MK_ERR_INVALID_MODEL) or document (MK_ERR_INVALID_ARGUMENT; not
  * JSON: MK_ERR_PARSE) leaves the session unchanged. Marks the session dirty
  * only when something changed. out_hash (nullable): the snapshot hash. */
