@@ -14,6 +14,7 @@ using MKLight.App.Views.Layout;
 using MKLight.App.Views.Panels;
 using MKLight.App.Views.Inspector;
 using MKLight.Engine;
+using MKLight.Model;
 using Windows.System;
 
 namespace MKLight.App.Windows;
@@ -390,7 +391,14 @@ public sealed partial class DesignWindow : Window
         if (path is null) return false;
         try
         {
-            doc.Save(path, _session.Workspace.Engine.Info.Version);
+            IReadOnlyList<CatalogReference> inUse = [];
+            try
+            {
+                var json = await _session.Workspace.Engine.LibraryCatalogsInUseJsonAsync();
+                inUse = (JsonNode.Parse(json) as JsonArray ?? []).Select(CatalogReference.FromJson).ToList();
+            }
+            catch (Exception e) when (e is EngineException or System.Text.Json.JsonException) { }
+            doc.Save(path, _session.Workspace.Engine.Info.Version, inUse);
             RecentFiles.Add(path);
             UpdateTitle();
             ShowToast($"Saved {Path.GetFileName(path)}");

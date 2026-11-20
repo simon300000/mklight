@@ -160,11 +160,18 @@ public sealed class DesignDocument
         SectionChanged?.Invoke(key);
     }
 
-    public void Save(string? path = null, string? engineVersion = null)
+    /// <param name="libraryCatalogsInUse">
+    /// Library catalogs the design's materials resolve to: recorded in the saved file (not as an edit),
+    /// so the project opens on a machine without that library entry (the Mac app's savedProject).
+    /// </param>
+    public void Save(string? path = null, string? engineVersion = null, IEnumerable<CatalogReference>? libraryCatalogsInUse = null)
     {
         var target = path ?? Path ?? throw new InvalidOperationException("An untitled design needs a path.");
         var version = typeof(DesignDocument).Assembly.GetName().Version?.ToString(3) ?? "0.1.0";
-        Project.StampMetadata("MKLight for Windows", version, engineVersion).Write(target);
+        var saved = Project;
+        foreach (var c in libraryCatalogsInUse ?? [])
+            if (!saved.Catalogs.Any(r => r.Name == c.Name)) saved = saved.AddCatalog(c);
+        saved.StampMetadata("MKLight for Windows", version, engineVersion).Write(target);
         Path = target;
         _savedRevision = _revision;
     }
