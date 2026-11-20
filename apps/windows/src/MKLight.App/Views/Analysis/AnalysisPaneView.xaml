@@ -1,0 +1,119 @@
+<UserControl
+    x:Class="MKLight.App.Views.Analysis.AnalysisPaneView"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <!-- An analysis pane: header (title, analysis menu, state line, button cluster), optional
+         settings form, the plot (content), footer (key numbers, backend badge). -->
+    <Grid x:Name="Root" Background="{ThemeResource ContentSurfaceBrush}">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <!-- Focus marker: a thin accent line along the top of the focused pane. -->
+        <Border x:Name="FocusBar" Height="2" VerticalAlignment="Top" Background="{ThemeResource AccentFillColorDefaultBrush}" Opacity="0" Grid.RowSpan="4" />
+
+        <Grid x:Name="Header" Padding="10,8,6,6" ColumnSpacing="6">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <StackPanel Spacing="0" MinWidth="0">
+                <Button x:Name="TitleButton" Padding="2,0,4,0" Background="Transparent" BorderThickness="0" HorizontalAlignment="Left">
+                    <StackPanel Orientation="Horizontal" Spacing="7">
+                        <FontIcon x:Name="TitleGlyph" FontSize="14" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                        <TextBlock x:Name="TitleText" Style="{StaticResource PanelTitleText}" />
+                        <FontIcon Glyph="&#xE70D;" FontSize="9" Foreground="{ThemeResource TextFillColorSecondaryBrush}" Margin="0,2,0,0" />
+                    </StackPanel>
+                    <Button.Flyout>
+                        <MenuFlyout x:Name="AnalysisMenu" Placement="BottomEdgeAlignedLeft" />
+                    </Button.Flyout>
+                </Button>
+                <TextBlock x:Name="StateText" Style="{StaticResource CaptionText}" Margin="3,1,0,0" />
+            </StackPanel>
+            <StackPanel x:Name="Cluster" Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Top" Spacing="0">
+                <Button x:Name="RunButton" Style="{StaticResource CircleButton}" Content="&#xE72C;" Click="OnRun" ToolTipService.ToolTip="Run (F5)" />
+                <ToggleButton x:Name="AutoButton" Style="{StaticResource CircleToggleButton}" Content="&#xE945;" Click="OnAutoUpdate"
+                              ToolTipService.ToolTip="Update automatically when the design changes" />
+                <ToggleButton x:Name="SettingsButton" Style="{StaticResource CircleToggleButton}" Content="&#xE9E9;" Click="OnSettingsToggle"
+                              ToolTipService.ToolTip="Settings" />
+                <Button Style="{StaticResource CircleButton}" Content="&#xE712;" ToolTipService.ToolTip="More">
+                    <Button.Flyout>
+                        <MenuFlyout Placement="BottomEdgeAlignedRight">
+                            <MenuFlyoutItem Text="Restore Default Settings" Click="OnDefaults" />
+                            <MenuFlyoutItem Text="Copy Result as JSON" Click="OnCopyJson" />
+                            <MenuFlyoutSeparator />
+                            <MenuFlyoutItem Text="Close Pane" Click="OnClose"><MenuFlyoutItem.Icon><FontIcon Glyph="&#xE711;" /></MenuFlyoutItem.Icon></MenuFlyoutItem>
+                        </MenuFlyout>
+                    </Button.Flyout>
+                </Button>
+            </StackPanel>
+        </Grid>
+
+        <ProgressBar x:Name="Progress" Grid.Row="0" VerticalAlignment="Bottom" Margin="10,0" Visibility="Collapsed" IsIndeterminate="True" MinHeight="2" />
+
+        <!-- Settings: a grouped card in the content layer, generated from the engine's schema. -->
+        <Border x:Name="SettingsHost" Grid.Row="1" Visibility="Collapsed" Margin="8,0,8,6" CornerRadius="8" Padding="10,8"
+                Background="{ThemeResource CardBackgroundFillColorSecondaryBrush}" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1">
+            <Grid RowSpacing="8">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="*" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+                <ScrollViewer MaxHeight="280" VerticalScrollBarVisibility="Auto">
+                    <ContentPresenter x:Name="SettingsContent" />
+                </ScrollViewer>
+                <StackPanel Grid.Row="1" Orientation="Horizontal" HorizontalAlignment="Right" Spacing="6">
+                    <Button Content="Defaults" Style="{StaticResource CapsuleButton}" Click="OnDefaults" />
+                    <Button Content="Done" Style="{StaticResource CapsuleButton}" Click="OnSettingsDone" />
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <Grid Grid.Row="2">
+            <ContentPresenter x:Name="ResultHost" HorizontalContentAlignment="Stretch" VerticalContentAlignment="Stretch">
+                <ContentPresenter.OpacityTransition>
+                    <ScalarTransition Duration="0:0:0.18" />
+                </ContentPresenter.OpacityTransition>
+            </ContentPresenter>
+            <StackPanel x:Name="MessagePanel" VerticalAlignment="Center" HorizontalAlignment="Center" Spacing="6" MaxWidth="300" Visibility="Collapsed">
+                <FontIcon x:Name="MessageGlyph" FontSize="22" Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
+                <TextBlock x:Name="MessageText" Style="{StaticResource SecondaryText}" TextWrapping="Wrap" TextAlignment="Center" TextTrimming="None" />
+                <Button x:Name="MessageAction" Style="{StaticResource AccentCapsuleButton}" HorizontalAlignment="Center" Visibility="Collapsed" Click="OnRun" />
+            </StackPanel>
+            <!-- Stale: the result dims under a glass card with the one prominent action, Update. -->
+            <Border x:Name="StaleCard" Visibility="Collapsed" VerticalAlignment="Center" HorizontalAlignment="Center"
+                    Background="{ThemeResource StaleCardBrush}" BorderBrush="{ThemeResource CapsuleStrokeBrush}" BorderThickness="1"
+                    CornerRadius="12" Padding="16,12">
+                <StackPanel Spacing="8" HorizontalAlignment="Center">
+                    <TextBlock Text="Design changed" Style="{StaticResource PanelTitleText}" HorizontalAlignment="Center" />
+                    <TextBlock x:Name="StaleReason" Style="{StaticResource CaptionText}" HorizontalAlignment="Center" Text="This result is from an earlier design." />
+                    <Button Content="Update" Style="{StaticResource AccentCapsuleButton}" HorizontalAlignment="Center" Click="OnRun" />
+                </StackPanel>
+            </Border>
+        </Grid>
+
+        <Grid x:Name="Footer" Grid.Row="3" Padding="10,5,8,7" ColumnSpacing="8">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <TextBlock x:Name="KeyNumbers" Style="{StaticResource CaptionText}" FontSize="11.5" Foreground="{ThemeResource TextFillColorPrimaryBrush}" />
+            <Button x:Name="BackendBadge" Grid.Column="1" Padding="8,1,9,2" CornerRadius="10" MinHeight="20" BorderThickness="1"
+                    Background="{ThemeResource CapsuleBrush}" BorderBrush="{ThemeResource CapsuleStrokeBrush}" Visibility="Collapsed">
+                <StackPanel Orientation="Horizontal" Spacing="5">
+                    <FontIcon x:Name="BackendWarning" Glyph="&#xE7BA;" FontSize="11" Foreground="{ThemeResource WarningBrush}" Visibility="Collapsed" />
+                    <FontIcon x:Name="BackendGlyph" Glyph="&#xE950;" FontSize="11" />
+                    <TextBlock x:Name="BackendText" Style="{StaticResource NumberText}" FontSize="11" />
+                </StackPanel>
+                <Button.Flyout>
+                    <Flyout Placement="TopEdgeAlignedRight">
+                        <StackPanel x:Name="RunDetails" Width="340" Spacing="4" />
+                    </Flyout>
+                </Button.Flyout>
+            </Button>
+        </Grid>
+    </Grid>
+</UserControl>

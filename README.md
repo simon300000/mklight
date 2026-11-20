@@ -142,9 +142,10 @@ print(r.run_info["snapshot_hash"])
 
 MKLight is in active development and has not been released yet; for now it
 builds from source, as [Development](docs/DEVELOPMENT.md) describes. The
-macOS app and the Metal backend are the current focus. iPad and iPhone
-versions of the app, Windows and Linux front ends, and Vulkan and CUDA
-backends are planned.
+macOS app and the Metal backend are the current focus. A native Windows app
+(WinUI 3, `apps/windows`, docs/WINDOWS.md) is being built in rounds. iPad and
+iPhone versions of the app, a Linux front end, and Vulkan and CUDA backends
+are planned.
 
 ## License
 

@@ -16,3 +16,10 @@ __pycache__/
 crates/mklight-py/.venv/
 crates/mklight-py/python/mklight/*.so
 crates/mklight-py/.pytest_cache/
+
+# Windows app: engine DLL copied by scripts/build-windows.ps1, .NET build output
+/apps/windows/native/
+/apps/windows/**/bin/
+/apps/windows/**/obj/
+/apps/windows/**/*.user
+/apps/windows/.vs/

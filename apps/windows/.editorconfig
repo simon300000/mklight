@@ -1,0 +1,5 @@
+root = false
+
+[*.cs]
+# The app is neither trimmed nor AOT-compiled: collection expressions on read-only interfaces are fine.
+dotnet_diagnostic.CsWinRT1032.severity = none
