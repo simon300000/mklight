@@ -70,7 +70,7 @@ public sealed partial class ImageSimulationView : UserControl, IViewOptions
         {
             var mapping = new Button
             {
-                Content = Kit.LegendItem(new FontIcon { Glyph = "", FontSize = 12 }, Kit.Text("Field Mapping", "BodyText", 12)),
+                Content = Kit.LegendItem(new FontIcon { Glyph = "\uE80A", FontSize = 12 }, Kit.Text("Field Mapping", "BodyText", 12)),
                 Padding = new Thickness(8, 2, 8, 3), MinHeight = 26, Background = new Microsoft.UI.Xaml.Media.SolidColorBrush(Color.FromArgb(0, 0, 0, 0)), BorderThickness = new Thickness(0),
             };
             mapping.Flyout = new Flyout { Content = MappingTable(d), Placement = FlyoutPlacementMode.Bottom };

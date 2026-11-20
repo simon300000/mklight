@@ -288,12 +288,12 @@ directly; only the materials change.
   and GPU kernels are in its flyout; transient messages are a toast.
 * **Light and dark** are both designed; the theme is System, Light or Dark per
   user (File menu), applied live to every window. The app's own theme
-  (`Application.RequestedTheme`) is set at launch from the saved choice or
-  `--theme`: WinUI resolves the theme resources of styles applied in code
-  (the lens table's cells) at the application level, so they would otherwise
-  follow the system's theme. A switch to the other appearance during a run
-  therefore completes on the next launch (a toast says so): the app theme is
-  not switched live. Brushes picked in code go through `ThemeLookup`, so a
+  (`Application.RequestedTheme`) can only be set at launch, from the saved
+  choice or `--theme`. A window root given another theme before it is loaded
+  keeps the app's theme for styles outside the app's dictionaries (a
+  control's own resources, dictionaries loaded at run time), so every window
+  takes its theme from `Support/ThemeSwitch` once its root is loaded, and
+  switches are live; System follows the system's light or dark. Brushes picked in code go through `ThemeLookup`, so a
   window's own theme wins (separate panel windows and the glass catalog window
   follow the same choice).
 

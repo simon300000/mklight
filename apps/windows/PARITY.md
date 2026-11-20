@@ -437,7 +437,7 @@ add library catalog, glass overrides, glass details, `mk_glass_from_spec`,
 
 | Feature | Status | Windows notes |
 |---|---|---|
-| Light and dark both designed; semantic colours; dynamic palette | ✅ | System / Light / Dark in the File menu; the app theme is fixed at launch (see Known issues) |
+| Light and dark both designed; semantic colours; dynamic palette | ✅ | System / Light / Dark in the File menu, switched live in every window (`Support/ThemeSwitch`); `--do theme=…` |
 | Liquid Glass chrome | ✅ | Translated to Mica / acrylic on chrome only |
 | Reduce Motion | ⬜ | |
 | Reduce Transparency / Increase Contrast | 🟡 | High-contrast theme dictionary exists, unchecked |
@@ -519,8 +519,6 @@ Windows has its own set (docs/WINDOWS.md "Launch options"): `--sample`, `--analy
 
 Not features of the Mac app, so not counted above.
 
-* **Theme**: the app theme (`Application.RequestedTheme`) is fixed at launch; a switch
-  during a run completes on the next launch.
 * **Image simulation** has no image-file import, no zoom/pan and no FOV controls.
 * **Drag and drop and 3-D mouse input** were verified in-process only (simulated
   drags, scripted camera), not with a real mouse.
