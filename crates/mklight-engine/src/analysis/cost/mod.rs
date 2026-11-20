@@ -31,7 +31,9 @@
 //!   within the accuracy contracts, so a fresh decision could change the
 //!   result of the same request (a seeded Monte Carlo, an optimisation).
 //!
-//! Devices without a calibration table (other GPU families, emulations)
+//! The WebGPU and CUDA backends route by a calibration measured on the
+//! running machine, with a fixed break-even prior until it exists
+//! ([`measured`]). Devices without either (other GPU families, emulations)
 //! use qualified Metal; the decision says so.
 use std::collections::{BTreeMap, BTreeSet};
 use std::hash::{Hash, Hasher};
@@ -43,9 +45,11 @@ use serde_json::{Value, json};
 
 use crate::lru::LruCache;
 
+pub mod measured;
 pub mod model;
 pub mod profile;
-pub mod webgpu;
+/// The WebGPU calibration's earlier module name.
+pub use measured as webgpu;
 
 pub use model::{AnalysisCalibration, Calibration, FEATURES, Features, Fit, Mode};
 pub use profile::{AIM_TRACES, Profile, SystemShape, profile};
@@ -90,6 +94,8 @@ pub(crate) enum Device {
     /// The WebGPU backend: the Apple table's Metal sets scaled by the
     /// measured WebGPU/Metal ratio of each analysis (`webgpu_factor`).
     WebGpu,
+    /// The CUDA backend: its own measured rules ([`measured::CUDA`]).
+    Cuda,
     /// Not open yet, and its family is not known in advance.
     Unknown,
 }
@@ -98,6 +104,8 @@ impl Device {
     pub(crate) fn of(info: &DeviceInfo) -> Self {
         if info.kind == BackendKind::WebGpu {
             Device::WebGpu
+        } else if info.kind == BackendKind::Cuda {
+            Device::Cuda
         } else if is_apple(info) {
             Device::Apple
         } else {
@@ -105,9 +113,12 @@ impl Device {
         }
     }
 
-    pub(crate) fn hinted(apple: Option<bool>, webgpu: bool) -> Self {
+    pub(crate) fn hinted(apple: Option<bool>, webgpu: bool, cuda: bool) -> Self {
         if webgpu {
             return Device::WebGpu;
+        }
+        if cuda {
+            return Device::Cuda;
         }
         match apple {
             Some(true) => Device::Apple,
@@ -239,8 +250,9 @@ pub struct CostModel {
     /// the cache state.
     refine: bool,
     online: Mutex<Online>,
-    /// The WebGPU device's calibration, once measured or installed.
-    webgpu: Mutex<Option<webgpu::WebGpuCalibration>>,
+    /// The measured devices' calibrations by backend name, once measured
+    /// or installed.
+    measured: Mutex<BTreeMap<&'static str, measured::DeviceCalibration>>,
 }
 
 impl Default for CostModel {
@@ -321,20 +333,36 @@ fn stages_json(s: &Features) -> Value {
 }
 
 impl CostModel {
-    /// Install (or with `None` remove) the WebGPU device's calibration
-    /// (`webgpu` module); until then WebGPU routes by the prior.
-    pub fn set_webgpu_calibration(&self, c: Option<webgpu::WebGpuCalibration>) {
-        *self.webgpu.lock().unwrap_or_else(|e| e.into_inner()) = c;
+    /// Install (or with `None` remove) the calibration of `rules`' device
+    /// ([`measured`]); until then it routes by the prior.
+    pub fn set_calibration(&self, rules: &measured::Rules, c: Option<measured::DeviceCalibration>) {
+        let mut m = self.measured.lock().unwrap_or_else(|e| e.into_inner());
+        match c {
+            Some(c) => m.insert(rules.name, c),
+            None => m.remove(rules.name),
+        };
+        drop(m);
         // Routes repeated from decisions of another calibration are stale.
         self.lock().routes.clear();
     }
 
-    /// The installed WebGPU calibration.
-    pub fn webgpu_calibration(&self) -> Option<webgpu::WebGpuCalibration> {
-        self.webgpu
+    /// The installed calibration of `rules`' device.
+    pub fn calibration(&self, rules: &measured::Rules) -> Option<measured::DeviceCalibration> {
+        self.measured
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .clone()
+            .get(rules.name)
+            .cloned()
+    }
+
+    /// [`Self::set_calibration`] of WebGPU.
+    pub fn set_webgpu_calibration(&self, c: Option<measured::DeviceCalibration>) {
+        self.set_calibration(&measured::WEBGPU, c)
+    }
+
+    /// The installed WebGPU calibration.
+    pub fn webgpu_calibration(&self) -> Option<measured::DeviceCalibration> {
+        self.calibration(&measured::WEBGPU)
     }
 
     /// A model over `table` (read from `source`), with online refinement
@@ -359,7 +387,7 @@ impl CostModel {
                 repeats: 0,
                 observations: 0,
             }),
-            webgpu: Mutex::new(None),
+            measured: Mutex::default(),
         }
     }
 
@@ -416,13 +444,14 @@ impl CostModel {
                     json!({"decision":"qualified_metal","reason":"no cost calibration for this device","version":VERSION}),
                 );
             }
-            Device::WebGpu => {
-                let cal = self
-                    .webgpu
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .clone();
-                return webgpu::decide(analysis, settings, system, cal.as_ref());
+            Device::WebGpu | Device::Cuda => {
+                let rules = if device == Device::Cuda {
+                    &measured::CUDA
+                } else {
+                    &measured::WEBGPU
+                };
+                let cal = self.calibration(rules);
+                return measured::decide(rules, analysis, settings, system, cal.as_ref());
             }
             Device::Apple => (),
         }
@@ -806,9 +835,72 @@ mod tests {
             "no measured WebGPU gain for this analysis"
         );
         // Analyses the rule lists are WebGPU analyses.
-        for (a, _) in webgpu::WEBGPU_MIN_RAYS {
+        for (a, _) in measured::WEBGPU.min_rays {
             assert!(crate::analysis::gpu::WEBGPU_ANALYSES.contains(a));
         }
+    }
+
+    /// CUDA routes by its own rules: the prior, then an installed
+    /// calibration, which also drops the routes settled before it.
+    #[test]
+    fn cuda_routes_by_its_prior_then_its_calibration() {
+        assert_eq!(Device::hinted(Some(false), false, true), Device::Cuda);
+        assert_eq!(Device::hinted(Some(false), false, false), Device::Other);
+        let dg = mklight_core::samples::double_gauss();
+        let m = CostModel::with_table(Calibration::builtin(), "builtin".into(), false);
+        let st = State {
+            device_open: true,
+            ..Default::default()
+        };
+        let d = |a: &str, s: Value| m.decide(a, &s, &dg, Device::Cuda, &st);
+        let small = d("spot_diagram", json!({"rings": 6}));
+        assert_eq!(small.route, Route::Cpu);
+        assert_eq!(small.json["rule"], "cuda break-even");
+        assert_eq!(d("spot_diagram", json!({"rings": 128})).route, Route::Metal);
+        assert_eq!(d("psf", json!({})).route, Route::Cpu);
+        let key = [1u8; 32];
+        m.settle(key, &small);
+        assert!(m.repeated(&key).is_some());
+        // A calibration that measured the device faster everywhere.
+        let line = |fixed_ms, per_mwork_ms| measured::Line {
+            fixed_ms,
+            per_mwork_ms,
+        };
+        let pair = measured::Pair {
+            cpu: line(50., 100.),
+            gpu: line(1., 1.),
+        };
+        m.set_calibration(
+            &measured::CUDA,
+            Some(measured::DeviceCalibration {
+                format: measured::FORMAT,
+                engine_version: "t".into(),
+                adapter: "test".into(),
+                driver: "d".into(),
+                threads: 1,
+                analyses: [("spot_diagram".into(), pair), ("psf".into(), pair)].into(),
+                points: vec![],
+                seconds: 0.,
+                source: "forced".into(),
+            }),
+        );
+        assert!(m.repeated(&key).is_none(), "settled routes are dropped");
+        assert_eq!(d("spot_diagram", json!({"rings": 6})).route, Route::Metal);
+        assert_eq!(d("psf", json!({})).json["rule"], "cuda calibration");
+        // WebGPU keeps its own (none: the prior).
+        let w = m.decide(
+            "spot_diagram",
+            &json!({"rings": 6}),
+            &dg,
+            Device::WebGpu,
+            &st,
+        );
+        assert_eq!(w.json["rule"], "webgpu break-even");
+        m.set_calibration(&measured::CUDA, None);
+        assert_eq!(
+            d("spot_diagram", json!({"rings": 6})).json["rule"],
+            "cuda break-even"
+        );
     }
 
     use super::*;

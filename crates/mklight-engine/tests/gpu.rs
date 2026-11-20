@@ -182,7 +182,9 @@ fn auto_picks_a_gpu_only_for_analyses_with_a_gpu_path() {
     // A large grid: `auto` follows its own cost decision (native exactly
     // when it predicts a meaningful gain), without a warning.
     let follows = |r: &mklight_engine::AnalysisResult| {
-        let native = r.backend.cost_decision.as_ref().unwrap()["decision"] == "qualified_metal";
+        let native = r.backend.cost_decision.as_ref().unwrap()["decision"]
+            .as_str()
+            .is_some_and(|d| d.starts_with("qualified_"));
         assert_eq!(
             r.run_info.precision == Precision::F32Gpu,
             native,

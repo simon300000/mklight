@@ -151,6 +151,8 @@ pub struct ProviderHint {
     pub apple_gpu: Option<bool>,
     /// The provider is the WebGPU backend (its own cost rules, GPU.md §11).
     pub webgpu: bool,
+    /// The provider is the CUDA backend (its own cost rules).
+    pub cuda: bool,
     /// The device is already open (no setup to pay).
     pub open: bool,
 }
@@ -190,6 +192,7 @@ pub enum AutoCandidate {
     Gpu {
         apple_gpu: Option<bool>,
         webgpu: bool,
+        cuda: bool,
         open: bool,
     },
 }
@@ -250,6 +253,7 @@ impl BackendProvider for Static {
             unavailable: (!i.available).then(|| i.reason.clone().unwrap_or_default()),
             apple_gpu: None,
             webgpu: false,
+            cuda: false,
             open: false,
         })
     }
@@ -416,6 +420,7 @@ impl BackendRegistry {
                 return Some(AutoCandidate::Gpu {
                     apple_gpu: h.apple_gpu,
                     webgpu: h.webgpu,
+                    cuda: h.cuda,
                     open: h.open,
                 });
             }
