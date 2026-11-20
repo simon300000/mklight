@@ -451,8 +451,11 @@ case to the engine's tests. The service worker always answers with a full
 response, so pages it isolates are not affected.
 
 `ready()` (no engine needed) reports `{isolated, threaded, threads,
-hardwareConcurrency, webgpu, reason}`; `reason` is a user-facing sentence
-when the engine cannot run.
+hardwareConcurrency, webgpu, webgpuReason, reason}`; `reason` is a
+user-facing sentence when the engine cannot run. Its WebGPU check asks for
+the adapter (at most 4 s) unless a pipeline failure is remembered for this
+browser (GPU.md §11.4); `createEngine` checks isolation only and makes no
+WebGPU call on the page, and the app does not call `ready()`.
 
 **No single-threaded fallback build.** A second, non-atomic build would
 double the build and the download variants, and the engine's scheduler
@@ -476,6 +479,7 @@ embedded in a non-isolated frame) gets a clear message instead:
 | `thread-host.ts` | A host worker (runs engine and rayon threads) |
 | `protocol.ts` | The typed messages between `client.ts` and `worker.ts` |
 | `ready.ts`, `isolation.ts` | Readiness report; registering the isolation service worker |
+| `webgpu-state.ts` | The remembered WebGPU pipeline failure and the bounded adapter request (GPU.md §11.4) |
 
 The web app imports it through the alias `@engine` →
 `apps/web/engine/src/index.ts` and needs, in its Vite config,
@@ -598,8 +602,9 @@ GPU: `gpu:webgpu`, the backend of the client's `backend: 'gpu'`.
   webgpuCalibration: 'off' })` keeps the prior, and the client's
   `webgpuCalibration()` / `setWebgpuCalibration(c)` read and force it.
 
-`ready().webgpu` and `info.webgpu` report whether the browser has a WebGPU
-adapter; `info.backends` lists `gpu:webgpu` with its availability. Tests:
+`ready().webgpu` and `info.webgpu` report whether a WebGPU adapter answered
+in this load (`webgpuReason` says why not: none, no answer within a few
+seconds, or a remembered pipeline failure); `info.backends` lists `gpu:webgpu` with its availability. Tests:
 `tests/webgpu.spec.ts` (Chromium runs the full browser in new-headless mode
 with WebGPU enabled, since the headless shell has no adapter; WebKit has
 WebGPU as is; it checks the calibration is measured, cached, reused and

@@ -283,6 +283,106 @@ test('WebGPU: a pipeline that never compiles is a reason, not a hang, and is rem
   const used = result.backend as { used: string; fallback_reason: string }
   expect(used.used).toBe('cpu_reference')
   expect(used.fallback_reason).toContain('remembered for this browser and GPU')
+
+  // A reload (the uncancellable compilation may still occupy the browser's
+  // GPU process) makes no WebGPU call at all: not the page (`ready()`), not
+  // the engine worker, and no GPU worker starts. The engine is ready at once.
+  await countAdapterRequests(page)
+  const workers = watchWorkers(page)
+  await page.reload()
+  await page.waitForFunction(() => globalThis.crossOriginIsolated && 'mk' in window, null, { timeout: 30_000 })
+  const t1 = Date.now()
+  const reloaded = await page.evaluate(() => window.mk.create(undefined, 'auto', { countCalls: true }))
+  const startMs = Date.now() - t1
+  const readiness = await page.evaluate(() => window.mk.ready())
+  console.log('after reload', startMs, 'ms', JSON.stringify(reloaded.info.webgpuCalls), JSON.stringify(readiness))
+  expect(startMs).toBeLessThan(10_000)
+  expect(reloaded.info.webgpu).toBe(false)
+  expect(reloaded.info.webgpuReason).toContain(REASON)
+  expect(reloaded.info.webgpuCalls).toEqual({ requestAdapter: 0, requestDevice: 0 })
+  const off = reloaded.info.backends.find((b) => b.id === 'gpu:webgpu')
+  expect(off?.available).toBe(false)
+  expect(off?.reason).toContain('remembered for this browser and GPU')
+  expect(readiness.webgpu).toBe(false)
+  expect(readiness.webgpuReason).toContain(REASON)
+  expect(await page.evaluate(() => (window as unknown as { __adapterRequests: number }).__adapterRequests)).toBe(0)
+  expect(workers.filter((u) => /gpu-host/.test(u)), 'no GPU worker').toEqual([])
+  expect(workers.some((u) => /worker/.test(u)), `engine worker seen: ${workers}`).toBe(true)
+})
+
+/** Count the page's `requestAdapter` calls (`window.__adapterRequests`)
+ * from the next load on; `stall` makes them never answer. */
+async function countAdapterRequests(page: Page, stall = false) {
+  await page.addInitScript((s) => {
+    const w = window as unknown as { __adapterRequests: number; GPU?: { prototype: { requestAdapter: () => Promise<unknown> } } }
+    w.__adapterRequests = 0
+    const proto = w.GPU?.prototype
+    if (!proto) return
+    const f = proto.requestAdapter
+    proto.requestAdapter = function (this: unknown) {
+      w.__adapterRequests++
+      return s ? new Promise(() => {}) : f.call(this)
+    }
+  }, stall)
+}
+
+/** URLs of the workers the page starts from now on (nested ones too). */
+function watchWorkers(page: Page): string[] {
+  const urls: string[] = []
+  page.on('worker', (w) => urls.push(w.url()))
+  return urls
+}
+
+test('WebGPU: an adapter request that never answers is a reason, not a hang', async ({ page, browserName }) => {
+  test.setTimeout(120_000)
+  await openHarness(page)
+  const r = await page.evaluate(() => window.mk.ready())
+  test.skip(!r.webgpu, 'no WebGPU adapter')
+  // The page: `ready()` gives up after a few seconds with the reason.
+  await countAdapterRequests(page, true)
+  await page.reload()
+  await page.waitForFunction(() => globalThis.crossOriginIsolated && 'mk' in window, null, { timeout: 30_000 })
+  const t0 = Date.now()
+  const stalled = await page.evaluate(() => window.mk.ready())
+  expect(Date.now() - t0).toBeLessThan(8_000)
+  expect(stalled.webgpu).toBe(false)
+  expect(stalled.webgpuReason).toContain('did not answer the WebGPU adapter request')
+  expect(await page.evaluate(() => (window as unknown as { __adapterRequests: number }).__adapterRequests)).toBe(1)
+
+  // The engine worker: its adapter request never answers either; the engine
+  // starts without WebGPU after the limit, with the reason, and no GPU worker.
+  const workers = watchWorkers(page)
+  const t1 = Date.now()
+  const e = await page.evaluate(() =>
+    window.mk.create(undefined, 'auto', { stallAdapter: true, adapterTimeoutMs: 1000, countCalls: true }),
+  )
+  const startMs = Date.now() - t1
+  console.log('stalled adapter', startMs, 'ms', JSON.stringify(e.info.webgpuCalls), e.info.webgpuReason)
+  expect(startMs).toBeLessThan(10_000)
+  expect(e.info.webgpu).toBe(false)
+  expect(e.info.webgpuReason).toContain('did not answer the WebGPU adapter request within 1 s')
+  expect(e.info.webgpuCalls).toEqual({ requestAdapter: 1, requestDevice: 0 })
+  const off = e.info.backends.find((b) => b.id === 'gpu:webgpu')
+  expect(off?.available).toBe(false)
+  expect(off?.reason).toContain('did not answer the WebGPU adapter request')
+  expect(workers.filter((u) => /gpu-host/.test(u)), 'no GPU worker').toEqual([])
+  // Analyses run (on the CPU).
+  const text = readFileSync(join(REF_DIR, 'cooke.mklight'), 'utf8')
+  await page.evaluate(([t, i]) => window.mk.openProject(i as number, t as string), [text, e.index] as const)
+  const { result } = await page.evaluate(
+    (i) => window.mk.run(i, { analysis: 'ray_grid', settings: { rings: 96 } as never, backend: 'auto', fresh: true }),
+    e.index,
+  )
+  expect((result.backend as { used: string }).used).toBe('cpu_reference')
+
+  // Only this load: nothing is remembered, the next engine uses WebGPU.
+  const next = await page.evaluate(() => window.mk.create(undefined, 'off'))
+  expect(next.info.webgpu, `${next.info.webgpuReason}`).toBe(true)
+  expect(next.info.backends.find((b) => b.id === 'gpu:webgpu')?.available).toBe(true)
+  // (Chromium reports nested workers, so there the worker watch sees GPU
+  // workers and the checks above are not vacuous; WebKit reports only the
+  // page's own workers.)
+  if (browserName === 'chromium') expect(workers.filter((u) => /gpu-host/.test(u)).length).toBe(1)
 })
 
 /**

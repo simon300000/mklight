@@ -2346,7 +2346,8 @@ natively over a plain thread in the tests (`proxy::spawn_native`).
 
 The engine worker (`apps/web/engine/src/worker.ts`) starts the GPU worker
 (`gpu-host.ts`, on the same module and memory as a host worker) when
-`navigator.gpu` exists, then calls `register_webgpu` after
+`navigator.gpu` exists, an adapter answers and no pipeline failure is
+remembered (below), then calls `register_webgpu` after
 `engine_create` (`mklight-wasm` feature `webgpu`, on by default), which
 registers `GpuProvider::webgpu_browser()`: opening it waits up to 10 s for
 the GPU worker to publish its channel (or the reason it has no adapter)
@@ -2372,11 +2373,28 @@ compiling within 45 s, …"), an explicit request without fallback fails with
 the reason (`BackendUnavailable`; with fallback, the CPU and a warning), and
 the calibration fails instead of measuring. No work is submitted with a
 pipeline that did not compile. The engine worker remembers the failure in
-the calibration database under the adapter, the browser's user agent and
-the kernel digest (`webgpu_kernel_build`) for 14 days; a later load installs
-it (`webgpu_set_known_failure`) and the backend is unavailable at once,
-without a calibration. A browser update, a new kernel build or the expiry
-(browsers do not expose the driver version) tries again. Natively pipeline
+the calibration database under the browser's user agent and the kernel
+digest (`webgpu_kernel_build`) for 14 days, with the adapter in the record
+for the message; a later load installs it (`webgpu_set_known_failure`) and
+the backend is unavailable at once, without a calibration. A browser
+update, a new kernel build or the expiry (browsers do not expose the driver
+version) tries again.
+
+The abandoned compilation cannot be cancelled and can keep the browser's
+GPU process busy after the page is gone, so that a reload's
+`requestAdapter` waits behind it (observed: over a minute). Hence the key
+leaves out the adapter, and a load looks the failure up before any WebGPU
+call: with one remembered, neither the page nor the engine worker touches
+`navigator.gpu` and no GPU worker starts. A machine with two GPUs therefore
+skips WebGPU on both until a retry rule applies. Every WebGPU call on a
+load path is bounded: the engine worker's `requestAdapter` (which names the
+adapter for the calibration key) waits at most 4 s
+(`webgpuWatchdog.adapterTimeoutMs`), and the page's `ready()` as long;
+after that WebGPU is unavailable for this load with the reason (not
+remembered). The GPU worker, which requests the adapter and device again,
+starts only after the engine worker's request answered; opening
+`gpu:webgpu` waits at most 10 s for it. `createEngine` and the app's
+start-up make no WebGPU call on the page. Natively pipeline
 creation is synchronous and the race resolves at once. For tests,
 `Watchdog::stalled` (native) and `createEngine({webgpuWatchdog})` (web)
 simulate modules whose compilation never finishes, with a shorter limit.
