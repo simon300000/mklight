@@ -154,8 +154,10 @@ public sealed partial class ImageSimulationView : UserControl, IViewOptions
             UpdateZoom();
             UpdateBlink();
             _canvas.Invalidate();
+            Motion.Changed -= MotionChanged;
+            Motion.Changed += MotionChanged;
         };
-        Unloaded += (_, _) => _blink.Stop();
+        Unloaded += (_, _) => { _blink.Stop(); Motion.Changed -= MotionChanged; };
         UpdateCaption();
         UpdateZoom();
     }
@@ -327,9 +329,11 @@ public sealed partial class ImageSimulationView : UserControl, IViewOptions
     void UpdateBlink()
     {
         // No flashing when the system asks for less motion: a click switches instead.
-        var animate = new global::Windows.UI.ViewManagement.UISettings().AnimationsEnabled;
-        if (_mode == Compare.Blink && _source is not null && animate) _blink.Start(); else _blink.Stop();
+        if (_mode == Compare.Blink && _source is not null && Motion.Enabled) _blink.Start(); else _blink.Stop();
     }
+
+    /// <summary>Reduce Motion turned on or off (any thread): start or stop the blink on the view's thread.</summary>
+    void MotionChanged() => DispatcherQueue?.TryEnqueue(UpdateBlink);
 
     // MARK: Dropping an image file
 
