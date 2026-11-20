@@ -158,6 +158,16 @@ public final class GlassLibrary {
         changed()
     }
 
+    /// Puts a removed entry back at `index` (undo of `remove`). Returns
+    /// whether it was missing.
+    @discardableResult
+    public func restore(_ entry: Entry, at index: Int) -> Bool {
+        guard !entries.contains(where: { $0.path == entry.path }) else { return false }
+        entries.insert(entry, at: min(max(index, 0), entries.count))
+        changed()
+        return true
+    }
+
     /// Tells the open designs to load the library again (a catalog file
     /// changed on disk and was reloaded).
     public func touch() { revision += 1 }
@@ -229,6 +239,7 @@ public final class GlassLibrary {
         if let why = Self.nameProblem(name) { throw LibraryError.invalidName(why) }
         if let other = userCatalog(name), other.url != c.url { throw LibraryError.duplicateName(name) }
         let oldURL = c.url
+        let oldName = c.name
         c.name = name
         c.url = userGlassesDirectory.appendingPathComponent(name + ".json")
         try write(c)
@@ -236,6 +247,10 @@ public final class GlassLibrary {
         userCatalogs.removeAll { $0.url == oldURL }
         userCatalogs.append(c)
         userCatalogs.sort { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+        // The glasses' statuses follow the catalog.
+        for i in overrides.indices where overrides[i].catalog.caseInsensitiveCompare(oldName) == .orderedSame {
+            overrides[i].catalog = name
+        }
         changed()
     }
 
@@ -263,6 +278,11 @@ public final class GlassLibrary {
         if let old { c.glasses[old] = nil }
         if let clash { c.glasses[clash] = nil }
         c.glasses[name] = glass
+        // A renamed glass keeps its status.
+        if let old, old.caseInsensitiveCompare(name) != .orderedSame {
+            overrides.removeAll { $0.matches(catalog: catalog, name: name) }
+            for i in overrides.indices where overrides[i].matches(catalog: catalog, name: old) { overrides[i].name = name }
+        }
         try replace(c)
     }
 

@@ -192,6 +192,7 @@ struct LensTableView: View {
         return LensCell(
             row: row, column: c, focus: $focus, isActive: active == id,
             completions: c == .material ? workspace.materialNames : [],
+            glassStatus: c == .material ? glassStatus(of: row) : nil,
             // Like a table: the first click selects the row, the next edits.
             click: { if press.wasSelected(row.id) { begin(id) } },
             begin: { begin(id) },
@@ -199,6 +200,15 @@ struct LensTableView: View {
             cancel: { begin(nil) },
             commit: { text in commit(row, c, text) },
             move: { dir in move(from: CellID(row: row.id, column: c), dir, rows: rows) })
+    }
+
+    /// The status of the glass after the row's surface, when it is one to
+    /// notice (not standard): preferred, obsolete, special or melt.
+    private func glassStatus(of row: LensRow) -> GlassStatus? {
+        guard let sf = system.surfaces.first(where: { $0.id == row.id }), sf.interaction == .refract,
+            let s = workspace.glassStatus(sf.material), s != .standard
+        else { return nil }
+        return s
     }
 
     private func commit(_ row: LensRow, _ c: LensColumn, _ text: String) -> Bool {
@@ -418,6 +428,8 @@ private struct LensCell: View {
     var focus: FocusState<CellID?>.Binding
     let isActive: Bool
     let completions: [String]
+    /// The glass's status when it is not standard (material cells).
+    var glassStatus: GlassStatus? = nil
     /// A click on the value (edits only on the row's second click).
     let click: () -> Void
     /// Edits the cell.
@@ -471,6 +483,7 @@ private struct LensCell: View {
                     .help("Melt offset Δn_d / ΔV_d on the catalog glass; edit it in the inspector")
                     .accessibilityLabel("offset \(note)")
             }
+            if let s = glassStatus, !isActive { GlassStatusDot(status: s) }
             if let m = row.markers[column] { MarkerBadge(marker: m) }
         }
     }
@@ -629,5 +642,20 @@ struct MarkerBadge: View {
                     .accessibilityLabel(marker.bounds == .pinned ? "pinned variable" : marker.bounds == .bounded ? "bounded variable" : "variable")
             }
         }
+    }
+}
+
+/// A glass status in a material cell: a dot in the status colour of the
+/// glass map and the Glass Catalogs window, its name on hover.
+struct GlassStatusDot: View {
+    let status: GlassStatus
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        Circle()
+            .fill(Palette.color(GlassMapStatus(json: status.json).rgb(dark: colorScheme == .dark)))
+            .frame(width: 7, height: 7)
+            .help("\(status.title) glass (Glass Catalogs sets statuses)")
+            .accessibilityLabel("\(status.title) glass")
     }
 }
