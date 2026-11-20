@@ -38,6 +38,27 @@ public sealed partial class LayoutPanel : UserControl
         Unloaded += (_, _) => Canvas.RemoveFromVisualTree();
     }
 
+    /// <summary>The layout of a design window: follows the session's layout scene, selection and preview.</summary>
+    public LayoutPanel(ViewModels.DesignSession session) : this()
+    {
+        var layout = session.Workspace.Layout;
+        void Update()
+        {
+            SetScene(session.Section, layout.Phase == ViewModels.PanePhase.Failed ? layout.Message : session.Workspace.ModelErrors.FirstOrDefault());
+            SetStale(layout.IsStale, layout.IsRunning);
+            SetSelectedSurface(session.SelectedSurface);
+            var previewing = session.Workspace.PreviewTitle;
+            PreviewChip.Visibility = previewing is null ? Visibility.Collapsed : Visibility.Visible;
+            PreviewText.Text = previewing is null ? "" : $"Previewing {previewing} · not applied";
+        }
+        SurfaceClicked += i => session.SelectedSurface = i;
+        session.SelectionChanged += () => SetSelectedSurface(session.SelectedSurface);
+        session.LayoutSceneChanged += Update;
+        layout.Changed += Update;
+        session.Workspace.PreviewChanged += Update;
+        Update();
+    }
+
     /// <summary>Raised when the user clicks a surface in the section.</summary>
     public event Action<int>? SurfaceClicked;
 

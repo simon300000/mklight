@@ -36,14 +36,14 @@
                     </DropDownButton>
                     <Button x:Name="FileButton" Style="{StaticResource CircleButton}" Content="&#xE8A5;" ToolTipService.ToolTip="File">
                         <Button.Flyout>
-                            <MenuFlyout Placement="BottomEdgeAlignedRight">
+                            <MenuFlyout x:Name="FileMenu" Placement="BottomEdgeAlignedRight">
                                 <MenuFlyoutItem Text="New from Sample…" Click="OnNew"><MenuFlyoutItem.Icon><FontIcon Glyph="&#xE8A5;" /></MenuFlyoutItem.Icon></MenuFlyoutItem>
                                 <MenuFlyoutItem Text="Open…" Click="OnOpen"><MenuFlyoutItem.Icon><FontIcon Glyph="&#xE838;" /></MenuFlyoutItem.Icon></MenuFlyoutItem>
                                 <MenuFlyoutSubItem x:Name="RecentMenu" Text="Open Recent"><MenuFlyoutSubItem.Icon><FontIcon Glyph="&#xE81C;" /></MenuFlyoutSubItem.Icon></MenuFlyoutSubItem>
                                 <MenuFlyoutSeparator />
                                 <MenuFlyoutItem Text="Save" Click="OnSave"><MenuFlyoutItem.Icon><FontIcon Glyph="&#xE74E;" /></MenuFlyoutItem.Icon></MenuFlyoutItem>
                                 <MenuFlyoutItem Text="Save As…" Click="OnSaveAs" />
-                                <MenuFlyoutSeparator />
+                                <MenuFlyoutSeparator x:Name="ThemeSeparator" />
                                 <RadioMenuFlyoutItem x:Name="ThemeSystem" Text="System Appearance" GroupName="theme" Click="OnTheme" Tag="system" />
                                 <RadioMenuFlyoutItem x:Name="ThemeLight" Text="Light" GroupName="theme" Click="OnTheme" Tag="light" />
                                 <RadioMenuFlyoutItem x:Name="ThemeDark" Text="Dark" GroupName="theme" Click="OnTheme" Tag="dark" />
@@ -71,48 +71,17 @@
             <Grid>
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*" />
-                    <ColumnDefinition x:Name="InspectorColumn" Width="280" />
+                    <ColumnDefinition x:Name="InspectorColumn" Width="320" />
                 </Grid.ColumnDefinitions>
 
                 <!-- Content: one opaque, crisp surface; no glass on content. -->
                 <Border x:Name="ContentCard" Background="{ThemeResource ContentSurfaceBrush}"
                         BorderBrush="{ThemeResource ContentStrokeBrush}" BorderThickness="1,1,1,0"
                         CornerRadius="8,8,0,0">
-                    <Grid x:Name="ContentGrid">
-                        <Grid.RowDefinitions>
-                            <RowDefinition Height="0.36*" MinHeight="150" />
-                            <RowDefinition Height="1" />
-                            <RowDefinition Height="0.64*" />
-                        </Grid.RowDefinitions>
-                        <views:LensDataPanel x:Name="LensData" />
-                        <Border Grid.Row="1" Background="{ThemeResource DividerBrush}" />
-                        <Grid x:Name="PanelsRow" Grid.Row="2" />
-                    </Grid>
                 </Border>
 
-                <!-- Inspector column: on Mica like the sidebar (chrome, not content). -->
-                <Grid x:Name="Inspector" Grid.Column="1" Padding="12,4,12,12">
-                    <Grid.RowDefinitions>
-                        <RowDefinition Height="Auto" />
-                        <RowDefinition Height="*" />
-                    </Grid.RowDefinitions>
-                    <Border Style="{StaticResource GlassChip}" HorizontalAlignment="Center" Margin="0,0,0,12">
-                        <StackPanel Orientation="Horizontal">
-                            <ToggleButton x:Name="InspectorSurfaceTab" Content="Surface" IsChecked="True" CornerRadius="13" Height="26" Padding="12,0" BorderThickness="0" Click="OnInspectorTab" />
-                            <ToggleButton x:Name="InspectorSystemTab" Content="System" CornerRadius="13" Height="26" Padding="12,0" BorderThickness="0" Background="Transparent" Click="OnInspectorTab" />
-                        </StackPanel>
-                    </Border>
-                    <Border Grid.Row="1" CornerRadius="8" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
-                            BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1">
-                        <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center" Spacing="8" Padding="24">
-                            <FontIcon Glyph="&#xE8A1;" FontSize="28" Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
-                            <TextBlock x:Name="InspectorTitle" Style="{StaticResource PanelTitleText}" HorizontalAlignment="Center" Text="Inspector" />
-                            <TextBlock x:Name="InspectorCaption" Style="{StaticResource SecondaryText}" HorizontalAlignment="Center"
-                                       TextAlignment="Center" TextWrapping="Wrap" MaxWidth="200"
-                                       Text="Surface and system parameters arrive in a later round." />
-                        </StackPanel>
-                    </Border>
-                </Grid>
+                <!-- Inspector column: on Mica like the sidebar (chrome, not content); pages from InspectorPages. -->
+                <Border x:Name="Inspector" Grid.Column="1" />
             </Grid>
         </NavigationView>
 

@@ -23,7 +23,7 @@ how the Mac app's design brief was translated to Fluent.
 
 ```powershell
 scripts/build-windows.ps1                        # engine DLL + release app -> build/windows/MKLight/MKLight.exe
-scripts/build-windows.ps1 -EngineOnly            # engine DLL only -> apps/windows/native/mklight_ffi.dll
+scripts/build-windows.ps1 -EngineOnly            # engine DLL only -> apps/windows/native/x64/mklight_ffi.dll
 scripts/build-windows.ps1 -Configuration Debug   # engine + debug build of the solution
 scripts/build-windows.ps1 -Test                  # ... and dotnet test
 scripts/build-windows.ps1 -NoEngine              # skip cargo (the DLL is already in place)
@@ -31,7 +31,7 @@ scripts/build-windows.ps1 -NoEngine              # skip cargo (the DLL is alread
 
 * The script builds `mklight-ffi` in release (`cargo build --release -p
   mklight-ffi`, or `--target aarch64-pc-windows-msvc` with `-Platform ARM64`)
-  and copies the DLL to `apps/windows/native/` (git-ignored). Every project
+  and copies the DLL to `apps/windows/native/<x64|ARM64>/` (git-ignored, one folder per platform). Every project
   that needs it (the app, the tests) copies it next to its output when it is
   there (`MKLightNativeDir` in `apps/windows/Directory.Build.props`).
 * Release: `dotnet publish` of `MKLight.App` into `build/windows/MKLight`,

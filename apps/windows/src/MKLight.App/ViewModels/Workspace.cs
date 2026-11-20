@@ -146,13 +146,116 @@ public sealed class Workspace
 
     // ---- Design changes ----
 
-    /// <summary>A new design value: debounced, then frozen into a snapshot and the panes refreshed.</summary>
+    /// <summary>A new design value: debounced, then frozen into a snapshot and the panes refreshed. A design change ends a preview.</summary>
     public void Update(OpticalSystem system, bool immediately = false)
+    {
+        _design = system;
+        if (PreviewSystem is not null)
+        {
+            PreviewSystem = null;
+            PreviewTitle = null;
+            _baseline.Clear();
+            PreviewChanged?.Invoke();
+        }
+        Schedule(system, immediately ? TimeSpan.Zero : Debounce);
+    }
+
+    void Schedule(OpticalSystem system, TimeSpan delay)
     {
         _latest = system;
         _pending?.Cancel();
         var cts = _pending = new CancellationTokenSource();
-        _ = OpenSnapshotLater(system, immediately ? TimeSpan.Zero : Debounce, cts.Token);
+        _ = OpenSnapshotLater(system, delay, cts.Token);
+    }
+
+    /// <summary>Take the snapshot again now (after a glass catalog change: the library hash differs).</summary>
+    public void Resnapshot()
+    {
+        if (_design is not null) Schedule(PreviewSystem ?? _design, TimeSpan.Zero);
+    }
+
+    // ---- Preview of a candidate design (an optimisation or glass substitution result) ----
+
+    OpticalSystem? _design;
+    readonly Dictionary<string, AnalysisOutput> _baseline = [];
+
+    /// <summary>The design itself (not a previewed candidate).</summary>
+    public OpticalSystem? DesignSystem => _design;
+    /// <summary>The snapshot of the design itself; design jobs always run on it, never on a preview.</summary>
+    public ModelSnapshot? DesignSnapshot { get; private set; }
+    /// <summary>A candidate the layout and every pane show instead of the design, not applied.</summary>
+    public OpticalSystem? PreviewSystem { get; private set; }
+    /// <summary>What is previewed, e.g. "Optimize: iteration 42" (shown on every pane and the layout).</summary>
+    public string? PreviewTitle { get; private set; }
+    public bool IsPreviewing => PreviewSystem is not null;
+    /// <summary>The outputs of the design taken just before the preview started, by pane id (for before/after views).</summary>
+    public IReadOnlyDictionary<string, AnalysisOutput> Baseline => _baseline;
+    /// <summary>Raised when a preview starts, changes or ends.</summary>
+    public event Action? PreviewChanged;
+
+    /// <summary>Show <paramref name="candidate"/> in the layout and every pane (null ends the preview).</summary>
+    public void Preview(OpticalSystem? candidate, string? title = null)
+    {
+        if (Equals(candidate, PreviewSystem) && title == PreviewTitle) return;
+        if (candidate is not null && PreviewSystem is null)
+        {
+            _baseline.Clear();
+            foreach (var p in AllPanes) if (p.Output is { } o && !IsStale(p)) _baseline[p.Id] = o;
+        }
+        if (candidate is null) _baseline.Clear();
+        PreviewSystem = candidate;
+        PreviewTitle = candidate is null ? null : title;
+        PreviewChanged?.Invoke();
+        StateChanged?.Invoke();
+        if ((candidate ?? _design) is { } target) Schedule(target, TimeSpan.Zero);
+    }
+
+    /// <summary>Whether an output must be kept (a baseline of the preview).</summary>
+    public bool IsRetained(AnalysisOutput output) => _baseline.ContainsValue(output);
+
+    /// <summary>
+    /// Submit a design job (optimize, glass substitution, tolerance, solves, merit evaluation) on the
+    /// design's own snapshot; null while there is none (the design has errors or is not yet frozen).
+    /// </summary>
+    public AnalysisJob? SubmitDesignJob(EngineAnalysisRequest request) =>
+        DesignSnapshot is { } snap ? Engine.Submit(request, snap) : null;
+
+    // ---- Glass catalogs ----
+
+    /// <summary>Problems loading the project's catalogs (a file that is not found, …).</summary>
+    public IReadOnlyList<string> CatalogWarnings { get; private set; } = [];
+
+    /// <summary>Raised after catalogs were loaded, removed or changed (the glass library hash differs).</summary>
+    public event Action? CatalogsChanged;
+
+    /// <summary>Load the project's user catalogs into the session (before the first snapshot).</summary>
+    public async Task LoadProjectCatalogsAsync(IEnumerable<CatalogReference> catalogs, string? projectDirectory)
+    {
+        var warnings = new List<string>();
+        foreach (var c in catalogs)
+        {
+            var loaded = false;
+            string? error = null;
+            foreach (var path in c.Candidates(projectDirectory))
+            {
+                if (!File.Exists(path)) continue;
+                try { await Engine.LoadCatalogAsync(path); loaded = true; break; }
+                catch (EngineException e) { error = e.Message; }
+            }
+            if (!loaded)
+                warnings.Add(error is null ? $"Glass catalog “{c.Name}” was not found ({c.Path ?? c.RelativePath ?? "no path"})." : $"{c.Name}: {error}");
+        }
+        CatalogWarnings = warnings;
+        await CatalogsDidChangeAsync();
+    }
+
+    /// <summary>After any catalog change: glass names again, a new snapshot (its library hash), listeners.</summary>
+    public async Task CatalogsDidChangeAsync()
+    {
+        try { MaterialNames = await Engine.MaterialNamesAsync(); } catch (EngineException) { }
+        CatalogsChanged?.Invoke();
+        StateChanged?.Invoke();
+        Resnapshot();
     }
 
     async Task OpenSnapshotLater(OpticalSystem system, TimeSpan delay, CancellationToken ct)
@@ -166,6 +269,7 @@ public sealed class Workspace
         try
         {
             var snap = await Engine.OpenSnapshotAsync(ModelJson.Encode(system));
+            if (ReferenceEquals(system, _design)) DesignSnapshot = snap;
             if (!ReferenceEquals(system, _latest)) return;
             Snapshot = snap;
             ModelErrors = [];

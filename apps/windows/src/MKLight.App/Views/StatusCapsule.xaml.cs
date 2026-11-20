@@ -93,6 +93,40 @@ public sealed partial class StatusCapsule : UserControl
         }
     }
 
+    Action? _endPreview;
+
+    /// <summary>The previewed candidate's title (null: the design is shown) and how to end the preview.</summary>
+    public void SetPreview(string? title, Action? endPreview)
+    {
+        _endPreview = endPreview;
+        PreviewBadge.Visibility = title is null ? Visibility.Collapsed : Visibility.Visible;
+        PreviewText.Text = title is null ? "" : $"Previewing {title}";
+    }
+
+    void OnEndPreview(object sender, RoutedEventArgs e) => _endPreview?.Invoke();
+
+    Action<int>? _backendChanged;
+    bool _settingBackend;
+
+    /// <summary>The compute backend picker in the details flyout.</summary>
+    public void SetBackends(IReadOnlyList<string> titles, int selected, Action<int> changed)
+    {
+        _settingBackend = true;
+        _backendChanged = changed;
+        if (BackendPicker.Items.Count != titles.Count)
+        {
+            BackendPicker.Items.Clear();
+            foreach (var t in titles) BackendPicker.Items.Add(t);
+        }
+        BackendPicker.SelectedIndex = selected;
+        _settingBackend = false;
+    }
+
+    void OnBackendChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (!_settingBackend && BackendPicker.SelectedIndex >= 0) _backendChanged?.Invoke(BackendPicker.SelectedIndex);
+    }
+
     public void ShowIssues() => OnIssuesClick(IssuesButton, new RoutedEventArgs());
 
     void OnIssuesClick(object sender, RoutedEventArgs e)

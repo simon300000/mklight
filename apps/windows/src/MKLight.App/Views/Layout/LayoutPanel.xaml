@@ -38,6 +38,12 @@
             </Border>
         </StackPanel>
 
+        <!-- A previewed candidate design: unmistakably not the design (under the controls). -->
+        <Border x:Name="PreviewChip" Visibility="Collapsed" HorizontalAlignment="Center" VerticalAlignment="Top" Margin="0,52,0,0"
+                CornerRadius="14" Padding="12,4,12,5" Background="{ThemeResource AccentFillColorDefaultBrush}">
+            <TextBlock x:Name="PreviewText" Foreground="{ThemeResource TextOnAccentFillColorPrimaryBrush}" FontSize="12.5" FontWeight="SemiBold" />
+        </Border>
+
         <!-- Scale bar. -->
         <StackPanel x:Name="ScaleBar" HorizontalAlignment="Left" VerticalAlignment="Bottom" Margin="14,0,0,12" Spacing="3">
             <TextBlock x:Name="ScaleText" Style="{StaticResource CaptionText}" />

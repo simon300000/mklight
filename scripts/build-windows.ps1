@@ -4,7 +4,7 @@
 
 .DESCRIPTION
   1. cargo build --release -p mklight-ffi            -> target/release/mklight_ffi.dll
-  2. copy it to apps/windows/native/ (git-ignored), where the app and the
+  2. copy it to apps/windows/native/<x64|ARM64>/ (git-ignored), where the app and the
      tests pick it up (Directory.Build.props, MKLightNativeDir)
   3. dotnet build of the solution, or dotnet publish of the app to
      build/windows/MKLight (self-contained, Windows App SDK included)
@@ -29,7 +29,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $Root = Split-Path -Parent $PSScriptRoot
 $AppDir = Join-Path $Root 'apps\windows'
-$NativeDir = Join-Path $AppDir 'native'
+$NativeDir = Join-Path (Join-Path $AppDir 'native') $Platform
 
 function Invoke-Step([string] $Title, [scriptblock] $Block) {
     Write-Host "==> $Title" -ForegroundColor Cyan
@@ -63,7 +63,7 @@ if (-not (Get-Command dotnet -ErrorAction SilentlyContinue)) {
     throw 'dotnet not found: install the .NET 11 SDK (winget install Microsoft.DotNet.SDK.11)'
 }
 if (-not (Test-Path (Join-Path $NativeDir 'mklight_ffi.dll'))) {
-    Write-Warning 'apps/windows/native/mklight_ffi.dll is missing: the app will report the engine unavailable and the FFI tests will be skipped.'
+    Write-Warning "$NativeDir\mklight_ffi.dll is missing: the app will report the engine unavailable and the FFI tests will be skipped."
 }
 
 Push-Location $AppDir

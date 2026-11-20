@@ -13,6 +13,7 @@ namespace MKLight.App.Support;
 ///   --undo                  undo it again (checks undo end to end)
 ///   --settings &lt;json&gt;      merge settings into every pane opened with --analysis
 ///   --show-settings         open the panes' settings forms
+///   --do &lt;action&gt;[=&lt;arg&gt;]  run a feature's launch action (AppHooks.LaunchActions), repeatable, in order
 ///   --size &lt;w&gt;x&lt;h&gt;        window client size in pixels (default 1600x1000)
 ///   --welcome               show the welcome window (default without a file or sample)
 ///   --screenshot &lt;file.png&gt; render the window to a PNG once the panes are drawn, then quit
@@ -31,6 +32,7 @@ public sealed class LaunchOptions
     public bool Undo;
     public string? Settings;
     public bool ShowSettings;
+    public List<(string Name, string? Arg)> Actions = [];
     public (int W, int H)? Size;
     public bool Welcome;
     public string? Screenshot;
@@ -55,6 +57,11 @@ public sealed class LaunchOptions
                 case "--edit": o.Edits.Add(Next()); break;
                 case "--undo": o.Undo = true; break;
                 case "--show-settings": o.ShowSettings = true; break;
+                case "--do":
+                    var d = Next();
+                    var eq = d.IndexOf('=');
+                    o.Actions.Add(eq < 0 ? (d, null) : (d[..eq], d[(eq + 1)..]));
+                    break;
                 case "--settings": o.Settings = Next(); break;
                 case "--welcome": o.Welcome = true; break;
                 case "--screenshot": o.Screenshot = Path.GetFullPath(Next()); break;

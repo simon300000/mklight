@@ -8,7 +8,9 @@
     <InvariantGlobalization>false</InvariantGlobalization>
     <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
     <!-- The engine DLL built by scripts/build-windows.ps1 (git-ignored). -->
-    <MKLightNativeDir>$(MSBuildThisFileDirectory)native\</MKLightNativeDir>
+    <MKLightNativePlatform Condition="'$(Platform)' == 'ARM64'">ARM64</MKLightNativePlatform>
+    <MKLightNativePlatform Condition="'$(Platform)' != 'ARM64'">x64</MKLightNativePlatform>
+    <MKLightNativeDir>$(MSBuildThisFileDirectory)native\$(MKLightNativePlatform)\</MKLightNativeDir>
     <WindowsTargetFramework>net11.0-windows10.0.26100.0</WindowsTargetFramework>
   </PropertyGroup>
 </Project>

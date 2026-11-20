@@ -11,12 +11,24 @@
                 <ProgressRing IsActive="True" Width="12" Height="12" MinWidth="12" MinHeight="12" />
                 <TextBlock x:Name="ActivityText" Style="{StaticResource SecondaryNumberText}" FontSize="12" />
             </StackPanel>
+            <!-- A previewed candidate: named in the capsule, with End Preview always at hand. -->
+            <Border x:Name="PreviewBadge" Visibility="Collapsed" CornerRadius="13" Height="26" Padding="10,0,4,0" VerticalAlignment="Center"
+                    Background="{ThemeResource AccentFillColorDefaultBrush}">
+                <StackPanel Orientation="Horizontal" Spacing="6">
+                    <TextBlock x:Name="PreviewText" Foreground="{ThemeResource TextOnAccentFillColorPrimaryBrush}" FontSize="12" FontWeight="SemiBold" VerticalAlignment="Center" />
+                    <Button x:Name="EndPreviewButton" Content="End Preview" FontSize="11.5" Padding="8,1,8,2" CornerRadius="10" MinHeight="20" VerticalAlignment="Center" Click="OnEndPreview" />
+                </StackPanel>
+            </Border>
             <Button x:Name="NumbersButton" Background="Transparent" BorderThickness="0" CornerRadius="13" Height="26" Padding="10,0"
                     ToolTipService.ToolTip="First-order data, engine and compute backend">
                 <StackPanel x:Name="Numbers" Orientation="Horizontal" Spacing="14" />
                 <Button.Flyout>
                     <Flyout Placement="Bottom">
-                        <StackPanel x:Name="Details" Width="320" Spacing="4" />
+                        <StackPanel Width="320" Spacing="4">
+                            <StackPanel x:Name="Details" Spacing="4" />
+                            <TextBlock Text="Compute Backend" Style="{StaticResource PanelTitleText}" Margin="0,10,0,2" />
+                            <ComboBox x:Name="BackendPicker" HorizontalAlignment="Stretch" SelectionChanged="OnBackendChanged" />
+                        </StackPanel>
                     </Flyout>
                 </Button.Flyout>
             </Button>
