@@ -100,6 +100,8 @@ public sealed class OptimizeSession
     public List<MeritPoint> Trace { get; } = [];
     public OptimizeResult? Result { get; private set; }
     public bool Applied { get; private set; }
+    /// <summary>The design the run started from (the result's before layout).</summary>
+    public OpticalSystem? StartSystem { get; private set; }
 
     public bool IsRunning => Phase == JobPhase.Running;
     public bool CanStop => IsRunning && (_job?.CanStop ?? false);
@@ -283,6 +285,7 @@ public sealed class OptimizeSession
             return;
         }
         _job = job;
+        StartSystem = Workspace.DesignSystem ?? Document.System;
         Trace.Clear();
         Result = null;
         Applied = false;

@@ -16,7 +16,8 @@ namespace MKLight.App.Views.Jobs;
 /// The Glass Substitution page (the Mac app's <c>GlassSubstitutionPanel</c>): the lenses whose glass may change and
 /// the candidates (for every lens, or per lens), a quick or thorough search that re-optimises the shape for every
 /// combination, live progress, then the ranked combinations: the selected one is previewed in the window, compared
-/// with the design (glasses, merit, spot numbers, shape changes) and applied as one undoable step.
+/// with the design (glasses, merit, spot numbers, shape changes, the two layouts), shown on the glass map, and applied
+/// as one undoable step.
 /// </summary>
 public sealed partial class GlassSubstitutionPanel : UserControl
 {
@@ -354,7 +355,12 @@ public sealed partial class GlassSubstitutionPanel : UserControl
         JobUI.Bind(frame, "CardStrokeColorDefaultBrush", b => frame.BorderBrush = b);
         JobUI.Bind(frame, "ContentSurfaceBrush", b => frame.Background = b);
         p.Children.Add(frame);
-        if (_s.Selected is { } c) p.Children.Add(Comparison(c, r));
+        if (_s.Selected is { } c)
+        {
+            p.Children.Add(Comparison(c, r));
+            if (_s.StartSystem is { } start)
+                p.Children.Add(new CandidateGlassMap(_session.Workspace, start, c, () => _s.MapPgf, on => _s.MapPgf = on));
+        }
         return p;
     }
 
@@ -469,6 +475,8 @@ public sealed partial class GlassSubstitutionPanel : UserControl
             }
             p.Children.Add(new Expander { Header = $"Shape changes ({c.Moved.Count})", Content = moves, HorizontalAlignment = HorizontalAlignment.Stretch, HorizontalContentAlignment = HorizontalAlignment.Stretch });
         }
+        // The design's layout and the candidate's (once applied, the design is the candidate's).
+        p.Children.Add(new LayoutComparison(_session.Workspace, _s.StartSystem, c.System, afterTitle: _s.Applied ? "Applied" : "Candidate"));
         var card = new Border { Child = p, Padding = new Thickness(10), CornerRadius = new CornerRadius(10) };
         JobUI.Bind(card, "SubtleFillColorSecondaryBrush", b => card.Background = b);
         return card;
