@@ -24,6 +24,7 @@ public static class ResultHosting
         Buffers = output.Buffers.Select(b => (IResultArray)new EngineResultArray(b)).ToList(),
         WavelengthsUm = system.Wavelengths.Wavelengths.Select(w => w.Um).ToList(),
         FieldLabels = FieldLabels(system),
+        Settings = output.RunInfo.Settings,
     };
 
     /// <summary>A field as specified: <c>0°</c>, <c>14°</c>, <c>(3, 4) mm</c>.</summary>

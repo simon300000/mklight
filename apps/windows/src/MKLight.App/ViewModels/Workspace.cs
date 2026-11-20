@@ -133,6 +133,12 @@ public sealed class Workspace
     public JsonObject StartingSettings(string analysis) => analysis switch
     {
         "spot_diagram" => new JsonObject { ["through_focus"] = new JsonObject { ["min"] = null, ["max"] = null, ["steps"] = 3 } },
+        // A visible patch: 10 % of the field on axis at 256 px with the engine's automatic PSF window and pupil.
+        "image_simulation" => new JsonObject
+        {
+            ["size"] = new JsonArray(256, 256), ["optics"] = new JsonObject { ["field_extent"] = 0.1 },
+            ["source"] = new JsonObject { ["kind"] = "pattern", ["pattern"] = "siemens_star" },
+        },
         "glass_info" => FirstGlass() is { } g ? new JsonObject { ["name"] = g, ["curve_samples"] = 200 } : new JsonObject { ["curve_samples"] = 200 },
         _ => [],
     };
