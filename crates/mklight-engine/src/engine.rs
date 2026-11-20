@@ -86,7 +86,21 @@ pub(crate) struct EngineInner {
     /// The measured backends' calibration states by backend name
     /// (`Engine::start_calibration`).
     calibrations: std::sync::Mutex<std::collections::BTreeMap<&'static str, GpuCalibrationState>>,
+    /// Where the CUDA calibration is cached (`<cache_dir>/cost/cuda.json`),
+    /// once `prepare_gpu` named a cache directory.
+    cuda_calibration_cache: std::sync::Mutex<Option<std::path::PathBuf>>,
+    /// Requests routed outside the calibration threads (`route_backend`),
+    /// so a calibration knows whether foreground work ran meanwhile.
+    foreground_requests: AtomicU64,
+    /// The CUDA calibration was started lazily (once per engine:
+    /// `Engine::calibrate_cuda_lazily`).
+    lazy_cuda_calibration: std::sync::atomic::AtomicBool,
     next_session: AtomicU64,
+}
+
+thread_local! {
+    /// The current thread runs a cost calibration (`calibrate`).
+    static CALIBRATING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// Progress of a measured backend's calibration
@@ -148,6 +162,9 @@ impl Engine {
                 cost: Arc::new(crate::analysis::cost::CostModel::default()),
                 gpu_preparation: Arc::default(),
                 calibrations: Default::default(),
+                cuda_calibration_cache: Default::default(),
+                foreground_requests: AtomicU64::new(0),
+                lazy_cuda_calibration: Default::default(),
                 next_session: AtomicU64::new(1),
                 config,
             }),
@@ -265,14 +282,18 @@ impl Engine {
     /// calibration already ran or runs (see [`Self::calibration_state`]).
     /// Dropping the engine stops it after the current analysis.
     pub fn start_calibration(&self, rules: &'static measured::Rules) -> bool {
-        if !self.begin_calibration(rules) {
+        if !self.begin_calibration(rules, true) {
             return false;
         }
+        self.spawn_calibration(rules);
+        true
+    }
+
+    /// Run `rules`' calibration, marked running, on its own thread.
+    fn spawn_calibration(&self, rules: &'static measured::Rules) {
         let weak = Arc::downgrade(&self.inner);
         let name = format!("mklight-{}-calibration", rules.name);
-        if let Err(e) =
-            mklight_core::platform::spawn(name, move || calibrate_into(&weak, rules, None))
-        {
+        if let Err(e) = mklight_core::platform::spawn(name, move || calibrate_into(&weak, rules)) {
             self.set_calibration_state(
                 rules,
                 GpuCalibrationState::Failed {
@@ -280,7 +301,40 @@ impl Engine {
                 },
             );
         }
-        true
+    }
+
+    /// After an `auto` request decided by the CUDA prior on an open CUDA
+    /// device: start the CUDA calibration in the background, once per
+    /// engine, if none ever started (library and command-line users that
+    /// never call [`Self::prepare_gpu`]). It is cached only once
+    /// `prepare_gpu` names a cache directory; the request does not wait
+    /// for it. A calibration removed with [`Self::set_cuda_calibration`]
+    /// is not measured again.
+    fn calibrate_cuda_lazily(&self, analysis: &str, decision: Option<&serde_json::Value>) {
+        if CALIBRATING.get()
+            || !decision.is_some_and(|d| d["rule"] == "cuda break-even")
+            || self.inner.lazy_cuda_calibration.load(Ordering::Relaxed)
+            || self.calibration_state(&measured::CUDA) != GpuCalibrationState::Idle
+        {
+            return;
+        }
+        let open_cuda = matches!(
+            read(&self.inner.backends).auto_candidate(analysis),
+            Some(crate::backend::AutoCandidate::Gpu {
+                cuda: true,
+                open: true,
+                ..
+            })
+        );
+        if open_cuda
+            && !self
+                .inner
+                .lazy_cuda_calibration
+                .swap(true, Ordering::Relaxed)
+            && self.begin_calibration(&measured::CUDA, false)
+        {
+            self.spawn_calibration(&measured::CUDA);
+        }
     }
 
     /// The state of `rules`' calibration.
@@ -320,44 +374,72 @@ impl Engine {
         self.calibrations().insert(rules.name, s);
     }
 
-    /// Mark `rules`' calibration running, unless it runs or ran.
-    fn begin_calibration(&self, rules: &'static measured::Rules) -> bool {
+    /// Mark `rules`' calibration running, unless it runs or ran (or, unless
+    /// `retry_failed`, failed).
+    fn begin_calibration(&self, rules: &'static measured::Rules, retry_failed: bool) -> bool {
         let mut m = self.calibrations();
         let s = m.entry(rules.name).or_default();
-        if matches!(
-            s,
-            GpuCalibrationState::Running | GpuCalibrationState::Ready { .. }
-        ) {
+        let ran = match s {
+            GpuCalibrationState::Idle => false,
+            GpuCalibrationState::Failed { .. } => !retry_failed,
+            GpuCalibrationState::Running | GpuCalibrationState::Ready { .. } => true,
+        };
+        if ran {
             return false;
         }
         *s = GpuCalibrationState::Running;
         true
     }
 
-    /// On the CUDA device `device` that `prepare_gpu` opened: install the
-    /// calibration cached in `<cache_dir>/cost/` when it still applies and
-    /// return `None`; else mark the calibration running and return where
-    /// to cache it once measured. `None` too when one runs or ran.
+    /// Where the CUDA calibration is cached, once known.
+    fn cuda_calibration_path(&self) -> Option<std::path::PathBuf> {
+        lock(&self.inner.cuda_calibration_cache).clone()
+    }
+
+    /// On the CUDA device `device` that `prepare_gpu` opened, with the
+    /// kernel build `kernel_build`: remember the cache path under
+    /// `cache_dir`, and install the calibration cached there when it still
+    /// applies and return false; else mark the calibration running and
+    /// return true (measure it). False too when one runs or ran: a running
+    /// one is cached when it ends, one measured earlier in this process
+    /// (lazily, [`Self::calibrate_cuda_lazily`]) is cached now.
     fn cached_cuda_calibration(
         &self,
         device: &str,
+        kernel_build: &str,
         cache_dir: Option<&Path>,
-    ) -> Option<Option<std::path::PathBuf>> {
+    ) -> bool {
         let rules = &measured::CUDA;
-        if !self.begin_calibration(rules) {
-            return None;
-        }
         let path = cache_dir.map(|d| d.join("cost").join(format!("{}.json", rules.name)));
+        if let Some(p) = &path {
+            *lock(&self.inner.cuda_calibration_cache) = Some(p.clone());
+        }
+        if !self.begin_calibration(rules, true) {
+            if let (Some(p), GpuCalibrationState::Ready { calibration }) =
+                (&path, self.calibration_state(rules))
+            {
+                save_calibration(rules, &calibration, p);
+            }
+            return false;
+        }
         let cached = path.as_deref().and_then(|p| {
             let threads = rayon::current_num_threads();
-            DeviceCalibration::load(p, rules, device, &crate::gpu::cuda_driver(), threads)
+            let print = measured::fingerprint(rules, kernel_build);
+            DeviceCalibration::load(
+                p,
+                rules,
+                device,
+                &crate::gpu::cuda_driver(),
+                threads,
+                &print,
+            )
         });
         match cached {
             Some(c) => {
                 self.set_calibration(rules, Some(c));
-                None
+                false
             }
-            None => Some(path),
+            None => true,
         }
     }
 
@@ -370,9 +452,12 @@ impl Engine {
     ///
     /// On a CUDA device it then installs the CUDA cost calibration: the one
     /// cached in `<cache_dir>/cost/` when it was measured on this device,
-    /// driver, engine version and thread count (installed as soon as the
-    /// device opens), else one measured on the same thread after the
-    /// kernels and cached there ([`Self::cuda_calibration_state`]).
+    /// driver, engine version, thread count, kernel build and calibration
+    /// runs (installed as soon as the device opens), else one measured on
+    /// the same thread after the kernels and cached there unless the
+    /// measurement looks disturbed ([`Self::cuda_calibration_state`]).
+    /// Until the kernels are ready, `auto` routes CUDA requests to the CPU
+    /// (`rule`: `cuda preparing`).
     pub fn prepare_gpu(&self, cache_dir: Option<std::path::PathBuf>) -> bool {
         let state = self.inner.gpu_preparation.clone();
         {
@@ -386,6 +471,8 @@ impl Engine {
                 total: 0,
             };
         }
+        let cost = self.inner.cost.clone();
+        cost.set_kernels_preparing(true);
         let provider = read(&self.inner.backends).first_gpu();
         let weak = Arc::downgrade(&self.inner);
         let spawned = mklight_core::platform::spawn("mklight-gpu-prepare", move || {
@@ -403,15 +490,18 @@ impl Engine {
                 {
                     Some(device) => {
                         let cuda = device.backend.info().kind == mklight_gpu::BackendKind::Cuda;
-                        let calibrate = cuda.then(|| weak.upgrade()).flatten().and_then(|inner| {
-                            Engine { inner }.cached_cuda_calibration(
-                                &device.device_name(),
-                                cache_dir.as_deref(),
-                            )
-                        });
+                        let calibrate =
+                            cuda.then(|| weak.upgrade()).flatten().is_some_and(|inner| {
+                                Engine { inner }.cached_cuda_calibration(
+                                    &device.device_name(),
+                                    &device.backend.precision().kernel_build,
+                                    cache_dir.as_deref(),
+                                )
+                            });
                         crate::gpu::prepare(device, cache_dir, &state);
-                        if let Some(path) = calibrate {
-                            calibrate_into(&weak, &measured::CUDA, path.as_deref());
+                        cost.set_kernels_preparing(false);
+                        if calibrate {
+                            calibrate_into(&weak, &measured::CUDA);
                         }
                     }
                     None => state.set(GpuPreparation::Unavailable {
@@ -424,7 +514,9 @@ impl Engine {
             };
             // A panic while opening the device or creating its kernels
             // must not leave the state at `Preparing`.
-            if let Err(panic) = catch_unwind(AssertUnwindSafe(prepare)) {
+            let r = catch_unwind(AssertUnwindSafe(prepare));
+            cost.set_kernels_preparing(false);
+            if let Err(panic) = r {
                 let device = match state.get() {
                     GpuPreparation::Preparing { device, .. } => device,
                     _ => String::new(),
@@ -436,6 +528,7 @@ impl Engine {
             }
         });
         if let Err(e) = spawned {
+            self.inner.cost.set_kernels_preparing(false);
             self.inner
                 .gpu_preparation
                 .set(crate::gpu::GpuPreparation::Failed {
@@ -444,6 +537,16 @@ impl Engine {
                 });
         }
         true
+    }
+
+    /// The kernel build of `rules`' device (opening it), for the
+    /// calibration's fingerprint.
+    fn kernel_build(&self, rules: &measured::Rules) -> Option<String> {
+        let s = read(&self.inner.backends)
+            .select(&Backend::Gpu(rules.name.into()), None, false)
+            .ok()?;
+        let d = s.device?.downcast::<crate::gpu::GpuDevice>().ok()?;
+        Some(d.backend.precision().kernel_build.clone())
     }
 
     /// Progress of [`Self::prepare_gpu`].
@@ -504,6 +607,11 @@ impl Engine {
         route: &crate::route::RouteOptions,
         allow_fallback: bool,
     ) -> EngineResult<SelectedBackend> {
+        if !CALIBRATING.get() {
+            self.inner
+                .foreground_requests
+                .fetch_add(1, Ordering::Relaxed);
+        }
         let Some(id) = self.auto_request_id(requested) else {
             return self.select_backend(requested, analysis, allow_fallback);
         };
@@ -532,6 +640,7 @@ impl Engine {
             },
         );
         s.requested = id;
+        self.calibrate_cuda_lazily(analysis, s.cost_decision.as_ref());
         Ok(s)
     }
 
@@ -612,33 +721,56 @@ fn read<T>(l: &RwLock<T>) -> std::sync::RwLockReadGuard<'_, T> {
     l.read().unwrap_or_else(|e| e.into_inner())
 }
 
+fn lock<T>(m: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Cache a calibration measured here at `path`, unless it is marked not
+/// to be cached (`DeviceCalibration::not_cached`).
+fn save_calibration(rules: &measured::Rules, c: &DeviceCalibration, path: &Path) {
+    if c.source != "measured" || !c.not_cached.is_empty() {
+        return;
+    }
+    if let Err(e) = c.save(path) {
+        eprintln!(
+            "mklight: the {} cost calibration could not be cached at {}: {e}",
+            rules.label,
+            path.display()
+        );
+    }
+}
+
 /// Run `rules`' calibration ([`calibrate`]) and record the outcome: on
-/// success install it (and cache it at `cache`); on failure keep the prior.
-/// Nothing when the engine was dropped meanwhile.
-fn calibrate_into(
-    weak: &std::sync::Weak<EngineInner>,
-    rules: &'static measured::Rules,
-    cache: Option<&Path>,
-) {
+/// success install it, and cache it (CUDA, once `prepare_gpu` named a cache
+/// directory) unless its repeats disagree or requests ran meanwhile; on
+/// failure keep the prior. Nothing when the engine was dropped meanwhile.
+fn calibrate_into(weak: &std::sync::Weak<EngineInner>, rules: &'static measured::Rules) {
+    let requests = |inner: &EngineInner| inner.foreground_requests.load(Ordering::Relaxed);
+    let before = weak.upgrade().map(|inner| requests(&inner));
+    CALIBRATING.set(true);
     let r = catch_unwind(AssertUnwindSafe(|| calibrate(weak, rules)));
+    CALIBRATING.set(false);
     let Some(inner) = weak.upgrade() else {
         return;
     };
+    let ran = requests(&inner) - before.unwrap_or(0);
     let engine = Engine { inner };
     let failed = |message| GpuCalibrationState::Failed { message };
     match r {
-        Ok(Ok(c)) => {
-            if let Some(path) = cache
-                && let Err(e) = c.save(path)
-            {
-                eprintln!(
-                    "mklight: the {} cost calibration could not be cached at {}: {e}",
-                    rules.label,
-                    path.display()
-                );
+        // The engine caches only CUDA's (the web host caches WebGPU's, in
+        // its unchanged format).
+        Ok(Ok(mut c)) if rules.name == measured::CUDA.name => {
+            c.not_cached = match c.disturbed() {
+                Some(why) => format!("its repeats disagree: {why}"),
+                None if ran > 0 => format!("{ran} requests ran while it measured"),
+                None => String::new(),
+            };
+            if let Some(path) = engine.cuda_calibration_path() {
+                save_calibration(rules, &c, &path);
             }
             engine.set_calibration(rules, Some(c));
         }
+        Ok(Ok(c)) => engine.set_calibration(rules, Some(c)),
         Ok(Err(e)) => engine.set_calibration_state(rules, failed(e.to_string())),
         Err(panic) => engine.set_calibration_state(
             rules,
@@ -733,6 +865,12 @@ fn calibrate(
         points,
         seconds: start.elapsed().as_secs_f64(),
         source: "measured".into(),
+        fingerprint: if rules.fingerprinted {
+            measured::fingerprint(rules, &engine()?.kernel_build(rules).unwrap_or_default())
+        } else {
+            String::new()
+        },
+        not_cached: String::new(),
     })
 }
 
