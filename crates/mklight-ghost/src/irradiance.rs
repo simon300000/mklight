@@ -1467,6 +1467,9 @@ pub(crate) fn ghost_irradiance_with_backend(
 }
 
 #[cfg(test)]
+// The macOS-only tests below are also `cfg(test)` items; off macOS this module
+// is the last test item and the lint would flag the helpers that follow it.
+#[cfg_attr(not(target_os = "macos"), allow(clippy::items_after_test_module))]
 mod tests {
     use std::collections::HashSet;
     use std::sync::Arc;

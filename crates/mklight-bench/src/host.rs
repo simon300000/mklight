@@ -2,6 +2,7 @@
 
 /// The 1, 5 and 15 minute load averages (zeros when unknown, as off unix).
 pub fn load_averages() -> [f64; 3] {
+    #[cfg_attr(not(unix), allow(unused_mut))]
     let mut l = [0f64; 3];
     // SAFETY: getloadavg writes at most the 3 doubles it is given.
     #[cfg(unix)]

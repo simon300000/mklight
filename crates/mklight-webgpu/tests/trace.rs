@@ -894,6 +894,7 @@ fn benchmark_extended_shapes() {
         .map(|(_, shape)| testutil::resolve(testutil::one_surface(shape.clone())))
         .collect();
     let backends: Vec<(String, Box<dyn QualificationBackend>)> = {
+        #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
         let mut v: Vec<(String, Box<dyn QualificationBackend>)> =
             vec![("WebGPU".into(), Box::new(g.clone()))];
         #[cfg(target_os = "macos")]

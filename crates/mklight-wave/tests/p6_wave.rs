@@ -6,6 +6,7 @@ fn snapshot() -> Snapshot {
     Snapshot::new(samples::singlet()).unwrap()
 }
 /// Equal lengths and every |x - y| below `limit`.
+#[cfg(target_os = "macos")]
 fn close(a: &[f64], b: &[f64], limit: f64) {
     assert_eq!(a.len(), b.len());
     for (x, y) in a.iter().zip(b) {
@@ -1032,6 +1033,7 @@ fn resampling_masks_match_device_emulation() {
 }
 
 /// Bits of every resident channel of a traced pupil, plus its rim loops.
+#[cfg(target_os = "macos")]
 fn traced_bits(b: &dyn ComputeBackend, r: &gpu::ResidentTracedPupil) -> (Vec<Vec<u32>>, String) {
     let p = &r.pupil;
     let words = |v: mklight_gpu::resident::BufferView| b.read_view(v).unwrap().words().to_vec();

@@ -304,6 +304,7 @@ pub(crate) fn run(
 mod tests {
     use super::*;
     use crate::analysis::AnalysisRegistry;
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     use crate::analysis::cost::Calibration;
     use crate::backend::Backend;
     use crate::gpu::GpuProvider;

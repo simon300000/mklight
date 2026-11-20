@@ -991,6 +991,7 @@ mod tests {
 
     #[test]
     fn gpu_refinements_share_evaluator_and_report_reference_values() {
+        #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
         let mut devices = vec![Arc::new(GpuDevice::new(
             "gpu:cpu_f32",
             Arc::new(mklight_gpu::CpuF32Backend::new()),
