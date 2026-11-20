@@ -170,11 +170,15 @@ impl<'a> GhostTransport<'a> {
         if max_steps == 0 {
             return Err(MkError::InvalidParam("ghost paths are empty".into()));
         }
+        // The packed aperture is the surface's fixed extent, which chooses
+        // between two crossings of its vertex sheet (`root_extent`); a clip
+        // that differs from it is marked on the steps (`pack_step`): a clear
+        // radius replaces the aperture and takes the nearer crossing, and
+        // `Clip::None` keeps the aperture for the root choice only.
         let mut packed = PackedSystem::pack(sys, &PackOptions::default())?;
         for (i, s) in packed.surfaces.iter_mut().enumerate() {
             match model.clip(i) {
-                Clip::None => s.aperture = MKL_APERTURE_NONE,
-                Clip::Surface => {}
+                Clip::None | Clip::Surface => {}
                 Clip::Radius { radius } => {
                     let r = Df32::from_f64(radius);
                     s.aperture = MKL_APERTURE_CIRCULAR;
@@ -1176,8 +1180,19 @@ fn pack_step(model: &GhostModel, st: &crate::Step, w: usize, coating: u32) -> St
     } else {
         MKL_STEP_SEQUENTIAL
     };
+    let clip = match model.clip(i) {
+        Clip::None => MKL_GHOST_STEP_NO_CLIP,
+        Clip::Surface => 0,
+        // Clear radii clip only surfaces without a fixed extent
+        // (`clip_apertures`).
+        Clip::Radius { .. } if s.root_extent().is_none() => MKL_GHOST_STEP_ROOT_NEAREST,
+        Clip::Radius { .. } => 0,
+    };
     Step {
-        word: st.surface | (mode << MKL_STEP_MODE_SHIFT) | if back { MKL_STEP_BACKWARD } else { 0 },
+        word: st.surface
+            | (mode << MKL_STEP_MODE_SHIFT)
+            | if back { MKL_STEP_BACKWARD } else { 0 }
+            | clip,
         physical: (model.interface_kinds()[i] != InterfaceKind::Passive) as u32,
         coating,
         channel,

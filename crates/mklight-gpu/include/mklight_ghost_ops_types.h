@@ -19,6 +19,15 @@
    the rim rays of the edge field put those rays exactly on the edge. */
 #define MKL_GHOST_APERTURE_TIE_BITS 0x31800000u
 #define MKL_GHOST_FIRSTORDER_SLOPE_BITS 0x358637bdu
+/* MklGhostStep.word bits above the path-program word (MKL_STEP_*): the
+   step's clipping differs from the surface's fixed extent, which the packed
+   aperture keeps for the conic root choice (docs/SURFACES.md §8).
+   ROOT_NEAREST: an automatic semi-diameter clipped at a packed clear radius;
+   it has no fixed extent, so the crossing nearer the vertex.
+   NO_CLIP: the surface does not clip ghost light; its packed aperture only
+   chooses the root. */
+#define MKL_GHOST_STEP_ROOT_NEAREST (1u << 21)
+#define MKL_GHOST_STEP_NO_CLIP (1u << 22)
 #define MKL_GHOST_VIRTUAL 16
 #define MKL_GHOST_REFERENCE 17
 #ifdef __METAL_VERSION__

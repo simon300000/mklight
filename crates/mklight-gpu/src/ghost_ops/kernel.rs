@@ -149,7 +149,9 @@ pub fn trace<E: FpEnv>(
         } else {
             tr::xf_forward(&s[si - 1], &mut pos, &mut dir)
         }
-        let root = if !back && si == 1 && h.flags & MKL_SYS_OBJECT_AT_INFINITY != 0 {
+        let root = if (!back && si == 1 && h.flags & MKL_SYS_OBJECT_AT_INFINITY != 0)
+            || st.word & MKL_GHOST_STEP_ROOT_NEAREST != 0
+        {
             MKL_ROOT_NEAREST
         } else {
             MKL_ROOT_FROM_START
@@ -178,11 +180,12 @@ pub fn trace<E: FpEnv>(
             counting = true;
         }
         pos = hit.x;
-        if aperture_tie(surf, pos[0], pos[1]) {
+        let clip = st.word & MKL_GHOST_STEP_NO_CLIP == 0;
+        if clip && aperture_tie(surf, pos[0], pos[1]) {
             v.status = fail(MKL_GHOST_REFERENCE);
             break;
         }
-        if !tr::passes_aperture(surf, pos[0], pos[1]) {
+        if clip && !tr::passes_aperture(surf, pos[0], pos[1]) {
             v.status = fail(MKL_RAY_VIGNETTED);
             break;
         }
