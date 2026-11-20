@@ -17,7 +17,10 @@
 //! cost model. The web host caches the WebGPU calibration (keyed by adapter,
 //! threads and engine version) and installs it at start
 //! ([`super::CostModel::set_calibration`]); natively the engine caches the
-//! CUDA calibration itself (`Engine::prepare_gpu`, [`DeviceCalibration::matches`]).
+//! CUDA calibration itself (`Engine::prepare_gpu`, [`DeviceCalibration::matches`]),
+//! keyed in addition by a [`fingerprint`] of the kernel build, the runs and
+//! the work measure, and only when its repeats agree
+//! ([`DeviceCalibration::disturbed`]).
 
 use std::collections::BTreeMap;
 
@@ -30,6 +33,18 @@ use super::{Decision, MIN_GAIN_MS, RATIO, Route, VERSION};
 
 /// Calibration format.
 pub const FORMAT: u32 = 1;
+
+/// Version of the work measure ([`mwork`]) and of [`fit`]: a calibration
+/// fitted with another measure predicts nothing (part of [`fingerprint`]).
+/// Raise it whenever either changes.
+pub const MWORK_VERSION: u32 = 1;
+
+/// Largest ratio of the median to the fastest repeat of one size in a
+/// calibration that is cached ([`DeviceCalibration::disturbed`]).
+pub const MAX_SPREAD: f64 = 1.5;
+/// Repeats closer than this (ms) agree whatever their ratio: the timer and
+/// scheduler noise of sub-millisecond runs, far below [`MIN_GAIN_MS`].
+pub const SPREAD_SLACK_MS: f64 = 1.;
 
 /// The rules of one measured backend.
 #[derive(Debug)]
@@ -49,6 +64,9 @@ pub struct Rules {
     pub sample: fn() -> OpticalSystem,
     /// Each calibrated analysis's settings at its two sizes.
     pub sizes: fn(&str) -> [Value; 2],
+    /// Its cached calibrations carry a [`fingerprint`] (CUDA; the WebGPU
+    /// format, which the web host caches, has none).
+    pub fingerprinted: bool,
 }
 
 /// WebGPU (GPU.md §11.6): the prior is the ray count from which WebGPU
@@ -65,6 +83,7 @@ pub const WEBGPU: Rules = Rules {
     calibrated: &["spot_diagram", "ray_grid", "geometric_mtf"],
     sample: mklight_core::samples::cooke_triplet,
     sizes: |_| [json!({"rings": 12}), json!({"rings": 40})],
+    fingerprinted: false,
 };
 
 /// CUDA: the prior is the smallest ray count at which CUDA measured at
@@ -111,6 +130,7 @@ pub const CUDA: Rules = Rules {
             [json!({"rings": 24}), json!({"rings": 96})]
         }
     },
+    fingerprinted: true,
 };
 
 /// The measured backends.
@@ -138,6 +158,33 @@ impl Rules {
     pub fn backend_id(&self) -> String {
         format!("gpu:{}", self.name)
     }
+}
+
+/// What a cached calibration of `rules`' device was measured with beyond
+/// the device, driver, engine version and threads: the kernel build
+/// (`PrecisionDescriptor::kernel_build`, which includes the kernel
+/// sources' digest), the runs and their sample, and the work measure
+/// ([`MWORK_VERSION`]). A development build keeps its engine version while
+/// any of these change. Empty for rules that are not
+/// [`Rules::fingerprinted`].
+pub fn fingerprint(rules: &Rules, kernel_build: &str) -> String {
+    if !rules.fingerprinted {
+        return String::new();
+    }
+    let runs = serde_json::to_vec(&rules.runs()).unwrap_or_default();
+    let sample = serde_json::to_vec(&(rules.sample)()).unwrap_or_default();
+    let mut h = blake3::Hasher::new();
+    for part in [
+        &MWORK_VERSION.to_le_bytes()[..],
+        rules.name.as_bytes(),
+        kernel_build.as_bytes(),
+        &runs,
+        &sample,
+    ] {
+        h.update(&(part.len() as u64).to_le_bytes());
+        h.update(part);
+    }
+    h.finalize().to_hex()[..32].to_string()
 }
 
 /// One backend's cost of one analysis (ms).
@@ -205,6 +252,14 @@ pub struct DeviceCalibration {
     /// Where it came from: `measured` here, or `cached` / `forced` by the host.
     #[serde(default)]
     pub source: String,
+    /// [`fingerprint`] of what it was measured with (CUDA; absent from the
+    /// WebGPU format).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub fingerprint: String,
+    /// Why a measured calibration was installed but not cached (its
+    /// repeats disagree, or requests ran meanwhile); empty otherwise.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub not_cached: String,
 }
 
 /// The WebGPU calibration's name in the web host's interface.
@@ -212,19 +267,28 @@ pub type WebGpuCalibration = DeviceCalibration;
 
 impl DeviceCalibration {
     /// A cached calibration still applies: same format, engine version,
-    /// device, driver and thread count, and it covers the analyses `rules`
-    /// calibrate now.
-    pub fn matches(&self, rules: &Rules, adapter: &str, driver: &str, threads: usize) -> bool {
+    /// device, driver, thread count and [`fingerprint`], and every analysis
+    /// it holds is one `rules` calibrate. An analysis the fit dropped
+    /// (fewer than two sizes measured) routes by the prior: measuring again
+    /// would most likely drop it again.
+    pub fn matches(
+        &self,
+        rules: &Rules,
+        adapter: &str,
+        driver: &str,
+        threads: usize,
+        fingerprint: &str,
+    ) -> bool {
         self.format == FORMAT
             && self.engine_version == mklight_core::ENGINE_VERSION
             && self.adapter == adapter
             && self.driver == driver
             && self.threads == threads
-            && self.analyses.keys().eq(rules
-                .calibrated
-                .iter()
-                .copied()
-                .collect::<std::collections::BTreeSet<_>>())
+            && self.fingerprint == fingerprint
+            && self
+                .analyses
+                .keys()
+                .all(|k| rules.calibrated.contains(&k.as_str()))
     }
 
     /// The calibration cached at `path` if it still applies
@@ -235,12 +299,41 @@ impl DeviceCalibration {
         adapter: &str,
         driver: &str,
         threads: usize,
+        fingerprint: &str,
     ) -> Option<Self> {
         let text = std::fs::read_to_string(path).ok()?;
         let mut c: Self = serde_json::from_str(&text).ok()?;
-        c.matches(rules, adapter, driver, threads).then(|| {
-            c.source = "cached".into();
-            c
+        c.matches(rules, adapter, driver, threads, fingerprint)
+            .then(|| {
+                c.source = "cached".into();
+                c
+            })
+    }
+
+    /// Why the measurement looks disturbed (other work on the CPU or the
+    /// device while it ran), so that it must not be cached: an analysis,
+    /// backend and size whose median repeat, which [`fit`] uses, took more
+    /// than [`MAX_SPREAD`] times its fastest (and more than
+    /// [`SPREAD_SLACK_MS`] longer). A single slow repeat does not count:
+    /// the first run of a size pays its allocations (up to twice the
+    /// others on the RTX 4090), and the median ignores it.
+    pub fn disturbed(&self) -> Option<String> {
+        let mut groups: BTreeMap<(&str, &str, u64), Vec<f64>> = BTreeMap::new();
+        for p in &self.points {
+            groups
+                .entry((&p.analysis, &p.backend, p.mwork.to_bits()))
+                .or_default()
+                .push(p.ms);
+        }
+        groups.into_iter().find_map(|((a, b, w), mut t)| {
+            t.sort_by(f64::total_cmp);
+            let (lo, mid) = (t[0], t[t.len() / 2]);
+            (mid - lo > SPREAD_SLACK_MS && mid > MAX_SPREAD * lo).then(|| {
+                format!(
+                    "{a} on {b} at {:.4} Mwork: median {mid:.2} ms, fastest {lo:.2} ms (over {MAX_SPREAD}x)",
+                    f64::from_bits(w)
+                )
+            })
         })
     }
 
@@ -343,6 +436,23 @@ pub(crate) fn decide(
     }
 }
 
+/// The decision while `rules`' device is still preparing its kernels
+/// (`Engine::prepare_gpu` started and not finished): the CPU, so a request
+/// never waits for kernel creation (a GPU newer than the built-in kernel
+/// images compiles them for about a minute).
+pub(crate) fn preparing(rules: &Rules) -> Decision {
+    let (name, label) = (rules.name, rules.label);
+    Decision {
+        route: Route::Cpu,
+        json: json!({
+            "decision": "cpu_reference",
+            "rule": format!("{name} preparing"),
+            "reason": format!("the {label} kernels are still being prepared"),
+            "version": VERSION,
+        }),
+    }
+}
+
 /// Fit the calibration from its timed points (the median of each
 /// analysis/backend/size).
 pub fn fit(rules: &Rules, points: &[Point]) -> BTreeMap<String, Pair> {
@@ -387,6 +497,8 @@ mod tests {
             points: vec![],
             seconds: 0.,
             source: "forced".into(),
+            fingerprint: String::new(),
+            not_cached: String::new(),
         }
     }
 
@@ -538,9 +650,11 @@ mod tests {
         c.adapter = "GPU".into();
         c.driver = "driver 1".into();
         c.source = "measured".into();
+        let print = fingerprint(&CUDA, "kernels 1");
+        c.fingerprint = print.clone();
         c.save(&path).unwrap();
         let load = |adapter, driver, threads| {
-            DeviceCalibration::load(&path, &CUDA, adapter, driver, threads)
+            DeviceCalibration::load(&path, &CUDA, adapter, driver, threads, &print)
         };
         let back = load("GPU", "driver 1", 4).expect("the same device loads");
         assert_eq!(back.source, "cached");
@@ -549,12 +663,18 @@ mod tests {
         assert!(load("other", "driver 1", 4).is_none());
         assert!(load("GPU", "driver 2", 4).is_none());
         assert!(load("GPU", "driver 1", 8).is_none());
-        // So does another engine version, format or analysis set.
+        // So does another kernel build.
+        let rebuilt = fingerprint(&CUDA, "kernels 2");
+        assert_ne!(rebuilt, print);
+        assert!(DeviceCalibration::load(&path, &CUDA, "GPU", "driver 1", 4, &rebuilt).is_none());
+        // And another engine version, format, fingerprint or an analysis
+        // the rules no longer calibrate.
         for change in [
             |c: &mut DeviceCalibration| c.engine_version = "0.0.0-other".into(),
             |c: &mut DeviceCalibration| c.format = FORMAT + 1,
+            |c: &mut DeviceCalibration| c.fingerprint.clear(),
             |c: &mut DeviceCalibration| {
-                c.analyses.remove("mtf");
+                c.analyses.insert("psf".into(), c.analyses["spot_diagram"]);
             },
         ] {
             let mut stale = c.clone();
@@ -562,10 +682,66 @@ mod tests {
             stale.save(&path).unwrap();
             assert!(load("GPU", "driver 1", 4).is_none());
         }
+        // An analysis the fit dropped is tolerated: it routes by the prior
+        // instead of measuring again at every launch.
+        let mut partial = c.clone();
+        partial.analyses.remove("mtf");
+        partial.save(&path).unwrap();
+        let back = load("GPU", "driver 1", 4).expect("a partial fit loads");
+        assert!(!back.analyses.contains_key("mtf"));
         // An unreadable file is no calibration.
         std::fs::write(&path, "{not json").unwrap();
         assert!(load("GPU", "driver 1", 4).is_none());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The fingerprint covers the kernel build, the runs and the work
+    /// measure, and the WebGPU format has none.
+    #[test]
+    fn fingerprints_cover_build_and_runs_and_only_cuda_has_one() {
+        let a = fingerprint(&CUDA, "build");
+        assert_eq!(a, fingerprint(&CUDA, "build"), "deterministic");
+        assert_eq!(a.len(), 32);
+        assert_ne!(a, fingerprint(&CUDA, "build 2"));
+        let other = Rules {
+            sizes: |_| [json!({"rings": 8}), json!({"rings": 9})],
+            ..CUDA
+        };
+        assert_ne!(a, fingerprint(&other, "build"), "other runs");
+        assert!(fingerprint(&WEBGPU, "build").is_empty());
+        let w = cal("ray_grid", line(1., 1.), line(1., 1.));
+        let text = serde_json::to_value(&w).unwrap();
+        assert!(text.get("fingerprint").is_none());
+        assert!(text.get("not_cached").is_none());
+    }
+
+    /// Repeats that disagree mark the measurement disturbed; one slow
+    /// repeat (a size's first run) and sub-ms noise do not.
+    #[test]
+    fn disturbed_calibrations_are_detected() {
+        let mut c = cal("ray_grid", line(1., 1.), line(1., 1.));
+        let p = |backend: &str, mwork: f64, ms: f64| Point {
+            analysis: "ray_grid".into(),
+            backend: backend.into(),
+            mwork,
+            ms,
+        };
+        c.points = vec![
+            // One slow first run.
+            p("cpu", 1., 30.),
+            p("cpu", 1., 15.),
+            p("cpu", 1., 14.),
+            // Tiny runs: double the time, but within the slack.
+            p("cuda", 0.1, 0.3),
+            p("cuda", 0.1, 0.9),
+            p("cuda", 0.1, 0.7),
+        ];
+        assert_eq!(c.disturbed(), None);
+        // Two of three slowed down: the median moves.
+        c.points
+            .extend([p("cuda", 1., 20.), p("cuda", 1., 31.), p("cuda", 1., 32.)]);
+        let why = c.disturbed().expect("a 1.55x median");
+        assert!(why.contains("ray_grid on cuda"), "{why}");
     }
 
     #[test]
