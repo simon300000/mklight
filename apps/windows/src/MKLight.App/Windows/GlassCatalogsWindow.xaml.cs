@@ -582,7 +582,15 @@ public sealed partial class GlassCatalogsWindow : Window
         Add(VirtualKey.Z, VirtualKeyModifiers.Control, () => { if (!IsTextEditing()) _design?.Session.Document.Undo(); });
         Add(VirtualKey.Y, VirtualKeyModifiers.Control, () => { if (!IsTextEditing()) _design?.Session.Document.Redo(); });
         Add(VirtualKey.F, VirtualKeyModifiers.Control, () => SearchBox.Focus(FocusState.Keyboard));
-        Add(VirtualKey.Enter, VirtualKeyModifiers.None, () => { if (!IsTextEditing()) _model.UseSelected(); });
+        // Return on a table row uses the glass (as a double-click does).
+        var enter = new KeyboardAccelerator { Key = VirtualKey.Enter };
+        enter.Invoked += (_, e) =>
+        {
+            if (FocusManager.GetFocusedElement(Root.XamlRoot) is not ListViewItem) return;
+            _model.UseSelected();
+            e.Handled = true;
+        };
+        Root.KeyboardAccelerators.Add(enter);
     }
 
     bool IsTextEditing() => FocusManager.GetFocusedElement(Root.XamlRoot) is TextBox or AutoSuggestBox;
