@@ -2683,17 +2683,32 @@ gain. A request's fixed cost on CUDA is about 2.5 ms.
 **Routing** (`analysis::cost::measured`, shared with WebGPU's calibration
 of §11.6): `Engine::prepare_gpu` installs `<cache_dir>/cost/cuda.json` when
 it was measured with the same device, driver, engine version, CPU thread
-count and calibrated analyses; otherwise, after the kernels, it times the
+count and fingerprint (a hash of the kernel build, the calibration's runs
+and sample and the version of the work measure, so another development
+build measures again); analyses missing from it route by the prior.
+Otherwise, after the kernels, it times the
 spot diagram, ray grid and geometric MTF (24 and 96 rings), the MTF, MTF
 vs field and through-focus MTF (33 and 65 pupil rays) and the FFT MTF
 (128² and 512² pupil grids) of the Cooke triplet on the CPU reference and
 on CUDA (about 6 s), fits each a line `fixed_ms + per_mwork_ms · work`
 (rays × surfaces, plus the transform work of the wave analyses), installs
-and caches it. A wave line applies only to the method it measured. `auto`
+it, and caches it unless a size's median repeat was more than 1.5× its
+fastest or requests ran while it measured (then it serves this run only,
+and `not_cached` says why). A wave line applies only to the method it
+measured. `auto`
 takes CUDA when the CPU is predicted at least 1.3× and 5 ms slower. Until a
 calibration exists, or when it failed or was cancelled, the prior applies:
 spot diagram, ray grid and geometric MTF from 400 k rays, everything else
 on the CPU. The PSF is not calibrated (within 10 % either way) and stays on
-the CPU. The decision is recorded in `backend.cost_decision` (`rule`:
-`cuda calibration` or `cuda break-even`); the calibration never delays a
-request.
+the CPU. While `prepare_gpu` prepares the kernels, `auto` sends CUDA
+requests to the CPU (`rule`: `cuda preparing`), so no request waits for a
+kernel compilation (on a GPU newer than the newest built-in CUBIN the PTX
+takes about a minute). An engine that never calls `prepare_gpu` (library
+and command-line use) starts the calibration in the background on its first
+`auto` request decided by the prior on the open CUDA device, and caches it
+once `prepare_gpu` names a cache directory. Installing a calibration
+decides new requests only: an identical request keeps its first route. The
+decision is recorded in `backend.cost_decision` (`rule`: `cuda preparing`,
+`cuda calibration` or `cuda break-even`). No request waits for the
+calibration, but it runs on the CPU and the device while requests may run
+(about 6 s), and can slow them meanwhile.
