@@ -199,6 +199,92 @@ test('WebGPU: calibration is measured, cached, reused, and routes auto', async (
   expect((await auto(8)).cost_decision.rule).toBe('webgpu break-even')
 })
 
+test('WebGPU: a pipeline that never compiles is a reason, not a hang, and is remembered', async ({ page }) => {
+  test.setTimeout(240_000)
+  await openHarness(page)
+  const r = await page.evaluate(() => window.mk.ready())
+  test.skip(!r.webgpu, 'no WebGPU adapter')
+  // The trace pipelines never finish compiling (the watchdog's test stall),
+  // with a 1.5 s limit. A fresh browser context: nothing remembered yet.
+  const watchdog = { timeoutMs: 1500, stalledModules: ['trace', 'trace_overlays'] }
+  const first = await page.evaluate((w) => window.mk.create(undefined, 'auto', w), watchdog)
+  const webgpu = first.info.backends.find((b) => b.id === 'gpu:webgpu')
+  expect(webgpu?.available, `gpu:webgpu opens: ${webgpu?.reason}`).toBe(true)
+  const REASON = 'compute pipeline did not finish compiling within 1.5 s, so WebGPU is not used on this device'
+
+  // The calibration meets the stall: it fails with the reason, records no
+  // numbers, and does not hang.
+  const settled = (await page.evaluate(async (k) => {
+    for (let n = 0; n < 1200; n++) {
+      const s = (await window.mk.calibration(k)) as { state: string }
+      if (s.state !== 'running' && s.state !== 'idle') return s
+      await new Promise((res) => setTimeout(res, 100))
+    }
+    return window.mk.calibration(k)
+  }, first.index)) as { state: string; message?: string; calibration?: unknown }
+  console.log('calibration', JSON.stringify(settled))
+  expect(settled.state).toBe('failed')
+  expect(settled.message).toContain(REASON)
+  expect(settled.calibration).toBeUndefined()
+
+  // `auto` sends a large ray grid (the prior's WebGPU route) to the CPU
+  // with the reason; an explicit request without fallback fails with it;
+  // with fallback (the default) it runs on the CPU and says why.
+  const text = readFileSync(join(REF_DIR, 'cooke.mklight'), 'utf8')
+  await page.evaluate(([t, i]) => window.mk.openProject(i as number, t as string), [text, first.index] as const)
+  const run = (backend: unknown, fallback = true) =>
+    page.evaluate(
+      async ([i, b, f]) => {
+        const req = {
+          analysis: 'ray_grid',
+          settings: { rings: 96 } as never,
+          backend: b as never,
+          allow_backend_fallback: f as boolean,
+          fresh: true,
+        }
+        try {
+          const { result } = await window.mk.run(i as number, req)
+          return { backend: result.backend as { used: string; fallback_reason?: string }, error: null }
+        } catch (e) {
+          const x = e as { kind?: string; message?: string }
+          return { backend: null, error: { kind: x.kind, message: String(x.message) } }
+        }
+      },
+      [first.index, backend, fallback] as const,
+    )
+  const auto = await run('auto')
+  expect(auto.backend?.used).toBe('cpu_reference')
+  expect(auto.backend?.fallback_reason).toContain('gpu:webgpu: the trace::')
+  expect(auto.backend?.fallback_reason).toContain(REASON)
+  const strict = await run('gpu', false)
+  expect(strict.error?.kind).toBe('unsupported')
+  expect(strict.error?.message).toContain(REASON)
+  const lenient = await run('gpu')
+  expect(lenient.backend?.used).toBe('cpu_reference')
+  expect(lenient.backend?.fallback_reason).toContain(REASON)
+
+  // A later load on this browser and adapter, without the stall, does not
+  // wait again: gpu:webgpu is unavailable at once with the remembered
+  // reason, and no calibration starts.
+  const second = await page.evaluate(() => window.mk.create())
+  const again = second.info.backends.find((b) => b.id === 'gpu:webgpu')
+  console.log('remembered', JSON.stringify(again))
+  expect(again?.available).toBe(false)
+  expect(again?.reason).toContain(REASON)
+  expect(again?.reason).toContain('remembered for this browser and GPU')
+  expect(((await page.evaluate((i) => window.mk.calibration(i), second.index)) as { state: string }).state).toBe('idle')
+  await page.evaluate(([t, i]) => window.mk.openProject(i as number, t as string), [text, second.index] as const)
+  const t0 = Date.now()
+  const { result } = await page.evaluate(
+    (i) => window.mk.run(i, { analysis: 'ray_grid', settings: { rings: 96 } as never, backend: 'auto', fresh: true }),
+    second.index,
+  )
+  expect(Date.now() - t0).toBeLessThan(60_000)
+  const used = result.backend as { used: string; fallback_reason: string }
+  expect(used.used).toBe('cpu_reference')
+  expect(used.fallback_reason).toContain('remembered for this browser and GPU')
+})
+
 /**
  * CPU (all threads) against WebGPU, fresh runs after a warm-up, best of
  * three: the browser columns of GPU.md §11's benchmark table. Set

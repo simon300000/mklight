@@ -16,3 +16,4 @@ mod spec_conversion;
 mod stray_partition;
 mod wave;
 mod webgpu_calibration;
+mod webgpu_watchdog;

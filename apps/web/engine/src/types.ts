@@ -147,6 +147,10 @@ export interface AnalysisRequest {
   /** Partial settings; missing keys take the schema defaults. */
   settings?: JSONObject
   backend?: BackendRequest
+  /** For a GPU backend: run on the CPU reference with a warning when it is
+   * unavailable (default `true`); `false` fails the request instead, with
+   * the reason. */
+  allow_backend_fallback?: boolean
   /** Recompute, bypassing the analysis graph. */
   fresh?: boolean
   tier?: Tier
@@ -339,4 +343,11 @@ export interface CreateEngineOptions {
    * measures one in the background (the prior routes meanwhile); `'off'`
    * keeps the prior. */
   webgpuCalibration?: 'auto' | 'off'
+  /** The WebGPU pipeline watchdog: a compute pipeline that does not finish
+   * compiling within `timeoutMs` (default 45 s) makes `gpu:webgpu`
+   * unavailable, with the reason, and the failure is remembered for this
+   * browser and adapter. `stalledModules` is for tests only: kernel
+   * modules (`'trace'`, `'trace_overlays'`, …) whose compilation is
+   * simulated never to finish. */
+  webgpuWatchdog?: { timeoutMs?: number; stalledModules?: string[] }
 }

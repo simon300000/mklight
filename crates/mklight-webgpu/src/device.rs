@@ -222,6 +222,11 @@ pub trait Gpu: Send + Sync {
     fn prepare(&self, kernels: &[(Kernel, PassShape)]) -> MkResult<()>;
     /// Run `batch` and block until it completed and its reads are written.
     fn run(&self, batch: Batch<'_>) -> MkResult<BatchStats>;
+    /// Why the device can no longer run work (a pipeline that did not
+    /// become ready in time, `crate::watchdog`), once known.
+    fn unavailable(&self) -> Option<String> {
+        None
+    }
 }
 
 /// The binding shape of a pass, which with the kernel identifies a pipeline.

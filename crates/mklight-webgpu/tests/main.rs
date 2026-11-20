@@ -35,4 +35,5 @@ mod numerics;
 mod proxy;
 mod trace;
 mod transforms;
+mod watchdog;
 mod wave;

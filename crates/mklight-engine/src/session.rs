@@ -287,6 +287,12 @@ fn collect_catalog_materials(v: &Value, out: &mut Vec<(Option<String>, String)>)
     }
 }
 
+/// An explicit GPU request that must not fall back to the CPU reference
+/// (`AnalysisInput::strict_backend`).
+fn strict_backend(req: &AnalysisRequest) -> bool {
+    matches!(req.backend, Some(Backend::Gpu(_))) && !req.allow_backend_fallback
+}
+
 fn resolve_cached(
     cache: &ResolvedCache,
     snapshot: &Snapshot,
@@ -1518,6 +1524,7 @@ impl Session {
         )
         .with_device(backend.device)
         .with_selection(backend.requested, backend.note)
+        .with_strict_backend(strict_backend(req))
         .with_cost_decision(backend.cost_decision)
         .with_library_hash(self.library_hash.clone())
         .with_graph(self.engine.analysis_graph().cloned())
@@ -1555,6 +1562,7 @@ impl Session {
         let label = format!("{} @ {}", req.analysis, snap.hash().short());
         let supports_stop = analysis.supports_stop();
         let fresh = req.fresh;
+        let strict = strict_backend(req);
         let stop = mklight_core::job::CancelToken::new();
         let job_stop = stop.clone();
         let mut spec = JobSpec::new(label, move |ctx: &JobContext| {
@@ -1567,6 +1575,7 @@ impl Session {
             .with_stop_token(job_stop)
             .with_device(backend.device)
             .with_selection(backend.requested, backend.note)
+            .with_strict_backend(strict)
             .with_cost_decision(backend.cost_decision)
             .with_library_hash(lib_hash)
             .with_graph(graph)

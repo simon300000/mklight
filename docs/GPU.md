@@ -2356,6 +2356,31 @@ and runs the numerics probe through the proxy. Plan workers
 the engine's host threads (WEB.md, "Threads"). WebGPU adds 0.73 MB brotli
 to the wasm module (2.72 MB in all).
 
+**Pipeline watchdog** (`mklight_webgpu::watchdog`). A browser hands the
+WGSL to the platform's shader compiler, which on some drivers never
+finishes the trace kernel; a batch using that pipeline would wait forever,
+and every later request behind it. So the device makes each pipeline ready
+before a batch uses it: the GPU thread requests the same pipeline (source,
+layout, entry point) with `createComputePipelineAsync` and races it against
+a timer of 45 s (`PIPELINE_TIMEOUT`); the synchronous creation that follows
+finds it in the browser's caches. A pipeline that is not ready in time
+marks the device as failed: every later pipeline request fails at once,
+`ComputeBackend::unavailable` gives the reason, and the engine reports
+`gpu:webgpu` as unavailable with it. `auto` then runs on the CPU reference
+(`fallback_reason` "gpu:webgpu: the trace::… compute pipeline did not finish
+compiling within 45 s, …"), an explicit request without fallback fails with
+the reason (`BackendUnavailable`; with fallback, the CPU and a warning), and
+the calibration fails instead of measuring. No work is submitted with a
+pipeline that did not compile. The engine worker remembers the failure in
+the calibration database under the adapter, the browser's user agent and
+the kernel digest (`webgpu_kernel_build`) for 14 days; a later load installs
+it (`webgpu_set_known_failure`) and the backend is unavailable at once,
+without a calibration. A browser update, a new kernel build or the expiry
+(browsers do not expose the driver version) tries again. Natively pipeline
+creation is synchronous and the race resolves at once. For tests,
+`Watchdog::stalled` (native) and `createEngine({webgpuWatchdog})` (web)
+simulate modules whose compilation never finishes, with a shorter limit.
+
 ### 11.5 Ported operations and accuracy
 
 The operations with WGSL kernels (`src/ops/*`, `kernels/*`): everything

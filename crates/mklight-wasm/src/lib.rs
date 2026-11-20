@@ -255,6 +255,52 @@ pub fn webgpu_calibration_set(calibration_json: &str) -> Result<(), JsValue> {
     Ok(())
 }
 
+/// Why WebGPU stopped in this load: a compute pipeline that did not finish
+/// compiling within the watchdog's limit (`mklight_webgpu::watchdog`), or
+/// `undefined`. The host remembers it for this browser and adapter.
+#[cfg(feature = "webgpu")]
+#[wasm_bindgen]
+pub fn webgpu_pipeline_failure() -> Option<String> {
+    mklight_webgpu::web::pipeline_failure()
+}
+
+/// Install a pipeline failure remembered from an earlier load (before
+/// `register_webgpu`): `gpu:webgpu` is then unavailable with `reason`
+/// without waiting for the compilation again.
+#[cfg(feature = "webgpu")]
+#[wasm_bindgen]
+pub fn webgpu_set_known_failure(reason: &str) {
+    mklight_webgpu::web::set_known_failure(reason);
+}
+
+/// A digest of the WebGPU kernel sources (part of the key under which the
+/// host remembers a pipeline failure: other kernels are tried again).
+#[cfg(feature = "webgpu")]
+#[wasm_bindgen]
+pub fn webgpu_kernel_build() -> String {
+    mklight_webgpu::kernels::digest()
+}
+
+/// Set the pipeline watchdog (`mklight_webgpu::watchdog`): its time limit
+/// in ms (0: the default) and, for tests only, comma-separated kernel
+/// modules (`"trace,trace_overlays"`) whose compilation is simulated never
+/// to finish. Call before the first analysis.
+#[cfg(feature = "webgpu")]
+#[wasm_bindgen]
+pub fn webgpu_set_watchdog(timeout_ms: u32, stalled_modules: &str) {
+    let mut w = mklight_webgpu::watchdog::Watchdog::default();
+    if timeout_ms > 0 {
+        w.timeout = std::time::Duration::from_millis(timeout_ms.into());
+    }
+    w.stalled = stalled_modules
+        .split(',')
+        .map(str::trim)
+        .filter(|m| !m.is_empty())
+        .map(String::from)
+        .collect();
+    mklight_webgpu::web::set_watchdog_override(Some(w));
+}
+
 /// Host workers the glue should start now for engine threads that wait for
 /// one (`mklight_core::platform`). Each started worker calls `thread_host`.
 #[wasm_bindgen]

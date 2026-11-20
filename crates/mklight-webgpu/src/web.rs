@@ -9,6 +9,11 @@
 //! cannot) and give the proxy to `WebGpuBackend::with_gpu`; the engine
 //! registers that as `gpu:webgpu` (`GpuProvider::webgpu_with`).
 //!
+//! Pipeline creation runs under the watchdog (`crate::watchdog`). The web
+//! host reads a failure with [`pipeline_failure`] to remember it for this
+//! browser and adapter, and installs a remembered one on later loads with
+//! [`set_known_failure`], so they do not wait again.
+//!
 //! The GPU worker must never block: it sleeps in `Atomics.waitAsync` on the
 //! channel's doorbell and awaits each batch's `mapAsync`. Engine threads
 //! block in `Atomics.wait` (through `std`'s condition variables), which
@@ -24,12 +29,58 @@ use wasm_bindgen::JsCast;
 use crate::WgpuDevice;
 use crate::device::AdapterSummary;
 use crate::proxy::{Channel, GpuProxy};
+use crate::watchdog::Watchdog;
 
 type Published = Result<(Arc<Channel>, AdapterSummary), String>;
 
 /// What the GPU thread published (statics live in the shared memory).
 static PUBLISHED: Mutex<Option<Published>> = Mutex::new(None);
 static PUBLISHED_CHANGED: Condvar = Condvar::new();
+
+/// The watchdog settings of the GPU thread's device when the host set them
+/// ([`set_watchdog_override`]).
+static WATCHDOG: Mutex<Option<Watchdog>> = Mutex::new(None);
+
+/// A pipeline failure the host remembered from an earlier load.
+static KNOWN_FAILURE: Mutex<Option<String>> = Mutex::new(None);
+
+/// Replace the GPU thread's watchdog settings (`crate::watchdog`): a
+/// different time limit, or, for tests, kernel modules whose compilation
+/// never finishes. Applies to pipelines created from now on.
+pub fn set_watchdog_override(w: Option<Watchdog>) {
+    *WATCHDOG.lock().unwrap_or_else(|e| e.into_inner()) = w;
+}
+
+pub(crate) fn watchdog_override() -> Option<Watchdog> {
+    WATCHDOG.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+/// Install a pipeline failure remembered for this browser and adapter: the
+/// engine then reports `gpu:webgpu` as unavailable with `reason` instead of
+/// waiting for the compilation again.
+pub fn set_known_failure(reason: &str) {
+    *KNOWN_FAILURE.lock().unwrap_or_else(|e| e.into_inner()) = Some(reason.to_string());
+    if let Some(Ok((channel, _))) = &*PUBLISHED.lock().unwrap_or_else(|e| e.into_inner()) {
+        channel.health().fail(reason);
+    }
+}
+
+/// The remembered failure installed with [`set_known_failure`].
+pub fn known_failure() -> Option<String> {
+    KNOWN_FAILURE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+}
+
+/// Why the GPU thread's device stopped creating pipelines in this load
+/// (the watchdog fired), if it did.
+pub fn pipeline_failure() -> Option<String> {
+    match &*PUBLISHED.lock().unwrap_or_else(|e| e.into_inner()) {
+        Some(Ok((channel, _))) => channel.health().failure(),
+        _ => None,
+    }
+}
 
 fn publish(p: Published) {
     *PUBLISHED.lock().unwrap_or_else(|e| e.into_inner()) = Some(p);
@@ -49,7 +100,7 @@ pub async fn run_gpu_thread() {
         Ok(None) => return publish(Err("this browser offers no WebGPU adapter".into())),
         Err(e) => return publish(Err(format!("the WebGPU device could not be opened: {e}"))),
     };
-    let channel = Channel::new();
+    let channel = Channel::for_device(&device);
     publish(Ok((channel.clone(), device.adapter_summary().clone())));
     loop {
         let seen = channel.doorbell().load(Ordering::SeqCst);

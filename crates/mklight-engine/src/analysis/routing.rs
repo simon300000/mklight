@@ -276,6 +276,23 @@ pub(crate) fn run(
         Err(e) => {
             ctx.check()?;
             let elapsed_ms = start.elapsed().as_secs_f64() * 1e3;
+            // The device stopped working during the run (a WebGPU pipeline
+            // that never finished compiling): the backend is unavailable
+            // from now on, so the failure belongs to the device, not to
+            // this input.
+            if let Some(why) = device.backend.unavailable() {
+                let reason = format!("{}: {why}", device.id);
+                attempt("failed", reason.clone(), elapsed_ms);
+                if input.strict_backend {
+                    return Err(EngineError::BackendUnavailable(reason));
+                }
+                fallback(reason, false);
+                return analysis.run(
+                    &reference,
+                    settings,
+                    &ctx.subrange(ctx.progress.fraction(), 1.),
+                );
+            }
             if deterministic(&e) {
                 device.remember_failure(
                     key,

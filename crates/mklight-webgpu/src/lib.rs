@@ -7,6 +7,7 @@ pub mod device;
 pub mod kernels;
 pub mod ops;
 pub mod proxy;
+pub mod watchdog;
 #[cfg(target_arch = "wasm32")]
 pub mod web;
 pub mod wgpu_device;

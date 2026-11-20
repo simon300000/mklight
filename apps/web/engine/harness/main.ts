@@ -35,8 +35,16 @@ const snaps: ModelSnapshot[] = []
 const mk = {
   ready,
   /** Create an engine; returns its index. */
-  async create(threads?: number, webgpuCalibration?: 'auto' | 'off') {
-    const e = await createEngine({ ...(threads ? { threads } : {}), ...(webgpuCalibration ? { webgpuCalibration } : {}) })
+  async create(
+    threads?: number,
+    webgpuCalibration?: 'auto' | 'off',
+    webgpuWatchdog?: { timeoutMs?: number; stalledModules?: string[] },
+  ) {
+    const e = await createEngine({
+      ...(threads ? { threads } : {}),
+      ...(webgpuCalibration ? { webgpuCalibration } : {}),
+      ...(webgpuWatchdog ? { webgpuWatchdog } : {}),
+    })
     engines.push(e)
     return { index: engines.length - 1, info: e.info }
   },
