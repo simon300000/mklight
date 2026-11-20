@@ -171,11 +171,13 @@ public sealed partial class AnalysisPaneView : UserControl
         var normal = ThemeLookup.Brush(this, "TextFillColorSecondaryBrush");
         BackendText.Foreground = gpu ? accent : normal;
         BackendGlyph.Foreground = gpu ? accent : normal;
-        var warnings = output.RunInfo.Warnings.Count + output.RunInfo.FailedAttempts.Count + (b?.FallbackReason is null ? 0 : 1);
+        // A fallback counts only from a backend that was asked for (an automatic request on a machine without a GPU is no warning).
+        var fallback = b?.FallbackReason is not null && b.Requested is not ("auto" or "default:auto" or "" or "cpu_reference" or "default:cpu_reference") ? b.FallbackReason : null;
+        var warnings = output.RunInfo.Warnings.Count + output.RunInfo.FailedAttempts.Count + (fallback is null ? 0 : 1);
         BackendWarning.Visibility = warnings > 0 ? Visibility.Visible : Visibility.Collapsed;
         BackendBadge.Visibility = Visibility.Visible;
         ToolTipService.SetToolTip(BackendBadge, warnings > 0
-            ? string.Join("\n", output.RunInfo.Warnings.Concat(b?.FallbackReason is { } f ? [f] : []))
+            ? string.Join("\n", output.RunInfo.Warnings.Concat(fallback is { } f ? [f] : []))
             : "Run details");
 
         // Run details: the backend that computed the result, what was requested, why, precision, seed, snapshot, time.

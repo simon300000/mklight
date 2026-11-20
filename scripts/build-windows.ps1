@@ -80,6 +80,7 @@ try {
         }
     }
     if ($Test) {
-        Invoke-Step 'dotnet test' { dotnet test --project tests/MKLight.Tests/MKLight.Tests.csproj -c $Configuration }
+        Invoke-Step 'dotnet test (model, engine, FFI)' { dotnet test --project tests/MKLight.Tests/MKLight.Tests.csproj -c $Configuration }
+        Invoke-Step 'dotnet test (app readers and settings)' { dotnet test --project tests/MKLight.App.Tests/MKLight.App.Tests.csproj -c $Configuration -p:Platform=$Platform }
     }
 } finally { Pop-Location }
