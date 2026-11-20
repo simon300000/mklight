@@ -63,7 +63,7 @@ public sealed class GlassSubstitutionSession
         StartGlasses = GlassSlot.All(system).ToDictionary(x => x.Id, x => x.Label);
         StartSystem = system;
         EndPreview();
-        var job = _s.Workspace.SubmitDesignJob(new EngineAnalysisRequest("glass_substitution", settings, new ExecutionSettings(_s.Workspace.Backend), fresh));
+        var job = _s.Workspace.SubmitDesignJob(new EngineAnalysisRequest("glass_substitution", settings, _s.Workspace.Execution, fresh));
         if (job is null)
         {
             Phase = JobPhase.Failed;
