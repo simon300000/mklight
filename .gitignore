@@ -15,6 +15,9 @@ __pycache__/
 # Python bindings: virtualenv and the extension maturin develop drops in
 crates/mklight-py/.venv/
 crates/mklight-py/python/mklight/*.so
+# (on Windows a .pyd, with its debug info in a .pdb)
+crates/mklight-py/python/mklight/*.pyd
+crates/mklight-py/python/mklight/*.pdb
 crates/mklight-py/.pytest_cache/
 
 # Windows app: engine DLL copied by scripts/build-windows.ps1, .NET build output

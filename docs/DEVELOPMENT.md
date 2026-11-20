@@ -80,6 +80,21 @@ maturin develop --release
 Wheels and the package layout are in
 [PYTHON.md](PYTHON.md#building-and-installing).
 
+### Windows
+
+`.cargo/config.toml` builds the Windows x86_64 target for x86-64-v3, so
+`mul_add` is an inline FMA instead of a call into the C runtime
+([CONVENTIONS §7](CONVENTIONS.md), "CPU packets"). The command line and
+the Python package also take `--features mimalloc` (for maturin,
+`maturin develop --release --features mimalloc`), which replaces the
+Windows heap: on an i9-12900KS the CPU analyses ran 1.15–1.4× faster
+with it (spot diagram, ray grid, geometric MTF, PSF, MTF; bitwise the
+same results). `--features mklight-engine/windows-worker-priority` runs
+the rayon workers one step above normal priority, which keeps the
+fork–join analyses from stalling on preempted workers when other
+processes load every core (spot diagram 950 → 72 ms next to 24 busy
+threads; no change on an idle machine).
+
 ## Tests
 
 ### Rust
@@ -110,6 +125,15 @@ scripts/test.sh -p mklight-trace -p mklight-wave
 scripts/test.sh -- --ignored
 JOBS=4 scripts/test.sh                  # programs at a time (default 8)
 ```
+
+On Windows, run it from Git Bash with a CPython ≥ 3.11 first on `PATH`
+(the Python crate's tests load its `python3.dll`; an older one there fails
+to start them), and `CC` set to a clang, e.g. Visual Studio's
+`VC/Tools/Llvm/x64/bin/clang.exe`, for the C layout tests of `mklight-gpu`
+(skipped without a C compiler). Until the WebGPU trace pipeline compiles
+on the Windows drivers (the Vulkan driver does not finish compiling it,
+and DX12's compiler rejects some kernels), set `WGPU_BACKEND=none`: the
+WebGPU tests then find no adapter and skip.
 
 After a change that rebuilds everything allow about a minute to build and
 three to run: macOS scans every newly built program when it first starts

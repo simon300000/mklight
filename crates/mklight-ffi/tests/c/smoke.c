@@ -5,6 +5,10 @@
  *   ./smoke /tmp/somedir
  * ). Exits 0 on success; prints the failing check otherwise.
  */
+#ifdef _WIN32
+/* The MSVC C runtime deprecates fopen in favour of fopen_s. */
+#define _CRT_SECURE_NO_WARNINGS
+#endif
 #include "mklight.h"
 
 #include <math.h>
@@ -40,10 +44,16 @@ static int g_checks = 0;
 
 #define OK(call) EXPECT(call, MK_OK)
 
+#ifdef _WIN32
+/* kernel32's Sleep, without all of windows.h. */
+void __stdcall Sleep(unsigned long ms);
+static void sleep_ms(long ms) { Sleep((unsigned long)ms); }
+#else
 static void sleep_ms(long ms) {
     struct timespec ts = {ms / 1000, (ms % 1000) * 1000000L};
     nanosleep(&ts, NULL);
 }
+#endif
 
 /* ---- callback bookkeeping (called on the engine's event thread) ---- */
 static atomic_int g_events = 0;

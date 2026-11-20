@@ -37,6 +37,8 @@ pub mod fsutil;
 pub mod gpu;
 pub mod graph;
 pub mod lru;
+#[cfg(feature = "windows-worker-priority")]
+mod priority;
 pub mod project;
 pub mod route;
 pub mod scheduler;

@@ -1,0 +1,10 @@
+# Text files check out with LF on every system, whatever core.autocrlf
+# says: tests compare committed fixtures, goldens, docs and headers byte
+# for byte with generated text, and bash reads the scripts. The index
+# already holds LF. Files that must keep their exact bytes say so in
+# their own directory (crates/mklight-core/tests/fixtures/prescriptions).
+* text=auto eol=lf
+# Windows tools that expect CRLF.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.sln text eol=crlf

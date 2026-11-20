@@ -600,9 +600,12 @@ impl Session {
         {
             for c in &mut p.catalogs {
                 let abs = c.path.as_deref().map(Path::new);
-                let rel = abs
-                    .and_then(|a| a.strip_prefix(&dir).ok())
-                    .map(|r| r.to_string_lossy().into_owned());
+                // Stored with `/` on every system, so that a project saved
+                // on Windows opens elsewhere (Windows reads `/` as well).
+                let rel = abs.and_then(|a| a.strip_prefix(&dir).ok()).map(|r| {
+                    let parts: Vec<_> = r.iter().map(|c| c.to_string_lossy()).collect();
+                    parts.join("/")
+                });
                 if rel.is_some() || abs.is_some_and(Path::is_file) {
                     c.relative_path = rel;
                 }

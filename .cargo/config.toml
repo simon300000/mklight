@@ -1,0 +1,9 @@
+# Windows x86_64 only: build for x86-64-v3 (AVX2 + FMA, Intel Haswell /
+# AMD Excavator and newer). On the baseline x86-64 target every `mul_add`
+# is a call into the C runtime's `fma`, which also keeps LLVM from
+# vectorising around it; inline FMA makes the CPU packet tracer about 2x
+# faster (CONVENTIONS §7, "CPU packets"). `mul_add` is fused either way and
+# Rust never contracts `a * b + c`, so results are bitwise identical.
+# No other target (macOS, Linux, wasm) is affected; RUSTFLAGS replaces it.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-cpu=x86-64-v3"]
