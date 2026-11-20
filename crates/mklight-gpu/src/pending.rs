@@ -122,7 +122,8 @@ pub fn spawn_job<T: Send + 'static>(
 /// the waiting thread when the worker has not started it yet: the result
 /// never waits for a thread to start (0.2 ms on an idle machine, tens of
 /// milliseconds on a loaded one), and the worker, starting later, finds
-/// nothing to do.
+/// nothing to do. Dropping the `Pending` before either started drops the
+/// work unrun.
 pub fn spawn_job_or_run_on_wait<T: Send + 'static>(
     pending: &Pending<T>,
     thread_name: &str,
@@ -221,8 +222,9 @@ impl<T> Pending<T> {
 impl<T> Drop for Pending<T> {
     fn drop(&mut self) {
         // Nobody can receive the result any more. After completion this is
-        // a no-op for the worker.
+        // a no-op for the worker; work that has not started never runs.
         self.cancel.cancel();
+        drop(self.job().take());
     }
 }
 
@@ -291,19 +293,27 @@ mod tests {
             }
             assert_eq!(p.wait(), Ok(i));
         }
-        // A dropped `Pending` leaves its work to the worker.
+        assert_eq!(runs.load(Ordering::SeqCst), 200);
+    }
+
+    /// Work whose `Pending` is dropped before anyone started it never runs:
+    /// nobody can receive its result (a superseded request).
+    #[test]
+    fn dropped_pending_drops_unstarted_work() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let runs = Arc::new(AtomicUsize::new(0));
         let (p, c, _) = pending::<u32>(&JobContext::new());
         let r = runs.clone();
-        spawn_job_or_run_on_wait(&p, "test-worker", "test job".into(), c, move || {
+        // Queued as `spawn_job_or_run_on_wait` queues it, before a worker
+        // took it.
+        *p.job() = Some(Box::new(move || {
             r.fetch_add(1, Ordering::SeqCst);
-            Ok(0)
-        })
-        .unwrap();
+            c.complete(Ok(0));
+        }));
+        assert_eq!(Arc::strong_count(&runs), 2);
         drop(p);
-        while runs.load(Ordering::SeqCst) < 201 {
-            std::thread::yield_now();
-        }
-        assert_eq!(runs.load(Ordering::SeqCst), 201);
+        assert_eq!(Arc::strong_count(&runs), 1, "the work was dropped");
+        assert_eq!(runs.load(Ordering::SeqCst), 0);
     }
 
     #[test]

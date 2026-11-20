@@ -646,6 +646,21 @@ impl mklight_webgpu::Gpu for Counting {
     fn ports(&self, family: &str) -> bool {
         self.inner.ports(family)
     }
+    fn prepare_all(
+        &self,
+        kernels: &[(
+            mklight_webgpu::device::Kernel,
+            mklight_webgpu::device::PassShape,
+        )],
+        cache_dir: Option<&std::path::Path>,
+        progress: &(dyn Fn(usize, usize) + Sync),
+        cancel: &std::sync::atomic::AtomicBool,
+    ) -> mklight_core::MkResult<(usize, usize, Option<String>)> {
+        self.inner.prepare_all(kernels, cache_dir, progress, cancel)
+    }
+    fn unavailable(&self) -> Option<String> {
+        self.inner.unavailable()
+    }
 }
 
 /// The PSF plan's chain Prepare, Sum, Transform, Intensity keeps its
