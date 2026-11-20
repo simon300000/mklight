@@ -33,12 +33,24 @@ public enum ControlKind
     Pupil,
     /// <summary>The spot diagram's through-focus planes.</summary>
     ThroughFocus,
+    /// <summary>The run-local spectrum (its own control, last in the form).</summary>
+    Spectrum,
+    /// <summary>Rows of the same scalar columns, edited as a small table in a popup.</summary>
+    Table,
+    /// <summary>The chief-ray angle's sensor limit, <c>[[radius, angle], …]</c>.</summary>
+    SensorLimit,
+    /// <summary>The image simulation's source: a built-in pattern.</summary>
+    ImageSource,
+    /// <summary>The image simulation's optics sampling: PSF window and spacing, pupil, PSF grid.</summary>
+    ImageOptics,
 }
 
 public enum IndexDomain { Fields, Wavelengths, Surfaces }
 
 /// <summary>A setting's control and what it needs to know.</summary>
-public readonly record struct SettingControl(ControlKind Kind, bool Integer = false, bool Nullable = false, IndexDomain Domain = IndexDomain.Fields)
+/// <param name="Columns">The columns of a <see cref="ControlKind.Table"/>; with <paramref name="RowsAreArrays"/> they are named "0", "1", ….</param>
+public readonly record struct SettingControl(ControlKind Kind, bool Integer = false, bool Nullable = false, IndexDomain Domain = IndexDomain.Fields,
+    IReadOnlyList<SettingsField>? Columns = null, bool RowsAreArrays = false)
 {
     public static readonly SettingControl Hidden = new(ControlKind.Hidden);
 }
@@ -46,9 +58,10 @@ public readonly record struct SettingControl(ControlKind Kind, bool Integer = fa
 /// <summary>
 /// The control a setting gets, chosen from its schema alone (the Mac app's
 /// SettingControls), so every analysis the engine publishes is editable
-/// without typed JSON. Settings with no sensible control (the spectrum,
-/// tables of rows, the image simulation's source and optics, explicit
-/// ghost path lists) are hidden and keep their value.
+/// without typed JSON. A few settings keep a dedicated control (the
+/// spectrum, the pupil sampling, the sensor limit, the image simulation's
+/// source and optics); settings with no sensible control (explicit ghost
+/// path lists, operand lists) are hidden and keep their value.
 /// </summary>
 public static class SettingControls
 {
@@ -65,10 +78,12 @@ public static class SettingControls
             if (f.Name == "field" && integer) return new(ControlKind.FieldIndex, Nullable: f.Nullable);
             if (f.Name is "wavelength" or "long_wavelength" or "short_wavelength" && integer) return new(ControlKind.WavelengthIndex, Nullable: f.Nullable);
             if (f.Name == "surface" && integer) return new(ControlKind.SurfaceIndex, Nullable: f.Nullable);
-            if (f.Name == "spectrum") return SettingControl.Hidden; // the Mac app's dedicated spectrum control
+            if (f.Name == "spectrum" && types.Contains("object")) return new(ControlKind.Spectrum);
             if (f.Name == "pupil" && types.Contains("object") && Json.Has(f.Default, "grid")) return new(ControlKind.Pupil);
             if (f.Name == "through_focus" && analysis == "spot_diagram" && Only(types, "object")) return new(ControlKind.ThroughFocus);
-            if (f.Name is "sensor_limit" or "source" or "optics" && analysis is "chief_ray_angle" or "image_simulation") return SettingControl.Hidden;
+            if (f.Name == "sensor_limit" && Only(types, "array")) return new(ControlKind.SensorLimit);
+            if (f.Name == "source" && Only(types, "object") && Json.Str(Json.At(f.Default, "kind")) == "pattern") return new(ControlKind.ImageSource);
+            if (f.Name == "optics" && Only(types, "object") && Json.Has(f.Default, "psf_size")) return new(ControlKind.ImageOptics);
             switch (f.Name)
             {
                 case "configuration": return hasConfigurations ? new(ControlKind.Number, Integer: true) : SettingControl.Hidden;
@@ -104,8 +119,28 @@ public static class SettingControls
         if (itemType == "integer")
             return IndexDomainOf(f.Name) is IndexDomain dom ? new(ControlKind.IndexList, Domain: dom) : new(ControlKind.NumberList, Integer: true);
         if (itemType == "number") return new(ControlKind.NumberList, Nullable: f.Nullable);
+        // Rows of scalars: objects with scalar properties, or fixed-length numeric arrays.
+        if (Json.Obj(f.Items) is JsonObject items && new SettingsField(f.Name, items).Properties is { Count: > 0 } props
+            && props.All(p => p.BaseTypes.Count > 0 && p.BaseTypes.All(t => t is "number" or "integer" or "boolean" or "string")))
+            return Table(props, false);
+        if (d is { Count: > 0 })
+        {
+            if (d[0] is JsonObject o && o.All(p => Json.Number(p.Value) is not null || Json.Bool(p.Value) is not null || Json.Str(p.Value) is not null))
+                return Table(o.OrderBy(p => p.Key, StringComparer.Ordinal)
+                    .Select(p => new SettingsField(p.Key, new JsonObject { ["type"] = SettingsField.TypeName(p.Value), ["default"] = p.Value?.DeepClone() })).ToList(), false);
+            if (d[0] is JsonArray row && row.Count > 0 && row.All(v => Json.Number(v) is not null))
+                return Table(row.Select((v, k) => new SettingsField(k.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                    new JsonObject { ["type"] = "number", ["default"] = v?.DeepClone() })).ToList(), true);
+            return SettingControl.Hidden;
+        }
+        // Empty by default with items undocumented: the description names the row keys in the engine's [{"hx", "hy"}] form.
+        if (TableSetting.RowKeys(f.Description) is { } keys)
+            return Table(keys.Select(k => new SettingsField(k, new JsonObject { ["type"] = "number", ["default"] = 0.0 })).ToList(), false);
         return SettingControl.Hidden;
     }
+
+    static SettingControl Table(IReadOnlyList<SettingsField> columns, bool rowsAreArrays) =>
+        new(ControlKind.Table, Columns: columns, RowsAreArrays: rowsAreArrays);
 
     static bool Only(IReadOnlySet<string> types, string type) => types.Count == 1 && types.Contains(type);
 

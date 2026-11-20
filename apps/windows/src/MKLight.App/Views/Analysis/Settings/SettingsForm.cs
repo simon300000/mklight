@@ -107,6 +107,7 @@ public sealed partial class SettingsForm : UserControl
     void Build()
     {
         _root.Children.Clear();
+        _popups.Clear();
         var pattern = _fields.Any(f => f.Name == "pattern") ? Json.Str(_settings["pattern"] ?? _fields.First(f => f.Name == "pattern").Default) : null;
         var rows = _fields.Select(f => (Field: f, Control: SettingControls.For(f, _analysis, _ctx.HasConfigurations, pattern)))
             .Where(r => r.Control.Kind != ControlKind.Hidden).ToList();
@@ -115,7 +116,26 @@ public sealed partial class SettingsForm : UserControl
             _root.Children.Add(Label("This analysis has no settings to change."));
             return;
         }
-        _root.Children.Add(Rows(rows.Select(r => (TopSlot(r.Field), r.Control))));
+        // The spectrum, the largest control, comes last on its own.
+        _root.Children.Add(Rows(rows.Where(r => r.Control.Kind != ControlKind.Spectrum).Select(r => (TopSlot(r.Field), r.Control))));
+        foreach (var r in rows.Where(r => r.Control.Kind == ControlKind.Spectrum))
+        {
+            _root.Children.Add(Divider());
+            var slot = TopSlot(r.Field);
+            var system = _ctx.WavelengthsUm.Select(um => new SpectrumSample(um, 1)).ToList();
+            _root.Children.Add(new SpectrumControl(slot.Current, system, _ctx.PrimaryWavelength,
+                v => slot.Write(v is null ? Edit.Reset : new Edit(v), false)));
+        }
+    }
+
+    /// <summary>A hairline in the window's theme (resolved once the line is shown).</summary>
+    static Border Divider()
+    {
+        var line = new Border { Height = 1, Margin = new Thickness(0, 2, 0, 2) };
+        void Paint() => line.Background = MKLight.App.Support.ThemeLookup.Brush(line, "DividerBrush");
+        line.Loaded += (_, _) => Paint();
+        line.ActualThemeChanged += (_, _) => Paint();
+        return line;
     }
 
     /// <summary>A two-column grid: right-aligned labels, controls on the left of their column.</summary>
@@ -162,8 +182,12 @@ public sealed partial class SettingsForm : UserControl
         ControlKind.Pair => Pair(slot, c.Integer, c.Nullable),
         ControlKind.Group => Group(slot, c.Nullable),
         ControlKind.Variants => Variants(slot, c.Nullable),
-        ControlKind.Pupil => Nested(slot, slot.Field.Properties.Where(p => p.Name is "grid" or "rays")),
+        ControlKind.Pupil => Pupil(slot),
         ControlKind.ThroughFocus => ThroughFocus(slot),
+        ControlKind.Table => TableButton(slot, c.Columns ?? [], c.RowsAreArrays),
+        ControlKind.SensorLimit => SensorLimitButton(slot),
+        ControlKind.ImageSource => ImageSource(slot),
+        ControlKind.ImageOptics => ImageOptics(slot),
         _ => null,
     };
 
