@@ -3048,6 +3048,7 @@ mod tests {
     #[test]
     fn tolerance_irregularity_gpu_and_trial_replay() {
         use mklight_core::param::IrregularityMode;
+        #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
         let mut backends: Vec<(&str, DeviceHandle)> = vec![(
             "gpu_emulation",
             Arc::new(GpuDevice::new(

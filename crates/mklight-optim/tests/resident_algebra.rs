@@ -2,6 +2,7 @@
 //! `GpuContext` plans: known answers on the emulation, the same words on
 //! Metal from both shader origins, and cancellation of a running product.
 
+#[cfg(target_os = "macos")]
 use crate::common;
 
 use mklight_core::{JobContext, Snapshot};

@@ -174,6 +174,7 @@ fn metal_transport_both_libraries() {
         samples_check(&b);
     }
 }
+#[cfg(target_os = "macos")]
 fn assert_close(a: f64, c: f64, what: &str) {
     assert!(
         (a - c).abs() <= 1e-9 * c.abs() + 1e-15,

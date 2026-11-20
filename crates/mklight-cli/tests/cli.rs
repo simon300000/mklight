@@ -3,7 +3,9 @@
 
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output, Stdio};
+#[cfg(unix)]
+use std::process::Stdio;
+use std::process::{Command, Output};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
