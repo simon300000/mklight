@@ -116,7 +116,13 @@ public sealed class GlassLibrary
             : string.Equals(p, Normalize(e.Path), StringComparison.OrdinalIgnoreCase));
     }
 
-    static string Normalize(string path) => Path.GetFullPath(path).TrimEnd('\\', '/');
+    static string Normalize(string path) => Path.GetFullPath(PlainPath(path)).TrimEnd('\\', '/');
+
+    /// <summary>A path without the extended-length prefix the engine may report (<c>\\?\C:\…</c>, <c>\\?\UNC\server\…</c>).</summary>
+    public static string PlainPath(string path) =>
+        path.StartsWith(@"\\?\UNC\", StringComparison.OrdinalIgnoreCase) ? @"\\" + path[8..]
+        : path.StartsWith(@"\\?\", StringComparison.Ordinal) ? path[4..]
+        : path;
 
     // ---- Library entries ----
 

@@ -13,6 +13,7 @@ public static class GlassLibrarySync
 {
     sealed class State
     {
+        public int Revision = -1;
         public IReadOnlyList<GlassOverride>? Overrides;
         public IReadOnlyList<string> Warnings = [];
     }
@@ -20,12 +21,16 @@ public static class GlassLibrarySync
     static readonly ConditionalWeakTable<IEngineClient, State> States = new();
 
     /// <summary>
-    /// Syncs <paramref name="engine"/> with <paramref name="library"/>. Returns whether the
-    /// session's glass library changed (then its snapshots must be taken again).
+    /// Syncs <paramref name="engine"/> with <paramref name="library"/> when the library changed
+    /// since the session's last sync (so a catalog file changed on disk is read again only then,
+    /// and Reload can report what changed). Returns whether the session's glass library changed
+    /// (then its snapshots must be taken again).
     /// </summary>
     public static async Task<bool> SyncAsync(IEngineClient engine, GlassLibrary library)
     {
         var state = States.GetOrCreateValue(engine);
+        if (state.Revision == library.Revision) return false;
+        state.Revision = library.Revision;
         var overrides = library.Overrides.ToArray();
         var warnings = new List<string>();
         var sync = await engine.SetLibraryCatalogsAsync(library.CatalogFiles);

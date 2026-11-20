@@ -47,8 +47,8 @@ public static class GlassFormat
     {
         if (r.Nd is not null && r.Vd is not null) return null;
         var listed = r.CatalogNd is { } nd && nd > 0
-            ? $"The catalog lists n_d {Fixed(nd, 5)}" + (r.CatalogVd is { } vd && vd > 0 ? $", V_d {Fixed(vd, 2)}" : "") + "."
-            : "The catalog lists no n_d, V_d.";
+            ? $"The catalog lists nd {Fixed(nd, 5)}" + (r.CatalogVd is { } vd && vd > 0 ? $", Vd {Fixed(vd, 2)}" : "") + "."
+            : "The catalog lists no nd, Vd.";
         return $"The d line (587.6 nm) is outside this glass's range. {listed}";
     }
 
@@ -56,8 +56,8 @@ public static class GlassFormat
     public static string Describe(CatalogChanges.Change c)
     {
         var parts = new List<string>();
-        if (!c.NdBefore.Equals(c.NdAfter)) parts.Add($"n_d {Fixed(c.NdBefore, 5)} → {Fixed(c.NdAfter, 5)}");
-        if (!c.VdBefore.Equals(c.VdAfter)) parts.Add($"V_d {Fixed(c.VdBefore, 3)} → {Fixed(c.VdAfter, 3)}");
+        if (!c.NdBefore.Equals(c.NdAfter)) parts.Add($"nd {Fixed(c.NdBefore, 5)} → {Fixed(c.NdAfter, 5)}");
+        if (!c.VdBefore.Equals(c.VdAfter)) parts.Add($"Vd {Fixed(c.VdBefore, 3)} → {Fixed(c.VdAfter, 3)}");
         var other = c.Fields.Where(f => f is not ("nd" or "vd")).ToList();
         if (other.Count > 0) parts.Add(string.Join(", ", other));
         return string.Join("; ", parts);

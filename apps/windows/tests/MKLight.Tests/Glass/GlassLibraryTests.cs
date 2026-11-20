@@ -162,6 +162,18 @@ public sealed class GlassLibraryTests : IDisposable
         Assert.Equal("Named", Assert.Single(lib.UserCatalogs).Name);
     }
 
+    [Fact]
+    public void EnginePathsWithTheExtendedPrefixMatchTheirEntry()
+    {
+        Assert.Equal(@"C:\a\b.agf", GlassLibrary.PlainPath(@"\\?\C:\a\b.agf"));
+        Assert.Equal(@"\\server\share\b.agf", GlassLibrary.PlainPath(@"\\?\UNC\server\share\b.agf"));
+        Assert.Equal(@"C:\a\b.agf", GlassLibrary.PlainPath(@"C:\a\b.agf"));
+        var file = File("cats/ONE.agf");
+        var lib = new GlassLibrary(Lib);
+        lib.Add(file);
+        Assert.NotNull(lib.EntryContaining(@"\\?\" + file));
+    }
+
     [Theory]
     [InlineData("", false)]
     [InlineData("N-BK7", true)]

@@ -1,0 +1,110 @@
+<Window
+    x:Class="MKLight.App.Windows.GlassCatalogsWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:glass="using:MKLight.App.Views.Glass">
+    <Window.SystemBackdrop>
+        <MicaBackdrop />
+    </Window.SystemBackdrop>
+
+    <Grid x:Name="Root">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <!-- Title bar: the window and the design it follows, the glass search in the centre,
+             Filter and Add trailing (the Mac toolbar). -->
+        <TitleBar x:Name="AppTitleBar" Height="52" Title="Glass Catalogs"
+                  IsBackButtonVisible="False" IsPaneToggleButtonVisible="False">
+            <TitleBar.IconSource>
+                <ImageIconSource ImageSource="ms-appx:///Assets/AppIcon.png" />
+            </TitleBar.IconSource>
+            <TitleBar.Content>
+                <AutoSuggestBox x:Name="SearchBox" PlaceholderText="Search glasses" QueryIcon="Find" Width="340"
+                                VerticalAlignment="Center" TextChanged="OnSearchChanged" KeyDown="OnSearchKeyDown" />
+            </TitleBar.Content>
+            <TitleBar.RightHeader>
+                <StackPanel Orientation="Horizontal" Spacing="2" Margin="0,0,4,0" VerticalAlignment="Center">
+                    <DropDownButton x:Name="FilterButton" Height="30" CornerRadius="15" Padding="9,0,7,0"
+                                    Background="Transparent" BorderThickness="0" ToolTipService.ToolTip="Show only some glasses">
+                        <FontIcon x:Name="FilterIcon" Glyph="&#xE71C;" FontSize="14" />
+                        <DropDownButton.Flyout>
+                            <MenuFlyout x:Name="FilterMenu" Placement="BottomEdgeAlignedRight" />
+                        </DropDownButton.Flyout>
+                    </DropDownButton>
+                    <DropDownButton x:Name="AddButton" Height="30" CornerRadius="15" Padding="9,0,7,0"
+                                    Background="Transparent" BorderThickness="0" ToolTipService.ToolTip="Add a glass or a catalog">
+                        <FontIcon Glyph="&#xE710;" FontSize="14" />
+                        <DropDownButton.Flyout>
+                            <MenuFlyout x:Name="AddMenu" Placement="BottomEdgeAlignedRight" Opening="OnAddMenuOpening">
+                                <MenuFlyoutItem Text="New Glass…" Click="OnNewGlass"><MenuFlyoutItem.Icon><FontIcon Glyph="&#xE710;" /></MenuFlyoutItem.Icon></MenuFlyoutItem>
+                                <MenuFlyoutItem Text="New User Catalog" Click="OnNewUserCatalog"><MenuFlyoutItem.Icon><FontIcon Glyph="&#xE77B;" /></MenuFlyoutItem.Icon></MenuFlyoutItem>
+                                <MenuFlyoutSeparator />
+                                <MenuFlyoutItem Text="Add Catalog to Library…" Click="OnAddLibraryFiles"><MenuFlyoutItem.Icon><FontIcon Glyph="&#xE8F1;" /></MenuFlyoutItem.Icon></MenuFlyoutItem>
+                                <MenuFlyoutItem Text="Add Folder to Library…" Click="OnAddLibraryFolder"><MenuFlyoutItem.Icon><FontIcon Glyph="&#xE8B7;" /></MenuFlyoutItem.Icon></MenuFlyoutItem>
+                                <MenuFlyoutItem x:Name="AddToDesignItem" Text="Add Glass Catalog to Design…" Click="OnAddToDesign"><MenuFlyoutItem.Icon><FontIcon Glyph="&#xE8A5;" /></MenuFlyoutItem.Icon></MenuFlyoutItem>
+                            </MenuFlyout>
+                        </DropDownButton.Flyout>
+                    </DropDownButton>
+                </StackPanel>
+            </TitleBar.RightHeader>
+        </TitleBar>
+
+        <!-- Sidebar of catalogs on Mica; the table on the content surface; the detail column on Mica. -->
+        <NavigationView x:Name="Nav" Grid.Row="1"
+                        PaneDisplayMode="Left" IsBackButtonVisible="Collapsed" IsPaneToggleButtonVisible="False"
+                        IsSettingsVisible="False" OpenPaneLength="248" IsTitleBarAutoPaddingEnabled="False"
+                        SelectionChanged="OnSidebarSelectionChanged">
+            <NavigationView.PaneFooter>
+                <StackPanel x:Name="WarningsPanel" Spacing="6" Margin="16,0,12,12" />
+            </NavigationView.PaneFooter>
+
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="336" />
+                </Grid.ColumnDefinitions>
+
+                <Border x:Name="ContentCard" Background="{ThemeResource ContentSurfaceBrush}"
+                        BorderBrush="{ThemeResource ContentStrokeBrush}" BorderThickness="1,1,1,0" CornerRadius="8,8,0,0">
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="*" />
+                        </Grid.RowDefinitions>
+                        <!-- The selected catalog: origin and file, with its actions. -->
+                        <Grid x:Name="CatalogBar" Padding="16,10,12,10" ColumnSpacing="12" Visibility="Collapsed"
+                              BorderBrush="{ThemeResource DividerBrush}" BorderThickness="0,0,0,1">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel VerticalAlignment="Center" Spacing="1">
+                                <StackPanel Orientation="Horizontal" Spacing="8">
+                                    <FontIcon x:Name="CatalogIcon" FontSize="14" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                    <TextBlock x:Name="CatalogTitle" Style="{StaticResource PanelTitleText}" />
+                                    <TextBlock x:Name="CatalogOrigin" Style="{StaticResource SecondaryText}" />
+                                </StackPanel>
+                                <TextBlock x:Name="CatalogPath" Style="{StaticResource CaptionText}" IsTextSelectionEnabled="True" />
+                            </StackPanel>
+                            <StackPanel x:Name="CatalogActions" Grid.Column="1" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center" />
+                        </Grid>
+                        <glass:GlassTableView x:Name="Table" Grid.Row="1" />
+                    </Grid>
+                </Border>
+
+                <Border x:Name="DetailHost" Grid.Column="1" Padding="12,0,4,0" />
+            </Grid>
+        </NavigationView>
+
+        <!-- Transient message: a glass toast at the bottom centre. -->
+        <Border x:Name="Toast" Grid.Row="1" Style="{StaticResource GlassChip}" Padding="16,8" Opacity="0" MaxWidth="640"
+                HorizontalAlignment="Center" VerticalAlignment="Bottom" Margin="0,0,0,40" IsHitTestVisible="False">
+            <Border.OpacityTransition>
+                <ScalarTransition Duration="0:0:0.2" />
+            </Border.OpacityTransition>
+            <TextBlock x:Name="ToastText" Style="{StaticResource BodyText}" TextWrapping="Wrap" />
+        </Border>
+    </Grid>
+</Window>
