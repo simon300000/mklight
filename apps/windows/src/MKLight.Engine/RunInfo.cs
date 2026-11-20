@@ -134,13 +134,13 @@ public sealed class RunInfo
 /// </summary>
 public sealed record BackendReport(
     string Requested, string Used, string Precision, string? Device = null, string? FallbackReason = null,
-    JsonNode? CostDecision = null)
+    JsonNode? CostDecision = null, JsonNode? Execution = null)
 {
-    /// <summary>Reads the envelope's <c>backend</c> object; <c>null</c> when it is missing. <c>cost_decision</c> is kept as sent.</summary>
+    /// <summary>Reads the envelope's <c>backend</c> object; <c>null</c> when it is missing. <c>cost_decision</c> and <c>execution</c> (device timings) are kept as sent.</summary>
     public static BackendReport? FromJson(JsonNode? json) => json is JsonObject o
         ? new BackendReport(
             o["requested"].StringOrNull() ?? "", o["used"].StringOrNull() ?? "", o["precision"].StringOrNull() ?? "",
-            o["device"].StringOrNull(), o["fallback_reason"].StringOrNull(), Json.Clone(o["cost_decision"]))
+            o["device"].StringOrNull(), o["fallback_reason"].StringOrNull(), Json.Clone(o["cost_decision"]), Json.Clone(o["execution"]))
         : null;
 
     /// <summary>The GPU backend that computed the result (<c>cuda</c> of <c>gpu:cuda</c>); <c>null</c> for the CPU.</summary>
