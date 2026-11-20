@@ -1,0 +1,824 @@
+//! [`Gpu`] on a CUDA device through the driver API (`nvcuda`, loaded at run
+//! time), with kernels compiled by NVRTC (loaded at run time too) and cached
+//! on disk ([`crate::kernels`]).
+//!
+//! A batch runs on one stream taken from a small pool, so batches of
+//! different threads overlap: uploads, zeroed scratch and device-side slices
+//! are stream-ordered allocations from the device's memory pool (kept
+//! allocated between batches), every pass is one launch, copies and
+//! readbacks follow, and the call returns when the stream has completed.
+//! Host transfers go through page-locked staging buffers (one per stream),
+//! so they run at full PCIe speed and asynchronously on the stream.
+
+use std::collections::HashMap;
+use std::ffi::{CString, c_void};
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
+
+use cudarc::driver::{result as cu, sys};
+use cudarc::nvrtc::sys as nv;
+use mklight_core::{MkError, MkResult};
+use mklight_gpu::{BackendKind, NumericsProbe};
+use mklight_webgpu::device::*;
+
+use crate::kernels;
+
+fn err(what: &str, e: impl std::fmt::Debug) -> MkError {
+    MkError::Backend(format!("cuda: {what}: {e:?}"))
+}
+
+fn check(what: &str, r: sys::CUresult) -> MkResult<()> {
+    r.result().map_err(|e| err(what, e))
+}
+
+/// A loaded compilation unit.
+struct Module {
+    module: sys::CUmodule,
+}
+
+/// A compilation unit, loaded once.
+type Unit = Arc<std::sync::OnceLock<Result<Arc<Module>, String>>>;
+
+// CUDA handles are usable from any thread with the context current.
+unsafe impl Send for Module {}
+unsafe impl Sync for Module {}
+
+/// Page-locked host memory of at least `bytes` bytes.
+struct Pinned {
+    ptr: *mut u8,
+    bytes: usize,
+}
+
+impl Pinned {
+    fn new(bytes: usize) -> MkResult<Self> {
+        let bytes = bytes.next_power_of_two().max(1 << 20);
+        let ptr = unsafe { cu::malloc_host(bytes, 0) }.map_err(|e| err("cuMemHostAlloc", e))?;
+        Ok(Self {
+            ptr: ptr as *mut u8,
+            bytes,
+        })
+    }
+}
+
+impl Drop for Pinned {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = cu::free_host(self.ptr as *mut c_void);
+        }
+    }
+}
+
+/// A stream with its staging buffer and timing events.
+struct Lane {
+    stream: sys::CUstream,
+    staging: Option<Pinned>,
+    start: sys::CUevent,
+    end: sys::CUevent,
+}
+
+unsafe impl Send for Lane {}
+
+pub struct CudaDevice {
+    ctx: sys::CUcontext,
+    summary: AdapterSummary,
+    arch: (i32, i32),
+    nvrtc: Option<(i32, i32)>,
+    driver_version: i32,
+    cache_dir: Option<PathBuf>,
+    modules: Mutex<HashMap<String, Unit>>,
+    blocks: Mutex<HashMap<Kernel, (sys::CUfunction, [u32; 3])>>,
+    persistent: Mutex<HashMap<u64, (sys::CUdeviceptr, usize)>>,
+    next_key: AtomicU64,
+    lanes: Mutex<Vec<Lane>>,
+    /// The stream persistent buffers are allocated and freed on (from the
+    /// memory pool: plan mirrors come and go with every plan, and
+    /// `cuMemFree` would synchronise the device).
+    admin: Mutex<sys::CUstream>,
+    /// `prepare` has compiled every kernel once.
+    prepared_all: std::sync::atomic::AtomicBool,
+}
+
+/// Module statistics of this process: (compiled, loaded from the cache,
+/// seconds spent compiling or reading).
+static COMPILE_STATS: Mutex<(usize, usize, f64)> = Mutex::new((0, 0, 0.0));
+
+/// (compiled, loaded from cache, seconds) of the kernel modules this process
+/// has built so far (start-up measurements).
+pub fn compile_stats() -> (usize, usize, f64) {
+    *COMPILE_STATS.lock().unwrap()
+}
+
+unsafe impl Send for CudaDevice {}
+unsafe impl Sync for CudaDevice {}
+
+/// Device time of completed batches in this process, nanoseconds.
+static DEVICE_NANOS: AtomicU64 = AtomicU64::new(0);
+
+/// Sum of the device time of every completed batch in this process (from the
+/// first transfer to the last readback on its stream; benchmarks only).
+pub fn device_seconds() -> f64 {
+    DEVICE_NANOS.load(Ordering::Relaxed) as f64 * 1e-9
+}
+
+static PROFILE: std::sync::LazyLock<bool> =
+    std::sync::LazyLock::new(|| std::env::var("MKLIGHT_CUDA_PROFILE").is_ok_and(|v| v == "1"));
+
+/// Whether the CUDA driver library can be loaded.
+pub fn driver_present() -> bool {
+    unsafe { sys::is_culib_present() }
+}
+
+/// The kernel cache directory: `MKLIGHT_CUDA_CACHE`, else the platform's
+/// local cache directory (`%LOCALAPPDATA%\mklight\cuda`,
+/// `$XDG_CACHE_HOME/mklight/cuda` or `~/.cache/mklight/cuda`).
+pub fn default_cache_dir() -> Option<PathBuf> {
+    if let Ok(d) = std::env::var("MKLIGHT_CUDA_CACHE") {
+        return (!d.is_empty() && d != "0").then(|| PathBuf::from(d));
+    }
+    let base = std::env::var_os("LOCALAPPDATA")
+        .or_else(|| std::env::var_os("XDG_CACHE_HOME"))
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache")))?;
+    Some(base.join("mklight").join("cuda"))
+}
+
+impl CudaDevice {
+    /// Device 0, or `Ok(None)` without a driver or a device.
+    pub fn open() -> MkResult<Option<Self>> {
+        if !driver_present() {
+            return Ok(None);
+        }
+        cu::init().map_err(|e| err("cuInit", e))?;
+        if cu::device::get_count().map_err(|e| err("cuDeviceGetCount", e))? < 1 {
+            return Ok(None);
+        }
+        let dev = cu::device::get(0).map_err(|e| err("cuDeviceGet", e))?;
+        let ctx = unsafe { cu::primary_ctx::retain(dev) }.map_err(|e| err("primary context", e))?;
+        unsafe { cu::ctx::set_current(ctx) }.map_err(|e| err("cuCtxSetCurrent", e))?;
+        let attr = |a| unsafe { cu::device::get_attribute(dev, a) }.map_err(|e| err("attribute", e));
+        use sys::CUdevice_attribute_enum as A;
+        let arch = (
+            attr(A::CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR)?,
+            attr(A::CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR)?,
+        );
+        let name = cu::device::get_name(dev).map_err(|e| err("cuDeviceGetName", e))?;
+        let mut driver_version = 0;
+        check("cuDriverGetVersion", unsafe {
+            sys::cuDriverGetVersion(&mut driver_version)
+        })?;
+        // Keep freed stream-ordered allocations in the pool (batches allocate
+        // their uploads and scratch there).
+        unsafe {
+            let pool = cu::device::get_default_mem_pool(dev).map_err(|e| err("mem pool", e))?;
+            let mut threshold: u64 = u64::MAX;
+            check(
+                "cuMemPoolSetAttribute",
+                sys::cuMemPoolSetAttribute(
+                    pool,
+                    sys::CUmemPool_attribute::CU_MEMPOOL_ATTR_RELEASE_THRESHOLD,
+                    &mut threshold as *mut u64 as *mut c_void,
+                ),
+            )?;
+        }
+        let admin = cu::stream::create(cu::stream::StreamKind::NonBlocking)
+            .map_err(|e| err("cuStreamCreate", e))?;
+        let nvrtc = nvrtc_version();
+        let l = mklight_webgpu::wgpu_device::design_limits();
+        let summary = AdapterSummary {
+            name,
+            vendor: "NVIDIA".into(),
+            backend: "CUDA".into(),
+            driver: format!(
+                "CUDA driver {}.{}, sm_{}{}",
+                driver_version / 1000,
+                driver_version % 1000 / 10,
+                arch.0,
+                arch.1
+            ),
+            integrated: false,
+            // The WebGPU host operations chunk work by these limits; the
+            // WebGPU defaults keep their chunking (and the kernels' index
+            // arithmetic) unchanged.
+            max_storage_buffer_binding_size: l.max_storage_buffer_binding_size as u64,
+            max_buffer_size: l.max_buffer_size,
+            max_storage_buffers_per_shader_stage: l.max_storage_buffers_per_shader_stage,
+            max_compute_workgroup_size_x: l.max_compute_workgroup_size_x,
+            max_compute_invocations_per_workgroup: l.max_compute_invocations_per_workgroup,
+            max_compute_workgroups_per_dimension: l.max_compute_workgroups_per_dimension,
+            max_compute_workgroup_storage_size: l.max_compute_workgroup_storage_size,
+            min_storage_buffer_offset_alignment: l.min_storage_buffer_offset_alignment,
+        };
+        Ok(Some(Self {
+            ctx,
+            summary,
+            arch,
+            nvrtc,
+            driver_version,
+            cache_dir: default_cache_dir(),
+            modules: Mutex::new(HashMap::new()),
+            blocks: Mutex::new(HashMap::new()),
+            persistent: Mutex::new(HashMap::new()),
+            next_key: AtomicU64::new(1),
+            lanes: Mutex::new(Vec::new()),
+            admin: Mutex::new(admin),
+            prepared_all: std::sync::atomic::AtomicBool::new(false),
+        }))
+    }
+
+    /// Compute capability (8, 9).
+    pub fn arch(&self) -> (i32, i32) {
+        self.arch
+    }
+
+    /// Use `dir` for the kernel cache (`None`: no cache).
+    pub fn set_cache_dir(&mut self, dir: Option<PathBuf>) {
+        self.cache_dir = dir;
+    }
+
+    fn bind(&self) -> MkResult<()> {
+        unsafe { cu::ctx::set_current(self.ctx) }.map_err(|e| err("cuCtxSetCurrent", e))
+    }
+
+    /// The CUBIN of `module`: from the cache or compiled.
+    fn cubin(&self, module: &str, source: &str) -> MkResult<Vec<u8>> {
+        let Some(nvrtc) = self.nvrtc else {
+            return Err(MkError::Unsupported(
+                "cuda: NVRTC (nvrtc64_*.dll / libnvrtc.so) is not available to compile kernels"
+                    .into(),
+            ));
+        };
+        let arch = format!("--gpu-architecture=sm_{}{}", self.arch.0, self.arch.1);
+        let mut h = blake3::Hasher::new();
+        h.update(kernels::digest().as_bytes());
+        h.update(module.as_bytes());
+        h.update(source.as_bytes());
+        h.update(arch.as_bytes());
+        h.update(format!("{nvrtc:?}").as_bytes());
+        let key = h.finalize().to_hex()[..20].to_string();
+        let path = self
+            .cache_dir
+            .as_ref()
+            .map(|d| d.join(format!("{module}-{key}.cubin")));
+        let t = Instant::now();
+        if let Some(p) = &path
+            && let Ok(b) = std::fs::read(p)
+        {
+            let mut s = COMPILE_STATS.lock().unwrap();
+            s.1 += 1;
+            s.2 += t.elapsed().as_secs_f64();
+            return Ok(b);
+        }
+        let mut options: Vec<&str> = kernels::OPTIONS.to_vec();
+        options.push(&arch);
+        let cubin = compile(module, source, &options)?;
+        if std::env::var_os("MKLIGHT_CUDA_LOG").is_some() {
+            eprintln!(
+                "cuda: compiled {module} in {:.2} s ({} KiB)",
+                t.elapsed().as_secs_f64(),
+                cubin.len() / 1024
+            );
+        }
+        if let Some(p) = &path {
+            let _ = std::fs::create_dir_all(p.parent().unwrap());
+            let tmp = p.with_extension(format!("tmp{}", std::process::id()));
+            if std::fs::write(&tmp, &cubin).is_ok() {
+                let _ = std::fs::rename(&tmp, p);
+            }
+        }
+        let mut s = COMPILE_STATS.lock().unwrap();
+        s.0 += 1;
+        s.2 += t.elapsed().as_secs_f64();
+        Ok(cubin)
+    }
+
+    /// The loaded unit holding `k` (compiled or read from the cache on first
+    /// use; concurrent first uses wait for one compilation).
+    fn unit(&self, k: Kernel) -> MkResult<Arc<Module>> {
+        let (name, source) = kernels::unit(k.module, k.entry)
+            .ok_or_else(|| MkError::Unsupported(format!("cuda: no kernel module '{}'", k.module)))?;
+        let cell = self.modules.lock().unwrap().entry(name.clone()).or_default().clone();
+        cell.get_or_init(|| {
+            let cubin = self.cubin(&name, &source).map_err(|e| e.to_string())?;
+            self.bind().map_err(|e| e.to_string())?;
+            let module = unsafe { cu::module::load_data(cubin.as_ptr() as *const c_void) }
+                .map_err(|e| format!("cuda: loading module {name}: {e:?}"))?;
+            Ok(Arc::new(Module { module }))
+        })
+        .clone()
+        .map_err(MkError::Backend)
+    }
+
+    fn function(&self, k: Kernel) -> MkResult<(sys::CUfunction, [u32; 3])> {
+        if let Some(f) = self.blocks.lock().unwrap().get(&k) {
+            return Ok(*f);
+        }
+        let m = self.unit(k)?;
+        let entry = CString::new(k.entry).unwrap();
+        let f = unsafe { cu::module::get_function(m.module, entry) };
+        let f = f.map_err(|e| err(&format!("kernel {}::{}", k.module, k.entry), e))?;
+        let block = kernels::block_size(k.module, k.entry).ok_or_else(|| {
+            MkError::Backend(format!(
+                "cuda: no @workgroup_size for {}::{}",
+                k.module, k.entry
+            ))
+        })?;
+        self.blocks.lock().unwrap().insert(k, (f, block));
+        Ok((f, block))
+    }
+
+    fn lane(&self) -> MkResult<Lane> {
+        if let Some(l) = self.lanes.lock().unwrap().pop() {
+            return Ok(l);
+        }
+        let stream = cu::stream::create(cu::stream::StreamKind::NonBlocking)
+            .map_err(|e| err("cuStreamCreate", e))?;
+        let ev = || {
+            cu::event::create(sys::CUevent_flags::CU_EVENT_DEFAULT)
+                .map_err(|e| err("cuEventCreate", e))
+        };
+        Ok(Lane {
+            stream,
+            staging: None,
+            start: ev()?,
+            end: ev()?,
+        })
+    }
+
+    fn ptr(&self, key: BufferKey) -> MkResult<(sys::CUdeviceptr, usize)> {
+        self.persistent
+            .lock()
+            .unwrap()
+            .get(&key.0)
+            .copied()
+            .ok_or_else(|| MkError::Backend(format!("cuda: unknown buffer {}", key.0)))
+    }
+
+    fn run_on(&self, lane: &mut Lane, batch: Batch<'_>) -> MkResult<BatchStats> {
+        let s = lane.stream;
+        let t_run = Instant::now();
+        let mut stats = BatchStats::default();
+        // Host bytes moved through staging: uploads and uniforms, then reads.
+        let uniform_align = 64usize;
+        let mut uniform_bytes = 0usize;
+        for p in &batch.passes {
+            if let Some(u) = &p.uniform {
+                uniform_bytes = uniform_bytes.div_ceil(uniform_align) * uniform_align + u.len() * 4;
+            }
+        }
+        let upload_bytes: usize = batch
+            .resources
+            .iter()
+            .map(|r| match r {
+                Resource::Upload(w) => w.len() * 4,
+                _ => 0,
+            })
+            .sum();
+        let read_bytes: usize = batch.reads.iter().map(|r| r.into.len() * 4).sum();
+        let staging_bytes = (upload_bytes + uniform_bytes + 4096).max(read_bytes);
+        if lane.staging.as_ref().is_none_or(|p| p.bytes < staging_bytes) {
+            lane.staging = None;
+            lane.staging = Some(Pinned::new(staging_bytes)?);
+        }
+        let staging = lane.staging.as_ref().unwrap();
+        let stage = unsafe { std::slice::from_raw_parts_mut(staging.ptr, staging.bytes) };
+        // Stage every upload first (in parallel), so the device clock below
+        // starts with the transfers.
+        {
+            let mut parts: Vec<(&mut [u8], &[u8])> = Vec::new();
+            let mut rest: &mut [u8] = stage;
+            for r in &batch.resources {
+                if let Resource::Upload(w) = r {
+                    let bytes: &[u8] = bytemuck::cast_slice(w);
+                    let (head, tail) = std::mem::take(&mut rest).split_at_mut(bytes.len());
+                    parts.push((head, bytes));
+                    rest = tail;
+                }
+            }
+            par_copy(parts);
+        }
+
+        unsafe { cu::event::record(lane.start, s) }.map_err(|e| err("cuEventRecord", e))?;
+        // MKLIGHT_CUDA_PROFILE=1: an event after the inputs, each pass and
+        // the copies; one line per batch on stderr.
+        let profile = *PROFILE;
+        let mut marks: Vec<(String, sys::CUevent)> = Vec::new();
+        let mut mark = |label: String| -> MkResult<()> {
+            if profile {
+                let e = cu::event::create(sys::CUevent_flags::CU_EVENT_DEFAULT)
+                    .map_err(|e| err("cuEventCreate", e))?;
+                unsafe { cu::event::record(e, s) }.map_err(|e| err("cuEventRecord", e))?;
+                marks.push((label, e));
+            }
+            Ok(())
+        };
+        let mut owned: Vec<sys::CUdeviceptr> = Vec::new();
+        let mut ptrs: Vec<sys::CUdeviceptr> = Vec::with_capacity(batch.resources.len());
+        let result = (|| -> MkResult<()> {
+            let alloc = |words: usize, owned: &mut Vec<sys::CUdeviceptr>| -> MkResult<sys::CUdeviceptr> {
+                let p = unsafe { cu::malloc_async(s, words.max(4) * 4) }
+                    .map_err(|e| err("cuMemAllocAsync", e))?;
+                owned.push(p);
+                Ok(p)
+            };
+            let mut cursor = 0usize;
+            for r in &batch.resources {
+                let p = match r {
+                    Resource::Persistent(k) => self.ptr(*k)?.0,
+                    Resource::Upload(w) => {
+                        let p = alloc(w.len(), &mut owned)?;
+                        if !w.is_empty() {
+                            let bytes: &[u8] = bytemuck::cast_slice(w);
+                            check("cuMemcpyHtoDAsync", unsafe {
+                                sys::cuMemcpyHtoDAsync_v2(
+                                    p,
+                                    staging.ptr.add(cursor) as *const c_void,
+                                    bytes.len(),
+                                    s,
+                                )
+                            })?;
+                            cursor += bytes.len();
+                            stats.uploaded_bytes += bytes.len() as u64;
+                        }
+                        p
+                    }
+                    Resource::Scratch(n) => {
+                        let p = alloc(*n, &mut owned)?;
+                        check("cuMemsetD32Async", unsafe {
+                            sys::cuMemsetD32Async(p, 0, (*n).max(4), s)
+                        })?;
+                        p
+                    }
+                    Resource::Slice { key, offset, len } => {
+                        let p = alloc(*len, &mut owned)?;
+                        if *len > 0 {
+                            let (src, _) = self.ptr(*key)?;
+                            check("cuMemcpyDtoDAsync", unsafe {
+                                sys::cuMemcpyDtoDAsync_v2(p, src + (*offset * 4) as u64, *len * 4, s)
+                            })?;
+                        }
+                        p
+                    }
+                };
+                ptrs.push(p);
+            }
+            // Every pass's uniform block, uploaded at once.
+            let mut uniform_at = Vec::with_capacity(batch.passes.len());
+            let ubase = cursor.div_ceil(uniform_align) * uniform_align;
+            let mut uoff = 0usize;
+            for p in &batch.passes {
+                if let Some(u) = &p.uniform {
+                    uoff = uoff.div_ceil(uniform_align) * uniform_align;
+                    let bytes: &[u8] = bytemuck::cast_slice(u);
+                    stage[ubase + uoff..ubase + uoff + bytes.len()].copy_from_slice(bytes);
+                    uniform_at.push(Some(uoff));
+                    uoff += bytes.len();
+                } else {
+                    uniform_at.push(None);
+                }
+            }
+            let uniforms = if uoff > 0 {
+                let p = alloc(uoff.div_ceil(4), &mut owned)?;
+                check("cuMemcpyHtoDAsync", unsafe {
+                    sys::cuMemcpyHtoDAsync_v2(p, staging.ptr.add(ubase) as *const c_void, uoff, s)
+                })?;
+                p
+            } else {
+                0
+            };
+            mark("inputs".into())?;
+            for (p, u) in batch.passes.iter().zip(&uniform_at) {
+                let (f, block) = self.function(p.kernel)?;
+                let mut args: Vec<u64> = Vec::with_capacity(1 + p.storage.len());
+                args.push(u.map_or(0, |o| uniforms + o as u64));
+                for b in &p.storage {
+                    let off = b.range.map_or(0, |r| r.0);
+                    args.push(ptrs[b.resource] + (off * 4) as u64);
+                }
+                let mut params: Vec<*mut c_void> = args
+                    .iter_mut()
+                    .map(|a| a as *mut u64 as *mut c_void)
+                    .collect();
+                let [x, y, z] = p.workgroups;
+                if x == 0 || y == 0 || z == 0 {
+                    continue;
+                }
+                check(
+                    &format!("launching {}::{}", p.kernel.module, p.kernel.entry),
+                    unsafe {
+                        sys::cuLaunchKernel(
+                            f,
+                            x,
+                            y,
+                            z,
+                            block[0],
+                            block[1],
+                            block[2],
+                            0,
+                            s,
+                            params.as_mut_ptr(),
+                            std::ptr::null_mut(),
+                        )
+                    },
+                )?;
+                stats.passes += 1;
+                mark(format!("{}[{}x{}x{}]", p.kernel.entry, x, y, z))?;
+            }
+            for c in &batch.copies {
+                if c.len == 0 {
+                    continue;
+                }
+                let (dst, _) = self.ptr(c.to)?;
+                check("cuMemcpyDtoDAsync", unsafe {
+                    sys::cuMemcpyDtoDAsync_v2(
+                        dst + (c.to_offset * 4) as u64,
+                        ptrs[c.from] + (c.from_offset * 4) as u64,
+                        c.len * 4,
+                        s,
+                    )
+                })?;
+            }
+            Ok(())
+        })();
+        // Readbacks into staging, then into the destinations after the sync.
+        let _ = mark("copies".into());
+        let mut reads = batch.reads;
+        let mut ok = result.and_then(|()| {
+            let mut cursor = 0usize;
+            for r in &reads {
+                let bytes = r.into.len() * 4;
+                if bytes == 0 {
+                    continue;
+                }
+                let src = ptrs[r.resource];
+                check("cuMemcpyDtoHAsync", unsafe {
+                    sys::cuMemcpyDtoHAsync_v2(
+                        staging.ptr.add(cursor) as *mut c_void,
+                        src + (r.offset * 4) as u64,
+                        bytes,
+                        s,
+                    )
+                })?;
+                cursor += bytes;
+            }
+            Ok(())
+        });
+        if ok.is_ok() {
+            ok = unsafe { cu::event::record(lane.end, s) }.map_err(|e| err("cuEventRecord", e));
+        }
+        for p in owned {
+            unsafe {
+                let _ = cu::free_async(p, s);
+            }
+        }
+        let t_sync = Instant::now();
+        let sync = unsafe { cu::stream::synchronize(s) }.map_err(|e| err("cuStreamSynchronize", e));
+        ok?;
+        sync?;
+        let mut parts: Vec<(&mut [u8], &[u8])> = Vec::new();
+        let mut rest: &[u8] = stage;
+        for r in &mut reads {
+            let bytes = r.into.len() * 4;
+            let (head, tail) = rest.split_at(bytes);
+            parts.push((bytemuck::cast_slice_mut(r.into), head));
+            rest = tail;
+            stats.readback_bytes += bytes as u64;
+        }
+        par_copy(parts);
+        stats.device_seconds = unsafe { cu::event::elapsed(lane.start, lane.end) }
+            .map_err(|e| err("cuEventElapsedTime", e))? as f64
+            * 1e-3;
+        DEVICE_NANOS.fetch_add((stats.device_seconds * 1e9) as u64, Ordering::Relaxed);
+        if profile {
+            let mut line = format!(
+                "cuda batch {:.3} ms, host {:.3} ms enqueue + {:.3} ms wait/unstage (up {} KiB, down {} KiB):",
+                stats.device_seconds * 1e3,
+                (t_sync - t_run).as_secs_f64() * 1e3,
+                t_sync.elapsed().as_secs_f64() * 1e3,
+                stats.uploaded_bytes / 1024,
+                stats.readback_bytes / 1024
+            );
+            let mut prev = lane.start;
+            for (label, e) in &marks {
+                let ms = unsafe { cu::event::elapsed(prev, *e) }.unwrap_or(f32::NAN);
+                line += &format!(" {label} {ms:.3}");
+                prev = *e;
+            }
+            let ms = unsafe { cu::event::elapsed(prev, lane.end) }.unwrap_or(f32::NAN);
+            line += &format!(" readback {ms:.3}");
+            eprintln!("{line}");
+            for (_, e) in marks {
+                unsafe {
+                    let _ = cu::event::destroy(e);
+                }
+            }
+        }
+        Ok(stats)
+    }
+
+    /// NVRTC version and driver version, for `kernel_build`.
+    pub fn versions(&self) -> (Option<(i32, i32)>, i32) {
+        (self.nvrtc, self.driver_version)
+    }
+}
+
+impl Gpu for CudaDevice {
+    fn summary(&self) -> &AdapterSummary {
+        &self.summary
+    }
+
+    fn persist(&self, words: &[u32]) -> MkResult<BufferKey> {
+        let key = self.allocate(words.len())?;
+        if !words.is_empty() {
+            self.bind()?;
+            let (p, _) = self.ptr(key)?;
+            unsafe { cu::memcpy_htod_sync(p, words) }.map_err(|e| err("cuMemcpyHtoD", e))?;
+        }
+        Ok(key)
+    }
+
+    fn allocate(&self, words: usize) -> MkResult<BufferKey> {
+        self.bind()?;
+        let p = {
+            let admin = self.admin.lock().unwrap();
+            let p = unsafe { cu::malloc_async(*admin, words.max(4) * 4) }
+                .map_err(|e| err("cuMemAllocAsync", e))?;
+            // Usable on every stream once the allocation has completed.
+            unsafe { cu::stream::synchronize(*admin) }.map_err(|e| err("cuStreamSynchronize", e))?;
+            p
+        };
+        let key = self.next_key.fetch_add(1, Ordering::Relaxed);
+        self.persistent.lock().unwrap().insert(key, (p, words));
+        Ok(BufferKey(key))
+    }
+
+    fn release(&self, key: BufferKey) {
+        if let Some((p, _)) = self.persistent.lock().unwrap().remove(&key.0) {
+            // Batches complete before `run` returns, so nothing uses `p`.
+            let _ = self.bind();
+            let admin = self.admin.lock().unwrap();
+            unsafe {
+                let _ = cu::free_async(p, *admin);
+            }
+        }
+    }
+
+    fn prepare(&self, kernels: &[(Kernel, PassShape)]) -> MkResult<()> {
+        // Units compile in parallel (NVRTC is thread-safe). The backend
+        // prepares one kernel at a time (for progress), so the first call
+        // prepares every kernel the host uses.
+        let mut ks: Vec<Kernel> = kernels.iter().map(|(k, _)| *k).collect();
+        if !self.prepared_all.swap(true, Ordering::Relaxed) {
+            ks.extend(mklight_webgpu::ops::pipelines().into_iter().map(|(k, _)| k));
+        }
+        ks.retain(|k| kernels::source(k.module).is_some());
+        let threads = std::thread::available_parallelism().map_or(4, |n| n.get()).min(ks.len().max(1));
+        let next = std::sync::atomic::AtomicUsize::new(0);
+        std::thread::scope(|scope| {
+            let workers: Vec<_> = (0..threads)
+                .map(|_| {
+                    scope.spawn(|| -> MkResult<()> {
+                        loop {
+                            let i = next.fetch_add(1, Ordering::Relaxed);
+                            let Some(k) = ks.get(i) else { return Ok(()) };
+                            self.function(*k)?;
+                        }
+                    })
+                })
+                .collect();
+            workers
+                .into_iter()
+                .try_for_each(|w| w.join().unwrap_or_else(|_| Err(MkError::Backend("cuda: compile thread panicked".into()))))
+        })
+    }
+
+    fn run(&self, batch: Batch<'_>) -> MkResult<BatchStats> {
+        self.bind()?;
+        let mut lane = self.lane()?;
+        let r = self.run_on(&mut lane, batch);
+        if r.is_ok() {
+            self.lanes.lock().unwrap().push(lane);
+        }
+        r
+    }
+
+    fn kind(&self) -> BackendKind {
+        BackendKind::Cuda
+    }
+
+    fn kernel_build(&self, raw: &NumericsProbe) -> Option<String> {
+        let yn = |b: bool| if b { "yes" } else { "no" };
+        Some(format!(
+            "CUDA {} (NVRTC {}, sm_{}{}, driver {}; {}); plain expressions: contraction {}, \
+             reassociation {}, correctly rounded div {} / sqrt {}",
+            kernels::digest(),
+            self.nvrtc
+                .map_or("-".to_string(), |(a, b)| format!("{a}.{b}")),
+            self.arch.0,
+            self.arch.1,
+            self.driver_version,
+            kernels::OPTIONS.join(" "),
+            yn(!raw.no_contraction),
+            yn(!raw.no_reassociation),
+            yn(raw.correctly_rounded_div),
+            yn(raw.correctly_rounded_sqrt),
+        ))
+    }
+
+    fn ports(&self, family: &str) -> bool {
+        kernels::ported(family)
+    }
+}
+
+/// Copy each `(dst, src)` pair, large ones in parallel pieces: one thread
+/// copies about 10 GB/s, so a 32 MiB plane alone took 3 ms.
+fn par_copy(parts: Vec<(&mut [u8], &[u8])>) {
+    use rayon::prelude::*;
+    const PIECE: usize = 1 << 20;
+    let total: usize = parts.iter().map(|(_, s)| s.len()).sum();
+    if total < 4 * PIECE {
+        for (d, s) in parts {
+            d.copy_from_slice(s);
+        }
+        return;
+    }
+    parts
+        .into_par_iter()
+        .flat_map(|(d, s)| d.par_chunks_mut(PIECE).zip(s.par_chunks(PIECE)))
+        .for_each(|(d, s)| d.copy_from_slice(s));
+}
+
+/// NVRTC's version, or `None` when the library cannot be loaded.
+pub fn nvrtc_version() -> Option<(i32, i32)> {
+    if !unsafe { nv::is_culib_present() } {
+        return None;
+    }
+    let (mut a, mut b) = (0, 0);
+    let r = unsafe { nv::nvrtcVersion(&mut a, &mut b) };
+    (r == nv::nvrtcResult::NVRTC_SUCCESS).then_some((a, b))
+}
+
+/// Compile one module with NVRTC into a CUBIN.
+fn compile(module: &str, source: &str, options: &[&str]) -> MkResult<Vec<u8>> {
+    let src = CString::new(source).unwrap();
+    let name = CString::new(format!("{module}.cu")).unwrap();
+    let hdr: Vec<CString> = kernels::HEADERS
+        .iter()
+        .map(|(_, s)| CString::new(*s).unwrap())
+        .collect();
+    let hdr_names: Vec<CString> = kernels::HEADERS
+        .iter()
+        .map(|(n, _)| CString::new(*n).unwrap())
+        .collect();
+    let hp: Vec<*const i8> = hdr.iter().map(|c| c.as_ptr()).collect();
+    let hn: Vec<*const i8> = hdr_names.iter().map(|c| c.as_ptr()).collect();
+    let opts: Vec<CString> = options.iter().map(|o| CString::new(*o).unwrap()).collect();
+    let op: Vec<*const i8> = opts.iter().map(|c| c.as_ptr()).collect();
+    let ok = |r: nv::nvrtcResult, what: &str| -> MkResult<()> {
+        if r == nv::nvrtcResult::NVRTC_SUCCESS {
+            Ok(())
+        } else {
+            Err(MkError::Backend(format!("cuda: NVRTC {what}: {r:?}")))
+        }
+    };
+    unsafe {
+        let mut prog = std::mem::MaybeUninit::uninit();
+        ok(
+            nv::nvrtcCreateProgram(
+                prog.as_mut_ptr(),
+                src.as_ptr(),
+                name.as_ptr(),
+                hp.len() as i32,
+                hp.as_ptr(),
+                hn.as_ptr(),
+            ),
+            "create",
+        )?;
+        let mut prog = prog.assume_init();
+        let r = nv::nvrtcCompileProgram(prog, op.len() as i32, op.as_ptr());
+        let mut log_size = 0usize;
+        nv::nvrtcGetProgramLogSize(prog, &mut log_size);
+        let mut log = vec![0u8; log_size.max(1)];
+        nv::nvrtcGetProgramLog(prog, log.as_mut_ptr() as *mut i8);
+        let log = String::from_utf8_lossy(&log[..log_size.saturating_sub(1)]).into_owned();
+        if r != nv::nvrtcResult::NVRTC_SUCCESS {
+            nv::nvrtcDestroyProgram(&mut prog);
+            return Err(MkError::Backend(format!(
+                "cuda: compiling {module}: {r:?}\n{log}"
+            )));
+        }
+        if !log.trim().is_empty() && std::env::var_os("MKLIGHT_CUDA_LOG").is_some() {
+            eprintln!("cuda: {module}: {log}");
+        }
+        let mut size = 0usize;
+        ok(nv::nvrtcGetCUBINSize(prog, &mut size), "cubin size")?;
+        let mut cubin = vec![0u8; size];
+        ok(
+            nv::nvrtcGetCUBIN(prog, cubin.as_mut_ptr() as *mut i8),
+            "cubin",
+        )?;
+        nv::nvrtcDestroyProgram(&mut prog);
+        Ok(cubin)
+    }
+}
