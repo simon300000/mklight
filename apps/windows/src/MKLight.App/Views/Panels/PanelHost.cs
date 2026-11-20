@@ -377,6 +377,9 @@ public sealed class PanelHost : UserControl
 
     // ---- Saving ----
 
+    /// <summary>Writes the views now (nothing before they were read back).</summary>
+    internal void SaveNow() => Save();
+
     internal void SaveSoon()
     {
         if (_saveTimer is null) return;

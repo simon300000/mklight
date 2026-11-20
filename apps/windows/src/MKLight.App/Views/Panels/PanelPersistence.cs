@@ -13,7 +13,28 @@ public static class PanelPersistence
 {
     static readonly ConditionalWeakTable<DesignSession, PanelHost> Hosts = [];
 
-    internal static void Register(DesignSession session, PanelHost host) => Hosts.AddOrUpdate(session, host);
+    internal static void Register(DesignSession session, PanelHost host)
+    {
+        Hosts.AddOrUpdate(session, host);
+        // The layout pane's settings and the viewport's state are saved with the panels.
+        void Changed() => WriteLayoutEntry(host);
+        session.Workspace.Layout.Changed += Changed;
+        host.Layout.StateChanged += Changed;
+    }
+
+    static bool _restoring;
+
+    /// <summary>Writes the views at once when the layout's settings or viewport state change (a save right after must see them).</summary>
+    static void WriteLayoutEntry(PanelHost host)
+    {
+        if (!_restoring) host.SaveNow();
+    }
+
+    static void SetLayoutEntry(DesignSession session, WorkspaceLayout layout, PanelHost host)
+    {
+        layout.LayoutSettings = (System.Text.Json.Nodes.JsonObject)session.Workspace.Layout.Settings.DeepClone();
+        host.Layout.ViewState.WriteTo(layout.LayoutUi);
+    }
 
     /// <summary>
     /// The session's start: the panes saved in the project's <c>views</c> (analysis, settings, automatic
@@ -37,6 +58,13 @@ public static class PanelPersistence
             ws.Panes.Add(pane);
         }
         ws.FocusedPaneId = ws.Panes.FirstOrDefault()?.Id;
+        _restoring = true;
+        try
+        {
+            if (layout.LayoutSettings.Count > 0) ws.Layout.SetSettings(layout.LayoutSettings);
+            if (host is not null) host.Layout.ViewState = WorkspaceLayout.ViewState.Read(layout.LayoutUi);
+        }
+        finally { _restoring = false; }
         host?.ApplySaved(layout);
         // Automatic panes run now; the others wait for Run.
         foreach (var pane in ws.Panes.Where(p => p.AutoUpdate)) ws.Run(pane, force: false);
@@ -52,6 +80,7 @@ public static class PanelPersistence
         foreach (var p in session.Workspace.Panes)
             layout.Panes.Add(new WorkspaceLayout.Pane(p.Id, p.Analysis, (System.Text.Json.Nodes.JsonObject)p.Settings.DeepClone(), p.AutoUpdate, p.ShowsSettings));
         layout.Arrangement = arrangement.ToJson();
+        if (Hosts.TryGetValue(session, out var host)) SetLayoutEntry(session, layout, host);
         doc.SetSection("views", new JsonTree(layout.ToViews()));
     }
 }

@@ -13,6 +13,27 @@ public sealed class WorkspaceLayout
 {
     public sealed record Pane(string Key, string Analysis, JsonObject Settings, bool AutoUpdate, bool ShowsSettings);
 
+    /// <summary>
+    /// The layout viewport's saved state (<c>ui</c> of the layout entry, the Mac app's keys): the view
+    /// (<c>2D</c>, <c>2D-xz</c> or <c>3D</c>), the ray colouring (<c>field</c> or <c>wavelength</c>) and the
+    /// vertical stretch when one was chosen.
+    /// </summary>
+    public sealed record ViewState(string Mode, string RayColoring, double? Stretch)
+    {
+        public static ViewState Read(JsonObject ui) => new(
+            Text(ui["mode"]) is ("3D" or "2D-xz") and { } m ? m : "2D",
+            Text(ui["ray_coloring"]) == "wavelength" ? "wavelength" : "field",
+            ui["stretch"] is JsonValue v && v.TryGetValue<double>(out var s) && double.IsFinite(s) && s >= 1 ? s : null);
+
+        /// <summary>Writes the state into <paramref name="ui"/>, keeping its other keys.</summary>
+        public void WriteTo(JsonObject ui)
+        {
+            ui["mode"] = Mode;
+            ui["ray_coloring"] = RayColoring;
+            if (Stretch is { } s) ui["stretch"] = s; else ui.Remove("stretch");
+        }
+    }
+
     public List<Pane> Panes { get; } = [];
     /// <summary>Where the panels are, in every window (null: the standard arrangement).</summary>
     public JsonObject? Arrangement { get; set; }
