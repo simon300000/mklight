@@ -28,4 +28,7 @@ public static class BenchPlan
         }
         return system;
     }
+
+    /// <summary>A path argument without the quotes a shell may have passed through: <c>"C:\a b\x.jsonl"</c> becomes <c>C:\a b\x.jsonl</c>.</summary>
+    public static string CleanPath(string arg) => arg.Trim().Trim('"', '\'').Trim();
 }

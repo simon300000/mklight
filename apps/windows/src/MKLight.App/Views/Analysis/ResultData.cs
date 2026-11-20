@@ -13,6 +13,12 @@ public interface IResultArray
     IReadOnlyList<int> Shape { get; }
     int Count { get; }
     double this[int index] { get; }
+
+    /// <summary>Every element as double into <paramref name="destination"/> (at least <see cref="Count"/> long): one typed pass for large buffers.</summary>
+    void CopyTo(Span<double> destination)
+    {
+        for (var i = 0; i < Count; i++) destination[i] = this[i];
+    }
 }
 
 /// <summary>Everything a result view needs from a finished run (docs/RESULTS.md).</summary>

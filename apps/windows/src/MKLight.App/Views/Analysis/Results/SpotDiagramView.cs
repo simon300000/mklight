@@ -137,6 +137,7 @@ public sealed partial class SpotDiagramView : UserControl, IViewOptions
         Grid.SetRow(footer, 2);
         root.Children.Add(footer);
         Content = root;
+        Unloaded += (_, _) => { foreach (var b in _masks.Values) b.Bitmap.Dispose(); _masks.Clear(); };
         UpdateScale();
     }
 
@@ -287,6 +288,48 @@ public sealed partial class SpotDiagramView : UserControl, IViewOptions
         return text;
     }
 
+    readonly Dictionary<SpotGridData.Coverage, (CanvasBitmap Bitmap, CanvasDevice Device, Color Color, int Side, float Radius)> _masks = new(ReferenceEqualityComparer.Instance);
+
+    /// <summary>
+    /// A coverage mask drawn as the markers would be: at <paramref name="side"/> device pixels, a disc of
+    /// <paramref name="radius"/> device pixels in <paramref name="color"/> at every covered bin (opaque; the
+    /// layer's opacity is the markers'). Cached per mask, device, colour, size and radius.
+    /// </summary>
+    CanvasBitmap MaskBitmap(CanvasDrawingSession ds, SpotGridData.Coverage m, Color color, int side, float radius)
+    {
+        if (_masks.TryGetValue(m, out var c) && c.Device == ds.Device && c.Color == color && c.Side == side && c.Radius == radius) return c.Bitmap;
+        c.Bitmap?.Dispose();
+        var cover = new byte[side * side];
+        var n = SpotGridData.MaskSize;
+        var step = (double)side / n;
+        var r = Math.Max(radius, 0.5f);
+        var reach = (int)Math.Ceiling(r);
+        var r2 = r * r;
+        for (var row = 0; row < n; row++)
+            for (var col = 0; col < n; col++)
+            {
+                if (m.Mask[row * n + col] == 0) continue;
+                double px = (col + 0.5) * step, py = (row + 0.5) * step;
+                int x0 = Math.Max((int)(px - reach), 0), x1 = Math.Min((int)(px + reach), side - 1);
+                int y0 = Math.Max((int)(py - reach), 0), y1 = Math.Min((int)(py + reach), side - 1);
+                for (var y = y0; y <= y1; y++)
+                    for (var x = x0; x <= x1; x++)
+                    {
+                        double dx = x + 0.5 - px, dy = y + 0.5 - py;
+                        if (dx * dx + dy * dy <= r2) cover[y * side + x] = 1;
+                    }
+            }
+        var bgra = new byte[cover.Length * 4];
+        for (var i = 0; i < cover.Length; i++)
+        {
+            if (cover[i] == 0) continue;
+            bgra[4 * i] = color.B; bgra[4 * i + 1] = color.G; bgra[4 * i + 2] = color.R; bgra[4 * i + 3] = 255;
+        }
+        var bitmap = CanvasBitmap.CreateFromBytes(ds, bgra, side, side, global::Windows.Graphics.DirectX.DirectXPixelFormat.B8G8R8A8UIntNormalized, 96);
+        _masks[m] = (bitmap, ds.Device, color, side, radius);
+        return bitmap;
+    }
+
     void DrawCell(CanvasDrawingSession ds, SpotGridData.Cell cell, Rect box, double halfWidth, PlotStyle style)
     {
         var s = Math.Min(box.Width, box.Height) / 2 / halfWidth;
@@ -300,6 +343,21 @@ public sealed partial class SpotDiagramView : UserControl, IViewOptions
             if (double.IsFinite(_grid.Airy))
                 ds.DrawCircle(cx, cy, (float)(_grid.Airy * s), style.Label, 1, AiryDash);
             var (radius, opacity) = SpotGridData.MarkerStyle(cell.PointCount, Math.Min(box.Width, box.Height));
+            // A dense cell: each wavelength's coverage mask in its colour at the markers' opacity (the same layers).
+            if (cell.Masks is { } masks)
+            {
+                var half = (float)(cell.Extent * 1.0001 * s);
+                var dest = new Rect(cx - half, cy - half, 2 * half, 2 * half);
+                var dpi = ds.Dpi / 96;
+                var side = Math.Clamp((int)Math.Ceiling(2 * half * dpi), 1, 4096);
+                foreach (var m in masks)
+                {
+                    var um = m.Wavelength >= 0 && m.Wavelength < _grid.WavelengthsUm.Count ? _grid.WavelengthsUm[m.Wavelength] : 0.55;
+                    ds.DrawImage(MaskBitmap(ds, m, Palette.Wavelength(um, style.Dark), side, (float)(radius * dpi)), dest, new Rect(0, 0, side, side),
+                        (float)opacity, CanvasImageInterpolation.NearestNeighbor);
+                }
+                return;
+            }
             // One group per wavelength, composited once, so overlapping markers keep one opacity.
             foreach (var g in cell.Groups)
             {
