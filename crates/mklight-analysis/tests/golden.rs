@@ -112,7 +112,11 @@ fn compare(path: &str, a: &Value, b: &Value, errs: &mut Vec<String>) {
     match (a, b) {
         (Value::Number(x), Value::Number(y)) => {
             let (x, y) = (x.as_f64().unwrap(), y.as_f64().unwrap());
-            let abs = if path.contains("_percent") { ABS_PERCENT } else { ABS };
+            let abs = if path.contains("_percent") {
+                ABS_PERCENT
+            } else {
+                ABS
+            };
             if (x - y).abs() > REL * x.abs().max(y.abs()) + abs {
                 errs.push(format!("{path}: {x:e} (now) vs {y:e} (golden)"));
             }
