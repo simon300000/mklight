@@ -53,7 +53,7 @@ public static class RunDetailsView
 
         panel.Children.Add(Heading("Run Information", top: 0));
         Row("Computed on", b?.Summary ?? info.Backend);
-        Row("Requested", b?.Requested);
+        Row("Requested", b is null || b.Requested.Length == 0 ? null : RunRoute.Requested(b.Requested));
         if (b is not null) Row("Route", RunRoute.Line(b.Requested, b.CostDecision));
         Row("Ran on the CPU", b?.FallbackReason);
         Row("Precision", info.Precision == MKLight.Engine.Precision.F64Reference ? "f64 reference" : "f32 (GPU, qualified)");
@@ -178,6 +178,11 @@ public static class RunDetailsView
         };
         return b;
     }
+
+    /// <summary>The backend badge's label ("GPU · f32 · cuda", "CPU · f64"), without the time.</summary>
+    public static string Badge(AnalysisOutput output) =>
+        RunRoute.Badge(output.Backend?.Used is { Length: > 0 } used ? used : output.RunInfo.Backend,
+            output.Backend?.Precision is { Length: > 0 } p ? p : output.RunInfo.Precision == MKLight.Engine.Precision.F64Reference ? "f64_reference" : "f32_gpu");
 
     public static string Precision(AnalysisOutput output) => output.Backend?.Precision switch
     {

@@ -282,9 +282,45 @@ public static class BackendPreferenceExtensions
 /// <summary>
 /// How a job is executed: what a front end chooses of a job's identity besides the
 /// snapshot and the analysis settings. Part of the request, so it takes part in the
-/// staleness check: another backend preference makes the old result stale.
+/// staleness check: another backend preference (or another named GPU) makes the old
+/// result stale.
 /// </summary>
-public readonly record struct ExecutionSettings(BackendPreference Backend = BackendPreference.Auto);
+public readonly record struct ExecutionSettings
+{
+    /// <param name="backend">The preference.</param>
+    /// <param name="gpuName">
+    /// For <see cref="BackendPreference.Gpu"/>: the GPU backend's name (<c>cuda</c> of
+    /// <c>gpu:cuda</c>); <c>null</c> for the engine's first GPU backend. Dropped for the
+    /// other preferences, so <c>Auto</c> always equals <c>Auto</c>.
+    /// </param>
+    public ExecutionSettings(BackendPreference backend = BackendPreference.Auto, string? gpuName = null)
+    {
+        Backend = backend;
+        GpuName = backend == BackendPreference.Gpu && !string.IsNullOrEmpty(gpuName) ? gpuName : null;
+    }
+
+    public BackendPreference Backend { get; }
+
+    /// <summary>The named GPU backend of a GPU preference (<c>cuda</c>); <c>null</c>: the engine's first.</summary>
+    public string? GpuName { get; }
+
+    /// <summary>
+    /// The persisted name: <c>auto</c>, <c>cpu_reference</c>, <c>gpu</c> (the first GPU) or
+    /// <c>gpu:&lt;name&gt;</c> (the engine's backend id).
+    /// </summary>
+    public string WireName => GpuName is { } name ? "gpu:" + name : Backend.WireName();
+
+    /// <summary>Reads <see cref="WireName"/>; anything else is automatic.</summary>
+    public static ExecutionSettings FromWireName(string? name) => name switch
+    {
+        "cpu_reference" => new(BackendPreference.CpuReference),
+        "gpu" => new(BackendPreference.Gpu),
+        { Length: > 4 } s when s.StartsWith("gpu:", StringComparison.Ordinal) => new(BackendPreference.Gpu, s[4..]),
+        _ => new(BackendPreference.Auto),
+    };
+
+    public override string ToString() => WireName;
+}
 
 /// <summary>
 /// A request for any engine analysis by name (<c>{"analysis", "settings", "view_key",
