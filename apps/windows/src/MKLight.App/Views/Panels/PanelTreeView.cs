@@ -3,6 +3,8 @@ using Microsoft.UI;
 using Microsoft.UI.Input;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
+using Microsoft.UI.Xaml.Automation.Peers;
+using Microsoft.UI.Xaml.Automation.Provider;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
@@ -396,11 +398,40 @@ internal sealed class PanelTab : Grid
         Children.Add(row);
         PointerEntered += (_, _) => { _hover = true; Paint(); };
         PointerExited += (_, _) => { _hover = false; Paint(); };
-        PanelHandles.Attach(host, this, panel, click: () => { host.Arrangement.Select(panel); host.Focus(panel); }, exclude: _close);
+        PanelHandles.Attach(host, this, panel, click: Select, exclude: _close);
         AutomationProperties.SetName(this, host.Title(panel));
+        AutomationProperties.SetAutomationId(this, $"Panel.{panel.Key}.Tab");
+        AutomationProperties.SetAutomationId(_close, $"Panel.{panel.Key}.Tab.Close");
     }
 
     public PanelId Panel { get; }
+    internal bool IsSelected => _selected;
+
+    /// <summary>Brings the tab's panel to the front (a click, or assistive technology's Select).</summary>
+    internal void Select()
+    {
+        _host.Arrangement.Select(Panel);
+        _host.Focus(Panel);
+    }
+
+    // A panel has no automation peer: the tab is a tab item (Select brings it to the front), its title the name.
+    protected override AutomationPeer OnCreateAutomationPeer() => new TabPeer(this);
+
+    sealed partial class TabPeer(PanelTab owner) : FrameworkElementAutomationPeer(owner), ISelectionItemProvider
+    {
+        protected override AutomationControlType GetAutomationControlTypeCore() => AutomationControlType.TabItem;
+        protected override string GetClassNameCore() => nameof(PanelTab);
+        protected override bool IsControlElementCore() => true;
+        protected override bool IsContentElementCore() => true;
+        protected override object? GetPatternCore(PatternInterface patternInterface) =>
+            patternInterface == PatternInterface.SelectionItem ? this : base.GetPatternCore(patternInterface);
+
+        public bool IsSelected => owner.IsSelected;
+        public IRawElementProviderSimple? SelectionContainer => null;
+        public void Select() => owner.Select();
+        public void AddToSelection() => owner.Select();
+        public void RemoveFromSelection() { }
+    }
 
     public void Update(bool selected)
     {

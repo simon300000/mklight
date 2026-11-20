@@ -34,6 +34,10 @@ public sealed class Workspace
     public IReadOnlyDictionary<int, IReadOnlyList<IssueItem>> IssuesBySurface { get; private set; } = new Dictionary<int, IReadOnlyList<IssueItem>>();
 
     public BackendPreference Backend { get; set; } = BackendPreference.Auto;
+    /// <summary>The GPU backend asked for by name (<c>cuda</c>) when <see cref="Backend"/> is GPU; null: the engine's.</summary>
+    public string? GpuName { get; set; }
+    /// <summary>What every request of the design carries: part of a result's identity, so another choice makes results stale.</summary>
+    public ExecutionSettings Execution => new(Backend, Backend == BackendPreference.Gpu ? GpuName : null);
 
     public List<AnalysisPaneModel> Panes { get; } = [];
     public AnalysisPaneModel Layout { get; } = new("layout", id: "layout");
@@ -318,7 +322,7 @@ public sealed class Workspace
     {
         var settings = pane.Settings.ToDictionary(kv => kv.Key, kv => kv.Value?.DeepClone());
         if (Descriptor(pane.Analysis) is { SettingsFields.Count: > 0 } d) settings = d.AcceptedSettings(settings);
-        return new EngineAnalysisRequest(pane.Analysis, settings, new ExecutionSettings(Backend));
+        return new EngineAnalysisRequest(pane.Analysis, settings, Execution);
     }
 
     public bool IsStale(AnalysisPaneModel pane)

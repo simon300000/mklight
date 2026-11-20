@@ -80,7 +80,7 @@ public sealed class WorkspaceLayout
         foreach (var p in Panes)
             views.Add(new JsonObject
             {
-                ["key"] = p.Key, ["analysis"] = p.Analysis, ["settings"] = p.Settings.DeepClone(),
+                ["key"] = p.Key, ["analysis"] = p.Analysis, ["settings"] = Views.Analysis.Results.ImageSourceImport.Persistable(p.Settings), // an imported image keeps only its path
                 ["ui"] = new JsonObject { ["auto_update"] = p.AutoUpdate, ["settings_visible"] = p.ShowsSettings },
             });
         return views;

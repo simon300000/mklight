@@ -25,13 +25,16 @@ sealed partial class MapCanvas : UserControl
     }
 
     public void SetName(string name) => AutomationProperties.SetName(_canvas, name);
+    public void SetHelp(string text) => AutomationProperties.SetHelpText(_canvas, text);
     public void Invalidate() => _canvas.Invalidate();
 }
 
 /// <summary>
 /// <c>psf</c>: the PSF as an image on the one-hue magnitude ramp (zero recedes into the plot),
 /// linear or logarithmic over five decades, axes in µm about the grid centre, its colour bar,
-/// and the Strehl ratio and peak; a menu of the fields (and wavelengths).
+/// and the Strehl ratio and peak; a menu of the fields (and wavelengths). Until the scale is
+/// chosen, a PSF with a low Strehl ratio is shown on the log scale (with a note saying so), so
+/// its structure shows at a glance; the core window follows the energy.
 /// </summary>
 public sealed partial class PsfView : UserControl, IViewOptions
 {
@@ -42,10 +45,11 @@ public sealed partial class PsfView : UserControl, IViewOptions
     readonly TextBlock _keys;
     MapPlot? _plot;
     int _item;
-    bool _log;
+    bool? _log;
     bool _full;
+    readonly Choice _scale;
 
-    public PsfView(PsfData d, bool log = false)
+    public PsfView(PsfData d, bool? log = null)
     {
         _d = d;
         _log = log;
@@ -53,11 +57,12 @@ public sealed partial class PsfView : UserControl, IViewOptions
         _keys = Kit.Caption("", wrap: true);
         _map = new MapCanvas(() => _plot, "Point spread function");
         var picker = new ItemPicker("Field", d.Items.Select(i => i.Title).ToList(), k => { _item = k; Rebuild(); });
-        var scale = new Choice("Color scale", ["Linear", "Log"], log ? 1 : 0, menuBelow: 0);
-        ToolTipService.SetToolTip(scale, "Linear intensity, or logarithmic over five decades below the peak (shows the halo and side lobes)");
-        scale.Changed += k => { _log = k == 1; Rebuild(); };
+        var scale = _scale = new Choice("Color scale", ["Linear", "Log"], 0, menuBelow: 0);
+        ToolTipService.SetToolTip(scale, "Linear intensity, or logarithmic over five decades below the peak (shows the halo and side lobes). "
+            + "A PSF with a Strehl ratio below " + Fmt.G3(PsfData.LogBelowStrehl) + " starts on the log scale.");
+        scale.Changed += k => { if (!_syncing) { _log = k == 1; Rebuild(); } };
         var zoom = new Choice("Extent", ["Core", "Full"], 0, menuBelow: 0);
-        ToolTipService.SetToolTip(zoom, "The core (every sample above 0.1 % of the peak) or the whole sampling window");
+        ToolTipService.SetToolTip(zoom, "The core (the square about the peak holding 95 % of the energy, or every sample above 0.1 % of the peak if that is smaller) or the whole sampling window");
         zoom.Changed += k => { _full = k == 1; Rebuild(); };
         _opts["log"] = () => scale.Select(1);
         _opts["full"] = () => zoom.Select(1);
@@ -78,9 +83,16 @@ public sealed partial class PsfView : UserControl, IViewOptions
         Rebuild();
     }
 
+    bool _syncing;
+
     void Rebuild()
     {
         var it = _d.Items[Math.Clamp(_item, 0, _d.Items.Count - 1)];
+        var auto = _log is null && PsfData.PrefersLog(it);
+        var log = _log ?? auto;
+        _syncing = true;
+        _scale.Select(log ? 1 : 0);
+        _syncing = false;
         var u = _d.Units;
         var micro = u.Micro;
         var unitEnergy = it.Normalization == "unit_energy";
@@ -89,7 +101,7 @@ public sealed partial class PsfView : UserControl, IViewOptions
         _plot = new MapPlot
         {
             Image = new MapImage(shown, cells: true),
-            Scale = MapScale.Magnitude(lo, it.Peak, _log),
+            Scale = MapScale.Magnitude(lo, it.Peak, log),
             Unit = unitEnergy ? u.Density.Replace("⁻¹", "⁻²") : "",
             XTitle = $"x ({micro})",
             YTitle = $"y ({micro})",
@@ -109,12 +121,14 @@ public sealed partial class PsfView : UserControl, IViewOptions
         var width = it.Size * it.SpacingMm;
         _keys.Text = string.Join("   ", new[]
         {
-            "Strehl " + Fmt.Fixed(it.Strehl, 3),
+            (auto ? "Log scale: Strehl " : "Strehl ") + Fmt.Fixed(it.Strehl, 3),
             unitEnergy ? "Peak " + Fmt.Short(it.Peak) : null,
             Kit.Inv($"{it.Size} × {it.Size} samples {u.Length(it.SpacingMm)} apart"),
             "window " + u.Length(width),
         }.OfType<string>());
-        _map.SetName($"Point spread function, {it.Title}, Strehl ratio {Fmt.Fixed(it.Strehl, 3)}" + (_log ? ", logarithmic scale" : ""));
+        _map.SetName($"Point spread function, {it.Title}");
+        _map.SetHelp($"Strehl ratio {Fmt.Fixed(it.Strehl, 3)}, {(log ? "logarithmic" : "linear")} scale, "
+            + $"{(_full ? "whole window" : "core")} {u.Length((shown.X1 - shown.X0) / 1000)} wide, peak {Fmt.Short(it.Peak)}");
         _map.Invalidate();
     }
 }

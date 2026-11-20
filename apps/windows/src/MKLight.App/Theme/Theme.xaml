@@ -63,20 +63,20 @@
             <SolidColorBrush x:Key="StaleCardBrush" Color="{StaticResource StaleCardColor}" />
         </ResourceDictionary>
         <ResourceDictionary x:Key="HighContrast">
-            <Color x:Key="ContentSurfaceColor">#FF000000</Color>
-            <Color x:Key="ContentStrokeColor">#FFFFFFFF</Color>
-            <Color x:Key="DividerColor">#FFFFFFFF</Color>
+            <StaticResource x:Key="ContentSurfaceColor" ResourceKey="SystemColorWindowColor" />
+            <StaticResource x:Key="ContentStrokeColor" ResourceKey="SystemColorWindowTextColor" />
+            <StaticResource x:Key="DividerColor" ResourceKey="SystemColorWindowTextColor" />
             <Color x:Key="RowStripeColor">#00000000</Color>
-            <Color x:Key="HeaderRuleColor">#FFFFFFFF</Color>
-            <Color x:Key="PlotGridColor">#80FFFFFF</Color>
-            <Color x:Key="PlotAxisColor">#FFFFFFFF</Color>
-            <Color x:Key="PlotLabelColor">#FFFFFFFF</Color>
-            <Color x:Key="PlotTitleColor">#FFFFFFFF</Color>
-            <Color x:Key="CapsuleColor">#FF000000</Color>
-            <Color x:Key="CapsuleStrokeColor">#FFFFFFFF</Color>
-            <Color x:Key="WarningColor">#FFFFFF00</Color>
+            <StaticResource x:Key="HeaderRuleColor" ResourceKey="SystemColorWindowTextColor" />
+            <StaticResource x:Key="PlotGridColor" ResourceKey="SystemColorGrayTextColor" />
+            <StaticResource x:Key="PlotAxisColor" ResourceKey="SystemColorWindowTextColor" />
+            <StaticResource x:Key="PlotLabelColor" ResourceKey="SystemColorWindowTextColor" />
+            <StaticResource x:Key="PlotTitleColor" ResourceKey="SystemColorWindowTextColor" />
+            <StaticResource x:Key="CapsuleColor" ResourceKey="SystemColorWindowColor" />
+            <StaticResource x:Key="CapsuleStrokeColor" ResourceKey="SystemColorWindowTextColor" />
+            <StaticResource x:Key="WarningColor" ResourceKey="SystemColorHighlightColor" />
             <Color x:Key="ErrorColor">#FFFF0000</Color>
-            <Color x:Key="StaleCardColor">#FF000000</Color>
+            <StaticResource x:Key="StaleCardColor" ResourceKey="SystemColorWindowColor" />
             <SolidColorBrush x:Key="ContentSurfaceBrush" Color="{StaticResource ContentSurfaceColor}" />
             <SolidColorBrush x:Key="ContentStrokeBrush" Color="{StaticResource ContentStrokeColor}" />
             <SolidColorBrush x:Key="DividerBrush" Color="{StaticResource DividerColor}" />

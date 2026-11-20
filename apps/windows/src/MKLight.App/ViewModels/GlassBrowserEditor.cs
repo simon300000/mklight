@@ -94,7 +94,9 @@ public sealed class GlassEditorModel
         {
             // Tabulated or other data without a formula: a model glass at its n_d, V_d.
             Dispersion = Kind.Model;
-            (Nd, Vd, Dpgf) = (d.Row.Nd ?? d.Row.CatalogNd ?? 1.5, d.Row.Vd ?? d.Row.CatalogVd ?? 50, d.Row.Dpgf ?? 0);
+            // The catalog's listed values unless they are an IR glass's placeholders (n_d 1, V_d 0).
+            (Nd, Vd, Dpgf) = (d.Row.Nd ?? (d.Row.CatalogNd is > 1 and var cn ? cn : 1.5),
+                d.Row.Vd ?? (d.Row.CatalogVd is > 0 and var cv ? cv : 50), d.Row.Dpgf ?? 0);
         }
         MinUm = d.Row.MinUm;
         MaxUm = d.Row.UnrestrictedRange ? null : d.Row.MaxUm;
@@ -189,9 +191,33 @@ public sealed class GlassEditorModel
         }
     }
 
-    /// <summary>n_d and V_d of the previewed glass (0 when the d line is outside the range).</summary>
-    public (double Nd, double Vd)? PreviewNumbers =>
-        Preview is { } p && p["nd"].DoubleValue() is { } nd && p["vd"].DoubleValue() is { } vd ? (nd, vd) : null;
+    /// <summary>
+    /// n_d and V_d of the previewed glass. Each is null when its lines are outside the glass's
+    /// range (an IR glass: the engine then gives the vendors' placeholders n_d 1, V_d 0).
+    /// </summary>
+    public (double? Nd, double? Vd)? PreviewNumbers
+    {
+        get
+        {
+            if (Preview is not { } p || p["nd"].DoubleValue() is not { } nd || p["vd"].DoubleValue() is not { } vd) return null;
+            var min = p["min_um"].DoubleValue() ?? 0;
+            var max = p["max_um"].DoubleValue() ?? double.PositiveInfinity;
+            bool Covers(double lo, double hi) => min <= lo && max >= hi;
+            return (Covers(LineD, LineD) && nd > 1 ? nd : null, Covers(LineF, LineC) && vd > 0 ? vd : null);
+        }
+    }
+
+    /// <summary>The editor's answer line: "nd 1.51680    Vd 64.17", or why there is none.</summary>
+    public string PreviewText => PreviewNumbers switch
+    {
+        null => "",
+        ({ } nd, { } vd) => $"nd {GlassFormat.Fixed(nd, 5)}    Vd {GlassFormat.Fixed(vd, 2)}",
+        ({ } nd, null) => $"nd {GlassFormat.Fixed(nd, 5)}    No Vd (the F or C line is outside the range)",
+        _ => "No nd, Vd (the d line is outside the range)",
+    };
+
+    /// <summary>The d, F and C lines (µm).</summary>
+    const double LineD = 0.5875618, LineF = 0.4861327, LineC = 0.6562725;
 
     /// <summary>Makes the glass and stores it in the user catalog. Returns whether it saved.</summary>
     public bool Save(IEngineClient engine)

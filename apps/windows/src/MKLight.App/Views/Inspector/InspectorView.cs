@@ -50,6 +50,7 @@ public sealed partial class InspectorView : UserControl
             };
             ToolTipService.SetToolTip(b, Help(page));
             Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(b, page.Title);
+            Microsoft.UI.Xaml.Automation.AutomationProperties.SetAutomationId(b, $"Inspector.Tab.{page.Id}");
             var id = page.Id;
             b.Click += (_, _) => Show(id);
             var dot = new Ellipse { Width = 6, Height = 6, HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Top, Margin = new Thickness(0, 3, 4, 0), IsHitTestVisible = false, Visibility = Visibility.Collapsed };
@@ -106,7 +107,7 @@ public sealed partial class InspectorView : UserControl
         {
             var selected = id == Page;
             button.Background = new SolidColorBrush(selected ? accent.WithAlpha(0.16) : Microsoft.UI.Colors.Transparent);
-            button.Foreground = selected ? accentText : secondary;
+            button.Foreground = selected ? accentText : secondary;            Microsoft.UI.Xaml.Automation.AutomationProperties.SetItemStatus(button, selected ? "Selected" : _session.RunningJobs.ContainsKey(id) ? "Running" : "");
             if (button.Content is TextBlock t) t.FontWeight = selected ? Microsoft.UI.Text.FontWeights.SemiBold : Microsoft.UI.Text.FontWeights.Normal;
             dot.Fill = accentText;
             dot.Visibility = _session.RunningJobs.ContainsKey(id) ? Visibility.Visible : Visibility.Collapsed;

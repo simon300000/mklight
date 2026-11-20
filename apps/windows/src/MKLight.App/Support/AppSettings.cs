@@ -11,7 +11,15 @@ namespace MKLight.App.Support;
 public static class AppSettings
 {
     public static string Directory { get; } = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "MKLight");
-    static string FilePath => Path.Combine(Directory, "settings.json");
+    /// <summary>
+    /// The support folder of the glass library and autosaves: <see cref="Directory"/>, or the folder the
+    /// <c>MKLIGHT_SUPPORT_DIRECTORY</c> environment variable names (<c>--support-dir</c>: checks with a scratch folder).
+    /// </summary>
+    public static string SupportDirectory =>
+        Environment.GetEnvironmentVariable("MKLIGHT_SUPPORT_DIRECTORY") is { Length: > 0 } d ? d : Directory;
+
+    // Settings and recent files follow the support folder, so checks with a scratch folder never touch the user's.
+    static string FilePath => Path.Combine(SupportDirectory, "settings.json");
 
     static JsonObject Load()
     {
@@ -23,7 +31,7 @@ public static class AppSettings
     {
         try
         {
-            System.IO.Directory.CreateDirectory(Directory);
+            System.IO.Directory.CreateDirectory(SupportDirectory);
             File.WriteAllText(FilePath, o.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
         }
         catch (Exception) { /* preferences are best effort */ }
@@ -40,6 +48,18 @@ public static class AppSettings
             Override = null;
             var o = Load();
             o["theme"] = value switch { ElementTheme.Light => "light", ElementTheme.Dark => "dark", _ => "system" };
+            Save(o);
+        }
+    }
+
+    /// <summary>How variables bound curvatures (key <c>curvatureBoundsUnit</c>): <c>radius</c> (the default) or <c>curvature</c>.</summary>
+    public static string CurvatureBoundsUnit
+    {
+        get => Load()["curvatureBoundsUnit"]?.GetValue<string>() == "curvature" ? "curvature" : "radius";
+        set
+        {
+            var o = Load();
+            o["curvatureBoundsUnit"] = value == "curvature" ? "curvature" : "radius";
             Save(o);
         }
     }

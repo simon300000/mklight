@@ -27,6 +27,11 @@ public sealed class ResultData
     public IReadOnlyList<string> FieldLabels { get; init; } = [];
     /// <summary>The settings the engine recorded for the run (<c>run_info.settings</c>): the values automatic settings took, the CRA sensor limit, the image simulation's source.</summary>
     public JsonNode? Settings { get; init; }
+    /// <summary>
+    /// While a candidate design is previewed: the same pane's result for the design itself, taken just before
+    /// the preview (for a Design | Candidate switch); null otherwise.
+    /// </summary>
+    public ResultData? Baseline { get; init; }
     public IResultArray? Buffer(string name) => Buffers.FirstOrDefault(b => b.Name == name);
 }
 
