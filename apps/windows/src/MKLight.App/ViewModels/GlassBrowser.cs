@@ -113,17 +113,23 @@ public sealed class GlassBrowserModel
 
     public static string ScopeTitle(string? scope) => scope switch { null => "All Glasses", "BUILTIN" => "Built-in Glasses", _ => scope };
 
+    int _catalogsRequest;
+
     /// <summary>Reads the catalogs and the glasses again (after the library or the design's catalogs changed).</summary>
     public async Task RefreshAsync()
     {
         if (Engine is not { } engine) return;
+        var request = ++_catalogsRequest;
         try
         {
             if (await GlassLibrarySync.SyncAsync(engine, Library) && Target is { } t) await t.CatalogsDidChange();
         }
         catch (EngineException e) { Say(e.Message); }
-        try { Catalogs = await engine.CatalogsAsync(); }
-        catch (EngineException e) { Catalogs = []; Say(e.Message); }
+        IReadOnlyList<CatalogInfo> catalogs;
+        try { catalogs = await engine.CatalogsAsync(); }
+        catch (EngineException e) { catalogs = []; Say(e.Message); }
+        if (request != _catalogsRequest) return; // a newer refresh (another design) owns the catalogs
+        Catalogs = catalogs;
         Warnings = [.. Library.Problems, .. GlassLibrarySync.Warnings(engine)];
         if (_scope is { } s && Catalog(s) is null) _scope = null;
         Changed?.Invoke();

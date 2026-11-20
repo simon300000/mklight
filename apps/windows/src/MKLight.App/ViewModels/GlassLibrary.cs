@@ -195,7 +195,9 @@ public sealed class GlassLibrary
         var name = rawName.Trim();
         if (NameProblem(name) is { } why) throw new LibraryException(why);
         if (UserCatalogNamed(name) is not null) throw Duplicate(name);
-        var c = new UserCatalog(name, Path.Combine(UserGlassesDirectory, name + ".json"), []);
+        var path = Path.Combine(UserGlassesDirectory, name + ".json");
+        CheckFileFree(path, null);
+        var c = new UserCatalog(name, path, []);
         Write(c);
         _userCatalogs.Add(c);
         SortUserCatalogs();
@@ -219,7 +221,9 @@ public sealed class GlassLibrary
         if (name == c.Name) return;
         if (NameProblem(name) is { } why) throw new LibraryException(why);
         if (UserCatalogNamed(name) is { } other && other.FilePath != c.FilePath) throw Duplicate(name);
-        var renamed = c with { Name = name, FilePath = Path.Combine(UserGlassesDirectory, name + ".json") };
+        var path = Path.Combine(UserGlassesDirectory, name + ".json");
+        CheckFileFree(path, c);
+        var renamed = c with { Name = name, FilePath = path };
         // A rename that only changes case keeps the file and rewrites it under the new name.
         Write(renamed);
         if (!string.Equals(renamed.FilePath, c.FilePath, StringComparison.OrdinalIgnoreCase))
@@ -228,8 +232,19 @@ public sealed class GlassLibrary
         }
         _userCatalogs.Remove(c);
         _userCatalogs.Add(renamed);
+        // The glasses' availability settings follow the catalog to its new name.
+        for (var i = 0; i < _overrides.Count; i++)
+            if (string.Equals(_overrides[i].Catalog, c.Name, StringComparison.OrdinalIgnoreCase))
+                _overrides[i] = _overrides[i] with { Catalog = renamed.Name };
         SortUserCatalogs();
         DidChange();
+    }
+
+    /// <summary>Refuses a file that belongs to a catalog other than <paramref name="owner"/> (its JSON name differs from the file name).</summary>
+    void CheckFileFree(string path, UserCatalog? owner)
+    {
+        if (_userCatalogs.FirstOrDefault(u => u != owner && string.Equals(u.FilePath, path, StringComparison.OrdinalIgnoreCase)) is { } other)
+            throw new LibraryException($"The file “{Path.GetFileName(path)}” already holds the catalog “{other.Name}”. Choose another name.");
     }
 
     /// <summary>Moves a user catalog's file to the Recycle Bin (deletes it when that is not possible).</summary>
