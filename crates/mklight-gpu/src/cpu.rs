@@ -30,7 +30,7 @@ use crate::df::Df32;
 use crate::fenv::{FpEnv, Ftz, Ieee};
 use crate::fmath::{packed_sag_with_pool_in, u32_to_unit_f32};
 use crate::layout::{PackedSystem, PackedSystemSet};
-use crate::pending::{JobControl, Pending, pending, spawn_job};
+use crate::pending::{JobControl, Pending, pending, spawn_job, spawn_job_or_run_on_wait};
 use crate::reduce;
 use crate::trace_kernel::{KRayIn, KRayOut, KState, trace_ray};
 
@@ -404,7 +404,8 @@ impl CpuF32Backend {
         }
         let (p, c, ctl) = pending(ctx);
         let b = self.clone();
-        spawn_job(
+        spawn_job_or_run_on_wait(
+            &p,
             "mklight-resident-cpu",
             "CPU resident plan".into(),
             c,
