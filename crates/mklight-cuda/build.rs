@@ -89,9 +89,23 @@ mod nvrtc;
 
 /// Targets compiled by default: CUBINs for Turing (7.5), Ampere (8.0, which
 /// the 8.6 parts run too), Ada (8.9) and Hopper (9.0), and PTX for later
-/// GPUs (compiled by their driver on first use). `MKLIGHT_CUDA_ARCHS`
-/// overrides it, e.g. `89` while developing on an Ada GPU, or `none`.
+/// GPUs (compiled by their driver on first use, about a minute).
+/// `MKLIGHT_CUDA_ARCHS` overrides it, e.g. `89` while developing on an Ada
+/// GPU, or `none`.
 const DEFAULT_TARGETS: &str = "75,80,89,90,ptx90";
+
+/// Added to the default targets when the build machine's NVRTC knows them
+/// (12.8 or later): CUBINs for Blackwell (10.0, 12.0), so those GPUs start
+/// without compiling PTX.
+const BLACKWELL_TARGETS: &str = "100,120";
+
+/// `MKLIGHT_CUDA_REQUIRE_KERNELS=1` (release builds of the apps): a build
+/// that would have no built-in kernels fails instead of warning, since its
+/// users' CUDA would then need NVRTC to start.
+fn require_kernels() -> bool {
+    println!("cargo:rerun-if-env-changed=MKLIGHT_CUDA_REQUIRE_KERNELS");
+    env::var("MKLIGHT_CUDA_REQUIRE_KERNELS").is_ok_and(|v| v == "1")
+}
 
 /// Write `OUT_DIR/embedded.rs`: the `EMBEDDED` table of `(unit, target,
 /// deflated image)` for every unit and target, compiled by NVRTC when the build
@@ -108,14 +122,23 @@ fn embed_kernels(out: &Path) {
         println!("cargo:rerun-if-changed={dir}");
     }
     let table = out.join("embedded.rs");
+    let os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    let cuda_target = os == "windows" || os == "linux";
     let empty = |why: &str| {
-        println!(
-            "cargo:warning=mklight-cuda: no built-in kernels ({why}); they compile at run time with NVRTC"
-        );
+        if cuda_target && require_kernels() {
+            panic!("mklight-cuda: no built-in kernels ({why}) and MKLIGHT_CUDA_REQUIRE_KERNELS=1");
+        }
+        if cuda_target {
+            println!(
+                "cargo:warning=mklight-cuda: no built-in kernels ({why}); they compile at run time with NVRTC"
+            );
+        }
         fs::write(&table, "&[]").unwrap();
     };
-    let targets: Vec<String> = env::var("MKLIGHT_CUDA_ARCHS")
-        .unwrap_or_else(|_| DEFAULT_TARGETS.into())
+    let explicit = env::var("MKLIGHT_CUDA_ARCHS").ok();
+    let targets: Vec<String> = explicit
+        .clone()
+        .unwrap_or_else(|| DEFAULT_TARGETS.into())
         .split(',')
         .map(str::trim)
         .filter(|t| !t.is_empty() && *t != "none")
@@ -124,12 +147,11 @@ fn embed_kernels(out: &Path) {
             None => format!("sm_{t}"),
         })
         .collect();
-    let os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
-    if targets.is_empty() {
+    if !cuda_target {
         return fs::write(&table, "&[]").unwrap();
     }
-    if os != "windows" && os != "linux" {
-        return fs::write(&table, "&[]").unwrap();
+    if targets.is_empty() {
+        return empty("MKLIGHT_CUDA_ARCHS=none");
     }
     #[cfg(not(any(windows, target_os = "linux")))]
     {
@@ -137,19 +159,37 @@ fn embed_kernels(out: &Path) {
     }
     #[cfg(any(windows, target_os = "linux"))]
     {
-        if nvrtc::version().is_none() {
+        let Some(version) = nvrtc::version() else {
             return empty("NVRTC not found on the build machine");
+        };
+        let mut targets = targets;
+        if explicit.is_none() && version >= (12, 8) {
+            targets.extend(BLACKWELL_TARGETS.split(',').map(|t| format!("sm_{t}")));
         }
         let dir = out.join("cuda");
         fs::create_dir_all(&dir).unwrap();
         // The units that inline the trace take the longest: first.
-        let mut jobs: Vec<(String, String, String)> = Vec::new();
+        // Each image is named after a digest of what it is compiled from, so
+        // a rerun of this script (any watched file changed) compiles only
+        // the images whose inputs changed.
+        let mut common = format!("{version:?}");
+        for (n, h) in sources::HEADERS {
+            common += n;
+            common += h;
+        }
+        common += &sources::OPTIONS.join(" ");
+        let mut jobs: Vec<(String, String, String, String)> = Vec::new();
         for (name, source) in sources::units() {
             for t in &targets {
-                jobs.push((name.clone(), source.clone(), t.clone()));
+                let mut h = blake3::Hasher::new();
+                for part in [&common, &name, &source, t] {
+                    h.update(part.as_bytes());
+                }
+                let file = format!("{name}.{t}.{}", &h.finalize().to_hex()[..16]);
+                jobs.push((name.clone(), source.clone(), t.clone(), file));
             }
         }
-        jobs.sort_by_key(|(_, s, _)| !s.contains("trace_bindings.h"));
+        jobs.sort_by_key(|(_, s, _, _)| !s.contains("trace_bindings.h"));
         let next = std::sync::atomic::AtomicUsize::new(0);
         let failed = std::sync::Mutex::new(Vec::new());
         let threads = std::thread::available_parallelism().map_or(4, |n| n.get());
@@ -158,16 +198,20 @@ fn embed_kernels(out: &Path) {
                 scope.spawn(|| {
                     loop {
                         let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        let Some((name, source, target)) = jobs.get(i) else {
+                        let Some((name, source, target, file)) = jobs.get(i) else {
                             return;
                         };
+                        if dir.join(file).is_file() {
+                            continue;
+                        }
                         match nvrtc::compile(name, source, target) {
                             // Deflated: the images shrink 4-6x (52 to 11 MB).
-                            Ok((image, _)) => fs::write(
-                                dir.join(format!("{name}.{target}")),
-                                miniz_oxide::deflate::compress_to_vec(&image, 8),
-                            )
-                            .unwrap(),
+                            Ok((image, _)) => {
+                                let tmp = dir.join(format!("{file}.tmp"));
+                                fs::write(&tmp, miniz_oxide::deflate::compress_to_vec(&image, 8))
+                                    .unwrap();
+                                fs::rename(&tmp, dir.join(file)).unwrap();
+                            }
                             Err(e) => failed.lock().unwrap().push(e),
                         }
                     }
@@ -181,9 +225,16 @@ fn embed_kernels(out: &Path) {
                 failed.join("\n")
             );
         }
+        // Images of earlier sources go.
+        for e in fs::read_dir(&dir).unwrap().flatten() {
+            let n = e.file_name().to_string_lossy().into_owned();
+            if !jobs.iter().any(|(_, _, _, f)| *f == n) {
+                let _ = fs::remove_file(e.path());
+            }
+        }
         let mut rs = String::from("&[\n");
-        for (name, _, target) in &jobs {
-            let file = dir.join(format!("{name}.{target}"));
+        for (name, _, target, file) in &jobs {
+            let file = dir.join(file);
             rs += &format!(
                 "    ({name:?}, {target:?}, include_bytes!({:?})),\n",
                 file.to_string_lossy().replace('\\', "/")
