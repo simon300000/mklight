@@ -75,12 +75,17 @@ public sealed partial class Viewport3DView : UserControl
     {
         CompositionTarget.Rendering -= OnRendering;
         _queued = false;
-        if (!IsLoaded || Visibility != Visibility.Visible) return;
+        if (!IsLoaded || Visibility != Visibility.Visible || _simulated) return;
         try { Draw(); }
         catch (SharpGen.Runtime.SharpGenException ex) when (IsDeviceLost(ex.ResultCode.Code))
         {
             Release();
-            Invalidate();
+            // A device lost again and again (a driver that keeps resetting): stop and say so.
+            var now = DateTime.UtcNow;
+            _losses.RemoveAll(t => now - t > TimeSpan.FromSeconds(10));
+            _losses.Add(now);
+            if (_losses.Count >= 3) SetError("The graphics device stopped responding. The 3-D view will draw again when it is available.");
+            else Invalidate();
         }
         catch (Exception ex)
         {
@@ -92,6 +97,27 @@ public sealed partial class Viewport3DView : UserControl
     static bool IsDeviceLost(int hr) =>
         hr == Vortice.DXGI.ResultCode.DeviceRemoved.Code || hr == Vortice.DXGI.ResultCode.DeviceReset.Code
         || hr == Vortice.DXGI.ResultCode.DeviceHung.Code;
+
+    readonly List<DateTime> _losses = [];
+
+    /// <summary>Tries to draw again after an error (the placeholder's Try Again).</summary>
+    public void Retry()
+    {
+        _losses.Clear();
+        _simulated = false;
+        SetError(null);
+        Invalidate();
+    }
+
+    /// <summary>Launch actions: show the view as unavailable without losing a device.</summary>
+    internal void SimulateError(string message)
+    {
+        _simulated = true;
+        Release();
+        SetError(message);
+    }
+
+    bool _simulated;
 
     void SetError(string? message)
     {
