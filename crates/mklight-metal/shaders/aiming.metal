@@ -44,9 +44,11 @@ static inline bool mkl_aim_solve2(MklAimMat2 j, MklAimVec2 r, thread MklAimVec2&
 }
 
 // Central differences, one-sided where one side fails (numeric::fd_jacobian).
+// Built locally: `j` is written only on success and kept on a failure.
 template <typename Fun>
 static __attribute__((noinline)) bool mkl_aim_jacobian(thread Fun& fun, MklAimVec2 x, MklAimVec2 fx,
                                                        MklDf h, thread MklAimMat2& j) {
+    MklAimMat2 out;
     for (uint k = 0; k < 2; ++k) {
         MklAimVec2 xp = x, xm = x, a, b, col;
         xp.v[k] = xp.v[k] + h;
@@ -60,9 +62,10 @@ static __attribute__((noinline)) bool mkl_aim_jacobian(thread Fun& fun, MklAimVe
             col = (fx - b) * (mkl_aim_c(1) / h);
         else
             return false;
-        j.v[0][k] = col.v[0];
-        j.v[1][k] = col.v[1];
+        out.v[0][k] = col.v[0];
+        out.v[1][k] = col.v[1];
     }
+    j = out;
     return true;
 }
 struct MklAimSolve {
