@@ -40,7 +40,7 @@
                 </Button.Flyout>
             </Button>
             <Button x:Name="IssuesButton" Background="Transparent" BorderThickness="0" CornerRadius="13" Height="26" Padding="8,0"
-                    Click="OnIssuesClick">
+                    Click="OnIssuesClick" AutomationProperties.AutomationId="Status.Issues">
                 <StackPanel Orientation="Horizontal" Spacing="5">
                     <FontIcon x:Name="IssuesGlyph" Glyph="&#xE930;" FontSize="13" Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
                     <TextBlock x:Name="IssuesCount" Style="{StaticResource NumberText}" FontSize="12" Visibility="Collapsed" />

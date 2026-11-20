@@ -347,6 +347,7 @@ public sealed partial class LayoutPanel : UserControl
         View3D.Visibility = orbit ? Visibility.Visible : Visibility.Collapsed;
         if (!orbit) Frame3D.Visibility = Visibility.Collapsed;
         FootprintsButton.Visibility = orbit ? Visibility.Visible : Visibility.Collapsed;
+        UpdateAutomation();
         UpdateStretchChip();
         UpdateStyle();
         UpdatePlaceholder();
@@ -485,14 +486,15 @@ public sealed partial class LayoutPanel : UserControl
         ModeSegments.Children.Clear();
         foreach (var m in modes)
         {
-            var b = new Button
+            var mode = m;
+            var b = new ModeSegmentButton(m == _mode, () => Mode = mode)
             {
                 Content = LayoutModes.Title(m, modes.Length),
                 Style = (Style)Resources[m == _mode ? "ModeSegmentSelected" : "ModeSegment"],
             };
+            AutomationProperties.SetAutomationId(b, "Layout.Mode." + m switch { ViewportMode.Orbit3D => "3d", ViewportMode.SectionXZ => "xz", _ => "section" });
             AutomationProperties.SetName(b, m switch { ViewportMode.Orbit3D => "3D view", ViewportMode.SectionXZ => "X–Z section", _ => modes.Length == 3 ? "Y–Z section" : "Section" });
-            var mode = m;
-            b.Click += (_, _) => Mode = mode;
+            b.Click += (_, _) => b.Choose();
             ModeSegments.Children.Add(b);
         }
         ToolTipService.SetToolTip(ModeSegments, modes.Length == 3 ? "Y–Z section, X–Z section or 3D view" : "Meridional section or 3D view");

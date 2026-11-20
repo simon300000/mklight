@@ -396,9 +396,11 @@ public sealed partial class DesignWindow
         foreach (var group in list.GroupBy(d => d.Category).OrderBy(g => AnalysisCatalog.CategoryRank(g.Key)).ThenBy(g => g.Key))
         {
             var sub = new MenuFlyoutSubItem { Text = AnalysisCatalog.CategoryTitle(group.Key) };
+            Microsoft.UI.Xaml.Automation.AutomationProperties.SetAutomationId(sub, "NewPane." + group.Key);
             foreach (var d in group.OrderBy(d => AnalysisCatalog.Title(d.Name, d.Title)))
             {
                 var item = new MenuFlyoutItem { Text = AnalysisCatalog.Title(d.Name, d.Title), IsEnabled = d.Available, Icon = new FontIcon { Glyph = AnalysisCatalog.Glyph(d.Name) } };
+                Microsoft.UI.Xaml.Automation.AutomationProperties.SetAutomationId(item, "NewPane." + d.Name);
                 var name = d.Name;
                 item.Click += (_, _) => ws.AddPane(name, after: ws.FocusedPane);
                 sub.Items.Add(item);

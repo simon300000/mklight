@@ -77,7 +77,9 @@ public sealed partial class StatusCapsule : UserControl
         {
             var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 5 };
             row.Children.Add(new TextBlock { Text = label, Style = (Style)Application.Current.Resources["SecondaryText"], FontSize = 12 });
-            row.Children.Add(new TextBlock { Text = value, Style = (Style)Application.Current.Resources["NumberText"], FontSize = 12.5 });
+            var number = new TextBlock { Text = value, Style = (Style)Application.Current.Resources["NumberText"], FontSize = 12.5 };
+            Microsoft.UI.Xaml.Automation.AutomationProperties.SetAutomationId(number, "Status." + label switch { "EFL" or "EFL y" => "EFL", "F/#" => "FNumber", _ => label });
+            row.Children.Add(number);
             Numbers.Children.Add(row);
         }
         if (numbers.Count == 0)

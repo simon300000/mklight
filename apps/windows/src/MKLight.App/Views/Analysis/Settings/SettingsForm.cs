@@ -156,6 +156,7 @@ public sealed partial class SettingsForm : UserControl
             if (Control(slot, control) is not FrameworkElement element) continue;
             element.HorizontalAlignment = HorizontalAlignment.Left;
             Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(element, SettingEntry.Label(f));
+            Microsoft.UI.Xaml.Automation.AutomationProperties.SetAutomationId(element, $"Settings.{_analysis}.{slot.Path}");
             g.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
             Grid.SetRow(label, r);
             Grid.SetRow(element, r);
