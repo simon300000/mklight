@@ -89,7 +89,7 @@ missing.
 | Closing a panel: analysis removed; Lens Data / Layout hidden and restorable | ✅ | Analysis pane removed; lens data and layout hidden, shown again from the sidebar |
 | Reset Panel Layout | ✅ | File menu command |
 | Focused pane: accent hairline, tap focuses, drives sidebar selection | ✅ | |
-| Persistence in project `views` (panes, arrangement, viewport, ray colouring, stretch) | 🟡 | Panes, settings and arrangement with window frames in `views` (`PanelPersistence`, `WorkspaceLayout`); layout viewport mode, camera, stretch not saved |
+| Persistence in project `views` (panes, arrangement, viewport, ray colouring, stretch) | ✅ | Panes, settings and arrangement with window frames, the layout's settings, mode, ray colouring and stretch in `views` (`PanelPersistence`, `WorkspaceLayout`); the 3-D camera is not saved (nor on the Mac) |
 | Views without arrangement open in the standard one | ✅ | Open in the standard arrangement |
 
 ## 4. Lens data table
@@ -228,7 +228,7 @@ All 13 types plus the cylinder preset are descriptors in `ViewModels/SurfaceType
 | More menu: Update Automatically, Show Settings, Duplicate Pane, Copy Result as JSON, Close Pane | 🟡 | Restore defaults, copy result JSON, close pane; Duplicate Pane ⬜ |
 | Narrow-pane behaviour: folding cluster, short titles | 🟡 | Short titles on narrow panes; folding unchecked |
 | Tabbed pane | ⬜ | |
-| Settings panel: Defaults, Done, open state saved | 🟡 | Settings toggle and restore defaults; open state not saved |
+| Settings panel: Defaults, Done, open state saved | ✅ | Defaults and Done; open state saved as `ui.settings_visible` |
 | Footer key numbers (subscripts, spoken form) | ✅ | Key numbers in the footer; VoiceOver forms ⬜ |
 | Backend badge (CPU · f64 / GPU · f32, duration, warning, fallback) | ✅ | Opens run details |
 | Run details: backend, requested, reason, precision, seed, snapshot, engine, time, failed attempts, Route, Tier | ✅ | Route line (`cost_decision`) and tier added (`Views/Analysis/RunDetails`); unit-tested, not checked on a real GPU fallback |
@@ -494,13 +494,13 @@ Windows has its own set (docs/WINDOWS.md "Launch options"): `--sample`, `--analy
 |---|---|---|---|---|
 | 1. Window and chrome | 18 | 10 | 3 | 31 |
 | 2. Menus, commands and keyboard shortcuts | 5 | 8 | 2 | 15 |
-| 3. Panels and arrangement | 18 | 2 | 0 | 20 |
+| 3. Panels and arrangement | 19 | 1 | 0 | 20 |
 | 4. Lens data table | 21 | 5 | 0 | 26 |
 | 5. Inspector: Surface page | 20 | 0 | 0 | 20 |
 | 6. Inspector: System page | 10 | 0 | 0 | 10 |
 | 7. Surface types | 19 | 0 | 0 | 19 |
 | 8. Layout viewport | 15 | 3 | 2 | 20 |
-| 9. Analysis panes (generic chrome) | 11 | 7 | 2 | 20 |
+| 9. Analysis panes (generic chrome) | 12 | 6 | 2 | 20 |
 | 10. Analysis settings form | 21 | 2 | 0 | 23 |
 | 11. Dedicated result views | 32 | 4 | 1 | 37 |
 | 12. Design jobs: common | 7 | 0 | 0 | 7 |
@@ -513,14 +513,12 @@ Windows has its own set (docs/WINDOWS.md "Launch options"): `--sample`, `--analy
 | 19. Appearance and accessibility | 5 | 2 | 2 | 9 |
 | 20. Engine integration | 9 | 2 | 0 | 11 |
 | 21. Debug launch options | 9 | 4 | 5 | 18 |
-| **Total** | **279** | **59** | **20** | **358** |
+| **Total** | **281** | **57** | **20** | **358** |
 
 ## Known issues
 
 Not features of the Mac app, so not counted above.
 
-* **Layout viewport state is not saved**: mode, camera and vertical stretch are not
-  written to `views`.
 * **Theme**: the app theme (`Application.RequestedTheme`) is fixed at launch; a switch
   during a run completes on the next launch.
 * **Image simulation** has no image-file import, no zoom/pan and no FOV controls.
