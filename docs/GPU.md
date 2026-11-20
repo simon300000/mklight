@@ -1074,8 +1074,8 @@ terms, while the sample designs have sparse, shorter coefficient lists.
   without intermediate readbacks, and asynchronous command buffers with an
   in-flight window and admission budget, are the resident plans of §9.2.
 * The CPU/GPU divisions of the analyses use fixed shares and rules measured
-  on one machine (an M2 Pro: the split-aiming device share 0.35, the stray
-  share rule, the ghost CPU share of 20 %). GPU-heavier divisions remain
+  on one machine (an M2 Pro: the stray share rule, the ghost CPU share of
+  20 %; the split-aiming device share, 1, on an RTX 4090 and an M2 Pro). GPU-heavier divisions remain
   selectable through the route options of §9.3, but nothing measures or
   chooses them per machine yet.
 
@@ -1434,7 +1434,7 @@ rays are aimed on the host as well (§9.1).
 *Split generations.* In the spot diagram and the geometric MTF, a
 generation with a seed table and at least 1.5 M rays × surfaces
 (`SPLIT_MIN_WORK`) is aimed by host and device together: a fixed share of
-its tiles (`SPLIT_DEVICE_SHARE = 0.35`, route option `aiming_share`) goes
+its tiles (`SPLIT_DEVICE_SHARE = 1`: all of them, route option `aiming_share`) goes
 to the device's double-float Newton solve in two plans per generation
 (`DEVICE_PLANS`), and the host completes their `MKL_AIM_FAILED` rays in f64.
 The assignment depends only on the generation and the share, so the output
@@ -2010,7 +2010,7 @@ two jobs of one process can run different divisions.
 | Key | Values (default first) | Moves to the GPU |
 |---|---|---|
 | `aiming` | `host-table`, `table`, `device` | every pupil aim of the geometric adapters (`table`: device Newton corrections from host seed tables; `device`: device chief-seeded solve) |
-| `aiming_share` | `null` (0.35), number in [0, 1] | under `host-table`, the device's share of split generations (0 aims on the host alone) |
+| `aiming_share` | `null` (1), number in [0, 1] | under `host-table`, the device's share of split generations (0 aims on the host alone) |
 | `fieldmaps` | `host-chief`, `device-chief` | the chief solves of `chief_ray_angle`, `pupil_aberration` and `grid_distortion` |
 | `stray_share` | `null` (the scene rule), number in [0, 1] | the device's share of the stray source chunks (1: the first 64 events of every stray source) |
 | `stray_sag` | `f32-scan`, `f32-grazing` | — (hands oblique and grazing extended-sag rays back to the CPU, which cuts device time on aspheric lenses) |
@@ -2701,6 +2701,18 @@ The geometric analyses gain 1.5–2× from about 100 k rays; the wave
 analyses trace and resample their pupils on the host (§11.6), so only
 FFT-MTF (its whole transform chain on the device) and through-focus MTF
 gain. A request's fixed cost on CUDA is about 2.5 ms.
+
+**Division.** Every route option was measured on the RTX 4090 (spot
+diagrams, ray grids and geometric MTFs of 32 to 250 rings on the Double
+Gauss, the Petzval asphere and the XY freeform; `backend_bench` and the
+app's `bench-panes`). The default split share, now 1 on every backend
+(§9.2, "Split generations"), took 0.68-1.02x the time of the former 0.35
+and was within 4 % of the fastest division in every case, within the §9.4
+contracts (worst gate fraction 2.7e-6); on the M2 Pro it was neutral
+(0.83-1.06x, no consistent direction, the same accuracy). `aiming=table`
+and `aiming=device` took 1.2-2.3x on CUDA (one plan per field with nothing
+overlapping it). In every division the GPU is busy for 3-33 % of a run; the
+rest is host work that no division moves.
 
 **Routing** (`analysis::cost::measured`, shared with WebGPU's calibration
 of §11.6): `Engine::prepare_gpu` installs `<cache_dir>/cost/cuda.json` when

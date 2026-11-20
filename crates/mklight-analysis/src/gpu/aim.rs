@@ -441,10 +441,14 @@ impl HostJob<'_> {
 /// aiming (geometric mean), from 4 M up 0.94; below 1.5 M they lost up to 18 %.
 pub const SPLIT_MIN_WORK: usize = 1_500_000;
 /// The device's share of a split generation's tiles unless the route sets
-/// another ([`Route::device_share`]). On the M2 Pro, 0.35 gave the same mean
-/// gain as 0.5 and 0.65 with the smallest worst case (+8 % against +26 % and
-/// +32 % on one lens); a GPU with more cores per CPU core may take more.
-pub const SPLIT_DEVICE_SHARE: f64 = 0.35;
+/// another ([`Route::device_share`]): the whole generation, the device
+/// solving every tile it can and the host completing the rest. On an
+/// RTX 4090 with an i9-12900KS it took 0.68-1.02x the time of the former
+/// default 0.35 (spot diagrams, ray grids and geometric MTFs of 32 to 250
+/// rings on three lenses), within 4 % of the fastest share in every case; on
+/// the M2 Pro it was neutral (0.83-1.06x, no consistent direction); the
+/// accuracy is the same (docs/GPU.md §9.2, "Split generations").
+pub const SPLIT_DEVICE_SHARE: f64 = 1.0;
 /// Rays per split tile at most (the unit in which tiles are dealt to host
 /// and device).
 const DEVICE_TILE: usize = 1 << 17;

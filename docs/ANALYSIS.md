@@ -565,7 +565,7 @@ generation with a seed table and at least 1.5 million rays × surfaces
 (rays of the generation times the image surface index) is aimed by the host
 and the device together. It is cut into tiles of whole 128-ray host chunks
 (a sixteenth of the generation, 2¹³–2¹⁷ rays); a fixed share of the tiles
-(`gpu::Route::device_share`: `gpu::aim::SPLIT_DEVICE_SHARE`, 0.35, unless
+(`gpu::Route::device_share`: `gpu::aim::SPLIT_DEVICE_SHARE`, 1, unless
 the route option `aiming_share` sets another in [0, 1]; 0 aims every
 generation on the host), spread evenly over the generation, goes to the
 device's double-float Newton solve seeded from the generation's host table
@@ -591,6 +591,11 @@ the split took 0.96; below, it lost up to 18 %. No fixed share suits every
 lens: the device aims some lenses several times slower per ray than the
 twelve host threads, and the slower side sets the time. The footprint
 (1.00–1.01) and the ray grid (0.90–1.17) gained nothing and do not split.
+The default share is now 1 (all tiles to the device, the host completing
+what it leaves): on an RTX 4090 with 24 host threads it took 0.68–1.02 of
+the time of 0.35 and was within 4 % of the fastest share in every case
+(GPU.md §12.4); on the M2 Pro it measured 0.83–1.06 of 0.35, with no
+consistent direction.
 
 **Host completion.** A device aim cannot always certify the requested stop
 tolerance. The device trace takes the even-asphere slope in double-float
