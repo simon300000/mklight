@@ -60,6 +60,9 @@ public static class Fmt
     /// <summary>"%.3g": three significant digits (axis-free values such as frequencies).</summary>
     public static string G3(double v) => double.IsFinite(v) ? NoNegativeZero(v.ToString("G3", C)) : Short(v);
 
+    /// <summary>"%.4g": four significant digits (fractions of field maps).</summary>
+    public static string G4(double v) => double.IsFinite(v) ? NoNegativeZero(v.ToString("G4", C)) : Short(v);
+
     static string NoNegativeZero(string s) => s.StartsWith('-') && s[1..].All(c => c is '0' or '.') ? s[1..] : s;
 
     /// <summary>
