@@ -29,4 +29,5 @@
   <ItemGroup>
     <Compile Include="..\..\src\MKLight.App\Views\Analysis\Settings\Model\*.cs;..\..\src\MKLight.App\Views\Analysis\RunDetails\Model\*.cs" Link="Linked\SettingsModel\%(Filename)%(Extension)" />
   </ItemGroup>
+  <ItemGroup><Compile Include="..\..\src\MKLight.App\Views\Analysis\Results\ImageSimulationImport.cs" Link="Linked\ImageSimulationImport.cs" /></ItemGroup>
 </Project>
