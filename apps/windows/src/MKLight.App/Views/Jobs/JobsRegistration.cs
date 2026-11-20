@@ -1,17 +1,98 @@
 using System.Runtime.CompilerServices;
+using MKLight.App.Support;
 using MKLight.App.Views.Inspector;
+using MKLight.App.Windows;
 
 namespace MKLight.App.Views.Jobs;
 
-/// <summary>Registers the design-job pages of the inspector (placeholders until the jobs land).</summary>
+/// <summary>
+/// Registers the design-job pages of the inspector, their launch actions (for screenshots and checks) and ends a
+/// design's jobs when its window closes.
+/// <list type="bullet">
+/// <item><c>--do job=optimize</c> (or <c>glass_substitution</c>, <c>tolerance</c>, <c>solves</c>) opens a page.</item>
+/// <item><c>--do optimize-run[=lm|de|…]</c> runs Optimize, waits for the result and previews it;
+/// <c>--do optimize-apply</c> applies it; <c>--do optimize-running=s</c> starts it and returns after s seconds
+/// (a screenshot of the running state); <c>--do merit-custom</c> converts the merit to custom.</item>
+/// <item><c>--do solves-run</c>, <c>--do glass-run</c>, <c>--do tolerance-run</c> run those jobs and wait.</item>
+/// </list>
+/// </summary>
 static class JobsRegistration
 {
     [ModuleInitializer]
     internal static void Register()
     {
-        InspectorPages.Add(new("optimize", "Optimize", "\uE9D9", 20, _ => InspectorRegistration.Placeholder("Optimize")));
-        InspectorPages.Add(new("glass_substitution", "Glass Substitution", "\uEB42", 21, _ => InspectorRegistration.Placeholder("Glass Substitution")));
-        InspectorPages.Add(new("tolerance", "Tolerance", "\uE9E9", 22, _ => InspectorRegistration.Placeholder("Tolerance")));
-        InspectorPages.Add(new("solves", "Apply Solves", "\uE943", 23, _ => InspectorRegistration.Placeholder("Apply Solves")));
+        InspectorPages.Add(new("optimize", "Optimize", "", 20, s => new OptimizePanel(s)));
+        InspectorPages.Add(new("glass_substitution", "Glass Substitution", "", 21, _ => InspectorRegistration.Placeholder("Glass Substitution")));
+        InspectorPages.Add(new("tolerance", "Tolerance", "", 22, _ => InspectorRegistration.Placeholder("Tolerance")));
+        InspectorPages.Add(new("solves", "Apply Solves", "", 23, s => new SolvesPanel(s)));
+
+        AppHooks.WindowCreated += w => w.Closed += (_, _) => DesignJobs.Of(w.Session).CancelAll();
+
+        AppHooks.LaunchActions["job"] = (w, arg) =>
+        {
+            w.Session.ShowInspectorPage(arg ?? "optimize");
+            return Task.CompletedTask;
+        };
+        // `variables=c1,c3,t11`: make those values variables (c curvature, t thickness, by surface index).
+        AppHooks.LaunchActions["variables"] = (w, arg) =>
+        {
+            var doc = w.Session.Document;
+            foreach (var item in (arg ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries))
+            {
+                if (item.Length < 2 || !int.TryParse(item[1..], out var i) || i <= 0 || i >= doc.System.Surfaces.Count) continue;
+                var id = doc.System.Surfaces[i].Id;
+                ViewModels.Jobs.DesignVariables.Set(doc, item[0] == 't' ? new Model.ParamPath.Thickness(id) : new Model.ParamPath.Curvature(id), true);
+            }
+            return Task.CompletedTask;
+        };
+        AppHooks.LaunchActions["optimize-run"] = async (w, arg) =>
+        {
+            var s = Open(w, "optimize").Optimize;
+            if (arg is { Length: > 0 }) s.SetAlgorithm(arg);
+            await WaitSnapshot(w);
+            s.Start();
+            await WaitUntil(() => !s.IsRunning, 120);
+        };
+        AppHooks.LaunchActions["optimize-running"] = async (w, arg) =>
+        {
+            var s = Open(w, "optimize").Optimize;
+            await WaitSnapshot(w);
+            s.SetAlgorithm("de");
+            s.SetIterations(100_000);
+            s.Start();
+            await Task.Delay(TimeSpan.FromSeconds(double.TryParse(arg, System.Globalization.CultureInfo.InvariantCulture, out var sec) ? sec : 3));
+        };
+        AppHooks.LaunchActions["optimize-apply"] = (w, _) =>
+        {
+            Open(w, "optimize").Optimize.Apply();
+            return Task.CompletedTask;
+        };
+        AppHooks.LaunchActions["merit-custom"] = async (w, _) =>
+        {
+            var s = Open(w, "optimize").Optimize;
+            await WaitSnapshot(w);
+            await s.ConvertToCustomAsync();
+            await WaitUntil(() => !s.Evaluating, 30);
+        };
+        AppHooks.LaunchActions["solves-run"] = async (w, _) =>
+        {
+            var s = Open(w, "solves").Solves;
+            await WaitSnapshot(w);
+            await s.DryRunAsync();
+        };
+    }
+
+    static DesignJobs Open(DesignWindow w, string page)
+    {
+        w.Session.ShowInspectorPage(page);
+        return DesignJobs.Of(w.Session);
+    }
+
+    static Task WaitSnapshot(DesignWindow w) => WaitUntil(() => w.Session.Workspace.DesignSnapshot is not null, 30);
+
+    internal static async Task WaitUntil(Func<bool> done, double seconds)
+    {
+        var end = DateTime.UtcNow.AddSeconds(seconds);
+        while (!done() && DateTime.UtcNow < end) await Task.Delay(100);
     }
 }

@@ -577,7 +577,7 @@ public sealed record MeritEvaluation(double Merit, double Violation, MeritStatus
     public string Help()
     {
         var on = ReportedOn.Length == 0 || ReportedOn.StartsWith("cpu", StringComparison.Ordinal) ? "CPU f64 reference" : ReportedOn;
-        var s = $"Merit {MeritFormat.Short(Merit)} at the current design ({on}).";
+        var s = $"Merit {MeritFormat.Merit(Merit)} at the current design ({on}).";
         if (double.IsFinite(Violation) && Violation > 1e-9) s += $" Constraint violation {MeritFormat.Short(Violation)}.";
         if (Status == MeritStatus.Degraded) s += $" {Failures} residual{(Failures == 1 ? "" : "s")} carry penalty values (failed rays or operands).";
         if (Status == MeritStatus.Failed) s += " The evaluation failed: no meaningful merit.";
@@ -592,6 +592,15 @@ public static class MeritFormat
 
     /// <summary>Up to 6 significant digits; scientific for very small and very large values.</summary>
     public static string Short(double v) => BoundsFormat.Short(v);
+
+    /// <summary>A merit value: 4 significant digits, scientific below 0.001 (<c>2.989e-4</c>, <c>0.03512</c>).</summary>
+    public static string Merit(double v)
+    {
+        if (!double.IsFinite(v)) return BoundsFormat.Short(v);
+        var a = Math.Abs(v);
+        var t = a != 0 && (a < 1e-3 || a >= 1e5) ? v.ToString("0.000e+0", C).Replace("e+", "e") : v.ToString("G4", C);
+        return Fix(t);
+    }
 
     /// <summary>A share in percent: <c>18.6 %</c>.</summary>
     public static string Percent(double fraction, int digits = 1) =>

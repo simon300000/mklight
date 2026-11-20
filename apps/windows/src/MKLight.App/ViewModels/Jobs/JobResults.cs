@@ -71,7 +71,7 @@ public sealed record OptimizeResult(string Status, bool Stopped, bool Improved, 
     /// <summary>The preview title, naming the candidate precisely: <c>Optimize result · merit 0.0123 (−42 %)</c>.</summary>
     public string PreviewTitle()
     {
-        var s = (Stopped ? "Optimize result (stopped)" : "Optimize result") + " · merit " + MeritFormat.Short(FinalMerit);
+        var s = (Stopped ? "Optimize result (stopped)" : "Optimize result") + " · merit " + MeritFormat.Merit(FinalMerit);
         if (double.IsFinite(Improvement)) s += " (" + (Improvement > 0 ? "−" : "+") + MeritFormat.Percent(Math.Abs(Improvement), 0) + ")";
         return s;
     }
