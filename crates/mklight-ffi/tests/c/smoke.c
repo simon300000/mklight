@@ -459,11 +459,22 @@ int main(int argc, char **argv) {
     EXPECT(mk_session_get_param(s, "{\"param\": \"thickness\", \"surface\": 999}", &json),
            MK_ERR_INVALID_ARGUMENT);
     {
+        /* The whole project, with a section of the front end's own (ABI 1.6). */
+        OK(mk_session_get_project_json(s, &json));
+        char *whole = replace(json, "{\"format\"", "{\"layout\":{\"panes\":2},\"format\"");
+        mk_string_free(json);
+        CHECK(whole != NULL);
+        OK(mk_session_set_project_json(s, whole, NULL));
+        free(whole);
+        EXPECT(mk_session_set_project_json(s, "{\"format\": 1", NULL), MK_ERR_PARSE);
         char *written = NULL;
         OK(mk_session_autosave(s, NULL, &written)); /* s was saved: autosave next to it */
         CHECK(strstr(written, "smoke.mklight.autosave") != NULL);
         MKSession *rec = NULL;
         OK(mk_session_open(eng, written, &rec));
+        OK(mk_session_get_project_json(rec, &json));
+        CHECK(strstr(json, "\"layout\":{\"panes\":2}") != NULL);
+        mk_string_free(json);
         mk_session_destroy(rec);
         mk_string_free(written);
     }

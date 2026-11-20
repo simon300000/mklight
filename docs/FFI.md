@@ -33,7 +33,7 @@ further linker flags are needed.
 ## Versioning
 
 * `mk_abi_version()` returns `(major << 16) | minor`; the header has
-  `MK_ABI_VERSION_MAJOR/MINOR` (currently 1.5). A front end must check that
+  `MK_ABI_VERSION_MAJOR/MINOR` (currently 1.6). A front end must check that
   the runtime major equals the compiled major. Minor releases only **add**
   functions and JSON fields, so JSON readers must ignore unknown keys.
   1.1 added `mk_engine_analysis_info`, `mk_engine_set_default_backend`,
@@ -56,6 +56,9 @@ further linker flags are needed.
   `mk_session_library_catalogs_in_use`, `mk_glass_from_spec`,
   `mk_catalog_to_agf`, and the catalog fields `library`, `in_project` and
   the glass-row fields of `mk_session_list_glasses`.
+* 1.6 adds `mk_session_set_project_json` (the whole project in one call, so
+  that autosave and recovery keep every section: *Validation, solves,
+  autosave* below).
 * Each analysis' result shape has its own `result_version`
   (`docs/RESULTS.md` §2).
 * `mk_engine_version()` is the engine (crate) version recorded in every
@@ -483,12 +486,38 @@ writes still set a fixed radius. A path the system does not have is
   outside the lock.
 * `mk_session_autosave(session, path, &written)`: writes the project to
   `path` or `<project file>.autosave` without touching the session (path,
-  dirty flag). Recover by opening the autosave file.
+  dirty flag). The file is a normal project and holds what the session
+  holds. Recover by opening it with `mk_session_open` and reading
+  `mk_session_get_project_json`.
 
 `mk_session_set_project_section_json(session, section, json)` replaces
 `views` (array of `{key, analysis, settings, ui}`), `merit`, `variables`,
 `tolerances` (the front end's tolerance setup: stored, never interpreted by
 the engine) or `metadata`.
+
+`mk_session_set_project_json(session, project_json, &hash)` (ABI 1.6)
+replaces the whole project from a document of the `.mklight` schema, as
+`mk_session_get_project_json` returns it (`format` and `schema_version`
+required): the system, `metadata`, `views`, `merit`, `variables`,
+`tolerances` and any top-level key the engine does not know (a front end's
+own section, such as a window layout), which is kept verbatim and written
+by `mk_session_save` and `mk_session_autosave`. `catalogs` is ignored: the
+catalog calls manage it. The call is atomic: text that is not JSON is
+`MK_ERR_PARSE`, a document of another shape or schema version
+`MK_ERR_INVALID_ARGUMENT`, a system that fails validation
+`MK_ERR_INVALID_MODEL`, and each leaves the session unchanged. The session
+becomes dirty only when something changed; `hash` (nullable) receives the
+snapshot hash.
+
+A front end that keeps project sections in its own model autosaves the
+whole project through the engine with
+
+1. `mk_session_set_project_json(session, document, NULL)` (or the section
+   setters) whenever its sections change, or just before autosaving;
+2. `mk_session_autosave(session, NULL or path, &written)`;
+
+and recovers it with `mk_session_open(engine, written, &session)` and
+`mk_session_get_project_json`, which returns every section it set.
 
 ### Glass catalogs
 
@@ -540,7 +569,7 @@ substitution data, which the glass map and glass substitution read.
   `melt_frequency`, `acid_resistance`, `alkali_resistance`,
   `phosphate_resistance`, `thermal`, `transmittance`, `comment`, `lines`
   (`[{line, um, n}]` at the standard lines in range), `index_curve` (81
-  `[λ µm, n]` pairs over the range, clipped to 0.25–2.5 µm) and `glass` (the
+  `[λ µm, n]` pairs over the glass's own wavelength range, 0.25–2.5 µm when the catalog gives none) and `glass` (the
   glass in catalog JSON form, before overrides). Unknown glass:
   `MK_ERR_NOT_FOUND`.
 * `mk_session_remove_catalog(session, name, &json)` removes a catalog from

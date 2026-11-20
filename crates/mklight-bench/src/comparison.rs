@@ -1065,7 +1065,11 @@ pub const REFERENCE_ONLY: &[(&str, &[Rule])] = &[
     ("glass_info", &[r("*", Exact)]),
     (
         "glass_map",
-        &[r("glasses[].*", Exact), r("@coordinates", Exact)],
+        &[
+            r("glasses[].*", Exact),
+            r("omitted[].*", Exact),
+            r("@coordinates", Exact),
+        ],
     ),
     (
         "polarization_pupil_map",

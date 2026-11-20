@@ -564,6 +564,47 @@ impl Session {
         Ok(())
     }
 
+    /// Replace the whole project from a front end's document (as
+    /// `project()` returns it): the system and every other section,
+    /// including top-level keys the engine does not know, so that `save`
+    /// and `autosave` write everything the front end holds. The document's
+    /// `catalogs` are ignored: the session's catalogs are managed by the
+    /// catalog calls. An invalid system leaves the session unchanged. The
+    /// session becomes dirty only when something changed. Returns the
+    /// snapshot hash.
+    pub fn set_project(&mut self, project: Project) -> EngineResult<SnapshotHash> {
+        let Project {
+            format: _,
+            schema_version: _,
+            metadata,
+            system,
+            catalogs: _,
+            views,
+            merit,
+            variables,
+            tolerances,
+            extra,
+        } = project;
+        let snap = Snapshot::new(system)?;
+        let p = &mut self.project;
+        if p.metadata != metadata
+            || p.views != views
+            || p.merit != merit
+            || p.variables != variables
+            || p.tolerances != tolerances
+            || p.extra != extra
+        {
+            p.metadata = metadata;
+            p.views = views;
+            p.merit = merit;
+            p.variables = variables;
+            p.tolerances = tolerances;
+            p.extra = extra;
+            self.dirty = true;
+        }
+        Ok(self.commit(snap))
+    }
+
     // --- files
 
     /// The project with its save metadata (modified time, app and engine
@@ -2231,6 +2272,58 @@ LD 0.32 2.5\r\n";
         s.set_glass_overrides(Vec::new());
         assert_eq!(s.library_hash(), h0);
         assert_eq!(s.glass_overrides(), &[] as &[GlassOverride]);
+    }
+
+    /// A synthetic infrared-only glass (3-12 µm) has no d-line values: it
+    /// stays off the glass map, which lists it under `omitted` with the
+    /// surface that uses it, and the glass list reports null n_d / V_d.
+    #[test]
+    fn glass_map_omits_glasses_without_d_line_values() {
+        const IR_AGF: &str = "NM IRONLY 3 0 1.0 0.0 0 0 0\r\n\
+CD 2.4 0.01 0.0002 0.00001 -1e-7 1e-9\r\n\
+LD 3.0 12.0\r\n";
+        let e = engine();
+        let mut s = e.new_session();
+        s.add_library_catalog_bytes("LIBCAT.agf", LIB_AGF.as_bytes())
+            .unwrap();
+        s.add_library_catalog_bytes("IRCAT.agf", IR_AGF.as_bytes())
+            .unwrap();
+        let run = |s: &mut Session| {
+            s.run_analysis(
+                &AnalysisRequest::new("glass_map", Value::Null),
+                &JobContext::new(),
+            )
+            .unwrap()
+        };
+        let r = run(&mut s);
+        let names = |v: &Value| -> Vec<String> {
+            v["glasses"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|g| g["name"].as_str().unwrap().to_string())
+                .collect()
+        };
+        assert!(names(&r.json).contains(&"LIBFLINT".to_string()));
+        assert!(!names(&r.json).contains(&"IRONLY".to_string()));
+        let om = r.json["omitted"].as_array().unwrap();
+        assert_eq!(om.len(), 1);
+        assert_eq!(
+            (om[0]["catalog"].as_str(), om[0]["name"].as_str()),
+            (Some("IRCAT"), Some("IRONLY"))
+        );
+        assert!(!om[0]["reason"].as_str().unwrap().is_empty());
+        assert_eq!(om[0]["surfaces"], serde_json::json!([]));
+        // Every plotted glass has finite coordinates, aligned with the buffer.
+        let n = r.json["glasses"].as_array().unwrap().len();
+        assert_eq!(r.buffers[0].shape, vec![n, 3]);
+        let row = s.glasses(Some("IRCAT")).unwrap();
+        assert_eq!((row[0].nd, row[0].vd), (None, None));
+        // A design surface using it is recorded on the omitted entry.
+        use_glass(&mut s, Some("IRCAT"), "IRONLY");
+        let r = run(&mut s);
+        assert_eq!(r.json["omitted"][0]["surfaces"], serde_json::json!([1]));
+        assert!(!names(&r.json).contains(&"IRONLY".to_string()));
     }
 
     #[test]

@@ -41,9 +41,21 @@ pub struct GlassPoint {
     pub transmittance: Vec<TransmittancePoint>,
     pub surfaces: Vec<usize>,
 }
+/// A catalogue glass left off the map: its dispersion range does not cover
+/// the d line (or the F and C lines), so it has no n_d / V_d to plot.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct OmittedGlass {
+    pub catalog: String,
+    pub name: String,
+    pub reason: String,
+    /// Design surfaces whose following medium is this glass.
+    pub surfaces: Vec<usize>,
+}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct GlassMapResult {
     pub glasses: Vec<GlassPoint>,
+    /// Catalogue glasses without a computable d-line index or Abbe number.
+    pub omitted: Vec<OmittedGlass>,
     pub run_info: RunInfo,
 }
 fn coordinates(m: &ResolvedMaterial) -> [f64; 3] {
@@ -59,25 +71,36 @@ pub fn glass_map_job(
     let timer = RunTimer::start();
     ctx.check()?;
     let mut glasses = Vec::new();
+    let mut omitted = Vec::new();
     let count: usize = library.catalogs().iter().map(|c| c.glasses.len()).sum();
     for cat in library.catalogs() {
         for g in cat.glasses.values() {
             ctx.check()?;
+            // From the dispersion, as P_g,F is (the listed values may
+            // disagree with it). Glasses whose range misses the d, F or C
+            // line have no coordinates and stay off the map.
+            let (Some(nd), Some(vd)) = d_line_values(g) else {
+                omitted.push(OmittedGlass {
+                    catalog: cat.name.clone(),
+                    name: g.name.clone(),
+                    reason: "the glass's wavelength range does not cover the d, F and C lines"
+                        .into(),
+                    surfaces: Vec::new(),
+                });
+                continue;
+            };
             let pgf = (g.catalog_index(lines::G) - g.catalog_index(lines::F))
                 / (g.catalog_index(lines::F) - g.catalog_index(lines::C));
             let meta = s.metadata.iter().find(|m| {
                 m.catalog.eq_ignore_ascii_case(&cat.name) && m.name.eq_ignore_ascii_case(&g.name)
             });
-            // From the dispersion, as P_g,F is (the listed values may
-            // disagree with it); the listed ones outside the glass's range.
-            let (nd, vd) = d_line_values(g);
             glasses.push(GlassPoint {
                 catalog: Some(cat.name.clone()),
                 name: g.name.clone(),
                 kind: "catalog".into(),
                 offset: MaterialOffset::default(),
-                nd: nd.unwrap_or(g.nd),
-                vd: vd.unwrap_or(g.vd),
+                nd,
+                vd,
                 pgf,
                 status: Some(meta.map_or(g.substitution.status, |m| m.status)),
                 exclude_substitution: Some(meta.map_or(g.substitution.exclude_substitution, |m| {
@@ -95,6 +118,7 @@ pub fn glass_map_job(
             );
         }
     }
+    let plotted = glasses.len();
     for (i, surface) in snapshot.system().surfaces.iter().enumerate() {
         ctx.check()?;
         match &surface.material {
@@ -106,17 +130,25 @@ pub fn glass_map_job(
                 // The entry the design resolves to: the first loaded
                 // catalogue (optionally the named one) holding the glass.
                 let g = library.find_glass(catalog.as_deref(), name)?;
-                let point = glasses[..count]
+                let in_catalog = |c: Option<&str>, n: &str| {
+                    n == g.name
+                        && catalog
+                            .as_deref()
+                            .is_none_or(|k| c.is_some_and(|v| v.eq_ignore_ascii_case(k)))
+                };
+                let Some(point) = glasses[..plotted]
                     .iter_mut()
-                    .find(|v| {
-                        v.name == g.name
-                            && catalog.as_deref().is_none_or(|c| {
-                                v.catalog
-                                    .as_deref()
-                                    .is_some_and(|v| v.eq_ignore_ascii_case(c))
-                            })
-                    })
-                    .unwrap();
+                    .find(|v| in_catalog(v.catalog.as_deref(), &v.name))
+                else {
+                    // Off the map: record where the design uses it.
+                    if let Some(o) = omitted
+                        .iter_mut()
+                        .find(|o| in_catalog(Some(&o.catalog), &o.name))
+                    {
+                        o.surfaces.push(i);
+                    }
+                    continue;
+                };
                 if offset.is_zero() {
                     point.surfaces.push(i);
                 } else {
@@ -155,6 +187,7 @@ pub fn glass_map_job(
     ctx.report(1.0, "glass map");
     Ok(GlassMapResult {
         glasses,
+        omitted,
         run_info: timer.finish(
             snapshot,
             "glass_map",
@@ -174,8 +207,8 @@ mod tests {
         let catalog = mklight_core::materials::agf::parse_agf(
             "FIXTURE",
             "\
-NM TEST 5 0 1.5 0 1 2 0
-CD 1.5 0 0
+NM TEST 2 0 1.5168 64.17 1 2 0
+CD 1.03961212 0.00600069867 0.231792344 0.0200179144 1.01046945 103.560653 0 0 0 0
 LD 0.3 2.5
 OD 2 3 4 -1 -1 -1
 IT 0.55 0.81 10
@@ -199,6 +232,32 @@ IT 0.55 0.81 10
                 tau: 0.81,
                 thickness_mm: 10.0
             }]
+        );
+    }
+
+    /// An infrared-only glass (3-12 µm) has no d, F or C line: it is not a
+    /// map point and is listed as omitted.
+    #[test]
+    fn infrared_glass_is_omitted_not_plotted_at_listed_values() {
+        let catalog = mklight_core::materials::agf::parse_agf(
+            "FIXTURE",
+            "\
+NM IRONLY 3 0 1.0 0.0 0 0 0
+CD 2.4 0.01 0.0002 0.00001 -1e-7 1e-9
+LD 3 12
+",
+        )
+        .unwrap();
+        let mut lib = MaterialLibrary::with_builtin();
+        lib.add_catalog(std::sync::Arc::new(catalog));
+        let snap = Snapshot::new(mklight_core::samples::singlet()).unwrap();
+        let r = glass_map_job(&snap, &lib, &Default::default(), &JobContext::new()).unwrap();
+        assert!(r.glasses.iter().all(|g| g.name != "IRONLY"));
+        assert!(r.glasses.iter().all(|g| g.nd.is_finite() && g.vd > 0.0));
+        assert_eq!(r.omitted.len(), 1);
+        assert_eq!(
+            (r.omitted[0].catalog.as_str(), r.omitted[0].name.as_str()),
+            ("FIXTURE", "IRONLY")
         );
     }
 

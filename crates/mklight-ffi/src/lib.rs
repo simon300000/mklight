@@ -40,6 +40,7 @@ use mklight_core::{JobContext, MkError, OpticalSystem};
 use mklight_engine::ErrorKind;
 use mklight_engine::backend::Backend;
 use mklight_engine::buffer::BufferData;
+use mklight_engine::project::Project;
 use mklight_engine::session::{AnalysisRequest, ParamEdit, Session};
 use mklight_engine::{
     AnalysisResult, Buffer, Engine, EngineConfig, EngineError, JobEvent, JobState,
@@ -49,7 +50,7 @@ use mklight_engine::{
 // Versioning and status codes (mirrored in include/mklight.h)
 
 pub const MK_ABI_VERSION_MAJOR: u32 = 1;
-pub const MK_ABI_VERSION_MINOR: u32 = 5;
+pub const MK_ABI_VERSION_MINOR: u32 = 6;
 /// `(major << 16) | minor`. Major changes break compatibility; minor
 /// versions only add functions or JSON fields.
 pub const MK_ABI_VERSION: u32 = (MK_ABI_VERSION_MAJOR << 16) | MK_ABI_VERSION_MINOR;
@@ -667,6 +668,33 @@ pub unsafe extern "C" fn mk_session_set_project_section_json(
     })
 }
 
+/// Replace the whole project from a document of the `.mklight` schema (as
+/// `mk_session_get_project_json` returns it): the system and every other
+/// section, top-level keys the engine does not know included, so that
+/// `mk_session_save` and `mk_session_autosave` write all of it. `catalogs`
+/// is ignored (the catalog calls manage it). Atomic: an invalid system
+/// (`MK_ERR_INVALID_MODEL`) or document (`MK_ERR_INVALID_ARGUMENT`) leaves
+/// the session unchanged. On success `*out_hash` (if not NULL) receives the
+/// snapshot hash.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mk_session_set_project_json(
+    session: *mut MKSession,
+    project_json: *const c_char,
+    out_hash: *mut *mut c_char,
+) -> MKStatus {
+    unsafe { clear_out(out_hash) };
+    guard(|| {
+        let s = unsafe { session_ref(session) }?;
+        let v = serde_json::from_str(unsafe { in_str(project_json, "project_json") }?)
+            .map_err(|e| not_json("project_json", e))?;
+        let project =
+            Project::from_value(v).map_err(|e| FfiError::arg(format!("project_json: {e}")))?;
+        let h = s.lock().set_project(project)?;
+        unsafe { put_string(out_hash, &h.to_hex()) };
+        Ok(())
+    })
+}
+
 /// 64 hex characters of the current snapshot's BLAKE3 hash.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mk_session_current_snapshot_hash(
@@ -1095,6 +1123,8 @@ pub unsafe extern "C" fn mk_session_apply_solves(
 /// Write the current project to `path`, or to `<project file>.autosave`
 /// when NULL, without changing the session (path, dirty flag). An untitled
 /// session needs a path. `*out_path` (nullable) receives the path written.
+/// The file holds what the session holds: push a front end's own sections
+/// first with `mk_session_set_project_json`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mk_session_autosave(
     session: *const MKSession,

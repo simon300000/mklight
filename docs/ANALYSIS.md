@@ -442,8 +442,12 @@ and definitions. Undefined values use NaN in buffers.
   provided; grid mode supports asymmetric systems.
 
 `glass_map` reports every loaded catalogue's glasses in library order,
-then each model glass used in the design. Coordinates are catalogue n_d,
-V_d, and `(n_g-n_F)/(n_F-n_C)` from the dispersion formula; model values
+then each model glass used in the design. Glasses whose wavelength range
+does not cover the d, F and C lines (e.g. infrared glasses) have no
+coordinates and are left out of `glasses` and `coordinates`; `omitted`
+lists them (`{catalog, name, reason, surfaces}`, `surfaces` being the design
+surfaces that use them). Coordinates are the n_d,
+V_d computed from the dispersion (as in the glass list), and `(n_g-n_F)/(n_F-n_C)` from the dispersion formula; model values
 are computed at reference conditions. `surfaces` marks each surface's
 following medium, resolving unqualified catalogue names in library order.
 The aligned `coordinates[glasses,3]` buffer supports either map projection.

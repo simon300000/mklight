@@ -36,7 +36,7 @@ extern "C" {
 /* ---- Versioning --------------------------------------------------------- */
 
 #define MK_ABI_VERSION_MAJOR 1
-#define MK_ABI_VERSION_MINOR 5
+#define MK_ABI_VERSION_MINOR 6
 /* (major << 16) | minor. A different major version is incompatible; a newer
  * minor version only adds functions and JSON fields. */
 #define MK_ABI_VERSION ((MK_ABI_VERSION_MAJOR << 16) | MK_ABI_VERSION_MINOR)
@@ -220,6 +220,18 @@ MKStatus mk_session_apply_param_edit(MKSession *session, const char *edits_json,
 MKStatus mk_session_set_project_section_json(MKSession *session, const char *section,
                                              const char *json);
 
+/* ABI 1.6. Replace the whole project from a .mklight-schema document (as
+ * mk_session_get_project_json returns it, with "format" and
+ * "schema_version"): the system, metadata, views, merit, variables,
+ * tolerances and any top-level key the engine does not know (kept
+ * verbatim), so that mk_session_save and mk_session_autosave write all of
+ * them. "catalogs" is ignored (use the catalog calls). Atomic: an invalid
+ * system (MK_ERR_INVALID_MODEL) or document (MK_ERR_INVALID_ARGUMENT; not
+ * JSON: MK_ERR_PARSE) leaves the session unchanged. Marks the session dirty
+ * only when something changed. out_hash (nullable): the snapshot hash. */
+MKStatus mk_session_set_project_json(MKSession *session, const char *project_json,
+                                     char **out_hash);
+
 /* 64 lowercase hex characters (BLAKE3 of the canonical system JSON). */
 MKStatus mk_session_current_snapshot_hash(const MKSession *session, char **out_hash);
 
@@ -371,7 +383,10 @@ MKStatus mk_session_apply_solves(MKSession *session, const char *settings_json,
 /* Write the current project to path, or to "<project file>.autosave" when
  * path is NULL, without changing the session (its path and dirty flag stay).
  * An untitled session needs a path. out_path (nullable): the path written.
- * Recover by opening the autosave file with mk_session_open. */
+ * Recover by opening the autosave file with mk_session_open and reading
+ * mk_session_get_project_json. The file holds what the session holds: a
+ * front end that keeps project sections of its own pushes them first with
+ * mk_session_set_project_json (or mk_session_set_project_section_json). */
 MKStatus mk_session_autosave(const MKSession *session, const char *path, char **out_path);
 
 /* Current value of a parameter: {"value": number | "inf" | "-inf" | null}
