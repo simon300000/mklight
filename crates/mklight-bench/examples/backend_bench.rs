@@ -63,7 +63,7 @@ use std::path::Path;
 use std::process::Command;
 use std::time::Instant;
 
-use mklight_bench::{host, solver};
+use mklight_bench::{comparison, host, solver};
 use mklight_core::OpticalSystem;
 use mklight_engine::{
     AnalysisRequest, Engine, EngineConfig, RouteOptions, Session, analysis::AnalysisResult,
@@ -323,7 +323,41 @@ fn compare(reference: &AnalysisResult, r: &AnalysisResult) -> Value {
     json!({
         "worst": rows.iter().map(|(k, v)| json!([k, v])).collect::<Vec<_>>(),
         "mismatched": mismatched.into_iter().take(5).collect::<Vec<_>>(),
+        "contract": contract(reference, r),
     })
+}
+
+/// The GPU.md §9.4 contracts (`comparison::compare`, the offline
+/// comparator): whether the result is within them, and the worst gate
+/// fraction (error ÷ the class's gate) with its class and path.
+fn contract(reference: &AnalysisResult, r: &AnalysisResult) -> Value {
+    use mklight_engine::analysis::AnalysisOutput;
+    let out = |x: &AnalysisResult| AnalysisOutput {
+        json: x.json.clone(),
+        buffers: x.buffers.clone(),
+        ..Default::default()
+    };
+    match comparison::compare(
+        &out(reference),
+        &out(r),
+        &reference.run_info.analysis,
+        &mklight_core::JobContext::new(),
+    ) {
+        Ok(c) => {
+            let worst = c
+                .classes
+                .iter()
+                .max_by(|a, b| a.1.worst_gate_fraction.total_cmp(&b.1.worst_gate_fraction));
+            json!({
+                "within": c.reason.is_none(),
+                "reason": c.reason,
+                "worst_gate_fraction": worst.map(|w| w.1.worst_gate_fraction),
+                "worst_class": worst.map(|w| *w.0),
+                "worst_path": worst.and_then(|w| w.1.worst_path.clone()),
+            })
+        }
+        Err(e) => json!({ "within": false, "reason": e.to_string() }),
+    }
 }
 
 fn median(v: &[f64]) -> f64 {
