@@ -28,8 +28,8 @@ pub mod lowlevel;
 pub mod session;
 pub mod wait;
 
-/// `--features mimalloc` (Cargo.toml).
-#[cfg(feature = "mimalloc")]
+/// Windows only (Cargo.toml).
+#[cfg(windows)]
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 

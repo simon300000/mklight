@@ -18,13 +18,6 @@ mklight-trace.workspace = true
 mklight-ffi = { path = "../mklight-ffi" }
 serde_json.workspace = true
 clap = { version = "4.5", features = ["derive"] }
-mimalloc = { version = "0.1", optional = true, default-features = false }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
-
-# Opt-in: mimalloc as the global allocator. Measured on Windows, whose
-# system heap makes the CPU analyses 1.15-1.4x slower (docs/DEVELOPMENT.md,
-# "Windows"); results are bitwise the same.
-[features]
-mimalloc = ["dep:mimalloc"]

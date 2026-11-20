@@ -16,6 +16,12 @@
 
 #![allow(clippy::missing_safety_doc)]
 
+/// Windows only (Cargo.toml): also the allocator of the command line, which
+/// links this crate.
+#[cfg(windows)]
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 use std::cell::RefCell;
 use std::ffi::{CStr, CString, c_char, c_void};
 use std::panic::{AssertUnwindSafe, catch_unwind};
