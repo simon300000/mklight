@@ -215,17 +215,8 @@ public sealed class GlassDetailView : UserControl
         g.Children.Add(control);
     }
 
-    /// <summary>The index curve, with a caption when it covers only part of the glass's range (an IR glass).</summary>
-    static UIElement? Index(GlassDetails d)
-    {
-        var note = GlassFormat.CurveNote(d);
-        var curve = d.IndexCurve.Count > 1 ? new IndexCurveView { Details = d } : null;
-        if (note is null) return curve;
-        var p = new StackPanel { Spacing = 6 };
-        if (curve is not null) p.Children.Add(curve);
-        p.Children.Add(new TextBlock { Text = note, Style = S("CaptionText"), TextWrapping = TextWrapping.Wrap });
-        return p;
-    }
+    /// <summary>The index curve over the glass's own wavelength range (an IR glass's too).</summary>
+    static UIElement? Index(GlassDetails d) => d.IndexCurve.Count > 1 ? new IndexCurveView { Details = d } : null;
 
     UIElement Optical(GlassDetails d)
     {

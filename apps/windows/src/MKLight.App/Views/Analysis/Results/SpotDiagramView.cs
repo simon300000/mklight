@@ -60,7 +60,7 @@ public sealed partial class SpotDiagramView : UserControl, IViewOptions
             if (w >= 0 && w < grid.WavelengthsUm.Count && double.IsFinite(grid.WavelengthsUm[w]))
                 legendEntries.Add(new LegendEntry(Fmt.Wavelength(grid.WavelengthsUm[w]), SeriesColor.Wavelength(grid.WavelengthsUm[w]), LegendMark.Dot));
         if (double.IsFinite(grid.Airy))
-            legendEntries.Add(new LegendEntry("Airy disk " + Fmt.Length(grid.Airy), SeriesColor.Neutral, LegendMark.DashedCircle));
+            legendEntries.Add(new LegendEntry("Airy disk " + grid.Length(grid.Airy), SeriesColor.Neutral, LegendMark.DashedCircle));
 
         // A small segmented control: the chosen scale on a quiet fill (the accent stays for selection elsewhere).
         _common = ScaleButton("Common", SpotScale.Grid);
@@ -134,9 +134,9 @@ public sealed partial class SpotDiagramView : UserControl, IViewOptions
         Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(_canvas,
             $"Spot diagram{who}, {_grid.Rows.Count} fields by {_grid.Planes.Count} focus planes");
         var rms = _grid.Rows.Select(r => (r.Cells.FirstOrDefault(c => c.Column == _grid.BaseColumn) ?? r.Cells.FirstOrDefault()) is { } c
-            ? $"{r.Title} RMS {Fmt.Length(c.Rms)}" : null).OfType<string>();
+            ? $"{r.Title} RMS {_grid.Length(c.Rms)}" : null).OfType<string>();
         Microsoft.UI.Xaml.Automation.AutomationProperties.SetHelpText(_canvas,
-            string.Join(", ", rms) + (double.IsFinite(_grid.Airy) ? ", Airy radius " + Fmt.Length(_grid.Airy) : ""));
+            string.Join(", ", rms) + (double.IsFinite(_grid.Airy) ? ", Airy radius " + _grid.Length(_grid.Airy) : ""));
     }
 
     /// <summary>The box scale (the pane may keep it with its layout).</summary>
@@ -226,7 +226,7 @@ public sealed partial class SpotDiagramView : UserControl, IViewOptions
             PlotText.Draw(ds, row.Title, 0, top + 18, style.Title, 11, TextAnchor.Start, bold: true);
             if (row.Value.Length > 0) PlotText.Draw(ds, Fit(ds, row.Value, m.RowHeader - 4, 10), 0, top + 33, style.Label, 10, TextAnchor.Start);
             if (_scale == SpotScale.Field)
-                PlotText.Draw(ds, Fit(ds, "±" + Fmt.Length(halfWidths[r]), m.RowHeader - 4, 10), 0, top + 47, tertiary, 10, TextAnchor.Start);
+                PlotText.Draw(ds, Fit(ds, "±" + _grid.Length(halfWidths[r]), m.RowHeader - 4, 10), 0, top + 47, tertiary, 10, TextAnchor.Start);
             foreach (var cell in row.Cells)
             {
                 var cx = m.RowHeader + cell.Column * (m.Cell + sp);
@@ -239,9 +239,9 @@ public sealed partial class SpotDiagramView : UserControl, IViewOptions
     /// <summary>The cell's caption, the longest that fits: "RMS … · GEO …" (base plane), "RMS …", the value.</summary>
     string Caption(CanvasDrawingSession ds, SpotGridData.Cell cell, double width)
     {
-        var rms = Fmt.Length(cell.Rms);
+        var rms = _grid.Length(cell.Rms);
         var options = new List<string>();
-        if (cell.Column == _grid.BaseColumn) options.Add($"RMS {rms} · GEO {Fmt.Length(cell.Geo)}");
+        if (cell.Column == _grid.BaseColumn) options.Add($"RMS {rms} · GEO {_grid.Length(cell.Geo)}");
         options.Add("RMS " + rms);
         options.Add(rms);
         foreach (var o in options)

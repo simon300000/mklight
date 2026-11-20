@@ -46,10 +46,7 @@ public sealed record GlassPoint(string Id, string? Catalog, string Name, string 
     /// <summary>Whether the design uses the glass (offset and model glasses always are).</summary>
     public bool InDesign => Kind != "catalog" || Surfaces.Count > 0;
 
-    /// <summary>
-    /// Whether the glass has a place on the map: finite n_d and V_d, n_d above 1 and V_d above 0.
-    /// An IR glass's catalogue entry carries placeholders (n_d 1, V_d 0) instead.
-    /// </summary>
+    /// <summary>Whether the glass has a place on the map: finite n_d and V_d (a guard; the engine omits the others).</summary>
     public bool HasNd => double.IsFinite(Nd) && double.IsFinite(Vd) && Nd > 1 && Vd > 0;
 
     /// <summary>"S1, S3".</summary>
@@ -75,10 +72,24 @@ public sealed record GlassPoint(string Id, string? Catalog, string Name, string 
     public static double NormalLine(double vd) => 0.6438 - 0.001682 * vd;
 }
 
+/// <summary>
+/// A catalogue glass the engine left off the map (<c>omitted[]</c>): its range does not cover the d, F and C
+/// lines (an infrared glass), so it has no n_d or V_d. <see cref="Surfaces"/>: the design surfaces using it.
+/// </summary>
+public sealed record OmittedGlass(string? Catalog, string Name, string Reason, IReadOnlyList<int> Surfaces)
+{
+    public bool InDesign => Surfaces.Count > 0;
+
+    public string SurfaceLabel => string.Join(", ", Surfaces.Select(s => "S" + s.ToString(System.Globalization.CultureInfo.InvariantCulture)));
+}
+
 /// <summary>The <c>glass_map</c> result.</summary>
 public sealed class GlassMapData
 {
     public required IReadOnlyList<GlassPoint> Glasses { get; init; }
+
+    /// <summary>Glasses without map coordinates, with the engine's reason: the design's first, then by catalogue order.</summary>
+    public IReadOnlyList<OmittedGlass> Omitted { get; init; } = [];
 
     public static GlassMapData? Read(ResultData d)
     {
@@ -106,14 +117,16 @@ public sealed class GlassMapData
                 Json.Bool(Json.At(g, "exclude_substitution")),
                 kind == "offset" ? Json.Number(Json.At(g, "offset", "dn_d")) ?? 0 : 0,
                 kind == "offset" ? Json.Number(Json.At(g, "offset", "dv_d")) ?? 0 : 0);
-            // Glasses without n_d (IR glasses' placeholders) are dropped, except those the design uses:
-            // they stay in its list (without a point on the map).
-            if (point.HasNd || point.InDesign) glasses.Add(point);
+            if (point.HasNd) glasses.Add(point);
         }
-        return new GlassMapData { Glasses = glasses };
+        var omitted = (Json.Arr(Json.At(d.Json, "omitted")) ?? [])
+            .Select(o => new OmittedGlass(Json.Str(Json.At(o, "catalog")), Json.Str(Json.At(o, "name")) ?? "?",
+                Json.Str(Json.At(o, "reason")) ?? "No n_d or V_d", Json.IntArray(Json.At(o, "surfaces")) ?? []))
+            .OrderByDescending(o => o.InDesign).ToList();
+        return new GlassMapData { Glasses = glasses, Omitted = omitted };
     }
 
-    public IEnumerable<string> Catalogs => Glasses.Select(g => g.Catalog).OfType<string>().Distinct();
+    public IEnumerable<string> Catalogs => Glasses.Select(g => g.Catalog).Concat(Omitted.Select(o => o.Catalog)).OfType<string>().Distinct();
 
     /// <summary>The statuses present among the catalogue glasses, in legend order.</summary>
     public IReadOnlyList<GlassStatus> Statuses =>

@@ -57,10 +57,11 @@ public partial class App : Application
             Track(new EngineMissingWindow(FFIEngine.UnavailableReason ?? "mklight_ffi.dll was not found.")).Activate();
             return;
         }
-        var engine = new FFIEngine(new JsonObject { ["app_name"] = "MKLight for Windows", ["app_version"] = AppVersion });
+        // --gpu-emulation: the engine lists its CPU-f32 emulation as gpu:cpu_f32 (auto never picks it).
+        var engine = new FFIEngine(new JsonObject { ["app_name"] = "MKLight for Windows", ["app_version"] = AppVersion, ["register_emulation"] = Options.GpuEmulation });
         Engine = engine;
         // Prepare the GPU's compute kernels once per run, cached between runs.
-        try { engine.PrepareGpu(Path.Combine(AppSettings.Directory, "GPU Kernels")); } catch (EngineException) { }
+        try { engine.PrepareGpu(Path.Combine(AppSettings.SupportDirectory, "GPU Kernels")); } catch (EngineException) { }
 
         if (Options.File is { } file) _ = OpenFileAsync(file);
         else if (Options.Sample is { } sample) OpenDocument(DesignDocument.FromSample(sample));

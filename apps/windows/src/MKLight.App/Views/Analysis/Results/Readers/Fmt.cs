@@ -45,6 +45,10 @@ public static class Fmt
         return Math.Abs(mm) < 0.1 ? Fixed(mm * 1000, 2) + " µm" : Fixed(mm, 4) + " mm";
     }
 
+    /// <summary>A length in mm in one chosen unit, for values shown side by side: "200.70 µm" or "0.2007 mm".</summary>
+    public static string Length(double mm, bool micrometres) =>
+        !double.IsFinite(mm) ? Short(mm) : micrometres ? Fixed(mm * 1000, 2) + " µm" : Fixed(mm, 4) + " mm";
+
     /// <summary>A signed value with fixed decimals ("+0.0123"); zero gets a figure space for the sign.</summary>
     public static string Signed(double v, int decimals = 4)
     {

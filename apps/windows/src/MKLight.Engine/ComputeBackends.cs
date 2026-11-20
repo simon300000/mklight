@@ -70,6 +70,8 @@ public sealed record EngineBackend(
     {
         get
         {
+            // The emulation's engine title ("Emulation on the CPU (f32), not a real GPU") does not fit a picker.
+            if (GpuName == "cpu_f32") return "GPU emulation on the CPU";
             var title = Title.Trim();
             foreach (var note in new[] { "(f64)", "(f32)", "(" + PrecisionShort(Precision) + ")" })
                 if (note.Length > 2 && title.EndsWith(note, StringComparison.OrdinalIgnoreCase)) title = title[..^note.Length].TrimEnd();

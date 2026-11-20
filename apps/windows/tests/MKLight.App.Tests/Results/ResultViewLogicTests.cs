@@ -94,19 +94,23 @@ public class ResultViewLogicTests
     }
 
     [Fact]
-    public void GlassMapDropsGlassesWithoutNdButKeepsTheDesignsOwn()
+    public void GlassMapListsTheGlassesTheEngineOmitted()
     {
-        var d = GlassMapData.Read(TestData.Result("glass_map", """
+        var r = TestData.Result("glass_map", """
             { "glasses": [
-              {"name": "N-BK7", "catalog": "SCHOTT", "nd": 1.5168, "vd": 64.17, "pgf": 0.5349, "surfaces": []},
-              {"name": "IRG24", "catalog": "SCHOTT", "nd": 1, "vd": 0, "pgf": 0, "surfaces": []},
-              {"name": "IRG26", "catalog": "SCHOTT", "nd": 1, "vd": 0, "pgf": 0, "surfaces": [3]},
-              {"name": "BAD", "catalog": "X", "nd": "nan", "vd": 50, "pgf": 0.5, "surfaces": []} ] }
-            """))!;
-        Assert.Equal(["N-BK7", "IRG26"], d.Glasses.Select(g => g.Name));
-        Assert.True(d.Glasses[0].HasNd);
-        var ir = d.Glasses[1];
-        Assert.False(ir.HasNd);
-        Assert.True(ir.InDesign);
+              {"name": "N-BK7", "catalog": "SCHOTT", "nd": 1.5168, "vd": 64.17, "pgf": 0.5349, "surfaces": [1]} ],
+              "omitted": [
+              {"catalog": "SCHOTT", "name": "IRG24", "reason": "range 0.9-12 um misses the d, F and C lines", "surfaces": []},
+              {"catalog": "SCHOTT", "name": "IRG26", "reason": "range 0.9-12 um misses the d, F and C lines", "surfaces": [3, 4]} ] }
+            """);
+        var d = GlassMapData.Read(r)!;
+        Assert.Equal(["N-BK7"], d.Glasses.Select(g => g.Name));
+        // The design's omitted glasses come first.
+        Assert.Equal(["IRG26", "IRG24"], d.Omitted.Select(o => o.Name));
+        Assert.True(d.Omitted[0].InDesign);
+        Assert.Equal("S3, S4", d.Omitted[0].SurfaceLabel);
+        Assert.StartsWith("range 0.9", d.Omitted[1].Reason);
+        Assert.Equal(["SCHOTT"], d.Catalogs);
+        Assert.Equal([("Glasses", "1"), ("In design", "2"), ("Not on map", "2")], KeyNumbers.Of(r));
     }
 }

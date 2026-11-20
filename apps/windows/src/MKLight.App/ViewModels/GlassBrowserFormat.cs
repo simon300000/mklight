@@ -67,21 +67,6 @@ public static class GlassFormat
     /// <summary>Up to six significant digits without trailing zeros: "1", "2.4", "64.17".</summary>
     public static string Short(double v) => double.IsFinite(v) ? Significant(v, 6) : None;
 
-    /// <summary>
-    /// A caption for the index curve when it does not span the glass's range (the engine
-    /// samples it within 0.25–2.5 µm, which an IR glass mostly lies beyond); null when it does.
-    /// </summary>
-    public static string? CurveNote(GlassDetails d)
-    {
-        var r = d.Row;
-        if (r.UnrestrictedRange) return null;
-        var range = $"{Fixed(r.MinUm, 2)}–{Fixed(r.MaxUm, 2)} µm";
-        if (d.IndexCurve.Count < 2) return $"No index curve: it is drawn within 0.25–2.5 µm, outside this glass's range ({range}).";
-        var (lo, hi) = (d.IndexCurve[0].Um, d.IndexCurve[^1].Um);
-        const double eps = 1e-6;
-        return lo > r.MinUm + eps || hi < r.MaxUm - eps ? $"Drawn for {Fixed(lo, 2)}–{Fixed(hi, 2)} µm of its {range} range." : null;
-    }
-
     /// <summary>One line of a reload report: what changed for a glass.</summary>
     public static string Describe(CatalogChanges.Change c)
     {

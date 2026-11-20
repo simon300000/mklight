@@ -46,6 +46,17 @@ public sealed class SpotGridData
     /// <summary>The column at the base defocus, if one is.</summary>
     public int? BaseColumn { get; }
     public IReadOnlyList<Row> Rows { get; }
+
+    /// <summary>
+    /// The grid's one length unit: µm unless a cell's RMS or GEO radius reaches 1 mm, so the captions of one grid
+    /// never mix "25.92 µm" with "0.2007 mm".
+    /// </summary>
+    public bool Micrometres => _micrometres ??= Rows.SelectMany(r => r.Cells).SelectMany(c => new[] { c.Rms, c.Geo })
+        .Where(double.IsFinite).Select(Math.Abs).DefaultIfEmpty(0).Max() < 1;
+    bool? _micrometres;
+
+    /// <summary>A length of this grid in its unit (<see cref="Micrometres"/>).</summary>
+    public string Length(double mm) => Fmt.Length(mm, Micrometres);
     public double Airy { get; }
     public IReadOnlyList<int> Wavelengths { get; }
     public IReadOnlyList<double> WavelengthsUm { get; }
