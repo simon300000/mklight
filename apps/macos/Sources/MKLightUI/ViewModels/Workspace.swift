@@ -65,8 +65,16 @@ public final class Workspace {
         didSet { requestEpoch += 1 }
     }
     public private(set) var catalogs: [CatalogInfo] = [] {
-        didSet { catalogRevision += 1 }
+        didSet {
+            catalogRevision += 1
+            loadGlassStatuses()
+        }
     }
+    /// Every glass's status (the user's settings applied), for the lens
+    /// table: by `CATALOG:NAME` and, for a glass named without its catalog,
+    /// by `NAME` (the first in load order). Upper case.
+    public private(set) var glassStatuses: [String: GlassStatus] = [:]
+    @ObservationIgnored private var statusRequest = 0
     /// Counts every read of the catalogs (their glasses or statuses may
     /// have changed even when the list is the same).
     public private(set) var catalogRevision = 0
@@ -404,7 +412,12 @@ public final class Workspace {
         guard let snapshot, modelErrors.isEmpty else { return }
         let request = request(for: pane)
         if !force {
-            if let out = pane.output, out.isCurrent(for: snapshot, request: request) { return }
+            if let out = pane.output, out.isCurrent(for: snapshot, request: request) {
+                // The shown result is current again (a glass came back as it
+                // was): a failure of a later snapshot no longer applies.
+                if pane.job == nil, case .failed = pane.phase { pane.phase = .finished }
+                return
+            }
             if pane.isRunning, pane.lastRequest == request, pane.job?.snapshotHash == snapshot.hash { return }
         }
         if let d = descriptor(pane.analysis), !d.available {
@@ -494,6 +507,45 @@ public final class Workspace {
             }
         }
         return nil
+    }
+
+    /// Reads the glasses' statuses again (after the catalogs were read).
+    private func loadGlassStatuses() {
+        statusRequest += 1
+        let request = statusRequest
+        let engine = documentEngine
+        let order = catalogs.map(\.name)
+        Task { @MainActor [weak self] in
+            let rows = (try? await engine.glassRows(in: nil)) ?? []
+            guard let self, request == self.statusRequest else { return }
+            self.glassStatuses = Self.statusIndex(rows, catalogOrder: order)
+        }
+    }
+
+    /// The status lookup of `glassStatuses`. A glass named without its
+    /// catalog is the first of that name in load order (`catalogOrder`), as
+    /// the engine resolves it.
+    static func statusIndex(_ rows: [GlassRow], catalogOrder: [String]) -> [String: GlassStatus] {
+        let rank = Dictionary(catalogOrder.enumerated().map { ($1.uppercased(), $0) }, uniquingKeysWith: { a, _ in a })
+        let ordered = rows.enumerated().sorted { a, b in
+            let ra = rank[a.element.catalog.uppercased()] ?? Int.max, rb = rank[b.element.catalog.uppercased()] ?? Int.max
+            return ra != rb ? ra < rb : a.offset < b.offset
+        }
+        var out: [String: GlassStatus] = [:]
+        for (_, r) in ordered {
+            out[(r.catalog + ":" + r.name).uppercased()] = r.status
+            let bare = r.name.uppercased()
+            if out[bare] == nil { out[bare] = r.status }
+        }
+        return out
+    }
+
+    /// The status of a catalogue glass (`nil` for other materials or a
+    /// glass the catalogs do not have).
+    public func glassStatus(_ m: MaterialRef) -> GlassStatus? {
+        guard case .catalog(let cat, let name, _) = m else { return nil }
+        if let cat { return glassStatuses[(cat + ":" + name).uppercased()] }
+        return glassStatuses[name.uppercased()]
     }
 
     /// Forgets the glass numbers (the catalogs changed).
@@ -628,6 +680,9 @@ public final class Workspace {
         }
         snapshotsHeld += 1
         var warnings: [String] = []
+        // A recorded library catalog the library still provides (by name)
+        // needs no file of its own (the project moved to another machine).
+        let libraryNames = Set(await documentEngine.catalogs().filter(\.library).map { $0.name.uppercased() })
         for ref in toLoad {
             var loaded = false
             var lastError: String?
@@ -640,7 +695,9 @@ public final class Workspace {
                     lastError = error.localizedDescription
                 }
             }
-            if !loaded { warnings.append("Glass catalog “\(ref.name)” could not be loaded (\(lastError ?? "file not found")).") }
+            if !loaded, !libraryNames.contains(ref.name.uppercased()) {
+                warnings.append(Self.missingCatalogWarning(ref, error: lastError))
+            }
         }
         catalogWarnings = warnings
         resetGlassNumbers()
@@ -649,6 +706,15 @@ public final class Workspace {
         snapshotsHeld -= 1
         if snapshotsHeld == 0 { retakeSnapshots() }
         return true
+    }
+
+    /// Why a project catalog did not load, and what to do about it.
+    static func missingCatalogWarning(_ ref: CatalogReference, error: String?) -> String {
+        guard let error else {
+            let place = ref.path.map { " at \(($0 as NSString).abbreviatingWithTildeInPath)" } ?? ""
+            return "Glass catalog “\(ref.name)” was not found\(place). Its glasses are unknown until you add the catalog to the library or the design."
+        }
+        return "Glass catalog “\(ref.name)” could not be loaded (\(error))."
     }
 
     /// Takes new snapshots after the session's glass library changed: of

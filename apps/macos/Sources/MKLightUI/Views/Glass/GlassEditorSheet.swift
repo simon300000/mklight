@@ -20,6 +20,11 @@ struct GlassEditorSheet: View {
                         ForEach(editor.library.userCatalogs) { Text($0.name).tag($0.name) }
                     }
                     .disabled(editor.originalName != nil)
+                } footer: {
+                    if editor.renames, let old = editor.originalName {
+                        Label("Designs that use “\(old)” will not find it under the new name.", systemImage: "exclamationmark.triangle")
+                            .font(.caption).foregroundStyle(.orange)
+                    }
                 }
                 Section {
                     Picker("Dispersion", selection: $editor.kind) {
@@ -92,7 +97,8 @@ struct GlassEditorSheet: View {
             Label(p, systemImage: "exclamationmark.triangle.fill")
                 .foregroundStyle(.orange)
                 .font(.callout)
-                .lineLimit(2)
+                .lineLimit(3)
+                .help(p)
         } else if let n = editor.previewNumbers {
             Text(n.nd > 0 ? String(format: "nd %.5f   Vd %.2f", n.nd, n.vd) : "No nd, Vd (the d line is outside the range)")
                 .font(.callout)
