@@ -66,7 +66,8 @@ public sealed partial class LayoutPanel : UserControl
             if (!_camera.IsFitted || e.PreviousSize.Width == 0) Fit(initial: !_camera.IsFitted);
             else Redraw();
         };
-        Unloaded += (_, _) => { Canvas.RemoveFromVisualTree(); _footprintJob?.Cancel(); };
+        // Panels move between places and windows (Unloaded, then Loaded again): the canvas must survive.
+        Unloaded += (_, _) => _footprintJob?.Cancel();
         View3D.ErrorChanged += () => Message.Text = View3D.Error ?? (_scene is null ? Message.Text : "");
         StaleCard.Tapped += (_, _) => _session?.Workspace.Layout.Rerun();
         BuildModeSegments();

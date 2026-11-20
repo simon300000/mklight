@@ -212,6 +212,7 @@ public sealed partial class AnalysisPaneView : UserControl
     void OnAutoUpdate(object sender, RoutedEventArgs e)
     {
         _pane.AutoUpdate = AutoButton.IsChecked == true;
+        _pane.RaiseChanged();
         if (_pane.AutoUpdate && _pane.IsStale) _pane.Rerun();
         Update();
     }
@@ -219,6 +220,7 @@ public sealed partial class AnalysisPaneView : UserControl
     void OnSettingsToggle(object sender, RoutedEventArgs e)
     {
         _pane.ShowsSettings = SettingsButton.IsChecked == true;
+        _pane.RaiseChanged();
         if (!_pane.ShowsSettings) SettingsContent.Content = null;
         Update();
     }
@@ -226,6 +228,7 @@ public sealed partial class AnalysisPaneView : UserControl
     void OnSettingsDone(object sender, RoutedEventArgs e)
     {
         _pane.ShowsSettings = false;
+        _pane.RaiseChanged();
         SettingsContent.Content = null;
         Update();
     }

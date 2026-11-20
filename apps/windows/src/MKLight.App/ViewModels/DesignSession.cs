@@ -48,6 +48,8 @@ public sealed class DesignSession : ILensDataHost, IDisposable
         await Workspace.LoadProjectCatalogsAsync(Document.Project.Catalogs, ProjectDirectory);
         Workspace.Update(Document.System, immediately: true);
         await Workspace.LoadEngineMetadataAsync();
+        // A project's saved panes and panel arrangement (views); the defaults otherwise.
+        if (analyses is null && Views.Panels.PanelPersistence.RestorePanes(this)) return;
         foreach (var a in analyses ?? DefaultPanes)
         {
             var settings = Workspace.StartingSettings(a);
