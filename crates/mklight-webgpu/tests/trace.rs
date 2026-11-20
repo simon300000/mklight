@@ -26,9 +26,35 @@ use mklight_gpu::{
 use mklight_trace::{PupilSampling, Ray, SequentialTracer};
 use mklight_webgpu::ops::trace::set_chunk_rays;
 use rayon::prelude::*;
+use std::sync::Mutex;
 
 #[path = "../../mklight-gpu/tests/p1_support.rs"]
 pub(crate) mod p1_support;
+
+/// Serialises the tests that set the process-global launch chunk size and
+/// restores the previous size on drop, even when the test panics.
+static CHUNK_LOCK: Mutex<()> = Mutex::new(());
+
+struct ChunkGuard {
+    previous: usize,
+    _lock: std::sync::MutexGuard<'static, ()>,
+}
+
+impl ChunkGuard {
+    fn set(n: usize) -> Self {
+        let lock = CHUNK_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        Self {
+            previous: set_chunk_rays(n),
+            _lock: lock,
+        }
+    }
+}
+
+impl Drop for ChunkGuard {
+    fn drop(&mut self) {
+        set_chunk_rays(self.previous);
+    }
+}
 
 fn trace(b: &dyn QualificationBackend, req: TraceRequest) -> TraceResult {
     match b
@@ -542,9 +568,9 @@ fn trace_chunks_progress_and_cancellation() {
     req.record = RecordMode::AllSurfaces;
     let whole = trace(g, req.clone());
     let ctx = JobContext::new();
-    let previous = set_chunk_rays(997);
+    let guard = ChunkGuard::set(997);
     let r = g.run(Job::Trace(Box::new(req.clone())), &ctx);
-    set_chunk_rays(previous);
+    drop(guard);
     let r = r.unwrap();
     assert!(r.stats.command_buffers > 3);
     assert!(r.stats.device_seconds > 0.0);
@@ -609,10 +635,10 @@ fn resident_trace_upload() {
             };
             let sum = p.sum(input, ReduceMode::DoubleFloat);
             p.outputs = vec![sum, o.floats, o.indices, o.records, o.record_status];
-            let previous = set_chunk_rays(chunk);
+            let guard = ChunkGuard::set(chunk);
             let ctx = JobContext::new();
             let out = g.submit_plan(p, &ctx).unwrap().wait();
-            set_chunk_rays(previous);
+            drop(guard);
             let out = out.unwrap();
             assert_eq!(ctx.progress.fraction(), 1.);
             assert!(out.stats.stages.iter().any(|s| s.name == "webgpu:trace"));
