@@ -159,7 +159,7 @@ fn request_options_replace_the_engines_and_reach_the_solvers() {
     };
     assert_eq!(
         aiming(&spot(RouteOptions::default())),
-        (json!("host-table"), json!(0.35))
+        (json!("host-table"), json!(1.0))
     );
     assert_eq!(
         aiming(&spot(RouteOptions {

@@ -304,7 +304,10 @@ fn split_designs(b: &dyn ComputeBackend) {
         }
         let (plans, rays) = device_rays(&runs[0].0);
         assert!(plans > 1 && rays > 0, "{name}: {plans} device plans");
-        assert!(device_rays(&runs[2].0).1 > rays, "{name}: share 0.75");
+        assert!(
+            device_rays(&runs[2].0).1 < rays,
+            "{name}: share 0.75 below the default"
+        );
         assert_eq!(device_rays(&runs[3].0), (0, 0), "{name}: share 0");
         assert_eq!(
             [&runs[0], &runs[2], &runs[3]].map(|r| share(&r.0)),
