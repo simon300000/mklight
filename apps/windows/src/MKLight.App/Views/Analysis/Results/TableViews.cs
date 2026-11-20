@@ -24,8 +24,8 @@ public sealed partial class FirstOrderView : UserControl
         if (d.IsAnamorphic && d.Primary is { } p) stack.Children.Add(Card("Anamorphic", Anamorphic(d, p)));
         else if (d.Primary is { Doe.Count: > 0 } q) stack.Children.Add(Card("Diffractive", Doe(q)));
 
-        // Labels take the room left (trimmed in narrow panes); values and units keep theirs.
-        var g = new Grid { ColumnSpacing = 6, RowSpacing = 5, HorizontalAlignment = HorizontalAlignment.Left, MaxWidth = 480 };
+        // Labels take the room left and wrap in narrow panes (never trimmed); values and units keep theirs.
+        var g = new Grid { ColumnSpacing = 6, RowSpacing = 5, HorizontalAlignment = HorizontalAlignment.Left, MaxWidth = 520 };
         g.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         g.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         g.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto, MinWidth = 22 });
@@ -35,7 +35,9 @@ public sealed partial class FirstOrderView : UserControl
             g.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
             var label = Kit.Text(e.Label, "SecondaryText", 12.5);
             label.Margin = new Thickness(0, 0, 14, 0);
-            ToolTipService.SetToolTip(label, e.Label);
+            label.TextWrapping = TextWrapping.WrapWholeWords;
+            label.TextTrimming = TextTrimming.None;
+            ToolTipService.SetToolTip(label, FirstOrderHelp.Tooltip(e.Key, e.Label, e.Unit));
             var value = Kit.Text(Fmt.Short(e.Value), "NumberText", 12.5);
             value.HorizontalAlignment = HorizontalAlignment.Right;
             value.IsTextSelectionEnabled = true;
@@ -44,6 +46,8 @@ public sealed partial class FirstOrderView : UserControl
             Grid.SetColumn(value, 1); Grid.SetColumn(unit, 2);
             g.Children.Add(label); g.Children.Add(value); g.Children.Add(unit);
             AutomationProperties.SetName(value, $"{e.Label}: {e.Formatted}");
+            if (FirstOrderHelp.Description(e.Key) is { } help) AutomationProperties.SetHelpText(value, help);
+            value.VerticalAlignment = unit.VerticalAlignment = VerticalAlignment.Top;
         }
         stack.Children.Add(g);
         if (double.IsFinite(d.WavelengthUm)) stack.Children.Add(Kit.Caption("At λ = " + Fmt.Wavelength(d.WavelengthUm)));

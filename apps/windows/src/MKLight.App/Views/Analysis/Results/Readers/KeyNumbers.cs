@@ -133,4 +133,20 @@ public static class KeyNumbers
 
     /// <summary>The footer line: "Max RMS 25.92 µm · Airy 2.87 µm".</summary>
     public static string Text(ResultData d) => string.Join("  ·  ", Of(d).Select(k => k.Label + " " + k.Value));
+
+    /// <summary>
+    /// The footer line while a candidate is previewed: each number of the candidate with the
+    /// design's beside it where it differs ("Max RMS 18.4 µm (design 25.92 µm)  ·  Airy 2.87 µm");
+    /// <see cref="Text"/> without a baseline.
+    /// </summary>
+    public static string Compared(ResultData d)
+    {
+        if (d.Baseline is not { } design) return Text(d);
+        var before = Of(design);
+        return string.Join("  ·  ", Of(d).Select(k =>
+        {
+            var was = before.FirstOrDefault(b => b.Label == k.Label).Value;
+            return k.Label + " " + k.Value + (was is null || was == k.Value ? "" : $" (design {was})");
+        }));
+    }
 }

@@ -17,6 +17,8 @@ namespace MKLight.App.Views.Analysis.Settings;
 /// <item><c>--do settings-scroll=end</c>: scrolls every open settings form to its end (the spectrum).</item>
 /// <item><c>--do run-details[=&lt;analysis&gt;]</c>: opens the run details of the first pane (of that analysis).</item>
 /// <item><c>--do popup=&lt;setting&gt;</c>: opens the popup table of that setting (sensor limit, row tables).</item>
+/// <item><c>--do settings-open-multiselect=&lt;setting&gt;[:1,3]</c>: opens the check-mark menu of a field,
+/// wavelength or surface selection and toggles those options (numbered from 1).</item>
 /// </list>
 /// </summary>
 static class SettingsLaunchActions
@@ -62,6 +64,28 @@ static class SettingsLaunchActions
                 .SelectMany(p => p.Child is { } c ? Descendants<Button>(c) : [])
                 .FirstOrDefault(b => b.Content is string s && (s.StartsWith("Sample the Pupil", StringComparison.Ordinal) || s.StartsWith("Size the", StringComparison.Ordinal)));
             if (button is not null) new Microsoft.UI.Xaml.Automation.Peers.ButtonAutomationPeer(button).Invoke();
+            await Task.Delay(500);
+        };
+        // settings-open-multiselect=fields[:1,3]: opens the menu of that selection, then toggles
+        // those options (numbered from 1) through their automation peers, as clicks do.
+        AppHooks.LaunchActions["settings-open-multiselect"] = async (w, arg) =>
+        {
+            var parts = (arg ?? "fields").Split(':', 2);
+            await Task.Delay(300);
+            foreach (var form in Descendants<SettingsForm>(w.RootElement))
+                if (form.MultiSelectFor(parts[0]) is { Flyout: MenuFlyout menu } button)
+                {
+                    menu.ShowAt(button);
+                    await Task.Delay(300);
+                    var options = menu.Items.OfType<ToggleMenuFlyoutItem>().Where(i => i.Text is not ("All" or "Primary")).ToList();
+                    foreach (var n in parts.Length > 1 ? parts[1].Split(',', StringSplitOptions.RemoveEmptyEntries) : [])
+                        if (int.TryParse(n, System.Globalization.CultureInfo.InvariantCulture, out var k) && k >= 1 && k <= options.Count)
+                        {
+                            new Microsoft.UI.Xaml.Automation.Peers.ToggleMenuFlyoutItemAutomationPeer(options[k - 1]).Toggle();
+                            await Task.Delay(150);
+                        }
+                    break;
+                }
             await Task.Delay(500);
         };
         AppHooks.LaunchActions["popup"] = async (w, arg) =>

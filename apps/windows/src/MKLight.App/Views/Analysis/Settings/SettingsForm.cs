@@ -108,6 +108,7 @@ public sealed partial class SettingsForm : UserControl
     {
         _root.Children.Clear();
         _popups.Clear();
+        _multiSelects.Clear();
         var pattern = _fields.Any(f => f.Name == "pattern") ? Json.Str(_settings["pattern"] ?? _fields.First(f => f.Name == "pattern").Default) : null;
         var rows = _fields.Select(f => (Field: f, Control: SettingControls.For(f, _analysis, _ctx.HasConfigurations, pattern)))
             .Where(r => r.Control.Kind != ControlKind.Hidden).ToList();
@@ -172,12 +173,12 @@ public sealed partial class SettingsForm : UserControl
         ControlKind.Number => Number(slot),
         ControlKind.Text => TextField(slot),
         ControlKind.Picker => Picker(slot),
-        ControlKind.FieldSelection => SelectionMenu(slot, _ctx.FieldOptions, allowsPrimary: false),
-        ControlKind.WavelengthSelection => SelectionMenu(slot, _ctx.WavelengthOptions, allowsPrimary: true),
+        ControlKind.FieldSelection => MultiSelect(slot, IndexDomain.Fields, SelectionEncoding.Tagged, allowsPrimary: false),
+        ControlKind.WavelengthSelection => MultiSelect(slot, IndexDomain.Wavelengths, SelectionEncoding.Tagged, allowsPrimary: true),
         ControlKind.FieldIndex => IndexMenu(slot, _ctx.FieldOptions, slot.Field.Nullable ? "Auto" : null),
         ControlKind.WavelengthIndex => IndexMenu(slot, _ctx.WavelengthOptions, slot.Field.Name == "wavelength" ? "Primary" : "Auto"),
         ControlKind.SurfaceIndex => IndexMenu(slot, _ctx.SurfaceOptions, slot.Field.Nullable ? "Auto" : null),
-        ControlKind.IndexList => IndexListMenu(slot, _ctx.Options(c.Domain)),
+        ControlKind.IndexList => MultiSelect(slot, c.Domain, SelectionEncoding.List, allowsPrimary: false),
         ControlKind.NumberList => NumberList(slot, c.Integer),
         ControlKind.Pair => Pair(slot, c.Integer, c.Nullable),
         ControlKind.Group => Group(slot, c.Nullable),
@@ -250,37 +251,12 @@ public sealed partial class SettingsForm : UserControl
 
     // MARK: Menus of the system's fields, wavelengths and surfaces
 
-    UIElement SelectionMenu(Slot slot, IReadOnlyList<(int Index, string Title)> options, bool allowsPrimary)
-    {
-        var menu = new MenuFlyout();
-        menu.Items.Add(Item("All", () => slot.Write(new Edit(SettingEntry.Selection("all")), true)));
-        if (allowsPrimary) menu.Items.Add(Item("Primary", () => slot.Write(new Edit(SettingEntry.Selection("primary")), true)));
-        if (options.Count > 0) menu.Items.Add(new MenuFlyoutSeparator());
-        foreach (var (k, title) in options) menu.Items.Add(Item(title, () => slot.Write(new Edit(SettingEntry.Selection("index", k)), true)));
-        return Menu(SettingEntry.SelectionTitle(slot.Current, options), menu, Help(slot.Field));
-    }
-
     UIElement IndexMenu(Slot slot, IReadOnlyList<(int Index, string Title)> options, string? nullTitle)
     {
         var menu = new MenuFlyout();
         if (nullTitle is not null) menu.Items.Add(Item(nullTitle, () => slot.Write(new Edit(null), true)));
         foreach (var (k, title) in options) menu.Items.Add(Item(title, () => slot.Write(new Edit(k), true)));
         return Menu(SettingEntry.IndexTitle(slot.Current, options, nullTitle), menu, Help(slot.Field));
-    }
-
-    UIElement IndexListMenu(Slot slot, IReadOnlyList<(int Index, string Title)> options)
-    {
-        var menu = new MenuFlyout();
-        menu.Items.Add(Item("All", () => slot.Write(new Edit(new JsonArray()), true)));
-        if (options.Count > 0) menu.Items.Add(new MenuFlyoutSeparator());
-        var selected = (Json.Arr(slot.Current) ?? []).Select(Json.Int).OfType<int>().ToHashSet();
-        foreach (var (k, title) in options)
-        {
-            var item = new ToggleMenuFlyoutItem { Text = title, IsChecked = selected.Contains(k) };
-            item.Click += (_, _) => slot.Write(new Edit(SettingEntry.Toggle(slot.Current, k, item.IsChecked)), true);
-            menu.Items.Add(item);
-        }
-        return Menu(SettingEntry.IndexListTitle(slot.Current, options), menu, Help(slot.Field) + "\nNone checked: all.");
     }
 
     // MARK: Lists and pairs

@@ -16,7 +16,7 @@ public static class ResultViews
     [
         "spot_diagram", "first_order", "seidel", "psf", "wavefront_map", "pupil_aberration", "relative_illumination_map", "chief_ray_angle",
         "glass_map", "glass_info", "image_simulation", "grid_distortion", "footprint", "ghost_paths", "ghost_irradiance", "stray_light",
-        "polarization_pupil_map", "system_transmission",
+        "polarization_pupil_map", "system_transmission", "validate",
     ];
 
     /// <summary>The analyses with a dedicated view.</summary>
@@ -30,7 +30,7 @@ public static class ResultViews
     public static (UIElement View, ResultSummary Summary) Create(ResultData data, ElementTheme theme, SpotScale spotScale = SpotScale.Grid)
     {
         string keys;
-        try { keys = KeyNumbers.Text(data); }
+        try { keys = KeyNumbers.Compared(data); }
         catch (Exception) { keys = ""; }
         UIElement? view = null;
         try
@@ -47,7 +47,7 @@ public static class ResultViews
 
     static UIElement? Dedicated_(ResultData d, SpotScale spotScale) => d.Analysis switch
     {
-        "spot_diagram" => SpotGridData.Read(d) is { } grid ? new SpotDiagramView(grid, spotScale) : null,
+        "spot_diagram" => SpotGridData.Read(d) is { } grid ? new SpotDiagramView(grid, spotScale, Baseline(d, SpotGridData.Read)) : null,
         "first_order" => FirstOrderData.Read(d.Json) is { } fo ? new FirstOrderView(fo) : null,
         "seidel" => SeidelData.Read(d.Json) is { } s ? new SeidelView(s) : null,
         "psf" => PsfData.Read(d) is { } psf ? new PsfView(psf) : null,
@@ -63,8 +63,17 @@ public static class ResultViews
         "stray_light" => SensorMapsData.StrayLight(d) is { } sl ? new SensorMapView(sl) : null,
         "polarization_pupil_map" => PolarizationData.Read(d) is { } pol ? new PolarizationView(pol) : null,
         "system_transmission" => TransmissionData.Read(d) is { } tr ? new TransmissionView(tr, d.WavelengthsUm) : null,
-        _ => LineReaders.Read(d) is ChartModel model && model.Panels.Any(p => p.Series.Count > 0) ? new LineChartView(model) : null,
+        "validate" => ValidationData.Read(d.Json) is { } v ? new ValidationView(v) : null,
+        _ => LineReaders.Read(d) is ChartModel model && model.Panels.Any(p => p.Series.Count > 0) ? new LineChartView(model, Baseline(d, LineReaders.Read)) : null,
     };
+
+    /// <summary>The design's result read the same way while a candidate is previewed (null otherwise, or when it cannot be read).</summary>
+    static T? Baseline<T>(ResultData d, Func<ResultData, T?> read) where T : class
+    {
+        if (d.Baseline is not { } b) return null;
+        try { return read(b); }
+        catch (Exception) { return null; }
+    }
 
     /// <summary>
     /// The settings the result was run with, from the pane that shows <paramref name="view"/>

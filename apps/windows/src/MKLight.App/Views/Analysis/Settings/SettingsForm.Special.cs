@@ -215,7 +215,7 @@ public sealed partial class SettingsForm
         var v = slot.Current;
         var title = Json.Str(Json.At(v, "kind")) switch
         {
-            "buffer" => "Image buffer",
+            "buffer" => Results.ImageSourceImport.FileName(_settings) ?? "Image buffer",
             "path" => Path.GetFileName(Json.Str(Json.At(v, "path")) ?? ""),
             _ => ImageSourcePatterns.Title(Json.Str(Json.At(v, "pattern")) ?? "grid"),
         };
@@ -223,10 +223,54 @@ public sealed partial class SettingsForm
         foreach (var (id, t) in ImageSourcePatterns.All)
         {
             var item = new ToggleMenuFlyoutItem { Text = t, IsChecked = Json.Str(Json.At(v, "kind")) is null or "pattern" && (Json.Str(Json.At(v, "pattern")) ?? "grid") == id };
-            item.Click += (_, _) => slot.Write(new Edit(ImageSourcePatterns.Source(id)), true);
+            // A pattern forgets an imported file (its path and field aspect go with the samples).
+            item.Click += (_, _) => Replace(Results.ImageSourceImport.WithPattern(_settings, id));
             menu.Items.Add(item);
         }
-        return Menu(title, menu, Help(slot.Field));
+        menu.Items.Add(new MenuFlyoutSeparator());
+        var choose = new MenuFlyoutItem { Text = "Choose Image…" };
+        choose.Click += async (_, _) =>
+        {
+            if (PaneOf(this) is not { } pane || await Results.ImageSimulationFiles.PickAsync(this) is not { } path) return;
+            if (await Results.ImageSimulationFiles.UseAsync(pane, path))
+            {
+                _settings = (JsonObject)pane.Settings.DeepClone();
+                QueueRebuild();
+            }
+        };
+        menu.Items.Add(choose);
+        var control = Menu(title, menu, Help(slot.Field));
+        // An imported file's samples are derived again when the pane needs them (after a project opened).
+        if (control is FrameworkElement fe)
+            fe.Loaded += async (_, _) =>
+            {
+                if (PaneOf(fe) is { } pane && Results.ImageSourceImport.NeedsRefresh(pane.Settings, Results.ImageSourceImport.FieldAspect(pane.Output?.Json)))
+                {
+                    await Results.ImageSimulationFiles.RefreshAsync(pane);
+                    _settings = (JsonObject)pane.Settings.DeepClone();
+                    QueueRebuild();
+                }
+            };
+        return control;
+    }
+
+    /// <summary>Replaces the whole settings (a change that touches more than one key) and rebuilds the form.</summary>
+    void Replace(JsonObject settings)
+    {
+        _settings = (JsonObject)settings.DeepClone();
+        _onChange(Settings);
+        QueueRebuild();
+    }
+
+    /// <summary>The pane whose settings the form edits, found through the visual tree (null before it is shown).</summary>
+    static ViewModels.AnalysisPaneModel? PaneOf(DependencyObject? e)
+    {
+        while (e is not null)
+        {
+            if (e is AnalysisPaneView pane) return pane.Pane;
+            e = Microsoft.UI.Xaml.Media.VisualTreeHelper.GetParent(e);
+        }
+        return null;
     }
 
     static SettingsField Synthetic(string name, string type, JsonNode? defaultValue, string help, string unit = "")
