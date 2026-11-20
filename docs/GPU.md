@@ -2444,6 +2444,42 @@ Metal's results (worst gate fraction 2.9e-4, PSF image L1). In the browser,
 `MKLIGHT_WEBGPU_TRACE_PLANS=1` prints every plan's operations with their
 placement (`[device]`/`[spec]`) and wall time.
 
+**Segmented reductions** (`kernels/collectives.wgsl`, CUDA twin
+`mklight-cuda/kernels/collectives.cu`, host `src/ops/collectives.rs`). A
+segment of length `L` reduces each term by the fixed tree of
+`reduce::tree_in`: `G = clamp(⌈L / (T·16)⌉, 1, 256)` pass-1 groups of
+`T = 256` threads, thread `t` of group `g` folding records
+`g·T + t, g·T + t + G·T, …` from the term's identity, the group's binary
+tree (strides `T/2 … 1`) giving its partial, then pass 2 folding partial
+`t` into the identity and running the same tree. A partial depends only on
+(segment, term, `g`), so the groups run as separate workgroups. Per phase
+(moments: phase 0 the four sums, phase 1 the six centred terms) the host
+dispatches:
+
+* `mkl_segment_pass1`, grid `[Gmax, terms(phase), segments]`
+  (`Gmax = reduce::num_groups(max_segment_len)`): a workgroup whose `g ≥ G`
+  of its segment, or whose segment's offsets are invalid, returns; the
+  others fold and tree exactly as above and thread 0 stores the partial at
+  `partials[(segment·terms(phase) + term)·Gmax + g]` (double-float pairs,
+  `segment` relative to the tile's first). Phase 1 reads the means from
+  output slots `z·10 + 2, 3`, where phase 0's pass 2 left them.
+* `mkl_segment_pass2`, grid `[segments, 1, 1]`: writes the status (and NaN
+  outputs for invalid offsets), then per term of the phase thread `t < G`
+  folds partial `t` into the identity, the tree runs and thread 0 writes the
+  output slot; afterwards thread 0 replaces the moments' weighted sums by
+  the means (phase 0) or writes the source products.
+
+Every fold, tree, identity, NaN/extremum rule, mask, weight and reference
+is the single-kernel form's, in the same order, so the outputs are bitwise
+the CPU-f32 specification's. Both entries share one binding set (env,
+parameters, values, offsets, mask, weights, reference, output, status,
+partials: 8 storage buffers); segments are tiled so that a tile's partials
+(`2·tile·max_terms·Gmax` words) fit one storage binding and 16 MiB, and a
+tile is at most `maxComputeWorkgroupsPerDimension` segments. A spot diagram has a few
+long segments (fields × wavelengths): at 250 rings on an RTX 4090 (CUDA)
+the segment kernels take 0.5–1 ms per run instead of 60 ms, the geometric
+MTF's about 10 ms instead of 121 ms.
+
 ### 11.6 Benchmark and routing
 
 Apple M2 Pro (12 CPU threads), release builds, median of fresh runs after

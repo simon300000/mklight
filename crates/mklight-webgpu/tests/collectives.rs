@@ -117,12 +117,15 @@ fn segment_reduce_matches_cpu_bitwise() {
 }
 
 /// A few long segments (a spot diagram's fields × wavelengths): one beyond
-/// the 256-group cap, one of a few groups, one record, one empty.
+/// the 256-group cap, one of a few groups, one record, one empty. Then 2000
+/// short segments under the same cap, so the partials take several tiles.
 #[test]
 fn segment_reduce_long_segments_bitwise() {
     let g = crate::gpu_or_skip!();
     let c = CpuF32Backend::matching(&g.precision().probe);
-    let offsets = [0, 1_300_000, 1_310_001, 1_310_002, 1_310_002];
+    let n = 1_310_002;
+    let long = [0, 1_300_000, 1_310_001, 1_310_002, 1_310_002];
+    let tiled: Vec<u32> = (0..=2000).map(|i| i * 600).chain([n as u32]).collect();
     for (kind, mode, channels) in [
         (SegmentKind::Sum, ReduceMode::Plain, 2),
         (SegmentKind::Summary, ReduceMode::Kahan, 2),
@@ -131,9 +134,10 @@ fn segment_reduce_long_segments_bitwise() {
     ] {
         eprintln!("{kind:?} {mode:?}");
         same(g, &c, &|b| {
-            random_case(
-                b, kind, mode, true, channels, &offsets, 1_310_002, 1_300_000,
-            )
+            random_case(b, kind, mode, true, channels, &long, n, 1_300_000)
+        });
+        same(g, &c, &|b| {
+            random_case(b, kind, mode, false, channels, &tiled, n, n)
         });
     }
 }

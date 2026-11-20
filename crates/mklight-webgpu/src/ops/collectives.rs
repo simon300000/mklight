@@ -24,6 +24,8 @@ use crate::device::*;
 
 const PASS1: Kernel = Kernel::new("collectives", "mkl_segment_pass1");
 const PASS2: Kernel = Kernel::new("collectives", "mkl_segment_pass2");
+/// Cap of the pass-1 partials scratch (words).
+const PARTIAL_WORDS: usize = 4 << 20;
 
 fn shape() -> PassShape {
     use Access::*;
@@ -104,9 +106,12 @@ fn segments(
     let max_terms = (0..phases).map(terms).max().unwrap_or(1);
     let maxg = reduce::num_groups(r.max_segment_len);
     let max_dim = gpu.summary().max_compute_workgroups_per_dimension as usize;
-    // Segments per tile: one grid dimension, partials within one binding.
+    // Segments per tile: one grid dimension, partials within one binding
+    // and at most 16 MiB.
     let binding_words = (gpu.summary().max_storage_buffer_binding_size / 4) as usize;
-    let tile = max_dim.min(binding_words / (2 * max_terms * maxg)).max(1);
+    let tile = max_dim
+        .min(binding_words.min(PARTIAL_WORDS) / (2 * max_terms * maxg))
+        .max(1);
     if max_terms > max_dim || !fits(&*gpu, 2 * max_terms * maxg) {
         return Ok(None);
     }
