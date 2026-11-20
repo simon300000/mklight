@@ -995,6 +995,7 @@ mod tests {
             "gpu:cpu_f32",
             Arc::new(mklight_gpu::CpuF32Backend::new()),
         ))];
+        #[cfg(target_os = "macos")]
         if let Some(metal) = mklight_metal::MetalBackend::new().unwrap() {
             devices.push(Arc::new(GpuDevice::new("gpu:metal", Arc::new(metal))));
         } else {

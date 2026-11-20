@@ -51,9 +51,11 @@ started=$SECONDS
 
 # 1. Build. The second call is up to date and only lists the programs: one
 #    JSON line per artifact, with its package manifest and executable.
+#    Windows paths (escaped backslashes in the JSON) become forward slashes.
 cargo test "${select[@]}" --no-run
 cargo test "${select[@]}" --no-run --message-format=json 2>/dev/null \
     | grep '"reason":"compiler-artifact"' \
+    | sed 's#\\\\#/#g' \
     | grep -E '"profile":\{[^}]*"test":true' \
     | sed -n 's/.*"manifest_path":"\([^"]*\)\/Cargo\.toml".*"executable":"\([^"]*\)".*/\1	\2/p' \
     > "$LOGS/programs"

@@ -3055,6 +3055,7 @@ mod tests {
                 Arc::new(CpuF32Backend::new()),
             )),
         )];
+        #[cfg(target_os = "macos")]
         if let Some(metal) = mklight_metal::MetalBackend::new().unwrap() {
             backends.push((
                 "gpu",
@@ -3371,10 +3372,13 @@ mod tests {
             Arc::new(GpuDevice::new(id, b))
         };
         let emulation = handle(Arc::new(CpuF32Backend::new()));
+        #[cfg(target_os = "macos")]
         let metal = mklight_metal::MetalBackend::new()
             .ok()
             .flatten()
             .map(|m| handle(Arc::new(m)));
+        #[cfg(not(target_os = "macos"))]
+        let metal: Option<DeviceHandle> = None;
         if metal.is_none() {
             eprintln!("SKIP (Metal part): no GPU device");
         }
