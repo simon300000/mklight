@@ -113,4 +113,28 @@ public class ResultViewLogicTests
         Assert.Equal(["SCHOTT"], d.Catalogs);
         Assert.Equal([("Glasses", "1"), ("In design", "2"), ("Not on map", "2")], KeyNumbers.Of(r));
     }
+
+    [Fact]
+    public void RayGridBinsEachFieldsHitsAboutItsCentroid()
+    {
+        // 2 fields × 1 wavelength × 3 pupil rays; field 1's third ray did not arrive.
+        double nan = double.NaN;
+        var d = TestData.Result("ray_grid", """
+            { "fields": [0, 1], "field_values": [[0, 0], [0, 10]], "wavelengths": [1], "wavelengths_um": [0.5876],
+              "pupil_count": 3, "arrived": 5, "launched": 6 }
+            """, new FakeArray("points", [2, 1, 3, 2], [1, 1, 3, 1, 2, 1, 0, 5, 0, 7, nan, nan]));
+        var g = RayGridData.Read(d)!;
+        Assert.Equal(2, g.Fields.Count);
+        Assert.Equal((5, 6), (g.Arrived, g.Launched));
+        // Field 0 about its centroid (2, 1): x −1, +1, 0.
+        Assert.Equal([-1.0, 0, 1, 0, 0, 0], g.Fields[0].Xy[0]);
+        Assert.Equal(1.0, g.Fields[0].HalfWidth);
+        Assert.Equal(2, g.Fields[1].Arrived);
+        Assert.False(g.Micrometres);
+        var bins = RayGridData.Bin(g.Fields[0], 4);
+        Assert.Equal(3, bins[0].Sum());
+        // +y is up: field 1's upper hit lands in the top half.
+        var b1 = RayGridData.Bin(g.Fields[1], 4);
+        Assert.Equal(1, b1[0][..8].Sum());
+    }
 }

@@ -91,6 +91,22 @@ public class SpotGridTests
     }
 
     [Fact]
+    public void ANarrowPaneFoldsToTheBasePlane()
+    {
+        var g = SpotGridData.Read(Data())!;
+        var b = g.BaseOnly();
+        Assert.Same(b, g.BaseOnly());
+        Assert.Equal([0.0], b.Planes);
+        Assert.Equal(0, b.BaseColumn);
+        Assert.All(b.Rows, r => Assert.Equal(0, Assert.Single(r.Cells).Column));
+        Assert.Equal(0.01, b.Rows[0].Cells[0].Rms);
+        // Three planes fold below about 260 px; one plane never does.
+        Assert.True(SpotGridLayout.Folds(3, 250));
+        Assert.False(SpotGridLayout.Folds(3, 300));
+        Assert.False(SpotGridLayout.Folds(1, 100));
+    }
+
+    [Fact]
     public void WithoutSlopesShowsTheBasePlaneOnly()
     {
         var g = SpotGridData.Read(Data(slopes: false))!;

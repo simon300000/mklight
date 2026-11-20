@@ -346,7 +346,18 @@ so none edits `App.xaml.cs`, `LaunchOptions.cs` or `DesignWindow` to be added:
   kernels ship inside the DLL, so preparation finishes before the first pane is
   drawn and "Preparing GPU n %" does not appear on this machine, even with an
   empty cache (`--do simulate-gpu-preparation` still shows it).
-* Spot diagram captions use one unit per grid (µm unless a radius reaches 1 mm).
+* Spot diagram captions use one unit per grid (µm unless a radius reaches 1 mm). In a
+  pane too narrow for every focus plane at a legible cell (58 px) the grid folds to
+  its base plane and its note says so; below 420 px the Common | Per field toggle
+  goes under the legend, so the wavelength legend keeps its width.
+* Ray Grid (`ray_grid`, raw rays the Mac app leaves out of its analysis list and the
+  sidebar here too, reachable with `--analysis ray_grid`) has its own view
+  (`RayGridView`): one density image per field instead of overplotted points, each
+  bin's colour mixing the wavelengths by count and its opacity following the log of
+  the count, centred on the field's centroid, with "arrived / launched".
+* An invalid `--settings` (not a JSON object, e.g. quotes a shell stripped) is a
+  parse error: the app logs it and exits with code 2. A failure while a design
+  window starts is logged, and a scripted run exits with code 3 instead of waiting.
 
 ## `FFIEngine`
 

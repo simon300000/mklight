@@ -104,11 +104,22 @@ public partial class App : Application
         // A launch script runs in the first design window only (not in one a script opens).
         var script = !_scriptClaimed;
         _scriptClaimed = true;
-        _ = StartAsync(window, session, script);
+        _ = StartGuardedAsync(window, session, script);
         return window;
     }
 
     static bool _scriptClaimed;
+
+    /// <summary>A failure while starting is logged; a scripted run then exits with code 3 instead of waiting forever.</summary>
+    static async Task StartGuardedAsync(DesignWindow window, DesignSession session, bool script)
+    {
+        try { await StartAsync(window, session, script); }
+        catch (Exception e)
+        {
+            Log($"start failed: {e}");
+            if (Options.IsScripted) Environment.Exit(3);
+        }
+    }
 
     static async Task StartAsync(DesignWindow window, DesignSession session, bool script)
     {

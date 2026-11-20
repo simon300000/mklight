@@ -30,7 +30,11 @@ public sealed partial class SpotDiagramView : UserControl, IViewOptions
     readonly SpotGridData _candidate;
     /// <summary>While a candidate is previewed: the design's grid (the switch shows either, on shared boxes); else null.</summary>
     readonly SpotGridData? _design;
+    /// <summary>The grid chosen (design or candidate), as read.</summary>
+    SpotGridData _chosen;
+    /// <summary>What is drawn: <see cref="_chosen"/>, or its base plane alone in a narrow pane.</summary>
     SpotGridData _grid;
+    bool _folded;
     readonly ScrollViewer _scroll;
     readonly PlotCanvas _canvas;
     readonly TextBlock _note;
@@ -41,7 +45,7 @@ public sealed partial class SpotDiagramView : UserControl, IViewOptions
 
     public SpotDiagramView(SpotGridData grid, SpotScale scale = SpotScale.Grid, SpotGridData? design = null)
     {
-        _grid = _candidate = grid;
+        _grid = _chosen = _candidate = grid;
         _design = design;
         _scale = scale;
         IsTabStop = false;
@@ -78,12 +82,23 @@ public sealed partial class SpotDiagramView : UserControl, IViewOptions
         ActualThemeChanged += (_, _) => UpdateScale();
         var toggle = _toggle;
 
-        var header = new Grid { ColumnSpacing = 8 };
+        // The legend beside the scale toggle; in a narrow pane the toggle goes under it, so the legend keeps its width.
+        var header = new Grid { ColumnSpacing = 8, RowSpacing = 4 };
         header.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        header.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        header.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         header.Children.Add(new Legend(legendEntries) { VerticalAlignment = VerticalAlignment.Center });
-        Grid.SetColumn(toggle, 1);
         header.Children.Add(toggle);
+        void PlaceToggle(double width)
+        {
+            var stacked = width < NarrowHeader;
+            Grid.SetRow(toggle, stacked ? 1 : 0);
+            Grid.SetColumn(toggle, stacked ? 0 : 1);
+            toggle.HorizontalAlignment = stacked ? HorizontalAlignment.Left : HorizontalAlignment.Stretch;
+        }
+        PlaceToggle(double.PositiveInfinity);
+        header.SizeChanged += (_, e) => PlaceToggle(e.NewSize.Width);
 
         _note = new TextBlock
         {
@@ -104,7 +119,7 @@ public sealed partial class SpotDiagramView : UserControl, IViewOptions
             var compare = _compare = new CompareSwitch { VerticalAlignment = VerticalAlignment.Bottom };
             compare.Changed += candidate =>
             {
-                _grid = candidate ? _candidate : design;
+                _chosen = candidate ? _candidate : design;
                 Fit(new Size(_scroll.ActualWidth, _scroll.ActualHeight));
                 UpdateScale();
             };
@@ -125,12 +140,17 @@ public sealed partial class SpotDiagramView : UserControl, IViewOptions
         UpdateScale();
     }
 
-    SpotGridData? Other => _design is null ? null : ReferenceEquals(_grid, _design) ? _candidate : _design;
+    /// <summary>Below this header width the scale toggle goes under the legend.</summary>
+    const double NarrowHeader = 420;
+
+    SpotGridData? Other => _design is null ? null : Fold(ReferenceEquals(_chosen, _design) ? _candidate : _design);
+
+    SpotGridData Fold(SpotGridData g) => _folded ? g.BaseOnly() : g;
 
     /// <summary>The canvas's spoken summary: what it shows and each field's RMS radius at the base plane.</summary>
     void Describe()
     {
-        var who = _design is null ? "" : ReferenceEquals(_grid, _design) ? ", the design" : ", the candidate";
+        var who = _design is null ? "" : ReferenceEquals(_chosen, _design) ? ", the design" : ", the candidate";
         Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(_canvas,
             $"Spot diagram{who}, {_grid.Rows.Count} fields by {_grid.Planes.Count} focus planes");
         var rms = _grid.Rows.Select(r => (r.Cells.FirstOrDefault(c => c.Column == _grid.BaseColumn) ?? r.Cells.FirstOrDefault()) is { } c
@@ -179,13 +199,20 @@ public sealed partial class SpotDiagramView : UserControl, IViewOptions
             b.Foreground = new SolidColorBrush(on ? ink : quiet);
             Microsoft.UI.Xaml.Automation.AutomationProperties.SetItemStatus(b, on ? "Selected" : "");
         }
-        _note.Text = _grid.ScaleNote(_scale, Other);
+        _note.Text = _grid.ScaleNote(_scale, Other)
+            + (_folded ? " · widen the pane for every focus plane" : "");
         Describe();
         _canvas.Invalidate();
     }
 
     void Fit(Size viewport)
     {
+        // Too narrow for every focus plane at a legible size: the base plane alone, said so in the note.
+        var folded = _chosen.BaseColumn is not null && SpotGridLayout.Folds(_chosen.Planes.Count, viewport.Width);
+        var shown = folded ? _chosen.BaseOnly() : _chosen;
+        var changed = folded != _folded || !ReferenceEquals(_grid, shown);
+        (_folded, _grid) = (folded, shown);
+        if (changed) UpdateScale();
         _metrics = SpotGridLayout.Compute(_grid.Planes.Count, _grid.Rows.Count, viewport.Width, viewport.Height);
         var m = _metrics;
         var width = m.RowHeader + _grid.Planes.Count * (m.Cell + SpotGridLayout.Spacing);

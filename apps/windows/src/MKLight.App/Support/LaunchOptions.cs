@@ -83,7 +83,7 @@ public sealed class LaunchOptions
                     var eq = d.IndexOf('=');
                     o.Actions.Add(eq < 0 ? (d, null) : (d[..eq], d[(eq + 1)..]));
                     break;
-                case "--settings": o.Settings = Next(); break;
+                case "--settings": o.Settings = JsonObjectText(a, Next()); break;
                 case "--welcome": o.Welcome = true; break;
                 case "--screenshot": o.Screenshot = Path.GetFullPath(Next()); break;
                 case "--delay": o.Delay = double.Parse(Next(), System.Globalization.CultureInfo.InvariantCulture); break;
@@ -108,6 +108,20 @@ public sealed class LaunchOptions
             }
         }
         return o;
+    }
+
+    /// <summary>The value when it is a JSON object, else a parse error naming the option (a shell may strip the quotes).</summary>
+    static string JsonObjectText(string option, string value)
+    {
+        try
+        {
+            if (System.Text.Json.Nodes.JsonNode.Parse(value) is System.Text.Json.Nodes.JsonObject) return value;
+        }
+        catch (System.Text.Json.JsonException e)
+        {
+            throw new ArgumentException($"{option} is not valid JSON ({e.Message}): {value}");
+        }
+        throw new ArgumentException($"{option} takes a JSON object, not {value}");
     }
 
     static string OneOf(string option, string value, params string[] allowed) =>

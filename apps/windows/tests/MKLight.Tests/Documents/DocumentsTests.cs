@@ -133,6 +133,10 @@ public sealed class DocumentsTests : IDisposable
         Assert.True(o.RecoverAutosaves);
         Assert.True(LaunchOptions.Parse(["--sidebar", "shown"]).Sidebar);
         Assert.Null(LaunchOptions.Parse([]).Sidebar);
+        // --settings must be a JSON object: quotes a shell stripped fail at once instead of hanging the run.
+        Assert.Equal("""{"rings":128}""", LaunchOptions.Parse(["--settings", """{"rings":128}"""]).Settings);
+        Assert.Contains("not valid JSON", Assert.Throws<ArgumentException>(() => LaunchOptions.Parse(["--settings", "{rings:128}"])).Message);
+        Assert.Contains("JSON object", Assert.Throws<ArgumentException>(() => LaunchOptions.Parse(["--settings", "[1]"])).Message);
         Assert.Throws<ArgumentException>(() => LaunchOptions.Parse(["--sidebar", "maybe"]));
         Assert.Throws<ArgumentException>(() => LaunchOptions.Parse(["--fit", "everything"]));
         Assert.Throws<ArgumentException>(() => LaunchOptions.Parse(["--curvature-bounds-unit", "mm"]));

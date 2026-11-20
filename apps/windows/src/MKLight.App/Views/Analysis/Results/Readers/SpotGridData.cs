@@ -70,6 +70,20 @@ public sealed class SpotGridData
         Wavelengths = wavelengths; WavelengthsUm = um; Reference = reference;
     }
 
+    /// <summary>
+    /// The base plane's column alone (for a pane too narrow for every focus plane), or this grid when it has
+    /// one column or no base plane.
+    /// </summary>
+    public SpotGridData BaseOnly() => _baseOnly ??= MakeBaseOnly();
+    SpotGridData? _baseOnly;
+
+    SpotGridData MakeBaseOnly()
+    {
+        if (Planes.Count <= 1 || BaseColumn is not int b) return this;
+        var rows = Rows.Select(r => r with { Cells = r.Cells.Where(c => c.Column == b).Select(c => c with { Column = 0 }).ToList() }).ToList();
+        return new SpotGridData([Planes[b]], SampledPlanes, 0, rows, Airy, Wavelengths, WavelengthsUm, Reference);
+    }
+
     /// <summary>Reads a spot diagram result; null when <c>fields</c> is missing or the buffers are malformed.</summary>
     public static SpotGridData? Read(ResultData d)
     {
@@ -262,6 +276,16 @@ public static class SpotGridLayout
     public readonly record struct Metrics(double Cell, double RowHeader, bool ScrollsHorizontally);
 
     public static double RowHeaderWidth(double width) => width < 420 ? 60 : 84;
+
+    /// <summary>
+    /// The narrowest cell whose captions ("42.43 µm") stay legible: below it a grid of several focus planes
+    /// folds to its base plane rather than cut or scroll its columns.
+    /// </summary>
+    public const double FoldCell = 58;
+
+    /// <summary>Whether <paramref name="columns"/> focus planes are too many for <paramref name="width"/>.</summary>
+    public static bool Folds(int columns, double width) =>
+        columns > 1 && (width - RowHeaderWidth(width) - columns * Spacing) / columns < FoldCell;
 
     /// <summary>
     /// The cell side for <paramref name="columns"/> × <paramref name="rows"/> cells: as wide as the
