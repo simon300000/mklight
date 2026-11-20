@@ -119,6 +119,24 @@ public sealed unsafe class ResultBuffer : IDisposable, IEquatable<ResultBuffer>
         }
     }
 
+    /// <summary>Every element converted to double into <paramref name="a"/> (at least <see cref="Count"/> long), in one pass over its typed span.</summary>
+    public void CopyTo(Span<double> a)
+    {
+        var n = Count;
+        switch (DType)
+        {
+            case BufferDType.F64: AsSpan<double>().CopyTo(a); break;
+            case BufferDType.F32: { var s = AsSpan<float>(); for (var k = 0; k < n; k++) a[k] = s[k]; break; }
+            case BufferDType.I32: { var s = AsSpan<int>(); for (var k = 0; k < n; k++) a[k] = s[k]; break; }
+            case BufferDType.U32: { var s = AsSpan<uint>(); for (var k = 0; k < n; k++) a[k] = s[k]; break; }
+            case BufferDType.I64: { var s = AsSpan<long>(); for (var k = 0; k < n; k++) a[k] = s[k]; break; }
+            case BufferDType.U64: { var s = AsSpan<ulong>(); for (var k = 0; k < n; k++) a[k] = s[k]; break; }
+            case BufferDType.U8: { var s = AsSpan<byte>(); for (var k = 0; k < n; k++) a[k] = s[k]; break; }
+            default: for (var k = 0; k < n; k++) a[k] = this[k]; break;
+        }
+        GC.KeepAlive(this);
+    }
+
     /// <summary>Typed access without copying; <typeparamref name="T"/> must match <see cref="DType"/>.</summary>
     public bool TryGetSpan<T>(out ReadOnlySpan<T> span) where T : unmanaged
     {

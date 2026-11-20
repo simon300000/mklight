@@ -27,8 +27,24 @@ public sealed class SpotGridData
         public int Count => Xy.Length / 2;
     }
 
-    /// <summary>One (field, plane) cell.</summary>
-    public sealed record Cell(int Column, double Defocus, IReadOnlyList<Group> Groups, int PointCount, double Rms, double Geo, double Extent);
+    /// <summary>
+    /// A dense cell's points of one wavelength as a coverage mask: <see cref="MaskSize"/>² bytes over ±<see cref="Cell.Extent"/>
+    /// (row 0 at +y), 1 where a point falls. Drawn as one layer like the markers, it looks the same at dense counts.
+    /// </summary>
+    public sealed record Coverage(int Wavelength, byte[] Mask);
+
+    /// <summary>
+    /// One (field, plane) cell: its points by wavelength (<see cref="Groups"/>), or for a dense grid (more than
+    /// <see cref="DensePoints"/> points per field) their <see cref="Masks"/> instead.
+    /// </summary>
+    public sealed record Cell(int Column, double Defocus, IReadOnlyList<Group> Groups, int PointCount, double Rms, double Geo, double Extent,
+        IReadOnlyList<Coverage>? Masks = null);
+
+    /// <summary>Points per field above which cells keep coverage masks instead of the points (fine pupil grids).</summary>
+    public const int DensePoints = 20_000;
+
+    /// <summary>The side of a dense cell's coverage mask: about one device pixel per bin at the largest cell.</summary>
+    public const int MaskSize = 512;
 
     /// <summary>One field.</summary>
     public sealed record Row(int Index, string Title, string Value, IReadOnlyList<Cell> Cells)
@@ -112,55 +128,119 @@ public sealed class SpotGridData
         for (var c = 0; c < planes.Length; c++)
             if (Math.Abs(planes[c] - baseDefocus) <= 1e-12 * Math.Max(1, Math.Abs(baseDefocus))) { baseIndex = c; break; }
 
-        var nPoints = pts is null ? 0 : pts.Count / 2;
-        var rows = new List<Row>();
-        for (var k = 0; k < list.Count; k++)
+        // The buffers as doubles in pooled arrays (reused between runs: no fresh pages for about 80 MB at 250 rings).
+        var pool = System.Buffers.ArrayPool<double>.Shared;
+        double[] Rent(IResultArray? a)
         {
-            var f = list[k];
-            var index = Json.Int(Json.At(f, "field")) ?? k;
-            var entries = Json.Arr(Json.At(f, "through_focus"));
-            int lo = 0, hi = 0;
-            if (pts is not null && Json.IntArray(Json.At(f, "point_range")) is { Length: 2 } r)
+            if (a is null) return [];
+            var r = pool.Rent(a.Count);
+            a.CopyTo(r);
+            return r;
+        }
+        var xy = Rent(pts);
+        var sl = Rent(slope);
+        var wl = Rent(pw);
+        int nXy = pts?.Count ?? 0, nSl = slope?.Count ?? 0, nWl = pw?.Count ?? 0;
+        try
+        {
+            var nPoints = nXy / 2;
+            var rows = new Row[list.Count];
+            // A dense grid builds its fields (and their planes) in parallel: the result JSON is materialised, so read-only access is safe.
+            void FieldRow(int k)
             {
-                lo = Math.Max(r[0], 0);
-                hi = (int)Math.Min((long)r[0] + r[1], nPoints);
-            }
-            var cells = new List<Cell>();
-            for (var c = 0; c < planes.Length; c++)
-            {
-                var delta = planes[c] - baseDefocus;
-                var byWavelength = new Dictionary<int, List<double>>();
+                var f = list[k];
+                var index = Json.Int(Json.At(f, "field")) ?? k;
+                var entries = Json.Arr(Json.At(f, "through_focus"));
+                int lo = 0, hi = 0;
+                if (pts is not null && Json.IntArray(Json.At(f, "point_range")) is { Length: 2 } r)
+                {
+                    lo = Math.Max(r[0], 0);
+                    hi = (int)Math.Min((long)r[0] + r[1], nPoints);
+                }
+                // The field's wavelength groups, in order of first appearance, and each point's group (same on every plane).
+                var groupOf = new int[Math.Max(hi - lo, 0)];
                 var order = new List<int>();
-                var extent = 0.0;
+                var sizes = new List<int>();
                 for (var i = lo; i < hi; i++)
                 {
-                    double x = pts![i * 2], y = pts[i * 2 + 1];
-                    if (delta != 0 && slope is not null && i * 2 + 1 < slope.Count)
-                    {
-                        x += delta * slope[i * 2];
-                        y += delta * slope[i * 2 + 1];
-                    }
-                    var w = pw is not null && i < pw.Count && double.IsFinite(pw[i]) ? (int)pw[i] : 0;
-                    if (!byWavelength.TryGetValue(w, out var g)) { byWavelength[w] = g = []; order.Add(w); }
-                    g.Add(x); g.Add(y);
-                    var rr = Math.Sqrt(x * x + y * y);
-                    if (double.IsFinite(rr)) extent = Math.Max(extent, rr);
+                    var w = i < nWl && double.IsFinite(wl[i]) ? (int)wl[i] : 0;
+                    var g = order.IndexOf(w);
+                    if (g < 0) { g = order.Count; order.Add(w); sizes.Add(0); }
+                    groupOf[i - lo] = g;
+                    sizes[g]++;
                 }
-                var groups = order.Select(w => new Group(w, [.. byWavelength[w]])).ToList();
-                var count = groups.Sum(g => g.Count);
-                // Statistics: the plane's through-focus entry, else (base plane
-                // without through-focus) the field's own values.
-                var entry = hasFocus && entries is not null && picked[c] < entries.Count ? entries[picked[c]] : null;
-                var isBase = c == baseIndex;
-                var rms = Json.Number(Json.At(entry, rmsKey)) ?? (isBase ? Json.Number(Json.At(f, "rms_radius")) : null) ?? double.NaN;
-                var engineGeo = Json.Nf(Json.At(f, "geo_radius"));
-                var geo = isBase && double.IsFinite(engineGeo) ? engineGeo : count > 0 ? extent : double.NaN;
-                cells.Add(new Cell(c, planes[c], groups, count, rms, geo, count > 0 ? extent : double.IsFinite(geo) ? geo : 0));
+                var count = Math.Max(hi - lo, 0);
+                var dense = count > DensePoints;
+                // Each plane's points (or masks) and extent; the planes of a dense field in parallel.
+                var built = new (IReadOnlyList<Group> Groups, IReadOnlyList<Coverage>? Masks, double Extent)[planes.Length];
+                void Plane(int c)
+                {
+                    var delta = planes[c] - baseDefocus;
+                    var moves = delta != 0 && nSl > 0;
+                    double X(int i) => moves && i * 2 + 1 < nSl ? xy[i * 2] + delta * sl[i * 2] : xy[i * 2];
+                    double Y(int i) => moves && i * 2 + 1 < nSl ? xy[i * 2 + 1] + delta * sl[i * 2 + 1] : xy[i * 2 + 1];
+                    var extent2 = 0.0; // squared: one square root per cell
+                    for (var i = lo; i < hi; i++)
+                    {
+                        double x = X(i), y = Y(i), r2 = x * x + y * y;
+                        if (r2 > extent2 && double.IsFinite(r2)) extent2 = r2;
+                    }
+                    var extent = Math.Sqrt(extent2);
+                    if (dense)
+                    {
+                        var masks = order.Select(_ => new byte[MaskSize * MaskSize]).ToArray();
+                        var scale = MaskSize / (2 * Math.Max(extent, 1e-12) * 1.0001);
+                        for (var i = lo; i < hi; i++)
+                        {
+                            double x = X(i), y = Y(i);
+                            if (!double.IsFinite(x) || !double.IsFinite(y)) continue;
+                            var col = (int)(x * scale + MaskSize / 2.0);
+                            var row = (int)(MaskSize / 2.0 - y * scale);
+                            if ((uint)col < MaskSize && (uint)row < MaskSize) masks[groupOf[i - lo]][row * MaskSize + col] = 1;
+                        }
+                        built[c] = ([], order.Select((w, g) => new Coverage(w, masks[g])).ToList(), extent);
+                        return;
+                    }
+                    var arrays = sizes.Select(n => GC.AllocateUninitializedArray<double>(2 * n)).ToArray(); // every slot is written below
+                    var fill = new int[arrays.Length];
+                    for (var i = lo; i < hi; i++)
+                    {
+                        var g = groupOf[i - lo];
+                        var at = fill[g];
+                        arrays[g][at] = X(i);
+                        arrays[g][at + 1] = Y(i);
+                        fill[g] = at + 2;
+                    }
+                    built[c] = (order.Select((w, g) => new Group(w, arrays[g])).ToList(), null, extent);
+                }
+                if (dense) Parallel.For(0, planes.Length, Plane);
+                else for (var c = 0; c < planes.Length; c++) Plane(c);
+
+                var cells = new List<Cell>();
+                for (var c = 0; c < planes.Length; c++)
+                {
+                    var (groups, masks, extent) = built[c];
+                    // Statistics: the plane's through-focus entry, else (base plane
+                    // without through-focus) the field's own values.
+                    var entry = hasFocus && entries is not null && picked[c] < entries.Count ? entries[picked[c]] : null;
+                    var isBase = c == baseIndex;
+                    var rms = Json.Number(Json.At(entry, rmsKey)) ?? (isBase ? Json.Number(Json.At(f, "rms_radius")) : null) ?? double.NaN;
+                    var engineGeo = Json.Nf(Json.At(f, "geo_radius"));
+                    var geo = isBase && double.IsFinite(engineGeo) ? engineGeo : count > 0 ? extent : double.NaN;
+                    cells.Add(new Cell(c, planes[c], groups, count, rms, geo, count > 0 ? extent : double.IsFinite(geo) ? geo : 0, masks));
+                }
+                var value = index < d.FieldLabels.Count ? d.FieldLabels[index] : Fmt.Field(Json.NfArray(Json.At(f, "field_value")));
+                rows[k] = new Row(index, $"Field {index + 1}", value, cells);
             }
-            var value = index < d.FieldLabels.Count ? d.FieldLabels[index] : Fmt.Field(Json.NfArray(Json.At(f, "field_value")));
-            rows.Add(new Row(index, $"Field {index + 1}", value, cells));
+            if (nPoints > DensePoints) Parallel.For(0, list.Count, FieldRow);
+            else for (var k = 0; k < list.Count; k++) FieldRow(k);
+            return new SpotGridData(planes, all.Length, baseIndex, rows, airy, wavelengths, um, reference);
         }
-        return new SpotGridData(planes, all.Length, baseIndex, rows, airy, wavelengths, um, reference);
+        finally
+        {
+            foreach (var a in new[] { xy, sl, wl }) if (a.Length > 0) pool.Return(a);
+        }
+
     }
 
     /// <summary>

@@ -134,8 +134,11 @@ window sets `AppHooks.ScreenshotTarget` so that window is captured:
   `bench-out=<file>` names (default `bench-<time>.jsonl` beside `mklight.log`):
   `pane`, `analysis`, `run`, `backend_requested`, `backend_used`, `engine_ms`
   (run_info), `device` (per GPU execution `wall_ms`, `device_ms` and its stages as
-  `[name, device_ms, wall_ms]`), `app_view_ms` (submit to the pane's view rebuilt) and
-  `app_frame_ms` (to the next frame after that), or `error`.
+  `[name, device_ms, wall_ms]`), `app_result_ms` (submit to the result taken from the
+  engine), `app_build_ms` (the view's build), `app_view_ms` (submit to the pane's view
+  rebuilt) and `app_frame_ms` (to the next frame after that), or `error`. `bench-out` may
+  stand before or after `bench-panes`; quotes around its path are dropped, so
+  `--do bench-out="C:\My Runs\cuda.jsonl"` works from PowerShell and cmd.
 
 Without a file or `--sample` the welcome window opens (`--screenshot` then
 captures it). The log is `%LOCALAPPDATA%\MKLight\mklight.log`.
@@ -357,6 +360,13 @@ so none edits `App.xaml.cs`, `LaunchOptions.cs` or `DesignWindow` to be added:
   kernels ship inside the DLL, so preparation finishes before the first pane is
   drawn and "Preparing GPU n %" does not appear on this machine, even with an
   empty cache (`--do simulate-gpu-preparation` still shows it).
+* Large results: buffers reach the views through `IResultArray.CopyTo` (one typed pass
+  into pooled arrays) instead of per-element reads. A spot diagram with more than 20 000
+  points per field keeps per-wavelength coverage masks (512², built in parallel) instead
+  of the points, and draws each as a bitmap of marker-sized discs at the cell's device
+  resolution at the markers' opacity, so it looks as before. At 250 rings (1.7 M points ×
+  3 planes) the spot view builds in about 15 ms instead of 185 ms, the ray grid in
+  about 11 ms instead of 33 ms.
 * Spot diagram captions use one unit per grid (µm unless a radius reaches 1 mm). In a
   pane too narrow for every focus plane at a legible cell (58 px) the grid folds to
   its base plane and its note says so; below 420 px the Common | Per field toggle

@@ -18,6 +18,14 @@ public class BenchPlanTests
     }
 
     [Fact]
+    public void BenchOutDropsTheQuotesAShellKept()
+    {
+        Assert.Equal(@"C:\a b\x.jsonl", BenchPlan.CleanPath("\"C:\\a b\\x.jsonl\""));
+        Assert.Equal(@"C:\x.jsonl", BenchPlan.CleanPath(" 'C:\\x.jsonl' "));
+        Assert.Equal("x.jsonl", BenchPlan.CleanPath("x.jsonl"));
+    }
+
+    [Fact]
     public void EachEditIsUniqueAndTiny()
     {
         var system = SampleSystems.Get("double_gauss")!;

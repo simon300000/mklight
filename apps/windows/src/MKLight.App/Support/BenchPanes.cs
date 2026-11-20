@@ -20,29 +20,36 @@ namespace MKLight.App.Support;
 /// Each timed run writes one line: <c>pane</c>, <c>analysis</c>, <c>run</c>, <c>backend_requested</c>,
 /// <c>backend_used</c>, <c>engine_ms</c> (run_info.duration_ms), <c>device</c> (from the backend's execution
 /// report, when a GPU ran: per execution its backend, <c>wall_ms</c>, <c>device_ms</c> and per stage
-/// <c>[name, device_ms, wall_ms]</c>), <c>app_view_ms</c> (submit to the pane's view
+/// <c>[name, device_ms, wall_ms]</c>), <c>app_result_ms</c> (submit to the result taken from the engine),
+/// <c>app_build_ms</c> (the view's build), <c>app_view_ms</c> (submit to the pane's view
 /// rebuilt) and <c>app_frame_ms</c> (submit to the next frame after that), or <c>error</c>.
 /// </summary>
 static class BenchPanes
 {
-    static string? _out;
-
     [ModuleInitializer]
     internal static void Register()
     {
-        AppHooks.LaunchActions["bench-out"] = (_, arg) =>
-        {
-            _out = string.IsNullOrWhiteSpace(arg) ? null : Path.GetFullPath(arg);
-            return Task.CompletedTask;
-        };
+        // Read by bench-panes wherever it stands among the actions (Out).
+        AppHooks.LaunchActions["bench-out"] = (_, _) => Task.CompletedTask;
         AppHooks.LaunchActions["bench-panes"] = (w, arg) => RunAsync(w.Session.Workspace, arg);
+    }
+
+    /// <summary>The file of <c>--do bench-out=&lt;file&gt;</c> (before or after bench-panes; surrounding quotes a shell kept are dropped).</summary>
+    static string Out()
+    {
+        if (App.Options.Actions.LastOrDefault(a => a.Name == "bench-out").Arg is { } arg && BenchPlan.CleanPath(arg) is { Length: > 0 } path)
+        {
+            try { return Path.GetFullPath(path); }
+            catch (Exception e) when (e is ArgumentException or NotSupportedException or PathTooLongException) { App.Log($"bench-out: not a path: {arg}"); }
+        }
+        return Path.Combine(AppSettings.Directory, $"bench-{DateTime.Now:yyyyMMdd-HHmmss}.jsonl");
     }
 
     static async Task RunAsync(Workspace ws, string? arg)
     {
         var (runs, backend) = BenchPlan.Parse(arg);
         if (ws.DesignSystem is not { } original) { App.Log("bench-panes: no design"); return; }
-        var path = _out ?? Path.Combine(AppSettings.Directory, $"bench-{DateTime.Now:yyyyMMdd-HHmmss}.jsonl");
+        var path = Out();
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         var (savedBackend, savedGpu) = (ws.Backend, ws.GpuName);
         if (backend is { } b) (ws.Backend, ws.GpuName) = (b.Backend, b.GpuName);
@@ -102,6 +109,7 @@ static class BenchPanes
 
         var done = new TaskCompletionSource<double>(TaskCreationOptions.RunContinuationsAsynchronously);
         var clock = new Stopwatch();
+        long submitted = 0;
         // Subscribed after the pane's view, so this runs once the view has rebuilt for the new output.
         void Changed()
         {
@@ -111,6 +119,7 @@ static class BenchPanes
         try
         {
             clock.Start();
+            submitted = Stopwatch.GetTimestamp();
             ws.Run(pane, force: true);
             var viewMs = await done.Task.WaitAsync(TimeSpan.FromMinutes(10));
             var frame = new TaskCompletionSource<double>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -123,6 +132,8 @@ static class BenchPanes
             line["backend_used"] = o.Backend?.Used ?? o.RunInfo.Backend;
             line["engine_ms"] = o.RunInfo.DurationMs;
             if (Timings(o.Backend?.Execution) is { Count: > 0 } timings) line["device"] = timings;
+            line["app_result_ms"] = Math.Round(Stopwatch.GetElapsedTime(submitted, o.ReceivedTimestamp).TotalMilliseconds, 3);
+            line["app_build_ms"] = Math.Round(Views.Analysis.Results.ResultViews.LastBuildMs, 3);
             line["app_view_ms"] = Math.Round(viewMs, 3);
             line["app_frame_ms"] = Math.Round(frameMs, 3);
         }

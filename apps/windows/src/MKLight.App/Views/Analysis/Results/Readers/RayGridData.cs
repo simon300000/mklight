@@ -29,7 +29,20 @@ public sealed class RayGridData
         var fieldValues = Json.Arr(Json.At(j, "field_values"));
         var nf = Math.Max(fieldIndices.Length, fieldValues?.Count ?? 0);
         var nw = um.Length;
-        if (d.Buffer("points") is not { } pts || p < 1 || nf < 1 || nw < 1 || pts.Count < (long)nf * nw * p * 2) return null;
+        if (d.Buffer("points") is not { } buffer || p < 1 || nf < 1 || nw < 1 || buffer.Count < (long)nf * nw * p * 2) return null;
+        // The hits as doubles in a pooled array (reused between runs), one typed pass.
+        var pts = System.Buffers.ArrayPool<double>.Shared.Rent(buffer.Count);
+        try
+        {
+            buffer.CopyTo(pts);
+            return Read(d, pts, p, um, fieldIndices, fieldValues, nf, nw);
+        }
+        finally { System.Buffers.ArrayPool<double>.Shared.Return(pts); }
+    }
+
+    static RayGridData Read(ResultData d, double[] pts, int p, double[] um, int[] fieldIndices, System.Text.Json.Nodes.JsonArray? fieldValues, int nf, int nw)
+    {
+        var j = d.Json;
         var fields = new List<Field>();
         for (var f = 0; f < nf; f++)
         {
@@ -46,17 +59,23 @@ public sealed class RayGridData
             var byWavelength = new List<double[]>();
             for (var w = 0; w < nw; w++)
             {
-                var xy = new List<double>(2 * p);
+                var start = (f * nw + w) * p;
+                var arrived = 0;
+                for (var k = 0; k < p; k++)
+                    if (double.IsFinite(pts[2 * (start + k)] - cx) && double.IsFinite(pts[2 * (start + k) + 1] - cy)) arrived++;
+                var xy = new double[2 * arrived];
+                var at = 0;
                 for (var k = 0; k < p; k++)
                 {
-                    var i = (f * nw + w) * p + k;
+                    var i = start + k;
                     double x = pts[2 * i] - cx, y = pts[2 * i + 1] - cy;
                     if (!double.IsFinite(x) || !double.IsFinite(y)) continue;
-                    xy.Add(x);
-                    xy.Add(y);
-                    half = Math.Max(half, Math.Max(Math.Abs(x), Math.Abs(y)));
+                    xy[at++] = x;
+                    xy[at++] = y;
+                    var m = Math.Max(Math.Abs(x), Math.Abs(y));
+                    if (m > half) half = m;
                 }
-                byWavelength.Add(xy.ToArray());
+                byWavelength.Add(xy);
             }
             var index = f < fieldIndices.Length ? fieldIndices[f] : f;
             fields.Add(new Field(Fmt.FieldTitle(d, index, fieldValues is { } fv && f < fv.Count ? fv[f] : null), byWavelength,
