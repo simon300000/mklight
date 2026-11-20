@@ -27,6 +27,7 @@ use std::sync::{Arc, Condvar, Mutex};
 use mklight_core::{MkError, MkResult};
 
 use crate::device::*;
+use crate::watchdog::Health;
 
 /// A request's command. Pointers refer to the caller's stack and heap, valid
 /// until the caller is released (it blocks for the whole call).
@@ -117,11 +118,26 @@ pub struct Channel {
     /// Wakes a native server thread.
     pending: Condvar,
     closed: std::sync::atomic::AtomicBool,
+    /// The served device's health (`crate::watchdog`), read by the proxies.
+    health: Arc<Health>,
 }
 
 impl Channel {
     pub fn new() -> Arc<Self> {
         Arc::new(Self::default())
+    }
+
+    /// A channel serving `device`: its proxies report the device's health.
+    pub fn for_device(device: &crate::WgpuDevice) -> Arc<Self> {
+        Arc::new(Self {
+            health: device.health().clone(),
+            ..Self::default()
+        })
+    }
+
+    /// The served device's health.
+    pub fn health(&self) -> &Arc<Health> {
+        &self.health
     }
 
     fn push(&self, r: Request) -> MkResult<()> {
@@ -241,6 +257,9 @@ impl Gpu for GpuProxy {
             _ => Err(protocol()),
         }
     }
+    fn unavailable(&self) -> Option<String> {
+        self.channel.health.failure()
+    }
     fn run(&self, batch: Batch<'_>) -> MkResult<BatchStats> {
         let mut slot = Some(batch);
         // SAFETY: lifetime erasure only; this thread blocks in `call` until
@@ -258,7 +277,7 @@ impl Gpu for GpuProxy {
 /// returned proxy does not stop the thread; `Channel::close` does.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn spawn_native(device: crate::WgpuDevice) -> MkResult<(GpuProxy, Arc<Channel>)> {
-    let channel = Channel::new();
+    let channel = Channel::for_device(&device);
     let summary = device.summary().clone();
     let ch = channel.clone();
     std::thread::Builder::new()

@@ -6,7 +6,13 @@ import type { EngineErrorKind, JSONObject, JSONValue, TypedArray } from './types
 /** Every call the client makes, with its arguments and result type. */
 export interface Calls {
   init: {
-    args: { threads: number; cores: number; config: JSONObject; webgpuCalibration: 'auto' | 'off' }
+    args: {
+      threads: number
+      cores: number
+      config: JSONObject
+      webgpuCalibration: 'auto' | 'off'
+      webgpuWatchdog?: { timeoutMs?: number; stalledModules?: string[] }
+    }
     result: { version: string; backends: JSONValue; threads: number; analyses: JSONValue }
   }
   listAnalyses: { args: Record<string, never>; result: JSONValue }

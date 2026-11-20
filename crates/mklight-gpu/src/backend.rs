@@ -490,6 +490,14 @@ pub trait ComputeBackend: Send + Sync {
     ) -> MkResult<KernelPreparation> {
         Ok(KernelPreparation::default())
     }
+
+    /// Why the device can no longer run production work although it opened
+    /// (for example a compute pipeline the driver never finished
+    /// compiling), once that is known. The engine then treats the backend
+    /// as unavailable with this reason.
+    fn unavailable(&self) -> Option<String> {
+        None
+    }
 }
 
 /// The offline qualification interface: the host-array [`Job`] API and the
