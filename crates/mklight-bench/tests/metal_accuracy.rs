@@ -157,7 +157,9 @@ fn sample_accuracy(engine: &Engine, device: &str) {
 /// reference on every sample at default settings. The truncated solves'
 /// outcomes (the final design's or a finalist's merit or violation) outside
 /// their gates pass within twice the reference's own movement
-/// (`mklight_bench::solver_spread`).
+/// (`mklight_bench::solver_spread`); glass finalists the reference reports
+/// infeasible are compared by structure only, each excused failure listed
+/// under `excused`.
 #[test]
 #[ignore = "offline solver-outcome evidence; real Metal required"]
 fn solver_outcomes() {
@@ -202,11 +204,13 @@ fn solver_outcomes() {
             let published = gpu.backend.used == "gpu:metal";
             // Truncated solves: an outcome's merit or violation outside its
             // gate passes within twice the reference's own movement.
+            // Infeasible glass finalists: structure only (`excuse_finalists`).
             let deviation = solver_spread::deviation(analysis, &cpu, &gpu);
-            let movement =
-                solver_spread::reference_movement(&session, &nudged, analysis, &settings, &cpu);
-            let within =
-                solver_spread::within_movement(analysis, &report.failures, deviation, movement);
+            let runs = solver_spread::reference_runs(&session, &nudged, analysis, &settings);
+            let movement = solver_spread::movement(analysis, &cpu, &runs);
+            let (gated, excused) =
+                solver_spread::excuse_finalists(analysis, &cpu, &runs, &report.failures);
+            let within = solver_spread::within_movement(analysis, &gated, deviation, movement);
             if (published && !within) || !native_failures.is_empty() {
                 failures.push(format!(
                     "{name}/{analysis}: {:?} {:?}",
@@ -222,7 +226,7 @@ fn solver_outcomes() {
             println!(
                 "SOLVER_OUTCOME {}",
                 json!({"sample":name,"analysis":analysis,"published":published,"used":gpu.backend.used,
-                "compared":report.compared,"gate_failures":report.failures,"classes":report.classes,
+                "compared":report.compared,"gate_failures":gated,"excused":excused,"classes":report.classes,
                 "native_failures":native_failures,"cpu_ms":cpu.run_info.duration_ms,"metal_ms":gpu.run_info.duration_ms,
                 "merits":[&cpu.json["final"]["merit"], &gpu.json["final"]["merit"]],
                 "deviation":[deviation.0, deviation.1],"reference_movement":[movement.0, movement.1],
