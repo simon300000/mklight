@@ -2,6 +2,7 @@
     x:Class="MKLight.App.Views.LensDataPanel"
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:local="using:MKLight.App.Views"
     IsTabStop="True" UseSystemFocusVisuals="False" TabFocusNavigation="Once"
     AutomationProperties.Name="Lens data">
     <UserControl.Resources>
@@ -205,8 +206,9 @@
             <RowDefinition Height="*" />
         </Grid.RowDefinitions>
 
-        <!-- Panel header: title, counts and unit, then insert and delete. -->
-        <Grid Padding="14,7,8,3" ColumnSpacing="8">
+        <!-- Panel header: title, counts and unit, then insert, delete and More. -->
+        <local:LensAutomationGroup x:Name="PanelHeader" Padding="14,7,8,3" ColumnSpacing="8" ControlType="Header"
+                                   AutomationProperties.Name="Lens Data" AutomationProperties.AutomationId="Panel.lens_data.Header">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="Auto" />
                 <ColumnDefinition Width="Auto" />
@@ -235,8 +237,15 @@
                         Click="OnDeleteClick" IsTabStop="False"
                         ToolTipService.ToolTip="Delete the selected surface (Ctrl+Delete)"
                         AutomationProperties.Name="Delete Surface" />
+                <Button x:Name="MoreButton" Style="{StaticResource CircleButton}" Width="26" Height="26" Content="&#xE712;" FontSize="12"
+                        IsTabStop="False" ToolTipService.ToolTip="More"
+                        AutomationProperties.Name="More" AutomationProperties.AutomationId="Panel.lens_data.More">
+                    <Button.Flyout>
+                        <MenuFlyout x:Name="MoreMenu" Placement="BottomEdgeAlignedRight" Opening="OnMoreOpening" />
+                    </Button.Flyout>
+                </Button>
             </StackPanel>
-        </Grid>
+        </local:LensAutomationGroup>
 
         <!-- The grid: columns scroll sideways together; rows scroll under the pinned column header. -->
         <ScrollViewer x:Name="HorizontalScroller" Grid.Row="1"
@@ -248,7 +257,8 @@
                     <RowDefinition Height="Auto" />
                     <RowDefinition Height="*" />
                 </Grid.RowDefinitions>
-                <Grid x:Name="ColumnHeader" Height="28" Margin="8,0" />
+                <local:LensAutomationGroup x:Name="ColumnHeader" Height="28" Margin="8,0" ControlType="Header"
+                                           AutomationProperties.Name="Columns" AutomationProperties.AutomationId="LensTable.Header" />
                 <Border Height="1" Margin="0" VerticalAlignment="Bottom" Background="{ThemeResource HeaderRuleBrush}" />
                 <ScrollViewer x:Name="RowScroller" Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollMode="Disabled"
                               HorizontalScrollBarVisibility="Disabled" IsTabStop="False">
