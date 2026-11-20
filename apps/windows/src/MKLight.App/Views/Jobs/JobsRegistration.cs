@@ -22,7 +22,7 @@ static class JobsRegistration
     internal static void Register()
     {
         InspectorPages.Add(new("optimize", "Optimize", "", 20, s => new OptimizePanel(s)));
-        InspectorPages.Add(new("glass_substitution", "Glass Substitution", "", 21, _ => InspectorRegistration.Placeholder("Glass Substitution")));
+        InspectorPages.Add(new("glass_substitution", "Glass Substitution", "", 21, s => new GlassSubstitutionPanel(s)));
         InspectorPages.Add(new("tolerance", "Tolerance", "", 22, _ => InspectorRegistration.Placeholder("Tolerance")));
         InspectorPages.Add(new("solves", "Apply Solves", "", 23, s => new SolvesPanel(s)));
 
@@ -73,6 +73,22 @@ static class JobsRegistration
             await WaitSnapshot(w);
             await s.ConvertToCustomAsync();
             await WaitUntil(() => !s.Evaluating, 30);
+        };
+        // `glass-run[=N]`: run the substitution and wait; N previews the combination of rank N.
+        AppHooks.LaunchActions["glass-run"] = async (w, arg) =>
+        {
+            var s = Open(w, "glass_substitution").Glass;
+            await WaitSnapshot(w);
+            s.Settings.MaxCombinations = 24;
+            s.Settings.LocalIterations = 20;
+            s.Start();
+            await WaitUntil(() => !s.IsRunning, 240);
+            if (int.TryParse(arg, out var rank)) s.Select(rank);
+        };
+        AppHooks.LaunchActions["glass-apply"] = (w, _) =>
+        {
+            Open(w, "glass_substitution").Glass.Apply();
+            return Task.CompletedTask;
         };
         AppHooks.LaunchActions["solves-run"] = async (w, _) =>
         {

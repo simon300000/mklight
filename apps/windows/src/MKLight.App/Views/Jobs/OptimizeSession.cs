@@ -111,30 +111,7 @@ public sealed class OptimizeSession
 
     // ---- Settings ----
 
-    /// <summary>
-    /// The <c>variables</c> setting: the design's variables without the pinned ones (equal bounds hold them) and those
-    /// a solve controls (the engine applies solves first and refuses them), or null for the engine's automatic set.
-    /// </summary>
-    public static JsonArray? VariableSettings(IReadOnlyList<DesignVariable> variables, bool useDesign, OpticalSystem? system)
-    {
-        var free = variables.Where(v => !v.IsPinned && !(system?.IsSolved(v.Param) ?? false)).ToList();
-        if (!useDesign || free.Count == 0) return null;
-        return new JsonArray([.. free.Select(v => (JsonNode)v.ToJson())]);
-    }
-
-    /// <summary>Why the run cannot start with these variables, if it cannot.</summary>
-    public static string? VariableProblem(IReadOnlyList<DesignVariable> variables, bool useDesign, OpticalSystem? system)
-    {
-        if (!useDesign || variables.Count == 0) return null;
-        bool Solved(DesignVariable v) => system?.IsSolved(v.Param) ?? false;
-        if (variables.All(v => v.IsPinned || Solved(v)))
-            return variables.Any(Solved)
-                ? "Every variable is pinned or controlled by a solve. Add a free variable, or vary the automatic set."
-                : "Every variable is pinned. Unpin one, or vary the automatic set.";
-        return null;
-    }
-
-    public string? Problem => VariableProblem(Variables, UseDesignVariables, Document.System);
+    public string? Problem => OptimizeVariables.Problem(Variables, UseDesignVariables, Document.System);
 
     public Dictionary<string, JsonNode?> Settings(MeritSettings? merit = null, bool evaluation = false)
     {
@@ -145,7 +122,7 @@ public sealed class OptimizeSession
             s["seed"] = Seed;
             if (MaxIterations is { } n) s["max_iterations"] = n;
         }
-        if (VariableSettings(Variables, UseDesignVariables, Workspace.DesignSystem ?? Document.System) is { } v) s["variables"] = v;
+        if (OptimizeVariables.Settings(Variables, UseDesignVariables, Workspace.DesignSystem ?? Document.System) is { } v) s["variables"] = v;
         return s;
     }
 

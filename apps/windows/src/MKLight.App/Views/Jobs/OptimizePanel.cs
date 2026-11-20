@@ -3,8 +3,6 @@ using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
 using MKLight.App.ViewModels;
 using MKLight.App.ViewModels.Jobs;
-using MKLight.App.Views.Analysis;
-using MKLight.App.Views.Analysis.Results.Readers;
 using MKLight.Model;
 
 namespace MKLight.App.Views.Jobs;
@@ -189,75 +187,12 @@ public sealed partial class OptimizePanel : UserControl
         return p;
     }
 
-    /// <summary>
-    /// The spot diagram's key numbers of the design (taken just before the preview) and of the previewed candidate,
-    /// side by side, so it is plain which design every number belongs to.
-    /// </summary>
+    /// <summary>The design's and the candidate's spot numbers and merit, side by side.</summary>
     void FillComparison(StackPanel card)
     {
-        card.Children.Clear();
-        var ws = _s.Workspace;
-        var pane = ws.Panes.FirstOrDefault(p => p.Analysis == "spot_diagram");
-        var head = new Grid { ColumnSpacing = 8 };
-        Columns(head);
-        head.Children.Add(JobUI.Text(pane is null ? "Design vs candidate" : "Spot diagram", "PanelTitleText", 12));
-        Cell(head, JobUI.Text("Design", "CaptionText"), 1);
-        var cand = JobUI.Text("Candidate", "CaptionText");
-        JobUI.Bind(cand, "AccentTextFillColorPrimaryBrush", b => cand.Foreground = b);
-        Cell(head, cand, 2);
-        card.Children.Add(head);
-        if (pane is null)
-        {
-            card.Children.Add(JobUI.Hint("Open a Spot Diagram to compare its numbers here.", 11.5));
-            AddMerit(card);
-            return;
-        }
-        var system = ws.DesignSystem ?? _s.Document.System;
-        IReadOnlyList<(string Label, string Value)> Keys(Engine.AnalysisOutput? o, OpticalSystem s) =>
-            o is null ? [] : KeyNumbers.Of(ResultHosting.Data("spot_diagram", o, s));
-        var before = Keys(ws.Baseline.GetValueOrDefault(pane.Id), system);
-        var candidate = pane.IsRunning || pane.IsStale ? [] : Keys(pane.Output, ws.PreviewSystem ?? system);
-        var labels = before.Select(k => k.Label).Concat(candidate.Select(k => k.Label)).Distinct().ToList();
-        foreach (var label in labels)
-        {
-            var row = new Grid { ColumnSpacing = 8 };
-            Columns(row);
-            row.Children.Add(JobUI.Text(label, "SecondaryText"));
-            Cell(row, JobUI.Text(before.FirstOrDefault(k => k.Label == label).Value ?? "—", "NumberText"), 1);
-            var c = JobUI.Text(candidate.FirstOrDefault(k => k.Label == label).Value ?? (pane.IsRunning ? "…" : "—"), "NumberText");
-            c.FontWeight = Microsoft.UI.Text.FontWeights.SemiBold;
-            Cell(row, c, 2);
-            card.Children.Add(row);
-        }
-        if (labels.Count == 0) card.Children.Add(JobUI.Hint(pane.IsRunning ? "Computing the candidate's spot diagram…" : "The spot diagram has no result yet.", 11.5));
-        AddMerit(card);
-    }
-
-    void AddMerit(StackPanel card)
-    {
-        if (_s.Result is not { } r) return;
-        var row = new Grid { ColumnSpacing = 8 };
-        Columns(row);
-        row.Children.Add(JobUI.Text("Merit", "SecondaryText"));
-        Cell(row, JobUI.Text(MeritFormat.Merit(r.StartMerit), "NumberText"), 1);
-        var c = JobUI.Text(MeritFormat.Merit(r.FinalMerit), "NumberText");
-        c.FontWeight = Microsoft.UI.Text.FontWeights.SemiBold;
-        Cell(row, c, 2);
-        card.Children.Add(row);
-    }
-
-    static void Columns(Grid g)
-    {
-        g.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        g.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(72) });
-        g.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(72) });
-    }
-
-    static void Cell(Grid g, FrameworkElement e, int column)
-    {
-        e.HorizontalAlignment = HorizontalAlignment.Right;
-        Grid.SetColumn(e, column);
-        g.Children.Add(e);
+        var r = _s.Result;
+        PreviewComparison.Fill(card, _s.Workspace, _s.Workspace.DesignSystem ?? _s.Document.System, "Candidate",
+            r is null ? [] : [("Merit", MeritFormat.Merit(r.StartMerit), MeritFormat.Merit(r.FinalMerit))]);
     }
 
     // ---- Actions ----
