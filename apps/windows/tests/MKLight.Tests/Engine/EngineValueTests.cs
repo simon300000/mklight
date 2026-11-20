@@ -121,7 +121,7 @@ public class NonFiniteResultTests
     public void DecodesNullAndInfinityStrings()
     {
         var g = GlassInfo.FromJson(JsonNode.Parse(GlassJson));
-        Assert.True(g.Nd == 1.5 && double.IsNaN(g.Vd) && g.MinUm == double.NegativeInfinity && g.MaxUm == double.PositiveInfinity);
+        Assert.True(g.Nd == 1.5 && g.Vd is null && g.MinUm == double.NegativeInfinity && g.MaxUm == double.PositiveInfinity);
         var back = GlassInfo.FromJson(g.ToJson());
         Assert.Equal(g, back);
         Assert.True(Json.DeepEquals(g.ToJson(), JsonNode.Parse(GlassJson)));

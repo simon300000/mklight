@@ -30,21 +30,22 @@ public sealed record CatalogInfo(string Name, string Source, string? Path, int G
 }
 
 /// <summary>One glass of a catalog (<c>mk_session_list_glasses</c>), with the engine's non-finite numbers (NaN, ±∞).</summary>
-public sealed record GlassInfo(string Catalog, string Name, double Nd, double Vd, double MinUm, double MaxUm)
+/// <remarks><c>Nd</c> and <c>Vd</c> are null for a glass whose range excludes the d line (an IR glass).</remarks>
+public sealed record GlassInfo(string Catalog, string Name, double? Nd, double? Vd, double MinUm, double MaxUm)
 {
     /// <summary>Reads a row; a number that is neither a number, null, "inf", "-inf" nor "nan" throws <see cref="FormatException"/>.</summary>
     public static GlassInfo FromJson(JsonNode? json) => new(
         json.At("catalog").StringOrNull() ?? throw new FormatException("glass without catalog"),
         json.At("name").StringOrNull() ?? throw new FormatException("glass without name"),
-        JsonRead.EngineDouble(json.At("nd")), JsonRead.EngineDouble(json.At("vd")),
+        Finite.Of(json.At("nd")), Finite.Of(json.At("vd")),
         JsonRead.EngineDouble(json.At("min_um")), JsonRead.EngineDouble(json.At("max_um")));
 
     public JsonObject ToJson() => new()
     {
         ["catalog"] = Catalog,
         ["name"] = Name,
-        ["nd"] = JsonRead.EngineDoubleNode(Nd),
-        ["vd"] = JsonRead.EngineDoubleNode(Vd),
+        ["nd"] = Nd is double nd ? JsonRead.EngineDoubleNode(nd) : null,
+        ["vd"] = Vd is double vd ? JsonRead.EngineDoubleNode(vd) : null,
         ["min_um"] = JsonRead.EngineDoubleNode(MinUm),
         ["max_um"] = JsonRead.EngineDoubleNode(MaxUm),
     };
@@ -114,8 +115,9 @@ public sealed record GlassRow
 {
     public required string Catalog { get; init; }
     public required string Name { get; init; }
-    public double Nd { get; init; }
-    public double Vd { get; init; }
+    /// <summary>Null for a glass whose range excludes the d line (an IR glass).</summary>
+    public double? Nd { get; init; }
+    public double? Vd { get; init; }
     public double? Pgf { get; init; }
     public double? Dpgf { get; init; }
     public double MinUm { get; init; }
@@ -148,8 +150,8 @@ public sealed record GlassRow
         {
             Catalog = catalog,
             Name = name,
-            Nd = v.At("nd").DoubleValue() ?? double.NaN,
-            Vd = v.At("vd").DoubleValue() ?? double.NaN,
+            Nd = Finite.Of(v.At("nd")),
+            Vd = Finite.Of(v.At("vd")),
             Pgf = Finite.Of(v.At("pgf")),
             Dpgf = Finite.Of(v.At("dpgf")),
             MinUm = v.At("min_um").DoubleValue() ?? 0,

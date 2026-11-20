@@ -450,7 +450,7 @@ public class FFIEngineTests
             Assert.Equal(0, await ValidationErrors(after));
             var glasses = await e.GlassesAsync("MYCAT");
             Assert.Equal(["MY-BK7"], glasses.Select(g => g.Name));
-            Assert.Equal(1.5168, glasses[0].Nd, 3);
+            Assert.Equal(1.5168, glasses[0].Nd!.Value, 3);
             using var output = await Run(e, after, "system_summary");
             Assert.True(output.IsCurrent(after, Request("system_summary")));
             Assert.False(output.IsCurrent(before, Request("system_summary")), "stale against the old library");
@@ -479,7 +479,7 @@ public class FFIEngineTests
         Assert.Contains("N-BK7", names);
         Assert.Equal(names.Order(StringComparer.Ordinal), names);
         var rows = await e.GlassRowsAsync(null);
-        Assert.Contains(rows, r => r.Name == "N-BK7" && Math.Abs(r.Nd - 1.5168) < 1e-3);
+        Assert.Contains(rows, r => r.Name == "N-BK7" && r.Nd is double nd && Math.Abs(nd - 1.5168) < 1e-3);
         var details = await e.GlassDetailsAsync(null, "N-BK7");
         Assert.True(details.Lines.Count > 0 && details.IndexCurve.Count > 0);
         Assert.Equal(EngineErrorCode.NotFound, (await Failure(() => e.GlassDetailsAsync(null, "NO-SUCH-GLASS"))).Code);
