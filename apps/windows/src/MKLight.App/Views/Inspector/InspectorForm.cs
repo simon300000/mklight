@@ -206,6 +206,7 @@ sealed record NumberRow(string Key, string Title, double? Value, Action<double> 
     internal abstract class Handle(NumberEntry entry)
     {
         public readonly NumberEntry Entry = entry;
+        public abstract void ToggleVariable();
     }
 
     sealed class View(Grid root, TextBlock title, TextBlock detail, NumberEntry box, TextBlock unit, Border solve, ToggleButton variable, Button trailing) : Handle(box)
@@ -219,6 +220,11 @@ sealed record NumberRow(string Key, string Title, double? Value, Action<double> 
         public VariableSpec? VariableSpec;
         public TrailingButton? TrailingSpec;
         public bool Updating;
+
+        public override void ToggleVariable()
+        {
+            if (VariableSpec is { } v && !(v.Solve is not null && !v.IsOn)) v.Set(!v.IsOn);
+        }
     }
 
     internal override FrameworkElement Create(FormContext ctx)
@@ -389,16 +395,22 @@ sealed record ChoiceRow(string Key, string Title, IReadOnlyList<(string Id, stri
 /// <summary>An on/off setting.</summary>
 sealed record ToggleRow(string Key, string Title, bool IsOn, Action<bool> Commit) : FormRow(Key)
 {
+    sealed class State(ToggleSwitch toggle, TextBlock title)
+    {
+        public readonly ToggleSwitch Toggle = toggle;
+        public readonly TextBlock Title = title;
+        public ToggleRow? Spec;
+        public bool Updating;
+    }
+
     internal override FrameworkElement Create(FormContext ctx)
     {
         var toggle = new ToggleSwitch { OnContent = null, OffContent = null, MinWidth = 0, HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Center };
         var root = LabeledGrid(out var title, out _, toggle);
-        var state = new object[] { toggle, title, this, false };
+        var state = new State(toggle, title);
         toggle.Toggled += (_, _) =>
         {
-            if ((bool)state[3]) return;
-            var spec = (ToggleRow)state[2];
-            if (toggle.IsOn != spec.IsOn) spec.Commit(toggle.IsOn);
+            if (!state.Updating && state.Spec is { } spec && toggle.IsOn != spec.IsOn) spec.Commit(toggle.IsOn);
         };
         root.Tag = state;
         Update(root, ctx);
@@ -407,14 +419,13 @@ sealed record ToggleRow(string Key, string Title, bool IsOn, Action<bool> Commit
 
     internal override void Update(FrameworkElement view, FormContext ctx)
     {
-        var state = (object[])view.Tag;
-        state[3] = true;
-        state[2] = this;
-        SetText((TextBlock)state[1], Title);
-        var toggle = (ToggleSwitch)state[0];
-        if (toggle.IsOn != IsOn) toggle.IsOn = IsOn;
-        NumberRow.AutomationName(toggle, Title);
-        state[3] = false;
+        var state = (State)view.Tag;
+        state.Updating = true;
+        state.Spec = this;
+        SetText(state.Title, Title);
+        if (state.Toggle.IsOn != IsOn) state.Toggle.IsOn = IsOn;
+        NumberRow.AutomationName(state.Toggle, Title);
+        state.Updating = false;
     }
 }
 
@@ -484,8 +495,18 @@ sealed record ButtonRow(string Key, string Text, Action Invoke) : FormRow(Key)
 {
     public string Glyph { get; init; } = "";
     public string Help { get; init; } = "";
-    /// <summary>A second action on the same row, right-aligned (a menu: presets, Zero Terms).</summary>
+    /// <summary>A second action on the same row, right-aligned (the wavelength presets).</summary>
     public FormRow? Right { get; init; }
+
+    sealed class State(Button button, ContentControl holder)
+    {
+        public readonly Button Button = button;
+        public readonly ContentControl Holder = holder;
+        public ButtonRow? Spec;
+        public (string, string)? Label;
+        public FrameworkElement? RightView;
+        public Type? RightKind;
+    }
 
     internal override FrameworkElement Create(FormContext ctx)
     {
@@ -497,8 +518,8 @@ sealed record ButtonRow(string Key, string Text, Action Invoke) : FormRow(Key)
         Grid.SetColumn(holder, 1);
         g.Children.Add(b);
         g.Children.Add(holder);
-        var state = new object[] { b, this, holder, null! };
-        b.Click += (_, _) => ((ButtonRow)state[1]).Invoke();
+        var state = new State(b, holder);
+        b.Click += (_, _) => state.Spec?.Invoke();
         g.Tag = state;
         Update(g, ctx);
         return g;
@@ -506,23 +527,29 @@ sealed record ButtonRow(string Key, string Text, Action Invoke) : FormRow(Key)
 
     internal override void Update(FrameworkElement view, FormContext ctx)
     {
-        var state = (object[])view.Tag;
-        state[1] = this;
-        var b = (Button)state[0];
-        b.Content = Label(Glyph, Text);
-        b.Visibility = Text.Length == 0 ? Visibility.Collapsed : Visibility.Visible;
-        SetHelp(b, Help);
-        var holder = (ContentControl)state[2];
-        if (Right is null) { holder.Content = null; state[3] = null!; return; }
-        if (state[3] is FrameworkElement existing && existing.Tag is not null && ((FormRow?)holder.Tag)?.GetType() == Right.GetType())
+        var state = (State)view.Tag;
+        state.Spec = this;
+        if (state.Label != (Glyph, Text))
+        {
+            state.Label = (Glyph, Text);
+            state.Button.Content = Label(Glyph, Text);
+        }
+        state.Button.Visibility = Text.Length == 0 ? Visibility.Collapsed : Visibility.Visible;
+        SetHelp(state.Button, Help);
+        if (Right is null)
+        {
+            state.Holder.Content = state.RightView = null;
+            state.RightKind = null;
+        }
+        else if (state.RightView is { } existing && state.RightKind == Right.GetType())
+        {
             Right.Update(existing, ctx);
+        }
         else
         {
-            var e = Right.Create(ctx);
-            holder.Content = e;
-            state[3] = e;
+            state.Holder.Content = state.RightView = Right.Create(ctx);
+            state.RightKind = Right.GetType();
         }
-        holder.Tag = Right;
     }
 
     internal static object Label(string glyph, string text)
@@ -543,6 +570,14 @@ sealed record MenuRow(string Key, string Text, IReadOnlyList<(string Title, Acti
     /// <summary>Whether the menu stands alone on its row (else it is the right part of a <see cref="ButtonRow"/>).</summary>
     public bool Row { get; init; } = true;
 
+    sealed class State(DropDownButton button)
+    {
+        public readonly DropDownButton Button = button;
+        public MenuRow? Spec;
+        public (string, string)? Label;
+        public List<string>? Titles;
+    }
+
     internal override FrameworkElement Create(FormContext ctx)
     {
         var d = new DropDownButton { Style = InspectorStyles.Get("InspectorMenu"), VerticalAlignment = VerticalAlignment.Center };
@@ -553,23 +588,34 @@ sealed record MenuRow(string Key, string Text, IReadOnlyList<(string Title, Acti
             g.Children.Add(d);
             root = g;
         }
-        root.Tag = d;
+        root.Tag = new State(d);
         Update(root, ctx);
         return root;
     }
 
     internal override void Update(FrameworkElement view, FormContext ctx)
     {
-        var d = (DropDownButton)view.Tag;
-        d.Content = ButtonRow.Label(Glyph, Text);
+        var state = (State)view.Tag;
+        state.Spec = this;
+        var d = state.Button;
+        if (state.Label != (Glyph, Text))
+        {
+            state.Label = (Glyph, Text);
+            d.Content = ButtonRow.Label(Glyph, Text);
+        }
         d.HorizontalAlignment = Row ? HorizontalAlignment.Left : HorizontalAlignment.Right;
         SetHelp(d, Help);
+        // The menu is rebuilt only when its entries change; a click runs the current spec's action.
+        var titles = Items.Select(i => i.Title).ToList();
+        if (state.Titles is { } old && old.SequenceEqual(titles)) return;
+        state.Titles = titles;
         var menu = new MenuFlyout { Placement = FlyoutPlacementMode.BottomEdgeAlignedLeft };
-        foreach (var (title, invoke) in Items)
+        for (var k = 0; k < titles.Count; k++)
         {
-            if (title == "-") { menu.Items.Add(new MenuFlyoutSeparator()); continue; }
-            var item = new MenuFlyoutItem { Text = title };
-            item.Click += (_, _) => invoke();
+            if (titles[k] == "-") { menu.Items.Add(new MenuFlyoutSeparator()); continue; }
+            var item = new MenuFlyoutItem { Text = titles[k] };
+            var index = k;
+            item.Click += (_, _) => { if (state.Spec is { } spec && index < spec.Items.Count) spec.Items[index].Invoke(); };
             menu.Items.Add(item);
         }
         d.Flyout = menu;
@@ -644,13 +690,17 @@ sealed class FormHost : UserControl
 
     /// <summary>
     /// A scripted edit of the row with <paramref name="key"/> (launch actions): a number row gets the text typed
-    /// and Enter, a choice row the option with that id. False when there is no such row.
+    /// and Enter (or <c>V</c>: its variable toggle is clicked), a choice row the option with that id. False when
+    /// there is no such row.
     /// </summary>
     public bool Script(string key, string value)
     {
         if (!_rows.TryGetValue(key, out var view)) return false;
         switch (view.Tag)
         {
+            case NumberRow.Handle h when value == "V":
+                h.ToggleVariable();
+                return true;
             case NumberRow.Handle h:
                 h.Entry.TypeAndEnter(value);
                 return true;

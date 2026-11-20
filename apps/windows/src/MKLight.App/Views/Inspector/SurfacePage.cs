@@ -87,7 +87,11 @@ sealed partial class SurfacePage : UserControl
 
     // ---- Edits ----
 
-    void Edit(string name, SurfaceID id, Func<Surface, Surface?> change) => Doc.Edit(name, s => InspectorEdits.Surface(s, id, change));
+    /// <summary>One undoable edit of a surface; a refused one shows the value again.</summary>
+    void Edit(string name, SurfaceID id, Func<Surface, Surface?> change)
+    {
+        if (!Doc.Edit(name, s => InspectorEdits.Surface(s, id, change))) Schedule();
+    }
 
     void SetShape(string name, SurfaceID id, Func<SurfaceShape, SurfaceShape?> change) =>
         Edit(name, id, sf => change(sf.Shape) is { } shape ? sf with { Shape = shape } : null);

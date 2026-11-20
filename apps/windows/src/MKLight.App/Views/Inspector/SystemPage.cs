@@ -64,7 +64,11 @@ sealed partial class SystemPage : UserControl
         _form.Show(Sections(Doc.System));
     }
 
-    void Edit(string name, Func<OpticalSystem, OpticalSystem?> change) => Doc.Edit(name, change);
+    /// <summary>One undoable edit of the system; a refused one shows the value again.</summary>
+    void Edit(string name, Func<OpticalSystem, OpticalSystem?> change)
+    {
+        if (!Doc.Edit(name, change)) Schedule();
+    }
 
     VariableSpec Variable(OpticalSystem sys, ParamPath path) =>
         new(InspectorVariables.IsVariable(Doc.Section("variables"), sys, path), sys.SolveFor(path)?.Kind.Type.Title(), on =>
