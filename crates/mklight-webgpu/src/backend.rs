@@ -393,6 +393,9 @@ impl ComputeBackend for WebGpuBackend {
             warning,
         })
     }
+    fn unavailable(&self) -> Option<String> {
+        self.inner.gpu.unavailable()
+    }
 }
 
 impl QualificationBackend for WebGpuBackend {

@@ -6,6 +6,9 @@
 //!   not when the engine starts. A device that does not exist, fails to
 //!   open, or fails its start-up numerics probe (so it refuses traces) makes
 //!   the backend unavailable, with the reason.
+//! * A device that opened but can no longer run work
+//!   (`ComputeBackend::unavailable`: a WebGPU pipeline that never finished
+//!   compiling) is unavailable from then on, with its reason.
 //! * `MKLIGHT_DISABLE_GPU=1` in the environment makes every GPU provider
 //!   unavailable (reproducible CPU-only runs on a machine with a GPU).
 //! * Accuracy is established by offline cross-validation and the engine's
@@ -179,6 +182,16 @@ impl GpuProvider {
             Ok(Arc::new(d))
         })
     }
+
+    /// The open device, or why there is none: it did not open, or it can no
+    /// longer run work.
+    fn usable(&self) -> Result<Arc<GpuDevice>, String> {
+        let d = self.get().clone()?;
+        match d.backend.unavailable() {
+            Some(reason) => Err(reason),
+            None => Ok(d),
+        }
+    }
 }
 
 /// The driver of the CUDA device this process opened (its calibration's
@@ -223,6 +236,11 @@ impl GpuProvider {
     #[cfg(target_arch = "wasm32")]
     pub fn webgpu_browser() -> Self {
         Self::webgpu_with(|| {
+            // A pipeline failure remembered for this browser and adapter
+            // (`mklight_webgpu::watchdog`): do not wait for it again.
+            if let Some(reason) = mklight_webgpu::web::known_failure() {
+                return Err(reason);
+            }
             let gpu = mklight_webgpu::web::connect(std::time::Duration::from_secs(10))
                 .map_err(|e| e.to_string())?;
             mklight_webgpu::WebGpuBackend::with_gpu(Arc::new(gpu))
@@ -256,7 +274,7 @@ impl BackendProvider for GpuProvider {
             precision: Precision::F32Gpu,
             capabilities: BackendCapabilities::default(),
         };
-        match self.get() {
+        match self.usable() {
             Ok(d) => {
                 let di = d.backend.info();
                 info.available = true;
@@ -268,19 +286,22 @@ impl BackendProvider for GpuProvider {
                     unified_memory: Some(di.unified_memory),
                 };
             }
-            Err(reason) => info.reason = Some(reason.clone()),
+            Err(reason) => info.reason = Some(reason),
         }
         info
     }
 
     fn device(&self) -> Option<DeviceHandle> {
-        self.get().as_ref().ok().map(|d| d.clone() as DeviceHandle)
+        self.usable().ok().map(|d| d as DeviceHandle)
     }
 
     fn hint(&self) -> Option<ProviderHint> {
         let opened = match self.device.get() {
             Some(Err(reason)) => Some(Err(reason.clone())),
-            Some(Ok(d)) => Some(Ok(crate::analysis::is_apple_gpu(d.backend.info()))),
+            Some(Ok(d)) => match d.backend.unavailable() {
+                Some(reason) => Some(Err(reason)),
+                None => Some(Ok(crate::analysis::is_apple_gpu(d.backend.info()))),
+            },
             None if std::env::var("MKLIGHT_DISABLE_GPU").is_ok_and(|v| v == "1") => {
                 Some(Err("disabled by MKLIGHT_DISABLE_GPU=1".into()))
             }

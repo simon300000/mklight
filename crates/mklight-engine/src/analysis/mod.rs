@@ -249,6 +249,10 @@ pub struct AnalysisInput<'a> {
     pub requested_backend: String,
     /// Why the preferred backend was not selected (`BackendReport`).
     pub selection_note: Option<String>,
+    /// An explicit GPU request without fallback
+    /// (`AnalysisRequest::allow_backend_fallback` false): a device that
+    /// becomes unavailable during the run fails it instead of falling back.
+    pub strict_backend: bool,
     /// Job-level stop that retains the best result (optimisation/tolerancing).
     pub stop: CancelToken,
     resolver: Resolver<'a>,
@@ -304,6 +308,7 @@ impl<'a> AnalysisInput<'a> {
             device: None,
             requested_backend: Backend::CpuReference.id(),
             selection_note: None,
+            strict_backend: false,
             stop: CancelToken::new(),
             resolver,
             backend_used: RefCell::new(None),
@@ -337,6 +342,13 @@ impl<'a> AnalysisInput<'a> {
             .with_graph(self.graph.clone())
             .with_fresh(self.fresh)
             .with_stop_token(self.stop.clone())
+    }
+
+    /// Fail instead of falling back when the device becomes unavailable
+    /// during the run ([`Self::strict_backend`]).
+    pub fn with_strict_backend(mut self, strict: bool) -> Self {
+        self.strict_backend = strict;
+        self
     }
 
     /// Rebuild every graph node of this run instead of reading it

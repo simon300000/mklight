@@ -277,6 +277,11 @@ pub trait Gpu: Send + Sync {
         }
         Ok((kernels.len(), 0, None))
     }
+    /// Why the device can no longer run work (a pipeline that did not
+    /// become ready in time, `crate::watchdog`), once known.
+    fn unavailable(&self) -> Option<String> {
+        None
+    }
 }
 
 /// The binding shape of a pass, which with the kernel identifies a pipeline.

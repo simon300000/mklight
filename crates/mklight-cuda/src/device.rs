@@ -21,6 +21,7 @@ use cudarc::driver::{result as cu, sys};
 use mklight_core::{MkError, MkResult};
 use mklight_gpu::{BackendKind, NumericsProbe};
 use mklight_webgpu::device::*;
+use mklight_webgpu::watchdog::Health;
 
 use crate::kernels;
 
@@ -100,6 +101,9 @@ pub struct CudaDevice {
     /// memory pool: plan mirrors come and go with every plan, and
     /// `cuMemFree` would synchronise the device).
     admin: Mutex<sys::CUstream>,
+    /// Set once a sticky CUDA error has made the context unusable
+    /// (`Gpu::unavailable`).
+    health: Health,
 }
 
 /// Module statistics of this process: (compiled, loaded from the cache,
@@ -227,6 +231,7 @@ impl CudaDevice {
             next_key: AtomicU64::new(1),
             lanes: Mutex::new(Vec::new()),
             admin: Mutex::new(admin),
+            health: Health::default(),
         }))
     }
 
@@ -360,6 +365,59 @@ impl CudaDevice {
         })?;
         self.blocks.lock().unwrap().insert(k, (f, block));
         Ok((f, block))
+    }
+
+    /// `Ok` while the device can run work; once a sticky error made its
+    /// context unusable, that reason (`Gpu::unavailable`).
+    fn usable(&self) -> MkResult<()> {
+        match self.health.failure() {
+            Some(reason) => Err(MkError::Unsupported(format!("cuda: {reason}"))),
+            None => Ok(()),
+        }
+    }
+
+    /// After a failed call: whether the context is still usable. A sticky
+    /// error (a kernel fault, a launch the operating system's watchdog
+    /// stopped, an uncorrectable memory error, a lost device) is returned by
+    /// every later call, so the device is marked unavailable for the rest of
+    /// the process; anything else (out of memory, an invalid argument)
+    /// failed only this request. Returns `e`, or the unavailability.
+    fn diagnose(&self, e: MkError) -> MkError {
+        if self.health.failure().is_none() {
+            let _ = self.bind();
+            if let Some(code) = sticky(unsafe { sys::cuCtxSynchronize() }) {
+                self.health.fail(format!(
+                    "the CUDA device stopped working ({code:?} after: {e}); \
+                     the GPU needs a restart of the application"
+                ));
+            }
+        }
+        match self.health.failure() {
+            Some(reason) => MkError::Unsupported(format!("cuda: {reason}")),
+            None => e,
+        }
+    }
+
+    /// Mark the device unusable (tests of the unavailable path).
+    #[doc(hidden)]
+    pub fn fail_for_test(&self, reason: &str) {
+        self.health.fail(reason);
+    }
+
+    fn allocate_now(&self, words: usize) -> MkResult<BufferKey> {
+        self.bind()?;
+        let p = {
+            let admin = self.admin.lock().unwrap();
+            let p = unsafe { cu::malloc_async(*admin, words.max(4) * 4) }
+                .map_err(|e| err("cuMemAllocAsync", e))?;
+            // Usable on every stream once the allocation has completed.
+            unsafe { cu::stream::synchronize(*admin) }
+                .map_err(|e| err("cuStreamSynchronize", e))?;
+            p
+        };
+        let key = self.next_key.fetch_add(1, Ordering::Relaxed);
+        self.persistent.lock().unwrap().insert(key, (p, words));
+        Ok(BufferKey(key))
     }
 
     fn lane(&self) -> MkResult<Lane> {
@@ -692,30 +750,29 @@ impl Gpu for CudaDevice {
     fn persist(&self, words: &[u32]) -> MkResult<BufferKey> {
         let key = self.allocate(words.len())?;
         if !words.is_empty() {
-            self.bind()?;
-            let (p, _) = self.ptr(key)?;
-            unsafe { cu::memcpy_htod_sync(p, words) }.map_err(|e| err("cuMemcpyHtoD", e))?;
+            let copied = self.bind().and_then(|()| {
+                let (p, _) = self.ptr(key)?;
+                unsafe { cu::memcpy_htod_sync(p, words) }.map_err(|e| err("cuMemcpyHtoD", e))
+            });
+            if let Err(e) = copied {
+                self.release(key);
+                return Err(self.diagnose(e));
+            }
         }
         Ok(key)
     }
 
     fn allocate(&self, words: usize) -> MkResult<BufferKey> {
-        self.bind()?;
-        let p = {
-            let admin = self.admin.lock().unwrap();
-            let p = unsafe { cu::malloc_async(*admin, words.max(4) * 4) }
-                .map_err(|e| err("cuMemAllocAsync", e))?;
-            // Usable on every stream once the allocation has completed.
-            unsafe { cu::stream::synchronize(*admin) }
-                .map_err(|e| err("cuStreamSynchronize", e))?;
-            p
-        };
-        let key = self.next_key.fetch_add(1, Ordering::Relaxed);
-        self.persistent.lock().unwrap().insert(key, (p, words));
-        Ok(BufferKey(key))
+        self.usable()?;
+        self.allocate_now(words).map_err(|e| self.diagnose(e))
     }
 
     fn release(&self, key: BufferKey) {
+        if self.health.failure().is_some() {
+            // The context is unusable; its memory goes with the process.
+            self.persistent.lock().unwrap().remove(&key.0);
+            return;
+        }
         if let Some((p, _)) = self.persistent.lock().unwrap().remove(&key.0) {
             // Batches complete before `run` returns, so nothing uses `p`.
             let _ = self.bind();
@@ -727,6 +784,7 @@ impl Gpu for CudaDevice {
     }
 
     fn prepare(&self, kernels: &[(Kernel, PassShape)]) -> MkResult<()> {
+        self.usable()?;
         let none = std::sync::atomic::AtomicBool::new(false);
         self.prepare_parallel(kernels, &|_, _| {}, &none)
             .map(|_| ())
@@ -739,6 +797,7 @@ impl Gpu for CudaDevice {
         progress: &(dyn Fn(usize, usize) + Sync),
         cancel: &std::sync::atomic::AtomicBool,
     ) -> MkResult<(usize, usize, Option<String>)> {
+        self.usable()?;
         if let Some(d) = cache_dir {
             self.set_cache_dir(Some(d.join("cuda")));
         }
@@ -760,13 +819,21 @@ impl Gpu for CudaDevice {
     }
 
     fn run(&self, batch: Batch<'_>) -> MkResult<BatchStats> {
+        self.usable()?;
         self.bind()?;
         let mut lane = self.lane()?;
-        let r = self.run_on(&mut lane, batch);
-        if r.is_ok() {
-            self.lanes.lock().unwrap().push(lane);
+        match self.run_on(&mut lane, batch) {
+            Ok(stats) => {
+                self.lanes.lock().unwrap().push(lane);
+                Ok(stats)
+            }
+            // The lane's stream may hold the failure: it is not reused.
+            Err(e) => Err(self.diagnose(e)),
         }
-        r
+    }
+
+    fn unavailable(&self) -> Option<String> {
+        self.health.failure()
     }
 
     fn kind(&self) -> BackendKind {
@@ -870,4 +937,27 @@ impl CudaDevice {
         })?;
         Ok(cached.into_inner())
     }
+}
+
+/// The code of a sticky error: one that leaves the context unusable, so
+/// every later call returns it until the process ends.
+fn sticky(r: sys::CUresult) -> Option<sys::CUresult> {
+    use sys::CUresult::*;
+    matches!(
+        r,
+        CUDA_ERROR_ILLEGAL_ADDRESS
+            | CUDA_ERROR_LAUNCH_FAILED
+            | CUDA_ERROR_LAUNCH_TIMEOUT
+            | CUDA_ERROR_HARDWARE_STACK_ERROR
+            | CUDA_ERROR_ILLEGAL_INSTRUCTION
+            | CUDA_ERROR_MISALIGNED_ADDRESS
+            | CUDA_ERROR_INVALID_ADDRESS_SPACE
+            | CUDA_ERROR_INVALID_PC
+            | CUDA_ERROR_ECC_UNCORRECTABLE
+            | CUDA_ERROR_CONTEXT_IS_DESTROYED
+            | CUDA_ERROR_DEVICE_UNAVAILABLE
+            | CUDA_ERROR_DEINITIALIZED
+            | CUDA_ERROR_UNKNOWN
+    )
+    .then_some(r)
 }

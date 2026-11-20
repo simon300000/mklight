@@ -14,6 +14,7 @@ use mklight_core::{MkError, MkResult};
 
 use crate::device::*;
 use crate::kernels;
+use crate::watchdog::{self, Health, Watchdog};
 
 /// Limits the backend is designed for: the WebGPU defaults every browser
 /// grants without asking (`maxStorageBufferBindingSize` 128 MiB,
@@ -36,6 +37,10 @@ pub struct WgpuDevice {
     pool: Mutex<Pool>,
     /// Persistent keys whose buffers came from the pool (`allocate`).
     pooled: Mutex<std::collections::HashSet<u64>>,
+    /// Pipeline creation's time limit (`crate::watchdog`).
+    watchdog: Mutex<Watchdog>,
+    /// Set once a pipeline did not become ready in time.
+    health: Arc<Health>,
 }
 
 /// Idle batch buffers by (usage, size class): uploads, scratch and staging
@@ -152,6 +157,8 @@ impl WgpuDevice {
             next_key: AtomicU64::new(1),
             pool: Mutex::new(Pool::default()),
             pooled: Mutex::new(Default::default()),
+            watchdog: Mutex::new(Watchdog::default()),
+            health: Arc::default(),
         }))
     }
 
@@ -179,37 +186,9 @@ impl WgpuDevice {
         if let Some(p) = self.pipelines.lock().unwrap().get(&key) {
             return Ok(p.clone());
         }
+        self.check_health()?;
         let module = self.module(kernel.module)?;
-        let mut entries = vec![wgpu::BindGroupLayoutEntry {
-            binding: 0,
-            visibility: wgpu::ShaderStages::COMPUTE,
-            ty: wgpu::BindingType::Buffer {
-                ty: wgpu::BufferBindingType::Uniform,
-                has_dynamic_offset: false,
-                min_binding_size: None,
-            },
-            count: None,
-        }];
-        if shape.uniform {
-            entries.push(wgpu::BindGroupLayoutEntry {
-                binding: 1,
-                ..entries[0]
-            });
-        }
-        for (i, a) in shape.storage.iter().enumerate() {
-            entries.push(wgpu::BindGroupLayoutEntry {
-                binding: 2 + i as u32,
-                visibility: wgpu::ShaderStages::COMPUTE,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Storage {
-                        read_only: *a == Access::Read,
-                    },
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            });
-        }
+        let entries = layout_entries(shape);
         let layout = self
             .device
             .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -243,6 +222,175 @@ impl WgpuDevice {
         let p = Arc::new(Pipeline { layout, pipeline });
         self.pipelines.lock().unwrap().insert(key, p.clone());
         Ok(p)
+    }
+
+    /// The watchdog's settings (`crate::watchdog`).
+    pub fn watchdog(&self) -> Watchdog {
+        #[cfg(target_arch = "wasm32")]
+        if let Some(w) = crate::web::watchdog_override() {
+            return w;
+        }
+        self.watchdog.lock().unwrap().clone()
+    }
+
+    /// Change the watchdog's settings (a shorter limit, or simulated
+    /// stalls for tests).
+    pub fn set_watchdog(&self, w: Watchdog) {
+        *self.watchdog.lock().unwrap() = w;
+    }
+
+    /// The device's health, shared with the threads that use it through a
+    /// proxy.
+    pub fn health(&self) -> &Arc<Health> {
+        &self.health
+    }
+
+    fn check_health(&self) -> MkResult<()> {
+        match self.health.failure() {
+            Some(reason) => Err(MkError::Unsupported(format!("webgpu: {reason}"))),
+            None => Ok(()),
+        }
+    }
+
+    /// Make the pipelines of `kernels` ready, each within the watchdog's
+    /// time limit (`crate::watchdog`). A pipeline that does not become
+    /// ready in time fails the device for good.
+    pub async fn ensure_pipelines(&self, kernels: &[(Kernel, PassShape)]) -> MkResult<()> {
+        for (kernel, shape) in kernels {
+            if self
+                .pipelines
+                .lock()
+                .unwrap()
+                .contains_key(&(*kernel, shape.clone()))
+            {
+                continue;
+            }
+            self.check_health()?;
+            let w = self.watchdog();
+            let probe = if w.stalls(kernel.module) {
+                watchdog::stalled()
+            } else {
+                self.probe(*kernel, shape)?
+            };
+            match watchdog::race(probe, w.timeout).await {
+                Some(Ok(())) => {}
+                Some(Err(e)) => {
+                    return Err(backend_error(
+                        &format!("pipeline {}::{}", kernel.module, kernel.entry),
+                        e,
+                    ));
+                }
+                None => {
+                    self.health.fail(format!(
+                        "the {}::{} compute pipeline did not finish compiling within {} s, \
+                         so WebGPU is not used on this device",
+                        kernel.module,
+                        kernel.entry,
+                        w.timeout.as_secs_f64()
+                    ));
+                    self.check_health()?;
+                }
+            }
+            self.pipeline(*kernel, shape)?;
+        }
+        Ok(())
+    }
+
+    /// The pipeline's creation as a future (`crate::watchdog`). Natively
+    /// creation is synchronous: ready at once.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn probe(&self, _kernel: Kernel, _shape: &PassShape) -> MkResult<watchdog::Probe<'static>> {
+        Ok(Box::pin(std::future::ready(Ok(()))))
+    }
+
+    /// The pipeline's creation as a future (`crate::watchdog`): the same
+    /// pipeline (source, layout, entry point) requested from the browser
+    /// with `createComputePipelineAsync`. The browser compiles it off its
+    /// GPU thread and resolves once the pipeline is ready; the synchronous
+    /// creation that follows then finds the compiled pipeline in the
+    /// browser's caches.
+    #[cfg(target_arch = "wasm32")]
+    fn probe(&self, kernel: Kernel, shape: &PassShape) -> MkResult<watchdog::Probe<'static>> {
+        use js_sys::{Array, Function, Object, Promise, Reflect};
+        use wasm_bindgen::{JsCast, JsValue};
+        let js = |e: JsValue| backend_error("pipeline probe", format!("{e:?}"));
+        let Some(device) = self.device.as_webgpu() else {
+            return Ok(Box::pin(std::future::ready(Ok(()))));
+        };
+        let device: &JsValue = device.as_ref();
+        let call = |name: &str, arg: &JsValue| -> MkResult<JsValue> {
+            let f: Function = Reflect::get(device, &name.into())
+                .map_err(js)?
+                .dyn_into()
+                .map_err(js)?;
+            f.call1(device, arg).map_err(js)
+        };
+        let set = |o: &Object, k: &str, v: &JsValue| Reflect::set(o, &k.into(), v).map(|_| ());
+        let src = kernels::source(kernel.module).ok_or_else(|| {
+            MkError::Backend(format!("webgpu: no kernel module {}", kernel.module))
+        })?;
+        let build = || -> Result<(Object, Object), JsValue> {
+            let md = Object::new();
+            set(&md, "code", &src.as_str().into())?;
+            set(&md, "label", &kernel.module.into())?;
+            let entries = Array::new();
+            for e in layout_entries(shape) {
+                let ty = match e.ty {
+                    wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        ..
+                    } => "uniform",
+                    wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        ..
+                    } => "read-only-storage",
+                    _ => "storage",
+                };
+                let buffer = Object::new();
+                set(&buffer, "type", &ty.into())?;
+                let entry = Object::new();
+                set(&entry, "binding", &e.binding.into())?;
+                // GPUShaderStage.COMPUTE
+                set(&entry, "visibility", &4u32.into())?;
+                set(&entry, "buffer", &buffer)?;
+                entries.push(&entry);
+            }
+            let bgl = Object::new();
+            set(&bgl, "entries", &entries)?;
+            Ok((md, bgl))
+        };
+        let (md, bgl) = build().map_err(js)?;
+        // Validation errors of the probe stay in its own error scope.
+        let scope = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let created = (|| -> MkResult<JsValue> {
+            let module = call("createShaderModule", &md)?;
+            let layout = call("createBindGroupLayout", &bgl)?;
+            let pld = Object::new();
+            set(&pld, "bindGroupLayouts", &Array::of1(&layout)).map_err(js)?;
+            let pl = call("createPipelineLayout", &pld)?;
+            let stage = Object::new();
+            set(&stage, "module", &module).map_err(js)?;
+            set(&stage, "entryPoint", &kernel.entry.into()).map_err(js)?;
+            let pd = Object::new();
+            set(&pd, "label", &kernel.entry.into()).map_err(js)?;
+            set(&pd, "layout", &pl).map_err(js)?;
+            set(&pd, "compute", &stage).map_err(js)?;
+            call("createComputePipelineAsync", &pd)
+        })();
+        let popped = scope.pop();
+        let promise = created?.dyn_into::<Promise>().map_err(js)?;
+        let ready = wasm_bindgen_futures::JsFuture::from(promise);
+        Ok(Box::pin(async move {
+            if let Some(e) = popped.await {
+                return Err(e.to_string());
+            }
+            ready.await.map(|_| ()).map_err(|e| {
+                Reflect::get(&e, &"message".into())
+                    .ok()
+                    .and_then(|m| m.as_string())
+                    .unwrap_or_else(|| format!("{e:?}"))
+            })
+        }))
     }
 
     fn buffer(
@@ -561,6 +709,7 @@ impl WgpuDevice {
     /// [`Gpu::run`] without blocking: the browser's GPU thread awaits the
     /// batch in its event loop (`crate::proxy`).
     pub async fn run_async(&self, batch: Batch<'_>) -> MkResult<BatchStats> {
+        self.ensure_pipelines(&batch_pipelines(&batch)).await?;
         let mut s = self.submit(batch)?;
         if let Some(e) = s.scope.take().unwrap().pop().await {
             return Err(backend_error("batch", e));
@@ -625,14 +774,63 @@ impl WgpuDevice {
     /// [`Gpu::prepare`] without blocking.
     pub async fn prepare_async(&self, kernels: &[(Kernel, PassShape)]) -> MkResult<()> {
         let scope = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
-        for (k, s) in kernels {
-            self.pipeline(*k, s)?;
-        }
-        match scope.pop().await {
+        let ready = self.ensure_pipelines(kernels).await;
+        let popped = scope.pop().await;
+        ready?;
+        match popped {
             Some(e) => Err(backend_error("pipeline preparation", e)),
             None => Ok(()),
         }
     }
+}
+
+/// The bind group layout of a pass shape (`crate::device`'s binding
+/// convention: the environment block, the uniform block when the pass has
+/// one, then the storage buffers).
+fn layout_entries(shape: &PassShape) -> Vec<wgpu::BindGroupLayoutEntry> {
+    let mut entries = vec![wgpu::BindGroupLayoutEntry {
+        binding: 0,
+        visibility: wgpu::ShaderStages::COMPUTE,
+        ty: wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Uniform,
+            has_dynamic_offset: false,
+            min_binding_size: None,
+        },
+        count: None,
+    }];
+    if shape.uniform {
+        entries.push(wgpu::BindGroupLayoutEntry {
+            binding: 1,
+            ..entries[0]
+        });
+    }
+    for (i, a) in shape.storage.iter().enumerate() {
+        entries.push(wgpu::BindGroupLayoutEntry {
+            binding: 2 + i as u32,
+            visibility: wgpu::ShaderStages::COMPUTE,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Storage {
+                    read_only: *a == Access::Read,
+                },
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        });
+    }
+    entries
+}
+
+/// The distinct pipelines a batch's passes use, in first-use order.
+fn batch_pipelines(batch: &Batch<'_>) -> Vec<(Kernel, PassShape)> {
+    let mut v: Vec<(Kernel, PassShape)> = Vec::new();
+    for p in &batch.passes {
+        let k = (p.kernel, p.shape());
+        if !v.contains(&k) {
+            v.push(k);
+        }
+    }
+    v
 }
 
 /// Completion of a batch's readback mappings, as a future.
@@ -702,7 +900,11 @@ impl Gpu for WgpuDevice {
     fn prepare(&self, kernels: &[(Kernel, PassShape)]) -> MkResult<()> {
         pollster::block_on(self.prepare_async(kernels))
     }
+    fn unavailable(&self) -> Option<String> {
+        self.health.failure()
+    }
     fn run(&self, batch: Batch<'_>) -> MkResult<BatchStats> {
+        pollster::block_on(self.ensure_pipelines(&batch_pipelines(&batch)))?;
         let mut s = self.submit(batch)?;
         if let Some(e) = pollster::block_on(s.scope.take().unwrap().pop()) {
             return Err(backend_error("batch", e));

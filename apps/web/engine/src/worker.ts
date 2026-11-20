@@ -136,9 +136,9 @@ function idb<T>(mode: IDBTransactionMode, f: (s: IDBObjectStore) => IDBRequest<T
   })
 }
 
-/** What a calibration is valid for: the adapter, the CPU threads and the
- * engine version. */
-async function calibrationKey(threads: number): Promise<string> {
+/** The WebGPU adapter as a key: vendor, architecture, device and
+ * description. */
+async function adapterKey(): Promise<string> {
   let adapter = 'unknown'
   try {
     const a = await (navigator as unknown as { gpu: { requestAdapter(): Promise<{ info?: Record<string, string> } | null> } }).gpu.requestAdapter()
@@ -147,7 +147,63 @@ async function calibrationKey(threads: number): Promise<string> {
   } catch {
     /* keyed as unknown */
   }
-  return `${adapter}|threads=${threads}|engine=${wasm.engine_version()}`
+  return adapter
+}
+
+/** What a calibration is valid for: the adapter, the CPU threads and the
+ * engine version. */
+async function calibrationKey(threads: number): Promise<string> {
+  return `${await adapterKey()}|threads=${threads}|engine=${wasm.engine_version()}`
+}
+
+// ---------------------------------------------------------------------------
+// WebGPU pipeline failures (the watchdog, mklight_webgpu::watchdog),
+// remembered in the calibration database
+
+/** How long a remembered pipeline failure holds: browsers do not expose the
+ * driver version, so a driver update is noticed only by trying again. */
+const PIPELINE_FAILURE_DAYS = 14
+
+interface PipelineFailure {
+  reason: string
+  /** When it was recorded (ms since the epoch). */
+  at: number
+}
+
+/** What a pipeline failure is remembered for: the adapter, the browser
+ * (its user agent names the version, so an update tries again) and the
+ * kernels (a new build tries again). */
+async function pipelineFailureKey(): Promise<string> {
+  return `pipeline-failure|${await adapterKey()}|${navigator.userAgent}|kernels=${wasm.webgpu_kernel_build()}`
+}
+
+/** The remembered failure under `key`, unless it has expired. */
+async function rememberedPipelineFailure(key: string): Promise<PipelineFailure | null> {
+  const text = await idb<string>('readonly', (s) => s.get(key))
+  if (!text) return null
+  try {
+    const f = JSON.parse(text) as PipelineFailure
+    if (typeof f.reason === 'string' && Date.now() - f.at < PIPELINE_FAILURE_DAYS * 864e5) return f
+  } catch {
+    /* unreadable: try again */
+  }
+  void idb('readwrite', (s) => s.delete(key))
+  return null
+}
+
+/** The key of this load's pipeline failure record (set once the GPU worker
+ * runs and no failure was remembered), cleared once one is recorded. */
+let pipelineFailureWatch: string | null = null
+
+/** Record the pipeline failure of this load, if the watchdog fired. */
+function recordPipelineFailure() {
+  if (pipelineFailureWatch === null) return
+  const reason = wasm.webgpu_pipeline_failure()
+  if (!reason) return
+  const key = pipelineFailureWatch
+  pipelineFailureWatch = null
+  const f: PipelineFailure = { reason, at: Date.now() }
+  void idb('readwrite', (s) => s.put(JSON.stringify(f), key))
 }
 
 let calibrationTimer: ReturnType<typeof setInterval> | null = null
@@ -173,6 +229,8 @@ async function startCalibration(threads: number) {
     if (s.state === 'running') return
     clearInterval(calibrationTimer!)
     calibrationTimer = null
+    // A failed calibration may have met a pipeline that never compiles.
+    recordPipelineFailure()
     if (s.state === 'ready' && s.calibration) {
       void idb('readwrite', (st) => st.put(JSON.stringify(s.calibration), key))
     }
@@ -230,6 +288,7 @@ function poll() {
       return
     }
     jobs.delete(job)
+    recordPipelineFailure()
     try {
       const r = wasm.job_take_result(t.engine) as RawResult
       post({ type: 'result', job, result: r }, transferables(r))
@@ -257,8 +316,11 @@ function snapshotOf(sid: number) {
 }
 
 const handlers: { [K in Op]: Handler<K> } = {
-  async init({ threads, cores, config, webgpuCalibration }) {
+  async init({ threads, cores, config, webgpuCalibration, webgpuWatchdog }) {
     await init()
+    if (webgpuWatchdog && typeof wasm.webgpu_set_watchdog === 'function') {
+      wasm.webgpu_set_watchdog(webgpuWatchdog.timeoutMs ?? 0, (webgpuWatchdog.stalledModules ?? []).join(','))
+    }
     // rayon's pool build waits until all its threads run, and a worker can
     // only start while this one is idle: start their hosts first.
     const [, gpu] = await Promise.all([
@@ -267,9 +329,26 @@ const handlers: { [K in Op]: Handler<K> } = {
     ])
     wasm.init_thread_pool(threads)
     wasm.engine_create(JSON.stringify(config), cores)
-    if (gpu) wasm.register_webgpu()
+    // A pipeline that never finished compiling on this browser and adapter
+    // in an earlier load: WebGPU stays off instead of waiting again.
+    let knownFailure = false
+    if (gpu) {
+      const key = await pipelineFailureKey()
+      const f = await rememberedPipelineFailure(key)
+      if (f) {
+        knownFailure = true
+        const since = new Date(f.at).toISOString().slice(0, 10)
+        wasm.webgpu_set_known_failure(
+          `${f.reason} (remembered for this browser and GPU since ${since}; tried again after a browser ` +
+            `update, a new engine build or ${PIPELINE_FAILURE_DAYS} days)`,
+        )
+      } else {
+        pipelineFailureWatch = key
+      }
+      wasm.register_webgpu()
+    }
     topUpHosts()
-    if (gpu && webgpuCalibration !== 'off') void startCalibration(threads)
+    if (gpu && !knownFailure && webgpuCalibration !== 'off') void startCalibration(threads)
     ready = true
     return {
       version: wasm.engine_version(),

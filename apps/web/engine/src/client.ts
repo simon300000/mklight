@@ -156,7 +156,7 @@ export function wireRequest(req: AnalysisRequest): JSONObject {
   const backend = wireBackend(req.backend)
   if (backend) {
     o.backend = backend
-    if ((backend as { kind?: string }).kind === 'gpu') o.allow_backend_fallback = true
+    if ((backend as { kind?: string }).kind === 'gpu') o.allow_backend_fallback = req.allow_backend_fallback ?? true
   }
   if (req.fresh) o.fresh = true
   if (req.tier) o.tier = req.tier
@@ -346,6 +346,7 @@ export async function createEngine(opts: CreateEngineOptions = {}): Promise<Engi
     cores: r.hardwareConcurrency,
     config: { ...WEB_CONFIG, ...(opts.config ?? {}) },
     webgpuCalibration: opts.webgpuCalibration ?? 'auto',
+    ...(opts.webgpuWatchdog ? { webgpuWatchdog: opts.webgpuWatchdog } : {}),
   })
   const sid = await conn.call('sessionNew', {})
   const info: EngineInfo = {
