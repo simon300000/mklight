@@ -193,7 +193,10 @@ public sealed class LinePlot
         {
             var x = MapX(v);
             ds.DrawLine(x, (float)plot.Y, x, (float)plot.Bottom, style.Grid, 1);
-            PlotText.Draw(ds, Ticks.Label(v, xStep), x, plot.Bottom + 9, style.Label);
+            // End labels stay inside the bounds (centred unless that would cut them off).
+            var label = Ticks.Label(v, xStep);
+            var half = PlotText.Measure(ds, label).Width / 2;
+            PlotText.Draw(ds, label, Math.Clamp(x, bounds.X + half, Math.Max(bounds.X + half, bounds.Right - half)), plot.Bottom + 9, style.Label);
         }
         foreach (var v in yTicks)
         {

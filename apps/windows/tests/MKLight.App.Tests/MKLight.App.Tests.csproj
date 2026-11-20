@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Unit tests of the app's pure result readers and settings mapping (no WinUI). -->
+  <PropertyGroup>
+    <TargetFramework>$(WindowsTargetFramework)</TargetFramework>
+    <IsPackable>false</IsPackable>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>MKLight.App.Tests</RootNamespace>
+    <Platforms>x64;ARM64</Platforms>
+    <UseMicrosoftTestingPlatformRunner>true</UseMicrosoftTestingPlatformRunner>
+    <TestingPlatformDotnetTestSupport>true</TestingPlatformDotnetTestSupport>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="xunit.v3" Version="4.0.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="4.0.1" />
+  </ItemGroup>
+  <ItemGroup>
+    <Using Include="Xunit" />
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="..\..\src\MKLight.App\Views\Analysis\ResultData.cs" Link="Linked\ResultData.cs" />
+    <Compile Include="..\..\src\MKLight.App\Views\Analysis\Results\Readers\*.cs" Link="Linked\Readers\%(Filename)%(Extension)" />
+    <Compile Include="..\..\src\MKLight.App\Views\Analysis\Settings\SettingsField.cs" Link="Linked\Settings\SettingsField.cs" />
+    <Compile Include="..\..\src\MKLight.App\Views\Analysis\Settings\SettingControls.cs" Link="Linked\Settings\SettingControls.cs" />
+    <Compile Include="..\..\src\MKLight.App\Views\Analysis\Settings\AutoSettings.cs" Link="Linked\Settings\AutoSettings.cs" />
+    <Compile Include="..\..\src\MKLight.App\Views\Analysis\Settings\SettingEntry.cs" Link="Linked\Settings\SettingEntry.cs" />
+    <Compile Include="..\..\src\MKLight.App\Views\Analysis\Settings\SettingsContext.cs" Link="Linked\Settings\SettingsContext.cs" />
+    <Compile Include="..\..\src\MKLight.App\Views\Analysis\Settings\SettingsSummary.cs" Link="Linked\Settings\SettingsSummary.cs" />
+  </ItemGroup>
+</Project>
