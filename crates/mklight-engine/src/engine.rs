@@ -123,6 +123,8 @@ impl Default for Engine {
 
 impl Engine {
     pub fn new(config: EngineConfig) -> Self {
+        #[cfg(feature = "windows-worker-priority")]
+        crate::priority::raise_workers();
         let mut sc = SchedulerConfig::default();
         if config.worker_threads > 0 {
             sc.workers = config.worker_threads;

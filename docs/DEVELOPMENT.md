@@ -89,7 +89,11 @@ the Python package also take `--features mimalloc` (for maturin,
 `maturin develop --release --features mimalloc`), which replaces the
 Windows heap: on an i9-12900KS the CPU analyses ran 1.15–1.4× faster
 with it (spot diagram, ray grid, geometric MTF, PSF, MTF; bitwise the
-same results).
+same results). `--features mklight-engine/windows-worker-priority` runs
+the rayon workers one step above normal priority, which keeps the
+fork–join analyses from stalling on preempted workers when other
+processes load every core (spot diagram 950 → 72 ms next to 24 busy
+threads; no change on an idle machine).
 
 ## Tests
 

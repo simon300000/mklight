@@ -28,6 +28,11 @@ thiserror.workspace = true
 blake3.workspace = true
 rayon.workspace = true
 
+[features]
+# Opt-in, Windows only: rayon workers above normal priority (src/priority.rs).
+# Enable from a front end with --features mklight-engine/windows-worker-priority.
+windows-worker-priority = []
+
 [[test]]
 name = "tests"
 path = "tests/main.rs"
