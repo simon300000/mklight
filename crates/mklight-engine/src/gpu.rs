@@ -132,6 +132,17 @@ impl GpuProvider {
         }
     }
 
+    /// The CUDA backend on device 0 (`gpu:cuda`): the WebGPU host
+    /// operations over CUDA kernels, so it runs the analyses of
+    /// `WEBGPU_ANALYSES` natively.
+    pub fn cuda() -> Self {
+        GpuProvider {
+            analyses: WEBGPU_ANALYSES,
+            apple_gpu: Some(false),
+            ..Self::new("cuda", "CUDA GPU (f32)", open_cuda)
+        }
+    }
+
     /// The system default Metal device (`gpu:metal`).
     pub fn metal() -> Self {
         Self::new("metal", "Metal GPU (f32)", open_metal)
@@ -163,6 +174,14 @@ impl GpuProvider {
             let d = GpuDevice::new(self.backend.id(), b);
             Ok(Arc::new(d))
         })
+    }
+}
+
+fn open_cuda() -> Result<Arc<dyn ComputeBackend>, String> {
+    match mklight_cuda::open() {
+        Ok(Some(b)) => Ok(Arc::new(b)),
+        Ok(None) => Err("this machine has no CUDA driver or device".into()),
+        Err(e) => Err(format!("the CUDA device could not be opened: {e}")),
     }
 }
 

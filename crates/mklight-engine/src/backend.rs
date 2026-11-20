@@ -268,12 +268,12 @@ impl Default for BackendRegistry {
 
 impl BackendRegistry {
     /// The CPU reference, plus on macOS the Metal backend and then the
-    /// WebGPU backend (each opened on first use; unavailable without a
-    /// qualifying device). `auto` takes the first GPU registered, so it
+    /// WebGPU backend, on Windows and Linux the CUDA backend (each opened on
+    /// first use; unavailable without a qualifying device). `auto` takes the first GPU registered, so it
     /// prefers Metal natively; WebGPU is an explicit choice there and the
     /// GPU of the browser build, which registers it itself
     /// (`crate::gpu::GpuProvider::webgpu_with`, WEB.md).
-    #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
+    #[cfg_attr(not(any(target_os = "macos", windows, target_os = "linux")), allow(unused_mut))]
     pub fn with_defaults() -> Self {
         let mut r = Self::cpu_only();
         #[cfg(target_os = "macos")]
@@ -281,6 +281,11 @@ impl BackendRegistry {
             r.register(Arc::new(crate::gpu::GpuProvider::metal()));
             r.register(Arc::new(crate::gpu::GpuProvider::webgpu()));
         }
+        // CUDA on NVIDIA GPUs (GPU.md §12). WebGPU is not registered natively
+        // here: on NVIDIA's Vulkan and D3D12 drivers its trace pipeline does
+        // not finish compiling.
+        #[cfg(any(windows, target_os = "linux"))]
+        r.register(Arc::new(crate::gpu::GpuProvider::cuda()));
         r
     }
 
