@@ -144,11 +144,23 @@ export interface AnalysisJob {
   stop(): void
 }
 
+/** What the catalog reader reported about one glass or record (a skipped or
+ *  replaced glass, listed n_d/V_d the coefficients do not give, …). */
+export interface CatalogWarning {
+  line?: number | null
+  glass?: string | null
+  /** `missing_dispersion`, `unsupported_formula`, `duplicate_glass`, `index_mismatch`, … */
+  kind: string
+  message: string
+}
+
 export interface CatalogInfo {
   name: string
   source: string
   path?: string | null
   glass_count: number
+  /** The reader's warnings (absent from older engines). */
+  warnings?: CatalogWarning[]
 }
 
 export interface ImportWarning {

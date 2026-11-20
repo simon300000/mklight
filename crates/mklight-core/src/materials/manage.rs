@@ -95,6 +95,10 @@ pub struct CatalogChanges {
     pub removed: Vec<String>,
     pub changed: Vec<GlassChange>,
     pub unchanged: usize,
+    /// What the reader reported for the new version (skipped, replaced or
+    /// inconsistent glasses; see `agf::AgfWarning`).
+    #[serde(default)]
+    pub warnings: Vec<AgfWarning>,
 }
 
 impl CatalogChanges {
@@ -321,9 +325,16 @@ pub fn catalog_to_agf(cat: &GlassCatalog) -> (String, Vec<AgfWarning>) {
 pub struct GlassRow {
     pub catalog: String,
     pub name: String,
-    /// Catalog `n_d`, `V_d` (display values).
-    pub nd: f64,
-    pub vd: f64,
+    /// `n_d`, `V_d` computed from the dispersion formula (what tracing
+    /// uses); `None` (JSON `null`) when the glass's range leaves out the d
+    /// line (`n_d`), or the d, F or C line (`V_d`), as for infrared glasses.
+    pub nd: Option<f64>,
+    pub vd: Option<f64>,
+    /// `n_d`, `V_d` as the catalog lists them (AGF `NM`; vendor files list
+    /// 1 and 0 for infrared glasses, user glasses 0). They may disagree with
+    /// the coefficients; loading such a catalog warns.
+    pub catalog_nd: f64,
+    pub catalog_vd: f64,
     /// `P_g,F = (n_g − n_F)/(n_F − n_C)` and its deviation from the normal
     /// line, from the dispersion formula; `None` outside the glass's range.
     pub pgf: Option<f64>,
@@ -383,11 +394,14 @@ fn lambda80(g: &Glass) -> Option<f64> {
 pub fn glass_row(catalog: &str, glass: &Glass, original: Option<&Glass>) -> GlassRow {
     let (pgf, dpgf) = partial_dispersion(glass);
     let t = &glass.transmittance;
+    let (nd, vd) = agf::d_line_values(glass);
     GlassRow {
         catalog: catalog.to_string(),
         name: glass.name.clone(),
-        nd: glass.nd,
-        vd: glass.vd,
+        nd,
+        vd,
+        catalog_nd: glass.nd,
+        catalog_vd: glass.vd,
         pgf,
         dpgf,
         min_um: glass.min_um,
@@ -429,7 +443,8 @@ pub struct GlassDetails {
     pub formula: Option<u32>,
     pub formula_name: String,
     pub coefficients: Vec<f64>,
-    /// `n_d`, `V_d` computed from the dispersion formula.
+    /// `n_d`, `V_d` computed from the dispersion formula (the same as the
+    /// row's `nd`, `vd`; kept for older readers).
     pub computed_nd: Option<f64>,
     pub computed_vd: Option<f64>,
     /// A model glass's parameters, when the dispersion is a model glass's fit.
@@ -501,12 +516,7 @@ pub fn glass_details(catalog: &str, glass: &Glass, original: &Glass) -> GlassDet
         },
     };
     let inside = |l: f64| glass.min_um <= l && l <= glass.max_um;
-    let (computed_nd, computed_vd) = if inside(lines::D) && inside(lines::F) && inside(lines::C) {
-        let (n, v) = computed_nd_vd(&glass.dispersion);
-        (finite(n), finite(v))
-    } else {
-        (None, None)
-    };
+    let (computed_nd, computed_vd) = (row.nd, row.vd);
     let named = [
         ("i", 0.365_015),
         ("h", 0.404_656),
@@ -732,6 +742,85 @@ LD 0.32 2.5\r\n";
         assert_eq!(d.index_curve.len(), 81);
         assert!((d.computed_nd.unwrap() - 1.5168).abs() < 2e-5);
         assert_eq!(d.glass, *g);
+    }
+
+    /// Made-up glasses: one whose `NM` line lists n_d/V_d its coefficients
+    /// do not give (the coefficients are TESTFLINT's), and an infrared glass
+    /// (range 2–14 µm, listed as vendors list them: n_d 1, V_d 0), in
+    /// UTF-16LE with CRLF as some vendors ship.
+    const LISTED: &str = "NM WRONGNM 2 587759 1.587166 75.90 1 2 0\r\n\
+CD 1.34533359 0.00997743871 0.209073176 0.0470450767 0.937357162 111.886764 0 0 0 0\r\n\
+OD 2.0 1 0 1 1 1\r\n\
+LD 0.32 2.5\r\n\
+NM IRTEST 3 0 1.000000 0.000000 0 3 4\r\n\
+CD 2.4 0.01 0.0002 0.00001 -1e-7 1e-9\r\n\
+LD 2.0 14.0\r\n";
+
+    fn listed() -> agf::AgfCatalog {
+        let bytes = agf::encode_text(LISTED, agf::TextEncoding::Utf16Le);
+        agf::parse_agf_bytes("LISTED", &bytes, &AgfOptions::default()).unwrap()
+    }
+
+    #[test]
+    fn rows_report_computed_nd_vd_and_keep_the_listed_ones() {
+        let c = listed();
+        // The mismatch is a warning naming the glass; the glass is kept.
+        let w: Vec<_> = c
+            .warnings
+            .iter()
+            .map(|w| (w.glass.as_deref(), w.kind))
+            .collect();
+        assert_eq!(w, [(Some("WRONGNM"), agf::AgfWarningKind::IndexMismatch)]);
+        let g = &c.catalog.glasses["WRONGNM"];
+        let r = glass_row("LISTED", g, None);
+        assert!((r.nd.unwrap() - 1.62004).abs() < 2e-5, "{:?}", r.nd);
+        assert!((r.vd.unwrap() - 36.37).abs() < 0.05, "{:?}", r.vd);
+        assert_eq!((r.catalog_nd, r.catalog_vd), (1.587166, 75.90));
+        let d = glass_details("LISTED", g, g);
+        assert_eq!((d.computed_nd, d.computed_vd), (r.nd, r.vd));
+
+        // No d line in the range: no n_d, V_d (JSON null), no warning.
+        let ir = glass_row("LISTED", &c.catalog.glasses["IRTEST"], None);
+        assert_eq!((ir.nd, ir.vd), (None, None));
+        assert_eq!((ir.catalog_nd, ir.catalog_vd), (1.0, 0.0));
+        let json = serde_json::to_value(&ir).unwrap();
+        assert!(json["nd"].is_null() && json["vd"].is_null(), "{json}");
+        // A range with the d line but not the F line: n_d only.
+        let mut half = c.catalog.glasses["WRONGNM"].clone();
+        half.min_um = 0.5;
+        let r = glass_row("LISTED", &half, None);
+        assert!(r.nd.is_some() && r.vd.is_none());
+    }
+
+    #[test]
+    fn agf_export_and_import_round_trips_listed_values_ranges_and_statuses() {
+        let first = listed();
+        let (text, w) = catalog_to_agf(&first.catalog);
+        assert!(w.is_empty(), "{w:?}");
+        // Infrared glasses are written as vendors write them.
+        assert!(text.contains("NM IRTEST 3 0 1 0 0 3 4\r\n"), "{text}");
+        assert!(text.contains("NM WRONGNM 2 587759 1.587166 75.9 1 2 0\r\n"));
+        let back = parse_agf_with("LISTED", &text, &AgfOptions::default()).unwrap();
+        // The same warnings, and exactly the same glasses: coefficients,
+        // range, statuses, exclusion and listed n_d/V_d.
+        let kinds = |c: &agf::AgfCatalog| c.warnings.iter().map(|w| w.kind).collect::<Vec<_>>();
+        assert_eq!(kinds(&back), kinds(&first));
+        assert_eq!(back.catalog, first.catalog);
+        let ir = &back.catalog.glasses["IRTEST"];
+        assert_eq!((ir.min_um, ir.max_um), (2.0, 14.0));
+        assert_eq!(ir.substitution.status, GlassStatus::Special);
+        assert!(
+            back.catalog.glasses["WRONGNM"]
+                .substitution
+                .exclude_substitution
+        );
+        // A user glass without listed values (n_d 0, as an editor makes an
+        // infrared glass) is written with n_d 1, V_d 0 too.
+        let mut user = first.catalog.clone();
+        let g = user.glasses.get_mut("IRTEST").unwrap();
+        (g.nd, g.vd, g.agf) = (0.0, 0.0, None);
+        let (text, _) = catalog_to_agf(&user);
+        assert!(text.contains("NM IRTEST 3 000000 1 0 0 3\r\n"), "{text}");
     }
 
     #[test]

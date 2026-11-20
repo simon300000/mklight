@@ -1,7 +1,6 @@
 """Sessions: samples, system dicts, edits, files, catalogs, errors."""
 
 import copy
-import math
 from pathlib import Path
 
 import pytest
@@ -108,7 +107,9 @@ def test_load_catalog_changes_library_hash(achromat, tmp_path):
     names = [c["name"] for c in achromat.catalogs()]
     assert names[0] == "BUILTIN" and "mycat" in names
     g = achromat.glasses("mycat")
-    assert g[0]["name"] == "MYBK7" and math.isclose(g[0]["nd"], 1.5168)
+    # nd is computed from the dispersion; catalog_nd is the listed value.
+    assert g[0]["name"] == "MYBK7" and g[0]["nd"] == pytest.approx(1.5168, abs=2e-5)
+    assert g[0]["catalog_nd"] == 1.5168 and info["warnings"] == []
     # The glass is usable by analyses through the session's library.
     r = achromat.run("glass_info", {"name": "MYBK7", "catalog": "mycat"})
     assert r.data["nd"] == pytest.approx(1.5168, abs=2e-4)

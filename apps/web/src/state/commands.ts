@@ -158,7 +158,14 @@ export async function loadGlassCatalog(file?: File | null): Promise<string | nul
     })
     ws().designChanged(doc().project.system)
     useCatalogs.getState().refresh()
-    view().toast(`Loaded ${info.name}: ${info.glass_count} glasses.`)
+    const warnings = info.warnings ?? []
+    if (warnings.length === 0) view().toast(`Loaded ${info.name}: ${info.glass_count} glasses.`)
+    else {
+      const w = warnings[0]
+      const first = `${w.line != null ? `line ${w.line}: ` : ''}${w.glass ? `${w.glass}: ` : ''}${w.message}`
+      const n = warnings.length === 1 ? '1 warning' : `${warnings.length} warnings`
+      view().toast(`Loaded ${info.name}: ${info.glass_count} glasses; ${n} (first: ${first}).`, 'warning')
+    }
     return info.name
   } catch (e) {
     view().toast(`${f.name} could not be loaded: ${e instanceof Error ? e.message : String(e)}`, 'error')

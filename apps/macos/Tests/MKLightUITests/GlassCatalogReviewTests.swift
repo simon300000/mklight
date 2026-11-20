@@ -104,15 +104,25 @@ import Testing
     }
 
     /// An infrared glass whose range leaves out the d line has no n_d, V_d
-    /// (the engine reports 1 and 0); the table shows a dash, not 1.00000.
+    /// (the engine reports null; the catalog lists 1 and 0); the table shows
+    /// a dash, not 1.00000.
     @Test func glassesWithoutTheDLineShowNoNumbers() throws {
         let ir = try #require(GlassRow(json: .object([
-            "catalog": .string("IR"), "name": .string("IRG"), "nd": .number(1), "vd": .number(0),
-            "min_um": .number(2), "max_um": .number(14),
+            "catalog": .string("IR"), "name": .string("IRG"), "nd": .null, "vd": .null,
+            "catalog_nd": .number(1), "catalog_vd": .number(0), "min_um": .number(2), "max_um": .number(14),
         ])))
-        #expect(!ir.hasDLine && ir.ndText == "—" && ir.vdText == "—")
+        #expect(!ir.hasDLine && ir.ndText == "—" && ir.vdText == "—" && !ir.listedValuesDiffer)
+        #expect(ir.catalogNd == 1 && ir.catalogVd == 0)
         let crown = try #require(GlassRow(json: .object(["catalog": .string("C"), "name": .string("K"), "nd": .number(1.5168), "vd": .number(64.17)])))
-        #expect(crown.hasDLine && crown.ndText == "1.51680" && crown.vdText == "64.17")
+        #expect(crown.hasDLine && crown.ndText == "1.51680" && crown.vdText == "64.17" && !crown.listedValuesDiffer)
+        // A catalog line whose listed values its coefficients do not give.
+        let odd = try #require(GlassRow(json: .object([
+            "catalog": .string("C"), "name": .string("ODD"), "nd": .number(1.62075), "vd": .number(60.30),
+            "catalog_nd": .number(1.587166), "catalog_vd": .number(75.90),
+        ])))
+        #expect(odd.listedValuesDiffer && odd.ndText == "1.62075")
+        #expect(warningsNote([]) == "")
+        #expect(warningsNote([CatalogWarning(line: 3, glass: "ODD", kind: "index_mismatch", message: "m")]) == " Reading it reported 1 warning (first: line 3: ODD: m).")
         #expect(glassCountText(1) == "1 glass" && glassCountText(0) == "0 glasses")
     }
 

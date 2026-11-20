@@ -1,6 +1,6 @@
 //! Catalogue and design glass coordinates at standard spectral lines.
 use mklight_core::job::{Precision, RunTimer};
-use mklight_core::materials::agf::GlassStatus;
+use mklight_core::materials::agf::{GlassStatus, d_line_values};
 use mklight_core::materials::{
     MaterialLibrary, MaterialOffset, ResolvedMaterial, TransmittancePoint, lines,
 };
@@ -68,13 +68,16 @@ pub fn glass_map_job(
             let meta = s.metadata.iter().find(|m| {
                 m.catalog.eq_ignore_ascii_case(&cat.name) && m.name.eq_ignore_ascii_case(&g.name)
             });
+            // From the dispersion, as P_g,F is (the listed values may
+            // disagree with it); the listed ones outside the glass's range.
+            let (nd, vd) = d_line_values(g);
             glasses.push(GlassPoint {
                 catalog: Some(cat.name.clone()),
                 name: g.name.clone(),
                 kind: "catalog".into(),
                 offset: MaterialOffset::default(),
-                nd: g.nd,
-                vd: g.vd,
+                nd: nd.unwrap_or(g.nd),
+                vd: vd.unwrap_or(g.vd),
                 pgf,
                 status: Some(meta.map_or(g.substitution.status, |m| m.status)),
                 exclude_substitution: Some(meta.map_or(g.substitution.exclude_substitution, |m| {
