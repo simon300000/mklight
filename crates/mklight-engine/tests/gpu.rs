@@ -376,10 +376,12 @@ fn merit_jobs_run_on_the_selected_provider() {
 /// The same seed gives the same Monte Carlo under `auto`, repeated in one
 /// engine: the repeat keeps the first run's route although refinement, the
 /// device and the warm caches change the cost prediction (the backends'
-/// compensator solves agree only within the accuracy contract).
+/// compensator solves agree only within the accuracy contract). The
+/// emulation gives `auto` a GPU where the defaults have none (on macOS
+/// Metal stays the first GPU, which `auto` takes).
 #[test]
 fn auto_monte_carlo_repeats_bit_identically() {
-    let e = engine_with(None);
+    let e = engine_with(Some(GpuProvider::emulation()));
     e.set_default_backend(Backend::Auto).unwrap();
     let s = session(&e, samples::cooke_triplet());
     let settings = json!({"mode": "both", "trials": 40, "seed": 5, "record_trials": 10,
