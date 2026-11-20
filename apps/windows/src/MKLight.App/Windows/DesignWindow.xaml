@@ -13,48 +13,54 @@
             <RowDefinition Height="*" />
         </Grid.RowDefinitions>
 
-        <!-- Custom title bar: icon, file and design name, the status capsule in the centre,
+        <!-- Custom title bar: icon, menu bar and design name, the status capsule in the centre,
              Add Analysis and the inspector toggle trailing (the Mac toolbar's groups). -->
         <TitleBar x:Name="AppTitleBar" Height="52"
                   IsBackButtonVisible="False" IsPaneToggleButtonVisible="True"
                   PaneToggleRequested="OnPaneToggleRequested">
+            <TitleBar.Resources>
+                <!-- The menu bar starts right after the icon (the title bar centres its content otherwise). -->
+                <HorizontalAlignment x:Key="TitleBarContentHorizontalAlignment">Stretch</HorizontalAlignment>
+                <Thickness x:Key="TitleBarIconMargin">0,0,6,0</Thickness>
+                <!-- Compact items, as Windows 11 apps' menu bars have them. -->
+                <Thickness x:Key="MenuBarItemButtonPadding">8,4,8,4</Thickness>
+                <Thickness x:Key="MenuBarItemMargin">2,0,2,0</Thickness>
+            </TitleBar.Resources>
             <TitleBar.IconSource>
                 <ImageIconSource ImageSource="ms-appx:///Assets/AppIcon.png" />
             </TitleBar.IconSource>
-            <TitleBar.RightHeader>
-                <StackPanel x:Name="RightButtons" Orientation="Horizontal" Spacing="2" Margin="0,0,4,0" VerticalAlignment="Center">
-                    <Button x:Name="UndoButton" Style="{StaticResource CircleButton}" Content="&#xE7A7;" Click="OnUndo" ToolTipService.ToolTip="Undo (Ctrl+Z)" />
-                    <Button x:Name="RedoButton" Style="{StaticResource CircleButton}" Content="&#xE7A6;" Click="OnRedo" ToolTipService.ToolTip="Redo (Ctrl+Y)" />
-                    <Border Width="1" Height="18" Margin="6,0" Background="{ThemeResource DividerBrush}" />
-                    <DropDownButton x:Name="AddAnalysisButton" Height="30" CornerRadius="15" Padding="9,0,7,0"
-                                    Background="Transparent" BorderThickness="0"
-                                    ToolTipService.ToolTip="Add an analysis pane">
-                        <FontIcon Glyph="&#xECCD;" FontSize="14" />
-                        <DropDownButton.Flyout>
-                            <MenuFlyout x:Name="AddAnalysisMenu" Placement="BottomEdgeAlignedRight" />
-                        </DropDownButton.Flyout>
-                    </DropDownButton>
-                    <Button x:Name="FileButton" Style="{StaticResource CircleButton}" Content="&#xE8A5;" ToolTipService.ToolTip="File">
-                        <Button.Flyout>
-                            <MenuFlyout x:Name="FileMenu" Placement="BottomEdgeAlignedRight">
-                                <MenuFlyoutItem Text="New from Sample…" Click="OnNew"><MenuFlyoutItem.Icon><FontIcon Glyph="&#xE8A5;" /></MenuFlyoutItem.Icon></MenuFlyoutItem>
-                                <MenuFlyoutItem Text="Open…" Click="OnOpen"><MenuFlyoutItem.Icon><FontIcon Glyph="&#xE838;" /></MenuFlyoutItem.Icon></MenuFlyoutItem>
-                                <MenuFlyoutSubItem x:Name="RecentMenu" Text="Open Recent"><MenuFlyoutSubItem.Icon><FontIcon Glyph="&#xE81C;" /></MenuFlyoutSubItem.Icon></MenuFlyoutSubItem>
-                                <MenuFlyoutSeparator />
-                                <MenuFlyoutItem Text="Save" Click="OnSave"><MenuFlyoutItem.Icon><FontIcon Glyph="&#xE74E;" /></MenuFlyoutItem.Icon></MenuFlyoutItem>
-                                <MenuFlyoutItem Text="Save As…" Click="OnSaveAs" />
-                                <MenuFlyoutSeparator x:Name="ThemeSeparator" />
-                                <RadioMenuFlyoutItem x:Name="ThemeSystem" Text="System Appearance" GroupName="theme" Click="OnTheme" Tag="system" />
-                                <RadioMenuFlyoutItem x:Name="ThemeLight" Text="Light" GroupName="theme" Click="OnTheme" Tag="light" />
-                                <RadioMenuFlyoutItem x:Name="ThemeDark" Text="Dark" GroupName="theme" Click="OnTheme" Tag="dark" />
-                            </MenuFlyout>
-                        </Button.Flyout>
-                    </Button>
-                    <ToggleButton x:Name="InspectorToggle" Style="{StaticResource CircleToggleButton}" Content="&#xE89F;"
-                                  IsChecked="True" Click="OnInspectorToggle" ToolTipService.ToolTip="Show or hide the inspector (Ctrl+Alt+P)" />
-                </StackPanel>
-            </TitleBar.RightHeader>
+            <!-- The menu bar after the icon (as Notepad and Paint have it), on Mica; the design's name after it. -->
+            <TitleBar.Content>
+                <Grid x:Name="MenuArea" HorizontalAlignment="Stretch">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+                    <MenuBar x:Name="Menus" Background="Transparent" VerticalAlignment="Center" Height="32" />
+                    <TextBlock x:Name="DocTitle" Grid.Column="1" Margin="10,0,0,1" HorizontalAlignment="Left" VerticalAlignment="Center"
+                               Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                               TextTrimming="CharacterEllipsis" IsHitTestVisible="False" />
+                </Grid>
+            </TitleBar.Content>
         </TitleBar>
+
+        <!-- Undo, Redo, Add Analysis and the inspector toggle, trailing before the caption buttons (over the title
+             bar, as its right header would sit too far left: its inset is taken in pixels, not in view units). -->
+        <StackPanel x:Name="RightButtons" Orientation="Horizontal" Spacing="2" Margin="0,0,4,0" HorizontalAlignment="Right" VerticalAlignment="Center">
+            <Button x:Name="UndoButton" Style="{StaticResource CircleButton}" Content="&#xE7A7;" Click="OnUndo" ToolTipService.ToolTip="Undo (Ctrl+Z)" />
+            <Button x:Name="RedoButton" Style="{StaticResource CircleButton}" Content="&#xE7A6;" Click="OnRedo" ToolTipService.ToolTip="Redo (Ctrl+Y)" />
+            <Border x:Name="UndoDivider" Width="1" Height="18" Margin="6,0" Background="{ThemeResource DividerBrush}" />
+            <DropDownButton x:Name="AddAnalysisButton" Height="30" CornerRadius="15" Padding="9,0,7,0"
+                            Background="Transparent" BorderThickness="0"
+                            ToolTipService.ToolTip="Add an analysis pane">
+                <FontIcon Glyph="&#xECCD;" FontSize="14" />
+                <DropDownButton.Flyout>
+                    <MenuFlyout x:Name="AddAnalysisMenu" Placement="BottomEdgeAlignedRight" />
+                </DropDownButton.Flyout>
+            </DropDownButton>
+            <ToggleButton x:Name="InspectorToggle" Style="{StaticResource CircleToggleButton}" Content="&#xE89F;"
+                          IsChecked="True" Click="OnInspectorToggle" ToolTipService.ToolTip="Show or hide the inspector (Ctrl+Alt+P)" />
+        </StackPanel>
 
         <!-- The status capsule, centred on the window (pointer input passes through the title bar there). -->
         <views:StatusCapsule x:Name="Status" HorizontalAlignment="Center" VerticalAlignment="Center" />

@@ -42,44 +42,119 @@ public sealed partial class StatusCapsule : UserControl
         ActivityText.Visibility = string.IsNullOrEmpty(text) ? Visibility.Collapsed : Visibility.Visible;
     }
 
-    /// <summary>The key numbers: (label, value) pairs, or a single caption when there are none.</summary>
-    public void SetNumbers(IReadOnlyList<(string Label, string Value)> numbers, string? caption = null)
+    /// <summary>The GPU kernel preparation: "Preparing GPU n%" with a spinner, "GPU ready", or nothing (null).</summary>
+    public void SetGpu(string? text, bool preparing)
     {
+        GpuBadge.Visibility = text is null ? Visibility.Collapsed : Visibility.Visible;
+        GpuText.Text = text ?? "";
+        GpuRing.IsActive = text is not null && preparing;
+        GpuRing.Visibility = GpuRing.IsActive ? Visibility.Visible : Visibility.Collapsed;
+        ToolTipService.SetToolTip(GpuBadge, preparing ? ViewModels.GpuPreparationMonitor.BadgeHelp : null);
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(GpuBadge, text ?? "");
+    }
+
+    /// <summary>Opens the details flyout (launch actions for screenshots).</summary>
+    /// <param name="keepOpenFor">Shows it again when it closes within this time (another window taking the focus while a screenshot waits).</param>
+    public void ShowDetails(TimeSpan keepOpenFor = default)
+    {
+        var flyout = NumbersButton.Flyout;
+        var until = DateTime.UtcNow + keepOpenFor;
+        void Reopen(object? s, object e)
+        {
+            if (DateTime.UtcNow < until) DispatcherQueue.TryEnqueue(() => flyout.ShowAt(NumbersButton));
+            else flyout.Closed -= Reopen;
+        }
+        if (keepOpenFor > TimeSpan.Zero) flyout.Closed += Reopen;
+        flyout.ShowAt(NumbersButton);
+    }
+
+    /// <summary>The key numbers: (label, value) pairs, or a single caption when there are none; a stale result is dimmed.</summary>
+    public void SetNumbers(IReadOnlyList<(string Label, string Value)> numbers, string? caption = null, bool stale = false)
+    {
+        Numbers.Opacity = stale ? 0.5 : 1;
         Numbers.Children.Clear();
         foreach (var (label, value) in numbers)
         {
             var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 5 };
             row.Children.Add(new TextBlock { Text = label, Style = (Style)Application.Current.Resources["SecondaryText"], FontSize = 12 });
-            row.Children.Add(new TextBlock { Text = value, Style = (Style)Application.Current.Resources["NumberText"], FontSize = 12.5 });
+            var number = new TextBlock { Text = value, Style = (Style)Application.Current.Resources["NumberText"], FontSize = 12.5 };
+            Microsoft.UI.Xaml.Automation.AutomationProperties.SetAutomationId(number, "Status." + label switch { "EFL" or "EFL y" => "EFL", "F/#" => "FNumber", _ => label });
+            row.Children.Add(number);
             Numbers.Children.Add(row);
         }
         if (numbers.Count == 0)
             Numbers.Children.Add(new TextBlock { Text = caption ?? "", Style = (Style)Application.Current.Resources["SecondaryText"], FontSize = 12 });
     }
 
-    /// <summary>Rows of the details flyout: (section or label, value); a null value is a section header.</summary>
-    public void SetDetails(IEnumerable<(string Label, string? Value)> rows)
+    static Style StyleOf(string key) => (Style)Application.Current.Resources[key];
+
+    /// <summary>The details flyout: sections, rows, the x / y table of an anamorphic design, notes and warnings.</summary>
+    public void SetDetails(IEnumerable<StatusDetail> rows)
     {
         Details.Children.Clear();
-        foreach (var (label, value) in rows)
+        foreach (var row in rows)
         {
-            if (value is null)
+            FrameworkElement e;
+            switch (row.Kind)
             {
-                Details.Children.Add(new TextBlock
+                case StatusDetail.Kinds.Header:
+                    e = new TextBlock { Text = row.Label, Style = StyleOf("PanelTitleText"), Margin = new Thickness(0, Details.Children.Count == 0 ? 0 : 10, 0, 2) };
+                    break;
+                case StatusDetail.Kinds.Note:
+                    e = new TextBlock { Text = row.Label, Style = StyleOf("CaptionText"), TextWrapping = TextWrapping.Wrap, TextTrimming = TextTrimming.None, IsTextSelectionEnabled = true };
+                    break;
+                case StatusDetail.Kinds.Warning:
                 {
-                    Text = label, Style = (Style)Application.Current.Resources["PanelTitleText"],
-                    Margin = new Thickness(0, Details.Children.Count == 0 ? 0 : 10, 0, 2),
-                });
-                continue;
+                    var g = new Grid { ColumnSpacing = 6 };
+                    g.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+                    g.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+                    g.Children.Add(new FontIcon { Glyph = "\uE7BA", FontSize = 12, Foreground = ThemeLookup.Brush(this, "WarningBrush"), VerticalAlignment = VerticalAlignment.Top, Margin = new Thickness(0, 2, 0, 0) });
+                    var t = new TextBlock { Text = row.Label, Style = StyleOf("CaptionText"), TextWrapping = TextWrapping.Wrap, TextTrimming = TextTrimming.None, IsTextSelectionEnabled = true };
+                    Grid.SetColumn(t, 1);
+                    g.Children.Add(t);
+                    e = g;
+                    break;
+                }
+                case StatusDetail.Kinds.XyHeader:
+                case StatusDetail.Kinds.Xy:
+                {
+                    var head = row.Kind == StatusDetail.Kinds.XyHeader;
+                    var g = new Grid { ColumnSpacing = 12 };
+                    g.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+                    g.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(90) });
+                    g.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(90) });
+                    g.Children.Add(new TextBlock { Text = row.Label, Style = StyleOf("SecondaryText") });
+                    var col = 1;
+                    foreach (var value in new[] { row.Value, row.Value2 })
+                    {
+                        var v = new TextBlock
+                        {
+                            Text = value ?? "", Style = StyleOf(head ? "CaptionText" : "NumberText"), TextAlignment = TextAlignment.Right,
+                            HorizontalAlignment = HorizontalAlignment.Right, IsTextSelectionEnabled = !head,
+                        };
+                        Grid.SetColumn(v, col++);
+                        g.Children.Add(v);
+                    }
+                    if (head) Microsoft.UI.Xaml.Automation.AutomationProperties.SetAccessibilityView(g, Microsoft.UI.Xaml.Automation.Peers.AccessibilityView.Raw);
+                    else Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(g, $"{row.Help ?? row.Label}: x {row.Value} mm, y {row.Value2} mm");
+                    e = g;
+                    break;
+                }
+                default:
+                {
+                    var g = new Grid { ColumnSpacing = 12 };
+                    g.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+                    g.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+                    g.Children.Add(new TextBlock { Text = row.Label, Style = StyleOf("SecondaryText") });
+                    var v = new TextBlock { Text = row.Value ?? "", Style = StyleOf("NumberText"), TextAlignment = TextAlignment.Right, IsTextSelectionEnabled = true, MaxWidth = 230, TextWrapping = TextWrapping.Wrap };
+                    Grid.SetColumn(v, 1);
+                    g.Children.Add(v);
+                    e = g;
+                    break;
+                }
             }
-            var g = new Grid { ColumnSpacing = 12 };
-            g.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-            g.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-            g.Children.Add(new TextBlock { Text = label, Style = (Style)Application.Current.Resources["SecondaryText"] });
-            var v = new TextBlock { Text = value, Style = (Style)Application.Current.Resources["NumberText"], TextAlignment = TextAlignment.Right, IsTextSelectionEnabled = true };
-            Grid.SetColumn(v, 1);
-            g.Children.Add(v);
-            Details.Children.Add(g);
+            if (row.Help is not null) ToolTipService.SetToolTip(e, row.Help);
+            Details.Children.Add(e);
         }
     }
 
@@ -125,17 +200,36 @@ public sealed partial class StatusCapsule : UserControl
     Action<int>? _backendChanged;
     bool _settingBackend;
 
-    /// <summary>The compute backend picker in the details flyout.</summary>
-    public void SetBackends(IReadOnlyList<string> titles, int selected, Action<int> changed)
+    IReadOnlyList<MKLight.Engine.ComputeBackendOption> _backends = [];
+
+    /// <summary>
+    /// The compute backend picker in the details flyout: the engine's backends by title, the
+    /// unavailable ones disabled with their reason; a note under it says why a chosen backend is not used.
+    /// </summary>
+    public void SetBackends(IReadOnlyList<MKLight.Engine.ComputeBackendOption> options, int selected, Action<int> changed)
     {
         _settingBackend = true;
         _backendChanged = changed;
-        if (BackendPicker.Items.Count != titles.Count)
+        if (!options.SequenceEqual(_backends))
         {
+            _backends = options;
             BackendPicker.Items.Clear();
-            foreach (var t in titles) BackendPicker.Items.Add(t);
+            foreach (var o in options)
+            {
+                var content = new StackPanel { Spacing = 0 };
+                content.Children.Add(new TextBlock { Text = o.Title, Style = StyleOf("NumberText") });
+                if (o.Reason is not null)
+                    content.Children.Add(new TextBlock { Text = o.Reason, Style = StyleOf("CaptionText"), MaxWidth = 280, TextWrapping = TextWrapping.Wrap, TextTrimming = TextTrimming.None });
+                var item = new ComboBoxItem { Content = content, IsEnabled = o.Enabled };
+                ToolTipService.SetToolTip(item, o.Reason is null ? o.Help : o.Reason);
+                Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(item, o.Reason is null ? o.Title : $"{o.Title}, not available: {o.Reason}");
+                BackendPicker.Items.Add(item);
+            }
         }
         BackendPicker.SelectedIndex = selected;
+        var chosen = selected >= 0 && selected < options.Count ? options[selected] : null;
+        BackendNote.Text = chosen is { Enabled: false } ? $"Not available: {chosen.Reason}. Analyses run on the CPU reference." : "";
+        BackendNote.Visibility = BackendNote.Text.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
         _settingBackend = false;
     }
 

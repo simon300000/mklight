@@ -19,7 +19,18 @@ namespace MKLight.App.Support;
 ///   --screenshot &lt;file.png&gt; render the window to a PNG once the panes are drawn, then quit
 ///   --delay &lt;seconds&gt;       extra wait before the screenshot (default 0)
 ///   --save-as &lt;file&gt;       save the design to this file before the screenshot
+///   --sidebar hidden|shown  hide or show the sidebar
+///   --show-issues           open the status capsule's issues list
+///   --toast &lt;text&gt;         show a toast in the design window
+///   --support-dir &lt;path&gt;   the support folder for this run: glass library, autosaves (MKLIGHT_SUPPORT_DIRECTORY)
+///   --fit lens|all          fit the layout to the lens or to everything
+///   --curvature-bounds-unit radius|curvature  how variables bound curvatures, for this run
+///   --recover-autosaves     offer to recover autosaved designs in a scripted run too
 /// </code>
+/// A <c>.zmx</c> or <c>.seq</c> file argument with <c>--screenshot</c> captures the design window
+/// with its import report open. Document launch actions (<c>--do</c>): <c>revert</c>,
+/// <c>duplicate</c>, <c>rename=&lt;name&gt;</c>, <c>replace-sample=&lt;id&gt;</c>, <c>autosave</c>,
+/// <c>import-catalog=&lt;file&gt;</c> (loads a catalog and imports the lens file again).
 /// </summary>
 public sealed class LaunchOptions
 {
@@ -38,6 +49,13 @@ public sealed class LaunchOptions
     public string? Screenshot;
     public double Delay;
     public string? SaveAs;
+    public bool? Sidebar;
+    public bool ShowIssues;
+    public string? Toast;
+    public string? SupportDirectory;
+    public string? Fit;
+    public string? CurvatureBoundsUnit;
+    public bool RecoverAutosaves;
 
     public bool IsScripted => Screenshot is not null;
 
@@ -67,6 +85,15 @@ public sealed class LaunchOptions
                 case "--screenshot": o.Screenshot = Path.GetFullPath(Next()); break;
                 case "--delay": o.Delay = double.Parse(Next(), System.Globalization.CultureInfo.InvariantCulture); break;
                 case "--save-as": o.SaveAs = Path.GetFullPath(Next()); break;
+                case "--sidebar":
+                    o.Sidebar = OneOf(a, Next(), "hidden", "shown") == "shown";
+                    break;
+                case "--show-issues": o.ShowIssues = true; break;
+                case "--toast": o.Toast = Next(); break;
+                case "--support-dir": o.SupportDirectory = Path.GetFullPath(Next()); break;
+                case "--fit": o.Fit = OneOf(a, Next(), "lens", "all"); break;
+                case "--curvature-bounds-unit": o.CurvatureBoundsUnit = OneOf(a, Next(), "radius", "curvature"); break;
+                case "--recover-autosaves": o.RecoverAutosaves = true; break;
                 case "--size":
                     var p = Next().Split('x');
                     o.Size = (int.Parse(p[0], System.Globalization.CultureInfo.InvariantCulture), int.Parse(p[1], System.Globalization.CultureInfo.InvariantCulture));
@@ -78,4 +105,7 @@ public sealed class LaunchOptions
         }
         return o;
     }
+
+    static string OneOf(string option, string value, params string[] allowed) =>
+        allowed.Contains(value) ? value : throw new ArgumentException($"{option} takes {string.Join(" or ", allowed)}, not {value}");
 }

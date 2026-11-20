@@ -14,5 +14,6 @@
   <Folder Name="/tests/">
     <Project Path="tests/MKLight.Tests/MKLight.Tests.csproj" />
     <Project Path="tests/MKLight.App.Tests/MKLight.App.Tests.csproj" />
+    <Project Path="tests/MKLight.UITests/MKLight.UITests.csproj" />
   </Folder>
 </Solution>

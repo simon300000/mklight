@@ -33,6 +33,14 @@ fn engine_with(p: Option<GpuProvider>) -> Engine {
     e
 }
 
+/// The emulation's kernels under another id: `auto` never selects
+/// `gpu:cpu_f32` itself, so tests of `auto` register this as its GPU.
+fn auto_gpu() -> GpuProvider {
+    GpuProvider::new("cpu_f32_auto", "CPU f32 stand-in for an `auto` GPU", || {
+        Ok(Arc::new(mklight_gpu::CpuF32Backend::new()) as Arc<dyn mklight_gpu::ComputeBackend>)
+    })
+}
+
 fn session(e: &Engine, sys: OpticalSystem) -> Session {
     e.session_from_project(Project::new(sys)).unwrap()
 }
@@ -175,9 +183,9 @@ fn metal_matches_the_reference_within_budget() {
 
 #[test]
 fn auto_picks_a_gpu_only_for_analyses_with_a_gpu_path() {
-    let e = engine_with(Some(GpuProvider::emulation()));
+    let e = engine_with(Some(auto_gpu()));
     // `auto` takes the first available GPU in registration order: Metal
-    // where it qualifies as a device, else the emulation.
+    // where it qualifies as a device, else the stand-in.
     let s = session(&e, samples::double_gauss());
     // A large grid: `auto` follows its own cost decision (native exactly
     // when it predicts a meaningful gain), without a warning.
@@ -202,7 +210,7 @@ fn auto_picks_a_gpu_only_for_analyses_with_a_gpu_path() {
         &s,
         "spot_diagram",
         json!({"rings": 3}),
-        Some(Backend::Gpu("cpu_f32".into())),
+        Some(Backend::Gpu("cpu_f32_auto".into())),
     );
     assert_eq!(r.run_info.precision, Precision::F32Gpu);
     let r = run_on(&s, "seidel", Value::Null, Some(Backend::Auto));
@@ -231,7 +239,7 @@ fn auto_picks_a_gpu_only_for_analyses_with_a_gpu_path() {
     // An explicit GPU request for an analysis without a GPU path fails
     // (or falls back when allowed, with a warning).
     let mut req = AnalysisRequest::new("seidel", Value::Null);
-    req.backend = Some(Backend::Gpu("cpu_f32".into()));
+    req.backend = Some(Backend::Gpu("cpu_f32_auto".into()));
     assert!(s.run_analysis(&req, &JobContext::new()).is_err());
     req.allow_backend_fallback = true;
     let r = s.run_analysis(&req, &JobContext::new()).unwrap();
@@ -379,11 +387,11 @@ fn merit_jobs_run_on_the_selected_provider() {
 /// engine: the repeat keeps the first run's route although refinement, the
 /// device and the warm caches change the cost prediction (the backends'
 /// compensator solves agree only within the accuracy contract). The
-/// emulation gives `auto` a GPU where the defaults have none (on macOS
+/// stand-in (the emulation under another id) gives `auto` a GPU where the defaults have none (on macOS
 /// Metal stays the first GPU, which `auto` takes).
 #[test]
 fn auto_monte_carlo_repeats_bit_identically() {
-    let e = engine_with(Some(GpuProvider::emulation()));
+    let e = engine_with(Some(auto_gpu()));
     e.set_default_backend(Backend::Auto).unwrap();
     let s = session(&e, samples::cooke_triplet());
     let settings = json!({"mode": "both", "trials": 40, "seed": 5, "record_trials": 10,
@@ -537,4 +545,54 @@ fn cuda_kernels_prepare_ahead() {
         s => panic!("{s:?}"),
     }
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `EngineConfig::register_emulation` lists `gpu:cpu_f32` as an emulation
+/// on the CPU, runs an explicit request on it, and never gives it to
+/// `auto`, even as the only GPU; without the flag nothing is registered.
+#[test]
+fn registered_emulation_runs_only_on_explicit_request() {
+    let engine = |register_emulation| {
+        Engine::new(EngineConfig {
+            worker_threads: 2,
+            register_emulation,
+            ..Default::default()
+        })
+    };
+    let listed = |e: &Engine| e.backends().into_iter().find(|b| b.id == "gpu:cpu_f32");
+    assert!(listed(&engine(false)).is_none());
+    let e = engine(true);
+    let info = listed(&e).expect("registered by the configuration");
+    assert!(info.available && info.precision == Precision::F32Gpu);
+    assert!(info.title.contains("CPU") && info.title.contains("not a real GPU"));
+    let s = session(&e, samples::double_gauss());
+    let r = run_on(
+        &s,
+        "spot_diagram",
+        json!({"rings": 3}),
+        Some(Backend::Gpu("cpu_f32".into())),
+    );
+    assert_eq!(r.run_info.backend, "gpu:cpu_f32");
+    assert_eq!(r.run_info.precision, Precision::F32Gpu);
+    e.set_default_backend(Backend::Auto).unwrap();
+    let big = json!({"rings": 512, "pattern": "square", "include_points": false});
+    for backend in [Some(Backend::Auto), None] {
+        let r = run_on(&s, "spot_diagram", big.clone(), backend);
+        assert_ne!(r.run_info.backend, "gpu:cpu_f32");
+        // Without a real GPU (the emulation aside) auto runs the CPU
+        // reference and says why the emulation was not taken; with one (CUDA
+        // on Windows and Linux, Metal on macOS) it may take that GPU.
+        let real_gpu = e
+            .backends()
+            .iter()
+            .any(|b| b.available && b.id.starts_with("gpu:") && b.id != "gpu:cpu_f32");
+        if !real_gpu {
+            assert_eq!(r.run_info.backend, "cpu_reference");
+            let why = r.backend.fallback_reason.clone().unwrap_or_default();
+            assert!(
+                why.contains("gpu:cpu_f32") && why.contains("emulation"),
+                "{why}"
+            );
+        }
+    }
 }

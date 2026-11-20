@@ -31,6 +31,7 @@ sealed class LensCellEditor
     public LensCellEditor(Canvas overlay, Func<string, Style> style)
     {
         _box = new TextBox { Style = style("LensEditor"), Visibility = Visibility.Collapsed };
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetAutomationId(_box,"LensEditor");
         _box.TextChanged += (_, _) => OnTextChanged();
         _box.PreviewKeyDown += OnKeyDown;
         _box.LostFocus += (_, _) => OnLostFocus();

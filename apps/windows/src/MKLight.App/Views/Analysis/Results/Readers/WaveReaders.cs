@@ -44,12 +44,24 @@ public sealed class PsfData
     }
 
     /// <summary>
-    /// The part of a PSF worth looking at on a linear scale: the smallest square about the
-    /// peak holding every cell above <paramref name="threshold"/> of the peak, widened by
-    /// 15 % (and at least 8 cells each side), so the core and its first rings fill the view
-    /// instead of a dot in a wide sampling window. The whole grid when that is not smaller.
+    /// A PSF is shown on a logarithmic scale from the start when its Strehl ratio is below this:
+    /// such a PSF spreads its energy over a halo far below the peak, which a linear scale
+    /// leaves almost white.
     /// </summary>
-    public static MapGrid Focus(MapGrid g, double threshold = 1e-3)
+    public const double LogBelowStrehl = 0.1;
+
+    /// <summary>Whether <paramref name="it"/> reads better on a logarithmic scale (a low Strehl ratio).</summary>
+    public static bool PrefersLog(Item it) => double.IsFinite(it.Strehl) && it.Strehl < LogBelowStrehl;
+
+    /// <summary>
+    /// The part of a PSF worth looking at: the smallest square about the peak holding every
+    /// cell above <paramref name="threshold"/> of the peak or <paramref name="energy"/> of the
+    /// energy, whichever is smaller, widened by 15 % (and at least 8 cells each side), so the
+    /// core and its first rings fill the view instead of a dot in a wide sampling window, and an
+    /// aberrated PSF (whose weak peak puts every cell above the threshold) shows where its
+    /// energy is. The whole grid when that is not smaller.
+    /// </summary>
+    public static MapGrid Focus(MapGrid g, double threshold = 1e-3, double energy = 0.95)
     {
         int ci = 0, cj = 0;
         var peak = double.NegativeInfinity;
@@ -57,9 +69,26 @@ public sealed class PsfData
             if (double.IsFinite(g.Values[k]) && g.Values[k] > peak) { peak = g.Values[k]; ci = k % g.Nx; cj = k / g.Nx; }
         if (!(peak > 0)) return g;
         var h = 0;
+        var rings = new double[Math.Max(g.Nx, g.Ny) + 1];
+        var total = 0.0;
         for (var j = 0; j < g.Ny; j++)
             for (var i = 0; i < g.Nx; i++)
-                if (g.Values[j * g.Nx + i] >= threshold * peak) h = Math.Max(h, Math.Max(Math.Abs(i - ci), Math.Abs(j - cj)));
+            {
+                var v = g.Values[j * g.Nx + i];
+                if (!double.IsFinite(v)) continue;
+                var r = Math.Max(Math.Abs(i - ci), Math.Abs(j - cj));
+                if (v >= threshold * peak) h = Math.Max(h, r);
+                if (v > 0) { rings[r] += v; total += v; }
+            }
+        if (total > 0)
+        {
+            var sum = 0.0;
+            for (var r = 0; r < rings.Length; r++)
+            {
+                sum += rings[r];
+                if (sum >= energy * total) { h = Math.Min(h, r); break; }
+            }
+        }
         var half = Math.Max((int)Math.Ceiling(h * 1.15) + 2, 8);
         int i0 = Math.Max(ci - half, 0), i1 = Math.Min(ci + half, g.Nx - 1), j0 = Math.Max(cj - half, 0), j1 = Math.Min(cj + half, g.Ny - 1);
         if (i1 - i0 + 1 >= g.Nx && j1 - j0 + 1 >= g.Ny) return g;

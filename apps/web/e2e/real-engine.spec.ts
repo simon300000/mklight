@@ -45,3 +45,25 @@ test('the real engine: Cooke triplet, edit a radius, spot and MTF', async ({ pag
   await expect(mtf.getByRole('button', { name: /Run details/ })).toContainText('CPU')
 
 })
+
+test('start-up makes no WebGPU call on the page', async ({ page }) => {
+  // A browser whose GPU process does not answer (e.g. still compiling for a
+  // page closed before): the page's adapter requests would never resolve.
+  // The app must load and compute anyway, without asking on the page.
+  await page.addInitScript(() => {
+    const w = window as unknown as { __adapterRequests: number; GPU?: { prototype: { requestAdapter: () => Promise<unknown> } } }
+    w.__adapterRequests = 0
+    if (w.GPU) {
+      w.GPU.prototype.requestAdapter = () => {
+        w.__adapterRequests++
+        return new Promise(() => {})
+      }
+    }
+  })
+  const t0 = Date.now()
+  await page.goto('./?sample=cooke_triplet')
+  expect(Date.now() - t0).toBeLessThan(20_000)
+  await expect(page.getByTestId('status-capsule')).toContainText('EFL', { timeout: 60_000 })
+  await expect(page.getByTestId('pane-spot_diagram').getByTestId('key-numbers')).toContainText('RMS')
+  expect(await page.evaluate(() => (window as unknown as { __adapterRequests: number }).__adapterRequests)).toBe(0)
+})

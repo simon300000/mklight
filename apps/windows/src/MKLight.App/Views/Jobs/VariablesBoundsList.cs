@@ -28,6 +28,7 @@ public static class VariablesBoundsList
             var unit = JobUI.Segments(["Radius mm", "Curvature 1/mm"], CurvatureUnit == CurvatureBoundsUnit.Radius ? 0 : 1, k =>
             {
                 CurvatureUnit = k == 0 ? CurvatureBoundsUnit.Radius : CurvatureBoundsUnit.Curvature;
+                Support.AppSettings.CurvatureBoundsUnit = k == 0 ? "radius" : "curvature";
                 refresh();
             });
             ToolTipService.SetToolTip(unit, "Enter and read the bounds of radii as a radius window in mm, or as the curvature c = 1/R the optimizer uses");

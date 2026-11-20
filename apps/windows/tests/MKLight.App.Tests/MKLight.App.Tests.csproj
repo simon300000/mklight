@@ -29,4 +29,5 @@
   <ItemGroup>
     <Compile Include="..\..\src\MKLight.App\Views\Analysis\Settings\Model\*.cs;..\..\src\MKLight.App\Views\Analysis\RunDetails\Model\*.cs" Link="Linked\SettingsModel\%(Filename)%(Extension)" />
   </ItemGroup>
+  <ItemGroup><Compile Include="..\..\src\MKLight.App\Views\Analysis\Results\ImageSimulationImport.cs;..\..\src\MKLight.App\Plotting\SparklineGeometry.cs" Link="Linked\%(Filename)%(Extension)" /></ItemGroup>
 </Project>

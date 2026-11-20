@@ -59,7 +59,28 @@ public sealed partial class JobPanelFrame : UserControl
         Grid.SetRow(bar, 2);
         root.Children.Add(bar);
         Content = root;
+        KeyDown += OnKey;
     }
+
+    /// <summary>
+    /// Return runs the bar's primary action and Escape its Cancel (the Mac's default and cancel actions), unless the
+    /// focus is in a control that reads those keys itself (a text field, a list choice, a button).
+    /// </summary>
+    void OnKey(object sender, KeyRoutedEventArgs e)
+    {
+        if (e.Key is not (VirtualKey.Enter or VirtualKey.Escape) || OwnsKeys(e.OriginalSource)) return;
+        var role = e.Key == VirtualKey.Enter ? JobUI.PrimaryRole : JobUI.CancelRole;
+        foreach (var child in _actionGrid.Children)
+            if (child is Button { IsEnabled: true } b && Equals(b.Tag, role))
+            {
+                JobUI.Invoke(b);
+                e.Handled = true;
+                return;
+            }
+    }
+
+    static bool OwnsKeys(object source) => source is TextBox or PasswordBox or RichEditBox or AutoSuggestBox or NumberBox
+        or ComboBox or Microsoft.UI.Xaml.Controls.Primitives.ButtonBase or ListViewBase or ListViewItem;
 
     public string Subtitle { set => _subtitle.Text = value; }
 
@@ -186,12 +207,20 @@ public static class JobUI
         return p;
     }
 
-    /// <summary>The flow's one primary action: the accent capsule.</summary>
+    /// <summary>Tags of the action bar's buttons that Return (the primary action) and Escape (Cancel) press.</summary>
+    internal const string PrimaryRole = "primary", CancelRole = "cancel";
+
+    /// <summary>Presses a button as a click would (its Click handlers and command).</summary>
+    internal static void Invoke(Button b) =>
+        (Microsoft.UI.Xaml.Automation.Peers.FrameworkElementAutomationPeer.CreatePeerForElement(b) as Microsoft.UI.Xaml.Automation.Peers.ButtonAutomationPeer)?.Invoke();
+
+    /// <summary>The flow's one primary action: the accent capsule. Return presses it (focus outside text fields) and Ctrl+Enter anywhere.</summary>
     public static Button Primary(string text, string? glyph, Action click, string? help = null, bool enabled = true)
     {
         var b = new Button { Style = Style("AccentCapsuleButton"), Content = Label(text, glyph), IsEnabled = enabled, MinHeight = 32, CornerRadius = new CornerRadius(16) };
         b.Click += (_, _) => click();
         b.KeyboardAccelerators.Add(new KeyboardAccelerator { Key = VirtualKey.Enter, Modifiers = VirtualKeyModifiers.Control });
+        b.Tag = PrimaryRole;
         if (help is not null) ToolTipService.SetToolTip(b, help);
         AutomationProperties.SetName(b, text);
         return b;
@@ -201,6 +230,7 @@ public static class JobUI
     {
         var b = new Button { Style = Style("CapsuleButton"), Content = Label(text, glyph), IsEnabled = enabled, MinHeight = 32, CornerRadius = new CornerRadius(16) };
         if (destructive) Bind(b, "ErrorBrush", x => b.Foreground = x);
+        if (text == "Cancel") b.Tag = CancelRole;
         b.Click += (_, _) => click();
         if (help is not null) ToolTipService.SetToolTip(b, help);
         AutomationProperties.SetName(b, text);

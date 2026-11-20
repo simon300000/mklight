@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using MKLight.App.Support;
@@ -33,6 +34,7 @@ public sealed class PanelHost : UserControl
     public PanelHost(DesignSession session)
     {
         _session = session;
+        Hosts.AddOrUpdate(session, this);
         LensData = new LensDataPanel { Host = session };
         Layout = new LayoutPanel(session);
         Arrangement = PanelArrangement.Standard([]);
@@ -50,6 +52,24 @@ public sealed class PanelHost : UserControl
         OnPanesChanged();
         Refresh();
     }
+
+    static readonly ConditionalWeakTable<DesignSession, PanelHost> Hosts = new();
+
+    /// <summary>
+    /// The panel host of a design's session: a panel view reaches the panel commands (Move to New
+    /// Window, Move to Main Window, Hide) through it, e.g. for its header's More menu.
+    /// </summary>
+    public static PanelHost? Of(DesignSession session) => Hosts.TryGetValue(session, out var h) ? h : null;
+
+    /// <summary>
+    /// Appends a panel's own commands to a menu, as its title's context menu has them: Move to Main
+    /// Window (in a separate window), Move to New Window (unless alone in its window), then Hide
+    /// (the lens data, the layout) or Close Pane (an analysis). Call it from the menu's Opening.
+    /// </summary>
+    public void AddPanelMenuItems(IList<MenuFlyoutItemBase> items, PanelId panel) => PanelMenus.AddPanelItems(items, this, panel);
+
+    /// <summary>Whether the panel is in a separate window.</summary>
+    public bool IsDetached(PanelId panel) => Arrangement.IsDetached(panel);
 
     public DesignSession Session => _session;
     public LensDataPanel LensData { get; }

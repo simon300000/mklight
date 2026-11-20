@@ -1,10 +1,13 @@
 using Microsoft.UI.Input;
 using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
+using MKLight.App.Support;
 using MKLight.App.ViewModels;
 using MKLight.App.ViewModels.Jobs;
+using MKLight.App.Views.Panels;
 using MKLight.Model;
 using Windows.System;
 using Windows.UI.Core;
@@ -20,17 +23,32 @@ namespace MKLight.App.Views;
 /// Ctrl+Shift+I / Ctrl+Alt+I insert before / after, Ctrl+Delete deletes, Ctrl+Shift+T makes the stop,
 /// Ctrl+Shift+V makes the edited (or last clicked) value a variable or fixes it again.
 /// </para>
+/// <para>
+/// Columns resize by their header dividers (double click: fit to content); widths the user chose are saved in the
+/// project's views (<see cref="LensColumnWidths"/>). The header's More menu fits or frees the columns, moves the panel
+/// to a window of its own and hides it. Cells are automation elements (<see cref="LensCellView"/>).
+/// </para>
 /// Every commit is one undoable <see cref="DesignDocument.Edit"/>; the window sets <see cref="Host"/>.
 /// </summary>
-public sealed partial class LensDataPanel : UserControl
+public sealed partial class LensDataPanel : UserControl, ILensCellActions
 {
     const double RowHeight = 26;
     const double Inset = 8;
+    /// <summary>The width of a header divider's hit area (the line is 1 px at its centre).</summary>
+    const double DividerHit = 9;
 
     readonly List<LensRowView> _views = [];
     readonly LensCellEditor _editor;
+    readonly List<TextBlock> _headerTitles = [];
+    readonly List<LensColumnDivider> _dividers = [];
     IReadOnlyList<LensRow> _rows = [];
     IReadOnlyList<LensGridColumn> _columns = LensGridLayout.Columns(false);
+    /// <summary>Widths the user chose (saved in the project's views); the other columns share the rest.</summary>
+    LensColumnWidths _userWidths = new();
+    /// <summary>Widths waiting to be saved until the views have a layout entry.</summary>
+    bool _widthsPending;
+    /// <summary>A divider being dragged: its column, the pointer's start and the column's width then.</summary>
+    (int Column, double StartX, double StartWidth)? _drag;
     double[] _widths = [];
     ILensDataHost? _host;
     DesignDocument? _document;
@@ -137,6 +155,17 @@ public sealed partial class LensDataPanel : UserControl
     /// <summary>Gives the table the keyboard focus (row selection with ↑/↓).</summary>
     public void FocusTable() => Focus(FocusState.Programmatic);
 
+    /// <summary>The panels of the design window (the More menu moves and hides this panel); set when the window is built.</summary>
+    public PanelHost? Panels { get; set; }
+
+    /// <summary>Selects surface <paramref name="index"/> and shows it in the inspector's Surface page.</summary>
+    public void ShowInInspector(int index)
+    {
+        if (index < 0 || index >= _rows.Count) return;
+        Select(index);
+        (_host as DesignSession)?.ShowInspectorPage("surface");
+    }
+
     void Insert(bool after)
     {
         if (_document is not { } doc) return;
@@ -161,14 +190,22 @@ public sealed partial class LensDataPanel : UserControl
         if (_host is null || _document is not null) return;
         _document = _host.Document;
         _document.Changed += Refresh;
+        _document.SectionChanged += OnSectionChanged;
         _host.SelectionChanged += OnHostSelectionChanged;
         _host.EngineDataChanged += Refresh;
+        // The widths saved with the project (this panel's own, while it moves between windows).
+        if (!_widthsPending) _userWidths = LensColumnWidths.Read(_document.Section("views").Node);
         Refresh();
+        Layout();
     }
 
     void Detach()
     {
-        if (_document is not null) _document.Changed -= Refresh;
+        if (_document is not null)
+        {
+            _document.Changed -= Refresh;
+            _document.SectionChanged -= OnSectionChanged;
+        }
         if (_host is not null)
         {
             _host.SelectionChanged -= OnHostSelectionChanged;
@@ -251,7 +288,7 @@ public sealed partial class LensDataPanel : UserControl
 
     LensRowView NewRowView()
     {
-        var view = new LensRowView(Res);
+        var view = new LensRowView(Res, this);
         view.AddHandler(PointerPressedEvent, new PointerEventHandler(OnRowPressed), handledEventsToo: true);
         view.Tapped += OnRowTapped;
         view.DoubleTapped += OnRowDoubleTapped;
@@ -305,22 +342,36 @@ public sealed partial class LensDataPanel : UserControl
 
     void OnScrollerSizeChanged(object sender, SizeChangedEventArgs e) => Layout();
 
-    /// <summary>Shares the width among the columns (the grid scrolls sideways below its minimum width).</summary>
+    /// <summary>
+    /// Shares the width among the columns, the ones the user sized held at their width (the grid scrolls
+    /// sideways below its minimum width), and puts the header dividers on the column edges.
+    /// </summary>
     void Layout()
     {
         var available = HorizontalScroller.ActualWidth;
         if (available <= 0) return;
-        var width = Math.Max(available, LensGridLayout.MinimumWidth(_columns) + 2 * Inset);
+        var columns = _userWidths.Apply(_columns);
+        var width = Math.Max(available, LensGridLayout.MinimumWidth(columns) + 2 * Inset);
         Table.Width = width;
-        _widths = LensGridLayout.Widths(_columns, width - 2 * Inset);
+        _widths = LensGridLayout.Widths(columns, width - 2 * Inset);
         for (var i = 0; i < _widths.Length; i++) ColumnHeader.ColumnDefinitions[i].Width = new GridLength(_widths[i]);
         foreach (var v in _views) v.SetWidths(_widths);
+        var x = 0.0;
+        for (var i = 0; i < _dividers.Count; i++)
+        {
+            x += _widths[i];
+            Canvas.SetLeft(_dividers[i], x - DividerHit / 2);
+        }
     }
 
-    /// <summary>The column titles, pinned over the rows, with a short divider between titles.</summary>
+    /// <summary>
+    /// The column titles, pinned over the rows, with a short divider between titles: drag one to resize the
+    /// column on its left, double-click it to fit the column to its content.
+    /// </summary>
     void BuildHeader()
     {
         var k = 0;
+        var layer = new Canvas();
         foreach (var column in LensColumns.Visible)
         {
             ColumnHeader.ColumnDefinitions.Add(new ColumnDefinition());
@@ -330,16 +381,134 @@ public sealed partial class LensDataPanel : UserControl
                 Style = (Style)Application.Current.Resources["ColumnHeaderText"],
                 Margin = new Thickness(column == LensColumn.Type ? 7 : 6, 0, 6, 0),
             };
+            AutomationProperties.SetAutomationId(title, $"LensTable.Header.{LensColumnWidths.Key(column)}");
             Grid.SetColumn(title, k);
             ColumnHeader.Children.Add(title);
-            if (k < LensColumns.Visible.Length - 1)
-            {
-                var divider = new Border { Style = Res("LensHeaderDivider") };
-                Grid.SetColumn(divider, k);
-                ColumnHeader.Children.Add(divider);
-            }
+            _headerTitles.Add(title);
+            if (k < LensColumns.Visible.Length - 1) layer.Children.Add(NewDivider(k, column));
             k++;
         }
+        Grid.SetColumnSpan(layer, k);
+        ColumnHeader.Children.Add(layer);
+    }
+
+    LensColumnDivider NewDivider(int k, LensColumn column)
+    {
+        var divider = new LensColumnDivider(column)
+        {
+            Width = DividerHit,
+            Height = 28,
+            // Transparent, not null: the whole strip takes the pointer.
+            Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent),
+            Current = () => (k < _widths.Length ? _widths[k] : 0, _columns[k]),
+            Resize = w => { if (_userWidths.Set(_columns[k], w)) WidthsChanged(); },
+            Fit = () => FitColumn(k),
+        };
+        divider.Children.Add(new Border { Style = Res("LensHeaderDivider"), HorizontalAlignment = HorizontalAlignment.Center });
+        _dividers.Add(divider);
+        divider.PointerPressed += (_, e) =>
+        {
+            if (!e.GetCurrentPoint(divider).Properties.IsLeftButtonPressed || k >= _widths.Length) return;
+            _drag = (k, e.GetCurrentPoint(this).Position.X, _widths[k]);
+            divider.CapturePointer(e.Pointer);
+            e.Handled = true;
+        };
+        divider.PointerMoved += (_, e) =>
+        {
+            if (_drag is not { } d || d.Column != k) return;
+            // Live while dragging; saved when the button goes up.
+            if (_userWidths.Set(_columns[k], d.StartWidth + e.GetCurrentPoint(this).Position.X - d.StartX)) Layout();
+            e.Handled = true;
+        };
+        void End()
+        {
+            if (_drag is null) return;
+            _drag = null;
+            SaveWidths();
+        }
+        divider.PointerReleased += (_, e) =>
+        {
+            divider.ReleasePointerCapture(e.Pointer);
+            End();
+        };
+        divider.PointerCaptureLost += (_, _) => End();
+        divider.DoubleTapped += (_, e) =>
+        {
+            FitColumn(k);
+            e.Handled = true;
+        };
+        return divider;
+    }
+
+    // MARK: Column widths
+
+    /// <summary>The width column <paramref name="k"/> needs for its title and every row's value in full.</summary>
+    double ContentWidth(int k)
+    {
+        var title = _headerTitles[k];
+        title.Measure(new global::Windows.Foundation.Size(double.PositiveInfinity, 28));
+        var width = title.DesiredSize.Width;
+        ColumnHeader.InvalidateMeasure();
+        foreach (var v in _views) width = Math.Max(width, v.ContentWidth(k));
+        return width;
+    }
+
+    /// <summary>Fits column <paramref name="k"/> to its content (held at that width, saved with the project).</summary>
+    public void FitColumn(int k)
+    {
+        if (k < 0 || k >= _columns.Count) return;
+        if (_userWidths.Fit(_columns[k], ContentWidth(k))) WidthsChanged();
+    }
+
+    /// <summary>Fits every column to its content.</summary>
+    public void FitColumns()
+    {
+        var changed = false;
+        for (var k = 0; k < _columns.Count; k++) changed |= _userWidths.Fit(_columns[k], ContentWidth(k));
+        if (changed) WidthsChanged();
+    }
+
+    /// <summary>Holds columns at the given widths (by stable key, e.g. <c>radius</c>); for launch actions and automation.</summary>
+    public void SetColumnWidths(IEnumerable<(string Key, double Width)> widths)
+    {
+        var changed = false;
+        foreach (var (key, w) in widths)
+        {
+            var k = LensColumnWidths.FromKey(key) is { } c ? Array.IndexOf(LensColumns.Visible, c) : -1;
+            if (k >= 0) changed |= _userWidths.Set(_columns[k], w);
+        }
+        if (changed) WidthsChanged();
+    }
+
+    /// <summary>Lets every column follow the panel's width again.</summary>
+    public void ResetColumnWidths()
+    {
+        if (_userWidths.Reset()) WidthsChanged();
+    }
+
+    void WidthsChanged()
+    {
+        Layout();
+        SaveWidths();
+    }
+
+    /// <summary>Saves the widths in the project's views (window state, not an undo step), keeping everything else there.</summary>
+    void SaveWidths()
+    {
+        if (_document is not { } doc) return;
+        if (_userWidths.WriteTo(doc.Section("views").Node) is not { } views)
+        {
+            // No layout entry yet: written as soon as the panels have saved theirs.
+            _widthsPending = true;
+            return;
+        }
+        _widthsPending = false;
+        doc.SetSection("views", new JsonTree(views));
+    }
+
+    void OnSectionChanged(string key)
+    {
+        if (key == "views" && _widthsPending) SaveWidths();
     }
 
     // MARK: Pointer
@@ -417,17 +586,62 @@ public sealed partial class LensDataPanel : UserControl
     /// Commits typed text to its surface (wherever the selection is now) as one undoable step. Rejected text
     /// is explained in a toast; the field then shows the value again.
     /// </summary>
-    bool Commit(LensCell cell, string text)
+    bool Commit(LensCell cell, string text) => CommitText(cell, text) is null;
+
+    /// <summary>Commits typed text (see <see cref="Commit"/>); returns why it was rejected, or null.</summary>
+    string? CommitText(LensCell cell, string text)
     {
-        if (_document is not { } doc || _rows.FirstOrDefault(r => r.Id == cell.Row) is not { } row) return true;
-        if (row.Commit(cell.Column, text) is not { } parsed) return true;
+        if (_document is not { } doc || _rows.FirstOrDefault(r => r.Id == cell.Row) is not { } row) return null;
+        if (row.Commit(cell.Column, text) is not { } parsed) return null;
         if (!parsed.Ok)
         {
             _host?.ShowToast(parsed.Error!);
-            return false;
+            return parsed.Error;
         }
         doc.Edit(parsed.Value.ActionName, parsed.Value.Apply);
-        return true;
+        return null;
+    }
+
+    // MARK: Cells for automation (ILensCellActions)
+
+    void ILensCellActions.SetValue(LensRow row, LensColumn column, string text)
+    {
+        if (column == LensColumn.Type)
+        {
+            // A type by its menu title ("Even Asphere", "Cylinder (power in x)").
+            var entry = SurfaceTypeCatalog.All.FirstOrDefault(e => string.Equals(e.Title, text.Trim(), StringComparison.OrdinalIgnoreCase))
+                ?? throw new ArgumentException($"“{text.Trim()}” is not a surface type");
+            SetType(row.Id, entry.Choice);
+            return;
+        }
+        // As typed: what the editor holds goes to its own cell first.
+        CommitEditing();
+        if (CommitText(new LensCell(row.Id, column), text) is { } error) throw new ArgumentException(error);
+    }
+
+    void ILensCellActions.Invoke(LensRow row, LensColumn column, FrameworkElement cell)
+    {
+        var i = RowIndex(row.Id);
+        if (i < 0) return;
+        if (column == LensColumn.Type)
+        {
+            if (_views[i].TypeButton is { } button) ShowTypeMenu(_views[i], button);
+        }
+        else BeginEdit(i, column);
+    }
+
+    bool ILensCellActions.IsSelected(LensRow row) => Selected is { } i && i < _rows.Count && _rows[i].Id == row.Id;
+
+    void ILensCellActions.Select(LensRow row)
+    {
+        if (RowIndex(row.Id) is var i and >= 0) Select(i);
+    }
+
+    void SetType(SurfaceID id, SurfaceTypeChoice choice)
+    {
+        if (_document is not { } doc || choice == _rows.FirstOrDefault(r => r.Id == id)?.TypeChoice) return;
+        var edit = new LensEdit.SetType(id, choice);
+        doc.Edit(edit.ActionName, edit.Apply);
     }
 
     /// <summary>Tab / Shift+Tab across the row's values; ↑/↓ and Enter to the same value of the next row that has one.</summary>
@@ -526,11 +740,29 @@ public sealed partial class LensDataPanel : UserControl
 
     void OnRowContextRequested(UIElement sender, ContextRequestedEventArgs e)
     {
-        var i = IndexOf(sender);
+        var view = (LensRowView)sender;
+        var at = e.TryGetPosition(sender, out var p) ? p : (global::Windows.Foundation.Point?)null;
+        ShowRowMenu(view, at, at is { } q ? view.ColumnAt(q) : null);
+        e.Handled = true;
+    }
+
+    /// <summary>Opens row <paramref name="i"/>'s context menu (launch actions), under the value of <paramref name="column"/>.</summary>
+    public void ShowRowMenu(int i, LensColumn? column = null)
+    {
+        if (i >= 0 && i < _views.Count) ShowRowMenu(_views[i], null, column);
+    }
+
+    /// <summary>
+    /// The row's context menu: insert, delete, make stop, the variable under the pointer and the Variables submenu,
+    /// then Show in Inspector.
+    /// </summary>
+    void ShowRowMenu(LensRowView sender, global::Windows.Foundation.Point? at, LensColumn? under)
+    {
+        var i = _views.IndexOf(sender);
         if (i < 0 || _document is null) return;
         Select(i);
         var s = _document.System;
-        var menu = new MenuFlyout();
+        var menu = new MenuFlyout { ShouldConstrainToRootBounds = MenusInWindow };
         MenuFlyoutItem Item(string text, string glyph, string keys, bool enabled, Action action)
         {
             var item = new MenuFlyoutItem { Text = text, IsEnabled = enabled, KeyboardAcceleratorTextOverride = keys };
@@ -544,7 +776,6 @@ public sealed partial class LensDataPanel : UserControl
         menu.Items.Add(new MenuFlyoutSeparator());
         menu.Items.Add(Item("Make Aperture Stop", "\uE7C8", "Ctrl+Shift+T", LensCommands.CanMakeStop(s, i), MakeSelectedStop));
         menu.Items.Add(new MenuFlyoutSeparator());
-        var under = e.TryGetPosition(sender, out var at) ? ((LensRowView)sender).ColumnAt(at) : null;
         if (under is { } col && VariablePath(s, i, col) is { } own)
         {
             var on = DesignVariables.IsVariable(_document, own);
@@ -554,9 +785,13 @@ public sealed partial class LensDataPanel : UserControl
             menu.Items.Add(item);
         }
         menu.Items.Add(VariablesMenu(s, i));
-        if (e.TryGetPosition(sender, out var p)) menu.ShowAt(sender, p);
-        else menu.ShowAt((FrameworkElement)sender);
-        e.Handled = true;
+        menu.Items.Add(new MenuFlyoutSeparator());
+        var inspect = Item("Show in Inspector", "\uE8A0", "", true, () => ShowInInspector(i));
+        AutomationProperties.SetAutomationId(inspect, "LensTable.Row.ShowInInspector");
+        menu.Items.Add(inspect);
+        ForCapture(menu);
+        if (at is { } p) menu.ShowAt(sender, p);
+        else menu.ShowAt(sender);
     }
 
     /// <summary>
@@ -586,7 +821,7 @@ public sealed partial class LensDataPanel : UserControl
     void ShowTypeMenu(LensRowView view, Button button)
     {
         if (view.Row is not { } row || _document is not { } doc) return;
-        var menu = new MenuFlyout { Placement = Microsoft.UI.Xaml.Controls.Primitives.FlyoutPlacementMode.BottomEdgeAlignedLeft };
+        var menu = new MenuFlyout { Placement = Microsoft.UI.Xaml.Controls.Primitives.FlyoutPlacementMode.BottomEdgeAlignedLeft, ShouldConstrainToRootBounds = MenusInWindow };
         foreach (var group in Enum.GetValues<SurfaceTypeGroup>())
         {
             if (menu.Items.Count > 0) menu.Items.Add(new MenuFlyoutSeparator());
@@ -599,15 +834,88 @@ public sealed partial class LensDataPanel : UserControl
                     Icon = new FontIcon { Glyph = entry.Glyph },
                 };
                 var id = row.Id;
-                item.Click += (_, _) =>
-                {
-                    var edit = new LensEdit.SetType(id, entry.Choice);
-                    if (entry.Choice != _rows.FirstOrDefault(r => r.Id == id)?.TypeChoice) doc.Edit(edit.ActionName, edit.Apply);
-                };
+                item.Click += (_, _) => SetType(id, entry.Choice);
                 menu.Items.Add(item);
             }
         }
+        ForCapture(menu);
         menu.ShowAt(button);
+    }
+
+    /// <summary>Opens the type menu of row <paramref name="i"/> (launch actions).</summary>
+    public void ShowTypeMenu(int i)
+    {
+        if (i >= 0 && i < _views.Count && _views[i].TypeButton is { } button) ShowTypeMenu(_views[i], button);
+    }
+
+    // MARK: More menu
+
+    /// <summary>Opens the header's More menu (launch actions).</summary>
+    public void ShowMoreMenu()
+    {
+        MoreMenu.ShouldConstrainToRootBounds = MenusInWindow;
+        MoreMenu.ShowAt(MoreButton);
+    }
+
+    /// <summary>Menus open inside the window rather than as popup windows of their own, so a window capture includes them (launch actions).</summary>
+    public bool MenusInWindow { get; set; }
+
+    /// <summary>
+    /// A menu shown for a window capture looks as on screen: the padding of a menu opened with the mouse (one opened
+    /// without any input takes the touch padding), and the acrylic's own solid colour (a capture draws an in-window
+    /// acrylic without its blur).
+    /// </summary>
+    void ForCapture(MenuFlyout menu)
+    {
+        if (!MenusInWindow) return;
+        if (ThemeLookup.Brush(this, "AcrylicInAppFillColorDefaultBrush") is AcrylicBrush acrylic)
+        {
+            var style = new Style(typeof(MenuFlyoutPresenter));
+            style.Setters.Add(new Setter(BackgroundProperty, new SolidColorBrush(acrylic.FallbackColor)));
+            menu.MenuFlyoutPresenterStyle = style;
+        }
+        var narrow = (Thickness)Application.Current.Resources["MenuFlyoutItemThemePaddingNarrow"];
+        void Compact(IList<MenuFlyoutItemBase> items)
+        {
+            foreach (var item in items)
+            {
+                if (item is MenuFlyoutSubItem sub) Compact(sub.Items);
+                if (item is Control c) c.Padding = narrow;
+            }
+        }
+        Compact(menu.Items);
+    }
+
+    /// <summary>
+    /// The header's More menu, built as it opens: the column widths (fit to content, back to automatic), then
+    /// moving the panel to its own window or back, and hiding it (shown again from the sidebar).
+    /// </summary>
+    void OnMoreOpening(object? sender, object e)
+    {
+        MoreMenu.Items.Clear();
+        MenuFlyoutItem Item(string text, string glyph, string id, bool enabled, Action click)
+        {
+            var item = new MenuFlyoutItem { Text = text, IsEnabled = enabled, Icon = new FontIcon { Glyph = glyph } };
+            AutomationProperties.SetAutomationId(item, "Panel.lens_data.More." + id);
+            item.Click += (_, _) => click();
+            return item;
+        }
+        MoreMenu.Items.Add(Item("Fit Columns to Content", "\uE9A6", "FitColumns", _rows.Count > 0, FitColumns));
+        MoreMenu.Items.Add(Item("Automatic Column Widths", "\uE72C", "AutomaticWidths", !_userWidths.IsEmpty, ResetColumnWidths));
+        if (Panels is not { } host)
+        {
+            ForCapture(MoreMenu);
+            return;
+        }
+        var panel = PanelId.LensData;
+        MoreMenu.Items.Add(new MenuFlyoutSeparator());
+        if (host.Arrangement.IsDetached(panel))
+            MoreMenu.Items.Add(Item("Move to Main Window", "\uE73F", "MoveToMainWindow", true, () => host.MoveToMainWindow(panel)));
+        if (!host.Arrangement.IsAloneInWindow(panel))
+            MoreMenu.Items.Add(Item("Move to New Window", "\uE8A7", "MoveToNewWindow", true, () => host.MoveToNewWindow(panel)));
+        if (MoreMenu.Items[^1] is not MenuFlyoutSeparator) MoreMenu.Items.Add(new MenuFlyoutSeparator());
+        MoreMenu.Items.Add(Item("Hide Lens Data", "\uED1A", "Hide", true, () => host.Close(panel)));
+        ForCapture(MoreMenu);
     }
 
     Style Res(string key) => (Style)Resources[key];

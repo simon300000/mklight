@@ -149,6 +149,16 @@ public sealed class FFIEngine : IEngineClient, IDisposable
     /// <summary>The engine's compute backends (<c>mk_engine_list_backends</c>, read when the engine was created).</summary>
     public JsonNode? Backends() => Json.Parse(core.BackendsJson, "backend list");
 
+    /// <summary>The engine's compute backends, typed (<see cref="Backends"/>).</summary>
+    public IReadOnlyList<EngineBackend> BackendList() => EngineBackend.ListFromJson(core.BackendsJson);
+
+    /// <summary>
+    /// The GPU backend (<c>cuda</c> of <c>gpu:cuda</c>) this session's GPU requests name when
+    /// their <see cref="ExecutionSettings"/> name none; <c>null</c>: the engine's first GPU backend.
+    /// A front end whose requests carry only a <see cref="BackendPreference"/> picks a GPU here.
+    /// </summary>
+    public string? PreferredGpuName { get; set; }
+
     // Snapshots, validation, solves, parameters
 
     /// <summary>
@@ -388,7 +398,7 @@ public sealed class FFIEngine : IEngineClient, IDisposable
     public AnalysisJob Submit(EngineAnalysisRequest request, ModelSnapshot snapshot)
     {
         var core = this.core;
-        var requestJson = WireJson(request, core.GpuName);
+        var requestJson = WireJson(request, PreferredGpuName ?? core.GpuName);
         var submission = new Submission();
         Func<bool>? onStop = core.Stoppable.Contains(request.Analysis)
             ? () =>
@@ -539,11 +549,13 @@ public sealed class FFIEngine : IEngineClient, IDisposable
     /// <summary>
     /// The request as the C ABI takes it: <c>{"analysis", "settings", "view_key", "backend",
     /// "allow_backend_fallback", "fresh"}</c> (<c>view_key</c> and <c>fresh</c> only when set). A GPU preference
-    /// names <paramref name="gpuName"/> (the engine's first GPU backend) and allows the
-    /// fallback to the CPU reference; without a GPU backend it runs as automatic.
+    /// names its own GPU (<see cref="ExecutionSettings.GpuName"/>), else <paramref name="gpuName"/>
+    /// (the session's preferred or the engine's first GPU backend), and allows the fallback to
+    /// the CPU reference; without any GPU name it runs as automatic.
     /// </summary>
     internal static string WireJson(EngineAnalysisRequest request, string? gpuName)
     {
+        gpuName = request.Execution.GpuName ?? gpuName;
         var o = new JsonObject { ["analysis"] = request.Analysis, ["settings"] = request.SettingsObject() };
         if (request.Fresh) o["fresh"] = true;
         if (request.ViewKey is { } key) o["view_key"] = key;

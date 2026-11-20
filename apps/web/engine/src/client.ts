@@ -4,7 +4,7 @@
 // sessions on the same worker. docs/WEB.md.
 
 import type { Calls, FromWorker, Op, RawResult, WireError } from './protocol'
-import { ready } from './ready'
+import { isolation } from './ready'
 import {
   type AnalysisDescriptor,
   type AnalysisJob,
@@ -333,9 +333,10 @@ class Client implements EngineClient {
 
 /** Start an engine worker and return a client for its first session.
  * Rejects with EngineError `unavailable` when this page cannot run the
- * threaded engine (no cross-origin isolation): see `ready()`. */
+ * threaded engine (no cross-origin isolation): see `ready()`. Makes no
+ * WebGPU call on the page; the engine worker's are bounded. */
 export async function createEngine(opts: CreateEngineOptions = {}): Promise<EngineClient> {
-  const r = await ready()
+  const r = isolation()
   if (!r.threaded) {
     throw new EngineError('unavailable', r.reason ?? 'this browser cannot run the engine')
   }
@@ -356,7 +357,9 @@ export async function createEngine(opts: CreateEngineOptions = {}): Promise<Engi
     threads: init.threads,
     isolated: r.isolated,
     threaded: true,
-    webgpu: r.webgpu,
+    webgpu: init.webgpu,
+    webgpuReason: init.webgpuReason,
+    ...(init.webgpuCalls ? { webgpuCalls: init.webgpuCalls } : {}),
   }
   return new Client(conn, info, Promise.resolve(sid), init.analyses as unknown as AnalysisDescriptor[])
 }

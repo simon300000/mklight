@@ -9,6 +9,7 @@ import {
   type AnalysisRequest,
   type AnalysisResult,
   type ModelSnapshot,
+  type WebgpuWatchdogOptions,
 } from '../src/index'
 
 type Plain = {
@@ -38,7 +39,7 @@ const mk = {
   async create(
     threads?: number,
     webgpuCalibration?: 'auto' | 'off',
-    webgpuWatchdog?: { timeoutMs?: number; stalledModules?: string[] },
+    webgpuWatchdog?: WebgpuWatchdogOptions,
   ) {
     const e = await createEngine({
       ...(threads ? { threads } : {}),

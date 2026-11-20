@@ -43,6 +43,14 @@ public partial class App : Application
         try { Options = LaunchOptions.Parse(Environment.GetCommandLineArgs().Skip(1).ToList()); }
         catch (Exception e) { Log(e.Message); Environment.Exit(2); }
         if (Options.Theme is { } t) AppSettings.Override = t == "dark" ? ElementTheme.Dark : ElementTheme.Light;
+        // Before anything reads the support directory (the glass library, autosaves).
+        if (Options.SupportDirectory is { } dir)
+        {
+            Directory.CreateDirectory(dir);
+            Environment.SetEnvironmentVariable("MKLIGHT_SUPPORT_DIRECTORY", dir);
+        }
+        Views.Jobs.VariablesBoundsList.CurvatureUnit = (Options.CurvatureBoundsUnit ?? AppSettings.CurvatureBoundsUnit) == "curvature"
+            ? ViewModels.Jobs.CurvatureBoundsUnit.Curvature : ViewModels.Jobs.CurvatureBoundsUnit.Radius;
 
         if (!FFIEngine.IsAvailable)
         {
@@ -57,6 +65,8 @@ public partial class App : Application
         if (Options.File is { } file) _ = OpenFileAsync(file);
         else if (Options.Sample is { } sample) OpenDocument(DesignDocument.FromSample(sample));
         else ShowWelcome();
+        // Designs a previous run left with unsaved changes (not in scripted runs unless asked).
+        if (!Options.IsScripted || Options.RecoverAutosaves) _ = AutosaveRecovery.OfferAsync();
     }
 
     public static string AppVersion => typeof(App).Assembly.GetName().Version?.ToString(3) ?? "0.1.0";
@@ -90,17 +100,24 @@ public partial class App : Application
         window.Activate();
         if (document.Path is { } p) RecentFiles.Add(p);
         foreach (var w in Windows.OfType<WelcomeWindow>().ToList()) w.Close();
-        _ = StartAsync(window, session);
+        // A launch script runs in the first design window only (not in one a script opens).
+        var script = !_scriptClaimed;
+        _scriptClaimed = true;
+        _ = StartAsync(window, session, script);
         return window;
     }
 
-    static async Task StartAsync(DesignWindow window, DesignSession session)
+    static bool _scriptClaimed;
+
+    static async Task StartAsync(DesignWindow window, DesignSession session, bool script)
     {
         JsonObject? extra = Options.Settings is { } s ? JsonNode.Parse(s) as JsonObject : null;
         await session.StartAsync(Options.Analyses.Count > 0 ? Options.Analyses : null, extra);
         window.BuildSidebar();
         if (Options.Select is int i) session.SelectedSurface = i;
         if (Options.ShowSettings) foreach (var p in session.Workspace.Panes) { p.ShowsSettings = true; p.RaiseChanged(); }
+        if (!script) return;
+        ApplyWindowOptions(window, session);
         if (Options.IsScripted || Options.Edits.Count > 0 || Options.SaveAs is not null || Options.Actions.Count > 0) await RunScriptAsync(window, session);
     }
 
@@ -119,10 +136,31 @@ public partial class App : Application
             if (!AppHooks.LaunchActions.TryGetValue(name, out var action)) { Log($"unknown launch action: {name}"); continue; }
             try { await action(window, arg); }
             catch (Exception e) { Log($"launch action {name} failed: {e}"); }
+            // An action that put another window in this one's place (Revert to Saved): the script goes on there.
+            while (window.ReplacedBy is { } next) { window = next; session = next.Session; }
             await WaitIdleAsync(session);
         }
         if (Options.SaveAs is { } path) await window.SaveAsync(false, path);
         if (Options.Screenshot is { } shot) await CaptureWhenReady(AppHooks.ScreenshotTarget ?? window, session, shot);
+    }
+
+    /// <summary>The launch options for the window itself: sidebar, issues, a toast, the layout's fit.</summary>
+    static void ApplyWindowOptions(DesignWindow window, DesignSession session)
+    {
+        if (Options.Sidebar is { } sidebar) window.IsSidebarVisible = sidebar;
+        // The issues are known once the first snapshot is validated; the sidebar is set again once laid out.
+        if (Options.ShowIssues || Options.Sidebar is not null) _ = WhenReady();
+        async Task WhenReady()
+        {
+            await WaitIdleAsync(session);
+            if (Options.Sidebar is { } s) window.IsSidebarVisible = s;
+            if (Options.ShowIssues) window.ShowIssues();
+        }
+        if (Options.Toast is { } toast) session.ShowToast(toast);
+        if (Options.Fit is { } fit)
+        {
+            if (fit == "lens") window.Panels.Layout.FitLens(); else window.Panels.Layout.Fit();
+        }
     }
 
     /// <summary>"<c>3.radius=30</c>": surface index, then radius, thickness or conic.</summary>
@@ -142,7 +180,7 @@ public partial class App : Application
     }
 
     /// <summary>Waits until the snapshot is current and no pane is running (at most 60 s).</summary>
-    static async Task WaitIdleAsync(DesignSession session)
+    internal static async Task WaitIdleAsync(DesignSession session)
     {
         var start = DateTime.UtcNow;
         await Task.Delay(400);
@@ -224,9 +262,9 @@ public partial class App : Application
                 var bytes = await File.ReadAllBytesAsync(path);
                 var format = ext == ".zmx" ? PrescriptionFormat.Zmx : PrescriptionFormat.Seq;
                 var import = await Task.Run(() => Engine!.ImportPrescription(bytes, format));
-                var doc = new DesignDocument(new ProjectFile(ModelJson.Decode<OpticalSystem>(import.SystemJson)));
-                var w = OpenDocument(doc);
-                if (import.Warnings.Count > 0) w.Session.ShowToast($"Imported with {import.Warnings.Count} note{(import.Warnings.Count == 1 ? "" : "s")}: {import.Warnings[0].Message}");
+                var system = ImportedSystem(import, path);
+                var w = OpenDocument(new DesignDocument(new ProjectFile(system)));
+                w.PresentImportReport(ImportReport.From(import, Path.GetFileName(path), system.Surfaces.Count), path);
                 return;
             }
             OpenDocument(DesignDocument.Open(path));
@@ -238,6 +276,13 @@ public partial class App : Application
             else if (Windows.OfType<DesignWindow>().FirstOrDefault() is { } dw) dw.Session.ShowToast($"Could not open {Path.GetFileName(path)}: {e.Message}");
             else { ShowWelcome(); Windows.OfType<WelcomeWindow>().First().ShowError($"Could not open {Path.GetFileName(path)}: {e.Message}"); }
         }
+    }
+
+    /// <summary>An imported prescription's system, named after its file when the file names none.</summary>
+    public static OpticalSystem ImportedSystem(PrescriptionImport import, string path)
+    {
+        var system = ModelJson.Decode<OpticalSystem>(import.SystemJson);
+        return string.IsNullOrWhiteSpace(system.Name) ? system with { Name = Path.GetFileNameWithoutExtension(path) } : system;
     }
 
     public static void Log(string message)

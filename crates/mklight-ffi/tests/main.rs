@@ -7,6 +7,7 @@ mod abi_1_3;
 mod abi_1_5;
 mod c_smoke;
 mod callback_reentrancy;
+mod emulation;
 mod errors_and_keys;
 mod shared_buffers;
 mod sync_unlocked;

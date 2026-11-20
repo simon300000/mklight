@@ -27,6 +27,7 @@ public sealed partial class WelcomeWindow : Window
         SetTitleBar(DragRegion);
         AppWindow.SetIcon(Path.Combine(AppContext.BaseDirectory, "Assets", "MKLight.ico"));
         ThemeSwitch.Attach(this, Root);
+        FileDrop.Attach(Root);
         EngineText.Text = App.Engine is { } e ? $"{e.Info.Name} {e.Info.Version}" : "Engine unavailable";
         BuildRecent();
         BuildGallery();
