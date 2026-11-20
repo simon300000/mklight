@@ -4,7 +4,7 @@ Purpose: every feature of the macOS SwiftUI app (`apps/macos`, the reference)
 with its status in the native Windows app (`apps/windows`, WinUI 3, design in
 `docs/WINDOWS.md`). The list comes from an inventory of the Swift sources; each
 row is one inventory item (a few trivially duplicate items are merged). The
-statuses describe the end of round 2 and are updated as rounds land.
+statuses describe the end of round 3 and are updated as rounds land.
 
 Legend: ✅ done, 🟡 partial, ⬜ not started. The "Windows notes" column says
 where the feature lives or what is missing. "Binding ready" means the engine
@@ -23,49 +23,49 @@ missing.
 | Toolbar trailing: Add Analysis menu (+) by category | ✅ | Title bar drop-down: categories → analyses, adds a pane after the focused one |
 | Toolbar trailing: inspector toggle | ✅ | Button and Ctrl+Alt+P (Ctrl+Alt+I inserts a surface after) |
 | Inspector toolbar tab bar (Surface, System, Optimize, Glass Substitution, Tolerance, Apply Solves, running dot) | ✅ | `Views/Inspector/InspectorView.cs`: Surface and System as words, job pages (Optimize, Glass Substitution, Tolerance, Apply Solves) as glyphs, dot on a running job |
-| Capsule: GPU preparation badge (Preparing n%, GPU ready) | 🟡 | State shown only in the details flyout, no badge |
+| Capsule: GPU preparation badge (Preparing n%, GPU ready) | ✅ | Badge in the capsule (`StatusCapsule.SetGpu`): Preparing n % with a spinner, GPU ready for 3 s; tooltip explains the wait |
 | Capsule: one button per running job | ✅ | Running job shown in the capsule (`DesignSession.SetJobActivity`); a click reopens its page |
 | Capsule: "Computing" spinner when analyses busy | ✅ | Activity spinner / percent |
-| Capsule: key numbers EFL, F/#, TT; stale dim; error / name fallback; anamorphic EFL y and squeeze | 🟡 | EFL · F/# · TT from `first_order`; anamorphic variants and stale dimming ⬜; no mock engine |
+| Capsule: key numbers EFL, F/#, TT; stale dim; error / name fallback; anamorphic EFL y and squeeze | 🟡 | EFL · F/# · TT from `first_order`; anamorphic EFL y and squeeze (`StatusCapsuleModel`); stale dimming unchecked; no mock engine |
 | Capsule: issues button (checkmark / severity icon and count) | ✅ | Button with count |
-| Status popover: First Order table | 🟡 | Details flyout lists first-order entries; "(y)" suffix for anamorphic ⬜ |
-| Status popover: anamorphic x/y table, symmetry, DOE power, notes | ⬜ | |
-| Status popover: Engine section (version, snapshot, library hash, GPU kernel state) | 🟡 | Engine version, snapshot, GPU kernel state shown; cache-unavailable line and library hash unchecked |
-| Status popover: compute backend picker | ✅ | Picker in the details flyout (`StatusCapsule.SetBackends`) |
+| Status popover: First Order table | ✅ | Details flyout lists first-order entries with the "(y)" suffix for anamorphic designs |
+| Status popover: anamorphic x/y table, symmetry, DOE power, notes | ✅ | x/y table, symmetry, DOE power and notes in the details flyout (`StatusCapsuleModel`) |
+| Status popover: Engine section (version, snapshot, library hash, GPU kernel state) | ✅ | Engine version, snapshot, library hash, GPU kernel state with the cache note |
+| Status popover: compute backend picker | ✅ | Picker in the details flyout (`StatusCapsule.SetBackends`) listing the engine's backends, one per GPU by name; choice kept as `ui.compute_backend`; `Workspace.Execution` carries the GPU name |
 | Issues popover: list with severity, message, code, chips; click selects surface; empty state | ✅ | Issues flyout; click selects the surface (field highlight ⬜) |
 | Transient toast for rejected edits and notices | ✅ | Toast messages |
 | No modal alerts for routine errors (revert + toast) | 🟡 | Toast exists; per-field revert rule belongs to lens table / settings form |
-| Sidebar "Design": Lens Data, Layout, Issues badge; dot when open; Show/Hide context menu | 🟡 | Rows with count badge; hide from sidebar ⬜ |
+| Sidebar "Design": Lens Data, Layout, Issues badge; dot when open; Show/Hide context menu | ✅ | Rows with count badge, dot when open; hide and show from the View menu |
 | Sidebar: all engine analyses by category in the Mac order | ✅ | `NavigationView`, `AnalysisCatalog` |
 | Sidebar: search (title, name, description), empty-search state | ✅ | |
 | Sidebar selection follows focus; click shows in focused pane; new pane; open dot | ✅ | Click, Shift+click or context "Open in New Pane"; dot (accent while running) |
 | Unavailable analyses dimmed, engine reason as help | ✅ | Tooltip with reason |
 | Short/long titles, icons, categories for ~40 known analyses; unknown get title-case | ✅ | `AnalysisCatalog` with Segoe Fluent Icons |
-| Drag and drop of `.mklight/.json/.zmx/.seq` onto a window | ⬜ | |
-| Per-window focused actions published to menus | 🟡 | No menu bar by design; File flyout plus shortcuts |
+| Drag and drop of `.mklight/.json/.zmx/.seq` onto a window | ✅ | Drop onto a design window opens the file (`Windows/DesignWindow.Documents.cs`) |
+| Per-window focused actions published to menus | ✅ | Menu bar commands act on the focused window (`AppHooks.WindowCommand`, `Menu` null = File) and are disabled by context |
 | One number format everywhere (decimal point, no grouping, comma accepted, no "-0.0000") | ✅ | `NumberDisplay`; settings form commit rule |
 | Unit display convention | 🟡 | Units in the settings form; other places as they are built |
-| Tooltips on controls; accessibility labels and values | 🟡 | Tooltips on built controls; accessibility labels for plots, cells, markers ⬜ |
+| Tooltips on controls; accessibility labels and values | 🟡 | Tooltips, automation names and ids on built controls, plot summaries (area 19); the rest as controls are added |
 
 ## 2. Menus, commands and keyboard shortcuts
 
 | Feature | Status | Windows notes |
 |---|---|---|
 | Undo/Redo with action names | ✅ | Buttons with names; Ctrl+Z, Ctrl+Y, Ctrl+Shift+Z; whole-state undo |
-| File: New from Sample submenu | 🟡 | "New from sample" opens the welcome window (sample cards) |
+| File: New from Sample submenu | ✅ | File > New from Sample, grouped like the welcome window (`Windows/DesignWindow.Menu.cs`) |
 | File: Show Welcome Window | ✅ | Ctrl+N |
-| File: New/Open/Save/Save As/Open Recent; Revert, Duplicate, Rename, autosave, versions | 🟡 | File flyout: New, Open, Save, Save As; Open Recent entry exists, list in the welcome window; Revert/Duplicate/Rename/autosave ⬜ |
-| View: Sidebar and Inspector commands | 🟡 | Inspector Ctrl+Alt+P; sidebar via the pane button |
-| View: Show/Hide Lens Data, Show/Hide Layout | 🟡 | A sidebar row shows a hidden panel (`PanelHost.ShowPanel`); hide by the panel's context menu or tab close; no menu commands |
-| View > Panel: Move to New/Main Window, Hide/Close, Reset Panel Layout | ✅ | Panel context menus and tab close buttons; Reset Panel Layout in the File menu |
+| File: New/Open/Save/Save As/Open Recent; Revert, Duplicate, Rename, autosave, versions | 🟡 | File menu: New, Open, Open Recent, Save, Save As, Revert to Saved, Duplicate, Rename, autosave (area 18); versions ⬜ |
+| View: Sidebar and Inspector commands | ✅ | View menu: Sidebar, Inspector (Ctrl+Alt+P) |
+| View: Show/Hide Lens Data, Show/Hide Layout | ✅ | View menu: Show / Hide Lens Data and Layout |
+| View > Panel: Move to New/Main Window, Hide/Close, Reset Panel Layout | ✅ | Panel context menus and tab close buttons; Reset Panel Layout in the View menu |
 | View: Section, X-Z Section, 3D View, Fit Layout, Ray Colors | ✅ | Section / 3D and Y–Z / X–Z selector and Display menu in the layout; Fit Ctrl+0 |
-| Lens menu: Insert Before/After, Delete, Make Aperture Stop, Toggle Variable | 🟡 | No menu bar: the table's context menu and keys (Ctrl+Shift+I / Ctrl+Alt+I, Ctrl+Delete, Ctrl+Shift+T, Ctrl+Shift+V) |
-| Lens menu: Replace with Sample | ⬜ | |
+| Lens menu: Insert Before/After, Delete, Make Aperture Stop, Toggle Variable | ✅ | Lens menu with the table's keys (Ctrl+Shift+I / Ctrl+Alt+I, Ctrl+Delete, Ctrl+Shift+T, Ctrl+Shift+V) |
+| Lens menu: Replace with Sample | ✅ | Lens > Replace with Sample, one undoable step |
 | Lens menu: Glass Catalogs…, Add Glass Catalog to Design… | ✅ | File menu commands (`Windows/GlassCatalogsRegistration.cs`) |
-| Design menu: Optimize, Glass Substitution, Tolerance, Apply Solves, Show Issues | 🟡 | Inspector tabs open each job; Show Issues is the sidebar row and capsule button; no Design menu |
-| Analysis menu: New Analysis Pane, Run Analyses, Cancel Running, Compute On | 🟡 | F5 run all, Ctrl+Esc cancel all, sidebar opens panes; Compute On is the backend picker in the status details |
-| Job panels: Return is primary action, Escape cancels | 🟡 | Ctrl+Enter is the primary action; Return and Esc ⬜ |
-| Menu items disabled by context | ⬜ | No menu bar |
+| Design menu: Optimize, Glass Substitution, Tolerance, Apply Solves, Show Issues | ✅ | Design menu: Optimize, Glass Substitution, Tolerance, Apply Solves (open the inspector pages), Show Issues |
+| Analysis menu: New Analysis Pane, Run Analyses, Cancel Running, Compute On | ✅ | Analysis menu: New Analysis Pane, Run Analyses (F5), Cancel Running (Ctrl+Esc), Compute On |
+| Job panels: Return is primary action, Escape cancels | ✅ | Return is the primary action, Escape cancels (`Views/Jobs/JobControls.cs`); Ctrl+Enter too |
+| Menu items disabled by context | ✅ | Menu bar in the title bar (File, Edit, View, Lens, Design, Analysis, Help); items enabled by context |
 
 ## 3. Panels and arrangement
 
@@ -75,7 +75,7 @@ missing.
 | Default arrangement: lens data top; layout and panes side by side | ✅ | Hairline dividers |
 | Header title is the drag handle | ✅ | `Views/Panels/PanelDrag.cs` |
 | Panel context menu (Move to New/Main Window, Hide, Close) | ✅ | Move to New / Main Window, Hide, Close |
-| Panel "More" menu in every header | 🟡 | Analysis panes only |
+| Panel "More" menu in every header | ✅ | Analysis panes (with Duplicate Pane), Lens Data and Layout |
 | Tab strip for groups of panels | ✅ | |
 | Drop zones: tab, split, edge | ✅ | |
 | Drop outside windows opens a separate window; Escape cancels | ✅ | |
@@ -98,8 +98,8 @@ Checked after the merge of the round-1 table (`Views/Editor`, `ViewModels/LensTa
 
 | Feature | Status | Windows notes |
 |---|---|---|
-| Header: title, caption "N surfaces · stop on S · mm · V variables", Insert / Delete / More buttons | ✅ | Title, caption "11 surfaces · stop on 6 · mm", "N variables" button (opens Optimize), insert (+) and delete (−) circle buttons; no More menu |
-| Columns Surf, Type, Comment, Radius, Thickness, Material, Semi-Diameter, Conic; pinned header; resizable; horizontal scroll | 🟡 | All eight columns, pinned header, vertical scroll; not resizable, no horizontal scroll |
+| Header: title, caption "N surfaces · stop on S · mm · V variables", Insert / Delete / More buttons | ✅ | Title, caption "11 surfaces · stop on 6 · mm", "N variables" button (opens Optimize), insert (+), delete (−) and More buttons |
+| Columns Surf, Type, Comment, Radius, Thickness, Material, Semi-Diameter, Conic; pinned header; resizable; horizontal scroll | 🟡 | All eight columns, pinned header, vertical scroll; resizable columns saved as `ui.lens_columns` (`ViewModels/LensTableColumns.cs`); no horizontal scroll |
 | Rows OBJ, numbered, STO marker, IMA; object/image partly read-only | ✅ | OBJ, numbers, STO with an accent marker, IMA; object/image read-only where the Mac is |
 | Alternating rows; selection emphasis only when table focused | ✅ | Stripes; accent tint and pill while the table has focus, neutral otherwise |
 | Selection on mouse-down; click edits; double-click row edits radius | 🟡 | Click selects, second click or double click edits; not exercised with a real mouse in round 1 |
@@ -110,7 +110,7 @@ Checked after the merge of the round-1 table (`Views/Editor`, `ViewModels/LensTa
 | Material column: glass-name completion from session catalogs, AIR, MIRROR, model glass | ✅ | Completion from the session's glass names, AIR, MIRROR, model glass |
 | Retyping same glass keeps melt offset | ✅ | LensTableEdits keeps the offset of the same glass |
 | Melt-offset suffix in the material cell | ✅ | Subtle note after the glass name |
-| Type column menu grouped by family, cylinder presets | 🟡 | Flat menu with group headers and Fluent glyphs, current type checked; cylinder presets unchecked |
+| Type column menu grouped by family, cylinder presets | ✅ | Menu with group headers and Fluent glyphs, current type checked, cylinder presets checked |
 | Type title "Sphere" for k=0, plane etc. | ✅ | |
 | Anamorphic radius/conic two sections ("y"/"x"), Tab y then x | ✅ | Both sections ("y ∞   x −50"), each editable |
 | Cylinder: flat section dimmed, biconic shows both conics | ✅ | Flat section dimmed; biconic shows both conics |
@@ -119,11 +119,11 @@ Checked after the merge of the round-1 table (`Views/Editor`, `ViewModels/LensTa
 | Solve marker letters M C F P D O E | ✅ | Letters before numbers so digits stay aligned |
 | Validation issue badge on the surface label | ✅ | Warning/error glyph in the Surf cell, messages as tooltip |
 | Insert before/after, delete (disabled rules), make stop | ✅ | Buttons, context menu, Ctrl+Shift+I / Ctrl+Alt+I, Ctrl+Delete, Ctrl+Shift+T |
-| Context menu: Insert, Delete, Make Stop, Variables submenu, Show in Inspector | 🟡 | Insert, Delete, Make Stop, Make / Remove Variable and a Variables submenu; no Show in Inspector |
+| Context menu: Insert, Delete, Make Stop, Variables submenu, Show in Inspector | ✅ | Insert, Delete, Make Stop, Make / Remove Variable, Variables submenu, Show in Inspector |
 | Variables menu and toggle refuse a solve-controlled parameter | ✅ | `DesignVariables.Refusal`, shown as a toast |
 | Every edit an undoable named step; invalidated solves/overrides dropped in same step | ✅ | DesignDocument.Edit with the Mac action names; whole-state undo |
 | Setting type keeps carry-over parameters | ✅ | Model SetShapeKind |
-| Table accessibility labels and Edit action | 🟡 | Automation names on rows, type button and badges; no Edit action pattern |
+| Table accessibility labels and Edit action | ✅ | Automation names and ids on rows, cells, type button and badges; cell peers with a value pattern (`Views/Editor/LensTableAutomation.cs`) |
 
 ## 5. Inspector: Surface page
 
@@ -198,7 +198,7 @@ All 13 types plus the cylinder preset are descriptors in `ViewModels/SurfaceType
 | Feature | Status | Windows notes |
 |---|---|---|
 | Engine `layout` scene edge to edge; floating controls | ✅ | Win2D section from the engine's layout result (not Metal) |
-| Title chip (drag handle) + More menu | 🟡 | Title chip is the panel's drag handle with the panel context menu; no More menu |
+| Title chip (drag handle) + More menu | ✅ | Title chip is the drag handle with the panel context menu; More menu (`Layout.More`) |
 | Mode selector Section / 3D, Y–Z / X–Z | ✅ | Section / 3D and Y–Z / X–Z (`Views/Layout/LayoutPanel.xaml`, `Views/Viewport3D/Logic/LayoutModes.cs`) |
 | Display menu: ray colours, rays per field, wavelengths, fit, stretch, mesh, footprints | ✅ | Ray colouring, rays per field, wavelengths, mesh, footprints, fit all / lens |
 | Fit button, Ctrl+0, double-click fits | ✅ | |
@@ -209,24 +209,24 @@ All 13 types plus the cylinder preset are descriptors in `ViewModels/SurfaceType
 | Surface mesh in 3D | ✅ | Layout setting `mesh_rings` |
 | Selected surface highlighted in accent | ✅ | |
 | DOE violet hatch, stops and image plane distinct, light/dark ink | ✅ | Glass fills, profiles, stop, image plane, axis, DOE violet dash |
-| Camera: pan, zoom about cursor, orbit, double-click fit | 🟡 | Drag pans (orbits in 3-D), wheel zooms about the pointer, double-click fits; touch pinch ⬜ |
-| Section views of toleranced builds (markNearSection) | ⬜ | |
+| Camera: pan, zoom about cursor, orbit, double-click fit | 🟡 | Drag pans (orbits in 3-D), wheel zooms about the pointer, double-click fits, pinch zooms; orbit, wheel zoom, pinch and drops checked in-process only (real mouse gestures cannot be posted to WinUI); UI Automation tests cover the rest |
+| Section views of toleranced builds (markNearSection) | ✅ | Near-section marking in `MKLight.Engine/LayoutScene.cs` (`MarkNearSection`) |
 | "Design changed" card when stale | ✅ | Click updates |
 | Preview label "Previewing … · not applied" | ✅ | Accent chip "Previewing … · not applied" on the layout |
-| Placeholder, "Viewport Unavailable", accessibility description | 🟡 | Accessibility description of the scene; placeholder / "Viewport Unavailable" ⬜ |
+| Placeholder, "Viewport Unavailable", accessibility description | ✅ | Placeholder, "Viewport Unavailable" and the scene's accessibility description |
 | Layout as a pane of `layout` with settings (rays_per_field, wavelengths, mesh_rings), re-run on change | ✅ | `rays_per_field`, `wavelengths`, `mesh_rings` from the Display menu, re-run on change |
-| Reduce Motion replaces animations | ⬜ | |
+| Reduce Motion replaces animations | ✅ | `Support/Motion.cs`: Windows' animation setting; moves, fades and pulses become instant |
 | Click selects surface | ✅ | Click in the layout selects the surface |
 
 ## 9. Analysis panes (generic chrome)
 
 | Feature | Status | Windows notes |
 |---|---|---|
-| Header: glyph + title (drag handle), chevron analysis menu by category | 🟡 | Glyph, title and menu; drag handle ⬜ |
+| Header: glyph + title (drag handle), chevron analysis menu by category | ✅ | Glyph, title (drag handle) and category menu |
 | State line: settings differing from defaults, or the stage | ✅ | |
 | Glass cluster: Run / Cancel, auto-update, Settings toggle, More | ✅ | |
-| More menu: Update Automatically, Show Settings, Duplicate Pane, Copy Result as JSON, Close Pane | 🟡 | Restore defaults, copy result JSON, close pane; Duplicate Pane ⬜ |
-| Narrow-pane behaviour: folding cluster, short titles | 🟡 | Short titles on narrow panes; folding unchecked |
+| More menu: Update Automatically, Show Settings, Duplicate Pane, Copy Result as JSON, Close Pane | ✅ | Update Automatically, Show Settings, Duplicate Pane, restore defaults, copy result JSON, close pane |
+| Narrow-pane behaviour: folding cluster, short titles | ✅ | The cluster folds into More and the title shortens (`AnalysisPaneChrome.Fold`) |
 | Tabbed pane | ⬜ | |
 | Settings panel: Defaults, Done, open state saved | ✅ | Defaults and Done; open state saved as `ui.settings_visible` |
 | Footer key numbers (subscripts, spoken form) | ✅ | Key numbers in the footer; VoiceOver forms ⬜ |
@@ -235,12 +235,12 @@ All 13 types plus the cylinder preset are descriptors in `ViewModels/SurfaceType
 | Warnings grouped, numbers masked, fields/wavelengths listed, raw messages | ✅ | `RunDetails/Model/RunWarnings.cs` |
 | One-click remedies (auto pupil grid, image grid, PSF window) | ✅ | Three remedies (auto pupil grid, image grid, PSF window) change the pane's settings |
 | Stale result: dimmed, "Design changed" card with Update | ✅ | |
-| Updating: progress line, pulse | 🟡 | Progress bar; pulse ⬜ |
-| Placeholders: running, Not Available, Design Has Errors, Failed, Not Ready, Cancelled | 🟡 | Unavailable and failed messages; others unchecked |
-| Failed rerun over existing result: warning capsule | ⬜ | |
+| Updating: progress line, pulse | ✅ | Progress bar and pulse (still under Reduce Motion) |
+| Placeholders: running, Not Available, Design Has Errors, Failed, Not Ready, Cancelled | ✅ | `PanePlaceholderKind`: running, unavailable, design has errors, failed, not ready, cancelled |
+| Failed rerun over existing result: warning capsule | ✅ | Warning capsule over the kept result (`AnalysisPaneChrome`) |
 | Automatic vs manual update; long analyses start manual; newer cancels older | ✅ | |
 | Debounce from edit to snapshot; stale on snapshot/library/request difference | ✅ | `Workspace` debounced snapshots, `IsCurrent` |
-| Manual retry asks for a fresh run | 🟡 | Run exists; fresh-run request unchecked |
+| Manual retry asks for a fresh run | ✅ | Run and retry ask for a fresh run (`Rerun(fresh: true)`) |
 | Unknown engine analyses appear and run with generic view | ✅ | |
 
 ## 10. Analysis settings form
@@ -250,7 +250,7 @@ All 13 types plus the cylinder preset are descriptors in `ViewModels/SurfaceType
 | Two-column form, small controls, spectrum control last | ✅ | Spectrum control last |
 | Controls from schema: number with units/bounds, toggle, enum, text | ✅ | One number format commit rule |
 | Field / wavelength / surface menus and index settings | ✅ | Single index |
-| Integer-list settings as check-mark menus | 🟡 | Integer lists work; multi-select menus ⬜ |
+| Integer-list settings as check-mark menus | ✅ | Check-mark menus for fields, wavelengths and surfaces (`Settings/SettingsForm.MultiSelect.cs`) |
 | Two-number arrays as pair fields | ✅ | |
 | Number lists; row-array popover tables | ✅ | Number lists and row-array tables (`Settings/Model/TableSetting.cs`) |
 | Object settings as grouped rows with on/off | ✅ | |
@@ -264,7 +264,7 @@ All 13 types plus the cylinder preset are descriptors in `ViewModels/SurfaceType
 | Pupil sampling control (Grid with Auto, Rays) | ✅ | `SettingsForm.Special.cs` |
 | MTF frequency list with automatic state | ✅ | Automatic state shown as "Auto (n)" |
 | Spot through-focus control | ✅ | |
-| Image simulation: source menu, optics, FOV/centre/resolution | 🟡 | Source pattern and optics; FOV, patch centre, resolution ⬜ |
+| Image simulation: source menu, optics, FOV/centre/resolution | ✅ | Source pattern, optics, imported image, FOV, patch centre and resolution |
 | Sensor CRA limit table | ✅ | Table in a popup |
 | Settings with no sensible control hidden, values kept | ✅ | `ControlKind.Hidden`, values kept |
 | Auto settings show "Auto (n)" with last value | ✅ | |
@@ -277,7 +277,8 @@ All 13 types plus the cylinder preset are descriptors in `ViewModels/SurfaceType
 |---|---|---|
 | Generic view: record tables, buffer previews, JSON outline | ✅ | Scalars, tables, curves, heat maps, raw JSON |
 | First Order view (table, anamorphic card, DOE card) | ✅ | Table, anamorphic card, DOE card (`TableViews.cs`) |
-| Validation view (issue list, "No Issues") | 🟡 | Generic view; issues also in the Issues row and flyout |
+| First Order labels wrap, with a tooltip per entry | ✅ | `TableViews.cs`, `FirstOrderHelp` |
+| Validation view (issue list, "No Issues") | ✅ | `Results/ValidationView.cs`: issue list, "No Issues" |
 | Spot Diagram (field × focus grid, per-plane RMS, Airy, common/per-field scale) | ✅ | |
 | Ray Fan / OPD Fan | ✅ | |
 | Field Curvature & Distortion | ✅ | |
@@ -293,7 +294,8 @@ All 13 types plus the cylinder preset are descriptors in `ViewModels/SurfaceType
 | Best Focus | ✅ | Curve |
 | MTF vs Field; Through-Focus MTF | ✅ | |
 | Wavefront Map (map picker, Zernike table) | ✅ | Map and Zernike table (`WaveViews.cs`) |
-| PSF (item picker, log scale, Airy) | ✅ | Field picker, linear / log, core / full |
+| PSF (item picker, log scale, Airy) | ✅ | Field picker, linear / log, core / full; see the two PSF rows below |
+| PSF opens on a log scale when the Strehl ratio is below 0.1 | ✅ | `Readers/WaveReaders.cs` (`PrefersLog`); the core view crops to 95 % of the energy |
 | Line Spread | ✅ | |
 | Ghost Paths | ✅ | Generic view only |
 | Ghost Irradiance | ✅ | Sensor map view |
@@ -306,11 +308,13 @@ All 13 types plus the cylinder preset are descriptors in `ViewModels/SurfaceType
 | CRA vs image height with sensor limit | ✅ | Sensor limit from the run's settings |
 | Glass Map | ✅ | `GlassMapView.cs` |
 | Glass Data | ✅ | `GlassDataView` |
-| Image Simulation: compare modes, exposure, zoom, pan, drop image | 🟡 | Side by side, split, blink and exposure; zoom, pan and dropping an image ⬜ |
-| Image simulation controls: FOV, patch centre, resolution, picker | ⬜ | |
+| Image Simulation: compare modes, exposure, zoom, pan, drop image | ✅ | Side by side, split, blink, exposure, zoom, pan, drop an image (`ImageSimulationView*.cs`) |
+| Image simulation controls: FOV, patch centre, resolution, picker | ✅ | FOV, patch centre, resolution and image picker in the pane (`ImageSimulationView.Controls.cs`) |
 | Image simulation footer and field-mapping table | ✅ | Pixel, patch, PSF window and Field Mapping flyout |
-| Image simulation starting settings, source drawing, imported images | 🟡 | Starting settings (`--do image-simulation-start`) and built-in source patterns; imported images ⬜ |
-| Shared chart components (line chart, legend, colour bar, sparkline, key/value grid) | 🟡 | `PlotKit`, `Legend`, heat-map colour bar; sparkline ⬜ |
+| Image simulation starting settings, source drawing, imported images | ✅ | Starting settings, built-in source patterns and imported images (picker and drop; 512 px per side; a saved view keeps only the path) |
+| Shared chart components (line chart, legend, colour bar, sparkline, key/value grid) | ✅ | `PlotKit`, `Legend`, heat-map colour bar, `Plotting/Sparkline.cs` |
+| Design \| Candidate switch on spot and line charts while a candidate is previewed, key numbers say which design | ✅ | `Results/CompareSwitch.cs`, `SpotDiagramView.cs`, `LineChartView.cs` |
+| Sparkline | ✅ | `Plotting/Sparkline.cs`, used by the job running views |
 | Palette: categorical slots, spectral colours, dashes, ramps | ✅ | `Palette` (the Mac's validated colours) |
 
 ## 12. Design jobs: common
@@ -342,7 +346,7 @@ Built in round 2 (`Views/Jobs`, `ViewModels/Jobs`) on the engine binding's job s
 | Variables and bounds list | ✅ | Radius windows, pin and problems (`VariablesBoundsList.cs`) |
 | Algorithm group (method, iterations, seed) | ✅ | `Views/Jobs`, `ViewModels/Jobs` |
 | Running view (iteration, merit, sparkline) | ✅ | Iteration, merit, log sparkline |
-| Result: before/after, preview in the window, variable list | 🟡 | Preview titled with the merit, spot before/after from the baseline, variables before → after; layout thumbnails ⬜ |
+| Result: before/after, preview in the window, variable list | ✅ | Preview titled with the merit, spot and layout thumbnails before / after on one scale, variables before → after (`Views/Jobs/DesignFigures.cs`, `LayoutComparison.cs`) |
 | "Fix the design's errors first" and blocked start | ✅ | `Views/Jobs`, `ViewModels/Jobs` |
 
 ## 14. Glass Substitution
@@ -356,7 +360,7 @@ Built in round 2 (`Views/Jobs`, `ViewModels/Jobs`) on the engine binding's job s
 | Merit/variables group, Edit Merit and Variables… | ✅ | `Views/Jobs`, `ViewModels/Jobs` |
 | Running view, Stop keeps ranking, Cancel discards | ✅ | `Views/Jobs`, `ViewModels/Jobs` |
 | Ranked results list | ✅ | `Views/Jobs`, `ViewModels/Jobs` |
-| Candidate detail (glasses, shape changes, layouts, glass map) | 🟡 | Glasses, shape changes and merit; glass map and layout thumbnails ⬜ |
+| Candidate detail (glasses, shape changes, layouts, glass map) | ✅ | Glasses, shape changes, merit, layouts and a glass map (`Views/Jobs/CandidateGlassMap.cs`) |
 | Preview selected row; Apply as one undoable step | ✅ | `Views/Jobs`, `ViewModels/Jobs` |
 
 ## 15. Tolerance
@@ -364,23 +368,23 @@ Built in round 2 (`Views/Jobs`, `ViewModels/Jobs`) on the engine binding's job s
 | Feature | Status | Windows notes |
 |---|---|---|
 | "Show the last results" shortcut | ✅ | `Views/Jobs`, `ViewModels/Jobs` |
-| Tolerances table grouped by element | 🟡 | Grouped by element; groups not collapsible |
+| Tolerances table grouped by element | ✅ | Grouped by element; groups collapse |
 | Row kinds | ✅ | `Views/Jobs`, `ViewModels/Jobs` |
 | Row editing (limits, surface menu, unit conversion, problems) | ✅ | `Views/Jobs`, `ViewModels/Jobs` |
 | Row context menu (unit, distribution, symmetric, duplicate, delete) | ✅ | `Views/Jobs`, `ViewModels/Jobs` |
 | Add menu (surface and element sections) | ✅ | `Views/Jobs`, `ViewModels/Jobs` |
 | Default Tolerances… generator | ✅ | Generator flyout |
 | Test fringes wavelength field | ✅ | `Views/Jobs`, `ViewModels/Jobs` |
-| Element tolerances (move together, pivot, range) | 🟡 | Move together; pivot and range UI ⬜ |
+| Element tolerances (move together, pivot, range) | ✅ | Move together, pivot and range |
 | Compensators | ✅ | `Views/Jobs`, `ViewModels/Jobs` |
 | Criterion section | ✅ | `Views/Jobs`, `ViewModels/Jobs` |
 | Analysis section (mode, trials, seed, percentiles) | ✅ | `Views/Jobs`, `ViewModels/Jobs` |
 | Running view (stage, elapsed, time left; Stop/Cancel) | ✅ | `Views/Jobs`, `ViewModels/Jobs` |
-| Results (nominal, RSS, percentiles, yield, Export menu) | 🟡 | Nominal, RSS, levels, yield; no CSV export |
+| Results (nominal, RSS, percentiles, yield, Export menu) | ✅ | Nominal, RSS, levels, yield and an Export menu (CSV) |
 | Sensitivity table | ✅ | `Views/Jobs`, `ViewModels/Jobs` |
-| Monte Carlo histogram | 🟡 | Histogram and worst trials (click previews one); bins not clickable |
-| Compensator results | 🟡 | Compensator values; range bars ⬜ |
-| Preview card and layout caption | 🟡 | Preview of a build or trial; layout caption ⬜ |
+| Monte Carlo histogram | 🟡 | Histogram with clickable bins and worst trials; cumulative curve and level labels ⬜ |
+| Compensator results | ✅ | Compensator values with range bars |
+| Preview card and layout caption | ✅ | Preview of a build or trial with its caption |
 | Tolerance spec saved in `tolerances` section | ✅ | `Views/Jobs`, `ViewModels/Jobs` |
 
 ## 16. Apply Solves
@@ -422,16 +426,16 @@ add library catalog, glass overrides, glass details, `mk_glass_from_spec`,
 | Feature | Status | Windows notes |
 |---|---|---|
 | `.mklight` open/save; `.zmx` and `.seq` imported, never written | ✅ | Atomic write; Save As asks for `.mklight` |
-| Open via File > Open, Welcome, drag and drop, file associations | 🟡 | File > Open and welcome; drag and drop and associations ⬜ |
-| Welcome window (New Design prominent, Open, recent files, drop hint) | ✅ | Drop hint ⬜ |
+| Open via File > Open, Welcome, drag and drop, file associations | 🟡 | File > Open, welcome, drag and drop; file associations ⬜ |
+| Welcome window (New Design prominent, Open, recent files, drop hint) | ✅ | New Design, Open, recent files, drop hint |
 | Sample cards with engine-computed layout thumbnails; Surface Types group | ✅ | |
 | Mock engine mark in the welcome window | ⬜ | Not ported by design: no mock engine |
-| Import report sheet (groups, Copy Report, Load Glass Catalog) | ⬜ | A toast notes warnings |
-| Autosave, versions; dirty state follows undo | 🟡 | Dirty marker in the title by revision; autosave and versions ⬜ |
+| Import report sheet (groups, Copy Report, Load Glass Catalog) | ✅ | `Windows/ImportReport*.cs`: groups, Copy Report, Load Glass Catalog |
+| Autosave, versions; dirty state follows undo | 🟡 | Autosave by the app's own writer, recovery at launch (`Windows/AutosaveRecovery.cs`); dirty follows undo; versions ⬜ |
 | Save stamps metadata and library-catalog references | ✅ | Metadata stamp and library-catalog references (`DesignDocument`) |
 | Project sections preserved (system, catalogs, variables, views, merit, tolerances, metadata, unknown keys) | ✅ | Unknown sections kept verbatim |
 | Undo/redo naming for all edits across windows | ✅ | Whole-state undo; one window |
-| Replace with Sample (undoable) | ⬜ | |
+| Replace with Sample (undoable) | ✅ | Lens > Replace with Sample |
 
 ## 19. Appearance and accessibility
 
@@ -439,11 +443,11 @@ add library catalog, glass overrides, glass details, `mk_glass_from_spec`,
 |---|---|---|
 | Light and dark both designed; semantic colours; dynamic palette | ✅ | System / Light / Dark in the File menu, switched live in every window (`Support/ThemeSwitch`); `--do theme=…` |
 | Liquid Glass chrome | ✅ | Translated to Mica / acrylic on chrome only |
-| Reduce Motion | ⬜ | |
-| Reduce Transparency / Increase Contrast | 🟡 | High-contrast theme dictionary exists, unchecked |
+| Reduce Motion | ✅ | `Support/Motion.cs` |
+| Reduce Transparency / Increase Contrast | 🟡 | High-contrast dictionary uses system colours (`Theme.xaml`, `ThemeLookup`), not screenshotted; Reduce Transparency ⬜ |
 | Tabular figures everywhere | ✅ | |
 | Spacing scale | ✅ | `Space*` resources |
-| Accessibility labels/values on plots, drawings, markers, cells, panes | ⬜ | |
+| Accessibility labels/values on plots, drawings, markers, cells, panes | ✅ | Automation names and ids on panes, cells and markers; plot summaries; the layout's scene description |
 | Physical wavelength colours; colour never sole carrier | ✅ | Palette plus dashes |
 | Help tags with shortcut hints | 🟡 | On built controls |
 
@@ -453,75 +457,96 @@ add library catalog, glass overrides, glass details, `mk_glass_from_spec`,
 |---|---|---|
 | FFIEngine always; missing library handling | ✅ | `FFIEngine` over `mklight_ffi.dll`; missing DLL shows an explanatory window; mock engine not ported by design |
 | GPU kernel preparation at launch with cache directory | ✅ | `%LOCALAPPDATA%\MKLight\GPU Kernels`; App Nap n/a |
-| "GPU kernels" row texts (Preparing, Ready, No GPU, cache unavailable) | 🟡 | State shown in the details flyout |
+| "GPU kernels" row texts (Preparing, Ready, No GPU, cache unavailable) | ✅ | State in the details flyout and the capsule badge |
 | Backend preference per design (Automatic / CPU / GPU) | ✅ | Picker in the status details flyout |
 | Descriptors, schemas, availability read once at engine creation | ✅ | |
 | Per-design session; snapshot and library hash; validate on every snapshot | ✅ | |
 | Glass library and project catalogs synced before first snapshot | ✅ | `AppHooks.SessionStarting`, `Workspace.LoadProjectCatalogsAsync` |
-| Preview mechanism for candidate designs with "not applied" labels | 🟡 | `Workspace.Preview` / `Baseline`; jobs name the candidate ("Optimize result · merit …"), strip on every pane and the layout, badge and End Preview in the capsule; spot Design | Candidate switch ⬜ |
+| Preview mechanism for candidate designs with "not applied" labels | ✅ | `Workspace.Preview` / `Baseline`; strip on every pane and the layout, badge and End Preview in the capsule; spot and line charts have a Design | Candidate switch |
 | `convert_spec`, `glass_info` cache, `merit_evaluation`, `merit_spec`, `apply_solves`, `preview_case` | ✅ | `convert_spec` (System page), `glass_info`, `merit_evaluation`, `merit_spec`, `apply_solves`, `preview_case` (jobs) |
 | Job streaming progress, Stop vs Cancel | ✅ | Used by analyses and the design jobs (stop keeps the best so far, cancel discards) |
 | Engine is the authority: no optics in the UI | ✅ | Display formulas only where the Mac has them |
 
 ## 21. Debug launch options
 
-Windows has its own set (docs/WINDOWS.md "Launch options"): `--sample`, `--analysis`, `--settings`, `--show-settings`, `--theme`, `--select`, `--edit`, `--undo`, `--save-as`, `--size`, `--screenshot`, `--delay` and `--welcome`, plus a file argument, and `--do <action>[=arg]` for actions features register (inspector, panels, layout, settings, run details, results, glass catalogs).
+Windows has its own set (docs/WINDOWS.md "Launch options"): `--sample`, `--analysis`, `--settings`, `--show-settings`, `--theme`, `--select`, `--edit`, `--undo`, `--save-as`, `--size`, `--screenshot`, `--delay`, `--welcome`, `--sidebar`, `--show-issues`, `--toast`, `--support-dir`, `--fit`, `--curvature-bounds-unit` and `--recover-autosaves`, plus a file argument, and `--do <action>[=arg]` for actions features register (inspector, panels, layout, settings, run details, results, glass catalogs).
 
 | Mac option | Status | Windows equivalent |
 |---|---|---|
 | `-MKLightNoWelcome YES` | ✅ | A file argument or `--sample` skips the welcome window; `--welcome` shows it |
-| `-MKLightSidebar hidden` | ⬜ | |
+| `-MKLightSidebar hidden` | ✅ | `--sidebar hidden|shown` |
 | `-MKLightSelectSurface <i>` | ✅ | `--select <i>` |
 | `-MKLightInspector system` | ✅ | `--do inspector-system` / `inspector-surface` |
 | `-MKLightViewport 3D` | ✅ | `--do layout-3d` |
 | `-MKLightSheet` (optimize, tolerance, solves, glass) | ✅ | `--do job=<optimize|glass_substitution|tolerance|solves>` |
 | `-MKLightAutoRun`, `-AutoPick`, `-AutoStop`, `-AutoApply` | 🟡 | `optimize-run`, `optimize-running=<s>`, `optimize-apply`, `glass-run`, `glass-apply`, `solves-run`; no auto-stop |
 | `-MKLightToleranceTrials`, `-MKLightTolerancePreview` | ✅ | `--do tolerance-run[=trials]`, `tolerance-preview=<k|sN>` |
-| `-MKLightShowIssues YES` | ⬜ | |
-| `-MKLightToast <text>` | ⬜ | |
+| `-MKLightShowIssues YES` | ✅ | `--show-issues` |
+| `-MKLightToast <text>` | ✅ | `--toast <text>` |
 | `-MKLightAppearance light` or `dark` | ✅ | `--theme light` or `dark` |
-| `-MKLightFootprints`, `-MKLightFit lens`, `-MKLightYaw` | 🟡 | `--do layout-footprints`, `layout-yaw`, `layout-pitch`; fit lens ⬜ |
+| `-MKLightFootprints`, `-MKLightFit lens`, `-MKLightYaw` | ✅ | `--do layout-footprints`, `layout-yaw`, `layout-pitch`, `--fit lens|all` |
 | `-MKLightGlassCatalogs`, `-GlassScope`, `-GlassSearch` | ✅ | `--do glass-catalogs`, `-search`, `-scope` |
-| `-MKLightSupportDirectory <path>` | ⬜ | |
+| `-MKLightSupportDirectory <path>` | ✅ | `--support-dir <path>` |
 | `-MKLightRunDetails <analysis>` | ✅ | `--do run-details` |
 | `-MKLightAutoEdit`, `-MKLightAutoConvert` (merit editor) | 🟡 | `--do merit-custom`, `add-solve`, `variables=`; `--edit` for lens edits |
-| `-MKLightCurvatureBoundsUnit curvature` | ⬜ | |
+| `-MKLightCurvatureBoundsUnit curvature` | ✅ | `--curvature-bounds-unit radius|curvature` |
 | Test render hook `MKLIGHT_RENDER_DIR` | 🟡 | `--screenshot <file.png>` renders the whole window (as composed), plus `--size`, `--delay` |
 
 ## Summary
 
 | Area | Done | Partial | Not started | Total |
 |---|---|---|---|---|
-| 1. Window and chrome | 18 | 10 | 3 | 31 |
-| 2. Menus, commands and keyboard shortcuts | 5 | 8 | 2 | 15 |
-| 3. Panels and arrangement | 19 | 1 | 0 | 20 |
-| 4. Lens data table | 21 | 5 | 0 | 26 |
+| 1. Window and chrome | 25 | 5 | 1 | 31 |
+| 2. Menus, commands and keyboard shortcuts | 14 | 1 | 0 | 15 |
+| 3. Panels and arrangement | 20 | 0 | 0 | 20 |
+| 4. Lens data table | 24 | 2 | 0 | 26 |
 | 5. Inspector: Surface page | 20 | 0 | 0 | 20 |
 | 6. Inspector: System page | 10 | 0 | 0 | 10 |
 | 7. Surface types | 19 | 0 | 0 | 19 |
-| 8. Layout viewport | 15 | 3 | 2 | 20 |
-| 9. Analysis panes (generic chrome) | 12 | 6 | 2 | 20 |
-| 10. Analysis settings form | 21 | 2 | 0 | 23 |
-| 11. Dedicated result views | 32 | 4 | 1 | 37 |
+| 8. Layout viewport | 19 | 1 | 0 | 20 |
+| 9. Analysis panes (generic chrome) | 19 | 0 | 1 | 20 |
+| 10. Analysis settings form | 23 | 0 | 0 | 23 |
+| 11. Dedicated result views | 41 | 0 | 0 | 41 |
 | 12. Design jobs: common | 7 | 0 | 0 | 7 |
-| 13. Optimize | 12 | 1 | 0 | 13 |
-| 14. Glass Substitution | 8 | 1 | 0 | 9 |
-| 15. Tolerance | 13 | 6 | 0 | 19 |
+| 13. Optimize | 13 | 0 | 0 | 13 |
+| 14. Glass Substitution | 9 | 0 | 0 | 9 |
+| 15. Tolerance | 18 | 1 | 0 | 19 |
 | 16. Apply Solves | 3 | 0 | 0 | 3 |
 | 17. Glass catalogs | 17 | 0 | 0 | 17 |
-| 18. Documents, welcome and import | 6 | 2 | 3 | 11 |
-| 19. Appearance and accessibility | 5 | 2 | 2 | 9 |
-| 20. Engine integration | 9 | 2 | 0 | 11 |
-| 21. Debug launch options | 9 | 4 | 5 | 18 |
-| **Total** | **281** | **57** | **20** | **358** |
+| 18. Documents, welcome and import | 8 | 2 | 1 | 11 |
+| 19. Appearance and accessibility | 7 | 2 | 0 | 9 |
+| 20. Engine integration | 11 | 0 | 0 | 11 |
+| 21. Debug launch options | 15 | 3 | 0 | 18 |
+| **Total** | **342** | **17** | **3** | **362** |
 
 ## Known issues
 
 Not features of the Mac app, so not counted above.
 
-* **Image simulation** has no image-file import, no zoom/pan and no FOV controls.
-* **Drag and drop and 3-D mouse input** were verified in-process only (simulated
-  drags, scripted camera), not with a real mouse.
+* **Interactions are verified through UI Automation patterns** by the opt-in
+  `MKLight.UITests` (15 tests, `MKLIGHT_UI_TESTS=1`). Real mouse gestures cannot
+  be posted to WinUI windows, so 3-D orbit, wheel zoom and drop-to-split are
+  checked in-process only; panel drags, pinch and divider resizing likewise.
+* **Versions and file associations** are not done (areas 2, 18).
+* **High contrast** uses the system colours but was not screenshotted; Reduce
+  Transparency is not handled.
+* **Left out of round 3**: the Monte-Carlo histogram's cumulative curve and level
+  labels; the lens table's horizontal scroll; a tabbed pane; stale dimming of the
+  capsule's key numbers; hover on the candidate glass map.
+
+## Needs engine changes
+
+Not Windows work; found while building round 3.
+
+* **CPU f32 emulation backend** cannot be registered in the DLL: only tests build
+  `GpuProvider::emulation`. It needs a feature (for example `cpu-f32-emulation`)
+  in `with_defaults`, and automatic routing must skip it.
+* **`glass_map` for IR glasses** sends the catalog placeholders n_d 1 and V_d 0;
+  it should send computed values or null, as `list_glasses` does.
+* **`glass_details` index curve** is limited to 0.25–2.5 µm (`manage.rs`), too
+  narrow for IR glasses.
+* **Autosave through `mk_session_autosave`** would need a way to set the session's
+  whole project (its sections); the app writes its own autosave file until then.
 
 ## Design notes for later rounds
 
