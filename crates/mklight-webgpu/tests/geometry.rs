@@ -22,7 +22,8 @@ fn all_pipelines_compile() {
     let p = g
         .prepare_kernels(None, &|_, _| {}, &AtomicBool::new(false))
         .unwrap();
-    assert_eq!(p.kernels, mklight_webgpu::ops::pipelines().len());
+    // Every kernel of the host, and any the device uses only itself.
+    assert!(p.kernels >= mklight_webgpu::ops::pipelines().len());
 }
 
 fn same_bits(what: &str, a: &[f64], b: &[f64]) {

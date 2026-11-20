@@ -381,45 +381,90 @@ impl CudaDevice {
         let s = lane.stream;
         let t_run = Instant::now();
         let mut stats = BatchStats::default();
-        // Host bytes moved through staging: uploads and uniforms, then reads.
-        let uniform_align = 64usize;
-        let mut uniform_bytes = 0usize;
-        for p in &batch.passes {
-            if let Some(u) = &p.uniform {
-                uniform_bytes = uniform_bytes.div_ceil(uniform_align) * uniform_align + u.len() * 4;
+        // Inputs: every upload and uniform block at an aligned offset of one
+        // staging block, copied to one device allocation; scratch and slices
+        // share a second allocation (scratch first, zeroed by one memset).
+        // Few driver calls per batch: small plans run many batches.
+        const ALIGN: usize = 256;
+        let up = |bytes: usize| bytes.div_ceil(ALIGN) * ALIGN;
+        let mut input_at = vec![usize::MAX; batch.resources.len()];
+        let mut work_at = vec![usize::MAX; batch.resources.len()];
+        let mut input_bytes = 0usize;
+        let mut scratch_bytes = 0usize;
+        for (i, r) in batch.resources.iter().enumerate() {
+            match r {
+                Resource::Upload(w) => {
+                    input_at[i] = input_bytes;
+                    input_bytes += up((w.len() * 4).max(16));
+                }
+                Resource::Scratch(n) => {
+                    work_at[i] = scratch_bytes;
+                    scratch_bytes += up((*n).max(4) * 4);
+                }
+                _ => {}
             }
         }
-        let upload_bytes: usize = batch
-            .resources
-            .iter()
-            .map(|r| match r {
-                Resource::Upload(w) => w.len() * 4,
-                _ => 0,
-            })
-            .sum();
+        let mut work_bytes = scratch_bytes;
+        for (i, r) in batch.resources.iter().enumerate() {
+            if let Resource::Slice { len, .. } = r {
+                work_at[i] = work_bytes;
+                work_bytes += up((*len).max(4) * 4);
+            }
+        }
+        let mut uniform_at = Vec::with_capacity(batch.passes.len());
+        for p in &batch.passes {
+            uniform_at.push(p.uniform.as_ref().map(|u| {
+                let at = input_bytes;
+                input_bytes += up(u.len() * 4);
+                at
+            }));
+        }
         let read_bytes: usize = batch.reads.iter().map(|r| r.into.len() * 4).sum();
-        let staging_bytes = (upload_bytes + uniform_bytes + 4096).max(read_bytes);
+        let staging_bytes = input_bytes.max(read_bytes).max(ALIGN);
         if lane.staging.as_ref().is_none_or(|p| p.bytes < staging_bytes) {
             lane.staging = None;
             lane.staging = Some(Pinned::new(staging_bytes)?);
         }
         let staging = lane.staging.as_ref().unwrap();
         let stage = unsafe { std::slice::from_raw_parts_mut(staging.ptr, staging.bytes) };
-        // Stage every upload first (in parallel), so the device clock below
-        // starts with the transfers.
+        // Stage the inputs first (large ones in parallel), so the device
+        // clock below starts with the transfer.
         {
             let mut parts: Vec<(&mut [u8], &[u8])> = Vec::new();
-            let mut rest: &mut [u8] = stage;
-            for r in &batch.resources {
-                if let Resource::Upload(w) = r {
-                    let bytes: &[u8] = bytemuck::cast_slice(w);
-                    let (head, tail) = std::mem::take(&mut rest).split_at_mut(bytes.len());
-                    parts.push((head, bytes));
-                    rest = tail;
-                }
+            let mut rest: &mut [u8] = &mut stage[..input_bytes];
+            let mut at = 0usize;
+            let sources = batch
+                .resources
+                .iter()
+                .enumerate()
+                .filter_map(|(i, r)| match r {
+                    Resource::Upload(w) => Some((input_at[i], bytemuck::cast_slice::<u32, u8>(w))),
+                    _ => None,
+                })
+                .chain(
+                    batch
+                        .passes
+                        .iter()
+                        .zip(&uniform_at)
+                        .filter_map(|(p, a)| Some(((*a)?, bytemuck::cast_slice(p.uniform.as_ref()?)))),
+                );
+            for (offset, bytes) in sources {
+                let (_, tail) = std::mem::take(&mut rest).split_at_mut(offset - at);
+                let (head, tail) = tail.split_at_mut(bytes.len());
+                parts.push((head, bytes));
+                rest = tail;
+                at = offset + bytes.len();
             }
             par_copy(parts);
         }
+        stats.uploaded_bytes = batch
+            .resources
+            .iter()
+            .map(|r| match r {
+                Resource::Upload(w) => (w.len() * 4) as u64,
+                _ => 0,
+            })
+            .sum();
 
         unsafe { cu::event::record(lane.start, s) }.map_err(|e| err("cuEventRecord", e))?;
         // MKLIGHT_CUDA_PROFILE=1: an event after the inputs, each pass and
@@ -444,36 +489,33 @@ impl CudaDevice {
                 owned.push(p);
                 Ok(p)
             };
-            let mut cursor = 0usize;
-            for r in &batch.resources {
+            let inputs = if input_bytes > 0 {
+                let p = alloc(input_bytes / 4, &mut owned)?;
+                check("cuMemcpyHtoDAsync", unsafe {
+                    sys::cuMemcpyHtoDAsync_v2(p, staging.ptr as *const c_void, input_bytes, s)
+                })?;
+                p
+            } else {
+                0
+            };
+            let work = if work_bytes > 0 {
+                let p = alloc(work_bytes / 4, &mut owned)?;
+                if scratch_bytes > 0 {
+                    check("cuMemsetD32Async", unsafe {
+                        sys::cuMemsetD32Async(p, 0, scratch_bytes / 4, s)
+                    })?;
+                }
+                p
+            } else {
+                0
+            };
+            for (i, r) in batch.resources.iter().enumerate() {
                 let p = match r {
                     Resource::Persistent(k) => self.ptr(*k)?.0,
-                    Resource::Upload(w) => {
-                        let p = alloc(w.len(), &mut owned)?;
-                        if !w.is_empty() {
-                            let bytes: &[u8] = bytemuck::cast_slice(w);
-                            check("cuMemcpyHtoDAsync", unsafe {
-                                sys::cuMemcpyHtoDAsync_v2(
-                                    p,
-                                    staging.ptr.add(cursor) as *const c_void,
-                                    bytes.len(),
-                                    s,
-                                )
-                            })?;
-                            cursor += bytes.len();
-                            stats.uploaded_bytes += bytes.len() as u64;
-                        }
-                        p
-                    }
-                    Resource::Scratch(n) => {
-                        let p = alloc(*n, &mut owned)?;
-                        check("cuMemsetD32Async", unsafe {
-                            sys::cuMemsetD32Async(p, 0, (*n).max(4), s)
-                        })?;
-                        p
-                    }
+                    Resource::Upload(_) => inputs + input_at[i] as u64,
+                    Resource::Scratch(_) => work + work_at[i] as u64,
                     Resource::Slice { key, offset, len } => {
-                        let p = alloc(*len, &mut owned)?;
+                        let p = work + work_at[i] as u64;
                         if *len > 0 {
                             let (src, _) = self.ptr(*key)?;
                             check("cuMemcpyDtoDAsync", unsafe {
@@ -485,30 +527,7 @@ impl CudaDevice {
                 };
                 ptrs.push(p);
             }
-            // Every pass's uniform block, uploaded at once.
-            let mut uniform_at = Vec::with_capacity(batch.passes.len());
-            let ubase = cursor.div_ceil(uniform_align) * uniform_align;
-            let mut uoff = 0usize;
-            for p in &batch.passes {
-                if let Some(u) = &p.uniform {
-                    uoff = uoff.div_ceil(uniform_align) * uniform_align;
-                    let bytes: &[u8] = bytemuck::cast_slice(u);
-                    stage[ubase + uoff..ubase + uoff + bytes.len()].copy_from_slice(bytes);
-                    uniform_at.push(Some(uoff));
-                    uoff += bytes.len();
-                } else {
-                    uniform_at.push(None);
-                }
-            }
-            let uniforms = if uoff > 0 {
-                let p = alloc(uoff.div_ceil(4), &mut owned)?;
-                check("cuMemcpyHtoDAsync", unsafe {
-                    sys::cuMemcpyHtoDAsync_v2(p, staging.ptr.add(ubase) as *const c_void, uoff, s)
-                })?;
-                p
-            } else {
-                0
-            };
+            let uniforms = inputs;
             mark("inputs".into())?;
             for (p, u) in batch.passes.iter().zip(&uniform_at) {
                 let (f, block) = self.function(p.kernel)?;
