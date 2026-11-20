@@ -13,7 +13,7 @@ public sealed partial class SolvesPanel : UserControl
 {
     readonly SolvesSession _s;
     readonly DesignSession _session;
-    readonly JobPanelFrame _frame = new("Apply Solves", "");
+    readonly JobPanelFrame _frame = new("Apply Solves", "\uE943");
     bool _queued;
     bool _dirty = true;
 
@@ -58,7 +58,7 @@ public sealed partial class SolvesPanel : UserControl
         _frame.Subtitle = $"{n} solve{(n == 1 ? "" : "s")} in {(sys.Name.Length > 0 ? sys.Name : "the design")}";
         if (n == 0 && !_s.Committed)
         {
-            _frame.Body = JobUI.Empty("", "No Solves",
+            _frame.Body = JobUI.Empty("\uE943", "No Solves",
                 "Add solves in the surface inspector: marginal or chief ray height on a thickness, angle or F-number on a curvature, pickups.");
             _frame.SetActions(null, JobUI.Primary("Apply to Design", null, () => { }, null, false));
             return;
@@ -67,7 +67,7 @@ public sealed partial class SolvesPanel : UserControl
         {
             case JobPhase.Failed:
                 _frame.Body = JobUI.Failure("Solving Failed", _s.Failure ?? "");
-                _frame.SetActions(null, JobUI.Primary("Try Again", "", () => _ = _s.DryRunAsync(fresh: true), "Run the job again with the same settings"));
+                _frame.SetActions(null, JobUI.Primary("Try Again", "\uE72C", () => _ = _s.DryRunAsync(fresh: true), "Run the job again with the same settings"));
                 return;
             case JobPhase.Setup or JobPhase.Running:
                 var busy = JobUI.Column(10, new ProgressRing { IsActive = true, Width = 24, Height = 24 }, JobUI.Text("Solving…", "SecondaryText"));
@@ -107,7 +107,7 @@ public sealed partial class SolvesPanel : UserControl
             kind.HorizontalAlignment = HorizontalAlignment.Right;
             head.Children.Add(kind);
             var values = new Grid();
-            var arrow = new FontIcon { Glyph = "", FontSize = 10, VerticalAlignment = VerticalAlignment.Center };
+            var arrow = new FontIcon { Glyph = "\uE72A", FontSize = 10, VerticalAlignment = VerticalAlignment.Center };
             var after = JobUI.Text(MeritFormat.Short(o.Value), "NumberText");
             if (o.Changes) after.FontWeight = Microsoft.UI.Text.FontWeights.SemiBold;
             values.Children.Add(JobUI.Row(6, JobUI.Text(o.Previous is { } pv ? MeritFormat.Short(pv) : "—", "NumberText"), arrow, after));

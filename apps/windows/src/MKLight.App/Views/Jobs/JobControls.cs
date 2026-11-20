@@ -245,7 +245,7 @@ public static class JobUI
     public static StackPanel Failure(string title, string reason)
     {
         var p = new StackPanel { Spacing = 8, Margin = new Thickness(0, 40, 0, 0), HorizontalAlignment = HorizontalAlignment.Center, MaxWidth = 280 };
-        var icon = new FontIcon { Glyph = "", FontSize = 28, HorizontalAlignment = HorizontalAlignment.Center };
+        var icon = new FontIcon { Glyph = "\uE7BA", FontSize = 28, HorizontalAlignment = HorizontalAlignment.Center };
         Bind(icon, "WarningBrush", b => icon.Foreground = b);
         p.Children.Add(icon);
         var t = Text(title, "PanelTitleText", 15);
@@ -276,7 +276,7 @@ public static class JobUI
     /// <summary>Shown at the top of a result once it is applied to the design.</summary>
     public static StackPanel AppliedNotice()
     {
-        var icon = new FontIcon { Glyph = "", FontSize = 14 };
+        var icon = new FontIcon { Glyph = "\uE930", FontSize = 14 };
         icon.Foreground = new SolidColorBrush(Palette.Slot(5, false));
         icon.Loaded += (_, _) => icon.Foreground = new SolidColorBrush(Palette.Slot(5, icon.ActualTheme == ElementTheme.Dark));
         return Row(6, icon, Text("Applied to the design. Undo with Ctrl+Z.", "SecondaryText"));
@@ -285,7 +285,7 @@ public static class JobUI
     /// <summary>A warning line (orange glyph and text).</summary>
     public static StackPanel Warning(string text)
     {
-        var icon = new FontIcon { Glyph = "", FontSize = 12, VerticalAlignment = VerticalAlignment.Top, Margin = new Thickness(0, 2, 0, 0) };
+        var icon = new FontIcon { Glyph = "\uE7BA", FontSize = 12, VerticalAlignment = VerticalAlignment.Top, Margin = new Thickness(0, 2, 0, 0) };
         var t = Hint(text);
         Bind(icon, "WarningBrush", b => { icon.Foreground = b; t.Foreground = b; });
         var p = Row(6, icon, t);
@@ -317,8 +317,8 @@ public static class JobUI
     /// <summary>A − value + stepper for small integers.</summary>
     public static StackPanel Stepper(string label, int value, int min, int max, Action<int> changed)
     {
-        var minus = Icon("", $"Fewer {label.ToLowerInvariant()}", () => changed(Math.Max(min, value - 1)), value > min, 24);
-        var plus = Icon("", $"More {label.ToLowerInvariant()}", () => changed(Math.Min(max, value + 1)), value < max, 24);
+        var minus = Icon("\uE738", $"Fewer {label.ToLowerInvariant()}", () => changed(Math.Max(min, value - 1)), value > min, 24);
+        var plus = Icon("\uE710", $"More {label.ToLowerInvariant()}", () => changed(Math.Min(max, value + 1)), value < max, 24);
         var t = Text($"{label} {value.ToString(CultureInfo.InvariantCulture)}", "NumberText");
         t.MinWidth = 62;
         return Row(2, t, minus, plus);

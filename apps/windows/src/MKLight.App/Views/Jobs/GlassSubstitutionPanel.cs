@@ -22,7 +22,7 @@ public sealed partial class GlassSubstitutionPanel : UserControl
 {
     readonly GlassSubstitutionSession _s;
     readonly DesignSession _session;
-    readonly JobPanelFrame _frame = new("Glass Substitution", "");
+    readonly JobPanelFrame _frame = new("Glass Substitution", "\uEB42");
     IReadOnlyList<CatalogInfo> _catalogs = [];
     bool _queued;
     JobPhase? _builtPhase;
@@ -177,7 +177,7 @@ public sealed partial class GlassSubstitutionPanel : UserControl
             if (check.IsChecked == true) st.Selected.Add(slot.Id); else st.Selected.Remove(slot.Id);
             _s.NotifyChanged();
         };
-        var overrideButton = JobUI.Icon(own is null ? "" : "", $"Candidates for surface {slot.Index} only", () => { }, true, 26);
+        var overrideButton = JobUI.Icon(own is null ? "\uE9E9" : "\uE71C", $"Candidates for surface {slot.Index} only", () => { }, true, 26);
         overrideButton.Flyout = OverrideFlyout(slot);
         var g = new Grid();
         g.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
@@ -345,7 +345,7 @@ public sealed partial class GlassSubstitutionPanel : UserControl
         p.Children.Add(JobUI.Hint(r.StatusText(_s.Applied)));
         if (r.Ranked.Count == 0)
         {
-            p.Children.Add(JobUI.Empty("", "No Combinations", "No combination could be evaluated."));
+            p.Children.Add(JobUI.Empty("\uE9CE", "No Combinations", "No combination could be evaluated."));
             return p;
         }
         var list = new StackPanel();
@@ -441,7 +441,7 @@ public sealed partial class GlassSubstitutionPanel : UserControl
             var cells = new FrameworkElement[]
             {
                 JobUI.Text($"S{idx}", "SecondaryNumberText"), JobUI.Text(_s.StartGlasses.GetValueOrDefault(x.Surface) ?? "—"),
-                new FontIcon { Glyph = "", FontSize = 10, VerticalAlignment = VerticalAlignment.Center },
+                new FontIcon { Glyph = "\uE72A", FontSize = 10, VerticalAlignment = VerticalAlignment.Center },
                 JobUI.Column(0, after, JobUI.Text($"{x.Nd.ToString("F4", CultureInfo.InvariantCulture)} / {x.Vd.ToString("F1", CultureInfo.InvariantCulture)}", "CaptionText", 10.5)),
             };
             for (var col = 0; col < cells.Length; col++)
@@ -485,16 +485,16 @@ public sealed partial class GlassSubstitutionPanel : UserControl
         switch (_s.Phase)
         {
             case JobPhase.Setup:
-                _frame.SetActions(null, JobUI.Primary("Find Glasses", "", () => _s.Start(), "Start the search (Ctrl+Enter)", !_s.CannotRun));
+                _frame.SetActions(null, JobUI.Primary("Find Glasses", "\uE768", () => _s.Start(), "Start the search (Ctrl+Enter)", !_s.CannotRun));
                 break;
             case JobPhase.Failed:
                 _frame.SetActions(null, JobUI.Secondary("Back", null, _s.Reset, "Back to the job's settings"),
-                    JobUI.Primary("Try Again", "", () => _s.Start(fresh: true), "Run the job again with the same settings", !_s.CannotRun));
+                    JobUI.Primary("Try Again", "\uE72C", () => _s.Start(fresh: true), "Run the job again with the same settings", !_s.CannotRun));
                 break;
             case JobPhase.Running:
                 _frame.SetActions(JobUI.Progress(_s.Progress, _s.Live is { } l ? $"{l.Combinations} combinations" : "Preparing"),
                     JobUI.Secondary("Cancel", null, _s.Cancel, "End the run and discard it", destructive: true),
-                    JobUI.Secondary("Stop", "", _s.Stop, "End now and keep the combinations ranked so far", _s.CanStop));
+                    JobUI.Secondary("Stop", "\uE71A", _s.Stop, "End now and keep the combinations ranked so far", _s.CanStop));
                 break;
             default:
                 if (_s.Applied) _frame.SetActions(null, JobUI.Primary("Done", null, _s.Reset, "Back to the glasses and the search settings"));

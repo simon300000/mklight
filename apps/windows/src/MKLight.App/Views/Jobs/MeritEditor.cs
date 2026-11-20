@@ -84,7 +84,7 @@ public sealed class MeritEditor
         if (M.Mode == MeritMode.Default)
         {
             body.Children.Add(DefaultForm());
-            var convert = JobUI.Secondary("Convert to Custom", "", () => _ = _s.ConvertToCustomAsync(),
+            var convert = JobUI.Secondary("Convert to Custom", "\uE8FD", () => _ = _s.ConvertToCustomAsync(),
                 "Start a custom merit from the operands the default generates for this design", !_s.Evaluating && _s.Workspace.DesignSnapshot is not null);
             convert.HorizontalAlignment = HorizontalAlignment.Left;
             body.Children.Add(convert);
@@ -211,7 +211,7 @@ public sealed class MeritEditor
         var p = new StackPanel { Spacing = 4 };
         var chevron = new Button
         {
-            Style = JobUI.Style("CircleButton"), Width = 22, Height = 22, FontSize = 10, Content = _thicknessOpen ? "" : "",
+            Style = JobUI.Style("CircleButton"), Width = 22, Height = 22, FontSize = 10, Content = _thicknessOpen ? "\uE70D" : "\uE76C",
         };
         AutomationProperties.SetName(chevron, _thicknessOpen ? "Hide the thickness limits" : "Show the thickness limits");
         chevron.Click += (_, _) => { _thicknessOpen = !_thicknessOpen; var parent = (Panel)p.Parent; var at = parent.Children.IndexOf(p); parent.Children[at] = ThicknessLimits(M.Defaults); };
@@ -254,7 +254,7 @@ public sealed class MeritEditor
         int? First() => Selection.Count == 0 ? null : ops.FindIndex(o => Selection.Contains(o.Id)) is var i and >= 0 ? i : null;
         var first = First();
 
-        var add = new Button { Style = JobUI.Style("CircleButton"), Content = "", Width = 26, Height = 26, FontSize = 12 };
+        var add = new Button { Style = JobUI.Style("CircleButton"), Content = "\uE710", Width = 26, Height = 26, FontSize = 12 };
         ToolTipService.SetToolTip(add, "Add an operand after the selection");
         AutomationProperties.SetName(add, "Add Operand");
         add.Flyout = OperandPicker(d =>
@@ -267,8 +267,8 @@ public sealed class MeritEditor
         });
         var toolbar = new Grid();
         toolbar.Children.Add(JobUI.Row(0, add,
-            JobUI.Icon("", "Delete the selected operands (Delete)", DeleteSelected, Selection.Count > 0),
-            JobUI.Icon("", "Duplicate the selected operands", () =>
+            JobUI.Icon("\uE738", "Delete the selected operands (Delete)", DeleteSelected, Selection.Count > 0),
+            JobUI.Icon("\uE8C8", "Duplicate the selected operands", () =>
             {
                 IReadOnlyList<Guid> copies = [];
                 var ids = Selection.ToHashSet();
@@ -276,8 +276,8 @@ public sealed class MeritEditor
                 Selection.Clear();
                 Selection.UnionWith(copies);
             }, Selection.Count > 0),
-            JobUI.Icon("", "Move up", () => MoveSelection(-1), Selection.Count == 1 && first > 0),
-            JobUI.Icon("", "Move down", () => MoveSelection(1), Selection.Count == 1 && first < ops.Count - 1)));
+            JobUI.Icon("\uE70E", "Move up", () => MoveSelection(-1), Selection.Count == 1 && first > 0),
+            JobUI.Icon("\uE70D", "Move down", () => MoveSelection(1), Selection.Count == 1 && first < ops.Count - 1)));
         var count = JobUI.Text($"{ops.Count} operand{(ops.Count == 1 ? "" : "s")}", "CaptionText");
         count.HorizontalAlignment = HorizontalAlignment.Right;
         toolbar.Children.Add(count);

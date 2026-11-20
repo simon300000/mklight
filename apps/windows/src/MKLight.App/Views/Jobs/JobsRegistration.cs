@@ -21,10 +21,10 @@ static class JobsRegistration
     [ModuleInitializer]
     internal static void Register()
     {
-        InspectorPages.Add(new("optimize", "Optimize", "", 20, s => new OptimizePanel(s)));
-        InspectorPages.Add(new("glass_substitution", "Glass Substitution", "", 21, s => new GlassSubstitutionPanel(s)));
-        InspectorPages.Add(new("tolerance", "Tolerance", "", 22, _ => InspectorRegistration.Placeholder("Tolerance")));
-        InspectorPages.Add(new("solves", "Apply Solves", "", 23, s => new SolvesPanel(s)));
+        InspectorPages.Add(new("optimize", "Optimize", "\uE9D9", 20, s => new OptimizePanel(s)));
+        InspectorPages.Add(new("glass_substitution", "Glass Substitution", "\uEB42", 21, s => new GlassSubstitutionPanel(s)));
+        InspectorPages.Add(new("tolerance", "Tolerance", "\uE9E9", 22, s => new TolerancePanel(s)));
+        InspectorPages.Add(new("solves", "Apply Solves", "\uE943", 23, s => new SolvesPanel(s)));
 
         AppHooks.WindowCreated += w => w.Closed += (_, _) => DesignJobs.Of(w.Session).CancelAll();
 
@@ -88,6 +88,34 @@ static class JobsRegistration
         AppHooks.LaunchActions["glass-apply"] = (w, _) =>
         {
             Open(w, "glass_substitution").Glass.Apply();
+            return Task.CompletedTask;
+        };
+        // `tolerance-run[=trials]`: run the default set (both analyses) and wait for the results.
+        AppHooks.LaunchActions["tolerance-run"] = async (w, arg) =>
+        {
+            var s = Open(w, "tolerance").Tolerance;
+            await WaitSnapshot(w);
+            await Task.Delay(1500); // the layout's semi-diameters and the glasses' Abbe numbers
+            if (int.TryParse(arg, out var trials)) s.Edit("Change Trials", x => x.Trials = trials);
+            s.Start();
+            await WaitUntil(() => !s.IsRunning, 300);
+        };
+        // `tolerance-preview=k`: preview Monte-Carlo trial k of the last run (`tolerance-preview=s0` the first sensitivity).
+        AppHooks.LaunchActions["tolerance-preview"] = async (w, arg) =>
+        {
+            var s = Open(w, "tolerance").Tolerance;
+            if (s.Result is not { } r) return;
+            ViewModels.Jobs.TolerancePreviewCase c = arg is ['s', ..] && int.TryParse(arg[1..], out var o)
+                ? new ViewModels.Jobs.TolerancePreviewCase.Sensitivity(r.Sensitivities.OrderByDescending(r.Share).ElementAt(o).Id, true)
+                : new ViewModels.Jobs.TolerancePreviewCase.Trial(int.TryParse(arg, out var k) ? k : r.TrialsWorstFirst.FirstOrDefault());
+            await s.PreviewAsync(c);
+        };
+        // `add-solve`: a marginal-ray-height solve on the back focus (screenshots of Apply Solves).
+        AppHooks.LaunchActions["add-solve"] = (w, _) =>
+        {
+            var doc = w.Session.Document;
+            var target = new Model.ParamPath.Thickness(doc.System.Surfaces[doc.System.ImageIndex - 1].Id);
+            doc.Edit("Add Solve", s => s with { Solves = s.Solves.Add(new Model.Solve(target, new Model.SolveKind.MarginalRayHeight(0))) });
             return Task.CompletedTask;
         };
         AppHooks.LaunchActions["solves-run"] = async (w, _) =>

@@ -31,7 +31,7 @@ public static class VariablesBoundsList
                 refresh();
             });
             ToolTipService.SetToolTip(unit, "Enter and read the bounds of radii as a radius window in mm, or as the curvature c = 1/R the optimizer uses");
-            var help = new FontIcon { Glyph = "", FontSize = 13, VerticalAlignment = VerticalAlignment.Center };
+            var help = new FontIcon { Glyph = "\uE9CE", FontSize = 13, VerticalAlignment = VerticalAlignment.Center };
             JobUI.Bind(help, "TextFillColorSecondaryBrush", b => help.Foreground = b);
             ToolTipService.SetToolTip(help, RadiusBounds.Help);
             var row = JobUI.Row(8, JobUI.Text("Curvatures as", "CaptionText"), unit, help);
@@ -89,7 +89,7 @@ public static class VariablesBoundsList
         var name = JobUI.Row(5, JobUI.Text(label));
         if (v.IsPinned)
         {
-            var pin = new FontIcon { Glyph = "", FontSize = 11, VerticalAlignment = VerticalAlignment.Center };
+            var pin = new FontIcon { Glyph = "\uE718", FontSize = 11, VerticalAlignment = VerticalAlignment.Center };
             JobUI.Bind(pin, "AccentTextFillColorPrimaryBrush", b => pin.Foreground = b);
             ToolTipService.SetToolTip(pin, "Pinned: kept as a variable but held at its value");
             name.Children.Add(pin);
@@ -97,9 +97,9 @@ public static class VariablesBoundsList
         name.VerticalAlignment = VerticalAlignment.Center;
         top.Children.Add(name);
         var buttons = JobUI.Row(0,
-            JobUI.Icon(v.IsPinned ? "" : "", v.IsPinned ? "Unpin: let the optimizer vary it again" : "Pin at its value (equal bounds): keep it as a variable but hold it",
+            JobUI.Icon(v.IsPinned ? "\uE77A" : "\uE718", v.IsPinned ? "Unpin: let the optimizer vary it again" : "Pin at its value (equal bounds): keep it as a variable but hold it",
                 () => DesignVariables.TogglePin(document, v), value is not null, 24),
-            JobUI.Icon("", "Fix this parameter (remove the variable)", () => DesignVariables.Set(document, path, false), true, 24));
+            JobUI.Icon("\uE711", "Fix this parameter (remove the variable)", () => DesignVariables.Set(document, path, false), true, 24));
         Grid.SetColumn(buttons, 1);
         top.Children.Add(buttons);
 

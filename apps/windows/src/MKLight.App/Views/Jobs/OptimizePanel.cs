@@ -16,7 +16,7 @@ namespace MKLight.App.Views.Jobs;
 public sealed partial class OptimizePanel : UserControl
 {
     readonly OptimizeSession _s;
-    readonly JobPanelFrame _frame = new("Optimize", "");
+    readonly JobPanelFrame _frame = new("Optimize", "\uE9D9");
     readonly MeritEditor _merit;
     bool _queued;
     JobPhase? _builtPhase;
@@ -169,7 +169,7 @@ public sealed partial class OptimizePanel : UserControl
             var end = OptimizeResult.Displayed(v.Value, v.Param);
             var unit = v.Param is { } pp ? (pp.IsCurvature ? "mm" : pp.Unit(system)) : "";
             var values = new Grid();
-            var arrow = new FontIcon { Glyph = "", FontSize = 10, VerticalAlignment = VerticalAlignment.Center };
+            var arrow = new FontIcon { Glyph = "\uE72A", FontSize = 10, VerticalAlignment = VerticalAlignment.Center };
             var after = JobUI.Text(MeritFormat.Short(end), "NumberText");
             after.FontWeight = Microsoft.UI.Text.FontWeights.SemiBold;
             values.Children.Add(JobUI.Row(6, JobUI.Text(MeritFormat.Short(start), "NumberText"), arrow, after));
@@ -203,17 +203,17 @@ public sealed partial class OptimizePanel : UserControl
         switch (_s.Phase)
         {
             case JobPhase.Setup:
-                _frame.SetActions(null, JobUI.Primary("Optimize", "", () => _s.Start(), cannotRun ? _s.Problem ?? "Fix the design's errors first." : "Start optimizing (Ctrl+Enter)", !cannotRun));
+                _frame.SetActions(null, JobUI.Primary("Optimize", "\uE768", () => _s.Start(), cannotRun ? _s.Problem ?? "Fix the design's errors first." : "Start optimizing (Ctrl+Enter)", !cannotRun));
                 break;
             case JobPhase.Failed:
                 _frame.SetActions(null,
                     JobUI.Secondary("Back", null, _s.Reset, "Back to the job's settings"),
-                    JobUI.Primary("Try Again", "", () => _s.Start(fresh: true), "Run the job again with the same settings", !cannotRun));
+                    JobUI.Primary("Try Again", "\uE72C", () => _s.Start(fresh: true), "Run the job again with the same settings", !cannotRun));
                 break;
             case JobPhase.Running:
                 _frame.SetActions(JobUI.Progress(_s.Progress, _s.Trace.Count > 0 ? $"Iteration {_s.Trace[^1].Iteration}" : ""),
                     JobUI.Secondary("Cancel", null, _s.Cancel, "End the run and discard it (Esc)", destructive: true),
-                    JobUI.Secondary("Stop", "", _s.Stop, "End now and keep the best design so far", _s.CanStop));
+                    JobUI.Secondary("Stop", "\uE71A", _s.Stop, "End now and keep the best design so far", _s.CanStop));
                 break;
             default:
                 if (_s.Applied) _frame.SetActions(null, JobUI.Primary("Done", null, _s.Reset, "Back to the merit function and variables"));
