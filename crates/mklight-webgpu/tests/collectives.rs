@@ -41,66 +41,11 @@ fn segment_known_answers() {
     p3_cases::segment_answers(g);
 }
 
-/// Values of every kind and mode over `n` records split by `offsets` (at
-/// most `bound` each), f32 and double-float.
-#[allow(clippy::too_many_arguments)]
-fn random_case(
-    b: &dyn QualificationBackend,
-    kind: SegmentKind,
-    mode: ReduceMode,
-    df: bool,
-    channels: usize,
-    offsets: &[u32],
-    n: usize,
-    bound: usize,
-) -> ResidentPlan {
-    let value = |i: usize| {
-        let u = ((i as u64 * 2654435761) % 1000003) as f64 / 1000003.;
-        (u - 0.3) * [1., 1e4, 1e-3][i % 3] + if i.is_multiple_of(97) { 1e7 } else { 0. }
-    };
-    let data = if df {
-        BufferData::DoubleFloat(
-            (0..channels * n)
-                .map(|i| Df32::from_f64(value(i)))
-                .collect(),
-        )
-    } else {
-        BufferData::F32((0..channels * n).map(|i| value(i) as f32).collect())
-    };
-    let mut p = p3_cases::segment(b, data, channels, offsets.to_vec(), kind, None, bound);
-    let ResidentOp::Collectives(Request::SegmentReduce(r)) = &mut p.operations[0] else {
-        unreachable!()
-    };
-    r.mode = mode;
-    p
-}
-
 #[test]
 fn segment_reduce_matches_cpu_bitwise() {
     let g = crate::gpu_or_skip!();
     let c = CpuF32Backend::matching(&g.precision().probe);
-    for mode in [
-        ReduceMode::Plain,
-        ReduceMode::Kahan,
-        ReduceMode::DoubleFloat,
-    ] {
-        for df in [false, true] {
-            for (kind, channels) in [
-                (SegmentKind::Sum, 2),
-                (SegmentKind::Summary, 2),
-                (SegmentKind::SourceProducts, 3),
-                (SegmentKind::Moments2, 3),
-            ] {
-                eprintln!("{kind:?} {mode:?} df={df}");
-                // Segments empty, short and spanning several tree groups,
-                // invalid offsets.
-                let offsets = [0, 0, 1, 7, 300, 4096, 4097, 13001, 30001, 30002, 29000];
-                same(g, &c, &|b| {
-                    random_case(b, kind, mode, df, channels, &offsets, 30002, 17001)
-                });
-            }
-        }
-    }
+    p3_cases::segment_sweep(&|build| same(g, &c, build));
     // Moments with a reference, a mask and separate weights (rejected
     // records hold NaN); short segments and one spanning several groups.
     let short: Vec<u32> = (0..=600)
@@ -116,30 +61,12 @@ fn segment_reduce_matches_cpu_bitwise() {
     same(g, &c, &|b| p3_cases::moments_case(b, short.clone(), 30_001));
 }
 
-/// A few long segments (a spot diagram's fields × wavelengths): one beyond
-/// the 256-group cap, one of a few groups, one record, one empty. Then 2000
-/// short segments under the same cap, so the partials take several tiles.
+/// Long segments beyond the 256-group cap and tiled partials.
 #[test]
 fn segment_reduce_long_segments_bitwise() {
     let g = crate::gpu_or_skip!();
     let c = CpuF32Backend::matching(&g.precision().probe);
-    let n = 1_310_002;
-    let long = [0, 1_300_000, 1_310_001, 1_310_002, 1_310_002];
-    let tiled: Vec<u32> = (0..=2000).map(|i| i * 600).chain([n as u32]).collect();
-    for (kind, mode, channels) in [
-        (SegmentKind::Sum, ReduceMode::Plain, 2),
-        (SegmentKind::Summary, ReduceMode::Kahan, 2),
-        (SegmentKind::SourceProducts, ReduceMode::DoubleFloat, 3),
-        (SegmentKind::Moments2, ReduceMode::DoubleFloat, 3),
-    ] {
-        eprintln!("{kind:?} {mode:?}");
-        same(g, &c, &|b| {
-            random_case(b, kind, mode, true, channels, &long, n, 1_300_000)
-        });
-        same(g, &c, &|b| {
-            random_case(b, kind, mode, false, channels, &tiled, n, n)
-        });
-    }
+    p3_cases::long_segments(&|build| same(g, &c, build));
 }
 
 /// Focus terms and characteristic terms feed segment sums in one plan whose

@@ -42,15 +42,31 @@ fn bitwise_fixed_collectives() {
         bitwise(&backend(origin));
     }
 }
+/// Bitwise check of one plan on the specification and on Metal.
+fn same(
+    g: &MetalBackend,
+    c: &CpuF32Backend,
+    build: &dyn Fn(&dyn QualificationBackend) -> ResidentPlan,
+) {
+    let (a, _) = p3_cases::read(c, build(c));
+    let (b, _) = p3_cases::read(g, build(g));
+    for (a, b) in a.iter().zip(&b) {
+        p3_cases::assert_bits(a, b);
+    }
+}
+/// Long segments beyond the 256-group cap (the pass-1 groups of a segment
+/// run in parallel) and partials over several tiles.
+#[test]
+fn segment_reduce_long_segments_bitwise() {
+    for origin in [LibraryChoice::Precompiled, LibraryChoice::RuntimeSource] {
+        let g = backend(origin);
+        let c = CpuF32Backend::matching(&g.precision().probe);
+        p3_cases::long_segments(&|build| same(&g, &c, build));
+    }
+}
 fn bitwise(g: &MetalBackend) {
     let c = CpuF32Backend::matching(&g.precision().probe);
-    let same = |build: &dyn Fn(&dyn QualificationBackend) -> ResidentPlan| {
-        let (a, _) = p3_cases::read(&c, build(&c));
-        let (b, _) = p3_cases::read(g, build(g));
-        for (a, b) in a.iter().zip(&b) {
-            p3_cases::assert_bits(a, b);
-        }
-    };
+    let same = |build: &dyn Fn(&dyn QualificationBackend) -> ResidentPlan| same(g, &c, build);
     for n in [0, 257, 10003] {
         for t in [ElementType::U32, ElementType::F32, ElementType::DoubleFloat] {
             same(&|b| p3_cases::sort_case(b, n, t));
@@ -64,6 +80,8 @@ fn bitwise(g: &MetalBackend) {
     for t in [ElementType::U32, ElementType::F32, ElementType::DoubleFloat] {
         same(&|b| p3_cases::random_sort_case(b, 70001, t));
     }
+    // Every kind and mode (tree-group path), invalid offsets.
+    p3_cases::segment_sweep(&same);
     // Short segments (SIMD path) and the same records under a long bound
     // (tree-group path); one segment spans several tree groups.
     let short: Vec<u32> = (0..=600)

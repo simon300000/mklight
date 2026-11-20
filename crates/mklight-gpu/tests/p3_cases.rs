@@ -335,6 +335,81 @@ pub fn segment(
         .push(ResidentOp::Collectives(Request::SegmentReduce(r)));
     p
 }
+/// Values of every kind and mode over `n` records split by `offsets` (at
+/// most `bound` each), f32 and double-float.
+#[allow(clippy::too_many_arguments)]
+pub fn random_segment(
+    b: &dyn QualificationBackend,
+    kind: SegmentKind,
+    mode: ReduceMode,
+    df: bool,
+    channels: usize,
+    offsets: &[u32],
+    n: usize,
+    bound: usize,
+) -> ResidentPlan {
+    let value = |i: usize| {
+        let u = ((i as u64 * 2654435761) % 1000003) as f64 / 1000003.;
+        (u - 0.3) * [1., 1e4, 1e-3][i % 3] + if i.is_multiple_of(97) { 1e7 } else { 0. }
+    };
+    let data = if df {
+        BufferData::DoubleFloat(
+            (0..channels * n)
+                .map(|i| Df32::from_f64(value(i)))
+                .collect(),
+        )
+    } else {
+        BufferData::F32((0..channels * n).map(|i| value(i) as f32).collect())
+    };
+    let mut p = segment(b, data, channels, offsets.to_vec(), kind, None, bound);
+    let ResidentOp::Collectives(Request::SegmentReduce(r)) = &mut p.operations[0] else {
+        unreachable!()
+    };
+    r.mode = mode;
+    p
+}
+/// A plan check: the device's outputs are bitwise the specification's.
+pub type Same<'a> = &'a dyn Fn(&dyn Fn(&dyn QualificationBackend) -> ResidentPlan);
+/// Every kind, mode and value type over segments empty, short and spanning
+/// several tree groups, and invalid offsets.
+pub fn segment_sweep(same: Same) {
+    for mode in [
+        ReduceMode::Plain,
+        ReduceMode::Kahan,
+        ReduceMode::DoubleFloat,
+    ] {
+        for df in [false, true] {
+            for (kind, channels) in [
+                (SegmentKind::Sum, 2),
+                (SegmentKind::Summary, 2),
+                (SegmentKind::SourceProducts, 3),
+                (SegmentKind::Moments2, 3),
+            ] {
+                eprintln!("{kind:?} {mode:?} df={df}");
+                let offsets = [0, 0, 1, 7, 300, 4096, 4097, 13001, 30001, 30002, 29000];
+                same(&|b| random_segment(b, kind, mode, df, channels, &offsets, 30002, 17001));
+            }
+        }
+    }
+}
+/// A few long segments (a spot diagram's fields × wavelengths): one beyond
+/// the 256-group cap, one of a few groups, one record, one empty. Then 2000
+/// short segments under the same cap, so the partials take several tiles.
+pub fn long_segments(same: Same) {
+    let n = 1_310_002;
+    let long = [0, 1_300_000, 1_310_001, 1_310_002, 1_310_002];
+    let tiled: Vec<u32> = (0..=2000).map(|i| i * 600).chain([n as u32]).collect();
+    for (kind, mode, channels) in [
+        (SegmentKind::Sum, ReduceMode::Plain, 2),
+        (SegmentKind::Summary, ReduceMode::Kahan, 2),
+        (SegmentKind::SourceProducts, ReduceMode::DoubleFloat, 3),
+        (SegmentKind::Moments2, ReduceMode::DoubleFloat, 3),
+    ] {
+        eprintln!("{kind:?} {mode:?}");
+        same(&|b| random_segment(b, kind, mode, true, channels, &long, n, 1_300_000));
+        same(&|b| random_segment(b, kind, mode, false, channels, &tiled, n, n));
+    }
+}
 pub fn segment_answers(b: &dyn QualificationBackend) {
     let (v, _) = read(
         b,

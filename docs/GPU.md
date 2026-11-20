@@ -2480,6 +2480,21 @@ long segments (fields × wavelengths): at 250 rings on an RTX 4090 (CUDA)
 the segment kernels take 0.5–1 ms per run instead of 60 ms, the geometric
 MTF's about 10 ms instead of 121 ms.
 
+Metal (`mklight-metal/shaders/collectives.metal`, host
+`mklight-metal/src/collectives/mod.rs`) has had this design from the start:
+`mkl_c_seg_pass1` is `mkl_segment_pass1` with the same grid and partial
+layout, and `mkl_c_seg_pass2` folds a segment's partials with one SIMD
+group (eight segments per threadgroup) whose 8-slot emulation of the
+256-thread tree (`mkl_c_tree8`) is bitwise the workgroup tree. Its tiles
+are bounded by the same 16 MiB of partials and by the command work bound
+(`COMMAND_WORK`, about 10 ms per command buffer for cancellation), which
+keeps a tile below 16,384 segments. When every segment fits one tree group
+(`Gmax = 1`) and segments are many (≥ 512) or at most 64 records,
+`mkl_c_seg_short` instead runs every term and phase of a segment in one
+SIMD group without partials. The shared cases
+(`mklight-gpu/tests/p3_cases.rs`: `segment_sweep`, `long_segments`) check
+WebGPU and both Metal libraries bitwise against the specification.
+
 ### 11.6 Benchmark and routing
 
 Apple M2 Pro (12 CPU threads), release builds, median of fresh runs after
