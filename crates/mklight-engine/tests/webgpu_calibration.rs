@@ -65,8 +65,8 @@ fn calibration_runs_installs_and_routes() {
     // A forced estimate changes the route.
     let mut fast = cal.clone();
     for p in fast.analyses.values_mut() {
-        p.webgpu.fixed_ms = 0.;
-        p.webgpu.per_mwork_ms = 1e-6;
+        p.gpu.fixed_ms = 0.;
+        p.gpu.per_mwork_ms = 1e-6;
         p.cpu.fixed_ms = 100.;
     }
     fast.source = "forced".into();
@@ -74,7 +74,7 @@ fn calibration_runs_installs_and_routes() {
     assert_eq!(decision(8)["decision"], "qualified_webgpu");
     let mut slow = cal;
     for p in slow.analyses.values_mut() {
-        p.webgpu.fixed_ms = 1e6;
+        p.gpu.fixed_ms = 1e6;
     }
     slow.source = "forced".into();
     engine.set_webgpu_calibration(Some(slow));

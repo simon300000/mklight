@@ -100,8 +100,9 @@ pub(crate) fn auto_route(
         Some(AutoCandidate::Gpu {
             apple_gpu,
             webgpu,
+            cuda,
             open,
-        }) => (Device::hinted(apple_gpu, webgpu), open),
+        }) => (Device::hinted(apple_gpu, webgpu, cuda), open),
         None => (Device::Unknown, false),
     };
     if let Some(reason) = reference_by_division(r) {

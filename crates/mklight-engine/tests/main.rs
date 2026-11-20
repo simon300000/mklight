@@ -4,6 +4,7 @@
 
 mod afocal;
 mod analyses;
+mod cuda_calibration;
 mod gpu;
 mod graph;
 mod material_offsets;
