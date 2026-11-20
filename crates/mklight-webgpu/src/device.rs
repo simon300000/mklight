@@ -239,6 +239,28 @@ pub trait Gpu: Send + Sync {
     fn ports(&self, _family: &str) -> bool {
         true
     }
+    /// Prepare `kernels` ahead of their first use (`ComputeBackend::
+    /// prepare_kernels`): report progress `(done, total)`, stop early when
+    /// `cancel` is set, and keep compiled code under `cache_dir` where the
+    /// device has a cache of its own. Returns how many kernels came from that
+    /// cache and why the cache could not be used, if it could not. Provided:
+    /// one kernel after the other through [`Gpu::prepare`], no cache.
+    fn prepare_all(
+        &self,
+        kernels: &[(Kernel, PassShape)],
+        _cache_dir: Option<&std::path::Path>,
+        progress: &(dyn Fn(usize, usize) + Sync),
+        cancel: &std::sync::atomic::AtomicBool,
+    ) -> MkResult<(usize, Option<String>)> {
+        for (i, k) in kernels.iter().enumerate() {
+            if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                break;
+            }
+            self.prepare(std::slice::from_ref(k))?;
+            progress(i + 1, kernels.len());
+        }
+        Ok((0, None))
+    }
 }
 
 /// The binding shape of a pass, which with the kernel identifies a pipeline.

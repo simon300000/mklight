@@ -374,23 +374,18 @@ impl ComputeBackend for WebGpuBackend {
     }
     fn prepare_kernels(
         &self,
-        _cache_dir: Option<&std::path::Path>,
+        cache_dir: Option<&std::path::Path>,
         progress: &(dyn Fn(usize, usize) + Sync),
         cancel: &std::sync::atomic::AtomicBool,
     ) -> MkResult<KernelPreparation> {
         let t = Instant::now();
         let all = crate::ops::pipelines();
-        for (i, k) in all.iter().enumerate() {
-            if cancel.load(std::sync::atomic::Ordering::Relaxed) {
-                break;
-            }
-            self.inner.gpu.prepare(std::slice::from_ref(k))?;
-            progress(i + 1, all.len());
-        }
+        let (from_cache, warning) = self.inner.gpu.prepare_all(&all, cache_dir, progress, cancel)?;
         Ok(KernelPreparation {
             kernels: all.len(),
+            from_cache,
             seconds: t.elapsed().as_secs_f64(),
-            ..Default::default()
+            warning,
         })
     }
 }

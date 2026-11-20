@@ -755,6 +755,7 @@ dependencies = [
  "blake3",
  "bytemuck",
  "cudarc",
+ "miniz_oxide 0.8.9",
  "mklight-analysis",
  "mklight-bench",
  "mklight-core",

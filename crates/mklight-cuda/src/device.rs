@@ -18,7 +18,6 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use cudarc::driver::{result as cu, sys};
-use cudarc::nvrtc::sys as nv;
 use mklight_core::{MkError, MkResult};
 use mklight_gpu::{BackendKind, NumericsProbe};
 use mklight_webgpu::device::*;
@@ -36,6 +35,8 @@ fn check(what: &str, r: sys::CUresult) -> MkResult<()> {
 /// A loaded compilation unit.
 struct Module {
     module: sys::CUmodule,
+    /// Read from the disk cache rather than compiled.
+    from_cache: bool,
 }
 
 /// A compilation unit, loaded once.
@@ -86,7 +87,10 @@ pub struct CudaDevice {
     arch: (i32, i32),
     nvrtc: Option<(i32, i32)>,
     driver_version: i32,
-    cache_dir: Option<PathBuf>,
+    /// Where compiled units are kept (`None`: nowhere).
+    cache_dir: Mutex<Option<PathBuf>>,
+    /// Why the cache could not be written, if it could not.
+    cache_warning: Mutex<Option<String>>,
     modules: Mutex<HashMap<String, Unit>>,
     blocks: Mutex<HashMap<Kernel, (sys::CUfunction, [u32; 3])>>,
     persistent: Mutex<HashMap<u64, (sys::CUdeviceptr, usize)>>,
@@ -96,8 +100,6 @@ pub struct CudaDevice {
     /// memory pool: plan mirrors come and go with every plan, and
     /// `cuMemFree` would synchronise the device).
     admin: Mutex<sys::CUstream>,
-    /// `prepare` has compiled every kernel once.
-    prepared_all: std::sync::atomic::AtomicBool,
 }
 
 /// Module statistics of this process: (compiled, loaded from the cache,
@@ -184,7 +186,7 @@ impl CudaDevice {
         }
         let admin = cu::stream::create(cu::stream::StreamKind::NonBlocking)
             .map_err(|e| err("cuStreamCreate", e))?;
-        let nvrtc = nvrtc_version();
+        let nvrtc = crate::nvrtc::version();
         let l = mklight_webgpu::wgpu_device::design_limits();
         let summary = AdapterSummary {
             name,
@@ -216,14 +218,14 @@ impl CudaDevice {
             arch,
             nvrtc,
             driver_version,
-            cache_dir: default_cache_dir(),
+            cache_dir: Mutex::new(default_cache_dir()),
+            cache_warning: Mutex::new(None),
             modules: Mutex::new(HashMap::new()),
             blocks: Mutex::new(HashMap::new()),
             persistent: Mutex::new(HashMap::new()),
             next_key: AtomicU64::new(1),
             lanes: Mutex::new(Vec::new()),
             admin: Mutex::new(admin),
-            prepared_all: std::sync::atomic::AtomicBool::new(false),
         }))
     }
 
@@ -232,65 +234,85 @@ impl CudaDevice {
         self.arch
     }
 
-    /// Use `dir` for the kernel cache (`None`: no cache).
-    pub fn set_cache_dir(&mut self, dir: Option<PathBuf>) {
-        self.cache_dir = dir;
+    /// Use `dir` for the kernel cache (`None`: no cache). Units already
+    /// loaded stay loaded.
+    pub fn set_cache_dir(&self, dir: Option<PathBuf>) {
+        *self.cache_dir.lock().unwrap() = dir;
     }
 
     fn bind(&self) -> MkResult<()> {
         unsafe { cu::ctx::set_current(self.ctx) }.map_err(|e| err("cuCtxSetCurrent", e))
     }
 
-    /// The CUBIN of `module`: from the cache or compiled.
-    fn cubin(&self, module: &str, source: &str) -> MkResult<Vec<u8>> {
+    /// The image of unit `name`: embedded at build time, else from the disk
+    /// cache, else compiled by NVRTC now (and saved to the cache). The flag
+    /// says whether it was not compiled now.
+    fn image(&self, name: &str, source: &str) -> MkResult<(Vec<u8>, bool)> {
+        let t = Instant::now();
+        if let Some((target, image)) = kernels::embedded(name, self.arch) {
+            let image = miniz_oxide::inflate::decompress_to_vec(image)
+                .map_err(|e| MkError::Backend(format!("cuda: built-in {name}.{target}: {e:?}")))?;
+            let mut s = COMPILE_STATS.lock().unwrap();
+            s.1 += 1;
+            s.2 += t.elapsed().as_secs_f64();
+            return Ok((image, true));
+        }
         let Some(nvrtc) = self.nvrtc else {
-            return Err(MkError::Unsupported(
-                "cuda: NVRTC (nvrtc64_*.dll / libnvrtc.so) is not available to compile kernels"
-                    .into(),
-            ));
+            return Err(MkError::Unsupported(format!(
+                "cuda: no kernels for sm_{}{} were built in, and NVRTC (nvrtc64_*.dll / \
+                 libnvrtc.so) is not available to compile them",
+                self.arch.0, self.arch.1
+            )));
         };
-        let arch = format!("--gpu-architecture=sm_{}{}", self.arch.0, self.arch.1);
+        let target = format!("sm_{}{}", self.arch.0, self.arch.1);
         let mut h = blake3::Hasher::new();
         h.update(kernels::digest().as_bytes());
-        h.update(module.as_bytes());
+        h.update(name.as_bytes());
         h.update(source.as_bytes());
-        h.update(arch.as_bytes());
+        h.update(target.as_bytes());
         h.update(format!("{nvrtc:?}").as_bytes());
         let key = h.finalize().to_hex()[..20].to_string();
         let path = self
             .cache_dir
+            .lock()
+            .unwrap()
             .as_ref()
-            .map(|d| d.join(format!("{module}-{key}.cubin")));
-        let t = Instant::now();
+            .map(|d| d.join(format!("{name}-{key}.cubin")));
         if let Some(p) = &path
             && let Ok(b) = std::fs::read(p)
         {
             let mut s = COMPILE_STATS.lock().unwrap();
             s.1 += 1;
             s.2 += t.elapsed().as_secs_f64();
-            return Ok(b);
+            return Ok((b, true));
         }
-        let mut options: Vec<&str> = kernels::OPTIONS.to_vec();
-        options.push(&arch);
-        let cubin = compile(module, source, &options)?;
+        let (cubin, log) = crate::nvrtc::compile(name, source, &target)
+            .map_err(|e| MkError::Backend(format!("cuda: {e}")))?;
         if std::env::var_os("MKLIGHT_CUDA_LOG").is_some() {
             eprintln!(
-                "cuda: compiled {module} in {:.2} s ({} KiB)",
+                "cuda: compiled {name} in {:.2} s ({} KiB){}",
                 t.elapsed().as_secs_f64(),
-                cubin.len() / 1024
+                cubin.len() / 1024,
+                if log.trim().is_empty() { String::new() } else { format!("\n{log}") }
             );
         }
         if let Some(p) = &path {
-            let _ = std::fs::create_dir_all(p.parent().unwrap());
             let tmp = p.with_extension(format!("tmp{}", std::process::id()));
-            if std::fs::write(&tmp, &cubin).is_ok() {
-                let _ = std::fs::rename(&tmp, p);
+            let saved = std::fs::create_dir_all(p.parent().unwrap())
+                .and_then(|()| std::fs::write(&tmp, &cubin))
+                .and_then(|()| std::fs::rename(&tmp, p));
+            if let Err(e) = saved {
+                let _ = std::fs::remove_file(&tmp);
+                *self.cache_warning.lock().unwrap() = Some(format!(
+                    "the CUDA kernel cache {} could not be written: {e}",
+                    p.display()
+                ));
             }
         }
         let mut s = COMPILE_STATS.lock().unwrap();
         s.0 += 1;
         s.2 += t.elapsed().as_secs_f64();
-        Ok(cubin)
+        Ok((cubin, false))
     }
 
     /// The loaded unit holding `k` (compiled or read from the cache on first
@@ -300,11 +322,11 @@ impl CudaDevice {
             .ok_or_else(|| MkError::Unsupported(format!("cuda: no kernel module '{}'", k.module)))?;
         let cell = self.modules.lock().unwrap().entry(name.clone()).or_default().clone();
         cell.get_or_init(|| {
-            let cubin = self.cubin(&name, &source).map_err(|e| e.to_string())?;
+            let (cubin, from_cache) = self.image(&name, &source).map_err(|e| e.to_string())?;
             self.bind().map_err(|e| e.to_string())?;
             let module = unsafe { cu::module::load_data(cubin.as_ptr() as *const c_void) }
                 .map_err(|e| format!("cuda: loading module {name}: {e:?}"))?;
-            Ok(Arc::new(Module { module }))
+            Ok(Arc::new(Module { module, from_cache }))
         })
         .clone()
         .map_err(MkError::Backend)
@@ -665,32 +687,22 @@ impl Gpu for CudaDevice {
     }
 
     fn prepare(&self, kernels: &[(Kernel, PassShape)]) -> MkResult<()> {
-        // Units compile in parallel (NVRTC is thread-safe). The backend
-        // prepares one kernel at a time (for progress), so the first call
-        // prepares every kernel the host uses.
-        let mut ks: Vec<Kernel> = kernels.iter().map(|(k, _)| *k).collect();
-        if !self.prepared_all.swap(true, Ordering::Relaxed) {
-            ks.extend(mklight_webgpu::ops::pipelines().into_iter().map(|(k, _)| k));
+        let none = std::sync::atomic::AtomicBool::new(false);
+        self.prepare_parallel(kernels, &|_, _| {}, &none).map(|_| ())
+    }
+
+    fn prepare_all(
+        &self,
+        kernels: &[(Kernel, PassShape)],
+        cache_dir: Option<&std::path::Path>,
+        progress: &(dyn Fn(usize, usize) + Sync),
+        cancel: &std::sync::atomic::AtomicBool,
+    ) -> MkResult<(usize, Option<String>)> {
+        if let Some(d) = cache_dir {
+            self.set_cache_dir(Some(d.join("cuda")));
         }
-        ks.retain(|k| kernels::source(k.module).is_some());
-        let threads = std::thread::available_parallelism().map_or(4, |n| n.get()).min(ks.len().max(1));
-        let next = std::sync::atomic::AtomicUsize::new(0);
-        std::thread::scope(|scope| {
-            let workers: Vec<_> = (0..threads)
-                .map(|_| {
-                    scope.spawn(|| -> MkResult<()> {
-                        loop {
-                            let i = next.fetch_add(1, Ordering::Relaxed);
-                            let Some(k) = ks.get(i) else { return Ok(()) };
-                            self.function(*k)?;
-                        }
-                    })
-                })
-                .collect();
-            workers
-                .into_iter()
-                .try_for_each(|w| w.join().unwrap_or_else(|_| Err(MkError::Backend("cuda: compile thread panicked".into()))))
-        })
+        let from_cache = self.prepare_parallel(kernels, progress, cancel)?;
+        Ok((from_cache, self.cache_warning.lock().unwrap().clone()))
     }
 
     fn run(&self, batch: Batch<'_>) -> MkResult<BatchStats> {
@@ -710,11 +722,14 @@ impl Gpu for CudaDevice {
     fn kernel_build(&self, raw: &NumericsProbe) -> Option<String> {
         let yn = |b: bool| if b { "yes" } else { "no" };
         Some(format!(
-            "CUDA {} (NVRTC {}, sm_{}{}, driver {}; {}); plain expressions: contraction {}, \
+            "CUDA {} ({}, sm_{}{}, driver {}; {}); plain expressions: contraction {}, \
              reassociation {}, correctly rounded div {} / sqrt {}",
             kernels::digest(),
-            self.nvrtc
-                .map_or("-".to_string(), |(a, b)| format!("{a}.{b}")),
+            match (kernels::embedded_targets(), self.nvrtc) {
+                (t, _) if !t.is_empty() => format!("built in: {}", t.join(" ")),
+                (_, Some((a, b))) => format!("NVRTC {a}.{b}"),
+                _ => "no compiler".into(),
+            },
             self.arch.0,
             self.arch.1,
             self.driver_version,
@@ -749,76 +764,56 @@ fn par_copy(parts: Vec<(&mut [u8], &[u8])>) {
         .for_each(|(d, s)| d.copy_from_slice(s));
 }
 
-/// NVRTC's version, or `None` when the library cannot be loaded.
-pub fn nvrtc_version() -> Option<(i32, i32)> {
-    if !unsafe { nv::is_culib_present() } {
-        return None;
-    }
-    let (mut a, mut b) = (0, 0);
-    let r = unsafe { nv::nvrtcVersion(&mut a, &mut b) };
-    (r == nv::nvrtcResult::NVRTC_SUCCESS).then_some((a, b))
-}
-
-/// Compile one module with NVRTC into a CUBIN.
-fn compile(module: &str, source: &str, options: &[&str]) -> MkResult<Vec<u8>> {
-    let src = CString::new(source).unwrap();
-    let name = CString::new(format!("{module}.cu")).unwrap();
-    let hdr: Vec<CString> = kernels::HEADERS
-        .iter()
-        .map(|(_, s)| CString::new(*s).unwrap())
-        .collect();
-    let hdr_names: Vec<CString> = kernels::HEADERS
-        .iter()
-        .map(|(n, _)| CString::new(*n).unwrap())
-        .collect();
-    let hp: Vec<*const i8> = hdr.iter().map(|c| c.as_ptr()).collect();
-    let hn: Vec<*const i8> = hdr_names.iter().map(|c| c.as_ptr()).collect();
-    let opts: Vec<CString> = options.iter().map(|o| CString::new(*o).unwrap()).collect();
-    let op: Vec<*const i8> = opts.iter().map(|c| c.as_ptr()).collect();
-    let ok = |r: nv::nvrtcResult, what: &str| -> MkResult<()> {
-        if r == nv::nvrtcResult::NVRTC_SUCCESS {
-            Ok(())
-        } else {
-            Err(MkError::Backend(format!("cuda: NVRTC {what}: {r:?}")))
-        }
-    };
-    unsafe {
-        let mut prog = std::mem::MaybeUninit::uninit();
-        ok(
-            nv::nvrtcCreateProgram(
-                prog.as_mut_ptr(),
-                src.as_ptr(),
-                name.as_ptr(),
-                hp.len() as i32,
-                hp.as_ptr(),
-                hn.as_ptr(),
-            ),
-            "create",
-        )?;
-        let mut prog = prog.assume_init();
-        let r = nv::nvrtcCompileProgram(prog, op.len() as i32, op.as_ptr());
-        let mut log_size = 0usize;
-        nv::nvrtcGetProgramLogSize(prog, &mut log_size);
-        let mut log = vec![0u8; log_size.max(1)];
-        nv::nvrtcGetProgramLog(prog, log.as_mut_ptr() as *mut i8);
-        let log = String::from_utf8_lossy(&log[..log_size.saturating_sub(1)]).into_owned();
-        if r != nv::nvrtcResult::NVRTC_SUCCESS {
-            nv::nvrtcDestroyProgram(&mut prog);
-            return Err(MkError::Backend(format!(
-                "cuda: compiling {module}: {r:?}\n{log}"
-            )));
-        }
-        if !log.trim().is_empty() && std::env::var_os("MKLIGHT_CUDA_LOG").is_some() {
-            eprintln!("cuda: {module}: {log}");
-        }
-        let mut size = 0usize;
-        ok(nv::nvrtcGetCUBINSize(prog, &mut size), "cubin size")?;
-        let mut cubin = vec![0u8; size];
-        ok(
-            nv::nvrtcGetCUBIN(prog, cubin.as_mut_ptr() as *mut i8),
-            "cubin",
-        )?;
-        nv::nvrtcDestroyProgram(&mut prog);
-        Ok(cubin)
+impl CudaDevice {
+    /// Prepare `kernels` on every core (NVRTC is thread-safe); returns how
+    /// many came from the cache.
+    fn prepare_parallel(
+        &self,
+        kernels: &[(Kernel, PassShape)],
+        progress: &(dyn Fn(usize, usize) + Sync),
+        cancel: &std::sync::atomic::AtomicBool,
+    ) -> MkResult<usize> {
+        let mut ks: Vec<Kernel> = kernels
+            .iter()
+            .map(|(k, _)| *k)
+            .filter(|k| kernels::source(k.module).is_some())
+            .collect();
+        // The units that inline the trace take seconds each: start them first.
+        ks.sort_by_key(|k| {
+            !kernels::source(k.module).is_some_and(|s| s.contains("trace_bindings.h"))
+        });
+        let total = kernels.len();
+        // Kernels without a CUDA module have nothing to prepare.
+        let done = std::sync::atomic::AtomicUsize::new(total - ks.len());
+        let cached = std::sync::atomic::AtomicUsize::new(0);
+        let next = std::sync::atomic::AtomicUsize::new(0);
+        let threads = std::thread::available_parallelism()
+            .map_or(4, |n| n.get())
+            .min(ks.len().max(1));
+        std::thread::scope(|scope| {
+            let workers: Vec<_> = (0..threads)
+                .map(|_| {
+                    scope.spawn(|| -> MkResult<()> {
+                        while !cancel.load(Ordering::Relaxed) {
+                            let Some(k) = ks.get(next.fetch_add(1, Ordering::Relaxed)) else {
+                                break;
+                            };
+                            self.function(*k)?;
+                            if self.unit(*k)?.from_cache {
+                                cached.fetch_add(1, Ordering::Relaxed);
+                            }
+                            progress(done.fetch_add(1, Ordering::Relaxed) + 1, total);
+                        }
+                        Ok(())
+                    })
+                })
+                .collect();
+            workers.into_iter().try_for_each(|w| {
+                w.join().unwrap_or_else(|_| {
+                    Err(MkError::Backend("cuda: compile thread panicked".into()))
+                })
+            })
+        })?;
+        Ok(cached.into_inner())
     }
 }

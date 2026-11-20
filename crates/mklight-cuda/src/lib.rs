@@ -16,6 +16,9 @@
 #[cfg(any(windows, target_os = "linux"))]
 pub mod device;
 pub mod kernels;
+#[cfg(any(windows, target_os = "linux"))]
+pub mod nvrtc;
+pub mod sources;
 
 #[cfg(any(windows, target_os = "linux"))]
 pub use device::CudaDevice;

@@ -15,11 +15,22 @@ mklight-webgpu.workspace = true
 bytemuck.workspace = true
 blake3.workspace = true
 rayon.workspace = true
+# Inflates the kernels embedded at build time.
+miniz_oxide = "0.8"
 
 # CUDA is loaded at run time (dynamic loading of nvcuda / nvrtc), so the
 # crate builds without a CUDA toolkit; elsewhere it is an empty backend.
 [target.'cfg(any(windows, target_os = "linux"))'.dependencies]
 cudarc = { version = "0.19.10", default-features = false, features = ["std", "driver", "nvrtc", "dynamic-loading", "cuda-12040"] }
+
+# The build script compiles the kernels with NVRTC when the build machine
+# has it (src/nvrtc.rs and src/sources.rs are shared with it).
+[build-dependencies]
+blake3.workspace = true
+miniz_oxide = "0.8"
+
+[target.'cfg(any(windows, target_os = "linux"))'.build-dependencies]
+cudarc = { version = "0.19.10", default-features = false, features = ["std", "nvrtc", "dynamic-loading", "cuda-12040"] }
 
 [dev-dependencies]
 mklight-trace.workspace = true
