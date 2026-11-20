@@ -46,7 +46,7 @@ internal static unsafe partial class Native
     /// The oldest minor version this binding needs: it calls functions of ABI 1.4 (GPU kernel
     /// preparation) and 1.5 (glass catalog management). A newer minor only adds.
     /// </summary>
-    public const uint AbiVersionMinor = 6;
+    public const uint AbiVersionMinor = 7;
 
     /// <summary><c>MK_OK</c>.</summary>
     public const int Ok = 0;
@@ -85,6 +85,12 @@ internal static unsafe partial class Native
     public static partial int mk_session_get_param(SessionHandle session, string pathJson, out nint json);
     [LibraryImport(Library, StringMarshalling = StringMarshalling.Utf8)]
     public static partial int mk_session_autosave(SessionHandle session, string? path, out nint outPath);
+    [LibraryImport(Library, StringMarshalling = StringMarshalling.Utf8)]
+    public static partial int mk_session_open(EngineHandle engine, string path, out nint session);
+    [LibraryImport(Library)] public static partial int mk_session_info_json(SessionHandle session, out nint json);
+    [LibraryImport(Library)] public static partial int mk_session_get_project_json(SessionHandle session, out nint json);
+    [LibraryImport(Library, StringMarshalling = StringMarshalling.Utf8)]
+    public static partial int mk_session_set_project_json(SessionHandle session, string projectJson, out nint hash);
 
     // Glass catalogs
     [LibraryImport(Library, StringMarshalling = StringMarshalling.Utf8)]

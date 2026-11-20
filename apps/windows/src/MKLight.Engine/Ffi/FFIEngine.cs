@@ -216,6 +216,33 @@ public sealed class FFIEngine : IEngineClient, IDisposable
     }
 
     /// <summary>
+    /// Autosaves a whole project document (ABI 1.7) in a scratch session of its own, so the design's session
+    /// (system, catalogs, undo) is untouched: <c>mk_session_set_project_json</c> with every section and the
+    /// document's catalog references (kept as given; one not loaded is recorded as missing and written all
+    /// the same), then <c>mk_session_autosave</c>. Returns the path written. An invalid document throws.
+    /// </summary>
+    public string AutosaveProject(string projectJson, string path)
+    {
+        using var s = CAbi.SessionNew(core.Handle);
+        CAbi.String("mk_session_set_project_json", (out nint p) => Native.mk_session_set_project_json(s, projectJson, out p));
+        return CAbi.String("mk_session_autosave", (out nint p) => Native.mk_session_autosave(s, path, out p));
+    }
+
+    /// <summary>
+    /// Reads a project file through the engine (<c>mk_session_open</c> in a scratch session, then
+    /// <c>mk_session_get_project_json</c>): the document with every section and catalog reference, and the
+    /// session's <c>open_warnings</c> (catalogs that could not be loaded, tried relative path first).
+    /// </summary>
+    public (string ProjectJson, IReadOnlyList<string> Warnings) OpenProject(string path)
+    {
+        using var s = CAbi.SessionOpen(core.Handle, path);
+        var json = CAbi.String("mk_session_get_project_json", (out nint p) => Native.mk_session_get_project_json(s, out p));
+        var info = Json.Parse(CAbi.String("mk_session_info_json", (out nint p) => Native.mk_session_info_json(s, out p)), "session info");
+        var warnings = (info.At("open_warnings").ArrayOrNull() ?? []).Select(w => w.StringOrNull()).OfType<string>().ToArray();
+        return (json, warnings);
+    }
+
+    /// <summary>
     /// Writes the session's project to <paramref name="path"/> (<c>mk_session_autosave</c>; an
     /// untitled session needs one) without changing the session. Returns the path written.
     /// </summary>

@@ -17,7 +17,7 @@ public sealed record CatalogReference(string Name, string? Path, string? Relativ
     public IReadOnlyList<string> Candidates(string? projectDirectory)
     {
         var output = new List<string>();
-        if (projectDirectory is not null && RelativePath is { } rel) output.Add(System.IO.Path.Combine(projectDirectory, rel));
+        if (projectDirectory is not null && RelativePath is { } rel) output.Add(global::System.IO.Path.Combine(projectDirectory, rel));
         if (Path is { } path) output.Add(path);
         return output;
     }
@@ -119,6 +119,32 @@ public sealed record ProjectFile
     /// <summary>Adds or replaces (by name) a catalog reference.</summary>
     public ProjectFile AddCatalog(CatalogReference reference) =>
         WithCatalogs(Catalogs.Where(c => c.Name != reference.Name).Append(reference));
+
+    /// <summary>
+    /// The catalog references with <c>relative_path</c> for a project in <paramref name="directory"/>, as the
+    /// engine's save computes it: the path relative to the folder (with <c>/</c>) when the catalog lies under it,
+    /// none when it is a usable file elsewhere, and the previous one kept while the absolute path is unusable
+    /// (the only location left). So a project folder that moves keeps finding its catalogs.
+    /// </summary>
+    public ProjectFile WithRelativeCatalogPaths(string? directory)
+    {
+        if (string.IsNullOrEmpty(directory)) return this;
+        var dir = global::System.IO.Path.GetFullPath(directory);
+        var changed = false;
+        var refs = Catalogs.Select(c =>
+        {
+            if (c.Path is not { Length: > 0 } abs || !global::System.IO.Path.IsPathFullyQualified(abs)) return c;
+            var full = global::System.IO.Path.GetFullPath(abs);
+            var rel = global::System.IO.Path.GetRelativePath(dir, full);
+            string? relative = rel != full && !rel.StartsWith("..", StringComparison.Ordinal) && !global::System.IO.Path.IsPathRooted(rel)
+                ? rel.Replace('\\', '/') : null;
+            if (relative is null && !File.Exists(full)) return c;
+            if (relative == c.RelativePath) return c;
+            changed = true;
+            return c with { RelativePath = relative };
+        }).ToList();
+        return changed ? WithCatalogs(refs) : this;
+    }
 
     /// <summary>Stamps <c>metadata</c> the way the engine does on save.</summary>
     public ProjectFile StampMetadata(string appName, string appVersion, string? engineVersion, DateTimeOffset? now = null)

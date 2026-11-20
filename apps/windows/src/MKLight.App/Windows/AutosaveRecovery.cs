@@ -4,6 +4,7 @@ using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using MKLight.App.Support;
 using MKLight.App.ViewModels;
+using MKLight.Engine;
 using MKLight.Model;
 
 namespace MKLight.App.Windows;
@@ -69,12 +70,28 @@ static class AutosaveRecovery
         return null;
     }
 
+    /// <summary>
+    /// The recovered window's note on the engine's <c>open_warnings</c>: the catalogs it could not load by name
+    /// (<c>glass catalog 'NAME' could not be loaded (…)</c>), else the warnings as they are; null without any.
+    /// </summary>
+    public static string? MissingCatalogsNote(IReadOnlyList<string> warnings)
+    {
+        if (warnings.Count == 0) return null;
+        var names = warnings.Select(w => System.Text.RegularExpressions.Regex.Match(w, "^glass catalog '(.+?)' could not be loaded"))
+            .Where(m => m.Success).Select(m => m.Groups[1].Value).ToList();
+        if (names.Count != warnings.Count) return "Recovered. " + string.Join("; ", warnings);
+        return names.Count == 1
+            ? $"Recovered. Glass catalog {names[0]} was not found; the design keeps its reference."
+            : $"Recovered. Glass catalogs {string.Join(", ", names)} were not found; the design keeps their references.";
+    }
+
     /// <summary>Opens the autosave: the design's file with the autosaved changes applied, or a new untitled design.</summary>
     public static DesignWindow? Recover(Autosaves.Entry entry)
     {
         try
         {
-            var recovered = ProjectFile.Read(entry.Path);
+            if (App.Engine is not FFIEngine engine) return null;
+            var (recovered, warnings) = Autosaves.Read(engine, entry.Path);
             var original = entry.Original is { } o && File.Exists(o) ? o : null;
             var doc = new DesignDocument(Autosaves.RecoveryBase(entry with { Original = original }, recovered), original);
             doc.EditProject("Recover Unsaved Changes", _ => recovered);
@@ -82,6 +99,9 @@ static class AutosaveRecovery
             if (recovered.Sections.TryGetValue("views", out var views)) doc.SetSection("views", views);
             var window = App.OpenDocument(doc);
             window.AdoptAutosave(entry.Path);
+            // Catalogs the engine could not load are kept as references (saved again); say which.
+            if (MissingCatalogsNote(warnings) is { } note) window.Session.ShowToast(note);
+            foreach (var w in warnings) App.Log($"recover {entry.Path}: {w}");
             return window;
         }
         catch (Exception e)

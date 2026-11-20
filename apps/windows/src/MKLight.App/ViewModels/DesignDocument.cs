@@ -194,6 +194,7 @@ public sealed class DesignDocument
         var saved = Project;
         foreach (var c in libraryCatalogsInUse ?? [])
             if (!saved.Catalogs.Any(r => r.Name == c.Name)) saved = saved.AddCatalog(c);
+        saved = saved.WithRelativeCatalogPaths(global::System.IO.Path.GetDirectoryName(global::System.IO.Path.GetFullPath(target)));
         saved.StampMetadata("MKLight for Windows", version, engineVersion).Write(target);
         Path = target;
         _savedRevision = _revision;

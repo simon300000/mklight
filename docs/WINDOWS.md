@@ -304,10 +304,8 @@ so none edits `App.xaml.cs`, `LaunchOptions.cs` or `DesignWindow` to be added:
   items are enabled by context and per-window commands go through
   `AppHooks.WindowCommand` (`Menu` null means File). Documents can be reverted,
   duplicated, renamed and replaced with a sample, and files open by drag and drop.
-  Autosave is the app's own writer, the one Save uses (round 4 kept it after ABI 1.6
-  added `mk_session_set_project_json`: the engine would write the session's catalog
-  list, not the document's catalog references); autosaved designs are offered for
-  recovery at launch. A lens file's import report opens as a sheet (groups, Copy Report, Load
+  Autosave and recovery go through the engine (ABI 1.7, below); autosaved designs
+  are offered for recovery at launch. A lens file's import report opens as a sheet (groups, Copy Report, Load
   Glass Catalog). File associations and versions are not done.
 * **Compute backends and GPU readiness** (`Views/StatusCapsule*`, `Windows/DesignWindow.Status.cs`).
   The capsule's flyout picks the compute backend from the engine's list (one entry per
@@ -340,6 +338,31 @@ so none edits `App.xaml.cs`, `LaunchOptions.cs` or `DesignWindow` to be added:
   moving a pane to a new window, the 3-D switch, inspector tabs. Not covered: 3-D
   orbit, wheel zoom, drop-to-split (checked in-process only). `MKLight.Tests` and
   `MKLight.App.Tests` run without a window.
+
+### ABI 1.7: autosave and recovery through the engine
+
+* The app needs ABI 1.7. An autosave is the whole document set into a scratch session
+  of its own (`mk_session_set_project_json` with every section and the document's
+  catalog references, then `mk_session_autosave`), so the design's session (system,
+  catalogs, undo) is untouched. A reference whose catalog is not loaded, such as one
+  on a share that is offline, is recorded as missing and written all the same.
+* Recovery reads the autosave with `mk_session_open` and `mk_session_get_project_json`
+  in a scratch session; catalogs it could not load (relative path tried first) come
+  from `open_warnings` and are shown in a toast on the recovered window and logged.
+  The lock file beside each autosave still keeps a second instance from offering one
+  a running instance writes.
+* Catalog references get `relative_path` as the engine's save computes it
+  (`ProjectFile.WithRelativeCatalogPaths`): relative to the design's folder when the
+  catalog lies under it, none for a usable file elsewhere, the previous one kept while
+  the absolute path is unusable. Autosave writes them for the design's folder and Save
+  for the target folder, so a project folder that moves still finds its catalogs.
+* Save keeps the app's writer: through a scratch session the engine keeps the given
+  relative paths, so Save As into another folder would need the app to rebase them
+  first, which is no simpler than computing them as above.
+* Tests against the real DLL (`Documents/EngineAutosaveTests.cs`): a catalog offline
+  while the design is open keeps its reference through autosave, recovery and a second
+  autosave, and loads once it is back; a project folder that moves before recovery
+  still finds its catalog by the relative path.
 
 ### Round 4 (ABI 1.6, CUDA)
 
