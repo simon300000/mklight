@@ -45,7 +45,12 @@ public static class ImageSimulationFiles
             if (bytes.Length != w * h * 4) return null;
             var grey = dec.BitmapPixelFormat is BitmapPixelFormat.Gray8 or BitmapPixelFormat.Gray16;
             var d = new Decoded(bytes, w, h, grey);
-            lock (cache) cache[info.FullName] = (info.LastWriteTimeUtc, info.Length, d);
+            lock (cache)
+            {
+                // The last two files only: a decoded picture can be 16 MB.
+                if (!cache.ContainsKey(info.FullName) && cache.Count >= 2) cache.Remove(cache.Keys.First());
+                cache[info.FullName] = (info.LastWriteTimeUtc, info.Length, d);
+            }
             return d;
         }
         catch (Exception)
@@ -106,7 +111,11 @@ public static class ImageSimulationFiles
     public static async Task<JsonObject> WithSizeAsync(AnalysisPaneModel pane, int n)
     {
         var s = ImageSimulationSettings.WithSize(pane.Settings, n);
-        return await RefreshedAsync(s, Aspect(pane)) is { } r ? r.Settings : s;
+        if (await RefreshedAsync(s, Aspect(pane)) is not { } r) return ImageSimulationSettings.WithSize(pane.Settings, n);
+        // Settings edited during the decode stay: only the resampled source comes from it.
+        var now = ImageSimulationSettings.WithSize(pane.Settings, n);
+        if (r.Settings["source"] is { } source) now["source"] = source.DeepClone();
+        return now;
     }
 
     /// <summary>Asks for an image file in the window that shows <paramref name="element"/>.</summary>

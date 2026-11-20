@@ -342,6 +342,7 @@ public sealed partial class ImageSimulationView : UserControl, IViewOptions
         _canvas.DragOver += (_, e) =>
         {
             if (_pane is null || !e.DataView.Contains(StandardDataFormats.StorageItems)) return;
+            e.Handled = true; // the image, not the window, takes the file (the window would open it as a design)
             e.AcceptedOperation = DataPackageOperation.Copy;
             e.DragUIOverride.Caption = "Use as Source";
             if (!_dropTargeted) { _dropTargeted = true; _canvas.Invalidate(); }
@@ -352,6 +353,7 @@ public sealed partial class ImageSimulationView : UserControl, IViewOptions
             _dropTargeted = false;
             _canvas.Invalidate();
             if (_pane is not { } pane || !e.DataView.Contains(StandardDataFormats.StorageItems)) return;
+            e.Handled = true;
             var deferral = e.GetDeferral();
             IReadOnlyList<IStorageItem> items;
             try { items = await e.DataView.GetStorageItemsAsync(); }

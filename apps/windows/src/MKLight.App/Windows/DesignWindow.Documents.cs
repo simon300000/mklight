@@ -89,7 +89,9 @@ public sealed partial class DesignWindow
     public Task DuplicateAsync()
     {
         _panels.SaveNow(); // the panel arrangement goes with the copy
-        var copy = OpenBeside(new DesignDocument(_session.Document.Project), offset: 28);
+        var duplicate = new DesignDocument(_session.Document.Project);
+        duplicate.MarkChanged(); // never saved: closing it asks, and it autosaves
+        var copy = OpenBeside(duplicate, offset: 28);
         AppHooks.ScreenshotTarget = copy;
         return Task.CompletedTask;
     }
@@ -189,6 +191,7 @@ public sealed partial class DesignWindow
     {
         if (_session.Document.Path is null) _untitledAutosave = path;
         _autosavesWritten.Add(path);
+        Autosaves.Hold(path);
     }
 
     void NoteChange() => _changedSince ??= DateTime.UtcNow;
@@ -213,6 +216,7 @@ public sealed partial class DesignWindow
         try
         {
             _panels.SaveNow();
+            Autosaves.Hold(path); // before the file appears, so no other launch offers it
             Autosaves.Write(_session.Document.Project, path, _session.Workspace.Engine.Info.Version);
             _autosavesWritten.Add(path);
             _changedSince = null;
@@ -238,7 +242,10 @@ public sealed partial class DesignWindow
     void OnDocumentClosed()
     {
         _autosaveTimer?.Stop();
-        if (_session.Document.IsDirty && !_closeConfirmed) AutosaveNow();
+        if (_session.Document.IsDirty && !_closeConfirmed)
+        {
+            if (AutosaveNow() is { } kept) Autosaves.Release(kept); // left for the next launch to offer
+        }
         else DeleteAutosaves();
     }
 

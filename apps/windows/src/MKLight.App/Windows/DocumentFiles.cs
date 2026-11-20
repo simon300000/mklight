@@ -39,13 +39,13 @@ public static class Autosaves
         {
             var folder = Folder(supportDirectory);
             if (Directory.Exists(folder))
-                found.AddRange(Directory.EnumerateFiles(folder, "*.mklight").Select(p => new Entry(p, null, File.GetLastWriteTime(p))));
+                found.AddRange(Directory.EnumerateFiles(folder, "*.mklight").Where(p => !IsHeld(p)).Select(p => new Entry(p, null, File.GetLastWriteTime(p))));
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
         foreach (var f in files.Distinct(StringComparer.OrdinalIgnoreCase))
         {
             var p = f + Suffix;
-            if (File.Exists(p)) found.Add(new Entry(p, f, File.GetLastWriteTime(p)));
+            if (File.Exists(p) && !IsHeld(p)) found.Add(new Entry(p, f, File.GetLastWriteTime(p)));
         }
         return found.OrderByDescending(e => e.Modified).ToList();
     }
@@ -58,8 +58,54 @@ public static class Autosaves
         project.StampMetadata("MKLight for Windows", version, engineVersion).Write(path);
     }
 
+    // ---- Ownership: an autosave a running instance still writes is never offered to another launch ----
+
+    static readonly Dictionary<string, FileStream> Held = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Marks <paramref name="path"/> as this process's: an exclusive, delete-on-close lock file beside it, released
+    /// when the window lets it go or the process ends (even when it crashes).
+    /// </summary>
+    public static void Hold(string path)
+    {
+        lock (Held)
+        {
+            if (Held.ContainsKey(path)) return;
+            try
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+                Held[path] = new FileStream(path + ".lock", FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None, 1, FileOptions.DeleteOnClose);
+            }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
+        }
+    }
+
+    public static void Release(string path)
+    {
+        lock (Held)
+        {
+            if (Held.Remove(path, out var lockFile)) lockFile.Dispose();
+        }
+    }
+
+    /// <summary>Whether a running instance (this one included) holds <paramref name="path"/>.</summary>
+    public static bool IsHeld(string path)
+    {
+        lock (Held) if (Held.ContainsKey(path)) return true;
+        var lockPath = path + ".lock";
+        if (!File.Exists(lockPath)) return false;
+        try
+        {
+            using (new FileStream(lockPath, FileMode.Open, FileAccess.ReadWrite, FileShare.None)) { }
+            File.Delete(lockPath); // left by an instance that is gone
+            return false;
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { return true; }
+    }
+
     public static void Delete(string path)
     {
+        Release(path);
         try { if (File.Exists(path)) File.Delete(path); }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
     }

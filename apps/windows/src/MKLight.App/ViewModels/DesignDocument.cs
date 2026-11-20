@@ -53,6 +53,9 @@ public sealed class DesignDocument
     public string DisplayName => Path is null ? "Untitled" : global::System.IO.Path.GetFileName(Path);
     public bool IsDirty => _revision != _savedRevision;
 
+    /// <summary>Marks the document as changed since it was last saved (a duplicate that was never written).</summary>
+    public void MarkChanged() => _savedRevision = -1;
+
     public bool CanUndo => _undo.Count > 0;
     public bool CanRedo => _redo.Count > 0;
     public string? UndoActionName => _undo.Count > 0 ? _undo.Peek().ActionName : null;

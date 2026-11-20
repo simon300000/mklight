@@ -399,7 +399,8 @@ public sealed partial class LayoutPanel : UserControl
             return;
         }
         _fitPending = false;
-        var lensOnly = _fitLens || ((initial || _modeFit) && SceneGeometry.IsSlim(_scene, _mode));
+        var lensOnly = _fitLens || _pendingFitLens || ((initial || _modeFit) && SceneGeometry.IsSlim(_scene, _mode));
+        _pendingFitLens = false;
         _modeFit = false;
         var points = SceneGeometry.FitPoints(_scene, _mode, lensOnly);
         var c = ViewportMath.Fit(_camera, _mode, points, w, h, TopInset, BottomInset);
@@ -564,7 +565,14 @@ public sealed partial class LayoutPanel : UserControl
     /// <summary>Launch actions: opens the More menu (for screenshots).</summary>
     internal void OpenMoreMenu() => MoreMenu.ShowAt(MoreButton, new FlyoutShowOptions { Placement = FlyoutPlacementMode.BottomEdgeAlignedRight });
 
-    public void FitLens() { _fitLens = true; Fit(); _fitLens = false; }
+    public void FitLens()
+    {
+        // Before the first scene (a launch option), the first fit frames the lens.
+        if (_scene is null) { _pendingFitLens = true; return; }
+        _fitLens = true; Fit(); _fitLens = false;
+    }
+
+    bool _pendingFitLens;
 
     /// <summary>The display options (ray colours, sampling, fit unless <paramref name="fit"/> is false, stretch, mesh, footprints).</summary>
     void FillDisplayItems(IList<MenuFlyoutItemBase> items, bool fit = true)

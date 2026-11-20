@@ -33,7 +33,7 @@ static class AutosaveRecovery
             };
             ContentDialogResult answer;
             try { answer = await dialog.ShowAsync(); }
-            catch (Exception e) { App.Log($"autosave recovery: {e.Message}"); return; }
+            catch (Exception e) { App.Log($"autosave recovery: {e.Message}"); continue; } // another dialog is open: offered again next launch
             if (answer == ContentDialogResult.Primary) Recover(entry);
             else if (answer == ContentDialogResult.Secondary) Autosaves.Delete(entry.Path);
         }
@@ -78,6 +78,8 @@ static class AutosaveRecovery
             var original = entry.Original is { } o && File.Exists(o) ? o : null;
             var doc = new DesignDocument(Autosaves.RecoveryBase(entry with { Original = original }, recovered), original);
             doc.EditProject("Recover Unsaved Changes", _ => recovered);
+            // The window's layout is not undoable, so the edit kept the base's: take the autosave's panes and arrangement.
+            if (recovered.Sections.TryGetValue("views", out var views)) doc.SetSection("views", views);
             var window = App.OpenDocument(doc);
             window.AdoptAutosave(entry.Path);
             return window;
