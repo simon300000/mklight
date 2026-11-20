@@ -44,39 +44,23 @@ public sealed class PsfData
     }
 
     /// <summary>
-    /// The part of a PSF worth looking at: the smallest square about the intensity centroid
-    /// holding <paramref name="fraction"/> of the energy, widened by a quarter (and at least
-    /// 8 cells each side), so the core and its first rings fill the view instead of a dot in
-    /// a wide sampling window. The whole grid when that is not smaller.
+    /// The part of a PSF worth looking at on a linear scale: the smallest square about the
+    /// peak holding every cell above <paramref name="threshold"/> of the peak, widened by
+    /// 15 % (and at least 8 cells each side), so the core and its first rings fill the view
+    /// instead of a dot in a wide sampling window. The whole grid when that is not smaller.
     /// </summary>
-    public static MapGrid Focus(MapGrid g, double fraction = 0.995)
+    public static MapGrid Focus(MapGrid g, double threshold = 1e-3)
     {
-        double total = 0, sx = 0, sy = 0;
+        int ci = 0, cj = 0;
+        var peak = double.NegativeInfinity;
+        for (var k = 0; k < g.Values.Length; k++)
+            if (double.IsFinite(g.Values[k]) && g.Values[k] > peak) { peak = g.Values[k]; ci = k % g.Nx; cj = k / g.Nx; }
+        if (!(peak > 0)) return g;
+        var h = 0;
         for (var j = 0; j < g.Ny; j++)
             for (var i = 0; i < g.Nx; i++)
-            {
-                var v = g.Values[j * g.Nx + i];
-                if (!double.IsFinite(v) || v <= 0) continue;
-                total += v; sx += v * i; sy += v * j;
-            }
-        if (!(total > 0)) return g;
-        int ci = (int)Math.Round(sx / total), cj = (int)Math.Round(sy / total);
-        var maxR = Math.Max(Math.Max(ci, g.Nx - 1 - ci), Math.Max(cj, g.Ny - 1 - cj));
-        var ring = new double[maxR + 1];
-        for (var j = 0; j < g.Ny; j++)
-            for (var i = 0; i < g.Nx; i++)
-            {
-                var v = g.Values[j * g.Nx + i];
-                if (double.IsFinite(v) && v > 0) ring[Math.Max(Math.Abs(i - ci), Math.Abs(j - cj))] += v;
-            }
-        double acc = 0;
-        var h = maxR;
-        for (var r = 0; r <= maxR; r++)
-        {
-            acc += ring[r];
-            if (acc >= fraction * total) { h = r; break; }
-        }
-        var half = Math.Max((int)Math.Ceiling(h * 1.25) + 2, 8);
+                if (g.Values[j * g.Nx + i] >= threshold * peak) h = Math.Max(h, Math.Max(Math.Abs(i - ci), Math.Abs(j - cj)));
+        var half = Math.Max((int)Math.Ceiling(h * 1.15) + 2, 8);
         int i0 = Math.Max(ci - half, 0), i1 = Math.Min(ci + half, g.Nx - 1), j0 = Math.Max(cj - half, 0), j1 = Math.Min(cj + half, g.Ny - 1);
         if (i1 - i0 + 1 >= g.Nx && j1 - j0 + 1 >= g.Ny) return g;
         int nx = i1 - i0 + 1, ny = j1 - j0 + 1;

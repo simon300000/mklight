@@ -133,7 +133,7 @@ public sealed partial class FirstOrderView : UserControl
             }
             s.Children.Add(new Expander
             {
-                Header = Kit.Inv($"Other wavelengths ({others.Count})"), Content = new ScrollViewer { Content = t, HorizontalScrollBarVisibility = ScrollBarVisibility.Auto, VerticalScrollBarVisibility = ScrollBarVisibility.Disabled },
+                Header = Kit.Text(Kit.Inv($"Other wavelengths ({others.Count})"), "BodyText", 12), Content = new ScrollViewer { Content = t, HorizontalScrollBarVisibility = ScrollBarVisibility.Auto, VerticalScrollBarVisibility = ScrollBarVisibility.Disabled },
                 HorizontalAlignment = HorizontalAlignment.Stretch, HorizontalContentAlignment = HorizontalAlignment.Left, Padding = new Thickness(8),
             });
         }
@@ -172,7 +172,9 @@ public sealed partial class GlassDataView : UserControl
         if (d.HasOffset)
         {
             var badge = new Border { CornerRadius = new CornerRadius(9), Padding = new Thickness(8, 1, 8, 2), VerticalAlignment = VerticalAlignment.Center, Child = Kit.Text("Offset", "CaptionText") };
-            badge.Background = ThemeLookup.Brush(this, "AccentFillColorSecondaryBrush");
+            void Paint() => badge.Background = new SolidColorBrush(Kit.Accent(this).WithAlpha(0.18));
+            Loaded += (_, _) => Paint();
+            ActualThemeChanged += (_, _) => Paint();
             ToolTipService.SetToolTip(badge, $"Δn_d {Fmt.Signed(d.Dnd, 5).Trim()}, ΔV_d {Fmt.Signed(d.Dvd, 2).Trim()} from the catalog values".Replace("_", ""));
             title.Children.Add(badge);
         }

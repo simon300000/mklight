@@ -33,7 +33,7 @@ static class ResultLaunchActions
             foreach (var p in w.Session.Workspace.Panes.Where(p => p.Analysis == "image_simulation"))
             {
                 var s = (JsonObject)p.Settings.DeepClone();
-                foreach (var (k, v) in ImageSimulationStart()) s[k] = v.DeepClone();
+                foreach (var (k, v) in ImageSimulationStart()) s[k] = v?.DeepClone();
                 p.SetSettings(s);
             }
             return Task.CompletedTask;

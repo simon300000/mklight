@@ -238,8 +238,8 @@ public sealed partial class ImageSimulationView : UserControl, IViewOptions
                 var x = _fit.X + _fit.Width * _split;
                 using (ds.CreateLayer(1, new Rect(_fit.X, _fit.Y, Math.Max(x - _fit.X, 0), _fit.Height)))
                     ds.DrawImage(_src!, _fit, _src!.Bounds, 1, CanvasImageInterpolation.NearestNeighbor);
-                Tag(ds, _sourceTitle, _fit.X + 6, _fit.Y + 6, TextAnchor.Start);
-                Tag(ds, "Simulated", _fit.Right - 6, _fit.Y + 6, TextAnchor.End);
+                ImageTag(ds, _sourceTitle, _fit.X + 6, _fit.Y + 6, TextAnchor.Start);
+                ImageTag(ds, "Simulated", _fit.Right - 6, _fit.Y + 6, TextAnchor.End);
                 ds.DrawLine((float)x, (float)_fit.Y, (float)x, (float)_fit.Bottom, Color.FromArgb(0x66, 0, 0, 0), 3);
                 ds.DrawLine((float)x, (float)_fit.Y, (float)x, (float)_fit.Bottom, White, 1.5f);
                 var cy = (float)(_fit.Y + _fit.Height / 2);
@@ -266,11 +266,11 @@ public sealed partial class ImageSimulationView : UserControl, IViewOptions
         ds.FillRectangle(r, Color.FromArgb(255, 0, 0, 0));
         if (bmp is not null) ds.DrawImage(bmp, r, bmp.Bounds, 1, CanvasImageInterpolation.NearestNeighbor);
         ds.DrawRectangle(r, style.Grid, 1);
-        if (title is not null) Tag(ds, title, r.X + 6, r.Y + 6, TextAnchor.Start);
+        if (title is not null) ImageTag(ds, title, r.X + 6, r.Y + 6, TextAnchor.Start);
     }
 
     /// <summary>A label on an image: small and legible on any picture.</summary>
-    static void Tag(CanvasDrawingSession ds, string text, double x, double y, TextAnchor anchor)
+    static void ImageTag(CanvasDrawingSession ds, string text, double x, double y, TextAnchor anchor)
     {
         var s = PlotText.Measure(ds, text, 10, true);
         var left = anchor == TextAnchor.End ? x - s.Width - 10 : x;

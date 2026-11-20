@@ -117,16 +117,18 @@ public class MapReaderTests
     }
 
     [Fact]
-    public void PsfFocusCropsToTheEnergyAboutTheCentroid()
+    public void PsfFocusCropsToTheVisibleCoreAboutThePeak()
     {
         // 41 × 41 cells of 1 µm, a 3 × 3 spot in the middle.
         var v = new double[41 * 41];
         for (var j = 19; j <= 21; j++) for (var i = 19; i <= 21; i++) v[j * 41 + i] = 1;
+        v[20 * 41 + 20] = 2;
+        v[0] = 1e-4; // far below 0.1 % of the peak: outside the core
         var g = new MapGrid(41, 41, v) { X0 = -20, X1 = 20, Y0 = -20, Y1 = 20 };
         var f = PsfData.Focus(g);
         Assert.Equal(17, f.Nx); // ±8 cells (the minimum)
         Assert.Equal((-8.0, 8.0), (f.X0, f.X1));
-        Assert.Equal(1, f.Values[8 * 17 + 8]);
+        Assert.Equal(2, f.Values[8 * 17 + 8]);
         // A spread PSF is not cropped below its energy.
         var spread = new MapGrid(41, 41, Enumerable.Repeat(1.0, 41 * 41).ToArray()) { X0 = -20, X1 = 20, Y0 = -20, Y1 = 20 };
         Assert.Same(spread, PsfData.Focus(spread));

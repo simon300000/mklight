@@ -57,7 +57,7 @@ public sealed partial class PsfView : UserControl, IViewOptions
         ToolTipService.SetToolTip(scale, "Linear intensity, or logarithmic over five decades below the peak (shows the halo and side lobes)");
         scale.Changed += k => { _log = k == 1; Rebuild(); };
         var zoom = new Choice("Extent", ["Core", "Full"], 0, menuBelow: 0);
-        ToolTipService.SetToolTip(zoom, "The core (the square holding 99.5 % of the energy) or the whole sampling window");
+        ToolTipService.SetToolTip(zoom, "The core (every sample above 0.1 % of the peak) or the whole sampling window");
         zoom.Changed += k => { _full = k == 1; Rebuild(); };
         _opts["log"] = () => scale.Select(1);
         _opts["full"] = () => zoom.Select(1);
