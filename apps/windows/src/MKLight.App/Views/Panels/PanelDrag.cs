@@ -1,5 +1,6 @@
 using System.Runtime.InteropServices;
 using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Input;
@@ -360,12 +361,14 @@ internal static class PanelHandles
         void Hook()
         {
             var handles = new List<UIElement>();
+            UIElement? header = null;
             if (view is Analysis.AnalysisPaneView pane)
             {
-                if (pane.FindName("TitleButton") is UIElement title) handles.Add(title);
+                if (pane.FindName("TitleButton") is UIElement title) handles.Add(header = title);
             }
             else if (FindText(view, panel == PanelId.LensData ? "Lens Data" : "Layout") is { } text)
             {
+                header = text;
                 // The title and its glyph (the layout's whole chip).
                 var parent = text.Parent as Panel;
                 if (panel == PanelId.Layout && parent?.Parent is Border chip) handles.Add(chip);
@@ -375,6 +378,9 @@ internal static class PanelHandles
                     if (parent?.Children.OfType<FontIcon>().FirstOrDefault() is { } glyph) handles.Add(glyph);
                 }
             }
+            // A stable automation id (UI tests), unless the view set one.
+            if (header is not null && string.IsNullOrEmpty(AutomationProperties.GetAutomationId(header)))
+                AutomationProperties.SetAutomationId(header, $"Panel.{panel.Key}.Header");
             foreach (var h in handles)
             {
                 Attach(host, h, panel);
@@ -415,17 +421,23 @@ internal static class PanelMenus
         menu.Opening += (_, _) =>
         {
             menu.Items.Clear();
-            var a = host.Arrangement;
-            if (a.IsDetached(panel)) menu.Items.Add(Item("Move to Main Window", "\uE73F", () => host.MoveToMainWindow(panel)));
-            if (!a.IsAloneInWindow(panel)) menu.Items.Add(Item("Move to New Window", "\uE8A7", () => host.MoveToNewWindow(panel)));
-            if (menu.Items.Count > 0) menu.Items.Add(new MenuFlyoutSeparator());
-            menu.Items.Add(panel.PaneId is null
-                ? Item($"Hide {host.Title(panel)}", "\uED1A", () => host.Close(panel))
-                : Item("Close Pane", "\uE711", () => host.Close(panel)));
+            AddPanelItems(menu.Items, host, panel);
         };
         return menu;
     }
 
+    /// <summary>Move to Main Window, Move to New Window, then Hide or Close Pane (see <see cref="PanelHost.AddPanelMenuItems"/>).</summary>
+    public static void AddPanelItems(IList<MenuFlyoutItemBase> items, PanelHost host, PanelId panel)
+    {
+        var a = host.Arrangement;
+        var start = items.Count;
+        if (a.IsDetached(panel)) items.Add(Item("Move to Main Window", "\uE73F", () => host.MoveToMainWindow(panel)));
+        if (!a.IsAloneInWindow(panel)) items.Add(Item("Move to New Window", "\uE8A7", () => host.MoveToNewWindow(panel)));
+        if (items.Count > start) items.Add(new MenuFlyoutSeparator());
+        items.Add(panel.PaneId is null
+            ? Item($"Hide {host.Title(panel)}", "\uED1A", () => host.Close(panel))
+            : Item("Close Pane", "\uE711", () => host.Close(panel)));
+    }
     public static MenuFlyoutItem Item(string text, string glyph, Action click)
     {
         var item = new MenuFlyoutItem { Text = text, Icon = new FontIcon { Glyph = glyph } };

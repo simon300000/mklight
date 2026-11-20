@@ -53,6 +53,10 @@ public sealed class ToleranceSession
     DateTime? _monteCarloStartedAt;
     double? _lastSecondsPerTrial;
     public TolerancePreviewCase? Previewed { get; private set; }
+    /// <summary>The histogram bar whose trials the results list (<c>null</c>: the worst trials).</summary>
+    public int? SelectedBin { get; private set; }
+    /// <summary>The keys of the tolerance groups collapsed in the table (<c>L1</c>, <c>Air after L1</c>).</summary>
+    public HashSet<string> CollapsedGroups { get; } = [];
     public TolerancePreview? Preview { get; private set; }
     public string? PreviewError { get; private set; }
 
@@ -174,6 +178,7 @@ public sealed class ToleranceSession
             using var output = await job.ResultAsync();
             if (!ReferenceEquals(_job, job)) return;
             Result = new ToleranceResult(output.Json, system, _display);
+            SelectedBin = null;
             if (Result.SecondsPerTrial is > 0 and { } t) _lastSecondsPerTrial = t;
             Phase = JobPhase.Finished;
         }
@@ -235,6 +240,36 @@ public sealed class ToleranceSession
         Changed?.Invoke();
     }
 
+    // ---- Table and histogram state ----
+
+    /// <summary>Lists the trials of histogram bar <paramref name="bin"/> (<c>null</c>: the worst trials).</summary>
+    public void SelectBin(int? bin)
+    {
+        if (SelectedBin == bin) return;
+        SelectedBin = bin;
+        Changed?.Invoke();
+    }
+
+    /// <summary>Collapses or expands a group of the tolerances table.</summary>
+    public void ToggleGroup(string key)
+    {
+        if (!CollapsedGroups.Remove(key)) CollapsedGroups.Add(key);
+        Changed?.Invoke();
+    }
+
+    // ---- Export ----
+
+    OpticalSystem ReportSystem => RunSystem ?? _s.Document.System;
+
+    /// <summary>The results as text for the clipboard.</summary>
+    public string? SummaryText() => Result is { } r ? ToleranceReport.Summary(r, ResultRows, ReportSystem, _s.Document.System.Name) : null;
+
+    /// <summary>The sensitivity table as CSV, if the run had one.</summary>
+    public string? SensitivityCsv() => Result is { HasSensitivity: true } r ? ToleranceReport.SensitivityCsv(r, ResultRows, ReportSystem) : null;
+
+    /// <summary>The Monte-Carlo trials as CSV (with the recorded compensators and perturbations), if the run had them.</summary>
+    public string? TrialsCsv() => Result is { HasMonteCarlo: true } r ? ToleranceReport.TrialsCsv(r, ResultRows, ReportSystem) : null;
+
     // ---- Previews ----
 
     /// <summary>Rebuilds a build of the last run in the engine and previews it in the window (null ends the preview).</summary>
@@ -246,6 +281,12 @@ public sealed class ToleranceSession
         Previewed = c;
         Preview = null;
         PreviewError = null;
+        // A previewed trial shows its bar's trials.
+        if (c is TolerancePreviewCase.Trial t && Result is { } res)
+        {
+            var bins = ToleranceHistogram.Bins(res);
+            if (ToleranceHistogram.BinOfTrial(res, bins, t.K) is { } b && SelectedBin != b) SelectedBin = b;
+        }
         Changed?.Invoke();
         var settings = new Dictionary<string, JsonNode?>(_runSettings.Select(kv => KeyValuePair.Create(kv.Key, kv.Value?.DeepClone())))
         {
