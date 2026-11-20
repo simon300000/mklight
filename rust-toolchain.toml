@@ -3,3 +3,4 @@
 # move it up deliberately, together with the fixes for the new lints.
 channel = "1.99.1"
 components = ["rustfmt", "clippy"]
+targets = ["wasm32-unknown-unknown"]
