@@ -115,7 +115,9 @@ public sealed partial class StatusCapsule : UserControl
     {
         _endPreview = endPreview;
         PreviewBadge.Visibility = title is null ? Visibility.Collapsed : Visibility.Visible;
-        PreviewText.Text = title is null ? "" : $"Previewing {title}";
+        // The capsule stays compact (the panes and the layout carry the full title); the title is the tooltip.
+        PreviewText.Text = title is null ? "" : "Previewing";
+        ToolTipService.SetToolTip(PreviewBadge, title is null ? null : $"Previewing {title} · not applied");
     }
 
     void OnEndPreview(object sender, RoutedEventArgs e) => _endPreview?.Invoke();
