@@ -21,7 +21,7 @@ fn default_sample_accuracy() {
         ..Default::default()
     });
     mklight_bench::require_metal(&engine);
-    sample_accuracy(&engine, "metal");
+    sample_accuracy(&engine, "metal", None);
 }
 
 /// The same evidence for the WebGPU backend (GPU.md §11): every analysis it
@@ -41,7 +41,7 @@ fn webgpu_sample_accuracy() {
             .any(|b| b.id == "gpu:webgpu" && b.available),
         "a WebGPU adapter required"
     );
-    sample_accuracy(&engine, "webgpu");
+    sample_accuracy(&engine, "webgpu", None);
 }
 
 /// The same evidence for the CUDA backend (study; the WebGPU host
@@ -61,12 +61,28 @@ fn cuda_sample_accuracy() {
             .any(|b| b.id == "gpu:cuda" && b.available),
         "a CUDA device required"
     );
-    sample_accuracy(&engine, "cuda");
+    sample_accuracy(&engine, "cuda", None);
+}
+
+/// `default_sample_accuracy` on the CPU-f32 emulation of the GPU kernels
+/// (`gpu:cpu_f32`): every GPU analysis on every sample, same settings and
+/// contracts. It guards the shared f32 specification that every GPU backend
+/// follows, on any machine (release gate). Lines are tagged
+/// `CPU_F32_ACCURACY`.
+#[test]
+#[ignore = "offline accuracy guard of the shared CPU-f32 specification (release gate)"]
+fn emulation_sample_accuracy() {
+    let engine = Engine::new(EngineConfig {
+        default_backend: Backend::CpuReference,
+        register_emulation: true,
+        ..Default::default()
+    });
+    sample_accuracy(&engine, "cpu_f32", None);
 }
 
 /// Every GPU-capable analysis on every sample on `gpu:<gpu>` against the
-/// CPU reference (`default_sample_accuracy`).
-fn sample_accuracy(engine: &Engine, device: &str) {
+/// CPU reference (`default_sample_accuracy`); `only` restricts the analyses.
+fn sample_accuracy(engine: &Engine, device: &str, only: Option<&[&str]>) {
     use mklight_engine::analysis::AnalysisOutput;
     let tag = device.to_uppercase();
     let id = format!("gpu:{device}");
@@ -85,7 +101,10 @@ fn sample_accuracy(engine: &Engine, device: &str) {
     for (name, system) in samples::all() {
         let session = engine.session_from_project(Project::new(system)).unwrap();
         for info in engine.analyses().into_iter().filter(|a| {
-            a.gpu_path && supported.contains(&a.name) && !solver::JOBS.contains(&a.name.as_str())
+            a.gpu_path
+                && supported.contains(&a.name)
+                && !solver::JOBS.contains(&a.name.as_str())
+                && only.is_none_or(|o| o.contains(&a.name.as_str()))
         }) {
             let mut request = AnalysisRequest::new(&info.name, Value::Null);
             request.backend = Some(Backend::CpuReference);
@@ -163,12 +182,31 @@ fn sample_accuracy(engine: &Engine, device: &str) {
 #[test]
 #[ignore = "offline solver-outcome evidence; real Metal required"]
 fn solver_outcomes() {
-    use mklight_engine::analysis::AnalysisOutput;
     let engine = Engine::new(EngineConfig {
         default_backend: Backend::CpuReference,
         ..Default::default()
     });
     mklight_bench::require_metal(&engine);
+    solver_outcomes_on(&engine, "metal", None);
+}
+
+/// `solver_outcomes` on the CPU-f32 emulation (`gpu:cpu_f32`): every solver
+/// job on every sample, same settings and contracts (release gate).
+#[test]
+#[ignore = "offline solver-outcome guard of the shared CPU-f32 specification (release gate)"]
+fn emulation_solver_outcomes() {
+    let engine = Engine::new(EngineConfig {
+        default_backend: Backend::CpuReference,
+        register_emulation: true,
+        ..Default::default()
+    });
+    solver_outcomes_on(&engine, "cpu_f32", None);
+}
+
+/// `solver_outcomes` on `gpu:<device>`; `only` restricts the solver jobs.
+fn solver_outcomes_on(engine: &Engine, device: &str, only: Option<&[&str]>) {
+    use mklight_engine::analysis::AnalysisOutput;
+    let id = format!("gpu:{device}");
     let mut failures = Vec::new();
     for (name, system) in samples::all() {
         // The benchmark's solver settings (project_bench): curvatures and
@@ -179,6 +217,9 @@ fn solver_outcomes() {
             .unwrap();
         let session = engine.session_from_project(Project::new(system)).unwrap();
         for (analysis, settings) in jobs {
+            if only.is_some_and(|o| !o.contains(&analysis)) {
+                continue;
+            }
             let mut request = AnalysisRequest::new(analysis, settings.clone());
             request.backend = Some(Backend::CpuReference);
             let cpu = match session.run_analysis(&request, &JobContext::new()) {
@@ -191,7 +232,7 @@ fn solver_outcomes() {
                     continue;
                 }
             };
-            request.backend = Some(Backend::Gpu("metal".into()));
+            request.backend = Some(Backend::Gpu(device.into()));
             let gpu = session.run_analysis(&request, &JobContext::new()).unwrap();
             let native_failures = comparison::native_failures(&gpu.run_info);
             let view = |r: &mklight_engine::AnalysisResult| AnalysisOutput {
@@ -201,7 +242,7 @@ fn solver_outcomes() {
             let report =
                 comparison::compare(&view(&cpu), &view(&gpu), analysis, &JobContext::new())
                     .unwrap();
-            let published = gpu.backend.used == "gpu:metal";
+            let published = gpu.backend.used == id;
             // Truncated solves: an outcome's merit or violation outside its
             // gate passes within twice the reference's own movement.
             // Infeasible glass finalists: structure only (`excuse_finalists`).
