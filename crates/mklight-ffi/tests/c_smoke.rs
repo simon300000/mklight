@@ -24,7 +24,11 @@ fn staticlib() -> PathBuf {
         .chain(units.filter_map(|e| e.ok()).map(|e| e.path().join("out")));
     let is_lib = |n: &str| {
         (n.starts_with("libmklight_ffi") && n.ends_with(".a"))
-            || (cfg!(target_env = "msvc") && n.starts_with("mklight_ffi") && n.ends_with(".lib"))
+            || (cfg!(target_env = "msvc")
+                && n.starts_with("mklight_ffi")
+                && n.ends_with(".lib")
+                // not the cdylib's import library, which needs the DLL
+                && !n.ends_with(".dll.lib"))
     };
     let mut cands: Vec<PathBuf> = dirs
         .flat_map(|d| std::fs::read_dir(d).into_iter().flatten())
