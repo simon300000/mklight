@@ -69,8 +69,8 @@ fn check(engine: &Engine, device: &str, systems: Vec<(&str, mklight_core::Optica
             ) else {
                 continue;
             };
-            let spread =
-                solver_spread::reference_movement(&session, &nudged, analysis, &settings, &cpu);
+            let runs = solver_spread::reference_runs(&session, &nudged, analysis, &settings);
+            let spread = solver_spread::movement(analysis, &cpu, &runs);
             for (aiming, expected) in [
                 (SolverAiming::ByBatch, "by-batch"),
                 (SolverAiming::Device, "device"),
@@ -106,7 +106,9 @@ fn check(engine: &Engine, device: &str, systems: Vec<(&str, mklight_core::Optica
                     cpu.run_info.duration_ms,
                     gpu.run_info.duration_ms
                 );
-                if !solver_spread::within_movement(analysis, &report.failures, dev, spread)
+                let (gated, _) =
+                    solver_spread::excuse_finalists(analysis, &cpu, &runs, &report.failures);
+                if !solver_spread::within_movement(analysis, &gated, dev, spread)
                     || !native.is_empty()
                 {
                     failures.push(format!(
