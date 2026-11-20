@@ -388,6 +388,7 @@ public sealed partial class DesignWindow : Window
     public async Task<bool> SaveAsync(bool saveAs, string? path = null)
     {
         var doc = _session.Document;
+        _panels.SaveNow(); // the panel arrangement's pending write (views) goes into this save
         path ??= saveAs || doc.Path is null ? await App.PickSavePathAsync(this, doc.Path is null ? doc.System.Name : Path.GetFileNameWithoutExtension(doc.Path)) : doc.Path;
         if (path is null) return false;
         try
