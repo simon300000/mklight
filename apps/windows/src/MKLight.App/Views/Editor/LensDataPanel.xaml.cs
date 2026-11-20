@@ -4,6 +4,7 @@ using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
 using MKLight.App.ViewModels;
+using MKLight.App.ViewModels.Jobs;
 using MKLight.Model;
 using Windows.System;
 using Windows.UI.Core;
@@ -16,7 +17,8 @@ namespace MKLight.App.Views;
 /// <para>
 /// Keyboard: ↑/↓ select rows; Enter, F2 or a double click edits (the radius, or the comment where there is
 /// none); in a cell, Tab / Shift+Tab move across, ↑/↓ and Enter move between rows committing, Esc reverts.
-/// Ctrl+Shift+I / Ctrl+Alt+I insert before / after, Ctrl+Delete deletes, Ctrl+Shift+T makes the stop.
+/// Ctrl+Shift+I / Ctrl+Alt+I insert before / after, Ctrl+Delete deletes, Ctrl+Shift+T makes the stop,
+/// Ctrl+Shift+V makes the edited (or last clicked) value a variable or fixes it again.
 /// </para>
 /// Every commit is one undoable <see cref="DesignDocument.Edit"/>; the window sets <see cref="Host"/>.
 /// </summary>
@@ -35,6 +37,8 @@ public sealed partial class LensDataPanel : UserControl
     bool _focusWithin;
     /// <summary>The row of the last press, and whether it was selected before (the next click on a selected row edits).</summary>
     (int Row, bool WasSelected) _press = (-1, false);
+    /// <summary>The value last pressed (the variable toggle's target outside an edit).</summary>
+    LensColumn? _pressedColumn;
 
     public LensDataPanel()
     {
@@ -99,6 +103,35 @@ public sealed partial class LensDataPanel : UserControl
         if (Selected is not { } i || i >= _rows.Count) return;
         var row = _rows[i];
         BeginEdit(i, column ?? (row.Editable.Contains(LensColumn.Radius) ? LensColumn.Radius : LensColumn.Comment));
+    }
+
+    /// <summary>
+    /// Makes the value of <paramref name="column"/> in the selected row a variable, or fixes it again (one undoable
+    /// step); a value a solve sets is refused with the reason in a toast. Without a column: the edited value, else
+    /// the one last clicked, else the radius.
+    /// </summary>
+    public void ToggleVariable(LensColumn? column = null)
+    {
+        if (_document is not { } doc || Selected is not { } i || i >= doc.System.Surfaces.Count) return;
+        column ??= _editor.Active?.Column ?? _pressedColumn ?? LensColumn.Radius;
+        if (VariablePath(doc.System, i, column.Value) is not { } path)
+        {
+            _host?.ShowToast($"The {column.Value.Title().ToLowerInvariant()} of this surface cannot be a variable.");
+            return;
+        }
+        // Typed text goes to its value first; the field stays open.
+        if (_editor.Active is not null && !_editor.Finish()) return;
+        if (DesignVariables.Toggle(doc, path) is { } refusal) _host?.ShowToast(refusal);
+    }
+
+    /// <summary>The parameter a variable of this value would vary (a catalog glass's index offset for the material), or null.</summary>
+    static ParamPath? VariablePath(OpticalSystem s, int i, LensColumn column)
+    {
+        var sf = s.Surfaces[i];
+        if (i == 0 || i == s.ImageIndex && column != LensColumn.SemiDiameter) return null;
+        if (column == LensColumn.Material)
+            return sf.Interaction == Interaction.Refract && sf.Material is MaterialRef.CatalogGlass ? new ParamPath.MaterialDnD(sf.Id) : null;
+        return column.Param(sf);
     }
 
     /// <summary>Gives the table the keyboard focus (row selection with ↑/↓).</summary>
@@ -181,7 +214,9 @@ public sealed partial class LensDataPanel : UserControl
         var variables = doc.Project.Sections.TryGetValue("variables", out var section)
             ? LensRows.Variables(section) : new Dictionary<ParamPath, VariableBounds>();
         _rows = LensRows.Build(system, _host.AutoSemiDiameters, variables);
-        Caption.Text = LensRows.Caption(system, variables.Count);
+        Caption.Text = LensRows.Caption(system);
+        VariablesButton.Visibility = variables.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+        VariablesText.Text = variables.Count == 1 ? "1 variable" : $"{variables.Count} variables";
 
         var columns = LensGridLayout.Columns(_rows.Any(r => r.Notes.ContainsKey(LensColumn.Material)));
         if (!columns.SequenceEqual(_columns))
@@ -314,6 +349,7 @@ public sealed partial class LensDataPanel : UserControl
         var i = IndexOf(sender);
         if (i < 0) return;
         _press = (i, Selected == i);
+        _pressedColumn = ((LensRowView)sender).ColumnAt(e.GetCurrentPoint((UIElement)sender).Position) ?? _pressedColumn;
         Select(i);
         // A press elsewhere ends the edit (the field commits as it loses the focus).
         if (e.OriginalSource is not TextBox) Focus(FocusState.Pointer);
@@ -459,6 +495,9 @@ public sealed partial class LensDataPanel : UserControl
             case VirtualKey.T when ctrl && shift:
                 MakeSelectedStop();
                 break;
+            case VirtualKey.V when ctrl && shift && !alt:
+                ToggleVariable();
+                break;
             case VirtualKey.Delete when ctrl && !editing:
                 DeleteSelected();
                 break;
@@ -483,6 +522,8 @@ public sealed partial class LensDataPanel : UserControl
 
     void OnDeleteClick(object sender, RoutedEventArgs e) => DeleteSelected();
 
+    void OnVariablesClick(object sender, RoutedEventArgs e) => (_host as DesignSession)?.ShowInspectorPage("optimize");
+
     void OnRowContextRequested(UIElement sender, ContextRequestedEventArgs e)
     {
         var i = IndexOf(sender);
@@ -502,9 +543,43 @@ public sealed partial class LensDataPanel : UserControl
         menu.Items.Add(Item("Delete Surface", "\uE738", "Ctrl+Delete", LensCommands.CanDelete(s, i), DeleteSelected));
         menu.Items.Add(new MenuFlyoutSeparator());
         menu.Items.Add(Item("Make Aperture Stop", "\uE7C8", "Ctrl+Shift+T", LensCommands.CanMakeStop(s, i), MakeSelectedStop));
+        menu.Items.Add(new MenuFlyoutSeparator());
+        var under = e.TryGetPosition(sender, out var at) ? ((LensRowView)sender).ColumnAt(at) : null;
+        if (under is { } col && VariablePath(s, i, col) is { } own)
+        {
+            var on = DesignVariables.IsVariable(_document, own);
+            var refusal = on ? null : DesignVariables.Refusal(s, own);
+            var item = Item(on ? "Remove Variable" : "Make Variable", "", "Ctrl+Shift+V", refusal is null, () => ToggleVariable(col));
+            if (refusal is not null) ToolTipService.SetToolTip(item, refusal);
+            menu.Items.Add(item);
+        }
+        menu.Items.Add(VariablesMenu(s, i));
         if (e.TryGetPosition(sender, out var p)) menu.ShowAt(sender, p);
         else menu.ShowAt((FrameworkElement)sender);
         e.Handled = true;
+    }
+
+    /// <summary>
+    /// The row's Variables submenu: each value of the surface that can vary, checked when it is a variable; a value a
+    /// solve sets is disabled with the solve named in its tooltip.
+    /// </summary>
+    MenuFlyoutSubItem VariablesMenu(OpticalSystem s, int i)
+    {
+        var sub = new MenuFlyoutSubItem { Text = "Variables", Icon = new FontIcon { Glyph = "\uE9D9" } };
+        var seen = new HashSet<ParamPath>();
+        foreach (var column in LensColumns.Editable)
+        {
+            if (VariablePath(s, i, column) is not { } path || s.ValueAt(path) is null || !seen.Add(s.Canonical(path))) continue;
+            var on = _document is { } doc && DesignVariables.IsVariable(doc, path);
+            var refusal = on ? null : DesignVariables.Refusal(s, path);
+            var item = new ToggleMenuFlyoutItem { Text = path.Label(s), IsChecked = on, IsEnabled = refusal is null };
+            if (refusal is not null) ToolTipService.SetToolTip(item, refusal);
+            var c = column;
+            item.Click += (_, _) => ToggleVariable(c);
+            sub.Items.Add(item);
+        }
+        sub.IsEnabled = sub.Items.Count > 0;
+        return sub;
     }
 
     /// <summary>The type menu, grouped Spherical, Aspheric, Freeform, Anamorphic, Diffractive, Special; the current type checked.</summary>

@@ -14,7 +14,8 @@ how the Mac app's design brief was translated to Fluent.
 * .NET SDK 11 (`apps/windows/global.json`), C# latest.
 * Windows App SDK 2.7 (WinUI 3), **unpackaged and self-contained**: the app
   carries the Windows App SDK and the .NET runtime, so nothing has to be
-  installed to run it. Win2D 1.4 draws the plots and the layout.
+  installed to run it. Win2D 1.4 draws the plots, the section view and the
+  inspector's previews; Direct3D 11 through Vortice 3.8 draws the 3-D layout view.
 * The engine: `mklight_ffi.dll`, the `cdylib` of `crates/mklight-ffi` (the
   crate also builds its `staticlib`, which the macOS app links, and its
   `rlib`).
@@ -23,7 +24,7 @@ how the Mac app's design brief was translated to Fluent.
 
 ```powershell
 scripts/build-windows.ps1                        # engine DLL + release app -> build/windows/MKLight/MKLight.exe
-scripts/build-windows.ps1 -EngineOnly            # engine DLL only -> apps/windows/native/mklight_ffi.dll
+scripts/build-windows.ps1 -EngineOnly            # engine DLL only -> apps/windows/native/x64/mklight_ffi.dll
 scripts/build-windows.ps1 -Configuration Debug   # engine + debug build of the solution
 scripts/build-windows.ps1 -Test                  # ... and dotnet test
 scripts/build-windows.ps1 -NoEngine              # skip cargo (the DLL is already in place)
@@ -31,7 +32,7 @@ scripts/build-windows.ps1 -NoEngine              # skip cargo (the DLL is alread
 
 * The script builds `mklight-ffi` in release (`cargo build --release -p
   mklight-ffi`, or `--target aarch64-pc-windows-msvc` with `-Platform ARM64`)
-  and copies the DLL to `apps/windows/native/` (git-ignored). Every project
+  and copies the DLL to `apps/windows/native/<x64|ARM64>/` (git-ignored, one folder per platform). Every project
   that needs it (the app, the tests) copies it next to its output when it is
   there (`MKLightNativeDir` in `apps/windows/Directory.Build.props`).
 * Release: `dotnet publish` of `MKLight.App` into `build/windows/MKLight`,
@@ -69,6 +70,29 @@ options):
 | `--size <w>x<h>` | window size in effective pixels, even beyond the display |
 | `--screenshot <file.png>` | once every pane has its result, render the window (as composed: Mica, acrylic, Win2D) to a PNG and quit |
 | `--delay <s>` | wait longer before the screenshot |
+| `--do <action>[=<arg>]` | run a registered launch action in the design window once its panes have their results, before the screenshot (repeatable, in order); see below |
+
+Launch actions are registered by the features (`AppHooks.LaunchActions`), so a
+screenshot can show any state without clicking; an action that opens another
+window sets `AppHooks.ScreenshotTarget` so that window is captured:
+
+* inspector: `inspector-surface[=i]`, `inspector-system`, `inspector-scroll=<px>`,
+  `inspector-set=<row>:<value>`;
+* panels: `panels-demo`, `panels-detach=<panel>`, `panels-drag=<panel>@fx,fy[@window]`,
+  `panels-drop`, `panels-hide=<panel>`, `panels-show=<panel>`, `panels-reset`,
+  `panels-capture=<window>`;
+* layout: `layout-3d`, `layout-xz`, `layout-yz`, `layout-mesh`, `layout-footprints`,
+  `layout-stretch=<n>`, `layout-yaw=<deg>`, `layout-pitch=<deg>`,
+  `layout-coloring=field|wavelength`, `layout-capture`;
+* settings and run details: `spectrum`, `spectrum-csv`, `settings-scroll`,
+  `run-details`, `remedy`, `popup`;
+* results: `result-view`, `image-simulation-start`, `dump-results`;
+* design jobs: `job=<id>` (`optimize`, `glass_substitution`, `tolerance`, `solves`; opens the page),
+  `variables=c1,c3,t11` (make those values variables), `optimize-run[=algorithm]`,
+  `optimize-running=<s>`, `optimize-apply`, `merit-custom`, `add-solve`, `solves-run`,
+  `glass-run[=rank]`, `glass-apply`, `tolerance-run[=trials]`, `tolerance-preview[=k|sN]`;
+* glass catalogs: `glass-catalogs` and `glass-catalogs-search`, `-scope`, `-filter`,
+  `-select`, `-reload`, `-new-glass`, `-edit`, `-add-to-design`.
 
 Without a file or `--sample` the welcome window opens (`--screenshot` then
 captures it). The log is `%LOCALAPPDATA%\MKLight\mklight.log`.
@@ -107,22 +131,111 @@ The layering mirrors the Swift package (`MKLightModel`, `MKLightEngine` +
     restore whole states; dirty tracking by revision), `Workspace` (debounced
     snapshots, panes, staleness, validation issues), `AnalysisPaneModel`,
     `DesignSession` (document + workspace + selection; the lens table's
-    `ILensDataHost`).
-  * `Windows/` — `DesignWindow`, `WelcomeWindow`, `EngineMissingWindow`.
+    `ILensDataHost`), the inspector's models (`SurfaceTypes`, `ShapeSag`,
+    `InspectorModel`), the panel tree (`PanelArrangement`, `WorkspaceLayout`)
+    and the glass library and browser (`GlassLibrary*`, `GlassBrowser*`).
+  * `Windows/` — `DesignWindow`, `PanelWindow` (a separate panel window),
+    `GlassCatalogsWindow`, `WelcomeWindow`, `EngineMissingWindow`.
   * `Views/` — the status capsule, the lens data table (`Editor/`), the
     layout section (`Layout/`: `EngineLayout` projects the engine's scene,
     `SectionRenderer` draws it for the pane and the welcome thumbnails), the
-    analysis pane chrome and result views (`Analysis/`).
+    3-D view (`Viewport3D/`), the inspector (`Inspector/`: pages, form,
+    shape previews), the panel host (`Panels/`), the glass catalog views
+    (`Glass/`), the design jobs' registration (`Jobs/`), the analysis pane
+    chrome (`Analysis/`) with its result views (`Results/`), settings form
+    (`Settings/`) and run details (`RunDetails/`).
   * `Plotting/PlotKit.cs` — Win2D plot primitives: theme-aware `PlotStyle`,
     text with tabular figures, nice ticks in the one number format, line
     plots with solid and dashed series.
   * `Support/` — `Palette` (the Mac app's validated colours), `AnalysisCatalog`
     (titles, glyphs, categories), `Fmt`, `ThemeLookup`, `AppSettings` and
-    recent files (`%LOCALAPPDATA%\MKLight`), launch options, window capture.
+    recent files (`%LOCALAPPDATA%\MKLight`), launch options, window capture,
+    and `AppHooks`.
 
-The 3-D viewport is a later round: Direct3D 11 in a `SwapChainPanel` beside
-the Win2D section view, fed by the same `LayoutScene` (it already carries the
-3-D polylines and the optional surface mesh).
+### Integration seams
+
+Features plug in from their own files (a `[ModuleInitializer]` registers them),
+so none edits `App.xaml.cs`, `LaunchOptions.cs` or `DesignWindow` to be added:
+
+* **`InspectorPages`**: the inspector's page registry (id, title or glyph,
+  order, factory per design window). Surface and System are registered by
+  `Views/Inspector`, the design jobs register theirs (`Views/Jobs`); pages are built once per
+  window and kept while hidden. `DesignSession.ShowInspectorPage` selects one.
+* **`AppHooks`**: `LaunchActions` (`--do`), `Commands` (File menu items with
+  shortcuts), `WindowCreated` (per design window), `SessionStarting` (before a
+  session's project catalogs and first snapshot; the glass library syncs here)
+  and `ScreenshotTarget`.
+* **`DesignDocument`**: `EditSection(key, value, name)` and `EditProject` change
+  project sections as undoable named steps (every section except `views`, which
+  `SetSection` writes without an undo step).
+* **`Workspace`**: `Preview(candidate, title)` and `Baseline` show an unapplied
+  candidate on every pane and the layout (strip, badge, End Preview in the status
+  capsule) until the next design edit or `Preview(null)`; `SubmitDesignJob` runs a
+  job on the design's own snapshot, never on a preview; `LoadProjectCatalogsAsync`
+  loads a project's catalogs into its session and `CatalogsDidChangeAsync`
+  refreshes after any catalog change.
+* **`DesignSession`**: `LayoutScene` (the engine's layout, shared by the section
+  and the 3-D view), `ShowInspectorPage`, `SetJobActivity` (a running job's text in
+  the capsule and a dot on its inspector tab). A window disposes the engine
+  session it owns, never the shared engine.
+* **Native DLL**: `apps/windows/native/<x64|ARM64>/` (`MKLightNativeDir` in
+  `Directory.Build.props`), so the two platforms cannot be mixed up.
+
+### Round 2 features
+
+* **Inspector** (`Views/Inspector`, `ViewModels/SurfaceTypes.cs`). The Surface
+  page is built from a descriptor per surface type (all 13 plus the cylinder
+  preset): type menu with summary, shape preview, parameter and coefficient
+  sections, spacing and medium with the melt offset, aperture, placement,
+  coating and solves; every edit is one undoable named step. The System page
+  has name and notes, aperture and field kinds (converted through `convert_spec`),
+  fields, wavelengths with presets, environment, ray aiming, configurations
+  (read-only) and the glass catalogs. A tab bar with glyphs for the design jobs
+  and a running dot sits above the pages.
+* **Panels** (`Views/Panels`, `ViewModels/PanelArrangement.cs`). The panes, lens
+  data and layout are a tree of splits and tab groups with draggable dividers.
+  Dragging a panel header shows drop zones (tab, split, window edge); dropping
+  outside the windows opens a separate window (`PanelWindow`) on the same design
+  session. Context menus move, hide and close; Reset Panel Layout is in the File
+  menu. The arrangement and window frames are saved in `views` and restored on open.
+* **3-D layout** (`Views/Viewport3D`, `Views/Layout`). A Direct3D 11 view (Vortice)
+  in a `SwapChainPanel`, fed by the same `LayoutScene` as the Win2D section view.
+  The layout has a Section / 3D and Y–Z / X–Z selector, a Display menu (ray
+  colouring, rays per field, wavelengths, mesh, footprints, fit), vertical
+  stretch, and a label while a candidate is previewed.
+* **Result views** (`Views/Analysis/Results`). Dedicated views for first order,
+  Seidel, PSF, wavefront, the field maps (pupil aberration, relative illumination
+  with iso-lines, chief ray angle with the sensor limit), glass map and data,
+  image simulation (side by side, split, blink, exposure), grid distortion,
+  footprint, ghost paths and irradiance, stray light, polarization pupil map and
+  system transmission, besides the earlier plots; an unreadable result falls back
+  to the generic view.
+* **Settings and run details** (`Views/Analysis/Settings`, `RunDetails`). The
+  spectrum control (presets, blackbody, explicit list, sensor CSV, chart), pupil
+  sampling, automatic MTF frequencies, the sensor limit and row tables, image
+  simulation source and optics; run details with the route line and tier,
+  grouped warnings and one-click remedies.
+* **Glass catalogs** (`Windows/GlassCatalogs*`, `Views/Glass`,
+  `ViewModels/GlassLibrary*`, `GlassBrowser*`). An app-wide library synced into
+  every session, and a window with the catalog sidebar, info bar, searchable
+  sortable table with filters, detail with the index curve, reload report, user
+  glass editor, user catalogs and AGF export; Use for Surface; adding and removing
+  catalogs is undoable and a saved project records the library catalogs it uses.
+  The vendor files are never written.
+* **Design jobs** (`Views/Jobs`, `ViewModels/Jobs`). The four job pages in the
+  inspector share one frame with action-bar states (setup, running, review, done,
+  failed); a running job shows in the status capsule (a click reopens its page)
+  and ends if the window closes. Apply is one undoable step that drops variables
+  that no longer exist. Optimize: Default or Custom merit (operand editor,
+  Convert to Custom, live evaluation), variables and bounds, algorithm, running
+  statistics with a sparkline, and a result previewed on every pane with spot
+  before / after and the variables before and after. Glass Substitution: glasses
+  that may change, candidates, search, ranked results, preview and apply.
+  Tolerance: rows, generator, compensators, criterion, sensitivities, Monte-Carlo
+  histogram and previews of builds and trials. Apply Solves: dry-run list and apply.
+  The lens table's variable toggle (context menu, Ctrl+Shift+V) and its "N variables"
+  button feed the Optimize page. Documents open `.zmx` / `.seq` prescriptions
+  off the UI thread.
 
 ## `FFIEngine`
 
@@ -175,23 +288,25 @@ directly; only the materials change.
   and GPU kernels are in its flyout; transient messages are a toast.
 * **Light and dark** are both designed; the theme is System, Light or Dark per
   user (File menu), applied live to every window. The app's own theme
-  (`Application.RequestedTheme`) is set at launch from the saved choice or
-  `--theme`: WinUI resolves the theme resources of styles applied in code
-  (the lens table's cells) at the application level, so they would otherwise
-  follow the system's theme. A switch to the other appearance during a run
-  therefore completes on the next launch (a toast says so). Brushes picked
-  in code go through `ThemeLookup`, so a window's own theme wins.
+  (`Application.RequestedTheme`) can only be set at launch, from the saved
+  choice or `--theme`. A window root given another theme before it is loaded
+  keeps the app's theme for styles outside the app's dictionaries (a
+  control's own resources, dictionaries loaded at run time), so every window
+  takes its theme from `Support/ThemeSwitch` once its root is loaded, and
+  switches are live; System follows the system's light or dark. Brushes picked in code go through `ThemeLookup`, so a
+  window's own theme wins (separate panel windows and the glass catalog window
+  follow the same choice).
 
-## Window structure (round 1)
+## Window structure
 
 ```
 ┌ ☰ ◉ name  subtitle      [ ⟳ EFL · F/# · TT · ✓ ]        ↶ ↷ │ ⊕▾ 🗎 ◨  ─ □ ✕ ┐
 ├ sidebar (Mica) ─┬ Lens Data ───────────────────────────────┬ inspector (Mica) ┤
-│ Analyses ⌕      │ Surf Type Comment Radius Thickness …      │ Surface | System │
-│ Design          ├──────────────┬──────────────┬────────────┤ (placeholder)    │
-│  Lens Data      │ Layout ◉     │ Spot Diagram │ MTF        │                  │
-│  Layout, Issues │ Section ⟲ ⤢  │ ⟳ ⚡ ⚙ …      │ ⟳ ⚡ ⚙ …    │                  │
-│ Geometric …     │ 20 mm        │ keys  [CPU]  │ keys [CPU] │                  │
+│ Analyses ⌕      │ Surf Type Comment Radius Thickness …      │ Surface System ⚙ │
+│ Design          ├──────────────┬──────────────┬────────────┤ ▸ Type, preview  │
+│  Lens Data      │ Layout ◉     │ Spot Diagram │ MTF        │ ▸ Parameters     │
+│  Layout, Issues │ Section|3D ⤢ │ ⟳ ⚡ ⚙ …      │ ⟳ ⚡ ⚙ …    │ ▸ Aperture …     │
+│ Geometric …     │ 20 mm        │ keys  [CPU]  │ keys [CPU] │ (inspector page) │
 └─────────────────┴──────────────┴──────────────┴────────────┴──────────────────┘
 ```
 
@@ -202,8 +317,13 @@ directly; only the materials change.
   (accent while running). A click shows the analysis in the focused pane;
   Shift+click or the context menu opens a new pane.
 * **Content**: lens data across the top, then the layout and the analysis
-  panes side by side (a fixed split this round; tabs, dragging and separate
-  windows come later).
+  panes side by side in the standard arrangement; the user changes it by
+  dragging a panel by its header and dropping it as a tab, a split or a window
+  edge, or moving it to a separate window.
+* **Inspector** (right column, Mica): a tab bar (Surface and System as words,
+  the design jobs as glyphs with a dot while running) over the selected page,
+  a form of sections (type and preview, parameters, spacing and medium,
+  aperture, placement, coating, solves; or the System page's sections).
 * **Analysis panes**: title with the analysis menu, a state line (the
   settings that differ from the defaults, or the stage while running), Run /
   Cancel, automatic update, Settings and More (defaults, copy result JSON,
@@ -213,4 +333,6 @@ directly; only the materials change.
   under a "Design changed" card with Update; automatic panes re-run.
 * **Keyboard**: Ctrl+Z / Ctrl+Y (Ctrl+Shift+Z), Ctrl+S, Ctrl+Shift+S, Ctrl+O,
   Ctrl+N (welcome), F5 run all, Ctrl+Esc cancel all, Ctrl+Alt+P inspector,
-  Ctrl+0 fit the layout, plus the lens table's own keys.
+  Ctrl+0 fit the layout, plus the lens table's own keys. Features add File menu
+  commands and shortcuts through `AppHooks.Commands` (Glass Catalogs…, Add Glass
+  Catalog to Design…, Reset Panel Layout).

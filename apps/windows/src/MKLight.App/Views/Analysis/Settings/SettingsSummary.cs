@@ -29,7 +29,16 @@ public static class SettingsSummary
     {
         var label = SettingEntry.Label(f);
         if (f.Name == "spectrum")
-            return v is null ? null : "Spectrum " + (Json.Str(Json.At(v, "kind")) is string k ? SettingEntry.Title(k).ToLowerInvariant() : "custom");
+            return SpectrumSetting.Read(v) is { } s ? s.Kind == SpectrumKind.Design ? null : "Spectrum " + s.Summary : "Spectrum custom";
+        if (f.Name == "sensor_limit" && analysis == "chief_ray_angle")
+            return SensorLimit.Rows(v).Count switch { 0 => "Sensor limit none", 1 => "Sensor limit 1 point", var n => $"Sensor limit {n.ToString(CultureInfo.InvariantCulture)} points" };
+        if (f.Name == "source" && Json.Str(Json.At(v, "kind")) is string kind)
+            return "Source " + kind switch
+            {
+                "pattern" => ImageSourcePatterns.Title(Json.Str(Json.At(v, "pattern")) ?? "grid").ToLowerInvariant(),
+                "buffer" => "image",
+                _ => Path.GetFileName(Json.Str(Json.At(v, "path")) ?? ""),
+            };
         if (f.Name == "pupil" && Json.Has(v, "grid"))
             return Json.Int(Json.At(v, "grid")) is int g && g != 0 ? "Pupil " + g.ToString(CultureInfo.InvariantCulture) : null;
         if (f.Name == "through_focus" && analysis == "spot_diagram")

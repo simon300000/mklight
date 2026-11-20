@@ -78,6 +78,11 @@
                     <ScalarTransition Duration="0:0:0.18" />
                 </ContentPresenter.OpacityTransition>
             </ContentPresenter>
+            <!-- A previewed candidate: every pane says it does not show the design. -->
+            <Border x:Name="PreviewStrip" Visibility="Collapsed" VerticalAlignment="Top" HorizontalAlignment="Center" Margin="8,2,8,0"
+                    CornerRadius="11" Padding="10,2,10,3" Background="{ThemeResource AccentFillColorDefaultBrush}">
+                <TextBlock x:Name="PreviewText" Foreground="{ThemeResource TextOnAccentFillColorPrimaryBrush}" FontSize="11.5" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
+            </Border>
             <StackPanel x:Name="MessagePanel" VerticalAlignment="Center" HorizontalAlignment="Center" Spacing="6" MaxWidth="300" Visibility="Collapsed">
                 <FontIcon x:Name="MessageGlyph" FontSize="22" Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
                 <TextBlock x:Name="MessageText" Style="{StaticResource SecondaryText}" TextWrapping="Wrap" TextAlignment="Center" TextTrimming="None" />

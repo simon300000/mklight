@@ -1,4 +1,6 @@
+using System.Text.Json.Nodes;
 using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Media;
 using MKLight.App.Views.Analysis.Results.Readers;
 
 namespace MKLight.App.Views.Analysis.Results;
@@ -10,8 +12,15 @@ namespace MKLight.App.Views.Analysis.Results;
 /// </summary>
 public static class ResultViews
 {
+    static readonly string[] Own =
+    [
+        "spot_diagram", "first_order", "seidel", "psf", "wavefront_map", "pupil_aberration", "relative_illumination_map", "chief_ray_angle",
+        "glass_map", "glass_info", "image_simulation", "grid_distortion", "footprint", "ghost_paths", "ghost_irradiance", "stray_light",
+        "polarization_pupil_map", "system_transmission",
+    ];
+
     /// <summary>The analyses with a dedicated view.</summary>
-    public static IReadOnlyList<string> Dedicated { get; } = new[] { "spot_diagram" }.Concat(LineReaders.Analyses).ToArray();
+    public static IReadOnlyList<string> Dedicated { get; } = Own.Concat(LineReaders.Analyses).ToArray();
 
     /// <param name="theme">
     /// The pane's theme. Views draw in their own <c>ActualTheme</c> (inherited
@@ -26,14 +35,7 @@ public static class ResultViews
         UIElement? view = null;
         try
         {
-            if (data.Analysis == "spot_diagram")
-            {
-                if (SpotGridData.Read(data) is SpotGridData grid) view = new SpotDiagramView(grid, spotScale);
-            }
-            else if (LineReaders.Read(data) is ChartModel model && model.Panels.Any(p => p.Series.Count > 0))
-            {
-                view = new LineChartView(model);
-            }
+            view = Dedicated_(data, spotScale);
         }
         catch (Exception)
         {
@@ -41,5 +43,42 @@ public static class ResultViews
         }
         view ??= new GenericResultView(data);
         return (view, new ResultSummary(keys));
+    }
+
+    static UIElement? Dedicated_(ResultData d, SpotScale spotScale) => d.Analysis switch
+    {
+        "spot_diagram" => SpotGridData.Read(d) is { } grid ? new SpotDiagramView(grid, spotScale) : null,
+        "first_order" => FirstOrderData.Read(d.Json) is { } fo ? new FirstOrderView(fo) : null,
+        "seidel" => SeidelData.Read(d.Json) is { } s ? new SeidelView(s) : null,
+        "psf" => PsfData.Read(d) is { } psf ? new PsfView(psf) : null,
+        "wavefront_map" => WavefrontData.Read(d) is { } wf ? new WavefrontView(wf) : null,
+        "pupil_aberration" or "relative_illumination_map" or "chief_ray_angle" => FieldMapData.Read(d) is { } fm ? FieldMapViews.Create(d.Analysis, fm) : null,
+        "glass_map" => GlassMapData.Read(d) is { Glasses.Count: > 0 } gm ? new GlassMapView(gm) : null,
+        "glass_info" => GlassInfoData.Read(d) is { } gi ? new GlassDataView(gi) : null,
+        "image_simulation" => ImageSimulationData.Read(d) is { } im ? new ImageSimulationView(d, im) : null,
+        "grid_distortion" => GridDistortionData.Read(d) is { } gd ? new GridDistortionView(gd) : null,
+        "footprint" => FootprintData.Read(d) is { } fp ? new FootprintView(fp, d.WavelengthsUm) : null,
+        "ghost_paths" => GhostPathsData.Read(d) is { } gp ? new GhostPathsView(gp) : null,
+        "ghost_irradiance" => SensorMapsData.GhostIrradiance(d) is { } gi2 ? new SensorMapView(gi2) : null,
+        "stray_light" => SensorMapsData.StrayLight(d) is { } sl ? new SensorMapView(sl) : null,
+        "polarization_pupil_map" => PolarizationData.Read(d) is { } pol ? new PolarizationView(pol) : null,
+        "system_transmission" => TransmissionData.Read(d) is { } tr ? new TransmissionView(tr, d.WavelengthsUm) : null,
+        _ => LineReaders.Read(d) is ChartModel model && model.Panels.Any(p => p.Series.Count > 0) ? new LineChartView(model) : null,
+    };
+
+    /// <summary>
+    /// The settings the result was run with, from the pane that shows <paramref name="view"/>
+    /// (null when it is not in a pane yet). Views that need them (the CRA sensor limit, the
+    /// image simulation's source) ask once loaded.
+    /// </summary>
+    internal static JsonNode? RunSettings(FrameworkElement view)
+    {
+        DependencyObject? e = view;
+        while (e is not null)
+        {
+            if (e is AnalysisPaneView pane) return pane.Pane.Output?.RunInfo.Settings;
+            e = VisualTreeHelper.GetParent(e);
+        }
+        return null;
     }
 }

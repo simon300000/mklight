@@ -5,6 +5,7 @@ using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
 using MKLight.App.Support;
 using MKLight.App.Views.Analysis.Results;
+using MKLight.App.Views.Analysis.RunDetails;
 using MKLight.App.Views.Analysis.Results.Readers;
 using MKLight.App.Views.Analysis.Settings;
 using MKLight.App.ViewModels;
@@ -25,6 +26,7 @@ public sealed partial class AnalysisPaneView : UserControl
     readonly DesignSession _session;
     readonly AnalysisPaneModel _pane;
     AnalysisOutput? _shown;
+    AnalysisOutput? _retired;
     ResultData? _data;
     ElementTheme _shownTheme;
 
@@ -35,8 +37,8 @@ public sealed partial class AnalysisPaneView : UserControl
         InitializeComponent();
         ActualThemeChanged += (_, _) => Update();
         // Follow the pane while in the tree; the window re-parents views when panes change.
-        Loaded += (_, _) => { pane.Changed -= Update; pane.Changed += Update; Update(); };
-        Unloaded += (_, _) => pane.Changed -= Update;
+        Loaded += (_, _) => { pane.Changed -= Update; pane.Changed += Update; session.Workspace.PreviewChanged -= Update; session.Workspace.PreviewChanged += Update; Update(); };
+        Unloaded += (_, _) => { pane.Changed -= Update; session.Workspace.PreviewChanged -= Update; };
         PointerPressed += (_, _) => Focused?.Invoke(this);
         BuildAnalysisMenu();
     }
@@ -87,14 +89,18 @@ public sealed partial class AnalysisPaneView : UserControl
         var output = _pane.Output;
         if (output is not null && (!ReferenceEquals(output, _shown) || _shownTheme != ActualTheme))
         {
+            // The view of the previous output goes now: free its buffers (unless a preview keeps it as baseline).
+            if (_shown is { } old && !ReferenceEquals(old, output) && !ReferenceEquals(old, _pane.Output) && !_session.Workspace.IsRetained(old)) _retired = old;
             _shown = output;
             _shownTheme = ActualTheme;
             try
             {
-                _data = ResultHosting.Data(_pane.Analysis, output, _session.Document.System);
+                _data = ResultHosting.Data(_pane.Analysis, output, _session.Workspace.PreviewSystem ?? _session.Document.System);
                 var (view, summary) = ResultViews.Create(_data, ActualTheme, _pane.SpotScale);
                 if (view is SpotDiagramView spot) spot.BoxScaleChanged += scale => _pane.SpotScale = scale;
                 ResultHost.Content = view;
+                _retired?.Dispose();
+                _retired = null;
                 // The form's "Auto (n)" values come from the latest result.
                 if (_pane.ShowsSettings) SettingsContent.Content = null;
                 KeyNumbers.Text = summary.KeyNumbers;
@@ -131,6 +137,11 @@ public sealed partial class AnalysisPaneView : UserControl
         StaleCard.Visibility = showStale && !running ? Visibility.Visible : Visibility.Collapsed;
         StaleReason.Text = _session.Workspace.ModelErrors.Count > 0 ? "The design has errors; fix them to update." : "This result is from an earlier design.";
 
+        // Preview: the result is of a candidate, not of the design.
+        var previewing = _session.Workspace.PreviewTitle;
+        PreviewStrip.Visibility = previewing is null ? Visibility.Collapsed : Visibility.Visible;
+        PreviewText.Text = previewing is null ? "" : $"Previewing {previewing} · not applied";
+
         // Settings form.
         SettingsHost.Visibility = _pane.ShowsSettings ? Visibility.Visible : Visibility.Collapsed;
         if (_pane.ShowsSettings && SettingsContent.Content is null) BuildSettings();
@@ -159,52 +170,17 @@ public sealed partial class AnalysisPaneView : UserControl
 
     void UpdateBackendBadge(AnalysisOutput output)
     {
-        var b = output.Backend;
-        var gpu = b?.Used.StartsWith("gpu", StringComparison.Ordinal) == true;
-        var precision = b?.Precision switch { "f32_gpu" => "f32", "f64_reference" => "f64", { Length: > 0 } p => p, _ => output.RunInfo.Precision.ToString().ToLowerInvariant() };
-        var ms = output.RunInfo.DurationMs;
-        var time = ms >= 1000 ? (ms / 1000).ToString("0.0", CultureInfo.InvariantCulture) + " s" : ms.ToString("0", CultureInfo.InvariantCulture) + " ms";
-        BackendText.Text = $"{(gpu ? "GPU" : "CPU")} · {precision}  {time}";
+        var gpu = output.Backend?.Used.StartsWith("gpu", StringComparison.Ordinal) == true;
+        BackendText.Text = $"{(gpu ? "GPU" : "CPU")} · {RunDetailsView.Precision(output)}  {RunDetailsView.Time(output)}";
         BackendGlyph.Glyph = gpu ? "\uE945" : "\uE950";
-        var accent = ThemeLookup.Brush(this, "AccentTextFillColorPrimaryBrush");
-        var normal = ThemeLookup.Brush(this, "TextFillColorSecondaryBrush");
-        BackendText.Foreground = gpu ? accent : normal;
-        BackendGlyph.Foreground = gpu ? accent : normal;
-        // A fallback counts only from a backend that was asked for (an automatic request on a machine without a GPU is no warning).
-        var fallback = b?.FallbackReason is not null && b.Requested is not ("auto" or "default:auto" or "" or "cpu_reference" or "default:cpu_reference") ? b.FallbackReason : null;
-        var warnings = output.RunInfo.Warnings.Count + output.RunInfo.FailedAttempts.Count + (fallback is null ? 0 : 1);
-        BackendWarning.Visibility = warnings > 0 ? Visibility.Visible : Visibility.Collapsed;
+        var brush = ThemeLookup.Brush(this, gpu ? "AccentTextFillColorPrimaryBrush" : "TextFillColorSecondaryBrush");
+        BackendText.Foreground = brush;
+        BackendGlyph.Foreground = brush;
+        var warnings = RunDetailsView.Warnings(output);
+        BackendWarning.Visibility = warnings.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
         BackendBadge.Visibility = Visibility.Visible;
-        ToolTipService.SetToolTip(BackendBadge, warnings > 0
-            ? string.Join("\n", output.RunInfo.Warnings.Concat(fallback is { } f ? [f] : []))
-            : "Run details");
-
-        // Run details: the backend that computed the result, what was requested, why, precision, seed, snapshot, time.
-        RunDetails.Children.Clear();
-        void Row(string label, string? value)
-        {
-            if (string.IsNullOrEmpty(value)) return;
-            var g = new Grid { ColumnSpacing = 12 };
-            g.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(96) });
-            g.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-            g.Children.Add(new TextBlock { Text = label, Style = (Style)Application.Current.Resources["SecondaryText"] });
-            var v = new TextBlock { Text = value, Style = (Style)Application.Current.Resources["NumberText"], TextWrapping = TextWrapping.Wrap, TextTrimming = TextTrimming.None, IsTextSelectionEnabled = true };
-            Grid.SetColumn(v, 1);
-            g.Children.Add(v);
-            RunDetails.Children.Add(g);
-        }
-        RunDetails.Children.Add(new TextBlock { Text = "Run Details", Style = (Style)Application.Current.Resources["PanelTitleText"], Margin = new Thickness(0, 0, 0, 4) });
-        Row("Computed on", b?.Summary ?? output.RunInfo.Backend);
-        Row("Requested", b?.Requested);
-        Row("Reason", b?.FallbackReason);
-        Row("Precision", precision);
-        Row("Seed", output.RunInfo.Seed?.ToString(CultureInfo.InvariantCulture));
-        Row("Snapshot", output.RunInfo.SnapshotHash.ToString() is { Length: > 12 } h ? h[..12] + "…" : output.RunInfo.SnapshotHash.ToString());
-        Row("Engine", output.RunInfo.EngineVersion);
-        Row("Time", time);
-        foreach (var a in output.RunInfo.FailedAttempts)
-            Row("Not used", $"{a.Backend}: {a.Outcome} after {a.ElapsedMs.ToString("0", CultureInfo.InvariantCulture)} ms — {a.Reason}");
-        foreach (var w in output.RunInfo.Warnings) Row("Warning", w);
+        ToolTipService.SetToolTip(BackendBadge, warnings.Count > 0 ? string.Join(Environment.NewLine, warnings) : "Run details");
+        RunDetailsView.Build(RunDetails, output, _pane, _session);
     }
 
     void BuildSettings()
@@ -236,6 +212,7 @@ public sealed partial class AnalysisPaneView : UserControl
     void OnAutoUpdate(object sender, RoutedEventArgs e)
     {
         _pane.AutoUpdate = AutoButton.IsChecked == true;
+        _pane.RaiseChanged();
         if (_pane.AutoUpdate && _pane.IsStale) _pane.Rerun();
         Update();
     }
@@ -243,6 +220,7 @@ public sealed partial class AnalysisPaneView : UserControl
     void OnSettingsToggle(object sender, RoutedEventArgs e)
     {
         _pane.ShowsSettings = SettingsButton.IsChecked == true;
+        _pane.RaiseChanged();
         if (!_pane.ShowsSettings) SettingsContent.Content = null;
         Update();
     }
@@ -250,6 +228,7 @@ public sealed partial class AnalysisPaneView : UserControl
     void OnSettingsDone(object sender, RoutedEventArgs e)
     {
         _pane.ShowsSettings = false;
+        _pane.RaiseChanged();
         SettingsContent.Content = null;
         Update();
     }

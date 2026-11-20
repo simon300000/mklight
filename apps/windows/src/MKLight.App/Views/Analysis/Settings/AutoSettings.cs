@@ -29,6 +29,7 @@ public static class AutoSettings
         "max_frequency" when analysis == "mtf" => AutoSentinel.Null,
         "focus_range_mm" when analysis == "through_focus_mtf" => AutoSentinel.Null,
         "spacing_mm" when analysis == "psf" => AutoSentinel.Null,
+        "optics.psf_spacing_mm" => AutoSentinel.Null,
         "through_focus.min" or "through_focus.max" when analysis == "spot_diagram" => AutoSentinel.Null,
         "frequencies" when analysis is "mtf_vs_field" or "through_focus_mtf" => AutoSentinel.Empty,
         _ => null,
@@ -86,6 +87,10 @@ public static class AutoSettings
                     grids = (Json.Arr(Json.At(j, "pupil_sampling")) ?? []).SelectMany(l => Json.Arr(l) ?? [])
                         .Select(p => Json.Number(Json.At(p, "grid"))).ToList();
                 return Range(grids);
+            case ("image_simulation", "optics.psf_size"):
+                return Range([Json.Number(Json.At(j, "psf_size"))]);
+            case ("image_simulation", "optics.psf_spacing_mm"):
+                return Json.Number(Json.At(j, "psf_spacing_mm")) is double sp ? Micrometres(sp, sp) : null;
             default:
                 return null;
         }

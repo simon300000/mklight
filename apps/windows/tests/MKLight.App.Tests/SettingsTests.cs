@@ -109,7 +109,7 @@ public class SettingControlTests
         Assert.Equal(ControlKind.Variants, Wave("center").Kind);
         Assert.Equal(ControlKind.Pupil, Wave("pupil").Kind);
         Assert.Equal(ControlKind.ThroughFocus, Spot("through_focus").Kind);
-        Assert.Equal(ControlKind.Hidden, Spot("spectrum").Kind);
+        Assert.Equal(ControlKind.Spectrum, Spot("spectrum").Kind);
         // Nested, a "pupil" is an ordinary group.
         Assert.Equal(ControlKind.Group, SettingControls.For(Schemas.Field(Schemas.Wave, "pupil"), "mtf", nested: true).Kind);
         var pitch = Schemas.Field(Schemas.Wave, "detector").Properties.Single(p => p.Name == "pitch_mm");

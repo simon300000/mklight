@@ -26,4 +26,7 @@
     <Compile Include="..\..\src\MKLight.App\Views\Analysis\Settings\SettingsContext.cs" Link="Linked\Settings\SettingsContext.cs" />
     <Compile Include="..\..\src\MKLight.App\Views\Analysis\Settings\SettingsSummary.cs" Link="Linked\Settings\SettingsSummary.cs" />
   </ItemGroup>
+  <ItemGroup>
+    <Compile Include="..\..\src\MKLight.App\Views\Analysis\Settings\Model\*.cs;..\..\src\MKLight.App\Views\Analysis\RunDetails\Model\*.cs" Link="Linked\SettingsModel\%(Filename)%(Extension)" />
+  </ItemGroup>
 </Project>

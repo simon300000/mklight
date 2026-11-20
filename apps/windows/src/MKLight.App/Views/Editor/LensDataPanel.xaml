@@ -217,6 +217,16 @@
             <TextBlock Grid.Column="1" Text="Lens Data" Style="{StaticResource PanelTitleText}" />
             <TextBlock x:Name="Caption" Grid.Column="2" Style="{StaticResource CaptionText}" Margin="0,1,0,0" />
             <StackPanel Grid.Column="3" Orientation="Horizontal" Spacing="2">
+                <Button x:Name="VariablesButton" Style="{StaticResource CapsuleButton}" Visibility="Collapsed" Padding="8,1,10,2" MinHeight="24"
+                        Background="Transparent" BorderThickness="0" Click="OnVariablesClick" IsTabStop="False" Margin="0,0,4,0"
+                        ToolTipService.ToolTip="The design's variables: open Optimize to edit their bounds">
+                    <StackPanel Orientation="Horizontal" Spacing="5">
+                        <Border Style="{StaticResource LensVariableBadge}" VerticalAlignment="Center">
+                            <TextBlock Text="V" Style="{StaticResource LensVariableText}" />
+                        </Border>
+                        <TextBlock x:Name="VariablesText" Style="{StaticResource NumberText}" FontSize="12" Foreground="{ThemeResource LensVariableBrush}" />
+                    </StackPanel>
+                </Button>
                 <Button x:Name="InsertButton" Style="{StaticResource CircleButton}" Width="26" Height="26" Content="&#xE710;" FontSize="12"
                         Click="OnInsertClick" IsTabStop="False"
                         ToolTipService.ToolTip="Insert a surface before the selection (Ctrl+Shift+I)"

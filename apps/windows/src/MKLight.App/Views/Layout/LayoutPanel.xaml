@@ -2,50 +2,109 @@
     x:Class="MKLight.App.Views.Layout.LayoutPanel"
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-    xmlns:canvas="using:Microsoft.Graphics.Canvas.UI.Xaml">
-    <!-- The layout: the engine's section drawn edge to edge, glass controls floating over it. -->
+    xmlns:canvas="using:Microsoft.Graphics.Canvas.UI.Xaml"
+    xmlns:v3d="using:MKLight.App.Views.Viewport3D">
+    <UserControl.Resources>
+        <!-- The view selector's segments: plain, or the accent capsule of the shown view. -->
+        <Style x:Key="ModeSegment" TargetType="Button" BasedOn="{StaticResource DefaultButtonStyle}">
+            <Setter Property="CornerRadius" Value="13" />
+            <Setter Property="MinHeight" Value="26" />
+            <Setter Property="Padding" Value="11,2,11,3" />
+            <Setter Property="FontSize" Value="12.5" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Foreground" Value="{ThemeResource TextFillColorPrimaryBrush}" />
+        </Style>
+        <Style x:Key="ModeSegmentSelected" TargetType="Button" BasedOn="{StaticResource AccentButtonStyle}">
+            <Setter Property="CornerRadius" Value="13" />
+            <Setter Property="MinHeight" Value="26" />
+            <Setter Property="Padding" Value="11,2,11,3" />
+            <Setter Property="FontSize" Value="12.5" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="BorderThickness" Value="0" />
+        </Style>
+    </UserControl.Resources>
+
+    <!-- The layout: the engine's scene drawn edge to edge, glass controls floating over it. -->
     <Grid x:Name="Root" Background="{ThemeResource ContentSurfaceBrush}">
-        <canvas:CanvasControl x:Name="Canvas" Draw="OnDraw" ClearColor="Transparent"
-                              PointerPressed="OnPointerPressed" PointerMoved="OnPointerMoved"
-                              PointerReleased="OnPointerReleased" PointerWheelChanged="OnPointerWheel"
-                              DoubleTapped="OnDoubleTapped" ManipulationMode="None" />
+        <!-- The scene: the section (Win2D) or the 3-D view (Direct3D 11). Input is handled here for both. -->
+        <Grid x:Name="Surface" Background="Transparent"
+              PointerPressed="OnPointerPressed" PointerMoved="OnPointerMoved" PointerReleased="OnPointerReleased"
+              PointerCanceled="OnPointerCanceled" PointerCaptureLost="OnPointerCanceled" PointerWheelChanged="OnPointerWheel"
+              DoubleTapped="OnDoubleTapped" ManipulationMode="None">
+            <canvas:CanvasControl x:Name="Canvas" Draw="OnDraw" ClearColor="Transparent" />
+            <v3d:Viewport3DView x:Name="View3D" Visibility="Collapsed" />
+            <!-- A captured frame of the 3-D view (window captures cannot see a swap chain). -->
+            <Image x:Name="Frame3D" Visibility="Collapsed" Stretch="Fill" IsHitTestVisible="False" />
+        </Grid>
 
         <!-- Title chip (the drag handle in later rounds). -->
-        <Border Style="{StaticResource GlassChip}" HorizontalAlignment="Left" VerticalAlignment="Top" Margin="10" Padding="12,4,12,5">
+        <Border x:Name="TitleChip" Style="{StaticResource GlassChip}" HorizontalAlignment="Left" VerticalAlignment="Top" Margin="10" Padding="12,4,12,5">
             <StackPanel Orientation="Horizontal" Spacing="7">
                 <FontIcon Glyph="&#xE81E;" FontSize="13" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
                 <TextBlock Text="Layout" Style="{StaticResource PanelTitleText}" />
+                <ProgressRing x:Name="TitleRing" IsActive="False" Width="12" Height="12" MinWidth="12" MinHeight="12" Visibility="Collapsed" />
             </StackPanel>
         </Border>
 
-        <!-- Floating controls: section, ray colouring, fit. -->
-        <StackPanel Orientation="Horizontal" Spacing="6" HorizontalAlignment="Right" VerticalAlignment="Top" Margin="10">
+        <!-- Floating controls: view selector, stretch, display options, footprints, fit. -->
+        <StackPanel x:Name="Controls" Orientation="Horizontal" Spacing="6" HorizontalAlignment="Right" VerticalAlignment="Top" Margin="10">
             <Border Style="{StaticResource GlassChip}">
-                <StackPanel Orientation="Horizontal">
-                    <Border CornerRadius="13" Background="{ThemeResource AccentFillColorDefaultBrush}" Padding="12,3,12,4">
-                        <TextBlock x:Name="SectionLabel" Text="Section" Foreground="{ThemeResource TextOnAccentFillColorPrimaryBrush}" FontSize="12.5" FontWeight="SemiBold" />
-                    </Border>
-                    <TextBlock Text="3D" Style="{StaticResource SecondaryText}" FontSize="12.5" Margin="10,0,10,0" Opacity="0.45"
-                               ToolTipService.ToolTip="The 3-D view arrives in a later round" />
-                </StackPanel>
+                <StackPanel x:Name="ModeSegments" Orientation="Horizontal" />
+            </Border>
+            <Border x:Name="StretchChip" Style="{StaticResource GlassChip}" Visibility="Collapsed">
+                <Button x:Name="StretchButton" Style="{StaticResource ModeSegment}" Padding="10,2,11,3"
+                        AutomationProperties.Name="Vertical stretch">
+                    <StackPanel Orientation="Horizontal" Spacing="5">
+                        <FontIcon Glyph="&#xE8CB;" FontSize="11" Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}" />
+                        <TextBlock x:Name="StretchText" FontSize="12" FontWeight="SemiBold" Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}"
+                                   Style="{StaticResource NumberText}" />
+                    </StackPanel>
+                    <Button.Flyout>
+                        <MenuFlyout x:Name="StretchMenu" Opening="OnStretchMenuOpening" Placement="BottomEdgeAlignedRight" />
+                    </Button.Flyout>
+                </Button>
             </Border>
             <Border Style="{StaticResource GlassChip}">
                 <StackPanel Orientation="Horizontal">
-                    <Button x:Name="ColoringButton" Style="{StaticResource CircleButton}" Content="&#xE790;" Click="OnColoring"
-                            ToolTipService.ToolTip="Colour rays by field or by wavelength" />
-                    <Button Style="{StaticResource CircleButton}" Content="&#xE9A6;" Click="OnFit" ToolTipService.ToolTip="Fit (double-click)" />
+                    <Button Style="{StaticResource CircleButton}" Content="&#xE890;" ToolTipService.ToolTip="Display options: ray colours, sampling, stretch, mesh, footprints"
+                            AutomationProperties.Name="Display">
+                        <Button.Flyout>
+                            <MenuFlyout x:Name="DisplayMenu" Opening="OnDisplayMenuOpening" Placement="BottomEdgeAlignedRight" />
+                        </Button.Flyout>
+                    </Button>
+                    <ToggleButton x:Name="FootprintsButton" Style="{StaticResource CircleToggleButton}" Content="&#xE81D;" Visibility="Collapsed"
+                                  Click="OnFootprintsClick" AutomationProperties.Name="Beam footprints" />
+                    <Button Style="{StaticResource CircleButton}" Content="&#xE9A6;" Click="OnFit" ToolTipService.ToolTip="Fit the layout (Ctrl+0, or double-click)"
+                            AutomationProperties.Name="Fit" />
                 </StackPanel>
             </Border>
         </StackPanel>
 
-        <!-- Scale bar. -->
-        <StackPanel x:Name="ScaleBar" HorizontalAlignment="Left" VerticalAlignment="Bottom" Margin="14,0,0,12" Spacing="3">
-            <TextBlock x:Name="ScaleText" Style="{StaticResource CaptionText}" />
-            <Border x:Name="ScaleLine" Height="2" HorizontalAlignment="Left" Background="{ThemeResource TextFillColorSecondaryBrush}" CornerRadius="1" />
+        <!-- A previewed candidate design: unmistakably not the design (under the controls). -->
+        <Border x:Name="PreviewChip" Visibility="Collapsed" HorizontalAlignment="Center" VerticalAlignment="Top" Margin="0,52,0,0"
+                CornerRadius="14" Padding="12,4,12,5" Background="{ThemeResource AccentFillColorDefaultBrush}">
+            <TextBlock x:Name="PreviewText" Foreground="{ThemeResource TextOnAccentFillColorPrimaryBrush}" FontSize="12.5" FontWeight="SemiBold" />
+        </Border>
+
+        <!-- Scale bar: a round length; with a vertical stretch, an upright bar as drawn and "vertical ×N". -->
+        <StackPanel x:Name="ScaleBar" Orientation="Horizontal" Spacing="10" HorizontalAlignment="Left" VerticalAlignment="Bottom" Margin="14,0,0,12"
+                    IsHitTestVisible="False">
+            <StackPanel x:Name="UpBar" Orientation="Horizontal" Spacing="4" VerticalAlignment="Bottom" Visibility="Collapsed">
+                <Border x:Name="UpLine" Width="2" CornerRadius="1" VerticalAlignment="Bottom" Background="{ThemeResource AccentTextFillColorPrimaryBrush}" />
+                <TextBlock x:Name="UpText" Style="{StaticResource CaptionText}" VerticalAlignment="Center" Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}" />
+            </StackPanel>
+            <StackPanel Spacing="3" VerticalAlignment="Bottom">
+                <TextBlock Style="{StaticResource CaptionText}">
+                    <Run x:Name="ScaleText" /><Run x:Name="StretchLabel" FontWeight="SemiBold" Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}" />
+                </TextBlock>
+                <Border x:Name="ScaleLine" Height="2" HorizontalAlignment="Left" Background="{ThemeResource TextFillColorSecondaryBrush}" CornerRadius="1" />
+            </StackPanel>
         </StackPanel>
 
         <!-- Legend of the ray colouring. -->
-        <TextBlock x:Name="ColoringLegend" Style="{StaticResource CaptionText}" HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="0,0,14,12" />
+        <TextBlock x:Name="ColoringLegend" Style="{StaticResource CaptionText}" HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="0,0,14,12"
+                   IsHitTestVisible="False" />
 
         <!-- Stale card. -->
         <Border x:Name="StaleCard" Visibility="Collapsed" Background="{ThemeResource StaleCardBrush}" BorderBrush="{ThemeResource CapsuleStrokeBrush}"
@@ -57,6 +116,6 @@
         </Border>
 
         <TextBlock x:Name="Message" Style="{StaticResource SecondaryText}" HorizontalAlignment="Center" VerticalAlignment="Center"
-                   TextWrapping="Wrap" TextAlignment="Center" MaxWidth="320" />
+                   TextWrapping="Wrap" TextAlignment="Center" MaxWidth="320" IsHitTestVisible="False" />
     </Grid>
 </UserControl>

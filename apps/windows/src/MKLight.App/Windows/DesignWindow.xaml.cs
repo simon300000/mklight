@@ -11,7 +11,10 @@ using MKLight.App.ViewModels;
 using MKLight.App.Views;
 using MKLight.App.Views.Analysis;
 using MKLight.App.Views.Layout;
+using MKLight.App.Views.Panels;
+using MKLight.App.Views.Inspector;
 using MKLight.Engine;
+using MKLight.Model;
 using Windows.System;
 
 namespace MKLight.App.Windows;
@@ -26,8 +29,8 @@ namespace MKLight.App.Windows;
 public sealed partial class DesignWindow : Window
 {
     readonly DesignSession _session;
-    readonly LayoutPanel _layout = new();
-    readonly List<AnalysisPaneView> _paneViews = [];
+    readonly PanelHost _panels;
+    readonly InspectorView _inspector;
     bool _buildingSidebar;
 
     public DesignWindow(DesignSession session)
@@ -38,18 +41,20 @@ public sealed partial class DesignWindow : Window
         SetTitleBar(AppTitleBar);
         AppWindow.TitleBar.PreferredHeightOption = TitleBarHeightOption.Tall;
         AppWindow.SetIcon(Path.Combine(AppContext.BaseDirectory, "Assets", "MKLight.ico"));
-        Root.RequestedTheme = AppSettings.Theme;
-        SyncThemeMenu();
+        ThemeSwitch.Attach(this, Root, SyncThemeMenu);
 
-        LensData.Host = session;
-        _layout.SurfaceClicked += i => session.SelectedSurface = i;
-        session.SelectionChanged += () => _layout.SetSelectedSurface(session.SelectedSurface);
+        _panels = new PanelHost(session);
+        ContentCard.Child = _panels;
+        _panels.FocusChanged += UpdateSidebarState;
+        _inspector = new InspectorView(session);
+        Inspector.Child = _inspector;
         session.Toast += ShowToast;
         session.Document.Changed += UpdateTitle;
         session.Workspace.StateChanged += UpdateStatus;
         session.Workspace.StateChanged += UpdateSidebarState;
-        session.Workspace.PanesChanged += RebuildPanes;
-        session.Workspace.Layout.Changed += UpdateLayout;
+        session.Workspace.PanesChanged += () => { UpdateSidebarState(); UpdateAddMenu(); };
+        session.Workspace.PreviewChanged += UpdateStatus;
+        session.RunningJobsChanged += UpdateStatus;
         Status.IssueInvoked += i => { if (i.Surface is int s) session.SelectedSurface = s; };
 
         Status.SizeChanged += (_, _) => UpdatePassthrough();
@@ -57,10 +62,13 @@ public sealed partial class DesignWindow : Window
         BuildAccelerators();
         UpdateTitle();
         UpdateStatus();
-        RebuildPanes();
-        UpdateLayout();
-        Closed += (_, _) => session.Workspace.CancelAll();
+        // The capsule's issue glyphs are brushes picked in code.
+        Root.ActualThemeChanged += (_, _) => UpdateStatus();
+        UpdateAddMenu();
+        AddCommands();
+        Closed += (_, _) => session.Dispose();
         AppWindow.Closing += OnClosing;
+        AppHooks.RaiseWindowCreated(this);
     }
 
     bool _closeConfirmed;
@@ -85,21 +93,19 @@ public sealed partial class DesignWindow : Window
     }
 
     public DesignSession Session => _session;
-
-    public static void ApplyTheme(ElementTheme theme)
-    {
-        foreach (var w in App.Windows.OfType<DesignWindow>()) { w.Root.RequestedTheme = theme; w.SyncThemeMenu(); }
-    }
+    /// <summary>The content area (lens data, layout, panes).</summary>
+    public PanelHost Panels => _panels;
+    /// <summary>The inspector column.</summary>
+    public InspectorView InspectorPanel => _inspector;
+    /// <summary>The window's root element (its theme, keyboard accelerators, XamlRoot).</summary>
+    public FrameworkElement RootElement => Root;
 
     void SyncThemeMenu()
     {
-        ThemeSystem.IsChecked = AppSettings.Theme == ElementTheme.Default;
-        ThemeLight.IsChecked = AppSettings.Theme == ElementTheme.Light;
-        ThemeDark.IsChecked = AppSettings.Theme == ElementTheme.Dark;
-        // The caption buttons follow the content's theme.
-        var dark = Root.ActualTheme == ElementTheme.Dark;
-        AppWindow.TitleBar.ButtonForegroundColor = dark ? Microsoft.UI.Colors.White : Microsoft.UI.Colors.Black;
-        AppWindow.TitleBar.ButtonHoverForegroundColor = AppWindow.TitleBar.ButtonForegroundColor;
+        var theme = AppSettings.Theme;
+        ThemeSystem.IsChecked = theme == ElementTheme.Default;
+        ThemeLight.IsChecked = theme == ElementTheme.Light;
+        ThemeDark.IsChecked = theme == ElementTheme.Dark;
     }
 
     /// <summary>The capsule sits over the title bar's drag area: let the pointer through to it.</summary>
@@ -137,7 +143,8 @@ public sealed partial class DesignWindow : Window
     {
         var ws = _session.Workspace;
         var running = ws.Panes.Where(p => p.IsRunning).ToList();
-        Status.SetActivity(ws.IsBusy ? (running.Count == 1 && running[0].Progress.Fraction > 0
+        Status.SetActivityAction(_session.RunningJobs.Values.Select(j => j.Open).FirstOrDefault(o => o is not null));
+        Status.SetActivity(_session.RunningJobs.Count > 0 ? string.Join("  ·  ", _session.RunningJobs.Values.Select(j => j.Text)) : ws.IsBusy ? (running.Count == 1 && running[0].Progress.Fraction > 0
             ? AnalysisCatalog.ShortTitle(running[0].Analysis) + " " + (running[0].Progress.Fraction * 100).ToString("0", CultureInfo.InvariantCulture) + "%"
             : "") : null);
         var json = ws.Summary.Output?.Json;
@@ -159,7 +166,13 @@ public sealed partial class DesignWindow : Window
         rows.Add(("Engine", null));
         rows.Add(("Engine", ws.Engine.Info.Name + " " + ws.Engine.Info.Version));
         rows.Add(("Snapshot", ws.Snapshot?.Hash.ToString() is { Length: > 16 } h ? h[..16] + "…" : "—"));
-        rows.Add(("Compute backend", ws.Backend switch { BackendPreference.Auto => "Automatic", var b => b.ToString() }));
+        BackendPreference[] backends = [BackendPreference.Auto, BackendPreference.CpuReference, BackendPreference.Gpu];
+        Status.SetBackends(backends.Select(b => b.Title()).ToList(), Array.IndexOf(backends, ws.Backend), i =>
+        {
+            ws.Backend = backends[i];
+            ws.RerunAll();
+        });
+        Status.SetPreview(ws.PreviewTitle, () => ws.Preview(null));
         if (App.Engine is FFIEngine ffi) rows.Add(("GPU kernels", GpuText(ffi.GetGpuPreparation())));
         Status.SetDetails(rows);
     }
@@ -266,8 +279,8 @@ public sealed partial class DesignWindow : Window
         if (_buildingSidebar || args.SelectedItem is not NavigationViewItem { Tag: string tag }) return;
         switch (tag)
         {
-            case ":lens": LensData.Focus(FocusState.Programmatic); break;
-            case ":layout": _layout.Fit(); break;
+            case ":lens": _panels.ShowPanel("lens_data"); break;
+            case ":layout": _panels.ShowPanel("layout"); break;
             case ":issues": Status.ShowIssues(); break;
             default:
                 if (_session.Workspace.Descriptor(tag) is { Available: false } d) { ShowToast(d.UnavailableReason ?? "Not available."); break; }
@@ -287,49 +300,6 @@ public sealed partial class DesignWindow : Window
 
     // ---- Panels ----
 
-    void RebuildPanes()
-    {
-        var ws = _session.Workspace;
-        PanelsRow.Children.Clear();
-        PanelsRow.ColumnDefinitions.Clear();
-        foreach (var v in _paneViews.Where(v => !ws.Panes.Contains(v.Pane))) v.CloseRequested -= ClosePane;
-        _paneViews.RemoveAll(v => !ws.Panes.Contains(v.Pane));
-
-        // Layout on the left (a little wider), then the panes side by side, hairline dividers between.
-        PanelsRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(ws.Panes.Count == 0 ? 1 : 1.25, GridUnitType.Star), MinWidth = 220 });
-        PanelsRow.Children.Add(_layout);
-        Grid.SetColumn(_layout, 0);
-        var col = 1;
-        foreach (var pane in ws.Panes)
-        {
-            var view = _paneViews.FirstOrDefault(v => v.Pane == pane);
-            if (view is null)
-            {
-                view = new AnalysisPaneView(_session, pane);
-                view.CloseRequested += ClosePane;
-                view.Focused += v => { ws.FocusedPaneId = v.Pane.Id; UpdateFocus(); UpdateSidebarState(); };
-                _paneViews.Add(view);
-            }
-            PanelsRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1) });
-            var divider = new Border { Background = ThemeLookup.Brush(Root, "DividerBrush") };
-            Grid.SetColumn(divider, col++);
-            PanelsRow.Children.Add(divider);
-            PanelsRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star), MinWidth = 200 });
-            Grid.SetColumn(view, col++);
-            PanelsRow.Children.Add(view);
-        }
-        UpdateFocus();
-        UpdateSidebarState();
-        UpdateAddMenu();
-    }
-
-    void UpdateFocus()
-    {
-        foreach (var v in _paneViews) v.SetFocused(_session.Workspace.Panes.Count > 1 && v.Pane.Id == _session.Workspace.FocusedPane?.Id);
-    }
-
-    void ClosePane(AnalysisPaneView view) => _session.Workspace.RemovePane(view.Pane);
-
     void UpdateAddMenu()
     {
         AddAnalysisMenu.Items.Clear();
@@ -345,14 +315,6 @@ public sealed partial class DesignWindow : Window
             }
             AddAnalysisMenu.Items.Add(sub);
         }
-    }
-
-    void UpdateLayout()
-    {
-        var layout = _session.Workspace.Layout;
-        _layout.SetScene(_session.Section, layout.Phase == PanePhase.Failed ? layout.Message : _session.Workspace.ModelErrors.FirstOrDefault());
-        _layout.SetStale(layout.IsStale, layout.IsRunning);
-        _layout.SetSelectedSurface(_session.SelectedSurface);
     }
 
     // ---- Commands ----
@@ -376,8 +338,32 @@ public sealed partial class DesignWindow : Window
         Add(VirtualKey.F5, VirtualKeyModifiers.None, () => _session.Workspace.RerunAll());
         Add(VirtualKey.Escape, VirtualKeyModifiers.Control, () => _session.Workspace.CancelAll());
         Add(VirtualKey.P, VirtualKeyModifiers.Control | VirtualKeyModifiers.Menu, ToggleInspector);
-        Add(VirtualKey.Number0, VirtualKeyModifiers.Control, _layout.Fit);
+        Add(VirtualKey.Number0, VirtualKeyModifiers.Control, () => _panels.Layout.Fit());
     }
+
+    /// <summary>Commands features registered (<see cref="AppHooks.Commands"/>): File menu items and shortcuts.</summary>
+    void AddCommands()
+    {
+        var at = FileMenu.Items.IndexOf(ThemeSeparator);
+        foreach (var c in AppHooks.Commands.OrderBy(c => c.Order))
+        {
+            var item = new MenuFlyoutItem { Text = c.Text, Icon = new FontIcon { Glyph = c.Glyph } };
+            item.Click += (_, _) => c.Invoke(this);
+            if (c.Key is { } key)
+            {
+                item.KeyboardAcceleratorTextOverride = Shortcut(key, c.Modifiers);
+                var a = new KeyboardAccelerator { Key = key, Modifiers = c.Modifiers };
+                a.Invoked += (_, e) => { c.Invoke(this); e.Handled = true; };
+                Root.KeyboardAccelerators.Add(a);
+            }
+            FileMenu.Items.Insert(at++, item);
+        }
+        if (AppHooks.Commands.Count > 0) FileMenu.Items.Insert(at, new MenuFlyoutSeparator());
+    }
+
+    static string Shortcut(VirtualKey key, VirtualKeyModifiers m) =>
+        (m.HasFlag(VirtualKeyModifiers.Control) ? "Ctrl+" : "") + (m.HasFlag(VirtualKeyModifiers.Menu) ? "Alt+" : "")
+        + (m.HasFlag(VirtualKeyModifiers.Shift) ? "Shift+" : "") + key.ToString();
 
     void Undo() { if (!IsTextEditing()) _session.Document.Undo(); }
     void Redo() { if (!IsTextEditing()) _session.Document.Redo(); }
@@ -395,11 +381,19 @@ public sealed partial class DesignWindow : Window
     public async Task<bool> SaveAsync(bool saveAs, string? path = null)
     {
         var doc = _session.Document;
+        _panels.SaveNow(); // the panel arrangement's pending write (views) goes into this save
         path ??= saveAs || doc.Path is null ? await App.PickSavePathAsync(this, doc.Path is null ? doc.System.Name : Path.GetFileNameWithoutExtension(doc.Path)) : doc.Path;
         if (path is null) return false;
         try
         {
-            doc.Save(path, _session.Workspace.Engine.Info.Version);
+            IReadOnlyList<CatalogReference> inUse = [];
+            try
+            {
+                var json = await _session.Workspace.Engine.LibraryCatalogsInUseJsonAsync();
+                inUse = (JsonNode.Parse(json) as JsonArray ?? []).Select(CatalogReference.FromJson).ToList();
+            }
+            catch (Exception e) when (e is EngineException or System.Text.Json.JsonException) { }
+            doc.Save(path, _session.Workspace.Engine.Info.Version, inUse);
             RecentFiles.Add(path);
             UpdateTitle();
             ShowToast($"Saved {Path.GetFileName(path)}");
@@ -414,13 +408,7 @@ public sealed partial class DesignWindow : Window
 
     void OnTheme(object sender, RoutedEventArgs e)
     {
-        AppSettings.Theme = (sender as FrameworkElement)?.Tag switch { "light" => ElementTheme.Light, "dark" => ElementTheme.Dark, _ => ElementTheme.Default };
-        ApplyTheme(AppSettings.Theme);
-        // Theme resources WinUI resolves for the whole app (styles set in code, e.g. the lens table's
-        // cells) follow the app's theme, which is fixed at launch.
-        var app = Application.Current.RequestedTheme == ApplicationTheme.Dark ? ElementTheme.Dark : ElementTheme.Light;
-        if (AppSettings.Theme != ElementTheme.Default && AppSettings.Theme != app)
-            ShowToast("The appearance is fully applied the next time MKLight starts.");
+        ThemeSwitch.Set((sender as FrameworkElement)?.Tag switch { "light" => ElementTheme.Light, "dark" => ElementTheme.Dark, _ => ElementTheme.Default });
     }
 
     void OnInspectorToggle(object sender, RoutedEventArgs e) => SetInspector(InspectorToggle.IsChecked == true);
@@ -429,17 +417,7 @@ public sealed partial class DesignWindow : Window
     void SetInspector(bool visible)
     {
         Inspector.Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
-        InspectorColumn.Width = visible ? new GridLength(280) : new GridLength(0);
-    }
-
-    void OnInspectorTab(object sender, RoutedEventArgs e)
-    {
-        var system = ReferenceEquals(sender, InspectorSystemTab);
-        InspectorSystemTab.IsChecked = system;
-        InspectorSurfaceTab.IsChecked = !system;
-        InspectorSystemTab.Background = system ? null : new SolidColorBrush(Microsoft.UI.Colors.Transparent);
-        InspectorSurfaceTab.Background = system ? new SolidColorBrush(Microsoft.UI.Colors.Transparent) : null;
-        InspectorTitle.Text = system ? "System" : "Surface";
+        InspectorColumn.Width = visible ? new GridLength(320) : new GridLength(0);
     }
 
     void OnPaneToggleRequested(TitleBar sender, object args) => Nav.IsPaneOpen = !Nav.IsPaneOpen;

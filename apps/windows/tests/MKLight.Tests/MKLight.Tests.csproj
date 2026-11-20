@@ -20,6 +20,15 @@
     <Compile Include="..\..\src\MKLight.App\ViewModels\LensTable*.cs" Link="Lens\App\%(Filename)%(Extension)" />
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="..\..\src\MKLight.App\ViewModels\Jobs\*.cs;..\..\src\MKLight.App\ViewModels\DesignDocument.cs" Link="Jobs\App\%(Filename)%(Extension)" />
+  </ItemGroup>
+  <ItemGroup>
     <None Include="$(MKLightNativeDir)mklight_ffi.dll" Condition="Exists('$(MKLightNativeDir)mklight_ffi.dll')" Link="mklight_ffi.dll" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
+  <ItemGroup>
+    <Compile Include="..\..\src\MKLight.App\Views\Viewport3D\Logic\*.cs" Link="Viewport\App\%(Filename)%(Extension)" />
+  </ItemGroup>
+    <ItemGroup><Compile Include="..\..\src\MKLight.App\ViewModels\PanelArrangement*.cs;..\..\src\MKLight.App\ViewModels\WorkspaceLayout*.cs" Link="Panels\App\%(Filename)%(Extension)" /></ItemGroup>
+  <ItemGroup><Compile Include="..\..\src\MKLight.App\ViewModels\GlassLibrary*.cs;..\..\src\MKLight.App\ViewModels\GlassBrowser*.cs" Link="Glass\App\%(Filename)%(Extension)" /></ItemGroup>
+  <ItemGroup><Compile Include="..\..\src\MKLight.App\ViewModels\SurfaceTypes.cs;..\..\src\MKLight.App\ViewModels\ShapeSag.cs;..\..\src\MKLight.App\ViewModels\InspectorModel.cs" Link="Inspector\App\%(Filename)%(Extension)" /></ItemGroup>
 </Project>

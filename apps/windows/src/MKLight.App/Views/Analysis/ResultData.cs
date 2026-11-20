@@ -25,6 +25,8 @@ public sealed class ResultData
     /// <summary>The system's wavelengths in µm and field count, for colours and labels (may be empty).</summary>
     public IReadOnlyList<double> WavelengthsUm { get; init; } = [];
     public IReadOnlyList<string> FieldLabels { get; init; } = [];
+    /// <summary>The settings the engine recorded for the run (<c>run_info.settings</c>): the values automatic settings took, the CRA sensor limit, the image simulation's source.</summary>
+    public JsonNode? Settings { get; init; }
     public IResultArray? Buffer(string name) => Buffers.FirstOrDefault(b => b.Name == name);
 }
 

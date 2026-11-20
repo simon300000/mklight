@@ -24,8 +24,8 @@ public partial class App : Application
 
     public App()
     {
-        // The app's own theme follows the chosen appearance, so theme resources that WinUI resolves
-        // at the application level (styles applied in code) match the windows (docs/WINDOWS.md "Look").
+        // The app's own theme starts as the chosen appearance (it can only be set here), so the windows
+        // rarely need to switch while they open; later switches are live (Support/ThemeSwitch.cs).
         var args = Environment.GetCommandLineArgs();
         var i = Array.IndexOf(args, "--theme");
         var theme = i >= 0 && i + 1 < args.Length ? (args[i + 1] == "dark" ? ElementTheme.Dark : ElementTheme.Light) : AppSettings.Theme;
@@ -101,7 +101,7 @@ public partial class App : Application
         window.BuildSidebar();
         if (Options.Select is int i) session.SelectedSurface = i;
         if (Options.ShowSettings) foreach (var p in session.Workspace.Panes) { p.ShowsSettings = true; p.RaiseChanged(); }
-        if (Options.IsScripted || Options.Edits.Count > 0 || Options.SaveAs is not null) await RunScriptAsync(window, session);
+        if (Options.IsScripted || Options.Edits.Count > 0 || Options.SaveAs is not null || Options.Actions.Count > 0) await RunScriptAsync(window, session);
     }
 
     /// <summary>Launch-option edits, undo, save, then the screenshot (and quit).</summary>
@@ -114,8 +114,15 @@ public partial class App : Application
             await WaitIdleAsync(session);
         }
         if (Options.Undo) { session.Document.Undo(); await WaitIdleAsync(session); }
+        foreach (var (name, arg) in Options.Actions)
+        {
+            if (!AppHooks.LaunchActions.TryGetValue(name, out var action)) { Log($"unknown launch action: {name}"); continue; }
+            try { await action(window, arg); }
+            catch (Exception e) { Log($"launch action {name} failed: {e}"); }
+            await WaitIdleAsync(session);
+        }
         if (Options.SaveAs is { } path) await window.SaveAsync(false, path);
-        if (Options.Screenshot is { } shot) await CaptureWhenReady(window, session, shot);
+        if (Options.Screenshot is { } shot) await CaptureWhenReady(AppHooks.ScreenshotTarget ?? window, session, shot);
     }
 
     /// <summary>"<c>3.radius=30</c>": surface index, then radius, thickness or conic.</summary>
@@ -156,7 +163,7 @@ public partial class App : Application
         if (session is not null) await WaitIdleAsync(session);
         // Win2D presents a new result on a later frame, and a window larger than its display (--size)
         // composes slowly: give the views time to present, more after scripted edits.
-        await Task.Delay(TimeSpan.FromSeconds(2 + (Options.Edits.Count > 0 || Options.Undo ? 4 : 0) + Options.Delay));
+        await Task.Delay(TimeSpan.FromSeconds(2 + (Options.Edits.Count > 0 || Options.Undo || Options.Actions.Count > 0 ? 4 : 0) + Options.Delay));
         try { WindowCapture.SavePng(window, path); Log($"screenshot: {path}"); }
         catch (Exception e) { Log($"screenshot failed: {e.Message}"); Environment.Exit(4); }
         Environment.Exit(0);
@@ -213,7 +220,10 @@ public partial class App : Application
             var ext = Path.GetExtension(path).ToLowerInvariant();
             if (ext is ".zmx" or ".seq")
             {
-                var import = Engine!.ImportPrescription(await File.ReadAllBytesAsync(path), ext == ".zmx" ? PrescriptionFormat.Zmx : PrescriptionFormat.Seq);
+                // The importer blocks its caller: off the UI thread.
+                var bytes = await File.ReadAllBytesAsync(path);
+                var format = ext == ".zmx" ? PrescriptionFormat.Zmx : PrescriptionFormat.Seq;
+                var import = await Task.Run(() => Engine!.ImportPrescription(bytes, format));
                 var doc = new DesignDocument(new ProjectFile(ModelJson.Decode<OpticalSystem>(import.SystemJson)));
                 var w = OpenDocument(doc);
                 if (import.Warnings.Count > 0) w.Session.ShowToast($"Imported with {import.Warnings.Count} note{(import.Warnings.Count == 1 ? "" : "s")}: {import.Warnings[0].Message}");

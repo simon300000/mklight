@@ -20,6 +20,21 @@ public sealed partial class StatusCapsule : UserControl
     /// <summary>Raised when an issue that names a surface is clicked.</summary>
     public event Action<IssueItem>? IssueInvoked;
 
+    Action? _activityOpen;
+
+    /// <summary>What a click on the activity does (a running job: open its page).</summary>
+    public void SetActivityAction(Action? open)
+    {
+        _activityOpen = open;
+        if (!_activityHooked)
+        {
+            _activityHooked = true;
+            Activity.Tapped += (_, _) => _activityOpen?.Invoke();
+        }
+        ToolTipService.SetToolTip(Activity, open is null ? null : "Show the running job");
+    }
+    bool _activityHooked;
+
     public void SetActivity(string? text)
     {
         Activity.Visibility = text is null ? Visibility.Collapsed : Visibility.Visible;
@@ -91,6 +106,42 @@ public sealed partial class StatusCapsule : UserControl
             IssuesCount.Visibility = Visibility.Visible;
             ToolTipService.SetToolTip(IssuesButton, $"{issues.Count} issue{(issues.Count == 1 ? "" : "s")}: show the design's validation issues");
         }
+    }
+
+    Action? _endPreview;
+
+    /// <summary>The previewed candidate's title (null: the design is shown) and how to end the preview.</summary>
+    public void SetPreview(string? title, Action? endPreview)
+    {
+        _endPreview = endPreview;
+        PreviewBadge.Visibility = title is null ? Visibility.Collapsed : Visibility.Visible;
+        // The capsule stays compact (the panes and the layout carry the full title); the title is the tooltip.
+        PreviewText.Text = title is null ? "" : "Previewing";
+        ToolTipService.SetToolTip(PreviewBadge, title is null ? null : $"Previewing {title} · not applied");
+    }
+
+    void OnEndPreview(object sender, RoutedEventArgs e) => _endPreview?.Invoke();
+
+    Action<int>? _backendChanged;
+    bool _settingBackend;
+
+    /// <summary>The compute backend picker in the details flyout.</summary>
+    public void SetBackends(IReadOnlyList<string> titles, int selected, Action<int> changed)
+    {
+        _settingBackend = true;
+        _backendChanged = changed;
+        if (BackendPicker.Items.Count != titles.Count)
+        {
+            BackendPicker.Items.Clear();
+            foreach (var t in titles) BackendPicker.Items.Add(t);
+        }
+        BackendPicker.SelectedIndex = selected;
+        _settingBackend = false;
+    }
+
+    void OnBackendChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (!_settingBackend && BackendPicker.SelectedIndex >= 0) _backendChanged?.Invoke(BackendPicker.SelectedIndex);
     }
 
     public void ShowIssues() => OnIssuesClick(IssuesButton, new RoutedEventArgs());
