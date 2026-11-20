@@ -118,7 +118,24 @@ public sealed partial class LayoutPanel : UserControl
     public RayColoring Coloring
     {
         get => _coloring;
-        set { _coloring = value; UpdateLegend(); UpdateStyle(); }
+        set { _coloring = value; UpdateLegend(); UpdateStyle(); StateChanged?.Invoke(); }
+    }
+
+    /// <summary>Raised when the view, the ray colouring or a chosen stretch changes (the project saves them).</summary>
+    public event Action? StateChanged;
+
+    /// <summary>The view, ray colouring and chosen stretch, as the project's <c>views</c> keeps them.</summary>
+    public WorkspaceLayout.ViewState ViewState
+    {
+        get => new(_mode switch { ViewportMode.Orbit3D => "3D", ViewportMode.SectionXZ => "2D-xz", _ => "2D" },
+                   _coloring == RayColoring.Wavelength ? "wavelength" : "field",
+                   _camera.StretchChosen ? _camera.Stretch : null);
+        set
+        {
+            Mode = value.Mode switch { "3D" => ViewportMode.Orbit3D, "2D-xz" => ViewportMode.SectionXZ, _ => ViewportMode.SectionYZ };
+            Coloring = value.RayColoring == "wavelength" ? RayColoring.Wavelength : RayColoring.Field;
+            if (value.Stretch is { } s) Stretch = s;
+        }
     }
 
     /// <summary>The shown view; the layout's <c>section</c> setting follows it.</summary>
@@ -139,6 +156,7 @@ public sealed partial class LayoutPanel : UserControl
             ShowView();
             TryPendingFit();
             if (_showFootprints) RefreshFootprints();
+            StateChanged?.Invoke();
         }
     }
 
@@ -158,6 +176,7 @@ public sealed partial class LayoutPanel : UserControl
             _camera.Stretch = Math.Clamp(value, 1, 50);
             _camera.StretchChosen = true;
             Fit();
+            StateChanged?.Invoke();
         }
     }
 

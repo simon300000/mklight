@@ -36,6 +36,9 @@ internal sealed class PanelTreeView : UserControl
         host.Drag.TargetChanged += ShowTarget;
     }
 
+    /// <summary>The tree is discarded (its window closed): it stops listening to the host's drags.</summary>
+    public void Detach() => _host.Drag.TargetChanged -= ShowTarget;
+
     public PanelHost Host => _host;
     public PanelWindowModel Model { get; }
     /// <summary>The window the tree is in (main or separate).</summary>

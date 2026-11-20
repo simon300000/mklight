@@ -87,6 +87,7 @@ public sealed partial class PanelWindow : Window
         Closed += (_, _) =>
         {
             host.Session.Document.Changed -= UpdateTitle;
+            Tree.Detach();
             if (!_quiet) host.WindowClosed(Model);
         };
         UpdateTitle();

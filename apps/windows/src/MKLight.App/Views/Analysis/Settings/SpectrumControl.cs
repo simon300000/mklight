@@ -357,7 +357,7 @@ public sealed partial class SpectrumControl : UserControl
     async Task ImportAsync()
     {
         if (SettingsServices.Window(this) is not { } window) return;
-        var picker = new FileOpenPicker(window.AppWindow.Id) { SuggestedStartLocation = PickerLocationId.DocumentsLibrary };
+        var picker = new FileOpenPicker(window.WindowId) { SuggestedStartLocation = PickerLocationId.DocumentsLibrary };
         foreach (var ext in new[] { ".csv", ".tsv", ".txt" }) picker.FileTypeFilter.Add(ext);
         picker.FileTypeFilter.Add("*");
         var file = await picker.PickSingleFileAsync();
