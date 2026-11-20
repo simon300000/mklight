@@ -157,8 +157,10 @@ public partial class App : Application
             if (Options.ShowIssues) window.ShowIssues();
         }
         if (Options.Toast is { } toast) session.ShowToast(toast);
-        // --fit lens needs a public LayoutPanel.FitLens() (the Fit Lens menu item's action); until then it is noted.
-        if (Options.Fit is { } fit) Log($"--fit {fit}: the layout has no public fit-lens call yet");
+        if (Options.Fit is { } fit)
+        {
+            if (fit == "lens") window.Panels.Layout.FitLens(); else window.Panels.Layout.Fit();
+        }
     }
 
     /// <summary>"<c>3.radius=30</c>": surface index, then radius, thickness or conic.</summary>
