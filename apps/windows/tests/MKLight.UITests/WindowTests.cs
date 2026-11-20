@@ -7,14 +7,13 @@ namespace MKLight.UITests;
 public sealed class WindowTests
 {
     [Fact]
-    public void FileMenuCommandOpensTheGlassCatalogs()
+    public void LensMenuCommandOpensTheGlassCatalogs()
     {
         using var app = AppSession.Start();
         app.Run(() =>
         {
             var ui = app.Ui;
-            // A button with a flyout: Invoke clicks it, which opens the menu.
-            ui.OpenMenu(() => ui.FileMenuButton.Patterns.Invoke.Pattern.Invoke(), "Glass Catalogs…").Patterns.Invoke.Pattern.Invoke();
+            ui.OpenMenu(() => Ui.Open(ui.MenuBarItem("Lens")),"Glass Catalogs…").Patterns.Invoke.Pattern.Invoke();
             Ui.Wait(() => app.TopLevelWindows().FirstOrDefault(w => Ui.NameOf(w).Contains("Glass", StringComparison.Ordinal)), "the Glass Catalogs window");
         });
     }
@@ -40,17 +39,11 @@ public sealed class WindowTests
         app.Run(() =>
         {
             var ui = app.Ui;
-            var region = CanvasRegion(ui);
-            Thread.Sleep(500);
-            using var section = WindowImage.CaptureRegion(app.Hwnd, region);
-            ui.LayoutModeButton("3D view").Patterns.Invoke.Pattern.Invoke();
-            // The canvas's automation name does not follow the mode yet (wanted: the mode in Layout.Canvas's name
-            // or a selected Layout.Mode.3D): the switch is read from the window's pixels.
-            Ui.WaitUntil(() =>
-            {
-                using var now = WindowImage.CaptureRegion(app.Hwnd, region);
-                return WindowImage.Difference(section, now) > 0.02;
-            }, "the layout to draw in 3-D");
+            Ui.WaitUntil(() => Ui.NameOf(ui.LayoutCanvas).Contains("meridional section", StringComparison.Ordinal), "the section view");
+            Assert.True(ui.LayoutMode("section").Patterns.SelectionItem.Pattern.IsSelected.Value);
+            ui.LayoutMode("3d").Patterns.SelectionItem.Pattern.Select();
+            Ui.WaitUntil(() => Ui.NameOf(ui.LayoutCanvas).Contains("3D view", StringComparison.Ordinal), "the layout canvas to name the 3D view");
+            Ui.WaitUntil(() => ui.LayoutMode("3d").Patterns.SelectionItem.Pattern.IsSelected.Value, "the 3D mode to be selected");
         });
     }
 
@@ -111,7 +104,7 @@ public sealed class WindowTests
         app.Run(() =>
         {
             var ui = app.Ui;
-            ui.LayoutModeButton("3D view").Patterns.Invoke.Pattern.Invoke();
+            ui.LayoutMode("3d").Patterns.SelectionItem.Pattern.Select();
             Thread.Sleep(1500); // the first 3-D frames
             var region = CanvasRegion(ui);
             using var before = WindowImage.CaptureRegion(app.Hwnd, region);

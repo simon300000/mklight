@@ -249,6 +249,7 @@ public sealed partial class DesignWindow : Window
     NavigationViewItem SidebarItem(string tag, string title, string glyph, string tip)
     {
         var item = new NavigationViewItem { Content = title, Tag = tag, Icon = new FontIcon { Glyph = glyph } };
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetAutomationId(item, "Sidebar." + tag switch { ":lens" => "lens_data", ":layout" => "layout", ":issues" => "issues", _ => tag });
         ToolTipService.SetToolTip(item, tip);
         var menu = new MenuFlyout();
         if (tag is ":lens" or ":layout")
@@ -338,9 +339,11 @@ public sealed partial class DesignWindow : Window
         foreach (var group in _session.Workspace.PaneAnalyses.GroupBy(d => d.Category).OrderBy(g => AnalysisCatalog.CategoryRank(g.Key)).ThenBy(g => g.Key))
         {
             var sub = new MenuFlyoutSubItem { Text = AnalysisCatalog.CategoryTitle(group.Key) };
+            Microsoft.UI.Xaml.Automation.AutomationProperties.SetAutomationId(sub, "AddAnalysis." + group.Key);
             foreach (var d in group.OrderBy(d => AnalysisCatalog.Title(d.Name, d.Title)))
             {
                 var item = new MenuFlyoutItem { Text = AnalysisCatalog.Title(d.Name, d.Title), IsEnabled = d.Available, Icon = new FontIcon { Glyph = AnalysisCatalog.Glyph(d.Name) } };
+                Microsoft.UI.Xaml.Automation.AutomationProperties.SetAutomationId(item, "AddAnalysis." + d.Name);
                 var name = d.Name;
                 item.Click += (_, _) => _session.Workspace.AddPane(name, after: _session.Workspace.FocusedPane);
                 sub.Items.Add(item);

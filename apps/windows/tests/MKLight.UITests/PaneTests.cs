@@ -14,7 +14,7 @@ public sealed class PaneTests
         {
             var ui = app.Ui;
             Assert.Null(ui.PaneWithTitle("Ray Fan"));
-            ui.SidebarItem("Ray Fan").Patterns.SelectionItem.Pattern.Select();
+            ui.SidebarItem("ray_fan").Patterns.SelectionItem.Pattern.Select();
             Ui.Wait(() => ui.PaneWithTitle("Ray Fan"), "a Ray Fan pane");
         });
     }
@@ -27,8 +27,8 @@ public sealed class PaneTests
         {
             var ui = app.Ui;
             var panes = ui.PaneCount();
-            var geometric = ui.OpenMenu(() => ui.AddAnalysisButton.Patterns.ExpandCollapse.Pattern.Expand(), "Geometric");
-            ui.OpenMenu(() => geometric.Patterns.ExpandCollapse.Pattern.Expand(), "Seidel Coefficients").Patterns.Invoke.Pattern.Invoke();
+            var geometric = ui.OpenMenu(() => ui.AddAnalysisButton.Patterns.ExpandCollapse.Pattern.Expand(), "AddAnalysis.geometric", byId: true);
+            ui.OpenMenu(() => geometric.Patterns.ExpandCollapse.Pattern.Expand(), "AddAnalysis.seidel", byId: true).Patterns.Invoke.Pattern.Invoke();
             Ui.WaitUntil(() => ui.PaneCount() == panes + 1, "a new pane");
             Assert.Contains("Seidel", Ui.NameOf(ui.PaneControl(ui.PaneIds().Except(["mtf", "spot_diagram"]).Single(), "Title")));
         });
@@ -66,7 +66,7 @@ public sealed class PaneTests
             var state = () => Ui.NameOf(ui.PaneControl("mtf", "State"));
             Assert.DoesNotContain("80", state());
             ui.PaneControl("mtf", "Settings").Patterns.Toggle.Pattern.Toggle();
-            var field = ui.SettingsField("Max Frequency");
+            var field = ui.SettingsField("mtf", "max_frequency");
             field.Focus();
             field.Patterns.Value.Pattern.SetValue("80");
             ui.FocusAway(); // the field commits as it loses the focus
@@ -81,7 +81,7 @@ public sealed class PaneTests
         app.Run(() =>
         {
             var ui = app.Ui;
-            app.Mouse.Click(ui.SidebarItem("Ray Fan"));
+            app.Mouse.Click(ui.SidebarItem("ray_fan"));
             WindowMouse.ExpectEffect(() => ui.PaneWithTitle("Ray Fan") is not null, "click on a sidebar entry", nameof(SidebarSelectionOpensAnAnalysis));
         });
     }

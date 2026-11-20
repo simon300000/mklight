@@ -54,28 +54,29 @@ sealed class Ui(AppSession app)
 
     public AutomationElement Undo => Wait(() => ById("UndoButton"), "the Undo button");
     public AutomationElement Redo => Wait(() => ById("RedoButton"), "the Redo button");
-    public AutomationElement FileMenuButton => Wait(() => ById("FileButton"), "the File button");
+    /// <summary>An entry of the menu bar ("File", "Lens"): a MenuBarItem with no id of its own, found by its name under <c>Menus</c>.</summary>
+    public AutomationElement MenuBarItem(string name) => Wait(() => ByName(name, ControlType.MenuItem, ById("Menus")), $"the {name} menu");
+
+    /// <summary>Opens a menu bar item or a drop-down button: ExpandCollapse when it has it, else Invoke.</summary>
+    public static void Open(AutomationElement e)
+    {
+        if (e.Patterns.ExpandCollapse.IsSupported) e.Patterns.ExpandCollapse.Pattern.Expand();
+        else e.Patterns.Invoke.Pattern.Invoke();
+    }
     public AutomationElement AddAnalysisButton => Wait(() => ById("AddAnalysisButton"), "the Add Analysis button");
 
-    /// <summary>The EFL in the status capsule ("49.997 mm"). Wanted id: <c>Status.EFL</c> (today: the text after the "EFL" label in NumbersButton).</summary>
-    public string Efl()
-    {
-        var numbers = Wait(() => ById("NumbersButton"), "the status capsule's numbers");
-        var texts = numbers.FindAllChildren(Cf.ByControlType(ControlType.Text));
-        for (var i = 0; i + 1 < texts.Length; i++)
-            if (NameOf(texts[i]) == "EFL") return NameOf(texts[i + 1]);
-        throw new InvalidOperationException("No EFL in the status capsule.");
-    }
+    /// <summary>The EFL in the status capsule ("49.997 mm"), <c>Status.EFL</c>; the others are <c>Status.FNumber</c>, <c>Status.TT</c> and the button <c>Status.Issues</c>.</summary>
+    public string Efl() => NameOf(Wait(() => ById("Status.EFL"), "the EFL in the status capsule"));
 
     // ---- Sidebar ----
 
-    /// <summary>A sidebar entry ("Lens Data", "MTF"). Wanted id: <c>Sidebar.{analysis}</c>.</summary>
-    public AutomationElement SidebarItem(string title) => Wait(() => ByName(title, ControlType.ListItem, ById("Nav")), $"the sidebar entry {title}");
+    /// <summary>A sidebar entry, <c>Sidebar.{key}</c>: an analysis id ("mtf") or lens_data, layout, issues.</summary>
+    public AutomationElement SidebarItem(string key) => Wait(() => ById($"Sidebar.{key}"), $"the sidebar entry {key}");
 
     // ---- Lens data ----
 
-    /// <summary>The lens data panel (its content group; no id of its own: <c>Panel.lens_data.Header</c> is the title).</summary>
-    public AutomationElement LensData => Wait(() => ByName("Lens data", ControlType.Group), "the lens data");
+    /// <summary>The lens data panel's container, <c>Panel.lens_data</c> (<c>Panel.lens_data.Header</c> is its title).</summary>
+    public AutomationElement LensData => Wait(() => ById("Panel.lens_data"), "the lens data");
 
     public void WaitForLensRows() => Wait(() => ById("LensRow.1"), "the lens data's rows");
 
@@ -102,9 +103,8 @@ sealed class Ui(AppSession app)
     /// <summary>The text shown in a cell (its Value).</summary>
     public string LensCellText(int row, string key) => LensCell(row, key).Patterns.Value.Pattern.Value.ValueOrDefault ?? "";
 
-    /// <summary>The in-place text editor while a cell edits: the one Edit in the lens data that is not a cell. Wanted id: <c>LensEditor</c>.</summary>
-    public AutomationElement? LensEditorOrNull() => LensData.FindAllDescendants(Cf.ByControlType(ControlType.Edit))
-        .FirstOrDefault(e => !IdOf(e).StartsWith("LensCell.", StringComparison.Ordinal) && Shown(e));
+    /// <summary>The in-place text editor while a cell edits, <c>LensEditor</c>.</summary>
+    public AutomationElement? LensEditorOrNull() => ById("LensEditor", LensData) is { } e && Shown(e) ? e : null;
 
     public AutomationElement LensEditor => Wait(LensEditorOrNull, "the lens cell editor");
 
@@ -113,9 +113,12 @@ sealed class Ui(AppSession app)
     /// <summary>A menu item of an open menu or flyout, in the window or one of the app's popup windows.</summary>
     public AutomationElement MenuItem(string text) => Wait(() => MenuItemOrNull(text), $"the menu item {text}");
 
-    AutomationElement? MenuItemOrNull(string text)
+    /// <summary>A menu item by its AutomationId (<c>AddAnalysis.{category}</c>, <c>AddAnalysis.{analysis}</c>).</summary>
+    public AutomationElement MenuItemById(string id) => Wait(() => MenuItemOrNull(id, byId: true), $"the menu item {id}");
+
+    AutomationElement? MenuItemOrNull(string text, bool byId = false)
     {
-        var cond = Cf.ByName(text).And(Cf.ByControlType(ControlType.MenuItem));
+        var cond = (byId ? Cf.ByAutomationId(text) : Cf.ByName(text)).And(Cf.ByControlType(ControlType.MenuItem));
         if (W.FindFirstDescendant(cond) is { } inWindow && Shown(inWindow)) return inWindow;
         // Windowed popups are top-level windows of the app's process.
         var pid = W.Properties.ProcessId.Value;
@@ -131,12 +134,12 @@ sealed class Ui(AppSession app)
     /// again when it does not show: a flyout light-dismisses when another window activates (other apps
     /// starting on a shared desktop do).
     /// </summary>
-    public AutomationElement OpenMenu(Action open, string text)
+    public AutomationElement OpenMenu(Action open, string text, bool byId = false)
     {
         for (var attempt = 1; ; attempt++)
         {
             open();
-            try { return Wait(() => MenuItemOrNull(text), $"the menu item {text}", TimeSpan.FromSeconds(attempt < 3 ? 5 : 15)); }
+            try { return Wait(() => MenuItemOrNull(text, byId), $"the menu item {text}", TimeSpan.FromSeconds(attempt < 3 ? 5 : 15)); }
             catch (TimeoutException) when (attempt < 3) { }
         }
     }
@@ -163,13 +166,13 @@ sealed class Ui(AppSession app)
             .Select(IdOf).FirstOrDefault(id => id.StartsWith("Pane.", StringComparison.Ordinal) && id.EndsWith(".Title", StringComparison.Ordinal)) is { } i
             ? i["Pane.".Length..^".Title".Length] : null;
 
-    /// <summary>A field of an open settings form, by its label ("Max Frequency"). Wanted id: <c>Settings.{analysis}.{field}</c>.</summary>
-    public AutomationElement SettingsField(string label) => Wait(() =>
+    /// <summary>A field of an open settings form, <c>Settings.{analysis}.{field}</c> (field: the setting's key path, "max_frequency").</summary>
+    public AutomationElement SettingsField(string analysis, string field) => Wait(() =>
     {
-        var e = W.FindAllDescendants(Cf.ByName(label)).FirstOrDefault(e => e.ControlType != ControlType.Text && Shown(e));
+        var e = ById($"Settings.{analysis}.{field}");
         // A number with a unit is a group (field + unit): the field is its Edit.
         return e is null || e.Patterns.Value.IsSupported ? e : e.FindFirstDescendant(Cf.ByControlType(ControlType.Edit));
-    }, $"the settings field {label}");
+    }, $"the settings field {analysis}.{field}");
 
     /// <summary>The text field of inspector row <c>Inspector.Row.{field}</c> ("radius", "comment"): the row itself when it takes a value, else its Edit.</summary>
     public AutomationElement InspectorField(string field) => Wait(() =>
@@ -198,7 +201,7 @@ sealed class Ui(AppSession app)
     }
 
     /// <summary>Moves the keyboard focus (UIA SetFocus) to a neutral control, so the field being left commits.</summary>
-    public void FocusAway() => Wait(() => ById("FileButton"), "the File button").Focus();
+    public void FocusAway() => Wait(() => ById("AddAnalysisButton"), "the Add Analysis button").Focus();
 
     // ---- Layout ----
 
@@ -208,8 +211,8 @@ sealed class Ui(AppSession app)
     /// <summary>The scale bar's name ("Scale bar 20 mm"): it follows the zoom.</summary>
     public string ScaleBarName() => NameOf(Wait(() => ById("ScaleBar"), "the layout's scale bar"));
 
-    /// <summary>"Section", "3D view". Wanted id: <c>Layout.Mode.{mode}</c>.</summary>
-    public AutomationElement LayoutModeButton(string name) => Wait(() => ByName(name, ControlType.Button), $"the layout's {name} button");
+    /// <summary>A view selector item, <c>Layout.Mode.{mode}</c> ("section", "xz", "3d"); it supports SelectionItem.</summary>
+    public AutomationElement LayoutMode(string mode) => Wait(() => ById($"Layout.Mode.{mode}"), $"the layout's {mode} mode");
 
     // ---- Panels ----
 

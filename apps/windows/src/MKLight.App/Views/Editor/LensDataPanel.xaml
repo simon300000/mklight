@@ -4,7 +4,7 @@
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:local="using:MKLight.App.Views"
     IsTabStop="True" UseSystemFocusVisuals="False" TabFocusNavigation="Once"
-    AutomationProperties.Name="Lens data">
+    AutomationProperties.Name="Lens data" AutomationProperties.AutomationId="Panel.lens_data">
     <UserControl.Resources>
         <ResourceDictionary>
             <ResourceDictionary.ThemeDictionaries>

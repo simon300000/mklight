@@ -35,7 +35,7 @@ public sealed class ExploreTests
         using var app = AppSession.Start();
         if (Environment.GetEnvironmentVariable("MKLIGHT_UI_DUMP") != "1") Assert.Skip("Set MKLIGHT_UI_DUMP=1 to probe.");
         var log = new List<string>();
-        var names = new[] { "Ray Fan", "Spot Diagram", "Footprint", "Grid Distortion", "Lateral Color" };
+        var names = new[] { "ray_fan", "spot_diagram", "footprint", "grid_distortion", "lateral_color" };
         var targets = Win32.Descendants(app.Hwnd).Prepend(app.Hwnd).ToList();
         var k = 0;
         foreach (var h in targets)

@@ -72,19 +72,25 @@ covers the feature. Should WinUI ever honour the messages, they start passing by
 
 ## Element lookups
 
-All lookups live in `Ui.cs`, by AutomationId where the app has one: `LensRow.{i}` (0 is the
-object), `LensCell.{row}.{key}`, `Pane.{analysis}` and `.Title`, `.Run`, `.AutoUpdate`,
-`.Settings`, `.State`, `Panel.{key}.Header`, `Layout.Canvas`, `Inspector.Tab.{id}`,
-`Inspector.Row.{key}` (the sphere's radius is `Inspector.Row.type.Shape.curvature`), and x:Names
-WinUI exposes as ids (`UndoButton`, `RedoButton`, `FileButton`, `AddAnalysisButton`,
-`NumbersButton`, `ScaleBar`). Still found another way, with the id they would rather have:
+All lookups live in `Ui.cs`, by AutomationId:
 
-| Wanted id | Element | Found today by |
-|---|---|---|
-| `LensEditor` | the in-place cell editor | the one Edit in the lens data that is not a `LensCell` |
-| `Panel.lens_data` | the lens data panel's container | its name "Lens data" |
-| `Settings.{analysis}.{field}` | a settings form field | its label as Name |
-| `Layout.Mode.{mode}` (SelectionItem) | Section / 3D view buttons | their names; the mode is read from pixels, as `Layout.Canvas`'s name does not follow it |
-| `Sidebar.{analysis}` | a sidebar entry | its title |
-| `Status.EFL` | the EFL in the status capsule | the text after "EFL" in `NumbersButton` |
-| `AddAnalysis.{category}`, `AddAnalysis.{analysis}` | Add Analysis menu items | their titles |
+| Id | Element |
+|---|---|
+| `LensRow.{i}` | lens table row (0 is the object); SelectionItem |
+| `LensCell.{row}.{key}` | a lens table cell; Value, Invoke starts editing |
+| `LensEditor` | the in-place cell editor while a cell edits |
+| `Panel.lens_data`, `Panel.{key}.Header` | the lens data panel's container; a panel's title (drag handle) |
+| `Pane.{analysis}` and `.Header`, `.Title`, `.Run`, `.AutoUpdate`, `.Settings`, `.State`, `.More`, `.Backend` | an analysis pane and its parts |
+| `Settings.{analysis}.{field}` | a settings form control (field: the setting's key path, e.g. `max_frequency`; a number with a unit is a group whose Edit holds the value) |
+| `Sidebar.{analysis}`, `Sidebar.lens_data`, `Sidebar.layout`, `Sidebar.issues` | sidebar entries; SelectionItem |
+| `AddAnalysis.{category}`, `AddAnalysis.{analysis}` | Add Analysis menu items (the Analysis menu's New Analysis Pane items use `NewPane.` instead) |
+| `Status.EFL`, `Status.FNumber`, `Status.TT`, `Status.Squeeze`, `Status.Issues` | the status capsule's value texts (name = the text) and its issues button |
+| `Layout.Canvas` | the layout; its name starts "Layout, meridional section" / "x–z section" / "3D view" and follows the mode |
+| `Layout.Mode.section`, `.xz`, `.3d` | the view selector's items; SelectionItem (IsSelected = shown) |
+| `Inspector.Tab.{id}`, `Inspector.Row.{key}` | inspector page buttons and rows |
+| `UndoButton`, `RedoButton`, `AddAnalysisButton`, `NumbersButton`, `ScaleBar` | x:Names WinUI exposes as ids |
+
+The inspector's keys are the engine's field paths, not the labels: the sphere's radius row is
+`Inspector.Row.type.Shape.curvature` (its name is "Radius"). Still found another way: the inspector's
+current page (by position under "Inspector pages") and the other menu items (by name).
+
