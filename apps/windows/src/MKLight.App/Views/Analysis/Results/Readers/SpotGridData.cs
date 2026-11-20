@@ -235,7 +235,7 @@ public sealed class SpotGridData
     {
         var s = scale == SpotScale.Grid || Rows.Count < 2
             ? $"Box half-width {Fmt.Length(HalfWidths(SpotScale.Grid, other).FirstOrDefault(double.NaN))}, common to all cells"
-              + (other is null ? "" : ", the design's and the candidate's")
+              + (other is null ? "" : " (design and candidate)")
             : "Box half-width per field, shown by each row";
         s += Reference == "centroid" ? " · about the centroid" : " · about the chief ray";
         if (Planes.Count < SampledPlanes) s += $" · {Planes.Count} of {SampledPlanes} planes shown";
