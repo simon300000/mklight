@@ -595,13 +595,13 @@ Result (`result` in the envelope):
 | field | type | unit | notes |
 |---|---|---|---|
 | `coordinates` | string |  | Buffer name. |
-| `glasses` | array<object> |  | All loaded glasses in catalogue order, then offset and model design glasses in surface order. Offset surfaces mark the shifted point only. |
+| `glasses` | array<object> |  | Loaded glasses with a computable n_d and V_d in catalogue order, then offset and model design glasses in surface order. Offset surfaces mark the shifted point only. |
 | `glasses[].catalog` | string? |  |  |
 | `glasses[].climate_resistance` | number? |  |  |
 | `glasses[].exclude_substitution` | boolean? |  |  |
 | `glasses[].kind` | string |  | one of `"catalog"`, `"offset"`, `"model"` |
 | `glasses[].name` | string |  |  |
-| `glasses[].nd` | nf | 1 | Catalogue d-line index; design offset and model glasses computed at catalogue reference conditions. |
+| `glasses[].nd` | nf | 1 | Computed d-line index; design offset and model glasses computed at catalogue reference conditions. |
 | `glasses[].offset` | object |  | d-line index and Abbe offsets; dispersion scales about d, preserving partial-dispersion ratios. |
 | `glasses[].offset.dn_d` (optional) | number |  | -0.05 … 0.05 |
 | `glasses[].offset.dv_d` (optional) | number |  | -10.0 … 10.0 |
@@ -616,6 +616,11 @@ Result (`result` in the envelope):
 | `glasses[].transmittance[].thickness_mm` | number |  | Sample thickness in mm. |
 | `glasses[].transmittance[].um` | number |  | Wavelength in µm. |
 | `glasses[].vd` | nf | 1 | Abbe number. |
+| `omitted` | array<object> |  | Catalogue glasses left off the map because their wavelength range does not cover the d, F and C lines (e.g. infrared glasses). |
+| `omitted[].catalog` | string |  | Catalogue name. |
+| `omitted[].name` | string |  |  |
+| `omitted[].reason` | string |  | Why the glass has no map coordinates. |
+| `omitted[].surfaces` | array<integer> |  | Surface indices whose following medium is this glass. |
 
 Buffers:
 
