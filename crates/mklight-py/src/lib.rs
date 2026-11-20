@@ -28,6 +28,11 @@ pub mod lowlevel;
 pub mod session;
 pub mod wait;
 
+/// `--features mimalloc` (Cargo.toml).
+#[cfg(feature = "mimalloc")]
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 use pyo3::prelude::*;
 
 use crate::convert::to_py;

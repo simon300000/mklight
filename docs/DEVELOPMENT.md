@@ -80,6 +80,17 @@ maturin develop --release
 Wheels and the package layout are in
 [PYTHON.md](PYTHON.md#building-and-installing).
 
+### Windows
+
+`.cargo/config.toml` builds the Windows x86_64 target for x86-64-v3, so
+`mul_add` is an inline FMA instead of a call into the C runtime
+([CONVENTIONS §7](CONVENTIONS.md), "CPU packets"). The command line and
+the Python package also take `--features mimalloc` (for maturin,
+`maturin develop --release --features mimalloc`), which replaces the
+Windows heap: on an i9-12900KS the CPU analyses ran 1.15–1.4× faster
+with it (spot diagram, ray grid, geometric MTF, PSF, MTF; bitwise the
+same results).
+
 ## Tests
 
 ### Rust
