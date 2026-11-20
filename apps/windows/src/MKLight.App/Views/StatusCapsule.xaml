@@ -1,0 +1,39 @@
+<UserControl
+    x:Class="MKLight.App.Views.StatusCapsule"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <!-- The design's status, one capsule in the title bar's centre (no status bar):
+         activity, EFL · F/# · TT, and the issues button. Details in a flyout. -->
+    <Border Background="{ThemeResource CapsuleBrush}" BorderBrush="{ThemeResource CapsuleStrokeBrush}" BorderThickness="1"
+            CornerRadius="16" Height="32" Padding="4,0">
+        <StackPanel Orientation="Horizontal" Spacing="2">
+            <StackPanel x:Name="Activity" Orientation="Horizontal" Spacing="6" Margin="8,0,2,0" Visibility="Collapsed" VerticalAlignment="Center">
+                <ProgressRing IsActive="True" Width="12" Height="12" MinWidth="12" MinHeight="12" />
+                <TextBlock x:Name="ActivityText" Style="{StaticResource SecondaryNumberText}" FontSize="12" />
+            </StackPanel>
+            <Button x:Name="NumbersButton" Background="Transparent" BorderThickness="0" CornerRadius="13" Height="26" Padding="10,0"
+                    ToolTipService.ToolTip="First-order data, engine and compute backend">
+                <StackPanel x:Name="Numbers" Orientation="Horizontal" Spacing="14" />
+                <Button.Flyout>
+                    <Flyout Placement="Bottom">
+                        <StackPanel x:Name="Details" Width="320" Spacing="4" />
+                    </Flyout>
+                </Button.Flyout>
+            </Button>
+            <Button x:Name="IssuesButton" Background="Transparent" BorderThickness="0" CornerRadius="13" Height="26" Padding="8,0"
+                    Click="OnIssuesClick">
+                <StackPanel Orientation="Horizontal" Spacing="5">
+                    <FontIcon x:Name="IssuesGlyph" Glyph="&#xE930;" FontSize="13" Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
+                    <TextBlock x:Name="IssuesCount" Style="{StaticResource NumberText}" FontSize="12" Visibility="Collapsed" />
+                </StackPanel>
+                <FlyoutBase.AttachedFlyout>
+                    <Flyout Placement="Bottom">
+                        <ScrollViewer MaxHeight="420" Width="420">
+                            <StackPanel x:Name="IssuesList" Spacing="8" />
+                        </ScrollViewer>
+                    </Flyout>
+                </FlyoutBase.AttachedFlyout>
+            </Button>
+        </StackPanel>
+    </Border>
+</UserControl>

@@ -1,0 +1,59 @@
+<Window
+    x:Class="MKLight.App.Windows.WelcomeWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <Window.SystemBackdrop>
+        <MicaBackdrop />
+    </Window.SystemBackdrop>
+    <!-- Welcome: on Mica, the app, New Design (the one prominent action), Open and recent
+         files; on the content surface, the engine's sample designs with layout thumbnails. -->
+    <Grid x:Name="Root">
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="340" />
+            <ColumnDefinition Width="*" />
+        </Grid.ColumnDefinitions>
+        <Grid x:Name="DragRegion" Height="40" VerticalAlignment="Top" Grid.ColumnSpan="2" Background="Transparent" />
+
+        <Grid Padding="36,72,36,24" RowSpacing="0">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
+            <StackPanel Spacing="4">
+                <Image Source="ms-appx:///Assets/AppIcon.png" Width="84" Height="84" HorizontalAlignment="Left" Margin="-4,0,0,18" />
+                <TextBlock Text="MKLight" FontFamily="{StaticResource UIDisplayFont}" FontSize="34" FontWeight="SemiBold" />
+                <TextBlock Text="Sequential optical design" Style="{StaticResource SecondaryText}" FontSize="16" />
+            </StackPanel>
+            <StackPanel Grid.Row="1" Spacing="10" Margin="0,40,0,0">
+                <Button x:Name="NewButton" Style="{StaticResource AccentCapsuleButton}" HorizontalAlignment="Stretch" Height="40" CornerRadius="20" Click="OnNew">
+                    <StackPanel Orientation="Horizontal" Spacing="10">
+                        <FontIcon Glyph="&#xE710;" FontSize="14" />
+                        <TextBlock Text="New Design" FontSize="14" />
+                    </StackPanel>
+                </Button>
+                <Button Style="{StaticResource CapsuleButton}" HorizontalAlignment="Stretch" Height="40" CornerRadius="20" Click="OnOpen">
+                    <StackPanel Orientation="Horizontal" Spacing="10">
+                        <FontIcon Glyph="&#xE838;" FontSize="14" />
+                        <TextBlock Text="Open…" FontSize="14" />
+                    </StackPanel>
+                </Button>
+            </StackPanel>
+            <StackPanel Grid.Row="2" Margin="0,32,0,0" Spacing="2" x:Name="RecentPanel">
+                <TextBlock Text="Recent" Style="{StaticResource ColumnHeaderText}" Margin="4,0,0,6" />
+            </StackPanel>
+            <StackPanel Grid.Row="3" Orientation="Horizontal" Spacing="8">
+                <FontIcon Glyph="&#xE950;" FontSize="12" Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
+                <TextBlock x:Name="EngineText" Style="{StaticResource CaptionText}" />
+            </StackPanel>
+        </Grid>
+
+        <Border Grid.Column="1" Background="{ThemeResource ContentSurfaceBrush}" BorderBrush="{ThemeResource ContentStrokeBrush}"
+                BorderThickness="1,0,0,0">
+            <ScrollViewer Padding="28,56,28,24">
+                <StackPanel x:Name="Gallery" Spacing="14" />
+            </ScrollViewer>
+        </Border>
+    </Grid>
+</Window>
