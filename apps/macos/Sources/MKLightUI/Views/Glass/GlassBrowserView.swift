@@ -11,6 +11,8 @@ extension UTType {
 
 /// Sort keys of the optional columns: glasses without a value sort last.
 extension GlassRow {
+    var sortNd: Double { nd ?? .infinity }
+    var sortVd: Double { vd ?? .infinity }
     var sortPgf: Double { dpgf ?? .infinity }
     var sortDensity: Double { density ?? .infinity }
     var sortCost: Double { relativeCost ?? .infinity }
@@ -348,9 +350,9 @@ struct GlassTable: View {
                     .width(min: 90, ideal: 120)
                 TableColumn("Catalog", value: \.catalog) { (r: GlassRow) in Text(r.catalog).foregroundStyle(.secondary) }
                     .width(min: 60, ideal: 100)
-                TableColumn("nd", value: \.nd) { (r: GlassRow) in NumberCell(text: r.ndText) }
+                TableColumn("nd", value: \.sortNd) { (r: GlassRow) in NumberCell(text: r.ndText) }
                     .width(min: 60, ideal: 70)
-                TableColumn("Vd", value: \.vd) { (r: GlassRow) in NumberCell(text: r.vdText) }
+                TableColumn("Vd", value: \.sortVd) { (r: GlassRow) in NumberCell(text: r.vdText) }
                     .width(min: 46, ideal: 54)
                 TableColumn("ΔPg,F", value: \.sortPgf) { (r: GlassRow) in NumberCell(text: r.dpgfText) }
                     .width(min: 54, ideal: 62)
@@ -438,6 +440,9 @@ private struct CatalogBar: View {
                 }
             }
             Spacer(minLength: Space.m)
+            if !catalog.warnings.isEmpty {
+                CatalogWarningsButton(warnings: catalog.warnings)
+            }
             if user {
                 Button("New Glass…", systemImage: "plus") { model.newGlass() }
             } else if catalog.path != nil {
@@ -471,6 +476,32 @@ private struct CatalogBar: View {
     }
 }
 
+/// What the catalog reader reported (skipped, replaced or inconsistent
+/// glasses), in a popover.
+private struct CatalogWarningsButton: View {
+    let warnings: [CatalogWarning]
+    @State private var shown = false
+
+    var body: some View {
+        Button(warnings.count == 1 ? "1 Warning" : "\(warnings.count) Warnings", systemImage: "exclamationmark.triangle") {
+            shown = true
+        }
+        .help("What reading the catalog file reported: skipped, replaced or inconsistent glasses")
+        .popover(isPresented: $shown) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: Space.xs) {
+                    ForEach(Array(warnings.enumerated()), id: \.offset) { _, w in
+                        Text(w.text).font(.callout).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .padding()
+            }
+            .frame(width: 440)
+            .frame(maxHeight: 360)
+        }
+    }
+}
+
 /// A glass name, with a mark when glass substitution may not use it.
 private struct GlassNameCell: View {
     let row: GlassRow
@@ -493,11 +524,19 @@ private struct NumberCell: View {
 }
 
 extension GlassRow {
-    /// Whether the glass has n_d and V_d: an infrared glass whose range
-    /// leaves out the d line has none (the engine reports n_d 1, V_d 0).
-    var hasDLine: Bool { nd.isFinite && vd.isFinite && nd > 1 && vd > 0 }
-    var ndText: String { hasDLine ? GlassTable.fixed(nd, 5) : "—" }
-    var vdText: String { hasDLine ? GlassTable.fixed(vd, 2) : "—" }
+    /// Whether the glass has n_d: an infrared glass whose range leaves out
+    /// the d line has none (the engine reports null).
+    var hasDLine: Bool { nd != nil }
+    var ndText: String { nd.map { GlassTable.fixed($0, 5) } ?? "—" }
+    var vdText: String { vd.map { GlassTable.fixed($0, 2) } ?? "—" }
+    /// The catalog file lists n_d/V_d its coefficients do not give (beyond
+    /// the reader's tolerances, 1·10⁻⁴ in n_d or 0.2 in V_d).
+    var listedValuesDiffer: Bool {
+        guard let nd, let cnd = catalogNd, cnd > 1 else { return false }
+        if abs(nd - cnd) > 1e-4 { return true }
+        guard let vd, let cvd = catalogVd, cvd > 0 else { return false }
+        return abs(vd - cvd) > 0.2
+    }
     var dpgfText: String { dpgf.map { GlassTable.signed($0, 4) } ?? "—" }
     var densityText: String { density.map { GlassTable.fixed($0, 2) } ?? "—" }
     var costText: String { relativeCost.map { GlassTable.fixed($0, 1) } ?? "—" }
@@ -670,9 +709,13 @@ private struct GlassDetailView: View {
     private func numbers(_ d: GlassDetails) -> some View {
         GroupBox("Optical Data") {
             Grid(alignment: .leading, horizontalSpacing: Space.l, verticalSpacing: Space.xs) {
-                if d.row.hasDLine {
-                    gridRow("nd", Self.fmt(d.row.nd, 6))
-                    gridRow("Vd", Self.fmt(d.row.vd, 3))
+                if let nd = d.row.nd {
+                    gridRow("nd", Self.fmt(nd, 6))
+                    gridRow("Vd", d.row.vd.map { Self.fmt($0, 3) } ?? "none (F or C line outside the range)")
+                    if d.row.listedValuesDiffer, let cnd = d.row.catalogNd {
+                        gridRow("Catalog lists", "nd \(Self.fmt(cnd, 6)), Vd \(Self.fmt(d.row.catalogVd ?? 0, 2))")
+                            .help("The catalog file's nd and Vd disagree with its dispersion coefficients. MKLight uses the coefficients.")
+                    }
                 } else {
                     gridRow("nd, Vd", "none (the d line is outside the range)")
                 }

@@ -267,7 +267,7 @@ private struct DesignWindowContent: View {
                 design.addCatalog(
                     CatalogReference(name: info.name, path: url.path, format: url.pathExtension.lowercased() == "json" ? "json" : "agf"),
                     undoManager: undoManager)
-                window.flash("Loaded glass catalog \(info.name) (\(glassCountText(info.glassCount))).")
+                window.flash("Loaded glass catalog \(info.name) (\(glassCountText(info.glassCount))).\(warningsNote(info.warnings))")
                 if reimport, let source = prescriptionURL { await importAgain(source) }
             } catch {
                 window.flash("Glass catalog: \(error.localizedDescription)")

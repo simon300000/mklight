@@ -250,7 +250,7 @@ final class GlassBrowserModel {
         guard let t = target else { return }
         do {
             let info = try await t.addCatalog(url)
-            message = "Added \(info.name) (\(glassCountText(info.glassCount))) to \(t.title())."
+            message = "Added \(info.name) (\(glassCountText(info.glassCount))) to \(t.title())." + warningsNote(info.warnings)
         } catch {
             message = error.localizedDescription
         }
@@ -267,7 +267,7 @@ final class GlassBrowserModel {
         do {
             let changes = try await ws.reloadCatalog(named: info.name)
             reloadReport = changes
-            message = "\(info.name) reloaded: \(changes.summary.lowercased())."
+            message = "\(info.name) reloaded: \(changes.summary.lowercased())." + warningsNote(changes.warnings)
             await refresh()
         } catch {
             message = "\(info.name) could not be reloaded: \(error.localizedDescription)"
@@ -450,14 +450,14 @@ final class GlassEditorModel {
             kind = .formula
             formula = f
             coefficients = Self.resized(d.coefficients, to: Self.coefficientNames(f).count)
-            nd = c(d.row.nd)
-            vd = c(d.row.vd)
+            nd = c(d.row.nd ?? nd)
+            vd = c(d.row.vd ?? vd)
             dpgf = c(d.row.dpgf ?? 0)
         } else {
             // Tabulated or other data without a formula: a model glass at its n_d, V_d.
             kind = .model
-            nd = c(d.row.nd)
-            vd = c(d.row.vd)
+            nd = c(d.row.nd ?? nd)
+            vd = c(d.row.vd ?? vd)
             dpgf = c(d.row.dpgf ?? 0)
         }
         minUm = d.row.minUm
@@ -604,3 +604,10 @@ final class GlassEditorModel {
 
 /// "1 glass", "13 glasses".
 func glassCountText(_ n: Int) -> String { n == 1 ? "1 glass" : "\(n) glasses" }
+
+/// " The reader reported 3 warnings (first: …)." after a catalog load, or "".
+func warningsNote(_ warnings: [CatalogWarning]) -> String {
+    guard let first = warnings.first else { return "" }
+    let count = warnings.count == 1 ? "1 warning" : "\(warnings.count) warnings"
+    return " Reading it reported \(count) (first: \(first.text))."
+}

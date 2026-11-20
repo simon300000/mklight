@@ -10,9 +10,7 @@
 use serde_json::json;
 
 use mklight_core::MkError;
-use mklight_core::materials::agf;
 use mklight_engine::EngineError;
-use mklight_engine::project::CatalogFormat;
 
 use super::{Ctx, Report, save, warning_lines};
 use crate::cli::{CatalogImportArgs, CatalogScope, CatalogShowArgs};
@@ -73,15 +71,17 @@ pub fn show(ctx: &Ctx, a: &CatalogShowArgs) -> CliResult<Report> {
     ]);
     let mut rows = Vec::new();
     for g in &glasses {
+        // Computed from the dispersion; none when the range leaves out the d line.
+        let (nd, vd) = (g.nd.unwrap_or(f64::NAN), g.vd.unwrap_or(f64::NAN));
         t.row(vec![
             g.name.clone(),
-            fmt_f(g.nd, 6),
-            fmt_f(g.vd, 2),
+            fmt_f(nd, 6),
+            fmt_f(vd, 2),
             fmt_f(g.min_um, 3),
             fmt_f(g.max_um, 3),
         ]);
         rows.push(json!({
-            "name": g.name, "nd": num(g.nd), "vd": num(g.vd),
+            "name": g.name, "nd": num(nd), "vd": num(vd),
             "min_um": num(g.min_um), "max_um": num(g.max_um),
         }));
     }
@@ -104,15 +104,8 @@ pub fn import(ctx: &Ctx, a: &CatalogImportArgs) -> CliResult<Report> {
     let summary = session
         .load_catalog_file(&a.file)
         .map_err(|e| CliError::from(e).context(a.file.display()))?;
-    // Reader warnings (skipped glasses, index mismatches) for the user; the
-    // session's loader keeps only the catalog.
-    let mut warnings = Vec::new();
-    if CatalogFormat::from_path(&a.file) == CatalogFormat::Agf
-        && let Ok(bytes) = std::fs::read(&a.file)
-        && let Ok(parsed) = agf::parse_agf_bytes(&summary.name, &bytes, &agf::AgfOptions::default())
-    {
-        warnings.extend(parsed.warnings.iter().map(|w| w.to_string()));
-    }
+    // Reader warnings (skipped glasses, index mismatches) for the user.
+    let warnings: Vec<String> = summary.warnings.iter().map(|w| w.to_string()).collect();
     save(&mut session, None)?;
     let mut text = format!(
         "imported catalog {} ({} glasses) into {}\n",

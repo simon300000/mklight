@@ -253,8 +253,11 @@ load order.
 UTF-16 LE/BE (with or without BOM; many vendor files are UTF-16 LE), with
 CRLF, LF or CR line endings.
 
-**Tolerance and policy.** Unknown records are kept verbatim and written back
-on export. `-` means a missing value, and missing trailing fields are allowed.
+**Tolerance and policy.** Record tags are case-insensitive. Unknown records
+are kept verbatim and written back on export. `-` or `_` means a missing
+value, and missing trailing fields are allowed. A non-numeric `OD` field
+(e.g. a class range `1-2`) is taken as unknown with a warning; the record's
+other fields stay.
 A line that starts with a number (or `-`) after an `ED`, `CD`, `TD` or `OD`
 record continues that record (wrapped coefficient lists).
 A glass is **skipped** with a warning when its dispersion cannot be evaluated
@@ -264,6 +267,19 @@ coefficients do not reproduce its catalog `n_d` within 1·10⁻⁴ or `V_d` with
 coefficients are the authoritative data. Set `AgfOptions::mismatch =
 MismatchPolicy::Skip` to drop such glasses instead. The check runs only when
 the d line lies in the glass's `LD` range and the catalog lists `n_d, V_d > 0`.
+Two glasses of the same name (compared case-insensitively, as lookups are):
+the **later one wins**, with a `DuplicateGlass` warning naming both lines.
+Every warning carries the glass name and the line of its `NM` record. A
+session's catalog summary (`warnings`) and reload report carry them, so
+front ends can show them.
+
+**Listed and computed n_d, V_d.** `Glass::nd`/`Glass::vd` keep the values the
+`NM` record lists, so that a catalog round-trips. Glass tables and details
+(`manage::GlassRow`) report n_d and V_d computed from the dispersion formula,
+which is what tracing uses, as `nd`/`vd`, and the listed values as
+`catalog_nd`/`catalog_vd`. The computed values are absent (null) when the
+glass's range leaves out the d line (V_d: the d, F or C line), as for
+infrared glasses, which vendor files list with n_d 1, V_d 0.
 
 ## Exporting glasses
 
@@ -285,3 +301,9 @@ is reported with a `NotExportable` warning:
 * an edited `Glass::cte` clears a stale "ignore thermal expansion" flag;
 * an unrestricted wavelength range (a glass read without `LD`) is written
   without `LD`.
+
+`NM` lists a glass's own n_d, V_d when it has them (as read from a file); a
+glass without (n_d ≤ 0, e.g. made in an editor) gets the computed values,
+or n_d 1, V_d 0 when its range leaves out the d line, as vendors list
+infrared glasses (the reader skips its consistency check for those). An
+unknown melt frequency is left out of `NM`.

@@ -124,8 +124,15 @@ private func finite(_ v: JSONValue?) -> Double? {
 public struct GlassRow: Hashable, Sendable, Identifiable {
     public var catalog: String
     public var name: String
-    public var nd: Double
-    public var vd: Double
+    /// n_d, V_d computed from the dispersion formula; `nil` when the glass's
+    /// range leaves out the d line (V_d: the d, F or C line), as for
+    /// infrared glasses.
+    public var nd: Double?
+    public var vd: Double?
+    /// n_d, V_d as the catalog file lists them (infrared glasses: 1 and 0).
+    /// `nil` from engines that did not report them.
+    public var catalogNd: Double?
+    public var catalogVd: Double?
     public var pgf: Double?
     public var dpgf: Double?
     public var minUm: Double
@@ -151,8 +158,10 @@ public struct GlassRow: Hashable, Sendable, Identifiable {
         guard let catalog = v["catalog"]?.string, let name = v["name"]?.string else { return nil }
         self.catalog = catalog
         self.name = name
-        nd = v["nd"]?.doubleValue ?? .nan
-        vd = v["vd"]?.doubleValue ?? .nan
+        nd = finite(v["nd"])
+        vd = finite(v["vd"])
+        catalogNd = finite(v["catalog_nd"])
+        catalogVd = finite(v["catalog_vd"])
         pgf = finite(v["pgf"])
         dpgf = finite(v["dpgf"])
         minUm = v["min_um"]?.doubleValue ?? 0
@@ -279,13 +288,19 @@ public struct CatalogChanges: Sendable, Hashable {
     public var removed: [String]
     public var changed: [Change]
     public var unchanged: Int
+    /// What the reader reported for the file as read now.
+    public var warnings: [CatalogWarning]
 
-    public init(catalog: String, added: [String] = [], removed: [String] = [], changed: [Change] = [], unchanged: Int = 0) {
+    public init(
+        catalog: String, added: [String] = [], removed: [String] = [], changed: [Change] = [], unchanged: Int = 0,
+        warnings: [CatalogWarning] = []
+    ) {
         self.catalog = catalog
         self.added = added
         self.removed = removed
         self.changed = changed
         self.unchanged = unchanged
+        self.warnings = warnings
     }
 
     public init?(json v: JSONValue) {
@@ -301,6 +316,10 @@ public struct CatalogChanges: Sendable, Hashable {
                 fields: (c["fields"]?.array ?? []).compactMap(\.string))
         }
         unchanged = v["unchanged"]?.int ?? 0
+        warnings = (v["warnings"]?.array ?? []).compactMap { w in
+            guard let message = w["message"]?.string else { return nil }
+            return CatalogWarning(line: w["line"]?.int, glass: w["glass"]?.string, kind: w["kind"]?.string ?? "", message: message)
+        }
     }
 
     public var isEmpty: Bool { added.isEmpty && removed.isEmpty && changed.isEmpty }

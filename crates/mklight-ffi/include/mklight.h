@@ -233,13 +233,19 @@ MKStatus mk_session_current_library_hash(const MKSession *session, char **out_ha
 
 /* Load a user glass catalog: AGF text, or GlassCatalog JSON when the file
  * ends in .json. Recorded in the project. out_json (nullable) receives
- * {"name", "source", "path", "glass_count"}. */
+ * {"name", "source", "path", "glass_count", "warnings"}; "warnings" lists
+ * what the reader reported, one {"line", "glass", "kind", "message"} per
+ * skipped, replaced or inconsistent glass (line and glass may be null). */
 MKStatus mk_session_load_catalog(MKSession *session, const char *path, char **out_json);
 
-/* JSON array of {"name", "source": "builtin"|"user", "path", "glass_count"}. */
+/* JSON array of {"name", "source": "builtin"|"user", "path", "glass_count",
+ * "warnings"}. */
 MKStatus mk_session_list_catalogs(const MKSession *session, char **out_json);
 
-/* JSON array of {"catalog", "name", "nd", "vd", "min_um", "max_um"}.
+/* JSON array of {"catalog", "name", "nd", "vd", "catalog_nd", "catalog_vd",
+ * "min_um", "max_um"}. nd and vd are computed from the dispersion formula
+ * and are null when the glass's range leaves out the d line (vd: the d, F
+ * or C line); catalog_nd and catalog_vd are what the file lists.
  * catalog (nullable): NULL lists every catalog. */
 MKStatus mk_session_list_glasses(const MKSession *session, const char *catalog,
                                  char **out_json);
@@ -430,7 +436,8 @@ MKStatus mk_session_restore_catalog(MKSession *session, const char *name, char *
 /* Read a project or library catalog again from its file. out_json
  * (nullable) receives {"catalog", "added", "removed", "changed": [{"name",
  * "nd_before", "nd_after", "vd_before", "vd_after", "fields"}],
- * "unchanged"}. */
+ * "unchanged", "warnings"} (nd/vd as the file lists them; warnings as for
+ * mk_session_load_catalog). */
 MKStatus mk_session_reload_catalog(MKSession *session, const char *name, char **out_json);
 
 /* Add (or replace, by name) a library catalog from a file. Library catalogs
