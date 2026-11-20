@@ -63,7 +63,7 @@ public static class Palette
         Color[] blue = dark ? [Rgb(0x3987e5), Rgb(0x184f95)] : [Rgb(0x6da7ec), Rgb(0x184f95)];
         Color[] red = dark ? [Rgb(0xe66767), Rgb(0x9b2a29)] : [Rgb(0xee8f8e), Rgb(0xa52b2a)];
         var x = double.IsFinite(t) ? Math.Clamp(t, -1, 1) : 0;
-        return x < 0 ? Interpolate([mid, .. blue], -x) : Interpolate([mid, .. red], x);
+        return x < 0 ? Interpolate((Color[])[mid, .. blue], -x) : Interpolate((Color[])[mid, .. red], x);
     }
 
     public static Color Interpolate(IReadOnlyList<Color> stops, double t)
