@@ -7,15 +7,27 @@ use std::process::Command;
 
 /// The static library from this build. `cargo test` writes it to
 /// `target/<profile>/deps/libmklight_ffi-<hash>.a` (only `cargo build`
-/// copies it to `target/<profile>/`), so take the most recent candidate.
+/// copies it to `target/<profile>/`), or with cargo's per-unit build
+/// directories to `target/<profile>/build/mklight-ffi/<hash>/out/` next to
+/// this test's own; MSVC names it `mklight_ffi-<hash>.lib`. Take the most
+/// recent candidate.
 fn staticlib() -> PathBuf {
     let exe = std::env::current_exe().unwrap();
     let deps = exe.parent().unwrap();
     let profile = deps.parent().unwrap();
-    let is_lib = |n: &str| n.starts_with("libmklight_ffi") && n.ends_with(".a");
-    let mut cands: Vec<PathBuf> = std::fs::read_dir(deps)
-        .unwrap()
-        .chain(std::fs::read_dir(profile).unwrap())
+    let units = profile
+        .parent()
+        .into_iter()
+        .flat_map(|p| std::fs::read_dir(p).into_iter().flatten());
+    let dirs = [deps.to_path_buf(), profile.to_path_buf()]
+        .into_iter()
+        .chain(units.filter_map(|e| e.ok()).map(|e| e.path().join("out")));
+    let is_lib = |n: &str| {
+        (n.starts_with("libmklight_ffi") && n.ends_with(".a"))
+            || (cfg!(target_env = "msvc") && n.starts_with("mklight_ffi") && n.ends_with(".lib"))
+    };
+    let mut cands: Vec<PathBuf> = dirs
+        .flat_map(|d| std::fs::read_dir(d).into_iter().flatten())
         .filter_map(|e| e.ok())
         .filter(|e| is_lib(&e.file_name().to_string_lossy()))
         .map(|e| e.path())
@@ -48,6 +60,21 @@ fn native_libs() -> &'static [&'static str] {
             "-framework",
             "QuartzCore",
         ]
+    } else if cfg!(target_env = "msvc") {
+        // clang's driver on the MSVC target; Rust links the DLL C runtime.
+        &[
+            "-lopengl32",
+            "-lkernel32",
+            "-lntdll",
+            "-luserenv",
+            "-lws2_32",
+            "-ldbghelp",
+            "-lsynchronization",
+            "-Xlinker",
+            "/defaultlib:msvcrt",
+            "-Xlinker",
+            "/nodefaultlib:libcmt",
+        ]
     } else {
         &["-lpthread", "-ldl", "-lm", "-lc"]
     }
@@ -73,7 +100,7 @@ fn c_smoke_test() {
     let out_dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("c-smoke");
     let _ = std::fs::remove_dir_all(&out_dir);
     std::fs::create_dir_all(&out_dir).unwrap();
-    let exe = out_dir.join("smoke");
+    let exe = out_dir.join(format!("smoke{}", std::env::consts::EXE_SUFFIX));
 
     let status = Command::new(&cc)
         .args(["-std=c11", "-Wall", "-Wextra", "-Werror", "-pedantic", "-g"])
