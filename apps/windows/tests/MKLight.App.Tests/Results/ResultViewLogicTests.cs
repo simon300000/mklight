@@ -94,19 +94,47 @@ public class ResultViewLogicTests
     }
 
     [Fact]
-    public void GlassMapDropsGlassesWithoutNdButKeepsTheDesignsOwn()
+    public void GlassMapListsTheGlassesTheEngineOmitted()
     {
-        var d = GlassMapData.Read(TestData.Result("glass_map", """
+        var r = TestData.Result("glass_map", """
             { "glasses": [
-              {"name": "N-BK7", "catalog": "SCHOTT", "nd": 1.5168, "vd": 64.17, "pgf": 0.5349, "surfaces": []},
-              {"name": "IRG24", "catalog": "SCHOTT", "nd": 1, "vd": 0, "pgf": 0, "surfaces": []},
-              {"name": "IRG26", "catalog": "SCHOTT", "nd": 1, "vd": 0, "pgf": 0, "surfaces": [3]},
-              {"name": "BAD", "catalog": "X", "nd": "nan", "vd": 50, "pgf": 0.5, "surfaces": []} ] }
-            """))!;
-        Assert.Equal(["N-BK7", "IRG26"], d.Glasses.Select(g => g.Name));
-        Assert.True(d.Glasses[0].HasNd);
-        var ir = d.Glasses[1];
-        Assert.False(ir.HasNd);
-        Assert.True(ir.InDesign);
+              {"name": "N-BK7", "catalog": "SCHOTT", "nd": 1.5168, "vd": 64.17, "pgf": 0.5349, "surfaces": [1]} ],
+              "omitted": [
+              {"catalog": "SCHOTT", "name": "IRG24", "reason": "range 0.9-12 um misses the d, F and C lines", "surfaces": []},
+              {"catalog": "SCHOTT", "name": "IRG26", "reason": "range 0.9-12 um misses the d, F and C lines", "surfaces": [3, 4]} ] }
+            """);
+        var d = GlassMapData.Read(r)!;
+        Assert.Equal(["N-BK7"], d.Glasses.Select(g => g.Name));
+        // The design's omitted glasses come first.
+        Assert.Equal(["IRG26", "IRG24"], d.Omitted.Select(o => o.Name));
+        Assert.True(d.Omitted[0].InDesign);
+        Assert.Equal("S3, S4", d.Omitted[0].SurfaceLabel);
+        Assert.StartsWith("range 0.9", d.Omitted[1].Reason);
+        Assert.Equal(["SCHOTT"], d.Catalogs);
+        Assert.Equal([("Glasses", "1"), ("In design", "2"), ("Not on map", "2")], KeyNumbers.Of(r));
+    }
+
+    [Fact]
+    public void RayGridBinsEachFieldsHitsAboutItsCentroid()
+    {
+        // 2 fields × 1 wavelength × 3 pupil rays; field 1's third ray did not arrive.
+        double nan = double.NaN;
+        var d = TestData.Result("ray_grid", """
+            { "fields": [0, 1], "field_values": [[0, 0], [0, 10]], "wavelengths": [1], "wavelengths_um": [0.5876],
+              "pupil_count": 3, "arrived": 5, "launched": 6 }
+            """, new FakeArray("points", [2, 1, 3, 2], [1, 1, 3, 1, 2, 1, 0, 5, 0, 7, nan, nan]));
+        var g = RayGridData.Read(d)!;
+        Assert.Equal(2, g.Fields.Count);
+        Assert.Equal((5, 6), (g.Arrived, g.Launched));
+        // Field 0 about its centroid (2, 1): x −1, +1, 0.
+        Assert.Equal([-1.0, 0, 1, 0, 0, 0], g.Fields[0].Xy[0]);
+        Assert.Equal(1.0, g.Fields[0].HalfWidth);
+        Assert.Equal(2, g.Fields[1].Arrived);
+        Assert.False(g.Micrometres);
+        var bins = RayGridData.Bin(g.Fields[0], 4);
+        Assert.Equal(3, bins[0].Sum());
+        // +y is up: field 1's upper hit lands in the top half.
+        var b1 = RayGridData.Bin(g.Fields[1], 4);
+        Assert.Equal(1, b1[0][..8].Sum());
     }
 }

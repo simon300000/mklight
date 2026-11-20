@@ -57,10 +57,11 @@ public partial class App : Application
             Track(new EngineMissingWindow(FFIEngine.UnavailableReason ?? "mklight_ffi.dll was not found.")).Activate();
             return;
         }
-        var engine = new FFIEngine(new JsonObject { ["app_name"] = "MKLight for Windows", ["app_version"] = AppVersion });
+        // --gpu-emulation: the engine lists its CPU-f32 emulation as gpu:cpu_f32 (auto never picks it).
+        var engine = new FFIEngine(new JsonObject { ["app_name"] = "MKLight for Windows", ["app_version"] = AppVersion, ["register_emulation"] = Options.GpuEmulation });
         Engine = engine;
         // Prepare the GPU's compute kernels once per run, cached between runs.
-        try { engine.PrepareGpu(Path.Combine(AppSettings.Directory, "GPU Kernels")); } catch (EngineException) { }
+        try { engine.PrepareGpu(Path.Combine(AppSettings.SupportDirectory, "GPU Kernels")); } catch (EngineException) { }
 
         if (Options.File is { } file) _ = OpenFileAsync(file);
         else if (Options.Sample is { } sample) OpenDocument(DesignDocument.FromSample(sample));
@@ -103,11 +104,22 @@ public partial class App : Application
         // A launch script runs in the first design window only (not in one a script opens).
         var script = !_scriptClaimed;
         _scriptClaimed = true;
-        _ = StartAsync(window, session, script);
+        _ = StartGuardedAsync(window, session, script);
         return window;
     }
 
     static bool _scriptClaimed;
+
+    /// <summary>A failure while starting is logged; a scripted run then exits with code 3 instead of waiting forever.</summary>
+    static async Task StartGuardedAsync(DesignWindow window, DesignSession session, bool script)
+    {
+        try { await StartAsync(window, session, script); }
+        catch (Exception e)
+        {
+            Log($"start failed: {e}");
+            if (Options.IsScripted) Environment.Exit(3);
+        }
+    }
 
     static async Task StartAsync(DesignWindow window, DesignSession session, bool script)
     {

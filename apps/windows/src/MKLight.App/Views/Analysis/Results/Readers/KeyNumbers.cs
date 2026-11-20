@@ -89,7 +89,8 @@ public static class KeyNumbers
                 if (GlassMapData.Read(d) is { } gm)
                 {
                     out_.Add(("Glasses", gm.Glasses.Count(x => x.Kind == "catalog").ToString(System.Globalization.CultureInfo.InvariantCulture)));
-                    out_.Add(("In design", gm.Glasses.Count(x => x.InDesign).ToString(System.Globalization.CultureInfo.InvariantCulture)));
+                    out_.Add(("In design", (gm.Glasses.Count(x => x.InDesign) + gm.Omitted.Count(x => x.InDesign)).ToString(System.Globalization.CultureInfo.InvariantCulture)));
+                    if (gm.Omitted.Count > 0) out_.Add(("Not on map", gm.Omitted.Count.ToString(System.Globalization.CultureInfo.InvariantCulture)));
                 }
                 break;
             case "glass_info":

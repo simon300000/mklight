@@ -17,7 +17,8 @@ namespace MKLight.App.Views.Analysis.Results;
 /// <c>glass_map</c>: catalogue glasses in the n_d – V_d or P_g,F – V_d plane, V_d decreasing
 /// to the right as glass maps are drawn; status colours (obsolete hollow, so status does not
 /// rely on colour alone); the design's glasses ringed in the accent and labelled with their
-/// surfaces; hover for a glass's data, click to inspect it.
+/// surfaces; hover for a glass's data, click to inspect it. Glasses the engine leaves off the map (infrared
+/// glasses, without n_d or V_d) are listed beside it with the reason.
 /// </summary>
 public sealed partial class GlassMapView : UserControl, IViewOptions
 {
@@ -49,7 +50,7 @@ public sealed partial class GlassMapView : UserControl, IViewOptions
         {
             var c = new ComboBox { ItemsSource = catalogs.Prepend("All catalogs").ToList(), SelectedIndex = 0, FontSize = 12, MinHeight = 26, MinWidth = 0, Padding = new Thickness(8, 2, 6, 3) };
             AutomationProperties.SetName(c, "Catalog");
-            c.SelectionChanged += (_, _) => { _catalog = c.SelectedIndex <= 0 ? null : catalogs[c.SelectedIndex - 1]; _canvas.Invalidate(); };
+            c.SelectionChanged += (_, _) => { _catalog = c.SelectedIndex <= 0 ? null : catalogs[c.SelectedIndex - 1]; Side(); _canvas.Invalidate(); };
             top.Children.Add(c);
         }
         top.Children.Add(_legend);
@@ -58,7 +59,8 @@ public sealed partial class GlassMapView : UserControl, IViewOptions
         body.Children.Add(Kit.Page(_side));
         Content = FieldMapViews.Shell(top, body);
         AutomationProperties.SetName(_canvas, $"Glass map, {d.Glasses.Count(g => g.Kind == "catalog")} glasses; in the design: " +
-            string.Join("; ", d.Glasses.Where(g => g.InDesign).Select(g => $"{g.Name} {g.SurfaceLabel}")));
+            string.Join("; ", d.Glasses.Where(g => g.InDesign).Select(g => $"{g.Name} {g.SurfaceLabel}"))
+            + (d.Omitted.Count > 0 ? $"; {d.Omitted.Count} glasses not on the map" : ""));
         _canvas.PointerMoved += (_, e) => { _hover = e.GetCurrentPoint(_canvas).Position; _canvas.Invalidate(); };
         _canvas.PointerExited += (_, _) => { _hover = null; _canvas.Invalidate(); };
         _canvas.PointerPressed += (_, e) =>
@@ -104,30 +106,74 @@ public sealed partial class GlassMapView : UserControl, IViewOptions
         }
         else p.Children.Add(Kit.Caption("Click a glass to inspect it.", wrap: true));
         var design = _d.Glasses.Where(x => x.InDesign).ToList();
-        if (design.Count > 0)
+        var designOmitted = _d.Omitted.Where(o => o.InDesign).ToList();
+        if (design.Count + designOmitted.Count > 0)
         {
             var list = new StackPanel { Spacing = 3 };
             list.Children.Add(Kit.Text("In the design", "PanelTitleText", 11));
             foreach (var x in design)
             {
-                var row = new Grid { ColumnSpacing = 8 };
-                row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-                row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-                row.Children.Add(Kit.Text(x.DisplayName, "BodyText", 12));
-                // A glass without n_d (an IR glass) has no point on the map: said so beside its surfaces.
-                var s = Kit.Text(x.HasNd ? x.SurfaceLabel : x.SurfaceLabel + "   n_d —", "SecondaryText", 12);
-                if (!x.HasNd) ToolTipService.SetToolTip(row, "No n_d or V_d in its catalogue (an infrared glass): not on the map");
-                Grid.SetColumn(s, 1);
-                row.Children.Add(s);
-                var b = new Button { Content = row, HorizontalAlignment = HorizontalAlignment.Stretch, HorizontalContentAlignment = HorizontalAlignment.Stretch, Padding = new Thickness(6, 2, 6, 3), Background = new SolidColorBrush(Color.FromArgb(0, 0, 0, 0)), BorderThickness = new Thickness(0) };
                 var id = x.Id;
-                b.Click += (_, _) => { _selected = id; Side(); _canvas.Invalidate(); };
+                var b = ListRow(x.DisplayName, x.SurfaceLabel, () => { _selected = id; Side(); _canvas.Invalidate(); });
                 AutomationProperties.SetName(b, $"{x.Name}, surfaces {x.SurfaceLabel}");
                 list.Children.Add(b);
+            }
+            // A design glass without n_d (an infrared glass) has no point: its row says so, the reason in the tooltip.
+            foreach (var o in designOmitted)
+            {
+                var row = ListRow(o.Name, o.SurfaceLabel + "   not on the map", null);
+                ToolTipService.SetToolTip(row, o.Reason);
+                AutomationProperties.SetName(row, $"{o.Name}, surfaces {o.SurfaceLabel}, not on the map: {o.Reason}");
+                list.Children.Add(row);
+            }
+            p.Children.Add(list);
+        }
+        // The other glasses the engine left off the map, under their reason.
+        var others = _d.Omitted.Where(o => !o.InDesign && (_catalog is null || o.Catalog == _catalog)).ToList();
+        if (others.Count > 0)
+        {
+            var list = new StackPanel { Spacing = 3 };
+            list.Children.Add(Kit.Text($"Not on the map ({others.Count})", "PanelTitleText", 11));
+            foreach (var group in others.GroupBy(o => o.Reason))
+            {
+                list.Children.Add(Kit.Caption(group.Key, wrap: true));
+                var rows = group.ToList();
+                var shown = _allOmitted || rows.Count <= OmittedRows ? rows : rows.Take(OmittedRows - 1).ToList();
+                foreach (var o in shown)
+                {
+                    var row = ListRow(o.Name, o.Catalog ?? "", null);
+                    AutomationProperties.SetName(row, $"{o.Name}, {o.Catalog}, not on the map: {o.Reason}");
+                    list.Children.Add(row);
+                }
+                if (shown.Count < rows.Count)
+                {
+                    var more = new HyperlinkButton { Content = $"Show all {rows.Count}", FontSize = 12, Padding = new Thickness(6, 1, 6, 2) };
+                    more.Click += (_, _) => { _allOmitted = true; Side(); };
+                    list.Children.Add(more);
+                }
             }
             p.Children.Add(list);
         }
         _side.Content = p;
+    }
+
+    const int OmittedRows = 8;
+    bool _allOmitted;
+
+    /// <summary>A side-list row: the name, and on the right the surfaces or catalogue; a button when it selects a glass.</summary>
+    static FrameworkElement ListRow(string name, string detail, Action? click)
+    {
+        var row = new Grid { ColumnSpacing = 8 };
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        row.Children.Add(Kit.Text(name, "BodyText", 12));
+        var s = Kit.Text(detail, "SecondaryText", 12);
+        Grid.SetColumn(s, 1);
+        row.Children.Add(s);
+        if (click is null) { row.Padding = new Thickness(6, 2, 6, 3); return row; }
+        var b = new Button { Content = row, HorizontalAlignment = HorizontalAlignment.Stretch, HorizontalContentAlignment = HorizontalAlignment.Stretch, Padding = new Thickness(6, 2, 6, 3), Background = new SolidColorBrush(Color.FromArgb(0, 0, 0, 0)), BorderThickness = new Thickness(0) };
+        b.Click += (_, _) => click();
+        return b;
     }
 
     /// <summary>A glass's data: name, catalogue · status, n_d, V_d, P_g,F (full: ΔP_g,F, surfaces, substitution).</summary>

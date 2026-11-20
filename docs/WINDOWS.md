@@ -83,6 +83,7 @@ options):
 | `--fit lens\|all` | fit the layout to the lens or to everything |
 | `--curvature-bounds-unit radius\|curvature` | how variables bound curvatures, for this run |
 | `--recover-autosaves` | offer to recover autosaved designs in a scripted run too |
+| `--gpu-emulation` | register the engine's CPU-f32 emulation of the GPU kernels as `gpu:cpu_f32` (`register_emulation`; also `MKLIGHT_GPU_EMULATION=1`), so the GPU paths can be tried without a GPU; `auto` never picks it |
 | `--do <action>[=<arg>]` | run a registered launch action in the design window once its panes have their results, before the screenshot (repeatable, in order); see below |
 
 Launch actions are registered by the features (`AppHooks.LaunchActions`), so a
@@ -289,10 +290,10 @@ so none edits `App.xaml.cs`, `LaunchOptions.cs` or `DesignWindow` to be added:
   items are enabled by context and per-window commands go through
   `AppHooks.WindowCommand` (`Menu` null means File). Documents can be reverted,
   duplicated, renamed and replaced with a sample, and files open by drag and drop.
-  Autosave is the app's own writer, not `mk_session_autosave`: the engine's session
-  does not hold the project's other sections (views, merit, tolerances), so an
-  autosave through it would lose them; autosaved designs are offered for recovery at
-  launch. A lens file's import report opens as a sheet (groups, Copy Report, Load
+  Autosave is the app's own writer, the one Save uses (round 4 kept it after ABI 1.6
+  added `mk_session_set_project_json`: the engine would write the session's catalog
+  list, not the document's catalog references); autosaved designs are offered for
+  recovery at launch. A lens file's import report opens as a sheet (groups, Copy Report, Load
   Glass Catalog). File associations and versions are not done.
 * **Compute backends and GPU readiness** (`Views/StatusCapsule*`, `Windows/DesignWindow.Status.cs`).
   The capsule's flyout picks the compute backend from the engine's list (one entry per
@@ -300,7 +301,7 @@ so none edits `App.xaml.cs`, `LaunchOptions.cs` or `DesignWindow` to be added:
   and the GPU name. The capsule shows "Preparing GPU n %" and "GPU ready" while the
   kernels are prepared, and its flyout lists the first order with the anamorphic
   x/y table, symmetry, DOE powers and the library hash. IR glasses work in the glass
-  views, with limits in the engine (PARITY.md "Needs engine changes").
+  views.
 * **Panes, panels, layout, lens table and accessibility.** Pane chrome has a More
   menu with Duplicate Pane, folds its buttons into it on a narrow pane, pulses while
   updating, shows placeholders for every phase and a warning capsule when a rerun
@@ -325,6 +326,38 @@ so none edits `App.xaml.cs`, `LaunchOptions.cs` or `DesignWindow` to be added:
   moving a pane to a new window, the 3-D switch, inspector tabs. Not covered: 3-D
   orbit, wheel zoom, drop-to-split (checked in-process only). `MKLight.Tests` and
   `MKLight.App.Tests` run without a window.
+
+### Round 4 (ABI 1.6, CUDA)
+
+* The app needs ABI 1.6. The glass map plots only glasses with an n_d and V_d;
+  the ones the engine leaves out (`omitted`, infrared glasses) are listed beside
+  the plot under their reason, the design's own first ("S10 · not on the map"),
+  and the key numbers count them. The glass details index curve spans the glass's
+  own range, so the partial-range note is gone.
+* `--gpu-emulation` (or `MKLIGHT_GPU_EMULATION=1`) creates the engine with
+  `register_emulation`: the picker lists "GPU emulation on the CPU · f32", and a
+  pane run on it is badged "GPU · f32 · cpu_f32". The GPU kernel cache follows the
+  support folder, so a `--support-dir` run never touches the user's cache.
+* Checked on an RTX 4090 with the release engine (CUDA kernels built in): the
+  picker lists "CUDA GPU (NVIDIA GeForce RTX 4090) · f32"; the spot diagram on it
+  is badged "GPU · f32 · cuda"; under Automatic the run details read "auto: the
+  CPU reference is predicted faster for this workload" for the default spot
+  diagram; the capsule's kernel row reads "Ready (45, loaded from cache)". The
+  kernels ship inside the DLL, so preparation finishes before the first pane is
+  drawn and "Preparing GPU n %" does not appear on this machine, even with an
+  empty cache (`--do simulate-gpu-preparation` still shows it).
+* Spot diagram captions use one unit per grid (µm unless a radius reaches 1 mm). In a
+  pane too narrow for every focus plane at a legible cell (58 px) the grid folds to
+  its base plane and its note says so; below 420 px the Common | Per field toggle
+  goes under the legend, so the wavelength legend keeps its width.
+* Ray Grid (`ray_grid`, raw rays the Mac app leaves out of its analysis list and the
+  sidebar here too, reachable with `--analysis ray_grid`) has its own view
+  (`RayGridView`): one density image per field instead of overplotted points, each
+  bin's colour mixing the wavelengths by count and its opacity following the log of
+  the count, centred on the field's centroid, with "arrived / launched".
+* An invalid `--settings` (not a JSON object, e.g. quotes a shell stripped) is a
+  parse error: the app logs it and exits with code 2. A failure while a design
+  window starts is logged, and a scripted run exits with code 3 instead of waiting.
 
 ## `FFIEngine`
 

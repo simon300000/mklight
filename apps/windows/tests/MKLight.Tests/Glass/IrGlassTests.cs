@@ -89,14 +89,14 @@ public sealed class IrGlassTests : IDisposable
         Assert.Equal(1.5168, rows.Single(r => r.Name == "CROWN").Nd!.Value, 4);
         Assert.Equal(["CROWN", "CHALCO", "GELIKE"], GlassBrowserModel.Visible(rows, "", GlassFilter.All, false, GlassColumn.Nd, true).Select(r => r.Name));
 
-        // Details: no d line, a curve inside the range with a note that it stops short of 12 µm.
+        // Details: no d line, a curve over the glass's own 2–12 µm range.
         var d = await engine.GlassDetailsAsync(info.Name, "GELIKE");
         Assert.Null(d.ComputedNd);
         Assert.DoesNotContain(d.Lines, l => l.Line == "d");
         Assert.All(d.IndexCurve, p => Assert.InRange(p.Um, 2, 12));
         Assert.All(d.IndexCurve, p => Assert.True(double.IsFinite(p.N) && p.N > 3.5));
-        if (d.IndexCurve.Count > 1 && d.IndexCurve[^1].Um < 12) Assert.StartsWith("Drawn for 2.00–", GlassFormat.CurveNote(d));
-        Assert.Null(GlassFormat.CurveNote(await engine.GlassDetailsAsync(info.Name, "CROWN")));
+        Assert.Equal(81, d.IndexCurve.Count);
+        Assert.Equal((2.0, 12.0), (d.IndexCurve[0].Um, d.IndexCurve[^1].Um));
 
         // Duplicate into a user catalog: the formula is kept, the preview has no n_d / V_d, and it saves.
         var lib = new GlassLibrary(Path.Combine(_dir, "lib"));

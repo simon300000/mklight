@@ -72,6 +72,11 @@ public class SpotGridTests
         Assert.Equal("Field 2", g.Rows[1].Title);
         Assert.Equal("14°", g.Rows[1].Value);
         Assert.Equal(0.002, g.Airy);
+        // One unit for the whole grid: µm, even for a radius above 0.1 mm (Fmt.Length alone would say mm).
+        Assert.True(g.Micrometres);
+        Assert.Equal("50.00 µm", g.Length(0.05));
+        Assert.Equal("200.70 µm", g.Length(0.2007));
+        Assert.Equal("0.2007 mm", Fmt.Length(0.2007, micrometres: false));
     }
 
     [Fact]
@@ -83,6 +88,22 @@ public class SpotGridTests
         Assert.Equal("centroid", g.Reference);
         Assert.Equal(0.04, g.Rows[0].Cells[0].Rms);
         Assert.Contains("about the centroid", g.ScaleNote(SpotScale.Grid));
+    }
+
+    [Fact]
+    public void ANarrowPaneFoldsToTheBasePlane()
+    {
+        var g = SpotGridData.Read(Data())!;
+        var b = g.BaseOnly();
+        Assert.Same(b, g.BaseOnly());
+        Assert.Equal([0.0], b.Planes);
+        Assert.Equal(0, b.BaseColumn);
+        Assert.All(b.Rows, r => Assert.Equal(0, Assert.Single(r.Cells).Column));
+        Assert.Equal(0.01, b.Rows[0].Cells[0].Rms);
+        // Three planes fold below about 260 px; one plane never does.
+        Assert.True(SpotGridLayout.Folds(3, 250));
+        Assert.False(SpotGridLayout.Folds(3, 300));
+        Assert.False(SpotGridLayout.Folds(1, 100));
     }
 
     [Fact]

@@ -26,6 +26,8 @@ namespace MKLight.App.Support;
 ///   --fit lens|all          fit the layout to the lens or to everything
 ///   --curvature-bounds-unit radius|curvature  how variables bound curvatures, for this run
 ///   --recover-autosaves     offer to recover autosaved designs in a scripted run too
+///   --gpu-emulation         register the engine's CPU-f32 emulation of the GPU kernels as gpu:cpu_f32, to try
+///                           the GPU paths without a GPU (also MKLIGHT_GPU_EMULATION=1)
 /// </code>
 /// A <c>.zmx</c> or <c>.seq</c> file argument with <c>--screenshot</c> captures the design window
 /// with its import report open. Document launch actions (<c>--do</c>): <c>revert</c>,
@@ -56,6 +58,7 @@ public sealed class LaunchOptions
     public string? Fit;
     public string? CurvatureBoundsUnit;
     public bool RecoverAutosaves;
+    public bool GpuEmulation = Environment.GetEnvironmentVariable("MKLIGHT_GPU_EMULATION") is "1" or "true";
 
     public bool IsScripted => Screenshot is not null;
 
@@ -80,7 +83,7 @@ public sealed class LaunchOptions
                     var eq = d.IndexOf('=');
                     o.Actions.Add(eq < 0 ? (d, null) : (d[..eq], d[(eq + 1)..]));
                     break;
-                case "--settings": o.Settings = Next(); break;
+                case "--settings": o.Settings = JsonObjectText(a, Next()); break;
                 case "--welcome": o.Welcome = true; break;
                 case "--screenshot": o.Screenshot = Path.GetFullPath(Next()); break;
                 case "--delay": o.Delay = double.Parse(Next(), System.Globalization.CultureInfo.InvariantCulture); break;
@@ -94,6 +97,7 @@ public sealed class LaunchOptions
                 case "--fit": o.Fit = OneOf(a, Next(), "lens", "all"); break;
                 case "--curvature-bounds-unit": o.CurvatureBoundsUnit = OneOf(a, Next(), "radius", "curvature"); break;
                 case "--recover-autosaves": o.RecoverAutosaves = true; break;
+                case "--gpu-emulation": o.GpuEmulation = true; break;
                 case "--size":
                     var p = Next().Split('x');
                     o.Size = (int.Parse(p[0], System.Globalization.CultureInfo.InvariantCulture), int.Parse(p[1], System.Globalization.CultureInfo.InvariantCulture));
@@ -104,6 +108,20 @@ public sealed class LaunchOptions
             }
         }
         return o;
+    }
+
+    /// <summary>The value when it is a JSON object, else a parse error naming the option (a shell may strip the quotes).</summary>
+    static string JsonObjectText(string option, string value)
+    {
+        try
+        {
+            if (System.Text.Json.Nodes.JsonNode.Parse(value) is System.Text.Json.Nodes.JsonObject) return value;
+        }
+        catch (System.Text.Json.JsonException e)
+        {
+            throw new ArgumentException($"{option} is not valid JSON ({e.Message}): {value}");
+        }
+        throw new ArgumentException($"{option} takes a JSON object, not {value}");
     }
 
     static string OneOf(string option, string value, params string[] allowed) =>

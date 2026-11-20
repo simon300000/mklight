@@ -16,7 +16,7 @@ public static class ResultViews
     [
         "spot_diagram", "first_order", "seidel", "psf", "wavefront_map", "pupil_aberration", "relative_illumination_map", "chief_ray_angle",
         "glass_map", "glass_info", "image_simulation", "grid_distortion", "footprint", "ghost_paths", "ghost_irradiance", "stray_light",
-        "polarization_pupil_map", "system_transmission", "validate",
+        "polarization_pupil_map", "system_transmission", "validate", "ray_grid",
     ];
 
     /// <summary>The analyses with a dedicated view.</summary>
@@ -64,6 +64,7 @@ public static class ResultViews
         "polarization_pupil_map" => PolarizationData.Read(d) is { } pol ? new PolarizationView(pol) : null,
         "system_transmission" => TransmissionData.Read(d) is { } tr ? new TransmissionView(tr, d.WavelengthsUm) : null,
         "validate" => ValidationData.Read(d.Json) is { } v ? new ValidationView(v) : null,
+        "ray_grid" => RayGridData.Read(d) is { } rg ? new RayGridView(rg) : null,
         _ => LineReaders.Read(d) is ChartModel model && model.Panels.Any(p => p.Series.Count > 0) ? new LineChartView(model, Baseline(d, LineReaders.Read)) : null,
     };
 

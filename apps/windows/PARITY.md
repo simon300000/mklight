@@ -8,7 +8,7 @@ statuses describe the end of round 3 and are updated as rounds land.
 
 Legend: ✅ done, 🟡 partial, ⬜ not started. The "Windows notes" column says
 where the feature lives or what is missing. "Binding ready" means the engine
-binding (`MKLight.Engine`, ABI 1.5) already supports it and only the UI is
+binding (`MKLight.Engine`, ABI 1.6) already supports it and only the UI is
 missing.
 
 ## 1. Window and chrome
@@ -536,17 +536,18 @@ Not features of the Mac app, so not counted above.
 
 ## Needs engine changes
 
-Not Windows work; found while building round 3.
+None open. The four items found in round 3 are in the engine since ABI 1.6 and
+adopted in round 4:
 
-* **CPU f32 emulation backend** cannot be registered in the DLL: only tests build
-  `GpuProvider::emulation`. It needs a feature (for example `cpu-f32-emulation`)
-  in `with_defaults`, and automatic routing must skip it.
-* **`glass_map` for IR glasses** sends the catalog placeholders n_d 1 and V_d 0;
-  it should send computed values or null, as `list_glasses` does.
-* **`glass_details` index curve** is limited to 0.25–2.5 µm (`manage.rs`), too
-  narrow for IR glasses.
-* **Autosave through `mk_session_autosave`** would need a way to set the session's
-  whole project (its sections); the app writes its own autosave file until then.
+* The CPU-f32 emulation backend registers as `gpu:cpu_f32` with
+  `register_emulation` (`--gpu-emulation`).
+* `glass_map` leaves infrared glasses out and lists them in `omitted`, which the
+  glass map shows beside the plot with the reason.
+* The glass details index curve spans the glass's own range.
+* `mk_session_set_project_json` can carry every project section into
+  `mk_session_autosave`. The app keeps its own autosave writer: Save uses the same
+  writer, and the engine would write the session's catalog list rather than the
+  document's catalog references (with their relative paths).
 
 ## Design notes for later rounds
 

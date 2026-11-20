@@ -42,6 +42,16 @@ public class ComputeBackendTests
     }
 
     [Fact]
+    public void RegisterEmulationListsTheCpuF32BackendWithAShortTitle()
+    {
+        using var engine = new FFIEngine(new JsonObject { ["register_emulation"] = true });
+        var emulation = Assert.Single(engine.BackendList(), b => b.Id == "gpu:cpu_f32");
+        Assert.Equal("GPU emulation on the CPU", emulation.DisplayTitle);
+        using var plain = new FFIEngine();
+        Assert.DoesNotContain(plain.BackendList(), b => b.Id == "gpu:cpu_f32");
+    }
+
+    [Fact]
     public void PickerChoices()
     {
         var options = ComputeBackendOptions.From(EngineBackend.ListFromJson(ListJson));
