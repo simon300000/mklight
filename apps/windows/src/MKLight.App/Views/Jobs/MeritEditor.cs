@@ -364,7 +364,7 @@ public sealed class MeritEditor
         var texts = JobUI.Column(1, title, detail);
         Grid.SetColumn(texts, 1);
         g.Children.Add(texts);
-        var value = JobUI.Text(e is null ? "—" : MeritFormat.Short(e.Value), "NumberText");
+        var value = JobUI.Text(e is null ? "—" : MeritFormat.Merit(e.Value), "NumberText");
         value.HorizontalAlignment = HorizontalAlignment.Right;
         var bar = ContributionBar(e?.Fraction ?? double.NaN);
         var right = JobUI.Column(2, value, bar);
