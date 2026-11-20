@@ -638,6 +638,26 @@ pub fn phase_and_views(b: &dyn QualificationBackend) {
 fn cpu_large_phase_and_offset_views() {
     phase_and_views(&CpuF32Backend::new());
 }
+/// The C compiler of the layout probes here and in `c_layout` and
+/// `p5_layout` (this file is also a module of the Metal and WebGPU tests):
+/// `CC`, `cc` or `clang` (on Windows, e.g. Visual Studio's LLVM
+/// component), `None` when none runs.
+pub(crate) fn compiler() -> Option<String> {
+    [
+        std::env::var("CC").ok(),
+        Some("cc".into()),
+        Some("clang".into()),
+    ]
+    .into_iter()
+    .flatten()
+    .find(|cc| {
+        std::process::Command::new(cc)
+            .arg("--version")
+            .output()
+            .is_ok_and(|o| o.status.success())
+    })
+}
+
 #[test]
 fn portable_parameter_layout() {
     use mklight_gpu::transforms::{correlation::Params as C, recipe::Params as T};
@@ -645,11 +665,16 @@ fn portable_parameter_layout() {
         mem::{align_of, offset_of, size_of},
         process::Command,
     };
+    let Some(cc) = compiler() else {
+        eprintln!("SKIP: no C compiler found");
+        return;
+    };
     let dir = std::env::temp_dir().join(format!("mklight-p2-layout-{}", std::process::id()));
+    let probe = dir.join(format!("probe{}", std::env::consts::EXE_SUFFIX));
     std::fs::create_dir_all(&dir).unwrap();
     let source = "#include <stdio.h>\n#include <stddef.h>\n#include \"mklight_gpu_types.h\"\nint main(void){printf(\"%zu %zu %zu %zu %zu %zu %zu %zu %zu\",sizeof(struct MklTransformParams),_Alignof(struct MklTransformParams),offsetof(struct MklTransformParams,affine),sizeof(struct MklCorrelationParams),_Alignof(struct MklCorrelationParams),offsetof(struct MklCorrelationParams,mapping),offsetof(struct MklCorrelationParams,frame),offsetof(struct MklCorrelationParams,sin_max),offsetof(struct MklCorrelationParams,reserved_tail));}\n";
     std::fs::write(dir.join("probe.c"), source).unwrap();
-    let compile = Command::new("cc")
+    let compile = Command::new(cc)
         .args([
             "-std=c11",
             "-Werror",
@@ -659,7 +684,7 @@ fn portable_parameter_layout() {
         ])
         .arg(dir.join("probe.c"))
         .arg("-o")
-        .arg(dir.join("probe"))
+        .arg(&probe)
         .output()
         .unwrap();
     assert!(
@@ -667,7 +692,7 @@ fn portable_parameter_layout() {
         "{}",
         String::from_utf8_lossy(&compile.stderr)
     );
-    let result = Command::new(dir.join("probe")).output().unwrap();
+    let result = Command::new(&probe).output().unwrap();
     let values: Vec<usize> = String::from_utf8(result.stdout)
         .unwrap()
         .split_whitespace()

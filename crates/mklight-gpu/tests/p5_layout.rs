@@ -7,12 +7,16 @@ use std::{
 };
 #[test]
 fn geometry_sample_matches_c_layout() {
+    let Some(cc) = crate::p2_transforms::compiler() else {
+        eprintln!("SKIP: no C compiler found");
+        return;
+    };
     let dir = std::env::temp_dir().join(format!("mklight-p5-layout-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let source = dir.join("probe.c");
-    let binary = dir.join("probe");
+    let binary = dir.join(format!("probe{}", std::env::consts::EXE_SUFFIX));
     std::fs::write(&source,"#include <stddef.h>\n#include <stdio.h>\n#include \"mklight_gpu_types.h\"\nint main(void) {printf(\"%zu %zu %zu %zu\\n\",sizeof(struct MklGeometrySample),offsetof(struct MklGeometrySample,system),offsetof(struct MklGeometrySample,surface),offsetof(struct MklGeometrySample,xy));return 0;}\n").unwrap();
-    let output = Command::new("cc")
+    let output = Command::new(cc)
         .args(["-std=c11", "-Wall", "-Wextra", "-Werror"])
         .arg("-I")
         .arg(concat!(env!("CARGO_MANIFEST_DIR"), "/include"))

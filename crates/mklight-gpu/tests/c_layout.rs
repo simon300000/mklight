@@ -27,32 +27,16 @@ fn probe_source() -> String {
     s
 }
 
-fn compiler() -> Option<String> {
-    [
-        std::env::var("CC").ok(),
-        Some("cc".into()),
-        Some("clang".into()),
-    ]
-    .into_iter()
-    .flatten()
-    .find(|cc| {
-        Command::new(cc)
-            .arg("--version")
-            .output()
-            .is_ok_and(|o| o.status.success())
-    })
-}
-
 #[test]
 fn rust_layout_matches_c_header() {
-    let Some(cc) = compiler() else {
+    let Some(cc) = crate::p2_transforms::compiler() else {
         eprintln!("SKIP: no C compiler found");
         return;
     };
     let dir: PathBuf = std::env::temp_dir().join(format!("mklight-layout-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let src = dir.join("probe.c");
-    let exe = dir.join("probe");
+    let exe = dir.join(format!("probe{}", std::env::consts::EXE_SUFFIX));
     std::fs::write(&src, probe_source()).unwrap();
     let out = Command::new(&cc)
         .args([
@@ -101,7 +85,7 @@ fn rust_layout_matches_c_header() {
 /// The header must also be valid C++ (MSL and CUDA are C++ dialects).
 #[test]
 fn header_compiles_as_cpp() {
-    let Some(cc) = compiler() else {
+    let Some(cc) = crate::p2_transforms::compiler() else {
         eprintln!("SKIP: no C compiler found");
         return;
     };
