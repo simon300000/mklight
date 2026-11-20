@@ -32,4 +32,6 @@
   <ItemGroup><Compile Include="..\..\src\MKLight.App\ViewModels\GlassLibrary*.cs;..\..\src\MKLight.App\ViewModels\GlassBrowser*.cs" Link="Glass\App\%(Filename)%(Extension)" /></ItemGroup>
   <ItemGroup><Compile Include="..\..\src\MKLight.App\ViewModels\SurfaceTypes.cs;..\..\src\MKLight.App\ViewModels\ShapeSag.cs;..\..\src\MKLight.App\ViewModels\InspectorModel.cs" Link="Inspector\App\%(Filename)%(Extension)" /></ItemGroup>
   <ItemGroup><Compile Include="..\..\src\MKLight.App\Windows\ImportReport.cs;..\..\src\MKLight.App\Windows\DocumentFiles.cs;..\..\src\MKLight.App\Support\LaunchOptions.cs" Link="Documents\App\%(Filename)%(Extension)" /></ItemGroup>
+  <ItemGroup><Compile Include="..\..\src\MKLight.App\Views\Analysis\AnalysisPaneChrome.cs" Link="Panels\App\%(Filename)%(Extension)" /></ItemGroup>
+  <ItemGroup><Compile Include="..\..\src\MKLight.App\ViewModels\GpuPreparationMonitor.cs;..\..\src\MKLight.App\Views\StatusCapsuleModel.cs;..\..\src\MKLight.App\Views\Analysis\ResultData.cs;..\..\src\MKLight.App\Views\Analysis\Results\Readers\*.cs" Link="Status\App\%(Filename)%(Extension)" /></ItemGroup>
 </Project>

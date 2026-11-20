@@ -6,10 +6,12 @@ using Microsoft.UI.Input;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
 using MKLight.App.Support;
 using MKLight.App.ViewModels;
+using MKLight.App.Views.Panels;
 using MKLight.App.Views.Viewport3D;
 using MKLight.Engine;
 using Windows.System;
@@ -68,7 +70,7 @@ public sealed partial class LayoutPanel : UserControl
         };
         // Panels move between places and windows (Unloaded, then Loaded again): the canvas must survive.
         Unloaded += (_, _) => _footprintJob?.Cancel();
-        View3D.ErrorChanged += () => Message.Text = View3D.Error ?? (_scene is null ? Message.Text : "");
+        View3D.ErrorChanged += UpdatePlaceholder;
         StaleCard.Tapped += (_, _) => _session?.Workspace.Layout.Rerun();
         BuildModeSegments();
         UpdateStyle();
@@ -97,8 +99,8 @@ public sealed partial class LayoutPanel : UserControl
             SetScene(session.LayoutScene, layout.Phase == PanePhase.Failed ? layout.Message : session.Workspace.ModelErrors.FirstOrDefault());
             SetStale(layout.IsStale, layout.IsRunning);
             var previewing = session.Workspace.PreviewTitle;
-            PreviewChip.Visibility = previewing is null ? Visibility.Collapsed : Visibility.Visible;
-            PreviewText.Text = previewing is null ? "" : $"Previewing {previewing} · not applied";
+            if (previewing is not null) PreviewText.Text = $"Previewing {previewing} · not applied";
+            MotionFade.Show(PreviewChip, previewing is not null);
             AutomationProperties.SetName(PreviewChip, previewing is null ? "" : $"Previewing {previewing}. The design has not changed.");
             UpdateAnamorphic();
         }
@@ -111,6 +113,9 @@ public sealed partial class LayoutPanel : UserControl
         SetSelectedSurface(session.SelectedSurface);
         Update();
     }
+
+    /// <summary>The design's panel host (the More menu's panel commands), once it has one.</summary>
+    PanelHost? Host => _session is null ? null : PanelHost.Of(_session);
 
     /// <summary>Raised when the user clicks a surface in the layout.</summary>
     public event Action<int>? SurfaceClicked;
@@ -215,37 +220,104 @@ public sealed partial class LayoutPanel : UserControl
     {
         _scene = scene;
         _section = scene is null ? null : EngineLayout.Section(scene);
-        Message.Text = scene is null ? message ?? "" : View3D.Error ?? "";
+        _message = message;
         if (!_camera.IsFitted) Fit(initial: true);
         else TryPendingFit();
         UpdateLegend();
         UpdateStyle();
-        AutomationProperties.SetName(Surface, LayoutModes.AccessibilityText(scene, _mode, _session?.Document.System.Surfaces.Count ?? 0));
+        UpdatePlaceholder();
+    }
+
+    string? _message;
+    string? _simulatedPhase;
+
+    /// <summary>The empty states over the scene (the Mac app's), and the canvas' automation name and help.</summary>
+    void UpdatePlaceholder()
+    {
+        var layout = _session?.Workspace.Layout;
+        var phase = _simulatedPhase ?? layout?.Phase switch { PanePhase.Unavailable => "unavailable", PanePhase.Failed => "failed", _ => "" };
+        var ws = _session?.Workspace;
+        var state = LayoutModes.Placeholder(
+            hasScene: _scene is not null || _section is not null,
+            viewportError: _mode == ViewportMode.Orbit3D ? View3D.Error : null,
+            phase, layout?.Message ?? _message,
+            designHasErrors: ws?.Issues.Any(i => i.Severity == "error") ?? false,
+            modelError: ws?.ModelErrors.FirstOrDefault() ?? (_session is null ? _message : null));
+        if (_simulatedPhase is "placeholder") state = new("Design Not Ready", "\uEA39", "The design needs at least one surface between the object and the image.");
+        Placeholder.Visibility = state is null ? Visibility.Collapsed : Visibility.Visible;
+        if (state is not null)
+        {
+            PlaceholderCard.Visibility = state.Busy ? Visibility.Collapsed : Visibility.Visible;
+            PlaceholderRing.IsActive = state.Busy;
+            PlaceholderRing.Visibility = state.Busy ? Visibility.Visible : Visibility.Collapsed;
+            PlaceholderGlyph.Glyph = state.Glyph;
+            PlaceholderTitle.Text = state.Title;
+            PlaceholderText.Text = state.Text;
+            PlaceholderText.Visibility = state.Text.Length == 0 ? Visibility.Collapsed : Visibility.Visible;
+            RetryButton.Visibility = state.CanRetry ? Visibility.Visible : Visibility.Collapsed;
+        }
+        else PlaceholderRing.IsActive = false;
+        // Nothing to scale or colour without a scene.
+        ColoringLegend.Visibility = state is null ? Visibility.Visible : Visibility.Collapsed;
+        UpdateScaleBar();
+        UpdateAutomation(state);
+    }
+
+    void UpdateAutomation(LayoutModes.PlaceholderState? state = null)
+    {
+        var (name, help) = LayoutModes.Summary(_scene, _mode, _session?.Document.System.Surfaces.Count ?? 0, _camera.Stretch, _selected, _stale,
+            _session?.Workspace.PreviewTitle, state is null || state.Busy ? null : $"{state.Title}. {state.Text}");
+        AutomationProperties.SetName(Surface, name);
+        AutomationProperties.SetHelpText(Surface, help);
+    }
+
+    void OnRetry(object sender, RoutedEventArgs e)
+    {
+        _simulatedPhase = null;
+        View3D.Retry();
+        UpdatePlaceholder();
+    }
+
+    /// <summary>Launch actions: the 3-D view as if its device were lost, or the "Design Not Ready" placeholder.</summary>
+    internal void SimulateUnavailable(bool viewport)
+    {
+        if (viewport)
+        {
+            Mode = ViewportMode.Orbit3D;
+            View3D.SimulateError("The graphics device stopped responding. The 3-D view will draw again when it is available.");
+        }
+        else
+        {
+            _simulatedPhase = "placeholder";
+            UpdatePlaceholder();
+        }
     }
 
     /// <summary>Kept for callers that draw a section alone (no 3-D).</summary>
     public void SetScene(SectionScene? scene, string? message = null)
     {
         _section = scene;
-        Message.Text = scene is null ? message ?? "" : "";
+        _message = message;
         if (!_camera.IsFitted) Fit(initial: true);
         UpdateLegend();
+        UpdatePlaceholder();
         Canvas.Invalidate();
     }
 
     public void SetStale(bool stale, bool updating)
     {
         _stale = stale;
-        StaleCard.Visibility = stale ? Visibility.Visible : Visibility.Collapsed;
+        MotionFade.Show(StaleCard, stale);
         StaleRing.IsActive = updating;
         StaleText.Text = updating ? "Updating" : "Design changed";
         ToolTipService.SetToolTip(StaleCard, updating ? null : "The layout is out of date. Click to update it.");
         TitleRing.IsActive = updating;
         TitleRing.Visibility = updating ? Visibility.Visible : Visibility.Collapsed;
         UpdateStyle();
+        UpdateAutomation();
     }
 
-    public void SetSelectedSurface(int? index) { _selected = index; UpdateStyle(); }
+    public void SetSelectedSurface(int? index) { _selected = index; UpdateStyle(); UpdateAutomation(); }
 
     void UpdateAnamorphic()
     {
@@ -277,6 +349,7 @@ public sealed partial class LayoutPanel : UserControl
         FootprintsButton.Visibility = orbit ? Visibility.Visible : Visibility.Collapsed;
         UpdateStretchChip();
         UpdateStyle();
+        UpdatePlaceholder();
     }
 
     /// <summary>The 3-D view's drawing style from the window's theme and the panel's state.</summary>
@@ -385,7 +458,7 @@ public sealed partial class LayoutPanel : UserControl
     void UpdateScaleBar()
     {
         var ppm = _camera.PointsPerMM;
-        if ((_scene is null && _section is null) || !(ppm > 0)) { ScaleBar.Visibility = Visibility.Collapsed; return; }
+        if ((_scene is null && _section is null) || !(ppm > 0) || Placeholder.Visibility == Visibility.Visible) { ScaleBar.Visibility = Visibility.Collapsed; return; }
         ScaleBar.Visibility = Visibility.Visible;
         var len = ViewportMath.NiceLength(90 / ppm);
         ScaleLine.Width = Math.Max(len * ppm, 1);
@@ -459,9 +532,43 @@ public sealed partial class LayoutPanel : UserControl
     }
 
     /// <summary>The Display menu, built from the current state each time it opens.</summary>
-    void OnDisplayMenuOpening(object? sender, object e)
+    void OnDisplayMenuOpening(object? sender, object e) => FillDisplayItems(DisplayMenu.Items);
+
+    /// <summary>
+    /// The header's More menu (the Mac app's panel More menu, with the view's own commands first):
+    /// Fit, Fit Lens, the display options, then moving the layout to another window and hiding it.
+    /// </summary>
+    void OnMoreMenuOpening(object? sender, object e) => FillMoreItems(MoreMenu.Items);
+
+    void FillMoreItems(IList<MenuFlyoutItemBase> items)
     {
-        var items = DisplayMenu.Items;
+        items.Clear();
+        var fit = new MenuFlyoutItem { Text = "Fit", Icon = new FontIcon { Glyph = "\uE9A6" }, KeyboardAcceleratorTextOverride = "Ctrl+0" };
+        fit.Click += (_, _) => { _fitLens = false; Fit(); };
+        var fitLens = new MenuFlyoutItem { Text = "Fit Lens", Icon = new FontIcon { Glyph = "\uE71E" }, IsEnabled = _scene is not null };
+        fitLens.Click += (_, _) => FitLens();
+        items.Add(fit);
+        items.Add(fitLens);
+        var display = new MenuFlyoutSubItem { Text = "Display Options", Icon = new FontIcon { Glyph = "\uE890" } };
+        FillDisplayItems(display.Items, fit: false);
+        items.Add(display);
+        if (Host is { } host)
+        {
+            items.Add(new MenuFlyoutSeparator());
+            host.AddPanelMenuItems(items, PanelId.Layout);
+        }
+        foreach (var item in items.OfType<MenuFlyoutItem>())
+            AutomationProperties.SetAutomationId(item, "Layout.More." + item.Text.Replace(" ", ""));
+    }
+
+    /// <summary>Launch actions: opens the More menu (for screenshots).</summary>
+    internal void OpenMoreMenu() => MoreMenu.ShowAt(MoreButton, new FlyoutShowOptions { Placement = FlyoutPlacementMode.BottomEdgeAlignedRight });
+
+    public void FitLens() { _fitLens = true; Fit(); _fitLens = false; }
+
+    /// <summary>The display options (ray colours, sampling, fit unless <paramref name="fit"/> is false, stretch, mesh, footprints).</summary>
+    void FillDisplayItems(IList<MenuFlyoutItemBase> items, bool fit = true)
+    {
         items.Clear();
         RadioMenuFlyoutItem ColoringItem(string text, RayColoring c)
         {
@@ -497,10 +604,13 @@ public sealed partial class LayoutPanel : UserControl
         var fitAll = new MenuFlyoutItem { Text = "Fit All", KeyboardAcceleratorTextOverride = "Ctrl+0" };
         fitAll.Click += (_, _) => { _fitLens = false; Fit(); };
         var fitLens = new MenuFlyoutItem { Text = "Fit Lens" };
-        fitLens.Click += (_, _) => { _fitLens = true; Fit(); _fitLens = false; };
-        items.Add(fitAll);
-        items.Add(fitLens);
-        items.Add(new MenuFlyoutSeparator());
+        fitLens.Click += (_, _) => FitLens();
+        if (fit)
+        {
+            items.Add(fitAll);
+            items.Add(fitLens);
+            items.Add(new MenuFlyoutSeparator());
+        }
 
         var stretch = new MenuFlyoutSubItem { Text = "Vertical Stretch", IsEnabled = _mode != ViewportMode.Orbit3D };
         FillStretchItems(stretch.Items, enabled: _mode != ViewportMode.Orbit3D);
@@ -570,8 +680,12 @@ public sealed partial class LayoutPanel : UserControl
 
     Vector2 Centred(Vector2 p) => new((float)(p.X - ActualWidth / 2), (float)(ActualHeight / 2 - p.Y));
 
+    // Touch goes through manipulations; the contacts down are counted (one finger orbits in 3-D, two pinch).
+    int _touches;
+
     void OnPointerPressed(object sender, PointerRoutedEventArgs e)
     {
+        if (e.Pointer.PointerDeviceType == PointerDeviceType.Touch) { _touches++; return; }
         var p = e.GetCurrentPoint(Surface);
         var props = p.Properties;
         if (!props.IsLeftButtonPressed && !props.IsMiddleButtonPressed && !props.IsRightButtonPressed) return;
@@ -597,12 +711,42 @@ public sealed partial class LayoutPanel : UserControl
 
     void OnPointerReleased(object sender, PointerRoutedEventArgs e)
     {
+        if (e.Pointer.PointerDeviceType == PointerDeviceType.Touch) { _touches = Math.Max(0, _touches - 1); return; }
         var at = e.GetCurrentPoint(Surface).Position.ToVector2();
         if (_pressAt is Vector2 p0 && Vector2.Distance(p0, at) < 3) HitTest(at);
         EndDrag(e.Pointer);
     }
 
-    void OnPointerCanceled(object sender, PointerRoutedEventArgs e) => EndDrag(e.Pointer);
+    void OnPointerCanceled(object sender, PointerRoutedEventArgs e)
+    {
+        if (e.Pointer.PointerDeviceType == PointerDeviceType.Touch) { _touches = Math.Max(0, _touches - 1); return; }
+        EndDrag(e.Pointer);
+    }
+
+    /// <summary>A tap selects the surface under the finger (mouse and pen clicks select in <see cref="OnPointerReleased"/>).</summary>
+    void OnTapped(object sender, TappedRoutedEventArgs e)
+    {
+        if (e.PointerDeviceType != PointerDeviceType.Touch) return;
+        HitTest(e.GetPosition(Surface).ToVector2());
+        e.Handled = true;
+    }
+
+    /// <summary>
+    /// Touch: one finger pans the section or orbits the 3-D view; two fingers pinch-zoom about their
+    /// centre and pan with it. Mouse and pen are handled by the pointer events.
+    /// </summary>
+    void OnManipulationDelta(object sender, ManipulationDeltaRoutedEventArgs e)
+    {
+        if (e.PointerDeviceType != PointerDeviceType.Touch) return;
+        Frame3D.Visibility = Visibility.Collapsed;
+        var d = e.Delta;
+        var at = e.Position;
+        _camera = _mode == ViewportMode.Orbit3D && _touches < 2 && d.Scale == 1
+            ? ViewportMath.Orbit(_camera, d.Translation.X, -d.Translation.Y)
+            : ViewportMath.Pinch(_camera, _mode, d.Scale, at.X, at.Y, d.Translation.X, d.Translation.Y, ActualWidth, ActualHeight);
+        Redraw();
+        e.Handled = true;
+    }
 
     void EndDrag(Pointer pointer)
     {

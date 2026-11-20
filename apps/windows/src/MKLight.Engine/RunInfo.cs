@@ -143,7 +143,10 @@ public sealed record BackendReport(
             o["device"].StringOrNull(), o["fallback_reason"].StringOrNull(), Json.Clone(o["cost_decision"]))
         : null;
 
-    /// <summary>e.g. "CPU reference · f64" or "Vulkan (RTX 4090) · f32".</summary>
+    /// <summary>The GPU backend that computed the result (<c>cuda</c> of <c>gpu:cuda</c>); <c>null</c> for the CPU.</summary>
+    public string? UsedGpuName => Used.StartsWith("gpu:", StringComparison.Ordinal) ? Used[4..] : null;
+
+    /// <summary>e.g. "CPU reference · f64" or "CUDA (RTX 4090) · f32".</summary>
     public string Summary
     {
         get
@@ -152,11 +155,11 @@ public sealed record BackendReport(
             {
                 "cpu_reference" => "CPU reference",
                 "mock" => "Mock",
-                var s when s.StartsWith("gpu:", StringComparison.Ordinal) => CultureInfo.InvariantCulture.TextInfo.ToTitleCase(s[4..]),
+                _ when UsedGpuName is { } g => EngineBackend.GpuDisplayName(g),
                 var s => s,
             };
-            var device = Device is { } d ? $" ({d})" : "";
-            var precision = Precision switch { "f64_reference" => "f64", "f32_gpu" => "f32", var p => p };
+            var device = Device is { Length: > 0 } d ? $" ({d})" : "";
+            var precision = EngineBackend.PrecisionShort(Precision);
             return precision.Length == 0 ? name + device : $"{name}{device} · {precision}";
         }
     }

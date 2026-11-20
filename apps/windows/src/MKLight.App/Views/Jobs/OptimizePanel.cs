@@ -10,7 +10,7 @@ namespace MKLight.App.Views.Jobs;
 /// <summary>
 /// The Optimize page of the inspector (the Mac app's <c>OptimizePanel</c>): the merit function, the variables and
 /// their bounds and the algorithm; while running the iteration, the search merit and a log-scale sparkline; the
-/// result previewed in the window with the design's and the candidate's spot numbers side by side, every variable
+/// result previewed in the window with the design's and the candidate's spot numbers and layouts side by side, every variable
 /// before → after, and Apply to Design as one undoable step.
 /// </summary>
 public sealed partial class OptimizePanel : UserControl
@@ -32,12 +32,6 @@ public sealed partial class OptimizePanel : UserControl
         session.Workspace.StateChanged += () => { if (_comparison is not null) FillComparison(_comparison); };
         session.Workspace.PreviewChanged += Queue;
         Loaded += (_, _) => { Rebuild(); _s.ScheduleEvaluation(); };
-        KeyDown += OnKey;
-    }
-
-    void OnKey(object sender, KeyRoutedEventArgs e)
-    {
-        if (e.Key == global::Windows.System.VirtualKey.Escape && _s.IsRunning) { _s.Cancel(); e.Handled = true; }
     }
 
     /// <summary>Rebuilds once per UI turn, however many changes arrived.</summary>
@@ -152,6 +146,8 @@ public sealed partial class OptimizePanel : UserControl
                 p.Children.Add(JobUI.Card(_comparison, 8));
             }
         }
+        if (r.System is not null && r.Improved)
+            p.Children.Add(new LayoutComparison(_s.Workspace, _s.StartSystem, r.System, afterTitle: _s.Applied ? "Applied" : "Candidate"));
         p.Children.Add(JobUI.Hint(r.StatusText()));
         if (_s.Trace.Count > 1) p.Children.Add(new Sparkline(64) { Values = _s.Trace.Select(t => t.Merit).ToList() });
         p.Children.Add(JobUI.Text("Variables", "PanelTitleText"));

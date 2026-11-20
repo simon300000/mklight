@@ -183,6 +183,13 @@ abstract record FormRow(string Key)
     }
 
     internal static void SetHelp(FrameworkElement e, string? help) => ToolTipService.SetToolTip(e, string.IsNullOrEmpty(help) ? null : help);
+
+    /// <summary>
+    /// The row's stable automation id, <c>Inspector.Row.{key}</c>, on its value control (the element
+    /// assistive technology and UI tests reach; its name is the row's label).
+    /// </summary>
+    internal void SetRowId(DependencyObject valueControl) =>
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetAutomationId(valueControl, "Inspector.Row." + Key);
 }
 
 /// <summary>Whether a value is a variable (the <c>V</c> toggle), and the solve that sets it.</summary>
@@ -246,6 +253,8 @@ sealed record NumberRow(string Key, string Title, double? Value, Action<double> 
         values.Children.Add(variable);
         values.Children.Add(trailing);
         var root = LabeledGrid(out var t, out var d, values);
+        SetRowId(box.Box);
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetAutomationId(variable, "Inspector.Row." + Key + ".Variable");
         var view = new View(root, t, d, box, unit, solve, variable, trailing);
         variable.Click += (_, _) =>
         {
@@ -318,6 +327,7 @@ sealed record TextRow(string Key, string Title, string Value, Action<string> Com
         field.View.VerticalAlignment = VerticalAlignment.Center;
         if (field.View is TextBox tb && Multiline) { tb.AcceptsReturn = true; tb.TextWrapping = TextWrapping.Wrap; tb.TextAlignment = TextAlignment.Left; tb.MaxHeight = 120; }
         var root = LabeledGrid(out var title, out _, field.View);
+        SetRowId(field.View);
         root.Tag = (field, title);
         Update(root, ctx);
         return root;
@@ -342,6 +352,7 @@ sealed record ChoiceRow(string Key, string Title, IReadOnlyList<(string Id, stri
     {
         var combo = new ComboBox { Style = InspectorStyles.Get("InspectorCombo") };
         var root = LabeledGrid(out var title, out _, combo);
+        SetRowId(combo);
         var state = new ChoiceState(combo, title);
         combo.SelectionChanged += (_, _) =>
         {
@@ -407,6 +418,7 @@ sealed record ToggleRow(string Key, string Title, bool IsOn, Action<bool> Commit
     {
         var toggle = new ToggleSwitch { OnContent = null, OffContent = null, MinWidth = 0, HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Center };
         var root = LabeledGrid(out var title, out _, toggle);
+        SetRowId(toggle);
         var state = new State(toggle, title);
         toggle.Toggled += (_, _) =>
         {
@@ -461,6 +473,7 @@ sealed record InfoRow(string Key, string Title, string Value) : FormRow(Key)
         left.Children.Add(caption);
         right.Children.Add(value);
         right.Children.Add(valueCaption);
+        SetRowId(value);
         g.Children.Add(left);
         Grid.SetColumn(right, 1);
         g.Children.Add(right);
@@ -487,6 +500,9 @@ sealed record InfoRow(string Key, string Title, string Value) : FormRow(Key)
         SetText(value, Value);
         SetText(valueCaption, ValueCaption);
         SetHelp(view, Help);
+        // Read as "label, value": the label names the value (its text pattern and help text carry the value).
+        NumberRow.AutomationName(value, Title);
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetHelpText(value, ValueCaption.Length == 0 ? Value : $"{Value}, {ValueCaption}");
     }
 }
 
@@ -514,6 +530,7 @@ sealed record ButtonRow(string Key, string Text, Action Invoke) : FormRow(Key)
         g.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         g.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         var b = new Button { Style = InspectorStyles.Get("InspectorLink"), VerticalAlignment = VerticalAlignment.Center };
+        SetRowId(b);
         var holder = new ContentControl { HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Center, IsTabStop = false };
         Grid.SetColumn(holder, 1);
         g.Children.Add(b);
@@ -581,6 +598,7 @@ sealed record MenuRow(string Key, string Text, IReadOnlyList<(string Title, Acti
     internal override FrameworkElement Create(FormContext ctx)
     {
         var d = new DropDownButton { Style = InspectorStyles.Get("InspectorMenu"), VerticalAlignment = VerticalAlignment.Center };
+        SetRowId(d);
         FrameworkElement root = d;
         if (Row)
         {

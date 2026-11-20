@@ -24,9 +24,12 @@ public static class ThemeLookup
         element.ActualThemeChanged += (_, _) => paint();
     }
 
+    static readonly Lazy<bool> HighContrast = new(() => new global::Windows.UI.ViewManagement.AccessibilitySettings().HighContrast);
+
     public static object Resource(ElementTheme theme, string key)
     {
-        var name = theme == ElementTheme.Dark ? "Dark" : "Light";
+        // A high-contrast theme takes its own dictionary (system colours), whatever the light/dark choice.
+        var name = HighContrast.Value ? "HighContrast" : theme == ElementTheme.Dark ? "Dark" : "Light";
         return Find(Application.Current.Resources, name, key)
             ?? (theme == ElementTheme.Dark ? Find(Application.Current.Resources, "Default", key) : null)
             ?? Application.Current.Resources[key];
