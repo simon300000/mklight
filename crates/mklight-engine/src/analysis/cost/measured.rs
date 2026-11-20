@@ -73,7 +73,10 @@ pub const WEBGPU: Rules = Rules {
 /// and wavelength (446k rays) for the spot diagram (2.1×), the ray grid
 /// (2.1×) and the geometric MTF (1.5×); at 32 rings (28k rays) the CPU
 /// was as fast or faster. The wave analyses measured no consistent gain
-/// and stay on the CPU unless the calibration shows one.
+/// and stay on the CPU unless the calibration shows one. The PSF is not
+/// calibrated: CUDA measured within 10 % of the CPU at every pupil size,
+/// and the sample's line sent 256² and 512² pupils of the Double Gauss to
+/// CUDA, which were 10 % slower there.
 pub const CUDA: Rules = Rules {
     name: "cuda",
     label: "CUDA",
@@ -86,7 +89,6 @@ pub const CUDA: Rules = Rules {
         "spot_diagram",
         "ray_grid",
         "geometric_mtf",
-        "psf",
         "mtf",
         "mtf_vs_field",
         "through_focus_mtf",

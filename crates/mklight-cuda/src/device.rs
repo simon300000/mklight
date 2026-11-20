@@ -159,7 +159,8 @@ impl CudaDevice {
         let dev = cu::device::get(0).map_err(|e| err("cuDeviceGet", e))?;
         let ctx = unsafe { cu::primary_ctx::retain(dev) }.map_err(|e| err("primary context", e))?;
         unsafe { cu::ctx::set_current(ctx) }.map_err(|e| err("cuCtxSetCurrent", e))?;
-        let attr = |a| unsafe { cu::device::get_attribute(dev, a) }.map_err(|e| err("attribute", e));
+        let attr =
+            |a| unsafe { cu::device::get_attribute(dev, a) }.map_err(|e| err("attribute", e));
         use sys::CUdevice_attribute_enum as A;
         let arch = (
             attr(A::CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR)?,
@@ -293,7 +294,11 @@ impl CudaDevice {
                 "cuda: compiled {name} in {:.2} s ({} KiB){}",
                 t.elapsed().as_secs_f64(),
                 cubin.len() / 1024,
-                if log.trim().is_empty() { String::new() } else { format!("\n{log}") }
+                if log.trim().is_empty() {
+                    String::new()
+                } else {
+                    format!("\n{log}")
+                }
             );
         }
         if let Some(p) = &path {
@@ -318,9 +323,16 @@ impl CudaDevice {
     /// The loaded unit holding `k` (compiled or read from the cache on first
     /// use; concurrent first uses wait for one compilation).
     fn unit(&self, k: Kernel) -> MkResult<Arc<Module>> {
-        let (name, source) = kernels::unit(k.module, k.entry)
-            .ok_or_else(|| MkError::Unsupported(format!("cuda: no kernel module '{}'", k.module)))?;
-        let cell = self.modules.lock().unwrap().entry(name.clone()).or_default().clone();
+        let (name, source) = kernels::unit(k.module, k.entry).ok_or_else(|| {
+            MkError::Unsupported(format!("cuda: no kernel module '{}'", k.module))
+        })?;
+        let cell = self
+            .modules
+            .lock()
+            .unwrap()
+            .entry(name.clone())
+            .or_default()
+            .clone();
         cell.get_or_init(|| {
             let (cubin, from_cache) = self.image(&name, &source).map_err(|e| e.to_string())?;
             self.bind().map_err(|e| e.to_string())?;
@@ -421,7 +433,11 @@ impl CudaDevice {
         }
         let read_bytes: usize = batch.reads.iter().map(|r| r.into.len() * 4).sum();
         let staging_bytes = input_bytes.max(read_bytes).max(ALIGN);
-        if lane.staging.as_ref().is_none_or(|p| p.bytes < staging_bytes) {
+        if lane
+            .staging
+            .as_ref()
+            .is_none_or(|p| p.bytes < staging_bytes)
+        {
             lane.staging = None;
             lane.staging = Some(Pinned::new(staging_bytes)?);
         }
@@ -442,11 +458,9 @@ impl CudaDevice {
                     _ => None,
                 })
                 .chain(
-                    batch
-                        .passes
-                        .iter()
-                        .zip(&uniform_at)
-                        .filter_map(|(p, a)| Some(((*a)?, bytemuck::cast_slice(p.uniform.as_ref()?)))),
+                    batch.passes.iter().zip(&uniform_at).filter_map(|(p, a)| {
+                        Some(((*a)?, bytemuck::cast_slice(p.uniform.as_ref()?)))
+                    }),
                 );
             for (offset, bytes) in sources {
                 let (_, tail) = std::mem::take(&mut rest).split_at_mut(offset - at);
@@ -483,12 +497,13 @@ impl CudaDevice {
         let mut owned: Vec<sys::CUdeviceptr> = Vec::new();
         let mut ptrs: Vec<sys::CUdeviceptr> = Vec::with_capacity(batch.resources.len());
         let result = (|| -> MkResult<()> {
-            let alloc = |words: usize, owned: &mut Vec<sys::CUdeviceptr>| -> MkResult<sys::CUdeviceptr> {
-                let p = unsafe { cu::malloc_async(s, words.max(4) * 4) }
-                    .map_err(|e| err("cuMemAllocAsync", e))?;
-                owned.push(p);
-                Ok(p)
-            };
+            let alloc =
+                |words: usize, owned: &mut Vec<sys::CUdeviceptr>| -> MkResult<sys::CUdeviceptr> {
+                    let p = unsafe { cu::malloc_async(s, words.max(4) * 4) }
+                        .map_err(|e| err("cuMemAllocAsync", e))?;
+                    owned.push(p);
+                    Ok(p)
+                };
             let inputs = if input_bytes > 0 {
                 let p = alloc(input_bytes / 4, &mut owned)?;
                 check("cuMemcpyHtoDAsync", unsafe {
@@ -519,7 +534,12 @@ impl CudaDevice {
                         if *len > 0 {
                             let (src, _) = self.ptr(*key)?;
                             check("cuMemcpyDtoDAsync", unsafe {
-                                sys::cuMemcpyDtoDAsync_v2(p, src + (*offset * 4) as u64, *len * 4, s)
+                                sys::cuMemcpyDtoDAsync_v2(
+                                    p,
+                                    src + (*offset * 4) as u64,
+                                    *len * 4,
+                                    s,
+                                )
                             })?;
                         }
                         p
@@ -686,7 +706,8 @@ impl Gpu for CudaDevice {
             let p = unsafe { cu::malloc_async(*admin, words.max(4) * 4) }
                 .map_err(|e| err("cuMemAllocAsync", e))?;
             // Usable on every stream once the allocation has completed.
-            unsafe { cu::stream::synchronize(*admin) }.map_err(|e| err("cuStreamSynchronize", e))?;
+            unsafe { cu::stream::synchronize(*admin) }
+                .map_err(|e| err("cuStreamSynchronize", e))?;
             p
         };
         let key = self.next_key.fetch_add(1, Ordering::Relaxed);
@@ -707,7 +728,8 @@ impl Gpu for CudaDevice {
 
     fn prepare(&self, kernels: &[(Kernel, PassShape)]) -> MkResult<()> {
         let none = std::sync::atomic::AtomicBool::new(false);
-        self.prepare_parallel(kernels, &|_, _| {}, &none).map(|_| ())
+        self.prepare_parallel(kernels, &|_, _| {}, &none)
+            .map(|_| ())
     }
 
     fn prepare_all(
@@ -730,7 +752,11 @@ impl Gpu for CudaDevice {
             (Kernel::new(m, e), shape)
         }));
         let from_cache = self.prepare_parallel(&all, progress, cancel)?;
-        Ok((all.len(), from_cache, self.cache_warning.lock().unwrap().clone()))
+        Ok((
+            all.len(),
+            from_cache,
+            self.cache_warning.lock().unwrap().clone(),
+        ))
     }
 
     fn run(&self, batch: Batch<'_>) -> MkResult<BatchStats> {

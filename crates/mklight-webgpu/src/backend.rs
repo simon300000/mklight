@@ -27,9 +27,9 @@ use mklight_gpu::resident::{
     ReadView, Readback, ResidentCacheStats, ResidentPlan, SystemCacheKey,
 };
 use mklight_gpu::{
-    ComputeBackend, CpuF32Backend, DeviceInfo, Df32, ErrorBudget, Job, JobKind,
-    JobOutput, JobResult, JobStats, KernelPreparation, NumericsProbe, PackedSystem,
-    PackedSystemSet, Pending, PrecisionDescriptor, QualificationBackend, SystemHandle,
+    ComputeBackend, CpuF32Backend, DeviceInfo, Df32, ErrorBudget, Job, JobKind, JobOutput,
+    JobResult, JobStats, KernelPreparation, NumericsProbe, PackedSystem, PackedSystemSet, Pending,
+    PrecisionDescriptor, QualificationBackend, SystemHandle,
 };
 
 use crate::device::*;
@@ -148,17 +148,19 @@ impl WebGpuBackend {
             compensated_reductions: true,
             probe,
             budget: ErrorBudget::CONVENTIONS,
-            kernel_build: gpu.kernel_build(&raw).unwrap_or_else(|| format!(
-                "WGSL {} via {} ({}); opaque-barrier double-float; compiler without barriers: \
+            kernel_build: gpu.kernel_build(&raw).unwrap_or_else(|| {
+                format!(
+                    "WGSL {} via {} ({}); opaque-barrier double-float; compiler without barriers: \
                  contraction {}, reassociation {}, correctly rounded div {} / sqrt {}",
-                kernels::digest(),
-                s.backend,
-                s.driver,
-                yn(!raw.no_contraction),
-                yn(!raw.no_reassociation),
-                yn(raw.correctly_rounded_div),
-                yn(raw.correctly_rounded_sqrt),
-            )),
+                    kernels::digest(),
+                    s.backend,
+                    s.driver,
+                    yn(!raw.no_contraction),
+                    yn(!raw.no_reassociation),
+                    yn(raw.correctly_rounded_div),
+                    yn(raw.correctly_rounded_sqrt),
+                )
+            }),
         };
         Ok(Self {
             inner: Arc::new(Inner {
@@ -380,8 +382,10 @@ impl ComputeBackend for WebGpuBackend {
     ) -> MkResult<KernelPreparation> {
         let t = Instant::now();
         let all = crate::ops::pipelines();
-        let (kernels, from_cache, warning) =
-            self.inner.gpu.prepare_all(&all, cache_dir, progress, cancel)?;
+        let (kernels, from_cache, warning) = self
+            .inner
+            .gpu
+            .prepare_all(&all, cache_dir, progress, cancel)?;
         Ok(KernelPreparation {
             kernels,
             from_cache,

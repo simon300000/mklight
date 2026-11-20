@@ -84,7 +84,10 @@ pub const HEADERS: &[(&str, &str)] = &[
         "trace_shared.h",
         include_str!("../../mklight-metal/shaders/trace_shared.h"),
     ),
-    ("trace_bindings.h", include_str!("../kernels/trace_bindings.h")),
+    (
+        "trace_bindings.h",
+        include_str!("../kernels/trace_bindings.h"),
+    ),
 ];
 
 /// `(module, source)` of every CUDA module: the WebGPU backend's module
@@ -99,26 +102,41 @@ pub const MODULES: &[(&str, &str)] = &[
     // trace.cu twice: without and with sag overlays.
     (
         "trace",
-        concat!("#define MKL_OVERLAYS false\n", include_str!("../kernels/trace.cu")),
+        concat!(
+            "#define MKL_OVERLAYS false\n",
+            include_str!("../kernels/trace.cu")
+        ),
     ),
     (
         "trace_overlays",
-        concat!("#define MKL_OVERLAYS true\n", include_str!("../kernels/trace.cu")),
+        concat!(
+            "#define MKL_OVERLAYS true\n",
+            include_str!("../kernels/trace.cu")
+        ),
     ),
     // aiming.cu likewise (the WGSL modules append the aim solver to the
     // trace; here it calls trace_shared.h's core).
     (
         "aiming",
-        concat!("#define MKL_OVERLAYS false\n", include_str!("../kernels/aiming.cu")),
+        concat!(
+            "#define MKL_OVERLAYS false\n",
+            include_str!("../kernels/aiming.cu")
+        ),
     ),
     (
         "aiming_overlays",
-        concat!("#define MKL_OVERLAYS true\n", include_str!("../kernels/aiming.cu")),
+        concat!(
+            "#define MKL_OVERLAYS true\n",
+            include_str!("../kernels/aiming.cu")
+        ),
     ),
     // FftMtf (CUDA only): after wave.cu, whose helpers it uses.
     (
         "fft_mtf",
-        concat!(include_str!("../kernels/wave.cu"), include_str!("../kernels/fft_mtf.cu")),
+        concat!(
+            include_str!("../kernels/wave.cu"),
+            include_str!("../kernels/fft_mtf.cu")
+        ),
     ),
 ];
 
@@ -169,7 +187,8 @@ pub fn units() -> Vec<(String, String)> {
                     .chars()
                     .take_while(|c| c.is_alphanumeric() || *c == '_')
                     .collect();
-                if !entry.is_empty() && !out.iter().any(|(n, _)| *n == format!("{module}.{entry}")) {
+                if !entry.is_empty() && !out.iter().any(|(n, _)| *n == format!("{module}.{entry}"))
+                {
                     out.extend(unit(module, &entry));
                 }
             }

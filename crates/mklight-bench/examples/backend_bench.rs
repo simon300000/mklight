@@ -100,11 +100,17 @@ fn prepare(engine: &Engine, dir: &str) {
         if !busy || t.elapsed().as_secs() > 600 {
             let cal = match calibration {
                 GpuCalibrationState::Ready { calibration } => {
-                    format!("calibration {} ({:.1} s)", calibration.source, calibration.seconds)
+                    format!(
+                        "calibration {} ({:.1} s)",
+                        calibration.source, calibration.seconds
+                    )
                 }
                 other => format!("calibration {other:?}"),
             };
-            println!("# prepared in {:.1} s: {kernels:?}; {cal}", t.elapsed().as_secs_f64());
+            println!(
+                "# prepared in {:.1} s: {kernels:?}; {cal}",
+                t.elapsed().as_secs_f64()
+            );
             return;
         }
         std::thread::sleep(std::time::Duration::from_millis(20));

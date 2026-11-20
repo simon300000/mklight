@@ -29,6 +29,7 @@ macro_rules! gpu_or_skip {
     };
 }
 
+mod aim_jacobian;
 mod cuda;
 mod fft_mtf;
 
@@ -39,4 +40,12 @@ macro_rules! webgpu_tests {
         }
     )*};
 }
-webgpu_tests!(numerics, transforms, geometry, collectives, wave, trace, aiming);
+webgpu_tests!(
+    numerics,
+    transforms,
+    geometry,
+    collectives,
+    wave,
+    trace,
+    aiming
+);

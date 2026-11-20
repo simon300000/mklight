@@ -182,7 +182,9 @@ impl DeviceOps for WebGpuOps {
         if !resident_inputs(op) {
             self.mirrors.sync_reads(op, x, stats)?;
         }
-        let r = self.offer(i, op, x, ctl, stats).map(|p| p.map(|p| relabel(&self.backend, p)));
+        let r = self
+            .offer(i, op, x, ctl, stats)
+            .map(|p| p.map(|p| relabel(&self.backend, p)));
         match &r {
             Ok(None) => {
                 self.mirrors.sync_reads(op, x, stats)?;

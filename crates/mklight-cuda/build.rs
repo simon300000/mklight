@@ -28,7 +28,11 @@ fn copy(src: &Path, out: &Path) -> String {
         if l.trim_start().starts_with("//!") {
             continue;
         }
-        if let Some(rel) = l.trim().strip_prefix("#[path = \"").and_then(|r| r.strip_suffix("\"]")) {
+        if let Some(rel) = l
+            .trim()
+            .strip_prefix("#[path = \"")
+            .and_then(|r| r.strip_suffix("\"]"))
+        {
             let target = copy(&dir.join(rel), out);
             body += &format!("#[path = \"{}\"]\n", target.replace('\\', "/"));
             continue;
@@ -38,8 +42,14 @@ fn copy(src: &Path, out: &Path) -> String {
         }
         body += &l
             .replace("\"webgpu:", "\"cuda:")
-            .replace("Backend::Gpu(\"webgpu\".into())", "Backend::Gpu(\"cuda\".into())")
-            .replace("kernel_build.contains(\"WGSL\")", "kernel_build.contains(\"CUDA\")");
+            .replace(
+                "Backend::Gpu(\"webgpu\".into())",
+                "Backend::Gpu(\"cuda\".into())",
+            )
+            .replace(
+                "kernel_build.contains(\"WGSL\")",
+                "kernel_build.contains(\"CUDA\")",
+            );
         body += "\n";
     }
     let dst = out.join(src.file_name().unwrap());
@@ -49,7 +59,8 @@ fn copy(src: &Path, out: &Path) -> String {
 
 fn main() {
     embed_kernels(&PathBuf::from(env::var("OUT_DIR").unwrap()));
-    let dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap()).join("../mklight-webgpu/tests");
+    let dir =
+        PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap()).join("../mklight-webgpu/tests");
     let out = PathBuf::from(env::var("OUT_DIR").unwrap()).join("webgpu_tests");
     fs::create_dir_all(&out).unwrap();
     println!("cargo:rerun-if-changed={}", dir.display());
@@ -88,12 +99,19 @@ const DEFAULT_TARGETS: &str = "75,80,89,90,ptx90";
 /// time. The images go to `OUT_DIR/cuda/` and are `include_bytes!`ed.
 fn embed_kernels(out: &Path) {
     println!("cargo:rerun-if-env-changed=MKLIGHT_CUDA_ARCHS");
-    for dir in ["kernels", "src/sources.rs", "../mklight-metal/shaders", "../mklight-gpu/include"] {
+    for dir in [
+        "kernels",
+        "src/sources.rs",
+        "../mklight-metal/shaders",
+        "../mklight-gpu/include",
+    ] {
         println!("cargo:rerun-if-changed={dir}");
     }
     let table = out.join("embedded.rs");
     let empty = |why: &str| {
-        println!("cargo:warning=mklight-cuda: no built-in kernels ({why}); they compile at run time with NVRTC");
+        println!(
+            "cargo:warning=mklight-cuda: no built-in kernels ({why}); they compile at run time with NVRTC"
+        );
         fs::write(&table, "&[]").unwrap();
     };
     let targets: Vec<String> = env::var("MKLIGHT_CUDA_ARCHS")
@@ -158,7 +176,10 @@ fn embed_kernels(out: &Path) {
         });
         let failed = failed.into_inner().unwrap();
         if !failed.is_empty() {
-            panic!("mklight-cuda: kernels failed to compile:\n{}", failed.join("\n"));
+            panic!(
+                "mklight-cuda: kernels failed to compile:\n{}",
+                failed.join("\n")
+            );
         }
         let mut rs = String::from("&[\n");
         for (name, _, target) in &jobs {

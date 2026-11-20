@@ -73,7 +73,10 @@ pub const CUDA_ENTRIES: &[(&str, &str, [u32; 3])] = &[
 /// whose terms are literals or `const`s of the module (the generated layout
 /// constants included); for CUDA-only entries, [`CUDA_ENTRIES`].
 pub fn block_size(module: &str, entry: &str) -> Option<[u32; 3]> {
-    if let Some(&(_, _, b)) = CUDA_ENTRIES.iter().find(|(m, e, _)| *m == module && *e == entry) {
+    if let Some(&(_, _, b)) = CUDA_ENTRIES
+        .iter()
+        .find(|(m, e, _)| *m == module && *e == entry)
+    {
         return Some(b);
     }
     let wgsl = mklight_webgpu::kernels::source(module)?;

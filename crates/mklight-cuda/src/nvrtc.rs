@@ -25,8 +25,14 @@ pub fn compile(name: &str, source: &str, target: &str) -> Result<(Vec<u8>, Strin
     let cstr = |s: &str| CString::new(s).map_err(|e| e.to_string());
     let src = cstr(source)?;
     let file = cstr(&format!("{name}.cu"))?;
-    let hdr: Vec<CString> = headers.iter().map(|(_, s)| cstr(s)).collect::<Result<_, _>>()?;
-    let hdr_names: Vec<CString> = headers.iter().map(|(n, _)| cstr(n)).collect::<Result<_, _>>()?;
+    let hdr: Vec<CString> = headers
+        .iter()
+        .map(|(_, s)| cstr(s))
+        .collect::<Result<_, _>>()?;
+    let hdr_names: Vec<CString> = headers
+        .iter()
+        .map(|(n, _)| cstr(n))
+        .collect::<Result<_, _>>()?;
     let hp: Vec<*const i8> = hdr.iter().map(|c| c.as_ptr()).collect();
     let hn: Vec<*const i8> = hdr_names.iter().map(|c| c.as_ptr()).collect();
     let mut opts: Vec<CString> = super::sources::OPTIONS
@@ -78,7 +84,10 @@ pub fn compile(name: &str, source: &str, target: &str) -> Result<(Vec<u8>, Strin
             } else {
                 ok(nv::nvrtcGetCUBINSize(prog, &mut size), "CUBIN size")?;
                 let mut cubin = vec![0u8; size];
-                ok(nv::nvrtcGetCUBIN(prog, cubin.as_mut_ptr() as *mut i8), "CUBIN")?;
+                ok(
+                    nv::nvrtcGetCUBIN(prog, cubin.as_mut_ptr() as *mut i8),
+                    "CUBIN",
+                )?;
                 cubin
             };
             Ok((image, log))
