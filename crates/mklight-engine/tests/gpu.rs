@@ -190,7 +190,9 @@ fn auto_picks_a_gpu_only_for_analyses_with_a_gpu_path() {
     // A large grid: `auto` follows its own cost decision (native exactly
     // when it predicts a meaningful gain), without a warning.
     let follows = |r: &mklight_engine::AnalysisResult| {
-        let native = r.backend.cost_decision.as_ref().unwrap()["decision"] == "qualified_metal";
+        let native = r.backend.cost_decision.as_ref().unwrap()["decision"]
+            .as_str()
+            .is_some_and(|d| d.starts_with("qualified_"));
         assert_eq!(
             r.run_info.precision == Precision::F32Gpu,
             native,
@@ -464,6 +466,7 @@ fn cpu_only_merit_reports_cpu_even_with_a_selected_gpu() {
 /// loads from the system cache), and the saved pipeline archive then serves
 /// a second engine without compiling.
 #[test]
+#[cfg(target_os = "macos")]
 fn metal_kernels_prepare_ahead_and_load_from_the_saved_cache() {
     use mklight_engine::gpu::GpuPreparation;
     let settled = |e: &Engine| {
@@ -506,6 +509,44 @@ fn metal_kernels_prepare_ahead_and_load_from_the_saved_cache() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// The Windows app prepares CUDA's kernels at launch: they are built into
+/// the library, so every kernel loads without compiling, and the
+/// preparation reports them as not compiled now.
+#[test]
+#[cfg(any(windows, target_os = "linux"))]
+fn cuda_kernels_prepare_ahead() {
+    use mklight_engine::gpu::GpuPreparation;
+    let dir = std::env::temp_dir().join(format!("mklight-cuda-prepare-{}", std::process::id()));
+    let e = engine_with(None);
+    assert!(e.prepare_gpu(Some(dir.clone())));
+    let start = std::time::Instant::now();
+    let state = loop {
+        match e.gpu_preparation() {
+            GpuPreparation::Preparing { .. } if start.elapsed().as_secs() < 300 => {
+                std::thread::sleep(std::time::Duration::from_millis(10))
+            }
+            s => break s,
+        }
+    };
+    match state {
+        GpuPreparation::Ready {
+            kernels,
+            from_cache,
+            warning,
+            ..
+        } => {
+            assert!(kernels >= 40, "{kernels} kernels");
+            if !mklight_cuda::kernels::EMBEDDED.is_empty() {
+                assert_eq!(from_cache, kernels, "every kernel built in");
+            }
+            assert_eq!(warning, None);
+        }
+        GpuPreparation::Unavailable { reason } => eprintln!("skipping: no CUDA ({reason})"),
+        s => panic!("{s:?}"),
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// `EngineConfig::register_emulation` lists `gpu:cpu_f32` as an emulation
 /// on the CPU, runs an explicit request on it, and never gives it to
 /// `auto`, even as the only GPU; without the flag nothing is registered.
@@ -538,7 +579,14 @@ fn registered_emulation_runs_only_on_explicit_request() {
     for backend in [Some(Backend::Auto), None] {
         let r = run_on(&s, "spot_diagram", big.clone(), backend);
         assert_ne!(r.run_info.backend, "gpu:cpu_f32");
-        if cfg!(not(target_os = "macos")) {
+        // Without a real GPU (the emulation aside) auto runs the CPU
+        // reference and says why the emulation was not taken; with one (CUDA
+        // on Windows and Linux, Metal on macOS) it may take that GPU.
+        let real_gpu = e
+            .backends()
+            .iter()
+            .any(|b| b.available && b.id.starts_with("gpu:") && b.id != "gpu:cpu_f32");
+        if !real_gpu {
             assert_eq!(r.run_info.backend, "cpu_reference");
             let why = r.backend.fallback_reason.clone().unwrap_or_default();
             assert!(

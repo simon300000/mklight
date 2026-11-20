@@ -150,6 +150,10 @@ impl<'a> Batch<'a> {
         self.resources.push(Resource::Slice { key, offset, len });
         self.resources.len() - 1
     }
+    /// Queue a copy; one that continues the previous copy on both sides
+    /// (the next words of the same source into the next words of the same
+    /// destination) extends it, so contiguous planes cost one device copy.
+    /// Copies within one buffer are never merged.
     pub fn copy(
         &mut self,
         from: usize,
@@ -158,6 +162,16 @@ impl<'a> Batch<'a> {
         to_offset: usize,
         len: usize,
     ) {
+        if let Some(c) = self.copies.last_mut()
+            && c.from == from
+            && c.to == to
+            && c.from_offset + c.len == from_offset
+            && c.to_offset + c.len == to_offset
+            && !matches!(self.resources.get(from), Some(Resource::Persistent(k)) if *k == to)
+        {
+            c.len += len;
+            return;
+        }
         self.copies.push(Copy {
             from,
             from_offset,
@@ -222,6 +236,47 @@ pub trait Gpu: Send + Sync {
     fn prepare(&self, kernels: &[(Kernel, PassShape)]) -> MkResult<()>;
     /// Run `batch` and block until it completed and its reads are written.
     fn run(&self, batch: Batch<'_>) -> MkResult<BatchStats>;
+    /// The backend this device presents itself as: WebGPU, or another API
+    /// implementing the same kernels and binding convention (CUDA).
+    fn kind(&self) -> mklight_gpu::BackendKind {
+        mklight_gpu::BackendKind::WebGpu
+    }
+    /// The `PrecisionDescriptor::kernel_build` of a device that is not
+    /// WebGPU (`raw`: its probe of unprotected expressions).
+    fn kernel_build(&self, _raw: &mklight_gpu::NumericsProbe) -> Option<String> {
+        None
+    }
+    /// Whether the device has the kernels of an operation family (`"sum"`,
+    /// `"trace"`, `"transforms"`, `"wave"`, `"aiming"`, `"geometry"`,
+    /// `"collectives"`, `"fft_mtf"`); the operations of a family it lacks
+    /// run their CPU-f32 specification. Every WebGPU device has them all but
+    /// `"fft_mtf"` (`FftMtf` of the wave family, which has no WGSL kernels).
+    fn ports(&self, family: &str) -> bool {
+        family != "fft_mtf"
+    }
+    /// Prepare `kernels` ahead of their first use (`ComputeBackend::
+    /// prepare_kernels`): report progress `(done, total)`, stop early when
+    /// `cancel` is set, and keep compiled code under `cache_dir` where the
+    /// device has a cache of its own. Returns how many kernels it prepared
+    /// (`kernels` and any it uses only on this device), how many of them were
+    /// not compiled now, and why its cache could not be used, if it could
+    /// not. Provided: one kernel after the other through [`Gpu::prepare`].
+    fn prepare_all(
+        &self,
+        kernels: &[(Kernel, PassShape)],
+        _cache_dir: Option<&std::path::Path>,
+        progress: &(dyn Fn(usize, usize) + Sync),
+        cancel: &std::sync::atomic::AtomicBool,
+    ) -> MkResult<(usize, usize, Option<String>)> {
+        for (i, k) in kernels.iter().enumerate() {
+            if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                break;
+            }
+            self.prepare(std::slice::from_ref(k))?;
+            progress(i + 1, kernels.len());
+        }
+        Ok((kernels.len(), 0, None))
+    }
     /// Why the device can no longer run work (a pipeline that did not
     /// become ready in time, `crate::watchdog`), once known.
     fn unavailable(&self) -> Option<String> {
@@ -250,4 +305,41 @@ pub fn uniform_words(words: &[u32]) -> Vec<u32> {
     let mut v = words.to_vec();
     v.resize(words.len().div_ceil(4).max(1) * 4, 0);
     v
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn contiguous_copies_merge() {
+        let words = [0u32; 8];
+        let mut b = Batch::default();
+        let r = b.upload(&words);
+        let own = b.persistent(BufferKey(1));
+        // Three planes of 2 words into consecutive destination words: one copy.
+        for j in 0..3 {
+            b.copy(r, 2 * j, BufferKey(1), 10 + 2 * j, 2);
+        }
+        // A gap on either side starts a new copy; so does a copy within one buffer.
+        b.copy(r, 7, BufferKey(1), 16, 1);
+        b.copy(r, 8, BufferKey(2), 17, 1);
+        b.copy(own, 0, BufferKey(1), 0, 1);
+        b.copy(own, 1, BufferKey(1), 1, 1);
+        let c: Vec<_> = b
+            .copies
+            .iter()
+            .map(|c| (c.from, c.from_offset, c.to.0, c.to_offset, c.len))
+            .collect();
+        assert_eq!(
+            c,
+            [
+                (r, 0, 1, 10, 6),
+                (r, 7, 1, 16, 1),
+                (r, 8, 2, 17, 1),
+                (own, 0, 1, 0, 1),
+                (own, 1, 1, 1, 1)
+            ]
+        );
+    }
 }

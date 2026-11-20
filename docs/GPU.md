@@ -10,9 +10,10 @@ validated against the CPU f64 reference. Read `docs/CONVENTIONS.md` first.
 | `mklight-gpu` | `ComputeBackend` (production) and `QualificationBackend` (offline qualification) traits and job types, the packed layout (`include/mklight_gpu_types.h` + Rust mirror + packer), the double-float / utility-math / reduction / **trace-kernel specifications** in Rust, the CPU-f32 emulation backend, cross-validation against the f64 reference and precision qualification (`xval`) |
 | `mklight-metal` | Metal implementation: MSL kernels (`shaders/`), offline `.metallib` build with runtime-source fallback, device/queue/pipeline/buffer wrappers |
 | `mklight-webgpu` | WebGPU implementation on `wgpu`: WGSL kernels (`kernels/`), the device seam, the browser's GPU thread and proxy (§11) |
+| `mklight-cuda` | CUDA implementation (NVIDIA, Windows and Linux): the WebGPU host over a CUDA device, kernels built in at compile time (§12) |
 
-Vulkan (AMD/Intel) and CUDA/OptiX (NVIDIA) backends will be further crates
-implementing the same trait over the same layout.
+A Vulkan backend (AMD/Intel) would be a further crate implementing the same
+trait over the same layout.
 
 ## 1. The backend interface
 
@@ -2180,6 +2181,7 @@ read. All are optional; the defaults are the documented behaviour.
 | `MKLIGHT_COST_REFINEMENT=0` | `mklight-engine/src/analysis/cost/mod.rs` | turns the cost model's online refinement off |
 | `MKLIGHT_METAL_IN_FLIGHT=<n>` | `mklight-metal/src/context.rs` | committed command buffers a worker keeps in flight (default 2, at most 8; 0 completes each before the next) |
 | `MKLIGHT_METAL_ADMIT_PLANS=<n>`, `MKLIGHT_METAL_ADMIT_MIB=<n>` | `mklight-metal/src/admission.rs` | resident plans admitted at once (default 4) and their declared storage (default 1024 MiB) |
+| `MKLIGHT_CUDA_CACHE=<dir>` | `mklight-cuda/src/device.rs` | where kernels compiled at run time are cached when no front end passed a cache directory (`0`: nowhere); only builds without built-in kernels compile (§12.2) |
 
 **Diagnostics** (read by library code; they print, and change no result):
 
@@ -2187,12 +2189,18 @@ read. All are optional; the defaults are the documented behaviour.
 |---|---|---|
 | `MKLIGHT_METAL_TRACE_PLANS=1` | `mklight-metal/src/backend.rs` | prints one line per resident plan to stderr |
 | `MKLIGHT_METAL_TRACE_AIMS=1` | `mklight-metal/src/aiming/mod.rs` | prints every aim generation's convergence statistics to stderr |
-| `MKLIGHT_WEBGPU_TRACE_PLANS=1` | `mklight-webgpu/src/ops/mod.rs` | prints every WebGPU plan's operations with their placement and wall time to stderr (§11.5) |
+| `MKLIGHT_WEBGPU_TRACE_PLANS=1` | `mklight-webgpu/src/ops/mod.rs` | prints every WebGPU plan's operations with their placement and wall time to stderr (§11.5); also for CUDA plans |
+| `MKLIGHT_CUDA_PROFILE=1` | `mklight-cuda/src/device.rs` | prints every CUDA batch's transfers, kernels and host time to stderr (§12.3) |
+| `MKLIGHT_CUDA_LOG=1` | `mklight-cuda/src/device.rs` | prints every kernel compiled at run time with its time and size (§12.2) |
 
 **Build** (read by `mklight-metal/build.rs`): `MKLIGHT_METAL_TOOLCHAIN_BIN`
 (directory of the Metal compiler) and `MKLIGHT_METAL_SKIP_OFFLINE=1` (skip
 the offline shader compile, so the library is compiled from source at run
-time), §6.
+time), §6. Read by `mklight-cuda/build.rs`: `MKLIGHT_CUDA_ARCHS` (the
+built-in kernel targets, default `75,80,89,90,ptx90`; `89` builds only an
+Ada CUBIN, `none` none, so kernels compile at run time) and
+`MKLIGHT_CUDA_REQUIRE_KERNELS=1` (a build without built-in kernels fails),
+§12.2.
 
 **Harnesses** (read only by tests and benchmarks; the files define their
 meaning). The engine's measurement and qualification harnesses are the crate
@@ -2541,3 +2549,188 @@ which in the browser is now the wave analyses' bottleneck; this is a new
 division of the analyses on every GPU and needs the lattice, placement,
 resampling, rim, radiometry and pupil-projection operations in WGSL.
 `FftMtf` for the FFT MTF.
+
+## 12. CUDA backend
+
+`mklight-cuda` is the GPU of the Windows and Linux builds on NVIDIA
+hardware (`gpu:cuda`; on these platforms the only GPU registered, so `auto`
+takes it). It is the WebGPU backend's host (§11.1: plans on the shared
+hosted executor, device operations offered first, CPU-f32 specifications
+for the rest, device-resident mirrors) over a CUDA implementation of the
+device seam `mklight_webgpu::Gpu` (`CudaDevice`). WebGPU itself is not
+registered off macOS: its WGSL trace pipeline does not finish compiling on
+NVIDIA's Vulkan driver, and D3D12's compiler rejects the aim kernel.
+
+### 12.1 Structure: the WebGPU host, the Metal arithmetic
+
+* **Seam.** `Gpu` has, besides the batch interface of §11.1, `kind()` (the
+  `BackendKind` the backend reports), `kernel_build()`, `ports(family)` (a
+  family the device lacks runs its specification; WebGPU declines
+  `fft_mtf`) and `prepare_all` (kernel preparation with the front end's
+  cache directory and progress). Placements are named after the kind
+  (`cuda:trace`).
+* **Kernels** implement the WGSL kernels' interface: the same entry names,
+  parameter blocks and binding order (a kernel receives a device pointer to
+  its uniform block, then one pointer per storage binding), block size =
+  the WGSL entry's `@workgroup_size`, read from the WGSL source (CUDA-only
+  entries: `kernels::CUDA_ENTRIES`). The trace and aim kernels include
+  `mklight_common.h`, `surface_math.h` and `trace_shared.h` from
+  `crates/mklight-metal/shaders` directly, through the MSL subset of
+  `kernels/metal_stdlib.h` (vector types written per component,
+  `as_type`, `select`, the address-space qualifiers), so a change to the
+  Metal arithmetic reaches CUDA with no copy to resync. The aim solver
+  (`aiming.cu`) follows the specification (`aiming::kernel`), the
+  transforms, wave, geometry and collectives kernels the WGSL. Units that
+  inline the trace are compiled per entry point (`MKL_ONE_ENTRY`): with all
+  entries in one unit the trace took a minute to compile.
+* **Numerics** (§3): NVRTC with `--fmad=false --prec-div=true
+  --prec-sqrt=true --ftz=false` and no fast math; the protected operations
+  of §11.2 are plain IEEE operations. The probe on an RTX 4090: plain and
+  protected expressions both IEEE, true fma, no contraction or
+  reassociation, correctly rounded `/` and `sqrt`, **subnormals kept** (the
+  IEEE environment; `CpuF32Backend::matching` emulates it exactly).
+* **Memory.** Discrete GPU (`unified_memory = false`). A batch runs on a
+  stream of a small pool, so batches of different engine threads overlap.
+  Its uploads and uniform blocks are staged at aligned offsets of one
+  page-locked block (copied in parallel) and moved by one transfer into one
+  stream-ordered allocation; its scratch and slices share a second one,
+  zeroed by one memset; readbacks come back through the same staging (a
+  lane keeps at most 64 MiB of it; a larger batch stages through a block
+  of its own). Allocations come from the device's memory pool, which keeps
+  up to 1 GiB of freed memory for later batches; plan mirrors are pool
+  allocations on an admin stream, since `cuMemFree` synchronises the
+  device.
+* **Availability** (`Gpu::unavailable`, as the WebGPU watchdog's). After a
+  failed call the device synchronises its context: a sticky error (a
+  kernel fault, a launch the operating system stopped, an uncorrectable
+  memory error, a lost device) leaves the context unusable, so the device
+  is unavailable from then on with the reason, every later call fails at
+  once, and the engine routes `auto` to the CPU and refuses explicit
+  requests. Out of memory and other errors fail only their request.
+
+### 12.2 Loading and kernel preparation
+
+The driver (`nvcuda.dll`, `libcuda.so`) is loaded at run time (`cudarc`
+with dynamic loading), so every platform builds without a CUDA toolkit;
+without a driver or device, or with a driver older than CUDA 12.4, the
+backend is unavailable with that reason, and on macOS and wasm the crate
+is empty.
+
+**Kernels are built in.** The build script compiles every unit with NVRTC
+when the build machine has it (`src/sources.rs` and `src/nvrtc.rs` are
+shared with it) into CUBINs for sm_75, sm_80 (which the 8.6 parts run),
+sm_89 and sm_90 and PTX for compute_90 (with NVRTC 12.8 or later also
+sm_100 and sm_120), deflated and embedded: 11 MB of the library (52 MB
+uncompressed), about a minute of build time on 24 threads when a kernel
+changes (images are cached by their inputs, so other reruns take seconds).
+`MKLIGHT_CUDA_REQUIRE_KERNELS=1` makes a build without them an error;
+`scripts/build-windows.ps1` sets it for the app's engine. At run time a unit loads the device's CUBIN,
+else the newest CUBIN of its major version, else the PTX (compiled by the
+driver, which caches it). Only a build without NVRTC
+(`MKLIGHT_CUDA_ARCHS=none`, or none installed) compiles at run time with
+NVRTC, cached as CUBINs in `<cache_dir>/cuda` (`MKLIGHT_CUDA_CACHE`
+without one).
+
+`Engine::prepare_gpu` (the app at launch, `mk_engine_prepare_gpu`) opens
+the device and prepares all 45 kernels in parallel, with progress and
+cancellation. RTX 4090, i9-12900KS:
+
+| start | device open + probe | all kernels |
+|---|---:|---:|
+| built-in CUBINs (shipped) | 0.24–0.33 s | 0.01–0.04 s |
+| PTX only (a GPU newer than the newest CUBIN), first start / later | 0.40 s | 73 s / 0.07 s |
+| no built-in kernels, NVRTC, cold / cached | 0.8 s | 23 s / 0.14 s |
+
+Shipping NVRTC instead (`nvrtc64_120_0.dll` + `nvrtc-builtins64_124.dll`)
+would add 50 MB of libraries and a 20–35 s first start after every install
+or update; the built-in kernels cost 11 MB and no start-up time.
+
+### 12.3 Ported operations and accuracy
+
+Everything WebGPU ports (§11.5), and `FftMtf` (`kernels/fft_mtf.cu`:
+domain, sensor field, normalisation and frequency sampling; the FFTs and
+|·|² around it were device operations already). Every ported kernel is
+compared with the CPU-f32 emulation by the WebGPU test files, which the
+CUDA test program runs on CUDA (`build.rs` copies them with the placements
+renamed), plus CUDA's own tests (probe, FftMtf, the aim-Jacobian twin of
+Metal's test): `cargo test -p mklight-cuda --test tests`, 51 tests.
+Bitwise: probe, `DfOps`, `Reduce`, `Sum`, the trace family (outputs,
+records, statuses, overlays), `GenerateAim`, geometry, `SegmentReduce`,
+the wave operations but their phases (≤ 3e-8), FftMtf's moments and
+normalisation; FFTs bitwise the specification's, 1.1–1.9e-7 relative L2 of
+f64; Bluestein, chirp-z and affine MFT ≤ 5.4e-7; the FFT-MTF chain ≤ 3e-7
+of the specification. The trace passes the f64 cross-validation suite
+(§5.1) with the largest budget fraction 0.185 (ideal relay) and no band
+mismatches. At the engine level, `metal_accuracy::cuda_sample_accuracy`
+runs every CUDA analysis on the 16 samples at default settings under §9.4:
+112 runs, all native, none outside its contract (worst: MTF 9.1e-7, PSF
+image L1 5.0e-7).
+
+`MKLIGHT_CUDA_PROFILE=1` prints every batch's transfers, kernels and host
+time; `MKLIGHT_CUDA_LOG=1` every run-time compilation.
+
+### 12.4 Benchmark and routing
+
+RTX 4090 and i9-12900KS (24 threads), release, median after an edit
+(`backend_bench --prepare DIR`), Double Gauss unless noted, machine shared
+with other work (CPU 20–50 % busy), so ±15 %.
+
+**Kernels** (device time includes the PCIe transfers):
+
+| | CUDA device / wall | CPU f64 (24 threads) |
+|---|---:|---:|
+| trace, 992 k rays × 12 surfaces | 6.7 / 58 ms (kernel alone ≈ 1 ms) | 37–45 ms |
+| trace, even asphere / XY 65 terms (M rays/s) | 167 / 127 | 72 / 7 |
+| FFT 1024² / 2048² | 1.3 / 2.5 ms | 28 / 162 ms |
+| chirp-z 1024² / 2048² | 4.4 / 7.0 ms | 39 / 179 ms |
+
+**Analyses** (ms; `auto` after the launch calibration):
+
+| analysis | CPU | CUDA | auto |
+|---|---:|---:|---|
+| spot diagram 6 / 32 rings | 0.6 / 3.1 | 2.8 / 4.0 | CPU / CUDA |
+| spot diagram 128 / 250 rings | 42 / 173 | 23 / 94 | CUDA |
+| spot, Petzval asphere 128 / XY freeform 64 | 45 / 25 | 24 / 20 | CUDA |
+| geometric MTF 32 / 128 rings | 7.3 / 85 | 5.5 / 54 | CUDA |
+| ray grid 32 / 128 rings | 2.6 / 35 | 2.9 / 19 | CUDA |
+| PSF default / 256² / 512² pupil | 34 / 42 / 125 | 31 / 47 / 143 | CPU |
+| MTF default / FFT 512² | 38 / 249 | 64 / 131 | CPU / CUDA |
+| MTF vs field / through-focus MTF | 58 / 146 | 70 / 95 | CPU / CUDA |
+
+The geometric analyses gain 1.5–2× from about 100 k rays; the wave
+analyses trace and resample their pupils on the host (§11.6), so only
+FFT-MTF (its whole transform chain on the device) and through-focus MTF
+gain. A request's fixed cost on CUDA is about 2.5 ms.
+
+**Routing** (`analysis::cost::measured`, shared with WebGPU's calibration
+of §11.6): `Engine::prepare_gpu` installs `<cache_dir>/cost/cuda.json` when
+it was measured with the same device, driver, engine version, CPU thread
+count and fingerprint (a hash of the kernel build, the calibration's runs
+and sample and the version of the work measure, so another development
+build measures again); analyses missing from it route by the prior.
+Otherwise, after the kernels, it times the
+spot diagram, ray grid and geometric MTF (24 and 96 rings), the MTF, MTF
+vs field and through-focus MTF (33 and 65 pupil rays) and the FFT MTF
+(128² and 512² pupil grids) of the Cooke triplet on the CPU reference and
+on CUDA (about 6 s), fits each a line `fixed_ms + per_mwork_ms · work`
+(rays × surfaces, plus the transform work of the wave analyses), installs
+it, and caches it unless a size's median repeat was more than 1.5× its
+fastest or requests ran while it measured (then it serves this run only,
+and `not_cached` says why). A wave line applies only to the method it
+measured. `auto`
+takes CUDA when the CPU is predicted at least 1.3× and 5 ms slower. Until a
+calibration exists, or when it failed or was cancelled, the prior applies:
+spot diagram, ray grid and geometric MTF from 400 k rays, everything else
+on the CPU. The PSF is not calibrated (within 10 % either way) and stays on
+the CPU. While `prepare_gpu` prepares the kernels, `auto` sends CUDA
+requests to the CPU (`rule`: `cuda preparing`), so no request waits for a
+kernel compilation (on a GPU newer than the newest built-in CUBIN the PTX
+takes about a minute). An engine that never calls `prepare_gpu` (library
+and command-line use) starts the calibration in the background on its first
+`auto` request decided by the prior on the open CUDA device, and caches it
+once `prepare_gpu` names a cache directory. Installing a calibration
+decides new requests only: an identical request keeps its first route. The
+decision is recorded in `backend.cost_decision` (`rule`: `cuda preparing`,
+`cuda calibration` or `cuda break-even`). No request waits for the
+calibration, but it runs on the CPU and the device while requests may run
+(about 6 s), and can slow them meanwhile.

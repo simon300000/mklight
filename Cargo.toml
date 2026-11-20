@@ -11,6 +11,7 @@ members = [
     "crates/mklight-gpu",
     "crates/mklight-metal",
     "crates/mklight-webgpu",
+    "crates/mklight-cuda",
     "crates/mklight-engine",
     "crates/mklight-bench",
     "crates/mklight-ffi",
@@ -37,6 +38,7 @@ mklight-optim = { path = "crates/mklight-optim" }
 mklight-gpu = { path = "crates/mklight-gpu" }
 mklight-metal = { path = "crates/mklight-metal" }
 mklight-webgpu = { path = "crates/mklight-webgpu" }
+mklight-cuda = { path = "crates/mklight-cuda" }
 mklight-engine = { path = "crates/mklight-engine" }
 serde = { version = "1", features = ["derive", "rc"] }
 serde_json = { version = "1", features = ["float_roundtrip"] }

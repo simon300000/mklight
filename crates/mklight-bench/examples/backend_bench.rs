@@ -45,13 +45,18 @@
 //! `--shuffle` times the columns of each repetition in a new pseudo-random
 //! order (seeded, so runs repeat), so no column always follows the same one;
 //! by default the order is fixed (`cpu`, `metal`, its variants, `auto`).
+//! `--prepare DIR` first runs what a front end runs at launch
+//! (`Engine::prepare_gpu` with `DIR` as its cache directory: the GPU's
+//! kernels and, on CUDA, the cost calibration `auto` routes by) and waits
+//! for it; without it `auto` routes CUDA by the prior.
 //! `--idle MS` sleeps that long before every timed call, so each call starts
 //! on an idle machine, as an analysis after an interactive edit does.
 //!
 //! Each case and column appends one JSON line to `--out` and each case
-//! prints one row. Metal's device time is part of every record: other
-//! targets build a stub.
-#![cfg_attr(not(target_os = "macos"), allow(dead_code, unused_imports))]
+//! prints one row. Metal's and CUDA's device time (summed over the call's
+//! command buffers / batches) is part of every record; WebGPU reports none.
+//! GPU columns name a registered engine backend (`metal`, `webgpu` on
+//! macOS; `cuda` on Windows and Linux).
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -77,6 +82,39 @@ struct Args {
     budget: Option<f64>,
     shuffle: bool,
     idle_ms: u64,
+    prepare: Option<String>,
+}
+
+/// What a front end does at launch (`Engine::prepare_gpu`): prepare the
+/// GPU's kernels and, on CUDA, load or measure the cost calibration `auto`
+/// routes by, with `dir` as the cache directory. Waits for both.
+fn prepare(engine: &Engine, dir: &str) {
+    use mklight_engine::{GpuCalibrationState, gpu::GpuPreparation};
+    let t = Instant::now();
+    engine.prepare_gpu(Some(dir.into()));
+    loop {
+        let kernels = engine.gpu_preparation();
+        let calibration = engine.cuda_calibration_state();
+        let busy = matches!(kernels, GpuPreparation::Preparing { .. })
+            || matches!(calibration, GpuCalibrationState::Running);
+        if !busy || t.elapsed().as_secs() > 600 {
+            let cal = match calibration {
+                GpuCalibrationState::Ready { calibration } => {
+                    format!(
+                        "calibration {} ({:.1} s)",
+                        calibration.source, calibration.seconds
+                    )
+                }
+                other => format!("calibration {other:?}"),
+            };
+            println!(
+                "# prepared in {:.1} s: {kernels:?}; {cal}",
+                t.elapsed().as_secs_f64()
+            );
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
 }
 
 fn args() -> Args {
@@ -91,6 +129,7 @@ fn args() -> Args {
         budget: None,
         shuffle: false,
         idle_ms: 0,
+        prepare: None,
     };
     let mut it = std::env::args().skip(1);
     while let Some(x) = it.next() {
@@ -105,6 +144,7 @@ fn args() -> Args {
             "--budget" => a.budget = Some(value().parse().expect("--budget SECONDS")),
             "--shuffle" => a.shuffle = true,
             "--idle" => a.idle_ms = value().parse().expect("--idle MS"),
+            "--prepare" => a.prepare = Some(value()),
             _ if a.suite.is_empty() => a.suite = x,
             _ => panic!("unexpected argument {x}"),
         }
@@ -331,17 +371,22 @@ fn short(e: &str) -> String {
     e.chars().take(80).collect()
 }
 
-#[cfg(not(target_os = "macos"))]
-fn main() {
-    eprintln!("backend_bench measures Metal and runs on macOS only");
-    std::process::exit(2);
+/// Device seconds spent so far by this process on Metal and CUDA.
+fn device_seconds() -> f64 {
+    #[cfg(target_os = "macos")]
+    let metal = mklight_metal::device_seconds();
+    #[cfg(not(target_os = "macos"))]
+    let metal = 0.0;
+    metal + mklight_cuda::device_seconds()
 }
 
-#[cfg(target_os = "macos")]
 fn main() {
     let a = args();
     let suite: Value = serde_json::from_str(&std::fs::read_to_string(&a.suite).unwrap()).unwrap();
     let engine = Engine::new(EngineConfig::default());
+    if let Some(dir) = &a.prepare {
+        prepare(&engine, dir);
+    }
     let commit = commit();
     // Per lens: the session, its system and its own variables section.
     let mut sessions: BTreeMap<String, (Session, OpticalSystem, Value)> = BTreeMap::new();
@@ -440,7 +485,7 @@ fn main() {
                 if a.idle_ms > 0 {
                     std::thread::sleep(std::time::Duration::from_millis(a.idle_ms));
                 }
-                let d0 = mklight_metal::device_seconds();
+                let d0 = device_seconds();
                 match run(s, analysis, &settings, c) {
                     Ok((ms, r)) => {
                         times[i].push(ms);
@@ -449,7 +494,7 @@ fn main() {
                         {
                             want[i] = ((b * 1e3 / ms).floor() as usize).clamp(1, reps);
                         }
-                        device[i].push((mklight_metal::device_seconds() - d0) * 1e3);
+                        device[i].push((device_seconds() - d0) * 1e3);
                         reported[i].push(r.run_info.duration_ms);
                         used[i] = Some(r.run_info.backend.clone());
                     }
@@ -492,7 +537,7 @@ fn main() {
             let ran = match (&used_i, c.backend.as_str()) {
                 (Some(u), "auto") => {
                     if u.starts_with("gpu") {
-                        "→Metal".to_string()
+                        format!("→{}", u.trim_start_matches("gpu:"))
                     } else {
                         "→CPU".to_string()
                     }

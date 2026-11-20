@@ -25,9 +25,11 @@ const LIMIT: Duration = Duration::from_millis(300);
 /// `None` without a WebGPU adapter.
 fn stalled_engine() -> Option<Engine> {
     let engine = Engine::new(EngineConfig::default());
-    engine.register_backend(Arc::new(GpuProvider::new("metal", "off", || {
-        Err("off for this test".into())
-    })));
+    for other in ["metal", "cuda"] {
+        engine.register_backend(Arc::new(GpuProvider::new(other, "off", || {
+            Err("off for this test".into())
+        })));
+    }
     engine.register_backend(Arc::new(GpuProvider::webgpu_with(|| {
         let device = match WgpuDevice::open_native() {
             Ok(Some(d)) => d,

@@ -43,6 +43,9 @@ if (-not $NoEngine) {
     }
     $target = if ($Platform -eq 'ARM64') { 'aarch64-pc-windows-msvc' } else { $null }
     Push-Location $Root
+    # A release engine must carry its CUDA kernels (GPU.md §12.2): fail the
+    # build instead of shipping one that needs NVRTC at run time.
+    $env:MKLIGHT_CUDA_REQUIRE_KERNELS = '1'
     try {
         if ($target) {
             Invoke-Step "cargo build --release -p mklight-ffi --target $target" { cargo build --release -p mklight-ffi --target $target }

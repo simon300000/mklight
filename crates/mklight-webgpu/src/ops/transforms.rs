@@ -293,7 +293,9 @@ impl<'a> Builder<'a> {
             };
         }
         b.passes = passes;
-        b.copies = self.copies.clone();
+        for c in &self.copies {
+            b.copy(c.from, c.from_offset, c.to, c.to_offset, c.len);
+        }
         b
     }
 }

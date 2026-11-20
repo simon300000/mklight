@@ -95,6 +95,14 @@ fork–join analyses from stalling on preempted workers when other
 processes load every core (spot diagram 950 → 72 ms next to 24 busy
 threads; no change on an idle machine).
 
+The CUDA backend (`mklight-cuda`, Windows and Linux) needs no toolkit to
+build. When NVRTC is installed (the CUDA toolkit, on `PATH` or in
+`CUDA_PATH`), its build script compiles the kernels for every supported GPU
+and builds them in, which takes about a minute after a kernel source
+changes; `MKLIGHT_CUDA_ARCHS=89` builds only for the local GPU's
+architecture (here an RTX 40 series) while developing. Without NVRTC the
+kernels compile at run time instead ([GPU.md §12.2](GPU.md)).
+
 ## Tests
 
 ### Rust

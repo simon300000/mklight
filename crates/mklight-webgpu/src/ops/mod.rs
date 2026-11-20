@@ -106,6 +106,28 @@ impl Drop for WebGpuOps {
     }
 }
 
+/// A placement `webgpu:<operation>` under the name of the device's
+/// backend kind (`cuda:<operation>` on a CUDA device).
+fn relabel(backend: &WebGpuBackend, place: &'static str) -> &'static str {
+    use mklight_gpu::ComputeBackend;
+    let kind = backend.info().kind.as_str();
+    let Some(op) = place.strip_prefix("webgpu:") else {
+        return place;
+    };
+    if kind == "webgpu" {
+        return place;
+    }
+    static NAMES: std::sync::Mutex<Vec<&'static str>> = std::sync::Mutex::new(Vec::new());
+    let name = format!("{kind}:{op}");
+    let mut names = NAMES.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(n) = names.iter().find(|n| **n == name) {
+        return n;
+    }
+    let n: &'static str = Box::leak(name.into_boxed_str());
+    names.push(n);
+    n
+}
+
 /// The variant path of an operation (`Wave::Intensity`).
 fn op_name(op: &ResidentOp) -> String {
     let d = format!("{op:?}");
@@ -160,7 +182,9 @@ impl DeviceOps for WebGpuOps {
         if !resident_inputs(op) {
             self.mirrors.sync_reads(op, x, stats)?;
         }
-        let r = self.offer(i, op, x, ctl, stats);
+        let r = self
+            .offer(i, op, x, ctl, stats)
+            .map(|p| p.map(|p| relabel(&self.backend, p)));
         match &r {
             Ok(None) => {
                 self.mirrors.sync_reads(op, x, stats)?;
@@ -228,6 +252,20 @@ impl WebGpuOps {
         stats: &mut JobStats,
     ) -> MkResult<Option<&'static str>> {
         let gpu = self.backend.gpu().clone();
+        let family = match op {
+            ResidentOp::Sum(_) => "sum",
+            ResidentOp::TraceUpload(_)
+            | ResidentOp::Aiming(mklight_gpu::aiming::Request::TraceResident(_)) => "trace",
+            ResidentOp::Transforms(_) => "transforms",
+            ResidentOp::Wave(_) => "wave",
+            ResidentOp::Aiming(_) => "aiming",
+            ResidentOp::Geometry(_) => "geometry",
+            ResidentOp::Collectives(_) => "collectives",
+            _ => return Ok(None),
+        };
+        if !gpu.ports(family) {
+            return Ok(None);
+        }
         match op {
             ResidentOp::Sum(s) => {
                 let [channels, count] = s.input.desc.shape[..] else {

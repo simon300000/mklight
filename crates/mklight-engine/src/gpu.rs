@@ -94,6 +94,8 @@ pub struct GpuProvider {
     analyses: &'static [&'static str],
     /// The WebGPU backend (`gpu:webgpu`): its own analyses and cost rules.
     webgpu: bool,
+    /// The CUDA backend (`gpu:cuda`): its own cost rules.
+    cuda: bool,
 }
 
 impl GpuProvider {
@@ -112,6 +114,7 @@ impl GpuProvider {
                 .then_some(true),
             analyses: GPU_ANALYSES,
             webgpu: false,
+            cuda: false,
         }
     }
 
@@ -132,6 +135,18 @@ impl GpuProvider {
             webgpu: true,
             apple_gpu: Some(false),
             ..Self::new("webgpu", "WebGPU (f32)", open)
+        }
+    }
+
+    /// The CUDA backend on device 0 (`gpu:cuda`): the WebGPU host
+    /// operations over CUDA kernels, so it runs the analyses of
+    /// `WEBGPU_ANALYSES` natively.
+    pub fn cuda() -> Self {
+        GpuProvider {
+            analyses: WEBGPU_ANALYSES,
+            apple_gpu: Some(false),
+            cuda: true,
+            ..Self::new("cuda", "CUDA GPU (f32)", open_cuda)
         }
     }
 
@@ -179,6 +194,25 @@ impl GpuProvider {
             Some(reason) => Err(reason),
             None => Ok(d),
         }
+    }
+}
+
+/// The driver of the CUDA device this process opened (its calibration's
+/// key, `Engine::prepare_gpu`).
+static CUDA_DRIVER: OnceLock<String> = OnceLock::new();
+
+pub(crate) fn cuda_driver() -> String {
+    CUDA_DRIVER.get().cloned().unwrap_or_default()
+}
+
+fn open_cuda() -> Result<Arc<dyn ComputeBackend>, String> {
+    match mklight_cuda::open() {
+        Ok(Some(b)) => {
+            let _ = CUDA_DRIVER.set(b.gpu().summary().driver.clone());
+            Ok(Arc::new(b))
+        }
+        Ok(None) => Err("this machine has no CUDA driver or device".into()),
+        Err(e) => Err(format!("the CUDA device could not be opened: {e}")),
     }
 }
 
@@ -284,6 +318,7 @@ impl BackendProvider for GpuProvider {
             known => ProviderHint {
                 analyses: self.analyses.iter().map(|s| s.to_string()).collect(),
                 webgpu: self.webgpu,
+                cuda: self.cuda,
                 apple_gpu: known.as_ref().map_or(self.apple_gpu, |k| k.clone().ok()),
                 open: known.is_some(),
                 ..Default::default()
