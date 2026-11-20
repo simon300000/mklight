@@ -32,12 +32,6 @@ public sealed partial class OptimizePanel : UserControl
         session.Workspace.StateChanged += () => { if (_comparison is not null) FillComparison(_comparison); };
         session.Workspace.PreviewChanged += Queue;
         Loaded += (_, _) => { Rebuild(); _s.ScheduleEvaluation(); };
-        KeyDown += OnKey;
-    }
-
-    void OnKey(object sender, KeyRoutedEventArgs e)
-    {
-        if (e.Key == global::Windows.System.VirtualKey.Escape && _s.IsRunning) { _s.Cancel(); e.Handled = true; }
     }
 
     /// <summary>Rebuilds once per UI turn, however many changes arrived.</summary>
