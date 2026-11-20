@@ -97,6 +97,7 @@ const DEFAULT_TARGETS: &str = "75,80,89,90,ptx90";
 /// Added to the default targets when the build machine's NVRTC knows them
 /// (12.8 or later): CUBINs for Blackwell (10.0, 12.0), so those GPUs start
 /// without compiling PTX.
+#[cfg(any(windows, target_os = "linux"))]
 const BLACKWELL_TARGETS: &str = "100,120";
 
 /// `MKLIGHT_CUDA_REQUIRE_KERNELS=1` (release builds of the apps): a build

@@ -3,6 +3,9 @@
 //! (`build.rs` renames their `webgpu` placements to `cuda`); `cuda.rs` holds
 //! the CUDA-specific ones. Every test skips with a message when no CUDA
 //! device is available.
+//! The backend is empty on macOS, and the copied WebGPU test files compare
+//! with Metal there, so the program is built off macOS only.
+#![cfg(not(target_os = "macos"))]
 
 use std::sync::OnceLock;
 
