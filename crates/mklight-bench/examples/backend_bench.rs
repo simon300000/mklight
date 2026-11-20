@@ -49,9 +49,10 @@
 //! on an idle machine, as an analysis after an interactive edit does.
 //!
 //! Each case and column appends one JSON line to `--out` and each case
-//! prints one row. Metal's device time is part of every record: other
-//! targets build a stub.
-#![cfg_attr(not(target_os = "macos"), allow(dead_code, unused_imports))]
+//! prints one row. Metal's and CUDA's device time (summed over the call's
+//! command buffers / batches) is part of every record; WebGPU reports none.
+//! GPU columns name a registered engine backend (`metal`, `webgpu` on
+//! macOS; `cuda` on Windows and Linux).
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -331,13 +332,15 @@ fn short(e: &str) -> String {
     e.chars().take(80).collect()
 }
 
-#[cfg(not(target_os = "macos"))]
-fn main() {
-    eprintln!("backend_bench measures Metal and runs on macOS only");
-    std::process::exit(2);
+/// Device seconds spent so far by this process on Metal and CUDA.
+fn device_seconds() -> f64 {
+    #[cfg(target_os = "macos")]
+    let metal = mklight_metal::device_seconds();
+    #[cfg(not(target_os = "macos"))]
+    let metal = 0.0;
+    metal + mklight_cuda::device_seconds()
 }
 
-#[cfg(target_os = "macos")]
 fn main() {
     let a = args();
     let suite: Value = serde_json::from_str(&std::fs::read_to_string(&a.suite).unwrap()).unwrap();
@@ -440,7 +443,7 @@ fn main() {
                 if a.idle_ms > 0 {
                     std::thread::sleep(std::time::Duration::from_millis(a.idle_ms));
                 }
-                let d0 = mklight_metal::device_seconds();
+                let d0 = device_seconds();
                 match run(s, analysis, &settings, c) {
                     Ok((ms, r)) => {
                         times[i].push(ms);
@@ -449,7 +452,7 @@ fn main() {
                         {
                             want[i] = ((b * 1e3 / ms).floor() as usize).clamp(1, reps);
                         }
-                        device[i].push((mklight_metal::device_seconds() - d0) * 1e3);
+                        device[i].push((device_seconds() - d0) * 1e3);
                         reported[i].push(r.run_info.duration_ms);
                         used[i] = Some(r.run_info.backend.clone());
                     }
@@ -492,7 +495,7 @@ fn main() {
             let ran = match (&used_i, c.backend.as_str()) {
                 (Some(u), "auto") => {
                     if u.starts_with("gpu") {
-                        "→Metal".to_string()
+                        format!("→{}", u.trim_start_matches("gpu:"))
                     } else {
                         "→CPU".to_string()
                     }

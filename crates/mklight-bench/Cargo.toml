@@ -29,6 +29,7 @@ mklight-stray.workspace = true
 mklight-optim.workspace = true
 mklight-gpu.workspace = true
 mklight-metal.workspace = true
+mklight-cuda.workspace = true
 blake3.workspace = true
 rayon.workspace = true
 # tests/aim_precision_study.rs includes mklight-gpu/tests/p1_support.rs.

@@ -44,6 +44,26 @@ fn webgpu_sample_accuracy() {
     sample_accuracy(&engine, "webgpu");
 }
 
+/// The same evidence for the CUDA backend (study; the WebGPU host
+/// operations over CUDA kernels): every analysis it publishes under the same
+/// contracts. Lines are tagged `CUDA_ACCURACY`.
+#[test]
+#[ignore = "offline default-grid f64 accuracy evidence; a CUDA device required"]
+fn cuda_sample_accuracy() {
+    let engine = Engine::new(EngineConfig {
+        default_backend: Backend::CpuReference,
+        ..Default::default()
+    });
+    assert!(
+        engine
+            .backends()
+            .iter()
+            .any(|b| b.id == "gpu:cuda" && b.available),
+        "a CUDA device required"
+    );
+    sample_accuracy(&engine, "cuda");
+}
+
 /// Every GPU-capable analysis on every sample on `gpu:<gpu>` against the
 /// CPU reference (`default_sample_accuracy`).
 fn sample_accuracy(engine: &Engine, device: &str) {
