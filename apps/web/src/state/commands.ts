@@ -2,7 +2,7 @@
 // apps/macos/Sources/MKLightUI/Views/App/Commands.swift): ⌘ on Mac, Ctrl
 // elsewhere (`mod`). Every toolbar item is also a menu command.
 
-import { rememberCatalog } from './catalogs'
+import { catalogText, rememberCatalog } from './catalogs'
 import { usePalette } from './palette'
 import { LAYOUT_PANEL, LENS_DATA } from './arrangement'
 import { resetPanelLayout, togglePanel } from '@/views/panels/actions'
@@ -148,7 +148,7 @@ export async function loadGlassCatalog(file?: File | null): Promise<string | nul
     return null
   }
   try {
-    const text = await f.text()
+    const text = catalogText(await f.arrayBuffer())
     const info = await engine.loadCatalog(f.name, text)
     await rememberCatalog(info.name, f.name, text)
     const materials = await engine.materialNames()

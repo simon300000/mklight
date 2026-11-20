@@ -22,6 +22,15 @@ interface Stored {
   text: string
 }
 
+/** The text of a catalog file's bytes. Catalog files come as UTF-8 or, from
+ *  some vendors, UTF-16 with a byte order mark; the mark picks the encoding
+ *  (and is dropped). */
+export function catalogText(bytes: ArrayBuffer | Uint8Array): string {
+  const b = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes)
+  const encoding = b[0] === 0xff && b[1] === 0xfe ? 'utf-16le' : b[0] === 0xfe && b[1] === 0xff ? 'utf-16be' : 'utf-8'
+  return new TextDecoder(encoding).decode(b)
+}
+
 export async function rememberCatalog(name: string, fileName: string, text: string) {
   try {
     await idbSet(key(name), { name, fileName, text } satisfies Stored)
