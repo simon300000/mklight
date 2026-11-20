@@ -701,7 +701,16 @@ impl Gpu for CudaDevice {
         if let Some(d) = cache_dir {
             self.set_cache_dir(Some(d.join("cuda")));
         }
-        let from_cache = self.prepare_parallel(kernels, progress, cancel)?;
+        // The host's kernels and those it uses only on CUDA (FftMtf).
+        let mut all = kernels.to_vec();
+        all.extend(kernels::CUDA_ENTRIES.iter().map(|(m, e, _)| {
+            let shape = PassShape {
+                uniform: false,
+                storage: Vec::new(),
+            };
+            (Kernel::new(m, e), shape)
+        }));
+        let from_cache = self.prepare_parallel(&all, progress, cancel)?;
         Ok((from_cache, self.cache_warning.lock().unwrap().clone()))
     }
 

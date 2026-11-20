@@ -61,10 +61,21 @@ pub fn ported(family: &str) -> bool {
     MODULES.iter().any(|(m, _)| *m == module)
 }
 
+/// Block sizes of the entries without a WGSL twin (`block_size`).
+pub const CUDA_ENTRIES: &[(&str, &str, [u32; 3])] = &[
+    ("fft_mtf", "mkl_fft_mtf_domain", [256, 1, 1]),
+    ("fft_mtf", "mkl_fft_mtf_sensor", [256, 1, 1]),
+    ("fft_mtf", "mkl_fft_mtf_normalize", [256, 1, 1]),
+    ("fft_mtf", "mkl_fft_mtf_sample", [256, 1, 1]),
+];
+
 /// The block size of a WGSL entry point: its `@workgroup_size(x[, y[, z]])`,
 /// whose terms are literals or `const`s of the module (the generated layout
-/// constants included).
+/// constants included); for CUDA-only entries, [`CUDA_ENTRIES`].
 pub fn block_size(module: &str, entry: &str) -> Option<[u32; 3]> {
+    if let Some(&(_, _, b)) = CUDA_ENTRIES.iter().find(|(m, e, _)| *m == module && *e == entry) {
+        return Some(b);
+    }
     let wgsl = mklight_webgpu::kernels::source(module)?;
     let at = wgsl.find(&format!("fn {entry}("))?;
     let before = &wgsl[..at];

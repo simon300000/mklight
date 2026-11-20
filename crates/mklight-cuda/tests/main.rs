@@ -30,6 +30,7 @@ macro_rules! gpu_or_skip {
 }
 
 mod cuda;
+mod fft_mtf;
 
 macro_rules! webgpu_tests {
     ($($m:ident),*) => {$(

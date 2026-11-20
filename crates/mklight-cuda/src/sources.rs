@@ -115,6 +115,11 @@ pub const MODULES: &[(&str, &str)] = &[
         "aiming_overlays",
         concat!("#define MKL_OVERLAYS true\n", include_str!("../kernels/aiming.cu")),
     ),
+    // FftMtf (CUDA only): after wave.cu, whose helpers it uses.
+    (
+        "fft_mtf",
+        concat!(include_str!("../kernels/wave.cu"), include_str!("../kernels/fft_mtf.cu")),
+    ),
 ];
 
 /// The compilation unit of `entry` of `module`: `(name, source)`. A module
