@@ -255,6 +255,11 @@ impl BackendProvider for Static {
     }
 }
 
+/// The CPU-f32 emulation of the GPU kernels. A stand-in for UI and test
+/// paths, never a candidate for `auto`: only an explicit request runs on it.
+pub(crate) const EMULATION_ID: &str = "gpu:cpu_f32";
+const EMULATION_NOT_AUTO: &str = "an emulation on the CPU, chosen only by an explicit request";
+
 #[derive(Clone)]
 pub struct BackendRegistry {
     providers: Vec<Arc<dyn BackendProvider>>,
@@ -347,13 +352,17 @@ impl BackendRegistry {
     }
 
     /// `auto`: the first available GPU backend implementing `analysis`
-    /// (registration order), else the CPU reference with the reason as a
-    /// note.
+    /// (registration order, never the emulation), else the CPU reference with
+    /// the reason as a note.
     pub(crate) fn select_auto(&self, analysis: Option<&str>) -> SelectedBackend {
         let mut why = Vec::new();
         for p in &self.providers {
             let i = p.info();
             if i.capabilities.reference {
+                continue;
+            }
+            if i.id == EMULATION_ID {
+                why.push(format!("{}: {EMULATION_NOT_AUTO}", i.id));
                 continue;
             }
             if !i.available {
@@ -394,6 +403,10 @@ impl BackendRegistry {
     pub fn auto_candidate(&self, analysis: &str) -> Option<AutoCandidate> {
         let mut why = Vec::new();
         for p in &self.providers {
+            if p.id() == EMULATION_ID {
+                why.push(format!("{}: {EMULATION_NOT_AUTO}", p.id()));
+                continue;
+            }
             let h = p.hint()?;
             if h.reference {
                 continue;

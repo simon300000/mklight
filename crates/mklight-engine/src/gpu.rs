@@ -143,11 +143,14 @@ impl GpuProvider {
     /// The bit-faithful CPU emulation of the GPU numerics (`gpu:cpu_f32`).
     /// Not registered by default: it runs the GPU algorithms on the CPU,
     /// slower than the reference, to separate algorithm error from precision
-    /// error and to exercise the GPU paths on machines without a GPU.
+    /// error and to exercise the GPU paths on machines without a GPU. `auto`
+    /// never selects it (`EngineConfig::register_emulation`).
     pub fn emulation() -> Self {
-        Self::new("cpu_f32", "CPU f32 emulation of the GPU kernels", || {
-            Ok(Arc::new(CpuF32Backend::new()) as Arc<dyn ComputeBackend>)
-        })
+        Self::new(
+            "cpu_f32",
+            "Emulation on the CPU (f32), not a real GPU",
+            || Ok(Arc::new(CpuF32Backend::new()) as Arc<dyn ComputeBackend>),
+        )
     }
 
     fn get(&self) -> &Result<Arc<GpuDevice>, String> {

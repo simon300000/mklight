@@ -649,6 +649,10 @@ Three implementations are compared, each answering a different question:
   for `/` and `sqrt` on a device without correctly rounded ones, within the
   stated bound). The trace kernel needs neither: on the M2 Pro (correctly
   rounded `/` and `sqrt`) it is bit-identical.
+  The engine registers it as `gpu:cpu_f32` only when its configuration sets
+  `register_emulation` (FFI "Engine configuration"), so a front end can try
+  its GPU paths without a GPU. It is titled as an emulation on the CPU, runs
+  only on an explicit request and is never a candidate for `auto`.
 * Tests on this machine's GPU (skipped without a Metal device):
   Philox known answers and 65 536 random counter/key blocks, a 2¹⁸-block
   stream against the stateful core generator, 64-bit counter carry; two_sum

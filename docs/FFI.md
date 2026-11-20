@@ -251,7 +251,7 @@ All keys optional:
 ```json
 { "worker_threads": 0, "max_retained_jobs": 256, "resolved_cache_capacity": 8,
   "analysis_graph_bytes": 268435456, "progress_interval_ms": 50,
-  "app_name": "MKLight", "app_version": "1.0",
+  "app_name": "MKLight", "app_version": "1.0", "register_emulation": false,
   "default_backend": {"kind": "auto"}, "aim_stop": "conditioned",
   "route": { "aiming": "host-table", "aiming_share": null,
              "fieldmaps": "host-chief", "stray_share": null,
@@ -267,6 +267,15 @@ CONVENTIONS §7). `route` holds the route options of requests that carry
 none (GPU §9.3: the keys, their values and what each moves to the GPU;
 every key optional, an unknown key or name fails `mk_engine_create`). A key
 the configuration does not have fails it too (`MK_ERR_INVALID_ARGUMENT`).
+`register_emulation` (boolean, default `false`; any other type fails the
+configuration) registers the CPU-f32 emulation of the GPU kernels as
+`gpu:cpu_f32` after the default providers, so a front end can exercise its
+GPU paths (backend picker, badges, fallbacks) on a machine without a GPU.
+`mk_engine_list_backends` lists it with the title "Emulation on the CPU
+(f32), not a real GPU". `auto` and the engine default never choose it, on any
+platform and even as the only GPU (the run is the CPU reference, its note
+naming the emulation); only an explicit `{"kind": "gpu", "name": "cpu_f32"}`
+runs on it, slower than the reference.
 `app_name`/`app_version` are stamped into project metadata on save.
 
 ### Analyses (`mk_engine_list_analyses`)

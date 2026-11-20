@@ -51,6 +51,11 @@ pub struct EngineConfig {
     /// Route options of requests that carry none (`crate::route`). They
     /// are checked with each request.
     pub route: crate::route::RouteOptions,
+    /// Register the CPU-f32 emulation of the GPU kernels (`gpu:cpu_f32`)
+    /// after the default providers, so a front end can exercise its GPU
+    /// paths without a GPU. `auto` never selects it; only an explicit
+    /// `{"kind": "gpu", "name": "cpu_f32"}` request runs on it.
+    pub register_emulation: bool,
 }
 
 impl Default for EngineConfig {
@@ -67,6 +72,7 @@ impl Default for EngineConfig {
             default_backend: Backend::Auto,
             aim_stop: mklight_core::AimStopKind::Conditioned,
             route: Default::default(),
+            register_emulation: false,
         }
     }
 }
@@ -131,10 +137,14 @@ impl Engine {
         }
         sc.max_retained = config.max_retained_jobs.max(1);
         sc.progress_interval = Duration::from_millis(config.progress_interval_ms.max(1));
+        let mut backends = BackendRegistry::with_defaults();
+        if config.register_emulation {
+            backends.register(Arc::new(crate::gpu::GpuProvider::emulation()));
+        }
         Engine {
             inner: Arc::new(EngineInner {
                 registry: RwLock::new(AnalysisRegistry::with_builtin()),
-                backends: RwLock::new(BackendRegistry::with_defaults()),
+                backends: RwLock::new(backends),
                 default_backend: RwLock::new(config.default_backend.clone()),
                 scheduler: Scheduler::new(sc),
                 graph: (config.analysis_graph_bytes > 0)
@@ -657,6 +667,19 @@ mod tests {
             serde_json::from_str::<EngineConfig>("{}").unwrap(),
             EngineConfig::default()
         );
+        let flag = |text: &str| serde_json::from_str::<EngineConfig>(text);
+        assert!(!EngineConfig::default().register_emulation);
+        assert!(
+            flag(r#"{"register_emulation": true}"#)
+                .unwrap()
+                .register_emulation
+        );
+        assert!(
+            !flag(r#"{"register_emulation": false}"#)
+                .unwrap()
+                .register_emulation
+        );
+        assert!(flag(r#"{"register_emulation": "yes"}"#).is_err());
         for (bad, named) in [
             (r#"{"worker_thread": 2}"#, "`worker_thread`"),
             (r#"{"route": {"fieldmap": "device-chief"}}"#, "`fieldmap`"),
