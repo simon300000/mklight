@@ -381,12 +381,16 @@ public sealed partial class SettingsForm : UserControl
     /// <summary>Off (the image surface only), or planes from −Δ to +Δ with Δ automatic or typed, and the number of planes (1 to 15).</summary>
     UIElement ThroughFocus(Slot slot)
     {
-        var v = slot.Current;
-        var on = v is not null;
-        var min = Json.Number(Json.At(v, "min"));
-        var max = Json.Number(Json.At(v, "max"));
-        var steps = Json.Int(Json.At(v, "steps")) ?? 3;
-        var symmetric = (min is null && max is null) || (min is double a && max is double b && Math.Abs(a + b) <= 1e-12 * Math.Max(1, Math.Abs(b)));
+        // The current bounds and steps, read when a control commits (a typed bound does not rebuild the row).
+        double? Min() => Json.Number(Json.At(slot.Current, "min"));
+        double? Max() => Json.Number(Json.At(slot.Current, "max"));
+        int Steps() => Json.Int(Json.At(slot.Current, "steps")) ?? 3;
+        void Write(double? min, double? max, int steps, bool rebuild) => slot.Write(new Edit(SettingEntry.ThroughFocus(min, max, steps)), rebuild);
+
+        var on = slot.Current is not null;
+        double? min0 = Min(), max0 = Max();
+        var steps = Steps();
+        var symmetric = (min0 is null && max0 is null) || (min0 is double a && max0 is double b && Math.Abs(a + b) <= 1e-12 * Math.Max(1, Math.Abs(b)));
         var p = new StackPanel { Spacing = 4 };
         var box = new CheckBox { IsChecked = on, Content = on ? "Planes before and after focus" : "Image surface only", MinWidth = 0, MinHeight = 28, FontSize = 12 };
         ToolTipService.SetToolTip(box, Help(slot.Field));
@@ -404,24 +408,23 @@ public sealed partial class SettingsForm : UserControl
         if (symmetric)
         {
             var used = AutoSettings.Used("through_focus", _analysis, _ctx.LastResult)?.Replace("±", "");
-            var half = BoundBox(() => max, d => slot.Write(new Edit(SettingEntry.ThroughFocus(d is double x ? -Math.Abs(x) : null, d is double y ? Math.Abs(y) : null, steps)), false),
-                AutoSettings.Display(used));
+            var half = BoundBox(Max, d => Write(d is double x ? -Math.Abs(x) : null, d is double y ? Math.Abs(y) : null, Steps(), false), AutoSettings.Display(used));
             ToolTipService.SetToolTip(half, Bound.Description);
             row.Children.Add(Label("±"));
             row.Children.Add(half);
         }
         else
         {
-            row.Children.Add(BoundBox(() => min, d => slot.Write(new Edit(SettingEntry.ThroughFocus(d, max, steps)), false), "auto"));
+            row.Children.Add(BoundBox(Min, d => Write(d, Max(), Steps(), false), "auto"));
             row.Children.Add(Label("to"));
-            row.Children.Add(BoundBox(() => max, d => slot.Write(new Edit(SettingEntry.ThroughFocus(min, d, steps)), false), "auto"));
+            row.Children.Add(BoundBox(Max, d => Write(Min(), d, Steps(), false), "auto"));
         }
         row.Children.Add(Label("mm"));
         var count = Label(steps == 1 ? "1 plane" : steps.ToString(CultureInfo.InvariantCulture) + " planes", style: "NumberText");
         count.Margin = new Thickness(6, 0, 0, 0);
         row.Children.Add(count);
-        row.Children.Add(StepButton("", "Fewer planes", steps > 1, () => slot.Write(new Edit(SettingEntry.ThroughFocus(min, max, steps - 1)), true)));
-        row.Children.Add(StepButton("", "More planes", steps < 15, () => slot.Write(new Edit(SettingEntry.ThroughFocus(min, max, steps + 1)), true)));
+        row.Children.Add(StepButton("\uE949", "Fewer planes", steps > 1, () => Write(Min(), Max(), Math.Max(Steps() - 1, 1), true)));
+        row.Children.Add(StepButton("\uE948", "More planes", steps < 15, () => Write(Min(), Max(), Math.Min(Steps() + 1, 15), true)));
         p.Children.Add(row);
         return p;
     }

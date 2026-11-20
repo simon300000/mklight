@@ -24,7 +24,8 @@ public sealed partial class SpotDiagramView : UserControl
     readonly ScrollViewer _scroll;
     readonly PlotCanvas _canvas;
     readonly TextBlock _note;
-    readonly ToggleButton _common, _perField;
+    readonly Button _common, _perField;
+    readonly Border _toggle;
     SpotScale _scale = SpotScale.Grid;
     SpotGridLayout.Metrics _metrics;
 
@@ -50,13 +51,21 @@ public sealed partial class SpotDiagramView : UserControl
         if (double.IsFinite(grid.Airy))
             legendEntries.Add(new LegendEntry("Airy disk " + Fmt.Length(grid.Airy), SeriesColor.Neutral, LegendMark.DashedCircle));
 
+        // A small segmented control: the chosen scale on a quiet fill (the accent stays for selection elsewhere).
         _common = ScaleButton("Common", SpotScale.Grid);
         _perField = ScaleButton("Per field", SpotScale.Field);
-        var toggle = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 2, VerticalAlignment = VerticalAlignment.Top };
-        toggle.Children.Add(_common);
-        toggle.Children.Add(_perField);
-        ToolTipService.SetToolTip(toggle, "Box scale: one for all cells, or one per field");
-        toggle.Visibility = grid.Rows.Count > 1 ? Visibility.Visible : Visibility.Collapsed;
+        var segments = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 0 };
+        segments.Children.Add(_common);
+        segments.Children.Add(_perField);
+        _toggle = new Border
+        {
+            Child = segments, CornerRadius = new CornerRadius(12), BorderThickness = new Thickness(1), Padding = new Thickness(2),
+            VerticalAlignment = VerticalAlignment.Top,
+            Visibility = grid.Rows.Count > 1 ? Visibility.Visible : Visibility.Collapsed,
+        };
+        ToolTipService.SetToolTip(_toggle, "Box scale: one for all cells, or one per field");
+        ActualThemeChanged += (_, _) => UpdateScale();
+        var toggle = _toggle;
 
         var header = new Grid { ColumnSpacing = 8 };
         header.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
@@ -97,21 +106,37 @@ public sealed partial class SpotDiagramView : UserControl
 
     public event Action<SpotScale>? BoxScaleChanged;
 
-    ToggleButton ScaleButton(string title, SpotScale scale)
+    Button ScaleButton(string title, SpotScale scale)
     {
-        var b = new ToggleButton { Content = title, FontSize = 11, Padding = new Thickness(8, 1, 8, 2), MinHeight = 22, MinWidth = 0, CornerRadius = new CornerRadius(11) };
+        var b = new Button
+        {
+            Content = title, FontSize = 11, Padding = new Thickness(9, 1, 9, 2), MinHeight = 20, MinWidth = 0,
+            CornerRadius = new CornerRadius(10), BorderThickness = new Thickness(0),
+        };
         b.Click += (_, _) =>
         {
-            if (_scale != scale) { _scale = scale; UpdateScale(); BoxScaleChanged?.Invoke(scale); }
-            else UpdateScale();
+            if (_scale == scale) return;
+            _scale = scale;
+            UpdateScale();
+            BoxScaleChanged?.Invoke(scale);
         };
         return b;
     }
 
     void UpdateScale()
     {
-        _common.IsChecked = _scale == SpotScale.Grid;
-        _perField.IsChecked = _scale == SpotScale.Field;
+        var dark = ActualTheme == ElementTheme.Dark;
+        var ink = dark ? Color.FromArgb(0xE6, 255, 255, 255) : Color.FromArgb(0xE4, 0, 0, 0);
+        var quiet = dark ? Color.FromArgb(0x99, 255, 255, 255) : Color.FromArgb(0x8F, 0, 0, 0);
+        var fill = dark ? Color.FromArgb(0x24, 255, 255, 255) : Color.FromArgb(0x10, 0, 0, 0);
+        _toggle.BorderBrush = new SolidColorBrush(dark ? Color.FromArgb(0x1A, 255, 255, 255) : Color.FromArgb(0x17, 0, 0, 0));
+        foreach (var (b, s) in new[] { (_common, SpotScale.Grid), (_perField, SpotScale.Field) })
+        {
+            var on = s == _scale;
+            b.Background = new SolidColorBrush(on ? fill : Color.FromArgb(0, 0, 0, 0));
+            b.Foreground = new SolidColorBrush(on ? ink : quiet);
+            Microsoft.UI.Xaml.Automation.AutomationProperties.SetItemStatus(b, on ? "Selected" : "");
+        }
         _note.Text = _grid.ScaleNote(_scale);
         _canvas.Invalidate();
     }

@@ -318,6 +318,8 @@ public class SettingsSummaryTests
         Assert.Equal("312", AutoSettings.Used("max_frequency", "mtf", mtf));
         Assert.Equal("128–192", AutoSettings.Used("pupil.grid", "mtf", mtf));
         Assert.Null(AutoSettings.Used("max_frequency", "psf", mtf));
+        var vf = TestData.Result("mtf_vs_field", """{"pupil_sampling": [ [{"grid": 96}], [], [{"grid": 160}] ]}""");
+        Assert.Equal("96–160", AutoSettings.Used("pupil.grid", "mtf_vs_field", vf));
         Assert.Equal(AutoSentinel.Zero, AutoSettings.Sentinel("pupil.grid", "mtf"));
         Assert.Null(AutoSettings.Sentinel("grid_size", "spot_diagram"));
         Assert.True(AutoSettings.IsAuto(JsonNode.Parse("[]"), AutoSentinel.Empty));

@@ -122,8 +122,8 @@ public static class LineReaders
         var unit = Json.Str(Json.At(d.Json, "field_unit")) ?? "";
         var um = WavelengthsUm(d, list);
         var yTitle = unit.Length > 0 ? $"Field ({unit})" : "Field";
-        var curvature = new ChartPanel { Title = "Field Curvature", XTitle = "Focus shift (mm)", YTitle = yTitle, ZeroLine = true };
-        var distortion = new ChartPanel { Title = "Distortion", XTitle = "Distortion (%)", YTitle = yTitle, ZeroLine = true };
+        var curvature = new ChartPanel { Title = "Field Curvature", XTitle = "Focus shift (mm)", YTitle = yTitle, PadX = true };
+        var distortion = new ChartPanel { Title = "Distortion", XTitle = "Distortion (%)", YTitle = yTitle, PadX = true };
         var wavelengths = new List<int>();
         foreach (var c in list)
         {
@@ -134,7 +134,7 @@ public static class LineReaders
             if (Json.NfArray(Json.At(c, "sagittal")) is double[] s) curvature.Series.Add(Curve(s, field, color, dashed: true));
             if (Json.NfArray(Json.At(c, "distortion_percent")) is double[] dp) distortion.Series.Add(Curve(dp, field, color));
         }
-        var m = new ChartModel { MinGroupHeight = 180 };
+        var m = new ChartModel { MinGroupHeight = 150 };
         var g = new ChartGroup();
         g.Panels.Add(curvature);
         g.Panels.Add(distortion);
@@ -154,7 +154,7 @@ public static class LineReaders
         var um = WavelengthsUm(d, list);
         var bothAxes = list.Select(c => Json.Str(Json.At(c, "axis"))).Distinct().Count() > 1;
         var lo = pupil.Where(double.IsFinite).DefaultIfEmpty(0).Min() < 0 ? -1 : 0;
-        var p = new ChartPanel { XTitle = "Longitudinal aberration (mm)", YTitle = "Pupil zone", YDomain = (lo, 1) };
+        var p = new ChartPanel { XTitle = "Longitudinal aberration (mm)", YTitle = "Pupil zone", YDomain = (lo, 1), PadX = true };
         var wavelengths = new List<int>();
         foreach (var c in list)
         {
@@ -178,7 +178,7 @@ public static class LineReaders
         var w = Json.NfArray(Json.At(d.Json, "wavelengths_um"));
         var s = Json.NfArray(Json.At(d.Json, "focal_shift"));
         if (w is null || s is null || w.Length != s.Length || w.Length == 0) return null;
-        var p = new ChartPanel { XTitle = "Focal shift (µm)", YTitle = "Wavelength (µm)" };
+        var p = new ChartPanel { XTitle = "Focal shift (µm)", YTitle = "Wavelength (µm)", PadX = true };
         p.Series.Add(Curve(Scale(s, 1000), w, SeriesColor.Field(0)));
         if (Json.NfArray(Json.At(d.Json, "focal_shift_x")) is double[] sx && sx.Length == w.Length && !sx.SequenceEqual(s))
         {
@@ -197,7 +197,7 @@ public static class LineReaders
         if (field is null || Json.Arr(Json.At(d.Json, "curves")) is not { } list) return null;
         var unit = Json.Str(Json.At(d.Json, "field_unit")) ?? "";
         var um = WavelengthsUm(d, list);
-        var p = new ChartPanel { XTitle = "Lateral color (µm)", YTitle = unit.Length > 0 ? $"Field ({unit})" : "Field" };
+        var p = new ChartPanel { XTitle = "Lateral color (µm)", YTitle = unit.Length > 0 ? $"Field ({unit})" : "Field", PadX = true };
         var wavelengths = new List<int>();
         foreach (var c in list)
         {
@@ -282,7 +282,7 @@ public static class LineReaders
             XTitle = $"Spatial frequency ({units.Frequency})", YTitle = "Modulation",
             XDomain = (0, freq[^1] > 0 ? freq[^1] : 1), YDomain = (0, 1.02), ZeroLine = false,
         };
-        var m = ChartModel.Single(p, 180);
+        var m = ChartModel.Single(p, 140);
         var curves = new SortedDictionary<int, (string Label, double[]? T, double[]? S)>();
         double[]? limit = null;
         if (Json.Arr(Json.At(j, "curves")) is JsonArray geometric)
@@ -354,7 +354,7 @@ public static class LineReaders
             if (Json.Numbers(d, Json.At(c, "tangential")) is double[] t) p.Series.Add(Curve(field, t, SeriesColor.Field(k)));
             if (Json.Numbers(d, Json.At(c, "sagittal")) is double[] s) p.Series.Add(Curve(field, s, SeriesColor.Field(k), dashed: true));
         }
-        var m = ChartModel.Single(p, 180);
+        var m = ChartModel.Single(p, 140);
         FrequencyLegend(m, freqs, units);
         return m;
     }

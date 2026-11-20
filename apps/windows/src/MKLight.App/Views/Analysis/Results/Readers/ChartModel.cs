@@ -39,6 +39,8 @@ public sealed class ChartPanel
     public (double Min, double Max)? XDomain { get; set; }
     public (double Min, double Max)? YDomain { get; set; }
     public bool ZeroLine { get; init; } = true;
+    /// <summary>Pad a fitted x range as y is (x carries the values, as in field curvature), so curves keep off the frame.</summary>
+    public bool PadX { get; init; }
     public List<ChartRule> Rules { get; } = [];
 }
 
@@ -59,9 +61,9 @@ public sealed class ChartModel
     public List<LegendEntry> Legend { get; } = [];
     public List<ChartGroup> Groups { get; } = [];
     /// <summary>Smallest height of a group before the plot scrolls (fans: 120).</summary>
-    public double MinGroupHeight { get; init; } = 160;
+    public double MinGroupHeight { get; init; } = 120;
 
-    public static ChartModel Single(ChartPanel panel, double minHeight = 160)
+    public static ChartModel Single(ChartPanel panel, double minHeight = 120)
     {
         var m = new ChartModel { MinGroupHeight = minHeight };
         var g = new ChartGroup();

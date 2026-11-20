@@ -95,6 +95,8 @@ public sealed partial class LineChartView : UserControl
             plot.Series.Add(new PlotSeries(pts, ChartColors.Resolve(s.Color, style.Dark), s.Dashed, s.Color.Role == ColorRole.Neutral ? 1.3f : 1.6f));
         }
         plot.FitData();
+        if (panel.PadX && panel.XDomain is null)
+            (plot.XMin, plot.XMax) = Ticks.Range(panel.Series.SelectMany(s => s.X).Concat(panel.Rules.Select(r => r.X)));
         if (panel.XDomain is (double x0, double x1) && x1 > x0) (plot.XMin, plot.XMax) = (x0, x1);
         if (panel.YDomain is (double y0, double y1) && y1 > y0) (plot.YMin, plot.YMax) = (y0, y1);
         var r = plot.Draw(ds, bounds, style);

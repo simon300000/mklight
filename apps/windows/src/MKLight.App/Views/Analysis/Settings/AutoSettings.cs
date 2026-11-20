@@ -82,6 +82,9 @@ public static class AutoSettings
                 if (grids.Count == 0)
                     grids = (Json.Arr(Json.At(j, "fields")) ?? Json.Arr(Json.At(j, "psfs")) ?? [])
                         .SelectMany(f => Json.Arr(Json.At(f, "pupil_sampling")) ?? []).Select(p => Json.Number(Json.At(p, "grid"))).ToList();
+                if (grids.Count == 0) // mtf_vs_field: one list per field sample
+                    grids = (Json.Arr(Json.At(j, "pupil_sampling")) ?? []).SelectMany(l => Json.Arr(l) ?? [])
+                        .Select(p => Json.Number(Json.At(p, "grid"))).ToList();
                 return Range(grids);
             default:
                 return null;
