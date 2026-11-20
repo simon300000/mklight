@@ -17,6 +17,7 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\MKLight.Model\MKLight.Model.csproj" />
     <ProjectReference Include="..\..\src\MKLight.Engine\MKLight.Engine.csproj" />
+    <Compile Include="..\..\src\MKLight.App\ViewModels\LensTable*.cs" Link="Lens\App\%(Filename)%(Extension)" />
   </ItemGroup>
   <ItemGroup>
     <None Include="$(MKLightNativeDir)mklight_ffi.dll" Condition="Exists('$(MKLightNativeDir)mklight_ffi.dll')" Link="mklight_ffi.dll" CopyToOutputDirectory="PreserveNewest" />
