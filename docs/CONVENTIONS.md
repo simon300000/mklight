@@ -258,7 +258,12 @@ x86-64-v3 build. `wide`'s `mul_add` is unfused without `fma`, so it is
 not bitwise identical on baseline x86_64 or wasm32. That is a
 per-architecture path, worth it only if x86 throughput matters.
 Building x86_64 releases with `-C target-cpu=x86-64-v3` (inline FMA) is
-the cheaper first step.
+the cheaper first step. Windows builds do so (`.cargo/config.toml`): on an
+i9-12900KS (2026-11-20, one thread, Cooke triplet) the call to the C
+runtime's `fma` (155 calls in `trace_packets` there) made `trace_rays`
+18.2 ms; inline `vfmadd…sd` makes it 8.3 ms (`trace_grid` 23.5 → 13.8 ms),
+bitwise identical. `+fma` alone gives nearly all of it; the kernel stays
+scalar.
 
 **Aiming Jacobians.** The real-aim solve (`SequentialTracer`, 2-D Newton with
 Broyden updates, `AIM_POLICY = JacobianPolicy::AnalyticRefresh`) takes every *fresh* Jacobian `∂(stop hit)/∂(aim point)`
