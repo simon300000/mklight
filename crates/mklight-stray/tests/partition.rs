@@ -338,7 +338,11 @@ fn ghost_orders_outside_the_ghost_run_stay_with_the_stray_solver() {
 fn ghost_model_shares_the_stray_sizing() {
     use mklight_core::{CancelToken, MkError, Progress};
     let mut opts = no_scatter_options();
-    opts.semi_diameters.azimuths = 8;
+    // Six azimuths miss the meridional pupil edge, so the apertures are
+    // ~3 % smaller than at the default 64. (Eight are a subset of the 64 and
+    // include it: the two sizings then differ at most in the last bits,
+    // which depends on the platform's libm.)
+    opts.semi_diameters.azimuths = 6;
     let sys = stray_system(mklight_core::samples::cooke_triplet(), &opts);
     let tracer = Arc::new(sys.tracer().clone());
     let none = std::iter::empty();
