@@ -126,6 +126,15 @@ scripts/test.sh -- --ignored
 JOBS=4 scripts/test.sh                  # programs at a time (default 8)
 ```
 
+On Windows, run it from Git Bash with a CPython ≥ 3.11 first on `PATH`
+(the Python crate's tests load its `python3.dll`; an older one there fails
+to start them), and `CC` set to a clang, e.g. Visual Studio's
+`VC/Tools/Llvm/x64/bin/clang.exe`, for the C layout tests of `mklight-gpu`
+(skipped without a C compiler). Until the WebGPU trace pipeline compiles
+on the Windows drivers (the Vulkan driver does not finish compiling it,
+and DX12's compiler rejects some kernels), set `WGPU_BACKEND=none`: the
+WebGPU tests then find no adapter and skip.
+
 After a change that rebuilds everything allow about a minute to build and
 three to run: macOS scans every newly built program when it first starts
 (XProtect). macOS has a setting for this, *System Settings → Privacy &
