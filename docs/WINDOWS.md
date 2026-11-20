@@ -125,6 +125,17 @@ window sets `AppHooks.ScreenshotTarget` so that window is captured:
   `simulate-backends[=file]` (a backend list as the engine returns it),
   `compute-backend=<name>`, `status-details` (opens the capsule's flyout),
   `simulate-gpu-results`, `run-details=<pane index>`.
+* timing: `bench-panes=N[:backend]` runs each open pane, one at a time, once untimed
+  and then N times, each after a unique tiny edit of the design (the first curved
+  surface's curvature changed by one to two parts per billion, so the engine reuses
+  nothing), on `cpu_reference`, `auto`, `gpu`, `cuda` or `gpu:<name>` (default: the
+  window's backend). Other panes wait meanwhile; the design and backend are put back
+  and the document is never edited. One JSON line per run goes to the file
+  `bench-out=<file>` names (default `bench-<time>.jsonl` beside `mklight.log`):
+  `pane`, `analysis`, `run`, `backend_requested`, `backend_used`, `engine_ms`
+  (run_info), `device` (per GPU execution `wall_ms`, `device_ms` and its stages as
+  `[name, device_ms, wall_ms]`), `app_view_ms` (submit to the pane's view rebuilt) and
+  `app_frame_ms` (to the next frame after that), or `error`.
 
 Without a file or `--sample` the welcome window opens (`--screenshot` then
 captures it). The log is `%LOCALAPPDATA%\MKLight\mklight.log`.

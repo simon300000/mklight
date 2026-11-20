@@ -332,8 +332,12 @@ public sealed class Workspace
         return !pane.Output.IsCurrent(Snapshot, Request(pane));
     }
 
+    /// <summary>While set, a new snapshot refreshes no pane (the bench runs one pane at a time itself).</summary>
+    public bool HoldRefresh { get; set; }
+
     void Refresh(bool forced)
     {
+        if (HoldRefresh) return;
         foreach (var p in AllPanes) RefreshPane(p, forced);
     }
 

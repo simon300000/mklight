@@ -82,34 +82,48 @@ public sealed partial class LineChartView : UserControl, IViewOptions
         return other.Panels.ElementAtOrDefault(flatIndex);
     }
 
-    /// <summary>Groups share the viewport's height, never less than the model's minimum each.</summary>
+    /// <summary>The narrowest plot beside another: below it a group's plots stack (a narrow pane draws them one per row).</summary>
+    const double MinPanelWidth = 130;
+
+    /// <summary>Plots per row in a group of <paramref name="panels"/> at <paramref name="width"/>.</summary>
+    static int Columns(int panels, double width) =>
+        Math.Clamp((int)((width + PanelGap) / (MinPanelWidth + PanelGap)), 1, Math.Max(panels, 1));
+
+    static int Rows(ChartGroup g, double width) => (Math.Max(g.Panels.Count, 1) + Columns(g.Panels.Count, width) - 1) / Columns(g.Panels.Count, width);
+
+    /// <summary>Groups share the viewport's height by their rows of plots, never less than the model's minimum per row.</summary>
     void Fit(Size viewport)
     {
         var n = Math.Max(_model.Groups.Count, 1);
-        var each = Math.Max(_model.MinGroupHeight, (viewport.Height - GroupGap * (n - 1)) / n);
-        _canvas.Height = Math.Max(viewport.Height, each * n + GroupGap * (n - 1));
+        var rows = Math.Max(_model.Groups.Sum(g => Rows(g, viewport.Width)), 1);
+        _canvas.Height = Math.Max(viewport.Height, _model.MinGroupHeight * rows + GroupGap * (n - 1));
         _canvas.Invalidate();
     }
 
     void Draw(CanvasDrawingSession ds, Size size, PlotStyle style)
     {
         var n = Math.Max(_model.Groups.Count, 1);
-        var gh = (size.Height - GroupGap * (n - 1)) / n;
+        var rows = Math.Max(_model.Groups.Sum(g => Rows(g, size.Width)), 1);
+        var perRow = (size.Height - GroupGap * (n - 1)) / rows;
         var flat = 0;
+        var top = 0.0;
         for (var k = 0; k < _model.Groups.Count; k++)
         {
             var g = _model.Groups[k];
-            var top = k * (gh + GroupGap);
+            var groupRows = Rows(g, size.Width);
+            var gh = perRow * groupRows;
+            var y = top;
             if (g.Label is not null)
             {
-                PlotText.Draw(ds, g.Label, 2, top + GroupLabel / 2, style.Title, 11, TextAnchor.Start, bold: true);
-                top += GroupLabel;
+                PlotText.Draw(ds, g.Label, 2, y + GroupLabel / 2, style.Title, 11, TextAnchor.Start, bold: true);
+                y += GroupLabel;
             }
-            var h = gh - (g.Label is null ? 0 : GroupLabel);
-            var m = Math.Max(g.Panels.Count, 1);
+            var h = (gh - (g.Label is null ? 0 : GroupLabel) - PanelGap * (groupRows - 1)) / groupRows;
+            var m = Columns(g.Panels.Count, size.Width);
             var w = (size.Width - PanelGap * (m - 1)) / m;
             for (var p = 0; p < g.Panels.Count; p++)
-                DrawPanel(ds, g.Panels[p], new Rect(p * (w + PanelGap), top, Math.Max(w, 0), Math.Max(h, 0)), style, Companion(flat++));
+                DrawPanel(ds, g.Panels[p], new Rect(p % m * (w + PanelGap), y + p / m * (h + PanelGap), Math.Max(w, 0), Math.Max(h, 0)), style, Companion(flat++));
+            top += gh + GroupGap;
         }
     }
 
