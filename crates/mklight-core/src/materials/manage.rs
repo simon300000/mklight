@@ -748,7 +748,7 @@ LD 0.32 2.5\r\n";
     /// do not give (the coefficients are TESTFLINT's), and an infrared glass
     /// (range 2–14 µm, listed as vendors list them: n_d 1, V_d 0), in
     /// UTF-16LE with CRLF as some vendors ship.
-    const LISTED: &str = "NM WRONGNM 2 587759 1.587166 75.90 1 2 0\r\n\
+    const LISTED: &str = "NM WRONGNM 2 553714 1.553214 71.40 1 2 0\r\n\
 CD 1.34533359 0.00997743871 0.209073176 0.0470450767 0.937357162 111.886764 0 0 0 0\r\n\
 OD 2.0 1 0 1 1 1\r\n\
 LD 0.32 2.5\r\n\
@@ -775,7 +775,7 @@ LD 2.0 14.0\r\n";
         let r = glass_row("LISTED", g, None);
         assert!((r.nd.unwrap() - 1.62004).abs() < 2e-5, "{:?}", r.nd);
         assert!((r.vd.unwrap() - 36.37).abs() < 0.05, "{:?}", r.vd);
-        assert_eq!((r.catalog_nd, r.catalog_vd), (1.587166, 75.90));
+        assert_eq!((r.catalog_nd, r.catalog_vd), (1.553214, 71.40));
         let d = glass_details("LISTED", g, g);
         assert_eq!((d.computed_nd, d.computed_vd), (r.nd, r.vd));
 
@@ -799,7 +799,7 @@ LD 2.0 14.0\r\n";
         assert!(w.is_empty(), "{w:?}");
         // Infrared glasses are written as vendors write them.
         assert!(text.contains("NM IRTEST 3 0 1 0 0 3 4\r\n"), "{text}");
-        assert!(text.contains("NM WRONGNM 2 587759 1.587166 75.9 1 2 0\r\n"));
+        assert!(text.contains("NM WRONGNM 2 553714 1.553214 71.4 1 2 0\r\n"));
         let back = parse_agf_with("LISTED", &text, &AgfOptions::default()).unwrap();
         // The same warnings, and exactly the same glasses: coefficients,
         // range, statuses, exclusion and listed n_d/V_d.

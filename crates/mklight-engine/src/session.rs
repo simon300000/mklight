@@ -1973,18 +1973,20 @@ LD 0.32 2.5\r\n";
     #[test]
     fn catalog_names_with_spaces_work_in_references_and_projects() {
         let dir = TempDir::new("spaces");
-        let lib_path = dir.path().join("vendor glasses preferred June-2025-B.agf");
+        let lib_path = dir
+            .path()
+            .join("vendor glasses preferred Spring Edition B.agf");
         std::fs::write(&lib_path, LIB_AGF).unwrap();
         let e = engine();
         let mut s = e.new_session();
         let sync = s.set_library_catalog_files(std::slice::from_ref(&lib_path));
         assert_eq!(
             sync.catalogs[0].name,
-            "vendor glasses preferred June-2025-B"
+            "vendor glasses preferred Spring Edition B"
         );
         use_glass(
             &mut s,
-            Some("VENDOR GLASSES PREFERRED JUNE-2025-B"),
+            Some("VENDOR GLASSES PREFERRED SPRING EDITION B"),
             "LIBFLINT",
         );
         assert!(s.resolved().is_ok());
@@ -1992,15 +1994,18 @@ LD 0.32 2.5\r\n";
         s.save(Some(&proj)).unwrap();
         assert_eq!(
             s.project().catalogs[0].relative_path.as_deref(),
-            Some("vendor glasses preferred June-2025-B.agf")
+            Some("vendor glasses preferred Spring Edition B.agf")
         );
         let s2 = e.open_session(&proj).unwrap();
         assert!(s2.open_warnings().is_empty(), "{:?}", s2.open_warnings());
         assert!(s2.resolved().is_ok());
         let d = s2
-            .glass_details(Some("Vendor Glasses Preferred June-2025-B"), "libflint")
+            .glass_details(
+                Some("Vendor Glasses Preferred Spring Edition B"),
+                "libflint",
+            )
             .unwrap();
-        assert_eq!(d.row.catalog, "vendor glasses preferred June-2025-B");
+        assert_eq!(d.row.catalog, "vendor glasses preferred Spring Edition B");
     }
 
     #[test]

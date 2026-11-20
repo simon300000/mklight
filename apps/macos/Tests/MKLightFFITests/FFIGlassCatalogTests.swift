@@ -48,7 +48,7 @@ import Testing
         defer { try? FileManager.default.removeItem(at: dir) }
         let file = dir.appendingPathComponent("ODD.agf")
         let text = Self.agf
-            .replacingOccurrences(of: "1.62004 36.37", with: "1.587166 75.90")
+            .replacingOccurrences(of: "1.62004 36.37", with: "1.553214 71.40")
             + "NM SYNIR 3 0 1.000000 0.000000 0 3 4\r\nCD 2.4 0.01 0.0002 0.00001 -1e-7 1e-9\r\nLD 2.0 14.0\r\n"
             + "NM NOCD 2 0 1.5 60 0 0 0\r\n"
         try text.write(to: file, atomically: true, encoding: .utf8)
@@ -61,7 +61,7 @@ import Testing
         #expect(info.warnings.map(\.glass) == ["SYNFLINT", "NOCD"] && info.warnings[0].line == 4)
         let rows = try await w.glassRows(in: "ODD")
         let flint = try #require(rows.first { $0.name == "SYNFLINT" })
-        #expect(abs((flint.nd ?? 0) - 1.62004) < 2e-5 && flint.catalogNd == 1.587166 && flint.listedValuesDiffer)
+        #expect(abs((flint.nd ?? 0) - 1.62004) < 2e-5 && flint.catalogNd == 1.553214 && flint.listedValuesDiffer)
         let ir = try #require(rows.first { $0.name == "SYNIR" })
         #expect(ir.nd == nil && ir.vd == nil && ir.catalogNd == 1 && ir.status == .special)
         let d = try await w.glassDetails(catalog: "ODD", name: "SYNIR")

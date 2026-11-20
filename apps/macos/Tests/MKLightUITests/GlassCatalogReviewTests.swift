@@ -117,10 +117,10 @@ import Testing
         #expect(crown.hasDLine && crown.ndText == "1.51680" && crown.vdText == "64.17" && !crown.listedValuesDiffer)
         // A catalog line whose listed values its coefficients do not give.
         let odd = try #require(GlassRow(json: .object([
-            "catalog": .string("C"), "name": .string("ODD"), "nd": .number(1.62075), "vd": .number(60.30),
-            "catalog_nd": .number(1.587166), "catalog_vd": .number(75.90),
+            "catalog": .string("C"), "name": .string("ODD"), "nd": .number(1.64210), "vd": .number(55.80),
+            "catalog_nd": .number(1.553214), "catalog_vd": .number(71.40),
         ])))
-        #expect(odd.listedValuesDiffer && odd.ndText == "1.62075")
+        #expect(odd.listedValuesDiffer && odd.ndText == "1.64210")
         #expect(warningsNote([]) == "")
         #expect(warningsNote([CatalogWarning(line: 3, glass: "ODD", kind: "index_mismatch", message: "m")]) == " Reading it reported 1 warning (first: line 3: ODD: m).")
         #expect(glassCountText(1) == "1 glass" && glassCountText(0) == "0 glasses")
