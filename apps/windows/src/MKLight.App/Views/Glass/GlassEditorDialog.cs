@@ -238,15 +238,10 @@ public sealed class GlassEditorDialog
             _status.Text = p;
             _status.FontWeight = FontWeights.Normal;
         }
-        else if (_e.PreviewNumbers is { } n)
-        {
-            _statusIcon.Visibility = Visibility.Collapsed;
-            _status.Text = n.Nd > 0 ? $"nd {GlassFormat.Fixed(n.Nd, 5)}    Vd {GlassFormat.Fixed(n.Vd, 2)}" : "No nd, Vd (the d line is outside the range)";
-        }
         else
         {
             _statusIcon.Visibility = Visibility.Collapsed;
-            _status.Text = "";
+            _status.Text = _e.PreviewText;
         }
         _dialog.IsPrimaryButtonEnabled = _e.Preview is not null;
     }
