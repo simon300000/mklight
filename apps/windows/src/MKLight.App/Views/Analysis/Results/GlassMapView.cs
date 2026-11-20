@@ -72,7 +72,7 @@ public sealed partial class GlassMapView : UserControl, IViewOptions
         Side();
     }
 
-    IEnumerable<GlassPoint> Shown => _d.Glasses.Where(g => (_catalog is null || g.Catalog == _catalog || g.InDesign) && double.IsFinite(g.Vd) && double.IsFinite(Y(g)));
+    IEnumerable<GlassPoint> Shown => _d.Glasses.Where(g => (_catalog is null || g.Catalog == _catalog || g.InDesign) && g.HasNd && double.IsFinite(Y(g)));
     double Y(GlassPoint g) => _pgf ? g.Pgf : g.Nd;
 
     static Color StatusColor(GlassStatus s, bool dark) => s.Slot() < 0 ? (dark ? Palette.Rgb(0x9a9a95) : Palette.Rgb(0x8a8a85)) : Palette.Slot(s.Slot(), dark);
@@ -114,7 +114,9 @@ public sealed partial class GlassMapView : UserControl, IViewOptions
                 row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
                 row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
                 row.Children.Add(Kit.Text(x.DisplayName, "BodyText", 12));
-                var s = Kit.Text(x.SurfaceLabel, "SecondaryText", 12);
+                // A glass without n_d (an IR glass) has no point on the map: said so beside its surfaces.
+                var s = Kit.Text(x.HasNd ? x.SurfaceLabel : x.SurfaceLabel + "   n_d —", "SecondaryText", 12);
+                if (!x.HasNd) ToolTipService.SetToolTip(row, "No n_d or V_d in its catalogue (an infrared glass): not on the map");
                 Grid.SetColumn(s, 1);
                 row.Children.Add(s);
                 var b = new Button { Content = row, HorizontalAlignment = HorizontalAlignment.Stretch, HorizontalContentAlignment = HorizontalAlignment.Stretch, Padding = new Thickness(6, 2, 6, 3), Background = new SolidColorBrush(Color.FromArgb(0, 0, 0, 0)), BorderThickness = new Thickness(0) };
@@ -135,7 +137,7 @@ public sealed partial class GlassMapView : UserControl, IViewOptions
         p.Children.Add(Kit.Text(g.DisplayName, "PanelTitleText", compact ? 12 : 14));
         var sub = string.Join(" · ", new[] { g.Catalog ?? (g.Kind == "model" ? "Model glass" : ""), g.Kind == "offset" ? "melt offset" : "", g.Status == GlassStatus.Unknown && g.OtherStatus is null ? "" : g.StatusLabel }.Where(s => s.Length > 0));
         if (sub.Length > 0) p.Children.Add(Kit.Caption(sub));
-        var rows = new List<(string, string)> { ("n_d", Fmt.Fixed(g.Nd, 5)), ("V_d", Fmt.Fixed(g.Vd, 2)), ("P_g,F", double.IsFinite(g.Pgf) ? Fmt.Fixed(g.Pgf, 4) : "—") };
+        var rows = new List<(string, string)> { ("n_d", g.HasNd ? Fmt.Fixed(g.Nd, 5) : "—"), ("V_d", g.HasNd ? Fmt.Fixed(g.Vd, 2) : "—"), ("P_g,F", double.IsFinite(g.Pgf) ? Fmt.Fixed(g.Pgf, 4) : "—") };
         if (!compact)
         {
             rows.Add(("ΔP_g,F", double.IsFinite(g.Pgf) ? Fmt.Signed(g.DeltaPgf, 4).Trim() : "—"));

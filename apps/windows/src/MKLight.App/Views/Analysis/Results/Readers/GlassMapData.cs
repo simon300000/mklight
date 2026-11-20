@@ -46,6 +46,12 @@ public sealed record GlassPoint(string Id, string? Catalog, string Name, string 
     /// <summary>Whether the design uses the glass (offset and model glasses always are).</summary>
     public bool InDesign => Kind != "catalog" || Surfaces.Count > 0;
 
+    /// <summary>
+    /// Whether the glass has a place on the map: finite n_d and V_d, n_d above 1 and V_d above 0.
+    /// An IR glass's catalogue entry carries placeholders (n_d 1, V_d 0) instead.
+    /// </summary>
+    public bool HasNd => double.IsFinite(Nd) && double.IsFinite(Vd) && Nd > 1 && Vd > 0;
+
     /// <summary>"S1, S3".</summary>
     public string SurfaceLabel => string.Join(", ", Surfaces.Select(s => "S" + s.ToString(System.Globalization.CultureInfo.InvariantCulture)));
 
@@ -96,10 +102,13 @@ public sealed class GlassMapData
                 "offset" => $"offset:{catalog}/{name}:{first}",
                 _ => $"{catalog}/{name}",
             };
-            glasses.Add(new GlassPoint(id, catalog, name, kind, Coord(0, "nd"), Coord(1, "vd"), Coord(2, "pgf"), status, other, surfaces,
+            var point = new GlassPoint(id, catalog, name, kind, Coord(0, "nd"), Coord(1, "vd"), Coord(2, "pgf"), status, other, surfaces,
                 Json.Bool(Json.At(g, "exclude_substitution")),
                 kind == "offset" ? Json.Number(Json.At(g, "offset", "dn_d")) ?? 0 : 0,
-                kind == "offset" ? Json.Number(Json.At(g, "offset", "dv_d")) ?? 0 : 0));
+                kind == "offset" ? Json.Number(Json.At(g, "offset", "dv_d")) ?? 0 : 0);
+            // Glasses without n_d (IR glasses' placeholders) are dropped, except those the design uses:
+            // they stay in its list (without a point on the map).
+            if (point.HasNd || point.InDesign) glasses.Add(point);
         }
         return new GlassMapData { Glasses = glasses };
     }
