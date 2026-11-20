@@ -684,11 +684,12 @@ fn calibrate(
         ("cpu", Backend::CpuReference),
         (rules.name, Backend::Gpu(rules.name.into())),
     ] {
-        for analysis in rules.calibrated {
+        for key in rules.calibrated {
+            let analysis = measured::analysis_of(key);
             let session = engine()?.session_from_project(Project::new(system.clone()))?;
             let mut warmed = false;
-            for (_, settings) in runs.iter().filter(|(a, _)| a == analysis) {
-                let mut req = crate::session::AnalysisRequest::new(*analysis, settings.clone());
+            for (_, settings) in runs.iter().filter(|(a, _)| a == key) {
+                let mut req = crate::session::AnalysisRequest::new(analysis, settings.clone());
                 req.backend = Some(backend.clone());
                 req.fresh = true;
                 if !std::mem::replace(&mut warmed, true) {
@@ -705,7 +706,7 @@ fn calibrate(
                         )));
                     }
                     points.push(Point {
-                        analysis: (*analysis).into(),
+                        analysis: (*key).into(),
                         backend: name.into(),
                         mwork,
                         ms: t.elapsed().as_secs_f64() * 1e3,

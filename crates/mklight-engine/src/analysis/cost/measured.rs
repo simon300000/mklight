@@ -42,7 +42,8 @@ pub struct Rules {
     /// `RATIO` faster than the CPU reference, per analysis. Analyses not
     /// listed stay on the CPU until a calibration shows a gain.
     pub min_rays: &'static [(&'static str, f64)],
-    /// The analyses calibrated (and routed by the calibration).
+    /// The analyses calibrated (and routed by the calibration), by [`key`]:
+    /// `analysis` or `analysis/method`.
     pub calibrated: &'static [&'static str],
     /// The calibration's sample system.
     pub sample: fn() -> OpticalSystem,
@@ -89,10 +90,17 @@ pub const CUDA: Rules = Rules {
         "mtf",
         "mtf_vs_field",
         "through_focus_mtf",
+        "mtf/fft",
     ],
     sample: mklight_core::samples::cooke_triplet,
-    sizes: |analysis| {
-        if WAVE.contains(&analysis) {
+    sizes: |key| {
+        if key == "mtf/fft" {
+            // The FFT's cost is the pupil grid's, not the traced rays'.
+            [
+                json!({"method": "fft", "pupil": {"grid": 128}}),
+                json!({"method": "fft", "pupil": {"grid": 512}}),
+            ]
+        } else if WAVE.contains(&key) {
             [
                 json!({"pupil": {"rays": 33}}),
                 json!({"pupil": {"rays": 65}}),
@@ -109,6 +117,11 @@ pub const ALL: [&Rules; 2] = [&WEBGPU, &CUDA];
 /// Wave analyses: their work includes the transforms, and a calibrated
 /// line applies to the default method only ([`key`]).
 const WAVE: &[&str] = &["psf", "mtf", "mtf_vs_field", "through_focus_mtf"];
+
+/// The analysis of a calibration key (`mtf/fft` → `mtf`).
+pub fn analysis_of(key: &str) -> &str {
+    key.split_once('/').map_or(key, |(a, _)| a)
+}
 
 impl Rules {
     /// The calibration runs: `(analysis, settings)` at two sizes each.
@@ -475,7 +488,7 @@ mod tests {
                 assert!(rules.calibrated.contains(a));
             }
             for a in rules.calibrated {
-                assert!(crate::analysis::gpu::WEBGPU_ANALYSES.contains(a));
+                assert!(crate::analysis::gpu::WEBGPU_ANALYSES.contains(&analysis_of(a)));
             }
         }
     }
@@ -558,7 +571,7 @@ mod tests {
         let sys = (CUDA.sample)();
         let mut points = Vec::new();
         for (a, s) in CUDA.runs() {
-            let w = mwork(a, &s, &sys).unwrap();
+            let w = mwork(analysis_of(a), &s, &sys).unwrap();
             assert!(w > 0., "{a}");
             for (backend, fixed, per) in [("cpu", 1., 40.), ("cuda", 6., 10.)] {
                 for jitter in [0.9, 1., 1.2] {

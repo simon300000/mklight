@@ -58,7 +58,7 @@ fn cuda_calibration_measures_caches_and_routes() {
         serde_json::to_string(&cal.analyses).unwrap()
     );
     assert_eq!(cal.source, "measured");
-    assert_eq!(cal.analyses.len(), 7);
+    assert_eq!(cal.analyses.len(), 8);
     assert!(!cal.driver.is_empty());
     assert!(dir.join("cost").join("cuda.json").is_file());
     // Small spot diagrams stay on the CPU.
