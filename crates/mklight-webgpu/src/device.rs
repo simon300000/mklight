@@ -243,16 +243,17 @@ pub trait Gpu: Send + Sync {
     /// Prepare `kernels` ahead of their first use (`ComputeBackend::
     /// prepare_kernels`): report progress `(done, total)`, stop early when
     /// `cancel` is set, and keep compiled code under `cache_dir` where the
-    /// device has a cache of its own. Returns how many kernels came from that
-    /// cache and why the cache could not be used, if it could not. Provided:
-    /// one kernel after the other through [`Gpu::prepare`], no cache.
+    /// device has a cache of its own. Returns how many kernels it prepared
+    /// (`kernels` and any it uses only on this device), how many of them were
+    /// not compiled now, and why its cache could not be used, if it could
+    /// not. Provided: one kernel after the other through [`Gpu::prepare`].
     fn prepare_all(
         &self,
         kernels: &[(Kernel, PassShape)],
         _cache_dir: Option<&std::path::Path>,
         progress: &(dyn Fn(usize, usize) + Sync),
         cancel: &std::sync::atomic::AtomicBool,
-    ) -> MkResult<(usize, Option<String>)> {
+    ) -> MkResult<(usize, usize, Option<String>)> {
         for (i, k) in kernels.iter().enumerate() {
             if cancel.load(std::sync::atomic::Ordering::Relaxed) {
                 break;
@@ -260,7 +261,7 @@ pub trait Gpu: Send + Sync {
             self.prepare(std::slice::from_ref(k))?;
             progress(i + 1, kernels.len());
         }
-        Ok((0, None))
+        Ok((kernels.len(), 0, None))
     }
 }
 

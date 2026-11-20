@@ -380,9 +380,10 @@ impl ComputeBackend for WebGpuBackend {
     ) -> MkResult<KernelPreparation> {
         let t = Instant::now();
         let all = crate::ops::pipelines();
-        let (from_cache, warning) = self.inner.gpu.prepare_all(&all, cache_dir, progress, cancel)?;
+        let (kernels, from_cache, warning) =
+            self.inner.gpu.prepare_all(&all, cache_dir, progress, cancel)?;
         Ok(KernelPreparation {
-            kernels: all.len(),
+            kernels,
             from_cache,
             seconds: t.elapsed().as_secs_f64(),
             warning,

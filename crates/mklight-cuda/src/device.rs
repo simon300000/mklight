@@ -697,7 +697,7 @@ impl Gpu for CudaDevice {
         cache_dir: Option<&std::path::Path>,
         progress: &(dyn Fn(usize, usize) + Sync),
         cancel: &std::sync::atomic::AtomicBool,
-    ) -> MkResult<(usize, Option<String>)> {
+    ) -> MkResult<(usize, usize, Option<String>)> {
         if let Some(d) = cache_dir {
             self.set_cache_dir(Some(d.join("cuda")));
         }
@@ -711,7 +711,7 @@ impl Gpu for CudaDevice {
             (Kernel::new(m, e), shape)
         }));
         let from_cache = self.prepare_parallel(&all, progress, cancel)?;
-        Ok((from_cache, self.cache_warning.lock().unwrap().clone()))
+        Ok((all.len(), from_cache, self.cache_warning.lock().unwrap().clone()))
     }
 
     fn run(&self, batch: Batch<'_>) -> MkResult<BatchStats> {

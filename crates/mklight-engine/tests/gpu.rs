@@ -458,6 +458,7 @@ fn cpu_only_merit_reports_cpu_even_with_a_selected_gpu() {
 /// loads from the system cache), and the saved pipeline archive then serves
 /// a second engine without compiling.
 #[test]
+#[cfg(target_os = "macos")]
 fn metal_kernels_prepare_ahead_and_load_from_the_saved_cache() {
     use mklight_engine::gpu::GpuPreparation;
     let settled = |e: &Engine| {
@@ -495,6 +496,44 @@ fn metal_kernels_prepare_ahead_and_load_from_the_saved_cache() {
             assert_eq!(kernels, first);
             assert_eq!(from_cache, kernels, "every kernel from the archive");
         }
+        s => panic!("{s:?}"),
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The Windows app prepares CUDA's kernels at launch: they are built into
+/// the library, so every kernel loads without compiling, and the
+/// preparation reports them as not compiled now.
+#[test]
+#[cfg(any(windows, target_os = "linux"))]
+fn cuda_kernels_prepare_ahead() {
+    use mklight_engine::gpu::GpuPreparation;
+    let dir = std::env::temp_dir().join(format!("mklight-cuda-prepare-{}", std::process::id()));
+    let e = engine_with(None);
+    assert!(e.prepare_gpu(Some(dir.clone())));
+    let start = std::time::Instant::now();
+    let state = loop {
+        match e.gpu_preparation() {
+            GpuPreparation::Preparing { .. } if start.elapsed().as_secs() < 300 => {
+                std::thread::sleep(std::time::Duration::from_millis(10))
+            }
+            s => break s,
+        }
+    };
+    match state {
+        GpuPreparation::Ready {
+            kernels,
+            from_cache,
+            warning,
+            ..
+        } => {
+            assert!(kernels >= 40, "{kernels} kernels");
+            if !mklight_cuda::kernels::EMBEDDED.is_empty() {
+                assert_eq!(from_cache, kernels, "every kernel built in");
+            }
+            assert_eq!(warning, None);
+        }
+        GpuPreparation::Unavailable { reason } => eprintln!("skipping: no CUDA ({reason})"),
         s => panic!("{s:?}"),
     }
     let _ = std::fs::remove_dir_all(&dir);
