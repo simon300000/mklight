@@ -175,6 +175,8 @@ sealed partial class SystemPage : UserControl
             Help = c.Path ?? "",
         }).ToList();
         catalogs.AddRange(Ws.CatalogWarnings.Select((w, k) => (FormRow)new NoteRow($"catalog.warning.{k}", w) { Warning = true }));
+        catalogs.Add(new ButtonRow("catalog.manage", "Glass Catalogs…", () =>
+            Windows.GlassCatalogsWindow.Show(App.Windows.OfType<Windows.DesignWindow>().FirstOrDefault(w => w.Session == _session))));
         if (catalogs.Count > 0)
         {
             list.Add(new FormSection("catalogs", "Glass Catalogs", catalogs)
