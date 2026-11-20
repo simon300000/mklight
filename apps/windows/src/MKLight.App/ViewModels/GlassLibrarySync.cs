@@ -30,10 +30,11 @@ public static class GlassLibrarySync
     {
         var state = States.GetOrCreateValue(engine);
         if (state.Revision == library.Revision) return false;
-        state.Revision = library.Revision;
+        var revision = library.Revision;
         var overrides = library.Overrides.ToArray();
         var warnings = new List<string>();
         var sync = await engine.SetLibraryCatalogsAsync(library.CatalogFiles);
+        state.Revision = revision; // only a finished sync counts, so a failed one is tried again
         var changed = sync.Changed;
         if (state.Overrides is null || !state.Overrides.SequenceEqual(overrides))
         {
