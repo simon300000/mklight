@@ -51,7 +51,7 @@
                         </Button.Flyout>
                     </Button>
                     <ToggleButton x:Name="InspectorToggle" Style="{StaticResource CircleToggleButton}" Content="&#xE89F;"
-                                  IsChecked="True" Click="OnInspectorToggle" ToolTipService.ToolTip="Show or hide the inspector (Ctrl+Alt+I)" />
+                                  IsChecked="True" Click="OnInspectorToggle" ToolTipService.ToolTip="Show or hide the inspector (Ctrl+Alt+P)" />
                 </StackPanel>
             </TitleBar.RightHeader>
         </TitleBar>

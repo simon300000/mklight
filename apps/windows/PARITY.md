@@ -24,7 +24,7 @@ after the merge.
 | Column widths and fixed-bound column layout | ⬜ | |
 | Toolbar centre: status capsule | ✅ | Centred in the title bar |
 | Toolbar trailing: Add Analysis menu (+) by category | ✅ | Title bar drop-down: categories → analyses, adds a pane after the focused one |
-| Toolbar trailing: inspector toggle | ✅ | Button and Ctrl+Alt+I |
+| Toolbar trailing: inspector toggle | ✅ | Button and Ctrl+Alt+P (Ctrl+Alt+I inserts a surface after) |
 | Inspector toolbar tab bar (Surface, System, Optimize, Glass Substitution, Tolerance, Apply Solves, running dot) | 🟡 | Surface and System tabs only; job tabs ⬜ |
 | Capsule: GPU preparation badge (Preparing n%, GPU ready) | 🟡 | State shown only in the details flyout, no badge |
 | Capsule: one button per running job | ⬜ | Jobs UI not started |
@@ -58,7 +58,7 @@ after the merge.
 | File: New from Sample submenu | 🟡 | "New from sample" opens the welcome window (sample cards) |
 | File: Show Welcome Window | ✅ | Ctrl+N |
 | File: New/Open/Save/Save As/Open Recent; Revert, Duplicate, Rename, autosave, versions | 🟡 | File flyout: New, Open, Save, Save As; Open Recent entry exists, list in the welcome window; Revert/Duplicate/Rename/autosave ⬜ |
-| View: Sidebar and Inspector commands | 🟡 | Inspector Ctrl+Alt+I; sidebar via the pane button |
+| View: Sidebar and Inspector commands | 🟡 | Inspector Ctrl+Alt+P; sidebar via the pane button |
 | View: Show/Hide Lens Data, Show/Hide Layout | ⬜ | |
 | View > Panel: Move to New/Main Window, Hide/Close, Reset Panel Layout | ⬜ | |
 | View: Section, X-Z Section, 3D View, Fit Layout, Ray Colors | 🟡 | Fit Ctrl+0; ray colours toggle; x–z section follows the design; 3D ⬜ |

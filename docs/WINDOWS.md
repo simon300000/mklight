@@ -173,8 +173,13 @@ directly; only the materials change.
   in the status capsule, centred in the title bar; engine, snapshot, backend
   and GPU kernels are in its flyout; transient messages are a toast.
 * **Light and dark** are both designed; the theme is System, Light or Dark per
-  user (File menu), applied live to every window. Brushes picked in code go
-  through `ThemeLookup`, so a window's own theme wins over the system's.
+  user (File menu), applied live to every window. The app's own theme
+  (`Application.RequestedTheme`) is set at launch from the saved choice or
+  `--theme`: WinUI resolves the theme resources of styles applied in code
+  (the lens table's cells) at the application level, so they would otherwise
+  follow the system's theme. A switch to the other appearance during a run
+  therefore completes on the next launch (a toast says so). Brushes picked
+  in code go through `ThemeLookup`, so a window's own theme wins.
 
 ## Window structure (round 1)
 
@@ -206,5 +211,5 @@ directly; only the materials change.
   fallback) in the footer, which opens the run details. A stale result dims
   under a "Design changed" card with Update; automatic panes re-run.
 * **Keyboard**: Ctrl+Z / Ctrl+Y (Ctrl+Shift+Z), Ctrl+S, Ctrl+Shift+S, Ctrl+O,
-  Ctrl+N (welcome), F5 run all, Ctrl+Esc cancel all, Ctrl+Alt+I inspector,
+  Ctrl+N (welcome), F5 run all, Ctrl+Esc cancel all, Ctrl+Alt+P inspector,
   Ctrl+0 fit the layout, plus the lens table's own keys.

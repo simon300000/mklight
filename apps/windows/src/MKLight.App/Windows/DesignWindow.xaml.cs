@@ -352,7 +352,7 @@ public sealed partial class DesignWindow : Window
         Add(VirtualKey.N, VirtualKeyModifiers.Control, App.ShowWelcome);
         Add(VirtualKey.F5, VirtualKeyModifiers.None, () => _session.Workspace.RerunAll());
         Add(VirtualKey.Escape, VirtualKeyModifiers.Control, () => _session.Workspace.CancelAll());
-        Add(VirtualKey.I, VirtualKeyModifiers.Control | VirtualKeyModifiers.Menu, ToggleInspector);
+        Add(VirtualKey.P, VirtualKeyModifiers.Control | VirtualKeyModifiers.Menu, ToggleInspector);
         Add(VirtualKey.Number0, VirtualKeyModifiers.Control, _layout.Fit);
     }
 
@@ -393,6 +393,11 @@ public sealed partial class DesignWindow : Window
     {
         AppSettings.Theme = (sender as FrameworkElement)?.Tag switch { "light" => ElementTheme.Light, "dark" => ElementTheme.Dark, _ => ElementTheme.Default };
         ApplyTheme(AppSettings.Theme);
+        // Theme resources WinUI resolves for the whole app (styles set in code, e.g. the lens table's
+        // cells) follow the app's theme, which is fixed at launch.
+        var app = Application.Current.RequestedTheme == ApplicationTheme.Dark ? ElementTheme.Dark : ElementTheme.Light;
+        if (AppSettings.Theme != ElementTheme.Default && AppSettings.Theme != app)
+            ShowToast("The appearance is fully applied the next time MKLight starts.");
     }
 
     void OnInspectorToggle(object sender, RoutedEventArgs e) => SetInspector(InspectorToggle.IsChecked == true);
