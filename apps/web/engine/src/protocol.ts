@@ -1,7 +1,7 @@
 // Messages between the page (`client.ts`) and the engine worker
 // (`worker.ts`). Internal to @engine; docs/WEB.md describes the design.
 
-import type { EngineErrorKind, JSONObject, JSONValue, TypedArray } from './types'
+import type { EngineErrorKind, JSONObject, JSONValue, TypedArray, WebgpuCalls, WebgpuWatchdogOptions } from './types'
 
 /** Every call the client makes, with its arguments and result type. */
 export interface Calls {
@@ -11,9 +11,17 @@ export interface Calls {
       cores: number
       config: JSONObject
       webgpuCalibration: 'auto' | 'off'
-      webgpuWatchdog?: { timeoutMs?: number; stalledModules?: string[] }
+      webgpuWatchdog?: WebgpuWatchdogOptions
     }
-    result: { version: string; backends: JSONValue; threads: number; analyses: JSONValue }
+    result: {
+      version: string
+      backends: JSONValue
+      threads: number
+      analyses: JSONValue
+      webgpu: boolean
+      webgpuReason: string | null
+      webgpuCalls?: WebgpuCalls
+    }
   }
   listAnalyses: { args: Record<string, never>; result: JSONValue }
   sessionNew: { args: Record<string, never>; result: number }

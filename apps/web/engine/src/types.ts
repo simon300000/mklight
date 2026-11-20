@@ -35,8 +35,12 @@ export interface Readiness {
   threads: number
   /** `navigator.hardwareConcurrency`. */
   hardwareConcurrency: number
-  /** `navigator.gpu` exists and an adapter could be requested. */
+  /** `navigator.gpu` exists and an adapter answered within a few seconds,
+   * with no pipeline failure remembered for this browser (then no WebGPU
+   * call is made at all). */
   webgpu: boolean
+  /** When `webgpu` is false: why. */
+  webgpuReason: string | null
   /** When `threaded` is false: why (no isolation, no SAB, …), for a banner. */
   reason: string | null
 }
@@ -65,9 +69,40 @@ export interface EngineInfo {
   isolated: boolean
   /** Running the threaded build. */
   threaded: boolean
-  /** WebGPU present in this browser (not: a WebGPU backend is registered;
-   * see `backends` for that). */
+  /** The engine worker found a WebGPU adapter in this load (not: the
+   * backend works; see `backends` for that). False without WebGPU, when the
+   * adapter did not answer within a few seconds, and when a pipeline
+   * failure is remembered for this browser (then no WebGPU call is made). */
   webgpu: boolean
+  /** When `webgpu` is false: why. */
+  webgpuReason: string | null
+  /** Test support (`webgpuWatchdog.countCalls`): WebGPU calls the engine
+   * worker made while it started. */
+  webgpuCalls?: WebgpuCalls
+}
+
+/** Test support: WebGPU calls counted in the engine worker. */
+export interface WebgpuCalls {
+  requestAdapter: number
+  requestDevice: number
+}
+
+/** The WebGPU pipeline watchdog and start-up bounds (`createEngine`). */
+export interface WebgpuWatchdogOptions {
+  /** A compute pipeline that does not finish compiling within this many ms
+   * (default 45 000) makes `gpu:webgpu` unavailable. */
+  timeoutMs?: number
+  /** How long the engine worker waits for the WebGPU adapter while it
+   * starts (default 4000 ms). */
+  adapterTimeoutMs?: number
+  /** Tests only: kernel modules (`'trace'`, `'trace_overlays'`, …) whose
+   * compilation is simulated never to finish. */
+  stalledModules?: string[]
+  /** Tests only: the engine worker's adapter request never answers. */
+  stallAdapter?: boolean
+  /** Tests only: count the engine worker's WebGPU calls
+   * (`info.webgpuCalls`). */
+  countCalls?: boolean
 }
 
 // ---------------------------------------------------------------------------
@@ -346,8 +381,7 @@ export interface CreateEngineOptions {
   /** The WebGPU pipeline watchdog: a compute pipeline that does not finish
    * compiling within `timeoutMs` (default 45 s) makes `gpu:webgpu`
    * unavailable, with the reason, and the failure is remembered for this
-   * browser and adapter. `stalledModules` is for tests only: kernel
-   * modules (`'trace'`, `'trace_overlays'`, …) whose compilation is
-   * simulated never to finish. */
-  webgpuWatchdog?: { timeoutMs?: number; stalledModules?: string[] }
+   * browser (user agent) and kernel build; later loads then make no WebGPU
+   * call. The other fields bound or simulate start-up (see the type). */
+  webgpuWatchdog?: WebgpuWatchdogOptions
 }
