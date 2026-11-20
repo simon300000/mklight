@@ -216,6 +216,91 @@ fn autosave_writes_a_recoverable_copy_without_touching_the_session() {
     std::fs::remove_dir_all(&d).ok();
 }
 
+/// A front end's whole project: every section it keeps, and a top-level
+/// key the engine does not know.
+fn front_end_project(system: mklight_core::OpticalSystem) -> Project {
+    let mut doc = Project::new(system).to_value().unwrap();
+    doc["metadata"]["author"] = json!("Optics team");
+    doc["views"] = json!([{"key": "spot-1", "analysis": "spot_diagram",
+        "settings": {"field": 2}, "ui": {"split": 0.4, "tab": "plot"}}]);
+    doc["merit"] = json!({"operands": [{"kind": "effl", "target": 100.0, "weight": 1.0}]});
+    doc["variables"] = json!([{"param": "curvature", "surface": 1}]);
+    doc["tolerances"] = json!({"operands": [{"kind": "tthi", "min": -0.05, "max": 0.05}]});
+    doc["layout"] = json!({"window": [10, 20, 1200, 800], "panels": ["lde", "spot-1"]});
+    Project::from_value(doc).unwrap()
+}
+
+/// The project without the fields every save stamps.
+fn unstamped(p: &Project) -> Value {
+    let mut v = p.to_value().unwrap();
+    v["metadata"]["modified"] = Value::Null;
+    v["metadata"]["engine_version"] = Value::Null;
+    v
+}
+
+#[test]
+fn set_project_keeps_every_section_through_autosave_and_recovery() {
+    let d = temp_dir("set-project");
+    let e = engine();
+    let mut s = e
+        .session_from_project(Project::new(samples::singlet()))
+        .unwrap();
+    let p = d.join("lens.mklight");
+    s.save(Some(&p)).unwrap();
+    assert!(!s.is_dirty());
+
+    let mut sys = samples::singlet();
+    sys.surfaces[1].thickness += 1.0;
+    let wanted = front_end_project(sys);
+    let h = s.set_project(wanted.clone()).unwrap();
+    assert_eq!(h, s.snapshot_hash());
+    assert!(s.is_dirty());
+    assert_eq!(s.system(), &wanted.system);
+    assert_eq!(unstamped(s.project()), unstamped(&wanted));
+
+    let a = s.autosave(None).unwrap();
+    let r = e.open_session(&a).unwrap();
+    assert_eq!(r.snapshot_hash(), s.snapshot_hash());
+    assert_eq!(unstamped(r.project()), unstamped(&wanted));
+    assert_eq!(r.project().extra["layout"], wanted.extra["layout"]);
+    std::fs::remove_dir_all(&d).ok();
+}
+
+#[test]
+fn set_project_is_atomic_and_leaves_catalogs_and_a_clean_session_alone() {
+    let e = engine();
+    let mut s = e
+        .session_from_project(Project::new(samples::singlet()))
+        .unwrap();
+    s.set_project(front_end_project(samples::singlet()))
+        .unwrap();
+    let before = s.project().clone();
+    let h = s.snapshot_hash();
+
+    // An invalid system changes nothing, the other sections included.
+    let mut bad = front_end_project(samples::singlet());
+    bad.merit = json!("other");
+    bad.system.surfaces[1].thickness = f64::NAN;
+    assert!(s.set_project(bad).is_err());
+    assert_eq!(s.project(), &before);
+    assert_eq!(s.snapshot_hash(), h);
+
+    // The same document again is no change; its catalogs are ignored.
+    let d = temp_dir("set-project-clean");
+    s.save(Some(&d.join("x.mklight"))).unwrap();
+    let mut same = s.project().clone();
+    same.catalogs.push(mklight_engine::project::CatalogRef {
+        name: "ELSEWHERE".into(),
+        path: None,
+        relative_path: None,
+        format: Default::default(),
+    });
+    assert_eq!(s.set_project(same).unwrap(), h);
+    assert!(!s.is_dirty());
+    assert!(s.project().catalogs.is_empty());
+    std::fs::remove_dir_all(&d).ok();
+}
+
 #[test]
 fn files_at_another_schema_version_are_refused() {
     let d = temp_dir("schema");
