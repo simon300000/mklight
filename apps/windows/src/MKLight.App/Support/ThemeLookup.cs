@@ -13,6 +13,17 @@ public static class ThemeLookup
 {
     public static Brush Brush(FrameworkElement element, string key) => (Brush)Resource(element.ActualTheme, key);
 
+    /// <summary>
+    /// Runs <paramref name="paint"/> now, once the element is loaded (its theme is the window's then) and
+    /// whenever its theme changes: for brushes picked in code.
+    /// </summary>
+    public static void Follow(FrameworkElement element, Action paint)
+    {
+        paint();
+        element.Loaded += (_, _) => paint();
+        element.ActualThemeChanged += (_, _) => paint();
+    }
+
     public static object Resource(ElementTheme theme, string key)
     {
         var name = theme == ElementTheme.Dark ? "Dark" : "Light";

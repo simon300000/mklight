@@ -632,15 +632,11 @@ sealed record NoteRow(string Key, string Text) : FormRow(Key)
         var t = new TextBlock { Style = InspectorStyles.Get("InspectorCaption"), Margin = new Thickness(12, 8, 12, 8) };
         t.Tag = t;
         Update(t, ctx);
+        if (Warning) Support.ThemeLookup.Follow(t, () => t.Foreground = Support.ThemeLookup.Brush(t, "WarningBrush"));
         return t;
     }
 
-    internal override void Update(FrameworkElement view, FormContext ctx)
-    {
-        var t = (TextBlock)view;
-        t.Text = Text;
-        if (Warning) t.Foreground = Support.ThemeLookup.Brush(t, "WarningBrush");
-    }
+    internal override void Update(FrameworkElement view, FormContext ctx) => ((TextBlock)view).Text = Text;
 }
 
 /// <summary>A row the page draws itself (the title, a shape preview, the field and wavelength grids).</summary>

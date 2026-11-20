@@ -94,12 +94,12 @@ public sealed partial class GlassCatalogsWindow : Window
         SetTitleBar(AppTitleBar);
         AppWindow.TitleBar.PreferredHeightOption = TitleBarHeightOption.Tall;
         AppWindow.SetIcon(Path.Combine(AppContext.BaseDirectory, "Assets", "MKLight.ico"));
-        Root.RequestedTheme = AppSettings.Theme;
-        SyncCaptionButtons();
-        Root.ActualThemeChanged += (_, _) => SyncCaptionButtons();
+        ThemeSwitch.Attach(this, Root);
 
         _model = new GlassBrowserModel(Library, () => App.Engine!.MakeDocumentEngine());
         _model.Changed += UpdateChrome;
+        // The sidebar's links and the filter's accent are brushes picked in code.
+        Root.ActualThemeChanged += (_, _) => UpdateChrome();
         _model.Message += ShowToast;
         Table.Model = _model;
         Table.ContextMenuRequested += (row, target, at) => GlassMenu(row).ShowAt(target, at);
@@ -120,13 +120,6 @@ public sealed partial class GlassCatalogsWindow : Window
             if (ReferenceEquals(Instance, this)) Instance = null;
             if (_model.OwnEngine is IDisposable own) own.Dispose();
         };
-    }
-
-    void SyncCaptionButtons()
-    {
-        var dark = Root.ActualTheme == ElementTheme.Dark;
-        AppWindow.TitleBar.ButtonForegroundColor = dark ? Microsoft.UI.Colors.White : Microsoft.UI.Colors.Black;
-        AppWindow.TitleBar.ButtonHoverForegroundColor = AppWindow.TitleBar.ButtonForegroundColor;
     }
 
     // ---- Following the frontmost design ----

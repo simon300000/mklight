@@ -34,6 +34,8 @@ internal sealed class PanelTreeView : UserControl
         Model = model;
         Content = _root;
         host.Drag.TargetChanged += ShowTarget;
+        // Each tree (main or separate window) rebuilds in its own theme: its brushes are picked in code.
+        ActualThemeChanged += (_, _) => host.Refresh();
     }
 
     public PanelHost Host => _host;
