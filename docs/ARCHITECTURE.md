@@ -9,8 +9,8 @@ GPU implementation details.**
 
 ```
  ┌──────────────────────────┐   ┌──────────────────────┐   ┌──────────────┐
- │ macOS app (Swift/SwiftUI │   │ Windows/Linux apps   │   │ Python / CLI │
- │ AppKit, Metal viewport)  │   │ (framework TBD)      │   │  (headless)  │
+ │ macOS app (Swift/SwiftUI │   │ Windows app (WinUI 3,│   │ Python / CLI │
+ │ AppKit, Metal viewport)  │   │ C#; Linux TBD)       │   │  (headless)  │
  └────────────┬─────────────┘   └──────────┬───────────┘   └──────┬───────┘
               │  C ABI (mklight-ffi, JSON + binary buffers)        │ pyo3 / Rust API
               └───────────────┬────────────┴───────────────────────┘
@@ -71,6 +71,13 @@ GPU implementation details.**
   app with a Metal-backed viewport) and the executable `MKLight`
   (`apps/macos/README.md`, `docs/APP.md`). Built by `scripts/build-macos.sh`
   into `MKLight.app`.
+* `apps/windows` — the native Windows app in WinUI 3 on .NET 11, layered
+  like the Swift package: `MKLight.Model` (the model JSON mirror),
+  `MKLight.Engine` (the `IEngineClient` boundary and `FFIEngine` over
+  `mklight_ffi.dll` with source-generated P/Invoke), `MKLight.App` (the
+  WinUI 3 app, Win2D drawing) and `MKLight.Tests` (`docs/WINDOWS.md`).
+  Built by `scripts/build-windows.ps1`; `mklight-ffi` builds a `cdylib`
+  for it.
 * `apps/web/engine` — `@engine`, the web app's engine: the wasm engine
   (`mklight-wasm`, built by `scripts/build-wasm.sh`) in a Web Worker with
   real threads, and a typed TypeScript `EngineClient` mirroring the Swift

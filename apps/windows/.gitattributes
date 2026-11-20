@@ -1,0 +1,4 @@
+# The repository uses LF; keep editors and tools on Windows from writing CRLF here.
+* text=auto eol=lf
+*.png binary
+*.ico binary
