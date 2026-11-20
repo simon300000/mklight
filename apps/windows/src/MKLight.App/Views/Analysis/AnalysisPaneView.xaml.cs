@@ -83,8 +83,6 @@ public sealed partial class AnalysisPaneView : UserControl
         RunButton.Content = running ? "\uE711" : "\uE72C";
         ToolTipService.SetToolTip(RunButton, running ? "Cancel" : "Run (F5)");
 
-        StateText.Text = StateLine(d, running);
-
         // Content: the result view, rebuilt only when the output or the theme changes.
         var output = _pane.Output;
         if (output is not null && (!ReferenceEquals(output, _shown) || _shownTheme != ActualTheme))
@@ -110,6 +108,7 @@ public sealed partial class AnalysisPaneView : UserControl
             UpdateBackendBadge(output);
         }
         if (output is null) { ResultHost.Content = null; _shown = null; KeyNumbers.Text = ""; BackendBadge.Visibility = Visibility.Collapsed; }
+        StateText.Text = StateLine(d, running); // after the result is read: automatic values come from it
 
         // Messages for panes without a result.
         switch (_pane.Phase)

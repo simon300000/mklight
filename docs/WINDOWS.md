@@ -60,6 +60,7 @@ options):
 | `--sample <id>` | a new design from a built-in sample (`double_gauss`, `cooke_triplet`, …), no welcome window |
 | `--analysis <name>[,<name>…]` | open these analysis panes instead of the defaults (Spot Diagram, MTF) |
 | `--settings <json>` | settings merged into every pane opened with `--analysis` |
+| `--show-settings` | open every pane's settings form |
 | `--theme light\|dark` | override the saved appearance for this run |
 | `--select <i>` | select surface *i* |
 | `--edit <i>.<radius\|thickness\|conic>=<value>` | apply a lens edit once the panes are up (repeatable), one undoable step each |

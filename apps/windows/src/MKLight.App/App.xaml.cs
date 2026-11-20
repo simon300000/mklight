@@ -100,6 +100,7 @@ public partial class App : Application
         await session.StartAsync(Options.Analyses.Count > 0 ? Options.Analyses : null, extra);
         window.BuildSidebar();
         if (Options.Select is int i) session.SelectedSurface = i;
+        if (Options.ShowSettings) foreach (var p in session.Workspace.Panes) { p.ShowsSettings = true; p.RaiseChanged(); }
         if (Options.IsScripted || Options.Edits.Count > 0 || Options.SaveAs is not null) await RunScriptAsync(window, session);
     }
 
@@ -153,7 +154,9 @@ public partial class App : Application
     static async Task CaptureWhenReady(Window window, DesignSession? session, string path)
     {
         if (session is not null) await WaitIdleAsync(session);
-        await Task.Delay(TimeSpan.FromSeconds(0.8 + Options.Delay));
+        // Win2D presents a new result on a later frame, and a window larger than its display (--size)
+        // composes slowly: give the views time to present, more after scripted edits.
+        await Task.Delay(TimeSpan.FromSeconds(2 + (Options.Edits.Count > 0 || Options.Undo ? 4 : 0) + Options.Delay));
         try { WindowCapture.SavePng(window, path); Log($"screenshot: {path}"); }
         catch (Exception e) { Log($"screenshot failed: {e.Message}"); Environment.Exit(4); }
         Environment.Exit(0);

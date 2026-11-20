@@ -97,36 +97,36 @@ after the merge.
 
 ## 4. Lens data table
 
-All rows: round 1 (lens table agent): verify, unless marked otherwise.
+Checked after the merge of the round-1 table (`Views/Editor`, `ViewModels/LensTable*.cs`).
 
 | Feature | Status | Windows notes |
 |---|---|---|
-| Header: title, caption "N surfaces · stop on S · mm · V variables", Insert / Delete / More buttons | 🟡 | Round 1 (lens table agent): verify |
-| Columns Surf, Type, Comment, Radius, Thickness, Material, Semi-Diameter, Conic; pinned header; resizable; horizontal scroll | 🟡 | Round 1 (lens table agent): verify |
-| Rows OBJ, numbered, STO marker, IMA; object/image partly read-only | 🟡 | Round 1 (lens table agent): verify (stop marker) |
-| Alternating rows; selection emphasis only when table focused | 🟡 | Round 1 (lens table agent): verify |
-| Selection on mouse-down; click edits; double-click row edits radius | 🟡 | Round 1 (lens table agent): verify |
-| Keyboard: Up/Down, Return, Tab/Shift+Tab, Esc | 🟡 | Round 1 (lens table agent): verify (keyboard navigation) |
-| Keyboard navigation skips non-editable cells, anamorphic x continues | 🟡 | Round 1 (lens table agent): verify; anamorphic cells ⬜ |
-| In-place cell editing: compact at rest, exact on focus, commit on Return/focus loss, rejected reverts with toast | 🟡 | Round 1 (lens table agent): verify (one text-field rule) |
-| Number parsing: ∞/inf, decimal comma, per-column validation | 🟡 | Round 1 (lens table agent): verify |
-| Material column: glass-name completion from session catalogs, AIR, MIRROR, model glass | 🟡 | Round 1 (lens table agent): verify (material completion) |
-| Retyping same glass keeps melt offset | ⬜ | Melt offsets not in round 1 |
-| Melt-offset suffix in the material cell | ⬜ | |
-| Type column menu grouped by family, cylinder presets | 🟡 | Round 1 (lens table agent): verify (type menu); cylinder presets unchecked |
-| Type title "Sphere" for k=0, plane etc. | 🟡 | Round 1 (lens table agent): verify |
-| Anamorphic radius/conic two sections ("y"/"x"), Tab y then x | ⬜ | Not in round 1 scope |
-| Cylinder: flat section dimmed, biconic shows both conics | ⬜ | Not in round 1 scope |
-| Automatic semi-diameters dimmed; editing fixes it | ⬜ | Not in round 1 scope |
-| Variable marker V badge (bounded bar, pinned dot, orange when solved) | 🟡 | Round 1 (lens table agent): verify (solve/variable markers) |
-| Solve marker letters M C F P D O E | 🟡 | Round 1 (lens table agent): verify |
-| Validation issue badge on the surface label | 🟡 | Round 1 (lens table agent): verify |
-| Insert before/after, delete (disabled rules), make stop | 🟡 | Round 1 (lens table agent): verify |
-| Context menu: Insert, Delete, Make Stop, Variables submenu, Show in Inspector | ⬜ | Not in round 1 scope; inspector is a placeholder |
+| Header: title, caption "N surfaces · stop on S · mm · V variables", Insert / Delete / More buttons | ✅ | Title, caption "11 surfaces · stop on 6 · mm", insert (+) and delete (−) circle buttons; no More menu |
+| Columns Surf, Type, Comment, Radius, Thickness, Material, Semi-Diameter, Conic; pinned header; resizable; horizontal scroll | 🟡 | All eight columns, pinned header, vertical scroll; not resizable, no horizontal scroll |
+| Rows OBJ, numbered, STO marker, IMA; object/image partly read-only | ✅ | OBJ, numbers, STO with an accent marker, IMA; object/image read-only where the Mac is |
+| Alternating rows; selection emphasis only when table focused | ✅ | Stripes; accent tint and pill while the table has focus, neutral otherwise |
+| Selection on mouse-down; click edits; double-click row edits radius | 🟡 | Click selects, second click or double click edits; not exercised with a real mouse in round 1 |
+| Keyboard: Up/Down, Return, Tab/Shift+Tab, Esc | ✅ | ↑/↓, Home/End, Enter/F2, Tab/Shift+Tab, Esc (checked in-process through the key handlers) |
+| Keyboard navigation skips non-editable cells, anamorphic x continues | ✅ | Tab moves y → x on anamorphic radii |
+| In-place cell editing: compact at rest, exact on focus, commit on Return/focus loss, rejected reverts with toast | ✅ | One shared editor over the cell; one text-field rule (LensTableFieldEdit), toast on rejection |
+| Number parsing: ∞/inf, decimal comma, per-column validation | ✅ | ∞/inf, decimal comma, typographic minus, per-column validation (LensTableValues) |
+| Material column: glass-name completion from session catalogs, AIR, MIRROR, model glass | ✅ | Completion from the session's glass names, AIR, MIRROR, model glass |
+| Retyping same glass keeps melt offset | ✅ | LensTableEdits keeps the offset of the same glass |
+| Melt-offset suffix in the material cell | ✅ | Subtle note after the glass name |
+| Type column menu grouped by family, cylinder presets | 🟡 | Flat menu with group headers and Fluent glyphs, current type checked; cylinder presets unchecked |
+| Type title "Sphere" for k=0, plane etc. | ✅ |  |
+| Anamorphic radius/conic two sections ("y"/"x"), Tab y then x | ✅ | Both sections ("y ∞   x −50"), each editable |
+| Cylinder: flat section dimmed, biconic shows both conics | ✅ | Flat section dimmed; biconic shows both conics |
+| Automatic semi-diameters dimmed; editing fixes it | ✅ | Engine's resolved value from the layout, dimmed; typing a value fixes it |
+| Variable marker V badge (bounded bar, pinned dot, orange when solved) | 🟡 | V badges from the project's variables (bounded, pinned); no toggle (needs an undoable section edit) |
+| Solve marker letters M C F P D O E | ✅ | Letters before numbers so digits stay aligned |
+| Validation issue badge on the surface label | ✅ | Warning/error glyph in the Surf cell, messages as tooltip |
+| Insert before/after, delete (disabled rules), make stop | ✅ | Buttons, context menu, Ctrl+Shift+I / Ctrl+Alt+I, Ctrl+Delete, Ctrl+Shift+T |
+| Context menu: Insert, Delete, Make Stop, Variables submenu, Show in Inspector | 🟡 | Insert, Delete, Make Stop; no Variables submenu or Show in Inspector |
 | Variables menu and toggle refuse a solve-controlled parameter | ⬜ | Not in round 1 scope |
-| Every edit an undoable named step; invalidated solves/overrides dropped in same step | 🟡 | Round 1 (lens table agent): verify (undo via document; whole-state undo) |
-| Setting type keeps carry-over parameters | 🟡 | Model edits exist (shape kind); round 1 (lens table agent): verify |
-| Table accessibility labels and Edit action | ⬜ | |
+| Every edit an undoable named step; invalidated solves/overrides dropped in same step | ✅ | DesignDocument.Edit with the Mac action names; whole-state undo |
+| Setting type keeps carry-over parameters | ✅ | Model SetShapeKind |
+| Table accessibility labels and Edit action | 🟡 | Automation names on rows, type button and badges; no Edit action pattern |
 
 ## 5. Inspector: Surface page
 
@@ -497,10 +497,10 @@ Windows has its own set (docs/WINDOWS.md "Launch options"): `--sample`, `--analy
 
 | Area | Done | Partial | Not started | Total |
 |---|---|---|---|---|
-| 1. Window and chrome | 13 | 13 | 5 | 31 |
+| 1. Window and chrome | 14 | 12 | 5 | 31 |
 | 2. Menus, commands and keyboard shortcuts | 2 | 6 | 7 | 15 |
 | 3. Panels and arrangement | 2 | 3 | 15 | 20 |
-| 4. Lens data table | 0 | 18 | 8 | 26 |
+| 4. Lens data table | 19 | 6 | 1 | 26 |
 | 5. Inspector: Surface page | 0 | 0 | 20 | 20 |
 | 6. Inspector: System page | 0 | 0 | 10 | 10 |
 | 7. Surface types | 0 | 0 | 19 | 19 |
@@ -518,8 +518,7 @@ Windows has its own set (docs/WINDOWS.md "Launch options"): `--sample`, `--analy
 | 19. Appearance and accessibility | 5 | 2 | 2 | 9 |
 | 20. Engine integration | 5 | 3 | 3 | 11 |
 | 21. Debug launch options | 3 | 1 | 14 | 18 |
-| **Total** | **70** | **87** | **201** | **358** |
-
+| **Total** | **90** | **74** | **194** | **358** |
 
 ## Design notes for later rounds
 

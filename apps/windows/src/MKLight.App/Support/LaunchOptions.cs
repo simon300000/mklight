@@ -12,6 +12,7 @@ namespace MKLight.App.Support;
 ///   --edit &lt;path&gt;=&lt;value&gt;  apply a lens edit after loading (e.g. 1.radius=30), as one undoable step
 ///   --undo                  undo it again (checks undo end to end)
 ///   --settings &lt;json&gt;      merge settings into every pane opened with --analysis
+///   --show-settings         open the panes' settings forms
 ///   --size &lt;w&gt;x&lt;h&gt;        window client size in pixels (default 1600x1000)
 ///   --welcome               show the welcome window (default without a file or sample)
 ///   --screenshot &lt;file.png&gt; render the window to a PNG once the panes are drawn, then quit
@@ -29,6 +30,7 @@ public sealed class LaunchOptions
     public List<string> Edits = [];
     public bool Undo;
     public string? Settings;
+    public bool ShowSettings;
     public (int W, int H)? Size;
     public bool Welcome;
     public string? Screenshot;
@@ -52,6 +54,7 @@ public sealed class LaunchOptions
                 case "--select": o.Select = int.Parse(Next(), System.Globalization.CultureInfo.InvariantCulture); break;
                 case "--edit": o.Edits.Add(Next()); break;
                 case "--undo": o.Undo = true; break;
+                case "--show-settings": o.ShowSettings = true; break;
                 case "--settings": o.Settings = Next(); break;
                 case "--welcome": o.Welcome = true; break;
                 case "--screenshot": o.Screenshot = Path.GetFullPath(Next()); break;
