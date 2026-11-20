@@ -174,6 +174,18 @@ public sealed class SpotGridData
     public double[] HalfWidths(SpotScale scale) =>
         HalfWidths(Rows.Select(r => (IReadOnlyList<double>)r.Cells.Select(c => c.Extent).ToList()).ToList(), Airy, scale);
 
+    /// <summary>
+    /// The half-widths shared with <paramref name="other"/> (the design's grid beside a previewed
+    /// candidate's): the larger of the two per row, so switching between them keeps the boxes and
+    /// shows which spot is smaller. Its own when the rows differ.
+    /// </summary>
+    public double[] HalfWidths(SpotScale scale, SpotGridData? other)
+    {
+        var own = HalfWidths(scale);
+        if (other is null || other.Rows.Count != Rows.Count) return own;
+        return own.Zip(other.HalfWidths(scale), Math.Max).ToArray();
+    }
+
     /// <summary>Indices of <paramref name="count"/> items thinned evenly to at most <paramref name="limit"/>, keeping the first, the last and <paramref name="keeping"/>.</summary>
     public static int[] Thin(int count, int limit, int? keeping)
     {
@@ -219,10 +231,11 @@ public sealed class SpotGridData
     }
 
     /// <summary>The scale note under the grid.</summary>
-    public string ScaleNote(SpotScale scale)
+    public string ScaleNote(SpotScale scale, SpotGridData? other = null)
     {
         var s = scale == SpotScale.Grid || Rows.Count < 2
-            ? $"Box half-width {Fmt.Length(HalfWidths(SpotScale.Grid).FirstOrDefault(double.NaN))}, common to all cells"
+            ? $"Box half-width {Fmt.Length(HalfWidths(SpotScale.Grid, other).FirstOrDefault(double.NaN))}, common to all cells"
+              + (other is null ? "" : ", the design's and the candidate's")
             : "Box half-width per field, shown by each row";
         s += Reference == "centroid" ? " · about the centroid" : " · about the chief ray";
         if (Planes.Count < SampledPlanes) s += $" · {Planes.Count} of {SampledPlanes} planes shown";

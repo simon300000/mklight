@@ -18,9 +18,19 @@ namespace MKLight.App.Views.Analysis.Results;
 /// Airy disk dashed, markers sized by density and drawn as one group per
 /// wavelength. The box scale is common to the grid or per field.
 /// </summary>
-public sealed partial class SpotDiagramView : UserControl
+public sealed partial class SpotDiagramView : UserControl, IViewOptions
 {
-    readonly SpotGridData _grid;
+    CompareSwitch? _compare;
+    /// <summary><c>result-view=design</c> / <c>candidate</c>: the Design | Candidate switch (for screenshots).</summary>
+    public void Apply(string option)
+    {
+        if (option is "design" or "candidate") _compare?.Select(option == "candidate");
+    }
+
+    readonly SpotGridData _candidate;
+    /// <summary>While a candidate is previewed: the design's grid (the switch shows either, on shared boxes); else null.</summary>
+    readonly SpotGridData? _design;
+    SpotGridData _grid;
     readonly ScrollViewer _scroll;
     readonly PlotCanvas _canvas;
     readonly TextBlock _note;
@@ -29,9 +39,10 @@ public sealed partial class SpotDiagramView : UserControl
     SpotScale _scale = SpotScale.Grid;
     SpotGridLayout.Metrics _metrics;
 
-    public SpotDiagramView(SpotGridData grid, SpotScale scale = SpotScale.Grid)
+    public SpotDiagramView(SpotGridData grid, SpotScale scale = SpotScale.Grid, SpotGridData? design = null)
     {
-        _grid = grid;
+        _grid = _candidate = grid;
+        _design = design;
         _scale = scale;
         IsTabStop = false;
         _canvas = new PlotCanvas(Draw);
@@ -80,7 +91,26 @@ public sealed partial class SpotDiagramView : UserControl
             TextWrapping = TextWrapping.Wrap,
             TextTrimming = TextTrimming.None,
             Margin = new Thickness(2, 0, 0, 0),
+            VerticalAlignment = VerticalAlignment.Center,
         };
+        // The note, and while a candidate is previewed the Design | Candidate switch beside it
+        // (at the foot, clear of the pane's preview banner over the top of the result).
+        var footer = new Grid { ColumnSpacing = 8 };
+        footer.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        footer.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        footer.Children.Add(_note);
+        if (design is not null)
+        {
+            var compare = _compare = new CompareSwitch { VerticalAlignment = VerticalAlignment.Bottom };
+            compare.Changed += candidate =>
+            {
+                _grid = candidate ? _candidate : design;
+                Fit(new Size(_scroll.ActualWidth, _scroll.ActualHeight));
+                UpdateScale();
+            };
+            Grid.SetColumn(compare, 1);
+            footer.Children.Add(compare);
+        }
 
         var root = new Grid { Padding = new Thickness(8, 4, 8, 6), RowSpacing = 6 };
         root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
@@ -89,12 +119,24 @@ public sealed partial class SpotDiagramView : UserControl
         root.Children.Add(header);
         Grid.SetRow(_scroll, 1);
         root.Children.Add(_scroll);
-        Grid.SetRow(_note, 2);
-        root.Children.Add(_note);
+        Grid.SetRow(footer, 2);
+        root.Children.Add(footer);
         Content = root;
         UpdateScale();
+    }
+
+    SpotGridData? Other => _design is null ? null : ReferenceEquals(_grid, _design) ? _candidate : _design;
+
+    /// <summary>The canvas's spoken summary: what it shows and each field's RMS radius at the base plane.</summary>
+    void Describe()
+    {
+        var who = _design is null ? "" : ReferenceEquals(_grid, _design) ? ", the design" : ", the candidate";
         Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(_canvas,
-            $"Spot diagram, {grid.Rows.Count} fields by {grid.Planes.Count} focus planes");
+            $"Spot diagram{who}, {_grid.Rows.Count} fields by {_grid.Planes.Count} focus planes");
+        var rms = _grid.Rows.Select(r => (r.Cells.FirstOrDefault(c => c.Column == _grid.BaseColumn) ?? r.Cells.FirstOrDefault()) is { } c
+            ? $"{r.Title} RMS {Fmt.Length(c.Rms)}" : null).OfType<string>();
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetHelpText(_canvas,
+            string.Join(", ", rms) + (double.IsFinite(_grid.Airy) ? ", Airy radius " + Fmt.Length(_grid.Airy) : ""));
     }
 
     /// <summary>The box scale (the pane may keep it with its layout).</summary>
@@ -137,7 +179,8 @@ public sealed partial class SpotDiagramView : UserControl
             b.Foreground = new SolidColorBrush(on ? ink : quiet);
             Microsoft.UI.Xaml.Automation.AutomationProperties.SetItemStatus(b, on ? "Selected" : "");
         }
-        _note.Text = _grid.ScaleNote(_scale);
+        _note.Text = _grid.ScaleNote(_scale, Other);
+        Describe();
         _canvas.Invalidate();
     }
 
@@ -160,7 +203,7 @@ public sealed partial class SpotDiagramView : UserControl
     {
         var m = _metrics;
         if (m.Cell <= 0) return;
-        var halfWidths = _grid.HalfWidths(_scale);
+        var halfWidths = _grid.HalfWidths(_scale, Other);
         var tertiary = style.Label.WithAlpha(style.Label.A / 255.0 * 0.7);
         const double sp = SpotGridLayout.Spacing;
 
