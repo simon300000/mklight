@@ -694,6 +694,22 @@
         }
       }
     },
+    "%@ on %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$@ on %2$@"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@ · 面 %2$@"
+          }
+        }
+      }
+    },
     "%@ over the pupil" : {
       "localizations" : {
         "zh-Hans" : {
@@ -2497,6 +2513,23 @@
         }
       }
     },
+    "A%lld on %@" : {
+      "comment" : "an asphere coefficient A4, A6… on a surface",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "A%1$lld on %2$@"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "A%1$lld · 面 %2$@"
+          }
+        }
+      }
+    },
     "AGF formula coefficients, λ in µm." : {
       "localizations" : {
         "zh-Hans" : {
@@ -3445,6 +3478,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "像散不规则度"
+          }
+        }
+      }
+    },
+    "Astig. irregularity %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "像散不规则度 %@"
           }
         }
       }
@@ -5875,6 +5918,16 @@
         }
       }
     },
+    "Conic %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "圆锥系数 %@"
+          }
+        }
+      }
+    },
     "Conic constant in x." : {
       "localizations" : {
         "zh-Hans" : {
@@ -6375,12 +6428,32 @@
         }
       }
     },
+    "Decenter X %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "偏心 X %@"
+          }
+        }
+      }
+    },
     "Decenter Y" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "偏心 Y"
+          }
+        }
+      }
+    },
+    "Decenter Y %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "偏心 Y %@"
           }
         }
       }
@@ -8114,6 +8187,36 @@
         }
       }
     },
+    "Field %lld weight" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "视场 %lld 权重"
+          }
+        }
+      }
+    },
+    "Field %lld x" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "视场 %lld x"
+          }
+        }
+      }
+    },
+    "Field %lld y" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "视场 %lld y"
+          }
+        }
+      }
+    },
     "Field %lld · %@" : {
       "localizations" : {
         "en" : {
@@ -8499,6 +8602,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "焦距"
+          }
+        }
+      }
+    },
+    "Focal length %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "焦距 %@"
           }
         }
       }
@@ -12767,6 +12880,22 @@
         }
       }
     },
+    "Odd %@ on %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Odd %1$@ on %2$@"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "奇次 %1$@ · 面 %2$@"
+          }
+        }
+      }
+    },
     "Odd Asphere" : {
       "localizations" : {
         "zh-Hans" : {
@@ -13647,6 +13776,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "相位"
+          }
+        }
+      }
+    },
+    "Phase %@ on %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Phase %1$@ on %2$@"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "相位 %1$@ · 面 %2$@"
           }
         }
       }
@@ -14664,6 +14809,16 @@
         }
       }
     },
+    "Radius %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "曲率半径 %@"
+          }
+        }
+      }
+    },
     "Radius (%@)" : {
       "localizations" : {
         "zh-Hans" : {
@@ -14750,6 +14905,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "半径 y"
+          }
+        }
+      }
+    },
+    "Radius y %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "曲率半径 y %@"
           }
         }
       }
@@ -16364,6 +16529,16 @@
         }
       }
     },
+    "Semi-diameter %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "半口径 %@"
+          }
+        }
+      }
+    },
     "Sensitivity" : {
       "localizations" : {
         "zh-Hans" : {
@@ -17289,6 +17464,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "球面不规则度"
+          }
+        }
+      }
+    },
+    "Sph. irregularity %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "球面不规则度 %@"
           }
         }
       }
@@ -19099,6 +19284,16 @@
         }
       }
     },
+    "Thickness %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "厚度 %@"
+          }
+        }
+      }
+    },
     "Thickness limits (mm)" : {
       "localizations" : {
         "zh-Hans" : {
@@ -19305,6 +19500,16 @@
         }
       }
     },
+    "Tilt X %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "倾斜 X %@"
+          }
+        }
+      }
+    },
     "Tilt Y" : {
       "localizations" : {
         "zh-Hans" : {
@@ -19315,12 +19520,32 @@
         }
       }
     },
+    "Tilt Y %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "倾斜 Y %@"
+          }
+        }
+      }
+    },
     "Tilt Z" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "倾斜 Z"
+          }
+        }
+      }
+    },
+    "Tilt Z %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "倾斜 Z %@"
           }
         }
       }
@@ -22408,6 +22633,16 @@
     },
     "λ µm" : {
       "shouldTranslate" : false
+    },
+    "λ%lld weight" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "λ%lld 权重"
+          }
+        }
+      }
     },
     "λ80 nm" : {
       "localizations" : {

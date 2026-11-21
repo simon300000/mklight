@@ -147,7 +147,7 @@ struct SettingsBar: View {
     static func label(_ f: SettingsField) -> String {
         var name = f.name
         for suffix in ["_mm", "_um", "_deg"] where name.hasSuffix(suffix) { name.removeLast(suffix.count) }
-        let t = f.title == f.name ? name.replacingOccurrences(of: "_", with: " ").capitalized : EngineText.string(f.title)
+        let t = EngineText.translation(f.title) ?? (f.title == f.name ? name.replacingOccurrences(of: "_", with: " ").capitalized : f.title)
         return t.count > 22 ? String(t.prefix(20)) + "…" : t
     }
 
