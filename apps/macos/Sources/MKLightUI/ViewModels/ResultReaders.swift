@@ -119,9 +119,9 @@ public struct ParaxialXYData: Sendable, Equatable {
 
         public var title: String {
             switch self {
-            case .rotational: "Rotational"
-            case .meridional: "Meridional plane"
-            case .none: "None"
+            case .rotational: String(localized: "Rotational")
+            case .meridional: String(localized: "Meridional plane")
+            case .none: String(localized: "None")
             }
         }
     }
@@ -229,7 +229,7 @@ public struct ImageUnits: Sendable, Equatable {
     public var micro: String { afocal ? "µrad" : "µm" }
     /// Per unit length (or angle), as a line-spread density.
     public var density: String { afocal ? "mrad⁻¹" : "mm⁻¹" }
-    public var focusAxis: String { afocal ? "Vergence (mD)" : "Focus shift (mm)" }
+    public var focusAxis: String { afocal ? String(localized: "Vergence (mD)") : String(localized: "Focus shift (mm)") }
 
     /// A scale-bar label for a `*_mm` value.
     public func barLabel(_ v: Double) -> String {

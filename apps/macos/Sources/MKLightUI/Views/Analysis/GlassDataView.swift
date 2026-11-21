@@ -86,9 +86,9 @@ struct GlassInfoData {
         case "sellmeier2": "Sellmeier 2"
         case "herzberger": "Herzberger"
         case "conrady": "Conrady"
-        case "extended": "Extended"
+        case "extended": String(localized: "Extended")
         case "cauchy": "Cauchy"
-        case "tabulated": "Tabulated"
+        case "tabulated": String(localized: "Tabulated")
         default: key.replacingOccurrences(of: "_", with: " ").capitalized
         }
     }
@@ -141,13 +141,13 @@ struct GlassDataView: View {
             }
             .accessibilityElement(children: .combine)
             FlowLayout(spacing: Space.xl, lineSpacing: Space.m) {
-                stat("n_d", NumberDisplay.format(data.nd, decimals: 6), help: "Refractive index at the d line (587.56 nm)", spoken: "n d")
-                stat("V_d", NumberDisplay.format(data.vd, decimals: 2), help: "Abbe number (n_d − 1) / (n_F − n_C)", spoken: "Abbe number")
-                stat("P_g,F", NumberDisplay.format(data.pgf, decimals: 4), help: "Relative partial dispersion (n_g − n_F) / (n_F − n_C)", spoken: "Partial dispersion P g F")
-                stat("n_e", NumberDisplay.format(data.ne, decimals: 6), help: "Refractive index at the e line (546.07 nm)", spoken: "n e")
+                stat("n_d", NumberDisplay.format(data.nd, decimals: 6), help: String(localized: "Refractive index at the d line (587.56 nm)"), spoken: String(localized: "n d"))
+                stat("V_d", NumberDisplay.format(data.vd, decimals: 2), help: String(localized: "Abbe number (n_d − 1) / (n_F − n_C)"), spoken: String(localized: "Abbe number"))
+                stat("P_g,F", NumberDisplay.format(data.pgf, decimals: 4), help: String(localized: "Relative partial dispersion (n_g − n_F) / (n_F − n_C)"), spoken: String(localized: "Partial dispersion P g F"))
+                stat("n_e", NumberDisplay.format(data.ne, decimals: 6), help: String(localized: "Refractive index at the e line (546.07 nm)"), spoken: String(localized: "n e"))
             }
             if data.hasOffset {
-                let line = "Catalog n_d \(NumberDisplay.format(data.catalogNd, decimals: 6)), V_d \(NumberDisplay.format(data.catalogVd, decimals: 2))"
+                let line = String(localized: "Catalog n_d \(NumberDisplay.format(data.catalogNd, decimals: 6)), V_d \(NumberDisplay.format(data.catalogVd, decimals: 2))")
                 Self.captionSubscripted(line)
                     .font(.caption).foregroundStyle(.secondary)
                     .accessibilityLabel(Subscripted.spoken(line))
@@ -199,7 +199,7 @@ struct GlassDataView: View {
 
     private var rangeText: String {
         guard data.minUm.isFinite, data.maxUm.isFinite else { return "" }
-        return "valid \(NumberDisplay.format(data.minUm, decimals: 3))–\(NumberDisplay.format(data.maxUm, decimals: 3)) µm"
+        return String(localized: "valid \(NumberDisplay.format(data.minUm, decimals: 3))–\(NumberDisplay.format(data.maxUm, decimals: 3)) µm")
     }
 
     // MARK: Indices
@@ -247,9 +247,9 @@ struct GlassDataView: View {
     }
 
     private func rowLabel(_ r: GlassInfoData.Index, primary: Bool) -> String {
-        var s = "\(NumberDisplay.format(r.um, decimals: 4)) micrometers\(primary ? ", primary" : ""): n \(NumberDisplay.format(r.n, decimals: 6))"
-        s += ", catalog \(NumberDisplay.format(r.nCatalog, decimals: 6))"
-        if !r.inRange { s += ", outside the data range" }
+        var s = primary ? String(localized: "\(NumberDisplay.format(r.um, decimals: 4)) micrometers, primary: n \(NumberDisplay.format(r.n, decimals: 6))") : String(localized: "\(NumberDisplay.format(r.um, decimals: 4)) micrometers: n \(NumberDisplay.format(r.n, decimals: 6))")
+        s += String(localized: ", catalog \(NumberDisplay.format(r.nCatalog, decimals: 6))")
+        if !r.inRange { s += String(localized: ", outside the data range") }
         return s
     }
 
@@ -273,18 +273,18 @@ struct GlassDataView: View {
 
     private var propertyRows: [(String, String)] {
         var rows: [(String, String)] = []
-        if let f = data.formula { rows.append(("Dispersion formula", f)) }
+        if let f = data.formula { rows.append((String(localized: "Dispersion formula"), f)) }
         if data.minUm.isFinite, data.maxUm.isFinite {
-            rows.append(("Valid range", "\(NumberDisplay.format(data.minUm, decimals: 3))–\(NumberDisplay.format(data.maxUm, decimals: 3)) µm"))
+            rows.append((String(localized: "Valid range"), "\(NumberDisplay.format(data.minUm, decimals: 3))–\(NumberDisplay.format(data.maxUm, decimals: 3)) µm"))
         }
-        rows.append(("Thermo-optic data (dn/dT)", data.hasThermalData ? "Yes" : "None"))
-        rows.append(("Thermal expansion", data.cte.map { "\(NumberDisplay.format($0 * 1e6, decimals: 2)) × 10⁻⁶/K" } ?? "—"))
-        if let d = data.density { rows.append(("Density", "\(NumberDisplay.format(d, decimals: 3)) g/cm³")) }
-        if let c = data.relativeCost { rows.append(("Relative cost", NumberDisplay.format(c, decimals: 2))) }
+        rows.append((String(localized: "Thermo-optic data (dn/dT)"), data.hasThermalData ? String(localized: "Yes") : String(localized: "None")))
+        rows.append((String(localized: "Thermal expansion"), data.cte.map { "\(NumberDisplay.format($0 * 1e6, decimals: 2)) × 10⁻⁶/K" } ?? "—"))
+        if let d = data.density { rows.append((String(localized: "Density"), "\(NumberDisplay.format(d, decimals: 3)) g/cm³")) }
+        if let c = data.relativeCost { rows.append((String(localized: "Relative cost"), NumberDisplay.format(c, decimals: 2))) }
         return rows
     }
 
-    private func section<C: View>(_ title: String, subtitle: String = "", @ViewBuilder _ content: () -> C) -> some View {
+    private func section<C: View>(_ title: LocalizedStringKey, subtitle: String = "", @ViewBuilder _ content: () -> C) -> some View {
         VStack(alignment: .leading, spacing: Space.s) {
             HStack(alignment: .firstTextBaseline, spacing: Space.s) {
                 Text(title).font(.subheadline.weight(.semibold))

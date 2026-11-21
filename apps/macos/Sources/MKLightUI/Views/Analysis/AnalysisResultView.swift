@@ -68,20 +68,20 @@ struct AnalysisResultView: View {
         switch analysis {
         case "first_order":
             let d = FirstOrderData(j)
-            return [("EFL", "efl"), ("F/#", "working_f_number"), ("BFL", "bfl")].compactMap { l, k in
+            return [(String(localized: "EFL"), "efl"), (String(localized: "F/#"), "working_f_number"), (String(localized: "BFL"), "bfl")].compactMap { l, k in
                 d?.entry([k]).map { KeyNumber(label: l, value: $0.formatted) }
             }
         case "spot_diagram":
             let rms = (j["fields"]?.array ?? []).compactMap { $0["rms_radius"]?.nf }.filter(\.isFinite)
             var out: [KeyNumber] = []
-            if let m = rms.max() { out.append(KeyNumber(label: "Max RMS", value: Fmt.length(m))) }
-            if let a = j["airy_radius"]?.nf, a.isFinite { out.append(KeyNumber(label: "Airy", value: Fmt.length(a))) }
+            if let m = rms.max() { out.append(KeyNumber(label: String(localized: "Max RMS"), value: Fmt.length(m))) }
+            if let a = j["airy_radius"]?.nf, a.isFinite { out.append(KeyNumber(label: String(localized: "Airy"), value: Fmt.length(a))) }
             return out
         case "field_curvature_distortion":
             let d = (j["curves"]?.array ?? []).flatMap { $0["distortion_percent"]?.nfArray ?? [] }.filter(\.isFinite)
-            return d.isEmpty ? [] : [KeyNumber(label: "Max distortion", value: String(format: "%.3f %%", d.map(abs).max()!))]
+            return d.isEmpty ? [] : [KeyNumber(label: String(localized: "Max distortion"), value: String(format: "%.3f %%", d.map(abs).max()!))]
         case "grid_distortion":
-            return j["max_abs_distortion_percent"]?.nf.map { [KeyNumber(label: "Max distortion", value: String(format: "%.3f %%", $0))] } ?? []
+            return j["max_abs_distortion_percent"]?.nf.map { [KeyNumber(label: String(localized: "Max distortion"), value: String(format: "%.3f %%", $0))] } ?? []
         case "seidel":
             // A design without rotational symmetry has no coefficients.
             if j["status"]?.string == "not_applicable" { return [] }
@@ -89,22 +89,22 @@ struct AnalysisResultView: View {
                 j[path: "sums", k]?.nf.map { KeyNumber(label: l, value: Fmt.short($0)) }
             }
         case "chromatic_focal_shift":
-            return j["range"]?.nf.map { [KeyNumber(label: "Range", value: Fmt.length($0))] } ?? []
+            return j["range"]?.nf.map { [KeyNumber(label: String(localized: "Range"), value: Fmt.length($0))] } ?? []
         case "wavefront_map":
             guard let m = j["maps"]?.array?.first else { return [] }
             return [
-                m["rms_waves"]?.nf.map { KeyNumber(label: "RMS", value: String(format: "%.4f λ", $0)) },
-                m["pv_waves"]?.nf.map { KeyNumber(label: "P-V", value: String(format: "%.4f λ", $0)) },
-                m["strehl_at_reference"]?.nf.map { KeyNumber(label: "Strehl", value: String(format: "%.3f", $0)) },
+                m["rms_waves"]?.nf.map { KeyNumber(label: String(localized: "RMS"), value: String(format: "%.4f λ", $0)) },
+                m["pv_waves"]?.nf.map { KeyNumber(label: String(localized: "P-V"), value: String(format: "%.4f λ", $0)) },
+                m["strehl_at_reference"]?.nf.map { KeyNumber(label: String(localized: "Strehl"), value: String(format: "%.3f", $0)) },
             ].compactMap { $0 }
         case "psf":
-            return (j["psfs"]?.array?.first?["strehl"]?.nf).map { [KeyNumber(label: "Strehl", value: String(format: "%.3f", $0))] } ?? []
+            return (j["psfs"]?.array?.first?["strehl"]?.nf).map { [KeyNumber(label: String(localized: "Strehl"), value: String(format: "%.3f", $0))] } ?? []
         case "ghost_irradiance":
-            return j["total_flux_ratio"]?.nf.map { [KeyNumber(label: "Ghost/primary flux", value: Fmt.short($0))] } ?? []
+            return j["total_flux_ratio"]?.nf.map { [KeyNumber(label: String(localized: "Ghost/primary flux"), value: Fmt.short($0))] } ?? []
         case "stray_light":
-            return j["stray_fraction"]?.nf.map { [KeyNumber(label: "Stray fraction", value: Fmt.short($0))] } ?? []
+            return j["stray_fraction"]?.nf.map { [KeyNumber(label: String(localized: "Stray fraction"), value: Fmt.short($0))] } ?? []
         case "best_focus":
-            return j["defocus"]?.nf.map { [KeyNumber(label: "Best defocus", value: Fmt.length($0))] } ?? []
+            return j["defocus"]?.nf.map { [KeyNumber(label: String(localized: "Best defocus"), value: Fmt.length($0))] } ?? []
         case "pupil_aberration", "relative_illumination_map", "chief_ray_angle", "glass_map", "image_simulation":
             return extendedKeyNumbers(analysis: analysis, output: output)
         case "glass_info":
@@ -114,7 +114,7 @@ struct AnalysisResultView: View {
                 KeyNumber(label: "V_d", value: NumberDisplay.format(d.vd, decimals: 2)),
             ]
         case "validate":
-            return [KeyNumber(label: "Errors", value: "\(j["errors"]?.int ?? 0)"), KeyNumber(label: "Warnings", value: "\(j["warnings"]?.int ?? 0)")]
+            return [KeyNumber(label: String(localized: "Errors"), value: "\(j["errors"]?.int ?? 0)"), KeyNumber(label: String(localized: "Warnings"), value: "\(j["warnings"]?.int ?? 0)")]
         default:
             return []
         }
@@ -163,7 +163,7 @@ struct FirstOrderView: View {
             Grid(alignment: .leading, horizontalSpacing: Space.xl, verticalSpacing: Space.s) {
                 ForEach(data.entries) { e in
                     GridRow {
-                        Text(e.label).foregroundStyle(.secondary)
+                        Text(EngineText.string(e.label)).foregroundStyle(.secondary)
                         Text(Fmt.short(e.value)).numeric().gridColumnAlignment(.trailing)
                         Text(e.unit).foregroundStyle(.secondary)
                     }
@@ -175,7 +175,7 @@ struct FirstOrderView: View {
             .padding(Space.l)
             .frame(maxWidth: .infinity, alignment: .leading)
             if let w = data.wavelengthUm {
-                Text(String(format: "At λ = %.4f µm", w)).font(.caption).foregroundStyle(.secondary)
+                Text(String(format: String(localized: "At λ = %.4f µm"), w)).font(.caption).foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, Space.l)
             }
         }
