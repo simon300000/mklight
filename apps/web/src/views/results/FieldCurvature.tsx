@@ -3,6 +3,7 @@ import { useMemo } from 'react'
 import type uPlot from 'uplot'
 import type { AnalysisResult, JsonObject } from '@/engine/types'
 import type { System } from '@/model/system'
+import { useT } from '@/i18n'
 import { useDark } from '@/lib/theme'
 import { sig } from '@/model/format'
 import { arr, isObj, maxAbs, nums, systemFieldUnit, useSize, wavelengthsUm, wlColor } from './common'
@@ -28,6 +29,7 @@ function rotated(xLabel: string, yLabel: string, series: uPlot.Series[], symmetr
 }
 
 export function FieldCurvatureView(props: { result: AnalysisResult; system: System }) {
+  const t = useT()
   const dark = useDark()
   const j = props.result.json
   const [ref, size] = useSize<HTMLDivElement>()
@@ -57,12 +59,12 @@ export function FieldCurvatureView(props: { result: AnalysisResult; system: Syst
     }
     const dMax = maxDistortion(j)
     return {
-      fc: { data: fcData as uPlot.AlignedData, options: rotated('Focus shift (mm)', `Field (${unit})`, fcSeries, (fcMax || 0.01) * 1.1) },
-      dist: { data: dData as uPlot.AlignedData, options: rotated('Distortion (%)', `Field (${unit})`, dSeries, (dMax || 0.1) * 1.1) },
+      fc: { data: fcData as uPlot.AlignedData, options: rotated(t('analysis.results.focusShift'), t('analysis.curves.fieldUnit', { unit }), fcSeries, (fcMax || 0.01) * 1.1) },
+      dist: { data: dData as uPlot.AlignedData, options: rotated(t('analysis.results.distortion'), t('analysis.curves.fieldUnit', { unit }), dSeries, (dMax || 0.1) * 1.1) },
     }
-  }, [j, curves, wls, dark, unit])
+  }, [j, curves, wls, dark, unit, t])
 
-  if (!curves.length) return <div className="p-4 text-secondary">No curves in this result.</div>
+  if (!curves.length) return <div className="p-4 text-secondary">{t('analysis.results.noCurves')}</div>
   const stacked = size.w > 0 && size.w < 480
   return (
     <div ref={ref} className="absolute inset-0 flex flex-col">
@@ -78,14 +80,14 @@ export function FieldCurvatureView(props: { result: AnalysisResult; system: Syst
       <div className={stacked ? 'flex min-h-0 flex-1 flex-col gap-2 px-2 pb-2' : 'grid min-h-0 flex-1 grid-cols-2 gap-3 px-2 pb-2'}>
         {(
           [
-            ['Field curvature', built.fc],
-            ['Distortion', built.dist],
+            ['fc', t('analysis.results.fieldCurvature'), t('analysis.results.fieldCurvatureLabel'), built.fc],
+            ['dist', t('analysis.results.distortionTitle'), t('analysis.results.distortionLabel'), built.dist],
           ] as const
-        ).map(([title, p]) => (
-          <div key={title} className="flex min-h-0 min-w-0 flex-1 flex-col">
+        ).map(([id, title, aria, p]) => (
+          <div key={id} className="flex min-h-0 min-w-0 flex-1 flex-col">
             <div className="px-1 text-[11px] text-secondary">{title}</div>
             <div className="min-h-0 flex-1">
-              <UPlot options={p.options} data={p.data} label={`${title} versus field`} />
+              <UPlot options={p.options} data={p.data} label={aria} />
             </div>
           </div>
         ))}

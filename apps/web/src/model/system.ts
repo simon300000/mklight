@@ -3,6 +3,7 @@
 // these helpers are pure model manipulation, like the Swift `MKLightModel`.
 
 import type { Json, JsonObject } from '@/engine/types'
+import { t } from '@/i18n'
 import { nf } from './format'
 import { applyMaterial, offsetCompactText, offsetOf, parseMaterial as parseMaterialText, type MaterialEdit as ParsedMaterial } from './materials'
 
@@ -41,30 +42,30 @@ export const clone = <T>(v: T): T => structuredClone(v)
 // MARK: Aperture and fields
 
 export const APERTURE_TYPES: { type: string; title: string; unit: string }[] = [
-  { type: 'entrance_pupil_diameter', title: 'Entrance pupil diameter', unit: 'mm' },
-  { type: 'image_space_f_number', title: 'Image-space F/#', unit: '' },
-  { type: 'object_space_na', title: 'Object-space NA', unit: '' },
-  { type: 'paraxial_working_f_number', title: 'Paraxial working F/#', unit: '' },
-  { type: 'float_by_stop_size', title: 'Float by stop size', unit: '' },
+  { type: 'entrance_pupil_diameter', get title() { return t('lens.model.apertureTypes.entrance_pupil_diameter') }, unit: 'mm' },
+  { type: 'image_space_f_number', get title() { return t('lens.model.apertureTypes.image_space_f_number') }, unit: '' },
+  { type: 'object_space_na', get title() { return t('lens.model.apertureTypes.object_space_na') }, unit: '' },
+  { type: 'paraxial_working_f_number', get title() { return t('lens.model.apertureTypes.paraxial_working_f_number') }, unit: '' },
+  { type: 'float_by_stop_size', get title() { return t('lens.model.apertureTypes.float_by_stop_size') }, unit: '' },
 ]
 
 export const FIELD_KINDS: { kind: string; title: string; unit: string }[] = [
-  { kind: 'object_angle', title: 'Object angle', unit: '°' },
-  { kind: 'object_height', title: 'Object height', unit: 'mm' },
-  { kind: 'paraxial_image_height', title: 'Paraxial image height', unit: 'mm' },
-  { kind: 'real_image_height', title: 'Real image height', unit: 'mm' },
+  { kind: 'object_angle', get title() { return t('lens.model.fieldKinds.object_angle') }, unit: '°' },
+  { kind: 'object_height', get title() { return t('lens.model.fieldKinds.object_height') }, unit: 'mm' },
+  { kind: 'paraxial_image_height', get title() { return t('lens.model.fieldKinds.paraxial_image_height') }, unit: 'mm' },
+  { kind: 'real_image_height', get title() { return t('lens.model.fieldKinds.real_image_height') }, unit: 'mm' },
 ]
 
 export const fieldUnit = (kind: string) => FIELD_KINDS.find((k) => k.kind === kind)?.unit ?? ''
 
 export const WAVELENGTH_PRESETS: { name: string; list: [number, number][]; primary: number }[] = [
-  { name: 'F, d, C (visible)', list: [[0.4861327, 1], [0.5875618, 1], [0.6562725, 1]], primary: 1 },
-  { name: 'F′, e, C′ (visible)', list: [[0.4799914, 1], [0.546074, 1], [0.6438469, 1]], primary: 1 },
-  { name: 'g, F, e, d, C', list: [[0.4358343, 1], [0.4861327, 1], [0.546074, 1], [0.5875618, 1], [0.6562725, 1]], primary: 3 },
-  { name: 'd only', list: [[0.5875618, 1]], primary: 0 },
-  { name: 'e only', list: [[0.546074, 1]], primary: 0 },
-  { name: 'Photopic (5)', list: [[0.47, 0.091], [0.51, 0.503], [0.555, 1], [0.61, 0.503], [0.65, 0.107]], primary: 2 },
-  { name: 'Near infrared', list: [[0.75, 1], [0.85, 1], [0.95, 1]], primary: 1 },
+  { get name() { return t('lens.model.wavelengthPresets.fdc') }, list: [[0.4861327, 1], [0.5875618, 1], [0.6562725, 1]], primary: 1 },
+  { get name() { return t('lens.model.wavelengthPresets.fec') }, list: [[0.4799914, 1], [0.546074, 1], [0.6438469, 1]], primary: 1 },
+  { get name() { return t('lens.model.wavelengthPresets.gfedc') }, list: [[0.4358343, 1], [0.4861327, 1], [0.546074, 1], [0.5875618, 1], [0.6562725, 1]], primary: 3 },
+  { get name() { return t('lens.model.wavelengthPresets.dOnly') }, list: [[0.5875618, 1]], primary: 0 },
+  { get name() { return t('lens.model.wavelengthPresets.eOnly') }, list: [[0.546074, 1]], primary: 0 },
+  { get name() { return t('lens.model.wavelengthPresets.photopic') }, list: [[0.47, 0.091], [0.51, 0.503], [0.555, 1], [0.61, 0.503], [0.65, 0.107]], primary: 2 },
+  { get name() { return t('lens.model.wavelengthPresets.nir') }, list: [[0.75, 1], [0.85, 1], [0.95, 1]], primary: 1 },
 ]
 
 // MARK: Surfaces
@@ -251,7 +252,7 @@ export function meltOffsetText(m: Material): string {
 
 export function newSystem(): System {
   const s: System = {
-    name: 'Untitled',
+    name: t('lens.model.untitled'),
     notes: '',
     aperture: { type: 'entrance_pupil_diameter', value: 10 },
     fields: {
@@ -290,7 +291,7 @@ export function newSystem(): System {
 }
 
 export function surfaceTitle(s: System, i: number): string {
-  if (i === 0) return 'Object'
-  if (i === imageIndex(s)) return 'Image'
-  return `Surface ${i}`
+  if (i === 0) return t('lens.model.surfaceObject')
+  if (i === imageIndex(s)) return t('lens.model.surfaceImage')
+  return t('common.surfaceN', { n: i })
 }

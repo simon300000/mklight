@@ -2,6 +2,7 @@
 // ⌥⌘2, ⌘3 and ⌘0 switch tabs and reset the zoom in a browser, so the web
 // app uses ⌥⌘Y (Y–Z section), ⌥⌘X (X–Z section), ⌥⌘3 (3-D) and ⌥⌘0 (fit).
 
+import { t } from '@/i18n'
 import { eventShortcut } from '@/state/commands'
 import { useDocument } from '@/state/document'
 import { useView } from '@/state/view'
@@ -37,11 +38,12 @@ export function syncLayoutSettings() {
 
 export const fitLayout = () => useView.getState().fit(false)
 
+/** `title` reads in the current language when shown. */
 export const LAYOUT_SHORTCUTS: { shortcut: string; title: string; run: () => void }[] = [
-  { shortcut: 'alt+mod+y', title: 'Y–Z Section', run: () => setLayoutMode('yz') },
-  { shortcut: 'alt+mod+x', title: 'X–Z Section', run: () => setLayoutMode('xz') },
-  { shortcut: 'alt+mod+3', title: '3D View', run: () => setLayoutMode('3d') },
-  { shortcut: 'alt+mod+0', title: 'Fit Layout', run: fitLayout },
+  { shortcut: 'alt+mod+y', get title() { return t('lens.layout.shortcuts.yz') }, run: () => setLayoutMode('yz') },
+  { shortcut: 'alt+mod+x', get title() { return t('lens.layout.shortcuts.xz') }, run: () => setLayoutMode('xz') },
+  { shortcut: 'alt+mod+3', get title() { return t('lens.layout.shortcuts.view3d') }, run: () => setLayoutMode('3d') },
+  { shortcut: 'alt+mod+0', get title() { return t('lens.layout.shortcuts.fit') }, run: fitLayout },
 ]
 
 /** Handles ⌥⌘Y / ⌥⌘X / ⌥⌘3 / ⌥⌘0; true when the key was one of them. */

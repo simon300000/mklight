@@ -19,6 +19,7 @@ import { PanelTabbedContext, usePanelWindow } from './context'
 import { pressHandle, useDrag } from './drag'
 import { clientOrigin } from './windows'
 import { MenuItem, MenuSeparator, PointMenu } from './Menu'
+import { useT } from '@/i18n'
 
 export function PanelIcon({ panel, className }: { panel: PanelKey; className?: string }) {
   const analysis = useWorkspace((s) => s.panes.find((p) => p.key === panel)?.analysis)
@@ -29,15 +30,16 @@ export function PanelIcon({ panel, className }: { panel: PanelKey; className?: s
 
 /** Moving and closing a panel, for its context menu and More menu. */
 export function PanelMenuItems({ panel, Item = MenuItem, Separator = MenuSeparator }: { panel: PanelKey; Item?: typeof MenuItem; Separator?: typeof MenuSeparator }) {
+  const t = useT()
   const detached = isDetached(panel)
   const alone = isAloneInWindow(panel)
   const title = panelTitle(panel)
   return (
     <>
-      {detached && <Item onSelect={() => moveToMainWindow(panel)}>Move to Main Window</Item>}
-      {!alone && <Item onSelect={() => moveToNewWindow(panel)}>Move to New Window</Item>}
+      {detached && <Item onSelect={() => moveToMainWindow(panel)}>{t('app.menu.moveToMainWindow')}</Item>}
+      {!alone && <Item onSelect={() => moveToNewWindow(panel)}>{t('app.menu.moveToNewWindow')}</Item>}
       {(detached || !alone) && <Separator />}
-      {A.isPane(panel) ? <Item onSelect={() => closePanel(panel)}>Close Pane</Item> : <Item onSelect={() => closePanel(panel)}>Hide {title}</Item>}
+      {A.isPane(panel) ? <Item onSelect={() => closePanel(panel)}>{t('app.menu.closePane')}</Item> : <Item onSelect={() => closePanel(panel)}>{t('app.sidebar.hidePanel', { title })}</Item>}
     </>
   )
 }
@@ -46,6 +48,7 @@ export function PanelMenuItems({ panel, Item = MenuItem, Separator = MenuSeparat
  *  (to another place, another window, or out into a window of its own); its
  *  context menu moves or closes it. */
 export function usePanelHandle(panel: PanelKey) {
+  const t = useT()
   const { id } = usePanelWindow()
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
   return {
@@ -58,7 +61,7 @@ export function usePanelHandle(panel: PanelKey) {
         e.preventDefault()
         setMenu({ x: e.clientX, y: e.clientY })
       },
-      title: `${panelTitle(panel)}. Drag to move it, or out of the window to open it in a window of its own.`,
+      title: t('app.panels.dragHelp', { title: panelTitle(panel) }),
       // A touch drags the panel instead of scrolling.
       style: { touchAction: 'none' } as React.CSSProperties,
     },
@@ -120,6 +123,7 @@ function PanelFrame({ panel }: { panel: PanelKey }) {
 }
 
 function Tab({ panel, group }: { panel: PanelKey; group: GroupNode }) {
+  const t = useT()
   const selected = A.current(group) === panel
   const handle = usePanelHandle(panel)
   const dragging = useDrag((s) => s.dragging === panel)
@@ -147,8 +151,8 @@ function Tab({ panel, group }: { panel: PanelKey; group: GroupNode }) {
       <span className="min-w-0 truncate">{title}</span>
       <button
         type="button"
-        aria-label={A.isPane(panel) ? `Close ${title}` : `Hide ${title}`}
-        title={A.isPane(panel) ? `Close ${title}` : `Hide ${title}`}
+        aria-label={A.isPane(panel) ? t('app.panels.closeTitle', { title }) : t('app.sidebar.hidePanel', { title })}
+        title={A.isPane(panel) ? t('app.panels.closeTitle', { title }) : t('app.sidebar.hidePanel', { title })}
         onPointerDown={(e) => e.stopPropagation()}
         onClick={(e) => {
           e.stopPropagation()
@@ -168,8 +172,9 @@ function Tab({ panel, group }: { panel: PanelKey; group: GroupNode }) {
 
 /** The tabs of a group of several panels: click to switch, drag to move. */
 function TabStrip({ group }: { group: GroupNode }) {
+  const t = useT()
   return (
-    <div data-tab-strip role="tablist" aria-label="Tabs" className="flex h-[34px] shrink-0 items-center gap-1 overflow-x-auto border-b border-separator bg-content px-2 [scrollbar-width:none]">
+    <div data-tab-strip role="tablist" aria-label={t('app.panels.tabs')} className="flex h-[34px] shrink-0 items-center gap-1 overflow-x-auto border-b border-separator bg-content px-2 [scrollbar-width:none]">
       {group.panels.map((p) => (
         <Tab key={p} panel={p} group={group} />
       ))}
@@ -179,12 +184,13 @@ function TabStrip({ group }: { group: GroupNode }) {
 
 /** Where a dragged panel would land in this group: the whole group (a tab) or the half on one side (a split). */
 function GroupHighlight({ gid }: { gid: string }) {
+  const t = useT()
   const target = useDrag((s) => s.target)
   if (!target || (target.kind !== 'tab' && target.kind !== 'split') || target.group !== gid) return null
   let style: React.CSSProperties = { inset: 4 }
-  let label = 'Add as Tab'
+  let label = t('app.panels.addAsTab')
   if (target.kind === 'split') {
-    label = 'Split'
+    label = t('app.panels.split')
     style =
       target.edge === 'leading'
         ? { left: 4, top: 4, bottom: 4, width: 'calc(50% - 8px)' }
@@ -211,6 +217,7 @@ function DropZone({ style, label }: { style: React.CSSProperties; label: string 
 
 /** Along a window's edge: a band a fifth of the window deep. */
 function WindowEdgeHighlight({ windowId }: { windowId: string }) {
+  const t = useT()
   const target = useDrag((s) => s.target)
   if (!target || target.kind !== 'windowEdge' || target.window !== windowId) return null
   const e = target.edge
@@ -222,11 +229,12 @@ function WindowEdgeHighlight({ windowId }: { windowId: string }) {
         : e === 'top'
           ? { left: 4, right: 4, top: 4, height: 'calc(22% - 8px)' }
           : { left: 4, right: 4, bottom: 4, height: 'calc(22% - 8px)' }
-  return <DropZone style={style} label={A.edgeAxis(e) === 'h' ? 'Full-Height Column' : 'Full-Width Row'} />
+  return <DropZone style={style} label={A.edgeAxis(e) === 'h' ? t('app.panels.fullHeight') : t('app.panels.fullWidth')} />
 }
 
 /** What follows the pointer during a drag, in the window the drag started in. */
 function DragGhost({ windowId }: { windowId: string }) {
+  const t = useT()
   const d = useDrag()
   if (!d.dragging || !d.ghost || d.ghost.window !== windowId) return null
   const outside = d.target?.kind === 'newWindow'
@@ -240,7 +248,7 @@ function DragGhost({ windowId }: { windowId: string }) {
     >
       <PanelIcon panel={d.dragging} className="size-4 text-accent" />
       {panelTitle(d.dragging)}
-      {outside && <span className="text-[12px] font-normal text-secondary">· New Window</span>}
+      {outside && <span className="text-[12px] font-normal text-secondary">· {t('app.panels.newWindow')}</span>}
     </div>
   )
 }
@@ -371,21 +379,22 @@ function NodeView({ node }: { node: PanelNode }) {
 
 /** The main window with every panel closed or moved away. */
 function EmptyPanels() {
+  const t = useT()
   const windows = useArrangement((s) => s.arr.windows.length)
   return (
     <div className="flex flex-1 flex-col items-center justify-center gap-3 bg-content text-center text-secondary">
       <PanelsTopLeft className="size-8 opacity-60" />
-      <div className="text-[15px] font-semibold text-label">No Panels</div>
-      <div className="max-w-[360px] text-[12px]">Show the lens data or the layout, or add an analysis. Panels moved to other windows can come back here.</div>
+      <div className="text-[15px] font-semibold text-label">{t('app.panels.none')}</div>
+      <div className="max-w-[360px] text-[12px]">{t('app.panels.noneDetail')}</div>
       <div className="flex gap-2">
-        <Button onClick={() => showPanel(LENS_DATA)}>Show Lens Data</Button>
+        <Button onClick={() => showPanel(LENS_DATA)}>{t('app.menu.showLensData')}</Button>
         <Button onClick={() => showPanel(LAYOUT_PANEL)}>
-          <LayoutPanelLeft /> Show Layout
+          <LayoutPanelLeft /> {t('app.menu.showLayout')}
         </Button>
       </div>
       {windows > 0 && (
         <Button variant="prominent" onClick={dockAll}>
-          Move All Panels Here
+          {t('app.panels.moveAllHere')}
         </Button>
       )}
     </div>

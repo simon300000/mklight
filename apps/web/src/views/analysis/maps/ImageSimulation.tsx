@@ -9,6 +9,7 @@ import type { AnalysisResult, JsonObject } from '@/engine/types'
 import { Button } from '@/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Select } from '@/components/ui/select'
+import { t, useT } from '@/i18n'
 import { nf } from '@/model/format'
 import { cn } from '@/lib/utils'
 import { nums, obj } from '@/views/results/common'
@@ -128,6 +129,7 @@ function fieldAspect(j: JsonObject): number | null {
 
 /** A linear image drawn into a pixel-sized canvas, scaled by CSS with sharp pixels. */
 function ImageCanvas({ img, gain, className, style }: { img: LinearImage | null; gain: number; className?: string; style?: React.CSSProperties }) {
+  const t = useT()
   const ref = useRef<HTMLCanvasElement>(null)
   useEffect(() => {
     const c = ref.current
@@ -145,7 +147,7 @@ function ImageCanvas({ img, gain, className, style }: { img: LinearImage | null;
     id.data.set(toRgba(img, gain))
     ctx.putImageData(id, 0, 0)
   }, [img, gain])
-  if (!img) return <div className="flex h-full w-full items-center justify-center text-[11px] text-white/60">No preview</div>
+  if (!img) return <div className="flex h-full w-full items-center justify-center text-[11px] text-white/60">{t('maps.sim.noPreview')}</div>
   return <canvas ref={ref} className={className} style={{ imageRendering: 'pixelated', ...style }} />
 }
 
@@ -189,6 +191,7 @@ function Frame(props: { img: LinearImage | null; gain: number; aspect: number; z
  *  points and the patch; a click or drag moves the centre, snapping to the
  *  axis and the field points. */
 function FieldCenterPicker(props: { center: [number, number]; extent: number; points: FieldPointChoice[]; onSet: (c: [number, number]) => void }) {
+  const t = useT()
   const side = 200, span = 1.15, k = side / 2 / span
   const [drag, setDrag] = useState<[number, number] | null>(null)
   const c = drag ?? props.center
@@ -201,12 +204,12 @@ function FieldCenterPicker(props: { center: [number, number]; extent: number; po
   const e = props.extent
   return (
     <div className="flex w-[200px] flex-col gap-1.5">
-      <h3 className="text-[13px] font-semibold">Patch Center</h3>
+      <h3 className="text-[13px] font-semibold">{t('maps.sim.patchCenter')}</h3>
       <svg
         width={side}
         height={side}
         role="img"
-        aria-label={`Field diagram, patch center ${centerTitle(c, props.points)}`}
+        aria-label={t('maps.sim.fieldDiagram', { center: centerTitle(c, props.points) })}
         className="touch-none"
         onPointerDown={(ev) => {
           ;(ev.currentTarget as SVGElement).setPointerCapture?.(ev.pointerId)
@@ -227,27 +230,28 @@ function FieldCenterPicker(props: { center: [number, number]; extent: number; po
         <circle cx={X(c[0])} cy={Y(c[1])} r={2.5} fill="var(--accent)" />
       </svg>
       <span className="num text-[12px]">{centerTitle(c, props.points)}</span>
-      {outsideField(c, e) && <span className="text-[11px] text-warning">Part of the patch lies outside the design's field.</span>}
-      <span className="text-[11px] text-secondary">Click to center the patch; it snaps to the axis and the field points.</span>
+      {outsideField(c, e) && <span className="text-[11px] text-warning">{t('maps.sim.outsideField')}</span>}
+      <span className="text-[11px] text-secondary">{t('maps.sim.pickerHelp')}</span>
     </div>
   )
 }
 
 function FieldMappingTable({ data }: { data: ImageSimData }) {
+  const t = useT()
   const f4 = (v: number) => (Number.isFinite(v) ? v.toFixed(4).replace('-', '−') : '—')
   return (
     <div className="flex flex-col gap-1">
-      <h3 className="text-[13px] font-semibold">Field Mapping</h3>
-      <p className="text-[11px] text-secondary">PSF grid nodes; the image is mapped bilinearly between them.</p>
+      <h3 className="text-[13px] font-semibold">{t('maps.sim.fieldMapping')}</h3>
+      <p className="text-[11px] text-secondary">{t('maps.sim.fieldMappingHelp')}</p>
       <div className="max-h-[320px] overflow-auto">
         <table className="num text-[11px] select-text">
           <thead className="text-secondary">
             <tr>
-              <th className="pr-3 text-left font-medium">Field (Hx, Hy)</th>
-              <th className="px-2 text-right font-medium">Ideal (mm)</th>
-              <th className="px-2 text-right font-medium">Real (mm)</th>
-              <th className="px-2 text-right font-medium">Distortion</th>
-              <th className="px-2 text-right font-medium">Rel. illum.</th>
+              <th className="pr-3 text-left font-medium">{t('maps.sim.colField')}</th>
+              <th className="px-2 text-right font-medium">{t('maps.sim.colIdeal')}</th>
+              <th className="px-2 text-right font-medium">{t('maps.sim.colReal')}</th>
+              <th className="px-2 text-right font-medium">{t('maps.sim.colDistortion')}</th>
+              <th className="px-2 text-right font-medium">{t('maps.sim.colRI')}</th>
             </tr>
           </thead>
           <tbody>
@@ -275,6 +279,7 @@ function FieldMappingTable({ data }: { data: ImageSimData }) {
 }
 
 export function ImageSimulationView(p: RendererProps) {
+  const t = useT()
   const data = useMemo(() => readImageSim(p.result), [p.result])
   const runSettings = (p.result.runInfo.settings ?? {}) as JsonObject
   const source = useMemo(() => readSource(runSettings.source ?? p.settings.source), [runSettings.source, p.settings.source])
@@ -356,7 +361,7 @@ export function ImageSimulationView(p: RendererProps) {
     setPan([px - (px - p0[0]) * f, py - (py - p0[1]) * f])
   }
 
-  if (!data) return <div className="p-4 text-secondary">No simulated image in this result.</div>
+  if (!data) return <div className="p-4 text-secondary">{t('maps.sim.none')}</div>
 
   const gain = Math.pow(2, exposure)
   const clipped = clippedFraction(data.image, gain)
@@ -384,19 +389,19 @@ export function ImageSimulationView(p: RendererProps) {
   const widthMm = data.pixelSize[0] * data.image.width
   const mmPerExtent = runExtent && Number.isFinite(widthMm) && widthMm > 0 ? widthMm / 2 / runExtent : null
   const extentLabel = (e: number) => {
-    let t = extentTitle(e)
+    let title = extentTitle(e)
     if (mmPerExtent) {
       const w = 2 * mmPerExtent * e
-      t += ` · ${lengthText(w)} wide, pixel ${lengthText(w / size)}`
+      title = t('maps.sim.extentDetail', { title, width: lengthText(w), pixel: lengthText(w / size) })
     }
-    return t
+    return title
   }
 
   const importFile = async (file: File) => {
     setBusy(true)
     const px = await decodeFile(file)
     setBusy(false)
-    if (!px) return setError(`${file.name} could not be read`)
+    if (!px) return setError(t('maps.sim.unreadable', { name: file.name }))
     setError(null)
     const [w, h] = targetSize(p.settings.size)
     const lin = resampleSrgb(px, w, h, fieldAspect(p.result.json))
@@ -413,7 +418,7 @@ export function ImageSimulationView(p: RendererProps) {
     const cur = obj(p.settings.source)
     if (cur?.kind === 'buffer') {
       const [w, h] = targetSize([n, n])
-      const orig = originals.get(cur) ?? (storedPixels ? { name: storedName ?? 'Imported image', pixels: storedPixels } : undefined)
+      const orig = originals.get(cur) ?? (storedPixels ? { name: storedName ?? t('maps.sim.importedImage'), pixels: storedPixels } : undefined)
       const img = orig ? resampleSrgb(orig.pixels, w, h, fieldAspect(p.result.json)) : readSource(cur).kind === 'buffer' ? resampleLinear((readSource(cur) as { image: LinearImage }).image, w, h) : null
       if (img) {
         const src = sourceJSON(img)
@@ -427,7 +432,7 @@ export function ImageSimulationView(p: RendererProps) {
   const curSource = obj(p.settings.source)
   const sourceValue = curSource?.kind === 'buffer' ? '__image' : curSource?.kind === 'path' ? '__path' : String(curSource?.pattern ?? 'grid')
   const importedName = (curSource ? originals.get(curSource)?.name : undefined) ?? (curSource?.kind === 'buffer' ? storedName : undefined)
-  const sourceTitle = source.kind === 'pattern' ? `${PATTERNS.find((x) => x.id === source.pattern)?.title ?? source.pattern} pattern` : source.kind === 'buffer' ? (importedName ?? 'Imported image') : source.path.split('/').pop()
+  const sourceTitle = source.kind === 'pattern' ? t('maps.sim.patternName', { title: PATTERNS.find((x) => x.id === source.pattern)?.title ?? source.pattern }) : source.kind === 'buffer' ? (importedName ?? t('maps.sim.importedImage')) : source.path.split('/').pop()
 
   const runCenter = centerFromRun(data)
   const psfAuto = (nf(optics.psf_size) || 0) === 0
@@ -494,7 +499,7 @@ export function ImageSimulationView(p: RendererProps) {
         {edit && (
           <>
             <Select
-              aria-label="Source"
+              aria-label={t('maps.sim.source')}
               value={sourceValue}
               onChange={(e) => {
                 const v = e.target.value
@@ -510,9 +515,9 @@ export function ImageSimulationView(p: RendererProps) {
                   {x.title}
                 </option>
               ))}
-              {sourceValue === '__image' && <option value="__image">{importedName ?? 'Imported image'}</option>}
+              {sourceValue === '__image' && <option value="__image">{importedName ?? t('maps.sim.importedImage')}</option>}
               {sourceValue === '__path' && <option value="__path">{sourceTitle}</option>}
-              <option value="__choose">Choose Image…</option>
+              <option value="__choose">{t('maps.sim.chooseImage')}</option>
             </Select>
             <input
               ref={fileInput}
@@ -526,34 +531,34 @@ export function ImageSimulationView(p: RendererProps) {
                 if (f) void importFile(f)
               }}
             />
-            <Select aria-label="Field of view" value={String(EXTENTS.find((e) => Math.abs(e - extent) < 1e-9) ?? extent)} onChange={(e) => setOptics({ field_extent: Number(e.target.value) })} title="The simulated part of the field: a square around the patch center. A smaller patch has finer pixels, so the blur shows.">
-              {!EXTENTS.some((e) => Math.abs(e - extent) < 1e-9) && <option value={String(extent)}>View {extentTitle(extent)}</option>}
+            <Select aria-label={t('maps.sim.fieldOfView')} value={String(EXTENTS.find((e) => Math.abs(e - extent) < 1e-9) ?? extent)} onChange={(e) => setOptics({ field_extent: Number(e.target.value) })} title={t('maps.sim.fieldOfViewHelp')}>
+              {!EXTENTS.some((e) => Math.abs(e - extent) < 1e-9) && <option value={String(extent)}>{t('maps.sim.view', { title: extentTitle(extent) })}</option>}
               {EXTENTS.map((e) => (
                 <option key={e} value={String(e)}>
-                  View {extentLabel(e)}
+                  {t('maps.sim.view', { title: extentLabel(e) })}
                 </option>
               ))}
             </Select>
             <span className="inline-flex items-center gap-1">
               <Select
-                aria-label="Patch center"
+                aria-label={t('maps.sim.patchCenterLabel')}
                 value={String(points.findIndex((q) => Math.hypot(q.field[0] - center[0], q.field[1] - center[1]) < 1e-4))}
                 onChange={(e) => {
                   const k = Number(e.target.value)
                   if (k >= 0) setOptics({ field_center: centerJSON(points[k].field) })
                 }}
               >
-                {!points.some((q) => Math.hypot(q.field[0] - center[0], q.field[1] - center[1]) < 1e-4) && <option value="-1">At {centerTitle(center, points)}</option>}
+                {!points.some((q) => Math.hypot(q.field[0] - center[0], q.field[1] - center[1]) < 1e-4) && <option value="-1">{t('maps.sim.at', { title: centerTitle(center, points) })}</option>}
                 {points.map((q, k) => (
                   <option key={k} value={k}>
-                    {q.title === 'On axis' ? q.title : `At ${q.title}`}
+                    {q.field[0] === 0 && q.field[1] === 0 ? q.title : t('maps.sim.at', { title: q.title })}
                   </option>
                 ))}
               </Select>
               <Popover>
                 <PopoverTrigger asChild>
                   <Button size="sm" variant="ghost">
-                    Pick…
+                    {t('maps.sim.pick')}
                   </Button>
                 </PopoverTrigger>
                 <PopoverContent>
@@ -561,7 +566,7 @@ export function ImageSimulationView(p: RendererProps) {
                 </PopoverContent>
               </Popover>
             </span>
-            <Select aria-label="Resolution" value={String(size)} onChange={(e) => setSize(Number(e.target.value))} title="Output pixels per side">
+            <Select aria-label={t('maps.sim.resolution')} value={String(size)} onChange={(e) => setSize(Number(e.target.value))} title={t('maps.sim.resolutionHelp')}>
               {!SIZES.includes(size) && <option value={String(size)}>{size} px</option>}
               {SIZES.map((n) => (
                 <option key={n} value={n}>
@@ -572,39 +577,39 @@ export function ImageSimulationView(p: RendererProps) {
           </>
         )}
         <SegmentedOrMenu
-          label="Compare"
+          label={t('maps.sim.compare')}
           value={compare}
           onChange={setCompare}
           options={[
-            { value: 'side', title: 'Side by Side' },
-            { value: 'split', title: 'Split' },
-            { value: 'blink', title: 'Blink' },
+            { value: 'side', title: t('maps.sim.sideBySide') },
+            { value: 'split', title: t('maps.sim.split') },
+            { value: 'blink', title: t('maps.sim.blink') },
           ]}
         />
         <label className="inline-flex items-center gap-1.5 text-secondary">
-          Exposure
-          <input type="range" min={-4} max={4} step={0.5} value={exposure} onChange={(e) => setExposure(Number(e.target.value))} aria-label="Exposure" className="w-[90px] accent-[var(--accent)]" />
+          {t('maps.sim.exposure')}
+          <input type="range" min={-4} max={4} step={0.5} value={exposure} onChange={(e) => setExposure(Number(e.target.value))} aria-label={t('maps.sim.exposure')} className="w-[90px] accent-[var(--accent)]" />
           <span className="num w-[48px] text-label">
             {exposure >= 0 ? '+' : '−'}
             {Math.abs(exposure).toFixed(1)} EV
           </span>
         </label>
         <span className="inline-flex items-center gap-0.5">
-          <Button size="iconSm" variant="ghost" aria-label="Zoom out" disabled={zoom <= 1} onClick={() => setZoom(zoom / 2)}>
+          <Button size="iconSm" variant="ghost" aria-label={t('maps.sim.zoomOut')} disabled={zoom <= 1} onClick={() => setZoom(zoom / 2)}>
             <Minus />
           </Button>
           <span className="num min-w-[40px] text-center">{Math.round(zoom * 100)}%</span>
-          <Button size="iconSm" variant="ghost" aria-label="Zoom in" disabled={zoom >= 32} onClick={() => setZoom(zoom * 2)}>
+          <Button size="iconSm" variant="ghost" aria-label={t('maps.sim.zoomIn')} disabled={zoom >= 32} onClick={() => setZoom(zoom * 2)}>
             <Plus />
           </Button>
           <Button size="sm" variant="ghost" disabled={zoom === 1 && pan[0] === 0 && pan[1] === 0} onClick={() => setZoom(1)}>
-            Fit
+            {t('maps.sim.fit')}
           </Button>
         </span>
         <Popover>
           <PopoverTrigger asChild>
             <Button size="sm" variant="ghost" disabled={!data.nodes.length}>
-              <Table /> Field Mapping
+              <Table /> {t('maps.sim.fieldMapping')}
             </Button>
           </PopoverTrigger>
           <PopoverContent className="w-auto">
@@ -616,38 +621,38 @@ export function ImageSimulationView(p: RendererProps) {
         ref={setImages}
         className={cn('relative min-h-0 flex-1 touch-none overflow-hidden select-none', zoom > 1 && 'cursor-grab active:cursor-grabbing')}
         {...panHandlers}
-        aria-label="Images; pinch or ⌘-scroll to zoom, drag or scroll to pan, drop an image file to use it as the source"
+        aria-label={t('maps.sim.imagesLabel')}
       >
         {compare === 'side' ? (
           <div className="flex h-full gap-2 @max-[480px]:flex-col">
-            <Frame img={sourceImage} gain={1} aspect={aspect} zoom={zoom} pan={pan} title={`Source · ${sourceTitle}`} />
-            <Frame img={data.image} gain={gain} aspect={aspect} zoom={zoom} pan={pan} title="Simulated" />
+            <Frame img={sourceImage} gain={1} aspect={aspect} zoom={zoom} pan={pan} title={t('maps.sim.sourceTag', { title: sourceTitle ?? '' })} />
+            <Frame img={data.image} gain={gain} aspect={aspect} zoom={zoom} pan={pan} title={t('maps.sim.simulated')} />
           </div>
         ) : compare === 'split' ? (
           <Frame img={sourceImage} gain={1} aspect={aspect} zoom={zoom} pan={pan} split={split} under={data.image} underGain={gain}>
             <span className="pointer-events-none absolute top-0 bottom-0 w-px bg-white/80 shadow-[0_0_0_1px_rgb(0_0_0/0.4)]" style={{ left: `${split * 100}%` }} />
-            <Tag>Source | Simulated</Tag>
+            <Tag>{t('maps.sim.sourceSimulated')}</Tag>
           </Frame>
         ) : (
-          <Frame img={sim} gain={blinkSource ? 1 : gain} aspect={aspect} zoom={zoom} pan={pan} title={blinkSource ? 'Source' : 'Simulated'} />
+          <Frame img={sim} gain={blinkSource ? 1 : gain} aspect={aspect} zoom={zoom} pan={pan} title={blinkSource ? t('maps.sim.sourceShort') : t('maps.sim.simulated')} />
         )}
-        {busy && <div className="absolute inset-0 flex items-center justify-center bg-black/30 text-white">Reading image…</div>}
+        {busy && <div className="absolute inset-0 flex items-center justify-center bg-black/30 text-white">{t('maps.sim.reading')}</div>}
       </div>
       <div className="num flex flex-wrap gap-x-4 gap-y-0.5 text-[11px] text-secondary">
         <span>
-          {data.image.width} × {data.image.height} px{data.image.channels === 3 ? ', RGB' : ', monochrome'}
+          {data.image.width} × {data.image.height} px{data.image.channels === 3 ? t('maps.sim.rgb') : t('maps.sim.mono')}
         </span>
-        {Number.isFinite(data.pixelSize[0]) && <span>Pixel {lengthText(data.pixelSize[0])}{Math.abs(data.pixelSize[0] - data.pixelSize[1]) > 1e-9 * data.pixelSize[0] ? ` × ${lengthText(data.pixelSize[1])}` : ''}</span>}
-        {runCenter && <span title={patchHelp(data, runCenter)}>At {centerTitle(runCenter, points)}</span>}
+        {Number.isFinite(data.pixelSize[0]) && <span>{t('maps.sim.pixel', { size: lengthText(data.pixelSize[0]) + (Math.abs(data.pixelSize[0] - data.pixelSize[1]) > 1e-9 * data.pixelSize[0] ? ` × ${lengthText(data.pixelSize[1])}` : '') })}</span>}
+        {runCenter && <span title={patchHelp(data, runCenter)}>{t('maps.sim.at', { title: centerTitle(runCenter, points) })}</span>}
         {data.psfSize !== null && data.psfSpacing !== null && (
-          <span title={`The PSF window and sample spacing this run used${psfAuto ? ', chosen by the engine from the blur and diffraction' : ''}.`}>
+          <span title={psfAuto ? t('maps.sim.psfHelpAuto') : t('maps.sim.psfHelp')}>
             PSF {data.psfSize} × {lengthText(data.psfSpacing)}
           </span>
         )}
-        {clipped > 0.001 && <span className="text-warning">{(clipped * 100).toFixed(1)}% clipped</span>}
+        {clipped > 0.001 && <span className="text-warning">{t('maps.sim.clipped', { pct: (clipped * 100).toFixed(1) })}</span>}
         {error && <span className="text-warning">{error}</span>}
         {source.kind === 'pattern' && (
-          <span title="The engine evaluates the built-in pattern analytically at each pixel's exact source point, averaged over the pixel; the source shown here is drawn with the same definition.">Pattern exact</span>
+          <span title={t('maps.sim.patternExactHelp')}>{t('maps.sim.patternExact')}</span>
         )}
       </div>
     </div>
@@ -655,14 +660,14 @@ export function ImageSimulationView(p: RendererProps) {
 }
 
 function patchHelp(d: ImageSimData, c: [number, number]): string {
-  let t = `Patch centered at normalized field ${coordinates(c)}`
+  let text = t('maps.sim.patchHelp', { coords: coordinates(c) })
   let best: (typeof d.nodes)[number] | null = null, bd = Infinity
   for (const n of d.nodes) {
     const x = Math.hypot(n.field[0] - c[0], n.field[1] - c[1])
     if (x < bd) ((bd = x), (best = n))
   }
-  if (best && Number.isFinite(best.real[0])) t += `, image point (${best.real[0].toFixed(3)}, ${best.real[1].toFixed(3)}) mm`
-  return t + '.'
+  if (best && Number.isFinite(best.real[0])) text = t('maps.sim.patchHelpPoint', { coords: coordinates(c), x: best.real[0].toFixed(3), y: best.real[1].toFixed(3) })
+  return text
 }
 
 export function imageSimulationKeyNumbers(r: AnalysisResult): KeyNumber[] {
@@ -670,10 +675,10 @@ export function imageSimulationKeyNumbers(r: AnalysisResult): KeyNumber[] {
   const nodes = readNodes(j)
   const out: KeyNumber[] = []
   const px = nums(j.pixel_size_mm)[0]
-  if (Number.isFinite(px)) out.push({ label: 'Pixel', value: lengthText(px), help: 'Output pixel pitch on the sensor' })
+  if (Number.isFinite(px)) out.push({ label: t('maps.sim.keyPixel'), value: lengthText(px), help: t('maps.sim.keyPixelHelp') })
   const m = maxDistortion(nodes)
-  if (m !== null) out.push({ label: 'Max distortion', value: `${m >= 0 ? '+' : '−'}${Math.abs(m).toFixed(3)} %`, help: 'Largest distortion of the field mapping nodes' })
+  if (m !== null) out.push({ label: t('maps.sim.keyDistortion'), value: `${m >= 0 ? '+' : '−'}${Math.abs(m).toFixed(3)} %`, help: t('maps.sim.keyDistortionHelp') })
   const ri = minRelativeIllumination(nodes)
-  if (ri !== null) out.push({ label: 'Min RI', value: ri.toFixed(3), help: 'Lowest relative illumination of the field mapping nodes' })
+  if (ri !== null) out.push({ label: t('maps.keys.minRI'), value: ri.toFixed(3), help: t('maps.sim.keyRIHelp') })
   return out
 }

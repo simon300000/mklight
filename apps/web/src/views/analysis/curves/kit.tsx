@@ -4,6 +4,7 @@
 // that follow the pane's size and the light or dark appearance.
 import { Fragment, useEffect, useRef, useState, type ReactNode } from 'react'
 import type { AnalysisResult, Json, JsonObject } from '@/engine/types'
+import { t } from '@/i18n'
 import { nf, sig } from '@/model/format'
 import type { System } from '@/model/system'
 import { cssVar, useDark } from '@/lib/theme'
@@ -93,7 +94,8 @@ export function fieldTitle(system: System, field: number, value: Json | undefine
   let v = ''
   if (x !== undefined && y === undefined) v = sig(x, 4) + u
   else if (x !== undefined && y !== undefined) v = Number.isFinite(x) && x !== 0 ? `(${sig(x, 4)}, ${sig(y, 4)})${u}` : sig(y, 4) + u
-  return v ? `Field ${field + 1} · ${v}` : `Field ${field + 1}`
+  const head = t('common.fieldN', { n: field + 1 })
+  return v ? `${head} · ${v}` : head
 }
 
 export const finite = (vs: Iterable<number>) => [...vs].filter(Number.isFinite)

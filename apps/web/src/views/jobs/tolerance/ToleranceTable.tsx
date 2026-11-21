@@ -8,6 +8,7 @@
 import { ChevronRight, Copy, Link2, Minus, Plus, Waves, Wand2 } from 'lucide-react'
 import { useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
+import { t as translate, useT } from '@/i18n'
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger } from '@/components/ui/context-menu'
 import {
   DropdownMenu,
@@ -81,6 +82,7 @@ import { Hint } from './controls'
 type Edit = typeof editTolerances
 
 export function ToleranceTable({ settings, context, issues }: { settings: ToleranceSettings; context: ToleranceContext; issues: Map<string, string> }) {
+  const t = useT()
   const system = context.system
   const rows = settings.rows
   const selection = new Set(useTolerance((s) => s.selection))
@@ -109,34 +111,34 @@ export function ToleranceTable({ settings, context, issues }: { settings: Tolera
   const duplicate = (ids: Set<string>) => {
     if (!ids.size) return
     let added: string[] = []
-    editTolerances(ids.size === 1 ? 'Duplicate Tolerance' : 'Duplicate Tolerances', (t) => {
-      added = duplicateRows(t, ids)
+    editTolerances(t(ids.size === 1 ? 'tolerance.undo.duplicateTolerance' : 'tolerance.undo.duplicateTolerances'), (x) => {
+      added = duplicateRows(x, ids)
     })
     select(added)
   }
   const remove = (ids: Set<string>) => {
     if (!ids.size) return
-    editTolerances(ids.size === 1 ? 'Delete Tolerance' : 'Delete Tolerances', (t) => deleteRows(t, ids))
+    editTolerances(t(ids.size === 1 ? 'tolerance.undo.deleteTolerance' : 'tolerance.undo.deleteTolerances'), (x) => deleteRows(x, ids))
     select([...selection].filter((id) => !ids.has(id)))
   }
   const add = (row: ToleranceRow, at: number) => {
     // After the last row on this surface or before it.
     const after = [...rows].reverse().find((r) => surfaceIndexOfId(system, r.surface) <= at)?.id ?? null
-    editTolerances('Add Tolerance', (t) => addRows(t, [row], after))
+    editTolerances(t('tolerance.undo.addTolerance'), (x) => addRows(x, [row], after))
     select([row.id], row.id)
   }
 
   return (
     <Section
-      title="Tolerances"
+      title={t('tolerance.table.title')}
       accessory={<span className="num text-[11px] text-secondary">{rows.length}</span>}
     >
       <div
         className="outline-none"
         tabIndex={-1}
         onKeyDown={(e) => {
-          const t = e.target as HTMLElement
-          if (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA') return
+          const el = e.target as HTMLElement
+          if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') return
           if ((e.key === 'Backspace' || e.key === 'Delete') && selection.size) {
             e.preventDefault()
             remove(selection)
@@ -153,27 +155,27 @@ export function ToleranceTable({ settings, context, issues }: { settings: Tolera
           <Button
             variant="ghost"
             size="iconSm"
-            aria-label="Duplicate"
-            title={`Duplicate the selected tolerances (${isMac ? '⌘D' : 'Ctrl+D'})`}
+            aria-label={t('tolerance.table.duplicate')}
+            title={t('tolerance.table.duplicateHelp', { shortcut: isMac ? '⌘D' : 'Ctrl+D' })}
             disabled={!selection.size}
             onClick={() => duplicate(selection)}
           >
             <Copy />
           </Button>
-          <Button variant="ghost" size="iconSm" aria-label="Delete" title="Delete the selected tolerances (⌫)" disabled={!selection.size} onClick={() => remove(selection)}>
+          <Button variant="ghost" size="iconSm" aria-label={t('tolerance.table.delete')} title={t('tolerance.table.deleteHelp')} disabled={!selection.size} onClick={() => remove(selection)}>
             <Minus />
           </Button>
         </div>
-        <TestWavelengthField value={settings.testWavelengthUm} onCommit={(v) => editTolerances('Change Test Wavelength', (t) => void (t.testWavelengthUm = v))} />
+        <TestWavelengthField value={settings.testWavelengthUm} onCommit={(v) => editTolerances(t('tolerance.undo.changeTestWavelength'), (x) => void (x.testWavelengthUm = v))} />
         {!rows.length ? (
-          <p className="py-3 text-[12px] text-secondary">No tolerances. Use Default Tolerances, or add them one by one.</p>
+          <p className="py-3 text-[12px] text-secondary">{t('tolerance.table.empty')}</p>
         ) : (
-          <div role="table" aria-label="Tolerances" className="pb-1">
+          <div role="table" aria-label={t('tolerance.table.title')} className="pb-1">
             <div className="grid grid-cols-[minmax(0,1fr)_3.25rem_6.75rem_1.75rem] gap-x-1.5 px-1 pt-1 text-[10px] text-tertiary" aria-hidden>
-              <span>Kind</span>
-              <span>Surface</span>
-              <span className="text-right">− / + limits</span>
-              <span>Unit</span>
+              <span>{t('tolerance.table.kind')}</span>
+              <span>{t('tolerance.table.surface')}</span>
+              <span className="text-right">{t('tolerance.table.limits')}</span>
+              <span>{t('tolerance.table.unit')}</span>
             </div>
             {groups.map((g) => {
               const closed = collapsed.has(g.key)
@@ -184,7 +186,7 @@ export function ToleranceTable({ settings, context, issues }: { settings: Tolera
                     type="button"
                     className="mt-1 flex w-full cursor-default items-center gap-1 rounded px-0.5 py-0.5 text-left text-[11px] font-semibold text-secondary hover:bg-hover"
                     aria-expanded={!closed}
-                    title={closed ? `Show the ${g.rows.length} tolerances of ${g.key}` : `Hide the tolerances of ${g.key}`}
+                    title={closed ? t('tolerance.table.showGroup', { count: g.rows.length, group: g.key }) : t('tolerance.table.hideGroup', { group: g.key })}
                     onClick={() => {
                       const next = new Set(collapsed)
                       if (closed) next.delete(g.key)
@@ -194,7 +196,7 @@ export function ToleranceTable({ settings, context, issues }: { settings: Tolera
                   >
                     <ChevronRight className={cn('size-3 shrink-0 transition-transform', !closed && 'rotate-90')} />
                     <span className="min-w-0 flex-1 truncate">{g.title}</span>
-                    {closed && problems > 0 && <span className="text-danger">{problems} to fix</span>}
+                    {closed && problems > 0 && <span className="text-danger">{t('tolerance.table.toFix', { count: problems })}</span>}
                     {closed && <span className="num">{g.rows.length}</span>}
                   </button>
                   {!closed &&
@@ -242,16 +244,17 @@ function RowView({
   onDuplicate: () => void
   onDelete: () => void
 }) {
+  const t = useT()
   const system = context.system
   const symmetric = row.minus === row.plus
   const set = (name: string, change: (r: ToleranceRow) => void, edit: Edit = editTolerances) =>
-    edit(name, (t) => {
-      const r = t.rows.find((x) => x.id === row.id)
+    edit(name, (ts) => {
+      const r = ts.rows.find((x) => x.id === row.id)
       if (r) change(r)
     })
   const convert = (u: ToleranceUnit) => {
     const c = convertRow(row, u, context)
-    if (c) set('Change Tolerance Unit', (r) => Object.assign(r, { ...c, id: r.id }))
+    if (c) set(t('tolerance.undo.changeToleranceUnit'), (r) => Object.assign(r, { ...c, id: r.id }))
   }
   const units = KINDS[row.kind].units
   const label = rowLabel(row, system)
@@ -281,18 +284,18 @@ function RowView({
                   <span className="text-secondary">±</span>
                   <NumberInput
                     className="w-[4.75rem]"
-                    ariaLabel={`${label} limit`}
+                    ariaLabel={t('tolerance.table.limit', { label })}
                     value={row.minus}
                     min={0}
-                    onCommit={(v) => v != null && set('Change Tolerance', (r) => Object.assign(r, { minus: v, plus: v }))}
+                    onCommit={(v) => v != null && set(t('tolerance.undo.changeTolerance'), (r) => Object.assign(r, { minus: v, plus: v }))}
                   />
                 </>
               ) : (
                 <>
                   <span className="text-secondary">−</span>
-                  <NumberInput className="w-[2.75rem]" ariaLabel={`${label} minus limit`} value={row.minus} min={0} onCommit={(v) => v != null && set('Change Tolerance', (r) => void (r.minus = v))} />
+                  <NumberInput className="w-[2.75rem]" ariaLabel={t('tolerance.table.minusLimit', { label })} value={row.minus} min={0} onCommit={(v) => v != null && set(t('tolerance.undo.changeTolerance'), (r) => void (r.minus = v))} />
                   <span className="text-secondary">+</span>
-                  <NumberInput className="w-[2.75rem]" ariaLabel={`${label} plus limit`} value={row.plus} min={0} onCommit={(v) => v != null && set('Change Tolerance', (r) => void (r.plus = v))} />
+                  <NumberInput className="w-[2.75rem]" ariaLabel={t('tolerance.table.plusLimit', { label })} value={row.plus} min={0} onCommit={(v) => v != null && set(t('tolerance.undo.changeTolerance'), (r) => void (r.plus = v))} />
                 </>
               )}
             </span>
@@ -303,7 +306,7 @@ function RowView({
             ) : (
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
-                  <button type="button" className="cursor-default truncate rounded px-0.5 text-left text-[12px] text-secondary hover:bg-hover" title={`Unit: ${UNITS[row.unit].title}. Changing it converts the limits.`}>
+                  <button type="button" className="cursor-default truncate rounded px-0.5 text-left text-[12px] text-secondary hover:bg-hover" title={t('tolerance.table.unitHelp', { unit: UNITS[row.unit].title })}>
                     {unitLabel(row, system)}
                   </button>
                 </DropdownMenuTrigger>
@@ -325,7 +328,7 @@ function RowView({
       <ContextMenuContent>
         {units.length > 1 && (
           <>
-            <div className="px-2 pt-1 pb-0.5 text-[11px] font-semibold text-secondary">Unit</div>
+            <div className="px-2 pt-1 pb-0.5 text-[11px] font-semibold text-secondary">{t('tolerance.table.unitMenu')}</div>
             {units.map((u) => (
               <ContextMenuItem key={u} className="pl-6" disabled={!convertRow(row, u, context)} onSelect={() => convert(u)}>
                 {u === row.unit && <span className="absolute left-2">✓</span>}
@@ -335,9 +338,9 @@ function RowView({
             <ContextMenuSeparator />
           </>
         )}
-        <div className="px-2 pt-1 pb-0.5 text-[11px] font-semibold text-secondary">Distribution</div>
+        <div className="px-2 pt-1 pb-0.5 text-[11px] font-semibold text-secondary">{t('tolerance.table.distribution')}</div>
         {DISTRIBUTIONS.map((d) => (
-          <ContextMenuItem key={JSON.stringify(distributionJson(d))} className="pl-6" onSelect={() => set('Change Distribution', (r) => void (r.distribution = d))}>
+          <ContextMenuItem key={JSON.stringify(distributionJson(d))} className="pl-6" onSelect={() => set(t('tolerance.undo.changeDistribution'), (r) => void (r.distribution = d))}>
             {sameDistribution(d, row.distribution) && <span className="absolute left-2">✓</span>}
             {distributionTitle(d)}
           </ContextMenuItem>
@@ -345,20 +348,20 @@ function RowView({
         <ContextMenuSeparator />
         <ContextMenuItem
           onSelect={() =>
-            set(symmetric ? 'Make Tolerance Asymmetric' : 'Make Tolerance Symmetric', (r) => {
+            set(t(symmetric ? 'tolerance.undo.makeAsymmetric' : 'tolerance.undo.makeSymmetric'), (r) => {
               if (r.minus === r.plus) r.plus = r.minus * 2
               else r.plus = r.minus
             })
           }
         >
-          {symmetric ? 'Make Asymmetric' : 'Make Symmetric'}
+          {symmetric ? t('tolerance.table.makeAsymmetric') : t('tolerance.table.makeSymmetric')}
         </ContextMenuItem>
         <ContextMenuSeparator />
         <ContextMenuItem shortcut="mod+d" onSelect={onDuplicate}>
-          Duplicate
+          {t('tolerance.table.duplicate')}
         </ContextMenuItem>
         <ContextMenuItem className="text-danger" onSelect={onDelete}>
-          Delete
+          {t('tolerance.table.delete')}
         </ContextMenuItem>
       </ContextMenuContent>
     </ContextMenu>
@@ -371,6 +374,7 @@ const surfaceOptions = (s: System) => Array.from({ length: Math.max(imageIndex(s
 
 /** The surface (a thickness is the gap after it), or for an element its range. */
 function SurfaceMenu({ row, system, set }: { row: ToleranceRow; system: System; set: SetRow }) {
+  const t = useT()
   const el = isElementKind(row.kind)
   const text = el ? (elementTitle(row, system) ?? surfaceLabel(row, system)) : surfaceLabel(row, system)
   if (row.kind === 'other') return <span className="num truncate text-[12px] text-secondary">{text}</span>
@@ -382,7 +386,7 @@ function SurfaceMenu({ row, system, set }: { row: ToleranceRow; system: System; 
         <button
           type="button"
           className="num cursor-default truncate rounded px-0.5 text-left text-[12px] hover:bg-hover"
-          title={el ? 'The element: the surfaces that move together' : 'The surface (a thickness is the gap after it)'}
+          title={el ? t('tolerance.table.surfaceHelpElement') : t('tolerance.table.surfaceHelp')}
         >
           {text}
         </button>
@@ -390,7 +394,7 @@ function SurfaceMenu({ row, system, set }: { row: ToleranceRow; system: System; 
       <DropdownMenuContent align="start">
         {el ? (
           <>
-            <DropdownMenuLabel>Element</DropdownMenuLabel>
+            <DropdownMenuLabel>{t('tolerance.table.element')}</DropdownMenuLabel>
             {lensGroups(system).map((g) => {
               const f = g.surfaces[0], l = g.surfaces[g.surfaces.length - 1]
               return (
@@ -401,7 +405,7 @@ function SurfaceMenu({ row, system, set }: { row: ToleranceRow; system: System; 
             })}
             <DropdownMenuSeparator />
             <DropdownMenuSub>
-              <DropdownMenuSubTrigger>First Surface</DropdownMenuSubTrigger>
+              <DropdownMenuSubTrigger>{t('tolerance.table.firstSurface')}</DropdownMenuSubTrigger>
               <DropdownMenuSubContent>
                 {surfaceOptions(system).map((i) => (
                   <DropdownMenuItem key={i} disabled={i === moving[0]} onSelect={() => moveElement(row, system, i, Math.max(i, moving[moving.length - 1] ?? i), pivotChoice)}>
@@ -411,7 +415,7 @@ function SurfaceMenu({ row, system, set }: { row: ToleranceRow; system: System; 
               </DropdownMenuSubContent>
             </DropdownMenuSub>
             <DropdownMenuSub>
-              <DropdownMenuSubTrigger>Last Surface</DropdownMenuSubTrigger>
+              <DropdownMenuSubTrigger>{t('tolerance.table.lastSurface')}</DropdownMenuSubTrigger>
               <DropdownMenuSubContent>
                 {surfaceOptions(system)
                   .filter((i) => i >= (moving[0] ?? 1))
@@ -425,9 +429,8 @@ function SurfaceMenu({ row, system, set }: { row: ToleranceRow; system: System; 
           </>
         ) : (
           surfaceOptions(system).map((i) => (
-            <DropdownMenuItem key={i} onSelect={() => set('Change Tolerance Surface', (r) => void (r.surface = system.surfaces[i].id))}>
-              S{i}
-              {i === system.stop ? ' (stop)' : ''}
+            <DropdownMenuItem key={i} onSelect={() => set(t('tolerance.undo.changeToleranceSurface'), (r) => void (r.surface = system.surfaces[i].id))}>
+              {i === system.stop ? t('tolerance.table.stopSuffix', { surface: `S${i}` }) : `S${i}`}
             </DropdownMenuItem>
           ))
         )}
@@ -446,48 +449,46 @@ function pivotChoiceOf(row: ToleranceRow, s: System): PivotChoice {
   return p === m[m.length - 1] ? { at: 'last' } : { at: 'surface', index: p }
 }
 
-function moveElement(row: ToleranceRow, s: System, f: number, l: number, c: PivotChoice | null, name = 'Change Element') {
+function moveElement(row: ToleranceRow, s: System, f: number, l: number, c: PivotChoice | null, name = translate('tolerance.undo.changeElement')) {
   if (!s.surfaces[f] || !s.surfaces[l]) return
   const choice = c ?? { at: 'first' }
   const pivot = choice.at === 'first' ? null : choice.at === 'last' ? s.surfaces[l].id : (s.surfaces[choice.index]?.id ?? null)
-  editTolerances(name, (t) => setElement(t, row.id, s.surfaces[f].id, s.surfaces[l].id, pivot))
+  editTolerances(name, (ts) => setElement(ts, row.id, s.surfaces[f].id, s.surfaces[l].id, pivot))
 }
 
 /** "S3 S4 S5 move together · pivot S3, first vertex", the pivot a menu. */
 function ElementLine({ row, system }: { row: ToleranceRow; system: System }) {
+  const t = useT()
   const moving = movingSurfaces(row, system)
   const p = pivotIndex(row, system)
   const f = moving[0], l = moving[moving.length - 1]
-  const pivotText = p == null ? '?' : p === f ? `S${p}, first vertex` : p === l ? `S${p}, last vertex` : `S${p}`
-  const setPivot = (c: PivotChoice) => f != null && moveElement(row, system, f, l, c, 'Change Element Pivot')
+  const pivotText = p == null ? '?' : p === f ? t('tolerance.table.pivotFirst', { surface: `S${p}` }) : p === l ? t('tolerance.table.pivotLast', { surface: `S${p}` }) : `S${p}`
+  const setPivot = (c: PivotChoice) => f != null && moveElement(row, system, f, l, c, t('tolerance.undo.changeElementPivot'))
+  const surfaces = moving.map((i) => `S${i}`).join(' ')
   return (
-    <div className="flex items-center gap-1 pl-1 text-[11px] text-secondary" aria-label={`Moves ${moving.map((i) => `surface ${i}`).join(', ')}, pivot ${pivotText}`}>
+    <div className="flex items-center gap-1 pl-1 text-[11px] text-secondary" aria-label={t('tolerance.table.movesAria', { surfaces: moving.map((i) => t('tolerance.table.surfaceLower', { n: i })).join(', '), pivot: pivotText })}>
       <Link2 className="size-3 shrink-0 text-tertiary" />
-      <span className="truncate">
-        {moving.map((i) => `S${i}`).join(' ')}
-        {moving.length > 1 ? ' move together' : ' moves'}
-      </span>
+      <span className="truncate">{moving.length > 1 ? t('tolerance.table.movesTogether', { surfaces }) : t('tolerance.table.moves', { surfaces })}</span>
       <span className="text-tertiary">·</span>
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
           <button
             type="button"
             className="cursor-default whitespace-nowrap rounded px-0.5 text-accent hover:bg-hover"
-            title={`The vertex the element tilts about; every element tolerance starting on S${f ?? 0} uses it`}
+            title={t('tolerance.table.pivotHelp', { surface: `S${f ?? 0}` })}
           >
-            pivot {pivotText}
+            {t('tolerance.table.pivotLabel', { pivot: pivotText })}
           </button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="start">
-          {f != null && <DropdownMenuItem onSelect={() => setPivot({ at: 'first' })}>First Vertex (S{f})</DropdownMenuItem>}
-          {l != null && l !== f && <DropdownMenuItem onSelect={() => setPivot({ at: 'last' })}>Last Vertex (S{l})</DropdownMenuItem>}
+          {f != null && <DropdownMenuItem onSelect={() => setPivot({ at: 'first' })}>{t('tolerance.table.firstVertex', { surface: `S${f}` })}</DropdownMenuItem>}
+          {l != null && l !== f && <DropdownMenuItem onSelect={() => setPivot({ at: 'last' })}>{t('tolerance.table.lastVertex', { surface: `S${l}` })}</DropdownMenuItem>}
           <DropdownMenuSub>
-            <DropdownMenuSubTrigger>Surface</DropdownMenuSubTrigger>
+            <DropdownMenuSubTrigger>{t('tolerance.table.surfaceMenu')}</DropdownMenuSubTrigger>
             <DropdownMenuSubContent>
               {surfaceOptions(system).map((i) => (
                 <DropdownMenuItem key={i} onSelect={() => setPivot({ at: 'surface', index: i })}>
-                  S{i}
-                  {i === system.stop ? ' (stop)' : ''}
+                  {i === system.stop ? t('tolerance.table.stopSuffix', { surface: `S${i}` }) : `S${i}`}
                 </DropdownMenuItem>
               ))}
             </DropdownMenuSubContent>
@@ -502,14 +503,14 @@ function ElementLine({ row, system }: { row: ToleranceRow; system: System }) {
 
 function surfaceMenuTitle(s: System, i: number): string {
   const sf = s.surfaces[i]
-  let t = `S${i}`
-  if (i === s.stop) t += ' (stop)'
-  if (sf.label) t += ' ' + sf.label
-  if (isSolid(s, i) && hasGlass(sf.material)) t += ' · ' + materialName(sf.material)
-  return t
+  let text = i === s.stop ? translate('tolerance.table.stopSuffix', { surface: `S${i}` }) : `S${i}`
+  if (sf.label) text += ' ' + sf.label
+  if (isSolid(s, i) && hasGlass(sf.material)) text += ' · ' + materialName(sf.material)
+  return text
 }
 
 function AddMenu({ system, settings, onAdd }: { system: System; settings: ToleranceSettings; onAdd: (row: ToleranceRow, at: number) => void }) {
+  const t = useT()
   const g = settings.generator
   const addSurface = (k: ToleranceKind, i: number) => onAdd(makeRow(k, system.surfaces[i].id, generatorValue(g, k), { distribution: g.distribution }), i)
   const addElement = (k: ToleranceKind, e: LensGroup) => {
@@ -520,13 +521,13 @@ function AddMenu({ system, settings, onAdd }: { system: System; settings: Tolera
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <Button variant="ghost" size="sm" title="Add a tolerance on a surface or an element">
+        <Button variant="ghost" size="sm" title={t('tolerance.table.addHelp')}>
           <Plus className="size-3.5" />
-          Add
+          {t('tolerance.table.add')}
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end">
-        <DropdownMenuLabel>Surface</DropdownMenuLabel>
+        <DropdownMenuLabel>{t('tolerance.table.surface')}</DropdownMenuLabel>
         {ADDABLE_SURFACE_KINDS.map((k) => {
           const surfaces = surfacesFor(k, system)
           return (
@@ -543,7 +544,7 @@ function AddMenu({ system, settings, onAdd }: { system: System; settings: Tolera
           )
         })}
         <DropdownMenuSeparator />
-        <DropdownMenuLabel>Element</DropdownMenuLabel>
+        <DropdownMenuLabel>{t('tolerance.table.element')}</DropdownMenuLabel>
         {ADDABLE_ELEMENT_KINDS.map((k) => (
           <DropdownMenuSub key={k}>
             <DropdownMenuSubTrigger disabled={!elements.length}>{KINDS[k].title}</DropdownMenuSubTrigger>
@@ -564,24 +565,22 @@ function AddMenu({ system, settings, onAdd }: { system: System; settings: Tolera
 // MARK: Test wavelength
 
 function TestWavelengthField({ value, onCommit }: { value: number; onCommit: (um: number) => void }) {
+  const t = useT()
   return (
-    <div
-      className="flex items-center gap-1.5 py-1 text-[12px]"
-      title="The interferometer wavelength: one test fringe is half a wave of sag at it. Power and irregularity tolerances are counted in these fringes."
-    >
+    <div className="flex items-center gap-1.5 py-1 text-[12px]" title={t('tolerance.table.testWavelengthHelp')}>
       <Waves className="size-3.5 text-secondary" />
-      <span>Test fringes at</span>
+      <span>{t('tolerance.table.testFringesAt')}</span>
       <NumberInput
         className="w-[4.5rem]"
-        ariaLabel="Test wavelength"
+        ariaLabel={t('tolerance.table.testWavelength')}
         value={Number((value * 1000).toPrecision(8))}
         placeholder="632.8"
         onCommit={(v) => v != null && v >= 200 && v <= 20000 && onCommit(v / 1000)}
       />
       <span className="text-secondary">nm</span>
       {Math.abs(value - DEFAULT_TEST_WAVELENGTH_UM) > 1e-9 && (
-        <button type="button" className="cursor-default text-accent hover:underline" title="Back to 632.8 nm" onClick={() => onCommit(DEFAULT_TEST_WAVELENGTH_UM)}>
-          He–Ne
+        <button type="button" className="cursor-default text-accent hover:underline" title={t('tolerance.table.backTo')} onClick={() => onCommit(DEFAULT_TEST_WAVELENGTH_UM)}>
+          {t('tolerance.table.heNe')}
         </button>
       )}
     </div>
@@ -590,69 +589,72 @@ function TestWavelengthField({ value, onCommit }: { value: number; onCommit: (um
 
 // MARK: Default tolerances
 
-const GENERATOR_ROWS: { group?: string; title: string; key: GeneratorValue; unit: string; help: (nm: string) => string }[] = [
-  { group: 'Surfaces', title: 'Radius (power)', key: 'radiusFringes', unit: 'fringes', help: (nm) => `Power error in test fringes at ${nm} nm over the clear aperture: Δc = N λ / h².` },
-  { title: 'Irregularity', key: 'irregularityFringes', unit: 'fringes', help: (nm) => `Astigmatic and spherical irregularity of every lens surface, each this many test fringes at ${nm} nm (peak to valley over the clear aperture).` },
-  { title: 'Thickness', key: 'thicknessMM', unit: 'mm', help: () => 'Every glass and air thickness inside the lens; the back focus is the compensator.' },
-  { title: 'Decenter', key: 'decentreMM', unit: 'mm', help: () => 'Every lens surface alone, in x and in y; the rest of the system stays on the axis.' },
-  { title: 'Tilt (wedge)', key: 'tiltArcmin', unit: '′', help: () => 'Every lens surface alone about x and about y, in arc minutes.' },
-  { group: 'Elements', title: 'Decenter', key: 'elementDecentreMM', unit: 'mm', help: () => 'Every element as a rigid body (a cemented group together), in x and in y.' },
-  { title: 'Tilt', key: 'elementTiltArcmin', unit: '′', help: () => 'Every element as a rigid body about its first vertex, about x and about y; the pivot can be changed per element.' },
-  { group: 'Glasses', title: 'Index', key: 'index', unit: 'Δn_d', help: () => "n_d of every glass: a model glass's n_d, a catalog glass's melt offset Δn_d." },
-  { title: 'Abbe number', key: 'abbePercent', unit: '% of V_d', help: () => "V_d of every glass: a model glass's V_d, a catalog glass's melt offset ΔV_d." },
+/** The default-tolerance rows: keys into `tolerance.generator.*` (the title; `<key>Help` is its tooltip) and the unit. */
+const GENERATOR_ROWS: { group?: 'groupSurfaces' | 'groupElements' | 'groupGlasses'; title: string; help: string; key: GeneratorValue; unit: string | 'unitFringes' | 'unitAbbe' }[] = [
+  { group: 'groupSurfaces', title: 'radius', help: 'radiusHelp', key: 'radiusFringes', unit: 'unitFringes' },
+  { title: 'irregularity', help: 'irregularityHelp', key: 'irregularityFringes', unit: 'unitFringes' },
+  { title: 'thickness', help: 'thicknessHelp', key: 'thicknessMM', unit: 'mm' },
+  { title: 'decenter', help: 'decenterHelp', key: 'decentreMM', unit: 'mm' },
+  { title: 'tiltWedge', help: 'tiltWedgeHelp', key: 'tiltArcmin', unit: '′' },
+  { group: 'groupElements', title: 'decenter', help: 'elementDecenterHelp', key: 'elementDecentreMM', unit: 'mm' },
+  { title: 'tilt', help: 'elementTiltHelp', key: 'elementTiltArcmin', unit: '′' },
+  { group: 'groupGlasses', title: 'index', help: 'indexHelp', key: 'index', unit: 'Δn_d' },
+  { title: 'abbeNumber', help: 'abbeHelp', key: 'abbePercent', unit: 'unitAbbe' },
 ]
 
 function GeneratorButton({ settings, system }: { settings: ToleranceSettings; system: System }) {
+  const t = useT()
   const [open, setOpen] = useState(false)
   const g = settings.generator
   const nm = short(settings.testWavelengthUm * 1000)
-  const setG = (name: string, change: (g: Generator) => void) => editTolerances(name, (t) => change(t.generator))
+  const setG = (name: string, change: (g: Generator) => void) => editTolerances(name, (x) => change(x.generator))
+  const gt = (key: string, params?: Record<string, string | number>) => t(`tolerance.generator.${key}` as Parameters<typeof t>[0], params)
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
-        <Button variant="ghost" size="sm" title="Generate a tolerance set for every element from a class of manufacture">
+        <Button variant="ghost" size="sm" title={t('tolerance.generator.buttonHelp')}>
           <Wand2 className="size-3.5" />
-          Default Tolerances…
+          {t('tolerance.generator.button')}
         </Button>
       </PopoverTrigger>
-      <PopoverContent side="left" align="start" className="w-[330px]" aria-label="Default Tolerances">
-        <h3 className="mb-2 text-[13px] font-semibold">Default Tolerances</h3>
+      <PopoverContent side="left" align="start" className="w-[330px]" aria-label={t('tolerance.generator.title')}>
+        <h3 className="mb-2 text-[13px] font-semibold">{t('tolerance.generator.title')}</h3>
         <Segmented<Preset | 'custom'>
-          label="Class"
+          label={t('tolerance.generator.class')}
           className="mb-2 w-full [&>button]:flex-1"
           value={g.preset ?? 'custom'}
-          options={[...PRESETS.map((p) => ({ value: p.value as Preset | 'custom', title: p.title })), ...(g.preset == null ? [{ value: 'custom' as const, title: 'Custom' }] : [])]}
-          onChange={(p) => p !== 'custom' && setG('Choose Tolerance Class', (x) => Object.assign(x, presetGenerator(p, x.distribution)))}
+          options={[...PRESETS.map((p) => ({ value: p.value as Preset | 'custom', title: p.title })), ...(g.preset == null ? [{ value: 'custom' as const, title: t('tolerance.presets.custom') }] : [])]}
+          onChange={(p) => p !== 'custom' && setG(t('tolerance.undo.chooseToleranceClass'), (x) => Object.assign(x, presetGenerator(p, x.distribution)))}
         />
         <div className="grid grid-cols-[minmax(0,1fr)_5rem_3.5rem] items-center gap-x-2 gap-y-1 text-[12px]">
           {GENERATOR_ROWS.map((r) => (
             <div key={r.group ?? '' + r.key} className="contents">
-              {r.group && <div className="col-span-3 pt-1.5 text-[11px] font-semibold text-secondary">{r.group}</div>}
-              <span title={r.help(nm)}>{r.title}</span>
+              {r.group && <div className="col-span-3 pt-1.5 text-[11px] font-semibold text-secondary">{gt(r.group)}</div>}
+              <span title={gt(r.help, { nm })}>{gt(r.title)}</span>
               <NumberInput
-                ariaLabel={`${r.group ?? ''} ${r.title}`.trim()}
+                ariaLabel={`${r.group ? gt(r.group) : ''} ${gt(r.title)}`.trim()}
                 value={g[r.key]}
                 min={0}
                 placeholder="0"
                 onCommit={(v) =>
                   v != null &&
                   v >= 0 &&
-                  setG('Change Default Tolerance', (x) => {
+                  setG(t('tolerance.undo.changeDefaultTolerance'), (x) => {
                     x[r.key] = v
                     x.preset = null
                   })
                 }
               />
-              <span className="truncate text-secondary">{r.unit}</span>
+              <span className="truncate text-secondary">{r.unit === 'unitFringes' || r.unit === 'unitAbbe' ? gt(r.unit) : r.unit}</span>
             </div>
           ))}
         </div>
-        <label className="mt-2 flex items-center gap-2 text-[12px]" title="How Monte Carlo trials draw each perturbation within its limits">
-          <span>Distribution</span>
+        <label className="mt-2 flex items-center gap-2 text-[12px]" title={t('tolerance.generator.distributionHelp')}>
+          <span>{t('tolerance.generator.distribution')}</span>
           <Select
             className="flex-1"
             value={JSON.stringify(distributionJson(g.distribution))}
-            onChange={(e) => setG('Change Distribution', (x) => void (x.distribution = JSON.parse(e.target.value) as Distribution))}
+            onChange={(e) => setG(t('tolerance.undo.changeDistribution'), (x) => void (x.distribution = JSON.parse(e.target.value) as Distribution))}
           >
             {DISTRIBUTIONS.map((d) => (
               <option key={JSON.stringify(distributionJson(d))} value={JSON.stringify(distributionJson(d))}>
@@ -661,22 +663,22 @@ function GeneratorButton({ settings, system }: { settings: ToleranceSettings; sy
             ))}
           </Select>
         </label>
-        <Hint className="mt-1.5">A value of 0 leaves that kind out.</Hint>
+        <Hint className="mt-1.5">{t('tolerance.generator.zeroHint')}</Hint>
         <div className="mt-3 flex justify-end gap-2">
           <Button size="sm" onClick={() => setOpen(false)}>
-            Cancel
+            {t('common.cancel')}
           </Button>
           <Button
             size="sm"
             variant="prominent"
-            title="Replace every tolerance by this class's set for each element"
+            title={t('tolerance.generator.replaceHelp')}
             onClick={() => {
-              editTolerances('Replace Tolerances', (t) => void (t.rows = generateRows(t.generator, system)))
+              editTolerances(t('tolerance.undo.replaceTolerances'), (x) => void (x.rows = generateRows(x.generator, system)))
               useTolerance.setState({ selection: [] })
               setOpen(false)
             }}
           >
-            Replace Tolerances
+            {t('tolerance.generator.replace')}
           </Button>
         </div>
       </PopoverContent>

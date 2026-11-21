@@ -2,6 +2,7 @@
 import { useMemo, useState } from 'react'
 import type { AnalysisResult, JsonObject } from '@/engine/types'
 import type { System } from '@/model/system'
+import { useT } from '@/i18n'
 import { useDark } from '@/lib/theme'
 import { fmt, nf, sig } from '@/model/format'
 import { arr, buffer, fieldLabel, isObj, magnitudeColor, nums, obj, wavelengthsUm } from './common'
@@ -15,6 +16,7 @@ export function psfTitle(p: JsonObject, system: System, wls: number[]): string {
 }
 
 export function PsfView(props: { result: AnalysisResult; system: System }) {
+  const t = useT()
   const dark = useDark()
   const r = props.result
   const psfs = useMemo(() => arr(r.json.psfs).filter(isObj), [r])
@@ -32,7 +34,7 @@ export function PsfView(props: { result: AnalysisResult; system: System }) {
   }, [data])
 
   if (!p || !img || !data || !(n > 0) || data.length < n * n)
-    return <div className="p-4 text-secondary">No PSF image in this result.</div>
+    return <div className="p-4 text-secondary">{t('analysis.results.noPsf')}</div>
   const sp = nf(img.spacing_mm) * 1000
   const [cx, cy] = nums(img.center_mm).map((v) => (Number.isFinite(v) ? v * 1000 : 0))
   const h = Math.floor(n / 2)
@@ -44,7 +46,7 @@ export function PsfView(props: { result: AnalysisResult; system: System }) {
   return (
     <div className="absolute inset-0 flex flex-col">
       {psfs.length > 1 && (
-        <Picker value={k} onChange={setSel} options={psfs.map((q) => psfTitle(q, props.system, wls))} label="PSF" />
+        <Picker value={k} onChange={setSel} options={psfs.map((q) => psfTitle(q, props.system, wls))} label={t('analysis.results.psfPicker')} />
       )}
       <div className="min-h-0 flex-1 p-2">
         <HeatMap
@@ -56,13 +58,13 @@ export function PsfView(props: { result: AnalysisResult; system: System }) {
           y={ext(cy ?? 0)}
           xLabel="x (µm)"
           yLabel="y (µm)"
-          colorBar={{ min: 0, max: max || 1, color: (v) => magnitudeColor(max > 0 ? v / max : 0, dark), label: unitEnergy ? 'Intensity (mm⁻²)' : 'Intensity (Strehl)' }}
-          label={`Point spread function, ${title}`}
+          colorBar={{ min: 0, max: max || 1, color: (v) => magnitudeColor(max > 0 ? v / max : 0, dark), label: unitEnergy ? t('analysis.results.intensityUnit') : t('analysis.results.intensityStrehl') }}
+          label={t('analysis.results.psfLabel', { title })}
           dark={dark}
         />
       </div>
       <div className="num shrink-0 px-3 pb-2 text-[11px] text-secondary">
-        {title} · Strehl {Number.isFinite(strehl) ? fmt(strehl, 3) : '–'} · {n} × {n} at {sig(sp, 3)} µm
+        {t('analysis.results.psfSummary', { title, strehl: Number.isFinite(strehl) ? fmt(strehl, 3) : '–', n, spacing: sig(sp, 3) })}
       </div>
     </div>
   )

@@ -7,6 +7,7 @@ import { discardRecovery, newDocument, openFromPicker, openSample, recover } fro
 import { useView } from '@/state/view'
 import { useWorkspace } from '@/state/workspace'
 import { cssVar, seriesColor, useDark } from '@/lib/theme'
+import { engineText, useT } from '@/i18n'
 import { readScene, type Scene } from './LayoutView'
 
 const thumbCache = new Map<string, Promise<Scene | null>>()
@@ -95,6 +96,7 @@ function Thumbnail({ sample }: { sample: Sample }) {
 }
 
 function SampleCard({ sample }: { sample: Sample }) {
+  useT()
   return (
     <button
       type="button"
@@ -103,7 +105,7 @@ function SampleCard({ sample }: { sample: Sample }) {
       className="flex cursor-default flex-col items-center gap-1 rounded-xl border border-separator bg-content p-2 text-center hover:border-accent hover:bg-accent-soft"
     >
       <Thumbnail sample={sample} />
-      <span className="line-clamp-2 text-[12px] font-medium">{sample.system.name}</span>
+      <span className="line-clamp-2 text-[12px] font-medium">{engineText(sample.system.name)}</span>
     </button>
   )
 }
@@ -113,6 +115,7 @@ function SampleCard({ sample }: { sample: Sample }) {
  *  under "Surface Types". */
 /** An autosaved design with unsaved changes from an earlier visit: open it or discard it. */
 function RecoveryCard() {
+  const t = useT()
   const r = useView((s) => s.recovery)
   if (!r) return null
   const when = new Date(r.time)
@@ -122,13 +125,13 @@ function RecoveryCard() {
     <div className="mb-4 flex items-center gap-3 rounded-xl border border-accent/40 bg-accent-soft px-3 py-2" data-testid="recovery">
       <History className="size-5 shrink-0 text-accent" />
       <div className="min-w-0 flex-1">
-        <div className="truncate text-[13px] font-semibold">Recovered: {r.name}</div>
-        <div className="text-[12px] text-secondary">Edited {time} · unsaved changes</div>
+        <div className="truncate text-[13px] font-semibold">{t('app.welcome.recovered', { name: r.name })}</div>
+        <div className="text-[12px] text-secondary">{t('app.welcome.editedAt', { time })}</div>
       </div>
       <Button variant="prominent" onClick={() => void recover()}>
-        Open
+        {t('app.welcome.openRecovered')}
       </Button>
-      <Button variant="ghost" size="icon" aria-label="Discard recovered design" title="Discard" onClick={() => void discardRecovery()}>
+      <Button variant="ghost" size="icon" aria-label={t('app.welcome.discardRecovered')} title={t('app.welcome.discard')} onClick={() => void discardRecovery()}>
         <X />
       </Button>
     </div>
@@ -136,6 +139,7 @@ function RecoveryCard() {
 }
 
 export function Welcome() {
+  const t = useT()
   const open = useView((s) => s.welcomeOpen)
   const set = useView((s) => s.set)
   const basic = SAMPLES.filter((s) => !isSurfaceTypeSample(s))
@@ -146,24 +150,24 @@ export function Welcome() {
         <div className="flex items-end gap-4 border-b border-separator px-6 pb-4 pt-6">
           <div className="flex-1">
             <DialogTitle className="text-[22px] font-semibold tracking-tight">MKLight</DialogTitle>
-            <DialogDescription className="text-secondary">Optical design. Start a new design, open a project or a lens file, or begin from a sample.</DialogDescription>
+            <DialogDescription className="text-secondary">{t('app.welcome.description')}</DialogDescription>
           </div>
           <Button variant="prominent" onClick={newDocument}>
-            <Plus /> New Design
+            <Plus /> {t('app.commands.new')}
           </Button>
           <Button onClick={() => void openFromPicker()}>
-            <FolderOpen /> Open…
+            <FolderOpen /> {t('app.commands.open')}
           </Button>
         </div>
         <div className="max-h-[64vh] overflow-y-auto px-6 py-4">
           <RecoveryCard />
-          <h3 className="mb-2 text-[12px] font-semibold text-secondary">Samples</h3>
+          <h3 className="mb-2 text-[12px] font-semibold text-secondary">{t('app.welcome.samples')}</h3>
           <div className="grid grid-cols-[repeat(auto-fill,minmax(212px,1fr))] gap-3">
             {basic.map((s) => (
               <SampleCard key={s.id} sample={s} />
             ))}
           </div>
-          <h3 className="mb-2 mt-5 text-[12px] font-semibold text-secondary">Surface Types</h3>
+          <h3 className="mb-2 mt-5 text-[12px] font-semibold text-secondary">{t('app.welcome.surfaceTypes')}</h3>
           <div className="grid grid-cols-[repeat(auto-fill,minmax(212px,1fr))] gap-3">
             {extended.map((s) => (
               <SampleCard key={s.id} sample={s} />

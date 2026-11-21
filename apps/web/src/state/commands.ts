@@ -11,6 +11,7 @@ import { canDelete, deleteSurface, imageIndex, insertSurface, type System } from
 import { isVariable, paramResolves, paramTitle, setVariable, variableRefusal, type ParamPath } from '@/model/params'
 import { addCatalogReference, catalogReference, catalogReferences } from '@/model/materials'
 import { isMac, platformShortcut } from '@/lib/utils'
+import { engineText, t, type Key } from '@/i18n'
 import { useDocument } from './document'
 import { newDocument, openFromPicker, save, saveAs } from './files'
 import { useView } from './view'
@@ -47,7 +48,7 @@ export const useValueFocus = create<FocusState>()((set) => ({
 
 export function insertSurfaceAt(index: number) {
   let at = index
-  doc().edit('Insert Surface', (s) => {
+  doc().edit(t('app.undoNames.insertSurface'), (s) => {
     at = insertSurface(s, index)
   })
   view().select(at)
@@ -56,10 +57,10 @@ export function insertSurfaceAt(index: number) {
 export function deleteSurfaceAt(i: number) {
   const s = doc().project.system
   if (!canDelete(s, i)) {
-    view().toast(i === 0 ? 'The object surface cannot be deleted.' : i === imageIndex(s) ? 'The image surface cannot be deleted.' : 'A design needs at least one surface between object and image.', 'warning')
+    view().toast(i === 0 ? t('app.toasts.cannotDeleteObject') : i === imageIndex(s) ? t('app.toasts.cannotDeleteImage') : t('app.toasts.needOneSurface'), 'warning')
     return
   }
-  doc().edit('Delete Surface', (sys) => deleteSurface(sys, i))
+  doc().edit(t('app.undoNames.deleteSurface'), (sys) => deleteSurface(sys, i))
   view().select(Math.min(i, doc().project.system.surfaces.length - 2))
 }
 
@@ -68,10 +69,10 @@ export const deleteSelectedSurface = () => deleteSurfaceAt(view().selection)
 export function makeStop(i = view().selection) {
   const s = doc().project.system
   if (i <= 0 || i >= imageIndex(s)) {
-    view().toast('The object and the image cannot be the stop.', 'warning')
+    view().toast(t('app.toasts.stopObjectImage'), 'warning')
     return
   }
-  doc().edit('Set Stop', (sys) => {
+  doc().edit(t('app.undoNames.setStop'), (sys) => {
     sys.stop = i
   })
 }
@@ -95,7 +96,7 @@ export function setParamVariable(p: ParamPath, on: boolean): boolean {
       return false
     }
   }
-  return doc().editProject(on ? 'Make Variable' : 'Remove Variable', (proj) => setVariable(proj, p, on))
+  return doc().editProject(on ? t('app.undoNames.makeVariable') : t('app.undoNames.removeVariable'), (proj) => setVariable(proj, p, on))
 }
 
 export function toggleParamVariable(p: ParamPath): boolean {
@@ -107,11 +108,11 @@ export function toggleFocusedVariable() {
   const p = useValueFocus.getState().param
   const s = doc().project.system
   if (!p || !paramResolves(s, p)) {
-    view().toast('Select a value in the lens data to make it a variable.', 'info')
+    view().toast(t('app.toasts.selectValue'), 'info')
     return
   }
   const on = !isVariable(doc().project, p)
-  if (setParamVariable(p, on)) view().toast(`${paramTitle(s, p)} is ${on ? 'now a variable' : 'no longer a variable'}.`)
+  if (setParamVariable(p, on)) view().toast(t(on ? 'app.toasts.nowVariable' : 'app.toasts.noLongerVariable', { name: paramTitle(s, p) }))
 }
 
 // MARK: Glass catalogs
@@ -144,7 +145,7 @@ export async function loadGlassCatalog(file?: File | null): Promise<string | nul
   if (!f) return null
   const engine = ws().engine
   if (!engine) {
-    view().toast('The engine is not ready yet.', 'warning')
+    view().toast(t('app.toasts.engineNotReady'), 'warning')
     return null
   }
   try {
@@ -153,22 +154,26 @@ export async function loadGlassCatalog(file?: File | null): Promise<string | nul
     await rememberCatalog(info.name, f.name, text)
     const materials = await engine.materialNames()
     useWorkspace.setState({ materials })
-    doc().editProject('Add Glass Catalog', (p) => {
+    doc().editProject(t('app.undoNames.addCatalog'), (p) => {
       p.catalogs = addCatalogReference(p.catalogs, catalogReference(f.name, info.name))
     })
     ws().designChanged(doc().project.system)
     useCatalogs.getState().refresh()
     const warnings = info.warnings ?? []
-    if (warnings.length === 0) view().toast(`Loaded ${info.name}: ${info.glass_count} glasses.`)
+    if (warnings.length === 0) view().toast(t('app.toasts.catalogLoaded', { name: info.name, n: info.glass_count }))
     else {
       const w = warnings[0]
-      const first = `${w.line != null ? `line ${w.line}: ` : ''}${w.glass ? `${w.glass}: ` : ''}${w.message}`
-      const n = warnings.length === 1 ? '1 warning' : `${warnings.length} warnings`
-      view().toast(`Loaded ${info.name}: ${info.glass_count} glasses; ${n} (first: ${first}).`, 'warning')
+      const message = engineText(w.message)
+      const first =
+        w.line != null && w.glass ? t('app.toasts.warnLineGlass', { line: w.line, glass: w.glass, message })
+        : w.line != null ? t('app.toasts.warnLine', { line: w.line, message })
+        : w.glass ? t('app.toasts.warnGlass', { glass: w.glass, message })
+        : message
+      view().toast(t('app.toasts.catalogLoadedWarnings', { name: info.name, n: info.glass_count, warnings: t('common.warnings', { count: warnings.length }), first }), 'warning')
     }
     return info.name
   } catch (e) {
-    view().toast(`${f.name} could not be loaded: ${e instanceof Error ? e.message : String(e)}`, 'error')
+    view().toast(t('app.toasts.catalogLoadFailed', { name: f.name, error: engineText(e instanceof Error ? e.message : String(e)) }), 'error')
     return null
   }
 }
@@ -176,7 +181,7 @@ export async function loadGlassCatalog(file?: File | null): Promise<string | nul
 /** Removes a catalog reference from the project ("Remove Glass Catalog"). The
  *  session keeps its glasses until the page reloads. */
 export function removeGlassCatalog(name: string) {
-  doc().editProject('Remove Glass Catalog', (p) => {
+  doc().editProject(t('app.undoNames.removeCatalog'), (p) => {
     p.catalogs = catalogReferences(p.catalogs).filter((c) => c.name !== name)
   })
 }
@@ -202,23 +207,22 @@ export const useCatalogs = create<CatalogsState>()((set) => ({
 
 // MARK: Commands
 
-export const COMMANDS: Command[] = [
-  { id: 'palette', title: 'Command Palette…', shortcut: 'mod+k', run: () => usePalette.getState().set(!usePalette.getState().open) },
-  { id: 'new', title: 'New Design', shortcut: 'alt+mod+n', run: newDocument },
-  { id: 'samples', title: 'Samples…', shortcut: 'alt+mod+o', run: () => view().set({ welcomeOpen: true }) },
-  { id: 'welcome', title: 'Show Welcome Window', run: () => view().set({ welcomeOpen: true }) },
-  { id: 'open', title: 'Open…', shortcut: 'mod+o', run: () => void openFromPicker() },
-  { id: 'save', title: 'Save', shortcut: 'mod+s', run: () => void save() },
-  { id: 'saveAs', title: 'Save As…', shortcut: 'shift+mod+s', run: () => void saveAs() },
-  { id: 'undo', title: 'Undo', shortcut: 'mod+z', run: () => doc().undo(), enabled: () => doc().past.length > 0 },
-  { id: 'redo', title: 'Redo', shortcut: 'shift+mod+z', run: () => doc().redo(), enabled: () => doc().future.length > 0 },
-  { id: 'insertBefore', title: 'Insert Surface Before', shortcut: 'shift+mod+i', run: () => insertSurfaceAt(Math.max(view().selection, 1)) },
-  { id: 'insertAfter', title: 'Insert Surface After', shortcut: 'alt+mod+Enter', run: () => insertSurfaceAt(view().selection + 1) },
-  { id: 'delete', title: 'Delete Surface', shortcut: 'mod+Backspace', run: deleteSelectedSurface, enabled: () => canDelete(doc().project.system, view().selection) },
-  { id: 'stop', title: 'Make Aperture Stop', shortcut: 'alt+mod+p', run: () => makeStop(), enabled: hasSurfaceSelection },
+const DEFINITIONS: Omit<Command, 'title'>[] = [
+  { id: 'palette', shortcut: 'mod+k', run: () => usePalette.getState().set(!usePalette.getState().open) },
+  { id: 'new', shortcut: 'alt+mod+n', run: newDocument },
+  { id: 'samples', shortcut: 'alt+mod+o', run: () => view().set({ welcomeOpen: true }) },
+  { id: 'welcome', run: () => view().set({ welcomeOpen: true }) },
+  { id: 'open', shortcut: 'mod+o', run: () => void openFromPicker() },
+  { id: 'save', shortcut: 'mod+s', run: () => void save() },
+  { id: 'saveAs', shortcut: 'shift+mod+s', run: () => void saveAs() },
+  { id: 'undo', shortcut: 'mod+z', run: () => doc().undo(), enabled: () => doc().past.length > 0 },
+  { id: 'redo', shortcut: 'shift+mod+z', run: () => doc().redo(), enabled: () => doc().future.length > 0 },
+  { id: 'insertBefore', shortcut: 'shift+mod+i', run: () => insertSurfaceAt(Math.max(view().selection, 1)) },
+  { id: 'insertAfter', shortcut: 'alt+mod+Enter', run: () => insertSurfaceAt(view().selection + 1) },
+  { id: 'delete', shortcut: 'mod+Backspace', run: deleteSelectedSurface, enabled: () => canDelete(doc().project.system, view().selection) },
+  { id: 'stop', shortcut: 'alt+mod+p', run: () => makeStop(), enabled: hasSurfaceSelection },
   {
     id: 'toggleVariable',
-    title: 'Toggle Variable',
     shortcut: 'ctrl+mod+v',
     run: toggleFocusedVariable,
     enabled: () => {
@@ -226,22 +230,30 @@ export const COMMANDS: Command[] = [
       return !!p && paramResolves(doc().project.system, p)
     },
   },
-  { id: 'loadCatalog', title: 'Load Glass Catalog…', run: () => void loadGlassCatalog(), enabled: () => !!ws().engine },
-  { id: 'runAll', title: 'Run Analyses', shortcut: 'mod+Enter', run: () => ws().runAll({ fresh: true }) },
-  { id: 'cancel', title: 'Cancel Running Analyses', shortcut: 'mod+Period', run: () => ws().cancelAll() },
-  { id: 'issues', title: 'Show Issues', shortcut: 'ctrl+mod+e', run: () => view().set({ issuesOpen: !view().issuesOpen }) },
-  { id: 'lensData', title: 'Lens Data', shortcut: 'alt+mod+e', run: () => togglePanel(LENS_DATA) },
-  { id: 'layout', title: 'Layout', shortcut: 'alt+mod+l', run: () => togglePanel(LAYOUT_PANEL) },
-  { id: 'resetPanels', title: 'Reset Panel Layout', run: () => resetPanelLayout() },
-  { id: 'inspector', title: 'Show Inspector', shortcut: 'ctrl+mod+i', run: () => view().set({ inspectorVisible: !view().inspectorVisible }) },
-  { id: 'sidebar', title: 'Show Sidebar', shortcut: 'ctrl+mod+s', run: () => view().set({ sidebarVisible: !view().sidebarVisible }) },
-  { id: 'surfacePage', title: 'Surface', shortcut: 'alt+mod+1', run: () => view().setPage('surface') },
-  { id: 'systemPage', title: 'System', shortcut: 'alt+mod+2', run: () => view().setPage('system') },
-  { id: 'optimize', title: 'Optimize…', shortcut: 'ctrl+mod+o', run: () => view().setPage('optimize') },
-  { id: 'glass', title: 'Glass Substitution…', shortcut: 'ctrl+mod+g', run: () => view().setPage('glass') },
-  { id: 'tolerance', title: 'Tolerance…', shortcut: 'ctrl+mod+t', run: () => view().setPage('tolerance') },
-  { id: 'solves', title: 'Apply Solves…', shortcut: 'ctrl+mod+l', run: () => view().setPage('solves') },
+  { id: 'loadCatalog', run: () => void loadGlassCatalog(), enabled: () => !!ws().engine },
+  { id: 'runAll', shortcut: 'mod+Enter', run: () => ws().runAll({ fresh: true }) },
+  { id: 'cancel', shortcut: 'mod+Period', run: () => ws().cancelAll() },
+  { id: 'issues', shortcut: 'ctrl+mod+e', run: () => view().set({ issuesOpen: !view().issuesOpen }) },
+  { id: 'lensData', shortcut: 'alt+mod+e', run: () => togglePanel(LENS_DATA) },
+  { id: 'layout', shortcut: 'alt+mod+l', run: () => togglePanel(LAYOUT_PANEL) },
+  { id: 'resetPanels', run: () => resetPanelLayout() },
+  { id: 'inspector', shortcut: 'ctrl+mod+i', run: () => view().set({ inspectorVisible: !view().inspectorVisible }) },
+  { id: 'sidebar', shortcut: 'ctrl+mod+s', run: () => view().set({ sidebarVisible: !view().sidebarVisible }) },
+  { id: 'surfacePage', shortcut: 'alt+mod+1', run: () => view().setPage('surface') },
+  { id: 'systemPage', shortcut: 'alt+mod+2', run: () => view().setPage('system') },
+  { id: 'optimize', shortcut: 'ctrl+mod+o', run: () => view().setPage('optimize') },
+  { id: 'glass', shortcut: 'ctrl+mod+g', run: () => view().setPage('glass') },
+  { id: 'tolerance', shortcut: 'ctrl+mod+t', run: () => view().setPage('tolerance') },
+  { id: 'solves', shortcut: 'ctrl+mod+l', run: () => view().setPage('solves') },
 ]
+
+/** The commands. A title is read in the current language when shown. */
+export const COMMANDS: Command[] = DEFINITIONS.map((c) =>
+  Object.defineProperty({ ...c } as Command, 'title', {
+    enumerable: true,
+    get: () => t(`app.commands.${c.id}` as Key),
+  }),
+)
 
 export const command = (id: string) => COMMANDS.find((c) => c.id === id)!
 

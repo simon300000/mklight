@@ -33,7 +33,8 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { Tip } from '@/components/ui/tooltip'
-import { compact, exact, nf, parseNumber, plural } from '@/model/format'
+import { t as tr, useT } from '@/i18n'
+import { compact, exact, nf, parseNumber } from '@/model/format'
 import { materialCompletions, offsetCompactText, offsetOf } from '@/model/materials'
 import { canonicalParam, isVariable, paramKey, paramResolves, variableBoundsKind, variableRefusal, variablesOf, type ParamPath } from '@/model/params'
 import { solveKindTitle, solveLetter, solvesOf } from '@/model/solves'
@@ -52,13 +53,13 @@ import {
   type Surface,
   type System,
 } from '@/model/system'
-import { CYLINDER_CHOICES, GROUPS, SURFACE_TYPES, cylinderAxis, tableTypeTitle, typeChoice } from '@/model/surfaceTypes'
+import { CYLINDER_CHOICES, GROUPS, groupTitle, SURFACE_TYPES, cylinderAxis, tableTypeTitle, typeChoice } from '@/model/surfaceTypes'
 import { command, deleteSurfaceAt, insertSurfaceAt, makeStop, setParamVariable, useValueFocus } from '@/state/commands'
 import { LENS_DATA } from '@/state/arrangement'
 import { useDocument } from '@/state/document'
 import { useView } from '@/state/view'
 import { allIssues, LAYOUT, useWorkspace, type Issue } from '@/state/workspace'
-import { cssVar, useDark } from '@/lib/theme'
+import { cssVar, FONT_FAMILY, useDark } from '@/lib/theme'
 import { cn, shortcutLabel } from '@/lib/utils'
 import { PanelHeader } from './PanelHeader'
 import { usePortalContainer } from './panels/context'
@@ -70,16 +71,18 @@ import { applyTypeChoice } from './inspector/SurfacePage'
 type ColumnId = 'surf' | 'type' | 'comment' | 'radius' | 'thickness' | 'material' | 'semi' | 'conic'
 
 /** Column widths are part of the e2e contract (Playwright clicks by offset). */
-const COLUMNS: { id: ColumnId; title: string; width: number }[] = [
-  { id: 'surf', title: 'Surf', width: 58 },
-  { id: 'type', title: 'Type', width: 80 },
-  { id: 'comment', title: 'Comment', width: 110 },
-  { id: 'radius', title: 'Radius (mm)', width: 110 },
-  { id: 'thickness', title: 'Thickness (mm)', width: 104 },
-  { id: 'material', title: 'Material', width: 100 },
-  { id: 'semi', title: 'Semi-Diam. (mm)', width: 112 },
-  { id: 'conic', title: 'Conic', width: 84 },
+const COLUMNS: { id: ColumnId; width: number }[] = [
+  { id: 'surf', width: 58 },
+  { id: 'type', width: 80 },
+  { id: 'comment', width: 110 },
+  { id: 'radius', width: 110 },
+  { id: 'thickness', width: 104 },
+  { id: 'material', width: 100 },
+  { id: 'semi', width: 112 },
+  { id: 'conic', width: 84 },
 ]
+/** A column's header, in the current language. */
+const columnTitle = (id: ColumnId) => tr(`lens.grid.columns.${id}`)
 /** The material column widens while a glass carries a melt offset. */
 const MATERIAL_WIDE = 168
 const VALUE_COLUMNS = new Set<ColumnId>(['comment', 'radius', 'thickness', 'material', 'semi', 'conic'])
@@ -284,7 +287,7 @@ const LensCellEditor: ProvideEditorComponent<LensCell> = ({ value, onChange, onF
           {d.labels?.[k] && <span className="text-[11px] text-tertiary">{d.labels[k]}</span>}
           <input
             ref={(el) => void (refs.current[k] = el)}
-            aria-label={`${COLUMNS.find((c) => c.id === d.column)?.title ?? ''}${d.labels?.[k] ? ' ' + d.labels[k] : ''}`}
+            aria-label={`${columnTitle(d.column)}${d.labels?.[k] ? ' ' + d.labels[k] : ''}`}
             className={cn('h-full w-full min-w-0 bg-transparent text-[13px] text-label outline-none', d.align === 'right' && 'text-right')}
             value={t}
             spellCheck={false}
@@ -327,7 +330,7 @@ const LensCellEditor: ProvideEditorComponent<LensCell> = ({ value, onChange, onF
         createPortal(
         <ul
           role="listbox"
-          aria-label="Glasses"
+          aria-label={tr('lens.grid.glasses')}
           data-lens-completions
           className="glass-popover fixed z-[10000] max-h-56 w-[200px] overflow-y-auto rounded-md p-1 text-[12px] text-label"
           style={{ left: target.x, top: target.y + target.height + 4 }}
@@ -387,7 +390,7 @@ function useGridTheme(): Partial<Theme> {
       borderColor: dark ? 'rgba(255,255,255,0.07)' : 'rgba(0,0,0,0.06)',
       horizontalBorderColor: dark ? 'rgba(255,255,255,0.07)' : 'rgba(0,0,0,0.06)',
       headerBottomBorderColor: dark ? 'rgba(255,255,255,0.14)' : 'rgba(0,0,0,0.12)',
-      fontFamily: '-apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", system-ui, sans-serif',
+      fontFamily: FONT_FAMILY,
       baseFontStyle: '13px',
       headerFontStyle: '600 11px',
       editorFontSize: '13px',
@@ -460,7 +463,7 @@ function cellFor(ctx: Context, col: number, row: number): GridCell {
   })
   switch (id) {
     case 'surf': {
-      const label = row === 0 ? 'OBJ' : row === img ? 'IMA' : row === system.stop ? `STO ${row}` : String(row)
+      const label = row === 0 ? tr('lens.grid.rowObject') : row === img ? tr('lens.grid.rowImage') : row === system.stop ? tr('lens.grid.rowStop', { n: row }) : String(row)
       const list = ctx.issues.get(row)
       const worst = list?.some((i) => i.severity === 'error') ? 'error' : list?.length ? 'warning' : null
       return readonly(label, {
@@ -523,7 +526,7 @@ function cellFor(ctx: Context, col: number, row: number): GridCell {
         return value([{ text: `${compact(v)} U`, marker }], [exact(v)])
       }
       const a = ctx.autoSemi.get(row)
-      return value([{ text: a != null && Number.isFinite(a) ? compact(a) : 'auto', dim: true, marker }], ['auto'])
+      return value([{ text: a != null && Number.isFinite(a) ? compact(a) : tr('lens.grid.auto'), dim: true, marker }], ['auto'])
     }
     case 'conic': {
       const t = s.shape.type
@@ -558,6 +561,7 @@ function cellFor(ctx: Context, col: number, row: number): GridCell {
  *  committing; Esc reverts). Small markers show variables and solves;
  *  validation issues badge their surface. */
 export function LensData() {
+  const t = useT()
   const system = useDocument((s) => s.project.system)
   const variables = useDocument((s) => s.project.variables)
   const edit = useDocument((s) => s.edit)
@@ -627,15 +631,19 @@ export function LensData() {
   const wideMaterial = !!system?.surfaces?.some((s) => offsetCompactText(offsetOf(s.material)) !== '')
   const [widths, setWidth, resetWidths] = useColumnWidths()
   const columns: GridColumn[] = useMemo(
-    () => COLUMNS.map((c) => ({ id: c.id, title: c.title, width: widths[c.id] ?? (c.id === 'material' && wideMaterial ? MATERIAL_WIDE : c.width) })),
-    [wideMaterial, widths],
+    () => COLUMNS.map((c) => ({ id: c.id, title: t(`lens.grid.columns.${c.id}`), width: widths[c.id] ?? (c.id === 'material' && wideMaterial ? MATERIAL_WIDE : c.width) })),
+    [wideMaterial, widths, t],
   )
   // Glide opens its cell editor in `#portal` of the main document; in a
   // separate window it must open in that window's document.
   const portalContainer = usePortalContainer()
   useGlidePortal(portalContainer ?? null)
 
-  const getCellContent = useCallback(([col, row]: Item): GridCell => (ctx ? cellFor(ctx, col, row) : { kind: GridCellKind.Loading, allowOverlay: false }), [ctx])
+  const getCellContent = useCallback(
+    ([col, row]: Item): GridCell => (ctx ? cellFor(ctx, col, row) : { kind: GridCellKind.Loading, allowOverlay: false }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [ctx, t],
+  )
 
   const onCellEdited = useCallback(
     ([col, row]: Item, cell: EditableGridCell) => {
@@ -644,19 +652,19 @@ export function LensData() {
       if (d?.kind !== 'lens-cell') return
       const id = COLUMNS[col].id
       const changed = (k: number) => (d.edit[k] ?? '') !== (d.original[k] ?? '')
-      const number = (t: string): number | null => {
-        const v = parseNumber(t)
+      const number = (text: string): number | null => {
+        const v = parseNumber(text)
         if (v == null || Number.isNaN(v)) {
-          toast(`"${t}" is not a number.`, 'warning')
+          toast(t('lens.grid.notNumber', { text }), 'warning')
           return null
         }
         return v
       }
-      const finite = (t: string, what: string): number | null => {
-        const v = number(t)
+      const finite = (text: string): number | null => {
+        const v = number(text)
         if (v == null) return null
         if (!Number.isFinite(v)) {
-          toast(`${what} must be finite.`, 'warning')
+          toast(t('lens.grid.conicFinite'), 'warning')
           return null
         }
         return v
@@ -666,16 +674,16 @@ export function LensData() {
       const anamorphic = surface.shape.type === 'toroid' || surface.shape.type === 'biconic'
       switch (id) {
         case 'comment':
-          if (changed(0)) edit('Change Label', (s) => void (s.surfaces[row].label = d.edit[0]))
+          if (changed(0)) edit(t('lens.grid.undo.label'), (s) => void (s.surfaces[row].label = d.edit[0]))
           break
         case 'radius': {
           if (changed(0)) {
             const r = number(d.edit[0])
-            if (r != null) edit('Change Radius', (s) => void (s.surfaces[row].shape = setCurvature(s.surfaces[row].shape, curvatureFromRadius(r))))
+            if (r != null) edit(t('lens.grid.undo.radius'), (s) => void (s.surfaces[row].shape = setCurvature(s.surfaces[row].shape, curvatureFromRadius(r))))
           }
           if (anamorphic && changed(1)) {
             const r = number(d.edit[1])
-            if (r != null) edit('Change R_x', (s) => void (s.surfaces[row].shape = { ...s.surfaces[row].shape, curvature_x: curvatureFromRadius(r) }))
+            if (r != null) edit(t('lens.grid.undo.radiusX'), (s) => void (s.surfaces[row].shape = { ...s.surfaces[row].shape, curvature_x: curvatureFromRadius(r) }))
           }
           break
         }
@@ -683,48 +691,48 @@ export function LensData() {
           if (!changed(0)) break
           const v = number(d.edit[0])
           if (v == null) return
-          if (!Number.isFinite(v) && row !== 0) return toast('Only the object distance can be infinite.', 'warning')
-          edit('Change Thickness', (s) => void (s.surfaces[row].thickness = Number.isFinite(v) ? v : 'inf'))
+          if (!Number.isFinite(v) && row !== 0) return toast(t('lens.grid.onlyObjectInfinite'), 'warning')
+          edit(t('lens.grid.undo.thickness'), (s) => void (s.surfaces[row].thickness = Number.isFinite(v) ? v : 'inf'))
           break
         }
         case 'material': {
           if (!changed(0)) break
           const m = parseMaterial(d.edit[0], materials)
           if ('error' in m) return toast(m.error, 'warning')
-          edit('Change Material', (s) => setMaterial(s.surfaces[row], m))
+          edit(t('lens.grid.undo.material'), (s) => setMaterial(s.surfaces[row], m))
           break
         }
         case 'semi': {
           if (!changed(0)) break
           const lower = d.edit[0].trim().toLowerCase()
-          if (lower === '' || lower === 'auto') {
-            edit('Change Semi-Diameter', (s) => void (s.surfaces[row].semi_diameter = { mode: 'auto' }))
+          if (lower === '' || lower === 'auto' || lower === t('lens.grid.auto').toLowerCase()) {
+            edit(t('lens.grid.undo.semi'), (s) => void (s.surfaces[row].semi_diameter = { mode: 'auto' }))
             break
           }
           const v = number(d.edit[0])
           if (v == null) return
-          if (!(v > 0) || !Number.isFinite(v)) return toast('A semi-diameter must be positive.', 'warning')
-          edit('Change Semi-Diameter', (s) => void (s.surfaces[row].semi_diameter = { mode: 'fixed', value: v }))
+          if (!(v > 0) || !Number.isFinite(v)) return toast(t('lens.grid.semiPositive'), 'warning')
+          edit(t('lens.grid.undo.semi'), (s) => void (s.surfaces[row].semi_diameter = { mode: 'fixed', value: v }))
           break
         }
         case 'conic': {
-          const t = surface.shape.type
+          const type = surface.shape.type
           const axis = cylinderAxis(surface.shape)
           // Which section each edited field is: a cylinder shows only its powered conic.
-          const sections: ('y' | 'x')[] = t === 'biconic' ? (axis === 'x' ? ['x'] : axis === 'y' ? ['y'] : ['y', 'x']) : ['y']
+          const sections: ('y' | 'x')[] = type === 'biconic' ? (axis === 'x' ? ['x'] : axis === 'y' ? ['y'] : ['y', 'x']) : ['y']
           sections.forEach((sec, k) => {
             if (!changed(k)) return
-            const v = finite(d.edit[k], 'A conic constant')
+            const v = finite(d.edit[k])
             if (v == null) return
-            if (!anamorphic) edit('Change Conic', (s) => void (s.surfaces[row].shape = setConic(s.surfaces[row].shape, v)))
-            else if (sec === 'y') edit('Change k_y', (s) => void (s.surfaces[row].shape = { ...s.surfaces[row].shape, conic_y: v }))
-            else edit('Change k_x', (s) => void (s.surfaces[row].shape = { ...s.surfaces[row].shape, conic_x: v }))
+            if (!anamorphic) edit(t('lens.grid.undo.conic'), (s) => void (s.surfaces[row].shape = setConic(s.surfaces[row].shape, v)))
+            else if (sec === 'y') edit(t('lens.grid.undo.conicY'), (s) => void (s.surfaces[row].shape = { ...s.surfaces[row].shape, conic_y: v }))
+            else edit(t('lens.grid.undo.conicX'), (s) => void (s.surfaces[row].shape = { ...s.surfaces[row].shape, conic_x: v }))
           })
           break
         }
       }
     },
-    [edit, materials, toast],
+    [edit, materials, toast, t],
   )
 
   const latestSel = useRef(gridSel)
@@ -751,48 +759,48 @@ export function LensData() {
 
   if (!system?.surfaces || !ctx) return null
   const nVars = variablesOf({ variables }).length
-  const caption = `${rows - 2} surfaces · stop on ${system.stop} · mm${nVars ? ` · ${plural(nVars, 'variable')}` : ''}`
+  const caption = t('lens.grid.caption', { n: rows - 2, stop: system.stop }) + (nVars ? ` · ${t('lens.grid.variables', { count: nVars })}` : '')
 
   return (
-    <section className="flex h-full min-h-0 flex-col bg-content" aria-label="Lens Data" data-testid="lens-data">
-      <PanelHeader icon={<Table2 />} title="Lens Data" caption={caption}>
-        <Tip label={`Insert Surface (${shortcutLabel(command('insertBefore').shortcut!)})`}>
-          <Button variant="ghost" size="iconSm" aria-label="Insert Surface" onClick={() => insertSurfaceAt(Math.max(selection, 1))}>
+    <section className="flex h-full min-h-0 flex-col bg-content" aria-label={t('lens.grid.title')} data-testid="lens-data">
+      <PanelHeader icon={<Table2 />} title={t('lens.grid.title')} caption={caption}>
+        <Tip label={`${t('lens.grid.insertSurface')} (${shortcutLabel(command('insertBefore').shortcut!)})`}>
+          <Button variant="ghost" size="iconSm" aria-label={t('lens.grid.insertSurface')} onClick={() => insertSurfaceAt(Math.max(selection, 1))}>
             <Plus />
           </Button>
         </Tip>
-        <Tip label={`Delete Surface (${shortcutLabel(command('delete').shortcut!)})`}>
-          <Button variant="ghost" size="iconSm" aria-label="Delete Surface" disabled={!canDelete(system, selection)} onClick={() => deleteSurfaceAt(selection)}>
+        <Tip label={`${t('lens.grid.deleteSurface')} (${shortcutLabel(command('delete').shortcut!)})`}>
+          <Button variant="ghost" size="iconSm" aria-label={t('lens.grid.deleteSurface')} disabled={!canDelete(system, selection)} onClick={() => deleteSurfaceAt(selection)}>
             <Minus />
           </Button>
         </Tip>
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <Button variant="ghost" size="iconSm" aria-label="More">
+            <Button variant="ghost" size="iconSm" aria-label={t('common.more')}>
               <Ellipsis />
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="min-w-[14rem]">
-            <DropdownMenuLabel>Lens Data</DropdownMenuLabel>
+            <DropdownMenuLabel>{t('lens.grid.title')}</DropdownMenuLabel>
             <DropdownMenuItem onSelect={() => insertSurfaceAt(Math.max(selection, 1))} shortcut={command('insertBefore').shortcut}>
-              Insert Surface Before
+              {t('lens.grid.insertBefore')}
             </DropdownMenuItem>
             <DropdownMenuItem onSelect={() => insertSurfaceAt(Math.min(selection + 1, imageIndex(system)))} shortcut={command('insertAfter').shortcut}>
-              Insert Surface After
+              {t('lens.grid.insertAfter')}
             </DropdownMenuItem>
             <DropdownMenuItem onSelect={() => deleteSurfaceAt(selection)} disabled={!canDelete(system, selection)} shortcut={command('delete').shortcut}>
-              Delete Surface
+              {t('lens.grid.deleteSurface')}
             </DropdownMenuItem>
             <DropdownMenuItem
               onSelect={() => makeStop(selection)}
               disabled={selection === 0 || selection === imageIndex(system) || selection === system.stop}
               shortcut={command('stop').shortcut}
             >
-              Make Aperture Stop
+              {t('lens.grid.makeStop')}
             </DropdownMenuItem>
             <DropdownMenuSeparator />
             <DropdownMenuItem onSelect={resetWidths} disabled={Object.keys(widths).length === 0}>
-              Reset Column Widths
+              {t('lens.grid.resetWidths')}
             </DropdownMenuItem>
             <DropdownMenuSeparator />
             <PanelMenuItems panel={LENS_DATA} Item={DropdownMenuItem} Separator={DropdownMenuSeparator} />
@@ -864,8 +872,11 @@ function markerTitle(ctx: Context, col: number, row: number): string | undefined
     const m = markerFor(ctx, columnParam(s, id, sec))
     if (!m) continue
     const pre = s.shape.type === 'toroid' || s.shape.type === 'biconic' ? `${sec}: ` : ''
-    if (m.variable) out.push(`${pre}Variable${m.bounds !== 'free' ? `, ${m.bounds}` : ''}${m.solve ? ' (set by a solve: not varied)' : ''}`)
-    if (m.solveTitle) out.push(`${pre}Solve: ${m.solveTitle}`)
+    if (m.variable) {
+      const base = tr(m.bounds === 'bounded' ? 'lens.grid.marker.variableBounded' : m.bounds === 'pinned' ? 'lens.grid.marker.variablePinned' : 'lens.grid.marker.variable')
+      out.push(pre + (m.solve ? tr('lens.grid.marker.bySolve', { text: base }) : base))
+    }
+    if (m.solveTitle) out.push(pre + tr('lens.grid.marker.solve', { title: m.solveTitle }))
   }
   return out.length ? out.join(' · ') : undefined
 }
@@ -874,11 +885,11 @@ function markerTitle(ctx: Context, col: number, row: number): string | undefined
 function rowVariables(s: Surface, system: System): { title: string; path: ParamPath }[] {
   const anamorphic = s.shape.type === 'toroid' || s.shape.type === 'biconic'
   const list: [string, ParamPath | null][] = [
-    [anamorphic ? 'Radius y' : s.shape.type === 'paraxial' ? 'Focal length' : 'Radius', columnParam(s, 'radius')],
-    ['Radius x', columnParam(s, 'radius', 'x')],
-    ['Thickness', columnParam(s, 'thickness')],
-    [anamorphic ? 'Conic y' : 'Conic', columnParam(s, 'conic')],
-    ['Conic x', columnParam(s, 'conic', 'x')],
+    [tr(anamorphic ? 'lens.grid.rowVariable.radiusY' : s.shape.type === 'paraxial' ? 'lens.grid.rowVariable.focalLength' : 'lens.grid.rowVariable.radius'), columnParam(s, 'radius')],
+    [tr('lens.grid.rowVariable.radiusX'), columnParam(s, 'radius', 'x')],
+    [tr('lens.grid.rowVariable.thickness'), columnParam(s, 'thickness')],
+    [tr(anamorphic ? 'lens.grid.rowVariable.conicY' : 'lens.grid.rowVariable.conic'), columnParam(s, 'conic')],
+    [tr('lens.grid.rowVariable.conicX'), columnParam(s, 'conic', 'x')],
   ]
   return list.flatMap(([title, path]) => (path && paramResolves(system, path) ? [{ title, path }] : []))
 }
@@ -887,6 +898,7 @@ function rowVariables(s: Surface, system: System): { title: string; path: ParamP
  *  Anamorphic with the cylinder presets, Diffractive, Special) and the row's
  *  context menu (insert, delete, stop, variables, the type, Show in Inspector). */
 function RowMenu({ state, onClose }: { state: { row: number; x: number; y: number; context?: boolean } | null; onClose: () => void }) {
+  const t = useT()
   const project = useDocument((s) => s.project)
   if (!state) return null
   const system = project.system
@@ -899,7 +911,7 @@ function RowMenu({ state, onClose }: { state: { row: number; x: number; y: numbe
     <>
       {GROUPS.map((g) => (
         <div key={g}>
-          <DropdownMenuLabel>{g}</DropdownMenuLabel>
+          <DropdownMenuLabel>{groupTitle(g)}</DropdownMenuLabel>
           {SURFACE_TYPES.filter((t) => t.group === g).map((t) => (
             <DropdownMenuCheckboxItem key={t.id} checked={t.id === current} onSelect={() => applyTypeChoice(state.row, t.id)}>
               {t.title}
@@ -920,26 +932,26 @@ function RowMenu({ state, onClose }: { state: { row: number; x: number; y: numbe
       <DropdownMenuTrigger asChild>
         <span style={{ position: 'fixed', left: state.x, top: state.y, width: 1, height: 1 }} />
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="start" className="min-w-[14rem]" aria-label={state.context ? 'Surface' : 'Surface type'}>
+      <DropdownMenuContent align="start" className="min-w-[14rem]" aria-label={state.context ? t('lens.grid.surfaceMenu') : t('lens.grid.surfaceTypeMenu')}>
         {state.context ? (
           <>
             <DropdownMenuItem onSelect={() => insertSurfaceAt(Math.max(state.row, 1))} shortcut={command('insertBefore').shortcut}>
-              Insert Surface Before
+              {t('lens.grid.insertBefore')}
             </DropdownMenuItem>
             <DropdownMenuItem onSelect={() => insertSurfaceAt(Math.min(state.row + 1, img))} shortcut={command('insertAfter').shortcut}>
-              Insert Surface After
+              {t('lens.grid.insertAfter')}
             </DropdownMenuItem>
             <DropdownMenuItem onSelect={() => deleteSurfaceAt(state.row)} disabled={!canDelete(system, state.row)} shortcut={command('delete').shortcut}>
-              Delete Surface
+              {t('lens.grid.deleteSurface')}
             </DropdownMenuItem>
             <DropdownMenuSeparator />
             <DropdownMenuItem onSelect={() => makeStop(state.row)} disabled={fixedEnd || state.row === system.stop} shortcut={command('stop').shortcut}>
-              Make Aperture Stop
+              {t('lens.grid.makeStop')}
             </DropdownMenuItem>
             <DropdownMenuSub>
-              <DropdownMenuSubTrigger>Variables</DropdownMenuSubTrigger>
+              <DropdownMenuSubTrigger>{t('lens.grid.variablesMenu')}</DropdownMenuSubTrigger>
               <DropdownMenuSubContent>
-                {rowVariables(s, system).length === 0 && <DropdownMenuItem disabled>No variable values</DropdownMenuItem>}
+                {rowVariables(s, system).length === 0 && <DropdownMenuItem disabled>{t('lens.grid.noVariables')}</DropdownMenuItem>}
                 {rowVariables(s, system).map(({ title, path }) => {
                   const on = isVariable(project, path)
                   const refusal = on ? null : variableRefusal(system, path)
@@ -960,7 +972,7 @@ function RowMenu({ state, onClose }: { state: { row: number; x: number; y: numbe
             </DropdownMenuSub>
             {!fixedEnd && (
               <DropdownMenuSub>
-                <DropdownMenuSubTrigger>Surface Type</DropdownMenuSubTrigger>
+                <DropdownMenuSubTrigger>{t('lens.grid.surfaceType')}</DropdownMenuSubTrigger>
                 <DropdownMenuSubContent className="min-w-[14rem]">{types}</DropdownMenuSubContent>
               </DropdownMenuSub>
             )}
@@ -971,7 +983,7 @@ function RowMenu({ state, onClose }: { state: { row: number; x: number; y: numbe
                 useView.getState().setPage('surface')
               }}
             >
-              Show in Inspector
+              {t('lens.grid.showInInspector')}
             </DropdownMenuItem>
           </>
         ) : (

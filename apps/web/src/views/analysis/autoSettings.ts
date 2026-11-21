@@ -4,6 +4,7 @@
 // a bare 0.
 
 import type { AnalysisResult, Json, JsonObject } from '@/engine/types'
+import { t } from '@/i18n'
 import { nf } from '@/model/format'
 
 export type Sentinel = 'zero' | 'null' | 'empty'
@@ -42,7 +43,7 @@ export function isAuto(value: Json | undefined, s: Sentinel): boolean {
 }
 
 /** "Auto (282)", or "Auto" before a run has said what it used. */
-export const autoDisplay = (used: string | null) => (used ? `Auto (${used})` : 'Auto')
+export const autoDisplay = (used: string | null) => (used ? t('lens.settings.autoValue', { value: used }) : t('lens.settings.auto'))
 
 /** `%.3g` as Swift prints it. */
 export function g3(v: number): string {
@@ -113,7 +114,7 @@ export function autoUsed(key: string, analysis: string, r: AnalysisResult | unde
       if (!planes.length) return null
       const lo = Math.min(...planes), hi = Math.max(...planes)
       if (Math.abs(lo + hi) <= 1e-9 * Math.max(1, Math.abs(hi))) return '±' + g3(hi)
-      return `${g3(lo)} to ${g3(hi)}`
+      return t('lens.settings.rangeTo', { lo: g3(lo), hi: g3(hi) })
     }
     case 'image_simulation optics.psf_size': {
       const v = whole(nf(j.psf_size))

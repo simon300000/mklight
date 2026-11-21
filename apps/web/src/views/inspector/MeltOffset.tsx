@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import type { JsonObject } from '@/engine/types'
+import { useT } from '@/i18n'
 import { Button } from '@/components/ui/button'
 import { isVariable, type ParamPath } from '@/model/params'
 import { glassNumbers, isZeroOffset, offsetOf, offsetRejection, withOffset, type GlassNumbers, type MaterialOffset } from '@/model/materials'
@@ -51,6 +52,7 @@ export function useGlassNumbers(m: Material | null): GlassNumbers | null {
  *  engine's ±0.05 and ±10, each a possible variable, the melt glass's n_d and
  *  V_d against the catalogue's, and Remove Melt Offset. */
 export function MeltOffsetRows({ surface }: { surface: Surface }) {
+  const t = useT()
   const edit = useDocument((s) => s.edit)
   const project = useDocument((s) => s.project)
   const [expanded, setExpanded] = useState(false)
@@ -69,8 +71,8 @@ export function MeltOffsetRows({ surface }: { surface: Surface }) {
   if (!showing) {
     return (
       <div className="py-[3px]">
-        <Button variant="ghost" size="sm" className="-ml-1.5 text-accent" onClick={() => setExpanded(true)} title="Give the catalog glass a measured melt's Δn_d and ΔV_d">
-          Add Melt Offset…
+        <Button variant="ghost" size="sm" className="-ml-1.5 text-accent" onClick={() => setExpanded(true)} title={t('inspector.melt.addHelp')}>
+          {t('inspector.melt.add')}
         </Button>
       </div>
     )
@@ -79,31 +81,31 @@ export function MeltOffsetRows({ surface }: { surface: Surface }) {
     <div data-testid="melt-offset">
       <NumberRow
         label="Δn_d"
-        detail="melt"
+        detail={t('inspector.melt.detail')}
         value={offset.dn_d}
         param={dn}
-        help="The melt's index offset from the catalog n_d (within ±0.05); the dispersion keeps its shape."
+        help={t('inspector.melt.dnHelp')}
         validate={(v) => offsetRejection('dn_d', v)}
-        onCommit={(v) => v != null && set('Change Δn_d', (o) => ({ ...o, dn_d: v }))}
+        onCommit={(v) => v != null && set(t('inspector.melt.undoDn'), (o) => ({ ...o, dn_d: v }))}
       />
       <NumberRow
         label="ΔV_d"
-        detail="melt"
+        detail={t('inspector.melt.detail')}
         value={offset.dv_d}
         param={dv}
-        help="The melt's Abbe-number offset from the catalog V_d (within ±10)."
+        help={t('inspector.melt.dvHelp')}
         validate={(v) => offsetRejection('dv_d', v)}
-        onCommit={(v) => v != null && set('Change ΔV_d', (o) => ({ ...o, dv_d: v }))}
+        onCommit={(v) => v != null && set(t('inspector.melt.undoDv'), (o) => ({ ...o, dv_d: v }))}
       />
       {g && (
-        <FormRow label="Melt glass">
+        <FormRow label={t('inspector.melt.glass')}>
           <span className="num text-right text-[12px] leading-tight">
             <span className="block">
               n_d {g.nd.toFixed(5)}  V_d {g.vd.toFixed(2)}
             </span>
             {!isZeroOffset(offset) && (
               <span className="block text-[11px] text-secondary">
-                catalog {g.catalogNd.toFixed(5)}  {g.catalogVd.toFixed(2)}
+                {t('inspector.melt.catalog')} {g.catalogNd.toFixed(5)}  {g.catalogVd.toFixed(2)}
               </span>
             )}
           </span>
@@ -114,13 +116,13 @@ export function MeltOffsetRows({ surface }: { surface: Surface }) {
           variant="ghost"
           size="sm"
           className="-ml-1.5 text-accent"
-          title="Back to the catalog glass"
+          title={t('inspector.melt.removeHelp')}
           onClick={() => {
             setExpanded(false)
-            set('Remove Melt Offset', () => ({ dn_d: 0, dv_d: 0 }))
+            set(t('inspector.melt.remove'), () => ({ dn_d: 0, dv_d: 0 }))
           }}
         >
-          Remove Melt Offset
+          {t('inspector.melt.remove')}
         </Button>
       )}
     </div>

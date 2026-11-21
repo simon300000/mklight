@@ -9,6 +9,7 @@
 import { Minus, Plus } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { Json, JsonObject } from '@/engine/types'
+import { useT } from '@/i18n'
 import { Button } from '@/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Select } from '@/components/ui/select'
@@ -58,9 +59,11 @@ export function SpectrumButton({
   /** The pinned bar's form: a small "Spectrum: …" capsule. */
   compact?: boolean
 }) {
+  const t = useT()
   const s = parseSpectrum(value)
-  const kindTitle = s ? SPECTRUM_KINDS.find((k) => k.kind === s.kind)?.title : 'Unreadable'
-  const text = s ? (s.kind === 'design' ? 'Design' : spectrumSummary(s)) : 'Unreadable'
+  const kindTitle = s ? SPECTRUM_KINDS.find((k) => k.kind === s.kind)?.title : t('lens.spectrum.unreadableCap')
+  const text = s ? (s.kind === 'design' ? t('lens.spectrum.design') : spectrumSummary(s)) : t('lens.spectrum.unreadableCap')
+  const ariaLabel = t('lens.spectrum.buttonAria', { summary: s ? spectrumSummary(s) : t('lens.spectrum.unreadable') })
   return (
     <Popover>
       <PopoverTrigger asChild>
@@ -68,18 +71,18 @@ export function SpectrumButton({
           <button
             type="button"
             className="flex h-[22px] max-w-full min-w-0 cursor-default items-center gap-1 rounded-full bg-selected px-2 text-[11px] hover:bg-hover focus-visible:outline-2"
-            aria-label={`Spectrum: ${s ? spectrumSummary(s) : 'unreadable'}`}
-            title={`The wavelengths this analysis runs with: ${kindTitle}`}
+            aria-label={ariaLabel}
+            title={t('lens.spectrum.buttonHelp', { kind: kindTitle ?? '' })}
             data-testid="pinned-spectrum"
           >
-            <span className="shrink-0 text-secondary">Spectrum:</span>
+            <span className="shrink-0 text-secondary">{t('lens.spectrum.barLabel')}</span>
             <span className="truncate font-medium">{text}</span>
           </button>
         ) : (
           <button
             type="button"
             className="flex h-6 w-full min-w-0 cursor-default items-center justify-end gap-1 truncate rounded-md border border-control-border bg-control px-2 text-[13px] hover:bg-hover"
-            aria-label={`Spectrum: ${s ? spectrumSummary(s) : 'unreadable'}`}
+            aria-label={ariaLabel}
             title={kindTitle}
           >
             <span className="truncate">{text}</span>
@@ -94,6 +97,7 @@ export function SpectrumButton({
 }
 
 export function SpectrumEditor({ value, system, onChange }: { value: Json | undefined; system: System; onChange: (v: JsonObject | null) => void }) {
+  const t = useT()
   const parsed = parseSpectrum(value)
   const s: Spectrum = parsed ?? { kind: 'design' }
   const set = (n: Spectrum) => onChange(spectrumJson(n))
@@ -105,9 +109,9 @@ export function SpectrumEditor({ value, system, onChange }: { value: Json | unde
 
   return (
     <div className="flex flex-col gap-2 text-[12px]" data-testid="spectrum-editor">
-      <h3 className="text-[13px] font-semibold">Spectrum</h3>
-      {!parsed && <p className="text-danger">The current spectrum setting is not readable; choosing a kind replaces it.</p>}
-      <Select aria-label="Spectrum kind" value={s.kind} onChange={(e) => set(spectrumOfKind(e.target.value as SpectrumKind, s, design))}>
+      <h3 className="text-[13px] font-semibold">{t('lens.spectrum.title')}</h3>
+      {!parsed && <p className="text-danger">{t('lens.spectrum.unreadableSetting')}</p>}
+      <Select aria-label={t('lens.spectrum.kindAria')} value={s.kind} onChange={(e) => set(spectrumOfKind(e.target.value as SpectrumKind, s, design))}>
         {SPECTRUM_KINDS.map((k) => (
           <option key={k.kind} value={k.kind}>
             {k.title}
@@ -117,14 +121,14 @@ export function SpectrumEditor({ value, system, onChange }: { value: Json | unde
 
       {s.kind === 'blackbody' && (
         <div className="grid grid-cols-[1fr_6rem_auto] items-center gap-2">
-          <span className="text-secondary">Temperature</span>
-          <NumberInput ariaLabel="Temperature" value={s.temperatureK} min={1} onCommit={(v) => v != null && set({ ...s, temperatureK: v })} />
+          <span className="text-secondary">{t('lens.spectrum.temperature')}</span>
+          <NumberInput ariaLabel={t('lens.spectrum.temperature')} value={s.temperatureK} min={1} onCommit={(v) => v != null && set({ ...s, temperatureK: v })} />
           <span className="text-secondary">K</span>
           <span />
           <span className="col-span-2 flex gap-1">
-            {BLACKBODY_PRESETS.map((t) => (
-              <Button key={t} size="sm" variant={s.temperatureK === t ? 'prominent' : 'default'} onClick={() => set({ ...s, temperatureK: t })}>
-                {t} K
+            {BLACKBODY_PRESETS.map((k) => (
+              <Button key={k} size="sm" variant={s.temperatureK === k ? 'prominent' : 'default'} onClick={() => set({ ...s, temperatureK: k })}>
+                {k} K
               </Button>
             ))}
           </span>
@@ -136,8 +140,8 @@ export function SpectrumEditor({ value, system, onChange }: { value: Json | unde
           <table className="w-full text-[12px]">
             <thead className="text-secondary">
               <tr>
-                <th className="px-2 py-1 text-left font-normal">λ (µm)</th>
-                <th className="px-2 py-1 text-left font-normal">Weight</th>
+                <th className="px-2 py-1 text-left font-normal">{t('lens.spectrum.wavelengthMicrons')}</th>
+                <th className="px-2 py-1 text-left font-normal">{t('lens.spectrum.weight')}</th>
                 <th />
               </tr>
             </thead>
@@ -145,13 +149,13 @@ export function SpectrumEditor({ value, system, onChange }: { value: Json | unde
               {s.wavelengths.map((w, k) => (
                 <tr key={k}>
                   <td className="px-1 py-[2px]">
-                    <NumberInput ariaLabel={`Wavelength ${k + 1}`} value={w.um} min={0} onCommit={(v) => v != null && set({ ...s, wavelengths: s.wavelengths.map((x, i) => (i === k ? { ...x, um: v } : x)) })} />
+                    <NumberInput ariaLabel={t('common.wavelengthN', { n: k + 1 })} value={w.um} min={0} onCommit={(v) => v != null && set({ ...s, wavelengths: s.wavelengths.map((x, i) => (i === k ? { ...x, um: v } : x)) })} />
                   </td>
                   <td className="px-1 py-[2px]">
-                    <NumberInput ariaLabel={`Weight ${k + 1}`} value={w.weight} min={0} onCommit={(v) => v != null && set({ ...s, wavelengths: s.wavelengths.map((x, i) => (i === k ? { ...x, weight: v } : x)) })} />
+                    <NumberInput ariaLabel={t('lens.spectrum.weightN', { n: k + 1 })} value={w.weight} min={0} onCommit={(v) => v != null && set({ ...s, wavelengths: s.wavelengths.map((x, i) => (i === k ? { ...x, weight: v } : x)) })} />
                   </td>
                   <td className="w-6">
-                    <Button variant="ghost" size="iconSm" aria-label={`Remove wavelength ${k + 1}`} onClick={() => set({ ...s, wavelengths: s.wavelengths.filter((_, i) => i !== k) })}>
+                    <Button variant="ghost" size="iconSm" aria-label={t('lens.spectrum.removeWavelength', { n: k + 1 })} onClick={() => set({ ...s, wavelengths: s.wavelengths.filter((_, i) => i !== k) })}>
                       <Minus />
                     </Button>
                   </td>
@@ -161,10 +165,10 @@ export function SpectrumEditor({ value, system, onChange }: { value: Json | unde
           </table>
           <div className="flex gap-1 border-t border-separator p-1">
             <Button size="sm" variant="ghost" onClick={() => set({ ...s, wavelengths: [...s.wavelengths, { um: s.wavelengths.at(-1)?.um ?? 0.55, weight: 1 }] })}>
-              <Plus /> Add
+              <Plus /> {t('common.add')}
             </Button>
             <Button size="sm" variant="ghost" onClick={() => set({ ...s, wavelengths: design })}>
-              From Design
+              {t('lens.spectrum.fromDesign')}
             </Button>
           </div>
         </div>
@@ -174,15 +178,15 @@ export function SpectrumEditor({ value, system, onChange }: { value: Json | unde
         <div className="flex flex-col gap-1">
           <div className="flex items-center gap-2">
             <Button size="sm" onClick={() => fileRef.current?.click()}>
-              Import CSV…
+              {t('lens.spectrum.importCsv')}
             </Button>
-            <span className="text-secondary">{s.table.length ? `${s.table.length} rows${csv ? ` from ${csv.name} (${csv.unit})` : ''}` : 'No response table'}</span>
+            <span className="text-secondary">{s.table.length ? (csv ? t('lens.spectrum.tableRowsFrom', { n: s.table.length, name: csv.name, unit: csv.unit }) : t('lens.spectrum.tableRows', { n: s.table.length })) : t('lens.spectrum.noTable')}</span>
             <input
               ref={fileRef}
               type="file"
               accept=".csv,.txt,.tsv,text/csv,text/plain"
               className="hidden"
-              aria-label="Sensor response CSV file"
+              aria-label={t('lens.spectrum.csvAria')}
               onChange={async (e) => {
                 const f = e.target.files?.[0]
                 e.target.value = ''
@@ -200,7 +204,7 @@ export function SpectrumEditor({ value, system, onChange }: { value: Json | unde
             <ul className="max-h-24 overflow-y-auto text-[11px] text-secondary">
               {csv.bad.map((b) => (
                 <li key={b.line}>
-                  Line {b.line}: {b.reason} <span className="num opacity-70">({b.text})</span>
+                  {t('lens.spectrum.csvLine', { line: b.line, reason: b.reason })} <span className="num opacity-70">({b.text})</span>
                 </li>
               ))}
             </ul>
@@ -210,18 +214,18 @@ export function SpectrumEditor({ value, system, onChange }: { value: Json | unde
 
       {sm && (
         <fieldset className="rounded-md border border-separator px-2 py-1">
-          <legend className="px-1 text-[11px] text-secondary">Sampling</legend>
+          <legend className="px-1 text-[11px] text-secondary">{t('lens.spectrum.sampling')}</legend>
           <div className="grid grid-cols-[1fr_5rem_5rem] items-center gap-x-2 gap-y-1">
-            <span className="text-secondary">Samples</span>
+            <span className="text-secondary">{t('lens.spectrum.samples')}</span>
             <span className="col-span-2">
-              <NumberInput ariaLabel="Samples" value={sm.samples} integer min={1} max={4096} onCommit={(v) => v != null && set(withSampling(s, { ...sm, samples: v }))} />
+              <NumberInput ariaLabel={t('lens.spectrum.samples')} value={sm.samples} integer min={1} max={4096} onCommit={(v) => v != null && set(withSampling(s, { ...sm, samples: v }))} />
             </span>
-            <span className="text-secondary">Range (µm)</span>
-            <NumberInput ariaLabel="Range from" value={sm.lowerUm} min={0} onCommit={(v) => v != null && set(withSampling(s, { ...sm, lowerUm: v }))} />
-            <NumberInput ariaLabel="Range to" value={sm.upperUm} min={0} onCommit={(v) => v != null && set(withSampling(s, { ...sm, upperUm: v }))} />
-            <span className="text-secondary">Spacing</span>
+            <span className="text-secondary">{t('lens.spectrum.rangeMicrons')}</span>
+            <NumberInput ariaLabel={t('lens.spectrum.rangeFrom')} value={sm.lowerUm} min={0} onCommit={(v) => v != null && set(withSampling(s, { ...sm, lowerUm: v }))} />
+            <NumberInput ariaLabel={t('lens.spectrum.rangeTo')} value={sm.upperUm} min={0} onCommit={(v) => v != null && set(withSampling(s, { ...sm, upperUm: v }))} />
+            <span className="text-secondary">{t('lens.spectrum.spacingLabel')}</span>
             <span className="col-span-2">
-              <Select aria-label="Spacing" className="w-full" value={sm.spacing} onChange={(e) => set(withSampling(s, { ...sm, spacing: e.target.value as Spacing }))}>
+              <Select aria-label={t('lens.spectrum.spacingLabel')} className="w-full" value={sm.spacing} onChange={(e) => set(withSampling(s, { ...sm, spacing: e.target.value as Spacing }))}>
                 {(Object.keys(SPACING_TITLES) as Spacing[]).map((k) => (
                   <option key={k} value={k}>
                     {SPACING_TITLES[k]}
@@ -232,7 +236,7 @@ export function SpectrumEditor({ value, system, onChange }: { value: Json | unde
           </div>
           {(s.kind === 'photopic' || s.kind === 'scotopic') && (
             <p className="mt-1 text-[11px] text-secondary">
-              The {s.kind} table covers {(s.kind === 'photopic' ? PHOTOPIC_RANGE : SCOTOPIC_RANGE).map((x) => x.toFixed(2)).join('–')} µm.
+              {t(s.kind === 'photopic' ? 'lens.spectrum.photopicCovers' : 'lens.spectrum.scotopicCovers', { range: (s.kind === 'photopic' ? PHOTOPIC_RANGE : SCOTOPIC_RANGE).map((x) => x.toFixed(2)).join('–') })}
             </p>
           )}
         </fieldset>
@@ -286,13 +290,21 @@ function useResolved(s: Spectrum, valid: boolean): Sample[] | null {
 }
 
 export function SpectrumChart({ spectrum, system, valid }: { spectrum: Spectrum; system: System; valid: boolean }) {
+  const t = useT()
   const dark = useDark()
   const engineSamples = useResolved(spectrum, valid)
   const local = useMemo(() => (spectrum.kind === 'design' ? designSamples(system) : previewSamples(spectrum)), [spectrum, system])
   const curve = useMemo(() => previewCurve(spectrum), [spectrum])
   const samples = engineSamples ?? local
-  const source = spectrum.kind === 'design' ? 'Design wavelengths' : engineSamples ? 'Engine-resolved' : spectrum.kind === 'explicit' ? 'As entered' : 'Approximate preview'
-  if (!samples?.length) return <p className="text-[11px] text-secondary">No weights to show.</p>
+  const source =
+    spectrum.kind === 'design'
+      ? t('lens.spectrum.kinds.design')
+      : engineSamples
+        ? t('lens.spectrum.sourceEngine')
+        : spectrum.kind === 'explicit'
+          ? t('lens.spectrum.sourceExplicit')
+          : t('lens.spectrum.sourcePreview')
+  if (!samples?.length) return <p className="text-[11px] text-secondary">{t('lens.spectrum.noWeights')}</p>
   const primary = spectrum.kind === 'design' ? system.wavelengths?.primary ?? 0 : primaryIndex(samples)
   const W = 300, H = 84, ml = 4, mr = 4, mt = 6, mb = 16
   const xs = [...samples.map((w) => w.um), ...(curve ?? []).map((c) => c.um)]
@@ -306,7 +318,7 @@ export function SpectrumChart({ spectrum, system, valid }: { spectrum: Spectrum;
   const py = (v: number) => mt + (1 - v) * (H - mt - mb)
   return (
     <figure className="m-0">
-      <svg viewBox={`0 0 ${W} ${H}`} className="h-[84px] w-full" role="img" aria-label={`${source}: ${samples.length} weighted wavelengths`}>
+      <svg viewBox={`0 0 ${W} ${H}`} className="h-[84px] w-full" role="img" aria-label={t('lens.spectrum.chartAria', { source, count: samples.length })}>
         <line x1={ml} x2={W - mr} y1={py(0)} y2={py(0)} stroke="var(--grid)" />
         {curve && (
           <polyline
@@ -331,8 +343,9 @@ export function SpectrumChart({ spectrum, system, valid }: { spectrum: Spectrum;
         </text>
       </svg>
       <figcaption className="text-[11px] text-secondary">
-        {source} · {samples.length} wavelength{samples.length === 1 ? '' : 's'}
-        {primary != null && samples[primary] ? ` · primary ${sig(samples[primary].um, 4)} µm` : ''}
+        {primary != null && samples[primary]
+          ? t('lens.spectrum.captionPrimary', { source, count: samples.length, um: sig(samples[primary].um, 4) })
+          : t('lens.spectrum.caption', { source, count: samples.length })}
       </figcaption>
     </figure>
   )

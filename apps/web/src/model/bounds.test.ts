@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { CONTAINS_ZERO, boundsActionName, counterpart, curvatureBounds, defaultBounds, outOfBounds, passesThroughFlat, radiusWindow } from './bounds'
+import { t } from '@/i18n'
+import { boundsActionName, counterpart, curvatureBounds, defaultBounds, outOfBounds, passesThroughFlat, radiusWindow } from './bounds'
 import type { System } from './system'
 
 const ok = (min: number | null, max: number | null) => {
@@ -45,7 +46,7 @@ describe('radius window ↔ curvature bounds', () => {
   })
 
   it('refuses a window containing R = 0', () => {
-    expect(curvatureBounds(-50, 50)).toEqual({ ok: false, error: CONTAINS_ZERO })
+    expect(curvatureBounds(-50, 50)).toEqual({ ok: false, error: t('optimize.bounds.containsZero') })
     expect(curvatureBounds(60, 40).ok).toBe(false)
   })
 

@@ -4,6 +4,7 @@
 import { useMemo, useState } from 'react'
 import type { AnalysisResult, JsonObject } from '@/engine/types'
 import { Segmented } from '@/components/ui/segmented'
+import { engineText, t, useT } from '@/i18n'
 import { cssVar, seriesColor, useDark, wavelengthColor } from '@/lib/theme'
 import { sig } from '@/model/format'
 import { FONT, buffer, nums, obj, wavelengthsUm, wlColor } from '../../results/common'
@@ -38,31 +39,32 @@ const CLIPPED = '#e34a47'
 
 // MARK: Seidel
 
-const TERMS: [string, string][] = [
-  ['s1', 'S_I spherical'],
-  ['s2', 'S_II coma'],
-  ['s3', 'S_III astigmatism'],
-  ['s4', 'S_IV Petzval'],
-  ['s5', 'S_V distortion'],
-]
-const COLOUR: [string, string][] = [
-  ['cl', 'C_L axial'],
-  ['ct', 'C_T lateral'],
-]
+const TERMS = [
+  ['s1', 'analysis.seidel.s1'],
+  ['s2', 'analysis.seidel.s2'],
+  ['s3', 'analysis.seidel.s3'],
+  ['s4', 'analysis.seidel.s4'],
+  ['s5', 'analysis.seidel.s5'],
+] as const
+const COLOUR = [
+  ['cl', 'analysis.seidel.cl'],
+  ['ct', 'analysis.seidel.ct'],
+] as const
 
 function SeidelView({ result }: RendererProps) {
+  const t = useT()
   const dark = useDark()
   const [chromatic, setChromatic] = useState(false)
   const j = result.json
   if (j.status === 'not_applicable')
-    return <Empty title="Seidel Coefficients Do Not Apply" detail={typeof j.reason === 'string' ? j.reason : 'Seidel coefficients need a rotationally symmetric system.'} />
+    return <Empty title={t('analysis.seidel.notApplicable')} detail={typeof j.reason === 'string' ? engineText(j.reason) : t('analysis.seidel.notApplicableDetail')} />
   const list = objects(j.surfaces)
   const sums = obj(j.sums) ?? {}
   const terms = chromatic ? COLOUR : TERMS
   const offset = chromatic ? 5 : 0
   const categories = [...list.map((s, k) => String(intOf(s.surface, k))), 'Σ']
   const groups = terms.map(([key, title], k) => ({
-    label: title,
+    label: t(title),
     color: seriesColor(k + offset, dark),
     values: [...list.map((s) => nf(s[key])), nf(sums[key])],
   }))
@@ -78,15 +80,15 @@ function SeidelView({ result }: RendererProps) {
     <div className="absolute inset-0 flex min-w-0 flex-col">
       <div className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1 px-3 pt-2">
         <Segmented
-          label="Coefficients"
+          label={t('analysis.seidel.coefficients')}
           value={chromatic ? 'c' : 's'}
           onChange={(v) => setChromatic(v === 'c')}
           options={[
-            { value: 's', title: 'Seidel' },
-            { value: 'c', title: 'Chromatic' },
+            { value: 's', title: t('analysis.seidel.seidel') },
+            { value: 'c', title: t('analysis.seidel.chromatic') },
           ]}
         />
-        {Number.isFinite(pr) && <span className="num ml-auto text-[11px] text-secondary">Petzval radius {short(pr)} mm</span>}
+        {Number.isFinite(pr) && <span className="num ml-auto text-[11px] text-secondary">{t('analysis.seidel.petzvalRadius', { value: short(pr) })}</span>}
       </div>
       <div className="flex shrink-0 flex-wrap gap-x-3 gap-y-0.5 px-3 pt-1.5 text-[11px] text-secondary">
         {groups.map((g) => (
@@ -96,11 +98,11 @@ function SeidelView({ result }: RendererProps) {
         ))}
       </div>
       <div className="min-h-0 flex-1 px-2 pb-1">
-        <BarPlot categories={categories} groups={groups} xLabel="Surface" yLabel="mm" label="Seidel coefficients per surface and their sum" />
+        <BarPlot categories={categories} groups={groups} xLabel={t('common.surface')} yLabel="mm" label={t('analysis.seidel.label')} />
       </div>
       {wavefront.length > 0 && (
         <div className="flex shrink-0 flex-wrap gap-x-3 gap-y-0.5 px-3 pb-2 text-[11px]">
-          <span className="font-semibold text-secondary">Wavefront (waves)</span>
+          <span className="font-semibold text-secondary">{t('analysis.seidel.wavefrontWaves')}</span>
           {wavefront.map(([k, v]) => (
             <span key={k} className="inline-flex gap-1">
               <span className="text-secondary">{k}</span>
@@ -119,18 +121,19 @@ function seidelKeys(r: AnalysisResult): KeyNumber[] {
   if (!sums) return []
   return (
     [
-      ['Σ S_I', 's1', 'Spherical'],
-      ['Σ S_II', 's2', 'Coma'],
-      ['Σ S_III', 's3', 'Astigmatism'],
+      ['Σ S_I', 's1', 'analysis.seidel.sphericalSum'],
+      ['Σ S_II', 's2', 'analysis.seidel.comaSum'],
+      ['Σ S_III', 's3', 'analysis.seidel.astigmatismSum'],
     ] as const
   )
     .filter(([, k]) => Number.isFinite(nf(sums[k])))
-    .map(([label, k, help]) => ({ label, value: short(nf(sums[k])), help: `${help} sum (mm)` }))
+    .map(([label, k, help]) => ({ label, value: short(nf(sums[k])), help: t(help) }))
 }
 
 // MARK: Chromatic focal shift
 
 function ChromaticFocalShift({ result }: RendererProps) {
+  const t = useT()
   const dark = useDark()
   const j = result.json
   const w = nums(j.wavelengths_um)
@@ -147,21 +150,21 @@ function ChromaticFocalShift({ result }: RendererProps) {
           <>
             {anamorphic && (
               <>
-                <Key color={seriesColor(0, dark)} label="y focus" />
-                <Key color={seriesColor(1, dark)} kind="dash" label="x focus" />
+                <Key color={seriesColor(0, dark)} label={t('analysis.chromaticFocalShift.yFocus')} />
+                <Key color={seriesColor(1, dark)} kind="dash" label={t('analysis.chromaticFocalShift.xFocus')} />
               </>
             )}
-            {Number.isFinite(primary) && <Key color={secondaryColor()} kind="thin" label={`Primary ${sig(primary, 5)} µm`} />}
+            {Number.isFinite(primary) && <Key color={secondaryColor()} kind="thin" label={t('analysis.chromaticFocalShift.primary', { value: sig(primary, 5) })} />}
           </>
         ) : undefined
       }
     >
       <XYPlot
         series={plot}
-        xLabel="Focal shift (µm)"
-        yLabel="Wavelength (µm)"
+        xLabel={t('analysis.chromaticFocalShift.xLabel')}
+        yLabel={t('analysis.curves.wavelengthUm')}
         hRules={Number.isFinite(primary) ? [{ y: primary, dash: true }] : []}
-        label="Chromatic focal shift versus wavelength"
+        label={t('analysis.chromaticFocalShift.label')}
       />
     </PlotPane>
   )
@@ -170,6 +173,7 @@ function ChromaticFocalShift({ result }: RendererProps) {
 // MARK: Longitudinal aberration
 
 function Longitudinal({ result, system }: RendererProps) {
+  const t = useT()
   const dark = useDark()
   const j = result.json
   const pupil = nums(j.pupil)
@@ -188,8 +192,8 @@ function Longitudinal({ result, system }: RendererProps) {
           ))}
           {axes.size > 1 && (
             <>
-              <Key color={secondaryColor()} label="y fan" />
-              <Key color={secondaryColor()} kind="dash" label="x fan" />
+              <Key color={secondaryColor()} label={t('analysis.longitudinal.yFan')} />
+              <Key color={secondaryColor()} kind="dash" label={t('analysis.longitudinal.xFan')} />
             </>
           )}
         </>
@@ -202,11 +206,11 @@ function Longitudinal({ result, system }: RendererProps) {
           color: Number.isFinite(umOf(c)) ? wavelengthColor(umOf(c), dark) : '#888',
           dash: axes.size > 1 && c.axis === 'x',
         }))}
-        xLabel="Longitudinal aberration (mm)"
-        yLabel="Pupil zone"
+        xLabel={t('analysis.longitudinal.xLabel')}
+        yLabel={t('analysis.longitudinal.yLabel')}
         yDomain={[0, 1]}
         markers={[{ x: 0, dash: false }]}
-        label="Longitudinal aberration versus pupil zone per wavelength"
+        label={t('analysis.longitudinal.label')}
       />
     </PlotPane>
   )
@@ -215,6 +219,7 @@ function Longitudinal({ result, system }: RendererProps) {
 // MARK: Lateral colour
 
 function LateralColour({ result, system }: RendererProps) {
+  const t = useT()
   const dark = useDark()
   const j = result.json
   const field = nums(j.field_values)
@@ -230,16 +235,16 @@ function LateralColour({ result, system }: RendererProps) {
           {curves.map((c, k) => (
             <Key key={k} kind="dot" color={Number.isFinite(umOf(c)) ? wavelengthColor(umOf(c), dark) : '#888'} label={`${sig(umOf(c), 4)} µm`} />
           ))}
-          {Number.isFinite(airy) && <Key color={secondaryColor()} kind="dash" label="± Airy radius" />}
+          {Number.isFinite(airy) && <Key color={secondaryColor()} kind="dash" label={t('analysis.lateralColour.airy')} />}
         </>
       }
     >
       <XYPlot
         series={curves.map((c) => ({ x: um1000(nums(c.offset)), y: field, color: Number.isFinite(umOf(c)) ? wavelengthColor(umOf(c), dark) : '#888' }))}
         markers={Number.isFinite(airy) ? [{ x: airy * 1000 }, { x: -airy * 1000 }] : []}
-        xLabel="Lateral color (µm)"
-        yLabel={`Field (${unit})`}
-        label="Lateral color versus field"
+        xLabel={t('analysis.lateralColour.xLabel')}
+        yLabel={t('analysis.curves.fieldUnit', { unit })}
+        label={t('analysis.lateralColour.label')}
       />
     </PlotPane>
   )
@@ -248,6 +253,7 @@ function LateralColour({ result, system }: RendererProps) {
 // MARK: Relative illumination
 
 function RelativeIllumination({ result, system }: RendererProps) {
+  const t = useT()
   const dark = useDark()
   const j = result.json
   const field = nums(j.field_values)
@@ -255,20 +261,20 @@ function RelativeIllumination({ result, system }: RendererProps) {
   const ri = nums(j.relative_illumination)
   const vig = nums(j.vignetting_fraction)
   const cos4 = nums(j.cos4_object)
-  const plot: XYSeries[] = [{ x: field, y: ri, color: seriesColor(0, dark), label: 'RI' }]
-  if (vig.length) plot.push({ x: field, y: vig, color: seriesColor(1, dark), dash: true, label: 'Vignetted' })
+  const plot: XYSeries[] = [{ x: field, y: ri, color: seriesColor(0, dark), label: t('analysis.relIllum.ri') }]
+  if (vig.length) plot.push({ x: field, y: vig, color: seriesColor(1, dark), dash: true, label: t('analysis.relIllum.vignetted') })
   if (cos4.some(Number.isFinite)) plot.push({ x: field, y: cos4, color: secondaryColor(), width: 1, label: 'cos⁴' })
   return (
     <PlotPane
       legend={
         <>
-          <Key color={seriesColor(0, dark)} label="Relative illumination" />
-          {vig.length > 0 && <Key color={seriesColor(1, dark)} kind="dash" label="Vignetted fraction" />}
-          {cos4.some(Number.isFinite) && <Key color={secondaryColor()} kind="thin" label="cos⁴ (object)" />}
+          <Key color={seriesColor(0, dark)} label={t('analysis.relIllum.relativeIllumination')} />
+          {vig.length > 0 && <Key color={seriesColor(1, dark)} kind="dash" label={t('analysis.relIllum.vignettedFraction')} />}
+          {cos4.some(Number.isFinite) && <Key color={secondaryColor()} kind="thin" label={t('analysis.relIllum.cos4Object')} />}
         </>
       }
     >
-      <XYPlot series={plot} xLabel={`Field (${unit})`} yLabel="Fraction" yDomain={[0, 1.05]} label="Relative illumination and vignetting versus field" />
+      <XYPlot series={plot} xLabel={t('analysis.curves.fieldUnit', { unit })} yLabel={t('analysis.relIllum.fraction')} yDomain={[0, 1.05]} label={t('analysis.relIllum.label')} />
     </PlotPane>
   )
 }
@@ -284,6 +290,7 @@ function squareFrame(_ctx: CanvasRenderingContext2D, W: number, H: number, m: nu
 }
 
 function Footprint({ result, system }: RendererProps) {
+  const t = useT()
   const j = result.json
   const pts = buffer(result, 'points')
   const clip = buffer(result, 'clipped')
@@ -297,14 +304,14 @@ function Footprint({ result, system }: RendererProps) {
     <PlotPane
       legend={
         <>
-          <span className="font-semibold text-label">Surface {surface}</span>
-          {Number.isFinite(sd) && <Key color={secondaryColor()} kind="dash" label={`Clear aperture ${short(sd)} mm`} />}
-          {nClipped > 0 && <Key color={CLIPPED} kind="dot" label={`${nClipped} clipped`} />}
+          <span className="font-semibold text-label">{t('common.surfaceN', { n: surface })}</span>
+          {Number.isFinite(sd) && <Key color={secondaryColor()} kind="dash" label={t('analysis.footprint.clearAperture', { value: short(sd) })} />}
+          {nClipped > 0 && <Key color={CLIPPED} kind="dot" label={t('analysis.footprint.clipped', { count: nClipped })} />}
         </>
       }
     >
       <CanvasBox
-        label={`Footprint on surface ${surface}, ${nPass} rays pass, ${nClipped} clipped`}
+        label={t('analysis.footprint.label', { surface, pass: nPass, clipped: nClipped })}
         deps={[result]}
         draw={(ctx, W, H, dk) => {
           let m = Number.isFinite(sd) ? sd : 0
@@ -346,24 +353,25 @@ function Footprint({ result, system }: RendererProps) {
 }
 
 function GridDistortion({ result }: RendererProps) {
+  const t = useT()
   const j = result.json
   const n = intOf(j.grid_size, 0)
   const par = buffer(result, 'paraxial')
   const real = buffer(result, 'real')
   const max = nf(j.max_abs_distortion_percent)
-  if (n < 2 || !par || !real || par.length < n * n * 2 || real.length < n * n * 2) return <Empty title="No distortion grid in this result" />
+  if (n < 2 || !par || !real || par.length < n * n * 2 || real.length < n * n * 2) return <Empty title={t('analysis.gridDistortion.empty')} />
   return (
     <PlotPane
       legend={
         <>
-          <Key color={secondaryColor()} kind="dash" label="Paraxial grid" />
-          <Key color={cssVar('--label') || '#222'} label="Real chief rays" />
-          {Number.isFinite(max) && <span className="num">Max {max.toFixed(3)} %</span>}
+          <Key color={secondaryColor()} kind="dash" label={t('analysis.gridDistortion.paraxial')} />
+          <Key color={cssVar('--label') || '#222'} label={t('analysis.gridDistortion.real')} />
+          {Number.isFinite(max) && <span className="num">{t('analysis.gridDistortion.max', { value: max.toFixed(3) })}</span>}
         </>
       }
     >
       <CanvasBox
-        label={`Grid distortion, maximum ${Number.isFinite(max) ? max.toFixed(3) : 'unknown'} percent`}
+        label={t('analysis.gridDistortion.label', { value: Number.isFinite(max) ? max.toFixed(3) : t('analysis.gridDistortion.unknown') })}
         deps={[result]}
         draw={(ctx, W, H) => {
           let m = 1e-9
@@ -406,6 +414,7 @@ function GridDistortion({ result }: RendererProps) {
 }
 
 function RayGrid({ result, system }: RendererProps) {
+  const t = useT()
   const dark = useDark()
   const j = result.json
   const F = nums(j.fields).length || (Array.isArray(j.field_values) ? j.field_values.length : 0)
@@ -417,7 +426,7 @@ function RayGrid({ result, system }: RendererProps) {
   const wls = umList.length ? umList : wavelengthsUm(j, system)
   const fieldIdx = nums(j.fields)
   const fv = Array.isArray(j.field_values) ? j.field_values : []
-  if (!pts || F < 1 || W < 1 || P < 1 || pts.length < F * W * P * 2) return <Empty title="No ray grid in this result" />
+  if (!pts || F < 1 || W < 1 || P < 1 || pts.length < F * W * P * 2) return <Empty title={t('analysis.rayGrid.empty')} />
   // The primary-wavelength chief ray (else the first) is each cell's centre.
   const sysPrimary = system.wavelengths?.primary ?? 0
   const wIdx = nums(j.wavelengths)
@@ -429,7 +438,7 @@ function RayGrid({ result, system }: RendererProps) {
           <Key key={k} kind="dot" color={wavelengthColor(um, dark)} label={`${sig(um, 4)} µm`} />
         ))}
         <span className="num ml-auto">
-          {intOf(j.arrived, 0)} / {intOf(j.launched, F * W * P)} arrived
+          {t('analysis.rayGrid.arrived', { arrived: intOf(j.arrived, 0), launched: intOf(j.launched, F * W * P) })}
         </span>
       </div>
       <div className="grid min-h-0 flex-1 auto-rows-[minmax(140px,1fr)] grid-cols-[repeat(auto-fill,minmax(140px,1fr))] gap-2 overflow-auto p-2">
@@ -440,7 +449,7 @@ function RayGrid({ result, system }: RendererProps) {
               <div className="truncate text-center text-[11px] text-secondary">{title}</div>
               <div className="min-h-0 flex-1">
                 <CanvasBox
-                  label={`Ray grid hits, ${title}`}
+                  label={t('analysis.rayGrid.label', { field: title })}
                   deps={[result, f]}
                   draw={(ctx, Wd, Hd, dk) => {
                     const cx = chief ? chief[(f * W + centreW) * 2] : NaN
@@ -488,19 +497,20 @@ function RayGrid({ result, system }: RendererProps) {
 // MARK: Best focus
 
 function BestFocus({ result }: RendererProps) {
+  const t = useT()
   const dark = useDark()
   const j = result.json
   const d = nf(j.defocus)
   const x = nums(j.through_focus_defocus)
   const y = nums(j.through_focus_merit)
   const rows: [string, string][] = [
-    ['Best defocus', length(d)],
-    ['RMS at best focus', length(nf(j.merit))],
-    ['RMS at the image surface', length(nf(j.merit_at_zero))],
+    [t('analysis.bestFocus.bestDefocus'), length(d)],
+    [t('analysis.bestFocus.rmsBest'), length(nf(j.merit))],
+    [t('analysis.bestFocus.rmsImage'), length(nf(j.merit_at_zero))],
   ]
   const msd = nf(j.mean_square_defocus)
-  if (Number.isFinite(msd)) rows.push(['Mean-square best defocus', length(msd)])
-  if (typeof j.converged === 'boolean') rows.push(['Search', `${j.converged ? 'Converged' : 'Not converged'} · ${intOf(j.evaluations, 0)} evaluations`])
+  if (Number.isFinite(msd)) rows.push([t('analysis.bestFocus.meanSquare'), length(msd)])
+  if (typeof j.converged === 'boolean') rows.push([t('analysis.bestFocus.search'), t(j.converged ? 'analysis.bestFocus.converged' : 'analysis.bestFocus.notConverged', { n: intOf(j.evaluations, 0) })])
   return (
     <div className="absolute inset-0 flex min-w-0 flex-col gap-2 p-3">
       <KeyValues rows={rows} />
@@ -508,14 +518,14 @@ function BestFocus({ result }: RendererProps) {
         <div className="min-h-0 flex-1">
           <XYPlot
             series={[{ x, y: um1000(y), color: seriesColor(0, dark) }]}
-            xLabel="Defocus (mm)"
-            yLabel="RMS radius (µm)"
-            markers={[{ x: d, label: 'Best' }]}
-            label="Field-weighted RMS radius versus defocus"
+            xLabel={t('analysis.bestFocus.xLabel')}
+            yLabel={t('analysis.bestFocus.yLabel')}
+            markers={[{ x: d, label: t('analysis.bestFocus.marker') }]}
+            label={t('analysis.bestFocus.label')}
           />
         </div>
       ) : (
-        <p className="text-[12px] text-secondary">Set Through Focus Samples to plot the merit against defocus.</p>
+        <p className="text-[12px] text-secondary">{t('analysis.bestFocus.hint')}</p>
       )}
     </div>
   )
@@ -552,10 +562,11 @@ function readEncircled(result: AnalysisResult, system: RendererProps['system']) 
 }
 
 function EncircledEnergy({ result, system }: RendererProps) {
+  const t = useT()
   const dark = useDark()
   const [square, setSquare] = useState(false)
-  const { radius, curves } = useMemo(() => readEncircled(result, system), [result, system])
-  if (!curves.length) return <Empty title="No encircled-energy curves in this result" />
+  const { radius, curves } = useMemo(() => readEncircled(result, system), [result, system, t])
+  if (!curves.length) return <Empty title={t('analysis.encircled.empty')} />
   const x = um1000(radius)
   const limit = curves.find((c) => c.limit.length === radius.length)?.limit
   const hasSquare = curves.some((c) => c.ensquared.length === radius.length)
@@ -567,12 +578,12 @@ function EncircledEnergy({ result, system }: RendererProps) {
         hasSquare ? (
           <div className="flex shrink-0 px-3 pt-2">
             <Segmented
-              label="Energy"
+              label={t('analysis.encircled.energy')}
               value={square ? 'sq' : 'enc'}
               onChange={(v) => setSquare(v === 'sq')}
               options={[
-                { value: 'enc', title: 'Encircled' },
-                { value: 'sq', title: 'Ensquared' },
+                { value: 'enc', title: t('analysis.encircled.encircled') },
+                { value: 'sq', title: t('analysis.encircled.ensquared') },
               ]}
             />
           </div>
@@ -581,19 +592,19 @@ function EncircledEnergy({ result, system }: RendererProps) {
       legend={
         <>
           {curves.map((c, k) => (
-            <Key key={c.field} kind="dot" color={seriesColor(k, dark)} label={`${c.label} · r80 ${length(c.r80)}`} />
+            <Key key={c.field} kind="dot" color={seriesColor(k, dark)} label={t('analysis.encircled.legend', { field: c.label, value: length(c.r80) })} />
           ))}
-          {limit && !square && <Key color={secondaryColor()} kind="dash" label="Diffraction limit" />}
+          {limit && !square && <Key color={secondaryColor()} kind="dash" label={t('analysis.curves.diffractionLimit')} />}
         </>
       }
     >
       <XYPlot
         series={plot}
-        xLabel={square ? 'Half-width (µm)' : 'Radius (µm)'}
-        yLabel={square ? 'Ensquared energy' : 'Encircled energy'}
+        xLabel={square ? t('analysis.encircled.halfWidth') : t('analysis.encircled.radius')}
+        yLabel={square ? t('analysis.encircled.ensquaredEnergy') : t('analysis.encircled.encircledEnergy')}
         yDomain={[0, 1.02]}
         hRules={[{ y: 0.8, dash: true }]}
-        label={`${square ? 'Ensquared' : 'Encircled'} energy versus ${square ? 'half-width' : 'radius'} per field`}
+        label={square ? t('analysis.encircled.labelSquare') : t('analysis.encircled.labelCircle')}
       />
     </PlotPane>
   )
@@ -601,12 +612,13 @@ function EncircledEnergy({ result, system }: RendererProps) {
 
 function encircledKeys(r: AnalysisResult): KeyNumber[] {
   const r80 = maxOf(objects(r.json.fields).map((f) => nf(f.r80 ?? f.r80_mm)))
-  return Number.isFinite(r80) ? [{ label: 'Max r80', value: length(r80), help: 'Largest radius enclosing 80 % of the energy over the fields' }] : []
+  return Number.isFinite(r80) ? [{ label: t('analysis.encircled.maxR80'), value: length(r80), help: t('analysis.encircled.maxR80Help') }] : []
 }
 
 // MARK: Geometric MTF
 
 function GeometricMtf({ result, system }: RendererProps) {
+  const t = useT()
   const dark = useDark()
   const j = result.json
   const freq = Array.isArray(j.frequencies) ? nums(j.frequencies) : series(result, j.frequencies)
@@ -620,7 +632,7 @@ function GeometricMtf({ result, system }: RendererProps) {
   }
   const fields = [...byField.keys()].sort((a, b) => a - b)
   const values = Array.isArray(j.field_values) ? j.field_values : []
-  if (!freq.length || !fields.length) return <Empty title="No MTF curves in this result" />
+  if (!freq.length || !fields.length) return <Empty title={t('analysis.geometricMtf.empty')} />
   const plot: XYSeries[] = fields.flatMap((f, k) => [
     { x: freq, y: byField.get(f)!.t, color: seriesColor(k, dark) },
     { x: freq, y: byField.get(f)!.s, color: seriesColor(k, dark), dash: true },
@@ -640,11 +652,11 @@ function GeometricMtf({ result, system }: RendererProps) {
     >
       <XYPlot
         series={plot}
-        xLabel="Spatial frequency (cycles/mm)"
-        yLabel="Modulation"
+        xLabel={t('analysis.geometricMtf.frequency')}
+        yLabel={t('analysis.curves.modulation')}
         xDomain={[0, Number.isFinite(last) && last > 0 ? last : 1]}
         yDomain={[0, 1.02]}
-        label="Geometric MTF versus spatial frequency, tangential and sagittal per field"
+        label={t('analysis.geometricMtf.label')}
       />
     </PlotPane>
   )
@@ -659,14 +671,14 @@ export const GEOMETRIC_RENDERERS: Record<string, Renderer> = {
   chromatic_focal_shift: {
     accepts: (j) => Array.isArray(j.wavelengths_um) && Array.isArray(j.focal_shift),
     View: ChromaticFocalShift,
-    keyNumbers: (r) => (Number.isFinite(nf(r.json.range)) ? [{ label: 'Range', value: length(nf(r.json.range)), help: 'Largest minus smallest focal shift over the sweep' }] : []),
+    keyNumbers: (r) => (Number.isFinite(nf(r.json.range)) ? [{ label: t('analysis.chromaticFocalShift.range'), value: length(nf(r.json.range)), help: t('analysis.chromaticFocalShift.rangeHelp') }] : []),
   },
   longitudinal_aberration: {
     accepts: (j) => Array.isArray(j.pupil) && Array.isArray(j.curves),
     View: Longitudinal,
     keyNumbers: (r) => {
       const m = maxOf(objects(r.json.curves).flatMap((c) => nums(c.aberration).map(Math.abs)))
-      return Number.isFinite(m) ? [{ label: 'Max |LA|', value: length(m), help: 'Largest longitudinal aberration over the zones and wavelengths' }] : []
+      return Number.isFinite(m) ? [{ label: t('analysis.longitudinal.max'), value: length(m), help: t('analysis.longitudinal.maxHelp') }] : []
     },
   },
   lateral_colour: {
@@ -674,7 +686,7 @@ export const GEOMETRIC_RENDERERS: Record<string, Renderer> = {
     View: LateralColour,
     keyNumbers: (r) => {
       const m = maxOf(nums(r.json.lateral_colour).map(Math.abs))
-      return Number.isFinite(m) ? [{ label: 'Max lateral color', value: length(m), help: 'Largest short − long chief-ray height difference' }] : []
+      return Number.isFinite(m) ? [{ label: t('analysis.lateralColour.max'), value: length(m), help: t('analysis.lateralColour.maxHelp') }] : []
     },
   },
   relative_illumination: {
@@ -682,7 +694,7 @@ export const GEOMETRIC_RENDERERS: Record<string, Renderer> = {
     View: RelativeIllumination,
     keyNumbers: (r) => {
       const m = minOf(nums(r.json.relative_illumination))
-      return Number.isFinite(m) ? [{ label: 'Min RI', value: percent(m), help: 'Lowest relative illumination over the field' }] : []
+      return Number.isFinite(m) ? [{ label: t('analysis.relIllum.min'), value: percent(m), help: t('analysis.relIllum.minHelp') }] : []
     },
   },
   footprint: {
@@ -691,26 +703,26 @@ export const GEOMETRIC_RENDERERS: Record<string, Renderer> = {
     keyNumbers: (r) => {
       const out: KeyNumber[] = []
       const sd = nf(r.json.semi_diameter)
-      if (Number.isFinite(sd)) out.push({ label: 'Semi-diameter', value: `${short(sd)} mm` })
+      if (Number.isFinite(sd)) out.push({ label: t('analysis.footprint.semiDiameter'), value: `${short(sd)} mm` })
       const mr = nf(r.json.max_radius)
-      if (Number.isFinite(mr)) out.push({ label: 'Max radius', value: `${short(mr)} mm`, help: 'Largest hit radius on the surface' })
+      if (Number.isFinite(mr)) out.push({ label: t('analysis.footprint.maxRadius'), value: `${short(mr)} mm`, help: t('analysis.footprint.maxRadiusHelp') })
       return out
     },
   },
   grid_distortion: {
     accepts: (j) => typeof j.grid_size === 'number',
     View: GridDistortion,
-    keyNumbers: (r) => (Number.isFinite(nf(r.json.max_abs_distortion_percent)) ? [{ label: 'Max distortion', value: `${nf(r.json.max_abs_distortion_percent).toFixed(3)} %` }] : []),
+    keyNumbers: (r) => (Number.isFinite(nf(r.json.max_abs_distortion_percent)) ? [{ label: t('analysis.gridDistortion.maxDistortion'), value: `${nf(r.json.max_abs_distortion_percent).toFixed(3)} %` }] : []),
   },
   ray_grid: {
     accepts: (j) => typeof j.pupil_count === 'number',
     View: RayGrid,
-    keyNumbers: (r) => (typeof r.json.arrived === 'number' ? [{ label: 'Arrived', value: `${r.json.arrived} / ${intOf(r.json.launched, 0)}`, help: 'Rays that reached the image surface' }] : []),
+    keyNumbers: (r) => (typeof r.json.arrived === 'number' ? [{ label: t('analysis.rayGrid.key'), value: `${r.json.arrived} / ${intOf(r.json.launched, 0)}`, help: t('analysis.rayGrid.keyHelp') }] : []),
   },
   best_focus: {
     accepts: (j) => j.defocus !== undefined,
     View: BestFocus,
-    keyNumbers: (r) => (Number.isFinite(nf(r.json.defocus)) ? [{ label: 'Best defocus', value: length(nf(r.json.defocus)) }] : []),
+    keyNumbers: (r) => (Number.isFinite(nf(r.json.defocus)) ? [{ label: t('analysis.bestFocus.bestDefocus'), value: length(nf(r.json.defocus)) }] : []),
   },
   encircled_energy: {
     accepts: (j) => Array.isArray(j.fields),
@@ -727,7 +739,7 @@ export const GEOMETRIC_RENDERERS: Record<string, Renderer> = {
     View: GeometricMtf,
     keyNumbers: (r) => {
       const c = nf(r.json.cutoff_frequency)
-      return Number.isFinite(c) ? [{ label: 'Diffraction cutoff', value: `${sig(c, 4)} cycles/mm`, help: '1/(λN) for reference; the geometric MTF has no diffraction' }] : []
+      return Number.isFinite(c) ? [{ label: t('analysis.geometricMtf.cutoff'), value: `${sig(c, 4)} cycles/mm`, help: t('analysis.geometricMtf.cutoffHelp') }] : []
     },
   },
 }

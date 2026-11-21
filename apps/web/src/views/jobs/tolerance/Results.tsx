@@ -9,6 +9,7 @@ import { AlertTriangle, BadgeCheck, Eye, EyeOff, Info, Loader2, Share } from 'lu
 import { useEffect, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
+import { useT } from '@/i18n'
 import { cn } from '@/lib/utils'
 import { sig } from '@/model/format'
 import { paramUnit, surfaceIndexOfId } from '@/model/params'
@@ -23,7 +24,7 @@ import {
   histogramBins,
   limitsText,
   percentText,
-  previewTitle,
+  previewSubject,
   recordOf,
   rowLabel,
   samePreviewCase,
@@ -52,6 +53,7 @@ import { MonteCarloChart } from './MonteCarloChart'
 const signed = (v: number, digits = 4) => (Number.isFinite(v) ? (v < 0 ? '−' : '+') + Math.abs(v).toFixed(digits) : '—')
 
 export function ToleranceResults({ result, system }: { result: ToleranceResult; system: System }) {
+  const t = useT()
   const rows = useTolerance((s) => s.runRows)
   const runSystem = useTolerance((s) => s.runSystem) ?? system
   const previewed = useTolerance((s) => s.previewed)
@@ -74,7 +76,7 @@ export function ToleranceResults({ result, system }: { result: ToleranceResult; 
       {result.hasSensitivity && <SensitivityList result={result} rows={rows} system={runSystem} />}
       {hasMonteCarlo(result) && (
         <section className="flex flex-col gap-2">
-          <h3 className="text-[13px] font-semibold">Monte Carlo</h3>
+          <h3 className="text-[13px] font-semibold">{t('tolerance.results.monteCarlo')}</h3>
           <MonteCarloChart
             result={result}
             selection={bin}
@@ -85,36 +87,36 @@ export function ToleranceResults({ result, system }: { result: ToleranceResult; 
             {hasNominal(result) && (
               <span className="flex items-center gap-1">
                 <span className="inline-block h-3 w-[2px] bg-accent" />
-                Nominal {DISPLAY.format(d, DISPLAY.value(d, result.nominal))}
+                {t('tolerance.results.nominalValue', { value: DISPLAY.format(d, DISPLAY.value(d, result.nominal)) })}
               </span>
             )}
             {result.percentiles.length > 0 && (
               <span className="flex items-center gap-1">
                 <span className="inline-block h-3 w-0 border-l border-dashed border-secondary" />
-                {result.percentiles.map((p) => short(p.percentile)).join(', ')} % of builds
+                {t('tolerance.results.levelsOfBuilds', { levels: result.percentiles.map((p) => short(p.percentile)).join(', ') })}
               </span>
             )}
             <span className="flex items-center gap-1">
               <span className="inline-block h-[2px] w-3 bg-label/75" />
-              Cumulative share (right axis)
+              {t('tolerance.results.cumulative')}
             </span>
           </div>
           <TrialList result={result} bin={bin} onClearBin={() => setBin(null)} />
           <KeyValues
             rows={[
-              ['Trials', `${result.trials}, seed ${result.seed}`],
-              ['Mean', DISPLAY.formatWithUnit(d, DISPLAY.value(d, result.mean))],
-              ['Best', DISPLAY.formatWithUnit(d, DISPLAY.value(d, result.min))],
-              ['Worst', DISPLAY.formatWithUnit(d, DISPLAY.value(d, result.max))],
-              ...(result.secondsPerTrial != null ? [['Time per trial', secondsText(result.secondsPerTrial)] as [string, string]] : []),
-              ...(result.failures > 0 ? [['Failed trials', String(result.failures)] as [string, string]] : []),
+              [t('tolerance.results.trials'), t('tolerance.results.trialsSeed', { trials: result.trials, seed: result.seed })],
+              [t('tolerance.results.mean'), DISPLAY.formatWithUnit(d, DISPLAY.value(d, result.mean))],
+              [t('tolerance.results.best'), DISPLAY.formatWithUnit(d, DISPLAY.value(d, result.min))],
+              [t('tolerance.results.worst'), DISPLAY.formatWithUnit(d, DISPLAY.value(d, result.max))],
+              ...(result.secondsPerTrial != null ? [[t('tolerance.results.timePerTrial'), secondsText(result.secondsPerTrial)] as [string, string]] : []),
+              ...(result.failures > 0 ? [[t('tolerance.results.failedTrials'), String(result.failures)] as [string, string]] : []),
             ]}
           />
         </section>
       )}
       {result.compensators.length > 0 && (
         <section className="flex flex-col gap-2">
-          <h3 className="text-[13px] font-semibold">Compensators</h3>
+          <h3 className="text-[13px] font-semibold">{t('tolerance.results.compensators')}</h3>
           {result.compensators.map((_, j) => (
             <CompensatorStats key={j} j={j} result={result} system={runSystem} />
           ))}
@@ -127,14 +129,15 @@ export function ToleranceResults({ result, system }: { result: ToleranceResult; 
 // MARK: Summary
 
 function Summary({ result, rows, system }: { result: ToleranceResult; rows: ToleranceRow[]; system: System }) {
+  const t = useT()
   const d = result.display
   const unit = DISPLAY.unit(d)
   const [copied, setCopied] = useState(false)
   const notes: string[] = []
-  if (result.stopped) notes.push(`Stopped early: ${hasMonteCarlo(result) ? `statistics of the ${result.trials} completed trials` : 'the sensitivities completed so far'}.`)
-  if (result.failures > 0) notes.push(`${result.failures} trials failed (no image) and are left out.`)
-  if (hasMonteCarlo(result) && !result.hasSensitivity) notes.push('Run the sensitivity too to see the largest contributors.')
-  const name = system.name || 'Tolerance'
+  if (result.stopped) notes.push(hasMonteCarlo(result) ? t('tolerance.results.stoppedMc', { trials: result.trials }) : t('tolerance.results.stoppedSens'))
+  if (result.failures > 0) notes.push(t('tolerance.results.failedNote', { count: result.failures }))
+  if (hasMonteCarlo(result) && !result.hasSensitivity) notes.push(t('tolerance.results.runSensitivityToo'))
+  const name = system.name || t('tolerance.results.tolerance')
   return (
     <section className="flex flex-col gap-3">
       <div className="flex items-baseline justify-between gap-2">
@@ -144,9 +147,9 @@ function Summary({ result, rows, system }: { result: ToleranceResult; rows: Tole
         </h3>
         <DropdownMenu onOpenChange={(o) => o && setCopied(false)}>
           <DropdownMenuTrigger asChild>
-            <Button variant="ghost" size="sm" title="Copy a summary as text, or save the tables as CSV">
+            <Button variant="ghost" size="sm" title={t('tolerance.results.exportHelp')}>
               <Share className="size-3.5" />
-              Export
+              {t('tolerance.results.export')}
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
@@ -154,44 +157,47 @@ function Summary({ result, rows, system }: { result: ToleranceResult; rows: Tole
               onSelect={() => {
                 void navigator.clipboard?.writeText(summaryText(result, rows, system, name))
                 setCopied(true)
-                useView.getState().toast('Copied the tolerance summary.')
+                useView.getState().toast(t('tolerance.results.copiedToast'))
               }}
             >
-              {copied ? 'Copied' : 'Copy Summary'}
+              {copied ? t('tolerance.results.copied') : t('tolerance.results.copySummary')}
             </DropdownMenuItem>
             <DropdownMenuSeparator />
             {result.hasSensitivity && (
-              <DropdownMenuItem onSelect={() => download(`${name} sensitivity.csv`, sensitivityCsv(result, rows, system), 'text/csv')}>Save Sensitivity Table as CSV…</DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => download(t('tolerance.results.sensitivityFile', { name }), sensitivityCsv(result, rows, system), 'text/csv')}>{t('tolerance.results.saveSensitivity')}</DropdownMenuItem>
             )}
             {hasMonteCarlo(result) && (
-              <DropdownMenuItem onSelect={() => download(`${name} trials.csv`, trialsCsv(result, rows, system), 'text/csv')}>Save Monte Carlo Trials as CSV…</DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => download(t('tolerance.results.trialsFile', { name }), trialsCsv(result, rows, system), 'text/csv')}>{t('tolerance.results.saveTrials')}</DropdownMenuItem>
             )}
           </DropdownMenuContent>
         </DropdownMenu>
       </div>
       <div className="grid grid-cols-3 gap-x-4 gap-y-3">
         {hasNominal(result) && (
-          <div title={result.compensators.length ? 'The design as it is, with the compensators re-optimized' : 'The design as it is'}>
-            <BigNumber label="Nominal" value={DISPLAY.format(d, DISPLAY.value(d, result.nominal))} testId="tolerance-nominal" />
+          <div title={result.compensators.length ? t('tolerance.results.nominalHelpComp') : t('tolerance.results.nominalHelp')}>
+            <BigNumber label={t('tolerance.results.nominal')} value={DISPLAY.format(d, DISPLAY.value(d, result.nominal))} testId="tolerance-nominal" />
           </div>
         )}
         {result.hasSensitivity && (
-          <div className="col-span-2" title="Nominal plus the root-sum-square of every tolerance's worst change">
-            <BigNumber label="Predicted (RSS)" value={DISPLAY.format(d, DISPLAY.value(d, result.predicted))} testId="tolerance-rss" />
+          <div className="col-span-2" title={t('tolerance.results.predictedHelp')}>
+            <BigNumber label={t('tolerance.results.predicted')} value={DISPLAY.format(d, DISPLAY.value(d, result.predicted))} testId="tolerance-rss" />
           </div>
         )}
         {hasMonteCarlo(result) &&
           // Rows of three, starting below Nominal and RSS (as macOS).
           result.percentiles.map((p, k) => (
-            <div key={p.percentile} className={cn(k % 3 === 0 && 'col-start-1')} data-testid="tolerance-percentile" title={`${short(p.percentile)} % of the Monte Carlo trials reach ${DISPLAY.higherIsBetter(d) ? 'at least' : 'at most'} this value`}>
-              <BigNumber label={`${short(p.percentile)} % of builds`} value={DISPLAY.format(d, DISPLAY.value(d, p.value))} />
+            <div key={p.percentile} className={cn(k % 3 === 0 && 'col-start-1')} data-testid="tolerance-percentile" title={t(DISPLAY.higherIsBetter(d) ? 'tolerance.results.percentileHelpAtLeast' : 'tolerance.results.percentileHelpAtMost', { p: short(p.percentile) })}>
+              <BigNumber label={t('tolerance.results.levelsOfBuilds', { levels: short(p.percentile) })} value={DISPLAY.format(d, DISPLAY.value(d, p.value))} />
             </div>
           ))}
       </div>
       {result.yieldFraction != null && (
         <p className="flex items-center gap-1.5 text-[12px]" data-testid="tolerance-yield">
           <BadgeCheck className="size-4 text-success" />
-          Yield {percentText(result.yieldFraction)} at {DISPLAY.higherIsBetter(d) ? '≥' : '≤'} {DISPLAY.format(d, DISPLAY.value(d, result.threshold ?? NaN))}
+          {t(DISPLAY.higherIsBetter(d) ? 'tolerance.results.yieldAtLeast' : 'tolerance.results.yieldAtMost', {
+            yield: percentText(result.yieldFraction),
+            limit: DISPLAY.format(d, DISPLAY.value(d, result.threshold ?? NaN)),
+          })}
         </p>
       )}
       {notes.length > 0 && (
@@ -207,6 +213,7 @@ function Summary({ result, rows, system }: { result: ToleranceResult; rows: Tole
 // MARK: Preview
 
 function PreviewCard({ result, rows, system }: { result: ToleranceResult; rows: ToleranceRow[]; system: System }) {
+  const t = useT()
   const previewed = useTolerance((s) => s.previewed)
   const preview = useTolerance((s) => s.preview)
   const error = useTolerance((s) => s.previewError)
@@ -215,15 +222,15 @@ function PreviewCard({ result, rows, system }: { result: ToleranceResult; rows: 
   useEffect(() => setAll(false), [previewed])
   if (!previewed) return null
   const d = result.display
-  const title = previewTitle(previewed, rows, system, result).replace(/^Tolerance: /, '')
+  const title = previewSubject(previewed, rows, system, result)
   const changes = preview ? buildChanges(preview.perturbations, rows, runSettings, system) : []
   return (
-    <section className="rounded-[10px] border border-accent/25 bg-accent/[0.08] p-3" aria-label="Previewed build" data-testid="tolerance-preview-card">
+    <section className="rounded-[10px] border border-accent/25 bg-accent/[0.08] p-3" aria-label={t('tolerance.results.previewed')} data-testid="tolerance-preview-card">
       <div className="flex items-start gap-2">
         <Eye className="mt-0.5 size-4 shrink-0 text-accent" />
         <h4 className="min-w-0 flex-1 text-[12px] font-semibold">{title.charAt(0).toUpperCase() + title.slice(1)}</h4>
         <Button size="sm" onClick={endTolerancePreview}>
-          End Preview
+          {t('tolerance.results.endPreview')}
         </Button>
       </div>
       {error ? (
@@ -234,7 +241,7 @@ function PreviewCard({ result, rows, system }: { result: ToleranceResult; rows: 
       ) : preview ? (
         <div className="mt-1.5 flex flex-col gap-1.5">
           <Hint>
-            {DISPLAY.title(d)} {DISPLAY.formatWithUnit(d, DISPLAY.value(d, preview.criterion))} · shown in the layout and the analyses, not applied
+            {t('tolerance.results.previewInfo', { criterion: DISPLAY.title(d), value: DISPLAY.formatWithUnit(d, DISPLAY.value(d, preview.criterion)) })}
           </Hint>
           {preview.compensators.length > 0 && (
             <div className="flex flex-col gap-0.5 text-[11px]">
@@ -243,7 +250,7 @@ function PreviewCard({ result, rows, system }: { result: ToleranceResult; rows: 
                 const n = result.nominalCompensators[j]
                 const unit = paramUnit(c.param)
                 return (
-                  <div key={j} className="flex items-baseline gap-2" title={`Re-optimized for this build${n != null ? `; nominal ${sig(n, 6)} ${unit}` : ''}`}>
+                  <div key={j} className="flex items-baseline gap-2" title={n != null ? t('tolerance.results.compensatorHelpNominal', { nominal: sig(n, 6), unit }) : t('tolerance.results.compensatorHelp')}>
                     <span className="min-w-0 flex-1 truncate">{compensatorTitle(c.param, system)}</span>
                     <span className="num">
                       {sig(v, 6)} {unit}
@@ -255,12 +262,12 @@ function PreviewCard({ result, rows, system }: { result: ToleranceResult; rows: 
             </div>
           )}
           {!changes.length ? (
-            <Hint>No perturbation.</Hint>
+            <Hint>{t('tolerance.results.noPerturbation')}</Hint>
           ) : (
             <div className="flex flex-col gap-0.5 text-[11px]">
-              <span className="font-medium text-secondary">{changes.length === 1 ? 'Perturbation' : 'Perturbations, largest share of their limit first'}</span>
+              <span className="font-medium text-secondary">{changes.length === 1 ? t('tolerance.results.perturbation') : t('tolerance.results.perturbations')}</span>
               {(all ? changes : changes.slice(0, 6)).map((c) => (
-                <div key={c.id} className="flex items-center gap-2" title={`${c.label}: ${c.text} of ${c.limits}`}>
+                <div key={c.id} className="flex items-center gap-2" title={t('tolerance.results.perturbationHelp', { label: c.label, text: c.text, limits: c.limits })}>
                   <span className="min-w-0 flex-1 truncate">{c.label}</span>
                   <span className="num">{c.text}</span>
                   <LimitBar fraction={c.fraction} />
@@ -268,7 +275,7 @@ function PreviewCard({ result, rows, system }: { result: ToleranceResult; rows: 
               ))}
               {changes.length > 6 && (
                 <button type="button" className="cursor-default self-start text-accent hover:underline" onClick={() => setAll(!all)}>
-                  {all ? 'Show the 6 largest' : `Show all ${changes.length}`}
+                  {all ? t('tolerance.results.showLargest') : t('tolerance.results.showAll', { count: changes.length })}
                 </button>
               )}
             </div>
@@ -277,7 +284,7 @@ function PreviewCard({ result, rows, system }: { result: ToleranceResult; rows: 
       ) : (
         <p className="mt-1.5 flex items-center gap-1.5 text-[11px] text-secondary">
           <Loader2 className="size-3.5 animate-spin" />
-          Rebuilding the build in the engine…
+          {t('tolerance.results.rebuilding')}
         </p>
       )}
     </section>
@@ -287,6 +294,7 @@ function PreviewCard({ result, rows, system }: { result: ToleranceResult; rows: 
 // MARK: Sensitivity
 
 function SensitivityList({ result, rows, system }: { result: ToleranceResult; rows: ToleranceRow[]; system: System }) {
+  const t = useT()
   const [all, setAll] = useState(false)
   const previewed = useTolerance((s) => s.previewed)
   const d = result.display
@@ -297,10 +305,10 @@ function SensitivityList({ result, rows, system }: { result: ToleranceResult; ro
   return (
     <section className="flex flex-col gap-1" data-testid="tolerance-sensitivity">
       <div className="flex items-baseline justify-between">
-        <h3 className="text-[13px] font-semibold">Sensitivity</h3>
-        <span className="text-[11px] text-secondary">Δ {unit || DISPLAY.title(d)} at − / +</span>
+        <h3 className="text-[13px] font-semibold">{t('tolerance.results.sensitivity')}</h3>
+        <span className="text-[11px] text-secondary">{t('tolerance.results.sensitivityAxis', { what: unit || DISPLAY.title(d) })}</span>
       </div>
-      <Hint className="pb-1">Each tolerance alone at its limits, largest share of the RSS first. Click a row to select its surface; the eye previews that build.</Hint>
+      <Hint className="pb-1">{t('tolerance.results.sensitivityHint')}</Hint>
       {list.map((s, k) => {
         const row = rows[s.id]
         const label = row ? rowLabel(row, system) : s.label
@@ -313,8 +321,8 @@ function SensitivityList({ result, rows, system }: { result: ToleranceResult; ro
             key={s.id}
             role="button"
             tabIndex={0}
-            aria-label={`${k + 1}. ${label}${isWorst ? ', a worst offender' : ''}, ${Math.round(f * 100)} % of the RSS`}
-            title={`${label}: ${Math.round(f * 100)} % of the RSS. Click to select the surface.`}
+            aria-label={t(isWorst ? 'tolerance.results.rowAriaWorst' : 'tolerance.results.rowAria', { rank: k + 1, label, share: Math.round(f * 100) })}
+            title={t('tolerance.results.rowHelp', { label, share: Math.round(f * 100) })}
             className={cn('group cursor-default rounded-md px-1 py-[3px] outline-none focus-visible:ring-2 focus-visible:ring-accent', selected ? 'bg-accent-soft' : isWorst ? 'bg-warning/12' : 'hover:bg-hover')}
             onClick={() => {
               const id = s.param && typeof s.param.surface === 'number' ? s.param.surface : row?.surface
@@ -332,8 +340,8 @@ function SensitivityList({ result, rows, system }: { result: ToleranceResult; ro
                 variant="ghost"
                 size="iconSm"
                 className={cn('shrink-0', selected ? 'text-accent' : 'opacity-40 group-hover:opacity-100')}
-                aria-label={selected ? 'End preview' : 'Preview'}
-                title={selected ? 'End the preview' : `Preview this build in the window: the tolerance at its worse limit${result.compensators.length ? ', compensated' : ''}; not applied`}
+                aria-label={selected ? t('tolerance.results.endPreviewAria') : t('tolerance.results.previewAria')}
+                title={selected ? t('tolerance.results.endPreviewHelp') : t(result.compensators.length ? 'tolerance.results.previewSensitivityHelpComp' : 'tolerance.results.previewSensitivityHelp')}
                 onClick={(e) => {
                   e.stopPropagation()
                   if (selected) endTolerancePreview()
@@ -355,10 +363,10 @@ function SensitivityList({ result, rows, system }: { result: ToleranceResult; ro
       })}
       {result.sensitivities.length > 12 && (
         <button type="button" className="cursor-default self-start text-[12px] text-accent hover:underline" onClick={() => setAll(!all)}>
-          {all ? 'Show the 12 largest' : `Show all ${result.sensitivities.length}`}
+          {all ? t('tolerance.results.showLargest12') : t('tolerance.results.showAll', { count: result.sensitivities.length })}
         </button>
       )}
-      {result.sensitivityCancelled && <p className="text-[11px] text-warning">Stopped: tolerances not evaluated are missing.</p>}
+      {result.sensitivityCancelled && <p className="text-[11px] text-warning">{t('tolerance.results.sensitivityStopped')}</p>}
     </section>
   )
 }
@@ -366,6 +374,7 @@ function SensitivityList({ result, rows, system }: { result: ToleranceResult; ro
 // MARK: Trials
 
 function TrialList({ result, bin, onClearBin }: { result: ToleranceResult; bin: Bin | null; onClearBin: () => void }) {
+  const t = useT()
   const [limit, setLimit] = useState(6)
   const previewed = useTolerance((s) => s.previewed)
   const runSystem = useTolerance((s) => s.runSystem)
@@ -373,18 +382,20 @@ function TrialList({ result, bin, onClearBin }: { result: ToleranceResult; bin: 
   const d = result.display
   const unit = DISPLAY.unit(d)
   const trials = bin ? trialsShownIn(result, bin.lo, bin.hi) : trialsWorstFirst(result)
-  const title = bin ? `${trials.length} trial${trials.length === 1 ? '' : 's'} at ${DISPLAY.format(d, bin.lo)}–${DISPLAY.format(d, bin.hi)}${unit ? ' ' + unit : ''}` : 'Worst trials'
+  const title = bin
+    ? t(unit ? 'tolerance.results.trialsInBarUnit' : 'tolerance.results.trialsInBar', { count: trials.length, lo: DISPLAY.format(d, bin.lo), hi: DISPLAY.format(d, bin.hi), unit })
+    : t('tolerance.results.worstTrials')
   return (
     <div className="flex flex-col gap-0.5" data-testid="tolerance-trials">
       <div className="flex items-baseline justify-between">
         <span className="text-[12px] font-medium">{title}</span>
         {bin && (
-          <button type="button" className="cursor-default text-[11px] text-accent hover:underline" title="List the worst trials instead of the selected bar's" onClick={onClearBin}>
-            Worst Trials
+          <button type="button" className="cursor-default text-[11px] text-accent hover:underline" title={t('tolerance.results.worstTrialsHelp')} onClick={onClearBin}>
+            {t('tolerance.results.worstTrialsButton')}
           </button>
         )}
       </div>
-      {!trials.length && <Hint>No trial in this bar.</Hint>}
+      {!trials.length && <Hint>{t('tolerance.results.noTrialInBar')}</Hint>}
       {trials.slice(0, limit).map((k) => {
         const selected = samePreviewCase(previewed, { type: 'trial', trial: k })
         const rec = recordOf(result, k)
@@ -399,11 +410,11 @@ function TrialList({ result, bin, onClearBin }: { result: ToleranceResult; bin: 
             key={k}
             type="button"
             className={cn('flex cursor-default items-center gap-2 rounded-[5px] px-1 py-[2px] text-left text-[12px]', selected ? 'bg-accent-soft' : 'hover:bg-hover')}
-            aria-label={`Trial ${k + 1}, ${value}`}
-            title={selected ? 'End the preview' : `Preview trial ${k + 1} in the window: its perturbations${result.compensators.length ? ' and re-optimised compensators' : ''}; not applied`}
+            aria-label={t('tolerance.results.trialAria', { n: k + 1, value })}
+            title={selected ? t('tolerance.results.endPreviewHelp') : t(result.compensators.length ? 'tolerance.results.previewTrialHelpComp' : 'tolerance.results.previewTrialHelp', { n: k + 1 })}
             onClick={() => (selected ? endTolerancePreview() : void previewTolerance({ type: 'trial', trial: k }, result))}
           >
-            <span className="num w-[72px] shrink-0">Trial {k + 1}</span>
+            <span className="num w-[72px] shrink-0">{t('tolerance.results.trialN', { n: k + 1 })}</span>
             <span className="num">{value}</span>
             {comp && <span className="num truncate text-[11px] text-secondary">{comp}</span>}
             <span className="flex-1" />
@@ -413,10 +424,10 @@ function TrialList({ result, bin, onClearBin }: { result: ToleranceResult; bin: 
       })}
       {trials.length > limit && (
         <button type="button" className="cursor-default self-start text-[11px] text-accent hover:underline" onClick={() => setLimit(limit + 20)}>
-          Show {Math.min(trials.length - limit, 20)} more
+          {t('tolerance.results.showMore', { count: Math.min(trials.length - limit, 20) })}
         </button>
       )}
-      <Hint>{bin ? 'The eye rebuilds a trial in the window, read-only.' : 'Click a bar of the histogram for its trials; the eye rebuilds a trial in the window.'}</Hint>
+      <Hint>{bin ? t('tolerance.results.trialsHintBar') : t('tolerance.results.trialsHint')}</Hint>
     </div>
   )
 }
@@ -424,18 +435,19 @@ function TrialList({ result, bin, onClearBin }: { result: ToleranceResult; bin: 
 // MARK: Compensators
 
 function CompensatorStats({ j, result, system }: { j: number; result: ToleranceResult; system: System }) {
+  const t = useT()
   const c = result.compensators[j]
   const unit = paramUnit(c.param)
   const used = compensatorRange(result, j)
   const nominal = j < result.nominalCompensators.length ? result.nominalCompensators[j] : null
   const rows: [string, string][] = []
-  if (nominal != null) rows.push(['Nominal (re-optimized)', `${sig(nominal, 6)} ${unit}`])
-  if (used) rows.push(['Sensitivity range used', `${signed(used[0])} to ${signed(used[1])} ${unit}`])
+  if (nominal != null) rows.push([t('tolerance.results.nominalReopt'), `${sig(nominal, 6)} ${unit}`])
+  if (used) rows.push([t('tolerance.results.rangeUsed'), t('tolerance.results.rangeUsedValue', { lo: signed(used[0]), hi: signed(used[1]), unit })])
   if (j < result.compensatorMean.length) {
     const mean = result.compensatorMean[j]
     const sd = result.compensatorStd[j] ?? NaN
-    rows.push(['Monte Carlo mean', `${sig(mean, 6)} ${unit}${nominal != null ? ` (${signed(mean - nominal)})` : ''}`])
-    rows.push(['Monte Carlo σ (±3σ)', Number.isFinite(sd) ? `${sig(sd, 4)} (±${sig(3 * sd, 4)}) ${unit}` : '—'])
+    rows.push([t('tolerance.results.mcMean'), `${sig(mean, 6)} ${unit}${nominal != null ? ` (${signed(mean - nominal)})` : ''}`])
+    rows.push([t('tolerance.results.mcSigma'), Number.isFinite(sd) ? `${sig(sd, 4)} (±${sig(3 * sd, 4)}) ${unit}` : '—'])
   }
   const atLimit = used && c.range != null && Math.max(-used[0], used[1]) >= c.range * 0.99
   return (
@@ -444,12 +456,12 @@ function CompensatorStats({ j, result, system }: { j: number; result: ToleranceR
         <span className="text-[12px] font-medium">{compensatorTitle(c.param, system)}</span>
         {c.range != null && (
           <span className="text-[11px] text-secondary">
-            allowed ±{short(c.range)} {unit}
+            {t('tolerance.results.allowed', { range: short(c.range), unit })}
           </span>
         )}
       </div>
       {used && c.range != null && c.range > 0 && (
-        <span title={`The sensitivity evaluations moved it from ${short(used[0])} to +${short(used[1])} ${unit} of ±${short(c.range)} allowed`}>
+        <span title={t('tolerance.results.rangeUsedHelp', { lo: short(used[0]), hi: short(used[1]), unit, range: short(c.range) })}>
           <RangeUsageBar lo={used[0]} hi={used[1]} range={c.range} />
         </span>
       )}
@@ -457,7 +469,7 @@ function CompensatorStats({ j, result, system }: { j: number; result: ToleranceR
       {atLimit && (
         <p className="flex items-start gap-1 text-[11px] text-warning">
           <AlertTriangle className="mt-px size-3 shrink-0" />
-          It reached its limit: some builds need more adjustment than allowed.
+          {t('tolerance.results.reachedLimit')}
         </p>
       )}
     </div>

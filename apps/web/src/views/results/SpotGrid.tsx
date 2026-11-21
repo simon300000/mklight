@@ -2,6 +2,7 @@
 import { useEffect, useMemo, useRef } from 'react'
 import type { AnalysisResult, JsonObject } from '@/engine/types'
 import type { System } from '@/model/system'
+import { useT } from '@/i18n'
 import { cssVar, useDark } from '@/lib/theme'
 import { fmt, nf, sig } from '@/model/format'
 import { arr, buffer, fieldLabel, isObj, nums, niceCeil, obj, setupCanvas, useSize, wavelengthsUm, wlColor } from './common'
@@ -75,6 +76,7 @@ function cellRms(d: SpotData, f: number, p: number, reference: string): number {
 }
 
 function SpotCell(props: { d: SpotData; cell: Cell; size: number; dark: boolean; label: string }) {
+  const t = useT()
   const ref = useRef<HTMLCanvasElement>(null)
   const { d, cell, size, dark } = props
   useEffect(() => {
@@ -122,12 +124,13 @@ function SpotCell(props: { d: SpotData; cell: Cell; size: number; dark: boolean;
   return (
     <div className="flex flex-col items-center gap-0.5">
       <canvas ref={ref} role="img" aria-label={props.label} />
-      <div className="num text-[11px] text-secondary">RMS {Number.isFinite(cell.rms) ? fmt(cell.rms * 1000, 2) : '–'} µm</div>
+      <div className="num text-[11px] text-secondary">{t('analysis.results.spotRms', { value: Number.isFinite(cell.rms) ? fmt(cell.rms * 1000, 2) : '–' })}</div>
     </div>
   )
 }
 
 export function SpotGrid(props: { result: AnalysisResult; system: System }) {
+  const t = useT()
   const dark = useDark()
   const d = useMemo(() => prepare(props.result, props.system), [props.result, props.system])
   const [ref, size] = useSize<HTMLDivElement>()
@@ -143,7 +146,7 @@ export function SpotGrid(props: { result: AnalysisResult; system: System }) {
   const byH = (size.h - colHead - footer - 16) / Math.max(rows, 1) - caption - gap
   const cell = Math.floor(Math.max(56, Math.min(260, byW, Math.max(byH, 96))))
 
-  if (!rows) return <div className="p-4 text-secondary">No fields in this result.</div>
+  if (!rows) return <div className="p-4 text-secondary">{t('analysis.results.noFields')}</div>
   const boxText = d.box >= 1 ? `${sig(d.box, 3)} mm` : `${sig(d.box, 3)} mm (${sig(d.box * 1000, 3)} µm)`
 
   return (
@@ -177,7 +180,7 @@ export function SpotGrid(props: { result: AnalysisResult; system: System }) {
                   cell={{ field: fi, plane: pi, rms: cellRms(d, fi, pi, reference) }}
                   size={cell}
                   dark={dark}
-                  label={`Spot diagram, ${label}${d.hasPlanes ? `, defocus ${fmt(d.planes[pi], 3)} mm` : ''}`}
+                  label={d.hasPlanes ? t('analysis.results.spotLabelDefocus', { field: label, defocus: fmt(d.planes[pi], 3) }) : t('analysis.results.spotLabel', { field: label })}
                 />
               )),
             ]
@@ -185,8 +188,8 @@ export function SpotGrid(props: { result: AnalysisResult; system: System }) {
         </div>
       </div>
       <Legend>
-        <span className="num">Box {boxText}</span>
-        {Number.isFinite(d.airy) && <span className="num">Airy radius {fmt(d.airy * 1000, 2)} µm (dashed)</span>}
+        <span className="num">{t('analysis.results.box', { value: boxText })}</span>
+        {Number.isFinite(d.airy) && <span className="num">{t('analysis.results.airyDashed', { value: fmt(d.airy * 1000, 2) })}</span>}
         {(d.selectedWls.length ? d.selectedWls : d.wls.map((_, k) => k)).map((w) => (
           <Swatch key={w} color={wlColor(d.wls, w, dark)} kind="dot" label={`${sig(d.wls[w], 4)} µm`} />
         ))}

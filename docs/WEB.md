@@ -100,6 +100,7 @@ MTF panes. The tests run one at a time (the engine's thread pool is per page).
 | `src/views/` | The window: toolbar, sidebar, lens data, layout (2-D and WebGL2 3-D), panels and separate windows, analysis panes, inspector, job panels |
 | `src/views/results/`, `src/views/analysis/`, `src/views/glassmap/` | A view for every analysis, pane settings, run details, the glass map |
 | `src/components/ui/` | shadcn/ui-style components on Radix and Tailwind |
+| `src/i18n/` | Languages: the English and 简体中文 catalogs, `t()`, the engine-text lookup |
 
 Document state and view state are separate, as in the Swift app. Every edit
 replaces the system (or the project's variables, merit, tolerances and
@@ -180,6 +181,32 @@ thing:
 * **Metal viewport** → a WebGL2 3-D view and a 2-D canvas for the sections.
 * **Liquid Glass** → backdrop-filter translucency on the toolbar and popovers
   only; system font, light and dark from the system.
+
+### Languages
+
+English and Simplified Chinese (简体中文). The app follows the browser's
+languages (zh, zh-CN, zh-SG, zh-Hans → 简体中文; zh-TW, zh-HK and zh-Hant
+stay English for now); App menu ▸ Language picks System, English or 简体中文,
+kept per browser and switched live. `<html lang>` follows.
+
+* **UI strings**: `src/i18n/en/*.ts` is the source, one file per area;
+  `zh-Hans/*.ts` must have the same keys (`tsc` fails on a missing one, a
+  unit test checks the placeholders). `t('area.key', { n })` with `{name}`
+  placeholders and English plurals (`{ one, other }` picked by `count`);
+  components use `useT()`, which re-renders them on a change. Module tables of
+  display text read the language when shown.
+* **Engine text** goes through the shared catalog
+  `locales/<lang>/engine.json` (docs/I18N.md, `src/i18n/engine.ts`), only
+  where it is shown: `engineText` (descriptors, settings titles and help,
+  first-order labels, field map definitions; exact English, else English),
+  `engineEnum` (settings choices by raw value, else the app's formatting),
+  `engineIssue` (validation and structural issues by code: the sentence,
+  with the English message as detail). What the app parses stays English.
+* The Chinese catalogs load on demand: English users download none of it.
+  Units, symbols (EFL, RMS, MTF…), glass names, file names and shortcuts are
+  not translated. Terms follow `locales/zh-Hans/GLOSSARY.md`.
+* The Playwright suite pins English (`locale: 'en-US'`);
+  `e2e/languages.spec.ts` covers Chinese.
 
 ### Differences from the macOS app
 

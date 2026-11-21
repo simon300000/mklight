@@ -5,6 +5,7 @@
 // its live progress, and the `glass_map` / `glass_info` results. Pure functions.
 
 import type { AnalysisResult, Json, JsonObject } from '@/engine/types'
+import { t, tMaybe, type Key } from '@/i18n'
 import { nf, sig } from './format'
 import { offsetCompactText } from './materials'
 import { solveFor, type ParamPath, type VariableSpec } from './params'
@@ -88,12 +89,12 @@ const sameSet = (a: readonly string[], b: readonly string[]) => a.length === b.l
 /** A short description, e.g. "10 nearest · all catalogs". */
 export function candidatesSummary(c: GlassCandidates): string {
   const parts: string[] = []
-  parts.push(c.rule === 'nearest' ? `${c.nearest} nearest` : `n_d ±${sig(c.windowNd, 4)}, V_d ±${sig(c.windowVd, 4)}`)
-  parts.push(c.catalogs.length ? c.catalogs.join(', ') : 'all catalogs')
-  if (!sameSet(c.statuses, DEFAULT_STATUSES)) parts.push(ALL_STATUSES.filter((s) => c.statuses.includes(s)).join(', '))
+  parts.push(c.rule === 'nearest' ? t('glass.summary.nearest', { n: c.nearest }) : `n_d ±${sig(c.windowNd, 4)}, V_d ±${sig(c.windowVd, 4)}`)
+  parts.push(c.catalogs.length ? c.catalogs.join(', ') : t('glass.summary.allCatalogs'))
+  if (!sameSet(c.statuses, DEFAULT_STATUSES)) parts.push(ALL_STATUSES.filter((s) => c.statuses.includes(s)).map((s) => t(`glass.status.${s}` as Key).toLowerCase()).join(t('glass.list.sep')))
   if (c.include.length) parts.push(`+${c.include.length}`)
   if (c.exclude.length) parts.push(`−${c.exclude.length}`)
-  if ([c.minTransmission, c.maxRelativeCost, c.maxClimateClass, c.maxStainClass].some((v) => v != null)) parts.push('limits')
+  if ([c.minTransmission, c.maxRelativeCost, c.maxClimateClass, c.maxStainClass].some((v) => v != null)) parts.push(t('glass.summary.limits'))
   return parts.join(' · ')
 }
 
@@ -150,12 +151,13 @@ export function offsetNote(system: System, selected: readonly number[]): string 
   const slots = glassSlots(system).filter((s) => selected.includes(s.id) && s.offset)
   if (!slots.length) return null
   const names = slots.map((s) => `S${s.index} ${s.material} ${s.offset}`)
-  const list = names.length < 3 ? names.join(' and ') : names.slice(0, -1).join(', ') + ', and ' + names.at(-1)
-  const one = slots.length === 1
-  return (
-    `${list} ${one ? 'carries a melt offset' : 'carry melt offsets'}. A replacement glass is installed without ` +
-    `${one ? 'it' : 'them'}, even the same glass: the offset belonged to the original melt.`
-  )
+  const list =
+    names.length === 1
+      ? names[0]
+      : names.length === 2
+        ? t('glass.list.two', { a: names[0], b: names[1] })
+        : t('glass.list.many', { rest: names.slice(0, -1).join(t('glass.list.sep')), last: names.at(-1)! })
+  return t(slots.length === 1 ? 'glass.offsetNote.one' : 'glass.offsetNote.many', { list })
 }
 
 const MATERIAL_PARAMS = new Set(['material_dn_d', 'material_dv_d', 'model_nd', 'model_vd', 'model_dpgf'])
@@ -190,27 +192,30 @@ export function meritJobSettings(merit: Json): JsonObject {
 export function meritSummary(merit: Json): string {
   const m = obj(merit)
   const hold = m && typeof m.hold_efl === 'boolean' ? m.hold_efl : true
-  let base: string
   if (m?.mode === 'custom') {
-    const n = arr(obj(m.spec)?.operands).length
-    base = `Custom merit, ${n} operand${n === 1 ? '' : 's'}`
-  } else {
-    const crit = obj(obj(m?.default_merit)?.criterion)
-    const type = str(crit?.type) ?? 'rms_spot'
-    const title: Record<string, string> = { rms_spot: 'RMS spot', wavefront: 'RMS wavefront', mtf: 'MTF' }
-    base = `Default merit: ${title[type] ?? type.replace(/_/g, ' ')}`
+    const count = arr(obj(m.spec)?.operands).length
+    return t(hold ? 'glass.merit.customHeld' : 'glass.merit.custom', { count })
   }
-  return base + (hold ? ', focal length held.' : '.')
+  const crit = obj(obj(m?.default_merit)?.criterion)
+  const type = str(crit?.type) ?? 'rms_spot'
+  const title = tMaybe(`glass.merit.types.${type}`) ?? type.replace(/_/g, ' ')
+  return t(hold ? 'glass.merit.defaultHeld' : 'glass.merit.default', { title })
 }
 
 // MARK: Settings
 
 export type GlassAlgorithm = 'tabu' | 'hammer'
 
-export const ALGORITHMS: { value: GlassAlgorithm; title: string; detail: string }[] = [
-  { value: 'tabu', title: 'Quick (tabu search)', detail: 'Tries glass combinations, each re-optimized from the current shape.' },
-  { value: 'hammer', title: 'Thorough (global search)', detail: 'Hops over glasses and shape together to escape local minima; slower.' },
-]
+/** The search kinds; `title` and `detail` read in the language shown when used. */
+export const ALGORITHMS: { value: GlassAlgorithm; readonly title: string; readonly detail: string }[] = (['tabu', 'hammer'] as const).map((value) => ({
+  value,
+  get title() {
+    return t(`glass.algorithms.${value}.title` as Key)
+  },
+  get detail() {
+    return t(`glass.algorithms.${value}.detail` as Key)
+  },
+}))
 
 export interface GlassSearchSettings {
   /** Surface ids whose glass may change. */
@@ -365,20 +370,18 @@ export function movedChanges(c: GlassCombination): VariableChange[] {
 /** "3 variables re-optimized · cut short". */
 export function changeSummary(c: GlassCombination): string {
   const n = movedChanges(c).length
-  let s = n === 0 ? 'shape unchanged' : `${n} variable${n === 1 ? '' : 's'} re-optimized`
-  if (c.cutShort) s += ' · cut short'
+  let s = n === 0 ? t('glass.change.unchanged') : t('glass.change.reoptimized', { count: n })
+  if (c.cutShort) s += ` · ${t('glass.change.cutShort')}`
   return s
 }
 
 /** The ranking's status line. */
 export function statusText(r: SubstitutionResult, applied: boolean): string {
-  let s = `${r.combinations} combination${r.combinations === 1 ? '' : 's'} re-optimized`
-  if (r.failed > 0) s += `, ${r.failed} failed`
-  s += '. '
-  if (r.stopped) s += 'Stopped early: the ranking so far. '
-  if (r.termination === 'time_limit') s += 'The time limit ended the search. '
-  if (!applied) s += 'Select a combination to preview it in the window.'
-  return s.trim()
+  const sentences = [t(r.failed > 0 ? 'glass.result.reoptimizedFailed' : 'glass.result.reoptimized', { count: r.combinations, failed: r.failed })]
+  if (r.stopped) sentences.push(t('glass.result.stopped'))
+  if (r.termination === 'time_limit') sentences.push(t('glass.result.timeLimit'))
+  if (!applied) sentences.push(t('glass.result.selectHint'))
+  return sentences.join(t('glass.result.join'))
 }
 
 /** Ringed glasses of a combination on the map: id → "S1, S3". */
@@ -449,7 +452,7 @@ export function readStatus(v: Json | undefined): { status: GlassStatus; label: s
   return { status: 'unknown', label: 'Unknown' }
 }
 
-export const statusTitle = (s: GlassStatus) => s.charAt(0).toUpperCase() + s.slice(1)
+export const statusTitle = (s: GlassStatus) => t(`glass.status.${s}` as Key)
 
 const SLOTS_LIGHT = ['#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87ba4', '#008300', '#6250d6', '#e34948']
 const SLOTS_DARK = ['#3987e5', '#d95926', '#199e70', '#c98500', '#d55181', '#008300', '#9085e9', '#e66767']
@@ -498,8 +501,8 @@ export const surfaceLabel = (g: GlassMapPoint) => g.surfaces.map((s) => `S${s}`)
 export const offsetText = (o: { dn_d: number; dv_d: number } | null): string => offsetCompactText(o)
 
 export function displayName(g: GlassMapPoint): string {
-  if (g.kind === 'model') return `${g.name} (model)`
-  if (g.kind === 'offset') return `${g.name} ${offsetText(g.offset) || '(melt)'}`
+  if (g.kind === 'model') return t('glass.display.model', { name: g.name })
+  if (g.kind === 'offset') return `${g.name} ${offsetText(g.offset) || t('glass.display.melt')}`
   return g.name
 }
 

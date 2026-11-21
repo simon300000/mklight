@@ -7,6 +7,7 @@
 import { AlertTriangle, CheckCircle2, Gauge, Loader2, Play, RotateCw, Sigma, Square, Target, Wand2 } from 'lucide-react'
 import { useEffect, useRef } from 'react'
 import { Button } from '@/components/ui/button'
+import { engineText, t, useT } from '@/i18n'
 import { JOB_TITLES, useJobs, type JobKind, type JobState } from '@/state/jobs'
 import { useView } from '@/state/view'
 import { cssVar, useDark } from '@/lib/theme'
@@ -34,6 +35,7 @@ export function JobPanelFrame({
   actions: React.ReactNode
 }) {
   const bar = useRef<HTMLDivElement>(null)
+  useT()
   return (
     <div
       className="flex h-full min-h-0 flex-col"
@@ -111,11 +113,12 @@ function GlassAction({
 
 /** A capsule with the run's progress and its stage or live detail. */
 export function GlassProgress({ job, detail }: { job: JobState; detail?: string }) {
+  useT()
   const pct = job.progress >= 0.01 ? `${Math.round(job.progress * 100)}%` : ''
   return (
     <div className="glass-popover flex h-8 min-w-0 flex-1 items-center gap-2 rounded-full px-3 text-[12px]" role="status" data-testid="job-progress">
       <Loader2 className="size-3.5 shrink-0 animate-spin text-secondary" />
-      <span className="num min-w-0 flex-1 truncate">{detail || job.stage || 'Running'}</span>
+      <span className="num min-w-0 flex-1 truncate">{detail || engineText(job.stage) || t('optimize.job.running')}</span>
       {pct && <span className="num shrink-0 text-secondary">{pct}</span>}
     </div>
   )
@@ -131,12 +134,12 @@ export const JobActions = {
     return (
       <>
         <GlassProgress job={job} detail={opts?.detail} />
-        <GlassAction title="Cancel" destructive help="End the run and discard it" onClick={() => jobs.cancel(kind)} />
+        <GlassAction title={t('common.cancel')} destructive help={t('optimize.job.cancelHelp')} onClick={() => jobs.cancel(kind)} />
         <GlassAction
-          title="Stop"
+          title={t('common.stop')}
           icon={<Square />}
           disabled={!opts?.canStop || job.stopped}
-          help={opts?.stopHelp ?? 'Stop now and keep the best result so far'}
+          help={opts?.stopHelp ?? t('optimize.job.stopHelp')}
           onClick={() => jobs.stop(kind)}
         />
       </>
@@ -146,9 +149,9 @@ export const JobActions = {
     return (
       <>
         {opts?.discard !== false && (
-          <GlassAction title="Discard" help="Drop this result; the design stays as it is" onClick={() => useJobs.getState().discard(kind)} />
+          <GlassAction title={t('optimize.job.discard')} help={t('optimize.job.discardHelp')} onClick={() => useJobs.getState().discard(kind)} />
         )}
-        <GlassAction title="Apply to Design" prominent disabled={opts?.applyDisabled} help="Apply the result as one step you can undo" onClick={apply} />
+        <GlassAction title={t('optimize.job.applyToDesign')} prominent disabled={opts?.applyDisabled} help={t('optimize.job.applyHelp')} onClick={apply} />
       </>
     )
   },
@@ -156,20 +159,20 @@ export const JobActions = {
     const jobs = useJobs.getState()
     return (
       <>
-        {opts?.back !== false && <GlassAction title="Back" help="Back to the job's settings" onClick={() => jobs.back(kind)} />}
+        {opts?.back !== false && <GlassAction title={t('optimize.job.back')} help={t('optimize.job.backHelp')} onClick={() => jobs.back(kind)} />}
         <GlassAction
-          title="Try Again"
+          title={t('optimize.job.tryAgain')}
           icon={<RotateCw />}
           prominent
           disabled={opts?.retryDisabled}
-          help="Run the job again with the same settings"
+          help={t('optimize.job.retryHelp')}
           onClick={() => jobs.retry(kind)}
         />
       </>
     )
   },
-  done(kind: JobKind, help = 'Back to the job’s settings') {
-    return <GlassAction title="Done" prominent help={help} onClick={() => useJobs.getState().done(kind)} />
+  done(kind: JobKind, help?: string) {
+    return <GlassAction title={t('common.done')} prominent help={help ?? t('optimize.job.doneHelp')} onClick={() => useJobs.getState().done(kind)} />
   },
 }
 
@@ -184,10 +187,11 @@ export function JobFailure({ title, reason }: { title: string; reason: string })
 }
 
 export function AppliedNotice() {
+  useT()
   return (
     <p className="mb-3 flex items-center gap-1.5 text-[12px] text-secondary" data-testid="applied-notice">
       <CheckCircle2 className="size-4 text-success" />
-      Applied to the design. Undo with {isMac ? '⌘Z' : 'Ctrl+Z'}.
+      {t('optimize.job.applied', { shortcut: isMac ? '⌘Z' : 'Ctrl+Z' })}
     </p>
   )
 }
@@ -205,6 +209,7 @@ export function BigNumber({ label, value, testId }: { label: string; value: stri
 
 /** A small line of a series (log scale optional), for live merit and the like. */
 export function Sparkline({ values, log, height = 36 }: { values: number[]; log?: boolean; height?: number }) {
+  const t = useT()
   const ref = useRef<HTMLCanvasElement>(null)
   const dark = useDark()
   useEffect(() => {
@@ -232,7 +237,7 @@ export function Sparkline({ values, log, height = 36 }: { values: number[]; log?
     })
     g.stroke()
   }, [values, log, height, dark])
-  return <canvas ref={ref} className="w-full" style={{ height }} role="img" aria-label="Progress of the merit" />
+  return <canvas ref={ref} className="w-full" style={{ height }} role="img" aria-label={t('optimize.job.meritProgress')} />
 }
 
 /** Opens the inspector on a job's page (menu commands, status capsule). */

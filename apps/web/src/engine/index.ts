@@ -6,6 +6,7 @@
 import * as engineModule from '@engine'
 import { adaptEngine, type RealEngine } from './adapt'
 import type { EngineClient } from './types'
+import { t } from '@/i18n'
 
 const real = engineModule as unknown as {
   createEngine: () => Promise<RealEngine>
@@ -14,10 +15,8 @@ const real = engineModule as unknown as {
 
 export * from './types'
 
-export const ENGINE_NOT_BUILT = 'Engine not built: run npm run build:wasm in apps/web, then reload.'
-
 export async function loadEngine(): Promise<EngineClient> {
-  if ('engineMissing' in real) throw new Error(ENGINE_NOT_BUILT)
+  if ('engineMissing' in real) throw new Error(t('app.engine.notBuilt'))
   // The engine runs only multithreaded: it needs a cross-origin isolated page
   // (COOP/COEP headers, or the isolation service worker in index.html), and
   // createEngine rejects with the reason otherwise. Not `ready()`: it asks

@@ -17,6 +17,7 @@ import * as A from './arrangement'
 import { useArrangement } from './arrangement'
 import type { LayoutMode } from '@/views/layout/camera'
 import { fromSavedFrame, toSavedFrame } from '@/views/panels/windows'
+import { engineText, t } from '@/i18n'
 
 const AUTOSAVE_KEY = 'mklight-autosave-v1'
 /** An autosaved document with unsaved changes, kept aside until the user recovers or discards it. */
@@ -29,10 +30,8 @@ type PickerWindow = Window & {
 const w = () => window as PickerWindow
 export const hasFileSystemAccess = () => typeof window !== 'undefined' && typeof w().showOpenFilePicker === 'function'
 
-const PROJECT_TYPES = [{ description: 'MKLight project', accept: { 'application/json': ['.mklight'] } }]
-const OPEN_TYPES = [
-  { description: 'MKLight project or lens prescription', accept: { 'application/octet-stream': ['.mklight', '.zmx', '.seq'] } },
-]
+const projectTypes = () => [{ description: t('app.files.projectType'), accept: { 'application/json': ['.mklight'] } }]
+const openTypes = () => [{ description: t('app.files.openType'), accept: { 'application/octet-stream': ['.mklight', '.zmx', '.seq'] } }]
 
 // MARK: Views ↔ panes
 
@@ -142,7 +141,7 @@ export function replaceWithSample(id: string) {
   const s = SAMPLES.find((x) => x.id === id)
   if (!s) return
   const doc = useDocument.getState()
-  doc.replace({ ...doc.project, system: clone(s.system) }, 'Replace with Sample')
+  doc.replace({ ...doc.project, system: clone(s.system) }, t('app.undoNames.replaceWithSample'))
 }
 
 // MARK: Open
@@ -150,11 +149,11 @@ export function replaceWithSample(id: string) {
 export async function openFromPicker() {
   if (hasFileSystemAccess()) {
     try {
-      const [handle] = await w().showOpenFilePicker!({ types: OPEN_TYPES, multiple: false })
+      const [handle] = await w().showOpenFilePicker!({ types: openTypes(), multiple: false })
       const file = await handle.getFile()
       await openFile(file, handle)
     } catch (e) {
-      if ((e as Error).name !== 'AbortError') useView.getState().toast((e as Error).message, 'error')
+      if ((e as Error).name !== 'AbortError') useView.getState().toast(engineText((e as Error).message), 'error')
     }
     return
   }
@@ -180,7 +179,7 @@ export async function openFile(file: File, handle: FileSystemFileHandle | null) 
   try {
     if (format) {
       const engine = useWorkspace.getState().engine
-      if (!engine) throw new Error('The engine is not ready yet.')
+      if (!engine) throw new Error(t('app.toasts.engineNotReady'))
       const data = await file.arrayBuffer()
       const result = await engine.importPrescription(data.slice(0), format)
       const system = result.system as System
@@ -188,16 +187,16 @@ export async function openFile(file: File, handle: FileSystemFileHandle | null) 
       openProject(projectFromSystem(system), { name: file.name, handle: null, imported: true }, { dirty: true })
       // A clean import shows a short note instead of the report.
       if (result.warnings.length) useImportReport.getState().show(file.name, result.warnings, { data, format })
-      else toast(`Imported ${file.name}: ${system.surfaces.length - 2} surfaces.`)
+      else toast(t('app.toasts.imported', { name: file.name, n: system.surfaces.length - 2 }))
       return
     }
     const project = readProject(await file.text())
     openProject(project, { name: file.name, handle, imported: false })
     const missing = await restoreCatalogs(project)
-    if (missing.length) toast(`Glass catalog${missing.length > 1 ? 's' : ''} not loaded: ${missing.join(', ')}. Load ${missing.length > 1 ? 'them' : 'it'} in the System inspector.`, 'warning')
+    if (missing.length) toast(t('app.toasts.catalogsNotLoaded', { count: missing.length, names: missing.join(', ') }), 'warning')
   } catch (e) {
-    const msg = e instanceof ProjectError ? e.message : (e as Error).message
-    toast(`${file.name} could not be opened. ${msg}`, 'error')
+    const msg = engineText(e instanceof ProjectError ? e.message : (e as Error).message)
+    toast(t('app.toasts.couldNotOpen', { name: file.name, error: msg }), 'error')
   }
 }
 
@@ -212,7 +211,7 @@ function currentProjectText(): string {
 
 function suggestedName(): string {
   const doc = useDocument.getState()
-  const base = doc.file?.name.replace(/\.(mklight|zmx|seq)$/i, '') || doc.project.system.name || 'Untitled'
+  const base = doc.file?.name.replace(/\.(mklight|zmx|seq)$/i, '') || doc.project.system.name || t('app.untitled')
   return base.replace(/[\\/:*?"<>|]/g, '-') + '.mklight'
 }
 
@@ -223,7 +222,7 @@ export async function save() {
       await writeHandle(doc.file.handle, currentProjectText())
       doc.markSaved(doc.file)
     } catch (e) {
-      useView.getState().toast(`Could not save: ${(e as Error).message}`, 'error')
+      useView.getState().toast(t('app.toasts.couldNotSave', { error: engineText((e as Error).message) }), 'error')
     }
     return
   }
@@ -235,11 +234,11 @@ export async function saveAs() {
   const name = suggestedName()
   if (typeof w().showSaveFilePicker === 'function') {
     try {
-      const handle = await w().showSaveFilePicker!({ suggestedName: name, types: PROJECT_TYPES })
+      const handle = await w().showSaveFilePicker!({ suggestedName: name, types: projectTypes() })
       await writeHandle(handle, text)
       useDocument.getState().markSaved({ name: handle.name, handle, imported: false })
     } catch (e) {
-      if ((e as Error).name !== 'AbortError') useView.getState().toast(`Could not save: ${(e as Error).message}`, 'error')
+      if ((e as Error).name !== 'AbortError') useView.getState().toast(t('app.toasts.couldNotSave', { error: engineText((e as Error).message) }), 'error')
     }
     return
   }
@@ -329,9 +328,9 @@ function openAutosave(saved: Autosave) {
 function recoveryName(saved: Autosave): string {
   if (saved.file?.name) return saved.file.name
   try {
-    return readProject(saved.text).system.name || 'Untitled'
+    return readProject(saved.text).system.name || t('app.untitled')
   } catch {
-    return 'Untitled'
+    return t('app.untitled')
   }
 }
 
@@ -350,7 +349,7 @@ export async function recover() {
     await idbDel(RECOVERY_KEY)
     useView.getState().set({ recovery: null })
   } catch (e) {
-    useView.getState().toast(`The recovered design could not be opened. ${(e as Error).message}`, 'error')
+    useView.getState().toast(t('app.toasts.couldNotRecover', { error: engineText((e as Error).message) }), 'error')
   }
 }
 

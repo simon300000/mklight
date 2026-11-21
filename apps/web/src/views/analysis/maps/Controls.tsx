@@ -2,9 +2,10 @@
 // menu in narrow panes (`SegmentedOrMenu`), and the field-map column picker
 // with the selected column's definition beside it (below it when narrow).
 import { Segmented } from '@/components/ui/segmented'
+import { useT } from '@/i18n'
 import { Select } from '@/components/ui/select'
 import { cn } from '@/lib/utils'
-import { columnTitleWithUnit, type FieldColumn } from './fieldMap'
+import { columnDefinition, columnTitleWithUnit, type FieldColumn } from './fieldMap'
 
 export function SegmentedOrMenu<T extends string>(props: {
   label: string
@@ -34,18 +35,19 @@ export function SegmentedOrMenu<T extends string>(props: {
 }
 
 export function ColumnPicker(props: { columns: FieldColumn[]; indices?: number[]; value: number; onChange: (c: number) => void }) {
+  const t = useT()
   const idx = props.indices ?? props.columns.map((_, k) => k)
   const col = props.columns[props.value]
   return (
     <div className="flex min-w-0 flex-wrap items-baseline gap-x-3 gap-y-0.5 @max-[420px]:flex-col @max-[420px]:items-start">
-      <Select aria-label="Quantity" value={String(props.value)} onChange={(e) => props.onChange(Number(e.target.value))} title={col?.definition}>
+      <Select aria-label={t('maps.quantity')} value={String(props.value)} onChange={(e) => props.onChange(Number(e.target.value))} title={columnDefinition(col)}>
         {idx.map((k) => (
-          <option key={k} value={k} title={props.columns[k].definition}>
+          <option key={k} value={k} title={columnDefinition(props.columns[k])}>
             {columnTitleWithUnit(props.columns[k])}
           </option>
         ))}
       </Select>
-      {col?.definition && <span className="min-w-0 truncate text-[11px] text-secondary @max-[420px]:line-clamp-3 @max-[420px]:whitespace-normal">{col.definition}</span>}
+      {col?.definition && <span className="min-w-0 truncate text-[11px] text-secondary @max-[420px]:line-clamp-3 @max-[420px]:whitespace-normal">{columnDefinition(col)}</span>}
     </div>
   )
 }

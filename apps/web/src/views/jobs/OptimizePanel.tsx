@@ -11,6 +11,7 @@ import { Segmented } from '@/components/ui/segmented'
 import { Select } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import type { Json, JsonObject } from '@/engine/types'
+import { currentLanguage, useT } from '@/i18n'
 import { isCurvature } from '@/model/bounds'
 import { nf, sig } from '@/model/format'
 import { paramTitle, paramUnit, variablesOf, type ParamPath } from '@/model/params'
@@ -19,7 +20,7 @@ import { useDocument } from '@/state/document'
 import { useJobs, type JobState } from '@/state/jobs'
 import {
   ALGORITHMS,
-  AUTOMATIC_VARIABLES,
+  automaticVariables,
   DEFAULT_ITERATIONS,
   STOCHASTIC,
   optimizeSettings,
@@ -62,6 +63,7 @@ function point(d: Json | null | undefined, stage?: string | null): MeritPoint | 
 const percent = (f: number) => (Number.isFinite(f) ? `${(f * 100).toFixed(Math.abs(f) < 0.1 ? 2 : 1)}%` : '–')
 
 export function OptimizePanel() {
+  const t = useT()
   const project = useDocument((s) => s.project)
   const job = useJobs((s) => s.jobs.optimize)
   const opt = useOptimize()
@@ -101,7 +103,7 @@ export function OptimizePanel() {
     const sys = job.result?.json.system as System | undefined
     if (!sys) return
     const doc = useDocument.getState()
-    doc.replace({ ...doc.project, system: sys }, 'Apply Optimization')
+    doc.replace({ ...doc.project, system: sys }, t('optimize.undo.applyOptimization'))
     useJobs.getState().applied('optimize')
     void useWorkspace.getState().setPreview(null)
   }
@@ -112,25 +114,25 @@ export function OptimizePanel() {
     case 'setup':
       actions = (
         <span className="contents" data-testid="optimize-start">
-          {JobActions.start('Optimize', start, {
+          {JobActions.start(t('optimize.panel.optimize'), start, {
             disabled: blocked || problem != null,
-            help: problem ?? (blocked ? 'Fix the design’s errors first' : 'Optimize the variables against the merit function'),
+            help: problem ?? (blocked ? t('optimize.panel.fixErrorsHelp') : t('optimize.panel.optimizeHelp')),
           })}
         </span>
       )
       break
     case 'running':
       actions = JobActions.running('optimize', job, {
-        detail: last ? `Iteration ${last.iteration} · merit ${sig(last.best, 3)}` : '',
+        detail: last ? t('optimize.panel.liveDetail', { iteration: last.iteration, merit: sig(last.best, 3) }) : '',
         canStop: true,
-        stopHelp: 'End now and keep the best design so far',
+        stopHelp: t('optimize.panel.stopHelp'),
       })
       break
     case 'review':
       actions = JobActions.review('optimize', apply, { applyDisabled: !job.result?.json.system || !improved })
       break
     case 'done':
-      actions = JobActions.done('optimize', 'Back to the merit function and variables')
+      actions = JobActions.done('optimize', t('optimize.panel.doneHelp'))
       break
     case 'failed':
       actions = JobActions.failed('optimize', { retryDisabled: blocked || problem != null })
@@ -142,12 +144,13 @@ export function OptimizePanel() {
       {phase === 'setup' && <Setup problem={problem} blocked={blocked} modelErrors={modelErrors} />}
       {phase === 'running' && <Running job={job} />}
       {(phase === 'review' || phase === 'done') && <Review job={job} system={project.system} applied={phase === 'done'} />}
-      {phase === 'failed' && <JobFailure title="Optimization Failed" reason={job.error ?? 'The engine gave no reason.'} />}
+      {phase === 'failed' && <JobFailure title={t('optimize.panel.failedTitle')} reason={job.error ?? t('optimize.panel.failedReason')} />}
     </JobPanelFrame>
   )
 }
 
 function Setup({ problem, blocked, modelErrors }: { problem: string | null; blocked: boolean; modelErrors: number }) {
+  const t = useT()
   const project = useDocument((s) => s.project)
   const opt = useOptimize()
   const n = variablesOf(project).length
@@ -155,15 +158,15 @@ function Setup({ problem, blocked, modelErrors }: { problem: string | null; bloc
   return (
     <>
       <MeritFunctionSection />
-      <Section title="Variables">
+      <Section title={t('optimize.panel.variables')}>
         <div className="py-1">
           <Segmented<'design' | 'auto'>
-            label="Vary"
+            label={t('optimize.panel.vary')}
             value={design ? 'design' : 'auto'}
             onChange={(v) => n > 0 && opt.set({ useDesignVariables: v === 'design' })}
             options={[
-              { value: 'design', title: `Design variables (${n})`, help: n ? 'The variables marked with V, with their bounds' : 'No variables marked yet' },
-              { value: 'auto', title: 'Automatic', help: 'Every curvature and the back focus' },
+              { value: 'design', title: t('optimize.panel.designVariables', { n }), help: n ? t('optimize.panel.designVariablesHelp') : t('optimize.panel.noVariablesYet') },
+              { value: 'auto', title: t('common.auto'), help: t('optimize.panel.automaticHelp') },
             ]}
           />
         </div>
@@ -171,11 +174,9 @@ function Setup({ problem, blocked, modelErrors }: { problem: string | null; bloc
           <VariablesBoundsList />
         ) : (
           <div data-testid="variables-list" className="py-1">
-            <p className="text-[13px]">{AUTOMATIC_VARIABLES}</p>
+            <p className="text-[13px]">{automaticVariables()}</p>
             <p className="pt-0.5 text-[11px] text-secondary">
-              {n === 0
-                ? 'Mark values with V in the lens data or the inspector to choose them; each gets sensible bounds you can edit here.'
-                : 'Solve-controlled parameters are left out.'}
+              {n === 0 ? t('optimize.panel.markVariables') : t('optimize.panel.solveLeftOut')}
             </p>
           </div>
         )}
@@ -186,9 +187,9 @@ function Setup({ problem, blocked, modelErrors }: { problem: string | null; bloc
           </p>
         )}
       </Section>
-      <Section title="Algorithm">
-        <FormRow label="Method">
-          <Select aria-label="Method" className="w-full" value={opt.algorithm} onChange={(e) => opt.set({ algorithm: e.target.value })}>
+      <Section title={t('optimize.panel.algorithm')}>
+        <FormRow label={t('optimize.panel.method')}>
+          <Select aria-label={t('optimize.panel.method')} className="w-full" value={opt.algorithm} onChange={(e) => opt.set({ algorithm: e.target.value })}>
             {ALGORITHMS.map((a) => (
               <option key={a.id} value={a.id}>
                 {a.title}
@@ -196,26 +197,26 @@ function Setup({ problem, blocked, modelErrors }: { problem: string | null; bloc
             ))}
           </Select>
         </FormRow>
-        <FormRow label="Iterations" help="Iterations, generations or rounds; empty is the algorithm’s default">
+        <FormRow label={t('optimize.panel.iterations')} help={t('optimize.panel.iterationsHelp')}>
           <NumberInput
-            ariaLabel="Iterations"
+            ariaLabel={t('optimize.panel.iterations')}
             value={opt.maxIterations}
             nullable
             integer
             min={1}
-            placeholder={`default (${DEFAULT_ITERATIONS[opt.algorithm] ?? ''})`}
+            placeholder={t('optimize.panel.defaultIterations', { n: DEFAULT_ITERATIONS[opt.algorithm] ?? '' })}
             onCommit={(v) => opt.set({ maxIterations: v })}
           />
         </FormRow>
         {STOCHASTIC.has(opt.algorithm) && (
-          <FormRow label="Seed" help="The random seed: the same seed repeats the run">
-            <NumberInput ariaLabel="Seed" value={opt.seed} integer min={0} onCommit={(v) => opt.set({ seed: v ?? 0 })} />
+          <FormRow label={t('optimize.panel.seed')} help={t('optimize.panel.seedHelp')}>
+            <NumberInput ariaLabel={t('optimize.panel.seed')} value={opt.seed} integer min={0} onCommit={(v) => opt.set({ seed: v ?? 0 })} />
           </FormRow>
         )}
       </Section>
       {blocked && (
         <p className="px-1 text-[12px] text-danger" role="alert">
-          {modelErrors ? 'Fix the design’s errors first.' : 'Waiting for the engine…'}
+          {modelErrors ? t('optimize.panel.fixErrors') : t('optimize.panel.waiting')}
         </p>
       )}
     </>
@@ -223,6 +224,7 @@ function Setup({ problem, blocked, modelErrors }: { problem: string | null; bloc
 }
 
 function Running({ job }: { job: JobState }) {
+  const t = useT()
   const points = job.history.map((d) => point(d)).filter((p): p is MeritPoint => p != null)
   const last = points.at(-1) ?? point(job.detail, job.stage)
   const first = points[0]
@@ -231,22 +233,22 @@ function Running({ job }: { job: JobState }) {
   return (
     <div className="flex flex-col gap-3" data-testid="optimize-running">
       <div className="grid grid-cols-3 gap-3">
-        <BigNumber label="Iteration" value={last ? String(last.iteration) : '–'} testId="optimize-iteration" />
+        <BigNumber label={t('optimize.panel.iteration')} value={last ? String(last.iteration) : '–'} testId="optimize-iteration" />
         <div
           title={
             ['de', 'cma_es', 'nelder_mead'].includes(algorithm)
-              ? 'The search’s merit, including the penalty that holds the focal length; the result reports the merit itself.'
-              : 'The best merit so far, as the search evaluates it.'
+ ? t('optimize.panel.searchMeritPenalty')
+              : t('optimize.panel.searchMeritBest')
           }
         >
-          <BigNumber label="Search merit" value={last ? sig(last.best, 4) : '–'} />
+          <BigNumber label={t('optimize.panel.searchMerit')} value={last ? sig(last.best, 4) : '–'} />
         </div>
-        <BigNumber label="Improvement" value={percent(improvement)} />
+        <BigNumber label={t('optimize.panel.improvement')} value={percent(improvement)} />
       </div>
       <div className="rounded-lg bg-content px-2 py-2 shadow-[0_0_0_0.5px_var(--separator)]">
         <Sparkline values={points.map((p) => p.best)} log height={110} />
       </div>
-      <p className="text-[11px] text-secondary">Stop keeps the best design so far. Cancel discards the run. You can close this panel; the job continues.</p>
+      <p className="text-[11px] text-secondary">{t('optimize.panel.runningNote')}</p>
     </div>
   )
 }
@@ -260,6 +262,7 @@ interface ResultVariable {
 }
 
 function Review({ job, system, applied }: { job: JobState; system: System; applied: boolean }) {
+  const t = useT()
   const r = job.result?.json ?? {}
   const preview = useWorkspace((s) => s.preview)
   const start = nf((r.start as JsonObject | undefined)?.merit)
@@ -278,10 +281,12 @@ function Review({ job, system, applied }: { job: JobState; system: System; appli
   // The variables are shown in the design they belong to (the result's, for surfaces).
   const titleSystem = resultSystem ?? system
 
-  let status = `${nf(r.iterations) || 0} iterations, ${nf(r.evaluations) || 0} evaluations. `
-  if (stopped) status += 'Stopped early: this is the best design found so far. '
-  if (!improved) status += 'No better design was found; the result equals the start. '
-  if (final && final.feasible === false) status += 'Some constraints are not met. '
+  const status = [
+    t('optimize.panel.counts', { iterations: nf(r.iterations) || 0, evaluations: nf(r.evaluations) || 0 }),
+    ...(stopped ? [t('optimize.panel.stoppedEarly')] : []),
+    ...(!improved ? [t('optimize.panel.noBetter')] : []),
+    ...(final && final.feasible === false ? [t('optimize.panel.constraintsUnmet')] : []),
+  ].join(currentLanguage() === 'zh-Hans' ? '' : ' ')
   const evaluatedOn = String((r.backend as JsonObject | undefined)?.evaluated_on ?? '')
 
   const shown = (v: number, p: ParamPath | null) => (p && isCurvature(p) ? radiusFromCurvature(v) : v)
@@ -291,15 +296,15 @@ function Review({ job, system, applied }: { job: JobState; system: System; appli
     <div className="flex flex-col gap-3" data-testid="optimize-result">
       {applied && <AppliedNotice />}
       <div className="grid grid-cols-3 gap-3">
-        <BigNumber label="Merit before" value={sig(start, 4)} />
-        <BigNumber label="After" value={sig(finalMerit, 4)} testId="optimize-final-merit" />
-        <BigNumber label="Improvement" value={percent(improvement)} />
+        <BigNumber label={t('optimize.panel.meritBefore')} value={sig(start, 4)} />
+        <BigNumber label={t('optimize.panel.after')} value={sig(finalMerit, 4)} testId="optimize-final-merit" />
+        <BigNumber label={t('optimize.panel.improvement')} value={percent(improvement)} />
       </div>
       {!applied && resultSystem && improved && (
-        <label className="flex items-center justify-between gap-2" title="Show the optimized design in the layout and analyses before applying it">
-          <span>Preview in the window</span>
+        <label className="flex items-center justify-between gap-2" title={t('optimize.panel.previewHelp')}>
+          <span>{t('optimize.panel.preview')}</span>
           <Switch
-            aria-label="Preview in the window"
+            aria-label={t('optimize.panel.preview')}
             checked={preview?.label === PREVIEW_LABEL}
             onCheckedChange={(on) => void useWorkspace.getState().setPreview(on ? resultSystem : null, PREVIEW_LABEL)}
           />
@@ -312,8 +317,8 @@ function Review({ job, system, applied }: { job: JobState; system: System; appli
           <Sparkline values={history.map((p) => p.best)} log height={56} />
         </div>
       )}
-      <Section title="Variables">
-        {vars.length === 0 && <p className="py-1 text-secondary">The engine reported no variables.</p>}
+      <Section title={t('optimize.panel.variables')}>
+        {vars.length === 0 && <p className="py-1 text-secondary">{t('optimize.panel.noVariablesReported')}</p>}
         <div data-testid="optimize-result-variables">
           {vars.map((v, k) => {
             const before = shown(v.start, v.param)
@@ -324,11 +329,11 @@ function Review({ job, system, applied }: { job: JobState; system: System; appli
               <div key={k} className={cn('py-1', k > 0 && 'border-t border-separator')}>
                 <div className="flex items-center gap-1.5 text-[13px]">
                   <span className="truncate">{v.param ? paramTitle(titleSystem, v.param) : v.label}</span>
-                  {v.atBound && <span className="text-[10px] text-warning">at bound</span>}
+                  {v.atBound && <span className="text-[10px] text-warning">{t('optimize.panel.atBound')}</span>}
                 </div>
                 <div className="num flex items-center gap-1.5 text-[12px]">
                   <span>{sig(before, 6)}</span>
-                  <ArrowRight className="size-3 text-secondary" aria-label="to" />
+                  <ArrowRight className="size-3 text-secondary" aria-label={t('optimize.job.to')} />
                   <span className="font-semibold">{sig(after, 6)}</span>
                   <span className="ml-auto text-secondary">
                     {Number.isFinite(d) ? (d >= 0 ? '+' : '') + sig(d, 4) : ''}
@@ -342,7 +347,7 @@ function Review({ job, system, applied }: { job: JobState; system: System; appli
       </Section>
       {evaluatedOn && (
         <p className="text-[11px] text-secondary">
-          {evaluatedOn.startsWith('cpu') ? 'Evaluated on the CPU f64 reference.' : `Searched on ${evaluatedOn}; merits reported on the CPU f64 reference.`}
+          {evaluatedOn.startsWith('cpu') ? t('optimize.panel.evaluatedOnCpu') : t('optimize.panel.searchedOn', { backend: evaluatedOn })}
         </p>
       )}
     </div>

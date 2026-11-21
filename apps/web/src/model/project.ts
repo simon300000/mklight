@@ -5,6 +5,7 @@
 import type { Json, JsonObject } from '@/engine/types'
 import samplesData from '@samples'
 import type { System } from './system'
+import { t } from '@/i18n'
 
 export const APP_VERSION = '0.1.0-web'
 
@@ -29,13 +30,13 @@ export function readProject(text: string): Project {
   try {
     j = JSON.parse(text)
   } catch (e) {
-    throw new ProjectError(`The file is not valid JSON: ${(e as Error).message}`)
+    throw new ProjectError(t('app.project.invalidJson', { error: (e as Error).message }))
   }
-  if (!j || typeof j !== 'object' || Array.isArray(j)) throw new ProjectError('The file is not an MKLight project.')
+  if (!j || typeof j !== 'object' || Array.isArray(j)) throw new ProjectError(t('app.project.notProject'))
   const o = j as JsonObject
-  if (o.format !== 'mklight-project') throw new ProjectError('The file is not an MKLight project (format).')
-  if (o.schema_version !== 1) throw new ProjectError(`Unsupported project schema version ${String(o.schema_version)}.`)
-  if (!o.system || typeof o.system !== 'object') throw new ProjectError('The project has no system.')
+  if (o.format !== 'mklight-project') throw new ProjectError(t('app.project.notProjectFormat'))
+  if (o.schema_version !== 1) throw new ProjectError(t('app.project.unsupportedVersion', { version: String(o.schema_version) }))
+  if (!o.system || typeof o.system !== 'object') throw new ProjectError(t('app.project.noSystem'))
   const extra: JsonObject = {}
   for (const [k, v] of Object.entries(o)) if (!KNOWN.has(k)) extra[k] = v
   return {

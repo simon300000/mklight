@@ -3,6 +3,7 @@
 // system. Surfaces are addressed by their stable id, never by index.
 
 import type { Json, JsonObject } from '@/engine/types'
+import { t, tMaybe } from '@/i18n'
 import { defaultBounds } from './bounds'
 import type { Project } from './project'
 import { nf } from './format'
@@ -156,14 +157,14 @@ export function paramTitle(s: System, p: ParamPath): string {
     case 'material_dn_d': return `Δn_d S${S}`
     case 'material_dv_d': return `ΔV_d S${S}`
     case 'semi_diameter': return `SD${S}`
-    case 'aperture_value': return 'Aperture'
-    case 'temperature_c': return 'Temperature'
-    case 'pressure_atm': return 'Pressure'
-    case 'field_x': return `Field ${i + 1} x`
-    case 'field_y': return `Field ${i + 1} y`
-    case 'field_weight': return `Field ${i + 1} weight`
+    case 'aperture_value': return t('lens.model.param.aperture')
+    case 'temperature_c': return t('lens.model.param.temperature')
+    case 'pressure_atm': return t('lens.model.param.pressure')
+    case 'field_x': return t('lens.model.param.fieldX', { n: i + 1 })
+    case 'field_y': return t('lens.model.param.fieldY', { n: i + 1 })
+    case 'field_weight': return t('lens.model.param.fieldWeight', { n: i + 1 })
     case 'wavelength_um': return `λ${i + 1}`
-    case 'wavelength_weight': return `λ${i + 1} weight`
+    case 'wavelength_weight': return t('lens.model.param.wavelengthWeight', { n: i + 1 })
     default:
       return PLACEMENT.has(p.param) ? `${p.param.replace('_', ' ')} S${S}` : p.param
   }
@@ -214,14 +215,8 @@ export const isVariable = (project: Pick<Project, 'variables' | 'system'>, p: Pa
 export function variableRefusal(s: System, p: ParamPath): string | null {
   const solve = solveFor(s, p)
   if (!solve) return null
-  const title = SOLVE_TITLES[String(solve.kind.type)] ?? String(solve.kind.type)
-  return `Set by a solve (${title}), so the optimizer cannot vary it. Remove the solve to make it a variable.`
-}
-
-const SOLVE_TITLES: Record<string, string> = {
-  marginal_ray_height: 'Marginal ray height', marginal_ray_angle: 'Marginal ray angle', chief_ray_height: 'Chief ray height',
-  chief_ray_angle: 'Chief ray angle', f_number: 'F-number', pickup: 'Pickup', position: 'Position',
-  center_of_curvature: 'Centre of curvature', edge_thickness: 'Edge thickness',
+  const title = tMaybe(`lens.model.solveTitles.${String(solve.kind.type)}`) ?? String(solve.kind.type)
+  return t('lens.model.solveRefusal', { title })
 }
 
 /** Makes `p` a variable (with sensible default bounds) or removes it, on a

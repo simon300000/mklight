@@ -18,6 +18,7 @@
 // A window that contains R = 0 itself (−50 … 50, or 60 … 40, which wraps
 // through ∞ and then 0) is not an interval of curvatures and is refused.
 
+import { t } from '@/i18n'
 import type { ParamPath, VariableSpec } from './params'
 import { surfaceIndexOfId } from './params'
 import { sig } from './format'
@@ -36,11 +37,8 @@ export interface RadiusWindow {
   max: number | null
 }
 
-export const CONTAINS_ZERO =
-  'This radius window passes through R = 0, which is not a range of curvatures. For |R| ≥ r, enter min r and max −r (through ∞).'
-
-export const RADIUS_HELP =
-  'Bounds as a radius window in mm; the optimizer bounds the curvature c = 1/R. Empty is open on that side. Min above max wraps through flat (R = ∞): min 100, max −100 is |R| ≥ 100. 0 leaves the curvature unbounded on that side.'
+/** How the radius window is read (the help beside the bounds). */
+export const radiusHelp = () => t('optimize.bounds.radiusHelp')
 
 /** −0 → 0, so stored bounds read 0. */
 const clean = (v: number) => (v === 0 ? 0 : v)
@@ -54,7 +52,7 @@ export function curvatureBounds(minRadius: number | null, maxRadius: number | nu
   // c_upper = 1/min (min → 0⁺: unbounded above); c_lower = 1/max (max → 0⁻: unbounded below).
   const upper = lo === 0 ? null : clean(1 / lo)
   const lower = hi === 0 ? null : clean(1 / hi)
-  if (lower != null && upper != null && lower > upper) return { ok: false, error: CONTAINS_ZERO }
+  if (lower != null && upper != null && lower > upper) return { ok: false, error: t('optimize.bounds.containsZero') }
   return { ok: true, bounds: { lower, upper } }
 }
 
@@ -147,6 +145,6 @@ export function boundsOf(v: VariableSpec): Bounds {
 
 /** Action name of a bounds change (macOS `DesignDocument.setBounds`). */
 export function boundsActionName(before: Bounds, after: Bounds): string {
-  if (after.lower != null && after.lower === after.upper) return 'Pin Variable'
-  return isPinned(before) ? 'Unpin Variable' : 'Change Bounds'
+  if (after.lower != null && after.lower === after.upper) return t('optimize.undo.pinVariable')
+  return isPinned(before) ? t('optimize.undo.unpinVariable') : t('optimize.undo.changeBounds')
 }

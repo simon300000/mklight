@@ -11,7 +11,8 @@ export default defineConfig({
   fullyParallel: false,
   workers: 1,
   reporter: [['list']],
-  use: { baseURL: 'http://localhost:4318/', trace: 'retain-on-failure' },
+  // English unless a test asks for another language (e2e/languages.spec.ts).
+  use: { baseURL: 'http://localhost:4318/', trace: 'retain-on-failure', locale: 'en-US' },
   projects: [
     { name: 'chromium', use: { ...devices['Desktop Chrome'], viewport: { width: 1600, height: 960 } } },
     { name: 'webkit', use: { ...devices['Desktop Safari'], viewport: { width: 1600, height: 960 } } },
