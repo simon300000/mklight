@@ -42,6 +42,7 @@ public static class UiLanguage
         try { Microsoft.Windows.Globalization.ApplicationLanguages.PrimaryLanguageOverride = Current; }
         catch (Exception e) { App.Log($"language override: {e.Message}"); }
         if (Lookup() is null) App.Log("resources: the UI text resources could not be read; showing English");
+        ModelText.Lookup = key => Loc.Provider?.Invoke(key);
         EngineText.Current = Current == Languages.English ? EngineText.None : EngineText.Load(EngineText.PathFor(AppContext.BaseDirectory, Current));
     }
 

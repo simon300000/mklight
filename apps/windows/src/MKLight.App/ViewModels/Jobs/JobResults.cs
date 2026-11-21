@@ -102,7 +102,7 @@ public sealed record SolveOutcomeRow(int Index, string Target, string Kind, doub
                 previous = previous is { } pv ? RadiusDisplay.RadiusFromCurvature(pv) : null;
                 value = RadiusDisplay.RadiusFromCurvature(value);
             }
-            var title = Wire.Parse<SolveType>(kind) is { } st ? st.Title() : kind.Replace('_', ' ');
+            var title = Wire.Parse<SolveType>(kind) is { } st ? LensText.Solve(st) : kind.Replace('_', ' ');
             return new SolveOutcomeRow((int)(o?["index"].IntOrNull() ?? k), path is null ? "?" : system is null ? path.ToString() : path.Label(system),
                 title, previous, value, o?["residual"].Nf() ?? double.NaN);
         }).ToList();

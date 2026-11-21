@@ -54,6 +54,19 @@ public sealed partial class LocalizationTests
         Assert.Empty(missing);
     }
 
+    [GeneratedRegex(@"\bT\(""([A-Za-z]+)"", ""([^""]*)""")] private static partial Regex ModelKey();
+
+    /// <summary>The labels MKLight.Model builds (ModelText): each key exists, with the English the code falls back to.</summary>
+    [Fact]
+    public void ModelLabelsHaveKeysWithTheSameEnglish()
+    {
+        var en = Resw("en-US");
+        var code = File.ReadAllText(RepoPath("apps", "windows", "src", "MKLight.Model", "ParamValues.cs"));
+        var found = ModelKey().Matches(code).Select(m => ("Model_Param_" + m.Groups[1].Value, m.Groups[2].Value)).ToList();
+        Assert.True(found.Count > 20);
+        Assert.Empty(found.Where(f => !en.TryGetValue(f.Item1, out var v) || v != f.Item2).Select(f => f.Item1));
+    }
+
     [Fact]
     public void FormatsWithInvariantNumbers()
     {

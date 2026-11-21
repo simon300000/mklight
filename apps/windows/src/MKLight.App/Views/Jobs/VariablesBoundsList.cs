@@ -157,7 +157,7 @@ public static class VariablesBoundsList
     static string Help(DesignVariable v, ParamPath path, OpticalSystem system, bool asRadius, string unit)
     {
         if (system.SolveFor(path) is { } s)
-            return Loc.F("Jobs_Variables_SolvedHelp", s.Kind.Type.Title().ToLowerInvariant());
+            return Loc.F("Jobs_Variables_SolvedHelp", LensText.Solve(s.Kind.Type).ToLowerInvariant());
         var help = asRadius ? RadiusBounds.Help : Loc.S("Jobs_Variables_CurvatureHelp");
         if (asRadius || path.IsCurvature)
             return BoundsFormat.Counterpart(v.Lower, v.Upper, CurvatureUnit) is { } c && path.IsCurvature ? Loc.F("Jobs_Variables_BoundsAs", c, help) : help;

@@ -2412,4 +2412,30 @@
   <data name="Glass_Window_Title" xml:space="preserve"><value>玻璃库 — MKLight</value></data>
   <data name="Glass_Window_TitleBar.Title" xml:space="preserve"><value>玻璃库</value></data>
   <!-- end area: Glass -->
+  <!-- area: Model (labels MKLight.Model builds, through ModelText) -->
+  <data name="Model_Param_Aperture" xml:space="preserve"><value>孔径</value></data>
+  <data name="Model_Param_AsphereOn" xml:space="preserve"><value>面 {1} 的 A{0}</value></data>
+  <data name="Model_Param_AstigIrregularity" xml:space="preserve"><value>像散不规则度 {0}</value></data>
+  <data name="Model_Param_Conic" xml:space="preserve"><value>圆锥系数 {0}</value></data>
+  <data name="Model_Param_DecenterX" xml:space="preserve"><value>偏心 X {0}</value></data>
+  <data name="Model_Param_DecenterY" xml:space="preserve"><value>偏心 Y {0}</value></data>
+  <data name="Model_Param_FieldWeight" xml:space="preserve"><value>视场 {0} 权重</value></data>
+  <data name="Model_Param_FieldX" xml:space="preserve"><value>视场 {0} x</value></data>
+  <data name="Model_Param_FieldY" xml:space="preserve"><value>视场 {0} y</value></data>
+  <data name="Model_Param_FocalLength" xml:space="preserve"><value>焦距 {0}</value></data>
+  <data name="Model_Param_OddTermOn" xml:space="preserve"><value>面 {1} 的奇次 {0}</value></data>
+  <data name="Model_Param_PhaseTermOn" xml:space="preserve"><value>面 {1} 的相位 {0}</value></data>
+  <data name="Model_Param_Pressure" xml:space="preserve"><value>气压</value></data>
+  <data name="Model_Param_Radius" xml:space="preserve"><value>曲率半径 {0}</value></data>
+  <data name="Model_Param_RadiusY" xml:space="preserve"><value>y 曲率半径 {0}</value></data>
+  <data name="Model_Param_SemiDiameter" xml:space="preserve"><value>半口径 {0}</value></data>
+  <data name="Model_Param_SphIrregularity" xml:space="preserve"><value>球差不规则度 {0}</value></data>
+  <data name="Model_Param_Temperature" xml:space="preserve"><value>温度</value></data>
+  <data name="Model_Param_TermOn" xml:space="preserve"><value>面 {1} 的 {0}</value></data>
+  <data name="Model_Param_Thickness" xml:space="preserve"><value>厚度 {0}</value></data>
+  <data name="Model_Param_TiltX" xml:space="preserve"><value>倾斜 X {0}</value></data>
+  <data name="Model_Param_TiltY" xml:space="preserve"><value>倾斜 Y {0}</value></data>
+  <data name="Model_Param_TiltZ" xml:space="preserve"><value>倾斜 Z {0}</value></data>
+  <data name="Model_Param_WavelengthWeight" xml:space="preserve"><value>λ{0} 权重</value></data>
+  <!-- end area: Model -->
 </root>

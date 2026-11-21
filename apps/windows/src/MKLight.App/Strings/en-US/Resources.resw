@@ -2412,4 +2412,30 @@
   <data name="Glass_Window_Title" xml:space="preserve"><value>Glass Catalogs — MKLight</value></data>
   <data name="Glass_Window_TitleBar.Title" xml:space="preserve"><value>Glass Catalogs</value></data>
   <!-- end area: Glass -->
+  <!-- area: Model (labels MKLight.Model builds, through ModelText) -->
+  <data name="Model_Param_Aperture" xml:space="preserve"><value>Aperture</value></data>
+  <data name="Model_Param_AsphereOn" xml:space="preserve"><value>A{0} on {1}</value></data>
+  <data name="Model_Param_AstigIrregularity" xml:space="preserve"><value>Astig. irregularity {0}</value></data>
+  <data name="Model_Param_Conic" xml:space="preserve"><value>Conic {0}</value></data>
+  <data name="Model_Param_DecenterX" xml:space="preserve"><value>Decenter X {0}</value></data>
+  <data name="Model_Param_DecenterY" xml:space="preserve"><value>Decenter Y {0}</value></data>
+  <data name="Model_Param_FieldWeight" xml:space="preserve"><value>Field {0} weight</value></data>
+  <data name="Model_Param_FieldX" xml:space="preserve"><value>Field {0} x</value></data>
+  <data name="Model_Param_FieldY" xml:space="preserve"><value>Field {0} y</value></data>
+  <data name="Model_Param_FocalLength" xml:space="preserve"><value>Focal length {0}</value></data>
+  <data name="Model_Param_OddTermOn" xml:space="preserve"><value>Odd {0} on {1}</value></data>
+  <data name="Model_Param_PhaseTermOn" xml:space="preserve"><value>Phase {0} on {1}</value></data>
+  <data name="Model_Param_Pressure" xml:space="preserve"><value>Pressure</value></data>
+  <data name="Model_Param_Radius" xml:space="preserve"><value>Radius {0}</value></data>
+  <data name="Model_Param_RadiusY" xml:space="preserve"><value>Radius y {0}</value></data>
+  <data name="Model_Param_SemiDiameter" xml:space="preserve"><value>Semi-diameter {0}</value></data>
+  <data name="Model_Param_SphIrregularity" xml:space="preserve"><value>Sph. irregularity {0}</value></data>
+  <data name="Model_Param_Temperature" xml:space="preserve"><value>Temperature</value></data>
+  <data name="Model_Param_TermOn" xml:space="preserve"><value>{0} on {1}</value></data>
+  <data name="Model_Param_Thickness" xml:space="preserve"><value>Thickness {0}</value></data>
+  <data name="Model_Param_TiltX" xml:space="preserve"><value>Tilt X {0}</value></data>
+  <data name="Model_Param_TiltY" xml:space="preserve"><value>Tilt Y {0}</value></data>
+  <data name="Model_Param_TiltZ" xml:space="preserve"><value>Tilt Z {0}</value></data>
+  <data name="Model_Param_WavelengthWeight" xml:space="preserve"><value>λ{0} weight</value></data>
+  <!-- end area: Model -->
 </root>
