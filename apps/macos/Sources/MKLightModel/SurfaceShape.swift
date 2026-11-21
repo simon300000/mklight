@@ -288,8 +288,8 @@ public enum ZernikeOrdering: String, Codable, Sendable, Hashable, CaseIterable, 
 
     public var title: String {
         switch self {
-        case .fringe: "Fringe"
-        case .standard: "Standard (Noll)"
+        case .fringe: String(localized: "Fringe")
+        case .standard: String(localized: "Standard (Noll)")
         }
     }
 

@@ -84,7 +84,7 @@ enum ViewportBridge {
         view.autoResizeDrawable = true
         input.redraw = { [weak view] in view?.redraw() }
         guard let device = view.device else {
-            DispatchQueue.main.async { error.wrappedValue = "This Mac has no Metal device." }
+            DispatchQueue.main.async { error.wrappedValue = String(localized: "This Mac has no Metal device.") }
             return view
         }
         do {
@@ -93,7 +93,7 @@ enum ViewportBridge {
             input.renderer = r
             view.delegate = r
         } catch let e {
-            DispatchQueue.main.async { error.wrappedValue = "The Metal viewport could not start: \(e.localizedDescription)" }
+            DispatchQueue.main.async { error.wrappedValue = String(localized: "The Metal viewport could not start: \(e.localizedDescription)") }
         }
         return view
     }

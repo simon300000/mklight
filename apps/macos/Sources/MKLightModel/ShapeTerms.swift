@@ -84,13 +84,13 @@ public enum ShapeParameter: String, Codable, Sendable, Hashable, CaseIterable, I
         switch self {
         case .curvatureX: "R_x"
         case .conicX: "k_x"
-        case .curvatureY: "R_y"
-        case .conicY: "k_y"
-        case .normRadius: "Norm radius"
-        case .astigmatismAngleDeg: "Astigmatism axis"
-        case .designOrder: "Design order"
-        case .designWavelengthUm: "Design λ"
-        case .traceOrder: "Trace order"
+        case .curvatureY: String(localized: "R_y")
+        case .conicY: String(localized: "k_y")
+        case .normRadius: String(localized: "Norm radius")
+        case .astigmatismAngleDeg: String(localized: "Astigmatism axis")
+        case .designOrder: String(localized: "Design order")
+        case .designWavelengthUm: String(localized: "Design λ")
+        case .traceOrder: String(localized: "Trace order")
         }
     }
 }

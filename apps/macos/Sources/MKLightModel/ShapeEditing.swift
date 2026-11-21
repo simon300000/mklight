@@ -11,19 +11,19 @@ extension SurfaceShape {
 
         public var title: String {
             switch self {
-            case .plane: "Plane"
-            case .conic: "Standard"
-            case .evenAsphere: "Even Asphere"
-            case .oddAsphere: "Odd Asphere"
-            case .qCon: "Q-Type (Conic)"
-            case .qBfs: "Q-Type (Best-Fit Sphere)"
-            case .diffractive: "Diffractive"
-            case .toroid: "Toroid"
-            case .biconic: "Biconic"
-            case .xyPolynomial: "XY Polynomial"
-            case .zernikeSag: "Zernike Sag"
-            case .paraxial: "Paraxial"
-            case .coordinateBreak: "Coord Break"
+            case .plane: String(localized: "Plane")
+            case .conic: String(localized: "Standard")
+            case .evenAsphere: String(localized: "Even Asphere")
+            case .oddAsphere: String(localized: "Odd Asphere")
+            case .qCon: String(localized: "Q-Type (Conic)")
+            case .qBfs: String(localized: "Q-Type (Best-Fit Sphere)")
+            case .diffractive: String(localized: "Diffractive")
+            case .toroid: String(localized: "Toroid")
+            case .biconic: String(localized: "Biconic")
+            case .xyPolynomial: String(localized: "XY Polynomial")
+            case .zernikeSag: String(localized: "Zernike Sag")
+            case .paraxial: String(localized: "Paraxial")
+            case .coordinateBreak: String(localized: "Coord Break")
             }
         }
 

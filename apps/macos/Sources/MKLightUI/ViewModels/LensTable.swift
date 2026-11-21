@@ -16,16 +16,16 @@ public enum LensColumn: String, CaseIterable, Identifiable, Sendable {
 
     public var title: String {
         switch self {
-        case .surface: "Surf"
-        case .type: "Type"
-        case .comment: "Comment"
-        case .radius: "Radius"
-        case .radiusX: "Radius x"
-        case .thickness: "Thickness"
-        case .material: "Material"
-        case .semiDiameter: "Semi-Diameter"
-        case .conic: "Conic"
-        case .conicX: "Conic x"
+        case .surface: String(localized: "Surf")
+        case .type: String(localized: "Type")
+        case .comment: String(localized: "Comment")
+        case .radius: String(localized: "Radius")
+        case .radiusX: String(localized: "Radius x")
+        case .thickness: String(localized: "Thickness")
+        case .material: String(localized: "Material")
+        case .semiDiameter: String(localized: "Semi-Diameter")
+        case .conic: String(localized: "Conic")
+        case .conicX: String(localized: "Conic x")
         }
     }
 
@@ -141,9 +141,9 @@ public struct LensRow: Identifiable, Equatable, Sendable {
 
     public var surfaceText: String {
         switch role {
-        case .object: "OBJ"
-        case .stop: "STO"
-        case .image: "IMA"
+        case .object: String(localized: "OBJ")
+        case .stop: String(localized: "STO")
+        case .image: String(localized: "IMA")
         case .surface: "\(index)"
         }
     }
@@ -223,7 +223,7 @@ public struct LensRow: Identifiable, Equatable, Sendable {
                 cells[.semiDiameter] = RowFormat.length(v, decimals: 3)
                 exact[.semiDiameter] = NumberDisplay.exact(v)
             case .auto:
-                cells[.semiDiameter] = autoSemiDiameters[sf.id].map { RowFormat.length($0, decimals: 3) } ?? "auto"
+                cells[.semiDiameter] = autoSemiDiameters[sf.id].map { RowFormat.length($0, decimals: 3) } ?? String(localized: "auto")
                 exact[.semiDiameter] = "auto"
             }
             if !sf.isCoordinateBreak { editable.insert(.semiDiameter) }
@@ -260,10 +260,10 @@ public struct LensRow: Identifiable, Equatable, Sendable {
     /// Short type name for the table: a conic of k = 0 is a sphere.
     static func typeTitle(_ shape: SurfaceShape) -> String {
         switch shape {
-        case .conic(_, let k): return k == 0 ? "Sphere" : "Conic"
+        case .conic(_, let k): return k == 0 ? String(localized: "Sphere") : String(localized: "Conic")
         case .qCon: return "Q-Con"
         case .qBfs: return "Q-BFS"
-        case .biconic where shape.isCylinder: return "Cylinder"
+        case .biconic where shape.isCylinder: return String(localized: "Cylinder")
         default: return SurfaceTypes.descriptor(for: shape).title
         }
     }

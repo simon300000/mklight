@@ -15,7 +15,15 @@ public struct ValidationIssue: Identifiable, Hashable, Sendable {
     public var severity: Severity
     /// The engine's stable code (`docs/RESULTS.md` §6), empty if none.
     public var code: String
+    /// The engine's English message (read for the field index).
     public var message: String
+    /// The message in the app's language, for display.
+    public var displayMessage: String {
+        var values: [String: String] = [:]
+        if let surface { values["surface"] = "\(surface)" }
+        if let field { values["field"] = "\(field)" }
+        return EngineText.diagnostic(code: code, message: message, values: values)
+    }
     /// Surface index the issue concerns.
     public var surface: Int?
     /// Field index the issue concerns (read from the message for the
@@ -422,11 +430,11 @@ public final class Workspace {
         }
         if let d = descriptor(pane.analysis), !d.available {
             pane.job?.cancel()
-            pane.phase = .unavailable(d.unavailableReason ?? "not available in this engine build")
+            pane.phase = .unavailable(EngineText.string(d.unavailableReason ?? String(localized: "not available in this engine build")))
             return
         }
         if !descriptors.isEmpty, descriptor(pane.analysis) == nil {
-            pane.phase = .unavailable("This engine has no analysis named “\(pane.analysis)”.")
+            pane.phase = .unavailable(String(localized: "This engine has no analysis named “\(pane.analysis)”."))
             return
         }
         pane.job?.cancel()
@@ -458,7 +466,7 @@ public final class Workspace {
             case .failure(EngineError.cancelled):
                 pane.phase = .cancelled
             case .failure(EngineError.unsupported(let why)):
-                pane.phase = .unavailable(why)
+                pane.phase = .unavailable(EngineText.string(why))
             case .failure(let error):
                 pane.phase = .failed(error.localizedDescription)
             }
@@ -607,13 +615,13 @@ public final class Workspace {
                 try await documentEngine.setGlassOverrides(overrides)
                 changed = true
             } catch {
-                libraryWarnings.append("Glass status settings: \(error.localizedDescription)")
+                libraryWarnings.append(String(localized: "Glass status settings: \(error.localizedDescription)"))
             }
         }
         loadedLibrary = (revision, overrides)
         libraryWarnings = sync.errors.map { e in
-            let file = e.path.isEmpty ? "Glass library" : URL(fileURLWithPath: e.path).lastPathComponent
-            return "\(file): \(e.message)"
+            let file = e.path.isEmpty ? String(localized: "Glass library") : URL(fileURLWithPath: e.path).lastPathComponent
+            return "\(file): \(EngineText.string(e.message))"
         }
         if changed { await refreshCatalogInfo() }
         return changed
@@ -711,10 +719,12 @@ public final class Workspace {
     /// Why a project catalog did not load, and what to do about it.
     static func missingCatalogWarning(_ ref: CatalogReference, error: String?) -> String {
         guard let error else {
-            let place = ref.path.map { " at \(($0 as NSString).abbreviatingWithTildeInPath)" } ?? ""
-            return "Glass catalog “\(ref.name)” was not found\(place). Its glasses are unknown until you add the catalog to the library or the design."
+            if let path = ref.path.map({ ($0 as NSString).abbreviatingWithTildeInPath }) {
+                return String(localized: "Glass catalog “\(ref.name)” was not found at \(path). Its glasses are unknown until you add the catalog to the library or the design.")
+            }
+            return String(localized: "Glass catalog “\(ref.name)” was not found. Its glasses are unknown until you add the catalog to the library or the design.")
         }
-        return "Glass catalog “\(ref.name)” could not be loaded (\(error))."
+        return String(localized: "Glass catalog “\(ref.name)” could not be loaded (\(EngineText.string(error))).")
     }
 
     /// Takes new snapshots after the session's glass library changed: of
@@ -739,10 +749,10 @@ public final class Workspace {
     public func submitJob(_ analysis: String, settings: [String: JSONValue], key: String? = nil, fresh: Bool = false) throws -> AnalysisJob {
         // Jobs run on the design, also while a candidate is previewed.
         guard let snapshot = designSnapshot ?? snapshot, modelErrors.isEmpty else {
-            throw EngineError.invalidModel(modelErrors.isEmpty ? ["The design has not been checked by the engine yet."] : modelErrors)
+            throw EngineError.invalidModel(modelErrors.isEmpty ? [String(localized: "The design has not been checked by the engine yet.")] : modelErrors)
         }
         if let d = descriptor(analysis), !d.available {
-            throw EngineError.unsupported(d.unavailableReason ?? "\(analysis) is not available")
+            throw EngineError.unsupported(d.unavailableReason ?? String(localized: "\(analysis) is not available"))
         }
         let job = documentEngine.submit(
             EngineAnalysisRequest(analysis: analysis, settings: settings, execution: ExecutionSettings(backend: backend), fresh: fresh),
@@ -761,11 +771,11 @@ public final class Workspace {
         // request made later may reach the engine before this one.
         let request = nextJobRequest()
         guard let design = designSnapshot ?? snapshot, modelErrors.isEmpty else {
-            throw EngineError.invalidModel(modelErrors.isEmpty ? ["The design has not been checked by the engine yet."] : modelErrors)
+            throw EngineError.invalidModel(modelErrors.isEmpty ? [String(localized: "The design has not been checked by the engine yet.")] : modelErrors)
         }
         guard system != design.system else { return try submitJob(analysis, settings: settings, key: key, fresh: fresh) }
         if let d = descriptor(analysis), !d.available {
-            throw EngineError.unsupported(d.unavailableReason ?? "\(analysis) is not available")
+            throw EngineError.unsupported(d.unavailableReason ?? String(localized: "\(analysis) is not available"))
         }
         let snap = try await documentEngine.openSnapshot(system)
         let job = documentEngine.submit(

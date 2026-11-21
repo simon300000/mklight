@@ -119,7 +119,7 @@ public struct FFIEngine: EngineClient {
         {
             // The engine stops at its first error (a system it cannot read
             // as one, or one that fails validation); add the mirror's list.
-            let message = error.code == .invalidModel ? Self.message(of: error) : (error.errorDescription ?? "")
+            let message = Self.message(of: error)
             let extra = local.filter { $0.severity == .error }.map(\.description).filter { $0 != message }
             throw EngineError.invalidModel([message] + extra)
         }

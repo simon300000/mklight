@@ -72,15 +72,15 @@ public enum SolveKind: Codable, Sendable, Hashable {
 
         public var title: String {
             switch self {
-            case .marginalRayHeight: "Marginal ray height"
-            case .marginalRayAngle: "Marginal ray angle"
-            case .chiefRayHeight: "Chief ray height"
-            case .chiefRayAngle: "Chief ray angle"
-            case .fNumber: "F-number"
-            case .pickup: "Pickup"
-            case .position: "Position"
-            case .centerOfCurvature: "Centre of curvature"
-            case .edgeThickness: "Edge thickness"
+            case .marginalRayHeight: String(localized: "Marginal ray height")
+            case .marginalRayAngle: String(localized: "Marginal ray angle")
+            case .chiefRayHeight: String(localized: "Chief ray height")
+            case .chiefRayAngle: String(localized: "Chief ray angle")
+            case .fNumber: String(localized: "F-number")
+            case .pickup: String(localized: "Pickup")
+            case .position: String(localized: "Position")
+            case .centerOfCurvature: String(localized: "Centre of curvature")
+            case .edgeThickness: String(localized: "Edge thickness")
             }
         }
 
@@ -88,11 +88,11 @@ public enum SolveKind: Codable, Sendable, Hashable {
         /// angle u", dimensionless (CONVENTIONS §8).
         public var valueLabel: (label: String, unit: String)? {
             switch self {
-            case .marginalRayHeight, .chiefRayHeight: ("height", "mm")
-            case .marginalRayAngle, .chiefRayAngle: ("paraxial angle u", "")
+            case .marginalRayHeight, .chiefRayHeight: (String(localized: "height"), "mm")
+            case .marginalRayAngle, .chiefRayAngle: (String(localized: "paraxial angle u"), "")
             case .fNumber: ("F/#", "")
-            case .position: ("distance", "mm")
-            case .edgeThickness: ("edge thickness", "mm")
+            case .position: (String(localized: "distance"), "mm")
+            case .edgeThickness: (String(localized: "edge thickness"), "mm")
             case .pickup, .centerOfCurvature: nil
             }
         }

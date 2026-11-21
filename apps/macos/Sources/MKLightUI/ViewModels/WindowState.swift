@@ -12,8 +12,8 @@ public enum ViewportMode: String, CaseIterable, Identifiable, Sendable, Codable 
     public var id: String { rawValue }
     public var title: String {
         switch self {
-        case .section2D: "Section"
-        case .sectionXZ: "X–Z"
+        case .section2D: String(localized: "Section")
+        case .sectionXZ: String(localized: "X–Z")
         case .orbit3D: "3D"
         }
     }
@@ -26,7 +26,7 @@ public enum ViewportMode: String, CaseIterable, Identifiable, Sendable, Codable 
 public enum RayColoring: String, CaseIterable, Identifiable, Sendable, Codable {
     case field, wavelength
     public var id: String { rawValue }
-    public var title: String { self == .field ? "Color by Field" : "Color by Wavelength" }
+    public var title: String { self == .field ? String(localized: "Color by Field") : String(localized: "Color by Wavelength") }
 }
 
 public enum InspectorTab: String, CaseIterable, Identifiable, Sendable {
@@ -45,8 +45,8 @@ public enum InspectorPage: Hashable, Sendable {
 
     public var title: String {
         switch self {
-        case .surface: "Surface"
-        case .system: "System"
+        case .surface: String(localized: "Surface")
+        case .system: String(localized: "System")
         case .job(let kind): kind.title
         }
     }
@@ -104,10 +104,10 @@ public enum DesignJobKind: String, Identifiable, Sendable, CaseIterable {
     public var id: String { rawValue }
     public var title: String {
         switch self {
-        case .optimize: "Optimize"
-        case .glass: "Glass Substitution"
-        case .tolerance: "Tolerance"
-        case .solves: "Apply Solves"
+        case .optimize: String(localized: "Optimize")
+        case .glass: String(localized: "Glass Substitution")
+        case .tolerance: String(localized: "Tolerance")
+        case .solves: String(localized: "Apply Solves")
         }
     }
     public var symbol: String {

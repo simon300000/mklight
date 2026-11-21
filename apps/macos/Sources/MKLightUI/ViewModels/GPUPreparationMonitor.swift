@@ -78,15 +78,15 @@ final class GPUPreparationMonitor {
         case .idle:
             nil
         case .preparing(_, let done, let total):
-            total > 0 ? "Preparing (\(done) of \(total))" : "Preparing"
+            total > 0 ? String(localized: "Preparing (\(done) of \(total))") : String(localized: "Preparing")
         case .ready(_, let kernels, let fromCache, let seconds, _):
             fromCache == kernels
-                ? "Ready (\(kernels), loaded from cache)"
-                : "Ready (\(kernels), prepared in \(String(format: "%.1f", seconds)) s)"
+                ? String(localized: "Ready (\(kernels), loaded from cache)")
+                : String(localized: "Ready (\(kernels), prepared in \(String(format: "%.1f", seconds)) s)")
         case .unavailable(let reason):
-            "No GPU: \(reason)"
+            String(localized: "No GPU: \(EngineText.string(reason))")
         case .failed(_, let message):
-            "Compiled on first use (\(message))"
+            String(localized: "Compiled on first use (\(EngineText.string(message)))")
         }
     }
 
@@ -94,6 +94,6 @@ final class GPUPreparationMonitor {
     /// the saved ones could not be read or written.
     var note: String? {
         guard case .ready(_, _, _, _, let warning?) = state else { return nil }
-        return "Kernel cache unavailable: the next launch compiles again (\(warning))"
+        return String(localized: "Kernel cache unavailable: the next launch compiles again (\(EngineText.string(warning)))")
     }
 }
