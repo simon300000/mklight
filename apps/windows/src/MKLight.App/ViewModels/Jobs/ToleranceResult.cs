@@ -242,7 +242,7 @@ public sealed class ToleranceResult
         {
             var path = ToleranceRow.TryPath(o.At("param"));
             var label = o.At("label").StringOrNull() ?? "";
-            if ((label.Length == 0 || label.StartsWith('{')) && path is not null && system is not null) label = path.Label(system);
+            if ((label.Length == 0 || label.StartsWith('{')) && path is not null && system is not null) label = path.EnglishLabel(system);
             return new Sensitivity(
                 (int)(o.At("index").IntOrNull() ?? k), label, path, Num(o, "minus"), Num(o, "plus"), Num(o, "criterion_minus"), Num(o, "criterion_plus"),
                 Num(o, "change_minus"), Num(o, "change_plus"), Num(o, "worst"), Num(o, "expected_change"), o.At("ok").BoolOrNull() ?? true,
@@ -396,7 +396,7 @@ public static class ToleranceReport
             string[] fields =
             [
                 (k + 1).ToString(C), Csv(Label(s, rows, system)), Num(row?.Minus ?? s.Minus), Num(row?.Plus ?? s.Plus), Csv(row?.Unit.Label() ?? ""),
-                Csv(s.Param?.Label(system) ?? s.Label), Num(s.CriterionMinus), Num(s.CriterionPlus), Num(d.Value(s.CriterionMinus)), Num(d.Value(s.CriterionPlus)),
+                Csv(s.Param?.EnglishLabel(system) ?? s.Label), Num(s.CriterionMinus), Num(s.CriterionPlus), Num(d.Value(s.CriterionMinus)), Num(d.Value(s.CriterionPlus)),
                 Num(d.Value(s.CriterionMinus) - d.Value(r.Nominal)), Num(d.Value(s.CriterionPlus) - d.Value(r.Nominal)), Num(r.Share(s)),
             ];
             output.Add(string.Join(",", fields));

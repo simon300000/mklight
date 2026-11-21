@@ -76,13 +76,18 @@ public static class SettingEntry
     static string Words(string snake) =>
         string.Join(' ', snake.Split('_', StringSplitOptions.RemoveEmptyEntries).Select(w => char.ToUpperInvariant(w[0]) + w[1..].ToLowerInvariant()));
 
-    /// <summary>An enum value's title: "FFT", "Primary Chief", "N-SK16" (names with capitals as written); engine text, translated.</summary>
+    /// <summary>
+    /// An enum value's title: the engine text catalog's label for the raw value (<c>enums</c>), else the value
+    /// formatted: "FFT", "Primary Chief", "N-SK16" (names with capitals as written). The value written back is
+    /// always the raw one.
+    /// </summary>
     public static string Title(JsonNode? v)
     {
         if (Json.Str(v) is not string s) return Json.Display(v);
-        if (s.Length <= 3) return EngineText.T(s.ToUpperInvariant());
-        if (s.Any(char.IsUpper)) return EngineText.T(s);
-        return EngineText.T(Words(s));
+        if (EngineText.Enum(s) is { } label) return label;
+        if (s.Length <= 3) return s.ToUpperInvariant();
+        if (s.Any(char.IsUpper)) return s;
+        return Words(s);
     }
 
     /// <summary>Typed text that asks for the automatic value: "auto", or the word the boxes show for it.</summary>

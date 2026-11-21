@@ -8,7 +8,8 @@ using MKLight.Model;
 namespace MKLight.App.Views;
 
 /// <summary>A validation issue as the capsule lists it.</summary>
-public sealed record IssueItem(string Severity, string Message, string? Where, int? Surface = null);
+/// <param name="Detail">The engine's English message when <paramref name="Message"/> is a translation of a coded issue.</param>
+public sealed record IssueItem(string Severity, string Message, string? Where, int? Surface = null, string? Detail = null);
 
 /// <summary>
 /// The status capsule in the title bar's centre (the Mac app's DesignStatus):
@@ -279,6 +280,8 @@ public sealed partial class StatusCapsule : UserControl
             });
             var text = new StackPanel { Spacing = 1 };
             text.Children.Add(new TextBlock { Text = issue.Message, Style = (Style)Application.Current.Resources["BodyText"], TextWrapping = TextWrapping.Wrap, TextTrimming = TextTrimming.None });
+            if (issue.Detail is not null)
+                text.Children.Add(new TextBlock { Text = issue.Detail, Style = (Style)Application.Current.Resources["CaptionText"], TextWrapping = TextWrapping.Wrap, TextTrimming = TextTrimming.None });
             if (issue.Where is not null)
                 text.Children.Add(new TextBlock { Text = issue.Where, Style = (Style)Application.Current.Resources["CaptionText"] });
             Grid.SetColumn(text, 1);

@@ -285,7 +285,7 @@ public static class OperandCatalog
         EngineText.T(Descriptor(type)?.Title ?? CultureInfo.InvariantCulture.TextInfo.ToTitleCase(type.Replace('_', ' ')));
 
     /// <summary>A choice parameter's option as shown: <c>real_working</c> is <c>Real Working</c> (engine text, in the UI language).</summary>
-    public static string OptionTitle(string option) => EngineText.T(CultureInfo.InvariantCulture.TextInfo.ToTitleCase(option.Replace('_', ' ')));
+    public static string OptionTitle(string option) => EngineText.Enum(option) ?? EngineText.T(CultureInfo.InvariantCulture.TextInfo.ToTitleCase(option.Replace('_', ' ')));
 
     /// <summary>Descriptors matching a search (in English or the UI language), by category.</summary>
     public static IReadOnlyList<(string Category, IReadOnlyList<OperandDescriptor> Items)> Search(string text)

@@ -526,14 +526,14 @@ public sealed class ToleranceRow
     /// <c>Radius S3</c>, <c>Thickness S3–4</c>, <c>Element tilt x L2</c>, <c>Index S5</c>, in English whatever the UI
     /// language: the engine's operand label and the exported files. The panel shows <see cref="DisplayLabel"/>.
     /// </summary>
-    public string Label(OpticalSystem system) => Label(system, Kind.EnglishTitle());
+    public string Label(OpticalSystem system) => Label(system, Kind.EnglishTitle(), english: true);
 
     /// <summary><see cref="Label"/> in the UI language.</summary>
-    public string DisplayLabel(OpticalSystem system) => Label(system, Kind.Title());
+    public string DisplayLabel(OpticalSystem system) => Label(system, Kind.Title(), english: false);
 
-    string Label(OpticalSystem system, string title)
+    string Label(OpticalSystem system, string title, bool english)
     {
-        if (Kind == ToleranceKind.Other) return Path(system).Label(system);
+        if (Kind == ToleranceKind.Other) return english ? Path(system).EnglishLabel(system) : Path(system).Label(system);
         if (Kind.IsElement() && ElementTitle(system) is { } e) return $"{title} {e}";
         return $"{title} {SurfaceLabel(system)}";
     }
@@ -929,7 +929,7 @@ public sealed class ToleranceCompensator(ParamPath param, double? range = null)
     public string Title(OpticalSystem s) => IsBackFocus(Param, s) ? Loc.S("Jobs_Tolerance_Model_BackFocus") : Param.Label(s);
 
     /// <summary><see cref="Title"/> in English whatever the UI language (the exported summary).</summary>
-    public string EnglishTitle(OpticalSystem s) => IsBackFocus(Param, s) ? "Back focus" : Param.Label(s);
+    public string EnglishTitle(OpticalSystem s) => IsBackFocus(Param, s) ? "Back focus" : Param.EnglishLabel(s);
 
     public JsonObject ToJson() => new() { ["param"] = Param.ToJson(), ["range"] = Range is { } r ? r : null };
 

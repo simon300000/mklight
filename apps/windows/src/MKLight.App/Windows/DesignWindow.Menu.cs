@@ -416,7 +416,7 @@ public sealed partial class DesignWindow
         _newPaneMenu.Items.Clear();
         foreach (var group in list.GroupBy(d => d.Category).OrderBy(g => AnalysisCatalog.CategoryRank(g.Key)).ThenBy(g => g.Key))
         {
-            var sub = new MenuFlyoutSubItem { Text = AnalysisCatalog.CategoryTitle(group.Key) };
+            var sub = new MenuFlyoutSubItem { Text = AnalysisCatalog.CategoryTitle(group.Key), Tag = AnalysisCatalog.EnglishCategoryTitle(group.Key) };
             Microsoft.UI.Xaml.Automation.AutomationProperties.SetAutomationId(sub, "NewPane." + group.Key);
             foreach (var d in group.OrderBy(d => AnalysisCatalog.Title(d.Name, d.Title)))
             {

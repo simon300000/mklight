@@ -54,7 +54,7 @@ public sealed partial class LocalizationTests
         Assert.Empty(missing);
     }
 
-    [GeneratedRegex(@"\bT\(""([A-Za-z]+)"", ""([^""]*)""")] private static partial Regex ModelKey();
+    [GeneratedRegex(@"\bT\(english, ""([A-Za-z]+)"", ""([^""]*)""")] private static partial Regex ModelKey();
 
     /// <summary>The labels MKLight.Model builds (ModelText): each key exists, with the English the code falls back to.</summary>
     [Fact]
@@ -150,13 +150,29 @@ public sealed partial class LocalizationTests
         finally { try { Directory.Delete(dir, true); } catch (IOException) { } }
     }
 
-    /// <summary>The shared catalog, once it is in the repository, parses and keeps its placeholders.</summary>
+    /// <summary>The shared catalog (docs/I18N.md) parses, with strings, enums and diagnostics.</summary>
     [Fact]
-    public void SharedCatalogParsesWhenPresent()
+    public void SharedCatalogParses()
     {
-        var path = RepoPath("locales", "zh-Hans", "engine.json");
-        if (!File.Exists(path)) return;
-        var t = EngineText.Parse(File.ReadAllText(path));
-        Assert.True(t.Count > 0);
+        var t = EngineText.Parse(File.ReadAllText(RepoPath("locales", "zh-Hans", "engine.json")));
+        Assert.True(t.Count > 400);
+        Assert.Equal("自动", t.EnumLabel("auto"));
+        Assert.Null(t.EnumLabel("not_an_enum_value"));
+    }
+
+    [Fact]
+    public void CodedIssuesUseTheirTemplateAndKeepTheEnglishAsDetail()
+    {
+        var t = new EngineText(new Dictionary<string, string>(),
+            new Dictionary<string, string> { ["missing_glass"] = "第 {surface} 面的玻璃未找到。", ["bad_path"] = "{path} 无效。" },
+            new Dictionary<string, string> { ["hexapolar"] = "六角" });
+        Assert.Equal(("第 3 面的玻璃未找到。", "Glass N-XYZ on surface 3 not found"), t.Issue("missing_glass", "Glass N-XYZ on surface 3 not found", 3));
+        Assert.Equal(("Glass on surface ? not found", (string?)null), t.Issue("missing_glass", "Glass on surface ? not found")); // no surface: English
+        Assert.Equal(("other", (string?)null), t.Issue("unknown_code", "other", 1));
+        var raw = "invalid model: [bad_path] surfaces[2].radius: must be finite";
+        Assert.Equal(("bad_path", "surfaces[2].radius", "must be finite"), EngineText.ParseStructural(raw));
+        Assert.Equal(("surfaces[2].radius 无效。", raw), t.StructuralIssue(raw));
+        Assert.Equal(("plain error", (string?)null), t.StructuralIssue("plain error"));
+        Assert.Equal("六角", t.EnumLabel("hexapolar"));
     }
 }

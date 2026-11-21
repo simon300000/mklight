@@ -101,7 +101,10 @@ public static class AnalysisCatalog
     }
 
     public static string Glyph(string name) => Glyphs.TryGetValue(name, out var g) ? g : "\uE9D2";
-    public static string CategoryTitle(string c) => EngineText.T(CategoryTitles.TryGetValue(c, out var t) ? t : TitleCase(c));
+    public static string CategoryTitle(string c) => EngineText.T(EnglishCategoryTitle(c));
+
+    /// <summary>The category's title in English (menu tags for <c>--do menu=…</c>).</summary>
+    public static string EnglishCategoryTitle(string c) => CategoryTitles.TryGetValue(c, out var t) ? t : TitleCase(c);
 
     /// <summary>Category order: the known categories first, then the rest alphabetically.</summary>
     public static int CategoryRank(string c)

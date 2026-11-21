@@ -310,7 +310,7 @@ public sealed class Workspace
             // The model mirror's structural problems name their surface.
             var structural = system.StructuralIssues().Select(i => new IssueItem("error", EngineText.T(i.Message), i.Surface is int s ? Loc.F("Shell_Issue_SurfaceAt", s) : null, i.Surface));
             ModelErrors = messages;
-            _refusal = [.. messages.Select(m => new IssueItem("error", EngineText.T(m), null)), .. structural];
+            _refusal = [.. messages.Select(m => EngineText.Current.StructuralIssue(m) is var (text, detail) ? new IssueItem("error", text, null, null, detail) : null!), .. structural];
             UpdateIssuesBySurface();
             StateChanged?.Invoke();
             foreach (var p in AllPanes) p.RaiseChanged();
@@ -437,12 +437,9 @@ public sealed class Workspace
         {
             var surface = i?["surface"].IntOrNull() is long s ? (int)s : (int?)null;
             // The message in the UI language: the engine text catalog's template for the code, else the English.
-            var args = i?["args"] is JsonObject a
-                ? a.Where(p => p.Value is JsonValue).ToDictionary(p => p.Key, p => p.Value!.ToString(), StringComparer.Ordinal)
-                : null;
-            var message = EngineText.Diagnostic(i?["code"].StringOrNull(), i?["message"].StringOrNull() ?? "", args);
+            var (message, detail) = EngineText.Current.Issue(i?["code"].StringOrNull(), i?["message"].StringOrNull() ?? "", surface);
             list.Add(new IssueItem(i?["severity"].StringOrNull() ?? "warning", message,
-                surface is int k ? Loc.F("Shell_Issue_SurfaceAt", k) : null, surface));
+                surface is int k ? Loc.F("Shell_Issue_SurfaceAt", k) : null, surface, detail));
         }
         _validation = list;
         UpdateIssuesBySurface();

@@ -72,6 +72,15 @@ public sealed partial class ValidationView : UserControl
         message.TextTrimming = TextTrimming.None;
         message.IsTextSelectionEnabled = true;
         text.Children.Add(message);
+        // A translated message: the engine's English below it, which holds the values the template leaves out.
+        if (issue.Detail is { } detail)
+        {
+            var english = Kit.Caption(detail);
+            english.TextWrapping = TextWrapping.Wrap;
+            english.TextTrimming = TextTrimming.None;
+            english.IsTextSelectionEnabled = true;
+            text.Children.Add(english);
+        }
         var meta = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10 };
         if (issue.Code.Length > 0)
         {

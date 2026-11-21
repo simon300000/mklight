@@ -151,7 +151,12 @@ public abstract partial record ParamPath
     /// A short human label, e.g. <c>Radius 3</c>, <c>Thickness 4</c>, <c>A6 on 2</c>, <c>Field 2 y</c>, with the
     /// surface given by its index in <paramref name="system"/>.
     /// </summary>
-    public string Label(OpticalSystem system)
+    public string Label(OpticalSystem system) => Label(system, english: false);
+
+    /// <summary>The label in English whatever the UI language: for what goes to the engine and into exported files.</summary>
+    public string EnglishLabel(OpticalSystem system) => Label(system, english: true);
+
+    string Label(OpticalSystem system, bool english)
     {
         var n = SurfaceId is { } sid && system.SurfaceIndexOf(sid) is { } idx ? idx.ToString() : "?";
         switch (this)
@@ -159,39 +164,39 @@ public abstract partial record ParamPath
             case Curvature c:
                 // The y section of a toroid or biconic.
                 var anamorphic = system.SurfaceIndexOf(c.Surface) is { } k && system.Surfaces[k].Shape.Kind is ShapeKind.Toroid or ShapeKind.Biconic;
-                return anamorphic ? T("RadiusY", "Radius y {0}", n) : T("Radius", "Radius {0}", n);
-            case Thickness: return T("Thickness", "Thickness {0}", n);
-            case Conic: return T("Conic", "Conic {0}", n);
-            case Asphere a: return T("AsphereOn", "A{0} on {1}", 2 * a.Index + 4, n);
+                return anamorphic ? T(english, "RadiusY", "Radius y {0}", n) : T(english, "Radius", "Radius {0}", n);
+            case Thickness: return T(english, "Thickness", "Thickness {0}", n);
+            case Conic: return T(english, "Conic", "Conic {0}", n);
+            case Asphere a: return T(english, "AsphereOn", "A{0} on {1}", 2 * a.Index + 4, n);
             case ShapeCoefficient sc:
                 return sc.Set switch
                 {
-                    CoefficientSet.Odd => T("OddTermOn", "Odd {0} on {1}", sc.Set.TermLabel(sc.Index), n),
-                    CoefficientSet.Phase => T("PhaseTermOn", "Phase {0} on {1}", sc.Set.TermLabel(sc.Index), n),
-                    _ => T("TermOn", "{0} on {1}", sc.Set.TermLabel(sc.Index), n),
+                    CoefficientSet.Odd => T(english, "OddTermOn", "Odd {0} on {1}", sc.Set.TermLabel(sc.Index), n),
+                    CoefficientSet.Phase => T(english, "PhaseTermOn", "Phase {0} on {1}", sc.Set.TermLabel(sc.Index), n),
+                    _ => T(english, "TermOn", "{0} on {1}", sc.Set.TermLabel(sc.Index), n),
                 };
-            case ShapeParam p: return T("TermOn", "{0} on {1}", p.Parameter.Title(), n);
-            case ParaxialFocalLength: return T("FocalLength", "Focal length {0}", n);
+            case ShapeParam p: return T(english, "TermOn", "{0} on {1}", p.Parameter.Title(), n);
+            case ParaxialFocalLength: return T(english, "FocalLength", "Focal length {0}", n);
             case ModelNd: return $"n_d {n}";
             case ModelVd: return $"V_d {n}";
             case ModelDpgf: return $"ΔP_g,F {n}";
             case MaterialDnD: return $"Δn_d {n}";
             case MaterialDvD: return $"ΔV_d {n}";
-            case DecenterX: return T("DecenterX", "Decenter X {0}", n);
-            case DecenterY: return T("DecenterY", "Decenter Y {0}", n);
-            case TiltX: return T("TiltX", "Tilt X {0}", n);
-            case TiltY: return T("TiltY", "Tilt Y {0}", n);
-            case TiltZ: return T("TiltZ", "Tilt Z {0}", n);
-            case SemiDiameter: return T("SemiDiameter", "Semi-diameter {0}", n);
-            case ApertureValue: return T("Aperture", "Aperture");
-            case FieldX f: return T("FieldX", "Field {0} x", f.Index + 1);
-            case FieldY f: return T("FieldY", "Field {0} y", f.Index + 1);
-            case FieldWeight f: return T("FieldWeight", "Field {0} weight", f.Index + 1);
+            case DecenterX: return T(english, "DecenterX", "Decenter X {0}", n);
+            case DecenterY: return T(english, "DecenterY", "Decenter Y {0}", n);
+            case TiltX: return T(english, "TiltX", "Tilt X {0}", n);
+            case TiltY: return T(english, "TiltY", "Tilt Y {0}", n);
+            case TiltZ: return T(english, "TiltZ", "Tilt Z {0}", n);
+            case SemiDiameter: return T(english, "SemiDiameter", "Semi-diameter {0}", n);
+            case ApertureValue: return T(english, "Aperture", "Aperture");
+            case FieldX f: return T(english, "FieldX", "Field {0} x", f.Index + 1);
+            case FieldY f: return T(english, "FieldY", "Field {0} y", f.Index + 1);
+            case FieldWeight f: return T(english, "FieldWeight", "Field {0} weight", f.Index + 1);
             case WavelengthUm w: return $"λ{w.Index + 1}";
-            case WavelengthWeight w: return T("WavelengthWeight", "λ{0} weight", w.Index + 1);
-            case TemperatureC: return T("Temperature", "Temperature");
-            case PressureAtm: return T("Pressure", "Pressure");
-            case Irregularity ir: return ir.Mode == IrregularityMode.Astigmatism ? T("AstigIrregularity", "Astig. irregularity {0}", n) : T("SphIrregularity", "Sph. irregularity {0}", n);
+            case WavelengthWeight w: return T(english, "WavelengthWeight", "λ{0} weight", w.Index + 1);
+            case TemperatureC: return T(english, "Temperature", "Temperature");
+            case PressureAtm: return T(english, "Pressure", "Pressure");
+            case Irregularity ir: return ir.Mode == IrregularityMode.Astigmatism ? T(english, "AstigIrregularity", "Astig. irregularity {0}", n) : T(english, "SphIrregularity", "Sph. irregularity {0}", n);
             case ElementPlacement e:
                 var m = system.SurfaceIndexOf(e.Last) is { } li ? li.ToString() : "?";
                 return $"{e.Component.Title()} {n}–{m}";
@@ -200,7 +205,8 @@ public abstract partial record ParamPath
     }
 
     /// <summary>A label's format in the UI language (<see cref="ModelText"/>), else the English.</summary>
-    static string T(string key, string english, params object?[] args) => ModelText.Format("Model_Param_" + key, english, args);
+    static string T(bool inEnglish, string key, string english, params object?[] args) =>
+        inEnglish ? string.Format(System.Globalization.CultureInfo.InvariantCulture, english, args) : ModelText.Format("Model_Param_" + key, english, args);
 
     /// <summary>Whether the value is a curvature <c>c = 1/R</c> (1/mm): shown and bounded as a radius by default.</summary>
     public bool IsCurvature =>
