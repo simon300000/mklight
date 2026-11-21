@@ -158,7 +158,7 @@
   <data name="Jobs_GlassSub_SummaryMtfWeakest" xml:space="preserve"><value>MTF ≥ {0}，于 {1} cyc/mm，最弱视场</value></data>
   <data name="Jobs_GlassSub_SummaryNearest" xml:space="preserve"><value>最接近的 {0} 种</value></data>
   <data name="Jobs_GlassSub_SummaryRings" xml:space="preserve"><value>{0} 环 × {1} 臂</value></data>
-  <data name="Jobs_GlassSub_SummarySqueeze" xml:space="preserve"><value>压缩 {0}</value></data>
+  <data name="Jobs_GlassSub_SummarySqueeze" xml:space="preserve"><value>压缩比 {0}</value></data>
   <data name="Jobs_GlassSub_SummaryThickness" xml:space="preserve"><value>厚度限制</value></data>
   <data name="Jobs_GlassSub_TimeLimit" xml:space="preserve"><value>时间限制</value></data>
   <data name="Jobs_GlassSub_TimeLimitName" xml:space="preserve"><value>时间限制（秒）</value></data>
