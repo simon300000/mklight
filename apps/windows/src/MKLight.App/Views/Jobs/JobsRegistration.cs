@@ -96,7 +96,7 @@ static class JobsRegistration
             var s = Open(w, "tolerance").Tolerance;
             await WaitSnapshot(w);
             await Task.Delay(1500); // the layout's semi-diameters and the glasses' Abbe numbers
-            if (int.TryParse(arg, out var trials)) s.Edit("Change Trials", x => x.Trials = trials);
+            if (int.TryParse(arg, out var trials)) s.Edit(Loc.S("Jobs_Tolerance_Panel_Undo_ChangeTrials"), x => x.Trials = trials);
             s.Start();
             await WaitUntil(() => !s.IsRunning, 300);
         };
