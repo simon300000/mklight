@@ -70,6 +70,7 @@ public final class ToleranceSession {
     public private(set) var monteCarloStartedAt: Date?
     /// The wall time per trial of the last Monte Carlo, for estimates.
     public private(set) var lastSecondsPerTrial: Double?
+    @ObservationIgnored private var shownPreviewTitle: String?
     @ObservationIgnored private var job: AnalysisJob?
     @ObservationIgnored private var previewJob: AnalysisJob?
     @ObservationIgnored private var apertureCache: (key: String, value: [SurfaceID: Double])?
@@ -163,9 +164,9 @@ public final class ToleranceSession {
     /// Why the run cannot start, if it cannot.
     public func runProblem(context: ToleranceContext) -> String? {
         let blocking = settings.issues(in: context).count
-        if blocking > 0 { return blocking == 1 ? "Fix the tolerance marked in red first." : "Fix the \(blocking) tolerances marked in red first." }
-        if settings.rows.isEmpty { return "Add a tolerance first." }
-        if settings.mode != .sensitivity && settings.trials < 2 { return "Run at least 2 Monte Carlo trials." }
+        if blocking > 0 { return blocking == 1 ? String(localized: "Fix the tolerance marked in red first.") : String(localized: "Fix the \(blocking) tolerances marked in red first.", locale: NumberDisplay.locale) }
+        if settings.rows.isEmpty { return String(localized: "Add a tolerance first.") }
+        if settings.mode != .sensitivity && settings.trials < 2 { return String(localized: "Run at least 2 Monte Carlo trials.") }
         return nil
     }
 
@@ -348,12 +349,14 @@ public final class ToleranceSession {
                 let out = try await job.result()
                 guard self.previewed == c else { return }
                 guard let p = TolerancePreview(json: out.json["preview"], case: c) else {
-                    self.previewError = "The engine could not rebuild this build: no ray reached the image."
+                    self.previewError = String(localized: "The engine could not rebuild this build: no ray reached the image.")
                     workspace.preview(nil)
                     return
                 }
                 self.preview = p
-                workspace.preview(p.system, title: self.title(of: c))
+                let t = self.title(of: c)
+                self.shownPreviewTitle = t
+                workspace.preview(p.system, title: t)
             } catch EngineError.cancelled {
                 return
             } catch {
@@ -371,23 +374,26 @@ public final class ToleranceSession {
         previewed = nil
         preview = nil
         previewError = nil
-        if was || workspace.previewTitle?.hasPrefix("Tolerance") == true { workspace.preview(nil) }
+        if was || (shownPreviewTitle != nil && workspace.previewTitle == shownPreviewTitle) { workspace.preview(nil) }
     }
 
     /// "Tolerance: trial 17, compensated", "Tolerance: Decentre y S3 at +0.02 mm".
-    public func title(of c: TolerancePreviewCase) -> String {
-        let compensated = (result?.compensators.isEmpty ?? true) ? "" : ", compensated"
+    public func title(of c: TolerancePreviewCase) -> String { String(localized: "Tolerance: \(detail(of: c))", locale: NumberDisplay.locale) }
+
+    /// The build alone: "trial 17, compensated", "Decentre y S3 at +0.02 mm".
+    public func detail(of c: TolerancePreviewCase) -> String {
+        let compensated = !(result?.compensators.isEmpty ?? true)
         switch c {
         case .trial(let k):
-            return "Tolerance: trial \(k + 1)" + compensated
+            return compensated ? String(localized: "trial \(k + 1), compensated", locale: NumberDisplay.locale) : String(localized: "trial \(k + 1)", locale: NumberDisplay.locale)
         case .sensitivity(let k, let plus):
             let what: String
             if let system = runSystem, resultRows.indices.contains(k) {
-                what = "\(resultRows[k].label(in: system)) at \(resultRows[k].limitText(plus: plus))"
+                what = String(localized: "\(resultRows[k].label(in: system)) at \(resultRows[k].limitText(plus: plus))", locale: NumberDisplay.locale)
             } else {
-                what = result?.sensitivities.first { $0.id == k }?.label ?? "operand \(k + 1)"
+                what = result?.sensitivities.first { $0.id == k }?.label ?? String(localized: "operand \(k + 1)", locale: NumberDisplay.locale)
             }
-            return "Tolerance: " + what + compensated
+            return compensated ? String(localized: "\(what), compensated", locale: NumberDisplay.locale) : what
         }
     }
 }

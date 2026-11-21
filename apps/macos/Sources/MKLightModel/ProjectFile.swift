@@ -83,10 +83,10 @@ public struct ProjectFile: Codable, Sendable, Hashable {
         public var errorDescription: String? {
             switch self {
             case .unsupportedVersion(let v) where v > ProjectFile.currentVersion:
-                "This project was written by a newer MKLight (schema version \(v)); please update MKLight."
+                String(localized: "This project was written by a newer MKLight (schema version \(v)); please update MKLight.", locale: NumberDisplay.locale)
             case .unsupportedVersion(let v):
-                "This project uses schema version \(v), which this MKLight does not read (it reads version \(ProjectFile.currentVersion))."
-            case .notAProject(let why): "Not an MKLight project: \(why)"
+                String(localized: "This project uses schema version \(v), which this MKLight does not read (it reads version \(ProjectFile.currentVersion)).", locale: NumberDisplay.locale)
+            case .notAProject(let why): String(localized: "Not an MKLight project: \(why)", locale: NumberDisplay.locale)
             }
         }
     }

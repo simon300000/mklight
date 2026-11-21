@@ -24,11 +24,11 @@ public enum ApertureSpec: Codable, Sendable, Hashable {
         public var id: String { rawValue }
         public var title: String {
             switch self {
-            case .entrancePupilDiameter: "Entrance pupil diameter"
-            case .imageSpaceFNumber: "Image-space F/#"
-            case .objectSpaceNA: "Object-space NA"
-            case .paraxialWorkingFNumber: "Paraxial working F/#"
-            case .floatByStopSize: "Float by stop size"
+            case .entrancePupilDiameter: String(localized: "Entrance pupil diameter")
+            case .imageSpaceFNumber: String(localized: "Image-space F/#")
+            case .objectSpaceNA: String(localized: "Object-space NA")
+            case .paraxialWorkingFNumber: String(localized: "Paraxial working F/#")
+            case .floatByStopSize: String(localized: "Float by stop size")
             }
         }
         public var unit: String {
@@ -104,10 +104,10 @@ public enum FieldKind: String, Codable, Sendable, Hashable, CaseIterable, Identi
     public var id: String { rawValue }
     public var title: String {
         switch self {
-        case .objectAngle: "Object angle"
-        case .objectHeight: "Object height"
-        case .paraxialImageHeight: "Paraxial image height"
-        case .realImageHeight: "Real image height"
+        case .objectAngle: String(localized: "Object angle")
+        case .objectHeight: String(localized: "Object height")
+        case .paraxialImageHeight: String(localized: "Paraxial image height")
+        case .realImageHeight: String(localized: "Real image height")
         }
     }
     public var unit: String { self == .objectAngle ? "°" : "mm" }

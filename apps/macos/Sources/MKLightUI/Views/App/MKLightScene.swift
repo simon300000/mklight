@@ -20,20 +20,20 @@ public struct MKLightScene: Scene {
             DesignWindow(document: config.document, fileURL: config.fileURL, engine: engine)
                 .frame(minWidth: 960, minHeight: 620)
                 // One number format app-wide (NumberDisplay): a decimal point, no grouping.
-                .environment(\.locale, NumberDisplay.locale)
+                .environment(\.locale, NumberDisplay.textLocale)
         }
         .defaultSize(width: 1520, height: 940)
         .commands { MKLightCommands() }
 
         Window("Glass Catalogs", id: GlassBrowserView.windowID) {
             GlassBrowserView(model: .shared)
-                .environment(\.locale, NumberDisplay.locale)
+                .environment(\.locale, NumberDisplay.textLocale)
         }
         .defaultSize(width: 1420, height: 780)
 
         Window("Welcome to MKLight", id: WelcomeView.windowID) {
             WelcomeView(engine: engine)
-                .environment(\.locale, NumberDisplay.locale)
+                .environment(\.locale, NumberDisplay.textLocale)
         }
         .windowResizability(.contentSize)
         .defaultPosition(.center)

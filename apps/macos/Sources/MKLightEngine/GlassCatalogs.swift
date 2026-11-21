@@ -29,12 +29,12 @@ public enum GlassStatus: Hashable, Sendable, Codable, Identifiable {
 
     public var title: String {
         switch self {
-        case .standard: "Standard"
-        case .preferred: "Preferred"
-        case .obsolete: "Obsolete"
-        case .special: "Special"
-        case .melt: "Melt"
-        case .other(let c): "Status \(c)"
+        case .standard: String(localized: "Standard")
+        case .preferred: String(localized: "Preferred")
+        case .obsolete: String(localized: "Obsolete")
+        case .special: String(localized: "Special")
+        case .melt: String(localized: "Melt")
+        case .other(let c): String(localized: "Status \(c)", locale: NumberDisplay.locale)
         }
     }
 

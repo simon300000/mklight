@@ -34,7 +34,7 @@ struct SpotDiagramView: View {
                         }
                     }
                     if grid.airy.isFinite {
-                        LegendItem(color: .secondary, label: "Airy disk \(Fmt.length(grid.airy))", dashed: true)
+                        LegendItem(color: .secondary, label: String(localized: "Airy disk \(Fmt.length(grid.airy))", locale: NumberDisplay.locale), dashed: true)
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -65,15 +65,15 @@ private struct ScaleNote: View {
     }
 
     private var text: String {
-        var s =
+        var parts =
             scale == .grid || grid.rows.count < 2
-            ? "Box half-width \(Fmt.length(grid.halfWidths(.grid).first ?? .nan)), common to all cells"
-            : "Box half-width per field, shown by each row"
-        s += grid.reference == "centroid" ? " · about the centroid" : " · about the chief ray"
+            ? [String(localized: "Box half-width \(Fmt.length(grid.halfWidths(.grid).first ?? .nan)), common to all cells", locale: NumberDisplay.locale)]
+            : [String(localized: "Box half-width per field, shown by each row")]
+        parts.append(grid.reference == "centroid" ? String(localized: "about the centroid") : String(localized: "about the chief ray"))
         if grid.planes.count < grid.sampledPlanes {
-            s += " · \(grid.planes.count) of \(grid.sampledPlanes) planes shown"
+            parts.append(String(localized: "\(grid.planes.count) of \(grid.sampledPlanes) planes shown", locale: NumberDisplay.locale))
         }
-        return s
+        return parts.joined(separator: " · ")
     }
 }
 
@@ -101,7 +101,7 @@ struct FanView: View {
         fields = list.enumerated().map { k, f in
             let i = f["field"]?.int ?? k
             return FieldFan(
-                id: i, label: "Field \(i + 1) · " + context.fieldLabel(f["field_value"]?.nfArray),
+                id: i, label: String(localized: "Field \(i + 1) · \(context.fieldLabel(f["field_value"]?.nfArray))", locale: NumberDisplay.locale),
                 tangential: curves(f["tangential"]), sagittal: curves(f["sagittal"]))
         }
     }
@@ -125,8 +125,8 @@ struct FanView: View {
                             VStack(alignment: .leading, spacing: Space.xxs) {
                                 Text(f.label).font(.caption.weight(.semibold)).lineLimit(1)
                                 HStack(spacing: Space.l) {
-                                    PlotCell(title: "Tangential") { chart(f.tangential, x: "Py", y: opd ? "W (waves)" : "εy (µm)") }
-                                    PlotCell(title: "Sagittal") { chart(f.sagittal, x: "Px", y: opd ? "W (waves)" : "εx (µm)") }
+                                    PlotCell(title: String(localized: "Tangential")) { chart(f.tangential, x: "Py", y: opd ? "W (waves)" : "εy (µm)") }
+                                    PlotCell(title: String(localized: "Sagittal")) { chart(f.sagittal, x: "Px", y: opd ? "W (waves)" : "εx (µm)") }
                                 }
                             }
                             .frame(height: h)
@@ -173,24 +173,24 @@ struct FieldCurvatureView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Space.s) {
             WavelengthLegend(wavelengths: curves.map(\.wavelength), um: wavelengthsUm) {
-                LegendItem(color: .secondary, label: "Tangential")
-                LegendItem(color: .secondary, label: "Sagittal", dashed: true)
+                LegendItem(color: .secondary, label: String(localized: "Tangential"))
+                LegendItem(color: .secondary, label: String(localized: "Sagittal"), dashed: true)
             }
             HStack(spacing: Space.l) {
-                PlotCell(title: "Field Curvature") {
+                PlotCell(title: String(localized: "Field Curvature")) {
                     LineChart(
                         series: curves.flatMap { c in
                             [
                                 Series(id: "t\(c.wavelength)", label: "T", color: color(c.wavelength), points: zip(c.t, field).map { ($0, $1) }),
                                 Series(id: "s\(c.wavelength)", label: "S", color: color(c.wavelength), points: zip(c.s, field).map { ($0, $1) }, dashed: true),
                             ]
-                        }, xLabel: "Focus shift (mm)", yLabel: "Field (\(fieldUnit))", zeroLine: false)
+                        }, xLabel: String(localized: "Focus shift (mm)"), yLabel: String(localized: "Field (\(fieldUnit))", locale: NumberDisplay.locale), zeroLine: false)
                 }
-                PlotCell(title: "Distortion") {
+                PlotCell(title: String(localized: "Distortion")) {
                     LineChart(
                         series: curves.map { c in
                             Series(id: "d\(c.wavelength)", label: "", color: color(c.wavelength), points: zip(c.d, field).map { ($0, $1) })
-                        }, xLabel: "Distortion (%)", yLabel: "Field (\(fieldUnit))", zeroLine: false)
+                        }, xLabel: String(localized: "Distortion (%)"), yLabel: String(localized: "Field (\(fieldUnit))", locale: NumberDisplay.locale), zeroLine: false)
                 }
             }
         }
@@ -222,9 +222,9 @@ struct GridDistortionView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Space.s) {
             FlowLayout(spacing: Space.l, lineSpacing: Space.xs) {
-                LegendItem(color: .secondary.opacity(0.5), label: "Paraxial grid", dashed: true)
-                LegendItem(color: .primary, label: "Real chief rays")
-                Text("Max \(String(format: "%.3f", maxDistortion)) %").font(.caption).foregroundStyle(.secondary).numeric().fixedSize()
+                LegendItem(color: .secondary.opacity(0.5), label: String(localized: "Paraxial grid"), dashed: true)
+                LegendItem(color: .primary, label: String(localized: "Real chief rays"))
+                Text(String(localized: "Max \(String(format: "%.3f", maxDistortion)) %", locale: NumberDisplay.locale)).font(.caption).foregroundStyle(.secondary).numeric().fixedSize()
             }
             Canvas { ctx, size in
                 let all = (paraxial + real).filter { $0.0.isFinite && $0.1.isFinite }
@@ -251,7 +251,7 @@ struct GridDistortionView: View {
             }
             .aspectRatio(1, contentMode: .fit)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .accessibilityLabel("Grid distortion, maximum \(String(format: "%.3f", maxDistortion)) percent")
+            .accessibilityLabel(String(localized: "Grid distortion, maximum \(String(format: "%.3f", maxDistortion)) percent", locale: NumberDisplay.locale))
         }
         .padding(Space.m)
     }
@@ -261,8 +261,10 @@ struct GridDistortionView: View {
 
 struct SeidelView: View {
     struct Bar: Identifiable { var id: String { "\(surface)-\(term)" }; var surface: String; var term: String; var value: Double }
-    static let terms = [("s1", "S_I spherical"), ("s2", "S_II coma"), ("s3", "S_III astigmatism"), ("s4", "S_IV Petzval"), ("s5", "S_V distortion")]
-    static let colour = [("cl", "C_L axial"), ("ct", "C_T lateral")]
+    static let terms = [("s1", String(localized: "S_I spherical")), ("s2", String(localized: "S_II coma")), ("s3", String(localized: "S_III astigmatism")),
+        ("s4", String(localized: "S_IV Petzval")), ("s5", String(localized: "S_V distortion")),
+    ]
+    static let colour = [("cl", String(localized: "C_L axial")), ("ct", String(localized: "C_T lateral"))]
     let surfaces: [[String: Double]]
     let surfaceIndex: [Int]
     let sums: [String: Double]
@@ -297,7 +299,7 @@ struct SeidelView: View {
 
     @ViewBuilder private var petzval: some View {
         if petzvalRadius.isFinite {
-            Text("Petzval radius \(Fmt.short(petzvalRadius)) mm").font(.caption).foregroundStyle(.secondary).numeric().fixedSize()
+            Text(String(localized: "Petzval radius \(Fmt.short(petzvalRadius)) mm", locale: NumberDisplay.locale)).font(.caption).foregroundStyle(.secondary).numeric().fixedSize()
         }
     }
 
@@ -327,7 +329,7 @@ struct SeidelView: View {
 
     @ViewBuilder var body: some View {
         if let notApplicable {
-            ContentUnavailableView("Seidel Coefficients Do Not Apply", systemImage: "circle.slash", description: Text(notApplicable))
+            ContentUnavailableView("Seidel Coefficients Do Not Apply", systemImage: "circle.slash", description: Text(EngineText.string(notApplicable)))
         } else {
             coefficients
         }
@@ -352,16 +354,18 @@ struct SeidelView: View {
             // sets S_I … S_V and C_L, C_T with real subscripts.
             legend(terms)
             Chart(bars) { b in
-                BarMark(x: .value("Surface", b.surface), y: .value("Coefficient (mm)", b.value))
-                    .position(by: .value("Term", b.term))
-                    .foregroundStyle(by: .value("Term", b.term))
+                BarMark(x: .value(String(localized: "Surface"), b.surface), y: .value(String(localized: "Coefficient (mm)"), b.value))
+                    .position(by: .value(String(localized: "Term"), b.term))
+                    .foregroundStyle(by: .value(String(localized: "Term"), b.term))
                     .cornerRadius(2)
             }
             .chartForegroundStyleScale(domain: terms, range: terms.indices.map { Palette.fieldColor($0 + (chromatic ? 5 : 0)) })
             .chartLegend(.hidden)
             .chartYAxisLabel("mm")
-            .chartXAxisLabel("Surface", alignment: .center)
-            .accessibilityLabel("Seidel coefficients per surface and their sum")
+            .chartXAxisLabel(String(localized: "Surface"), alignment: .center)
+            .accessibilityLabel(String(localized: "Seidel coefficients per surface and their sum"))
+            // Numbers as in every language (decimal point, no grouping).
+            .environment(\.locale, NumberDisplay.locale)
             if !wavefront.isEmpty {
                 // Wavefront coefficients, wrapped in narrow panes.
                 FlowLayout(spacing: Space.l, lineSpacing: Space.xs) {
@@ -401,7 +405,7 @@ struct LongitudinalView: View {
             LineChart(
                 series: curves.map { w, a in
                     Series(id: "\(w)", label: "", color: Palette.wavelengthColor(um.indices.contains(w) ? um[w] : 0.55), points: zip(a, pupil).map { ($0, $1) })
-                }, xLabel: "Longitudinal aberration (mm)", yLabel: "Pupil zone", yDomain: 0...1, zeroLine: false)
+                }, xLabel: String(localized: "Longitudinal aberration (mm)"), yLabel: String(localized: "Pupil zone"), yDomain: 0...1, zeroLine: false)
         }
         .padding(Space.m)
     }
@@ -421,7 +425,7 @@ struct ChromaticFocalShiftView: View {
     var body: some View {
         LineChart(
             series: [Series(id: "shift", label: "", color: Palette.fieldColor(0), points: zip(shift.map { $0 * 1000 }, um).map { ($0, $1) })],
-            xLabel: "Focal shift (µm)", yLabel: "Wavelength (µm)", zeroLine: false)
+            xLabel: String(localized: "Focal shift (µm)"), yLabel: String(localized: "Wavelength (µm)"), zeroLine: false)
             .padding(Space.m)
     }
 }
@@ -446,7 +450,7 @@ struct LateralColourView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Space.s) {
             WavelengthLegend(wavelengths: curves.map(\.0), um: um) {
-                if airy.isFinite { LegendItem(color: .secondary, label: "± Airy radius", dashed: true) }
+                if airy.isFinite { LegendItem(color: .secondary, label: String(localized: "± Airy radius"), dashed: true) }
             }
             Chart {
                 if airy.isFinite {
@@ -456,15 +460,17 @@ struct LateralColourView: View {
                 ForEach(curves, id: \.0) { w, off in
                     ForEach(Array(zip(off, field).enumerated()), id: \.offset) { _, p in
                         if p.0.isFinite && p.1.isFinite {
-                            LineMark(x: .value("Offset (µm)", p.0 * 1000), y: .value("Field", p.1), series: .value("λ", w))
+                            LineMark(x: .value(String(localized: "Offset (µm)"), p.0 * 1000), y: .value(String(localized: "Field"), p.1), series: .value("λ", w))
                                 .foregroundStyle(Palette.wavelengthColor(um.indices.contains(w) ? um[w] : 0.55))
                         }
                     }
                 }
             }
-            .chartXAxisLabel("Lateral color (µm)", alignment: .center)
-            .chartYAxisLabel("Field (\(unit))")
-            .accessibilityLabel("Lateral color versus field")
+            .chartXAxisLabel(String(localized: "Lateral color (µm)"), alignment: .center)
+            .chartYAxisLabel(String(localized: "Field (\(unit))", locale: NumberDisplay.locale))
+            .accessibilityLabel(String(localized: "Lateral color versus field"))
+            // Numbers as in every language (decimal point, no grouping).
+            .environment(\.locale, NumberDisplay.locale)
         }
         .padding(Space.m)
     }
@@ -490,14 +496,14 @@ struct RelativeIlluminationView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Space.s) {
             HStack(spacing: Space.l) {
-                LegendItem(color: Palette.fieldColor(0), label: "Relative illumination")
-                if !vignetting.isEmpty { LegendItem(color: Palette.fieldColor(1), label: "Vignetted fraction", dashed: true) }
+                LegendItem(color: Palette.fieldColor(0), label: String(localized: "Relative illumination"))
+                if !vignetting.isEmpty { LegendItem(color: Palette.fieldColor(1), label: String(localized: "Vignetted fraction"), dashed: true) }
             }
             LineChart(
                 series: [
                     Series(id: "ri", label: "", color: Palette.fieldColor(0), points: zip(field, ri).map { ($0, $1) }),
                     Series(id: "v", label: "", color: Palette.fieldColor(1), points: zip(field, vignetting).map { ($0, $1) }, dashed: true),
-                ], xLabel: "Field (\(unit))", yLabel: "Fraction", yDomain: 0...1.05, zeroLine: false)
+                ], xLabel: String(localized: "Field (\(unit))", locale: NumberDisplay.locale), yLabel: String(localized: "Fraction"), yDomain: 0...1.05, zeroLine: false)
         }
         .padding(Space.m)
     }
@@ -537,9 +543,9 @@ struct FootprintView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Space.s) {
             HStack(spacing: Space.l) {
-                Text("Surface \(surface)").font(.caption.weight(.semibold))
-                if semiDiameter.isFinite { LegendItem(color: .secondary, label: "Clear aperture \(Fmt.short(semiDiameter)) mm", dashed: true) }
-                if !clipped.isEmpty { LegendItem(color: Color(.sRGB, red: 0.89, green: 0.29, blue: 0.28), label: "\(clipped.count) clipped") }
+                Text(String(localized: "Surface \(surface)", locale: NumberDisplay.locale)).font(.caption.weight(.semibold))
+                if semiDiameter.isFinite { LegendItem(color: .secondary, label: String(localized: "Clear aperture \(Fmt.short(semiDiameter)) mm", locale: NumberDisplay.locale), dashed: true) }
+                if !clipped.isEmpty { LegendItem(color: Color(.sRGB, red: 0.89, green: 0.29, blue: 0.28), label: String(localized: "\(clipped.count) clipped", locale: NumberDisplay.locale)) }
             }
             Canvas { ctx, size in
                 let all = points.map { max(abs($0.0), abs($0.1)) } + clipped.map { max(abs($0.0), abs($0.1)) }
@@ -562,7 +568,7 @@ struct FootprintView: View {
             }
             .aspectRatio(1, contentMode: .fit)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .accessibilityLabel("Footprint on surface \(surface), \(points.count) rays pass, \(clipped.count) clipped")
+            .accessibilityLabel(String(localized: "Footprint on surface \(surface), \(points.count) rays pass, \(clipped.count) clipped", locale: NumberDisplay.locale))
         }
         .padding(Space.m)
     }
@@ -585,7 +591,7 @@ struct EncircledEnergyView: View {
             guard !enc.isEmpty, enc.count == shared.count else { return nil }
             let i = f["field"]?.int ?? k
             return Curve(
-                field: i, label: "Field \(i + 1) · " + context.fieldLabel(f["field_value"]?.nfArray), radius: shared, encircled: enc,
+                field: i, label: String(localized: "Field \(i + 1) · \(context.fieldLabel(f["field_value"]?.nfArray))", locale: NumberDisplay.locale), radius: shared, encircled: enc,
                 limit: output.buffer(ref: f["diffraction_limit"])?.doubles ?? [], r80: (f["r80"] ?? f["r80_mm"])?.nf ?? .nan)
         }
         if curves.isEmpty { return nil }
@@ -594,15 +600,15 @@ struct EncircledEnergyView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Space.s) {
             FlowLayout(spacing: Space.m) {
-                ForEach(curves, id: \.field) { c in LegendItem(color: Palette.fieldColor(c.field), label: c.label + " · r80 \(units.length(c.r80))") }
-                if curves.contains(where: { !$0.limit.isEmpty }) { LegendItem(color: .secondary, label: "Diffraction limit", dashed: true) }
+                ForEach(curves, id: \.field) { c in LegendItem(color: Palette.fieldColor(c.field), label: String(localized: "\(c.label) · r80 \(units.length(c.r80))", locale: NumberDisplay.locale)) }
+                if curves.contains(where: { !$0.limit.isEmpty }) { LegendItem(color: .secondary, label: String(localized: "Diffraction limit"), dashed: true) }
             }
             LineChart(
                 series: curves.map { c in
                     Series(id: "\(c.field)", label: c.label, color: Palette.fieldColor(c.field), points: zip(c.radius.map { $0 * 1000 }, c.encircled).map { ($0, $1) })
                 } + curves.prefix(1).filter { !$0.limit.isEmpty }.map { c in
                     Series(id: "limit", label: "", color: .secondary, points: zip(c.radius.map { $0 * 1000 }, c.limit).map { ($0, $1) }, dashed: true)
-                }, xLabel: "Radius (\(units.micro))", yLabel: "Encircled energy", yDomain: 0...1.02, zeroLine: false)
+                }, xLabel: String(localized: "Radius (\(units.micro))", locale: NumberDisplay.locale), yLabel: String(localized: "Encircled energy"), yDomain: 0...1.02, zeroLine: false)
         }
         .padding(Space.m)
     }
@@ -630,20 +636,20 @@ struct MTFView: View {
         if let list = j["curves"]?.array {  // geometric_mtf
             for c in list {
                 let f = c["field"]?.int ?? 0
-                var cur = out[f] ?? Curve(field: f, label: "Field \(f + 1)", tangential: [], sagittal: [])
+                var cur = out[f] ?? Curve(field: f, label: String(localized: "Field \(f + 1)", locale: NumberDisplay.locale), tangential: [], sagittal: [])
                 let m = c["modulation"]?.nfArray ?? []
                 if c["orientation"]?.string == "sagittal" { cur.sagittal = m } else { cur.tangential = m }
                 out[f] = cur
             }
             let values = j["field_values"]?.array ?? []
             for (k, f) in out.keys.sorted().enumerated() where values.indices.contains(k) {
-                out[f]?.label = "Field \(f + 1) · " + context.fieldLabel(values[k].nfArray)
+                out[f]?.label = String(localized: "Field \(f + 1) · \(context.fieldLabel(values[k].nfArray))", locale: NumberDisplay.locale)
             }
         } else if let list = j["fields"]?.array {  // wave mtf
             for (k, f) in list.enumerated() {
                 let i = f["field"]?.int ?? k
                 out[i] = Curve(
-                    field: i, label: "Field \(i + 1) · " + context.fieldLabel(f["field_value"]?.nfArray),
+                    field: i, label: String(localized: "Field \(i + 1) · \(context.fieldLabel(f["field_value"]?.nfArray))", locale: NumberDisplay.locale),
                     tangential: output.buffer(ref: f["tangential"])?.doubles ?? f["tangential"]?.nfArray ?? [],
                     sagittal: output.buffer(ref: f["sagittal"])?.doubles ?? f["sagittal"]?.nfArray ?? [])
                 if lim.isEmpty { lim = output.buffer(ref: f["diffraction_limit"])?.doubles ?? [] }
@@ -661,8 +667,8 @@ struct MTFView: View {
         VStack(alignment: .leading, spacing: Space.s) {
             FlowLayout(spacing: Space.m) {
                 ForEach(curves, id: \.field) { c in LegendItem(color: Palette.fieldColor(c.field), label: c.label) }
-                LegendItem(color: .secondary, label: "T solid, S dashed")
-                if !limit.isEmpty { LegendItem(color: .primary.opacity(0.5), label: "Diffraction limit") }
+                LegendItem(color: .secondary, label: String(localized: "T solid, S dashed"))
+                if !limit.isEmpty { LegendItem(color: .primary.opacity(0.5), label: String(localized: "Diffraction limit")) }
             }
             LineChart(
                 series: (limit.isEmpty ? [] : [Series(id: "limit", label: "", color: .primary.opacity(0.45), points: zip(frequencies, limit).map { ($0, $1) })])
@@ -672,8 +678,8 @@ struct MTFView: View {
                             Series(id: "s\(c.field)", label: "", color: Palette.fieldColor(c.field), points: zip(frequencies, c.sagittal).map { ($0, $1) }, dashed: true),
                         ]
                     },
-                xLabel: "Spatial frequency (\(units.frequency))", yLabel: "Modulation", xDomain: 0...(frequencies.last ?? 1), yDomain: 0...1.02,
-                zeroLine: false, markers: nyquist.map { [(x: $0, label: "Nyquist")] } ?? [])
+                xLabel: String(localized: "Spatial frequency (\(units.frequency))", locale: NumberDisplay.locale), yLabel: String(localized: "Modulation"), xDomain: 0...(frequencies.last ?? 1), yDomain: 0...1.02,
+                zeroLine: false, markers: nyquist.map { [(x: $0, label: String(localized: "Nyquist"))] } ?? [])
         }
         .padding(Space.m)
     }
@@ -700,13 +706,13 @@ struct BestFocusView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Space.l) {
             KeyValueGrid(rows: [
-                ("Best defocus", Fmt.length(defocus)), ("RMS at best focus", Fmt.length(merit)),
-                ("RMS at the image surface", Fmt.length(meritAtZero)),
+                (String(localized: "Best defocus"), Fmt.length(defocus)), (String(localized: "RMS at best focus"), Fmt.length(merit)),
+                (String(localized: "RMS at the image surface"), Fmt.length(meritAtZero)),
             ])
             if throughFocus.count > 2 {
                 LineChart(
                     series: [Series(id: "tf", label: "", color: Palette.fieldColor(0), points: throughFocus.map { ($0.0, $0.1 * 1000) })],
-                    xLabel: "Defocus (mm)", yLabel: "RMS radius (µm)", zeroLine: false, markers: [(x: defocus, label: "Best")])
+                    xLabel: String(localized: "Defocus (mm)"), yLabel: String(localized: "RMS radius (µm)"), zeroLine: false, markers: [(x: defocus, label: String(localized: "Best"))])
             } else {
                 Text("Set Through Focus Samples to plot the merit against defocus.").font(.caption).foregroundStyle(.secondary)
                 Spacer()

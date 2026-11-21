@@ -126,7 +126,7 @@ struct AnalysisPaneView: View {
                 if case .failed(let why) = pane.phase {
                     VStack {
                         Spacer()
-                        Label(why, systemImage: "exclamationmark.triangle.fill")
+                        Label(EngineText.message(why), systemImage: "exclamationmark.triangle.fill")
                             .font(.caption)
                             .padding(.horizontal, Space.l)
                             .padding(.vertical, Space.s)
@@ -147,19 +147,19 @@ struct AnalysisPaneView: View {
         case .running(let p):
             VStack(spacing: Space.m) {
                 ProgressView(value: p.fraction > 0 ? p.fraction : nil).frame(width: 160)
-                Text(p.stage.isEmpty ? "Computing…" : p.stage).font(.caption).foregroundStyle(.secondary)
+                Text(p.stage.isEmpty ? String(localized: "Computing…") : EngineText.message(p.stage)).font(.caption).foregroundStyle(.secondary)
                 Button("Cancel") { pane.cancel() }.buttonStyle(.glass).controlSize(.small)
             }
         case .unavailable(let why):
             ContentUnavailableView(
                 "Not Available", systemImage: "nosign",
-                description: Text(why.isEmpty ? "This engine build does not provide this analysis." : why))
+                description: Text(why.isEmpty ? String(localized: "This engine build does not provide this analysis.") : EngineText.message(why)))
         case .failed(let why):
             if workspace.issues.contains(where: { $0.severity == .error }) {
                 ContentUnavailableView {
                     Label("Design Has Errors", systemImage: "xmark.octagon")
                 } description: {
-                    Text(why)
+                    Text(EngineText.message(why))
                 } actions: {
                     Button("Show Issues") { window.showIssues = true }.buttonStyle(.glass)
                 }
@@ -167,7 +167,7 @@ struct AnalysisPaneView: View {
                 ContentUnavailableView {
                     Label("Analysis Failed", systemImage: "exclamationmark.triangle")
                 } description: {
-                    Text(why)
+                    Text(EngineText.message(why))
                 } actions: {
                     Button("Try Again") { pane.rerun(fresh: true) }.buttonStyle(.glass)
                 }
@@ -177,7 +177,7 @@ struct AnalysisPaneView: View {
                 ContentUnavailableView {
                     Label("Design Not Ready", systemImage: "xmark.octagon")
                 } description: {
-                    Text(workspace.modelErrors.first ?? "")
+                    Text(EngineText.message(workspace.modelErrors.first ?? ""))
                 } actions: {
                     Button("Show Issues") { window.showIssues = true }.buttonStyle(.glass)
                 }
@@ -221,7 +221,7 @@ struct StaleBanner: View {
 
     var body: some View {
         VStack(spacing: Space.m) {
-            Label(blocked ? "The design has errors" : "Design changed", systemImage: blocked ? "xmark.octagon" : "clock.arrow.circlepath")
+            Label(blocked ? String(localized: "The design has errors") : String(localized: "Design changed"), systemImage: blocked ? "xmark.octagon" : "clock.arrow.circlepath")
                 .font(.callout.weight(.medium))
             if !blocked {
                 Button {
@@ -278,7 +278,7 @@ struct PaneHeader: View {
                             .font(font)
                             .lineLimit(1)
                             .fixedSize()
-                            .help(titleHelp + "\nDrag to move the pane, or out of the window to open it in a window of its own.")
+                            .help(titleHelp + "\n" + String(localized: "Drag to move the pane, or out of the window to open it in a window of its own."))
                             .accessibilityAddTraits(.isHeader)
                             .panelHandle(.analysis(pane.id))
                     }
@@ -326,7 +326,7 @@ struct PaneHeader: View {
     private var titleHelp: String {
         let t = AnalysisCatalog.title(of: pane.analysis)
         guard let d = descriptor?.description, !d.isEmpty else { return t }
-        return t + ": " + d
+        return t + ": " + EngineText.message(d)
     }
 
     private func cluster(compact: Bool) -> some View {
@@ -344,13 +344,13 @@ struct PaneHeader: View {
                         Label("Update Automatically", systemImage: pane.autoUpdate ? "bolt.fill" : "bolt.slash")
                     }
                     .toggleStyle(.button)
-                    .help(pane.autoUpdate ? "Updates when the design changes. Click to update on request only." : "Updates on request only. Click to update automatically.")
+                    .help(pane.autoUpdate ? String(localized: "Updates when the design changes. Click to update on request only.") : String(localized: "Updates on request only. Click to update automatically."))
                     if hasSettings {
                         Toggle(isOn: showSettings) {
                             Label("Settings", systemImage: "slider.horizontal.3")
                         }
                         .toggleStyle(.button)
-                        .help(pane.showsSettings ? "Hide the settings" : "Show the settings of this analysis")
+                        .help(pane.showsSettings ? String(localized: "Hide the settings") : String(localized: "Show the settings of this analysis"))
                     }
                 }
                 Menu {
@@ -390,11 +390,11 @@ struct PaneHeader: View {
 
     /// State, then the settings that differ from the defaults.
     private var subtitle: String {
-        if let p = pane.progress { return p.stage.isEmpty ? "Computing…" : p.stage }
+        if let p = pane.progress { return p.stage.isEmpty ? String(localized: "Computing…") : EngineText.message(p.stage) }
         let s = SettingsBar.summary(pane, descriptor)
-        if pane.isStale { return s.isEmpty ? "Out of date" : "Out of date · " + s }
+        if pane.isStale { return s.isEmpty ? String(localized: "Out of date") : String(localized: "Out of date · \(s)", locale: NumberDisplay.locale) }
         if !s.isEmpty { return s }
-        return "Default settings"
+        return String(localized: "Default settings")
     }
 
     private func copyJSON() {
@@ -441,7 +441,7 @@ struct SettingsPanel: View {
         .padding(.horizontal, Space.m)
         .padding(.bottom, Space.xs)
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("\(AnalysisCatalog.title(of: pane.analysis)) settings")
+        .accessibilityLabel(String(localized: "\(AnalysisCatalog.title(of: pane.analysis)) settings", locale: NumberDisplay.locale))
     }
 }
 
@@ -496,7 +496,7 @@ struct PaneFooter: View {
             .buttonStyle(.plain)
             .layoutPriority(2)
             .help(badgeHelp)
-            .accessibilityHint("Shows how this result was computed" + (output.runInfo.warnings.isEmpty ? "" : ", and its warnings"))
+            .accessibilityHint(output.runInfo.warnings.isEmpty ? String(localized: "Shows how this result was computed") : String(localized: "Shows how this result was computed, and its warnings"))
             .popover(isPresented: $showDetails) { RunDetails(output: output, pane: pane).frame(width: 400) }
             #if DEBUG
             // `-MKLightRunDetails <analysis>` opens the run details (screenshots).
@@ -516,11 +516,11 @@ struct PaneFooter: View {
     /// The warnings themselves on hover; else what the badge is.
     private var badgeHelp: String {
         var parts: [String] = []
-        if let why = output.backend?.fallbackReason { parts.append("Ran on the CPU: " + why) }
+        if let why = output.backend?.fallbackReason { parts.append(String(localized: "Ran on the CPU: \(EngineText.message(why))", locale: NumberDisplay.locale)) }
         let groups = RunWarnings.group(output.runInfo.warnings)
         parts += groups.prefix(3).map(\.line)
-        if groups.count > 3 { parts.append("… \(groups.count - 3) more") }
-        return parts.isEmpty ? "How this result was computed" : parts.joined(separator: "\n") + "\nClick for details."
+        if groups.count > 3 { parts.append(String(localized: "… \(groups.count - 3) more", locale: NumberDisplay.locale)) }
+        return parts.isEmpty ? String(localized: "How this result was computed") : parts.joined(separator: "\n") + "\n" + String(localized: "Click for details.")
     }
 
     private func numbersRow(_ numbers: ArraySlice<KeyNumber>) -> some View {
@@ -556,7 +556,7 @@ struct BackendBadge: View {
             if !groups.isEmpty {
                 HStack(spacing: 2) {
                     Image(systemName: "exclamationmark.triangle.fill")
-                    if groups.count > 1 { Text("\(groups.count)") }
+                    if groups.count > 1 { Text(String(localized: "\(groups.count)", locale: NumberDisplay.locale)) }
                 }
                 .foregroundStyle(.orange)
             }
@@ -578,10 +578,11 @@ struct BackendBadge: View {
     }
 
     private func accessibilityText(_ groups: [WarningGroup]) -> String {
-        var t = "Computed on \(output.backend?.summary ?? output.runInfo.backend) in \(duration)"
-        if let why = output.backend?.fallbackReason { t += ". Ran on the CPU: \(why)" }
+        var t = String(localized: "Computed on \(output.backend?.summary ?? output.runInfo.backend) in \(duration)", locale: NumberDisplay.locale)
+        if let why = output.backend?.fallbackReason { t += ". " + String(localized: "Ran on the CPU: \(EngineText.message(why))", locale: NumberDisplay.locale) }
         if !groups.isEmpty {
-            t += ". \(groups.count) warning\(groups.count == 1 ? "" : "s"): " + groups.map(\.line).joined(separator: ". ")
+            let lines = groups.map(\.line).joined(separator: ". ")
+            t += ". " + (groups.count == 1 ? String(localized: "1 warning: \(lines)", locale: NumberDisplay.locale) : String(localized: "\(groups.count) warnings: \(lines)", locale: NumberDisplay.locale))
         }
         return t
     }
@@ -609,8 +610,8 @@ struct RunDetails: View {
                 if let b = output.backend, let route = RunRoute.line(requested: b.requested, decision: b.costDecision) {
                     row("Route", route)
                 }
-                if let why = output.backend?.fallbackReason { row("Ran on the CPU", why) }
-                row("Precision", info.precision == .f64Reference ? "f64 reference" : "f32 (GPU, qualified)")
+                if let why = output.backend?.fallbackReason { row("Ran on the CPU", EngineText.message(why)) }
+                row("Precision", info.precision == .f64Reference ? String(localized: "f64 reference") : String(localized: "f32 (GPU, qualified)"))
                 if let tier = RunRoute.tier(info.tier) { row("Tier", tier) }
                 if let seed = info.seed { row("Seed", "\(seed)") }
                 row("Snapshot", info.snapshotHash.short)
@@ -621,7 +622,7 @@ struct RunDetails: View {
             let attempts = RunRoute.attempts(info.failedAttempts)
             if !attempts.isEmpty {
                 Divider()
-                Text(attempts.count == 1 ? "Attempt Not Used" : "\(attempts.count) Attempts Not Used").font(.subheadline.weight(.medium))
+                Text(attempts.count == 1 ? String(localized: "Attempt Not Used") : String(localized: "\(attempts.count) Attempts Not Used", locale: NumberDisplay.locale)).font(.subheadline.weight(.medium))
                 ForEach(attempts) { a in
                     VStack(alignment: .leading, spacing: 3) {
                         Label {
@@ -630,7 +631,7 @@ struct RunDetails: View {
                             Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
                         }
                         .font(.callout)
-                        Text(a.reason).font(.caption).foregroundStyle(.secondary)
+                        Text(EngineText.message(a.reason)).font(.caption).foregroundStyle(.secondary)
                             .padding(.leading, 22)
                             .fixedSize(horizontal: false, vertical: true)
                     }
@@ -640,11 +641,11 @@ struct RunDetails: View {
             if !info.warnings.isEmpty {
                 Divider()
                 let groups = RunWarnings.group(info.warnings)
-                Text(groups.count == 1 ? "Warning" : "\(groups.count) Warnings").font(.subheadline.weight(.medium))
+                Text(groups.count == 1 ? String(localized: "Warning") : String(localized: "\(groups.count) Warnings", locale: NumberDisplay.locale)).font(.subheadline.weight(.medium))
                 ForEach(groups) { g in
                     VStack(alignment: .leading, spacing: 3) {
                         Label {
-                            Text(g.message).fixedSize(horizontal: false, vertical: true)
+                            Text(EngineText.message(g.message)).fixedSize(horizontal: false, vertical: true)
                         } icon: {
                             Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
                         }
@@ -665,10 +666,10 @@ struct RunDetails: View {
                     .accessibilityElement(children: .combine)
                 }
                 if info.warnings.count > groups.count {
-                    DisclosureGroup("All \(info.warnings.count) messages from the engine", isExpanded: $showAll) {
+                    DisclosureGroup(String(localized: "All \(info.warnings.count) messages from the engine", locale: NumberDisplay.locale), isExpanded: $showAll) {
                         VStack(alignment: .leading, spacing: 2) {
                             ForEach(Array(info.warnings.enumerated()), id: \.offset) { _, w in
-                                Text(w).font(.caption.monospaced()).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                                Text(EngineText.message(w)).font(.caption.monospaced()).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                             }
                         }
                     }
@@ -710,8 +711,8 @@ struct RunDetails: View {
         case .pupilSampling:
             guard var pupil = (optics?["pupil"] ?? value("pupil"))?.object, let grid = pupil["grid"]?.int, grid > 0 else { return nil }
             pupil["grid"] = .integer(0)
-            let title = "Sample the Pupil Automatically (grid \(grid) → auto)"
-            let help = "The pupil grid is set to \(grid). Automatic sampling picks a grid fine enough for the wavefront's slope (64 to 1024), then runs again."
+            let title = String(localized: "Sample the Pupil Automatically (grid \(grid) → auto)", locale: NumberDisplay.locale)
+            let help = String(localized: "The pupil grid is set to \(grid). Automatic sampling picks a grid fine enough for the wavefront's slope (64 to 1024), then runs again.", locale: NumberDisplay.locale)
             if var o = optics {
                 o["pupil"] = .object(pupil)
                 return Remedy(title: title, help: help, key: "optics", value: .object(o))
@@ -722,19 +723,19 @@ struct RunDetails: View {
                 guard let size = o["psf_size"]?.int, size > 0 else { return nil }
                 o["psf_size"] = .integer(0)
                 return Remedy(
-                    title: "Size the PSF Window Automatically (\(size) → auto)",
-                    help: "The PSF window is set to \(size) samples. The automatic window holds the blur and its diffraction wings, then runs again.",
+                    title: String(localized: "Size the PSF Window Automatically (\(size) → auto)", locale: NumberDisplay.locale),
+                    help: String(localized: "The PSF window is set to \(size) samples. The automatic window holds the blur and its diffraction wings, then runs again.", locale: NumberDisplay.locale),
                     key: "optics", value: .object(o))
             }
             guard let size = value("grid_size")?.int, size > 0 else { return nil }
             return Remedy(
-                title: "Size the Image Grid Automatically (\(size) → auto)",
-                help: "The image grid is set to \(size). The automatic grid holds the blur and its diffraction wings, then runs again.",
+                title: String(localized: "Size the Image Grid Automatically (\(size) → auto)", locale: NumberDisplay.locale),
+                help: String(localized: "The image grid is set to \(size). The automatic grid holds the blur and its diffraction wings, then runs again.", locale: NumberDisplay.locale),
                 key: "grid_size", value: .integer(0))
         }
     }
 
-    private func row(_ k: String, _ v: String) -> some View {
+    private func row(_ k: LocalizedStringKey, _ v: String) -> some View {
         GridRow {
             Text(k).foregroundStyle(.secondary)
             Text(v).fixedSize(horizontal: false, vertical: true)

@@ -164,7 +164,7 @@ struct ColorBar: View {
         .font(.caption2.monospacedDigit())
         .foregroundStyle(.secondary)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Color scale from \(label(low)) to \(label(range.upperBound))" + (isLog ? ", logarithmic" : ""))
+        .accessibilityLabel(isLog ? String(localized: "Color scale from \(label(low)) to \(label(range.upperBound)), logarithmic", locale: NumberDisplay.locale) : String(localized: "Color scale from \(label(low)) to \(label(range.upperBound))", locale: NumberDisplay.locale))
     }
 
     private var isLog: Bool { scale == .sequential(log: true) }
@@ -355,7 +355,7 @@ struct LineChart: View {
         .chartXScale(domain: xDomain ?? autoDomain(\.0))
         .chartYScale(domain: yDomain ?? autoDomain(\.1))
         .chartLegend(.hidden)
-        .accessibilityLabel(yLabel + " versus " + xLabel)
+        .accessibilityLabel(String(localized: "\(yLabel) versus \(xLabel)", locale: NumberDisplay.locale))
     }
 
     /// Splits a series at non-finite values.
@@ -386,7 +386,7 @@ struct Sparkline: View {
         Chart {
             ForEach(Array(logs.enumerated()), id: \.offset) { k, v in
                 if v.isFinite {
-                    LineMark(x: .value("Iteration", k), y: .value("log₁₀ merit", v))
+                    LineMark(x: .value(String(localized: "Iteration"), k), y: .value(String(localized: "log₁₀ merit"), v))
                         .interpolationMethod(.monotone)
                         .lineStyle(StrokeStyle(lineWidth: 1.6))
                 }
@@ -403,7 +403,7 @@ struct Sparkline: View {
         }
         .chartYScale(domain: domain(logs))
         .environment(\.locale, NumberDisplay.locale)
-        .accessibilityLabel("Merit history, \(values.count) iterations, logarithmic scale")
+        .accessibilityLabel(String(localized: "Merit history, \(values.count) iterations, logarithmic scale", locale: NumberDisplay.locale))
     }
 
     private func domain(_ v: [Double]) -> ClosedRange<Double> {

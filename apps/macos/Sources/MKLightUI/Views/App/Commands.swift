@@ -26,6 +26,8 @@ struct WindowActions {
     var setMode: (ViewportMode) -> Void
     var toggleViewport: () -> Void
     var toggleLensData: () -> Void
+    var toggleInspector: () -> Void
+    var showsInspector: Bool
     var showsLayout: Bool
     var showsLensData: Bool
     /// The panel the panel commands act on, if it is open.
@@ -76,10 +78,10 @@ struct MKLightCommands: Commands {
         CommandGroup(replacing: .undoRedo) {
             let _ = UndoMenuState.shared.revision
             let u = undo?.manager
-            Button(u.flatMap { $0.canUndo ? $0.undoMenuItemTitle : nil } ?? "Undo") { Self.perform(redo: false, u) }
+            Button(u.flatMap { $0.canUndo ? $0.undoMenuItemTitle : nil } ?? String(localized: "Undo")) { Self.perform(redo: false, u) }
                 .keyboardShortcut("z", modifiers: .command)
                 .disabled(!(u?.canUndo ?? false) && !Self.editingText)
-            Button(u.flatMap { $0.canRedo ? $0.redoMenuItemTitle : nil } ?? "Redo") { Self.perform(redo: true, u) }
+            Button(u.flatMap { $0.canRedo ? $0.redoMenuItemTitle : nil } ?? String(localized: "Redo")) { Self.perform(redo: true, u) }
                 .keyboardShortcut("z", modifiers: [.command, .shift])
                 .disabled(!(u?.canRedo ?? false) && !Self.editingText)
         }
@@ -89,7 +91,15 @@ struct MKLightCommands: Commands {
                 .keyboardShortcut("1", modifiers: [.command, .shift])
         }
         SidebarCommands()
-        InspectorCommands()
+        // The inspector toggle of InspectorCommands, written out: the
+        // system's reads "Show检查器" in Chinese.
+        CommandGroup(after: .sidebar) {
+            Button(actions?.showsInspector == true ? String(localized: "Hide Inspector") : String(localized: "Show Inspector")) {
+                actions?.toggleInspector()
+            }
+            .keyboardShortcut("i", modifiers: [.command, .control])
+            .disabled(actions == nil)
+        }
         CommandMenu("Lens") {
             Button("Insert Surface Before") { actions?.insertBefore() }
                 .keyboardShortcut("i", modifiers: [.command, .shift])
@@ -160,10 +170,10 @@ struct MKLightCommands: Commands {
             .disabled(actions == nil)
         }
         CommandGroup(before: .sidebar) {
-            Button(actions?.showsLensData == true ? "Hide Lens Data" : "Show Lens Data") { actions?.toggleLensData() }
+            Button(actions?.showsLensData == true ? String(localized: "Hide Lens Data") : String(localized: "Show Lens Data")) { actions?.toggleLensData() }
                 .keyboardShortcut("e", modifiers: [.command, .option])
                 .disabled(actions == nil)
-            Button(actions?.showsLayout == false ? "Show Layout" : "Hide Layout") { actions?.toggleViewport() }
+            Button(actions?.showsLayout == false ? String(localized: "Show Layout") : String(localized: "Hide Layout")) { actions?.toggleViewport() }
                 .keyboardShortcut("l", modifiers: [.command, .option])
                 .disabled(actions == nil)
             Menu("Panel") {
@@ -172,7 +182,7 @@ struct MKLightCommands: Commands {
                     .disabled(panel == nil || actions?.focusedPanelAlone == true)
                 Button("Move to Main Window") { if let panel { actions?.moveToMainWindow(panel) } }
                     .disabled(panel == nil || actions?.focusedPanelDetached != true)
-                Button(panel == .lensData ? "Hide Lens Data" : panel == .layout ? "Hide Layout" : "Close Pane") { if let panel { actions?.closePanel(panel) } }
+                Button(panel == .lensData ? String(localized: "Hide Lens Data") : panel == .layout ? String(localized: "Hide Layout") : String(localized: "Close Pane")) { if let panel { actions?.closePanel(panel) } }
                     .disabled(panel == nil)
                 Divider()
                 Button("Reset Panel Layout") { actions?.resetLayout() }

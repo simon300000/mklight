@@ -6,35 +6,35 @@ import MKLightEngine
 /// generic symbol, so new analyses appear without code changes.
 public enum AnalysisCatalog {
     static let titles: [String: String] = [
-        "first_order": "First-Order Data", "system_summary": "System Data", "validate": "Validation",
-        "spot_diagram": "Spot Diagram", "ray_fan": "Ray Fan", "opd_fan": "OPD Fan",
-        "field_curvature_distortion": "Field Curvature & Distortion", "grid_distortion": "Grid Distortion",
-        "seidel": "Seidel Coefficients", "longitudinal_aberration": "Longitudinal Aberration",
-        "chromatic_focal_shift": "Chromatic Focal Shift", "lateral_colour": "Lateral Color",
-        "relative_illumination": "Relative Illumination", "footprint": "Footprint", "encircled_energy": "Encircled Energy",
-        "geometric_mtf": "Geometric MTF", "best_focus": "Best Focus", "ray_grid": "Ray Grid", "layout": "Layout",
-        "wavefront_map": "Wavefront Map", "psf": "PSF", "mtf": "MTF", "mtf_vs_field": "MTF vs Field",
-        "through_focus_mtf": "Through-Focus MTF", "diffraction_encircled_energy": "Diffraction Encircled Energy",
-        "line_spread": "Line Spread", "ghost_paths": "Ghost Paths", "ghost_irradiance": "Ghost Irradiance",
-        "stray_light": "Stray Light", "polarization_pupil_map": "Polarization Pupil Map",
-        "system_transmission": "System Transmission", "glass_info": "Glass Data", "solves": "Solves",
-        "optimize": "Optimize", "tolerance": "Tolerance", "rng_stream": "Random Stream",
-        "pupil_aberration": "Pupil Aberration", "relative_illumination_map": "Relative Illumination Map",
-        "chief_ray_angle": "Chief Ray Angle", "glass_map": "Glass Map", "image_simulation": "Image Simulation",
-        "glass_substitution": "Glass Substitution",
+        "first_order": String(localized: "First-Order Data"), "system_summary": String(localized: "System Data"), "validate": String(localized: "Validation"),
+        "spot_diagram": String(localized: "Spot Diagram"), "ray_fan": String(localized: "Ray Fan"), "opd_fan": String(localized: "OPD Fan"),
+        "field_curvature_distortion": String(localized: "Field Curvature & Distortion"), "grid_distortion": String(localized: "Grid Distortion"),
+        "seidel": String(localized: "Seidel Coefficients"), "longitudinal_aberration": String(localized: "Longitudinal Aberration"),
+        "chromatic_focal_shift": String(localized: "Chromatic Focal Shift"), "lateral_colour": String(localized: "Lateral Color"),
+        "relative_illumination": String(localized: "Relative Illumination"), "footprint": String(localized: "Footprint"), "encircled_energy": String(localized: "Encircled Energy"),
+        "geometric_mtf": String(localized: "Geometric MTF"), "best_focus": String(localized: "Best Focus"), "ray_grid": String(localized: "Ray Grid"), "layout": String(localized: "Layout"),
+        "wavefront_map": String(localized: "Wavefront Map"), "psf": String(localized: "PSF"), "mtf": String(localized: "MTF"), "mtf_vs_field": String(localized: "MTF vs Field"),
+        "through_focus_mtf": String(localized: "Through-Focus MTF"), "diffraction_encircled_energy": String(localized: "Diffraction Encircled Energy"),
+        "line_spread": String(localized: "Line Spread"), "ghost_paths": String(localized: "Ghost Paths"), "ghost_irradiance": String(localized: "Ghost Irradiance"),
+        "stray_light": String(localized: "Stray Light"), "polarization_pupil_map": String(localized: "Polarization Pupil Map"),
+        "system_transmission": String(localized: "System Transmission"), "glass_info": String(localized: "Glass Data"), "solves": String(localized: "Solves"),
+        "optimize": String(localized: "Optimize"), "tolerance": String(localized: "Tolerance"), "rng_stream": String(localized: "Random Stream"),
+        "pupil_aberration": String(localized: "Pupil Aberration"), "relative_illumination_map": String(localized: "Relative Illumination Map"),
+        "chief_ray_angle": String(localized: "Chief Ray Angle"), "glass_map": String(localized: "Glass Map"), "image_simulation": String(localized: "Image Simulation"),
+        "glass_substitution": String(localized: "Glass Substitution"),
     ]
 
     /// Abbreviations for narrow panes (the full title stays in the help
     /// and the VoiceOver label).
     static let shortTitles: [String: String] = [
-        "first_order": "First Order", "system_summary": "System", "spot_diagram": "Spot",
-        "field_curvature_distortion": "Field Curv. & Dist.", "grid_distortion": "Grid Dist.", "seidel": "Seidel",
-        "longitudinal_aberration": "Long. Aberration", "chromatic_focal_shift": "Focal Shift",
-        "relative_illumination": "Rel. Illumination", "encircled_energy": "Encircled En.", "geometric_mtf": "Geom. MTF",
-        "wavefront_map": "Wavefront", "through_focus_mtf": "Thru-Focus MTF", "diffraction_encircled_energy": "Diffr. Enc. En.",
-        "ghost_irradiance": "Ghost Irrad.", "polarization_pupil_map": "Pol. Pupil Map", "system_transmission": "Transmission",
-        "pupil_aberration": "Pupil Aberr.", "relative_illumination_map": "RI Map", "chief_ray_angle": "CRA",
-        "image_simulation": "Image Sim.", "glass_substitution": "Glass Subst.",
+        "first_order": String(localized: "First Order"), "system_summary": String(localized: "System"), "spot_diagram": String(localized: "Spot"),
+        "field_curvature_distortion": String(localized: "Field Curv. & Dist."), "grid_distortion": String(localized: "Grid Dist."), "seidel": String(localized: "Seidel"),
+        "longitudinal_aberration": String(localized: "Long. Aberration"), "chromatic_focal_shift": String(localized: "Focal Shift"),
+        "relative_illumination": String(localized: "Rel. Illumination"), "encircled_energy": String(localized: "Encircled En."), "geometric_mtf": String(localized: "Geom. MTF"),
+        "wavefront_map": String(localized: "Wavefront"), "through_focus_mtf": String(localized: "Thru-Focus MTF"), "diffraction_encircled_energy": String(localized: "Diffr. Enc. En."),
+        "ghost_irradiance": String(localized: "Ghost Irrad."), "polarization_pupil_map": String(localized: "Pol. Pupil Map"), "system_transmission": String(localized: "Transmission"),
+        "pupil_aberration": String(localized: "Pupil Aberr."), "relative_illumination_map": String(localized: "RI Map"), "chief_ray_angle": String(localized: "CRA"),
+        "image_simulation": String(localized: "Image Sim."), "glass_substitution": String(localized: "Glass Subst."),
     ]
 
     static let symbols: [String: String] = [
@@ -54,15 +54,15 @@ public enum AnalysisCatalog {
     ]
 
     static let categoryTitles: [String: String] = [
-        "model": "System", "materials": "Materials", "geometric": "Geometric", "wave": "Wave Optics",
-        "radiometry": "Radiometry", "polarization": "Polarization", "ghost": "Ghosts", "stray": "Stray Light",
-        "optimization": "Design", "diagnostic": "Diagnostics",
+        "model": String(localized: "System"), "materials": String(localized: "Materials"), "geometric": String(localized: "Geometric"), "wave": String(localized: "Wave Optics"),
+        "radiometry": String(localized: "Radiometry"), "polarization": String(localized: "Polarization"), "ghost": String(localized: "Ghosts"), "stray": String(localized: "Stray Light"),
+        "optimization": String(localized: "Design"), "diagnostic": String(localized: "Diagnostics"),
     ]
 
     static let categoryOrder = ["geometric", "wave", "model", "radiometry", "polarization", "ghost", "stray", "materials"]
 
     /// Known analyses have short titles; others keep the engine's, in title case.
-    public static func title(of d: AnalysisDescriptor) -> String { titles[d.name] ?? titleCase(d.title) }
+    public static func title(of d: AnalysisDescriptor) -> String { titles[d.name] ?? EngineText.translation(d.title) ?? titleCase(d.title) }
 
     static func titleCase(_ s: String) -> String {
         let small: Set<String> = ["a", "an", "and", "at", "by", "for", "in", "of", "on", "or", "the", "to", "vs"]

@@ -46,6 +46,7 @@ if engineLinked {
 
 let package = Package(
     name: "MKLight",
+    defaultLocalization: "en",
     platforms: [.macOS(.v27)],
     products: [
         .executable(name: "MKLight", targets: ["MKLight"]),
@@ -62,7 +63,10 @@ let package = Package(
         .target(
             name: "MKLightUI",
             dependencies: ["MKLightModel", "MKLightEngine"],
-            resources: [.copy("Viewport/Shaders/Viewport.metal")],
+            // The app's string catalog (docs/APP.md, "Languages"); strings
+            // are looked up in the main bundle, where the build script puts
+            // the compiled catalog.
+            resources: [.copy("Viewport/Shaders/Viewport.metal"), .process("Resources/Localizable.xcstrings")],
             swiftSettings: strict
         ),
         .executableTarget(

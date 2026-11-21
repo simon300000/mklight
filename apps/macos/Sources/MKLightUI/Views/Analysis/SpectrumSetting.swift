@@ -23,7 +23,7 @@ public struct SpectralSampling: Equatable, Hashable, Sendable {
         case equalWeight = "equal_weight"
         case uniform
 
-        public var title: String { self == .equalWeight ? "Equal energy" : "Uniform" }
+        public var title: String { self == .equalWeight ? String(localized: "Equal energy") : String(localized: "Uniform") }
     }
 
     public var samples: Int
@@ -79,8 +79,8 @@ public struct SpectralSampling: Equatable, Hashable, Sendable {
     /// The engine's checks (`validate_sampling`).
     public var issues: [String] {
         var out: [String] = []
-        if !Self.sampleLimits.contains(samples) { out.append("Samples must be between 1 and 4096.") }
-        if !(lowerUm > 0 && upperUm > lowerUm && upperUm.isFinite) { out.append("The range must be positive and increasing.") }
+        if !Self.sampleLimits.contains(samples) { out.append(String(localized: "Samples must be between 1 and 4096.")) }
+        if !(lowerUm > 0 && upperUm > lowerUm && upperUm.isFinite) { out.append(String(localized: "The range must be positive and increasing.")) }
         return out
     }
 }
@@ -113,12 +113,12 @@ public enum SpectrumSetting: Equatable, Hashable, Sendable {
 
         public var title: String {
             switch self {
-            case .design: "Design wavelengths"
-            case .photopic: "Photopic V(λ)"
-            case .scotopic: "Scotopic V′(λ)"
-            case .blackbody: "Blackbody"
-            case .explicit: "Explicit wavelengths"
-            case .sensor: "Sensor response"
+            case .design: String(localized: "Design wavelengths")
+            case .photopic: String(localized: "Photopic V(λ)")
+            case .scotopic: String(localized: "Scotopic V′(λ)")
+            case .blackbody: String(localized: "Blackbody")
+            case .explicit: String(localized: "Explicit wavelengths")
+            case .sensor: String(localized: "Sensor response")
             }
         }
 
@@ -257,41 +257,41 @@ public enum SpectrumSetting: Equatable, Hashable, Sendable {
         case .design:
             return []
         case .photopic(let s):
-            return s.issues + Self.rangeIssue(s, inside: Self.photopicRangeUm, what: "the photopic table")
+            return s.issues + Self.rangeIssue(s, inside: Self.photopicRangeUm, what: String(localized: "the photopic table"))
         case .scotopic(let s):
-            return s.issues + Self.rangeIssue(s, inside: Self.scotopicRangeUm, what: "the scotopic table")
+            return s.issues + Self.rangeIssue(s, inside: Self.scotopicRangeUm, what: String(localized: "the scotopic table"))
         case .blackbody(let t, let s):
-            return (t > 0 && t.isFinite ? [] : ["The temperature must be positive."]) + s.issues
+            return (t > 0 && t.isFinite ? [] : [String(localized: "The temperature must be positive.")]) + s.issues
         case .explicit(let list):
             var out: [String] = []
-            if list.isEmpty { out.append("Add at least one wavelength.") }
-            if list.contains(where: { !($0.um > 0 && $0.um.isFinite) }) { out.append("Wavelengths must be positive.") }
-            if list.contains(where: { !($0.weight >= 0 && $0.weight.isFinite) }) { out.append("Weights must not be negative.") }
+            if list.isEmpty { out.append(String(localized: "Add at least one wavelength.")) }
+            if list.contains(where: { !($0.um > 0 && $0.um.isFinite) }) { out.append(String(localized: "Wavelengths must be positive.")) }
+            if list.contains(where: { !($0.weight >= 0 && $0.weight.isFinite) }) { out.append(String(localized: "Weights must not be negative.")) }
             return out
         case .sensor(let table, let s):
             var out = s.issues
             if let problem = Self.tableIssue(table) {
                 out.append(problem)
             } else if let lo = table.first?.um, let hi = table.last?.um {
-                out += Self.rangeIssue(s, inside: lo...hi, what: "the response table")
+                out += Self.rangeIssue(s, inside: lo...hi, what: String(localized: "the response table"))
             }
             return out
         }
     }
 
     static func tableIssue(_ table: [SpectrumSample]) -> String? {
-        if table.count < 2 { return "The response table needs at least two rows." }
+        if table.count < 2 { return String(localized: "The response table needs at least two rows.") }
         if table.contains(where: { !($0.um > 0 && $0.um.isFinite && $0.weight >= 0 && $0.weight.isFinite) }) {
-            return "Responses must not be negative."
+            return String(localized: "Responses must not be negative.")
         }
-        if zip(table, table.dropFirst()).contains(where: { $0.um >= $1.um }) { return "Wavelengths must increase." }
+        if zip(table, table.dropFirst()).contains(where: { $0.um >= $1.um }) { return String(localized: "Wavelengths must increase.") }
         return nil
     }
 
     static func rangeIssue(_ s: SpectralSampling, inside r: ClosedRange<Double>, what: String) -> [String] {
         guard s.lowerUm > 0, s.upperUm > s.lowerUm else { return [] }
         if s.lowerUm < r.lowerBound - 1e-12 || s.upperUm > r.upperBound + 1e-12 {
-            return [String(format: "The range must lie inside %@ (%.3f–%.3f µm).", what, r.lowerBound, r.upperBound)]
+            return [String(format: String(localized: "The range must lie inside %@ (%.3f–%.3f µm)."), what, r.lowerBound, r.upperBound)]
         }
         return []
     }
@@ -302,12 +302,12 @@ public enum SpectrumSetting: Equatable, Hashable, Sendable {
     /// `blackbody 5500 K`, `3 wavelengths`, `sensor (42 rows)`.
     public var summary: String {
         switch self {
-        case .design: "design"
-        case .photopic(let s): "photopic" + Self.samplesSuffix(s)
-        case .scotopic(let s): "scotopic" + Self.samplesSuffix(s)
-        case .blackbody(let t, let s): "blackbody \(Self.kelvin(t))" + Self.samplesSuffix(s)
-        case .explicit(let l): l.count == 1 ? String(format: "%.4g µm", l[0].um) : "\(l.count) wavelengths"
-        case .sensor(let t, let s): "sensor (\(t.count) rows)" + Self.samplesSuffix(s)
+        case .design: String(localized: "design")
+        case .photopic(let s): String(localized: "photopic") + Self.samplesSuffix(s)
+        case .scotopic(let s): String(localized: "scotopic") + Self.samplesSuffix(s)
+        case .blackbody(let t, let s): String(localized: "blackbody \(Self.kelvin(t))", locale: NumberDisplay.locale) + Self.samplesSuffix(s)
+        case .explicit(let l): l.count == 1 ? String(format: "%.4g µm", l[0].um) : String(localized: "\(l.count) wavelengths", locale: NumberDisplay.locale)
+        case .sensor(let t, let s): String(localized: "sensor (\(t.count) rows)", locale: NumberDisplay.locale) + Self.samplesSuffix(s)
         }
     }
 
@@ -494,14 +494,14 @@ public struct SpectrumCSV: Equatable, Sendable {
                 if rows.isEmpty && bad.isEmpty && header == nil && cells.contains(where: { number($0) == nil }) {
                     header = line
                 } else {
-                    bad.append(BadRow(line: k + 1, text: line, reason: cells.count < 2 ? "needs two columns" : "not a number"))
+                    bad.append(BadRow(line: k + 1, text: line, reason: cells.count < 2 ? String(localized: "needs two columns") : String(localized: "not a number")))
                 }
                 continue
             }
             if !(a.isFinite && a > 0) {
-                bad.append(BadRow(line: k + 1, text: line, reason: "wavelength must be positive"))
+                bad.append(BadRow(line: k + 1, text: line, reason: String(localized: "wavelength must be positive")))
             } else if !(b.isFinite && b >= 0) {
-                bad.append(BadRow(line: k + 1, text: line, reason: "response must not be negative"))
+                bad.append(BadRow(line: k + 1, text: line, reason: String(localized: "response must not be negative")))
             } else {
                 rows.append((k + 1, line, a, b))
             }
@@ -518,7 +518,7 @@ public struct SpectrumCSV: Equatable, Sendable {
         for r in rows.sorted(by: { ($0.um, $0.line) < ($1.um, $1.line) }) {
             let um = r.um * scale
             if let last = table.last, abs(last.um - um) < 1e-12 {
-                bad.append(BadRow(line: r.line, text: r.text, reason: "repeats a wavelength"))
+                bad.append(BadRow(line: r.line, text: r.text, reason: String(localized: "repeats a wavelength")))
                 continue
             }
             table.append(SpectrumSample(um: um, weight: r.value))

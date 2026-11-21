@@ -104,10 +104,10 @@ struct AnalysisSidebar: View {
             if open { Circle().fill(.secondary).frame(width: 5, height: 5).accessibilityLabel("open") }
         }
         .tag(Self.tag(panel))
-        .help(panel == .lensData ? "Show the lens data (⌥⌘E)" : "Show the layout viewport (⌥⌘L)")
+        .help(panel == .lensData ? String(localized: "Show the lens data (⌥⌘E)") : String(localized: "Show the layout viewport (⌥⌘L)"))
         .contextMenu {
             let title = session.title(of: panel)
-            if open { Button("Hide \(title)") { session.close(panel) } } else { Button("Show \(title)") { session.show(panel) } }
+            if open { Button(String(localized: "Hide \(title)", locale: NumberDisplay.locale)) { session.close(panel) } } else { Button(String(localized: "Show \(title)", locale: NumberDisplay.locale)) { session.show(panel) } }
         }
     }
 
@@ -123,7 +123,7 @@ struct AnalysisSidebar: View {
                 Circle().fill(.secondary).frame(width: 5, height: 5).accessibilityLabel("open")
             }
         }
-        .help(d.available ? d.description : (d.unavailableReason ?? "Not available in this engine build"))
+        .help(d.available ? EngineText.string(d.description) : (d.unavailableReason.map(EngineText.string) ?? String(localized: "Not available in this engine build")))
         .contextMenu {
             Button("Open in New Pane") { workspace.addPane(d.name) }.disabled(!d.available)
             if let open { Button("Close Pane") { workspace.removePane(open) } }
@@ -145,14 +145,15 @@ struct IssuesButton: View {
             if issues.isEmpty {
                 Label("No Issues", systemImage: "checkmark.circle").labelStyle(.iconOnly).foregroundStyle(.secondary)
             } else {
-                Label("\(issues.count)", systemImage: errors > 0 ? "xmark.octagon.fill" : "exclamationmark.triangle.fill")
+                Label(String(localized: "\(issues.count)", locale: NumberDisplay.locale), systemImage: errors > 0 ? "xmark.octagon.fill" : "exclamationmark.triangle.fill")
                     .labelStyle(.titleAndIcon)
                     .foregroundStyle(errors > 0 ? .red : .orange)
                     .monospacedDigit()
             }
         }
-        .accessibilityLabel(issues.isEmpty ? "No issues" : "\(issues.count) issue\(issues.count == 1 ? "" : "s")")
-        .help(issues.isEmpty ? "The engine found no problems in the design" : "Show the design's validation issues (⌃⌘E)")
+        .accessibilityLabel(
+            issues.isEmpty ? String(localized: "No issues") : issues.count == 1 ? String(localized: "1 issue") : String(localized: "\(issues.count) issues", locale: NumberDisplay.locale))
+        .help(issues.isEmpty ? String(localized: "The engine found no problems in the design") : String(localized: "Show the design's validation issues (⌃⌘E)"))
         .popover(isPresented: $window.showIssues, arrowEdge: .bottom) {
             IssuesList(workspace: workspace, window: window).frame(width: 420)
         }
@@ -190,7 +191,8 @@ struct IssuesList: View {
                                     .frame(maxWidth: .infinity, alignment: .leading)
                             }
                             .buttonStyle(.plain)
-                            .help(issue.surface != nil ? "Select surface \(issue.surface!)" : issue.field != nil ? "Show field \(issue.field! + 1)" : "")
+                            .help(
+                                issue.surface.map { String(localized: "Select surface \($0)", locale: NumberDisplay.locale) } ?? issue.field.map { String(localized: "Show field \($0 + 1)", locale: NumberDisplay.locale) } ?? "")
                         }
                     }
                     .padding(Space.l)
@@ -204,7 +206,9 @@ struct IssuesList: View {
     private var summary: String {
         let e = workspace.issues.filter { $0.severity == .error }.count
         let w = workspace.issues.filter { $0.severity == .warning }.count
-        return [e > 0 ? "\(e) error\(e == 1 ? "" : "s")" : nil, w > 0 ? "\(w) warning\(w == 1 ? "" : "s")" : nil]
+        let errors = e == 1 ? String(localized: "1 error") : String(localized: "\(e) errors", locale: NumberDisplay.locale)
+        let warnings = w == 1 ? String(localized: "1 warning") : String(localized: "\(w) warnings", locale: NumberDisplay.locale)
+        return [e > 0 ? errors : nil, w > 0 ? warnings : nil]
             .compactMap { $0 }.joined(separator: ", ")
     }
 
@@ -229,13 +233,16 @@ struct IssueRow: View {
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: Space.m) {
-            Image(systemName: icon).foregroundStyle(color).accessibilityLabel(issue.severity.rawValue)
+            Image(systemName: icon).foregroundStyle(color).accessibilityLabel(severityName)
             VStack(alignment: .leading, spacing: 2) {
-                Text(issue.message).fixedSize(horizontal: false, vertical: true)
+                Text(issue.displayMessage).fixedSize(horizontal: false, vertical: true)
+                if let detail = issue.detailMessage {
+                    Text(detail).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                }
                 HStack(spacing: Space.s) {
                     if !issue.code.isEmpty { Text(issue.code).monospaced() }
-                    if let s = issue.surface { Text("Surface \(s)") }
-                    if let f = issue.field { Text("Field \(f + 1)") }
+                    if let s = issue.surface { Text(String(localized: "Surface \(s)", locale: NumberDisplay.locale)) }
+                    if let f = issue.field { Text(String(localized: "Field \(f + 1)", locale: NumberDisplay.locale)) }
                 }
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -243,6 +250,14 @@ struct IssueRow: View {
         }
         .padding(.vertical, 2)
         .contentShape(Rectangle())
+    }
+
+    private var severityName: String {
+        switch issue.severity {
+        case .error: String(localized: "error")
+        case .warning: String(localized: "warning")
+        case .info: String(localized: "info")
+        }
     }
 
     private var icon: String {

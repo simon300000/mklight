@@ -34,7 +34,7 @@ struct ShapePreview: View {
                 if case .diffractive(let base, let phase) = shape {
                     PhaseProfile(phase: phase, radius: h)
                     DOEFigures(phase: phase, radius: h, primaryWavelengthUm: primaryWavelengthUm)
-                    if base.kind != .plane { profiles([.y], title: "Base sag") }
+                    if base.kind != .plane { profiles([.y], title: String(localized: "Base sag")) }
                 }
             }
         case .idealLens, .coordinateBreak:
@@ -42,18 +42,18 @@ struct ShapePreview: View {
         }
     }
 
-    private func profiles(_ axes: [SurfaceShape.CylinderAxis], title: String = "Sag") -> some View {
+    private func profiles(_ axes: [SurfaceShape.CylinderAxis], title: String? = nil) -> some View {
         let series: [Series] = axes.compactMap { axis in
             SurfaceTypes.profile(shape, semiDiameter: h, axis: axis, samples: 96).map { pts in
                 Series(
-                    id: axis.rawValue, label: axis == .x ? "x section" : "y section",
+                    id: axis.rawValue, label: axis == .x ? String(localized: "x section") : String(localized: "y section"),
                     color: axis == .x ? Palette.fieldColor(1) : Palette.fieldColor(0), points: pts, dashed: axis == .x)
             }
         }
         return VStack(alignment: .leading, spacing: Space.xs) {
-            if series.count > 1 || title != "Sag" {
+            if series.count > 1 || title != nil {
                 HStack(spacing: Space.m) {
-                    Text(title).font(.caption.weight(.semibold))
+                    Text(title ?? String(localized: "Sag")).font(.caption.weight(.semibold))
                     Spacer()
                     if series.count > 1 {
                         ForEach(series) { s in LegendItem(color: s.color, label: s.label, dashed: s.dashed) }
@@ -61,9 +61,9 @@ struct ShapePreview: View {
                 }
             }
             if series.isEmpty {
-                Text("The shape has no real sag over ±\(Fmt.short(h)) mm.").font(.caption).foregroundStyle(.secondary)
+                Text(String(localized: "The shape has no real sag over ±\(Fmt.short(h)) mm.", locale: NumberDisplay.locale)).font(.caption).foregroundStyle(.secondary)
             } else {
-                LineChart(series: series, xLabel: "Position (mm)", yLabel: "Sag (mm)", xDomain: -h...h)
+                LineChart(series: series, xLabel: String(localized: "Position (mm)"), yLabel: String(localized: "Sag (mm)"), xDomain: -h...h)
                     .frame(height: 116)
                     .font(.caption2)
                     .accessibilityLabel(accessibilityProfile(series))
@@ -74,7 +74,7 @@ struct ShapePreview: View {
     private func accessibilityProfile(_ series: [Series]) -> String {
         series.map { s in
             let z = s.points.map(\.1)
-            return "\(s.label): sag from \(Fmt.short(z.min() ?? 0)) to \(Fmt.short(z.max() ?? 0)) millimeters over ±\(Fmt.short(h)) millimeters"
+            return String(localized: "\(s.label): sag from \(Fmt.short(z.min() ?? 0)) to \(Fmt.short(z.max() ?? 0)) millimeters over ±\(Fmt.short(h)) millimeters", locale: NumberDisplay.locale)
         }.joined(separator: "; ")
     }
 }
@@ -98,7 +98,7 @@ struct DepartureMap: View {
             HStack {
                 Text("Departure from base").font(.caption.weight(.semibold))
                 Spacer()
-                Text("PV \(Fmt.length(pv))").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                Text(String(localized: "PV \(Fmt.length(pv))", locale: NumberDisplay.locale)).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
             }
             HStack(alignment: .center, spacing: Space.m) {
                 HeatMapImage(
@@ -120,7 +120,7 @@ struct DepartureMap: View {
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Departure map from the base conic")
-        .accessibilityValue("Peak to valley \(Fmt.length(pv)) over a radius of \(Fmt.short(radius)) millimeters")
+        .accessibilityValue(String(localized: "Peak to valley \(Fmt.length(pv)) over a radius of \(Fmt.short(radius)) millimeters", locale: NumberDisplay.locale))
     }
 
     private func axisLabel(_ s: String) -> some View {
@@ -142,12 +142,12 @@ struct PhaseProfile: View {
             Text("Phase (order +1)").font(.caption.weight(.semibold))
             LineChart(
                 series: [Series(id: "phase", label: "Φ / 2π", color: Palette.fieldColor(6), points: pts)],
-                xLabel: "Radius (mm)", yLabel: "Φ (waves)", xDomain: 0...radius
+                xLabel: String(localized: "Radius (mm)"), yLabel: String(localized: "Φ (waves)"), xDomain: 0...radius
             )
             .frame(height: 116)
             .font(.caption2)
             .accessibilityLabel("Phase profile")
-            .accessibilityValue("From 0 to \(Fmt.short(pts.last?.1 ?? 0)) waves at a radius of \(Fmt.short(radius)) millimeters")
+            .accessibilityValue(String(localized: "From 0 to \(Fmt.short(pts.last?.1 ?? 0)) waves at a radius of \(Fmt.short(radius)) millimeters", locale: NumberDisplay.locale))
         }
     }
 }
@@ -167,17 +167,17 @@ struct DOEFigures: View {
         let sameAsDesign = phase.traceOrder == phase.designOrder && abs(primaryWavelengthUm - phase.designWavelengthUm) < 1e-9
         VStack(alignment: .leading, spacing: Space.s) {
             figure(
-                "Paraxial power", "order \(phase.traceOrder), \(Fmt.short(primaryWavelengthUm)) µm",
+                String(localized: "Paraxial power"), String(localized: "order \(phase.traceOrder), \(Fmt.short(primaryWavelengthUm)) µm", locale: NumberDisplay.locale),
                 trace == 0 ? "0" : "\(Fmt.short(trace)) mm⁻¹", trace == 0 ? nil : "f \(Fmt.short(1 / trace)) mm")
             if !sameAsDesign {
                 figure(
-                    "At design", "order \(phase.designOrder), \(Fmt.short(phase.designWavelengthUm)) µm",
+                    String(localized: "At design"), String(localized: "order \(phase.designOrder), \(Fmt.short(phase.designWavelengthUm)) µm", locale: NumberDisplay.locale),
                     design == 0 ? "0" : "\(Fmt.short(design)) mm⁻¹", design == 0 ? nil : "f \(Fmt.short(1 / design)) mm")
             }
             figure(
-                "Smallest zone period", period.map { "at r = \(Fmt.short($0.radius)) mm" } ?? "",
+                String(localized: "Smallest zone period"), period.map { String(localized: "at r = \(Fmt.short($0.radius)) mm", locale: NumberDisplay.locale) } ?? "",
                 period.map { Fmt.length($0.period) } ?? "—", nil)
-            figure("Zones", "over ±\(Fmt.short(radius)) mm", String(format: "%.1f", zones), nil)
+            figure(String(localized: "Zones"), String(localized: "over ±\(Fmt.short(radius)) mm", locale: NumberDisplay.locale), String(format: "%.1f", zones), nil)
         }
         .textSelection(.enabled)
         .help("Paraxial power φ = −m λ A₁ / (π r_norm²), added to the base's refractive power. A DOE's Abbe number is about −3.45.")

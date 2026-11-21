@@ -176,11 +176,11 @@ public enum PlacementComponent: String, Codable, Sendable, Hashable, CaseIterabl
 
     public var title: String {
         switch self {
-        case .decenterX: "Decenter X"
-        case .decenterY: "Decenter Y"
-        case .tiltX: "Tilt X"
-        case .tiltY: "Tilt Y"
-        case .tiltZ: "Tilt Z"
+        case .decenterX: String(localized: "Decenter X")
+        case .decenterY: String(localized: "Decenter Y")
+        case .tiltX: String(localized: "Tilt X")
+        case .tiltY: String(localized: "Tilt Y")
+        case .tiltZ: String(localized: "Tilt Z")
         }
     }
 

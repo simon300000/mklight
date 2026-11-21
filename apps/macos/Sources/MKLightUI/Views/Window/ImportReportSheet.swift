@@ -1,5 +1,6 @@
 import MKLightEngine
 import SwiftUI
+import MKLightModel
 
 /// The sheet a design window shows once after importing a lens prescription
 /// file: what was left out or changed, grouped by meaning, each item with
@@ -42,7 +43,7 @@ struct ImportReportSheet: View {
                         HStack {
                             Label(group.category.title, systemImage: group.category.symbol)
                             Spacer()
-                            Text("\(group.items.count)").monospacedDigit().foregroundStyle(.secondary)
+                            Text(String(localized: "\(group.items.count)", locale: NumberDisplay.locale)).monospacedDigit().foregroundStyle(.secondary)
                         }
                     }
                 }
@@ -63,7 +64,7 @@ struct ImportReportSheet: View {
                 .symbolRenderingMode(.hierarchical)
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: Space.xs) {
-                Text("Imported “\(report.fileName)”").font(.title3.weight(.semibold))
+                Text(String(localized: "Imported “\(report.fileName)”", locale: NumberDisplay.locale)).font(.title3.weight(.semibold))
                 Text(report.headline).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 Text(report.summary).font(.caption).foregroundStyle(.tertiary)
             }
@@ -86,7 +87,7 @@ struct ImportReportSheet: View {
 
     private var footer: some View {
         HStack(spacing: Space.m) {
-            Button(copied ? "Copied" : "Copy Report") {
+            Button(copied ? String(localized: "Copied") : String(localized: "Copy Report")) {
                 Clipboard.copy(report.plainText)
                 copied = true
             }

@@ -95,12 +95,12 @@ struct InspectorTabBar: View {
 
     static func help(_ page: InspectorPage) -> String {
         switch page {
-        case .surface: "The selected surface"
-        case .system: "Aperture, fields, wavelengths and environment"
-        case .job(.optimize): "Optimize the design (⌃⌘O)"
-        case .job(.glass): "Replace glasses with catalog glasses, re-optimizing each combination (⌃⌘G)"
-        case .job(.tolerance): "Tolerance analysis: sensitivities and Monte Carlo (⌃⌘T)"
-        case .job(.solves): "Preview and apply the design's solves (⌃⌘L)"
+        case .surface: String(localized: "The selected surface")
+        case .system: String(localized: "Aperture, fields, wavelengths and environment")
+        case .job(.optimize): String(localized: "Optimize the design (⌃⌘O)")
+        case .job(.glass): String(localized: "Replace glasses with catalog glasses, re-optimizing each combination (⌃⌘G)")
+        case .job(.tolerance): String(localized: "Tolerance analysis: sensitivities and Monte Carlo (⌃⌘T)")
+        case .job(.solves): String(localized: "Preview and apply the design's solves (⌃⌘L)")
         }
     }
 }
@@ -120,7 +120,9 @@ struct SurfaceInspector: View {
     private var type: SurfaceTypeDescriptor { SurfaceTypes.descriptor(for: surface.shape) }
     private var isEnd: Bool { index == 0 || index == system.imageIndex }
     private var title: String {
-        index == 0 ? "Object" : index == system.imageIndex ? "Image" : "Surface \(index)"
+        index == 0 ? String(localized: "surface.object", defaultValue: "Object", comment: "the object surface of a lens")
+            : index == system.imageIndex ? String(localized: "surface.image", defaultValue: "Image", comment: "the image surface of a lens")
+            : String(localized: "Surface \(index)", locale: NumberDisplay.locale)
     }
 
     var body: some View {
@@ -130,7 +132,7 @@ struct SurfaceInspector: View {
                     HStack(alignment: .firstTextBaseline, spacing: Space.s) {
                         Text(title).font(.title3.weight(.semibold))
                         if index == system.stop {
-                            Label("Stop", systemImage: "camera.aperture")
+                            Label(String(localized: "surface.stop", defaultValue: "Stop", comment: "the aperture stop surface"), systemImage: "camera.aperture")
                                 .font(.caption.weight(.medium))
                                 .padding(.horizontal, 6)
                                 .padding(.vertical, 2)
@@ -147,8 +149,8 @@ struct SurfaceInspector: View {
                     ShapePreview(shape: surface.shape, semiDiameter: semiDiameter, primaryWavelengthUm: primaryWavelength)
                         .padding(.vertical, Space.xs)
                 }
-                TextValueField(title: "Comment", value: surface.label, prompt: "none", owner: surface.id) { v in
-                    edit("Change Comment") { $0.label = v }
+                TextValueField(title: String(localized: "Comment"), value: surface.label, prompt: String(localized: "none"), owner: surface.id) { v in
+                    edit(String(localized: "Change Comment")) { $0.label = v }
                 }
             }
             if type.placementFirst { PlacementSection(surface: surface, edit: edit, variable: variable).id(RowsID.placement(surface.id)) }
@@ -179,7 +181,7 @@ struct SurfaceInspector: View {
             if type.orderEfficiency, case .diffractive(_, let phase) = surface.shape {
                 DiffractionEfficiencySection(
                     model: surface.diffractionEfficiency, phase: phase, wavelengths: system.wavelengths.wavelengths.map(\.um)
-                ) { m in edit("Change Diffraction Efficiency") { $0.diffractionEfficiency = m } }
+                ) { m in edit(String(localized: "Change Diffraction Efficiency")) { $0.diffractionEfficiency = m } }
             }
             if surface.shape.kind == .biconic {
                 Section {
@@ -195,13 +197,13 @@ struct SurfaceInspector: View {
             if index != system.imageIndex {
                 Section("Spacing and Medium") {
                     NumberField(
-                        title: "Thickness", value: surface.thickness, unit: "mm", help: "Distance to the next vertex.",
+                        title: String(localized: "Thickness"), value: surface.thickness, unit: "mm", help: String(localized: "Distance to the next vertex."),
                         parse: { LensValueParser.thickness($0, allowInfinite: index == 0) },
                         variable: variable(.thickness(surface: surface.id)),
                         solve: system.solve(for: .thickness(surface: surface.id))?.kind.kind.title, owner: surface.id
-                    ) { v in edit("Change Thickness") { $0.thickness = v } }
+                    ) { v in edit(String(localized: "Change Thickness")) { $0.thickness = v } }
                     if !surface.isCoordinateBreak && index != 0 {
-                        Picker("Interaction", selection: Binding(get: { surface.interaction }, set: { v in edit("Change Interaction") { $0.interaction = v } })) {
+                        Picker("Interaction", selection: Binding(get: { surface.interaction }, set: { v in edit(String(localized: "Change Interaction")) { $0.interaction = v } })) {
                             Text("Refract").tag(Interaction.refract)
                             Text("Mirror").tag(Interaction.reflect)
                             Text("Dummy").tag(Interaction.dummy)
@@ -209,12 +211,12 @@ struct SurfaceInspector: View {
                     }
                     if !surface.isCoordinateBreak && surface.interaction == .refract {
                         TextValueField(
-                            title: "Material", value: surface.material.isAir ? "AIR" : surface.material.displayName, prompt: "AIR",
+                            title: String(localized: "Material"), value: surface.material.isAir ? "AIR" : surface.material.displayName, prompt: "AIR",
                             suggestions: workspace.materialNames, owner: surface.id
                         ) { text in
                             switch LensValueParser.material(text) {
                             case .success(let m):
-                                edit("Change Material") { s in
+                                edit(String(localized: "Change Material")) { s in
                                     s.interaction = m.interaction
                                     if let mat = m.material { s.material = s.material.replaced(by: mat) }
                                 }
@@ -227,10 +229,10 @@ struct SurfaceInspector: View {
                         }
                         if case .model(let nd, let vd, let dpgf) = surface.material {
                             NumberField(title: "n_d", value: nd, variable: variable(.modelNd(surface: surface.id)), owner: surface.id) { v in
-                                edit("Change n_d") { $0.material = .model(nd: v, vd: vd, dpgf: dpgf) }
+                                edit(String(localized: "Change n_d")) { $0.material = .model(nd: v, vd: vd, dpgf: dpgf) }
                             }
                             NumberField(title: "V_d", value: vd, variable: variable(.modelVd(surface: surface.id)), owner: surface.id) { v in
-                                edit("Change V_d") { $0.material = .model(nd: nd, vd: v, dpgf: dpgf) }
+                                edit(String(localized: "Change V_d")) { $0.material = .model(nd: nd, vd: v, dpgf: dpgf) }
                             }
                         }
                     }
@@ -242,7 +244,7 @@ struct SurfaceInspector: View {
             if !type.placementFirst && !isEnd { PlacementSection(surface: surface, edit: edit, variable: variable).id(RowsID.placement(surface.id)) }
             if !isEnd && !surface.isCoordinateBreak {
                 Section("Coating") {
-                    Picker("Coating", selection: Binding(get: { surface.coating ?? "" }, set: { v in edit("Change Coating") { $0.coating = v.isEmpty ? nil : v } })) {
+                    Picker("Coating", selection: Binding(get: { surface.coating ?? "" }, set: { v in edit(String(localized: "Change Coating")) { $0.coating = v.isEmpty ? nil : v } })) {
                         Text("Uncoated").tag("")
                         ForEach(system.coatings.keys.sorted(), id: \.self) { Text($0).tag($0) }
                     }
@@ -276,7 +278,7 @@ struct SurfaceInspector: View {
             variable: path.map(variable), solve: path.flatMap { system.solve(for: $0)?.kind.kind.title }, owner: surface.id
         ) { stored in
             let value: JSONValue = p.display == .integer ? .integer(Int64(stored)) : .number(stored)
-            edit("Change \(p.title)") { s in
+            edit(String(localized: "Change \(p.title)", locale: NumberDisplay.locale)) { s in
                 if let shape = SurfaceTypes.shape(s.shape, setting: p.key, to: value) { s.shape = shape }
             }
         }
@@ -289,7 +291,7 @@ struct SurfaceInspector: View {
             selection: Binding(
                 get: { current },
                 set: { v in
-                    edit("Change \(c.title)") { s in
+                    edit(String(localized: "Change \(c.title)", locale: NumberDisplay.locale)) { s in
                         if let shape = SurfaceTypes.shape(s.shape, setting: c.key, to: .string(v)) { s.shape = shape }
                     }
                 })
@@ -311,7 +313,7 @@ struct SurfaceInspector: View {
     }
 
     private func setDiffractiveBase(_ k: SurfaceShape.Kind) {
-        edit("Change Base Shape") { s in
+        edit(String(localized: "Change Base Shape")) { s in
             guard case .diffractive(let base, let phase) = s.shape else { return }
             let c = base.curvature, kk = base.conicConstant
             let newBase: SurfaceShape =
@@ -395,13 +397,13 @@ private struct CoefficientRows: View {
                     unit: list.unit(k), variable: list.path.map { variable($0(surface.id, k)) }
                 ) { nv in set(values, k, nv) }
                 let removable = k == values.count - 1 || list.sparse
-                Button("Remove \(list.term(k, surface.shape))", systemImage: "minus.circle") { remove(values, k) }
+                Button(String(localized: "Remove \(list.term(k, surface.shape))", locale: NumberDisplay.locale), systemImage: "minus.circle") { remove(values, k) }
                     .labelStyle(.iconOnly)
                     .buttonStyle(.borderless)
                     .foregroundStyle(.secondary)
                     .opacity(removable ? 1 : 0)
                     .disabled(!removable)
-                    .help(k == values.count - 1 ? "Remove this term" : "Set this term to zero")
+                    .help(k == values.count - 1 ? String(localized: "Remove this term") : String(localized: "Set this term to zero"))
             }
         }
         HStack {
@@ -410,7 +412,7 @@ private struct CoefficientRows: View {
                     Menu {
                         ForEach(0..<limit, id: \.self) { k in
                             if k >= values.count || (values[k] == 0 && !revealed.contains(k)) {
-                                Button("\(list.term(k, surface.shape))   \(list.meaning(k, surface.shape))") { add(values, k) }
+                                Button(String(localized: "\(list.term(k, surface.shape))   \(list.meaning(k, surface.shape))", locale: NumberDisplay.locale)) { add(values, k) }
                             }
                         }
                     } label: {
@@ -421,7 +423,7 @@ private struct CoefficientRows: View {
                     Button {
                         add(values, values.count)
                     } label: {
-                        Label("Add \(list.term(values.count, surface.shape))  \(list.meaning(values.count, surface.shape))", systemImage: "plus")
+                        Label(String(localized: "Add \(list.term(values.count, surface.shape))  \(list.meaning(values.count, surface.shape))", locale: NumberDisplay.locale), systemImage: "plus")
                     }
                 }
             }
@@ -434,21 +436,21 @@ private struct CoefficientRows: View {
         }
         .buttonStyle(.borderless)
         if values.count >= limit {
-            Text("\(limit) terms, the most this type allows.").font(.caption).foregroundStyle(.secondary)
+            Text(String(localized: "\(limit) terms, the most this type allows.", locale: NumberDisplay.locale)).font(.caption).foregroundStyle(.secondary)
         }
     }
 
     private func set(_ values: [Double], _ k: Int, _ v: Double) {
         var a = values
         a[k] = v
-        write(a, "Change \(list.term(k, surface.shape))")
+        write(a, String(localized: "Change \(list.term(k, surface.shape))", locale: NumberDisplay.locale))
     }
 
     private func add(_ values: [Double], _ k: Int) {
         var a = values
         if k >= a.count { a += Array(repeating: 0, count: k - a.count + 1) }
         revealed.insert(k)
-        write(a, "Add \(list.term(k, surface.shape))")
+        write(a, String(localized: "Add \(list.term(k, surface.shape))", locale: NumberDisplay.locale))
     }
 
     private func remove(_ values: [Double], _ k: Int) {
@@ -462,7 +464,7 @@ private struct CoefficientRows: View {
             a[k] = 0
         }
         revealed.remove(k)
-        write(a, "Remove \(list.term(k, surface.shape))")
+        write(a, String(localized: "Remove \(list.term(k, surface.shape))", locale: NumberDisplay.locale))
     }
 
     private func write(_ a: [Double], _ name: String) {
@@ -486,14 +488,14 @@ private struct ApertureSection: View {
     var body: some View {
         Section("Aperture") {
             Picker("Semi-diameter", selection: Binding(get: { surface.semiDiameter == .auto }, set: { auto in
-                edit("Change Semi-Diameter") { s in s.semiDiameter = auto ? .auto : .fixed(s.semiDiameter.fixedValue ?? autoValue ?? 1) }
+                edit(String(localized: "Change Semi-Diameter")) { s in s.semiDiameter = auto ? .auto : .fixed(s.semiDiameter.fixedValue ?? autoValue ?? 1) }
             })) {
                 Text("Automatic").tag(true)
                 Text("Fixed").tag(false)
             }
             if case .fixed(let v) = surface.semiDiameter {
-                NumberField(title: "Value", value: v, unit: "mm", parse: LensValueParser.positiveLength, variable: variable(.semiDiameter(surface: surface.id)), owner: surface.id) { nv in
-                    edit("Change Semi-Diameter") { $0.semiDiameter = .fixed(nv) }
+                NumberField(title: String(localized: "Value"), value: v, unit: "mm", parse: LensValueParser.positiveLength, variable: variable(.semiDiameter(surface: surface.id)), owner: surface.id) { nv in
+                    edit(String(localized: "Change Semi-Diameter")) { $0.semiDiameter = .fixed(nv) }
                 }
             } else if let autoValue {
                 LabeledContent("Computed") { Text(Fmt.short(autoValue) + " mm").numeric().foregroundStyle(.secondary) }
@@ -507,16 +509,16 @@ private struct ApertureSection: View {
             }
             switch surface.aperture {
             case .circular(let r)?:
-                NumberField(title: "Radius", value: r, unit: "mm", parse: LensValueParser.positiveLength, owner: surface.id) { v in setAperture(.circular(radius: v)) }
+                NumberField(title: String(localized: "Radius"), value: r, unit: "mm", parse: LensValueParser.positiveLength, owner: surface.id) { v in setAperture(.circular(radius: v)) }
             case .annular(let a, let b)?:
-                NumberField(title: "Inner radius", value: a, unit: "mm", parse: LensValueParser.positiveLength, owner: surface.id) { v in setAperture(.annular(innerRadius: v, outerRadius: b)) }
-                NumberField(title: "Outer radius", value: b, unit: "mm", parse: LensValueParser.positiveLength, owner: surface.id) { v in setAperture(.annular(innerRadius: a, outerRadius: v)) }
+                NumberField(title: String(localized: "Inner radius"), value: a, unit: "mm", parse: LensValueParser.positiveLength, owner: surface.id) { v in setAperture(.annular(innerRadius: v, outerRadius: b)) }
+                NumberField(title: String(localized: "Outer radius"), value: b, unit: "mm", parse: LensValueParser.positiveLength, owner: surface.id) { v in setAperture(.annular(innerRadius: a, outerRadius: v)) }
             case .rectangular(let x, let y)?:
-                NumberField(title: "Half width x", value: x, unit: "mm", parse: LensValueParser.positiveLength, owner: surface.id) { v in setAperture(.rectangular(halfX: v, halfY: y)) }
-                NumberField(title: "Half width y", value: y, unit: "mm", parse: LensValueParser.positiveLength, owner: surface.id) { v in setAperture(.rectangular(halfX: x, halfY: v)) }
+                NumberField(title: String(localized: "Half width x"), value: x, unit: "mm", parse: LensValueParser.positiveLength, owner: surface.id) { v in setAperture(.rectangular(halfX: v, halfY: y)) }
+                NumberField(title: String(localized: "Half width y"), value: y, unit: "mm", parse: LensValueParser.positiveLength, owner: surface.id) { v in setAperture(.rectangular(halfX: x, halfY: v)) }
             case .elliptical(let x, let y)?:
-                NumberField(title: "Semi-axis x", value: x, unit: "mm", parse: LensValueParser.positiveLength, owner: surface.id) { v in setAperture(.elliptical(semiX: v, semiY: y)) }
-                NumberField(title: "Semi-axis y", value: y, unit: "mm", parse: LensValueParser.positiveLength, owner: surface.id) { v in setAperture(.elliptical(semiX: x, semiY: v)) }
+                NumberField(title: String(localized: "Semi-axis x"), value: x, unit: "mm", parse: LensValueParser.positiveLength, owner: surface.id) { v in setAperture(.elliptical(semiX: v, semiY: y)) }
+                NumberField(title: String(localized: "Semi-axis y"), value: y, unit: "mm", parse: LensValueParser.positiveLength, owner: surface.id) { v in setAperture(.elliptical(semiX: x, semiY: v)) }
             case nil:
                 EmptyView()
             }
@@ -546,7 +548,7 @@ private struct ApertureSection: View {
         setAperture(a)
     }
 
-    private func setAperture(_ a: ApertureShape?) { edit("Change Aperture") { $0.aperture = a } }
+    private func setAperture(_ a: ApertureShape?) { edit(String(localized: "Change Aperture")) { $0.aperture = a } }
 }
 
 /// A catalogue glass's melt offset: Δn_d and ΔV_d (validated against the
@@ -568,21 +570,21 @@ struct MeltOffsetRows: View {
         let showing = expanded || !offset.isZero || variable(dn).isOn.wrappedValue || variable(dv).isOn.wrappedValue
         if showing {
             NumberField(
-                title: "Δn_d", detail: "melt", value: offset.dnD,
-                help: "The melt's index offset from the catalog n_d (within ±\(Fmt.short(MaterialOffset.maxDnD))); the dispersion keeps its shape.",
+                title: "Δn_d", detail: String(localized: "melt"), value: offset.dnD,
+                help: String(localized: "The melt's index offset from the catalog n_d (within ±\(Fmt.short(MaterialOffset.maxDnD))); the dispersion keeps its shape.", locale: NumberDisplay.locale),
                 parse: LensValueParser.offsetDnD, variable: variable(dn), solve: system.solve(for: dn)?.kind.kind.title
-            ) { v in set("Change Δn_d") { $0.dnD = v } }
+            ) { v in set(String(localized: "Change Δn_d")) { $0.dnD = v } }
             NumberField(
-                title: "ΔV_d", detail: "melt", value: offset.dvD,
-                help: "The melt's Abbe-number offset from the catalog V_d (within ±\(Fmt.short(MaterialOffset.maxDvD))).",
+                title: "ΔV_d", detail: String(localized: "melt"), value: offset.dvD,
+                help: String(localized: "The melt's Abbe-number offset from the catalog V_d (within ±\(Fmt.short(MaterialOffset.maxDvD))).", locale: NumberDisplay.locale),
                 parse: LensValueParser.offsetDvD, variable: variable(dv), solve: system.solve(for: dv)?.kind.kind.title
-            ) { v in set("Change ΔV_d") { $0.dvD = v } }
+            ) { v in set(String(localized: "Change ΔV_d")) { $0.dvD = v } }
             if let g = workspace.glass(surface.material) {
                 LabeledContent("Melt glass") {
                     VStack(alignment: .trailing, spacing: 1) {
-                        Text("n_d \(String(format: "%.5f", g.nd))  V_d \(String(format: "%.2f", g.vd))").numeric()
+                        Text(String(localized: "n_d \(String(format: "%.5f", g.nd))  V_d \(String(format: "%.2f", g.vd))", locale: NumberDisplay.locale)).numeric()
                         if !offset.isZero {
-                            Text("catalog \(String(format: "%.5f", g.catalogNd))  \(String(format: "%.2f", g.catalogVd))")
+                            Text(String(localized: "catalog \(String(format: "%.5f", g.catalogNd))  \(String(format: "%.2f", g.catalogVd))", locale: NumberDisplay.locale))
                                 .font(.caption).numeric().foregroundStyle(.secondary)
                         }
                     }
@@ -592,7 +594,7 @@ struct MeltOffsetRows: View {
             if !offset.isZero {
                 Button("Remove Melt Offset") {
                     expanded = false
-                    set("Remove Melt Offset") { $0 = .zero }
+                    set(String(localized: "Remove Melt Offset")) { $0 = .zero }
                 }
                 .buttonStyle(.borderless)
                 .help("Back to the catalog glass")
@@ -624,11 +626,11 @@ private struct PlacementSection: View {
         let p = surface.placement ?? Placement()
         Section {
             if expanded || surface.isCoordinateBreak || !p.isIdentity {
-                NumberField(title: "Decenter X", value: p.decenterX, unit: "mm", variable: variable(.decenterX(surface: surface.id))) { v in set { $0.decenterX = v } }
-                NumberField(title: "Decenter Y", value: p.decenterY, unit: "mm", variable: variable(.decenterY(surface: surface.id))) { v in set { $0.decenterY = v } }
-                NumberField(title: "Tilt X", value: p.tiltX, unit: "°", variable: variable(.tiltX(surface: surface.id))) { v in set { $0.tiltX = v } }
-                NumberField(title: "Tilt Y", value: p.tiltY, unit: "°", variable: variable(.tiltY(surface: surface.id))) { v in set { $0.tiltY = v } }
-                NumberField(title: "Tilt Z", value: p.tiltZ, unit: "°", variable: variable(.tiltZ(surface: surface.id))) { v in set { $0.tiltZ = v } }
+                NumberField(title: String(localized: "Decenter X"), value: p.decenterX, unit: "mm", variable: variable(.decenterX(surface: surface.id))) { v in set { $0.decenterX = v } }
+                NumberField(title: String(localized: "Decenter Y"), value: p.decenterY, unit: "mm", variable: variable(.decenterY(surface: surface.id))) { v in set { $0.decenterY = v } }
+                NumberField(title: String(localized: "Tilt X"), value: p.tiltX, unit: "°", variable: variable(.tiltX(surface: surface.id))) { v in set { $0.tiltX = v } }
+                NumberField(title: String(localized: "Tilt Y"), value: p.tiltY, unit: "°", variable: variable(.tiltY(surface: surface.id))) { v in set { $0.tiltY = v } }
+                NumberField(title: String(localized: "Tilt Z"), value: p.tiltZ, unit: "°", variable: variable(.tiltZ(surface: surface.id))) { v in set { $0.tiltZ = v } }
                 Picker("Order", selection: Binding(get: { p.order }, set: { o in set { $0.order = o } })) {
                     Text("Decenter, then tilt").tag(TransformOrder.decenterThenTilt)
                     Text("Tilt, then decenter").tag(TransformOrder.tiltThenDecenter)
@@ -643,7 +645,7 @@ private struct PlacementSection: View {
     }
 
     private func set(_ f: @escaping (inout Placement) -> Void) {
-        edit("Change Placement") { s in
+        edit(String(localized: "Change Placement")) { s in
             var p = s.placement ?? Placement()
             f(&p)
             s.placement = p.isIdentity && !s.isCoordinateBreak && p.order == .decenterThenTilt && !p.restoreAfter ? nil : p
@@ -669,10 +671,10 @@ private struct SolvesSection: View {
                         }
                         Spacer()
                         if let label = s.kind.kind.valueLabel, let v = s.kind.value {
-                            Text("\(Fmt.short(v)) \(label.unit)").numeric().foregroundStyle(.secondary)
+                            Text(String(localized: "\(Fmt.short(v)) \(label.unit)", locale: NumberDisplay.locale)).numeric().foregroundStyle(.secondary)
                         }
                         Button("Remove", systemImage: "minus.circle") {
-                            design.edit("Remove Solve", undoManager: undoManager) { $0.solves.remove(at: k) }
+                            design.edit(String(localized: "Remove Solve"), undoManager: undoManager) { $0.solves.remove(at: k) }
                         }
                         .labelStyle(.iconOnly).buttonStyle(.borderless).foregroundStyle(.secondary)
                     }
@@ -699,7 +701,7 @@ private struct SolvesSection: View {
     }
 
     private func add(_ target: ParamPath, _ kind: SolveKind) {
-        design.edit("Add Solve", undoManager: undoManager) { s in
+        design.edit(String(localized: "Add Solve"), undoManager: undoManager) { s in
             s.solves.removeAll { $0.target == target }
             s.solves.append(Solve(target: target, kind: kind))
         }

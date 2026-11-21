@@ -34,8 +34,9 @@ public enum JobState: Equatable, Sendable {
 @Observable
 public final class OptimizeSession {
     public static let algorithms: [(id: String, title: String)] = [
-        ("lm", "Damped least squares (LM)"), ("dogleg", "Trust region (dogleg)"), ("de", "Differential evolution"),
-        ("cma_es", "CMA-ES"), ("nelder_mead", "Nelder–Mead"), ("hammer", "Basin hopping"),
+        ("lm", String(localized: "Damped least squares (LM)")), ("dogleg", String(localized: "Trust region (dogleg)")),
+        ("de", String(localized: "Differential evolution")), ("cma_es", "CMA-ES"), ("nelder_mead", "Nelder–Mead"),
+        ("hammer", String(localized: "Basin hopping")),
     ]
     public var algorithm = "lm"
     /// `nil`: the algorithm's default.
@@ -91,8 +92,8 @@ public final class OptimizeSession {
         guard useDesignVariables, !variables.isEmpty else { return nil }
         func solved(_ v: DesignVariable) -> Bool { system?.isSolved(v.param) ?? false }
         if variables.allSatisfy({ $0.isPinned || solved($0) }) {
-            if !variables.contains(where: solved) { return "Every variable is pinned. Unpin one, or vary the automatic set." }
-            return "Every variable is pinned or controlled by a solve. Add a free variable, or vary the automatic set."
+            if !variables.contains(where: solved) { return String(localized: "Every variable is pinned. Unpin one, or vary the automatic set.") }
+            return String(localized: "Every variable is pinned or controlled by a solve. Add a free variable, or vary the automatic set.")
         }
         return nil
     }
@@ -166,7 +167,7 @@ public final class OptimizeSession {
             evaluation = MeritEvaluation(json: out.json)
             evaluatedKey = key
             pendingKey = nil
-            evaluationError = evaluation == nil ? "The engine returned no merit." : nil
+            evaluationError = evaluation == nil ? String(localized: "The engine returned no merit.") : nil
             evaluating = false
         } catch EngineError.cancelled {
             // A newer evaluation replaced it.
@@ -204,10 +205,10 @@ public final class OptimizeSession {
         }
         let operands = (e?.specOperands ?? []).filter { !Self.isEFLHold($0) || !defaults.holdEFL }
         guard let e, !operands.isEmpty else {
-            evaluationError = "The engine generated no operands for this design."
+            evaluationError = String(localized: "The engine generated no operands for this design.")
             return
         }
-        editMerit(document, "Convert Merit to Custom", undoManager: undoManager) {
+        editMerit(document, String(localized: "Convert Merit to Custom"), undoManager: undoManager) {
             $0.operands = operands
             $0.specOptions = e.specOptions
             $0.mode = .custom
@@ -238,7 +239,7 @@ public final class OptimizeSession {
         trace = []
         result = nil
         applied = false
-        state = .running(JobProgress(fraction: 0, stage: "Queued"))
+        state = .running(JobProgress(fraction: 0, stage: String(localized: "Queued")))
         Task { @MainActor [weak self] in
             for await p in job.progress {
                 guard let self, self.job === job else { return }
@@ -255,7 +256,7 @@ public final class OptimizeSession {
                 guard let self, self.job === job else { return }
                 self.result = OptimizeResult(json: out.json)
                 if let h = self.result?.history, !h.isEmpty { self.trace = h }
-                self.state = self.result == nil ? .failed("The engine returned no optimized design.") : .finished
+                self.state = self.result == nil ? .failed(String(localized: "The engine returned no optimized design.")) : .finished
             } catch EngineError.cancelled {
                 guard let self, self.job === job else { return }
                 self.state = .setup
@@ -278,7 +279,7 @@ public final class OptimizeSession {
     /// Applies the optimised design as one undoable step.
     public func apply(to document: DesignDocument, undoManager: UndoManager?) {
         guard let system = result?.system, !applied else { return }
-        document.replace(system: system, actionName: "Apply Optimization", undoManager: undoManager)
+        document.replace(system: system, actionName: String(localized: "Apply Optimization"), undoManager: undoManager)
         applied = true
     }
 
@@ -366,7 +367,7 @@ public final class SolvesSession {
 
     /// `fresh`: recompute rather than reuse a stored result (Try Again).
     public func dryRun(in workspace: Workspace, fresh: Bool = false) async {
-        state = .running(JobProgress(fraction: 0, stage: "Solving"))
+        state = .running(JobProgress(fraction: 0, stage: String(localized: "Solving")))
         committed = false
         do {
             let job = try workspace.submitJob("solves", settings: [:], fresh: fresh)
@@ -404,7 +405,7 @@ public final class SolvesSession {
         do {
             let applied = try await workspace.applySolves()
             read(applied.report, system: document.system)
-            document.replace(system: applied.snapshot.system, actionName: "Apply Solves", undoManager: undoManager)
+            document.replace(system: applied.snapshot.system, actionName: String(localized: "Apply Solves"), undoManager: undoManager)
             committed = true
             state = .finished
         } catch {

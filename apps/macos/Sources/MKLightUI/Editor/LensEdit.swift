@@ -21,18 +21,18 @@ public enum LensEdit: Equatable, Sendable {
 
     public var actionName: String {
         switch self {
-        case .setCurvature: "Change Radius"
-        case .setThickness: "Change Thickness"
-        case .setConic: "Change Conic"
-        case .setSemiDiameter: "Change Semi-Diameter"
-        case .setMaterial: "Change Material"
-        case .setLabel: "Change Label"
-        case .setShapeKind, .setCylinder: "Change Surface Type"
-        case .setShapeParameter(_, let p, _): "Change \(p.title)"
-        case .setCoating: "Change Coating"
-        case .insert: "Insert Surface"
-        case .delete: "Delete Surface"
-        case .makeStop: "Set Stop"
+        case .setCurvature: String(localized: "Change Radius")
+        case .setThickness: String(localized: "Change Thickness")
+        case .setConic: String(localized: "Change Conic")
+        case .setSemiDiameter: String(localized: "Change Semi-Diameter")
+        case .setMaterial: String(localized: "Change Material")
+        case .setLabel: String(localized: "Change Label")
+        case .setShapeKind, .setCylinder: String(localized: "Change Surface Type")
+        case .setShapeParameter(_, let p, _): String(localized: "Change \(p.title)", locale: NumberDisplay.locale)
+        case .setCoating: String(localized: "Change Coating")
+        case .insert: String(localized: "Insert Surface")
+        case .delete: String(localized: "Delete Surface")
+        case .makeStop: String(localized: "Set Stop", comment: "undo action: make this surface the aperture stop")
         }
     }
 

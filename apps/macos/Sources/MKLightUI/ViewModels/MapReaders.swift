@@ -24,7 +24,8 @@ struct FieldMapData: Sendable {
         /// "Stop error x (mm)".
         var title: String {
             let t = name.replacingOccurrences(of: "_", with: " ")
-            return t.prefix(1).uppercased() + t.dropFirst()
+            let english = t.prefix(1).uppercased() + t.dropFirst()
+            return EngineText.translation(english) ?? english
         }
 
         var unitLabel: String {
@@ -416,13 +417,13 @@ enum GlassMapStatus: Hashable, Sendable, CaseIterable {
 
     var label: String {
         switch self {
-        case .preferred: "Preferred"
-        case .standard: "Standard"
-        case .obsolete: "Obsolete"
-        case .special: "Special"
-        case .melt: "Melt"
-        case .other(let n): "Status \(n)"
-        case .unknown: "Unknown"
+        case .preferred: String(localized: "Preferred")
+        case .standard: String(localized: "Standard")
+        case .obsolete: String(localized: "Obsolete")
+        case .special: String(localized: "Special")
+        case .melt: String(localized: "Melt")
+        case .other(let n): String(localized: "Status \(n)", locale: NumberDisplay.locale)
+        case .unknown: String(localized: "Unknown")
         }
     }
 
@@ -479,8 +480,8 @@ struct GlassMapPoint: Identifiable, Hashable, Sendable {
     var displayName: String {
         switch kind {
         case .catalog: name
-        case .model: "\(name) (model)"
-        case .offset: "\(name) \(offset?.compactText ?? "(melt)")"
+        case .model: String(localized: "\(name) (model)", locale: NumberDisplay.locale)
+        case .offset: offset.map { "\(name) \($0.compactText)" } ?? String(localized: "\(name) (melt)", locale: NumberDisplay.locale)
         }
     }
 
@@ -708,8 +709,8 @@ struct ImageSimulationData: Sendable {
     }
 
     static let patterns: [(id: String, title: String, symbol: String)] = [
-        ("grid", "Grid", "grid"), ("siemens_star", "Siemens star", "sun.max"),
-        ("slanted_edge", "Slanted edge", "righttriangle"), ("text_chart", "Text chart", "textformat"),
+        ("grid", String(localized: "Grid"), "grid"), ("siemens_star", String(localized: "Siemens star"), "sun.max"),
+        ("slanted_edge", String(localized: "Slanted edge"), "righttriangle"), ("text_chart", String(localized: "Text chart"), "textformat"),
     ]
 
     var image: LinearImage
@@ -779,8 +780,8 @@ struct ImageSimulationData: Sendable {
 
     var sourceTitle: String {
         switch source {
-        case .pattern(let p): (Self.patterns.first { $0.id == p }?.title ?? p) + " pattern"
-        case .buffer: "Imported image"
+        case .pattern(let p): String(localized: "\(Self.patterns.first { $0.id == p }?.title ?? p) pattern", locale: NumberDisplay.locale)
+        case .buffer: String(localized: "Imported image")
         case .path(let p): (p as NSString).lastPathComponent
         }
     }

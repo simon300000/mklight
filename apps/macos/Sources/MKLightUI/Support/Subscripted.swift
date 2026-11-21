@@ -1,4 +1,5 @@
 import SwiftUI
+import MKLightModel
 
 /// Labels written with `_` subscripts (`S_III astigmatism`, `Σ S_I`,
 /// `C_L axial`) set as text with real subscripts: the part of a word after
@@ -39,7 +40,7 @@ enum Subscripted {
     static func text(_ label: String) -> Text {
         pieces(label).reduce(Text(verbatim: "")) { t, p in
             let piece = p.isSubscript ? Text(verbatim: p.text).font(.caption2).baselineOffset(-3) : Text(verbatim: p.text)
-            return Text("\(t)\(piece)")
+            return Text(String(localized: "\(t)\(piece)", locale: NumberDisplay.locale))
         }
     }
 

@@ -8,7 +8,7 @@ public enum CurvatureBoundsUnit: String, CaseIterable, Identifiable, Sendable {
     case radius, curvature
 
     public var id: String { rawValue }
-    public var title: String { self == .radius ? "Radius" : "Curvature" }
+    public var title: String { self == .radius ? String(localized: "Radius") : String(localized: "Curvature") }
     public var unit: String { self == .radius ? "mm" : "1/mm" }
 }
 
@@ -38,7 +38,7 @@ public enum RadiusBounds {
         public var description: String {
             switch self {
             case .containsZero:
-                "This radius window passes through R = 0, which is not a range of curvatures. For |R| ≥ r, enter min r and max −r (through ∞)."
+                String(localized: "This radius window passes through R = 0, which is not a range of curvatures. For |R| ≥ r, enter min r and max −r (through ∞).")
             }
         }
     }
@@ -75,8 +75,9 @@ public enum RadiusBounds {
     static func clean(_ v: Double) -> Double { v == 0 ? 0 : v }
 
     /// The short help shown with radius bounds.
-    public static let help =
-        "Bounds as a radius window in mm; the optimizer bounds the curvature c = 1/R. Empty is open on that side. Min above max wraps through flat (R = ∞): min 100, max −100 is |R| ≥ 100. 0 leaves the curvature unbounded on that side."
+    public static var help: String {
+        String(localized: "Bounds as a radius window in mm; the optimizer bounds the curvature c = 1/R. Empty is open on that side. Min above max wraps through flat (R = ∞): min 100, max −100 is |R| ≥ 100. 0 leaves the curvature unbounded on that side.")
+    }
 }
 
 /// Formatting of variable values and bounds.

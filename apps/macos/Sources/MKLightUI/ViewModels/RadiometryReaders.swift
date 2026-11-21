@@ -32,8 +32,8 @@ public struct GhostIrradianceSummary: Sendable, Equatable {
     /// The totals, then the peak ratios of the `limit` strongest ghosts.
     public func rows(limit: Int = 6) -> [(String, String)] {
         [
-            ("Ghost / primary flux", Fmt.defined(totalFluxRatio)),
-            ("Ghost / primary peak", Fmt.defined(totalPeakRatio)),
+            (String(localized: "Ghost / primary flux"), Fmt.defined(totalFluxRatio)),
+            (String(localized: "Ghost / primary peak"), Fmt.defined(totalPeakRatio)),
         ] + ghosts.prefix(limit).map { ($0.label, Fmt.defined($0.peakRatio)) }
     }
 }
@@ -65,11 +65,11 @@ public struct StrayLightSummary: Sendable, Equatable {
 
     public var rows: [(String, String)] {
         var rows = [
-            ("Stray flux", Fmt.defined(flux, unit: "W")),
-            ("± standard error", Fmt.defined(stdError, unit: "W")),
+            (String(localized: "Stray flux"), Fmt.defined(flux, unit: "W")),
+            (String(localized: "± standard error"), Fmt.defined(stdError, unit: "W")),
         ]
-        if let fraction { rows.append(("Stray fraction", Fmt.short(fraction))) }
-        return rows + totals.map { ($0.name.capitalized, Fmt.defined($0.flux, unit: "W")) }
+        if let fraction { rows.append((String(localized: "Stray fraction"), Fmt.short(fraction))) }
+        return rows + totals.map { (EngineText.translation($0.name.capitalized) ?? $0.name.capitalized, Fmt.defined($0.flux, unit: "W")) }
     }
 }
 

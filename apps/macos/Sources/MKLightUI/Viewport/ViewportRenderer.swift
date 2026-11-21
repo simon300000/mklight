@@ -4,6 +4,7 @@ import Metal
 import MetalKit
 import MKLightEngine
 import simd
+import MKLightModel
 
 /// Loads the viewport shaders.
 ///
@@ -32,7 +33,7 @@ enum ShaderLibrary {
             return lib
         }
         guard let url = sourceURL() else {
-            throw NSError(domain: "MKLight", code: 1, userInfo: [NSLocalizedDescriptionKey: "Viewport.metal not found in \(resourceBundleName)"])
+            throw NSError(domain: "MKLight", code: 1, userInfo: [NSLocalizedDescriptionKey: String(localized: "Viewport.metal not found in \(resourceBundleName)", locale: NumberDisplay.locale)])
         }
         let source = try String(contentsOf: url, encoding: .utf8)
         let options = MTLCompileOptions()

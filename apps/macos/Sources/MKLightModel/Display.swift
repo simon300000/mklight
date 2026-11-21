@@ -31,14 +31,26 @@ extension Surface {
 ///
 /// **One rule app-wide:** numbers are shown with a decimal point and no
 /// digit grouping, whatever the system region, as in lens prescriptions,
-/// glass catalogues and the engine's files (`1.5`, `12345.678`). The app's
-/// views run with `NumberDisplay.locale` (en_US_POSIX), so Swift Charts
-/// axes, `formatted()` and number fields follow the same rule; the
-/// `String(format:)` paths are locale-free. Typed numbers also accept a
-/// decimal comma (`LensValueParser.number`).
+/// glass catalogues and the engine's files (`1.5`, `12345.678`), the same in
+/// every language. The charts and format styles use `NumberDisplay.locale`
+/// (en_US_POSIX), so Swift Charts axes, `formatted()` and number fields
+/// follow the same rule; the `String(format:)` paths are locale-free. The
+/// views' environment has `textLocale`, because SwiftUI picks the strings by
+/// the environment's locale; integer fields there format without grouping.
+/// Typed numbers also accept a decimal comma (`LensValueParser.number`).
 public enum NumberDisplay {
-    /// The locale every view formats numbers with.
+    /// The locale numbers are formatted with, in every language: charts
+    /// and format styles.
     public static let locale = Locale(identifier: "en_US_POSIX")
+
+    /// The views' locale: the app's language (SwiftUI looks the strings up
+    /// in it). Its own number format groups digits in some languages, so
+    /// numbers are formatted with `locale`, not with this.
+    public static let textLocale = textLocale(language: Bundle.main.preferredLocalizations.first ?? "en")
+
+    static func textLocale(language: String) -> Locale {
+        language == "en" ? locale : Locale(identifier: "\(language)_US_POSIX")
+    }
 
     /// Up to `digits` significant digits, trailing zeros dropped, without
     /// exponent for ordinary magnitudes: `1.5`, `1.7552`, `0.0001`.

@@ -48,7 +48,7 @@ struct WavefrontView: View {
             let wl = m["wavelength_um"]?.nf ?? .nan
             let field = m["field"]?.int ?? 0
             return Map(
-                title: "Field \(field + 1) · \(context.fieldLabel(m["field_value"]?.nfArray)) · \(String(format: "%.4f µm", wl))",
+                title: String(localized: "Field \(field + 1) · \(context.fieldLabel(m["field_value"]?.nfArray)) · \(String(format: "%.4f µm", wl))", locale: NumberDisplay.locale),
                 grid: g, rms: m["rms_waves"]?.nf ?? .nan, pv: m["pv_waves"]?.nf ?? .nan,
                 strehl: m["strehl_at_reference"]?.nf ?? .nan,
                 zernike: output.buffer(ref: m[path: "zernike", "coefficients"])?.doubles ?? m[path: "zernike", "coefficients"]?.nfArray ?? [],
@@ -62,7 +62,7 @@ struct WavefrontView: View {
         let m = maps[min(selected, maps.count - 1)]
         VStack(alignment: .leading, spacing: Space.s) {
             ItemPicker(titles: maps.map(\.title), selection: $selected)
-            Text(String(format: "RMS %.4f λ   P-V %.4f λ   Strehl %.3f", m.rms, m.pv, m.strehl))
+            Text(String(format: String(localized: "RMS %.4f λ   P-V %.4f λ   Strehl %.3f"), m.rms, m.pv, m.strehl))
                 .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
             GeometryReader { geo in
                 let wide = geo.size.width >= 500 && !m.zernike.isEmpty
@@ -84,7 +84,7 @@ struct WavefrontView: View {
                         }
                     }
                     .frame(width: side, height: side)
-                    .accessibilityLabel(String(format: "Wavefront map, RMS %.3f waves, peak to valley %.3f waves", m.rms, m.pv))
+                    .accessibilityLabel(String(format: String(localized: "Wavefront map, RMS %.3f waves, peak to valley %.3f waves"), m.rms, m.pv))
                     ColorBar(scale: .diverging, range: m.grid.range, unit: "waves").frame(height: min(side, 240))
                 }
                 if wide {
@@ -110,18 +110,18 @@ struct ZernikeTable: View {
     let ordering: String
 
     static let fringeNames = [
-        "Piston", "Tilt x", "Tilt y", "Defocus", "Astig 0°", "Astig 45°", "Coma x", "Coma y", "Spherical", "Trefoil x",
-        "Trefoil y",
+        String(localized: "Piston"), String(localized: "Tilt x"), String(localized: "Tilt y"), String(localized: "Defocus"), String(localized: "Astig 0°"), String(localized: "Astig 45°"), String(localized: "Coma x"), String(localized: "Coma y"), String(localized: "Spherical"), String(localized: "Trefoil x"),
+        String(localized: "Trefoil y"),
     ]
 
     var body: some View {
         VStack(alignment: .leading, spacing: Space.xs) {
-            Text("Zernike (\(ordering.capitalized), waves)").font(.caption.weight(.semibold))
+            Text(String(localized: "Zernike (\(ordering.capitalized), waves)", locale: NumberDisplay.locale)).font(.caption.weight(.semibold))
             ScrollView {
                 Grid(alignment: .leading, horizontalSpacing: Space.m, verticalSpacing: 2) {
                     ForEach(coefficients.indices, id: \.self) { k in
                         GridRow {
-                            Text("Z\(k + 1)").foregroundStyle(.secondary)
+                            Text(String(localized: "Z\(k + 1)", locale: NumberDisplay.locale)).foregroundStyle(.secondary)
                             Text(ordering == "fringe" && k < Self.fringeNames.count ? Self.fringeNames[k] : "")
                                 .foregroundStyle(.secondary).lineLimit(1).fixedSize()
                             Text(Fmt.signed(coefficients[k])).numeric().fixedSize().gridColumnAlignment(.trailing)
@@ -155,9 +155,11 @@ struct PSFView: View {
             else { return nil }
             let wl = psf?["wavelength_um"]?.nf
             let field = p["field"]?.int ?? 0
+            let fieldText = context.fieldLabel(p["field_value"]?.nfArray)
+            let finiteWl = wl.flatMap { $0.isFinite ? $0 : nil }
             return Item(
-                title: "Field \(field + 1) · \(context.fieldLabel(p["field_value"]?.nfArray))"
-                    + (wl.map { $0.isFinite ? String(format: " · %.4f µm", $0) : " · polychromatic" } ?? " · polychromatic"),
+                title: finiteWl.map { String(localized: "Field \(field + 1) · \(fieldText) · \(String(format: "%.4f µm", $0))", locale: NumberDisplay.locale) }
+                    ?? String(localized: "Field \(field + 1) · \(fieldText) · polychromatic", locale: NumberDisplay.locale),
                 grid: g, strehl: p["strehl"]?.nf ?? .nan, spacing: h, size: n)
         }
         if items.isEmpty { return nil }
@@ -168,7 +170,7 @@ struct PSFView: View {
         VStack(alignment: .leading, spacing: Space.s) {
             ItemPicker(titles: items.map(\.title), selection: $selected)
             HStack {
-                Text(String(format: "Strehl %.3f", it.strehl)).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                Text(String(format: String(localized: "Strehl %.3f"), it.strehl)).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
                 Spacer()
                 Toggle("Log scale", isOn: $log).toggleStyle(.checkbox).controlSize(.small).fixedSize()
             }
@@ -187,7 +189,7 @@ struct PSFView: View {
                         .padding(Space.s)
                     }
                     .frame(width: side, height: side)
-                    .accessibilityLabel(String(format: "Point spread function, Strehl ratio %.3f", it.strehl))
+                    .accessibilityLabel(String(format: String(localized: "Point spread function, Strehl ratio %.3f"), it.strehl))
                     ColorBar(scale: .sequential(log: log), range: it.grid.range).frame(height: min(side, 240))
                     Spacer(minLength: 0)
                 }
@@ -225,7 +227,7 @@ struct MTFVsFieldView: View {
                 ForEach(Array(curves.enumerated()), id: \.offset) { k, c in
                     LegendItem(color: Palette.fieldColor(k), label: Fmt.short(c.0) + " " + units.frequency)
                 }
-                LegendItem(color: .secondary, label: "T solid, S dashed")
+                LegendItem(color: .secondary, label: String(localized: "T solid, S dashed"))
             }
             LineChart(
                 series: curves.enumerated().flatMap { k, c in
@@ -233,7 +235,7 @@ struct MTFVsFieldView: View {
                         Series(id: "t\(k)", label: "", color: Palette.fieldColor(k), points: zip(field, c.1).map { ($0, $1) }),
                         Series(id: "s\(k)", label: "", color: Palette.fieldColor(k), points: zip(field, c.2).map { ($0, $1) }, dashed: true),
                     ]
-                }, xLabel: "Normalized field", yLabel: "Modulation", xDomain: 0...1, yDomain: 0...1.02, zeroLine: false)
+                }, xLabel: String(localized: "Normalized field"), yLabel: String(localized: "Modulation"), xDomain: 0...1, yDomain: 0...1.02, zeroLine: false)
         }
         .padding(Space.m)
     }
@@ -254,7 +256,7 @@ struct ThroughFocusMTFView: View {
         focus = f
         fields = list.map { fl in
             FieldCurves(
-                title: "Field \((fl["field"]?.int ?? 0) + 1) · " + context.fieldLabel(fl["field_value"]?.nfArray),
+                title: String(localized: "Field \((fl["field"]?.int ?? 0) + 1) · \(context.fieldLabel(fl["field_value"]?.nfArray))", locale: NumberDisplay.locale),
                 curves: (fl["curves"]?.array ?? []).map { c in
                     (c["frequency"]?.nf ?? .nan, output.buffer(ref: c["tangential"])?.doubles ?? [], output.buffer(ref: c["sagittal"])?.doubles ?? [])
                 })
@@ -278,7 +280,7 @@ struct ThroughFocusMTFView: View {
                 ForEach(Array(f.curves.enumerated()), id: \.offset) { k, c in
                     LegendItem(color: Palette.fieldColor(k), label: Fmt.short(c.0) + " " + units.frequency)
                 }
-                LegendItem(color: .secondary, label: "T solid, S dashed")
+                LegendItem(color: .secondary, label: String(localized: "T solid, S dashed"))
             }
             LineChart(
                 series: f.curves.enumerated().flatMap { k, c in
@@ -286,8 +288,8 @@ struct ThroughFocusMTFView: View {
                         Series(id: "t\(k)", label: "", color: Palette.fieldColor(k), points: zip(focus, c.1).map { ($0, $1) }),
                         Series(id: "s\(k)", label: "", color: Palette.fieldColor(k), points: zip(focus, c.2).map { ($0, $1) }, dashed: true),
                     ]
-                }, xLabel: units.focusAxis, yLabel: "Modulation", xDomain: focusDomain, yDomain: 0...1.02, zeroLine: false,
-                markers: [(x: 0, label: "Image")])
+                }, xLabel: units.focusAxis, yLabel: String(localized: "Modulation"), xDomain: focusDomain, yDomain: 0...1.02, zeroLine: false,
+                markers: [(x: 0, label: String(localized: "surface.image", defaultValue: "Image", comment: "the image surface"))])
         }
         .padding(Space.m)
     }
@@ -313,8 +315,8 @@ struct LineSpreadView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Space.s) {
             FlowLayout(spacing: Space.m) {
-                ForEach(items, id: \.field) { LegendItem(color: Palette.fieldColor($0.field), label: "Field \($0.field + 1)") }
-                LegendItem(color: .secondary, label: "x solid, y dashed")
+                ForEach(items, id: \.field) { LegendItem(color: Palette.fieldColor($0.field), label: String(localized: "Field \($0.field + 1)", locale: NumberDisplay.locale)) }
+                LegendItem(color: .secondary, label: String(localized: "x solid, y dashed"))
             }
             LineChart(
                 series: items.flatMap { i in
@@ -322,7 +324,7 @@ struct LineSpreadView: View {
                         Series(id: "x\(i.field)", label: "", color: Palette.fieldColor(i.field), points: zip(i.x, i.lx).map { ($0, $1) }),
                         Series(id: "y\(i.field)", label: "", color: Palette.fieldColor(i.field), points: zip(i.x, i.ly).map { ($0, $1) }, dashed: true),
                     ]
-                }, xLabel: "Position (\(units.micro))", yLabel: "Line spread (\(units.density))", zeroLine: false)
+                }, xLabel: String(localized: "Position (\(units.micro))", locale: NumberDisplay.locale), yLabel: String(localized: "Line spread (\(units.density))", locale: NumberDisplay.locale), zeroLine: false)
         }
         .padding(Space.m)
     }

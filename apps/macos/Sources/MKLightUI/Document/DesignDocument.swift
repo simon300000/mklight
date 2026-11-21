@@ -192,7 +192,7 @@ public final class DesignDocument {
     /// applies solves first and refuses solved parameters as variables.
     public func variableRefusal(_ path: ParamPath) -> String? {
         guard let s = system.solve(for: path) else { return nil }
-        return "Set by a solve (\(s.kind.kind.title)), so the optimizer cannot vary it. Remove the solve to make it a variable."
+        return String(localized: "Set by a solve (\(s.kind.kind.title)), so the optimizer cannot vary it. Remove the solve to make it a variable.", locale: NumberDisplay.locale)
     }
 
     /// Makes `path` a variable or a fixed parameter (undoable). A parameter
@@ -207,7 +207,7 @@ public final class DesignDocument {
         } else {
             list.removeAll { system.canonical($0.param) == p }
         }
-        setSectionUndoable("variables", Self.encode(list), actionName: on ? "Make Variable" : "Remove Variable", undoManager: undoManager)
+        setSectionUndoable("variables", Self.encode(list), actionName: on ? String(localized: "Make Variable") : String(localized: "Remove Variable"), undoManager: undoManager)
     }
 
     /// Sets a variable's bounds (`nil`: unbounded on that side), undoable.
@@ -215,7 +215,7 @@ public final class DesignDocument {
         var list = variables
         guard let i = list.firstIndex(where: { $0.param == path }) else { return }
         guard list[i].lower != lower || list[i].upper != upper else { return }
-        let action = lower != nil && lower == upper ? "Pin Variable" : list[i].isPinned ? "Unpin Variable" : "Change Bounds"
+        let action = lower != nil && lower == upper ? String(localized: "Pin Variable") : list[i].isPinned ? String(localized: "Unpin Variable") : String(localized: "Change Bounds")
         list[i].lower = lower
         list[i].upper = upper
         setSectionUndoable("variables", Self.encode(list), actionName: action, undoManager: undoManager)
@@ -272,7 +272,7 @@ public final class DesignDocument {
         var next = project
         next.addCatalog(ref)
         guard next.sections["catalogs"] != project.sections["catalogs"] else { return }
-        setSectionUndoable("catalogs", next.sections["catalogs"] ?? .array([]), actionName: "Add Glass Catalog", undoManager: undoManager)
+        setSectionUndoable("catalogs", next.sections["catalogs"] ?? .array([]), actionName: String(localized: "Add Glass Catalog"), undoManager: undoManager)
     }
 
     /// Removes a glass catalog from the project (undoable). A catalog of
@@ -281,7 +281,7 @@ public final class DesignDocument {
         var next = project
         next.catalogs = next.catalogs.filter { $0.name != name }
         guard next.sections["catalogs"] != project.sections["catalogs"] else { return }
-        setSectionUndoable("catalogs", next.sections["catalogs"] ?? .array([]), actionName: "Remove Glass Catalog", undoManager: undoManager)
+        setSectionUndoable("catalogs", next.sections["catalogs"] ?? .array([]), actionName: String(localized: "Remove Glass Catalog"), undoManager: undoManager)
     }
 
     /// The saved window layout (`views` section).

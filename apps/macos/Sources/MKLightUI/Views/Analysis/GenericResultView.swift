@@ -17,8 +17,8 @@ struct GenericResultView: View {
             VStack(alignment: .leading, spacing: Space.xl) {
                 let scalars = Self.scalars(json)
                 if !scalars.isEmpty {
-                    section("Values") {
-                        KeyValueGrid(rows: scalars.map { ($0.0, $0.1.displayText) })
+                    section(String(localized: "Values")) {
+                        KeyValueGrid(rows: scalars.map { (EngineText.string($0.0), $0.1.displayText) })
                     }
                 }
                 ForEach(Self.recordTables(json), id: \.0) { name, rows in
@@ -28,16 +28,16 @@ struct GenericResultView: View {
                     section(Self.title(name)) {
                         LineChart(
                             series: [Series(id: name, label: name, color: Palette.fieldColor(0), points: values.enumerated().map { (Double($0.offset), $0.element) })],
-                            xLabel: "index", yLabel: "", zeroLine: false
+                            xLabel: String(localized: "index"), yLabel: "", zeroLine: false
                         )
                         .frame(height: 120)
                     }
                 }
                 ForEach(output.buffers, id: \.name) { b in
-                    section(b.name) { BufferPreview(buffer: b) }
+                    section(EngineText.string(b.name)) { BufferPreview(buffer: b) }
                 }
                 if json != .null {
-                    section("Data") { JSONOutline(value: json) }
+                    section(String(localized: "Data")) { JSONOutline(value: json) }
                 }
             }
             .padding(Space.l)
@@ -52,7 +52,10 @@ struct GenericResultView: View {
         }
     }
 
-    static func title(_ key: String) -> String { key.replacingOccurrences(of: "_", with: " ").capitalized }
+    static func title(_ key: String) -> String {
+        let t = key.replacingOccurrences(of: "_", with: " ").capitalized
+        return EngineText.translation(t) ?? t
+    }
 
     /// Scalars at the top level and one object level down (`a.b`).
     static func scalars(_ json: JSONValue) -> [(String, JSONValue)] {
@@ -117,7 +120,7 @@ struct RecordTable: View {
             }
             .textSelection(.enabled)
         }
-        if rows.count > 200 { Text("\(rows.count - 200) more rows").font(.caption).foregroundStyle(.secondary) }
+        if rows.count > 200 { Text(String(localized: "\(rows.count - 200) more rows", locale: NumberDisplay.locale)).font(.caption).foregroundStyle(.secondary) }
     }
 }
 
@@ -132,7 +135,7 @@ struct BufferPreview: View {
                 let v = buffer.doubles
                 LineChart(
                     series: [Series(id: buffer.name, label: buffer.name, color: Palette.fieldColor(0), points: v.enumerated().map { (Double($0.offset), $0.element) })],
-                    xLabel: "index", yLabel: "", zeroLine: false
+                    xLabel: String(localized: "index"), yLabel: "", zeroLine: false
                 )
                 .frame(height: 110)
             } else if buffer.shape.count == 2, buffer.shape[1] > 3, buffer.count <= 4_000_000, let g = Grid2D(buffer) {
@@ -143,7 +146,7 @@ struct BufferPreview: View {
             } else if buffer.count > 0, buffer.count <= 2_000_000 {
                 let f = buffer.doubles.filter(\.isFinite)
                 if let lo = f.min(), let hi = f.max() {
-                    Text("range \(Fmt.short(lo)) … \(Fmt.short(hi)), \(buffer.count - f.count) without a value")
+                    Text(String(localized: "range \(Fmt.short(lo)) … \(Fmt.short(hi)), \(buffer.count - f.count) without a value", locale: NumberDisplay.locale))
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }
@@ -162,7 +165,7 @@ struct JSONOutline: View {
                 ForEach(o.keys.sorted(), id: \.self) { k in node(k, o[k]!) }
             case .array(let a):
                 ForEach(Array(a.prefix(100).enumerated()), id: \.offset) { i, v in node("[\(i)]", v) }
-                if a.count > 100 { Text("… \(a.count - 100) more").foregroundStyle(.secondary) }
+                if a.count > 100 { Text(String(localized: "… \(a.count - 100) more", locale: NumberDisplay.locale)).foregroundStyle(.secondary) }
             default:
                 Text(value.displayText)
             }

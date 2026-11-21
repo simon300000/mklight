@@ -16,7 +16,16 @@ import UniformTypeIdentifiers
 /// (the engine itself evaluates it analytically at each pixel's source
 /// point), or the imported image's samples from the run's settings.
 struct ImageSimulationView: View {
-    enum Compare: String, CaseIterable { case sideBySide = "Side by Side", split = "Split", blink = "Blink" }
+    enum Compare: String, CaseIterable { case sideBySide = "Side by Side", split = "Split", blink = "Blink"
+
+        var title: String {
+            switch self {
+            case .sideBySide: String(localized: "Side by Side")
+            case .split: String(localized: "Split")
+            case .blink: String(localized: "Blink")
+            }
+        }
+    }
 
     let data: ImageSimulationData
     let source: LinearImage?
@@ -81,6 +90,8 @@ struct ImageSimulationView: View {
         return data.sourceTitle
     }
 
+    static var simulatedTitle: String { String(localized: "Simulated") }
+
     private var gain: Double { pow(2, exposure) }
 
     /// Width / height of the image in mm (pixels may be rectangular).
@@ -136,12 +147,12 @@ struct ImageSimulationView: View {
         FlowLayout(spacing: Space.m, lineSpacing: Space.xs) {
             if let pane, let sourceField { ImageSourceControl(pane: pane, field: sourceField) }
             if let pane { ImageViewControls(pane: pane, data: data) }
-            SegmentedOrMenu(title: "Compare", options: Compare.allCases.map { ($0, $0.rawValue) }, selection: $compare)
+            SegmentedOrMenu(title: String(localized: "Compare"), options: Compare.allCases.map { ($0, $0.title) }, selection: $compare)
                 .disabled(source == nil)
             HStack(spacing: Space.xs) {
                 Text("Exposure").foregroundStyle(.secondary)
                 Slider(value: $exposure, in: -4...4, step: 0.5).frame(width: 90).accessibilityLabel("Exposure")
-                    .accessibilityValue(String(format: "%+.1f stops", exposure))
+                    .accessibilityValue(String(localized: "\(String(format: "%+.1f", exposure)) stops", locale: NumberDisplay.locale))
                 Text(String(format: "%+.1f EV", exposure)).numeric().frame(width: 52, alignment: .leading)
             }
             HStack(spacing: Space.xs) {
@@ -186,7 +197,7 @@ struct ImageSimulationView: View {
             let layout = wide ? AnyLayout(HStackLayout(spacing: Space.m)) : AnyLayout(VStackLayout(spacing: Space.m))
             layout {
                 if let src { frame(src, title: sourceTitle, isSource: true) }
-                frame(simulated, title: "Simulated", isSource: false)
+                frame(simulated, title: Self.simulatedTitle, isSource: false)
             }
         case .split:
             splitView(simulated: simulated, source: src)
@@ -201,7 +212,7 @@ struct ImageSimulationView: View {
             .gesture(zoomGesture)
             .simultaneousGesture(panGesture)
             .accessibilityElement(children: .ignore)
-            .accessibilityLabel(isSource ? "Source: \(sourceTitle)" : "Simulated image, \(data.image.width) by \(data.image.height) pixels")
+            .accessibilityLabel(isSource ? String(localized: "Source: \(sourceTitle)", locale: NumberDisplay.locale) : String(localized: "Simulated image, \(data.image.width) by \(data.image.height) pixels", locale: NumberDisplay.locale))
             .accessibilityAddTraits(.isImage)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
@@ -216,7 +227,7 @@ struct ImageSimulationView: View {
                         Rectangle().frame(width: max(fit.minX + fit.width * split, 0)).frame(maxWidth: .infinity, alignment: .leading)
                     }
                 ImageTag(text: sourceTitle).offset(x: fit.minX, y: fit.minY)
-                ImageTag(text: "Simulated").frame(width: fit.width, alignment: .trailing).offset(x: fit.minX, y: fit.minY)
+                ImageTag(text: Self.simulatedTitle).frame(width: fit.width, alignment: .trailing).offset(x: fit.minX, y: fit.minY)
                 // The divider and its handle.
                 let x = fit.minX + fit.width * split
                 Rectangle().fill(.white).frame(width: 1.5, height: fit.height).shadow(radius: 1).offset(x: x - 0.75, y: fit.minY)
@@ -233,7 +244,7 @@ struct ImageSimulationView: View {
                     )
                     .accessibilityElement()
                     .accessibilityLabel("Split position")
-                    .accessibilityValue(String(format: "%.0f percent source", split * 100))
+                    .accessibilityValue(String(localized: "\(String(format: "%.0f", split * 100)) percent source", locale: NumberDisplay.locale))
                     .accessibilityAdjustableAction { d in
                         split = min(max(split + (d == .increment ? 0.1 : -0.1), 0), 1)
                     }
@@ -250,13 +261,13 @@ struct ImageSimulationView: View {
     private func blinkView(simulated: CGImage?, source: CGImage?) -> some View {
         if reduceMotion {
             // No flashing: show one at a time, switched by a click.
-            frame(blinkSource ? source : simulated, title: blinkSource ? sourceTitle : "Simulated", isSource: blinkSource)
+            frame(blinkSource ? source : simulated, title: blinkSource ? sourceTitle : Self.simulatedTitle, isSource: blinkSource)
                 .onTapGesture { blinkSource.toggle() }
                 .help("Click to switch between the source and the simulated image")
         } else {
             TimelineView(.periodic(from: .now, by: 0.8)) { t in
                 let showSource = Int(t.date.timeIntervalSinceReferenceDate / 0.8) % 2 == 0
-                frame(showSource ? source : simulated, title: showSource ? sourceTitle : "Simulated", isSource: showSource)
+                frame(showSource ? source : simulated, title: showSource ? sourceTitle : Self.simulatedTitle, isSource: showSource)
             }
         }
     }
@@ -287,11 +298,11 @@ struct ImageSimulationView: View {
 
     /// The patch's field position and where it lands on the sensor.
     private func patchHelp(_ c: SIMD2<Double>) -> String {
-        var t = "Patch centered at normalized field " + ImageSimulationSettings.coordinates(c)
+        let at = ImageSimulationSettings.coordinates(c)
         if let n = data.nodes.min(by: { simd_distance($0.field, c) < simd_distance($1.field, c) }), n.real.x.isFinite {
-            t += ", image point (" + String(format: "%.3f, %.3f", n.real.x, n.real.y) + ") mm"
+            return String(localized: "Patch centered at normalized field \(at), image point (\(String(format: "%.3f, %.3f", n.real.x, n.real.y))) mm.", locale: NumberDisplay.locale)
         }
-        return t + "."
+        return String(localized: "Patch centered at normalized field \(at).", locale: NumberDisplay.locale)
     }
 
     private var psfAuto: Bool { (pane?.value("optics")?["psf_size"]?.int ?? 0) == 0 }
@@ -300,20 +311,20 @@ struct ImageSimulationView: View {
         let clipped = cache.clipped
         // One flow that wraps in narrow panes, so nothing is cut off.
         return FlowLayout(spacing: Space.l, lineSpacing: Space.xxs) {
-            Text("\(data.image.width) × \(data.image.height) px" + (data.image.channels == 3 ? ", RGB" : ", monochrome"))
+            Text(data.image.channels == 3 ? String(localized: "\(data.image.width) × \(data.image.height) px, RGB", locale: NumberDisplay.locale) : String(localized: "\(data.image.width) × \(data.image.height) px, monochrome", locale: NumberDisplay.locale))
             if data.pixelSize.x.isFinite, abs(data.pixelSize.x - data.pixelSize.y) > 1e-9 * data.pixelSize.x {
-                Text("Pixel \(Fmt.length(data.pixelSize.x)) × \(Fmt.length(data.pixelSize.y))")
+                Text(String(localized: "Pixel \(Fmt.length(data.pixelSize.x)) × \(Fmt.length(data.pixelSize.y))", locale: NumberDisplay.locale))
             }
             if let c = ImageSimulationSettings.fieldCenter(fromRun: data) {
-                Text("At " + ImageSimulationSettings.centerTitle(c, points: ImageSimulationSettings.fieldPoints(pane?.workspace?.snapshot?.system)))
+                Text(String(localized: "At \(ImageSimulationSettings.centerTitle(c, points: ImageSimulationSettings.fieldPoints(pane?.workspace?.snapshot?.system)))", locale: NumberDisplay.locale))
                     .help(patchHelp(c))
             }
             if let n = data.psfSize, let d = data.psfSpacing, d.isFinite {
-                Text("PSF \(n) × \(Fmt.length(d))")
-                    .help("The PSF window and sample spacing this run used\(psfAuto ? ", chosen by the engine from the blur and diffraction" : "").")
+                Text(String(localized: "PSF \(n) × \(Fmt.length(d))", locale: NumberDisplay.locale))
+                    .help(psfAuto ? String(localized: "The PSF window and sample spacing this run used, chosen by the engine from the blur and diffraction.") : String(localized: "The PSF window and sample spacing this run used."))
             }
-            if clipped > 0.001 { Text(String(format: "%.1f%% clipped", clipped * 100)).foregroundStyle(.orange) }
-            if let dropFailed { Text("\(dropFailed) could not be read").foregroundStyle(.orange) }
+            if clipped > 0.001 { Text(String(localized: "\(String(format: "%.1f", clipped * 100))% clipped", locale: NumberDisplay.locale)).foregroundStyle(.orange) }
+            if let dropFailed { Text(String(localized: "\(dropFailed) could not be read", locale: NumberDisplay.locale)).foregroundStyle(.orange) }
             if case .pattern = data.source {
                 Text("Pattern exact").help(
                     "The engine evaluates the built-in pattern analytically at each pixel's exact source point (through the distortion), averaged over the pixel: no bitmap in between, so the blur is the lens's. The source shown here is drawn with the same definition.")
@@ -360,7 +371,7 @@ struct ImageViewControls: View {
                 }
                 .pickerStyle(.inline)
             } label: {
-                Text("View " + ImageSimulationSettings.extentTitle(extent))
+                Text(String(localized: "View \(ImageSimulationSettings.extentTitle(extent))", locale: NumberDisplay.locale))
             }
             .menuStyle(.borderlessButton)
             .fixedSize()
@@ -378,7 +389,7 @@ struct ImageViewControls: View {
                 Divider()
                 Button("Pick on the Field…") { picking = true }
             } label: {
-                Text("At " + ImageSimulationSettings.centerTitle(center, points: points))
+                Text(String(localized: "At \(ImageSimulationSettings.centerTitle(center, points: points))", locale: NumberDisplay.locale))
             }
             .menuStyle(.borderlessButton)
             .fixedSize()
@@ -391,17 +402,17 @@ struct ImageViewControls: View {
             }
             Menu {
                 Picker("Resolution", selection: Binding(get: { size }, set: { ImageSimulationSettings.setSize($0, in: pane) })) {
-                    ForEach(ImageSimulationSettings.sizes, id: \.self) { n in Text("\(n) × \(n) px").tag(n) }
+                    ForEach(ImageSimulationSettings.sizes, id: \.self) { n in Text(String(localized: "\(n) × \(n) px", locale: NumberDisplay.locale)).tag(n) }
                 }
                 .pickerStyle(.inline)
             } label: {
-                Text("\(size) px")
+                Text(String(localized: "\(size) px", locale: NumberDisplay.locale))
             }
             .menuStyle(.borderlessButton)
             .fixedSize()
             .help("Output pixels per side")
             .accessibilityLabel("Resolution")
-            .accessibilityValue("\(size) pixels")
+            .accessibilityValue(String(localized: "\(size) pixels", locale: NumberDisplay.locale))
         }
     }
 
@@ -409,7 +420,7 @@ struct ImageViewControls: View {
         var t = ImageSimulationSettings.extentTitle(e)
         if let k = mmPerExtent {
             let width = 2 * k * e
-            t += " · " + Fmt.length(width) + " wide, pixel " + Fmt.length(width / Double(size))
+            t = String(localized: "\(t) · \(Fmt.length(width)) wide, pixel \(Fmt.length(width / Double(size)))", locale: NumberDisplay.locale)
         }
         return t
     }
@@ -468,7 +479,7 @@ struct FieldCenterPicker: View {
             )
             .accessibilityElement()
             .accessibilityLabel("Field diagram")
-            .accessibilityValue("Patch center " + ImageSimulationSettings.centerTitle(c, points: points))
+            .accessibilityValue(String(localized: "Patch center \(ImageSimulationSettings.centerTitle(c, points: points))", locale: NumberDisplay.locale))
             Text(ImageSimulationSettings.centerTitle(c, points: points)).font(.callout.monospacedDigit())
             if ImageSimulationSettings.outsideField(center: c, extent: extent) {
                 Label("Part of the patch lies outside the design's field.", systemImage: "exclamationmark.triangle")
@@ -562,8 +573,8 @@ enum ImageSimulationSettings {
     }
 
     nonisolated static func extentTitle(_ e: Double) -> String {
-        if e >= 1 { return "full square" }
-        if abs(e - fullExtent) < 1e-6 { return "full field" }
+        if e >= 1 { return String(localized: "full square") }
+        if abs(e - fullExtent) < 1e-6 { return String(localized: "full field") }
         return String(format: "%g %%", e * 100)
     }
 
@@ -578,7 +589,7 @@ enum ImageSimulationSettings {
     /// The axis and the design's field points (normalised by the largest
     /// radial field, CONVENTIONS §3), each listed once.
     nonisolated static func fieldPoints(_ system: OpticalSystem?) -> [FieldPoint] {
-        var out = [FieldPoint(title: "On axis", field: .zero)]
+        var out = [FieldPoint(title: String(localized: "On axis"), field: .zero)]
         guard let s = system else { return out }
         let f = s.fields.fields
         let r = f.map { ($0.x * $0.x + $0.y * $0.y).squareRoot() }.max() ?? 0
@@ -586,7 +597,7 @@ enum ImageSimulationSettings {
         for (k, p) in f.enumerated() {
             let h = SIMD2(p.x / r, p.y / r)
             guard !out.contains(where: { simd_distance($0.field, h) < 1e-9 }) else { continue }
-            out.append(FieldPoint(title: "Field \(k + 1) " + coordinates(h), field: h))
+            out.append(FieldPoint(title: String(localized: "Field \(k + 1) \(coordinates(h))", locale: NumberDisplay.locale), field: h))
         }
         return out
     }
@@ -600,7 +611,7 @@ enum ImageSimulationSettings {
 
     /// "on axis", "Field 3 (0.00, 1.00)" or "(0.30, −0.45)".
     nonisolated static func centerTitle(_ c: SIMD2<Double>, points: [FieldPoint]) -> String {
-        if c == .zero { return "on axis" }
+        if c == .zero { return String(localized: "on axis") }
         if let p = points.first(where: { simd_distance($0.field, c) < 1e-4 }) { return p.title }
         return coordinates(c)
     }

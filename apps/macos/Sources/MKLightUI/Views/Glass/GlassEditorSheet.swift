@@ -22,7 +22,7 @@ struct GlassEditorSheet: View {
                     .disabled(editor.originalName != nil)
                 } footer: {
                     if editor.renames, let old = editor.originalName {
-                        Label("Designs that use “\(old)” will not find it under the new name.", systemImage: "exclamationmark.triangle")
+                        Label(String(localized: "Designs that use “\(old)” will not find it under the new name.", locale: NumberDisplay.locale), systemImage: "exclamationmark.triangle")
                             .font(.caption).foregroundStyle(.orange)
                     }
                 }
@@ -38,11 +38,11 @@ struct GlassEditorSheet: View {
                         number("ΔPg,F", value: $editor.dpgf)
                     case .formula:
                         Picker("Formula", selection: $editor.formula) {
-                            ForEach(GlassEditorModel.formulaNames, id: \.0) { f in Text("\(f.0): \(f.1)").tag(f.0) }
+                            ForEach(GlassEditorModel.formulaNames, id: \.0) { f in Text(String(localized: "\(f.0): \(f.1)", locale: NumberDisplay.locale)).tag(f.0) }
                         }
                         let names = GlassEditorModel.coefficientNames(editor.formula)
                         ForEach(names.indices, id: \.self) { i in
-                            number(names[i], value: Binding(
+                            number(LocalizedStringKey(names[i]), value: Binding(
                                 get: { i < editor.coefficients.count ? editor.coefficients[i] : 0 },
                                 set: { if i < editor.coefficients.count { editor.coefficients[i] = $0 } }))
                         }
@@ -51,8 +51,8 @@ struct GlassEditorSheet: View {
                     Text("Dispersion")
                 } footer: {
                     Text(editor.kind == .model
-                        ? "A Cauchy fit through nd, the F–C dispersion and ΔPg,F from the normal line (valid 0.35–1.1 µm unless set below)."
-                        : "AGF formula coefficients, λ in µm.")
+                        ? String(localized: "A Cauchy fit through nd, the F–C dispersion and ΔPg,F from the normal line (valid 0.35–1.1 µm unless set below).")
+                        : String(localized: "AGF formula coefficients, λ in µm."))
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Section("Range and Data") {
@@ -100,7 +100,7 @@ struct GlassEditorSheet: View {
                 .lineLimit(3)
                 .help(p)
         } else if let n = editor.previewNumbers {
-            Text(n.nd > 0 ? String(format: "nd %.5f   Vd %.2f", n.nd, n.vd) : "No nd, Vd (the d line is outside the range)")
+            Text(n.nd > 0 ? String(format: "nd %.5f   Vd %.2f", n.nd, n.vd) : String(localized: "No nd, Vd (the d line is outside the range)"))
                 .font(.callout)
                 .monospacedDigit()
                 .foregroundStyle(.secondary)
@@ -111,13 +111,13 @@ struct GlassEditorSheet: View {
     private static let format = FloatingPointFormatStyle<Double>.number.precision(.significantDigits(1...12)).grouping(.never)
         .locale(NumberDisplay.locale)
 
-    private func number(_ title: String, value: Binding<Double>) -> some View {
+    private func number(_ title: LocalizedStringKey, value: Binding<Double>) -> some View {
         TextField(title, value: value, format: Self.format)
             .monospacedDigit()
             .multilineTextAlignment(.trailing)
     }
 
-    private func optionalNumber(_ title: String, value: Binding<Double?>) -> some View {
+    private func optionalNumber(_ title: LocalizedStringKey, value: Binding<Double?>) -> some View {
         TextField(title, value: value, format: Self.format, prompt: Text("none"))
             .monospacedDigit()
             .multilineTextAlignment(.trailing)

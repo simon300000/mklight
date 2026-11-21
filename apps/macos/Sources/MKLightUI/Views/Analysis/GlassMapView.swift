@@ -18,7 +18,7 @@ enum GlassMapPlane: String, CaseIterable, Identifiable, Sendable {
     /// The y axis title with its subscript.
     var axisLabel: Text {
         self == .ndVd
-            ? Text("Refractive index n") + GlassMapPlane.sub("d") : Text("Partial dispersion P") + GlassMapPlane.sub("g,F")
+            ? Text(String(localized: "Refractive index n")) + GlassMapPlane.sub("d") : Text(String(localized: "Partial dispersion P")) + GlassMapPlane.sub("g,F")
     }
 
     static func sub(_ s: String) -> Text { Text(s).font(.caption2).baselineOffset(-3) }
@@ -76,7 +76,7 @@ struct GlassMapChart: View {
             }
         }
         .chartYAxis { AxisMarks(values: .automatic(desiredCount: 6)) }
-        .chartXAxisLabel(alignment: .center) { Text("Abbe number V") + GlassMapPlane.sub("d") }
+        .chartXAxisLabel(alignment: .center) { Text(String(localized: "Abbe number V")) + GlassMapPlane.sub("d") }
         .chartYAxisLabel { plane.axisLabel }
         .chartOverlay { proxy in
             GeometryReader { geo in
@@ -89,15 +89,15 @@ struct GlassMapChart: View {
         }
         .environment(\.locale, NumberDisplay.locale)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Glass map, \(plane.title) against Abbe number, \(plotted.count) glasses")
+        .accessibilityLabel(String(localized: "Glass map, \(plane.title) against Abbe number, \(plotted.count) glasses", locale: NumberDisplay.locale))
         .accessibilityValue(accessibilityValue)
     }
 
     private var accessibilityValue: String {
         let marked = highlighted.compactMap { h in glasses.first { $0.id == h.id }.map { "\($0.name) \(h.label)" } }
-        var t = marked.isEmpty ? "" : "Marked: " + marked.joined(separator: "; ")
+        var t = marked.isEmpty ? "" : String(localized: "Marked: \(marked.joined(separator: "; "))", locale: NumberDisplay.locale)
         if let s = selection, let g = glasses.first(where: { $0.id == s }) {
-            t += (t.isEmpty ? "" : ". ") + "Selected \(g.name)"
+            t += (t.isEmpty ? "" : ". ") + String(localized: "Selected \(g.name)", locale: NumberDisplay.locale)
         }
         return t
     }
@@ -241,7 +241,7 @@ struct GlassCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: compact ? 1 : Space.xs) {
             Text(glass.displayName).font(compact ? .caption.weight(.semibold) : .headline)
-            Text([glass.catalog ?? (glass.kind == .model ? "Model glass" : ""), glass.kind == .offset ? "melt offset" : "",
+            Text([glass.catalog ?? (glass.kind == .model ? String(localized: "Model glass") : ""), glass.kind == .offset ? String(localized: "melt offset") : "",
                   glass.status == .unknown ? "" : glass.status.label]
                 .filter { !$0.isEmpty }.joined(separator: " · "))
                 .font(.caption2).foregroundStyle(.secondary)
@@ -249,14 +249,14 @@ struct GlassCard: View {
                 row(Text("n") + GlassMapPlane.sub("d"), String(format: "%.5f", glass.nd))
                 row(Text("V") + GlassMapPlane.sub("d"), String(format: "%.2f", glass.vd))
                 if let o = glass.offset, !o.isZero {
-                    row(Text("Offset"), o.compactText)
+                    row(Text(String(localized: "Offset")), o.compactText)
                 }
                 row(Text("P") + GlassMapPlane.sub("g,F"), glass.pgf.isFinite ? String(format: "%.4f", glass.pgf) : "—")
                 if !compact {
                     row(Text("ΔP") + GlassMapPlane.sub("g,F"), glass.pgf.isFinite ? String(format: "%+.4f", glass.deltaPgF) : "—")
-                    if glass.status != .unknown { row(Text("Status"), glass.status.label) }
-                    if !glass.surfaces.isEmpty { row(Text("Surfaces"), glass.surfaceLabel) }
-                    if glass.excludeSubstitution == true { row(Text("Substitution"), "Excluded") }
+                    if glass.status != .unknown { row(Text(String(localized: "Status")), glass.status.label) }
+                    if !glass.surfaces.isEmpty { row(Text(String(localized: "Surfaces")), glass.surfaceLabel) }
+                    if glass.excludeSubstitution == true { row(Text(String(localized: "Substitution")), String(localized: "Excluded")) }
                 }
             }
             .font(compact ? .caption2 : .callout)
@@ -288,7 +288,7 @@ struct GlassStatusLegend: View {
                     } else {
                         Circle().fill(c).frame(width: 6, height: 6)
                     }
-                    Text(statuses == [.unknown] ? "Catalog glass" : s.label)
+                    Text(statuses == [.unknown] ? String(localized: "Catalog glass") : s.label)
                 }
             }
             HStack(spacing: 4) {
@@ -400,8 +400,8 @@ struct GlassMapView: View {
                     HStack(spacing: Space.xs) {
                         Text("Select").font(.caption).foregroundStyle(.secondary)
                         ForEach(g.surfaces, id: \.self) { s in
-                            Button("S\(s)") { selectSurface(s) }
-                                .help("Select surface \(s) in the lens table")
+                            Button(String(localized: "S\(s)", locale: NumberDisplay.locale)) { selectSurface(s) }
+                                .help(String(localized: "Select surface \(s) in the lens table", locale: NumberDisplay.locale))
                         }
                     }
                     .buttonStyle(.bordered)
@@ -434,7 +434,7 @@ struct GlassMapView: View {
                     }
                     .buttonStyle(.plain)
                     .font(.callout)
-                    .accessibilityLabel("\(g.name), surfaces \(g.surfaceLabel)")
+                    .accessibilityLabel(String(localized: "\(g.name), surfaces \(g.surfaceLabel)", locale: NumberDisplay.locale))
                 }
             }
         }

@@ -52,13 +52,13 @@ struct LayoutPaneView: View {
         }
         .overlay(alignment: .top) {
             if let title = workspace.previewTitle {
-                Label("Previewing \(title) · not applied", systemImage: "eye")
+                Label(String(localized: "Previewing \(title) · not applied", locale: NumberDisplay.locale), systemImage: "eye")
                     .font(.callout.weight(.medium))
                     .padding(.horizontal, Space.l)
                     .padding(.vertical, Space.s)
                     .glassEffect(.regular.tint(.accentColor.opacity(0.25)), in: .capsule)
                     .padding(.top, 56)
-                    .accessibilityLabel("Previewing \(title). The design has not changed.")
+                    .accessibilityLabel(String(localized: "Previewing \(title). The design has not changed.", locale: NumberDisplay.locale))
                     .transition(.opacity)
             }
         }
@@ -86,17 +86,17 @@ struct LayoutPaneView: View {
     @ViewBuilder private var placeholder: some View {
         switch pane.phase {
         case .unavailable(let why):
-            ContentUnavailableView("Layout Not Available", systemImage: "nosign", description: Text(why))
+            ContentUnavailableView("Layout Not Available", systemImage: "nosign", description: Text(EngineText.message(why)))
                 .frame(maxWidth: .infinity, maxHeight: .infinity).background(.background)
         case .failed(let why) where workspace.issues.contains { $0.severity == .error }:
-            ContentUnavailableView("Design Has Errors", systemImage: "xmark.octagon", description: Text(why))
+            ContentUnavailableView("Design Has Errors", systemImage: "xmark.octagon", description: Text(EngineText.message(why)))
                 .frame(maxWidth: .infinity, maxHeight: .infinity).background(.background)
         case .failed(let why):
-            ContentUnavailableView("No Layout", systemImage: "exclamationmark.triangle", description: Text(why))
+            ContentUnavailableView("No Layout", systemImage: "exclamationmark.triangle", description: Text(EngineText.message(why)))
                 .frame(maxWidth: .infinity, maxHeight: .infinity).background(.background)
         default:
             if let e = workspace.modelErrors.first {
-                ContentUnavailableView("Design Not Ready", systemImage: "xmark.octagon", description: Text(e))
+                ContentUnavailableView("Design Not Ready", systemImage: "xmark.octagon", description: Text(EngineText.message(e)))
                     .frame(maxWidth: .infinity, maxHeight: .infinity).background(.background)
             } else {
                 ProgressView().controlSize(.small)
@@ -135,10 +135,11 @@ private struct LayoutViewport: View {
     /// The layout in words: the view, the surfaces between object and
     /// image, the rays drawn and the scene's length.
     static func accessibilityText(_ scene: LayoutScene?, mode: ViewportMode, system: OpticalSystem) -> String {
-        guard let scene else { return "Layout, not available" }
+        guard let scene else { return String(localized: "Layout, not available") }
         let rays = scene.polylines.filter { $0.kind == .ray }.count
         let length = scene.bounds.max.z - scene.bounds.min.z
-        return "Layout, \(mode == .orbit3D ? "3D view" : mode == .sectionXZ ? "x–z section" : "meridional section"), \(system.surfaces.count - 2) surfaces, \(rays) rays, \(Fmt.short(length)) millimeters long"
+        let view = mode == .orbit3D ? String(localized: "3D view") : mode == .sectionXZ ? String(localized: "x–z section") : String(localized: "meridional section")
+        return String(localized: "Layout, \(view), \(system.surfaces.count - 2) surfaces, \(rays) rays, \(Fmt.short(length)) millimeters long", locale: NumberDisplay.locale)
     }
 }
 
@@ -225,7 +226,7 @@ private struct LayoutControls: View {
                 }
                 .padding(3)
                 .glassEffect(.regular.interactive(), in: .capsule)
-                .help(modes.count == 3 ? "Y–Z section, X–Z section or 3D view (⌘2, ⌥⌘2, ⌘3)" : "Meridional section or 3D view (⌘2, ⌘3)")
+                .help(modes.count == 3 ? String(localized: "Y–Z section, X–Z section or 3D view (⌘2, ⌥⌘2, ⌘3)") : String(localized: "Meridional section or 3D view (⌘2, ⌘3)"))
                 HStack(spacing: Space.xs) {
                     Menu {
                         Picker("Ray Colors", selection: $window.rayColoring) {
@@ -235,7 +236,7 @@ private struct LayoutControls: View {
                         Divider()
                         Menu("Rays per Field") {
                             ForEach([3, 5, 7, 11, 15], id: \.self) { n in
-                                Button("\(n)") { pane.set("rays_per_field", .integer(Int64(n))) }
+                                Button(String(localized: "\(n)", locale: NumberDisplay.locale)) { pane.set("rays_per_field", .integer(Int64(n))) }
                             }
                         }
                         Menu("Wavelengths") {
@@ -254,7 +255,7 @@ private struct LayoutControls: View {
                         Divider()
                         Picker("Vertical Stretch", selection: stretch) {
                             ForEach(ViewportCamera.stretches, id: \.self) { s in
-                                Text(s == 1 ? "Off (true proportions)" : "×\(Int(s))").tag(s)
+                                Text(s == 1 ? String(localized: "Off (true proportions)") : "×\(Int(s))").tag(s)
                             }
                         }
                         .disabled(window.viewportMode == .orbit3D)
@@ -271,12 +272,12 @@ private struct LayoutControls: View {
                         Menu {
                             Picker("Vertical Stretch", selection: stretch) {
                                 ForEach(ViewportCamera.stretches, id: \.self) { s in
-                                    Text(s == 1 ? "Off (true proportions)" : "×\(Int(s))").tag(s)
+                                    Text(s == 1 ? String(localized: "Off (true proportions)") : "×\(Int(s))").tag(s)
                                 }
                             }
                             .pickerStyle(.inline)
                         } label: {
-                            Label("Stretch ×\(Int(window.camera.stretch))", systemImage: "arrow.up.and.down")
+                            Label(String(localized: "Stretch ×\(Int(window.camera.stretch))", locale: NumberDisplay.locale), systemImage: "arrow.up.and.down")
                                 .labelStyle(.titleAndIcon)
                                 .font(.caption.weight(.semibold))
                                 .foregroundStyle(.tint)
@@ -284,9 +285,9 @@ private struct LayoutControls: View {
                         .menuIndicator(.hidden)
                         .buttonBorderShape(.capsule)
                         .fixedSize()
-                        .help("The section is drawn \(Int(window.camera.stretch)) times taller than true proportions. Click to change or turn off.")
+                        .help(String(localized: "The section is drawn \(Int(window.camera.stretch)) times taller than true proportions. Click to change or turn off.", locale: NumberDisplay.locale))
                         .accessibilityLabel("Vertical stretch")
-                        .accessibilityValue("\(Int(window.camera.stretch)) times")
+                        .accessibilityValue(String(localized: "\(Int(window.camera.stretch)) times", locale: NumberDisplay.locale))
                     }
                     if window.viewportMode == .orbit3D {
                         Button {
@@ -295,9 +296,9 @@ private struct LayoutControls: View {
                             Label("Footprints", systemImage: workspace.showFootprints ? "circle.dashed.inset.filled" : "circle.dashed")
                                 .foregroundStyle(workspace.showFootprints ? AnyShapeStyle(.tint) : AnyShapeStyle(.primary))
                         }
-                        .help(workspace.showFootprints ? "Hide the beam footprints on the surfaces" : "Show the beam footprint of every field on every surface")
+                        .help(workspace.showFootprints ? String(localized: "Hide the beam footprints on the surfaces") : String(localized: "Show the beam footprint of every field on every surface"))
                         .accessibilityLabel("Beam footprints")
-                        .accessibilityValue(workspace.showFootprints ? "on" : "off")
+                        .accessibilityValue(workspace.showFootprints ? String(localized: "on") : String(localized: "off"))
                     }
                     Button("Fit", systemImage: "arrow.up.left.and.arrow.down.right") {
                         window.fitLens = false
@@ -341,7 +342,7 @@ struct ScaleBar: View {
                 HStack(spacing: Space.s) {
                     Text(Nice.lengthLabel(mm))
                     if stretch != 1 {
-                        Text("vertical ×\(Int(stretch))").foregroundStyle(.tint).fontWeight(.semibold)
+                        Text(String(localized: "vertical ×\(Int(stretch))", locale: NumberDisplay.locale)).foregroundStyle(.tint).fontWeight(.semibold)
                     }
                 }
                 .font(.caption2.monospacedDigit())
@@ -350,7 +351,8 @@ struct ScaleBar: View {
         .foregroundStyle(.secondary)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(
-            "Scale bar \(Nice.lengthLabel(mm))"
-                + (stretch != 1 ? ", vertical stretch \(Int(stretch)) times, upright bar \(Nice.lengthLabel(Nice.length(60 / max(pointsPerMM * stretch, 1e-9))))" : ""))
+            stretch != 1
+                ? String(localized: "Scale bar \(Nice.lengthLabel(mm)), vertical stretch \(Int(stretch)) times, upright bar \(Nice.lengthLabel(up))", locale: NumberDisplay.locale)
+                : String(localized: "Scale bar \(Nice.lengthLabel(mm))", locale: NumberDisplay.locale))
     }
 }

@@ -61,9 +61,9 @@ public final class GlassLibrary {
         public var errorDescription: String? {
             switch self {
             case .invalidName(let why): why
-            case .duplicateName(let n): "There is already a catalog or glass named “\(n)”."
-            case .unknownCatalog(let n): "There is no user catalog named “\(n)”."
-            case .unknownGlass(let n): "There is no glass named “\(n)”."
+            case .duplicateName(let n): String(localized: "There is already a catalog or glass named “\(n)”.", locale: NumberDisplay.locale)
+            case .unknownCatalog(let n): String(localized: "There is no user catalog named “\(n)”.", locale: NumberDisplay.locale)
+            case .unknownGlass(let n): String(localized: "There is no glass named “\(n)”.", locale: NumberDisplay.locale)
             }
         }
     }
@@ -209,10 +209,10 @@ public final class GlassLibrary {
     /// Why `name` cannot name a new catalog or glass, if it cannot.
     public static func nameProblem(_ name: String, glass: Bool = false) -> String? {
         let n = name.trimmingCharacters(in: .whitespaces)
-        if n.isEmpty { return "Enter a name." }
-        if glass, n.contains(where: \.isWhitespace) { return "Glass names cannot contain spaces (AGF names are single words)." }
-        if n.contains(where: { "/:\\".contains($0) }) { return "Names cannot contain “/”, “:” or “\\”." }
-        if !glass, n.caseInsensitiveCompare("BUILTIN") == .orderedSame { return "“BUILTIN” is the built-in catalog's name." }
+        if n.isEmpty { return String(localized: "Enter a name.") }
+        if glass, n.contains(where: \.isWhitespace) { return String(localized: "Glass names cannot contain spaces (AGF names are single words).") }
+        if n.contains(where: { "/:\\".contains($0) }) { return String(localized: "Names cannot contain “/”, “:” or “\\”.") }
+        if !glass, n.caseInsensitiveCompare("BUILTIN") == .orderedSame { return String(localized: "“BUILTIN” is the built-in catalog's name.") }
         return nil
     }
 
@@ -270,7 +270,7 @@ public final class GlassLibrary {
     /// catalog. `replacing` is the glass's previous name when it was
     /// renamed in the editor.
     public func putGlass(_ glass: JSONValue, in catalog: String, replacing old: String? = nil) throws {
-        guard let name = glass["name"]?.string else { throw LibraryError.invalidName("The glass has no name.") }
+        guard let name = glass["name"]?.string else { throw LibraryError.invalidName(String(localized: "The glass has no name.")) }
         if let why = Self.nameProblem(name, glass: true) { throw LibraryError.invalidName(why) }
         guard var c = userCatalog(catalog) else { throw LibraryError.unknownCatalog(catalog) }
         let clash = c.glasses.keys.first { $0.caseInsensitiveCompare(name) == .orderedSame }
@@ -332,7 +332,7 @@ public final class GlassLibrary {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             try MKLightJSON.encode(s, pretty: true).write(to: settingsURL, options: .atomic)
         } catch {
-            problems.append("The glass library could not be saved (\(error.localizedDescription)).")
+            problems.append(String(localized: "The glass library could not be saved (\(error.localizedDescription)).", locale: NumberDisplay.locale))
         }
     }
 
@@ -344,13 +344,13 @@ public final class GlassLibrary {
                 entries = s.catalogs
                 overrides = s.overrides
             } else {
-                problems.append("\(settingsURL.lastPathComponent) could not be read.")
+                problems.append(String(localized: "\(settingsURL.lastPathComponent) could not be read.", locale: NumberDisplay.locale))
             }
         }
         let files = (try? FileManager.default.contentsOfDirectory(at: userGlassesDirectory, includingPropertiesForKeys: nil)) ?? []
         userCatalogs = files.filter { $0.pathExtension.lowercased() == "json" }.compactMap { url in
             guard let data = try? Data(contentsOf: url), let v = try? JSONValue.parse(data) else {
-                problems.append("\(url.lastPathComponent) is not a glass catalog.")
+                problems.append(String(localized: "\(url.lastPathComponent) is not a glass catalog.", locale: NumberDisplay.locale))
                 return nil
             }
             let name = v["name"]?.string.flatMap { $0.isEmpty ? nil : $0 } ?? url.deletingPathExtension().lastPathComponent

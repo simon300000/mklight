@@ -27,7 +27,7 @@ final class DetachedPanelWindowController: NSWindowController, NSWindowDelegate 
         window.toolbarStyle = .unifiedCompact
         window.minSize = CGSize(width: 360, height: 260)
         let host = NSHostingController(
-            rootView: AnyView(DetachedPanelsView(session: session, model: model).environment(\.locale, NumberDisplay.locale)))
+            rootView: AnyView(DetachedPanelsView(session: session, model: model).environment(\.locale, NumberDisplay.textLocale)))
         host.sceneBridgingOptions = [.toolbars, .title]
         host.sizingOptions = []
         window.contentViewController = host
@@ -125,7 +125,7 @@ struct DetachedPanelsView: View {
     /// The panels in front, e.g. "Spot Diagram, Ray Fan".
     private var title: String {
         let shown = model.groups.compactMap(\.current).map(session.title(of:))
-        guard !shown.isEmpty else { return "Panels" }
+        guard !shown.isEmpty else { return String(localized: "Panels") }
         return shown.count > 3 ? shown.prefix(3).joined(separator: ", ") + " +\(shown.count - 3)" : shown.joined(separator: ", ")
     }
 }

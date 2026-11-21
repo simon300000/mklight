@@ -19,13 +19,13 @@ struct FieldColumnPicker: View {
     var body: some View {
         Picker("Quantity", selection: $selection) {
             ForEach(columns.indices, id: \.self) { k in
-                Text(columns[k].titleWithUnit).tag(k).help(columns[k].definition)
+                Text(columns[k].titleWithUnit).tag(k).help(EngineText.string(columns[k].definition))
             }
         }
         .pickerStyle(.menu)
         .labelsHidden()
         .fixedSize()
-        .help(columns.indices.contains(selection) ? columns[selection].definition : "")
+        .help(columns.indices.contains(selection) ? EngineText.string(columns[selection].definition) : "")
         .accessibilityLabel("Quantity")
     }
 }
@@ -64,6 +64,8 @@ struct FieldMapPlot: View {
         }
         .chartXScale(domain: grid.xRange)
         .chartYScale(domain: grid.yRange)
+        // Numbers as in every language (decimal point, no grouping).
+        .environment(\.locale, NumberDisplay.locale)
         // The map is the content: ticks and labels, no grid over it; the y
         // axis leading, so the colour bar sits next to the map.
         .chartXAxis {
@@ -105,7 +107,7 @@ struct FieldMapPlot: View {
             }
         }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("\(title) map over the normalized field, \(grid.nx) by \(grid.ny) samples")
+        .accessibilityLabel(String(localized: "\(title) map over the normalized field, \(grid.nx) by \(grid.ny) samples", locale: NumberDisplay.locale))
         .accessibilityValue(accessibilityValue)
     }
 
@@ -124,8 +126,8 @@ struct FieldMapPlot: View {
 
     private var accessibilityValue: String {
         let f = grid.finite
-        guard let lo = f.min(), let hi = f.max() else { return "No values" }
-        return "From \(format(lo)) to \(format(hi))"
+        guard let lo = f.min(), let hi = f.max() else { return String(localized: "No values") }
+        return String(localized: "From \(format(lo)) to \(format(hi))", locale: NumberDisplay.locale)
     }
 }
 
@@ -225,7 +227,7 @@ private struct FieldMapOverlay: View {
         let q = point(p)
         let v = grid.values[k]
         return VStack(alignment: .leading, spacing: 1) {
-            Text(v.isFinite ? format(v) : grid.noData?.excludes(grid.node(k).x, grid.node(k).y) == true ? "Outside the field" : "No value")
+            Text(v.isFinite ? format(v) : grid.noData?.excludes(grid.node(k).x, grid.node(k).y) == true ? String(localized: "Outside the field") : String(localized: "No value"))
                 .font(.caption.weight(.semibold))
             Text(String(format: "Hx %.3g  Hy %.3g", p.x, p.y)).font(.caption2).foregroundStyle(.secondary)
         }
@@ -286,11 +288,11 @@ struct PupilAberrationView: View {
             ViewThatFits(in: .horizontal) {
                 HStack(alignment: .firstTextBaseline, spacing: Space.m) {
                     FieldColumnPicker(columns: data.columns, selection: $column).fixedSize()
-                    Text(col.definition).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    Text(EngineText.string(col.definition)).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 }
                 VStack(alignment: .leading, spacing: 2) {
                     FieldColumnPicker(columns: data.columns, selection: $column)
-                    Text(col.definition).font(.caption).foregroundStyle(.secondary).lineLimit(3)
+                    Text(EngineText.string(col.definition)).font(.caption).foregroundStyle(.secondary).lineLimit(3)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
@@ -314,7 +316,7 @@ struct FieldMapContent: View {
         if data.range(column) == nil {
             ContentUnavailableView(
                 "No Values", systemImage: "square.dashed",
-                description: Text("\(col.title) is undefined at every sample: \(col.definition)."))
+                description: Text(String(localized: "\(col.title) is undefined at every sample: \(EngineText.string(col.definition)).", locale: NumberDisplay.locale)))
         } else if data.layout == .map {
             let signed = data.isSigned(column)
             let r = HeatMapScale.range(data.range(column) ?? 0...1, signed: signed, mode: rangeMode, isFraction: isFraction)
@@ -327,7 +329,7 @@ struct FieldMapContent: View {
             LineChart(
                 series: [Series(id: "v", label: col.title, color: Palette.fieldColor(0), points: data.sweep(column))],
                 xLabel: data.layout == .sweepX ? "Hx" : "Hy", yLabel: col.titleWithUnit, zeroLine: data.isSigned(column))
-                .accessibilityValue(data.range(column).map { "From \(format($0.lowerBound)) to \(format($0.upperBound))" } ?? "")
+                .accessibilityValue(data.range(column).map { String(localized: "From \(format($0.lowerBound)) to \(format($0.upperBound))", locale: NumberDisplay.locale) } ?? "")
         }
     }
 }
@@ -358,11 +360,11 @@ struct RelativeIlluminationMapView: View {
             ViewThatFits(in: .horizontal) {
                 HStack(alignment: .firstTextBaseline, spacing: Space.m) {
                     FieldColumnPicker(columns: data.columns, selection: $column).fixedSize()
-                    Text(col.definition).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    Text(EngineText.string(col.definition)).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 }
                 VStack(alignment: .leading, spacing: 2) {
                     FieldColumnPicker(columns: data.columns, selection: $column)
-                    Text(col.definition).font(.caption).foregroundStyle(.secondary).lineLimit(3)
+                    Text(EngineText.string(col.definition)).font(.caption).foregroundStyle(.secondary).lineLimit(3)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
@@ -408,25 +410,27 @@ struct RelativeIlluminationMapView: View {
         let line = data.isRadial(c, tolerance: 1e-2)
         let format = fieldValueFormat(col)
         return VStack(alignment: .leading, spacing: Space.xs) {
-            Text("\(col.title) vs image radius").font(.caption.weight(.semibold))
+            Text(String(localized: "\(col.title) vs image radius", locale: NumberDisplay.locale)).font(.caption.weight(.semibold))
             Chart {
                 ForEach(Array(pts.enumerated()), id: \.offset) { _, p in
                     if line {
-                        LineMark(x: .value("Image radius (mm)", p.0), y: .value(col.title, p.1))
+                        LineMark(x: .value(String(localized: "Image radius (mm)"), p.0), y: .value(col.title, p.1))
                             .foregroundStyle(Palette.fieldColor(0))
                             .lineStyle(StrokeStyle(lineWidth: 1.6))
                     }
-                    PointMark(x: .value("Image radius (mm)", p.0), y: .value(col.title, p.1))
+                    PointMark(x: .value(String(localized: "Image radius (mm)"), p.0), y: .value(col.title, p.1))
                         .foregroundStyle(Palette.fieldColor(0))
                         .symbolSize(line ? 14 : 18)
                 }
             }
-            .chartXAxisLabel("Image radius (mm)", alignment: .center)
+            .chartXAxisLabel(String(localized: "Image radius (mm)"), alignment: .center)
             .chartYScale(domain: isFraction && rangeMode == .unit ? 0...1.02 : FieldMapData.range(pts.map(\.1)))
             .chartYAxis { AxisMarks(values: .automatic(desiredCount: 4)) }
             .accessibilityElement(children: .ignore)
-            .accessibilityLabel("\(col.title) versus image radius, \(pts.count) samples")
-            .accessibilityValue(pts.isEmpty ? "No values" : "From \(format(pts.map(\.1).min()!)) to \(format(pts.map(\.1).max()!))")
+            .accessibilityLabel(String(localized: "\(col.title) versus image radius, \(pts.count) samples", locale: NumberDisplay.locale))
+            .accessibilityValue(pts.isEmpty ? String(localized: "No values") : String(localized: "From \(format(pts.map(\.1).min()!)) to \(format(pts.map(\.1).max()!))", locale: NumberDisplay.locale))
+            // Numbers as in every language (decimal point, no grouping).
+            .environment(\.locale, NumberDisplay.locale)
         }
     }
 }
@@ -437,7 +441,11 @@ struct RelativeIlluminationMapView: View {
 /// limit and the margin between them (red where violated); a map over the
 /// field for asymmetric systems.
 struct ChiefRayAngleView: View {
-    enum Display: String, CaseIterable { case curve = "Curve", map = "Map" }
+    enum Display: String, CaseIterable {
+        case curve = "Curve", map = "Map"
+
+        var title: String { self == .curve ? String(localized: "Curve") : String(localized: "Map") }
+    }
     let data: FieldMapData
     let limit: [(Double, Double)]
     let incidence: Int
@@ -488,7 +496,7 @@ struct ChiefRayAngleView: View {
     @ViewBuilder private var displayPicker: some View {
         if data.layout == .map {
             Picker("Display", selection: $display) {
-                ForEach(Display.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                ForEach(Display.allCases, id: \.self) { Text($0.title).tag($0) }
             }
             .pickerStyle(.segmented)
             .labelsHidden()
@@ -520,9 +528,9 @@ struct ChiefRayAngleView: View {
 
     private var legend: some View {
         FlowLayout(spacing: Space.m) {
-            LegendItem(color: Palette.fieldColor(0), label: "Chief ray incidence")
+            LegendItem(color: Palette.fieldColor(0), label: String(localized: "Chief ray incidence"))
             if !limit.isEmpty {
-                LegendItem(color: .secondary, label: "Sensor limit", dashed: true)
+                LegendItem(color: .secondary, label: String(localized: "Sensor limit"), dashed: true)
                 HStack(spacing: 4) {
                     RoundedRectangle(cornerRadius: 2).fill(Palette.fieldColor(5).opacity(0.25)).frame(width: 12, height: 8)
                     Text("Margin")
@@ -628,7 +636,10 @@ struct ChiefRayAngleView: View {
         let limitPts = limitCurve(over: xr)
         let ys = s.map(\.cra) + limitPts.map(\.1)
         let yr = 0...max((ys.filter(\.isFinite).max() ?? 1) * 1.08, 1e-3)
-        let xLabel = data.layout == .map ? "Image radius (mm)" : data.layout == .sweepX ? "Image height x (mm)" : "Image height y (mm)"
+        let xLabel =
+            data.layout == .map
+            ? String(localized: "Image radius (mm)")
+            : data.layout == .sweepX ? String(localized: "Image height x (mm)") : String(localized: "Image height y (mm)")
         return Chart {
             ForEach(bands) { b in
                 ForEach(Array(b.points.enumerated()), id: \.offset) { _, p in
@@ -660,19 +671,19 @@ struct ChiefRayAngleView: View {
         .chartXScale(domain: xr)
         .chartYScale(domain: yr)
         .chartXAxisLabel(xLabel, alignment: .center)
-        .chartYAxisLabel("Chief ray angle (°)")
+        .chartYAxisLabel(String(localized: "Chief ray angle (°)"))
         .chartYAxis { AxisMarks(values: .automatic(desiredCount: 5)) }
         .environment(\.locale, NumberDisplay.locale)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Chief ray angle versus image height" + (limit.isEmpty ? "" : ", with the sensor limit"))
+        .accessibilityLabel(limit.isEmpty ? String(localized: "Chief ray angle versus image height") : String(localized: "Chief ray angle versus image height, with the sensor limit"))
         .accessibilityValue(accessibilitySummary(s))
     }
 
     private func accessibilitySummary(_ s: [Sample]) -> String {
-        guard let worst = s.max(by: { $0.cra < $1.cra }) else { return "No values" }
-        var t = String(format: "Largest %.2f degrees at %.3g millimeters", worst.cra, worst.h)
+        guard let worst = s.max(by: { $0.cra < $1.cra }) else { return String(localized: "No values") }
+        var t = String(localized: "Largest \(String(format: "%.2f", worst.cra)) degrees at \(String(format: "%.3g", worst.h)) millimeters", locale: NumberDisplay.locale)
         let bad = s.filter { $0.margin < 0 }.count
-        if !limit.isEmpty { t += bad == 0 ? ", within the sensor limit" : ", \(bad) samples exceed the sensor limit" }
+        if !limit.isEmpty { t += ", " + (bad == 0 ? String(localized: "within the sensor limit") : String(localized: "\(bad) samples exceed the sensor limit", locale: NumberDisplay.locale)) }
         return t
     }
 

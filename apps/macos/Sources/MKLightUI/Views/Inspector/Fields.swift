@@ -43,7 +43,7 @@ struct NumberField: View {
                 if let solve {
                     Text("S").font(.system(size: 9, weight: .bold, design: .rounded)).foregroundStyle(.secondary)
                         .frame(width: 13, height: 13).background(RoundedRectangle(cornerRadius: 3).fill(.quaternary))
-                        .help("Controlled by a \(solve) solve")
+                        .help(String(localized: "Controlled by a \(solve) solve", locale: NumberDisplay.locale))
                 }
                 if let variable {
                     VariableToggle(isOn: variable.isOn, solve: variable.solve)
@@ -110,7 +110,7 @@ struct VariableToggle: View {
         .buttonStyle(.plain)
         .help(help)
         .accessibilityLabel("Variable")
-        .accessibilityValue(isOn ? "on" : "off")
+        .accessibilityValue(isOn ? String(localized: "on") : String(localized: "off"))
         .accessibilityHint(help)
     }
 
@@ -127,10 +127,10 @@ struct VariableToggle: View {
     private var help: String {
         if let solve {
             return isOn
-                ? "Set by a solve (\(solve)): the optimizer leaves this variable out. Click to remove it."
-                : "Set by a solve (\(solve)), so it cannot be a variable: the optimizer applies solves first. Remove the solve to vary it."
+                ? String(localized: "Set by a solve (\(solve)): the optimizer leaves this variable out. Click to remove it.", locale: NumberDisplay.locale)
+                : String(localized: "Set by a solve (\(solve)), so it cannot be a variable: the optimizer applies solves first. Remove the solve to vary it.", locale: NumberDisplay.locale)
         }
-        return isOn ? "Variable: the optimizer may change it. Click to fix it." : "Fixed. Click to make it a variable."
+        return isOn ? String(localized: "Variable: the optimizer may change it. Click to fix it.") : String(localized: "Fixed. Click to make it a variable.")
     }
 }
 
