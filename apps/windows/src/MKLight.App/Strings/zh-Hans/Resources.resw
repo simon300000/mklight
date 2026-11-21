@@ -1046,6 +1046,710 @@
   <data name="Analysis_Summary_Value" xml:space="preserve"><value>{0} {1}</value></data>
   <!-- end area: Analysis -->
   <!-- area: Jobs -->
+  <data name="Jobs_Controls_AppliedNotice" xml:space="preserve"><value>已应用到设计。按 Ctrl+Z 撤销。</value></data>
+  <data name="Jobs_Controls_ApplyToDesign" xml:space="preserve"><value>应用到设计</value></data>
+  <data name="Jobs_Controls_Back" xml:space="preserve"><value>返回</value></data>
+  <data name="Jobs_Controls_BackHelp" xml:space="preserve"><value>返回任务设置</value></data>
+  <data name="Jobs_Controls_BigNumberName" xml:space="preserve"><value>{0} {1}</value></data>
+  <data name="Jobs_Controls_Discard" xml:space="preserve"><value>放弃</value></data>
+  <data name="Jobs_Controls_Done" xml:space="preserve"><value>完成</value></data>
+  <data name="Jobs_Controls_MeritByIteration" xml:space="preserve"><value>各次迭代的评价函数</value></data>
+  <data name="Jobs_Controls_Running" xml:space="preserve"><value>运行中</value></data>
+  <data name="Jobs_Controls_StepperFewer" xml:space="preserve"><value>减少{0}</value></data>
+  <data name="Jobs_Controls_StepperMore" xml:space="preserve"><value>增加{0}</value></data>
+  <data name="Jobs_Controls_StepperValue" xml:space="preserve"><value>{0} {1}</value></data>
+  <data name="Jobs_Controls_Stop" xml:space="preserve"><value>停止</value></data>
+  <data name="Jobs_Controls_TryAgain" xml:space="preserve"><value>重试</value></data>
+  <data name="Jobs_Controls_TryAgainHelp" xml:space="preserve"><value>以相同设置再次运行任务</value></data>
+  <data name="Jobs_GlassMap_AxisAbbe" xml:space="preserve"><value>阿贝数 V_d</value></data>
+  <data name="Jobs_GlassMap_AxisIndex" xml:space="preserve"><value>折射率 n_d</value></data>
+  <data name="Jobs_GlassMap_AxisPgf" xml:space="preserve"><value>相对部分色散 P_g,F</value></data>
+  <data name="Jobs_GlassMap_Legend" xml:space="preserve"><value>圆环：候选设计的玻璃，标注所在的面。空心：被替换的设计玻璃。</value></data>
+  <data name="Jobs_GlassMap_Name" xml:space="preserve"><value>玻璃图，候选设计的玻璃：{0}</value></data>
+  <data name="Jobs_GlassMap_Plane" xml:space="preserve"><value>平面</value></data>
+  <data name="Jobs_GlassMap_PlaneHelp" xml:space="preserve"><value>折射率 nd 或相对部分色散 Pg,F 对阿贝数 Vd</value></data>
+  <data name="Jobs_GlassMap_Title" xml:space="preserve"><value>玻璃图</value></data>
+  <data name="Jobs_GlassSub_Activity" xml:space="preserve"><value>玻璃替换中</value></data>
+  <data name="Jobs_GlassSub_ActivityCount" xml:space="preserve"><value>玻璃替换中 · {0}</value></data>
+  <data name="Jobs_GlassSub_AllLoaded" xml:space="preserve"><value>所有已加载</value></data>
+  <data name="Jobs_GlassSub_AlwaysInclude" xml:space="preserve"><value>始终包含</value></data>
+  <data name="Jobs_GlassSub_Applied" xml:space="preserve"><value>已应用</value></data>
+  <data name="Jobs_GlassSub_ApplyHelp" xml:space="preserve"><value>将预览的组合作为一步可撤销的操作应用</value></data>
+  <data name="Jobs_GlassSub_AutoVariablesHint" xml:space="preserve"><value>每个组合都会重新优化所有曲率和后焦距。</value></data>
+  <data name="Jobs_GlassSub_BestGlasses" xml:space="preserve"><value>目前最佳玻璃</value></data>
+  <data name="Jobs_GlassSub_BestMerit" xml:space="preserve"><value>最佳评价函数</value></data>
+  <data name="Jobs_GlassSub_CancelHelp" xml:space="preserve"><value>结束运行并放弃结果</value></data>
+  <data name="Jobs_GlassSub_Candidate" xml:space="preserve"><value>候选设计 {0}</value></data>
+  <data name="Jobs_GlassSub_Catalogs" xml:space="preserve"><value>玻璃库</value></data>
+  <data name="Jobs_GlassSub_Choose" xml:space="preserve"><value>选择</value></data>
+  <data name="Jobs_GlassSub_Combinations" xml:space="preserve"><value>组合</value></data>
+  <data name="Jobs_GlassSub_CombinationsToTry" xml:space="preserve"><value>尝试的组合数</value></data>
+  <data name="Jobs_GlassSub_ConstraintsNotMet" xml:space="preserve"><value>未满足约束</value></data>
+  <data name="Jobs_GlassSub_CutShort" xml:space="preserve"><value>{0} · 提前中止</value></data>
+  <data name="Jobs_GlassSub_DiscardHelp" xml:space="preserve"><value>放弃此结果；设计保持不变</value></data>
+  <data name="Jobs_GlassSub_DoneHelp" xml:space="preserve"><value>返回玻璃和搜索设置</value></data>
+  <data name="Jobs_GlassSub_EditMerit" xml:space="preserve"><value>编辑评价函数和变量…</value></data>
+  <data name="Jobs_GlassSub_FailedTitle" xml:space="preserve"><value>玻璃替换失败</value></data>
+  <data name="Jobs_GlassSub_FindGlasses" xml:space="preserve"><value>查找玻璃</value></data>
+  <data name="Jobs_GlassSub_FindGlassesHelp" xml:space="preserve"><value>开始搜索（Ctrl+Enter）</value></data>
+  <data name="Jobs_GlassSub_FixErrors" xml:space="preserve"><value>请先修正设计中的错误。</value></data>
+  <data name="Jobs_GlassSub_GroupCandidates" xml:space="preserve"><value>所有透镜的候选玻璃</value></data>
+  <data name="Jobs_GlassSub_GroupGlasses" xml:space="preserve"><value>可更换的玻璃</value></data>
+  <data name="Jobs_GlassSub_GroupMerit" xml:space="preserve"><value>评价函数</value></data>
+  <data name="Jobs_GlassSub_KeepBest" xml:space="preserve"><value>保留最佳的</value></data>
+  <data name="Jobs_GlassSub_Limits" xml:space="preserve"><value>限制</value></data>
+  <data name="Jobs_GlassSub_ListAnd" xml:space="preserve"><value>{0} 和 {1}</value></data>
+  <data name="Jobs_GlassSub_ListSeparator" xml:space="preserve"><value>、</value></data>
+  <data name="Jobs_GlassSub_MaxClimate" xml:space="preserve"><value>最大气候等级</value></data>
+  <data name="Jobs_GlassSub_MaxClimateHelp" xml:space="preserve"><value>耐气候等级（CR）</value></data>
+  <data name="Jobs_GlassSub_MaxCost" xml:space="preserve"><value>最大相对成本</value></data>
+  <data name="Jobs_GlassSub_MaxCostHelp" xml:space="preserve"><value>玻璃库中的相对成本</value></data>
+  <data name="Jobs_GlassSub_MaxStain" xml:space="preserve"><value>最大污渍等级</value></data>
+  <data name="Jobs_GlassSub_MaxStainHelp" xml:space="preserve"><value>耐污渍等级（FR）</value></data>
+  <data name="Jobs_GlassSub_MeltOffsetHelp" xml:space="preserve"><value>熔炼偏差 Δn_d / ΔV_d：替换玻璃不带此偏差</value></data>
+  <data name="Jobs_GlassSub_Merit" xml:space="preserve"><value>评价函数</value></data>
+  <data name="Jobs_GlassSub_MeritCustom" xml:space="preserve"><value>自定义评价函数，{0} 个操作数。</value></data>
+  <data name="Jobs_GlassSub_MeritCustomHeld" xml:space="preserve"><value>自定义评价函数，{0} 个操作数，保持焦距。</value></data>
+  <data name="Jobs_GlassSub_MeritDefault" xml:space="preserve"><value>默认评价函数：{0}。</value></data>
+  <data name="Jobs_GlassSub_MeritDefaultHeld" xml:space="preserve"><value>默认评价函数：{0}，保持焦距。</value></data>
+  <data name="Jobs_GlassSub_MinTransmission" xml:space="preserve"><value>最小透过率</value></data>
+  <data name="Jobs_GlassSub_MinTransmissionHelp" xml:space="preserve"><value>最短波长下透镜中心厚度的内透过率（0…1）</value></data>
+  <data name="Jobs_GlassSub_ModelTag" xml:space="preserve"><value>模型</value></data>
+  <data name="Jobs_GlassSub_NamesPlaceholder" xml:space="preserve"><value>名称</value></data>
+  <data name="Jobs_GlassSub_Nearest" xml:space="preserve"><value>最近</value></data>
+  <data name="Jobs_GlassSub_NeverUse" xml:space="preserve"><value>从不使用</value></data>
+  <data name="Jobs_GlassSub_NoCombinations" xml:space="preserve"><value>没有组合</value></data>
+  <data name="Jobs_GlassSub_NoCombinationsDetail" xml:space="preserve"><value>没有可以评估的组合。</value></data>
+  <data name="Jobs_GlassSub_NoGlass" xml:space="preserve"><value>设计中没有可替换的玻璃。</value></data>
+  <data name="Jobs_GlassSub_NoResult" xml:space="preserve"><value>引擎未返回任何玻璃组合。</value></data>
+  <data name="Jobs_GlassSub_NoneTickedHint" xml:space="preserve"><value>未勾选任何玻璃时，每个模型玻璃（n_d, V_d）都替换为最接近的真实玻璃。</value></data>
+  <data name="Jobs_GlassSub_NoneValue" xml:space="preserve"><value>无</value></data>
+  <data name="Jobs_GlassSub_NotPreviewed" xml:space="preserve"><value>未预览</value></data>
+  <data name="Jobs_GlassSub_OffsetNote_Many" xml:space="preserve"><value>{0} 带有熔炼偏差。替换玻璃不带这些偏差，即使是同一种玻璃：偏差属于原来的熔炼批次。</value></data>
+  <data name="Jobs_GlassSub_OffsetNote_One" xml:space="preserve"><value>{0} 带有熔炼偏差。替换玻璃不带此偏差，即使是同一种玻璃：偏差属于原来的熔炼批次。</value></data>
+  <data name="Jobs_GlassSub_OverrideHelp" xml:space="preserve"><value>仅用于面 {0} 的候选玻璃</value></data>
+  <data name="Jobs_GlassSub_OverrideTitle" xml:space="preserve"><value>S{0} · {1} 的候选玻璃</value></data>
+  <data name="Jobs_GlassSub_OwnCandidates" xml:space="preserve"><value>此透镜使用单独的候选玻璃</value></data>
+  <data name="Jobs_GlassSub_Preparing" xml:space="preserve"><value>准备中</value></data>
+  <data name="Jobs_GlassSub_PreparingCandidates" xml:space="preserve"><value>正在准备候选玻璃</value></data>
+  <data name="Jobs_GlassSub_PreviewTitle" xml:space="preserve"><value>玻璃候选设计 {0} · 评价函数 {1}</value></data>
+  <data name="Jobs_GlassSub_PreviewTitleChange" xml:space="preserve"><value>玻璃候选设计 {0} · 评价函数 {1}（{2}{3}）</value></data>
+  <data name="Jobs_GlassSub_Previewed" xml:space="preserve"><value>已在窗口中预览</value></data>
+  <data name="Jobs_GlassSub_ProgressCombinations" xml:space="preserve"><value>{0} 个组合</value></data>
+  <data name="Jobs_GlassSub_RankName" xml:space="preserve"><value>第 {0} 名，评价函数 {1}，玻璃 {2}</value></data>
+  <data name="Jobs_GlassSub_RuleNearest" xml:space="preserve"><value>最接近的玻璃</value></data>
+  <data name="Jobs_GlassSub_RuleWindow" xml:space="preserve"><value>窗口内的玻璃</value></data>
+  <data name="Jobs_GlassSub_RunningHint" xml:space="preserve"><value>“停止”保留目前已排名的组合。“取消”放弃本次运行。可以关闭此面板，搜索会继续进行。</value></data>
+  <data name="Jobs_GlassSub_Search" xml:space="preserve"><value>搜索</value></data>
+  <data name="Jobs_GlassSub_SearchHammer" xml:space="preserve"><value>全面（全局搜索）</value></data>
+  <data name="Jobs_GlassSub_SearchHammerDetail" xml:space="preserve"><value>同时在玻璃和形状之间跳跃以跳出局部极小值；较慢。</value></data>
+  <data name="Jobs_GlassSub_SearchTabu" xml:space="preserve"><value>快速（禁忌搜索）</value></data>
+  <data name="Jobs_GlassSub_SearchTabuDetail" xml:space="preserve"><value>尝试各种玻璃组合，每个组合都从当前形状重新优化。</value></data>
+  <data name="Jobs_GlassSub_SelectAll" xml:space="preserve"><value>全选</value></data>
+  <data name="Jobs_GlassSub_SelectNone" xml:space="preserve"><value>全不选</value></data>
+  <data name="Jobs_GlassSub_ShapeChanges" xml:space="preserve"><value>形状变化（{0}）</value></data>
+  <data name="Jobs_GlassSub_ShapeIterations" xml:space="preserve"><value>每个组合的形状迭代</value></data>
+  <data name="Jobs_GlassSub_ShapeIterationsHelp" xml:space="preserve"><value>为每个玻璃组合重新优化形状的阻尼最小二乘迭代次数</value></data>
+  <data name="Jobs_GlassSub_ShapeUnchanged" xml:space="preserve"><value>形状未变</value></data>
+  <data name="Jobs_GlassSub_Status" xml:space="preserve"><value>状态</value></data>
+  <data name="Jobs_GlassSub_StatusDone_Many" xml:space="preserve"><value>已重新优化 {0} 个组合。</value></data>
+  <data name="Jobs_GlassSub_StatusDone_One" xml:space="preserve"><value>已重新优化 {0} 个组合。</value></data>
+  <data name="Jobs_GlassSub_StatusFailed_Many" xml:space="preserve"><value>已重新优化 {0} 个组合，{1} 个失败。</value></data>
+  <data name="Jobs_GlassSub_StatusFailed_One" xml:space="preserve"><value>已重新优化 {0} 个组合，{1} 个失败。</value></data>
+  <data name="Jobs_GlassSub_StatusJoin" xml:space="preserve"><value>{0}{1}</value></data>
+  <data name="Jobs_GlassSub_StatusName_Melt" xml:space="preserve"><value>熔炼</value></data>
+  <data name="Jobs_GlassSub_StatusName_Obsolete" xml:space="preserve"><value>停产</value></data>
+  <data name="Jobs_GlassSub_StatusName_Preferred" xml:space="preserve"><value>优选</value></data>
+  <data name="Jobs_GlassSub_StatusName_Special" xml:space="preserve"><value>特殊</value></data>
+  <data name="Jobs_GlassSub_StatusName_Standard" xml:space="preserve"><value>标准</value></data>
+  <data name="Jobs_GlassSub_StatusSelect" xml:space="preserve"><value>选择一个组合即可在窗口中预览。</value></data>
+  <data name="Jobs_GlassSub_StatusStopped" xml:space="preserve"><value>已提前停止：显示目前的排名。</value></data>
+  <data name="Jobs_GlassSub_StatusTimeLimit" xml:space="preserve"><value>搜索因达到时间限制而结束。</value></data>
+  <data name="Jobs_GlassSub_Status_Melt" xml:space="preserve"><value>熔炼</value></data>
+  <data name="Jobs_GlassSub_Status_Obsolete" xml:space="preserve"><value>停产</value></data>
+  <data name="Jobs_GlassSub_Status_Preferred" xml:space="preserve"><value>优选</value></data>
+  <data name="Jobs_GlassSub_Status_Special" xml:space="preserve"><value>特殊</value></data>
+  <data name="Jobs_GlassSub_Status_Standard" xml:space="preserve"><value>标准</value></data>
+  <data name="Jobs_GlassSub_StopHelp" xml:space="preserve"><value>立即结束并保留目前已排名的组合</value></data>
+  <data name="Jobs_GlassSub_SubtitleNone" xml:space="preserve"><value>将模型玻璃替换为真实玻璃</value></data>
+  <data name="Jobs_GlassSub_Subtitle_Many" xml:space="preserve"><value>{0} 种玻璃可以更换</value></data>
+  <data name="Jobs_GlassSub_Subtitle_One" xml:space="preserve"><value>{0} 种玻璃可以更换</value></data>
+  <data name="Jobs_GlassSub_SummaryAllCatalogs" xml:space="preserve"><value>所有玻璃库</value></data>
+  <data name="Jobs_GlassSub_SummaryLimits" xml:space="preserve"><value>限制</value></data>
+  <data name="Jobs_GlassSub_SummaryMtf" xml:space="preserve"><value>MTF ≥ {0}，于 {1} cyc/mm</value></data>
+  <data name="Jobs_GlassSub_SummaryMtfWeakest" xml:space="preserve"><value>MTF ≥ {0}，于 {1} cyc/mm，最弱视场</value></data>
+  <data name="Jobs_GlassSub_SummaryNearest" xml:space="preserve"><value>最接近的 {0} 种</value></data>
+  <data name="Jobs_GlassSub_SummaryRings" xml:space="preserve"><value>{0} 环 × {1} 臂</value></data>
+  <data name="Jobs_GlassSub_SummarySqueeze" xml:space="preserve"><value>压缩比 {0}</value></data>
+  <data name="Jobs_GlassSub_SummaryThickness" xml:space="preserve"><value>厚度限制</value></data>
+  <data name="Jobs_GlassSub_TimeLimit" xml:space="preserve"><value>时间限制</value></data>
+  <data name="Jobs_GlassSub_TimeLimitName" xml:space="preserve"><value>时间限制（秒）</value></data>
+  <data name="Jobs_GlassSub_Title" xml:space="preserve"><value>玻璃替换</value></data>
+  <data name="Jobs_GlassSub_UndoApply" xml:space="preserve"><value>应用玻璃替换</value></data>
+  <data name="Jobs_GlassSub_UsesShared" xml:space="preserve"><value>使用所有透镜的候选玻璃。</value></data>
+  <data name="Jobs_GlassSub_VariablesPinned" xml:space="preserve"><value>所有变量都已固定。请取消固定一个变量，或改用自动变量集。</value></data>
+  <data name="Jobs_GlassSub_VariablesPinnedOrSolved" xml:space="preserve"><value>所有变量都已固定或由求解控制。请添加一个自由变量，或改用自动变量集。</value></data>
+  <data name="Jobs_GlassSub_VariablesReoptimized_Many" xml:space="preserve"><value>已重新优化 {0} 个变量</value></data>
+  <data name="Jobs_GlassSub_VariablesReoptimized_One" xml:space="preserve"><value>已重新优化 {0} 个变量</value></data>
+  <data name="Jobs_GlassSub_VaryAuto" xml:space="preserve"><value>重新优化所有曲率和后焦距</value></data>
+  <data name="Jobs_GlassSub_VaryDesign" xml:space="preserve"><value>重新优化设计变量（{0}）</value></data>
+  <data name="Jobs_GlassSub_WindowNdName" xml:space="preserve"><value>n_d 窗口</value></data>
+  <data name="Jobs_GlassSub_WindowVdName" xml:space="preserve"><value>V_d 窗口</value></data>
+  <data name="Jobs_Layout_Before" xml:space="preserve"><value>原设计</value></data>
+  <data name="Jobs_Layout_Candidate" xml:space="preserve"><value>候选设计</value></data>
+  <data name="Jobs_Layout_Name" xml:space="preserve"><value>{0}布局图</value></data>
+  <data name="Jobs_Merit_AddOperand" xml:space="preserve"><value>添加操作数</value></data>
+  <data name="Jobs_Merit_AddOperandHelp" xml:space="preserve"><value>在所选项之后添加操作数</value></data>
+  <data name="Jobs_Merit_All" xml:space="preserve"><value>全部</value></data>
+  <data name="Jobs_Merit_AllFieldsWeighted" xml:space="preserve"><value>全部视场（加权）</value></data>
+  <data name="Jobs_Merit_AllWavelengths" xml:space="preserve"><value>全部（复色）</value></data>
+  <data name="Jobs_Merit_Arms" xml:space="preserve"><value>臂数</value></data>
+  <data name="Jobs_Merit_Auto" xml:space="preserve"><value>自动</value></data>
+  <data name="Jobs_Merit_Caption_Mtf" xml:space="preserve"><value>每个频率处复色子午和弧矢 MTF 的下限。</value></data>
+  <data name="Jobs_Merit_Caption_RmsSpot" xml:space="preserve"><value>所选视场和波长上 RMS 弥散斑半径的均方值，按各自权重计算。</value></data>
+  <data name="Jobs_Merit_Caption_Wavefront" xml:space="preserve"><value>所选视场和波长上 RMS 波前误差的均方值，按各自权重计算。</value></data>
+  <data name="Jobs_Merit_ChecklistSummary" xml:space="preserve"><value>{0}：{1}</value></data>
+  <data name="Jobs_Merit_ComparisonHelp" xml:space="preserve"><value>= 目标值，≤ 上限，≥ 下限</value></data>
+  <data name="Jobs_Merit_Constraint" xml:space="preserve"><value>约束</value></data>
+  <data name="Jobs_Merit_ConstraintHelp" xml:space="preserve"><value>精确保持（或作为边界），而不是在评价函数中加权</value></data>
+  <data name="Jobs_Merit_ConstraintTag" xml:space="preserve"><value>约束</value></data>
+  <data name="Jobs_Merit_ConvertToCustom" xml:space="preserve"><value>转换为自定义</value></data>
+  <data name="Jobs_Merit_ConvertToCustomHelp" xml:space="preserve"><value>以默认评价函数为此设计生成的操作数为起点，创建自定义评价函数</value></data>
+  <data name="Jobs_Merit_Criterion" xml:space="preserve"><value>准则</value></data>
+  <data name="Jobs_Merit_Criterion_RmsSpot" xml:space="preserve"><value>RMS 弥散斑半径</value></data>
+  <data name="Jobs_Merit_Criterion_Wavefront" xml:space="preserve"><value>RMS 波前</value></data>
+  <data name="Jobs_Merit_DeleteSelected" xml:space="preserve"><value>删除所选操作数（Delete）</value></data>
+  <data name="Jobs_Merit_Detail_Weight" xml:space="preserve"><value>权重 {0}</value></data>
+  <data name="Jobs_Merit_DuplicateSelected" xml:space="preserve"><value>复制所选操作数</value></data>
+  <data name="Jobs_Merit_Enabled" xml:space="preserve"><value>启用</value></data>
+  <data name="Jobs_Merit_EvaluationError" xml:space="preserve"><value>引擎无法评估此评价函数：{0}</value></data>
+  <data name="Jobs_Merit_Field" xml:space="preserve"><value>视场</value></data>
+  <data name="Jobs_Merit_Fields" xml:space="preserve"><value>视场</value></data>
+  <data name="Jobs_Merit_Frequencies" xml:space="preserve"><value>频率</value></data>
+  <data name="Jobs_Merit_FrequenciesName" xml:space="preserve"><value>MTF 频率（周期/mm）</value></data>
+  <data name="Jobs_Merit_Help_CpuReference" xml:space="preserve"><value>CPU f64 基准</value></data>
+  <data name="Jobs_Merit_Help_Degraded_Many" xml:space="preserve"><value>{0} 个残差为惩罚值（光线或操作数计算失败）。</value></data>
+  <data name="Jobs_Merit_Help_Degraded_One" xml:space="preserve"><value>{0} 个残差为惩罚值（光线或操作数计算失败）。</value></data>
+  <data name="Jobs_Merit_Help_Failed" xml:space="preserve"><value>评估失败：评价函数值无意义。</value></data>
+  <data name="Jobs_Merit_Help_Merit" xml:space="preserve"><value>当前设计的评价函数值为 {0}（{1}）。</value></data>
+  <data name="Jobs_Merit_Help_Violation" xml:space="preserve"><value>约束违反量 {0}。</value></data>
+  <data name="Jobs_Merit_HideThickness" xml:space="preserve"><value>隐藏厚度限制</value></data>
+  <data name="Jobs_Merit_HoldEfl" xml:space="preserve"><value>保持焦距</value></data>
+  <data name="Jobs_Merit_HoldEflHelp" xml:space="preserve"><value>将 EFL 作为约束保持在初始值，除非评价函数中已有 EFL 操作数。</value></data>
+  <data name="Jobs_Merit_Issue_NeedsOneField" xml:space="preserve"><value>需要指定一个视场，而不是全部视场。</value></data>
+  <data name="Jobs_Merit_Issue_NoField" xml:space="preserve"><value>视场 {0} 不存在。</value></data>
+  <data name="Jobs_Merit_Issue_NoWavelength" xml:space="preserve"><value>波长 {0} 不存在。</value></data>
+  <data name="Jobs_Merit_Issue_Required" xml:space="preserve"><value>必须指定{0}。</value></data>
+  <data name="Jobs_Merit_Issue_Weight" xml:space="preserve"><value>权重必须为零或正数。</value></data>
+  <data name="Jobs_Merit_Menu_Delete" xml:space="preserve"><value>删除</value></data>
+  <data name="Jobs_Merit_Menu_Disable" xml:space="preserve"><value>停用</value></data>
+  <data name="Jobs_Merit_Menu_Duplicate" xml:space="preserve"><value>复制</value></data>
+  <data name="Jobs_Merit_Menu_Enable" xml:space="preserve"><value>启用</value></data>
+  <data name="Jobs_Merit_Method" xml:space="preserve"><value>方法</value></data>
+  <data name="Jobs_Merit_Method_Diffraction" xml:space="preserve"><value>衍射</value></data>
+  <data name="Jobs_Merit_Method_Geometric" xml:space="preserve"><value>几何</value></data>
+  <data name="Jobs_Merit_ModeHelp" xml:space="preserve"><value>默认：引擎根据几个选项生成评价函数。自定义：编辑每个操作数。</value></data>
+  <data name="Jobs_Merit_Mode_Custom" xml:space="preserve"><value>自定义</value></data>
+  <data name="Jobs_Merit_Mode_Default" xml:space="preserve"><value>默认</value></data>
+  <data name="Jobs_Merit_MoveDown" xml:space="preserve"><value>下移</value></data>
+  <data name="Jobs_Merit_MoveUp" xml:space="preserve"><value>上移</value></data>
+  <data name="Jobs_Merit_MtfTargetName" xml:space="preserve"><value>MTF 目标</value></data>
+  <data name="Jobs_Merit_NoOperands" xml:space="preserve"><value>没有操作数。请用 + 添加，或转换默认评价函数。</value></data>
+  <data name="Jobs_Merit_None" xml:space="preserve"><value>无</value></data>
+  <data name="Jobs_Merit_NotEvaluated" xml:space="preserve"><value>未评估</value></data>
+  <data name="Jobs_Merit_OperandCount_Many" xml:space="preserve"><value>{0} 个操作数</value></data>
+  <data name="Jobs_Merit_OperandCount_One" xml:space="preserve"><value>{0} 个操作数</value></data>
+  <data name="Jobs_Merit_OperandError" xml:space="preserve"><value>引擎无法评估此操作数：{0}</value></data>
+  <data name="Jobs_Merit_OperandHeading" xml:space="preserve"><value>{0}. {1}</value></data>
+  <data name="Jobs_Merit_OperandListHelp" xml:space="preserve"><value>前面操作数的编号，例如 1, 3</value></data>
+  <data name="Jobs_Merit_OperandRowName" xml:space="preserve"><value>操作数 {0}，{1}，{2}</value></data>
+  <data name="Jobs_Merit_OperandValue" xml:space="preserve"><value>值 {0}</value></data>
+  <data name="Jobs_Merit_OperandValueShare" xml:space="preserve"><value>值 {0} · {1}</value></data>
+  <data name="Jobs_Merit_ParametersJson" xml:space="preserve"><value>参数：{0}</value></data>
+  <data name="Jobs_Merit_PrimaryWavelength" xml:space="preserve"><value>主波长</value></data>
+  <data name="Jobs_Merit_Readout" xml:space="preserve"><value>评价函数</value></data>
+  <data name="Jobs_Merit_ReadoutHelp" xml:space="preserve"><value>优化前当前设计的评价函数值。</value></data>
+  <data name="Jobs_Merit_ReadoutName" xml:space="preserve"><value>当前评价函数值</value></data>
+  <data name="Jobs_Merit_Reference" xml:space="preserve"><value>参考</value></data>
+  <data name="Jobs_Merit_Reference_Centroid" xml:space="preserve"><value>质心</value></data>
+  <data name="Jobs_Merit_Reference_CentroidWavefront" xml:space="preserve"><value>质心（去除平移和倾斜）</value></data>
+  <data name="Jobs_Merit_Reference_ChiefRay" xml:space="preserve"><value>主光线</value></data>
+  <data name="Jobs_Merit_Reference_ChiefRayWavefront" xml:space="preserve"><value>主光线（去除平移）</value></data>
+  <data name="Jobs_Merit_Rings" xml:space="preserve"><value>环数</value></data>
+  <data name="Jobs_Merit_SearchOperands" xml:space="preserve"><value>搜索操作数</value></data>
+  <data name="Jobs_Merit_ShowThickness" xml:space="preserve"><value>显示厚度限制</value></data>
+  <data name="Jobs_Merit_SomeOf" xml:space="preserve"><value>{0}/{1}</value></data>
+  <data name="Jobs_Merit_SqueezeTarget" xml:space="preserve"><value>压缩比目标</value></data>
+  <data name="Jobs_Merit_SqueezeTargetHelp" xml:space="preserve"><value>将带符号的 EFL_y / EFL_x 保持在此值（变形设计）。</value></data>
+  <data name="Jobs_Merit_Summary_Of" xml:space="preserve"><value>取自 {0}</value></data>
+  <data name="Jobs_Merit_Summary_Polychromatic" xml:space="preserve"><value>复色</value></data>
+  <data name="Jobs_Merit_Surface" xml:space="preserve"><value>面 {0}</value></data>
+  <data name="Jobs_Merit_SurfaceLabeled" xml:space="preserve"><value>面 {0} · {1}</value></data>
+  <data name="Jobs_Merit_Surface_First" xml:space="preserve"><value>第一面</value></data>
+  <data name="Jobs_Merit_Surface_Image" xml:space="preserve"><value>像面</value></data>
+  <data name="Jobs_Merit_Surface_Next" xml:space="preserve"><value>下一面</value></data>
+  <data name="Jobs_Merit_Target" xml:space="preserve"><value>目标</value></data>
+  <data name="Jobs_Merit_ThicknessLimits" xml:space="preserve"><value>厚度限制（mm）</value></data>
+  <data name="Jobs_Merit_Thickness_Air" xml:space="preserve"><value>空气</value></data>
+  <data name="Jobs_Merit_Thickness_AirName" xml:space="preserve"><value>空气{0}</value></data>
+  <data name="Jobs_Merit_Thickness_Glass" xml:space="preserve"><value>玻璃</value></data>
+  <data name="Jobs_Merit_Thickness_GlassName" xml:space="preserve"><value>玻璃{0}</value></data>
+  <data name="Jobs_Merit_Thickness_MaxCenter" xml:space="preserve"><value>最大中心</value></data>
+  <data name="Jobs_Merit_Thickness_MinCenter" xml:space="preserve"><value>最小中心</value></data>
+  <data name="Jobs_Merit_Thickness_MinEdge" xml:space="preserve"><value>最小边缘</value></data>
+  <data name="Jobs_Merit_Title" xml:space="preserve"><value>评价函数</value></data>
+  <data name="Jobs_Merit_Undo_AddOperand" xml:space="preserve"><value>添加操作数</value></data>
+  <data name="Jobs_Merit_Undo_Centroid" xml:space="preserve"><value>更改质心</value></data>
+  <data name="Jobs_Merit_Undo_Comparison" xml:space="preserve"><value>更改比较方式</value></data>
+  <data name="Jobs_Merit_Undo_ConvertToCustom" xml:space="preserve"><value>将评价函数转换为自定义</value></data>
+  <data name="Jobs_Merit_Undo_Criterion" xml:space="preserve"><value>更改准则</value></data>
+  <data name="Jobs_Merit_Undo_DeleteOperand" xml:space="preserve"><value>删除操作数</value></data>
+  <data name="Jobs_Merit_Undo_DeleteOperands" xml:space="preserve"><value>删除操作数</value></data>
+  <data name="Jobs_Merit_Undo_DisableOperand" xml:space="preserve"><value>停用操作数</value></data>
+  <data name="Jobs_Merit_Undo_DuplicateOperand" xml:space="preserve"><value>复制操作数</value></data>
+  <data name="Jobs_Merit_Undo_EnableOperand" xml:space="preserve"><value>启用操作数</value></data>
+  <data name="Jobs_Merit_Undo_Fields" xml:space="preserve"><value>更改评价函数视场</value></data>
+  <data name="Jobs_Merit_Undo_HoldEfl" xml:space="preserve"><value>保持焦距</value></data>
+  <data name="Jobs_Merit_Undo_MakeConstraint" xml:space="preserve"><value>设为约束</value></data>
+  <data name="Jobs_Merit_Undo_MakeResidual" xml:space="preserve"><value>设为残差</value></data>
+  <data name="Jobs_Merit_Undo_MoveOperand" xml:space="preserve"><value>移动操作数</value></data>
+  <data name="Jobs_Merit_Undo_MtfFieldRule" xml:space="preserve"><value>更改 MTF 视场规则</value></data>
+  <data name="Jobs_Merit_Undo_MtfFrequencies" xml:space="preserve"><value>更改 MTF 频率</value></data>
+  <data name="Jobs_Merit_Undo_MtfMethod" xml:space="preserve"><value>更改 MTF 方法</value></data>
+  <data name="Jobs_Merit_Undo_MtfTarget" xml:space="preserve"><value>更改 MTF 目标</value></data>
+  <data name="Jobs_Merit_Undo_OperandField" xml:space="preserve"><value>更改操作数视场</value></data>
+  <data name="Jobs_Merit_Undo_OperandWavelength" xml:space="preserve"><value>更改操作数波长</value></data>
+  <data name="Jobs_Merit_Undo_Param" xml:space="preserve"><value>更改{0}</value></data>
+  <data name="Jobs_Merit_Undo_PupilArms" xml:space="preserve"><value>更改光瞳臂数</value></data>
+  <data name="Jobs_Merit_Undo_PupilRings" xml:space="preserve"><value>更改光瞳环数</value></data>
+  <data name="Jobs_Merit_Undo_Reference" xml:space="preserve"><value>更改参考</value></data>
+  <data name="Jobs_Merit_Undo_SqueezeTarget" xml:space="preserve"><value>更改压缩比目标</value></data>
+  <data name="Jobs_Merit_Undo_Target" xml:space="preserve"><value>更改目标</value></data>
+  <data name="Jobs_Merit_Undo_ThicknessLimits" xml:space="preserve"><value>更改厚度限制</value></data>
+  <data name="Jobs_Merit_Undo_UseCustom" xml:space="preserve"><value>使用自定义评价函数</value></data>
+  <data name="Jobs_Merit_Undo_UseDefault" xml:space="preserve"><value>使用默认评价函数</value></data>
+  <data name="Jobs_Merit_Undo_Wavelengths" xml:space="preserve"><value>更改评价函数波长</value></data>
+  <data name="Jobs_Merit_Undo_Weight" xml:space="preserve"><value>更改权重</value></data>
+  <data name="Jobs_Merit_Wavelength" xml:space="preserve"><value>波长</value></data>
+  <data name="Jobs_Merit_Wavelengths" xml:space="preserve"><value>波长</value></data>
+  <data name="Jobs_Merit_WeakestField" xml:space="preserve"><value>最差视场</value></data>
+  <data name="Jobs_Merit_WeakestFieldHelp" xml:space="preserve"><value>在每个频率处使最差视场和方向最大化（极小极大），而不是使用按视场加权的下限。</value></data>
+  <data name="Jobs_Merit_Weight" xml:space="preserve"><value>权重</value></data>
+  <data name="Jobs_Merit_WhiteLightCentroid" xml:space="preserve"><value>白光质心</value></data>
+  <data name="Jobs_Merit_WhiteLightCentroidHelp" xml:space="preserve"><value>所有波长共用一个质心，因此计入垂轴色差；否则每个波长各用一个质心。</value></data>
+  <data name="Jobs_Optimize_Activity" xml:space="preserve"><value>正在优化</value></data>
+  <data name="Jobs_Optimize_ActivityIteration" xml:space="preserve"><value>正在优化 · {0}</value></data>
+  <data name="Jobs_Optimize_Algorithm" xml:space="preserve"><value>算法</value></data>
+  <data name="Jobs_Optimize_Algorithm_De" xml:space="preserve"><value>差分进化</value></data>
+  <data name="Jobs_Optimize_Algorithm_Dogleg" xml:space="preserve"><value>信赖域（dogleg）</value></data>
+  <data name="Jobs_Optimize_Algorithm_Hammer" xml:space="preserve"><value>盆地跳跃</value></data>
+  <data name="Jobs_Optimize_Algorithm_Lm" xml:space="preserve"><value>阻尼最小二乘（LM）</value></data>
+  <data name="Jobs_Optimize_Applied" xml:space="preserve"><value>已应用</value></data>
+  <data name="Jobs_Optimize_Apply" xml:space="preserve"><value>应用到设计</value></data>
+  <data name="Jobs_Optimize_ApplyHelp" xml:space="preserve"><value>将结果作为可撤销的一步应用（Ctrl+Enter）</value></data>
+  <data name="Jobs_Optimize_AtBound" xml:space="preserve"><value>到达边界</value></data>
+  <data name="Jobs_Optimize_AutomaticVariables" xml:space="preserve"><value>所有曲率和后焦距</value></data>
+  <data name="Jobs_Optimize_Back" xml:space="preserve"><value>返回</value></data>
+  <data name="Jobs_Optimize_BackHelp" xml:space="preserve"><value>返回任务设置</value></data>
+  <data name="Jobs_Optimize_CancelHelp" xml:space="preserve"><value>结束运行并放弃结果（Esc）</value></data>
+  <data name="Jobs_Optimize_Candidate" xml:space="preserve"><value>候选设计</value></data>
+  <data name="Jobs_Optimize_DesignVariables" xml:space="preserve"><value>设计变量（{0}）</value></data>
+  <data name="Jobs_Optimize_Discard" xml:space="preserve"><value>放弃</value></data>
+  <data name="Jobs_Optimize_DiscardHelp" xml:space="preserve"><value>丢弃此结果；设计保持不变</value></data>
+  <data name="Jobs_Optimize_Done" xml:space="preserve"><value>完成</value></data>
+  <data name="Jobs_Optimize_DoneHelp" xml:space="preserve"><value>返回评价函数和变量</value></data>
+  <data name="Jobs_Optimize_EvaluatedOnCpu" xml:space="preserve"><value>在 CPU f64 基准上评估。</value></data>
+  <data name="Jobs_Optimize_Failed" xml:space="preserve"><value>优化失败</value></data>
+  <data name="Jobs_Optimize_FixErrorsFirst" xml:space="preserve"><value>请先修正设计中的错误。</value></data>
+  <data name="Jobs_Optimize_Improvement" xml:space="preserve"><value>改善</value></data>
+  <data name="Jobs_Optimize_Iteration" xml:space="preserve"><value>迭代</value></data>
+  <data name="Jobs_Optimize_IterationProgress" xml:space="preserve"><value>迭代 {0}</value></data>
+  <data name="Jobs_Optimize_Iterations" xml:space="preserve"><value>迭代次数</value></data>
+  <data name="Jobs_Optimize_IterationsDefault" xml:space="preserve"><value>默认</value></data>
+  <data name="Jobs_Optimize_Merit" xml:space="preserve"><value>评价函数</value></data>
+  <data name="Jobs_Optimize_MeritAfter" xml:space="preserve"><value>优化后</value></data>
+  <data name="Jobs_Optimize_MeritBefore" xml:space="preserve"><value>优化前评价函数</value></data>
+  <data name="Jobs_Optimize_Method" xml:space="preserve"><value>方法</value></data>
+  <data name="Jobs_Optimize_NoMerit" xml:space="preserve"><value>引擎未返回评价函数值。</value></data>
+  <data name="Jobs_Optimize_NoOperands" xml:space="preserve"><value>引擎未为此设计生成任何操作数。</value></data>
+  <data name="Jobs_Optimize_NoResult" xml:space="preserve"><value>引擎未返回优化后的设计。</value></data>
+  <data name="Jobs_Optimize_NoVariablesHint" xml:space="preserve"><value>在镜头数据中用 V 标记数值（右键单击数值，或按 Ctrl+Shift+V）即可选为变量；每个变量都有合理的默认边界，可在此编辑。</value></data>
+  <data name="Jobs_Optimize_PreviewInWindow" xml:space="preserve"><value>在窗口中预览</value></data>
+  <data name="Jobs_Optimize_PreviewInWindowHelp" xml:space="preserve"><value>应用之前，在布局图和分析中显示优化后的设计</value></data>
+  <data name="Jobs_Optimize_Queued" xml:space="preserve"><value>排队中</value></data>
+  <data name="Jobs_Optimize_Run" xml:space="preserve"><value>优化</value></data>
+  <data name="Jobs_Optimize_RunHelp" xml:space="preserve"><value>开始优化（Ctrl+Enter）</value></data>
+  <data name="Jobs_Optimize_RunningHint" xml:space="preserve"><value>“停止”保留目前的最佳设计，“取消”放弃本次运行。可以关闭此面板，任务会继续运行。</value></data>
+  <data name="Jobs_Optimize_SearchMerit" xml:space="preserve"><value>搜索评价函数</value></data>
+  <data name="Jobs_Optimize_SearchMeritHelp" xml:space="preserve"><value>目前为止搜索评估得到的最佳评价函数值。</value></data>
+  <data name="Jobs_Optimize_SearchMeritPopulationHelp" xml:space="preserve"><value>搜索使用的评价函数，含保持焦距的惩罚项；结果报告的是评价函数本身。</value></data>
+  <data name="Jobs_Optimize_SearchedOn" xml:space="preserve"><value>在 {0} 上搜索；评价函数值在 CPU f64 基准上报告。</value></data>
+  <data name="Jobs_Optimize_Seed" xml:space="preserve"><value>随机种子</value></data>
+  <data name="Jobs_Optimize_Stop" xml:space="preserve"><value>停止</value></data>
+  <data name="Jobs_Optimize_StopHelp" xml:space="preserve"><value>立即结束并保留目前的最佳设计</value></data>
+  <data name="Jobs_Optimize_Title" xml:space="preserve"><value>优化</value></data>
+  <data name="Jobs_Optimize_TryAgain" xml:space="preserve"><value>重试</value></data>
+  <data name="Jobs_Optimize_TryAgainHelp" xml:space="preserve"><value>使用相同设置再次运行任务</value></data>
+  <data name="Jobs_Optimize_Undo_Apply" xml:space="preserve"><value>应用优化</value></data>
+  <data name="Jobs_Optimize_UntitledDesign" xml:space="preserve"><value>未命名设计</value></data>
+  <data name="Jobs_Optimize_VariableChangeName" xml:space="preserve"><value>{0}：{1} 变为 {2}</value></data>
+  <data name="Jobs_Optimize_Variables" xml:space="preserve"><value>变量</value></data>
+  <data name="Jobs_Preview_Computing" xml:space="preserve"><value>正在计算候选设计的点列图…</value></data>
+  <data name="Jobs_Preview_Design" xml:space="preserve"><value>设计</value></data>
+  <data name="Jobs_Preview_DesignAndCandidate" xml:space="preserve"><value>设计与候选设计</value></data>
+  <data name="Jobs_Preview_NoResult" xml:space="preserve"><value>点列图尚无结果。</value></data>
+  <data name="Jobs_Preview_OpenSpot" xml:space="preserve"><value>打开点列图即可在此比较其数值。</value></data>
+  <data name="Jobs_Preview_RowName" xml:space="preserve"><value>{0}：设计 {1}，候选设计 {2}</value></data>
+  <data name="Jobs_Preview_SpotDiagram" xml:space="preserve"><value>点列图</value></data>
+  <data name="Jobs_Registration_AddSolve" xml:space="preserve"><value>添加求解</value></data>
+  <data name="Jobs_Registration_Page_GlassSubstitution" xml:space="preserve"><value>玻璃替换</value></data>
+  <data name="Jobs_Registration_Page_Optimize" xml:space="preserve"><value>优化</value></data>
+  <data name="Jobs_Registration_Page_Solves" xml:space="preserve"><value>应用求解</value></data>
+  <data name="Jobs_Registration_Page_Tolerance" xml:space="preserve"><value>公差</value></data>
+  <data name="Jobs_Results_Counts" xml:space="preserve"><value>{0} 次迭代，{1} 次评估。</value></data>
+  <data name="Jobs_Results_Infeasible" xml:space="preserve"><value>部分约束未满足。</value></data>
+  <data name="Jobs_Results_NotImproved" xml:space="preserve"><value>未找到更好的设计；结果与起点相同。</value></data>
+  <data name="Jobs_Results_PreviewTitle" xml:space="preserve"><value>优化结果 · 评价函数 {0}</value></data>
+  <data name="Jobs_Results_PreviewTitleChange" xml:space="preserve"><value>{0}（{1}）</value></data>
+  <data name="Jobs_Results_PreviewTitleStopped" xml:space="preserve"><value>优化结果（已停止）· 评价函数 {0}</value></data>
+  <data name="Jobs_Results_StoppedEarly" xml:space="preserve"><value>已提前停止：这是目前找到的最佳设计。</value></data>
+  <data name="Jobs_Solves_ApplyHelp" xml:space="preserve"><value>将结果作为一步可撤销的操作应用（Ctrl+Enter）</value></data>
+  <data name="Jobs_Solves_ApplyHelpNoChange" xml:space="preserve"><value>求解不会改变任何值：设计已包含这些值</value></data>
+  <data name="Jobs_Solves_CommittedHint" xml:space="preserve"><value>设计现在包含这些求解值。</value></data>
+  <data name="Jobs_Solves_DoneHelp" xml:space="preserve"><value>返回设计的求解</value></data>
+  <data name="Jobs_Solves_DryRunHint" xml:space="preserve"><value>试运行：求解将设置的值。尚未做任何更改。</value></data>
+  <data name="Jobs_Solves_EmptyDescription" xml:space="preserve"><value>在面检查器中添加求解：厚度上的边缘光线或主光线高度，曲率上的角度或 F 数，以及拾取。</value></data>
+  <data name="Jobs_Solves_EmptyTitle" xml:space="preserve"><value>没有求解</value></data>
+  <data name="Jobs_Solves_FailedTitle" xml:space="preserve"><value>求解失败</value></data>
+  <data name="Jobs_Solves_None" xml:space="preserve"><value>无</value></data>
+  <data name="Jobs_Solves_NotReady" xml:space="preserve"><value>设计尚未就绪。</value></data>
+  <data name="Jobs_Solves_Residual" xml:space="preserve"><value>残差 {0}</value></data>
+  <data name="Jobs_Solves_RowName" xml:space="preserve"><value>{0}，{1}：{2} 到 {3}，残差 {4}</value></data>
+  <data name="Jobs_Solves_Solving" xml:space="preserve"><value>正在求解…</value></data>
+  <data name="Jobs_Solves_Subtitle_Many" xml:space="preserve"><value>{1}：{0} 个求解</value></data>
+  <data name="Jobs_Solves_Subtitle_One" xml:space="preserve"><value>{1}：{0} 个求解</value></data>
+  <data name="Jobs_Solves_TheDesign" xml:space="preserve"><value>设计</value></data>
+  <data name="Jobs_Solves_Title" xml:space="preserve"><value>应用求解</value></data>
+  <data name="Jobs_Tolerance_Model_BackFocus" xml:space="preserve"><value>后焦距</value></data>
+  <data name="Jobs_Tolerance_Model_Candidates_AirSpaces" xml:space="preserve"><value>空气间隔</value></data>
+  <data name="Jobs_Tolerance_Model_Candidates_BackFocus" xml:space="preserve"><value>后焦距</value></data>
+  <data name="Jobs_Tolerance_Model_Candidates_DesignVariables" xml:space="preserve"><value>设计变量</value></data>
+  <data name="Jobs_Tolerance_Model_Candidates_Surfaces" xml:space="preserve"><value>面</value></data>
+  <data name="Jobs_Tolerance_Model_Criterion_OptimizerMerit" xml:space="preserve"><value>优化器评价函数</value></data>
+  <data name="Jobs_Tolerance_Model_Criterion_RmsSpotRadius" xml:space="preserve"><value>RMS 弥散斑半径</value></data>
+  <data name="Jobs_Tolerance_Model_Criterion_RmsWavefront" xml:space="preserve"><value>RMS 波前</value></data>
+  <data name="Jobs_Tolerance_Model_Display_Merit" xml:space="preserve"><value>评价函数值</value></data>
+  <data name="Jobs_Tolerance_Model_Display_RmsSpot" xml:space="preserve"><value>RMS 弥散斑</value></data>
+  <data name="Jobs_Tolerance_Model_Display_RmsWavefront" xml:space="preserve"><value>RMS 波前</value></data>
+  <data name="Jobs_Tolerance_Model_Distribution_EndPoints" xml:space="preserve"><value>端点</value></data>
+  <data name="Jobs_Tolerance_Model_Distribution_Normal" xml:space="preserve"><value>正态（限值位于 ±{0} σ）</value></data>
+  <data name="Jobs_Tolerance_Model_Distribution_Parabolic" xml:space="preserve"><value>抛物线（多数靠近限值）</value></data>
+  <data name="Jobs_Tolerance_Model_Distribution_Uniform" xml:space="preserve"><value>均匀</value></data>
+  <data name="Jobs_Tolerance_Model_Group_AirAfter" xml:space="preserve"><value>{0} 后的空气间隔</value></data>
+  <data name="Jobs_Tolerance_Model_Group_Other" xml:space="preserve"><value>其他</value></data>
+  <data name="Jobs_Tolerance_Model_Group_Stop" xml:space="preserve"><value>光阑 S{0}</value></data>
+  <data name="Jobs_Tolerance_Model_Issue_AbbeUnknown" xml:space="preserve"><value>{0} 的阿贝数尚未知：请以 ΔV_d 给出限值，或等待玻璃数据。</value></data>
+  <data name="Jobs_Tolerance_Model_Issue_Air" xml:space="preserve"><value>空气</value></data>
+  <data name="Jobs_Tolerance_Model_Issue_ApertureWiderThanSphere" xml:space="preserve"><value>面 {0} 的通光口径超出其球面。</value></data>
+  <data name="Jobs_Tolerance_Model_Issue_BothZero" xml:space="preserve"><value>两个限值均为零。</value></data>
+  <data name="Jobs_Tolerance_Model_Issue_DecenterRange" xml:space="preserve"><value>只能对物面与像面之间的面设置偏心。</value></data>
+  <data name="Jobs_Tolerance_Model_Issue_DeltaRTooLarge" xml:space="preserve"><value>ΔR 必须小于 |R| = {0} mm。</value></data>
+  <data name="Jobs_Tolerance_Model_Issue_ElementGroupDisagrees" xml:space="preserve"><value>始于 {0} 的元件公差作为同一组移动：请为它们设置相同的末面和枢轴点。</value></data>
+  <data name="Jobs_Tolerance_Model_Issue_ElementInDesign" xml:space="preserve"><value>设计已将 S{0}–{1} 作为绕 S{2} 移动的元件：请使用该范围和枢轴点。</value></data>
+  <data name="Jobs_Tolerance_Model_Issue_ElementLastGone" xml:space="preserve"><value>元件的末面已不存在。</value></data>
+  <data name="Jobs_Tolerance_Model_Issue_ElementRange" xml:space="preserve"><value>元件移动的是物面与像面之间、从首面到末面的各面。</value></data>
+  <data name="Jobs_Tolerance_Model_Issue_FlatSurface" xml:space="preserve"><value>面 {0} 为平面：请以光圈数给出其光焦度公差。</value></data>
+  <data name="Jobs_Tolerance_Model_Issue_FringesNeedAperture" xml:space="preserve"><value>光圈数需要面 {0} 的通光口径；请运行布局或设置半口径。</value></data>
+  <data name="Jobs_Tolerance_Model_Issue_ImageThickness" xml:space="preserve"><value>像面没有厚度。</value></data>
+  <data name="Jobs_Tolerance_Model_Issue_LimitsNotPositive" xml:space="preserve"><value>限值必须为零或正数。</value></data>
+  <data name="Jobs_Tolerance_Model_Issue_MeltOffsetLimit" xml:space="preserve"><value>加上熔炼偏差（{0}）后，{1} 将超出引擎的限值 ±{2}。</value></data>
+  <data name="Jobs_Tolerance_Model_Issue_NoFormForIrregularity" xml:space="preserve"><value>面 {0} 没有可施加不规则度的面形。</value></data>
+  <data name="Jobs_Tolerance_Model_Issue_NoRadius" xml:space="preserve"><value>面 {0} 没有曲率半径。</value></data>
+  <data name="Jobs_Tolerance_Model_Issue_NotAGlass" xml:space="preserve"><value>面 {0} 之后是{1}，不是具有 n_d 和 V_d 的玻璃。</value></data>
+  <data name="Jobs_Tolerance_Model_Issue_OneSurface" xml:space="preserve"><value>同一面</value></data>
+  <data name="Jobs_Tolerance_Model_Issue_ParameterGone" xml:space="preserve"><value>该参数已不存在。</value></data>
+  <data name="Jobs_Tolerance_Model_Issue_PivotGone" xml:space="preserve"><value>枢轴面已不存在。</value></data>
+  <data name="Jobs_Tolerance_Model_Issue_RadiusUnits" xml:space="preserve"><value>曲率半径公差的单位为光圈、mm 或 %。</value></data>
+  <data name="Jobs_Tolerance_Model_Issue_SurfaceGone" xml:space="preserve"><value>该面已不存在。</value></data>
+  <data name="Jobs_Tolerance_Model_Issue_TiltRange" xml:space="preserve"><value>只能对物面与像面之间的面设置倾斜。</value></data>
+  <data name="Jobs_Tolerance_Model_KindShort_DecenterX" xml:space="preserve"><value>偏心 x</value></data>
+  <data name="Jobs_Tolerance_Model_KindShort_DecenterY" xml:space="preserve"><value>偏心 y</value></data>
+  <data name="Jobs_Tolerance_Model_KindShort_IrregularityAstigmatism" xml:space="preserve"><value>像散不规则</value></data>
+  <data name="Jobs_Tolerance_Model_KindShort_IrregularitySpherical" xml:space="preserve"><value>球面不规则</value></data>
+  <data name="Jobs_Tolerance_Model_KindShort_TiltX" xml:space="preserve"><value>倾斜 x</value></data>
+  <data name="Jobs_Tolerance_Model_KindShort_TiltY" xml:space="preserve"><value>倾斜 y</value></data>
+  <data name="Jobs_Tolerance_Model_Kind_Abbe" xml:space="preserve"><value>阿贝数</value></data>
+  <data name="Jobs_Tolerance_Model_Kind_DecenterX" xml:space="preserve"><value>面偏心 x</value></data>
+  <data name="Jobs_Tolerance_Model_Kind_DecenterY" xml:space="preserve"><value>面偏心 y</value></data>
+  <data name="Jobs_Tolerance_Model_Kind_ElementDecenterX" xml:space="preserve"><value>元件偏心 x</value></data>
+  <data name="Jobs_Tolerance_Model_Kind_ElementDecenterY" xml:space="preserve"><value>元件偏心 y</value></data>
+  <data name="Jobs_Tolerance_Model_Kind_ElementTiltX" xml:space="preserve"><value>元件倾斜 x</value></data>
+  <data name="Jobs_Tolerance_Model_Kind_ElementTiltY" xml:space="preserve"><value>元件倾斜 y</value></data>
+  <data name="Jobs_Tolerance_Model_Kind_Index" xml:space="preserve"><value>折射率</value></data>
+  <data name="Jobs_Tolerance_Model_Kind_IrregularityAstigmatism" xml:space="preserve"><value>像散不规则度</value></data>
+  <data name="Jobs_Tolerance_Model_Kind_IrregularitySpherical" xml:space="preserve"><value>球面不规则度</value></data>
+  <data name="Jobs_Tolerance_Model_Kind_Parameter" xml:space="preserve"><value>参数</value></data>
+  <data name="Jobs_Tolerance_Model_Kind_Radius" xml:space="preserve"><value>曲率半径</value></data>
+  <data name="Jobs_Tolerance_Model_Kind_Thickness" xml:space="preserve"><value>厚度</value></data>
+  <data name="Jobs_Tolerance_Model_Kind_TiltX" xml:space="preserve"><value>面倾斜 x</value></data>
+  <data name="Jobs_Tolerance_Model_Kind_TiltY" xml:space="preserve"><value>面倾斜 y</value></data>
+  <data name="Jobs_Tolerance_Model_Mode_Both" xml:space="preserve"><value>两者</value></data>
+  <data name="Jobs_Tolerance_Model_Mode_MonteCarlo" xml:space="preserve"><value>蒙特卡罗</value></data>
+  <data name="Jobs_Tolerance_Model_Mode_Sensitivity" xml:space="preserve"><value>敏感度</value></data>
+  <data name="Jobs_Tolerance_Model_Preset_Commercial" xml:space="preserve"><value>商用级</value></data>
+  <data name="Jobs_Tolerance_Model_Preset_HighPrecision" xml:space="preserve"><value>高精密级</value></data>
+  <data name="Jobs_Tolerance_Model_Preset_Precision" xml:space="preserve"><value>精密级</value></data>
+  <data name="Jobs_Tolerance_Model_Unit_ArcMinutes" xml:space="preserve"><value>角分</value></data>
+  <data name="Jobs_Tolerance_Model_Unit_Degrees" xml:space="preserve"><value>度</value></data>
+  <data name="Jobs_Tolerance_Model_Unit_ParameterUnits" xml:space="preserve"><value>参数单位</value></data>
+  <data name="Jobs_Tolerance_Model_Unit_Percent" xml:space="preserve"><value>百分比</value></data>
+  <data name="Jobs_Tolerance_Model_Unit_TestFringes" xml:space="preserve"><value>检测光圈</value></data>
+  <data name="Jobs_Tolerance_Panel_AddCompensator" xml:space="preserve"><value>添加补偿器</value></data>
+  <data name="Jobs_Tolerance_Panel_AddSurface" xml:space="preserve"><value>面 {0}</value></data>
+  <data name="Jobs_Tolerance_Panel_AddSurfaceLabeled" xml:space="preserve"><value>面 {0} · {1}</value></data>
+  <data name="Jobs_Tolerance_Panel_AddTolerance" xml:space="preserve"><value>添加公差</value></data>
+  <data name="Jobs_Tolerance_Panel_AnalysisGroup" xml:space="preserve"><value>分析</value></data>
+  <data name="Jobs_Tolerance_Panel_Back" xml:space="preserve"><value>返回</value></data>
+  <data name="Jobs_Tolerance_Panel_BackFocus" xml:space="preserve"><value>后焦距</value></data>
+  <data name="Jobs_Tolerance_Panel_BackHelp" xml:space="preserve"><value>返回公差</value></data>
+  <data name="Jobs_Tolerance_Panel_Builds" xml:space="preserve"><value>{0} 个样件</value></data>
+  <data name="Jobs_Tolerance_Panel_CancelHelp" xml:space="preserve"><value>结束运行并放弃结果</value></data>
+  <data name="Jobs_Tolerance_Panel_Comp_Allowed" xml:space="preserve"><value>允许 ±{0} {1}</value></data>
+  <data name="Jobs_Tolerance_Panel_Comp_AtLimit" xml:space="preserve"><value>已达到限值：部分样件需要的调整超出允许范围。</value></data>
+  <data name="Jobs_Tolerance_Panel_Comp_Mean" xml:space="preserve"><value>蒙特卡罗均值</value></data>
+  <data name="Jobs_Tolerance_Panel_Comp_MeanHelp" xml:space="preserve"><value>各次试验的均值，及其相对标称值的偏移</value></data>
+  <data name="Jobs_Tolerance_Panel_Comp_MeanWithShift" xml:space="preserve"><value>{0} {1}（{2}）</value></data>
+  <data name="Jobs_Tolerance_Panel_Comp_NominalHelp" xml:space="preserve"><value>在原设计上重新优化后的补偿器值</value></data>
+  <data name="Jobs_Tolerance_Panel_Comp_RangeBarHelp" xml:space="preserve"><value>敏感度评估使其从 {0} 移动到 +{1} {2}（允许 ±{3}）</value></data>
+  <data name="Jobs_Tolerance_Panel_Comp_RangeUsed" xml:space="preserve"><value>已用范围</value></data>
+  <data name="Jobs_Tolerance_Panel_Comp_RangeUsedHelp" xml:space="preserve"><value>敏感度评估所需的移动量（相对标称值）</value></data>
+  <data name="Jobs_Tolerance_Panel_Comp_RangeUsedValue" xml:space="preserve"><value>{0} 至 {1} {2}</value></data>
+  <data name="Jobs_Tolerance_Panel_Comp_Sigma" xml:space="preserve"><value>蒙特卡罗 σ</value></data>
+  <data name="Jobs_Tolerance_Panel_Comp_SigmaHelp" xml:space="preserve"><value>各次试验的标准差，及其三倍</value></data>
+  <data name="Jobs_Tolerance_Panel_Comp_SigmaValue" xml:space="preserve"><value>{0}（±3σ {1}）{2}</value></data>
+  <data name="Jobs_Tolerance_Panel_CompensatorsGroup" xml:space="preserve"><value>补偿器</value></data>
+  <data name="Jobs_Tolerance_Panel_CopySummary" xml:space="preserve"><value>复制摘要</value></data>
+  <data name="Jobs_Tolerance_Panel_CouldNotSave" xml:space="preserve"><value>无法保存：{0}</value></data>
+  <data name="Jobs_Tolerance_Panel_Criterion" xml:space="preserve"><value>判据</value></data>
+  <data name="Jobs_Tolerance_Panel_CriterionHintFields" xml:space="preserve"><value>在设计的各视场和波长上，按其权重计算。</value></data>
+  <data name="Jobs_Tolerance_Panel_CriterionHintMerit" xml:space="preserve"><value>每个样件按优化页的评价函数评判。</value></data>
+  <data name="Jobs_Tolerance_Panel_CriterionHintMtf" xml:space="preserve"><value>评价设置中各频率处的 MTF，以与 1 的差值表示。</value></data>
+  <data name="Jobs_Tolerance_Panel_CsvFileType" xml:space="preserve"><value>CSV（逗号分隔值）</value></data>
+  <data name="Jobs_Tolerance_Panel_DefaultTolerancesButton" xml:space="preserve"><value>默认公差…</value></data>
+  <data name="Jobs_Tolerance_Panel_DefaultTolerancesHelp" xml:space="preserve"><value>按制造等级生成一组公差</value></data>
+  <data name="Jobs_Tolerance_Panel_Delete" xml:space="preserve"><value>删除</value></data>
+  <data name="Jobs_Tolerance_Panel_DeleteSelected" xml:space="preserve"><value>删除所选公差（Delete）</value></data>
+  <data name="Jobs_Tolerance_Panel_Distribution" xml:space="preserve"><value>分布</value></data>
+  <data name="Jobs_Tolerance_Panel_Duplicate" xml:space="preserve"><value>复制</value></data>
+  <data name="Jobs_Tolerance_Panel_DuplicateSelected" xml:space="preserve"><value>复制所选公差</value></data>
+  <data name="Jobs_Tolerance_Panel_EditTolerances" xml:space="preserve"><value>编辑公差</value></data>
+  <data name="Jobs_Tolerance_Panel_EditTolerancesHelp" xml:space="preserve"><value>返回公差集（结果会保留）</value></data>
+  <data name="Jobs_Tolerance_Panel_Elapsed" xml:space="preserve"><value>已用时间</value></data>
+  <data name="Jobs_Tolerance_Panel_ElementLineName" xml:space="preserve"><value>移动 {0}，枢轴点 {1}</value></data>
+  <data name="Jobs_Tolerance_Panel_ElementLineSurface" xml:space="preserve"><value>面 {0}</value></data>
+  <data name="Jobs_Tolerance_Panel_EndPreview" xml:space="preserve"><value>结束预览</value></data>
+  <data name="Jobs_Tolerance_Panel_EndThePreview" xml:space="preserve"><value>结束预览</value></data>
+  <data name="Jobs_Tolerance_Panel_Export" xml:space="preserve"><value>导出</value></data>
+  <data name="Jobs_Tolerance_Panel_ExportHelp" xml:space="preserve"><value>将摘要复制为文本，或将表格保存为 CSV</value></data>
+  <data name="Jobs_Tolerance_Panel_FailedTitle" xml:space="preserve"><value>公差分析失败</value></data>
+  <data name="Jobs_Tolerance_Panel_FirstSurface" xml:space="preserve"><value>首面</value></data>
+  <data name="Jobs_Tolerance_Panel_Generator_AbbeNumber" xml:space="preserve"><value>阿贝数</value></data>
+  <data name="Jobs_Tolerance_Panel_Generator_Class" xml:space="preserve"><value>等级</value></data>
+  <data name="Jobs_Tolerance_Panel_Generator_ElementDecenter" xml:space="preserve"><value>元件偏心</value></data>
+  <data name="Jobs_Tolerance_Panel_Generator_ElementTilt" xml:space="preserve"><value>元件倾斜</value></data>
+  <data name="Jobs_Tolerance_Panel_Generator_Generate" xml:space="preserve"><value>生成</value></data>
+  <data name="Jobs_Tolerance_Panel_Generator_Hint" xml:space="preserve"><value>0 表示不含该类公差。生成会替换现有公差；补偿器保持不变。</value></data>
+  <data name="Jobs_Tolerance_Panel_Generator_Index" xml:space="preserve"><value>折射率</value></data>
+  <data name="Jobs_Tolerance_Panel_Generator_Irregularity" xml:space="preserve"><value>局部光圈</value></data>
+  <data name="Jobs_Tolerance_Panel_Generator_Power" xml:space="preserve"><value>光圈</value></data>
+  <data name="Jobs_Tolerance_Panel_Generator_SurfaceDecenter" xml:space="preserve"><value>面偏心</value></data>
+  <data name="Jobs_Tolerance_Panel_Generator_SurfaceTilt" xml:space="preserve"><value>面倾斜</value></data>
+  <data name="Jobs_Tolerance_Panel_Generator_Thickness" xml:space="preserve"><value>厚度</value></data>
+  <data name="Jobs_Tolerance_Panel_Generator_Title" xml:space="preserve"><value>默认公差</value></data>
+  <data name="Jobs_Tolerance_Panel_Group_Collapsed" xml:space="preserve"><value>已折叠，{0} 项公差</value></data>
+  <data name="Jobs_Tolerance_Panel_Group_CollapsedProblems" xml:space="preserve"><value>已折叠，{0} 项公差，{1} 项有问题</value></data>
+  <data name="Jobs_Tolerance_Panel_Group_Expanded" xml:space="preserve"><value>已展开</value></data>
+  <data name="Jobs_Tolerance_Panel_Group_Hide" xml:space="preserve"><value>隐藏 {0} 的公差</value></data>
+  <data name="Jobs_Tolerance_Panel_Group_Show" xml:space="preserve"><value>显示 {1} 的 {0} 项公差</value></data>
+  <data name="Jobs_Tolerance_Panel_HistogramDashed" xml:space="preserve"><value>虚线：{0} % 的样件。</value></data>
+  <data name="Jobs_Tolerance_Panel_HistogramHelp" xml:space="preserve"><value>点击柱条以列出其试验</value></data>
+  <data name="Jobs_Tolerance_Panel_HistogramHint" xml:space="preserve"><value>点击直方图的柱条查看其试验；眼睛图标在窗口中重建该试验。</value></data>
+  <data name="Jobs_Tolerance_Panel_HistogramHintSelected" xml:space="preserve"><value>眼睛图标在窗口中以只读方式重建试验。</value></data>
+  <data name="Jobs_Tolerance_Panel_HistogramName" xml:space="preserve"><value>{0} 次蒙特卡罗试验的{1}分布</value></data>
+  <data name="Jobs_Tolerance_Panel_HistogramSolid" xml:space="preserve"><value>实线：标称值 {0}。</value></data>
+  <data name="Jobs_Tolerance_Panel_HistogramSolidDashed" xml:space="preserve"><value>实线：标称值 {0}。虚线：{1} % 的样件。</value></data>
+  <data name="Jobs_Tolerance_Panel_KeepTrials" xml:space="preserve"><value>保留试验</value></data>
+  <data name="Jobs_Tolerance_Panel_KeepTrialsHelp" xml:space="preserve"><value>保留扰动和补偿器值的试验数（用于预览）</value></data>
+  <data name="Jobs_Tolerance_Panel_KeptTrialsName" xml:space="preserve"><value>保留的试验数</value></data>
+  <data name="Jobs_Tolerance_Panel_LastRunEstimate" xml:space="preserve"><value>上次运行：每次试验 {0}，因此 {1} 次试验约需 {2}。</value></data>
+  <data name="Jobs_Tolerance_Panel_LastSurface" xml:space="preserve"><value>末面</value></data>
+  <data name="Jobs_Tolerance_Panel_LevelOfBuilds" xml:space="preserve"><value>{0} % 的样件</value></data>
+  <data name="Jobs_Tolerance_Panel_Levels" xml:space="preserve"><value>分位水平</value></data>
+  <data name="Jobs_Tolerance_Panel_LevelsHelp" xml:space="preserve"><value>样件的百分位数，取值 0…100</value></data>
+  <data name="Jobs_Tolerance_Panel_LevelsName" xml:space="preserve"><value>分位水平（百分比）</value></data>
+  <data name="Jobs_Tolerance_Panel_LimitMinusName" xml:space="preserve"><value>{0} 下限</value></data>
+  <data name="Jobs_Tolerance_Panel_LimitName" xml:space="preserve"><value>{0} 限值</value></data>
+  <data name="Jobs_Tolerance_Panel_LimitPlusName" xml:space="preserve"><value>{0} 上限</value></data>
+  <data name="Jobs_Tolerance_Panel_ListSeparator" xml:space="preserve"><value>、</value></data>
+  <data name="Jobs_Tolerance_Panel_MenuButtonName" xml:space="preserve"><value>{0}：{1}</value></data>
+  <data name="Jobs_Tolerance_Panel_MonteCarloGroup" xml:space="preserve"><value>蒙特卡罗</value></data>
+  <data name="Jobs_Tolerance_Panel_NoCompensators" xml:space="preserve"><value>无：每个样件按原样评判。</value></data>
+  <data name="Jobs_Tolerance_Panel_NoTolerances" xml:space="preserve"><value>没有公差。生成一组默认公差，或用 + 添加。</value></data>
+  <data name="Jobs_Tolerance_Panel_NoTrialInBar" xml:space="preserve"><value>此柱条中没有试验。</value></data>
+  <data name="Jobs_Tolerance_Panel_Nominal" xml:space="preserve"><value>标称值</value></data>
+  <data name="Jobs_Tolerance_Panel_PassLimit" xml:space="preserve"><value>合格限</value></data>
+  <data name="Jobs_Tolerance_Panel_PassLimitHelpHighest" xml:space="preserve"><value>样件允许的最高值；据此计算良率</value></data>
+  <data name="Jobs_Tolerance_Panel_PassLimitHelpLowest" xml:space="preserve"><value>样件允许的最低值；据此计算良率</value></data>
+  <data name="Jobs_Tolerance_Panel_PassLimitNone" xml:space="preserve"><value>无</value></data>
+  <data name="Jobs_Tolerance_Panel_PerTrial" xml:space="preserve"><value>每次试验 {0}</value></data>
+  <data name="Jobs_Tolerance_Panel_PivotFirstVertex" xml:space="preserve"><value>首顶点（S{0}）</value></data>
+  <data name="Jobs_Tolerance_Panel_PivotHelp" xml:space="preserve"><value>元件绕其倾斜的顶点；所有始于 S{0} 的元件公差都使用它</value></data>
+  <data name="Jobs_Tolerance_Panel_PivotLabel" xml:space="preserve"><value>枢轴点 {0}</value></data>
+  <data name="Jobs_Tolerance_Panel_PivotLastVertex" xml:space="preserve"><value>末顶点（S{0}）</value></data>
+  <data name="Jobs_Tolerance_Panel_PivotName" xml:space="preserve"><value>枢轴点 {0}</value></data>
+  <data name="Jobs_Tolerance_Panel_PivotSurface" xml:space="preserve"><value>面</value></data>
+  <data name="Jobs_Tolerance_Panel_PreviewCompensator" xml:space="preserve"><value>{0}：{1}（{2}）</value></data>
+  <data name="Jobs_Tolerance_Panel_PreviewCriterion" xml:space="preserve"><value>判据 {0}</value></data>
+  <data name="Jobs_Tolerance_Panel_PreviewCriterionNominal" xml:space="preserve"><value>判据 {0}（标称值 {1}）</value></data>
+  <data name="Jobs_Tolerance_Panel_PreviewTrial" xml:space="preserve"><value>在窗口中预览试验 {0}：其扰动；不会应用</value></data>
+  <data name="Jobs_Tolerance_Panel_PreviewTrialCompensated" xml:space="preserve"><value>在窗口中预览试验 {0}：其扰动及重新优化的补偿器；不会应用</value></data>
+  <data name="Jobs_Tolerance_Panel_PreviewWorseLimit" xml:space="preserve"><value>在窗口中预览该样件处于较差限值时的状态</value></data>
+  <data name="Jobs_Tolerance_Panel_RangeFree" xml:space="preserve"><value>自由</value></data>
+  <data name="Jobs_Tolerance_Panel_RangeOf" xml:space="preserve"><value>{0} 的范围</value></data>
+  <data name="Jobs_Tolerance_Panel_Rebuilding" xml:space="preserve"><value>正在引擎中重建该样件…</value></data>
+  <data name="Jobs_Tolerance_Panel_RemoveCompensatorHelp" xml:space="preserve"><value>移除补偿器</value></data>
+  <data name="Jobs_Tolerance_Panel_RowName" xml:space="preserve"><value>{0}，{1}</value></data>
+  <data name="Jobs_Tolerance_Panel_RssPrediction" xml:space="preserve"><value>RSS 预测</value></data>
+  <data name="Jobs_Tolerance_Panel_Run" xml:space="preserve"><value>运行公差分析</value></data>
+  <data name="Jobs_Tolerance_Panel_RunHelp" xml:space="preserve"><value>开始运行（Ctrl+Enter）</value></data>
+  <data name="Jobs_Tolerance_Panel_Running" xml:space="preserve"><value>正在运行</value></data>
+  <data name="Jobs_Tolerance_Panel_RunningHint" xml:space="preserve"><value>“停止”会保留敏感度和已完成的试验。“取消”会放弃本次运行。可以关闭此面板，任务会继续运行。</value></data>
+  <data name="Jobs_Tolerance_Panel_SaveSensitivityCsv" xml:space="preserve"><value>将敏感度表保存为 CSV…</value></data>
+  <data name="Jobs_Tolerance_Panel_SaveTrialsCsv" xml:space="preserve"><value>将蒙特卡罗试验保存为 CSV…</value></data>
+  <data name="Jobs_Tolerance_Panel_Saved" xml:space="preserve"><value>已保存 {0}。</value></data>
+  <data name="Jobs_Tolerance_Panel_Seed" xml:space="preserve"><value>随机种子</value></data>
+  <data name="Jobs_Tolerance_Panel_SensitivityGroup" xml:space="preserve"><value>敏感度</value></data>
+  <data name="Jobs_Tolerance_Panel_SensitivityGroupLargest" xml:space="preserve"><value>敏感度（{0} 项中最大的 25 项）</value></data>
+  <data name="Jobs_Tolerance_Panel_SensitivityRowName" xml:space="preserve"><value>{0}：占 RSS 的 {1}</value></data>
+  <data name="Jobs_Tolerance_Panel_ShareOfRss" xml:space="preserve"><value>占 RSS 比例</value></data>
+  <data name="Jobs_Tolerance_Panel_ShowLastResults" xml:space="preserve"><value>显示上次结果</value></data>
+  <data name="Jobs_Tolerance_Panel_ShowMore" xml:space="preserve"><value>再显示 {0} 项</value></data>
+  <data name="Jobs_Tolerance_Panel_Stop" xml:space="preserve"><value>停止</value></data>
+  <data name="Jobs_Tolerance_Panel_StopHelp" xml:space="preserve"><value>立即结束，并保留敏感度和已完成的试验</value></data>
+  <data name="Jobs_Tolerance_Panel_StoppedEarly" xml:space="preserve"><value>已提前停止：以下为已完成部分的结果。</value></data>
+  <data name="Jobs_Tolerance_Panel_Subtitle_Many" xml:space="preserve"><value>{0} 项公差 · {1}</value></data>
+  <data name="Jobs_Tolerance_Panel_Subtitle_One" xml:space="preserve"><value>{0} 项公差 · {1}</value></data>
+  <data name="Jobs_Tolerance_Panel_SummaryCopied" xml:space="preserve"><value>公差摘要已复制到剪贴板。</value></data>
+  <data name="Jobs_Tolerance_Panel_SurfaceColumnElementHelp" xml:space="preserve"><value>元件：一起移动的各面</value></data>
+  <data name="Jobs_Tolerance_Panel_SurfaceColumnSurfaceHelp" xml:space="preserve"><value>面（厚度指其后的间隔）</value></data>
+  <data name="Jobs_Tolerance_Panel_SurfaceStop" xml:space="preserve"><value>S{0}（光阑）</value></data>
+  <data name="Jobs_Tolerance_Panel_SymmetricLimits" xml:space="preserve"><value>对称限值</value></data>
+  <data name="Jobs_Tolerance_Panel_TestFringesAt" xml:space="preserve"><value>光圈检测波长</value></data>
+  <data name="Jobs_Tolerance_Panel_TestFringesHelp" xml:space="preserve"><value>光圈和局部光圈的条纹数按此波长计</value></data>
+  <data name="Jobs_Tolerance_Panel_TestWavelengthName" xml:space="preserve"><value>检测波长（nm）</value></data>
+  <data name="Jobs_Tolerance_Panel_TheDesign" xml:space="preserve"><value>该设计</value></data>
+  <data name="Jobs_Tolerance_Panel_TimeLeft" xml:space="preserve"><value>剩余时间</value></data>
+  <data name="Jobs_Tolerance_Panel_Title" xml:space="preserve"><value>公差</value></data>
+  <data name="Jobs_Tolerance_Panel_TitleWithUnit" xml:space="preserve"><value>{0}（{1}）</value></data>
+  <data name="Jobs_Tolerance_Panel_TolerancesGroup" xml:space="preserve"><value>公差</value></data>
+  <data name="Jobs_Tolerance_Panel_Trial" xml:space="preserve"><value>试验 {0}</value></data>
+  <data name="Jobs_Tolerance_Panel_TrialName" xml:space="preserve"><value>试验 {0}，{1}</value></data>
+  <data name="Jobs_Tolerance_Panel_Trials" xml:space="preserve"><value>试验次数</value></data>
+  <data name="Jobs_Tolerance_Panel_TrialsSummary" xml:space="preserve"><value>{0} 次试验，随机种子 {1}</value></data>
+  <data name="Jobs_Tolerance_Panel_TrialsSummaryFailed" xml:space="preserve"><value>{0} 次试验，{1} 次失败，随机种子 {2}</value></data>
+  <data name="Jobs_Tolerance_Panel_TrialsSummaryTimed" xml:space="preserve"><value>{0} · 每次试验 {1}</value></data>
+  <data name="Jobs_Tolerance_Panel_TryAgain" xml:space="preserve"><value>重试</value></data>
+  <data name="Jobs_Tolerance_Panel_TryAgainHelp" xml:space="preserve"><value>以相同设置再次运行任务</value></data>
+  <data name="Jobs_Tolerance_Panel_Undo_AddCompensator" xml:space="preserve"><value>添加补偿器</value></data>
+  <data name="Jobs_Tolerance_Panel_Undo_AddTolerance" xml:space="preserve"><value>添加公差</value></data>
+  <data name="Jobs_Tolerance_Panel_Undo_AsymmetricLimits" xml:space="preserve"><value>非对称限值</value></data>
+  <data name="Jobs_Tolerance_Panel_Undo_ChangeAnalysis" xml:space="preserve"><value>更改分析</value></data>
+  <data name="Jobs_Tolerance_Panel_Undo_ChangeCompensatorRange" xml:space="preserve"><value>更改补偿器范围</value></data>
+  <data name="Jobs_Tolerance_Panel_Undo_ChangeCriterion" xml:space="preserve"><value>更改判据</value></data>
+  <data name="Jobs_Tolerance_Panel_Undo_ChangeDistribution" xml:space="preserve"><value>更改分布</value></data>
+  <data name="Jobs_Tolerance_Panel_Undo_ChangeElement" xml:space="preserve"><value>更改元件</value></data>
+  <data name="Jobs_Tolerance_Panel_Undo_ChangeElementPivot" xml:space="preserve"><value>更改元件枢轴点</value></data>
+  <data name="Jobs_Tolerance_Panel_Undo_ChangeKeptTrials" xml:space="preserve"><value>更改保留的试验数</value></data>
+  <data name="Jobs_Tolerance_Panel_Undo_ChangeLevels" xml:space="preserve"><value>更改分位水平</value></data>
+  <data name="Jobs_Tolerance_Panel_Undo_ChangePassLimit" xml:space="preserve"><value>更改合格限</value></data>
+  <data name="Jobs_Tolerance_Panel_Undo_ChangeSeed" xml:space="preserve"><value>更改随机种子</value></data>
+  <data name="Jobs_Tolerance_Panel_Undo_ChangeTestWavelength" xml:space="preserve"><value>更改检测波长</value></data>
+  <data name="Jobs_Tolerance_Panel_Undo_ChangeTolerance" xml:space="preserve"><value>更改公差</value></data>
+  <data name="Jobs_Tolerance_Panel_Undo_ChangeToleranceSurface" xml:space="preserve"><value>更改公差面</value></data>
+  <data name="Jobs_Tolerance_Panel_Undo_ChangeToleranceUnit" xml:space="preserve"><value>更改公差单位</value></data>
+  <data name="Jobs_Tolerance_Panel_Undo_ChangeTrials" xml:space="preserve"><value>更改试验次数</value></data>
+  <data name="Jobs_Tolerance_Panel_Undo_DefaultTolerances" xml:space="preserve"><value>默认公差</value></data>
+  <data name="Jobs_Tolerance_Panel_Undo_DeleteTolerance" xml:space="preserve"><value>删除公差</value></data>
+  <data name="Jobs_Tolerance_Panel_Undo_DeleteTolerances" xml:space="preserve"><value>删除公差</value></data>
+  <data name="Jobs_Tolerance_Panel_Undo_DuplicateTolerance" xml:space="preserve"><value>复制公差</value></data>
+  <data name="Jobs_Tolerance_Panel_Undo_RemoveCompensator" xml:space="preserve"><value>移除补偿器</value></data>
+  <data name="Jobs_Tolerance_Panel_Undo_SymmetricLimits" xml:space="preserve"><value>对称限值</value></data>
+  <data name="Jobs_Tolerance_Panel_UnitHelp" xml:space="preserve"><value>限值的单位（更改时会换算限值）</value></data>
+  <data name="Jobs_Tolerance_Panel_UnitNeedsData" xml:space="preserve"><value>此单位需要面的通光口径或玻璃的阿贝数，而设计尚未提供。</value></data>
+  <data name="Jobs_Tolerance_Panel_WorstTrialsButton" xml:space="preserve"><value>最差试验</value></data>
+  <data name="Jobs_Tolerance_Panel_WorstTrialsHelp" xml:space="preserve"><value>列出最差试验，而非所选柱条的试验</value></data>
+  <data name="Jobs_Tolerance_Panel_WorstTrialsTitle" xml:space="preserve"><value>最差试验</value></data>
+  <data name="Jobs_Tolerance_Panel_Yield" xml:space="preserve"><value>良率（合格限 {0}）</value></data>
+  <data name="Jobs_Tolerance_Result_PreviewAtLimit" xml:space="preserve"><value>{0} 处于 {1}</value></data>
+  <data name="Jobs_Tolerance_Result_PreviewCase" xml:space="preserve"><value>公差：{0}</value></data>
+  <data name="Jobs_Tolerance_Result_PreviewCaseCompensated" xml:space="preserve"><value>公差：{0}，已补偿</value></data>
+  <data name="Jobs_Tolerance_Result_PreviewOperand" xml:space="preserve"><value>操作数 {0}</value></data>
+  <data name="Jobs_Tolerance_Result_PreviewTrial" xml:space="preserve"><value>公差：试验 {0}</value></data>
+  <data name="Jobs_Tolerance_Result_PreviewTrialCompensated" xml:space="preserve"><value>公差：试验 {0}，已补偿</value></data>
+  <data name="Jobs_Tolerance_Session_Activity" xml:space="preserve"><value>公差分析 · {0}</value></data>
+  <data name="Jobs_Tolerance_Session_AddToleranceFirst" xml:space="preserve"><value>请先添加公差。</value></data>
+  <data name="Jobs_Tolerance_Session_FixDesignErrors" xml:space="preserve"><value>请先修正设计中的错误。</value></data>
+  <data name="Jobs_Tolerance_Session_FixMarked_Many" xml:space="preserve"><value>请先修正标红的 {0} 项公差。</value></data>
+  <data name="Jobs_Tolerance_Session_FixMarked_One" xml:space="preserve"><value>请先修正标红的公差。</value></data>
+  <data name="Jobs_Tolerance_Session_MinTrials" xml:space="preserve"><value>请至少运行 2 次蒙特卡罗试验。</value></data>
+  <data name="Jobs_Tolerance_Session_PreviewNoRay" xml:space="preserve"><value>引擎无法重建该样件：没有光线到达像面。</value></data>
+  <data name="Jobs_Tolerance_Session_Queued" xml:space="preserve"><value>排队中</value></data>
+  <data name="Jobs_Tolerance_Views_BinTitle_Many" xml:space="preserve"><value>{1}–{2}{3} 中的 {0} 次试验</value></data>
+  <data name="Jobs_Tolerance_Views_BinTitle_One" xml:space="preserve"><value>{1}–{2}{3} 中的 {0} 次试验</value></data>
+  <data name="Jobs_Tolerance_Views_MoveTogether" xml:space="preserve"><value>{0} 一起移动</value></data>
+  <data name="Jobs_Tolerance_Views_Moves" xml:space="preserve"><value>{0} 移动</value></data>
+  <data name="Jobs_Tolerance_Views_PivotFirstVertex" xml:space="preserve"><value>{0}，首顶点</value></data>
+  <data name="Jobs_Tolerance_Views_PivotLastVertex" xml:space="preserve"><value>{0}，末顶点</value></data>
+  <data name="Jobs_Variables_BoundsAs" xml:space="preserve"><value>边界换算为 {0}。{1}</value></data>
+  <data name="Jobs_Variables_BoundsIn" xml:space="preserve"><value>边界单位为 {0}</value></data>
+  <data name="Jobs_Variables_BoundsInHelp" xml:space="preserve"><value>边界单位为 {0}。</value></data>
+  <data name="Jobs_Variables_CurvatureHelp" xml:space="preserve"><value>曲率 c = 1/R 的边界（1/mm）。</value></data>
+  <data name="Jobs_Variables_CurvaturesAs" xml:space="preserve"><value>曲率显示为</value></data>
+  <data name="Jobs_Variables_Dimensionless" xml:space="preserve"><value>无量纲</value></data>
+  <data name="Jobs_Variables_DimensionlessHelp" xml:space="preserve"><value>无量纲参数的边界。</value></data>
+  <data name="Jobs_Variables_Max" xml:space="preserve"><value>最大</value></data>
+  <data name="Jobs_Variables_MaxName" xml:space="preserve"><value>{0}的最大值</value></data>
+  <data name="Jobs_Variables_MaxNameUnit" xml:space="preserve"><value>{0}的最大值，单位 {1}</value></data>
+  <data name="Jobs_Variables_Min" xml:space="preserve"><value>最小</value></data>
+  <data name="Jobs_Variables_MinName" xml:space="preserve"><value>{0}的最小值</value></data>
+  <data name="Jobs_Variables_MinNameUnit" xml:space="preserve"><value>{0}的最小值，单位 {1}</value></data>
+  <data name="Jobs_Variables_Now" xml:space="preserve"><value>当前 {0}</value></data>
+  <data name="Jobs_Variables_NowCurvature" xml:space="preserve"><value>当前 c {0}</value></data>
+  <data name="Jobs_Variables_NowRadius" xml:space="preserve"><value>当前 R {0}</value></data>
+  <data name="Jobs_Variables_NowRadiusThroughFlat" xml:space="preserve"><value>当前 R {0} · 经过 ∞</value></data>
+  <data name="Jobs_Variables_Pin" xml:space="preserve"><value>固定在当前值（上下边界相等）：仍为变量但保持不变</value></data>
+  <data name="Jobs_Variables_PinnedHelp" xml:space="preserve"><value>已固定：仍为变量，但保持当前值</value></data>
+  <data name="Jobs_Variables_Problem_AutoSemiDiameter" xml:space="preserve"><value>半口径为自动：请先在镜头数据中设定数值。</value></data>
+  <data name="Jobs_Variables_Problem_Gone" xml:space="preserve"><value>该面上已不存在此参数。</value></data>
+  <data name="Jobs_Variables_Problem_MinAboveMax" xml:space="preserve"><value>最小值大于最大值。</value></data>
+  <data name="Jobs_Variables_Problem_OutOfBounds" xml:space="preserve"><value>当前 {0}：超出边界</value></data>
+  <data name="Jobs_Variables_Problem_Solved" xml:space="preserve"><value>由求解设定：不参与变化</value></data>
+  <data name="Jobs_Variables_RadiusContainsZero" xml:space="preserve"><value>此半径区间经过 R = 0，不是有效的曲率范围。若要 |R| ≥ r，请输入最小值 r、最大值 −r（经过 ∞）。</value></data>
+  <data name="Jobs_Variables_RadiusHelp" xml:space="preserve"><value>以 mm 为单位的曲率半径区间作为边界；优化器约束的是曲率 c = 1/R。留空表示该侧不设限。最小值大于最大值时区间经过平面（R = ∞）：最小 100、最大 −100 即 |R| ≥ 100。0 表示该侧曲率不设限。</value></data>
+  <data name="Jobs_Variables_Refusal" xml:space="preserve"><value>由求解（{0}）设定，优化器无法改变它。移除求解后才能将其设为变量。</value></data>
+  <data name="Jobs_Variables_Remove" xml:space="preserve"><value>固定此参数（移除变量）</value></data>
+  <data name="Jobs_Variables_SolvedHelp" xml:space="preserve"><value>此值由{0}求解设定，因此优化器在运行时不使用该变量。请移除该变量，或删除求解以改变它。</value></data>
+  <data name="Jobs_Variables_Undo_Bounds" xml:space="preserve"><value>更改边界</value></data>
+  <data name="Jobs_Variables_Undo_Make" xml:space="preserve"><value>设为变量</value></data>
+  <data name="Jobs_Variables_Undo_Pin" xml:space="preserve"><value>固定变量</value></data>
+  <data name="Jobs_Variables_Undo_Remove" xml:space="preserve"><value>移除变量</value></data>
+  <data name="Jobs_Variables_Undo_Unpin" xml:space="preserve"><value>取消固定变量</value></data>
+  <data name="Jobs_Variables_Unit" xml:space="preserve"><value>单位</value></data>
+  <data name="Jobs_Variables_UnitHelp" xml:space="preserve"><value>以 mm 为单位的半径区间输入和显示半径边界，或使用优化器所用的曲率 c = 1/R</value></data>
+  <data name="Jobs_Variables_Unit_Curvature" xml:space="preserve"><value>曲率 1/mm</value></data>
+  <data name="Jobs_Variables_Unit_Radius" xml:space="preserve"><value>半径 mm</value></data>
+  <data name="Jobs_Variables_Unpin" xml:space="preserve"><value>取消固定：允许优化器再次改变它</value></data>
+  <data name="Jobs_Variables_Variable" xml:space="preserve"><value>变量</value></data>
   <!-- end area: Jobs -->
   <!-- area: Results -->
   <data name="Results_A11y_Selected" xml:space="preserve"><value>已选择</value></data>

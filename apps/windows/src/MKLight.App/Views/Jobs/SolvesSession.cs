@@ -1,4 +1,5 @@
 using System.Text.Json.Nodes;
+using MKLight.App.Support;
 using MKLight.App.ViewModels;
 using MKLight.App.ViewModels.Jobs;
 using MKLight.Engine;
@@ -33,7 +34,7 @@ public sealed class SolvesSession(DesignSession session)
         if (job is null)
         {
             Phase = JobPhase.Failed;
-            Failure = session.Workspace.ModelErrors.FirstOrDefault() ?? "The design is not ready yet.";
+            Failure = session.Workspace.ModelErrors.FirstOrDefault() ?? Loc.S("Jobs_Solves_NotReady");
             Changed?.Invoke();
             return;
         }
@@ -72,7 +73,7 @@ public sealed class SolvesSession(DesignSession session)
             var applied = await session.Workspace.Engine.ApplySolvesAsync(new Dictionary<string, JsonNode?>(), snap);
             var system = OpticalSystem.FromJson(JsonNode.Parse(applied.Snapshot.SystemJson));
             Read(applied.Report, session.Document.System);
-            DesignVariables.ReplaceSystem(session.Document, system, "Apply Solves");
+            DesignVariables.ReplaceSystem(session.Document, system, Loc.S("Jobs_Solves_Title"));
             Committed = true;
             Phase = JobPhase.Finished;
         }

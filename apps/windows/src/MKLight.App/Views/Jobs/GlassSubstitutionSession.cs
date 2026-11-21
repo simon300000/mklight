@@ -1,3 +1,4 @@
+using MKLight.App.Support;
 using MKLight.App.ViewModels;
 using MKLight.App.ViewModels.Jobs;
 using MKLight.Engine;
@@ -15,6 +16,8 @@ public sealed class GlassSubstitutionSession
     readonly DesignSession _s;
     readonly OptimizeSession _optimize;
     AnalysisJob? _job;
+    /// <summary>The window's preview title this job set (to end only its own preview).</summary>
+    string? _previewTitle;
 
     public GlassSubstitutionSession(DesignSession session, OptimizeSession optimize)
     {
@@ -67,7 +70,7 @@ public sealed class GlassSubstitutionSession
         if (job is null)
         {
             Phase = JobPhase.Failed;
-            Failure = "Fix the design's errors first.";
+            Failure = Loc.S("Jobs_GlassSub_FixErrors");
             Changed?.Invoke();
             return;
         }
@@ -79,7 +82,7 @@ public sealed class GlassSubstitutionSession
         Applied = false;
         Failure = null;
         Phase = JobPhase.Running;
-        Progress = new JobProgress(0, "Preparing candidates");
+        Progress = new JobProgress(0, Loc.S("Jobs_GlassSub_PreparingCandidates"));
         UpdateActivity();
         Changed?.Invoke();
         _ = Follow(job);
@@ -116,7 +119,7 @@ public sealed class GlassSubstitutionSession
             if (Result is null)
             {
                 Phase = JobPhase.Failed;
-                Failure = "The engine returned no glass combinations.";
+                Failure = Loc.S("Jobs_GlassSub_NoResult");
             }
             else
             {
@@ -144,7 +147,7 @@ public sealed class GlassSubstitutionSession
     void UpdateActivity()
     {
         if (Phase == JobPhase.Running)
-            _s.SetJobActivity("glass_substitution", Live is { } l ? $"Substituting · {l.Combinations}" : "Substituting", () => _s.ShowInspectorPage("glass_substitution"));
+            _s.SetJobActivity("glass_substitution", Live is { } l ? Loc.F("Jobs_GlassSub_ActivityCount", l.Combinations) : Loc.S("Jobs_GlassSub_Activity"), () => _s.ShowInspectorPage("glass_substitution"));
         else _s.SetJobActivity("glass_substitution", null);
     }
 
@@ -154,9 +157,11 @@ public sealed class GlassSubstitutionSession
         SelectedRank = rank;
         if (Selected is { System: { } system } c && !Applied)
         {
-            var title = $"Glass candidate {c.Rank} · merit {MeritFormat.Merit(c.Merit)}";
-            if (Result is { StartingMerit: > 0 } r && double.IsFinite(c.Merit))
-                title += $" ({(c.Merit <= r.StartingMerit ? "−" : "+")}{MeritFormat.Percent(Math.Abs(1 - c.Merit / r.StartingMerit), 0)})";
+            var title = Result is { StartingMerit: > 0 } r && double.IsFinite(c.Merit)
+                ? Loc.F("Jobs_GlassSub_PreviewTitleChange", c.Rank, MeritFormat.Merit(c.Merit), c.Merit <= r.StartingMerit ? "−" : "+",
+                    MeritFormat.Percent(Math.Abs(1 - c.Merit / r.StartingMerit), 0))
+                : Loc.F("Jobs_GlassSub_PreviewTitle", c.Rank, MeritFormat.Merit(c.Merit));
+            _previewTitle = title;
             _s.Workspace.Preview(system, title);
         }
         else EndPreview();
@@ -165,7 +170,7 @@ public sealed class GlassSubstitutionSession
 
     void EndPreview()
     {
-        if (_s.Workspace.IsPreviewing && _s.Workspace.PreviewTitle?.StartsWith("Glass candidate", StringComparison.Ordinal) == true) _s.Workspace.Preview(null);
+        if (_s.Workspace.IsPreviewing && _previewTitle is not null && _s.Workspace.PreviewTitle == _previewTitle) _s.Workspace.Preview(null);
     }
 
     public void Stop() => _job?.Stop();
@@ -185,7 +190,7 @@ public sealed class GlassSubstitutionSession
     {
         if (Selected?.System is not { } system || Applied) return;
         Applied = true;
-        DesignVariables.ReplaceSystem(_s.Document, system, "Apply Glass Substitution");
+        DesignVariables.ReplaceSystem(_s.Document, system, Loc.S("Jobs_GlassSub_UndoApply"));
         EndPreview();
         Changed?.Invoke();
     }

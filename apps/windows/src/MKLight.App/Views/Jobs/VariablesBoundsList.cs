@@ -1,5 +1,6 @@
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using MKLight.App.Support;
 using MKLight.App.ViewModels;
 using MKLight.App.ViewModels.Jobs;
 using MKLight.Model;
@@ -25,26 +26,26 @@ public static class VariablesBoundsList
         var list = new StackPanel { Spacing = 0 };
         if (vars.Any(v => v.Param.IsCurvature))
         {
-            var unit = JobUI.Segments(["Radius mm", "Curvature 1/mm"], CurvatureUnit == CurvatureBoundsUnit.Radius ? 0 : 1, k =>
+            var unit = JobUI.Segments([Loc.S("Jobs_Variables_Unit_Radius"), Loc.S("Jobs_Variables_Unit_Curvature")], CurvatureUnit == CurvatureBoundsUnit.Radius ? 0 : 1, k =>
             {
                 CurvatureUnit = k == 0 ? CurvatureBoundsUnit.Radius : CurvatureBoundsUnit.Curvature;
                 Support.AppSettings.CurvatureBoundsUnit = k == 0 ? "radius" : "curvature";
                 refresh();
             });
-            ToolTipService.SetToolTip(unit, "Enter and read the bounds of radii as a radius window in mm, or as the curvature c = 1/R the optimizer uses");
+            ToolTipService.SetToolTip(unit, Loc.S("Jobs_Variables_UnitHelp"));
             var help = new FontIcon { Glyph = "\uE9CE", FontSize = 13, VerticalAlignment = VerticalAlignment.Center };
             JobUI.Bind(help, "TextFillColorSecondaryBrush", b => help.Foreground = b);
             ToolTipService.SetToolTip(help, RadiusBounds.Help);
-            var row = JobUI.Row(8, JobUI.Text("Curvatures as", "CaptionText"), unit, help);
+            var row = JobUI.Row(8, JobUI.Text(Loc.S("Jobs_Variables_CurvaturesAs"), "CaptionText"), unit, help);
             row.Margin = new Thickness(0, 0, 0, 8);
             list.Children.Add(row);
         }
         var header = new Grid { ColumnSpacing = 6, Margin = new Thickness(0, 0, 0, 2) };
         Columns(header);
-        header.Children.Add(JobUI.Text("Variable", "CaptionText"));
-        Place(header, JobUI.Text("Min", "CaptionText"), 1, HorizontalAlignment.Right);
-        Place(header, JobUI.Text("Max", "CaptionText"), 2, HorizontalAlignment.Right);
-        Place(header, JobUI.Text("Unit", "CaptionText"), 3, HorizontalAlignment.Left);
+        header.Children.Add(JobUI.Text(Loc.S("Jobs_Variables_Variable"), "CaptionText"));
+        Place(header, JobUI.Text(Loc.S("Jobs_Variables_Min"), "CaptionText"), 1, HorizontalAlignment.Right);
+        Place(header, JobUI.Text(Loc.S("Jobs_Variables_Max"), "CaptionText"), 2, HorizontalAlignment.Right);
+        Place(header, JobUI.Text(Loc.S("Jobs_Variables_Unit"), "CaptionText"), 3, HorizontalAlignment.Left);
         list.Children.Add(header);
         for (var k = 0; k < vars.Count; k++)
         {
@@ -92,15 +93,15 @@ public static class VariablesBoundsList
         {
             var pin = new FontIcon { Glyph = "\uE718", FontSize = 11, VerticalAlignment = VerticalAlignment.Center };
             JobUI.Bind(pin, "AccentTextFillColorPrimaryBrush", b => pin.Foreground = b);
-            ToolTipService.SetToolTip(pin, "Pinned: kept as a variable but held at its value");
+            ToolTipService.SetToolTip(pin, Loc.S("Jobs_Variables_PinnedHelp"));
             name.Children.Add(pin);
         }
         name.VerticalAlignment = VerticalAlignment.Center;
         top.Children.Add(name);
         var buttons = JobUI.Row(0,
-            JobUI.Icon(v.IsPinned ? "\uE77A" : "\uE718", v.IsPinned ? "Unpin: let the optimizer vary it again" : "Pin at its value (equal bounds): keep it as a variable but hold it",
+            JobUI.Icon(v.IsPinned ? "\uE77A" : "\uE718", Loc.S(v.IsPinned ? "Jobs_Variables_Unpin" : "Jobs_Variables_Pin"),
                 () => DesignVariables.TogglePin(document, v), value is not null, 24),
-            JobUI.Icon("\uE711", "Fix this parameter (remove the variable)", () => DesignVariables.Set(document, path, false), true, 24));
+            JobUI.Icon("\uE711", Loc.S("Jobs_Variables_Remove"), () => DesignVariables.Set(document, path, false), true, 24));
         Grid.SetColumn(buttons, 1);
         top.Children.Add(buttons);
 
@@ -130,17 +131,16 @@ public static class VariablesBoundsList
             }
             DesignVariables.SetBounds(document, path, lo, hi);
         }
-        var unitText = unit.Length == 0 ? "" : " in " + unit;
         var minField = new NumberField($"bound-min-{index}", () => shown.Item1, x => Commit(x, shown.Item2), 64, "−∞", BoundsFormat.Compact,
-            allowsInfinite: asRadius, name: $"Minimum of {label}{unitText}");
+            allowsInfinite: asRadius, name: unit.Length == 0 ? Loc.F("Jobs_Variables_MinName", label) : Loc.F("Jobs_Variables_MinNameUnit", label, unit));
         var maxField = new NumberField($"bound-max-{index}", () => shown.Item2, x => Commit(shown.Item1, x), 64, asRadius ? "∞" : "+∞", BoundsFormat.Compact,
-            allowsInfinite: asRadius, name: $"Maximum of {label}{unitText}");
+            allowsInfinite: asRadius, name: unit.Length == 0 ? Loc.F("Jobs_Variables_MaxName", label) : Loc.F("Jobs_Variables_MaxNameUnit", label, unit));
         Place(bottom, minField, 1, HorizontalAlignment.Stretch);
         Place(bottom, maxField, 2, HorizontalAlignment.Stretch);
         minField.Width = maxField.Width = double.NaN;
         var u = JobUI.Text(unit.Length == 0 ? "–" : unit, "CaptionText");
         u.VerticalAlignment = VerticalAlignment.Center;
-        ToolTipService.SetToolTip(u, unit.Length == 0 ? "Dimensionless" : $"The bounds are in {unit}");
+        ToolTipService.SetToolTip(u, unit.Length == 0 ? Loc.S("Jobs_Variables_Dimensionless") : Loc.F("Jobs_Variables_BoundsIn", unit));
         Place(bottom, u, 3, HorizontalAlignment.Left);
         return JobUI.Column(2, top, bottom);
     }
@@ -148,18 +148,19 @@ public static class VariablesBoundsList
     static string Caption(double? value, ParamPath path, bool asRadius, (double? Min, double? Max) shown)
     {
         if (value is not { } v) return "";
-        if (!path.IsCurvature) return "now " + MeritFormat.Short(v);
-        if (!asRadius) return "now c " + BoundsFormat.Compact(v);
-        return "now R " + MeritFormat.Short(RadiusDisplay.RadiusFromCurvature(v)) + (RadiusBounds.PassesThroughFlat(shown.Min, shown.Max) ? " · through ∞" : "");
+        if (!path.IsCurvature) return Loc.F("Jobs_Variables_Now", MeritFormat.Short(v));
+        if (!asRadius) return Loc.F("Jobs_Variables_NowCurvature", BoundsFormat.Compact(v));
+        var r = MeritFormat.Short(RadiusDisplay.RadiusFromCurvature(v));
+        return RadiusBounds.PassesThroughFlat(shown.Min, shown.Max) ? Loc.F("Jobs_Variables_NowRadiusThroughFlat", r) : Loc.F("Jobs_Variables_NowRadius", r);
     }
 
     static string Help(DesignVariable v, ParamPath path, OpticalSystem system, bool asRadius, string unit)
     {
         if (system.SolveFor(path) is { } s)
-            return $"A {s.Kind.Type.Title().ToLowerInvariant()} solve sets this value, so the optimizer leaves the variable out of the run. Remove the variable, or remove the solve to vary it.";
-        var other = BoundsFormat.Counterpart(v.Lower, v.Upper, CurvatureUnit) is { } c && path.IsCurvature ? $"Bounds as {c}. " : "";
-        if (asRadius) return other + RadiusBounds.Help;
-        if (path.IsCurvature) return other + "Bounds on the curvature c = 1/R (1/mm).";
-        return unit.Length == 0 ? "Bounds of a dimensionless parameter." : $"Bounds in {unit}.";
+            return Loc.F("Jobs_Variables_SolvedHelp", s.Kind.Type.Title().ToLowerInvariant());
+        var help = asRadius ? RadiusBounds.Help : Loc.S("Jobs_Variables_CurvatureHelp");
+        if (asRadius || path.IsCurvature)
+            return BoundsFormat.Counterpart(v.Lower, v.Upper, CurvatureUnit) is { } c && path.IsCurvature ? Loc.F("Jobs_Variables_BoundsAs", c, help) : help;
+        return unit.Length == 0 ? Loc.S("Jobs_Variables_DimensionlessHelp") : Loc.F("Jobs_Variables_BoundsInHelp", unit);
     }
 }

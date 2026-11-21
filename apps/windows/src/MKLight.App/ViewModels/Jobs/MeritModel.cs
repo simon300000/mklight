@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text.Json.Nodes;
+using MKLight.App.Support;
 using MKLight.Engine;
 using MKLight.Model;
 
@@ -109,12 +110,12 @@ public sealed class MeritOperand
     {
         var output = new List<string>();
         if (Descriptor is not { } d) return output;
-        if (d.SingleField && Field["field"].StringOrNull() == "all") output.Add("Needs one field, not all fields.");
-        if (Field["field"].StringOrNull() == "index" && Field["index"].IntOrNull() is { } i && i >= fieldCount) output.Add($"Field {i + 1} does not exist.");
+        if (d.SingleField && Field["field"].StringOrNull() == "all") output.Add(Loc.S("Jobs_Merit_Issue_NeedsOneField"));
+        if (Field["field"].StringOrNull() == "index" && Field["index"].IntOrNull() is { } i && i >= fieldCount) output.Add(Loc.F("Jobs_Merit_Issue_NoField", i + 1));
         if (Wavelength["wavelength"].StringOrNull() == "index" && Wavelength["index"].IntOrNull() is { } w && w >= wavelengthCount)
-            output.Add($"Wavelength {w + 1} does not exist.");
-        foreach (var p in d.Params.Where(p => p.Required && Kind[p.Key] is null)) output.Add($"{p.Title} is required.");
-        if (!double.IsFinite(Weight) || Weight < 0) output.Add("The weight must be zero or positive.");
+            output.Add(Loc.F("Jobs_Merit_Issue_NoWavelength", w + 1));
+        foreach (var p in d.Params.Where(p => p.Required && Kind[p.Key] is null)) output.Add(Loc.F("Jobs_Merit_Issue_Required", EngineText.T(p.Title)));
+        if (!double.IsFinite(Weight) || Weight < 0) output.Add(Loc.S("Jobs_Merit_Issue_Weight"));
         return output;
     }
 
@@ -129,21 +130,26 @@ public sealed class MeritOperand
         }
         switch (Wavelength["wavelength"].StringOrNull())
         {
-            case "all": parts.Add("poly"); break;
+            case "all": parts.Add(Loc.S("Jobs_Merit_Summary_Polychromatic")); break;
             case "index": parts.Add($"λ{(Wavelength["index"].IntOrNull() ?? 0) + 1}"); break;
         }
         foreach (var p in Descriptor?.Params ?? [])
         {
             if (Kind[p.Key] is not { } v) continue;
+            var title = EngineText.T(p.Title);
             switch (p.Kind)
             {
-                case OperandParamKind.Surface: parts.Add($"{p.Title.ToLowerInvariant()} S{v.IntOrNull()?.ToString(CultureInfo.InvariantCulture) ?? "?"}"); break;
-                case OperandParamKind.Wavelength: parts.Add($"{p.Title} λ{(v.IntOrNull() ?? 0) + 1}"); break;
-                case OperandParamKind.Choice: parts.Add((v.StringOrNull() ?? v.ToJsonString()).Replace('_', ' ')); break;
-                case OperandParamKind.Flag: if (v.BoolOrNull() == true) parts.Add(p.Title.ToLowerInvariant()); break;
+                case OperandParamKind.Surface: parts.Add($"{title.ToLowerInvariant()} S{v.IntOrNull()?.ToString(CultureInfo.InvariantCulture) ?? "?"}"); break;
+                case OperandParamKind.Wavelength: parts.Add($"{title} λ{(v.IntOrNull() ?? 0) + 1}"); break;
+                case OperandParamKind.Choice:
+                    var option = v.StringOrNull();
+                    parts.Add(option is not null && (p.Options?.Contains(option) ?? false) ? OperandCatalog.OptionTitle(option).ToLowerInvariant()
+                        : (option ?? v.ToJsonString()).Replace('_', ' '));
+                    break;
+                case OperandParamKind.Flag: if (v.BoolOrNull() == true) parts.Add(title.ToLowerInvariant()); break;
                 case OperandParamKind.Sampling: parts.Add($"{v["rings"].IntOrNull() ?? 3}×{v["arms"].IntOrNull() ?? 6}"); break;
-                case OperandParamKind.OperandList: parts.Add("of " + string.Join(", ", (v.IntArray() ?? []).Select(k => $"#{k + 1}"))); break;
-                default: parts.Add($"{p.Title.ToLowerInvariant()} {(v.DoubleValue() is { } d ? MeritFormat.Short(d) : v.ToJsonString())}"); break;
+                case OperandParamKind.OperandList: parts.Add(Loc.F("Jobs_Merit_Summary_Of", string.Join(", ", (v.IntArray() ?? []).Select(k => $"#{k + 1}")))); break;
+                default: parts.Add($"{title.ToLowerInvariant()} {(v.DoubleValue() is { } d ? MeritFormat.Short(d) : v.ToJsonString())}"); break;
             }
         }
         return parts.Count == 0 ? null : string.Join(" ", parts);
@@ -155,7 +161,7 @@ public sealed class MeritOperand
         var parts = new List<string>();
         if (ParameterSummary() is { Length: > 0 } s) parts.Add(s);
         parts.Add($"{Comparison.Symbol()} {MeritFormat.Short(Target)}");
-        if (!IsConstraint) parts.Add($"w {MeritFormat.Short(Weight)}");
+        if (!IsConstraint) parts.Add(Loc.F("Jobs_Merit_Detail_Weight", MeritFormat.Short(Weight)));
         return string.Join(" · ", parts);
     }
 }
@@ -274,15 +280,20 @@ public static class OperandCatalog
     /// <summary>Operands a user adds from the picker (the composition kinds that need a model path or a nested criterion are read and kept, not added).</summary>
     public static IEnumerable<OperandDescriptor> Addable => All.Where(d => d.Type is not ("param_value" or "tolerance_sensitivity"));
 
+    /// <summary>An operand's name as shown (engine text, in the UI language).</summary>
     public static string Title(string type) =>
-        Descriptor(type)?.Title ?? CultureInfo.InvariantCulture.TextInfo.ToTitleCase(type.Replace('_', ' '));
+        EngineText.T(Descriptor(type)?.Title ?? CultureInfo.InvariantCulture.TextInfo.ToTitleCase(type.Replace('_', ' ')));
 
-    /// <summary>Descriptors matching a search, by category.</summary>
+    /// <summary>A choice parameter's option as shown: <c>real_working</c> is <c>Real Working</c> (engine text, in the UI language).</summary>
+    public static string OptionTitle(string option) => EngineText.T(CultureInfo.InvariantCulture.TextInfo.ToTitleCase(option.Replace('_', ' ')));
+
+    /// <summary>Descriptors matching a search (in English or the UI language), by category.</summary>
     public static IReadOnlyList<(string Category, IReadOnlyList<OperandDescriptor> Items)> Search(string text)
     {
         var q = text.Trim().ToLowerInvariant();
-        var hits = Addable.Where(d => q.Length == 0 || d.Title.ToLowerInvariant().Contains(q) || d.Type.Contains(q)
-            || d.Summary.ToLowerInvariant().Contains(q) || d.Category.ToLowerInvariant().Contains(q)).ToList();
+        static bool Has(string s, string q) => s.ToLowerInvariant().Contains(q) || EngineText.T(s).ToLowerInvariant().Contains(q);
+        var hits = Addable.Where(d => q.Length == 0 || Has(d.Title, q) || d.Type.Contains(q)
+            || Has(d.Summary, q) || Has(d.Category, q)).ToList();
         return Categories.Select(c => (c, (IReadOnlyList<OperandDescriptor>)hits.Where(d => d.Category == c).ToList())).Where(g => g.Item2.Count > 0).ToList();
     }
 }
@@ -318,7 +329,12 @@ public sealed record DefaultMeritSettings
 
     public static string Wire(MeritCriterion c) => c switch { MeritCriterion.Wavefront => "wavefront", MeritCriterion.Mtf => "mtf", _ => "rms_spot" };
 
-    public static string Title(MeritCriterion c) => c switch { MeritCriterion.Wavefront => "RMS wavefront", MeritCriterion.Mtf => "MTF", _ => "RMS spot radius" };
+    public static string Title(MeritCriterion c) => c switch
+    {
+        MeritCriterion.Wavefront => Loc.S("Jobs_Merit_Criterion_Wavefront"),
+        MeritCriterion.Mtf => "MTF",
+        _ => Loc.S("Jobs_Merit_Criterion_RmsSpot"),
+    };
 
     /// <summary>The <c>default_merit</c> settings object (laid over the engine's defaults).</summary>
     public JsonObject ToJson()
@@ -398,9 +414,9 @@ public sealed record DefaultMeritSettings
     /// <summary>The caption under the default merit's settings.</summary>
     public string Caption => Criterion switch
     {
-        MeritCriterion.RmsSpot => "The mean square RMS spot radius over the chosen fields and wavelengths, by their weights.",
-        MeritCriterion.Wavefront => "The mean square RMS wavefront error over the chosen fields and wavelengths, by their weights.",
-        _ => "Polychromatic tangential and sagittal MTF lower bounds at each frequency.",
+        MeritCriterion.RmsSpot => Loc.S("Jobs_Merit_Caption_RmsSpot"),
+        MeritCriterion.Wavefront => Loc.S("Jobs_Merit_Caption_Wavefront"),
+        _ => Loc.S("Jobs_Merit_Caption_Mtf"),
     };
 
     public bool Equals(DefaultMeritSettings? other) => other is not null && JsonNode.DeepEquals(ToJson(), other.ToJson());
@@ -576,12 +592,12 @@ public sealed record MeritEvaluation(double Merit, double Violation, MeritStatus
     /// <summary>The readout's tooltip: the evaluator, a violation, a degraded or failed status.</summary>
     public string Help()
     {
-        var on = ReportedOn.Length == 0 || ReportedOn.StartsWith("cpu", StringComparison.Ordinal) ? "CPU f64 reference" : ReportedOn;
-        var s = $"Merit {MeritFormat.Merit(Merit)} at the current design ({on}).";
-        if (double.IsFinite(Violation) && Violation > 1e-9) s += $" Constraint violation {MeritFormat.Short(Violation)}.";
-        if (Status == MeritStatus.Degraded) s += $" {Failures} residual{(Failures == 1 ? "" : "s")} carry penalty values (failed rays or operands).";
-        if (Status == MeritStatus.Failed) s += " The evaluation failed: no meaningful merit.";
-        return s;
+        var on = ReportedOn.Length == 0 || ReportedOn.StartsWith("cpu", StringComparison.Ordinal) ? Loc.S("Jobs_Merit_Help_CpuReference") : ReportedOn;
+        var s = new List<string> { Loc.F("Jobs_Merit_Help_Merit", MeritFormat.Merit(Merit), on) };
+        if (double.IsFinite(Violation) && Violation > 1e-9) s.Add(Loc.F("Jobs_Merit_Help_Violation", MeritFormat.Short(Violation)));
+        if (Status == MeritStatus.Degraded) s.Add(Loc.F(Failures == 1 ? "Jobs_Merit_Help_Degraded_One" : "Jobs_Merit_Help_Degraded_Many", Failures));
+        if (Status == MeritStatus.Failed) s.Add(Loc.S("Jobs_Merit_Help_Failed"));
+        return string.Join(" ", s);
     }
 }
 

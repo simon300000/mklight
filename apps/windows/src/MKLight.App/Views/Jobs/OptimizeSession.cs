@@ -1,5 +1,6 @@
 using System.Runtime.CompilerServices;
 using System.Text.Json.Nodes;
+using MKLight.App.Support;
 using MKLight.App.ViewModels;
 using MKLight.App.ViewModels.Jobs;
 using MKLight.Engine;
@@ -43,10 +44,11 @@ public sealed class DesignJobs
 /// </summary>
 public sealed class OptimizeSession
 {
-    public static readonly (string Id, string Title)[] Algorithms =
+    /// <summary>The algorithms: engine id and title (in the UI language; CMA-ES and Nelder–Mead are names).</summary>
+    public static (string Id, string Title)[] Algorithms =>
     [
-        ("lm", "Damped least squares (LM)"), ("dogleg", "Trust region (dogleg)"), ("de", "Differential evolution"),
-        ("cma_es", "CMA-ES"), ("nelder_mead", "Nelder–Mead"), ("hammer", "Basin hopping"),
+        ("lm", Loc.S("Jobs_Optimize_Algorithm_Lm")), ("dogleg", Loc.S("Jobs_Optimize_Algorithm_Dogleg")), ("de", Loc.S("Jobs_Optimize_Algorithm_De")),
+        ("cma_es", "CMA-ES"), ("nelder_mead", "Nelder–Mead"), ("hammer", Loc.S("Jobs_Optimize_Algorithm_Hammer")),
     ];
 
     readonly DesignSession _s;
@@ -210,7 +212,7 @@ public sealed class OptimizeSession
             using var output = await job.ResultAsync();
             if (!ReferenceEquals(_evaluationJob, job)) return;
             Evaluation = MeritEvaluation.FromJson(output.Json);
-            EvaluationError = Evaluation is null ? "The engine returned no merit." : null;
+            EvaluationError = Evaluation is null ? Loc.S("Jobs_Optimize_NoMerit") : null;
         }
         catch (EngineException e) when (e.Kind == EngineErrorKind.Cancelled) { return; }
         catch (EngineException e)
@@ -254,11 +256,11 @@ public sealed class OptimizeSession
         var operands = (e?.SpecOperands ?? []).Where(o => !MeritSettings.IsEflHold(o) || !defaults.HoldEfl).ToList();
         if (e is null || operands.Count == 0)
         {
-            EvaluationError = "The engine generated no operands for this design.";
+            EvaluationError = Loc.S("Jobs_Optimize_NoOperands");
             EvaluationChanged?.Invoke();
             return;
         }
-        EditMerit("Convert Merit to Custom", m =>
+        EditMerit(Loc.S("Jobs_Merit_Undo_ConvertToCustom"), m =>
         {
             m.Operands = operands;
             m.SpecOptions = e.SpecOptions;
@@ -280,7 +282,7 @@ public sealed class OptimizeSession
         if (job is null)
         {
             Phase = JobPhase.Failed;
-            Failure = "Fix the design's errors first.";
+            Failure = Loc.S("Jobs_Optimize_FixErrorsFirst");
             Changed?.Invoke();
             return;
         }
@@ -291,7 +293,7 @@ public sealed class OptimizeSession
         Applied = false;
         Failure = null;
         Phase = JobPhase.Running;
-        Progress = new JobProgress(0, "Queued");
+        Progress = new JobProgress(0, Loc.S("Jobs_Optimize_Queued"));
         UpdateActivity();
         Changed?.Invoke();
         _ = Follow(job);
@@ -323,7 +325,7 @@ public sealed class OptimizeSession
             Result = OptimizeResult.FromJson(output.Json);
             if (Result is { History.Count: > 0 } r) { Trace.Clear(); Trace.AddRange(r.History); }
             Phase = Result is null ? JobPhase.Failed : JobPhase.Finished;
-            Failure = Result is null ? "The engine returned no optimized design." : null;
+            Failure = Result is null ? Loc.S("Jobs_Optimize_NoResult") : null;
         }
         catch (EngineException e) when (e.Kind == EngineErrorKind.Cancelled)
         {
@@ -346,19 +348,28 @@ public sealed class OptimizeSession
     {
         if (Phase == JobPhase.Running)
         {
-            var text = Trace.Count > 0 ? $"Optimizing · {Trace[^1].Iteration}" : "Optimizing";
+            var text = Trace.Count > 0 ? Loc.F("Jobs_Optimize_ActivityIteration", Trace[^1].Iteration) : Loc.S("Jobs_Optimize_Activity");
             _s.SetJobActivity("optimize", text, () => _s.ShowInspectorPage("optimize"));
         }
         else _s.SetJobActivity("optimize", null);
+    }
+
+    /// <summary>The title of the preview this job showed last (another job's preview is left alone).</summary>
+    string? _previewTitle;
+
+    void Preview(OpticalSystem? system, OptimizeResult? r)
+    {
+        _previewTitle = system is null ? null : r!.PreviewTitle();
+        Workspace.Preview(system, _previewTitle);
     }
 
     /// <summary>A finished, unapplied, improved result is previewed in the window until it is applied or discarded.</summary>
     void SyncPreview()
     {
         if (Phase == JobPhase.Finished && !Applied && Result is { Improved: true, System: { } system } r)
-            Workspace.Preview(system, r.PreviewTitle());
-        else if (Workspace.IsPreviewing && Workspace.PreviewTitle?.StartsWith("Optimize", StringComparison.Ordinal) == true)
-            Workspace.Preview(null);
+            Preview(system, r);
+        else if (Workspace.IsPreviewing && _previewTitle is not null && Workspace.PreviewTitle == _previewTitle)
+            Preview(null, null);
     }
 
     /// <summary>Ends the run early, keeping the best design so far.</summary>
@@ -380,7 +391,7 @@ public sealed class OptimizeSession
     {
         if (Result?.System is not { } system || Applied) return;
         Applied = true;
-        DesignVariables.ReplaceSystem(Document, system, "Apply Optimization");
+        DesignVariables.ReplaceSystem(Document, system, Loc.S("Jobs_Optimize_Undo_Apply"));
         SyncPreview();
         Changed?.Invoke();
     }
@@ -403,8 +414,8 @@ public sealed class OptimizeSession
     /// <summary>Shows or hides the result in the window.</summary>
     public void SetPreview(bool on)
     {
-        if (on && Result is { System: { } s } r) Workspace.Preview(s, r.PreviewTitle());
-        else Workspace.Preview(null);
+        if (on && Result is { System: { } s } r) Preview(s, r);
+        else Preview(null, null);
         Changed?.Invoke();
     }
 }

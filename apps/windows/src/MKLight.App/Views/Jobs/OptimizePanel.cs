@@ -1,6 +1,7 @@
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
+using MKLight.App.Support;
 using MKLight.App.ViewModels;
 using MKLight.App.ViewModels.Jobs;
 using MKLight.Model;
@@ -16,7 +17,7 @@ namespace MKLight.App.Views.Jobs;
 public sealed partial class OptimizePanel : UserControl
 {
     readonly OptimizeSession _s;
-    readonly JobPanelFrame _frame = new("Optimize", "\uE9D9");
+    readonly JobPanelFrame _frame = new(Loc.S("Jobs_Optimize_Title"), "\uE9D9");
     readonly MeritEditor _merit;
     bool _queued;
     JobPhase? _builtPhase;
@@ -48,13 +49,13 @@ public sealed partial class OptimizePanel : UserControl
         var key = focused?.Key;
         var offset = _builtPhase == _s.Phase ? _frame.Scroller.VerticalOffset : 0;
         _builtPhase = _s.Phase;
-        _frame.Subtitle = _s.Document.System.Name.Length > 0 ? _s.Document.System.Name : "Untitled design";
+        _frame.Subtitle = _s.Document.System.Name.Length > 0 ? _s.Document.System.Name : Loc.S("Jobs_Optimize_UntitledDesign");
         _comparison = null;
         _frame.Body = _s.Phase switch
         {
             JobPhase.Running => Running(),
             JobPhase.Finished => Result(),
-            JobPhase.Failed => JobUI.Failure("Optimization Failed", _s.Failure ?? ""),
+            JobPhase.Failed => JobUI.Failure(Loc.S("Jobs_Optimize_Failed"), EngineText.T(_s.Failure ?? "")),
             _ => Setup(),
         };
         Actions();
@@ -81,27 +82,27 @@ public sealed partial class OptimizePanel : UserControl
 
         var vars = _s.Variables;
         var v = new StackPanel { Spacing = 8 };
-        var design = new RadioButton { Content = $"Design variables ({vars.Count})", IsChecked = _s.UseDesignVariables, GroupName = "vary", IsEnabled = vars.Count > 0, MinWidth = 0 };
-        var auto = new RadioButton { Content = "Every curvature and the back focus", IsChecked = !_s.UseDesignVariables, GroupName = "vary", MinWidth = 0 };
+        var design = new RadioButton { Content = Loc.F("Jobs_Optimize_DesignVariables", vars.Count), IsChecked = _s.UseDesignVariables, GroupName = "vary", IsEnabled = vars.Count > 0, MinWidth = 0 };
+        var auto = new RadioButton { Content = Loc.S("Jobs_Optimize_AutomaticVariables"), IsChecked = !_s.UseDesignVariables, GroupName = "vary", MinWidth = 0 };
         design.Checked += (_, _) => { if (!_s.UseDesignVariables) _s.SetUseDesignVariables(true); };
         auto.Checked += (_, _) => { if (_s.UseDesignVariables) _s.SetUseDesignVariables(false); };
         v.Children.Add(JobUI.Column(0, design, auto));
         if (_s.UseDesignVariables && vars.Count > 0) v.Children.Add(VariablesBoundsList.Build(_s.Document, Rebuild));
         else if (vars.Count == 0)
-            v.Children.Add(JobUI.Hint("Mark values with V in the lens data (right-click a value, or Ctrl+Shift+V) to choose them; each gets sensible bounds you can edit here."));
+            v.Children.Add(JobUI.Hint(Loc.S("Jobs_Optimize_NoVariablesHint")));
         if (_s.Problem is { } why) v.Children.Add(JobUI.Warning(why));
-        p.Children.Add(JobUI.Group("Variables", v));
+        p.Children.Add(JobUI.Group(Loc.S("Jobs_Optimize_Variables"), v));
 
         var a = new StackPanel { Spacing = 6 };
         var algorithms = OptimizeSession.Algorithms;
-        a.Children.Add(JobUI.Labeled("Method", JobUI.Choice(algorithms.Select(x => x.Title).ToList(), Array.FindIndex(algorithms, x => x.Id == _s.Algorithm),
+        a.Children.Add(JobUI.Labeled(Loc.S("Jobs_Optimize_Method"), JobUI.Choice(algorithms.Select(x => x.Title).ToList(), Array.FindIndex(algorithms, x => x.Id == _s.Algorithm),
             k => _s.SetAlgorithm(algorithms[k].Id), 150)));
-        a.Children.Add(JobUI.Labeled("Iterations", new NumberField("iterations", () => _s.MaxIterations, x => _s.SetIterations(x is { } d ? (int)Math.Round(d) : null),
-            90, "default", MeritFormat.Short, name: "Iterations")));
+        a.Children.Add(JobUI.Labeled(Loc.S("Jobs_Optimize_Iterations"), new NumberField("iterations", () => _s.MaxIterations, x => _s.SetIterations(x is { } d ? (int)Math.Round(d) : null),
+            90, Loc.S("Jobs_Optimize_IterationsDefault"), MeritFormat.Short, name: Loc.S("Jobs_Optimize_Iterations"))));
         if (_s.Stochastic)
-            a.Children.Add(JobUI.Labeled("Seed", new NumberField("seed", () => _s.Seed, x => _s.SetSeed((int)Math.Round(x ?? 0)), 90, "0", MeritFormat.Short, optional: false, name: "Seed")));
-        p.Children.Add(JobUI.Group("Algorithm", a));
-        if (_s.Workspace.ModelErrors.Count > 0) p.Children.Add(JobUI.Warning("Fix the design's errors first."));
+            a.Children.Add(JobUI.Labeled(Loc.S("Jobs_Optimize_Seed"), new NumberField("seed", () => _s.Seed, x => _s.SetSeed((int)Math.Round(x ?? 0)), 90, "0", MeritFormat.Short, optional: false, name: Loc.S("Jobs_Optimize_Seed"))));
+        p.Children.Add(JobUI.Group(Loc.S("Jobs_Optimize_Algorithm"), a));
+        if (_s.Workspace.ModelErrors.Count > 0) p.Children.Add(JobUI.Warning(Loc.S("Jobs_Optimize_FixErrorsFirst")));
         return p;
     }
 
@@ -113,14 +114,13 @@ public sealed partial class OptimizePanel : UserControl
         var last = _s.Trace.Count > 0 ? _s.Trace[^1] : (MeritPoint?)null;
         var population = _s.Algorithm is "de" or "cma_es" or "nelder_mead";
         p.Children.Add(JobUI.Row(28,
-            JobUI.BigNumber("Iteration", last is { } l ? MeritFormat.Integer(l.Iteration) : "—"),
-            JobUI.BigNumber("Search merit", last is { } m ? MeritFormat.Merit(m.Merit) : "—",
-                population ? "The search's merit, including the penalty that holds the focal length; the result reports the merit itself."
-                    : "The best merit so far, as the search evaluates it.")));
+            JobUI.BigNumber(Loc.S("Jobs_Optimize_Iteration"), last is { } l ? MeritFormat.Integer(l.Iteration) : "—"),
+            JobUI.BigNumber(Loc.S("Jobs_Optimize_SearchMerit"), last is { } m ? MeritFormat.Merit(m.Merit) : "—",
+                Loc.S(population ? "Jobs_Optimize_SearchMeritPopulationHelp" : "Jobs_Optimize_SearchMeritHelp"))));
         if (_s.Trace.Count > 0 && _s.Trace[0].Merit > 0)
-            p.Children.Add(JobUI.BigNumber("Improvement", MeritFormat.Percent(1 - _s.Trace[^1].Merit / _s.Trace[0].Merit)));
+            p.Children.Add(JobUI.BigNumber(Loc.S("Jobs_Optimize_Improvement"), MeritFormat.Percent(1 - _s.Trace[^1].Merit / _s.Trace[0].Merit)));
         p.Children.Add(new Sparkline(120) { Values = _s.Trace.Select(t => t.Merit).ToList() });
-        p.Children.Add(JobUI.Hint("Stop keeps the best design so far. Cancel discards the run. You can close this panel; the job continues."));
+        p.Children.Add(JobUI.Hint(Loc.S("Jobs_Optimize_RunningHint")));
         return p;
     }
 
@@ -132,12 +132,12 @@ public sealed partial class OptimizePanel : UserControl
         if (_s.Result is not { } r) return p;
         var system = _s.Document.System;
         if (_s.Applied) p.Children.Add(JobUI.AppliedNotice());
-        p.Children.Add(JobUI.Row(28, JobUI.BigNumber("Merit before", MeritFormat.Merit(r.StartMerit)), JobUI.BigNumber("After", MeritFormat.Merit(r.FinalMerit))));
-        p.Children.Add(JobUI.BigNumber("Improvement", MeritFormat.Percent(r.Improvement)));
+        p.Children.Add(JobUI.Row(28, JobUI.BigNumber(Loc.S("Jobs_Optimize_MeritBefore"), MeritFormat.Merit(r.StartMerit)), JobUI.BigNumber(Loc.S("Jobs_Optimize_MeritAfter"), MeritFormat.Merit(r.FinalMerit))));
+        p.Children.Add(JobUI.BigNumber(Loc.S("Jobs_Optimize_Improvement"), MeritFormat.Percent(r.Improvement)));
         if (!_s.Applied && r.System is not null && r.Improved)
         {
-            var preview = JobUI.Check("Preview in the window", _s.Workspace.IsPreviewing, _s.SetPreview,
-                "Show the optimized design in the layout and analyses before applying it");
+            var preview = JobUI.Check(Loc.S("Jobs_Optimize_PreviewInWindow"), _s.Workspace.IsPreviewing, _s.SetPreview,
+                Loc.S("Jobs_Optimize_PreviewInWindowHelp"));
             p.Children.Add(preview);
             if (_s.Workspace.IsPreviewing)
             {
@@ -147,17 +147,17 @@ public sealed partial class OptimizePanel : UserControl
             }
         }
         if (r.System is not null && r.Improved)
-            p.Children.Add(new LayoutComparison(_s.Workspace, _s.StartSystem, r.System, afterTitle: _s.Applied ? "Applied" : "Candidate"));
+            p.Children.Add(new LayoutComparison(_s.Workspace, _s.StartSystem, r.System, afterTitle: Loc.S(_s.Applied ? "Jobs_Optimize_Applied" : "Jobs_Optimize_Candidate")));
         p.Children.Add(JobUI.Hint(r.StatusText()));
         if (_s.Trace.Count > 1) p.Children.Add(new Sparkline(64) { Values = _s.Trace.Select(t => t.Merit).ToList() });
-        p.Children.Add(JobUI.Text("Variables", "PanelTitleText"));
+        p.Children.Add(JobUI.Text(Loc.S("Jobs_Optimize_Variables"), "PanelTitleText"));
         var list = new StackPanel { Spacing = 8 };
         foreach (var v in r.Variables)
         {
-            var head = JobUI.Row(6, JobUI.Text(v.Param is { } path ? path.Label(r.System ?? system) : v.Label));
+            var head = JobUI.Row(6, JobUI.Text(v.Param is { } path ? path.Label(r.System ?? system) : EngineText.T(v.Label)));
             if (v.AtBound)
             {
-                var b = JobUI.Text("at bound", "CaptionText");
+                var b = JobUI.Text(Loc.S("Jobs_Optimize_AtBound"), "CaptionText");
                 JobUI.Bind(b, "WarningBrush", x => b.Foreground = x);
                 head.Children.Add(b);
             }
@@ -173,13 +173,13 @@ public sealed partial class OptimizePanel : UserControl
             delta.HorizontalAlignment = HorizontalAlignment.Right;
             values.Children.Add(delta);
             var row = JobUI.Column(1, head, values);
-            Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(row, $"{(v.Param is { } q ? q.Label(system) : v.Label)}: {MeritFormat.Short(start)} to {MeritFormat.Short(end)}");
+            Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(row, Loc.F("Jobs_Optimize_VariableChangeName", v.Param is { } q ? q.Label(system) : EngineText.T(v.Label), MeritFormat.Short(start), MeritFormat.Short(end)));
             list.Children.Add(row);
         }
         p.Children.Add(list);
         if (r.EvaluatedOn.Length > 0)
             p.Children.Add(JobUI.Hint(r.EvaluatedOn.StartsWith("cpu", StringComparison.Ordinal)
-                ? "Evaluated on the CPU f64 reference." : $"Searched on {r.EvaluatedOn}; merits reported on the CPU f64 reference.", 11));
+                ? Loc.S("Jobs_Optimize_EvaluatedOnCpu") : Loc.F("Jobs_Optimize_SearchedOn", r.EvaluatedOn), 11));
         return p;
     }
 
@@ -187,8 +187,8 @@ public sealed partial class OptimizePanel : UserControl
     void FillComparison(StackPanel card)
     {
         var r = _s.Result;
-        PreviewComparison.Fill(card, _s.Workspace, _s.Workspace.DesignSystem ?? _s.Document.System, "Candidate",
-            r is null ? [] : [("Merit", MeritFormat.Merit(r.StartMerit), MeritFormat.Merit(r.FinalMerit))]);
+        PreviewComparison.Fill(card, _s.Workspace, _s.Workspace.DesignSystem ?? _s.Document.System, Loc.S("Jobs_Optimize_Candidate"),
+            r is null ? [] : [(Loc.S("Jobs_Optimize_Merit"), MeritFormat.Merit(r.StartMerit), MeritFormat.Merit(r.FinalMerit))]);
     }
 
     // ---- Actions ----
@@ -199,24 +199,27 @@ public sealed partial class OptimizePanel : UserControl
         switch (_s.Phase)
         {
             case JobPhase.Setup:
-                _frame.SetActions(null, JobUI.Primary("Optimize", "\uE768", () => _s.Start(), cannotRun ? _s.Problem ?? "Fix the design's errors first." : "Start optimizing (Ctrl+Enter)", !cannotRun));
+                _frame.SetActions(null, JobUI.Primary(Loc.S("Jobs_Optimize_Run"), "\uE768", () => _s.Start(), cannotRun ? _s.Problem ?? Loc.S("Jobs_Optimize_FixErrorsFirst") : Loc.S("Jobs_Optimize_RunHelp"), !cannotRun));
                 break;
             case JobPhase.Failed:
                 _frame.SetActions(null,
-                    JobUI.Secondary("Back", null, _s.Reset, "Back to the job's settings"),
-                    JobUI.Primary("Try Again", "\uE72C", () => _s.Start(fresh: true), "Run the job again with the same settings", !cannotRun));
+                    JobUI.Secondary(Loc.S("Jobs_Optimize_Back"), null, _s.Reset, Loc.S("Jobs_Optimize_BackHelp")),
+                    JobUI.Primary(Loc.S("Jobs_Optimize_TryAgain"), "\uE72C", () => _s.Start(fresh: true), Loc.S("Jobs_Optimize_TryAgainHelp"), !cannotRun));
                 break;
             case JobPhase.Running:
-                _frame.SetActions(JobUI.Progress(_s.Progress, _s.Trace.Count > 0 ? $"Iteration {_s.Trace[^1].Iteration}" : ""),
-                    JobUI.Secondary("Cancel", null, _s.Cancel, "End the run and discard it (Esc)", destructive: true),
-                    JobUI.Secondary("Stop", "\uE71A", _s.Stop, "End now and keep the best design so far", _s.CanStop));
+                var cancel = JobUI.Secondary(Loc.S("Common_Cancel"), null, _s.Cancel, Loc.S("Jobs_Optimize_CancelHelp"), destructive: true);
+                cancel.Tag = JobUI.CancelRole; // Escape presses it in every language
+                _frame.SetActions(JobUI.Progress(_s.Progress, _s.Trace.Count > 0 ? Loc.F("Jobs_Optimize_IterationProgress", _s.Trace[^1].Iteration)
+                        : _s.Progress.Stage.Length > 0 ? EngineText.T(_s.Progress.Stage) : ""),
+                    cancel,
+                    JobUI.Secondary(Loc.S("Jobs_Optimize_Stop"), "\uE71A", _s.Stop, Loc.S("Jobs_Optimize_StopHelp"), _s.CanStop));
                 break;
             default:
-                if (_s.Applied) _frame.SetActions(null, JobUI.Primary("Done", null, _s.Reset, "Back to the merit function and variables"));
+                if (_s.Applied) _frame.SetActions(null, JobUI.Primary(Loc.S("Jobs_Optimize_Done"), null, _s.Reset, Loc.S("Jobs_Optimize_DoneHelp")));
                 else
                     _frame.SetActions(null,
-                        JobUI.Secondary("Discard", null, _s.Reset, "Drop this result; the design stays as it is"),
-                        JobUI.Primary("Apply to Design", null, _s.Apply, "Apply the result as one step you can undo (Ctrl+Enter)",
+                        JobUI.Secondary(Loc.S("Jobs_Optimize_Discard"), null, _s.Reset, Loc.S("Jobs_Optimize_DiscardHelp")),
+                        JobUI.Primary(Loc.S("Jobs_Optimize_Apply"), null, _s.Apply, Loc.S("Jobs_Optimize_ApplyHelp"),
                             _s.Result?.System is not null && _s.Result.Improved));
                 break;
         }
