@@ -21945,7 +21945,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "旋转中心 %@"
+            "value" : "枢轴 %@"
           }
         }
       }

@@ -865,6 +865,44 @@ capsule shows EFL y and the squeeze. The surface kinds decide only when an
 engine does not report the symmetry. Automatic semi-diameters of every
 surface type come from the engine's layout, in the table and the previews.
 
+## Languages
+
+English and Simplified Chinese (`zh-Hans`), following the system: the
+per-app language (System Settings → General → Language & Region →
+Applications) or the preferred languages; `zh`, `zh-CN`, `zh-SG` and
+`zh-Hans*` give Chinese, Traditional Chinese stays English. There is no
+language setting in the app. Scheme, glossary and the engine catalog:
+docs/I18N.md.
+
+* **UI text** is in the string catalog
+  `Sources/MKLightUI/Resources/Localizable.xcstrings` (English source, one
+  catalog for every target). SwiftPM compiles it into MKLightUI's resource
+  bundle; the build script copies the compiled `<language>.lproj` into the
+  app's own `Contents/Resources` and lists them in `CFBundleLocalizations`,
+  so the default main-bundle lookups (SwiftUI's string literals,
+  `String(localized:)`) find it, macOS offers the language per app and the
+  system menus follow. No `bundle:` arguments anywhere. A plain `swift run`
+  has no catalog and shows English.
+* **Engine text** (analysis titles and descriptions, settings titles,
+  descriptions and enum labels, diagnostics) goes through `EngineText`
+  (MKLightEngine), which reads `locales/<language>/engine.json`, copied by
+  the build script to `Contents/Resources/<language>.lproj/engine.json`.
+  Only where it is shown: anything parsed or matched stays English. A
+  translated diagnostic keeps the English message as detail.
+* **Not translated:** units and symbols, glass and catalog names, sample
+  design names, identifiers, keyboard shortcuts, user data, CSV headers,
+  and the engine text docs/I18N.md keeps English (run warnings, error
+  messages, backend titles).
+* The views' locale is `NumberDisplay.locale`, US POSIX numbers in the
+  app's language: SwiftUI picks the strings by the environment's locale.
+* **Adding a string:** write it in English (`Text("…")`,
+  `String(localized: "…")`, whole sentences with interpolation, never
+  concatenated pieces), run `scripts/sync-strings.sh` (compiles a release
+  build and syncs the extracted strings into the catalog), translate the new
+  entries with the glossary's terms. `LocalizationTests` fails on a string
+  without a translation, a stale one, or a translation whose format
+  arguments differ.
+
 ## Building
 
 ```sh
