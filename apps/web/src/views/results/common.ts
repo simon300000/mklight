@@ -2,7 +2,7 @@
 // shape, buffer lookup, field labels, canvas set-up and colour ramps.
 import { useLayoutEffect, useRef, useState, type RefObject } from 'react'
 import type { AnalysisResult, Json, JsonObject } from '@/engine/types'
-import { engineDiagnostic, engineText, t } from '@/i18n'
+import { engineIssue, parseStructuralIssue, t } from '@/i18n'
 import { nf, sig } from '@/model/format'
 import { fieldUnit, type System } from '@/model/system'
 import { FONT_FAMILY, wavelengthColor } from '@/lib/theme'
@@ -51,16 +51,14 @@ export function fieldLabel(system: System, field: Json | undefined, value: Json 
   return v ? `${head} · ${v}` : head
 }
 
-/** An issue's message in the current language: by its code (the issue's scalar
- *  fields are the parameters, `field` counted from 1), else the engine catalog. */
-export function issueMessage(i: JsonObject): string {
+/** An issue's text in the current language: by its code (a sentence with
+ *  `{surface}`, `{path}`; the English message then as detail), else the
+ *  engine's English message. */
+export function issueMessage(i: JsonObject): { text: string; detail?: string } {
   const message = String(i.message ?? '')
-  if (typeof i.code !== 'string') return engineText(message)
-  const params: Record<string, string | number> = {}
-  for (const [k, v] of Object.entries(i)) {
-    if (typeof v === 'string' || typeof v === 'number') params[k] = k === 'field' && typeof v === 'number' ? v + 1 : v
-  }
-  return engineDiagnostic(i.code, params, message)
+  const s = !i.code ? parseStructuralIssue(message) : null
+  if (s) return engineIssue(s.code, { path: s.path }, s.message)
+  return engineIssue(typeof i.code === 'string' ? i.code : null, { surface: typeof i.surface === 'number' ? i.surface : null }, message)
 }
 
 /** Wavelengths (µm) by system index: from the result, else from the system. */

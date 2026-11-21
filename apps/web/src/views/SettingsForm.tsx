@@ -1,7 +1,7 @@
 import { ChevronsUpDown, Minus, Plus } from 'lucide-react'
 import { useState, type ReactNode } from 'react'
 import type { AnalysisResult, Json, JsonObject } from '@/engine/types'
-import { engineText, t as tr, tMaybe, useT } from '@/i18n'
+import { engineText, t as tr, tMaybe, useT, engineEnum } from '@/i18n'
 import { Button } from '@/components/ui/button'
 import { DropdownMenu, DropdownMenuCheckboxItem, DropdownMenuContent, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
@@ -288,7 +288,7 @@ function ImageSourceControl({ schema, value, label, onChange }: { schema: Schema
     <Select aria-label={label} className="w-full" value={cur} onChange={(e) => e.target.value.startsWith('p:') && onChange({ kind: 'pattern', pattern: e.target.value.slice(2) })}>
       {imagePatterns(schema).map((p) => (
         <option key={p} value={`p:${p}`}>
-          {tMaybe(`lens.settings.patterns.${p}`) ?? engineText(p.replace(/_/g, ' ').replace(/^./, (c) => c.toUpperCase()))}
+          {engineEnum(p) ?? tMaybe(`lens.settings.patterns.${p}`) ?? p.replace(/_/g, ' ').replace(/^./, (c) => c.toUpperCase())}
         </option>
       ))}
       {v.kind === 'buffer' && <option value="buffer">{t('lens.settings.imageBuffer', { w: String(v.width), h: String(v.height) })}</option>}
@@ -369,7 +369,7 @@ function Control({ k, path, schema, value, ctx, onChange, nested }: { k: string;
           <Select aria-label={label} value={String(value ?? schema.default)} onChange={(e) => onChange(e.target.value)} className="w-full">
             {(schema.enum as string[]).map((o) => (
               <option key={o} value={o}>
-                {engineText(String(o).replace(/_/g, ' '))}
+                {engineEnum(String(o)) ?? String(o).replace(/_/g, ' ')}
               </option>
             ))}
           </Select>
@@ -535,9 +535,9 @@ function valueSummary(k: string, v: Json, d: Json | undefined): string | null {
     if (typeof v.type === 'string') {
       if (v.type === 'index') return `${human(k).replace(/s$/, '')} ${Number(v.index) + 1}`
       if (v.type === 'list' && Array.isArray(v.indices)) return `${human(k)} ${(v.indices as number[]).map((x) => x + 1).join(', ')}`
-      return `${human(k)} ${String(v.type).replace(/_/g, ' ')}`
+      return `${human(k)} ${engineEnum(String(v.type)) ?? String(v.type).replace(/_/g, ' ')}`
     }
-    if (v.kind === 'pattern') return String(v.pattern).replace(/_/g, ' ')
+    if (v.kind === 'pattern') return engineEnum(String(v.pattern)) ?? String(v.pattern).replace(/_/g, ' ')
     if (v.kind === 'buffer') return tr('lens.settings.summary.image')
     // Groups: the changed members.
     const dd = d && typeof d === 'object' && !Array.isArray(d) ? d : {}
@@ -558,7 +558,7 @@ function valueSummary(k: string, v: Json, d: Json | undefined): string | null {
   }
   if (typeof v === 'number') return `${human(k)} ${v === 0 && d === 0 ? tr('lens.settings.summary.auto') : sig(v, 4)}`
   if (typeof v === 'boolean') return v ? human(k) : tr('lens.settings.summary.no', { name: human(k) })
-  return `${human(k)} ${String(v).replace(/_/g, ' ')}`
+  return `${human(k)} ${engineEnum(String(v)) ?? String(v).replace(/_/g, ' ')}`
 }
 
 /** The values that differ from a new pane's, for the header's summary line. */

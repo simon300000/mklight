@@ -360,7 +360,15 @@ function ValidateView({ result }: RendererProps) {
             <Icon className={cn('mt-[1px] size-3.5 shrink-0', sev === 'error' ? 'text-danger' : sev === 'info' ? 'text-secondary' : 'text-warning')} aria-label={severityText(sev)} />
             <span className="min-w-0 flex-1">
               {typeof i.surface === 'number' && <span className="mr-1.5 text-secondary">{t('common.surfaceN', { n: i.surface })}</span>}
-              {issueMessage(i)}
+              {(() => {
+                const m = issueMessage(i)
+                return (
+                  <>
+                    {m.text}
+                    {m.detail && <span className="block select-text text-[11px] text-secondary">{m.detail}</span>}
+                  </>
+                )
+              })()}
               {typeof i.code === 'string' && <span className="ml-1.5 text-[11px] text-secondary">{i.code}</span>}
             </span>
           </li>

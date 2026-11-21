@@ -195,10 +195,13 @@ kept per browser and switched live. `<html lang>` follows.
   placeholders and English plurals (`{ one, other }` picked by `count`);
   components use `useT()`, which re-renders them on a change. Module tables of
   display text read the language when shown.
-* **Engine text** (analysis descriptions, settings help and choices, run
-  warnings, stages, issues by code, sample names) goes through the shared
-  catalog `locales/<lang>/engine.json` (`src/i18n/engine.ts`): exact English
-  match, else English; issues by `code` with a `{placeholder}` template.
+* **Engine text** goes through the shared catalog
+  `locales/<lang>/engine.json` (docs/I18N.md, `src/i18n/engine.ts`), only
+  where it is shown: `engineText` (descriptors, settings titles and help,
+  first-order labels, field map definitions; exact English, else English),
+  `engineEnum` (settings choices by raw value, else the app's formatting),
+  `engineIssue` (validation and structural issues by code: the sentence,
+  with the English message as detail). What the app parses stays English.
 * The Chinese catalogs load on demand: English users download none of it.
   Units, symbols (EFL, RMS, MTF…), glass names, file names and shortcuts are
   not translated. Terms follow `locales/zh-Hans/GLOSSARY.md`.

@@ -3,7 +3,7 @@
 //   t('app.menu.file')                     a string in the current language
 //   t('common.errors', { count: 3 })       `{name}` placeholders; `count` picks a plural form
 //   const t = useT()                       in components: re-renders on a language change
-//   engineText(s), engineDiagnostic(…)     text the engine writes (./engine.ts)
+//   engineText(s), engineEnum(v), engineIssue(…)  text the engine writes (./engine.ts)
 //
 // A language's catalog (and its engine catalog) loads on demand; switching is
 // live. The choice ("System", or a language) is kept per browser.
@@ -15,7 +15,7 @@ import { en, type Catalog, type Translation } from './en'
 import { fill } from './fill'
 import type { Params, Paths, Plural } from './types'
 
-export { engineDiagnostic, engineText } from './engine'
+export { engineEnum, engineIssue, engineText, parseStructuralIssue } from './engine'
 export type { Params, Plural } from './types'
 
 export type Lang = 'en' | 'zh-Hans'

@@ -1,7 +1,7 @@
 import { AlertTriangle, CheckCircle2, Info, XOctagon } from 'lucide-react'
 import { useView } from '@/state/view'
 import { allIssues, fieldIndexIn, useWorkspace, type Issue } from '@/state/workspace'
-import { engineDiagnostic, useT } from '@/i18n'
+import { engineIssue, parseStructuralIssue, useT } from '@/i18n'
 
 const RANK = { error: 0, warning: 1, info: 2 } as const
 
@@ -22,15 +22,14 @@ export function issueText(i: Issue): string {
   )
 }
 
-/** The issue's text in the current language: the engine's code picks the
- *  translation (with the surface and the field numbered from 1 as its
- *  parameters); without one, the English message with its field renumbered. */
-function localIssueText(i: Issue): string {
-  const f = fieldOf(i)
-  const params: Record<string, number> = {}
-  if (i.surface != null) params.surface = i.surface
-  if (f != null) params.field = f + 1
-  return engineDiagnostic(i.code, params, issueText(i))
+/** The issue's text in the current language: by the engine's code (a
+ *  sentence, the English message then as detail), a structural issue of an
+ *  invalid model by its code and path; else the English message with its field
+ *  renumbered. */
+function localIssueText(i: Issue): { text: string; detail?: string } {
+  const s = !i.code ? parseStructuralIssue(i.message) : null
+  if (s) return engineIssue(s.code, { path: s.path }, s.message)
+  return engineIssue(i.code, { surface: i.surface }, issueText(i))
 }
 
 /** The design's validation issues, errors first; choosing one selects the
@@ -74,6 +73,7 @@ export function IssuesList() {
         <ul className="-mx-1 max-h-[50vh] space-y-0.5 overflow-y-auto" data-testid="issues-list">
           {issues.map((i, k) => {
             const f = fieldOf(i)
+            const text = localIssueText(i)
             const target = i.surface != null ? t('app.issues.selectSurface', { n: i.surface }) : f != null ? t('app.issues.showField', { n: f + 1 }) : undefined
             return (
               <li key={k}>
@@ -92,7 +92,8 @@ export function IssuesList() {
                     <Info className="mt-[1px] size-3.5 shrink-0 text-secondary" aria-label={t('common.info').toLowerCase()} />
                   )}
                   <span className="min-w-0">
-                    <span className="block select-text text-label">{localIssueText(i)}</span>
+                    <span className="block select-text text-label">{text.text}</span>
+                    {text.detail && <span className="block select-text text-[11px] text-secondary">{text.detail}</span>}
                     {(i.code || i.surface != null || f != null) && (
                       <span className="flex gap-2 text-[11px] text-secondary">
                         {i.code && <span className="font-mono">{i.code}</span>}

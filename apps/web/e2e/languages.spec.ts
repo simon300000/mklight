@@ -32,6 +32,11 @@ test.describe('a Chinese browser', () => {
     await expect(pane).toContainText('点列图')
     await expect(pane.getByTestId('key-numbers')).toContainText('RMS', { timeout: 30_000 })
 
+    // Engine text from the shared catalog: the first-order labels.
+    await page.getByTestId('status-capsule').click()
+    await expect(page.getByText('有效焦距').first()).toBeVisible()
+    await page.keyboard.press('Escape')
+
     // The inspector's System page.
     await page.getByRole('tab', { name: '系统' }).click()
     await expect(page.getByTestId('system-page')).toContainText('波长')
@@ -40,9 +45,13 @@ test.describe('a Chinese browser', () => {
 })
 
 test('Language in the app menu switches live and the choice survives reload', async ({ page }) => {
+  const chunks: string[] = []
+  page.on('request', (r) => chunks.push(r.url()))
   await page.goto('./?fresh&sample=double_gauss')
   await engineReady(page)
   await expect(page.locator('html')).toHaveAttribute('lang', 'en')
+  // English loads no Chinese catalog, UI or engine.
+  expect(chunks.filter((u) => /zh-Hans|engine-[\w-]+\.js/.test(u))).toEqual([])
   await page.getByRole('button', { name: 'Menu' }).click()
   await page.getByTestId('language-menu').click()
   await page.getByRole('menuitemradio', { name: '简体中文' }).click()

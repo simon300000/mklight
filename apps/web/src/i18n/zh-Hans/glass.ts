@@ -1,7 +1,7 @@
 import type { Translation } from '../en'
 
 export const glass: Translation['glass'] = {
-  candidate: '候选设计 {n}',
+  candidate: '候选 {n}',
   applyUndo: '应用玻璃替换',
   list: {
     sep: '、',
@@ -31,7 +31,7 @@ export const glass: Translation['glass'] = {
     defaultHeld: '默认评价函数：{title}，保持焦距。',
     default: '默认评价函数：{title}。',
     types: {
-      rms_spot: 'RMS 点列图',
+      rms_spot: 'RMS 弥散斑',
       wavefront: 'RMS 波前',
       mtf: 'MTF',
     },
@@ -81,7 +81,7 @@ export const glass: Translation['glass'] = {
     search: '搜索',
     combinations: '尝试组合数',
     timeLimit: '时间限制',
-    iterations: '每种组合的形状迭代次数',
+    iterations: '每组迭代次数',
     iterationsHelp: '针对每种玻璃组合重新优化形状的阻尼最小二乘迭代次数',
     keepBest: '保留最佳数量',
     merit: '评价函数',
@@ -106,21 +106,21 @@ export const glass: Translation['glass'] = {
     rankLabel: '第 {rank} 名，评价值 {merit}，玻璃 {glasses}',
     infeasible: '未满足约束',
     previewed: '已在窗口中预览',
-    previewError: '无法预览此候选设计：{error}',
+    previewError: '无法预览此候选：{error}',
     meritNow: '当前评价值',
-    candidate: '候选设计',
+    candidate: '候选',
     to: '改为',
     shapeChanges: '形状变化（{n}）',
   },
   map: {
     title: '玻璃图',
     plane: '坐标平面',
-    ringed: '圈出的是候选设计的玻璃，并标注了所在的面。',
+    ringed: '圈出的是候选的玻璃，并标注了所在的面。',
   },
   layout: {
     label: '{title}光路图',
     before: '之前',
-    candidate: '候选设计',
+    candidate: '候选',
   },
   cand: {
     catalogs: '玻璃库',
@@ -148,7 +148,7 @@ export const glass: Translation['glass'] = {
     maxStain: '最大污渍等级',
     maxStainHelp: '耐污渍等级 (FR)',
     forLensOnly: '仅此透镜的候选玻璃',
-    forSurface: '面 {n} 的候选玻璃',
+    forSurface: '第 {n} 面的候选玻璃',
     forSlot: 'S{n} · {material} 的候选玻璃',
     own: '此透镜使用独立候选玻璃',
     usesAll: '使用所有透镜的候选玻璃（{summary}）。',
@@ -156,7 +156,7 @@ export const glass: Translation['glass'] = {
   chart: {
     abbe: '阿贝数',
     index: '折射率',
-    partial: '相对部分色散',
+    partial: '部分色散',
     label: '玻璃图，{plane} 与阿贝数，共 {count} 种玻璃。',
     labelFor: '玻璃图，{plane} 与阿贝数，{name} 的 {count} 种玻璃。',
     marked: '已标记：{list}。',
@@ -189,10 +189,10 @@ export const glass: Translation['glass'] = {
   view: {
     none: '没有载入任何玻璃。',
     select: '选择',
-    selectSurface: '在镜头数据中选择面 {n}',
+    selectSurface: '在镜头数据中选择第 {n} 面',
     clickHint: '点按玻璃以查看详情。',
     ndHelp: '折射率 n_d 与阿贝数 V_d 的关系',
-    pgfHelp: '相对部分色散 P_g,F 与阿贝数 V_d 的关系',
+    pgfHelp: '部分色散 P_g,F 与阿贝数 V_d 的关系',
     catalog: '玻璃库',
     allCatalogs: '全部玻璃库',
     designGlass: '{name}，面 {surfaces}',
@@ -207,7 +207,7 @@ export const glass: Translation['glass'] = {
     offsetHelp: '相对玻璃库数值，Δn_d {dn}，ΔV_d {dv}',
     ndHelp: 'd 线 (587.56 nm) 处的折射率',
     vdHelp: '阿贝数 (n_d − 1) / (n_F − n_C)',
-    pgfHelp: '相对部分色散 (n_g − n_F) / (n_F − n_C)',
+    pgfHelp: '部分色散 (n_g − n_F) / (n_F − n_C)',
     neHelp: 'e 线 (546.07 nm) 处的折射率',
     catalog: '玻璃库',
     dispersion: '色散',

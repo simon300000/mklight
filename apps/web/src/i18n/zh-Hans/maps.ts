@@ -73,7 +73,7 @@ export const maps: Translation['maps'] = {
     colFocus: '焦点 (mm)',
     colBlur: '弥散斑 ⌀ (mm)',
     colHeight: '高度 (mm)',
-    selectSurface: '选择面 {n}',
+    selectSurface: '选择第 {n} 面',
     nearFocusLabel: '接近焦点',
     summary: '{n} 条路径，按强度从高到低',
     nearSensor: '聚焦在传感器附近',

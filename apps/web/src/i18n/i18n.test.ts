@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { en } from './en'
 import { zhHans } from './zh-Hans'
-import { engineDiagnostic, engineText, setEngineCatalog } from './engine'
+import { engineEnum, engineIssue, engineText, parseStructuralIssue, setEngineCatalog } from './engine'
 import { currentLanguage, systemLanguage, t, tMaybe, useI18n } from '.'
 
 type Tree = { [k: string]: string | Tree }
@@ -47,7 +47,7 @@ describe('t', () => {
     expect(useI18n.getState().lang).toBe('zh-Hans')
     expect(document.documentElement.lang).toBe('zh-Hans')
     expect(localStorage.getItem('mklight.language')).toBe('zh-Hans')
-    expect(t('common.surfaceN', { n: 3 })).toBe('面 3')
+    expect(t('common.surfaceN', { n: 3 })).toBe('第 3 面')
     expect(t('common.errors', { count: 1 })).toBe('1 个错误')
     await useI18n.getState().setChoice('en')
     expect(t('common.cancel')).toBe('Cancel')
@@ -79,14 +79,19 @@ describe('catalogs', () => {
 describe('engine text', () => {
   afterEach(() => setEngineCatalog(null))
 
-  it('looks up exact English and falls back to it', () => {
-    setEngineCatalog({ strings: { 'Spot Diagram': '点列图' }, diagnostics: { thick_neg: '面 {surface} 的厚度为负' } })
+  it('looks up exact English, enums and issue codes, and falls back to English', () => {
+    setEngineCatalog({ strings: { 'Spot Diagram': '点列图' }, enums: { hexapolar: '六角极坐标' }, diagnostics: { thick_neg: '第 {surface} 面的厚度为负', bad: '{path} 无效' } })
     expect(engineText('Spot Diagram')).toBe('点列图')
     expect(engineText('Spot diagram')).toBe('Spot diagram')
     expect(engineText(null)).toBeUndefined()
-    expect(engineDiagnostic('thick_neg', { surface: 4 }, 'Negative thickness')).toBe('面 4 的厚度为负')
+    expect(engineEnum('hexapolar')).toBe('六角极坐标')
+    expect(engineEnum('grid')).toBeUndefined()
+    expect(engineIssue('thick_neg', { surface: 4 }, 'Negative thickness -1 mm')).toEqual({ text: '第 4 面的厚度为负', detail: 'Negative thickness -1 mm' })
     // A template naming a value the issue lacks, or an unknown code: the message.
-    expect(engineDiagnostic('thick_neg', {}, 'Negative thickness')).toBe('Negative thickness')
-    expect(engineDiagnostic('other', { surface: 4 }, 'Spot Diagram')).toBe('点列图')
+    expect(engineIssue('thick_neg', { surface: null }, 'Negative thickness')).toEqual({ text: 'Negative thickness' })
+    expect(engineIssue('other', { surface: 4 }, 'Odd')).toEqual({ text: 'Odd' })
+    const s = parseStructuralIssue('invalid model: [bad] surfaces[3].radius: must be finite')
+    expect(s).toEqual({ code: 'bad', path: 'surfaces[3].radius', message: 'must be finite' })
+    expect(engineIssue(s!.code, { path: s!.path }, s!.message).text).toBe('surfaces[3].radius 无效')
   })
 })

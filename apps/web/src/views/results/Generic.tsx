@@ -265,7 +265,8 @@ function Issues(props: { json: JsonObject }) {
               <li key={k} className="flex gap-2 py-0.5">
                 <span className={cn('w-14 shrink-0 capitalize', SEVERITY[sev] ?? 'text-secondary')}>{sev === 'error' ? t('common.error') : sev === 'warning' ? t('common.warning') : sev === 'info' ? t('common.info') : sev}</span>
                 <span className="text-label">
-                  {i.message === undefined && i.code !== undefined ? String(i.code) : issueMessage(i)}
+                  {i.message === undefined && i.code !== undefined ? String(i.code) : issueMessage(i).text}
+                  {i.message !== undefined && issueMessage(i).detail && <span className="block text-[11px] text-secondary">{issueMessage(i).detail}</span>}
                   {typeof i.surface === 'number' && <span className="text-secondary">{t('analysis.results.onSurface', { n: i.surface })}</span>}
                   {typeof i.code === 'string' && <span className="ml-1 font-mono text-[11px] text-tertiary">{i.code}</span>}
                 </span>
