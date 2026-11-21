@@ -68,6 +68,7 @@ options):
 | `--settings <json>` | settings merged into every pane opened with `--analysis` |
 | `--show-settings` | open every pane's settings form |
 | `--theme light\|dark` | override the saved appearance for this run |
+| `--language en-US\|zh-Hans\|system` | the UI language for this run (default: the saved choice, else the system's) |
 | `--select <i>` | select surface *i* |
 | `--edit <i>.<radius\|thickness\|conic>=<value>` | apply a lens edit once the panes are up (repeatable), one undoable step each |
 | `--undo` | then undo once |
@@ -402,6 +403,47 @@ so none edits `App.xaml.cs`, `LaunchOptions.cs` or `DesignWindow` to be added:
 * An invalid `--settings` (not a JSON object, e.g. quotes a shell stripped) is a
   parse error: the app logs it and exits with code 2. A failure while a design
   window starts is logged, and a scripted run exits with code 3 instead of waiting.
+
+## Languages
+
+English is the source language. Simplified Chinese (`zh-Hans`) is the first translation.
+
+* **Choice.** The app follows the system's preferred languages. zh, zh-CN, zh-SG and
+  zh-Hans* get Simplified Chinese. zh-TW, zh-HK and zh-Hant* stay English for now, and so does
+  anything else. View > Language saves a choice (System, English, 简体中文) as `language` in
+  settings.json, and `--language` overrides it for one run (screenshots, tests).
+  * At launch, before any XAML loads, `Support/UiLanguage.cs` sets the result as
+    `Microsoft.Windows.Globalization.ApplicationLanguages.PrimaryLanguageOverride`.
+  * The app is unpackaged, so Windows does not keep the override; it is set from the saved
+    choice on every launch, and a new choice applies on restart.
+  * The XAML language follows the override, so Chinese text uses the system CJK font (Microsoft
+    YaHei UI through the Segoe UI fallback).
+* **The app's own text** lives in MRT Core resources, `Strings/en-US/Resources.resw` and
+  `Strings/zh-Hans/Resources.resw`.
+  * Code reads them with `Loc.S("Key")` and `Loc.F("Key", args)`: one format string with
+    `{0}` placeholders, never concatenation, with invariant number formatting.
+  * XAML uses `x:Uid`.
+  * A key missing in Chinese falls back to English (`DefaultLanguage` en-US). A key missing
+    everywhere shows as itself.
+  * Keys are `<Area>_<Group>_<Name>`, grouped in one block per area: Common, Shell, Lens,
+    Analysis, Results, Jobs, Glass.
+  * Unit tests that link app files read the English resw through `Loc`.
+* **Engine text**: analysis titles and descriptions, settings descriptions and enum values,
+  operand names, diagnostics by code, and sample names.
+  * It is translated through the catalog shared by every app, `locales/<language>/engine.json`
+    at the repository root (docs/I18N.md), shipped beside the app as `locales/…/engine.json`.
+  * `EngineText.T` (MKLight.Model) looks up the exact English, and a miss shows the English.
+  * `EngineText.Diagnostic` fills a code's template from the issue's `args` and falls back
+    to the English message.
+  * Every place that displays engine text goes through it; keys and identifiers stay English.
+* **Not translated:** units, symbols, glass and catalog names, identifiers, file extensions,
+  user data, and keyboard shortcuts. Numbers keep invariant formatting.
+* **Tests** (`Localization/LocalizationTests.cs`):
+  * every English key has a Chinese one with the same placeholders;
+  * every `Loc` key and `x:Uid` in the app exists;
+  * the language choice;
+  * the engine text lookup.
+  The FlaUI suite runs with `--language en-US`, so automation names stay English.
 
 ## `FFIEngine`
 
