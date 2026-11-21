@@ -24,6 +24,200 @@
   <!-- area: Analysis -->
   <!-- end area: Analysis -->
   <!-- area: Jobs -->
+  <data name="Jobs_Tolerance_Panel_AddCompensator" xml:space="preserve"><value>Add Compensator</value></data>
+  <data name="Jobs_Tolerance_Panel_AddSurface" xml:space="preserve"><value>Surface {0}</value></data>
+  <data name="Jobs_Tolerance_Panel_AddSurfaceLabeled" xml:space="preserve"><value>Surface {0} · {1}</value></data>
+  <data name="Jobs_Tolerance_Panel_AddTolerance" xml:space="preserve"><value>Add a tolerance</value></data>
+  <data name="Jobs_Tolerance_Panel_AnalysisGroup" xml:space="preserve"><value>Analysis</value></data>
+  <data name="Jobs_Tolerance_Panel_Back" xml:space="preserve"><value>Back</value></data>
+  <data name="Jobs_Tolerance_Panel_BackFocus" xml:space="preserve"><value>Back focus</value></data>
+  <data name="Jobs_Tolerance_Panel_BackHelp" xml:space="preserve"><value>Back to the tolerances</value></data>
+  <data name="Jobs_Tolerance_Panel_Builds" xml:space="preserve"><value>{0} builds</value></data>
+  <data name="Jobs_Tolerance_Panel_CancelHelp" xml:space="preserve"><value>End the run and discard it</value></data>
+  <data name="Jobs_Tolerance_Panel_Comp_Allowed" xml:space="preserve"><value>allowed ±{0} {1}</value></data>
+  <data name="Jobs_Tolerance_Panel_Comp_AtLimit" xml:space="preserve"><value>It reached its limit: some builds need more adjustment than allowed.</value></data>
+  <data name="Jobs_Tolerance_Panel_Comp_Mean" xml:space="preserve"><value>Monte Carlo mean</value></data>
+  <data name="Jobs_Tolerance_Panel_Comp_MeanHelp" xml:space="preserve"><value>The mean over the trials, and its shift from nominal</value></data>
+  <data name="Jobs_Tolerance_Panel_Comp_MeanWithShift" xml:space="preserve"><value>{0} {1} ({2})</value></data>
+  <data name="Jobs_Tolerance_Panel_Comp_NominalHelp" xml:space="preserve"><value>The compensator re-optimized on the design as it is</value></data>
+  <data name="Jobs_Tolerance_Panel_Comp_RangeBarHelp" xml:space="preserve"><value>The sensitivity evaluations moved it from {0} to +{1} {2} of ±{3} allowed</value></data>
+  <data name="Jobs_Tolerance_Panel_Comp_RangeUsed" xml:space="preserve"><value>Range used</value></data>
+  <data name="Jobs_Tolerance_Panel_Comp_RangeUsedHelp" xml:space="preserve"><value>The moves the sensitivity evaluations needed, from nominal</value></data>
+  <data name="Jobs_Tolerance_Panel_Comp_RangeUsedValue" xml:space="preserve"><value>{0} to {1} {2}</value></data>
+  <data name="Jobs_Tolerance_Panel_Comp_Sigma" xml:space="preserve"><value>Monte Carlo σ</value></data>
+  <data name="Jobs_Tolerance_Panel_Comp_SigmaHelp" xml:space="preserve"><value>The standard deviation over the trials, and three times it</value></data>
+  <data name="Jobs_Tolerance_Panel_Comp_SigmaValue" xml:space="preserve"><value>{0} (±3σ {1}) {2}</value></data>
+  <data name="Jobs_Tolerance_Panel_CompensatorsGroup" xml:space="preserve"><value>Compensators</value></data>
+  <data name="Jobs_Tolerance_Panel_CopySummary" xml:space="preserve"><value>Copy Summary</value></data>
+  <data name="Jobs_Tolerance_Panel_CouldNotSave" xml:space="preserve"><value>Could not save: {0}</value></data>
+  <data name="Jobs_Tolerance_Panel_Criterion" xml:space="preserve"><value>Criterion</value></data>
+  <data name="Jobs_Tolerance_Panel_CriterionHintFields" xml:space="preserve"><value>Over the design's fields and wavelengths, by their weights.</value></data>
+  <data name="Jobs_Tolerance_Panel_CriterionHintMerit" xml:space="preserve"><value>Each build is judged by the Optimize page's merit function.</value></data>
+  <data name="Jobs_Tolerance_Panel_CriterionHintMtf" xml:space="preserve"><value>The MTF at the frequencies of the merit settings, as a shortfall from 1.</value></data>
+  <data name="Jobs_Tolerance_Panel_CsvFileType" xml:space="preserve"><value>CSV (comma-separated values)</value></data>
+  <data name="Jobs_Tolerance_Panel_DefaultTolerancesButton" xml:space="preserve"><value>Default Tolerances…</value></data>
+  <data name="Jobs_Tolerance_Panel_DefaultTolerancesHelp" xml:space="preserve"><value>Generate a set from a class of manufacture</value></data>
+  <data name="Jobs_Tolerance_Panel_Delete" xml:space="preserve"><value>Delete</value></data>
+  <data name="Jobs_Tolerance_Panel_DeleteSelected" xml:space="preserve"><value>Delete the selected tolerances (Delete)</value></data>
+  <data name="Jobs_Tolerance_Panel_Distribution" xml:space="preserve"><value>Distribution</value></data>
+  <data name="Jobs_Tolerance_Panel_Duplicate" xml:space="preserve"><value>Duplicate</value></data>
+  <data name="Jobs_Tolerance_Panel_DuplicateSelected" xml:space="preserve"><value>Duplicate the selected tolerances</value></data>
+  <data name="Jobs_Tolerance_Panel_EditTolerances" xml:space="preserve"><value>Edit Tolerances</value></data>
+  <data name="Jobs_Tolerance_Panel_EditTolerancesHelp" xml:space="preserve"><value>Back to the tolerance set (the results are kept)</value></data>
+  <data name="Jobs_Tolerance_Panel_Elapsed" xml:space="preserve"><value>Elapsed</value></data>
+  <data name="Jobs_Tolerance_Panel_ElementLineName" xml:space="preserve"><value>Moves {0}, pivot {1}</value></data>
+  <data name="Jobs_Tolerance_Panel_ElementLineSurface" xml:space="preserve"><value>surface {0}</value></data>
+  <data name="Jobs_Tolerance_Panel_EndPreview" xml:space="preserve"><value>End Preview</value></data>
+  <data name="Jobs_Tolerance_Panel_EndThePreview" xml:space="preserve"><value>End the preview</value></data>
+  <data name="Jobs_Tolerance_Panel_Export" xml:space="preserve"><value>Export</value></data>
+  <data name="Jobs_Tolerance_Panel_ExportHelp" xml:space="preserve"><value>Copy a summary as text, or save the tables as CSV</value></data>
+  <data name="Jobs_Tolerance_Panel_FailedTitle" xml:space="preserve"><value>Tolerancing Failed</value></data>
+  <data name="Jobs_Tolerance_Panel_FirstSurface" xml:space="preserve"><value>First Surface</value></data>
+  <data name="Jobs_Tolerance_Panel_Generator_AbbeNumber" xml:space="preserve"><value>Abbe number</value></data>
+  <data name="Jobs_Tolerance_Panel_Generator_Class" xml:space="preserve"><value>Class</value></data>
+  <data name="Jobs_Tolerance_Panel_Generator_ElementDecenter" xml:space="preserve"><value>Element decenter</value></data>
+  <data name="Jobs_Tolerance_Panel_Generator_ElementTilt" xml:space="preserve"><value>Element tilt</value></data>
+  <data name="Jobs_Tolerance_Panel_Generator_Generate" xml:space="preserve"><value>Generate</value></data>
+  <data name="Jobs_Tolerance_Panel_Generator_Hint" xml:space="preserve"><value>0 leaves a kind out. Generating replaces the tolerances; the compensators stay.</value></data>
+  <data name="Jobs_Tolerance_Panel_Generator_Index" xml:space="preserve"><value>Index</value></data>
+  <data name="Jobs_Tolerance_Panel_Generator_Irregularity" xml:space="preserve"><value>Irregularity</value></data>
+  <data name="Jobs_Tolerance_Panel_Generator_Power" xml:space="preserve"><value>Power</value></data>
+  <data name="Jobs_Tolerance_Panel_Generator_SurfaceDecenter" xml:space="preserve"><value>Surface decenter</value></data>
+  <data name="Jobs_Tolerance_Panel_Generator_SurfaceTilt" xml:space="preserve"><value>Surface tilt</value></data>
+  <data name="Jobs_Tolerance_Panel_Generator_Thickness" xml:space="preserve"><value>Thickness</value></data>
+  <data name="Jobs_Tolerance_Panel_Generator_Title" xml:space="preserve"><value>Default Tolerances</value></data>
+  <data name="Jobs_Tolerance_Panel_Group_Collapsed" xml:space="preserve"><value>Collapsed, {0} tolerances</value></data>
+  <data name="Jobs_Tolerance_Panel_Group_CollapsedProblems" xml:space="preserve"><value>Collapsed, {0} tolerances, {1} with problems</value></data>
+  <data name="Jobs_Tolerance_Panel_Group_Expanded" xml:space="preserve"><value>Expanded</value></data>
+  <data name="Jobs_Tolerance_Panel_Group_Hide" xml:space="preserve"><value>Hide the tolerances of {0}</value></data>
+  <data name="Jobs_Tolerance_Panel_Group_Show" xml:space="preserve"><value>Show the {0} tolerances of {1}</value></data>
+  <data name="Jobs_Tolerance_Panel_HistogramDashed" xml:space="preserve"><value>Dashed: {0} % of builds.</value></data>
+  <data name="Jobs_Tolerance_Panel_HistogramHelp" xml:space="preserve"><value>Click a bar to list its trials</value></data>
+  <data name="Jobs_Tolerance_Panel_HistogramHint" xml:space="preserve"><value>Click a bar of the histogram for its trials; the eye rebuilds a trial in the window.</value></data>
+  <data name="Jobs_Tolerance_Panel_HistogramHintSelected" xml:space="preserve"><value>The eye rebuilds a trial in the window, read-only.</value></data>
+  <data name="Jobs_Tolerance_Panel_HistogramName" xml:space="preserve"><value>Distribution of {0} Monte Carlo trials of the {1}</value></data>
+  <data name="Jobs_Tolerance_Panel_HistogramSolid" xml:space="preserve"><value>Solid: the nominal {0}. </value></data>
+  <data name="Jobs_Tolerance_Panel_HistogramSolidDashed" xml:space="preserve"><value>Solid: the nominal {0}. Dashed: {1} % of builds.</value></data>
+  <data name="Jobs_Tolerance_Panel_KeepTrials" xml:space="preserve"><value>Keep trials</value></data>
+  <data name="Jobs_Tolerance_Panel_KeepTrialsHelp" xml:space="preserve"><value>How many trials keep their perturbations and compensators (to preview them)</value></data>
+  <data name="Jobs_Tolerance_Panel_KeptTrialsName" xml:space="preserve"><value>Kept trials</value></data>
+  <data name="Jobs_Tolerance_Panel_LastRunEstimate" xml:space="preserve"><value>Last run: {0} per trial, so {1} trials take about {2}.</value></data>
+  <data name="Jobs_Tolerance_Panel_LastSurface" xml:space="preserve"><value>Last Surface</value></data>
+  <data name="Jobs_Tolerance_Panel_LevelOfBuilds" xml:space="preserve"><value>{0} % of builds</value></data>
+  <data name="Jobs_Tolerance_Panel_Levels" xml:space="preserve"><value>Levels</value></data>
+  <data name="Jobs_Tolerance_Panel_LevelsHelp" xml:space="preserve"><value>Percentiles of the builds, in 0…100</value></data>
+  <data name="Jobs_Tolerance_Panel_LevelsName" xml:space="preserve"><value>Levels in percent</value></data>
+  <data name="Jobs_Tolerance_Panel_LimitMinusName" xml:space="preserve"><value>{0} minus</value></data>
+  <data name="Jobs_Tolerance_Panel_LimitName" xml:space="preserve"><value>{0} limit</value></data>
+  <data name="Jobs_Tolerance_Panel_LimitPlusName" xml:space="preserve"><value>{0} plus</value></data>
+  <data name="Jobs_Tolerance_Panel_ListSeparator" xml:space="preserve"><value>, </value></data>
+  <data name="Jobs_Tolerance_Panel_MenuButtonName" xml:space="preserve"><value>{0}: {1}</value></data>
+  <data name="Jobs_Tolerance_Panel_MonteCarloGroup" xml:space="preserve"><value>Monte Carlo</value></data>
+  <data name="Jobs_Tolerance_Panel_NoCompensators" xml:space="preserve"><value>None: every build is judged as it is.</value></data>
+  <data name="Jobs_Tolerance_Panel_NoTolerances" xml:space="preserve"><value>No tolerances. Generate a default set, or add one with +.</value></data>
+  <data name="Jobs_Tolerance_Panel_NoTrialInBar" xml:space="preserve"><value>No trial in this bar.</value></data>
+  <data name="Jobs_Tolerance_Panel_Nominal" xml:space="preserve"><value>Nominal</value></data>
+  <data name="Jobs_Tolerance_Panel_PassLimit" xml:space="preserve"><value>Pass limit</value></data>
+  <data name="Jobs_Tolerance_Panel_PassLimitHelpHighest" xml:space="preserve"><value>The highest value a build may have; gives the yield</value></data>
+  <data name="Jobs_Tolerance_Panel_PassLimitHelpLowest" xml:space="preserve"><value>The lowest value a build may have; gives the yield</value></data>
+  <data name="Jobs_Tolerance_Panel_PassLimitNone" xml:space="preserve"><value>none</value></data>
+  <data name="Jobs_Tolerance_Panel_PerTrial" xml:space="preserve"><value>{0} per trial</value></data>
+  <data name="Jobs_Tolerance_Panel_PivotFirstVertex" xml:space="preserve"><value>First Vertex (S{0})</value></data>
+  <data name="Jobs_Tolerance_Panel_PivotHelp" xml:space="preserve"><value>The vertex the element tilts about; every element tolerance starting on S{0} uses it</value></data>
+  <data name="Jobs_Tolerance_Panel_PivotLabel" xml:space="preserve"><value>pivot {0}</value></data>
+  <data name="Jobs_Tolerance_Panel_PivotLastVertex" xml:space="preserve"><value>Last Vertex (S{0})</value></data>
+  <data name="Jobs_Tolerance_Panel_PivotName" xml:space="preserve"><value>Pivot {0}</value></data>
+  <data name="Jobs_Tolerance_Panel_PivotSurface" xml:space="preserve"><value>Surface</value></data>
+  <data name="Jobs_Tolerance_Panel_PreviewCompensator" xml:space="preserve"><value>{0}: {1} ({2})</value></data>
+  <data name="Jobs_Tolerance_Panel_PreviewCriterion" xml:space="preserve"><value>Criterion {0}</value></data>
+  <data name="Jobs_Tolerance_Panel_PreviewCriterionNominal" xml:space="preserve"><value>Criterion {0} (nominal {1})</value></data>
+  <data name="Jobs_Tolerance_Panel_PreviewTrial" xml:space="preserve"><value>Preview trial {0} in the window: its perturbations; not applied</value></data>
+  <data name="Jobs_Tolerance_Panel_PreviewTrialCompensated" xml:space="preserve"><value>Preview trial {0} in the window: its perturbations and re-optimized compensators; not applied</value></data>
+  <data name="Jobs_Tolerance_Panel_PreviewWorseLimit" xml:space="preserve"><value>Preview this build at its worse limit in the window</value></data>
+  <data name="Jobs_Tolerance_Panel_RangeFree" xml:space="preserve"><value>free</value></data>
+  <data name="Jobs_Tolerance_Panel_RangeOf" xml:space="preserve"><value>Range of {0}</value></data>
+  <data name="Jobs_Tolerance_Panel_Rebuilding" xml:space="preserve"><value>Rebuilding the build in the engine…</value></data>
+  <data name="Jobs_Tolerance_Panel_RemoveCompensatorHelp" xml:space="preserve"><value>Remove the compensator</value></data>
+  <data name="Jobs_Tolerance_Panel_RowName" xml:space="preserve"><value>{0}, {1}</value></data>
+  <data name="Jobs_Tolerance_Panel_RssPrediction" xml:space="preserve"><value>RSS prediction</value></data>
+  <data name="Jobs_Tolerance_Panel_Run" xml:space="preserve"><value>Run Tolerancing</value></data>
+  <data name="Jobs_Tolerance_Panel_RunHelp" xml:space="preserve"><value>Start the run (Ctrl+Enter)</value></data>
+  <data name="Jobs_Tolerance_Panel_Running" xml:space="preserve"><value>Running</value></data>
+  <data name="Jobs_Tolerance_Panel_RunningHint" xml:space="preserve"><value>Stop keeps the sensitivities and the trials completed. Cancel discards the run. You can close this panel; the job continues.</value></data>
+  <data name="Jobs_Tolerance_Panel_SaveSensitivityCsv" xml:space="preserve"><value>Save Sensitivity Table as CSV…</value></data>
+  <data name="Jobs_Tolerance_Panel_SaveTrialsCsv" xml:space="preserve"><value>Save Monte Carlo Trials as CSV…</value></data>
+  <data name="Jobs_Tolerance_Panel_Saved" xml:space="preserve"><value>Saved {0}.</value></data>
+  <data name="Jobs_Tolerance_Panel_Seed" xml:space="preserve"><value>Seed</value></data>
+  <data name="Jobs_Tolerance_Panel_SensitivityGroup" xml:space="preserve"><value>Sensitivity</value></data>
+  <data name="Jobs_Tolerance_Panel_SensitivityGroupLargest" xml:space="preserve"><value>Sensitivity (the largest 25 of {0})</value></data>
+  <data name="Jobs_Tolerance_Panel_SensitivityRowName" xml:space="preserve"><value>{0}: {1} of the RSS</value></data>
+  <data name="Jobs_Tolerance_Panel_ShareOfRss" xml:space="preserve"><value>share of RSS</value></data>
+  <data name="Jobs_Tolerance_Panel_ShowLastResults" xml:space="preserve"><value>Show the last results</value></data>
+  <data name="Jobs_Tolerance_Panel_ShowMore" xml:space="preserve"><value>Show {0} more</value></data>
+  <data name="Jobs_Tolerance_Panel_Stop" xml:space="preserve"><value>Stop</value></data>
+  <data name="Jobs_Tolerance_Panel_StopHelp" xml:space="preserve"><value>End now and keep the sensitivities and the trials completed</value></data>
+  <data name="Jobs_Tolerance_Panel_StoppedEarly" xml:space="preserve"><value>Stopped early: the results of what completed.</value></data>
+  <data name="Jobs_Tolerance_Panel_Subtitle_Many" xml:space="preserve"><value>{0} tolerances · {1}</value></data>
+  <data name="Jobs_Tolerance_Panel_Subtitle_One" xml:space="preserve"><value>{0} tolerance · {1}</value></data>
+  <data name="Jobs_Tolerance_Panel_SummaryCopied" xml:space="preserve"><value>The tolerance summary is on the clipboard.</value></data>
+  <data name="Jobs_Tolerance_Panel_SurfaceColumnElementHelp" xml:space="preserve"><value>The element: the surfaces that move together</value></data>
+  <data name="Jobs_Tolerance_Panel_SurfaceColumnSurfaceHelp" xml:space="preserve"><value>The surface (a thickness is the gap after it)</value></data>
+  <data name="Jobs_Tolerance_Panel_SurfaceStop" xml:space="preserve"><value>S{0} (stop)</value></data>
+  <data name="Jobs_Tolerance_Panel_SymmetricLimits" xml:space="preserve"><value>Symmetric Limits</value></data>
+  <data name="Jobs_Tolerance_Panel_TestFringesAt" xml:space="preserve"><value>Test fringes at</value></data>
+  <data name="Jobs_Tolerance_Panel_TestFringesHelp" xml:space="preserve"><value>Power and irregularity in test fringes are counted at this wavelength</value></data>
+  <data name="Jobs_Tolerance_Panel_TestWavelengthName" xml:space="preserve"><value>Test wavelength in nm</value></data>
+  <data name="Jobs_Tolerance_Panel_TheDesign" xml:space="preserve"><value>the design</value></data>
+  <data name="Jobs_Tolerance_Panel_TimeLeft" xml:space="preserve"><value>Time left</value></data>
+  <data name="Jobs_Tolerance_Panel_Title" xml:space="preserve"><value>Tolerance</value></data>
+  <data name="Jobs_Tolerance_Panel_TitleWithUnit" xml:space="preserve"><value>{0} ({1})</value></data>
+  <data name="Jobs_Tolerance_Panel_TolerancesGroup" xml:space="preserve"><value>Tolerances</value></data>
+  <data name="Jobs_Tolerance_Panel_Trial" xml:space="preserve"><value>Trial {0}</value></data>
+  <data name="Jobs_Tolerance_Panel_TrialName" xml:space="preserve"><value>Trial {0}, {1}</value></data>
+  <data name="Jobs_Tolerance_Panel_Trials" xml:space="preserve"><value>Trials</value></data>
+  <data name="Jobs_Tolerance_Panel_TrialsSummary" xml:space="preserve"><value>{0} trials, seed {1}</value></data>
+  <data name="Jobs_Tolerance_Panel_TrialsSummaryFailed" xml:space="preserve"><value>{0} trials, {1} failed, seed {2}</value></data>
+  <data name="Jobs_Tolerance_Panel_TrialsSummaryTimed" xml:space="preserve"><value>{0} · {1} per trial</value></data>
+  <data name="Jobs_Tolerance_Panel_TryAgain" xml:space="preserve"><value>Try Again</value></data>
+  <data name="Jobs_Tolerance_Panel_TryAgainHelp" xml:space="preserve"><value>Run the job again with the same settings</value></data>
+  <data name="Jobs_Tolerance_Panel_Undo_AddCompensator" xml:space="preserve"><value>Add Compensator</value></data>
+  <data name="Jobs_Tolerance_Panel_Undo_AddTolerance" xml:space="preserve"><value>Add Tolerance</value></data>
+  <data name="Jobs_Tolerance_Panel_Undo_AsymmetricLimits" xml:space="preserve"><value>Asymmetric Limits</value></data>
+  <data name="Jobs_Tolerance_Panel_Undo_ChangeAnalysis" xml:space="preserve"><value>Change Analysis</value></data>
+  <data name="Jobs_Tolerance_Panel_Undo_ChangeCompensatorRange" xml:space="preserve"><value>Change Compensator Range</value></data>
+  <data name="Jobs_Tolerance_Panel_Undo_ChangeCriterion" xml:space="preserve"><value>Change Criterion</value></data>
+  <data name="Jobs_Tolerance_Panel_Undo_ChangeDistribution" xml:space="preserve"><value>Change Distribution</value></data>
+  <data name="Jobs_Tolerance_Panel_Undo_ChangeElement" xml:space="preserve"><value>Change Element</value></data>
+  <data name="Jobs_Tolerance_Panel_Undo_ChangeElementPivot" xml:space="preserve"><value>Change Element Pivot</value></data>
+  <data name="Jobs_Tolerance_Panel_Undo_ChangeKeptTrials" xml:space="preserve"><value>Change Kept Trials</value></data>
+  <data name="Jobs_Tolerance_Panel_Undo_ChangeLevels" xml:space="preserve"><value>Change Levels</value></data>
+  <data name="Jobs_Tolerance_Panel_Undo_ChangePassLimit" xml:space="preserve"><value>Change Pass Limit</value></data>
+  <data name="Jobs_Tolerance_Panel_Undo_ChangeSeed" xml:space="preserve"><value>Change Seed</value></data>
+  <data name="Jobs_Tolerance_Panel_Undo_ChangeTestWavelength" xml:space="preserve"><value>Change Test Wavelength</value></data>
+  <data name="Jobs_Tolerance_Panel_Undo_ChangeTolerance" xml:space="preserve"><value>Change Tolerance</value></data>
+  <data name="Jobs_Tolerance_Panel_Undo_ChangeToleranceSurface" xml:space="preserve"><value>Change Tolerance Surface</value></data>
+  <data name="Jobs_Tolerance_Panel_Undo_ChangeToleranceUnit" xml:space="preserve"><value>Change Tolerance Unit</value></data>
+  <data name="Jobs_Tolerance_Panel_Undo_ChangeTrials" xml:space="preserve"><value>Change Trials</value></data>
+  <data name="Jobs_Tolerance_Panel_Undo_DefaultTolerances" xml:space="preserve"><value>Default Tolerances</value></data>
+  <data name="Jobs_Tolerance_Panel_Undo_DeleteTolerance" xml:space="preserve"><value>Delete Tolerance</value></data>
+  <data name="Jobs_Tolerance_Panel_Undo_DeleteTolerances" xml:space="preserve"><value>Delete Tolerances</value></data>
+  <data name="Jobs_Tolerance_Panel_Undo_DuplicateTolerance" xml:space="preserve"><value>Duplicate Tolerance</value></data>
+  <data name="Jobs_Tolerance_Panel_Undo_RemoveCompensator" xml:space="preserve"><value>Remove Compensator</value></data>
+  <data name="Jobs_Tolerance_Panel_Undo_SymmetricLimits" xml:space="preserve"><value>Symmetric Limits</value></data>
+  <data name="Jobs_Tolerance_Panel_UnitHelp" xml:space="preserve"><value>The unit of the limits (changing it converts them)</value></data>
+  <data name="Jobs_Tolerance_Panel_UnitNeedsData" xml:space="preserve"><value>This unit needs the surface's clear aperture or the glass's Abbe number, which the design does not give yet.</value></data>
+  <data name="Jobs_Tolerance_Panel_WorstTrialsButton" xml:space="preserve"><value>Worst Trials</value></data>
+  <data name="Jobs_Tolerance_Panel_WorstTrialsHelp" xml:space="preserve"><value>List the worst trials instead of the selected bar's</value></data>
+  <data name="Jobs_Tolerance_Panel_WorstTrialsTitle" xml:space="preserve"><value>Worst trials</value></data>
+  <data name="Jobs_Tolerance_Panel_Yield" xml:space="preserve"><value>Yield (pass limit {0})</value></data>
+  <data name="Jobs_Tolerance_Session_Activity" xml:space="preserve"><value>Tolerancing · {0}</value></data>
+  <data name="Jobs_Tolerance_Session_AddToleranceFirst" xml:space="preserve"><value>Add a tolerance first.</value></data>
+  <data name="Jobs_Tolerance_Session_FixDesignErrors" xml:space="preserve"><value>Fix the design's errors first.</value></data>
+  <data name="Jobs_Tolerance_Session_FixMarked_Many" xml:space="preserve"><value>Fix the {0} tolerances marked in red first.</value></data>
+  <data name="Jobs_Tolerance_Session_FixMarked_One" xml:space="preserve"><value>Fix the tolerance marked in red first.</value></data>
+  <data name="Jobs_Tolerance_Session_MinTrials" xml:space="preserve"><value>Run at least 2 Monte Carlo trials.</value></data>
+  <data name="Jobs_Tolerance_Session_PreviewNoRay" xml:space="preserve"><value>The engine could not rebuild this build: no ray reached the image.</value></data>
+  <data name="Jobs_Tolerance_Session_Queued" xml:space="preserve"><value>Queued</value></data>
   <!-- end area: Jobs -->
   <!-- area: Results -->
   <!-- end area: Results -->

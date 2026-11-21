@@ -1,4 +1,5 @@
 using System.Text.Json.Nodes;
+using MKLight.App.Support;
 using MKLight.App.ViewModels;
 using MKLight.App.ViewModels.Jobs;
 using MKLight.Engine;
@@ -114,11 +115,11 @@ public sealed class ToleranceSession
     /// <summary>Why the run cannot start, if it cannot.</summary>
     public string? RunProblem()
     {
-        if (_s.Workspace.DesignSnapshot is null || _s.Workspace.ModelErrors.Count > 0) return "Fix the design's errors first.";
+        if (_s.Workspace.DesignSnapshot is null || _s.Workspace.ModelErrors.Count > 0) return Loc.S("Jobs_Tolerance_Session_FixDesignErrors");
         var blocking = Settings.Issues(Context()).Count;
-        if (blocking > 0) return blocking == 1 ? "Fix the tolerance marked in red first." : $"Fix the {blocking} tolerances marked in red first.";
-        if (Settings.Rows.Count == 0) return "Add a tolerance first.";
-        if (Settings.Mode != ToleranceMode.Sensitivity && Settings.Trials < 2) return "Run at least 2 Monte Carlo trials.";
+        if (blocking > 0) return blocking == 1 ? Loc.S("Jobs_Tolerance_Session_FixMarked_One") : Loc.F("Jobs_Tolerance_Session_FixMarked_Many", blocking);
+        if (Settings.Rows.Count == 0) return Loc.S("Jobs_Tolerance_Session_AddToleranceFirst");
+        if (Settings.Mode != ToleranceMode.Sensitivity && Settings.Trials < 2) return Loc.S("Jobs_Tolerance_Session_MinTrials");
         return null;
     }
 
@@ -132,7 +133,7 @@ public sealed class ToleranceSession
         if (job is null)
         {
             Phase = JobPhase.Failed;
-            Failure = "Fix the design's errors first.";
+            Failure = Loc.S("Jobs_Tolerance_Session_FixDesignErrors");
             Changed?.Invoke();
             return;
         }
@@ -146,7 +147,7 @@ public sealed class ToleranceSession
         StartedAt = DateTime.UtcNow;
         _monteCarloStartedAt = null;
         Phase = JobPhase.Running;
-        Progress = new JobProgress(0, "Queued");
+        Progress = new JobProgress(0, Loc.S("Jobs_Tolerance_Session_Queued"));
         UpdateActivity();
         Changed?.Invoke();
         _ = Follow(job);
@@ -201,7 +202,7 @@ public sealed class ToleranceSession
     void UpdateActivity()
     {
         if (Phase == JobPhase.Running)
-            _s.SetJobActivity("tolerance", "Tolerancing · " + MeritFormat.Percent(Progress.Fraction, 0), () => _s.ShowInspectorPage("tolerance"));
+            _s.SetJobActivity("tolerance", Loc.F("Jobs_Tolerance_Session_Activity", MeritFormat.Percent(Progress.Fraction, 0)), () => _s.ShowInspectorPage("tolerance"));
         else _s.SetJobActivity("tolerance", null);
     }
 
@@ -303,7 +304,7 @@ public sealed class ToleranceSession
             if (!Equals(Previewed, c)) return;
             if (TolerancePreview.FromJson(output.Json?["preview"], c) is not { } p)
             {
-                PreviewError = "The engine could not rebuild this build: no ray reached the image.";
+                PreviewError = Loc.S("Jobs_Tolerance_Session_PreviewNoRay");
                 _s.Workspace.Preview(null);
             }
             else
