@@ -151,7 +151,8 @@ print(r.run_info["snapshot_hash"])
 ## Documentation
 
 - **Overview:** [Architecture](docs/ARCHITECTURE.md) ·
-  [Conventions](docs/CONVENTIONS.md) · [Decisions](docs/DECISIONS.md)
+  [Conventions](docs/CONVENTIONS.md) · [Decisions](docs/DECISIONS.md) ·
+  [Localisation](docs/I18N.md)
 - **The model:** [Surfaces](docs/SURFACES.md) ·
   [Materials](docs/MATERIALS.md) · [Solves](docs/SOLVES.md) ·
   [Import](docs/IMPORT.md)
