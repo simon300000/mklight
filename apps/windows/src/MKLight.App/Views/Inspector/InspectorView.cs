@@ -44,12 +44,12 @@ public sealed partial class InspectorView : UserControl
             var glyph = page.Glyph.Length == 1;
             var b = new Button
             {
-                Content = glyph ? new FontIcon { Glyph = page.Glyph, FontSize = 15 } : new TextBlock { Text = Title(page), FontSize = 13 },
+                Content = glyph ? new FontIcon { Glyph = page.Glyph, FontSize = 15 } : new TextBlock { Text = page.Title, FontSize = 13 },
                 CornerRadius = new CornerRadius(14), Height = 28, MinWidth = 34, Padding = new Thickness(glyph ? 0 : 11, 0, glyph ? 0 : 11, 1),
                 BorderThickness = new Thickness(0), Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent),
             };
             ToolTipService.SetToolTip(b, Help(page));
-            Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(b, Title(page));
+            Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(b, page.Title);
             Microsoft.UI.Xaml.Automation.AutomationProperties.SetAutomationId(b, $"Inspector.Tab.{page.Id}");
             var id = page.Id;
             b.Click += (_, _) => Show(id);
@@ -66,17 +66,6 @@ public sealed partial class InspectorView : UserControl
         if (InspectorPages.All.FirstOrDefault() is { } first) Show(first.Id);
     }
 
-    /// <summary>
-    /// A tab's title in the UI language: pages register at module initialization, before the language is chosen,
-    /// so the Surface and System titles are looked up here (the others as registered).
-    /// </summary>
-    static string Title(InspectorPageInfo page) => page.Id switch
-    {
-        "surface" => Loc.S("Lens_Inspector_TabSurface"),
-        "system" => Loc.S("Lens_Inspector_TabSystem"),
-        _ => page.Title,
-    };
-
     /// <summary>The Mac app's tab help.</summary>
     static string Help(InspectorPageInfo page) => page.Id switch
     {
@@ -86,7 +75,7 @@ public sealed partial class InspectorView : UserControl
         "glass_substitution" => Loc.S("Lens_Inspector_HelpGlassSubstitution"),
         "tolerance" => Loc.S("Lens_Inspector_HelpTolerance"),
         "solves" => Loc.S("Lens_Inspector_HelpSolves"),
-        _ => Title(page),
+        _ => page.Title,
     };
 
     public string? Page { get; private set; }

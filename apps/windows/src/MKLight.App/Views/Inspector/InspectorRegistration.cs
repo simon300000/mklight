@@ -17,8 +17,8 @@ static class InspectorRegistration
     [ModuleInitializer]
     internal static void Register()
     {
-        InspectorPages.Add(new("surface", "Surface", "Surface", 10, s => new SurfacePage(s)));
-        InspectorPages.Add(new("system", "System", "System", 11, s => new SystemPage(s)));
+        InspectorPages.Add(new("surface", Loc.S("Lens_Inspector_TabSurface"), "Surface", 10, s => new SurfacePage(s)));
+        InspectorPages.Add(new("system", Loc.S("Lens_Inspector_TabSystem"), "System", 11, s => new SystemPage(s)));
 
         AppHooks.LaunchActions["inspector-surface"] = (w, arg) =>
         {
