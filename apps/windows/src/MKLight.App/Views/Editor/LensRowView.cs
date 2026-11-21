@@ -2,6 +2,7 @@ using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Automation.Peers;
 using Microsoft.UI.Xaml.Controls;
+using MKLight.App.Support;
 using MKLight.App.ViewModels;
 
 namespace MKLight.App.Views;
@@ -130,7 +131,7 @@ sealed partial class LensRowView : Grid
         if (row.Role == LensRowRole.Stop)
         {
             var stop = new FontIcon { Style = _style("LensStopGlyph") };
-            ToolTipService.SetToolTip(stop, "Aperture stop");
+            ToolTipService.SetToolTip(stop, Loc.S("Lens_Row_StopTip"));
             AutomationProperties.SetAccessibilityView(stop, AccessibilityView.Raw);
             panel.Children.Add(stop);
         }
@@ -240,7 +241,7 @@ sealed partial class LensRowView : Grid
         cell.Children.Add(text);
         if (note is not null)
         {
-            ToolTipService.SetToolTip(note, "Melt offset Δn_d / ΔV_d on the catalog glass; edit it in the inspector");
+            ToolTipService.SetToolTip(note, Loc.S("Lens_Row_MeltTip"));
             Grid.SetColumn(note, 1);
             cell.Children.Add(note);
         }
@@ -263,8 +264,8 @@ sealed partial class LensRowView : Grid
         if (m.SolveLetter is { } letter)
         {
             var b = new Border { Style = _style("LensSolveBadge"), Child = new TextBlock { Text = letter, Style = _style("LensBadgeText") } };
-            ToolTipService.SetToolTip(b, $"Solve: {m.SolveTitle}");
-            AutomationProperties.SetName(b, $"controlled by a {m.SolveTitle} solve");
+            ToolTipService.SetToolTip(b, Loc.F("Lens_Row_SolveTip", m.SolveTitle));
+            AutomationProperties.SetName(b, Loc.F("Lens_Row_SolveName", m.SolveTitle));
             panel.Children.Add(b);
         }
         if (m.IsVariable)
@@ -278,8 +279,8 @@ sealed partial class LensRowView : Grid
             if (!ignored && m.Bounds == VariableBounds.Pinned)
                 v.Children.Add(new Border { Style = _style("LensBoundMark"), Width = 4, Height = 4, CornerRadius = new CornerRadius(2), VerticalAlignment = VerticalAlignment.Top, HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0, -2, -2, 0) });
             var b = new Border { Style = _style(ignored ? "LensVariableIgnoredBadge" : "LensVariableBadge"), Child = v };
-            var help = ignored ? "Variable on a solved value: the optimizer leaves it out. Remove the variable or the solve."
-                : m.Bounds == VariableBounds.Pinned ? "Variable, pinned (equal bounds)" : m.Bounds == VariableBounds.Bounded ? "Variable with bounds" : "Variable";
+            var help = ignored ? Loc.S("Lens_Row_VariableIgnored")
+                : m.Bounds == VariableBounds.Pinned ? Loc.S("Lens_Row_VariablePinned") : m.Bounds == VariableBounds.Bounded ? Loc.S("Lens_Row_VariableBounded") : Loc.S("Lens_Row_Variable");
             ToolTipService.SetToolTip(b, help);
             AutomationProperties.SetName(b, help);
             panel.Children.Add(b);
@@ -289,9 +290,7 @@ sealed partial class LensRowView : Grid
 
     static string HintHelp(LensRow row, LensColumn c, string hint)
     {
-        var what = c.Base() == LensColumn.Radius ? "radius" : "conic";
-        return row.IsFlatSection(c)
-            ? $"The {hint} section's {what}: flat (this cylinder has power in the other section)"
-            : $"The {hint} section's {what} (the surface is anamorphic: y and x sections)";
+        var what = c.Base() == LensColumn.Radius ? Loc.S("Lens_Row_HintRadius") : Loc.S("Lens_Row_HintConic");
+        return row.IsFlatSection(c) ? Loc.F("Lens_Row_HintFlat", hint, what) : Loc.F("Lens_Row_HintAnamorphic", hint, what);
     }
 }

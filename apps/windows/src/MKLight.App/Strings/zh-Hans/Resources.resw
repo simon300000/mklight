@@ -20,6 +20,417 @@
   <data name="Shell_Language_Title" xml:space="preserve"><value>语言</value></data>
   <!-- end area: Shell -->
   <!-- area: Lens -->
+  <data name="Lens_Aperture_EntrancePupilDiameter" xml:space="preserve"><value>入瞳直径</value></data>
+  <data name="Lens_Aperture_FloatByStopSize" xml:space="preserve"><value>由光阑尺寸决定</value></data>
+  <data name="Lens_Aperture_ImageSpaceFNumber" xml:space="preserve"><value>像方 F/#</value></data>
+  <data name="Lens_Aperture_ObjectSpaceNA" xml:space="preserve"><value>物方 NA</value></data>
+  <data name="Lens_Aperture_ParaxialWorkingFNumber" xml:space="preserve"><value>近轴工作 F/#</value></data>
+  <data name="Lens_Caption_Many" xml:space="preserve"><value>{0} 个面 · 光阑在面 {1} · mm</value></data>
+  <data name="Lens_Caption_One" xml:space="preserve"><value>{0} 个面 · 光阑在面 {1} · mm</value></data>
+  <data name="Lens_Caption_Variables_Many" xml:space="preserve"><value>{0} · {1} 个变量</value></data>
+  <data name="Lens_Caption_Variables_One" xml:space="preserve"><value>{0} · {1} 个变量</value></data>
+  <data name="Lens_Catalog_Builtin" xml:space="preserve"><value>MKLight 内置</value></data>
+  <data name="Lens_Catalog_Library" xml:space="preserve"><value>库</value></data>
+  <data name="Lens_Catalog_LibraryRecorded" xml:space="preserve"><value>库，已记录在设计中</value></data>
+  <data name="Lens_Catalog_ThisDesign" xml:space="preserve"><value>本设计</value></data>
+  <data name="Lens_Cell_Automatic" xml:space="preserve"><value>自动</value></data>
+  <data name="Lens_Cell_ControlType" xml:space="preserve"><value>单元格</value></data>
+  <data name="Lens_Cell_FlatSection" xml:space="preserve"><value>平面截面</value></data>
+  <data name="Lens_Cell_MeltOffset" xml:space="preserve"><value>熔炼偏差 {0}</value></data>
+  <data name="Lens_Cell_Name" xml:space="preserve"><value>{0}，{1}</value></data>
+  <data name="Lens_Cell_SectionTitle" xml:space="preserve"><value>{0} {1}</value></data>
+  <data name="Lens_Clip_Annular" xml:space="preserve"><value>环形</value></data>
+  <data name="Lens_Clip_Circular" xml:space="preserve"><value>圆形</value></data>
+  <data name="Lens_Clip_Elliptical" xml:space="preserve"><value>椭圆</value></data>
+  <data name="Lens_Clip_HalfWidthX" xml:space="preserve"><value>半宽 x</value></data>
+  <data name="Lens_Clip_HalfWidthY" xml:space="preserve"><value>半宽 y</value></data>
+  <data name="Lens_Clip_InnerRadius" xml:space="preserve"><value>内半径</value></data>
+  <data name="Lens_Clip_OuterRadius" xml:space="preserve"><value>外半径</value></data>
+  <data name="Lens_Clip_Radius" xml:space="preserve"><value>半径</value></data>
+  <data name="Lens_Clip_Rectangular" xml:space="preserve"><value>矩形</value></data>
+  <data name="Lens_Clip_SemiAxisX" xml:space="preserve"><value>半轴 x</value></data>
+  <data name="Lens_Clip_SemiAxisY" xml:space="preserve"><value>半轴 y</value></data>
+  <data name="Lens_Clip_SemiDiameter" xml:space="preserve"><value>半口径</value></data>
+  <data name="Lens_Coating_Uncoated" xml:space="preserve"><value>无膜层</value></data>
+  <data name="Lens_Column_Comment" xml:space="preserve"><value>备注</value></data>
+  <data name="Lens_Column_Conic" xml:space="preserve"><value>圆锥系数</value></data>
+  <data name="Lens_Column_ConicX" xml:space="preserve"><value>圆锥系数 x</value></data>
+  <data name="Lens_Column_Material" xml:space="preserve"><value>材料</value></data>
+  <data name="Lens_Column_Radius" xml:space="preserve"><value>曲率半径</value></data>
+  <data name="Lens_Column_RadiusX" xml:space="preserve"><value>曲率半径 x</value></data>
+  <data name="Lens_Column_SemiDiameter" xml:space="preserve"><value>半口径</value></data>
+  <data name="Lens_Column_Surface" xml:space="preserve"><value>面</value></data>
+  <data name="Lens_Column_Thickness" xml:space="preserve"><value>厚度</value></data>
+  <data name="Lens_Column_Type" xml:space="preserve"><value>类型</value></data>
+  <data name="Lens_Cylinder_Footer" xml:space="preserve"><value>柱面是一个截面为平面的双锥面。</value></data>
+  <data name="Lens_Cylinder_Make" xml:space="preserve"><value>转为柱面</value></data>
+  <data name="Lens_Cylinder_PowerX" xml:space="preserve"><value>x 向有光焦度（y 向为平面）</value></data>
+  <data name="Lens_Cylinder_PowerY" xml:space="preserve"><value>y 向有光焦度（x 向为平面）</value></data>
+  <data name="Lens_Divider_Help" xml:space="preserve"><value>拖动以调整列宽；双击使其适应内容。</value></data>
+  <data name="Lens_Divider_Name" xml:space="preserve"><value>调整“{0}”列的宽度</value></data>
+  <data name="Lens_Efficiency_AtDesign" xml:space="preserve"><value>λ₀ 处的追迹级次</value></data>
+  <data name="Lens_Efficiency_AtDesignHelp" xml:space="preserve"><value>追迹级次（{0}）在设计波长 {1} µm 处的效率。</value></data>
+  <data name="Lens_Efficiency_BarName" xml:space="preserve"><value>{0} 微米：{1}</value></data>
+  <data name="Lens_Efficiency_Footer" xml:space="preserve"><value>系统各波长按闪耀 m₀λ₀/λ 估算，忽略浮雕材料的色散。引擎按精确模型追迹。</value></data>
+  <data name="Lens_Efficiency_Ideal" xml:space="preserve"><value>理想</value></data>
+  <data name="Lens_Efficiency_Kinoform" xml:space="preserve"><value>连续闪耀（Kinoform）</value></data>
+  <data name="Lens_Efficiency_Levels" xml:space="preserve"><value>台阶数</value></data>
+  <data name="Lens_Efficiency_LevelsHelp" xml:space="preserve"><value>阶梯的刻蚀台阶数（2 为二元，4、8、16 …）。</value></data>
+  <data name="Lens_Efficiency_LevelsRange" xml:space="preserve"><value>台阶数必须为 1 … 256</value></data>
+  <data name="Lens_Efficiency_Model" xml:space="preserve"><value>模型</value></data>
+  <data name="Lens_Efficiency_ModelHelp" xml:space="preserve"><value>理想：所有光子都进入追迹级次。Kinoform：连续闪耀浮雕。多台阶：N 级刻蚀的阶梯结构。</value></data>
+  <data name="Lens_Efficiency_Multilevel" xml:space="preserve"><value>多台阶</value></data>
+  <data name="Lens_Error_MustBeFinite" xml:space="preserve"><value>数值必须是有限值</value></data>
+  <data name="Lens_Error_MustBePositive" xml:space="preserve"><value>数值必须大于零</value></data>
+  <data name="Lens_Error_MustBeWhole" xml:space="preserve"><value>数值必须是整数</value></data>
+  <data name="Lens_Error_NotAMaterial" xml:space="preserve"><value>“{0}”不是材料（玻璃名、AIR、MIRROR、nd/vd、n=…、CATALOG:NAME）</value></data>
+  <data name="Lens_Error_NotANumber" xml:space="preserve"><value>“{0}”不是数字</value></data>
+  <data name="Lens_Error_NotASurfaceType" xml:space="preserve"><value>“{0}”不是面型</value></data>
+  <data name="Lens_Error_WithinBound" xml:space="preserve"><value>数值必须在 ±{0} 以内</value></data>
+  <data name="Lens_FieldKind_ObjectAngle" xml:space="preserve"><value>物方视场角</value></data>
+  <data name="Lens_FieldKind_ObjectHeight" xml:space="preserve"><value>物高</value></data>
+  <data name="Lens_FieldKind_ParaxialImageHeight" xml:space="preserve"><value>近轴像高</value></data>
+  <data name="Lens_FieldKind_RealImageHeight" xml:space="preserve"><value>实际像高</value></data>
+  <data name="Lens_Field_Base" xml:space="preserve"><value>基底</value></data>
+  <data name="Lens_Field_Clipping" xml:space="preserve"><value>裁切</value></data>
+  <data name="Lens_Field_Coating" xml:space="preserve"><value>膜层</value></data>
+  <data name="Lens_Field_Comment" xml:space="preserve"><value>备注</value></data>
+  <data name="Lens_Field_Computed" xml:space="preserve"><value>计算值</value></data>
+  <data name="Lens_Field_Interaction" xml:space="preserve"><value>作用方式</value></data>
+  <data name="Lens_Field_Material" xml:space="preserve"><value>材料</value></data>
+  <data name="Lens_Field_None" xml:space="preserve"><value>无</value></data>
+  <data name="Lens_Field_SemiDiameter" xml:space="preserve"><value>半口径</value></data>
+  <data name="Lens_Field_Thickness" xml:space="preserve"><value>厚度</value></data>
+  <data name="Lens_Field_ThicknessHelp" xml:space="preserve"><value>到下一个顶点的距离。</value></data>
+  <data name="Lens_Field_Value" xml:space="preserve"><value>数值</value></data>
+  <data name="Lens_FirstOrder_Bfl" xml:space="preserve"><value>BFL x / y</value></data>
+  <data name="Lens_FirstOrder_Efl" xml:space="preserve"><value>EFL x / y</value></data>
+  <data name="Lens_FirstOrder_Note" xml:space="preserve"><value>非旋转对称。引擎的一阶数据仅涵盖 y 截面。</value></data>
+  <data name="Lens_FirstOrder_Squeeze" xml:space="preserve"><value>压缩比</value></data>
+  <data name="Lens_FirstOrder_SqueezeDefault" xml:space="preserve"><value>带符号的 EFL y / EFL x</value></data>
+  <data name="Lens_FirstOrder_SqueezeHelp" xml:space="preserve"><value>压缩比：{0}</value></data>
+  <data name="Lens_FirstOrder_Symmetry" xml:space="preserve"><value>对称性</value></data>
+  <data name="Lens_FirstOrder_Title" xml:space="preserve"><value>一阶特性</value></data>
+  <data name="Lens_Footer_OddAsphere" xml:space="preserve"><value>近轴曲率为 c + 2β₂；β₁ 没有一阶意义。</value></data>
+  <data name="Lens_Footer_Orders" xml:space="preserve"><value>级次是离散值，不能作为优化变量。</value></data>
+  <data name="Lens_Footer_Phase" xml:space="preserve"><value>会聚相位的 A₁ 为负。系数描述 +1 级，波长或级次改变时保持不变。</value></data>
+  <data name="Lens_Footer_QBfs" xml:space="preserve"><value>顶点曲率为 c_bfs + 2Σaₘ Qₘ(0)/r_norm²。</value></data>
+  <data name="Lens_Footer_Toroid" xml:space="preserve"><value>曲率半径 x 是顶点到旋转轴的距离；∞ 时为 y 向柱面。</value></data>
+  <data name="Lens_Form_SolveBadge" xml:space="preserve"><value>由{0}求解控制</value></data>
+  <data name="Lens_Form_VariableOff" xml:space="preserve"><value>固定。单击以设为变量。</value></data>
+  <data name="Lens_Form_VariableOn" xml:space="preserve"><value>变量：优化器可以改变它。单击以固定。</value></data>
+  <data name="Lens_Form_VariableSolvedOff" xml:space="preserve"><value>由求解（{0}）设定，因此不能设为变量：优化器会先应用求解。移除求解后才能改变它。</value></data>
+  <data name="Lens_Form_VariableSolvedOn" xml:space="preserve"><value>由求解（{0}）设定：优化器会忽略此变量。单击以移除。</value></data>
+  <data name="Lens_Help_Conic" xml:space="preserve"><value>圆锥系数 k：0 为球面，−1 为抛物面，&lt; −1 为双曲面。</value></data>
+  <data name="Lens_Help_ConicX" xml:space="preserve"><value>x 方向的圆锥系数。</value></data>
+  <data name="Lens_Help_ConicY" xml:space="preserve"><value>y 方向的圆锥系数。</value></data>
+  <data name="Lens_Help_ConicYProfile" xml:space="preserve"><value>y 轮廓的圆锥系数。</value></data>
+  <data name="Lens_Help_DesignOrder" xml:space="preserve"><value>结构所针对的设计级次（非零）。仅为元数据：不会缩放相位。</value></data>
+  <data name="Lens_Help_DesignWavelength" xml:space="preserve"><value>设计波长 λ₀。仅为元数据：不会缩放相位。</value></data>
+  <data name="Lens_Help_FocalLength" xml:space="preserve"><value>理想透镜的焦距。</value></data>
+  <data name="Lens_Help_NormRadius" xml:space="preserve"><value>归一化半径 r_norm：多项式在 r ≤ r_norm 范围内定义。通常取通光半口径。</value></data>
+  <data name="Lens_Help_Ordering" xml:space="preserve"><value>Fringe 项未归一化；Standard（Noll）项已归一化。</value></data>
+  <data name="Lens_Help_Radius" xml:space="preserve"><value>曲率半径；平面为 ∞。以曲率 c = 1/R 存储。</value></data>
+  <data name="Lens_Help_TraceOrder" xml:space="preserve"><value>光线追迹所沿的级次；0 为普通折射或反射。</value></data>
+  <data name="Lens_Inspector_HelpGlassSubstitution" xml:space="preserve"><value>用目录玻璃替换玻璃，并对每种组合重新优化</value></data>
+  <data name="Lens_Inspector_HelpOptimize" xml:space="preserve"><value>优化设计</value></data>
+  <data name="Lens_Inspector_HelpSolves" xml:space="preserve"><value>预览并应用设计的求解</value></data>
+  <data name="Lens_Inspector_HelpSurface" xml:space="preserve"><value>所选的面</value></data>
+  <data name="Lens_Inspector_HelpSystem" xml:space="preserve"><value>孔径、视场、波长和环境</value></data>
+  <data name="Lens_Inspector_HelpTolerance" xml:space="preserve"><value>公差分析：灵敏度与蒙特卡罗</value></data>
+  <data name="Lens_Inspector_NoSurface" xml:space="preserve"><value>未选择面</value></data>
+  <data name="Lens_Inspector_NoSurfaceHint" xml:space="preserve"><value>在镜头数据中选择一行以编辑该面。</value></data>
+  <data name="Lens_Inspector_Pages" xml:space="preserve"><value>检查器页面</value></data>
+  <data name="Lens_Inspector_StopBadge" xml:space="preserve"><value>光阑</value></data>
+  <data name="Lens_Inspector_SurfaceType" xml:space="preserve"><value>面型</value></data>
+  <data name="Lens_Inspector_TabRunning" xml:space="preserve"><value>运行中</value></data>
+  <data name="Lens_Inspector_TabSelected" xml:space="preserve"><value>已选中</value></data>
+  <data name="Lens_Inspector_TabSurface" xml:space="preserve"><value>面</value></data>
+  <data name="Lens_Inspector_TabSystem" xml:space="preserve"><value>系统</value></data>
+  <data name="Lens_Interaction_Dummy" xml:space="preserve"><value>虚设面</value></data>
+  <data name="Lens_Interaction_Mirror" xml:space="preserve"><value>反射镜</value></data>
+  <data name="Lens_Interaction_Refract" xml:space="preserve"><value>折射</value></data>
+  <data name="Lens_Melt_Add" xml:space="preserve"><value>添加熔炼偏差…</value></data>
+  <data name="Lens_Melt_AddHelp" xml:space="preserve"><value>为目录玻璃设定实测熔炼的 Δn_d 和 ΔV_d</value></data>
+  <data name="Lens_Melt_Detail" xml:space="preserve"><value>熔炼</value></data>
+  <data name="Lens_Melt_DnHelp" xml:space="preserve"><value>熔炼批次相对目录 n_d 的折射率偏差（±{0} 以内）；色散曲线形状不变。</value></data>
+  <data name="Lens_Melt_DvHelp" xml:space="preserve"><value>熔炼批次相对目录 V_d 的阿贝数偏差（±{0} 以内）。</value></data>
+  <data name="Lens_Melt_Remove" xml:space="preserve"><value>移除熔炼偏差</value></data>
+  <data name="Lens_Melt_RemoveHelp" xml:space="preserve"><value>恢复为目录玻璃</value></data>
+  <data name="Lens_Menu_DeleteSurface" xml:space="preserve"><value>删除面</value></data>
+  <data name="Lens_Menu_InsertAfter" xml:space="preserve"><value>在后面插入面</value></data>
+  <data name="Lens_Menu_InsertBefore" xml:space="preserve"><value>在前面插入面</value></data>
+  <data name="Lens_Menu_MakeStop" xml:space="preserve"><value>设为孔径光阑</value></data>
+  <data name="Lens_Menu_MakeVariable" xml:space="preserve"><value>设为变量</value></data>
+  <data name="Lens_Menu_RemoveVariable" xml:space="preserve"><value>移除变量</value></data>
+  <data name="Lens_Menu_ShowInInspector" xml:space="preserve"><value>在检查器中显示</value></data>
+  <data name="Lens_Menu_Variables" xml:space="preserve"><value>变量</value></data>
+  <data name="Lens_More_AutomaticWidths" xml:space="preserve"><value>自动列宽</value></data>
+  <data name="Lens_More_FitColumns" xml:space="preserve"><value>列宽适应内容</value></data>
+  <data name="Lens_More_Hide" xml:space="preserve"><value>隐藏镜头数据</value></data>
+  <data name="Lens_More_MoveToMainWindow" xml:space="preserve"><value>移到主窗口</value></data>
+  <data name="Lens_More_MoveToNewWindow" xml:space="preserve"><value>移到新窗口</value></data>
+  <data name="Lens_Ordering_Fringe" xml:space="preserve"><value>Fringe（37 项）</value></data>
+  <data name="Lens_Ordering_Standard" xml:space="preserve"><value>Standard / Noll（45 项）</value></data>
+  <data name="Lens_Panel.[using:Microsoft.UI.Xaml.Automation]AutomationProperties.Name" xml:space="preserve"><value>镜头数据</value></data>
+  <data name="Lens_Panel_Columns.[using:Microsoft.UI.Xaml.Automation]AutomationProperties.Name" xml:space="preserve"><value>列</value></data>
+  <data name="Lens_Panel_DeleteButton.[using:Microsoft.UI.Xaml.Automation]AutomationProperties.Name" xml:space="preserve"><value>删除面</value></data>
+  <data name="Lens_Panel_DeleteButton.[using:Microsoft.UI.Xaml.Controls]ToolTipService.ToolTip" xml:space="preserve"><value>删除所选面（Ctrl+Delete）</value></data>
+  <data name="Lens_Panel_Header.[using:Microsoft.UI.Xaml.Automation]AutomationProperties.Name" xml:space="preserve"><value>镜头数据</value></data>
+  <data name="Lens_Panel_InsertButton.[using:Microsoft.UI.Xaml.Automation]AutomationProperties.Name" xml:space="preserve"><value>插入面</value></data>
+  <data name="Lens_Panel_InsertButton.[using:Microsoft.UI.Xaml.Controls]ToolTipService.ToolTip" xml:space="preserve"><value>在所选面之前插入一个面（Ctrl+Shift+I）</value></data>
+  <data name="Lens_Panel_MoreButton.[using:Microsoft.UI.Xaml.Automation]AutomationProperties.Name" xml:space="preserve"><value>更多</value></data>
+  <data name="Lens_Panel_MoreButton.[using:Microsoft.UI.Xaml.Controls]ToolTipService.ToolTip" xml:space="preserve"><value>更多</value></data>
+  <data name="Lens_Panel_Title.Text" xml:space="preserve"><value>镜头数据</value></data>
+  <data name="Lens_Panel_VariablesButton.[using:Microsoft.UI.Xaml.Controls]ToolTipService.ToolTip" xml:space="preserve"><value>设计的变量：打开“优化”以编辑其边界</value></data>
+  <data name="Lens_Panel_Variables_Many" xml:space="preserve"><value>{0} 个变量</value></data>
+  <data name="Lens_Panel_Variables_One" xml:space="preserve"><value>{0} 个变量</value></data>
+  <data name="Lens_Param_AstigmatismAxis" xml:space="preserve"><value>像散轴向</value></data>
+  <data name="Lens_Param_Conic" xml:space="preserve"><value>圆锥系数</value></data>
+  <data name="Lens_Param_ConicX" xml:space="preserve"><value>圆锥系数 x</value></data>
+  <data name="Lens_Param_ConicY" xml:space="preserve"><value>圆锥系数 y</value></data>
+  <data name="Lens_Param_DesignOrder" xml:space="preserve"><value>设计级次</value></data>
+  <data name="Lens_Param_DesignWavelength" xml:space="preserve"><value>设计 λ</value></data>
+  <data name="Lens_Param_FocalLength" xml:space="preserve"><value>焦距</value></data>
+  <data name="Lens_Param_NormRadius" xml:space="preserve"><value>归一化半径</value></data>
+  <data name="Lens_Param_Ordering" xml:space="preserve"><value>排序方式</value></data>
+  <data name="Lens_Param_Radius" xml:space="preserve"><value>曲率半径</value></data>
+  <data name="Lens_Param_RadiusX" xml:space="preserve"><value>曲率半径 x</value></data>
+  <data name="Lens_Param_RadiusY" xml:space="preserve"><value>曲率半径 y</value></data>
+  <data name="Lens_Param_TraceOrder" xml:space="preserve"><value>追迹级次</value></data>
+  <data name="Lens_Placement_Add" xml:space="preserve"><value>添加偏心或倾斜…</value></data>
+  <data name="Lens_Placement_DecenterThenTilt" xml:space="preserve"><value>先偏心，后倾斜</value></data>
+  <data name="Lens_Placement_DecenterX" xml:space="preserve"><value>偏心 X</value></data>
+  <data name="Lens_Placement_DecenterY" xml:space="preserve"><value>偏心 Y</value></data>
+  <data name="Lens_Placement_Order" xml:space="preserve"><value>顺序</value></data>
+  <data name="Lens_Placement_Restore" xml:space="preserve"><value>在面后恢复坐标</value></data>
+  <data name="Lens_Placement_TiltThenDecenter" xml:space="preserve"><value>先倾斜，后偏心</value></data>
+  <data name="Lens_Placement_TiltX" xml:space="preserve"><value>倾斜 X</value></data>
+  <data name="Lens_Placement_TiltY" xml:space="preserve"><value>倾斜 Y</value></data>
+  <data name="Lens_Placement_TiltZ" xml:space="preserve"><value>倾斜 Z</value></data>
+  <data name="Lens_Preset_DOnly" xml:space="preserve"><value>仅 d</value></data>
+  <data name="Lens_Preset_EOnly" xml:space="preserve"><value>仅 e</value></data>
+  <data name="Lens_Preset_FdC" xml:space="preserve"><value>F, d, C（可见光）</value></data>
+  <data name="Lens_Preset_FeC" xml:space="preserve"><value>F′, e, C′（可见光）</value></data>
+  <data name="Lens_Preset_NearInfrared" xml:space="preserve"><value>近红外</value></data>
+  <data name="Lens_Preset_Photopic" xml:space="preserve"><value>明视觉（5）</value></data>
+  <data name="Lens_Preview_AtDesign" xml:space="preserve"><value>设计条件下</value></data>
+  <data name="Lens_Preview_AtRadius" xml:space="preserve"><value>位于 r = {0} mm</value></data>
+  <data name="Lens_Preview_BaseSag" xml:space="preserve"><value>基底矢高</value></data>
+  <data name="Lens_Preview_Departure" xml:space="preserve"><value>相对基底的偏离</value></data>
+  <data name="Lens_Preview_NoSag" xml:space="preserve"><value>±{0} mm 范围内没有实数矢高</value></data>
+  <data name="Lens_Preview_Order" xml:space="preserve"><value>{0} 级，{1} µm</value></data>
+  <data name="Lens_Preview_Over" xml:space="preserve"><value>±{0} mm 范围内</value></data>
+  <data name="Lens_Preview_ParaxialPower" xml:space="preserve"><value>近轴光焦度</value></data>
+  <data name="Lens_Preview_Phase" xml:space="preserve"><value>相位（+1 级）</value></data>
+  <data name="Lens_Preview_PositionAxis" xml:space="preserve"><value>位置 (mm)</value></data>
+  <data name="Lens_Preview_PowerHelp" xml:space="preserve"><value>近轴光焦度 φ = −m λ A₁ / (π r_norm²)，叠加在基底的折射光焦度上。DOE 的阿贝数约为 −3.45。</value></data>
+  <data name="Lens_Preview_RadiusAxis" xml:space="preserve"><value>半径 (mm)</value></data>
+  <data name="Lens_Preview_Sag" xml:space="preserve"><value>矢高</value></data>
+  <data name="Lens_Preview_SagAxis" xml:space="preserve"><value>矢高 (mm)</value></data>
+  <data name="Lens_Preview_SmallestPeriod" xml:space="preserve"><value>最小环带周期</value></data>
+  <data name="Lens_Preview_XSection" xml:space="preserve"><value>x 截面</value></data>
+  <data name="Lens_Preview_YSection" xml:space="preserve"><value>y 截面</value></data>
+  <data name="Lens_Preview_Zones" xml:space="preserve"><value>环带数</value></data>
+  <data name="Lens_Row_HintAnamorphic" xml:space="preserve"><value>{0} 截面的{1}（该面为变形面：分 y 和 x 两个截面）</value></data>
+  <data name="Lens_Row_HintConic" xml:space="preserve"><value>圆锥系数</value></data>
+  <data name="Lens_Row_HintFlat" xml:space="preserve"><value>{0} 截面的{1}：平面（此柱面的光焦度在另一截面）</value></data>
+  <data name="Lens_Row_HintRadius" xml:space="preserve"><value>曲率半径</value></data>
+  <data name="Lens_Row_Image" xml:space="preserve"><value>像面</value></data>
+  <data name="Lens_Row_MeltTip" xml:space="preserve"><value>目录玻璃的熔炼偏差 Δn_d / ΔV_d；在检查器中编辑</value></data>
+  <data name="Lens_Row_Object" xml:space="preserve"><value>物面</value></data>
+  <data name="Lens_Row_SolveName" xml:space="preserve"><value>由{0}求解控制</value></data>
+  <data name="Lens_Row_SolveTip" xml:space="preserve"><value>求解：{0}</value></data>
+  <data name="Lens_Row_StopTip" xml:space="preserve"><value>孔径光阑</value></data>
+  <data name="Lens_Row_Surface" xml:space="preserve"><value>面 {0}</value></data>
+  <data name="Lens_Row_SurfaceStop" xml:space="preserve"><value>面 {0}，孔径光阑</value></data>
+  <data name="Lens_Row_Variable" xml:space="preserve"><value>变量</value></data>
+  <data name="Lens_Row_VariableBounded" xml:space="preserve"><value>带边界的变量</value></data>
+  <data name="Lens_Row_VariableIgnored" xml:space="preserve"><value>求解值上的变量：优化器会忽略它。请移除变量或求解。</value></data>
+  <data name="Lens_Row_VariablePinned" xml:space="preserve"><value>变量，已固定（上下界相等）</value></data>
+  <data name="Lens_Section_Aperture" xml:space="preserve"><value>孔径</value></data>
+  <data name="Lens_Section_BaseConic" xml:space="preserve"><value>基础圆锥面</value></data>
+  <data name="Lens_Section_BasePolynomial" xml:space="preserve"><value>基底多项式</value></data>
+  <data name="Lens_Section_BaseShape" xml:space="preserve"><value>基底面形</value></data>
+  <data name="Lens_Section_BestFitSphere" xml:space="preserve"><value>最佳拟合球面</value></data>
+  <data name="Lens_Section_Coating" xml:space="preserve"><value>膜层</value></data>
+  <data name="Lens_Section_Efficiency" xml:space="preserve"><value>衍射效率</value></data>
+  <data name="Lens_Section_IdealLens" xml:space="preserve"><value>理想透镜</value></data>
+  <data name="Lens_Section_Medium" xml:space="preserve"><value>间隔与介质</value></data>
+  <data name="Lens_Section_Orders" xml:space="preserve"><value>级次</value></data>
+  <data name="Lens_Section_Phase" xml:space="preserve"><value>相位</value></data>
+  <data name="Lens_Section_Placement" xml:space="preserve"><value>位置</value></data>
+  <data name="Lens_Section_Polynomial" xml:space="preserve"><value>多项式</value></data>
+  <data name="Lens_Section_QPolynomial" xml:space="preserve"><value>Q 多项式</value></data>
+  <data name="Lens_Section_Rotation" xml:space="preserve"><value>旋转</value></data>
+  <data name="Lens_Section_Shape" xml:space="preserve"><value>形状</value></data>
+  <data name="Lens_Section_Solves" xml:space="preserve"><value>求解</value></data>
+  <data name="Lens_Section_XSection" xml:space="preserve"><value>X 截面</value></data>
+  <data name="Lens_Section_XyTerms" xml:space="preserve"><value>XY 项</value></data>
+  <data name="Lens_Section_YProfile" xml:space="preserve"><value>Y 轮廓</value></data>
+  <data name="Lens_Section_YSection" xml:space="preserve"><value>Y 截面</value></data>
+  <data name="Lens_Section_ZernikeTerms" xml:space="preserve"><value>泽尼克项</value></data>
+  <data name="Lens_SemiDiameter_Automatic" xml:space="preserve"><value>自动</value></data>
+  <data name="Lens_SemiDiameter_Fixed" xml:space="preserve"><value>固定</value></data>
+  <data name="Lens_SolvePreset_ChiefRayHeight" xml:space="preserve"><value>厚度：主光线高度</value></data>
+  <data name="Lens_SolvePreset_FNumber" xml:space="preserve"><value>曲率：F 数</value></data>
+  <data name="Lens_SolvePreset_MarginalRayAngle" xml:space="preserve"><value>曲率：边缘光线角度</value></data>
+  <data name="Lens_SolvePreset_MarginalRayHeight" xml:space="preserve"><value>厚度：边缘光线高度</value></data>
+  <data name="Lens_Solve_CenterOfCurvature" xml:space="preserve"><value>曲率中心</value></data>
+  <data name="Lens_Solve_ChiefRayAngle" xml:space="preserve"><value>主光线角度</value></data>
+  <data name="Lens_Solve_ChiefRayHeight" xml:space="preserve"><value>主光线高度</value></data>
+  <data name="Lens_Solve_EdgeThickness" xml:space="preserve"><value>边缘厚度</value></data>
+  <data name="Lens_Solve_FNumber" xml:space="preserve"><value>F 数</value></data>
+  <data name="Lens_Solve_MarginalRayAngle" xml:space="preserve"><value>边缘光线角度</value></data>
+  <data name="Lens_Solve_MarginalRayHeight" xml:space="preserve"><value>边缘光线高度</value></data>
+  <data name="Lens_Solve_Pickup" xml:space="preserve"><value>拾取</value></data>
+  <data name="Lens_Solve_Position" xml:space="preserve"><value>位置</value></data>
+  <data name="Lens_Solves_Add" xml:space="preserve"><value>添加求解</value></data>
+  <data name="Lens_Solves_Remove" xml:space="preserve"><value>移除</value></data>
+  <data name="Lens_Summary_Biconic" xml:space="preserve"><value>x 和 y 方向各自独立的圆锥面，带偶次轴向多项式。柱面是一个方向为平面的双锥面。</value></data>
+  <data name="Lens_Summary_Conic" xml:space="preserve"><value>球面或旋转圆锥曲面。</value></data>
+  <data name="Lens_Summary_CoordinateBreak" xml:space="preserve"><value>只改变坐标系：先偏心后倾斜（或相反）。</value></data>
+  <data name="Lens_Summary_Diffractive" xml:space="preserve"><value>位于平面、圆锥面或偶次非球面基底上的固定周期相位 Φ = Σ Aᵢ ρ²ⁱ（+1 级，弧度）。</value></data>
+  <data name="Lens_Summary_EvenAsphere" xml:space="preserve"><value>圆锥面加偶次多项式项 A₄r⁴ + A₆r⁶ + …</value></data>
+  <data name="Lens_Summary_IdealLens" xml:space="preserve"><value>给定焦距的无像差薄透镜。</value></data>
+  <data name="Lens_Summary_OddAsphere" xml:space="preserve"><value>圆锥面加 r 的各次幂：β₁r + β₂r² + β₃r³ + …。非零的 β₁ 使顶点成为锥尖。</value></data>
+  <data name="Lens_Summary_Plane" xml:space="preserve"><value>平坦的表面。</value></data>
+  <data name="Lens_Summary_QBfs" xml:space="preserve"><value>相对最佳拟合球面的 Forbes 斜率正交偏离：u²(1−u²) Σ aₘ Qₘᵇᶠˢ(u²) / √(1−c²r²)。</value></data>
+  <data name="Lens_Summary_QCon" xml:space="preserve"><value>Forbes 圆锥基非球面：圆锥面加 u⁴ Σ aₘ Qₘᶜᵒⁿ(u²)，u = r/r_norm。保持顶点曲率。</value></data>
+  <data name="Lens_Summary_Toroid" xml:space="preserve"><value>y 轮廓（圆锥面加偶次项）绕一条平行于 y、距离为 R_x 的轴旋转而成。</value></data>
+  <data name="Lens_Summary_XyPolynomial" xml:space="preserve"><value>自由曲面：圆锥面加 Σ C(xᵐyⁿ) Xᵐ Yⁿ，其中 X = x/r_norm，Y = y/r_norm；1 至 10 阶。</value></data>
+  <data name="Lens_Summary_ZernikeSag" xml:space="preserve"><value>自由曲面：圆锥面加 Σ cⱼ Zⱼ(ρ, θ)，ρ = r/r_norm，θ 从 +x 起算。矢高系数单位为 mm，保留平移和倾斜项。</value></data>
+  <data name="Lens_Symmetry_Meridional" xml:space="preserve"><value>子午面对称</value></data>
+  <data name="Lens_Symmetry_None" xml:space="preserve"><value>无</value></data>
+  <data name="Lens_Symmetry_Rotational" xml:space="preserve"><value>旋转对称</value></data>
+  <data name="Lens_System_AddField" xml:space="preserve"><value>添加视场</value></data>
+  <data name="Lens_System_AddWavelength" xml:space="preserve"><value>添加波长</value></data>
+  <data name="Lens_System_CatalogBuiltin" xml:space="preserve"><value>内置</value></data>
+  <data name="Lens_System_Catalogs" xml:space="preserve"><value>玻璃库</value></data>
+  <data name="Lens_System_CatalogsFooter" xml:space="preserve"><value>库中的玻璃库会载入每个设计；设计在保存时记录所用的玻璃库。可在“玻璃库”窗口中管理。</value></data>
+  <data name="Lens_System_ConfigurationN" xml:space="preserve"><value>结构 {0}</value></data>
+  <data name="Lens_System_Configurations" xml:space="preserve"><value>多重结构</value></data>
+  <data name="Lens_System_Environment" xml:space="preserve"><value>环境</value></data>
+  <data name="Lens_System_FieldN" xml:space="preserve"><value>视场 {0}</value></data>
+  <data name="Lens_System_Fields" xml:space="preserve"><value>视场</value></data>
+  <data name="Lens_System_Glasses" xml:space="preserve"><value>{0} 种玻璃</value></data>
+  <data name="Lens_System_GridCellName" xml:space="preserve"><value>{0} {1}</value></data>
+  <data name="Lens_System_HideVignetting" xml:space="preserve"><value>隐藏渐晕因子</value></data>
+  <data name="Lens_System_MakePrimary" xml:space="preserve"><value>设为主波长</value></data>
+  <data name="Lens_System_ManageCatalogs" xml:space="preserve"><value>玻璃库…</value></data>
+  <data name="Lens_System_Name" xml:space="preserve"><value>名称</value></data>
+  <data name="Lens_System_Notes" xml:space="preserve"><value>注释</value></data>
+  <data name="Lens_System_Overrides_Many" xml:space="preserve"><value>{0} 项覆盖</value></data>
+  <data name="Lens_System_Overrides_One" xml:space="preserve"><value>{0} 项覆盖</value></data>
+  <data name="Lens_System_Presets" xml:space="preserve"><value>预设</value></data>
+  <data name="Lens_System_Pressure" xml:space="preserve"><value>气压</value></data>
+  <data name="Lens_System_PrimaryWavelength" xml:space="preserve"><value>主波长</value></data>
+  <data name="Lens_System_RayAiming" xml:space="preserve"><value>光线瞄准</value></data>
+  <data name="Lens_System_RayAimingFooter" xml:space="preserve"><value>让每条光线瞄准实际光阑，而非近轴入瞳。速度较慢，大视场和存在光瞳像差时需要。</value></data>
+  <data name="Lens_System_RealRayAiming" xml:space="preserve"><value>实际光线瞄准</value></data>
+  <data name="Lens_System_RemoveField" xml:space="preserve"><value>移除视场</value></data>
+  <data name="Lens_System_RemoveWavelength" xml:space="preserve"><value>移除波长</value></data>
+  <data name="Lens_System_ShowVignetting" xml:space="preserve"><value>显示渐晕因子</value></data>
+  <data name="Lens_System_Temperature" xml:space="preserve"><value>温度</value></data>
+  <data name="Lens_System_Type" xml:space="preserve"><value>类型</value></data>
+  <data name="Lens_System_Vignetting" xml:space="preserve"><value>渐晕</value></data>
+  <data name="Lens_System_VignettingFooter" xml:space="preserve"><value>各视场的光瞳坐标：x 和 y 方向均为 P′ = vd + (1 − vc)·P。</value></data>
+  <data name="Lens_System_Wavelengths" xml:space="preserve"><value>波长</value></data>
+  <data name="Lens_System_Weight" xml:space="preserve"><value>权重</value></data>
+  <data name="Lens_Target_Conic" xml:space="preserve"><value>圆锥系数</value></data>
+  <data name="Lens_Target_Curvature" xml:space="preserve"><value>曲率</value></data>
+  <data name="Lens_Target_FocalLength" xml:space="preserve"><value>焦距</value></data>
+  <data name="Lens_Target_Parameter" xml:space="preserve"><value>参数</value></data>
+  <data name="Lens_Target_SemiDiameter" xml:space="preserve"><value>半口径</value></data>
+  <data name="Lens_Target_Thickness" xml:space="preserve"><value>厚度</value></data>
+  <data name="Lens_Term_Add" xml:space="preserve"><value>添加项</value></data>
+  <data name="Lens_Term_AddNamed" xml:space="preserve"><value>添加 {0}  {1}</value></data>
+  <data name="Lens_Term_Degree" xml:space="preserve"><value>{0} 阶</value></data>
+  <data name="Lens_Term_HideZero" xml:space="preserve"><value>隐藏零项</value></data>
+  <data name="Lens_Term_Limit" xml:space="preserve"><value>{0} 项，已达此面型的上限。</value></data>
+  <data name="Lens_Term_Remove" xml:space="preserve"><value>移除此项</value></data>
+  <data name="Lens_Term_SetZero" xml:space="preserve"><value>将此项设为零</value></data>
+  <data name="Lens_Term_ShowZero" xml:space="preserve"><value>显示零项</value></data>
+  <data name="Lens_Term_ShowZeroHelp" xml:space="preserve"><value>显示值为零的项</value></data>
+  <data name="Lens_Toast_CannotBeVariable" xml:space="preserve"><value>此面的{0}不能设为变量。</value></data>
+  <data name="Lens_TypeGroup_Anamorphic" xml:space="preserve"><value>变形面</value></data>
+  <data name="Lens_TypeGroup_Aspheric" xml:space="preserve"><value>非球面</value></data>
+  <data name="Lens_TypeGroup_Diffractive" xml:space="preserve"><value>衍射面</value></data>
+  <data name="Lens_TypeGroup_Freeform" xml:space="preserve"><value>自由曲面</value></data>
+  <data name="Lens_TypeGroup_Special" xml:space="preserve"><value>特殊</value></data>
+  <data name="Lens_TypeGroup_Spherical" xml:space="preserve"><value>球面</value></data>
+  <data name="Lens_TypeShort_Conic" xml:space="preserve"><value>圆锥面</value></data>
+  <data name="Lens_TypeShort_Cylinder" xml:space="preserve"><value>柱面</value></data>
+  <data name="Lens_TypeShort_Diffractive" xml:space="preserve"><value>衍射面</value></data>
+  <data name="Lens_TypeShort_Sphere" xml:space="preserve"><value>球面</value></data>
+  <data name="Lens_Type_Biconic" xml:space="preserve"><value>双锥面</value></data>
+  <data name="Lens_Type_Conic" xml:space="preserve"><value>球面 / 圆锥面</value></data>
+  <data name="Lens_Type_CoordinateBreak" xml:space="preserve"><value>坐标断点</value></data>
+  <data name="Lens_Type_CylinderX" xml:space="preserve"><value>柱面（x 向有光焦度）</value></data>
+  <data name="Lens_Type_CylinderY" xml:space="preserve"><value>柱面（y 向有光焦度）</value></data>
+  <data name="Lens_Type_Diffractive" xml:space="preserve"><value>衍射面</value></data>
+  <data name="Lens_Type_EvenAsphere" xml:space="preserve"><value>偶次非球面</value></data>
+  <data name="Lens_Type_IdealLens" xml:space="preserve"><value>理想透镜</value></data>
+  <data name="Lens_Type_OddAsphere" xml:space="preserve"><value>奇次非球面</value></data>
+  <data name="Lens_Type_Plane" xml:space="preserve"><value>平面</value></data>
+  <data name="Lens_Type_QBfs" xml:space="preserve"><value>Q 型（最佳拟合球面）</value></data>
+  <data name="Lens_Type_QCon" xml:space="preserve"><value>Q 型（圆锥）</value></data>
+  <data name="Lens_Type_Toroid" xml:space="preserve"><value>环面</value></data>
+  <data name="Lens_Type_XyPolynomial" xml:space="preserve"><value>XY 多项式</value></data>
+  <data name="Lens_Type_ZernikeSag" xml:space="preserve"><value>泽尼克矢高</value></data>
+  <data name="Lens_Undo_AddNamed" xml:space="preserve"><value>添加 {0}</value></data>
+  <data name="Lens_Undo_AddSolve" xml:space="preserve"><value>添加求解</value></data>
+  <data name="Lens_Undo_ApplyWavelengthPreset" xml:space="preserve"><value>应用波长预设</value></data>
+  <data name="Lens_Undo_ChangeAperture" xml:space="preserve"><value>更改孔径</value></data>
+  <data name="Lens_Undo_ChangeApertureType" xml:space="preserve"><value>更改孔径类型</value></data>
+  <data name="Lens_Undo_ChangeBaseShape" xml:space="preserve"><value>更改基底面形</value></data>
+  <data name="Lens_Undo_ChangeCoating" xml:space="preserve"><value>更改膜层</value></data>
+  <data name="Lens_Undo_ChangeComment" xml:space="preserve"><value>更改备注</value></data>
+  <data name="Lens_Undo_ChangeConic" xml:space="preserve"><value>更改圆锥系数</value></data>
+  <data name="Lens_Undo_ChangeEfficiency" xml:space="preserve"><value>更改衍射效率</value></data>
+  <data name="Lens_Undo_ChangeField" xml:space="preserve"><value>更改视场</value></data>
+  <data name="Lens_Undo_ChangeFieldType" xml:space="preserve"><value>更改视场类型</value></data>
+  <data name="Lens_Undo_ChangeFieldWeight" xml:space="preserve"><value>更改视场权重</value></data>
+  <data name="Lens_Undo_ChangeInteraction" xml:space="preserve"><value>更改作用方式</value></data>
+  <data name="Lens_Undo_ChangeLabel" xml:space="preserve"><value>更改备注</value></data>
+  <data name="Lens_Undo_ChangeMaterial" xml:space="preserve"><value>更改材料</value></data>
+  <data name="Lens_Undo_ChangeNamed" xml:space="preserve"><value>更改{0}</value></data>
+  <data name="Lens_Undo_ChangeNotes" xml:space="preserve"><value>更改注释</value></data>
+  <data name="Lens_Undo_ChangePlacement" xml:space="preserve"><value>更改位置</value></data>
+  <data name="Lens_Undo_ChangePressure" xml:space="preserve"><value>更改气压</value></data>
+  <data name="Lens_Undo_ChangePrimaryWavelength" xml:space="preserve"><value>更改主波长</value></data>
+  <data name="Lens_Undo_ChangeRadius" xml:space="preserve"><value>更改曲率半径</value></data>
+  <data name="Lens_Undo_ChangeRayAiming" xml:space="preserve"><value>更改光线瞄准</value></data>
+  <data name="Lens_Undo_ChangeSemiDiameter" xml:space="preserve"><value>更改半口径</value></data>
+  <data name="Lens_Undo_ChangeSurfaceType" xml:space="preserve"><value>更改面型</value></data>
+  <data name="Lens_Undo_ChangeTemperature" xml:space="preserve"><value>更改温度</value></data>
+  <data name="Lens_Undo_ChangeThickness" xml:space="preserve"><value>更改厚度</value></data>
+  <data name="Lens_Undo_ChangeVignetting" xml:space="preserve"><value>更改渐晕</value></data>
+  <data name="Lens_Undo_ChangeWavelength" xml:space="preserve"><value>更改波长</value></data>
+  <data name="Lens_Undo_ChangeWavelengthWeight" xml:space="preserve"><value>更改波长权重</value></data>
+  <data name="Lens_Undo_DeleteSurface" xml:space="preserve"><value>删除面</value></data>
+  <data name="Lens_Undo_InsertSurface" xml:space="preserve"><value>插入面</value></data>
+  <data name="Lens_Undo_MakeVariable" xml:space="preserve"><value>设为变量</value></data>
+  <data name="Lens_Undo_RemoveNamed" xml:space="preserve"><value>移除 {0}</value></data>
+  <data name="Lens_Undo_RemoveSolve" xml:space="preserve"><value>移除求解</value></data>
+  <data name="Lens_Undo_RemoveVariable" xml:space="preserve"><value>移除变量</value></data>
+  <data name="Lens_Undo_Rename" xml:space="preserve"><value>重命名</value></data>
+  <data name="Lens_Undo_SetStop" xml:space="preserve"><value>设置光阑</value></data>
+  <data name="Lens_Variable_Refusal" xml:space="preserve"><value>由求解（{0}）设定，优化器无法改变它。移除求解后才能将其设为变量。</value></data>
+  <data name="Lens_Zernike_Astigmatism" xml:space="preserve"><value>像散</value></data>
+  <data name="Lens_Zernike_Astigmatism2" xml:space="preserve"><value>二级像散</value></data>
+  <data name="Lens_Zernike_Coma" xml:space="preserve"><value>彗差</value></data>
+  <data name="Lens_Zernike_Coma2" xml:space="preserve"><value>二级彗差</value></data>
+  <data name="Lens_Zernike_Defocus" xml:space="preserve"><value>离焦</value></data>
+  <data name="Lens_Zernike_Pentafoil" xml:space="preserve"><value>五叶像差</value></data>
+  <data name="Lens_Zernike_Piston" xml:space="preserve"><value>平移</value></data>
+  <data name="Lens_Zernike_Spherical" xml:space="preserve"><value>球差</value></data>
+  <data name="Lens_Zernike_Spherical2" xml:space="preserve"><value>二级球差</value></data>
+  <data name="Lens_Zernike_Spherical3" xml:space="preserve"><value>三级球差</value></data>
+  <data name="Lens_Zernike_Tetrafoil" xml:space="preserve"><value>四叶像差</value></data>
+  <data name="Lens_Zernike_Tilt" xml:space="preserve"><value>倾斜</value></data>
+  <data name="Lens_Zernike_Trefoil" xml:space="preserve"><value>三叶像差</value></data>
+  <data name="Lens_Zernike_Trefoil2" xml:space="preserve"><value>二级三叶像差</value></data>
   <!-- end area: Lens -->
   <!-- area: Analysis -->
   <data name="Analysis_Csv_CannotRead" xml:space="preserve"><value>无法读取</value></data>

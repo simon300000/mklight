@@ -20,6 +20,417 @@
   <data name="Shell_Language_Title" xml:space="preserve"><value>Language</value></data>
   <!-- end area: Shell -->
   <!-- area: Lens -->
+  <data name="Lens_Aperture_EntrancePupilDiameter" xml:space="preserve"><value>Entrance pupil diameter</value></data>
+  <data name="Lens_Aperture_FloatByStopSize" xml:space="preserve"><value>Float by stop size</value></data>
+  <data name="Lens_Aperture_ImageSpaceFNumber" xml:space="preserve"><value>Image-space F/#</value></data>
+  <data name="Lens_Aperture_ObjectSpaceNA" xml:space="preserve"><value>Object-space NA</value></data>
+  <data name="Lens_Aperture_ParaxialWorkingFNumber" xml:space="preserve"><value>Paraxial working F/#</value></data>
+  <data name="Lens_Caption_Many" xml:space="preserve"><value>{0} surfaces · stop on {1} · mm</value></data>
+  <data name="Lens_Caption_One" xml:space="preserve"><value>{0} surface · stop on {1} · mm</value></data>
+  <data name="Lens_Caption_Variables_Many" xml:space="preserve"><value>{0} · {1} variables</value></data>
+  <data name="Lens_Caption_Variables_One" xml:space="preserve"><value>{0} · {1} variable</value></data>
+  <data name="Lens_Catalog_Builtin" xml:space="preserve"><value>Built into MKLight</value></data>
+  <data name="Lens_Catalog_Library" xml:space="preserve"><value>Library</value></data>
+  <data name="Lens_Catalog_LibraryRecorded" xml:space="preserve"><value>Library, recorded in the design</value></data>
+  <data name="Lens_Catalog_ThisDesign" xml:space="preserve"><value>This design</value></data>
+  <data name="Lens_Cell_Automatic" xml:space="preserve"><value>automatic</value></data>
+  <data name="Lens_Cell_ControlType" xml:space="preserve"><value>cell</value></data>
+  <data name="Lens_Cell_FlatSection" xml:space="preserve"><value>flat section</value></data>
+  <data name="Lens_Cell_MeltOffset" xml:space="preserve"><value>melt offset {0}</value></data>
+  <data name="Lens_Cell_Name" xml:space="preserve"><value>{0}, {1}</value></data>
+  <data name="Lens_Cell_SectionTitle" xml:space="preserve"><value>{0} {1}</value></data>
+  <data name="Lens_Clip_Annular" xml:space="preserve"><value>Annular</value></data>
+  <data name="Lens_Clip_Circular" xml:space="preserve"><value>Circular</value></data>
+  <data name="Lens_Clip_Elliptical" xml:space="preserve"><value>Elliptical</value></data>
+  <data name="Lens_Clip_HalfWidthX" xml:space="preserve"><value>Half width x</value></data>
+  <data name="Lens_Clip_HalfWidthY" xml:space="preserve"><value>Half width y</value></data>
+  <data name="Lens_Clip_InnerRadius" xml:space="preserve"><value>Inner radius</value></data>
+  <data name="Lens_Clip_OuterRadius" xml:space="preserve"><value>Outer radius</value></data>
+  <data name="Lens_Clip_Radius" xml:space="preserve"><value>Radius</value></data>
+  <data name="Lens_Clip_Rectangular" xml:space="preserve"><value>Rectangular</value></data>
+  <data name="Lens_Clip_SemiAxisX" xml:space="preserve"><value>Semi-axis x</value></data>
+  <data name="Lens_Clip_SemiAxisY" xml:space="preserve"><value>Semi-axis y</value></data>
+  <data name="Lens_Clip_SemiDiameter" xml:space="preserve"><value>Semi-diameter</value></data>
+  <data name="Lens_Coating_Uncoated" xml:space="preserve"><value>Uncoated</value></data>
+  <data name="Lens_Column_Comment" xml:space="preserve"><value>Comment</value></data>
+  <data name="Lens_Column_Conic" xml:space="preserve"><value>Conic</value></data>
+  <data name="Lens_Column_ConicX" xml:space="preserve"><value>Conic x</value></data>
+  <data name="Lens_Column_Material" xml:space="preserve"><value>Material</value></data>
+  <data name="Lens_Column_Radius" xml:space="preserve"><value>Radius</value></data>
+  <data name="Lens_Column_RadiusX" xml:space="preserve"><value>Radius x</value></data>
+  <data name="Lens_Column_SemiDiameter" xml:space="preserve"><value>Semi-Diameter</value></data>
+  <data name="Lens_Column_Surface" xml:space="preserve"><value>Surf</value></data>
+  <data name="Lens_Column_Thickness" xml:space="preserve"><value>Thickness</value></data>
+  <data name="Lens_Column_Type" xml:space="preserve"><value>Type</value></data>
+  <data name="Lens_Cylinder_Footer" xml:space="preserve"><value>A cylinder is a biconic with one section plane.</value></data>
+  <data name="Lens_Cylinder_Make" xml:space="preserve"><value>Make Cylinder</value></data>
+  <data name="Lens_Cylinder_PowerX" xml:space="preserve"><value>Power in x (plane in y)</value></data>
+  <data name="Lens_Cylinder_PowerY" xml:space="preserve"><value>Power in y (plane in x)</value></data>
+  <data name="Lens_Divider_Help" xml:space="preserve"><value>Drag to resize the column; double-click to fit it to its content.</value></data>
+  <data name="Lens_Divider_Name" xml:space="preserve"><value>Resize the {0} column</value></data>
+  <data name="Lens_Efficiency_AtDesign" xml:space="preserve"><value>Trace order at λ₀</value></data>
+  <data name="Lens_Efficiency_AtDesignHelp" xml:space="preserve"><value>Efficiency of the trace order ({0}) at the design wavelength {1} µm.</value></data>
+  <data name="Lens_Efficiency_BarName" xml:space="preserve"><value>{0} micrometers: {1}</value></data>
+  <data name="Lens_Efficiency_Footer" xml:space="preserve"><value>System wavelengths estimated with blaze m₀λ₀/λ, ignoring the relief material's dispersion. The engine traces the exact model.</value></data>
+  <data name="Lens_Efficiency_Ideal" xml:space="preserve"><value>Ideal</value></data>
+  <data name="Lens_Efficiency_Kinoform" xml:space="preserve"><value>Kinoform</value></data>
+  <data name="Lens_Efficiency_Levels" xml:space="preserve"><value>Levels</value></data>
+  <data name="Lens_Efficiency_LevelsHelp" xml:space="preserve"><value>Number of etch levels of the staircase (2 binary, 4, 8, 16 …).</value></data>
+  <data name="Lens_Efficiency_LevelsRange" xml:space="preserve"><value>Levels must be 1 … 256</value></data>
+  <data name="Lens_Efficiency_Model" xml:space="preserve"><value>Model</value></data>
+  <data name="Lens_Efficiency_ModelHelp" xml:space="preserve"><value>Ideal: every photon in the trace order. Kinoform: a continuous blazed relief. Multilevel: a staircase of N etch levels.</value></data>
+  <data name="Lens_Efficiency_Multilevel" xml:space="preserve"><value>Multilevel</value></data>
+  <data name="Lens_Error_MustBeFinite" xml:space="preserve"><value>Value must be finite</value></data>
+  <data name="Lens_Error_MustBePositive" xml:space="preserve"><value>Value must be greater than zero</value></data>
+  <data name="Lens_Error_MustBeWhole" xml:space="preserve"><value>Value must be a whole number</value></data>
+  <data name="Lens_Error_NotAMaterial" xml:space="preserve"><value>“{0}” is not a material (glass name, AIR, MIRROR, nd/vd, n=…, CATALOG:NAME)</value></data>
+  <data name="Lens_Error_NotANumber" xml:space="preserve"><value>“{0}” is not a number</value></data>
+  <data name="Lens_Error_NotASurfaceType" xml:space="preserve"><value>“{0}” is not a surface type</value></data>
+  <data name="Lens_Error_WithinBound" xml:space="preserve"><value>Value must be within ±{0}</value></data>
+  <data name="Lens_FieldKind_ObjectAngle" xml:space="preserve"><value>Object angle</value></data>
+  <data name="Lens_FieldKind_ObjectHeight" xml:space="preserve"><value>Object height</value></data>
+  <data name="Lens_FieldKind_ParaxialImageHeight" xml:space="preserve"><value>Paraxial image height</value></data>
+  <data name="Lens_FieldKind_RealImageHeight" xml:space="preserve"><value>Real image height</value></data>
+  <data name="Lens_Field_Base" xml:space="preserve"><value>Base</value></data>
+  <data name="Lens_Field_Clipping" xml:space="preserve"><value>Clipping</value></data>
+  <data name="Lens_Field_Coating" xml:space="preserve"><value>Coating</value></data>
+  <data name="Lens_Field_Comment" xml:space="preserve"><value>Comment</value></data>
+  <data name="Lens_Field_Computed" xml:space="preserve"><value>Computed</value></data>
+  <data name="Lens_Field_Interaction" xml:space="preserve"><value>Interaction</value></data>
+  <data name="Lens_Field_Material" xml:space="preserve"><value>Material</value></data>
+  <data name="Lens_Field_None" xml:space="preserve"><value>none</value></data>
+  <data name="Lens_Field_SemiDiameter" xml:space="preserve"><value>Semi-diameter</value></data>
+  <data name="Lens_Field_Thickness" xml:space="preserve"><value>Thickness</value></data>
+  <data name="Lens_Field_ThicknessHelp" xml:space="preserve"><value>Distance to the next vertex.</value></data>
+  <data name="Lens_Field_Value" xml:space="preserve"><value>Value</value></data>
+  <data name="Lens_FirstOrder_Bfl" xml:space="preserve"><value>BFL x / y</value></data>
+  <data name="Lens_FirstOrder_Efl" xml:space="preserve"><value>EFL x / y</value></data>
+  <data name="Lens_FirstOrder_Note" xml:space="preserve"><value>Not rotationally symmetric. The engine's first-order data covers the y section.</value></data>
+  <data name="Lens_FirstOrder_Squeeze" xml:space="preserve"><value>Squeeze</value></data>
+  <data name="Lens_FirstOrder_SqueezeDefault" xml:space="preserve"><value>signed EFL y / EFL x</value></data>
+  <data name="Lens_FirstOrder_SqueezeHelp" xml:space="preserve"><value>Squeeze: {0}</value></data>
+  <data name="Lens_FirstOrder_Symmetry" xml:space="preserve"><value>Symmetry</value></data>
+  <data name="Lens_FirstOrder_Title" xml:space="preserve"><value>First Order</value></data>
+  <data name="Lens_Footer_OddAsphere" xml:space="preserve"><value>The paraxial curvature is c + 2β₂; β₁ has no first-order meaning.</value></data>
+  <data name="Lens_Footer_Orders" xml:space="preserve"><value>Orders are discrete and never optimization variables.</value></data>
+  <data name="Lens_Footer_Phase" xml:space="preserve"><value>A focusing phase has negative A₁. Coefficients describe order +1 and stay fixed when the wavelength or order changes.</value></data>
+  <data name="Lens_Footer_QBfs" xml:space="preserve"><value>Vertex curvature c_bfs + 2Σaₘ Qₘ(0)/r_norm².</value></data>
+  <data name="Lens_Footer_Toroid" xml:space="preserve"><value>Radius x is the distance from the vertex to the axis of rotation; ∞ makes a y cylinder.</value></data>
+  <data name="Lens_Form_SolveBadge" xml:space="preserve"><value>Controlled by a {0} solve</value></data>
+  <data name="Lens_Form_VariableOff" xml:space="preserve"><value>Fixed. Click to make it a variable.</value></data>
+  <data name="Lens_Form_VariableOn" xml:space="preserve"><value>Variable: the optimizer may change it. Click to fix it.</value></data>
+  <data name="Lens_Form_VariableSolvedOff" xml:space="preserve"><value>Set by a solve ({0}), so it cannot be a variable: the optimizer applies solves first. Remove the solve to vary it.</value></data>
+  <data name="Lens_Form_VariableSolvedOn" xml:space="preserve"><value>Set by a solve ({0}): the optimizer leaves this variable out. Click to remove it.</value></data>
+  <data name="Lens_Help_Conic" xml:space="preserve"><value>Conic constant k: 0 sphere, −1 paraboloid, &lt; −1 hyperboloid.</value></data>
+  <data name="Lens_Help_ConicX" xml:space="preserve"><value>Conic constant in x.</value></data>
+  <data name="Lens_Help_ConicY" xml:space="preserve"><value>Conic constant in y.</value></data>
+  <data name="Lens_Help_ConicYProfile" xml:space="preserve"><value>Conic constant of the y profile.</value></data>
+  <data name="Lens_Help_DesignOrder" xml:space="preserve"><value>The order the structure is designed for (nonzero). Metadata: it does not rescale the phase.</value></data>
+  <data name="Lens_Help_DesignWavelength" xml:space="preserve"><value>Design wavelength λ₀. Metadata: it does not rescale the phase.</value></data>
+  <data name="Lens_Help_FocalLength" xml:space="preserve"><value>Focal length of the ideal lens.</value></data>
+  <data name="Lens_Help_NormRadius" xml:space="preserve"><value>Normalization radius r_norm: the polynomial is defined for r ≤ r_norm. Usually the clear semi-diameter.</value></data>
+  <data name="Lens_Help_Ordering" xml:space="preserve"><value>Fringe terms are unnormalized; Standard (Noll) terms are normalized.</value></data>
+  <data name="Lens_Help_Radius" xml:space="preserve"><value>Radius of curvature; ∞ for a plane. Stored as curvature c = 1/R.</value></data>
+  <data name="Lens_Help_TraceOrder" xml:space="preserve"><value>The order rays follow; 0 is ordinary refraction or reflection.</value></data>
+  <data name="Lens_Inspector_HelpGlassSubstitution" xml:space="preserve"><value>Replace glasses with catalog glasses, re-optimizing each combination</value></data>
+  <data name="Lens_Inspector_HelpOptimize" xml:space="preserve"><value>Optimize the design</value></data>
+  <data name="Lens_Inspector_HelpSolves" xml:space="preserve"><value>Preview and apply the design's solves</value></data>
+  <data name="Lens_Inspector_HelpSurface" xml:space="preserve"><value>The selected surface</value></data>
+  <data name="Lens_Inspector_HelpSystem" xml:space="preserve"><value>Aperture, fields, wavelengths and environment</value></data>
+  <data name="Lens_Inspector_HelpTolerance" xml:space="preserve"><value>Tolerance analysis: sensitivities and Monte Carlo</value></data>
+  <data name="Lens_Inspector_NoSurface" xml:space="preserve"><value>No Surface Selected</value></data>
+  <data name="Lens_Inspector_NoSurfaceHint" xml:space="preserve"><value>Select a row in the lens data to edit its surface.</value></data>
+  <data name="Lens_Inspector_Pages" xml:space="preserve"><value>Inspector pages</value></data>
+  <data name="Lens_Inspector_StopBadge" xml:space="preserve"><value>Stop</value></data>
+  <data name="Lens_Inspector_SurfaceType" xml:space="preserve"><value>Surface type</value></data>
+  <data name="Lens_Inspector_TabRunning" xml:space="preserve"><value>Running</value></data>
+  <data name="Lens_Inspector_TabSelected" xml:space="preserve"><value>Selected</value></data>
+  <data name="Lens_Inspector_TabSurface" xml:space="preserve"><value>Surface</value></data>
+  <data name="Lens_Inspector_TabSystem" xml:space="preserve"><value>System</value></data>
+  <data name="Lens_Interaction_Dummy" xml:space="preserve"><value>Dummy</value></data>
+  <data name="Lens_Interaction_Mirror" xml:space="preserve"><value>Mirror</value></data>
+  <data name="Lens_Interaction_Refract" xml:space="preserve"><value>Refract</value></data>
+  <data name="Lens_Melt_Add" xml:space="preserve"><value>Add Melt Offset…</value></data>
+  <data name="Lens_Melt_AddHelp" xml:space="preserve"><value>Give the catalog glass a measured melt's Δn_d and ΔV_d</value></data>
+  <data name="Lens_Melt_Detail" xml:space="preserve"><value>melt</value></data>
+  <data name="Lens_Melt_DnHelp" xml:space="preserve"><value>The melt's index offset from the catalog n_d (within ±{0}); the dispersion keeps its shape.</value></data>
+  <data name="Lens_Melt_DvHelp" xml:space="preserve"><value>The melt's Abbe-number offset from the catalog V_d (within ±{0}).</value></data>
+  <data name="Lens_Melt_Remove" xml:space="preserve"><value>Remove Melt Offset</value></data>
+  <data name="Lens_Melt_RemoveHelp" xml:space="preserve"><value>Back to the catalog glass</value></data>
+  <data name="Lens_Menu_DeleteSurface" xml:space="preserve"><value>Delete Surface</value></data>
+  <data name="Lens_Menu_InsertAfter" xml:space="preserve"><value>Insert Surface After</value></data>
+  <data name="Lens_Menu_InsertBefore" xml:space="preserve"><value>Insert Surface Before</value></data>
+  <data name="Lens_Menu_MakeStop" xml:space="preserve"><value>Make Aperture Stop</value></data>
+  <data name="Lens_Menu_MakeVariable" xml:space="preserve"><value>Make Variable</value></data>
+  <data name="Lens_Menu_RemoveVariable" xml:space="preserve"><value>Remove Variable</value></data>
+  <data name="Lens_Menu_ShowInInspector" xml:space="preserve"><value>Show in Inspector</value></data>
+  <data name="Lens_Menu_Variables" xml:space="preserve"><value>Variables</value></data>
+  <data name="Lens_More_AutomaticWidths" xml:space="preserve"><value>Automatic Column Widths</value></data>
+  <data name="Lens_More_FitColumns" xml:space="preserve"><value>Fit Columns to Content</value></data>
+  <data name="Lens_More_Hide" xml:space="preserve"><value>Hide Lens Data</value></data>
+  <data name="Lens_More_MoveToMainWindow" xml:space="preserve"><value>Move to Main Window</value></data>
+  <data name="Lens_More_MoveToNewWindow" xml:space="preserve"><value>Move to New Window</value></data>
+  <data name="Lens_Ordering_Fringe" xml:space="preserve"><value>Fringe (37 terms)</value></data>
+  <data name="Lens_Ordering_Standard" xml:space="preserve"><value>Standard / Noll (45 terms)</value></data>
+  <data name="Lens_Panel.[using:Microsoft.UI.Xaml.Automation]AutomationProperties.Name" xml:space="preserve"><value>Lens data</value></data>
+  <data name="Lens_Panel_Columns.[using:Microsoft.UI.Xaml.Automation]AutomationProperties.Name" xml:space="preserve"><value>Columns</value></data>
+  <data name="Lens_Panel_DeleteButton.[using:Microsoft.UI.Xaml.Automation]AutomationProperties.Name" xml:space="preserve"><value>Delete Surface</value></data>
+  <data name="Lens_Panel_DeleteButton.[using:Microsoft.UI.Xaml.Controls]ToolTipService.ToolTip" xml:space="preserve"><value>Delete the selected surface (Ctrl+Delete)</value></data>
+  <data name="Lens_Panel_Header.[using:Microsoft.UI.Xaml.Automation]AutomationProperties.Name" xml:space="preserve"><value>Lens Data</value></data>
+  <data name="Lens_Panel_InsertButton.[using:Microsoft.UI.Xaml.Automation]AutomationProperties.Name" xml:space="preserve"><value>Insert Surface</value></data>
+  <data name="Lens_Panel_InsertButton.[using:Microsoft.UI.Xaml.Controls]ToolTipService.ToolTip" xml:space="preserve"><value>Insert a surface before the selection (Ctrl+Shift+I)</value></data>
+  <data name="Lens_Panel_MoreButton.[using:Microsoft.UI.Xaml.Automation]AutomationProperties.Name" xml:space="preserve"><value>More</value></data>
+  <data name="Lens_Panel_MoreButton.[using:Microsoft.UI.Xaml.Controls]ToolTipService.ToolTip" xml:space="preserve"><value>More</value></data>
+  <data name="Lens_Panel_Title.Text" xml:space="preserve"><value>Lens Data</value></data>
+  <data name="Lens_Panel_VariablesButton.[using:Microsoft.UI.Xaml.Controls]ToolTipService.ToolTip" xml:space="preserve"><value>The design's variables: open Optimize to edit their bounds</value></data>
+  <data name="Lens_Panel_Variables_Many" xml:space="preserve"><value>{0} variables</value></data>
+  <data name="Lens_Panel_Variables_One" xml:space="preserve"><value>{0} variable</value></data>
+  <data name="Lens_Param_AstigmatismAxis" xml:space="preserve"><value>Astigmatism axis</value></data>
+  <data name="Lens_Param_Conic" xml:space="preserve"><value>Conic</value></data>
+  <data name="Lens_Param_ConicX" xml:space="preserve"><value>Conic x</value></data>
+  <data name="Lens_Param_ConicY" xml:space="preserve"><value>Conic y</value></data>
+  <data name="Lens_Param_DesignOrder" xml:space="preserve"><value>Design order</value></data>
+  <data name="Lens_Param_DesignWavelength" xml:space="preserve"><value>Design λ</value></data>
+  <data name="Lens_Param_FocalLength" xml:space="preserve"><value>Focal length</value></data>
+  <data name="Lens_Param_NormRadius" xml:space="preserve"><value>Norm radius</value></data>
+  <data name="Lens_Param_Ordering" xml:space="preserve"><value>Ordering</value></data>
+  <data name="Lens_Param_Radius" xml:space="preserve"><value>Radius</value></data>
+  <data name="Lens_Param_RadiusX" xml:space="preserve"><value>Radius x</value></data>
+  <data name="Lens_Param_RadiusY" xml:space="preserve"><value>Radius y</value></data>
+  <data name="Lens_Param_TraceOrder" xml:space="preserve"><value>Trace order</value></data>
+  <data name="Lens_Placement_Add" xml:space="preserve"><value>Add Decenter or Tilt…</value></data>
+  <data name="Lens_Placement_DecenterThenTilt" xml:space="preserve"><value>Decenter, then tilt</value></data>
+  <data name="Lens_Placement_DecenterX" xml:space="preserve"><value>Decenter X</value></data>
+  <data name="Lens_Placement_DecenterY" xml:space="preserve"><value>Decenter Y</value></data>
+  <data name="Lens_Placement_Order" xml:space="preserve"><value>Order</value></data>
+  <data name="Lens_Placement_Restore" xml:space="preserve"><value>Return after surface</value></data>
+  <data name="Lens_Placement_TiltThenDecenter" xml:space="preserve"><value>Tilt, then decenter</value></data>
+  <data name="Lens_Placement_TiltX" xml:space="preserve"><value>Tilt X</value></data>
+  <data name="Lens_Placement_TiltY" xml:space="preserve"><value>Tilt Y</value></data>
+  <data name="Lens_Placement_TiltZ" xml:space="preserve"><value>Tilt Z</value></data>
+  <data name="Lens_Preset_DOnly" xml:space="preserve"><value>d only</value></data>
+  <data name="Lens_Preset_EOnly" xml:space="preserve"><value>e only</value></data>
+  <data name="Lens_Preset_FdC" xml:space="preserve"><value>F, d, C (visible)</value></data>
+  <data name="Lens_Preset_FeC" xml:space="preserve"><value>F′, e, C′ (visible)</value></data>
+  <data name="Lens_Preset_NearInfrared" xml:space="preserve"><value>Near infrared</value></data>
+  <data name="Lens_Preset_Photopic" xml:space="preserve"><value>Photopic (5)</value></data>
+  <data name="Lens_Preview_AtDesign" xml:space="preserve"><value>At design</value></data>
+  <data name="Lens_Preview_AtRadius" xml:space="preserve"><value>at r = {0} mm</value></data>
+  <data name="Lens_Preview_BaseSag" xml:space="preserve"><value>Base sag</value></data>
+  <data name="Lens_Preview_Departure" xml:space="preserve"><value>Departure from base</value></data>
+  <data name="Lens_Preview_NoSag" xml:space="preserve"><value>No real sag over ±{0} mm</value></data>
+  <data name="Lens_Preview_Order" xml:space="preserve"><value>order {0}, {1} µm</value></data>
+  <data name="Lens_Preview_Over" xml:space="preserve"><value>over ±{0} mm</value></data>
+  <data name="Lens_Preview_ParaxialPower" xml:space="preserve"><value>Paraxial power</value></data>
+  <data name="Lens_Preview_Phase" xml:space="preserve"><value>Phase (order +1)</value></data>
+  <data name="Lens_Preview_PositionAxis" xml:space="preserve"><value>Position (mm)</value></data>
+  <data name="Lens_Preview_PowerHelp" xml:space="preserve"><value>Paraxial power φ = −m λ A₁ / (π r_norm²), added to the base's refractive power. A DOE's Abbe number is about −3.45.</value></data>
+  <data name="Lens_Preview_RadiusAxis" xml:space="preserve"><value>Radius (mm)</value></data>
+  <data name="Lens_Preview_Sag" xml:space="preserve"><value>Sag</value></data>
+  <data name="Lens_Preview_SagAxis" xml:space="preserve"><value>Sag (mm)</value></data>
+  <data name="Lens_Preview_SmallestPeriod" xml:space="preserve"><value>Smallest zone period</value></data>
+  <data name="Lens_Preview_XSection" xml:space="preserve"><value>x section</value></data>
+  <data name="Lens_Preview_YSection" xml:space="preserve"><value>y section</value></data>
+  <data name="Lens_Preview_Zones" xml:space="preserve"><value>Zones</value></data>
+  <data name="Lens_Row_HintAnamorphic" xml:space="preserve"><value>The {0} section's {1} (the surface is anamorphic: y and x sections)</value></data>
+  <data name="Lens_Row_HintConic" xml:space="preserve"><value>conic</value></data>
+  <data name="Lens_Row_HintFlat" xml:space="preserve"><value>The {0} section's {1}: flat (this cylinder has power in the other section)</value></data>
+  <data name="Lens_Row_HintRadius" xml:space="preserve"><value>radius</value></data>
+  <data name="Lens_Row_Image" xml:space="preserve"><value>Image</value></data>
+  <data name="Lens_Row_MeltTip" xml:space="preserve"><value>Melt offset Δn_d / ΔV_d on the catalog glass; edit it in the inspector</value></data>
+  <data name="Lens_Row_Object" xml:space="preserve"><value>Object</value></data>
+  <data name="Lens_Row_SolveName" xml:space="preserve"><value>controlled by a {0} solve</value></data>
+  <data name="Lens_Row_SolveTip" xml:space="preserve"><value>Solve: {0}</value></data>
+  <data name="Lens_Row_StopTip" xml:space="preserve"><value>Aperture stop</value></data>
+  <data name="Lens_Row_Surface" xml:space="preserve"><value>Surface {0}</value></data>
+  <data name="Lens_Row_SurfaceStop" xml:space="preserve"><value>Surface {0}, aperture stop</value></data>
+  <data name="Lens_Row_Variable" xml:space="preserve"><value>Variable</value></data>
+  <data name="Lens_Row_VariableBounded" xml:space="preserve"><value>Variable with bounds</value></data>
+  <data name="Lens_Row_VariableIgnored" xml:space="preserve"><value>Variable on a solved value: the optimizer leaves it out. Remove the variable or the solve.</value></data>
+  <data name="Lens_Row_VariablePinned" xml:space="preserve"><value>Variable, pinned (equal bounds)</value></data>
+  <data name="Lens_Section_Aperture" xml:space="preserve"><value>Aperture</value></data>
+  <data name="Lens_Section_BaseConic" xml:space="preserve"><value>Base Conic</value></data>
+  <data name="Lens_Section_BasePolynomial" xml:space="preserve"><value>Base Polynomial</value></data>
+  <data name="Lens_Section_BaseShape" xml:space="preserve"><value>Base Shape</value></data>
+  <data name="Lens_Section_BestFitSphere" xml:space="preserve"><value>Best-Fit Sphere</value></data>
+  <data name="Lens_Section_Coating" xml:space="preserve"><value>Coating</value></data>
+  <data name="Lens_Section_Efficiency" xml:space="preserve"><value>Diffraction Efficiency</value></data>
+  <data name="Lens_Section_IdealLens" xml:space="preserve"><value>Ideal Lens</value></data>
+  <data name="Lens_Section_Medium" xml:space="preserve"><value>Spacing and Medium</value></data>
+  <data name="Lens_Section_Orders" xml:space="preserve"><value>Orders</value></data>
+  <data name="Lens_Section_Phase" xml:space="preserve"><value>Phase</value></data>
+  <data name="Lens_Section_Placement" xml:space="preserve"><value>Placement</value></data>
+  <data name="Lens_Section_Polynomial" xml:space="preserve"><value>Polynomial</value></data>
+  <data name="Lens_Section_QPolynomial" xml:space="preserve"><value>Q Polynomial</value></data>
+  <data name="Lens_Section_Rotation" xml:space="preserve"><value>Rotation</value></data>
+  <data name="Lens_Section_Shape" xml:space="preserve"><value>Shape</value></data>
+  <data name="Lens_Section_Solves" xml:space="preserve"><value>Solves</value></data>
+  <data name="Lens_Section_XSection" xml:space="preserve"><value>X Section</value></data>
+  <data name="Lens_Section_XyTerms" xml:space="preserve"><value>XY Terms</value></data>
+  <data name="Lens_Section_YProfile" xml:space="preserve"><value>Y Profile</value></data>
+  <data name="Lens_Section_YSection" xml:space="preserve"><value>Y Section</value></data>
+  <data name="Lens_Section_ZernikeTerms" xml:space="preserve"><value>Zernike Terms</value></data>
+  <data name="Lens_SemiDiameter_Automatic" xml:space="preserve"><value>Automatic</value></data>
+  <data name="Lens_SemiDiameter_Fixed" xml:space="preserve"><value>Fixed</value></data>
+  <data name="Lens_SolvePreset_ChiefRayHeight" xml:space="preserve"><value>Chief ray height on thickness</value></data>
+  <data name="Lens_SolvePreset_FNumber" xml:space="preserve"><value>F-number on curvature</value></data>
+  <data name="Lens_SolvePreset_MarginalRayAngle" xml:space="preserve"><value>Marginal ray angle on curvature</value></data>
+  <data name="Lens_SolvePreset_MarginalRayHeight" xml:space="preserve"><value>Marginal ray height on thickness</value></data>
+  <data name="Lens_Solve_CenterOfCurvature" xml:space="preserve"><value>Centre of curvature</value></data>
+  <data name="Lens_Solve_ChiefRayAngle" xml:space="preserve"><value>Chief ray angle</value></data>
+  <data name="Lens_Solve_ChiefRayHeight" xml:space="preserve"><value>Chief ray height</value></data>
+  <data name="Lens_Solve_EdgeThickness" xml:space="preserve"><value>Edge thickness</value></data>
+  <data name="Lens_Solve_FNumber" xml:space="preserve"><value>F-number</value></data>
+  <data name="Lens_Solve_MarginalRayAngle" xml:space="preserve"><value>Marginal ray angle</value></data>
+  <data name="Lens_Solve_MarginalRayHeight" xml:space="preserve"><value>Marginal ray height</value></data>
+  <data name="Lens_Solve_Pickup" xml:space="preserve"><value>Pickup</value></data>
+  <data name="Lens_Solve_Position" xml:space="preserve"><value>Position</value></data>
+  <data name="Lens_Solves_Add" xml:space="preserve"><value>Add Solve</value></data>
+  <data name="Lens_Solves_Remove" xml:space="preserve"><value>Remove</value></data>
+  <data name="Lens_Summary_Biconic" xml:space="preserve"><value>Independent conics in x and y with even axis polynomials. A cylinder is a biconic with one plane axis.</value></data>
+  <data name="Lens_Summary_Conic" xml:space="preserve"><value>Sphere or conic of revolution.</value></data>
+  <data name="Lens_Summary_CoordinateBreak" xml:space="preserve"><value>Changes the coordinate frame only: decenters, then tilts (or the reverse).</value></data>
+  <data name="Lens_Summary_Diffractive" xml:space="preserve"><value>A fixed-period phase Φ = Σ Aᵢ ρ²ⁱ (order +1, radians) on a plane, conic or even-asphere base.</value></data>
+  <data name="Lens_Summary_EvenAsphere" xml:space="preserve"><value>Conic plus even polynomial terms A₄r⁴ + A₆r⁶ + …</value></data>
+  <data name="Lens_Summary_IdealLens" xml:space="preserve"><value>A thin, aberration-free lens of the given focal length.</value></data>
+  <data name="Lens_Summary_OddAsphere" xml:space="preserve"><value>Conic plus all powers of r: β₁r + β₂r² + β₃r³ + … A nonzero β₁ is a cone at the vertex.</value></data>
+  <data name="Lens_Summary_Plane" xml:space="preserve"><value>A flat surface.</value></data>
+  <data name="Lens_Summary_QBfs" xml:space="preserve"><value>Forbes slope-orthogonal departure from a best-fit sphere: u²(1−u²) Σ aₘ Qₘᵇᶠˢ(u²) / √(1−c²r²).</value></data>
+  <data name="Lens_Summary_QCon" xml:space="preserve"><value>Forbes conic-based asphere: conic plus u⁴ Σ aₘ Qₘᶜᵒⁿ(u²), u = r/r_norm. Keeps the vertex curvature.</value></data>
+  <data name="Lens_Summary_Toroid" xml:space="preserve"><value>The y profile (conic plus even terms) rotated about an axis parallel to y at the distance R_x.</value></data>
+  <data name="Lens_Summary_XyPolynomial" xml:space="preserve"><value>Freeform: conic plus Σ C(xᵐyⁿ) Xᵐ Yⁿ with X = x/r_norm, Y = y/r_norm; degrees 1 to 10.</value></data>
+  <data name="Lens_Summary_ZernikeSag" xml:space="preserve"><value>Freeform: conic plus Σ cⱼ Zⱼ(ρ, θ), ρ = r/r_norm, θ from +x. Sag coefficients in mm, piston and tilt kept.</value></data>
+  <data name="Lens_Symmetry_Meridional" xml:space="preserve"><value>Meridional plane</value></data>
+  <data name="Lens_Symmetry_None" xml:space="preserve"><value>None</value></data>
+  <data name="Lens_Symmetry_Rotational" xml:space="preserve"><value>Rotational</value></data>
+  <data name="Lens_System_AddField" xml:space="preserve"><value>Add Field</value></data>
+  <data name="Lens_System_AddWavelength" xml:space="preserve"><value>Add Wavelength</value></data>
+  <data name="Lens_System_CatalogBuiltin" xml:space="preserve"><value>Built-in</value></data>
+  <data name="Lens_System_Catalogs" xml:space="preserve"><value>Glass Catalogs</value></data>
+  <data name="Lens_System_CatalogsFooter" xml:space="preserve"><value>Library catalogs load into every design; a design records the ones it uses when saved. Manage them in the Glass Catalogs window.</value></data>
+  <data name="Lens_System_ConfigurationN" xml:space="preserve"><value>Configuration {0}</value></data>
+  <data name="Lens_System_Configurations" xml:space="preserve"><value>Configurations</value></data>
+  <data name="Lens_System_Environment" xml:space="preserve"><value>Environment</value></data>
+  <data name="Lens_System_FieldN" xml:space="preserve"><value>Field {0}</value></data>
+  <data name="Lens_System_Fields" xml:space="preserve"><value>Fields</value></data>
+  <data name="Lens_System_Glasses" xml:space="preserve"><value>{0} glasses</value></data>
+  <data name="Lens_System_GridCellName" xml:space="preserve"><value>{0} {1}</value></data>
+  <data name="Lens_System_HideVignetting" xml:space="preserve"><value>Hide Vignetting Factors</value></data>
+  <data name="Lens_System_MakePrimary" xml:space="preserve"><value>Make primary</value></data>
+  <data name="Lens_System_ManageCatalogs" xml:space="preserve"><value>Glass Catalogs…</value></data>
+  <data name="Lens_System_Name" xml:space="preserve"><value>Name</value></data>
+  <data name="Lens_System_Notes" xml:space="preserve"><value>Notes</value></data>
+  <data name="Lens_System_Overrides_Many" xml:space="preserve"><value>{0} overrides</value></data>
+  <data name="Lens_System_Overrides_One" xml:space="preserve"><value>{0} override</value></data>
+  <data name="Lens_System_Presets" xml:space="preserve"><value>Presets</value></data>
+  <data name="Lens_System_Pressure" xml:space="preserve"><value>Pressure</value></data>
+  <data name="Lens_System_PrimaryWavelength" xml:space="preserve"><value>Primary wavelength</value></data>
+  <data name="Lens_System_RayAiming" xml:space="preserve"><value>Ray Aiming</value></data>
+  <data name="Lens_System_RayAimingFooter" xml:space="preserve"><value>Aims every ray through the real stop instead of the paraxial entrance pupil. Slower, needed for wide fields and pupil aberration.</value></data>
+  <data name="Lens_System_RealRayAiming" xml:space="preserve"><value>Real ray aiming</value></data>
+  <data name="Lens_System_RemoveField" xml:space="preserve"><value>Remove Field</value></data>
+  <data name="Lens_System_RemoveWavelength" xml:space="preserve"><value>Remove Wavelength</value></data>
+  <data name="Lens_System_ShowVignetting" xml:space="preserve"><value>Show Vignetting Factors</value></data>
+  <data name="Lens_System_Temperature" xml:space="preserve"><value>Temperature</value></data>
+  <data name="Lens_System_Type" xml:space="preserve"><value>Type</value></data>
+  <data name="Lens_System_Vignetting" xml:space="preserve"><value>Vignetting</value></data>
+  <data name="Lens_System_VignettingFooter" xml:space="preserve"><value>Pupil coordinates per field: P′ = vd + (1 − vc)·P in x and y.</value></data>
+  <data name="Lens_System_Wavelengths" xml:space="preserve"><value>Wavelengths</value></data>
+  <data name="Lens_System_Weight" xml:space="preserve"><value>Weight</value></data>
+  <data name="Lens_Target_Conic" xml:space="preserve"><value>Conic</value></data>
+  <data name="Lens_Target_Curvature" xml:space="preserve"><value>Curvature</value></data>
+  <data name="Lens_Target_FocalLength" xml:space="preserve"><value>Focal length</value></data>
+  <data name="Lens_Target_Parameter" xml:space="preserve"><value>Parameter</value></data>
+  <data name="Lens_Target_SemiDiameter" xml:space="preserve"><value>Semi-diameter</value></data>
+  <data name="Lens_Target_Thickness" xml:space="preserve"><value>Thickness</value></data>
+  <data name="Lens_Term_Add" xml:space="preserve"><value>Add Term</value></data>
+  <data name="Lens_Term_AddNamed" xml:space="preserve"><value>Add {0}  {1}</value></data>
+  <data name="Lens_Term_Degree" xml:space="preserve"><value>degree {0}</value></data>
+  <data name="Lens_Term_HideZero" xml:space="preserve"><value>Hide Zero Terms</value></data>
+  <data name="Lens_Term_Limit" xml:space="preserve"><value>{0} terms, the most this type allows.</value></data>
+  <data name="Lens_Term_Remove" xml:space="preserve"><value>Remove this term</value></data>
+  <data name="Lens_Term_SetZero" xml:space="preserve"><value>Set this term to zero</value></data>
+  <data name="Lens_Term_ShowZero" xml:space="preserve"><value>Show Zero Terms</value></data>
+  <data name="Lens_Term_ShowZeroHelp" xml:space="preserve"><value>Show the terms that are zero</value></data>
+  <data name="Lens_Toast_CannotBeVariable" xml:space="preserve"><value>The {0} of this surface cannot be a variable.</value></data>
+  <data name="Lens_TypeGroup_Anamorphic" xml:space="preserve"><value>Anamorphic</value></data>
+  <data name="Lens_TypeGroup_Aspheric" xml:space="preserve"><value>Aspheric</value></data>
+  <data name="Lens_TypeGroup_Diffractive" xml:space="preserve"><value>Diffractive</value></data>
+  <data name="Lens_TypeGroup_Freeform" xml:space="preserve"><value>Freeform</value></data>
+  <data name="Lens_TypeGroup_Special" xml:space="preserve"><value>Special</value></data>
+  <data name="Lens_TypeGroup_Spherical" xml:space="preserve"><value>Spherical</value></data>
+  <data name="Lens_TypeShort_Conic" xml:space="preserve"><value>Conic</value></data>
+  <data name="Lens_TypeShort_Cylinder" xml:space="preserve"><value>Cylinder</value></data>
+  <data name="Lens_TypeShort_Diffractive" xml:space="preserve"><value>Diffractive</value></data>
+  <data name="Lens_TypeShort_Sphere" xml:space="preserve"><value>Sphere</value></data>
+  <data name="Lens_Type_Biconic" xml:space="preserve"><value>Biconic</value></data>
+  <data name="Lens_Type_Conic" xml:space="preserve"><value>Sphere / Conic</value></data>
+  <data name="Lens_Type_CoordinateBreak" xml:space="preserve"><value>Coordinate Break</value></data>
+  <data name="Lens_Type_CylinderX" xml:space="preserve"><value>Cylinder (power in x)</value></data>
+  <data name="Lens_Type_CylinderY" xml:space="preserve"><value>Cylinder (power in y)</value></data>
+  <data name="Lens_Type_Diffractive" xml:space="preserve"><value>Diffractive</value></data>
+  <data name="Lens_Type_EvenAsphere" xml:space="preserve"><value>Even Asphere</value></data>
+  <data name="Lens_Type_IdealLens" xml:space="preserve"><value>Ideal Lens</value></data>
+  <data name="Lens_Type_OddAsphere" xml:space="preserve"><value>Odd Asphere</value></data>
+  <data name="Lens_Type_Plane" xml:space="preserve"><value>Plane</value></data>
+  <data name="Lens_Type_QBfs" xml:space="preserve"><value>Q-Type (Best-Fit Sphere)</value></data>
+  <data name="Lens_Type_QCon" xml:space="preserve"><value>Q-Type (Conic)</value></data>
+  <data name="Lens_Type_Toroid" xml:space="preserve"><value>Toroid</value></data>
+  <data name="Lens_Type_XyPolynomial" xml:space="preserve"><value>XY Polynomial</value></data>
+  <data name="Lens_Type_ZernikeSag" xml:space="preserve"><value>Zernike Sag</value></data>
+  <data name="Lens_Undo_AddNamed" xml:space="preserve"><value>Add {0}</value></data>
+  <data name="Lens_Undo_AddSolve" xml:space="preserve"><value>Add Solve</value></data>
+  <data name="Lens_Undo_ApplyWavelengthPreset" xml:space="preserve"><value>Apply Wavelength Preset</value></data>
+  <data name="Lens_Undo_ChangeAperture" xml:space="preserve"><value>Change Aperture</value></data>
+  <data name="Lens_Undo_ChangeApertureType" xml:space="preserve"><value>Change Aperture Type</value></data>
+  <data name="Lens_Undo_ChangeBaseShape" xml:space="preserve"><value>Change Base Shape</value></data>
+  <data name="Lens_Undo_ChangeCoating" xml:space="preserve"><value>Change Coating</value></data>
+  <data name="Lens_Undo_ChangeComment" xml:space="preserve"><value>Change Comment</value></data>
+  <data name="Lens_Undo_ChangeConic" xml:space="preserve"><value>Change Conic</value></data>
+  <data name="Lens_Undo_ChangeEfficiency" xml:space="preserve"><value>Change Diffraction Efficiency</value></data>
+  <data name="Lens_Undo_ChangeField" xml:space="preserve"><value>Change Field</value></data>
+  <data name="Lens_Undo_ChangeFieldType" xml:space="preserve"><value>Change Field Type</value></data>
+  <data name="Lens_Undo_ChangeFieldWeight" xml:space="preserve"><value>Change Field Weight</value></data>
+  <data name="Lens_Undo_ChangeInteraction" xml:space="preserve"><value>Change Interaction</value></data>
+  <data name="Lens_Undo_ChangeLabel" xml:space="preserve"><value>Change Label</value></data>
+  <data name="Lens_Undo_ChangeMaterial" xml:space="preserve"><value>Change Material</value></data>
+  <data name="Lens_Undo_ChangeNamed" xml:space="preserve"><value>Change {0}</value></data>
+  <data name="Lens_Undo_ChangeNotes" xml:space="preserve"><value>Change Notes</value></data>
+  <data name="Lens_Undo_ChangePlacement" xml:space="preserve"><value>Change Placement</value></data>
+  <data name="Lens_Undo_ChangePressure" xml:space="preserve"><value>Change Pressure</value></data>
+  <data name="Lens_Undo_ChangePrimaryWavelength" xml:space="preserve"><value>Change Primary Wavelength</value></data>
+  <data name="Lens_Undo_ChangeRadius" xml:space="preserve"><value>Change Radius</value></data>
+  <data name="Lens_Undo_ChangeRayAiming" xml:space="preserve"><value>Change Ray Aiming</value></data>
+  <data name="Lens_Undo_ChangeSemiDiameter" xml:space="preserve"><value>Change Semi-Diameter</value></data>
+  <data name="Lens_Undo_ChangeSurfaceType" xml:space="preserve"><value>Change Surface Type</value></data>
+  <data name="Lens_Undo_ChangeTemperature" xml:space="preserve"><value>Change Temperature</value></data>
+  <data name="Lens_Undo_ChangeThickness" xml:space="preserve"><value>Change Thickness</value></data>
+  <data name="Lens_Undo_ChangeVignetting" xml:space="preserve"><value>Change Vignetting</value></data>
+  <data name="Lens_Undo_ChangeWavelength" xml:space="preserve"><value>Change Wavelength</value></data>
+  <data name="Lens_Undo_ChangeWavelengthWeight" xml:space="preserve"><value>Change Wavelength Weight</value></data>
+  <data name="Lens_Undo_DeleteSurface" xml:space="preserve"><value>Delete Surface</value></data>
+  <data name="Lens_Undo_InsertSurface" xml:space="preserve"><value>Insert Surface</value></data>
+  <data name="Lens_Undo_MakeVariable" xml:space="preserve"><value>Make Variable</value></data>
+  <data name="Lens_Undo_RemoveNamed" xml:space="preserve"><value>Remove {0}</value></data>
+  <data name="Lens_Undo_RemoveSolve" xml:space="preserve"><value>Remove Solve</value></data>
+  <data name="Lens_Undo_RemoveVariable" xml:space="preserve"><value>Remove Variable</value></data>
+  <data name="Lens_Undo_Rename" xml:space="preserve"><value>Rename</value></data>
+  <data name="Lens_Undo_SetStop" xml:space="preserve"><value>Set Stop</value></data>
+  <data name="Lens_Variable_Refusal" xml:space="preserve"><value>Set by a solve ({0}), so the optimizer cannot vary it. Remove the solve to make it a variable.</value></data>
+  <data name="Lens_Zernike_Astigmatism" xml:space="preserve"><value>astigmatism</value></data>
+  <data name="Lens_Zernike_Astigmatism2" xml:space="preserve"><value>2nd astigmatism</value></data>
+  <data name="Lens_Zernike_Coma" xml:space="preserve"><value>coma</value></data>
+  <data name="Lens_Zernike_Coma2" xml:space="preserve"><value>2nd coma</value></data>
+  <data name="Lens_Zernike_Defocus" xml:space="preserve"><value>defocus</value></data>
+  <data name="Lens_Zernike_Pentafoil" xml:space="preserve"><value>pentafoil</value></data>
+  <data name="Lens_Zernike_Piston" xml:space="preserve"><value>piston</value></data>
+  <data name="Lens_Zernike_Spherical" xml:space="preserve"><value>spherical</value></data>
+  <data name="Lens_Zernike_Spherical2" xml:space="preserve"><value>2nd spherical</value></data>
+  <data name="Lens_Zernike_Spherical3" xml:space="preserve"><value>3rd spherical</value></data>
+  <data name="Lens_Zernike_Tetrafoil" xml:space="preserve"><value>tetrafoil</value></data>
+  <data name="Lens_Zernike_Tilt" xml:space="preserve"><value>tilt</value></data>
+  <data name="Lens_Zernike_Trefoil" xml:space="preserve"><value>trefoil</value></data>
+  <data name="Lens_Zernike_Trefoil2" xml:space="preserve"><value>2nd trefoil</value></data>
   <!-- end area: Lens -->
   <!-- area: Analysis -->
   <data name="Analysis_Csv_CannotRead" xml:space="preserve"><value>cannot be read</value></data>
