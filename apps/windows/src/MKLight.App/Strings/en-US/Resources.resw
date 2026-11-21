@@ -380,6 +380,10 @@
   <data name="Jobs_Preview_RowName" xml:space="preserve"><value>{0}: design {1}, candidate {2}</value></data>
   <data name="Jobs_Preview_SpotDiagram" xml:space="preserve"><value>Spot diagram</value></data>
   <data name="Jobs_Registration_AddSolve" xml:space="preserve"><value>Add Solve</value></data>
+  <data name="Jobs_Registration_Page_GlassSubstitution" xml:space="preserve"><value>Glass Substitution</value></data>
+  <data name="Jobs_Registration_Page_Optimize" xml:space="preserve"><value>Optimize</value></data>
+  <data name="Jobs_Registration_Page_Solves" xml:space="preserve"><value>Apply Solves</value></data>
+  <data name="Jobs_Registration_Page_Tolerance" xml:space="preserve"><value>Tolerance</value></data>
   <data name="Jobs_Results_Counts" xml:space="preserve"><value>{0} iterations, {1} evaluations.</value></data>
   <data name="Jobs_Results_Infeasible" xml:space="preserve"><value>Some constraints are not met.</value></data>
   <data name="Jobs_Results_NotImproved" xml:space="preserve"><value>No better design was found; the result equals the start.</value></data>

@@ -21,10 +21,10 @@ static class JobsRegistration
     [ModuleInitializer]
     internal static void Register()
     {
-        InspectorPages.Add(new("optimize", "Optimize", "\uE9D9", 20, s => new OptimizePanel(s)));
-        InspectorPages.Add(new("glass_substitution", "Glass Substitution", "\uEB42", 21, s => new GlassSubstitutionPanel(s)));
-        InspectorPages.Add(new("tolerance", "Tolerance", "\uE9E9", 22, s => new TolerancePanel(s)));
-        InspectorPages.Add(new("solves", "Apply Solves", "\uE943", 23, s => new SolvesPanel(s)));
+        InspectorPages.Add(new("optimize", Loc.S("Jobs_Registration_Page_Optimize"), "\uE9D9", 20, s => new OptimizePanel(s)));
+        InspectorPages.Add(new("glass_substitution", Loc.S("Jobs_Registration_Page_GlassSubstitution"), "\uEB42", 21, s => new GlassSubstitutionPanel(s)));
+        InspectorPages.Add(new("tolerance", Loc.S("Jobs_Registration_Page_Tolerance"), "\uE9E9", 22, s => new TolerancePanel(s)));
+        InspectorPages.Add(new("solves", Loc.S("Jobs_Registration_Page_Solves"), "\uE943", 23, s => new SolvesPanel(s)));
 
         AppHooks.WindowCreated += w => w.Closed += (_, _) => DesignJobs.Of(w.Session).CancelAll();
 

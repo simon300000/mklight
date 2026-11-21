@@ -380,6 +380,10 @@
   <data name="Jobs_Preview_RowName" xml:space="preserve"><value>{0}：设计 {1}，候选设计 {2}</value></data>
   <data name="Jobs_Preview_SpotDiagram" xml:space="preserve"><value>点列图</value></data>
   <data name="Jobs_Registration_AddSolve" xml:space="preserve"><value>添加求解</value></data>
+  <data name="Jobs_Registration_Page_GlassSubstitution" xml:space="preserve"><value>玻璃替换</value></data>
+  <data name="Jobs_Registration_Page_Optimize" xml:space="preserve"><value>优化</value></data>
+  <data name="Jobs_Registration_Page_Solves" xml:space="preserve"><value>应用求解</value></data>
+  <data name="Jobs_Registration_Page_Tolerance" xml:space="preserve"><value>公差</value></data>
   <data name="Jobs_Results_Counts" xml:space="preserve"><value>{0} 次迭代，{1} 次评估。</value></data>
   <data name="Jobs_Results_Infeasible" xml:space="preserve"><value>部分约束未满足。</value></data>
   <data name="Jobs_Results_NotImproved" xml:space="preserve"><value>未找到更好的设计；结果与起点相同。</value></data>
@@ -430,7 +434,7 @@
   <data name="Jobs_Variables_Problem_Solved" xml:space="preserve"><value>由求解设定：不参与变化</value></data>
   <data name="Jobs_Variables_RadiusContainsZero" xml:space="preserve"><value>此半径区间经过 R = 0，不是有效的曲率范围。若要 |R| ≥ r，请输入最小值 r、最大值 −r（经过 ∞）。</value></data>
   <data name="Jobs_Variables_RadiusHelp" xml:space="preserve"><value>以 mm 为单位的曲率半径区间作为边界；优化器约束的是曲率 c = 1/R。留空表示该侧不设限。最小值大于最大值时区间经过平面（R = ∞）：最小 100、最大 −100 即 |R| ≥ 100。0 表示该侧曲率不设限。</value></data>
-  <data name="Jobs_Variables_Refusal" xml:space="preserve"><value>由求解（{0}）设定，优化器无法改变它。删除该求解后才能将其设为变量。</value></data>
+  <data name="Jobs_Variables_Refusal" xml:space="preserve"><value>由求解（{0}）设定，优化器无法改变它。移除求解后才能将其设为变量。</value></data>
   <data name="Jobs_Variables_Remove" xml:space="preserve"><value>固定此参数（移除变量）</value></data>
   <data name="Jobs_Variables_SolvedHelp" xml:space="preserve"><value>此值由{0}求解设定，因此优化器在运行时不使用该变量。请移除该变量，或删除求解以改变它。</value></data>
   <data name="Jobs_Variables_Undo_Bounds" xml:space="preserve"><value>更改边界</value></data>
